@@ -1,6 +1,6 @@
 {
   "name": "@mnmal-ai/substrate-sentinel-client",
-  "version": "1.0.0-alpha.0",
+  "version": "1.0.0-alpha.1",
   "private": true,
   "description": "Client helper for the Sentinel coordinator-bridge fan-out.",
   "license": "Apache-2.0",
