@@ -1,3 +1,4 @@
+import { satisfies } from 'semver';
 import { describe, expect, it } from 'vitest';
 import { defaultPluginsForPersona, KNOWN_PLUGINS, pluginNpmName } from './plugins.js';
 
@@ -7,6 +8,13 @@ describe('KNOWN_PLUGINS', () => {
     expect(claude).toBeDefined();
     expect(claude!.description.length).toBeGreaterThan(0);
     expect(claude!.npmName).toBe('@mnmal-ai/cortext');
+  });
+
+  it('ranges cortext to admit its 1.0.0 prereleases as well as later 1.x releases', () => {
+    const range = KNOWN_PLUGINS.find((p) => p.name === 'cortext')!.range!;
+    expect(satisfies('1.0.0-alpha.0', range)).toBe(true);
+    expect(satisfies('1.2.0', range)).toBe(true);
+    expect(satisfies('2.0.0', range)).toBe(false);
   });
 
   it('lists no built-in plugin', () => {

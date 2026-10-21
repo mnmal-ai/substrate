@@ -12,9 +12,10 @@ export interface KnownPlugin {
 /**
  * The cortext line publishes on its own versions and declares substrate as a
  * peer range. Raise the floor when a cortext release drops support for the
- * substrate major this binary is on.
+ * substrate major this binary is on. The floor names a prerelease because a
+ * caret range admits no prerelease of a version it does not itself name.
  */
-const CORTEXT_RANGE = '^1.0.0';
+const CORTEXT_RANGE = '^1.0.0-alpha.0';
 
 export type Persona = 'agent-context' | 'minimal' | 'full';
 
