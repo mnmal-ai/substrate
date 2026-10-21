@@ -21,11 +21,9 @@ on:
       - assigned
       - unassigned
 
-# One PR, one in-flight check: a rapid label/assignee fixup cycle collapses to
-# the latest run rather than piling up.
-concurrency:
-  group: pr-hygiene-pr-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+# No concurrency group: every run reads the PR's live state, so duplicates
+# reach the same verdict in seconds. A group cancelled the superseded runs,
+# and a cancelled required check blocked the merge until it was re-run.
 
 permissions:
   contents: read
