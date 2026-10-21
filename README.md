@@ -113,6 +113,8 @@ pnpm check-types && pnpm lint && pnpm test
 
 Postgres-backed suites skip unless `POSTGRES_URL` is set; [`packages/substrate-dataset-pg`](packages/substrate-dataset-pg/README.md#running-tests) explains the guards they run and how to set up a test database.
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for pull requests and labels, and [SECURITY.md](SECURITY.md) to report a vulnerability.
+
 ## License
 
 [Apache-2.0](LICENSE)

@@ -30,7 +30,7 @@ export function evaluatePrHygiene({ labels, assignees }) {
   const errors = [];
   if (areas.length < 1) {
     errors.push(
-      `Missing an Area label (need ≥1, the package the PR touches, e.g. substrate-core, or repo). See CONTRIBUTING.md.`
+      `Missing an Area label (need ≥1, the package the PR touches, named without the @mnmal-ai/ scope, or repo). See CONTRIBUTING.md.`
     );
   }
   if (types.length !== 1) {

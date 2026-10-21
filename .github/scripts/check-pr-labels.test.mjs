@@ -8,7 +8,7 @@ import { evaluatePrHygiene } from './check-pr-labels.mjs';
 
 test('passes with one area, one type, one priority, and an assignee', () => {
   const result = evaluatePrHygiene({
-    labels: ['substrate-core', 'feat', 'P2-medium'],
+    labels: ['core', 'feat', 'P2-medium'],
     assignees: ['octocat']
   });
   assert.equal(result.ok, true);
@@ -17,11 +17,11 @@ test('passes with one area, one type, one priority, and an assignee', () => {
 
 test('an optional status label does not count as an area and does not break a valid PR', () => {
   const result = evaluatePrHygiene({
-    labels: ['substrate-server-fastify', 'refactor', 'P1-high', 'needs-review'],
+    labels: ['server', 'refactor', 'P1-high', 'needs-review'],
     assignees: ['octocat']
   });
   assert.equal(result.ok, true);
-  assert.deepEqual(result.areas, ['substrate-server-fastify']);
+  assert.deepEqual(result.areas, ['server']);
 });
 
 test('fails when no area label is present (type+priority+status are not areas)', () => {
@@ -38,7 +38,7 @@ test('fails when no area label is present (type+priority+status are not areas)',
 
 test('fails when the type label is missing', () => {
   const result = evaluatePrHygiene({
-    labels: ['substrate-core', 'P2-medium'],
+    labels: ['core', 'P2-medium'],
     assignees: ['octocat']
   });
   assert.equal(result.ok, false);
@@ -50,7 +50,7 @@ test('fails when the type label is missing', () => {
 
 test('fails when more than one type label is present', () => {
   const result = evaluatePrHygiene({
-    labels: ['substrate-core', 'feat', 'refactor', 'P2-medium'],
+    labels: ['core', 'feat', 'refactor', 'P2-medium'],
     assignees: ['octocat']
   });
   assert.equal(result.ok, false);
@@ -62,7 +62,7 @@ test('fails when more than one type label is present', () => {
 
 test('fails when the priority label is missing', () => {
   const result = evaluatePrHygiene({
-    labels: ['substrate-core', 'feat'],
+    labels: ['core', 'feat'],
     assignees: ['octocat']
   });
   assert.equal(result.ok, false);
@@ -74,7 +74,7 @@ test('fails when the priority label is missing', () => {
 
 test('fails when there is no assignee', () => {
   const result = evaluatePrHygiene({
-    labels: ['substrate-core', 'feat', 'P2-medium'],
+    labels: ['core', 'feat', 'P2-medium'],
     assignees: []
   });
   assert.equal(result.ok, false);
