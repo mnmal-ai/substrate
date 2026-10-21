@@ -1,0 +1,232 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "embedder": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "off"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "fake"
+            },
+            "dimension": {
+              "default": 8,
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "ollama"
+            },
+            "baseUrl": {
+              "type": "string",
+              "format": "uri"
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1
+            },
+            "dimension": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "timeoutMs": {
+              "default": 120000,
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "contextLength": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "kind",
+            "baseUrl",
+            "model",
+            "dimension"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "onnx"
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1
+            },
+            "dimension": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "cacheDir": {
+              "type": "string",
+              "minLength": 1
+            },
+            "maxLength": {
+              "default": 512,
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "kind",
+            "model",
+            "dimension"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "queryEmbedTimeoutMs": {
+      "default": 30000,
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991
+    },
+    "hnswM": {
+      "default": 16,
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991
+    },
+    "hnswEfConstruction": {
+      "default": 64,
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991
+    },
+    "salience": {
+      "default": {
+        "weight": 0,
+        "halfLifeHours": 168,
+        "spreadDamping": 0.3
+      },
+      "type": "object",
+      "properties": {
+        "weight": {
+          "default": 0,
+          "type": "number",
+          "minimum": 0
+        },
+        "halfLifeHours": {
+          "default": 168,
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "spreadDamping": {
+          "default": 0.3,
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "expansion": {
+      "default": {
+        "enabled": true,
+        "maxNeighboursPerSeed": 8,
+        "maxTotalNeighbours": 50
+      },
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "maxNeighboursPerSeed": {
+          "default": 8,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "maxTotalNeighbours": {
+          "default": 50,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "additionalProperties": false
+    },
+    "crystallise": {
+      "default": {
+        "nComponents": 10,
+        "nNeighbors": 15,
+        "minClusterSize": 5,
+        "seed": 42,
+        "accretionThreshold": 0.6
+      },
+      "type": "object",
+      "properties": {
+        "nComponents": {
+          "default": 10,
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "nNeighbors": {
+          "default": 15,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "minClusterSize": {
+          "default": 5,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "seed": {
+          "default": 42,
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "accretionThreshold": {
+          "default": 0.6,
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

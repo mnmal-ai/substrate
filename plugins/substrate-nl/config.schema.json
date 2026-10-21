@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "judge": {
+      "type": "object",
+      "properties": {
+        "baseUrl": { "type": "string", "format": "uri" },
+        "model": { "type": "string", "minLength": 1 },
+        "timeoutMs": { "type": "integer", "exclusiveMinimum": 0, "default": 20000 }
+      },
+      "required": ["baseUrl", "model"],
+      "additionalProperties": false
+    },
+    "rulings": {
+      "type": "object",
+      "additionalProperties": { "type": "object" }
+    },
+    "packTtlMs": { "type": "integer", "exclusiveMinimum": 0, "default": 300000 }
+  },
+  "additionalProperties": false
+}

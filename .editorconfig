@@ -1,0 +1,21 @@
+# Editor settings — see https://editorconfig.org. Honored by every modern editor.
+# Enforce a trailing newline on every file (GitHub flags missing-newline diffs). Biome already enforces this on .ts/.tsx/.js/.mjs/.json/.jsonc;
+# this catches the rest (.md, .yml, .sql, .toml, .sh, .editorconfig itself, etc.).
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# Markdown uses trailing whitespace for hard line breaks — preserve it.
+[*.md]
+trim_trailing_whitespace = false
+
+# Makefiles require literal tabs.
+[Makefile]
+indent_style = tab

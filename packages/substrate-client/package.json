@@ -1,0 +1,53 @@
+{
+  "name": "@mnmal-ai/substrate-client",
+  "version": "1.0.0-alpha.0",
+  "private": true,
+  "description": "TypeScript client for Substrate over HTTP/WS with JSON + substrate-pack wire formats.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mnmal-ai/substrate.git",
+    "directory": "packages/substrate-client"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsdown && tsc -p tsconfig.dts.json",
+    "test": "vitest run",
+    "check-types": "tsc -p tsconfig.json --noEmit",
+    "lint": "biome check ."
+  },
+  "dependencies": {
+    "@mnmal-ai/substrate-pack": "workspace:*",
+    "@mnmal-ai/substrate-policy": "workspace:*",
+    "@mnmal-ai/substrate-types": "workspace:*",
+    "@preact/signals-core": "catalog:",
+    "ws": "catalog:"
+  },
+  "devDependencies": {
+    "@mnmal-ai/substrate-compose": "workspace:*",
+    "@mnmal-ai/substrate-config": "workspace:*",
+    "@mnmal-ai/substrate-core": "workspace:*",
+    "@mnmal-ai/substrate-dataset-memory": "workspace:*",
+    "@mnmal-ai/substrate-sdk": "workspace:*",
+    "@mnmal-ai/substrate-server-fastify": "workspace:*",
+    "@mnmal-ai/substrate-server-memory": "workspace:*",
+    "@types/node": "catalog:",
+    "@types/ws": "catalog:",
+    "jsdom": "catalog:",
+    "msw": "catalog:",
+    "tsdown": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "engines": {
+    "node": ">=26.2.0"
+  }
+}

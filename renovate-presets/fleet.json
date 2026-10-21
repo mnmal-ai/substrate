@@ -1,0 +1,44 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "mnmal-ai fleet base: weekly, grouped, release-aged dependency PRs. Repos extend fleet-lead (substrate) or fleet-follower (synoptic, surface, holomap).",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "schedule": [
+    "before 6am on monday"
+  ],
+  "timezone": "America/Chicago",
+  "minimumReleaseAge": "1 day",
+  "labels": [
+    "infra",
+    "P3-low"
+  ],
+  "assignees": [
+    "mnmal-ai-agent"
+  ],
+  "dependencyDashboard": true,
+  "packageRules": [
+    {
+      "description": "GitHub Actions, digest-pinned with the version comment substrate-toolchain-check reads.",
+      "groupName": "github actions",
+      "matchManagers": [
+        "github-actions"
+      ]
+    },
+    {
+      "description": "Rust toolchain and crates (holomap).",
+      "groupName": "rust",
+      "matchManagers": [
+        "cargo"
+      ]
+    },
+    {
+      "description": "@mnmal-ai packages move with their own releases, never by a bot PR.",
+      "matchPackageNames": [
+        "@mnmal-ai/**"
+      ],
+      "enabled": false
+    }
+  ]
+}

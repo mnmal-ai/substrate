@@ -1,0 +1,4 @@
+{
+  "hnswM": 16,
+  "hnswEfConstruction": 64
+}

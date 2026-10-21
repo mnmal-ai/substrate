@@ -1,0 +1,64 @@
+{
+  "name": "@mnmal-ai/substrate-proposals",
+  "version": "1.0.0-alpha.0",
+  "private": true,
+  "description": "Substrate coordinator plugin for runtime namespace, type, and field hot-add.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./bootstrap": {
+      "import": "./dist/bootstrap.js",
+      "types": "./dist/bootstrap.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "default-config.json",
+    "config.schema.json"
+  ],
+  "scripts": {
+    "build": "tsdown && tsc -p tsconfig.dts.json",
+    "test": "vitest run",
+    "check-types": "tsc -p tsconfig.json --noEmit",
+    "lint": "biome check ."
+  },
+  "dependencies": {
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@mnmal-ai/substrate-bootstrap": "workspace:*",
+    "@mnmal-ai/substrate-compose": "workspace:*",
+    "@mnmal-ai/substrate-config": "workspace:*",
+    "@mnmal-ai/substrate-core": "workspace:*",
+    "@mnmal-ai/substrate-dataset-memory": "workspace:*",
+    "@mnmal-ai/substrate-policy": "workspace:*",
+    "@mnmal-ai/substrate-sdk": "workspace:*",
+    "@mnmal-ai/substrate-server-memory": "workspace:*",
+    "@mnmal-ai/substrate-types": "workspace:*",
+    "@types/node": "catalog:",
+    "tsdown": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "peerDependencies": {
+    "@mnmal-ai/substrate-bootstrap": ">=1.0.0-alpha.0 <2.0.0",
+    "@mnmal-ai/substrate-compose": ">=1.0.0-alpha.0 <2.0.0",
+    "@mnmal-ai/substrate-core": ">=1.0.0-alpha.0 <2.0.0",
+    "@mnmal-ai/substrate-policy": ">=1.0.0-alpha.0 <2.0.0",
+    "@mnmal-ai/substrate-sdk": ">=1.0.0-alpha.0 <2.0.0",
+    "@mnmal-ai/substrate-types": ">=1.0.0-alpha.0 <2.0.0"
+  },
+  "engines": {
+    "node": ">=26.2.0"
+  },
+  "substrate": {
+    "tier": "coordinator",
+    "entry": "./dist/bootstrap.js",
+    "configSchema": "./config.schema.json",
+    "defaultConfig": "./default-config.json"
+  }
+}

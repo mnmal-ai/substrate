@@ -1,0 +1,47 @@
+{
+  "name": "@mnmal-ai/substrate-sdk",
+  "version": "1.0.0-alpha.0",
+  "private": true,
+  "description": "Decorator-free SDK for declaring Substrate namespaces, types, and autoCRUD at compose time.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mnmal-ai/substrate.git",
+    "directory": "packages/substrate-sdk"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./autocrud": {
+      "import": "./dist/autocrud/index.js",
+      "types": "./dist/autocrud/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsdown && tsc -p tsconfig.dts.json",
+    "test": "vitest run",
+    "check-types": "tsc -p tsconfig.json --noEmit",
+    "lint": "biome check ."
+  },
+  "dependencies": {
+    "@mnmal-ai/substrate-policy": "workspace:*",
+    "@mnmal-ai/substrate-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@mnmal-ai/substrate-config": "workspace:*",
+    "@mnmal-ai/substrate-core": "workspace:*",
+    "@mnmal-ai/substrate-dataset-memory": "workspace:*",
+    "@types/node": "catalog:",
+    "tsdown": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "engines": {
+    "node": ">=26.2.0"
+  }
+}

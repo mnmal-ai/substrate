@@ -1,0 +1,121 @@
+{
+  "name": "@mnmal-ai/substrate",
+  "version": "1.0.0-alpha.0",
+  "description": "Substrate — an agent-first typed-data server: the substrate and substrate-admin binaries, the built-in plugins and the SDK subpaths.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mnmal-ai/substrate.git",
+    "directory": "apps/substrate"
+  },
+  "type": "module",
+  "bin": {
+    "substrate": "dist/substrate.js",
+    "substrate-admin": "dist/substrate-admin.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsdown && node scripts/copy-plugin-configs.mjs",
+    "prepack": "TURBO_TELEMETRY_DISABLED=1 turbo run build --filter=@mnmal-ai/substrate",
+    "dev": "tsx src/bin/substrate.ts serve",
+    "test": "vitest run",
+    "check-types": "tsc -p tsconfig.json --noEmit",
+    "lint": "biome check ."
+  },
+  "dependencies": {
+    "@fastify/compress": "catalog:",
+    "@fastify/cors": "catalog:",
+    "@fastify/websocket": "catalog:",
+    "@mnmal-ai/holomap-clusterer": "catalog:",
+    "@modelcontextprotocol/sdk": "catalog:",
+    "@preact/signals-core": "catalog:",
+    "fastify": "catalog:",
+    "msgpackr": "catalog:",
+    "postgres": "catalog:",
+    "semver": "catalog:",
+    "ws": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@inquirer/prompts": "catalog:",
+    "@mnmal-ai/substrate-bootstrap": "workspace:*",
+    "@mnmal-ai/substrate-client": "workspace:*",
+    "@mnmal-ai/substrate-compose": "workspace:*",
+    "@mnmal-ai/substrate-config": "workspace:*",
+    "@mnmal-ai/substrate-core": "workspace:*",
+    "@mnmal-ai/substrate-dataset-memory": "workspace:*",
+    "@mnmal-ai/substrate-dataset-pg": "workspace:*",
+    "@mnmal-ai/substrate-embedder": "workspace:*",
+    "@mnmal-ai/substrate-filter": "workspace:*",
+    "@mnmal-ai/substrate-pack": "workspace:*",
+    "@mnmal-ai/substrate-policy": "workspace:*",
+    "@mnmal-ai/substrate-proposals": "workspace:*",
+    "@mnmal-ai/substrate-recall": "workspace:*",
+    "@mnmal-ai/substrate-sdk": "workspace:*",
+    "@mnmal-ai/substrate-sentinel-client": "workspace:*",
+    "@mnmal-ai/substrate-server-fastify": "workspace:*",
+    "@mnmal-ai/substrate-server-memory": "workspace:*",
+    "@mnmal-ai/substrate-types": "workspace:*",
+    "@types/node": "catalog:",
+    "@types/semver": "catalog:",
+    "@types/ws": "catalog:",
+    "msw": "catalog:",
+    "tsdown": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "engines": {
+    "node": ">=26.2.0"
+  },
+  "exports": {
+    "./sdk": {
+      "types": "./dist/sdk.d.ts",
+      "import": "./dist/sdk.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "import": "./dist/client.js"
+    },
+    "./pack": {
+      "types": "./dist/pack.d.ts",
+      "import": "./dist/pack.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.js"
+    },
+    "./recall": {
+      "types": "./dist/recall.d.ts",
+      "import": "./dist/recall.js"
+    },
+    "./proposals": {
+      "types": "./dist/proposals.d.ts",
+      "import": "./dist/proposals.js"
+    }
+  },
+  "substrate": {
+    "plugins": [
+      {
+        "name": "recall",
+        "tier": "kernel",
+        "entry": "./dist/recall-bootstrap.js",
+        "defaultConfig": "./dist/recall.default-config.json",
+        "configSchema": "./dist/recall.config.schema.json"
+      },
+      {
+        "name": "proposals",
+        "tier": "coordinator",
+        "entry": "./dist/proposals-bootstrap.js",
+        "defaultConfig": "./dist/proposals.default-config.json",
+        "configSchema": "./dist/proposals.config.schema.json"
+      }
+    ]
+  }
+}

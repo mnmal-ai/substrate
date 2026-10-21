@@ -1,0 +1,10 @@
+# Build context is the repository root (docker-compose.yml, apps/substrate-image/Dockerfile).
+**/node_modules
+**/dist
+**/*.test.ts
+**/test/**
+docs
+.git
+.gitignore
+Dockerfile
+.dockerignore

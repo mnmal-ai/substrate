@@ -1,0 +1,15 @@
+{
+  "extends": "@mnmal-ai/substrate-config/tsconfig.app.json",
+  "compilerOptions": {
+    "types": ["node"],
+    // substrate-client is the lone DOM-lib package; resolving it to source drags
+    // transport/ws.ts (BinaryType) into this ES2025-only program. Point it at its
+    // built declarations instead (check-types runs after ^build). Relative to this file.
+    "paths": {
+      "@mnmal-ai/substrate-client": ["../../packages/substrate-client/dist/index.d.ts"],
+      "@mnmal-ai/substrate/*": ["./src/exports/*.ts"],
+      "@mnmal-ai/*": ["../../packages/*/src/index.ts", "../../plugins/*/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*", "test/**/*", "vitest.config.ts"]
+}

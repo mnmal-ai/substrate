@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+    # ready_for_review is load-bearing: the jobs skip drafts, so without it a PR
+    # last pushed as a draft never gets a real run once marked ready.
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore:
+      - '*.md'
+      - 'docs/**'
+      - '.gitignore'
+      - 'LICENSE'
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: Build, type-check, lint & test
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c  # v4.3.0
+        with:
+          cache: true
+
+      - name: Get pnpm store path
+        id: pnpm-cache
+        run: echo "dir=$(pnpm store path)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ steps.pnpm-cache.outputs.dir }}
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: ${{ runner.os }}-pnpm-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Type-check
+        run: pnpm check-types
+
+      - name: Lint
+        run: pnpm lint
+
+      # toolchain.json is what every other repo is held to; a stale one moves the fleet silently.
+      - name: Fleet toolchain manifest is current
+        run: node scripts/emit-toolchain.mjs --check
+
+      # pg-gated suites self-skip without POSTGRES_URL; the pg job runs them.
+      - name: Test
+        run: pnpm test
+
+  # The pg-gated suites are the only checks on the migrations. The role is
+  # least-privilege because the test guards refuse a superuser. Credentials are
+  # literals scoped to this throwaway service container.
+  pg:
+    name: Postgres-gated tests
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_PASSWORD: ci-superuser-only
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      PGPASSWORD: ci-superuser-only
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c  # v4.3.0
+        with:
+          cache: true
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Provision the least-privilege test role
+        run: |
+          psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE substrate_test LOGIN PASSWORD 'ci-substrate-test'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+          CREATE DATABASE substrate_test OWNER substrate_test;
+          SQL
+          psql -h 127.0.0.1 -U postgres -d substrate_test -v ON_ERROR_STOP=1 <<'SQL'
+          ALTER SCHEMA public OWNER TO substrate_test;
+          CREATE EXTENSION IF NOT EXISTS vector;
+          SQL
+
+      - name: Test (pg-gated suites run, none skipped)
+        env:
+          POSTGRES_URL: postgres://substrate_test:ci-substrate-test@127.0.0.1:5432/substrate_test
+        run: .github/scripts/test-pg-gated.sh

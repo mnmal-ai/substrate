@@ -1,0 +1,40 @@
+{
+  "name": "@mnmal-ai/substrate-filter",
+  "version": "1.0.0-alpha.0",
+  "private": true,
+  "description": "Query filter DSL for Substrate: eq, gt, between, in, contains across all datasets.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mnmal-ai/substrate.git",
+    "directory": "packages/substrate-filter"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsdown && tsc -p tsconfig.dts.json",
+    "test": "vitest run",
+    "check-types": "tsc -p tsconfig.json --noEmit",
+    "lint": "biome check ."
+  },
+  "dependencies": {
+    "@mnmal-ai/substrate-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@mnmal-ai/substrate-config": "workspace:*",
+    "@types/node": "catalog:",
+    "tsdown": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "engines": {
+    "node": ">=26.2.0"
+  }
+}

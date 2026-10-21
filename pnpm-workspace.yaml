@@ -1,0 +1,85 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+  - "plugins/*"
+
+# Satisfy plugins' peer ranges from the local workspace package rather than the
+# registry. pnpm defaults this to false, which with `auto-install-peers=true`
+# fetches the peer instead of linking it, and fails on a version not yet
+# published.
+linkWorkspacePackages: true
+
+# vitest's mocker declares an optional peer on msw ^2 (used only by browser-mode
+# mocking, which nothing here runs) while the workspace's own tests use msw 3.
+# auto-install-peers satisfied that peer with msw 2 in every package that does
+# not depend on msw, and which of the two a package got varied with resolution
+# order, so unrelated installs flipped packages between two vitest variants.
+# The `msw` override below pins every msw in the graph to the catalog version;
+# this rule records that msw 3 is acceptable for the mocker's peer.
+peerDependencyRules:
+  allowedVersions:
+    "@vitest/mocker>msw": "3"
+
+overrides:
+  "hono@<4.12.21": ">=4.12.21"
+  "ip-address@<=10.1.0": ">=10.1.1"
+  "fast-uri@<3.1.2": ">=3.1.2"
+  "qs@>=6.11.1 <6.15.2": ">=6.15.2"
+  # One msw for the whole graph — see peerDependencyRules above.
+  msw: "catalog:"
+
+catalog:
+  "@biomejs/biome": "^2.5.15"
+  '@inquirer/prompts': ^8.7.2
+  turbo: "^2.11.7"
+  "@fastify/compress": "^9.2.0"
+  "@fastify/cors": "^11.3.0"
+  "@fastify/websocket": "^11.3.1"
+  "@modelcontextprotocol/sdk": "^1.32.0"
+  "@preact/signals-core": "^1.14.4"
+  "@mnmal-ai/holomap-clusterer": "0.2.1"
+  "@mnmal-ai/surface-core": "0.14.5"
+  "@mnmal-ai/surface-kit": "0.14.5"
+  "@mnmal-ai/surface-theme": "0.14.5"
+  "@types/react": "^19.2.0"
+  ink: "^7.1.1"
+  ink-testing-library: "^4.0.0"
+  react: "^19.3.0"
+  "@types/node": "^26.6.4"
+  "@types/semver": "^7.5.0"
+  "@types/ws": "^8.18.1"
+  "@vitest/coverage-v8": "^5.0.3"
+  fastify: "^5.12.5"
+  jsdom: "^30.1.1"
+  msw: "^3.0.1"
+  msgpackr: "^2.1.0"
+  postgres: "3.4.9"
+  semver: "^7.8.5"
+  tsdown: "^0.23.0"
+  tsx: "^4.23.15"
+  oxc-parser: "^0.154.0"
+  typescript: "^7.0.2"
+  vitest: "^5.0.3"
+  ws: "^8.22.0"
+  zod: "^4.6.5"
+
+allowBuilds:
+  esbuild: true
+  msgpackr-extract: true
+  msw: true
+  onnxruntime-node: true
+
+minimumReleaseAgeExclude:
+  - '@mnmal-ai/holomap-clusterer@0.2.1'
+  - '@mnmal-ai/surface-core@0.14.5'
+  - '@mnmal-ai/surface-kit@0.14.5'
+  - '@mnmal-ai/surface-theme@0.14.5'
+  - "@modelcontextprotocol/sdk@1.32.0"
+  - "@turbo/darwin-64@2.11.7"
+  - "@turbo/darwin-arm64@2.11.7"
+  - "@turbo/linux-64@2.11.7"
+  - "@turbo/linux-arm64@2.11.7"
+  - "@turbo/windows-64@2.11.7"
+  - "@turbo/windows-arm64@2.11.7"
+  - "@types/node@26.6.4"
+  - turbo@2.11.7

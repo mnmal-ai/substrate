@@ -1,0 +1,38 @@
+# Postgres with pgvector and a substrate server with the in-tree plugins.
+#
+#   docker compose up -d            # both; the server on localhost:3100
+#   docker compose up -d postgres   # only the database, for running from source
+name: substrate
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: substrate
+      POSTGRES_PASSWORD: substrate
+      POSTGRES_DB: substrate
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U substrate -d substrate"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  substrate:
+    build:
+      context: .
+      dockerfile: apps/substrate-image/Dockerfile
+    environment:
+      SUBSTRATE_DATABASE_URL: postgres://substrate:substrate@postgres:5432/substrate
+    ports:
+      - "127.0.0.1:3100:3100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

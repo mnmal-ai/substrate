@@ -1,0 +1,13 @@
+{
+  "extends": "@mnmal-ai/substrate-config/tsconfig.app.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "jsx": "react-jsx",
+    "paths": {
+      "@mnmal-ai/substrate-client": ["../../packages/substrate-client/dist/index.d.ts"],
+
+      "@mnmal-ai/*": ["../../packages/*/src/index.ts", "../../plugins/*/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*", "test/**/*", "vitest.config.ts"]
+}

@@ -1,0 +1,44 @@
+node_modules
+dist
+.turbo
+*.tsbuildinfo
+.DS_Store
+
+# Real env files — committed templates live as <name>.env.example
+*.env
+!*.env.example
+
+# Vitest coverage output
+coverage
+
+# Postgres dumps produced by scripts/backup-postgres.sh
+data/
+
+# Local snapshots (one-shot data exports, not source-controlled)
+scripts/.snapshots/
+
+# Git worktrees (created by superpowers:using-git-worktrees skill)
+.worktrees/
+
+# Claude Code runtime lockfile — rewritten every session
+.claude/scheduled_tasks.lock
+
+# subagent-driven-development scratch workspace (ledger, briefs, review packages)
+.superpowers/
+
+# Machine-local: an absolute binary path. Identity lives in
+# .claude/settings.local.json.
+.mcp.json
+
+# OpenCode project config — machine-local (kid/key literals live in options)
+.opencode/
+
+# Per-machine identity and permissions, plus any backup copy of it. A .bak of this
+# file was committed once with a literal database password in its allowlist.
+.claude/settings.local.json*
+
+# Agent worktrees (Claude Code isolation: worktree)
+.claude/worktrees/
+
+# Internal plans, specs and review notes live outside the repo (__docs__/<repo>/).
+docs/superpowers/

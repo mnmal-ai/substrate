@@ -1,0 +1,53 @@
+{
+  "name": "@mnmal-ai/substrate-tui",
+  "version": "1.0.0-alpha.0",
+  "description": "Terminal UI for Substrate: ask in natural language, browse the schema, see the service status.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mnmal-ai/substrate.git",
+    "directory": "apps/substrate-tui"
+  },
+  "type": "module",
+  "bin": {
+    "substrate-tui": "dist/bin/tui.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "scripts": {
+    "prepack": "TURBO_TELEMETRY_DISABLED=1 turbo run build --filter=@mnmal-ai/substrate-tui",
+    "build": "tsdown",
+    "dev": "tsx src/bin/tui.tsx",
+    "test": "vitest run",
+    "check-types": "tsc -p tsconfig.json --noEmit",
+    "lint": "biome check ."
+  },
+  "dependencies": {
+    "@mnmal-ai/substrate": "workspace:*",
+    "@mnmal-ai/substrate-nl": "workspace:*",
+    "@mnmal-ai/surface-core": "catalog:",
+    "@mnmal-ai/surface-kit": "catalog:",
+    "@mnmal-ai/surface-theme": "catalog:",
+    "ink": "catalog:",
+    "react": "catalog:"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "catalog:",
+    "@mnmal-ai/substrate-config": "workspace:*",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "ink-testing-library": "catalog:",
+    "tsdown": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "engines": {
+    "node": ">=26.2.0"
+  }
+}

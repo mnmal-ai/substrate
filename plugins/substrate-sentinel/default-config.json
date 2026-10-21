@@ -1,0 +1,5 @@
+{
+  "namespace": "sentinel",
+  "pingIntervalMs": 30000,
+  "staleThresholdMs": 90000
+}

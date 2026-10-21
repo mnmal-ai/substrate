@@ -1,0 +1,75 @@
+{
+  "name": "@mnmal-ai/substrate-recall",
+  "version": "1.0.0-alpha.0",
+  "private": true,
+  "description": "Substrate substrate plugin for semantic recall over any embedded type via pgvector + pluggable embedders (ollama, onnx, fake).",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mnmal-ai/substrate.git",
+    "directory": "plugins/substrate-recall"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./bootstrap": {
+      "import": "./dist/bootstrap.js",
+      "types": "./dist/bootstrap.d.ts"
+    },
+    "./cluster-worker": {
+      "import": "./dist/cluster-worker.js"
+    }
+  },
+  "files": [
+    "dist",
+    "default-config.json",
+    "config.schema.json"
+  ],
+  "scripts": {
+    "build": "tsdown && tsc -p tsconfig.dts.json",
+    "test": "vitest run",
+    "check-types": "tsc -p tsconfig.json --noEmit",
+    "lint": "biome check ."
+  },
+  "dependencies": {
+    "@mnmal-ai/holomap-clusterer": "catalog:",
+    "postgres": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@mnmal-ai/substrate-bootstrap": "workspace:*",
+    "@mnmal-ai/substrate-compose": "workspace:*",
+    "@mnmal-ai/substrate-config": "workspace:*",
+    "@mnmal-ai/substrate-core": "workspace:*",
+    "@mnmal-ai/substrate-dataset-memory": "workspace:*",
+    "@mnmal-ai/substrate-dataset-pg": "workspace:*",
+    "@mnmal-ai/substrate-embedder": "workspace:*",
+    "@mnmal-ai/substrate-server-memory": "workspace:*",
+    "@mnmal-ai/substrate-types": "workspace:*",
+    "@types/node": "catalog:",
+    "@types/semver": "catalog:",
+    "semver": "catalog:",
+    "tsdown": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "peerDependencies": {
+    "@mnmal-ai/substrate-bootstrap": ">=1.0.0-alpha.0 <2.0.0",
+    "@mnmal-ai/substrate-compose": ">=1.0.0-alpha.0 <2.0.0",
+    "@mnmal-ai/substrate-core": ">=1.0.0-alpha.0 <2.0.0",
+    "@mnmal-ai/substrate-dataset-pg": ">=1.0.0-alpha.0 <2.0.0",
+    "@mnmal-ai/substrate-embedder": ">=1.0.0-alpha.0 <2.0.0",
+    "@mnmal-ai/substrate-types": ">=1.0.0-alpha.0 <2.0.0"
+  },
+  "engines": {
+    "node": ">=26.2.0"
+  },
+  "substrate": {
+    "tier": "kernel",
+    "entry": "./dist/bootstrap.js",
+    "configSchema": "./config.schema.json",
+    "defaultConfig": "./default-config.json"
+  }
+}

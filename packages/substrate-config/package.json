@@ -1,0 +1,57 @@
+{
+  "name": "@mnmal-ai/substrate-config",
+  "version": "1.0.0-alpha.0",
+  "description": "Shared TypeScript, Biome, and tsdown configs for the Substrate workspace.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mnmal-ai/substrate.git",
+    "directory": "packages/substrate-config"
+  },
+  "type": "module",
+  "exports": {
+    "./biome.json": "./biome.json",
+    "./tsconfig.base.json": "./tsconfig.base.json",
+    "./tsconfig.lib.json": "./tsconfig.lib.json",
+    "./tsconfig.app.json": "./tsconfig.app.json",
+    "./tsconfig.dts.json": "./tsconfig.dts.json",
+    "./tsdown": {
+      "import": "./dist/tsdown.js",
+      "types": "./dist/tsdown.d.ts"
+    },
+    "./toolchain.json": "./toolchain.json"
+  },
+  "files": [
+    "dist",
+    "biome.json",
+    "tsconfig.base.json",
+    "tsconfig.lib.json",
+    "tsconfig.app.json",
+    "tsconfig.dts.json",
+    "toolchain.json",
+    "bin"
+  ],
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "scripts": {
+    "prepack": "TURBO_TELEMETRY_DISABLED=1 turbo run build --filter=@mnmal-ai/substrate-config",
+    "build": "tsdown && tsc -p tsconfig.self-dts.json",
+    "check-types": "tsc -p tsconfig.json --noEmit",
+    "lint": "biome check .",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "tsdown": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "engines": {
+    "node": ">=26.2.0"
+  },
+  "bin": {
+    "substrate-toolchain-check": "bin/toolchain-check.mjs"
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "extends": "./apps/substrate/tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@mnmal-ai/substrate-bootstrap": ["./packages/substrate-bootstrap/src/index.ts"],
+      "@mnmal-ai/substrate-bridge-http": ["./packages/substrate-bridge-http/src/index.ts"],
+      "@mnmal-ai/substrate-client": ["./packages/substrate-client/src/index.ts"],
+      "@mnmal-ai/substrate-compose": ["./packages/substrate-compose/src/index.ts"],
+      "@mnmal-ai/substrate-config/tsdown": ["./packages/substrate-config/src/tsdown.ts"],
+      "@mnmal-ai/substrate-core": ["./packages/substrate-core/src/index.ts"],
+      "@mnmal-ai/substrate-dataset-memory": ["./packages/substrate-dataset-memory/src/index.ts"],
+      "@mnmal-ai/substrate-dataset-pg": ["./packages/substrate-dataset-pg/src/index.ts"],
+      "@mnmal-ai/substrate-dataset-pg/testing": ["./packages/substrate-dataset-pg/src/testing.ts"],
+      "@mnmal-ai/substrate-embedder": ["./packages/substrate-embedder/src/index.ts"],
+      "@mnmal-ai/substrate-embedder/fake": ["./packages/substrate-embedder/src/fake.ts"],
+      "@mnmal-ai/substrate-filter": ["./packages/substrate-filter/src/index.ts"],
+      "@mnmal-ai/substrate-pack": ["./packages/substrate-pack/src/index.ts"],
+      "@mnmal-ai/substrate-policy": ["./packages/substrate-policy/src/index.ts"],
+      "@mnmal-ai/substrate-sdk": ["./packages/substrate-sdk/src/index.ts"],
+      "@mnmal-ai/substrate-sdk/autocrud": ["./packages/substrate-sdk/src/autocrud/index.ts"],
+      "@mnmal-ai/substrate-sentinel-client": ["./packages/substrate-sentinel-client/src/index.ts"],
+      "@mnmal-ai/substrate-server-fastify": ["./packages/substrate-server-fastify/src/index.ts"],
+      "@mnmal-ai/substrate-server-memory": ["./packages/substrate-server-memory/src/index.ts"],
+      "@mnmal-ai/substrate-types": ["./packages/substrate-types/src/index.ts"],
+      "@mnmal-ai/substrate-nl": ["./plugins/substrate-nl/src/index.ts"],
+      "@mnmal-ai/substrate-nl/bootstrap": ["./plugins/substrate-nl/src/bootstrap.ts"],
+      "@mnmal-ai/substrate-proposals": ["./plugins/substrate-proposals/src/index.ts"],
+      "@mnmal-ai/substrate-proposals/bootstrap": ["./plugins/substrate-proposals/src/bootstrap.ts"],
+      "@mnmal-ai/substrate-recall": ["./plugins/substrate-recall/src/index.ts"],
+      "@mnmal-ai/substrate-recall/bootstrap": ["./plugins/substrate-recall/src/bootstrap.ts"],
+      "@mnmal-ai/substrate-recall/cluster-worker": [
+        "./plugins/substrate-recall/src/cluster-worker.ts"
+      ],
+      "@mnmal-ai/substrate-sentinel": ["./plugins/substrate-sentinel/src/index.ts"],
+      "@mnmal-ai/substrate-sentinel/bootstrap": ["./plugins/substrate-sentinel/src/bootstrap.ts"]
+    },
+    "lib": ["ES2025", "DOM"],
+    "declarationMap": false,
+    "typeRoots": ["./apps/substrate/node_modules/@types"]
+  },
+  "include": ["apps/substrate/src/exports/*.ts"]
+}

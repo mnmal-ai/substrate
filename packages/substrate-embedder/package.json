@@ -1,0 +1,46 @@
+{
+  "name": "@mnmal-ai/substrate-embedder",
+  "version": "1.0.0-alpha.0",
+  "private": true,
+  "description": "Pluggable embedder interface for Substrate semantic recall (ollama, openai, etc.).",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mnmal-ai/substrate.git",
+    "directory": "packages/substrate-embedder"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./fake": {
+      "import": "./dist/fake.js",
+      "types": "./dist/fake.d.ts"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsdown && tsc -p tsconfig.dts.json",
+    "test": "vitest run",
+    "lint": "biome check .",
+    "check-types": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "catalog:",
+    "@mnmal-ai/substrate-config": "workspace:*",
+    "@types/node": "catalog:",
+    "fastembed": "^2.1.1",
+    "msw": "catalog:",
+    "tsdown": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "engines": {
+    "node": ">=26.2.0"
+  }
+}

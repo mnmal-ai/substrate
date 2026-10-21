@@ -1,0 +1,10 @@
+{
+  "extends": "@mnmal-ai/substrate-config/tsconfig.dts.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src/**/*"],
+  "exclude": ["**/__tests__/**", "**/*.test.ts"]
+}

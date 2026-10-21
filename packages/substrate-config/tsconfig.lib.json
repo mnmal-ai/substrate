@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // Resolve workspace imports to package SOURCE for type-checking + the
+    // editor LSP, not built dist/*.d.ts — kills the transient TS7016
+    // "could not find declaration file" noise that fires while the bundler rebuilds a
+    // dependency's dist. Paths are relative to THIS file (TS >=5.0 resolves
+    // `paths` in `extends` relative to the declaring config). Subpath imports
+    // (e.g. @mnmal-ai/substrate-embedder/fake) don't match and fall through to
+    // exports resolution. tsconfig.app.json carries the same map; only
+    // tsconfig.dts.json is deliberately excluded (declaration emit must
+    // reference packages by name, not source).
+    "paths": {
+      "@mnmal-ai/substrate/*": ["../../apps/substrate/src/exports/*.ts"],
+      "@mnmal-ai/*": ["../*/src/index.ts", "../../plugins/*/src/index.ts"]
+    }
+  }
+}

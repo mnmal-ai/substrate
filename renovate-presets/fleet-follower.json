@@ -1,0 +1,30 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Repos that follow substrate (synoptic, surface, holomap): the toolchain is never chosen here. It arrives with a substrate-config bump, applied by `substrate-toolchain-check --fix` in the same PR, so these repos cannot drift ahead of or behind the fleet. Renovate handles everything else.",
+  "extends": [
+    "github>mnmal-ai/substrate//renovate-presets/fleet"
+  ],
+  "packageRules": [
+    {
+      "description": "Fleet toolchain packages and Actions pins: decided in substrate, carried by substrate-config.",
+      "matchPackageNames": [
+        "@biomejs/biome",
+        "@modelcontextprotocol/sdk",
+        "@types/node",
+        "tsdown",
+        "typescript",
+        "vitest",
+        "zod",
+        "pnpm",
+        "node"
+      ],
+      "enabled": false
+    },
+    {
+      "matchManagers": [
+        "github-actions"
+      ],
+      "enabled": false
+    }
+  ]
+}
