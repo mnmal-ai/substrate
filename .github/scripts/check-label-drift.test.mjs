@@ -46,3 +46,23 @@ test('discovers named members of packages/, apps/ and plugins/, without the scop
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('discovers Cargo crates and the root and npm/ members, but not the root package.json', () => {
+  const root = mkdtempSync(join(tmpdir(), 'label-drift-'));
+  const put = (file, text) => {
+    mkdirSync(join(root, file, '..'), { recursive: true });
+    writeFileSync(join(root, file), text);
+  };
+  put(
+    'Cargo.toml',
+    '[workspace]\nmembers = ["crates/two"]\n\n[package]\nname = "one"\nversion = "0.1.0"\n'
+  );
+  put('crates/two/Cargo.toml', '[package]\nname = "two"\n\n[[bin]]\nname = "two-cli"\n');
+  put('npm/package.json', JSON.stringify({ name: '@mnmal-ai/two' }));
+  put('package.json', JSON.stringify({ name: '@mnmal-ai/repo-workspace' }));
+  try {
+    assert.deepEqual(discoverWorkspaceMembers(root), ['one', 'two']);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
