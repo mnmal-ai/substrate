@@ -16,6 +16,7 @@ import {
   grantEntryError,
   KEY_TYPE
 } from '@mnmal-ai/substrate-compose';
+import { trimTrailingSlashes } from '@mnmal-ai/substrate-types';
 import { validateArgv } from '../argv.js';
 import { type OpenDatasetFn, openPgDataset } from '../dataset.js';
 import type { AdminCliEnv } from '../env.js';
@@ -382,7 +383,7 @@ export async function runRegisterViaRoute(
     }
   };
 
-  const url = `${baseUrl.replace(/\/+$/, '')}/substrate/v1/_system/keys`;
+  const url = `${trimTrailingSlashes(baseUrl)}/substrate/v1/_system/keys`;
   let res: Response;
   try {
     res = await fetchImpl(url, {

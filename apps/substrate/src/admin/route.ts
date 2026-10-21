@@ -8,6 +8,7 @@
  */
 
 import type { KeyMutationRefusal, KeyUpdateRefusal } from '@mnmal-ai/substrate-compose';
+import { trimTrailingSlashes } from '@mnmal-ai/substrate-types';
 import type { AdminCliEnv } from './env.js';
 import { AdminCliError } from './errors.js';
 import { resolveAdminAuth } from './identity.js';
@@ -30,7 +31,7 @@ export async function runKeyPatchViaRoute(
   const auth = resolveAdminAuth(env, baseUrl);
   if ('error' in auth)
     throw new AdminCliError(`${body.revoke === true ? 'revoke' : 'update'}: ${auth.error}`, 1);
-  const url = `${baseUrl.replace(/\/+$/, '')}/substrate/v1/_system/keys`;
+  const url = `${trimTrailingSlashes(baseUrl)}/substrate/v1/_system/keys`;
   let res: Response;
   try {
     res = await fetchImpl(url, {
@@ -105,7 +106,7 @@ export async function runKeyListViaRoute(
 ): Promise<Array<Record<string, unknown>>> {
   const auth = resolveAdminAuth(env, baseUrl);
   if ('error' in auth) throw new AdminCliError(`list: ${auth.error}`, 1);
-  const base = `${baseUrl.replace(/\/+$/, '')}/substrate/v1/_system/keys`;
+  const base = `${trimTrailingSlashes(baseUrl)}/substrate/v1/_system/keys`;
   const keys: Array<Record<string, unknown>> = [];
   let cursor: string | undefined;
   // Bounded so a server that always answers hasMore cannot spin forever — a

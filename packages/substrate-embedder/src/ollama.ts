@@ -52,7 +52,7 @@ export class OllamaEmbedder implements Embedder {
   async embed(text: string, opts?: EmbedOptions): Promise<Float32Array> {
     const timeoutMs = opts?.timeoutMs ?? this.timeoutMs;
     const contextLength = await this.resolveContextLength(timeoutMs);
-    const url = `${this.baseUrl.replace(/\/+$/, '')}/api/embed`;
+    const url = `${trimTrailingSlashes(this.baseUrl)}/api/embed`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     let res: Response;
@@ -119,7 +119,7 @@ export class OllamaEmbedder implements Embedder {
   }
 
   private async fetchContextLength(timeoutMs: number): Promise<number> {
-    const url = `${this.baseUrl.replace(/\/+$/, '')}/api/show`;
+    const url = `${trimTrailingSlashes(this.baseUrl)}/api/show`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     let body: unknown;
@@ -190,6 +190,13 @@ export class OllamaEmbedder implements Embedder {
 }
 
 /** `unavailable` for a failed request, naming the timeout when it was the abort. */
+// A copy of substrate-types' trimTrailingSlashes: this package takes no dependencies.
+function trimTrailingSlashes(url: string): string {
+  let end = url.length;
+  while (end > 0 && url.charCodeAt(end - 1) === 47) end--;
+  return url.slice(0, end);
+}
+
 function transportError(
   url: string,
   controller: AbortController,

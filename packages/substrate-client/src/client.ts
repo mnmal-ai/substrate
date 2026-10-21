@@ -25,7 +25,8 @@ import {
   parseQualifiedKey,
   type RuntimeErrors,
   type RuntimeMetrics,
-  type Schema
+  type Schema,
+  trimTrailingSlashes
 } from '@mnmal-ai/substrate-types';
 import { type AdminApi, createAdminApi } from './admin/api.js';
 import { CacheStore } from './cache/store.js';
@@ -138,7 +139,7 @@ export class SubstrateClient {
 
     // Browser WebSocket can't set custom upgrade headers; node-ws can and is
     // preferred under Node. Browser consumers need a header-capable `webSocket`.
-    this.#wsEndpoint = `${opts.endpoint.replace(/^http/, 'ws').replace(/\/+$/, '')}/substrate/v1/ws`;
+    this.#wsEndpoint = `${trimTrailingSlashes(opts.endpoint.replace(/^http/, 'ws'))}/substrate/v1/ws`;
     this.#wsToken = opts.token;
     this.#wsGetToken = opts.getToken;
     this.#wsEncoding = opts.wsEncoding ?? 'json';

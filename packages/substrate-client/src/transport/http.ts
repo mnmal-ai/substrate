@@ -5,6 +5,7 @@
  */
 
 import type { PackEnvelope, QualifiedFrame, Schema } from '@mnmal-ai/substrate-types';
+import { trimTrailingSlashes } from '@mnmal-ai/substrate-types';
 import { AuthError, NetworkError, type NetworkErrorInfo } from '../errors.js';
 
 export type { QualifiedFrame };
@@ -32,7 +33,7 @@ export class HttpTransport {
     if (opts.token !== undefined && opts.getToken !== undefined) {
       throw new Error('HttpTransport: provide `token` OR `getToken`, not both');
     }
-    this.#endpoint = opts.endpoint.replace(/\/+$/, '');
+    this.#endpoint = trimTrailingSlashes(opts.endpoint);
     this.#fetch = (opts.fetch ?? globalThis.fetch).bind(globalThis);
     this.#token = opts.token;
     this.#getToken = opts.getToken;

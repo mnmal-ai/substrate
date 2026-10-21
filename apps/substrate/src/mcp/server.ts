@@ -12,6 +12,7 @@
 
 import { tokenAudience } from '@mnmal-ai/substrate-client';
 import type { NlAskRequest } from '@mnmal-ai/substrate-types';
+import { trimTrailingSlashes } from '@mnmal-ai/substrate-types';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -133,7 +134,7 @@ async function postSubstrate<T>(
   body: unknown,
   errorMode: 'parsedError' | 'textPreview' = 'textPreview'
 ): Promise<T> {
-  const url = `${endpoint.replace(/\/+$/, '')}${path}`;
+  const url = `${trimTrailingSlashes(endpoint)}${path}`;
   let res: Response;
   try {
     res = await fetch(url, {
@@ -184,7 +185,7 @@ async function postSubstrate<T>(
  * a transport failure wraps the cause with the failing URL.
  */
 async function getSubstrate<T>(endpoint: string, path: string): Promise<T> {
-  const url = `${endpoint.replace(/\/+$/, '')}${path}`;
+  const url = `${trimTrailingSlashes(endpoint)}${path}`;
   let res: Response;
   try {
     res = await fetch(url, {

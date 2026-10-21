@@ -292,6 +292,17 @@ describe('auth.extractBearer', () => {
     expect(extractBearer('Bearer ')).toBeNull();
     expect(extractBearer('Bearer')).toBeNull();
   });
+
+  it('keeps everything after the whitespace as the token, as before', () => {
+    expect(extractBearer('Bearer   abc def')).toBe('abc def');
+  });
+
+  it('stays linear on a long whitespace run before a line break', () => {
+    const header = `Bearer ${' '.repeat(20_000)}a\nb`;
+    const start = performance.now();
+    expect(extractBearer(header)).toBeNull();
+    expect(performance.now() - start).toBeLessThan(50);
+  });
 });
 
 describe('auth.verifyBearerToken — Ed25519', () => {

@@ -6,6 +6,7 @@ import {
   tokenAudience
 } from '@mnmal-ai/substrate-client';
 import type { NlOutcome } from '@mnmal-ai/substrate-types';
+import { trimTrailingSlashes } from '@mnmal-ai/substrate-types';
 import { makeAgentJwtProvider } from '../../mcp/agent-jwt.js';
 
 export interface AskCliOptions {
@@ -44,7 +45,7 @@ export async function runAsk(argv: string[], options: AskCliOptions = {}): Promi
       else project = v;
     } else words.push(a);
   }
-  const endpoint = (env.SUBSTRATE_URL ?? '').replace(/\/+$/, '');
+  const endpoint = trimTrailingSlashes(env.SUBSTRATE_URL ?? '');
   if (endpoint === '') {
     write('SUBSTRATE_URL is required (e.g. https://substrate.example.com:3100)\n');
     return 2;
