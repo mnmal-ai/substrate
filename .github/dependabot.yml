@@ -1,0 +1,19 @@
+# Renovate does version updates. This file only shapes Dependabot's security
+# updates: open-pull-requests-limit 0 turns its version updates off, and the
+# labels and assignee are what the PR hygiene check requires.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    labels: [fix, P1-high, repo]
+    assignees: [mnmal-ai-one]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    labels: [fix, P1-high, repo]
+    assignees: [mnmal-ai-one]
