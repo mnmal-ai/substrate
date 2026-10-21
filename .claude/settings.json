@@ -1,0 +1,5 @@
+{
+  "env": {
+    "SYNOPTIC_AGENT_NAME": "substrate-claude"
+  }
+}
