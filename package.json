@@ -1,8 +1,13 @@
 {
   "name": "@mnmal-ai/substrate-workspace",
   "private": true,
-  "type": "module",
+  "description": "Workspace root for Substrate.",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mnmal-ai/substrate.git"
+  },
+  "type": "module",
   "scripts": {
     "build": "TURBO_TELEMETRY_DISABLED=1 turbo run build",
     "dev": "turbo run dev",

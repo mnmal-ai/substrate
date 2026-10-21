@@ -3,6 +3,7 @@
   "version": "1.0.0-alpha.0",
   "private": true,
   "description": "Decorator-free SDK for declaring Substrate namespaces, types, and autoCRUD at compose time.",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/mnmal-ai/substrate.git",

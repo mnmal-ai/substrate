@@ -4,6 +4,11 @@
   "private": true,
   "description": "The Docker image's runtime: the binary (with its built-in plugins) and the sibling plugins in one node_modules, as `substrate init` lays out a runtime.",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mnmal-ai/substrate.git",
+    "directory": "apps/substrate-image"
+  },
   "dependencies": {
     "@mnmal-ai/substrate": "workspace:*",
     "@mnmal-ai/substrate-nl": "workspace:*",

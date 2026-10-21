@@ -4,6 +4,11 @@
   "private": true,
   "description": "Substrate coordinator plugin for runtime namespace, type, and field hot-add.",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mnmal-ai/substrate.git",
+    "directory": "plugins/substrate-proposals"
+  },
   "type": "module",
   "exports": {
     ".": {
