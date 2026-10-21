@@ -1,9 +1,7 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "description": "substrate only: the repo that DECIDES the fleet toolchain. Its catalog, pnpm, Node floor and Actions pins generate substrate-config's toolchain.json, which every other repo is checked against.",
-  "extends": [
-    "github>mnmal-ai/substrate//renovate-presets/fleet"
-  ],
+  "extends": ["github>mnmal-ai/substrate//renovate-presets/fleet"],
   "packageRules": [
     {
       "description": "One PR for the fleet toolchain. Keep this list equal to TRACKED in scripts/emit-toolchain.mjs (plus pnpm and node); emit-toolchain --check enforces it.",
