@@ -228,7 +228,9 @@ async function sweepBatch(base: Edge[], deps: SweepDeps): Promise<number> {
 }
 
 const SWEEP_CURSOR_TYPE = 'SweepCursor';
-const SWEEP_CURSOR_ID = 'edges';
+// A fixed UUID, not a name: SUBSTRATE_ENFORCE_UUID_CHECK's rows_id_uuid_format
+// constraint refuses any other id, and the sweep then fails every cycle.
+const SWEEP_CURSOR_ID = '5ee9c0a5-0000-4000-8000-000000000001';
 
 /** Reads the sweep cursor persisted by `saveSweepState`, or the scan head. */
 export async function loadSweepState(ds: Dataset): Promise<SweepState> {

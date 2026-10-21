@@ -558,4 +558,14 @@ describe('runSweep — time budget + persisted cursor', () => {
     expect(await loadSweepState(system)).toEqual(state);
     expect(state.lastSweptCursor).toBe(edges[2]?.id);
   });
+
+  it('stores the cursor under a UUID id, which the opt-in pg UUID check requires', async () => {
+    const system = new MemoryDataset({ namespace: '_system' });
+    await saveSweepState(system, { lastSweptCursor: 'c1' });
+    const { rows } = await system.read('SweepCursor', { limit: 10 });
+    expect(rows).toHaveLength(1);
+    expect(String(rows[0]?.id)).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+    );
+  });
 });
