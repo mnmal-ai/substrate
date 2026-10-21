@@ -5,12 +5,9 @@ on:
     branches: [main]
     # ready_for_review is load-bearing: the jobs skip drafts, so without it a PR
     # last pushed as a draft never gets a real run once marked ready.
+    # No paths-ignore: these jobs are required checks, and a skipped workflow
+    # never reports, which would leave a docs-only PR unmergeable.
     types: [opened, synchronize, reopened, ready_for_review]
-    paths-ignore:
-      - '*.md'
-      - 'docs/**'
-      - '.gitignore'
-      - 'LICENSE'
   push:
     branches: [main]
 

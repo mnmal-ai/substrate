@@ -1,0 +1,76 @@
+name: PR hygiene
+
+# Every PR carries at least one Area label, exactly one Type label, exactly one
+# Priority label, and an assignee. CONTRIBUTING.md describes the labels.
+# Contributors without triage access cannot set these; a maintainer does.
+
+on:
+  pull_request:
+    branches: [main]
+    # Fire on label/assignee/ready changes AND on every push (synchronize):
+    # required checks are evaluated on the head SHA, so the gate must produce
+    # a conclusion on each new commit, not only on label events. The live
+    # fetch below makes every trigger read current state.
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+      - labeled
+      - unlabeled
+      - assigned
+      - unassigned
+
+# One PR, one in-flight check: a rapid label/assignee fixup cycle collapses to
+# the latest run rather than piling up.
+concurrency:
+  group: pr-hygiene-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  label-drift:
+    name: Label catalog drift
+    # Repo state, not PR state: every workspace member must have an Area
+    # label. Runs on drafts too; a draft adding a package should learn now.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Test the hygiene scripts
+        run: node --test .github/scripts/check-pr-labels.test.mjs .github/scripts/check-label-drift.test.mjs
+
+      - name: Check workspace members against the label catalog
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/check-label-drift.mjs
+
+  labels-and-assignee:
+    name: Labels & assignee
+    # Drafts are work in progress; enforce once the PR is marked ready.
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check area + type + priority labels and assignee
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        # Fetch the PR's LIVE labels/assignees rather than trusting the event
+        # payload: `gh pr create --label --assignee` fires `opened` BEFORE
+        # attaching them, so the snapshot races empty. The fetched JSON arrays
+        # flow only through env into JSON.parse (never a shell), and PR_NUMBER
+        # is an integer, so there is no injection surface.
+        run: |
+          PR_LABELS=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels --jq '[.labels[].name]')
+          PR_ASSIGNEES=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json assignees --jq '[.assignees[].login]')
+          PR_LABELS="$PR_LABELS" PR_ASSIGNEES="$PR_ASSIGNEES" node .github/scripts/check-pr-labels.mjs
