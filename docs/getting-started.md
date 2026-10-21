@@ -90,13 +90,13 @@ To run Substrate as a Node process you manage, with your own choice of plugins, 
 `substrate init` writes a runtime directory: a self-contained folder that is your Substrate installation.
 
 ```bash
-npx @mnmal-ai/substrate init ~/my-substrate
+npx @mnmal-ai/substrate@next init ~/my-substrate
 ```
 
 It asks for the plugin set, store (`postgres` or `memory`), ports, embedder, TLS, and the public URL clients will use. For a non-interactive first run with the memory store and only the built-in plugins:
 
 ```bash
-npx @mnmal-ai/substrate init ~/my-substrate --yes --store=memory --plugins= --port=3100
+npx @mnmal-ai/substrate@next init ~/my-substrate --yes --store=memory --plugins= --port=3100
 ```
 
 Flags: `--store=memory|postgres` (default `postgres`), `--port` (default 3100), `--pg-port` (default 5433), `--plugins=<csv>` (any of `cortext`, `substrate-nl`, `substrate-sentinel`; none by default), `--embedder=minilm|bge-base|ollama|none` (default `minilm`), `--tls --tls-cert-path=… --tls-key-path=…`, `--substrate-url`, `--yes`, `--force` (scaffold into an existing directory).
@@ -187,7 +187,7 @@ Then run the checks in [Verify](#verify) above.
 The Docker image already carries every plugin in this repository. In an npm runtime, install an optional plugin next to the binary:
 
 ```bash
-pnpm add @mnmal-ai/substrate-sentinel
+pnpm add @mnmal-ai/substrate-sentinel@next
 ```
 
 then restart `substrate serve`; the binary rescans `node_modules` at boot. Plugin config overrides go in `<plugin-basename>.config.json` next to `package.json`, for example `substrate-sentinel.config.json`.

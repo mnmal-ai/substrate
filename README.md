@@ -36,8 +36,10 @@ curl http://localhost:3100/substrate/v1/onboard
 
 `substrate init` scaffolds a runtime directory: the binary (with recall and proposals built in) and any optional plugins in one `node_modules`, a `.env`, and (for Postgres) a compose file.
 
+Until 1.0.0, releases publish on npm's `next` tag, so install with `@next`. `latest` holds a 0.0.0 placeholder.
+
 ```bash
-npx @mnmal-ai/substrate init ~/my-substrate --yes --store=memory --plugins=
+npx @mnmal-ai/substrate@next init ~/my-substrate --yes --store=memory --plugins=
 cd ~/my-substrate
 pnpm install
 set -a && source .env && set +a

@@ -132,7 +132,7 @@ as a `PluginLoadError` naming your package and the invalid keys.
 A package becomes a plugin by declaring a top-level `substrate` block in its
 `package.json`. Declare `@mnmal-ai/substrate` as a peer dependency, so the
 plugin shares the binary's copy at runtime, and as a dev dependency for
-building and testing (`pnpm add -D @mnmal-ai/substrate`):
+building and testing (`pnpm add -D @mnmal-ai/substrate@next`):
 
 ```json
 {
