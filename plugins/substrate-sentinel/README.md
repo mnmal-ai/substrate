@@ -12,7 +12,7 @@ Install it on the instance that acts as the federation's Sentinel. A single-inst
 
 ```bash
 cd <runtime-dir>        # the directory SUBSTRATE_PLUGIN_DIR points at
-pnpm add @mnmal-ai/substrate-sentinel
+pnpm add @mnmal-ai/substrate-sentinel@next
 ```
 
 Defaults in `default-config.json`: `namespace: "sentinel"`, `pingIntervalMs: 30000` (liveness tick), `staleThresholdMs: 90000` (age after which a peer is treated as stale). Override them in `<SUBSTRATE_PLUGIN_DIR>/substrate-sentinel.config.json`.

@@ -840,7 +840,7 @@ See [`plugin-author-guide.md`](plugin-author-guide.md) and [`plugin-tier-decisio
 One binary, configured by env, hosting plugins. Subcommands: `serve`, `mcp`, `init`, `ask`, `federate`, `check-enums`, `normalise-vocab`, `backfill-field`. `substrate --help` prints the full env reference.
 
 ```bash
-npm install --prefix /srv/substrate @mnmal-ai/substrate
+npm install --prefix /srv/substrate @mnmal-ai/substrate@next
 SUBSTRATE_DATABASE_URL=postgres://… SUBSTRATE_PLUGIN_DIR=/srv/substrate /srv/substrate/node_modules/.bin/substrate serve
 ```
 

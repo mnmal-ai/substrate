@@ -12,7 +12,7 @@ Both routes claim `capability: 'read'`. Row policy keeps data safe; the gate kee
 
 ## Where it fits
 
-A **kernel-tier plugin**, installed separately: `pnpm add @mnmal-ai/substrate-nl` in the runtime directory. It owns no namespace and stores nothing. Without it installed, `/substrate/v1/nl` 404s and the `ask` MCP tool reports that.
+A **kernel-tier plugin**, installed separately: `pnpm add @mnmal-ai/substrate-nl@next` in the runtime directory. It owns no namespace and stores nothing. Without it installed, `/substrate/v1/nl` 404s and the `ask` MCP tool reports that.
 
 ## Config
 

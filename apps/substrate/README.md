@@ -15,7 +15,7 @@ It runs as a real install: the binary and its plugins resolve from one shared `n
 | `@mnmal-ai/substrate/recall` | The recall plugin's primitives (`EmbeddingsStore`, `LexicalStore`, `embedAndStore`, …) |
 | `@mnmal-ai/substrate/proposals` | The proposals plugin's exports |
 
-A plugin package declares `@mnmal-ai/substrate` as a peer dependency and as a dev dependency (`pnpm add -D @mnmal-ai/substrate`).
+A plugin package declares `@mnmal-ai/substrate` as a peer dependency and as a dev dependency (`pnpm add -D @mnmal-ai/substrate@next`).
 
 ## Subcommands
 
@@ -52,7 +52,7 @@ A separate binary for key management: `bootstrap` (seed the genesis admin key), 
 
 ```bash
 # 1. Scaffold a runtime directory (package.json, .env, and for postgres a compose file).
-npx @mnmal-ai/substrate init ./my-runtime
+npx @mnmal-ai/substrate@next init ./my-runtime
 
 # 2. Install one shared node_modules: the binary and every chosen plugin.
 cd my-runtime
@@ -70,7 +70,7 @@ set -a && source .env && set +a
 ### Adding a plugin
 
 ```bash
-pnpm add @mnmal-ai/substrate-sentinel
+pnpm add @mnmal-ai/substrate-sentinel@next
 # then restart `substrate serve`
 ```
 
