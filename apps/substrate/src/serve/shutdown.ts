@@ -33,6 +33,12 @@ export function installShutdown(args: ShutdownArgs): void {
     process.stdout.write(
       `\nreceived ${signal} — shutting down (grace ${config.shutdownGraceMs}ms)\n`
     );
+    // A step that never settles (sql.end() waits on every in-flight query) would
+    // otherwise hold the process past the grace until something sends SIGKILL.
+    setTimeout(() => {
+      process.stderr.write('shutdown exceeded its grace; exiting with work still pending\n');
+      process.exit(1);
+    }, config.shutdownGraceMs + 1000).unref();
     clearInterval(sweepTimer);
     if (inviteSweepTimer !== null) clearInterval(inviteSweepTimer);
     const stopSentinel =
