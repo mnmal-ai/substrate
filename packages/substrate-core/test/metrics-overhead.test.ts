@@ -1,30 +1,38 @@
 import { describe, expect, it } from 'vitest';
 import { createRuntimeStats } from '../src/runtime-stats.js';
 
+// Best of five: load from other processes only ever adds time, so the fastest
+// run is the truest cost, and a real regression still slows every run.
+function fastestMs(run: () => void): number {
+  let best = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < 5; i++) {
+    const start = performance.now();
+    run();
+    best = Math.min(best, performance.now() - start);
+  }
+  return best;
+}
+
 describe('RuntimeStats overhead', () => {
-  it('recordResolve mean under 10 µs per observation', () => {
+  it('recordResolve mean under 50 µs per observation (about 2 µs locally)', () => {
     const stats = createRuntimeStats({ activeSubscriptions: () => 0 });
     const numKeys = 100;
-    const numObservations = 200_000;
+    const numObservations = 40_000;
     const keys = Array.from({ length: numKeys }, (_, i) => `ns/Type_${i}`);
 
-    const startTime = performance.now();
-    for (let i = 0; i < numObservations; i++) {
-      const key = keys[i % keys.length]!;
-      stats.recordResolve({
-        key,
-        kind: i % 2 === 0 ? 'query' : 'mutate',
-        durationMs: Math.random() * 100,
-        ok: Math.random() > 0.05
-      });
-    }
-    const endTime = performance.now();
+    const totalMs = fastestMs(() => {
+      for (let i = 0; i < numObservations; i++) {
+        const key = keys[i % keys.length]!;
+        stats.recordResolve({
+          key,
+          kind: i % 2 === 0 ? 'query' : 'mutate',
+          durationMs: Math.random() * 100,
+          ok: Math.random() > 0.05
+        });
+      }
+    });
 
-    const totalMs = endTime - startTime;
-    const microsecondsPerObservation = (totalMs * 1000) / numObservations;
-    console.log(`Measured: ${microsecondsPerObservation.toFixed(2)} µs per observation`);
-
-    expect(microsecondsPerObservation).toBeLessThan(50); // sanity bound; ~2 µs locally, CI runners are noisy
+    expect((totalMs * 1000) / numObservations).toBeLessThan(50);
   });
 
   it('snapshot() on full 512-key table under 50 ms', () => {
@@ -44,11 +52,10 @@ describe('RuntimeStats overhead', () => {
       }
     }
 
-    const startTime = performance.now();
-    const snapshot = stats.snapshot();
-    const endTime = performance.now();
-
-    const totalMs = endTime - startTime;
+    let snapshot = stats.snapshot();
+    const totalMs = fastestMs(() => {
+      snapshot = stats.snapshot();
+    });
     expect(totalMs).toBeLessThan(50);
     expect(snapshot.resolvers).toBeDefined();
     // Should have roughly 512 keys (or close to it due to LRU)
