@@ -8,6 +8,7 @@
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { enumCheckStatements } from '../src/enum-check.js';
+import { runMigrations } from '../src/migrate.js';
 
 const squash = (sql: string): string =>
   sql
@@ -110,6 +111,8 @@ describe.skipIf(!POSTGRES_URL)('enumCheckStatements — live DDL proof', () => {
 
   beforeAll(async () => {
     sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
+    // A fresh database has no `rows` table until something migrates it.
+    await runMigrations(sql);
   });
 
   afterAll(async () => {
