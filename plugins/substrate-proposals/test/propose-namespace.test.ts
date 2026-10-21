@@ -17,7 +17,6 @@ import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-datase
 import type { Dataset, RequestContext } from '@mnmal-ai/substrate-types';
 import { describe, expect, it, vi } from 'vitest';
 import { CONTROL_NAMESPACE } from '../src/control-plane.js';
-import { ProposalError } from '../src/errors.js';
 import { createNoopPubSub, createProposalsPlugin } from '../src/index.js';
 
 function makeCtx(overrides: Partial<RequestContext> = {}): Partial<RequestContext> {
