@@ -2,9 +2,10 @@
  * Label-catalog drift guard. `check-pr-labels.js` treats Area as an open set,
  * so a package with no label would otherwise pass the hygiene gate silently.
  *
- * Compares every workspace member (`packages/`, `apps/`, `plugins/` holding a
- * `package.json`) against the repo's label list and exits non-zero naming the
- * members with no Area label, with the exact `gh label create` to fix it.
+ * Compares every workspace member (a `package.json` or Cargo `[package]` under
+ * `packages/`, `apps/`, `plugins/` or `crates/`, plus a root crate and `npm/`)
+ * against the repo's label list and exits non-zero naming the members with no
+ * Area label, with the exact `gh label create` to fix it.
  * One direction only: extra labels (e.g. `repo`) are not drift — only a package nobody can label is.
  *
  * CLI usage (in CI): needs `gh` authenticated (GH_TOKEN) — run from the repo
@@ -16,7 +17,13 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import process from 'node:process';
 
-const WORKSPACE_DIRS = ['packages', 'apps', 'plugins'];
+const WORKSPACE_DIRS = ['packages', 'apps', 'plugins', 'crates'];
+// Single-directory members, with the manifests that name them. The root counts
+// only as a Cargo crate: its package.json is the workspace itself.
+const SINGLE_MEMBERS = [
+  ['.', ['Cargo.toml']],
+  ['npm', ['package.json', 'Cargo.toml']]
+];
 const ORG_PREFIX = '@mnmal-ai/';
 
 /**
@@ -25,19 +32,45 @@ const ORG_PREFIX = '@mnmal-ai/';
  */
 export function discoverWorkspaceMembers(rootDir) {
   const out = [];
+  const add = (dir, manifests) => {
+    const name = memberName(dir, manifests);
+    if (name !== undefined)
+      out.push(name.startsWith(ORG_PREFIX) ? name.slice(ORG_PREFIX.length) : name);
+  };
   for (const dir of WORKSPACE_DIRS) {
     const absDir = resolve(rootDir, dir);
     if (!existsSync(absDir)) continue;
-    for (const name of readdirSync(absDir).sort()) {
-      const pkgFile = resolve(absDir, name, 'package.json');
-      if (!existsSync(pkgFile)) continue;
-      const pkg = JSON.parse(readFileSync(pkgFile, 'utf8'));
-      if (typeof pkg.name === 'string') {
-        out.push(pkg.name.startsWith(ORG_PREFIX) ? pkg.name.slice(ORG_PREFIX.length) : pkg.name);
-      }
+    for (const name of readdirSync(absDir).sort())
+      add(resolve(absDir, name), ['package.json', 'Cargo.toml']);
+  }
+  for (const [dir, manifests] of SINGLE_MEMBERS) add(resolve(rootDir, dir), manifests);
+  return [...new Set(out)].sort();
+}
+
+/** The first manifest's package name, or undefined when none names one. */
+function memberName(dir, manifests) {
+  for (const manifest of manifests) {
+    const file = resolve(dir, manifest);
+    if (!existsSync(file)) continue;
+    const text = readFileSync(file, 'utf8');
+    const name = manifest === 'package.json' ? JSON.parse(text).name : cargoPackageName(text);
+    if (typeof name === 'string') return name;
+  }
+  return undefined;
+}
+
+/** `name` from a Cargo.toml's `[package]` table; a workspace-only manifest has none. */
+function cargoPackageName(toml) {
+  let inPackage = false;
+  for (const line of toml.split('\n')) {
+    const header = line.trim();
+    if (header.startsWith('[')) inPackage = header === '[package]';
+    else if (inPackage) {
+      const m = /^name\s*=\s*"([^"]+)"/.exec(header);
+      if (m) return m[1];
     }
   }
-  return [...new Set(out)].sort();
+  return undefined;
 }
 
 /**
