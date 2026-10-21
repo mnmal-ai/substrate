@@ -1,5 +1,6 @@
 import { basename } from 'node:path';
 import { DEFAULT_CAPABILITIES, makeTokenProvider } from '@mnmal-ai/substrate/client';
+import { trimTrailingSlashes } from '@mnmal-ai/substrate/sdk';
 
 export interface TuiConfig {
   endpoint: string;
@@ -12,7 +13,7 @@ export interface TuiConfig {
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 export function readConfig(env: NodeJS.ProcessEnv, cwd: string): TuiConfig | { error: string } {
-  const endpoint = (env.SUBSTRATE_URL ?? '').replace(/\/+$/, '');
+  const endpoint = trimTrailingSlashes(env.SUBSTRATE_URL ?? '');
   if (endpoint === '')
     return { error: 'SUBSTRATE_URL is required (e.g. https://substrate.example.com:3100)' };
   const namespace = env.SUBSTRATE_NAMESPACE ?? '';

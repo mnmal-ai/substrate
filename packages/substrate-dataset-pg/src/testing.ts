@@ -276,7 +276,7 @@ export function pgTestSchemaName(packageName: string): string {
   const slug = packageName
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '');
+    .replace(/^_|_$/g, ''); // the line above leaves at most one _ at each end
   return `${TEST_SCHEMA_PREFIX}${slug}`.slice(0, 63);
 }
 

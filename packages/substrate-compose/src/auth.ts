@@ -355,7 +355,7 @@ function base64UrlDecode(segment: string): Buffer {
 }
 
 function base64UrlEncode(buf: Buffer): string {
-  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return buf.toString('base64url');
 }
 
 function parseSegments(token: string): {
@@ -773,7 +773,9 @@ export function watchCredential(
 
 export function extractBearer(authorization: string | undefined): string | null {
   if (authorization === undefined) return null;
-  const match = /^Bearer\s+(.+)$/i.exec(authorization.trim());
+  // `\S` after `\s+` keeps the two from sharing characters, so a long
+  // whitespace run cannot backtrack quadratically; the capture is unchanged.
+  const match = /^Bearer\s+(\S.*)$/i.exec(authorization.trim());
   if (match === null) return null;
   const token = match[1]?.trim();
   if (token === undefined || token.length === 0) return null;

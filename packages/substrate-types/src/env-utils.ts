@@ -21,3 +21,14 @@ export function parsePositiveInt(
   }
   return n;
 }
+
+/**
+ * `url` with its trailing slashes removed, for joining a configured base URL
+ * to a path. A loop rather than `/\/+$/`, which backtracks quadratically on a
+ * long run of slashes that does not end the string.
+ */
+export function trimTrailingSlashes(url: string): string {
+  let end = url.length;
+  while (end > 0 && url.charCodeAt(end - 1) === 47) end--;
+  return url.slice(0, end);
+}

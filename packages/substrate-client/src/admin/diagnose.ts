@@ -19,6 +19,7 @@ import {
   SYSTEM_NAMESPACE
 } from '@mnmal-ai/substrate-policy';
 import type { Row } from '@mnmal-ai/substrate-types';
+import { trimTrailingSlashes } from '@mnmal-ai/substrate-types';
 
 /**
  * `ok` — asked and answered yes. `no` — asked and answered no. `skip` — NOT
@@ -359,7 +360,7 @@ export async function diagnose(opts: DiagnoseOpts): Promise<DiagnoseResult> {
   const checks = new Checks();
   const fetchImpl = opts.fetch ?? fetch;
   const adminCapability = opts.adminCapability ?? 'admin';
-  const baseUrl = opts.baseUrl.replace(/\/+$/, '');
+  const baseUrl = trimTrailingSlashes(opts.baseUrl);
   let identityId: string | null = null;
   let facts: DiagnoseFacts = {};
   const done = (): DiagnoseResult => ({ ...checks.done(), identity: identityId, facts });

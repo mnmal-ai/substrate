@@ -11,6 +11,7 @@
  */
 
 import { noRedirectFetch, tokenAudience } from '@mnmal-ai/substrate-client';
+import { trimTrailingSlashes } from '@mnmal-ai/substrate-types';
 
 export interface NormaliseVocabOptions {
   baseUrl?: string;
@@ -44,7 +45,7 @@ export async function runNormaliseVocab(
     );
     return 2;
   }
-  const baseUrl = (options.baseUrl ?? process.env.SUBSTRATE_URL ?? '').replace(/\/+$/, '');
+  const baseUrl = trimTrailingSlashes(options.baseUrl ?? process.env.SUBSTRATE_URL ?? '');
   if (baseUrl === '') {
     write('SUBSTRATE_URL is required (e.g. https://substrate.example.com:3100)\n');
     return 2;

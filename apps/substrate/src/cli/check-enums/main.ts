@@ -13,6 +13,7 @@
 
 import { createHash } from 'node:crypto';
 import { tokenAudience } from '@mnmal-ai/substrate-client';
+import { trimTrailingSlashes } from '@mnmal-ai/substrate-types';
 
 /**
  * Structural subset of `FieldDef` — only what drift detection reads. Kept
@@ -220,7 +221,7 @@ export async function runCheckEnums(
 ): Promise<number> {
   const write = options.write ?? ((text: string) => process.stdout.write(text));
   const asJson = argv.includes('--json');
-  const baseUrl = (options.baseUrl ?? process.env.SUBSTRATE_URL ?? '').replace(/\/+$/, '');
+  const baseUrl = trimTrailingSlashes(options.baseUrl ?? process.env.SUBSTRATE_URL ?? '');
   if (baseUrl === '') {
     write('SUBSTRATE_URL is required (e.g. https://substrate.example.com:3100)\n');
     return 2;

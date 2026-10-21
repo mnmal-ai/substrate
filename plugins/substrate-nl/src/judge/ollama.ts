@@ -1,3 +1,4 @@
+import { trimTrailingSlashes } from '@mnmal-ai/substrate/sdk';
 import type { Judge, JudgePrompt } from './judge.js';
 
 export interface OllamaJudgeConfig {
@@ -18,7 +19,7 @@ export class OllamaJudge implements Judge {
   readonly #config: OllamaJudgeConfig;
 
   constructor(config: OllamaJudgeConfig) {
-    this.#config = { ...config, baseUrl: config.baseUrl.replace(/\/+$/, '') };
+    this.#config = { ...config, baseUrl: trimTrailingSlashes(config.baseUrl) };
   }
 
   async decide(prompt: JudgePrompt, signal?: AbortSignal): Promise<unknown> {
