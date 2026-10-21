@@ -1,6 +1,6 @@
 {
   "name": "@mnmal-ai/substrate-dataset-memory",
-  "version": "1.0.0-alpha.0",
+  "version": "1.0.0-alpha.1",
   "private": true,
   "description": "In-memory Dataset reference implementation for tests and ephemeral consumers.",
   "license": "Apache-2.0",
