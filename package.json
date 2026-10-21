@@ -11,7 +11,7 @@
   "scripts": {
     "build": "TURBO_TELEMETRY_DISABLED=1 turbo run build",
     "dev": "turbo run dev",
-    "lint": "TURBO_TELEMETRY_DISABLED=1 turbo run lint --continue",
+    "lint": "biome check --error-on-warnings .",
     "format": "biome format --write .",
     "check-types": "TURBO_TELEMETRY_DISABLED=1 turbo run check-types",
     "test": "TURBO_TELEMETRY_DISABLED=1 turbo run test --continue",
