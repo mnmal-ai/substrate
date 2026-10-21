@@ -186,7 +186,7 @@ describe('runtimePackageJsonTemplate', () => {
       })
     );
     expect(out.dependencies['@mnmal-ai/substrate-nl']).toBe('^7.0.0');
-    expect(out.dependencies['@mnmal-ai/cortext']).toBe('^1.0.0');
+    expect(out.dependencies['@mnmal-ai/cortext']).toBe('^1.0.0-alpha.0');
   });
 
   it('pins to the current major version derived from substrateVersion', () => {

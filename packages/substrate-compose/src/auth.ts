@@ -683,9 +683,13 @@ export function diagnoseBearerToken(token: string, cfg: AuthConfig): BearerRejec
 
 /** What a 401 should add for a reason whose fix is a server knob, not the token. */
 export function rejectionDetail(reason: BearerRejectionReason | null): string | undefined {
-  return reason === 'lifetime_exceeds_max'
-    ? 'the token expires further ahead than this server accepts; mint a shorter-lived token or raise SUBSTRATE_JWT_MAX_TTL_SECONDS'
-    : undefined;
+  if (reason === 'lifetime_exceeds_max') {
+    return 'the token expires further ahead than this server accepts; mint a shorter-lived token or raise SUBSTRATE_JWT_MAX_TTL_SECONDS';
+  }
+  if (reason === 'wrong_audience') {
+    return "the token's aud is not one of this server's origins; connect through an origin listed in SUBSTRATE_PUBLIC_ORIGIN, or add this one there";
+  }
+  return undefined;
 }
 
 export type CredentialLapse = 'credential_expired' | 'credential_revoked' | 'credential_changed';

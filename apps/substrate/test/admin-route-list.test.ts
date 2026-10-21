@@ -68,6 +68,18 @@ describe('runKeyListViaRoute', () => {
     );
   });
 
+  it("a 401 names the server's reason, not just the status", async () => {
+    const fetchImpl = (async () =>
+      res(401, {
+        code: 'unauthorized',
+        reason: 'wrong_audience',
+        detail: 'the token names an origin this server does not list'
+      })) as unknown as typeof fetch;
+    await expect(runKeyListViaRoute('https://peer', env, fetchImpl)).rejects.toThrow(
+      /unauthorized \(wrong_audience\): the token names an origin/
+    );
+  });
+
   it('a missing keys array is an error, not an empty store', async () => {
     const fetchImpl = (async () => res(200, { hasMore: false })) as unknown as typeof fetch;
     await expect(runKeyListViaRoute('https://peer', env, fetchImpl)).rejects.toThrow(

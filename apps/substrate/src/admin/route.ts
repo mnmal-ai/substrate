@@ -49,7 +49,7 @@ export async function runKeyPatchViaRoute(
   const payload = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) {
     const code = typeof payload.code === 'string' ? payload.code : 'request_failed';
-    const message = typeof payload.message === 'string' ? payload.message : `HTTP ${res.status}`;
+    const message = failureText(payload, res.status);
     throw new AdminCliError(message, exitCodes[code] ?? 1);
   }
   return payload;
@@ -127,7 +127,7 @@ export async function runKeyListViaRoute(
     }
     const payload = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     if (!res.ok) {
-      const message = typeof payload.message === 'string' ? payload.message : `HTTP ${res.status}`;
+      const message = failureText(payload, res.status);
       // 403 is the answer, not a malfunction: the server verified this caller
       // and said no. Naming the kid is what makes it actionable.
       throw new AdminCliError(
@@ -152,4 +152,13 @@ export async function runKeyListViaRoute(
     }
   }
   throw new AdminCliError('list --url: pagination did not terminate after 50 pages', 1);
+}
+
+/** A refusal body as one line: its `message`, else `code (reason): detail`, else the status. */
+function failureText(payload: Record<string, unknown>, status: number): string {
+  if (typeof payload.message === 'string') return payload.message;
+  if (typeof payload.code !== 'string') return `HTTP ${status}`;
+  const reason = typeof payload.reason === 'string' ? ` (${payload.reason})` : '';
+  const detail = typeof payload.detail === 'string' ? `: ${payload.detail}` : '';
+  return `${payload.code}${reason}${detail}`;
 }

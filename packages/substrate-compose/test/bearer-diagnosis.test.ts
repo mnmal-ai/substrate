@@ -1,7 +1,13 @@
 import { generateKeyPairSync } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { KeyRecord, KeyRegistry } from '../src/_system/registry.js';
-import { type AuthConfig, diagnoseBearerToken, signEdDSA, verifyBearerToken } from '../src/auth.js';
+import {
+  type AuthConfig,
+  diagnoseBearerToken,
+  rejectionDetail,
+  signEdDSA,
+  verifyBearerToken
+} from '../src/auth.js';
 
 /**
  * `diagnoseBearerToken` names the half of a bearer check that failed wherever
@@ -122,6 +128,10 @@ describe('diagnoseBearerToken', () => {
 
 describe('audience (SUBSTRATE_PUBLIC_ORIGIN)', () => {
   const ORIGIN = 'https://host:3100';
+
+  it('explains wrong_audience by naming the setting that decides it', () => {
+    expect(rejectionDetail('wrong_audience')).toMatch(/SUBSTRATE_PUBLIC_ORIGIN/);
+  });
 
   it('when set, refuses an aud naming another origin and admits a match or no aud', () => {
     const { privatePem, publicPem } = keypair();
