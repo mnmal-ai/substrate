@@ -16,7 +16,8 @@ import {
   buildDecodePlan,
   type DecodeEnvelopeCtx,
   type DecodePlanEntry,
-  decodeEnvelope
+  decodeEnvelope,
+  SchemaDriftError
 } from '@mnmal-ai/substrate-pack';
 import {
   type FieldDef,
@@ -325,10 +326,23 @@ export class SubstrateClient {
     let env: PackEnvelope;
 
     if (wire === 'pack' && isPackMarker(raw as unknown)) {
-      const schema = this.#schemaCache ?? {};
-      const marker = raw as unknown as PackMarker;
-      const ctx = this.#buildDecodeCtx(frame, schema);
-      env = decodeEnvelope(marker.__packBytes, ctx);
+      const bytes = (raw as unknown as PackMarker).__packBytes;
+      const decode = (expectedSchemaVersion?: string): PackEnvelope =>
+        decodeEnvelope(bytes, {
+          ...this.#buildDecodeCtx(frame, this.#schemaCache ?? {}),
+          ...(expectedSchemaVersion !== undefined ? { expectedSchemaVersion } : {})
+        });
+      // Positional rows decode only against the schema that encoded them, so
+      // the version is checked BEFORE decoding: a type added since the cache
+      // was filled would otherwise fail ("unknown type") on every retry.
+      try {
+        env = decode(this.#driftCachedVersion ?? undefined);
+      } catch (err) {
+        if (!(err instanceof SchemaDriftError)) throw err;
+        await this.#refetchSchema();
+        this.#driftCachedVersion = err.envelopeSchemaVersion;
+        env = decode();
+      }
     } else {
       env = decodeJsonEnvelope(raw);
     }

@@ -214,6 +214,26 @@ describe('envelope roundtrip', () => {
     expect(decoded._completeness).toEqual(env._completeness);
   });
 
+  // `_diagnostics` names projection keys the type does not declare; over pack
+  // it was dropped, so a typo came back as `null` on every row, unflagged.
+  it('roundtrips _diagnostics unchanged', () => {
+    const s = buildScenario();
+    const env: PackEnvelope = {
+      schemaVersion: s.schema.schemaVersion,
+      data: { 'default/Todo': [] },
+      shapes: { 'default/Todo': 'list' },
+      _diagnostics: { 'default/Todo': { unknownProjectionFields: ['titel'] } }
+    };
+    const ctx = {
+      fieldsByKey: s.fieldsByKey,
+      typeByKey: s.typeByKey,
+      schemas: s.schemas,
+      currentNsByKey: s.currentNsByKey
+    };
+    const decoded = decodeEnvelope(encodeEnvelope(env, ctx), ctx);
+    expect(decoded._diagnostics).toEqual(env._diagnostics);
+  });
+
   it('leaves _completeness absent when the source envelope had none', () => {
     const s = buildScenario();
     const env: PackEnvelope = {

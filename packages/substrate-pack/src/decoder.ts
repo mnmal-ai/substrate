@@ -185,6 +185,7 @@ export function decodeEnvelope(bytes: Buffer | Uint8Array, ctx: DecodeEnvelopeCt
   if (raw._meta !== undefined) out._meta = raw._meta;
   if (raw._pagination !== undefined) out._pagination = raw._pagination;
   if (raw._completeness !== undefined) out._completeness = raw._completeness;
+  if (raw._diagnostics !== undefined) out._diagnostics = raw._diagnostics;
   if (raw.errors !== undefined) out.errors = raw.errors;
   return out;
 }
