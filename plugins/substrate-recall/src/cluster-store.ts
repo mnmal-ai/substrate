@@ -106,9 +106,12 @@ export interface ClusterStore {
 
   getCluster(id: string): Promise<ClusterRecord | null>;
 
-  /** Members of one cluster. Departed members excluded unless asked for. */
+  /**
+   * Members of one cluster, or of each of several in one read. Departed
+   * members excluded unless asked for.
+   */
   listMembers(
-    clusterId: string,
+    clusterId: string | readonly string[],
     opts?: { includeDeparted?: boolean }
   ): Promise<ClusterMemberRecord[]>;
 

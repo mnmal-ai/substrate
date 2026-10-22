@@ -108,6 +108,7 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
 
     // SET LOCAL + SELECT in one transaction so the hnsw GUCs apply only here.
     const wantVector = input.returnVector === true;
+    const halfLife = input.salienceHalfLifeHours;
     type KnnRow = {
       row: Record<string, unknown>;
       score: number;
@@ -131,7 +132,11 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
         SELECT
           ${tx.unsafe(ROW_BODY_SQL)}              AS row,
           1 - (e.embedding <=> ${literal}::vector) AS score,
-          e.salience                              AS salience
+          e.salience ${
+            halfLife !== undefined && halfLife > 0
+              ? tx`* exp(-ln(2) * GREATEST(0, EXTRACT(EPOCH FROM (now() - e.salience_updated_at))) / ${halfLife * 3600})`
+              : tx``
+          } AS salience
           ${wantVector ? tx`, e.embedding::text AS embedding` : tx``}
         FROM embeddings e
         JOIN rows r

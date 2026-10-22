@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Candidate } from '../src/candidate-selection.js';
 import { buildClusterSurface } from '../src/cluster-frame-surface.js';
 import type { ClusterProvenance } from '../src/cluster-store.js';
@@ -264,6 +264,20 @@ describe('recall/Cluster + recall/ClusterMember — read-policy gate', () => {
     // denied Decision scope (vanishes) — this is the "at least one readable
     // scope" predicate, not "every scope must be readable".
     expect(rows.map((r) => r.id)).toEqual(['cA']);
+  });
+
+  it('recall/Cluster reads the members of every listed cluster in one call', async () => {
+    const surface = await seededWithPolicy((ns, type) => ({
+      allow: !(ns === 'cortext' && type === 'Decision')
+    }));
+    const spy = vi.spyOn(InMemoryClusterStore.prototype, 'listMembers');
+    try {
+      const rows = await surface.types.Cluster.resolver(ctx, { params: {} });
+      expect(rows.map((r) => r.id)).toEqual(['cA']);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('recall/Cluster.getCluster (by id) returns nothing for a cluster with no readable member scope', async () => {

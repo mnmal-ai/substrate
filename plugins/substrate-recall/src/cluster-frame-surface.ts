@@ -169,6 +169,13 @@ function rethrowCoded(err: unknown): never {
   throw err;
 }
 
+interface ClusterVisibility {
+  visible: boolean;
+  memberCount: number;
+  departedCount: number;
+  labelReadable: boolean;
+}
+
 /**
  * Returns whether `record` is visible to this caller, plus its
  * policy-filtered `memberCount` / `departedCount`. Shared by `clusterResolver`
@@ -184,23 +191,51 @@ async function resolveClusterVisibility(
   record: ClusterRecord,
   deps: ClusterSurfaceDeps,
   ctx: RequestContext
-): Promise<{
-  visible: boolean;
-  memberCount: number;
-  departedCount: number;
-  labelReadable: boolean;
-}> {
-  if (deps.checkReadPolicy === undefined) {
-    return {
-      visible: true,
-      memberCount: record.memberCount,
-      departedCount: record.departedCount,
-      labelReadable: true
-    };
-  }
+): Promise<ClusterVisibility> {
+  if (deps.checkReadPolicy === undefined) return storedVisibility(record);
   const members = await deps.clusters.listMembers(record.id, { includeDeparted: true });
-  const readable = await readableMembers(members, deps, ctx);
+  return visibilityOf(members, await readableMembers(members, deps, ctx));
+}
 
+/**
+ * `resolveClusterVisibility` for a whole listing: one member read and one
+ * readability check across every cluster, rather than two per cluster.
+ */
+async function resolveListVisibility(
+  records: readonly ClusterRecord[],
+  deps: ClusterSurfaceDeps,
+  ctx: RequestContext
+): Promise<ClusterVisibility[]> {
+  if (deps.checkReadPolicy === undefined || records.length === 0) {
+    return records.map(storedVisibility);
+  }
+  const members = await deps.clusters.listMembers(
+    records.map((r) => r.id),
+    { includeDeparted: true }
+  );
+  const readable = await readableMembers(members, deps, ctx);
+  const byCluster = new Map<string, ClusterMemberRecord[]>();
+  for (const m of members) {
+    const list = byCluster.get(m.clusterId);
+    if (list === undefined) byCluster.set(m.clusterId, [m]);
+    else list.push(m);
+  }
+  return records.map((r) => visibilityOf(byCluster.get(r.id) ?? [], readable));
+}
+
+function storedVisibility(record: ClusterRecord): ClusterVisibility {
+  return {
+    visible: true,
+    memberCount: record.memberCount,
+    departedCount: record.departedCount,
+    labelReadable: true
+  };
+}
+
+function visibilityOf(
+  members: readonly ClusterMemberRecord[],
+  readable: ReadonlySet<ClusterMemberRecord>
+): ClusterVisibility {
   // `liveTotal` (unfiltered) is separate from `memberCount` (readable-live)
   // because a cluster with no live members stays visible, while one whose
   // live members are all unreadable does not.
@@ -287,10 +322,11 @@ export function buildClusterSurface(deps: ClusterSurfaceDeps): {
     const rows = await deps.clusters.listClusters(
       p.includeRetired === true ? { includeRetired: true } : {}
     );
+    const visibility = await resolveListVisibility(rows, deps, ctx);
     const visible: Row[] = [];
-    for (const c of rows) {
-      const vis = await resolveClusterVisibility(c, deps, ctx);
-      if (vis.visible) visible.push(project(clusterRow(c, vis), args.fields));
+    for (const [i, c] of rows.entries()) {
+      const vis = visibility[i];
+      if (vis?.visible === true) visible.push(project(clusterRow(c, vis), args.fields));
     }
     return visible;
   };
