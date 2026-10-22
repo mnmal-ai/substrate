@@ -3,7 +3,8 @@
  *
  * Returns only `(publicKey, algorithm)` for a kid. Public because a plugin
  * running its own JWT verifier has no verified identity yet when it asks; the
- * full `_system/Key` row stays admin-gated.
+ * full `_system/Key` row stays admin-gated. So which kids are registered and
+ * live is public too; fleet kids (`<agent>@<host>`) are guessable anyway.
  *
  * Backed by the same primed `KeyRegistry` the substrate's auth verifier
  * consults, so lookups are synchronous in-memory and naturally honour the

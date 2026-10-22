@@ -52,6 +52,7 @@ import type {
   ResolverArgs,
   Row
 } from '@mnmal-ai/substrate-types';
+import { createKeyedMutex } from '@mnmal-ai/substrate-types';
 import { type CreateKeyRegistryOptions, createKeyRegistry, type KeyRegistry } from './registry.js';
 import { createSigningKeyResolver, type SigningKeyMetric } from './signing-key.js';
 import {
@@ -69,6 +70,9 @@ import {
   SIGNING_KEY_TYPE,
   SYSTEM_NAMESPACE
 } from './types.js';
+
+/** Advisory-lock key held by key writes that can remove an admin. */
+const KEY_WRITE_LOCK = 'substrate-system:key-write';
 
 export interface InstallSystemNamespaceOptions {
   registry: Registry;
@@ -443,127 +447,157 @@ export async function installSystemNamespace(
       );
     }
   };
+  // Serialises key writes that can remove an admin, so two concurrent revokes
+  // cannot each count the other's admin as still live. On a tx-bound pg
+  // dataset the lock is held until commit; the local mutex covers datasets
+  // without one.
+  const localKeyLock = createKeyedMutex();
+  const lockedKeyWrite =
+    (fn: AutoCrudResolver): AutoCrudResolver =>
+    (ctx, args) => {
+      const ds = args.dataset ?? opts.dataset;
+      const run = () => fn(ctx, args);
+      return ds.withAdvisoryLock !== undefined
+        ? ds.withAdvisoryLock(KEY_WRITE_LOCK, run)
+        : localKeyLock(KEY_WRITE_LOCK, run);
+    };
   const isLive = (row: Row | undefined): boolean =>
     row !== undefined && row.revokedAt == null && row._deletedAt == null;
 
   const keyInterceptors: Record<string, (base: AutoCrudResolver) => AutoCrudResolver> = {
-    createKey: (base) => async (ctx: RequestContext, args: ResolverArgs) => {
-      assertAllowedAlgorithm(args.params);
-      assertGrantParses(args.params ?? {});
-      const result = await base(ctx, args);
-      const kid = extractKidForInvalidation(result);
-      if (kid !== null) {
-        const params = args.params ?? {};
-        await emitAuditInTx(ctx, args, {
-          actorKid: resolveActorKid(ctx),
-          kind: 'key_created',
-          targetKid: kid,
-          clientIp: ctx.clientIp,
-          details: {
-            name: params.name,
-            capabilities: params.capabilities,
-            namespaces: params.namespaces
-          },
-          now: ctx.now
-        });
-        installFromResult(keyRegistry, result, kid, opts.onWarn);
-      }
-      return result;
-    },
-    updateKey: (base) => async (ctx: RequestContext, args: ResolverArgs) => {
-      if (args.params?.kid !== undefined) {
-        throw new Error('Key.kid is immutable; rotate or re-register instead of changing kid');
-      }
-      // Only enforce algorithm if the update touches it — otherwise a revoke
-      // (which only sets `revokedAt`) shouldn't fail on a missing algorithm.
-      if (args.params?.algorithm !== undefined) {
+    createKey: (base) =>
+      lockedKeyWrite(async (ctx: RequestContext, args: ResolverArgs) => {
         assertAllowedAlgorithm(args.params);
-      }
-      const params = args.params ?? {};
-      const rows = await keysFor(args);
-      const target = rows.find((r) => r.id === params.id);
-      if (target !== undefined) {
-        const next = { ...target, ...params } as Row;
-        // Only a grant the caller supplies is checked: a stored grant that no
-        // longer parses must stay revocable.
-        if (params.namespaces !== undefined || params.capabilities !== undefined) {
-          assertGrantParses(next);
+        assertGrantParses(args.params ?? {});
+        // Checked under the lock, so of two concurrent registrations of one kid
+        // the second sees the first (the pg unique index would refuse it as 500).
+        const newKid = args.params?.kid;
+        if (
+          isLive(args.params as Row) &&
+          (await keysFor(args)).some((r) => r.kid === newKid && isLive(r))
+        ) {
+          throw new ResolverFrameError(
+            'kid_already_live',
+            `kid '${String(newKid)}' is already registered and live — rotate or revoke it before re-registering`
+          );
         }
-        assertAdminSurvives(rows, target.id, next);
-      }
-      // Decided before the write: a dataset may hand back the stored row itself.
-      const wasLive = isLive(target);
-      const result = await base(ctx, args);
-      const kid = extractKidForInvalidation(result);
-      // A rotated kid keeps its revoked rows beside the live one, and the
-      // cache is keyed by kid: writing an already-revoked row through would
-      // overwrite the live key.
-      if (kid !== null && wasLive) {
-        // Emit `key_revoked` when the update frame sets a non-empty
-        // `revokedAt`. There is no prior-value probe, so re-setting an
-        // already-revoked key emits a redundant event. Other updates skip it.
-        const revokedAt = args.params?.revokedAt;
-        if (revokedAt !== undefined && revokedAt !== null && revokedAt !== '') {
+        const result = await base(ctx, args);
+        const kid = extractKidForInvalidation(result);
+        if (kid !== null) {
+          const params = args.params ?? {};
           await emitAuditInTx(ctx, args, {
             actorKid: resolveActorKid(ctx),
-            kind: 'key_revoked',
+            kind: 'key_created',
             targetKid: kid,
             clientIp: ctx.clientIp,
-            details: { revokedAt },
+            details: {
+              name: params.name,
+              capabilities: params.capabilities,
+              namespaces: params.namespaces
+            },
             now: ctx.now
           });
+          installFromResult(keyRegistry, result, kid, opts.onWarn);
         }
-        installFromResult(keyRegistry, result, kid, opts.onWarn);
-      }
-      return result;
-    },
-    deleteKey: (base) => async (ctx: RequestContext, args: ResolverArgs) => {
-      // Pre-read the kid BEFORE delete: the result only carries { id, deleted },
-      // and the cache is keyed by the kid FIELD, which can differ from the row
-      // id. A pre-read row with no kid is malformed — skip eviction.
-      const targetId = typeof args.params?.id === 'string' ? args.params.id : undefined;
-      let kidToEvict: string | null = null;
-      if (targetId !== undefined) {
+        return result;
+      }),
+    updateKey: (base) =>
+      lockedKeyWrite(async (ctx: RequestContext, args: ResolverArgs) => {
+        if (args.params?.kid !== undefined) {
+          throw new Error('Key.kid is immutable; rotate or re-register instead of changing kid');
+        }
+        // Only enforce algorithm if the update touches it — otherwise a revoke
+        // (which only sets `revokedAt`) shouldn't fail on a missing algorithm.
+        if (args.params?.algorithm !== undefined) {
+          assertAllowedAlgorithm(args.params);
+        }
+        const params = args.params ?? {};
         const rows = await keysFor(args);
-        const target = rows.find((r) => r.id === targetId);
-        assertAdminSurvives(rows, targetId, null);
-        // Evict only for the live row: the kid's other rows are revoked history.
-        if (isLive(target)) kidToEvict = extractKidForInvalidation(target);
-      }
-      const result = await base(ctx, args);
-      if (kidToEvict !== null) keyRegistry.evict(kidToEvict);
-      return result;
-    },
-    purgeKey: (base) => async (ctx: RequestContext, args: ResolverArgs) => {
-      // Pre-read the kid BEFORE purge, as for deleteKey. If the kill
-      // switch refuses, nothing was deleted and the catch below skips the
-      // evict.
-      const targetId = typeof args.params?.id === 'string' ? args.params.id : undefined;
-      let kidToEvict: string | null = null;
-      if (targetId !== undefined) {
-        const ds = args.dataset ?? opts.dataset;
-        const { rows } = await ds.read(KEY_TYPE, { id: targetId, includeDeleted: true });
-        assertAdminSurvives(await keysFor(args), targetId, null);
-        // As for deleteKey: a revoked or soft-deleted row is not the cached one.
-        if (isLive(rows[0])) kidToEvict = extractKidForInvalidation(rows[0]);
-      }
-      try {
+        const target = rows.find((r) => r.id === params.id);
+        if (target !== undefined) {
+          const next = { ...target, ...params } as Row;
+          // Only a grant the caller supplies is checked: a stored grant that no
+          // longer parses must stay revocable.
+          if (params.namespaces !== undefined || params.capabilities !== undefined) {
+            assertGrantParses(next);
+          }
+          assertAdminSurvives(rows, target.id, next);
+        }
+        // Decided before the write: a dataset may hand back the stored row itself.
+        const wasLive = isLive(target);
+        const result = await base(ctx, args);
+        const kid = extractKidForInvalidation(result);
+        // A rotated kid keeps its revoked rows beside the live one, and the
+        // cache is keyed by kid: writing an already-revoked row through would
+        // overwrite the live key.
+        if (kid !== null && wasLive) {
+          // Emit `key_revoked` when the update frame sets a non-empty
+          // `revokedAt`. There is no prior-value probe, so re-setting an
+          // already-revoked key emits a redundant event. Other updates skip it.
+          const revokedAt = args.params?.revokedAt;
+          if (revokedAt !== undefined && revokedAt !== null && revokedAt !== '') {
+            await emitAuditInTx(ctx, args, {
+              actorKid: resolveActorKid(ctx),
+              kind: 'key_revoked',
+              targetKid: kid,
+              clientIp: ctx.clientIp,
+              details: { revokedAt },
+              now: ctx.now
+            });
+          }
+          installFromResult(keyRegistry, result, kid, opts.onWarn);
+        }
+        return result;
+      }),
+    deleteKey: (base) =>
+      lockedKeyWrite(async (ctx: RequestContext, args: ResolverArgs) => {
+        // Pre-read the kid BEFORE delete: the result only carries { id, deleted },
+        // and the cache is keyed by the kid FIELD, which can differ from the row
+        // id. A pre-read row with no kid is malformed — skip eviction.
+        const targetId = typeof args.params?.id === 'string' ? args.params.id : undefined;
+        let kidToEvict: string | null = null;
+        if (targetId !== undefined) {
+          const rows = await keysFor(args);
+          const target = rows.find((r) => r.id === targetId);
+          assertAdminSurvives(rows, targetId, null);
+          // Evict only for the live row: the kid's other rows are revoked history.
+          if (isLive(target)) kidToEvict = extractKidForInvalidation(target);
+        }
         const result = await base(ctx, args);
         if (kidToEvict !== null) keyRegistry.evict(kidToEvict);
         return result;
-      } catch (err) {
-        // Kill-switch refusal: emit `destructive_op_refused` BEFORE re-throw so
-        // the engine surfaces the envelope error to the client. The re-throw
-        // is load-bearing — without it the client sees a successful no-op.
-        if (err instanceof ResolverFrameError && err.code === 'destructive_ops_disabled') {
-          // targetKid is the key's KID, not the row UUID; a kid-less row
-          // surfaces as undefined rather than mislabelling the row id.
-          const targetKid = kidToEvict ?? undefined;
-          await emitRefusalAudit(ctx, opts.dataset, args, 'purge_substrate_key', targetKid);
+      }),
+    purgeKey: (base) =>
+      lockedKeyWrite(async (ctx: RequestContext, args: ResolverArgs) => {
+        // Pre-read the kid BEFORE purge, as for deleteKey. If the kill
+        // switch refuses, nothing was deleted and the catch below skips the
+        // evict.
+        const targetId = typeof args.params?.id === 'string' ? args.params.id : undefined;
+        let kidToEvict: string | null = null;
+        if (targetId !== undefined) {
+          const ds = args.dataset ?? opts.dataset;
+          const { rows } = await ds.read(KEY_TYPE, { id: targetId, includeDeleted: true });
+          assertAdminSurvives(await keysFor(args), targetId, null);
+          // As for deleteKey: a revoked or soft-deleted row is not the cached one.
+          if (isLive(rows[0])) kidToEvict = extractKidForInvalidation(rows[0]);
         }
-        throw err;
-      }
-    }
+        try {
+          const result = await base(ctx, args);
+          if (kidToEvict !== null) keyRegistry.evict(kidToEvict);
+          return result;
+        } catch (err) {
+          // Kill-switch refusal: emit `destructive_op_refused` BEFORE re-throw so
+          // the engine surfaces the envelope error to the client. The re-throw
+          // is load-bearing — without it the client sees a successful no-op.
+          if (err instanceof ResolverFrameError && err.code === 'destructive_ops_disabled') {
+            // targetKid is the key's KID, not the row UUID; a kid-less row
+            // surfaces as undefined rather than mislabelling the row id.
+            const targetKid = kidToEvict ?? undefined;
+            await emitRefusalAudit(ctx, opts.dataset, args, 'purge_substrate_key', targetKid);
+          }
+          throw err;
+        }
+      })
   };
 
   const wrappedForSubstrateKey = wrapRegistryMutations(opts.registry, keyInterceptors);
