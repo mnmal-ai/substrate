@@ -106,6 +106,8 @@ export class InMemoryEmbeddingsStore implements EmbeddingsStore {
   async knnSearch(input: EmbeddingsStoreKnnInput): Promise<EmbeddingsStoreKnnResult[]> {
     const threshold = typeof input.threshold === 'number' ? input.threshold : 0;
     const candidates: Array<{ entry: Entry; score: number }> = [];
+    const now = Date.now();
+    const halfLife = input.salienceHalfLifeHours;
     for (const entry of this.#entries.values()) {
       if (entry.rowNamespace !== input.namespace) continue;
       if (entry.rowType !== input.type) continue;
@@ -135,7 +137,10 @@ export class InMemoryEmbeddingsStore implements EmbeddingsStore {
       results.push({
         row,
         score,
-        salience: entry.salience,
+        salience:
+          halfLife !== undefined && halfLife > 0
+            ? decayed(entry.salience, now - entry.salienceUpdatedAt.getTime(), halfLife)
+            : entry.salience,
         // Copy (not alias) so a caller mutating the result can't corrupt the
         // stored vector.
         ...(input.returnVector === true ? { vector: Array.from(entry.vector) } : {})
@@ -151,14 +156,12 @@ export class InMemoryEmbeddingsStore implements EmbeddingsStore {
   ): Promise<ReadonlyArray<SalienceTarget>> {
     if (targets.length === 0) return [];
     const now = new Date();
-    const halfLifeMs = halfLifeHours * 3600 * 1000;
     const applied: SalienceTarget[] = [];
     for (const t of targets) {
       const entry = this.#entries.get(key(t.namespace, t.type, t.id));
       if (entry === undefined) continue;
-      const elapsedMs = Math.max(0, now.getTime() - entry.salienceUpdatedAt.getTime());
-      const decay = Math.exp((-Math.LN2 * elapsedMs) / halfLifeMs);
-      entry.salience = entry.salience * decay + bump;
+      const elapsedMs = now.getTime() - entry.salienceUpdatedAt.getTime();
+      entry.salience = decayed(entry.salience, elapsedMs, halfLifeHours) + bump;
       entry.salienceUpdatedAt = now;
       applied.push({ namespace: t.namespace, type: t.type, id: t.id });
     }
@@ -240,4 +243,9 @@ export class InMemoryEmbeddingsStore implements EmbeddingsStore {
     }
     return out;
   }
+}
+
+/** `salience` after `elapsedMs` of exponential decay at `halfLifeHours`. */
+function decayed(salience: number, elapsedMs: number, halfLifeHours: number): number {
+  return salience * Math.exp((-Math.LN2 * Math.max(0, elapsedMs)) / (halfLifeHours * 3600 * 1000));
 }

@@ -189,6 +189,30 @@ describe.skipIf(!isPgGated)('fetchEmbeddings parity (memory vs pg)', () => {
     expect(after.map((out) => out[0]?.salience)).toEqual([1, 1]);
   });
 
+  it('knnSearch decays salience to now on pg, by the given half-life', async () => {
+    const v = vec(7);
+    const ref = { namespace: 'claude', type: 'Decision', id: 'dec-1' };
+    await pg.upsert({
+      rowNamespace: 'claude',
+      rowType: 'Decision',
+      rowId: 'dec-1',
+      vector: v,
+      model: 'm:3'
+    });
+    await sql`
+      INSERT INTO rows (namespace, type, id, body)
+      VALUES ('claude', 'Decision', 'dec-1', ${sql.json({ id: 'dec-1' })})
+    `;
+    await pg.boostSalience([ref], 168);
+    // One half-life ago.
+    await sql`UPDATE embeddings SET salience_updated_at = now() - interval '10 hours'`;
+    const input = { namespace: 'claude', type: 'Decision', model: 'm:3', vector: v, k: 1 };
+    const [stored] = await pg.knnSearch(input);
+    const [decayed] = await pg.knnSearch({ ...input, salienceHalfLifeHours: 10 });
+    expect(stored?.salience).toBeCloseTo(1, 5);
+    expect(decayed?.salience).toBeCloseTo(0.5, 3);
+  });
+
   it('empty IDs → empty result, no SQL fired (pg) / no map scan (mem)', async () => {
     const memOut = await mem.fetchEmbeddings([], 'm:3');
     const pgOut = await pg.fetchEmbeddings([], 'm:3');

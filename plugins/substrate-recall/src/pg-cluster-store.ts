@@ -235,13 +235,14 @@ export class PgClusterStore implements ClusterStore {
   }
 
   async listMembers(
-    clusterId: string,
+    clusterId: string | readonly string[],
     opts: { includeDeparted?: boolean } = {}
   ): Promise<ClusterMemberRecord[]> {
     const sql = this.#sql as Sql;
+    const ids = typeof clusterId === 'string' ? [clusterId] : [...clusterId];
     const rows = await sql<MemberRow[]>`
       SELECT * FROM recall_cluster_members
-      WHERE cluster_id = ${clusterId}
+      WHERE cluster_id = ANY(${ids}::text[])
         ${opts.includeDeparted === true ? sql`` : sql`AND departed_at IS NULL`}
       ORDER BY short_id ASC
     `;

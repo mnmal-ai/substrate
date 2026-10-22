@@ -101,11 +101,12 @@ export class InMemoryClusterStore implements ClusterStore {
   }
 
   async listMembers(
-    clusterId: string,
+    clusterId: string | readonly string[],
     opts: { includeDeparted?: boolean } = {}
   ): Promise<ClusterMemberRecord[]> {
+    const ids = new Set(typeof clusterId === 'string' ? [clusterId] : clusterId);
     return this.#members
-      .filter((m) => m.clusterId === clusterId)
+      .filter((m) => ids.has(m.clusterId))
       .filter((m) => opts.includeDeparted === true || m.departedAt === null)
       .map((m) => ({ ...m }));
   }

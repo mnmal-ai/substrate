@@ -201,6 +201,33 @@ describe('InMemoryEmbeddingsStore.knnSearch', () => {
     });
     expect(r[0]?.salience).toBe(0);
   });
+
+  it('returns salience decayed to now when given a half-life', async () => {
+    const store = new InMemoryEmbeddingsStore();
+    await store.upsert({
+      rowNamespace: 'demo',
+      rowType: 'Doc',
+      rowId: 'd1',
+      vector: vec(1),
+      model: 'fake:v1'
+    });
+    vi.useFakeTimers({ now: new Date('2026-01-01T00:00:00Z') });
+    try {
+      await store.boostSalience([{ namespace: 'demo', type: 'Doc', id: 'd1' }], 10);
+      vi.setSystemTime(new Date('2026-01-01T10:00:00Z'));
+      const r = await store.knnSearch({
+        namespace: 'demo',
+        type: 'Doc',
+        model: 'fake:v1',
+        vector: vec(1),
+        k: 1,
+        salienceHalfLifeHours: 10
+      });
+      expect(r[0]?.salience).toBeCloseTo(0.5, 5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 async function readSalience(
@@ -286,6 +313,21 @@ describe('PgEmbeddingsStore.knnSearch', () => {
     expect(select?.text).toContain('e.salience');
     expect(select?.text).toContain('AS salience');
   });
+
+  it('decays salience to now in the select when given a half-life', async () => {
+    const { sql, calls } = makeFakeSql(() => []);
+    const store = new PgEmbeddingsStore({ sql: sql as unknown as import('postgres').Sql });
+    await store.knnSearch({
+      namespace: 'claude',
+      type: 'Decision',
+      model: 'bge-m3:1024',
+      vector: vec(0, 1),
+      k: 10,
+      salienceHalfLifeHours: 168
+    });
+    const decay = calls.find((c) => c.text.includes('salience_updated_at'));
+    expect(decay?.values).toContain(168 * 3600);
+  });
 });
 
 describe('PgEmbeddingsStore.upsert', () => {
@@ -370,6 +412,25 @@ describe('handleRecallRequest salience blend', () => {
     expect(out.rows[0]?._blendedScore).toBeGreaterThan(out.rows[0]?.score ?? 0);
     expect(out.rows[0]?._salience).toBe(1000);
     expect(out.rows[1]?._salience).toBe(0);
+  });
+
+  it('asks the store for salience decayed by the configured half-life', async () => {
+    const { store } = makeStore([{ id: 'a', score: 0.9, salience: 0 }]);
+    const seen: EmbeddingsStoreKnnInput[] = [];
+    const knn = store.knnSearch.bind(store);
+    store.knnSearch = async (input) => {
+      seen.push(input);
+      return knn(input);
+    };
+    await handleRecallRequest(
+      { query: 'q', namespace: 'demo', type: 'Doc' },
+      {
+        embedder: new FakeEmbedder({ dimension: 8 }),
+        store,
+        salience: { weight: 1, halfLifeHours: 168, spreadDamping: 0 }
+      }
+    );
+    expect(seen[0]?.salienceHalfLifeHours).toBe(168);
   });
 
   it('fires boostSalience on returned ids without awaiting', async () => {

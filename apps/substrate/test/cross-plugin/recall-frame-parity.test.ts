@@ -221,6 +221,12 @@ async function flushMicrotasks(): Promise<void> {
 // Tests
 // ---------------------------------------------------------------------------
 
+/** Equal salience lists, to within the decay between two reads milliseconds apart. */
+function expectSameSalience(a: number[], b: number[]): void {
+  expect(a).toHaveLength(b.length);
+  for (const [i, v] of a.entries()) expect(v).toBeCloseTo(b[i] ?? Number.NaN, 6);
+}
+
 describe('recall route-vs-frame parity', () => {
   const harnesses: Harness[] = [];
 
@@ -330,7 +336,7 @@ describe('recall route-vs-frame parity', () => {
     // per-row salience deltas match across transports.
     expect(frameSalience.length).toBeGreaterThanOrEqual(2);
     expect(frameSalience.every((s) => s > 0)).toBe(true);
-    expect(frameSalience).toEqual(routeSalience);
+    expectSameSalience(frameSalience, routeSalience);
   });
 
   // -------------------------------------------------------------------------
@@ -396,7 +402,7 @@ describe('recall route-vs-frame parity', () => {
       .sort((a, b) => a - b);
     // Two rows reinforced once → two strictly-positive salience values.
     expect(frameSal.filter((s) => s > 0)).toHaveLength(2);
-    expect(frameSal).toEqual(routeSal);
+    expectSameSalience(frameSal, routeSal);
   });
 
   // -------------------------------------------------------------------------
@@ -469,7 +475,7 @@ describe('recall route-vs-frame parity', () => {
     const frameSal = await salienceOf(hFrame);
     const routeSal = await salienceOf(hRoute);
     expect(frameSal.filter((s) => s > 0)).toHaveLength(2);
-    expect(frameSal).toEqual(routeSal);
+    expectSameSalience(frameSal, routeSal);
   });
 
   // -------------------------------------------------------------------------

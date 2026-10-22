@@ -57,6 +57,11 @@ export interface EmbeddingsStoreKnnInput {
    * store shared by several still fills k. Equality family only.
    */
   rowFilter?: KnnRowFilter;
+  /**
+   * Return each row's salience decayed to now by this half-life, the decay
+   * `boostSalience` applies. Absent: the stored value, as of its last boost.
+   */
+  salienceHalfLifeHours?: number;
 }
 
 export type KnnScalar = string | number | boolean | null;

@@ -173,7 +173,8 @@ export async function handleRecallRequest(
       type,
       model: embedder.modelId,
       vector,
-      k
+      k,
+      salienceHalfLifeHours: salience.halfLifeHours
     };
     if (threshold > 0) knnInput.threshold = threshold;
     if (returnVector) knnInput.returnVector = true;
