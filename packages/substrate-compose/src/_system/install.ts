@@ -1,10 +1,9 @@
 /**
  * `_system` namespace wire-up. Spec §5.12.
  *
- * Registers `Key`, `Invite`, `AuditEvent` and the enum-verdict
- * type with admin-gated autoCRUD, plus the public `SigningKey`
- * projection. Returns a live `KeyRegistry` whose cache is synchronously
- * updated by `Key` create/update/delete/purge.
+ * Registers `Key`, `Invite`, `AuditEvent` and the enum-verdict type with
+ * admin-gated autoCRUD. Returns a live `KeyRegistry` whose cache is
+ * synchronously updated by `Key` create/update/delete/purge.
  *
  * Invalidation strategy: we wrap the `Registry` surface that
  * `installAutoCrud` writes into. The `Key` mutations get their resolver
@@ -33,7 +32,6 @@
 import { randomUUID } from 'node:crypto';
 import { ResolverFrameError } from '@mnmal-ai/substrate-core';
 import {
-  allowAll,
   and,
   decodeList,
   grantEntryError,
@@ -54,7 +52,6 @@ import type {
 } from '@mnmal-ai/substrate-types';
 import { createKeyedMutex } from '@mnmal-ai/substrate-types';
 import { type CreateKeyRegistryOptions, createKeyRegistry, type KeyRegistry } from './registry.js';
-import { createSigningKeyResolver, type SigningKeyMetric } from './signing-key.js';
 import {
   AUDIT_EVENT_FIELDS,
   AUDIT_EVENT_TYPE,
@@ -66,8 +63,6 @@ import {
   KEY_ALGORITHMS,
   KEY_FIELDS,
   KEY_TYPE,
-  SIGNING_KEY_FIELDS,
-  SIGNING_KEY_TYPE,
   SYSTEM_NAMESPACE
 } from './types.js';
 
@@ -93,13 +88,6 @@ export interface InstallSystemNamespaceOptions {
    * Omit / non-positive → disabled.
    */
   reprimeIntervalMs?: number;
-  /**
-   * Optional metric sink forwarded to `createSigningKeyResolver`. Called when
-   * a `_system/SigningKey` query arrives with an unsupported `where` shape
-   * (compound predicates or extra top-level keys). Useful for operator
-   * alerting when a caller believes their filter is active but it isn't.
-   */
-  onMetric?: SigningKeyMetric;
 }
 
 export interface InstalledSystemNamespace {
@@ -701,26 +689,6 @@ export async function installSystemNamespace(
     policy: adminGate,
     purgeable: true,
     adminCapability
-  });
-
-  // --- SigningKey ---
-  //
-  // Public-policy projection of `Key`. Coordinator plugins running their
-  // own JWT verifier need `(publicKey, algorithm)` for a kid before they can
-  // produce an identity, so this surface accepts `identity: null` and gates
-  // only on namespace-presence (which is implicit — the engine routes by the
-  // qualified key, no per-resolver check needed). Backed by the same primed
-  // `keyRegistry` the substrate verifier consults; revocation is honoured
-  // automatically because `registry.lookup` filters revoked rows.
-  // Frame key: `_system/SigningKey`.
-  opts.registry.register(SIGNING_KEY_TYPE, {
-    resolver: createSigningKeyResolver(
-      keyRegistry,
-      opts.onMetric !== undefined ? { onMetric: opts.onMetric } : undefined
-    ),
-    kind: 'type',
-    policy: allowAll(),
-    fields: SIGNING_KEY_FIELDS
   });
 
   // §5.12 bootstrap audit — idempotent across restarts. See

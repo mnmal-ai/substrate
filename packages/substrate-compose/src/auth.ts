@@ -503,9 +503,10 @@ function verifyAsymmetric(key: AuthKey, signingInput: Buffer, signature: Buffer)
  *   `wrong_audience` / `malformed_claim:*` are only named once the signature verified, so they
  *   describe a token its holder could already read.
  * - `null` (no further signal) covers unknown kid, bad signature, and revoked
- *   keys — collapsed, so a 401 never says more than the caller sent. This
- *   is not a secret-kid guarantee: `_system/SigningKey` is public and answers
- *   exactly when a kid is registered and live, so verifiers can fetch keys.
+ *   keys — COLLAPSED deliberately. Distinguishing "no such kid" from "bad
+ *   signature" is a kid-existence oracle: a prober learns which kids are
+ *   registered without holding any private key. A revoked key reads as
+ *   unknown for the same reason — confirming it would confirm the kid.
  *   "Valid signature but insufficient claim" needs no code because it never
  *   reaches here: narrowing yields an identity with narrowed caps, and the
  *   route gate 403s with `{ required, have }`.

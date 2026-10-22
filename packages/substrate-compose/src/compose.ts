@@ -372,8 +372,7 @@ async function composeInner(
   const installSubstrateOpts: Parameters<typeof installSystemNamespace>[0] = {
     registry: substrateRegistry,
     dataset: substrateDataset,
-    edges,
-    onMetric: routeMetric
+    edges
   };
   // Thread the binary's admin-capability claim name through to the `_system`
   // admin gate. Default (`'admin'`) applies when auth is disabled or the
