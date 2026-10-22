@@ -1,6 +1,6 @@
 {
   "name": "@mnmal-ai/substrate-bridge-http",
-  "version": "1.0.0-alpha.2",
+  "version": "1.0.0-alpha.3",
   "private": true,
   "description": "HTTP bridge primitives for cross-coordinator dispatch in Substrate.",
   "license": "Apache-2.0",
