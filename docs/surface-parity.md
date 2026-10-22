@@ -250,8 +250,8 @@ it. All of the above reaches the route, the frame and the MCP tool.
 zero the whole arm — and the queries that hit it are the natural ones:
 
 ```
-'Broseley'                    rank 2
-'what happened in Broseley'   zero under AND — 'happened' is not in the row
+'Las Vegas'                   rank 2
+'what happened in Vegas'      zero under AND — 'happened' is not in the row
 ```
 
 Recall runs the strict query first and falls back to an OR-joined form
@@ -324,9 +324,38 @@ Per-kind on SSE: `remove` carries `{ removedId }`, `end` carries `{ reason }`,
 `error` carries `{ code, message }`. A client written against one does not read
 the other.
 
-### 7. `substrate-pack` negotiation is symmetric
+### 7. `substrate-pack`: what it is, and where it pays
 
-Advertise `Sec-WebSocket-Protocol: substrate-pack` and the server sends MessagePack
+`substrate-pack` is an opt-in binary encoding of the same envelopes, served by
+the query and mutate routes and the WebSocket channel. It is MessagePack with
+**positional rows**: the field names are sent once, from the schema, instead of
+on every row, and the client maps positions back to names from its cached
+federated schema. The engine and its semantics are unchanged; only the bytes
+differ. The codec is `@mnmal-ai/substrate/pack`.
+
+| surface | opt in with | client option |
+|---|---|---|
+| HTTP `query`, `mutate` | `Accept: application/vnd.substrate.pack` | `client.query(frame, { wire: 'pack' })` |
+| WebSocket | `Sec-WebSocket-Protocol: substrate-pack` at the handshake | `new SubstrateClient({ wsEncoding: 'pack' })` |
+| MCP, SSE | not available | — |
+
+The saving is the share of the payload that is repeated field names, so it is
+modest on prose-heavy rows. Against a live `cortext` store, over HTTP:
+
+| `cortext/SessionLog` | JSON | pack | pack / JSON | after gzip |
+|---|---|---|---|---|
+| 500 rows, 3 short fields | 138 KB | 123 KB | 0.89 | 1.00 |
+| 500 rows, 6 fields incl. `summary` | 1,170 KB | 1,133 KB | 0.97 | 1.00 |
+
+Gzip removes the repeated names too, so behind a compressing proxy the two
+encodings are the same size. Pack is worth turning on for a high-volume
+subscription or stream of narrow rows (ids, flags, numbers, short handles) on a
+link that does not compress. For prose, or anything behind gzip, JSON costs
+nothing extra and is easier to debug.
+
+#### Negotiation is symmetric
+
+On WebSocket, advertise `Sec-WebSocket-Protocol: substrate-pack` and the server sends MessagePack
 with positionally-encoded `data` — and then expects **your** frames in
 MessagePack too. Sending JSON text on a pack-negotiated socket is refused with
 `invalid_frame`, which looks like a grammar error and is an encoding one.
