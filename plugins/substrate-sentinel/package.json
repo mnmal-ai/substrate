@@ -1,6 +1,6 @@
 {
   "name": "@mnmal-ai/substrate-sentinel",
-  "version": "1.0.0-alpha.1",
+  "version": "1.0.0-alpha.2",
   "description": "Substrate coordinator plugin: registry for dynamic bridge discovery.",
   "license": "Apache-2.0",
   "repository": {
