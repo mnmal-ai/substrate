@@ -19,13 +19,16 @@ import { randomUUID } from 'node:crypto';
 import {
   applyExtensionResultMeta,
   assertWhereHonourable,
+  compareFilterValues,
   decodeCursor,
   type ExtensionOpResultMeta,
   encodeCursor,
   evaluateWhere,
+  type FieldDefOf,
   fieldRequested,
   fullBuiltinOperators,
   getFieldValue,
+  isDateField,
   preResolveExtensionOperatorsDetailed
 } from '@mnmal-ai/substrate-filter';
 import type {
@@ -34,6 +37,7 @@ import type {
   Dataset,
   DeleteResult,
   DropResult,
+  FieldDef,
   FilterCapabilities,
   Id,
   OrderByClause,
@@ -64,6 +68,11 @@ export interface MemoryDatasetOptions {
    * tests without spinning up pg.
    */
   txScopeId?: string;
+  /**
+   * The namespace's field declarations. Lets `date` fields filter and sort as
+   * instants, as the pg dataset's lookup does; without it they compare as text.
+   */
+  fieldDefLookup?: (type: string, field: string) => FieldDef | undefined;
 }
 
 const RESERVED_DELETED_AT = '_deletedAt';
@@ -87,6 +96,7 @@ function mergeRowMetadata(existing: RowMetadata | undefined, incoming: RowMetada
 export class MemoryDataset implements Dataset {
   readonly namespace: string;
   readonly txScopeId: string;
+  readonly #fieldDefLookup: MemoryDatasetOptions['fieldDefLookup'];
   // Full builtin operator set — everything the validator recognises. A
   // deliberate narrowing would override per kind here and fail the
   // allowlist-parity test loudly.
@@ -130,6 +140,7 @@ export class MemoryDataset implements Dataset {
   constructor(options: MemoryDatasetOptions) {
     this.namespace = options.namespace;
     this.txScopeId = options.txScopeId ?? `mem:${randomUUID()}`;
+    this.#fieldDefLookup = options.fieldDefLookup;
   }
 
   private bucket(type: string): Map<Id, Row> {
@@ -153,6 +164,8 @@ export class MemoryDataset implements Dataset {
     if (!b) return { rows: [], hasMore: false };
 
     const includeDeleted = params.includeDeleted === true;
+    const lookup = this.#fieldDefLookup;
+    const fieldDefOf: FieldDefOf = (field) => lookup?.(type, field);
 
     const idFilter = new Set<Id>();
     let hasIdFilter = false;
@@ -205,7 +218,7 @@ export class MemoryDataset implements Dataset {
       : b.values();
     for (const row of candidates) {
       if (!includeDeleted && row._deletedAt != null) continue;
-      if (resolvedWhere !== undefined && !evaluateWhere(row, resolvedWhere)) continue;
+      if (resolvedWhere !== undefined && !evaluateWhere(row, resolvedWhere, fieldDefOf)) continue;
       pool.push(row);
     }
 
@@ -213,13 +226,13 @@ export class MemoryDataset implements Dataset {
     // the cursor tuple is deterministic. If the caller supplied orderBy on id
     // explicitly we honour it and skip the append.
     const orderBy = normalizeOrderBy(params.orderBy);
-    pool.sort((a, b2) => compareByClauses(a, b2, orderBy));
+    pool.sort((a, b2) => compareByClauses(a, b2, orderBy, fieldDefOf));
 
     // Cursor: drop rows up to and including the cursor tuple.
     let startIdx = 0;
     if (params.cursor !== undefined && params.cursor !== '') {
       const cursor = decodeCursor(params.cursor);
-      startIdx = findCursorStart(pool, orderBy, cursor.orderByValues, cursor.id);
+      startIdx = findCursorStart(pool, orderBy, cursor.orderByValues, cursor.id, fieldDefOf);
     }
 
     // Apply limit. We fetch one extra row to detect `hasMore` without an extra
@@ -549,7 +562,10 @@ export class MemoryDataset implements Dataset {
   }
 
   forNamespace(namespace: string): Dataset {
-    return new MemoryDataset({ namespace });
+    return new MemoryDataset({
+      namespace,
+      ...(this.#fieldDefLookup !== undefined ? { fieldDefLookup: this.#fieldDefLookup } : {})
+    });
   }
 }
 
@@ -573,25 +589,6 @@ function conditionalMatchEq(actual: unknown, expected: unknown): boolean {
   return actual === expected;
 }
 
-function compare(a: unknown, b: unknown): number {
-  // Nullish values sort LAST (null is treated as larger than any value) so
-  // `orderBy createdAt desc` surfaces non-null dates first. This matches the
-  // pg dataset's `ORDER BY col DESC NULLS LAST` default.
-  if (a == null && b == null) return 0;
-  if (a == null) return 1;
-  if (b == null) return -1;
-
-  if (a instanceof Date || b instanceof Date) {
-    const at = a instanceof Date ? a.getTime() : typeof a === 'string' ? Date.parse(a) : Number(a);
-    const bt = b instanceof Date ? b.getTime() : typeof b === 'string' ? Date.parse(b) : Number(b);
-    return at < bt ? -1 : at > bt ? 1 : 0;
-  }
-  if (typeof a === 'number' && typeof b === 'number') return a < b ? -1 : a > b ? 1 : 0;
-  const as = String(a);
-  const bs = String(b);
-  return as < bs ? -1 : as > bs ? 1 : 0;
-}
-
 function normalizeOrderBy(orderBy: OrderByClause[] | undefined): Array<[string, 'asc' | 'desc']> {
   // No early return for an absent orderBy: the id tail is what a cursor
   // resumes on, and without it every row compares equal to the cursor. pg
@@ -611,7 +608,12 @@ function normalizeOrderBy(orderBy: OrderByClause[] | undefined): Array<[string, 
   return out;
 }
 
-function compareByClauses(a: Row, b: Row, orderBy: Array<[string, 'asc' | 'desc']>): number {
+function compareByClauses(
+  a: Row,
+  b: Row,
+  orderBy: Array<[string, 'asc' | 'desc']>,
+  fieldDefOf: FieldDefOf
+): number {
   for (const [field, dir] of orderBy) {
     const av = getFieldValue(a, field);
     const bv = getFieldValue(b, field);
@@ -620,7 +622,7 @@ function compareByClauses(a: Row, b: Row, orderBy: Array<[string, 'asc' | 'desc'
     if (av == null && bv == null) continue;
     if (av == null) return 1;
     if (bv == null) return -1;
-    const cmp = compare(av, bv);
+    const cmp = compareFilterValues(av, bv, isDateField(field, fieldDefOf));
     if (cmp !== 0) return dir === 'asc' ? cmp : -cmp;
   }
   return 0;
@@ -630,7 +632,8 @@ function findCursorStart(
   pool: Row[],
   orderBy: Array<[string, 'asc' | 'desc']>,
   cursorValues: unknown[],
-  cursorId: Id
+  cursorId: Id,
+  fieldDefOf: FieldDefOf
 ): number {
   // Build a synthetic "cursor row" and compare with compareByClauses.
   // cursorValues holds one value per orderBy clause, id included, so each
@@ -662,7 +665,7 @@ function findCursorStart(
   for (let i = 0; i < pool.length; i++) {
     const row = pool[i];
     if (row === undefined) continue;
-    if (compareByClauses(row, cursorRow, orderBy) > 0) return i;
+    if (compareByClauses(row, cursorRow, orderBy, fieldDefOf) > 0) return i;
   }
   return pool.length;
 }

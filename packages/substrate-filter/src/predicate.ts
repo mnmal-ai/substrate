@@ -13,7 +13,9 @@
  */
 
 import {
+  type FieldDef,
   type FieldPredicate,
+  METADATA_FILTER_FIELDS,
   type Row,
   UnsupportedFilterError,
   type WhereClause
@@ -57,6 +59,18 @@ export function getFieldValue(row: Row, name: string): unknown {
   const projector = METADATA_COLUMN_PROJECTIONS[name];
   if (projector !== undefined) return projector(row);
   return row[name];
+}
+
+/** A type's field declarations, by top-level field name. */
+export type FieldDefOf = (field: string) => FieldDef | undefined;
+
+/**
+ * Whether `field` holds a date: the `createdAt`/`updatedAt` columns always do,
+ * a body field when its declaration says so. Date fields compare as instants.
+ */
+export function isDateField(field: string, fieldDefOf?: FieldDefOf): boolean {
+  const def = METADATA_FILTER_FIELDS[field] ?? fieldDefOf?.(field);
+  return def?.kind === 'scalar' && def.type === 'date';
 }
 
 const KNOWN_OPS = new Set<string>([
@@ -163,20 +177,25 @@ function assertFieldPredicateHonourable(field: string, predicate: unknown): void
   }
 }
 
-export function evaluateWhere(row: Row, where: WhereClause): boolean {
+/**
+ * `fieldDefOf` names the row type's declared fields, so `date` fields compare
+ * as instants (as pg's timestamptz does). Without it, only `createdAt` and
+ * `updatedAt` do; nested struct fields always compare as written.
+ */
+export function evaluateWhere(row: Row, where: WhereClause, fieldDefOf?: FieldDefOf): boolean {
   if (where === null || typeof where !== 'object' || Array.isArray(where)) return true;
   for (const [k, child] of Object.entries(where as Record<string, unknown>)) {
     if (k === 'AND') {
       if (Array.isArray(child)) {
         for (const sub of child) {
-          if (!evaluateWhere(row, sub as WhereClause)) return false;
+          if (!evaluateWhere(row, sub as WhereClause, fieldDefOf)) return false;
         }
       }
     } else if (k === 'OR') {
       if (Array.isArray(child)) {
         let any = false;
         for (const sub of child) {
-          if (evaluateWhere(row, sub as WhereClause)) {
+          if (evaluateWhere(row, sub as WhereClause, fieldDefOf)) {
             any = true;
             break;
           }
@@ -184,15 +203,21 @@ export function evaluateWhere(row: Row, where: WhereClause): boolean {
         if (!any) return false;
       }
     } else if (k === 'NOT') {
-      if (evaluateWhere(row, child as WhereClause)) return false;
+      if (evaluateWhere(row, child as WhereClause, fieldDefOf)) return false;
     } else {
-      if (!evaluateFieldPredicate(k, getFieldValue(row, k), child)) return false;
+      const asDate = isDateField(k, fieldDefOf);
+      if (!evaluateFieldPredicate(k, getFieldValue(row, k), child, asDate)) return false;
     }
   }
   return true;
 }
 
-function evaluateFieldPredicate(field: string, value: unknown, predicate: unknown): boolean {
+function evaluateFieldPredicate(
+  field: string,
+  value: unknown,
+  predicate: unknown,
+  asDate = false
+): boolean {
   if (predicate === null || typeof predicate !== 'object' || Array.isArray(predicate)) {
     // `where: { kind: 'depends_on' }` — a bare value where an operator object
     // belongs. Throw rather than return false: a silent non-match here
@@ -231,31 +256,37 @@ function evaluateFieldPredicate(field: string, value: unknown, predicate: unknow
 
   for (const op of keys) {
     const operand = p[op as keyof FieldPredicate] as unknown;
-    if (!applyOp(field, op, value, operand)) return false;
+    if (!applyOp(field, op, value, operand, asDate)) return false;
   }
   return true;
 }
 
-function applyOp(field: string, op: string, value: unknown, operand: unknown): boolean {
+function applyOp(
+  field: string,
+  op: string,
+  value: unknown,
+  operand: unknown,
+  asDate: boolean
+): boolean {
   switch (op) {
     case 'eq':
-      return equals(value, operand);
+      return equals(value, operand, asDate);
     case 'neq':
-      return !equals(value, operand);
+      return !equals(value, operand, asDate);
     case 'gt':
       // null value cannot satisfy an ordered comparison — null sorts last in
       // orderBy (matches pg NULLS LAST) but is excluded from range filters.
       if (value == null) return false;
-      return compare(value, operand) > 0;
+      return compareFilterValues(value, operand, asDate) > 0;
     case 'gte':
       if (value == null) return false;
-      return compare(value, operand) >= 0;
+      return compareFilterValues(value, operand, asDate) >= 0;
     case 'lt':
       if (value == null) return false;
-      return compare(value, operand) < 0;
+      return compareFilterValues(value, operand, asDate) < 0;
     case 'lte':
       if (value == null) return false;
-      return compare(value, operand) <= 0;
+      return compareFilterValues(value, operand, asDate) <= 0;
     case 'between': {
       if (!Array.isArray(operand) || operand.length !== 2) {
         throw new UnsupportedFilterError(field, op, 'requires a two-element [low, high] array');
@@ -263,14 +294,17 @@ function applyOp(field: string, op: string, value: unknown, operand: unknown): b
       // A null row value cannot satisfy an ordered comparison — a data fact,
       // not a caller error, so it stays a plain non-match.
       if (value == null) return false;
-      return compare(value, operand[0]) >= 0 && compare(value, operand[1]) <= 0;
+      return (
+        compareFilterValues(value, operand[0], asDate) >= 0 &&
+        compareFilterValues(value, operand[1], asDate) <= 0
+      );
     }
     case 'in':
     case 'nin': {
       if (!Array.isArray(operand)) {
         throw new UnsupportedFilterError(field, op, 'requires an array value');
       }
-      const member = operand.some((e) => equals(value, e));
+      const member = operand.some((e) => equals(value, e, asDate));
       return op === 'in' ? member : !member;
     }
     // The OPERAND being a non-string is a caller error; the row VALUE being a
@@ -302,31 +336,52 @@ function applyOp(field: string, op: string, value: unknown, operand: unknown): b
   }
 }
 
-function equals(a: unknown, b: unknown): boolean {
+function equals(a: unknown, b: unknown, asDate = false): boolean {
   // Treat null and undefined as equivalent. Mirrors pg's behaviour where
   // `body ->> 'field'` returns SQL NULL for both absent keys and explicit
   // JSONB nulls. Without this branch, `eq: null` and `in: [..., null]` miss
   // rows whose field is absent (value === undefined), diverging from pg.
   if (a == null && b == null) return true;
-  if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime();
-  if (a instanceof Date && typeof b === 'string') return a.toISOString() === b;
-  if (b instanceof Date && typeof a === 'string') return (b as Date).toISOString() === a;
+  if (asDate || a instanceof Date || b instanceof Date) {
+    const at = toMicros(a);
+    const bt = toMicros(b);
+    if (at !== undefined && bt !== undefined) return at === bt;
+  }
   return a === b;
 }
 
-function compare(a: unknown, b: unknown): number {
+/**
+ * Orders two filter values: nullish last, dates (when `asDate`, or either side
+ * is a `Date`) by instant, numbers numerically, anything else as text.
+ */
+export function compareFilterValues(a: unknown, b: unknown, asDate = false): number {
   // Nullish sorts last — matches pg's `NULLS LAST` default and the memory
   // dataset's orderBy convention.
   if (a == null && b == null) return 0;
   if (a == null) return 1;
   if (b == null) return -1;
-  if (a instanceof Date || b instanceof Date) {
-    const at = a instanceof Date ? a.getTime() : typeof a === 'string' ? Date.parse(a) : Number(a);
-    const bt = b instanceof Date ? b.getTime() : typeof b === 'string' ? Date.parse(b) : Number(b);
-    return at < bt ? -1 : at > bt ? 1 : 0;
+  if (asDate || a instanceof Date || b instanceof Date) {
+    const at = toMicros(a);
+    const bt = toMicros(b);
+    if (at !== undefined && bt !== undefined) return at < bt ? -1 : at > bt ? 1 : 0;
   }
   if (typeof a === 'number' && typeof b === 'number') return a < b ? -1 : a > b ? 1 : 0;
   const as = String(a);
   const bs = String(b);
   return as < bs ? -1 : as > bs ? 1 : 0;
+}
+
+/**
+ * Microseconds since the epoch, pg's timestamptz precision. `Date.parse` keeps
+ * only milliseconds, so the 4th–6th fraction digits are added back. A number
+ * is read as epoch milliseconds; anything unparseable is `undefined`.
+ */
+function toMicros(v: unknown): number | undefined {
+  if (v instanceof Date) return v.getTime() * 1000;
+  if (typeof v === 'number') return Number.isFinite(v) ? v * 1000 : undefined;
+  if (typeof v !== 'string') return undefined;
+  const ms = Date.parse(v);
+  if (Number.isNaN(ms)) return undefined;
+  const frac = /T[\d:]+\.(\d+)/.exec(v)?.[1] ?? '';
+  return ms * 1000 + Number(frac.padEnd(6, '0').slice(3, 6));
 }

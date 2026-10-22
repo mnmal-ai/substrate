@@ -82,9 +82,10 @@ export async function wireStore(
 ): Promise<StoreWiring> {
   if (storeSpec === 'memory') {
     return {
-      // MemoryDataset compares body values in JS (numbers as numbers, dates
-      // as dates) so it needs no fieldDefLookup.
-      dataset: new MemoryDataset({ namespace: DEFAULT_NAMESPACE }),
+      dataset: new MemoryDataset({
+        namespace: DEFAULT_NAMESPACE,
+        fieldDefLookup: fieldDefLookupFor(DEFAULT_NAMESPACE)
+      }),
       edges: new MemoryEdgesStore({ now: () => new Date() }),
       substrateNamespaceDataset: null,
       sql: null,
@@ -267,7 +268,7 @@ export function buildPluginDatasetMap(
               // substrate tx.
               ...(sharedEdges !== null ? { edgesStore: sharedEdges } : {})
             })
-          : new MemoryDataset({ namespace: ns });
+          : new MemoryDataset({ namespace: ns, fieldDefLookup: fieldDefLookupFor(ns) });
     }
   }
   return datasets;

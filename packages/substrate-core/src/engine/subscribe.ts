@@ -917,7 +917,9 @@ export class SubscribeSubsystem {
     // the other subscribers with it.
     let whereMatches: boolean;
     try {
-      whereMatches = entry.where === undefined ? true : evaluateWhere(row, entry.where);
+      const fields = this.#schemaFor(entry.ns).types[entry.type]?.fields;
+      whereMatches =
+        entry.where === undefined ? true : evaluateWhere(row, entry.where, (f) => fields?.[f]);
     } catch (err) {
       const code = isResolverFrameError(err) ? err.code : 'resolver_error';
       this.#enqueueFrame(entry, {
