@@ -170,7 +170,7 @@ function jsonEquals(value: unknown, operand: unknown): boolean {
 }
 
 /** Code-point order, matching pg's `COLLATE "C"` over UTF-8. */
-function compareCodePoints(a: string, b: string): number {
+export function compareCodePoints(a: string, b: string): number {
   const ai = a[Symbol.iterator]();
   const bi = b[Symbol.iterator]();
   for (;;) {

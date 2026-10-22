@@ -113,6 +113,24 @@ describe('single-frame mutate bucket', () => {
     ]);
   });
 
+  it('marks entries after the refusal, which never ran, as rolled back', async () => {
+    const { engine } = coalescing();
+    const env = await engine.mutate({
+      frame: {
+        'a/create': { params: {} },
+        'b/refuse': { params: {} },
+        'b/create': { params: {} }
+      },
+      ctx
+    });
+    expect(env.data['b/create']).toBeUndefined();
+    expect(env.errors?.map((e) => [e.path?.[0], e.code])).toEqual([
+      ['b/refuse', 'not_found'],
+      ['a/create', 'frame_rolled_back'],
+      ['b/create', 'frame_rolled_back']
+    ]);
+  });
+
   it('a ResolverFrameError rolls back earlier entries on one dataset', async () => {
     const ds = new MemoryDataset({ namespace: 'a' });
     const datasets = new MemoryDatasetRegistry();

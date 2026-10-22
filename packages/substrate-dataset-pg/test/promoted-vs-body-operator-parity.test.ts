@@ -31,7 +31,9 @@ const ROWS: Row[] = [
   { id: 'r2', status: 'beta', label: 'beta' },
   { id: 'r3', status: null, label: null },
   { id: 'r4', status: 'gamma', label: 'gamma' },
-  { id: 'r5', status: 'beta', label: 'beta' }
+  { id: 'r5', status: 'beta', label: 'beta' },
+  // Upper case sorts before lower case by byte order, after it in en_US.
+  { id: 'r6', status: 'Zeta', label: 'Zeta' }
 ];
 
 /**
@@ -93,6 +95,12 @@ describe.skipIf(!POSTGRES_URL)(
       });
     }
 
+    it('orderBy sorts the promoted column as the body field', async () => {
+      const order = async (field: string): Promise<string[]> =>
+        (await ds.read('Memo', { orderBy: [{ [field]: 'asc' }] })).rows.map((r) => String(r.id));
+      expect(await order('status')).toEqual(await order('label'));
+    });
+
     it('eq and neq partition the rows, on BOTH paths', async () => {
       // With `eq: null` a legitimate filter in this store, `eq: x` and `neq: x`
       // must together cover every row exactly once — null rows included.
@@ -100,7 +108,7 @@ describe.skipIf(!POSTGRES_URL)(
         const eq = await idsFor(field, { eq: 'beta' });
         const neq = await idsFor(field, { neq: 'beta' });
 
-        expect([...eq, ...neq].sort()).toEqual(['r1', 'r2', 'r3', 'r4', 'r5']);
+        expect([...eq, ...neq].sort()).toEqual(['r1', 'r2', 'r3', 'r4', 'r5', 'r6']);
         expect(eq.filter((id) => neq.includes(id))).toEqual([]);
       }
     });
