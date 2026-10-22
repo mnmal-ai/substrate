@@ -324,14 +324,12 @@ Per-kind on SSE: `remove` carries `{ removedId }`, `end` carries `{ reason }`,
 `error` carries `{ code, message }`. A client written against one does not read
 the other.
 
-### 7. `substrate-pack`: what it is, and where it pays
+### 7. `substrate-pack`: where to opt in
 
-`substrate-pack` is an opt-in binary encoding of the same envelopes, served by
-the query and mutate routes and the WebSocket channel. It is MessagePack with
-**positional rows**: the field names are sent once, from the schema, instead of
-on every row, and the client maps positions back to names from its cached
-federated schema. The engine and its semantics are unchanged; only the bytes
-differ. The codec is `@mnmal-ai/substrate/pack`.
+`substrate-pack` is MessagePack with positional rows, an opt-in alternative to
+JSON with the same semantics. What it encodes and why is in
+[first principles §7](substrate-from-first-principles.md#7-wire-format-substrate-pack).
+Which surfaces carry it:
 
 | surface | opt in with | client option |
 |---|---|---|
@@ -339,19 +337,17 @@ differ. The codec is `@mnmal-ai/substrate/pack`.
 | WebSocket | `Sec-WebSocket-Protocol: substrate-pack` at the handshake | `new SubstrateClient({ wsEncoding: 'pack' })` |
 | MCP, SSE | not available | — |
 
-The saving is the share of the payload that is repeated field names, so it is
-modest on prose-heavy rows. Against a live `cortext` store, over HTTP:
+Its purpose is decode speed on multi-thousand-row responses, not size. It does
+not make payloads much smaller. Over HTTP against a live `cortext` store:
 
 | `cortext/SessionLog` | JSON | pack | pack / JSON | after gzip |
 |---|---|---|---|---|
 | 500 rows, 3 short fields | 138 KB | 123 KB | 0.89 | 1.00 |
 | 500 rows, 6 fields incl. `summary` | 1,170 KB | 1,133 KB | 0.97 | 1.00 |
 
-Gzip removes the repeated names too, so behind a compressing proxy the two
-encodings are the same size. Pack is worth turning on for a high-volume
-subscription or stream of narrow rows (ids, flags, numbers, short handles) on a
-link that does not compress. For prose, or anything behind gzip, JSON costs
-nothing extra and is easier to debug.
+So turn it on for a client that decodes large result sets or a busy
+subscription, not to save bandwidth. For small reads JSON costs nothing extra
+and is easier to debug.
 
 #### Negotiation is symmetric
 

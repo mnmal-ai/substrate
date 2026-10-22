@@ -1111,7 +1111,7 @@ Cascades across an unreachable bridge are **blocked**, logged, and visible to ad
 
 ## 7. Wire Format (substrate-pack)
 
-substrate-pack is MessagePack with positional encoding. JSON is always available as the alternative; the semantics are identical.
+substrate-pack is MessagePack with positional encoding. JSON is always available as the alternative; the semantics are identical. [surface-parity §7](surface-parity.md#7-substrate-pack-where-to-opt-in) lists which surfaces carry it and how a client opts in.
 
 ### 7.0 Envelope
 
