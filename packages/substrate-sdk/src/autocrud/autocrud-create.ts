@@ -30,6 +30,7 @@ import {
   assertNoNullOnNonNullable,
   assertNoUnknownFields,
   assertRequiredFields,
+  assertScalarTypes,
   coerceId,
   dropUndefinedParams,
   resolveIdentity
@@ -99,6 +100,7 @@ export function createResolver<T extends Row = Row>(
     // fails loud (`missing_required_field`) rather than writing a partial row.
     if (options.fields) {
       assertNoNullOnNonNullable(params, options.fields, 'create');
+      assertScalarTypes(params, options.fields, 'create');
       applyScalarDefaults(params, options.fields);
       assertRequiredFields(params, options.fields);
     }

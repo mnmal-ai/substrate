@@ -61,24 +61,6 @@ export class PgShortIdStore {
   }
 
   /**
-   * Allocate a new short-id for `rowId` and persist the mapping in a single
-   * round-trip via a CTE that calls `nextval` and INSERTs atomically.
-   * `ensureSequence` is called first (cached after the first call per (ns, type)).
-   */
-  async allocate(ns: string, type: string, rowId: string): Promise<number> {
-    const name = await this.ensureSequence(ns, type);
-    const rows = await this.sql.unsafe<Array<{ short_id: string }>>(
-      `WITH n AS (SELECT nextval('"${name}"') AS s)
-       INSERT INTO short_ids (namespace, type, short_id, row_id)
-       SELECT $1, $2, n.s, $3 FROM n
-       ON CONFLICT DO NOTHING
-       RETURNING short_id`,
-      [ns, type, rowId]
-    );
-    return parseShortId(rows[0]?.short_id);
-  }
-
-  /**
    * Allocate a new short-id without binding it to a row. The caller is
    * responsible for calling `bind` before the row is visible to consumers.
    * Used by the migrate backfill's preload path.

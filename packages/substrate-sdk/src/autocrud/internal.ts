@@ -221,6 +221,66 @@ export function assertNoNullOnNonNullable(
   );
 }
 
+// ISO 8601 date or date-time, the subset pg's timestamptz input also accepts.
+// Anchored and free of nested quantifiers, so no backtracking blow-up. pg
+// caps a zone offset at ±15:59 ("time zone displacement out of range").
+const ISO_TIMESTAMP =
+  /^(\d{4})-(\d{2})-(\d{2})(?:[T ]([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,9})?)?)?(?:Z|[+-](?:0\d|1[0-5])(?::?[0-5]\d)?)?$/;
+
+/**
+ * Is this a timestamp pg will cast? `Date.parse` alone is not the test: it
+ * accepts `"1"` (2001), `"Oct 21 2026"`, and rolls `"2026-02-30"` to March,
+ * all of which pg's `::timestamptz` rejects, which is the failure this guards.
+ */
+function isIsoTimestamp(v: string): boolean {
+  const m = ISO_TIMESTAMP.exec(v);
+  if (m === null) return false;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  if (y < 1 || mo < 1 || mo > 12 || d < 1) return false; // pg has no year 0000
+  // A day that exists in that month. setUTCFullYear, not Date.UTC, which maps
+  // years 0-99 onto 1900-1999 and so would judge 0004-02-29 by 1904.
+  const probe = new Date(0);
+  probe.setUTCFullYear(y, mo - 1, d);
+  return probe.getUTCDate() === d;
+}
+
+/**
+ * Refuse a supplied value whose JS type does not match a `number`, `boolean`
+ * or `date` scalar. pg sorts and date-filters these by casting
+ * `body->>field` to numeric, boolean or timestamptz, so one stored
+ * `dueAt: "next week"` fails every such read of the type, for every caller.
+ * `string` and `json` fields are left alone: nothing casts them. `null` is
+ * the null guard's business, not this one's.
+ */
+export function assertScalarTypes(
+  params: Record<string, unknown>,
+  fieldDefs: Record<string, FieldDef>,
+  phase: 'create' | 'update'
+): void {
+  for (const [name, def] of Object.entries(fieldDefs)) {
+    if (def.kind !== 'scalar' || !Object.hasOwn(params, name)) continue;
+    const v = params[name];
+    if (v === null) continue;
+    const ok =
+      def.type === 'number'
+        ? typeof v === 'number' && Number.isFinite(v)
+        : def.type === 'boolean'
+          ? typeof v === 'boolean'
+          : def.type === 'date'
+            ? typeof v === 'string'
+              ? isIsoTimestamp(v)
+              : v instanceof Date && Number.isFinite(v.getTime())
+            : true;
+    if (!ok) {
+      throw new ResolverFrameError(
+        'invalid_field_type',
+        `Cannot ${phase} '${name}' with ${JSON.stringify(v)}: expected a ${def.type === 'date' ? 'date (ISO 8601 string)' : def.type}.`,
+        { field: name, expected: def.type, phase }
+      );
+    }
+  }
+}
+
 /**
  * Fill `create` defaults: for every declared scalar field with a `default` that
  * the caller omitted, set it on `params`. Mutates the supplied bag in place

@@ -12,7 +12,9 @@ import {
   type Fragment,
   METADATA_COLUMNS,
   type MetadataFieldName,
-  metaStr
+  metaStr,
+  tsArrayParam,
+  tsParam
 } from './primitives.js';
 
 /**
@@ -40,55 +42,41 @@ export function buildMetadataColumnPredicate(
 
     if (isTimestamp) {
       // Timestamp columns — use ::timestamptz casts for ordering / range ops.
-      // ISO-8601 strings come in from callers; pg can parse them natively.
+      // ISO-8601 strings come in from callers; pg parses them, bound as text
+      // so the driver cannot round them to milliseconds (see `tsParam`).
+      const ts =
+        typeof operand === 'string' || operand instanceof Date ? tsParam(sql, operand) : null;
       switch (op) {
         case 'eq':
           if (operand === null) frag = sql`${col} IS NULL`;
-          else if (typeof operand === 'string') frag = sql`${col} = ${operand}::timestamptz`;
-          else if (operand instanceof Date)
-            frag = sql`${col} = ${operand.toISOString()}::timestamptz`;
+          else if (ts !== null) frag = sql`${col} = ${ts}`;
           break;
         case 'neq':
           if (operand === null) frag = sql`${col} IS NOT NULL`;
-          else if (typeof operand === 'string')
-            frag = sql`${col} IS DISTINCT FROM ${operand}::timestamptz`;
-          else if (operand instanceof Date)
-            frag = sql`${col} IS DISTINCT FROM ${operand.toISOString()}::timestamptz`;
+          else if (ts !== null) frag = sql`${col} IS DISTINCT FROM ${ts}`;
           break;
         case 'gt':
-          if (typeof operand === 'string') frag = sql`${col} > ${operand}::timestamptz`;
-          else if (operand instanceof Date)
-            frag = sql`${col} > ${operand.toISOString()}::timestamptz`;
+          if (ts !== null) frag = sql`${col} > ${ts}`;
           break;
         case 'gte':
-          if (typeof operand === 'string') frag = sql`${col} >= ${operand}::timestamptz`;
-          else if (operand instanceof Date)
-            frag = sql`${col} >= ${operand.toISOString()}::timestamptz`;
+          if (ts !== null) frag = sql`${col} >= ${ts}`;
           break;
         case 'lt':
-          if (typeof operand === 'string') frag = sql`${col} < ${operand}::timestamptz`;
-          else if (operand instanceof Date)
-            frag = sql`${col} < ${operand.toISOString()}::timestamptz`;
+          if (ts !== null) frag = sql`${col} < ${ts}`;
           break;
         case 'lte':
-          if (typeof operand === 'string') frag = sql`${col} <= ${operand}::timestamptz`;
-          else if (operand instanceof Date)
-            frag = sql`${col} <= ${operand.toISOString()}::timestamptz`;
+          if (ts !== null) frag = sql`${col} <= ${ts}`;
           break;
         case 'between':
           if (Array.isArray(operand) && operand.length === 2) {
-            const low = operand[0] instanceof Date ? operand[0].toISOString() : String(operand[0]);
-            const high = operand[1] instanceof Date ? operand[1].toISOString() : String(operand[1]);
-            frag = sql`${col} BETWEEN ${low}::timestamptz AND ${high}::timestamptz`;
+            frag = sql`${col} BETWEEN ${tsParam(sql, operand[0])} AND ${tsParam(sql, operand[1])}`;
           }
           break;
         case 'in':
         case 'nin':
           if (Array.isArray(operand)) {
-            const vals = operand
-              .filter((v) => v !== null)
-              .map((v) => (v instanceof Date ? v.toISOString() : String(v)));
-            const member = memberOf(sql, col, sql`${vals}::timestamptz[]`, operand);
+            const vals = operand.filter((v) => v !== null);
+            const member = memberOf(sql, col, tsArrayParam(sql, vals), operand);
             frag = op === 'in' ? member : sql`NOT ${member}`;
           }
           break;

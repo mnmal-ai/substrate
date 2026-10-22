@@ -34,6 +34,7 @@ import {
   assertNoClientServerFields,
   assertNoNullOnNonNullable,
   assertNoUnknownFields,
+  assertScalarTypes,
   coerceId,
   dropUndefinedParams,
   resolveIdentity
@@ -141,6 +142,7 @@ export function updateResolver<T extends Row = Row>(
     if (options.fields) {
       assertNoUnknownFields(inParams, options.fields, 'update');
       assertNoNullOnNonNullable(inParams, options.fields, 'update');
+      assertScalarTypes(inParams, options.fields, 'update');
     }
 
     // Resolve short-form (e.g. "1") to the underlying row id.
