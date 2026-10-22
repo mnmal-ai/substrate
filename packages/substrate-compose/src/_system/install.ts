@@ -32,7 +32,15 @@
 
 import { randomUUID } from 'node:crypto';
 import { ResolverFrameError } from '@mnmal-ai/substrate-core';
-import { allowAll, and, requireCapability, requireNamespace } from '@mnmal-ai/substrate-policy';
+import {
+  allowAll,
+  and,
+  decodeList,
+  grantEntryError,
+  isActiveAdminKeyRow,
+  requireCapability,
+  requireNamespace
+} from '@mnmal-ai/substrate-policy';
 import { type AutoCrudResolver, installAutoCrud, resolveIdentity } from '@mnmal-ai/substrate-sdk';
 import type {
   Dataset,
@@ -406,9 +414,42 @@ export async function installSystemNamespace(
   // key write or both roll back on an emit failure. `ctx.clientIp` is
   // populated by the HTTP route's `buildContext` with trust gating already
   // applied; interceptors read it verbatim (never re-apply XFF rules).
+  //
+  // Guards that hold whoever the caller is. The key verbs are reachable
+  // through plain `mutate` as well as the `/_system/keys` routes and the CLI,
+  // so these run here, in the write's own transaction: a stored grant must
+  // parse (else every request bearing that kid 500s in `candidatesFor`), and
+  // no write may leave zero active admins. The confirmable gates (`widen`,
+  // `allowAdmin`) stay with the routes and CLI that offer the confirmation.
+  const keysFor = async (args: ResolverArgs): Promise<Array<Row>> =>
+    // Unpaged on purpose: a partial table silently weakens the lockout count.
+    (await (args.dataset ?? opts.dataset).read(KEY_TYPE, {})).rows;
+  const assertGrantParses = (row: Record<string, unknown>): void => {
+    const err = grantEntryError(decodeList(row.namespaces), decodeList(row.capabilities));
+    if (err !== null) {
+      throw new ResolverFrameError(
+        'invalid_grant_entry',
+        `${err} — each entry is '<namespace>' or '<namespace>:<cap>[+<cap>...]'.`
+      );
+    }
+  };
+  const assertAdminSurvives = (rows: Array<Row>, targetId: unknown, next: Row | null): void => {
+    const isAdmin = (r: Row): boolean => isActiveAdminKeyRow(r, adminCapability);
+    const after = [...rows.filter((r) => r.id !== targetId), ...(next === null ? [] : [next])];
+    if (rows.some(isAdmin) && !after.some(isAdmin)) {
+      throw new ResolverFrameError(
+        'last_active_admin',
+        'refusing a key write that would leave no active admin key — rotate instead via `substrate-admin rotate`.'
+      );
+    }
+  };
+  const isLive = (row: Row | undefined): boolean =>
+    row !== undefined && row.revokedAt == null && row._deletedAt == null;
+
   const keyInterceptors: Record<string, (base: AutoCrudResolver) => AutoCrudResolver> = {
     createKey: (base) => async (ctx: RequestContext, args: ResolverArgs) => {
       assertAllowedAlgorithm(args.params);
+      assertGrantParses(args.params ?? {});
       const result = await base(ctx, args);
       const kid = extractKidForInvalidation(result);
       if (kid !== null) {
@@ -438,9 +479,26 @@ export async function installSystemNamespace(
       if (args.params?.algorithm !== undefined) {
         assertAllowedAlgorithm(args.params);
       }
+      const params = args.params ?? {};
+      const rows = await keysFor(args);
+      const target = rows.find((r) => r.id === params.id);
+      if (target !== undefined) {
+        const next = { ...target, ...params } as Row;
+        // Only a grant the caller supplies is checked: a stored grant that no
+        // longer parses must stay revocable.
+        if (params.namespaces !== undefined || params.capabilities !== undefined) {
+          assertGrantParses(next);
+        }
+        assertAdminSurvives(rows, target.id, next);
+      }
+      // Decided before the write: a dataset may hand back the stored row itself.
+      const wasLive = isLive(target);
       const result = await base(ctx, args);
       const kid = extractKidForInvalidation(result);
-      if (kid !== null) {
+      // A rotated kid keeps its revoked rows beside the live one, and the
+      // cache is keyed by kid: writing an already-revoked row through would
+      // overwrite the live key.
+      if (kid !== null && wasLive) {
         // Emit `key_revoked` when the update frame sets a non-empty
         // `revokedAt`. There is no prior-value probe, so re-setting an
         // already-revoked key emits a redundant event. Other updates skip it.
@@ -466,9 +524,11 @@ export async function installSystemNamespace(
       const targetId = typeof args.params?.id === 'string' ? args.params.id : undefined;
       let kidToEvict: string | null = null;
       if (targetId !== undefined) {
-        const ds = args.dataset ?? opts.dataset;
-        const { rows } = await ds.read(KEY_TYPE, { id: targetId });
-        kidToEvict = extractKidForInvalidation(rows[0]);
+        const rows = await keysFor(args);
+        const target = rows.find((r) => r.id === targetId);
+        assertAdminSurvives(rows, targetId, null);
+        // Evict only for the live row: the kid's other rows are revoked history.
+        if (isLive(target)) kidToEvict = extractKidForInvalidation(target);
       }
       const result = await base(ctx, args);
       if (kidToEvict !== null) keyRegistry.evict(kidToEvict);
@@ -483,7 +543,9 @@ export async function installSystemNamespace(
       if (targetId !== undefined) {
         const ds = args.dataset ?? opts.dataset;
         const { rows } = await ds.read(KEY_TYPE, { id: targetId, includeDeleted: true });
-        kidToEvict = extractKidForInvalidation(rows[0]);
+        assertAdminSurvives(await keysFor(args), targetId, null);
+        // As for deleteKey: a revoked or soft-deleted row is not the cached one.
+        if (isLive(rows[0])) kidToEvict = extractKidForInvalidation(rows[0]);
       }
       try {
         const result = await base(ctx, args);

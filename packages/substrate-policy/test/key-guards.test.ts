@@ -295,6 +295,15 @@ describe('newlyGrantedPairs — widening reasons over pairs', () => {
   it('an identical grant is not a widening', () => {
     expect(newlyGrantedPairs(prev, { ...prev })).toEqual([]);
   });
+
+  it('removing or raising an explicit entry that narrowed a wildcard is a grant', () => {
+    // An explicit entry beats the wildcard, so `notes` held only read before.
+    const shadowed = { '*': ['read', 'mutate'], notes: ['read'] };
+    expect(newlyGrantedPairs(shadowed, { '*': ['read', 'mutate'] })).toEqual(['notes:mutate']);
+    expect(
+      newlyGrantedPairs(shadowed, { '*': ['read', 'mutate'], notes: ['read', 'mutate'] })
+    ).toEqual(['notes:mutate']);
+  });
 });
 
 describe('checkUpdatable resolves admin through the grant, not the flat list', () => {

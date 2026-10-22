@@ -200,7 +200,7 @@ export function parseAuthConfig(env: NodeJS.ProcessEnv): AuthConfig | null {
 
 /** True for a postgres `SUBSTRATE_DATABASE_URL`, which is what makes the DB key registry available. */
 function isPostgresStore(store: string | undefined): boolean {
-  return store?.startsWith('postgres://') ?? false;
+  return (store?.startsWith('postgres://') || store?.startsWith('postgresql://')) ?? false;
 }
 
 /** Mode defaults to `required` — the safe end — when unset. */
