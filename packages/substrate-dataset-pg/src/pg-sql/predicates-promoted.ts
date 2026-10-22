@@ -114,26 +114,26 @@ export function buildPromotedBodyColumnPredicate(
       }
       case 'gt':
         textOnly(op);
-        frag = sql`${col} > ${str(op, operand)}::text`;
+        frag = sql`${col} COLLATE "C" > ${str(op, operand)}::text`;
         break;
       case 'gte':
         textOnly(op);
-        frag = sql`${col} >= ${str(op, operand)}::text`;
+        frag = sql`${col} COLLATE "C" >= ${str(op, operand)}::text`;
         break;
       case 'lt':
         textOnly(op);
-        frag = sql`${col} < ${str(op, operand)}::text`;
+        frag = sql`${col} COLLATE "C" < ${str(op, operand)}::text`;
         break;
       case 'lte':
         textOnly(op);
-        frag = sql`${col} <= ${str(op, operand)}::text`;
+        frag = sql`${col} COLLATE "C" <= ${str(op, operand)}::text`;
         break;
       case 'between': {
         textOnly(op);
         if (!Array.isArray(operand) || operand.length !== 2) {
           throw new UnsupportedFilterError(field, op, 'requires a two-element [low, high] array');
         }
-        frag = sql`${col} BETWEEN ${str(op, operand[0])}::text AND ${str(op, operand[1])}::text`;
+        frag = sql`${col} COLLATE "C" BETWEEN ${str(op, operand[0])}::text AND ${str(op, operand[1])}::text`;
         break;
       }
       // ILIKE for case-insensitive matching, mirroring the metadata text

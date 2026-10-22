@@ -35,13 +35,25 @@ export function buildBodyProjection(
   if (keyArr.length === 0) return sql`'{}'::jsonb`;
   // Comma-interleaved `'k', <value>` pairs. The output key needs `::text`:
   // jsonb_build_object's VARIADIC any cannot infer a parameter's type.
+  // pg caps a call at 100 arguments, so each call takes at most 50 keys and
+  // the objects are concatenated with `||`.
   const pairs: Fragment[] = keyArr.map((k) => sql`${k}::text, r.body->${k}`);
-  const commaFrag = sql`,`;
-  const interleaved: Fragment[] = [pairs[0] as Fragment];
-  for (let i = 1; i < pairs.length; i++) {
-    interleaved.push(commaFrag, pairs[i] as Fragment);
+  const objects: Fragment[] = [];
+  for (let i = 0; i < pairs.length; i += MAX_KEYS_PER_CALL) {
+    objects.push(sql`jsonb_build_object(${join(pairs.slice(i, i + MAX_KEYS_PER_CALL), sql`,`)})`);
   }
-  return sql`jsonb_build_object(${interleaved})`;
+  return sql`${join(objects, sql` || `)}`;
+}
+
+const MAX_KEYS_PER_CALL = 50;
+
+function join(parts: Fragment[], sep: Fragment): Fragment[] {
+  const out: Fragment[] = [];
+  for (const [i, p] of parts.entries()) {
+    if (i > 0) out.push(sep);
+    out.push(p);
+  }
+  return out;
 }
 
 export function assembleRowMetadata(record: {

@@ -55,7 +55,12 @@ export class PgShortIdStore {
     const name = seqName(ns, type);
     const cacheKey = `${ns}\0${type}`;
     if (this.#ensuredSequences.has(cacheKey)) return name;
-    await this.sql.unsafe(`CREATE SEQUENCE IF NOT EXISTS "${name}"`);
+    // The lock is a transaction lock held until the caller's transaction ends,
+    // so a concurrent creator waits and then finds the sequence, rather than
+    // failing on pg_class's unique index. `name` is `[a-z0-9_]` only.
+    await this.sql.unsafe(
+      `DO $$ BEGIN PERFORM pg_advisory_xact_lock(hashtext('${name}')); CREATE SEQUENCE IF NOT EXISTS "${name}"; END $$`
+    );
     this.#ensuredSequences.add(cacheKey);
     return name;
   }

@@ -1,6 +1,7 @@
 /**
- * Date fields compare as instants, as pg's timestamptz does: an offset or a
- * different number of fraction digits names the same instant.
+ * The evaluator orders values as pg does. Date fields compare as instants, as
+ * timestamptz does: an offset or a different number of fraction digits names
+ * the same instant. Text compares by code point, as COLLATE "C" does.
  */
 
 import type { FieldDef, Row } from '@mnmal-ai/substrate-types';
@@ -54,5 +55,12 @@ describe('evaluateWhere on date fields', () => {
     expect(evaluateWhere(row, { label: { gt: '2026-10-20T11:00:00+02:00' } }, fieldDefOf)).toBe(
       false
     );
+  });
+});
+
+describe('evaluateWhere on text', () => {
+  it('orders by code point, as pg COLLATE "C" does', () => {
+    // U+1F600 is above U+FF01, though its UTF-16 lead unit (0xD83D) is below.
+    expect(evaluateWhere({ id: 'r', s: '😀' }, { s: { gt: '！' } })).toBe(true);
   });
 });

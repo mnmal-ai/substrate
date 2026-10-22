@@ -23,6 +23,7 @@ import {
 import { getExtensionOperator } from './extension-operators.js';
 import {
   assertJsonPathPredicate,
+  compareCodePoints,
   evaluateJsonPathPredicate,
   isJsonPathPredicate
 } from './json-path.js';
@@ -352,7 +353,7 @@ function equals(a: unknown, b: unknown, asDate = false): boolean {
 
 /**
  * Orders two filter values: nullish last, dates (when `asDate`, or either side
- * is a `Date`) by instant, numbers numerically, anything else as text.
+ * is a `Date`) by instant, numbers numerically, anything else as text by code point.
  */
 export function compareFilterValues(a: unknown, b: unknown, asDate = false): number {
   // Nullish sorts last — matches pg's `NULLS LAST` default and the memory
@@ -366,9 +367,8 @@ export function compareFilterValues(a: unknown, b: unknown, asDate = false): num
     if (at !== undefined && bt !== undefined) return at < bt ? -1 : at > bt ? 1 : 0;
   }
   if (typeof a === 'number' && typeof b === 'number') return a < b ? -1 : a > b ? 1 : 0;
-  const as = String(a);
-  const bs = String(b);
-  return as < bs ? -1 : as > bs ? 1 : 0;
+  // By code point, as pg's COLLATE "C" orders UTF-8; JS `<` orders UTF-16 units.
+  return compareCodePoints(String(a), String(b));
 }
 
 /**
