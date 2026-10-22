@@ -29,7 +29,8 @@ const NO_DEFAULT: Record<string, string> = {
     'no default — fail-closed; a bridge without a credential refuses to boot',
   SUBSTRATE_TLS_KEY_PATH: 'no default — TLS is on or off, and the boot report says which',
   SUBSTRATE_TLS_CERT_PATH: 'no default — see SUBSTRATE_TLS_KEY_PATH',
-  SUBSTRATE_TLS_CA_PATH: 'no default — optional chain material, reported as part of tls: enabled'
+  SUBSTRATE_TLS_CA_PATH: 'no default — optional chain material, reported as part of tls: enabled',
+  HYDRA_AUTH_MODE: 'not a knob — read only to refuse a hydra-era env that would boot with auth off'
 };
 
 /** Every `env.FOO` / `env[FOO]` property access in the parser source. */

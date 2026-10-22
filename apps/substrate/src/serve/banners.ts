@@ -90,3 +90,15 @@ export function knobsBanner(knobs: ConfigReport): string {
   });
   return ['knobs (effective value, source):', ...lines, ''].join('\n');
 }
+
+/**
+ * Names the `HYDRA_*` env keys a boot found. `serve` reads only `SUBSTRATE_*`,
+ * so each of these is ignored and its setting has fallen back to the default.
+ */
+export function legacyHydraEnvBanner(names: ReadonlyArray<string>): string {
+  return [
+    `warning: ignoring ${names.length} HYDRA_* env key(s); serve reads only SUBSTRATE_* names:`,
+    ...names.map((n) => `  ${n}`),
+    ''
+  ].join('\n');
+}

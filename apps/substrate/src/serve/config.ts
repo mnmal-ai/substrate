@@ -111,6 +111,8 @@ export interface ParsedConfig {
    * defaulting, so no deployment writes as an actor nobody chose.
    */
   systemActor: string | null;
+  /** Set `HYDRA_*` env names, sorted. `serve` reads none of them. */
+  legacyHydraEnv: Array<string>;
 }
 
 export class EnvConfigError extends Error {
@@ -166,6 +168,15 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
           `SUBSTRATE_BRIDGE_CREDENTIALS origin '${cred.origin}'`
       );
     }
+  }
+  const legacyHydraEnv = Object.keys(env)
+    .filter((k) => k.startsWith('HYDRA_') && env[k] !== undefined)
+    .sort();
+  if (env.HYDRA_AUTH_MODE !== undefined && env.SUBSTRATE_AUTH_MODE === undefined) {
+    throw new EnvConfigError(
+      `HYDRA_AUTH_MODE=${env.HYDRA_AUTH_MODE} is set but SUBSTRATE_AUTH_MODE is not — serve reads only ` +
+        'SUBSTRATE_AUTH_MODE, so this store would boot with auth off. Rename the HYDRA_* keys to SUBSTRATE_*'
+    );
   }
   const auth = parseAuthConfig(env);
   const tls = parseTlsConfig(env);
@@ -270,7 +281,8 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
     keyReprimeIntervalMs,
     knobs: knobs.report(),
     streamTicketSecret,
-    systemActor: nonEmpty(env.SUBSTRATE_SYSTEM_ACTOR?.trim()) ?? null
+    systemActor: nonEmpty(env.SUBSTRATE_SYSTEM_ACTOR?.trim()) ?? null,
+    legacyHydraEnv
   };
 }
 

@@ -95,7 +95,12 @@ import {
 } from './serve/wiring.js';
 
 /** Re-exported: tests import the serve surface from main.js. */
-export { listeningBanner, memoryStoreBanner, noPluginsBanner } from './serve/banners.js';
+export {
+  legacyHydraEnvBanner,
+  listeningBanner,
+  memoryStoreBanner,
+  noPluginsBanner
+} from './serve/banners.js';
 /** Re-exported: tests import the serve surface from main.js. */
 export {
   BINARY_CONTRACT_VERSION,

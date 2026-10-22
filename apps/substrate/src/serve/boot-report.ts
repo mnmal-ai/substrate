@@ -8,7 +8,13 @@
 
 import type { CoordinatorPlugin, Dataset, KernelPlugin } from '@mnmal-ai/substrate-types';
 import type { Sql } from 'postgres';
-import { knobsBanner, listeningBanner, memoryStoreBanner, noPluginsBanner } from './banners.js';
+import {
+  knobsBanner,
+  legacyHydraEnvBanner,
+  listeningBanner,
+  memoryStoreBanner,
+  noPluginsBanner
+} from './banners.js';
 import type { ParsedConfig } from './config.js';
 import { redactStoreSpec } from './wiring.js';
 
@@ -30,6 +36,9 @@ export function reportBoot(args: {
     args;
   process.stdout.write(listeningBanner(info.address, info.port, config.tls !== null));
   process.stdout.write(`store: ${redactStoreSpec(config.storeSpec)}\n`);
+  if (config.legacyHydraEnv.length > 0) {
+    process.stdout.write(legacyHydraEnvBanner(config.legacyHydraEnv));
+  }
   if (config.storeSpec === 'memory') {
     process.stdout.write(memoryStoreBanner(config.memoryByDefault));
   }
