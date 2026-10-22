@@ -21,7 +21,9 @@ import {
   isMetadataField,
   metaStr,
   type PromotedColumnLookup,
-  scalarParam
+  scalarParam,
+  tsArrayParam,
+  tsParam
 } from './primitives.js';
 
 export function buildWhere(
@@ -398,7 +400,6 @@ function buildOpFragment(
   // inference alone would text-compare; cast it to timestamptz.
   const isTs = (v: unknown): boolean =>
     v instanceof Date || (declaredCast === 'timestamptz' && typeof v === 'string');
-  const tsIso = (v: unknown): string => (v instanceof Date ? v.toISOString() : String(v));
   // `<expr> = ANY(values)`: numbers against numeric values, the rest typed by
   // their first member. Never NULL, so `NOT anyOf(...)` is safe.
   const anyOf = (values: unknown[]): Fragment => {
@@ -409,7 +410,7 @@ function buildOpFragment(
     if (rest.length > 0) {
       parts.push(
         isTs(rest[0])
-          ? sql`COALESCE((${textExpr})::timestamptz = ANY(${rest.map(tsIso)}), FALSE)`
+          ? sql`COALESCE((${textExpr})::timestamptz = ANY(${tsArrayParam(sql, rest)}), FALSE)`
           : sql`COALESCE(${textExpr} = ANY(${rest.map(scalarParam)}), FALSE)`
       );
     }
@@ -427,7 +428,7 @@ function buildOpFragment(
         return ifJsonNumber(sql, jsonExpr, sql`${num} = ${operand}`);
       }
       if (isTs(operand)) {
-        return sql`(${textExpr})::timestamptz = ${tsIso(operand)}`;
+        return sql`(${textExpr})::timestamptz = ${tsParam(sql, operand)}`;
       }
       return sql`${textExpr} = ${scalarParam(operand)}`;
     }
@@ -440,7 +441,7 @@ function buildOpFragment(
         return sql`NOT ${ifJsonNumber(sql, jsonExpr, sql`${num} = ${operand}`)}`;
       }
       if (isTs(operand)) {
-        return sql`(${textExpr})::timestamptz IS DISTINCT FROM ${tsIso(operand)}`;
+        return sql`(${textExpr})::timestamptz IS DISTINCT FROM ${tsParam(sql, operand)}`;
       }
       return sql`${textExpr} IS DISTINCT FROM ${scalarParam(operand)}`;
     }
@@ -462,7 +463,7 @@ function buildOpFragment(
         return ifJsonNumber(sql, jsonExpr, sql`${num} BETWEEN ${low} AND ${high}`);
       }
       if (isTs(low) || isTs(high)) {
-        return sql`(${textExpr})::timestamptz BETWEEN ${tsIso(low)} AND ${tsIso(high)}`;
+        return sql`(${textExpr})::timestamptz BETWEEN ${tsParam(sql, low)} AND ${tsParam(sql, high)}`;
       }
       return sql`${textExpr} COLLATE "C" BETWEEN ${scalarParam(low)} AND ${scalarParam(high)}`;
     }
@@ -567,16 +568,16 @@ function numericCmp(
     }
   }
   if (operand instanceof Date || (declaredCast === 'timestamptz' && typeof operand === 'string')) {
-    const iso = operand instanceof Date ? operand.toISOString() : String(operand);
+    const ts = tsParam(sql, operand);
     switch (cmp) {
       case '>':
-        return sql`(${textExpr})::timestamptz > ${iso}`;
+        return sql`(${textExpr})::timestamptz > ${ts}`;
       case '>=':
-        return sql`(${textExpr})::timestamptz >= ${iso}`;
+        return sql`(${textExpr})::timestamptz >= ${ts}`;
       case '<':
-        return sql`(${textExpr})::timestamptz < ${iso}`;
+        return sql`(${textExpr})::timestamptz < ${ts}`;
       case '<=':
-        return sql`(${textExpr})::timestamptz <= ${iso}`;
+        return sql`(${textExpr})::timestamptz <= ${ts}`;
     }
   }
   if (typeof operand === 'string') {
@@ -626,7 +627,7 @@ export function conditionalMatchFragment(
     return ifJsonNumber(sql, sql`(body -> ${field})`, sql`(${textExpr})::numeric = ${expected}`);
   }
   if (expected instanceof Date) {
-    return sql`(${textExpr})::timestamptz = ${expected.toISOString()}`;
+    return sql`(${textExpr})::timestamptz = ${tsParam(sql, expected)}`;
   }
   return sql`${textExpr} = ${String(expected)}`;
 }

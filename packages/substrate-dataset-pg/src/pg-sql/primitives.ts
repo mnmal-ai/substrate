@@ -109,6 +109,24 @@ export const NON_BODY_FIELD_KEYS = new Set(['_metadata', '_deletedAt', 'shortId'
  */
 export type BodyOrderByCast = 'numeric' | 'timestamptz' | 'boolean';
 
+const isoOf = (v: unknown): string => (v instanceof Date ? v.toISOString() : String(v));
+
+/**
+ * A timestamptz parameter, bound as TEXT and cast in SQL. When pg infers a
+ * parameter's type as timestamptz (`$1::timestamptz`, or a compare against a
+ * timestamptz column), postgres.js serialises the value through a JS Date,
+ * which keeps milliseconds only: `.123456` arrives as `.123`, so equality
+ * misses and every range compare is off by the dropped microseconds.
+ */
+export function tsParam(sql: Sql | TransactionSql, v: unknown): Fragment {
+  return sql`${isoOf(v)}::text::timestamptz`;
+}
+
+/** {@link tsParam} for an array operand (`= ANY(...)`). */
+export function tsArrayParam(sql: Sql | TransactionSql, vs: unknown[]): Fragment {
+  return sql`${vs.map(isoOf)}::text[]::timestamptz[]`;
+}
+
 export type SqlJsonValue = Parameters<Sql['json']>[0];
 export const asJsonValue = (v: unknown): SqlJsonValue => v as SqlJsonValue;
 

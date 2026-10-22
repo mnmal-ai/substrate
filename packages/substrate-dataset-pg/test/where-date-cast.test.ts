@@ -60,6 +60,21 @@ describe.skipIf(!POSTGRES_URL)('PgDataset — date-field WHERE cast', () => {
     expect(rows.map((r) => r.id)).toEqual(['b']);
   });
 
+  it('keeps microseconds in the operand: eq hits, gt and in stay exact', async () => {
+    // The driver used to serialise a timestamptz-typed parameter through a JS
+    // Date, cutting `.123456` to `.123`.
+    const ds = new PgDataset({ namespace: 'd185', sql, fieldDefLookup: dateLookup });
+    await ds.write('E', [
+      { id: 'u1', eventAt: '2026-10-21T10:00:00.123456Z' },
+      { id: 'u2', eventAt: '2026-10-21T10:00:00.123789Z' }
+    ]);
+    const ids = async (where: Record<string, unknown>) =>
+      (await ds.read('E', { where })).rows.map((r) => r.id).sort();
+    expect(await ids({ eventAt: { eq: '2026-10-21T10:00:00.123456Z' } })).toEqual(['u1']);
+    expect(await ids({ eventAt: { gt: '2026-10-21T10:00:00.123456Z' } })).toEqual(['u2']);
+    expect(await ids({ eventAt: { in: ['2026-10-21T10:00:00.123789Z'] } })).toEqual(['u2']);
+  });
+
   it('eq with an ISO-string operand matches by instant, not by string (declared date)', async () => {
     const ds = new PgDataset({ namespace: 'd185', sql, fieldDefLookup: dateLookup });
     await seed(ds);

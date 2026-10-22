@@ -14,7 +14,7 @@
  */
 
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
-import type { Row } from '@mnmal-ai/substrate-types';
+import type { FieldDef, Row } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PgDataset, runMigrations } from '../src/index.js';
@@ -268,4 +268,74 @@ describe.skipIf(!POSTGRES_URL)('keyset pagination agrees with the unpaginated re
       expect(paged).toHaveLength(4);
     });
   }
+});
+
+describe.skipIf(!POSTGRES_URL)('keyset pagination over sub-millisecond timestamps', () => {
+  let sql: Sql;
+  // The cursor used to carry the sort key as a JS Date, which keeps
+  // milliseconds only, so `.123456` came back as `.123` and the next page
+  // started at (and re-served) the cursor row itself.
+  const dueAtIsDate = (_type: string, field: string): FieldDef | undefined =>
+    field === 'dueAt' ? { kind: 'scalar', type: 'date' } : undefined;
+
+  beforeAll(async () => {
+    sql = postgres(POSTGRES_URL as string);
+    await runMigrations(sql);
+  });
+  afterAll(async () => {
+    await sql.end();
+  });
+
+  for (const dir of ['asc', 'desc'] as const) {
+    it(`pages a microsecond-precision date field without repeats (${dir})`, async () => {
+      await sql`TRUNCATE TABLE rows, short_ids`;
+      const ds = new PgDataset({ namespace: 'cursor_usec', sql, fieldDefLookup: dueAtIsDate });
+      await ds.write('Memo', [
+        { id: 'a', dueAt: '2026-10-21T10:00:00.123456Z' },
+        { id: 'b', dueAt: '2026-10-21T10:00:00.123789Z' },
+        { id: 'c', dueAt: '2026-10-21T10:00:00.124001Z' }
+      ] as Row[]);
+
+      const seen: string[] = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < 10; page++) {
+        const res = await ds.read('Memo', {
+          orderBy: [{ dueAt: dir }],
+          limit: 1,
+          ...(cursor === undefined ? {} : { cursor })
+        });
+        seen.push(...res.rows.map((r) => String(r.id)));
+        const next = (res as { nextCursor?: string | null }).nextCursor;
+        if (next === undefined || next === null || res.rows.length === 0) break;
+        cursor = next;
+      }
+      expect(seen).toEqual(dir === 'asc' ? ['a', 'b', 'c'] : ['c', 'b', 'a']);
+    });
+  }
+
+  it('pages createdAt the same way when it carries microseconds', async () => {
+    await sql`TRUNCATE TABLE rows, short_ids`;
+    const ds = new PgDataset({ namespace: 'cursor_usec', sql });
+    await ds.write('Memo', [{ id: 'a' }, { id: 'b' }, { id: 'c' }] as Row[]);
+    // Writes through a path that stamps now() carry microseconds.
+    await sql`
+      UPDATE rows
+      SET created_at = '2026-10-21T10:00:00.123456Z'::timestamptz
+        + (CASE id::text WHEN 'a' THEN 1 WHEN 'b' THEN 2 ELSE 3 END) * interval '1 microsecond'
+      WHERE namespace = 'cursor_usec'`;
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 10; page++) {
+      const res = await ds.read('Memo', {
+        orderBy: [{ createdAt: 'asc' }],
+        limit: 1,
+        ...(cursor === undefined ? {} : { cursor })
+      });
+      seen.push(...res.rows.map((r) => String(r.id)));
+      const next = (res as { nextCursor?: string | null }).nextCursor;
+      if (next === undefined || next === null || res.rows.length === 0) break;
+      cursor = next;
+    }
+    expect(seen).toEqual(['a', 'b', 'c']);
+  });
 });

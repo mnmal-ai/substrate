@@ -17,7 +17,8 @@ import {
   METADATA_COLUMNS,
   type PromotedColumnLookup,
   promotedColumnSql,
-  scalarParam
+  scalarParam,
+  tsParam
 } from './primitives.js';
 
 export function normalizeOrderBy(
@@ -137,7 +138,19 @@ export function buildSortKeyProjection(
     if (field === 'id' || aliases.has(field)) continue;
     const alias = `__sort_${aliases.size}`;
     aliases.set(field, alias);
-    fragments.push(sql`, ${sortExpr(sql, field, castFor(field), promotedFor)} AS ${sql(alias)}`);
+    const cast = castFor(field);
+    const expr = sortExpr(sql, field, cast, promotedFor);
+    // A timestamptz key comes back as a JS Date, which keeps milliseconds only:
+    // `.123456` would round-trip as `.123` and the next page would re-serve (asc)
+    // or skip (desc) the cursor row. Text keeps every digit; `sortParam` casts
+    // it back to timestamptz.
+    const isTimestamp =
+      field === 'createdAt' ||
+      field === 'updatedAt' ||
+      (cast === 'timestamptz' && !isMetadataField(field) && promotedFor(field) === undefined);
+    fragments.push(
+      isTimestamp ? sql`, (${expr})::text AS ${sql(alias)}` : sql`, ${expr} AS ${sql(alias)}`
+    );
   }
   if (fragments.length === 0) return { fragment: sql``, aliases };
   return { fragment: fragments as unknown as Fragment, aliases };
@@ -160,7 +173,7 @@ function sortParam(
     // Timestamp columns compare as timestamptz so the btree index is usable;
     // the string columns compare directly.
     return field === 'createdAt' || field === 'updatedAt'
-      ? sql`${value as string}::timestamptz`
+      ? tsParam(sql, value)
       : sql`${value as string}`;
   }
   const promoted = promotedFor(field);
@@ -309,6 +322,7 @@ function castParam(
   value: unknown,
   cast: BodyOrderByCast | null
 ): Fragment {
+  if (cast === 'timestamptz') return tsParam(sql, value);
   const param = scalarParam(value);
   if (cast === null) return sql`${param as string | number | boolean | null}`;
   // Coerce JS booleans/numbers/strings into the bound pg type. The

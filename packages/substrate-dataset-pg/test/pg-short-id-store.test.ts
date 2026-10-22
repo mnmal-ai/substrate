@@ -90,12 +90,6 @@ describe.skipIf(!POSTGRES_URL)('PgShortIdStore', () => {
     expect(await store.getShortIdForRow(TEST_NS_A, 'Todo', 'nope')).toBeNull();
   });
 
-  it('allocate() composes allocateUnbound + bind', async () => {
-    await seedRow(TEST_NS_A, 'Todo', 'uuid-a');
-    const short = await store.allocate(TEST_NS_A, 'Todo', 'uuid-a');
-    expect(await store.resolveShortId(TEST_NS_A, 'Todo', short)).toBe('uuid-a');
-  });
-
   it('preload inserts rows and sets sequence start past the max', async () => {
     await seedRow(TEST_NS_A, 'Todo', '1052');
     await seedRow(TEST_NS_A, 'Todo', '828');

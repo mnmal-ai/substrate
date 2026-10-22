@@ -562,3 +562,53 @@ describe('autoCRUD — scalar defaults + required fields', () => {
     });
   });
 });
+
+describe('autoCRUD reject — values that do not match a scalar field type', () => {
+  // Postgres sorts and date-filters these by casting body->>field to numeric,
+  // timestamptz or boolean, so one bad stored value breaks every such read of
+  // the type for everyone.
+  const TYPED: Record<string, FieldDef> = {
+    id: { kind: 'scalar', type: 'string' },
+    count: { kind: 'scalar', type: 'number', nullable: true },
+    done: { kind: 'scalar', type: 'boolean', nullable: true },
+    dueAt: { kind: 'scalar', type: 'date', nullable: true }
+  };
+  const setup = () => {
+    const dataset = new MemoryDataset({ namespace: 'default' });
+    return {
+      create: createResolver('Typed', dataset, { fields: TYPED }),
+      update: updateResolver('Typed', dataset, makeEdges(), { fields: TYPED })
+    };
+  };
+
+  for (const [field, value] of [
+    ['count', 'abc'],
+    ['count', Number.NaN],
+    ['done', 'yes'],
+    ['dueAt', 'next week'],
+    ['dueAt', '']
+  ] as const) {
+    it(`refuses ${field}: ${JSON.stringify(value)} on create and update`, async () => {
+      const { create, update } = setup();
+      await expect(create(makeCtx(), { params: { [field]: value } })).rejects.toThrow(
+        expect.objectContaining({ code: 'invalid_field_type' })
+      );
+      await create(makeCtx(), { params: { id: 'r1' } });
+      await expect(update(makeCtx(), { params: { id: 'r1', [field]: value } })).rejects.toThrow(
+        expect.objectContaining({ code: 'invalid_field_type' })
+      );
+    });
+  }
+
+  it('accepts well-typed values and null on a nullable field', async () => {
+    const { create } = setup();
+    await expect(
+      create(makeCtx(), {
+        params: { count: 3, done: false, dueAt: '2026-10-21T10:00:00.123456Z' }
+      })
+    ).resolves.toBeDefined();
+    await expect(
+      create(makeCtx(), { params: { count: null, done: null, dueAt: null } })
+    ).resolves.toBeDefined();
+  });
+});

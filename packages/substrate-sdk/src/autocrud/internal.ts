@@ -222,6 +222,41 @@ export function assertNoNullOnNonNullable(
 }
 
 /**
+ * Refuse a supplied value whose JS type does not match a `number`, `boolean`
+ * or `date` scalar. pg sorts and date-filters these by casting
+ * `body->>field` to numeric, boolean or timestamptz, so one stored
+ * `dueAt: "next week"` fails every such read of the type, for every caller.
+ * `string` and `json` fields are left alone: nothing casts them. `null` is
+ * the null guard's business, not this one's.
+ */
+export function assertScalarTypes(
+  params: Record<string, unknown>,
+  fieldDefs: Record<string, FieldDef>,
+  phase: 'create' | 'update'
+): void {
+  for (const [name, def] of Object.entries(fieldDefs)) {
+    if (def.kind !== 'scalar' || !Object.hasOwn(params, name)) continue;
+    const v = params[name];
+    if (v === null) continue;
+    const ok =
+      def.type === 'number'
+        ? typeof v === 'number' && Number.isFinite(v)
+        : def.type === 'boolean'
+          ? typeof v === 'boolean'
+          : def.type === 'date'
+            ? (typeof v === 'string' || v instanceof Date) && Number.isFinite(new Date(v).getTime())
+            : true;
+    if (!ok) {
+      throw new ResolverFrameError(
+        'invalid_field_type',
+        `Cannot ${phase} '${name}' with ${JSON.stringify(v)}: expected a ${def.type === 'date' ? 'date (ISO 8601 string)' : def.type}.`,
+        { field: name, expected: def.type, phase }
+      );
+    }
+  }
+}
+
+/**
  * Fill `create` defaults: for every declared scalar field with a `default` that
  * the caller omitted, set it on `params`. Mutates the supplied bag in place
  * (the create resolver passes a fresh `{ ...args.params }`). A caller-supplied
