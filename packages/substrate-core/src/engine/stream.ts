@@ -137,7 +137,27 @@ export class StreamSubsystem {
       }
     }
 
-    void this.#runStream(input, keys[0] as string, controller);
+    // Nothing awaits the stream, so an escaped throw would be an unhandled
+    // rejection, which exits the process.
+    this.#runStream(input, keys[0] as string, controller).catch((err: unknown) => {
+      const key = keys[0] as string;
+      deliverFrame(
+        input.onFrame,
+        {
+          id: input.id,
+          kind: 'error',
+          errors: [
+            {
+              message: clientErrorMessage(err, this.#metric, key),
+              code: 'resolver_error',
+              path: [key]
+            }
+          ]
+        },
+        this.#metric
+      );
+      deliverFrame(input.onFrame, { id: input.id, kind: 'end', final: true }, this.#metric);
+    });
 
     return {
       id: input.id,

@@ -192,12 +192,14 @@ export type ParsedStreamRequest =
  *
  * The values must be checked here: `StreamSession` reads `entry.fields` off
  * each one, and a throw after the transport opens leaks its heartbeat timer.
+ * The WS route uses it too, where that throw would escape the message
+ * listener and exit the process.
  *
  * Unlike `validateFrame` in `helpers.ts`, array values (the §5.13
  * batched-mutate shape) are rejected: streams cannot carry them, so this
  * turns an in-band error into a pre-stream 400.
  */
-function isFrameRecord(value: unknown): value is FrameRecord {
+export function isFrameRecord(value: unknown): value is FrameRecord {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   for (const entry of Object.values(value)) {
     if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return false;

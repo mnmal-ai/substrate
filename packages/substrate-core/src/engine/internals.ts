@@ -552,7 +552,12 @@ export function obligationsPermitRow(
   row: Row
 ): boolean {
   for (const ob of obligations) {
-    if (!ob.predicate(ctx, row)) return false;
+    try {
+      if (!ob.predicate(ctx, row)) return false;
+    } catch {
+      // Throwing predicates silently drop the row (spec §4.4), as in applyRowFilters.
+      return false;
+    }
   }
   return true;
 }
