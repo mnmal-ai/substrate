@@ -221,6 +221,24 @@ export function assertNoNullOnNonNullable(
   );
 }
 
+// ISO 8601 date or date-time, the subset pg's timestamptz input also accepts.
+// Anchored and free of nested quantifiers, so no backtracking blow-up.
+const ISO_TIMESTAMP =
+  /^(\d{4})-(\d{2})-(\d{2})(?:[T ]([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,9})?)?)?(?:Z|[+-](?:[01]\d|2[0-3])(?::?[0-5]\d)?)?$/;
+
+/**
+ * Is this a timestamp pg will cast? `Date.parse` alone is not the test: it
+ * accepts `"1"` (2001), `"Oct 21 2026"`, and rolls `"2026-02-30"` to March,
+ * all of which pg's `::timestamptz` rejects, which is the failure this guards.
+ */
+function isIsoTimestamp(v: string): boolean {
+  const m = ISO_TIMESTAMP.exec(v);
+  if (m === null) return false;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  // A real calendar date: month 1-12 and a day that exists in it.
+  return mo >= 1 && mo <= 12 && d >= 1 && new Date(Date.UTC(y, mo - 1, d)).getUTCDate() === d;
+}
+
 /**
  * Refuse a supplied value whose JS type does not match a `number`, `boolean`
  * or `date` scalar. pg sorts and date-filters these by casting
@@ -244,7 +262,9 @@ export function assertScalarTypes(
         : def.type === 'boolean'
           ? typeof v === 'boolean'
           : def.type === 'date'
-            ? (typeof v === 'string' || v instanceof Date) && Number.isFinite(new Date(v).getTime())
+            ? typeof v === 'string'
+              ? isIsoTimestamp(v)
+              : v instanceof Date && Number.isFinite(v.getTime())
             : true;
     if (!ok) {
       throw new ResolverFrameError(

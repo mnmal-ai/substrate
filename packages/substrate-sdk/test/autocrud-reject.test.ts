@@ -586,7 +586,12 @@ describe('autoCRUD reject — values that do not match a scalar field type', () 
     ['count', Number.NaN],
     ['done', 'yes'],
     ['dueAt', 'next week'],
-    ['dueAt', '']
+    ['dueAt', ''],
+    // JS Date accepts these; pg's timestamptz input does not.
+    ['dueAt', '1'],
+    ['dueAt', 'Oct 21 2026'],
+    ['dueAt', '2026-02-30'],
+    ['dueAt', '2026-10-21T24:30:00Z']
   ] as const) {
     it(`refuses ${field}: ${JSON.stringify(value)} on create and update`, async () => {
       const { create, update } = setup();
