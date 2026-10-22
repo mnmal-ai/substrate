@@ -1,7 +1,13 @@
 import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-dataset-memory';
 import type { BridgeClient, BridgeRegistry, SweepDeps } from '@mnmal-ai/substrate-types';
 import { describe, expect, it, vi } from 'vitest';
-import { loadSweepState, MemoryEdgesStore, runSweep, saveSweepState } from '../src/index.js';
+import {
+  BridgeUnreachableError,
+  loadSweepState,
+  MemoryEdgesStore,
+  runSweep,
+  saveSweepState
+} from '../src/index.js';
 import type { SweepMetricName } from '../src/sweep.js';
 
 function mkBridges(
@@ -283,6 +289,39 @@ describe('runSweep — bridge handling', () => {
     expect(rec?.blocked).toBeUndefined();
     expect(rec?.lastSweptAt).toBeUndefined();
 
+    expect(countMetric(h, 'bridge_unreachable')).toBe(1);
+  });
+
+  it('a bridge that refuses the read (403) leaves the edge and its source row alone', async () => {
+    // A 403 throws BridgeUnreachableError without flipping isUnreachable, so
+    // the sweep cannot rely on the registry flag to tell refusal from absence.
+    const refusing = {
+      readRow: async () => {
+        throw new BridgeUnreachableError('peer', 'https://peer', 'HTTP 403 (auth)');
+      }
+    } as unknown as BridgeClient;
+    const bridges: BridgeRegistry = { ...mkBridges(['bridge-ns']), get: () => refusing };
+    const h = makeHarness({ bridges });
+
+    const productDs = new MemoryDataset({ namespace: 'products' });
+    await productDs.write('Product', [{ id: 1 }]);
+    h.datasets.set('products', productDs);
+
+    const edge = await h.edges.write({
+      from: { ns: 'products', type: 'Product', id: 1 },
+      to: { ns: 'bridge-ns', type: 'Remote', id: 99, bridged: true },
+      fieldName: 'remoteId',
+      policy: 'cascade'
+    });
+
+    await runSweep(h.deps, { lastSweptCursor: null });
+
+    const batch = await h.edges.readNextBatch(null, 10);
+    const rec = batch.edges.find((e) => e.id === edge.id);
+    expect(rec?.deletedAt).toBeUndefined();
+    expect(rec?.lastSweptAt).toBeUndefined();
+    const { rows } = await productDs.read('Product', { id: 1 });
+    expect(rows[0]?._deletedAt).toBeUndefined();
     expect(countMetric(h, 'bridge_unreachable')).toBe(1);
   });
 

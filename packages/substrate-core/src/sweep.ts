@@ -43,7 +43,8 @@ export type SweepMetricName =
 const DEFAULT_BATCH_SIZE = 100;
 const SWEEP_ACTOR: ActorIdentity = { kind: 'system', id: 'sweep' };
 
-async function resolveTarget(ref: EdgeRef, deps: SweepDeps): Promise<TargetState> {
+/** `UNKNOWN`: the bridge could not answer (down, or refused), so nothing may be applied. */
+async function resolveTarget(ref: EdgeRef, deps: SweepDeps): Promise<TargetState | 'UNKNOWN'> {
   const ds: Dataset | undefined = deps.datasets.get(ref.ns);
   if (ds) {
     const { rows } = await ds.read(ref.type, { id: ref.id, includeDeleted: true });
@@ -54,9 +55,9 @@ async function resolveTarget(ref: EdgeRef, deps: SweepDeps): Promise<TargetState
 
   // No local dataset. If the namespace is bridged, go to the bridge for the
   // row. §5.8: a successful read classifies EXISTS/DELETED; a null row is
-  // MISSING; an unreachable bridge surfaces as MISSING so the outer sweep
-  // loop's `isUnreachable` gate can emit `bridge_unreachable` and leave the
-  // edge untouched (§6.3).
+  // MISSING. A failed read is UNKNOWN, never MISSING: a 403 does not flip the
+  // registry's `isUnreachable` flag, so MISSING would let the policy run and
+  // delete local rows over a refusal (§6.3 leaves the edge untouched).
   const bridge = deps.bridges.get(ref.ns);
   if (bridge !== undefined) {
     try {
@@ -64,7 +65,7 @@ async function resolveTarget(ref: EdgeRef, deps: SweepDeps): Promise<TargetState
       if (row === null) return 'MISSING';
       return row._deletedAt != null ? 'DELETED' : 'EXISTS';
     } catch (err) {
-      if (err instanceof BridgeUnreachableError) return 'MISSING';
+      if (err instanceof BridgeUnreachableError) return 'UNKNOWN';
       throw err;
     }
   }
@@ -204,6 +205,9 @@ async function sweepBatch(base: Edge[], deps: SweepDeps): Promise<number> {
 
     if (target === 'EXISTS') {
       await deps.edges.update({ id: edge.id, lastSweptAt: deps.now() });
+    } else if (target === 'UNKNOWN') {
+      deps.metric('bridge_unreachable', edge.to.ns);
+      // Edge untouched — no lastSweptAt, no blocked.
     } else if (target === 'DELETED') {
       await applyPolicy(edge, cascadeQueue, deps);
     } else {
