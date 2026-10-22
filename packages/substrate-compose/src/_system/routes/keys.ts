@@ -256,8 +256,9 @@ export function keysRoute(engine: Engine, opts: KeysRouteOptions): HttpHandler {
     }
 
     // --- liveness pre-check --------------------------------------------------
-    // A live same-kid row means rotate/revoke, not a second row. There is no
-    // unique index on `kid`, so this read-then-write is racy.
+    // A live same-kid row means rotate/revoke, not a second row. A concurrent
+    // registration can pass this check; the createKey interceptor refuses it
+    // with the same code.
     const existing = await engine.query({
       frame: {
         [`${SYSTEM_NAMESPACE}/${KEY_TYPE}`]: {
@@ -326,7 +327,8 @@ export function keysRoute(engine: Engine, opts: KeysRouteOptions): HttpHandler {
     const keyErr = errorFor(keyFrameKey);
     if (keyErr !== undefined) {
       const code = keyErr.code ?? 'internal_error';
-      return jsonResponse(code === 'policy_denied' ? 403 : 500, {
+      const status = code === 'policy_denied' ? 403 : code === 'kid_already_live' ? 409 : 500;
+      return jsonResponse(status, {
         code,
         message: keyErr.message ?? 'key registration failed'
       });

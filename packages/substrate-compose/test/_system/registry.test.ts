@@ -196,6 +196,34 @@ describe('createKeyRegistry — periodic re-prime', () => {
     registry.dispose();
   });
 
+  it('a revoke installed while a re-prime is reading survives the older snapshot', async () => {
+    vi.useFakeTimers();
+    const clock = new Date('2020-06-01T00:00:00Z');
+    const live = keyRow('k@host', null);
+    let release: (() => void) | undefined;
+    let gated = false;
+    const dataset = {
+      read: async (): Promise<{ rows: Array<Row> }> => {
+        // The snapshot is taken before the revoke, and returned after it.
+        const rows = [live];
+        if (gated) await new Promise<void>((r) => (release = r));
+        return { rows };
+      }
+    } as unknown as Dataset;
+    const registry = createKeyRegistry({ dataset, reprimeIntervalMs: 1000, now: () => clock });
+    await registry.primeFromDataset();
+    gated = true;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(release).toBeDefined();
+
+    registry.install(keyRow('k@host', new Date('2020-01-01T00:00:00Z')));
+    expect(registry.lookup('k@host')).toBeNull();
+    release?.();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(registry.lookup('k@host')).toBeNull();
+    registry.dispose();
+  });
+
   it('dispose() stops the timer — no further re-primes', async () => {
     vi.useFakeTimers();
     const state: FakeState = { rows: [], failNextRead: false, reads: 0 };

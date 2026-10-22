@@ -84,6 +84,19 @@ describe('_system key interceptors — lockout guard', () => {
     await call('updateKey', { id: a.id, revokedAt: LATER });
     expect(keyRegistry.lookup('a@test')).toBeNull();
   });
+
+  it('of two concurrent revokes of the last two admins, refuses one', async () => {
+    const { call, create, keyRegistry } = await setup();
+    const a = await create('a@test');
+    const b = await create('b@test');
+    const results = await Promise.allSettled([
+      call('updateKey', { id: a.id, revokedAt: LATER }),
+      call('updateKey', { id: b.id, revokedAt: LATER })
+    ]);
+    expect(results.map((r) => r.status).sort()).toEqual(['fulfilled', 'rejected']);
+    const live = ['a@test', 'b@test'].filter((k) => keyRegistry.lookup(k) !== null);
+    expect(live).toHaveLength(1);
+  });
 });
 
 describe('_system key interceptors — grant parsing', () => {
