@@ -84,7 +84,7 @@ function suite(name: string, make: () => Promise<World>) {
 
     const recall = (input: Partial<RecallInput>, deps: Partial<RecallDeps> = {}) =>
       handleRecallRequest(
-        { query: 'sweden', namespace: NS, type: 'Doc', boost: false, ...input },
+        { query: 'sweden', namespace: NS, type: 'Doc', boost: false, rowFields: true, ...input },
         deps
       );
     const dense = () => ({ embedder, store: world.store });

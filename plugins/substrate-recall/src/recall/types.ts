@@ -121,6 +121,14 @@ export interface RecallInput {
    * or null field. A malformed filter is refused with `bad_request`.
    */
   where?: KnnRowFilter;
+  /**
+   * Row-body projection. Field -> `true` keeps those keys plus `id`; `true`
+   * keeps the whole body. Absent → `id` plus the handle fields
+   * (`HANDLE_FIELDS`) the row has. Applied after row filtering and policy,
+   * which still see the full body. A malformed value is refused with
+   * `bad_request`.
+   */
+  rowFields?: Record<string, true> | true;
 }
 
 export interface RecallRow {

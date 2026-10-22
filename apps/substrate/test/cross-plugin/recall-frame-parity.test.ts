@@ -280,6 +280,31 @@ describe('recall route-vs-frame parity', () => {
     );
   });
 
+  it('row projection parity: route rowFields === frame fields.row, through the engine', async () => {
+    const h = track(await bootHarness({ seed: SEED }));
+    const input = { namespace: 'sample', type: 'Memo', k: 3, boost: false };
+
+    const routeRes = await h.route('recall', { query: QUERY, ...input, rowFields: { name: true } });
+    expect(routeRes.status).toBe(200);
+    const routeRows = parseJson<{ rows: Array<{ row: Record<string, unknown> }> }>(routeRes).rows;
+
+    const frameRes = await h.server.inject(
+      postReq('/substrate/v1/query', {
+        'recall/Hit': { params: { to: QUERY, ...input }, fields: { id: true, row: { name: true } } }
+      })
+    );
+    expect(frameRes.status).toBe(200);
+    const envelope = parseEnvelope(frameRes);
+    expect(envelope.errors).toBeUndefined();
+    const frameRows = envelope.data['recall/Hit'] as Array<{ id: string; row: unknown }>;
+
+    expect(routeRows.length).toBeGreaterThanOrEqual(2);
+    for (const r of routeRows) expect(Object.keys(r.row).sort()).toEqual(['id', 'name']);
+    // The frame selects exactly what it names; the hit's `id` sits beside `row`.
+    expect(frameRows.map((r) => r.row)).toEqual(routeRows.map((r) => ({ name: r.row.name })));
+    expect(frameRows.map((r) => r.id)).toEqual(routeRows.map((r) => r.row.id));
+  });
+
   // -------------------------------------------------------------------------
   // 2. returnVector parity
   // -------------------------------------------------------------------------

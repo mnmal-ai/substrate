@@ -44,7 +44,8 @@ const MCP_PARAMS = [
   'returnVector',
   'lexical',
   'explain',
-  'where'
+  'where',
+  'rowFields'
 ] as const;
 
 export interface RecallMcpToolConfig {
@@ -151,6 +152,11 @@ export function recallMcpTool(cfg: RecallMcpToolConfig): McpToolRegistration {
           type: 'object',
           description:
             'Row-field filter applied inside every candidate source, so k fills with matching rows: field -> { eq: scalar | null } or { in: [scalar | null, ...] }, every field must match. eq null matches a missing or null field. Example: { "project": { "in": ["substrate", null] } }.'
+        },
+        rowFields: {
+          type: ['object', 'boolean'],
+          description:
+            'Row-body projection. Omitted, each hit\'s `row` carries `id` plus its handle fields (name, title, topic, synopsis, description), enough to decide on. field -> true keeps just those fields plus `id`, e.g. { "synopsis": true, "body": true }; true returns the whole body.'
         }
       },
       required: ['query', 'type']

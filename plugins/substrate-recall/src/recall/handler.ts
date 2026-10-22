@@ -6,6 +6,7 @@
 import { cosineSimilarity } from '../cosine.js';
 import { type EmbeddingsStore, matchesRowFilter, rowFilterProblem } from '../embeddings-store.js';
 import type { ExpansionNeighbour, ExpansionSourceRow } from '../expansion-resolver.js';
+import { HANDLE_FIELDS } from '../labelling.js';
 import { fillVisible, memoCheck, visibleRefs, visibleRows } from '../row-visibility.js';
 import { armRanks, fuseByRank } from '../rrf.js';
 import type { SpreadSourceRow } from '../spread-resolver.js';
@@ -92,6 +93,13 @@ export async function handleRecallRequest(
     const problem = rowFilterProblem(where);
     if (problem !== null) {
       throw Object.assign(new Error(`"where" ${problem}`), { code: 'bad_request' });
+    }
+  }
+  const rowFields = input.rowFields;
+  if (rowFields !== undefined) {
+    const problem = rowFieldsProblem(rowFields);
+    if (problem !== null) {
+      throw Object.assign(new Error(`"rowFields" ${problem}`), { code: 'bad_request' });
     }
   }
   // No default type either, for the same reason as namespace.
@@ -463,7 +471,7 @@ export async function handleRecallRequest(
   const t3 = performance.now();
 
   return {
-    rows: fusedRows,
+    rows: rowFields === true ? fusedRows : fusedRows.map((r) => projectRow(r, rowFields)),
     // Empty when the dense arm did not run, including the `no-source` case.
     model: denseRan ? (embedder?.modelId ?? '') : '',
     arms: {
@@ -527,4 +535,29 @@ function extractTargets(
     }
   }
   return out;
+}
+
+/** Why `rowFields` is malformed, or `null` when it is `true` or an object of `field: true`. */
+function rowFieldsProblem(value: unknown): string | null {
+  if (value === true) return null;
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return 'must be true (the whole body) or an object of field: true, e.g. { "body": true }';
+  }
+  for (const [field, v] of Object.entries(value)) {
+    if (v !== true) return `field "${field}" must be true`;
+  }
+  return null;
+}
+
+/** Narrow a hit's `row` to `id` plus `rowFields`, or plus the handle fields when absent. */
+function projectRow<R extends { row: Record<string, unknown> }>(
+  hit: R,
+  rowFields: Record<string, true> | undefined
+): R {
+  const row: Record<string, unknown> = {};
+  const keep = rowFields === undefined ? HANDLE_FIELDS : Object.keys(rowFields);
+  for (const field of ['id', ...keep]) {
+    if (Object.hasOwn(hit.row, field)) row[field] = hit.row[field];
+  }
+  return { ...hit, row };
 }

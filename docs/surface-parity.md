@@ -191,6 +191,23 @@ path returns them. Limit: under the HNSW iterative scan, a very selective filter
 behind more than `hnsw.max_scan_tuples` nearer non-matching rows can still
 return fewer than `k`.
 
+**A hit's `row` carries `id` plus its handle fields unless you ask for more.**
+The handle fields are `name`, `title`, `topic`, `synopsis` and `description`,
+whichever the row has. They are short by design and are usually enough to
+decide whether a hit is the one you want. Ask for more on the hits you will
+actually read:
+
+| Surface | Handles (default) | Chosen fields | Whole body |
+|---|---|---|---|
+| route, MCP `recall` | omit `rowFields` | `rowFields: { "synopsis": true, "body": true }` | `rowFields: true` |
+| `recall/Hit` frame | no `row` selection in `fields`, or no `fields` | `fields: { …, "row": { "synopsis": true, "body": true } }` | `fields: { …, "row": true }` |
+
+Chosen fields are exactly those plus `id` on the route and the MCP tool. On the
+frame the engine projects `row` to exactly what is named, with the hit's `id`
+beside it. Row filters and read policy still see the full body, so projection
+saves bytes and tokens, not the server's read. A malformed `rowFields` is
+refused `bad_request` naming `"rowFields"`.
+
 ### 3b. The lexical arm, and what `score` means
 
 Where a type declares `lexical.source` and a lexical store is wired, recall

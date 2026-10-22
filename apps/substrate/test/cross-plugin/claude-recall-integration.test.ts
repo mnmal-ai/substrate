@@ -329,7 +329,8 @@ describe('cross-plugin: memory-mode recall returns row bodies', () => {
           namespace: 'sample',
           type: 'Memo',
           k: 3,
-          returnVector: true
+          returnVector: true,
+          rowFields: true
         })
       )
     });
