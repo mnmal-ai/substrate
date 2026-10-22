@@ -99,16 +99,16 @@ export function newlyGrantedPairs(
   prev: Readonly<Record<string, ReadonlyArray<string>>>,
   next: Readonly<Record<string, ReadonlyArray<string>>>
 ): Array<string> {
-  const covered = (ns: string, cap: string): boolean => {
-    const direct = prev[ns];
-    if (Array.isArray(direct) && direct.includes(cap)) return true;
-    const wild = prev['*'];
-    return Array.isArray(wild) && wild.includes(cap);
-  };
+  // What a namespace effectively holds, by `capabilitiesFor`'s rule: an
+  // explicit entry beats the wildcard. Checking both independently missed
+  // `['*', 'notes:read']` -> `['*']`, which hands `notes` the wildcard's caps.
+  const effective = (grant: typeof prev, ns: string): ReadonlyArray<string> =>
+    grant[ns] ?? grant['*'] ?? [];
   const byNs = new Map<string, Array<string>>();
-  for (const [ns, caps] of Object.entries(next)) {
-    for (const cap of caps) {
-      if (covered(ns, cap)) continue;
+  for (const ns of new Set([...Object.keys(prev), ...Object.keys(next)])) {
+    const had = effective(prev, ns);
+    for (const cap of effective(next, ns)) {
+      if (had.includes(cap)) continue;
       const bucket = byNs.get(ns);
       if (bucket === undefined) byNs.set(ns, [cap]);
       else bucket.push(cap);

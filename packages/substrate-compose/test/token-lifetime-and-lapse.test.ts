@@ -124,6 +124,19 @@ describe('file-registry keys', () => {
   });
 });
 
+describe('database key source', () => {
+  it('accepts both libpq URL schemes as a key source for SUBSTRATE_AUTH_MODE', () => {
+    for (const url of ['postgres://u@h/db', 'postgresql://u@h/db']) {
+      expect(() =>
+        parseAuthConfig({ SUBSTRATE_AUTH_MODE: 'required', SUBSTRATE_DATABASE_URL: url })
+      ).not.toThrow();
+    }
+    expect(() =>
+      parseAuthConfig({ SUBSTRATE_AUTH_MODE: 'required', SUBSTRATE_DATABASE_URL: 'memory' })
+    ).toThrow(/no key source/);
+  });
+});
+
 describe('credentialLapse', () => {
   it('reports a verified identity whose token has since expired', () => {
     const jwt = signHs256({ sub: 'u', exp: now() + 60 }, SECRET, { kid: 'k1' });
