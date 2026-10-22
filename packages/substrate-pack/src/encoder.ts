@@ -167,6 +167,7 @@ export function encodeEnvelope(envelope: PackEnvelope, ctx: EncodeEnvelopeCtx): 
   if (envelope._meta !== undefined) out._meta = envelope._meta;
   if (envelope._pagination !== undefined) out._pagination = envelope._pagination;
   if (envelope._completeness !== undefined) out._completeness = envelope._completeness;
+  if (envelope._diagnostics !== undefined) out._diagnostics = envelope._diagnostics;
   if (envelope.errors !== undefined) out.errors = envelope.errors;
   return Buffer.from(pack(out));
 }
