@@ -588,4 +588,32 @@ describe('Engine.stream — row-filter obligations (§4.4)', () => {
     // emitted chunk. A skipped row does NOT bump the sequence, so 0,1 survive.
     expect(chunks.map((c) => c.sequence)).toEqual([0, 1]);
   });
+
+  it('a row-filter rule that throws drops that row and the stream still ends', async () => {
+    const policy = row<{ owner?: { id: string } }>((_ctx, r) => r.owner!.id === 'x');
+    ctx.registry.register('ownedTodos', {
+      kind: 'type',
+      fields: todoFields(),
+      policy,
+      resolver: async function* () {
+        yield { id: 'a', owner: { id: 'x' } } as Row;
+        yield { id: 'b' } as Row;
+        yield { id: 'c', owner: { id: 'x' } } as Row;
+      }
+    });
+    ctx.engine.stream({
+      id: 'str-throw',
+      frame: { 'default/ownedTodos': { params: {}, fields: { id: true } } },
+      ctx: makeCtx(),
+      onFrame: (f) => {
+        frames.push(f);
+      }
+    });
+    await waitForCount(frames, 3);
+    const ids = frames
+      .filter((f) => f.kind === 'chunk')
+      .map((c) => (c.data as Record<string, { id: string }>)['default/ownedTodos']?.id);
+    expect(ids).toEqual(['a', 'c']);
+    expect(frames.at(-1)?.kind).toBe('end');
+  });
 });

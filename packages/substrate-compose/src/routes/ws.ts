@@ -61,6 +61,7 @@ import { type AuthConfig, authenticateBearer, extractBearer, watchCredential } f
 import { type ConnectionLimiter, MAX_SESSIONS_PER_CLIENT } from './connection-limit.js';
 import { extractClientIp } from './helpers.js';
 import { projectWsFrame } from './project-json.js';
+import { isFrameRecord } from './sse.js';
 import {
   erroredKey,
   type SessionFrame,
@@ -95,6 +96,7 @@ function parseRequestFrame(buf: Buffer, mode: WireMode): WsRequestFrame | null {
     if (v.op !== 'subscribe' && v.op !== 'stream' && v.op !== 'cancel' && v.op !== 'whoami') {
       return null;
     }
+    if (v.frame !== undefined && !isFrameRecord(v.frame)) return null;
     return value as WsRequestFrame;
   } catch {
     return null;

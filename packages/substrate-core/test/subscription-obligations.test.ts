@@ -147,6 +147,44 @@ function pushKinds(c: Collector): Array<{ kind: string; id?: unknown }> {
     }));
 }
 
+describe('subscription row-filter obligations: a rule that throws', () => {
+  it('withholds the pushed row and the committed mutate still succeeds', async () => {
+    const store = new Map<string, Row>();
+    const registry = new Registry();
+    registry.register('Event', {
+      resolver: async () => [...store.values()],
+      policy: row<{ owner?: { id: string } }>((c, r) => r.owner!.id === c.identity?.id)
+    });
+    registry.register('createEvent', {
+      kind: 'mutation',
+      resolver: async (_ctx, args) => {
+        const r: Row = { id: String(args.params?.id) };
+        store.set(String(r.id), r);
+        args.onWrite?.({ ns: NS, type: 'Event', id: r.id, operation: 'create', row: r });
+        return r;
+      }
+    });
+    const datasets = new MemoryDatasetRegistry();
+    datasets.set(NS, new MemoryDataset({ namespace: NS }));
+    const engine = new Engine({
+      namespaces: new Map([[NS, { registry }]]),
+      datasets,
+      edges: new MemoryEdgesStore({ now: NOW })
+    });
+    const a = await subscribeAs(engine, 'sub-a', SELF_A);
+
+    // The row has no owner, so the rule throws on the push.
+    const result = await engine.mutate({
+      frame: { [`${NS}/createEvent`]: { params: { id: 'e1' }, fields: { id: true } } },
+      ctx: ctxFor(SELF_A)
+    });
+
+    expect(result.errors ?? []).toEqual([]);
+    expect(store.has('e1')).toBe(true);
+    expect(pushKinds(a)).toEqual([]);
+  });
+});
+
 describe('subscription row-filter obligations (identity-keyed)', () => {
   it('redacts the snapshot per subscriber identity', async () => {
     const { engine, seed } = buildEngine();
