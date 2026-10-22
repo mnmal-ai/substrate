@@ -1,6 +1,6 @@
 {
   "name": "@mnmal-ai/substrate-tui",
-  "version": "1.0.0-alpha.1",
+  "version": "1.0.0-alpha.2",
   "description": "Terminal UI for Substrate: ask in natural language, browse the schema, see the service status.",
   "license": "Apache-2.0",
   "repository": {

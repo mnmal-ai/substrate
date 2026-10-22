@@ -1,6 +1,6 @@
 {
   "name": "@mnmal-ai/substrate-server-fastify",
-  "version": "1.0.0-alpha.1",
+  "version": "1.0.0-alpha.2",
   "private": true,
   "description": "Fastify-backed SubstrateServer — the production HTTP/WS transport for Substrate.",
   "license": "Apache-2.0",
