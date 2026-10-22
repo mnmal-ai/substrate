@@ -222,9 +222,10 @@ export function assertNoNullOnNonNullable(
 }
 
 // ISO 8601 date or date-time, the subset pg's timestamptz input also accepts.
-// Anchored and free of nested quantifiers, so no backtracking blow-up.
+// Anchored and free of nested quantifiers, so no backtracking blow-up. pg
+// caps a zone offset at ±15:59 ("time zone displacement out of range").
 const ISO_TIMESTAMP =
-  /^(\d{4})-(\d{2})-(\d{2})(?:[T ]([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,9})?)?)?(?:Z|[+-](?:[01]\d|2[0-3])(?::?[0-5]\d)?)?$/;
+  /^(\d{4})-(\d{2})-(\d{2})(?:[T ]([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,9})?)?)?(?:Z|[+-](?:0\d|1[0-5])(?::?[0-5]\d)?)?$/;
 
 /**
  * Is this a timestamp pg will cast? `Date.parse` alone is not the test: it
@@ -235,8 +236,12 @@ function isIsoTimestamp(v: string): boolean {
   const m = ISO_TIMESTAMP.exec(v);
   if (m === null) return false;
   const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
-  // A real calendar date: month 1-12 and a day that exists in it.
-  return mo >= 1 && mo <= 12 && d >= 1 && new Date(Date.UTC(y, mo - 1, d)).getUTCDate() === d;
+  if (y < 1 || mo < 1 || mo > 12 || d < 1) return false; // pg has no year 0000
+  // A day that exists in that month. setUTCFullYear, not Date.UTC, which maps
+  // years 0-99 onto 1900-1999 and so would judge 0004-02-29 by 1904.
+  const probe = new Date(0);
+  probe.setUTCFullYear(y, mo - 1, d);
+  return probe.getUTCDate() === d;
 }
 
 /**
