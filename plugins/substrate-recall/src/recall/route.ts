@@ -41,7 +41,8 @@ const ROUTE_PARAMS = [
   'returnVector',
   'lexical',
   'explain',
-  'where'
+  'where',
+  'rowFields'
 ] as const;
 
 function parseBody(req: SubstrateRequest): RecallInput | { error: string } {
@@ -121,6 +122,9 @@ function parseBody(req: SubstrateRequest): RecallInput | { error: string } {
   }
   // The core validates the filter's shape, once for every surface.
   if (obj.where !== undefined) input.where = obj.where as NonNullable<RecallInput['where']>;
+  if (obj.rowFields !== undefined) {
+    input.rowFields = obj.rowFields as NonNullable<RecallInput['rowFields']>;
+  }
   return input;
 }
 

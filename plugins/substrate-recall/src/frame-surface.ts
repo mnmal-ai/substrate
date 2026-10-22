@@ -224,13 +224,15 @@ function rethrowCoded(err: unknown): never {
 }
 
 /**
- * Keep only the `=== true` keys of `fields`; `undefined` fields = passthrough.
+ * Keep only the selected keys of `fields`; `undefined` fields = passthrough.
  * `fields: {}` strips every key, matching the compose layer's projectEnvelope.
+ * A nested `row: { … }` selection keeps `row`, which the core has already
+ * narrowed through `rowFields`.
  */
 function projectHit(row: Row, fields: Record<string, unknown> | undefined): Row {
   if (fields === undefined) return row;
   const keep = Object.entries(fields)
-    .filter(([, v]) => v === true)
+    .filter(([k, v]) => v === true || (k === 'row' && isPlainObject(v)))
     .map(([k]) => k);
   const out: Record<string, unknown> = {};
   for (const k of keep) {
@@ -261,6 +263,9 @@ export function buildRecallFrameSurface(deps: RecallFrameDeps): KernelNamespaceC
     // No pre-gate: the core decides whether any arm can run, and
     // `rethrowCoded` maps its refusal.
     const input = parseHitParams(args.params);
+    const rowSelection = args.fields?.row;
+    if (rowSelection === true) input.rowFields = true;
+    else if (isPlainObject(rowSelection)) input.rowFields = rowSelection as Record<string, true>;
     const bound = bindPolicy(deps.checkReadPolicy, callerFromContext(ctx));
     const boundWrite = bindPolicy(deps.checkWritePolicy, callerFromContext(ctx));
     let out: Awaited<ReturnType<typeof handleRecallRequest>>;
@@ -341,4 +346,8 @@ export function buildRecallFrameSurface(deps: RecallFrameDeps): KernelNamespaceC
       ...(clusterSurface?.mutations ?? {})
     }
   };
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === 'object' && !Array.isArray(v);
 }

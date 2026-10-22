@@ -110,6 +110,8 @@ export interface RecallInput {
   lexicalThreshold?: number | undefined;
   /** Row-field filter, field -> `{ eq }` or `{ in }`. The server validates its shape. */
   where?: Record<string, unknown> | undefined;
+  /** Row-body projection: field -> `true`, or `true` for the whole body. Omitted → handles. */
+  rowFields?: Record<string, true> | true | undefined;
 }
 
 export interface RecallOutput {
@@ -722,6 +724,15 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
                 'matching rows: field -> { eq: scalar | null } or { in: [scalar | null, ...] }, ' +
                 'every field must match; eq null matches a missing or null field. Example: ' +
                 '{ "project": { "in": ["substrate", null] } }.'
+            ),
+          rowFields: z
+            .union([z.record(z.string(), z.literal(true)), z.literal(true)])
+            .optional()
+            .describe(
+              "Row-body projection. Omitted, each hit's `row` carries `id` plus its handle " +
+                'fields (name, title, topic, synopsis, description), which is enough to decide on. ' +
+                'Ask for more only when you need it: field -> true keeps just those fields plus ' +
+                '`id`, e.g. { "synopsis": true, "body": true }; true returns the whole body.'
             )
         }
       },
