@@ -1,6 +1,6 @@
 {
   "name": "@mnmal-ai/substrate",
-  "version": "1.0.0-alpha.4",
+  "version": "1.0.0-alpha.5",
   "description": "Substrate — an agent-first typed-data server: the substrate and substrate-admin binaries, the built-in plugins and the SDK subpaths.",
   "license": "Apache-2.0",
   "repository": {

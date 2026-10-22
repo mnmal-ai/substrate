@@ -1,6 +1,6 @@
 {
   "name": "@mnmal-ai/substrate-types",
-  "version": "1.0.0-alpha.4",
+  "version": "1.0.0-alpha.5",
   "private": true,
   "description": "Foundational types and zero-dependency runtime primitives for Substrate (error classes, qualified-key parsing, env gates). No external runtime dependencies.",
   "license": "Apache-2.0",
