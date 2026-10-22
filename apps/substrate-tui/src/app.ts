@@ -10,6 +10,9 @@ import { schemaModule } from './schema/module.js';
 import { statusModule } from './status/module.js';
 import { surgeryModule } from './surgery/module.js';
 
+/** marathon with no overlay fill: an empty `raised` means Ink paints no background, so panels sit on the ground. */
+export const substrateTheme = { ...marathon, color: { ...marathon.color, raised: '' } };
+
 // Status registers first so its substrate/ns listener exists before ask's init emits.
 export function buildModules(
   deps: TuiDeps,
@@ -35,7 +38,7 @@ export function substrateAppOptions(
   opts: { intervalMs?: number; dashIntervalMs?: number; doctorIntervalMs?: number } = {}
 ): AppOptions {
   return {
-    theme: marathon,
+    theme: substrateTheme,
     modules: buildModules(deps, opts),
     defaultTurn: 'substrate.ask:ask',
     band: true,

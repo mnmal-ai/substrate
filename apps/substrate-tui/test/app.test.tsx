@@ -1,5 +1,6 @@
 import type { NlApi } from '@mnmal-ai/substrate/client';
 import { assertComposes } from '@mnmal-ai/surface-core';
+import { marathon } from '@mnmal-ai/surface-theme';
 import { render } from 'ink-testing-library';
 import { describe, expect, it, vi } from 'vitest';
 import { buildModules, createTui, substrateAppOptions } from '../src/app.js';
@@ -38,6 +39,11 @@ function fake() {
 describe('app', () => {
   it('leaves the terminal to the bin, which prepares it with SUBSTRATE_TUI_BACKGROUND / SUBSTRATE_TUI_CLEAR', () => {
     expect(substrateAppOptions(fake().deps).terminal).toBe(false);
+  });
+  it('paints no overlay fill, so panels sit on the ground', () => {
+    const { theme } = substrateAppOptions(fake().deps);
+    expect(theme?.color.raised).toBe('');
+    expect(theme?.color.accent).toBe(marathon.color.accent);
   });
   it('composes', () => {
     expect(() => assertComposes(buildModules(fake().deps))).not.toThrow();
