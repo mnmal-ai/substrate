@@ -1,6 +1,6 @@
 {
   "name": "@mnmal-ai/substrate-dataset-pg",
-  "version": "1.0.0-alpha.3",
+  "version": "1.0.0-alpha.4",
   "private": true,
   "description": "Postgres-backed Dataset implementation with migrations and pgvector embeddings.",
   "license": "Apache-2.0",
