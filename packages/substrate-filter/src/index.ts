@@ -50,4 +50,11 @@ export {
   type ExtensionOpResultMeta,
   preResolveExtensionOperatorsDetailed
 } from './pre-resolve-extension-operators.js';
-export { assertWhereHonourable, evaluateWhere, getFieldValue } from './predicate.js';
+export {
+  assertWhereHonourable,
+  compareFilterValues,
+  evaluateWhere,
+  type FieldDefOf,
+  getFieldValue,
+  isDateField
+} from './predicate.js';
