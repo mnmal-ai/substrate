@@ -61,6 +61,13 @@ export function reduceSubscribeRows<T>(
   }
 }
 
+/** End reasons after which the transport resubscribes rather than finishing. */
+const SURVIVABLE_END_REASONS = new Set([
+  'server_restart',
+  'credential_expired',
+  'credential_changed'
+]);
+
 /**
  * Fold a single-key subscription's event stream into a live row-set: yields the
  * current `T[]` after every snapshot / add / update / remove. Completes on `end`
@@ -79,7 +86,11 @@ export async function* watchRows<T>(
 ): AsyncGenerator<T[]> {
   let rows: T[] = [];
   for await (const event of events) {
-    if (event.kind === 'end') return;
+    // An end the transport survives is followed by a resubscribe and a fresh
+    // snapshot; if the transport instead treats it as final, the source
+    // simply ends after it and so does this loop.
+    if (event.kind === 'end' && !SURVIVABLE_END_REASONS.has(event.reason ?? '')) return;
+    if (event.kind === 'end') continue;
     if (event.kind === 'error') {
       const first = event.errors[0];
       throw new SubscribeError(first?.message ?? 'subscribe error', first?.code ?? 'unknown');

@@ -120,6 +120,24 @@ describe('reduceSubscribeRows', () => {
 });
 
 describe('watchRows', () => {
+  it('keeps watching across an end the transport survives (restart, lapsed credential)', async () => {
+    // The transport resubscribes after these; the fresh snapshot replaces the set.
+    for (const reason of ['server_restart', 'credential_expired', 'credential_changed']) {
+      const sets = await collect(
+        watchRows(
+          fakeEvents([
+            { kind: 'snapshot', data: { [QKEY]: [{ id: 1 }] } },
+            { kind: 'end', reason },
+            { kind: 'snapshot', data: { [QKEY]: [{ id: 1 }, { id: 2 }] } },
+            { kind: 'end' }
+          ] as SubscribeEvent[]),
+          QKEY
+        )
+      );
+      expect(sets).toEqual([[{ id: 1 }], [{ id: 1 }, { id: 2 }]]);
+    }
+  });
+
   it('yields the maintained row-set after each delta', async () => {
     const sets = await collect(
       watchRows(
