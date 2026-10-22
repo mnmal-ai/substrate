@@ -234,6 +234,13 @@ export class WsTransport {
    */
   #lastCloseCode: number | null = null;
   /**
+   * Backoff for closes that come AFTER an accepted upgrade (1013 overload,
+   * 4001 on a lapsed credential). It lives on the transport, not the open
+   * loop, so repeated churn grows the delay; a socket that delivers a frame
+   * and outlives `maxDelayMs` proves healthy and resets it.
+   */
+  readonly #churn: ReconnectScheduler;
+  /**
    * Retry forever only once a socket has opened. Before that, a failure is
    * most likely a wrong endpoint or a broken token, so it surfaces instead.
    */
@@ -248,6 +255,7 @@ export class WsTransport {
     this.#getToken = opts.getToken;
     this.#webSocket = opts.webSocket;
     this.#reconnectOpts = { ...DEFAULT_RECONNECT, ...opts.reconnect };
+    this.#churn = new ReconnectScheduler(this.#reconnectOpts);
     this.#encoding = opts.encoding ?? 'json';
     this.#overloadResubscribe = { ...DEFAULT_OVERLOAD_RESUBSCRIBE, ...opts.overloadResubscribe };
   }
@@ -306,7 +314,15 @@ export class WsTransport {
     // graceful restart (1012) skip the first backoff; later failures use
     // normal backoff in case the server never comes back.
     const wasGracefulRestart = this.#lastCloseCode === 1012;
+    // The server accepted the last socket and then closed it, so the open
+    // itself will succeed: without a wait here the loop would reopen at
+    // round-trip speed for as long as the server keeps closing.
+    const churned = this.#lastCloseCode === 1013 || this.#lastCloseCode === 4001;
     this.#lastCloseCode = null;
+    if (churned) {
+      await this.#churn.schedule();
+      if (this.#destroyed) throw new NetworkError('WsTransport destroyed', null);
+    }
     let firstFailure = true;
     while (true) {
       // A close() during the backoff sleep must not open a new socket.
@@ -391,14 +407,30 @@ export class WsTransport {
     });
 
     const mux = new MultiplexedSocket(ws, { usePack: this.#encoding === 'pack' });
+    const openedAt = Date.now();
+    // A socket that never delivered a frame proved nothing, however long it
+    // stayed open (a refused upgrade under load can outlast `maxDelayMs`).
+    let delivered = false;
+    ws.addEventListener(
+      'message',
+      () => {
+        delivered = true;
+      },
+      { once: true }
+    );
 
     // Wire up unexpected-close handler for reconnect + resubscribe.
     ws.addEventListener('close', (ev: CloseEvent) => {
       // Only reconnect if we didn't initiate the close.
       if (this.#destroyed) return;
+      const healthy = delivered && Date.now() - openedAt >= this.#reconnectOpts.maxDelayMs;
+      if (healthy) this.#churn.reset();
       // 4001 = unauthorized. Retrying with the same credentials would loop
-      // forever, so fail every active sub and stop.
-      if (ev.code === 4001) {
+      // forever, so fail every active sub and stop. The exception is a
+      // credential that lapsed on a socket that had been working, when a
+      // provider can mint a fresh one: reconnect. A socket refused at once is
+      // not healthy, so a provider whose tokens never work still fails here.
+      if (ev.code === 4001 && !(healthy && this.#canRefreshToken())) {
         if (this.#mux === mux) this.#mux = null;
         this.#failActiveSubs(
           new NetworkError(
@@ -422,6 +454,11 @@ export class WsTransport {
     });
 
     return mux;
+  }
+
+  /** Only a provider can mint a fresh token; a fixed `token` would be refused again. */
+  #canRefreshToken(): boolean {
+    return this.#token === undefined && this.#getToken !== undefined;
   }
 
   /** Terminate every active sub with `err` — delivered so next() throws. */
@@ -586,6 +623,13 @@ export class WsTransport {
         return 'suppress';
       }
       if (msg.reason === REASON_SERVER_RESTART) return 'survive';
+      // The 4001 that follows reconnects on a fresh token (see the close handler).
+      if (
+        (msg.reason === 'credential_expired' || msg.reason === 'credential_changed') &&
+        this.#canRefreshToken()
+      ) {
+        return 'survive';
+      }
       return 'terminal';
     }
     return 'data';
