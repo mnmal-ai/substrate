@@ -85,22 +85,28 @@ describe('embedAndStore', () => {
       expect(spy).toHaveBeenCalledWith('one-line hook\n\nfull content');
     });
 
-    it('passes empty string through when serializeRow returns empty (no skip)', async () => {
-      const embedder = new FakeEmbedder({ dimension: 4 });
-      const spy = vi.spyOn(embedder, 'embed');
-      const { store } = makeStore();
-      await embedAndStore(
-        { id: 'a1' },
-        {
-          namespace: 'claude',
-          type: 'AnchorIntent',
-          serializeRow: (r) => (typeof r.text === 'string' ? r.text : ''),
-          embedder,
-          store
-        }
-      );
-      // embed is called even on empty text
-      expect(spy).toHaveBeenCalledWith('');
+    it('treats an empty or blank source as un-indexable: no embed, old vector deleted', async () => {
+      // Ollama answers `input: ""` with no vector at all (embeddings: []), so
+      // the embed failed and the row kept its OLD vector: recall went on
+      // finding it by text it no longer had. Blank text embeds to noise.
+      for (const text of ['', '  \n ']) {
+        const embedder = new FakeEmbedder({ dimension: 4 });
+        const spy = vi.spyOn(embedder, 'embed');
+        const { store, upserts, deletes } = makeStore();
+        await embedAndStore(
+          { id: 'a1', text },
+          {
+            namespace: 'claude',
+            type: 'AnchorIntent',
+            serializeRow: (r) => (typeof r.text === 'string' ? r.text : ''),
+            embedder,
+            store
+          }
+        );
+        expect(spy).not.toHaveBeenCalled();
+        expect(upserts).toHaveLength(0);
+        expect(deletes).toEqual([{ rowNamespace: 'claude', rowType: 'AnchorIntent', rowId: 'a1' }]);
+      }
     });
   });
 
@@ -220,19 +226,6 @@ describe('embedAndStore', () => {
       expect(upserts).toHaveLength(1);
       expect(deletes).toHaveLength(0);
     });
-
-    it("does NOT treat '' as the sentinel — empty source still embeds and upserts", async () => {
-      const embedder = new FakeEmbedder({ dimension: 4 });
-      const spy = vi.spyOn(embedder, 'embed');
-      const { store, upserts, deletes } = makeStore();
-      await embedAndStore(
-        { id: 'a1' },
-        { namespace: 'claude', type: 'AnchorIntent', serializeRow: () => '', embedder, store }
-      );
-      expect(spy).toHaveBeenCalledWith('');
-      expect(upserts).toHaveLength(1);
-      expect(deletes).toHaveLength(0);
-    });
   });
 
   describe('fields option', () => {
@@ -258,16 +251,16 @@ describe('embedAndStore', () => {
       expect(spy).toHaveBeenCalledWith('foo\nbar');
     });
 
-    it('produces empty string when all fields missing', async () => {
+    it('treats all fields missing as un-indexable, like an empty source', async () => {
       const embedder = new FakeEmbedder({ dimension: 4 });
       const spy = vi.spyOn(embedder, 'embed');
-      const { store } = makeStore();
+      const { store, deletes } = makeStore();
       await embedAndStore(
         { id: 'r1' },
         { namespace: 'ns', type: 'T', fields: ['a', 'b'], embedder, store }
       );
-      // empty string — embed is still called (no empty-skip in the generic primitive)
-      expect(spy).toHaveBeenCalledWith('');
+      expect(spy).not.toHaveBeenCalled();
+      expect(deletes).toHaveLength(1);
     });
   });
 
