@@ -118,7 +118,7 @@ export interface PgDatasetOptions {
    *
    * None by default. A namespace declares its own (`NamespaceDefinition`'s
    * `promotedColumns`), and the plugin that declares them adds the columns in
-   * its kernel migrations: the engine creates none. Two things that bite:
+   * its kernel migrations: the engine creates none. Three things that bite:
    *
    *   - Filters and sorts route to the column and ONLY the column, so a column
    *     added over existing rows must be backfilled from the body first, or
@@ -126,6 +126,8 @@ export interface PgDatasetOptions {
    *   - `column` is a BARE name (`'severity'`, not `'r.severity'`) and is
    *     validated as an identifier at construction, because it is interpolated
    *     into SQL as an identifier.
+   *   - Text columns sort and range-compare `COLLATE "C"`, so an index meant
+   *     to serve those must be built `COLLATE "C"` too.
    */
   promotedColumns?: PromotedBodyColumnMap;
 }

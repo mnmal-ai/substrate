@@ -109,9 +109,19 @@ function sortExpr(
   if (field === 'shortId') return sql`s.short_id`;
   // Metadata + promoted columns are drawn from closed constant maps, never from
   // caller input — the `sql.unsafe` contract in this file's header.
-  if (isMetadataField(field)) return sql.unsafe(METADATA_COLUMNS[field]);
+  // Text columns sort by byte order (COLLATE "C"), as body text and the
+  // memory dataset do, whatever the database collation.
+  if (isMetadataField(field)) {
+    const col = METADATA_COLUMNS[field];
+    return field === 'createdAt' || field === 'updatedAt'
+      ? sql.unsafe(col)
+      : sql.unsafe(`${col} COLLATE "C"`);
+  }
   const promoted = promotedFor(field);
-  if (promoted !== undefined) return sql.unsafe(promotedColumnSql(promoted));
+  if (promoted !== undefined) {
+    const col = promotedColumnSql(promoted);
+    return sql.unsafe(promoted.kind === 'text' ? `${col} COLLATE "C"` : col);
+  }
   // Body field: cast by declared kind when known, else text compare.
   return bodyOrderByExpr(sql, field, bodyCast);
 }

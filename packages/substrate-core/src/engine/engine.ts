@@ -1012,10 +1012,14 @@ export class Engine {
     } catch (err) {
       if (!(err instanceof SharedTxRefusal)) throw err;
       for (const key of singleFrameKeys) {
-        if (!(key in envelope.data)) continue;
         const ns = parsedByKey.get(key)?.ns;
         // Virtual mutations ran outside the tx, so their results stand.
         if (ns !== undefined && this.#namespaces.get(ns)?.virtual === true) continue;
+        // A key with neither data nor an error never ran: the refusal came
+        // first. It is marked too, so no key comes back empty.
+        if (!(key in envelope.data) && envelope.errors?.some((e) => e.path?.[0] === key)) {
+          continue;
+        }
         delete envelope.data[key];
         delete envelope.shapes[key];
         addError(

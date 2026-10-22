@@ -27,10 +27,8 @@ export const NUMBER_OPS: readonly string[] = [
   'in',
   'nin'
 ];
-// Range operators on strings are lexicographic: evaluateWhere (memory
-// snapshots + all live pushes) compares UTF-16 code units; pg compares by
-// column collation. Byte-stable only for ASCII-shaped keys (ISO-8601
-// timestamps, ULIDs, zero-padded sequences) — the intended use cases.
+// Range operators on strings are lexicographic by code point: evaluateWhere
+// (memory snapshots + all live pushes) and pg's COLLATE "C" agree.
 export const STRING_OPS: readonly string[] = [
   'eq',
   'neq',

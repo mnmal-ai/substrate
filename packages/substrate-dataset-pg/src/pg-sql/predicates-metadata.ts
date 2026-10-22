@@ -113,24 +113,24 @@ export function buildMetadataColumnPredicate(
         case 'endsWith':
           if (typeof operand === 'string') frag = sql`${col} ILIKE ${`%${escapeLike(operand)}`}`;
           break;
-        // Lexicographic range on an actor id / kind.
+        // Lexicographic range on an actor id / kind, by byte order as body text is.
         case 'gt':
-          frag = sql`${col} > ${metaStr(field, op, operand)}`;
+          frag = sql`${col} COLLATE "C" > ${metaStr(field, op, operand)}`;
           break;
         case 'gte':
-          frag = sql`${col} >= ${metaStr(field, op, operand)}`;
+          frag = sql`${col} COLLATE "C" >= ${metaStr(field, op, operand)}`;
           break;
         case 'lt':
-          frag = sql`${col} < ${metaStr(field, op, operand)}`;
+          frag = sql`${col} COLLATE "C" < ${metaStr(field, op, operand)}`;
           break;
         case 'lte':
-          frag = sql`${col} <= ${metaStr(field, op, operand)}`;
+          frag = sql`${col} COLLATE "C" <= ${metaStr(field, op, operand)}`;
           break;
         case 'between': {
           if (!Array.isArray(operand) || operand.length !== 2) {
             throw new UnsupportedFilterError(field, op, 'requires a two-element [low, high] array');
           }
-          frag = sql`${col} BETWEEN ${metaStr(field, op, operand[0])} AND ${metaStr(field, op, operand[1])}`;
+          frag = sql`${col} COLLATE "C" BETWEEN ${metaStr(field, op, operand[0])} AND ${metaStr(field, op, operand[1])}`;
           break;
         }
         default:
