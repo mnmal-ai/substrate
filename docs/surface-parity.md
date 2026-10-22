@@ -250,8 +250,8 @@ it. All of the above reaches the route, the frame and the MCP tool.
 zero the whole arm — and the queries that hit it are the natural ones:
 
 ```
-'Broseley'                    rank 2
-'what happened in Broseley'   zero under AND — 'happened' is not in the row
+'Las Vegas'                   rank 2
+'what happened in Vegas'      zero under AND — 'happened' is not in the row
 ```
 
 Recall runs the strict query first and falls back to an OR-joined form
@@ -324,9 +324,34 @@ Per-kind on SSE: `remove` carries `{ removedId }`, `end` carries `{ reason }`,
 `error` carries `{ code, message }`. A client written against one does not read
 the other.
 
-### 7. `substrate-pack` negotiation is symmetric
+### 7. `substrate-pack`: where to opt in
 
-Advertise `Sec-WebSocket-Protocol: substrate-pack` and the server sends MessagePack
+`substrate-pack` is MessagePack with positional rows, an opt-in alternative to
+JSON with the same semantics. What it encodes and why is in
+[first principles §7](substrate-from-first-principles.md#7-wire-format-substrate-pack).
+Which surfaces carry it:
+
+| surface | opt in with | client option |
+|---|---|---|
+| HTTP `query`, `mutate` | `Accept: application/vnd.substrate.pack` | `client.query(frame, { wire: 'pack' })` |
+| WebSocket | `Sec-WebSocket-Protocol: substrate-pack` at the handshake | `new SubstrateClient({ wsEncoding: 'pack' })` |
+| MCP, SSE | not available | — |
+
+Its purpose is decode speed on multi-thousand-row responses, not size. It does
+not make payloads much smaller. Over HTTP against a live `cortext` store:
+
+| `cortext/SessionLog` | JSON | pack | pack / JSON | after gzip |
+|---|---|---|---|---|
+| 500 rows, 3 short fields | 138 KB | 123 KB | 0.89 | 1.00 |
+| 500 rows, 6 fields incl. `summary` | 1,170 KB | 1,133 KB | 0.97 | 1.00 |
+
+So turn it on for a client that decodes large result sets or a busy
+subscription, not to save bandwidth. For small reads JSON costs nothing extra
+and is easier to debug.
+
+#### Negotiation is symmetric
+
+On WebSocket, advertise `Sec-WebSocket-Protocol: substrate-pack` and the server sends MessagePack
 with positionally-encoded `data` — and then expects **your** frames in
 MessagePack too. Sending JSON text on a pack-negotiated socket is refused with
 `invalid_frame`, which looks like a grammar error and is an encoding one.
