@@ -108,4 +108,19 @@ describe('a rotated kid acts on its live row', () => {
     expect(res.status).toBe(409);
     expect(JSON.parse(String(res.body)).code).toBe('kid_already_live');
   });
+
+  it('of two concurrent registrations of one kid, answers the second 409', async () => {
+    const { call, admin } = await rotatedStack();
+    const register = () =>
+      call('POST', '/substrate/v1/_system/keys', admin, {
+        kid: 'fresh@host',
+        publicKey: pubPem().pem,
+        namespaces: ['*'],
+        capabilities: ['read']
+      });
+    const res = await Promise.all([register(), register()]);
+    expect(res.map((r) => r.status).sort()).toEqual([201, 409]);
+    const refused = res.find((r) => r.status === 409);
+    expect(JSON.parse(String(refused?.body)).code).toBe('kid_already_live');
+  });
 });

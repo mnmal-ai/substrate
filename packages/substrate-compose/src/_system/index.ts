@@ -59,11 +59,6 @@ export {
   registerRoute
 } from './routes.js';
 export {
-  type CreateSigningKeyResolverOptions,
-  createSigningKeyResolver,
-  type SigningKeyMetric
-} from './signing-key.js';
-export {
   AUDIT_EVENT_FIELDS,
   AUDIT_EVENT_KINDS,
   AUDIT_EVENT_TYPE,
@@ -78,8 +73,6 @@ export {
   KEY_FIELDS,
   KEY_TYPE,
   type KeyAlgorithm,
-  SIGNING_KEY_FIELDS,
-  SIGNING_KEY_TYPE,
   SYSTEM_NAMESPACE
 } from './types.js';
 export {

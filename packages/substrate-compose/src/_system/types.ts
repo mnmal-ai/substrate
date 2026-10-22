@@ -184,28 +184,6 @@ export const ENUM_VERDICT_FIELDS: Record<string, FieldDef> = {
 };
 export const AUDIT_EVENT_TYPE = 'AuditEvent';
 /**
- * Public-policy projection of `Key`. Returns only verification material.
- * Named `SigningKey` to follow the `_system` namespace convention (every
- * type in `_system` carries the `Substrate` prefix as identity, independent of
- * policy posture). Policy posture is documented per-resolver: this one accepts
- * `identity: null` and gates only on namespace presence. See `./signing-key.ts`
- * for the resolver implementation.
- */
-export const SIGNING_KEY_TYPE = 'SigningKey';
-
-/**
- * Field surface for `_system/SigningKey`. Mirrors the subset of `Key`
- * that a JWT verifier needs: `id` (the kid, auto-included by the schema
- * publisher for every type) plus `publicKey` and `algorithm`. Capabilities,
- * namespaces, and `revokedAt` are NOT exposed — they're admin-only on the
- * parent type.
- */
-export const SIGNING_KEY_FIELDS: Record<string, FieldDef> = {
-  publicKey: field.string({ indexed: false }),
-  algorithm: field.string()
-};
-
-/**
  * Canonical `kind` values for `AuditEvent`. Not enforced at the schema
  * layer (the field is `field.string()`); reviewers / tests use this set as the
  * convention. Writers SHOULD use one of these values; unknown strings aren't

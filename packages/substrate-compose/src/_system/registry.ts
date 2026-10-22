@@ -134,6 +134,9 @@ export function createKeyRegistry(opts: CreateKeyRegistryOptions): KeyRegistry {
   // (which read whatever `cache` currently points at) never observe a
   // half-loaded state. `refresh`/`evict` mutate whichever map is live.
   let cache = new Map<string, KeyRecord>();
+  // Bumped by every per-kid change, so a re-prime that started before one
+  // drops its snapshot rather than undo it (a revoke would otherwise revive).
+  let generation = 0;
 
   function isLive(record: KeyRecord): boolean {
     if (record.revokedAt === null) return true;
@@ -176,6 +179,7 @@ export function createKeyRegistry(opts: CreateKeyRegistryOptions): KeyRegistry {
   function installRow(row: Row): boolean {
     const projected = projectRow(row);
     if (projected === null) return false;
+    generation++;
     cache.set(projected.kid, projected);
     return true;
   }
@@ -188,9 +192,10 @@ export function createKeyRegistry(opts: CreateKeyRegistryOptions): KeyRegistry {
     reprimeIntervalMs > 0
   ) {
     timer = setInterval(() => {
+      const started = generation;
       loadAll()
         .then((next) => {
-          cache = next;
+          if (generation === started) cache = next;
         })
         .catch((err) => {
           // A transient dataset failure must not nuke the cache — keep serving
@@ -230,11 +235,13 @@ export function createKeyRegistry(opts: CreateKeyRegistryOptions): KeyRegistry {
         // gone. Evicting is correct AND fail-closed for both — but warn, since
         // an in-tx caller that cannot see its own insert also lands here.
         warn('substrate_key_registry_no_live_row', { kid });
+        generation++;
         cache.delete(kid);
         return;
       }
       if (!installRow(row)) {
         warn('substrate_key_registry_malformed_row', { kid });
+        generation++;
         cache.delete(kid);
       }
     },
@@ -244,6 +251,7 @@ export function createKeyRegistry(opts: CreateKeyRegistryOptions): KeyRegistry {
     },
 
     evict(kid: string): void {
+      generation++;
       cache.delete(kid);
     },
 
