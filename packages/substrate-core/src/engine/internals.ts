@@ -3,6 +3,7 @@
  * engine and its subsystems. Nothing in here touches engine state.
  */
 
+import { createHash } from 'node:crypto';
 import {
   type AfterTxWork,
   type BridgeFrame,
@@ -537,6 +538,28 @@ export function toBridgeFrame(bucket: QualifiedFrame): BridgeFrame {
   for (const [key, entry] of Object.entries(bucket)) {
     if (Array.isArray(entry)) continue;
     out[key] = entry;
+  }
+  return out;
+}
+
+/**
+ * Scope each forwarded `idempotencyKey` to the local caller. The peer sees
+ * every forwarded write under the bridge's one credential, so a key passed
+ * verbatim lets two callers who pick the same key share one cached reply
+ * there. The same caller retrying still forwards the same key.
+ */
+export function scopeBridgeIdempotency(bucket: QualifiedFrame, caller: string): QualifiedFrame {
+  const out: QualifiedFrame = {};
+  for (const [key, entry] of Object.entries(bucket)) {
+    out[key] =
+      !Array.isArray(entry) && typeof entry.idempotencyKey === 'string'
+        ? {
+            ...entry,
+            idempotencyKey: createHash('sha256')
+              .update(JSON.stringify([caller, entry.idempotencyKey]))
+              .digest('hex')
+          }
+        : entry;
   }
   return out;
 }

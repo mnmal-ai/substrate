@@ -118,7 +118,13 @@ export class HttpBridgeClient implements BridgeClient {
     };
     const envelope = await this.query(frame);
     const data = envelope.data?.[key];
-    if (data === undefined || data === null) return null;
+    // An absent key means the peer refused the frame; only a present-but-empty
+    // answer says the row is gone. The peer answered, so reachability stays.
+    if (data === undefined) {
+      const code = envelope.errors?.[0]?.code ?? 'no_data';
+      throw new BridgeUnreachableError(this.name, this.baseUrl, `refused (${code})`);
+    }
+    if (data === null) return null;
     if (Array.isArray(data)) {
       const first = data[0];
       return first === undefined || first === null ? null : (first as Row);

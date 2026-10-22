@@ -139,6 +139,7 @@ import {
   type SubscribeInput,
   type SubscriptionHandle,
   type SubscriptionStatsSnapshot,
+  scopeBridgeIdempotency,
   toResolverArgs,
   withCanonicalMetadataFilters
 } from './internals.js';
@@ -836,7 +837,9 @@ export class Engine {
     // throwing — bridge atomicity is per-bridge best-effort, NOT G1.
     const bridgePromises: Array<Promise<void>> = [];
     for (const [ns, bucket] of bridgeBuckets) {
-      bridgePromises.push(this.#bridgeProxy.runMutate(ns, bucket, envelope));
+      bridgePromises.push(
+        this.#bridgeProxy.runMutate(ns, scopeBridgeIdempotency(bucket, callerKey), envelope)
+      );
     }
 
     // §5.4 write-event batch. Resolvers emit into this collector via
@@ -1095,10 +1098,14 @@ export class Engine {
       | { kind: 'conflict'; values: string[] },
     callerKey: string
   ): Promise<PackEnvelope> {
+    // Cache once any key has data, i.e. ran and was not rolled back: a reply
+    // that is error-free is not the test, since a refused sibling leaves the
+    // committed keys in place and a retry would run them again. A frame where
+    // nothing ran stays uncached, so its retry runs.
     if (
       resolution.kind === 'present' &&
       this.#idempotency !== undefined &&
-      (envelope.errors === undefined || envelope.errors.length === 0)
+      keys.some((key) => key in envelope.data)
     ) {
       const dedupKey = makeDedupKey(keys, resolution.value, callerKey);
       // The write has committed: failing the call now would invite the retry

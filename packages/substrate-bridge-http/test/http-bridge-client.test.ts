@@ -182,6 +182,27 @@ describe('HttpBridgeClient', () => {
     expect(row).toBeNull();
   });
 
+  it('readRow throws, not null, when the peer refused the frame with a 200', async () => {
+    // A refused frame comes back with its key ABSENT from data. Reading that
+    // as "no row" let the sweep delete local rows over a refusal.
+    const envelope = {
+      schemaVersion: 'abcdef123456',
+      data: {},
+      errors: [{ code: 'policy_denied', message: 'denied', path: ['cal/Event'] }]
+    };
+    stub.next(() => ({ status: 200, body: envelope }));
+    client = new HttpBridgeClient({
+      name: 'cal',
+      baseUrl: 'http://cal.internal',
+      fetch: stub.fetch,
+      healthCheckIntervalMs: 10_000
+    });
+    await expect(client.readRow({ ns: 'cal', type: 'Event', id: 'ev-1' })).rejects.toBeInstanceOf(
+      BridgeUnreachableError
+    );
+    expect(client.isReachable()).toBe(true);
+  });
+
   it('fetch throw raises BridgeUnreachableError and flips isReachable to false', async () => {
     stub.next(() => new Error('connect ECONNREFUSED'));
     client = new HttpBridgeClient({
@@ -342,7 +363,8 @@ describe('auth', () => {
     await client.federatedSchema();
     await client.query({ 'ns/Type': { fields: { id: true } } });
     await client.mutate({ 'ns/createType': { params: {}, fields: { id: true } } });
-    await client.readRow({ ns: 'ns', type: 'Type', id: 'row-1' });
+    // The stub's empty `data` reads as a refusal; only the header matters here.
+    await client.readRow({ ns: 'ns', type: 'Type', id: 'row-1' }).catch(() => null);
     client.dispose();
 
     expect(calls).toHaveLength(4);
