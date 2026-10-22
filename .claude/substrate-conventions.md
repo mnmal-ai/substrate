@@ -1,4 +1,4 @@
-<!-- substrate-conventions vsynoptic-1.0.0-alpha.0+a04c0f90 — plugin-owned; do not edit. Edit your own CLAUDE.md instead. -->
+<!-- substrate-conventions vsynoptic-1.0.0-alpha.1+99787976 — plugin-owned; do not edit. Edit your own CLAUDE.md instead. -->
 
 # Substrate interaction conventions
 
@@ -183,10 +183,10 @@ Each row also carries that cold-start's own checks: `pinState`, `mcpJsonState`, 
 
 Memory is scoped by the `project` field on each row (repo basename), **not** by which directory the file sits in. Cross-cutting rows use `project: null`.
 
-**Reading:** memory is **not preloaded**. The cold-start's `## Agent Memory — not preloaded` block carries only the anchor and how to recall. When a task touches prior work, call `recall` with `namespace`, a topic `query` and `type: "Memory"` (or `"SessionLog"` / `"Decision"`; the tool defaults to Decision), scoped with `where: { project: { in: ["<repo>", null] } }`. Or query `<ns>/Memory` by `name`. `SYNOPTIC_COLD_START_MEMORY=full` in settings `env` restores the preloaded block.
+**Reading:** memory is **not preloaded**; the cold-start carries no memory section. When a task touches prior work, call `recall` with `namespace`, a topic `query` and `type: "Memory"` (or `"SessionLog"` / `"Decision"`; the tool defaults to Decision), scoped with `where: { project: { in: ["<repo>", null] } }`. Or query `<ns>/Memory` by `name`.
 
 **Writing:** `cortext/createMemory`. Recall first: update an existing row covering the same fact rather than creating a duplicate.
 
 ## Cold-start
 
-Each session begins with an injected synoptic view (Concepts, Agent Memory, Open Work, Agent Rules). Read it before acting. Re-query AgentRules after `/compact` (compression evicts them).
+Each session begins with an injected rule index: every binding (`must`) and always-on (`pinned`) AgentRule as one line, `#<shortId> (<category>) <synopsis>`, then one line pointing at everything else (the remaining rules, current focus in `<ns>/AnchorIntent`, open work, memory, concepts), each a query away. Read it before acting, and fetch a rule's full text, rationale and triggers by shortId when you need them. Re-query AgentRules after `/compact` (compression evicts them).
