@@ -994,6 +994,12 @@ Compose the plugin over memory datasets with `compose` from
 everything except the transport: the full install, `_metadata` and `shortId`,
 `postWrite`, filter validation, subscriptions and idempotency.
 
+To run the same frames over Postgres, compose with `PgDataset` and
+`PgEdgesStore` instead, after `runMigrations` (and `runDerivedMigrations` for
+indexed list fields). All of these come from `@mnmal-ai/substrate/testing`. Call the
+test-database guards from the same subpath first: they refuse a database that
+isn't `_test`/`_dev` and a superuser role.
+
 ### HTTP / WebSocket
 
 Run the composed server on `MemorySubstrateServer` from

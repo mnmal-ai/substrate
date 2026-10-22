@@ -11,7 +11,7 @@ It runs as a real install: the binary and its plugins resolve from one shared `n
 | `@mnmal-ai/substrate/sdk` | Plugin authoring: `defineNamespace`, the field DSL, autoCRUD, engine helpers, `defineBootstrap`, policy combinators, route helpers, and all shared types |
 | `@mnmal-ai/substrate/client` | `SubstrateClient`, `watchRows`, client errors, the admin API, and the token and grant helpers |
 | `@mnmal-ai/substrate/pack` | The MessagePack wire codec |
-| `@mnmal-ai/substrate/testing` | `compose`, `MemorySubstrateServer`, `MemoryDataset`, `MemoryEdgesStore`, `loadPlugins`, `FakeEmbedder`, and the Postgres test-database guards |
+| `@mnmal-ai/substrate/testing` | `compose`, `MemorySubstrateServer`, `MemoryDataset`, `MemoryEdgesStore`, `loadPlugins`, `FakeEmbedder`, `PgDataset`, `PgEdgesStore`, the pg migration runners, and the Postgres test-database guards |
 | `@mnmal-ai/substrate/recall` | The recall plugin's primitives (`EmbeddingsStore`, `LexicalStore`, `embedAndStore`, …) |
 | `@mnmal-ai/substrate/proposals` | The proposals plugin's exports |
 
