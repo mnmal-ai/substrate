@@ -78,10 +78,24 @@ describe('applying a choice', () => {
   });
 
   it('recall, clarify and refuse end the round without a frame', async () => {
-    for (const action of ['recall', 'clarify', 'refuse'] as const) {
+    for (const action of ['clarify', 'refuse'] as const) {
       const r = await parseWithJudge('what about zebras', pack, ctx, scripted({ action }));
       expect(r.status).toBe(action);
     }
+    const type = Object.keys(pack.types).sort()[0] as string;
+    const r = await parseWithJudge(
+      'what about zebras',
+      pack,
+      ctx,
+      scripted({ action: 'recall', type })
+    );
+    expect(r).toMatchObject({ status: 'recall', type });
+  });
+
+  it('refuses a recall that names no type: recall cannot run without one', async () => {
+    const r = await parseWithJudge('what about zebras', pack, ctx, scripted({ action: 'recall' }));
+    expect(r.status).toBe('escalated');
+    expect(r.trail[0]?.rejected).toMatch(/recall needs an offered type/);
   });
 
   it('an invalid reply leaves the question escalated, with the reason', async () => {

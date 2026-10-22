@@ -66,9 +66,10 @@ import { makeSpreadResolver, SpreadEdgeRegistry } from './spread-resolver.js';
 const DEFAULT_CLUSTER_DIMENSION = 768;
 
 export const DEFAULT_QUERY_EMBED_TIMEOUT_MS = 30_000;
+export const DEFAULT_WRITE_EMBED_TIMEOUT_MS = 30_000;
 
 /** `embedder` with `timeoutMs` applied to every call that does not set its own. */
-function withQueryTimeout(embedder: Embedder, timeoutMs: number): Embedder {
+function withEmbedTimeout(embedder: Embedder, timeoutMs: number): Embedder {
   return {
     modelId: embedder.modelId,
     dimension: embedder.dimension,
@@ -80,10 +81,17 @@ function withQueryTimeout(embedder: Embedder, timeoutMs: number): Embedder {
 export interface RecallPluginConfig {
   embedder?: Embedder;
   /**
-   * Timeout for embedding a recall or `embeddingSimilar` query, in ms. Write
-   * and reindex embeds keep the embedder's own timeout. Default 30000.
+   * Timeout for embedding a recall or `embeddingSimilar` query, in ms.
+   * Reindex embeds keep the embedder's own timeout. Default 30000.
    */
   queryEmbedTimeoutMs?: number;
+  /**
+   * Timeout for the embed that follows a write, in ms. The engine awaits
+   * after-commit work before it replies, so this bounds how long an already
+   * committed write can be held by a slow embedder. A timed-out embed keeps
+   * the row's previous vector until its next write or a reindex. Default 30000.
+   */
+  writeEmbedTimeoutMs?: number;
   store: EmbeddingsStore;
   /**
    * Store for the lexical arm. Absent → types declaring `lexical.source`
@@ -210,7 +218,7 @@ export function createRecallPlugin(cfg: RecallPluginConfig): KernelPlugin {
   const queryEmbedder =
     cfg.embedder === undefined
       ? undefined
-      : withQueryTimeout(cfg.embedder, cfg.queryEmbedTimeoutMs ?? DEFAULT_QUERY_EMBED_TIMEOUT_MS);
+      : withEmbedTimeout(cfg.embedder, cfg.queryEmbedTimeoutMs ?? DEFAULT_QUERY_EMBED_TIMEOUT_MS);
   // The registries below are populated by contributePostWrites as namespaces
   // register, which happens after the substrate composes. Everything that
   // consumes them must read at call time rather than resolve eagerly.
@@ -534,7 +542,15 @@ export function createRecallPlugin(cfg: RecallPluginConfig): KernelPlugin {
           stats,
           ...(embedSourceContext !== undefined ? { embedSourceContext } : {})
         };
-        const hook = makeEmbedPostWrite(binding);
+        // Only the write path gets the cap; the re-embed (backfill) keeps the
+        // embedder's own timeout, as before.
+        const hook = makeEmbedPostWrite({
+          ...binding,
+          embedder: withEmbedTimeout(
+            binding.embedder,
+            cfg.writeEmbedTimeoutMs ?? DEFAULT_WRITE_EMBED_TIMEOUT_MS
+          )
+        });
         // COMPOSE rather than assign: a type declaring both arms already has a
         // lexical hook here, and assigning would silently drop it.
         out[typeName] = composeHooks(out[typeName], hook);

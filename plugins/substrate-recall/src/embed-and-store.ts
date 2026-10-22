@@ -83,7 +83,10 @@ export async function embedRowReporting(
       source = '';
     }
 
-    if (source === null || source === undefined) {
+    // Empty or blank text is un-indexable too: Ollama answers `input: ""` with
+    // no vector (the embed fails and the OLD vector would survive, matching
+    // text the row no longer has), and blank text embeds to noise.
+    if (source === null || source === undefined || source.trim() === '') {
       // Delete any existing vector too: rows can become un-indexable after
       // they were first embedded.
       await opts.store.delete({

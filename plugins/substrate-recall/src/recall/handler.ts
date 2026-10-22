@@ -104,6 +104,14 @@ export async function handleRecallRequest(
       }
     );
   }
+  // The HTTP route and the frame reject this already; the MCP tool passes its
+  // input through unparsed, so a missing query threw a raw TypeError below and
+  // an empty one reached the embedder, which answers "" with no vector.
+  if (typeof input.query !== 'string' || input.query.trim() === '') {
+    throw Object.assign(new Error('recall: pass `query`, the text to search for.'), {
+      code: 'bad_request'
+    });
+  }
   // Every arm embeds or tokenises the whole text, so its length is the cost.
   if (input.query.length > MAX_RECALL_QUERY_CHARS) {
     throw Object.assign(

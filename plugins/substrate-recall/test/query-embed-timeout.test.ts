@@ -5,7 +5,12 @@
  */
 
 import { type Embedder, EmbedError } from '@mnmal-ai/substrate-embedder';
-import type { SubstrateRequest } from '@mnmal-ai/substrate-types';
+import type {
+  NamespaceDefinition,
+  RequestContext,
+  Row,
+  SubstrateRequest
+} from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
 import { RecallBootstrapConfigSchema } from '../src/bootstrap.js';
 import { InMemoryEmbeddingsStore } from '../src/in-memory-embeddings-store.js';
@@ -84,5 +89,55 @@ describe('query-time embed timeout', () => {
   it('accepts queryEmbedTimeoutMs in the bootstrap config, defaulting to 30000', () => {
     expect(RecallBootstrapConfigSchema.parse({}).queryEmbedTimeoutMs).toBe(30_000);
     expect(RecallBootstrapConfigSchema.safeParse({ queryEmbedTimeoutMs: 0 }).success).toBe(false);
+  });
+});
+
+describe('write-time embed timeout', () => {
+  // The embed runs as after-commit work the engine awaits, so the write's
+  // reply waits on it. It used to run on the embedder's own timeout (120 s
+  // live), holding writes that had already committed.
+  const ns = {
+    namespace: 'cortext',
+    types: { Memory: { fields: {}, embed: { source: (r: Row) => String(r.body) } } },
+    install: () => {}
+  } as unknown as NamespaceDefinition;
+  const write = (plugin: ReturnType<typeof createRecallPlugin>) =>
+    plugin
+      .contributePostWrites?.(ns)
+      .Memory?.({ id: 'm1', body: 'b' } as Row, {} as RequestContext);
+
+  it('gives up at writeEmbedTimeoutMs when the embedder stalls', async () => {
+    const seen: Array<number | undefined> = [];
+    const plugin = createRecallPlugin({
+      embedder: stalledEmbedder(seen),
+      store: new InMemoryEmbeddingsStore(),
+      writeEmbedTimeoutMs: 50
+    });
+    const t0 = Date.now();
+    await write(plugin);
+    expect(Date.now() - t0).toBeLessThan(2_000);
+    expect(seen).toEqual([50]);
+  });
+
+  it('defaults the write timeout to 30s', async () => {
+    const seen: Array<number | undefined> = [];
+    const plugin = createRecallPlugin({
+      embedder: {
+        modelId: 'ok:v1:8',
+        dimension: 8,
+        embed: async (_t, opts) => {
+          seen.push(opts?.timeoutMs);
+          return new Float32Array(8);
+        }
+      },
+      store: new InMemoryEmbeddingsStore()
+    });
+    await write(plugin);
+    expect(seen).toEqual([30_000]);
+  });
+
+  it('accepts writeEmbedTimeoutMs in the bootstrap config, defaulting to 30000', () => {
+    expect(RecallBootstrapConfigSchema.parse({}).writeEmbedTimeoutMs).toBe(30_000);
+    expect(RecallBootstrapConfigSchema.safeParse({ writeEmbedTimeoutMs: 0 }).success).toBe(false);
   });
 });

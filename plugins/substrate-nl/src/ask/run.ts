@@ -51,12 +51,13 @@ async function rows(
 async function recall(
   query: string,
   ns: string,
+  type: string,
   http: SubstrateRequest,
   deps: AskDeps
 ): Promise<NlOutcome> {
   const frame = {
     'recall/Hit': {
-      params: { to: query, namespace: ns, k: RECALL_K },
+      params: { to: query, namespace: ns, type, k: RECALL_K },
       fields: { id: true, namespace: true, type: true, score: true, row: true }
     }
   } as Query;
@@ -186,7 +187,14 @@ export async function* runAsk(
           outcome = await rows(judged.candidate, 'judge', http, deps);
           break;
         case 'recall':
-          outcome = await recall(judged.query, deps.pack.namespace, http, deps);
+          // A type the caller forced outranks the judge's pick, as it does for rows.
+          outcome = await recall(
+            judged.query,
+            deps.pack.namespace,
+            ctx.forceType ?? judged.type,
+            http,
+            deps
+          );
           break;
         case 'refuse':
           outcome = { kind: 'refuse', reason: judged.reason };

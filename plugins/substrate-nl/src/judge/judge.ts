@@ -38,7 +38,7 @@ export type JudgeStep = NlJudgeStep;
 
 export type JudgedResult =
   | { status: 'resolved'; candidate: Candidate; trail: JudgeStep[] }
-  | { status: 'recall'; query: string; trail: JudgeStep[] }
+  | { status: 'recall'; query: string; type: string; trail: JudgeStep[] }
   | { status: 'clarify' | 'refuse'; reason: string; trail: JudgeStep[] }
   | { status: 'escalated'; result: ParseResult; trail: JudgeStep[] };
 
@@ -91,7 +91,8 @@ export function buildJudgePrompt(
           })
         ]
       : []),
-    branch('recall'),
+    // recall/Hit refuses a frame without `type`, so the judge names the type to search.
+    branch('recall', { type: { type: 'string', enum: allTypes } }),
     branch('clarify'),
     branch('refuse'),
     branch('escalate')
@@ -123,7 +124,7 @@ export function buildJudgePrompt(
     '  of a name or id, contains = a word inside a title or subject. Never bind a word that only',
     '  describes the question (e.g. "status", "called").',
     '- recall: the question asks what is known ABOUT a topic (free-text subject words, not field values);',
-    '  semantic search over the text answers it.',
+    '  semantic search over the text answers it. Name the type whose rows hold that knowledge.',
     '- clarify: RARE. Only when the question has two specific readings and nothing in it chooses one.',
     '  Missing detail is not ambiguity: if a type or a topic fits, choose type or recall.',
     '- refuse: the question is not about this store at all, or asks to change data.',
@@ -276,7 +277,7 @@ export async function parseWithJudge(
           trail
         };
       case 'recall':
-        return { status: 'recall', query: question, trail };
+        return { status: 'recall', query: question, type: checked.type as string, trail };
       case 'clarify':
       case 'refuse':
         return { status: checked.action, reason: 'judge', trail };

@@ -199,7 +199,7 @@ describe('runAsk', () => {
       runAsk({ namespace: 'ns', question: 'what do we know about zorblax' }, http, {
         pack,
         engine: e,
-        judge: judge({ action: 'recall' })
+        judge: judge({ action: 'recall', type: 'SessionLog' })
       })
     );
     const o = outcome(evs);
@@ -215,7 +215,7 @@ describe('runAsk', () => {
       runAsk({ namespace: 'ns', question: 'what do we know about zorblax' }, http, {
         pack,
         engine: e,
-        judge: judge({ action: 'recall' })
+        judge: judge({ action: 'recall', type: 'SessionLog' })
       })
     );
     const o = outcome(evs);
@@ -224,10 +224,28 @@ describe('runAsk', () => {
       string,
       { params: Record<string, unknown> }
     >;
+    // recall/Hit refuses a frame with no `type`, so the judge must name one.
     expect(sent['recall/Hit']?.params).toMatchObject({
       to: 'what do we know about zorblax',
-      namespace: 'ns'
+      namespace: 'ns',
+      type: 'SessionLog'
     });
+  });
+
+  it('a type forced by the caller wins over the one the judge names', async () => {
+    const { e, query } = engine((f) => ({ data: { [Object.keys(f)[0] as string]: [] } }));
+    await collect(
+      runAsk({ namespace: 'ns', question: 'what do we know about zorblax', type: 'Todo' }, http, {
+        pack,
+        engine: e,
+        judge: judge({ action: 'recall', type: 'SessionLog' })
+      })
+    );
+    const sent = query.mock.calls.at(-1)?.[0] as Record<
+      string,
+      { params: Record<string, unknown> }
+    >;
+    expect(sent['recall/Hit']?.params?.type).toBe('Todo');
   });
 
   it('an aborted request stops before executing', async () => {

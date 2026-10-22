@@ -34,6 +34,7 @@ With no embedder configured (`embedder.kind: "off"`, the default), recall still 
 - `embedder.timeoutMs`: per-request timeout for write and reindex embeds (`ollama`; default `120000`).
 - `embedder.contextLength`: tokens sent to Ollama as `num_ctx` and `num_batch`. Default: the model's own, read from Ollama's `/api/show`.
 - `queryEmbedTimeoutMs`: timeout for embedding a recall or `embeddingSimilar` query, so a stalled embedder answers 503 instead of holding the caller (default `30000`).
+- `writeEmbedTimeoutMs`: timeout for the embed that follows a write. The write has already committed, but its reply waits for the embed, so this bounds how long a slow embedder can hold it. A timed-out embed keeps the row's previous vector until its next write or a reindex (default `30000`).
 - `hnswM`, `hnswEfConstruction`: HNSW build parameters (defaults 16 and 64).
 
 Pick the model before you have data: changing it means re-embedding every row (`POST /substrate/v1/embed/reindex`).

@@ -142,6 +142,7 @@ export const RecallBootstrapConfigSchema = z
   .object({
     embedder: EmbedderSchema.optional(),
     queryEmbedTimeoutMs: z.number().int().positive().default(30_000),
+    writeEmbedTimeoutMs: z.number().int().positive().default(30_000),
     hnswM: z.number().int().positive().default(16),
     hnswEfConstruction: z.number().int().positive().default(64),
     salience: SalienceSchema.default({ weight: 0, halfLifeHours: 168, spreadDamping: 0.3 }),
@@ -248,6 +249,7 @@ export const bootstrap = defineBootstrap.kernel<RecallBootstrapConfig, RecallHos
     return createRecallPlugin({
       ...(embedder !== null ? { embedder } : {}),
       queryEmbedTimeoutMs: config.queryEmbedTimeoutMs,
+      writeEmbedTimeoutMs: config.writeEmbedTimeoutMs,
       ...(deps.lexicalStore !== undefined ? { lexicalStore: deps.lexicalStore } : {}),
       store: deps.store,
       ...(deps.stats !== undefined ? { stats: deps.stats } : {}),
