@@ -44,6 +44,8 @@ export function substrateAppOptions(
     band: true,
     // Inset: two columns each side of the transcript, band and status row.
     gutter: 2,
+    // Keep the input on the last row when the live region shrinks, a panel closes or the terminal resizes.
+    anchored: true,
     // The bin prepares the terminal (ground, clear) from SUBSTRATE_TUI_* before run() and restores it.
     terminal: false
   };
