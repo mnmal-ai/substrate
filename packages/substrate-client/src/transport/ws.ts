@@ -329,6 +329,11 @@ export class WsTransport {
       if (this.#destroyed) throw new NetworkError('WsTransport destroyed', null);
       try {
         const mux = await this.#openOnce();
+        // close() saw no mux while this open was in flight, so it is ours to close.
+        if (this.#destroyed) {
+          mux.close();
+          throw new NetworkError('WsTransport destroyed', null);
+        }
         scheduler.reset();
         this.#hasOpened = true;
         this.#mux = mux;
