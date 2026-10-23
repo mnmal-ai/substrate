@@ -48,17 +48,18 @@ Posts the question to `POST /substrate/v1/nl` on `SUBSTRATE_URL` and prints the 
 ### `substrate run`
 
 ```bash
-substrate run <script.mts> [--dry-run | --write] [--max-writes <n>] [--out <file>]
+substrate run <script.mts> [--args <json>] [--dry-run | --write] [--max-writes <n>] [--out <file>]
 ```
 
-Imports the script and calls its default export with a `ScriptContext` (`query`, `queryAll`, `mutate`, `log`), so one call can chain many reads and writes and return one result. The client is signed from `SUBSTRATE_URL`, `SUBSTRATE_AGENT_KEY_ID` and `SUBSTRATE_AGENT_KEY_PATH`; an unsigned run is refused.
+Imports the script and calls its default export with a `ScriptContext` (`args`, `query`, `queryAll`, `mutate`, `log`), so one call can chain many reads and writes and return one result. The client is signed from `SUBSTRATE_URL`, `SUBSTRATE_AGENT_KEY_ID` and `SUBSTRATE_AGENT_KEY_PATH`; an unsigned run is refused.
 
 ```ts
 import type { ScriptContext } from '@mnmal-ai/substrate/client';
 
+// substrate run open-todos.mts --args '{"project":"substrate"}'
 export default async function (s: ScriptContext) {
   const open = await s.queryAll('cortext/Todo', {
-    params: { where: { status: { eq: 'open' } }, limit: 100 },
+    params: { where: { status: { eq: 'open' }, project: { eq: s.args.project } }, limit: 100 },
     fields: { id: true, project: true }
   });
   return { open: open.length };
@@ -71,7 +72,9 @@ Guardrails:
 - **A rejected frame throws.** A query whose key is missing from `data`, or a mutate the server refused, fails the run with the server's error rather than reading as empty.
 - **Truncation is reported.** `query` adds a warning when a result has `hasMore`; `queryAll` pages to the end.
 
-Stdout carries one JSON report, `{ ok, kid, mode, result, error?, mutations, warnings, stats }`. `mutations` lists every payload with `applied`, including those sent before a failure. `--out` writes the report to a file and prints a one-line summary. `.mts` scripts run as-is: the Node this package requires strips types natively. Exit codes: `0` ok, `1` the script failed, `2` usage or configuration error.
+`--args` takes a JSON object, which the script reads as `s.args` (`{}` when omitted), so one script serves many calls.
+
+Stdout carries one JSON report, `{ ok, kid, mode, args, result, error?, mutations, warnings, stats }`. `mutations` lists every payload with `applied`, including those sent before a failure. `--out` writes the report to a file and prints a one-line summary. `.mts` scripts run as-is: the Node this package requires strips types natively. Exit codes: `0` ok, `1` the script failed, `2` usage or configuration error.
 
 The pieces are exported for use outside the CLI: `createClientFromEnv()` builds the same signed client, and `runScript()` runs a function against the guarded context.
 

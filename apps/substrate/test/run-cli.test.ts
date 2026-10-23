@@ -80,4 +80,16 @@ describe('substrate run', () => {
     ).toBe(2);
     expect(out).toMatch(/agent identity: no signing key/);
   });
+
+  it('passes --args to the script and refuses anything but a JSON object', async () => {
+    let out = '';
+    const p = script('args.mjs', 'export default (s) => s.args.n * 2');
+    expect(await runRun([p, '--args', '{"n":21}'], { env, write: (s) => (out += s) })).toBe(0);
+    expect(JSON.parse(out)).toMatchObject({ result: 42, args: { n: 21 } });
+    for (const bad of ['[1]', 'null', '{oops', '"s"']) {
+      let err = '';
+      expect(await runRun([p, '--args', bad], { env, write: (s) => (err += s) })).toBe(2);
+      expect(err).toMatch(/--args takes a JSON object/);
+    }
+  });
 });

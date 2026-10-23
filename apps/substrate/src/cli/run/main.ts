@@ -17,7 +17,7 @@ export interface RunCliOptions {
 }
 
 const USAGE =
-  'usage: substrate run <script.mts> [--dry-run | --write] [--max-writes <n>] [--out <file>]\n';
+  'usage: substrate run <script.mts> [--args <json>] [--dry-run | --write] [--max-writes <n>] [--out <file>]\n';
 
 /**
  * Runs a script's default export against a signed, guarded client and prints
@@ -29,6 +29,7 @@ export async function runRun(argv: string[], options: RunCliOptions = {}): Promi
   let mode: ScriptMode = 'read';
   let maxWrites = DEFAULT_MAX_WRITES;
   let out: string | undefined;
+  let args: Record<string, unknown> = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i] as string;
     if (a === '--dry-run' || a === '--write') {
@@ -38,14 +39,26 @@ export async function runRun(argv: string[], options: RunCliOptions = {}): Promi
         return 2;
       }
       mode = next;
-    } else if (a === '--max-writes' || a === '--out') {
+    } else if (a === '--max-writes' || a === '--out' || a === '--args') {
       const v = argv[++i];
       if (v === undefined || v.startsWith('--')) {
         write(USAGE);
         return 2;
       }
       if (a === '--out') out = v;
-      else {
+      else if (a === '--args') {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(v);
+        } catch {
+          parsed = undefined;
+        }
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+          write('substrate run: --args takes a JSON object, e.g. \'{"project":"substrate"}\'\n');
+          return 2;
+        }
+        args = parsed as Record<string, unknown>;
+      } else {
         maxWrites = Number(v);
         if (!Number.isInteger(maxWrites) || maxWrites < 0) {
           write('substrate run: --max-writes takes a non-negative integer\n');
@@ -91,6 +104,7 @@ export async function runRun(argv: string[], options: RunCliOptions = {}): Promi
     client,
     kid,
     mode,
+    args,
     maxWrites
   });
   await client.close();

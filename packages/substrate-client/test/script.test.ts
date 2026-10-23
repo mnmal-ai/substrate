@@ -136,4 +136,22 @@ describe('runScript', () => {
     expect(r2.error).toMatch(/mutate refused for ns\/createU/);
     expect(r2.mutations[0]).toMatchObject({ applied: true });
   });
+
+  it('hands the args to the script, frozen, and echoes them in the report', async () => {
+    const { client } = fakeClient(() => ({}));
+    const r = await runScript(
+      (s) => {
+        expect(Object.isFrozen(s.args)).toBe(true);
+        return s.args.project;
+      },
+      { client, kid: null, args: { project: 'substrate' }, log: () => {} }
+    );
+    expect(r).toMatchObject({ ok: true, result: 'substrate', args: { project: 'substrate' } });
+    const none = await runScript((s) => Object.keys(s.args).length, {
+      client,
+      kid: null,
+      log: () => {}
+    });
+    expect(none).toMatchObject({ result: 0, args: {} });
+  });
 });
