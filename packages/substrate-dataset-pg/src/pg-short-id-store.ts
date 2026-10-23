@@ -172,7 +172,7 @@ export class PgShortIdStore {
       ON CONFLICT (namespace, type, short_id) DO NOTHING
     `;
 
-    const max = entries.reduce((m, e) => (e.shortId > m ? e.shortId : m), 0);
+    const max = entries.reduce((m, e) => Math.max(m, e.shortId), 0);
     const name = await this.ensureSequence(ns, type);
     // Advance the sequence to max so that the next nextval returns max+1.
     // GREATEST guards against regressing the sequence when preloading partial data.
