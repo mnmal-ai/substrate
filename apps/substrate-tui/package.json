@@ -10,7 +10,7 @@
   },
   "type": "module",
   "bin": {
-    "substrate-tui": "dist/bin/tui.js"
+    "substrate-tui": "dist/bin/substrate-tui.js"
   },
   "files": [
     "dist"
