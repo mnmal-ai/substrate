@@ -81,9 +81,9 @@ Environment for \`serve\` (the load-bearing ones; the full reference is in the d
                                   outstanding ticket, which is the only revocation
                                   mechanism.
   SUBSTRATE_PUBLIC_ORIGIN         This server's origins, comma-separated (e.g.
-                                  https://host:3100,https://alias). A token carrying
-                                  'aud' must name one; a token with no 'aud' is still
-                                  accepted for now. Required with auth on a non-loopback
+                                  https://host:3100,https://alias). A token must carry
+                                  'aud' naming one; a token with no 'aud' is refused.
+                                  Required with auth on a non-loopback
                                   HOST; on loopback it defaults to the loopback origins.
   SUBSTRATE_TLS_KEY_PATH          Serve HTTPS. Both are required together — setting one
   SUBSTRATE_TLS_CERT_PATH         without the other refuses to boot.

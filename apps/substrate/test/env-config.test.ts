@@ -610,7 +610,8 @@ describe('auth integration', () => {
       {
         sub: 'home',
         exp: Math.floor(Date.now() / 1000) + 60,
-        capabilities: ['read', 'mutate']
+        capabilities: ['read', 'mutate'],
+        aud: 'https://h:3100'
       },
       SECRET,
       { kid: 'k1' }
