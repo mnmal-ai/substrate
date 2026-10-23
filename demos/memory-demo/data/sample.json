@@ -1,0 +1,92 @@
+[
+  {
+    "id": "person-ana-reyes",
+    "kind": "person",
+    "title": "Ana Reyes",
+    "body": "Ana Reyes leads the Platform team at Lumen Labs. She owns the queue migration and runs the weekly reliability review.",
+    "date": "2025-01-06",
+    "fields": { "role": "Engineering Manager", "team": "Platform", "location": "Lisbon" },
+    "links": ["project-atlas"]
+  },
+  {
+    "id": "person-ben-okafor",
+    "kind": "person",
+    "title": "Ben Okafor",
+    "body": "Ben Okafor is a staff engineer on the Data team. He is the go-to person for the billing pipeline.",
+    "date": "2025-01-06",
+    "fields": { "role": "Staff Engineer", "team": "Data", "location": "Toronto" },
+    "links": ["project-ledger"]
+  },
+  {
+    "id": "project-atlas",
+    "kind": "project",
+    "title": "Atlas queue migration",
+    "body": "Atlas moves every background job off the legacy RabbitMQ cluster onto a managed queue.",
+    "date": "2025-02-03",
+    "fields": { "status": "active", "owner": "person-ana-reyes", "team": "Platform", "deadline": "2025-09-30" },
+    "links": ["person-ana-reyes"]
+  },
+  {
+    "id": "project-ledger",
+    "kind": "project",
+    "title": "Ledger billing pipeline",
+    "body": "Ledger rebuilds the nightly billing export as a streaming pipeline.",
+    "date": "2025-02-10",
+    "fields": { "status": "paused", "owner": "person-ben-okafor", "team": "Data", "deadline": "2025-11-15" },
+    "links": ["person-ben-okafor"]
+  },
+  {
+    "id": "decision-atlas-queue-sqs",
+    "kind": "decision",
+    "title": "Atlas will move to Amazon SQS",
+    "body": "We chose Amazon SQS as the target queue for Atlas because the team already runs on AWS.",
+    "date": "2025-03-04",
+    "fields": { "status": "superseded", "owner": "person-ana-reyes", "project": "project-atlas", "supersededBy": "decision-atlas-queue-nats", "supersedes": null },
+    "links": ["project-atlas", "person-ana-reyes", "decision-atlas-queue-nats"]
+  },
+  {
+    "id": "decision-atlas-queue-nats",
+    "kind": "decision",
+    "title": "Atlas will move to NATS JetStream instead of SQS",
+    "body": "After load testing, we replaced the SQS decision: Atlas moves to NATS JetStream, because SQS could not meet our ordering needs.",
+    "date": "2025-05-19",
+    "fields": { "status": "active", "owner": "person-ana-reyes", "project": "project-atlas", "supersededBy": null, "supersedes": "decision-atlas-queue-sqs" },
+    "links": ["project-atlas", "person-ana-reyes", "decision-atlas-queue-sqs"]
+  },
+  {
+    "id": "task-atlas-cutover-runbook",
+    "kind": "task",
+    "title": "Write the Atlas cutover runbook",
+    "body": "Document the step-by-step cutover from RabbitMQ to the new queue, with rollback.",
+    "date": "2025-06-02",
+    "fields": { "status": "open", "owner": "person-ana-reyes", "project": "project-atlas", "priority": "high", "due": "2025-07-15" },
+    "links": ["project-atlas", "person-ana-reyes"]
+  },
+  {
+    "id": "task-ledger-backfill",
+    "kind": "task",
+    "title": "Backfill six months of billing events",
+    "body": "Replay six months of billing events into the new Ledger pipeline to validate totals.",
+    "date": "2025-06-09",
+    "fields": { "status": "blocked", "owner": "person-ben-okafor", "project": "project-ledger", "priority": "medium", "due": "2025-08-01" },
+    "links": ["project-ledger", "person-ben-okafor"]
+  },
+  {
+    "id": "incident-2025-06-billing-gap",
+    "kind": "incident",
+    "title": "Billing export skipped a day",
+    "body": "The nightly billing export silently skipped June 12. Customers were invoiced a day late. Root cause: a cron job ran in the wrong timezone.",
+    "date": "2025-06-13",
+    "fields": { "severity": "sev2", "project": "project-ledger", "owner": "person-ben-okafor", "resolved": true },
+    "links": ["project-ledger", "person-ben-okafor"]
+  },
+  {
+    "id": "task-atlas-load-test",
+    "kind": "task",
+    "title": "Load test NATS JetStream with production traffic",
+    "body": "Replay a day of production job traffic against JetStream and record p99 latency.",
+    "date": "2025-05-26",
+    "fields": { "status": "done", "owner": "person-ana-reyes", "project": "project-atlas", "priority": "high", "due": "2025-06-20" },
+    "links": ["project-atlas", "decision-atlas-queue-nats"]
+  }
+]

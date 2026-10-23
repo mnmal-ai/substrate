@@ -1,0 +1,4538 @@
+[
+ {
+  "id": "person-ana-reyes",
+  "kind": "person",
+  "title": "Ana Reyes",
+  "body": "Ana Reyes is a Engineering Manager on the Platform team at Lumen Labs, based in Lisbon.",
+  "date": "2025-01-06",
+  "fields": {
+   "role": "Engineering Manager",
+   "team": "Platform",
+   "location": "Lisbon"
+  },
+  "links": []
+ },
+ {
+  "id": "person-ben-okafor",
+  "kind": "person",
+  "title": "Ben Okafor",
+  "body": "Ben Okafor is a Staff Engineer on the Data team at Lumen Labs, based in Toronto.",
+  "date": "2025-01-06",
+  "fields": {
+   "role": "Staff Engineer",
+   "team": "Data",
+   "location": "Toronto"
+  },
+  "links": []
+ },
+ {
+  "id": "person-chloe-martin",
+  "kind": "person",
+  "title": "Chloe Martin",
+  "body": "Chloe Martin is a Senior Engineer on the Mobile team at Lumen Labs, based in Lyon.",
+  "date": "2025-01-06",
+  "fields": {
+   "role": "Senior Engineer",
+   "team": "Mobile",
+   "location": "Lyon"
+  },
+  "links": []
+ },
+ {
+  "id": "person-dev-patel",
+  "kind": "person",
+  "title": "Dev Patel",
+  "body": "Dev Patel is a Engineering Manager on the Payments team at Lumen Labs, based in Pune.",
+  "date": "2025-01-06",
+  "fields": {
+   "role": "Engineering Manager",
+   "team": "Payments",
+   "location": "Pune"
+  },
+  "links": []
+ },
+ {
+  "id": "person-elif-kaya",
+  "kind": "person",
+  "title": "Elif Kaya",
+  "body": "Elif Kaya is a Security Engineer on the Security team at Lumen Labs, based in Istanbul.",
+  "date": "2025-01-06",
+  "fields": {
+   "role": "Security Engineer",
+   "team": "Security",
+   "location": "Istanbul"
+  },
+  "links": []
+ },
+ {
+  "id": "person-farah-haddad",
+  "kind": "person",
+  "title": "Farah Haddad",
+  "body": "Farah Haddad is a Data Engineer on the Data team at Lumen Labs, based in Amman.",
+  "date": "2025-01-06",
+  "fields": {
+   "role": "Data Engineer",
+   "team": "Data",
+   "location": "Amman"
+  },
+  "links": []
+ },
+ {
+  "id": "person-gus-lindqvist",
+  "kind": "person",
+  "title": "Gus Lindqvist",
+  "body": "Gus Lindqvist is a Site Reliability Engineer on the Platform team at Lumen Labs, based in Stockholm.",
+  "date": "2025-01-06",
+  "fields": {
+   "role": "Site Reliability Engineer",
+   "team": "Platform",
+   "location": "Stockholm"
+  },
+  "links": []
+ },
+ {
+  "id": "person-hana-sato",
+  "kind": "person",
+  "title": "Hana Sato",
+  "body": "Hana Sato is a Engineering Manager on the Mobile team at Lumen Labs, based in Osaka.",
+  "date": "2025-01-06",
+  "fields": {
+   "role": "Engineering Manager",
+   "team": "Mobile",
+   "location": "Osaka"
+  },
+  "links": []
+ },
+ {
+  "id": "person-ivan-petrov",
+  "kind": "person",
+  "title": "Ivan Petrov",
+  "body": "Ivan Petrov is a Senior Engineer on the Payments team at Lumen Labs, based in Sofia.",
+  "date": "2025-01-06",
+  "fields": {
+   "role": "Senior Engineer",
+   "team": "Payments",
+   "location": "Sofia"
+  },
+  "links": []
+ },
+ {
+  "id": "person-jade-wong",
+  "kind": "person",
+  "title": "Jade Wong",
+  "body": "Jade Wong is a Engineering Manager on the Security team at Lumen Labs, based in Singapore.",
+  "date": "2025-01-06",
+  "fields": {
+   "role": "Engineering Manager",
+   "team": "Security",
+   "location": "Singapore"
+  },
+  "links": []
+ },
+ {
+  "id": "person-kofi-mensah",
+  "kind": "person",
+  "title": "Kofi Mensah",
+  "body": "Kofi Mensah is a Senior Engineer on the Platform team at Lumen Labs, based in Accra.",
+  "date": "2025-01-06",
+  "fields": {
+   "role": "Senior Engineer",
+   "team": "Platform",
+   "location": "Accra"
+  },
+  "links": []
+ },
+ {
+  "id": "person-lena-novak",
+  "kind": "person",
+  "title": "Lena Novak",
+  "body": "Lena Novak is a Engineering Manager on the Data team at Lumen Labs, based in Ljubljana.",
+  "date": "2025-01-06",
+  "fields": {
+   "role": "Engineering Manager",
+   "team": "Data",
+   "location": "Ljubljana"
+  },
+  "links": []
+ },
+ {
+  "id": "person-marco-rossi",
+  "kind": "person",
+  "title": "Marco Rossi",
+  "body": "Marco Rossi is a Staff Engineer on the Payments team at Lumen Labs, based in Turin.",
+  "date": "2025-01-06",
+  "fields": {
+   "role": "Staff Engineer",
+   "team": "Payments",
+   "location": "Turin"
+  },
+  "links": []
+ },
+ {
+  "id": "person-nia-brooks",
+  "kind": "person",
+  "title": "Nia Brooks",
+  "body": "Nia Brooks is a Senior Engineer on the Mobile team at Lumen Labs, based in Atlanta.",
+  "date": "2025-01-06",
+  "fields": {
+   "role": "Senior Engineer",
+   "team": "Mobile",
+   "location": "Atlanta"
+  },
+  "links": []
+ },
+ {
+  "id": "person-omar-saleh",
+  "kind": "person",
+  "title": "Omar Saleh",
+  "body": "Omar Saleh is a Senior Engineer on the Security team at Lumen Labs, based in Doha.",
+  "date": "2025-01-06",
+  "fields": {
+   "role": "Senior Engineer",
+   "team": "Security",
+   "location": "Doha"
+  },
+  "links": []
+ },
+ {
+  "id": "person-priya-iyer",
+  "kind": "person",
+  "title": "Priya Iyer",
+  "body": "Priya Iyer is a Senior Engineer on the Data team at Lumen Labs, based in Chennai.",
+  "date": "2025-01-06",
+  "fields": {
+   "role": "Senior Engineer",
+   "team": "Data",
+   "location": "Chennai"
+  },
+  "links": []
+ },
+ {
+  "id": "person-quinn-harper",
+  "kind": "person",
+  "title": "Quinn Harper",
+  "body": "Quinn Harper is a Staff Engineer on the Platform team at Lumen Labs, based in Denver.",
+  "date": "2025-01-06",
+  "fields": {
+   "role": "Staff Engineer",
+   "team": "Platform",
+   "location": "Denver"
+  },
+  "links": []
+ },
+ {
+  "id": "person-sam-rivera",
+  "kind": "person",
+  "title": "Sam Rivera",
+  "body": "Sam Rivera is a Engineer on the Mobile team at Lumen Labs, based in Austin.",
+  "date": "2025-01-06",
+  "fields": {
+   "role": "Engineer",
+   "team": "Mobile",
+   "location": "Austin"
+  },
+  "links": []
+ },
+ {
+  "id": "person-tara-quinn",
+  "kind": "person",
+  "title": "Tara Quinn",
+  "body": "Tara Quinn is a Engineer on the Payments team at Lumen Labs, based in Dublin.",
+  "date": "2025-01-06",
+  "fields": {
+   "role": "Engineer",
+   "team": "Payments",
+   "location": "Dublin"
+  },
+  "links": []
+ },
+ {
+  "id": "person-uma-desai",
+  "kind": "person",
+  "title": "Uma Desai",
+  "body": "Uma Desai is a Engineer on the Security team at Lumen Labs, based in Ahmedabad.",
+  "date": "2025-01-06",
+  "fields": {
+   "role": "Engineer",
+   "team": "Security",
+   "location": "Ahmedabad"
+  },
+  "links": []
+ },
+ {
+  "id": "person-victor-hale",
+  "kind": "person",
+  "title": "Victor Hale",
+  "body": "Victor Hale is a Engineer on the Platform team at Lumen Labs, based in Leeds.",
+  "date": "2025-01-06",
+  "fields": {
+   "role": "Engineer",
+   "team": "Platform",
+   "location": "Leeds"
+  },
+  "links": []
+ },
+ {
+  "id": "person-wen-li",
+  "kind": "person",
+  "title": "Wen Li",
+  "body": "Wen Li is a Engineer on the Data team at Lumen Labs, based in Chengdu.",
+  "date": "2025-01-06",
+  "fields": {
+   "role": "Engineer",
+   "team": "Data",
+   "location": "Chengdu"
+  },
+  "links": []
+ },
+ {
+  "id": "person-yara-costa",
+  "kind": "person",
+  "title": "Yara Costa",
+  "body": "Yara Costa is a Engineer on the Mobile team at Lumen Labs, based in Porto.",
+  "date": "2025-01-06",
+  "fields": {
+   "role": "Engineer",
+   "team": "Mobile",
+   "location": "Porto"
+  },
+  "links": []
+ },
+ {
+  "id": "person-zane-ortiz",
+  "kind": "person",
+  "title": "Zane Ortiz",
+  "body": "Zane Ortiz is a Senior Engineer on the Payments team at Lumen Labs, based in Bogotá.",
+  "date": "2025-01-06",
+  "fields": {
+   "role": "Senior Engineer",
+   "team": "Payments",
+   "location": "Bogotá"
+  },
+  "links": []
+ },
+ {
+  "id": "project-atlas-queue-migration",
+  "kind": "project",
+  "title": "Atlas queue migration",
+  "body": "Atlas queue migration moves every background job off the legacy RabbitMQ cluster onto a new queue. It is owned by Ana Reyes on the Platform team.",
+  "date": "2025-02-03",
+  "fields": {
+   "status": "active",
+   "owner": "person-ana-reyes",
+   "team": "Platform",
+   "deadline": "2025-09-30"
+  },
+  "links": [
+   "person-ana-reyes"
+  ]
+ },
+ {
+  "id": "project-ledger-billing-pipeline",
+  "kind": "project",
+  "title": "Ledger billing pipeline",
+  "body": "Ledger billing pipeline rebuilds the nightly billing export as a streaming pipeline. It is owned by Lena Novak on the Data team.",
+  "date": "2025-02-03",
+  "fields": {
+   "status": "paused",
+   "owner": "person-lena-novak",
+   "team": "Data",
+   "deadline": "2025-11-15"
+  },
+  "links": [
+   "person-lena-novak"
+  ]
+ },
+ {
+  "id": "project-beacon-mobile-push",
+  "kind": "project",
+  "title": "Beacon mobile push",
+  "body": "Beacon mobile push rebuilds push notifications for the iOS and Android apps. It is owned by Hana Sato on the Mobile team.",
+  "date": "2025-02-03",
+  "fields": {
+   "status": "active",
+   "owner": "person-hana-sato",
+   "team": "Mobile",
+   "deadline": "2025-08-31"
+  },
+  "links": [
+   "person-hana-sato"
+  ]
+ },
+ {
+  "id": "project-cobalt-payment-retries",
+  "kind": "project",
+  "title": "Cobalt payment retries",
+  "body": "Cobalt payment retries retries failed card payments without double-charging. It is owned by Dev Patel on the Payments team.",
+  "date": "2025-02-03",
+  "fields": {
+   "status": "active",
+   "owner": "person-dev-patel",
+   "team": "Payments",
+   "deadline": "2025-10-15"
+  },
+  "links": [
+   "person-dev-patel"
+  ]
+ },
+ {
+  "id": "project-sentinel-access-reviews",
+  "kind": "project",
+  "title": "Sentinel access reviews",
+  "body": "Sentinel access reviews automates periodic reviews of who can access production. It is owned by Jade Wong on the Security team.",
+  "date": "2025-02-03",
+  "fields": {
+   "status": "paused",
+   "owner": "person-jade-wong",
+   "team": "Security",
+   "deadline": "2025-12-01"
+  },
+  "links": [
+   "person-jade-wong"
+  ]
+ },
+ {
+  "id": "project-harbor-container-platform",
+  "kind": "project",
+  "title": "Harbor container platform",
+  "body": "Harbor container platform moves services from virtual machines to containers. It is owned by Ana Reyes on the Platform team.",
+  "date": "2025-02-03",
+  "fields": {
+   "status": "active",
+   "owner": "person-ana-reyes",
+   "team": "Platform",
+   "deadline": "2026-01-31"
+  },
+  "links": [
+   "person-ana-reyes"
+  ]
+ },
+ {
+  "id": "project-prism-analytics-warehouse",
+  "kind": "project",
+  "title": "Prism analytics warehouse",
+  "body": "Prism analytics warehouse consolidates analytics into one warehouse with self-serve dashboards. It is owned by Lena Novak on the Data team.",
+  "date": "2025-02-03",
+  "fields": {
+   "status": "active",
+   "owner": "person-lena-novak",
+   "team": "Data",
+   "deadline": "2025-10-31"
+  },
+  "links": [
+   "person-lena-novak"
+  ]
+ },
+ {
+  "id": "project-quill-offline-notes",
+  "kind": "project",
+  "title": "Quill offline notes",
+  "body": "Quill offline notes lets field staff take notes offline and sync later. It is owned by Hana Sato on the Mobile team.",
+  "date": "2025-02-03",
+  "fields": {
+   "status": "done",
+   "owner": "person-hana-sato",
+   "team": "Mobile",
+   "deadline": "2025-06-30"
+  },
+  "links": [
+   "person-hana-sato"
+  ]
+ },
+ {
+  "id": "project-vault-key-rotation",
+  "kind": "project",
+  "title": "Vault key rotation",
+  "body": "Vault key rotation rotates every encryption key on a fixed schedule. It is owned by Jade Wong on the Security team.",
+  "date": "2025-02-03",
+  "fields": {
+   "status": "active",
+   "owner": "person-jade-wong",
+   "team": "Security",
+   "deadline": "2025-09-15"
+  },
+  "links": [
+   "person-jade-wong"
+  ]
+ },
+ {
+  "id": "project-relay-webhook-service",
+  "kind": "project",
+  "title": "Relay webhook service",
+  "body": "Relay webhook service delivers payment events to customers' webhooks. It is owned by Dev Patel on the Payments team.",
+  "date": "2025-02-03",
+  "fields": {
+   "status": "paused",
+   "owner": "person-dev-patel",
+   "team": "Payments",
+   "deadline": "2026-02-28"
+  },
+  "links": [
+   "person-dev-patel"
+  ]
+ },
+ {
+  "id": "decision-atlas-queue-migration-target-queue-1",
+  "kind": "decision",
+  "title": "Atlas queue migration: target queue is Amazon SQS",
+  "body": "For Atlas queue migration, we decided the target queue is Amazon SQS, because the team already runs on AWS.",
+  "date": "2025-03-01",
+  "fields": {
+   "status": "superseded",
+   "owner": "person-ana-reyes",
+   "project": "project-atlas-queue-migration",
+   "topic": "target queue",
+   "choice": "Amazon SQS",
+   "supersedes": null,
+   "supersededBy": "decision-atlas-queue-migration-target-queue-2"
+  },
+  "links": [
+   "project-atlas-queue-migration",
+   "person-ana-reyes",
+   "decision-atlas-queue-migration-target-queue-2"
+  ]
+ },
+ {
+  "id": "decision-atlas-queue-migration-target-queue-2",
+  "kind": "decision",
+  "title": "Atlas queue migration: target queue is NATS JetStream",
+  "body": "We replaced the earlier decision (Amazon SQS). For Atlas queue migration, the target queue is now NATS JetStream, because SQS could not meet our message-ordering needs in load tests.",
+  "date": "2025-04-30",
+  "fields": {
+   "status": "active",
+   "owner": "person-ana-reyes",
+   "project": "project-atlas-queue-migration",
+   "topic": "target queue",
+   "choice": "NATS JetStream",
+   "supersedes": "decision-atlas-queue-migration-target-queue-1",
+   "supersededBy": null
+  },
+  "links": [
+   "project-atlas-queue-migration",
+   "person-ana-reyes",
+   "decision-atlas-queue-migration-target-queue-1"
+  ]
+ },
+ {
+  "id": "decision-ledger-billing-pipeline-storage-engine-1",
+  "kind": "decision",
+  "title": "Ledger billing pipeline: storage engine is Amazon Redshift",
+  "body": "For Ledger billing pipeline, we decided the storage engine is Amazon Redshift, because it was the default warehouse.",
+  "date": "2025-03-01",
+  "fields": {
+   "status": "superseded",
+   "owner": "person-lena-novak",
+   "project": "project-ledger-billing-pipeline",
+   "topic": "storage engine",
+   "choice": "Amazon Redshift",
+   "supersedes": null,
+   "supersededBy": "decision-ledger-billing-pipeline-storage-engine-2"
+  },
+  "links": [
+   "project-ledger-billing-pipeline",
+   "person-lena-novak",
+   "decision-ledger-billing-pipeline-storage-engine-2"
+  ]
+ },
+ {
+  "id": "decision-ledger-billing-pipeline-storage-engine-2",
+  "kind": "decision",
+  "title": "Ledger billing pipeline: storage engine is Google BigQuery",
+  "body": "We replaced the earlier decision (Amazon Redshift). For Ledger billing pipeline, the storage engine is now Google BigQuery, because Redshift costs grew faster than usage.",
+  "date": "2025-04-30",
+  "fields": {
+   "status": "superseded",
+   "owner": "person-lena-novak",
+   "project": "project-ledger-billing-pipeline",
+   "topic": "storage engine",
+   "choice": "Google BigQuery",
+   "supersedes": "decision-ledger-billing-pipeline-storage-engine-1",
+   "supersededBy": "decision-ledger-billing-pipeline-storage-engine-3"
+  },
+  "links": [
+   "project-ledger-billing-pipeline",
+   "person-lena-novak",
+   "decision-ledger-billing-pipeline-storage-engine-1",
+   "decision-ledger-billing-pipeline-storage-engine-3"
+  ]
+ },
+ {
+  "id": "decision-ledger-billing-pipeline-storage-engine-3",
+  "kind": "decision",
+  "title": "Ledger billing pipeline: storage engine is ClickHouse",
+  "body": "We replaced the earlier decision (Google BigQuery). For Ledger billing pipeline, the storage engine is now ClickHouse, because BigQuery query costs were unpredictable for nightly backfills.",
+  "date": "2025-06-29",
+  "fields": {
+   "status": "active",
+   "owner": "person-lena-novak",
+   "project": "project-ledger-billing-pipeline",
+   "topic": "storage engine",
+   "choice": "ClickHouse",
+   "supersedes": "decision-ledger-billing-pipeline-storage-engine-2",
+   "supersededBy": null
+  },
+  "links": [
+   "project-ledger-billing-pipeline",
+   "person-lena-novak",
+   "decision-ledger-billing-pipeline-storage-engine-2"
+  ]
+ },
+ {
+  "id": "decision-beacon-mobile-push-push-provider-1",
+  "kind": "decision",
+  "title": "Beacon mobile push: push provider is OneSignal",
+  "body": "For Beacon mobile push, we decided the push provider is OneSignal, because it was fastest to integrate.",
+  "date": "2025-03-01",
+  "fields": {
+   "status": "superseded",
+   "owner": "person-hana-sato",
+   "project": "project-beacon-mobile-push",
+   "topic": "push provider",
+   "choice": "OneSignal",
+   "supersedes": null,
+   "supersededBy": "decision-beacon-mobile-push-push-provider-2"
+  },
+  "links": [
+   "project-beacon-mobile-push",
+   "person-hana-sato",
+   "decision-beacon-mobile-push-push-provider-2"
+  ]
+ },
+ {
+  "id": "decision-beacon-mobile-push-push-provider-2",
+  "kind": "decision",
+  "title": "Beacon mobile push: push provider is Firebase Cloud Messaging",
+  "body": "We replaced the earlier decision (OneSignal). For Beacon mobile push, the push provider is now Firebase Cloud Messaging, because OneSignal pricing changed and we need delivery receipts.",
+  "date": "2025-04-30",
+  "fields": {
+   "status": "active",
+   "owner": "person-hana-sato",
+   "project": "project-beacon-mobile-push",
+   "topic": "push provider",
+   "choice": "Firebase Cloud Messaging",
+   "supersedes": "decision-beacon-mobile-push-push-provider-1",
+   "supersededBy": null
+  },
+  "links": [
+   "project-beacon-mobile-push",
+   "person-hana-sato",
+   "decision-beacon-mobile-push-push-provider-1"
+  ]
+ },
+ {
+  "id": "decision-cobalt-payment-retries-retry-policy-1",
+  "kind": "decision",
+  "title": "Cobalt payment retries: retry policy is three fixed retries one hour apart",
+  "body": "For Cobalt payment retries, we decided the retry policy is three fixed retries one hour apart, because it matched the old behaviour.",
+  "date": "2025-03-01",
+  "fields": {
+   "status": "superseded",
+   "owner": "person-dev-patel",
+   "project": "project-cobalt-payment-retries",
+   "topic": "retry policy",
+   "choice": "three fixed retries one hour apart",
+   "supersedes": null,
+   "supersededBy": "decision-cobalt-payment-retries-retry-policy-2"
+  },
+  "links": [
+   "project-cobalt-payment-retries",
+   "person-dev-patel",
+   "decision-cobalt-payment-retries-retry-policy-2"
+  ]
+ },
+ {
+  "id": "decision-cobalt-payment-retries-retry-policy-2",
+  "kind": "decision",
+  "title": "Cobalt payment retries: retry policy is exponential backoff with jitter",
+  "body": "We replaced the earlier decision (three fixed retries one hour apart). For Cobalt payment retries, the retry policy is now exponential backoff with jitter, because fixed retries caused bursts against the card network.",
+  "date": "2025-04-30",
+  "fields": {
+   "status": "active",
+   "owner": "person-dev-patel",
+   "project": "project-cobalt-payment-retries",
+   "topic": "retry policy",
+   "choice": "exponential backoff with jitter",
+   "supersedes": "decision-cobalt-payment-retries-retry-policy-1",
+   "supersededBy": null
+  },
+  "links": [
+   "project-cobalt-payment-retries",
+   "person-dev-patel",
+   "decision-cobalt-payment-retries-retry-policy-1"
+  ]
+ },
+ {
+  "id": "decision-sentinel-access-reviews-review-cadence-1",
+  "kind": "decision",
+  "title": "Sentinel access reviews: review cadence is quarterly reviews",
+  "body": "For Sentinel access reviews, we decided the review cadence is quarterly reviews, because auditors asked for quarterly evidence.",
+  "date": "2025-03-01",
+  "fields": {
+   "status": "superseded",
+   "owner": "person-jade-wong",
+   "project": "project-sentinel-access-reviews",
+   "topic": "review cadence",
+   "choice": "quarterly reviews",
+   "supersedes": null,
+   "supersededBy": "decision-sentinel-access-reviews-review-cadence-2"
+  },
+  "links": [
+   "project-sentinel-access-reviews",
+   "person-jade-wong",
+   "decision-sentinel-access-reviews-review-cadence-2"
+  ]
+ },
+ {
+  "id": "decision-sentinel-access-reviews-review-cadence-2",
+  "kind": "decision",
+  "title": "Sentinel access reviews: review cadence is monthly reviews",
+  "body": "We replaced the earlier decision (quarterly reviews). For Sentinel access reviews, the review cadence is now monthly reviews, because quarterly reviews missed leavers for too long.",
+  "date": "2025-04-30",
+  "fields": {
+   "status": "active",
+   "owner": "person-jade-wong",
+   "project": "project-sentinel-access-reviews",
+   "topic": "review cadence",
+   "choice": "monthly reviews",
+   "supersedes": "decision-sentinel-access-reviews-review-cadence-1",
+   "supersededBy": null
+  },
+  "links": [
+   "project-sentinel-access-reviews",
+   "person-jade-wong",
+   "decision-sentinel-access-reviews-review-cadence-1"
+  ]
+ },
+ {
+  "id": "decision-harbor-container-platform-orchestrator-1",
+  "kind": "decision",
+  "title": "Harbor container platform: orchestrator is HashiCorp Nomad",
+  "body": "For Harbor container platform, we decided the orchestrator is HashiCorp Nomad, because it is simpler to operate.",
+  "date": "2025-03-01",
+  "fields": {
+   "status": "superseded",
+   "owner": "person-ana-reyes",
+   "project": "project-harbor-container-platform",
+   "topic": "orchestrator",
+   "choice": "HashiCorp Nomad",
+   "supersedes": null,
+   "supersededBy": "decision-harbor-container-platform-orchestrator-2"
+  },
+  "links": [
+   "project-harbor-container-platform",
+   "person-ana-reyes",
+   "decision-harbor-container-platform-orchestrator-2"
+  ]
+ },
+ {
+  "id": "decision-harbor-container-platform-orchestrator-2",
+  "kind": "decision",
+  "title": "Harbor container platform: orchestrator is Kubernetes on EKS",
+  "body": "We replaced the earlier decision (HashiCorp Nomad). For Harbor container platform, the orchestrator is now Kubernetes on EKS, because every vendor tool we need assumes Kubernetes.",
+  "date": "2025-04-30",
+  "fields": {
+   "status": "active",
+   "owner": "person-ana-reyes",
+   "project": "project-harbor-container-platform",
+   "topic": "orchestrator",
+   "choice": "Kubernetes on EKS",
+   "supersedes": "decision-harbor-container-platform-orchestrator-1",
+   "supersededBy": null
+  },
+  "links": [
+   "project-harbor-container-platform",
+   "person-ana-reyes",
+   "decision-harbor-container-platform-orchestrator-1"
+  ]
+ },
+ {
+  "id": "decision-prism-analytics-warehouse-dashboard-tool-1",
+  "kind": "decision",
+  "title": "Prism analytics warehouse: dashboard tool is Looker",
+  "body": "For Prism analytics warehouse, we decided the dashboard tool is Looker, because the data team knew it already.",
+  "date": "2025-03-01",
+  "fields": {
+   "status": "superseded",
+   "owner": "person-lena-novak",
+   "project": "project-prism-analytics-warehouse",
+   "topic": "dashboard tool",
+   "choice": "Looker",
+   "supersedes": null,
+   "supersededBy": "decision-prism-analytics-warehouse-dashboard-tool-2"
+  },
+  "links": [
+   "project-prism-analytics-warehouse",
+   "person-lena-novak",
+   "decision-prism-analytics-warehouse-dashboard-tool-2"
+  ]
+ },
+ {
+  "id": "decision-prism-analytics-warehouse-dashboard-tool-2",
+  "kind": "decision",
+  "title": "Prism analytics warehouse: dashboard tool is Metabase",
+  "body": "We replaced the earlier decision (Looker). For Prism analytics warehouse, the dashboard tool is now Metabase, because Looker seat costs blocked self-serve access.",
+  "date": "2025-04-30",
+  "fields": {
+   "status": "active",
+   "owner": "person-lena-novak",
+   "project": "project-prism-analytics-warehouse",
+   "topic": "dashboard tool",
+   "choice": "Metabase",
+   "supersedes": "decision-prism-analytics-warehouse-dashboard-tool-1",
+   "supersededBy": null
+  },
+  "links": [
+   "project-prism-analytics-warehouse",
+   "person-lena-novak",
+   "decision-prism-analytics-warehouse-dashboard-tool-1"
+  ]
+ },
+ {
+  "id": "decision-vault-key-rotation-rotation-interval-1",
+  "kind": "decision",
+  "title": "Vault key rotation: rotation interval is every 180 days",
+  "body": "For Vault key rotation, we decided the rotation interval is every 180 days, because it matched the compliance minimum.",
+  "date": "2025-03-01",
+  "fields": {
+   "status": "superseded",
+   "owner": "person-jade-wong",
+   "project": "project-vault-key-rotation",
+   "topic": "rotation interval",
+   "choice": "every 180 days",
+   "supersedes": null,
+   "supersededBy": "decision-vault-key-rotation-rotation-interval-2"
+  },
+  "links": [
+   "project-vault-key-rotation",
+   "person-jade-wong",
+   "decision-vault-key-rotation-rotation-interval-2"
+  ]
+ },
+ {
+  "id": "decision-vault-key-rotation-rotation-interval-2",
+  "kind": "decision",
+  "title": "Vault key rotation: rotation interval is every 90 days",
+  "body": "We replaced the earlier decision (every 180 days). For Vault key rotation, the rotation interval is now every 90 days, because a customer contract required 90 days.",
+  "date": "2025-04-30",
+  "fields": {
+   "status": "superseded",
+   "owner": "person-jade-wong",
+   "project": "project-vault-key-rotation",
+   "topic": "rotation interval",
+   "choice": "every 90 days",
+   "supersedes": "decision-vault-key-rotation-rotation-interval-1",
+   "supersededBy": "decision-vault-key-rotation-rotation-interval-3"
+  },
+  "links": [
+   "project-vault-key-rotation",
+   "person-jade-wong",
+   "decision-vault-key-rotation-rotation-interval-1",
+   "decision-vault-key-rotation-rotation-interval-3"
+  ]
+ },
+ {
+  "id": "decision-vault-key-rotation-rotation-interval-3",
+  "kind": "decision",
+  "title": "Vault key rotation: rotation interval is every 30 days",
+  "body": "We replaced the earlier decision (every 90 days). For Vault key rotation, the rotation interval is now every 30 days, because the security review asked for shorter key lifetimes.",
+  "date": "2025-06-29",
+  "fields": {
+   "status": "active",
+   "owner": "person-jade-wong",
+   "project": "project-vault-key-rotation",
+   "topic": "rotation interval",
+   "choice": "every 30 days",
+   "supersedes": "decision-vault-key-rotation-rotation-interval-2",
+   "supersededBy": null
+  },
+  "links": [
+   "project-vault-key-rotation",
+   "person-jade-wong",
+   "decision-vault-key-rotation-rotation-interval-2"
+  ]
+ },
+ {
+  "id": "decision-relay-webhook-service-delivery-guarantee-1",
+  "kind": "decision",
+  "title": "Relay webhook service: delivery guarantee is at-most-once delivery",
+  "body": "For Relay webhook service, we decided the delivery guarantee is at-most-once delivery, because it kept the first version simple.",
+  "date": "2025-03-01",
+  "fields": {
+   "status": "superseded",
+   "owner": "person-dev-patel",
+   "project": "project-relay-webhook-service",
+   "topic": "delivery guarantee",
+   "choice": "at-most-once delivery",
+   "supersedes": null,
+   "supersededBy": "decision-relay-webhook-service-delivery-guarantee-2"
+  },
+  "links": [
+   "project-relay-webhook-service",
+   "person-dev-patel",
+   "decision-relay-webhook-service-delivery-guarantee-2"
+  ]
+ },
+ {
+  "id": "decision-relay-webhook-service-delivery-guarantee-2",
+  "kind": "decision",
+  "title": "Relay webhook service: delivery guarantee is at-least-once delivery with idempotency keys",
+  "body": "We replaced the earlier decision (at-most-once delivery). For Relay webhook service, the delivery guarantee is now at-least-once delivery with idempotency keys, because customers lost events during deploys.",
+  "date": "2025-04-30",
+  "fields": {
+   "status": "active",
+   "owner": "person-dev-patel",
+   "project": "project-relay-webhook-service",
+   "topic": "delivery guarantee",
+   "choice": "at-least-once delivery with idempotency keys",
+   "supersedes": "decision-relay-webhook-service-delivery-guarantee-1",
+   "supersededBy": null
+  },
+  "links": [
+   "project-relay-webhook-service",
+   "person-dev-patel",
+   "decision-relay-webhook-service-delivery-guarantee-1"
+  ]
+ },
+ {
+  "id": "decision-atlas-queue-migration-adopt-opentelemetry-for-tracing",
+  "kind": "decision",
+  "title": "Atlas queue migration: Adopt OpenTelemetry for tracing",
+  "body": "Adopt OpenTelemetry for tracing for Atlas queue migration. Agreed in the Platform team's design review.",
+  "date": "2025-04-03",
+  "fields": {
+   "status": "active",
+   "owner": "person-gus-lindqvist",
+   "project": "project-atlas-queue-migration",
+   "topic": "practice",
+   "choice": null,
+   "supersedes": null,
+   "supersededBy": null
+  },
+  "links": [
+   "project-atlas-queue-migration",
+   "person-gus-lindqvist"
+  ]
+ },
+ {
+  "id": "decision-atlas-queue-migration-require-code-review-from-a-second-team-for-schema-changes",
+  "kind": "decision",
+  "title": "Atlas queue migration: Require code review from a second team for schema changes",
+  "body": "Require code review from a second team for schema changes for Atlas queue migration. Agreed in the Platform team's design review.",
+  "date": "2025-05-29",
+  "fields": {
+   "status": "active",
+   "owner": "person-victor-hale",
+   "project": "project-atlas-queue-migration",
+   "topic": "practice",
+   "choice": null,
+   "supersedes": null,
+   "supersededBy": null
+  },
+  "links": [
+   "project-atlas-queue-migration",
+   "person-victor-hale"
+  ]
+ },
+ {
+  "id": "decision-atlas-queue-migration-use-feature-flags-for-every-risky-rollout",
+  "kind": "decision",
+  "title": "Atlas queue migration: Use feature flags for every risky rollout",
+  "body": "Use feature flags for every risky rollout for Atlas queue migration. Agreed in the Platform team's design review.",
+  "date": "2025-06-07",
+  "fields": {
+   "status": "active",
+   "owner": "person-kofi-mensah",
+   "project": "project-atlas-queue-migration",
+   "topic": "practice",
+   "choice": null,
+   "supersedes": null,
+   "supersededBy": null
+  },
+  "links": [
+   "project-atlas-queue-migration",
+   "person-kofi-mensah"
+  ]
+ },
+ {
+  "id": "decision-ledger-billing-pipeline-keep-service-runbooks-in-the-repository",
+  "kind": "decision",
+  "title": "Ledger billing pipeline: Keep service runbooks in the repository",
+  "body": "Keep service runbooks in the repository for Ledger billing pipeline. Agreed in the Data team's design review.",
+  "date": "2025-04-07",
+  "fields": {
+   "status": "active",
+   "owner": "person-farah-haddad",
+   "project": "project-ledger-billing-pipeline",
+   "topic": "practice",
+   "choice": null,
+   "supersedes": null,
+   "supersededBy": null
+  },
+  "links": [
+   "project-ledger-billing-pipeline",
+   "person-farah-haddad"
+  ]
+ },
+ {
+  "id": "decision-ledger-billing-pipeline-move-ci-to-ephemeral-runners",
+  "kind": "decision",
+  "title": "Ledger billing pipeline: Move CI to ephemeral runners",
+  "body": "Move CI to ephemeral runners for Ledger billing pipeline. Agreed in the Data team's design review.",
+  "date": "2025-08-17",
+  "fields": {
+   "status": "active",
+   "owner": "person-ben-okafor",
+   "project": "project-ledger-billing-pipeline",
+   "topic": "practice",
+   "choice": null,
+   "supersedes": null,
+   "supersededBy": null
+  },
+  "links": [
+   "project-ledger-billing-pipeline",
+   "person-ben-okafor"
+  ]
+ },
+ {
+  "id": "decision-ledger-billing-pipeline-pin-all-base-images-by-digest",
+  "kind": "decision",
+  "title": "Ledger billing pipeline: Pin all base images by digest",
+  "body": "Pin all base images by digest for Ledger billing pipeline. Agreed in the Data team's design review.",
+  "date": "2025-08-29",
+  "fields": {
+   "status": "active",
+   "owner": "person-wen-li",
+   "project": "project-ledger-billing-pipeline",
+   "topic": "practice",
+   "choice": null,
+   "supersedes": null,
+   "supersededBy": null
+  },
+  "links": [
+   "project-ledger-billing-pipeline",
+   "person-wen-li"
+  ]
+ },
+ {
+  "id": "decision-beacon-mobile-push-run-a-game-day-every-quarter",
+  "kind": "decision",
+  "title": "Beacon mobile push: Run a game day every quarter",
+  "body": "Run a game day every quarter for Beacon mobile push. Agreed in the Mobile team's design review.",
+  "date": "2025-04-19",
+  "fields": {
+   "status": "active",
+   "owner": "person-sam-rivera",
+   "project": "project-beacon-mobile-push",
+   "topic": "practice",
+   "choice": null,
+   "supersedes": null,
+   "supersededBy": null
+  },
+  "links": [
+   "project-beacon-mobile-push",
+   "person-sam-rivera"
+  ]
+ },
+ {
+  "id": "decision-beacon-mobile-push-write-an-architecture-decision-record-for-every-new-service",
+  "kind": "decision",
+  "title": "Beacon mobile push: Write an architecture decision record for every new service",
+  "body": "Write an architecture decision record for every new service for Beacon mobile push. Agreed in the Mobile team's design review.",
+  "date": "2025-04-26",
+  "fields": {
+   "status": "active",
+   "owner": "person-chloe-martin",
+   "project": "project-beacon-mobile-push",
+   "topic": "practice",
+   "choice": null,
+   "supersedes": null,
+   "supersededBy": null
+  },
+  "links": [
+   "project-beacon-mobile-push",
+   "person-chloe-martin"
+  ]
+ },
+ {
+  "id": "decision-beacon-mobile-push-store-secrets-only-in-the-secrets-manager",
+  "kind": "decision",
+  "title": "Beacon mobile push: Store secrets only in the secrets manager",
+  "body": "Store secrets only in the secrets manager for Beacon mobile push. Agreed in the Mobile team's design review.",
+  "date": "2025-02-16",
+  "fields": {
+   "status": "active",
+   "owner": "person-nia-brooks",
+   "project": "project-beacon-mobile-push",
+   "topic": "practice",
+   "choice": null,
+   "supersedes": null,
+   "supersededBy": null
+  },
+  "links": [
+   "project-beacon-mobile-push",
+   "person-nia-brooks"
+  ]
+ },
+ {
+  "id": "decision-cobalt-payment-retries-track-error-budgets-per-service",
+  "kind": "decision",
+  "title": "Cobalt payment retries: Track error budgets per service",
+  "body": "Track error budgets per service for Cobalt payment retries. Agreed in the Payments team's design review.",
+  "date": "2025-07-15",
+  "fields": {
+   "status": "active",
+   "owner": "person-ivan-petrov",
+   "project": "project-cobalt-payment-retries",
+   "topic": "practice",
+   "choice": null,
+   "supersedes": null,
+   "supersededBy": null
+  },
+  "links": [
+   "project-cobalt-payment-retries",
+   "person-ivan-petrov"
+  ]
+ },
+ {
+  "id": "decision-cobalt-payment-retries-adopt-opentelemetry-for-tracing",
+  "kind": "decision",
+  "title": "Cobalt payment retries: Adopt OpenTelemetry for tracing",
+  "body": "Adopt OpenTelemetry for tracing for Cobalt payment retries. Agreed in the Payments team's design review.",
+  "date": "2025-06-28",
+  "fields": {
+   "status": "active",
+   "owner": "person-tara-quinn",
+   "project": "project-cobalt-payment-retries",
+   "topic": "practice",
+   "choice": null,
+   "supersedes": null,
+   "supersededBy": null
+  },
+  "links": [
+   "project-cobalt-payment-retries",
+   "person-tara-quinn"
+  ]
+ },
+ {
+  "id": "decision-cobalt-payment-retries-require-code-review-from-a-second-team-for-schema-changes",
+  "kind": "decision",
+  "title": "Cobalt payment retries: Require code review from a second team for schema changes",
+  "body": "Require code review from a second team for schema changes for Cobalt payment retries. Agreed in the Payments team's design review.",
+  "date": "2025-02-20",
+  "fields": {
+   "status": "active",
+   "owner": "person-ivan-petrov",
+   "project": "project-cobalt-payment-retries",
+   "topic": "practice",
+   "choice": null,
+   "supersedes": null,
+   "supersededBy": null
+  },
+  "links": [
+   "project-cobalt-payment-retries",
+   "person-ivan-petrov"
+  ]
+ },
+ {
+  "id": "decision-sentinel-access-reviews-use-feature-flags-for-every-risky-rollout",
+  "kind": "decision",
+  "title": "Sentinel access reviews: Use feature flags for every risky rollout",
+  "body": "Use feature flags for every risky rollout for Sentinel access reviews. Agreed in the Security team's design review.",
+  "date": "2025-07-29",
+  "fields": {
+   "status": "active",
+   "owner": "person-elif-kaya",
+   "project": "project-sentinel-access-reviews",
+   "topic": "practice",
+   "choice": null,
+   "supersedes": null,
+   "supersededBy": null
+  },
+  "links": [
+   "project-sentinel-access-reviews",
+   "person-elif-kaya"
+  ]
+ },
+ {
+  "id": "decision-sentinel-access-reviews-keep-service-runbooks-in-the-repository",
+  "kind": "decision",
+  "title": "Sentinel access reviews: Keep service runbooks in the repository",
+  "body": "Keep service runbooks in the repository for Sentinel access reviews. Agreed in the Security team's design review.",
+  "date": "2025-08-06",
+  "fields": {
+   "status": "active",
+   "owner": "person-uma-desai",
+   "project": "project-sentinel-access-reviews",
+   "topic": "practice",
+   "choice": null,
+   "supersedes": null,
+   "supersededBy": null
+  },
+  "links": [
+   "project-sentinel-access-reviews",
+   "person-uma-desai"
+  ]
+ },
+ {
+  "id": "decision-sentinel-access-reviews-move-ci-to-ephemeral-runners",
+  "kind": "decision",
+  "title": "Sentinel access reviews: Move CI to ephemeral runners",
+  "body": "Move CI to ephemeral runners for Sentinel access reviews. Agreed in the Security team's design review.",
+  "date": "2025-08-26",
+  "fields": {
+   "status": "active",
+   "owner": "person-uma-desai",
+   "project": "project-sentinel-access-reviews",
+   "topic": "practice",
+   "choice": null,
+   "supersedes": null,
+   "supersededBy": null
+  },
+  "links": [
+   "project-sentinel-access-reviews",
+   "person-uma-desai"
+  ]
+ },
+ {
+  "id": "decision-harbor-container-platform-pin-all-base-images-by-digest",
+  "kind": "decision",
+  "title": "Harbor container platform: Pin all base images by digest",
+  "body": "Pin all base images by digest for Harbor container platform. Agreed in the Platform team's design review.",
+  "date": "2025-07-01",
+  "fields": {
+   "status": "active",
+   "owner": "person-gus-lindqvist",
+   "project": "project-harbor-container-platform",
+   "topic": "practice",
+   "choice": null,
+   "supersedes": null,
+   "supersededBy": null
+  },
+  "links": [
+   "project-harbor-container-platform",
+   "person-gus-lindqvist"
+  ]
+ },
+ {
+  "id": "decision-harbor-container-platform-run-a-game-day-every-quarter",
+  "kind": "decision",
+  "title": "Harbor container platform: Run a game day every quarter",
+  "body": "Run a game day every quarter for Harbor container platform. Agreed in the Platform team's design review.",
+  "date": "2025-08-28",
+  "fields": {
+   "status": "active",
+   "owner": "person-victor-hale",
+   "project": "project-harbor-container-platform",
+   "topic": "practice",
+   "choice": null,
+   "supersedes": null,
+   "supersededBy": null
+  },
+  "links": [
+   "project-harbor-container-platform",
+   "person-victor-hale"
+  ]
+ },
+ {
+  "id": "decision-harbor-container-platform-write-an-architecture-decision-record-for-every-new-service",
+  "kind": "decision",
+  "title": "Harbor container platform: Write an architecture decision record for every new service",
+  "body": "Write an architecture decision record for every new service for Harbor container platform. Agreed in the Platform team's design review.",
+  "date": "2025-05-11",
+  "fields": {
+   "status": "active",
+   "owner": "person-ana-reyes",
+   "project": "project-harbor-container-platform",
+   "topic": "practice",
+   "choice": null,
+   "supersedes": null,
+   "supersededBy": null
+  },
+  "links": [
+   "project-harbor-container-platform",
+   "person-ana-reyes"
+  ]
+ },
+ {
+  "id": "decision-prism-analytics-warehouse-store-secrets-only-in-the-secrets-manager",
+  "kind": "decision",
+  "title": "Prism analytics warehouse: Store secrets only in the secrets manager",
+  "body": "Store secrets only in the secrets manager for Prism analytics warehouse. Agreed in the Data team's design review.",
+  "date": "2025-04-15",
+  "fields": {
+   "status": "active",
+   "owner": "person-farah-haddad",
+   "project": "project-prism-analytics-warehouse",
+   "topic": "practice",
+   "choice": null,
+   "supersedes": null,
+   "supersededBy": null
+  },
+  "links": [
+   "project-prism-analytics-warehouse",
+   "person-farah-haddad"
+  ]
+ },
+ {
+  "id": "decision-prism-analytics-warehouse-track-error-budgets-per-service",
+  "kind": "decision",
+  "title": "Prism analytics warehouse: Track error budgets per service",
+  "body": "Track error budgets per service for Prism analytics warehouse. Agreed in the Data team's design review.",
+  "date": "2025-06-05",
+  "fields": {
+   "status": "active",
+   "owner": "person-farah-haddad",
+   "project": "project-prism-analytics-warehouse",
+   "topic": "practice",
+   "choice": null,
+   "supersedes": null,
+   "supersededBy": null
+  },
+  "links": [
+   "project-prism-analytics-warehouse",
+   "person-farah-haddad"
+  ]
+ },
+ {
+  "id": "decision-prism-analytics-warehouse-adopt-opentelemetry-for-tracing",
+  "kind": "decision",
+  "title": "Prism analytics warehouse: Adopt OpenTelemetry for tracing",
+  "body": "Adopt OpenTelemetry for tracing for Prism analytics warehouse. Agreed in the Data team's design review.",
+  "date": "2025-03-17",
+  "fields": {
+   "status": "active",
+   "owner": "person-lena-novak",
+   "project": "project-prism-analytics-warehouse",
+   "topic": "practice",
+   "choice": null,
+   "supersedes": null,
+   "supersededBy": null
+  },
+  "links": [
+   "project-prism-analytics-warehouse",
+   "person-lena-novak"
+  ]
+ },
+ {
+  "id": "decision-quill-offline-notes-require-code-review-from-a-second-team-for-schema-changes",
+  "kind": "decision",
+  "title": "Quill offline notes: Require code review from a second team for schema changes",
+  "body": "Require code review from a second team for schema changes for Quill offline notes. Agreed in the Mobile team's design review.",
+  "date": "2025-03-12",
+  "fields": {
+   "status": "active",
+   "owner": "person-chloe-martin",
+   "project": "project-quill-offline-notes",
+   "topic": "practice",
+   "choice": null,
+   "supersedes": null,
+   "supersededBy": null
+  },
+  "links": [
+   "project-quill-offline-notes",
+   "person-chloe-martin"
+  ]
+ },
+ {
+  "id": "decision-quill-offline-notes-use-feature-flags-for-every-risky-rollout",
+  "kind": "decision",
+  "title": "Quill offline notes: Use feature flags for every risky rollout",
+  "body": "Use feature flags for every risky rollout for Quill offline notes. Agreed in the Mobile team's design review.",
+  "date": "2025-07-11",
+  "fields": {
+   "status": "active",
+   "owner": "person-hana-sato",
+   "project": "project-quill-offline-notes",
+   "topic": "practice",
+   "choice": null,
+   "supersedes": null,
+   "supersededBy": null
+  },
+  "links": [
+   "project-quill-offline-notes",
+   "person-hana-sato"
+  ]
+ },
+ {
+  "id": "decision-quill-offline-notes-keep-service-runbooks-in-the-repository",
+  "kind": "decision",
+  "title": "Quill offline notes: Keep service runbooks in the repository",
+  "body": "Keep service runbooks in the repository for Quill offline notes. Agreed in the Mobile team's design review.",
+  "date": "2025-06-01",
+  "fields": {
+   "status": "active",
+   "owner": "person-sam-rivera",
+   "project": "project-quill-offline-notes",
+   "topic": "practice",
+   "choice": null,
+   "supersedes": null,
+   "supersededBy": null
+  },
+  "links": [
+   "project-quill-offline-notes",
+   "person-sam-rivera"
+  ]
+ },
+ {
+  "id": "decision-vault-key-rotation-move-ci-to-ephemeral-runners",
+  "kind": "decision",
+  "title": "Vault key rotation: Move CI to ephemeral runners",
+  "body": "Move CI to ephemeral runners for Vault key rotation. Agreed in the Security team's design review.",
+  "date": "2025-05-24",
+  "fields": {
+   "status": "active",
+   "owner": "person-elif-kaya",
+   "project": "project-vault-key-rotation",
+   "topic": "practice",
+   "choice": null,
+   "supersedes": null,
+   "supersededBy": null
+  },
+  "links": [
+   "project-vault-key-rotation",
+   "person-elif-kaya"
+  ]
+ },
+ {
+  "id": "decision-vault-key-rotation-pin-all-base-images-by-digest",
+  "kind": "decision",
+  "title": "Vault key rotation: Pin all base images by digest",
+  "body": "Pin all base images by digest for Vault key rotation. Agreed in the Security team's design review.",
+  "date": "2025-06-04",
+  "fields": {
+   "status": "active",
+   "owner": "person-elif-kaya",
+   "project": "project-vault-key-rotation",
+   "topic": "practice",
+   "choice": null,
+   "supersedes": null,
+   "supersededBy": null
+  },
+  "links": [
+   "project-vault-key-rotation",
+   "person-elif-kaya"
+  ]
+ },
+ {
+  "id": "decision-vault-key-rotation-run-a-game-day-every-quarter",
+  "kind": "decision",
+  "title": "Vault key rotation: Run a game day every quarter",
+  "body": "Run a game day every quarter for Vault key rotation. Agreed in the Security team's design review.",
+  "date": "2025-05-29",
+  "fields": {
+   "status": "active",
+   "owner": "person-elif-kaya",
+   "project": "project-vault-key-rotation",
+   "topic": "practice",
+   "choice": null,
+   "supersedes": null,
+   "supersededBy": null
+  },
+  "links": [
+   "project-vault-key-rotation",
+   "person-elif-kaya"
+  ]
+ },
+ {
+  "id": "decision-relay-webhook-service-write-an-architecture-decision-record-for-every-new-service",
+  "kind": "decision",
+  "title": "Relay webhook service: Write an architecture decision record for every new service",
+  "body": "Write an architecture decision record for every new service for Relay webhook service. Agreed in the Payments team's design review.",
+  "date": "2025-07-06",
+  "fields": {
+   "status": "active",
+   "owner": "person-tara-quinn",
+   "project": "project-relay-webhook-service",
+   "topic": "practice",
+   "choice": null,
+   "supersedes": null,
+   "supersededBy": null
+  },
+  "links": [
+   "project-relay-webhook-service",
+   "person-tara-quinn"
+  ]
+ },
+ {
+  "id": "decision-relay-webhook-service-store-secrets-only-in-the-secrets-manager",
+  "kind": "decision",
+  "title": "Relay webhook service: Store secrets only in the secrets manager",
+  "body": "Store secrets only in the secrets manager for Relay webhook service. Agreed in the Payments team's design review.",
+  "date": "2025-04-06",
+  "fields": {
+   "status": "active",
+   "owner": "person-ivan-petrov",
+   "project": "project-relay-webhook-service",
+   "topic": "practice",
+   "choice": null,
+   "supersedes": null,
+   "supersededBy": null
+  },
+  "links": [
+   "project-relay-webhook-service",
+   "person-ivan-petrov"
+  ]
+ },
+ {
+  "id": "decision-relay-webhook-service-track-error-budgets-per-service",
+  "kind": "decision",
+  "title": "Relay webhook service: Track error budgets per service",
+  "body": "Track error budgets per service for Relay webhook service. Agreed in the Payments team's design review.",
+  "date": "2025-07-29",
+  "fields": {
+   "status": "active",
+   "owner": "person-dev-patel",
+   "project": "project-relay-webhook-service",
+   "topic": "practice",
+   "choice": null,
+   "supersedes": null,
+   "supersededBy": null
+  },
+  "links": [
+   "project-relay-webhook-service",
+   "person-dev-patel"
+  ]
+ },
+ {
+  "id": "task-write-the-cutover-runbook-for-atlas-queue-migration",
+  "kind": "task",
+  "title": "Write the cutover runbook for Atlas queue migration",
+  "body": "Write the cutover runbook for Atlas queue migration. Owned by Victor Hale.",
+  "date": "2025-04-12",
+  "fields": {
+   "status": "blocked",
+   "owner": "person-victor-hale",
+   "project": "project-atlas-queue-migration",
+   "priority": "high",
+   "due": "2025-10-28"
+  },
+  "links": [
+   "project-atlas-queue-migration",
+   "person-victor-hale"
+  ]
+ },
+ {
+  "id": "task-review-the-schema-migration-for-atlas-queue-migration",
+  "kind": "task",
+  "title": "Review the schema migration for Atlas queue migration",
+  "body": "Review the schema migration for Atlas queue migration. Owned by Uma Desai.",
+  "date": "2025-07-08",
+  "fields": {
+   "status": "open",
+   "owner": "person-uma-desai",
+   "project": "project-atlas-queue-migration",
+   "priority": "low",
+   "due": "2025-08-01"
+  },
+  "links": [
+   "project-atlas-queue-migration",
+   "person-uma-desai"
+  ]
+ },
+ {
+  "id": "task-migrate-the-integration-tests-for-atlas-queue-migration",
+  "kind": "task",
+  "title": "Migrate the integration tests for Atlas queue migration",
+  "body": "Migrate the integration tests for Atlas queue migration. Owned by Kofi Mensah.",
+  "date": "2025-04-04",
+  "fields": {
+   "status": "done",
+   "owner": "person-kofi-mensah",
+   "project": "project-atlas-queue-migration",
+   "priority": "medium",
+   "due": "2025-07-12"
+  },
+  "links": [
+   "project-atlas-queue-migration",
+   "person-kofi-mensah"
+  ]
+ },
+ {
+  "id": "task-load-test-the-retry-worker-for-atlas-queue-migration",
+  "kind": "task",
+  "title": "Load test the retry worker for Atlas queue migration",
+  "body": "Load test the retry worker for Atlas queue migration. Owned by Gus Lindqvist.",
+  "date": "2025-08-16",
+  "fields": {
+   "status": "done",
+   "owner": "person-gus-lindqvist",
+   "project": "project-atlas-queue-migration",
+   "priority": "low",
+   "due": "2025-11-15"
+  },
+  "links": [
+   "project-atlas-queue-migration",
+   "person-gus-lindqvist"
+  ]
+ },
+ {
+  "id": "task-document-the-cost-report-for-atlas-queue-migration",
+  "kind": "task",
+  "title": "Document the cost report for Atlas queue migration",
+  "body": "Document the cost report for Atlas queue migration. Owned by Jade Wong.",
+  "date": "2025-06-07",
+  "fields": {
+   "status": "blocked",
+   "owner": "person-jade-wong",
+   "project": "project-atlas-queue-migration",
+   "priority": "medium",
+   "due": "2025-07-13"
+  },
+  "links": [
+   "project-atlas-queue-migration",
+   "person-jade-wong"
+  ]
+ },
+ {
+  "id": "task-automate-the-access-policy-for-atlas-queue-migration",
+  "kind": "task",
+  "title": "Automate the access policy for Atlas queue migration",
+  "body": "Automate the access policy for Atlas queue migration. Owned by Ana Reyes.",
+  "date": "2025-07-27",
+  "fields": {
+   "status": "open",
+   "owner": "person-ana-reyes",
+   "project": "project-atlas-queue-migration",
+   "priority": "medium",
+   "due": "2025-07-04"
+  },
+  "links": [
+   "project-atlas-queue-migration",
+   "person-ana-reyes"
+  ]
+ },
+ {
+  "id": "task-audit-the-capacity-plan-for-atlas-queue-migration",
+  "kind": "task",
+  "title": "Audit the capacity plan for Atlas queue migration",
+  "body": "Audit the capacity plan for Atlas queue migration. Owned by Ana Reyes.",
+  "date": "2025-08-24",
+  "fields": {
+   "status": "blocked",
+   "owner": "person-ana-reyes",
+   "project": "project-atlas-queue-migration",
+   "priority": "medium",
+   "due": "2025-11-11"
+  },
+  "links": [
+   "project-atlas-queue-migration",
+   "person-ana-reyes"
+  ]
+ },
+ {
+  "id": "task-benchmark-the-on-call-handbook-for-atlas-queue-migration",
+  "kind": "task",
+  "title": "Benchmark the on-call handbook for Atlas queue migration",
+  "body": "Benchmark the on-call handbook for Atlas queue migration. Owned by Victor Hale.",
+  "date": "2025-04-21",
+  "fields": {
+   "status": "done",
+   "owner": "person-victor-hale",
+   "project": "project-atlas-queue-migration",
+   "priority": "medium",
+   "due": "2025-09-04"
+  },
+  "links": [
+   "project-atlas-queue-migration",
+   "person-victor-hale"
+  ]
+ },
+ {
+  "id": "task-refactor-the-rollback-plan-for-atlas-queue-migration",
+  "kind": "task",
+  "title": "Refactor the rollback plan for Atlas queue migration",
+  "body": "Refactor the rollback plan for Atlas queue migration. Owned by Kofi Mensah.",
+  "date": "2025-06-12",
+  "fields": {
+   "status": "open",
+   "owner": "person-kofi-mensah",
+   "project": "project-atlas-queue-migration",
+   "priority": "high",
+   "due": "2025-11-04"
+  },
+  "links": [
+   "project-atlas-queue-migration",
+   "person-kofi-mensah"
+  ]
+ },
+ {
+  "id": "task-monitor-the-dashboards-for-atlas-queue-migration",
+  "kind": "task",
+  "title": "Monitor the dashboards for Atlas queue migration",
+  "body": "Monitor the dashboards for Atlas queue migration. Owned by Ana Reyes.",
+  "date": "2025-04-04",
+  "fields": {
+   "status": "in_progress",
+   "owner": "person-ana-reyes",
+   "project": "project-atlas-queue-migration",
+   "priority": "medium",
+   "due": "2025-08-31"
+  },
+  "links": [
+   "project-atlas-queue-migration",
+   "person-ana-reyes"
+  ]
+ },
+ {
+  "id": "task-write-the-canary-release-for-atlas-queue-migration",
+  "kind": "task",
+  "title": "Write the canary release for Atlas queue migration",
+  "body": "Write the canary release for Atlas queue migration. Owned by Victor Hale.",
+  "date": "2025-05-24",
+  "fields": {
+   "status": "open",
+   "owner": "person-victor-hale",
+   "project": "project-atlas-queue-migration",
+   "priority": "low",
+   "due": "2025-10-25"
+  },
+  "links": [
+   "project-atlas-queue-migration",
+   "person-victor-hale"
+  ]
+ },
+ {
+  "id": "task-review-the-staging-environment-for-atlas-queue-migration",
+  "kind": "task",
+  "title": "Review the staging environment for Atlas queue migration",
+  "body": "Review the staging environment for Atlas queue migration. Owned by Ana Reyes.",
+  "date": "2025-06-24",
+  "fields": {
+   "status": "done",
+   "owner": "person-ana-reyes",
+   "project": "project-atlas-queue-migration",
+   "priority": "high",
+   "due": "2025-11-27"
+  },
+  "links": [
+   "project-atlas-queue-migration",
+   "person-ana-reyes"
+  ]
+ },
+ {
+  "id": "task-migrate-the-backfill-job-for-atlas-queue-migration",
+  "kind": "task",
+  "title": "Migrate the backfill job for Atlas queue migration",
+  "body": "Migrate the backfill job for Atlas queue migration. Owned by Kofi Mensah.",
+  "date": "2025-05-11",
+  "fields": {
+   "status": "blocked",
+   "owner": "person-kofi-mensah",
+   "project": "project-atlas-queue-migration",
+   "priority": "low",
+   "due": "2025-11-04"
+  },
+  "links": [
+   "project-atlas-queue-migration",
+   "person-kofi-mensah"
+  ]
+ },
+ {
+  "id": "task-load-test-the-alerting-rules-for-atlas-queue-migration",
+  "kind": "task",
+  "title": "Load test the alerting rules for Atlas queue migration",
+  "body": "Load test the alerting rules for Atlas queue migration. Owned by Gus Lindqvist.",
+  "date": "2025-07-28",
+  "fields": {
+   "status": "open",
+   "owner": "person-gus-lindqvist",
+   "project": "project-atlas-queue-migration",
+   "priority": "low",
+   "due": "2025-10-11"
+  },
+  "links": [
+   "project-atlas-queue-migration",
+   "person-gus-lindqvist"
+  ]
+ },
+ {
+  "id": "task-document-the-client-sdk-for-atlas-queue-migration",
+  "kind": "task",
+  "title": "Document the client SDK for Atlas queue migration",
+  "body": "Document the client SDK for Atlas queue migration. Owned by Victor Hale.",
+  "date": "2025-05-08",
+  "fields": {
+   "status": "done",
+   "owner": "person-victor-hale",
+   "project": "project-atlas-queue-migration",
+   "priority": "medium",
+   "due": "2025-11-08"
+  },
+  "links": [
+   "project-atlas-queue-migration",
+   "person-victor-hale"
+  ]
+ },
+ {
+  "id": "task-write-the-alerting-rules-for-ledger-billing-pipeline",
+  "kind": "task",
+  "title": "Write the alerting rules for Ledger billing pipeline",
+  "body": "Write the alerting rules for Ledger billing pipeline. Owned by Priya Iyer.",
+  "date": "2025-06-18",
+  "fields": {
+   "status": "done",
+   "owner": "person-priya-iyer",
+   "project": "project-ledger-billing-pipeline",
+   "priority": "medium",
+   "due": "2025-07-25"
+  },
+  "links": [
+   "project-ledger-billing-pipeline",
+   "person-priya-iyer"
+  ]
+ },
+ {
+  "id": "task-review-the-client-sdk-for-ledger-billing-pipeline",
+  "kind": "task",
+  "title": "Review the client SDK for Ledger billing pipeline",
+  "body": "Review the client SDK for Ledger billing pipeline. Owned by Lena Novak.",
+  "date": "2025-06-21",
+  "fields": {
+   "status": "blocked",
+   "owner": "person-lena-novak",
+   "project": "project-ledger-billing-pipeline",
+   "priority": "medium",
+   "due": "2025-08-27"
+  },
+  "links": [
+   "project-ledger-billing-pipeline",
+   "person-lena-novak"
+  ]
+ },
+ {
+  "id": "task-migrate-the-cutover-runbook-for-ledger-billing-pipeline",
+  "kind": "task",
+  "title": "Migrate the cutover runbook for Ledger billing pipeline",
+  "body": "Migrate the cutover runbook for Ledger billing pipeline. Owned by Ben Okafor.",
+  "date": "2025-07-18",
+  "fields": {
+   "status": "open",
+   "owner": "person-ben-okafor",
+   "project": "project-ledger-billing-pipeline",
+   "priority": "high",
+   "due": "2025-12-24"
+  },
+  "links": [
+   "project-ledger-billing-pipeline",
+   "person-ben-okafor"
+  ]
+ },
+ {
+  "id": "task-load-test-the-schema-migration-for-ledger-billing-pipeline",
+  "kind": "task",
+  "title": "Load test the schema migration for Ledger billing pipeline",
+  "body": "Load test the schema migration for Ledger billing pipeline. Owned by Lena Novak.",
+  "date": "2025-06-17",
+  "fields": {
+   "status": "open",
+   "owner": "person-lena-novak",
+   "project": "project-ledger-billing-pipeline",
+   "priority": "low",
+   "due": "2025-09-26"
+  },
+  "links": [
+   "project-ledger-billing-pipeline",
+   "person-lena-novak"
+  ]
+ },
+ {
+  "id": "task-document-the-integration-tests-for-ledger-billing-pipeline",
+  "kind": "task",
+  "title": "Document the integration tests for Ledger billing pipeline",
+  "body": "Document the integration tests for Ledger billing pipeline. Owned by Priya Iyer.",
+  "date": "2025-06-26",
+  "fields": {
+   "status": "open",
+   "owner": "person-priya-iyer",
+   "project": "project-ledger-billing-pipeline",
+   "priority": "medium",
+   "due": "2025-10-02"
+  },
+  "links": [
+   "project-ledger-billing-pipeline",
+   "person-priya-iyer"
+  ]
+ },
+ {
+  "id": "task-automate-the-retry-worker-for-ledger-billing-pipeline",
+  "kind": "task",
+  "title": "Automate the retry worker for Ledger billing pipeline",
+  "body": "Automate the retry worker for Ledger billing pipeline. Owned by Farah Haddad.",
+  "date": "2025-05-28",
+  "fields": {
+   "status": "blocked",
+   "owner": "person-farah-haddad",
+   "project": "project-ledger-billing-pipeline",
+   "priority": "high",
+   "due": "2025-10-20"
+  },
+  "links": [
+   "project-ledger-billing-pipeline",
+   "person-farah-haddad"
+  ]
+ },
+ {
+  "id": "task-audit-the-cost-report-for-ledger-billing-pipeline",
+  "kind": "task",
+  "title": "Audit the cost report for Ledger billing pipeline",
+  "body": "Audit the cost report for Ledger billing pipeline. Owned by Kofi Mensah.",
+  "date": "2025-04-07",
+  "fields": {
+   "status": "open",
+   "owner": "person-kofi-mensah",
+   "project": "project-ledger-billing-pipeline",
+   "priority": "medium",
+   "due": "2025-08-06"
+  },
+  "links": [
+   "project-ledger-billing-pipeline",
+   "person-kofi-mensah"
+  ]
+ },
+ {
+  "id": "task-benchmark-the-access-policy-for-ledger-billing-pipeline",
+  "kind": "task",
+  "title": "Benchmark the access policy for Ledger billing pipeline",
+  "body": "Benchmark the access policy for Ledger billing pipeline. Owned by Lena Novak.",
+  "date": "2025-05-03",
+  "fields": {
+   "status": "open",
+   "owner": "person-lena-novak",
+   "project": "project-ledger-billing-pipeline",
+   "priority": "low",
+   "due": "2025-08-31"
+  },
+  "links": [
+   "project-ledger-billing-pipeline",
+   "person-lena-novak"
+  ]
+ },
+ {
+  "id": "task-refactor-the-capacity-plan-for-ledger-billing-pipeline",
+  "kind": "task",
+  "title": "Refactor the capacity plan for Ledger billing pipeline",
+  "body": "Refactor the capacity plan for Ledger billing pipeline. Owned by Farah Haddad.",
+  "date": "2025-08-05",
+  "fields": {
+   "status": "in_progress",
+   "owner": "person-farah-haddad",
+   "project": "project-ledger-billing-pipeline",
+   "priority": "low",
+   "due": "2025-07-31"
+  },
+  "links": [
+   "project-ledger-billing-pipeline",
+   "person-farah-haddad"
+  ]
+ },
+ {
+  "id": "task-monitor-the-on-call-handbook-for-ledger-billing-pipeline",
+  "kind": "task",
+  "title": "Monitor the on-call handbook for Ledger billing pipeline",
+  "body": "Monitor the on-call handbook for Ledger billing pipeline. Owned by Wen Li.",
+  "date": "2025-07-12",
+  "fields": {
+   "status": "blocked",
+   "owner": "person-wen-li",
+   "project": "project-ledger-billing-pipeline",
+   "priority": "medium",
+   "due": "2025-12-13"
+  },
+  "links": [
+   "project-ledger-billing-pipeline",
+   "person-wen-li"
+  ]
+ },
+ {
+  "id": "task-write-the-rollback-plan-for-ledger-billing-pipeline",
+  "kind": "task",
+  "title": "Write the rollback plan for Ledger billing pipeline",
+  "body": "Write the rollback plan for Ledger billing pipeline. Owned by Farah Haddad.",
+  "date": "2025-06-05",
+  "fields": {
+   "status": "done",
+   "owner": "person-farah-haddad",
+   "project": "project-ledger-billing-pipeline",
+   "priority": "low",
+   "due": "2025-07-17"
+  },
+  "links": [
+   "project-ledger-billing-pipeline",
+   "person-farah-haddad"
+  ]
+ },
+ {
+  "id": "task-review-the-dashboards-for-ledger-billing-pipeline",
+  "kind": "task",
+  "title": "Review the dashboards for Ledger billing pipeline",
+  "body": "Review the dashboards for Ledger billing pipeline. Owned by Farah Haddad.",
+  "date": "2025-04-14",
+  "fields": {
+   "status": "done",
+   "owner": "person-farah-haddad",
+   "project": "project-ledger-billing-pipeline",
+   "priority": "medium",
+   "due": "2025-11-13"
+  },
+  "links": [
+   "project-ledger-billing-pipeline",
+   "person-farah-haddad"
+  ]
+ },
+ {
+  "id": "task-migrate-the-canary-release-for-ledger-billing-pipeline",
+  "kind": "task",
+  "title": "Migrate the canary release for Ledger billing pipeline",
+  "body": "Migrate the canary release for Ledger billing pipeline. Owned by Ben Okafor.",
+  "date": "2025-08-16",
+  "fields": {
+   "status": "done",
+   "owner": "person-ben-okafor",
+   "project": "project-ledger-billing-pipeline",
+   "priority": "high",
+   "due": "2025-08-04"
+  },
+  "links": [
+   "project-ledger-billing-pipeline",
+   "person-ben-okafor"
+  ]
+ },
+ {
+  "id": "task-load-test-the-staging-environment-for-ledger-billing-pipeline",
+  "kind": "task",
+  "title": "Load test the staging environment for Ledger billing pipeline",
+  "body": "Load test the staging environment for Ledger billing pipeline. Owned by Kofi Mensah.",
+  "date": "2025-08-27",
+  "fields": {
+   "status": "in_progress",
+   "owner": "person-kofi-mensah",
+   "project": "project-ledger-billing-pipeline",
+   "priority": "high",
+   "due": "2025-09-16"
+  },
+  "links": [
+   "project-ledger-billing-pipeline",
+   "person-kofi-mensah"
+  ]
+ },
+ {
+  "id": "task-document-the-backfill-job-for-ledger-billing-pipeline",
+  "kind": "task",
+  "title": "Document the backfill job for Ledger billing pipeline",
+  "body": "Document the backfill job for Ledger billing pipeline. Owned by Lena Novak.",
+  "date": "2025-04-21",
+  "fields": {
+   "status": "open",
+   "owner": "person-lena-novak",
+   "project": "project-ledger-billing-pipeline",
+   "priority": "low",
+   "due": "2025-08-19"
+  },
+  "links": [
+   "project-ledger-billing-pipeline",
+   "person-lena-novak"
+  ]
+ },
+ {
+  "id": "task-write-the-staging-environment-for-beacon-mobile-push",
+  "kind": "task",
+  "title": "Write the staging environment for Beacon mobile push",
+  "body": "Write the staging environment for Beacon mobile push. Owned by Hana Sato.",
+  "date": "2025-08-25",
+  "fields": {
+   "status": "done",
+   "owner": "person-hana-sato",
+   "project": "project-beacon-mobile-push",
+   "priority": "high",
+   "due": "2025-11-27"
+  },
+  "links": [
+   "project-beacon-mobile-push",
+   "person-hana-sato"
+  ]
+ },
+ {
+  "id": "task-review-the-backfill-job-for-beacon-mobile-push",
+  "kind": "task",
+  "title": "Review the backfill job for Beacon mobile push",
+  "body": "Review the backfill job for Beacon mobile push. Owned by Chloe Martin.",
+  "date": "2025-06-29",
+  "fields": {
+   "status": "open",
+   "owner": "person-chloe-martin",
+   "project": "project-beacon-mobile-push",
+   "priority": "high",
+   "due": "2025-12-27"
+  },
+  "links": [
+   "project-beacon-mobile-push",
+   "person-chloe-martin"
+  ]
+ },
+ {
+  "id": "task-migrate-the-alerting-rules-for-beacon-mobile-push",
+  "kind": "task",
+  "title": "Migrate the alerting rules for Beacon mobile push",
+  "body": "Migrate the alerting rules for Beacon mobile push. Owned by Nia Brooks.",
+  "date": "2025-07-15",
+  "fields": {
+   "status": "done",
+   "owner": "person-nia-brooks",
+   "project": "project-beacon-mobile-push",
+   "priority": "medium",
+   "due": "2025-11-13"
+  },
+  "links": [
+   "project-beacon-mobile-push",
+   "person-nia-brooks"
+  ]
+ },
+ {
+  "id": "task-load-test-the-client-sdk-for-beacon-mobile-push",
+  "kind": "task",
+  "title": "Load test the client SDK for Beacon mobile push",
+  "body": "Load test the client SDK for Beacon mobile push. Owned by Nia Brooks.",
+  "date": "2025-04-02",
+  "fields": {
+   "status": "blocked",
+   "owner": "person-nia-brooks",
+   "project": "project-beacon-mobile-push",
+   "priority": "high",
+   "due": "2025-11-17"
+  },
+  "links": [
+   "project-beacon-mobile-push",
+   "person-nia-brooks"
+  ]
+ },
+ {
+  "id": "task-document-the-cutover-runbook-for-beacon-mobile-push",
+  "kind": "task",
+  "title": "Document the cutover runbook for Beacon mobile push",
+  "body": "Document the cutover runbook for Beacon mobile push. Owned by Chloe Martin.",
+  "date": "2025-04-02",
+  "fields": {
+   "status": "open",
+   "owner": "person-chloe-martin",
+   "project": "project-beacon-mobile-push",
+   "priority": "medium",
+   "due": "2025-10-13"
+  },
+  "links": [
+   "project-beacon-mobile-push",
+   "person-chloe-martin"
+  ]
+ },
+ {
+  "id": "task-automate-the-schema-migration-for-beacon-mobile-push",
+  "kind": "task",
+  "title": "Automate the schema migration for Beacon mobile push",
+  "body": "Automate the schema migration for Beacon mobile push. Owned by Nia Brooks.",
+  "date": "2025-06-02",
+  "fields": {
+   "status": "done",
+   "owner": "person-nia-brooks",
+   "project": "project-beacon-mobile-push",
+   "priority": "low",
+   "due": "2025-08-21"
+  },
+  "links": [
+   "project-beacon-mobile-push",
+   "person-nia-brooks"
+  ]
+ },
+ {
+  "id": "task-audit-the-integration-tests-for-beacon-mobile-push",
+  "kind": "task",
+  "title": "Audit the integration tests for Beacon mobile push",
+  "body": "Audit the integration tests for Beacon mobile push. Owned by Sam Rivera.",
+  "date": "2025-07-31",
+  "fields": {
+   "status": "open",
+   "owner": "person-sam-rivera",
+   "project": "project-beacon-mobile-push",
+   "priority": "medium",
+   "due": "2025-07-09"
+  },
+  "links": [
+   "project-beacon-mobile-push",
+   "person-sam-rivera"
+  ]
+ },
+ {
+  "id": "task-benchmark-the-retry-worker-for-beacon-mobile-push",
+  "kind": "task",
+  "title": "Benchmark the retry worker for Beacon mobile push",
+  "body": "Benchmark the retry worker for Beacon mobile push. Owned by Nia Brooks.",
+  "date": "2025-08-10",
+  "fields": {
+   "status": "done",
+   "owner": "person-nia-brooks",
+   "project": "project-beacon-mobile-push",
+   "priority": "high",
+   "due": "2025-07-21"
+  },
+  "links": [
+   "project-beacon-mobile-push",
+   "person-nia-brooks"
+  ]
+ },
+ {
+  "id": "task-refactor-the-cost-report-for-beacon-mobile-push",
+  "kind": "task",
+  "title": "Refactor the cost report for Beacon mobile push",
+  "body": "Refactor the cost report for Beacon mobile push. Owned by Chloe Martin.",
+  "date": "2025-05-10",
+  "fields": {
+   "status": "done",
+   "owner": "person-chloe-martin",
+   "project": "project-beacon-mobile-push",
+   "priority": "high",
+   "due": "2025-10-03"
+  },
+  "links": [
+   "project-beacon-mobile-push",
+   "person-chloe-martin"
+  ]
+ },
+ {
+  "id": "task-monitor-the-access-policy-for-beacon-mobile-push",
+  "kind": "task",
+  "title": "Monitor the access policy for Beacon mobile push",
+  "body": "Monitor the access policy for Beacon mobile push. Owned by Chloe Martin.",
+  "date": "2025-05-21",
+  "fields": {
+   "status": "done",
+   "owner": "person-chloe-martin",
+   "project": "project-beacon-mobile-push",
+   "priority": "high",
+   "due": "2025-10-18"
+  },
+  "links": [
+   "project-beacon-mobile-push",
+   "person-chloe-martin"
+  ]
+ },
+ {
+  "id": "task-write-the-capacity-plan-for-beacon-mobile-push",
+  "kind": "task",
+  "title": "Write the capacity plan for Beacon mobile push",
+  "body": "Write the capacity plan for Beacon mobile push. Owned by Hana Sato.",
+  "date": "2025-05-20",
+  "fields": {
+   "status": "done",
+   "owner": "person-hana-sato",
+   "project": "project-beacon-mobile-push",
+   "priority": "medium",
+   "due": "2025-09-27"
+  },
+  "links": [
+   "project-beacon-mobile-push",
+   "person-hana-sato"
+  ]
+ },
+ {
+  "id": "task-review-the-on-call-handbook-for-beacon-mobile-push",
+  "kind": "task",
+  "title": "Review the on-call handbook for Beacon mobile push",
+  "body": "Review the on-call handbook for Beacon mobile push. Owned by Sam Rivera.",
+  "date": "2025-04-03",
+  "fields": {
+   "status": "done",
+   "owner": "person-sam-rivera",
+   "project": "project-beacon-mobile-push",
+   "priority": "medium",
+   "due": "2025-12-27"
+  },
+  "links": [
+   "project-beacon-mobile-push",
+   "person-sam-rivera"
+  ]
+ },
+ {
+  "id": "task-migrate-the-rollback-plan-for-beacon-mobile-push",
+  "kind": "task",
+  "title": "Migrate the rollback plan for Beacon mobile push",
+  "body": "Migrate the rollback plan for Beacon mobile push. Owned by Ana Reyes.",
+  "date": "2025-05-18",
+  "fields": {
+   "status": "in_progress",
+   "owner": "person-ana-reyes",
+   "project": "project-beacon-mobile-push",
+   "priority": "high",
+   "due": "2025-09-14"
+  },
+  "links": [
+   "project-beacon-mobile-push",
+   "person-ana-reyes"
+  ]
+ },
+ {
+  "id": "task-load-test-the-dashboards-for-beacon-mobile-push",
+  "kind": "task",
+  "title": "Load test the dashboards for Beacon mobile push",
+  "body": "Load test the dashboards for Beacon mobile push. Owned by Nia Brooks.",
+  "date": "2025-07-13",
+  "fields": {
+   "status": "in_progress",
+   "owner": "person-nia-brooks",
+   "project": "project-beacon-mobile-push",
+   "priority": "low",
+   "due": "2025-09-14"
+  },
+  "links": [
+   "project-beacon-mobile-push",
+   "person-nia-brooks"
+  ]
+ },
+ {
+  "id": "task-document-the-canary-release-for-beacon-mobile-push",
+  "kind": "task",
+  "title": "Document the canary release for Beacon mobile push",
+  "body": "Document the canary release for Beacon mobile push. Owned by Chloe Martin.",
+  "date": "2025-08-06",
+  "fields": {
+   "status": "open",
+   "owner": "person-chloe-martin",
+   "project": "project-beacon-mobile-push",
+   "priority": "medium",
+   "due": "2025-12-14"
+  },
+  "links": [
+   "project-beacon-mobile-push",
+   "person-chloe-martin"
+  ]
+ },
+ {
+  "id": "task-write-the-dashboards-for-cobalt-payment-retries",
+  "kind": "task",
+  "title": "Write the dashboards for Cobalt payment retries",
+  "body": "Write the dashboards for Cobalt payment retries. Owned by Victor Hale.",
+  "date": "2025-07-09",
+  "fields": {
+   "status": "open",
+   "owner": "person-victor-hale",
+   "project": "project-cobalt-payment-retries",
+   "priority": "low",
+   "due": "2025-08-09"
+  },
+  "links": [
+   "project-cobalt-payment-retries",
+   "person-victor-hale"
+  ]
+ },
+ {
+  "id": "task-review-the-canary-release-for-cobalt-payment-retries",
+  "kind": "task",
+  "title": "Review the canary release for Cobalt payment retries",
+  "body": "Review the canary release for Cobalt payment retries. Owned by Kofi Mensah.",
+  "date": "2025-08-14",
+  "fields": {
+   "status": "done",
+   "owner": "person-kofi-mensah",
+   "project": "project-cobalt-payment-retries",
+   "priority": "medium",
+   "due": "2025-12-19"
+  },
+  "links": [
+   "project-cobalt-payment-retries",
+   "person-kofi-mensah"
+  ]
+ },
+ {
+  "id": "task-migrate-the-staging-environment-for-cobalt-payment-retries",
+  "kind": "task",
+  "title": "Migrate the staging environment for Cobalt payment retries",
+  "body": "Migrate the staging environment for Cobalt payment retries. Owned by Ana Reyes.",
+  "date": "2025-04-15",
+  "fields": {
+   "status": "open",
+   "owner": "person-ana-reyes",
+   "project": "project-cobalt-payment-retries",
+   "priority": "high",
+   "due": "2025-10-30"
+  },
+  "links": [
+   "project-cobalt-payment-retries",
+   "person-ana-reyes"
+  ]
+ },
+ {
+  "id": "task-load-test-the-backfill-job-for-cobalt-payment-retries",
+  "kind": "task",
+  "title": "Load test the backfill job for Cobalt payment retries",
+  "body": "Load test the backfill job for Cobalt payment retries. Owned by Dev Patel.",
+  "date": "2025-04-30",
+  "fields": {
+   "status": "in_progress",
+   "owner": "person-dev-patel",
+   "project": "project-cobalt-payment-retries",
+   "priority": "medium",
+   "due": "2025-09-27"
+  },
+  "links": [
+   "project-cobalt-payment-retries",
+   "person-dev-patel"
+  ]
+ },
+ {
+  "id": "task-document-the-alerting-rules-for-cobalt-payment-retries",
+  "kind": "task",
+  "title": "Document the alerting rules for Cobalt payment retries",
+  "body": "Document the alerting rules for Cobalt payment retries. Owned by Uma Desai.",
+  "date": "2025-07-02",
+  "fields": {
+   "status": "blocked",
+   "owner": "person-uma-desai",
+   "project": "project-cobalt-payment-retries",
+   "priority": "low",
+   "due": "2025-10-03"
+  },
+  "links": [
+   "project-cobalt-payment-retries",
+   "person-uma-desai"
+  ]
+ },
+ {
+  "id": "task-automate-the-client-sdk-for-cobalt-payment-retries",
+  "kind": "task",
+  "title": "Automate the client SDK for Cobalt payment retries",
+  "body": "Automate the client SDK for Cobalt payment retries. Owned by Kofi Mensah.",
+  "date": "2025-08-27",
+  "fields": {
+   "status": "open",
+   "owner": "person-kofi-mensah",
+   "project": "project-cobalt-payment-retries",
+   "priority": "low",
+   "due": "2025-09-19"
+  },
+  "links": [
+   "project-cobalt-payment-retries",
+   "person-kofi-mensah"
+  ]
+ },
+ {
+  "id": "task-audit-the-cutover-runbook-for-cobalt-payment-retries",
+  "kind": "task",
+  "title": "Audit the cutover runbook for Cobalt payment retries",
+  "body": "Audit the cutover runbook for Cobalt payment retries. Owned by Ivan Petrov.",
+  "date": "2025-05-04",
+  "fields": {
+   "status": "open",
+   "owner": "person-ivan-petrov",
+   "project": "project-cobalt-payment-retries",
+   "priority": "high",
+   "due": "2025-12-07"
+  },
+  "links": [
+   "project-cobalt-payment-retries",
+   "person-ivan-petrov"
+  ]
+ },
+ {
+  "id": "task-benchmark-the-schema-migration-for-cobalt-payment-retries",
+  "kind": "task",
+  "title": "Benchmark the schema migration for Cobalt payment retries",
+  "body": "Benchmark the schema migration for Cobalt payment retries. Owned by Dev Patel.",
+  "date": "2025-06-25",
+  "fields": {
+   "status": "open",
+   "owner": "person-dev-patel",
+   "project": "project-cobalt-payment-retries",
+   "priority": "low",
+   "due": "2025-07-26"
+  },
+  "links": [
+   "project-cobalt-payment-retries",
+   "person-dev-patel"
+  ]
+ },
+ {
+  "id": "task-refactor-the-integration-tests-for-cobalt-payment-retries",
+  "kind": "task",
+  "title": "Refactor the integration tests for Cobalt payment retries",
+  "body": "Refactor the integration tests for Cobalt payment retries. Owned by Ivan Petrov.",
+  "date": "2025-06-29",
+  "fields": {
+   "status": "in_progress",
+   "owner": "person-ivan-petrov",
+   "project": "project-cobalt-payment-retries",
+   "priority": "medium",
+   "due": "2025-08-16"
+  },
+  "links": [
+   "project-cobalt-payment-retries",
+   "person-ivan-petrov"
+  ]
+ },
+ {
+  "id": "task-monitor-the-retry-worker-for-cobalt-payment-retries",
+  "kind": "task",
+  "title": "Monitor the retry worker for Cobalt payment retries",
+  "body": "Monitor the retry worker for Cobalt payment retries. Owned by Tara Quinn.",
+  "date": "2025-04-28",
+  "fields": {
+   "status": "in_progress",
+   "owner": "person-tara-quinn",
+   "project": "project-cobalt-payment-retries",
+   "priority": "medium",
+   "due": "2025-08-21"
+  },
+  "links": [
+   "project-cobalt-payment-retries",
+   "person-tara-quinn"
+  ]
+ },
+ {
+  "id": "task-write-the-cost-report-for-cobalt-payment-retries",
+  "kind": "task",
+  "title": "Write the cost report for Cobalt payment retries",
+  "body": "Write the cost report for Cobalt payment retries. Owned by Nia Brooks.",
+  "date": "2025-06-03",
+  "fields": {
+   "status": "in_progress",
+   "owner": "person-nia-brooks",
+   "project": "project-cobalt-payment-retries",
+   "priority": "medium",
+   "due": "2025-09-04"
+  },
+  "links": [
+   "project-cobalt-payment-retries",
+   "person-nia-brooks"
+  ]
+ },
+ {
+  "id": "task-review-the-access-policy-for-cobalt-payment-retries",
+  "kind": "task",
+  "title": "Review the access policy for Cobalt payment retries",
+  "body": "Review the access policy for Cobalt payment retries. Owned by Dev Patel.",
+  "date": "2025-06-18",
+  "fields": {
+   "status": "in_progress",
+   "owner": "person-dev-patel",
+   "project": "project-cobalt-payment-retries",
+   "priority": "high",
+   "due": "2025-08-24"
+  },
+  "links": [
+   "project-cobalt-payment-retries",
+   "person-dev-patel"
+  ]
+ },
+ {
+  "id": "task-migrate-the-capacity-plan-for-cobalt-payment-retries",
+  "kind": "task",
+  "title": "Migrate the capacity plan for Cobalt payment retries",
+  "body": "Migrate the capacity plan for Cobalt payment retries. Owned by Marco Rossi.",
+  "date": "2025-06-24",
+  "fields": {
+   "status": "open",
+   "owner": "person-marco-rossi",
+   "project": "project-cobalt-payment-retries",
+   "priority": "medium",
+   "due": "2025-12-16"
+  },
+  "links": [
+   "project-cobalt-payment-retries",
+   "person-marco-rossi"
+  ]
+ },
+ {
+  "id": "task-load-test-the-on-call-handbook-for-cobalt-payment-retries",
+  "kind": "task",
+  "title": "Load test the on-call handbook for Cobalt payment retries",
+  "body": "Load test the on-call handbook for Cobalt payment retries. Owned by Tara Quinn.",
+  "date": "2025-07-16",
+  "fields": {
+   "status": "open",
+   "owner": "person-tara-quinn",
+   "project": "project-cobalt-payment-retries",
+   "priority": "medium",
+   "due": "2025-10-24"
+  },
+  "links": [
+   "project-cobalt-payment-retries",
+   "person-tara-quinn"
+  ]
+ },
+ {
+  "id": "task-document-the-rollback-plan-for-cobalt-payment-retries",
+  "kind": "task",
+  "title": "Document the rollback plan for Cobalt payment retries",
+  "body": "Document the rollback plan for Cobalt payment retries. Owned by Zane Ortiz.",
+  "date": "2025-08-17",
+  "fields": {
+   "status": "done",
+   "owner": "person-zane-ortiz",
+   "project": "project-cobalt-payment-retries",
+   "priority": "high",
+   "due": "2025-09-02"
+  },
+  "links": [
+   "project-cobalt-payment-retries",
+   "person-zane-ortiz"
+  ]
+ },
+ {
+  "id": "task-write-the-on-call-handbook-for-sentinel-access-reviews",
+  "kind": "task",
+  "title": "Write the on-call handbook for Sentinel access reviews",
+  "body": "Write the on-call handbook for Sentinel access reviews. Owned by Chloe Martin.",
+  "date": "2025-04-21",
+  "fields": {
+   "status": "open",
+   "owner": "person-chloe-martin",
+   "project": "project-sentinel-access-reviews",
+   "priority": "high",
+   "due": "2025-07-09"
+  },
+  "links": [
+   "project-sentinel-access-reviews",
+   "person-chloe-martin"
+  ]
+ },
+ {
+  "id": "task-review-the-rollback-plan-for-sentinel-access-reviews",
+  "kind": "task",
+  "title": "Review the rollback plan for Sentinel access reviews",
+  "body": "Review the rollback plan for Sentinel access reviews. Owned by Uma Desai.",
+  "date": "2025-05-28",
+  "fields": {
+   "status": "blocked",
+   "owner": "person-uma-desai",
+   "project": "project-sentinel-access-reviews",
+   "priority": "medium",
+   "due": "2025-11-30"
+  },
+  "links": [
+   "project-sentinel-access-reviews",
+   "person-uma-desai"
+  ]
+ },
+ {
+  "id": "task-migrate-the-dashboards-for-sentinel-access-reviews",
+  "kind": "task",
+  "title": "Migrate the dashboards for Sentinel access reviews",
+  "body": "Migrate the dashboards for Sentinel access reviews. Owned by Farah Haddad.",
+  "date": "2025-04-29",
+  "fields": {
+   "status": "blocked",
+   "owner": "person-farah-haddad",
+   "project": "project-sentinel-access-reviews",
+   "priority": "high",
+   "due": "2025-11-20"
+  },
+  "links": [
+   "project-sentinel-access-reviews",
+   "person-farah-haddad"
+  ]
+ },
+ {
+  "id": "task-load-test-the-canary-release-for-sentinel-access-reviews",
+  "kind": "task",
+  "title": "Load test the canary release for Sentinel access reviews",
+  "body": "Load test the canary release for Sentinel access reviews. Owned by Omar Saleh.",
+  "date": "2025-07-30",
+  "fields": {
+   "status": "open",
+   "owner": "person-omar-saleh",
+   "project": "project-sentinel-access-reviews",
+   "priority": "high",
+   "due": "2025-11-22"
+  },
+  "links": [
+   "project-sentinel-access-reviews",
+   "person-omar-saleh"
+  ]
+ },
+ {
+  "id": "task-document-the-staging-environment-for-sentinel-access-reviews",
+  "kind": "task",
+  "title": "Document the staging environment for Sentinel access reviews",
+  "body": "Document the staging environment for Sentinel access reviews. Owned by Jade Wong.",
+  "date": "2025-06-02",
+  "fields": {
+   "status": "open",
+   "owner": "person-jade-wong",
+   "project": "project-sentinel-access-reviews",
+   "priority": "low",
+   "due": "2025-09-10"
+  },
+  "links": [
+   "project-sentinel-access-reviews",
+   "person-jade-wong"
+  ]
+ },
+ {
+  "id": "task-automate-the-backfill-job-for-sentinel-access-reviews",
+  "kind": "task",
+  "title": "Automate the backfill job for Sentinel access reviews",
+  "body": "Automate the backfill job for Sentinel access reviews. Owned by Omar Saleh.",
+  "date": "2025-05-22",
+  "fields": {
+   "status": "done",
+   "owner": "person-omar-saleh",
+   "project": "project-sentinel-access-reviews",
+   "priority": "high",
+   "due": "2025-09-09"
+  },
+  "links": [
+   "project-sentinel-access-reviews",
+   "person-omar-saleh"
+  ]
+ },
+ {
+  "id": "task-audit-the-alerting-rules-for-sentinel-access-reviews",
+  "kind": "task",
+  "title": "Audit the alerting rules for Sentinel access reviews",
+  "body": "Audit the alerting rules for Sentinel access reviews. Owned by Uma Desai.",
+  "date": "2025-08-20",
+  "fields": {
+   "status": "done",
+   "owner": "person-uma-desai",
+   "project": "project-sentinel-access-reviews",
+   "priority": "medium",
+   "due": "2025-10-20"
+  },
+  "links": [
+   "project-sentinel-access-reviews",
+   "person-uma-desai"
+  ]
+ },
+ {
+  "id": "task-benchmark-the-client-sdk-for-sentinel-access-reviews",
+  "kind": "task",
+  "title": "Benchmark the client SDK for Sentinel access reviews",
+  "body": "Benchmark the client SDK for Sentinel access reviews. Owned by Jade Wong.",
+  "date": "2025-05-17",
+  "fields": {
+   "status": "open",
+   "owner": "person-jade-wong",
+   "project": "project-sentinel-access-reviews",
+   "priority": "medium",
+   "due": "2025-09-19"
+  },
+  "links": [
+   "project-sentinel-access-reviews",
+   "person-jade-wong"
+  ]
+ },
+ {
+  "id": "task-refactor-the-cutover-runbook-for-sentinel-access-reviews",
+  "kind": "task",
+  "title": "Refactor the cutover runbook for Sentinel access reviews",
+  "body": "Refactor the cutover runbook for Sentinel access reviews. Owned by Omar Saleh.",
+  "date": "2025-04-18",
+  "fields": {
+   "status": "done",
+   "owner": "person-omar-saleh",
+   "project": "project-sentinel-access-reviews",
+   "priority": "high",
+   "due": "2025-12-13"
+  },
+  "links": [
+   "project-sentinel-access-reviews",
+   "person-omar-saleh"
+  ]
+ },
+ {
+  "id": "task-monitor-the-schema-migration-for-sentinel-access-reviews",
+  "kind": "task",
+  "title": "Monitor the schema migration for Sentinel access reviews",
+  "body": "Monitor the schema migration for Sentinel access reviews. Owned by Omar Saleh.",
+  "date": "2025-07-18",
+  "fields": {
+   "status": "in_progress",
+   "owner": "person-omar-saleh",
+   "project": "project-sentinel-access-reviews",
+   "priority": "high",
+   "due": "2025-08-06"
+  },
+  "links": [
+   "project-sentinel-access-reviews",
+   "person-omar-saleh"
+  ]
+ },
+ {
+  "id": "task-write-the-integration-tests-for-sentinel-access-reviews",
+  "kind": "task",
+  "title": "Write the integration tests for Sentinel access reviews",
+  "body": "Write the integration tests for Sentinel access reviews. Owned by Jade Wong.",
+  "date": "2025-05-13",
+  "fields": {
+   "status": "blocked",
+   "owner": "person-jade-wong",
+   "project": "project-sentinel-access-reviews",
+   "priority": "medium",
+   "due": "2025-08-21"
+  },
+  "links": [
+   "project-sentinel-access-reviews",
+   "person-jade-wong"
+  ]
+ },
+ {
+  "id": "task-review-the-retry-worker-for-sentinel-access-reviews",
+  "kind": "task",
+  "title": "Review the retry worker for Sentinel access reviews",
+  "body": "Review the retry worker for Sentinel access reviews. Owned by Omar Saleh.",
+  "date": "2025-06-10",
+  "fields": {
+   "status": "in_progress",
+   "owner": "person-omar-saleh",
+   "project": "project-sentinel-access-reviews",
+   "priority": "medium",
+   "due": "2025-08-11"
+  },
+  "links": [
+   "project-sentinel-access-reviews",
+   "person-omar-saleh"
+  ]
+ },
+ {
+  "id": "task-migrate-the-cost-report-for-sentinel-access-reviews",
+  "kind": "task",
+  "title": "Migrate the cost report for Sentinel access reviews",
+  "body": "Migrate the cost report for Sentinel access reviews. Owned by Elif Kaya.",
+  "date": "2025-04-09",
+  "fields": {
+   "status": "in_progress",
+   "owner": "person-elif-kaya",
+   "project": "project-sentinel-access-reviews",
+   "priority": "medium",
+   "due": "2025-12-19"
+  },
+  "links": [
+   "project-sentinel-access-reviews",
+   "person-elif-kaya"
+  ]
+ },
+ {
+  "id": "task-load-test-the-access-policy-for-sentinel-access-reviews",
+  "kind": "task",
+  "title": "Load test the access policy for Sentinel access reviews",
+  "body": "Load test the access policy for Sentinel access reviews. Owned by Hana Sato.",
+  "date": "2025-05-26",
+  "fields": {
+   "status": "done",
+   "owner": "person-hana-sato",
+   "project": "project-sentinel-access-reviews",
+   "priority": "medium",
+   "due": "2025-08-07"
+  },
+  "links": [
+   "project-sentinel-access-reviews",
+   "person-hana-sato"
+  ]
+ },
+ {
+  "id": "task-document-the-capacity-plan-for-sentinel-access-reviews",
+  "kind": "task",
+  "title": "Document the capacity plan for Sentinel access reviews",
+  "body": "Document the capacity plan for Sentinel access reviews. Owned by Uma Desai.",
+  "date": "2025-04-26",
+  "fields": {
+   "status": "open",
+   "owner": "person-uma-desai",
+   "project": "project-sentinel-access-reviews",
+   "priority": "medium",
+   "due": "2025-07-13"
+  },
+  "links": [
+   "project-sentinel-access-reviews",
+   "person-uma-desai"
+  ]
+ },
+ {
+  "id": "task-write-the-access-policy-for-harbor-container-platform",
+  "kind": "task",
+  "title": "Write the access policy for Harbor container platform",
+  "body": "Write the access policy for Harbor container platform. Owned by Uma Desai.",
+  "date": "2025-06-01",
+  "fields": {
+   "status": "open",
+   "owner": "person-uma-desai",
+   "project": "project-harbor-container-platform",
+   "priority": "medium",
+   "due": "2025-09-02"
+  },
+  "links": [
+   "project-harbor-container-platform",
+   "person-uma-desai"
+  ]
+ },
+ {
+  "id": "task-review-the-capacity-plan-for-harbor-container-platform",
+  "kind": "task",
+  "title": "Review the capacity plan for Harbor container platform",
+  "body": "Review the capacity plan for Harbor container platform. Owned by Ana Reyes.",
+  "date": "2025-04-24",
+  "fields": {
+   "status": "done",
+   "owner": "person-ana-reyes",
+   "project": "project-harbor-container-platform",
+   "priority": "low",
+   "due": "2025-09-24"
+  },
+  "links": [
+   "project-harbor-container-platform",
+   "person-ana-reyes"
+  ]
+ },
+ {
+  "id": "task-migrate-the-on-call-handbook-for-harbor-container-platform",
+  "kind": "task",
+  "title": "Migrate the on-call handbook for Harbor container platform",
+  "body": "Migrate the on-call handbook for Harbor container platform. Owned by Kofi Mensah.",
+  "date": "2025-08-12",
+  "fields": {
+   "status": "in_progress",
+   "owner": "person-kofi-mensah",
+   "project": "project-harbor-container-platform",
+   "priority": "high",
+   "due": "2025-11-18"
+  },
+  "links": [
+   "project-harbor-container-platform",
+   "person-kofi-mensah"
+  ]
+ },
+ {
+  "id": "task-load-test-the-rollback-plan-for-harbor-container-platform",
+  "kind": "task",
+  "title": "Load test the rollback plan for Harbor container platform",
+  "body": "Load test the rollback plan for Harbor container platform. Owned by Gus Lindqvist.",
+  "date": "2025-04-08",
+  "fields": {
+   "status": "open",
+   "owner": "person-gus-lindqvist",
+   "project": "project-harbor-container-platform",
+   "priority": "medium",
+   "due": "2025-07-24"
+  },
+  "links": [
+   "project-harbor-container-platform",
+   "person-gus-lindqvist"
+  ]
+ },
+ {
+  "id": "task-document-the-dashboards-for-harbor-container-platform",
+  "kind": "task",
+  "title": "Document the dashboards for Harbor container platform",
+  "body": "Document the dashboards for Harbor container platform. Owned by Quinn Harper.",
+  "date": "2025-06-04",
+  "fields": {
+   "status": "done",
+   "owner": "person-quinn-harper",
+   "project": "project-harbor-container-platform",
+   "priority": "medium",
+   "due": "2025-09-06"
+  },
+  "links": [
+   "project-harbor-container-platform",
+   "person-quinn-harper"
+  ]
+ },
+ {
+  "id": "task-automate-the-canary-release-for-harbor-container-platform",
+  "kind": "task",
+  "title": "Automate the canary release for Harbor container platform",
+  "body": "Automate the canary release for Harbor container platform. Owned by Gus Lindqvist.",
+  "date": "2025-05-11",
+  "fields": {
+   "status": "open",
+   "owner": "person-gus-lindqvist",
+   "project": "project-harbor-container-platform",
+   "priority": "high",
+   "due": "2025-12-14"
+  },
+  "links": [
+   "project-harbor-container-platform",
+   "person-gus-lindqvist"
+  ]
+ },
+ {
+  "id": "task-audit-the-staging-environment-for-harbor-container-platform",
+  "kind": "task",
+  "title": "Audit the staging environment for Harbor container platform",
+  "body": "Audit the staging environment for Harbor container platform. Owned by Gus Lindqvist.",
+  "date": "2025-06-25",
+  "fields": {
+   "status": "open",
+   "owner": "person-gus-lindqvist",
+   "project": "project-harbor-container-platform",
+   "priority": "medium",
+   "due": "2025-07-04"
+  },
+  "links": [
+   "project-harbor-container-platform",
+   "person-gus-lindqvist"
+  ]
+ },
+ {
+  "id": "task-benchmark-the-backfill-job-for-harbor-container-platform",
+  "kind": "task",
+  "title": "Benchmark the backfill job for Harbor container platform",
+  "body": "Benchmark the backfill job for Harbor container platform. Owned by Gus Lindqvist.",
+  "date": "2025-08-07",
+  "fields": {
+   "status": "done",
+   "owner": "person-gus-lindqvist",
+   "project": "project-harbor-container-platform",
+   "priority": "low",
+   "due": "2025-12-11"
+  },
+  "links": [
+   "project-harbor-container-platform",
+   "person-gus-lindqvist"
+  ]
+ },
+ {
+  "id": "task-refactor-the-alerting-rules-for-harbor-container-platform",
+  "kind": "task",
+  "title": "Refactor the alerting rules for Harbor container platform",
+  "body": "Refactor the alerting rules for Harbor container platform. Owned by Kofi Mensah.",
+  "date": "2025-07-24",
+  "fields": {
+   "status": "done",
+   "owner": "person-kofi-mensah",
+   "project": "project-harbor-container-platform",
+   "priority": "low",
+   "due": "2025-10-04"
+  },
+  "links": [
+   "project-harbor-container-platform",
+   "person-kofi-mensah"
+  ]
+ },
+ {
+  "id": "task-monitor-the-client-sdk-for-harbor-container-platform",
+  "kind": "task",
+  "title": "Monitor the client SDK for Harbor container platform",
+  "body": "Monitor the client SDK for Harbor container platform. Owned by Quinn Harper.",
+  "date": "2025-07-20",
+  "fields": {
+   "status": "blocked",
+   "owner": "person-quinn-harper",
+   "project": "project-harbor-container-platform",
+   "priority": "medium",
+   "due": "2025-07-30"
+  },
+  "links": [
+   "project-harbor-container-platform",
+   "person-quinn-harper"
+  ]
+ },
+ {
+  "id": "task-write-the-cutover-runbook-for-harbor-container-platform",
+  "kind": "task",
+  "title": "Write the cutover runbook for Harbor container platform",
+  "body": "Write the cutover runbook for Harbor container platform. Owned by Sam Rivera.",
+  "date": "2025-07-10",
+  "fields": {
+   "status": "in_progress",
+   "owner": "person-sam-rivera",
+   "project": "project-harbor-container-platform",
+   "priority": "medium",
+   "due": "2025-08-13"
+  },
+  "links": [
+   "project-harbor-container-platform",
+   "person-sam-rivera"
+  ]
+ },
+ {
+  "id": "task-review-the-schema-migration-for-harbor-container-platform",
+  "kind": "task",
+  "title": "Review the schema migration for Harbor container platform",
+  "body": "Review the schema migration for Harbor container platform. Owned by Gus Lindqvist.",
+  "date": "2025-08-18",
+  "fields": {
+   "status": "open",
+   "owner": "person-gus-lindqvist",
+   "project": "project-harbor-container-platform",
+   "priority": "high",
+   "due": "2025-11-04"
+  },
+  "links": [
+   "project-harbor-container-platform",
+   "person-gus-lindqvist"
+  ]
+ },
+ {
+  "id": "task-migrate-the-integration-tests-for-harbor-container-platform",
+  "kind": "task",
+  "title": "Migrate the integration tests for Harbor container platform",
+  "body": "Migrate the integration tests for Harbor container platform. Owned by Quinn Harper.",
+  "date": "2025-06-30",
+  "fields": {
+   "status": "blocked",
+   "owner": "person-quinn-harper",
+   "project": "project-harbor-container-platform",
+   "priority": "low",
+   "due": "2025-08-20"
+  },
+  "links": [
+   "project-harbor-container-platform",
+   "person-quinn-harper"
+  ]
+ },
+ {
+  "id": "task-load-test-the-retry-worker-for-harbor-container-platform",
+  "kind": "task",
+  "title": "Load test the retry worker for Harbor container platform",
+  "body": "Load test the retry worker for Harbor container platform. Owned by Gus Lindqvist.",
+  "date": "2025-07-28",
+  "fields": {
+   "status": "open",
+   "owner": "person-gus-lindqvist",
+   "project": "project-harbor-container-platform",
+   "priority": "medium",
+   "due": "2025-07-06"
+  },
+  "links": [
+   "project-harbor-container-platform",
+   "person-gus-lindqvist"
+  ]
+ },
+ {
+  "id": "task-document-the-cost-report-for-harbor-container-platform",
+  "kind": "task",
+  "title": "Document the cost report for Harbor container platform",
+  "body": "Document the cost report for Harbor container platform. Owned by Quinn Harper.",
+  "date": "2025-06-22",
+  "fields": {
+   "status": "done",
+   "owner": "person-quinn-harper",
+   "project": "project-harbor-container-platform",
+   "priority": "high",
+   "due": "2025-12-21"
+  },
+  "links": [
+   "project-harbor-container-platform",
+   "person-quinn-harper"
+  ]
+ },
+ {
+  "id": "task-write-the-retry-worker-for-prism-analytics-warehouse",
+  "kind": "task",
+  "title": "Write the retry worker for Prism analytics warehouse",
+  "body": "Write the retry worker for Prism analytics warehouse. Owned by Quinn Harper.",
+  "date": "2025-08-24",
+  "fields": {
+   "status": "in_progress",
+   "owner": "person-quinn-harper",
+   "project": "project-prism-analytics-warehouse",
+   "priority": "medium",
+   "due": "2025-10-11"
+  },
+  "links": [
+   "project-prism-analytics-warehouse",
+   "person-quinn-harper"
+  ]
+ },
+ {
+  "id": "task-review-the-cost-report-for-prism-analytics-warehouse",
+  "kind": "task",
+  "title": "Review the cost report for Prism analytics warehouse",
+  "body": "Review the cost report for Prism analytics warehouse. Owned by Priya Iyer.",
+  "date": "2025-04-06",
+  "fields": {
+   "status": "open",
+   "owner": "person-priya-iyer",
+   "project": "project-prism-analytics-warehouse",
+   "priority": "high",
+   "due": "2025-08-23"
+  },
+  "links": [
+   "project-prism-analytics-warehouse",
+   "person-priya-iyer"
+  ]
+ },
+ {
+  "id": "task-migrate-the-access-policy-for-prism-analytics-warehouse",
+  "kind": "task",
+  "title": "Migrate the access policy for Prism analytics warehouse",
+  "body": "Migrate the access policy for Prism analytics warehouse. Owned by Farah Haddad.",
+  "date": "2025-05-12",
+  "fields": {
+   "status": "open",
+   "owner": "person-farah-haddad",
+   "project": "project-prism-analytics-warehouse",
+   "priority": "medium",
+   "due": "2025-07-07"
+  },
+  "links": [
+   "project-prism-analytics-warehouse",
+   "person-farah-haddad"
+  ]
+ },
+ {
+  "id": "task-load-test-the-capacity-plan-for-prism-analytics-warehouse",
+  "kind": "task",
+  "title": "Load test the capacity plan for Prism analytics warehouse",
+  "body": "Load test the capacity plan for Prism analytics warehouse. Owned by Lena Novak.",
+  "date": "2025-05-24",
+  "fields": {
+   "status": "open",
+   "owner": "person-lena-novak",
+   "project": "project-prism-analytics-warehouse",
+   "priority": "high",
+   "due": "2025-08-02"
+  },
+  "links": [
+   "project-prism-analytics-warehouse",
+   "person-lena-novak"
+  ]
+ },
+ {
+  "id": "task-document-the-on-call-handbook-for-prism-analytics-warehouse",
+  "kind": "task",
+  "title": "Document the on-call handbook for Prism analytics warehouse",
+  "body": "Document the on-call handbook for Prism analytics warehouse. Owned by Wen Li.",
+  "date": "2025-06-21",
+  "fields": {
+   "status": "open",
+   "owner": "person-wen-li",
+   "project": "project-prism-analytics-warehouse",
+   "priority": "medium",
+   "due": "2025-07-11"
+  },
+  "links": [
+   "project-prism-analytics-warehouse",
+   "person-wen-li"
+  ]
+ },
+ {
+  "id": "task-automate-the-rollback-plan-for-prism-analytics-warehouse",
+  "kind": "task",
+  "title": "Automate the rollback plan for Prism analytics warehouse",
+  "body": "Automate the rollback plan for Prism analytics warehouse. Owned by Wen Li.",
+  "date": "2025-06-01",
+  "fields": {
+   "status": "open",
+   "owner": "person-wen-li",
+   "project": "project-prism-analytics-warehouse",
+   "priority": "high",
+   "due": "2025-08-27"
+  },
+  "links": [
+   "project-prism-analytics-warehouse",
+   "person-wen-li"
+  ]
+ },
+ {
+  "id": "task-audit-the-dashboards-for-prism-analytics-warehouse",
+  "kind": "task",
+  "title": "Audit the dashboards for Prism analytics warehouse",
+  "body": "Audit the dashboards for Prism analytics warehouse. Owned by Sam Rivera.",
+  "date": "2025-05-04",
+  "fields": {
+   "status": "in_progress",
+   "owner": "person-sam-rivera",
+   "project": "project-prism-analytics-warehouse",
+   "priority": "high",
+   "due": "2025-08-11"
+  },
+  "links": [
+   "project-prism-analytics-warehouse",
+   "person-sam-rivera"
+  ]
+ },
+ {
+  "id": "task-benchmark-the-canary-release-for-prism-analytics-warehouse",
+  "kind": "task",
+  "title": "Benchmark the canary release for Prism analytics warehouse",
+  "body": "Benchmark the canary release for Prism analytics warehouse. Owned by Priya Iyer.",
+  "date": "2025-04-03",
+  "fields": {
+   "status": "blocked",
+   "owner": "person-priya-iyer",
+   "project": "project-prism-analytics-warehouse",
+   "priority": "high",
+   "due": "2025-12-21"
+  },
+  "links": [
+   "project-prism-analytics-warehouse",
+   "person-priya-iyer"
+  ]
+ },
+ {
+  "id": "task-refactor-the-staging-environment-for-prism-analytics-warehouse",
+  "kind": "task",
+  "title": "Refactor the staging environment for Prism analytics warehouse",
+  "body": "Refactor the staging environment for Prism analytics warehouse. Owned by Ben Okafor.",
+  "date": "2025-05-27",
+  "fields": {
+   "status": "open",
+   "owner": "person-ben-okafor",
+   "project": "project-prism-analytics-warehouse",
+   "priority": "high",
+   "due": "2025-11-19"
+  },
+  "links": [
+   "project-prism-analytics-warehouse",
+   "person-ben-okafor"
+  ]
+ },
+ {
+  "id": "task-monitor-the-backfill-job-for-prism-analytics-warehouse",
+  "kind": "task",
+  "title": "Monitor the backfill job for Prism analytics warehouse",
+  "body": "Monitor the backfill job for Prism analytics warehouse. Owned by Farah Haddad.",
+  "date": "2025-08-08",
+  "fields": {
+   "status": "in_progress",
+   "owner": "person-farah-haddad",
+   "project": "project-prism-analytics-warehouse",
+   "priority": "medium",
+   "due": "2025-12-20"
+  },
+  "links": [
+   "project-prism-analytics-warehouse",
+   "person-farah-haddad"
+  ]
+ },
+ {
+  "id": "task-write-the-alerting-rules-for-prism-analytics-warehouse",
+  "kind": "task",
+  "title": "Write the alerting rules for Prism analytics warehouse",
+  "body": "Write the alerting rules for Prism analytics warehouse. Owned by Priya Iyer.",
+  "date": "2025-08-07",
+  "fields": {
+   "status": "open",
+   "owner": "person-priya-iyer",
+   "project": "project-prism-analytics-warehouse",
+   "priority": "medium",
+   "due": "2025-08-16"
+  },
+  "links": [
+   "project-prism-analytics-warehouse",
+   "person-priya-iyer"
+  ]
+ },
+ {
+  "id": "task-review-the-client-sdk-for-prism-analytics-warehouse",
+  "kind": "task",
+  "title": "Review the client SDK for Prism analytics warehouse",
+  "body": "Review the client SDK for Prism analytics warehouse. Owned by Lena Novak.",
+  "date": "2025-08-28",
+  "fields": {
+   "status": "open",
+   "owner": "person-lena-novak",
+   "project": "project-prism-analytics-warehouse",
+   "priority": "medium",
+   "due": "2025-07-03"
+  },
+  "links": [
+   "project-prism-analytics-warehouse",
+   "person-lena-novak"
+  ]
+ },
+ {
+  "id": "task-migrate-the-cutover-runbook-for-prism-analytics-warehouse",
+  "kind": "task",
+  "title": "Migrate the cutover runbook for Prism analytics warehouse",
+  "body": "Migrate the cutover runbook for Prism analytics warehouse. Owned by Priya Iyer.",
+  "date": "2025-05-22",
+  "fields": {
+   "status": "open",
+   "owner": "person-priya-iyer",
+   "project": "project-prism-analytics-warehouse",
+   "priority": "low",
+   "due": "2025-10-15"
+  },
+  "links": [
+   "project-prism-analytics-warehouse",
+   "person-priya-iyer"
+  ]
+ },
+ {
+  "id": "task-load-test-the-schema-migration-for-prism-analytics-warehouse",
+  "kind": "task",
+  "title": "Load test the schema migration for Prism analytics warehouse",
+  "body": "Load test the schema migration for Prism analytics warehouse. Owned by Ben Okafor.",
+  "date": "2025-08-07",
+  "fields": {
+   "status": "in_progress",
+   "owner": "person-ben-okafor",
+   "project": "project-prism-analytics-warehouse",
+   "priority": "medium",
+   "due": "2025-10-21"
+  },
+  "links": [
+   "project-prism-analytics-warehouse",
+   "person-ben-okafor"
+  ]
+ },
+ {
+  "id": "task-document-the-integration-tests-for-prism-analytics-warehouse",
+  "kind": "task",
+  "title": "Document the integration tests for Prism analytics warehouse",
+  "body": "Document the integration tests for Prism analytics warehouse. Owned by Lena Novak.",
+  "date": "2025-04-01",
+  "fields": {
+   "status": "done",
+   "owner": "person-lena-novak",
+   "project": "project-prism-analytics-warehouse",
+   "priority": "high",
+   "due": "2025-12-20"
+  },
+  "links": [
+   "project-prism-analytics-warehouse",
+   "person-lena-novak"
+  ]
+ },
+ {
+  "id": "task-write-the-schema-migration-for-quill-offline-notes",
+  "kind": "task",
+  "title": "Write the schema migration for Quill offline notes",
+  "body": "Write the schema migration for Quill offline notes. Owned by Chloe Martin.",
+  "date": "2025-04-22",
+  "fields": {
+   "status": "in_progress",
+   "owner": "person-chloe-martin",
+   "project": "project-quill-offline-notes",
+   "priority": "high",
+   "due": "2025-08-18"
+  },
+  "links": [
+   "project-quill-offline-notes",
+   "person-chloe-martin"
+  ]
+ },
+ {
+  "id": "task-review-the-integration-tests-for-quill-offline-notes",
+  "kind": "task",
+  "title": "Review the integration tests for Quill offline notes",
+  "body": "Review the integration tests for Quill offline notes. Owned by Hana Sato.",
+  "date": "2025-04-06",
+  "fields": {
+   "status": "done",
+   "owner": "person-hana-sato",
+   "project": "project-quill-offline-notes",
+   "priority": "medium",
+   "due": "2025-07-23"
+  },
+  "links": [
+   "project-quill-offline-notes",
+   "person-hana-sato"
+  ]
+ },
+ {
+  "id": "task-migrate-the-retry-worker-for-quill-offline-notes",
+  "kind": "task",
+  "title": "Migrate the retry worker for Quill offline notes",
+  "body": "Migrate the retry worker for Quill offline notes. Owned by Chloe Martin.",
+  "date": "2025-07-12",
+  "fields": {
+   "status": "done",
+   "owner": "person-chloe-martin",
+   "project": "project-quill-offline-notes",
+   "priority": "low",
+   "due": "2025-07-08"
+  },
+  "links": [
+   "project-quill-offline-notes",
+   "person-chloe-martin"
+  ]
+ },
+ {
+  "id": "task-load-test-the-cost-report-for-quill-offline-notes",
+  "kind": "task",
+  "title": "Load test the cost report for Quill offline notes",
+  "body": "Load test the cost report for Quill offline notes. Owned by Sam Rivera.",
+  "date": "2025-08-18",
+  "fields": {
+   "status": "done",
+   "owner": "person-sam-rivera",
+   "project": "project-quill-offline-notes",
+   "priority": "medium",
+   "due": "2025-10-31"
+  },
+  "links": [
+   "project-quill-offline-notes",
+   "person-sam-rivera"
+  ]
+ },
+ {
+  "id": "task-document-the-access-policy-for-quill-offline-notes",
+  "kind": "task",
+  "title": "Document the access policy for Quill offline notes",
+  "body": "Document the access policy for Quill offline notes. Owned by Ben Okafor.",
+  "date": "2025-08-04",
+  "fields": {
+   "status": "in_progress",
+   "owner": "person-ben-okafor",
+   "project": "project-quill-offline-notes",
+   "priority": "medium",
+   "due": "2025-09-25"
+  },
+  "links": [
+   "project-quill-offline-notes",
+   "person-ben-okafor"
+  ]
+ },
+ {
+  "id": "task-automate-the-capacity-plan-for-quill-offline-notes",
+  "kind": "task",
+  "title": "Automate the capacity plan for Quill offline notes",
+  "body": "Automate the capacity plan for Quill offline notes. Owned by Nia Brooks.",
+  "date": "2025-05-30",
+  "fields": {
+   "status": "open",
+   "owner": "person-nia-brooks",
+   "project": "project-quill-offline-notes",
+   "priority": "high",
+   "due": "2025-08-15"
+  },
+  "links": [
+   "project-quill-offline-notes",
+   "person-nia-brooks"
+  ]
+ },
+ {
+  "id": "task-audit-the-on-call-handbook-for-quill-offline-notes",
+  "kind": "task",
+  "title": "Audit the on-call handbook for Quill offline notes",
+  "body": "Audit the on-call handbook for Quill offline notes. Owned by Hana Sato.",
+  "date": "2025-06-21",
+  "fields": {
+   "status": "open",
+   "owner": "person-hana-sato",
+   "project": "project-quill-offline-notes",
+   "priority": "high",
+   "due": "2025-07-14"
+  },
+  "links": [
+   "project-quill-offline-notes",
+   "person-hana-sato"
+  ]
+ },
+ {
+  "id": "task-benchmark-the-rollback-plan-for-quill-offline-notes",
+  "kind": "task",
+  "title": "Benchmark the rollback plan for Quill offline notes",
+  "body": "Benchmark the rollback plan for Quill offline notes. Owned by Jade Wong.",
+  "date": "2025-04-09",
+  "fields": {
+   "status": "open",
+   "owner": "person-jade-wong",
+   "project": "project-quill-offline-notes",
+   "priority": "low",
+   "due": "2025-11-01"
+  },
+  "links": [
+   "project-quill-offline-notes",
+   "person-jade-wong"
+  ]
+ },
+ {
+  "id": "task-refactor-the-dashboards-for-quill-offline-notes",
+  "kind": "task",
+  "title": "Refactor the dashboards for Quill offline notes",
+  "body": "Refactor the dashboards for Quill offline notes. Owned by Sam Rivera.",
+  "date": "2025-04-18",
+  "fields": {
+   "status": "done",
+   "owner": "person-sam-rivera",
+   "project": "project-quill-offline-notes",
+   "priority": "medium",
+   "due": "2025-11-30"
+  },
+  "links": [
+   "project-quill-offline-notes",
+   "person-sam-rivera"
+  ]
+ },
+ {
+  "id": "task-monitor-the-canary-release-for-quill-offline-notes",
+  "kind": "task",
+  "title": "Monitor the canary release for Quill offline notes",
+  "body": "Monitor the canary release for Quill offline notes. Owned by Sam Rivera.",
+  "date": "2025-05-03",
+  "fields": {
+   "status": "done",
+   "owner": "person-sam-rivera",
+   "project": "project-quill-offline-notes",
+   "priority": "low",
+   "due": "2025-12-01"
+  },
+  "links": [
+   "project-quill-offline-notes",
+   "person-sam-rivera"
+  ]
+ },
+ {
+  "id": "task-write-the-staging-environment-for-quill-offline-notes",
+  "kind": "task",
+  "title": "Write the staging environment for Quill offline notes",
+  "body": "Write the staging environment for Quill offline notes. Owned by Hana Sato.",
+  "date": "2025-07-28",
+  "fields": {
+   "status": "open",
+   "owner": "person-hana-sato",
+   "project": "project-quill-offline-notes",
+   "priority": "medium",
+   "due": "2025-12-10"
+  },
+  "links": [
+   "project-quill-offline-notes",
+   "person-hana-sato"
+  ]
+ },
+ {
+  "id": "task-review-the-backfill-job-for-quill-offline-notes",
+  "kind": "task",
+  "title": "Review the backfill job for Quill offline notes",
+  "body": "Review the backfill job for Quill offline notes. Owned by Chloe Martin.",
+  "date": "2025-04-29",
+  "fields": {
+   "status": "done",
+   "owner": "person-chloe-martin",
+   "project": "project-quill-offline-notes",
+   "priority": "high",
+   "due": "2025-11-17"
+  },
+  "links": [
+   "project-quill-offline-notes",
+   "person-chloe-martin"
+  ]
+ },
+ {
+  "id": "task-migrate-the-alerting-rules-for-quill-offline-notes",
+  "kind": "task",
+  "title": "Migrate the alerting rules for Quill offline notes",
+  "body": "Migrate the alerting rules for Quill offline notes. Owned by Yara Costa.",
+  "date": "2025-07-20",
+  "fields": {
+   "status": "in_progress",
+   "owner": "person-yara-costa",
+   "project": "project-quill-offline-notes",
+   "priority": "medium",
+   "due": "2025-10-17"
+  },
+  "links": [
+   "project-quill-offline-notes",
+   "person-yara-costa"
+  ]
+ },
+ {
+  "id": "task-load-test-the-client-sdk-for-quill-offline-notes",
+  "kind": "task",
+  "title": "Load test the client SDK for Quill offline notes",
+  "body": "Load test the client SDK for Quill offline notes. Owned by Nia Brooks.",
+  "date": "2025-04-09",
+  "fields": {
+   "status": "in_progress",
+   "owner": "person-nia-brooks",
+   "project": "project-quill-offline-notes",
+   "priority": "medium",
+   "due": "2025-09-16"
+  },
+  "links": [
+   "project-quill-offline-notes",
+   "person-nia-brooks"
+  ]
+ },
+ {
+  "id": "task-document-the-cutover-runbook-for-quill-offline-notes",
+  "kind": "task",
+  "title": "Document the cutover runbook for Quill offline notes",
+  "body": "Document the cutover runbook for Quill offline notes. Owned by Chloe Martin.",
+  "date": "2025-06-28",
+  "fields": {
+   "status": "in_progress",
+   "owner": "person-chloe-martin",
+   "project": "project-quill-offline-notes",
+   "priority": "medium",
+   "due": "2025-12-18"
+  },
+  "links": [
+   "project-quill-offline-notes",
+   "person-chloe-martin"
+  ]
+ },
+ {
+  "id": "task-write-the-client-sdk-for-vault-key-rotation",
+  "kind": "task",
+  "title": "Write the client SDK for Vault key rotation",
+  "body": "Write the client SDK for Vault key rotation. Owned by Jade Wong.",
+  "date": "2025-04-27",
+  "fields": {
+   "status": "open",
+   "owner": "person-jade-wong",
+   "project": "project-vault-key-rotation",
+   "priority": "medium",
+   "due": "2025-09-09"
+  },
+  "links": [
+   "project-vault-key-rotation",
+   "person-jade-wong"
+  ]
+ },
+ {
+  "id": "task-review-the-cutover-runbook-for-vault-key-rotation",
+  "kind": "task",
+  "title": "Review the cutover runbook for Vault key rotation",
+  "body": "Review the cutover runbook for Vault key rotation. Owned by Ben Okafor.",
+  "date": "2025-06-02",
+  "fields": {
+   "status": "open",
+   "owner": "person-ben-okafor",
+   "project": "project-vault-key-rotation",
+   "priority": "medium",
+   "due": "2025-11-28"
+  },
+  "links": [
+   "project-vault-key-rotation",
+   "person-ben-okafor"
+  ]
+ },
+ {
+  "id": "task-migrate-the-schema-migration-for-vault-key-rotation",
+  "kind": "task",
+  "title": "Migrate the schema migration for Vault key rotation",
+  "body": "Migrate the schema migration for Vault key rotation. Owned by Elif Kaya.",
+  "date": "2025-05-04",
+  "fields": {
+   "status": "open",
+   "owner": "person-elif-kaya",
+   "project": "project-vault-key-rotation",
+   "priority": "low",
+   "due": "2025-07-03"
+  },
+  "links": [
+   "project-vault-key-rotation",
+   "person-elif-kaya"
+  ]
+ },
+ {
+  "id": "task-load-test-the-integration-tests-for-vault-key-rotation",
+  "kind": "task",
+  "title": "Load test the integration tests for Vault key rotation",
+  "body": "Load test the integration tests for Vault key rotation. Owned by Elif Kaya.",
+  "date": "2025-05-11",
+  "fields": {
+   "status": "open",
+   "owner": "person-elif-kaya",
+   "project": "project-vault-key-rotation",
+   "priority": "low",
+   "due": "2025-11-14"
+  },
+  "links": [
+   "project-vault-key-rotation",
+   "person-elif-kaya"
+  ]
+ },
+ {
+  "id": "task-document-the-retry-worker-for-vault-key-rotation",
+  "kind": "task",
+  "title": "Document the retry worker for Vault key rotation",
+  "body": "Document the retry worker for Vault key rotation. Owned by Jade Wong.",
+  "date": "2025-06-26",
+  "fields": {
+   "status": "done",
+   "owner": "person-jade-wong",
+   "project": "project-vault-key-rotation",
+   "priority": "medium",
+   "due": "2025-12-10"
+  },
+  "links": [
+   "project-vault-key-rotation",
+   "person-jade-wong"
+  ]
+ },
+ {
+  "id": "task-automate-the-cost-report-for-vault-key-rotation",
+  "kind": "task",
+  "title": "Automate the cost report for Vault key rotation",
+  "body": "Automate the cost report for Vault key rotation. Owned by Jade Wong.",
+  "date": "2025-08-19",
+  "fields": {
+   "status": "open",
+   "owner": "person-jade-wong",
+   "project": "project-vault-key-rotation",
+   "priority": "low",
+   "due": "2025-08-28"
+  },
+  "links": [
+   "project-vault-key-rotation",
+   "person-jade-wong"
+  ]
+ },
+ {
+  "id": "task-audit-the-access-policy-for-vault-key-rotation",
+  "kind": "task",
+  "title": "Audit the access policy for Vault key rotation",
+  "body": "Audit the access policy for Vault key rotation. Owned by Nia Brooks.",
+  "date": "2025-08-11",
+  "fields": {
+   "status": "done",
+   "owner": "person-nia-brooks",
+   "project": "project-vault-key-rotation",
+   "priority": "medium",
+   "due": "2025-12-25"
+  },
+  "links": [
+   "project-vault-key-rotation",
+   "person-nia-brooks"
+  ]
+ },
+ {
+  "id": "task-benchmark-the-capacity-plan-for-vault-key-rotation",
+  "kind": "task",
+  "title": "Benchmark the capacity plan for Vault key rotation",
+  "body": "Benchmark the capacity plan for Vault key rotation. Owned by Omar Saleh.",
+  "date": "2025-07-09",
+  "fields": {
+   "status": "done",
+   "owner": "person-omar-saleh",
+   "project": "project-vault-key-rotation",
+   "priority": "medium",
+   "due": "2025-11-24"
+  },
+  "links": [
+   "project-vault-key-rotation",
+   "person-omar-saleh"
+  ]
+ },
+ {
+  "id": "task-refactor-the-on-call-handbook-for-vault-key-rotation",
+  "kind": "task",
+  "title": "Refactor the on-call handbook for Vault key rotation",
+  "body": "Refactor the on-call handbook for Vault key rotation. Owned by Elif Kaya.",
+  "date": "2025-07-21",
+  "fields": {
+   "status": "done",
+   "owner": "person-elif-kaya",
+   "project": "project-vault-key-rotation",
+   "priority": "medium",
+   "due": "2025-10-07"
+  },
+  "links": [
+   "project-vault-key-rotation",
+   "person-elif-kaya"
+  ]
+ },
+ {
+  "id": "task-monitor-the-rollback-plan-for-vault-key-rotation",
+  "kind": "task",
+  "title": "Monitor the rollback plan for Vault key rotation",
+  "body": "Monitor the rollback plan for Vault key rotation. Owned by Elif Kaya.",
+  "date": "2025-05-29",
+  "fields": {
+   "status": "open",
+   "owner": "person-elif-kaya",
+   "project": "project-vault-key-rotation",
+   "priority": "medium",
+   "due": "2025-10-15"
+  },
+  "links": [
+   "project-vault-key-rotation",
+   "person-elif-kaya"
+  ]
+ },
+ {
+  "id": "task-write-the-dashboards-for-vault-key-rotation",
+  "kind": "task",
+  "title": "Write the dashboards for Vault key rotation",
+  "body": "Write the dashboards for Vault key rotation. Owned by Jade Wong.",
+  "date": "2025-07-13",
+  "fields": {
+   "status": "open",
+   "owner": "person-jade-wong",
+   "project": "project-vault-key-rotation",
+   "priority": "low",
+   "due": "2025-11-12"
+  },
+  "links": [
+   "project-vault-key-rotation",
+   "person-jade-wong"
+  ]
+ },
+ {
+  "id": "task-review-the-canary-release-for-vault-key-rotation",
+  "kind": "task",
+  "title": "Review the canary release for Vault key rotation",
+  "body": "Review the canary release for Vault key rotation. Owned by Elif Kaya.",
+  "date": "2025-05-09",
+  "fields": {
+   "status": "done",
+   "owner": "person-elif-kaya",
+   "project": "project-vault-key-rotation",
+   "priority": "low",
+   "due": "2025-09-28"
+  },
+  "links": [
+   "project-vault-key-rotation",
+   "person-elif-kaya"
+  ]
+ },
+ {
+  "id": "task-migrate-the-staging-environment-for-vault-key-rotation",
+  "kind": "task",
+  "title": "Migrate the staging environment for Vault key rotation",
+  "body": "Migrate the staging environment for Vault key rotation. Owned by Elif Kaya.",
+  "date": "2025-04-16",
+  "fields": {
+   "status": "in_progress",
+   "owner": "person-elif-kaya",
+   "project": "project-vault-key-rotation",
+   "priority": "high",
+   "due": "2025-11-07"
+  },
+  "links": [
+   "project-vault-key-rotation",
+   "person-elif-kaya"
+  ]
+ },
+ {
+  "id": "task-load-test-the-backfill-job-for-vault-key-rotation",
+  "kind": "task",
+  "title": "Load test the backfill job for Vault key rotation",
+  "body": "Load test the backfill job for Vault key rotation. Owned by Jade Wong.",
+  "date": "2025-04-19",
+  "fields": {
+   "status": "done",
+   "owner": "person-jade-wong",
+   "project": "project-vault-key-rotation",
+   "priority": "medium",
+   "due": "2025-09-14"
+  },
+  "links": [
+   "project-vault-key-rotation",
+   "person-jade-wong"
+  ]
+ },
+ {
+  "id": "task-document-the-alerting-rules-for-vault-key-rotation",
+  "kind": "task",
+  "title": "Document the alerting rules for Vault key rotation",
+  "body": "Document the alerting rules for Vault key rotation. Owned by Omar Saleh.",
+  "date": "2025-07-19",
+  "fields": {
+   "status": "in_progress",
+   "owner": "person-omar-saleh",
+   "project": "project-vault-key-rotation",
+   "priority": "medium",
+   "due": "2025-09-26"
+  },
+  "links": [
+   "project-vault-key-rotation",
+   "person-omar-saleh"
+  ]
+ },
+ {
+  "id": "task-write-the-backfill-job-for-relay-webhook-service",
+  "kind": "task",
+  "title": "Write the backfill job for Relay webhook service",
+  "body": "Write the backfill job for Relay webhook service. Owned by Zane Ortiz.",
+  "date": "2025-06-01",
+  "fields": {
+   "status": "open",
+   "owner": "person-zane-ortiz",
+   "project": "project-relay-webhook-service",
+   "priority": "low",
+   "due": "2025-10-11"
+  },
+  "links": [
+   "project-relay-webhook-service",
+   "person-zane-ortiz"
+  ]
+ },
+ {
+  "id": "task-review-the-alerting-rules-for-relay-webhook-service",
+  "kind": "task",
+  "title": "Review the alerting rules for Relay webhook service",
+  "body": "Review the alerting rules for Relay webhook service. Owned by Tara Quinn.",
+  "date": "2025-07-01",
+  "fields": {
+   "status": "in_progress",
+   "owner": "person-tara-quinn",
+   "project": "project-relay-webhook-service",
+   "priority": "medium",
+   "due": "2025-09-25"
+  },
+  "links": [
+   "project-relay-webhook-service",
+   "person-tara-quinn"
+  ]
+ },
+ {
+  "id": "task-migrate-the-client-sdk-for-relay-webhook-service",
+  "kind": "task",
+  "title": "Migrate the client SDK for Relay webhook service",
+  "body": "Migrate the client SDK for Relay webhook service. Owned by Sam Rivera.",
+  "date": "2025-04-08",
+  "fields": {
+   "status": "open",
+   "owner": "person-sam-rivera",
+   "project": "project-relay-webhook-service",
+   "priority": "high",
+   "due": "2025-10-07"
+  },
+  "links": [
+   "project-relay-webhook-service",
+   "person-sam-rivera"
+  ]
+ },
+ {
+  "id": "task-load-test-the-cutover-runbook-for-relay-webhook-service",
+  "kind": "task",
+  "title": "Load test the cutover runbook for Relay webhook service",
+  "body": "Load test the cutover runbook for Relay webhook service. Owned by Dev Patel.",
+  "date": "2025-04-10",
+  "fields": {
+   "status": "done",
+   "owner": "person-dev-patel",
+   "project": "project-relay-webhook-service",
+   "priority": "medium",
+   "due": "2025-11-02"
+  },
+  "links": [
+   "project-relay-webhook-service",
+   "person-dev-patel"
+  ]
+ },
+ {
+  "id": "task-document-the-schema-migration-for-relay-webhook-service",
+  "kind": "task",
+  "title": "Document the schema migration for Relay webhook service",
+  "body": "Document the schema migration for Relay webhook service. Owned by Ivan Petrov.",
+  "date": "2025-07-22",
+  "fields": {
+   "status": "open",
+   "owner": "person-ivan-petrov",
+   "project": "project-relay-webhook-service",
+   "priority": "low",
+   "due": "2025-08-16"
+  },
+  "links": [
+   "project-relay-webhook-service",
+   "person-ivan-petrov"
+  ]
+ },
+ {
+  "id": "task-automate-the-integration-tests-for-relay-webhook-service",
+  "kind": "task",
+  "title": "Automate the integration tests for Relay webhook service",
+  "body": "Automate the integration tests for Relay webhook service. Owned by Jade Wong.",
+  "date": "2025-07-10",
+  "fields": {
+   "status": "in_progress",
+   "owner": "person-jade-wong",
+   "project": "project-relay-webhook-service",
+   "priority": "medium",
+   "due": "2025-07-14"
+  },
+  "links": [
+   "project-relay-webhook-service",
+   "person-jade-wong"
+  ]
+ },
+ {
+  "id": "task-audit-the-retry-worker-for-relay-webhook-service",
+  "kind": "task",
+  "title": "Audit the retry worker for Relay webhook service",
+  "body": "Audit the retry worker for Relay webhook service. Owned by Zane Ortiz.",
+  "date": "2025-05-18",
+  "fields": {
+   "status": "open",
+   "owner": "person-zane-ortiz",
+   "project": "project-relay-webhook-service",
+   "priority": "medium",
+   "due": "2025-11-09"
+  },
+  "links": [
+   "project-relay-webhook-service",
+   "person-zane-ortiz"
+  ]
+ },
+ {
+  "id": "task-benchmark-the-cost-report-for-relay-webhook-service",
+  "kind": "task",
+  "title": "Benchmark the cost report for Relay webhook service",
+  "body": "Benchmark the cost report for Relay webhook service. Owned by Tara Quinn.",
+  "date": "2025-06-16",
+  "fields": {
+   "status": "open",
+   "owner": "person-tara-quinn",
+   "project": "project-relay-webhook-service",
+   "priority": "medium",
+   "due": "2025-08-21"
+  },
+  "links": [
+   "project-relay-webhook-service",
+   "person-tara-quinn"
+  ]
+ },
+ {
+  "id": "task-refactor-the-access-policy-for-relay-webhook-service",
+  "kind": "task",
+  "title": "Refactor the access policy for Relay webhook service",
+  "body": "Refactor the access policy for Relay webhook service. Owned by Marco Rossi.",
+  "date": "2025-08-03",
+  "fields": {
+   "status": "in_progress",
+   "owner": "person-marco-rossi",
+   "project": "project-relay-webhook-service",
+   "priority": "high",
+   "due": "2025-07-16"
+  },
+  "links": [
+   "project-relay-webhook-service",
+   "person-marco-rossi"
+  ]
+ },
+ {
+  "id": "task-monitor-the-capacity-plan-for-relay-webhook-service",
+  "kind": "task",
+  "title": "Monitor the capacity plan for Relay webhook service",
+  "body": "Monitor the capacity plan for Relay webhook service. Owned by Marco Rossi.",
+  "date": "2025-04-17",
+  "fields": {
+   "status": "done",
+   "owner": "person-marco-rossi",
+   "project": "project-relay-webhook-service",
+   "priority": "high",
+   "due": "2025-12-27"
+  },
+  "links": [
+   "project-relay-webhook-service",
+   "person-marco-rossi"
+  ]
+ },
+ {
+  "id": "task-write-the-on-call-handbook-for-relay-webhook-service",
+  "kind": "task",
+  "title": "Write the on-call handbook for Relay webhook service",
+  "body": "Write the on-call handbook for Relay webhook service. Owned by Tara Quinn.",
+  "date": "2025-08-15",
+  "fields": {
+   "status": "done",
+   "owner": "person-tara-quinn",
+   "project": "project-relay-webhook-service",
+   "priority": "high",
+   "due": "2025-07-26"
+  },
+  "links": [
+   "project-relay-webhook-service",
+   "person-tara-quinn"
+  ]
+ },
+ {
+  "id": "task-review-the-rollback-plan-for-relay-webhook-service",
+  "kind": "task",
+  "title": "Review the rollback plan for Relay webhook service",
+  "body": "Review the rollback plan for Relay webhook service. Owned by Tara Quinn.",
+  "date": "2025-04-22",
+  "fields": {
+   "status": "done",
+   "owner": "person-tara-quinn",
+   "project": "project-relay-webhook-service",
+   "priority": "high",
+   "due": "2025-07-24"
+  },
+  "links": [
+   "project-relay-webhook-service",
+   "person-tara-quinn"
+  ]
+ },
+ {
+  "id": "task-migrate-the-dashboards-for-relay-webhook-service",
+  "kind": "task",
+  "title": "Migrate the dashboards for Relay webhook service",
+  "body": "Migrate the dashboards for Relay webhook service. Owned by Zane Ortiz.",
+  "date": "2025-08-12",
+  "fields": {
+   "status": "done",
+   "owner": "person-zane-ortiz",
+   "project": "project-relay-webhook-service",
+   "priority": "medium",
+   "due": "2025-07-24"
+  },
+  "links": [
+   "project-relay-webhook-service",
+   "person-zane-ortiz"
+  ]
+ },
+ {
+  "id": "task-load-test-the-canary-release-for-relay-webhook-service",
+  "kind": "task",
+  "title": "Load test the canary release for Relay webhook service",
+  "body": "Load test the canary release for Relay webhook service. Owned by Marco Rossi.",
+  "date": "2025-08-18",
+  "fields": {
+   "status": "open",
+   "owner": "person-marco-rossi",
+   "project": "project-relay-webhook-service",
+   "priority": "medium",
+   "due": "2025-08-25"
+  },
+  "links": [
+   "project-relay-webhook-service",
+   "person-marco-rossi"
+  ]
+ },
+ {
+  "id": "task-document-the-staging-environment-for-relay-webhook-service",
+  "kind": "task",
+  "title": "Document the staging environment for Relay webhook service",
+  "body": "Document the staging environment for Relay webhook service. Owned by Zane Ortiz.",
+  "date": "2025-04-08",
+  "fields": {
+   "status": "blocked",
+   "owner": "person-zane-ortiz",
+   "project": "project-relay-webhook-service",
+   "priority": "high",
+   "due": "2025-07-26"
+  },
+  "links": [
+   "project-relay-webhook-service",
+   "person-zane-ortiz"
+  ]
+ },
+ {
+  "id": "incident-atlas-queue-migration-outage-on-2025-03-31",
+  "kind": "incident",
+  "title": "Atlas queue migration outage on 2025-03-31",
+  "body": "Atlas queue migration had a sev1 outage on 2025-03-31. Root cause: a cron job ran in the wrong timezone.",
+  "date": "2025-03-31",
+  "fields": {
+   "severity": "sev1",
+   "project": "project-atlas-queue-migration",
+   "owner": "person-quinn-harper",
+   "resolved": false,
+   "rootCause": "a cron job ran in the wrong timezone"
+  },
+  "links": [
+   "project-atlas-queue-migration",
+   "person-quinn-harper"
+  ]
+ },
+ {
+  "id": "incident-atlas-queue-migration-outage-on-2025-05-17",
+  "kind": "incident",
+  "title": "Atlas queue migration outage on 2025-05-17",
+  "body": "Atlas queue migration had a sev2 outage on 2025-05-17. Root cause: a cron job ran in the wrong timezone.",
+  "date": "2025-05-17",
+  "fields": {
+   "severity": "sev2",
+   "project": "project-atlas-queue-migration",
+   "owner": "person-victor-hale",
+   "resolved": true,
+   "rootCause": "a cron job ran in the wrong timezone"
+  },
+  "links": [
+   "project-atlas-queue-migration",
+   "person-victor-hale"
+  ]
+ },
+ {
+  "id": "incident-ledger-billing-pipeline-outage-on-2025-10-21",
+  "kind": "incident",
+  "title": "Ledger billing pipeline outage on 2025-10-21",
+  "body": "Ledger billing pipeline had a sev3 outage on 2025-10-21. Root cause: a dependency upgrade changed a default timeout.",
+  "date": "2025-10-21",
+  "fields": {
+   "severity": "sev3",
+   "project": "project-ledger-billing-pipeline",
+   "owner": "person-farah-haddad",
+   "resolved": true,
+   "rootCause": "a dependency upgrade changed a default timeout"
+  },
+  "links": [
+   "project-ledger-billing-pipeline",
+   "person-farah-haddad"
+  ]
+ },
+ {
+  "id": "incident-beacon-mobile-push-outage-on-2025-08-05",
+  "kind": "incident",
+  "title": "Beacon mobile push outage on 2025-08-05",
+  "body": "Beacon mobile push had a sev1 outage on 2025-08-05. Root cause: an expired TLS certificate.",
+  "date": "2025-08-05",
+  "fields": {
+   "severity": "sev1",
+   "project": "project-beacon-mobile-push",
+   "owner": "person-nia-brooks",
+   "resolved": false,
+   "rootCause": "an expired TLS certificate"
+  },
+  "links": [
+   "project-beacon-mobile-push",
+   "person-nia-brooks"
+  ]
+ },
+ {
+  "id": "incident-beacon-mobile-push-outage-on-2025-04-25",
+  "kind": "incident",
+  "title": "Beacon mobile push outage on 2025-04-25",
+  "body": "Beacon mobile push had a sev2 outage on 2025-04-25. Root cause: a missing database index.",
+  "date": "2025-04-25",
+  "fields": {
+   "severity": "sev2",
+   "project": "project-beacon-mobile-push",
+   "owner": "person-chloe-martin",
+   "resolved": true,
+   "rootCause": "a missing database index"
+  },
+  "links": [
+   "project-beacon-mobile-push",
+   "person-chloe-martin"
+  ]
+ },
+ {
+  "id": "incident-cobalt-payment-retries-outage-on-2025-05-28",
+  "kind": "incident",
+  "title": "Cobalt payment retries outage on 2025-05-28",
+  "body": "Cobalt payment retries had a sev1 outage on 2025-05-28. Root cause: a misconfigured load balancer health check.",
+  "date": "2025-05-28",
+  "fields": {
+   "severity": "sev1",
+   "project": "project-cobalt-payment-retries",
+   "owner": "person-marco-rossi",
+   "resolved": false,
+   "rootCause": "a misconfigured load balancer health check"
+  },
+  "links": [
+   "project-cobalt-payment-retries",
+   "person-marco-rossi"
+  ]
+ },
+ {
+  "id": "incident-cobalt-payment-retries-outage-on-2025-07-10",
+  "kind": "incident",
+  "title": "Cobalt payment retries outage on 2025-07-10",
+  "body": "Cobalt payment retries had a sev3 outage on 2025-07-10. Root cause: a dependency upgrade changed a default timeout.",
+  "date": "2025-07-10",
+  "fields": {
+   "severity": "sev3",
+   "project": "project-cobalt-payment-retries",
+   "owner": "person-tara-quinn",
+   "resolved": true,
+   "rootCause": "a dependency upgrade changed a default timeout"
+  },
+  "links": [
+   "project-cobalt-payment-retries",
+   "person-tara-quinn"
+  ]
+ },
+ {
+  "id": "incident-sentinel-access-reviews-outage-on-2025-03-18",
+  "kind": "incident",
+  "title": "Sentinel access reviews outage on 2025-03-18",
+  "body": "Sentinel access reviews had a sev2 outage on 2025-03-18. Root cause: a full disk on the primary database.",
+  "date": "2025-03-18",
+  "fields": {
+   "severity": "sev2",
+   "project": "project-sentinel-access-reviews",
+   "owner": "person-jade-wong",
+   "resolved": true,
+   "rootCause": "a full disk on the primary database"
+  },
+  "links": [
+   "project-sentinel-access-reviews",
+   "person-jade-wong"
+  ]
+ },
+ {
+  "id": "incident-sentinel-access-reviews-outage-on-2025-09-27",
+  "kind": "incident",
+  "title": "Sentinel access reviews outage on 2025-09-27",
+  "body": "Sentinel access reviews had a sev1 outage on 2025-09-27. Root cause: a missing database index.",
+  "date": "2025-09-27",
+  "fields": {
+   "severity": "sev1",
+   "project": "project-sentinel-access-reviews",
+   "owner": "person-jade-wong",
+   "resolved": true,
+   "rootCause": "a missing database index"
+  },
+  "links": [
+   "project-sentinel-access-reviews",
+   "person-jade-wong"
+  ]
+ },
+ {
+  "id": "incident-sentinel-access-reviews-outage-on-2025-03-08",
+  "kind": "incident",
+  "title": "Sentinel access reviews outage on 2025-03-08",
+  "body": "Sentinel access reviews had a sev1 outage on 2025-03-08. Root cause: a full disk on the primary database.",
+  "date": "2025-03-08",
+  "fields": {
+   "severity": "sev1",
+   "project": "project-sentinel-access-reviews",
+   "owner": "person-uma-desai",
+   "resolved": false,
+   "rootCause": "a full disk on the primary database"
+  },
+  "links": [
+   "project-sentinel-access-reviews",
+   "person-uma-desai"
+  ]
+ },
+ {
+  "id": "incident-harbor-container-platform-outage-on-2025-05-25",
+  "kind": "incident",
+  "title": "Harbor container platform outage on 2025-05-25",
+  "body": "Harbor container platform had a sev3 outage on 2025-05-25. Root cause: a bad feature flag default.",
+  "date": "2025-05-25",
+  "fields": {
+   "severity": "sev3",
+   "project": "project-harbor-container-platform",
+   "owner": "person-quinn-harper",
+   "resolved": true,
+   "rootCause": "a bad feature flag default"
+  },
+  "links": [
+   "project-harbor-container-platform",
+   "person-quinn-harper"
+  ]
+ },
+ {
+  "id": "incident-harbor-container-platform-outage-on-2025-10-15",
+  "kind": "incident",
+  "title": "Harbor container platform outage on 2025-10-15",
+  "body": "Harbor container platform had a sev2 outage on 2025-10-15. Root cause: an expired TLS certificate.",
+  "date": "2025-10-15",
+  "fields": {
+   "severity": "sev2",
+   "project": "project-harbor-container-platform",
+   "owner": "person-quinn-harper",
+   "resolved": true,
+   "rootCause": "an expired TLS certificate"
+  },
+  "links": [
+   "project-harbor-container-platform",
+   "person-quinn-harper"
+  ]
+ },
+ {
+  "id": "incident-prism-analytics-warehouse-outage-on-2025-10-19",
+  "kind": "incident",
+  "title": "Prism analytics warehouse outage on 2025-10-19",
+  "body": "Prism analytics warehouse had a sev3 outage on 2025-10-19. Root cause: a misconfigured load balancer health check.",
+  "date": "2025-10-19",
+  "fields": {
+   "severity": "sev3",
+   "project": "project-prism-analytics-warehouse",
+   "owner": "person-wen-li",
+   "resolved": false,
+   "rootCause": "a misconfigured load balancer health check"
+  },
+  "links": [
+   "project-prism-analytics-warehouse",
+   "person-wen-li"
+  ]
+ },
+ {
+  "id": "incident-quill-offline-notes-outage-on-2025-03-13",
+  "kind": "incident",
+  "title": "Quill offline notes outage on 2025-03-13",
+  "body": "Quill offline notes had a sev2 outage on 2025-03-13. Root cause: a dependency upgrade changed a default timeout.",
+  "date": "2025-03-13",
+  "fields": {
+   "severity": "sev2",
+   "project": "project-quill-offline-notes",
+   "owner": "person-chloe-martin",
+   "resolved": true,
+   "rootCause": "a dependency upgrade changed a default timeout"
+  },
+  "links": [
+   "project-quill-offline-notes",
+   "person-chloe-martin"
+  ]
+ },
+ {
+  "id": "incident-quill-offline-notes-outage-on-2025-07-30",
+  "kind": "incident",
+  "title": "Quill offline notes outage on 2025-07-30",
+  "body": "Quill offline notes had a sev3 outage on 2025-07-30. Root cause: a dependency upgrade changed a default timeout.",
+  "date": "2025-07-30",
+  "fields": {
+   "severity": "sev3",
+   "project": "project-quill-offline-notes",
+   "owner": "person-chloe-martin",
+   "resolved": false,
+   "rootCause": "a dependency upgrade changed a default timeout"
+  },
+  "links": [
+   "project-quill-offline-notes",
+   "person-chloe-martin"
+  ]
+ },
+ {
+  "id": "incident-relay-webhook-service-outage-on-2025-05-25",
+  "kind": "incident",
+  "title": "Relay webhook service outage on 2025-05-25",
+  "body": "Relay webhook service had a sev2 outage on 2025-05-25. Root cause: a misconfigured load balancer health check.",
+  "date": "2025-05-25",
+  "fields": {
+   "severity": "sev2",
+   "project": "project-relay-webhook-service",
+   "owner": "person-zane-ortiz",
+   "resolved": true,
+   "rootCause": "a misconfigured load balancer health check"
+  },
+  "links": [
+   "project-relay-webhook-service",
+   "person-zane-ortiz"
+  ]
+ },
+ {
+  "id": "incident-relay-webhook-service-outage-on-2025-10-01",
+  "kind": "incident",
+  "title": "Relay webhook service outage on 2025-10-01",
+  "body": "Relay webhook service had a sev3 outage on 2025-10-01. Root cause: a missing database index.",
+  "date": "2025-10-01",
+  "fields": {
+   "severity": "sev3",
+   "project": "project-relay-webhook-service",
+   "owner": "person-tara-quinn",
+   "resolved": true,
+   "rootCause": "a missing database index"
+  },
+  "links": [
+   "project-relay-webhook-service",
+   "person-tara-quinn"
+  ]
+ },
+ {
+  "id": "incident-relay-webhook-service-outage-on-2025-08-11",
+  "kind": "incident",
+  "title": "Relay webhook service outage on 2025-08-11",
+  "body": "Relay webhook service had a sev3 outage on 2025-08-11. Root cause: an expired TLS certificate.",
+  "date": "2025-08-11",
+  "fields": {
+   "severity": "sev3",
+   "project": "project-relay-webhook-service",
+   "owner": "person-dev-patel",
+   "resolved": true,
+   "rootCause": "an expired TLS certificate"
+  },
+  "links": [
+   "project-relay-webhook-service",
+   "person-dev-patel"
+  ]
+ },
+ {
+  "id": "incident-relay-webhook-service-outage-on-2025-09-21",
+  "kind": "incident",
+  "title": "Relay webhook service outage on 2025-09-21",
+  "body": "Relay webhook service had a sev2 outage on 2025-09-21. Root cause: a bad feature flag default.",
+  "date": "2025-09-21",
+  "fields": {
+   "severity": "sev2",
+   "project": "project-relay-webhook-service",
+   "owner": "person-tara-quinn",
+   "resolved": true,
+   "rootCause": "a bad feature flag default"
+  },
+  "links": [
+   "project-relay-webhook-service",
+   "person-tara-quinn"
+  ]
+ }
+]
