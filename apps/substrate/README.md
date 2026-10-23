@@ -25,6 +25,7 @@ A plugin package declares `@mnmal-ai/substrate` as a peer dependency and as a de
 | `substrate mcp` | stdio MCP server; reads `SUBSTRATE_URL`, and `SUBSTRATE_MCP_TOOLS` (csv) to register only some tools |
 | `substrate init [dir] [flags]` | Scaffold a runtime directory (interactive; `--yes` for scripted use) |
 | `substrate ask <question…>` | Ask a natural-language question (needs `substrate-nl`) |
+| `substrate run <script.mts>` | Run a script against a signed, guarded client and print one JSON report |
 | `substrate federate <verb>` | Federation onboarding: `enroll` / `join` / `check` |
 | `substrate check-enums [--json]` | Report stored values outside a field's declared enum; exits 1 on drift, so it works as a CI gate |
 | `substrate normalise-vocab <ns> <Type> <field> [--apply]` | Rewrite stored vocabulary aliases to canonical values (admin) |
@@ -43,6 +44,36 @@ substrate ask [--ns <namespace>] [--project <name>] [--json] <question…>
 ```
 
 Posts the question to `POST /substrate/v1/nl` on `SUBSTRATE_URL` and prints the answer. `--ns` defaults to `SUBSTRATE_NAMESPACE`, and one of the two is required; `--project` defaults to the current directory's name. Human output leads with the frame line (`▸ <ns>/<Type> · parser · 3 rows`); a frame the engine rejected prints `· rejected` and the errors. `--json` prints the raw `{ outcome, trail }`. Exit codes: `0` answered, `1` refused / engine errors / request failed, `2` usage or configuration error.
+
+### `substrate run`
+
+```bash
+substrate run <script.mts> [--dry-run | --write] [--max-writes <n>] [--out <file>]
+```
+
+Imports the script and calls its default export with a `ScriptContext` (`query`, `queryAll`, `mutate`, `log`), so one call can chain many reads and writes and return one result. The client is signed from `SUBSTRATE_URL`, `SUBSTRATE_AGENT_KEY_ID` and `SUBSTRATE_AGENT_KEY_PATH`; an unsigned run is refused.
+
+```ts
+import type { ScriptContext } from '@mnmal-ai/substrate/client';
+
+export default async function (s: ScriptContext) {
+  const open = await s.queryAll('cortext/Todo', {
+    params: { where: { status: { eq: 'open' } }, limit: 100 },
+    fields: { id: true, project: true }
+  });
+  return { open: open.length };
+}
+```
+
+Guardrails:
+
+- **Read-only by default.** `mutate` throws unless `--dry-run` (records each payload, sends nothing, returns `null`) or `--write` (sends up to `--max-writes` frames, default 50).
+- **A rejected frame throws.** A query whose key is missing from `data`, or a mutate the server refused, fails the run with the server's error rather than reading as empty.
+- **Truncation is reported.** `query` adds a warning when a result has `hasMore`; `queryAll` pages to the end.
+
+Stdout carries one JSON report, `{ ok, kid, mode, result, error?, mutations, warnings, stats }`. `mutations` lists every payload with `applied`, including those sent before a failure. `--out` writes the report to a file and prints a one-line summary. `.mts` scripts run as-is: the Node this package requires strips types natively. Exit codes: `0` ok, `1` the script failed, `2` usage or configuration error.
+
+The pieces are exported for use outside the CLI: `createClientFromEnv()` builds the same signed client, and `runScript()` runs a function against the guarded context.
 
 ### `substrate-admin`
 

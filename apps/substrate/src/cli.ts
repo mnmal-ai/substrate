@@ -8,6 +8,7 @@
  *   substrate normalise-vocab — rewrite stored vocabulary aliases to canonical values
  *   substrate backfill-field  — write per-row values of one field, metadata preserved
  *   substrate ask         — ask a natural-language question (./cli/ask)
+ *   substrate run         — run a script against a signed, guarded client (./cli/run)
  *   substrate federate    — enroll / join / check bridges (./cli/federate)
  *
  * No flags-vs-subcommand ambiguity: subcommands are always argv[2].
@@ -21,6 +22,7 @@ import { runCheckEnums } from './cli/check-enums/main.js';
 import { runFederate } from './cli/federate/main.js';
 import { runInit } from './cli/init/main.js';
 import { runNormaliseVocab } from './cli/normalise-vocab/main.js';
+import { runRun } from './cli/run/main.js';
 import { runServe } from './main.js';
 import { runMcp } from './mcp/server.js';
 
@@ -41,6 +43,11 @@ Subcommands:
                             Run \`substrate federate\` for the verb list.
   ask <question>            Ask a natural-language question (needs the substrate-nl plugin).
                             Flags: --ns, --project, --json. Reads SUBSTRATE_URL.
+  run <script.mts> [--dry-run | --write] [--max-writes <n>] [--out <file>]
+                            Run a script's default export (s) => result against a client
+                            signed from SUBSTRATE_URL + SUBSTRATE_AGENT_KEY_ID/_PATH, and
+                            print one JSON report. Read-only unless --dry-run (records
+                            mutations) or --write (sends up to --max-writes frames, 50).
   check-enums [--json] [--record]
                             Report stored values outside a field's declared enum.
                             Read-only over HTTP (--record writes verdict rows); reads
@@ -144,6 +151,8 @@ export async function runCli(argv: string[]): Promise<number> {
       return await runBackfillField(rest);
     case 'ask':
       return await runAsk(rest);
+    case 'run':
+      return await runRun(rest);
     case 'federate':
       return await runFederate(
         rest,
