@@ -1,6 +1,6 @@
 {
   "name": "@mnmal-ai/substrate-proposals",
-  "version": "1.0.0-alpha.6",
+  "version": "1.0.0-alpha.7",
   "private": true,
   "description": "Substrate coordinator plugin for runtime namespace, type, and field hot-add.",
   "license": "Apache-2.0",
