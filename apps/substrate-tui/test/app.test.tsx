@@ -40,6 +40,9 @@ describe('app', () => {
   it('leaves the terminal to the bin, which prepares it with SUBSTRATE_TUI_BACKGROUND / SUBSTRATE_TUI_CLEAR', () => {
     expect(substrateAppOptions(fake().deps).terminal).toBe(false);
   });
+  it('pins the input to the bottom row', () => {
+    expect(substrateAppOptions(fake().deps).anchored).toBe(true);
+  });
   it('paints no overlay fill, so panels sit on the ground', () => {
     const { theme } = substrateAppOptions(fake().deps);
     expect(theme?.color.raised).toBe('');
