@@ -51,7 +51,7 @@ Posts the question to `POST /substrate/v1/nl` on `SUBSTRATE_URL` and prints the 
 substrate run <script.mts> [--args <json>] [--dry-run | --write] [--max-writes <n>] [--out <file>]
 ```
 
-Imports the script and calls its default export with a `ScriptContext` (`args`, `query`, `queryAll`, `mutate`, `log`), so one call can chain many reads and writes and return one result. The client is signed from `SUBSTRATE_URL`, `SUBSTRATE_AGENT_KEY_ID` and `SUBSTRATE_AGENT_KEY_PATH`; an unsigned run is refused.
+Imports the script and calls its default export with a `ScriptContext` (`args`, `query`, `queryAll`, `recall`, `mutate`, `log`), so one call can chain many reads and writes and return one result. The client is signed from `SUBSTRATE_URL`, `SUBSTRATE_AGENT_KEY_ID` and `SUBSTRATE_AGENT_KEY_PATH`; an unsigned run is refused.
 
 ```ts
 import type { ScriptContext } from '@mnmal-ai/substrate/client';
@@ -71,6 +71,8 @@ Guardrails:
 - **Read-only by default.** `mutate` throws unless `--dry-run` (records each payload, sends nothing, returns `null`) or `--write` (sends up to `--max-writes` frames, default 50).
 - **A rejected frame throws.** A query whose key is missing from `data`, or a mutate the server refused, fails the run with the server's error rather than reading as empty.
 - **Truncation is reported.** `query` adds a warning when a result has `hasMore`; `queryAll` pages to the end.
+
+`s.recall({ query, namespace, type?, k?, threshold?, where?, row? })` returns hits best first, through the `recall/Hit` frame. Each hit's `row` is `id` plus the handle fields; pass `row: { body: true }` (or `true`) for more, on the hits you will read.
 
 `--args` takes a JSON object, which the script reads as `s.args` (`{}` when omitted), so one script serves many calls.
 

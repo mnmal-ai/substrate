@@ -154,4 +154,25 @@ describe('runScript', () => {
     });
     expect(none).toMatchObject({ result: 0, args: {} });
   });
+
+  it('recalls through the recall/Hit frame, sending fields only when row asks for more', async () => {
+    const seen: Record<string, unknown>[] = [];
+    const { client } = fakeClient((frame) => {
+      seen.push(frame);
+      return {
+        data: { 'recall/Hit': [{ id: 'h1', score: 0.9, row: { id: 'r1', synopsis: 's' } }] }
+      };
+    });
+    const r = await run(async (s) => {
+      const hits = await s.recall({ query: 'pack', namespace: 'cortext', type: 'Memory', k: 3 });
+      await s.recall({ query: 'pack', namespace: 'cortext', row: { body: true } });
+      return hits.map((h) => h.row.synopsis);
+    }, client);
+    expect(r.result).toEqual(['s']);
+    expect(seen[0]).toEqual({
+      'recall/Hit': { params: { to: 'pack', namespace: 'cortext', type: 'Memory', k: 3 } }
+    });
+    expect(seen[1]).toMatchObject({ 'recall/Hit': { fields: { row: { body: true } } } });
+    expect(r.stats.queries).toBe(2);
+  });
 });
