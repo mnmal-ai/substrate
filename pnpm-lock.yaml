@@ -165,7 +165,7 @@ settings:
 catalogs:
   default:
     '@biomejs/biome':
-      specifier: ^2.5.15
+      specifier: 2.5.15
       version: 2.5.15
     '@fastify/compress':
       specifier: ^9.2.0

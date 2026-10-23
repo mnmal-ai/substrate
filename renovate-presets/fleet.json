@@ -5,7 +5,7 @@
   "schedule": ["before 6am on monday"],
   "timezone": "America/Chicago",
   "minimumReleaseAge": "1 day",
-  "labels": ["infra", "P3-low"],
+  "labels": ["repo", "infra", "P3-low"],
   "assignees": ["mnmal-ai-agent"],
   "dependencyDashboard": true,
   "packageRules": [
