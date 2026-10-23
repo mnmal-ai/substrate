@@ -1,13 +1,10 @@
 import { basename } from 'node:path';
 import {
+  createClientFromEnv,
   NetworkError,
-  noRedirectFetch,
-  SubstrateClient,
-  tokenAudience
+  type SubstrateClient
 } from '@mnmal-ai/substrate-client';
 import type { NlOutcome } from '@mnmal-ai/substrate-types';
-import { trimTrailingSlashes } from '@mnmal-ai/substrate-types';
-import { makeAgentJwtProvider } from '../../mcp/agent-jwt.js';
 
 export interface AskCliOptions {
   write?: (s: string) => void;
@@ -45,8 +42,7 @@ export async function runAsk(argv: string[], options: AskCliOptions = {}): Promi
       else project = v;
     } else words.push(a);
   }
-  const endpoint = trimTrailingSlashes(env.SUBSTRATE_URL ?? '');
-  if (endpoint === '') {
+  if ((env.SUBSTRATE_URL ?? '') === '') {
     write('SUBSTRATE_URL is required (e.g. https://substrate.example.com:3100)\n');
     return 2;
   }
@@ -60,23 +56,18 @@ export async function runAsk(argv: string[], options: AskCliOptions = {}): Promi
     return 2;
   }
 
-  // The provider is synchronous and yields null when no signing key is configured.
-  // A set-but-broken key throws at construction; that is a config error, not a stack trace.
-  let bearer: () => string | null;
+  // A set-but-broken key is a config error, not a stack trace.
+  let client: SubstrateClient;
   try {
-    bearer = makeAgentJwtProvider(env);
-    // A signing key means a credential goes out: name its audience, and refuse an unsafe URL.
-    if (bearer() !== null) bearer = makeAgentJwtProvider(env, tokenAudience(endpoint));
+    ({ client } = createClientFromEnv({
+      env,
+      allowAnonymous: true,
+      ...(options.fetchImpl !== undefined ? { fetch: options.fetchImpl } : {})
+    }));
   } catch (err) {
     write(`substrate ask: agent identity: ${messageOf(err)}\n`);
     return 2;
   }
-  const signed = bearer() !== null;
-  const client = new SubstrateClient({
-    endpoint,
-    ...(signed ? { getToken: () => (bearer() ?? '').replace(/^Bearer /, '') } : {}),
-    fetch: noRedirectFetch(options.fetchImpl)
-  });
   let result: Awaited<ReturnType<typeof client.nl.askJson>>;
   try {
     result = await client.nl.askJson({ namespace: ns, question, project });

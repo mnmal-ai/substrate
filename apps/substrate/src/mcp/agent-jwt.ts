@@ -11,29 +11,10 @@
  * must not silently degrade to anonymous writes.
  */
 
-import { DEFAULT_CAPABILITIES, makeAuthorizationProvider } from '@mnmal-ai/substrate-policy';
+import { resolveAgentCapabilities } from '@mnmal-ai/substrate-client';
+import { makeAuthorizationProvider } from '@mnmal-ai/substrate-policy';
 
-/**
- * The capabilities THIS CLIENT asks for, from `SUBSTRATE_AGENT_CAPABILITIES` (csv),
- * defaulting to `substrate-policy`'s own default rather than a second copy of it.
- *
- * Not simply `ADMIN_CAPABILITIES`: for a DATASET-registry key the row
- * intersects the claim, but a FILE-registry key takes the claim VERBATIM, so
- * a wider default would promote every MCP agent on such a deployment to
- * admin. Widen it only where an operator says so.
- */
-export function resolveAgentCapabilities(env: NodeJS.ProcessEnv): ReadonlyArray<string> {
-  const raw = env.SUBSTRATE_AGENT_CAPABILITIES;
-  if (raw === undefined || raw.trim().length === 0) return DEFAULT_CAPABILITIES;
-  const parsed = raw
-    .split(',')
-    .map((c) => c.trim())
-    .filter((c) => c.length > 0);
-  // An env var set to punctuation is a misconfiguration, not a request for an
-  // empty grant — and an empty claim intersects to nothing, which would read as
-  // a broken credential rather than a typo.
-  return parsed.length > 0 ? parsed : DEFAULT_CAPABILITIES;
-}
+export { resolveAgentCapabilities };
 
 /**
  * Returns a provider that yields `Bearer <jwt>` (the full Authorization header

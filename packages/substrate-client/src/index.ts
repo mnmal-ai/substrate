@@ -69,6 +69,12 @@ export {
   type DiagnosticsSink
 } from './diagnostics.js';
 export { AuthError, NetworkError, SchemaDriftError, SubscribeError } from './errors.js';
+export {
+  type ClientFromEnv,
+  type ClientFromEnvOptions,
+  createClientFromEnv,
+  resolveAgentCapabilities
+} from './from-env.js';
 export type {
   NlApi,
   NlAskRequest,
@@ -78,6 +84,15 @@ export type {
   NlTrailEvent,
   NlWireEvent
 } from './nl.js';
+export {
+  DEFAULT_MAX_WRITES,
+  type RunScriptOptions,
+  runScript,
+  type ScriptContext,
+  type ScriptMode,
+  type ScriptMutation,
+  type ScriptReport
+} from './script.js';
 // Low-level fold primitives behind `SubstrateClient.watch`, exported for consumers
 // that own their own subscription loop (e.g. a bespoke resubscribe wrapper) but
 // still want the typed-row reduction instead of hand-decoding the data envelope.
