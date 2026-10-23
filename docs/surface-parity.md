@@ -32,7 +32,7 @@ than its behaviour.
 | cancel | — | — | `{op:"cancel"}` | disconnect (no op) |
 | recall | `POST /substrate/v1/recall` **and** `recall/Hit` through `POST /substrate/v1/query` | `recall` | refused (`subscription_unsupported_frame`) | refused, same code — in-band as `event: error` under HTTP 200 |
 | metrics | `GET /substrate/v1/metrics` (needs `read`): request counts, per-key `resolvers` (latency histogram, errors), `process` (rss, heap, cpu, event-loop lag, `inFlight`), `slowest`; no error text; per-key fields filtered by the caller's namespace grant (read in that namespace; anonymous callers get none) | — | — | — |
-| errors | `GET /substrate/v1/errors` (needs `admin`): last 50 failed resolves with truncated messages, each naming its caller (kid, or `anonymous`) | — | — | — |
+| errors | `GET /substrate/v1/errors` (needs `admin`): last 50 failed resolves with truncated messages, each naming its caller (its kid, the key id it signed with, or `anonymous`) | — | — | — |
 | config knobs | `GET /substrate/v1/config` (needs **`admin`**, not `read`) | — | — | — |
 | embed stats | `GET /substrate/v1/embed-stats` — answers about **both** retrieval arms despite the name | — | — | — |
 | admin: invites, drop-namespace, drop-type | `POST /substrate/v1/_system/*` | `drop_namespace`, `drop_type` | — | — |

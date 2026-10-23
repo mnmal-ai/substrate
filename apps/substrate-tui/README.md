@@ -25,7 +25,7 @@ Without an admin identity it is read-only.
 
 ## Status row
 
-`● LIVE`, `● OFFLINE` or `● RECONNECTING` (polled from `/health` every 10 s), the service version, the agent kid (`anon` when unauthenticated, `anon?` when whoami fails) and the active namespace.
+`● LIVE`, `● OFFLINE` or `● RECONNECTING` (polled from `/health` every 10 s), the service version, the agent kid (key id; `anon` when unauthenticated, `anon?` when whoami fails) and the active namespace.
 
 ## Environment
 

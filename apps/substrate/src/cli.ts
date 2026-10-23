@@ -46,8 +46,9 @@ Subcommands:
   run <script.mts> [--args <json>] [--dry-run | --write] [--max-writes <n>] [--out <file>]
                             Run a script's default export (s) => result against a client
                             signed from SUBSTRATE_URL + SUBSTRATE_AGENT_KEY_ID/_PATH, and
-                            print one JSON report. --args is a JSON object, read as s.args. Read-only unless --dry-run (records
-                            mutations) or --write (sends up to --max-writes frames, 50).
+                            print one JSON report. --args is a JSON object, read as
+                            s.args. Read-only unless --dry-run (records mutations) or
+                            --write (sends up to --max-writes frames, 50).
   check-enums [--json] [--record]
                             Report stored values outside a field's declared enum.
                             Read-only over HTTP (--record writes verdict rows); reads
