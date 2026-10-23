@@ -1,0 +1,48 @@
+name: Renovate toolchain regen
+
+# A Renovate bump to the catalog, pnpm, Node or an Actions pin changes what
+# toolchain.json is generated from, and CI's manifest check then fails. Hosted
+# Renovate cannot run commands, so this regenerates the file on its branch.
+# It pushes with TOOLCHAIN_REGEN_TOKEN, not github.token: a github.token push
+# triggers no workflows, so the new head would never get its required checks.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions: {}
+
+concurrency:
+  group: renovate-toolchain-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  regen:
+    name: Regenerate toolchain.json
+    # Same-repo Renovate branches only: a fork PR gets no secrets, and nothing
+    # else should be pushed to by a workflow.
+    if: >-
+      startsWith(github.head_ref, 'renovate/') &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.TOOLCHAIN_REGEN_TOKEN }}
+
+      - name: Regenerate and push if stale
+        run: |
+          node scripts/emit-toolchain.mjs
+          if git diff --quiet -- packages/substrate-config/toolchain.json; then
+            echo "toolchain.json is current"
+            exit 0
+          fi
+          git config user.name "mnmal-ai-agent"
+          git config user.email "mnmal-ai-agent@users.noreply.github.com"
+          git add packages/substrate-config/toolchain.json
+          git commit -m "chore(toolchain): regenerate toolchain.json"
+          git push
