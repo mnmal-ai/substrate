@@ -56,13 +56,13 @@ Imports the script and calls its default export with a `ScriptContext` (`args`, 
 ```ts
 import type { ScriptContext } from '@mnmal-ai/substrate/client';
 
-// substrate run open-todos.mts --args '{"project":"substrate"}'
+// substrate run titled.mts --args '{"title":"hello"}'
 export default async function (s: ScriptContext) {
-  const open = await s.queryAll('cortext/Todo', {
-    params: { where: { status: { eq: 'open' }, project: { eq: s.args.project } }, limit: 100 },
-    fields: { id: true, project: true }
+  const notes = await s.queryAll('notes/Note', {
+    params: { where: { title: { eq: s.args.title } }, limit: 100 },
+    fields: { id: true }
   });
-  return { open: open.length };
+  return { count: notes.length };
 }
 ```
 
@@ -72,7 +72,7 @@ Guardrails:
 - **A rejected frame throws.** A query whose key is missing from `data`, or a mutate the server refused, fails the run with the server's error rather than reading as empty.
 - **Truncation is reported.** `query` adds a warning when a result has `hasMore`; `queryAll` pages to the end.
 
-`s.recall({ query, namespace, type?, k?, threshold?, where?, row? })` returns hits best first, through the `recall/Hit` frame. Each hit's `row` is `id` plus the handle fields; pass `row: { body: true }` (or `true`) for more, on the hits you will read.
+`s.recall({ query, namespace, type, k?, threshold?, where?, row? })` returns hits best first, through the `recall/Hit` frame. Each hit's `row` is `id` plus the handle fields; pass `row: { body: true }` (or `true`) for more, on the hits you will read.
 
 `--args` takes a JSON object, which the script reads as `s.args` (`{}` when omitted), so one script serves many calls.
 

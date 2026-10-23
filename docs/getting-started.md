@@ -228,6 +228,25 @@ Plugins in this repository (recall and proposals are built into `@mnmal-ai/subst
 
 It serves `schema`, `query`, `mutate`, `recall`, `ask`, `whoami`, `propose_type`, `propose_field`, and the admin-gated `drop_namespace` / `drop_type`. [`surface-parity.md`](surface-parity.md) maps what each surface (HTTP, MCP, WS, SSE) can do.
 
+### Script it: `substrate run`
+
+An agent with a shell can also talk to Substrate in code. `substrate run` imports a TypeScript script and calls its default export with a signed client, so a count, a join across types, or a batch of writes chosen by what a read found costs one call and returns one small JSON report, instead of a chain of MCP calls that pass ids between them.
+
+```ts
+import type { ScriptContext } from '@mnmal-ai/substrate/client';
+
+export default async function (s: ScriptContext) {
+  const notes = await s.queryAll('notes/Note', { params: { limit: 100 }, fields: { id: true } });
+  return { notes: notes.length };
+}
+```
+
+```bash
+substrate run count-notes.mts
+```
+
+It signs with `SUBSTRATE_AGENT_KEY_ID` and `SUBSTRATE_AGENT_KEY_PATH` and refuses to run unsigned. It is read-only unless you pass `--dry-run` (records writes, sends nothing) or `--write`. The [`substrate run` reference](../apps/substrate/README.md#substrate-run) has the full context API, the guardrails and the report format.
+
 ### Semantic recall and the embedder
 
 Recall retrieves rows by semantic similarity (`recall` MCP tool, `POST /substrate/v1/recall`, the `embeddingSimilar` filter operator) and also ranks by keyword, fusing the two, so a small model loses little. It needs an embedder for the built-in `substrate-recall` plugin, configured in `substrate-recall.config.json` at the runtime root, not in `.env`. The Docker image ships no embedder; `docker-compose.embed.yml` adds one ([§3](#3-run-it-with-docker)). In an npm runtime, `--embedder` picks the model:
