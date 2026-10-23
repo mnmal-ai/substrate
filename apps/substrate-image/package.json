@@ -1,6 +1,6 @@
 {
   "name": "@mnmal-ai/substrate-image",
-  "version": "1.0.0-alpha.5",
+  "version": "1.0.0-alpha.6",
   "private": true,
   "description": "The Docker image's runtime: the binary (with its built-in plugins) and the sibling plugins in one node_modules, as `substrate init` lays out a runtime.",
   "license": "Apache-2.0",
