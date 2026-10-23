@@ -183,14 +183,14 @@ catalogs:
       specifier: 0.2.1
       version: 0.2.1
     '@mnmal-ai/surface-core':
-      specifier: 0.14.5
-      version: 0.14.5
+      specifier: 0.14.6
+      version: 0.14.6
     '@mnmal-ai/surface-kit':
-      specifier: 0.14.5
-      version: 0.14.5
+      specifier: 0.14.6
+      version: 0.14.6
     '@mnmal-ai/surface-theme':
-      specifier: 0.14.5
-      version: 0.14.5
+      specifier: 0.14.6
+      version: 0.14.6
     '@modelcontextprotocol/sdk':
       specifier: ^1.32.0
       version: 1.32.1
@@ -437,13 +437,13 @@ importers:
         version: link:../../plugins/substrate-nl
       '@mnmal-ai/surface-core':
         specifier: 'catalog:'
-        version: 0.14.5(ink@7.1.1(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)
+        version: 0.14.6(ink@7.1.1(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)
       '@mnmal-ai/surface-kit':
         specifier: 'catalog:'
-        version: 0.14.5(ink@7.1.1(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)
+        version: 0.14.6(ink@7.1.1(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)
       '@mnmal-ai/surface-theme':
         specifier: 'catalog:'
-        version: 0.14.5
+        version: 0.14.6
       ink:
         specifier: 'catalog:'
         version: 7.1.1(@types/react@19.3.0)(react@19.3.1)
@@ -1675,22 +1675,22 @@ packages:
   '@mnmal-ai/holomap-clusterer@0.2.1':
     resolution: {integrity: sha512-X3d4Zj0IQoliinQ6ajjZOMYJ5AyfXZZoaZxyTJWJWmxCNNN2ZbP/nnt8WLS/Ddbrs3WxdfreAyzGX9pDCAKxRQ==}
 
-  '@mnmal-ai/surface-core@0.14.5':
-    resolution: {integrity: sha512-Qjsz7L9uk7AOZYAXK8VfGzGvP/TXG6E4SGG3QW+C3Vpu3g5WlFDxG+9obr3cVdEMSBWpNBM0gfHYRtTsdGiTsw==}
+  '@mnmal-ai/surface-core@0.14.6':
+    resolution: {integrity: sha512-YK2fLf9fmGqmUrds2y1rd9f3wxb7FHMkCrT29pJi0pphFPa8tfIMtc38teD1Ec7ugz/qP2fu9U2WRdc3cgkzhA==}
     engines: {node: '>=26.2.0'}
     peerDependencies:
       ink: ^7.1.1
       react: ^19.3.0
 
-  '@mnmal-ai/surface-kit@0.14.5':
-    resolution: {integrity: sha512-eKA806GXnZ1CjL2DSzTQwH87kdXV0LTjh4TwmpTJpXLw3XtbW86A/ZJQEQ8dVow2RSetK2wT2V5U1pt7mZyHWw==}
+  '@mnmal-ai/surface-kit@0.14.6':
+    resolution: {integrity: sha512-jSky4d7a21wQgNr10ttIvfF1k0oibirFTyCszWre1gU1C5Ps7b1WaTD83lVw4OolUTuskNtj84C1IiS2Vwlm3A==}
     engines: {node: '>=26.2.0'}
     peerDependencies:
       ink: ^7.1.1
       react: ^19.3.0
 
-  '@mnmal-ai/surface-theme@0.14.5':
-    resolution: {integrity: sha512-JNyYNl1mPXWnF/8NwqbqizizyuPZRVrBx/oLk25NZ8RsnZYP8Rbw4o1K+zsSWzHaGB7phYRUgTEfB7qJG4N+Zw==}
+  '@mnmal-ai/surface-theme@0.14.6':
+    resolution: {integrity: sha512-hIsIeGV4P/fCKezVmr+vlnIJeW9AhiTjGDmYNcoSsei9WzgTfdNYGn5shWehIan5MFbqAfSPrpKWZd5EQ54CoQ==}
     engines: {node: '>=26.2.0'}
 
   '@modelcontextprotocol/sdk@1.32.1':
@@ -3998,21 +3998,21 @@ snapshots:
 
   '@mnmal-ai/holomap-clusterer@0.2.1': {}
 
-  '@mnmal-ai/surface-core@0.14.5(ink@7.1.1(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)':
+  '@mnmal-ai/surface-core@0.14.6(ink@7.1.1(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)':
     dependencies:
-      '@mnmal-ai/surface-kit': 0.14.5(ink@7.1.1(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)
-      '@mnmal-ai/surface-theme': 0.14.5
+      '@mnmal-ai/surface-kit': 0.14.6(ink@7.1.1(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)
+      '@mnmal-ai/surface-theme': 0.14.6
       ink: 7.1.1(@types/react@19.3.0)(react@19.3.1)
       react: 19.3.1
 
-  '@mnmal-ai/surface-kit@0.14.5(ink@7.1.1(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)':
+  '@mnmal-ai/surface-kit@0.14.6(ink@7.1.1(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)':
     dependencies:
-      '@mnmal-ai/surface-theme': 0.14.5
+      '@mnmal-ai/surface-theme': 0.14.6
       ink: 7.1.1(@types/react@19.3.0)(react@19.3.1)
       react: 19.3.1
       string-width: 8.3.0
 
-  '@mnmal-ai/surface-theme@0.14.5': {}
+  '@mnmal-ai/surface-theme@0.14.6': {}
 
   '@modelcontextprotocol/sdk@1.32.1(zod@4.6.7)':
     dependencies:
