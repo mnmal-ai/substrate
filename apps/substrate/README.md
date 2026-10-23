@@ -99,7 +99,7 @@ set -a && source .env && set +a
 ./node_modules/.bin/substrate serve
 ```
 
-`substrate init` writes a `package.json` pinning `@mnmal-ai/substrate` and the chosen optional plugins, a `.npmrc` for the `@mnmal-ai` registry, a `.env` with `SUBSTRATE_PLUGIN_DIR=.`, a `substrate-recall.config.json` for the embedder, and, unless `--store=memory`, a `docker-compose.yml` running `pgvector/pgvector:pg17`. Flags: `--store=memory|postgres`, `--port`, `--pg-port`, `--plugins=<csv>` (from `cortext`, `substrate-nl`, `substrate-sentinel`; none by default), `--embedder=minilm|bge-base|ollama|none`, `--tls --tls-cert-path --tls-key-path`, `--substrate-url`, `--yes`, `--force`.
+`substrate init` writes a `package.json` pinning `@mnmal-ai/substrate` and the chosen optional plugins, a `.npmrc` for the `@mnmal-ai` registry, a `.env` with `SUBSTRATE_PLUGIN_DIR=.`, a `substrate-recall.config.json` for the embedder, and, unless `--store=memory`, a `docker-compose.yml` running `pgvector/pgvector:pg17`. Flags: `--store=memory|postgres`, `--port`, `--pg-port`, `--plugins=<csv>` (from `cortext`, `substrate-nl`, `substrate-sentinel`; none by default), `--embedder=bge-base|minilm|ollama|none` (default `bge-base`), `--tls --tls-cert-path --tls-key-path`, `--substrate-url`, `--yes`, `--force`.
 
 `SUBSTRATE_PLUGIN_DIR` is the directory whose `node_modules/` holds the plugins; in a scaffolded runtime that is the runtime directory itself. Recall and proposals load from `@mnmal-ai/substrate` itself, so they are present whenever the binary is installed there. Kernel plugins (`substrate-recall`, `substrate-nl`) compose first, then coordinators (`substrate-proposals`, `substrate-sentinel`, …), alphabetical within each tier. Per-plugin overrides live at `<SUBSTRATE_PLUGIN_DIR>/<pkg-basename>.config.json`. With `SUBSTRATE_PLUGIN_DIR` unset the binary boots with only the `_system` admin namespace and `/health`.
 
@@ -118,7 +118,7 @@ cat > substrate-recall.config.json <<'EOF'
 EOF
 ```
 
-`kind: "onnx"` runs the model in-process and needs `fastembed` installed in the runtime (the embedder code itself ships in `@mnmal-ai/substrate`); `substrate init` adds it for `--embedder=minilm` (the default) and `--embedder=bge-base`. `kind: "ollama"` takes a `baseUrl` instead.
+`kind: "onnx"` runs the model in-process and needs `fastembed` installed in the runtime (the embedder code itself ships in `@mnmal-ai/substrate`); `substrate init` adds it for `--embedder=bge-base` (the default) and `--embedder=minilm`. `kind: "ollama"` takes a `baseUrl` instead.
 
 ## Docker
 

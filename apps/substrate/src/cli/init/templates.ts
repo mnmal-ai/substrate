@@ -90,8 +90,8 @@ export function recallConfigTemplate(embedder: EmbedderMode, runtimeDir: string)
           embedder: {
             kind: 'ollama',
             baseUrl: 'http://localhost:11434',
-            model: 'bge-m3',
-            dimension: 1024
+            model: 'hf.co/CompendiumLabs/bge-base-en-v1.5-gguf:F16',
+            dimension: 768
           }
         }
       : {
@@ -276,8 +276,8 @@ function recallReadmeLines(embedder: Exclude<EmbedderMode, 'none'>): string[] {
   const lines =
     embedder === 'ollama'
       ? [
-          '`substrate-recall.config.json` points at Ollama on `localhost:11434` with `bge-m3`. ' +
-            'Pull the model first: `ollama pull bge-m3`.'
+          '`substrate-recall.config.json` points at Ollama on `localhost:11434` with bge-base-en-v1.5. ' +
+            'Pull the model first: `ollama pull hf.co/CompendiumLabs/bge-base-en-v1.5-gguf:F16`.'
         ]
       : [
           `\`substrate-recall.config.json\` runs \`${ONNX_MODELS[embedder].model}\` in-process ` +

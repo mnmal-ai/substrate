@@ -94,11 +94,11 @@ export async function runRepl(seed: InitConfig): Promise<InitConfig> {
     seed.embedder ??
     (await select<EmbedderMode>({
       message: 'Semantic recall embedder:',
-      default: 'minilm',
+      default: 'bge-base',
       choices: [
-        { name: 'minilm — all-MiniLM-L6-v2, in-process (recommended)', value: 'minilm' },
-        { name: 'bge-base — bge-base-en-v1.5, in-process, slower and stronger', value: 'bge-base' },
-        { name: 'ollama — bge-m3 via local Ollama', value: 'ollama' },
+        { name: 'bge-base — bge-base-en-v1.5, in-process (recommended)', value: 'bge-base' },
+        { name: 'minilm — all-MiniLM-L6-v2, in-process, smaller and faster', value: 'minilm' },
+        { name: 'ollama — bge-base-en-v1.5 via local Ollama', value: 'ollama' },
         { name: 'none — no semantic recall', value: 'none' }
       ]
     }));

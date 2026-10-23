@@ -80,7 +80,7 @@ export async function runInit(argv: string[]): Promise<number> {
     port: config.port ?? 3100,
     pgPort: config.pgPort ?? 5433,
     plugins: [...(config.plugins ?? [])],
-    embedder: config.embedder ?? 'minilm',
+    embedder: config.embedder ?? 'bge-base',
     substrateUrl:
       config.substrateUrl ?? `${config.tls ? 'https' : 'http'}://localhost:${config.port ?? 3100}`,
     tls: config.tls,

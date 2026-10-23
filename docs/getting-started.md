@@ -108,7 +108,7 @@ It asks for the plugin set, store (`postgres` or `memory`), ports, embedder, TLS
 npx @mnmal-ai/substrate@next init ~/my-substrate --yes --store=memory --plugins= --port=3100
 ```
 
-Flags: `--store=memory|postgres` (default `postgres`), `--port` (default 3100), `--pg-port` (default 5433), `--plugins=<csv>` (any of `cortext`, `substrate-nl`, `substrate-sentinel`; none by default), `--embedder=minilm|bge-base|ollama|none` (default `minilm`), `--tls --tls-cert-path=… --tls-key-path=…`, `--substrate-url`, `--yes`, `--force` (scaffold into an existing directory).
+Flags: `--store=memory|postgres` (default `postgres`), `--port` (default 3100), `--pg-port` (default 5433), `--plugins=<csv>` (any of `cortext`, `substrate-nl`, `substrate-sentinel`; none by default), `--embedder=bge-base|minilm|ollama|none` (default `bge-base`), `--tls --tls-cert-path=… --tls-key-path=…`, `--substrate-url`, `--yes`, `--force` (scaffold into an existing directory).
 
 Recall and proposals are built into the binary, so they are never in the plugin list.
 
@@ -234,9 +234,9 @@ Recall retrieves rows by semantic similarity (`recall` MCP tool, `POST /substrat
 
 | `--embedder` | Model | Runs | Notes |
 |---|---|---|---|
-| `minilm` (default) | all-MiniLM-L6-v2, 384-d | in-process | Fast on CPU. Adds `fastembed` (about 540 MB, mostly ONNX Runtime). |
-| `bge-base` | bge-base-en-v1.5, 768-d | in-process | Better on paraphrase, much slower to embed on CPU. Same install. |
-| `ollama` | bge-m3, 1024-d | local [Ollama](https://ollama.com) | Needs `ollama pull bge-m3`. |
+| `bge-base` (default) | bge-base-en-v1.5, 768-d | in-process | Better on paraphrase. Adds `fastembed` (about 540 MB, mostly ONNX Runtime). |
+| `minilm` | all-MiniLM-L6-v2, 384-d | in-process | Smaller, much faster to embed on CPU. Same install. |
+| `ollama` | bge-base-en-v1.5, 768-d | local [Ollama](https://ollama.com) | Needs `ollama pull hf.co/CompendiumLabs/bge-base-en-v1.5-gguf:F16`. |
 | `none` | | | No dense recall; keyword ranking still works. |
 
 The in-process models download into `models/` under the runtime on first use. The default config:
@@ -245,8 +245,8 @@ The in-process models download into `models/` under the runtime on first use. Th
 {
   "embedder": {
     "kind": "onnx",
-    "model": "all-MiniLM-L6-v2",
-    "dimension": 384,
+    "model": "bge-base-en-v1.5",
+    "dimension": 768,
     "cacheDir": "/abs/path/to/runtime/models"
   }
 }
