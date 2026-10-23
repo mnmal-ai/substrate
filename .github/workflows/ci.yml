@@ -115,3 +115,30 @@ jobs:
         env:
           POSTGRES_URL: postgres://substrate_test:ci-substrate-test@127.0.0.1:5432/substrate_test
         run: .github/scripts/test-pg-gated.sh
+
+  # Boots docker-compose.yml as a user would. Runs on every PR because a server
+  # change, not an image change, is what breaks the boot.
+  image:
+    name: Docker image boots
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Build and start the compose stack
+        run: docker compose -p ci up -d --build --wait --wait-timeout 180
+
+      - name: Health and plugin routes answer
+        run: |
+          curl -fsS http://127.0.0.1:3100/health
+          curl -fsS -o /dev/null http://127.0.0.1:3100/substrate/v1/plugins/substrate-proposals/onboard
+
+      - name: Server logs
+        if: failure()
+        run: docker compose -p ci logs substrate
+
+      - name: Stop the stack
+        if: always()
+        run: docker compose -p ci down -v
