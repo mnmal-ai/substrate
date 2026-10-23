@@ -165,7 +165,7 @@ describe('runScript', () => {
     });
     const r = await run(async (s) => {
       const hits = await s.recall({ query: 'pack', namespace: 'cortext', type: 'Memory', k: 3 });
-      await s.recall({ query: 'pack', namespace: 'cortext', row: { body: true } });
+      await s.recall({ query: 'pack', namespace: 'cortext', type: 'Memory', row: { body: true } });
       return hits.map((h) => h.row.synopsis);
     }, client);
     expect(r.result).toEqual(['s']);

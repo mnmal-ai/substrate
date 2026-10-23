@@ -77,6 +77,8 @@ HTTP, WebSocket, SSE, JSON, substrate-pack: one resolution pipeline underneath, 
 
 Every operation an agent needs is reachable from the primary agent surface. Today that is the MCP server (`substrate mcp`, §5.7), with HTTP and natural-language query as alternate surfaces. The invariant is **coverage**, not a fixed tool count.
 
+An agent with a shell has a second way in: code mode. `substrate run` imports a TypeScript script and calls it with a signed client that has `query`, `queryAll`, `recall` and `mutate`. A count over many rows, a join across types, or a batch of writes chosen by what a read found then costs one call and returns one small result. Through MCP, the same work is a chain of tool calls passing ids from one to the next, and every intermediate result lands in the agent's context. Code mode adds composition, not capability: each operation inside a script is the same HTTP surface with the same grants and policy, so the coverage invariant holds for both. A run is guarded by default. It refuses to run unsigned and is read-only unless given `--dry-run` or `--write`, with a cap on frames written. A rejected frame fails the run rather than reading as empty, and truncated reads are reported. The [`substrate run` reference](../apps/substrate/README.md#substrate-run) has the details.
+
 **Why fixed:** agents are the primary users. A gap in their surface is a gap in the product.
 
 ---
