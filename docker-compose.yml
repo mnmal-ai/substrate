@@ -27,6 +27,9 @@ services:
       dockerfile: apps/substrate-image/Dockerfile
     environment:
       SUBSTRATE_DATABASE_URL: postgres://substrate:substrate@postgres:5432/substrate
+      # Auth is off, and the server binds 0.0.0.0 inside the container. The opt-in is safe only
+      # because the port below is published on the host's loopback.
+      SUBSTRATE_ALLOW_UNAUTHENTICATED_HOST: "1"
     ports:
       - "127.0.0.1:3100:3100"
     depends_on:
