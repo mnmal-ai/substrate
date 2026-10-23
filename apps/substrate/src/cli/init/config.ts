@@ -1,13 +1,12 @@
 export type StoreMode = 'memory' | 'postgres';
 /**
- * `minilm` is the default: with the lexical leg carrying exact
- * terms, a small model loses little, and it runs in-process with no service.
- * `bge-base` is the step-up, also in-process. `ollama` hands embedding to a
- * local Ollama running bge-m3.
+ * `bge-base` is the default, in-process with no service: the model the fleet
+ * runs. `minilm` is smaller and faster to embed on CPU, also in-process.
+ * `ollama` hands embedding to a local Ollama running bge-base-en-v1.5.
  */
 export type EmbedderMode = 'minilm' | 'bge-base' | 'ollama' | 'none';
 
-export const EMBEDDER_MODES: readonly EmbedderMode[] = ['minilm', 'bge-base', 'ollama', 'none'];
+export const EMBEDDER_MODES: readonly EmbedderMode[] = ['bge-base', 'minilm', 'ollama', 'none'];
 
 export interface InitConfig {
   targetDir: string | undefined;
