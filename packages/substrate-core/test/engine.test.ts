@@ -443,7 +443,7 @@ describe('Engine.mutate — G1 frame atomicity', () => {
     expect((seen as { namespace: string }).namespace).toBe('default');
   });
 
-  it('policy deny does not abort the frame (no rollback on policy_denied)', async () => {
+  it('a policy deny rolls back the other single-frame entries', async () => {
     const dataset = new MemoryDataset({ namespace: 'default' });
     const registry = new Registry();
     registry.register('createTodoA', { resolver: writeTodoResolver('a') });
@@ -458,9 +458,9 @@ describe('Engine.mutate — G1 frame atomicity', () => {
       ctx: makeCtx()
     });
 
-    expect(envelope.errors?.[0]?.code).toBe('policy_denied');
+    expect(envelope.errors?.map((e) => e.code)).toEqual(['policy_denied', 'frame_rolled_back']);
     const { rows } = await dataset.read('Todo', {});
-    expect(rows.map((r) => r.id)).toEqual(['a']);
+    expect(rows).toEqual([]);
   });
 
   // Cross-store atomicity (§6.2). The engine nests edges.withTransaction
@@ -835,8 +835,10 @@ describe('Engine — multi-namespace dispatch', () => {
       ctx: makeCtx({ identity: { kind: 'agent', id: 'k', grants: { ns1: ['read', 'mutate'] } } })
     });
 
-    expect(envelope.data['ns1/createA']).toEqual({ id: 'a' });
-    expect(envelope.errors?.map((e) => e.code)).toEqual(['unauthorized_namespace']);
+    expect(envelope.errors?.map((e) => e.code)).toEqual([
+      'unauthorized_namespace',
+      'frame_rolled_back'
+    ]);
     expect(JSON.stringify(envelope.errors)).not.toContain(dsB.txScopeId);
   });
 

@@ -958,7 +958,8 @@ export class Engine {
         const entry = frame[key] as FrameEntry | undefined;
         if (entry === undefined) continue;
         const parsed = parsedByKey.get(key) ?? null;
-        const refused = await this.#runEntry(
+        const errorsBefore = envelope.errors?.length ?? 0;
+        const thrown = await this.#runEntry(
           envelope,
           key,
           entry,
@@ -971,6 +972,10 @@ export class Engine {
           signal,
           (fn) => settled.push(fn)
         );
+        // Any refusal of this key (grant, policy, validation, a resolver's
+        // frame error) unwinds the bucket: the entries commit together or not at all.
+        const refused =
+          thrown || (envelope.errors ?? []).slice(errorsBefore).some((e) => e.path?.[0] === key);
         if (refused) {
           refusedKey = key;
           throw new SharedTxRefusal();

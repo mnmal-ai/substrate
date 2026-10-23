@@ -1,7 +1,6 @@
 /**
  * The single-frame mutate bucket shares one tx: every key dispatches (or
- * reports why not), and a resolver refusing through the envelope rolls the
- * whole bucket back.
+ * reports why not), and any key's refusal rolls the whole bucket back.
  */
 
 import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-dataset-memory';
@@ -29,6 +28,10 @@ function writer(type: string): Registry {
     resolver: async () => {
       throw new ResolverFrameError('not_found', 'no such row');
     }
+  });
+  reg.register('denied', {
+    resolver: async () => ({ id: 'never' }),
+    policy: () => ({ allow: false, reason: 'not for you' })
   });
   return reg;
 }
@@ -81,22 +84,23 @@ describe('single-frame mutate bucket', () => {
     const env = await engine.mutate({
       frame: {
         'a/create': { params: {} },
-        'b/create': { params: {} },
         'v/m': { params: {} },
-        'nope/m': { params: {} },
         unqualified: { params: {} }
       },
       ctx
     });
+    // Virtual mutations run outside the tx, so their result survives the rollback.
     expect(virtualRuns()).toBe(1);
     expect(env.data['v/m']).toEqual({ id: 'v' });
-    const codes = (env.errors ?? []).map((e) => [e.path?.[0], e.code]);
-    expect(codes).toEqual(
-      expect.arrayContaining([
-        ['nope/m', 'unknown_namespace'],
-        ['unqualified', 'unqualified_key']
-      ])
-    );
+    expect(env.errors?.map((e) => [e.path?.[0], e.code])).toEqual([
+      ['unqualified', 'unqualified_key'],
+      ['a/create', 'frame_rolled_back']
+    ]);
+
+    const unknown = await engine.mutate({ frame: { 'nope/m': { params: {} } }, ctx });
+    expect(unknown.errors?.map((e) => [e.path?.[0], e.code])).toEqual([
+      ['nope/m', 'unknown_namespace']
+    ]);
   });
 
   it('a ResolverFrameError rolls back earlier entries in a coalesced tx', async () => {
@@ -128,6 +132,45 @@ describe('single-frame mutate bucket', () => {
       ['b/refuse', 'not_found'],
       ['a/create', 'frame_rolled_back'],
       ['b/create', 'frame_rolled_back']
+    ]);
+  });
+
+  it('a policy denial rolls back earlier entries in a coalesced tx', async () => {
+    const { engine, dsA } = coalescing();
+    const env = await engine.mutate({
+      frame: { 'a/create': { params: {} }, 'b/denied': { params: {} } },
+      ctx
+    });
+    expect(env.data['a/create']).toBeUndefined();
+    expect((await dsA.read('A', {})).rows).toEqual([]);
+    expect(env.errors?.map((e) => [e.path?.[0], e.code])).toEqual([
+      ['b/denied', 'policy_denied'],
+      ['a/create', 'frame_rolled_back']
+    ]);
+  });
+
+  it("a key outside the caller's grant rolls back the rest of the bucket", async () => {
+    const { engine, dsA } = coalescing();
+    const env = await engine.mutate({
+      frame: { 'a/create': { params: {} }, 'b/create': { params: {} } },
+      ctx: { ...ctx, identity: { id: 'k', kind: 'agent', grants: { a: ['read', 'mutate'] } } }
+    });
+    expect((await dsA.read('A', {})).rows).toEqual([]);
+    const codes = env.errors?.map((e) => [e.path?.[0], e.code]) ?? [];
+    expect(codes).toContainEqual(['a/create', 'frame_rolled_back']);
+    expect(codes.find(([k]) => k === 'b/create')?.[1]).toMatch(/^unauthorized_/);
+  });
+
+  it('an unknown mutation rolls back the rest of the bucket', async () => {
+    const { engine, dsA } = coalescing();
+    const env = await engine.mutate({
+      frame: { 'a/create': { params: {} }, 'a/nope': { params: {} } },
+      ctx
+    });
+    expect((await dsA.read('A', {})).rows).toEqual([]);
+    expect(env.errors?.map((e) => [e.path?.[0], e.code])).toContainEqual([
+      'a/create',
+      'frame_rolled_back'
     ]);
   });
 
