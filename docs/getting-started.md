@@ -43,7 +43,7 @@ plugin-dir: /app
 
 The `coordinators:` and `kernel:` lines list the plugins that loaded. Data lives in the `postgres_data` volume and survives `docker compose down`; `down -v` deletes it.
 
-The stack starts with keyword recall only. For dense recall, add `docker-compose.embed.yml`, which runs [Ollama](https://ollama.com) beside the server, pulls `bge-m3` (about 1.2 GB, once, into the `ollama_models` volume) and mounts a recall config pointing at it:
+The stack starts with keyword recall only. For dense recall, add `docker-compose.embed.yml`, which runs [Ollama](https://ollama.com) beside the server, pulls `bge-base-en-v1.5` (768-d, about 220 MB, once, into the `ollama_models` volume) and mounts a recall config pointing at it:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.embed.yml up -d

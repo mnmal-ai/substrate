@@ -2,7 +2,7 @@
   "embedder": {
     "kind": "ollama",
     "baseUrl": "http://ollama:11434",
-    "model": "bge-m3",
-    "dimension": 1024
+    "model": "hf.co/CompendiumLabs/bge-base-en-v1.5-gguf:F16",
+    "dimension": 768
   }
 }
