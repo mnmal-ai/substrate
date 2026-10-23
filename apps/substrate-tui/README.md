@@ -1,6 +1,6 @@
 # @mnmal-ai/substrate-tui
 
-A terminal UI for Substrate: ask questions in natural language, browse the federated schema, watch service status and metrics, and, with an unlocked admin identity, run admin operations. Install it with `pnpm add -g @mnmal-ai/substrate-tui`, then run `substrate-tui` in an interactive terminal with `SUBSTRATE_URL` set.
+A terminal UI for Substrate: ask questions in natural language, browse the federated schema, watch service status and metrics, and, with an unlocked admin identity, run admin operations. Install it with `pnpm add -g @mnmal-ai/substrate-tui@next`, then run `substrate-tui` in an interactive terminal with `SUBSTRATE_URL` set.
 
 Without an admin identity it is read-only.
 
