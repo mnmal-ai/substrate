@@ -1,3 +1,7 @@
+import { generateKeyPairSync } from 'node:crypto';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { readConfig } from '../src/config.js';
 
@@ -40,5 +44,26 @@ describe('readConfig', () => {
       '/r'
     );
     expect(c).toMatchObject({ error: expect.stringMatching(/^agent identity: /) });
+  });
+  it('mints the agent token for the endpoint origin', () => {
+    const keyPath = join(mkdtempSync(join(tmpdir(), 'tui-config-')), 'agent.key');
+    writeFileSync(
+      keyPath,
+      generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'pem' })
+    );
+    const c = readConfig(
+      {
+        SUBSTRATE_URL: 'https://h:3100/',
+        SUBSTRATE_NAMESPACE: 'notes',
+        SUBSTRATE_AGENT_KEY_ID: 'k@h',
+        SUBSTRATE_AGENT_KEY_PATH: keyPath
+      },
+      '/r'
+    );
+    if ('error' in c || c.token === null) throw new Error('expected a token provider');
+    const claims = JSON.parse(
+      Buffer.from(c.token().split('.')[1] ?? '', 'base64url').toString('utf8')
+    );
+    expect(claims.aud).toBe('https://h:3100');
   });
 });

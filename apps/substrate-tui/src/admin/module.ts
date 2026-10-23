@@ -11,7 +11,8 @@ import {
   isEncryptedKey,
   makeTokenProvider,
   diagnose as realDiagnose,
-  resolveAdminCredential
+  resolveAdminCredential,
+  tokenAudience
 } from '@mnmal-ai/substrate/client';
 import { defineModule, type ModuleCtx, sanitise, type TuiModule } from '@mnmal-ai/surface-core';
 import type { TuiDeps } from '../deps.js';
@@ -94,6 +95,7 @@ export function adminModule(
       { keyPath, kid },
       {
         capabilities: adminClaimCapabilities(deps.adminEnv),
+        audience: tokenAudience(deps.endpoint),
         ...(passphrase !== undefined ? { passphrase } : {})
       }
     );

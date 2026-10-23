@@ -18,7 +18,7 @@ import { MemoryBridgeCredentialStore } from '@mnmal-ai/substrate-core';
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
 import { MemorySubstrateServer } from '@mnmal-ai/substrate-server-memory';
 import type { PackEnvelope, Schema } from '@mnmal-ai/substrate-types';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   buildBridgeRegistry,
   DEFAULT_KEY_REPRIME_INTERVAL_MS,
@@ -920,6 +920,39 @@ describe('buildBridgeRegistry credential validation (fail-closed)', () => {
     );
     expect(registry.has('cal')).toBe(true);
     dispose();
+  });
+
+  it("mints the bridge's token for the credential's origin", async () => {
+    const creds = parseBridgeCreds(
+      JSON.stringify({
+        'peripheral-a': {
+          keyPath: writeEd25519Key(),
+          kid: 'labs-prime@host',
+          origin: 'https://a.test'
+        }
+      })
+    );
+    const auths: Array<string | null> = [];
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_u, init) => {
+      auths.push(new Headers(init?.headers).get('authorization'));
+      return new Response('{}', { headers: { 'content-type': 'application/json' } });
+    });
+    try {
+      const { registry, dispose } = buildBridgeRegistry(
+        [{ ns: 'cal', name: 'peripheral-a', url: 'https://a.test' }],
+        creds
+      );
+      await registry
+        .get('cal')
+        ?.federatedSchema()
+        .catch(() => {});
+      dispose();
+      const jwt = (auths.find((a) => a !== null) ?? '').replace(/^Bearer /, '');
+      const claims = JSON.parse(Buffer.from(jwt.split('.')[1] ?? '', 'base64url').toString('utf8'));
+      expect(claims.aud).toBe('https://a.test');
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 });
 

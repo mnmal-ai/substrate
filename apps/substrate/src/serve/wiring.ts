@@ -156,7 +156,7 @@ export function buildBridgeRegistry(
     // Throws here on a SET-but-unreadable keyPath rather than inside the bridge
     // client's try-block, where a LOCAL misconfiguration would be reported as a
     // REMOTE outage (`BridgeUnreachableError`).
-    const auth = makeAuthorizationProvider(cred);
+    const auth = makeAuthorizationProvider(cred, { audience: cred.origin });
     const client = new HttpBridgeClient({
       name: spec.name,
       baseUrl: spec.url,
