@@ -39,11 +39,16 @@ describe('WsTransport — closes after an accepted upgrade', () => {
     await new Promise<void>((r) => slow.once('listening', () => r()));
     const addr = slow.address() as { port: number };
     let open = 0;
+    let accepted!: () => void;
+    const acceptedP = new Promise<void>((r) => {
+      accepted = r;
+    });
     slow.on('connection', (socket) => {
       open += 1;
       socket.on('close', () => {
         open -= 1;
       });
+      accepted();
     });
     const t = new WsTransport({ endpoint: `ws://127.0.0.1:${addr.port}` });
     try {
@@ -54,7 +59,10 @@ describe('WsTransport — closes after an accepted upgrade', () => {
       await sleep(20);
       await t.close();
       await first;
-      await sleep(200);
+      await acceptedP;
+      // The server sees the close only after the handshake, so wait for it; a leak never gets there.
+      const deadline = Date.now() + 3000;
+      while (open > 0 && Date.now() < deadline) await sleep(10);
       expect(open).toBe(0);
     } finally {
       await t.close();
