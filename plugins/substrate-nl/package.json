@@ -1,6 +1,6 @@
 {
   "name": "@mnmal-ai/substrate-nl",
-  "version": "1.0.0-alpha.6",
+  "version": "1.0.0-alpha.7",
   "description": "Natural-language questions for Substrate — a deterministic parser with an optional constrained judge, served at POST /substrate/v1/nl and GET /substrate/v1/nl/pack/:ns, plus browser-safe completion.",
   "license": "Apache-2.0",
   "repository": {
