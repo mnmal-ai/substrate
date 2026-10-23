@@ -91,6 +91,8 @@ export {
   type ScriptContext,
   type ScriptMode,
   type ScriptMutation,
+  type ScriptRecallHit,
+  type ScriptRecallInput,
   type ScriptReport
 } from './script.js';
 // Low-level fold primitives behind `SubstrateClient.watch`, exported for consumers

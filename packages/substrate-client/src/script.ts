@@ -15,6 +15,28 @@ export interface ScriptMutation {
   errors?: PackEnvelope['errors'];
 }
 
+export interface ScriptRecallInput {
+  query: string;
+  /** Required, as on every recall surface. */
+  namespace: string;
+  type?: string;
+  k?: number;
+  threshold?: number;
+  where?: Record<string, unknown>;
+  /** `true` for the whole row, or the fields to return beside `id`. Omit for the handle fields. */
+  row?: true | Record<string, true>;
+}
+
+export interface ScriptRecallHit {
+  id: string;
+  namespace: string;
+  type: string;
+  score: number;
+  kind: 'seed' | 'expansion';
+  expandedFrom?: unknown;
+  row: Record<string, unknown>;
+}
+
 /** What a script's default export receives. */
 export interface ScriptContext {
   readonly kid: string | null;
@@ -31,6 +53,8 @@ export interface ScriptContext {
     key: string,
     frame: { params?: Record<string, unknown>; fields?: unknown }
   ): Promise<Record<string, unknown>[]>;
+  /** Recall hits, best first, through the `recall/Hit` frame. */
+  recall(input: ScriptRecallInput): Promise<ScriptRecallHit[]>;
   /**
    * One mutate payload (one transaction). Returns null in `dry-run`, and throws
    * in `read`, past `maxWrites`, or when the server refuses any frame.
@@ -134,6 +158,27 @@ export async function runScript(
         cursor = p.nextCursor;
       }
       throw new Error(`${key}: still hasMore after ${maxPages} pages`);
+    },
+    async recall({ query: to, row, ...params }) {
+      // The frame drops `row` unless `fields` names it, so the handle default sends no `fields`.
+      const fields =
+        row === undefined
+          ? {}
+          : {
+              fields: {
+                id: true,
+                namespace: true,
+                type: true,
+                score: true,
+                kind: true,
+                expandedFrom: true,
+                row
+              }
+            };
+      const env = await query({
+        'recall/Hit': { params: { to, ...params }, ...fields }
+      } as QualifiedFrame);
+      return env.data['recall/Hit'] as ScriptRecallHit[];
     },
     async mutate(frame) {
       if (mode === 'read') throw new Error('mutate refused: read mode (pass --dry-run or --write)');
