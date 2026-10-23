@@ -1,6 +1,6 @@
 {
   "name": "@mnmal-ai/substrate-server-memory",
-  "version": "1.0.0-alpha.5",
+  "version": "1.0.0-alpha.6",
   "private": true,
   "description": "In-process SubstrateServer for tests and in-process embedding.",
   "license": "Apache-2.0",
