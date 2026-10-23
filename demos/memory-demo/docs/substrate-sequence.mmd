@@ -1,0 +1,40 @@
+sequenceDiagram
+  autonumber
+  participant P as Demo<br/>page and server
+  participant C as Claude Code<br/>agent session
+  participant M as Claude model<br/>Anthropic API
+  box rgba(0, 95, 158, 0.08) Substrate, all on this Mac
+    participant X as Substrate MCP<br/>one per session
+    participant S as Substrate server<br/>:3100
+    participant O as Ollama<br/>bge-m3
+    participant D as Postgres<br/>+ pgvector
+  end
+
+  Note over P,D: Writing a memory. The demo's ingest calls the server directly, and an agent does the same through the MCP.
+  P->>S: mutate: create a Decision
+  S->>D: Insert the row, fields checked against its type
+  S->>D: Update the keyword index
+  S->>O: Embed the row's text
+  O-->>S: Vector
+  S->>D: Store the vector
+  S-->>P: Created and searchable
+
+  Note over P,D: Answering "What is the current storage engine for Ledger billing pipeline?"
+  P->>S: schema
+  S-->>P: Types and fields
+  P->>C: Question, Substrate tools, schema overview
+  C->>X: Start
+  C->>M: Question and tool definitions
+  M-->>C: Call the recall tool, asking for the decisions' fields
+  C->>X: Tool call
+  X->>S: recall
+  S->>O: Embed the question
+  O-->>S: Vector
+  S->>D: Vector search and keyword search
+  D-->>S: Matching rows
+  S-->>X: Rows fused by rank, with the fields asked for
+  X-->>C: 3 decisions: 1 active, 2 replaced
+  C->>M: Tool result
+  M-->>C: "ClickHouse"
+  C-->>P: Answer and every call, streamed
+  Note over C,D: Filter, count and join questions call the query tool instead: one typed query, answered by Postgres alone, with no embedding.

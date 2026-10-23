@@ -1,0 +1,64 @@
+{
+ "at": "2026-10-23T04:34:04.777Z",
+ "question": "What is the current target queue for the Atlas queue migration project? Answer with only the queue name.",
+ "steps": [
+  {
+   "system": "obsidian",
+   "step": "machine B: clone and index the vault",
+   "ms": 12476,
+   "detail": "(setup, before the change)"
+  },
+  {
+   "system": "obsidian",
+   "step": "machine A: record the change",
+   "ms": 10517,
+   "detail": "note written, indexed, committed"
+  },
+  {
+   "system": "obsidian",
+   "step": "machine B: ask",
+   "ms": 8497,
+   "answer": "NATS JetStream",
+   "current": false
+  },
+  {
+   "system": "obsidian",
+   "step": "machine B: git pull and re-index",
+   "ms": 565,
+   "detail": "someone has to do this"
+  },
+  {
+   "system": "obsidian",
+   "step": "machine B: ask again",
+   "ms": 8155,
+   "answer": "Apache Kafka",
+   "current": true
+  },
+  {
+   "system": "substrate",
+   "step": "machine A: record the change",
+   "ms": 614,
+   "detail": "two writes to the server"
+  },
+  {
+   "system": "substrate",
+   "step": "machine B: ask",
+   "ms": 5459,
+   "answer": "Apache Kafka",
+   "current": true
+  },
+  {
+   "system": "hindsight",
+   "step": "machine A: record the change",
+   "ms": 5324,
+   "detail": "both memories retained; its LLM extracts their facts"
+  },
+  {
+   "system": "hindsight",
+   "step": "machine B: ask",
+   "ms": 8352,
+   "answer": "Apache Kafka",
+   "current": true
+  }
+ ]
+}
