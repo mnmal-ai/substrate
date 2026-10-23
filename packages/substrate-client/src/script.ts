@@ -19,6 +19,8 @@ export interface ScriptMutation {
 export interface ScriptContext {
   readonly kid: string | null;
   readonly mode: ScriptMode;
+  /** The caller's `--args` object; `{}` when none was passed. */
+  readonly args: Readonly<Record<string, unknown>>;
   /**
    * One query. Throws when a requested key is missing from `data`, which is a
    * rejected frame, not an empty result.
@@ -42,6 +44,7 @@ export interface ScriptReport {
   ok: boolean;
   kid: string | null;
   mode: ScriptMode;
+  args: Record<string, unknown>;
   result?: unknown;
   error?: string;
   mutations: ScriptMutation[];
@@ -53,6 +56,7 @@ export interface RunScriptOptions {
   client: SubstrateClient;
   kid: string | null;
   mode?: ScriptMode;
+  args?: Record<string, unknown>;
   maxWrites?: number;
   maxPages?: number;
   log?: (line: string) => void;
@@ -88,6 +92,7 @@ export async function runScript(
     client,
     kid,
     mode = 'read',
+    args = {},
     maxWrites = DEFAULT_MAX_WRITES,
     maxPages = DEFAULT_MAX_PAGES
   } = opts;
@@ -111,6 +116,7 @@ export async function runScript(
   const ctx: ScriptContext = {
     kid,
     mode,
+    args: Object.freeze({ ...args }),
     query,
     async queryAll(key, frame) {
       const rows: Record<string, unknown>[] = [];
@@ -158,7 +164,7 @@ export async function runScript(
 
   const report = (extra: { ok: boolean; result?: unknown; error?: string }): ScriptReport => {
     stats.ms = Date.now() - started;
-    return { ...extra, kid, mode, mutations, warnings, stats };
+    return { ...extra, kid, mode, args, mutations, warnings, stats };
   };
   try {
     return report({ ok: true, result: await script(ctx) });
