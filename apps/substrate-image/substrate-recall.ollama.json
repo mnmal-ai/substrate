@@ -1,0 +1,8 @@
+{
+  "embedder": {
+    "kind": "ollama",
+    "baseUrl": "http://ollama:11434",
+    "model": "bge-m3",
+    "dimension": 1024
+  }
+}

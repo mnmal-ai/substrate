@@ -1,0 +1,37 @@
+# Dense recall for the root compose stack: an Ollama server, a one-shot pull of
+# the embedding model, and the recall config that points substrate at it.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.embed.yml up -d
+#
+# The first up downloads bge-m3 (about 1.2 GB) into the ollama_models volume.
+
+services:
+  ollama:
+    image: ollama/ollama:0.40.2
+    volumes:
+      - ollama_models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  ollama-pull:
+    image: ollama/ollama:0.40.2
+    environment:
+      OLLAMA_HOST: ollama:11434
+    command: ["pull", "bge-m3"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+
+  substrate:
+    volumes:
+      - ./apps/substrate-image/substrate-recall.ollama.json:/app/substrate-recall.config.json:ro
+    depends_on:
+      ollama-pull:
+        condition: service_completed_successfully
+
+volumes:
+  ollama_models:

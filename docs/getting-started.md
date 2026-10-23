@@ -43,6 +43,15 @@ plugin-dir: /app
 
 The `coordinators:` and `kernel:` lines list the plugins that loaded. Data lives in the `postgres_data` volume and survives `docker compose down`; `down -v` deletes it.
 
+The stack starts with keyword recall only. For dense recall, add `docker-compose.embed.yml`, which runs [Ollama](https://ollama.com) beside the server, pulls `bge-m3` (about 1.2 GB, once, into the `ollama_models` volume) and mounts a recall config pointing at it:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.embed.yml up -d
+curl http://localhost:3100/substrate/v1/embed-stats   # "enabled": true
+```
+
+Rows are embedded only for types whose namespace declares an `embed.source`, so `embeddedTypes` stays empty until you load such a plugin. Use the same `-f` pair for every later `docker compose` command, or the server restarts without the embedder.
+
 ### Verify
 
 **The engine is up:**
@@ -221,7 +230,7 @@ It serves `schema`, `query`, `mutate`, `recall`, `ask`, `whoami`, `propose_type`
 
 ### Semantic recall and the embedder
 
-Recall retrieves rows by semantic similarity (`recall` MCP tool, `POST /substrate/v1/recall`, the `embeddingSimilar` filter operator) and also ranks by keyword, fusing the two, so a small model loses little. It needs an embedder for the built-in `substrate-recall` plugin, configured in `substrate-recall.config.json` at the runtime root, not in `.env`. The Docker image ships no embedder, so dense recall is off there. In an npm runtime, `--embedder` picks the model:
+Recall retrieves rows by semantic similarity (`recall` MCP tool, `POST /substrate/v1/recall`, the `embeddingSimilar` filter operator) and also ranks by keyword, fusing the two, so a small model loses little. It needs an embedder for the built-in `substrate-recall` plugin, configured in `substrate-recall.config.json` at the runtime root, not in `.env`. The Docker image ships no embedder; `docker-compose.embed.yml` adds one ([§3](#3-run-it-with-docker)). In an npm runtime, `--embedder` picks the model:
 
 | `--embedder` | Model | Runs | Notes |
 |---|---|---|---|
