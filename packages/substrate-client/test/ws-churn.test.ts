@@ -30,6 +30,46 @@ const send = (s: WsSocket, f: Record<string, unknown>): void => s.send(JSON.stri
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 describe('WsTransport — closes after an accepted upgrade', () => {
+  it('a close() while an open is in flight leaves no socket behind', async () => {
+    const slow = new WebSocketServer({
+      port: 0,
+      // Holds the upgrade so close() lands while the client is still connecting.
+      verifyClient: (_info, done) => setTimeout(() => done(true), 80)
+    });
+    await new Promise<void>((r) => slow.once('listening', () => r()));
+    const addr = slow.address() as { port: number };
+    let open = 0;
+    let accepted!: () => void;
+    const acceptedP = new Promise<void>((r) => {
+      accepted = r;
+    });
+    slow.on('connection', (socket) => {
+      open += 1;
+      socket.on('close', () => {
+        open -= 1;
+      });
+      accepted();
+    });
+    const t = new WsTransport({ endpoint: `ws://127.0.0.1:${addr.port}` });
+    try {
+      const iter = t
+        .subscribe({ id: 's', frame: { 'default/Todo': { params: {}, fields: { id: true } } } })
+        [Symbol.asyncIterator]();
+      const first = iter.next().catch(() => undefined);
+      await sleep(20);
+      await t.close();
+      await first;
+      await acceptedP;
+      // The server sees the close only after the handshake, so wait for it; a leak never gets there.
+      const deadline = Date.now() + 3000;
+      while (open > 0 && Date.now() < deadline) await sleep(10);
+      expect(open).toBe(0);
+    } finally {
+      await t.close();
+      await new Promise<void>((r) => slow.close(() => r()));
+    }
+  });
+
   it('backs off, growing, when the server keeps closing with 1013', async () => {
     let connections = 0;
     wss.on('connection', (socket) => {
