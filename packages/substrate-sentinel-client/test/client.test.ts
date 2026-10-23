@@ -893,6 +893,42 @@ describe('discovery origin binding', () => {
     expect(clients.map((c) => c.name)).toEqual(['peripheral-a']);
     await handle.stop();
   });
+
+  it("mints the discovered bridge's token for the credential's origin", async () => {
+    const clients: Array<BridgeClient> = [];
+    const bridges: WritableBridgeRegistry = {
+      has: () => false,
+      get: () => undefined,
+      isUnreachable: () => false,
+      entries: () => [],
+      register: (_ns: string, client: BridgeClient) => {
+        clients.push(client);
+      },
+      unregister: () => {}
+    };
+    const auths: Array<string | null> = [];
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_u, init) => {
+      auths.push(new Headers(init?.headers).get('authorization'));
+      return new Response('{}', { headers: { 'content-type': 'application/json' } });
+    });
+    try {
+      const handle = startSentinelClient({
+        sentinelUrl: 'ws://sentinel.test',
+        bridges,
+        engine: { refreshBridgeSchemas: async () => {}, registryFor: () => undefined },
+        creds: { get: () => ({ keyPath: KEY_PATH, kid: 'k@h', origin: 'https://a.test' }) },
+        wsFactory: makeFakeSocket()
+      });
+      await emitOnline({ name: 'peripheral-a', url: 'https://a.test', namespaces: ['alpha'] });
+      await clients[0]?.federatedSchema().catch(() => {});
+      const jwt = (auths.find((a) => a !== null) ?? '').replace(/^Bearer /, '');
+      const claims = JSON.parse(Buffer.from(jwt.split('.')[1] ?? '', 'base64url').toString('utf8'));
+      expect(claims.aud).toBe('https://a.test');
+      await handle.stop();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
 });
 
 describe('sentinel error frames', () => {

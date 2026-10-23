@@ -45,7 +45,7 @@ const verdict = (adminOk: boolean, identity: string | null): DiagnoseResult => (
 function start(adminEnv: TuiDeps['adminEnv'], result: DiagnoseResult, gate?: Promise<void>) {
   const seen: DiagnoseOpts[] = [];
   const deps: TuiDeps = {
-    endpoint: 'http://h',
+    endpoint: 'https://h',
     project: 'substrate',
     namespace: 'journal',
     nl: {} as TuiDeps['nl'],
@@ -53,7 +53,7 @@ function start(adminEnv: TuiDeps['adminEnv'], result: DiagnoseResult, gate?: Pro
     getJson: async () => ({}),
     ...noDash,
     ...noAdmin(),
-    admin: createAdminSession({ endpoint: 'http://h', idleMs: 15 * 60_000 }),
+    admin: createAdminSession({ endpoint: 'https://h', idleMs: 15 * 60_000 }),
     adminEnv
   };
   const mod = adminModule(deps, {
