@@ -40,7 +40,9 @@ USER node
 
 ENV NODE_ENV=production
 ENV PORT=3100
-# Auth is off in this image; compose publishes the port on the host's loopback only.
+# Auth is off in this image, so the server refuses to boot on 0.0.0.0 until the
+# caller sets SUBSTRATE_ALLOW_UNAUTHENTICATED_HOST=1. Compose does, and publishes
+# the port on the host's loopback only.
 ENV HOST=0.0.0.0
 ENV SUBSTRATE_PLUGIN_DIR=/app
 # Who the server writes as while auth is off; it refuses to boot without one.
