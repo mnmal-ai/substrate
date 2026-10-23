@@ -1,5 +1,5 @@
 /**
- * A frame where one key commits and another is refused must still be cached
+ * A frame where one op-key commits and another is refused must still be cached
  * under its idempotency key. Caching only error-free replies made the retry
  * re-run the key that had already committed, which is the duplicate the key
  * exists to prevent. The retry gets the stored reply, refusal included; to try
@@ -60,7 +60,9 @@ describe('idempotency: a partly committed frame', () => {
     const { engine, getRuns } = bootstrap();
     const frame = {
       'default/createTodo': { params: { id: 't1' }, fields: { id: true }, idempotencyKey: 'k' },
-      'default/createSecret': { params: {}, fields: { id: true }, idempotencyKey: 'k' }
+      // An array op-key commits apart from the single-frame bucket, so this
+      // refusal leaves the createTodo commit in place.
+      'default/createSecret': [{ params: {}, fields: { id: true } }]
     };
 
     const first = await engine.mutate({ frame, ctx });

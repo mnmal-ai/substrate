@@ -612,7 +612,7 @@ Plugins can contribute extra operators (the recall plugin adds `embeddingSimilar
 
 ### 5.3 Transactions and batched mutations
 
-A `mutate` call runs its single-frame entries in one transaction on the addressed store, via `withTransaction` (§4.5). They commit together or not at all: a resolver that throws or refuses (a `ResolverFrameError`) rolls back every single-frame entry in the call, so a retry repeats nothing.
+A `mutate` call runs its single-frame entries in one transaction on the addressed store, via `withTransaction` (§4.5). They commit together or not at all. If any entry is refused (outside the caller's grant, denied by policy, invalid, or a resolver's `ResolverFrameError`) or its resolver throws, every single-frame entry in the call rolls back, and each of the others comes back with `frame_rolled_back`. So a retry repeats nothing. Virtual mutations run outside the transaction, so their results stand.
 
 Work that must outlive a rollback, such as an audit row recording a refusal, goes through `args.afterTx(fn)`: `fn` runs once the transaction has settled, committed or rolled back, and receives `{ committed }` saying which; autoCRUD's `postWrite` uses it to run only after a commit. A failure there is reported as the `engine_after_tx_failed` metric and does not change the envelope.
 
