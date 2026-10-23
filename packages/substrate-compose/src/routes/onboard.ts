@@ -185,6 +185,22 @@ const WS_INSTRUCTIONS = {
   }
 } as const;
 
+const CODE_MODE_INSTRUCTIONS = {
+  command:
+    'substrate run <script.mts> [--args <json>] [--dry-run | --write] [--max-writes <n>] [--out <file>]',
+  summary:
+    'For an agent with a shell: run a TypeScript script whose default export receives a signed client, so many reads and writes cost one call and return one small JSON report. It composes the operations above; it adds none, and every call meets the same grants and policy.',
+  when: 'a count or census over many rows, a join across types, recall followed by fetching the bodies of the hits worth reading, or a batch of writes chosen by what a read found. One lookup or one write is simpler as a direct query or mutate',
+  context:
+    'the default export gets `s` with `args`, `query(frame)`, `queryAll(key, { params, fields })`, `recall({ query, namespace, type, ... })`, `mutate(payload)` and `log(...)`; return a reduced result (counts, ids, a verdict), not whole rows',
+  notes: [
+    'signs from SUBSTRATE_URL, SUBSTRATE_AGENT_KEY_ID and SUBSTRATE_AGENT_KEY_PATH, and refuses to run unsigned',
+    'read-only by default: `mutate` throws unless `--dry-run` (records each payload and sends nothing) or `--write` (sends up to `--max-writes` frames, default 50). Dry-run first, read the recorded mutations, then write',
+    'a frame the server rejected fails the run with its error rather than reading as empty; a truncated `query` is reported in `warnings`, and `queryAll` pages to the end',
+    'stdout is one report `{ ok, kid, mode, args, result, error?, mutations, warnings, stats }`; `mutations` lists every payload with `applied`, including those sent before a failure. Exit codes: 0 ok, 1 the script failed, 2 usage or configuration'
+  ]
+} as const;
+
 const AUTH_INSTRUCTIONS = {
   summary:
     'Bearer-JWT auth (§5.12). Present `Authorization: Bearer <jwt>` on every request, onboard included. Only /health, /substrate/v1/whoami and /substrate/v1/_system/register answer without one. Two paths to a token: (a) the invite→register exchange for a namespace-scoped JWT, or (b) a pre-registered per-principal key you sign with directly (the agent-identity path — see `identity`). How a MISSING token is treated depends on `mode`.',
@@ -241,8 +257,8 @@ function buildFrameGrammar(coordinators: ReadonlyArray<CoordinatorPlugin>): Reco
     queryKey: '<ns>/<TypeName>',
     mutationKey: '<ns>/<mutationName>',
     batched:
-      'A mutate op-key MAY carry an Array<FrameEntry>. All frames under one op-key run serially inside the same transaction (all-or-nothing per op-key). Cross-op-key atomicity is not a goal — each op-key commits independently. Query/subscribe/stream op-keys reject array values.',
-    example: `{ "${exampleNs}/Todo": { "params": {"status": "open"}, "fields": {"id": true, "title": true} }, "${exampleNs}/createTodo": [{ "params": {"title": "first"}, "fields": {"id": true} }, { "params": {"title": "second"}, "fields": {"id": true} }] }`
+      'A mutate op-key MAY carry an Array<FrameEntry>. All frames under one array op-key run serially inside the same transaction (all-or-nothing per op-key), and each array op-key commits independently of every other op-key. The single-frame op-keys of one call share their own transaction: if any of them is refused, all of them roll back with `frame_rolled_back`. Query/subscribe/stream op-keys reject array values.',
+    example: `{ "${exampleNs}/Todo": { "params": {"where": {"status": {"eq": "open"}}}, "fields": {"id": true, "title": true} }, "${exampleNs}/createTodo": [{ "params": {"title": "first"}, "fields": {"id": true} }, { "params": {"title": "second"}, "fields": {"id": true} }] }`
   };
 }
 
@@ -295,6 +311,7 @@ export function buildOnboardBody(deps: OnboardDeps): Record<string, unknown> {
     stream: WS_INSTRUCTIONS.stream,
     substratePack: WS_INSTRUCTIONS.substratePack,
     sse: WS_INSTRUCTIONS.sse,
+    codeMode: CODE_MODE_INSTRUCTIONS,
     plugins: buildPluginContributions(deps.coordinators),
     pluginRoutes: buildPluginRoutes(deps.coordinators)
   };

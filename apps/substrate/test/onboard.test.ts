@@ -348,6 +348,28 @@ describe('GET /substrate/v1/onboard — frame grammar', () => {
     expect(typeof body.frameGrammar.example).toBe('string');
     // No coordinators loaded → falls back to the `default` namespace.
     expect(body.frameGrammar.example).toContain('default/Todo');
+    // Filters belong in `where`; top-level params are not filters.
+    expect(JSON.parse(body.frameGrammar.example)['default/Todo'].params).toEqual({
+      where: { status: { eq: 'open' } }
+    });
+  });
+
+  it('teaches code mode: substrate run, signed and read-only by default', async () => {
+    server = new MemorySubstrateServer();
+    composed = await compose({
+      systemActor: 'test',
+      server,
+      dataset: new MemoryDataset({ namespace: 'default' }),
+      version: '1.0.0'
+    });
+    const res = await server.inject({
+      method: 'GET',
+      path: '/substrate/v1/onboard',
+      headers: readAuth()
+    });
+    const { codeMode } = JSON.parse(bodyToString(res)).instructions;
+    expect(codeMode.command).toMatch(/^substrate run /);
+    expect(codeMode.notes.join(' ')).toContain('--dry-run');
   });
 
   it('builds the example from the first loaded namespace, not a hardcoded default', async () => {
