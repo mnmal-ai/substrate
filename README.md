@@ -30,7 +30,7 @@ curl http://localhost:3100/health
 curl http://localhost:3100/substrate/v1/onboard
 ```
 
-[`docs/getting-started.md`](docs/getting-started.md) goes on from there.
+Add `-f docker-compose.yml -f docker-compose.embed.yml` for dense recall through a local Ollama. [`docs/getting-started.md`](docs/getting-started.md) goes on from there.
 
 ### npm runtime
 
