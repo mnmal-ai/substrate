@@ -1,6 +1,6 @@
 {
   "name": "@mnmal-ai/substrate-pack",
-  "version": "1.0.0-alpha.8",
+  "version": "1.0.0-alpha.9",
   "private": true,
   "description": "MessagePack + positional encoder/decoder for Substrate wire frames.",
   "license": "Apache-2.0",

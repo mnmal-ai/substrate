@@ -1,6 +1,6 @@
 {
   "name": "@mnmal-ai/substrate-sdk",
-  "version": "1.0.0-alpha.8",
+  "version": "1.0.0-alpha.9",
   "private": true,
   "description": "Decorator-free SDK for declaring Substrate namespaces, types, and autoCRUD at compose time.",
   "license": "Apache-2.0",
