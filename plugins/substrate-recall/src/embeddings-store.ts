@@ -162,6 +162,17 @@ export interface EmbeddingsStore {
    * mismatched vector surfaces as a substrate-level error.
    */
   upsert(input: EmbeddingsStoreUpsertInput): Promise<void>;
+  /**
+   * Ids of live rows of (namespace, type) whose vector is missing or older than
+   * the row, after `afterId` in id order: the writes whose embed failed. Optional;
+   * a store that cannot see the rows table omits it and nothing is backfilled.
+   */
+  staleRowIds?(input: {
+    namespace: string;
+    type: string;
+    afterId: string;
+    limit: number;
+  }): Promise<string[]>;
 
   /**
    * Remove the embedding for one row, leaving the row itself untouched. Used
