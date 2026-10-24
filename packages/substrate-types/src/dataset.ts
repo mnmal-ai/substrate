@@ -353,6 +353,22 @@ export interface Dataset {
    */
   ensureTypeStorage?(type: string): Promise<void>;
   /**
+   * Where `type`'s rows live and how its declared indexes stand, read from the
+   * catalog without building anything.
+   *
+   * OPTIONAL. Backends without per-type storage omit it.
+   */
+  describeStorage?(type: string): Promise<TypeStorageReport>;
+  /**
+   * The database-wide storage layout and what an operator should look at:
+   * rows parked in DEFAULT partitions, indexes on the `rows` parent,
+   * engine-named indexes no longer declared, and a partition count over
+   * `partitionBudget`. Never changes anything.
+   *
+   * OPTIONAL. Backends without per-type storage omit it.
+   */
+  storageReport?(opts: { partitionBudget: number }): Promise<StorageReport>;
+  /**
    * Execute `fn` atomically. All ops performed on the `tx` argument run inside
    * one substrate transaction. If `fn` throws or returns a rejected promise,
    * every mutation inside the callback rolls back. If `fn` resolves, the
@@ -492,4 +508,25 @@ export interface DatasetRegistry {
    * Optional: same rationale as `onNamespaceLost`.
    */
   dispose?(ns: string): void;
+}
+
+/** One declared index of a type and the state the catalog holds it in. */
+export interface TypeIndexState {
+  name: string;
+  fields: string[];
+  unique: boolean;
+  state: 'valid' | 'building' | 'invalid' | 'failed';
+  outcome: 'created' | 'adopted' | 'swapped' | 'unchanged';
+}
+
+/** Where a type's rows live: `partition` is set on the partitioned layout once the type has one. */
+export interface TypeStorageReport {
+  layout: 'legacy' | 'partitioned';
+  partition?: string;
+  indexes: TypeIndexState[];
+}
+
+export interface StorageReport {
+  layout: 'legacy' | 'partitioned';
+  warnings: string[];
 }

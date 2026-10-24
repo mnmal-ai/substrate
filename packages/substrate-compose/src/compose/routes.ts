@@ -16,6 +16,7 @@ import type {
   HttpHandler,
   Identity,
   PluginRouter,
+  StorageReport,
   SubstrateServer
 } from '@mnmal-ai/substrate-types';
 import { grantedIn, grantOf } from '@mnmal-ai/substrate-types';
@@ -82,6 +83,8 @@ export interface CoreRoutesArgs {
    * echo would read as "nothing is configured" rather than "nothing reported".
    */
   configReport?: ConfigReport;
+  /** Adds the storage layout and its warnings to the config report. */
+  storageReport?: () => Promise<StorageReport>;
 }
 
 export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
@@ -110,7 +113,8 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
     registerRateLimiter,
     identityDirectory,
     adminCapability,
-    configReport
+    configReport,
+    storageReport
   } = args;
 
   server.route(
@@ -206,7 +210,11 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
   // Admin-gated, unlike /substrate/v1/metrics: this says how the deployment is built
   // — store kind, auth mode, proxy allowlist.
   if (configReport !== undefined) {
-    server.route('GET', '/substrate/v1/config', gate(configRouteHandler(configReport), 'admin'));
+    server.route(
+      'GET',
+      '/substrate/v1/config',
+      gate(configRouteHandler(configReport, storageReport), 'admin')
+    );
   }
 
   // §5.12: admin-gated invite mint + public rate-limited register.

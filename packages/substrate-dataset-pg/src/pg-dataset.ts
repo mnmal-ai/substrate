@@ -46,7 +46,9 @@ import type {
   ReadResult,
   Row,
   RowMetadata,
+  StorageReport,
   TxScopeHandles,
+  TypeStorageReport,
   UpdateFieldRef,
   WriteOptions,
   WriteResult
@@ -54,7 +56,12 @@ import type {
 import type { Sql } from 'postgres';
 import { withPgAdvisoryLock } from './advisory-lock.js';
 import { NamespaceMismatch, ReservedField } from './errors.js';
-import { reconcileTypeIndexes } from './index-reconciler.js';
+import {
+  describeTypeIndexes,
+  type ReconcileTypeIndexesArgs,
+  reconcileTypeIndexes,
+  undeclaredIndexes
+} from './index-reconciler.js';
 import { detectLayout, type StorageLayout } from './layout.js';
 import type { PgEdgesStore } from './pg-edges-store.js';
 import { PgShortIdStore } from './pg-short-id-store.js';
@@ -79,7 +86,7 @@ import {
   resolvePromotedColumns
 } from './pg-sql.js';
 import { type PgHandle, txScopeIdFor } from './tx-scope.js';
-import { ensureTypeStorage, storageWarnings } from './type-storage.js';
+import { ensureTypeStorage, findPartition, storageWarnings } from './type-storage.js';
 
 // The pool-owned instance holds `Sql`; tx-scoped instances hold the
 // `TransactionSql` from `sql.begin(fn)`. Only `Sql` exposes `begin`, so that
@@ -1006,6 +1013,81 @@ export class PgDataset implements Dataset {
   async storageWarnings(): Promise<string[]> {
     if ((await this.#layout()) !== 'partitioned') return [];
     return storageWarnings(this.#sql as Sql);
+  }
+
+  #indexArgs(type: string, namespace: string, layout: StorageLayout): ReconcileTypeIndexesArgs {
+    const def = this.#typeDefLookup?.(type, namespace);
+    return {
+      namespace,
+      type,
+      layout,
+      fields: def?.fields ?? {},
+      indexes: def?.indexes ?? [],
+      promotedColumns: this.#promotedColumns
+    };
+  }
+
+  /** See `Dataset.describeStorage`. Reads the catalog only. */
+  async describeStorage(type: string): Promise<TypeStorageReport> {
+    const layout = (await this.#layout()) === 'partitioned' ? 'partitioned' : 'legacy';
+    const sql = this.#sql as Sql;
+    const nsPart =
+      layout === 'partitioned' ? await findPartition(sql, 'rows', this.namespace) : undefined;
+    const partition = nsPart === undefined ? undefined : await findPartition(sql, nsPart, type);
+    return {
+      layout,
+      ...(partition !== undefined ? { partition } : {}),
+      indexes: await describeTypeIndexes(sql, this.#indexArgs(type, this.namespace, layout))
+    };
+  }
+
+  /** See `Dataset.storageReport`. Spans every namespace of the database. */
+  async storageReport(opts: { partitionBudget: number }): Promise<StorageReport> {
+    const layout = await this.#layout();
+    if (layout !== 'partitioned') return { layout: 'legacy', warnings: [] };
+    const sql = this.#sql as Sql;
+    const warnings = await storageWarnings(sql);
+    const parent = await sql<Array<{ name: string }>>`
+      SELECT c.relname AS name FROM pg_index i
+      JOIN pg_class c ON c.oid = i.indexrelid
+      WHERE i.indrelid = 'rows'::regclass AND NOT i.indisprimary ORDER BY 1`;
+    for (const { name } of parent) {
+      warnings.push(`index ${name} is on the rows parent: every partition carries a copy of it`);
+    }
+    const parts = await sql<Array<{ ns: string; type: string }>>`
+      SELECT pg_get_expr(np.relpartbound, np.oid) AS ns, pg_get_expr(tp.relpartbound, tp.oid) AS type
+      FROM pg_inherits i1
+      JOIN pg_class np ON np.oid = i1.inhrelid
+      JOIN pg_inherits i2 ON i2.inhparent = np.oid
+      JOIN pg_class tp ON tp.oid = i2.inhrelid
+      WHERE i1.inhparent = 'rows'::regclass ORDER BY 1, 2`;
+    const bound = (b: string): string | undefined =>
+      /^FOR VALUES IN \('(.*)'\)$/s.exec(b)?.[1]?.replace(/''/g, "'");
+    for (const p of parts) {
+      const ns = bound(p.ns);
+      const type = bound(p.type);
+      if (ns === undefined || type === undefined || this.#typeDefLookup?.(type, ns) === undefined) {
+        continue;
+      }
+      try {
+        for (const name of await undeclaredIndexes(sql, this.#indexArgs(type, ns, 'partitioned'))) {
+          warnings.push(`undeclared index ${name} on ${ns}/${type}: drop it explicitly`);
+        }
+      } catch (err) {
+        warnings.push(
+          `indexes of ${ns}/${type} could not be checked: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+    const [count] = await sql<Array<{ n: number }>>`
+      SELECT (count(*) - 1)::int AS n FROM pg_partition_tree('rows')`;
+    const n = count?.n ?? 0;
+    if (n > opts.partitionBudget) {
+      warnings.push(
+        `${n} partitions exceed the budget of ${opts.partitionBudget}: move a namespace to its own instance behind a bridge`
+      );
+    }
+    return { layout: 'partitioned', warnings };
   }
 
   private materialize(record: SubstrateRowRecord): Row {

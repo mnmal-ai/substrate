@@ -76,6 +76,10 @@ export async function buildComposeOpts(args: {
     // Mounts the admin-gated `GET /substrate/v1/config`.
     configReport: config.knobs
   };
+  if (dataset.storageReport !== undefined) {
+    const report = dataset.storageReport.bind(dataset);
+    composeOpts.storageReport = () => report({ partitionBudget: config.partitionBudget });
+  }
   if (coordinators.length > 0) {
     composeOpts.coordinators = coordinators;
     composeOpts.datasets = buildPluginDatasetMap(

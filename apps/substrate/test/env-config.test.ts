@@ -517,6 +517,14 @@ describe('parseEnv', () => {
     expect(() => parseEnv({ SUBSTRATE_SHUTDOWN_GRACE_MS: '-1' })).toThrow(EnvConfigError);
   });
 
+  it('partition budget: defaults to 500, honours an override, refuses anything else', () => {
+    expect(parseEnv({}).partitionBudget).toBe(500);
+    expect(parseEnv({ SUBSTRATE_PARTITION_BUDGET: '3' }).partitionBudget).toBe(3);
+    for (const bad of ['0', '-1', '1.5', 'abc']) {
+      expect(() => parseEnv({ SUBSTRATE_PARTITION_BUDGET: bad })).toThrow(EnvConfigError);
+    }
+  });
+
   // Regression: docker-compose `${VAR:-}` substitution passes `""` when an
   // operator leaves the .env line blank. parseInt('') is NaN, and NaN in
   // setInterval fires continuously, so empty must mean "not set".

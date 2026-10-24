@@ -35,6 +35,7 @@ import type {
   IdempotencyStore,
   KernelPlugin,
   Registry as RegistryInterface,
+  StorageReport,
   SubstrateServer,
   SweepDeps,
   SweepState
@@ -197,6 +198,8 @@ export interface ComposeOpts {
    * second reading of the environment. Omitted by programmatic embedders.
    */
   configReport?: ConfigReport;
+  /** Reported beside `configReport`; ignored without it. */
+  storageReport?: () => Promise<StorageReport>;
 }
 
 export interface ComposeResult {
@@ -541,7 +544,8 @@ async function composeInner(
     ...(opts.auth?.adminCapability !== undefined
       ? { adminCapability: opts.auth.adminCapability }
       : {}),
-    ...(opts.configReport !== undefined ? { configReport: opts.configReport } : {})
+    ...(opts.configReport !== undefined ? { configReport: opts.configReport } : {}),
+    ...(opts.storageReport !== undefined ? { storageReport: opts.storageReport } : {})
   });
 
   let scheduler: TaskScheduler | null = null;

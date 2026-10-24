@@ -54,6 +54,7 @@ const CHECK_ADMIN = 'admin-capability';
 const CHECK_FLOOR = 'admin-floor';
 const CHECK_NAMESPACES = 'namespaces';
 const CHECK_DIR = 'key-directory';
+const CHECK_STORAGE = 'storage';
 
 /** Every check downstream of a failure, so a skip is never silent. */
 const DOWNSTREAM: Record<string, readonly string[]> = {
@@ -64,11 +65,19 @@ const DOWNSTREAM: Record<string, readonly string[]> = {
     CHECK_ADMIN,
     CHECK_FLOOR,
     CHECK_NAMESPACES,
-    CHECK_DIR
+    CHECK_DIR,
+    CHECK_STORAGE
   ],
-  [CHECK_CREDENTIAL]: [CHECK_IDENTITY, CHECK_ADMIN, CHECK_FLOOR, CHECK_NAMESPACES, CHECK_DIR],
-  [CHECK_IDENTITY]: [CHECK_ADMIN, CHECK_FLOOR, CHECK_DIR],
-  [CHECK_ADMIN]: [CHECK_FLOOR, CHECK_DIR],
+  [CHECK_CREDENTIAL]: [
+    CHECK_IDENTITY,
+    CHECK_ADMIN,
+    CHECK_FLOOR,
+    CHECK_NAMESPACES,
+    CHECK_DIR,
+    CHECK_STORAGE
+  ],
+  [CHECK_IDENTITY]: [CHECK_ADMIN, CHECK_FLOOR, CHECK_DIR, CHECK_STORAGE],
+  [CHECK_ADMIN]: [CHECK_FLOOR, CHECK_DIR, CHECK_STORAGE],
   [CHECK_FLOOR]: [CHECK_DIR]
 };
 
@@ -349,7 +358,8 @@ export const DIAGNOSE_CHECKS: readonly string[] = [
   CHECK_ADMIN,
   CHECK_FLOOR,
   CHECK_NAMESPACES,
-  CHECK_DIR
+  CHECK_DIR,
+  CHECK_STORAGE
 ];
 
 /**
@@ -506,7 +516,7 @@ export async function diagnose(opts: DiagnoseOpts): Promise<DiagnoseResult> {
   checks.ok(CHECK_IDENTITY, `the server resolved this credential as ${String(identity.id)}`);
   identityId = String(identity.id);
   if (opts.expectAdmin === false) {
-    for (const name of [CHECK_ADMIN, CHECK_FLOOR, CHECK_DIR]) {
+    for (const name of [CHECK_ADMIN, CHECK_FLOOR, CHECK_DIR, CHECK_STORAGE]) {
       checks.skip(name, 'not asked — this identity was not expected to be an admin');
     }
     return done();
@@ -540,6 +550,29 @@ export async function diagnose(opts: DiagnoseOpts): Promise<DiagnoseResult> {
     CHECK_ADMIN,
     `the grant confers '${adminCapability}' on ${SYSTEM_NAMESPACE} — this identity can administer`
   );
+
+  const config = await getJson(`${baseUrl}/substrate/v1/config`, fetchImpl, { authorization });
+  const storage =
+    'error' in config ? undefined : (config.body.storage as Record<string, unknown> | undefined);
+  if ('error' in config || config.status !== 200) {
+    checks.skip(
+      CHECK_STORAGE,
+      `not asked — /substrate/v1/config ${'error' in config ? `could not be reached: ${config.error}` : `answered HTTP ${config.status}`}`
+    );
+  } else if (storage === undefined) {
+    checks.skip(CHECK_STORAGE, 'not asked — the server reports no storage section (memory store)');
+  } else {
+    const warnings = Array.isArray(storage.warnings) ? storage.warnings.map(String) : [];
+    if (warnings.length === 0) {
+      checks.ok(CHECK_STORAGE, `${String(storage.layout)} layout, no warnings`);
+    } else {
+      checks.no(
+        CHECK_STORAGE,
+        `${String(storage.layout)} layout, ${warnings.length} warning(s):\n${warnings.join('\n')}`,
+        'Each warning names what to move or drop; indexes are never dropped automatically.'
+      );
+    }
+  }
 
   const floor = await listLiveKeys(baseUrl, authorization, fetchImpl);
   if ('error' in floor) {

@@ -120,6 +120,80 @@ export async function reconcileTypeIndexes(
   });
 }
 
+interface CatalogIndex {
+  name: string;
+  valid: boolean;
+  ready: boolean;
+}
+
+async function indexesOn(sql: Sql, table: string): Promise<CatalogIndex[]> {
+  return sql<CatalogIndex[]>`
+    SELECT c.relname AS name, i.indisvalid AS valid, i.indisready AS ready
+    FROM pg_index i
+    JOIN pg_class c ON c.oid = i.indexrelid
+    JOIN pg_class t ON t.oid = i.indrelid
+    WHERE t.relname = ${table} AND t.relnamespace = current_schema()::regnamespace`;
+}
+
+/**
+ * Each index the type should have and how the catalog holds it, without
+ * building anything. An index the catalog lacks is `failed`, as a build that
+ * has not succeeded is; a type with no partition yet has none of them.
+ */
+export async function describeTypeIndexes(
+  sql: Sql,
+  args: ReconcileTypeIndexesArgs
+): Promise<IndexState[]> {
+  const specs = desiredSpecs(args);
+  if (specs.length === 0) return [];
+  const table = await targetTable(sql, args).catch(() => undefined);
+  const held = new Map(
+    (table === undefined ? [] : await indexesOn(sql, table)).map((i) => [i.name, i])
+  );
+  return specs.map((spec) => {
+    const found = held.get(spec.name);
+    const state: IndexState['state'] =
+      found === undefined
+        ? 'failed'
+        : found.valid && found.ready
+          ? 'valid'
+          : found.ready
+            ? 'building'
+            : 'invalid';
+    return {
+      name: spec.name,
+      fields: spec.fields,
+      unique: spec.unique,
+      state,
+      outcome: 'unchanged'
+    };
+  });
+}
+
+const fold = (s: string): string => s.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+
+/**
+ * Engine-named indexes on the type's partition that its declaration no longer
+ * asks for. They are reported, never dropped: removing an index is the
+ * operator's call. Partitioned layout only.
+ */
+export async function undeclaredIndexes(
+  sql: Sql,
+  args: ReconcileTypeIndexesArgs
+): Promise<string[]> {
+  if (args.layout !== 'partitioned') return [];
+  const table = await targetTable(sql, args).catch(() => undefined);
+  if (table === undefined) return [];
+  const desired = new Set(desiredSpecs(args).map((s) => s.name));
+  const prefix = `rows_${fold(args.namespace)}_${fold(args.type)}_`;
+  return (await indexesOn(sql, table))
+    .map((i) => i.name)
+    .filter(
+      (n) => n.startsWith(prefix) && /_[0-9a-f]{8}_(idx|uniq|gin|base)$/.test(n) && !desired.has(n)
+    )
+    .sort();
+}
+
 async function targetTable(sql: Sql, args: ReconcileTypeIndexesArgs): Promise<string> {
   if (args.layout === 'legacy') return 'rows';
   const nsPart = await findPartition(sql, 'rows', args.namespace);
