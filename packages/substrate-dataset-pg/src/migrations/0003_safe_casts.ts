@@ -13,17 +13,16 @@ export const TX_STATEMENTS: ReadonlyArray<string> = [
     LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE SET search_path = pg_catalog
     AS $$ SELECT CASE WHEN jsonb_typeof(v) = 'number' THEN (v #>> '{}')::numeric END $$`,
 
+  // pg_input_is_valid rejects shape-valid but out-of-range values (month 13,
+  // Feb 30) without raising. An EXCEPTION block would need a subtransaction,
+  // which a parallel plan cannot start, so it would turn valid values to NULL.
   `CREATE OR REPLACE FUNCTION substrate_ts(v jsonb) RETURNS timestamptz
-    LANGUAGE plpgsql IMMUTABLE STRICT PARALLEL SAFE SET search_path = pg_catalog
-    AS $$
-    BEGIN
-      IF jsonb_typeof(v) = 'string' AND (v #>> '{}') ~ '${TS_SHAPE}' THEN
-        RETURN (v #>> '{}')::timestamptz;
-      END IF;
-      RETURN NULL;
-    EXCEPTION WHEN others THEN
-      -- shape-valid but out of range (month 13, Feb 30)
-      RETURN NULL;
+    LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE SET search_path = pg_catalog
+    AS $$ SELECT CASE
+      WHEN jsonb_typeof(v) = 'string'
+        AND (v #>> '{}') ~ '${TS_SHAPE}'
+        AND pg_input_is_valid(v #>> '{}', 'timestamptz')
+      THEN (v #>> '{}')::timestamptz
     END $$`
 ];
 

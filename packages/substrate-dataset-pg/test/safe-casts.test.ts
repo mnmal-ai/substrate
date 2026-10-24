@@ -68,6 +68,28 @@ describe.skipIf(!POSTGRES_URL)('safe-cast functions', () => {
     expect(await norm(a)).toBe(await norm(b));
   });
 
+  it('substrate_ts parses inside a parallel plan of a writing statement', async () => {
+    // A temp table is never scanned in parallel, so this one is real and dropped after.
+    await sql.unsafe('DROP TABLE IF EXISTS sc_par_src, sc_par_out');
+    try {
+      await sql.unsafe(`CREATE TABLE sc_par_src AS
+        SELECT jsonb_build_object('d', '2026-10-24T10:00:00Z') AS body FROM generate_series(1, 2000)`);
+      const nulls = await sql.begin(async (tx) => {
+        await tx.unsafe('SET LOCAL debug_parallel_query = on');
+        await tx.unsafe('SET LOCAL parallel_setup_cost = 0');
+        await tx.unsafe('SET LOCAL parallel_tuple_cost = 0');
+        await tx.unsafe('SET LOCAL min_parallel_table_scan_size = 0');
+        await tx.unsafe(
+          "CREATE TABLE sc_par_out AS SELECT substrate_ts(body->'d') AS d FROM sc_par_src"
+        );
+        return (await tx`SELECT count(*)::int AS c FROM sc_par_out WHERE d IS NULL`)[0]?.c;
+      });
+      expect(nulls).toBe(0);
+    } finally {
+      await sql.unsafe('DROP TABLE IF EXISTS sc_par_src, sc_par_out');
+    }
+  });
+
   it('is IMMUTABLE: usable in an index expression', async () => {
     await sql.begin(async (tx) => {
       await tx.unsafe('CREATE TEMP TABLE sc_t (body jsonb)');
