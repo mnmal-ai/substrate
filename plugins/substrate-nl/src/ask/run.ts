@@ -1,5 +1,5 @@
 import type { Query, SubstrateRequest } from '@mnmal-ai/substrate/sdk';
-import type { NlEngineAccess } from '../access.js';
+import type { NlEngineAccess, NlEnvelope } from '../access.js';
 import { type Judge, type JudgedResult, parseWithJudge } from '../judge/judge.js';
 import { own } from '../own.js';
 import type { ServedPack } from '../pack/service.js';
@@ -37,15 +37,65 @@ async function rows(
   const key = Object.keys(frame)[0] as string;
   const env = await deps.engine.query(frame, http);
   const present = env.data !== undefined && key in env.data;
+  const data = present ? env.data?.[key] : undefined;
+  const errors = [...(env.errors ?? [])];
+  let count: number | undefined;
+  if (c.answer === 'count' && Array.isArray(data)) {
+    const counted = await countRest(frame, key, data.length, env, http, deps);
+    if (typeof counted === 'number') count = counted;
+    else errors.push(counted);
+  }
   return {
     kind: 'rows',
     frame,
     answer: c.answer,
-    data: present ? env.data?.[key] : undefined,
-    ...(env.errors !== undefined && env.errors.length > 0 ? { errors: env.errors } : {}),
+    data,
+    ...(count !== undefined ? { count } : {}),
+    ...(errors.length > 0 ? { errors } : {}),
     source,
     ...(handoff !== undefined ? { handoff } : {})
   };
+}
+
+// shortcut: counts by paging ids at the engine's default page size, so a type
+// past MAX_COUNT_PAGES pages gets no count; upgrade to a server-side count
+// aggregate when one exists.
+const MAX_COUNT_PAGES = 1000;
+
+/** The population a count candidate matches: `seen` rows from page one, then id-only pages after its cursor. */
+async function countRest(
+  frame: Query,
+  key: string,
+  seen: number,
+  first: NlEnvelope,
+  http: SubstrateRequest,
+  deps: AskDeps
+): Promise<number | { code: string; message: string }> {
+  const params = (frame as Record<string, { params: Record<string, unknown> }>)[key]?.params ?? {};
+  let count = seen;
+  let page = first._pagination?.[key];
+  for (let pages = 1; page?.hasMore === true; pages++) {
+    if (pages >= MAX_COUNT_PAGES || page.nextCursor === undefined || isAborted(http)) {
+      return {
+        code: 'count_incomplete',
+        message: `counted ${count} rows and stopped before the end; the true count is higher`
+      };
+    }
+    const env = await deps.engine.query(
+      { [key]: { params: { ...params, cursor: page.nextCursor }, fields: { id: true } } } as Query,
+      http
+    );
+    const rows = env.data?.[key];
+    if (!Array.isArray(rows)) {
+      return {
+        code: 'count_incomplete',
+        message: `counted ${count} rows, then a page failed: ${JSON.stringify(env.errors ?? [])}`
+      };
+    }
+    count += rows.length;
+    page = env._pagination?.[key];
+  }
+  return count;
 }
 
 async function recall(

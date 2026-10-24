@@ -36,7 +36,7 @@ export function outcomeChips(o: NlOutcome): Chip[] {
       tone: o.source === 'handoff' ? 'warn' : 'dim'
     },
     {
-      label: rejected ? 'rejected' : `${(o.data as unknown[]).length} rows`,
+      label: rejected ? 'rejected' : `${o.count ?? (o.data as unknown[]).length} rows`,
       tone: rejected ? 'error' : 'dim'
     }
   ];
