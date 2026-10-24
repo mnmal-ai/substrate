@@ -31,16 +31,24 @@ export interface NamespaceOverview {
 // The overview rides in the session instructions, which an agent trusts. Proposals let any
 // agent with mutate add enum values, so only identifier-shaped text is copied through.
 const NAME = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/;
-const ENUM_VALUE = /^[A-Za-z0-9_.:/-][A-Za-z0-9 _.:/-]{0,39}$/;
+const ENUM_VALUE = /^[A-Za-z0-9_./-]{1,40}$/;
 const MAX_ENUM_VALUES = 20;
+const MAX_ENUM_TEXT = 200;
 
 function safe(text: unknown, pattern: RegExp): string {
   return typeof text === 'string' && pattern.test(text) ? text : '<unsafe>';
 }
 
 function enumText(values: unknown[]): string {
-  const shown = values.slice(0, MAX_ENUM_VALUES).map((v) => safe(v, ENUM_VALUE));
-  return [...shown, ...(values.length > MAX_ENUM_VALUES ? ['…'] : [])].join('|');
+  const shown: string[] = [];
+  let length = 0;
+  for (const v of values.slice(0, MAX_ENUM_VALUES)) {
+    const text = safe(v, ENUM_VALUE);
+    if (length + text.length > MAX_ENUM_TEXT) break;
+    shown.push(text);
+    length += text.length + 1;
+  }
+  return [...shown, ...(shown.length < values.length ? ['…'] : [])].join('|');
 }
 
 function fieldType(f: FieldShape, ns: string): string {
