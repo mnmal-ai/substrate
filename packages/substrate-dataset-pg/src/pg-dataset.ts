@@ -967,6 +967,7 @@ export class PgDataset implements Dataset {
    * namespace's partition and the type's, then reconciles the type's indexes
    * on it; on legacy, reconciles only its declared `indexes`. Index builds
    * run CONCURRENTLY, outside any transaction, so a tx-bound instance refuses.
+   * Logs each index it created, adopted or swapped.
    */
   async ensureTypeStorage(type: string): Promise<void> {
     const layout = await this.#layout();
@@ -977,7 +978,7 @@ export class PgDataset implements Dataset {
     const sql = this.#sql as Sql;
     if (layout === 'partitioned') await ensureTypeStorage(sql, this.namespace, type);
     const def = this.#typeDefLookup?.(type);
-    await reconcileTypeIndexes(sql, {
+    const states = await reconcileTypeIndexes(sql, {
       namespace: this.namespace,
       type,
       layout,
@@ -985,6 +986,12 @@ export class PgDataset implements Dataset {
       indexes: def?.indexes ?? [],
       promotedColumns: this.#promotedColumns
     });
+    for (const s of states) {
+      if (s.outcome === 'unchanged') continue;
+      process.stdout.write(
+        `[substrate] index ${s.name} on ${this.namespace}/${type}: ${s.outcome} (${s.state})\n`
+      );
+    }
   }
 
   /**

@@ -62,7 +62,7 @@
  * Env parsing is the pure `parseEnv(env)`; `runServe()` sequences the I/O.
  */
 
-import { compose } from '@mnmal-ai/substrate-compose';
+import { compose, SYSTEM_NAMESPACE } from '@mnmal-ai/substrate-compose';
 import { validateHardDeleteEnv } from '@mnmal-ai/substrate-core';
 import { FastifySubstrateServer } from '@mnmal-ai/substrate-server-fastify';
 import type { NamespaceDefinition } from '@mnmal-ai/substrate-types';
@@ -203,7 +203,9 @@ export async function runServe(): Promise<void> {
     storeSql,
     coordinators,
     kernelAuth: refs.kernelAuth,
-    trustedProxies: config.trustedProxies
+    trustedProxies: config.trustedProxies,
+    datasetFor: (ns) => composeOpts.datasets?.[ns],
+    nsDefs
   });
 
   const {
@@ -214,6 +216,11 @@ export async function runServe(): Promise<void> {
     datasets: composedDatasets,
     stop
   } = await compose(composeOpts);
+
+  // `_system` types are registered by compose itself, so their storage follows it.
+  for (const [type, entry] of engine.registryFor(SYSTEM_NAMESPACE)?.all() ?? []) {
+    if (entry.kind === 'type') await substrateNamespaceDataset?.ensureTypeStorage?.(type);
+  }
 
   // Late-bound holders populate from the composed engine.
   populateLateRefs(refs, composedDatasets, engine, keyRegistry);

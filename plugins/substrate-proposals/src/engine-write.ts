@@ -3,6 +3,7 @@
  */
 
 import type {
+  Dataset,
   Registry,
   RegistryEntry,
   RequestContext,
@@ -96,5 +97,33 @@ export async function notifyAfterCommit(
   }
   args.afterTx(async ({ committed }) => {
     if (committed) await notify();
+  });
+}
+
+/**
+ * Prepares `type`'s storage on the namespace's base `dataset` once the
+ * caller's transaction has committed (at once when there is none), never
+ * inside it: index builds run CONCURRENTLY and would wait forever on it. A
+ * failure is logged and never undoes the committed proposal. The type's rows
+ * stay readable meanwhile, and the next boot or proposal retries.
+ */
+export async function ensureStorageAfterCommit(
+  afterTx: ResolverArgs['afterTx'],
+  dataset: Dataset,
+  type: string
+): Promise<void> {
+  const ensure = async (): Promise<void> => {
+    try {
+      await dataset.ensureTypeStorage?.(type);
+    } catch (err) {
+      process.stderr.write(
+        `[substrate-proposals] storage for ${dataset.namespace}/${type} not prepared: ` +
+          `${err instanceof Error ? err.message : String(err)}\n`
+      );
+    }
+  };
+  if (afterTx === undefined) return ensure();
+  afterTx(async ({ committed }) => {
+    if (committed) await ensure();
   });
 }

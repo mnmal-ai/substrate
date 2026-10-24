@@ -30,7 +30,12 @@ import type {
 } from '@mnmal-ai/substrate-types';
 import { applyFieldProposal, assertValidFieldProposal } from './apply.js';
 import type { PubSub } from './config.js';
-import { applyUntilRollback, notifyAfterCommit, writeInTx } from './engine-write.js';
+import {
+  applyUntilRollback,
+  ensureStorageAfterCommit,
+  notifyAfterCommit,
+  writeInTx
+} from './engine-write.js';
 import { ProposalError } from './errors.js';
 import { type FieldSpecJson, parseFieldSpec, stringifyFieldDef } from './field-spec-json.js';
 import { proposalLockKey, withProposalLock } from './proposal-lock.js';
@@ -294,6 +299,7 @@ async function proposeFieldLocked(
   await notifyAfterCommit(args, () =>
     deps.pubsub.notify(deps.channelFor(deps.namespace), String(newId))
   );
+  await ensureStorageAfterCommit(args.afterTx, deps.dataset, targetType);
 
   // Step 8 — return the applied row, carrying the migration summary when
   // the destructive path ran so its counts need no re-scan to read.

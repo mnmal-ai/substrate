@@ -1064,6 +1064,9 @@ importers:
       '@mnmal-ai/substrate-dataset-memory':
         specifier: workspace:*
         version: link:../../packages/substrate-dataset-memory
+      '@mnmal-ai/substrate-dataset-pg':
+        specifier: workspace:*
+        version: link:../../packages/substrate-dataset-pg
       '@mnmal-ai/substrate-policy':
         specifier: workspace:*
         version: link:../../packages/substrate-policy
@@ -1079,6 +1082,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 26.6.5
+      postgres:
+        specifier: 'catalog:'
+        version: 3.4.9
       tsdown:
         specifier: 'catalog:'
         version: 0.23.1(tsx@4.23.15)(typescript@7.0.2)

@@ -207,6 +207,24 @@ export function makeTypeDefLookupFactory(nsDefs: {
 }
 
 /**
+ * Prepares storage for every type the namespace definitions declare: its
+ * partition and its indexes, through `Dataset.ensureTypeStorage`. Runs before
+ * any kernel migration, so a migration can rely on a declared index. Errors
+ * propagate and fail the boot, among them `UniqueIndexDuplicatesError` and
+ * `IndexDefinitionConflictError`, which name the index. Index builds run
+ * CONCURRENTLY, so the process must hold no open transaction meanwhile.
+ */
+export async function reconcileDeclaredStorage(
+  datasetFor: (ns: string) => Dataset | undefined,
+  nsDefs: Map<string, NamespaceDefinition>
+): Promise<void> {
+  for (const [ns, def] of nsDefs) {
+    const dataset = datasetFor(ns);
+    for (const type of Object.keys(def.types ?? {})) await dataset?.ensureTypeStorage?.(type);
+  }
+}
+
+/**
  * Walk loaded namespace definitions for `field.list({ indexed: true })` and
  * `field.json({ indexed: true })` fields. Each becomes an auto-derived GIN
  * migration so the `indexed` flag — the validator's queryability contract —

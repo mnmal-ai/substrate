@@ -107,6 +107,8 @@ export async function runBootstrap(
       namespace: SYSTEM_NAMESPACE,
       sql
     });
+    // So the admin Key lands in its own partition rather than the DEFAULT one.
+    await dataset.ensureTypeStorage(KEY_TYPE);
     // Held across the check and the write, so two concurrent bootstraps
     // cannot both find no admin and both create one.
     return await dataset.withAdvisoryLock('substrate:bootstrap', async () => {
