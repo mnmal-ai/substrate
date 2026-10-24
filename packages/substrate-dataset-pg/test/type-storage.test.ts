@@ -216,6 +216,46 @@ describe.skipIf(!POSTGRES_URL || LAYOUT !== 'partitioned')(
   }
 );
 
+describe.skipIf(!POSTGRES_URL || LAYOUT !== 'partitioned')('ensureTypeStorage lock waits', () => {
+  it('never stalls other namespaces behind a move queued on an open transaction', async () => {
+    const [other, moving, third] = [freshNs(), freshNs(), freshNs()];
+    await new PgDataset({ namespace: other, sql }).ensureTypeStorage('T');
+    await new PgDataset({ namespace: third, sql }).ensureTypeStorage('T');
+    await new PgDataset({ namespace: third, sql }).write('T', [{ id: 'a' }]);
+    const ds = new PgDataset({ namespace: moving, sql });
+    await ds.write('T', [{ id: 'm' }]);
+
+    const blocker = await sql.reserve();
+    const readerSql = postgres(POSTGRES_URL as string, {
+      max: 2,
+      connection: { statement_timeout: 3000 }
+    });
+    try {
+      await blocker`BEGIN`;
+      await blocker`SELECT count(*) FROM rows WHERE namespace = ${other}`;
+      // The namespace-level move needs ACCESS EXCLUSIVE on `rows`, which the blocker holds off.
+      const ensured = ds.ensureTypeStorage('T');
+      ensured.catch(() => {}); // awaited below; keeps an early failure from going unhandled
+      const reader = new PgDataset({ namespace: third, sql: readerSql });
+      const until = Date.now() + 1500;
+      let slowest = 0;
+      while (Date.now() < until) {
+        const start = Date.now();
+        expect((await reader.read('T', {})).rows).toHaveLength(1);
+        slowest = Math.max(slowest, Date.now() - start);
+      }
+      expect(slowest).toBeLessThan(1500);
+      await blocker`COMMIT`;
+      await ensured;
+      expect(await partitionOf('rows', moving)).toBe(partitionName(moving));
+      expect((await ds.read('T', {})).rows.map((r) => r.id)).toEqual(['m']);
+    } finally {
+      blocker.release();
+      await readerSql.end({ timeout: 5 });
+    }
+  });
+});
+
 describe.skipIf(!POSTGRES_URL || LAYOUT !== 'legacy')('ensureTypeStorage (legacy)', () => {
   it('is a no-op that creates nothing', async () => {
     const ns = freshNs();

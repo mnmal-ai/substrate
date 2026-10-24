@@ -19,7 +19,8 @@ export async function detectLayout(sql: Sql): Promise<StorageLayout | 'absent'> 
   return row.relkind === 'p' ? 'partitioned' : 'legacy';
 }
 
-const MAX_IDENTIFIER = 63;
+/** pg's identifier limit, in bytes. */
+export const MAX_IDENTIFIER = 63;
 
 /**
  * `rows__<ns>` or `rows__<ns>__<type>`, folded to `[a-z0-9_]`. When folding

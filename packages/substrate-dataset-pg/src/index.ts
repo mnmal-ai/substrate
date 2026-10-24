@@ -38,3 +38,4 @@ export type {
   PromotedColumnLookup
 } from './pg-sql.js';
 export { type PgHandle, txScopeIdFor } from './tx-scope.js';
+export { TypeStorageLockTimeoutError } from './type-storage.js';

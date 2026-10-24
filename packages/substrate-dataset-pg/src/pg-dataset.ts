@@ -949,7 +949,10 @@ export class PgDataset implements Dataset {
     await ensureTypeStorage(this.#sql as Sql, this.namespace, type);
   }
 
-  /** Rows parked in DEFAULT partitions, one line per namespace/type. `[]` on legacy. */
+  /**
+   * Rows parked in DEFAULT partitions across the whole database, every
+   * namespace, not only this one: one line per namespace/type. `[]` on legacy.
+   */
   async storageWarnings(): Promise<string[]> {
     if ((await this.#layout()) !== 'partitioned') return [];
     return storageWarnings(this.#sql as Sql);

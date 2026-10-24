@@ -13,12 +13,29 @@
  */
 
 import type { Sql, TransactionSql } from 'postgres';
-import { hashedName, partitionName } from './layout.js';
+import { hashedName, MAX_IDENTIFIER, partitionName } from './layout.js';
 
-const MAX_IDENTIFIER = 63;
-/** lock_not_available (our NOWAIT), duplicate_table (a racing creator took the name), deadlock. */
+/** lock_not_available (NOWAIT or lock_timeout), duplicate_table (a racing creator took the name), deadlock. */
 const RETRYABLE = new Set(['55P03', '42P07', '40P01']);
-const MAX_ATTEMPTS = 50;
+/** Longest a single lock wait may queue other sessions behind the move. */
+const LOCK_TIMEOUT = '500ms';
+const GIVE_UP_AFTER_MS = 10_000;
+
+/** The move kept losing its lock waits and gave up; nothing changed and no row moved. */
+export class TypeStorageLockTimeoutError extends Error {
+  constructor(
+    readonly namespace: string,
+    readonly type: string,
+    cause: unknown
+  ) {
+    super(
+      `partition for ${namespace}/${type} was not created: locks stayed busy for ${GIVE_UP_AFTER_MS}ms. ` +
+        'Its rows stay readable in the DEFAULT partition; call ensureTypeStorage again later.',
+      { cause }
+    );
+    this.name = 'TypeStorageLockTimeoutError';
+  }
+}
 
 type Handle = Sql | TransactionSql;
 
@@ -76,6 +93,9 @@ interface Level {
 async function attachPartition(tx: TransactionSql, level: Level): Promise<string> {
   const { parent, column, value } = level;
   await tx`SELECT pg_advisory_xact_lock(hashtext(${level.lockKey}))`;
+  // A queued ACCESS EXCLUSIVE request stalls every later reader and writer of
+  // the parent, so no wait may last long; the caller retries.
+  await tx.unsafe(`SET LOCAL lock_timeout = '${LOCK_TIMEOUT}'`);
   // Parent before child, as every query does. ACCESS EXCLUSIVE on the parent
   // stops readers and writers before they read its partition list, so none
   // plans against the list from before the move.
@@ -105,7 +125,8 @@ async function attachPartition(tx: TransactionSql, level: Level): Promise<string
       SELECT string_agg(quote_ident(attname), ', ' ORDER BY attnum) AS list
       FROM pg_attribute
       WHERE attrelid = 'rows'::regclass AND attnum > 0 AND NOT attisdropped`;
-    const list = cols?.list as string;
+    const list = cols?.list;
+    if (list == null) throw new Error('rows has no columns in the current schema');
     const src = ident(source);
     await tx.unsafe(
       `CREATE TEMP TABLE substrate_moved_short_ids ON COMMIT DROP AS
@@ -146,15 +167,17 @@ async function attachPartition(tx: TransactionSql, level: Level): Promise<string
   return name;
 }
 
-async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
-  for (let attempt = 1; ; attempt++) {
+async function withRetry<T>(namespace: string, type: string, fn: () => Promise<T>): Promise<T> {
+  const deadline = Date.now() + GIVE_UP_AFTER_MS;
+  for (;;) {
     try {
       return await fn();
     } catch (err) {
       const code = (err as { code?: unknown }).code;
-      if (attempt >= MAX_ATTEMPTS || typeof code !== 'string' || !RETRYABLE.has(code)) throw err;
-      const delay = Math.min(5 * 2 ** attempt, 200) * (0.5 + Math.random());
-      await new Promise((resolve) => setTimeout(resolve, delay));
+      if (typeof code !== 'string' || !RETRYABLE.has(code)) throw err;
+      if (Date.now() >= deadline) throw new TypeStorageLockTimeoutError(namespace, type, err);
+      // Short and jittered, so the queue drains between attempts and racers spread out.
+      await new Promise((resolve) => setTimeout(resolve, 20 + Math.random() * 80));
     }
   }
 }
@@ -170,7 +193,7 @@ export async function ensureTypeStorage(sql: Sql, namespace: string, type: strin
   if (nsPart !== undefined && (await findPartition(sql, nsPart, type)) !== undefined) return;
 
   if (nsPart === undefined) {
-    nsPart = await withRetry(() =>
+    nsPart = await withRetry(namespace, type, () =>
       sql.begin((tx) =>
         attachPartition(tx, {
           parent: 'rows',
@@ -185,7 +208,7 @@ export async function ensureTypeStorage(sql: Sql, namespace: string, type: strin
     );
   }
   const parent = nsPart;
-  await withRetry(() =>
+  await withRetry(namespace, type, () =>
     sql.begin((tx) =>
       attachPartition(tx, {
         parent,

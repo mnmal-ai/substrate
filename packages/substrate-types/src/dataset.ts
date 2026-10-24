@@ -344,7 +344,9 @@ export interface Dataset {
   /**
    * Prepare dedicated storage for `type` in this namespace, moving any rows
    * already written for it there. Idempotent, and safe beside concurrent
-   * reads and writes: no row is lost, duplicated or seen twice.
+   * reads and writes: no row is lost, duplicated or seen twice. That holds for
+   * READ COMMITTED readers; a REPEATABLE READ snapshot taken before the move
+   * can miss the moved rows.
    *
    * OPTIONAL. Backends without per-type storage omit it.
    */
