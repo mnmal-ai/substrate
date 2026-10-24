@@ -51,6 +51,8 @@ describe.skipIf(!POSTGRES_URL)('safe-cast functions', () => {
     expect(await ts('"2026-10-24 10:00"')).toBeNull();
     expect(await ts('"yesterday"')).toBeNull();
     expect(await ts('42')).toBeNull();
+    expect(await ts('"2026-13-45T00:00:00Z"')).toBeNull();
+    expect(await ts('"2026-02-30T00:00:00Z"')).toBeNull();
   });
 
   it('substrate_ts ignores the session TimeZone', async () => {
@@ -71,6 +73,7 @@ describe.skipIf(!POSTGRES_URL)('safe-cast functions', () => {
       await tx.unsafe('CREATE TEMP TABLE sc_t (body jsonb)');
       await tx.unsafe("CREATE INDEX sc_t_d ON sc_t ((substrate_ts(body->'d')))");
       await tx.unsafe("CREATE INDEX sc_t_n ON sc_t ((substrate_num(body->'n')))");
+      await tx.unsafe(`INSERT INTO sc_t VALUES ('{"d":"2026-13-45T00:00:00Z"}')`);
     });
   });
 });
