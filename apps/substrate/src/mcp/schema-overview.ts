@@ -28,14 +28,32 @@ export interface NamespaceOverview {
   mutations?: string[];
 }
 
+// The overview rides in the session instructions, which an agent trusts. Proposals let any
+// agent with mutate add enum values, so only identifier-shaped text is copied through.
+const NAME = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/;
+const ENUM_VALUE = /^[A-Za-z0-9_.:/-][A-Za-z0-9 _.:/-]{0,39}$/;
+const MAX_ENUM_VALUES = 20;
+
+function safe(text: unknown, pattern: RegExp): string {
+  return typeof text === 'string' && pattern.test(text) ? text : '<unsafe>';
+}
+
+function enumText(values: unknown[]): string {
+  const shown = values.slice(0, MAX_ENUM_VALUES).map((v) => safe(v, ENUM_VALUE));
+  return [...shown, ...(values.length > MAX_ENUM_VALUES ? ['…'] : [])].join('|');
+}
+
 function fieldType(f: FieldShape, ns: string): string {
   let t: string;
   if (f.kind === 'list' && f.of !== undefined) t = `${fieldType(f.of, ns)}[]`;
   else if (f.kind === 'crossRef')
-    t = `→${f.ns === ns || f.ns === undefined ? '' : `${f.ns}/`}${f.type}`;
-  else if (f.kind === 'struct') t = `{${Object.keys(f.fields ?? {}).join(', ')}}`;
-  else if (Array.isArray(f.enum)) t = f.nullable ? `(${f.enum.join('|')})` : f.enum.join('|');
-  else t = f.type ?? f.kind ?? 'unknown';
+    t = `→${f.ns === ns || f.ns === undefined ? '' : `${safe(f.ns, NAME)}/`}${safe(f.type, NAME)}`;
+  else if (f.kind === 'struct')
+    t = `{${Object.keys(f.fields ?? {})
+      .map((k) => safe(k, NAME))
+      .join(', ')}}`;
+  else if (Array.isArray(f.enum)) t = f.nullable ? `(${enumText(f.enum)})` : enumText(f.enum);
+  else t = safe(f.type ?? f.kind, NAME);
   const tags: string[] = [];
   if (f.indexed === false) tags.push('unindexed');
   if (f.readonly === true || (f.serverSet !== undefined && f.serverSet !== false))
@@ -53,15 +71,16 @@ export function schemaOverview(
     const typeDefs = schema.types ?? {};
     const types: Record<string, string> = {};
     for (const [name, def] of Object.entries(typeDefs)) {
-      types[name] = Object.entries(def.fields ?? {})
-        .map(([field, shape]) => `${field}: ${fieldType(shape, ns)}`)
+      types[safe(name, NAME)] = Object.entries(def.fields ?? {})
+        .map(([field, shape]) => `${safe(field, NAME)}: ${fieldType(shape, ns)}`)
         .join(', ');
     }
     const custom = Object.keys(schema.mutations ?? {}).filter((m) => {
       const crud = AUTO_CRUD.exec(m);
       return !(crud?.[2] !== undefined && crud[2] in typeDefs);
     });
-    out[ns] = custom.length > 0 ? { types, mutations: custom } : { types };
+    const mutations = custom.map((m) => safe(m, NAME));
+    out[safe(ns, NAME)] = mutations.length > 0 ? { types, mutations } : { types };
   }
   return out;
 }
