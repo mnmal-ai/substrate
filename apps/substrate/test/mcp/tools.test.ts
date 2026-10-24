@@ -123,12 +123,20 @@ describe('substrate-mcp tool handlers', () => {
     await composed.stop();
   });
 
-  it('schema handler returns federated schema as stringified JSON', async () => {
-    const handler = createSchemaHandler(TEST_ENDPOINT);
-    const result = await handler();
+  it('schema handler with no args returns the compact overview', async () => {
+    const result = await createSchemaHandler(TEST_ENDPOINT)();
     expect(result.isError).toBeUndefined();
+    const parsed = parseToolText(result) as {
+      legend: string;
+      overview: Record<string, { types: Record<string, string> }>;
+    };
+    expect(parsed.legend).toContain('field: type');
+    expect(typeof parsed.overview.default?.types.Todo).toBe('string');
+  });
+
+  it('schema handler with full: true returns the federated schema', async () => {
+    const result = await createSchemaHandler(TEST_ENDPOINT)({ full: true });
     const parsed = parseToolText(result) as Record<string, { types: Record<string, unknown> }>;
-    expect(parsed.default).toBeDefined();
     expect(parsed.default?.types.Todo).toBeDefined();
   });
 
