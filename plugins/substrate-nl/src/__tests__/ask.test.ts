@@ -51,6 +51,54 @@ describe('runAsk', () => {
     expect(sent['ns/Todo']?.fields).toMatchObject({ id: true, title: true, status: true });
   });
 
+  it('counts every page, not just the first', async () => {
+    const { e, query } = engine((f) => {
+      const key = Object.keys(f)[0] as string;
+      const cursor = (f as Record<string, { params: { cursor?: string } }>)[key]?.params.cursor;
+      const ids = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `${cursor}-${i}` }));
+      if (cursor === undefined)
+        return {
+          data: { [key]: ids(100) },
+          _pagination: { [key]: { hasMore: true, nextCursor: 'c1' } }
+        };
+      if (cursor === 'c1')
+        return {
+          data: { [key]: ids(100) },
+          _pagination: { [key]: { hasMore: true, nextCursor: 'c2' } }
+        };
+      return { data: { [key]: ids(17) }, _pagination: { [key]: { hasMore: false } } };
+    });
+    const o = outcome(
+      await collect(
+        runAsk({ namespace: 'ns', question: 'how many open todos' }, http, { pack, engine: e })
+      )
+    );
+    expect(o).toMatchObject({ kind: 'rows', answer: 'count', count: 217 });
+    expect((o as { data: unknown[] }).data).toHaveLength(100);
+    const later = query.mock.calls[1]?.[0] as Record<string, { fields: Record<string, boolean> }>;
+    expect(later['ns/Todo']?.fields).toEqual({ id: true });
+  });
+
+  it('omits the count and says why when a later page fails', async () => {
+    const { e } = engine((f) => {
+      const key = Object.keys(f)[0] as string;
+      const cursor = (f as Record<string, { params: { cursor?: string } }>)[key]?.params.cursor;
+      if (cursor === undefined)
+        return {
+          data: { [key]: [{ id: '1' }] },
+          _pagination: { [key]: { hasMore: true, nextCursor: 'c1' } }
+        };
+      return { data: {}, errors: [{ code: 'invalid_cursor', message: 'no' }] };
+    });
+    const o = outcome(
+      await collect(
+        runAsk({ namespace: 'ns', question: 'how many open todos' }, http, { pack, engine: e })
+      )
+    );
+    expect(o).not.toHaveProperty('count');
+    expect(o).toMatchObject({ errors: [{ code: 'count_incomplete' }] });
+  });
+
   it('carries engine errors instead of reporting zero rows', async () => {
     const { e } = engine(() => ({ data: {}, errors: [{ code: 'forbidden', message: 'no' }] }));
     const o = outcome(

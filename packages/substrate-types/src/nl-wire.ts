@@ -73,6 +73,8 @@ export type NlOutcome =
       answer: string;
       /** Absent on the wire when the engine rejected the frame; `errors` then says why. */
       data: unknown;
+      /** On a `count` answer: every row the frame matches, across pages; `data` holds only the first page. Absent when counting stopped short, with `errors` saying why. */
+      count?: number;
       errors?: unknown[];
       source: 'parser' | 'judge' | 'handoff';
       handoff?: string;
