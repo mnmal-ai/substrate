@@ -304,6 +304,32 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
    *
    * @returns number of orphaned embeddings deleted.
    */
+  async staleRowIds(input: {
+    namespace: string;
+    type: string;
+    afterId: string;
+    limit: number;
+  }): Promise<string[]> {
+    const sql = this.#sql as Sql;
+    const found = await sql<Array<{ id: string }>>`
+      SELECT r.id FROM rows r
+      WHERE r.namespace = ${input.namespace}
+        AND r.type      = ${input.type}
+        AND r.deleted_at IS NULL
+        AND r.id > ${input.afterId}
+        AND NOT EXISTS (
+          SELECT 1 FROM embeddings e
+          WHERE e.row_namespace = r.namespace
+            AND e.row_type      = r.type
+            AND e.row_id        = r.id
+            AND (r.updated_at IS NULL OR e.updated_at >= r.updated_at)
+        )
+      ORDER BY r.id
+      LIMIT ${input.limit}
+    `;
+    return found.map((r) => r.id);
+  }
+
   async purgeOrphans(): Promise<number> {
     const sql = this.#sql as Sql;
     const result = await sql`
