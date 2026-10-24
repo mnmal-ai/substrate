@@ -35,6 +35,10 @@ import {
   TX_STATEMENTS as BASELINE_TX
 } from './migrations/0001_baseline.js';
 import { TX_STATEMENTS as UUID_CHECK_TX } from './migrations/0002_uuid_format_check.js';
+import {
+  CONCURRENT_STATEMENTS as SAFE_CASTS_CONCURRENT,
+  TX_STATEMENTS as SAFE_CASTS_TX
+} from './migrations/0003_safe_casts.js';
 
 /**
  * Internal canonical migration shape after normalisation. The framework
@@ -75,6 +79,11 @@ const MIGRATION_INPUTS: ReadonlyArray<MigrationInput> = [
     version: '0001_baseline',
     txStatements: BASELINE_TX,
     concurrentStatements: BASELINE_CONCURRENT
+  },
+  {
+    version: '0003_safe_casts',
+    txStatements: SAFE_CASTS_TX,
+    concurrentStatements: SAFE_CASTS_CONCURRENT
   }
 ];
 
