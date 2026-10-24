@@ -11,11 +11,14 @@
 
 import postgres, { type Sql } from 'postgres';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { runMigrations } from '../src/index.js';
+import { partitionName, runMigrations } from '../src/index.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const NS = '_system';
 const TYPE = 'Key';
+// The index lives on the Key partition when rows is partitioned.
+const INDEXED_TABLE =
+  process.env.SUBSTRATE_STORAGE_LAYOUT === 'partitioned' ? partitionName(NS, TYPE) : 'rows';
 
 describe.skipIf(!POSTGRES_URL)('unique LIVE kid per principal', () => {
   let sql: Sql;
@@ -93,7 +96,7 @@ describe.skipIf(!POSTGRES_URL)('unique LIVE kid per principal', () => {
 
     const idx = await sql`SELECT indexdef FROM pg_indexes
                           WHERE schemaname = current_schema()
-                            AND tablename = 'rows'
+                            AND tablename = ${INDEXED_TABLE}
                             AND indexname = 'substrate_key_live_kid_uniq'`;
     expect(idx).toHaveLength(1);
     expect(String((idx[0] as { indexdef: string }).indexdef)).toContain("body ->> 'kid'");

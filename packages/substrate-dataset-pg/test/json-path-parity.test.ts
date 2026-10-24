@@ -19,6 +19,7 @@ import { generatedIdentifier } from '../src/migrate.js';
 import { buildWhere } from '../src/pg-sql.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
+const PARTITIONED = process.env.SUBSTRATE_STORAGE_LAYOUT === 'partitioned';
 const NS = 'jpath_ns';
 
 const ROWS: Row[] = [
@@ -156,7 +157,9 @@ describe.skipIf(!POSTGRES_URL)('json path parity', () => {
   // `field.json({ indexed: true })` derives the same per-field GIN a list
   // field gets (there is no whole-body GIN), so the containment must be
   // written against `(body -> field)` to match it.
-  it('eq and has are served by the derived per-field GIN', async () => {
+  // Legacy only: Postgres cannot CREATE INDEX CONCURRENTLY on a partitioned
+  // parent; per-partition derived indexes are not built yet.
+  it.skipIf(PARTITIONED)('eq and has are served by the derived per-field GIN', async () => {
     await runDerivedMigrations(sql, [
       deriveListIndexMigration({ namespace: NS, type: 'J', field: 'values' })
     ]);

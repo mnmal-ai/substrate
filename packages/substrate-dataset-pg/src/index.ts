@@ -9,14 +9,17 @@ export {
   enumCheckStatements
 } from './enum-check.js';
 export { NamespaceMismatch, ReservedField } from './errors.js';
+export { detectLayout, partitionName, type StorageLayout } from './layout.js';
 export {
   deriveListIndexMigration,
   type IndexedListField,
   MigrationChecksumDriftError,
   type MigrationInput,
   pendingMigrations,
+  type RunMigrationsOptions,
   runDerivedMigrations,
-  runMigrations
+  runMigrations,
+  StorageLayoutMismatchError
 } from './migrate.js';
 export {
   type FieldDefLookup,

@@ -16,6 +16,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { deriveListIndexMigration, runDerivedMigrations, runMigrations } from '../src/index.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
+const PARTITIONED = process.env.SUBSTRATE_STORAGE_LAYOUT === 'partitioned';
 
 describe('deriveListIndexMigration (pure)', () => {
   it('derives a scoped CONCURRENTLY GIN, keyed by the raw names', () => {
@@ -43,7 +44,9 @@ describe('deriveListIndexMigration (pure)', () => {
   });
 });
 
-describe.skipIf(!POSTGRES_URL)('runDerivedMigrations', () => {
+// Legacy only: Postgres cannot CREATE INDEX CONCURRENTLY on a partitioned
+// parent; per-partition derived indexes are not built yet.
+describe.skipIf(!POSTGRES_URL || PARTITIONED)('runDerivedMigrations', () => {
   let sql: Sql;
 
   beforeAll(async () => {

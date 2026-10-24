@@ -26,6 +26,7 @@
   "scripts": {
     "build": "tsdown && tsc -p tsconfig.dts.json",
     "test": "vitest run",
+    "test:partitioned": "SUBSTRATE_TEST_LAYOUT=partitioned vitest run",
     "check-types": "tsc -p tsconfig.json --noEmit",
     "lint": "biome check ."
   },

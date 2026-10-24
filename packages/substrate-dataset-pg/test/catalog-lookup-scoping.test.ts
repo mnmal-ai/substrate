@@ -19,6 +19,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runMigrations } from '../src/index.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
+const PARTITIONED = process.env.SUBSTRATE_STORAGE_LAYOUT === 'partitioned';
+// Legacy only: a partitioned `rows` has no parent-level indexes; per-partition
+// engine indexes are not built yet.
+const itIndexed = it.skipIf(PARTITIONED);
 
 /**
  * Names the real assertions in this suite match on. Both must be objects the
@@ -65,31 +69,34 @@ describe.skipIf(!POSTGRES_URL)('catalog lookups are scoped, proven by decoys', (
     await sql.end();
   });
 
-  it('the decoys really are visible to an unscoped lookup — otherwise this file proves nothing', async () => {
-    // Guards the guard: if the decoys failed to plant, every assertion below
-    // would pass trivially.
-    //
-    // Asserts presence, not a row count: other schemas in the shared database
-    // may hold the same name, and that is not this file's concern.
-    const constraintTables = await sql<{ rel: string }[]>`
+  itIndexed(
+    'the decoys really are visible to an unscoped lookup — otherwise this file proves nothing',
+    async () => {
+      // Guards the guard: if the decoys failed to plant, every assertion below
+      // would pass trivially.
+      //
+      // Asserts presence, not a row count: other schemas in the shared database
+      // may hold the same name, and that is not this file's concern.
+      const constraintTables = await sql<{ rel: string }[]>`
       SELECT c.conrelid::regclass::text AS rel
       FROM pg_constraint c WHERE c.conname = ${REAL_CONSTRAINT}
     `;
-    const indexSchemas = await sql<{ schemaname: string }[]>`
+      const indexSchemas = await sql<{ schemaname: string }[]>`
       SELECT schemaname FROM pg_indexes WHERE indexname = ${REAL_INDEX}
     `;
-    // The constraint decoy shares the SCHEMA and differs by table; the index
-    // decoy shares the NAME and differs by schema. Each assertion names the
-    // axis its decoy actually varies.
-    expect(
-      constraintTables.map((r) => r.rel),
-      'decoy constraint did not plant'
-    ).toEqual(expect.arrayContaining(['rows', 'decoy_relation']));
-    expect(
-      indexSchemas.map((r) => r.schemaname),
-      'decoy index did not plant'
-    ).toEqual(expect.arrayContaining([ownSchema, 'decoy']));
-  });
+      // The constraint decoy shares the SCHEMA and differs by table; the index
+      // decoy shares the NAME and differs by schema. Each assertion names the
+      // axis its decoy actually varies.
+      expect(
+        constraintTables.map((r) => r.rel),
+        'decoy constraint did not plant'
+      ).toEqual(expect.arrayContaining(['rows', 'decoy_relation']));
+      expect(
+        indexSchemas.map((r) => r.schemaname),
+        'decoy index did not plant'
+      ).toEqual(expect.arrayContaining([ownSchema, 'decoy']));
+    }
+  );
 
   it('a relation-scoped constraint lookup ignores the same name on another table', async () => {
     const rows = await sql<{ conname: string }[]>`
@@ -101,7 +108,7 @@ describe.skipIf(!POSTGRES_URL)('catalog lookups are scoped, proven by decoys', (
     expect(rows.map((r) => r.conname)).toEqual([REAL_CONSTRAINT]);
   });
 
-  it('a schema-scoped index lookup ignores the same name in another schema', async () => {
+  itIndexed('a schema-scoped index lookup ignores the same name in another schema', async () => {
     const rows = await sql<{ indexname: string }[]>`
       SELECT indexname FROM pg_indexes
       WHERE schemaname = current_schema()
@@ -116,26 +123,29 @@ describe.skipIf(!POSTGRES_URL)('catalog lookups are scoped, proven by decoys', (
    * a table of the SAME name matches too, which is exactly what decoy 2
    * constructs.
    */
-  it('tablename alone is NOT sufficient — the reason lookups qualify by schema', async () => {
-    const byTable = await sql<{ schemaname: string }[]>`
+  itIndexed(
+    'tablename alone is NOT sufficient — the reason lookups qualify by schema',
+    async () => {
+      const byTable = await sql<{ schemaname: string }[]>`
       SELECT schemaname FROM pg_indexes
       WHERE tablename = 'rows' AND indexname = ${REAL_INDEX}
     `;
-    const bySchema = await sql<{ schemaname: string }[]>`
+      const bySchema = await sql<{ schemaname: string }[]>`
       SELECT schemaname FROM pg_indexes
       WHERE schemaname = current_schema() AND tablename = 'rows' AND indexname = ${REAL_INDEX}
     `;
-    // Asserts which schemas each form returns, not a count: tablename-only
-    // reaches ACROSS schemas, schemaname does not.
-    expect(
-      byTable.map((r) => r.schemaname),
-      'tablename-only should match the decoy too'
-    ).toEqual(expect.arrayContaining([ownSchema, 'decoy']));
-    expect(
-      bySchema.map((r) => r.schemaname),
-      'schemaname is what discriminates'
-    ).toEqual([ownSchema]);
-  });
+      // Asserts which schemas each form returns, not a count: tablename-only
+      // reaches ACROSS schemas, schemaname does not.
+      expect(
+        byTable.map((r) => r.schemaname),
+        'tablename-only should match the decoy too'
+      ).toEqual(expect.arrayContaining([ownSchema, 'decoy']));
+      expect(
+        bySchema.map((r) => r.schemaname),
+        'schemaname is what discriminates'
+      ).toEqual([ownSchema]);
+    }
+  );
 
   /**
    * The decoy constraint is deliberately a CHECK that would reject the values

@@ -18,6 +18,10 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { MigrationChecksumDriftError, runMigrations } from '../src/index.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
+const BASELINE =
+  process.env.SUBSTRATE_STORAGE_LAYOUT === 'partitioned'
+    ? '0001p_partitioned_baseline'
+    : '0001_baseline';
 
 describe.skipIf(!POSTGRES_URL)('runMigrations idempotency', () => {
   let sql: Sql;
@@ -160,14 +164,14 @@ describe.skipIf(!POSTGRES_URL)('migration framework — tracking + force', () =>
       SELECT version, checksum FROM migrations ORDER BY version
     `;
     expect(rows.length).toBeGreaterThanOrEqual(1);
-    const initial = rows.find((r) => r.version === '0001_baseline');
+    const initial = rows.find((r) => r.version === BASELINE);
     expect(initial).toBeDefined();
     expect(initial?.checksum).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('re-run skips already-applied migrations (tracking timestamps unchanged)', async () => {
     const before = await sql<{ applied_at: Date }[]>`
-      SELECT applied_at FROM migrations WHERE version = '0001_baseline'
+      SELECT applied_at FROM migrations WHERE version = ${BASELINE}
     `;
     expect(before).toHaveLength(1);
     const beforeTs = before[0]?.applied_at.getTime();
@@ -178,7 +182,7 @@ describe.skipIf(!POSTGRES_URL)('migration framework — tracking + force', () =>
     await runMigrations(sql); // no force — should be a no-op
 
     const after = await sql<{ applied_at: Date }[]>`
-      SELECT applied_at FROM migrations WHERE version = '0001_baseline'
+      SELECT applied_at FROM migrations WHERE version = ${BASELINE}
     `;
     expect(after).toHaveLength(1);
     expect(after[0]?.applied_at.getTime()).toBe(beforeTs);
@@ -186,7 +190,7 @@ describe.skipIf(!POSTGRES_URL)('migration framework — tracking + force', () =>
 
   it('force: true clears tracking and re-applies (timestamp advances)', async () => {
     const before = await sql<{ applied_at: Date }[]>`
-      SELECT applied_at FROM migrations WHERE version = '0001_baseline'
+      SELECT applied_at FROM migrations WHERE version = ${BASELINE}
     `;
     const beforeTs = before[0]?.applied_at.getTime() ?? 0;
 
@@ -195,7 +199,7 @@ describe.skipIf(!POSTGRES_URL)('migration framework — tracking + force', () =>
     await runMigrations(sql, { force: true });
 
     const after = await sql<{ applied_at: Date }[]>`
-      SELECT applied_at FROM migrations WHERE version = '0001_baseline'
+      SELECT applied_at FROM migrations WHERE version = ${BASELINE}
     `;
     expect(after).toHaveLength(1);
     expect(after[0]?.applied_at.getTime()).toBeGreaterThan(beforeTs);
@@ -209,7 +213,7 @@ describe.skipIf(!POSTGRES_URL)('migration framework — tracking + force', () =>
     await sql`
       UPDATE migrations
       SET checksum = 'legacy_checksum_value_94ae4a84'
-      WHERE version = '0001_baseline'
+      WHERE version = ${BASELINE}
     `;
 
     const stderrChunks: string[] = [];
@@ -229,7 +233,7 @@ describe.skipIf(!POSTGRES_URL)('migration framework — tracking + force', () =>
 
     // The recorded row is now at the current (post-rehash) checksum.
     const after = await sql<{ checksum: string }[]>`
-      SELECT checksum FROM migrations WHERE version = '0001_baseline'
+      SELECT checksum FROM migrations WHERE version = ${BASELINE}
     `;
     expect(after[0]?.checksum).toMatch(/^[0-9a-f]{64}$/);
     expect(after[0]?.checksum).not.toBe('legacy_checksum_value_94ae4a84');
@@ -237,7 +241,7 @@ describe.skipIf(!POSTGRES_URL)('migration framework — tracking + force', () =>
     // WARN log fired on stderr naming version + both truncated checksums.
     const log = stderrChunks.join('');
     expect(log).toContain('rehash');
-    expect(log).toContain('0001_baseline');
+    expect(log).toContain(BASELINE);
     expect(log).toContain('legacy_check'); // first 12 chars of seeded legacy value
   });
 

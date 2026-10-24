@@ -30,10 +30,15 @@
 
 import { createHash } from 'node:crypto';
 import type { Sql } from 'postgres';
+import { detectLayout, type StorageLayout } from './layout.js';
 import {
   CONCURRENT_STATEMENTS as BASELINE_CONCURRENT,
   TX_STATEMENTS as BASELINE_TX
 } from './migrations/0001_baseline.js';
+import {
+  CONCURRENT_STATEMENTS as PARTITIONED_BASELINE_CONCURRENT,
+  TX_STATEMENTS as PARTITIONED_BASELINE_TX
+} from './migrations/0001p_partitioned_baseline.js';
 import { TX_STATEMENTS as UUID_CHECK_TX } from './migrations/0002_uuid_format_check.js';
 import {
   CONCURRENT_STATEMENTS as SAFE_CASTS_CONCURRENT,
@@ -75,12 +80,20 @@ export type MigrationInput =
       readonly concurrentStatements?: never;
     };
 
-const MIGRATION_INPUTS: ReadonlyArray<MigrationInput> = [
-  {
-    version: '0001_baseline',
-    txStatements: BASELINE_TX,
-    concurrentStatements: BASELINE_CONCURRENT
-  },
+const LEGACY_BASELINE: MigrationInput = {
+  version: '0001_baseline',
+  txStatements: BASELINE_TX,
+  concurrentStatements: BASELINE_CONCURRENT
+};
+
+const PARTITIONED_BASELINE: MigrationInput = {
+  version: '0001p_partitioned_baseline',
+  txStatements: PARTITIONED_BASELINE_TX,
+  concurrentStatements: PARTITIONED_BASELINE_CONCURRENT
+};
+
+/** Migrations after the baseline, run in both layouts. */
+const SHARED_INPUTS: ReadonlyArray<MigrationInput> = [
   {
     version: '0003_safe_casts',
     txStatements: SAFE_CASTS_TX,
@@ -114,22 +127,72 @@ const UUID_CHECK_INPUT: MigrationInput = {
 };
 
 /**
- * @internal — the always-on migration list, exported for unit tests. The
- * gated 0002 is appended by `getMigrationList`.
- */
-export const MIGRATIONS: ReadonlyArray<Migration> = MIGRATION_INPUTS.map(normalise);
-
-/**
- * @internal — returns the migration list including the gated 0002 when
- * `SUBSTRATE_ENFORCE_UUID_CHECK=true` (or the explicit override is true). Used by
- * `runMigrations` and exported for the focused test that exercises the
- * CHECK constraint.
+ * @internal — the baseline for `layout`, then the gated 0002 when
+ * `SUBSTRATE_ENFORCE_UUID_CHECK=true` (or the explicit override is true), then
+ * the migrations both layouts share. Used by `runMigrations` and exported for
+ * unit tests.
  */
 export function getMigrationList(
-  enforceUuidCheck: boolean | undefined = process.env.SUBSTRATE_ENFORCE_UUID_CHECK === 'true'
+  enforceUuidCheck: boolean | undefined = process.env.SUBSTRATE_ENFORCE_UUID_CHECK === 'true',
+  layout: StorageLayout = 'legacy'
 ): ReadonlyArray<Migration> {
-  if (enforceUuidCheck !== true) return MIGRATIONS;
-  return [...MIGRATIONS, normalise(UUID_CHECK_INPUT)];
+  const baseline = layout === 'partitioned' ? PARTITIONED_BASELINE : LEGACY_BASELINE;
+  const gated = enforceUuidCheck === true ? [UUID_CHECK_INPUT] : [];
+  return [baseline, ...gated, ...SHARED_INPUTS].map(normalise);
+}
+
+/** @internal — the legacy layout's always-on list, exported for unit tests. */
+export const MIGRATIONS: ReadonlyArray<Migration> = getMigrationList(false);
+
+/**
+ * Raised when the ledger records one layout's baseline but `rows` has the
+ * other layout, which means the schema was changed outside the runner.
+ */
+export class StorageLayoutMismatchError extends Error {
+  override readonly name = 'StorageLayoutMismatchError';
+
+  constructor(layout: StorageLayout, recordedBaseline: string) {
+    super(
+      `rows is ${layout} but the migrations ledger records ` +
+        `${recordedBaseline}. A database keeps the layout it was created with; ` +
+        'restore the matching schema or migrate into a fresh one.'
+    );
+  }
+}
+
+/**
+ * The layout migrations target: the layout `rows` has; else the one the
+ * ledger's baseline records; else `fallback`, then `SUBSTRATE_STORAGE_LAYOUT`,
+ * then `partitioned`. Throws when `rows` and the ledger disagree.
+ */
+async function resolveLayout(
+  sql: Sql,
+  applied: ReadonlySet<string>,
+  fallback: StorageLayout | undefined
+): Promise<StorageLayout> {
+  const recorded: StorageLayout | undefined = applied.has(LEGACY_BASELINE.version)
+    ? 'legacy'
+    : applied.has(PARTITIONED_BASELINE.version)
+      ? 'partitioned'
+      : undefined;
+  const actual = await detectLayout(sql);
+  if (actual === 'absent') {
+    return recorded ?? fallback ?? envLayout() ?? 'partitioned';
+  }
+  if (recorded !== undefined && recorded !== actual) {
+    throw new StorageLayoutMismatchError(
+      actual,
+      recorded === 'legacy' ? LEGACY_BASELINE.version : PARTITIONED_BASELINE.version
+    );
+  }
+  return actual;
+}
+
+function envLayout(): StorageLayout | undefined {
+  const v = process.env.SUBSTRATE_STORAGE_LAYOUT;
+  if (v === undefined || v === '') return undefined;
+  if (v === 'legacy' || v === 'partitioned') return v;
+  throw new Error(`SUBSTRATE_STORAGE_LAYOUT must be 'legacy' or 'partitioned', got '${v}'`);
 }
 
 /**
@@ -200,6 +263,12 @@ export interface RunMigrationsOptions {
    * Production bootstraps shouldn't pass this — let the env decide.
    */
   enforceUuidCheck?: boolean;
+  /**
+   * The layout for a database with no `rows` yet. Ignored once `rows` exists,
+   * since a database keeps its layout. Defaults to `SUBSTRATE_STORAGE_LAYOUT`,
+   * then `partitioned`.
+   */
+  layout?: StorageLayout;
 }
 
 export async function runMigrations(sql: Sql, opts: RunMigrationsOptions = {}): Promise<void> {
@@ -232,7 +301,8 @@ export async function pendingMigrations(sql: Sql): Promise<string[]> {
     ledger?.present === true
       ? new Set((await sql<AppliedRow[]>`SELECT version FROM migrations`).map((r) => r.version))
       : new Set<string>();
-  return getMigrationList()
+  const layout = await resolveLayout(sql, applied, undefined);
+  return getMigrationList(undefined, layout)
     .map((m) => m.version)
     .filter((v) => !applied.has(v));
 }
@@ -306,7 +376,7 @@ async function runMigrationsLocked(sql: Sql, opts: RunMigrationsOptions): Promis
   //
   // Iterates the FULL list including gated 0002, even when the gate is off:
   // a previously applied gated migration must still be rehashed.
-  const REHASH_LIST = getMigrationList(true);
+  const REHASH_LIST = [...getMigrationList(true), normalise(PARTITIONED_BASELINE)];
   const buildSha = process.env.SUBSTRATE_BUILD_SHA ?? 'unknown';
   for (const migration of REHASH_LIST) {
     const recorded = appliedByVersion.get(migration.version);
@@ -329,7 +399,8 @@ async function runMigrationsLocked(sql: Sql, opts: RunMigrationsOptions): Promis
     appliedByVersion.set(migration.version, current);
   }
 
-  for (const migration of getMigrationList(opts.enforceUuidCheck)) {
+  const layout = await resolveLayout(sql, new Set(appliedByVersion.keys()), opts.layout);
+  for (const migration of getMigrationList(opts.enforceUuidCheck, layout)) {
     const recorded = appliedByVersion.get(migration.version);
     if (recorded !== undefined) {
       // The rehash pass above guarantees the recorded checksum is current.
