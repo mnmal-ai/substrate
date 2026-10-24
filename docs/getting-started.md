@@ -226,7 +226,7 @@ Plugins in this repository (recall and proposals are built into `@mnmal-ai/subst
 }
 ```
 
-It serves `schema`, `query`, `mutate`, `recall`, `ask`, `whoami`, `propose_type`, `propose_field`, and the admin-gated `drop_namespace` / `drop_type`. [`surface-parity.md`](surface-parity.md) maps what each surface (HTTP, MCP, WS, SSE) can do.
+It serves `schema`, `query`, `mutate`, `recall`, `ask`, `whoami`, `propose_type`, `propose_field`, and the admin-gated `drop_namespace` / `drop_type`. At session start it also sends the client short instructions: how to write frames and read results, plus a one-line-per-type overview of this server's types, so the agent can query without fetching the schema first. [`surface-parity.md`](surface-parity.md) maps what each surface (HTTP, MCP, WS, SSE) can do.
 
 ### Script it: `substrate run`
 

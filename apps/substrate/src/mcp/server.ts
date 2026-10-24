@@ -20,6 +20,7 @@ import { z } from 'zod';
 // binary carries the literal value.
 import pkg from '../../package.json' with { type: 'json' };
 import { makeAgentJwtProvider, resolveAgentCapabilities } from './agent-jwt.js';
+import { buildInstructions, OVERVIEW_LEGEND, schemaOverview } from './schema-overview.js';
 
 /** The version the MCP server reports in its initialize serverInfo. */
 export const MCP_SERVER_VERSION: string =
@@ -228,14 +229,31 @@ export async function recall(endpoint: string, body: RecallInput): Promise<Recal
 
 export function createSchemaHandler(
   endpoint: string
-): (args?: { namespace?: string; type?: string; shape?: string }) => Promise<ToolResult> {
+): (args?: {
+  namespace?: string;
+  type?: string;
+  shape?: string;
+  full?: boolean;
+}) => Promise<ToolResult> {
   return async (args) => {
     // Scoped, cheap lookups when a namespace (and optionally a type) is given —
     // the right call before a create/update so you read the exact write contract
-    // instead of pulling the whole federated schema. No args → federated.
+    // instead of pulling the whole federated schema. No args → the compact
+    // overview; `full: true` → the whole federated schema.
     const ns = args?.namespace;
     const type = args?.type;
     const shape = args?.shape;
+    if ((ns === undefined || ns === '') && args?.full !== true) {
+      try {
+        const federated = await getSubstrate<Parameters<typeof schemaOverview>[0]>(
+          endpoint,
+          '/substrate/v1/federated-schema'
+        );
+        return okResult({ legend: OVERVIEW_LEGEND, overview: schemaOverview(federated) });
+      } catch (err) {
+        return errorResult(toMessage(err));
+      }
+    }
     let path = '/substrate/v1/federated-schema';
     if (ns !== undefined && ns !== '') {
       if (type !== undefined && type !== '') {
@@ -404,10 +422,15 @@ export interface McpServerOptions {
    * all ten.
    */
   tools?: string;
+  /** Sent to the client at initialize; clients put it in the agent's context. */
+  instructions?: string;
 }
 
 export function createMcpServer(endpoint: string, options: McpServerOptions = {}): McpServer {
-  const server = new McpServer({ name: 'substrate', version: MCP_SERVER_VERSION });
+  const server = new McpServer(
+    { name: 'substrate', version: MCP_SERVER_VERSION },
+    options.instructions !== undefined ? { instructions: options.instructions } : undefined
+  );
 
   // TOOLS table: each entry maps directly to a server.registerTool call.
   // Every handler is a thin JSON-over-HTTP closure over `endpoint` (no client
@@ -423,8 +446,9 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
       name: 'schema',
       config: {
         description:
-          'Fetch the Substrate schema. No args → the full federated schema for every ' +
-          'namespace (use sparingly; it is large). SCOPED + CHEAP: pass `namespace` ' +
+          "Fetch the Substrate schema. No args → a compact overview: every namespace's " +
+          'types, one line of `field: type` each, enough to write a query. `full: true` → ' +
+          'the whole federated schema (large; rarely needed). SCOPED + CHEAP: pass `namespace` ' +
           "for one namespace, or `namespace` + `type` for a single type's write " +
           'contract ({ fields, mutations }). Mine the scoped shape BEFORE a ' +
           'create/update so you send only declared fields — autoCRUD rejects ' +
@@ -450,6 +474,12 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
             .optional()
             .describe(
               'Projection of the type contract; requires `namespace` + `type`. "full" (default) inlines every mutation\'s params and returns. "fields" returns the field defs plus `mutationNames`, about a sixth the size — use it to answer "what fields does this type have".'
+            ),
+          full: z
+            .boolean()
+            .optional()
+            .describe(
+              'With no `namespace`: true returns the whole federated schema instead of the overview.'
             )
         }
       },
@@ -781,6 +811,16 @@ function resolveToolAllowlist(raw: string | undefined, known: string[]): Set<str
   return new Set(names);
 }
 
+/** The overview for the session's instructions, or null when the server is slow or down. */
+async function fetchOverview(endpoint: string): Promise<ReturnType<typeof schemaOverview> | null> {
+  const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000).unref());
+  const fetched = getSubstrate<Parameters<typeof schemaOverview>[0]>(
+    endpoint,
+    '/substrate/v1/federated-schema'
+  ).then(schemaOverview, () => null);
+  return Promise.race([fetched, timeout]);
+}
+
 /**
  * Boot the stdio MCP server. Resolves once the transport is connected; the
  * process keeps running until the host (Claude Code, etc.) closes stdio.
@@ -788,10 +828,12 @@ function resolveToolAllowlist(raw: string | undefined, known: string[]): Set<str
 export async function runMcp(): Promise<void> {
   const endpoint = process.env.SUBSTRATE_URL ?? 'http://localhost:3100';
   configureAgentAuth(process.env, endpoint);
-  const server = createMcpServer(
-    endpoint,
-    process.env.SUBSTRATE_MCP_TOOLS === undefined ? {} : { tools: process.env.SUBSTRATE_MCP_TOOLS }
-  );
+  const server = createMcpServer(endpoint, {
+    ...(process.env.SUBSTRATE_MCP_TOOLS === undefined
+      ? {}
+      : { tools: process.env.SUBSTRATE_MCP_TOOLS }),
+    instructions: buildInstructions(await fetchOverview(endpoint))
+  });
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
