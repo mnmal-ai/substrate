@@ -89,7 +89,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c  # v4.3.0
+      - uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550  # v5.2.2
         with:
           cache: true
 
@@ -189,9 +189,9 @@ jobs:
 
       # npm >= 11.5.1 does the OIDC exchange itself; Node 22 is above the
       # 22.14.0 trusted publishing needs.
-      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903  # v5.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
-          node-version: 22
+          node-version: 24
           package-manager-cache: false
 
       # Idempotent: a version already on npmjs is skipped, so a re-run after a
