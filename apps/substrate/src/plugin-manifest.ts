@@ -76,14 +76,24 @@ export class PluginManifestError extends Error {
 }
 
 export async function listPluginManifests(pluginDir: string): Promise<PluginManifest[]> {
+  const declared = await declaredDependencies(pluginDir);
+  if (declared.size === 0) return [];
   const nodeModulesDir = resolvePath(pluginDir, 'node_modules');
   if (!(await isDirectory(nodeModulesDir))) {
-    return [];
+    throw new PluginManifestError(
+      undefined,
+      `${pluginDir}/package.json lists ${[...declared].join(', ')} but there is no node_modules: run \`pnpm install\` in ${pluginDir}`
+    );
   }
-  const packageDirs = await listPackageDirs(nodeModulesDir, await declaredDependencies(pluginDir));
+  const packageDirs = await listPackageDirs(nodeModulesDir, declared);
   const manifests: PluginManifest[] = [];
   for (const packageDir of packageDirs) {
     manifests.push(...(await readManifestsIfPresent(packageDir)));
+  }
+  if (manifests.length === 0) {
+    process.stderr.write(
+      `substrate: SUBSTRATE_PLUGIN_DIR=${pluginDir} lists ${[...declared].join(', ')}, none of which is an installed substrate plugin; booting without plugins\n`
+    );
   }
   return manifests;
 }
@@ -91,14 +101,19 @@ export async function listPluginManifests(pluginDir: string): Promise<PluginMani
 /**
  * The names `<pluginDir>/package.json` lists under `dependencies`. Only these
  * are plugin candidates: a transitive package hoisted into `node_modules` is
- * not something the operator chose to run. No package.json means none.
+ * not something the operator chose to run. A missing package.json refuses
+ * boot, since a plugin dir that can name no plugin is a misconfiguration.
  */
 async function declaredDependencies(pluginDir: string): Promise<Set<string>> {
   let raw: string;
   try {
     raw = await readFile(resolvePath(pluginDir, 'package.json'), 'utf8');
-  } catch {
-    return new Set();
+  } catch (err) {
+    if ((err as { code?: unknown }).code !== 'ENOENT') throw err;
+    throw new PluginManifestError(
+      undefined,
+      `SUBSTRATE_PLUGIN_DIR=${pluginDir} has no package.json, so no plugin can load. List each plugin under "dependencies" there (\`substrate init\` writes one) and run \`pnpm install\`, or unset SUBSTRATE_PLUGIN_DIR to boot without plugins`
+    );
   }
   let parsed: unknown;
   try {
