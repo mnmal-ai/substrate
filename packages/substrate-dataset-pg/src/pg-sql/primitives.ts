@@ -129,18 +129,20 @@ export function tsArrayParam(sql: Sql | TransactionSql, vs: unknown[]): Fragment
 }
 
 /**
- * A value embedded in a single-quoted SQL string literal, escaped (`'` → `''`).
- * pg string literals cannot carry NUL, so a name holding one is refused.
+ * A complete SQL string literal for `s`: `'o''neil'`. A value holding a
+ * backslash takes the `E'…'` form with the backslash doubled, because in a
+ * plain literal `standard_conforming_strings = off` would read `\'` as an
+ * escaped quote and let the value break out. Without a backslash the plain
+ * form reads the same under either setting, and keeps the text of existing
+ * index DDL unchanged. pg literals cannot carry NUL, so that is refused.
  */
 export function sqlStringLiteral(s: string): string {
   if (s.includes('\0')) {
     throw new UnsupportedFilterError(s, '<name>', 'refused: the field name contains NUL');
   }
-  return s.replace(/'/g, "''");
+  const quoted = s.replace(/'/g, "''");
+  return s.includes('\\') ? `E'${quoted.replace(/\\/g, '\\\\')}'` : `'${quoted}'`;
 }
-
-/** `'name'`: the SQL text of a quoted literal. */
-const lit = (s: string): string => `'${sqlStringLiteral(s)}'`;
 
 /**
  * Body-field expressions as SQL TEXT, with every name inlined as a literal.
@@ -148,16 +150,16 @@ const lit = (s: string): string => `'${sqlStringLiteral(s)}'`;
  * expression index serves only a filter whose expression matches it.
  */
 const jsonSql = (path: readonly string[]): string =>
-  `body${path.map((p) => ` -> ${lit(p)}`).join('')}`;
+  `body${path.map((p) => ` -> ${sqlStringLiteral(p)}`).join('')}`;
 const rawTextSql = (path: readonly string[]): string =>
-  `(${jsonSql(path.slice(0, -1))} ->> ${lit(path[path.length - 1] as string)})`;
+  `(${jsonSql(path.slice(0, -1))} ->> ${sqlStringLiteral(path[path.length - 1] as string)})`;
 const textSql = (path: readonly string[]): string => `(${rawTextSql(path)} COLLATE "C")`;
 const numSql = (path: readonly string[]): string => `substrate_num(${jsonSql(path)})`;
 const tsSql = (path: readonly string[]): string => `substrate_ts(${jsonSql(path)})`;
 
 /** A field name as an inlined SQL literal: `'o''neil'`. */
 export function fieldLit(sql: Sql | TransactionSql, name: string): Fragment {
-  return sql.unsafe(lit(name));
+  return sql.unsafe(sqlStringLiteral(name));
 }
 
 /** `((body -> 'a' ->> 'b') COLLATE "C")`: the one text expression for compares and sorts. */

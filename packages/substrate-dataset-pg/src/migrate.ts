@@ -443,8 +443,8 @@ export function deriveListIndexMigration(f: IndexedListField): MigrationInput {
     txStatements: [],
     concurrentStatements: [
       `CREATE INDEX CONCURRENTLY IF NOT EXISTS ${name}\n` +
-        `  ON rows USING GIN ((body -> '${field}') jsonb_path_ops)\n` +
-        `  WHERE namespace = '${ns}' AND type = '${type}' AND deleted_at IS NULL`
+        `  ON rows USING GIN ((body -> ${field}) jsonb_path_ops)\n` +
+        `  WHERE namespace = ${ns} AND type = ${type} AND deleted_at IS NULL`
     ]
   };
 }

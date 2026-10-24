@@ -114,5 +114,9 @@ describe('compiled body-field expressions', () => {
     expect(r(bodyNum(sql, ['f']))).toBe(indexExpressionSql('number', 'f'));
     expect(r(bodyTs(sql, ['f']))).toBe(indexExpressionSql('date', 'f'));
     expect(r(fieldLit(sql, "o'neil"))).toBe(`'o''neil'`);
+    // A backslash takes the E'' form, which reads the same whatever
+    // standard_conforming_strings says.
+    expect(r(fieldLit(sql, "a\\'b"))).toBe(`E'a\\\\''b'`);
+    expect(indexExpressionSql('text', 'a\\b')).toBe(`((body ->> E'a\\\\b') COLLATE "C")`);
   });
 });

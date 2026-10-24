@@ -349,7 +349,12 @@ describe.skipIf(!POSTGRES_URL)('backend filter parity', () => {
         ['e1', 'e3']
       ],
       ['offset-less date under eq', { at: { eq: '2026-10-24T10:00:00Z' } }, ['e2']],
-      ['quoted field name', { "o'neil": { eq: 'x' } }, ['e1']]
+      ['quoted field name', { "o'neil": { eq: 'x' } }, ['e1']],
+      // Operands keep the lenient parse (pg's tsParam); only stored values must
+      // carry an offset. Operands sit hours from every stored instant, so the
+      // session time zone cannot decide the result.
+      ['date-only operand', { at: { gt: '2026-10-24' } }, ['e2']],
+      ['offset-less operand', { at: { lt: '2026-10-23 22:00' } }, ['e3']]
     ];
 
     for (const [name, where, expected] of edgeCases) {
@@ -363,15 +368,24 @@ describe.skipIf(!POSTGRES_URL)('backend filter parity', () => {
       });
     }
 
-    it('both backends sort a number field over a string value without throwing', async () => {
-      for (const ds of [epg, emem]) {
-        const { rows } = await ds.read('E', { orderBy: [{ n: 'asc' }] });
-        expect(
-          rows.map((r) => r.id),
-          ds === epg ? 'pg' : 'memory'
-        ).toEqual(['e3', 'e2', 'e1']);
-      }
-    });
+    // A wrong-shaped value sorts as NULL: last, in both directions.
+    const sorts: Array<[string, 'asc' | 'desc', string[]]> = [
+      ['n', 'asc', ['e3', 'e2', 'e1']],
+      ['n', 'desc', ['e2', 'e3', 'e1']],
+      ['at', 'asc', ['e3', 'e2', 'e1']],
+      ['at', 'desc', ['e2', 'e3', 'e1']]
+    ];
+    for (const [field, dir, expected] of sorts) {
+      it(`both backends sort ${field} ${dir} with a wrong-shaped value last`, async () => {
+        for (const ds of [epg, emem]) {
+          const { rows } = await ds.read('E', { orderBy: [{ [field]: dir }] });
+          expect(
+            rows.map((r) => r.id),
+            ds === epg ? 'pg' : 'memory'
+          ).toEqual(expected);
+        }
+      });
+    }
   });
 
   it('both backends sort body strings in byte order', async () => {

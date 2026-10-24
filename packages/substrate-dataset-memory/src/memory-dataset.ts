@@ -18,6 +18,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   applyExtensionResultMeta,
+  asSortValue,
   assertWhereHonourable,
   compareFilterValues,
   decodeCursor,
@@ -615,8 +616,8 @@ function compareByClauses(
   fieldDefOf: FieldDefOf
 ): number {
   for (const [field, dir] of orderBy) {
-    const av = getFieldValue(a, field);
-    const bv = getFieldValue(b, field);
+    const av = asSortValue(field, getFieldValue(a, field), fieldDefOf);
+    const bv = asSortValue(field, getFieldValue(b, field), fieldDefOf);
     // Nulls sort last independently of direction (matches SQL's NULLS LAST).
     // Direction flip applies only when both sides are non-null.
     if (av == null && bv == null) continue;

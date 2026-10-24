@@ -4,7 +4,7 @@
  * Anything else is a non-match, so memory and pg agree.
  */
 
-import type { FieldDef, WhereClause } from '@mnmal-ai/substrate-types';
+import type { FieldDef, Row, WhereClause } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
 import { evaluateWhere } from '../src/index.js';
 
@@ -29,6 +29,36 @@ describe('evaluateWhere — date shape', () => {
       expect(matches(at, { at: { eq: at } }), at).toBe(false);
       expect(matches(at, { NOT: gte }), at).toBe(true);
     }
+  });
+
+  it('reads operands leniently, as pg casts them', () => {
+    expect(matches('2026-10-25T10:00:00Z', { at: { gt: '2026-10-24' } })).toBe(true);
+    expect(matches('2026-10-25T10:00:00Z', { at: { lt: '2026-10-24 10:00' } })).toBe(false);
+    const row = {
+      id: '1',
+      _metadata: {
+        createdAt: '2026-10-25T10:00:00.000Z',
+        updatedAt: '2026-10-25T10:00:00.000Z',
+        createdBy: { kind: 'agent', id: 'a' },
+        updatedBy: { kind: 'agent', id: 'a' }
+      }
+    } as Row;
+    expect(evaluateWhere(row, { createdAt: { gt: '2026-10-24' } })).toBe(true);
+  });
+
+  it('reads operands leniently, as pg casts them', () => {
+    expect(matches('2026-10-25T10:00:00Z', { at: { gt: '2026-10-24' } })).toBe(true);
+    expect(matches('2026-10-25T10:00:00Z', { at: { lt: '2026-10-24 10:00' } })).toBe(false);
+    const row = {
+      id: '1',
+      _metadata: {
+        createdAt: '2026-10-25T10:00:00.000Z',
+        updatedAt: '2026-10-25T10:00:00.000Z',
+        createdBy: { kind: 'agent', id: 'a' },
+        updatedBy: { kind: 'agent', id: 'a' }
+      }
+    } as Row;
+    expect(evaluateWhere(row, { createdAt: { gt: '2026-10-24' } })).toBe(true);
   });
 
   it('a number operand never matches a non-number value', () => {

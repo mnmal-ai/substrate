@@ -332,8 +332,8 @@ function equals(a: unknown, b: unknown, asDate = false): boolean {
   // rows whose field is absent (value === undefined), diverging from pg.
   if (a == null && b == null) return true;
   if (asDate || a instanceof Date || b instanceof Date) {
-    // Either side not an instant reads as NULL in pg's substrate_ts: no match.
-    const at = toMicros(a);
+    // A stored value pg's substrate_ts reads as NULL never matches.
+    const at = storedMicros(a);
     const bt = toMicros(b);
     return at !== undefined && bt !== undefined && at === bt;
   }
@@ -351,7 +351,7 @@ function rangeCmp(value: unknown, operand: unknown, asDate: boolean): number {
   if (typeof operand === 'number' && typeof value !== 'number') return Number.NaN;
   if (
     (asDate || value instanceof Date || operand instanceof Date) &&
-    (toMicros(value) === undefined || toMicros(operand) === undefined)
+    (storedMicros(value) === undefined || toMicros(operand) === undefined)
   ) {
     return Number.NaN;
   }
@@ -379,27 +379,47 @@ export function compareFilterValues(a: unknown, b: unknown, asDate = false): num
 }
 
 /**
- * The string shape pg's `substrate_ts` accepts: ISO date and time with an
- * explicit offset or `Z`, so the instant never depends on a time zone.
+ * The string shape pg's `substrate_ts` accepts for a STORED value: ISO date
+ * and time with an explicit offset or `Z`, so the instant never depends on a
+ * time zone. Operands are cast leniently, as pg's `tsParam` casts them.
  */
 const TS_SHAPE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?(Z|[+-]\d{2}(:?\d{2})?)$/;
 
-/**
- * Microseconds since the epoch, pg's timestamptz precision. `Date.parse` keeps
- * only milliseconds, so the 4th–6th fraction digits are added back. A number
- * is read as epoch milliseconds; a string outside {@link TS_SHAPE}, or one
- * that does not parse, is `undefined`.
- */
-function toMicros(v: unknown): number | undefined {
-  if (v instanceof Date) return v.getTime() * 1000;
-  if (typeof v === 'number') return Number.isFinite(v) ? v * 1000 : undefined;
-  if (typeof v !== 'string' || !TS_SHAPE.test(v)) return undefined;
+/** {@link toMicros} for a stored value: `undefined` wherever `substrate_ts` is NULL, a number included. */
+function storedMicros(v: unknown): number | undefined {
+  if (v instanceof Date) return toMicros(v);
+  if (typeof v !== 'string') return undefined;
+  if (!TS_SHAPE.test(v)) return undefined;
   // pg refuses an impossible day (Feb 30) where Date.parse rolls it over.
   const [y, mo, d] = v.slice(0, 10).split('-').map(Number) as [number, number, number];
   const day = new Date(Date.UTC(y, mo - 1, d));
   if (day.getUTCMonth() !== mo - 1 || day.getUTCDate() !== d) return undefined;
+  return toMicros(v);
+}
+
+/**
+ * A row value as pg sorts it: a date-field value `substrate_ts` cannot read, or
+ * a number-field value that is not a number, becomes null and sorts last.
+ */
+export function asSortValue(field: string, value: unknown, fieldDefOf?: FieldDefOf): unknown {
+  if (value == null) return value;
+  if (isDateField(field, fieldDefOf)) return storedMicros(value) === undefined ? null : value;
+  const def = METADATA_FILTER_FIELDS[field] ?? fieldDefOf?.(field);
+  if (def?.kind === 'scalar' && def.type === 'number' && typeof value !== 'number') return null;
+  return value;
+}
+
+/**
+ * Microseconds since the epoch, pg's timestamptz precision. `Date.parse` keeps
+ * only milliseconds, so the 4th–6th fraction digits are added back. A number
+ * is read as epoch milliseconds; anything unparseable is `undefined`.
+ */
+function toMicros(v: unknown): number | undefined {
+  if (v instanceof Date) return v.getTime() * 1000;
+  if (typeof v === 'number') return Number.isFinite(v) ? v * 1000 : undefined;
+  if (typeof v !== 'string') return undefined;
   // Date.parse needs `+05:00` where pg also takes `+05`.
-  const ms = Date.parse(v.replace(/([+-]\d{2})$/, '$1:00'));
+  const ms = Date.parse(v.replace(/(:\d{2}(?:\.\d+)?[+-]\d{2})$/, '$1:00'));
   if (Number.isNaN(ms)) return undefined;
   const frac = /[T ][\d:]+\.(\d+)/.exec(v)?.[1] ?? '';
   return ms * 1000 + Number(frac.padEnd(6, '0').slice(3, 6));
