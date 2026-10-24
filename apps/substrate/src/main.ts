@@ -90,6 +90,7 @@ import {
   buildPluginDatasetMap,
   extractIndexedListFields,
   makeFieldDefLookupFactory,
+  makeTypeDefLookupFactory,
   redactStoreSpec,
   wireStore
 } from './serve/wiring.js';
@@ -137,7 +138,7 @@ export async function runServe(): Promise<void> {
     substrateNamespaceDataset,
     sql: storeSql,
     close: closeStore
-  } = await wireStore(config.storeSpec, fieldDefLookupFor);
+  } = await wireStore(config.storeSpec, fieldDefLookupFor, makeTypeDefLookupFactory(nsDefs));
 
   const pluginDir = resolvePluginDir();
 

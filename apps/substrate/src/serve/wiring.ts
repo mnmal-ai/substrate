@@ -24,7 +24,8 @@ import {
   type IndexedListField,
   PgDataset,
   PgEdgesStore,
-  runMigrations
+  runMigrations,
+  type TypeDefLookup
 } from '@mnmal-ai/substrate-dataset-pg';
 import { getExtensionOperator, registerExtensionOperator } from '@mnmal-ai/substrate-filter';
 import { makeAuthorizationProvider } from '@mnmal-ai/substrate-policy';
@@ -78,7 +79,8 @@ export interface StoreWiring {
 
 export async function wireStore(
   storeSpec: string,
-  fieldDefLookupFor: (namespace: string) => FieldDefLookup
+  fieldDefLookupFor: (namespace: string) => FieldDefLookup,
+  typeDefLookupFor?: (namespace: string) => TypeDefLookup
 ): Promise<StoreWiring> {
   if (storeSpec === 'memory') {
     return {
@@ -104,14 +106,16 @@ export async function wireStore(
         namespace: DEFAULT_NAMESPACE,
         sql,
         edgesStore: edges,
-        fieldDefLookup: fieldDefLookupFor(DEFAULT_NAMESPACE)
+        fieldDefLookup: fieldDefLookupFor(DEFAULT_NAMESPACE),
+        ...(typeDefLookupFor ? { typeDefLookup: typeDefLookupFor(DEFAULT_NAMESPACE) } : {})
       }),
       edges,
       substrateNamespaceDataset: new PgDataset({
         namespace: SYSTEM_NAMESPACE,
         sql,
         edgesStore: edges,
-        fieldDefLookup: fieldDefLookupFor(SYSTEM_NAMESPACE)
+        fieldDefLookup: fieldDefLookupFor(SYSTEM_NAMESPACE),
+        ...(typeDefLookupFor ? { typeDefLookup: typeDefLookupFor(SYSTEM_NAMESPACE) } : {})
       }),
       sql,
       close: (): Promise<void> => sql.end()
@@ -192,6 +196,17 @@ export function makeFieldDefLookupFactory(nsDefs: {
 }
 
 /**
+ * Build a per-namespace {@link TypeDefLookup} factory over the same late-bound
+ * `nsDefs` registry as {@link makeFieldDefLookupFactory}: a type's fields and
+ * declared indexes, which `PgDataset.ensureTypeStorage` builds indexes from.
+ */
+export function makeTypeDefLookupFactory(nsDefs: {
+  get(namespace: string): NamespaceDefinition | undefined;
+}): (namespace: string) => TypeDefLookup {
+  return (namespace) => (type) => nsDefs.get(namespace)?.types?.[type];
+}
+
+/**
  * Walk loaded namespace definitions for `field.list({ indexed: true })` and
  * `field.json({ indexed: true })` fields. Each becomes an auto-derived GIN
  * migration so the `indexed` flag — the validator's queryability contract —
@@ -260,6 +275,7 @@ export function buildPluginDatasetMap(
               namespace: ns,
               sql: sharedSql,
               fieldDefLookup: fieldDefLookupFor(ns),
+              typeDefLookup: (type) => nsDef.types?.[type],
               ...(nsDef.promotedColumns !== undefined
                 ? { promotedColumns: nsDef.promotedColumns }
                 : {}),

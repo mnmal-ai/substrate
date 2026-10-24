@@ -50,8 +50,8 @@ describe.skipIf(!POSTGRES_URL)('row-metadata schema migration', () => {
     ]);
   });
 
-  // Legacy only: a partitioned `rows` has no parent-level indexes; per-partition
-  // engine indexes are not built yet.
+  // Legacy only: a partitioned `rows` has no parent-level indexes. Its
+  // per-partition timestamp indexes are covered in index-reconciler.test.ts.
   it.skipIf(PARTITIONED)(
     'adds composite partial indexes on (namespace, type, ts) — replaces single-col globals',
     async () => {

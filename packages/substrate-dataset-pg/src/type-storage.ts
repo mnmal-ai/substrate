@@ -39,7 +39,8 @@ export class TypeStorageLockTimeoutError extends Error {
 
 type Handle = Sql | TransactionSql;
 
-function ident(name: string): string {
+/** `name` as a quoted SQL identifier. */
+export function ident(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
 }
 
@@ -49,7 +50,7 @@ function boundText(value: string | null): string {
 }
 
 /** The partition of `parent` (current schema) whose bound is `value`, or DEFAULT for null. */
-async function findPartition(
+export async function findPartition(
   sql: Handle,
   parent: string,
   value: string | null

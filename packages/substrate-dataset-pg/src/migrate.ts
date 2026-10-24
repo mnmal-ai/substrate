@@ -461,12 +461,22 @@ const CONCURRENT_INDEX_RE =
  */
 async function dropInvalidIndexFor(sql: Sql, stmt: string): Promise<void> {
   const name = CONCURRENT_INDEX_RE.exec(stmt)?.[1];
-  if (name === undefined) return;
+  if (name !== undefined) await dropIndexIfInvalid(sql, name);
+}
+
+/**
+ * Drops index `name` (a bare lower-snake identifier) when it exists and is
+ * INVALID, as a failed concurrent build leaves it. True when it dropped one.
+ */
+export async function dropIndexIfInvalid(sql: Sql, name: string): Promise<boolean> {
+  if (!/^[a-z_][a-z0-9_]*$/.test(name)) throw new Error(`not a bare index name: '${name}'`);
   const [row] = await sql<Array<{ invalid: boolean }>>`
     SELECT NOT indisvalid AS invalid FROM pg_index WHERE indexrelid = to_regclass(${name})
   `;
+  if (row?.invalid !== true) return false;
   // The name matched an identifier pattern, which licenses `unsafe`.
-  if (row?.invalid === true) await sql.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS ${name}`);
+  await sql.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS ${name}`);
+  return true;
 }
 
 /**
@@ -500,6 +510,8 @@ export function generatedIdentifier(
   return `rows_${fold(namespace)}_${fold(type)}_${fold(field)}`.slice(0, 63 - tail.length) + tail;
 }
 
+const LIST_GIN_PREFIX = 'list-gin:';
+
 /**
  * Derives the tracked, idempotent CONCURRENTLY GIN migration for one indexed
  * field. The version key uses the raw ns/type/field.
@@ -510,7 +522,7 @@ export function deriveListIndexMigration(f: IndexedListField): MigrationInput {
   const type = sqlStringLiteral(f.type);
   const field = sqlStringLiteral(f.field);
   return {
-    version: `list-gin:${f.namespace}:${f.type}:${f.field}`,
+    version: `${LIST_GIN_PREFIX}${f.namespace}:${f.type}:${f.field}`,
     txStatements: [],
     concurrentStatements: [
       `CREATE INDEX CONCURRENTLY IF NOT EXISTS ${name}\n` +
@@ -525,11 +537,17 @@ export function deriveListIndexMigration(f: IndexedListField): MigrationInput {
  * advisory-locked machinery as the static list. Called after plugins load,
  * since `runMigrations` has no field-def knowledge. Idempotent: applied
  * versions are skipped.
+ *
+ * On the partitioned layout the list/json GIN migrations are skipped: those
+ * indexes live on each type's partition, built by `reconcileTypeIndexes`, and
+ * Postgres cannot build one CONCURRENTLY on the partitioned parent.
  */
 export async function runDerivedMigrations(
   sql: Sql,
-  derived: ReadonlyArray<MigrationInput>
+  all: ReadonlyArray<MigrationInput>
 ): Promise<void> {
+  const partitioned = all.length > 0 && (await detectLayout(sql)) === 'partitioned';
+  const derived = partitioned ? all.filter((m) => !m.version.startsWith(LIST_GIN_PREFIX)) : all;
   if (derived.length === 0) return;
   await withMigrationLock(sql, async (conn) => {
     await conn`

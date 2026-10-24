@@ -1,0 +1,260 @@
+/**
+ * `reconcileTypeIndexes`: declared indexes are created, left alone when
+ * identical, swapped without a gap in uniqueness when only the expression
+ * differs, refused when anything else differs, refused over duplicate live
+ * values, and rebuilt when a failed concurrent build left one INVALID.
+ */
+
+import { randomBytes } from 'node:crypto';
+import type { FieldDef } from '@mnmal-ai/substrate-types';
+import postgres, { type Sql } from 'postgres';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import {
+  type IndexDecl,
+  IndexDefinitionConflictError,
+  PgDataset,
+  reconcileTypeIndexes,
+  type StorageLayout,
+  UniqueIndexDuplicatesError
+} from '../src/index.js';
+
+const POSTGRES_URL = process.env.POSTGRES_URL;
+const LAYOUT = (process.env.SUBSTRATE_STORAGE_LAYOUT ?? 'legacy') as StorageLayout;
+const TYPE = 'T';
+
+const fields: Record<string, FieldDef> = {
+  cert: { kind: 'scalar', type: 'string' },
+  observedAt: { kind: 'scalar', type: 'date' },
+  kid: { kind: 'scalar', type: 'string' }
+};
+const kidIndexed: Record<string, FieldDef> = {
+  ...fields,
+  kid: { kind: 'scalar', type: 'string', indexed: true }
+};
+
+const hex = () => randomBytes(4).toString('hex');
+
+let sql: Sql;
+
+beforeAll(async () => {
+  if (POSTGRES_URL) sql = postgres(POSTGRES_URL, { onnotice: () => {} });
+});
+
+afterAll(async () => {
+  await sql?.end({ timeout: 5 });
+});
+
+interface Fixture {
+  ns: string;
+  ds: PgDataset;
+  /** The table the type's indexes live on. */
+  target: string;
+  /** The predicate every index of the type carries. */
+  live: string;
+}
+
+async function fixture(): Promise<Fixture> {
+  const ns = `ir_${hex()}`;
+  const ds = new PgDataset({ namespace: ns, sql });
+  if (LAYOUT === 'legacy') {
+    return {
+      ns,
+      ds,
+      target: 'rows',
+      live: `namespace = '${ns}' AND type = '${TYPE}' AND deleted_at IS NULL`
+    };
+  }
+  await ds.ensureTypeStorage(TYPE);
+  const [row] = await sql<Array<{ relname: string }>>`
+    SELECT c.relname FROM pg_partition_tree('rows') t
+    JOIN pg_class c ON c.oid = t.relid
+    WHERE t.isleaf AND pg_get_expr(c.relpartbound, c.oid) = ${`FOR VALUES IN ('${TYPE}')`}
+      AND t.parentrelid = (
+        SELECT c2.oid FROM pg_partition_tree('rows') t2 JOIN pg_class c2 ON c2.oid = t2.relid
+        WHERE pg_get_expr(c2.relpartbound, c2.oid) = ${`FOR VALUES IN ('${ns}')`})`;
+  if (row === undefined) throw new Error('type partition missing');
+  return { ns, ds, target: row.relname, live: 'deleted_at IS NULL' };
+}
+
+const reconcile = (ns: string, indexes: IndexDecl[], f: Record<string, FieldDef> = fields) =>
+  reconcileTypeIndexes(sql, { namespace: ns, type: TYPE, layout: LAYOUT, fields: f, indexes });
+
+async function indexState(name: string) {
+  const [row] = await sql<Array<{ valid: boolean; def: string }>>`
+    SELECT i.indisvalid AND i.indisready AS valid, pg_get_indexdef(i.indexrelid) AS def
+    FROM pg_index i WHERE i.indexrelid = to_regclass(${name})`;
+  return row;
+}
+
+describe.skipIf(!POSTGRES_URL)(`reconcileTypeIndexes (${LAYOUT})`, () => {
+  it('creates a declared composite, then leaves it unchanged', async () => {
+    const { ns } = await fixture();
+    const name = `rows_c_${hex()}`;
+    const decl: IndexDecl = { fields: ['cert', { field: 'observedAt', dir: 'desc' }], name };
+
+    const first = await reconcile(ns, [decl]);
+    expect(first.find((s) => s.name === name)).toMatchObject({
+      fields: ['cert', 'observedAt'],
+      unique: false,
+      state: 'valid',
+      outcome: 'created'
+    });
+    const state = await indexState(name);
+    expect(state?.valid).toBe(true);
+    expect(state?.def).toContain(`substrate_ts((body -> 'observedAt'::text)) DESC NULLS LAST`);
+
+    const second = await reconcile(ns, [decl]);
+    expect(second.find((s) => s.name === name)).toMatchObject({
+      state: 'valid',
+      outcome: 'unchanged'
+    });
+  });
+
+  it('adopts an identical index it did not build', async () => {
+    const { ns, target, live } = await fixture();
+    const name = `rows_a_${hex()}`;
+    await sql.unsafe(
+      `CREATE INDEX ${name} ON ${target} (((body ->> 'cert') COLLATE "C")) WHERE ${live}`
+    );
+    const s = (await reconcile(ns, [{ fields: ['cert'], name }])).find((x) => x.name === name);
+    expect(s).toMatchObject({ name, outcome: 'adopted', state: 'valid' });
+  });
+
+  it('swaps an index whose expression differs, keeping uniqueness enforced throughout', async () => {
+    const { ns, ds, target, live } = await fixture();
+    const name = `rows_x_${hex()}`;
+    await ds.write(TYPE, [
+      { id: 'a', kid: 'k1' },
+      { id: 'b', kid: 'k2' }
+    ]);
+    await sql.unsafe(`CREATE UNIQUE INDEX ${name} ON ${target} ((body ->> 'kid')) WHERE ${live}`);
+
+    // An open snapshot holds the concurrent build in its last wait, with both
+    // indexes in place.
+    const blocker = await sql.reserve();
+    await blocker`BEGIN ISOLATION LEVEL REPEATABLE READ`;
+    await blocker`SELECT count(*) FROM rows`;
+    let swapping: ReturnType<typeof reconcile> | undefined;
+    try {
+      swapping = reconcile(ns, [{ fields: ['kid'], unique: true, where: 'live', name }]);
+      swapping.catch(() => {});
+      const swapName = `${name}__swap`;
+      for (let i = 0; i < 200 && (await indexState(swapName)) === undefined; i++) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(await indexState(swapName)).toBeDefined();
+      expect((await indexState(name))?.valid).toBe(true);
+      await expect(ds.write(TYPE, [{ id: 'dup1', kid: 'k1' }])).rejects.toThrow(
+        /unique|duplicate/i
+      );
+    } finally {
+      await blocker`COMMIT`;
+      blocker.release();
+    }
+
+    const s = (await (swapping as ReturnType<typeof reconcile>)).find((x) => x.name === name);
+    expect(s).toMatchObject({ name, unique: true, outcome: 'swapped', state: 'valid' });
+    expect((await indexState(name))?.def).toContain(`COLLATE "C"`);
+    expect(await indexState(`${name}__swap`)).toBeUndefined();
+    await expect(ds.write(TYPE, [{ id: 'dup2', kid: 'k2' }])).rejects.toThrow(/unique|duplicate/i);
+  });
+
+  it('refuses an existing index of the same name on a different field', async () => {
+    const { ns, target, live } = await fixture();
+    const name = `rows_y_${hex()}`;
+    await sql.unsafe(`CREATE UNIQUE INDEX ${name} ON ${target} ((body ->> 'cert')) WHERE ${live}`);
+    const err = await reconcile(ns, [{ fields: ['kid'], unique: true, where: 'live', name }]).catch(
+      (e: unknown) => e
+    );
+    expect(err).toBeInstanceOf(IndexDefinitionConflictError);
+    expect(err).toMatchObject({ code: 'index_definition_conflict', name });
+    expect((err as IndexDefinitionConflictError).existing).toContain(`'cert'`);
+    expect((err as IndexDefinitionConflictError).declared).toContain(`'kid'`);
+  });
+
+  it('refuses a unique index over duplicate live values and builds nothing', async () => {
+    const { ns, ds } = await fixture();
+    const name = `rows_z_${hex()}`;
+    await ds.write(TYPE, [
+      { id: 'a', kid: 'same' },
+      { id: 'b', kid: 'same' },
+      { id: 'c', kid: 'other' }
+    ]);
+    const err = await reconcile(ns, [{ fields: ['kid'], unique: true, where: 'live', name }]).catch(
+      (e: unknown) => e
+    );
+    expect(err).toBeInstanceOf(UniqueIndexDuplicatesError);
+    expect(err).toMatchObject({
+      code: 'unique_index_duplicates',
+      namespace: ns,
+      type: TYPE,
+      fields: ['kid'],
+      count: 1
+    });
+    expect(await indexState(name)).toBeUndefined();
+  });
+
+  it('drops a leftover INVALID build and builds the index again', async () => {
+    const { ns, ds, target, live } = await fixture();
+    const name = `rows_w_${hex()}`;
+    await ds.write(TYPE, [
+      { id: 'a', kid: 'd' },
+      { id: 'b', kid: 'd' }
+    ]);
+    await expect(
+      sql.unsafe(
+        `CREATE UNIQUE INDEX CONCURRENTLY ${name}__swap ON ${target} (((body ->> 'kid') COLLATE "C")) WHERE ${live}`
+      )
+    ).rejects.toThrow();
+    expect((await indexState(`${name}__swap`))?.valid).toBe(false);
+    await ds.purge(TYPE, ['b']);
+
+    const s = (await reconcile(ns, [{ fields: ['kid'], unique: true, where: 'live', name }])).find(
+      (x) => x.name === name
+    );
+    expect(s).toMatchObject({ name, outcome: 'created', state: 'valid' });
+    expect(await indexState(`${name}__swap`)).toBeUndefined();
+  });
+
+  it.skipIf(LAYOUT !== 'legacy')('legacy: an implicit indexed field creates nothing', async () => {
+    const { ns } = await fixture();
+    expect(await reconcile(ns, [], kidIndexed)).toEqual([]);
+    const made = await sql`
+      SELECT 1 FROM pg_indexes
+      WHERE schemaname = current_schema() AND indexdef LIKE ${`%'${ns}'%`}`;
+    expect(made).toHaveLength(0);
+  });
+
+  it.skipIf(LAYOUT !== 'partitioned')(
+    'partitioned: implicit, list, json and engine base indexes land on the type partition',
+    async () => {
+      const { ns, target } = await fixture();
+      const states = await reconcile(ns, [], {
+        ...kidIndexed,
+        n: { kind: 'scalar', type: 'number', indexed: true },
+        tags: { kind: 'list', of: { kind: 'scalar', type: 'string' }, indexed: true },
+        values: { kind: 'scalar', type: 'json', indexed: true }
+      });
+      expect(states.every((s) => s.state === 'valid')).toBe(true);
+      const defs = (
+        await sql<Array<{ def: string }>>`
+          SELECT pg_get_indexdef(i.indexrelid) AS def FROM pg_index i
+          WHERE i.indrelid = to_regclass(${target})`
+      ).map((r) => r.def);
+      const expected = [
+        `USING btree (((body ->> 'kid'::text)) COLLATE "C") WHERE (deleted_at IS NULL)`,
+        `USING btree (substrate_num((body -> 'n'::text))) WHERE (deleted_at IS NULL)`,
+        `USING gin (((body -> 'tags'::text)) jsonb_path_ops) WHERE (deleted_at IS NULL)`,
+        `USING gin (((body -> 'values'::text)) jsonb_path_ops) WHERE (deleted_at IS NULL)`,
+        `USING btree (created_at DESC NULLS LAST) WHERE (deleted_at IS NULL)`,
+        `USING btree (updated_at DESC NULLS LAST) WHERE (deleted_at IS NULL)`,
+        `USING btree (deleted_at) WHERE (deleted_at IS NOT NULL)`
+      ];
+      for (const e of expected)
+        expect(
+          defs.some((d) => d.endsWith(e)),
+          e
+        ).toBe(true);
+    }
+  );
+});

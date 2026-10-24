@@ -44,8 +44,8 @@ describe('deriveListIndexMigration (pure)', () => {
   });
 });
 
-// Legacy only: Postgres cannot CREATE INDEX CONCURRENTLY on a partitioned
-// parent; per-partition derived indexes are not built yet.
+// Legacy only: on the partitioned layout list/json GIN indexes are built per
+// type partition by the index reconciler instead.
 describe.skipIf(!POSTGRES_URL || PARTITIONED)('runDerivedMigrations', () => {
   let sql: Sql;
 
@@ -86,5 +86,30 @@ describe.skipIf(!POSTGRES_URL || PARTITIONED)('runDerivedMigrations', () => {
 
     await sql`DROP INDEX IF EXISTS ${sql(indexName)}`;
     await sql`DELETE FROM migrations WHERE version = ${m.version}`;
+  });
+});
+
+describe.skipIf(!POSTGRES_URL || !PARTITIONED)('runDerivedMigrations (partitioned)', () => {
+  let sql: Sql;
+
+  beforeAll(async () => {
+    sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
+    await runMigrations(sql);
+  });
+
+  afterAll(async () => {
+    await sql.end();
+  });
+
+  // Postgres cannot CREATE INDEX CONCURRENTLY on a partitioned parent, so
+  // running the derived GIN there would fail every boot with an indexed list.
+  it('a fresh database with an indexed list field migrates cleanly and builds nothing on rows', async () => {
+    const m = deriveListIndexMigration({ namespace: 'kmeta', type: 'Metric', field: 'labels' });
+    await runDerivedMigrations(sql, [m]);
+    await runDerivedMigrations(sql, [m]);
+    const onRows = await sql`
+      SELECT 1 FROM pg_indexes
+      WHERE schemaname = current_schema() AND tablename = 'rows' AND indexdef ILIKE '%gin%'`;
+    expect(onRows).toHaveLength(0);
   });
 });

@@ -31,6 +31,7 @@ import { and } from '@mnmal-ai/substrate-policy';
 import type {
   EmbedSourceContext,
   FieldDef,
+  IndexDecl,
   NamespaceDefinition,
   NamespaceInstallContext,
   NamespaceTypeDef,
@@ -104,6 +105,12 @@ export interface TypeInput {
   lexical?: {
     source: (row: Row) => string | null | undefined | Promise<string | null | undefined>;
   };
+  /**
+   * Composite and unique indexes, built by the engine with the filter
+   * compiler's own expressions. Keys and predicate fields must be declared
+   * scalar (not json) or crossRef fields. See `IndexDecl`.
+   */
+  indexes?: IndexDecl[];
 }
 
 export interface DefineNamespaceOptions {
@@ -178,6 +185,10 @@ export function defineNamespace(
     assertServerSetFieldsFillable(typeName, typeInput.fields);
   }
 
+  for (const [typeName, typeInput] of Object.entries(types)) {
+    for (const decl of typeInput.indexes ?? []) assertIndexDecl(typeName, typeInput.fields, decl);
+  }
+
   if (opts.annotations !== undefined) assertJsonValue(opts.annotations, 'annotations');
   const globalPolicy = opts.policy;
   return {
@@ -224,6 +235,54 @@ export function defineNamespace(
       }
     }
   };
+}
+
+/** Lower-snake, within pg's 63-byte identifier limit. */
+const INDEX_NAME_PATTERN = /^[a-z_][a-z0-9_]{0,62}$/;
+
+/** Throws unless every key and predicate field is a btree-indexable declared field. */
+function assertIndexDecl(
+  typeName: string,
+  fields: Record<string, FieldDef>,
+  decl: IndexDecl
+): void {
+  const where = `index on ${typeName}`;
+  const assertField = (name: string): void => {
+    const def = fields[name];
+    if (def === undefined) throw new Error(`${where}: unknown field '${name}'`);
+    const ok = def.kind === 'crossRef' || (def.kind === 'scalar' && def.type !== 'json');
+    if (!ok) {
+      throw new Error(
+        `${where}: field '${name}' is ${def.kind}; only scalar and crossRef fields index`
+      );
+    }
+  };
+  if (!Array.isArray(decl.fields) || decl.fields.length === 0) {
+    throw new Error(`${where}: fields must be a non-empty array`);
+  }
+  for (const f of decl.fields) {
+    if (typeof f === 'string') {
+      assertField(f);
+      continue;
+    }
+    assertField(f.field);
+    if (f.dir !== 'asc' && f.dir !== 'desc') {
+      throw new Error(
+        `${where}: dir of '${f.field}' must be 'asc' or 'desc', got '${String(f.dir)}'`
+      );
+    }
+  }
+  if (decl.where !== undefined && decl.where !== 'live') {
+    for (const [name, value] of Object.entries(decl.where)) {
+      assertField(name);
+      if (value !== null && !['string', 'number', 'boolean'].includes(typeof value)) {
+        throw new Error(`${where}: where.${name} must be a string, number, boolean or null`);
+      }
+    }
+  }
+  if (decl.name !== undefined && !INDEX_NAME_PATTERN.test(decl.name)) {
+    throw new Error(`${where}: name '${decl.name}' must match ${INDEX_NAME_PATTERN.source}`);
+  }
 }
 
 function composePolicyLayers(

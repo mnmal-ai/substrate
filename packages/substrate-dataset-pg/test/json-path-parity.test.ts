@@ -156,13 +156,22 @@ describe.skipIf(!POSTGRES_URL)('json path parity', () => {
 
   // `field.json({ indexed: true })` derives the same per-field GIN a list
   // field gets (there is no whole-body GIN), so the containment must be
-  // written against `(body -> field)` to match it.
-  // Legacy only: Postgres cannot CREATE INDEX CONCURRENTLY on a partitioned
-  // parent; per-partition derived indexes are not built yet.
-  it.skipIf(PARTITIONED)('eq and has are served by the derived per-field GIN', async () => {
-    await runDerivedMigrations(sql, [
-      deriveListIndexMigration({ namespace: NS, type: 'J', field: 'values' })
-    ]);
+  // written against `(body -> field)` to match it. On the partitioned layout
+  // the reconciler builds it on the type's partition, under the same name.
+  it('eq and has are served by the derived per-field GIN', async () => {
+    if (PARTITIONED) {
+      await new PgDataset({
+        namespace: NS,
+        sql,
+        typeDefLookup: () => ({
+          fields: { values: { kind: 'scalar', type: 'json', indexed: true } }
+        })
+      }).ensureTypeStorage('J');
+    } else {
+      await runDerivedMigrations(sql, [
+        deriveListIndexMigration({ namespace: NS, type: 'J', field: 'values' })
+      ]);
+    }
     await pg.write(
       'J',
       Array.from({ length: 2000 }, (_, i) => ({

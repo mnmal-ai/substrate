@@ -41,6 +41,7 @@ import type {
   FieldDef,
   FilterCapabilities,
   Id,
+  IndexDecl,
   ReadParams,
   ReadResult,
   Row,
@@ -53,6 +54,7 @@ import type {
 import type { Sql } from 'postgres';
 import { withPgAdvisoryLock } from './advisory-lock.js';
 import { NamespaceMismatch, ReservedField } from './errors.js';
+import { reconcileTypeIndexes } from './index-reconciler.js';
 import { detectLayout, type StorageLayout } from './layout.js';
 import type { PgEdgesStore } from './pg-edges-store.js';
 import { PgShortIdStore } from './pg-short-id-store.js';
@@ -89,6 +91,11 @@ import { ensureTypeStorage, storageWarnings } from './type-storage.js';
  * `resolveBodyOrderByCast`.
  */
 export type FieldDefLookup = (type: string, field: string) => FieldDef | undefined;
+
+/** A type's declared fields and indexes, or undefined when the type is unknown. */
+export type TypeDefLookup = (
+  type: string
+) => { fields: Record<string, FieldDef>; indexes?: IndexDecl[] } | undefined;
 
 export interface PgDatasetOptions {
   namespace: string;
@@ -132,6 +139,11 @@ export interface PgDatasetOptions {
    *     to serve those must be built `COLLATE "C"` too.
    */
   promotedColumns?: PromotedBodyColumnMap;
+  /**
+   * The namespace's type definitions, which `ensureTypeStorage` builds the
+   * type's indexes from. Without it only the engine's own indexes are built.
+   */
+  typeDefLookup?: TypeDefLookup;
 }
 
 interface InternalPgSubstrateDatasetOptions {
@@ -149,6 +161,7 @@ interface InternalPgSubstrateDatasetOptions {
   promotedColumns?: PromotedBodyColumnMap;
   /** Shared with the instance this one was derived from. */
   layoutCache?: LayoutCache;
+  typeDefLookup?: TypeDefLookup;
 }
 
 /** The detected layout, shared by an instance and every clone of it. */
@@ -197,6 +210,7 @@ export class PgDataset implements Dataset {
   readonly #promotedColumns: PromotedBodyColumnMap;
   readonly #promotedFor: PromotedColumnLookup;
   readonly #layoutCache: LayoutCache;
+  readonly #typeDefLookup: TypeDefLookup | null;
 
   constructor(options: PgDatasetOptions | InternalPgSubstrateDatasetOptions) {
     this.namespace = options.namespace;
@@ -221,6 +235,7 @@ export class PgDataset implements Dataset {
     // Validates before any configured column name can reach `sql.unsafe`.
     this.#promotedFor = resolvePromotedColumns(this.#promotedColumns);
     this.#layoutCache = ('layoutCache' in options ? options.layoutCache : undefined) ?? {};
+    this.#typeDefLookup = options.typeDefLookup ?? null;
   }
 
   /**
@@ -832,7 +847,8 @@ export class PgDataset implements Dataset {
         txScopeId: this.txScopeId,
         ...(this.#fieldDefLookup !== null ? { fieldDefLookup: this.#fieldDefLookup } : {}),
         promotedColumns: this.#promotedColumns,
-        layoutCache: this.#layoutCache
+        layoutCache: this.#layoutCache,
+        ...(this.#typeDefLookup !== null ? { typeDefLookup: this.#typeDefLookup } : {})
       });
       return fn(txDataset);
       // postgres.js's begin<T> wraps the return in UnwrapPromiseArray; for
@@ -867,7 +883,8 @@ export class PgDataset implements Dataset {
             ...(this.#edgesStore !== null ? { edgesStore: this.#edgesStore } : {}),
             ...(this.#fieldDefLookup !== null ? { fieldDefLookup: this.#fieldDefLookup } : {}),
             promotedColumns: this.#promotedColumns,
-            layoutCache: this.#layoutCache
+            layoutCache: this.#layoutCache,
+            ...(this.#typeDefLookup !== null ? { typeDefLookup: this.#typeDefLookup } : {})
           })
         );
       }
@@ -924,7 +941,8 @@ export class PgDataset implements Dataset {
       ...(this.#edgesStore !== null ? { edgesStore: this.#edgesStore } : {}),
       ...(this.#fieldDefLookup !== null ? { fieldDefLookup: this.#fieldDefLookup } : {}),
       promotedColumns: this.#promotedColumns,
-      layoutCache: this.#layoutCache
+      layoutCache: this.#layoutCache,
+      ...(this.#typeDefLookup !== null ? { typeDefLookup: this.#typeDefLookup } : {})
     });
   }
 
@@ -937,16 +955,27 @@ export class PgDataset implements Dataset {
   }
 
   /**
-   * See `Dataset.ensureTypeStorage`. Creates this namespace's partition and
-   * the type's on the partitioned layout; a no-op on legacy. It runs its own
-   * transactions, so a tx-bound instance refuses it.
+   * See `Dataset.ensureTypeStorage`. On the partitioned layout, creates this
+   * namespace's partition and the type's, then reconciles the type's indexes
+   * on it; on legacy, reconciles only its declared `indexes`. Index builds
+   * run CONCURRENTLY, outside any transaction, so a tx-bound instance refuses.
    */
   async ensureTypeStorage(type: string): Promise<void> {
-    if ((await this.#layout()) !== 'partitioned') return;
+    const layout = await this.#layout();
+    if (layout === 'absent') return;
     if (this.#inTx) {
       throw new Error('PgDataset.ensureTypeStorage cannot be called on a tx-bound instance');
     }
-    await ensureTypeStorage(this.#sql as Sql, this.namespace, type);
+    const sql = this.#sql as Sql;
+    if (layout === 'partitioned') await ensureTypeStorage(sql, this.namespace, type);
+    const def = this.#typeDefLookup?.(type);
+    await reconcileTypeIndexes(sql, {
+      namespace: this.namespace,
+      type,
+      layout,
+      fields: def?.fields ?? {},
+      indexes: def?.indexes ?? []
+    });
   }
 
   /**

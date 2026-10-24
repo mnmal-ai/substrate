@@ -346,7 +346,8 @@ export interface Dataset {
    * already written for it there. Idempotent, and safe beside concurrent
    * reads and writes: no row is lost, duplicated or seen twice. That holds for
    * READ COMMITTED readers; a REPEATABLE READ snapshot taken before the move
-   * can miss the moved rows.
+   * can miss the moved rows. Also builds the type's indexes, including its
+   * declared `indexes`, and throws when one of them cannot be built.
    *
    * OPTIONAL. Backends without per-type storage omit it.
    */
