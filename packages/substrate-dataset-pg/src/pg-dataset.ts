@@ -93,9 +93,14 @@ import { ensureTypeStorage, storageWarnings } from './type-storage.js';
  */
 export type FieldDefLookup = (type: string, field: string) => FieldDef | undefined;
 
-/** A type's declared fields and indexes, or undefined when the type is unknown. */
+/**
+ * A type's declared fields and indexes, or undefined when the type is unknown.
+ * Called with the asking dataset's namespace, so a `forNamespace` clone that
+ * inherits the lookup resolves its own types.
+ */
 export type TypeDefLookup = (
-  type: string
+  type: string,
+  namespace: string
 ) => { fields: Record<string, FieldDef>; indexes?: IndexDecl[] } | undefined;
 
 export interface PgDatasetOptions {
@@ -977,7 +982,7 @@ export class PgDataset implements Dataset {
     }
     const sql = this.#sql as Sql;
     if (layout === 'partitioned') await ensureTypeStorage(sql, this.namespace, type);
-    const def = this.#typeDefLookup?.(type);
+    const def = this.#typeDefLookup?.(type, this.namespace);
     const states = await reconcileTypeIndexes(sql, {
       namespace: this.namespace,
       type,

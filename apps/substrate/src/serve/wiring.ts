@@ -13,6 +13,7 @@ import {
   SYSTEM_NAMESPACE
 } from '@mnmal-ai/substrate-compose';
 import {
+  type Engine,
   HttpBridgeClient,
   type MemoryBridgeCredentialStore,
   MemoryBridgeRegistry,
@@ -35,7 +36,8 @@ import type {
   EdgesStore,
   FilterOperatorDef,
   McpToolRegistration,
-  NamespaceDefinition
+  NamespaceDefinition,
+  Registry as RegistryInterface
 } from '@mnmal-ai/substrate-types';
 import type { Sql } from 'postgres';
 import { openSql } from '../pg-client.js';
@@ -196,14 +198,25 @@ export function makeFieldDefLookupFactory(nsDefs: {
 }
 
 /**
- * Build a per-namespace {@link TypeDefLookup} factory over the same late-bound
- * `nsDefs` registry as {@link makeFieldDefLookupFactory}: a type's fields and
- * declared indexes, which `PgDataset.ensureTypeStorage` builds indexes from.
+ * Build a {@link TypeDefLookup} factory over the same late-bound `nsDefs`
+ * registry as {@link makeFieldDefLookupFactory}: a type's fields and declared
+ * indexes, which `PgDataset.ensureTypeStorage` builds indexes from. A type no
+ * definition declares (proposed at runtime, or registered at install) falls
+ * back to its fields in the live registry, once `registryFor` resolves. The
+ * lookup answers for the namespace it is asked about, so clones made by
+ * `forNamespace` resolve their own types.
  */
-export function makeTypeDefLookupFactory(nsDefs: {
-  get(namespace: string): NamespaceDefinition | undefined;
-}): (namespace: string) => TypeDefLookup {
-  return (namespace) => (type) => nsDefs.get(namespace)?.types?.[type];
+export function makeTypeDefLookupFactory(
+  nsDefs: { get(namespace: string): NamespaceDefinition | undefined },
+  registryFor: (namespace: string) => RegistryInterface | undefined = () => undefined
+): (namespace: string) => TypeDefLookup {
+  const lookup: TypeDefLookup = (type, namespace) => {
+    const declared = nsDefs.get(namespace)?.types?.[type];
+    if (declared !== undefined) return declared;
+    const entry = registryFor(namespace)?.get(type);
+    return entry?.kind === 'type' ? { fields: entry.fields } : undefined;
+  };
+  return () => lookup;
 }
 
 /**
@@ -211,8 +224,9 @@ export function makeTypeDefLookupFactory(nsDefs: {
  * partition and its indexes, through `Dataset.ensureTypeStorage`. Runs before
  * any kernel migration, so a migration can rely on a declared index. Errors
  * propagate and fail the boot, among them `UniqueIndexDuplicatesError` and
- * `IndexDefinitionConflictError`, which name the index. Index builds run
- * CONCURRENTLY, so the process must hold no open transaction meanwhile.
+ * `IndexDefinitionConflictError`, which name the index, and a declared
+ * namespace with no dataset. Index builds run CONCURRENTLY, so the process
+ * must hold no open transaction meanwhile.
  */
 export async function reconcileDeclaredStorage(
   datasetFor: (ns: string) => Dataset | undefined,
@@ -220,7 +234,32 @@ export async function reconcileDeclaredStorage(
 ): Promise<void> {
   for (const [ns, def] of nsDefs) {
     const dataset = datasetFor(ns);
-    for (const type of Object.keys(def.types ?? {})) await dataset?.ensureTypeStorage?.(type);
+    if (dataset === undefined) {
+      throw new Error(
+        `namespace '${ns}' is declared but has no dataset; its storage cannot be prepared`
+      );
+    }
+    for (const type of Object.keys(def.types ?? {})) await dataset.ensureTypeStorage?.(type);
+  }
+}
+
+/**
+ * Prepares storage for every type registered in every local namespace once
+ * compose has run: `_system`, install-time types such as the proposals
+ * plugin's, and proposed types replayed at start. Namespaces without a local
+ * dataset (bridged, virtual) are skipped. Errors propagate and fail the boot.
+ */
+export async function reconcileRegisteredStorage(
+  engine: Pick<Engine, 'federatedSchema' | 'registryFor'>,
+  datasets: { has(ns: string): boolean; get(ns: string): Dataset | undefined }
+): Promise<void> {
+  for (const ns of Object.keys(engine.federatedSchema())) {
+    // `has`, not `get`: `get` would allocate a dataset for a virtual namespace.
+    if (!datasets.has(ns)) continue;
+    const dataset = datasets.get(ns);
+    for (const [type, entry] of engine.registryFor(ns)?.all() ?? []) {
+      if (entry.kind === 'type') await dataset?.ensureTypeStorage?.(type);
+    }
   }
 }
 
@@ -276,7 +315,8 @@ export function buildPluginDatasetMap(
   defaultDataset: Dataset,
   sharedSql: Sql | null,
   sharedEdges: PgEdgesStore | null,
-  fieldDefLookupFor: (namespace: string) => FieldDefLookup
+  fieldDefLookupFor: (namespace: string) => FieldDefLookup,
+  typeDefLookup?: TypeDefLookup
 ): Record<string, Dataset> {
   const datasets: Record<string, Dataset> = {};
   for (const plugin of plugins) {
@@ -293,7 +333,7 @@ export function buildPluginDatasetMap(
               namespace: ns,
               sql: sharedSql,
               fieldDefLookup: fieldDefLookupFor(ns),
-              typeDefLookup: (type) => nsDef.types?.[type],
+              typeDefLookup: typeDefLookup ?? ((type) => nsDef.types?.[type]),
               ...(nsDef.promotedColumns !== undefined
                 ? { promotedColumns: nsDef.promotedColumns }
                 : {}),

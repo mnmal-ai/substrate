@@ -10,7 +10,7 @@
 import { type ComposeOpts, SYSTEM_NAMESPACE } from '@mnmal-ai/substrate-compose';
 import type { MemoryBridgeRegistry } from '@mnmal-ai/substrate-core';
 import { MemoryIdempotencyStore } from '@mnmal-ai/substrate-core';
-import type { FieldDefLookup, PgEdgesStore } from '@mnmal-ai/substrate-dataset-pg';
+import type { FieldDefLookup, PgEdgesStore, TypeDefLookup } from '@mnmal-ai/substrate-dataset-pg';
 import { PgIdempotencyStore } from '@mnmal-ai/substrate-dataset-pg';
 import {
   loadConfig as loadSentinelClientConfig,
@@ -50,6 +50,7 @@ export async function buildComposeOpts(args: {
   storeSql: Sql | null;
   substrateNamespaceDataset: Dataset | null;
   fieldDefLookupFor: (namespace: string) => FieldDefLookup;
+  typeDefLookup: TypeDefLookup;
   kernel: KernelPlugin[];
 }): Promise<ComposedOpts> {
   const {
@@ -61,6 +62,7 @@ export async function buildComposeOpts(args: {
     storeSql,
     substrateNamespaceDataset,
     fieldDefLookupFor,
+    typeDefLookup,
     kernel
   } = args;
 
@@ -81,7 +83,8 @@ export async function buildComposeOpts(args: {
       dataset,
       storeSql,
       storeSql !== null ? (edges as PgEdgesStore) : null,
-      fieldDefLookupFor
+      fieldDefLookupFor,
+      typeDefLookup
     );
   }
   // When pg-backed, thread the `_system` namespace dataset into compose so

@@ -17,6 +17,7 @@ import {
   type StorageLayout,
   UniqueIndexDuplicatesError
 } from '../src/index.js';
+import { generatedIdentifier } from '../src/migrate.js';
 import { addTestPromotedColumns } from './_promoted.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
@@ -108,6 +109,44 @@ describe.skipIf(!POSTGRES_URL)(`reconcileTypeIndexes (${LAYOUT})`, () => {
     expect(second.find((s) => s.name === name)).toMatchObject({
       state: 'valid',
       outcome: 'unchanged'
+    });
+  });
+
+  describe('an unnamed declaration on an implicitly indexed field', () => {
+    const withArchived: Record<string, FieldDef> = {
+      ...kidIndexed,
+      archived: { kind: 'scalar', type: 'boolean' }
+    };
+    const kidStates = (states: Awaited<ReturnType<typeof reconcile>>) =>
+      states.filter((x) => x.fields.join() === 'kid');
+
+    it('with a predicate, is built beside the implicit index under a name of its own', async () => {
+      const { ns } = await fixture();
+      const decl: IndexDecl = { fields: ['kid'], where: { archived: false } };
+      const states = kidStates(await reconcile(ns, [decl], withArchived));
+      const implicit = generatedIdentifier(ns, TYPE, 'kid', 'idx');
+      expect(states).toHaveLength(LAYOUT === 'partitioned' ? 2 : 1);
+      for (const st of states) expect((await indexState(st.name))?.valid).toBe(true);
+      if (LAYOUT === 'partitioned') {
+        const own = states.find((x) => x.name !== implicit);
+        expect(own?.name).toMatch(/_kid_[0-9a-f]{6}_[0-9a-f]{8}_idx$/);
+        expect((await indexState(own?.name ?? ''))?.def).toContain('archived');
+      }
+    });
+
+    it('identical to the implicit one, is the same index', async () => {
+      const { ns } = await fixture();
+      const states = kidStates(await reconcile(ns, [{ fields: ['kid'] }], withArchived));
+      expect(states.map((x) => x.name)).toEqual([generatedIdentifier(ns, TYPE, 'kid', 'idx')]);
+    });
+
+    it('keeps its name across runs', async () => {
+      const { ns } = await fixture();
+      const decl: IndexDecl = { fields: ['kid'], where: { archived: false } };
+      const first = kidStates(await reconcile(ns, [decl], withArchived));
+      const second = kidStates(await reconcile(ns, [decl], withArchived));
+      expect(second.map((x) => x.name)).toEqual(first.map((x) => x.name));
+      expect(second.every((x) => x.outcome === 'unchanged')).toBe(true);
     });
   });
 

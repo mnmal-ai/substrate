@@ -100,19 +100,15 @@ export async function notifyAfterCommit(
   });
 }
 
-/**
- * Prepares `type`'s storage on the namespace's base `dataset` once the
- * caller's transaction has committed (at once when there is none), never
- * inside it: index builds run CONCURRENTLY and would wait forever on it. A
- * failure is logged and never undoes the committed proposal. The type's rows
- * stay readable meanwhile, and the next boot or proposal retries.
- */
-export async function ensureStorageAfterCommit(
-  afterTx: ResolverArgs['afterTx'],
-  dataset: Dataset,
-  type: string
-): Promise<void> {
-  const ensure = async (): Promise<void> => {
+const pendingStorage = new Set<Promise<void>>();
+
+/** Resolves once every storage preparation started so far has settled. */
+export async function storageSettled(): Promise<void> {
+  await Promise.all([...pendingStorage]);
+}
+
+function prepareStorage(dataset: Dataset, type: string): void {
+  const work = (async (): Promise<void> => {
     try {
       await dataset.ensureTypeStorage?.(type);
     } catch (err) {
@@ -121,9 +117,31 @@ export async function ensureStorageAfterCommit(
           `${err instanceof Error ? err.message : String(err)}\n`
       );
     }
-  };
-  if (afterTx === undefined) return ensure();
+  })();
+  pendingStorage.add(work);
+  void work.finally(() => pendingStorage.delete(work));
+}
+
+/**
+ * Starts preparing `type`'s storage on the namespace's base `dataset` once the
+ * caller's transaction has committed (at once when there is none), never
+ * inside it: index builds run CONCURRENTLY and would wait forever on it. It
+ * runs in the background, because the lock waits and index builds have no
+ * bound and must not hold the caller's response; rows written meanwhile land
+ * in the DEFAULT partition and are moved. A failure is logged and never
+ * undoes the committed proposal; the next boot or proposal retries.
+ * {@link storageSettled} awaits it.
+ */
+export function ensureStorageAfterCommit(
+  afterTx: ResolverArgs['afterTx'],
+  dataset: Dataset,
+  type: string
+): void {
+  if (afterTx === undefined) {
+    prepareStorage(dataset, type);
+    return;
+  }
   afterTx(async ({ committed }) => {
-    if (committed) await ensure();
+    if (committed) prepareStorage(dataset, type);
   });
 }

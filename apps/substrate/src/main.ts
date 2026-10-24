@@ -62,7 +62,7 @@
  * Env parsing is the pure `parseEnv(env)`; `runServe()` sequences the I/O.
  */
 
-import { compose, SYSTEM_NAMESPACE } from '@mnmal-ai/substrate-compose';
+import { compose, DEFAULT_NAMESPACE } from '@mnmal-ai/substrate-compose';
 import { validateHardDeleteEnv } from '@mnmal-ai/substrate-core';
 import { FastifySubstrateServer } from '@mnmal-ai/substrate-server-fastify';
 import type { NamespaceDefinition } from '@mnmal-ai/substrate-types';
@@ -91,6 +91,7 @@ import {
   extractIndexedListFields,
   makeFieldDefLookupFactory,
   makeTypeDefLookupFactory,
+  reconcileRegisteredStorage,
   redactStoreSpec,
   wireStore
 } from './serve/wiring.js';
@@ -132,17 +133,21 @@ export async function runServe(): Promise<void> {
   const nsDefs = new Map<string, NamespaceDefinition>();
   const fieldDefLookupFor = makeFieldDefLookupFactory(nsDefs);
 
+  const refs = createLateRefs(config.auth);
+  // Types no definition declares resolve from the engine's registry once it exists.
+  const typeDefLookupFor = makeTypeDefLookupFactory(nsDefs, (ns) =>
+    refs.engineRef.current?.registryFor(ns)
+  );
+
   const {
     dataset,
     edges,
     substrateNamespaceDataset,
     sql: storeSql,
     close: closeStore
-  } = await wireStore(config.storeSpec, fieldDefLookupFor, makeTypeDefLookupFactory(nsDefs));
+  } = await wireStore(config.storeSpec, fieldDefLookupFor, typeDefLookupFor);
 
   const pluginDir = resolvePluginDir();
-
-  const refs = createLateRefs(config.auth);
   const { datasetRegistryRef, resolveDataset, engineRef, checkReadPolicy, checkWritePolicy } = refs;
 
   const { recallStore, lexicalStore, clusterStore, rowsMissing } = buildRecallStores(
@@ -194,6 +199,7 @@ export async function runServe(): Promise<void> {
       storeSql,
       substrateNamespaceDataset,
       fieldDefLookupFor,
+      typeDefLookup: typeDefLookupFor(DEFAULT_NAMESPACE),
       kernel
     });
 
@@ -217,13 +223,12 @@ export async function runServe(): Promise<void> {
     stop
   } = await compose(composeOpts);
 
-  // `_system` types are registered by compose itself, so their storage follows it.
-  for (const [type, entry] of engine.registryFor(SYSTEM_NAMESPACE)?.all() ?? []) {
-    if (entry.kind === 'type') await substrateNamespaceDataset?.ensureTypeStorage?.(type);
-  }
-
   // Late-bound holders populate from the composed engine.
   populateLateRefs(refs, composedDatasets, engine, keyRegistry);
+
+  // Types compose registered (`_system`, install-time, replayed proposals),
+  // after the engine ref is set so their fields resolve from its registry.
+  await reconcileRegisteredStorage(engine, composedDatasets);
 
   const info = await server.start({ host: config.host, port: config.port });
   if (scheduler !== null) scheduler.start();

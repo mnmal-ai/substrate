@@ -72,7 +72,7 @@ export async function applyProposalFromNotification(
         dataset: binding.dataset,
         edges: binding.edges
       });
-      await ensureStorageAfterCommit(undefined, binding.dataset, row.typeName as string);
+      ensureStorageAfterCommit(undefined, binding.dataset, row.typeName as string);
     }
     return;
   }
@@ -93,7 +93,7 @@ export async function applyProposalFromNotification(
           dataset: binding.dataset,
           edges: binding.edges
         });
-        await ensureStorageAfterCommit(undefined, binding.dataset, row.targetType as string);
+        ensureStorageAfterCommit(undefined, binding.dataset, row.targetType as string);
       }
     }
   }
@@ -145,7 +145,7 @@ export async function reconcileNamespace(args: ReconcileArgs): Promise<void> {
       args.onSkip?.(row, err);
       continue;
     }
-    await ensureStorageAfterCommit(undefined, binding.dataset, row.typeName as string);
+    ensureStorageAfterCommit(undefined, binding.dataset, row.typeName as string);
   }
 
   const fieldRows = await binding.dataset.read('FieldProposal', {
@@ -178,7 +178,7 @@ export async function reconcileNamespace(args: ReconcileArgs): Promise<void> {
       args.onSkip?.(row, err);
       continue;
     }
-    await ensureStorageAfterCommit(undefined, binding.dataset, row.targetType as string);
+    ensureStorageAfterCommit(undefined, binding.dataset, row.targetType as string);
   }
 }
 

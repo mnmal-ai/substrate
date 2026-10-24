@@ -240,15 +240,22 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
     );
   }
   for (const decl of args.indexes) {
-    const keyNames = decl.fields.map((f) => (typeof f === 'string' ? f : f.field));
-    const name =
-      decl.name ??
-      generatedIdentifier(
-        namespace,
-        type,
-        keyNames.join('_'),
-        decl.unique === true ? 'uniq' : 'idx'
-      );
+    const keys = decl.fields.map((f) => (typeof f === 'string' ? f : f.field)).join('_');
+    const suffix = decl.unique === true ? 'uniq' : 'idx';
+    let name = decl.name ?? generatedIdentifier(namespace, type, keys, suffix);
+    if (decl.name === undefined) {
+      // An unnamed declaration that differs from the implicit index of the same
+      // generated name takes a hash of its own definition, so both are built.
+      const spec = btree(decl, name);
+      const implicit = specs.find((s) => s.name === name);
+      if (implicit !== undefined && createSql(implicit, 'rows') !== createSql(spec, 'rows')) {
+        const hash = createHash('sha256')
+          .update(`${spec.unique}|${spec.tail}`)
+          .digest('hex')
+          .slice(0, 6);
+        name = generatedIdentifier(namespace, type, `${keys}_${hash}`, suffix);
+      }
+    }
     if (!BARE_NAME.test(name) || name.length > MAX_IDENTIFIER) {
       throw new Error(`index name '${name}' must be a lower-snake identifier of at most 63 bytes`);
     }

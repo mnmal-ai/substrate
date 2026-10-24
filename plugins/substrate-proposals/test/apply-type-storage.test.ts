@@ -1,7 +1,8 @@
 /**
  * An applied type proposal gets storage of its own: `ensureTypeStorage` runs
  * on the namespace's base dataset once the proposal's transaction has
- * committed, never inside it, and a failure there never fails the proposal.
+ * committed, never inside it, in the background so the response does not
+ * wait on it, and a failure there never fails the proposal.
  *
  * The pg tests have short timeouts: index builds run CONCURRENTLY, which waits
  * forever on a transaction this process holds open.
@@ -27,7 +28,7 @@ import type {
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createNoopPubSub } from '../src/config.js';
-import { createProposalsPlugin } from '../src/index.js';
+import { createProposalsPlugin, storageSettled } from '../src/index.js';
 import { makeProposeTypeResolver } from '../src/propose-type-resolver.js';
 import { RegistryStore } from '../src/registry-store.js';
 
@@ -80,8 +81,10 @@ describe('propose_type prepares the type storage after commit', () => {
   class Recording extends MemoryDataset {
     calls: string[] = [];
     fail: Error | undefined;
+    hold: Promise<void> | undefined;
     async ensureTypeStorage(type: string): Promise<void> {
       this.calls.push(type);
+      await this.hold;
       if (this.fail !== undefined) throw this.fail;
     }
   }
@@ -92,7 +95,29 @@ describe('propose_type prepares the type storage after commit', () => {
     await proposeType(dataset)(CTX, args);
     expect(dataset.calls).toEqual([]);
     await settle(true);
+    await storageSettled();
     expect(dataset.calls).toEqual(['Dress']);
+  });
+
+  it('does not hold the response while storage is prepared', async () => {
+    const dataset = new Recording({ namespace: NS });
+    let release = (): void => {};
+    dataset.hold = new Promise((resolve) => {
+      release = resolve;
+    });
+    const { args, settle } = heldTx();
+    const row = await proposeType(dataset)(CTX, args);
+    await settle(true);
+    expect(row.applied).toBe(true);
+    expect(dataset.calls).toEqual(['Dress']);
+    let settled = false;
+    const done = storageSettled().then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    release();
+    await done;
   });
 
   it('does not run when the transaction rolls back', async () => {
@@ -107,6 +132,7 @@ describe('propose_type prepares the type storage after commit', () => {
     const dataset = new Recording({ namespace: NS });
     dataset.fail = new Error('locks stayed busy');
     const row = await proposeType(dataset)(CTX, { params: proposal() });
+    await storageSettled();
     expect(row.applied).toBe(true);
     expect(dataset.calls).toEqual(['Dress']);
   });
@@ -152,11 +178,12 @@ describe.skipIf(!POSTGRES_URL)('propose_type storage (pg)', () => {
     await proposeType(dataset)(CTX, args);
     await dataset.write(typeName, [{ id: 'd1', name: 'early' }]);
     await settle(true);
+    await storageSettled();
     expect(await liveCount()).toBe(1);
     expect(await partitionCount()).toBe(partitioned ? 1 : null);
   }, 20_000);
 
-  it('through the engine, the partition exists once the mutation returns', async () => {
+  it('through the engine, a row written as the mutation returns ends in the new partition', async () => {
     const edges = new PgEdgesStore({ sql });
     const datasets = new MemoryDatasetRegistry();
     for (const ns of [NS, '_system_proposals']) {
@@ -188,6 +215,7 @@ describe.skipIf(!POSTGRES_URL)('propose_type storage (pg)', () => {
     });
     expect(env.errors ?? []).toEqual([]);
     await datasets.get(NS)?.write(typeName, [{ id: 'd1', name: 'late' }]);
+    await storageSettled();
     expect(await liveCount()).toBe(1);
     expect(await partitionCount()).toBe(partitioned ? 1 : null);
   }, 20_000);
