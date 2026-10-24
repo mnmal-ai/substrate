@@ -53,6 +53,7 @@ import type {
 import type { Sql } from 'postgres';
 import { withPgAdvisoryLock } from './advisory-lock.js';
 import { NamespaceMismatch, ReservedField } from './errors.js';
+import { detectLayout, type StorageLayout } from './layout.js';
 import type { PgEdgesStore } from './pg-edges-store.js';
 import { PgShortIdStore } from './pg-short-id-store.js';
 import {
@@ -75,6 +76,7 @@ import {
   resolvePromotedColumns
 } from './pg-sql.js';
 import { type PgHandle, txScopeIdFor } from './tx-scope.js';
+import { ensureTypeStorage, storageWarnings } from './type-storage.js';
 
 // The pool-owned instance holds `Sql`; tx-scoped instances hold the
 // `TransactionSql` from `sql.begin(fn)`. Only `Sql` exposes `begin`, so that
@@ -145,6 +147,13 @@ interface InternalPgSubstrateDatasetOptions {
   fieldDefLookup?: FieldDefLookup;
   /** See `PgDatasetOptions.promotedColumns`. */
   promotedColumns?: PromotedBodyColumnMap;
+  /** Shared with the instance this one was derived from. */
+  layoutCache?: LayoutCache;
+}
+
+/** The detected layout, shared by an instance and every clone of it. */
+interface LayoutCache {
+  layout?: StorageLayout;
 }
 
 const RESERVED_DELETED_AT = '_deletedAt';
@@ -187,6 +196,7 @@ export class PgDataset implements Dataset {
    */
   readonly #promotedColumns: PromotedBodyColumnMap;
   readonly #promotedFor: PromotedColumnLookup;
+  readonly #layoutCache: LayoutCache;
 
   constructor(options: PgDatasetOptions | InternalPgSubstrateDatasetOptions) {
     this.namespace = options.namespace;
@@ -210,6 +220,7 @@ export class PgDataset implements Dataset {
     this.#promotedColumns = options.promotedColumns ?? {};
     // Validates before any configured column name can reach `sql.unsafe`.
     this.#promotedFor = resolvePromotedColumns(this.#promotedColumns);
+    this.#layoutCache = ('layoutCache' in options ? options.layoutCache : undefined) ?? {};
   }
 
   /**
@@ -820,7 +831,8 @@ export class PgDataset implements Dataset {
         inTx: true,
         txScopeId: this.txScopeId,
         ...(this.#fieldDefLookup !== null ? { fieldDefLookup: this.#fieldDefLookup } : {}),
-        promotedColumns: this.#promotedColumns
+        promotedColumns: this.#promotedColumns,
+        layoutCache: this.#layoutCache
       });
       return fn(txDataset);
       // postgres.js's begin<T> wraps the return in UnwrapPromiseArray; for
@@ -854,7 +866,8 @@ export class PgDataset implements Dataset {
             // calls (flattened) retain the same enlistment behaviour.
             ...(this.#edgesStore !== null ? { edgesStore: this.#edgesStore } : {}),
             ...(this.#fieldDefLookup !== null ? { fieldDefLookup: this.#fieldDefLookup } : {}),
-            promotedColumns: this.#promotedColumns
+            promotedColumns: this.#promotedColumns,
+            layoutCache: this.#layoutCache
           })
         );
       }
@@ -907,10 +920,39 @@ export class PgDataset implements Dataset {
     return new PgDataset({
       namespace,
       sql: this.#sql as Sql,
+      inTx: false,
       ...(this.#edgesStore !== null ? { edgesStore: this.#edgesStore } : {}),
       ...(this.#fieldDefLookup !== null ? { fieldDefLookup: this.#fieldDefLookup } : {}),
-      promotedColumns: this.#promotedColumns
+      promotedColumns: this.#promotedColumns,
+      layoutCache: this.#layoutCache
     });
+  }
+
+  /** The storage layout of `rows`, detected once; `'absent'` is not cached. */
+  async #layout(): Promise<StorageLayout | 'absent'> {
+    if (this.#layoutCache.layout !== undefined) return this.#layoutCache.layout;
+    const layout = await detectLayout(this.#sql as Sql);
+    if (layout !== 'absent') this.#layoutCache.layout = layout;
+    return layout;
+  }
+
+  /**
+   * See `Dataset.ensureTypeStorage`. Creates this namespace's partition and
+   * the type's on the partitioned layout; a no-op on legacy. It runs its own
+   * transactions, so a tx-bound instance refuses it.
+   */
+  async ensureTypeStorage(type: string): Promise<void> {
+    if ((await this.#layout()) !== 'partitioned') return;
+    if (this.#inTx) {
+      throw new Error('PgDataset.ensureTypeStorage cannot be called on a tx-bound instance');
+    }
+    await ensureTypeStorage(this.#sql as Sql, this.namespace, type);
+  }
+
+  /** Rows parked in DEFAULT partitions, one line per namespace/type. `[]` on legacy. */
+  async storageWarnings(): Promise<string[]> {
+    if ((await this.#layout()) !== 'partitioned') return [];
+    return storageWarnings(this.#sql as Sql);
   }
 
   private materialize(record: SubstrateRowRecord): Row {

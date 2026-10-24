@@ -31,6 +31,11 @@ export function partitionName(namespace: string, type?: string): string {
   const readable = `rows__${raw.join('__')}`;
   const folded = readable.toLowerCase().replace(/[^a-z0-9_]/g, '_');
   if (folded === readable && folded.length <= MAX_IDENTIFIER) return folded;
-  const hash = createHash('sha256').update(JSON.stringify(raw)).digest('hex').slice(0, 8);
-  return `${folded.slice(0, MAX_IDENTIFIER - hash.length - 1)}_${hash}`;
+  return hashedName(folded, raw);
+}
+
+/** `base` cut to fit 63 bytes with an 8-hex hash of `seed` appended. `base` must be ASCII. */
+export function hashedName(base: string, seed: unknown): string {
+  const hash = createHash('sha256').update(JSON.stringify(seed)).digest('hex').slice(0, 8);
+  return `${base.slice(0, MAX_IDENTIFIER - hash.length - 1)}_${hash}`;
 }

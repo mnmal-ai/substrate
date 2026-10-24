@@ -342,6 +342,14 @@ export interface Dataset {
    */
   withAdvisoryLock?<T>(key: string, fn: () => Promise<T>): Promise<T>;
   /**
+   * Prepare dedicated storage for `type` in this namespace, moving any rows
+   * already written for it there. Idempotent, and safe beside concurrent
+   * reads and writes: no row is lost, duplicated or seen twice.
+   *
+   * OPTIONAL. Backends without per-type storage omit it.
+   */
+  ensureTypeStorage?(type: string): Promise<void>;
+  /**
    * Execute `fn` atomically. All ops performed on the `tx` argument run inside
    * one substrate transaction. If `fn` throws or returns a rejected promise,
    * every mutation inside the callback rolls back. If `fn` resolves, the
