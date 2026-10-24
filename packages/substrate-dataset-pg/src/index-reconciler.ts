@@ -8,8 +8,8 @@
  * declared `indexes`, as partial indexes on `rows` scoped to the type.
  *
  * Each desired index is compared, by name, with what the catalog holds:
- * identical is kept; same table, uniqueness, key fields and predicate but a
- * different definition is swapped (built under a temporary name, the old one
+ * identical is kept; same table, uniqueness and key fields but a different
+ * expression or predicate is swapped (built under a temporary name, the old one
  * dropped only once the new one is valid and ready, then renamed, so a unique
  * index is enforced throughout); anything else is refused. Definitions are
  * compared as pg deparses them: the desired ones are deparsed by building them
@@ -24,7 +24,12 @@ import type { FieldDef, IndexDecl } from '@mnmal-ai/substrate-types';
 import type { Sql } from 'postgres';
 import { MAX_IDENTIFIER, type StorageLayout } from './layout.js';
 import { dropIndexIfInvalid, generatedIdentifier, withMigrationLock } from './migrate.js';
-import { indexExpressionSql, sqlStringLiteral } from './pg-sql/primitives.js';
+import {
+  indexExpressionSql,
+  type PromotedBodyColumnMap,
+  resolvePromotedColumns,
+  sqlStringLiteral
+} from './pg-sql/primitives.js';
 import { findPartition, ident } from './type-storage.js';
 
 export interface IndexState {
@@ -52,20 +57,18 @@ export class UniqueIndexDuplicatesError extends Error {
   }
 }
 
-/**
- * An index of the declared name exists with a definition the reconciler may
- * not replace. `name` is that index's name, as the error contract states.
- */
+/** An index of the declared name exists with a definition the reconciler may not replace. */
 export class IndexDefinitionConflictError extends Error {
   readonly code = 'index_definition_conflict';
   constructor(
-    override readonly name: string,
+    readonly indexName: string,
     readonly existing: string,
     readonly declared: string
   ) {
     super(
-      `index ${name} exists with a different definition.\n  existing: ${existing}\n  declared: ${declared}`
+      `index ${indexName} exists with a different definition.\n  existing: ${existing}\n  declared: ${declared}`
     );
+    this.name = 'IndexDefinitionConflictError';
   }
 }
 
@@ -75,6 +78,8 @@ export interface ReconcileTypeIndexesArgs {
   layout: StorageLayout;
   fields: Record<string, FieldDef>;
   indexes: IndexDecl[];
+  /** The namespace's promoted columns: a promoted field indexes on its column, as the compiler filters on it. */
+  promotedColumns?: PromotedBodyColumnMap;
 }
 
 interface Spec {
@@ -127,7 +132,14 @@ async function targetTable(sql: Sql, args: ReconcileTypeIndexesArgs): Promise<st
   return part;
 }
 
-function keyExpr(field: string, def: FieldDef | undefined): string {
+function keyExpr(
+  field: string,
+  def: FieldDef | undefined,
+  promoted: PromotedBodyColumnMap
+): string {
+  // A bare column name, validated by `resolvePromotedColumns` in `desiredSpecs`.
+  const column = Object.hasOwn(promoted, field) ? promoted[field]?.column : undefined;
+  if (column !== undefined) return column;
   if (def?.kind === 'crossRef') return indexExpressionSql('text', field);
   if (def?.kind === 'scalar' && def.type !== 'json') {
     return indexExpressionSql(
@@ -142,6 +154,8 @@ function keyExpr(field: string, def: FieldDef | undefined): string {
 
 function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
   const { namespace, type, layout, fields } = args;
+  const promoted = args.promotedColumns ?? {};
+  resolvePromotedColumns(promoted);
   const live =
     layout === 'legacy'
       ? `namespace = ${sqlStringLiteral(namespace)} AND type = ${sqlStringLiteral(type)} AND deleted_at IS NULL`
@@ -149,17 +163,22 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
   const specs: Spec[] = [];
   const btree = (decl: IndexDecl, name: string): Spec => {
     const cols = decl.fields.map((f) => (typeof f === 'string' ? { field: f, dir: 'asc' } : f));
-    const keys = cols.map((c) => keyExpr(c.field, fields[c.field]));
+    const keys = cols.map((c) => keyExpr(c.field, fields[c.field], promoted));
     let predicate = live;
     if (decl.where !== undefined && decl.where !== 'live') {
+      // Exactly the compiler's `eq` for a boolean or null operand, which it inlines.
       for (const [f, v] of Object.entries(decl.where)) {
-        const def = fields[f];
+        const column = Object.hasOwn(promoted, f) ? promoted[f]?.column : undefined;
+        if (v !== null && typeof v !== 'boolean') {
+          throw new Error(`index predicate on '${f}' must be a boolean or null`);
+        }
+        const lhs = column ?? indexExpressionSql('text', f);
         predicate +=
           v === null
-            ? ` AND ${keyExpr(f, def)} IS NULL`
-            : typeof v === 'number'
-              ? ` AND ${indexExpressionSql('number', f)} = ${v}`
-              : ` AND ${indexExpressionSql('text', f)} = ${sqlStringLiteral(String(v))}`;
+            ? ` AND ${lhs} IS NULL`
+            : column !== undefined
+              ? ` AND ${column} = ${v ? 'TRUE' : 'FALSE'}`
+              : ` AND ${lhs} = ${v ? "'true'" : "'false'"}`;
       }
     }
     const colSql = keys.map((k, i) => `(${k})${cols[i]?.dir === 'desc' ? ' DESC NULLS LAST' : ''}`);
@@ -186,7 +205,12 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
           predicate: live
         });
       } else {
-        specs.push(btree({ fields: [field] }, generatedIdentifier(namespace, type, field, 'idx')));
+        // Dates are read newest first, which a backward scan of an ASC index
+        // cannot serve: it would put NULLs first, and orderBy puts them last.
+        const dir = def.kind === 'scalar' && def.type === 'date' ? 'desc' : 'asc';
+        specs.push(
+          btree({ fields: [{ field, dir }] }, generatedIdentifier(namespace, type, field, 'idx'))
+        );
       }
     }
     const base = (column: string, tail: string): Spec => ({
@@ -357,82 +381,120 @@ async function reconcileOne(
   await dropIndexIfInvalid(conn, spec.name);
   await dropIndexIfInvalid(conn, swapName);
 
-  const existing = await describeIndex(conn, spec.name, 'current');
+  const named = await describeIndex(conn, spec.name, 'current');
+  const leftover = await describeIndex(conn, swapName, 'current');
   const identical = (d: Described | undefined): boolean =>
     d !== undefined && d.table === target && d.def === desired.def;
 
-  if (identical(existing)) {
-    if (existing?.marked === true) return report('valid', 'unchanged');
+  if (identical(named)) {
+    // `named` enforces what is declared, so a leftover is redundant.
+    if (leftover !== undefined) await dropConcurrently(conn, swapName);
+    if (named?.marked === true) return report('valid', 'unchanged');
     await mark(conn, spec.name);
     return report('valid', 'adopted');
   }
 
-  const swapping = existing !== undefined;
+  // A valid __swap with no index under the name is what an interrupted swap
+  // leaves, and it may be the only thing enforcing uniqueness, so it counts as
+  // the existing index and is dropped only once its replacement is valid.
+  const existing = named ?? leftover;
+  if (existing === undefined) {
+    const built = await build(conn, args, target, spec, spec.name);
+    if (built !== undefined) return report(built, 'unchanged');
+    await mark(conn, spec.name);
+    return report(await stateOf(conn, spec.name), 'created');
+  }
+
+  // Swappable when only the expression text or the predicate differs.
   if (
-    swapping &&
     !(
       existing.table === target &&
       existing.unique === desired.unique &&
-      existing.predicate === desired.predicate &&
       existing.keyFields.join('\n') === desired.keyFields.join('\n')
     )
   ) {
     throw new IndexDefinitionConflictError(
       spec.name,
-      existing.def.replace(/^(CREATE (?:UNIQUE )?INDEX) /, `$1 ${spec.name} ON ${existing.table} `),
+      existing.def.replace(
+        /^(CREATE (?:UNIQUE )?INDEX) /,
+        `$1 ${named === undefined ? swapName : spec.name} ON ${existing.table} `
+      ),
       createSql(spec, target)
     );
   }
 
-  // A valid build left under the temporary name by an interrupted swap is
-  // reused when it is what is declared, and dropped otherwise.
-  const leftover = await describeIndex(conn, swapName, 'current');
-  const reuse = identical(leftover);
-  if (leftover !== undefined && !reuse) {
-    await conn.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS ${swapName}`);
-  }
-
-  if (!reuse) {
-    const buildName = swapping ? swapName : spec.name;
-    if (spec.unique) await assertNoDuplicates(conn, args, target, spec);
-    // No lock_timeout: CONCURRENTLY takes SHARE UPDATE EXCLUSIVE, which a
-    // queued request holds against DDL and VACUUM only, never readers or
-    // writers, so waiting stalls nobody; a timeout would only leave an
-    // INVALID index behind. The same holds for DROP INDEX CONCURRENTLY and
-    // for ALTER INDEX RENAME and COMMENT ON INDEX, which take that lock on
-    // the index alone.
-    try {
-      await conn.unsafe(createSql(spec, target, buildName, true));
-    } catch (err) {
-      // A unique index that cannot be built fails the boot; any other index
-      // only costs a scan until the next reconcile retries it.
-      if (spec.unique) throw err;
-      process.stderr.write(
-        `index ${buildName} on ${target} failed to build and will be retried: ` +
-          `${err instanceof Error ? err.message : String(err)}\n`
-      );
-      return report('failed', swapping ? 'swapped' : 'created');
+  if (named === undefined) {
+    if (identical(leftover)) {
+      await conn.unsafe(`ALTER INDEX ${swapName} RENAME TO ${spec.name}`);
+    } else {
+      const built = await build(conn, args, target, spec, spec.name);
+      if (built !== undefined) return report(built, 'unchanged');
+      await dropConcurrently(conn, swapName);
     }
-  }
-
-  if (!swapping) {
-    if (reuse) await conn.unsafe(`ALTER INDEX ${swapName} RENAME TO ${spec.name}`);
     await mark(conn, spec.name);
-    return report(await stateOf(conn, spec.name), reuse ? 'swapped' : 'created');
+    return report(await stateOf(conn, spec.name), 'swapped');
   }
 
-  // The old index keeps enforcing until the new one is valid and ready.
-  for (let i = 0; ; i++) {
-    const built = await describeIndex(conn, swapName, 'current');
-    if (built?.valid === true && built.ready) break;
-    if (i >= 100)
-      throw new Error(`index ${swapName} did not become valid; ${spec.name} left in place`);
-    await new Promise((resolve) => setTimeout(resolve, 100));
+  if (identical(leftover)) {
+    // Built by an earlier run that stopped before the drop; it is used only
+    // once valid and ready.
+    let ready = leftover?.valid === true && leftover.ready;
+    for (let i = 0; !ready; i++) {
+      if (i >= 100) {
+        throw new Error(`index ${swapName} did not become valid; ${spec.name} left in place`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const again = await describeIndex(conn, swapName, 'current');
+      ready = again?.valid === true && again.ready;
+    }
+  } else {
+    // `named` keeps enforcing while the stale leftover goes.
+    if (leftover !== undefined) await dropConcurrently(conn, swapName);
+    const built = await build(conn, args, target, spec, swapName);
+    if (built !== undefined) return report(built, 'unchanged');
   }
-  await conn.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS ${spec.name}`);
+  // A successful CREATE INDEX CONCURRENTLY returns only once the index is
+  // valid and ready, so the old one can go.
+  await dropConcurrently(conn, spec.name);
   await conn.unsafe(`ALTER INDEX ${swapName} RENAME TO ${spec.name}`);
   await mark(conn, spec.name);
   return report(await stateOf(conn, spec.name), 'swapped');
+}
+
+/**
+ * Builds `spec` as `name` CONCURRENTLY, refusing a unique one over duplicate
+ * live values. Returns `'failed'` when a non-unique build fails, which costs
+ * only a scan until the next reconcile retries it; a unique one throws.
+ */
+async function build(
+  conn: Sql,
+  args: ReconcileTypeIndexesArgs,
+  target: string,
+  spec: Spec,
+  name: string
+): Promise<'failed' | undefined> {
+  if (spec.unique) await assertNoDuplicates(conn, args, target, spec);
+  // No lock_timeout: CONCURRENTLY takes SHARE UPDATE EXCLUSIVE, which a
+  // queued request holds against DDL and VACUUM only, never readers or
+  // writers, so waiting stalls nobody; a timeout would only leave an
+  // INVALID index behind. The same holds for DROP INDEX CONCURRENTLY and
+  // for ALTER INDEX RENAME and COMMENT ON INDEX, which take that lock on
+  // the index alone.
+  try {
+    await conn.unsafe(createSql(spec, target, name, true));
+    return undefined;
+  } catch (err) {
+    if (spec.unique) throw err;
+    process.stderr.write(
+      `index ${name} on ${target} failed to build and will be retried: ` +
+        `${err instanceof Error ? err.message : String(err)}\n`
+    );
+    return 'failed';
+  }
+}
+
+async function dropConcurrently(conn: Sql, name: string): Promise<void> {
+  await conn.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS ${name}`);
 }
 
 async function mark(conn: Sql, name: string): Promise<void> {

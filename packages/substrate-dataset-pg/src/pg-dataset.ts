@@ -58,6 +58,7 @@ import { reconcileTypeIndexes } from './index-reconciler.js';
 import { detectLayout, type StorageLayout } from './layout.js';
 import type { PgEdgesStore } from './pg-edges-store.js';
 import { PgShortIdStore } from './pg-short-id-store.js';
+import { sqlStringLiteral } from './pg-sql/primitives.js';
 import {
   asJsonValue,
   assembleRowMetadata,
@@ -245,6 +246,18 @@ export class PgDataset implements Dataset {
    * Body values extract as text and are cast for comparison only; the filter
    * validator has already rejected type mismatches.
    */
+  /**
+   * `namespace = '<ns>' [AND type = '<type>']` with both inlined as literals,
+   * so plans prune partitions at plan time and a generic plan can still match
+   * a legacy partial index's `namespace = … AND type = …` predicate.
+   */
+  #scope(type?: string, alias = ''): Fragment {
+    const ns = `${alias}namespace = ${sqlStringLiteral(this.namespace)}`;
+    return this.#sql.unsafe(
+      type === undefined ? ns : `${ns} AND ${alias}type = ${sqlStringLiteral(type)}`
+    );
+  }
+
   async read(type: string, params: ReadParams): Promise<ReadResult> {
     const sql = this.#sql;
     const includeDeleted = params.includeDeleted === true;
@@ -271,8 +284,7 @@ export class PgDataset implements Dataset {
     // Build WHERE fragment incrementally. Use table alias `r` to avoid
     // ambiguity with the LEFT-joined short_ids alias `s`.
     const clauses: Fragment[] = [];
-    clauses.push(sql`r.namespace = ${this.namespace}`);
-    clauses.push(sql`r.type = ${type}`);
+    clauses.push(this.#scope(type, 'r.'));
     if (hasIdFilter) clauses.push(sql`r.id = ANY(${idList})`);
     if (!includeDeleted) clauses.push(sql`r.deleted_at IS NULL`);
     // Maps a body field's declared kind to the cast applied to its extraction,
@@ -571,8 +583,7 @@ export class PgDataset implements Dataset {
     const rows = await this.#sql<{ id: string; body: Record<string, unknown> }[]>`
       UPDATE rows
       SET deleted_at = now()
-      WHERE namespace = ${this.namespace}
-        AND type = ${type}
+      WHERE ${this.#scope(type)}
         AND id = ANY(${textIds})
         AND deleted_at IS NULL
       RETURNING id, body
@@ -589,8 +600,7 @@ export class PgDataset implements Dataset {
 
     const rows = await this.#sql<{ id: string; body: Record<string, unknown> }[]>`
       DELETE FROM rows
-      WHERE namespace = ${this.namespace}
-        AND type = ${type}
+      WHERE ${this.#scope(type)}
         AND id = ANY(${textIds})
       RETURNING id, body
     `;
@@ -626,7 +636,7 @@ export class PgDataset implements Dataset {
   async dropType(type: string): Promise<DropResult> {
     const rows = await this.#sql<{ id: string }[]>`
       DELETE FROM rows
-      WHERE namespace = ${this.namespace} AND type = ${type}
+      WHERE ${this.#scope(type)}
       RETURNING id
     `;
     const rowsDeleted = rows.length;
@@ -641,7 +651,7 @@ export class PgDataset implements Dataset {
   async dropNamespace(): Promise<DropResult> {
     const rows = await this.#sql<{ id: string }[]>`
       DELETE FROM rows
-      WHERE namespace = ${this.namespace}
+      WHERE ${this.#scope()}
       RETURNING id
     `;
     const rowsDeleted = rows.length;
@@ -728,8 +738,7 @@ export class PgDataset implements Dataset {
       WITH updated AS (
         UPDATE rows
         SET ${interleaved}
-        WHERE namespace = ${this.namespace}
-          AND type = ${type}
+        WHERE ${this.#scope(type)}
           AND id = ${idToText(id)}
           AND ${deletedGuard}
           AND ${matchSql}
@@ -773,8 +782,7 @@ export class PgDataset implements Dataset {
             created_by_id   = ${meta?.createdBy?.id ?? null},
             updated_by_kind = ${meta?.updatedBy?.kind ?? null},
             updated_by_id   = ${meta?.updatedBy?.id ?? null}
-        WHERE namespace = ${this.namespace}
-          AND type = ${ref.type}
+        WHERE ${this.#scope(ref.type)}
           AND id = ${idToText(ref.id)}
       `;
       return; // skip body jsonb_set
@@ -816,8 +824,7 @@ export class PgDataset implements Dataset {
     await this.#sql`
       UPDATE rows
       SET ${interleaved}
-      WHERE namespace = ${this.namespace}
-        AND type = ${ref.type}
+      WHERE ${this.#scope(ref.type)}
         AND id = ${idToText(ref.id)}
     `;
   }
@@ -974,7 +981,8 @@ export class PgDataset implements Dataset {
       type,
       layout,
       fields: def?.fields ?? {},
-      indexes: def?.indexes ?? []
+      indexes: def?.indexes ?? [],
+      promotedColumns: this.#promotedColumns
     });
   }
 

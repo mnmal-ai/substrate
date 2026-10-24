@@ -46,6 +46,16 @@ describe('defineNamespace indexes', () => {
     expect(() => define([{ fields: ['cert'], where: { gone: true } }])).toThrow(/gone/);
   });
 
+  it('rejects a predicate value that is not a boolean or null, naming the field', () => {
+    expect(() =>
+      define([{ fields: ['cert'], where: { cert: 'x' } as unknown as Record<string, boolean> }])
+    ).toThrow(/where\.cert/);
+  });
+
+  it('rejects a name ending in the swap suffix', () => {
+    expect(() => define([{ fields: ['cert'], name: 'rows_x__swap' }])).toThrow(/__swap/);
+  });
+
   it('rejects a name that is not a short identifier', () => {
     expect(() => define([{ fields: ['cert'], name: 'Bad Name' }])).toThrow(/name/);
     expect(() => define([{ fields: ['cert'], name: 'x'.repeat(64) }])).toThrow(/name/);

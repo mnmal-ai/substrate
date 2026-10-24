@@ -275,10 +275,15 @@ function assertIndexDecl(
   if (decl.where !== undefined && decl.where !== 'live') {
     for (const [name, value] of Object.entries(decl.where)) {
       assertField(name);
-      if (value !== null && !['string', 'number', 'boolean'].includes(typeof value)) {
-        throw new Error(`${where}: where.${name} must be a string, number, boolean or null`);
+      if (value !== null && typeof value !== 'boolean') {
+        throw new Error(`${where}: where.${name} must be a boolean or null`);
       }
     }
+  }
+  if (decl.name?.endsWith('__swap') === true) {
+    throw new Error(
+      `${where}: name '${decl.name}' must not end in '__swap', the reconciler's temporary suffix`
+    );
   }
   if (decl.name !== undefined && !INDEX_NAME_PATTERN.test(decl.name)) {
     throw new Error(`${where}: name '${decl.name}' must match ${INDEX_NAME_PATTERN.source}`);

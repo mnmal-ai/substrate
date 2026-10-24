@@ -233,13 +233,16 @@ export interface EmbedSourceContext {
  *   sort NULLs last, as `orderBy` does.
  * - `unique`: refused at build time while duplicate live values exist.
  * - `where`: always ANDed with "not deleted". `'live'` adds nothing more; a
- *   record adds equality (or IS NULL for `null`) on the type's own fields.
- * - `name`: the pg index name to own or adopt; generated when omitted.
+ *   record adds equality to a boolean (or IS NULL for `null`) on the type's
+ *   own fields. Only those operands compile to literals, which a generic plan
+ *   needs to match the index predicate.
+ * - `name`: the pg index name to own or adopt; generated when omitted. It may
+ *   not end in `__swap`, the reconciler's temporary suffix.
  */
 export interface IndexDecl {
   fields: Array<string | { field: string; dir: 'asc' | 'desc' }>;
   unique?: boolean;
-  where?: 'live' | Record<string, string | number | boolean | null>;
+  where?: 'live' | Record<string, boolean | null>;
   name?: string;
 }
 

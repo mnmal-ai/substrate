@@ -50,7 +50,8 @@ export function buildPromotedBodyColumnPredicate(
       if (typeof value !== 'boolean') {
         throw new UnsupportedFilterError(field, 'eq', 'requires a boolean value');
       }
-      return sql`${col} = ${value}::boolean`;
+      // Inlined, so a generic plan can still match a partial index's predicate.
+      return sql`${col} = ${sql.unsafe(value ? 'TRUE' : 'FALSE')}`;
     }
     return sql`${col} = ${str('eq', value)}::text`;
   };
@@ -65,7 +66,7 @@ export function buildPromotedBodyColumnPredicate(
       if (typeof value !== 'boolean') {
         throw new UnsupportedFilterError(field, 'neq', 'requires a boolean value');
       }
-      return sql`${col} IS DISTINCT FROM ${value}::boolean`;
+      return sql`${col} IS DISTINCT FROM ${sql.unsafe(value ? 'TRUE' : 'FALSE')}`;
     }
     return sql`${col} IS DISTINCT FROM ${str('neq', value)}::text`;
   };

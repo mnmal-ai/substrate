@@ -410,7 +410,8 @@ function buildOpFragment(
       if (operand === null) return sql`${textExpr} IS NULL`;
       if (typeof operand === 'boolean') {
         // body ->> returns text; compare the text form so booleans work without a cast dance.
-        return sql`${textExpr} = ${operand ? 'true' : 'false'}`;
+        // Inlined, so a generic plan can still match a partial index's predicate.
+        return sql`${textExpr} = ${sql.unsafe(operand ? "'true'" : "'false'")}`;
       }
       if (typeof operand === 'number') return notNullAnd(sql, num, sql`${num} = ${operand}`);
       if (isTs(operand)) return notNullAnd(sql, ts, sql`${ts} = ${tsParam(sql, operand)}`);
@@ -419,7 +420,7 @@ function buildOpFragment(
     case 'neq': {
       if (operand === null) return sql`${textExpr} IS NOT NULL`;
       if (typeof operand === 'boolean') {
-        return sql`${textExpr} IS DISTINCT FROM ${operand ? 'true' : 'false'}`;
+        return sql`${textExpr} IS DISTINCT FROM ${sql.unsafe(operand ? "'true'" : "'false'")}`;
       }
       if (typeof operand === 'number') {
         return sql`NOT ${notNullAnd(sql, num, sql`${num} = ${operand}`)}`;

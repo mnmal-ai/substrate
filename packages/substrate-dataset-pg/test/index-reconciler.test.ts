@@ -159,6 +159,47 @@ describe.skipIf(!POSTGRES_URL)(`reconcileTypeIndexes (${LAYOUT})`, () => {
     await expect(ds.write(TYPE, [{ id: 'dup2', kid: 'k2' }])).rejects.toThrow(/unique|duplicate/i);
   });
 
+  it('swaps from a valid leftover __swap that no longer matches, never dropping it before its replacement is valid', async () => {
+    const { ns, ds, target, live } = await fixture();
+    const name = `rows_v_${hex()}`;
+    const swapName = `${name}__swap`;
+    await ds.write(TYPE, [
+      { id: 'a', kid: 'k1' },
+      { id: 'b', kid: 'k2' }
+    ]);
+    // An interrupted earlier swap: the old index is gone and the __swap, built
+    // to a since-changed declaration, is the only thing enforcing uniqueness.
+    await sql.unsafe(
+      `CREATE UNIQUE INDEX ${swapName} ON ${target} ((body ->> 'kid')) WHERE ${live}`
+    );
+
+    const blocker = await sql.reserve();
+    await blocker`BEGIN ISOLATION LEVEL REPEATABLE READ`;
+    await blocker`SELECT count(*) FROM rows`;
+    let swapping: ReturnType<typeof reconcile> | undefined;
+    try {
+      swapping = reconcile(ns, [{ fields: ['kid'], unique: true, where: 'live', name }]);
+      swapping.catch(() => {});
+      for (let i = 0; i < 200 && (await indexState(name)) === undefined; i++) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(await indexState(name)).toBeDefined();
+      expect((await indexState(swapName))?.valid).toBe(true);
+      await expect(ds.write(TYPE, [{ id: 'dup1', kid: 'k1' }])).rejects.toThrow(
+        /unique|duplicate/i
+      );
+    } finally {
+      await blocker`COMMIT`;
+      blocker.release();
+    }
+
+    const s = (await (swapping as ReturnType<typeof reconcile>)).find((x) => x.name === name);
+    expect(s).toMatchObject({ outcome: 'swapped', state: 'valid' });
+    expect((await indexState(name))?.def).toContain(`COLLATE "C"`);
+    expect(await indexState(swapName)).toBeUndefined();
+    await expect(ds.write(TYPE, [{ id: 'dup2', kid: 'k2' }])).rejects.toThrow(/unique|duplicate/i);
+  });
+
   it('refuses an existing index of the same name on a different field', async () => {
     const { ns, target, live } = await fixture();
     const name = `rows_y_${hex()}`;
@@ -167,7 +208,11 @@ describe.skipIf(!POSTGRES_URL)(`reconcileTypeIndexes (${LAYOUT})`, () => {
       (e: unknown) => e
     );
     expect(err).toBeInstanceOf(IndexDefinitionConflictError);
-    expect(err).toMatchObject({ code: 'index_definition_conflict', name });
+    expect(err).toMatchObject({
+      code: 'index_definition_conflict',
+      indexName: name,
+      name: 'IndexDefinitionConflictError'
+    });
     expect((err as IndexDefinitionConflictError).existing).toContain(`'cert'`);
     expect((err as IndexDefinitionConflictError).declared).toContain(`'kid'`);
   });
