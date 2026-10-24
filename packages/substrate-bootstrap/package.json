@@ -1,6 +1,6 @@
 {
   "name": "@mnmal-ai/substrate-bootstrap",
-  "version": "1.0.0-alpha.8",
+  "version": "1.0.0-alpha.9",
   "private": true,
   "description": "Bootstrap helpers for Substrate: idempotent first-run setup hooks for plugins.",
   "license": "Apache-2.0",

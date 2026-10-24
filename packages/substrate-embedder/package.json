@@ -1,6 +1,6 @@
 {
   "name": "@mnmal-ai/substrate-embedder",
-  "version": "1.0.0-alpha.8",
+  "version": "1.0.0-alpha.9",
   "private": true,
   "description": "Pluggable embedder interface for Substrate semantic recall (ollama, openai, etc.).",
   "license": "Apache-2.0",
