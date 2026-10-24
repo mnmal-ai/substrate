@@ -278,6 +278,12 @@ function assertIndexDecl(
       if (value !== null && typeof value !== 'boolean') {
         throw new Error(`${where}: where.${name} must be a boolean or null`);
       }
+      const def = fields[name];
+      if (value !== null && !(def?.kind === 'scalar' && def.type === 'boolean')) {
+        throw new Error(
+          `${where}: where.${name} compares a boolean, but '${name}' is not a boolean field`
+        );
+      }
     }
   }
   if (decl.name?.endsWith('__swap') === true) {

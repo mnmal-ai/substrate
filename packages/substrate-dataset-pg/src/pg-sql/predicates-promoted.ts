@@ -19,7 +19,7 @@ import {
  * predicate; throws `UnsupportedFilterError` on an unknown operator or a
  * wrong-typed operand.
  *
- * Per value V: `col = V::T`, or `col IS NULL` when V is null. `in` / `nin`
+ * Per value V: `col = V::T` (text under `COLLATE "C"`), or `col IS NULL` when V is null. `in` / `nin`
  * OR/AND the per-value predicates.
  */
 export function buildPromotedBodyColumnPredicate(
@@ -53,7 +53,8 @@ export function buildPromotedBodyColumnPredicate(
       // Inlined, so a generic plan can still match a partial index's predicate.
       return sql`${col} = ${sql.unsafe(value ? 'TRUE' : 'FALSE')}`;
     }
-    return sql`${col} = ${str('eq', value)}::text`;
+    // Byte order, as ranges and sorts compare, so one `(col COLLATE "C")` index serves all.
+    return sql`${col} COLLATE "C" = ${str('eq', value)}::text`;
   };
 
   /**
@@ -68,7 +69,7 @@ export function buildPromotedBodyColumnPredicate(
       }
       return sql`${col} IS DISTINCT FROM ${sql.unsafe(value ? 'TRUE' : 'FALSE')}`;
     }
-    return sql`${col} IS DISTINCT FROM ${str('neq', value)}::text`;
+    return sql`${col} COLLATE "C" IS DISTINCT FROM ${str('neq', value)}::text`;
   };
 
   /**

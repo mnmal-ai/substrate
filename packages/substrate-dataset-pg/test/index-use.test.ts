@@ -26,6 +26,9 @@ const ROWS = 5000;
 const hex = () => randomBytes(4).toString('hex');
 const COMPOSITE = `rows_iu_${hex()}`;
 const PARTIAL = `rows_iu_partial_${hex()}`;
+const PROMOTED_TEXT = `rows_iu_project_${hex()}`;
+/** `project` lives in a promoted text column. */
+const obsPromoted: PromotedBodyColumnMap = { project: { column: 'project', kind: 'text' } };
 
 const fields: Record<string, FieldDef> = {
   title: { kind: 'scalar', type: 'string', indexed: true },
@@ -36,11 +39,13 @@ const fields: Record<string, FieldDef> = {
   cert: { kind: 'scalar', type: 'string' },
   observedAt: { kind: 'scalar', type: 'date' },
   grp: { kind: 'scalar', type: 'string' },
-  archived: { kind: 'scalar', type: 'boolean' }
+  archived: { kind: 'scalar', type: 'boolean' },
+  project: { kind: 'scalar', type: 'string' }
 };
 const indexes: IndexDecl[] = [
   { fields: ['cert', { field: 'observedAt', dir: 'desc' }], name: COMPOSITE },
-  { fields: ['grp'], where: { archived: false }, name: PARTIAL }
+  { fields: ['grp'], where: { archived: false }, name: PARTIAL },
+  { fields: ['project'], name: PROMOTED_TEXT }
 ];
 
 const ns = `iu_${hex()}`;
@@ -64,9 +69,11 @@ beforeAll(async () => {
   ds = new PgDataset({
     namespace: ns,
     sql: traced,
+    promotedColumns: obsPromoted,
     fieldDefLookup: (type, field) => (type === TYPE ? fields[field] : undefined),
     typeDefLookup: (type) => (type === TYPE ? { fields, indexes } : undefined)
   });
+  await addTestPromotedColumns(sql);
   await ds.ensureTypeStorage(TYPE);
   for (let start = 0; start < ROWS; start += 1000) {
     await ds.write(
@@ -83,7 +90,8 @@ beforeAll(async () => {
           cert: `c${i % 50}`,
           observedAt: iso(i),
           grp: `p${i % 50}`,
-          archived: i % 2 === 0
+          archived: i % 2 === 0,
+          project: `j${String(i).padStart(5, '0')}`
         };
       })
     );
@@ -208,6 +216,14 @@ const declaredCases: Array<[string, ReadParams, () => string]> = [
     { where: { cert: { eq: 'c7' } }, orderBy: [{ observedAt: 'desc' }], limit: 10 },
     () => COMPOSITE
   ],
+  ['promoted text eq', { where: { project: { eq: 'j00042' } } }, () => PROMOTED_TEXT],
+  ['promoted text in', { where: { project: { in: ['j00001', 'j00002'] } } }, () => PROMOTED_TEXT],
+  [
+    'promoted text between',
+    { where: { project: { between: ['j00010', 'j00020'] } } },
+    () => PROMOTED_TEXT
+  ],
+  ['promoted text orderBy', { orderBy: [{ project: 'asc' }], limit: 10 }, () => PROMOTED_TEXT],
   [
     'partial (archived: false) eq',
     { where: { grp: { eq: 'p7' }, archived: { eq: false } } },
@@ -230,7 +246,6 @@ describe.skipIf(!POSTGRES_URL)(`index use: declared indexes (${LAYOUT})`, () => 
   // the fleet already holds a hand-built index of the declared name whose
   // predicate is `archived IS NOT TRUE`.
   it('swaps a legacy-style index over promoted columns, and the swap serves reads', async () => {
-    await addTestPromotedColumns(sql);
     const type = 'AgentMessage';
     const msgNs = `iu_msg_${hex()}`;
     const name = `rows_agent_message_recipient_idx_${hex()}`;

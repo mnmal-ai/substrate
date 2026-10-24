@@ -52,6 +52,13 @@ describe('defineNamespace indexes', () => {
     ).toThrow(/where\.cert/);
   });
 
+  it('rejects a boolean predicate on a non-boolean field, and accepts null on any field', () => {
+    expect(() => define([{ fields: ['observedAt'], where: { cert: false } }])).toThrow(
+      /where\.cert/
+    );
+    expect(() => define([{ fields: ['observedAt'], where: { cert: null } }])).not.toThrow();
+  });
+
   it('rejects a name ending in the swap suffix', () => {
     expect(() => define([{ fields: ['cert'], name: 'rows_x__swap' }])).toThrow(/__swap/);
   });

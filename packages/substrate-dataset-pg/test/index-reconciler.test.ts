@@ -17,6 +17,7 @@ import {
   type StorageLayout,
   UniqueIndexDuplicatesError
 } from '../src/index.js';
+import { addTestPromotedColumns } from './_promoted.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const LAYOUT = (process.env.SUBSTRATE_STORAGE_LAYOUT ?? 'legacy') as StorageLayout;
@@ -198,6 +199,49 @@ describe.skipIf(!POSTGRES_URL)(`reconcileTypeIndexes (${LAYOUT})`, () => {
     expect((await indexState(name))?.def).toContain(`COLLATE "C"`);
     expect(await indexState(swapName)).toBeUndefined();
     await expect(ds.write(TYPE, [{ id: 'dup2', kid: 'k2' }])).rejects.toThrow(/unique|duplicate/i);
+  });
+
+  it('swaps a body-keyed index onto the column once its field is promoted', async () => {
+    await addTestPromotedColumns(sql);
+    const { ns, target, live } = await fixture();
+    const name = `rows_p_${hex()}`;
+    await sql.unsafe(`CREATE INDEX ${name} ON ${target} ((body ->> 'status')) WHERE ${live}`);
+    const states = await reconcileTypeIndexes(sql, {
+      namespace: ns,
+      type: TYPE,
+      layout: LAYOUT,
+      fields: { ...fields, status: { kind: 'scalar', type: 'string' } },
+      indexes: [{ fields: ['status'], name }],
+      promotedColumns: { status: { column: 'status', kind: 'text' } }
+    });
+    expect(states.find((x) => x.name === name)).toMatchObject({
+      outcome: 'swapped',
+      state: 'valid'
+    });
+    expect((await indexState(name))?.def).toMatch(/\(status COLLATE "C"\)/);
+  });
+
+  it('refuses a boolean predicate on a field that is not boolean, naming it', async () => {
+    const { ns } = await fixture();
+    await expect(
+      reconcile(ns, [{ fields: ['cert'], where: { kid: false }, name: `rows_b_${hex()}` }])
+    ).rejects.toThrow(/'kid'.*boolean/);
+  });
+
+  it('reports a non-unique build that fails as failed, unchanged, without throwing', async () => {
+    const { ns } = await fixture();
+    const name = `rows_f_${hex()}`;
+    // A non-index relation holding the name makes the CREATE INDEX fail.
+    await sql.unsafe(`CREATE SEQUENCE ${name}`);
+    try {
+      const states = await reconcile(ns, [{ fields: ['cert'], name }]);
+      expect(states.find((x) => x.name === name)).toMatchObject({
+        state: 'failed',
+        outcome: 'unchanged'
+      });
+    } finally {
+      await sql.unsafe(`DROP SEQUENCE ${name}`);
+    }
   });
 
   it('refuses an existing index of the same name on a different field', async () => {

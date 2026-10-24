@@ -136,8 +136,9 @@ export interface PgDatasetOptions {
    *   - `column` is a BARE name (`'severity'`, not `'r.severity'`) and is
    *     validated as an identifier at construction, because it is interpolated
    *     into SQL as an identifier.
-   *   - Text columns sort and range-compare `COLLATE "C"`, so an index meant
-   *     to serve those must be built `COLLATE "C"` too.
+   *   - Text columns compare `COLLATE "C"` in every operator, eq included,
+   *     so an index meant to serve them must key `(column COLLATE "C")`, as
+   *     declared `indexes` do.
    */
   promotedColumns?: PromotedBodyColumnMap;
   /**

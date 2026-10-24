@@ -138,8 +138,9 @@ function keyExpr(
   promoted: PromotedBodyColumnMap
 ): string {
   // A bare column name, validated by `resolvePromotedColumns` in `desiredSpecs`.
-  const column = Object.hasOwn(promoted, field) ? promoted[field]?.column : undefined;
-  if (column !== undefined) return column;
+  // Text keys under "C", as the compiler compares promoted text in every operator.
+  const meta = Object.hasOwn(promoted, field) ? promoted[field] : undefined;
+  if (meta !== undefined) return meta.kind === 'text' ? `${meta.column} COLLATE "C"` : meta.column;
   if (def?.kind === 'crossRef') return indexExpressionSql('text', field);
   if (def?.kind === 'scalar' && def.type !== 'json') {
     return indexExpressionSql(
@@ -168,9 +169,20 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
     if (decl.where !== undefined && decl.where !== 'live') {
       // Exactly the compiler's `eq` for a boolean or null operand, which it inlines.
       for (const [f, v] of Object.entries(decl.where)) {
-        const column = Object.hasOwn(promoted, f) ? promoted[f]?.column : undefined;
+        const meta = Object.hasOwn(promoted, f) ? promoted[f] : undefined;
+        const column = meta?.column;
         if (v !== null && typeof v !== 'boolean') {
           throw new Error(`index predicate on '${f}' must be a boolean or null`);
+        }
+        const def = fields[f];
+        const isBoolean =
+          meta !== undefined
+            ? meta.kind === 'boolean'
+            : def?.kind === 'scalar' && def.type === 'boolean';
+        if (v !== null && !isBoolean) {
+          throw new Error(
+            `index predicate '${f}: ${v}' compares a boolean, but '${f}' is not a boolean field`
+          );
         }
         const lhs = column ?? indexExpressionSql('text', f);
         predicate +=
@@ -274,7 +286,7 @@ interface Described {
   valid: boolean;
   ready: boolean;
   predicate: string | null;
-  /** Per key column, the body fields it reads (or its text when it reads none). */
+  /** Per key column, the body field names it reads (or its text, e.g. a column name, when it reads none). */
   keyFields: string[];
   marked: boolean;
 }
@@ -299,7 +311,9 @@ function described(row: CatalogRow): Described {
     ready: row.ready,
     predicate: row.predicate,
     keyFields: row.cols.map((c) => {
-      const lits = [...c.matchAll(/->>? ('(?:[^']|'')*')::text/g)].map((m) => m[1]);
+      const lits = [...c.matchAll(/->>? '((?:[^']|'')*)'::text/g)].map((m) =>
+        (m[1] as string).replace(/''/g, "'")
+      );
       return lits.length > 0 ? lits.join(' ') : c;
     }),
     marked: row.comment === MARK
@@ -405,12 +419,19 @@ async function reconcileOne(
     return report(await stateOf(conn, spec.name), 'created');
   }
 
+  // Key columns are identified by field name, so a body-keyed index on a
+  // field promoted since swaps onto the column rather than conflicting.
+  const fieldOf = new Map(
+    Object.entries(args.promotedColumns ?? {}).map(([field, meta]) => [meta.column, field])
+  );
+  const keyIdentity = (d: Described): string =>
+    d.keyFields.map((k) => fieldOf.get(k) ?? k).join('\n');
   // Swappable when only the expression text or the predicate differs.
   if (
     !(
       existing.table === target &&
       existing.unique === desired.unique &&
-      existing.keyFields.join('\n') === desired.keyFields.join('\n')
+      keyIdentity(existing) === keyIdentity(desired)
     )
   ) {
     throw new IndexDefinitionConflictError(
