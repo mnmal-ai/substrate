@@ -9,6 +9,10 @@ import type { FieldDef, Id, OrderByClause } from '@mnmal-ai/substrate-types';
 import type { Sql, TransactionSql } from 'postgres';
 import {
   type BodyOrderByCast,
+  bodyNum,
+  bodyRawText,
+  bodyText,
+  bodyTs,
   combineAnd,
   combineOr,
   type Fragment,
@@ -211,18 +215,26 @@ function orderByFragment(
 }
 
 /**
- * The body-field extraction expression for a sort, with the cast applied when
- * one is given. `sql.unsafe` emits only the closed `BodyOrderByCast` suffix;
- * `field` is parameterised.
+ * The body-field expression for a sort: the filter compiler's expression for
+ * the declared kind, so an expression index serves both. A wrong-shaped number
+ * or date reads as NULL and sorts last.
  */
 function bodyOrderByExpr(
   sql: Sql | TransactionSql,
   field: string,
   cast: BodyOrderByCast | null
 ): Fragment {
-  // Byte order, matching memory's sort and the body filters' string compares.
-  if (cast === null) return sql`(body ->> ${field}) COLLATE "C"`;
-  return sql`(body ->> ${field})${sql.unsafe(`::${cast}`)}`;
+  switch (cast) {
+    case null:
+      // Byte order, matching memory's sort and the body filters' string compares.
+      return bodyText(sql, [field]);
+    case 'numeric':
+      return bodyNum(sql, [field]);
+    case 'timestamptz':
+      return bodyTs(sql, [field]);
+    case 'boolean':
+      return sql`${bodyRawText(sql, [field])}::boolean`;
+  }
 }
 
 /**

@@ -6,7 +6,8 @@
  * SQL-injection contract: every caller-supplied
  * value flows through postgres.js's parameterised tagged-template slots.
  * `sql.unsafe(...)` is used ONLY for identifiers/cast suffixes drawn from
- * closed constant maps in this file, never for caller input.
+ * closed constant maps in this file, and for field names inlined as escaped
+ * literals by `sqlStringLiteral`.
  */
 
 import type { Id } from '@mnmal-ai/substrate-types';
@@ -125,6 +126,77 @@ export function tsParam(sql: Sql | TransactionSql, v: unknown): Fragment {
 /** {@link tsParam} for an array operand (`= ANY(...)`). */
 export function tsArrayParam(sql: Sql | TransactionSql, vs: unknown[]): Fragment {
   return sql`${vs.map(isoOf)}::text[]::timestamptz[]`;
+}
+
+/**
+ * A value embedded in a single-quoted SQL string literal, escaped (`'` → `''`).
+ * pg string literals cannot carry NUL, so a name holding one is refused.
+ */
+export function sqlStringLiteral(s: string): string {
+  if (s.includes('\0')) {
+    throw new UnsupportedFilterError(s, '<name>', 'refused: the field name contains NUL');
+  }
+  return s.replace(/'/g, "''");
+}
+
+/** `'name'`: the SQL text of a quoted literal. */
+const lit = (s: string): string => `'${sqlStringLiteral(s)}'`;
+
+/**
+ * Body-field expressions as SQL TEXT, with every name inlined as a literal.
+ * The compiler and the index DDL both build from these, because an
+ * expression index serves only a filter whose expression matches it.
+ */
+const jsonSql = (path: readonly string[]): string =>
+  `body${path.map((p) => ` -> ${lit(p)}`).join('')}`;
+const rawTextSql = (path: readonly string[]): string =>
+  `(${jsonSql(path.slice(0, -1))} ->> ${lit(path[path.length - 1] as string)})`;
+const textSql = (path: readonly string[]): string => `(${rawTextSql(path)} COLLATE "C")`;
+const numSql = (path: readonly string[]): string => `substrate_num(${jsonSql(path)})`;
+const tsSql = (path: readonly string[]): string => `substrate_ts(${jsonSql(path)})`;
+
+/** A field name as an inlined SQL literal: `'o''neil'`. */
+export function fieldLit(sql: Sql | TransactionSql, name: string): Fragment {
+  return sql.unsafe(lit(name));
+}
+
+/** `((body -> 'a' ->> 'b') COLLATE "C")`: the one text expression for compares and sorts. */
+export function bodyText(sql: Sql | TransactionSql, path: readonly string[]): Fragment {
+  return sql.unsafe(textSql(path));
+}
+
+/** `(body -> 'a' ->> 'b')` uncollated, for ILIKE, which a "C" collation would not case-fold. */
+export function bodyRawText(sql: Sql | TransactionSql, path: readonly string[]): Fragment {
+  return sql.unsafe(rawTextSql(path));
+}
+
+/** `(body -> 'a' -> 'b')`: the leaf stays jsonb. */
+export function bodyJson(sql: Sql | TransactionSql, path: readonly string[]): Fragment {
+  return sql.unsafe(`(${jsonSql(path)})`);
+}
+
+/** `substrate_num(body -> …)`: the number, or NULL for any other jsonb. */
+export function bodyNum(sql: Sql | TransactionSql, path: readonly string[]): Fragment {
+  return sql.unsafe(numSql(path));
+}
+
+/** `substrate_ts(body -> …)`: the instant, or NULL for anything but an ISO string with an offset. */
+export function bodyTs(sql: Sql | TransactionSql, path: readonly string[]): Fragment {
+  return sql.unsafe(tsSql(path));
+}
+
+/** The DDL text of the expression the compiler emits for a top-level field. */
+export function indexExpressionSql(kind: 'text' | 'number' | 'date', field: string): string {
+  return kind === 'text' ? textSql([field]) : kind === 'number' ? numSql([field]) : tsSql([field]);
+}
+
+/**
+ * `cond` where `expr` is not NULL, else FALSE, never NULL, so a caller's NOT
+ * stays sound. The bare `cond` conjunct keeps it index-servable, where a
+ * COALESCE would hide it from the planner.
+ */
+export function notNullAnd(sql: Sql | TransactionSql, expr: Fragment, cond: Fragment): Fragment {
+  return sql`(${expr} IS NOT NULL AND ${cond})`;
 }
 
 export type SqlJsonValue = Parameters<Sql['json']>[0];

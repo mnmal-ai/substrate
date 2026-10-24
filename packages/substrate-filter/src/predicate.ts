@@ -275,30 +275,18 @@ function applyOp(
     case 'neq':
       return !equals(value, operand, asDate);
     case 'gt':
-      // null value cannot satisfy an ordered comparison — null sorts last in
-      // orderBy (matches pg NULLS LAST) but is excluded from range filters.
-      if (value == null) return false;
-      return compareFilterValues(value, operand, asDate) > 0;
+      return rangeCmp(value, operand, asDate) > 0;
     case 'gte':
-      if (value == null) return false;
-      return compareFilterValues(value, operand, asDate) >= 0;
+      return rangeCmp(value, operand, asDate) >= 0;
     case 'lt':
-      if (value == null) return false;
-      return compareFilterValues(value, operand, asDate) < 0;
+      return rangeCmp(value, operand, asDate) < 0;
     case 'lte':
-      if (value == null) return false;
-      return compareFilterValues(value, operand, asDate) <= 0;
+      return rangeCmp(value, operand, asDate) <= 0;
     case 'between': {
       if (!Array.isArray(operand) || operand.length !== 2) {
         throw new UnsupportedFilterError(field, op, 'requires a two-element [low, high] array');
       }
-      // A null row value cannot satisfy an ordered comparison — a data fact,
-      // not a caller error, so it stays a plain non-match.
-      if (value == null) return false;
-      return (
-        compareFilterValues(value, operand[0], asDate) >= 0 &&
-        compareFilterValues(value, operand[1], asDate) <= 0
-      );
+      return rangeCmp(value, operand[0], asDate) >= 0 && rangeCmp(value, operand[1], asDate) <= 0;
     }
     case 'in':
     case 'nin': {
@@ -344,11 +332,30 @@ function equals(a: unknown, b: unknown, asDate = false): boolean {
   // rows whose field is absent (value === undefined), diverging from pg.
   if (a == null && b == null) return true;
   if (asDate || a instanceof Date || b instanceof Date) {
+    // Either side not an instant reads as NULL in pg's substrate_ts: no match.
     const at = toMicros(a);
     const bt = toMicros(b);
-    if (at !== undefined && bt !== undefined) return at === bt;
+    return at !== undefined && bt !== undefined && at === bt;
   }
   return a === b;
+}
+
+/**
+ * {@link compareFilterValues} for a range operator, or NaN, which fails every
+ * ordered test, where pg's compare is NULL: a null value, a non-number value
+ * against a number operand (substrate_num), or either side not an instant in
+ * date mode (substrate_ts).
+ */
+function rangeCmp(value: unknown, operand: unknown, asDate: boolean): number {
+  if (value == null) return Number.NaN;
+  if (typeof operand === 'number' && typeof value !== 'number') return Number.NaN;
+  if (
+    (asDate || value instanceof Date || operand instanceof Date) &&
+    (toMicros(value) === undefined || toMicros(operand) === undefined)
+  ) {
+    return Number.NaN;
+  }
+  return compareFilterValues(value, operand, asDate);
 }
 
 /**
@@ -372,16 +379,28 @@ export function compareFilterValues(a: unknown, b: unknown, asDate = false): num
 }
 
 /**
+ * The string shape pg's `substrate_ts` accepts: ISO date and time with an
+ * explicit offset or `Z`, so the instant never depends on a time zone.
+ */
+const TS_SHAPE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?(Z|[+-]\d{2}(:?\d{2})?)$/;
+
+/**
  * Microseconds since the epoch, pg's timestamptz precision. `Date.parse` keeps
  * only milliseconds, so the 4th–6th fraction digits are added back. A number
- * is read as epoch milliseconds; anything unparseable is `undefined`.
+ * is read as epoch milliseconds; a string outside {@link TS_SHAPE}, or one
+ * that does not parse, is `undefined`.
  */
 function toMicros(v: unknown): number | undefined {
   if (v instanceof Date) return v.getTime() * 1000;
   if (typeof v === 'number') return Number.isFinite(v) ? v * 1000 : undefined;
-  if (typeof v !== 'string') return undefined;
-  const ms = Date.parse(v);
+  if (typeof v !== 'string' || !TS_SHAPE.test(v)) return undefined;
+  // pg refuses an impossible day (Feb 30) where Date.parse rolls it over.
+  const [y, mo, d] = v.slice(0, 10).split('-').map(Number) as [number, number, number];
+  const day = new Date(Date.UTC(y, mo - 1, d));
+  if (day.getUTCMonth() !== mo - 1 || day.getUTCDate() !== d) return undefined;
+  // Date.parse needs `+05:00` where pg also takes `+05`.
+  const ms = Date.parse(v.replace(/([+-]\d{2})$/, '$1:00'));
   if (Number.isNaN(ms)) return undefined;
-  const frac = /T[\d:]+\.(\d+)/.exec(v)?.[1] ?? '';
+  const frac = /[T ][\d:]+\.(\d+)/.exec(v)?.[1] ?? '';
   return ms * 1000 + Number(frac.padEnd(6, '0').slice(3, 6));
 }

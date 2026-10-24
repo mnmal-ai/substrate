@@ -10,7 +10,8 @@
  *
  * These modules never import from pg-dataset.ts and hold no connection state.
  * Caller values always go through parameterised slots; `sql.unsafe(...)` is
- * used only for identifiers/casts drawn from closed constant maps.
+ * used only for identifiers/casts drawn from closed constant maps and for field
+ * names inlined as escaped literals.
  */
 
 export {

@@ -39,6 +39,7 @@ import {
   CONCURRENT_STATEMENTS as SAFE_CASTS_CONCURRENT,
   TX_STATEMENTS as SAFE_CASTS_TX
 } from './migrations/0003_safe_casts.js';
+import { sqlStringLiteral } from './pg-sql/primitives.js';
 
 /**
  * Internal canonical migration shape after normalisation. The framework
@@ -426,11 +427,6 @@ export function generatedIdentifier(
     .slice(0, 8);
   const tail = `_${hash}_${suffix}`;
   return `rows_${fold(namespace)}_${fold(type)}_${fold(field)}`.slice(0, 63 - tail.length) + tail;
-}
-
-/** Escape a value embedded in a single-quoted SQL string literal (defense-in-depth). */
-function sqlStringLiteral(s: string): string {
-  return s.replace(/'/g, "''");
 }
 
 /**
