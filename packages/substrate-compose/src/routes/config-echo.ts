@@ -64,6 +64,12 @@ export function configRouteHandler(
   return async (_req: SubstrateRequest) =>
     jsonResponse(200, {
       ...handleConfigRequest(report),
-      ...(storage !== undefined ? { storage: await storage() } : {})
+      ...(storage !== undefined ? { storage: await storage().catch(failed) } : {})
     });
 }
+
+/** A catalog error costs the storage section, never the knobs beside it. */
+const failed = (err: unknown): StorageReport => ({
+  layout: 'unknown',
+  warnings: [`storage report failed: ${err instanceof Error ? err.message : String(err)}`]
+});

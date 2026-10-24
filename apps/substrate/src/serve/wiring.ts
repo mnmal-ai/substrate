@@ -247,18 +247,30 @@ export async function reconcileDeclaredStorage(
  * Prepares storage for every type registered in every local namespace once
  * compose has run: `_system`, install-time types such as the proposals
  * plugin's, and proposed types replayed at start. Namespaces without a local
- * dataset (bridged, virtual) are skipped. Errors propagate and fail the boot.
+ * dataset (bridged, virtual) are skipped. A type the operator's `nsDefs`
+ * declares fails the boot on error, since its unique indexes must exist. A
+ * type only the registry knows (proposed by a principal who can merely propose)
+ * logs the error naming it and the boot continues.
  */
 export async function reconcileRegisteredStorage(
   engine: Pick<Engine, 'federatedSchema' | 'registryFor'>,
-  datasets: { has(ns: string): boolean; get(ns: string): Dataset | undefined }
+  datasets: { has(ns: string): boolean; get(ns: string): Dataset | undefined },
+  nsDefs: { get(ns: string): NamespaceDefinition | undefined }
 ): Promise<void> {
   for (const ns of Object.keys(engine.federatedSchema())) {
     // `has`, not `get`: `get` would allocate a dataset for a virtual namespace.
     if (!datasets.has(ns)) continue;
     const dataset = datasets.get(ns);
     for (const [type, entry] of engine.registryFor(ns)?.all() ?? []) {
-      if (entry.kind === 'type') await dataset?.ensureTypeStorage?.(type);
+      if (entry.kind !== 'type') continue;
+      try {
+        await dataset?.ensureTypeStorage?.(type);
+      } catch (err) {
+        if (nsDefs.get(ns)?.types?.[type] !== undefined) throw err;
+        process.stderr.write(
+          `storage for registered type ${ns}/${type} was not prepared: ${err instanceof Error ? err.message : String(err)}\n`
+        );
+      }
     }
   }
 }

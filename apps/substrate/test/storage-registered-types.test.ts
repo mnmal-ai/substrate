@@ -49,10 +49,41 @@ describe('reconcileDeclaredStorage', () => {
   });
 });
 
+describe('reconcileRegisteredStorage failure policy', () => {
+  const registry = {
+    all: () => [
+      ['Declared', { kind: 'type' }],
+      ['Proposed', { kind: 'type' }]
+    ]
+  };
+  const engine = { federatedSchema: () => ({ kp: {} }), registryFor: () => registry } as never;
+  const datasetThrowing = (only: string) =>
+    ({
+      ensureTypeStorage: async (type: string) => {
+        if (type === only) throw new Error(`boom ${type}`);
+      }
+    }) as never;
+  const datasets = (d: unknown) => ({ has: () => true, get: () => d as never });
+  const declared = new Map([['kp', defineNamespace('kp', { Declared: { fields: {} } })]]);
+
+  it('logs and continues past a registry-only type whose storage fails', async () => {
+    await expect(
+      reconcileRegisteredStorage(engine, datasets(datasetThrowing('Proposed')), declared)
+    ).resolves.toBeUndefined();
+  });
+
+  it('still fails the boot for a declared type', async () => {
+    await expect(
+      reconcileRegisteredStorage(engine, datasets(datasetThrowing('Declared')), declared)
+    ).rejects.toThrow(/boom Declared/);
+  });
+});
+
 describe.skipIf(!POSTGRES_URL)('storage for registered types (pg)', () => {
   let sql: Sql;
   let partitioned: boolean;
   let ns: string;
+  let nsDefs: Map<string, ReturnType<typeof defineNamespace>>;
   let engine: Engine;
   let stop: () => Promise<void>;
 
@@ -63,7 +94,7 @@ describe.skipIf(!POSTGRES_URL)('storage for registered types (pg)', () => {
     ns = `ksweep_${randomUUID().slice(0, 8)}`;
 
     const plugin = createProposalsPlugin({ ownedNamespaces: [ns], pubsub: createNoopPubSub() });
-    const nsDefs = new Map(plugin.namespaces.map((d) => [d.namespace, d]));
+    nsDefs = new Map(plugin.namespaces.map((d) => [d.namespace, d]));
     const engineRef: { current: Engine | null } = { current: null };
     const typeDefLookup = makeTypeDefLookupFactory(nsDefs, (n) =>
       engineRef.current?.registryFor(n)
@@ -99,7 +130,7 @@ describe.skipIf(!POSTGRES_URL)('storage for registered types (pg)', () => {
     });
     engine = composed.engine;
     engineRef.current = engine;
-    await reconcileRegisteredStorage(engine, composed.datasets);
+    await reconcileRegisteredStorage(engine, composed.datasets, nsDefs);
     stop = () => composed.stop();
   }, 60_000);
 

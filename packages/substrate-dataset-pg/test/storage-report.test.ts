@@ -59,12 +59,12 @@ describe.skipIf(!POSTGRES_URL)(`describeStorage (${LAYOUT})`, () => {
     }
   });
 
-  it('builds nothing: a type never ensured has no partition and unbuilt indexes', async () => {
+  it('builds nothing: a type never ensured has no partition and no indexes', async () => {
     if (LAYOUT !== 'partitioned') return;
     const ns = freshNs();
     const report = await dataset(ns, { current: indexed }).describeStorage(TYPE);
     expect(report.partition).toBeUndefined();
-    expect(report.indexes.every((i) => i.state === 'failed')).toBe(true);
+    expect(report.indexes).toEqual([]);
   });
 });
 
@@ -94,6 +94,36 @@ describe.skipIf(!POSTGRES_URL || LAYOUT !== 'partitioned')('storageReport (parti
       expect(warnings.some((w) => w.startsWith(`index ${idx} is on the rows parent`))).toBe(true);
     } finally {
       await sql.unsafe(`DROP INDEX ${idx}`);
+    }
+  });
+
+  it('reads the catalog in a fixed number of queries however many partitions exist', async () => {
+    let queries = 0;
+    const counting = postgres(POSTGRES_URL as string, {
+      onnotice: () => {},
+      debug: () => {
+        queries++;
+      }
+    });
+    try {
+      const measure = async (types: number): Promise<number> => {
+        const ns = freshNs();
+        const names = Array.from({ length: types }, (_, i) => `T${i}`);
+        const ds = new PgDataset({
+          namespace: ns,
+          sql: counting,
+          typeDefLookup: () => ({ fields: indexed })
+        });
+        for (const t of names) await ds.ensureTypeStorage(t);
+        queries = 0;
+        await ds.storageReport({ partitionBudget: BIG });
+        return queries;
+      };
+      const few = await measure(2);
+      const many = await measure(10);
+      expect(many).toBe(few);
+    } finally {
+      await counting.end({ timeout: 5 });
     }
   });
 

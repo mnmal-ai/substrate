@@ -58,6 +58,7 @@ import { withPgAdvisoryLock } from './advisory-lock.js';
 import { NamespaceMismatch, ReservedField } from './errors.js';
 import {
   describeTypeIndexes,
+  indexesOn,
   type ReconcileTypeIndexesArgs,
   reconcileTypeIndexes,
   undeclaredIndexes
@@ -1027,50 +1028,71 @@ export class PgDataset implements Dataset {
     };
   }
 
-  /** See `Dataset.describeStorage`. Reads the catalog only. */
+  /** See `Dataset.describeStorage`. Reads the catalog only, in a fixed number of queries. */
   async describeStorage(type: string): Promise<TypeStorageReport> {
     const layout = (await this.#layout()) === 'partitioned' ? 'partitioned' : 'legacy';
     const sql = this.#sql as Sql;
-    const nsPart =
-      layout === 'partitioned' ? await findPartition(sql, 'rows', this.namespace) : undefined;
+    const args = this.#indexArgs(type, this.namespace, layout);
+    if (layout === 'legacy') {
+      return { layout, indexes: describeTypeIndexes(args, await indexesOn(sql, 'rows')) };
+    }
+    const nsPart = await findPartition(sql, 'rows', this.namespace);
     const partition = nsPart === undefined ? undefined : await findPartition(sql, nsPart, type);
+    if (partition === undefined) return { layout, indexes: [] };
     return {
       layout,
-      ...(partition !== undefined ? { partition } : {}),
-      indexes: await describeTypeIndexes(sql, this.#indexArgs(type, this.namespace, layout))
+      partition,
+      indexes: describeTypeIndexes(args, await indexesOn(sql, partition))
     };
   }
 
-  /** See `Dataset.storageReport`. Spans every namespace of the database. */
+  /**
+   * See `Dataset.storageReport`. Spans every namespace of the database. Reads
+   * the partition tree and every index on it in one query each, so its cost
+   * does not grow with the number of partitions.
+   */
   async storageReport(opts: { partitionBudget: number }): Promise<StorageReport> {
     const layout = await this.#layout();
     if (layout !== 'partitioned') return { layout: 'legacy', warnings: [] };
     const sql = this.#sql as Sql;
     const warnings = await storageWarnings(sql);
-    const parent = await sql<Array<{ name: string }>>`
-      SELECT c.relname AS name FROM pg_index i
+    const tree = await sql<Array<{ name: string; parent: string | null; bound: string | null }>>`
+      SELECT c.relname AS name, p.relname AS parent, pg_get_expr(c.relpartbound, c.oid) AS bound
+      FROM pg_partition_tree('rows') t
+      JOIN pg_class c ON c.oid = t.relid
+      LEFT JOIN pg_class p ON p.oid = t.parentrelid`;
+    const indexes = await sql<Array<{ table: string; name: string; primary: boolean }>>`
+      SELECT t.relname AS "table", c.relname AS name, i.indisprimary AS "primary"
+      FROM pg_partition_tree('rows') pt
+      JOIN pg_index i ON i.indrelid = pt.relid
       JOIN pg_class c ON c.oid = i.indexrelid
-      WHERE i.indrelid = 'rows'::regclass AND NOT i.indisprimary ORDER BY 1`;
-    for (const { name } of parent) {
-      warnings.push(`index ${name} is on the rows parent: every partition carries a copy of it`);
+      JOIN pg_class t ON t.oid = pt.relid`;
+    const heldBy = new Map<string, string[]>();
+    for (const i of indexes) {
+      if (i.table === 'rows') {
+        if (!i.primary) {
+          warnings.push(
+            `index ${i.name} is on the rows parent: every partition carries a copy of it`
+          );
+        }
+        continue;
+      }
+      heldBy.set(i.table, [...(heldBy.get(i.table) ?? []), i.name]);
     }
-    const parts = await sql<Array<{ ns: string; type: string }>>`
-      SELECT pg_get_expr(np.relpartbound, np.oid) AS ns, pg_get_expr(tp.relpartbound, tp.oid) AS type
-      FROM pg_inherits i1
-      JOIN pg_class np ON np.oid = i1.inhrelid
-      JOIN pg_inherits i2 ON i2.inhparent = np.oid
-      JOIN pg_class tp ON tp.oid = i2.inhrelid
-      WHERE i1.inhparent = 'rows'::regclass ORDER BY 1, 2`;
-    const bound = (b: string): string | undefined =>
-      /^FOR VALUES IN \('(.*)'\)$/s.exec(b)?.[1]?.replace(/''/g, "'");
-    for (const p of parts) {
-      const ns = bound(p.ns);
-      const type = bound(p.type);
-      if (ns === undefined || type === undefined || this.#typeDefLookup?.(type, ns) === undefined) {
+    const bound = (b: string | null): string | undefined =>
+      b === null ? undefined : /^FOR VALUES IN \('(.*)'\)$/s.exec(b)?.[1]?.replace(/''/g, "'");
+    const nsOf = new Map(tree.map((t) => [t.name, bound(t.bound)]));
+    for (const part of tree) {
+      const type = bound(part.bound);
+      const ns = part.parent === null || part.parent === 'rows' ? undefined : nsOf.get(part.parent);
+      if (type === undefined || ns === undefined || this.#typeDefLookup?.(type, ns) === undefined) {
         continue;
       }
       try {
-        for (const name of await undeclaredIndexes(sql, this.#indexArgs(type, ns, 'partitioned'))) {
+        for (const name of undeclaredIndexes(
+          this.#indexArgs(type, ns, 'partitioned'),
+          heldBy.get(part.name) ?? []
+        )) {
           warnings.push(`undeclared index ${name} on ${ns}/${type}: drop it explicitly`);
         }
       } catch (err) {
@@ -1079,9 +1101,7 @@ export class PgDataset implements Dataset {
         );
       }
     }
-    const [count] = await sql<Array<{ n: number }>>`
-      SELECT (count(*) - 1)::int AS n FROM pg_partition_tree('rows')`;
-    const n = count?.n ?? 0;
+    const n = tree.length - 1;
     if (n > opts.partitionBudget) {
       warnings.push(
         `${n} partitions exceed the budget of ${opts.partitionBudget}: move a namespace to its own instance behind a bridge`

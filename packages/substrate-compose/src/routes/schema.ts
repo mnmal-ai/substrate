@@ -196,7 +196,11 @@ export function schemaForTypeRoute(engine: Engine): HttpHandler {
     };
     // Absent when the dataset keeps no per-type storage. Not part of
     // `schemaVersion`: it changes as indexes build, with no schema change.
-    const storage = await engine.datasetFor(ns)?.describeStorage?.(type);
+    // Introspection never fails the schema route: a catalog error omits it.
+    const storage = await engine
+      .datasetFor(ns)
+      ?.describeStorage?.(type)
+      .catch(() => undefined);
     const withStorage = storage === undefined ? base : { ...base, storage };
     // `mutationNames` rather than nothing: a caller that asked for fields still
     // has to know which mutations exist to write at all, and the names cost a

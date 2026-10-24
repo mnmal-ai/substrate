@@ -527,6 +527,7 @@ export interface TypeStorageReport {
 }
 
 export interface StorageReport {
-  layout: 'legacy' | 'partitioned';
+  /** `unknown` when the report itself failed. */
+  layout: 'legacy' | 'partitioned' | 'unknown';
   warnings: string[];
 }

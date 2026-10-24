@@ -24,6 +24,12 @@ const REPORT: TypeStorageReport = {
   indexes: [{ name: 'i', fields: ['text'], unique: false, state: 'valid', outcome: 'unchanged' }]
 };
 
+class BrokenDataset extends MemoryDataset {
+  async describeStorage(): Promise<TypeStorageReport> {
+    throw new Error('catalog down');
+  }
+}
+
 class DescribingDataset extends MemoryDataset {
   async describeStorage(): Promise<TypeStorageReport> {
     return REPORT;
@@ -80,5 +86,25 @@ describe('storage in the schema and config routes', () => {
       layout: 'partitioned',
       warnings: ['rows__default holds 2 rows of a/b']
     });
+  });
+
+  it('keeps the knobs and names the failure when the storage report throws', async () => {
+    const url = await boot(new MemoryDataset({ namespace: NS }), async () => {
+      throw new Error('catalog down');
+    });
+    const body = await get(`${url}/substrate/v1/config`);
+    expect(body).toHaveProperty('knobs');
+    expect(body.storage).toEqual({
+      layout: 'unknown',
+      warnings: ['storage report failed: catalog down']
+    });
+  });
+
+  it('serves the type schema without storage when describing it throws', async () => {
+    const res = await fetch(
+      `${await boot(new BrokenDataset({ namespace: NS }))}/substrate/v1/schema/${NS}/Note`
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).not.toHaveProperty('storage');
   });
 });

@@ -224,20 +224,24 @@ export async function ensureTypeStorage(sql: Sql, namespace: string, type: strin
   );
 }
 
-/** One line per (namespace, type) with rows in a DEFAULT partition. */
+/** One line per (namespace, type) with rows in a DEFAULT partition. Two queries however many partitions. */
 export async function storageWarnings(sql: Sql): Promise<string[]> {
   const defaults = await sql<Array<{ relname: string }>>`
     SELECT c.relname FROM pg_partition_tree('rows') t
     JOIN pg_class c ON c.oid = t.relid
     WHERE pg_get_expr(c.relpartbound, c.oid) = 'DEFAULT'
     ORDER BY c.relname`;
-  const out: string[] = [];
-  for (const { relname } of defaults) {
-    const held = await sql.unsafe<Array<{ namespace: string; type: string; n: number }>>(
-      `SELECT namespace, type, count(*)::int AS n FROM ${ident(relname)}
-       GROUP BY namespace, type ORDER BY namespace, type`
-    );
-    for (const h of held) out.push(`${relname} holds ${h.n} rows of ${h.namespace}/${h.type}`);
-  }
-  return out;
+  if (defaults.length === 0) return [];
+  const held = await sql.unsafe<
+    Array<{ part: string; namespace: string; type: string; n: number }>
+  >(
+    defaults
+      .map(
+        ({ relname }) =>
+          `SELECT '${relname.replace(/'/g, "''")}' AS part, namespace, type, count(*)::int AS n
+           FROM ${ident(relname)} GROUP BY namespace, type`
+      )
+      .join(' UNION ALL ') + ' ORDER BY part, namespace, type'
+  );
+  return held.map((h) => `${h.part} holds ${h.n} rows of ${h.namespace}/${h.type}`);
 }

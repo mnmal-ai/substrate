@@ -228,7 +228,7 @@ export async function runServe(): Promise<void> {
 
   // Types compose registered (`_system`, install-time, replayed proposals),
   // after the engine ref is set so their fields resolve from its registry.
-  await reconcileRegisteredStorage(engine, composedDatasets);
+  await reconcileRegisteredStorage(engine, composedDatasets, nsDefs);
 
   const info = await server.start({ host: config.host, port: config.port });
   if (scheduler !== null) scheduler.start();
