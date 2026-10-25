@@ -17,6 +17,7 @@ import {
   type StorageLayout,
   UniqueIndexDuplicatesError
 } from '../src/index.js';
+import { reconcileTypeStatistics } from '../src/index-reconciler.js';
 import { generatedIdentifier } from '../src/migrate.js';
 import { addTestPromotedColumns } from './_promoted.js';
 
@@ -323,6 +324,67 @@ describe.skipIf(!POSTGRES_URL)(`reconcileTypeIndexes (${LAYOUT})`, () => {
       const err = await reconcile(ns, [{ fields: ['kid'], name }]).catch((e: unknown) => e);
       expect(err).toBeInstanceOf(IndexDefinitionConflictError);
       expect((err as IndexDefinitionConflictError).existing).toContain(`'cert'`);
+    });
+  });
+
+  describe('expression statistics', () => {
+    /** The statistics objects on `target`, with their expressions. */
+    const statsOn = async (target: string) =>
+      sql<Array<{ name: string; exprs: string[] }>>`
+        SELECT stxname AS name, pg_get_statisticsobjdef_expressions(oid) AS exprs
+        FROM pg_statistic_ext WHERE stxrelid = to_regclass(${`"${target}"`}) ORDER BY stxname`;
+    const ours = (ns: string, field: string) =>
+      new RegExp(`^rows_${ns}_t_${field.toLowerCase()}_[0-9a-f]{6}_[0-9a-f]{8}_stat$`);
+
+    it('are created per body-keyed key, once, dropped with the declaration, and nothing else is touched', async () => {
+      const { ns, target } = await fixture();
+      const foreign = `other_stat_${hex()}`;
+      await sql.unsafe(`CREATE STATISTICS ${foreign} ON ((body ->> 'kid')) FROM "${target}"`);
+      const decls: IndexDecl[] = [
+        { fields: ['cert'], name: `rows_s_${hex()}` },
+        { fields: ['kid'], unique: true, name: `rows_u_${hex()}` }
+      ];
+      await reconcile(ns, decls);
+      const after = await statsOn(target);
+      const cert = after.find((x) => ours(ns, 'cert').test(x.name));
+      const kid = after.find((x) => ours(ns, 'kid').test(x.name));
+      expect(cert?.exprs).toEqual([`((body ->> 'cert'::text) COLLATE "C")`]);
+      expect(kid?.exprs).toEqual([`((body ->> 'kid'::text) COLLATE "C")`]);
+
+      const again = await reconcileTypeStatistics(sql, {
+        namespace: ns,
+        type: TYPE,
+        layout: LAYOUT,
+        fields,
+        indexes: decls
+      });
+      expect(again).toEqual({ created: [], dropped: [], analyzed: false });
+
+      await reconcile(ns, []);
+      const left = (await statsOn(target)).map((x) => x.name);
+      expect(left).not.toContain(cert?.name);
+      expect(left).not.toContain(kid?.name);
+      expect(left).toContain(foreign);
+      await sql.unsafe(`DROP STATISTICS ${foreign}`);
+    });
+
+    it('are not created for a promoted field', async () => {
+      await addTestPromotedColumns(sql);
+      const { ns, target } = await fixture();
+      await reconcileTypeIndexes(sql, {
+        namespace: ns,
+        type: TYPE,
+        layout: LAYOUT,
+        fields: { ...fields, status: { kind: 'scalar', type: 'string' } },
+        indexes: [
+          { fields: ['status'], name: `rows_p_${hex()}` },
+          { fields: ['cert'], name: `rows_s_${hex()}` }
+        ],
+        promotedColumns: { status: { column: 'status', kind: 'text' } }
+      });
+      const names = (await statsOn(target)).map((x) => x.name);
+      expect(names.some((n) => ours(ns, 'cert').test(n))).toBe(true);
+      expect(names.some((n) => ours(ns, 'status').test(n))).toBe(false);
     });
   });
 

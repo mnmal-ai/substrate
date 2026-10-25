@@ -15,6 +15,11 @@
  * compared as pg deparses them: the desired ones are deparsed by building them
  * on an empty temp table first.
  *
+ * Every index is partial, and the planner ignores a partial index's
+ * expression statistics, so each body-keyed key expression also gets an
+ * expression statistics object on the same table (`_stat`), marked as this
+ * type's. One whose expression is no longer indexed is dropped.
+ *
  * Builds run CONCURRENTLY, so never inside a transaction, and under the
  * migration lock, which serialises them with migrations and other boots.
  */
@@ -108,16 +113,123 @@ export async function reconcileTypeIndexes(
   args: ReconcileTypeIndexesArgs
 ): Promise<IndexState[]> {
   const specs = desiredSpecs(args);
-  if (specs.length === 0) return [];
+  if (specs.length === 0 && (await heldStatistics(sql, args)).length === 0) return [];
   const target = await targetTable(sql, args);
   return withMigrationLock(sql, async (conn) => {
-    const desired = await deparse(conn, specs);
     const out: IndexState[] = [];
-    for (const [i, spec] of specs.entries()) {
-      out.push(await reconcileOne(conn, args, target, spec, desired[i] as Described));
+    if (specs.length > 0) {
+      const desired = await deparse(conn, specs);
+      for (const [i, spec] of specs.entries()) {
+        out.push(await reconcileOne(conn, args, target, spec, desired[i] as Described));
+      }
     }
+    await reconcileStatistics(conn, args, target, specs);
     return out;
   });
+}
+
+export interface StatisticsOutcome {
+  created: string[];
+  dropped: string[];
+  analyzed: boolean;
+}
+
+/** Reconciles only the type's expression statistics objects, as `reconcileTypeIndexes` does. */
+export async function reconcileTypeStatistics(
+  sql: Sql,
+  args: ReconcileTypeIndexesArgs
+): Promise<StatisticsOutcome> {
+  const specs = desiredSpecs(args);
+  const target = await targetTable(sql, args);
+  return withMigrationLock(sql, (conn) => reconcileStatistics(conn, args, target, specs));
+}
+
+/** Marks a statistics object as this type's, so another type's never matches. */
+const statMark = (args: ReconcileTypeIndexesArgs): string =>
+  `substrate: statistics of ${JSON.stringify([args.namespace, args.type])}`;
+const STAT_NAME = /_[0-9a-f]{8}_stat$/;
+
+/** One per body-keyed key expression; a promoted column has column statistics already. */
+function desiredStatistics(
+  args: ReconcileTypeIndexesArgs,
+  specs: Spec[]
+): Array<{ name: string; expr: string }> {
+  const promoted = args.promotedColumns ?? {};
+  const byField = new Map<string, { name: string; expr: string }>();
+  for (const spec of specs) {
+    for (const [i, expr] of spec.keys.entries()) {
+      const field = spec.fields[i] as string;
+      if (Object.hasOwn(promoted, field) || byField.has(field)) continue;
+      // The expression is in the name, so a changed one is a new object and the old one goes.
+      const hash = createHash('sha256').update(expr).digest('hex').slice(0, 6);
+      byField.set(field, {
+        name: generatedIdentifier(args.namespace, args.type, `${field}_${hash}`, 'stat'),
+        expr
+      });
+    }
+  }
+  return [...byField.values()];
+}
+
+/** The statistics objects marked as this type's, on any table, with the table each is on. */
+async function heldStatistics(
+  sql: Sql,
+  args: ReconcileTypeIndexesArgs
+): Promise<Array<{ name: string; table: string }>> {
+  const rows = await sql<Array<{ name: string; table: string }>>`
+    SELECT s.stxname AS name, t.relname AS table FROM pg_statistic_ext s
+    JOIN pg_class t ON t.oid = s.stxrelid
+    WHERE s.stxnamespace = current_schema()::regnamespace
+      AND obj_description(s.oid, 'pg_statistic_ext') = ${statMark(args)}`;
+  return rows.filter((r) => STAT_NAME.test(r.name));
+}
+
+async function reconcileStatistics(
+  conn: Sql,
+  args: ReconcileTypeIndexesArgs,
+  target: string,
+  specs: Spec[]
+): Promise<StatisticsOutcome> {
+  const desired = desiredStatistics(args, specs);
+  const wanted = new Set(desired.map((d) => d.name));
+  const out: StatisticsOutcome = { created: [], dropped: [], analyzed: false };
+  const held = new Set<string>();
+  for (const { name, table } of await heldStatistics(conn, args)) {
+    if (wanted.has(name) && table === target) {
+      held.add(name);
+      continue;
+    }
+    await conn.unsafe(`DROP STATISTICS IF EXISTS ${name}`);
+    out.dropped.push(name);
+  }
+  // shortcut: on the legacy layout the object is on the shared `rows`, so its
+  // statistics cover every type's rows; per-type ones need the partitioned layout.
+  for (const { name, expr } of desired) {
+    if (held.has(name)) continue;
+    // One transaction, so an object is never left unmarked, which would hide it from the drop above.
+    await conn.unsafe('BEGIN');
+    try {
+      await conn.unsafe(
+        `CREATE STATISTICS IF NOT EXISTS ${name} ON (${expr}) FROM ${ident(target)}`
+      );
+      await conn.unsafe(`COMMENT ON STATISTICS ${name} IS ${sqlStringLiteral(statMark(args))}`);
+      await conn.unsafe('COMMIT');
+      out.created.push(name);
+    } catch (err) {
+      // Statistics only steer the planner, so a failure costs estimates until the next reconcile.
+      await conn.unsafe('ROLLBACK');
+      process.stderr.write(
+        `statistics ${name} on ${target} failed to build and will be retried: ` +
+          `${err instanceof Error ? err.message : String(err)}\n`
+      );
+    }
+  }
+  // A new object holds nothing until the table is analysed.
+  if (out.created.length > 0) {
+    await conn.unsafe(`ANALYZE ${ident(target)}`);
+    out.analyzed = true;
+  }
+  return out;
 }
 
 export interface CatalogIndex {
@@ -495,13 +607,14 @@ async function reconcileOne(
 
   // Key columns are identified by field name, so a body-keyed index on a
   // field promoted since swaps onto the column rather than conflicting. A
-  // trailing `id` is not part of the identity, so an index without it swaps.
+  // non-unique index's trailing `id` is not part of the identity, so one
+  // without it swaps.
   const fieldOf = new Map(
     Object.entries(args.promotedColumns ?? {}).map(([field, meta]) => [meta.column, field])
   );
   const keyIdentity = (d: Described): string => {
     const keys = d.keyFields.map((k) => fieldOf.get(k) ?? k);
-    if (keys.length > 1 && keys.at(-1) === 'id') keys.pop();
+    if (!d.unique && keys.length > 1 && keys.at(-1) === 'id') keys.pop();
     return keys.join('\n');
   };
   // Swappable when only the expression text or the predicate differs.
