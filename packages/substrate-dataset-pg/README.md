@@ -36,7 +36,7 @@ CREATE TABLE rows (
 - `legacy`: one plain `rows` table, as above (`0001_baseline`).
 - `partitioned` (`0001p_partitioned_baseline`): `rows` is `LIST(namespace)`, each namespace partition is `LIST(type)`, and each level has a DEFAULT partition. Same columns and side tables. A type's partition is created, and its rows moved out of DEFAULT, by `ensureTypeStorage`; rows are readable from DEFAULT meanwhile. The move holds the parent lock briefly and retries on lock timeout, raising `TypeStorageLockTimeoutError` if it cannot get through.
 
-**Plugin DDL on `rows`.** On the partitioned layout, `CREATE INDEX` (or any DDL) on the parent `rows` fans out to every partition of every namespace and type, and cannot be built concurrently. Index a type through `indexes` on its definition instead, which builds on that type's partition only. `storageReport` lists indexes on the parent as fan-out. A promoted text column compares under `COLLATE "C"`, so a hand-written index on it must key `(col COLLATE "C")` to serve `eq`.
+**Plugin DDL on `rows`.** On the partitioned layout, `CREATE INDEX` (or any DDL) on the parent `rows` fans out to every partition of every namespace and type, and cannot be built concurrently. Index a type through `indexes` on its definition instead, which builds on that type's partition only. `storageReport` lists indexes and CHECK constraints on the parent as fan-out. A promoted text column compares under `COLLATE "C"`, so a hand-written index on it must key `(col COLLATE "C")` to serve `eq`.
 
 ## Indexes
 

@@ -97,6 +97,21 @@ describe.skipIf(!POSTGRES_URL || LAYOUT !== 'partitioned')('storageReport (parti
     }
   });
 
+  it("warns about a plugin CHECK on the rows parent, not the engine's own", async () => {
+    const ds = dataset(freshNs(), { current: {} });
+    const check = `rows_parent_check_${randomBytes(4).toString('hex')}`;
+    await sql.unsafe(`ALTER TABLE rows ADD CONSTRAINT ${check} CHECK (type <> '') NOT VALID`);
+    try {
+      const { warnings } = await ds.storageReport({ partitionBudget: BIG });
+      expect(warnings).toContain(
+        `check ${check} is on the rows parent: every partition carries it, and every write evaluates it`
+      );
+      expect(warnings.some((w) => w.includes('rows_created_by_kind_check'))).toBe(false);
+    } finally {
+      await sql.unsafe(`ALTER TABLE rows DROP CONSTRAINT ${check}`);
+    }
+  });
+
   it('reads the catalog in a fixed number of queries however many partitions exist', async () => {
     let queries = 0;
     const counting = postgres(POSTGRES_URL as string, {

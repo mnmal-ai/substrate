@@ -190,6 +190,13 @@ interface DeferredBuild {
   type: string;
 }
 
+/** The CHECKs the engine's own migrations put on `rows`; any other is plugin fan-out. */
+const ENGINE_CHECKS = [
+  'rows_created_by_kind_check',
+  'rows_updated_by_kind_check',
+  'rows_id_uuid_format'
+];
+
 /** Per pool, so every dataset on it reports what the others deferred. */
 const deferredBuilds = new WeakMap<object, Map<string, DeferredBuild>>();
 
@@ -1181,6 +1188,15 @@ export class PgDataset implements Dataset {
       JOIN pg_index i ON i.indrelid = pt.relid
       JOIN pg_class c ON c.oid = i.indexrelid
       JOIN pg_class t ON t.oid = pt.relid`;
+    const checks = await sql<Array<{ name: string }>>`
+      SELECT conname AS name FROM pg_constraint
+      WHERE contype = 'c' AND conrelid = 'rows'::regclass AND NOT (conname = ANY(${ENGINE_CHECKS}))
+      ORDER BY conname`;
+    for (const c of checks) {
+      warnings.push(
+        `check ${c.name} is on the rows parent: every partition carries it, and every write evaluates it`
+      );
+    }
     const heldBy = new Map<string, string[]>();
     for (const i of indexes) {
       if (i.table === 'rows') {
