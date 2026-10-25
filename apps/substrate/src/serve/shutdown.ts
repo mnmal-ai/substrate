@@ -17,6 +17,9 @@ export interface ShutdownArgs {
   stopIndexBuilds?: () => Promise<void>;
 }
 
+/** The longest shutdown waits for the background index builds to stop. */
+const INDEX_BUILDS_STOP_MS = 2000;
+
 /**
  * Re-entrancy guard: systemd retries SIGTERM under load, and a double-fire
  * here would clear already-cleared timers and call `stop()` twice. The flag
@@ -52,8 +55,26 @@ export function installShutdown(args: ShutdownArgs): void {
     clearInterval(sweepTimer);
     if (inviteSweepTimer !== null) clearInterval(inviteSweepTimer);
     // A cancelled CREATE INDEX CONCURRENTLY leaves an INVALID index, which
-    // the next boot's reconcile drops and rebuilds.
-    const stopBuilds = stopIndexBuilds?.() ?? Promise.resolve();
+    // the next boot's reconcile drops and rebuilds. Lock waits and builds stop
+    // at once; a catalog step that cannot be cancelled gets a bounded wait,
+    // then is abandoned to closeStore, which ends its session.
+    const buildsBound = Math.min(INDEX_BUILDS_STOP_MS, config.shutdownGraceMs / 2);
+    const stopBuilds = new Promise<void>((resolve) => {
+      if (stopIndexBuilds === undefined) return resolve();
+      const timer = setTimeout(() => {
+        process.stderr.write(
+          `index builds did not stop within ${buildsBound}ms; abandoning them\n`
+        );
+        resolve();
+      }, buildsBound);
+      timer.unref();
+      void stopIndexBuilds()
+        .catch(() => undefined)
+        .then(() => {
+          clearTimeout(timer);
+          resolve();
+        });
+    });
     const stopSentinel =
       sentinelClient !== null
         ? sentinelClient.stop().catch((err: unknown) => {
