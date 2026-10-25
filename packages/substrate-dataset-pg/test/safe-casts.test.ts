@@ -53,6 +53,7 @@ describe.skipIf(!POSTGRES_URL)('safe-cast functions', () => {
     expect(await ts('42')).toBeNull();
     expect(await ts('"2026-13-45T00:00:00Z"')).toBeNull();
     expect(await ts('"2026-02-30T00:00:00Z"')).toBeNull();
+    expect(await ts('"0000-01-01T00:00:00Z"')).toBeNull();
   });
 
   it('substrate_ts ignores the session TimeZone', async () => {

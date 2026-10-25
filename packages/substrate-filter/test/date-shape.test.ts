@@ -23,7 +23,13 @@ describe('evaluateWhere — date shape', () => {
   });
 
   it('never matches an offset-less, date-only or impossible value', () => {
-    for (const at of ['2026-10-24 10:00', '2026-10-24', '2026-02-30T10:00:00Z', 'soon']) {
+    for (const at of [
+      '2026-10-24 10:00',
+      '2026-10-24',
+      '2026-02-30T10:00:00Z',
+      '0000-01-01T00:00:00Z',
+      'soon'
+    ]) {
       expect(matches(at, gte), at).toBe(false);
       expect(matches(at, { at: { lt: '2027-01-01T00:00:00Z' } }), at).toBe(false);
       expect(matches(at, { at: { eq: at } }), at).toBe(false);

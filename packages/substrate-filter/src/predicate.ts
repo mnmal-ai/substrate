@@ -390,8 +390,10 @@ function storedMicros(v: unknown): number | undefined {
   if (v instanceof Date) return toMicros(v);
   if (typeof v !== 'string') return undefined;
   if (!TS_SHAPE.test(v)) return undefined;
-  // pg refuses an impossible day (Feb 30) where Date.parse rolls it over.
+  // pg refuses an impossible day (Feb 30) where Date.parse rolls it over, and
+  // year 0000, which Date.parse accepts.
   const [y, mo, d] = v.slice(0, 10).split('-').map(Number) as [number, number, number];
+  if (y < 1) return undefined;
   const day = new Date(Date.UTC(y, mo - 1, d));
   if (day.getUTCMonth() !== mo - 1 || day.getUTCDate() !== d) return undefined;
   return toMicros(v);

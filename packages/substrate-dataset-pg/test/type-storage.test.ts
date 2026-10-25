@@ -7,7 +7,7 @@
 import { randomBytes } from 'node:crypto';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { PgDataset, partitionName } from '../src/index.js';
+import { PgDataset, partitionName, TypeStorageLockTimeoutError } from '../src/index.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const LAYOUT = process.env.SUBSTRATE_STORAGE_LAYOUT ?? 'legacy';
@@ -279,6 +279,39 @@ describe.skipIf(!POSTGRES_URL || LAYOUT !== 'partitioned')('ensureTypeStorage lo
       await readerSql.end({ timeout: 5 });
     }
   });
+});
+
+describe.skipIf(!POSTGRES_URL || LAYOUT !== 'partitioned')('ensureTypeStorage give-up', () => {
+  it('gives up with TypeStorageLockTimeoutError when its locks stay busy, moving nothing', async () => {
+    const ns = freshNs();
+    const ds = new PgDataset({ namespace: ns, sql });
+    await ds.ensureTypeStorage('Other');
+    await ds.write('T', [{ id: 'a' }]);
+    const nsPart = (await partitionOf('rows', ns)) as string;
+    const nsDefault = (await partitionOf(nsPart, null)) as string;
+
+    // Held on the namespace's partition only, so no other test's move waits on it.
+    const blocker = await sql.reserve();
+    try {
+      await blocker`BEGIN`;
+      await blocker.unsafe(`LOCK TABLE "${nsPart}" IN ACCESS SHARE MODE`);
+      // shortcut: waits out the fixed 10 s give-up; make it injectable if this suite gets slow.
+      const err = await ds.ensureTypeStorage('T').then(
+        () => undefined,
+        (e: unknown) => e
+      );
+      expect(err).toBeInstanceOf(TypeStorageLockTimeoutError);
+      expect(err).toMatchObject({ namespace: ns, type: 'T', cause: { code: '55P03' } });
+    } finally {
+      await blocker`ROLLBACK`;
+      blocker.release();
+    }
+    expect(await partitionOf(nsPart, 'T')).toBeUndefined();
+    expect(await countIn(nsDefault, ns, 'T')).toBe(1);
+
+    await ds.ensureTypeStorage('T');
+    expect(await countIn(partitionName(ns, 'T'), ns, 'T')).toBe(1);
+  }, 30_000);
 });
 
 describe.skipIf(!POSTGRES_URL || LAYOUT !== 'legacy')('ensureTypeStorage (legacy)', () => {
