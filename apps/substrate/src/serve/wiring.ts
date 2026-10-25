@@ -30,7 +30,7 @@ import {
 } from '@mnmal-ai/substrate-dataset-pg';
 import { getExtensionOperator, registerExtensionOperator } from '@mnmal-ai/substrate-filter';
 import { makeAuthorizationProvider } from '@mnmal-ai/substrate-policy';
-import { RESERVED_AUTOCRUD_FIELD_NAMES } from '@mnmal-ai/substrate-sdk';
+import { RESERVED_AUTOCRUD_FIELDS } from '@mnmal-ai/substrate-sdk';
 import type {
   CoordinatorPlugin,
   Dataset,
@@ -206,9 +206,9 @@ export function makeFieldDefLookupFactory(nsDefs: {
  * ones, are merged over the declared fields, and the declared `indexes` are
  * kept; a type no definition declares (proposed at runtime, or registered at
  * install) has the registry's fields alone. The engine's reserved fields are
- * left out, since they are not body fields. The lookup answers for the
- * namespace it is asked about, so clones made by `forNamespace` resolve their
- * own types.
+ * left out where autoCRUD registered them, since they are not body fields.
+ * The lookup answers for the namespace it is asked about, so clones made by
+ * `forNamespace` resolve their own types.
  */
 export function makeTypeDefLookupFactory(
   nsDefs: { get(namespace: string): NamespaceDefinition | undefined },
@@ -218,8 +218,13 @@ export function makeTypeDefLookupFactory(
     const declared = nsDefs.get(namespace)?.types?.[type];
     const entry = registryFor(namespace)?.get(type);
     if (entry?.kind !== 'type') return declared;
+    // autoCRUD registers the reserved descriptor itself; a type without
+    // autoCRUD may declare a body field of the same name.
     const live = Object.fromEntries(
-      Object.entries(entry.fields).filter(([f]) => !RESERVED_AUTOCRUD_FIELD_NAMES.includes(f))
+      Object.entries(entry.fields).filter(
+        ([f, def]) =>
+          !Object.hasOwn(RESERVED_AUTOCRUD_FIELDS, f) || RESERVED_AUTOCRUD_FIELDS[f] !== def
+      )
     );
     return declared === undefined
       ? { fields: live }

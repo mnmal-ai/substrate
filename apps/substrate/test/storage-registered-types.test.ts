@@ -25,7 +25,7 @@ import {
   createProposalsPlugin,
   storageSettled
 } from '@mnmal-ai/substrate-proposals';
-import { defineNamespace } from '@mnmal-ai/substrate-sdk';
+import { defineNamespace, RESERVED_AUTOCRUD_FIELDS } from '@mnmal-ai/substrate-sdk';
 import { MemorySubstrateServer } from '@mnmal-ai/substrate-server-memory';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -65,7 +65,7 @@ describe('makeTypeDefLookupFactory', () => {
             fields: {
               title: { kind: 'scalar', type: 'string' },
               sku: proposed,
-              shortId: { kind: 'scalar', type: 'number', indexed: true }
+              shortId: RESERVED_AUTOCRUD_FIELDS.shortId
             }
           }
         : undefined
@@ -77,6 +77,13 @@ describe('makeTypeDefLookupFactory', () => {
       fields: { title: { kind: 'scalar', type: 'string' }, sku: proposed },
       indexes: [{ fields: ['title'], name: 'kl_doc_title' }]
     });
+  });
+
+  it('keeps a shortId body field that autoCRUD did not register', () => {
+    const own = { kind: 'scalar', type: 'number', indexed: true } as const;
+    const plain = { get: () => ({ kind: 'type', fields: { shortId: own } }) } as never;
+    const lookup = makeTypeDefLookupFactory(new Map(), () => plain)('kl');
+    expect(lookup('Raw', 'kl')).toEqual({ fields: { shortId: own } });
   });
 
   it('answers the declaration alone until the registry resolves', () => {
