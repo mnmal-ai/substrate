@@ -4,7 +4,8 @@
  *   `./pg-sql/primitives.js` — Fragment, idToText, metadata/promoted-column
  *     maps, BodyOrderByCast, scalar helpers
  *   `./pg-sql/projection.js` — buildBodyProjection, assembleRowMetadata
- *   `./pg-sql/where.js` — buildWhere, combineAnd, conditionalMatchFragment
+ *   `./pg-sql/where.js` — buildWhere, combineAnd, conditionalMatchFragment,
+ *     whereReferencesField
  *   `./pg-sql/sorting.js` — normalizeOrderBy, resolveBodyOrderByCast,
  *     buildOrderBy, buildSortKeyProjection, buildCursorCompare
  *
@@ -36,4 +37,4 @@ export {
   normalizeOrderBy,
   resolveBodyOrderByCast
 } from './pg-sql/sorting.js';
-export { buildWhere, conditionalMatchFragment } from './pg-sql/where.js';
+export { buildWhere, conditionalMatchFragment, whereReferencesField } from './pg-sql/where.js';

@@ -68,6 +68,18 @@ export function buildWhere(
   return combineAnd(sql, fragments);
 }
 
+/** True when `field` is a predicate key anywhere in the tree, under AND/OR/NOT included. */
+export function whereReferencesField(where: unknown, field: string): boolean {
+  if (where === null || typeof where !== 'object' || Array.isArray(where)) return false;
+  for (const [k, child] of Object.entries(where)) {
+    if (k === field) return true;
+    if ((k === 'AND' || k === 'OR') && Array.isArray(child)) {
+      if (child.some((sub) => whereReferencesField(sub, field))) return true;
+    } else if (k === 'NOT' && whereReferencesField(child, field)) return true;
+  }
+  return false;
+}
+
 function buildFieldPredicate(
   sql: Sql | TransactionSql,
   field: string,

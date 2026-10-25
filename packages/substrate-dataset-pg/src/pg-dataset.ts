@@ -84,7 +84,8 @@ import {
   type PromotedBodyColumnMap,
   type PromotedColumnLookup,
   resolveBodyOrderByCast,
-  resolvePromotedColumns
+  resolvePromotedColumns,
+  whereReferencesField
 } from './pg-sql.js';
 import { type PgHandle, txScopeIdFor } from './tx-scope.js';
 import { ensureTypeStorage, findPartition, storageWarnings } from './type-storage.js';
@@ -296,7 +297,7 @@ export class PgDataset implements Dataset {
     }
 
     // Build WHERE fragment incrementally. Use table alias `r` to avoid
-    // ambiguity with the LEFT-joined short_ids alias `s`.
+    // ambiguity with the short_ids alias `s`.
     const clauses: Fragment[] = [];
     clauses.push(this.#scope(type, 'r.'));
     if (hasIdFilter) clauses.push(sql`r.id = ANY(${idList})`);
@@ -366,16 +367,29 @@ export class PgDataset implements Dataset {
       this.#promotedFor
     );
 
+    // A filter or sort on shortId needs `s.short_id` per candidate, so it
+    // joins. Otherwise the scalar subquery runs only for the rows that survive
+    // LIMIT; short_ids_row_uniq_idx makes it return at most one row.
+    const joinShortIds =
+      whereReferencesField(params.where, 'shortId') || orderBy.some(([f]) => f === 'shortId');
+    const shortIdSql = joinShortIds
+      ? sql`s.short_id`
+      : sql`(SELECT s.short_id FROM short_ids s
+              WHERE s.namespace = r.namespace AND s.type = r.type AND s.row_id = r.id) AS short_id`;
+    const shortIdJoin = joinShortIds
+      ? sql`LEFT JOIN short_ids s
+              ON s.namespace = r.namespace
+             AND s.type = r.type
+             AND s.row_id = r.id`
+      : sql``;
+
     const rows = await sql<SubstrateRowRecord[]>`
-      SELECT r.id, ${bodyProjection} AS body, r.deleted_at, s.short_id,
+      SELECT r.id, ${bodyProjection} AS body, r.deleted_at, ${shortIdSql},
              r.created_at, r.updated_at,
              r.created_by_kind, r.created_by_id,
              r.updated_by_kind, r.updated_by_id${sortKeyProjection}
       FROM rows r
-      LEFT JOIN short_ids s
-        ON s.namespace = r.namespace
-       AND s.type = r.type
-       AND s.row_id = r.id
+      ${shortIdJoin}
       WHERE ${whereSql}
       ${orderBySql}
       ${fetchLimit !== undefined ? sql`LIMIT ${fetchLimit}` : sql``}
