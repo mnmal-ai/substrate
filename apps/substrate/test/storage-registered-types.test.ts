@@ -49,6 +49,42 @@ describe('reconcileDeclaredStorage', () => {
   });
 });
 
+describe('makeTypeDefLookupFactory', () => {
+  const declared = defineNamespace('kl', {
+    Doc: {
+      fields: { title: { kind: 'scalar', type: 'string' } },
+      indexes: [{ fields: ['title'], name: 'kl_doc_title' }]
+    }
+  });
+  const proposed = { kind: 'scalar', type: 'string', indexed: true } as const;
+  const registry = {
+    get: (type: string) =>
+      type === 'Doc'
+        ? {
+            kind: 'type',
+            fields: {
+              title: { kind: 'scalar', type: 'string' },
+              sku: proposed,
+              shortId: { kind: 'scalar', type: 'number', indexed: true }
+            }
+          }
+        : undefined
+  } as never;
+
+  it('merges proposed fields over a declared type, keeping its indexes', () => {
+    const lookup = makeTypeDefLookupFactory(new Map([['kl', declared]]), () => registry)('kl');
+    expect(lookup('Doc', 'kl')).toEqual({
+      fields: { title: { kind: 'scalar', type: 'string' }, sku: proposed },
+      indexes: [{ fields: ['title'], name: 'kl_doc_title' }]
+    });
+  });
+
+  it('answers the declaration alone until the registry resolves', () => {
+    const lookup = makeTypeDefLookupFactory(new Map([['kl', declared]]))('kl');
+    expect(lookup('Doc', 'kl')).toBe(declared.types?.Doc);
+  });
+});
+
 describe('reconcileRegisteredStorage failure policy', () => {
   const registry = {
     all: () => [
@@ -160,6 +196,34 @@ describe.skipIf(!POSTGRES_URL)('storage for registered types (pg)', () => {
     const warnings = await new PgDataset({ namespace: ns, sql }).storageWarnings();
     expect(warnings.filter((w) => w.includes(ns) || w.includes(CONTROL))).toEqual([]);
   });
+
+  it('builds the implicit index of a field proposed on a declared type', async () => {
+    const kns = `kfield_${randomUUID().slice(0, 8)}`;
+    const def = defineNamespace(kns, {
+      Doc: { fields: { title: { kind: 'scalar', type: 'string', indexed: false } } }
+    });
+    // The registry once a FieldProposal has added `sku`.
+    const fields = {
+      title: { kind: 'scalar', type: 'string', indexed: false },
+      sku: { kind: 'scalar', type: 'string', indexed: true }
+    };
+    const registry = { get: () => ({ kind: 'type', fields }) } as never;
+    const docs = new PgDataset({
+      namespace: kns,
+      sql,
+      typeDefLookup: makeTypeDefLookupFactory(new Map([[kns, def]]), () => registry)(kns)
+    });
+    try {
+      await docs.ensureTypeStorage('Doc');
+      const states = (await docs.describeStorage('Doc')).indexes;
+      expect(states.find((i) => i.fields.join() === 'sku')?.state).toBe(
+        partitioned ? 'valid' : undefined
+      );
+      expect(states.some((i) => i.fields.join() === 'title')).toBe(false);
+    } finally {
+      await sql`DELETE FROM rows WHERE namespace = ${kns}`;
+    }
+  }, 20_000);
 
   it('builds the indexed fields of a proposed type on its partition', async () => {
     const type = `Sku${randomUUID().slice(0, 8)}`;

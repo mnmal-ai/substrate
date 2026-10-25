@@ -30,6 +30,7 @@ import {
 } from '@mnmal-ai/substrate-dataset-pg';
 import { getExtensionOperator, registerExtensionOperator } from '@mnmal-ai/substrate-filter';
 import { makeAuthorizationProvider } from '@mnmal-ai/substrate-policy';
+import { RESERVED_AUTOCRUD_FIELD_NAMES } from '@mnmal-ai/substrate-sdk';
 import type {
   CoordinatorPlugin,
   Dataset,
@@ -200,11 +201,14 @@ export function makeFieldDefLookupFactory(nsDefs: {
 /**
  * Build a {@link TypeDefLookup} factory over the same late-bound `nsDefs`
  * registry as {@link makeFieldDefLookupFactory}: a type's fields and declared
- * indexes, which `PgDataset.ensureTypeStorage` builds indexes from. A type no
- * definition declares (proposed at runtime, or registered at install) falls
- * back to its fields in the live registry, once `registryFor` resolves. The
- * lookup answers for the namespace it is asked about, so clones made by
- * `forNamespace` resolve their own types.
+ * indexes, which `PgDataset.ensureTypeStorage` builds indexes from. Once
+ * `registryFor` resolves, the live registry's fields, which include proposed
+ * ones, are merged over the declared fields, and the declared `indexes` are
+ * kept; a type no definition declares (proposed at runtime, or registered at
+ * install) has the registry's fields alone. The engine's reserved fields are
+ * left out, since they are not body fields. The lookup answers for the
+ * namespace it is asked about, so clones made by `forNamespace` resolve their
+ * own types.
  */
 export function makeTypeDefLookupFactory(
   nsDefs: { get(namespace: string): NamespaceDefinition | undefined },
@@ -212,9 +216,14 @@ export function makeTypeDefLookupFactory(
 ): (namespace: string) => TypeDefLookup {
   const lookup: TypeDefLookup = (type, namespace) => {
     const declared = nsDefs.get(namespace)?.types?.[type];
-    if (declared !== undefined) return declared;
     const entry = registryFor(namespace)?.get(type);
-    return entry?.kind === 'type' ? { fields: entry.fields } : undefined;
+    if (entry?.kind !== 'type') return declared;
+    const live = Object.fromEntries(
+      Object.entries(entry.fields).filter(([f]) => !RESERVED_AUTOCRUD_FIELD_NAMES.includes(f))
+    );
+    return declared === undefined
+      ? { fields: live }
+      : { ...declared, fields: { ...declared.fields, ...live } };
   };
   return () => lookup;
 }
