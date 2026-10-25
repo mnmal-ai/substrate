@@ -387,6 +387,28 @@ describe.skipIf(!POSTGRES_URL)('read: short id lookup for the returned page only
     expect([...first.rows, ...rest.rows].map((r) => r.id)).toEqual(expected);
   });
 
+  it('the null tail sends one statement text whatever the first query returned', async () => {
+    // 40 rows, 3 of them without `d`.
+    const params: ReadParams = { where: { n: { lt: 40 } }, orderBy: [{ d: 'desc' }] };
+    const after = async (skip: number) =>
+      (await ds.read(TYPE, { ...params, limit: skip })).nextCursor ?? '';
+    const tails: string[] = [];
+    for (const [skip, limit, ids, hasMore] of [
+      [34, 10, 6, false],
+      [35, 10, 5, false],
+      [34, 4, 4, true]
+    ] as const) {
+      const cursor = await after(skip);
+      sent = [];
+      const page = await ds.read(TYPE, { ...params, limit, cursor });
+      expect([page.rows.length, page.hasMore]).toEqual([ids, hasMore]);
+      const selects = sent.filter((q) => /FROM rows r/.test(q.query));
+      expect(selects).toHaveLength(2);
+      tails.push((selects[1] as (typeof sent)[number]).query);
+    }
+    expect(tails[0]).toBe(tails[1]);
+  });
+
   it('a row whose lead turns null between the two queries is not returned twice', async () => {
     const RACE = 'Race';
     await ds.ensureTypeStorage(RACE);

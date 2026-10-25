@@ -447,13 +447,15 @@ export class PgDataset implements Dataset {
     // SERIALIZABLE transaction; elsewhere each sees its own.
     let rows: SubstrateRowRecord[] = await page(whereSql, fetchLimit);
     if (tailSql !== null && (fetchLimit === undefined || rows.length < fetchLimit)) {
-      const n = fetchLimit === undefined ? undefined : fetchLimit - rows.length;
       // A row whose lead turned null after the first query would come back
       // twice; excluding it in SQL keeps the look-ahead row, and so `hasMore`.
       // The residual anomaly is a skip: a row that left the tail in between.
       const unseen = sql`r.id <> ALL(${rows.map((r) => r.id)})`;
+      // The full `fetchLimit`, sliced here, so the tail has one statement text
+      // per shape rather than one per remaining count.
+      const tail = await page(combineAnd(sql, [tailSql, unseen]), fetchLimit);
       // concat, not push(...): an unlimited tail can exceed the argument limit.
-      rows = rows.concat(await page(combineAnd(sql, [tailSql, unseen]), n));
+      rows = rows.concat(fetchLimit === undefined ? tail : tail.slice(0, fetchLimit - rows.length));
     }
 
     const materialised = rows.map((r) => this.materialize(r));
