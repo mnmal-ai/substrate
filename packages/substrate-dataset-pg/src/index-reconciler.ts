@@ -113,7 +113,9 @@ export async function reconcileTypeIndexes(
   args: ReconcileTypeIndexesArgs
 ): Promise<IndexState[]> {
   const specs = desiredSpecs(args);
-  if (specs.length === 0 && (await heldStatistics(sql, args)).length === 0) return [];
+  if (specs.length === 0 && (await heldStatistics(sql, args).catch(() => [])).length === 0) {
+    return [];
+  }
   const target = await targetTable(sql, args);
   return withMigrationLock(sql, async (conn) => {
     const out: IndexState[] = [];
@@ -190,45 +192,89 @@ async function reconcileStatistics(
   target: string,
   specs: Spec[]
 ): Promise<StatisticsOutcome> {
+  const out: StatisticsOutcome = { created: [], dropped: [], analyzed: false };
+  // Statistics only steer the planner, so no step here fails the reconcile: a
+  // failed one is logged and retried by the next reconcile.
+  const attempt = async (what: string, run: () => Promise<unknown>): Promise<boolean> => {
+    try {
+      await run();
+      return true;
+    } catch (err) {
+      process.stderr.write(
+        `statistics ${what} on ${target} failed and will be retried: ` +
+          `${err instanceof Error ? err.message : String(err)}\n`
+      );
+      return false;
+    }
+  };
   const desired = desiredStatistics(args, specs);
   const wanted = new Set(desired.map((d) => d.name));
-  const out: StatisticsOutcome = { created: [], dropped: [], analyzed: false };
-  const held = new Set<string>();
-  for (const { name, table } of await heldStatistics(conn, args)) {
+  let marked: Array<{ name: string; table: string }> = [];
+  if (!(await attempt('lookup', async () => (marked = await heldStatistics(conn, args))))) {
+    return out;
+  }
+  const held: string[] = [];
+  for (const { name, table } of marked) {
     if (wanted.has(name) && table === target) {
-      held.add(name);
+      held.push(name);
       continue;
     }
-    await conn.unsafe(`DROP STATISTICS IF EXISTS ${name}`);
-    out.dropped.push(name);
+    if (!BARE_NAME.test(name)) {
+      process.stderr.write(
+        `statistics ${name} on ${table} is not a generated name; left in place\n`
+      );
+      continue;
+    }
+    if (
+      await attempt(`${name} drop`, () => conn.unsafe(`DROP STATISTICS IF EXISTS ${ident(name)}`))
+    ) {
+      out.dropped.push(name);
+    }
   }
   // shortcut: on the legacy layout the object is on the shared `rows`, so its
   // statistics cover every type's rows; per-type ones need the partitioned layout.
   for (const { name, expr } of desired) {
-    if (held.has(name)) continue;
-    // One transaction, so an object is never left unmarked, which would hide it from the drop above.
-    await conn.unsafe('BEGIN');
-    try {
-      await conn.unsafe(
-        `CREATE STATISTICS IF NOT EXISTS ${name} ON (${expr}) FROM ${ident(target)}`
-      );
-      await conn.unsafe(`COMMENT ON STATISTICS ${name} IS ${sqlStringLiteral(statMark(args))}`);
-      await conn.unsafe('COMMIT');
-      out.created.push(name);
-    } catch (err) {
-      // Statistics only steer the planner, so a failure costs estimates until the next reconcile.
-      await conn.unsafe('ROLLBACK');
-      process.stderr.write(
-        `statistics ${name} on ${target} failed to build and will be retried: ` +
-          `${err instanceof Error ? err.message : String(err)}\n`
-      );
-    }
+    if (held.includes(name)) continue;
+    // One transaction, so an object is never left unmarked, which would hide it
+    // from the drop above. No IF NOT EXISTS: an object of the name that is not
+    // marked as this type's fails here rather than being claimed.
+    const created = await attempt(`${name} create`, async () => {
+      await conn.unsafe('BEGIN');
+      try {
+        await conn.unsafe(`CREATE STATISTICS ${ident(name)} ON (${expr}) FROM ${ident(target)}`);
+        await conn.unsafe(
+          `COMMENT ON STATISTICS ${ident(name)} IS ${sqlStringLiteral(statMark(args))}`
+        );
+        await conn.unsafe('COMMIT');
+      } catch (err) {
+        await conn.unsafe('ROLLBACK');
+        throw err;
+      }
+    });
+    if (created) out.created.push(name);
   }
-  // A new object holds nothing until the table is analysed.
-  if (out.created.length > 0) {
+  // A new object holds nothing until the table is analysed, and one whose
+  // ANALYZE failed still holds nothing (a null `null_frac`; an empty table
+  // never fills it, so its cheap ANALYZE repeats until it has rows).
+  // shortcut: on legacy each type that gains an object analyses the whole
+  // shared `rows` under the migration lock, up to one sampled ANALYZE per type
+  // on the first boot after upgrade; coalesce to one per boot pass if deploy
+  // time matters.
+  await attempt('analyze', async () => {
+    const pending =
+      out.created.length > 0 ||
+      (held.length > 0 &&
+        (
+          await conn`
+            SELECT 1 FROM pg_stats_ext_exprs
+            WHERE statistics_schemaname = current_schema()
+              AND statistics_name = ANY(${held}) AND null_frac IS NULL
+            LIMIT 1`
+        ).length > 0);
+    if (!pending) return;
     await conn.unsafe(`ANALYZE ${ident(target)}`);
     out.analyzed = true;
-  }
+  });
   return out;
 }
 

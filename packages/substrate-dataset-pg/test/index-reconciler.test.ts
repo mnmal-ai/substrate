@@ -5,7 +5,7 @@
  * values, and rebuilt when a failed concurrent build left one INVALID.
  */
 
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import type { FieldDef } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -19,6 +19,7 @@ import {
 } from '../src/index.js';
 import { reconcileTypeStatistics } from '../src/index-reconciler.js';
 import { generatedIdentifier } from '../src/migrate.js';
+import { indexExpressionSql } from '../src/pg-sql/primitives.js';
 import { addTestPromotedColumns } from './_promoted.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
@@ -336,37 +337,135 @@ describe.skipIf(!POSTGRES_URL)(`reconcileTypeIndexes (${LAYOUT})`, () => {
     const ours = (ns: string, field: string) =>
       new RegExp(`^rows_${ns}_t_${field.toLowerCase()}_[0-9a-f]{6}_[0-9a-f]{8}_stat$`);
 
+    const statArgs = (ns: string, indexes: IndexDecl[], type = TYPE) => ({
+      namespace: ns,
+      type,
+      layout: LAYOUT,
+      fields,
+      indexes
+    });
+    /** `sql`, but every `unsafe` statement on a reserved connection matching `fails` rejects. */
+    const failing = (fails: RegExp): Sql =>
+      new Proxy(sql, {
+        get(target, prop, receiver) {
+          if (prop !== 'reserve') return Reflect.get(target, prop, receiver);
+          return async () => {
+            const conn = await target.reserve();
+            return new Proxy(conn, {
+              get(c, p, r) {
+                if (p !== 'unsafe') return Reflect.get(c, p, r);
+                return (q: string, ...rest: unknown[]) =>
+                  fails.test(q)
+                    ? Promise.reject(new Error(`stubbed failure: ${q}`))
+                    : (c.unsafe as (...a: unknown[]) => unknown)(q, ...rest);
+              }
+            });
+          };
+        }
+      });
+    const statName = (ns: string, field: string, type = TYPE) =>
+      generatedIdentifier(
+        ns,
+        type,
+        `${field}_${createHash('sha256').update(indexExpressionSql('text', field)).digest('hex').slice(0, 6)}`,
+        'stat'
+      );
+
     it('are created per body-keyed key, once, dropped with the declaration, and nothing else is touched', async () => {
-      const { ns, target } = await fixture();
+      const { ns, ds, target } = await fixture();
+      // A row, so the ANALYZE fills the objects and a second reconcile has nothing to do.
+      await ds.write(TYPE, [{ id: 'a', cert: 'c', kid: 'k' }]);
       const foreign = `other_stat_${hex()}`;
       await sql.unsafe(`CREATE STATISTICS ${foreign} ON ((body ->> 'kid')) FROM "${target}"`);
-      const decls: IndexDecl[] = [
-        { fields: ['cert'], name: `rows_s_${hex()}` },
-        { fields: ['kid'], unique: true, name: `rows_u_${hex()}` }
-      ];
-      await reconcile(ns, decls);
-      const after = await statsOn(target);
-      const cert = after.find((x) => ours(ns, 'cert').test(x.name));
-      const kid = after.find((x) => ours(ns, 'kid').test(x.name));
-      expect(cert?.exprs).toEqual([`((body ->> 'cert'::text) COLLATE "C")`]);
-      expect(kid?.exprs).toEqual([`((body ->> 'kid'::text) COLLATE "C")`]);
+      try {
+        const decls: IndexDecl[] = [
+          { fields: ['cert'], name: `rows_s_${hex()}` },
+          { fields: ['kid'], unique: true, name: `rows_u_${hex()}` }
+        ];
+        await reconcile(ns, decls);
+        const after = await statsOn(target);
+        const cert = after.find((x) => x.name === statName(ns, 'cert'));
+        const kid = after.find((x) => x.name === statName(ns, 'kid'));
+        expect(cert?.exprs).toEqual([`((body ->> 'cert'::text) COLLATE "C")`]);
+        expect(kid?.exprs).toEqual([`((body ->> 'kid'::text) COLLATE "C")`]);
 
-      const again = await reconcileTypeStatistics(sql, {
-        namespace: ns,
-        type: TYPE,
-        layout: LAYOUT,
-        fields,
-        indexes: decls
-      });
-      expect(again).toEqual({ created: [], dropped: [], analyzed: false });
+        const again = await reconcileTypeStatistics(sql, statArgs(ns, decls));
+        expect(again).toEqual({ created: [], dropped: [], analyzed: false });
 
-      await reconcile(ns, []);
-      const left = (await statsOn(target)).map((x) => x.name);
-      expect(left).not.toContain(cert?.name);
-      expect(left).not.toContain(kid?.name);
-      expect(left).toContain(foreign);
-      await sql.unsafe(`DROP STATISTICS ${foreign}`);
+        await reconcile(ns, []);
+        const left = (await statsOn(target)).map((x) => x.name);
+        expect(left).not.toContain(cert?.name);
+        expect(left).not.toContain(kid?.name);
+        expect(left).toContain(foreign);
+      } finally {
+        await sql.unsafe(`DROP STATISTICS IF EXISTS ${foreign}`);
+      }
     });
+
+    it('a failed drop is logged, the reconcile completes, and the next one drops it', async () => {
+      const { ns, target } = await fixture();
+      const decls: IndexDecl[] = [{ fields: ['cert'], name: `rows_s_${hex()}` }];
+      await reconcile(ns, decls);
+      const name = statName(ns, 'cert');
+      await expect(
+        reconcileTypeIndexes(failing(/^DROP STATISTICS/), statArgs(ns, []))
+      ).resolves.toBeDefined();
+      expect((await statsOn(target)).map((x) => x.name)).toContain(name);
+      expect(await reconcileTypeStatistics(sql, statArgs(ns, []))).toMatchObject({
+        dropped: [name]
+      });
+    });
+
+    it('a failed ANALYZE is retried by the next reconcile', async () => {
+      const { ns, ds } = await fixture();
+      await ds.write(TYPE, [{ id: 'a', cert: 'c' }]);
+      const decls: IndexDecl[] = [{ fields: ['cert'], name: `rows_s_${hex()}` }];
+      const first = await reconcileTypeStatistics(failing(/^ANALYZE/), statArgs(ns, decls));
+      expect(first).toEqual({ created: [statName(ns, 'cert')], dropped: [], analyzed: false });
+      expect(await reconcileTypeStatistics(sql, statArgs(ns, decls))).toEqual({
+        created: [],
+        dropped: [],
+        analyzed: true
+      });
+      expect((await reconcileTypeStatistics(sql, statArgs(ns, decls))).analyzed).toBe(false);
+    });
+
+    it("never claims an object of its name that is not marked as the type's", async () => {
+      const { ns, target } = await fixture();
+      const name = statName(ns, 'cert');
+      await sql.unsafe(`CREATE STATISTICS ${name} ON ((body ->> 'kid')) FROM "${target}"`);
+      try {
+        const out = await reconcileTypeStatistics(
+          sql,
+          statArgs(ns, [{ fields: ['cert'], name: `rows_s_${hex()}` }])
+        );
+        expect(out.created).toEqual([]);
+        const [row] = await sql<Array<{ comment: string | null }>>`
+          SELECT obj_description(oid, 'pg_statistic_ext') AS comment
+          FROM pg_statistic_ext WHERE stxname = ${name}`;
+        expect(row?.comment).toBeNull();
+      } finally {
+        await sql.unsafe(`DROP STATISTICS IF EXISTS ${name}`);
+      }
+    });
+
+    it.skipIf(LAYOUT !== 'legacy')(
+      "legacy: one type's reconcile leaves another type's object on rows alone",
+      async () => {
+        const { ns } = await fixture();
+        const decls: IndexDecl[] = [{ fields: ['cert'], name: `rows_s_${hex()}` }];
+        const other = {
+          ...statArgs(ns, [{ fields: ['cert'], name: `rows_o_${hex()}` }]),
+          type: 'U'
+        };
+        await reconcileTypeIndexes(sql, statArgs(ns, decls));
+        await reconcileTypeIndexes(sql, other);
+        await reconcileTypeIndexes(sql, { ...other, indexes: [] });
+        const names = (await statsOn('rows')).map((x) => x.name);
+        expect(names).toContain(statName(ns, 'cert'));
+        expect(names).not.toContain(statName(ns, 'cert', 'U'));
+      }
+    );
 
     it('are not created for a promoted field', async () => {
       await addTestPromotedColumns(sql);
