@@ -73,6 +73,7 @@ import {
   type BodyOrderByCast,
   buildBodyProjection,
   buildCursorCompare,
+  buildCursorNullTail,
   buildOrderBy,
   buildProjectedOrderBy,
   buildSortKeyProjection,
@@ -332,8 +333,12 @@ export class PgDataset implements Dataset {
 
     const orderByCastFor = bodyCastFor;
 
-    // Cursor: add a tuple-compare clause so the next page starts strictly
-    // after the cursor's (orderBy-values, id) tuple.
+    // Cursor: a tuple-compare clause so the page starts strictly after the
+    // cursor's (orderBy-values, id) tuple. It matches only non-null leading
+    // values when the cursor's is non-null; `tailSql` then selects the null
+    // tail that sorts after them, read only if the first query falls short.
+    let whereSql = combineAnd(sql, clauses);
+    let tailSql: Fragment | null = null;
     if (params.cursor !== undefined && params.cursor !== '') {
       const cursor = decodeCursor(params.cursor);
       const cursorFragment = buildCursorCompare(
@@ -344,13 +349,19 @@ export class PgDataset implements Dataset {
         orderByCastFor,
         this.#promotedFor
       );
-      if (cursorFragment !== null) clauses.push(cursorFragment);
+      const tail = buildCursorNullTail(
+        sql,
+        orderBy,
+        cursor.orderByValues,
+        orderByCastFor,
+        this.#promotedFor
+      );
+      if (tail !== null) tailSql = combineAnd(sql, [...clauses, tail]);
+      if (cursorFragment !== null) whereSql = combineAnd(sql, [...clauses, cursorFragment]);
     }
-
-    const whereSql = combineAnd(sql, clauses);
     const orderBySql = buildOrderBy(sql, orderBy, orderByCastFor, this.#promotedFor);
 
-    // Fetch one extra row to determine hasMore without a second query.
+    // Fetch one extra row to determine hasMore without a count query.
     const fetchLimit = limit !== undefined ? limit + 1 : undefined;
 
     // Ships only the requested top-level body keys when `fields` is given,
@@ -377,14 +388,16 @@ export class PgDataset implements Dataset {
     // outer ORDER BY restores the page order over the projected sort keys.
     const joinShortIds =
       whereReferencesField(params.where, 'shortId') || orderBy.some(([f]) => f === 'shortId');
-    const limitSql = fetchLimit !== undefined ? sql`LIMIT ${fetchLimit}` : sql``;
     // Inlined so a generic plan costs the page at its real size rather than
-    // guessing 10% of the type, which favours a parallel full sort over an index.
-    const pageLimitSql =
-      fetchLimit !== undefined ? sql.unsafe(`LIMIT ${BigInt(fetchLimit)}`) : sql``;
-
-    const rows = joinShortIds
-      ? await sql<SubstrateRowRecord[]>`
+    // guessing 10% of the type, which favours a parallel full sort over an
+    // index. Safe to inline: `n` derives from `limit`, which is validated and
+    // floored above, and `BigInt()` throws on a non-integer.
+    const inlineLimit = (n: number | undefined): Fragment =>
+      n !== undefined ? sql.unsafe(`LIMIT ${BigInt(n)}`) : sql``;
+    // One page query: phase 1 with the cursor compare, or the null tail.
+    const page = (where: Fragment, n: number | undefined) =>
+      joinShortIds
+        ? sql<SubstrateRowRecord[]>`
           SELECT r.id, ${bodyProjection} AS body, r.deleted_at, s.short_id,
                  r.created_at, r.updated_at,
                  r.created_by_kind, r.created_by_id,
@@ -394,11 +407,11 @@ export class PgDataset implements Dataset {
             ON s.namespace = r.namespace
            AND s.type = r.type
            AND s.row_id = r.id
-          WHERE ${whereSql}
+          WHERE ${where}
           ${orderBySql}
-          ${limitSql}
+          ${n !== undefined ? sql`LIMIT ${n}` : sql``}
         `
-      : await sql<SubstrateRowRecord[]>`
+        : sql<SubstrateRowRecord[]>`
           SELECT p.*, s.short_id
           FROM (
             SELECT r.id, ${bodyProjection} AS body, r.deleted_at,
@@ -407,9 +420,9 @@ export class PgDataset implements Dataset {
                    r.updated_by_kind, r.updated_by_id,
                    r.namespace, r.type${sortKeyProjection}
             FROM rows r
-            WHERE ${whereSql}
+            WHERE ${where}
             ${orderBySql}
-            ${pageLimitSql}
+            ${inlineLimit(n)}
           ) p
           LEFT JOIN LATERAL (
             SELECT s.short_id FROM short_ids s
@@ -418,6 +431,15 @@ export class PgDataset implements Dataset {
           ) s ON true
           ${buildProjectedOrderBy(sql, orderBy, sortKeyAliases, orderByCastFor, this.#promotedFor, 'p')}
         `;
+
+    // Both queries read the same snapshot only inside a REPEATABLE READ or
+    // SERIALIZABLE transaction; elsewhere each sees its own.
+    let rows: SubstrateRowRecord[] = await page(whereSql, fetchLimit);
+    if (tailSql !== null && (fetchLimit === undefined || rows.length < fetchLimit)) {
+      const n = fetchLimit === undefined ? undefined : fetchLimit - rows.length;
+      // concat, not push(...): an unlimited tail can exceed the argument limit.
+      rows = rows.concat(await page(tailSql, n));
+    }
 
     const materialised = rows.map((r) => this.materialize(r));
     let hasMore = false;

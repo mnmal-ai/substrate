@@ -8,12 +8,14 @@
  *     whereReferencesField
  *   `./pg-sql/sorting.js` — normalizeOrderBy, resolveBodyOrderByCast,
  *     buildOrderBy, buildSortKeyProjection, buildProjectedOrderBy,
- *     buildCursorCompare
+ *     buildCursorCompare, buildCursorNullTail
  *
  * These modules never import from pg-dataset.ts and hold no connection state.
  * Caller values always go through parameterised slots; `sql.unsafe(...)` is
- * used only for identifiers/casts drawn from closed constant maps and for field
- * names inlined as escaped literals.
+ * used only for identifiers/casts drawn from closed constant maps, for field
+ * names inlined as escaped literals, and for comparison operators from a closed
+ * set. `PgDataset.read` also inlines its page LIMIT, which is safe because
+ * `read()` validates and floors it and `BigInt()` throws on a non-integer.
  */
 
 export {
@@ -33,6 +35,7 @@ export {
 export { assembleRowMetadata, buildBodyProjection } from './pg-sql/projection.js';
 export {
   buildCursorCompare,
+  buildCursorNullTail,
   buildOrderBy,
   buildProjectedOrderBy,
   buildSortKeyProjection,

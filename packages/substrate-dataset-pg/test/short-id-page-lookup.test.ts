@@ -6,28 +6,40 @@
  * `force_generic_plan` a join on `short_ids` below the LIMIT has nothing
  * bounding `row_id` and reads the type from its start up to the cursor. Under
  * zero parallel costs the page query must still be able to run in parallel.
+ * A cursor on a nullable leading key bounds that key in the index scan and
+ * reads the null tail only when the bounded page falls short.
  */
 
 import { randomBytes } from 'node:crypto';
 import { encodeCursor } from '@mnmal-ai/substrate-filter';
-import type { FieldDef, ReadParams } from '@mnmal-ai/substrate-types';
+import type { FieldDef, IndexDecl, ReadParams } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset } from '../src/index.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const TYPE = 'Paged';
+/** Every row has a `d`. */
+const FULL = 'PagedFull';
+const FULL_ROWS = 6000;
 const ROWS = 20_000;
 const PAGE = 1000;
 const ns = `spl_${randomBytes(4).toString('hex')}`;
 const rid = (i: number): string => `r${String(i).padStart(5, '0')}`;
 /** Every 7th row has no short id; the rest have short id i + 1. */
 const bound = (i: number): boolean => i % 7 !== 0;
-/** Every 5th row has no `d`; the rest repeat 997 distinct dates, so ties fall to id. */
-const dateOf = (i: number): string | undefined =>
-  i % 5 === 0 ? undefined : new Date(Date.UTC(2020, 0, 1) + (i % 997) * 3_600_000).toISOString();
-const dIsDate = (_type: string, field: string): FieldDef | undefined =>
-  field === 'd' ? { kind: 'scalar', type: 'date' } : undefined;
+const iso = (i: number): string =>
+  new Date(Date.UTC(2020, 0, 1) + (i % 997) * 3_600_000).toISOString();
+/**
+ * Every 19th row (about 5%) has no `d`; the rest repeat 997 distinct dates, so
+ * ties fall to the later keys. 19 leaves the null boundary mid-page.
+ */
+const dateOf = (i: number): string | undefined => (i % 19 === 0 ? undefined : iso(i));
+/** A second sort key: three values, and none on every 11th row. */
+const gOf = (i: number): string | undefined => (i % 11 === 0 ? undefined : `g${i % 3}`);
+const fields: Record<string, FieldDef> = { d: { kind: 'scalar', type: 'date' } };
+const D_IDX = `rows_spl_d_${randomBytes(4).toString('hex')}`;
+const indexes: IndexDecl[] = [{ fields: [{ field: 'd', dir: 'desc' }], name: D_IDX }];
 
 let sql: Sql;
 /** A second client whose `debug` hook records each statement it sends. */
@@ -44,17 +56,37 @@ beforeAll(async () => {
       sent.push({ query, parameters: parameters as unknown[], types: types as number[] });
     }
   });
-  ds = new PgDataset({ namespace: ns, sql: traced, fieldDefLookup: dIsDate });
+  ds = new PgDataset({
+    namespace: ns,
+    sql: traced,
+    fieldDefLookup: (_type, field) => fields[field],
+    typeDefLookup: (type) =>
+      type === TYPE
+        ? { fields, indexes }
+        : { fields, indexes: [{ fields: [{ field: 'd', dir: 'desc' }] }] }
+  });
   await ds.ensureTypeStorage(TYPE);
+  await ds.ensureTypeStorage(FULL);
   for (let start = 0; start < ROWS; start += 2000) {
     await ds.write(
       TYPE,
       Array.from({ length: 2000 }, (_, k) => {
-        const d = dateOf(start + k);
-        return { id: rid(start + k), n: start + k, ...(d === undefined ? {} : { d }) };
+        const i = start + k;
+        const d = dateOf(i);
+        const g = gOf(i);
+        return {
+          id: rid(i),
+          n: i,
+          ...(d === undefined ? {} : { d }),
+          ...(g === undefined ? {} : { g })
+        };
       })
     );
   }
+  await ds.write(
+    FULL,
+    Array.from({ length: FULL_ROWS }, (_, i) => ({ id: rid(i), n: i, d: iso(i) }))
+  );
   await sql`
     INSERT INTO short_ids (namespace, type, short_id, row_id)
     SELECT ${ns}, ${TYPE}, i + 1, 'r' || lpad(i::text, 5, '0')
@@ -76,6 +108,8 @@ type PlanNode = {
   'Parent Relationship'?: string;
   'Relation Name'?: string;
   'Index Name'?: string;
+  'Index Cond'?: string;
+  'Rows Removed by Filter'?: number;
   'Actual Rows': number;
   'Actual Loops': number;
   Plans?: PlanNode[];
@@ -90,11 +124,16 @@ function nodes(node: PlanNode, out: PlanNode[] = []): PlanNode[] {
   return out;
 }
 
-/** The plan of the statement `read()` sends for `params`, executed after `settings`. */
-async function planOf(params: ReadParams, settings: string[], analyze: boolean): Promise<PlanNode> {
+/** The SELECTs `read()` sends for `params`. */
+async function selectsOf(params: ReadParams, type = TYPE): Promise<typeof sent> {
   sent = [];
-  await ds.read(TYPE, params);
-  const q = sent.find((s) => /FROM rows r/.test(s.query));
+  await ds.read(type, params);
+  return sent.filter((s) => /FROM rows r/.test(s.query));
+}
+
+/** The plan of the first statement `read()` sends for `params`, executed after `settings`. */
+async function planOf(params: ReadParams, settings: string[], analyze: boolean): Promise<PlanNode> {
+  const q = (await selectsOf(params))[0];
   if (q === undefined) throw new Error('read sent no SELECT');
   const conn = await sql.reserve();
   try {
@@ -104,7 +143,10 @@ async function planOf(params: ReadParams, settings: string[], analyze: boolean):
     const literals = q.parameters
       .map((p) => (p === null ? 'NULL' : `'${String(p).replace(/'/g, "''")}'`))
       .join(', ');
-    await conn.unsafe(`PREPARE spl_stmt(${names.map((n) => n.t).join(', ')}) AS ${q.query}`);
+    // A statement the client already prepared reports its types as 0 ('-'),
+    // which PREPARE takes as `unknown`, inferred from context as the client's were.
+    const typeList = names.map((n) => (n.t === '-' ? 'unknown' : n.t)).join(', ');
+    await conn.unsafe(`PREPARE spl_stmt(${typeList}) AS ${q.query}`);
     for (const s of settings) await conn.unsafe(`SET ${s}`);
     const rows = await conn.unsafe(
       `EXPLAIN (${analyze ? 'ANALYZE, ' : ''}FORMAT JSON) EXECUTE spl_stmt(${literals})`
@@ -185,33 +227,137 @@ describe.skipIf(!POSTGRES_URL)('read: short id lookup for the returned page only
     );
   }, 60_000);
 
-  it('a paged walk by a nullable date DESC returns every row once, in order', async () => {
-    const seen: Array<{ id: unknown; shortId: unknown }> = [];
-    let cursor: string | undefined;
-    for (;;) {
-      const page = await ds.read(TYPE, {
-        orderBy: [{ d: 'desc' }, { id: 'asc' }],
-        limit: PAGE,
-        ...(cursor ? { cursor } : {})
-      });
-      for (const r of page.rows) seen.push({ id: r.id, shortId: r.shortId });
-      if (!page.hasMore) break;
-      cursor = page.nextCursor;
+  // A deep page: about half the dated rows sort before the cursor.
+  const deepDateCursor = encodeCursor({ orderByValues: [iso(500)], id: rid(500) });
+
+  for (const mode of ['force_custom_plan', 'force_generic_plan']) {
+    it(`a deep page by a nullable date bounds the date in the index scan (${mode})`, async () => {
+      const params: ReadParams = { orderBy: [{ d: 'desc' }], limit: PAGE, cursor: deepDateCursor };
+      const all = nodes(await planOf(params, [`plan_cache_mode = ${mode}`], true));
+      const scan = all.find((n) => n['Index Name'] === D_IDX);
+      expect(
+        scan,
+        all.map((n) => `${n['Node Type']} ${n['Index Name'] ?? ''}`).join(', ')
+      ).toBeDefined();
+      expect(scan?.['Index Cond']).toMatch(/<=/);
+      const removed = all.reduce((sum, n) => sum + (n['Rows Removed by Filter'] ?? 0), 0);
+      expect(removed).toBeLessThanOrEqual(PAGE);
+      // A full page never reads the null tail.
+      expect(await selectsOf(params)).toHaveLength(1);
+    });
+  }
+
+  it('a cursor already in the null tail bounds it in the index scan', async () => {
+    const tailCursor = encodeCursor({ orderByValues: [null], id: rid(19 * 500) });
+    const params: ReadParams = { orderBy: [{ d: 'desc' }], limit: 100, cursor: tailCursor };
+    for (const mode of ['force_custom_plan', 'force_generic_plan']) {
+      const all = nodes(await planOf(params, [`plan_cache_mode = ${mode}`], true));
+      const scan = all.find((n) => n['Index Name'] === D_IDX);
+      expect(scan?.['Index Cond'], mode).toMatch(/IS NULL/);
+      expect(scan?.['Index Cond'], mode).toMatch(/id >/);
     }
-    const expected = Array.from({ length: ROWS }, (_, i) => i).sort((a, b) => {
-      const da = dateOf(a);
-      const db = dateOf(b);
-      if (da !== db) {
-        if (da === undefined) return 1;
-        if (db === undefined) return -1;
-        return da < db ? 1 : -1;
+    expect(await selectsOf(params)).toHaveLength(1);
+  });
+
+  type Key = (i: number) => string | undefined;
+  /** The expected order: each key under NULLS LAST, then id ascending. */
+  const sortedBy =
+    (keys: Array<[Key, 'asc' | 'desc']>) =>
+    (a: number, b: number): number => {
+      for (const [key, dir] of keys) {
+        const ka = key(a);
+        const kb = key(b);
+        if (ka === kb) continue;
+        if (ka === undefined) return 1;
+        if (kb === undefined) return -1;
+        return ka < kb === (dir === 'asc') ? -1 : 1;
       }
       return a - b;
-    });
-    expect(seen).toEqual(
-      expected.map((i) => ({ id: rid(i), shortId: bound(i) ? i + 1 : undefined }))
-    );
-  }, 60_000);
+    };
+
+  const walks: Array<{
+    name: string;
+    type?: string;
+    params: ReadParams;
+    keep?: (i: number) => boolean;
+    keys: Array<[Key, 'asc' | 'desc']>;
+    straddles: boolean;
+  }> = [
+    {
+      name: 'date DESC',
+      params: { orderBy: [{ d: 'desc' }, { id: 'asc' }] },
+      keys: [[dateOf, 'desc']],
+      straddles: true
+    },
+    {
+      name: 'date ASC',
+      params: { orderBy: [{ d: 'asc' }] },
+      keys: [[dateOf, 'asc']],
+      straddles: true
+    },
+    {
+      name: 'date DESC, g ASC',
+      params: { orderBy: [{ d: 'desc' }, { g: 'asc' }] },
+      keys: [
+        [dateOf, 'desc'],
+        [gOf, 'asc']
+      ],
+      straddles: true
+    },
+    {
+      name: 'date DESC where date >= X',
+      params: { where: { d: { gte: iso(300) } }, orderBy: [{ d: 'desc' }] },
+      keep: (i) => (dateOf(i) ?? '') >= iso(300),
+      keys: [[dateOf, 'desc']],
+      straddles: false
+    },
+    {
+      name: 'date DESC with no nulls',
+      type: FULL,
+      params: { orderBy: [{ d: 'desc' }] },
+      keys: [[iso, 'desc']],
+      straddles: false
+    }
+  ];
+
+  for (const w of walks) {
+    for (const size of [7, 100]) {
+      it(`a paged walk by ${w.name}, page ${size}, returns every row once, in order`, async () => {
+        const type = w.type ?? TYPE;
+        // A slice of the fixture keeps the page count down. Both sizes leave
+        // the null boundary mid-page.
+        const total = size === 7 ? 2000 : 6000;
+        const slice = { n: { lt: total } };
+        const where = w.params.where === undefined ? slice : { AND: [w.params.where, slice] };
+        const seen: Array<{ id: unknown; shortId: unknown }> = [];
+        let straddled = false;
+        let cursor: string | undefined;
+        for (;;) {
+          const page = await ds.read(type, {
+            ...w.params,
+            where,
+            limit: size,
+            ...(cursor ? { cursor } : {})
+          });
+          const dated = page.rows.filter((r) => r.d !== undefined).length;
+          if (dated > 0 && dated < page.rows.length) straddled = true;
+          for (const r of page.rows) seen.push({ id: r.id, shortId: r.shortId });
+          if (!page.hasMore) break;
+          cursor = page.nextCursor;
+        }
+        const expected = Array.from({ length: total }, (_, i) => i)
+          .filter(w.keep ?? (() => true))
+          .sort(sortedBy(w.keys));
+        expect(seen).toEqual(
+          expected.map((i) => ({
+            id: rid(i),
+            shortId: type === TYPE && bound(i) ? i + 1 : undefined
+          }))
+        );
+        expect(straddled).toBe(w.straddles);
+      }, 60_000);
+    }
+  }
 
   it('a shortId reference nested under OR/NOT keeps the join', async () => {
     const { rows } = await ds.read(TYPE, {
