@@ -308,6 +308,9 @@ export async function pendingMigrations(sql: Sql): Promise<string[]> {
     .filter((v) => !applied.has(v));
 }
 
+/** Reserved connections whose session {@link withTableIndexLock} terminated. */
+const retired = new WeakSet<ReservedSql>();
+
 export async function withMigrationLock<T>(
   sql: Sql,
   fn: (conn: ReservedSql) => Promise<T>
@@ -318,13 +321,17 @@ export async function withMigrationLock<T>(
     try {
       return await fn(lockConn);
     } finally {
-      const [row] = await lockConn<Array<{ released: boolean }>>`
-        SELECT pg_advisory_unlock(hashtext('substrate-migrations')) AS released
-      `;
-      if (row?.released === false) {
-        process.stderr.write(
-          'substrate migrations: advisory unlock reported the lock was not held by this session\n'
-        );
+      // A retired session released the lock as it ended; unlocking on it would
+      // only replace the error that retired it with a connection error.
+      if (!retired.has(lockConn)) {
+        const [row] = await lockConn<Array<{ released: boolean }>>`
+          SELECT pg_advisory_unlock(hashtext('substrate-migrations')) AS released
+        `;
+        if (row?.released === false) {
+          process.stderr.write(
+            'substrate migrations: advisory unlock reported the lock was not held by this session\n'
+          );
+        }
       }
     }
   } finally {
@@ -399,7 +406,10 @@ async function releaseTableIndexLock(
     await unlock().catch(unlock);
   } catch (err) {
     // The session may still hold the lock, so it must not be pooled.
-    if (!(await retireSession(sql, session))) conn.release = () => {};
+    if (!(await retireSession(sql, session))) {
+      retired.add(conn);
+      conn.release = () => {};
+    }
     throw err;
   }
 }

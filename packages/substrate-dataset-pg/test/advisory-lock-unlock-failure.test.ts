@@ -7,7 +7,7 @@
 import type { ReservedSql, Sql } from 'postgres';
 import { describe, expect, it } from 'vitest';
 import { tryWithPgAdvisoryLock } from '../src/index.js';
-import { withTableIndexLock } from '../src/migrate.js';
+import { withMigrationLock, withTableIndexLock } from '../src/migrate.js';
 
 function fakeSql(failUnlock: boolean, max = 10) {
   const poolQueries: string[] = [];
@@ -119,5 +119,41 @@ describe('withTableIndexLock unlock failure', () => {
     expect(f.pool).toEqual(['terminate 42,t0']);
     f.conn.release();
     expect(f.released()).toBe(false);
+  });
+});
+
+describe('withMigrationLock over a retired session', () => {
+  it('rethrows the original unlock error, not a connection error from its own unlock', async () => {
+    const sent: string[] = [];
+    let tableUnlocks = 0;
+    const tag = (strings: TemplateStringsArray) => {
+      const text = strings.join('?');
+      if (text.includes('pg_try_advisory_lock')) {
+        sent.push('migration lock');
+        return Promise.resolve([{ acquired: true }]);
+      }
+      sent.push('migration unlock');
+      return Promise.reject(new Error('write CONNECTION_ENDED'));
+    };
+    const conn = Object.assign(tag, {
+      unsafe: (text: string) => {
+        if (text.includes('pg_try_advisory_lock')) {
+          return Promise.resolve([{ acquired: true, pid: 42, started: 't0' }]);
+        }
+        tableUnlocks += 1;
+        return Promise.reject(new Error(`canceling statement due to user request ${tableUnlocks}`));
+      },
+      release: () => {
+        sent.push('release');
+      }
+    }) as unknown as ReservedSql;
+    const sql = Object.assign(() => Promise.resolve([{ pg_terminate_backend: true }]), {
+      options: { max: 10 },
+      reserve: () => Promise.resolve(conn)
+    }) as unknown as Sql;
+    await expect(
+      withMigrationLock(sql, (c) => withTableIndexLock(sql, c, 'rows', undefined, async () => 1))
+    ).rejects.toThrow('canceling statement due to user request 2');
+    expect(sent).toEqual(['migration lock']);
   });
 });
