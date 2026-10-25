@@ -437,8 +437,12 @@ export class PgDataset implements Dataset {
     let rows: SubstrateRowRecord[] = await page(whereSql, fetchLimit);
     if (tailSql !== null && (fetchLimit === undefined || rows.length < fetchLimit)) {
       const n = fetchLimit === undefined ? undefined : fetchLimit - rows.length;
+      // A row whose lead turned null after the first query would come back
+      // twice; excluding it in SQL keeps the look-ahead row, and so `hasMore`.
+      // The residual anomaly is a skip: a row that left the tail in between.
+      const unseen = sql`r.id <> ALL(${rows.map((r) => r.id)})`;
       // concat, not push(...): an unlimited tail can exceed the argument limit.
-      rows = rows.concat(await page(tailSql, n));
+      rows = rows.concat(await page(combineAnd(sql, [tailSql, unseen]), n));
     }
 
     const materialised = rows.map((r) => this.materialize(r));

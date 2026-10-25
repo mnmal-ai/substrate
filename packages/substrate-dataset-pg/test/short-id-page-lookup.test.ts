@@ -39,7 +39,11 @@ const dateOf = (i: number): string | undefined => (i % 19 === 0 ? undefined : is
 const gOf = (i: number): string | undefined => (i % 11 === 0 ? undefined : `g${i % 3}`);
 const fields: Record<string, FieldDef> = { d: { kind: 'scalar', type: 'date' } };
 const D_IDX = `rows_spl_d_${randomBytes(4).toString('hex')}`;
-const indexes: IndexDecl[] = [{ fields: [{ field: 'd', dir: 'desc' }], name: D_IDX }];
+const D_ASC_IDX = `rows_spl_d_asc_${randomBytes(4).toString('hex')}`;
+const indexes: IndexDecl[] = [
+  { fields: [{ field: 'd', dir: 'desc' }], name: D_IDX },
+  { fields: ['d'], name: D_ASC_IDX }
+];
 
 let sql: Sql;
 /** A second client whose `debug` hook records each statement it sends. */
@@ -230,22 +234,26 @@ describe.skipIf(!POSTGRES_URL)('read: short id lookup for the returned page only
   // A deep page: about half the dated rows sort before the cursor.
   const deepDateCursor = encodeCursor({ orderByValues: [iso(500)], id: rid(500) });
 
-  for (const mode of ['force_custom_plan', 'force_generic_plan']) {
-    it(`a deep page by a nullable date bounds the date in the index scan (${mode})`, async () => {
-      const params: ReadParams = { orderBy: [{ d: 'desc' }], limit: PAGE, cursor: deepDateCursor };
-      const all = nodes(await planOf(params, [`plan_cache_mode = ${mode}`], true));
-      const scan = all.find((n) => n['Index Name'] === D_IDX);
-      expect(
-        scan,
-        all.map((n) => `${n['Node Type']} ${n['Index Name'] ?? ''}`).join(', ')
-      ).toBeDefined();
-      expect(scan?.['Index Cond']).toMatch(/<=/);
-      const removed = all.reduce((sum, n) => sum + (n['Rows Removed by Filter'] ?? 0), 0);
-      expect(removed).toBeLessThanOrEqual(PAGE);
-      // A full page never reads the null tail.
-      expect(await selectsOf(params)).toHaveLength(1);
-    });
-  }
+  for (const [dir, index, bound] of [
+    ['desc', () => D_IDX, /<=/],
+    ['asc', () => D_ASC_IDX, />=/]
+  ] as const)
+    for (const mode of ['force_custom_plan', 'force_generic_plan']) {
+      it(`a deep page by a nullable date ${dir} bounds the date in the index scan (${mode})`, async () => {
+        const params: ReadParams = { orderBy: [{ d: dir }], limit: PAGE, cursor: deepDateCursor };
+        const all = nodes(await planOf(params, [`plan_cache_mode = ${mode}`], true));
+        const scan = all.find((n) => n['Index Name'] === index());
+        expect(
+          scan,
+          all.map((n) => `${n['Node Type']} ${n['Index Name'] ?? ''}`).join(', ')
+        ).toBeDefined();
+        expect(scan?.['Index Cond']).toMatch(bound);
+        const removed = all.reduce((sum, n) => sum + (n['Rows Removed by Filter'] ?? 0), 0);
+        expect(removed).toBeLessThanOrEqual(PAGE);
+        // A full page never reads the null tail.
+        expect(await selectsOf(params)).toHaveLength(1);
+      });
+    }
 
   it('a cursor already in the null tail bounds it in the index scan', async () => {
     const tailCursor = encodeCursor({ orderByValues: [null], id: rid(19 * 500) });
@@ -312,6 +320,14 @@ describe.skipIf(!POSTGRES_URL)('read: short id lookup for the returned page only
       straddles: false
     },
     {
+      name: 'date DESC through the shortId join',
+      // gte 3 rather than 1 leaves the null boundary mid-page at page 7.
+      params: { where: { shortId: { gte: 3 } }, orderBy: [{ d: 'desc' }] },
+      keep: (i) => bound(i) && i + 1 >= 3,
+      keys: [[dateOf, 'desc']],
+      straddles: true
+    },
+    {
       name: 'date DESC with no nulls',
       type: FULL,
       params: { orderBy: [{ d: 'desc' }] },
@@ -358,6 +374,58 @@ describe.skipIf(!POSTGRES_URL)('read: short id lookup for the returned page only
       }, 60_000);
     }
   }
+
+  it('an unlimited read from a non-null cursor returns the rest, null tail included', async () => {
+    const params: ReadParams = { where: { n: { lt: 2000 } }, orderBy: [{ d: 'desc' }] };
+    const first = await ds.read(TYPE, { ...params, limit: 100 });
+    expect(first.nextCursor).toBeDefined();
+    const rest = await ds.read(TYPE, { ...params, cursor: first.nextCursor ?? '' });
+    expect(rest.hasMore).toBe(false);
+    const expected = Array.from({ length: 2000 }, (_, i) => i)
+      .sort(sortedBy([[dateOf, 'desc']]))
+      .map(rid);
+    expect([...first.rows, ...rest.rows].map((r) => r.id)).toEqual(expected);
+  });
+
+  it('a row whose lead turns null between the two queries is not returned twice', async () => {
+    const RACE = 'Race';
+    await ds.ensureTypeStorage(RACE);
+    await ds.write(
+      RACE,
+      Array.from({ length: 10 }, (_, i) => ({ id: rid(i), ...(i < 5 ? { d: iso(i) } : {}) }))
+    );
+    // A client that clears r00001's date just before the second page query
+    // (the null tail) is sent; the first has already returned r00001.
+    let pageQueries = 0;
+    const racing = new Proxy(traced, {
+      apply(target, thisArg, args: unknown[]) {
+        const strings = args[0];
+        const isPage = Array.isArray(strings) && String(strings[0]).includes('SELECT p.*');
+        if (isPage && ++pageQueries === 2) {
+          return sql`
+            UPDATE rows SET body = body - 'd'
+            WHERE namespace = ${ns} AND type = ${RACE} AND id = ${rid(1)}`.then(() =>
+            Reflect.apply(target, thisArg, args)
+          );
+        }
+        return Reflect.apply(target, thisArg, args);
+      }
+    });
+    const raceDs = new PgDataset({
+      namespace: ns,
+      sql: racing,
+      fieldDefLookup: (_type, field) => fields[field]
+    });
+    const page = await raceDs.read(RACE, {
+      orderBy: [{ d: 'desc' }],
+      limit: 100,
+      cursor: encodeCursor({ orderByValues: [iso(4)], id: rid(4) })
+    });
+    expect(pageQueries).toBe(2);
+    const ids = page.rows.map((r) => r.id);
+    expect(ids).toEqual([rid(3), rid(2), rid(1), rid(0), rid(5), rid(6), rid(7), rid(8), rid(9)]);
+    expect(page.hasMore).toBe(false);
+  });
 
   it('a shortId reference nested under OR/NOT keeps the join', async () => {
     const { rows } = await ds.read(TYPE, {

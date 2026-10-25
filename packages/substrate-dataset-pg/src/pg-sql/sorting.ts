@@ -330,7 +330,8 @@ export function buildCursorCompare(
  * The null tail that follows a cursor under NULLS LAST: `lead IS NULL` when
  * the leading key is nullable (not `id`) and the cursor's leading value is
  * not null, else null. Every row it matches sorts after the cursor, so the
- * tail query needs no other cursor condition.
+ * tail query needs no other cursor condition. `createdAt` and `updatedAt` count
+ * as nullable: their columns are nullable in both baselines.
  */
 export function buildCursorNullTail(
   sql: Sql | TransactionSql,
