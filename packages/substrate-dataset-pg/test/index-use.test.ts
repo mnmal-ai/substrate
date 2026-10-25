@@ -402,6 +402,50 @@ describe.skipIf(!POSTGRES_URL)(`index use: the default order (${LAYOUT})`, () =>
   });
 });
 
+/** Every `Index Cond` and every `Filter` in the plan. */
+const conditions = (
+  node: PlanNode & { 'Index Cond'?: string; Filter?: string },
+  out: { cond: string[]; filter: string[] } = { cond: [], filter: [] }
+): { cond: string[]; filter: string[] } => {
+  if (node['Index Cond'] !== undefined) out.cond.push(node['Index Cond']);
+  if (node.Filter !== undefined) out.filter.push(node.Filter);
+  for (const child of node.Plans ?? []) conditions(child, out);
+  return out;
+};
+
+// `id` is NOT NULL, so its keyset compare carries no `IS NULL` arm and the
+// primary key serves it as a range rather than filtering every earlier row.
+describe.skipIf(!POSTGRES_URL)(`index use: id keyset cursor (${LAYOUT})`, () => {
+  const byId: ReadParams = { orderBy: [{ id: 'asc' }], limit: 500 };
+
+  it('page 2 of an id-ordered read bounds id in an Index Cond, with no IS NULL filter', async () => {
+    const { nextCursor } = await ds.read(TYPE, byId);
+    if (nextCursor === undefined) throw new Error('page 1 returned no cursor');
+    const plan = await customPlan({ ...byId, cursor: nextCursor }, ds, TYPE);
+    if (process.env.INDEX_USE_LOG) console.log(JSON.stringify(plan, null, 1));
+    const { cond, filter } = conditions(plan);
+    expect(
+      cond.some((c) => /\bid > /.test(c)),
+      JSON.stringify(cond)
+    ).toBe(true);
+    expect(filter.filter((f) => /IS NULL/.test(f) && /\bid\b/.test(f))).toEqual([]);
+  });
+
+  it('id-ordered keyset paging returns every row exactly once', async () => {
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < ROWS / 500 + 2; page++) {
+      const res = await ds.read(TYPE, { ...byId, ...(cursor === undefined ? {} : { cursor }) });
+      seen.push(...res.rows.map((r) => String(r.id)));
+      if (res.nextCursor === undefined || res.rows.length === 0) break;
+      cursor = res.nextCursor;
+    }
+    expect(seen).toHaveLength(ROWS);
+    expect(new Set(seen).size).toBe(ROWS);
+    expect(seen).toEqual([...seen].sort());
+  });
+});
+
 /** The estimated rows of the scan on the type's table. */
 const scanRows = (
   node: PlanNode & { 'Relation Name'?: string; 'Plan Rows'?: number }

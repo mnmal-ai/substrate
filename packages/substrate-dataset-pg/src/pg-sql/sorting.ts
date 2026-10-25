@@ -307,8 +307,8 @@ function cursorEqFragment(
 }
 
 /**
- * "Strictly after the cursor" for one sort key, under `NULLS LAST`. A bare
- * `expr > $1` would exclude null rows, since `NULL > x` is NULL. The two cases:
+ * "Strictly after the cursor" for one sort key, under `NULLS LAST`. On a
+ * nullable key a bare `expr > $1` would exclude null rows, since `NULL > x` is NULL. The two cases:
  *
  *   cursor value NOT NULL — the rows after it are the ones further along in
  *     direction, PLUS the entire null tail, hence the `OR ... IS NULL`.
@@ -329,6 +329,9 @@ function cursorCmpFragment(
   const expr = sortExpr(sql, field, bodyCast, promotedFor);
   if (value === null || value === undefined) return sql`false`;
   const param = sortParam(sql, field, value, bodyCast, promotedFor);
+  // `id` is NOT NULL in both baselines: no null tail, and a bare compare is
+  // sargable. Every other sort key's column or expression can be null.
+  if (field === 'id') return dir === 'asc' ? sql`${expr} > ${param}` : sql`${expr} < ${param}`;
   return dir === 'asc'
     ? sql`(${expr} > ${param} OR ${expr} IS NULL)`
     : sql`(${expr} < ${param} OR ${expr} IS NULL)`;
