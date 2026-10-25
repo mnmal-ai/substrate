@@ -7,6 +7,7 @@
 import type { Sql } from 'postgres';
 import { describe, expect, it } from 'vitest';
 import { tryWithPgAdvisoryLock } from '../src/index.js';
+import { withTableIndexLock } from '../src/migrate.js';
 
 function fakeSql(failUnlock: boolean, max = 10) {
   const poolQueries: string[] = [];
@@ -67,5 +68,24 @@ describe('tryWithPgAdvisoryLock unlock failure', () => {
       value: 1
     });
     expect(f.released()).toBe(true);
+  });
+});
+
+describe('withTableIndexLock unlock failure', () => {
+  it('unlocks again when a late cancel lands on the first unlock', async () => {
+    const sent: string[] = [];
+    let unlocks = 0;
+    const conn = {
+      unsafe: (text: string) => {
+        sent.push(text.includes('pg_try_advisory_lock') ? 'lock' : 'unlock');
+        if (text.includes('pg_try_advisory_lock')) return Promise.resolve([{ acquired: true }]);
+        unlocks += 1;
+        return unlocks === 1
+          ? Promise.reject(new Error('canceling statement due to user request'))
+          : Promise.resolve([{ pg_advisory_unlock: true }]);
+      }
+    } as unknown as Sql;
+    expect(await withTableIndexLock(conn, 'rows', undefined, async () => 1)).toBe(1);
+    expect(sent).toEqual(['lock', 'unlock', 'unlock']);
   });
 });

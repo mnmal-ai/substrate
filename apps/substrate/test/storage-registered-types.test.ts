@@ -86,6 +86,17 @@ describe('makeTypeDefLookupFactory', () => {
     expect(lookup('Raw', 'kl')).toEqual({ fields: { shortId: own } });
   });
 
+  it("drops a second SDK copy's reserved shortId, which is equal but not identical", () => {
+    const copy = Object.defineProperty(
+      { ...RESERVED_AUTOCRUD_FIELDS.shortId },
+      Symbol.for('@mnmal-ai/substrate-sdk:autocrud-reserved'),
+      { value: true }
+    );
+    const dup = { get: () => ({ kind: 'type', fields: { shortId: copy } }) } as never;
+    const lookup = makeTypeDefLookupFactory(new Map(), () => dup)('kl');
+    expect(lookup('Raw', 'kl')).toEqual({ fields: {} });
+  });
+
   it('answers the declaration alone until the registry resolves', () => {
     const lookup = makeTypeDefLookupFactory(new Map([['kl', declared]]))('kl');
     expect(lookup('Doc', 'kl')).toBe(declared.types?.Doc);

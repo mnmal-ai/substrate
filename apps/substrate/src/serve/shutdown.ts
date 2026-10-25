@@ -57,7 +57,8 @@ export function installShutdown(args: ShutdownArgs): void {
     // A cancelled CREATE INDEX CONCURRENTLY leaves an INVALID index, which
     // the next boot's reconcile drops and rebuilds. Lock waits and builds stop
     // at once; a catalog step that cannot be cancelled gets a bounded wait,
-    // then is abandoned to closeStore, which ends its session.
+    // then is abandoned to closeStore, which drops its connection after a
+    // bounded wait of its own.
     const buildsBound = Math.min(INDEX_BUILDS_STOP_MS, config.shutdownGraceMs / 2);
     const stopBuilds = new Promise<void>((resolve) => {
       if (stopIndexBuilds === undefined) return resolve();

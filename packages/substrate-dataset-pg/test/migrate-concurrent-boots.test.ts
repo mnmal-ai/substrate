@@ -44,4 +44,22 @@ describe.skipIf(!POSTGRES_URL)('runMigrations advisory lock', () => {
     const versions = rows.map((r) => r.version);
     expect(new Set(versions).size).toBe(versions.length);
   });
+
+  it("waits for the rows table's index-build lock before its concurrent phase", async () => {
+    const holder = await sqlB.reserve();
+    const key = `hashtext('substrate-index-build:' || current_schema() || '.' || $1::text)`;
+    await holder.unsafe(`SELECT pg_advisory_lock(${key})`, ['rows']);
+    let settled = false;
+    const run = runMigrations(sqlA, { force: true }).finally(() => {
+      settled = true;
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      expect(settled).toBe(false);
+    } finally {
+      await holder.unsafe(`SELECT pg_advisory_unlock(${key})`, ['rows']);
+      holder.release();
+    }
+    await run;
+  });
 });

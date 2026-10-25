@@ -370,7 +370,10 @@ export async function withTableIndexLock<T>(
   try {
     return await fn();
   } finally {
-    await conn.unsafe(`SELECT pg_advisory_unlock(${INDEX_LOCK_KEY})`, [table]);
+    const unlock = () => conn.unsafe(`SELECT pg_advisory_unlock(${INDEX_LOCK_KEY})`, [table]);
+    // A cancel sent for fn's last statement can land on the unlock instead. It
+    // is one-shot, so a second unlock holds and the pooled conn keeps no lock.
+    await unlock().catch(unlock);
   }
 }
 
@@ -491,18 +494,24 @@ async function applyOneMigration(sql: Sql, migration: Migration): Promise<void> 
       throw err;
     }
   }
-  for (const stmt of migration.concurrentStatements) {
-    try {
-      await dropInvalidIndexFor(sql, stmt);
-      await sql.unsafe(stmt);
-    } catch (err) {
-      process.stderr.write(
-        `migration ${migration.version}: concurrent-phase failure on statement; ` +
-          `tx-phase changes are durable, re-run to resume concurrent phase: ` +
-          `${err instanceof Error ? err.message : String(err)}\n`
-      );
-      throw err;
+  const concurrentPhase = async (): Promise<void> => {
+    for (const stmt of migration.concurrentStatements) {
+      try {
+        await dropInvalidIndexFor(sql, stmt);
+        await sql.unsafe(stmt);
+      } catch (err) {
+        process.stderr.write(
+          `migration ${migration.version}: concurrent-phase failure on statement; ` +
+            `tx-phase changes are durable, re-run to resume concurrent phase: ` +
+            `${err instanceof Error ? err.message : String(err)}\n`
+        );
+        throw err;
+      }
     }
+  };
+  // Builds CONCURRENTLY on `rows` among others, as the reconciler's legacy builds do.
+  if (migration.concurrentStatements.length > 0) {
+    await withTableIndexLock(sql, 'rows', undefined, concurrentPhase);
   }
   await sql`
     INSERT INTO migrations (version, checksum)
@@ -619,12 +628,6 @@ export async function runDerivedMigrations(
     const applied = await conn<Array<{ version: string }>>`SELECT version FROM migrations`;
     const appliedVersions = new Set(applied.map((r) => r.version));
     const pending = derived.map(normalise).filter((m) => !appliedVersions.has(m.version));
-    const apply = async (): Promise<void> => {
-      for (const migration of pending) await applyOneMigration(conn, migration);
-    };
-    // These build CONCURRENTLY on `rows`, as the reconciler's legacy builds do.
-    if (pending.length > 0 && !partitioned)
-      await withTableIndexLock(conn, 'rows', undefined, apply);
-    else await apply();
+    for (const migration of pending) await applyOneMigration(conn, migration);
   });
 }

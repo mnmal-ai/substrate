@@ -30,7 +30,7 @@ import {
 } from '@mnmal-ai/substrate-dataset-pg';
 import { getExtensionOperator, registerExtensionOperator } from '@mnmal-ai/substrate-filter';
 import { makeAuthorizationProvider } from '@mnmal-ai/substrate-policy';
-import { RESERVED_AUTOCRUD_FIELDS } from '@mnmal-ai/substrate-sdk';
+import { isReservedAutoCrudField } from '@mnmal-ai/substrate-sdk';
 import type {
   CoordinatorPlugin,
   Dataset,
@@ -60,6 +60,9 @@ export const filterRegistry = {
 // `substrate serve` has no MCP transport by design (the stdio server is the
 // separate `substrate mcp`), so there is deliberately no "never exposed" warning.
 export const pendingMcpTools: McpToolRegistration[] = [];
+
+/** Seconds `close` waits for in-flight queries before it drops their connections. */
+export const STORE_END_TIMEOUT_S = 2;
 
 export interface StoreWiring {
   dataset: Dataset;
@@ -121,7 +124,7 @@ export async function wireStore(
         ...(typeDefLookupFor ? { typeDefLookup: typeDefLookupFor(SYSTEM_NAMESPACE) } : {})
       }),
       sql,
-      close: (): Promise<void> => sql.end()
+      close: (): Promise<void> => sql.end({ timeout: STORE_END_TIMEOUT_S })
     };
   }
   throw new EnvConfigError(
@@ -221,10 +224,7 @@ export function makeTypeDefLookupFactory(
     // autoCRUD registers the reserved descriptor itself; a type without
     // autoCRUD may declare a body field of the same name.
     const live = Object.fromEntries(
-      Object.entries(entry.fields).filter(
-        ([f, def]) =>
-          !Object.hasOwn(RESERVED_AUTOCRUD_FIELDS, f) || RESERVED_AUTOCRUD_FIELDS[f] !== def
-      )
+      Object.entries(entry.fields).filter(([, def]) => !isReservedAutoCrudField(def))
     );
     return declared === undefined
       ? { fields: live }
