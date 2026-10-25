@@ -313,7 +313,7 @@ describe.skipIf(!POSTGRES_URL)('backend filter parity', () => {
 
   /**
    * Wrong-shaped stored values under declared kinds: `n` is a number field and
-   * `at` a date field, and `e1` holds a string in each. Such a value reads as
+   * `at` a date field, and `e1` holds a string in `n` and an impossible day in `at`. Such a value reads as
    * NULL on pg (substrate_num / substrate_ts) and never matches on either
    * substrate, inside a NOT included.
    */
@@ -325,7 +325,7 @@ describe.skipIf(!POSTGRES_URL)('backend filter parity', () => {
           ? { kind: 'scalar', type: 'date' }
           : undefined;
     const EDGE_ROWS: Row[] = [
-      { id: 'e1', n: 'abc', at: '2026-10-24 10:00', "o'neil": 'x' },
+      { id: 'e1', n: 'abc', at: '2026-02-30 10:00', "o'neil": 'x' },
       { id: 'e2', n: 5, at: '2026-10-24T10:00:00Z' },
       { id: 'e3', n: 0.5, at: '2026-10-23T10:00:00Z' }
     ];
@@ -342,17 +342,15 @@ describe.skipIf(!POSTGRES_URL)('backend filter parity', () => {
     const edgeCases: Array<[string, WhereClause, string[]]> = [
       ['number gt over a string value', { n: { gt: 1 } }, ['e2']],
       ['NOT number gt over a string value', { NOT: { n: { gt: 1 } } }, ['e1', 'e3']],
-      ['offset-less date under gte', { at: { gte: '2026-10-24T00:00:00Z' } }, ['e2']],
+      ['impossible date under gte', { at: { gte: '2026-10-24T00:00:00Z' } }, ['e2']],
       [
-        'NOT offset-less date under gte',
+        'NOT impossible date under gte',
         { NOT: { at: { gte: '2026-10-24T00:00:00Z' } } },
         ['e1', 'e3']
       ],
-      ['offset-less date under eq', { at: { eq: '2026-10-24T10:00:00Z' } }, ['e2']],
+      ['impossible date under eq', { at: { eq: '2026-10-24T10:00:00Z' } }, ['e2']],
       ['quoted field name', { "o'neil": { eq: 'x' } }, ['e1']],
-      // Operands keep the lenient parse (pg's tsParam); only stored values must
-      // carry an offset. Operands sit hours from every stored instant, so the
-      // session time zone cannot decide the result.
+      // Operands read as stored values do: no offset is UTC.
       ['date-only operand', { at: { gt: '2026-10-24' } }, ['e2']],
       ['offset-less operand', { at: { lt: '2026-10-23 22:00' } }, ['e3']]
     ];

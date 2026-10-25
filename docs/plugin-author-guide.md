@@ -705,7 +705,7 @@ Every `field.*` builder in `@mnmal-ai/substrate/sdk` returns a plain
 | `field.string(opts?)` | `{kind:'scalar',type:'string'}` | `true` | Names, identifiers, short text. |
 | `field.number(opts?)` | `{kind:'scalar',type:'number'}` | `true` | Counts, scores, money in minor units. |
 | `field.boolean(opts?)` | `{kind:'scalar',type:'boolean'}` | `true` | Flags. |
-| `field.date(opts?)` | `{kind:'scalar',type:'date'}` | `true` | Timestamps. `serverSet: 'create' \| 'update' \| 'both'` marks one your server code sets; autoCRUD rejects client values for it. |
+| `field.date(opts?)` | `{kind:'scalar',type:'date'}` | `true` | Timestamps. `serverSet: 'create' \| 'update' \| 'both'` marks one your server code sets; autoCRUD rejects client values for it. A date with no offset is read as UTC, so writers should send an offset or `Z`. |
 | `field.enum(values, opts?)` | string scalar with `enum` | `true` | A closed set of values. |
 | `field.vocab(values, opts?)` | string scalar with `enum` + `aliases` | `true` | A governed vocabulary: aliases are normalised to canonical values on write and in filters. `strict: false` admits unknown values. |
 | `field.json(opts?)` | `{kind:'scalar',type:'json'}` | `false` | Opaque bodies. See below. |

@@ -11,7 +11,7 @@
  */
 
 import type { Id } from '@mnmal-ai/substrate-types';
-import { UnsupportedFilterError } from '@mnmal-ai/substrate-types';
+import { normalizeIsoTimestamp, UnsupportedFilterError } from '@mnmal-ai/substrate-types';
 import type { PendingQuery, Row as PgRow, Sql, TransactionSql } from 'postgres';
 
 export type Fragment = PendingQuery<PgRow[]>;
@@ -110,7 +110,9 @@ export const NON_BODY_FIELD_KEYS = new Set(['_metadata', '_deletedAt', 'shortId'
  */
 export type BodyOrderByCast = 'numeric' | 'timestamptz' | 'boolean';
 
-const isoOf = (v: unknown): string => (v instanceof Date ? v.toISOString() : String(v));
+/** An operand's text: the shared ISO grammar in its explicit-offset form (no offset is UTC), as `substrate_ts` reads a stored value. */
+const isoOf = (v: unknown): string =>
+  v instanceof Date ? v.toISOString() : (normalizeIsoTimestamp(String(v)) ?? String(v));
 
 /**
  * A timestamptz parameter, bound as TEXT and cast in SQL. When pg infers a
@@ -182,7 +184,7 @@ export function bodyNum(sql: Sql | TransactionSql, path: readonly string[]): Fra
   return sql.unsafe(numSql(path));
 }
 
-/** `substrate_ts(body -> …)`: the instant, or NULL for anything but an ISO string with an offset. */
+/** `substrate_ts(body -> …)`: the instant, or NULL for anything but an ISO date or date-time string. */
 export function bodyTs(sql: Sql | TransactionSql, path: readonly string[]): Fragment {
   return sql.unsafe(tsSql(path));
 }

@@ -38,17 +38,18 @@ describe.skipIf(!POSTGRES_URL)('safe-cast functions', () => {
     expect(await num('true')).toBeNull();
   });
 
-  it('substrate_ts parses ISO strings with an explicit offset', async () => {
+  it('substrate_ts parses ISO strings, an absent offset as UTC', async () => {
     const [{ e }] =
       (await sql`SELECT extract(epoch FROM '2026-10-24T10:00:00Z'::timestamptz)::text AS e`) as unknown as [
         { e: string }
       ];
     expect(await ts('"2026-10-24T10:00:00Z"')).toBe(e);
     expect(await ts('"2026-10-24T05:00:00-05:00"')).toBe(e);
+    expect(await ts('"2026-10-24 10:00"')).toBe(e);
   });
 
   it('substrate_ts yields NULL for other shapes', async () => {
-    expect(await ts('"2026-10-24 10:00"')).toBeNull();
+    expect(await ts('"2026-10-24T10"')).toBeNull();
     expect(await ts('"yesterday"')).toBeNull();
     expect(await ts('42')).toBeNull();
     expect(await ts('"2026-13-45T00:00:00Z"')).toBeNull();

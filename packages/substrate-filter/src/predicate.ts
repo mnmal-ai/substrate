@@ -16,6 +16,7 @@ import {
   type FieldDef,
   type FieldPredicate,
   METADATA_FILTER_FIELDS,
+  normalizeIsoTimestamp,
   type Row,
   UnsupportedFilterError,
   type WhereClause
@@ -379,23 +380,13 @@ export function compareFilterValues(a: unknown, b: unknown, asDate = false): num
 }
 
 /**
- * The string shape pg's `substrate_ts` accepts for a STORED value: ISO date
- * and time with an explicit offset or `Z`, so the instant never depends on a
- * time zone. Operands are cast leniently, as pg's `tsParam` casts them.
+ * {@link toMicros} for a stored value: `undefined` wherever `substrate_ts` is
+ * NULL, a number included. Only the shared ISO grammar is read; operands are
+ * cast leniently, as pg's `tsParam` casts them.
  */
-const TS_SHAPE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?(Z|[+-]\d{2}(:?\d{2})?)$/;
-
-/** {@link toMicros} for a stored value: `undefined` wherever `substrate_ts` is NULL, a number included. */
 function storedMicros(v: unknown): number | undefined {
   if (v instanceof Date) return toMicros(v);
-  if (typeof v !== 'string') return undefined;
-  if (!TS_SHAPE.test(v)) return undefined;
-  // pg refuses an impossible day (Feb 30) where Date.parse rolls it over, and
-  // year 0000, which Date.parse accepts.
-  const [y, mo, d] = v.slice(0, 10).split('-').map(Number) as [number, number, number];
-  if (y < 1) return undefined;
-  const day = new Date(Date.UTC(y, mo - 1, d));
-  if (day.getUTCMonth() !== mo - 1 || day.getUTCDate() !== d) return undefined;
+  if (typeof v !== 'string' || normalizeIsoTimestamp(v) === undefined) return undefined;
   return toMicros(v);
 }
 
@@ -420,9 +411,10 @@ function toMicros(v: unknown): number | undefined {
   if (v instanceof Date) return v.getTime() * 1000;
   if (typeof v === 'number') return Number.isFinite(v) ? v * 1000 : undefined;
   if (typeof v !== 'string') return undefined;
-  // Date.parse needs `+05:00` where pg also takes `+05`.
-  const ms = Date.parse(v.replace(/(:\d{2}(?:\.\d+)?[+-]\d{2})$/, '$1:00'));
+  // The grammar's own form (no offset is UTC); anything else as Date.parse reads it.
+  const iso = normalizeIsoTimestamp(v) ?? v;
+  const ms = Date.parse(iso);
   if (Number.isNaN(ms)) return undefined;
-  const frac = /[T ][\d:]+\.(\d+)/.exec(v)?.[1] ?? '';
+  const frac = /[T ][\d:]+\.(\d+)/.exec(iso)?.[1] ?? '';
   return ms * 1000 + Number(frac.padEnd(6, '0').slice(3, 6));
 }

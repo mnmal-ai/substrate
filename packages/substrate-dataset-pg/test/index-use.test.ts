@@ -244,6 +244,34 @@ describe.skipIf(!POSTGRES_URL)(`index use: declared indexes (${LAYOUT})`, () => 
     it(name, async () => expectServedBy(name, await plans(params), expected()));
   }
 
+  it('a stored value with no offset is UTC: it matches gt and sorts in place under the index', async () => {
+    const at: Record<string, string> = {
+      nz1: '2026-06-01T10:00:00',
+      nz2: '2026-06-01T09:00:00Z',
+      nz3: '2026-06-01T11:00:00+00:00',
+      nz4: '2026-06-01',
+      nz5: '2026-06-01T10:30:00.1234567',
+      nz6: '2026-06-01T12:15:00+02:00'
+    };
+    await ds.write(
+      TYPE,
+      Object.entries(at).map(([id, observedAt]) => ({ id, cert: 'cNZ', observedAt }))
+    );
+    try {
+      const params: ReadParams = {
+        where: { cert: { eq: 'cNZ' }, observedAt: { gt: '2026-06-01T09:30:00' } },
+        orderBy: [{ observedAt: 'desc' }],
+        limit: 10
+      };
+      // Plans first: the helper reads the parameter types of the statement's first send.
+      await expectServedBy('no-offset gt + orderBy desc', await plans(params), COMPOSITE);
+      const { rows } = await ds.read(TYPE, params);
+      expect(rows.map((r) => r.id)).toEqual(['nz3', 'nz5', 'nz6', 'nz1']);
+    } finally {
+      await ds.purge(TYPE, Object.keys(at));
+    }
+  });
+
   // cortext's AgentMessage: `status` and `archived` are promoted columns, and
   // the fleet already holds a hand-built index of the declared name whose
   // predicate is `archived IS NOT TRUE`.
