@@ -87,6 +87,7 @@ import { installShutdown } from './serve/shutdown.js';
 import { buildRecallStores } from './serve/stores.js';
 import {
   buildBridgeRegistry,
+  buildDeferredIndexes,
   buildPluginDatasetMap,
   extractIndexedListFields,
   makeFieldDefLookupFactory,
@@ -231,6 +232,8 @@ export async function runServe(): Promise<void> {
   await reconcileRegisteredStorage(engine, composedDatasets, nsDefs);
 
   const info = await server.start({ host: config.host, port: config.port });
+  const indexBuilds = new AbortController();
+  const deferredIndexes = buildDeferredIndexes(engine, composedDatasets, indexBuilds.signal);
   if (scheduler !== null) scheduler.start();
   reportBoot({
     config,
@@ -263,6 +266,10 @@ export async function runServe(): Promise<void> {
     sentinelClient,
     disposeBridges,
     stop,
-    closeStore
+    closeStore,
+    stopIndexBuilds: () => {
+      indexBuilds.abort();
+      return deferredIndexes;
+    }
   });
 }

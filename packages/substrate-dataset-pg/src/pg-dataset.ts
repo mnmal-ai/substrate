@@ -58,6 +58,7 @@ import { withPgAdvisoryLock } from './advisory-lock.js';
 import { NamespaceMismatch, ReservedField } from './errors.js';
 import {
   describeTypeIndexes,
+  type IndexState,
   indexesOn,
   type ReconcileTypeIndexesArgs,
   reconcileTypeIndexes,
@@ -181,6 +182,16 @@ interface InternalPgSubstrateDatasetOptions {
   layoutCache?: LayoutCache;
   typeDefLookup?: TypeDefLookup;
 }
+
+/** An index whose build this process deferred, is running, or saw fail. */
+interface DeferredBuild {
+  state: 'pending' | 'building' | 'failed';
+  /** `<namespace>/<type>`. */
+  type: string;
+}
+
+/** Per pool, so every dataset on it reports what the others deferred. */
+const deferredBuilds = new WeakMap<object, Map<string, DeferredBuild>>();
 
 /** The detected layout, shared by an instance and every clone of it. */
 interface LayoutCache {
@@ -1044,9 +1055,13 @@ export class PgDataset implements Dataset {
    * namespace's partition and the type's, then reconciles the type's indexes
    * on it; on legacy, reconciles only its declared `indexes`. Index builds
    * run CONCURRENTLY, outside any transaction, so a tx-bound instance refuses.
-   * Logs each index it created, adopted or swapped.
+   * Logs each index it created, adopted or swapped, and records each one
+   * left pending, building or failed for `describeStorage` and `storageReport`.
    */
-  async ensureTypeStorage(type: string): Promise<void> {
+  async ensureTypeStorage(
+    type: string,
+    opts: { indexes?: 'all' | 'unique' | 'nonUnique'; signal?: AbortSignal } = {}
+  ): Promise<void> {
     const layout = await this.#layout();
     if (layout === 'absent') return;
     if (this.#inTx) {
@@ -1054,16 +1069,25 @@ export class PgDataset implements Dataset {
     }
     const sql = this.#sql as Sql;
     if (layout === 'partitioned') await ensureTypeStorage(sql, this.namespace, type);
-    const def = this.#typeDefLookup?.(type, this.namespace);
-    const states = await reconcileTypeIndexes(sql, {
-      namespace: this.namespace,
-      type,
-      layout,
-      fields: def?.fields ?? {},
-      indexes: def?.indexes ?? [],
-      promotedColumns: this.#promotedColumns
-    });
+    const builds = this.#deferredBuilds();
+    const qualified = `${this.namespace}/${type}`;
+    let states: IndexState[];
+    try {
+      states = await reconcileTypeIndexes(sql, this.#indexArgs(type, this.namespace, layout), {
+        only: opts.indexes ?? 'all',
+        onBuild: (name) => builds.set(name, { state: 'building', type: qualified }),
+        ...(opts.signal !== undefined ? { signal: opts.signal } : {})
+      });
+    } catch (err) {
+      for (const b of builds.values()) if (b.type === qualified) b.state = 'failed';
+      throw err;
+    }
     for (const s of states) {
+      if (s.state === 'pending' || s.state === 'failed') {
+        builds.set(s.name, { state: s.state, type: qualified });
+      } else {
+        builds.delete(s.name);
+      }
       if (s.outcome === 'unchanged') continue;
       process.stdout.write(
         `[substrate] index ${s.name} on ${this.namespace}/${type}: ${s.outcome} (${s.state})\n`
@@ -1078,6 +1102,21 @@ export class PgDataset implements Dataset {
   async storageWarnings(): Promise<string[]> {
     if ((await this.#layout()) !== 'partitioned') return [];
     return storageWarnings(this.#sql as Sql);
+  }
+
+  #deferredBuilds(): Map<string, DeferredBuild> {
+    const builds = deferredBuilds.get(this.#sql) ?? new Map<string, DeferredBuild>();
+    deferredBuilds.set(this.#sql, builds);
+    return builds;
+  }
+
+  /** Each index's catalog state, overridden by what this process knows of its build. */
+  #withBuilds(states: IndexState[]): IndexState[] {
+    const builds = this.#deferredBuilds();
+    return states.map((s) => {
+      const build = builds.get(s.name);
+      return build === undefined ? s : { ...s, state: build.state };
+    });
   }
 
   #indexArgs(type: string, namespace: string, layout: StorageLayout): ReconcileTypeIndexesArgs {
@@ -1098,7 +1137,10 @@ export class PgDataset implements Dataset {
     const sql = this.#sql as Sql;
     const args = this.#indexArgs(type, this.namespace, layout);
     if (layout === 'legacy') {
-      return { layout, indexes: describeTypeIndexes(args, await indexesOn(sql, 'rows')) };
+      return {
+        layout,
+        indexes: this.#withBuilds(describeTypeIndexes(args, await indexesOn(sql, 'rows')))
+      };
     }
     const nsPart = await findPartition(sql, 'rows', this.namespace);
     const partition = nsPart === undefined ? undefined : await findPartition(sql, nsPart, type);
@@ -1106,7 +1148,7 @@ export class PgDataset implements Dataset {
     return {
       layout,
       partition,
-      indexes: describeTypeIndexes(args, await indexesOn(sql, partition))
+      indexes: this.#withBuilds(describeTypeIndexes(args, await indexesOn(sql, partition)))
     };
   }
 
@@ -1117,9 +1159,15 @@ export class PgDataset implements Dataset {
    */
   async storageReport(opts: { partitionBudget: number }): Promise<StorageReport> {
     const layout = await this.#layout();
-    if (layout !== 'partitioned') return { layout: 'legacy', warnings: [] };
+    const building = [...this.#deferredBuilds()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(
+        ([name, b]) =>
+          `index ${name} on ${b.type} is ${b.state}: filters it would serve scan until it is valid`
+      );
+    if (layout !== 'partitioned') return { layout: 'legacy', warnings: building };
     const sql = this.#sql as Sql;
-    const warnings = await storageWarnings(sql);
+    const warnings = [...(await storageWarnings(sql)), ...building];
     const tree = await sql<Array<{ name: string; parent: string | null; bound: string | null }>>`
       SELECT c.relname AS name, p.relname AS parent, pg_get_expr(c.relpartbound, c.oid) AS bound
       FROM pg_partition_tree('rows') t

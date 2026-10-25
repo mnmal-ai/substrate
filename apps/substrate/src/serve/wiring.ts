@@ -221,8 +221,9 @@ export function makeTypeDefLookupFactory(
 
 /**
  * Prepares storage for every type the namespace definitions declare: its
- * partition and its indexes, through `Dataset.ensureTypeStorage`. Runs before
- * any kernel migration, so a migration can rely on a declared index. Errors
+ * partition and its unique indexes, through `Dataset.ensureTypeStorage`. Runs
+ * before any kernel migration, so a migration can rely on a declared unique
+ * index. Non-unique indexes are left to {@link buildDeferredIndexes}. Errors
  * propagate and fail the boot, among them `UniqueIndexDuplicatesError` and
  * `IndexDefinitionConflictError`, which name the index, and a declared
  * namespace with no dataset. Index builds run CONCURRENTLY, so the process
@@ -239,38 +240,80 @@ export async function reconcileDeclaredStorage(
         `namespace '${ns}' is declared but has no dataset; its storage cannot be prepared`
       );
     }
-    for (const type of Object.keys(def.types ?? {})) await dataset.ensureTypeStorage?.(type);
+    for (const type of Object.keys(def.types ?? {})) {
+      await dataset.ensureTypeStorage?.(type, { indexes: 'unique' });
+    }
   }
 }
 
-/**
- * Prepares storage for every type registered in every local namespace once
- * compose has run: `_system`, install-time types such as the proposals
- * plugin's, and proposed types replayed at start. Namespaces without a local
- * dataset (bridged, virtual) are skipped. A type the operator's `nsDefs`
- * declares fails the boot on error, since its unique indexes must exist. A
- * type only the registry knows (proposed by a principal who can merely propose)
- * logs the error naming it and the boot continues.
- */
-export async function reconcileRegisteredStorage(
+type ComposedDatasets = { has(ns: string): boolean; get(ns: string): Dataset | undefined };
+
+/** Every type registered in a namespace with a local dataset, with that dataset. */
+function* registeredTypes(
   engine: Pick<Engine, 'federatedSchema' | 'registryFor'>,
-  datasets: { has(ns: string): boolean; get(ns: string): Dataset | undefined },
-  nsDefs: { get(ns: string): NamespaceDefinition | undefined }
-): Promise<void> {
+  datasets: ComposedDatasets
+): Generator<{ ns: string; type: string; dataset: Dataset | undefined }> {
   for (const ns of Object.keys(engine.federatedSchema())) {
     // `has`, not `get`: `get` would allocate a dataset for a virtual namespace.
     if (!datasets.has(ns)) continue;
     const dataset = datasets.get(ns);
     for (const [type, entry] of engine.registryFor(ns)?.all() ?? []) {
-      if (entry.kind !== 'type') continue;
-      try {
-        await dataset?.ensureTypeStorage?.(type);
-      } catch (err) {
-        if (nsDefs.get(ns)?.types?.[type] !== undefined) throw err;
-        process.stderr.write(
-          `storage for registered type ${ns}/${type} was not prepared: ${err instanceof Error ? err.message : String(err)}\n`
-        );
-      }
+      if (entry.kind === 'type') yield { ns, type, dataset };
+    }
+  }
+}
+
+const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+/**
+ * Prepares storage, partition and unique indexes, for every type registered in
+ * every local namespace once compose has run: `_system`, install-time types
+ * such as the proposals plugin's, and proposed types replayed at start.
+ * Namespaces without a local dataset (bridged, virtual) are skipped. A type the
+ * operator's `nsDefs` declares fails the boot on error, since its unique
+ * indexes must exist. A type only the registry knows (proposed by a principal
+ * who can merely propose) logs the error naming it and the boot continues.
+ */
+export async function reconcileRegisteredStorage(
+  engine: Pick<Engine, 'federatedSchema' | 'registryFor'>,
+  datasets: ComposedDatasets,
+  nsDefs: { get(ns: string): NamespaceDefinition | undefined }
+): Promise<void> {
+  for (const { ns, type, dataset } of registeredTypes(engine, datasets)) {
+    try {
+      await dataset?.ensureTypeStorage?.(type, { indexes: 'unique' });
+    } catch (err) {
+      if (nsDefs.get(ns)?.types?.[type] !== undefined) throw err;
+      process.stderr.write(
+        `storage for registered type ${ns}/${type} was not prepared: ${message(err)}\n`
+      );
+    }
+  }
+}
+
+/**
+ * Builds the non-unique indexes of every registered type, one type at a time.
+ * Started after the server listens: until an index is valid, filters it would
+ * serve scan. Never rejects: a type whose build fails is logged, and reported
+ * `failed`, until the next boot retries it. `signal` cancels the build in
+ * flight, whose INVALID leftover the next reconcile drops, and skips the rest.
+ */
+export async function buildDeferredIndexes(
+  engine: Pick<Engine, 'federatedSchema' | 'registryFor'>,
+  datasets: ComposedDatasets,
+  signal?: AbortSignal
+): Promise<void> {
+  for (const { ns, type, dataset } of registeredTypes(engine, datasets)) {
+    if (signal?.aborted === true) return;
+    try {
+      await dataset?.ensureTypeStorage?.(type, {
+        indexes: 'nonUnique',
+        ...(signal !== undefined ? { signal } : {})
+      });
+    } catch (err) {
+      process.stderr.write(
+        `indexes of ${ns}/${type} were not built and will be retried at the next boot: ${message(err)}\n`
+      );
     }
   }
 }

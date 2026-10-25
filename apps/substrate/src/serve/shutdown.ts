@@ -13,6 +13,8 @@ export interface ShutdownArgs {
   disposeBridges: () => void;
   stop: (opts?: { grace?: number; abortInFlight?: boolean }) => Promise<void>;
   closeStore: (() => Promise<void>) | null;
+  /** Cancels the background index builds and waits for them to stop. */
+  stopIndexBuilds?: () => Promise<void>;
 }
 
 /**
@@ -21,8 +23,16 @@ export interface ShutdownArgs {
  * flips on first entry and stays set; subsequent signals just log.
  */
 export function installShutdown(args: ShutdownArgs): void {
-  const { config, sweepTimer, inviteSweepTimer, sentinelClient, disposeBridges, stop, closeStore } =
-    args;
+  const {
+    config,
+    sweepTimer,
+    inviteSweepTimer,
+    sentinelClient,
+    disposeBridges,
+    stop,
+    closeStore,
+    stopIndexBuilds
+  } = args;
   let shuttingDown = false;
   const shutdown = (signal: string): void => {
     if (shuttingDown) {
@@ -41,6 +51,9 @@ export function installShutdown(args: ShutdownArgs): void {
     }, config.shutdownGraceMs + 1000).unref();
     clearInterval(sweepTimer);
     if (inviteSweepTimer !== null) clearInterval(inviteSweepTimer);
+    // A cancelled CREATE INDEX CONCURRENTLY leaves an INVALID index, which
+    // the next boot's reconcile drops and rebuilds.
+    const stopBuilds = stopIndexBuilds?.() ?? Promise.resolve();
     const stopSentinel =
       sentinelClient !== null
         ? sentinelClient.stop().catch((err: unknown) => {
@@ -55,6 +68,7 @@ export function installShutdown(args: ShutdownArgs): void {
         return stop({ grace: config.shutdownGraceMs, abortInFlight: true });
       })
       .then(async () => {
+        await stopBuilds;
         if (closeStore) await closeStore();
       })
       .then(() => {

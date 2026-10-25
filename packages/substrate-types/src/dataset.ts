@@ -347,11 +347,18 @@ export interface Dataset {
    * reads and writes: no row is lost, duplicated or seen twice. That holds for
    * READ COMMITTED readers; a REPEATABLE READ snapshot taken before the move
    * can miss the moved rows. Also builds the type's indexes, including its
-   * declared `indexes`, and throws when one of them cannot be built.
+   * declared `indexes`, and throws when a unique one cannot be built.
+   *
+   * `indexes` picks which: `unique` builds only the unique ones and leaves the
+   * rest `pending`, for a later `nonUnique` call to build. `signal` cancels an
+   * in-flight non-unique build, which the next call retries. Default `all`.
    *
    * OPTIONAL. Backends without per-type storage omit it.
    */
-  ensureTypeStorage?(type: string): Promise<void>;
+  ensureTypeStorage?(
+    type: string,
+    opts?: { indexes?: 'all' | 'unique' | 'nonUnique'; signal?: AbortSignal }
+  ): Promise<void>;
   /**
    * Where `type`'s rows live and how its declared indexes stand, read from the
    * catalog without building anything.
@@ -361,8 +368,9 @@ export interface Dataset {
   describeStorage?(type: string): Promise<TypeStorageReport>;
   /**
    * The database-wide storage layout and what an operator should look at:
-   * rows parked in DEFAULT partitions, indexes on the `rows` parent,
-   * engine-named indexes no longer declared, and a partition count over
+   * rows parked in DEFAULT partitions, indexes and CHECK constraints on the
+   * `rows` parent, engine-named indexes no longer declared, indexes this
+   * process has yet to build or failed to build, and a partition count over
    * `partitionBudget`. Never changes anything.
    *
    * OPTIONAL. Backends without per-type storage omit it.
@@ -510,12 +518,16 @@ export interface DatasetRegistry {
   dispose?(ns: string): void;
 }
 
-/** One declared index of a type and the state the catalog holds it in. */
+/**
+ * One declared index of a type and its state: as the catalog holds it, or,
+ * while this process defers or runs its build, `pending`, `building` or
+ * `failed`. Filters on an index that is not `valid` scan.
+ */
 export interface TypeIndexState {
   name: string;
   fields: string[];
   unique: boolean;
-  state: 'valid' | 'building' | 'invalid' | 'failed';
+  state: 'valid' | 'building' | 'pending' | 'invalid' | 'failed';
   outcome: 'created' | 'adopted' | 'swapped' | 'unchanged';
 }
 

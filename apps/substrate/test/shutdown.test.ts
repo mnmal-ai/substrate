@@ -30,4 +30,38 @@ describe('installShutdown', () => {
     await vi.advanceTimersByTimeAsync(1001);
     expect(exit).toHaveBeenCalledWith(1);
   });
+
+  it('stops the index builds, and waits for them, before closing the store', async () => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const order: string[] = [];
+    let finishBuilds = (): void => {};
+    installShutdown({
+      config: { shutdownGraceMs: 1000 },
+      sweepTimer: setInterval(() => {}, 1e6),
+      inviteSweepTimer: null,
+      sentinelClient: null,
+      disposeBridges: () => {},
+      stop: async () => {},
+      closeStore: async () => {
+        order.push('closeStore');
+      },
+      stopIndexBuilds: () => {
+        order.push('stopIndexBuilds');
+        return new Promise<void>((resolve) => {
+          finishBuilds = () => {
+            order.push('builds stopped');
+            resolve();
+          };
+        });
+      }
+    });
+
+    process.emit('SIGTERM');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(order).toEqual(['stopIndexBuilds']);
+    finishBuilds();
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0));
+    expect(order).toEqual(['stopIndexBuilds', 'builds stopped', 'closeStore']);
+  });
 });
