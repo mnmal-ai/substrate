@@ -35,7 +35,7 @@
     "@biomejs/biome": "catalog:",
     "@mnmal-ai/substrate-config": "workspace:*",
     "@types/node": "catalog:",
-    "fastembed": "^2.1.1",
+    "fastembed": "^3.0.0",
     "msw": "catalog:",
     "tsdown": "catalog:",
     "typescript": "catalog:",
