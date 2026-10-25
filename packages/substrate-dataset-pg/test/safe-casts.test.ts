@@ -90,6 +90,26 @@ describe.skipIf(!POSTGRES_URL)('safe-cast functions', () => {
     }
   });
 
+  it('returns NULL for SQL NULL input', async () => {
+    const [r] = await sql`SELECT substrate_num(NULL) IS NULL AS n, substrate_ts(NULL) IS NULL AS t`;
+    expect(r).toEqual({ n: true, t: true });
+  });
+
+  // substrate_ts is not: pg never inlines an IMMUTABLE body that calls a
+  // STABLE function, and timestamptz input is STABLE.
+  it('substrate_num is inlined: the plan carries the CASE, not a call', async () => {
+    const plan = await sql.begin(async (tx) => {
+      await tx.unsafe('CREATE TEMP TABLE sc_inl (body jsonb)');
+      const rows = await tx.unsafe(
+        "EXPLAIN (VERBOSE, FORMAT JSON) SELECT substrate_num(body->'n') FROM sc_inl"
+      );
+      await tx.unsafe('DROP TABLE sc_inl');
+      return JSON.stringify(rows[0]?.['QUERY PLAN']);
+    });
+    expect(plan).toMatch(/CASE WHEN/);
+    expect(plan).not.toMatch(/substrate_num\(/);
+  });
+
   it('is IMMUTABLE: usable in an index expression', async () => {
     await sql.begin(async (tx) => {
       await tx.unsafe('CREATE TEMP TABLE sc_t (body jsonb)');
