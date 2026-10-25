@@ -74,6 +74,7 @@ import {
   buildBodyProjection,
   buildCursorCompare,
   buildOrderBy,
+  buildProjectedOrderBy,
   buildSortKeyProjection,
   buildWhere,
   combineAnd,
@@ -191,7 +192,7 @@ interface SubstrateRowRecord {
   id: string;
   body: Record<string, unknown>;
   deleted_at: Date | null;
-  /** Populated by the LEFT JOIN on short_ids; null when no binding exists. */
+  /** From short_ids; null when no binding exists. */
   short_id: number | null;
   // Row-metadata columns. NULL for legacy rows.
   created_at: Date | null;
@@ -368,32 +369,55 @@ export class PgDataset implements Dataset {
     );
 
     // A filter or sort on shortId needs `s.short_id` per candidate, so it
-    // joins. Otherwise the scalar subquery runs only for the rows that survive
-    // LIMIT; short_ids_row_uniq_idx makes it return at most one row.
+    // joins before LIMIT. Otherwise the page query runs alone, with nothing
+    // parallel-restricted in it, and short_ids is probed once per row it
+    // returns: the LIMIT keeps the lateral lookup from being flattened into a
+    // join that a generic plan may hash over the type's whole short_ids.
+    // short_ids_row_uniq_idx makes either form match at most one row. The
+    // outer ORDER BY restores the page order over the projected sort keys.
     const joinShortIds =
       whereReferencesField(params.where, 'shortId') || orderBy.some(([f]) => f === 'shortId');
-    const shortIdSql = joinShortIds
-      ? sql`s.short_id`
-      : sql`(SELECT s.short_id FROM short_ids s
-              WHERE s.namespace = r.namespace AND s.type = r.type AND s.row_id = r.id) AS short_id`;
-    const shortIdJoin = joinShortIds
-      ? sql`LEFT JOIN short_ids s
-              ON s.namespace = r.namespace
-             AND s.type = r.type
-             AND s.row_id = r.id`
-      : sql``;
+    const limitSql = fetchLimit !== undefined ? sql`LIMIT ${fetchLimit}` : sql``;
+    // Inlined so a generic plan costs the page at its real size rather than
+    // guessing 10% of the type, which favours a parallel full sort over an index.
+    const pageLimitSql =
+      fetchLimit !== undefined ? sql.unsafe(`LIMIT ${BigInt(fetchLimit)}`) : sql``;
 
-    const rows = await sql<SubstrateRowRecord[]>`
-      SELECT r.id, ${bodyProjection} AS body, r.deleted_at, ${shortIdSql},
-             r.created_at, r.updated_at,
-             r.created_by_kind, r.created_by_id,
-             r.updated_by_kind, r.updated_by_id${sortKeyProjection}
-      FROM rows r
-      ${shortIdJoin}
-      WHERE ${whereSql}
-      ${orderBySql}
-      ${fetchLimit !== undefined ? sql`LIMIT ${fetchLimit}` : sql``}
-    `;
+    const rows = joinShortIds
+      ? await sql<SubstrateRowRecord[]>`
+          SELECT r.id, ${bodyProjection} AS body, r.deleted_at, s.short_id,
+                 r.created_at, r.updated_at,
+                 r.created_by_kind, r.created_by_id,
+                 r.updated_by_kind, r.updated_by_id${sortKeyProjection}
+          FROM rows r
+          LEFT JOIN short_ids s
+            ON s.namespace = r.namespace
+           AND s.type = r.type
+           AND s.row_id = r.id
+          WHERE ${whereSql}
+          ${orderBySql}
+          ${limitSql}
+        `
+      : await sql<SubstrateRowRecord[]>`
+          SELECT p.*, s.short_id
+          FROM (
+            SELECT r.id, ${bodyProjection} AS body, r.deleted_at,
+                   r.created_at, r.updated_at,
+                   r.created_by_kind, r.created_by_id,
+                   r.updated_by_kind, r.updated_by_id,
+                   r.namespace, r.type${sortKeyProjection}
+            FROM rows r
+            WHERE ${whereSql}
+            ${orderBySql}
+            ${pageLimitSql}
+          ) p
+          LEFT JOIN LATERAL (
+            SELECT s.short_id FROM short_ids s
+            WHERE s.namespace = p.namespace AND s.type = p.type AND s.row_id = p.id
+            LIMIT 1
+          ) s ON true
+          ${buildProjectedOrderBy(sql, orderBy, sortKeyAliases, orderByCastFor, this.#promotedFor, 'p')}
+        `;
 
     const materialised = rows.map((r) => this.materialize(r));
     let hasMore = false;

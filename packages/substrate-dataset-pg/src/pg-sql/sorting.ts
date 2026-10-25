@@ -158,16 +158,60 @@ export function buildSortKeyProjection(
     // `.123456` would round-trip as `.123` and the next page would re-serve (asc)
     // or skip (desc) the cursor row. Text keeps every digit; `sortParam` casts
     // it back to timestamptz.
-    const isTimestamp =
-      field === 'createdAt' ||
-      field === 'updatedAt' ||
-      (cast === 'timestamptz' && !isMetadataField(field) && promotedFor(field) === undefined);
     fragments.push(
-      isTimestamp ? sql`, (${expr})::text AS ${sql(alias)}` : sql`, ${expr} AS ${sql(alias)}`
+      sortKeyIsTimestamp(field, cast, promotedFor)
+        ? sql`, (${expr})::text AS ${sql(alias)}`
+        : sql`, ${expr} AS ${sql(alias)}`
     );
   }
   if (fragments.length === 0) return { fragment: sql``, aliases };
   return { fragment: fragments as unknown as Fragment, aliases };
+}
+
+/** Whether `buildSortKeyProjection` projects the field's key as timestamptz text. */
+function sortKeyIsTimestamp(
+  field: string,
+  cast: BodyOrderByCast | null,
+  promotedFor: PromotedColumnLookup
+): boolean {
+  return (
+    field === 'createdAt' ||
+    field === 'updatedAt' ||
+    (cast === 'timestamptz' && !isMetadataField(field) && promotedFor(field) === undefined)
+  );
+}
+
+/**
+ * `buildOrderBy` re-expressed over a subquery `rel` that projected the sort
+ * keys under `aliases` (from `buildSortKeyProjection`) and `id`. Same
+ * directions and NULLS LAST; a timestamp key, projected as text, casts back
+ * so it orders as a timestamp.
+ */
+export function buildProjectedOrderBy(
+  sql: Sql | TransactionSql,
+  orderBy: Array<[string, 'asc' | 'desc']>,
+  aliases: Map<string, string>,
+  castFor: (field: string) => BodyOrderByCast | null,
+  promotedFor: PromotedColumnLookup,
+  rel: string
+): Fragment {
+  const parts: string[] = [];
+  for (const [field, dir] of orderBy) {
+    let expr: string;
+    if (field === 'id') {
+      expr = `${rel}.id`;
+    } else {
+      const alias = aliases.get(field);
+      if (alias === undefined) throw new Error(`orderBy key '${field}' has no projected alias`);
+      expr = sortKeyIsTimestamp(field, castFor(field), promotedFor)
+        ? `${rel}.${alias}::timestamptz`
+        : `${rel}.${alias}`;
+    }
+    parts.push(`${expr} ${dir === 'asc' ? 'ASC' : 'DESC'} NULLS LAST`);
+  }
+  // `rel` is a caller constant and aliases are positional `__sort_<n>`, so
+  // nothing from caller input reaches `sql.unsafe`.
+  return parts.length === 0 ? sql`` : sql.unsafe(`ORDER BY ${parts.join(', ')}`);
 }
 
 /**

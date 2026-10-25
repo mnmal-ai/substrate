@@ -7,7 +7,8 @@
  *   `./pg-sql/where.js` — buildWhere, combineAnd, conditionalMatchFragment,
  *     whereReferencesField
  *   `./pg-sql/sorting.js` — normalizeOrderBy, resolveBodyOrderByCast,
- *     buildOrderBy, buildSortKeyProjection, buildCursorCompare
+ *     buildOrderBy, buildSortKeyProjection, buildProjectedOrderBy,
+ *     buildCursorCompare
  *
  * These modules never import from pg-dataset.ts and hold no connection state.
  * Caller values always go through parameterised slots; `sql.unsafe(...)` is
@@ -33,6 +34,7 @@ export { assembleRowMetadata, buildBodyProjection } from './pg-sql/projection.js
 export {
   buildCursorCompare,
   buildOrderBy,
+  buildProjectedOrderBy,
   buildSortKeyProjection,
   normalizeOrderBy,
   resolveBodyOrderByCast

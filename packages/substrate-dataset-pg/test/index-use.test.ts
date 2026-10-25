@@ -148,13 +148,15 @@ async function plans(
       SELECT format_type(oid, NULL) AS t FROM unnest(${types}::oid[]) WITH ORDINALITY u(oid, k)
       ORDER BY k`;
     // The values as the client serialised them, as literals: EXPLAIN takes no bind parameters.
-    const literals = parameters
-      .map((p) => (p === null ? 'NULL' : `'${String(p).replace(/'/g, "''")}'`))
-      .join(', ');
-    await conn.unsafe(`PREPARE iu_stmt(${names.map((n) => n.t).join(', ')}) AS ${query}`);
+    const literals = parameters.map((p) =>
+      p === null ? 'NULL' : `'${String(p).replace(/'/g, "''")}'`
+    );
+    // A read with no bound values prepares and executes without a parameter list.
+    const list = (items: string[]) => (items.length === 0 ? '' : `(${items.join(', ')})`);
+    await conn.unsafe(`PREPARE iu_stmt${list(names.map((n) => n.t))} AS ${query}`);
     const explain = async (mode: string): Promise<string[]> => {
       await conn.unsafe(`SET plan_cache_mode = ${mode}`);
-      const rows = await conn.unsafe(`EXPLAIN (FORMAT JSON) EXECUTE iu_stmt(${literals})`);
+      const rows = await conn.unsafe(`EXPLAIN (FORMAT JSON) EXECUTE iu_stmt${list(literals)}`);
       return indexesUsed(planOf(rows));
     };
     return {
