@@ -177,7 +177,7 @@ export async function reconcileTypeIndexes(
             held !== undefined
               ? held
               : spec.unique
-                ? await withTableIndexLock(conn, target, undefined, () =>
+                ? await withTableIndexLock(sql, conn, target, undefined, () =>
                     reconcileOne(conn, args, target, spec, d, {})
                   )
                 : indexState(spec, 'pending', 'unchanged')
@@ -212,7 +212,7 @@ async function reconcileNonUnique(
       let state = await heldAsDeclared(conn, target, spec, d);
       if (state === undefined) {
         try {
-          state = await withTableIndexLock(conn, target, opts.signal, () =>
+          state = await withTableIndexLock(sql, conn, target, opts.signal, () =>
             reconcileOne(conn, args, target, spec, d, opts)
           );
         } catch (err) {
@@ -229,7 +229,7 @@ async function reconcileNonUnique(
       if (opts.signal?.aborted === true) return out;
     }
     try {
-      await withTableIndexLock(conn, target, opts.signal, () =>
+      await withTableIndexLock(sql, conn, target, opts.signal, () =>
         reconcileStatistics(conn, args, target, all, opts.signal)
       );
     } catch (err) {
@@ -302,7 +302,7 @@ export async function reconcileTypeStatistics(
   const target = await targetTable(sql, args);
   const conn = await sql.reserve();
   try {
-    return await withTableIndexLock(conn, target, undefined, () =>
+    return await withTableIndexLock(sql, conn, target, undefined, () =>
       reconcileStatistics(conn, args, target, specs)
     );
   } finally {

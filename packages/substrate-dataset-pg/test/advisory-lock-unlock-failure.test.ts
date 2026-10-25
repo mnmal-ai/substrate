@@ -4,7 +4,7 @@
  * Runs without pg: the reserved connection is a fake.
  */
 
-import type { Sql } from 'postgres';
+import type { ReservedSql, Sql } from 'postgres';
 import { describe, expect, it } from 'vitest';
 import { tryWithPgAdvisoryLock } from '../src/index.js';
 import { withTableIndexLock } from '../src/migrate.js';
@@ -72,20 +72,52 @@ describe('tryWithPgAdvisoryLock unlock failure', () => {
 });
 
 describe('withTableIndexLock unlock failure', () => {
-  it('unlocks again when a late cancel lands on the first unlock', async () => {
+  /** A reserved connection whose unlocks fail `failures` times, and the pool it came from. */
+  function fakes(failures: number) {
     const sent: string[] = [];
+    const pool: string[] = [];
+    let released = false;
     let unlocks = 0;
     const conn = {
       unsafe: (text: string) => {
-        sent.push(text.includes('pg_try_advisory_lock') ? 'lock' : 'unlock');
-        if (text.includes('pg_try_advisory_lock')) return Promise.resolve([{ acquired: true }]);
+        if (text.includes('pg_try_advisory_lock')) {
+          sent.push('lock');
+          return Promise.resolve([{ acquired: true, pid: 42, started: 't0' }]);
+        }
+        sent.push('unlock');
         unlocks += 1;
-        return unlocks === 1
+        return unlocks <= failures
           ? Promise.reject(new Error('canceling statement due to user request'))
           : Promise.resolve([{ pg_advisory_unlock: true }]);
+      },
+      release: () => {
+        released = true;
       }
-    } as unknown as Sql;
-    expect(await withTableIndexLock(conn, 'rows', undefined, async () => 1)).toBe(1);
-    expect(sent).toEqual(['lock', 'unlock', 'unlock']);
+    } as unknown as ReservedSql;
+    const sql = Object.assign(
+      (_s: TemplateStringsArray, ...values: unknown[]) => {
+        pool.push(`terminate ${values.join(',')}`);
+        return Promise.resolve([{ pg_terminate_backend: true }]);
+      },
+      { options: { max: 10 } }
+    ) as unknown as Sql;
+    return { sql, conn, sent, pool, released: () => released };
+  }
+
+  it('unlocks again when a late cancel lands on the first unlock', async () => {
+    const f = fakes(1);
+    expect(await withTableIndexLock(f.sql, f.conn, 'rows', undefined, async () => 1)).toBe(1);
+    expect(f.sent).toEqual(['lock', 'unlock', 'unlock']);
+    expect(f.pool).toEqual([]);
+  });
+
+  it('retires the session, and never pools it, when the second unlock fails too', async () => {
+    const f = fakes(2);
+    await expect(
+      withTableIndexLock(f.sql, f.conn, 'rows', undefined, async () => 1)
+    ).rejects.toThrow(/canceling statement/);
+    expect(f.pool).toEqual(['terminate 42,t0']);
+    f.conn.release();
+    expect(f.released()).toBe(false);
   });
 });

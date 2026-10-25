@@ -9,21 +9,41 @@ import type { ReservedSql, Sql } from 'postgres';
 const LOCAL_LOCKS = new WeakMap<Sql, KeyedMutex>();
 
 /** The locking session, identified by `pid` and `started` (its `backend_start` as text). */
-interface Session {
+export interface Session {
   pid: number;
   started: string;
 }
 
+/** Selects the current session as `pid` and `started`, for {@link retireSession}. */
+export const SESSION_COLUMNS = `pg_backend_pid() AS pid,
+  (SELECT backend_start::text FROM pg_stat_activity WHERE pid = pg_backend_pid()) AS started`;
+
 /**
- * Unlock `key` on `conn`. True when `conn` may go back to the pool. If the
- * unlock throws, the session may still hold the lock, so it is terminated
- * from another pooled connection instead, which drops every lock it holds and
- * retires the connection; a reserved handle has no `end()`, and a backend
+ * Retires a session that may still hold an advisory lock after its unlock
+ * threw. True when its connection may go back to the pool. The session is
+ * terminated from another pooled connection, which drops every lock it holds
+ * and retires the connection; a reserved handle has no `end()`, and a backend
  * terminating itself mid-query leaves postgres.js a stale error that surfaces
- * uncaught on the connection's next use. The session is matched on
- * `backend_start` as well as `pid`, because once it has ended its pid can
- * name another session.
+ * uncaught on the connection's next use. It is matched on `backend_start` as
+ * well as `pid`, because once it has ended its pid can name another session.
  */
+export async function retireSession(sql: Sql, session: Session): Promise<boolean> {
+  // A pool of one has no other connection to terminate from, so waiting for
+  // one would hang; release and risk the lock instead.
+  if (sql.options.max <= 1) return true;
+  try {
+    const killed = await sql`
+      SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+      WHERE pid = ${session.pid} AND backend_start = ${session.started}::timestamptz`;
+    // No match: the session has already ended, and its locks with it.
+    return killed.length === 0;
+  } catch {
+    // Cannot retire it either; release rather than leak the pool slot.
+    return true;
+  }
+}
+
+/** Unlock `key` on `conn`. True when `conn` may go back to the pool. */
 async function unlock(
   sql: Sql,
   conn: ReservedSql,
@@ -34,19 +54,7 @@ async function unlock(
     await conn`SELECT pg_advisory_unlock(hashtext(${key}))`;
     return true;
   } catch {
-    // A pool of one has no other connection to terminate from, so waiting for
-    // one would hang; release and risk the lock instead.
-    if (sql.options.max <= 1) return true;
-    try {
-      const killed = await sql`
-        SELECT pg_terminate_backend(pid) FROM pg_stat_activity
-        WHERE pid = ${session.pid} AND backend_start = ${session.started}::timestamptz`;
-      // No match: the session has already ended, and its locks with it.
-      return killed.length === 0;
-    } catch {
-      // Cannot retire it either; release rather than leak the pool slot.
-      return true;
-    }
+    return retireSession(sql, session);
   }
 }
 

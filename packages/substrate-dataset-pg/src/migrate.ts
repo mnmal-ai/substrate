@@ -29,7 +29,8 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { Sql } from 'postgres';
+import type { ReservedSql, Sql } from 'postgres';
+import { retireSession, SESSION_COLUMNS, type Session } from './advisory-lock.js';
 import { detectLayout, type StorageLayout } from './layout.js';
 import {
   CONCURRENT_STATEMENTS as BASELINE_CONCURRENT,
@@ -277,7 +278,7 @@ export async function runMigrations(sql: Sql, opts: RunMigrationsOptions = {}): 
   // The lock is polled with pg_try_advisory_lock, not blocking
   // pg_advisory_lock: a blocked waiter holds a transaction open, and the
   // holder's CREATE INDEX CONCURRENTLY waits on it, which deadlocks.
-  await withMigrationLock(sql, (conn) => runMigrationsLocked(conn, opts));
+  await withMigrationLock(sql, (conn) => runMigrationsLocked(sql, conn, opts));
 }
 
 /**
@@ -307,7 +308,10 @@ export async function pendingMigrations(sql: Sql): Promise<string[]> {
     .filter((v) => !applied.has(v));
 }
 
-export async function withMigrationLock<T>(sql: Sql, fn: (conn: Sql) => Promise<T>): Promise<T> {
+export async function withMigrationLock<T>(
+  sql: Sql,
+  fn: (conn: ReservedSql) => Promise<T>
+): Promise<T> {
   const lockConn = await sql.reserve();
   try {
     await acquireMigrationLock(lockConn);
@@ -347,33 +351,56 @@ export class IndexLockAborted extends Error {
  * builds on different tables do not. It is taken after the migration lock,
  * never before it, so a holder of this lock never waits for the migration lock.
  *
- * `conn` must be a reserved connection with no open transaction, and so with
- * no snapshot a holder's concurrent build would wait for. The lock is polled,
- * as the migration lock is, and the poll gives up with {@link IndexLockAborted}
- * once `signal` aborts.
+ * `conn` must be a connection reserved from `sql` with no open transaction,
+ * and so with no snapshot a holder's concurrent build would wait for. The lock
+ * is polled, as the migration lock is, and the poll gives up with
+ * {@link IndexLockAborted} once `signal` aborts. If the lock cannot be
+ * released, `conn`'s session is retired from `sql`, and the caller's
+ * `release()` of `conn` becomes a no-op, so it never returns to the pool.
  */
 export async function withTableIndexLock<T>(
-  conn: Sql,
+  sql: Sql,
+  conn: ReservedSql,
   table: string,
   signal: AbortSignal | undefined,
   fn: () => Promise<T>
 ): Promise<T> {
+  let session: Session;
   for (;;) {
     if (signal?.aborted === true) throw new IndexLockAborted();
-    const [row] = await conn.unsafe<Array<{ acquired: boolean }>>(
-      `SELECT pg_try_advisory_lock(${INDEX_LOCK_KEY}) AS acquired`,
+    const [row] = await conn.unsafe<Array<Session & { acquired: boolean }>>(
+      `SELECT pg_try_advisory_lock(${INDEX_LOCK_KEY}) AS acquired, ${SESSION_COLUMNS}`,
       [table]
     );
-    if (row?.acquired === true) break;
+    if (row?.acquired === true) {
+      session = row;
+      break;
+    }
     await abortableSleep(250, signal);
   }
   try {
     return await fn();
   } finally {
-    const unlock = () => conn.unsafe(`SELECT pg_advisory_unlock(${INDEX_LOCK_KEY})`, [table]);
-    // A cancel sent for fn's last statement can land on the unlock instead. It
-    // is one-shot, so a second unlock holds and the pooled conn keeps no lock.
+    await releaseTableIndexLock(sql, conn, table, session);
+  }
+}
+
+/** Unlocks what {@link withTableIndexLock} took, or retires the session that may still hold it. */
+async function releaseTableIndexLock(
+  sql: Sql,
+  conn: ReservedSql,
+  table: string,
+  session: Session
+): Promise<void> {
+  const unlock = () => conn.unsafe(`SELECT pg_advisory_unlock(${INDEX_LOCK_KEY})`, [table]);
+  try {
+    // A cancel sent for fn's last statement can land on the unlock instead.
+    // It is one-shot, so a second unlock normally holds.
     await unlock().catch(unlock);
+  } catch (err) {
+    // The session may still hold the lock, so it must not be pooled.
+    if (!(await retireSession(sql, session))) conn.release = () => {};
+    throw err;
   }
 }
 
@@ -400,7 +427,12 @@ async function acquireMigrationLock(sql: Sql): Promise<void> {
   }
 }
 
-async function runMigrationsLocked(sql: Sql, opts: RunMigrationsOptions): Promise<void> {
+/** `sql` is the pool; `conn` holds the migration lock and runs every statement. */
+async function runMigrationsLocked(
+  pool: Sql,
+  sql: ReservedSql,
+  opts: RunMigrationsOptions
+): Promise<void> {
   if (opts.force === true) {
     await sql`DROP TABLE IF EXISTS migrations`;
   }
@@ -468,7 +500,7 @@ async function runMigrationsLocked(sql: Sql, opts: RunMigrationsOptions): Promis
       // The rehash pass above guarantees the recorded checksum is current.
       continue;
     }
-    await applyOneMigration(sql, migration);
+    await applyOneMigration(pool, sql, migration);
   }
 }
 
@@ -480,7 +512,7 @@ async function runMigrationsLocked(sql: Sql, opts: RunMigrationsOptions): Promis
  * succeeds, so a partial concurrent failure leaves the migration "in progress"
  * and a re-run (statements are IF [NOT] EXISTS guarded) resumes it.
  */
-async function applyOneMigration(sql: Sql, migration: Migration): Promise<void> {
+async function applyOneMigration(pool: Sql, sql: ReservedSql, migration: Migration): Promise<void> {
   if (migration.txStatements.length > 0) {
     // Explicit statements: `sql` is the reserved lock connection, which has no begin().
     await sql.unsafe('BEGIN');
@@ -511,7 +543,7 @@ async function applyOneMigration(sql: Sql, migration: Migration): Promise<void> 
   };
   // Builds CONCURRENTLY on `rows` among others, as the reconciler's legacy builds do.
   if (migration.concurrentStatements.length > 0) {
-    await withTableIndexLock(sql, 'rows', undefined, concurrentPhase);
+    await withTableIndexLock(pool, sql, 'rows', undefined, concurrentPhase);
   }
   await sql`
     INSERT INTO migrations (version, checksum)
@@ -628,6 +660,6 @@ export async function runDerivedMigrations(
     const applied = await conn<Array<{ version: string }>>`SELECT version FROM migrations`;
     const appliedVersions = new Set(applied.map((r) => r.version));
     const pending = derived.map(normalise).filter((m) => !appliedVersions.has(m.version));
-    for (const migration of pending) await applyOneMigration(conn, migration);
+    for (const migration of pending) await applyOneMigration(sql, conn, migration);
   });
 }
