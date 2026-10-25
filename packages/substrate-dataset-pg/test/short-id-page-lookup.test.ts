@@ -15,7 +15,7 @@ import { encodeCursor } from '@mnmal-ai/substrate-filter';
 import type { FieldDef, IndexDecl, ReadParams } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { PgDataset } from '../src/index.js';
+import { detectLayout, PgDataset } from '../src/index.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const TYPE = 'Paged';
@@ -24,6 +24,8 @@ const FULL = 'PagedFull';
 const FULL_ROWS = 6000;
 const ROWS = 20_000;
 const PAGE = 1000;
+/** The most rows that share one date: 997 distinct dates over ROWS. */
+const TIES = Math.ceil(ROWS / 997);
 const ns = `spl_${randomBytes(4).toString('hex')}`;
 const rid = (i: number): string => `r${String(i).padStart(5, '0')}`;
 /** Every 7th row has no short id; the rest have short id i + 1. */
@@ -50,10 +52,12 @@ let sql: Sql;
 let traced: Sql;
 let sent: Array<{ query: string; parameters: unknown[]; types: number[] }> = [];
 let ds: PgDataset;
+let partitioned = false;
 
 beforeAll(async () => {
   if (!POSTGRES_URL) return;
   sql = postgres(POSTGRES_URL, { onnotice: () => {} });
+  partitioned = (await detectLayout(sql)) === 'partitioned';
   traced = postgres(POSTGRES_URL, {
     onnotice: () => {},
     debug: (_conn, query, parameters, types) => {
@@ -114,6 +118,7 @@ type PlanNode = {
   'Index Name'?: string;
   'Index Cond'?: string;
   'Rows Removed by Filter'?: number;
+  'Rows Removed by Index Recheck'?: number;
   'Actual Rows': number;
   'Actual Loops': number;
   Plans?: PlanNode[];
@@ -242,14 +247,29 @@ describe.skipIf(!POSTGRES_URL)('read: short id lookup for the returned page only
       it(`a deep page by a nullable date ${dir} bounds the date in the index scan (${mode})`, async () => {
         const params: ReadParams = { orderBy: [{ d: dir }], limit: PAGE, cursor: deepDateCursor };
         const all = nodes(await planOf(params, [`plan_cache_mode = ${mode}`], true));
-        const scan = all.find((n) => n['Index Name'] === index());
-        expect(
-          scan,
-          all.map((n) => `${n['Node Type']} ${n['Index Name'] ?? ''}`).join(', ')
-        ).toBeDefined();
-        expect(scan?.['Index Cond']).toMatch(bound);
-        const removed = all.reduce((sum, n) => sum + (n['Rows Removed by Filter'] ?? 0), 0);
-        expect(removed).toBeLessThanOrEqual(PAGE);
+        const listing = all.map((n) => `${n['Node Type']} ${n['Index Name'] ?? ''}`).join(', ');
+        if (partitioned) {
+          // The type has a heap of its own: an ordered scan of this direction's index.
+          const scan = all.find((n) => n['Index Name'] === index());
+          expect(scan, listing).toBeDefined();
+          expect(scan?.['Index Cond']).toMatch(bound);
+        } else {
+          // On the shared legacy heap, a bitmap scan plus a sort is a plan the
+          // planner legitimately picks. What must hold is a sargable bound, on
+          // either date index, as an Index Scan's or a Bitmap Index Scan's cond.
+          const scan = all.find(
+            (n) =>
+              (n['Index Name'] === D_IDX || n['Index Name'] === D_ASC_IDX) &&
+              bound.test(n['Index Cond'] ?? '')
+          );
+          expect(scan, listing).toBeDefined();
+        }
+        const removed = all.reduce(
+          (sum, n) =>
+            sum + (n['Rows Removed by Filter'] ?? 0) + (n['Rows Removed by Index Recheck'] ?? 0),
+          0
+        );
+        expect(removed, listing).toBeLessThanOrEqual(PAGE + TIES);
         // A full page never reads the null tail.
         expect(await selectsOf(params)).toHaveLength(1);
       });

@@ -384,7 +384,7 @@ export function compareFilterValues(a: unknown, b: unknown, asDate = false): num
  * NULL, a number included. Only the shared ISO grammar is read; operands are
  * cast leniently, as pg's `tsParam` casts them.
  */
-function storedMicros(v: unknown): number | undefined {
+function storedMicros(v: unknown): bigint | undefined {
   if (v instanceof Date) return toMicros(v);
   if (typeof v !== 'string' || normalizeIsoTimestamp(v) === undefined) return undefined;
   return toMicros(v);
@@ -403,18 +403,27 @@ export function asSortValue(field: string, value: unknown, fieldDefOf?: FieldDef
 }
 
 /**
- * Microseconds since the epoch, pg's timestamptz precision. `Date.parse` keeps
- * only milliseconds, so the 4th–6th fraction digits are added back. A number
- * is read as epoch milliseconds; anything unparseable is `undefined`.
+ * Microseconds since the epoch, pg's timestamptz precision, as a bigint: a
+ * double is exact only to 2^53 µs (about 1685-2255), and the grammar spans
+ * years 0001-9999. `Date.parse` keeps only milliseconds, so the 4th-6th
+ * fraction digits are added back. A number is read as epoch milliseconds;
+ * anything unparseable is `undefined`.
  */
-function toMicros(v: unknown): number | undefined {
-  if (v instanceof Date) return v.getTime() * 1000;
-  if (typeof v === 'number') return Number.isFinite(v) ? v * 1000 : undefined;
+function toMicros(v: unknown): bigint | undefined {
+  if (v instanceof Date) return msToMicros(v.getTime());
+  if (typeof v === 'number') return msToMicros(v);
   if (typeof v !== 'string') return undefined;
   // The grammar's own form (no offset is UTC); anything else as Date.parse reads it.
   const iso = normalizeIsoTimestamp(v) ?? v;
-  const ms = Date.parse(iso);
-  if (Number.isNaN(ms)) return undefined;
+  const micros = msToMicros(Date.parse(iso));
+  if (micros === undefined) return undefined;
   const frac = /[T ][\d:]+\.(\d+)/.exec(iso)?.[1] ?? '';
-  return ms * 1000 + Number(frac.padEnd(6, '0').slice(3, 6));
+  return micros + BigInt(frac.padEnd(6, '0').slice(3, 6));
+}
+
+/** Epoch milliseconds as microseconds, exact: `ms * 1000` as a double is not, past 2^53. */
+function msToMicros(ms: number): bigint | undefined {
+  if (!Number.isFinite(ms)) return undefined;
+  const whole = Math.floor(ms);
+  return BigInt(whole) * 1000n + BigInt(Math.round((ms - whole) * 1000));
 }

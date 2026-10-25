@@ -118,6 +118,28 @@ describe('validateFilter — where clause', () => {
     );
   });
 
+  it('refuses a date operand of the ISO shape on a day that does not exist, naming the field', () => {
+    for (const operand of [
+      { gt: '2026-02-30' },
+      { eq: '2026-13-01T00:00:00Z' },
+      { in: ['2026-10-24', '0000-01-01'] },
+      { between: ['2026-10-24', '2026-02-30T10:00:00Z'] },
+      { lt: new Date(Number.NaN) }
+    ]) {
+      const run = () =>
+        validateFilter({ where: { createdAt: operand }, typeSchema: SCHEMA, capabilities: CAPS });
+      expectCode(run, 'type_mismatch');
+      expect(run).toThrow(/on 'createdAt': .* is not a real date/);
+    }
+    expectOk(() =>
+      validateFilter({
+        where: { createdAt: { gt: '2026-10-24', lt: '2026-10-25T10:00:00' } },
+        typeSchema: SCHEMA,
+        capabilities: CAPS
+      })
+    );
+  });
+
   it('rejects unknown fields', () => {
     expectCode(
       () =>

@@ -36,3 +36,8 @@ export function normalizeIsoTimestamp(v: string): string | undefined {
 export function isIsoTimestamp(v: string): boolean {
   return normalizeIsoTimestamp(v) !== undefined;
 }
+
+/** Does `v` have the grammar's shape but name a day that does not exist (Feb 30, month 13, year 0000)? */
+export function isImpossibleIsoTimestamp(v: string): boolean {
+  return ISO_TIMESTAMP.test(v) && normalizeIsoTimestamp(v) === undefined;
+}

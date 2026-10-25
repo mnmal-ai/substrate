@@ -40,6 +40,9 @@ const CASES: Array<[string, string | null]> = [
   ['2026-10-24T10:00:00.1234567Z', '2026-10-24T10:00:00.123456Z'],
   ['2026-10-24T10:00:00.123456789+01:00', '2026-10-24T09:00:00.123456Z'],
   ['2026-10-24T10:00:00.9999999', '2026-10-24T10:00:00.999999Z'],
+  // The ends of the year range, to the microsecond.
+  ['9999-12-31T23:59:59.999999-15:59', '10000-01-01T15:58:59.999999Z'],
+  ['0001-01-01T00:00:00.000001-15:59', '0001-01-01T15:59:00.000001Z'],
   // Rejected: out of range or outside the grammar.
   ['2026-02-30', null],
   ['2026-02-30T00:00:00Z', null],
@@ -62,8 +65,9 @@ const fieldDefOf = (f: string) => (f === 'at' ? def : undefined);
 function memoryInstant(input: string, expected: string | null): string | null {
   const row = { id: 'r', at: input };
   if (asSortValue('at', input, fieldDefOf) === null) return null;
-  const probe = expected ?? '1970-01-01T00:00:00.000000Z';
-  return evaluateWhere(row, { at: { eq: probe } }, fieldDefOf) ? probe : `not ${probe}`;
+  // Date.parse spells a 5-digit year in the ES expanded form.
+  const probe = (expected ?? '1970-01-01T00:00:00.000000Z').replace(/^(\d{5})-/, '+0$1-');
+  return evaluateWhere(row, { at: { eq: probe } }, fieldDefOf) ? expected : `not ${probe}`;
 }
 
 describe('ISO timestamp parity: validator, memory and pg agree', () => {
@@ -88,6 +92,17 @@ describe('ISO timestamp parity: validator, memory and pg agree', () => {
                        'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS v`;
       return (r?.v ?? null) as string | null;
     });
+
+  it('memory tells instants 1µs apart at both ends of the year range', () => {
+    for (const [lo, hi] of [
+      ['9999-12-31T23:59:59.999998-15:59', '9999-12-31T23:59:59.999999-15:59'],
+      ['0001-01-01T00:00:00.000000-15:59', '0001-01-01T00:00:00.000001-15:59']
+    ] as const) {
+      const row = { id: 'r', at: hi };
+      expect(evaluateWhere(row, { at: { eq: lo } }, fieldDefOf), hi).toBe(false);
+      expect(evaluateWhere(row, { at: { gt: lo } }, fieldDefOf), hi).toBe(true);
+    }
+  });
 
   for (const [input, expected] of CASES) {
     it(`${input} -> ${expected ?? 'rejected'}`, async () => {
