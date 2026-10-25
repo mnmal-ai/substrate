@@ -226,7 +226,9 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
       ? `namespace = ${sqlStringLiteral(namespace)} AND type = ${sqlStringLiteral(type)} AND deleted_at IS NULL`
       : 'deleted_at IS NULL';
   const specs: Spec[] = [];
-  const btree = (decl: IndexDecl, name: string): Spec => {
+  // A non-unique btree ends with `id`, so it serves the `id` that ends every
+  // ORDER BY as well as the filter. `withoutId` leaves it out, for name hashing.
+  const btree = (decl: IndexDecl, name: string, withoutId = false): Spec => {
     const cols = decl.fields.map((f) => (typeof f === 'string' ? { field: f, dir: 'asc' } : f));
     const keys = cols.map((c) => keyExpr(c.field, fields[c.field], promoted));
     let predicate = live;
@@ -258,6 +260,7 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
       }
     }
     const colSql = keys.map((k, i) => `(${k})${cols[i]?.dir === 'desc' ? ' DESC NULLS LAST' : ''}`);
+    if (decl.unique !== true && !withoutId) colSql.push('id');
     return {
       name,
       fields: cols.map((c) => c.field),
@@ -298,8 +301,8 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
       predicate: live
     });
     specs.push(
-      base('created_at', `USING btree (created_at DESC NULLS LAST) WHERE ${live}`),
-      base('updated_at', `USING btree (updated_at DESC NULLS LAST) WHERE ${live}`),
+      base('created_at', `USING btree (created_at DESC NULLS LAST, id) WHERE ${live}`),
+      base('updated_at', `USING btree (updated_at DESC NULLS LAST, id) WHERE ${live}`),
       base('deleted_at', 'USING btree (deleted_at) WHERE deleted_at IS NOT NULL')
     );
   }
@@ -314,7 +317,7 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
       const implicit = specs.find((s) => s.name === name);
       if (implicit !== undefined && createSql(implicit, 'rows') !== createSql(spec, 'rows')) {
         const hash = createHash('sha256')
-          .update(`${spec.unique}|${spec.tail}`)
+          .update(`${spec.unique}|${btree(decl, name, true).tail}`)
           .digest('hex')
           .slice(0, 6);
         name = generatedIdentifier(namespace, type, `${keys}_${hash}`, suffix);
@@ -491,12 +494,16 @@ async function reconcileOne(
   }
 
   // Key columns are identified by field name, so a body-keyed index on a
-  // field promoted since swaps onto the column rather than conflicting.
+  // field promoted since swaps onto the column rather than conflicting. A
+  // trailing `id` is not part of the identity, so an index without it swaps.
   const fieldOf = new Map(
     Object.entries(args.promotedColumns ?? {}).map(([field, meta]) => [meta.column, field])
   );
-  const keyIdentity = (d: Described): string =>
-    d.keyFields.map((k) => fieldOf.get(k) ?? k).join('\n');
+  const keyIdentity = (d: Described): string => {
+    const keys = d.keyFields.map((k) => fieldOf.get(k) ?? k);
+    if (keys.length > 1 && keys.at(-1) === 'id') keys.pop();
+    return keys.join('\n');
+  };
   // Swappable when only the expression text or the predicate differs.
   if (
     !(

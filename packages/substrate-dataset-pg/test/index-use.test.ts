@@ -311,3 +311,92 @@ describe.skipIf(!POSTGRES_URL)(`index use: declared indexes (${LAYOUT})`, () => 
     );
   });
 });
+
+/** Every node type in the plan. */
+const nodeTypes = (node: PlanNode, out: string[] = []): string[] => {
+  out.push(node['Node Type']);
+  for (const child of node.Plans ?? []) nodeTypes(child, out);
+  return out;
+};
+
+// The default order ends with `id`, so a non-unique index that does not end
+// with it serves the filter but not the order: at scale the planner walks the
+// primary key in id order instead, filtering every row.
+describe.skipIf(!POSTGRES_URL)(`index use: the default order (${LAYOUT})`, () => {
+  const certNs = `iu_cert_${hex()}`;
+  const type = 'Cert';
+  const name = `rows_iu_cert_${hex()}`;
+  const certFields: Record<string, FieldDef> = { cert: { kind: 'scalar', type: 'string' } };
+  // The planner estimates `body ->> f = X` at its default 0.5% selectivity, so
+  // the matches must estimate well above the limit for an ordered range scan
+  // to beat fetching them all and sorting: 500 estimated (1,000 real) here.
+  const N = 100_000;
+  let certs: PgDataset;
+
+  beforeAll(async () => {
+    if (!POSTGRES_URL) return;
+    certs = new PgDataset({
+      namespace: certNs,
+      sql: traced,
+      fieldDefLookup: (_t, f) => certFields[f],
+      typeDefLookup: () => ({ fields: certFields, indexes: [{ fields: ['cert'], name }] })
+    });
+    await certs.ensureTypeStorage(type);
+    for (let start = 0; start < N; start += 2000) {
+      await certs.write(
+        type,
+        Array.from({ length: 2000 }, (_, k) => ({
+          id: `c${start + k}`,
+          cert: `x${(start + k) % 100}`
+        }))
+      );
+    }
+    await sql`ANALYZE rows`;
+  }, 120_000);
+
+  it('where <field> = X, limit 100: one range scan of the declared index, no Sort', async () => {
+    const { query, parameters, types } = await compiled(
+      { where: { cert: { eq: 'x7' } }, limit: 100 },
+      certs,
+      type
+    );
+    const conn = await sql.reserve();
+    try {
+      const names = await conn<Array<{ t: string }>>`
+        SELECT format_type(oid, NULL) AS t FROM unnest(${types}::oid[]) WITH ORDINALITY u(oid, k)
+        ORDER BY k`;
+      const literals = parameters
+        .map((p) => (p === null ? 'NULL' : `'${String(p).replace(/'/g, "''")}'`))
+        .join(', ');
+      await conn.unsafe(`PREPARE iu_cert(${names.map((n) => n.t).join(', ')}) AS ${query}`);
+      await conn.unsafe('SET plan_cache_mode = force_custom_plan');
+      const plan = planOf(await conn.unsafe(`EXPLAIN (FORMAT JSON) EXECUTE iu_cert(${literals})`));
+      if (process.env.INDEX_USE_LOG) console.log(JSON.stringify(plan, null, 1));
+      expect(indexesUsed(plan), JSON.stringify(nodeTypes(plan))).toContain(`Index Scan on ${name}`);
+      expect(nodeTypes(plan)).not.toContain('Sort');
+    } finally {
+      await conn.unsafe('DEALLOCATE ALL');
+      await conn.unsafe('RESET plan_cache_mode');
+      conn.release();
+    }
+  });
+
+  it('keyset paging over where <field> = X returns every match exactly once', async () => {
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 20; page++) {
+      const res = await certs.read(type, {
+        where: { cert: { eq: 'x7' } },
+        limit: 100,
+        ...(cursor === undefined ? {} : { cursor })
+      });
+      seen.push(...res.rows.map((r) => String(r.id)));
+      const next = (res as { nextCursor?: string | null }).nextCursor;
+      if (next === undefined || next === null || res.rows.length === 0) break;
+      cursor = next;
+    }
+    const expected = Array.from({ length: N / 100 }, (_, k) => `c${k * 100 + 7}`);
+    expect(seen).toHaveLength(expected.length);
+    expect(new Set(seen)).toEqual(new Set(expected));
+  });
+});

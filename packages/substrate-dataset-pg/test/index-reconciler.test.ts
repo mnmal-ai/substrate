@@ -154,7 +154,7 @@ describe.skipIf(!POSTGRES_URL)(`reconcileTypeIndexes (${LAYOUT})`, () => {
     const { ns, target, live } = await fixture();
     const name = `rows_a_${hex()}`;
     await sql.unsafe(
-      `CREATE INDEX ${name} ON ${target} (((body ->> 'cert') COLLATE "C")) WHERE ${live}`
+      `CREATE INDEX ${name} ON ${target} (((body ->> 'cert') COLLATE "C"), id) WHERE ${live}`
     );
     const s = (await reconcile(ns, [{ fields: ['cert'], name }])).find((x) => x.name === name);
     expect(s).toMatchObject({ name, outcome: 'adopted', state: 'valid' });
@@ -257,7 +257,73 @@ describe.skipIf(!POSTGRES_URL)(`reconcileTypeIndexes (${LAYOUT})`, () => {
       outcome: 'swapped',
       state: 'valid'
     });
-    expect((await indexState(name))?.def).toMatch(/\(status COLLATE "C"\)/);
+    expect((await indexState(name))?.def).toMatch(/\(status COLLATE "C", id\)/);
+  });
+
+  describe('a trailing id key', () => {
+    /** The key-column list of `def`, which ends `, id` on a non-unique btree. */
+    const keyList = (def: string | undefined) =>
+      /USING btree \((.*?)\) WHERE /.exec(def ?? '')?.[1];
+
+    it('ends every non-unique btree, ascending, and no unique one', async () => {
+      const { ns } = await fixture();
+      const single = `rows_s_${hex()}`;
+      const composite = `rows_c_${hex()}`;
+      const unique = `rows_u_${hex()}`;
+      const datey: Record<string, FieldDef> = {
+        ...fields,
+        observedAt: { kind: 'scalar', type: 'date', indexed: true }
+      };
+      await reconcile(
+        ns,
+        [
+          { fields: ['cert'], name: single },
+          { fields: ['cert', { field: 'observedAt', dir: 'desc' }], name: composite },
+          { fields: ['kid'], unique: true, name: unique }
+        ],
+        datey
+      );
+      expect(keyList((await indexState(single))?.def)).toBe(
+        `((body ->> 'cert'::text)) COLLATE "C", id`
+      );
+      expect(keyList((await indexState(composite))?.def)).toBe(
+        `((body ->> 'cert'::text)) COLLATE "C", substrate_ts((body -> 'observedAt'::text)) DESC NULLS LAST, id`
+      );
+      expect(keyList((await indexState(unique))?.def)).toBe(`((body ->> 'kid'::text)) COLLATE "C"`);
+      if (LAYOUT === 'partitioned') {
+        expect(
+          keyList((await indexState(generatedIdentifier(ns, TYPE, 'observedAt', 'idx')))?.def)
+        ).toBe(`substrate_ts((body -> 'observedAt'::text)) DESC NULLS LAST, id`);
+        expect(
+          keyList((await indexState(generatedIdentifier(ns, TYPE, 'created_at', 'base')))?.def)
+        ).toBe('created_at DESC NULLS LAST, id');
+      }
+    });
+
+    it('swaps an index of the shape without it in place of conflicting', async () => {
+      const { ns, target, live } = await fixture();
+      const name = `rows_o_${hex()}`;
+      await sql.unsafe(
+        `CREATE INDEX ${name} ON ${target} (((body ->> 'cert') COLLATE "C")) WHERE ${live}`
+      );
+      const s = (await reconcile(ns, [{ fields: ['cert'], name }])).find((x) => x.name === name);
+      expect(s).toMatchObject({ name, outcome: 'swapped', state: 'valid' });
+      expect(keyList((await indexState(name))?.def)).toBe(
+        `((body ->> 'cert'::text)) COLLATE "C", id`
+      );
+      expect(await indexState(`${name}__swap`)).toBeUndefined();
+    });
+
+    it('still refuses an existing non-unique index on a different field', async () => {
+      const { ns, target, live } = await fixture();
+      const name = `rows_d_${hex()}`;
+      await sql.unsafe(
+        `CREATE INDEX ${name} ON ${target} (((body ->> 'cert') COLLATE "C")) WHERE ${live}`
+      );
+      const err = await reconcile(ns, [{ fields: ['kid'], name }]).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(IndexDefinitionConflictError);
+      expect((err as IndexDefinitionConflictError).existing).toContain(`'cert'`);
+    });
   });
 
   it('refuses a boolean predicate on a field that is not boolean, naming it', async () => {
@@ -370,12 +436,12 @@ describe.skipIf(!POSTGRES_URL)(`reconcileTypeIndexes (${LAYOUT})`, () => {
           WHERE i.indrelid = to_regclass(${target})`
       ).map((r) => r.def);
       const expected = [
-        `USING btree (((body ->> 'kid'::text)) COLLATE "C") WHERE (deleted_at IS NULL)`,
-        `USING btree (substrate_num((body -> 'n'::text))) WHERE (deleted_at IS NULL)`,
+        `USING btree (((body ->> 'kid'::text)) COLLATE "C", id) WHERE (deleted_at IS NULL)`,
+        `USING btree (substrate_num((body -> 'n'::text)), id) WHERE (deleted_at IS NULL)`,
         `USING gin (((body -> 'tags'::text)) jsonb_path_ops) WHERE (deleted_at IS NULL)`,
         `USING gin (((body -> 'values'::text)) jsonb_path_ops) WHERE (deleted_at IS NULL)`,
-        `USING btree (created_at DESC NULLS LAST) WHERE (deleted_at IS NULL)`,
-        `USING btree (updated_at DESC NULLS LAST) WHERE (deleted_at IS NULL)`,
+        `USING btree (created_at DESC NULLS LAST, id) WHERE (deleted_at IS NULL)`,
+        `USING btree (updated_at DESC NULLS LAST, id) WHERE (deleted_at IS NULL)`,
         `USING btree (deleted_at) WHERE (deleted_at IS NOT NULL)`
       ];
       for (const e of expected)
