@@ -598,6 +598,7 @@ Every type gets a full autoCRUD surface (`createDress`, `getDress`,
 | `purgeable: true` | Also install the admin-only `purge<Type>` mutation. |
 | `adminCapability` | Capability required for admin verbs (default `'admin'`). |
 | `postWrite` | Hook run after every committed create or update; it cannot veto the write. |
+| `indexes` | Composite and unique indexes the engine builds and maintains (see [Indexes](#indexes)). |
 | `embed` / `lexical` | Recall source slots (see [Opting into recall](#opting-into-recall-from-a-coordinator)). |
 
 `defineNamespace` also accepts `opts.annotations`, opaque JSON passed through
@@ -607,6 +608,71 @@ dedicated `rows` columns so filters and sorts on them hit an index
 (`{ status: { column: 'status', kind: 'text' } }`). Your plugin's own
 migration creates the columns and their indexes; the engine creates none.
 Reads return the body as stored, and filters use the column.
+
+### Indexes
+
+On the partitioned layout the engine indexes every field whose `indexed` is
+`true` (the default for most builders, see below), plus `created_at`,
+`updated_at` and tombstones. Add `indexes` on a type for what a single field
+cannot serve: composites and unique constraints.
+
+```ts
+Listing: {
+  fields: { cert: field.string(), observedAt: field.date(), sku: field.string() },
+  indexes: [
+    { fields: ['cert', { field: 'observedAt', dir: 'desc' }] },
+    { fields: ['sku'], unique: true, where: 'live', name: 'listing_sku_uniq' }
+  ]
+}
+```
+
+- `fields`: key fields in order. Each is a name (ascending) or
+  `{ field, dir }`. Scalar and crossRef fields only; `field.json` is refused.
+  Both directions sort NULLs last, as `orderBy` does.
+- `unique`: refused at boot, with `unique_index_duplicates`, while live rows
+  already hold duplicate values.
+- `where`: every index covers live (not deleted) rows only. `'live'` adds
+  nothing to that; a record such as `{ archived: false, owner: null }` also
+  requires those boolean fields to equal the value (`null` means IS NULL).
+- `name`: the Postgres index name (`[a-z_][a-z0-9_]*`, at most 63 bytes, not
+  ending `__swap`). Omit it and one is generated. An existing index of that
+  name with the same key fields and uniqueness is adopted, and swapped to the
+  declared definition if the expression or predicate differs. One that differs
+  in key fields or uniqueness is refused with `index_definition_conflict`.
+  Two declarations resolving to one name with different definitions fail the
+  same way.
+
+The engine reconciles at boot, building concurrently.
+A removed declaration leaves its index in place.
+
+**What serves a query.**
+
+- Every non-unique btree ends in `id` ascending, so a filter plus the default
+  page order is one index range. Unique indexes do not get the `id`.
+- Implicit date indexes are newest-first (`DESC NULLS LAST`). An oldest-first
+  sort on a date is not index-served unless you declare an ASC index.
+- Filtering on one field and sorting by another needs a composite, e.g.
+  `(cert, observedAt desc)`. A range on one field with a sort by another is
+  the known trade-off: no single index serves both, and the planner picks one
+  side.
+- Keyset paging (the `cursor`) is index-served for `id` and for a sort key
+  that may be null: a range bound first, then the null tail. Page cost stays
+  flat with depth.
+
+**What it costs.**
+
+- Each index adds write cost. Index the fields you filter on, not every field;
+  set `indexed: false` on the rest.
+- The reconciler also owns one `CREATE STATISTICS` per indexed body
+  expression, and runs `ANALYZE` once when it creates one, because the planner
+  needs it for row estimates on body-field filters.
+- The first boot after upgrading from a release that built the old index
+  shape rebuilds every non-unique index concurrently to the new one. Each
+  rebuild briefly needs twice that index's disk. On a test host this took
+  about 6.4 minutes for 25M rows across 19 indexes.
+
+On the legacy layout only declared `indexes` are built, as partial indexes
+scoped to the type.
 
 The engine injects `id`, `shortId` and the `_metadata` fields (`createdAt`,
 `updatedAt`, `createdBy`, `updatedBy`). Declaring `shortId` yourself is
