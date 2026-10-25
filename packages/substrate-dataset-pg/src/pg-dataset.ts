@@ -1010,14 +1010,14 @@ export class PgDataset implements Dataset {
 
   /**
    * See `Dataset.withAdvisoryLock`. Excludes every session on the
-   * database, across processes. On a tx-bound instance the lock is
+   * same schema, across processes. On a tx-bound instance the lock is
    * `pg_advisory_xact_lock` on the transaction's own connection, held until
    * it commits or rolls back: a session lock would need a second connection
    * beside the open transaction.
    */
   async withAdvisoryLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
     if (!this.#inTx) return withPgAdvisoryLock(this.#sql as Sql, key, fn);
-    await this.#sql`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
+    await this.#sql`SELECT pg_advisory_xact_lock(hashtext(current_schema() || ':' || ${key}))`;
     return fn();
   }
 

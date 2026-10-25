@@ -54,6 +54,10 @@ The reconciler (`reconcileTypeIndexes`) builds each type's indexes at boot and k
 
 `0003_safe_casts` adds `substrate_num(jsonb)` and `substrate_ts(jsonb)`, used by sorts and index expressions over untyped body fields. Both are `IMMUTABLE` and `PARALLEL SAFE`, return NULL for a wrong-shaped value instead of raising, and are schema-qualified throughout (`pg_catalog.` operators and types) so the caller's `search_path` cannot change what they do. `substrate_ts` accepts the ISO dates and date-times the write validator accepts, and rebuilds each with an explicit offset before the cast, which is what makes it immutable regardless of `TimeZone` and `DateStyle`. A date with no offset is read as UTC, so writers should send an offset or `Z`.
 
+## Upgrading
+
+Advisory-lock keys (migration, index build, type storage, short-id sequences, `withAdvisoryLock`) are scoped to the current schema, so a process on an earlier release, which uses unscoped keys, does not exclude one on this release: stop every instance on a store before starting the new release.
+
 ## Running tests
 
 With `POSTGRES_URL` unset, the integration suite is skipped and the test command exits cleanly, so CI without Postgres can still run `pnpm test`.

@@ -329,7 +329,7 @@ export interface Dataset {
    * Run `fn` while holding a mutual-exclusion lock named `key`, waiting until
    * it is free. Excludes every other holder of the same key on this substrate:
    * pg holds a session advisory lock, so the exclusion spans processes sharing
-   * the database; memory excludes holders on this dataset instance only.
+   * the store's database schema; memory excludes holders on this dataset instance only.
    * Released when `fn` settles, whether it resolves or throws, except on a
    * pg tx-bound dataset, where it is held until the transaction ends so the
    * next holder sees what this one committed. Not re-entrant:

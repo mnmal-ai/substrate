@@ -93,7 +93,7 @@ interface Level {
  */
 async function attachPartition(tx: TransactionSql, level: Level): Promise<string> {
   const { parent, column, value } = level;
-  await tx`SELECT pg_advisory_xact_lock(hashtext(${level.lockKey}))`;
+  await tx`SELECT pg_advisory_xact_lock(hashtext(current_schema() || ':' || ${level.lockKey}))`;
   // A queued ACCESS EXCLUSIVE request stalls every later reader and writer of
   // the parent, so no wait may last long; the caller retries.
   await tx.unsafe(`SET LOCAL lock_timeout = '${LOCK_TIMEOUT}'`);

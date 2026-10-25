@@ -282,7 +282,8 @@ export async function runMigrations(sql: Sql, opts: RunMigrationsOptions = {}): 
 }
 
 /**
- * Runs `fn` while holding the migration advisory lock on one reserved connection.
+ * Runs `fn` while holding the migration advisory lock of the current schema on
+ * one reserved connection.
  *
  * The lock and unlock must share a session: through the pool, the unlock can
  * land on another connection and leave the lock held. `fn` is handed that same
@@ -325,7 +326,7 @@ export async function withMigrationLock<T>(
       // only replace the error that retired it with a connection error.
       if (!retired.has(lockConn)) {
         const [row] = await lockConn<Array<{ released: boolean }>>`
-          SELECT pg_advisory_unlock(hashtext('substrate-migrations')) AS released
+          SELECT pg_advisory_unlock(hashtext('substrate-migrations:' || current_schema())) AS released
         `;
         if (row?.released === false) {
           process.stderr.write(
@@ -430,7 +431,7 @@ export function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> 
 async function acquireMigrationLock(sql: Sql): Promise<void> {
   while (true) {
     const result = await sql<Array<{ acquired: boolean }>>`
-      SELECT pg_try_advisory_lock(hashtext('substrate-migrations')) AS acquired
+      SELECT pg_try_advisory_lock(hashtext('substrate-migrations:' || current_schema())) AS acquired
     `;
     if (result[0]?.acquired === true) return;
     await new Promise((resolve) => setTimeout(resolve, 250));

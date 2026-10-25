@@ -1,6 +1,7 @@
 /**
  * Session advisory lock on one reserved connection, for
- * `PgDataset.withAdvisoryLock`.
+ * `PgDataset.withAdvisoryLock`. Keys are scoped to the session's current
+ * schema, so stores in different schemas of one database never contend.
  */
 
 import { createKeyedMutex, type KeyedMutex } from '@mnmal-ai/substrate-types';
@@ -51,7 +52,7 @@ async function unlock(
   session: Session
 ): Promise<boolean> {
   try {
-    await conn`SELECT pg_advisory_unlock(hashtext(${key}))`;
+    await conn`SELECT pg_advisory_unlock(hashtext(current_schema() || ':' || ${key}))`;
     return true;
   } catch {
     return retireSession(sql, session);
@@ -59,7 +60,7 @@ async function unlock(
 }
 
 /**
- * Run `fn` while holding `pg_advisory_lock(hashtext(key))`, waiting until it
+ * Run `fn` while holding the advisory lock of `key` in the current schema, waiting until it
  * is free. Lock and unlock share one reserved connection, because an unlock
  * through the pool can land on another session and leave the lock held.
  *
@@ -81,7 +82,7 @@ export function withPgAdvisoryLock<T>(sql: Sql, key: string, fn: () => Promise<T
     let reusable = true;
     try {
       const [row] = await conn<Session[]>`
-        SELECT pg_advisory_lock(hashtext(${key})), pg_backend_pid() AS pid,
+        SELECT pg_advisory_lock(hashtext(current_schema() || ':' || ${key})), pg_backend_pid() AS pid,
           (SELECT backend_start::text FROM pg_stat_activity WHERE pid = pg_backend_pid()) AS started`;
       try {
         return await fn();
@@ -95,7 +96,7 @@ export function withPgAdvisoryLock<T>(sql: Sql, key: string, fn: () => Promise<T
 }
 
 /**
- * Run `fn` only if `pg_try_advisory_lock(hashtext(key))` is free right now,
+ * Run `fn` only if the advisory lock of `key` in the current schema is free right now,
  * on one reserved connection like `withPgAdvisoryLock`. A held lock resolves
  * `{ acquired: false }` without running `fn` and without waiting.
  *
@@ -110,7 +111,7 @@ export async function tryWithPgAdvisoryLock<T>(
   let reusable = true;
   try {
     const [row] = await conn<(Session & { ok: boolean })[]>`
-      SELECT pg_try_advisory_lock(hashtext(${key})) AS ok, pg_backend_pid() AS pid,
+      SELECT pg_try_advisory_lock(hashtext(current_schema() || ':' || ${key})) AS ok, pg_backend_pid() AS pid,
         (SELECT backend_start::text FROM pg_stat_activity WHERE pid = pg_backend_pid()) AS started`;
     if (row?.ok !== true) return { acquired: false };
     try {

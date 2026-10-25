@@ -191,7 +191,7 @@ export function buildOnboardBody(ownedNamespaces: ReadonlyArray<string>): Onboar
         'unless the change narrows an enum and a valueMap is supplied. That path rewrites every ' +
         'stored value the map names before narrowing, so it changes data, not just schema.',
       'First-past-the-post: concurrent proposes of the same name (namespace, type, or field) are ' +
-        'serialised by a lock on that name — a database-wide advisory lock on a pg backend, a ' +
+        'serialised by a lock on that name — a schema-scoped advisory lock on a pg backend, a ' +
         'process-local lock otherwise. The first to take it wins; the next reads its row and gets ' +
         '`namespace_already_proposed` / `type_already_proposed` with the prior proposedBy/at in ' +
         'details, or, for a field with an identical spec, the prior FieldProposal row.',
