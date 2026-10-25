@@ -188,6 +188,8 @@ interface DeferredBuild {
   state: 'pending' | 'building' | 'failed';
   /** `<namespace>/<type>`. */
   type: string;
+  /** Why it failed: an error code, then a short reason. */
+  error?: string;
 }
 
 /** The CHECKs the engine's own migrations put on `rows`; any other is plugin fan-out. */
@@ -1080,23 +1082,41 @@ export class PgDataset implements Dataset {
     if (layout === 'partitioned') await ensureTypeStorage(sql, this.namespace, type);
     const builds = this.#deferredBuilds();
     const qualified = `${this.namespace}/${type}`;
+    const record = (s: IndexState): void => {
+      if (s.state === 'pending' || s.state === 'failed') {
+        builds.set(s.name, {
+          state: s.state,
+          type: qualified,
+          ...(s.error !== undefined ? { error: s.error } : {})
+        });
+      } else {
+        builds.delete(s.name);
+      }
+    };
     let states: IndexState[];
     try {
       states = await reconcileTypeIndexes(sql, this.#indexArgs(type, this.namespace, layout), {
         only: opts.indexes ?? 'all',
         onBuild: (name) => builds.set(name, { state: 'building', type: qualified }),
+        onState: record,
         ...(opts.signal !== undefined ? { signal: opts.signal } : {})
       });
     } catch (err) {
-      for (const b of builds.values()) if (b.type === qualified) b.state = 'failed';
+      // Only the indexes this pass had not settled; one it settled keeps its state.
+      const code = (err as { code?: unknown }).code;
+      const reason = `${typeof code === 'string' ? code : 'error'}: ${
+        (err instanceof Error ? err.message : String(err)).split('\n')[0]
+      }`;
+      for (const b of builds.values()) {
+        if (b.type === qualified && b.state !== 'failed') {
+          b.state = 'failed';
+          b.error = reason;
+        }
+      }
       throw err;
     }
     for (const s of states) {
-      if (s.state === 'pending' || s.state === 'failed') {
-        builds.set(s.name, { state: s.state, type: qualified });
-      } else {
-        builds.delete(s.name);
-      }
+      record(s);
       if (s.outcome === 'unchanged') continue;
       process.stdout.write(
         `[substrate] index ${s.name} on ${this.namespace}/${type}: ${s.outcome} (${s.state})\n`
@@ -1124,7 +1144,13 @@ export class PgDataset implements Dataset {
     const builds = this.#deferredBuilds();
     return states.map((s) => {
       const build = builds.get(s.name);
-      return build === undefined ? s : { ...s, state: build.state };
+      if (build === undefined) return s;
+      // A catalog state carries no `error`.
+      return {
+        ...s,
+        state: build.state,
+        ...(build.error !== undefined ? { error: build.error } : {})
+      };
     });
   }
 
@@ -1172,7 +1198,8 @@ export class PgDataset implements Dataset {
       .sort(([a], [b]) => a.localeCompare(b))
       .map(
         ([name, b]) =>
-          `index ${name} on ${b.type} is ${b.state}: filters it would serve scan until it is valid`
+          `index ${name} on ${b.type} is ${b.state}${b.error !== undefined ? ` (${b.error})` : ''}: ` +
+          'filters it would serve scan until it is valid'
       );
     if (layout !== 'partitioned') return { layout: 'legacy', warnings: building };
     const sql = this.#sql as Sql;

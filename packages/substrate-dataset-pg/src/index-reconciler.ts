@@ -20,15 +20,29 @@
  * expression statistics object on the same table (`_stat`), marked as this
  * type's. One whose expression is no longer indexed is dropped.
  *
- * Builds run CONCURRENTLY, so never inside a transaction, and under the
- * migration lock, which serialises them with migrations and other boots.
+ * Builds run CONCURRENTLY, so never inside a transaction, and each under its
+ * table's index-build lock, since two concurrent builds on one table deadlock.
+ * Unique ones also hold the migration lock, which serialises them with
+ * migrations and other boots; non-unique ones do not, so a long build never
+ * holds up a booting process. What still meets a non-unique build is DDL on
+ * its table outside these locks: a kernel migration's ALTER or non-concurrent
+ * CREATE INDEX on `rows` waits for the build, and can deadlock with it, in
+ * which case Postgres aborts one with 40P01 (a failed build is retried by the
+ * next reconcile; a failed migration fails that boot).
  */
 
 import { createHash } from 'node:crypto';
 import type { FieldDef, IndexDecl } from '@mnmal-ai/substrate-types';
 import type { Sql } from 'postgres';
 import { MAX_IDENTIFIER, type StorageLayout } from './layout.js';
-import { dropIndexIfInvalid, generatedIdentifier, withMigrationLock } from './migrate.js';
+import {
+  abortableSleep,
+  dropIndexIfInvalid,
+  generatedIdentifier,
+  IndexLockAborted,
+  withMigrationLock,
+  withTableIndexLock
+} from './migrate.js';
 import {
   indexExpressionSql,
   type PromotedBodyColumnMap,
@@ -43,6 +57,8 @@ export interface IndexState {
   unique: boolean;
   state: 'valid' | 'building' | 'pending' | 'invalid' | 'failed';
   outcome: 'created' | 'adopted' | 'swapped' | 'unchanged';
+  /** Why a `failed` index failed: an error code, then a short reason. */
+  error?: string;
 }
 
 /** A unique index was declared over values that are already duplicated among live rows. */
@@ -101,15 +117,24 @@ interface Spec {
 export interface ReconcileOptions {
   /**
    * Which indexes to reconcile. `unique` leaves the non-unique ones and the
-   * statistics objects alone, reporting those indexes `pending`; `nonUnique`
+   * statistics objects alone, reporting each non-unique index `valid` when the
+   * catalog already holds it as declared and `pending` otherwise; `nonUnique`
    * is the rest. Default `all`.
    */
   only?: 'all' | 'unique' | 'nonUnique';
   /** Called with an index's name as its build starts. */
   onBuild?: (name: string) => void;
-  /** Cancels an in-flight non-unique build and skips the rest. */
+  /** Called with each non-unique index's state as soon as it is reconciled. */
+  onState?: (state: IndexState) => void;
+  /**
+   * Cancels the non-unique work: a lock wait or an in-flight build, which
+   * leaves an INVALID index the next reconcile drops. The rest is skipped.
+   */
   signal?: AbortSignal;
 }
+
+/** Pause after a non-unique build releases its table lock, so a polling waiter gets it. */
+const YIELD_MS = 300;
 
 /** Marks an index this reconciler built or adopted. */
 const MARK = 'substrate: reconciled';
@@ -120,6 +145,13 @@ const BARE_NAME = /^[a-z_][a-z0-9_]*$/;
  * the type's partition must exist (`ensureTypeStorage`). Must not be called
  * while this session's pool already holds the migration lock on another
  * connection, since it waits for that lock.
+ *
+ * Unique indexes reconcile under the migration lock, which serialises them
+ * with migrations and other boots. Non-unique indexes and statistics take
+ * only the table's index-build lock (`withTableIndexLock`), one index at a
+ * time, so a long build never holds up another process's migrations, nor its
+ * unique builds on other tables. An index the catalog already holds as
+ * declared takes no lock at all.
  */
 export async function reconcileTypeIndexes(
   sql: Sql,
@@ -128,41 +160,131 @@ export async function reconcileTypeIndexes(
 ): Promise<IndexState[]> {
   const only = opts.only ?? 'all';
   const all = desiredSpecs(args);
-  const specs = all.filter((s) => only === 'all' || s.unique === (only === 'unique'));
-  const pending: IndexState[] =
-    only === 'unique'
-      ? all
-          .filter((s) => !s.unique)
-          .map((s) => ({
-            name: s.name,
-            fields: s.fields,
-            unique: false,
-            state: 'pending',
-            outcome: 'unchanged'
-          }))
-      : [];
-  const withStatistics = only !== 'unique';
-  if (
-    specs.length === 0 &&
-    (!withStatistics || (await heldStatistics(sql, args).catch(() => [])).length === 0)
-  ) {
-    return pending;
+  const out: IndexState[] = [];
+  const unique = all.filter((s) => s.unique);
+  // The unique pass also reads the non-unique indexes' states, to report them.
+  const first = only === 'unique' ? all : only === 'all' ? unique : [];
+  if (first.length > 0) {
+    const target = await targetTable(sql, args);
+    out.push(
+      ...(await withMigrationLock(sql, async (conn) => {
+        const desired = await deparse(conn, first);
+        const states: IndexState[] = [];
+        for (const [i, spec] of first.entries()) {
+          const d = desired[i] as Described;
+          const held = await heldAsDeclared(conn, target, spec, d);
+          states.push(
+            held !== undefined
+              ? held
+              : spec.unique
+                ? await withTableIndexLock(conn, target, undefined, () =>
+                    reconcileOne(conn, args, target, spec, d, {})
+                  )
+                : indexState(spec, 'pending', 'unchanged')
+          );
+        }
+        return states;
+      }))
+    );
+  }
+  if (only !== 'unique') out.push(...(await reconcileNonUnique(sql, args, all, opts)));
+  return out;
+}
+
+/** Non-unique indexes, then statistics, each under the table's index-build lock. */
+async function reconcileNonUnique(
+  sql: Sql,
+  args: ReconcileTypeIndexesArgs,
+  all: Spec[],
+  opts: ReconcileOptions
+): Promise<IndexState[]> {
+  const specs = all.filter((s) => !s.unique);
+  if (specs.length === 0 && (await heldStatistics(sql, args).catch(() => [])).length === 0) {
+    return [];
   }
   const target = await targetTable(sql, args);
-  return withMigrationLock(sql, async (conn) => {
-    const out: IndexState[] = [];
-    if (specs.length > 0) {
-      const desired = await deparse(conn, specs);
-      for (const [i, spec] of specs.entries()) {
-        if (opts.signal?.aborted === true) return out;
-        out.push(await reconcileOne(conn, args, target, spec, desired[i] as Described, opts));
+  const conn = await sql.reserve();
+  const out: IndexState[] = [];
+  try {
+    const desired = await deparse(conn, specs);
+    for (const [i, spec] of specs.entries()) {
+      const d = desired[i] as Described;
+      let state = await heldAsDeclared(conn, target, spec, d);
+      if (state === undefined) {
+        try {
+          state = await withTableIndexLock(conn, target, opts.signal, () =>
+            reconcileOne(conn, args, target, spec, d, opts)
+          );
+        } catch (err) {
+          if (err instanceof IndexLockAborted) return out;
+          // A non-unique index costs only speed, so a conflict fails it alone.
+          if (!(err instanceof IndexDefinitionConflictError)) throw err;
+          process.stderr.write(`${err.message}\n`);
+          state = indexState(spec, 'failed', 'unchanged', conflictReason(err));
+        }
+        await abortableSleep(YIELD_MS, opts.signal);
       }
+      opts.onState?.(state);
+      out.push(state);
+      if (opts.signal?.aborted === true) return out;
     }
-    if (withStatistics && opts.signal?.aborted !== true) {
-      await reconcileStatistics(conn, args, target, all);
+    try {
+      await withTableIndexLock(conn, target, opts.signal, () =>
+        reconcileStatistics(conn, args, target, all, opts.signal)
+      );
+    } catch (err) {
+      if (!(err instanceof IndexLockAborted)) throw err;
     }
-    return [...out, ...pending];
-  });
+    return out;
+  } finally {
+    conn.release();
+  }
+}
+
+function indexState(
+  spec: Spec,
+  state: IndexState['state'],
+  outcome: IndexState['outcome'],
+  error?: string
+): IndexState {
+  return {
+    name: spec.name,
+    fields: spec.fields,
+    unique: spec.unique,
+    state,
+    outcome,
+    ...(error !== undefined ? { error } : {})
+  };
+}
+
+const conflictReason = (err: IndexDefinitionConflictError): string =>
+  `${err.code}: ${err.indexName} exists with a different definition; drop or rename it`;
+
+/**
+ * `valid`, unchanged, when the catalog holds `spec` exactly as declared,
+ * valid, marked, and with no swap leftover: nothing to do, so no lock.
+ * Otherwise undefined.
+ */
+async function heldAsDeclared(
+  conn: Sql,
+  target: string,
+  spec: Spec,
+  desired: Described
+): Promise<IndexState | undefined> {
+  const named = await describeIndex(conn, spec.name, 'current');
+  if (
+    named === undefined ||
+    named.table !== target ||
+    named.def !== desired.def ||
+    !named.valid ||
+    !named.ready ||
+    !named.marked
+  ) {
+    return undefined;
+  }
+  if ((await describeIndex(conn, swapNameFor(spec.name), 'current')) !== undefined)
+    return undefined;
+  return indexState(spec, 'valid', 'unchanged');
 }
 
 export interface StatisticsOutcome {
@@ -178,7 +300,14 @@ export async function reconcileTypeStatistics(
 ): Promise<StatisticsOutcome> {
   const specs = desiredSpecs(args);
   const target = await targetTable(sql, args);
-  return withMigrationLock(sql, (conn) => reconcileStatistics(conn, args, target, specs));
+  const conn = await sql.reserve();
+  try {
+    return await withTableIndexLock(conn, target, undefined, () =>
+      reconcileStatistics(conn, args, target, specs)
+    );
+  } finally {
+    conn.release();
+  }
 }
 
 /** Marks a statistics object as this type's, so another type's never matches. */
@@ -225,7 +354,8 @@ async function reconcileStatistics(
   conn: Sql,
   args: ReconcileTypeIndexesArgs,
   target: string,
-  specs: Spec[]
+  specs: Spec[],
+  signal?: AbortSignal
 ): Promise<StatisticsOutcome> {
   const out: StatisticsOutcome = { created: [], dropped: [], analyzed: false };
   // Statistics only steer the planner, so no step here fails the reconcile: a
@@ -292,7 +422,7 @@ async function reconcileStatistics(
   // ANALYZE failed still holds nothing (a null `null_frac`; an empty table
   // never fills it, so its cheap ANALYZE repeats until it has rows).
   // shortcut: on legacy each type that gains an object analyses the whole
-  // shared `rows` under the migration lock, up to one sampled ANALYZE per type
+  // shared `rows` under its index-build lock, up to one sampled ANALYZE per type
   // on the first boot after upgrade; coalesce to one per boot pass if deploy
   // time matters.
   await attempt('analyze', async () => {
@@ -307,7 +437,7 @@ async function reconcileStatistics(
             LIMIT 1`
         ).length > 0);
     if (!pending) return;
-    await conn.unsafe(`ANALYZE ${ident(target)}`);
+    await cancellable(conn, `ANALYZE ${ident(target)}`, signal);
     out.analyzed = true;
   });
   return out;
@@ -651,13 +781,11 @@ async function reconcileOne(
   desired: Described,
   opts: ReconcileOptions
 ): Promise<IndexState> {
-  const report = (state: IndexState['state'], outcome: IndexState['outcome']): IndexState => ({
-    name: spec.name,
-    fields: spec.fields,
-    unique: spec.unique,
-    state,
-    outcome
-  });
+  const report = (state: IndexState['state'], outcome: IndexState['outcome']): IndexState =>
+    indexState(spec, state, outcome);
+  const failed = (reason: string): IndexState => indexState(spec, 'failed', 'unchanged', reason);
+  // Only a non-unique index's work is cancelled; a unique one must finish.
+  const signal = spec.unique ? undefined : opts.signal;
   const swapName = swapNameFor(spec.name);
   // A failed concurrent build leaves an INVALID index, never to be adopted.
   await dropIndexIfInvalid(conn, spec.name);
@@ -670,7 +798,7 @@ async function reconcileOne(
 
   if (identical(named)) {
     // `named` enforces what is declared, so a leftover is redundant.
-    if (leftover !== undefined) await dropConcurrently(conn, swapName);
+    if (leftover !== undefined) await dropConcurrently(conn, swapName, signal);
     if (named?.marked === true) return report('valid', 'unchanged');
     await mark(conn, spec.name);
     return report('valid', 'adopted');
@@ -682,7 +810,7 @@ async function reconcileOne(
   const existing = named ?? leftover;
   if (existing === undefined) {
     const built = await build(conn, args, target, spec, spec.name, opts);
-    if (built !== undefined) return report(built, 'unchanged');
+    if (built !== undefined) return failed(built);
     await mark(conn, spec.name);
     return report(await stateOf(conn, spec.name), 'created');
   }
@@ -722,8 +850,8 @@ async function reconcileOne(
       await conn.unsafe(`ALTER INDEX ${swapName} RENAME TO ${spec.name}`);
     } else {
       const built = await build(conn, args, target, spec, spec.name, opts);
-      if (built !== undefined) return report(built, 'unchanged');
-      await dropConcurrently(conn, swapName);
+      if (built !== undefined) return failed(built);
+      await dropConcurrently(conn, swapName, signal);
     }
     await mark(conn, spec.name);
     return report(await stateOf(conn, spec.name), 'swapped');
@@ -743,13 +871,13 @@ async function reconcileOne(
     }
   } else {
     // `named` keeps enforcing while the stale leftover goes.
-    if (leftover !== undefined) await dropConcurrently(conn, swapName);
+    if (leftover !== undefined) await dropConcurrently(conn, swapName, signal);
     const built = await build(conn, args, target, spec, swapName, opts);
-    if (built !== undefined) return report(built, 'unchanged');
+    if (built !== undefined) return failed(built);
   }
   // A successful CREATE INDEX CONCURRENTLY returns only once the index is
   // valid and ready, so the old one can go.
-  await dropConcurrently(conn, spec.name);
+  await dropConcurrently(conn, spec.name, signal);
   await conn.unsafe(`ALTER INDEX ${swapName} RENAME TO ${spec.name}`);
   await mark(conn, spec.name);
   return report(await stateOf(conn, spec.name), 'swapped');
@@ -757,7 +885,7 @@ async function reconcileOne(
 
 /**
  * Builds `spec` as `name` CONCURRENTLY, refusing a unique one over duplicate
- * live values. Returns `'failed'` when a non-unique build fails or is
+ * live values. Returns the reason when a non-unique build fails or is
  * cancelled through `opts.signal`, which costs only a scan until the next
  * reconcile drops the INVALID leftover and retries it; a unique one throws.
  */
@@ -768,7 +896,7 @@ async function build(
   spec: Spec,
   name: string,
   opts: ReconcileOptions
-): Promise<'failed' | undefined> {
+): Promise<string | undefined> {
   if (spec.unique) await assertNoDuplicates(conn, args, target, spec);
   opts.onBuild?.(spec.name);
   // No lock_timeout: CONCURRENTLY takes SHARE UPDATE EXCLUSIVE, which a
@@ -777,8 +905,30 @@ async function build(
   // INVALID index behind. The same holds for DROP INDEX CONCURRENTLY and
   // for ALTER INDEX RENAME and COMMENT ON INDEX, which take that lock on
   // the index alone.
-  const signal = spec.unique ? undefined : opts.signal;
-  const query = conn.unsafe(createSql(spec, target, name, true));
+  try {
+    await cancellable(
+      conn,
+      createSql(spec, target, name, true),
+      spec.unique ? undefined : opts.signal
+    );
+    return undefined;
+  } catch (err) {
+    if (spec.unique) throw err;
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(
+      `index ${name} on ${target} failed to build and will be retried: ${message}\n`
+    );
+    return `build_failed: ${message}`;
+  }
+}
+
+/** Runs `text` on `conn`, cancelling it in flight when `signal` aborts. */
+async function cancellable(
+  conn: Sql,
+  text: string,
+  signal: AbortSignal | undefined
+): Promise<void> {
+  const query = conn.unsafe(text);
   // Typed void, but returns the cancel request's promise, which may reject.
   const cancel = (): void => {
     Promise.resolve(query.cancel() as unknown).catch(() => undefined);
@@ -787,21 +937,13 @@ async function build(
   try {
     if (signal?.aborted === true) cancel();
     await query;
-    return undefined;
-  } catch (err) {
-    if (spec.unique) throw err;
-    process.stderr.write(
-      `index ${name} on ${target} failed to build and will be retried: ` +
-        `${err instanceof Error ? err.message : String(err)}\n`
-    );
-    return 'failed';
   } finally {
     signal?.removeEventListener('abort', cancel);
   }
 }
 
-async function dropConcurrently(conn: Sql, name: string): Promise<void> {
-  await conn.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS ${name}`);
+async function dropConcurrently(conn: Sql, name: string, signal?: AbortSignal): Promise<void> {
+  await cancellable(conn, `DROP INDEX CONCURRENTLY IF EXISTS ${name}`, signal);
 }
 
 async function mark(conn: Sql, name: string): Promise<void> {

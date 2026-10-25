@@ -15,9 +15,10 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import type { IndexDecl } from '@mnmal-ai/substrate-types';
 import postgres, { type ReservedSql, type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { PgDataset } from '../src/index.js';
+import { PgDataset, partitionName, runMigrations } from '../src/index.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
+const LAYOUT = process.env.SUBSTRATE_STORAGE_LAYOUT ?? 'legacy';
 const TYPE = 'T';
 
 let sql: Sql;
@@ -38,18 +39,34 @@ function fixture() {
     { fields: ['kid'], unique: true, where: 'live', name: unique },
     { fields: ['cert'], name: plain }
   ];
+  /** Declared indexes per type, editable between ensures. */
+  const declared: Record<string, IndexDecl[]> = { [TYPE]: indexes };
   const ds = new PgDataset({
     namespace: ns,
     sql,
-    typeDefLookup: () => ({
+    typeDefLookup: (type) => ({
       fields: {
         kid: { kind: 'scalar', type: 'string' },
         cert: { kind: 'scalar', type: 'string' }
       },
-      indexes
+      indexes: declared[type] ?? []
     })
   });
-  return { ns, ds, unique, plain };
+  return { ns, ds, unique, plain, declared };
+}
+
+/** Holds the index-build lock of the table `type`'s indexes live on, from another session. */
+async function holdIndexLock(ns: string, type: string): Promise<{ release(): Promise<void> }> {
+  const table = LAYOUT === 'partitioned' ? partitionName(ns, type) : 'rows';
+  const conn: ReservedSql = await sql.reserve();
+  const key = `hashtext('substrate-index-build:' || current_schema() || '.' || $1::text)`;
+  await conn.unsafe(`SELECT pg_advisory_lock(${key})`, [table]);
+  return {
+    async release() {
+      await conn.unsafe(`SELECT pg_advisory_unlock(${key})`, [table]);
+      conn.release();
+    }
+  };
 }
 
 async function catalogValid(name: string): Promise<boolean | undefined> {
@@ -142,5 +159,90 @@ describe.skipIf(!POSTGRES_URL)('deferred non-unique index builds', () => {
     await ds.ensureTypeStorage(TYPE, { indexes: 'nonUnique' });
     expect(await catalogValid(cancelled)).toBe(true);
     expect(await stateOf(ds, cancelled)).toBe('valid');
+  }, 30_000);
+
+  it('a second boot with no changes leaves nothing pending', async () => {
+    const { ns, ds, unique, plain } = fixture();
+    await ds.ensureTypeStorage(TYPE, { indexes: 'unique' });
+    await ds.ensureTypeStorage(TYPE, { indexes: 'nonUnique' });
+    await ds.ensureTypeStorage(TYPE, { indexes: 'unique' });
+    expect(await stateOf(ds, plain)).toBe('valid');
+    expect(await stateOf(ds, unique)).toBe('valid');
+    const { warnings } = await ds.storageReport({ partitionBudget: 1e6 });
+    expect(warnings.filter((w) => w.includes(ns))).toEqual([]);
+  }, 30_000);
+
+  it('a conflicting index fails alone, with its reason, and the rest still build', async () => {
+    const { ns, ds, plain, declared } = fixture();
+    const after = `${ns}_kid_ix`;
+    declared[TYPE] = [
+      { fields: ['cert'], name: plain },
+      { fields: ['kid'], name: after }
+    ];
+    await ds.ensureTypeStorage(TYPE, { indexes: 'unique' });
+    // An index of the declared name on another field: a conflict, not a swap.
+    const table = LAYOUT === 'partitioned' ? partitionName(ns, TYPE) : 'rows';
+    await sql.unsafe(`CREATE INDEX ${plain} ON "${table}" ((body ->> 'kid'))`);
+    await ds.ensureTypeStorage(TYPE, { indexes: 'nonUnique' });
+    const reason = `index_definition_conflict: ${plain} exists with a different definition; drop or rename it`;
+    const described = (await ds.describeStorage(TYPE)).indexes;
+    expect(described.find((i) => i.name === plain)).toMatchObject({
+      state: 'failed',
+      error: reason
+    });
+    expect(described.find((i) => i.name === after)?.state).toBe('valid');
+    expect((await ds.storageReport({ partitionBudget: 1e6 })).warnings).toContain(
+      `index ${plain} on ${ns}/${TYPE} is failed (${reason}): filters it would serve scan until it is valid`
+    );
+  }, 30_000);
+
+  it('a second boot completes while a slow background build holds its table lock', async () => {
+    const { ns, ds, unique, declared } = fixture();
+    const other = 'U';
+    await ds.ensureTypeStorage(TYPE, { indexes: 'unique' });
+    // Its partition exists before the background build starts.
+    await ds.ensureTypeStorage(other, { indexes: 'unique' });
+    const hold = await holdBuilds(ns);
+    let settled = false;
+    const background = ds.ensureTypeStorage(TYPE, { indexes: 'nonUnique' }).then(() => {
+      settled = true;
+    });
+    try {
+      await until(async () => (await building(ds)) !== undefined, 'a build to start');
+      // The second boot: migrations, then its unique pass, on the same database.
+      await runMigrations(sql);
+      await ds.ensureTypeStorage(TYPE, { indexes: 'unique' });
+      expect(await stateOf(ds, unique)).toBe('valid');
+      if (LAYOUT === 'partitioned') {
+        // A unique index still to build, on another table, builds meanwhile.
+        const otherUnique = `${ns}_u_kid_uq`;
+        declared[other] = [{ fields: ['kid'], unique: true, where: 'live', name: otherUnique }];
+        await ds.ensureTypeStorage(other, { indexes: 'unique' });
+        expect(await catalogValid(otherUnique)).toBe(true);
+      }
+      expect(settled).toBe(false);
+    } finally {
+      await hold.release();
+    }
+    await background;
+  }, 60_000);
+
+  it('stops at once when aborted while waiting for the table lock', async () => {
+    const { ns, ds, plain } = fixture();
+    await ds.ensureTypeStorage(TYPE, { indexes: 'unique' });
+    const lock = await holdIndexLock(ns, TYPE);
+    const abort = new AbortController();
+    try {
+      const background = ds.ensureTypeStorage(TYPE, { indexes: 'nonUnique', signal: abort.signal });
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      const start = Date.now();
+      abort.abort();
+      await background;
+      expect(Date.now() - start).toBeLessThan(500);
+    } finally {
+      await lock.release();
+    }
+    expect(await catalogValid(plain)).toBeUndefined();
+    expect(await stateOf(ds, plain)).toBe('pending');
   }, 30_000);
 });

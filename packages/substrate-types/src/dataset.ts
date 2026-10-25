@@ -529,6 +529,8 @@ export interface TypeIndexState {
   unique: boolean;
   state: 'valid' | 'building' | 'pending' | 'invalid' | 'failed';
   outcome: 'created' | 'adopted' | 'swapped' | 'unchanged';
+  /** Why a `failed` index failed: an error code, then a short reason. */
+  error?: string;
 }
 
 /** Where a type's rows live: `partition` is set on the partitioned layout once the type has one. */

@@ -316,15 +316,28 @@ describe.skipIf(!POSTGRES_URL)(`reconcileTypeIndexes (${LAYOUT})`, () => {
       expect(await indexState(`${name}__swap`)).toBeUndefined();
     });
 
-    it('still refuses an existing non-unique index on a different field', async () => {
+    it('still refuses an existing non-unique index on a different field, failing it alone', async () => {
       const { ns, target, live } = await fixture();
       const name = `rows_d_${hex()}`;
+      const after = `rows_e_${hex()}`;
       await sql.unsafe(
         `CREATE INDEX ${name} ON ${target} (((body ->> 'cert') COLLATE "C")) WHERE ${live}`
       );
-      const err = await reconcile(ns, [{ fields: ['kid'], name }]).catch((e: unknown) => e);
-      expect(err).toBeInstanceOf(IndexDefinitionConflictError);
-      expect((err as IndexDefinitionConflictError).existing).toContain(`'cert'`);
+      const states = await reconcile(ns, [
+        { fields: ['kid'], name },
+        { fields: ['observedAt'], name: after }
+      ]);
+      expect(states.find((x) => x.name === name)).toMatchObject({
+        state: 'failed',
+        error: `index_definition_conflict: ${name} exists with a different definition; drop or rename it`
+      });
+      expect(keyList((await indexState(name))?.def)).toContain(`'cert'`);
+      // The declaration after it, and the type's statistics, still reconcile.
+      expect(states.find((x) => x.name === after)).toMatchObject({ state: 'valid' });
+      const [stats] = await sql<Array<{ n: number }>>`
+        SELECT count(*)::int AS n FROM pg_statistic_ext
+        WHERE obj_description(oid, 'pg_statistic_ext') = ${`substrate: statistics of ${JSON.stringify([ns, TYPE])}`}`;
+      expect(stats?.n).toBeGreaterThan(0);
     });
   });
 

@@ -328,6 +328,65 @@ export async function withMigrationLock<T>(sql: Sql, fn: (conn: Sql) => Promise<
   }
 }
 
+/** Per schema and table; `$1` is the table name. */
+const INDEX_LOCK_KEY = `hashtext('substrate-index-build:' || current_schema() || '.' || $1::text)`;
+
+/** `withTableIndexLock` gave up waiting because its signal aborted. */
+export class IndexLockAborted extends Error {
+  constructor() {
+    super('index build lock wait aborted');
+    this.name = 'IndexLockAborted';
+  }
+}
+
+/**
+ * Runs `fn` while `conn` holds the index-build advisory lock of `table` (in the
+ * current schema). Every engine CREATE or DROP INDEX CONCURRENTLY, swap and
+ * statistics step on a table runs under it: two concurrent builds on one table
+ * deadlock in Postgres (measured on pg17: one is aborted with 40P01), while
+ * builds on different tables do not. It is taken after the migration lock,
+ * never before it, so a holder of this lock never waits for the migration lock.
+ *
+ * `conn` must be a reserved connection with no open transaction, and so with
+ * no snapshot a holder's concurrent build would wait for. The lock is polled,
+ * as the migration lock is, and the poll gives up with {@link IndexLockAborted}
+ * once `signal` aborts.
+ */
+export async function withTableIndexLock<T>(
+  conn: Sql,
+  table: string,
+  signal: AbortSignal | undefined,
+  fn: () => Promise<T>
+): Promise<T> {
+  for (;;) {
+    if (signal?.aborted === true) throw new IndexLockAborted();
+    const [row] = await conn.unsafe<Array<{ acquired: boolean }>>(
+      `SELECT pg_try_advisory_lock(${INDEX_LOCK_KEY}) AS acquired`,
+      [table]
+    );
+    if (row?.acquired === true) break;
+    await abortableSleep(250, signal);
+  }
+  try {
+    return await fn();
+  } finally {
+    await conn.unsafe(`SELECT pg_advisory_unlock(${INDEX_LOCK_KEY})`, [table]);
+  }
+}
+
+/** Resolves after `ms`, or as soon as `signal` aborts. */
+export function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const done = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener('abort', done, { once: true });
+  });
+}
+
 async function acquireMigrationLock(sql: Sql): Promise<void> {
   while (true) {
     const result = await sql<Array<{ acquired: boolean }>>`
@@ -559,10 +618,13 @@ export async function runDerivedMigrations(
     `;
     const applied = await conn<Array<{ version: string }>>`SELECT version FROM migrations`;
     const appliedVersions = new Set(applied.map((r) => r.version));
-    for (const input of derived) {
-      const migration = normalise(input);
-      if (appliedVersions.has(migration.version)) continue;
-      await applyOneMigration(conn, migration);
-    }
+    const pending = derived.map(normalise).filter((m) => !appliedVersions.has(m.version));
+    const apply = async (): Promise<void> => {
+      for (const migration of pending) await applyOneMigration(conn, migration);
+    };
+    // These build CONCURRENTLY on `rows`, as the reconciler's legacy builds do.
+    if (pending.length > 0 && !partitioned)
+      await withTableIndexLock(conn, 'rows', undefined, apply);
+    else await apply();
   });
 }
