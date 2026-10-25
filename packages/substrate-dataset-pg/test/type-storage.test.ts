@@ -110,6 +110,31 @@ describe.skipIf(!POSTGRES_URL || LAYOUT !== 'partitioned')(
       expect(sids?.n).toBe(3);
     });
 
+    it('moves a row that a NOT VALID parent CHECK added after it would reject, and keeps the CHECK', async () => {
+      const ns = freshNs();
+      const ds = new PgDataset({ namespace: ns, sql });
+      await ds.write('T', [{ id: 'old', v: 'bad' }]);
+      const check = `${ns}_v_check`;
+      await sql.unsafe(
+        `ALTER TABLE rows ADD CONSTRAINT ${check}
+           CHECK (namespace <> '${ns}' OR body->>'v' IS DISTINCT FROM 'bad') NOT VALID`
+      );
+      try {
+        // Both levels move: the namespace's partition and the type's.
+        await ds.ensureTypeStorage('T');
+        expect(await countIn(partitionName(ns, 'T'), ns, 'T')).toBe(1);
+        const [held] = await sql<Array<{ validated: boolean }>>`
+          SELECT convalidated AS validated FROM pg_constraint
+          WHERE conname = ${check} AND conrelid = ${partitionName(ns, 'T')}::regclass`;
+        expect(held?.validated).toBe(false);
+        await expect(ds.write('T', [{ id: 'new', v: 'bad' }])).rejects.toMatchObject({
+          code: '23514'
+        });
+      } finally {
+        await sql.unsafe(`ALTER TABLE rows DROP CONSTRAINT ${check}`);
+      }
+    });
+
     it('is idempotent: a second call creates nothing and moves nothing', async () => {
       const ns = freshNs();
       const ds = new PgDataset({ namespace: ns, sql });

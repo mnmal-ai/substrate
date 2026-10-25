@@ -111,8 +111,10 @@ async function attachPartition(tx: TransactionSql, level: Level): Promise<string
 
   const seed = column === 'namespace' ? [value] : [level.namespace, value];
   const name = await freeName(tx, level.preferredName, seed);
+  // CHECKs are added after the copy below, so one the parent holds NOT VALID
+  // stays unenforced on the rows written before it.
   await tx.unsafe(
-    `CREATE TABLE ${ident(name)} (LIKE rows INCLUDING DEFAULTS INCLUDING CONSTRAINTS)` +
+    `CREATE TABLE ${ident(name)} (LIKE rows INCLUDING DEFAULTS)` +
       (level.subPartitioned ? ' PARTITION BY LIST (type)' : '')
   );
   if (level.subPartitioned) {
@@ -152,6 +154,19 @@ async function attachPartition(tx: TransactionSql, level: Level): Promise<string
         `partition move of ${column} '${value}' copied ${copied.count} rows but deleted ${deleted.count}`
       );
     }
+  }
+
+  // ATTACH requires the parent's CHECKs, under their names. Each is added as
+  // the parent holds it: a NOT VALID one skips the scan, a validated one
+  // scans the moved rows, which the parent's DEFAULT already held to it.
+  const checks = await tx<Array<{ name: string; def: string }>>`
+    SELECT conname AS name, pg_get_constraintdef(oid) AS def FROM pg_constraint
+    WHERE contype = 'c' AND conrelid = (
+      SELECT oid FROM pg_class
+      WHERE relname = ${parent} AND relnamespace = current_schema()::regnamespace)
+    ORDER BY conname`;
+  for (const { name: check, def } of checks) {
+    await tx.unsafe(`ALTER TABLE ${ident(name)} ADD CONSTRAINT ${ident(check)} ${def}`);
   }
 
   await tx.unsafe(
