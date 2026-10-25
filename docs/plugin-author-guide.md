@@ -606,8 +606,18 @@ to the namespace schema for consumers such as `substrate-nl`, and
 `opts.promotedColumns`, which names body keys the pg dataset mirrors into
 dedicated `rows` columns so filters and sorts on them hit an index
 (`{ status: { column: 'status', kind: 'text' } }`). Your plugin's own
-migration creates the columns and their indexes; the engine creates none.
-Reads return the body as stored, and filters use the column.
+migration creates the columns. Reads return the body as stored, and filters
+use the column.
+
+Index a promoted field through `indexes` (see [Indexes](#indexes)): the
+engine builds declared indexes over a promoted field on its column, in the
+form its filters compare. An index you write by hand must match that form
+or it serves nothing, and nothing reports it. Key a text column as
+`(col COLLATE "C")`, because filters compare promoted text under `"C"`, `eq`
+included. A raw expression index over a body field must use the filter
+compiler's expressions, such as `((body ->> 'f') COLLATE "C")`. Better, move
+the index into `indexes` with its existing `name`, and the engine adopts it,
+swapping it to the right definition.
 
 ### Indexes
 
@@ -633,7 +643,8 @@ Listing: {
   already hold duplicate values.
 - `where`: every index covers live (not deleted) rows only. `'live'` adds
   nothing to that; a record such as `{ archived: false, owner: null }` also
-  requires those boolean fields to equal the value (`null` means IS NULL).
+  requires each field to match: `true` or `false` on a boolean field, and
+  `null` (IS NULL) on any scalar field.
 - `name`: the Postgres index name (`[a-z_][a-z0-9_]*`, at most 63 bytes, not
   ending `__swap`). Omit it and one is generated. An existing index of that
   name with the same key fields and uniqueness is adopted, and swapped to the
@@ -642,8 +653,12 @@ Listing: {
   Two declarations resolving to one name with different definitions fail the
   same way.
 
-The engine reconciles at boot, building concurrently.
-A removed declaration leaves its index in place.
+The engine reconciles at boot, building concurrently. Unique indexes are
+built before the server starts, and the boot fails if one cannot be built.
+Non-unique indexes build in the background once the server is serving, one
+type at a time. Until one is valid, filters it would serve scan, and doctor
+reports it `pending`, `building` or `failed`; a failed build is retried at
+the next boot. A removed declaration leaves its index in place.
 
 **What serves a query.**
 
@@ -666,10 +681,11 @@ A removed declaration leaves its index in place.
 - The reconciler also owns one `CREATE STATISTICS` per indexed body
   expression, and runs `ANALYZE` once when it creates one, because the planner
   needs it for row estimates on body-field filters.
-- The first boot after upgrading from a release that built the old index
-  shape rebuilds every non-unique index concurrently to the new one. Each
-  rebuild briefly needs twice that index's disk. On a test host this took
-  about 6.4 minutes for 25M rows across 19 indexes.
+- The first boot after a release that changes an index's shape rebuilds
+  each affected non-unique index concurrently, in the background after the
+  server starts. Each rebuild briefly needs twice that index's disk, and
+  filters it serves scan until it is done. On a test host this took about
+  6.4 minutes for 25M rows across 19 indexes.
 
 On the legacy layout only declared `indexes` are built, as partial indexes
 scoped to the type.
