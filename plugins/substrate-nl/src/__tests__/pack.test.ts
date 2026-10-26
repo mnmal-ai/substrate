@@ -1,8 +1,11 @@
 import type { Schema } from '@mnmal-ai/substrate/sdk';
 import { describe, expect, it } from 'vitest';
+import { buildJudgePrompt } from '../judge/judge.js';
 import { buildNamespacePack } from '../pack/build.js';
 import { profileNamespace } from '../pack/profile.js';
 import type { NamespaceProfile } from '../pack/types.js';
+import { parseQuestion } from '../parse/parse.js';
+import { ctx } from './_fixture.js';
 
 const OPERATORS = {
   'scalar.string': ['contains', 'eq', 'in', 'startsWith'],
@@ -283,5 +286,53 @@ describe('vocabulary aliases from the schema', () => {
 
   it('records the alias table on the field', () => {
     expect(pack.types.Todo?.fields.status?.aliases).toEqual({ done: 'closed', 'in force': 'open' });
+  });
+});
+
+describe('search handles: unset indexed counts, explicit false does not', () => {
+  const sneakers: Schema = {
+    schemaVersion: 'sneakers01',
+    mutations: {},
+    types: {
+      Sneaker: {
+        fields: {
+          brand: { kind: 'scalar', type: 'string' },
+          blurb: { kind: 'scalar', type: 'string', indexed: false }
+        }
+      }
+    }
+  };
+  const read = async (_type: string, fields: string[]) => ({
+    rows: [Object.fromEntries(fields.map((f) => [f, f === 'brand' ? 'nike' : 'so comfy']))],
+    nextCursor: undefined
+  });
+
+  it('a plain field.string() field is profiled, packed and offered to the judge; indexed: false is not', async () => {
+    const asked: string[][] = [];
+    const profile = await profileNamespace({
+      schema: sneakers,
+      read: async (type, fields) => {
+        asked.push(fields);
+        return read(type, fields);
+      }
+    });
+    expect(asked[0]).toEqual(['brand']);
+    const pack = buildNamespacePack({
+      namespace: 'shop',
+      schema: sneakers,
+      operators: OPERATORS,
+      profile
+    });
+    expect(pack.types.Sneaker?.fields.brand?.indexed).toBe(true);
+    expect(pack.types.Sneaker?.fields.blurb?.indexed).toBe(false);
+    expect(pack.values.nike).toBeDefined();
+
+    const result = parseQuestion('what about adidas', pack, ctx);
+    const prompt = buildJudgePrompt('what about adidas', result, pack);
+    type Branch = { properties: Record<string, { const?: string; enum?: unknown[] }> };
+    const bind = (prompt.schema.anyOf as Branch[]).find(
+      (b) => b.properties.action?.const === 'bind'
+    );
+    expect(bind?.properties.field?.enum).toEqual(['Sneaker.brand']);
   });
 });

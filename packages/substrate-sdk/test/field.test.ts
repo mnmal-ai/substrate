@@ -6,18 +6,19 @@ import { installAutoCrud } from '../src/autocrud/index.js';
 import { field } from '../src/field.js';
 
 describe('field DSL', () => {
-  it('field.string() defaults indexed false; field.crossRef() defaults indexed true', () => {
-    expect(field.string()).toEqual({ kind: 'scalar', type: 'string', indexed: false });
+  it('field.string() leaves indexed unset; field.crossRef() defaults indexed true', () => {
+    expect(field.string()).toEqual({ kind: 'scalar', type: 'string' });
     expect(field.crossRef('users', 'User').indexed).toBe(true);
   });
 
   it('field.number / boolean / date share the scalar shape', () => {
-    expect(field.number()).toEqual({ kind: 'scalar', type: 'number', indexed: false });
-    expect(field.boolean()).toEqual({ kind: 'scalar', type: 'boolean', indexed: false });
-    expect(field.date()).toEqual({ kind: 'scalar', type: 'date', indexed: false });
+    expect(field.number()).toEqual({ kind: 'scalar', type: 'number' });
+    expect(field.boolean()).toEqual({ kind: 'scalar', type: 'boolean' });
+    expect(field.date()).toEqual({ kind: 'scalar', type: 'date' });
   });
 
   it('indexed override flows through on every scalar builder', () => {
+    expect(field.string({ indexed: false }).indexed).toBe(false);
     expect(field.string({ indexed: true }).indexed).toBe(true);
     expect(field.number({ indexed: true }).indexed).toBe(true);
     expect(field.boolean({ indexed: true }).indexed).toBe(true);
@@ -115,7 +116,7 @@ describe('field.crossRef onMissing', () => {
 
   it('field.list wraps an inner FieldDef', () => {
     const list = field.list(field.string());
-    expect(list).toEqual({ kind: 'list', of: { kind: 'scalar', type: 'string', indexed: false } });
+    expect(list).toEqual({ kind: 'list', of: { kind: 'scalar', type: 'string' } });
   });
 
   it('field.json defaults to indexed: false', () => {
@@ -139,7 +140,6 @@ describe('field.crossRef onMissing', () => {
     expect(field.enum(['low', 'medium', 'high'])).toEqual({
       kind: 'scalar',
       type: 'string',
-      indexed: false,
       enum: ['low', 'medium', 'high']
     });
   });

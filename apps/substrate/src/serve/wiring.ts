@@ -335,7 +335,7 @@ export async function buildDeferredIndexes(
 /**
  * Walk loaded namespace definitions for `field.list({ indexed: true })` and
  * `field.json({ indexed: true })` fields. Each becomes an auto-derived GIN
- * migration so the `indexed` flag — the validator's queryability contract —
+ * migration so the `indexed` flag — the physical-index contract —
  * can't drift from the physical index.
  */
 export function extractIndexedListFields(

@@ -119,12 +119,9 @@ export function parseFieldSpec(json: FieldSpecJson): FieldDef {
       if (!SCALAR_TYPES.has(json.type)) {
         throw new Error(`unsupported scalar type: ${String(json.type)}`);
       }
-      const def: FieldDefScalar = {
-        kind: 'scalar',
-        type: json.type,
-        // Same default as the SDK's field builders: proposed types behave like code-defined ones.
-        indexed: json.indexed ?? false
-      };
+      // Unset stays unset, as with the SDK's field builders: no index, still a search handle.
+      const def: FieldDefScalar = { kind: 'scalar', type: json.type };
+      if (json.indexed !== undefined) def.indexed = json.indexed;
       if (json.nullable !== undefined) def.nullable = json.nullable;
       if (json.readonly !== undefined) def.readonly = json.readonly;
       if (json.enum !== undefined) def.enum = json.enum;

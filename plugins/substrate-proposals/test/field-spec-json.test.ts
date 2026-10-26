@@ -102,8 +102,13 @@ describe('FieldSpecJson round-trip', () => {
 });
 
 describe('indexed defaults', () => {
-  it('a proposed scalar defaults indexed false like field.string(); a crossRef stays true', () => {
+  it('a proposed scalar leaves indexed unset like field.string(); a crossRef stays true', () => {
     expect(parseFieldSpec({ kind: 'scalar', type: 'string' })).toEqual(field.string());
+    const stored = JSON.parse(
+      JSON.stringify(stringifyFieldDef(parseFieldSpec({ kind: 'scalar', type: 'string' })))
+    );
+    expect(stored).toEqual({ kind: 'scalar', type: 'string' });
+    expect('indexed' in parseFieldSpec(stored)).toBe(false);
     expect(parseFieldSpec({ kind: 'crossRef', ns: 'a', type: 'B' })).toMatchObject({
       indexed: true
     });
@@ -121,7 +126,7 @@ describe('vocabulary specs', () => {
   };
 
   it('round-trips aliases, strict and implies', () => {
-    expect(stringifyFieldDef(parseFieldSpec(spec))).toEqual({ ...spec, indexed: false });
+    expect(stringifyFieldDef(parseFieldSpec(spec))).toEqual(spec);
   });
 
   it('refuses an alias pointing outside the vocabulary', () => {

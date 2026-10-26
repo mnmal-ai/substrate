@@ -621,13 +621,19 @@ swapping it to the right definition.
 
 ### Indexes
 
-Every field filters and sorts whether or not it is indexed; an index only
-makes it faster. On the partitioned layout the engine indexes every field
-whose `indexed` is `true` (the default only for `crossRef`, see below), plus
-`created_at`, `updated_at` and tombstones. Add `indexes` on a type for what a
-single field cannot serve: composites and unique constraints. A composite led
-by a field already serves filters on that field alone, so the field needs no
-`indexed: true` of its own.
+No field needs an index to filter, and no scalar needs one to sort; an index
+only makes it faster. Sorting is for non-json scalars: `orderBy` on a
+crossRef, list, struct or json field is refused (`orderby_nonscalar`), and a
+json field filters only through a path predicate. On the partitioned layout
+the engine indexes every field whose `indexed` is `true` (the default only for
+`crossRef`, see below), plus `created_at`, `updated_at` and tombstones. A
+scalar left unset gets no index; `indexed: false` also gets none, and marks
+the field as not a search handle, so NL leaves it out. Add `indexes` on a type
+for what a single field cannot serve: composites and unique constraints. A
+declared composite with no `where` of its own, led by a field, already serves
+filters on that field alone, so the field needs no `indexed: true`. A
+composite with its own `where` serves the field only for queries that imply
+that predicate.
 
 ```ts
 Listing: {
@@ -705,12 +711,12 @@ Every `field.*` builder in `@mnmal-ai/substrate/sdk` returns a plain
 
 | Builder | Shape | Default `indexed` | Use for |
 |---|---|---|---|
-| `field.string(opts?)` | `{kind:'scalar',type:'string'}` | `false` | Names, identifiers, short text. |
-| `field.number(opts?)` | `{kind:'scalar',type:'number'}` | `false` | Counts, scores, money in minor units. |
-| `field.boolean(opts?)` | `{kind:'scalar',type:'boolean'}` | `false` | Flags. |
-| `field.date(opts?)` | `{kind:'scalar',type:'date'}` | `false` | Timestamps. `serverSet: 'create' \| 'update' \| 'both'` marks one your server code sets; autoCRUD rejects client values for it. A date with no offset is read as UTC, so writers should send an offset or `Z`. |
-| `field.enum(values, opts?)` | string scalar with `enum` | `false` | A closed set of values. |
-| `field.vocab(values, opts?)` | string scalar with `enum` + `aliases` | `false` | A governed vocabulary: aliases are normalised to canonical values on write and in filters. `strict: false` admits unknown values. |
+| `field.string(opts?)` | `{kind:'scalar',type:'string'}` | unset | Names, identifiers, short text. |
+| `field.number(opts?)` | `{kind:'scalar',type:'number'}` | unset | Counts, scores, money in minor units. |
+| `field.boolean(opts?)` | `{kind:'scalar',type:'boolean'}` | unset | Flags. |
+| `field.date(opts?)` | `{kind:'scalar',type:'date'}` | unset | Timestamps. `serverSet: 'create' \| 'update' \| 'both'` marks one your server code sets; autoCRUD rejects client values for it. A date with no offset is read as UTC, so writers should send an offset or `Z`. |
+| `field.enum(values, opts?)` | string scalar with `enum` | unset | A closed set of values. |
+| `field.vocab(values, opts?)` | string scalar with `enum` + `aliases` | unset | A governed vocabulary: aliases are normalised to canonical values on write and in filters. `strict: false` admits unknown values. |
 | `field.json(opts?)` | `{kind:'scalar',type:'json'}` | `false` | Opaque bodies. See below. |
 | `field.struct(fields, opts?)` | `{kind:'struct',fields}` | n/a | A known nested shape you want to filter on per leaf. |
 | `field.list(of, opts?)` | `{kind:'list',of}` | `false` | Homogeneous lists. `indexed: true` backs `has` with a GIN. |

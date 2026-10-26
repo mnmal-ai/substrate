@@ -94,7 +94,8 @@ export function schemaOverview(
 /** How to read the overview; rides beside it in the tool result and the instructions. */
 export const OVERVIEW_LEGEND =
   'Each type is `field: type` pairs. `a|b` is an enum, `?` nullable, `T[]` a list, `→Type` a reference ' +
-  '(`→ns/Type` across namespaces). Every field filters and sorts; [readonly] ' +
+  '(`→ns/Type` across namespaces). No field needs an index to filter; json filters by path only, and ' +
+  'only non-json scalars sort. [readonly] ' +
   'fields are server-set. Generated get/create/update/delete<Type> mutations are not listed; `mutations` ' +
   "holds the rest. For a type's exact write contract call `schema` with `namespace` and `type`.";
 

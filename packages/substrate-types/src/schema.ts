@@ -20,6 +20,13 @@ export interface FieldDefScalar {
    * inner keys, use `field.struct` instead.
    */
   type: 'string' | 'number' | 'boolean' | 'date' | 'json';
+  /**
+   * Tri-state. `true` builds an index (a btree; a GIN for json). Unset means
+   * no index. `false` means no index AND not a search handle: long-form
+   * prose that NL and similar consumers leave out. The field filters either
+   * way. Physical consumers test `=== true`, so never normalise unset to
+   * `false`.
+   */
   indexed?: boolean;
   /** Metadata: when true, consumers SHOULD expect `null` as a legitimate value. */
   nullable?: boolean;

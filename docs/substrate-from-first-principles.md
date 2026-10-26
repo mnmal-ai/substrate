@@ -157,7 +157,7 @@ Or proposed at runtime through the proposals plugin (§5.15):
     "proposedReason": "need prices" } } }
 ```
 
-The field DSL (`field.*`) covers scalars (`string`, `number`, `boolean`, `date`, `json`, plus `enum` and `vocab` string variants), `crossRef`, `struct` and `list`. Every `FieldDef` may carry `nullable` — metadata only: the engine does not enforce it, but schema consumers use it to document shapes that legitimately produce `null`. Scalars may carry `indexed` (whether the engine builds an index for the field; default false, and every field filters either way, §5.2), `readonly`, and `serverSet` (a server-managed timestamp the caller cannot supply).
+The field DSL (`field.*`) covers scalars (`string`, `number`, `boolean`, `date`, `json`, plus `enum` and `vocab` string variants), `crossRef`, `struct` and `list`. Every `FieldDef` may carry `nullable` — metadata only: the engine does not enforce it, but schema consumers use it to document shapes that legitimately produce `null`. Scalars may carry `indexed` (`true` builds an index; unset, the SDK default, builds none; `false` builds none and marks the field as not a search handle; the field filters either way, §5.2), `readonly`, and `serverSet` (a server-managed timestamp the caller cannot supply).
 
 A type input to `defineNamespace` carries its fields plus optional `policy` (§4.4), `autoCrud: false` (opt out), `purgeable`, `adminCapability`, a `postWrite` hook and `embed` metadata (consumed by the recall plugin, §5.10).
 
@@ -593,7 +593,7 @@ Plugins can contribute extra operators (the recall plugin adds `embeddingSimilar
 
 - **Validate against the schema before dispatch.** Unknown fields (`unknown_field`), unknown operators and type-mismatched values are rejected with a `FilterValidationError` and never reach the dataset. An unknown name in a filter is rejected because a filter the server cannot evaluate would silently widen the result.
 - **Negotiate with the dataset.** Each dataset declares `capabilities.operators` per field kind; the engine rejects anything the dataset cannot evaluate, rather than returning silently empty results.
-- **Never refuse for want of an index.** A filter or sort on an unindexed field is accepted and scans. `_allowTableScan` is accepted and ignored, and `unindexed_field` is no longer produced.
+- **Never refuse for want of an index.** A filter on an unindexed field, or a sort on an unindexed non-json scalar, is accepted and scans. Sorting on a crossRef, list, struct or json field is still refused (`orderby_nonscalar`). `_allowTableScan` is accepted and ignored, and `unindexed_field` is no longer produced.
 
 **Pagination is cursor-based.** The cursor is opaque: base64url(JSON) of the last row's `orderBy` values plus its id. The next page re-runs the query with `(orderBy tuple) > (last seen tuple)` — exclusive, so it starts after the cursor row. With `id` as the final tie-breaker this survives data changes between pages without duplicates or gaps. If `orderBy` omits `id`, the engine appends `{ id: 'asc' }`. The `where` clause re-applies on every page. The envelope carries `_pagination[key] = { nextCursor?, hasMore }`. Under a row-filter policy the cursor is sealed (encrypted with a key derived from `SUBSTRATE_STREAM_TICKET_SECRET`, or held only by the process when that is unset), because the row it names may be one the caller cannot see; without the secret a sealed cursor stops opening when the server restarts or on another replica. An unsealed cursor is refused there.
 

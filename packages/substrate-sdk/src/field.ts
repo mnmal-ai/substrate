@@ -37,8 +37,10 @@ import type {
 
 export interface ScalarFieldOptions {
   /**
-   * Build a btree for this field. Default false: every field filters and
-   * sorts without one, so declare it only where a read needs the speed.
+   * `true` builds a btree for this field. Leave it unset for no index: the
+   * field still filters and sorts, by scanning. `false` also means no index,
+   * and marks the field as not a search handle (long-form prose), so NL
+   * leaves it out.
    */
   indexed?: boolean;
   nullable?: boolean;
@@ -114,8 +116,9 @@ function makeScalar(
   type: FieldDefScalar['type'],
   opts: ScalarFieldOptions | undefined
 ): FieldDefScalar {
-  const indexed = opts?.indexed ?? false;
-  const def: FieldDefScalar = { kind: 'scalar', type, indexed };
+  // Unset means no index; an explicit false also says "not a search handle".
+  const def: FieldDefScalar = { kind: 'scalar', type };
+  if (opts?.indexed !== undefined) def.indexed = opts.indexed;
   if (opts?.nullable !== undefined) def.nullable = opts.nullable;
   if (opts?.readonly !== undefined) def.readonly = opts.readonly;
   if (opts?.default !== undefined) def.default = opts.default;
