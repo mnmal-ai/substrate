@@ -18,7 +18,7 @@ curl -s -X POST http://localhost:3100/substrate/v1/query \
 
 ## Install and run
 
-Substrate needs Node `>=26.2.0`. A durable deployment needs PostgreSQL 18 or newer with the [pgvector](https://github.com/pgvector/pgvector) extension; an in-memory store is available for trying it out.
+Substrate needs Node `>=26.12.1`. A durable deployment needs PostgreSQL 18 or newer with the [pgvector](https://github.com/pgvector/pgvector) extension; an in-memory store is available for trying it out.
 
 ### Docker
 

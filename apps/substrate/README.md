@@ -2,7 +2,7 @@
 
 The `substrate` binary: the server, the stdio MCP server, and the runtime scaffolder, plus `substrate-admin` for key management. The same package carries the libraries for plugin authors and clients, and two built-in plugins: `substrate-recall` (kernel) and `substrate-proposals` (coordinator).
 
-It runs as a real install: the binary and its plugins resolve from one shared `node_modules`, so every plugin sees the same copy of every shared package. `substrate init` scaffolds such a runtime directory. Node `>=26.2.0` is required; a durable deployment also needs PostgreSQL 18 or newer with the `pgvector` extension. Walkthrough: [`docs/getting-started.md`](https://github.com/mnmal-ai/substrate/blob/main/docs/getting-started.md).
+It runs as a real install: the binary and its plugins resolve from one shared `node_modules`, so every plugin sees the same copy of every shared package. `substrate init` scaffolds such a runtime directory. Node `>=26.12.1` is required; a durable deployment also needs PostgreSQL 18 or newer with the `pgvector` extension. Walkthrough: [`docs/getting-started.md`](https://github.com/mnmal-ai/substrate/blob/main/docs/getting-started.md).
 
 ## Library subpaths
 

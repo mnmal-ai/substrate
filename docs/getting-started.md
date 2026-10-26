@@ -91,7 +91,7 @@ To run Substrate as a Node process you manage, with your own choice of plugins, 
 
 ### Prerequisites
 
-- **Node `>=26.2.0`** and **pnpm**. [mise](https://mise.jdx.dev/) is one way to manage both; your system package manager is another.
+- **Node `>=26.12.1`** and **pnpm**. [mise](https://mise.jdx.dev/) is one way to manage both; your system package manager is another.
 - **For a persistent store, Docker** (or your own Postgres with pgvector). The scaffold writes a `docker-compose.yml` for it. For a first run you can skip this and use the memory store.
 
 ### Scaffold

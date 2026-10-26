@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 import { runCli } from '../cli.js';
+import { assertNodeVersion } from '../node-version.js';
+
+assertNodeVersion();
 
 // Not a top-level await: `mcp` never settles, and ends when the host closes
 // stdin and the event loop drains. Under a top-level await that drain exits 13

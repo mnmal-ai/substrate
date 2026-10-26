@@ -21,6 +21,7 @@ import { openPgDataset } from '../admin/dataset.js';
 import type { AdminCliEnv } from '../admin/env.js';
 import { main } from '../admin/main.js';
 import { createAsk } from '../admin/stdin-ask.js';
+import { assertNodeVersion } from '../node-version.js';
 
 /**
  * Is this module the process entrypoint?
@@ -51,6 +52,7 @@ function isEntrypoint(): boolean {
 }
 
 if (isEntrypoint()) {
+  assertNodeVersion();
   // Only an interactive onboard holds stdin open; every other subcommand stays scriptable.
   const interactive = process.stdin.isTTY === true && process.argv[2] === 'onboard';
   void main(
