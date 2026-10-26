@@ -210,7 +210,7 @@ export interface ComposeOpts {
    * no read is recorded. `storeProfile` seeds `_system/StoreProfile` when it
    * has no row yet.
    */
-  advisor?: { intervalMs: number; storeProfile?: StoreProfileName };
+  advisor?: { intervalMs: number; storeProfile?: StoreProfileName; writeHeavy?: boolean };
 }
 
 export interface ComposeResult {
@@ -593,7 +593,8 @@ async function composeInner(
       system: substrateDataset,
       recorder: shapeRecorder,
       registry: (ns: string) => namespaces.get(ns)?.registry,
-      now: Date.now
+      now: Date.now,
+      writeHeavy: opts.advisor?.writeHeavy === true
     };
     const pass = (): Promise<{ upserted: number }> => runAdvisorPass(deps);
     runAdvisorNow = pass;

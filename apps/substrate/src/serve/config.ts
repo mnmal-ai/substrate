@@ -83,6 +83,8 @@ export interface ParsedConfig {
   advisorIntervalMs: number;
   /** `SUBSTRATE_STORE_PROFILE` — seeds `_system/StoreProfile` once; unset seeds `personal`. */
   storeProfile: StoreProfileName | null;
+  /** `SUBSTRATE_STORE_WRITE_HEAVY=1` — the advisor halves its write-rate threshold for removing unused indexes. */
+  storeWriteHeavy: boolean;
   /**
    * §5.13 mutation idempotency config. `disabled` kills dedup entirely (the
    * engine never sees a store); `defaultTtlMs === null` leaves the engine's
@@ -255,6 +257,13 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
     env.SUBSTRATE_STORE_PROFILE,
     profileRaw ?? null
   );
+  const writeHeavyRaw = env.SUBSTRATE_STORE_WRITE_HEAVY;
+  const storeWriteHeavy = knobs.record(
+    'storeWriteHeavy',
+    'SUBSTRATE_STORE_WRITE_HEAVY',
+    writeHeavyRaw,
+    writeHeavyRaw !== undefined && (writeHeavyRaw === '1' || writeHeavyRaw.toLowerCase() === 'true')
+  );
   const idempotency = parseIdempotencyConfig(env, knobs);
   const trustedProxies = parseTrustedProxies(env, knobs);
   const port = parsePort(env, knobs);
@@ -342,6 +351,7 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
     indexRetryIntervalMs,
     advisorIntervalMs,
     storeProfile,
+    storeWriteHeavy,
     idempotency,
     trustedProxies,
     port,

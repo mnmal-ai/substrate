@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import type { StoreProfileName } from '@mnmal-ai/substrate-compose';
 import type { EmbedderMode } from './config.js';
 import { pluginNpmName, pluginRange } from './plugins.js';
 
@@ -17,6 +18,8 @@ export interface TemplateContext {
   readonly dbName: string;
   readonly composeName: string;
   readonly substrateVersion: string;
+  readonly storeProfile: StoreProfileName;
+  readonly writeHeavy: boolean;
 }
 
 export function envBinaryTemplate(ctx: TemplateContext): string {
@@ -34,6 +37,16 @@ export function envBinaryTemplate(ctx: TemplateContext): string {
     );
   } else {
     lines.push('SUBSTRATE_DATABASE_URL=memory');
+  }
+  lines.push('');
+
+  lines.push(
+    '# Sizing profile: how sensitive the index advisor is. Seeds the store once; change it live afterwards.'
+  );
+  lines.push(`SUBSTRATE_STORE_PROFILE=${ctx.storeProfile}`);
+  if (ctx.writeHeavy) {
+    lines.push('# Write-heavy store: the advisor flags unused indexes at half the write rate.');
+    lines.push('SUBSTRATE_STORE_WRITE_HEAVY=1');
   }
   lines.push('');
 

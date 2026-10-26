@@ -69,6 +69,8 @@ export interface AdvisorDeps {
   /** Each namespace's registry, for a type's declared fields. */
   registry: (namespace: string) => Registry | undefined;
   now: () => number;
+  /** Halves the write rate a type needs before an unused index is worth removing. */
+  writeHeavy?: boolean;
 }
 
 type PlanIndex = IndexPlan['indexes'][number];
@@ -217,7 +219,8 @@ export async function runAdvisorPass(deps: AdvisorDeps): Promise<{ upserted: num
   if (dataset.typeStats === undefined || dataset.indexPlan === undefined) return { upserted: 0 };
   const { rows: profiles } = await system.read(STORE_PROFILE_TYPE, { id: STORE_PROFILE_ID });
   const profile = profiles[0]?.profile;
-  const t = PROFILES[isStoreProfileName(profile) ? profile : 'personal'];
+  const base = PROFILES[isStoreProfileName(profile) ? profile : 'personal'];
+  const t = deps.writeHeavy ? { ...base, minWriteRatePerMin: base.minWriteRatePerMin / 2 } : base;
   const prior = await readState(system);
   const state: AdvisorState = { epoch: prior?.epoch ?? now, types: {}, indexes: {} };
 

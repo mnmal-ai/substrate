@@ -1,6 +1,7 @@
 import { checkbox, confirm, input, select } from '@inquirer/prompts';
 import { type EmbedderMode, type InitConfig, parsePort } from './config.js';
 import { defaultPluginsForPersona, KNOWN_PLUGINS, type Persona } from './plugins.js';
+import { DEFAULT_SIZING, parsePositive } from './sizing.js';
 
 function validPort(v: string): true | string {
   try {
@@ -103,6 +104,44 @@ export async function runRepl(seed: InitConfig): Promise<InitConfig> {
       ]
     }));
 
+  // --profile settles the profile, so the sizing questions would change nothing.
+  const ask = async (message: string, fallback: number, flag: string): Promise<number> =>
+    parsePositive(
+      flag,
+      await input({
+        message,
+        default: String(fallback),
+        validate: (v) => {
+          try {
+            parsePositive(flag, v);
+            return true;
+          } catch (err) {
+            return (err as Error).message;
+          }
+        }
+      })
+    );
+  let { rowsPerDay, retentionDays, readTargetMs, writeHeavy } = seed;
+  if (seed.profile === undefined) {
+    rowsPerDay ??= await ask(
+      'Expected rows written per day:',
+      DEFAULT_SIZING.rowsPerDay,
+      'rows-per-day'
+    );
+    retentionDays ??= await ask(
+      'Days of data to keep:',
+      DEFAULT_SIZING.retentionDays,
+      'retention-days'
+    );
+    readTargetMs ??= await ask(
+      'Read latency target (ms):',
+      DEFAULT_SIZING.readTargetMs,
+      'read-target-ms'
+    );
+    writeHeavy =
+      writeHeavy || (await confirm({ message: 'Is write throughput a priority?', default: false }));
+  }
+
   const tls =
     seed.tls ||
     (await confirm({
@@ -155,6 +194,11 @@ export async function runRepl(seed: InitConfig): Promise<InitConfig> {
     tls,
     tlsCertPath,
     tlsKeyPath,
+    rowsPerDay,
+    retentionDays,
+    readTargetMs,
+    writeHeavy,
+    profile: seed.profile,
     yes: true,
     force
   };

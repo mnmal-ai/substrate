@@ -25,7 +25,9 @@ const baseConfig = {
   pgPassword: 'TESTPASS',
   dbName: 'substrate_prod',
   composeName: 'substrate-test',
-  substrateVersion: '2.8.6'
+  substrateVersion: '2.8.6',
+  storeProfile: 'personal' as const,
+  writeHeavy: false
 };
 
 describe('envBinaryTemplate', () => {

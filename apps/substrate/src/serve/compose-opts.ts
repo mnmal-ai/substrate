@@ -110,7 +110,8 @@ export async function buildComposeOpts(args: {
     configReport: config.knobs,
     advisor: {
       intervalMs: config.advisorIntervalMs,
-      ...(config.storeProfile !== null ? { storeProfile: config.storeProfile } : {})
+      ...(config.storeProfile !== null ? { storeProfile: config.storeProfile } : {}),
+      writeHeavy: config.storeWriteHeavy
     }
   };
   if (dataset.storageReport !== undefined) {

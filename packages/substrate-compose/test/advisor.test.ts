@@ -264,6 +264,22 @@ describe('runAdvisorPass', () => {
     expect(await runAdvisorPass(w.deps)).toEqual({ upserted: 1 });
   });
 
+  it('writeHeavy halves the write rate a remove needs', async () => {
+    const run = async (writeHeavy: boolean): Promise<number> => {
+      clock = NOW;
+      const store: Store = { stats: [stats(10, [index(OLD)])], plan: { indexes: [] } };
+      const w = world(store);
+      await w.setProfile('scale');
+      await runAdvisorPass({ ...w.deps, writeHeavy });
+      clock += DAY;
+      // 15 a minute: under scale's 20, over half of it.
+      store.stats = [stats(10, [index(OLD)], writes(15))];
+      return (await runAdvisorPass({ ...w.deps, writeHeavy })).upserted;
+    };
+    expect(await run(false)).toBe(0);
+    expect(await run(true)).toBe(1);
+  });
+
   it('does not recommend remove for a recent scan, light writes, or an index first seen within the window', async () => {
     const cases: Array<{ old: TypeStats['indexes'][0]; perMin: number; seenAfter: boolean }> = [
       {
