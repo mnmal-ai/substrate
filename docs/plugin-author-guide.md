@@ -44,8 +44,10 @@ Both tiers are declared in `@mnmal-ai/substrate/sdk`.
   - `migrations`: schema migrations, applied idempotently at every boot and
     tracked by id. `ctx.layout` tells a migration how `rows` is stored:
     `'partitioned'`, `'legacy'`, or `null` on the in-memory dataset. PG refuses
-    a unique index on a partitioned parent, so DDL on the `rows` parent must
-    branch on `layout`.
+    a unique index on a partitioned parent unless it includes every partition
+    key column (`namespace`, `type`), so a unique index on `rows` that omits
+    them must branch on `layout`: on `'partitioned'`, declare it as a type
+    index instead.
   - `storeTables`: the names of the tables the plugin keeps data in (recall
     declares `embeddings`, `lexical`, `recall_clusters` and
     `recall_cluster_members`). `substrate-admin migrate-store` copies them with

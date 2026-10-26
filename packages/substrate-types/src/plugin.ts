@@ -795,7 +795,8 @@ export interface KernelMigrationContext {
   /**
    * How `rows` is stored: `'partitioned'` (LIST(namespace) then LIST(type)) or
    * `'legacy'` (one plain table). `null` on the in-memory dataset. PG refuses
-   * a unique index on a partitioned parent, so DDL on `rows` must branch on this.
+   * a unique index on a partitioned parent unless it includes every partition
+   * key column (`namespace`, `type`), so such DDL on `rows` must branch on this.
    */
   layout: 'legacy' | 'partitioned' | null;
   metric(name: string, payload?: unknown): void;
