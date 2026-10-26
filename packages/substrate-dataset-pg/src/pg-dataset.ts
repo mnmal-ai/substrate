@@ -57,7 +57,7 @@ import type {
   WriteResult,
   WriteRow
 } from '@mnmal-ai/substrate-types';
-import { naturalOrderOf } from '@mnmal-ai/substrate-types';
+import { assertNoRepeatedIds, naturalOrderOf } from '@mnmal-ai/substrate-types';
 import type { Sql } from 'postgres';
 import { withPgAdvisoryLock } from './advisory-lock.js';
 import type { DiskGuard } from './disk-guard.js';
@@ -574,10 +574,16 @@ export class PgDataset implements Dataset {
    * `uuidv7()`, returned in `ids` in input order. Limits of a v7 id: it is
    * never a happened-before signal; ids sort in creation order only within one
    * connection (across connections within a millisecond, and for
-   * client-supplied ids, order is arbitrary); and it reveals its creation time.
+   * client-supplied ids, order is arbitrary); it reveals its creation time;
+   * and deciding who won (last-writer-wins, `conditionalUpdate`) uses the
+   * database's transaction time or a per-row version, never the id.
+   *
+   * A supplied id repeated in one batch: under `insertOnly` the first
+   * occurrence lands and the rest are skipped; otherwise the batch is refused.
    */
   async write(type: string, rows: WriteRow[], options?: WriteOptions): Promise<WriteResult> {
     if (rows.length === 0) return { written: 0, ids: [], rows: [] };
+    if (options?.insertOnly !== true) assertNoRepeatedIds(type, rows);
 
     const sql = this.#sql;
 
@@ -726,7 +732,7 @@ export class PgDataset implements Dataset {
              u.created_by_kind, u.created_by_id,
              u.updated_by_kind, u.updated_by_id
       FROM upserted u
-      JOIN input i ON i.rid = u.id
+      JOIN (SELECT rid, min(ord) AS ord FROM input GROUP BY rid) i ON i.rid = u.id
       LEFT JOIN short_ids s
         ON s.namespace = u.namespace
        AND s.type = u.type

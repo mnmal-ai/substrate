@@ -77,4 +77,25 @@ describe.skipIf(!POSTGRES_URL)('uuidv7 ids (pg)', () => {
     expect(ids[2]).toMatch(V7);
     expect(rows.map((r) => r.title)).toEqual(['a', 'b', 'c']);
   });
+
+  it('a supplied id repeated in one insertOnly batch lands once, first occurrence wins', async () => {
+    const { ids, rows, written } = await ds.write(
+      'Todo',
+      [{ id: 'dup', title: 'first' }, { title: 'x' }, { id: 'dup', title: 'second' }],
+      { insertOnly: true }
+    );
+    expect(written).toBe(2);
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toBe('dup');
+    expect(ids[1]).toMatch(V7);
+    expect(rows[0]?.title).toBe('first');
+  });
+
+  it('a supplied id repeated in one upsert batch is refused and writes nothing', async () => {
+    await expect(
+      ds.write('Todo', [{ id: 'dup', title: 'a' }, { title: 'x' }, { id: 'dup', title: 'b' }])
+    ).rejects.toThrow(/id 'dup' appears twice in one batch/);
+    const { rows } = await ds.read('Todo', {});
+    expect(rows).toHaveLength(0);
+  });
 });

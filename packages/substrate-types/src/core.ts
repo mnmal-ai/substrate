@@ -27,6 +27,21 @@ export interface WriteRow {
   [field: string]: unknown;
 }
 
+/**
+ * Refuse an upsert batch that names one id twice: the datasets would
+ * otherwise disagree (pg cannot update a row twice in one statement).
+ */
+export function assertNoRepeatedIds(type: string, rows: readonly WriteRow[]): void {
+  const seen = new Set<string>();
+  for (const { id } of rows) {
+    if (id == null) continue;
+    const key = String(id);
+    if (seen.has(key))
+      throw new Error(`write: id '${key}' appears twice in one batch (type='${type}')`);
+    seen.add(key);
+  }
+}
+
 export type IdentityKind = 'agent' | 'user' | 'system';
 
 /**

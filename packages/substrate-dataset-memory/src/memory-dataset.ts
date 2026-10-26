@@ -51,7 +51,7 @@ import type {
   WriteResult,
   WriteRow
 } from '@mnmal-ai/substrate-types';
-import { createKeyedMutex } from '@mnmal-ai/substrate-types';
+import { assertNoRepeatedIds, createKeyedMutex } from '@mnmal-ai/substrate-types';
 import { NamespaceMismatch, ReservedField } from './errors.js';
 import { MemoryShortIdStore, type ShortIdBucketSnapshot } from './memory-short-id-store.js';
 import { uuidv7 } from './uuidv7.js';
@@ -279,6 +279,7 @@ export class MemoryDataset implements Dataset {
   }
 
   async write(type: string, rows: WriteRow[], options?: WriteOptions): Promise<WriteResult> {
+    if (options?.insertOnly !== true) assertNoRepeatedIds(type, rows);
     const b = this.bucket(type);
     const ids: Id[] = [];
     const merged: Row[] = [];

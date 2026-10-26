@@ -10,7 +10,8 @@ let counter = 0;
  * step backwards the timestamp advances past the last one issued.
  *
  * Limits: the order holds only within this process, so it is never a
- * happened-before signal across writers, and the id reveals its creation time.
+ * happened-before signal across writers; the id reveals its creation time; and
+ * deciding who won uses a transaction time or a per-row version, never the id.
  */
 export function uuidv7(): string {
   const now = Date.now();
