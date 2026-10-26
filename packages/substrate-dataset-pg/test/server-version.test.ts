@@ -39,6 +39,7 @@ describe('checkServerVersionNum', () => {
     expect(caught).toBeInstanceOf(UnsupportedServerVersionError);
     expect((caught as UnsupportedServerVersionError).found).toBe(170009);
     expect((caught as Error).message).toContain('PostgreSQL 18');
+    expect((caught as Error).message).toContain('PostgreSQL 17.9');
   });
 
   it('accepts 18.0', () => {

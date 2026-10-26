@@ -7,7 +7,7 @@ export const MIN_SERVER_VERSION_NUM = 180000;
 export class UnsupportedServerVersionError extends Error {
   constructor(readonly found: number) {
     super(
-      `substrate requires PostgreSQL 18 or newer; the server reports server_version_num ${found}`
+      `substrate requires PostgreSQL 18 or newer; the server is PostgreSQL ${Math.floor(found / 10000)}.${found % 10000} (server_version_num ${found})`
     );
     this.name = 'UnsupportedServerVersionError';
   }
