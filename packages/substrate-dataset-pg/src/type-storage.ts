@@ -70,14 +70,23 @@ export async function typePartition(
   namespace: string,
   type: string
 ): Promise<string | undefined> {
-  const [row] = await sql<Array<{ relname: string }>>`
+  return (await typePartitions(sql, namespace, type))[0];
+}
+
+/** The type partitions of `namespace` (current schema), or only `type`'s when given. */
+export async function typePartitions(
+  sql: Handle,
+  namespace: string,
+  type?: string
+): Promise<string[]> {
+  const rows = await sql<Array<{ relname: string }>>`
     SELECT c.relname FROM pg_partition_tree('rows') t
     JOIN pg_class c ON c.oid = t.relid
     JOIN pg_class p ON p.oid = t.parentrelid
     WHERE t.level = 2
       AND pg_get_expr(p.relpartbound, p.oid) = ${boundText(namespace)}
-      AND pg_get_expr(c.relpartbound, c.oid) = ${boundText(type)}`;
-  return row?.relname;
+      ${type === undefined ? sql`` : sql`AND pg_get_expr(c.relpartbound, c.oid) = ${boundText(type)}`}`;
+  return rows.map((r) => r.relname);
 }
 
 async function freeName(sql: Handle, preferred: string, seed: unknown): Promise<string> {

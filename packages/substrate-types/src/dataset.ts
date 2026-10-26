@@ -417,6 +417,16 @@ export interface Dataset {
     }
   ): Promise<void>;
   /**
+   * Drop every engine-owned index of this namespace, after a namespace drop
+   * has committed: its types leave the engine, so nothing would remove them.
+   * Returns the names dropped. Never inside a transaction; a tx-bound
+   * instance throws. A lock wait that times out throws `index_drop_timeout`,
+   * leaving the rest for `storageReport` to list as orphaned.
+   *
+   * OPTIONAL. Backends that build no indexes omit it.
+   */
+  dropNamespaceIndexes?(): Promise<string[]>;
+  /**
    * The entry of this namespace's `type`'s declared `indexes` whose index is
    * named `name`, or undefined when no declaration builds it (a derived or
    * engine index, or none). `propose_index remove` retracts it when it is a

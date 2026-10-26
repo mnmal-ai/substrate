@@ -20,7 +20,9 @@
  *
  * Scope is data-only: substrate rows, short-ids and (optionally) edges.
  * Schema declarations are not affected — a type still declared in
- * code/proposals reappears on next compose boot.
+ * code/proposals reappears on next compose boot. A committed namespace drop
+ * also drops the namespace's engine indexes (`Dataset.dropNamespaceIndexes`);
+ * a type drop keeps its type's, since the type stays registered.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -467,6 +469,14 @@ export function dropNamespaceRoute(deps: DropNamespaceRouteDeps): HttpHandler {
     // on dry-run (the tx rolled back so nothing was deleted).
     if (!dryRun) {
       deps.engine.tombstoneNamespace(namespace);
+      // Its types are gone from the engine, so nothing else would drop their indexes.
+      try {
+        await dataset.dropNamespaceIndexes?.();
+      } catch (err) {
+        warnings.push(
+          `indexes of '${namespace}' were not all dropped after the drop committed: ${err instanceof Error ? err.message : String(err)}; storage doctor lists the rest as orphaned`
+        );
+      }
     }
 
     return jsonResponse(200, {

@@ -7,7 +7,13 @@
  */
 
 import { compose, SYSTEM_NAMESPACE, signHs256 } from '@mnmal-ai/substrate-compose';
-import { PgDataset, PgEdgesStore, runMigrations } from '@mnmal-ai/substrate-dataset-pg';
+import {
+  PgDataset,
+  PgEdgesStore,
+  runMigrations,
+  type StorageLayout,
+  typeIndexesOf
+} from '@mnmal-ai/substrate-dataset-pg';
 import { createNoopPubSub, createProposalsPlugin } from '@mnmal-ai/substrate-proposals';
 import { MemorySubstrateServer } from '@mnmal-ai/substrate-server-memory';
 import postgres, { type Sql } from 'postgres';
@@ -98,8 +104,30 @@ describe.skipIf(!POSTGRES_URL)('dropping a proposed namespace (pg)', () => {
     expect(proposed, proposed).not.toMatch(/error/i);
     expect(engine.namespaceState(NS)).toBe('live');
 
+    // Engine indexes of a type in the namespace, as a reconcile builds them.
+    const layout = (process.env.SUBSTRATE_STORAGE_LAYOUT ?? 'legacy') as StorageLayout;
+    const typed = new PgDataset({
+      namespace: NS,
+      sql,
+      typeDefLookup: (type) =>
+        type === 'Doc'
+          ? {
+              fields: {
+                ref: { kind: 'crossRef', ns: 'other', type: 'X', onDelete: 'set_null' }
+              }
+            }
+          : undefined
+    });
+    await typed.write('Doc', [{ ref: 'x' }]);
+    await typed.ensureTypeStorage('Doc');
+    const engineIndexes = async () =>
+      (await typeIndexesOf(sql, NS, 'Doc', layout)).filter((i) => i.engineOwned);
+    expect(await engineIndexes()).not.toEqual([]);
+
     const res = await drop();
     expect(res.status, String(res.body)).toBe(200);
+    expect(JSON.parse(String(res.body)).warnings).toBeUndefined();
+    expect(await engineIndexes()).toEqual([]);
 
     expect(await archivedFlags()).toEqual(['true']);
     await vi.waitFor(() => expect(engine.namespaceState(NS)).toBe('absent'));
