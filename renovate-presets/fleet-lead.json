@@ -18,6 +18,11 @@
         "pnpm",
         "node"
       ]
+    },
+    {
+      "description": "Hold tsdown at 0.23.1: 0.23.2 depends on rolldown-plugin-dts 0.29.0-beta, whose tsc generator refuses TypeScript 7.0 and whose tsgo generator needs typescript 7.1 beta. Lift once a tsdown release supports TypeScript 7.0 stable.",
+      "matchPackageNames": ["tsdown"],
+      "allowedVersions": "<0.23.2"
     }
   ]
 }
