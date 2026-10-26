@@ -501,8 +501,16 @@ export class MemoryDataset implements Dataset {
     // seq is the dataset's, never the caller's, as on pg where it has its own column.
     const seq = (row._metadata as RowMetadata | undefined)?.seq;
     row[fieldName] = value;
-    if (fieldName === '_metadata' && value != null) {
-      const meta = withoutSeq(value as RowMetadata);
+    if (fieldName === '_metadata' && (value != null || seq !== undefined)) {
+      // A null clears the columns, as pg's UPDATE does, but not seq.
+      const meta = withoutSeq(
+        (value ?? {
+          createdAt: null,
+          updatedAt: null,
+          createdBy: null,
+          updatedBy: null
+        }) as RowMetadata
+      );
       row._metadata = seq !== undefined ? { ...meta, seq } : meta;
     }
   }

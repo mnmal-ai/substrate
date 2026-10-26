@@ -688,6 +688,24 @@ function validateWhereAgainstFields(
       capabilities,
       ctx
     );
+    if (def === METADATA_VIRTUAL_FIELDS.seq) {
+      assertSeqIntegers((where as Record<string, unknown>)[fieldName], [...path, fieldName]);
+    }
+  }
+}
+
+/** `seq` is a bigint column: every numeric operand must be a safe integer. */
+function assertSeqIntegers(leaf: unknown, path: string[]): void {
+  for (const [op, operand] of Object.entries(leaf as Record<string, unknown>)) {
+    for (const v of Array.isArray(operand) ? operand : [operand]) {
+      if (typeof v === 'number' && !Number.isSafeInteger(v)) {
+        throw new FilterValidationError(
+          'type_mismatch',
+          `operator '${op}' expected an integer for 'seq', got ${v}`,
+          [...path, op]
+        );
+      }
+    }
   }
 }
 

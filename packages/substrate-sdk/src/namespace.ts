@@ -129,6 +129,13 @@ export interface TypeInput {
    * transaction lock from seq assignment to commit, so one writer's open
    * transaction blocks every other writer of the type until it ends. Other
    * types are unaffected and pay nothing.
+   *
+   * Two transactions that write two visible-order types in opposite orders
+   * can deadlock; Postgres aborts one with 40P01. Write them in a consistent
+   * order.
+   *
+   * Making an existing type visible assigns no seq to its old rows: they keep
+   * a null seq and sort after every new row.
    */
   ordering?: 'visible';
   /**

@@ -127,18 +127,22 @@ const EXPECTED = {
   paged: ['a', 'b2', 'c', 'd', 'f', 'g']
 };
 
-/** Pages `Log` through the engine in its natural order (`seq` asc), following cursors. */
-async function enginePages(ds: Dataset): Promise<unknown[]> {
+function engineFor(ds: Dataset): Engine {
   const registry = new Registry();
   const edges = new MemoryEdgesStore({ now: () => new Date() });
   defineNamespace(NS, types).install({ registry, dataset: ds, edges });
   const datasets = new MemoryDatasetRegistry();
   datasets.set(NS, ds);
-  const engine = new Engine({
+  return new Engine({
     namespaces: new Map<string, NamespaceConfig>([[NS, { registry }]]),
     datasets,
     edges
   });
+}
+
+/** Pages `Log` through the engine in its natural order (`seq` asc), following cursors. */
+async function enginePages(ds: Dataset): Promise<unknown[]> {
+  const engine = engineFor(ds);
   const out: unknown[] = [];
   let cursor: string | undefined;
   do {
@@ -159,6 +163,44 @@ async function enginePages(ds: Dataset): Promise<unknown[]> {
   return out;
 }
 
+/** The error codes and returned msgs of a `Log` query filtered by `where` through the engine. */
+async function filterThroughEngine(ds: Dataset, where: Record<string, unknown>) {
+  const env = await engineFor(ds).query({
+    frame: { [`${NS}/Log`]: { params: { where }, fields: { msg: true } } },
+    ctx: { identity: null }
+  });
+  return {
+    codes: (env.errors ?? []).map((e) => e.code),
+    msgs: env.data[`${NS}/Log`] === undefined ? undefined : msgs(env.data[`${NS}/Log`] as Row[])
+  };
+}
+
+/** A non-integer seq operand is a filter error, an integer one is served. */
+async function seqOperandChecks(ds: Dataset) {
+  await ds.write('Log', [{ msg: 'a' }, { msg: 'b' }]);
+  for (const where of [
+    { seq: { gt: 1.5 } },
+    { seq: { in: [1, 2.5] } },
+    { seq: { between: [1, 1e21] } },
+    { _metadata: { seq: { eq: 0.5 } } }
+  ]) {
+    expect(await filterThroughEngine(ds, where)).toEqual({
+      codes: ['type_mismatch'],
+      msgs: undefined
+    });
+  }
+  expect(await filterThroughEngine(ds, { seq: { gt: 1 } })).toEqual({ codes: [], msgs: ['b'] });
+}
+
+/** Clearing `_metadata` with updateField keeps the row's seq. */
+async function updateFieldKeepsSeq(ds: Dataset) {
+  const { ids } = await ds.write('Log', [{ msg: 'a' }, { msg: 'b' }]);
+  const id = ids[1] as Id;
+  await ds.updateField({ type: 'Log', id }, '_metadata', null);
+  const [row] = (await ds.read('Log', { id })).rows;
+  expect(seqOf(row)).toBe(2);
+}
+
 describe('visible order (memory)', () => {
   const memory = () => new MemoryDataset({ namespace: NS, typeDefLookup });
 
@@ -170,6 +212,14 @@ describe('visible order (memory)', () => {
     const ds = memory();
     await scenario(ds);
     expect(await enginePages(ds)).toEqual(EXPECTED.paged);
+  });
+
+  it('refuses a non-integer seq operand as a filter error', async () => {
+    await seqOperandChecks(memory());
+  });
+
+  it("keeps seq when updateField clears '_metadata'", async () => {
+    await updateFieldKeepsSeq(memory());
   });
 });
 
@@ -225,38 +275,51 @@ describe.skipIf(!POSTGRES_URL)('visible order (pg)', () => {
       written(await tx.write('Log', [{ msg: 'A' }]));
       await hold;
     });
-    const a = await aWritten;
-    expect(seqOf(a.rows[0])).toBe(n);
+    // A failed assertion still releases A, so its connection is not left open.
+    try {
+      const a = await aWritten;
+      expect(seqOf(a.rows[0])).toBe(n);
 
-    // Writer B must block until A commits.
-    let bDoneAt: number | undefined;
-    const txB = ds.write('Log', [{ msg: 'B' }]).then((r) => {
-      bDoneAt = performance.now();
-      return r;
-    });
-    const deadline = performance.now() + 5_000;
-    for (;;) {
-      const [w] = await sql<Array<{ n: number }>>`
+      // Writer B must block until A commits.
+      let bDoneAt: number | undefined;
+      const txB = ds.write('Log', [{ msg: 'B' }]).then((r) => {
+        bDoneAt = performance.now();
+        return r;
+      });
+      const deadline = performance.now() + 5_000;
+      for (;;) {
+        const [w] = await sql<Array<{ n: number }>>`
         SELECT count(*)::int AS n FROM pg_stat_activity
         WHERE datname = current_database() AND wait_event_type = 'Lock'
           AND wait_event = 'advisory' AND query LIKE '%substrate-visible-seq%'`;
-      if ((w?.n ?? 0) > 0) break;
-      expect(performance.now()).toBeLessThan(deadline);
-      await new Promise((r) => setTimeout(r, 20));
+        if ((w?.n ?? 0) > 0) break;
+        expect(performance.now()).toBeLessThan(deadline);
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      await new Promise((r) => setTimeout(r, 300));
+      expect(bDoneAt).toBeUndefined();
+
+      // A reader on a third connection during the hold sees neither row.
+      const seen = await ds.read('Log', {});
+      expect(msgs(seen.rows)).toEqual(['before']);
+
+      const releasedAt = performance.now();
+      release();
+      await txA;
+      const b = await txB;
+      expect(bDoneAt).toBeGreaterThanOrEqual(releasedAt);
+      expect(seqOf(b.rows[0])).toBe(n + 1);
+    } finally {
+      release();
     }
-    await new Promise((r) => setTimeout(r, 300));
-    expect(bDoneAt).toBeUndefined();
+  });
 
-    // A reader on a third connection during the hold sees neither row.
-    const seen = await ds.read('Log', {});
-    expect(msgs(seen.rows)).toEqual(['before']);
+  it('refuses a non-integer seq operand as a filter error', async () => {
+    await seqOperandChecks(ds);
+  });
 
-    const releasedAt = performance.now();
-    release();
-    await txA;
-    const b = await txB;
-    expect(bDoneAt).toBeGreaterThanOrEqual(releasedAt);
-    expect(seqOf(b.rows[0])).toBe(n + 1);
+  it("keeps seq when updateField clears '_metadata'", async () => {
+    await updateFieldKeepsSeq(ds);
   });
 
   it('non-visible types leave seq null', async () => {
