@@ -65,6 +65,11 @@ function makeFakeSqlForRehash(appliedRows: ReadonlyArray<AppliedRow>): {
   }) as unknown as Sql;
   // biome-ignore lint/suspicious/noExplicitAny: stubbing the postgres-js shape
   (tag as any).unsafe = (text: string) => {
+    // The migration lock is polled and released through unsafe, as the tag ran it before.
+    if (/pg_(try_)?advisory_(un)?lock\(/.test(text)) {
+      ranStatements.push(text.trim());
+      return Promise.resolve(/pg_try_advisory_lock\(/.test(text) ? [{ acquired: true }] : []);
+    }
     ranStatements.push(`UNSAFE: ${text}`);
     return Promise.resolve([]);
   };
