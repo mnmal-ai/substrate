@@ -197,7 +197,7 @@ describe.skipIf(!POSTGRES_URL)('storage for registered types (pg)', () => {
 
   async function hasPartition(namespace: string, type: string): Promise<boolean> {
     const [row] = await sql<Array<{ present: boolean }>>`
-      SELECT to_regclass(${partitionName(namespace, type)}) IS NOT NULL AS present`;
+      SELECT to_regclass(format('%I.%I', current_schema(), ${partitionName(namespace, type)}::text)) IS NOT NULL AS present`;
     return row?.present === true;
   }
 
