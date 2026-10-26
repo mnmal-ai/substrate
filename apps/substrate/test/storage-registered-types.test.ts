@@ -245,7 +245,9 @@ describe.skipIf(!POSTGRES_URL)('storage for registered types (pg)', () => {
     for (const [n, t] of expected) {
       expect(await hasPartition(n, t), `${n}/${t}`).toBe(partitioned);
     }
-    const warnings = await new PgDataset({ namespace: ns, sql }).storageWarnings();
+    const { warnings } = await new PgDataset({ namespace: ns, sql }).storageReport({
+      partitionBudget: Infinity
+    });
     expect(warnings.filter((w) => w.includes(ns) || w.includes(CONTROL))).toEqual([]);
   });
 

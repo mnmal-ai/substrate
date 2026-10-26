@@ -1257,15 +1257,6 @@ export class PgDataset implements Dataset {
     }
   }
 
-  /**
-   * Rows parked in DEFAULT partitions across the whole database, every
-   * namespace, not only this one: one line per namespace/type. `[]` on legacy.
-   */
-  async storageWarnings(): Promise<string[]> {
-    if ((await this.#layout()) !== 'partitioned') return [];
-    return storageWarnings(this.#sql as Sql);
-  }
-
   #deferredBuilds(): Map<string, DeferredBuild> {
     const builds = deferredBuilds.get(this.#sql) ?? new Map<string, DeferredBuild>();
     deferredBuilds.set(this.#sql, builds);

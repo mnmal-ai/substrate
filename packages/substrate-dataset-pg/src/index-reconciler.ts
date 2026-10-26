@@ -692,16 +692,6 @@ export async function typeIndexesOf(
     .map((i) => ({ ...i, engineOwned: isEngineOwned(i) }));
 }
 
-/** The engine-owned indexes of `namespace`/`type`, by `typeIndexesOf`'s rule. */
-export async function engineIndexesOf(
-  sql: Sql,
-  namespace: string,
-  type: string,
-  layout: StorageLayout
-): Promise<HeldIndex[]> {
-  return (await typeIndexesOf(sql, namespace, type, layout)).filter((i) => i.engineOwned);
-}
-
 async function targetTable(sql: Sql, args: ReconcileTypeIndexesArgs): Promise<string> {
   if (args.layout === 'legacy') return 'rows';
   const part = await typePartition(sql, args.namespace, args.type);

@@ -13,7 +13,6 @@ export {
 export { NamespaceMismatch, ReservedField } from './errors.js';
 export {
   desiredIndexKeys,
-  engineIndexesOf,
   type HeldIndex,
   IndexDefinitionConflictError,
   IndexDropRefusedError,
