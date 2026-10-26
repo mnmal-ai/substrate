@@ -156,7 +156,8 @@ describe('natural order (memory)', () => {
     });
     handle.cancel();
     const snapshot = frames.find((f) => f.kind === 'snapshot');
-    const snapRows = (snapshot?.data?.['shop/Item'] ?? []) as Row[];
+    const snapRows = ((snapshot?.data as Record<string, unknown> | undefined)?.['shop/Item'] ??
+      []) as Row[];
     expect(snapRows.map((r) => String(r.id))).toEqual(queried);
     expect(seen.at(-1)?.orderBy).toEqual([{ boughtOn: 'asc' }]);
 
@@ -175,7 +176,11 @@ describe('natural order (memory)', () => {
     expect(
       chunks
         .filter((f) => f.kind === 'chunk')
-        .map((f) => String((f.data?.['shop/Item'] as Row | undefined)?.id))
+        .map((f) =>
+          String(
+            ((f.data as Record<string, unknown> | undefined)?.['shop/Item'] as Row | undefined)?.id
+          )
+        )
     ).toEqual(queried);
 
     // An explicit orderBy wins on both.
