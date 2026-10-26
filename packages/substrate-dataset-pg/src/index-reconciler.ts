@@ -122,6 +122,8 @@ interface Spec {
   derived?: true;
   /** The keys a read can use, by field name (metadata columns by their read name), in order. */
   order: Array<[string, 'asc' | 'desc']>;
+  /** A declared `where` beyond `live`: the read must `eq` each field to its value. */
+  only?: Record<string, boolean | null>;
 }
 
 export interface ReconcileOptions {
@@ -551,11 +553,34 @@ export function undeclaredIndexes(args: ReconcileTypeIndexesArgs, held: HeldInde
     .sort();
 }
 
-/** Each index the reconciler wants for the type, with the keys a read can use, in order. */
-export function desiredIndexKeys(
-  args: ReconcileTypeIndexesArgs
-): Array<{ name: string; keys: Array<[string, 'asc' | 'desc']>; unique: boolean }> {
-  return desiredSpecs(args).map((s) => ({ name: s.name, keys: s.order, unique: s.unique }));
+/**
+ * The legacy migrations' shared per-type order indexes on `rows`
+ * (`0001_baseline`): `(namespace, type, created_at|updated_at DESC)`, live.
+ * Not the reconciler's, so never `remove` candidates, but they serve reads.
+ */
+const LEGACY_SHARED_KEYS: ReadonlyArray<{ name: string; keys: Array<[string, 'asc' | 'desc']> }> = [
+  { name: 'rows_ns_type_created_at_idx', keys: [['createdAt', 'desc']] },
+  { name: 'rows_ns_type_updated_at_idx', keys: [['updatedAt', 'desc']] }
+];
+
+/**
+ * Each index that serves the type's reads, with the keys a read can use, in
+ * order: the reconciler's, and on legacy the migrations' shared order indexes.
+ */
+export function desiredIndexKeys(args: ReconcileTypeIndexesArgs): Array<{
+  name: string;
+  keys: Array<[string, 'asc' | 'desc']>;
+  unique: boolean;
+  only?: Record<string, boolean | null>;
+}> {
+  const own = desiredSpecs(args).map((s) => ({
+    name: s.name,
+    keys: s.order,
+    unique: s.unique,
+    ...(s.only !== undefined ? { only: s.only } : {})
+  }));
+  if (args.layout !== 'legacy') return own;
+  return [...own, ...LEGACY_SHARED_KEYS.map((k) => ({ ...k, unique: false }))];
 }
 
 /** An index on the table a type's rows live in, with its usage statistics. */
@@ -795,6 +820,7 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
       tail: `USING btree (${colSql.join(', ')}) WHERE ${predicate}`,
       keys,
       predicate,
+      ...(decl.where !== undefined && decl.where !== 'live' ? { only: { ...decl.where } } : {}),
       order: [
         ...cols.map((c): [string, 'asc' | 'desc'] => [c.field, c.dir === 'desc' ? 'desc' : 'asc']),
         ...(naturalKey !== undefined ? [naturalKey] : [])

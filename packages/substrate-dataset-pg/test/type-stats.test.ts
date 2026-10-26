@@ -62,7 +62,9 @@ describe.skipIf(!POSTGRES_URL)('typeStats', () => {
     const table = own?.table ?? 'rows';
     const scope = LAYOUT === 'legacy' ? `WHERE namespace = '${ns}' AND type = 'T'` : '';
     await sql.unsafe(`CREATE INDEX ${lookalike} ON ${table} ((body->>'label')) ${scope}`);
-    await sql.unsafe(`ANALYZE ${table}`);
+    // VACUUM counts a partial index's rows exactly; ANALYZE only estimates them
+    // from its sample, which on a large shared `rows` can miss a 2-row type.
+    await sql.unsafe(`VACUUM (ANALYZE) ${table}`);
 
     const stats = (await ds.typeStats()).find((s) => s.namespace === ns && s.type === 'T');
     expect(stats?.liveRows).toBeGreaterThanOrEqual(1);

@@ -34,6 +34,7 @@ import { ResolverFrameError } from '@mnmal-ai/substrate-core';
 import {
   and,
   decodeList,
+  denyVerbs,
   grantEntryError,
   isActiveAdminKeyRow,
   or,
@@ -55,6 +56,8 @@ import { createKeyedMutex } from '@mnmal-ai/substrate-types';
 import type { StoreProfileName } from '../advisor/profiles.js';
 import { type CreateKeyRegistryOptions, createKeyRegistry, type KeyRegistry } from './registry.js';
 import {
+  ADVISOR_STATE_FIELDS,
+  ADVISOR_STATE_TYPE,
   AUDIT_EVENT_FIELDS,
   AUDIT_EVENT_TYPE,
   type AuditEventKind,
@@ -721,6 +724,16 @@ export async function installSystemNamespace(
     fields: mergeIdField(INDEX_RECOMMENDATION_FIELDS),
     policy: indexGate,
     purgeable: true,
+    adminCapability
+  });
+  // Admins read the advisor's baseline; every write verb is refused for
+  // everyone, so evidence behind a `remove` cannot be backdated by a caller.
+  installAutoCrud(opts.registry, ADVISOR_STATE_TYPE, opts.dataset, opts.edges, {
+    fields: mergeIdField(ADVISOR_STATE_FIELDS),
+    policy: and(
+      adminGate,
+      denyVerbs(['create', 'update', 'delete'], 'AdvisorState is written by the index advisor only')
+    ),
     adminCapability
   });
   // Seeded once: a profile changed live outlives the env var on restart.

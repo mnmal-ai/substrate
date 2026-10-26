@@ -14,8 +14,10 @@ export interface ProfileThresholds {
   minRowsLargeHint: number;
   /** How long an index's scan count must stay unchanged before `remove`. */
   unusedWindowMs: number;
-  /** Inserts per minute a type needs before one of its unused indexes is worth removing. */
+  /** Writes per minute a type needs before one of its unused indexes is worth removing. */
   minWriteRatePerMin: number;
+  /** Reads of a shape, in one drain window, before it can open an `add`: one slow outlier is not evidence. */
+  minReads: number;
 }
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -26,21 +28,24 @@ export const PROFILES: Record<StoreProfileName, ProfileThresholds> = {
     minRows: 100_000,
     minRowsLargeHint: 10_000,
     unusedWindowMs: 7 * DAY,
-    minWriteRatePerMin: 100
+    minWriteRatePerMin: 100,
+    minReads: 50
   },
   growth: {
     slowP95Ms: 100,
     minRows: 50_000,
     minRowsLargeHint: 5_000,
     unusedWindowMs: 3 * DAY,
-    minWriteRatePerMin: 50
+    minWriteRatePerMin: 50,
+    minReads: 30
   },
   scale: {
     slowP95Ms: 50,
     minRows: 20_000,
     minRowsLargeHint: 1_000,
     unusedWindowMs: DAY,
-    minWriteRatePerMin: 20
+    minWriteRatePerMin: 20,
+    minReads: 20
   }
 };
 

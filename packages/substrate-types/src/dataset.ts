@@ -570,6 +570,12 @@ export interface StorageReport {
 /** See `Dataset.indexPlan`. */
 export interface IndexPlan {
   /** Each desired index, its keys in order: a derived index ends with the type's natural order. */
-  indexes: Array<{ name: string; keys: Array<[string, 'asc' | 'desc']>; unique: boolean }>;
+  indexes: Array<{
+    name: string;
+    keys: Array<[string, 'asc' | 'desc']>;
+    unique: boolean;
+    /** A partial index's predicate beyond `live`: it serves only reads that `eq` each field to its value. */
+    only?: Record<string, boolean | null>;
+  }>;
   expectedSize?: 'small' | 'large';
 }

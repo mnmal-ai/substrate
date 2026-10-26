@@ -857,12 +857,29 @@ describe('desiredIndexKeys', () => {
     }
   });
 
-  it('follows a declared natural order, and adds the metadata base keys on partitioned only', () => {
+  it('follows a declared natural order, and has the metadata order keys on both layouts', () => {
     expect(keysOf('legacy', { observedAt: 'asc' })).toContainEqual([
       ['kid', 'asc'],
       ['observedAt', 'asc']
     ]);
     expect(keysOf('partitioned')).toContainEqual([['createdAt', 'desc']]);
-    expect(keysOf('legacy')).not.toContainEqual([['createdAt', 'desc']]);
+    // Legacy: the migrations' shared (namespace, type, created_at|updated_at) indexes.
+    const legacy = desiredIndexKeys(args('legacy'));
+    expect(legacy).toContainEqual({
+      name: 'rows_ns_type_created_at_idx',
+      keys: [['createdAt', 'desc']],
+      unique: false
+    });
+    expect(legacy.map((k) => k.name)).toContain('rows_ns_type_updated_at_idx');
+  });
+
+  it("carries a partial declaration's predicate, which a read must match", () => {
+    const keys = desiredIndexKeys({
+      ...args('partitioned'),
+      fields: { ...kidIndexed, archived: { kind: 'scalar', type: 'boolean' } },
+      indexes: [{ fields: ['cert'], where: { archived: false } }]
+    });
+    expect(keys.find((k) => k.keys[0]?.[0] === 'cert')?.only).toEqual({ archived: false });
+    expect(keys.find((k) => k.keys[0]?.[0] === 'kid')?.only).toBeUndefined();
   });
 });

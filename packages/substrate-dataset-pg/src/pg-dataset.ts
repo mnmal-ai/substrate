@@ -222,6 +222,12 @@ interface DeferredBuild {
 }
 
 /** The CHECKs the engine's own migrations put on `rows`; any other is plugin fan-out. */
+const ENGINE_CHECKS = [
+  'rows_created_by_kind_check',
+  'rows_updated_by_kind_check',
+  'rows_id_uuid_format'
+];
+
 /**
  * `N open index recommendation(s)` while the index advisor has any, else
  * nothing. Reads `_system/IndexRecommendation` from this schema's rows, so a
@@ -239,12 +245,6 @@ async function openRecommendations(sql: Sql): Promise<string[]> {
         `${n} open index recommendation${n === 1 ? '' : 's'}: query _system/IndexRecommendation, then apply or dismiss each with propose_index`
       ];
 }
-
-const ENGINE_CHECKS = [
-  'rows_created_by_kind_check',
-  'rows_updated_by_kind_check',
-  'rows_id_uuid_format'
-];
 
 /** Per pool, so every dataset on it reports what the others deferred. */
 const deferredBuilds = new WeakMap<object, Map<string, DeferredBuild>>();
@@ -1459,7 +1459,9 @@ export class PgDataset implements Dataset {
     // partial index (every crossRef type has its derived one) takes that index's
     // reltuples (while fresh, below), and any other type its share of a ~SAMPLE_ROWS block sample,
     // so a small one may be missing or noisy. Inserts are split by live-row
-    // share (writes too), not by each type's own rate. Partitioning is the upgrade.
+    // share (writes too), not by each type's own rate: a type's share falls as
+    // others grow, so its counters can drop and the advisor re-baselines it,
+    // which only delays a `remove`. Partitioning is the upgrade.
     // `n_live_tup` sizes it before the first ANALYZE, when reltuples is -1, so
     // a never-analyzed large `rows` is still sampled rather than scanned.
     const [table] = await sql<
@@ -1501,7 +1503,9 @@ export class PgDataset implements Dataset {
       const fromIndex = new Map<string, { namespace: string; type: string; liveRows: number }>();
       for (const i of held) {
         const scope = legacyLiveScope(i.predicate);
-        if (scope === undefined || i.reltuples < 0) continue;
+        // 0 is no evidence of an empty type: ANALYZE estimates a partial index's
+        // count from its sample, which can miss a small type on a large `rows`.
+        if (scope === undefined || i.reltuples <= 0) continue;
         const key = JSON.stringify([scope.namespace, scope.type]);
         const seen = fromIndex.get(key);
         if (seen === undefined || i.reltuples > seen.liveRows) {

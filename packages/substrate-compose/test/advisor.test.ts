@@ -6,7 +6,11 @@
  */
 
 import type { ReadShape } from '@mnmal-ai/substrate-core';
-import { ShapeRecorder } from '@mnmal-ai/substrate-core';
+import {
+  Registry as CoreRegistry,
+  MemoryEdgesStore,
+  ShapeRecorder
+} from '@mnmal-ai/substrate-core';
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
 import { defineNamespace, field } from '@mnmal-ai/substrate-sdk';
 import type {
@@ -19,8 +23,11 @@ import type {
 } from '@mnmal-ai/substrate-types';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
+  ADVISOR_STATE_TYPE,
   type AdvisorDeps,
+  type AdvisorState,
   INDEX_RECOMMENDATION_TYPE,
+  installSystemNamespace,
   runAdvisorPass,
   STORE_PROFILE_TYPE
 } from '../src/index.js';
@@ -43,6 +50,19 @@ interface Store {
   plan: IndexPlan;
 }
 
+/** Observes a shape `n` times (the scale profile's `minReads` by default). */
+class Recorder extends ShapeRecorder {
+  override observe(s: ReadShape, ms: number, n = 20): void {
+    for (let i = 0; i < n; i++) super.observe(s, ms);
+  }
+}
+
+/** The advisor's persisted state. */
+const persistedState = async (system: Dataset): Promise<AdvisorState> =>
+  JSON.parse(
+    String((await system.read(ADVISOR_STATE_TYPE, { id: 'store' })).rows[0]?.stateJson)
+  ) as AdvisorState;
+
 function world(store: Store, system = new MemoryDataset({ namespace: '_system' })) {
   const dataset = {
     typeStats: async () => store.stats,
@@ -50,7 +70,7 @@ function world(store: Store, system = new MemoryDataset({ namespace: '_system' }
       ns === 'app' && type === 'Task' ? store.plan : undefined
   } as unknown as Dataset;
   const registry = { get: () => ({ kind: 'type', fields: FIELDS }) } as unknown as Registry;
-  const recorder = new ShapeRecorder();
+  const recorder = new Recorder(() => clock);
   const deps: AdvisorDeps = {
     dataset,
     system,
@@ -124,7 +144,7 @@ describe('runAdvisorPass', () => {
     expect(JSON.parse(String(rec?.declarationJson))).toEqual({
       fields: ['status', { field: 'createdAt', dir: 'desc' }]
     });
-    expect(JSON.parse(String(rec?.evidenceJson))).toMatchObject({ count: 2, liveRows: 30_000 });
+    expect(JSON.parse(String(rec?.evidenceJson))).toMatchObject({ count: 40, liveRows: 30_000 });
   });
 
   it('does not recommend for a small type, unless it declares itself large', async () => {
@@ -210,23 +230,21 @@ describe('runAdvisorPass', () => {
     const first = world(store, system);
     await first.setProfile('scale');
     expect(await runAdvisorPass(first.deps)).toEqual({ upserted: 0 });
-    const persisted = async () =>
-      JSON.parse(
-        String((await system.read(STORE_PROFILE_TYPE, { id: 'store' })).rows[0]?.advisorStateJson)
-      );
-    const before = await persisted();
+    const before = await persistedState(system);
     expect(before.epoch).toBe(NOW);
     // A fresh instance a day later stands in for a restart: nothing is held in process.
     clock += DAY;
     store.stats = [stats(10, [index(OLD)], writes(100))];
     expect(await runAdvisorPass(world(store, system).deps)).toEqual({ upserted: 1 });
     expect((await first.recs())[0]).toMatchObject({ action: 'remove', indexName: OLD });
-    const after = await persisted();
+    const after = await persistedState(system);
     expect(after.epoch).toBe(NOW);
-    expect(Object.values(after.indexes)).toEqual([NOW]);
+    expect(Object.values(after.indexes).map((i) => i.seen)).toEqual([NOW]);
     expect(Object.values(after.types)).toEqual(Object.values(before.types));
-    // The profile beside the state is untouched.
-    expect((await system.read(STORE_PROFILE_TYPE, { id: 'store' })).rows[0]?.profile).toBe('scale');
+    // The profile is a separate row the advisor never writes.
+    const [profile] = (await system.read(STORE_PROFILE_TYPE, { id: 'store' })).rows;
+    expect(profile?.profile).toBe('scale');
+    expect(profile?._metadata?.updatedBy?.id).not.toBe('index-advisor');
   });
 
   it('a counter below its baseline re-baselines the type and skips its rate for the pass', async () => {
@@ -238,9 +256,7 @@ describe('runAdvisorPass', () => {
     clock += DAY;
     store.stats = [stats(10, [index(OLD)], 5)];
     expect(await runAdvisorPass(w.deps)).toEqual({ upserted: 0 });
-    const types = JSON.parse(
-      String((await w.system.read(STORE_PROFILE_TYPE, { id: 'store' })).rows[0]?.advisorStateJson)
-    ).types;
+    const { types } = await persistedState(w.system);
     expect(Object.values(types)).toEqual([{ ins: 5, upd: 0, del: 0, at: clock }]);
     // From the new baseline, 100 writes a minute for a day: the rate is back.
     clock += DAY;
@@ -311,6 +327,114 @@ describe('runAdvisorPass', () => {
     expect(await state('remove')).toBe('superseded');
   });
 
+  it('restarts the index windows when pg statistics restart, so no remove rests on lost scans', async () => {
+    const scanned = (at: number) =>
+      index(OLD, { scans: 40, lastScanAt: new Date(at).toISOString() });
+    const store: Store = { stats: [stats(10, [scanned(NOW)], 0)], plan: { indexes: [] } };
+    const w = world(store);
+    await w.setProfile('personal');
+    await runAdvisorPass(w.deps);
+    // Scanned an hour before a reset, eight days after first sight.
+    clock += 8 * DAY;
+    store.stats = [stats(10, [scanned(clock - 3_600_000)], writes(500))];
+    expect(await runAdvisorPass(w.deps)).toEqual({ upserted: 0 });
+    // The reset: counters and scans back to zero, no last scan.
+    const reset = (perMinSinceReset: number, since: number) =>
+      stats(10, [index(OLD, { scans: 0 })], (perMinSinceReset * (clock - since)) / 60_000);
+    const at = clock + 60_000;
+    clock = at;
+    store.stats = [reset(0, at)];
+    expect(await runAdvisorPass(w.deps)).toEqual({ upserted: 0 });
+    // Ten minutes and six days later, under heavy writes: still inside the restarted window.
+    for (const later of [10 * 60_000, 6 * DAY]) {
+      clock = at + later;
+      store.stats = [reset(500, at)];
+      expect(await runAdvisorPass(w.deps), `${later}`).toEqual({ upserted: 0 });
+    }
+    // A full window after the reset, the index has been unused for all of it.
+    clock = at + 7 * DAY;
+    store.stats = [reset(500, at)];
+    expect(await runAdvisorPass(w.deps)).toEqual({ upserted: 1 });
+  });
+
+  it('never recommends add for a disjunctive or negated shape', async () => {
+    const w = world({ stats: [stats(1_000_000)], plan: { indexes: [] } });
+    await w.setProfile('scale');
+    const filters = [
+      { field: 'status', op: 'eq' },
+      { field: 'dueOn', op: 'eq' }
+    ];
+    w.recorder.observe({ ...shape(filters), disjunctive: true }, 900);
+    expect(await runAdvisorPass(w.deps)).toEqual({ upserted: 0 });
+    w.recorder.observe(shape(filters), 900);
+    expect(await runAdvisorPass(w.deps)).toEqual({ upserted: 1 });
+  });
+
+  it('a partial index serves only reads that eq its predicate to its value', async () => {
+    const plan: IndexPlan = {
+      indexes: [
+        {
+          name: 'p',
+          keys: [['status', 'asc'], ...NATURAL],
+          unique: false,
+          only: { archived: false }
+        }
+      ]
+    };
+    const w = world({ stats: [stats(1_000_000)], plan });
+    await w.setProfile('scale');
+    const withArchived = (v: boolean): ReadShape => ({
+      ...shape([
+        { field: 'status', op: 'eq' },
+        { field: 'archived', op: 'eq' }
+      ]),
+      literals: { archived: v }
+    });
+    w.recorder.observe(withArchived(false), 900);
+    expect(await runAdvisorPass(w.deps)).toEqual({ upserted: 0 });
+    w.recorder.observe(statusEq, 900);
+    w.recorder.observe(withArchived(true), 900);
+    expect(await runAdvisorPass(w.deps)).toEqual({ upserted: 2 });
+  });
+
+  it('prunes the state of a type no namespace declares any more, and keeps an unreported known one', async () => {
+    const gone: TypeStats = { ...stats(10, [index('rows_app_gone_x_0badf00d_idx')]), type: 'Gone' };
+    const store: Store = { stats: [stats(10, [index(OLD)]), gone], plan: { indexes: [] } };
+    const w = world(store);
+    await runAdvisorPass(w.deps);
+    expect(Object.keys((await persistedState(w.system)).types)).toHaveLength(2);
+    // Both absent from typeStats now: Task is still declared (unknown, kept), Gone is not.
+    store.stats = [];
+    await runAdvisorPass(w.deps);
+    const state = await persistedState(w.system);
+    expect(Object.keys(state.types)).toEqual([JSON.stringify(['app', 'Task'])]);
+    expect(Object.keys(state.indexes)).toEqual([`${JSON.stringify(['app', 'Task'])}\0${OLD}`]);
+  });
+
+  it("takes an add's evidence window from this process's last drain, not the store's last pass", async () => {
+    const system = new MemoryDataset({ namespace: '_system' });
+    const store: Store = { stats: [stats(1_000_000)], plan: { indexes: [] } };
+    const other = world(store, system);
+    await other.setProfile('scale');
+    clock += 60_000;
+    await runAdvisorPass(other.deps);
+    const w = world(store, system);
+    clock += 5 * 60_000;
+    w.recorder.observe(statusEq, 900);
+    await runAdvisorPass(w.deps);
+    const [rec] = await w.recs();
+    expect(JSON.parse(String(rec?.evidenceJson)).window).toBe(5 * 60_000);
+  });
+
+  it('needs minReads reads of a shape before it opens an add', async () => {
+    const w = world({ stats: [stats(1_000_000)], plan: { indexes: [] } });
+    await w.setProfile('scale');
+    w.recorder.observe(statusEq, 900, 19);
+    expect(await runAdvisorPass(w.deps)).toEqual({ upserted: 0 });
+    w.recorder.observe(statusEq, 900, 20);
+    expect(await runAdvisorPass(w.deps)).toEqual({ upserted: 1 });
+  });
+
   it('two passes, and two advisor instances, leave one row per recKey', async () => {
     const system = new MemoryDataset({ namespace: '_system' });
     const store: Store = { stats: [stats(1_000_000)], plan: { indexes: [] } };
@@ -350,6 +474,43 @@ describe('runAdvisorPass', () => {
     await w.setProfile('scale');
     w.recorder.observe(statusEq, 200);
     expect(await runAdvisorPass(w.deps)).toEqual({ upserted: 1 });
+  });
+});
+
+describe('_system/AdvisorState', () => {
+  it('admins read it; nobody writes it through the mutate surface', async () => {
+    const registry = new CoreRegistry();
+    const dataset = new MemoryDataset({ namespace: '_system' });
+    await installSystemNamespace({
+      registry,
+      dataset,
+      edges: new MemoryEdgesStore({ now: () => new Date() })
+    });
+    const ctx = (caps: string[], verb?: string) =>
+      ({
+        identity: { kind: 'agent', id: 'k', grants: { _system: caps } },
+        namespace: '_system',
+        authEnabled: true,
+        ...(verb !== undefined ? { verb } : {})
+      }) as never;
+    const decide = (entry: string, caps: string[], verb?: string): boolean => {
+      const policy = registry.get(entry)?.policy as
+        | ((c: never, a: never) => { allow: boolean })
+        | undefined;
+      if (policy === undefined) throw new Error(`no policy on ${entry}`);
+      return policy(ctx(caps, verb), {} as never).allow;
+    };
+    expect(decide('AdvisorState', ['admin'])).toBe(true);
+    expect(decide('AdvisorState', ['substrate.index'])).toBe(false);
+    for (const [entry, verb] of [
+      ['createAdvisorState', 'create'],
+      ['updateAdvisorState', 'update'],
+      ['deleteAdvisorState', 'delete']
+    ] as const) {
+      expect(decide(entry, ['admin', 'substrate.index'], verb), entry).toBe(false);
+    }
+    // The profile stays writable under substrate.index.
+    expect(decide('updateStoreProfile', ['substrate.index'], 'update')).toBe(true);
   });
 });
 

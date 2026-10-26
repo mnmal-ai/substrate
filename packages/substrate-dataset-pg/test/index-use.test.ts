@@ -422,6 +422,13 @@ describe.skipIf(!POSTGRES_URL)('index use: a declared metadata order key', () =>
     await sql`ANALYZE rows`;
   }, 120_000);
 
+  // Leave `rows` as large as it was: later files' sampled statistics depend on its size.
+  afterAll(async () => {
+    if (!POSTGRES_URL) return;
+    await sql`DELETE FROM rows WHERE namespace = ${taskNs}`;
+    await sql`ANALYZE rows`;
+  });
+
   it('status eq in the default order, limit 10: the declared index, no Sort under the limit', async () => {
     const name = generatedIdentifier(taskNs, type, 'status_createdAt', 'idx');
     const params: ReadParams = {

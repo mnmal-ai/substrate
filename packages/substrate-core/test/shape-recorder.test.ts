@@ -13,6 +13,7 @@ import {
   type NamespaceConfig,
   type ReadShape,
   Registry,
+  readShapeOf,
   ShapeRecorder,
   shapeKey
 } from '../src/index.js';
@@ -160,5 +161,45 @@ describe('engine read recording', () => {
     expect(obs?.count).toBe(1);
     expect(obs?.shape.filters).toEqual([{ field: 'kid', op: 'eq' }]);
     expect(obs?.shape.orderBy).toEqual([['rating', 'desc']]);
+  });
+});
+
+describe('readShapeOf: conjunction and literals', () => {
+  const fields: Record<string, FieldDef> = {
+    status: { kind: 'scalar', type: 'string' },
+    archived: { kind: 'scalar', type: 'boolean' }
+  };
+  const of = (where: unknown) => readShapeOf('shop', 'Item', fields, where, []);
+
+  it('marks a shape with an OR or a NOT anywhere as disjunctive, and keys it apart', () => {
+    const and = of({ AND: [{ status: { eq: 'a' } }, { archived: { eq: false } }] });
+    expect(and.disjunctive).toBeUndefined();
+    const or = of({ OR: [{ status: { eq: 'a' } }, { archived: { eq: false } }] });
+    expect(or.disjunctive).toBe(true);
+    expect(of({ NOT: { status: { eq: 'a' } } }).disjunctive).toBe(true);
+    expect(of({ AND: [{ OR: [{ status: { eq: 'a' } }] }] }).disjunctive).toBe(true);
+    const { disjunctive: _, ...plain } = or;
+    expect(shapeKey(or)).not.toBe(shapeKey(plain));
+  });
+
+  it('keeps only conjunctive boolean or null eq operands, never other values', () => {
+    const s = of({ status: { eq: 'secret' }, archived: { eq: false } });
+    expect(s.literals).toEqual({ archived: false });
+    expect(JSON.stringify(s)).not.toContain('secret');
+    expect(of({ OR: [{ archived: { eq: true } }] }).literals).toBeUndefined();
+    expect(shapeKey(of({ archived: { eq: true } }))).not.toBe(
+      shapeKey(of({ archived: { eq: false } }))
+    );
+  });
+});
+
+describe('ShapeRecorder.since', () => {
+  it('is the start of what the next drain returns', () => {
+    let t = 1000;
+    const r = new ShapeRecorder(() => t);
+    expect(r.since).toBe(1000);
+    t = 5000;
+    r.drain();
+    expect(r.since).toBe(5000);
   });
 });

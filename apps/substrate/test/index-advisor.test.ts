@@ -43,7 +43,7 @@ describe.skipIf(!POSTGRES_URL)('index advisor (pg)', () => {
     await sql`DELETE FROM rows WHERE namespace = ${ns}`;
     await sql`DELETE FROM rows WHERE namespace = '_system' AND type = 'IndexRecommendation'
       AND body->>'namespace' = ${ns}`;
-    await sql`DELETE FROM rows WHERE namespace = '_system' AND type = 'StoreProfile'`;
+    await sql`DELETE FROM rows WHERE namespace = '_system' AND type IN ('StoreProfile', 'AdvisorState')`;
     await sql.end();
   });
 
@@ -113,7 +113,8 @@ describe.skipIf(!POSTGRES_URL)('index advisor (pg)', () => {
         Number(/^(\d+) open index recommendation/.exec(info?.[0] ?? '')?.[1] ?? 0);
       const before = count((await dataset.storageReport({ partitionBudget: 1e6 })).info);
 
-      for (let i = 0; i < 3; i++) {
+      // The scale profile's minReads.
+      for (let i = 0; i < 20; i++) {
         const env = await composed.engine.query({
           frame: {
             [`${ns}/Task`]: {
@@ -136,7 +137,7 @@ describe.skipIf(!POSTGRES_URL)('index advisor (pg)', () => {
         fields: ['status', { field: 'createdAt', dir: 'desc' }]
       });
       const evidence = JSON.parse(String(rows[0]?.evidenceJson));
-      expect(evidence.count).toBe(3);
+      expect(evidence.count).toBe(20);
       expect(evidence.liveRows).toBeGreaterThanOrEqual(1_000);
 
       const report = await dataset.storageReport({ partitionBudget: 1e6 });
@@ -144,16 +145,24 @@ describe.skipIf(!POSTGRES_URL)('index advisor (pg)', () => {
       expect(report.info?.[0]).toMatch(/open index recommendations?:/);
       expect(report.warnings.filter((w) => w.includes('open index recommendation'))).toEqual([]);
 
-      // A read the owner's derived index serves (owner, then natural order) is not recommended.
-      await composed.engine.query({
-        frame: {
-          [`${ns}/Task`]: {
-            params: { where: { owner: { eq: randomUUID() } } },
-            fields: { id: true }
-          }
-        },
-        ctx
-      });
+      // Served reads are not recommended: one the owner's derived index serves
+      // (owner, then natural order), and one in natural order alone, which the
+      // shared order index serves on legacy and the type's base index on partitioned.
+      const reads = async (where: Record<string, unknown> | undefined) => {
+        for (let i = 0; i < 20; i++) {
+          await composed?.engine.query({
+            frame: {
+              [`${ns}/Task`]: {
+                params: { ...(where ? { where } : {}), limit: 5 },
+                fields: { id: true }
+              }
+            },
+            ctx
+          });
+        }
+      };
+      await reads({ owner: { eq: randomUUID() } });
+      await reads(undefined);
       expect(await composed.runAdvisorNow?.()).toEqual({ upserted: 0 });
     } finally {
       await composed.stop();
@@ -180,9 +189,8 @@ describe.skipIf(!POSTGRES_URL)('index advisor (pg)', () => {
     // Retracted: no longer declared, so outside the desired set, and never scanned.
     fields.current = { status: { kind: 'scalar', type: 'string' } };
     // Scale, and no baseline left by an earlier suite.
-    await system.write('StoreProfile', [
-      { id: 'store', profile: 'scale', updatedReason: 'test', advisorStateJson: null }
-    ]);
+    await system.write('StoreProfile', [{ id: 'store', profile: 'scale', updatedReason: 'test' }]);
+    await sql`DELETE FROM rows WHERE namespace = '_system' AND type = 'AdvisorState'`;
     // Meant for a database whose statistics were never reset, as the test database's.
     const [db] = await sql<Array<{ reset: Date | null }>>`
       SELECT stats_reset AS reset FROM pg_stat_database WHERE datname = current_database()`;

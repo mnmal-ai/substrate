@@ -194,9 +194,21 @@ export const STORE_PROFILE_ID = 'store';
  */
 export const STORE_PROFILE_FIELDS: Record<string, FieldDef> = {
   profile: field.enum(['personal', 'growth', 'scale']),
-  updatedReason: field.string({ indexed: false }),
-  /** The index advisor's persisted baseline: `{ epoch, types, indexes }`. Written by the advisor only. */
-  advisorStateJson: field.string({ indexed: false, nullable: true })
+  updatedReason: field.string({ indexed: false })
+};
+
+export const ADVISOR_STATE_TYPE = 'AdvisorState';
+/** The one `AdvisorState` row's id. */
+export const ADVISOR_STATE_ID = 'store';
+
+/**
+ * `AdvisorState` — one row, id `store`: the index advisor's persisted
+ * baseline (`{ epoch, types, indexes }`, see `AdvisorState` in the advisor).
+ * Written only by the advisor through the dataset; admins may read it, and
+ * no caller may write it.
+ */
+export const ADVISOR_STATE_FIELDS: Record<string, FieldDef> = {
+  stateJson: field.string({ indexed: false })
 };
 
 /**

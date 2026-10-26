@@ -12,12 +12,23 @@ export interface ReadShape {
   type: string;
   filters: Array<{ field: string; op: string }>;
   orderBy: Array<[string, 'asc' | 'desc']>;
+  /** An OR or a NOT somewhere in the filter: no composite index serves it as a conjunction. */
+  disjunctive?: true;
+  /**
+   * The boolean or null operand of each top-level (or AND-ed) `eq`, the only
+   * operand values kept: they decide whether a partial index's predicate
+   * holds, and have three possible values.
+   */
+  literals?: Record<string, boolean | null>;
 }
 
 /** Stable across filter order and operand values: field names and operators only. */
 export function shapeKey(s: ReadShape): string {
   const filters = [...new Set(s.filters.map((f) => `${f.field} ${f.op}`))].sort();
-  return JSON.stringify([s.namespace, s.type, filters, s.orderBy]);
+  const key: unknown[] = [s.namespace, s.type, filters, s.orderBy];
+  const literals = Object.entries(s.literals ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  if (s.disjunctive === true || literals.length > 0) key.push(s.disjunctive === true, literals);
+  return JSON.stringify(key);
 }
 
 const COMBINATORS = new Set(['AND', 'OR', 'NOT']);
@@ -38,30 +49,50 @@ export function readShapeOf(
   orderBy: unknown
 ): ReadShape {
   const filters: ReadShape['filters'] = [];
-  const walk = (w: unknown, defs: Record<string, FieldDef> | undefined, prefix: string): void => {
+  const literals: Record<string, boolean | null> = {};
+  let disjunctive = false;
+  const walk = (
+    w: unknown,
+    defs: Record<string, FieldDef> | undefined,
+    prefix: string,
+    conjunct: boolean
+  ): void => {
     if (!isObject(w)) return;
     for (const [k, v] of Object.entries(w)) {
       if (COMBINATORS.has(k)) {
-        for (const sub of Array.isArray(v) ? v : [v]) walk(sub, defs, prefix);
+        const under = conjunct && k === 'AND';
+        if (!under) disjunctive = true;
+        for (const sub of Array.isArray(v) ? v : [v]) walk(sub, defs, prefix, under);
         continue;
       }
       const def = defs !== undefined && Object.hasOwn(defs, k) ? defs[k] : undefined;
       if (def?.kind === 'struct') {
-        walk(v, def.fields, `${prefix}${k}.`);
+        walk(v, def.fields, `${prefix}${k}.`, conjunct);
       } else if (isObject(v)) {
         for (const op of Object.keys(v)) {
           if (op !== 'path') filters.push({ field: `${prefix}${k}`, op });
         }
+        const operand = v.eq;
+        if (conjunct && (operand === null || typeof operand === 'boolean')) {
+          literals[`${prefix}${k}`] = operand;
+        }
       }
     }
   };
-  walk(where, fields, '');
+  walk(where, fields, '', true);
   const order: ReadShape['orderBy'] = [];
   for (const clause of Array.isArray(orderBy) ? orderBy : []) {
     if (!isObject(clause)) continue;
     for (const [f, dir] of Object.entries(clause)) order.push([f, dir === 'desc' ? 'desc' : 'asc']);
   }
-  return { namespace, type, filters, orderBy: order };
+  return {
+    namespace,
+    type,
+    filters,
+    orderBy: order,
+    ...(disjunctive ? { disjunctive: true as const } : {}),
+    ...(Object.keys(literals).length > 0 ? { literals } : {})
+  };
 }
 
 /** Distinct shapes held between drains; past it the least recently seen is dropped. */
@@ -71,6 +102,14 @@ export class ShapeRecorder {
   // A Map iterates in insertion order: re-inserting on each observe keeps the
   // least recently seen first.
   readonly #shapes = new Map<string, { shape: ReadShape; hist: LogHistogram }>();
+  readonly #now: () => number;
+  /** When this recorder was created or last drained: the start of what `drain` returns. */
+  since: number;
+
+  constructor(now: () => number = Date.now) {
+    this.#now = now;
+    this.since = now();
+  }
 
   observe(shape: ReadShape, durationMs: number): void {
     const key = shapeKey(shape);
@@ -93,6 +132,7 @@ export class ShapeRecorder {
       p95Ms: hist.percentile(0.95)
     }));
     this.#shapes.clear();
+    this.since = this.#now();
     return out;
   }
 }

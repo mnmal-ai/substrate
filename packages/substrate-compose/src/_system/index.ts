@@ -60,6 +60,9 @@ export {
   registerRoute
 } from './routes.js';
 export {
+  ADVISOR_STATE_FIELDS,
+  ADVISOR_STATE_ID,
+  ADVISOR_STATE_TYPE,
   AUDIT_EVENT_FIELDS,
   AUDIT_EVENT_KINDS,
   AUDIT_EVENT_TYPE,
