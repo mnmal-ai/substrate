@@ -1,11 +1,12 @@
 /**
  * Builds a type's indexes and keeps them matching their declaration.
  *
- * The desired set is, on the partitioned layout, every `indexed: true` field
- * (btree on the compiler's expression, or GIN `jsonb_path_ops` for list and
- * json fields), the engine's timestamp and tombstone indexes, and the declared
- * `indexes`, all on the type's partition. On the legacy layout it is only the
- * declared `indexes`, as partial indexes on `rows` scoped to the type.
+ * The desired set is, in both layouts, a derived btree per crossRef (unless
+ * `indexed: false`) and per `indexed: true` scalar, keyed (field, natural-order
+ * key, id), and the declared `indexes`. The partitioned layout adds GIN
+ * `jsonb_path_ops` for `indexed: true` list and json fields and the engine's
+ * timestamp and tombstone indexes. Partitioned indexes are on the type's
+ * partition; legacy ones are partial indexes on `rows` scoped to the type.
  *
  * Each desired index is compared, by name, with what the catalog holds:
  * identical is kept; same table, uniqueness and key fields but a different
@@ -32,7 +33,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { FieldDef, IndexDecl } from '@mnmal-ai/substrate-types';
+import type { FieldDef, IndexDecl, OrderedBy } from '@mnmal-ai/substrate-types';
 import type { Sql } from 'postgres';
 import { MAX_IDENTIFIER, type StorageLayout } from './layout.js';
 import {
@@ -99,6 +100,8 @@ export interface ReconcileTypeIndexesArgs {
   layout: StorageLayout;
   fields: Record<string, FieldDef>;
   indexes: IndexDecl[];
+  /** The type's natural order, which every derived index carries after its field. */
+  orderedBy: OrderedBy;
   /** The namespace's promoted columns: a promoted field indexes on its column, as the compiler filters on it. */
   promotedColumns?: PromotedBodyColumnMap;
 }
@@ -112,6 +115,8 @@ interface Spec {
   /** Key expressions, for the duplicate count. */
   keys: string[];
   predicate: string;
+  /** A derived index, whose natural-order key may change and still swap. */
+  derived?: true;
 }
 
 export interface ReconcileOptions {
@@ -318,7 +323,7 @@ const STAT_NAME = /_[0-9a-f]{8}_stat$/;
 /** One per body-keyed key expression; a promoted column has column statistics already. */
 function desiredStatistics(
   args: ReconcileTypeIndexesArgs,
-  specs: Spec[]
+  specs: Array<Pick<Spec, 'fields' | 'keys'>>
 ): Array<{ name: string; expr: string }> {
   const promoted = args.promotedColumns ?? {};
   const byField = new Map<string, { name: string; expr: string }>();
@@ -372,12 +377,26 @@ async function reconcileStatistics(
       return false;
     }
   };
-  const desired = desiredStatistics(args, specs);
-  const wanted = new Set(desired.map((d) => d.name));
   let marked: Array<{ name: string; table: string }> = [];
-  if (!(await attempt('lookup', async () => (marked = await heldStatistics(conn, args))))) {
-    return out;
-  }
+  // Statistics follow every field index still held, declared or left over
+  // (indexes are never dropped here), so estimates hold until it is removed.
+  const leftovers: Array<Pick<Spec, 'fields' | 'keys'>> = [];
+  const found = await attempt('lookup', async () => {
+    marked = await heldStatistics(conn, args);
+    const held = new Set((await indexesOn(conn, target)).map((i) => i.name));
+    for (const [field, def] of Object.entries(args.fields)) {
+      const isBtree = def.kind === 'crossRef' || (def.kind === 'scalar' && def.type !== 'json');
+      if (isBtree && held.has(generatedIdentifier(args.namespace, args.type, field, 'idx'))) {
+        leftovers.push({
+          fields: [field],
+          keys: [keyExpr(field, def, args.promotedColumns ?? {})]
+        });
+      }
+    }
+  });
+  if (!found) return out;
+  const desired = desiredStatistics(args, [...specs, ...leftovers]);
+  const wanted = new Set(desired.map((d) => d.name));
   const held: string[] = [];
   for (const { name, table } of marked) {
     if (wanted.has(name) && table === target) {
@@ -551,7 +570,8 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
   const specs: Spec[] = [];
   // A non-unique btree ends with `id`, so it serves the `id` that ends every
   // ORDER BY as well as the filter. `withoutId` leaves it out, for name hashing.
-  const btree = (decl: IndexDecl, name: string, withoutId = false): Spec => {
+  // `natural` is a derived index's natural-order key, after the declared ones.
+  const btree = (decl: IndexDecl, name: string, withoutId = false, natural?: string): Spec => {
     const cols = decl.fields.map((f) => (typeof f === 'string' ? { field: f, dir: 'asc' } : f));
     const keys = cols.map((c) => keyExpr(c.field, fields[c.field], promoted));
     let predicate = live;
@@ -583,6 +603,7 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
       }
     }
     const colSql = keys.map((k, i) => `(${k})${cols[i]?.dir === 'desc' ? ' DESC NULLS LAST' : ''}`);
+    if (natural !== undefined) colSql.push(natural);
     if (decl.unique !== true && !withoutId) colSql.push('id');
     return {
       name,
@@ -594,6 +615,34 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
     };
   };
 
+  // A derived btree is (field, natural key, id), so a filter on the field
+  // reads in natural order with no Sort; on the natural-order field itself it
+  // is (field DIR, id). Both layouts: on legacy it is partial on `rows`.
+  const [natField, natDir] = Object.entries(args.orderedBy)[0] ?? ['createdAt', 'desc'];
+  const natKey =
+    natField === 'createdAt'
+      ? 'created_at'
+      : natField === 'updatedAt'
+        ? 'updated_at'
+        : `(${keyExpr(natField, fields[natField], promoted)})`;
+  const natural = `${natKey}${natDir === 'desc' ? ' DESC NULLS LAST' : ''}`;
+  for (const [field, def] of Object.entries(fields)) {
+    const wanted =
+      def.kind === 'crossRef'
+        ? def.indexed !== false
+        : def.kind === 'scalar' && def.type !== 'json' && def.indexed === true;
+    if (!wanted) continue;
+    const own = field === natField;
+    specs.push({
+      ...btree(
+        { fields: [{ field, dir: own ? natDir : 'asc' }] },
+        generatedIdentifier(namespace, type, field, 'idx'),
+        false,
+        own ? undefined : natural
+      ),
+      derived: true
+    });
+  }
   if (layout === 'partitioned') {
     for (const [field, def] of Object.entries(fields)) {
       if (def.kind === 'struct' || def.indexed !== true) continue;
@@ -606,13 +655,6 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
           keys: [],
           predicate: live
         });
-      } else {
-        // Dates are read newest first, which a backward scan of an ASC index
-        // cannot serve: it would put NULLs first, and orderBy puts them last.
-        const dir = def.kind === 'scalar' && def.type === 'date' ? 'desc' : 'asc';
-        specs.push(
-          btree({ fields: [{ field, dir }] }, generatedIdentifier(namespace, type, field, 'idx'))
-        );
       }
     }
     const base = (column: string, tail: string): Spec => ({
@@ -822,19 +864,22 @@ async function reconcileOne(
   const fieldOf = new Map(
     Object.entries(args.promotedColumns ?? {}).map(([field, meta]) => [meta.column, field])
   );
-  const keyIdentity = (d: Described): string => {
+  const keyIdentity = (d: Described): string[] => {
     const keys = d.keyFields.map((k) => fieldOf.get(k) ?? k);
     if (!d.unique && keys.length > 1 && keys.at(-1) === 'id') keys.pop();
-    return keys.join('\n');
+    return keys;
   };
+  // A derived index is identified by its field alone, so a change of natural
+  // order (or the shape before it carried one) swaps rather than conflicting.
+  const have = keyIdentity(existing);
+  const want = keyIdentity(desired);
+  const n = spec.fields.length;
+  const sameKeys =
+    spec.derived === true
+      ? have.length <= n + 1 && have.slice(0, n).join('\n') === want.slice(0, n).join('\n')
+      : have.join('\n') === want.join('\n');
   // Swappable when only the expression text or the predicate differs.
-  if (
-    !(
-      existing.table === target &&
-      existing.unique === desired.unique &&
-      keyIdentity(existing) === keyIdentity(desired)
-    )
-  ) {
+  if (!(existing.table === target && existing.unique === desired.unique && sameKeys)) {
     throw new IndexDefinitionConflictError(
       spec.name,
       existing.def.replace(

@@ -234,9 +234,8 @@ describe.skipIf(!POSTGRES_URL)('storage for registered types (pg)', () => {
     try {
       await docs.ensureTypeStorage('Doc');
       const states = (await docs.describeStorage('Doc')).indexes;
-      expect(states.find((i) => i.fields.join() === 'sku')?.state).toBe(
-        partitioned ? 'valid' : undefined
-      );
+      // Spec rule (derived indexes, both layouts): legacy builds it too, on `rows`.
+      expect(states.find((i) => i.fields.join() === 'sku')?.state).toBe('valid');
       expect(states.some((i) => i.fields.join() === 'title')).toBe(false);
     } finally {
       await sql`DELETE FROM rows WHERE namespace = ${kns}`;

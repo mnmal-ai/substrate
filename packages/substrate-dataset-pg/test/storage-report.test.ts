@@ -48,15 +48,13 @@ describe.skipIf(!POSTGRES_URL)('describeStorage', () => {
     const report = await ds.describeStorage(TYPE);
     expect(report.layout).toBe(LAYOUT);
     expect(report.partition !== undefined).toBe(LAYOUT === 'partitioned');
-    if (LAYOUT === 'partitioned') {
-      const name = generatedIdentifier(ns, TYPE, 'kid', 'idx');
-      expect(report.indexes.find((i) => i.name === name)).toMatchObject({
-        fields: ['kid'],
-        state: 'valid'
-      });
-    } else {
-      expect(report.indexes).toEqual([]);
-    }
+    // Spec rule (derived indexes, both layouts): legacy builds the derived
+    // index too, as a partial index on `rows`, so both layouts report it.
+    const name = generatedIdentifier(ns, TYPE, 'kid', 'idx');
+    expect(report.indexes.find((i) => i.name === name)).toMatchObject({
+      fields: ['kid'],
+      state: 'valid'
+    });
   });
 
   it('builds nothing: a type never ensured has no partition and no indexes', async () => {

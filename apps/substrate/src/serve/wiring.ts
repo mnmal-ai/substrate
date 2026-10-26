@@ -226,9 +226,13 @@ export function makeTypeDefLookupFactory(
     const live = Object.fromEntries(
       Object.entries(entry.fields).filter(([, def]) => !isReservedAutoCrudField(def))
     );
-    return declared === undefined
-      ? { fields: live }
-      : { ...declared, fields: { ...declared.fields, ...live } };
+    // The registry's natural order is the one reads use, so indexes follow it.
+    const orderedBy = entry.orderedBy ?? declared?.orderedBy;
+    return {
+      ...declared,
+      fields: { ...declared?.fields, ...live },
+      ...(orderedBy !== undefined ? { orderedBy } : {})
+    };
   };
   return () => lookup;
 }

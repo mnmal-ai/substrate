@@ -5,12 +5,16 @@
  * statement `read()` actually sends, twice: with its parameters (a custom
  * plan), and as a prepared statement under `force_generic_plan`.
  *
- * Implicit per-field indexes exist on the partitioned layout only; declared
- * indexes are checked in both layouts.
+ * Derived per-field indexes and declared indexes are checked in both layouts.
  */
 
 import { randomBytes } from 'node:crypto';
-import type { FieldDef, IndexDecl, ReadParams } from '@mnmal-ai/substrate-types';
+import {
+  DEFAULT_ORDERED_BY,
+  type FieldDef,
+  type IndexDecl,
+  type ReadParams
+} from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset, reconcileTypeIndexes, type StorageLayout } from '../src/index.js';
@@ -185,7 +189,7 @@ async function expectServedBy(
   expect(on(p.generic), `generic plan: ${p.generic}`).toBe(true);
 }
 
-/** Served by implicit per-field indexes, which only the partitioned layout builds. */
+/** Served by derived per-field indexes, in both layouts. */
 const implicitCases: Array<[string, ReadParams, () => string]> = [
   ['text eq', { where: { title: { eq: 't00042' } } }, () => idx('title')],
   ['text in', { where: { title: { in: ['t00001', 't00002'] } } }, () => idx('title')],
@@ -205,10 +209,17 @@ const implicitCases: Array<[string, ReadParams, () => string]> = [
     { where: { at: { gte: iso(4990) } }, orderBy: [{ at: 'desc' }], limit: 10 },
     () => idx('at')
   ],
-  ['date orderBy desc', { orderBy: [{ at: 'desc' }], limit: 10 }, () => idx('at')],
+  // Spec rule (derived keys): natural order replaced the implicit date DESC
+  // rule, so the derived date index is ascending and serves an ascending read.
+  ['date orderBy asc', { orderBy: [{ at: 'asc' }], limit: 10 }, () => idx('at')],
   ['crossRef eq', { where: { owner: { eq: 'o7' } } }, () => idx('owner')],
   ['crossRef in', { where: { owner: { in: ['o7', 'o8'] } } }, () => idx('owner')],
-  ['list has', { where: { tags: { has: 'g7' } } }, () => idx('tags', 'gin')]
+  // GIN for list fields stays partitioned-only; legacy derives it by migration.
+  ...(PARTITIONED
+    ? ([['list has', { where: { tags: { has: 'g7' } } }, () => idx('tags', 'gin')]] satisfies Array<
+        [string, ReadParams, () => string]
+      >)
+    : [])
 ];
 
 /** Served by declared indexes, in both layouts. */
@@ -233,7 +244,7 @@ const declaredCases: Array<[string, ReadParams, () => string]> = [
   ]
 ];
 
-describe.skipIf(!POSTGRES_URL || !PARTITIONED)('index use: implicit indexes (partitioned)', () => {
+describe.skipIf(!POSTGRES_URL)('index use: derived indexes', () => {
   for (const [name, params, expected] of implicitCases) {
     it(name, async () => expectServedBy(name, await plans(params), expected()));
   }
@@ -321,6 +332,7 @@ describe.skipIf(!POSTGRES_URL)('index use: declared indexes', () => {
       namespace: msgNs,
       type,
       layout: LAYOUT,
+      orderedBy: DEFAULT_ORDERED_BY,
       fields: msgFields,
       promotedColumns,
       indexes: [{ fields: ['recipient', 'status'], where: { archived: false }, name }]
@@ -379,7 +391,10 @@ describe.skipIf(!POSTGRES_URL)('index use: the default order', () => {
   const certNs = `iu_cert_${hex()}`;
   const type = 'Cert';
   const name = `rows_iu_cert_${hex()}`;
-  const certFields: Record<string, FieldDef> = { cert: { kind: 'scalar', type: 'string' } };
+  const certFields: Record<string, FieldDef> = {
+    cert: { kind: 'scalar', type: 'string' },
+    ref: { kind: 'crossRef', ns: 'x', type: 'Ref', onDelete: 'set_null' }
+  };
   // The matches must estimate well above the limit for an ordered range scan
   // to beat fetching them all and sorting: 1,000 here.
   const N = 100_000;
@@ -399,7 +414,8 @@ describe.skipIf(!POSTGRES_URL)('index use: the default order', () => {
         type,
         Array.from({ length: 2000 }, (_, k) => ({
           id: `c${start + k}`,
-          cert: `x${(start + k) % 100}`
+          cert: `x${(start + k) % 100}`,
+          ref: `r${(start + k) % 100}`
         }))
       );
     }
@@ -411,6 +427,26 @@ describe.skipIf(!POSTGRES_URL)('index use: the default order', () => {
     if (process.env.INDEX_USE_LOG) console.log(JSON.stringify(plan, null, 1));
     expect(indexesUsed(plan), JSON.stringify(nodeTypes(plan))).toContain(`Index Scan on ${name}`);
     expect(nodeTypes(plan).filter((t) => /Sort/.test(t))).toEqual([]);
+  });
+
+  it('where ref = X in the natural order, limit 10: the derived index, no Sort under the limit', async () => {
+    const plan = await customPlan(
+      { where: { ref: { eq: 'r7' } }, orderBy: [{ createdAt: 'desc' }], limit: 10 },
+      certs,
+      type
+    );
+    if (process.env.INDEX_USE_LOG) console.log(JSON.stringify(plan, null, 1));
+    expect(indexesUsed(plan), JSON.stringify(nodeTypes(plan))).toContain(
+      `Index Scan on ${generatedIdentifier(certNs, type, 'ref', 'idx')}`
+    );
+    // The read re-sorts its at most limit + 1 rows after the short-id join, by
+    // the projected timestamp text; what matters is that no Sort sits under
+    // the LIMIT, where it would sort every match.
+    const limit = (n: PlanNode): PlanNode | undefined =>
+      n['Node Type'] === 'Limit' ? n : (n.Plans ?? []).map(limit).find((x) => x !== undefined);
+    const under = limit(plan);
+    expect(under, JSON.stringify(nodeTypes(plan))).toBeDefined();
+    expect(nodeTypes(under as PlanNode).filter((t) => /Sort/.test(t))).toEqual([]);
   });
 
   it('keyset paging over where <field> = X returns every match exactly once', async () => {

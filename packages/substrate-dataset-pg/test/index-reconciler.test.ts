@@ -6,7 +6,7 @@
  */
 
 import { createHash, randomBytes } from 'node:crypto';
-import type { FieldDef } from '@mnmal-ai/substrate-types';
+import { DEFAULT_ORDERED_BY, type FieldDef, type OrderedBy } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -80,8 +80,20 @@ async function fixture(): Promise<Fixture> {
   return { ns, ds, target: row.relname, live: 'deleted_at IS NULL' };
 }
 
-const reconcile = (ns: string, indexes: IndexDecl[], f: Record<string, FieldDef> = fields) =>
-  reconcileTypeIndexes(sql, { namespace: ns, type: TYPE, layout: LAYOUT, fields: f, indexes });
+const reconcile = (
+  ns: string,
+  indexes: IndexDecl[],
+  f: Record<string, FieldDef> = fields,
+  orderedBy: OrderedBy = DEFAULT_ORDERED_BY
+) =>
+  reconcileTypeIndexes(sql, {
+    namespace: ns,
+    type: TYPE,
+    layout: LAYOUT,
+    fields: f,
+    indexes,
+    orderedBy
+  });
 
 async function indexState(name: string) {
   const [row] = await sql<Array<{ valid: boolean; def: string }>>`
@@ -127,19 +139,27 @@ describe.skipIf(!POSTGRES_URL)('reconcileTypeIndexes', () => {
       const decl: IndexDecl = { fields: ['kid'], where: { archived: false } };
       const states = kidStates(await reconcile(ns, [decl], withArchived));
       const implicit = generatedIdentifier(ns, TYPE, 'kid', 'idx');
-      expect(states).toHaveLength(LAYOUT === 'partitioned' ? 2 : 1);
+      // Spec rule (derived indexes, both layouts): legacy builds the derived one too.
+      expect(states).toHaveLength(2);
       for (const st of states) expect((await indexState(st.name))?.valid).toBe(true);
-      if (LAYOUT === 'partitioned') {
-        const own = states.find((x) => x.name !== implicit);
-        expect(own?.name).toMatch(/_kid_[0-9a-f]{6}_[0-9a-f]{8}_idx$/);
-        expect((await indexState(own?.name ?? ''))?.def).toContain('archived');
-      }
+      const own = states.find((x) => x.name !== implicit);
+      expect(own?.name).toMatch(/_kid_[0-9a-f]{6}_[0-9a-f]{8}_idx$/);
+      expect((await indexState(own?.name ?? ''))?.def).toContain('archived');
     });
 
     it('identical to the implicit one, is the same index', async () => {
       const { ns } = await fixture();
-      const states = kidStates(await reconcile(ns, [{ fields: ['kid'] }], withArchived));
-      expect(states.map((x) => x.name)).toEqual([generatedIdentifier(ns, TYPE, 'kid', 'idx')]);
+      // Spec rule (derived keys): a derived index is (field, natural key, id),
+      // so a one-field declaration matches it only on the natural-order field,
+      // whose derived index is (field DIR, id).
+      const withN: Record<string, FieldDef> = {
+        ...withArchived,
+        n: { kind: 'scalar', type: 'number', indexed: true }
+      };
+      const states = (await reconcile(ns, [{ fields: ['n'] }], withN, { n: 'asc' })).filter(
+        (x) => x.fields.join() === 'n'
+      );
+      expect(states.map((x) => x.name)).toEqual([generatedIdentifier(ns, TYPE, 'n', 'idx')]);
     });
 
     it('keeps its name across runs', async () => {
@@ -251,6 +271,7 @@ describe.skipIf(!POSTGRES_URL)('reconcileTypeIndexes', () => {
       namespace: ns,
       type: TYPE,
       layout: LAYOUT,
+      orderedBy: DEFAULT_ORDERED_BY,
       fields: { ...fields, status: { kind: 'scalar', type: 'string' } },
       indexes: [{ fields: ['status'], name }],
       promotedColumns: { status: { column: 'status', kind: 'text' } }
@@ -292,10 +313,12 @@ describe.skipIf(!POSTGRES_URL)('reconcileTypeIndexes', () => {
         `((body ->> 'cert'::text)) COLLATE "C", substrate_ts((body -> 'observedAt'::text)) DESC NULLS LAST, id`
       );
       expect(keyList((await indexState(unique))?.def)).toBe(`((body ->> 'kid'::text)) COLLATE "C"`);
+      // Spec rule (derived keys, both layouts): the natural key replaces the
+      // implicit date DESC rule, so a date field is ascending, then created_at.
+      expect(
+        keyList((await indexState(generatedIdentifier(ns, TYPE, 'observedAt', 'idx')))?.def)
+      ).toBe(`substrate_ts((body -> 'observedAt'::text)), created_at DESC NULLS LAST, id`);
       if (LAYOUT === 'partitioned') {
-        expect(
-          keyList((await indexState(generatedIdentifier(ns, TYPE, 'observedAt', 'idx')))?.def)
-        ).toBe(`substrate_ts((body -> 'observedAt'::text)) DESC NULLS LAST, id`);
         expect(
           keyList((await indexState(generatedIdentifier(ns, TYPE, 'created_at', 'base')))?.def)
         ).toBe('created_at DESC NULLS LAST, id');
@@ -354,6 +377,7 @@ describe.skipIf(!POSTGRES_URL)('reconcileTypeIndexes', () => {
       namespace: ns,
       type,
       layout: LAYOUT,
+      orderedBy: DEFAULT_ORDERED_BY,
       fields,
       indexes
     });
@@ -480,6 +504,28 @@ describe.skipIf(!POSTGRES_URL)('reconcileTypeIndexes', () => {
       }
     );
 
+    it('follow a derived index left over after its field stops asking for one', async () => {
+      const { ns, ds } = await fixture();
+      await ds.write(TYPE, [{ id: 'a', kid: 'k' }]);
+      const idxName = generatedIdentifier(ns, TYPE, 'kid', 'idx');
+      await reconcile(ns, [], kidIndexed);
+      expect((await indexState(idxName))?.valid).toBe(true);
+      // `fields` declares kid with indexed unset: the index stays, so its statistics do.
+      await reconcile(ns, []);
+      expect((await indexState(idxName))?.valid).toBe(true);
+      const held = async () =>
+        (
+          await sql<Array<{ name: string }>>`
+            SELECT stxname AS name FROM pg_statistic_ext WHERE stxname = ${statName(ns, 'kid')}`
+        ).length;
+      expect(await held()).toBe(1);
+      await sql.unsafe(`DROP INDEX ${idxName}`);
+      expect(await reconcileTypeStatistics(sql, statArgs(ns, []))).toMatchObject({
+        dropped: [statName(ns, 'kid')]
+      });
+      expect(await held()).toBe(0);
+    });
+
     it('are not created for a promoted field', async () => {
       await addTestPromotedColumns(sql);
       const { ns, target } = await fixture();
@@ -487,6 +533,7 @@ describe.skipIf(!POSTGRES_URL)('reconcileTypeIndexes', () => {
         namespace: ns,
         type: TYPE,
         layout: LAYOUT,
+        orderedBy: DEFAULT_ORDERED_BY,
         fields: { ...fields, status: { kind: 'scalar', type: 'string' } },
         indexes: [
           { fields: ['status'], name: `rows_p_${hex()}` },
@@ -584,14 +631,25 @@ describe.skipIf(!POSTGRES_URL)('reconcileTypeIndexes', () => {
     expect(await indexState(`${name}__swap`)).toBeUndefined();
   });
 
-  it.skipIf(LAYOUT !== 'legacy')('legacy: an implicit indexed field creates nothing', async () => {
-    const { ns } = await fixture();
-    expect(await reconcile(ns, [], kidIndexed)).toEqual([]);
-    const made = await sql`
-      SELECT 1 FROM pg_indexes
-      WHERE schemaname = current_schema() AND indexdef LIKE ${`%'${ns}'%`}`;
-    expect(made).toHaveLength(0);
-  });
+  // Spec rule (derived indexes, both layouts): this was "an implicit indexed
+  // field creates nothing" on legacy; legacy now builds the derived index.
+  it.skipIf(LAYOUT !== 'legacy')(
+    'builds derived indexes as partial indexes on rows, scoped to the type',
+    async () => {
+      const { ns } = await fixture();
+      const name = generatedIdentifier(ns, TYPE, 'kid', 'idx');
+      expect(await reconcile(ns, [], kidIndexed)).toMatchObject([{ name, state: 'valid' }]);
+      const made = await sql<Array<{ indexname: string; tablename: string; indexdef: string }>>`
+        SELECT indexname, tablename, indexdef FROM pg_indexes
+        WHERE schemaname = current_schema() AND indexdef LIKE ${`%'${ns}'%`}`;
+      expect(made).toHaveLength(1);
+      expect(made[0]).toMatchObject({ indexname: name, tablename: 'rows' });
+      expect(made[0]?.indexdef).toContain(
+        `USING btree (((body ->> 'kid'::text)) COLLATE "C", created_at DESC NULLS LAST, id) ` +
+          `WHERE ((namespace = '${ns}'::text) AND (type = '${TYPE}'::text) AND (deleted_at IS NULL))`
+      );
+    }
+  );
 
   it.skipIf(LAYOUT !== 'partitioned')(
     'partitioned: implicit, list, json and engine base indexes land on the type partition',
@@ -610,8 +668,9 @@ describe.skipIf(!POSTGRES_URL)('reconcileTypeIndexes', () => {
           WHERE i.indrelid = to_regclass(${target})`
       ).map((r) => r.def);
       const expected = [
-        `USING btree (((body ->> 'kid'::text)) COLLATE "C", id) WHERE (deleted_at IS NULL)`,
-        `USING btree (substrate_num((body -> 'n'::text)), id) WHERE (deleted_at IS NULL)`,
+        // Spec rule (derived keys): (field, natural key, id), natural key created_at DESC.
+        `USING btree (((body ->> 'kid'::text)) COLLATE "C", created_at DESC NULLS LAST, id) WHERE (deleted_at IS NULL)`,
+        `USING btree (substrate_num((body -> 'n'::text)), created_at DESC NULLS LAST, id) WHERE (deleted_at IS NULL)`,
         `USING gin (((body -> 'tags'::text)) jsonb_path_ops) WHERE (deleted_at IS NULL)`,
         `USING gin (((body -> 'values'::text)) jsonb_path_ops) WHERE (deleted_at IS NULL)`,
         `USING btree (created_at DESC NULLS LAST, id) WHERE (deleted_at IS NULL)`,
@@ -625,4 +684,93 @@ describe.skipIf(!POSTGRES_URL)('reconcileTypeIndexes', () => {
         ).toBe(true);
     }
   );
+
+  describe('derived indexes in natural order', () => {
+    const withRef: Record<string, FieldDef> = {
+      ...fields,
+      owner: { kind: 'crossRef', ns: 'x', type: 'Owner', onDelete: 'set_null' },
+      boughtOn: { kind: 'scalar', type: 'date' }
+    };
+    const ownerIdx = (ns: string) => generatedIdentifier(ns, TYPE, 'owner', 'idx');
+    const bought = `substrate_ts((body -> 'boughtOn'::text)) DESC NULLS LAST`;
+
+    it('a crossRef index is (ref, created_at DESC NULLS LAST, id) by default', async () => {
+      const { ns } = await fixture();
+      const s = (await reconcile(ns, [], withRef)).find((x) => x.name === ownerIdx(ns));
+      expect(s).toMatchObject({ fields: ['owner'], state: 'valid', outcome: 'created' });
+      expect((await indexState(ownerIdx(ns)))?.def).toMatch(
+        /\(\(\(body ->> 'owner'::text\)\) COLLATE "C", created_at DESC NULLS LAST, id\) WHERE /
+      );
+    });
+
+    it('a crossRef index follows a declared orderedBy body date', async () => {
+      const { ns } = await fixture();
+      await reconcile(ns, [], withRef, { boughtOn: 'desc' });
+      expect((await indexState(ownerIdx(ns)))?.def).toContain(
+        `((body ->> 'owner'::text)) COLLATE "C", ${bought}, id)`
+      );
+    });
+
+    it('a crossRef declared indexed:false gets no derived index', async () => {
+      const { ns } = await fixture();
+      const states = await reconcile(ns, [], {
+        ...withRef,
+        owner: { kind: 'crossRef', ns: 'x', type: 'Owner', onDelete: 'set_null', indexed: false }
+      });
+      expect(states.map((x) => x.name)).not.toContain(ownerIdx(ns));
+      expect(await indexState(ownerIdx(ns))).toBeUndefined();
+    });
+
+    it('changing orderedBy swaps the derived index in place', async () => {
+      const { ns, ds } = await fixture();
+      await reconcile(ns, [], withRef);
+      const N = 50;
+      await ds.write(
+        TYPE,
+        Array.from({ length: N }, (_, i) => ({
+          id: `r${i}`,
+          owner: 'o1',
+          boughtOn: new Date(Date.UTC(2026, 0, 1 + i)).toISOString()
+        }))
+      );
+      // An open snapshot holds the concurrent build in its last wait, mid-swap.
+      const blocker = await sql.reserve();
+      await blocker`BEGIN ISOLATION LEVEL REPEATABLE READ`;
+      await blocker`SELECT count(*) FROM rows`;
+      let swapping: ReturnType<typeof reconcile> | undefined;
+      try {
+        swapping = reconcile(ns, [], withRef, { boughtOn: 'desc' });
+        swapping.catch(() => {});
+        const swapName = `${ownerIdx(ns)}__swap`;
+        for (let i = 0; i < 200 && (await indexState(swapName)) === undefined; i++) {
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        expect(await indexState(swapName)).toBeDefined();
+        const during = await ds.read(TYPE, { where: { owner: { eq: 'o1' } }, limit: 1000 });
+        expect(during.rows).toHaveLength(N);
+      } finally {
+        await blocker`COMMIT`;
+        blocker.release();
+      }
+      const s = (await (swapping as ReturnType<typeof reconcile>)).find(
+        (x) => x.name === ownerIdx(ns)
+      );
+      expect(s).toMatchObject({ outcome: 'swapped', state: 'valid' });
+      expect((await indexState(ownerIdx(ns)))?.def).toContain(`COLLATE "C", ${bought}, id)`);
+      expect(await indexState(`${ownerIdx(ns)}__swap`)).toBeUndefined();
+    });
+
+    it('on the natural-order field itself, the key is (field DIR NULLS LAST, id)', async () => {
+      const { ns } = await fixture();
+      await reconcile(
+        ns,
+        [],
+        { ...withRef, boughtOn: { kind: 'scalar', type: 'date', indexed: true } },
+        { boughtOn: 'desc' }
+      );
+      expect((await indexState(generatedIdentifier(ns, TYPE, 'boughtOn', 'idx')))?.def).toMatch(
+        /USING btree \(substrate_ts\(\(body -> 'boughtOn'::text\)\) DESC NULLS LAST, id\) WHERE /
+      );
+    });
+  });
 });

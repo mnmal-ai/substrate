@@ -624,9 +624,10 @@ swapping it to the right definition.
 No field needs an index to filter, and no scalar needs one to sort; an index
 only makes it faster. Sorting is for non-json scalars: `orderBy` on a
 crossRef, list, struct or json field is refused (`orderby_nonscalar`), and a
-json field filters only through a path predicate. On the partitioned layout
-the engine indexes every field whose `indexed` is `true` (the default only for
-`crossRef`, see below), plus `created_at`, `updated_at` and tombstones. A
+json field filters only through a path predicate. The engine indexes every
+field whose `indexed` is `true` (the default only for `crossRef`, see below);
+on the partitioned layout it also indexes `created_at`, `updated_at` and
+tombstones. A
 scalar left unset gets no index; `indexed: false` also gets none, and marks
 the field as not a search handle, so NL leaves it out. Add `indexes` on a type
 for what a single field cannot serve: composites and unique constraints. A
@@ -673,8 +674,11 @@ the next boot. A removed declaration leaves its index in place.
 
 - Every non-unique btree ends in `id` ascending, so a filter plus the default
   page order is one index range. Unique indexes do not get the `id`.
-- Implicit date indexes are newest-first (`DESC NULLS LAST`). An oldest-first
-  sort on a date is not index-served unless you declare an ASC index.
+- A field's own index is `(field, natural order, id)`, so a filter on it reads
+  in the type's natural order (`orderedBy`, newest `createdAt` first by
+  default) with no sort. On the natural-order field itself it is
+  `(field, id)` in that direction. Changing `orderedBy` swaps these indexes
+  in place at the next boot.
 - Filtering on one field and sorting by another needs a composite, e.g.
   `(cert, observedAt desc)`. A range on one field with a sort by another is
   the known trade-off: no single index serves both, and the planner picks one
@@ -696,8 +700,9 @@ the next boot. A removed declaration leaves its index in place.
   filters it serves scan until it is done. On a test host this took about
   6.4 minutes for 25M rows across 19 indexes.
 
-On the legacy layout only declared `indexes` are built, as partial indexes
-scoped to the type.
+On the legacy layout field and declared indexes are built as partial indexes
+on `rows` scoped to the type; the per-type timestamp and tombstone indexes are
+partitioned-only.
 
 The engine injects `id`, `shortId` and the `_metadata` fields (`createdAt`,
 `updatedAt`, `createdBy`, `updatedBy`). Declaring `shortId` yourself is

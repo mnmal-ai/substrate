@@ -42,6 +42,7 @@ import type {
   FilterCapabilities,
   Id,
   IndexDecl,
+  OrderedBy,
   ReadParams,
   ReadResult,
   Row,
@@ -53,6 +54,7 @@ import type {
   WriteOptions,
   WriteResult
 } from '@mnmal-ai/substrate-types';
+import { naturalOrderOf } from '@mnmal-ai/substrate-types';
 import type { Sql } from 'postgres';
 import { withPgAdvisoryLock } from './advisory-lock.js';
 import { NamespaceMismatch, ReservedField } from './errors.js';
@@ -113,7 +115,7 @@ export type FieldDefLookup = (type: string, field: string) => FieldDef | undefin
 export type TypeDefLookup = (
   type: string,
   namespace: string
-) => { fields: Record<string, FieldDef>; indexes?: IndexDecl[] } | undefined;
+) => { fields: Record<string, FieldDef>; indexes?: IndexDecl[]; orderedBy?: OrderedBy } | undefined;
 
 export interface PgDatasetOptions {
   namespace: string;
@@ -1163,6 +1165,7 @@ export class PgDataset implements Dataset {
       layout,
       fields: def?.fields ?? {},
       indexes: def?.indexes ?? [],
+      orderedBy: naturalOrderOf(def ?? {}),
       promotedColumns: this.#promotedColumns
     };
   }
