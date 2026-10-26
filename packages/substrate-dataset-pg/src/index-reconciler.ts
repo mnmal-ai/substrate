@@ -1161,19 +1161,10 @@ async function reconcileOne(
     return report(await stateOf(conn, spec.name), 'swapped');
   }
 
-  if (identical(leftover)) {
-    // Built by an earlier run that stopped before the drop; it is used only
-    // once valid and ready.
-    let ready = leftover?.valid === true && leftover.ready;
-    for (let i = 0; !ready; i++) {
-      if (i >= 100) {
-        throw new Error(`index ${swapName} did not become valid; ${spec.name} left in place`);
-      }
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      const again = await describeIndex(conn, swapName, 'current');
-      ready = again?.valid === true && again.ready;
-    }
-  } else {
+  // A leftover identical to the declaration was built by an earlier run that
+  // stopped before the drop. It is valid and ready: an invalid one was dropped
+  // above, and no build can be in flight under this table's index-build lock.
+  if (!identical(leftover)) {
     // `named` keeps enforcing while the stale leftover goes.
     if (leftover !== undefined) await dropConcurrently(conn, swapName, signal);
     const built = await build(conn, args, target, spec, swapName, opts);
