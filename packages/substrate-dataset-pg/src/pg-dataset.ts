@@ -67,6 +67,7 @@ import {
   desiredIndexKeys,
   type HeldIndex,
   heldIndexes,
+  IndexDropRefusedError,
   type IndexState,
   indexesOn,
   isEngineOwned,
@@ -74,9 +75,11 @@ import {
   legacyScope,
   type ReconcileTypeIndexesArgs,
   reconcileTypeIndexes,
+  typeIndexesOf,
   undeclaredIndexes
 } from './index-reconciler.js';
 import { detectLayout, type StorageLayout } from './layout.js';
+import { withTableIndexLock } from './migrate.js';
 import type { PgEdgesStore } from './pg-edges-store.js';
 import { PgShortIdStore } from './pg-short-id-store.js';
 import { sqlStringLiteral } from './pg-sql/primitives.js';
@@ -103,7 +106,7 @@ import {
   whereReferencesField
 } from './pg-sql.js';
 import { type PgHandle, txScopeIdFor } from './tx-scope.js';
-import { ensureTypeStorage, findPartition, storageWarnings } from './type-storage.js';
+import { ensureTypeStorage, findPartition, ident, storageWarnings } from './type-storage.js';
 
 // The pool-owned instance holds `Sql`; tx-scoped instances hold the
 // `TransactionSql` from `sql.begin(fn)`. Only `Sql` exposes `begin`, so that
@@ -1377,6 +1380,71 @@ export class PgDataset implements Dataset {
       indexes: desiredIndexKeys(this.#indexArgs(type, namespace, layout)),
       ...(def.expectedSize !== undefined ? { expectedSize: def.expectedSize } : {})
     };
+  }
+
+  /**
+   * See `Dataset.dropEngineIndex`. Checks and drops under the table's index
+   * build lock, so a reconcile cannot rebuild or swap the index in between.
+   * Ownership is the reconciler's marker and generated name on an index of
+   * this type (`typeIndexesOf`); the wanted set is the reconciler's own
+   * (`desiredIndexKeys`), so only a leftover or a retracted declaration goes.
+   * Refuses with `IndexDropRefusedError`.
+   */
+  async dropEngineIndex(type: string, name: string): Promise<void> {
+    const layout = await this.#layout();
+    if (this.#inTx) {
+      throw new Error('PgDataset.dropEngineIndex cannot be called on a tx-bound instance');
+    }
+    const where = `${this.namespace}/${type}`;
+    if (layout === 'absent') {
+      throw new IndexDropRefusedError('unknown_index', `no index ${name} on ${where}`);
+    }
+    const sql = this.#sql as Sql;
+    const find = async () =>
+      (await typeIndexesOf(sql, this.namespace, type, layout)).find((i) => i.name === name);
+    const seen = await find();
+    if (seen === undefined) {
+      throw new IndexDropRefusedError('unknown_index', `no index ${name} on ${where}`);
+    }
+    const conn = await sql.reserve();
+    try {
+      await withTableIndexLock(sql, conn, seen.table, undefined, async () => {
+        // Again under the lock: a reconcile may have swapped or rebuilt it.
+        const index = await find();
+        if (index === undefined) {
+          throw new IndexDropRefusedError('unknown_index', `no index ${name} on ${where}`);
+        }
+        if (!index.engineOwned) {
+          throw new IndexDropRefusedError(
+            'not_engine_owned',
+            `index ${name} on ${where} was not created by substrate; drop it by hand if it must go`
+          );
+        }
+        if (index.unique) {
+          throw new IndexDropRefusedError(
+            'unique_index',
+            `index ${name} on ${where} is unique; retract its declaration instead`
+          );
+        }
+        // Without the type's definition the wanted set is unknown, so nothing is a leftover.
+        const wanted = this.#typeDefLookup?.(type, this.namespace) !== undefined;
+        const desired = wanted
+          ? desiredIndexKeys(this.#indexArgs(type, this.namespace, layout)).some(
+              (d) => d.name === name
+            )
+          : true;
+        if (desired || name.endsWith('_base')) {
+          throw new IndexDropRefusedError(
+            'still_desired',
+            `index ${name} on ${where} is one the engine builds for this type; dropping it would only rebuild it`
+          );
+        }
+        await conn.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS ${ident(name)}`);
+      });
+    } finally {
+      conn.release();
+    }
+    process.stdout.write(`[substrate] index ${name} on ${where}: dropped\n`);
   }
 
   /**

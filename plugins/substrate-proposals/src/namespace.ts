@@ -2,7 +2,8 @@
  * substrate-proposals namespace definition.
  *
  * Defines two types for schema evolution proposals:
- *   - TypeProposal: proposes a new type (multiple fields at once)
+ *   - TypeProposal: proposes a new type (multiple fields at once), and holds
+ *     the indexes and natural order `propose_index` gives it
  *   - FieldProposal: proposes a single field on an existing type
  *
  * Both track proposal metadata (proposedBy, proposedAt, reason) and application
@@ -17,13 +18,18 @@
 
 import { defineNamespace, field } from '@mnmal-ai/substrate-sdk';
 import type { NamespaceDefinition } from '@mnmal-ai/substrate-types';
-import { DEFAULT_PROPOSE_CAPABILITY, proposeToWrite } from './capability.js';
+import {
+  DEFAULT_INDEX_CAPABILITY,
+  DEFAULT_PROPOSE_CAPABILITY,
+  proposeToWrite
+} from './capability.js';
 
 export function defineProposalTypes(
   namespace: string,
-  capability: string = DEFAULT_PROPOSE_CAPABILITY
+  capability: string = DEFAULT_PROPOSE_CAPABILITY,
+  indexCapability: string = DEFAULT_INDEX_CAPABILITY
 ): NamespaceDefinition {
-  const policy = proposeToWrite(capability);
+  const policy = proposeToWrite(capability, indexCapability);
   return defineNamespace(namespace, {
     TypeProposal: {
       policy,
@@ -37,7 +43,11 @@ export function defineProposalTypes(
         appliedAt: field.date({ nullable: true }),
         resultingSchemaVersion: field.string({ nullable: true }),
         supersededByCode: field.boolean(),
-        archived: field.boolean()
+        archived: field.boolean(),
+        /** `IndexDecl[]` as JSON, set by `propose_index add`; null for none. */
+        indexesJson: field.string({ indexed: false, nullable: true }),
+        /** `OrderedBy` as JSON, set by `propose_index orderedBy`; null for the default. */
+        orderedByJson: field.string({ indexed: false, nullable: true })
       }
     },
     FieldProposal: {

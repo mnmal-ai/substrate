@@ -24,7 +24,8 @@ import { createProposalsPlugin } from './index.js';
 export const ProposalsBootstrapConfigSchema = z
   .object({
     ownedNamespaces: z.array(z.string().min(1)).default([]),
-    proposeCapability: z.string().min(1).default('substrate.propose')
+    proposeCapability: z.string().min(1).default('substrate.propose'),
+    indexCapability: z.string().min(1).default('substrate.index')
   })
   .strict();
 
@@ -36,7 +37,8 @@ export const bootstrap = defineBootstrap.coordinator({
     createProposalsPlugin({
       ownedNamespaces: config.ownedNamespaces,
       pubsub: createNoopPubSub(),
-      proposeCapability: config.proposeCapability
+      proposeCapability: config.proposeCapability,
+      indexCapability: config.indexCapability
     })
 });
 

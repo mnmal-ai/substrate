@@ -20,7 +20,13 @@ import type {
   Registry,
   Row
 } from '@mnmal-ai/substrate-types';
-import { applyFieldProposal, applyTypeProposal } from './apply.js';
+import {
+  applyFieldProposal,
+  applyTypeIndexOptions,
+  applyTypeProposal,
+  hasTypeIndexOptions,
+  typeIndexOptionsOf
+} from './apply.js';
 import type { PubSub } from './config.js';
 import { isProposableNamespace } from './control-plane.js';
 import { ensureStorageAfterCommit } from './engine-write.js';
@@ -62,18 +68,24 @@ export async function applyProposalFromNotification(
   const typeHit = await binding.dataset.read('TypeProposal', { id: args.proposalId });
   if (typeHit.rows.length > 0) {
     const row = typeHit.rows[0] as Row;
-    if (row.applied === true && !binding.registry.get(row.typeName as string)) {
+    if (row.applied !== true) return;
+    const typeName = row.typeName as string;
+    let changed = false;
+    if (!binding.registry.get(typeName)) {
       const fields = JSON.parse(row.fieldsJson as string) as Record<string, FieldSpecJson>;
       applyTypeProposal({
         namespace: args.namespace,
-        typeName: row.typeName as string,
+        typeName,
         fields,
         registryStore: args.registryStore,
         dataset: binding.dataset,
         edges: binding.edges
       });
-      ensureStorageAfterCommit(undefined, binding.dataset, row.typeName as string);
+      changed = true;
     }
+    // A propose_index on a peer changes an applied row's indexes or order.
+    changed = replayTypeIndexOptions(args.registryStore, args.namespace, row) || changed;
+    if (changed) ensureStorageAfterCommit(undefined, binding.dataset, typeName);
     return;
   }
 
@@ -97,6 +109,32 @@ export async function applyProposalFromNotification(
       }
     }
   }
+}
+
+/**
+ * Bring a registered proposed type's indexes and natural order in line with
+ * its row. False when they already match (or the type is not registered).
+ *
+ * @throws when the row's options are malformed or invalid for the type
+ */
+function replayTypeIndexOptions(
+  registryStore: RegistryStore,
+  namespace: string,
+  row: Row
+): boolean {
+  const binding = registryStore.getBinding(namespace);
+  const entry = binding.registry.get(row.typeName as string);
+  const opts = typeIndexOptionsOf(row);
+  if (entry === undefined || hasTypeIndexOptions(entry, opts)) return false;
+  applyTypeIndexOptions({
+    namespace,
+    typeName: row.typeName as string,
+    ...opts,
+    registryStore,
+    dataset: binding.dataset,
+    edges: binding.edges
+  });
+  return true;
 }
 
 export interface ReconcileArgs {
@@ -129,6 +167,8 @@ export async function reconcileNamespace(args: ReconcileArgs): Promise<void> {
     },
     limit: 10000
   });
+  // Prepared once each, after every replay pass, so storage sees the final indexes.
+  const prepare = new Set<string>();
   for (const row of typeRows.rows) {
     if (binding.registry.get(row.typeName as string)) continue;
     try {
@@ -145,7 +185,7 @@ export async function reconcileNamespace(args: ReconcileArgs): Promise<void> {
       args.onSkip?.(row, err);
       continue;
     }
-    ensureStorageAfterCommit(undefined, binding.dataset, row.typeName as string);
+    prepare.add(row.typeName as string);
   }
 
   const fieldRows = await binding.dataset.read('FieldProposal', {
@@ -178,14 +218,29 @@ export async function reconcileNamespace(args: ReconcileArgs): Promise<void> {
       args.onSkip?.(row, err);
       continue;
     }
-    ensureStorageAfterCommit(undefined, binding.dataset, row.targetType as string);
+    prepare.add(row.targetType as string);
   }
+
+  // Indexes and order last: they may key on a field a field proposal added.
+  // A bad one is skipped and reported; the type stays, without it.
+  for (const row of typeRows.rows) {
+    try {
+      if (replayTypeIndexOptions(args.registryStore, args.namespace, row)) {
+        prepare.add(row.typeName as string);
+      }
+    } catch (err) {
+      args.onSkip?.(row, err);
+    }
+  }
+  for (const type of prepare) ensureStorageAfterCommit(undefined, binding.dataset, type);
 }
 
 export interface InstallHotAddedNamespaceArgs {
   ns: string;
   /** Capability that writes to the proposal record types need; see `defineProposalTypes`. */
   proposeCapability?: string;
+  /** Capability that writes to a proposal row's indexes need; see `proposeToWrite`. */
+  indexCapability?: string;
   dataset: Dataset;
   registryStore: RegistryStore;
   engine: EngineHandle;
@@ -248,7 +303,7 @@ export function installHotAddedNamespace(args: InstallHotAddedNamespaceArgs): vo
     args.registryStore.set(args.ns, binding);
   }
   const registry = skipRegistered(binding.registry);
-  defineProposalTypes(args.ns, args.proposeCapability).install({
+  defineProposalTypes(args.ns, args.proposeCapability, args.indexCapability).install({
     registry,
     dataset: binding.dataset,
     edges: binding.edges
@@ -284,6 +339,8 @@ function skipRegistered(registry: Registry): Registry {
 
 export interface SetupClusterListenerArgs {
   proposeCapability?: string;
+  /** Capability that writes to a proposal row's indexes need; see `proposeToWrite`. */
+  indexCapability?: string;
   pubsub: PubSub;
   registryStore: RegistryStore;
   engine: EngineHandle;
@@ -343,6 +400,7 @@ export async function setupClusterNamespaceListener(args: SetupClusterListenerAr
         engine: args.engine,
         edges: args.edges,
         ...(args.proposeCapability !== undefined && { proposeCapability: args.proposeCapability }),
+        ...(args.indexCapability !== undefined && { indexCapability: args.indexCapability }),
         ...(args.registerProposalMutations !== undefined && {
           registerProposalMutations: args.registerProposalMutations
         })
@@ -358,6 +416,8 @@ export async function setupClusterNamespaceListener(args: SetupClusterListenerAr
 
 export interface ReconcileClusterArgs {
   proposeCapability?: string;
+  /** Capability that writes to a proposal row's indexes need; see `proposeToWrite`. */
+  indexCapability?: string;
   controlNamespace: string;
   registryStore: RegistryStore;
   engine: EngineHandle;
@@ -406,6 +466,7 @@ export async function reconcileClusterNamespaces(args: ReconcileClusterArgs): Pr
         engine: args.engine,
         edges: args.edges,
         ...(args.proposeCapability !== undefined && { proposeCapability: args.proposeCapability }),
+        ...(args.indexCapability !== undefined && { indexCapability: args.indexCapability }),
         ...(args.registerProposalMutations !== undefined && {
           registerProposalMutations: args.registerProposalMutations
         })

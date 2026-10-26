@@ -394,6 +394,16 @@ export interface Dataset {
    */
   indexPlan?(type: string, namespace: string): Promise<IndexPlan | undefined>;
   /**
+   * Drop index `name` of this namespace's `type`, a signed `propose_index`
+   * remove. Only an engine-owned, non-unique index the engine no longer wants
+   * (a leftover or a retracted declaration) is dropped; anything else is
+   * refused with an error whose `code` is `unknown_index`, `not_engine_owned`,
+   * `unique_index` or `still_desired`, and nothing is dropped.
+   *
+   * OPTIONAL. Backends that build no indexes omit it.
+   */
+  dropEngineIndex?(type: string, name: string): Promise<void>;
+  /**
    * Execute `fn` atomically. All ops performed on the `tx` argument run inside
    * one substrate transaction. If `fn` throws or returns a rejected promise,
    * every mutation inside the callback rolls back. If `fn` resolves, the

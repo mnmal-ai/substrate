@@ -261,7 +261,7 @@ export function defineNamespace(
 const INDEX_NAME_PATTERN = /^[a-z_][a-z0-9_]{0,62}$/;
 
 /** Throws unless every key is a btree-indexable declared field or `createdAt`/`updatedAt`, and every predicate field a declared one. */
-function assertIndexDecl(
+export function assertIndexDecl(
   typeName: string,
   fields: Record<string, FieldDef>,
   decl: IndexDecl

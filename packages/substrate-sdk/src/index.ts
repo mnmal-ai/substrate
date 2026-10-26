@@ -29,6 +29,7 @@ export {
   type StructFieldOptions
 } from './field.js';
 export {
+  assertIndexDecl,
   assertOrderedBy,
   type DefineNamespaceOptions,
   defineNamespace,

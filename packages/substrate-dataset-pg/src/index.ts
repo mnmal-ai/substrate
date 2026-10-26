@@ -16,6 +16,7 @@ export {
   engineIndexesOf,
   type HeldIndex,
   IndexDefinitionConflictError,
+  IndexDropRefusedError,
   type IndexState,
   type ReconcileTypeIndexesArgs,
   reconcileTypeIndexes,

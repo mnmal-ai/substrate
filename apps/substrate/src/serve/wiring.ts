@@ -248,10 +248,13 @@ export function makeTypeDefLookupFactory(
         : Object.fromEntries(
             Object.entries(registered.fields).filter(([, def]) => !isReservedAutoCrudField(def))
           );
+    // A proposed type's indexes live on its registry entry; a declared type's in code.
+    const indexes = rest.indexes ?? registered?.indexes;
     return {
       ...rest,
       fields: { ...rest.fields, ...live },
-      ...(orderedBy !== undefined ? { orderedBy } : {})
+      ...(orderedBy !== undefined ? { orderedBy } : {}),
+      ...(indexes !== undefined ? { indexes } : {})
     };
   };
   return () => lookup;

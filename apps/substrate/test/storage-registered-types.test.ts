@@ -122,6 +122,15 @@ describe('makeTypeDefLookupFactory', () => {
     expect(lookup('Raw', 'kl')).toEqual({ fields: {} });
   });
 
+  it("takes a proposed type's indexes from its registry entry", () => {
+    const decl = [{ fields: ['sku'] }];
+    const reg = {
+      get: () => ({ kind: 'type', fields: { sku: proposed }, indexes: decl })
+    } as never;
+    const lookup = makeTypeDefLookupFactory(new Map(), () => reg)('kl');
+    expect(lookup('Item', 'kl')).toEqual({ fields: { sku: proposed }, indexes: decl });
+  });
+
   it('answers the declaration alone until the registry resolves', () => {
     const lookup = makeTypeDefLookupFactory(new Map([['kl', declared]]))('kl');
     expect(lookup('Doc', 'kl')).toBe(declared.types?.Doc);

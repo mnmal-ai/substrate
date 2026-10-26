@@ -79,6 +79,8 @@ export const INVITE_FIELDS: Record<string, FieldDef> = {
  *   - `field_backfilled`       : `backfillFieldRoute` wrote per-row values of one field, metadata preserved
  *   - `type_dropped`           : `dropTypeRoute` dropped every row in a single type
  *   - `destructive_op_refused` : kill switch refused a hard-destructive operation
+ *   - `index_proposed`         : `propose_index` added, removed or reordered an index, or
+ *                                dismissed a recommendation; `details` names the action
  *
  * `details` is an opaque JSON body — `field.json()` round-trips the value
  * unchanged through encoder/decoder, no JSON.stringify boundary needed.
@@ -255,7 +257,8 @@ export type AuditEventKind =
   | 'type_dropped'
   | 'vocab_normalised'
   | 'field_backfilled'
-  | 'destructive_op_refused';
+  | 'destructive_op_refused'
+  | 'index_proposed';
 
 export const AUDIT_EVENT_KINDS: ReadonlySet<AuditEventKind> = new Set<AuditEventKind>([
   'bootstrap',
@@ -270,7 +273,8 @@ export const AUDIT_EVENT_KINDS: ReadonlySet<AuditEventKind> = new Set<AuditEvent
   'type_dropped',
   'vocab_normalised',
   'field_backfilled',
-  'destructive_op_refused'
+  'destructive_op_refused',
+  'index_proposed'
 ]);
 
 /** Subset of `JwtAlg` the dataset accepts. HS256 is rejected at write-time. */

@@ -10,6 +10,8 @@
  *     apply-proposal + reconcile + cluster-listener paths can reach the live
  *     registry at runtime
  *   - a policy gate derived from config.proposeCapability (defaults to 'substrate.propose')
+ *   - `propose_index` on the control plane, for indexes of any namespace, gated
+ *     by config.indexCapability (defaults to 'substrate.index')
  *
  * onStart wires the engine handle into each binding, replays applied proposals
  * via reconcileNamespace, and subscribes to per-ns + cluster-wide LISTEN/NOTIFY
@@ -25,7 +27,12 @@ import type {
   PluginLifecycleContext,
   Registry
 } from '@mnmal-ai/substrate-types';
-import { DEFAULT_PROPOSE_CAPABILITY, makeProposePolicy } from './capability.js';
+import {
+  DEFAULT_INDEX_CAPABILITY,
+  DEFAULT_PROPOSE_CAPABILITY,
+  makeIndexPolicy,
+  makeProposePolicy
+} from './capability.js';
 import type { ProposalsPluginConfig } from './config.js';
 import { CONTROL_NAMESPACE, defineControlPlaneTypes } from './control-plane.js';
 import {
@@ -40,6 +47,7 @@ import {
 import { defineProposalTypes } from './namespace.js';
 import { buildOnboardBody, registerOnboardRoute } from './onboard.js';
 import { makeProposeFieldResolver } from './propose-field-resolver.js';
+import { makeProposeIndexResolver } from './propose-index-resolver.js';
 import { makeProposeNamespaceResolver } from './propose-namespace-resolver.js';
 import { makeProposeTypeResolver } from './propose-type-resolver.js';
 import { RegistryStore } from './registry-store.js';
@@ -68,6 +76,7 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
   const registryStore = new RegistryStore();
   const capability = config.proposeCapability ?? DEFAULT_PROPOSE_CAPABILITY;
   const policy = makeProposePolicy(capability);
+  const indexCapability = config.indexCapability ?? DEFAULT_INDEX_CAPABILITY;
 
   // Late-bound dataset lookup for hot-added namespaces. An explicit
   // `config.datasetFor` wins; otherwise onStart swaps in the engine handle's
@@ -137,9 +146,23 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
           edges: ctx.edges,
           pubsub: config.pubsub,
           proposeCapability: capability,
+          indexCapability,
           registerProposalMutations
         }),
         policy
+      });
+
+      // propose_index — index changes on any namespace's types, so it lives on
+      // the control plane and names its target in `params.namespace`.
+      ctx.registry.register('propose_index', {
+        kind: 'mutation',
+        resolver: makeProposeIndexResolver({
+          registryStore,
+          datasetFor: (ns: string): Dataset | undefined => lookupDataset(ns),
+          pubsub: config.pubsub,
+          channelFor: (n: string): string => `_substrate_proposals_${n}`
+        }),
+        policy: makeIndexPolicy(indexCapability)
       });
     }
   };
@@ -152,7 +175,7 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
         registryStore.set(ns, { registry: ctx.registry, dataset: ctx.dataset, edges: ctx.edges });
 
         // Register TypeProposal + FieldProposal autoCRUD types.
-        defineProposalTypes(ns, capability).install(ctx);
+        defineProposalTypes(ns, capability, indexCapability).install(ctx);
 
         // Register propose_type + propose_field mutations via the shared
         // helper (single-source with the hot-add path).
@@ -209,6 +232,7 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
         datasetFor: lookupDataset,
         edges: controlBinding.edges,
         proposeCapability: capability,
+        indexCapability,
         registerProposalMutations,
         onSkip: (row, err) =>
           ctx.metric('_system_proposals.replay_skipped', {
@@ -285,6 +309,7 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
         edges: controlBinding.edges,
         metric: ctx.metric,
         proposeCapability: capability,
+        indexCapability,
         registerProposalMutations
       });
     }

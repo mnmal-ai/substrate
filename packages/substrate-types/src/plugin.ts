@@ -60,6 +60,8 @@ export interface RegistryEntryInput {
   returns?: FieldDef;
   /** Natural order of a `kind: 'type'` entry; published on its `TypeSchema`. */
   orderedBy?: OrderedBy;
+  /** Declared indexes of a `kind: 'type'` entry installed at runtime (a proposed type). */
+  indexes?: IndexDecl[];
   /**
    * Semantic verb for autoCRUD-registered mutations. The engine
    * threads this into `RequestContext.verb` at dispatch so type-/plugin-level
@@ -86,6 +88,8 @@ export interface RegistryEntry {
   returns?: FieldDef;
   /** Mirrors `RegistryEntryInput.orderedBy`. */
   orderedBy?: OrderedBy;
+  /** Mirrors `RegistryEntryInput.indexes`. */
+  indexes?: IndexDecl[];
   /** Mirrors `RegistryEntryInput.verb` — present when the registrant stamped one. */
   verb?: AutoCrudVerb;
 }
