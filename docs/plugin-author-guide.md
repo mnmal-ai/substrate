@@ -831,7 +831,8 @@ transaction changes: a concurrent drop waits for every transaction that holds
 a lock on the table, its caller's included. A drop that still waits more
 than 10 seconds on another transaction (a long export, say) gives up with
 `index_drop_timeout`; the recommendation stays `open`, and a retry once that
-transaction ends finishes it.
+transaction ends finishes it. Until then the index can be left INVALID: unused by
+reads but still maintained on every write.
 
 #### Profiles
 

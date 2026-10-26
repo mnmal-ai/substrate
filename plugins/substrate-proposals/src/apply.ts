@@ -177,16 +177,32 @@ export interface TypeIndexOptions {
   expectedSize?: 'small' | 'large';
 }
 
-/** Parses a TypeProposal row's `indexesJson` / `orderedByJson` / `expectedSize` (null or absent: none). */
-export function typeIndexOptionsOf(row: Record<string, unknown>): TypeIndexOptions {
+/**
+ * Parses a TypeProposal row's `indexesJson` / `orderedByJson` / `expectedSize`
+ * (null or absent: none). An `expectedSize` other than `small` or `large` is
+ * left out and handed to `onInvalidSize`, so a bad hint never costs the type
+ * its indexes or order.
+ */
+export function typeIndexOptionsOf(
+  row: Record<string, unknown>,
+  onInvalidSize?: (err: Error) => void
+): TypeIndexOptions {
   const parse = (v: unknown): unknown => (typeof v === 'string' ? JSON.parse(v) : undefined);
   const indexes = parse(row.indexesJson) as IndexDecl[] | undefined;
   const orderedBy = parse(row.orderedByJson) as OrderedBy | undefined;
-  const expectedSize = row.expectedSize ?? undefined;
+  const size = row.expectedSize ?? undefined;
+  const expectedSize = size === 'small' || size === 'large' ? size : undefined;
+  if (size !== undefined && expectedSize === undefined) {
+    onInvalidSize?.(
+      new Error(
+        `expectedSize on ${String(row.typeName)} must be 'small' or 'large', got '${String(size)}'; ignored`
+      )
+    );
+  }
   return {
     ...(indexes !== undefined ? { indexes } : {}),
     ...(orderedBy !== undefined ? { orderedBy } : {}),
-    ...(expectedSize !== undefined ? { expectedSize: expectedSize as 'small' | 'large' } : {})
+    ...(expectedSize !== undefined ? { expectedSize } : {})
   };
 }
 

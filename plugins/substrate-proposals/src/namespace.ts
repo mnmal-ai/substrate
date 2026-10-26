@@ -49,7 +49,7 @@ export function defineProposalTypes(
         /** `OrderedBy` as JSON, set by `propose_index orderedBy`; null for the default. */
         orderedByJson: field.string({ indexed: false, nullable: true }),
         /** `'small' | 'large'`, the proposer's size hint for the index advisor; null when none. */
-        expectedSize: field.string({ indexed: false, nullable: true })
+        expectedSize: field.enum(['small', 'large'], { indexed: false, nullable: true })
       }
     },
     FieldProposal: {

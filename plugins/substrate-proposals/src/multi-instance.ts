@@ -120,11 +120,12 @@ export async function applyProposalFromNotification(
 function replayTypeIndexOptions(
   registryStore: RegistryStore,
   namespace: string,
-  row: Row
+  row: Row,
+  onSkip?: (row: Row, err: unknown) => void
 ): boolean {
   const binding = registryStore.getBinding(namespace);
   const entry = binding.registry.get(row.typeName as string);
-  const opts = typeIndexOptionsOf(row);
+  const opts = typeIndexOptionsOf(row, (err) => onSkip?.(row, err));
   if (entry === undefined || hasTypeIndexOptions(entry, opts)) return false;
   applyTypeIndexOptions({
     namespace,
@@ -225,7 +226,7 @@ export async function reconcileNamespace(args: ReconcileArgs): Promise<void> {
   // A bad one is skipped and reported; the type stays, without it.
   for (const row of typeRows.rows) {
     try {
-      if (replayTypeIndexOptions(args.registryStore, args.namespace, row)) {
+      if (replayTypeIndexOptions(args.registryStore, args.namespace, row, args.onSkip)) {
         prepare.add(row.typeName as string);
       }
     } catch (err) {

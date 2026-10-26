@@ -137,6 +137,51 @@ function suite(make: () => Promise<{ ns: string; datasets: MemoryDatasetRegistry
     await storageSettled();
   });
 
+  it('refuses an invalid expectedSize on write, and replay ignores one without losing the options', async () => {
+    const { ns, datasets } = await make();
+    const engine = await boot(datasets, ns);
+    const indexes = [{ fields: ['brand'] }];
+    const env = await propose(engine, ns, 'Boot', {
+      orderedBy: { size: 'asc' },
+      indexes,
+      expectedSize: 'large'
+    });
+    expect(env.errors ?? []).toEqual([]);
+    const home = datasets.get(ns) as Dataset;
+    const [row] = (await home.read('TypeProposal', { where: { typeName: { eq: 'Boot' } } })).rows;
+    for (const [op, params] of [
+      ['updateTypeProposal', { id: row?.id, expectedSize: 'medium' }],
+      [
+        'createTypeProposal',
+        {
+          typeName: 'Other',
+          fieldsJson: '{}',
+          applied: false,
+          archived: false,
+          expectedSize: 'huge'
+        }
+      ]
+    ] as const) {
+      const w = await engine.mutate({
+        frame: { [`${ns}/${op}`]: { params, fields: { id: true } } },
+        ctx: PROPOSER
+      });
+      expect(
+        w.errors?.map((e) => e.code),
+        op
+      ).toEqual(['invalid_enum_value']);
+      expect(w.data?.[`${ns}/${op}`], op).toBeUndefined();
+    }
+    // A row written past the check: replay drops the hint, keeps the order and indexes.
+    const { id: _id, _metadata, shortId: _s, ...body } = row as Record<string, unknown>;
+    await home.write('TypeProposal', [{ id: row?.id as string, ...body, expectedSize: 'medium' }]);
+    const again = await boot(datasets, ns);
+    const entry = again.registryFor(ns)?.get('Boot');
+    expect(entry).toMatchObject({ indexes, orderedBy: { size: 'asc' } });
+    expect(entry?.expectedSize).toBeUndefined();
+    await storageSettled();
+  });
+
   it('stores nothing extra when none is given', async () => {
     const { ns, datasets } = await make();
     const engine = await boot(datasets, ns);
