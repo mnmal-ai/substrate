@@ -46,18 +46,32 @@ import {
 const ADVISOR: ActorIdentity = { kind: 'system', id: 'index-advisor' };
 
 /**
- * What the advisor carries from one pass to the next. Evidence comes from
- * the database's own statistics, so a restart loses nothing that decides a
- * recommendation: `firstSeen` only stands in for an index's age while the
- * database's statistics have never been reset.
+ * The advisor's baseline, persisted on the `StoreProfile` row so a restart,
+ * or another advisor process on the store, picks it up. Times are epoch ms.
  */
-export interface AdvisorMemory {
+export interface AdvisorState {
+  /** When the advisor first observed this store. */
+  epoch: number;
   lastPassAt?: number;
-  /** Per index: when this process first saw it. */
-  firstSeen: Map<string, number>;
+  /** Per type (`typeKey`): its write counters when the rate's window opened. */
+  types: Record<string, { ins: number; upd: number; del: number; at: number }>;
+  /** Per engine index (`typeKey` + NUL + name): when the advisor first saw it. */
+  indexes: Record<string, number>;
 }
 
-export const createAdvisorMemory = (): AdvisorMemory => ({ firstSeen: new Map() });
+async function readState(
+  system: Dataset
+): Promise<{ profile: StoreProfileName; state: AdvisorState | undefined }> {
+  const { rows } = await system.read(STORE_PROFILE_TYPE, { id: STORE_PROFILE_ID });
+  const row = rows[0];
+  const profile = isStoreProfileName(row?.profile) ? row.profile : 'personal';
+  try {
+    const state = JSON.parse(String(row?.advisorStateJson ?? 'null')) as AdvisorState | null;
+    return { profile, state: state ?? undefined };
+  } catch {
+    return { profile, state: undefined };
+  }
+}
 
 export interface AdvisorDeps {
   /** The store: `typeStats` and `indexPlan` span every namespace. */
@@ -68,7 +82,6 @@ export interface AdvisorDeps {
   /** Each namespace's registry, for a type's declared fields. */
   registry: (namespace: string) => Registry | undefined;
   now: () => number;
-  memory: AdvisorMemory;
 }
 
 const typeKey = (namespace: string, type: string): string => JSON.stringify([namespace, type]);
@@ -131,12 +144,6 @@ function writeCost(rate: number | undefined, t: ProfileThresholds): 'low' | 'med
   return rate < 10 * t.minWriteRatePerMin ? 'medium' : 'high';
 }
 
-async function readProfile(system: Dataset): Promise<StoreProfileName> {
-  const { rows } = await system.read(STORE_PROFILE_TYPE, { id: STORE_PROFILE_ID });
-  const profile = rows[0]?.profile;
-  return isStoreProfileName(profile) ? profile : 'personal';
-}
-
 /**
  * One row per `recKey`, which is also its id: inserted `open`; or, when it
  * exists, its evidence refreshed while `open`, or reopened when `superseded`
@@ -172,24 +179,51 @@ async function upsert(system: Dataset, row: Row & { id: string }, at: Date): Pro
 }
 
 export async function runAdvisorPass(deps: AdvisorDeps): Promise<{ upserted: number }> {
-  const { dataset, system, memory } = deps;
+  const { dataset, system } = deps;
   const now = deps.now();
   const at = new Date(now);
   const shapes = deps.recorder.drain();
-  const windowMs = memory.lastPassAt === undefined ? null : now - memory.lastPassAt;
-  memory.lastPassAt = now;
   if (dataset.typeStats === undefined || dataset.indexPlan === undefined) return { upserted: 0 };
-  const t = PROFILES[await readProfile(system)];
+  const read = await readState(system);
+  const t = PROFILES[read.profile];
+  const prior = read.state;
+  const windowMs = prior?.lastPassAt === undefined ? null : now - prior.lastPassAt;
+  const state: AdvisorState = {
+    epoch: prior?.epoch ?? now,
+    lastPassAt: now,
+    types: { ...prior?.types },
+    indexes: {}
+  };
 
   const stats = new Map<string, TypeStats>();
-  // Writes per minute, averaged since the database's statistics were reset.
-  // Never reset: no origin, so no rate, and no `remove`.
+  // Writes per minute since the type's baseline. A counter below its baseline
+  // (a stats reset, a pg restart, a failover) re-baselines the type to now,
+  // and its rate is skipped this pass.
   const rates = new Map<string, number>();
   for (const s of await dataset.typeStats()) {
     const key = typeKey(s.namespace, s.type);
     stats.set(key, s);
-    const since = s.statsSince === null ? Number.NaN : Date.parse(s.statsSince);
-    if (now > since) rates.set(key, (s.writesTotal * 60_000) / (now - since));
+    const cur = { ins: s.insertsTotal, upd: s.updatesTotal, del: s.deletesTotal, at: now };
+    const base = state.types[key];
+    if (base === undefined || cur.ins < base.ins || cur.upd < base.upd || cur.del < base.del) {
+      state.types[key] = cur;
+    } else if (now > base.at) {
+      const writes = cur.ins - base.ins + (cur.upd - base.upd) + (cur.del - base.del);
+      rates.set(key, (writes * 60_000) / (now - base.at));
+    }
+  }
+  // Index first sightings: kept for every engine index still held and for
+  // every type `typeStats` did not report (unknown, not gone); a dropped
+  // index's entry goes, so one rebuilt under its name starts a new age.
+  for (const [k, seen] of Object.entries(prior?.indexes ?? {})) {
+    if (!stats.has(k.slice(0, k.indexOf('\0')))) state.indexes[k] = seen;
+  }
+  for (const [key, s] of stats) {
+    for (const i of s.indexes) {
+      if (!i.engineOwned) continue;
+      const k = `${key}\0${i.name}`;
+      state.indexes[k] = prior?.indexes[k] ?? now;
+    }
   }
   const plans = new Map<string, Promise<IndexPlan | undefined>>();
   const planOf = (namespace: string, type: string): Promise<IndexPlan | undefined> => {
@@ -219,13 +253,10 @@ export async function runAdvisorPass(deps: AdvisorDeps): Promise<{ upserted: num
     const rate = rates.get(key);
     for (const i of s.indexes) {
       if (!i.engineOwned || i.unique || desired.has(i.name) || i.name.endsWith('_base')) continue;
-      // Unused: no scan within the window, and known to have existed for all of it.
-      // pg records no index creation time, so its age is counted from the
-      // statistics' reset, or failing one, from when this process first saw it.
-      const seenKey = `${key}\0${i.name}`;
-      const firstSeen = memory.firstSeen.get(seenKey) ?? now;
-      memory.firstSeen.set(seenKey, firstSeen);
-      const since = s.statsSince !== null ? Date.parse(s.statsSince) : firstSeen;
+      // Unused: no scan within the window, and known to have existed for all
+      // of it. pg records no index creation time, so its age is counted from
+      // when the advisor first saw it.
+      const since = state.indexes[`${key}\0${i.name}`] ?? now;
       const lastScan = i.lastScanAt === null ? undefined : Date.parse(i.lastScanAt);
       if (lastScan !== undefined && now - lastScan < t.unusedWindowMs) continue;
       if (now - since < t.unusedWindowMs) continue;
@@ -252,6 +283,14 @@ export async function runAdvisorPass(deps: AdvisorDeps): Promise<{ upserted: num
     }
   }
   await supersede();
+  // Last write wins between two advisors on one store, which is safe: a
+  // baseline only moves forward or re-baselines, and either keeps rates and
+  // ages conservative. A merge write, so the profile beside it is untouched.
+  await system.write(
+    STORE_PROFILE_TYPE,
+    [{ id: STORE_PROFILE_ID, advisorStateJson: JSON.stringify(state) }],
+    { identity: ADVISOR, now: at }
+  );
   return { upserted };
 
   /** Open recommendations the store no longer needs: a shape now served, an index gone or wanted again. */

@@ -17,8 +17,7 @@
 export * from './_system/index.js';
 export {
   type AdvisorDeps,
-  type AdvisorMemory,
-  createAdvisorMemory,
+  type AdvisorState,
   runAdvisorPass
 } from './advisor/advisor.js';
 export {

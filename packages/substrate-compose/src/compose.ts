@@ -43,7 +43,7 @@ import type {
 } from '@mnmal-ai/substrate-types';
 import { installSystemNamespace, type KeyRegistry, SYSTEM_NAMESPACE } from './_system/index.js';
 import type { RateLimiter } from './_system/rate-limit.js';
-import { createAdvisorMemory, runAdvisorPass } from './advisor/advisor.js';
+import { runAdvisorPass } from './advisor/advisor.js';
 import type { StoreProfileName } from './advisor/profiles.js';
 import type { AuthConfig } from './auth.js';
 import { type Capability, withAuth, withSystemActor } from './compose/auth-middleware.js';
@@ -593,8 +593,7 @@ async function composeInner(
       system: substrateDataset,
       recorder: shapeRecorder,
       registry: (ns: string) => namespaces.get(ns)?.registry,
-      now: Date.now,
-      memory: createAdvisorMemory()
+      now: Date.now
     };
     const pass = (): Promise<{ upserted: number }> => runAdvisorPass(deps);
     runAdvisorNow = pass;

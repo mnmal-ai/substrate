@@ -8,7 +8,8 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { type ComposeResult, compose } from '@mnmal-ai/substrate-compose';
+import { type ComposeResult, compose, runAdvisorPass } from '@mnmal-ai/substrate-compose';
+import { ShapeRecorder } from '@mnmal-ai/substrate-core';
 import { PgDataset, PgEdgesStore, runMigrations } from '@mnmal-ai/substrate-dataset-pg';
 import { defineNamespace } from '@mnmal-ai/substrate-sdk';
 import { MemorySubstrateServer } from '@mnmal-ai/substrate-server-memory';
@@ -157,5 +158,73 @@ describe.skipIf(!POSTGRES_URL)('index advisor (pg)', () => {
     } finally {
       await composed.stop();
     }
+  }, 60_000);
+
+  it('recommends remove for a retracted index once its persisted first sighting is a window old', async () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    const rns = `${ns}_rm`;
+    const fields: { current: Record<string, FieldDef> } = {
+      current: { status: { kind: 'scalar', type: 'string', indexed: true } }
+    };
+    const lookup = (type: string, namespace: string) =>
+      namespace === rns && type === 'Task' ? { fields: fields.current } : undefined;
+    const ds = new PgDataset({ namespace: rns, sql, typeDefLookup: lookup });
+    const system = new PgDataset({ namespace: '_system', sql });
+    await ds.ensureTypeStorage('Task');
+    // A few rows, so the type is known from the first pass (an empty legacy type is not).
+    await ds.write(
+      'Task',
+      Array.from({ length: 10 }, () => ({ id: randomUUID(), status: 'open' }))
+    );
+    await sql`ANALYZE rows`;
+    // Retracted: no longer declared, so outside the desired set, and never scanned.
+    fields.current = { status: { kind: 'scalar', type: 'string' } };
+    // Scale, and no baseline left by an earlier suite.
+    await system.write('StoreProfile', [
+      { id: 'store', profile: 'scale', updatedReason: 'test', advisorStateJson: null }
+    ]);
+    // Meant for a database whose statistics were never reset, as the test database's.
+    const [db] = await sql<Array<{ reset: Date | null }>>`
+      SELECT stats_reset AS reset FROM pg_stat_database WHERE datname = current_database()`;
+    expect(db).toBeDefined();
+
+    let now = Date.now();
+    const deps = {
+      dataset: ds,
+      system,
+      recorder: new ShapeRecorder(),
+      registry: () => undefined,
+      now: () => now
+    };
+    const removes = async () =>
+      (
+        await system.read('IndexRecommendation', {
+          where: { namespace: { eq: rns }, action: { eq: 'remove' } }
+        })
+      ).rows;
+    expect(await runAdvisorPass(deps)).toEqual({ upserted: 0 });
+
+    // 30,000 writes, flushed to the statistics; then half a window, then a whole one, by the injected clock.
+    const conn = await sql.reserve();
+    try {
+      await conn`INSERT INTO rows (namespace, type, id, body)
+        SELECT ${rns}, 'Task', gen_random_uuid()::text, jsonb_build_object('status', 'open')
+        FROM generate_series(1, 30000)`;
+      await conn`SELECT pg_stat_force_next_flush()`;
+    } finally {
+      conn.release();
+    }
+    await sql`ANALYZE rows`;
+    now += DAY / 2;
+    expect(await runAdvisorPass(deps)).toEqual({ upserted: 0 });
+    expect(await removes()).toEqual([]);
+    now += DAY / 2;
+    expect(await runAdvisorPass(deps)).toEqual({ upserted: 1 });
+    const [rec] = await removes();
+    expect(rec).toMatchObject({ state: 'open', type: 'Task' });
+    expect(String(rec?.indexName)).toMatch(/_status_[0-9a-f]{8}_idx$/);
+    await sql`DELETE FROM rows WHERE namespace = ${rns}`;
+    await sql`DELETE FROM rows WHERE namespace = '_system' AND type = 'IndexRecommendation'
+      AND body->>'namespace' = ${rns}`;
   }, 60_000);
 });

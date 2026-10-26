@@ -1389,10 +1389,6 @@ export class PgDataset implements Dataset {
     const layout = await this.#layout();
     if (layout === 'absent') return [];
     const sql = this.#sql as Sql;
-    const [db] = await sql<Array<{ since: string | null }>>`
-      SELECT to_char(stats_reset AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS since
-      FROM pg_stat_database WHERE datname = current_database()`;
-    const statsSince = db?.since ?? null;
     const toStats = (
       t: {
         namespace: string;
@@ -1400,7 +1396,8 @@ export class PgDataset implements Dataset {
         table: string;
         liveRows: number;
         insertsTotal: number;
-        writesTotal: number;
+        updatesTotal: number;
+        deletesTotal: number;
       },
       held: Awaited<ReturnType<typeof heldIndexes>>
     ): TypeStats => ({
@@ -1408,8 +1405,8 @@ export class PgDataset implements Dataset {
       type: t.type,
       liveRows: Math.round(t.liveRows),
       insertsTotal: Math.round(t.insertsTotal),
-      writesTotal: Math.round(t.writesTotal),
-      statsSince,
+      updatesTotal: Math.round(t.updatesTotal),
+      deletesTotal: Math.round(t.deletesTotal),
       indexes: held
         .filter((i) => belongsToType(i, t.namespace, t.type, layout, t.table))
         .map((i) => ({
@@ -1429,7 +1426,8 @@ export class PgDataset implements Dataset {
           bound: string;
           liveRows: number;
           insertsTotal: number;
-          writesTotal: number;
+          updatesTotal: number;
+          deletesTotal: number;
         }>
       >`
         SELECT c.relname AS "table",
@@ -1438,7 +1436,8 @@ export class PgDataset implements Dataset {
                (CASE WHEN c.reltuples >= 0 THEN c.reltuples ELSE COALESCE(s.n_live_tup, 0) END)::float8
                  AS "liveRows",
                COALESCE(s.n_tup_ins, 0)::float8 AS "insertsTotal",
-               COALESCE(s.n_tup_ins + s.n_tup_upd + s.n_tup_del, 0)::float8 AS "writesTotal"
+               COALESCE(s.n_tup_upd, 0)::float8 AS "updatesTotal",
+               COALESCE(s.n_tup_del, 0)::float8 AS "deletesTotal"
         FROM pg_partition_tree('rows') t
         JOIN pg_class c ON c.oid = t.relid
         JOIN pg_class p ON p.oid = t.parentrelid
@@ -1464,14 +1463,15 @@ export class PgDataset implements Dataset {
     // `n_live_tup` sizes it before the first ANALYZE, when reltuples is -1, so
     // a never-analyzed large `rows` is still sampled rather than scanned.
     const [table] = await sql<
-      Array<{ fresh: boolean; size: number; inserts: number; writes: number }>
+      Array<{ fresh: boolean; size: number; inserts: number; updates: number; deletes: number }>
     >`
       SELECT c.reltuples > 0
                AND COALESCE(s.n_mod_since_analyze, 0) <= ${INDEX_COUNT_STALE} * c.reltuples
                AS fresh,
              GREATEST(c.reltuples, COALESCE(s.n_live_tup, 0))::float8 AS size,
              COALESCE(s.n_tup_ins, 0)::float8 AS inserts,
-             COALESCE(s.n_tup_ins + s.n_tup_upd + s.n_tup_del, 0)::float8 AS writes
+             COALESCE(s.n_tup_upd, 0)::float8 AS updates,
+             COALESCE(s.n_tup_del, 0)::float8 AS deletes
       FROM pg_class c LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
       WHERE c.oid = 'rows'::regclass`;
     const size = table?.size ?? 0;
@@ -1522,7 +1522,8 @@ export class PgDataset implements Dataset {
           ...t,
           table: 'rows',
           insertsTotal: share(table?.inserts, t.liveRows),
-          writesTotal: share(table?.writes, t.liveRows)
+          updatesTotal: share(table?.updates, t.liveRows),
+          deletesTotal: share(table?.deletes, t.liveRows)
         },
         held
       )

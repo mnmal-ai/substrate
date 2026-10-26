@@ -194,7 +194,9 @@ export const STORE_PROFILE_ID = 'store';
  */
 export const STORE_PROFILE_FIELDS: Record<string, FieldDef> = {
   profile: field.enum(['personal', 'growth', 'scale']),
-  updatedReason: field.string({ indexed: false })
+  updatedReason: field.string({ indexed: false }),
+  /** The index advisor's persisted baseline: `{ epoch, types, indexes }`. Written by the advisor only. */
+  advisorStateJson: field.string({ indexed: false, nullable: true })
 };
 
 /**

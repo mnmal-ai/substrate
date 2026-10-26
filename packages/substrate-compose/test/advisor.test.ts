@@ -17,20 +17,20 @@ import type {
   Row,
   TypeStats
 } from '@mnmal-ai/substrate-types';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import {
   type AdvisorDeps,
-  createAdvisorMemory,
   INDEX_RECOMMENDATION_TYPE,
   runAdvisorPass,
   STORE_PROFILE_TYPE
 } from '../src/index.js';
 
+const DAY = 24 * 60 * 60 * 1000;
 const NOW = Date.parse('2026-10-01T00:00:00Z');
-/** The database's statistics were last reset ten days before NOW. */
-const RESET = '2026-09-21T00:00:00.000000Z';
-/** Writes since RESET that average `perMin` a minute at NOW. */
-const writesAt = (perMin: number): number => (perMin * (NOW - Date.parse(RESET))) / 60_000;
+/** The injected clock every advisor in a test reads; reset to NOW before each. */
+let clock = NOW;
+/** The write counter at `clock` of a type written `perMin` a minute since NOW. */
+const writes = (perMin: number): number => (perMin * (clock - NOW)) / 60_000;
 const FIELDS: Record<string, FieldDef> = {
   status: field.string(),
   owner: { kind: 'crossRef', ns: 'app', type: 'User' } as FieldDef,
@@ -56,8 +56,7 @@ function world(store: Store, system = new MemoryDataset({ namespace: '_system' }
     system,
     recorder,
     registry: () => registry,
-    now: () => NOW,
-    memory: createAdvisorMemory()
+    now: () => clock
   };
   return {
     deps,
@@ -78,15 +77,15 @@ const shape = (filters: ReadShape['filters'], orderBy = NATURAL): ReadShape => (
 const stats = (
   liveRows: number,
   indexes: TypeStats['indexes'] = [],
-  writesTotal = 0,
-  statsSince: string | null = RESET
+  insertsTotal = 0,
+  updatesTotal = 0
 ): TypeStats => ({
   namespace: 'app',
   type: 'Task',
   liveRows,
-  insertsTotal: writesTotal,
-  writesTotal,
-  statsSince,
+  insertsTotal,
+  updatesTotal,
+  deletesTotal: 0,
   indexes
 });
 const index = (name: string, over: Partial<TypeStats['indexes'][0]> = {}) => ({
@@ -102,6 +101,10 @@ const OLD = 'rows_app_task_old_0badf00d_idx';
 const statusEq = shape([{ field: 'status', op: 'eq' }]);
 
 describe('runAdvisorPass', () => {
+  beforeEach(() => {
+    clock = NOW;
+  });
+
   it('recommends add for a slow unserved shape on a big type', async () => {
     const w = world({ stats: [stats(30_000)], plan: { indexes: [] } });
     await w.setProfile('scale');
@@ -183,9 +186,14 @@ describe('runAdvisorPass', () => {
     const plan: IndexPlan = {
       indexes: [{ name: 'rows_app_task_kept_0badf00d_idx', keys: [], unique: false }]
     };
-    const store: Store = { stats: [stats(10, indexes, writesAt(100))], plan };
+    const store: Store = { stats: [stats(10, indexes)], plan };
     const w = world(store);
     await w.setProfile('scale');
+    // The first pass opens the baselines: no age, no rate yet.
+    expect(await runAdvisorPass(w.deps)).toEqual({ upserted: 0 });
+    // A day on (the scale window), never scanned, 100 writes a minute.
+    clock += DAY;
+    store.stats = [stats(10, indexes, writes(60), writes(40))];
     expect(await runAdvisorPass(w.deps)).toEqual({ upserted: 1 });
     const [rec] = await w.recs();
     expect(rec).toMatchObject({
@@ -196,37 +204,82 @@ describe('runAdvisorPass', () => {
     });
   });
 
-  it('a restarted advisor still recommends remove: the evidence is the database statistics', async () => {
-    const store: Store = { stats: [stats(10, [index(OLD)], writesAt(100))], plan: { indexes: [] } };
+  it('a restarted advisor keeps the epoch and baselines, and still recommends remove', async () => {
+    const store: Store = { stats: [stats(10, [index(OLD)])], plan: { indexes: [] } };
     const system = new MemoryDataset({ namespace: '_system' });
     const first = world(store, system);
     await first.setProfile('scale');
-    // A fresh instance, with no memory of any earlier pass, stands in for a restart.
+    expect(await runAdvisorPass(first.deps)).toEqual({ upserted: 0 });
+    const persisted = async () =>
+      JSON.parse(
+        String((await system.read(STORE_PROFILE_TYPE, { id: 'store' })).rows[0]?.advisorStateJson)
+      );
+    const before = await persisted();
+    expect(before.epoch).toBe(NOW);
+    // A fresh instance a day later stands in for a restart: nothing is held in process.
+    clock += DAY;
+    store.stats = [stats(10, [index(OLD)], writes(100))];
     expect(await runAdvisorPass(world(store, system).deps)).toEqual({ upserted: 1 });
     expect((await first.recs())[0]).toMatchObject({ action: 'remove', indexName: OLD });
+    const after = await persisted();
+    expect(after.epoch).toBe(NOW);
+    expect(Object.values(after.indexes)).toEqual([NOW]);
+    expect(Object.values(after.types)).toEqual(Object.values(before.types));
+    // The profile beside the state is untouched.
+    expect((await system.read(STORE_PROFILE_TYPE, { id: 'store' })).rows[0]?.profile).toBe('scale');
   });
 
-  it('does not recommend remove for a recent scan, light writes, or statistics never reset', async () => {
-    const cases: TypeStats[] = [
-      stats(10, [index(OLD, { lastScanAt: '2026-09-30T12:00:00.000000Z' })], writesAt(100)),
-      stats(10, [index(OLD)], writesAt(5)),
-      // No reset: no origin for the rate, and a fresh process has only just seen the index.
-      stats(10, [index(OLD)], writesAt(100), null)
+  it('a counter below its baseline re-baselines the type and skips its rate for the pass', async () => {
+    const store: Store = { stats: [stats(10, [index(OLD)], 1_000_000)], plan: { indexes: [] } };
+    const w = world(store);
+    await w.setProfile('scale');
+    await runAdvisorPass(w.deps);
+    // A stats reset: the counters drop, whatever the writes since.
+    clock += DAY;
+    store.stats = [stats(10, [index(OLD)], 5)];
+    expect(await runAdvisorPass(w.deps)).toEqual({ upserted: 0 });
+    const types = JSON.parse(
+      String((await w.system.read(STORE_PROFILE_TYPE, { id: 'store' })).rows[0]?.advisorStateJson)
+    ).types;
+    expect(Object.values(types)).toEqual([{ ins: 5, upd: 0, del: 0, at: clock }]);
+    // From the new baseline, 100 writes a minute for a day: the rate is back.
+    clock += DAY;
+    store.stats = [stats(10, [index(OLD)], 5 + 100 * 24 * 60)];
+    expect(await runAdvisorPass(w.deps)).toEqual({ upserted: 1 });
+  });
+
+  it('does not recommend remove for a recent scan, light writes, or an index first seen within the window', async () => {
+    const cases: Array<{ old: TypeStats['indexes'][0]; perMin: number; seenAfter: boolean }> = [
+      {
+        old: index(OLD, { lastScanAt: new Date(NOW + DAY - 1000).toISOString() }),
+        perMin: 100,
+        seenAfter: false
+      },
+      { old: index(OLD), perMin: 5, seenAfter: false },
+      { old: index(OLD), perMin: 100, seenAfter: true }
     ];
     for (const c of cases) {
-      const w = world({ stats: [c], plan: { indexes: [] } });
+      clock = NOW;
+      const store: Store = {
+        stats: [stats(10, c.seenAfter ? [] : [c.old])],
+        plan: { indexes: [] }
+      };
+      const w = world(store);
       await w.setProfile('scale');
+      await runAdvisorPass(w.deps);
+      clock += DAY;
+      store.stats = [stats(10, [c.old], writes(c.perMin))];
       expect(await runAdvisorPass(w.deps), JSON.stringify(c)).toEqual({ upserted: 0 });
     }
   });
 
   it('supersedes an open add once its shape is served, and an open remove once its index is wanted or gone', async () => {
-    const store: Store = {
-      stats: [stats(1_000_000, [index(OLD)], writesAt(100))],
-      plan: { indexes: [] }
-    };
+    const store: Store = { stats: [stats(1_000_000, [index(OLD)])], plan: { indexes: [] } };
     const w = world(store);
     await w.setProfile('scale');
+    await runAdvisorPass(w.deps);
+    clock += DAY;
+    store.stats = [stats(1_000_000, [index(OLD)], writes(100))];
     w.recorder.observe(statusEq, 500);
     expect(await runAdvisorPass(w.deps)).toEqual({ upserted: 2 });
     const state = async (action: string) =>
@@ -239,12 +292,15 @@ describe('runAdvisorPass', () => {
     expect(await state('add')).toBe('superseded');
     expect(await state('remove')).toBe('open');
 
-    store.stats = [stats(1_000_000, [], writesAt(100))];
+    store.stats = [stats(1_000_000, [], writes(100))];
     await runAdvisorPass(w.deps);
     expect(await state('remove')).toBe('superseded');
 
-    // The index is back and unused again: the same row reopens.
-    store.stats = [stats(1_000_000, [index(OLD)], writesAt(100))];
+    // The index is back: its age restarts, and a window later the same row reopens.
+    store.stats = [stats(1_000_000, [index(OLD)], writes(100))];
+    expect(await runAdvisorPass(w.deps)).toEqual({ upserted: 0 });
+    clock += DAY;
+    store.stats = [stats(1_000_000, [index(OLD)], writes(100))];
     expect(await runAdvisorPass(w.deps)).toEqual({ upserted: 1 });
     expect(await state('remove')).toBe('open');
     expect(await w.recs()).toHaveLength(2);
