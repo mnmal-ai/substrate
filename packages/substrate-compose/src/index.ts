@@ -59,6 +59,7 @@ export {
   kernelMigrationTracking,
   mountKernelRoute
 } from './kernel.js';
+export { uuidFromName } from './name-uuid.js';
 export type { ConfigReport, KnobReport } from './routes/config-echo.js';
 export {
   buildContext,

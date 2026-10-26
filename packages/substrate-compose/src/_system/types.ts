@@ -186,11 +186,14 @@ export const ENUM_VERDICT_FIELDS: Record<string, FieldDef> = {
 };
 export const STORE_PROFILE_TYPE = 'StoreProfile';
 export const INDEX_RECOMMENDATION_TYPE = 'IndexRecommendation';
-/** The one `StoreProfile` row's id. */
-export const STORE_PROFILE_ID = 'store';
+/**
+ * The one `StoreProfile` row's id. A fixed UUID, not a name, so the row passes
+ * the `rows_id_uuid_format` CHECK that `SUBSTRATE_ENFORCE_UUID_CHECK` installs.
+ */
+export const STORE_PROFILE_ID = '5703e000-0000-4000-8000-000000000001';
 
 /**
- * `StoreProfile` — one row, id `store`: the sizing profile the index advisor
+ * `StoreProfile` — one row, id `STORE_PROFILE_ID`: the sizing profile the index advisor
  * reads its thresholds from on each pass. Seeded once from
  * `SUBSTRATE_STORE_PROFILE` (else `personal`), then changed live.
  */
@@ -200,11 +203,11 @@ export const STORE_PROFILE_FIELDS: Record<string, FieldDef> = {
 };
 
 export const ADVISOR_STATE_TYPE = 'AdvisorState';
-/** The one `AdvisorState` row's id. */
-export const ADVISOR_STATE_ID = 'store';
+/** The one `AdvisorState` row's id: a fixed UUID, for the same CHECK. */
+export const ADVISOR_STATE_ID = '5703e000-0000-4000-8000-000000000002';
 
 /**
- * `AdvisorState` — one row, id `store`: the index advisor's persisted
+ * `AdvisorState` — one row, id `ADVISOR_STATE_ID`: the index advisor's persisted
  * baseline (`{ epoch, types, indexes }`, see `AdvisorState` in the advisor).
  * Written only by the advisor through the dataset; admins may read it, and
  * no caller may write it.
@@ -215,12 +218,12 @@ export const ADVISOR_STATE_FIELDS: Record<string, FieldDef> = {
 
 /**
  * `IndexRecommendation` — one index the advisor recommends adding or removing,
- * with its evidence. The row id is `recKey`, so every advisor process on a
- * store converges on one row per (action, shape) or (action, index), refreshed
+ * with its evidence. The row id is a version-8 UUID derived from `recKey`, so
+ * every advisor process on a store converges on one row per (action, shape) or (action, index), refreshed
  * while `open` and never reopened once `accepted` or `dismissed`.
  */
 export const INDEX_RECOMMENDATION_FIELDS: Record<string, FieldDef> = {
-  /** sha256 of the action and the shape key (or the index name, for `remove`); also the row id. */
+  /** sha256 of the action and the shape key (or the index name, for `remove`); the row id derives from it. */
   recKey: field.string(),
   namespace: field.string(),
   type: field.string(),

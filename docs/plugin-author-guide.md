@@ -824,8 +824,8 @@ recommendation and the change; that is the only record of a drop.
 #### Profiles
 
 Thresholds come from a sizing profile, held in the single
-`_system/StoreProfile` row (id `store`), which an admin or a holder of
-`substrate.index` on `_system` can change live.
+`_system/StoreProfile` row (id `5703e000-0000-4000-8000-000000000001`),
+which an admin or a holder of `substrate.index` on `_system` can change live.
 
 | | `personal` | `growth` | `scale` |
 |---|---|---|---|

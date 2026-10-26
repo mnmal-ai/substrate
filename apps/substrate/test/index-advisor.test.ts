@@ -8,7 +8,12 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { type ComposeResult, compose, runAdvisorPass } from '@mnmal-ai/substrate-compose';
+import {
+  type ComposeResult,
+  compose,
+  runAdvisorPass,
+  STORE_PROFILE_ID
+} from '@mnmal-ai/substrate-compose';
 import { ShapeRecorder } from '@mnmal-ai/substrate-core';
 import { PgDataset, PgEdgesStore, runMigrations } from '@mnmal-ai/substrate-dataset-pg';
 import { defineNamespace } from '@mnmal-ai/substrate-sdk';
@@ -102,7 +107,7 @@ describe.skipIf(!POSTGRES_URL)('index advisor (pg)', () => {
       await reconcileRegisteredStorage(composed.engine, composed.datasets, nsDefs);
       // The seed is insert-only, and an earlier suite in this schema may have seeded the row.
       await (datasets._system as PgDataset).write('StoreProfile', [
-        { id: 'store', profile: 'scale', updatedReason: 'test' }
+        { id: STORE_PROFILE_ID, profile: 'scale', updatedReason: 'test' }
       ]);
       await sql`INSERT INTO rows (namespace, type, id, body)
         SELECT ${ns}, 'Task', gen_random_uuid()::text, jsonb_build_object('status', 'open')
@@ -189,7 +194,9 @@ describe.skipIf(!POSTGRES_URL)('index advisor (pg)', () => {
     // Retracted: no longer declared, so outside the desired set, and never scanned.
     fields.current = { status: { kind: 'scalar', type: 'string' } };
     // Scale, and no baseline left by an earlier suite.
-    await system.write('StoreProfile', [{ id: 'store', profile: 'scale', updatedReason: 'test' }]);
+    await system.write('StoreProfile', [
+      { id: STORE_PROFILE_ID, profile: 'scale', updatedReason: 'test' }
+    ]);
     await sql`DELETE FROM rows WHERE namespace = '_system' AND type = 'AdvisorState'`;
     // Meant for a database whose statistics were never reset, as the test database's.
     const [db] = await sql<Array<{ reset: Date | null }>>`

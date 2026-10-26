@@ -23,13 +23,16 @@ import type {
 } from '@mnmal-ai/substrate-types';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
+  ADVISOR_STATE_ID,
   ADVISOR_STATE_TYPE,
   type AdvisorDeps,
   type AdvisorState,
   INDEX_RECOMMENDATION_TYPE,
   installSystemNamespace,
   runAdvisorPass,
-  STORE_PROFILE_TYPE
+  STORE_PROFILE_ID,
+  STORE_PROFILE_TYPE,
+  uuidFromName
 } from '../src/index.js';
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -60,7 +63,7 @@ class Recorder extends ShapeRecorder {
 /** The advisor's persisted state. */
 const persistedState = async (system: Dataset): Promise<AdvisorState> =>
   JSON.parse(
-    String((await system.read(ADVISOR_STATE_TYPE, { id: 'store' })).rows[0]?.stateJson)
+    String((await system.read(ADVISOR_STATE_TYPE, { id: ADVISOR_STATE_ID })).rows[0]?.stateJson)
   ) as AdvisorState;
 
 function world(store: Store, system = new MemoryDataset({ namespace: '_system' })) {
@@ -84,7 +87,7 @@ function world(store: Store, system = new MemoryDataset({ namespace: '_system' }
     recorder,
     recs: async (): Promise<Row[]> => (await system.read(INDEX_RECOMMENDATION_TYPE, {})).rows,
     setProfile: (profile: string) =>
-      system.write(STORE_PROFILE_TYPE, [{ id: 'store', profile, updatedReason: 'test' }])
+      system.write(STORE_PROFILE_TYPE, [{ id: STORE_PROFILE_ID, profile, updatedReason: 'test' }])
   };
 }
 
@@ -139,7 +142,14 @@ describe('runAdvisorPass', () => {
       state: 'open',
       estimatedWriteCost: 'low'
     });
-    expect(rec?.recKey).toBe(rec?.id);
+    // A UUID row id, derived from the full-hash recKey, so a UUID-checked store accepts it.
+    expect(rec?.recKey).toMatch(/^[0-9a-f]{64}$/);
+    expect(rec?.id).toBe(
+      uuidFromName(`add${JSON.stringify(['app', 'Task', ['status eq'], NATURAL])}`)
+    );
+    expect(rec?.id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+    );
     // The natural order's metadata column is a key too, so the index serves the order.
     expect(JSON.parse(String(rec?.declarationJson))).toEqual({
       fields: ['status', { field: 'createdAt', dir: 'desc' }]
@@ -242,7 +252,7 @@ describe('runAdvisorPass', () => {
     expect(Object.values(after.indexes).map((i) => i.seen)).toEqual([NOW]);
     expect(Object.values(after.types)).toEqual(Object.values(before.types));
     // The profile is a separate row the advisor never writes.
-    const [profile] = (await system.read(STORE_PROFILE_TYPE, { id: 'store' })).rows;
+    const [profile] = (await system.read(STORE_PROFILE_TYPE, { id: STORE_PROFILE_ID })).rows;
     expect(profile?.profile).toBe('scale');
     expect(profile?._metadata?.updatedBy?.id).not.toBe('index-advisor');
   });

@@ -36,8 +36,8 @@
  * event.
  */
 
-import { createHash, randomUUID } from 'node:crypto';
-import { planServesShape } from '@mnmal-ai/substrate-compose';
+import { randomUUID } from 'node:crypto';
+import { planServesShape, uuidFromName } from '@mnmal-ai/substrate-compose';
 import { RESERVED_AUTOCRUD_FIELD_NAMES, resolveIdentity } from '@mnmal-ai/substrate-sdk';
 import type {
   ActorIdentity,
@@ -195,11 +195,7 @@ async function proposeIndex(
 
   // Derived from the recommendation, so a retry's insert finds the first one.
   const auditId =
-    rec === undefined
-      ? randomUUID()
-      : createHash('sha256')
-          .update(`index_proposed:${String(rec.id)}`)
-          .digest('hex');
+    rec === undefined ? randomUUID() : uuidFromName(`index_proposed:${String(rec.id)}`);
   let audited: Record<string, unknown> | undefined;
   const audit = async (detail: Record<string, unknown>): Promise<void> => {
     if (audited !== undefined) return;

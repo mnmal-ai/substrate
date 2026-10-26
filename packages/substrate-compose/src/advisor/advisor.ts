@@ -39,6 +39,7 @@ import {
   STORE_PROFILE_ID,
   STORE_PROFILE_TYPE
 } from '../_system/types.js';
+import { uuidFromName } from '../name-uuid.js';
 import { isStoreProfileName, PROFILES, type ProfileThresholds } from './profiles.js';
 
 const ADVISOR: ActorIdentity = { kind: 'system', id: 'index-advisor' };
@@ -77,6 +78,11 @@ type PlanIndex = IndexPlan['indexes'][number];
 
 const typeKey = (namespace: string, type: string): string => JSON.stringify([namespace, type]);
 const sha256 = (s: string): string => createHash('sha256').update(s).digest('hex');
+/** A recommendation's identity: `recKey`, and the UUID row id derived from it. */
+const recIdentity = (name: string): { id: string; recKey: string } => ({
+  id: uuidFromName(name),
+  recKey: sha256(name)
+});
 
 /** The parts of a shape an index must match: its equalities, boolean literals and order. */
 interface Need {
@@ -176,17 +182,17 @@ async function readState(system: Dataset): Promise<AdvisorState | undefined> {
 }
 
 /**
- * One row per `recKey`, which is also its id: inserted `open`; or, when it
+ * One row per `recKey`, whose UUID is its id: inserted `open`; or, when it
  * exists, its evidence refreshed while `open`, or reopened when `superseded`
  * (the evidence is back). Each step is atomic, so advisors on one store
  * converge on one row and never reopen an accepted or dismissed one.
  */
 async function upsert(system: Dataset, row: Row & { id: string }, at: Date): Promise<boolean> {
-  const inserted = await system.write(
-    INDEX_RECOMMENDATION_TYPE,
-    [{ ...row, recKey: row.id, state: 'open' }],
-    { insertOnly: true, identity: ADVISOR, now: at }
-  );
+  const inserted = await system.write(INDEX_RECOMMENDATION_TYPE, [{ ...row, state: 'open' }], {
+    insertOnly: true,
+    identity: ADVISOR,
+    now: at
+  });
   if (inserted.ids.length > 0) return true;
   const { id, ...refresh } = row;
   const updated = await system.conditionalUpdate(
@@ -316,7 +322,7 @@ export async function runAdvisorPass(deps: AdvisorDeps): Promise<{ upserted: num
       if (now - since < t.unusedWindowMs) continue;
       if (rate === undefined || rate < t.minWriteRatePerMin) continue;
       const rec: Row & { id: string } = {
-        id: sha256(`remove${i.name}`),
+        ...recIdentity(`remove${i.name}`),
         namespace: s.namespace,
         type: s.type,
         action: 'remove',
@@ -419,7 +425,7 @@ export async function runAdvisorPass(deps: AdvisorDeps): Promise<{ upserted: num
     const rate = rates.get(key);
     const sk = shapeKey(shape);
     return {
-      id: sha256(`add${sk}`),
+      ...recIdentity(`add${sk}`),
       namespace: shape.namespace,
       type: shape.type,
       action: 'add',
