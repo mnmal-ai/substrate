@@ -70,7 +70,6 @@ import {
   heldIndexes,
   IndexDropRefusedError,
   type IndexState,
-  indexesOn,
   isEngineOwned,
   legacyLiveScope,
   legacyScope,
@@ -1328,7 +1327,7 @@ export class PgDataset implements Dataset {
     if (layout === 'legacy') {
       return {
         layout,
-        indexes: this.#withBuilds(describeTypeIndexes(args, await indexesOn(sql, 'rows')))
+        indexes: this.#withBuilds(describeTypeIndexes(args, await heldIndexes(sql, ['rows'])))
       };
     }
     const nsPart = await findPartition(sql, 'rows', this.namespace);
@@ -1337,7 +1336,7 @@ export class PgDataset implements Dataset {
     return {
       layout,
       partition,
-      indexes: this.#withBuilds(describeTypeIndexes(args, await indexesOn(sql, partition)))
+      indexes: this.#withBuilds(describeTypeIndexes(args, await heldIndexes(sql, [partition])))
     };
   }
 

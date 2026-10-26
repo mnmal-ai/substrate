@@ -427,7 +427,7 @@ async function reconcileStatistics(
   const found = await attempt('lookup', async () => {
     marked = await heldStatistics(conn, args);
     const held = new Set(
-      (await indexesOn(conn, target))
+      (await heldIndexes(conn, [target]))
         .filter((i) => i.marked && i.valid && i.ready)
         .map((i) => i.name)
     );
@@ -509,25 +509,6 @@ async function reconcileStatistics(
   return out;
 }
 
-export interface CatalogIndex {
-  name: string;
-  valid: boolean;
-  ready: boolean;
-  /** Marked as built or adopted by this reconciler. */
-  marked: boolean;
-}
-
-/** The indexes on `table` (current schema). */
-export async function indexesOn(sql: Sql, table: string): Promise<CatalogIndex[]> {
-  return sql<CatalogIndex[]>`
-    SELECT c.relname AS name, i.indisvalid AS valid, i.indisready AS ready,
-           obj_description(i.indexrelid, 'pg_class') IS NOT DISTINCT FROM ${MARK} AS marked
-    FROM pg_index i
-    JOIN pg_class c ON c.oid = i.indexrelid
-    JOIN pg_class t ON t.oid = i.indrelid
-    WHERE t.relname = ${table} AND t.relnamespace = current_schema()::regnamespace`;
-}
-
 /**
  * Each index the type should have, as the catalog rows `held` (the indexes on
  * its table) show it. Builds nothing and queries nothing. An index `held`
@@ -535,28 +516,17 @@ export async function indexesOn(sql: Sql, table: string): Promise<CatalogIndex[]
  */
 export function describeTypeIndexes(
   args: ReconcileTypeIndexesArgs,
-  held: CatalogIndex[]
+  held: HeldIndex[]
 ): IndexState[] {
   const byName = new Map(held.map((i) => [i.name, i]));
-  return desiredSpecs(args).map((spec) => {
-    const found = byName.get(spec.name);
-    const state: IndexState['state'] =
-      found === undefined
-        ? 'failed'
-        : found.valid && found.ready
-          ? 'valid'
-          : found.ready
-            ? 'building'
-            : 'invalid';
-    return {
-      name: spec.name,
-      fields: spec.fields,
-      unique: spec.unique,
-      state,
-      outcome: 'unchanged'
-    };
-  });
+  return desiredSpecs(args).map((spec) =>
+    indexState(spec, stateFrom(byName.get(spec.name)), 'unchanged')
+  );
 }
+
+/** A catalog index's state; one that is not there is `failed`, as a build that has not succeeded is. */
+const stateFrom = (d: { valid: boolean; ready: boolean } | undefined): IndexState['state'] =>
+  d === undefined ? 'failed' : d.valid && d.ready ? 'valid' : d.ready ? 'building' : 'invalid';
 
 /**
  * Engine-owned indexes of the type (`held`: its indexes, by `belongsToType`)
@@ -608,6 +578,8 @@ export interface HeldIndex {
   unique: boolean;
   /** Carries the reconciler's comment marker. */
   marked: boolean;
+  valid: boolean;
+  ready: boolean;
   /** `pg_get_expr` of the predicate, or null for a full index. */
   predicate: string | null;
   /** The index's `pg_class.reltuples`: for a partial index, the rows under its predicate; -1 unknown. */
@@ -623,6 +595,7 @@ export async function heldIndexes(sql: Sql, tables: string[]): Promise<HeldIndex
   return sql<HeldIndex[]>`
     SELECT t.relname AS "table", c.relname AS name, i.indisunique AS "unique",
            obj_description(i.indexrelid, 'pg_class') IS NOT DISTINCT FROM ${MARK} AS marked,
+           i.indisvalid AS valid, i.indisready AS ready,
            pg_get_expr(i.indpred, i.indrelid) AS predicate,
            c.reltuples::float8 AS reltuples,
            COALESCE(s.idx_scan, 0)::float8 AS scans,
@@ -1064,14 +1037,7 @@ function swapNameFor(name: string): string {
 }
 
 async function stateOf(conn: Sql, name: string): Promise<IndexState['state']> {
-  const d = await describeIndex(conn, name, 'current');
-  return d === undefined
-    ? 'failed'
-    : d.valid && d.ready
-      ? 'valid'
-      : d.ready
-        ? 'building'
-        : 'invalid';
+  return stateFrom(await describeIndex(conn, name, 'current'));
 }
 
 async function reconcileOne(
