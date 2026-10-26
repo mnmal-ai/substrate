@@ -181,7 +181,6 @@ describe('validateFilter — where clause', () => {
       () =>
         validateFilter({
           where: { priority: { between: [1] as unknown as [number, number] } },
-          allowTableScan: true,
           typeSchema: SCHEMA,
           capabilities: CAPS
         }),
@@ -189,21 +188,10 @@ describe('validateFilter — where clause', () => {
     );
   });
 
-  it('accepts eq on an unindexed scalar without _allowTableScan', () => {
+  it('accepts eq on an unindexed scalar', () => {
     expectOk(() =>
       validateFilter({
         where: { priority: { eq: 5 } },
-        typeSchema: SCHEMA,
-        capabilities: CAPS
-      })
-    );
-  });
-
-  it('accepts _allowTableScan and ignores it', () => {
-    expectOk(() =>
-      validateFilter({
-        where: { priority: { eq: 5 } },
-        allowTableScan: true,
         typeSchema: SCHEMA,
         capabilities: CAPS
       })
@@ -718,20 +706,9 @@ describe('validateFilter — list fields (has)', () => {
     );
   });
 
-  it('accepts `has` on an unindexed list without _allowTableScan', () => {
+  it('accepts `has` on an unindexed list', () => {
     expectOk(() =>
       validateFilter({ where: { labels: { has: 'x' } }, typeSchema: SCHEMA, capabilities: CAPS })
-    );
-  });
-
-  it('accepts `has` on an unindexed list with _allowTableScan (ignored)', () => {
-    expectOk(() =>
-      validateFilter({
-        where: { labels: { has: 'x' } },
-        allowTableScan: true,
-        typeSchema: SCHEMA,
-        capabilities: CAPS
-      })
     );
   });
 

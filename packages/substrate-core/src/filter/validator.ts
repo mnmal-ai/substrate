@@ -50,8 +50,6 @@ export type FilterErrorCode =
   | 'unknown_field'
   | 'unknown_operator'
   | 'type_mismatch'
-  /** @deprecated Never produced: filters no longer refuse an unindexed field. Removed next release. */
-  | 'unindexed_field'
   | 'orderby_nonscalar'
   | 'capability_unsupported'
   | 'invalid_between'
@@ -791,8 +789,6 @@ function validateOrderBy(
 export interface ValidateFilterInput {
   where?: WhereClause;
   orderBy?: OrderByClause[];
-  /** @deprecated Accepted and ignored: filters never refuse an unindexed field. */
-  allowTableScan?: boolean;
   typeSchema: TypeSchema;
   capabilities: FilterCapabilities;
 }

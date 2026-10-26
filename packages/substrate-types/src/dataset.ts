@@ -106,11 +106,6 @@ export interface ReadParams {
    */
   cursor?: string;
   /**
-   * @deprecated Accepted and ignored. Filters on unindexed fields are no
-   * longer refused, so there is nothing left to override.
-   */
-  _allowTableScan?: boolean;
-  /**
    * Optional caller-supplied projection hint. Substrates MAY use this to
    * narrow the body keys they materialise from storage — e.g. PgDataset
    * builds a `jsonb_build_object(...)` projection over only the requested

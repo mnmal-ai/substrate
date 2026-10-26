@@ -71,7 +71,6 @@ export function listResolver<_T extends Row = Row>(
     const where = args.params?.where as WhereClause | undefined;
     const orderBy = args.params?.orderBy as OrderByClause[] | undefined;
     const cursor = args.params?.cursor;
-    const allowTableScan = args.params?._allowTableScan;
     const includeDeleted = args.params?.includeDeleted;
     if (id !== undefined) readParams.id = id;
     if (ids !== undefined) readParams.ids = ids;
@@ -83,7 +82,6 @@ export function listResolver<_T extends Row = Row>(
     }
     if (orderBy !== undefined) readParams.orderBy = orderBy;
     if (typeof cursor === 'string') readParams.cursor = cursor;
-    if (allowTableScan === true) readParams._allowTableScan = true;
     if (includeDeleted === true) readParams.includeDeleted = true;
     // Forward the caller's field selection so substrates (PgDataset) can
     // narrow the body keys they materialise from storage. Substrates MAY
