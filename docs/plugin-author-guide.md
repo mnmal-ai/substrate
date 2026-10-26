@@ -889,7 +889,7 @@ and each `indexed: true` field's) to its new `(field, natural order, id)`
 shape, one at a time, in the background. The old index serves until its
 replacement is valid. Each swap needs about twice that index's disk for a
 while, so before each build the dataset compares free space on the database
-volume against an estimate (the size of the index it replaces, else 30% of the
+volume against an estimate (the size of the index it replaces, a leftover `__swap` index included, else 30% of the
 table; sort temp space is not included) plus a margin, and waits, reporting
 `pending` with `insufficient_disk`, when there is not room. Configure it with:
 
