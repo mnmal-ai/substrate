@@ -10,11 +10,13 @@ import { randomUUID } from 'node:crypto';
 import { Engine, loadPlugins, MemoryEdgesStore } from '@mnmal-ai/substrate-core';
 import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-dataset-memory';
 import {
+  deriveListIndexMigration,
   desiredIndexKeys,
   detectLayout,
   PgDataset,
   PgEdgesStore,
   partitionName,
+  runDerivedMigrations,
   type StorageLayout,
   typeIndexesOf
 } from '@mnmal-ai/substrate-dataset-pg';
@@ -23,6 +25,7 @@ import type {
   Dataset,
   FieldDef,
   IndexDecl,
+  IndexPlan,
   NamespaceTypeDef,
   PackEnvelope,
   RequestContext,
@@ -102,11 +105,15 @@ async function recState(system: Dataset, id: unknown): Promise<unknown> {
 describe('propose_index (memory)', () => {
   const NS = 'shop';
 
-  async function setup() {
+  /** The read shape `brand eq` on Sneaker, as the advisor keys it. */
+  const BRAND_EQ = JSON.stringify([NS, 'Sneaker', ['brand eq'], []]);
+
+  async function setup(home: Dataset = new MemoryDataset({ namespace: NS })) {
     const datasets = new MemoryDatasetRegistry();
-    for (const ns of [NS, '_system_proposals', '_system']) {
+    for (const ns of ['_system_proposals', '_system']) {
       datasets.set(ns, new MemoryDataset({ namespace: ns }));
     }
+    datasets.set(NS, home);
     const engine = await boot(datasets, NS);
     const env = await engine.mutate({
       frame: {
@@ -246,7 +253,7 @@ describe('propose_index (memory)', () => {
   });
 
   it('requires substrate.index, not substrate.propose', async () => {
-    const { engine } = await setup();
+    const { datasets, engine } = await setup();
     const env = await proposeIndex(
       engine,
       { namespace: NS, type: 'Sneaker', action: 'add', declaration: { fields: ['brand'] } },
@@ -264,6 +271,20 @@ describe('propose_index (memory)', () => {
       ctx: PROPOSER
     });
     expect(code(direct)).toBe('policy_denied');
+    // Clearing them is a change too: an explicit null is gated like a value.
+    const [row] = (await (datasets.get(NS) as Dataset).read('TypeProposal', {})).rows;
+    for (const cleared of [{ indexesJson: null }, { orderedByJson: null }]) {
+      const nulled = await engine.mutate({
+        frame: {
+          [`${NS}/updateTypeProposal`]: {
+            params: { id: row?.id, ...cleared },
+            fields: { id: true }
+          }
+        },
+        ctx: PROPOSER
+      });
+      expect(code(nulled)).toBe('policy_denied');
+    }
     // The grant must cover the target namespace, not only some other one.
     const elsewhere = await proposeIndex(
       engine,
@@ -286,6 +307,7 @@ describe('propose_index (memory)', () => {
     const rec = recommendation({
       namespace: NS,
       type: 'Sneaker',
+      shape: BRAND_EQ,
       declarationJson: JSON.stringify({ fields: ['brand'] })
     });
     await system.write('IndexRecommendation', [rec]);
@@ -297,6 +319,9 @@ describe('propose_index (memory)', () => {
     });
     expect(env.errors ?? []).toEqual([]);
     expect(await recState(system, rec.id)).toBe('accepted');
+    // Closed by a conditional update, by the caller, never a whole-row write-back.
+    const [closedRow] = (await system.read('IndexRecommendation', { id: rec.id as string })).rows;
+    expect(closedRow?.evidenceJson).toBe('{}');
     expect(sneaker(engine)?.indexes).toEqual([{ fields: ['brand'] }]);
     const [audit] = (await system.read('AuditEvent', {})).rows;
     expect(audit).toMatchObject({ kind: 'index_proposed', actorKid: 'reviewer' });
@@ -310,6 +335,100 @@ describe('propose_index (memory)', () => {
       recommendationId: rec.id
     });
     expect(code(again)).toBe('recommendation_closed');
+  });
+
+  it('supersedes an add recommendation whose shape is now served, or unreadable', async () => {
+    // A store whose plan already serves `brand eq`, as an index added since would.
+    class Served extends MemoryDataset {
+      async indexPlan(): Promise<IndexPlan> {
+        return { indexes: [{ name: 'brand_idx', keys: [['brand', 'asc']], unique: false }] };
+      }
+    }
+    for (const [home, shape] of [
+      [new Served({ namespace: NS }), BRAND_EQ],
+      [new MemoryDataset({ namespace: NS }), 'not a shape']
+    ] as const) {
+      const { engine, system } = await setup(home);
+      const rec = recommendation({
+        namespace: NS,
+        type: 'Sneaker',
+        shape,
+        declarationJson: JSON.stringify({ fields: ['brand'] })
+      });
+      await system.write('IndexRecommendation', [rec]);
+      const env = await proposeIndex(engine, {
+        namespace: NS,
+        type: 'Sneaker',
+        action: 'add',
+        recommendationId: rec.id
+      });
+      expect(code(env)).toBe('recommendation_stale');
+      expect(await recState(system, rec.id)).toBe('superseded');
+      expect(sneaker(engine)?.indexes).toBeUndefined();
+      expect((await system.read('AuditEvent', {})).rows).toEqual([]);
+    }
+  });
+
+  it('a retry after a partial failure accepts once, with one audit event', async () => {
+    const { datasets, engine, system } = await setup();
+    const rec = recommendation({
+      namespace: NS,
+      type: 'Sneaker',
+      shape: BRAND_EQ,
+      declarationJson: JSON.stringify({ fields: ['brand'] })
+    });
+    await system.write('IndexRecommendation', [rec]);
+    // The first attempt stored the declaration and failed before closing the row.
+    const home = datasets.get(NS) as Dataset;
+    const [row] = (await home.read('TypeProposal', {})).rows;
+    await home.write('TypeProposal', [{ ...row, indexesJson: '[{"fields":["brand"]}]' } as Row]);
+    for (let i = 0; i < 2; i++) {
+      await system.conditionalUpdate('IndexRecommendation', rec.id, {}, { state: 'open' });
+      const env = await proposeIndex(engine, {
+        namespace: NS,
+        type: 'Sneaker',
+        action: 'add',
+        recommendationId: rec.id
+      });
+      expect(env.errors ?? []).toEqual([]);
+      expect(await recState(system, rec.id)).toBe('accepted');
+    }
+    expect((await system.read('AuditEvent', {})).rows).toHaveLength(1);
+  });
+
+  it('cannot remove on the memory dataset, which builds no indexes', async () => {
+    const { engine, system } = await setup();
+    const add = await proposeIndex(engine, {
+      namespace: NS,
+      type: 'Sneaker',
+      action: 'add',
+      declaration: { fields: ['brand'] }
+    });
+    expect(add.errors ?? []).toEqual([]);
+    // Not even a proposed declaration is retracted: there is no index to name.
+    const direct = await proposeIndex(engine, {
+      namespace: NS,
+      type: 'Sneaker',
+      action: 'remove',
+      indexName: 'shop_sneaker_brand_0123abcd_idx'
+    });
+    expect(code(direct)).toBe('unknown_index');
+    expect(sneaker(engine)?.indexes).toEqual([{ fields: ['brand'] }]);
+    const rec = recommendation({
+      namespace: NS,
+      type: 'Sneaker',
+      action: 'remove',
+      indexName: 'x'
+    });
+    await system.write('IndexRecommendation', [rec]);
+    const viaRec = await proposeIndex(engine, {
+      namespace: NS,
+      type: 'Sneaker',
+      action: 'remove',
+      recommendationId: rec.id
+    });
+    expect(code(viaRec)).toBe('recommendation_stale');
+    expect(await recState(system, rec.id)).toBe('superseded');
   });
 
   it('dismisses a recommendation, which then stays closed', async () => {
@@ -600,5 +719,89 @@ describe.skipIf(!POSTGRES_URL)('propose_index (pg)', () => {
     );
     expect(added).toHaveLength(1);
     expect(added[0]?.unique).toBe(false);
+    const name = added[0]?.name as string;
+
+    // A recommendation for a shape that index now serves is stale, live.
+    const rec = recommendation({
+      namespace: APP,
+      type: typeName,
+      shape: JSON.stringify([APP, typeName, ['brand eq'], []]),
+      declarationJson: JSON.stringify({ fields: ['brand'] })
+    });
+    await system.write('IndexRecommendation', [rec]);
+    const served = await proposeIndex(engine, {
+      namespace: APP,
+      type: typeName,
+      action: 'add',
+      recommendationId: rec.id
+    });
+    expect(code(served)).toBe('recommendation_stale');
+    expect(await recState(system, rec.id)).toBe('superseded');
+
+    // Retract: the index is wanted only by the proposed declaration, so remove
+    // takes the declaration out of the row and the registry, then drops it.
+    const removed = await proposeIndex(engine, {
+      namespace: APP,
+      type: typeName,
+      action: 'remove',
+      indexName: name
+    });
+    expect(removed.errors ?? []).toEqual([]);
+    expect(await indexNames(typeName, APP)).not.toContain(name);
+    expect(engine.registryFor(APP)?.get(typeName)?.indexes).toBeUndefined();
+    const [row] = await sql<Array<{ indexes: string | null }>>`
+        SELECT body->>'indexesJson' AS indexes FROM rows
+        WHERE namespace = ${APP} AND type = 'TypeProposal' AND body->>'typeName' = ${typeName}`;
+    expect(row?.indexes).toBeNull();
+    // A reconcile does not bring it back.
+    await (engine.datasetFor(APP) as PgDataset).ensureTypeStorage(typeName);
+    expect(await indexNames(typeName, APP)).not.toContain(name);
+    const [audit] = await sql<Array<{ details: Record<string, unknown> }>>`
+      SELECT body->'details' AS details FROM rows
+      WHERE namespace = '_system' AND type = 'AuditEvent'
+        AND body->'details'->>'indexName' = ${name}`;
+    expect(audit?.details).toMatchObject({
+      action: 'remove',
+      retracted: { fields: ['brand', { field: 'updatedAt', dir: 'desc' }] }
+    });
+    // Its derived siblings are still wanted for other reasons, and stay refused.
+    const derived = (await typeIndexesOf(sql, APP, typeName, layout)).find(
+      (i) => i.engineOwned && !i.unique
+    )?.name;
+    if (derived !== undefined) {
+      expect(
+        code(
+          await proposeIndex(engine, {
+            namespace: APP,
+            type: typeName,
+            action: 'remove',
+            indexName: derived
+          })
+        )
+      ).toBe('still_desired');
+    }
+  });
+
+  it('refuses remove of a list GIN index the engine does not own or still wants', async () => {
+    const type = `Tagged${randomUUID().slice(0, 8)}`;
+    const tags: FieldDef = { kind: 'list', of: { kind: 'scalar', type: 'string' }, indexed: true };
+    codeTypes.set(type, { fields: { ...fields, tags } });
+    if (layout === 'legacy') {
+      // The legacy layout's list GIN comes from the migrations ledger, unmarked.
+      await runDerivedMigrations(sql, [
+        deriveListIndexMigration({ namespace: CODE, type, field: 'tags' })
+      ]);
+    }
+    await codeDataset.ensureTypeStorage(type);
+    const gin = (await typeIndexesOf(sql, CODE, type, layout)).find((i) => i.name.endsWith('_gin'));
+    expect(gin).toBeDefined();
+    const env = await proposeIndex(engine, {
+      namespace: CODE,
+      type,
+      action: 'remove',
+      indexName: gin?.name as string
+    });
+    expect(code(env)).toBe(layout === 'legacy' ? 'not_engine_owned' : 'still_desired');
+    expect(await indexNames(type)).toContain(gin?.name);
   });
 });

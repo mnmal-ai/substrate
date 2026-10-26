@@ -15,6 +15,7 @@
 
 import type { ActorIdentity, Id, Row } from './core.js';
 import type { EdgesStore } from './edge.js';
+import type { IndexDecl } from './plugin.js';
 import type { TypeStats } from './runtime-metrics.js';
 
 /**
@@ -400,9 +401,27 @@ export interface Dataset {
    * refused with an error whose `code` is `unknown_index`, `not_engine_owned`,
    * `unique_index` or `still_desired`, and nothing is dropped.
    *
+   * OPTIONAL. Backends that build no indexes omit it (the memory dataset):
+   * there, `propose_index remove` has no index to find, so it is refused
+   * `unknown_index`, and a remove recommendation it names is superseded.
+   */
+  dropEngineIndex?(
+    type: string,
+    name: string,
+    opts?: {
+      /** Runs once every check has passed, just before the drop; a throw drops nothing. */
+      beforeDrop?: () => Promise<void>;
+    }
+  ): Promise<void>;
+  /**
+   * The entry of this namespace's `type`'s declared `indexes` whose index is
+   * named `name`, or undefined when no declaration builds it (a derived or
+   * engine index, or none). `propose_index remove` retracts it when it is a
+   * proposed type's. Never changes anything.
+   *
    * OPTIONAL. Backends that build no indexes omit it.
    */
-  dropEngineIndex?(type: string, name: string): Promise<void>;
+  indexDeclarationOf?(type: string, name: string): Promise<IndexDecl | undefined>;
   /**
    * Execute `fn` atomically. All ops performed on the `tx` argument run inside
    * one substrate transaction. If `fn` throws or returns a rejected promise,

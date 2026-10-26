@@ -110,6 +110,18 @@ function serves(index: PlanIndex, need: Need): boolean {
   });
 }
 
+/**
+ * Whether `plan` already serves the read shape `key` names (an `add`
+ * recommendation's `shape`), as the advisor's supersede pass decides.
+ * Undefined when the key does not parse.
+ */
+export function planServesShape(plan: IndexPlan, key: string): boolean | undefined {
+  const shape = shapeOf(key);
+  if (shape === undefined) return undefined;
+  const need = needOf(shape);
+  return plan.indexes.some((i) => serves(i, need));
+}
+
 /** What an `indexes` entry may key on: a declared scalar or crossRef, or a metadata column. */
 const declarable = (field: string, def: FieldDef | undefined): boolean =>
   field === 'createdAt' ||
@@ -347,10 +359,9 @@ export async function runAdvisorPass(deps: AdvisorDeps): Promise<{ upserted: num
       if (s === undefined || plan === undefined) continue;
       let done = false;
       if (row.action === 'add') {
-        const shape = shapeOf(String(row.shape));
-        if (shape === undefined) continue;
-        const need = needOf(shape);
-        done = plan.indexes.some((i) => serves(i, need));
+        const served = planServesShape(plan, String(row.shape));
+        if (served === undefined) continue;
+        done = served;
       } else if (row.action === 'remove') {
         const name = String(row.indexName);
         done = !s.indexes.some((i) => i.name === name) || plan.indexes.some((i) => i.name === name);

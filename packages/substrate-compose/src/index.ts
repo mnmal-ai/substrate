@@ -18,6 +18,7 @@ export * from './_system/index.js';
 export {
   type AdvisorDeps,
   type AdvisorState,
+  planServesShape,
   runAdvisorPass
 } from './advisor/advisor.js';
 export {

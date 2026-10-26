@@ -1390,7 +1390,11 @@ export class PgDataset implements Dataset {
    * (`desiredIndexKeys`), so only a leftover or a retracted declaration goes.
    * Refuses with `IndexDropRefusedError`.
    */
-  async dropEngineIndex(type: string, name: string): Promise<void> {
+  async dropEngineIndex(
+    type: string,
+    name: string,
+    opts: { beforeDrop?: () => Promise<void> } = {}
+  ): Promise<void> {
     const layout = await this.#layout();
     if (this.#inTx) {
       throw new Error('PgDataset.dropEngineIndex cannot be called on a tx-bound instance');
@@ -1439,12 +1443,25 @@ export class PgDataset implements Dataset {
             `index ${name} on ${where} is one the engine builds for this type; dropping it would only rebuild it`
           );
         }
+        await opts.beforeDrop?.();
         await conn.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS ${ident(name)}`);
       });
     } finally {
       conn.release();
     }
-    process.stdout.write(`[substrate] index ${name} on ${where}: dropped\n`);
+  }
+
+  /** See `Dataset.indexDeclarationOf`. */
+  async indexDeclarationOf(type: string, name: string): Promise<IndexDecl | undefined> {
+    const layout = await this.#layout();
+    if (layout === 'absent') return undefined;
+    const args = this.#indexArgs(type, this.namespace, layout);
+    const others = new Set(desiredIndexKeys({ ...args, indexes: [] }).map((d) => d.name));
+    return args.indexes.find((decl) =>
+      desiredIndexKeys({ ...args, indexes: [decl] }).some(
+        (d) => d.name === name && !others.has(d.name)
+      )
+    );
   }
 
   /**

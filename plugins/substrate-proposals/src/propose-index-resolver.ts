@@ -8,23 +8,34 @@
  *   swaps its derived indexes.
  * - `remove` drops an engine-owned, non-unique index the engine no longer
  *   wants, on any type (`Dataset.dropEngineIndex`, which re-checks it live).
+ *   An index wanted only because a proposed type's `indexesJson` declares it
+ *   is retracted first: the declaration leaves the row, peers are told, and
+ *   the index is dropped.
  * - `dismiss` closes a recommendation without acting on it.
  *
  * A referenced `_system/IndexRecommendation` must be `open`, and moves to
- * `accepted` or `dismissed`. Its rows are writable by any index-capability
- * holder, so nothing in one is trusted: an `add` declaration is validated as a
- * direct one is, and `remove` is checked against the catalog. When that
- * evidence no longer holds the call is refused `recommendation_stale` and the
- * row is set `superseded`.
+ * `accepted` or `dismissed` by a conditional update from `open`. Its rows are
+ * writable by any index-capability holder, so nothing in one is trusted: an
+ * `add` must still be unserved by the type's index plan (as the advisor's
+ * supersede pass decides) and its declaration validates as a direct one does;
+ * `remove` is checked against the catalog. When that evidence no longer
+ * holds the call is refused `recommendation_stale` and the row superseded.
  *
  * Every write here goes through the namespaces' base datasets, outside the
  * caller's transaction: a `DROP INDEX CONCURRENTLY` cannot run beside it, and
  * a superseded mark must outlive the refusal that rolls the transaction back.
- * Each one is stamped with the caller's identity, and every applied call
- * writes a `_system/AuditEvent` (`index_proposed`).
+ * Each one is stamped with the caller's identity.
+ *
+ * Audit: every applied call writes one `_system/AuditEvent` (`index_proposed`)
+ * once its checks have passed and before its first effect (for a drop, under
+ * the table lock, just before `DROP INDEX`), so no effect lands unaudited. For
+ * a recommendation the event's id derives from the recommendation's, written
+ * insert-only, so a retry after a partial failure converges without a second
+ * event.
  */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { planServesShape } from '@mnmal-ai/substrate-compose';
 import { RESERVED_AUTOCRUD_FIELD_NAMES, resolveIdentity } from '@mnmal-ai/substrate-sdk';
 import type {
   ActorIdentity,
@@ -38,6 +49,7 @@ import type {
 import {
   applyTypeIndexOptions,
   assertValidTypeIndexOptions,
+  sameJson,
   type TypeIndexOptions,
   typeIndexOptionsOf
 } from './apply.js';
@@ -45,7 +57,7 @@ import type { PubSub } from './config.js';
 import { ensureStorageAfterCommit, notifyAfterCommit } from './engine-write.js';
 import { ProposalError, type ProposalErrorCode } from './errors.js';
 import { proposalLockKey, withProposalLock } from './proposal-lock.js';
-import type { RegistryStore } from './registry-store.js';
+import type { NamespaceBinding, RegistryStore } from './registry-store.js';
 
 const SYSTEM_NAMESPACE = '_system';
 const RECOMMENDATION_TYPE = 'IndexRecommendation';
@@ -90,6 +102,14 @@ function invalid(param: string, message: string): ProposalError {
   return new ProposalError('invalid_params', message, { param });
 }
 
+function closed(id: unknown, state?: unknown): ProposalError {
+  return new ProposalError(
+    'recommendation_closed',
+    `index recommendation '${String(id)}' is no longer open${state === undefined ? '' : ` (${String(state)})`}`,
+    state === undefined ? {} : { state }
+  );
+}
+
 function parseInput(params: Record<string, unknown>): ProposeIndexInput {
   for (const key of ['namespace', 'type', 'reason'] as const) {
     if (typeof params[key] !== 'string' || (key !== 'reason' && params[key] === '')) {
@@ -120,6 +140,19 @@ export function makeProposeIndexResolver(
   };
 }
 
+/** What one call has to work with, shared by the action handlers. */
+interface Call {
+  deps: ProposeIndexResolverDeps;
+  args: ResolverArgs;
+  input: ProposeIndexInput;
+  identity: ActorIdentity;
+  rec: Row | undefined;
+  /** Writes the call's audit event (once; a retry's insert is a no-op). */
+  audit: (detail: Record<string, unknown>) => Promise<void>;
+  /** Supersedes the recommendation, then refuses `recommendation_stale`. */
+  stale: (reason: string, code?: string) => Promise<never>;
+}
+
 async function proposeIndex(
   deps: ProposeIndexResolverDeps,
   ctx: RequestContext,
@@ -128,6 +161,7 @@ async function proposeIndex(
 ): Promise<Row> {
   const identity = resolveIdentity(ctx);
   const system = deps.datasetFor(SYSTEM_NAMESPACE);
+  const now = new Date();
   const rec = input.recommendationId === undefined ? undefined : await openRecommendation();
   async function openRecommendation(): Promise<Row> {
     const id = input.recommendationId as string;
@@ -138,13 +172,7 @@ async function proposeIndex(
     if (row === undefined) {
       throw new ProposalError('unknown_recommendation', `no index recommendation '${id}'`);
     }
-    if (row.state !== 'open') {
-      throw new ProposalError(
-        'recommendation_closed',
-        `index recommendation '${id}' is already ${String(row.state)}`,
-        { state: row.state }
-      );
-    }
+    if (row.state !== 'open') throw closed(id, row.state);
     if (row.namespace !== input.namespace || row.type !== input.type) {
       throw invalid(
         'recommendationId',
@@ -157,13 +185,53 @@ async function proposeIndex(
     return row;
   }
 
-  /** Marks the recommendation (if any) `state`, as the caller. */
-  const close = async (state: 'accepted' | 'dismissed' | 'superseded'): Promise<void> => {
-    if (rec === undefined || system === undefined) return;
-    await system.write(RECOMMENDATION_TYPE, [{ ...bodyOf(rec), state }], { identity });
+  // Derived from the recommendation, so a retry's insert finds the first one.
+  const auditId =
+    rec === undefined
+      ? randomUUID()
+      : createHash('sha256')
+          .update(`index_proposed:${String(rec.id)}`)
+          .digest('hex');
+  let audited: Record<string, unknown> | undefined;
+  const audit = async (detail: Record<string, unknown>): Promise<void> => {
+    if (audited !== undefined) return;
+    audited = detail;
+    await system?.write(
+      'AuditEvent',
+      [
+        {
+          id: auditId,
+          ts: now.toISOString(),
+          actorKid: identity.id,
+          kind: 'index_proposed',
+          targetKid: `${input.namespace}/${input.type}`,
+          clientIp: null,
+          details: {
+            action: input.action,
+            reason: input.reason,
+            recommendationId: rec?.id ?? null,
+            ...detail
+          }
+        }
+      ],
+      { identity, now, insertOnly: true }
+    );
   };
 
-  /** The recommendation's evidence no longer holds: supersede it, then refuse. */
+  /** Moves the recommendation (if any) from `open` to `state`, atomically. */
+  const close = async (state: 'accepted' | 'dismissed' | 'superseded'): Promise<void> => {
+    if (rec === undefined || system === undefined) return;
+    const { matched } = await system.conditionalUpdate(
+      RECOMMENDATION_TYPE,
+      rec.id,
+      { state: 'open' },
+      { state },
+      identity,
+      now
+    );
+    if (!matched) throw closed(rec.id);
+  };
+
   const stale = async (reason: string, code?: string): Promise<never> => {
     await close('superseded');
     throw new ProposalError(
@@ -173,84 +241,154 @@ async function proposeIndex(
     );
   };
 
-  let detail: Record<string, unknown> = {};
+  const call: Call = { deps, args, input, identity, rec, audit, stale };
   switch (input.action) {
     case 'dismiss': {
-      if (rec === undefined)
+      if (rec === undefined) {
         throw invalid('recommendationId', "'dismiss' needs a recommendationId");
+      }
+      await audit({});
       await close('dismissed');
       break;
     }
     case 'remove': {
-      const name = input.indexName ?? (rec?.indexName as string | null | undefined) ?? undefined;
-      if (name === undefined) throw invalid('indexName', "'remove' needs an indexName");
-      const dataset = deps.datasetFor(input.namespace);
-      try {
-        if (dataset?.dropEngineIndex === undefined) {
-          throw Object.assign(new Error(`no index ${name} on ${input.namespace}/${input.type}`), {
-            code: 'unknown_index'
-          });
-        }
-        await dataset.dropEngineIndex(input.type, name);
-      } catch (err) {
-        const code = (err as { code?: unknown }).code;
-        if (typeof code !== 'string' || !DROP_REFUSALS.has(code)) throw err;
-        const message = err instanceof Error ? err.message : String(err);
-        if (rec !== undefined) await stale(message, code);
-        throw new ProposalError(code as ProposalErrorCode, message, { indexName: name });
-      }
+      await removeIndex(call, system, auditId);
       await close('accepted');
-      detail = { indexName: name };
       break;
     }
     case 'add':
     case 'orderedBy': {
-      detail = await changeProposedType(deps, args, input, identity, rec, stale);
+      await changeProposedType(call);
       await close('accepted');
       break;
     }
   }
 
-  const id = randomUUID();
-  await system?.write(
-    'AuditEvent',
-    [
-      {
-        id,
-        ts: new Date().toISOString(),
-        actorKid: identity.id,
-        kind: 'index_proposed',
-        targetKid: `${input.namespace}/${input.type}`,
-        clientIp: null,
-        details: {
-          action: input.action,
-          reason: input.reason,
-          recommendationId: rec?.id ?? null,
-          ...detail
-        }
-      }
-    ],
-    { identity }
-  );
   return {
-    id,
+    id: auditId,
     action: input.action,
     namespace: input.namespace,
     type: input.type,
     recommendationId: rec?.id ?? null,
-    indexName: (detail.indexName as string | undefined) ?? null
+    indexName: (audited?.indexName as string | undefined) ?? null
   } as Row;
 }
 
+/** The applied, live TypeProposal row of `type`, or undefined (a code-defined type). */
+async function proposalOf(binding: NamespaceBinding, type: string): Promise<Row | undefined> {
+  return (
+    await binding.dataset.read('TypeProposal', {
+      where: {
+        AND: [
+          { typeName: { eq: type } },
+          { applied: { eq: true } },
+          { supersededByCode: { eq: false } },
+          { archived: { eq: false } }
+        ]
+      },
+      limit: 1
+    })
+  ).rows[0];
+}
+
+/**
+ * Stores `next` on the proposal row, reinstalls the type with it, and tells
+ * peers once the caller's transaction commits.
+ */
+async function storeTypeIndexOptions(
+  call: Call,
+  binding: NamespaceBinding,
+  proposal: Row,
+  next: TypeIndexOptions
+): Promise<void> {
+  const { deps, args, input, identity } = call;
+  // No indexes is stored, and installed, as none at all, as replay reads it.
+  const { indexes: all, ...rest } = next;
+  const opts: TypeIndexOptions = { ...rest, ...(all?.length ? { indexes: all } : {}) };
+  await binding.dataset.write(
+    'TypeProposal',
+    [
+      {
+        ...bodyOf(proposal),
+        indexesJson: opts.indexes !== undefined ? JSON.stringify(opts.indexes) : null,
+        orderedByJson: opts.orderedBy !== undefined ? JSON.stringify(opts.orderedBy) : null
+      }
+    ],
+    { identity }
+  );
+  applyTypeIndexOptions({
+    namespace: input.namespace,
+    typeName: input.type,
+    ...opts,
+    registryStore: deps.registryStore,
+    dataset: binding.dataset,
+    edges: binding.edges
+  });
+  await notifyAfterCommit(args, () =>
+    deps.pubsub.notify(deps.channelFor(input.namespace), String(proposal.id))
+  );
+}
+
+/** `remove`: retract a proposed declaration if that is all that wants it, then drop. */
+async function removeIndex(
+  call: Call,
+  system: Dataset | undefined,
+  auditId: string
+): Promise<void> {
+  const { deps, input, rec } = call;
+  const name = input.indexName ?? (rec?.indexName as string | null | undefined) ?? undefined;
+  if (name === undefined) throw invalid('indexName', "'remove' needs an indexName");
+  const dataset = deps.datasetFor(input.namespace);
+
+  // A recommendation's evidence is that nothing wants the index; a declared
+  // one is wanted, so it is not retracted on a recommendation's word.
+  if (rec === undefined && dataset?.indexDeclarationOf !== undefined) {
+    const owned = deps.registryStore.ownsNamespace(input.namespace);
+    const binding = owned ? deps.registryStore.getBinding(input.namespace) : undefined;
+    const proposal = binding === undefined ? undefined : await proposalOf(binding, input.type);
+    const decl =
+      proposal === undefined ? undefined : await dataset.indexDeclarationOf(input.type, name);
+    const current = proposal === undefined ? {} : typeIndexOptionsOf(proposal);
+    const kept = (current.indexes ?? []).filter((d) => !sameJson(d, decl));
+    if (
+      binding !== undefined &&
+      proposal !== undefined &&
+      decl !== undefined &&
+      kept.length < (current.indexes ?? []).length
+    ) {
+      await call.audit({ indexName: name, retracted: decl });
+      await storeTypeIndexOptions(call, binding, proposal, { ...current, indexes: kept });
+    }
+  }
+
+  try {
+    if (dataset?.dropEngineIndex === undefined) {
+      throw Object.assign(new Error(`no index ${name} on ${input.namespace}/${input.type}`), {
+        code: 'unknown_index'
+      });
+    }
+    await dataset.dropEngineIndex(input.type, name, {
+      beforeDrop: () => call.audit({ indexName: name })
+    });
+  } catch (err) {
+    const code = (err as { code?: unknown }).code;
+    if (typeof code !== 'string' || !DROP_REFUSALS.has(code)) throw err;
+    const message = err instanceof Error ? err.message : String(err);
+    if (rec !== undefined) {
+      // A retry after a drop whose recommendation was not yet closed: done, not stale.
+      const done =
+        code === 'unknown_index' &&
+        (await system?.read('AuditEvent', { id: auditId, limit: 1 }))?.rows[0] !== undefined;
+      if (done) return;
+      await call.stale(message, code);
+    }
+    throw new ProposalError(code as ProposalErrorCode, message, { indexName: name });
+  }
+}
+
 /** `add` or `orderedBy` on a proposed type: update its row, then its registry entry. */
-async function changeProposedType(
-  deps: ProposeIndexResolverDeps,
-  args: ResolverArgs,
-  input: ProposeIndexInput,
-  identity: ActorIdentity,
-  rec: Row | undefined,
-  stale: (reason: string) => Promise<never>
-): Promise<Record<string, unknown>> {
+async function changeProposedType(call: Call): Promise<void> {
+  const { deps, args, input, rec, stale } = call;
   const { namespace: ns, type } = input;
   const codeDefined = (): ProposalError =>
     new ProposalError(
@@ -265,19 +403,7 @@ async function changeProposedType(
   if (entry?.kind !== 'type') {
     throw new ProposalError('unknown_type', `no type '${type}' in namespace '${ns}'`);
   }
-  const proposal = (
-    await binding.dataset.read('TypeProposal', {
-      where: {
-        AND: [
-          { typeName: { eq: type } },
-          { applied: { eq: true } },
-          { supersededByCode: { eq: false } },
-          { archived: { eq: false } }
-        ]
-      },
-      limit: 1
-    })
-  ).rows[0];
+  const proposal = await proposalOf(binding, type);
   if (proposal === undefined) throw codeDefined();
 
   const current = typeIndexOptionsOf(proposal);
@@ -294,11 +420,21 @@ async function changeProposedType(
     }
     if (decl === undefined) throw invalid('declaration', "'add' needs a declaration");
     const indexes = current.indexes ?? [];
-    const known = indexes.some((d) => JSON.stringify(d) === JSON.stringify(decl));
+    const known = indexes.some((d) => sameJson(d, decl));
+    // Live evidence: the shape is still unserved. Skipped when the declaration
+    // is already stored, a retry whose own index now serves it.
+    if (rec !== undefined && !known) {
+      const plan = (await binding.dataset.indexPlan?.(type, ns)) ?? { indexes: [] };
+      const served = planServesShape(plan, String(rec.shape));
+      if (served === undefined) return stale('its read shape does not parse');
+      if (served) return stale('an index the type already has serves its read shape');
+    }
     next = { ...current, indexes: known ? indexes : [...indexes, decl as IndexDecl] };
     detail = { declaration: decl };
   } else {
-    if (input.orderedBy === undefined) throw invalid('orderedBy', "'orderedBy' needs an orderedBy");
+    if (input.orderedBy === undefined) {
+      throw invalid('orderedBy', "'orderedBy' needs an orderedBy");
+    }
     next = { ...current, orderedBy: input.orderedBy };
     detail = { orderedBy: input.orderedBy };
   }
@@ -310,26 +446,7 @@ async function changeProposedType(
     throw invalid(input.action === 'add' ? 'declaration' : 'orderedBy', message);
   }
 
-  await binding.dataset.write(
-    'TypeProposal',
-    [
-      {
-        ...bodyOf(proposal),
-        indexesJson: next.indexes !== undefined ? JSON.stringify(next.indexes) : null,
-        orderedByJson: next.orderedBy !== undefined ? JSON.stringify(next.orderedBy) : null
-      }
-    ],
-    { identity }
-  );
-  applyTypeIndexOptions({
-    namespace: ns,
-    typeName: type,
-    ...next,
-    registryStore: deps.registryStore,
-    dataset: binding.dataset,
-    edges: binding.edges
-  });
-  await notifyAfterCommit(args, () => deps.pubsub.notify(deps.channelFor(ns), String(proposal.id)));
+  await call.audit(detail);
+  await storeTypeIndexOptions(call, binding, proposal, next);
   ensureStorageAfterCommit(args.afterTx, binding.dataset, type);
-  return detail;
 }

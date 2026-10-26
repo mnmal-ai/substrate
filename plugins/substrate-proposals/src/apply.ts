@@ -20,13 +20,14 @@ import {
   installAutoCrud,
   RESERVED_AUTOCRUD_FIELDS
 } from '@mnmal-ai/substrate-sdk';
-import type {
-  Dataset,
-  EdgesStore,
-  FieldDef,
-  IndexDecl,
-  OrderedBy,
-  Registry
+import {
+  canonicalize,
+  type Dataset,
+  type EdgesStore,
+  type FieldDef,
+  type IndexDecl,
+  type OrderedBy,
+  type Registry
 } from '@mnmal-ai/substrate-types';
 import { ProposalError } from './errors.js';
 import {
@@ -275,8 +276,12 @@ export function hasTypeIndexOptions(
   entry: { indexes?: IndexDecl[]; orderedBy?: OrderedBy },
   opts: TypeIndexOptions
 ): boolean {
-  const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
-  return same(entry.indexes, opts.indexes) && same(entry.orderedBy, opts.orderedBy);
+  return sameJson(entry.indexes, opts.indexes) && sameJson(entry.orderedBy, opts.orderedBy);
+}
+
+/** Deep equality of JSON values, whatever order their keys were written in. */
+export function sameJson(a: unknown, b: unknown): boolean {
+  return JSON.stringify(canonicalize(a)) === JSON.stringify(canonicalize(b));
 }
 
 /**

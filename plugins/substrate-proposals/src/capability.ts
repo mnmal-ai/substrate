@@ -29,7 +29,8 @@ const INDEX_FIELDS = ['indexesJson', 'orderedByJson'] as const;
 /**
  * Writes to the proposal record types need the propose capability: boot
  * replays every row marked applied, so a row written directly would become
- * live schema. A write that sets a type's indexes or natural order also needs
+ * live schema. A write that names a type's indexes or natural order (null, which clears
+ * them, included) also needs
  * the index capability, which `propose_index` is gated by. Reads stay open to
  * anyone the namespace grant admits.
  */
@@ -43,7 +44,7 @@ export function proposeToWrite(
     if (ctx.operation !== 'mutate') return { allow: true };
     const decision = gate(ctx, args);
     const params = args.params ?? {};
-    if (!decision.allow || !INDEX_FIELDS.some((f) => params[f] != null)) return decision;
+    if (!decision.allow || !INDEX_FIELDS.some((f) => f in params)) return decision;
     return indexGate(ctx, args);
   };
 }
