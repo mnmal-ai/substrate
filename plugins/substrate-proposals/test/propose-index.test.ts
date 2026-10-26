@@ -108,11 +108,13 @@ describe('propose_index (memory)', () => {
   /** The read shape `brand eq` on Sneaker, as the advisor keys it. */
   const BRAND_EQ = JSON.stringify([NS, 'Sneaker', ['brand eq'], []]);
 
-  async function setup(home: Dataset = new MemoryDataset({ namespace: NS })) {
+  async function setup(
+    home: Dataset = new MemoryDataset({ namespace: NS }),
+    sys: Dataset = new MemoryDataset({ namespace: '_system' })
+  ) {
     const datasets = new MemoryDatasetRegistry();
-    for (const ns of ['_system_proposals', '_system']) {
-      datasets.set(ns, new MemoryDataset({ namespace: ns }));
-    }
+    datasets.set('_system_proposals', new MemoryDataset({ namespace: '_system_proposals' }));
+    datasets.set('_system', sys);
     datasets.set(NS, home);
     const engine = await boot(datasets, NS);
     const env = await engine.mutate({
@@ -367,6 +369,76 @@ describe('propose_index (memory)', () => {
       expect(sneaker(engine)?.indexes).toBeUndefined();
       expect((await system.read('AuditEvent', {})).rows).toEqual([]);
     }
+  });
+
+  it('a recommendation another writer closes first is refused before any effect', async () => {
+    // Another writer dismisses the row between this call's read and its claim.
+    class Racing extends MemoryDataset {
+      raced = false;
+      override async conditionalUpdate(
+        ...a: Parameters<MemoryDataset['conditionalUpdate']>
+      ): ReturnType<MemoryDataset['conditionalUpdate']> {
+        if (!this.raced && a[0] === 'IndexRecommendation') {
+          this.raced = true;
+          await super.conditionalUpdate(a[0], a[1], { state: 'open' }, { state: 'dismissed' });
+        }
+        return super.conditionalUpdate(...a);
+      }
+    }
+    const { datasets, engine, system } = await setup(
+      undefined,
+      new Racing({ namespace: '_system' })
+    );
+    const rec = recommendation({
+      namespace: NS,
+      type: 'Sneaker',
+      shape: BRAND_EQ,
+      declarationJson: JSON.stringify({ fields: ['brand'] })
+    });
+    await system.write('IndexRecommendation', [rec]);
+    const env = await proposeIndex(engine, {
+      namespace: NS,
+      type: 'Sneaker',
+      action: 'add',
+      recommendationId: rec.id
+    });
+    expect(code(env)).toBe('recommendation_closed');
+    expect(await recState(system, rec.id)).toBe('dismissed');
+    expect(sneaker(engine)?.indexes).toBeUndefined();
+    const [row] = (await (datasets.get(NS) as Dataset).read('TypeProposal', {})).rows;
+    expect(row?.indexesJson ?? null).toBeNull();
+    expect((await system.read('AuditEvent', {})).rows).toEqual([]);
+  });
+
+  it('a failed effect gives the claimed recommendation back', async () => {
+    class Failing extends MemoryDataset {
+      override async write(...a: Parameters<MemoryDataset['write']>) {
+        if (a[0] === 'TypeProposal' && typeof a[1][0]?.indexesJson === 'string') {
+          throw new Error('store unavailable');
+        }
+        return super.write(...a);
+      }
+    }
+    const { engine, system } = await setup(new Failing({ namespace: NS }));
+    const rec = recommendation({
+      namespace: NS,
+      type: 'Sneaker',
+      shape: BRAND_EQ,
+      declarationJson: JSON.stringify({ fields: ['brand'] })
+    });
+    await system.write('IndexRecommendation', [rec]);
+    // An unexpected error is not a frame error: the engine rethrows it.
+    await expect(
+      proposeIndex(engine, {
+        namespace: NS,
+        type: 'Sneaker',
+        action: 'add',
+        recommendationId: rec.id
+      })
+    ).rejects.toThrow('store unavailable');
+
+    expect(await recState(system, rec.id)).toBe('open');
+    expect(sneaker(engine)?.indexes).toBeUndefined();
   });
 
   it('a retry after a partial failure accepts once, with one audit event', async () => {

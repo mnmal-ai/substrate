@@ -14,7 +14,9 @@
  * - `dismiss` closes a recommendation without acting on it.
  *
  * A referenced `_system/IndexRecommendation` must be `open`, and moves to
- * `accepted` or `dismissed` by a conditional update from `open`. Its rows are
+ * `accepted` or `dismissed` by a conditional update from `open`, claimed
+ * before the audit event and the effect and given back (to `open`) if the
+ * effect fails, so a caller never learns it was closed after its own effect. Its rows are
  * writable by any index-capability holder, so nothing in one is trusted: an
  * `add` must still be unserved by the type's index plan (as the advisor's
  * supersede pass decides) and its declaration validates as a direct one does;
@@ -151,7 +153,13 @@ interface Call {
   audit: (detail: Record<string, unknown>) => Promise<void>;
   /** Supersedes the recommendation, then refuses `recommendation_stale`. */
   stale: (reason: string, code?: string) => Promise<never>;
+  /** Claims the recommendation (open → `state`), or refuses `recommendation_closed`. */
+  claim: (state: ClosedState) => Promise<void>;
+  /** Gives a claim back after a failed effect; a failed release is logged. */
+  release: () => Promise<void>;
 }
+
+type ClosedState = 'accepted' | 'dismissed' | 'superseded';
 
 async function proposeIndex(
   deps: ProposeIndexResolverDeps,
@@ -219,7 +227,7 @@ async function proposeIndex(
   };
 
   /** Moves the recommendation (if any) from `open` to `state`, atomically. */
-  const close = async (state: 'accepted' | 'dismissed' | 'superseded'): Promise<void> => {
+  const close = async (state: ClosedState): Promise<void> => {
     if (rec === undefined || system === undefined) return;
     const { matched } = await system.conditionalUpdate(
       RECOMMENDATION_TYPE,
@@ -232,7 +240,39 @@ async function proposeIndex(
     if (!matched) throw closed(rec.id);
   };
 
+  // The state this call claimed the recommendation as, until it is released.
+  let claimed: ClosedState | undefined;
+  const claim = async (state: ClosedState): Promise<void> => {
+    await close(state);
+    if (rec !== undefined && system !== undefined) claimed = state;
+  };
+  /** Gives a claim back (claimed → open) when the work behind it failed. */
+  const release = async (): Promise<void> => {
+    const state = claimed;
+    if (state === undefined || rec === undefined || system === undefined) return;
+    claimed = undefined;
+    const fail = (why: string): void => {
+      process.stderr.write(
+        `[substrate-proposals] index recommendation ${String(rec.id)} stays ${state} after a failed ${input.action}: ${why}\n`
+      );
+    };
+    try {
+      const { matched } = await system.conditionalUpdate(
+        RECOMMENDATION_TYPE,
+        rec.id,
+        { state },
+        { state: 'open' },
+        identity,
+        now
+      );
+      if (!matched) fail('it was changed meanwhile');
+    } catch (err) {
+      fail(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   const stale = async (reason: string, code?: string): Promise<never> => {
+    await release();
     await close('superseded');
     throw new ProposalError(
       'recommendation_stale',
@@ -241,27 +281,33 @@ async function proposeIndex(
     );
   };
 
-  const call: Call = { deps, args, input, identity, rec, audit, stale };
-  switch (input.action) {
-    case 'dismiss': {
-      if (rec === undefined) {
-        throw invalid('recommendationId', "'dismiss' needs a recommendationId");
+  // Claim, then audit, then the effect: a recommendation another writer
+  // closed first is refused before anything lands, and a failed effect gives
+  // its claim back.
+  const call: Call = { deps, args, input, identity, rec, audit, stale, claim, release };
+  try {
+    switch (input.action) {
+      case 'dismiss': {
+        if (rec === undefined) {
+          throw invalid('recommendationId', "'dismiss' needs a recommendationId");
+        }
+        await claim('dismissed');
+        await audit({});
+        break;
       }
-      await audit({});
-      await close('dismissed');
-      break;
+      case 'remove': {
+        await removeIndex(call, system, auditId);
+        break;
+      }
+      case 'add':
+      case 'orderedBy': {
+        await changeProposedType(call);
+        break;
+      }
     }
-    case 'remove': {
-      await removeIndex(call, system, auditId);
-      await close('accepted');
-      break;
-    }
-    case 'add':
-    case 'orderedBy': {
-      await changeProposedType(call);
-      await close('accepted');
-      break;
-    }
+  } catch (err) {
+    await release();
+    throw err;
   }
 
   return {
@@ -339,6 +385,7 @@ async function removeIndex(
   const name = input.indexName ?? (rec?.indexName as string | null | undefined) ?? undefined;
   if (name === undefined) throw invalid('indexName', "'remove' needs an indexName");
   const dataset = deps.datasetFor(input.namespace);
+  await call.claim('accepted');
 
   // A recommendation's evidence is that nothing wants the index; a declared
   // one is wanted, so it is not retracted on a recommendation's word.
@@ -382,6 +429,7 @@ async function removeIndex(
       if (done) return;
       await call.stale(message, code);
     }
+    await call.release();
     throw new ProposalError(code as ProposalErrorCode, message, { indexName: name });
   }
 }
@@ -446,6 +494,7 @@ async function changeProposedType(call: Call): Promise<void> {
     throw invalid(input.action === 'add' ? 'declaration' : 'orderedBy', message);
   }
 
+  await call.claim('accepted');
   await call.audit(detail);
   await storeTypeIndexOptions(call, binding, proposal, next);
   ensureStorageAfterCommit(args.afterTx, binding.dataset, type);
