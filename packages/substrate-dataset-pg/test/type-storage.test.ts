@@ -331,7 +331,9 @@ describe.skipIf(!POSTGRES_URL || LAYOUT !== 'legacy')('ensureTypeStorage (legacy
     const after =
       await sql`SELECT count(*)::int AS n FROM pg_class WHERE relnamespace = current_schema()::regnamespace`;
     expect(after).toEqual(before);
-    expect((await ds.storageReport({ partitionBudget: Infinity })).warnings).toEqual([]);
+    expect(
+      (await ds.storageReport({ partitionBudget: Infinity })).warnings.filter((w) => w.includes(ns))
+    ).toEqual([]);
     expect((await ds.read('T', {})).rows).toHaveLength(1);
   });
 });

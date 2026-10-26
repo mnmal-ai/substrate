@@ -292,6 +292,13 @@ const DROP_LOCK_TIMEOUT_MS = 10_000;
 /** Rows the legacy `typeStats` sample aims for. */
 const SAMPLE_ROWS = 10_000;
 
+/**
+ * Engine-owned partial indexes on a legacy `rows` above which `storageReport`
+ * warns: the planner checks every partial index's predicate on every query of
+ * `rows`, about 4-5 ms of planning at 50 on PG 18, against ~1 ms to run a page.
+ */
+export const LEGACY_PARTIAL_INDEX_LIMIT = 50;
+
 /** The value of a one-value LIST partition bound as `pg_get_expr` prints it. */
 const listBound = (b: string | null): string | undefined =>
   b === null ? undefined : /^FOR VALUES IN \('(.*)'\)$/s.exec(b)?.[1]?.replace(/''/g, "'");
@@ -1357,6 +1364,13 @@ export class PgDataset implements Dataset {
     if (layout !== 'partitioned') {
       const warnings = [...building];
       const held = await heldIndexes(sql, ['rows']);
+      const partial = held.filter((i) => isEngineOwned(i) && i.predicate !== null).length;
+      if (partial > LEGACY_PARTIAL_INDEX_LIMIT) {
+        warnings.push(
+          `${partial} engine-owned partial indexes on the shared rows table, over ${LEGACY_PARTIAL_INDEX_LIMIT}: ` +
+            'every query on rows pays planning time for each; the partitioned layout gives each type its own table and indexes'
+        );
+      }
       const types = new Map<string, { namespace: string; type: string }>();
       for (const i of held) {
         const scope = legacyScope(i.predicate);
