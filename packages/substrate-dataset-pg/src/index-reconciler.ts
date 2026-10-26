@@ -34,7 +34,7 @@
 
 import { createHash } from 'node:crypto';
 import type { FieldDef, IndexDecl, OrderedBy } from '@mnmal-ai/substrate-types';
-import type { Sql } from 'postgres';
+import type { ReservedSql, Sql } from 'postgres';
 import type { DiskGuard } from './disk-guard.js';
 import { hashedName, MAX_IDENTIFIER, type StorageLayout } from './layout.js';
 import {
@@ -192,7 +192,7 @@ const BARE_NAME = /^[a-z_][a-z0-9_]*$/;
  * connection, since it waits for that lock.
  *
  * Unique indexes reconcile under the migration lock, which serialises them
- * with migrations and other boots. Non-unique indexes and statistics take
+ * with migrations and other boots; a type with none takes no migration lock. Non-unique indexes and statistics take
  * only the table's index-build lock (`withTableIndexLock`), one index at a
  * time, so a long build never holds up another process's migrations, nor its
  * unique builds on other tables. An index the catalog already holds as
@@ -211,29 +211,41 @@ export async function reconcileTypeIndexes(
   const first = only === 'unique' ? all : only === 'all' ? unique : [];
   if (first.length > 0) {
     const target = await targetTable(sql, args);
+    const pass = async (conn: ReservedSql): Promise<IndexState[]> => {
+      const desired = await deparse(conn, first);
+      const states: IndexState[] = [];
+      for (const [i, spec] of first.entries()) {
+        const d = desired[i] as Described;
+        const held = await heldAsDeclared(conn, target, spec, d);
+        states.push(
+          held !== undefined
+            ? held
+            : spec.unique
+              ? await withTableIndexLock(sql, conn, target, undefined, () =>
+                  reconcileOne(conn, args, target, spec, d, {})
+                )
+              : indexState(spec, 'pending', 'unchanged')
+        );
+      }
+      return states;
+    };
+    // With nothing unique to build, the pass only reads states, so it takes no lock.
     out.push(
-      ...(await withMigrationLock(sql, async (conn) => {
-        const desired = await deparse(conn, first);
-        const states: IndexState[] = [];
-        for (const [i, spec] of first.entries()) {
-          const d = desired[i] as Described;
-          const held = await heldAsDeclared(conn, target, spec, d);
-          states.push(
-            held !== undefined
-              ? held
-              : spec.unique
-                ? await withTableIndexLock(sql, conn, target, undefined, () =>
-                    reconcileOne(conn, args, target, spec, d, {})
-                  )
-                : indexState(spec, 'pending', 'unchanged')
-          );
-        }
-        return states;
-      }))
+      ...(unique.length > 0 ? await withMigrationLock(sql, pass) : await reserved(sql, pass))
     );
   }
   if (only !== 'unique') out.push(...(await reconcileNonUnique(sql, args, all, opts)));
   return out;
+}
+
+/** Runs `fn` on a connection reserved from `sql`, released after. */
+async function reserved<T>(sql: Sql, fn: (conn: ReservedSql) => Promise<T>): Promise<T> {
+  const conn = await sql.reserve();
+  try {
+    return await fn(conn);
+  } finally {
+    conn.release();
+  }
 }
 
 /** Non-unique indexes, then statistics, each under the table's index-build lock. */

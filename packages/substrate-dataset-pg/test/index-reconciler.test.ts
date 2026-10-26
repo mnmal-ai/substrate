@@ -18,7 +18,7 @@ import {
   UniqueIndexDuplicatesError
 } from '../src/index.js';
 import { desiredIndexKeys, reconcileTypeStatistics } from '../src/index-reconciler.js';
-import { generatedIdentifier } from '../src/migrate.js';
+import { generatedIdentifier, withMigrationLock } from '../src/migrate.js';
 import { indexExpressionSql } from '../src/pg-sql/primitives.js';
 import { addTestPromotedColumns } from './_promoted.js';
 
@@ -103,6 +103,27 @@ async function indexState(name: string) {
 }
 
 describe.skipIf(!POSTGRES_URL)('reconcileTypeIndexes', () => {
+  it('reports a type with no unique index in the unique pass without taking the migration lock', async () => {
+    const { ns } = await fixture();
+    // Held here, so a pass that waited for it would never return.
+    const states = await withMigrationLock(sql, () =>
+      reconcileTypeIndexes(
+        sql,
+        {
+          namespace: ns,
+          type: TYPE,
+          layout: LAYOUT,
+          fields: kidIndexed,
+          indexes: [],
+          orderedBy: DEFAULT_ORDERED_BY
+        },
+        { only: 'unique' }
+      )
+    );
+    const kid = generatedIdentifier(ns, TYPE, 'kid', 'idx');
+    expect(states.find((s) => s.name === kid)).toMatchObject({ state: 'pending', unique: false });
+  });
+
   it('creates a declared composite, then leaves it unchanged', async () => {
     const { ns } = await fixture();
     const name = `rows_c_${hex()}`;
