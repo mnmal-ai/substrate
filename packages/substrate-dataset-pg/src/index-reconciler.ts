@@ -36,7 +36,7 @@ import { createHash } from 'node:crypto';
 import type { FieldDef, IndexDecl, OrderedBy } from '@mnmal-ai/substrate-types';
 import type { Sql } from 'postgres';
 import type { DiskGuard } from './disk-guard.js';
-import { MAX_IDENTIFIER, type StorageLayout } from './layout.js';
+import { hashedName, MAX_IDENTIFIER, type StorageLayout } from './layout.js';
 import {
   abortableSleep,
   dropIndexIfInvalid,
@@ -1060,8 +1060,7 @@ async function deparse(conn: Sql, specs: Spec[]): Promise<Described[]> {
 function swapNameFor(name: string): string {
   const plain = `${name}__swap`;
   if (plain.length <= MAX_IDENTIFIER) return plain;
-  const hash = createHash('sha256').update(name).digest('hex').slice(0, 8);
-  return `${name.slice(0, MAX_IDENTIFIER - '__swap'.length - hash.length - 1)}_${hash}__swap`;
+  return `${hashedName(name, name, MAX_IDENTIFIER - '__swap'.length)}__swap`;
 }
 
 async function stateOf(conn: Sql, name: string): Promise<IndexState['state']> {
