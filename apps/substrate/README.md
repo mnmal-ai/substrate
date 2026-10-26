@@ -141,6 +141,12 @@ The main ones; `substrate --help` and the header of `apps/substrate/src/main.ts`
 | `SUBSTRATE_TLS_KEY_PATH` / `SUBSTRATE_TLS_CERT_PATH` / `SUBSTRATE_TLS_CA_PATH` | Serve HTTPS. Key and cert are required together. |
 | `SUBSTRATE_NAMESPACE` | Default namespace for recall requests that omit one. |
 | `SUBSTRATE_SWEEP_INTERVAL_MS` | Edge-sweep cadence (default 300000) |
+| `SUBSTRATE_INDEX_DISK_PATH` | The database volume's mount, when the database is on this host: free space there is checked before each background index build. `off` skips the check. |
+| `SUBSTRATE_INDEX_DISK_MARGIN_MB` | Free space a build must leave (default 2048; `0` requires only the estimate). |
+| `SUBSTRATE_INDEX_RETRY_INTERVAL_MS` | How often pending or failed index builds are retried (default 600000; `0` leaves them to the next boot). |
+| `SUBSTRATE_ADVISOR_INTERVAL_MS` | How often the index advisor writes `_system/IndexRecommendation` rows (default 600000; `0` turns it off). |
+| `SUBSTRATE_STORE_PROFILE` | `personal`, `growth` or `scale`: seeds `_system/StoreProfile` once, so changing it later does not change an existing store. |
+| `SUBSTRATE_STORE_WRITE_HEAVY` | `1` or `true`, read on every boot: halves the write rate at which the advisor recommends removing an unused index. |
 | `SUBSTRATE_CORS_ORIGINS` | Comma-separated allowed origins, or `*`. Unset registers no CORS handling. |
 
 Natural-language query and the recall embedder are not configured by environment: they read `substrate-nl.config.json` and `substrate-recall.config.json` in the plugin directory.

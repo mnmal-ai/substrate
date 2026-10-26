@@ -110,6 +110,8 @@ npx @mnmal-ai/substrate@next init ~/my-substrate --yes --store=memory --plugins=
 
 Flags: `--store=memory|postgres` (default `postgres`), `--port` (default 3100), `--pg-port` (default 5433), `--plugins=<csv>` (any of `cortext`, `substrate-nl`, `substrate-sentinel`; none by default), `--embedder=bge-base|minilm|ollama|none` (default `bge-base`), `--tls --tls-cert-path=… --tls-key-path=…`, `--substrate-url`, `--yes`, `--force` (scaffold into an existing directory).
 
+On a terminal `init` also asks four sizing questions: expected rows per day, days of data kept, the read latency target and whether write throughput is a priority. The answers choose a store profile (`personal`, `growth` or `scale`), which sets how readily the index advisor recommends indexes; `--rows-per-day`, `--retention-days`, `--read-target-ms` and `--write-heavy` answer them up front, and `--profile=personal|growth|scale` skips them. The result is `SUBSTRATE_STORE_PROFILE` (and `SUBSTRATE_STORE_WRITE_HEAVY=1`) in `.env`. The profile seeds the store once; change it later by editing the `_system/StoreProfile` row. You never write an index: the advisor records recommendations in `_system/IndexRecommendation`, and a reviewer applies them with `propose_index` (see the [plugin author guide](plugin-author-guide.md#indexes)).
+
 Recall and proposals are built into the binary, so they are never in the plugin list.
 
 #### What was created
@@ -127,7 +129,7 @@ Recall and proposals are built into the binary, so they are never in the plugin 
 ├── docker-compose.yml            # pgvector/pgvector:pg18 on 127.0.0.1:<pg-port>
 ├── postgres-init/
 │   └── 01-create-database.sql
-└── data/pg/                      # postgres data volume (data in data/pg/18/)
+└── data/pg/                      # postgres data volume, mounted at /var/lib/postgresql (data in data/pg/18/)
 ```
 
 **`package.json`** lists `@mnmal-ai/substrate` and each chosen plugin as dependencies, pinned to the binary's major, plus `fastembed` when the embedder runs in-process (`minilm`, `bge-base`). One `pnpm install` puts them all in a single shared `node_modules`.
@@ -280,6 +282,7 @@ This guide stops at "Substrate is up locally". A production install also wants:
 - **Auth.** Set `SUBSTRATE_AUTH_MODE=required` (or `attribute`, which lets anonymous callers through on non-admin routes), set `SUBSTRATE_STREAM_TICKET_SECRET`, set `SUBSTRATE_PUBLIC_ORIGIN` to the origins callers reach the server by (e.g. `https://substrate.example.com:3100`; required with auth on a non-loopback `HOST`, which includes the default `0.0.0.0`), and register keys with `substrate-admin bootstrap` / `substrate-admin register`. Every token must carry `aud`, naming one of those origins, or it is refused. A token signed by an RS256/ES256 key must also carry `exp` and `ns` (the namespaces it may touch); one without `ns` is refused rather than read as `*`, so a third-party issuer must emit both. `substrate-admin doctor` checks the result.
 - **TLS.** `SUBSTRATE_TLS_CERT_PATH` and `SUBSTRATE_TLS_KEY_PATH`, or a reverse proxy in front.
 - **Supervision.** systemd or a container orchestrator, restarting on failure. The Docker image (`apps/substrate-image/Dockerfile`) has a `/health` healthcheck.
+- **Index builds.** After an upgrade the server rebuilds indexes in the background and waits when the database volume is short of space. Set `SUBSTRATE_INDEX_DISK_PATH` to the volume's mount (the scaffold writes `off`, which skips the check) and see the [plugin author guide](plugin-author-guide.md#upgrading-an-existing-store).
 - **Backups.** Scheduled `pg_dump`. The scaffold's compose file includes a commented-out backup sidecar to start from.
 - **Secrets out of your shell history.** An environment file readable only by the service user.
 
