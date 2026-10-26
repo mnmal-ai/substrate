@@ -33,110 +33,82 @@ export function buildMetadataColumnPredicate(
   predicate: Record<string, unknown>
 ): Fragment | null {
   const colName = METADATA_COLUMNS[field];
-  if (field === 'seq') return seqPredicate(sql, sql.unsafe(colName), predicate);
-  const isTimestamp = field === 'createdAt' || field === 'updatedAt';
+  const col = sql.unsafe(colName);
+  if (field === 'seq') {
+    // The validator has already checked operands are numbers.
+    const n = (v: unknown): Fragment => sql`${String(v)}::bigint`;
+    return orderedColumnPredicate(sql, field, col, predicate, {
+      one: n,
+      bound: n,
+      many: (vs) => sql`${vs.map(String)}::bigint[]`,
+      strictBetween: true
+    });
+  }
+  if (field === 'createdAt' || field === 'updatedAt') {
+    // ISO-8601 strings come in from callers; pg parses them, bound as text so
+    // the driver cannot round them to milliseconds (see `tsParam`).
+    return orderedColumnPredicate(sql, field, col, predicate, {
+      one: (v) => (typeof v === 'string' || v instanceof Date ? tsParam(sql, v) : null),
+      bound: (v) => tsParam(sql, v),
+      many: (vs) => tsArrayParam(sql, vs),
+      strictBetween: false
+    });
+  }
   const fragments: Fragment[] = [];
 
   for (const [op, operand] of Object.entries(predicate)) {
     let frag: Fragment | null = null;
-    const col = sql.unsafe(colName);
-
-    if (isTimestamp) {
-      // Timestamp columns — use ::timestamptz casts for ordering / range ops.
-      // ISO-8601 strings come in from callers; pg parses them, bound as text
-      // so the driver cannot round them to milliseconds (see `tsParam`).
-      const ts =
-        typeof operand === 'string' || operand instanceof Date ? tsParam(sql, operand) : null;
-      switch (op) {
-        case 'eq':
-          if (operand === null) frag = sql`${col} IS NULL`;
-          else if (ts !== null) frag = sql`${col} = ${ts}`;
-          break;
-        case 'neq':
-          if (operand === null) frag = sql`${col} IS NOT NULL`;
-          else if (ts !== null) frag = sql`${col} IS DISTINCT FROM ${ts}`;
-          break;
-        case 'gt':
-          if (ts !== null) frag = sql`${col} > ${ts}`;
-          break;
-        case 'gte':
-          if (ts !== null) frag = sql`${col} >= ${ts}`;
-          break;
-        case 'lt':
-          if (ts !== null) frag = sql`${col} < ${ts}`;
-          break;
-        case 'lte':
-          if (ts !== null) frag = sql`${col} <= ${ts}`;
-          break;
-        case 'between':
-          if (Array.isArray(operand) && operand.length === 2) {
-            frag = sql`${col} BETWEEN ${tsParam(sql, operand[0])} AND ${tsParam(sql, operand[1])}`;
-          }
-          break;
-        case 'in':
-        case 'nin':
-          if (Array.isArray(operand)) {
-            const vals = operand.filter((v) => v !== null);
-            const member = memberOf(sql, col, tsArrayParam(sql, vals), operand);
-            frag = op === 'in' ? member : sql`NOT ${member}`;
-          }
-          break;
-        default:
-          throw new UnsupportedFilterError(field, op, 'is not a recognised filter operator');
-      }
-    } else {
-      // Text columns (createdByKind, createdById, updatedByKind, updatedById).
-      // The ILIKE patterns are not btree-indexable; a seq-scan within
-      // (ns, type) is accepted. escapeLike() stops operands smuggling `%`/`_`.
-      switch (op) {
-        case 'eq':
-          if (operand === null) frag = sql`${col} IS NULL`;
-          else if (typeof operand === 'string') frag = sql`${col} = ${operand}`;
-          break;
-        case 'neq':
-          if (operand === null) frag = sql`${col} IS NOT NULL`;
-          else if (typeof operand === 'string') frag = sql`${col} IS DISTINCT FROM ${operand}`;
-          break;
-        case 'in':
-        case 'nin':
-          if (Array.isArray(operand)) {
-            const strs = operand.filter((v) => typeof v === 'string') as string[];
-            const member = memberOf(sql, col, sql`${strs}::text[]`, operand);
-            frag = op === 'in' ? member : sql`NOT ${member}`;
-          }
-          break;
-        case 'contains':
-          if (typeof operand === 'string') frag = sql`${col} ILIKE ${`%${escapeLike(operand)}%`}`;
-          break;
-        case 'startsWith':
-          if (typeof operand === 'string') frag = sql`${col} ILIKE ${`${escapeLike(operand)}%`}`;
-          break;
-        case 'endsWith':
-          if (typeof operand === 'string') frag = sql`${col} ILIKE ${`%${escapeLike(operand)}`}`;
-          break;
-        // Lexicographic range on an actor id / kind, by byte order as body text is.
-        case 'gt':
-          frag = sql`${col} COLLATE "C" > ${metaStr(field, op, operand)}`;
-          break;
-        case 'gte':
-          frag = sql`${col} COLLATE "C" >= ${metaStr(field, op, operand)}`;
-          break;
-        case 'lt':
-          frag = sql`${col} COLLATE "C" < ${metaStr(field, op, operand)}`;
-          break;
-        case 'lte':
-          frag = sql`${col} COLLATE "C" <= ${metaStr(field, op, operand)}`;
-          break;
-        case 'between': {
-          if (!Array.isArray(operand) || operand.length !== 2) {
-            throw new UnsupportedFilterError(field, op, 'requires a two-element [low, high] array');
-          }
-          frag = sql`${col} COLLATE "C" BETWEEN ${metaStr(field, op, operand[0])} AND ${metaStr(field, op, operand[1])}`;
-          break;
+    // Text columns (createdByKind, createdById, updatedByKind, updatedById).
+    // The ILIKE patterns are not btree-indexable; a seq-scan within
+    // (ns, type) is accepted. escapeLike() stops operands smuggling `%`/`_`.
+    switch (op) {
+      case 'eq':
+        if (operand === null) frag = sql`${col} IS NULL`;
+        else if (typeof operand === 'string') frag = sql`${col} = ${operand}`;
+        break;
+      case 'neq':
+        if (operand === null) frag = sql`${col} IS NOT NULL`;
+        else if (typeof operand === 'string') frag = sql`${col} IS DISTINCT FROM ${operand}`;
+        break;
+      case 'in':
+      case 'nin':
+        if (Array.isArray(operand)) {
+          const strs = operand.filter((v) => typeof v === 'string') as string[];
+          const member = memberOf(sql, col, sql`${strs}::text[]`, operand);
+          frag = op === 'in' ? member : sql`NOT ${member}`;
         }
-        default:
-          throw new UnsupportedFilterError(field, op, 'is not a recognised filter operator');
+        break;
+      case 'contains':
+        if (typeof operand === 'string') frag = sql`${col} ILIKE ${`%${escapeLike(operand)}%`}`;
+        break;
+      case 'startsWith':
+        if (typeof operand === 'string') frag = sql`${col} ILIKE ${`${escapeLike(operand)}%`}`;
+        break;
+      case 'endsWith':
+        if (typeof operand === 'string') frag = sql`${col} ILIKE ${`%${escapeLike(operand)}`}`;
+        break;
+      // Lexicographic range on an actor id / kind, by byte order as body text is.
+      case 'gt':
+        frag = sql`${col} COLLATE "C" > ${metaStr(field, op, operand)}`;
+        break;
+      case 'gte':
+        frag = sql`${col} COLLATE "C" >= ${metaStr(field, op, operand)}`;
+        break;
+      case 'lt':
+        frag = sql`${col} COLLATE "C" < ${metaStr(field, op, operand)}`;
+        break;
+      case 'lte':
+        frag = sql`${col} COLLATE "C" <= ${metaStr(field, op, operand)}`;
+        break;
+      case 'between': {
+        if (!Array.isArray(operand) || operand.length !== 2) {
+          throw new UnsupportedFilterError(field, op, 'requires a two-element [low, high] array');
+        }
+        frag = sql`${col} COLLATE "C" BETWEEN ${metaStr(field, op, operand[0])} AND ${metaStr(field, op, operand[1])}`;
+        break;
       }
+      default:
+        throw new UnsupportedFilterError(field, op, 'is not a recognised filter operator');
     }
 
     if (frag !== null) fragments.push(frag);
@@ -146,52 +118,67 @@ export function buildMetadataColumnPredicate(
   return combineAnd(sql, fragments);
 }
 
-/** Predicates on the bigint `seq` column; the validator has already checked operands are numbers. */
-function seqPredicate(
+/** How an ordered column binds its operands. */
+interface OrderedBinders {
+  /** A comparison operand, or null when it yields no predicate. */
+  one: (v: unknown) => Fragment | null;
+  /** A `between` bound. */
+  bound: (v: unknown) => Fragment;
+  /** The non-null elements of an `in`/`nin` list. */
+  many: (vs: unknown[]) => Fragment;
+  /** A malformed `between` throws rather than yielding no predicate. */
+  strictBetween: boolean;
+}
+
+/** Equality, range and membership predicates on one ordered column (`seq`, a timestamp). */
+function orderedColumnPredicate(
   sql: Sql | TransactionSql,
+  field: MetadataFieldName,
   col: ReturnType<Sql['unsafe']>,
-  predicate: Record<string, unknown>
+  predicate: Record<string, unknown>,
+  bind: OrderedBinders
 ): Fragment | null {
-  const n = (v: unknown): Fragment => sql`${String(v)}::bigint`;
   const fragments: Fragment[] = [];
   for (const [op, operand] of Object.entries(predicate)) {
     let frag: Fragment | null = null;
+    const v = bind.one(operand);
     switch (op) {
       case 'eq':
-        frag = operand === null ? sql`${col} IS NULL` : sql`${col} = ${n(operand)}`;
+        if (operand === null) frag = sql`${col} IS NULL`;
+        else if (v !== null) frag = sql`${col} = ${v}`;
         break;
       case 'neq':
-        frag =
-          operand === null ? sql`${col} IS NOT NULL` : sql`${col} IS DISTINCT FROM ${n(operand)}`;
+        if (operand === null) frag = sql`${col} IS NOT NULL`;
+        else if (v !== null) frag = sql`${col} IS DISTINCT FROM ${v}`;
         break;
       case 'gt':
-        frag = sql`${col} > ${n(operand)}`;
+        if (v !== null) frag = sql`${col} > ${v}`;
         break;
       case 'gte':
-        frag = sql`${col} >= ${n(operand)}`;
+        if (v !== null) frag = sql`${col} >= ${v}`;
         break;
       case 'lt':
-        frag = sql`${col} < ${n(operand)}`;
+        if (v !== null) frag = sql`${col} < ${v}`;
         break;
       case 'lte':
-        frag = sql`${col} <= ${n(operand)}`;
+        if (v !== null) frag = sql`${col} <= ${v}`;
         break;
       case 'between':
-        if (!Array.isArray(operand) || operand.length !== 2) {
-          throw new UnsupportedFilterError('seq', op, 'requires a two-element [low, high] array');
+        if (Array.isArray(operand) && operand.length === 2) {
+          frag = sql`${col} BETWEEN ${bind.bound(operand[0])} AND ${bind.bound(operand[1])}`;
+        } else if (bind.strictBetween) {
+          throw new UnsupportedFilterError(field, op, 'requires a two-element [low, high] array');
         }
-        frag = sql`${col} BETWEEN ${n(operand[0])} AND ${n(operand[1])}`;
         break;
       case 'in':
       case 'nin':
         if (Array.isArray(operand)) {
-          const vals = operand.filter((v) => v !== null).map(String);
-          const member = memberOf(sql, col, sql`${vals}::bigint[]`, operand);
+          const member = memberOf(sql, col, bind.many(operand.filter((e) => e !== null)), operand);
           frag = op === 'in' ? member : sql`NOT ${member}`;
         }
         break;
       default:
-        throw new UnsupportedFilterError('seq', op, 'is not a recognised filter operator');
+        throw new UnsupportedFilterError(field, op, 'is not a recognised filter operator');
     }
     if (frag !== null) fragments.push(frag);
   }
