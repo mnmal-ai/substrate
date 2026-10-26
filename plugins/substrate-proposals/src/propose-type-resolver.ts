@@ -138,10 +138,11 @@ export function makeProposeTypeResolver(
 }
 
 function indexOptionsOf(input: ProposeTypeInput): TypeIndexOptions {
-  const { indexes, orderedBy } = input;
+  const { indexes, orderedBy, expectedSize } = input;
   return {
     ...(indexes?.length ? { indexes } : {}),
-    ...(orderedBy !== undefined ? { orderedBy } : {})
+    ...(orderedBy !== undefined ? { orderedBy } : {}),
+    ...(expectedSize !== undefined ? { expectedSize } : {})
   };
 }
 

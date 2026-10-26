@@ -1,7 +1,8 @@
 /**
  * `propose_type` takes `orderedBy`, `indexes` and `expectedSize`: a new type is
  * declared with them under `substrate.propose` alone, they are stored on its
- * TypeProposal row, the type reads in that order, and boot replays them.
+ * TypeProposal row and its registry entry, the type reads in that order, and
+ * boot replays them.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -99,7 +100,8 @@ function suite(make: () => Promise<{ ns: string; datasets: MemoryDatasetRegistry
     });
     expect(engine.registryFor(ns)?.get('Sneaker')).toMatchObject({
       indexes,
-      orderedBy: { size: 'asc' }
+      orderedBy: { size: 'asc' },
+      expectedSize: 'large'
     });
 
     for (const size of [3, 1, 2]) {
@@ -120,7 +122,8 @@ function suite(make: () => Promise<{ ns: string; datasets: MemoryDatasetRegistry
     const again = await boot(datasets, ns);
     expect(again.registryFor(ns)?.get('Sneaker')).toMatchObject({
       indexes,
-      orderedBy: { size: 'asc' }
+      orderedBy: { size: 'asc' },
+      expectedSize: 'large'
     });
     await storageSettled();
   });

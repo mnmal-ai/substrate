@@ -62,6 +62,8 @@ export interface RegistryEntryInput {
   orderedBy?: OrderedBy;
   /** Declared indexes of a `kind: 'type'` entry installed at runtime (a proposed type). */
   indexes?: IndexDecl[];
+  /** A proposed type's size hint; `large` lowers the index advisor's row minimum. */
+  expectedSize?: 'small' | 'large';
   /**
    * Semantic verb for autoCRUD-registered mutations. The engine
    * threads this into `RequestContext.verb` at dispatch so type-/plugin-level
@@ -90,6 +92,8 @@ export interface RegistryEntry {
   orderedBy?: OrderedBy;
   /** Mirrors `RegistryEntryInput.indexes`. */
   indexes?: IndexDecl[];
+  /** Mirrors `RegistryEntryInput.expectedSize`. */
+  expectedSize?: 'small' | 'large';
   /** Mirrors `RegistryEntryInput.verb` — present when the registrant stamped one. */
   verb?: AutoCrudVerb;
 }

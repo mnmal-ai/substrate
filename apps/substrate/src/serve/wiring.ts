@@ -251,11 +251,13 @@ export function makeTypeDefLookupFactory(
           );
     // A proposed type's indexes live on its registry entry; a declared type's in code.
     const indexes = rest.indexes ?? registered?.indexes;
+    const expectedSize = rest.expectedSize ?? registered?.expectedSize;
     return {
       ...rest,
       fields: { ...rest.fields, ...live },
       ...(orderedBy !== undefined ? { orderedBy } : {}),
-      ...(indexes !== undefined ? { indexes } : {})
+      ...(indexes !== undefined ? { indexes } : {}),
+      ...(expectedSize !== undefined ? { expectedSize } : {})
     };
   };
   return () => lookup;

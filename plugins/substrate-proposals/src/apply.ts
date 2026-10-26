@@ -170,20 +170,23 @@ export interface ApplyFieldProposalArgs {
   edges: EdgesStore;
 }
 
-/** A proposed type's indexes and natural order, as its TypeProposal row stores them. */
+/** A proposed type's indexes, natural order and size hint, as its TypeProposal row stores them. */
 export interface TypeIndexOptions {
   indexes?: IndexDecl[];
   orderedBy?: OrderedBy;
+  expectedSize?: 'small' | 'large';
 }
 
-/** Parses a TypeProposal row's `indexesJson` / `orderedByJson` (null or absent: none). */
+/** Parses a TypeProposal row's `indexesJson` / `orderedByJson` / `expectedSize` (null or absent: none). */
 export function typeIndexOptionsOf(row: Record<string, unknown>): TypeIndexOptions {
   const parse = (v: unknown): unknown => (typeof v === 'string' ? JSON.parse(v) : undefined);
   const indexes = parse(row.indexesJson) as IndexDecl[] | undefined;
   const orderedBy = parse(row.orderedByJson) as OrderedBy | undefined;
+  const expectedSize = row.expectedSize ?? undefined;
   return {
     ...(indexes !== undefined ? { indexes } : {}),
-    ...(orderedBy !== undefined ? { orderedBy } : {})
+    ...(orderedBy !== undefined ? { orderedBy } : {}),
+    ...(expectedSize !== undefined ? { expectedSize: expectedSize as 'small' | 'large' } : {})
   };
 }
 
@@ -217,6 +220,13 @@ export function assertValidTypeIndexOptions(
   }
   if (opts.orderedBy !== undefined)
     assertOrderedBy(typeName, { fields, orderedBy: opts.orderedBy });
+  if (
+    opts.expectedSize !== undefined &&
+    opts.expectedSize !== 'small' &&
+    opts.expectedSize !== 'large'
+  ) {
+    throw new Error(`expectedSize on ${typeName} must be 'small' or 'large'`);
+  }
 }
 
 /**
@@ -266,22 +276,24 @@ export function applyTypeIndexOptions(args: ApplyTypeIndexOptionsArgs): void {
   if (!existing) throw new Error(`type '${args.typeName}' not registered`);
   assertValidTypeIndexOptions(args.typeName, existing.fields, args);
   reinstallType(binding.registry, args.typeName, args.dataset, args.edges, (prior) => {
-    const { indexes: _i, orderedBy: _o, ...rest } = prior;
+    const { indexes: _i, orderedBy: _o, expectedSize: _s, ...rest } = prior;
     return {
       ...rest,
       ...(args.indexes !== undefined ? { indexes: args.indexes } : {}),
-      ...(args.orderedBy !== undefined ? { orderedBy: args.orderedBy } : {})
+      ...(args.orderedBy !== undefined ? { orderedBy: args.orderedBy } : {}),
+      ...(args.expectedSize !== undefined ? { expectedSize: args.expectedSize } : {})
     };
   });
   binding.invalidateSchemaCaches?.();
 }
 
 /** Whether the type entry already carries exactly these options. */
-export function hasTypeIndexOptions(
-  entry: { indexes?: IndexDecl[]; orderedBy?: OrderedBy },
-  opts: TypeIndexOptions
-): boolean {
-  return sameJson(entry.indexes, opts.indexes) && sameJson(entry.orderedBy, opts.orderedBy);
+export function hasTypeIndexOptions(entry: TypeIndexOptions, opts: TypeIndexOptions): boolean {
+  return (
+    sameJson(entry.indexes, opts.indexes) &&
+    sameJson(entry.orderedBy, opts.orderedBy) &&
+    entry.expectedSize === opts.expectedSize
+  );
 }
 
 /** Deep equality of JSON values, whatever order their keys were written in. */

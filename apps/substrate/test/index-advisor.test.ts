@@ -16,6 +16,11 @@ import {
 } from '@mnmal-ai/substrate-compose';
 import { ShapeRecorder } from '@mnmal-ai/substrate-core';
 import { PgDataset, PgEdgesStore, runMigrations } from '@mnmal-ai/substrate-dataset-pg';
+import {
+  createNoopPubSub,
+  createProposalsPlugin,
+  storageSettled
+} from '@mnmal-ai/substrate-proposals';
 import { defineNamespace } from '@mnmal-ai/substrate-sdk';
 import { MemorySubstrateServer } from '@mnmal-ai/substrate-server-memory';
 import type { FieldDef, RequestContext } from '@mnmal-ai/substrate-types';
@@ -171,6 +176,110 @@ describe.skipIf(!POSTGRES_URL)('index advisor (pg)', () => {
       expect(await composed.runAdvisorNow?.()).toEqual({ upserted: 0 });
     } finally {
       await composed.stop();
+    }
+  }, 60_000);
+
+  it("advises on a proposed type declaring expectedSize 'large' at a size it would not otherwise", async () => {
+    const pns = `${ns}_hint`;
+    const plugin = createProposalsPlugin({ ownedNamespaces: [pns], pubsub: createNoopPubSub() });
+    const nsDefs = new Map(plugin.namespaces.map((d) => [d.namespace, d]));
+    let composed: ComposeResult | undefined;
+    const typeDefLookup = makeTypeDefLookupFactory(nsDefs, (n) => composed?.engine.registryFor(n))(
+      pns
+    );
+    const edges = new PgEdgesStore({ sql });
+    const dataset = new PgDataset({ namespace: 'default', sql, edgesStore: edges, typeDefLookup });
+    const datasets = buildPluginDatasetMap(
+      [plugin],
+      dataset,
+      sql,
+      edges,
+      makeFieldDefLookupFactory(nsDefs),
+      typeDefLookup
+    );
+    const system = new PgDataset({ namespace: '_system', sql, edgesStore: edges, typeDefLookup });
+    datasets._system = system;
+    composed = await compose({
+      server: new MemorySubstrateServer(),
+      dataset,
+      edges,
+      datasets,
+      coordinators: [plugin],
+      systemActor: 'local-dev'
+    });
+    try {
+      await reconcileRegisteredStorage(composed.engine, composed.datasets, nsDefs);
+      await system.write('StoreProfile', [
+        { id: STORE_PROFILE_ID, profile: 'scale', updatedReason: 'test' }
+      ]);
+      const proposer: Partial<RequestContext> = {
+        identity: {
+          kind: 'system',
+          id: 'test',
+          grants: { '*': ['read', 'mutate', 'substrate.propose'] }
+        }
+      };
+      for (const [typeName, extra] of [
+        ['Big', { expectedSize: 'large' }],
+        ['Plain', {}]
+      ] as const) {
+        const env = await composed.engine.mutate({
+          frame: {
+            [`${pns}/propose_type`]: {
+              params: {
+                typeName,
+                fields: { status: { kind: 'scalar', type: 'string' } },
+                proposedReason: 'r',
+                ...extra
+              },
+              fields: { id: true }
+            }
+          },
+          ctx: proposer
+        });
+        expect(env.errors ?? []).toEqual([]);
+        await sql`INSERT INTO rows (namespace, type, id, body)
+          SELECT ${pns}, ${typeName}, gen_random_uuid()::text, jsonb_build_object('status', 'open')
+          FROM generate_series(1, ${ROWS})`;
+      }
+      await storageSettled();
+      await sql`VACUUM (ANALYZE) rows`;
+
+      // The same slow, unserved read on each, the scale profile's minReads times.
+      const recorder = new ShapeRecorder();
+      for (const type of ['Big', 'Plain']) {
+        for (let i = 0; i < 20; i++) {
+          recorder.observe(
+            {
+              namespace: pns,
+              type,
+              filters: [{ field: 'status', op: 'eq' }],
+              orderBy: [['createdAt', 'desc']]
+            },
+            80
+          );
+        }
+      }
+      expect(
+        await runAdvisorPass({
+          dataset: datasets[pns] as PgDataset,
+          system,
+          recorder,
+          registry: (n) => composed?.engine.registryFor(n),
+          now: Date.now
+        })
+      ).toEqual({ upserted: 1 });
+      const { rows } = await system.read('IndexRecommendation', {
+        where: { namespace: { eq: pns } }
+      });
+      // 3,000 rows: over the scale profile's large-hint minimum (1,000), under its 20,000.
+      expect(rows.map((r) => [r.type, r.action])).toEqual([['Big', 'add']]);
+    } finally {
+      await storageSettled();
+      await composed.stop();
+      await sql`DELETE FROM rows WHERE namespace IN (${pns}, '_system_proposals')`;
+      await sql`DELETE FROM rows WHERE namespace = '_system' AND type = 'IndexRecommendation'
+        AND body->>'namespace' = ${pns}`;
     }
   }, 60_000);
 
