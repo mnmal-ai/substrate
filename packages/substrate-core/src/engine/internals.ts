@@ -37,6 +37,7 @@ import {
   type WriteEvent,
   type WsResponseFrame
 } from '@mnmal-ai/substrate-types';
+import type { ShapeRecorder } from '../advisor/shape-recorder.js';
 
 // Re-exported from substrate-types for this package's internal import sites.
 export type { NamespaceConfig };
@@ -126,6 +127,12 @@ export interface EngineOptions {
    * does no timing at all.
    */
   onResolve?: (o: ResolveObservation) => void;
+  /**
+   * Observes each successful local read of a type: its shape (filtered fields
+   * and operators, the effective order including the natural one) and how long
+   * the resolver took. For the index advisor; absent means no recording.
+   */
+  shapeRecorder?: Pick<ShapeRecorder, 'observe'>;
   /**
    * Idempotency dedup (§5.13). Absent → no dedup; `FrameEntry.idempotencyKey`
    * is ignored on mutate (queries ignore it unconditionally). Present → the

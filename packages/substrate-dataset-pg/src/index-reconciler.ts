@@ -553,6 +553,100 @@ export function undeclaredIndexes(args: ReconcileTypeIndexesArgs, heldNames: str
     .sort();
 }
 
+/** An index on the table a type's rows live in, with its usage statistics. */
+export interface HeldIndex {
+  table: string;
+  name: string;
+  unique: boolean;
+  /** Carries the reconciler's comment marker. */
+  marked: boolean;
+  /** `pg_get_expr` of the predicate, or null for a full index. */
+  predicate: string | null;
+  scans: number;
+  sizeBytes: number;
+}
+
+/** Every index on `tables` (current schema), with its scan count and size. */
+export async function heldIndexes(sql: Sql, tables: string[]): Promise<HeldIndex[]> {
+  return sql<HeldIndex[]>`
+    SELECT t.relname AS "table", c.relname AS name, i.indisunique AS "unique",
+           obj_description(i.indexrelid, 'pg_class') IS NOT DISTINCT FROM ${MARK} AS marked,
+           pg_get_expr(i.indpred, i.indrelid) AS predicate,
+           COALESCE(s.idx_scan, 0)::float8 AS scans,
+           pg_relation_size(i.indexrelid)::float8 AS "sizeBytes"
+    FROM pg_index i
+    JOIN pg_class c ON c.oid = i.indexrelid
+    JOIN pg_class t ON t.oid = i.indrelid
+    LEFT JOIN pg_stat_user_indexes s ON s.indexrelid = i.indexrelid
+    WHERE t.relnamespace = current_schema()::regnamespace AND t.relname = ANY(${tables})
+    ORDER BY c.relname`;
+}
+
+/** The name tail `generatedIdentifier` gives every engine index, whatever truncated its head. */
+const ENGINE_SUFFIX = /_[0-9a-f]{8}_(idx|uniq|gin|base)$/;
+
+/**
+ * Whether `index` belongs to `namespace`/`type`: on partitioned, it is on the
+ * type's own partition (`table`, resolved by bound); on legacy, it is on `rows`
+ * and its predicate opens with the type's exact namespace and type literals,
+ * as pg deparses the predicate the reconciler emits. Never by name prefix:
+ * names fold, so two types can share one, and a long one is truncated.
+ */
+export function belongsToType(
+  index: HeldIndex,
+  namespace: string,
+  type: string,
+  layout: StorageLayout,
+  table: string
+): boolean {
+  if (index.table !== table) return false;
+  if (layout === 'partitioned') return true;
+  // pg deparses a literal with quotes doubled and backslashes as-is
+  // (standard_conforming_strings on), whatever form it was written in.
+  const lit = (v: string): string => `'${v.replace(/'/g, "''")}'::text`;
+  const scope = `((namespace = ${lit(namespace)}) AND (type = ${lit(type)})`;
+  return (
+    index.predicate !== null &&
+    (index.predicate === `${scope})` || index.predicate.startsWith(`${scope} AND `))
+  );
+}
+
+/** Built or adopted by the reconciler: its comment marker and an engine-generated name. */
+export const isEngineOwned = (index: HeldIndex): boolean =>
+  index.marked && ENGINE_SUFFIX.test(index.name);
+
+/**
+ * Every index of `namespace`/`type` (see `belongsToType`), each flagged
+ * whether the engine owns it. `[]` when the type has no partition yet.
+ */
+export async function typeIndexesOf(
+  sql: Sql,
+  namespace: string,
+  type: string,
+  layout: StorageLayout
+): Promise<Array<HeldIndex & { engineOwned: boolean }>> {
+  let table = 'rows';
+  if (layout === 'partitioned') {
+    const nsPart = await findPartition(sql, 'rows', namespace);
+    const part = nsPart === undefined ? undefined : await findPartition(sql, nsPart, type);
+    if (part === undefined) return [];
+    table = part;
+  }
+  return (await heldIndexes(sql, [table]))
+    .filter((i) => belongsToType(i, namespace, type, layout, table))
+    .map((i) => ({ ...i, engineOwned: isEngineOwned(i) }));
+}
+
+/** The engine-owned indexes of `namespace`/`type`, by `typeIndexesOf`'s rule. */
+export async function engineIndexesOf(
+  sql: Sql,
+  namespace: string,
+  type: string,
+  layout: StorageLayout
+): Promise<HeldIndex[]> {
+  return (await typeIndexesOf(sql, namespace, type, layout)).filter((i) => i.engineOwned);
+}
+
 async function targetTable(sql: Sql, args: ReconcileTypeIndexesArgs): Promise<string> {
   if (args.layout === 'legacy') return 'rows';
   const nsPart = await findPartition(sql, 'rows', args.namespace);

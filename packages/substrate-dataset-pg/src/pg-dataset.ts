@@ -49,6 +49,7 @@ import type {
   RowMetadata,
   StorageReport,
   TxScopeHandles,
+  TypeStats,
   TypeStorageReport,
   UpdateFieldRef,
   WriteOptions,
@@ -60,9 +61,12 @@ import { withPgAdvisoryLock } from './advisory-lock.js';
 import type { DiskGuard } from './disk-guard.js';
 import { NamespaceMismatch, ReservedField } from './errors.js';
 import {
+  belongsToType,
   describeTypeIndexes,
+  heldIndexes,
   type IndexState,
   indexesOn,
+  isEngineOwned,
   type ReconcileTypeIndexesArgs,
   reconcileTypeIndexes,
   undeclaredIndexes
@@ -236,6 +240,13 @@ interface SubstrateRowRecord {
   updated_by_kind: string | null;
   updated_by_id: string | null;
 }
+
+/** Rows the legacy `typeStats` sample aims for. */
+const SAMPLE_ROWS = 10_000;
+
+/** The value of a one-value LIST partition bound as `pg_get_expr` prints it. */
+const listBound = (b: string | null): string | undefined =>
+  b === null ? undefined : /^FOR VALUES IN \('(.*)'\)$/s.exec(b)?.[1]?.replace(/''/g, "'");
 
 export class PgDataset implements Dataset {
   readonly namespace: string;
@@ -1264,11 +1275,9 @@ export class PgDataset implements Dataset {
       }
       heldBy.set(i.table, [...(heldBy.get(i.table) ?? []), i.name]);
     }
-    const bound = (b: string | null): string | undefined =>
-      b === null ? undefined : /^FOR VALUES IN \('(.*)'\)$/s.exec(b)?.[1]?.replace(/''/g, "'");
-    const nsOf = new Map(tree.map((t) => [t.name, bound(t.bound)]));
+    const nsOf = new Map(tree.map((t) => [t.name, listBound(t.bound)]));
     for (const part of tree) {
-      const type = bound(part.bound);
+      const type = listBound(part.bound);
       const ns = part.parent === null || part.parent === 'rows' ? undefined : nsOf.get(part.parent);
       if (type === undefined || ns === undefined || this.#typeDefLookup?.(type, ns) === undefined) {
         continue;
@@ -1293,6 +1302,103 @@ export class PgDataset implements Dataset {
       );
     }
     return { layout: 'partitioned', warnings };
+  }
+
+  /**
+   * See `Dataset.typeStats`. Spans every namespace of the database, in a fixed
+   * number of queries. Partitioned: each type partition's own statistics;
+   * `liveRows` is `reltuples` (or `n_live_tup` before the first ANALYZE) and
+   * counts tombstoned rows too. Legacy: `rows`' statistics split by each
+   * type's share of a block sample.
+   */
+  async typeStats(): Promise<TypeStats[]> {
+    const layout = await this.#layout();
+    if (layout === 'absent') return [];
+    const sql = this.#sql as Sql;
+    const toStats = (
+      t: { namespace: string; type: string; table: string; liveRows: number; insertsTotal: number },
+      held: Awaited<ReturnType<typeof heldIndexes>>
+    ): TypeStats => ({
+      namespace: t.namespace,
+      type: t.type,
+      liveRows: Math.round(t.liveRows),
+      insertsTotal: Math.round(t.insertsTotal),
+      indexes: held
+        .filter((i) => belongsToType(i, t.namespace, t.type, layout, t.table))
+        .map((i) => ({
+          name: i.name,
+          scans: i.scans,
+          sizeBytes: i.sizeBytes,
+          unique: i.unique,
+          engineOwned: isEngineOwned(i)
+        }))
+    });
+    if (layout === 'partitioned') {
+      const parts = await sql<
+        Array<{
+          table: string;
+          nsBound: string;
+          bound: string;
+          liveRows: number;
+          insertsTotal: number;
+        }>
+      >`
+        SELECT c.relname AS "table",
+               pg_get_expr(p.relpartbound, p.oid) AS "nsBound",
+               pg_get_expr(c.relpartbound, c.oid) AS bound,
+               (CASE WHEN c.reltuples >= 0 THEN c.reltuples ELSE COALESCE(s.n_live_tup, 0) END)::float8
+                 AS "liveRows",
+               COALESCE(s.n_tup_ins, 0)::float8 AS "insertsTotal"
+        FROM pg_partition_tree('rows') t
+        JOIN pg_class c ON c.oid = t.relid
+        JOIN pg_class p ON p.oid = t.parentrelid
+        LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
+        WHERE t.level = 2`;
+      const types = parts.flatMap((p) => {
+        const namespace = listBound(p.nsBound);
+        const type = listBound(p.bound);
+        return namespace === undefined || type === undefined ? [] : [{ ...p, namespace, type }];
+      });
+      const held = await heldIndexes(
+        sql,
+        types.map((t) => t.table)
+      );
+      return types.map((t) => toStats(t, held));
+    }
+    // shortcut: a per-type count(*) over a large shared `rows` costs a scan per
+    // pass, so legacy splits `rows`' reltuples and n_tup_ins by each type's share
+    // of a ~SAMPLE_ROWS block sample (exact counts below that). A type too small
+    // to land in the sample is missing, and inserts are split by row share, not
+    // by each type's own insert rate; partitioning is the upgrade.
+    const [table] = await sql<Array<{ reltuples: number; inserts: number }>>`
+      SELECT c.reltuples::float8 AS reltuples, COALESCE(s.n_tup_ins, 0)::float8 AS inserts
+      FROM pg_class c LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
+      WHERE c.oid = 'rows'::regclass`;
+    const reltuples = table?.reltuples ?? -1;
+    const sampled = reltuples > SAMPLE_ROWS;
+    const sample = sql.unsafe(
+      sampled ? `rows TABLESAMPLE SYSTEM (${(100 * SAMPLE_ROWS) / reltuples})` : 'rows'
+    );
+    const counts = await sql<Array<{ namespace: string; type: string; all: number; live: number }>>`
+      SELECT namespace, type, count(*)::float8 AS "all",
+             (count(*) FILTER (WHERE deleted_at IS NULL))::float8 AS live
+      FROM ${sample} GROUP BY namespace, type`;
+    const total = counts.reduce((n, c) => n + c.all, 0);
+    if (total === 0) return [];
+    const scale = sampled ? reltuples / total : 1;
+    const held = await heldIndexes(sql, ['rows']);
+    return counts.map((c) =>
+      toStats(
+        {
+          namespace: c.namespace,
+          type: c.type,
+          table: 'rows',
+          liveRows: c.live * scale,
+          insertsTotal: ((table?.inserts ?? 0) * c.all) / total
+        },
+        held
+      )
+    );
   }
 
   private materialize(record: SubstrateRowRecord): Row {

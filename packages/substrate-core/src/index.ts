@@ -16,6 +16,12 @@ export { RestrictViolation } from '@mnmal-ai/substrate-types';
  * change.
  */
 
+export {
+  type ReadShape,
+  readShapeOf,
+  ShapeRecorder,
+  shapeKey
+} from './advisor/shape-recorder.js';
 export { BridgeUnreachableError } from './bridge-unreachable-error.js';
 export { setCursorSealSecret } from './engine/cursor-seal.js';
 export {

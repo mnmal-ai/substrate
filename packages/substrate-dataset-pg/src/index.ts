@@ -12,10 +12,13 @@ export {
 } from './enum-check.js';
 export { NamespaceMismatch, ReservedField } from './errors.js';
 export {
+  engineIndexesOf,
+  type HeldIndex,
   IndexDefinitionConflictError,
   type IndexState,
   type ReconcileTypeIndexesArgs,
   reconcileTypeIndexes,
+  typeIndexesOf,
   UniqueIndexDuplicatesError
 } from './index-reconciler.js';
 export { detectLayout, partitionName, type StorageLayout } from './layout.js';

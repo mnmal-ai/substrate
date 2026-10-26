@@ -64,6 +64,7 @@ import {
   isRestrictViolation,
   naturalOrderOf
 } from '@mnmal-ai/substrate-types';
+import { readShapeOf } from '../advisor/shape-recorder.js';
 import { applyLostNamespace } from '../apply-lost-namespace.js';
 
 /** Local query keys dispatched at once; the rest wait for a free slot. */
@@ -198,6 +199,7 @@ export class Engine {
   readonly #edges: EdgesStore;
   readonly #metric: MetricFn;
   readonly #onResolve: ((o: ResolveObservation) => void) | undefined;
+  readonly #shapeRecorder: EngineOptions['shapeRecorder'];
   readonly #idempotency: { store: IdempotencyStore; defaultTtlMs: number } | undefined;
   /**
    * Mutates under a dedup key that are still running. The store only sees a
@@ -234,6 +236,7 @@ export class Engine {
     this.#edges = opts.edges;
     this.#metric = opts.metric ?? ((): void => {});
     this.#onResolve = opts.onResolve;
+    this.#shapeRecorder = opts.shapeRecorder;
     this.#idempotency =
       opts.idempotency !== undefined
         ? {
@@ -1460,6 +1463,7 @@ export class Engine {
     }
 
     let result: Row | Row[] | ReadResult | AsyncIterable<Row> | null;
+    const t0 = performance.now();
     try {
       result = await registryEntry.resolver(ctx, args);
     } catch (err) {
@@ -1481,6 +1485,20 @@ export class Engine {
         return true;
       }
       throw err;
+    }
+
+    // After natural order is injected, so the shape carries the effective order.
+    // A single-row `id` read is served by the key, so no index could speed it.
+    if (
+      operation === 'query' &&
+      registryEntry.kind === 'type' &&
+      !isVirtual &&
+      args.params?.id === undefined
+    ) {
+      this.#shapeRecorder?.observe(
+        readShapeOf(ns, name, registryEntry.fields, args.params?.where, args.params?.orderBy),
+        performance.now() - t0
+      );
     }
 
     shapeResult({

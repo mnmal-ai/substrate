@@ -15,6 +15,7 @@
 
 import type { ActorIdentity, Id, Row } from './core.js';
 import type { EdgesStore } from './edge.js';
+import type { TypeStats } from './runtime-metrics.js';
 
 /**
  * Handles yielded by `Dataset.withScopedTransaction`. Contains the
@@ -375,6 +376,14 @@ export interface Dataset {
    * OPTIONAL. Backends without per-type storage omit it.
    */
   storageReport?(opts: { partitionBudget: number }): Promise<StorageReport>;
+  /**
+   * Table and index statistics for every type the store holds, every
+   * namespace, read from the database's own statistics. Estimates, never a
+   * count. Never changes anything.
+   *
+   * OPTIONAL. Backends without such statistics omit it.
+   */
+  typeStats?(): Promise<TypeStats[]>;
   /**
    * Execute `fn` atomically. All ops performed on the `tx` argument run inside
    * one substrate transaction. If `fn` throws or returns a rejected promise,
