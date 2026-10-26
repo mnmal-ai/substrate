@@ -328,7 +328,7 @@ export async function withMigrationLock<T>(
 ): Promise<T> {
   const lockConn = await sql.reserve();
   try {
-    return await withPolledLock(sql, lockConn, MIGRATION_LOCK_KEY, [], undefined, () =>
+    return await withPolledLock(sql, lockConn, 'migration', MIGRATION_LOCK_KEY, [], undefined, () =>
       fn(lockConn)
     );
   } finally {
@@ -369,12 +369,12 @@ export function withTableIndexLock<T>(
   signal: AbortSignal | undefined,
   fn: () => Promise<T>
 ): Promise<T> {
-  return withPolledLock(sql, conn, INDEX_LOCK_KEY, [table], signal, fn);
+  return withPolledLock(sql, conn, `index-build ${table}`, INDEX_LOCK_KEY, [table], signal, fn);
 }
 
 /**
  * Runs `fn` while `conn` holds the session advisory lock `key` (SQL over
- * `params`), polled every 250 ms with pg_try_advisory_lock until it is free or
+ * `params`; `name` says which in logs), polled every 250 ms with pg_try_advisory_lock until it is free or
  * `signal` aborts ({@link IndexLockAborted}). If the lock cannot be released,
  * `conn`'s session is retired from `sql`, since it may still hold the lock,
  * and `conn.release()` becomes a no-op so it never returns to the pool. When
@@ -383,6 +383,7 @@ export function withTableIndexLock<T>(
 async function withPolledLock<T>(
   sql: Sql,
   conn: ReservedSql,
+  name: string,
   key: string,
   params: string[],
   signal: AbortSignal | undefined,
@@ -413,7 +414,7 @@ async function withPolledLock<T>(
       const [row] = await unlock().catch(unlock);
       if (row?.released === false) {
         process.stderr.write(
-          `substrate: advisory unlock of ${key} reported the lock was not held by this session\n`
+          `substrate: advisory unlock of the ${name} lock reported it was not held by this session\n`
         );
       }
     } catch (err) {

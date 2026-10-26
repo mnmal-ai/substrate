@@ -247,6 +247,27 @@ describe.skipIf(!POSTGRES_URL)('engine indexes of a dropped namespace', () => {
     // Four types' concurrent builds on the shared legacy rows, then the drops.
   }, 120_000);
 
+  it('gives up with index_drop_timeout when the index-build lock stays held past the bound', async () => {
+    const { ns, ds, engineIndexes } = await namespaceWithIndexes();
+    const table = (await typeIndexesOf(sql, ns, 'U', LAYOUT))[0]?.table as string;
+    const holder = await sql.reserve();
+    try {
+      await holder`SELECT pg_advisory_lock(hashtext('substrate-index-build:' || current_schema() || '.' || ${table}::text))`;
+      const before = await engineIndexes('U');
+      const start = performance.now();
+      await expect(ds.dropNamespaceIndexes({ lockTimeoutMs: 500 })).rejects.toMatchObject({
+        code: 'index_drop_timeout'
+      });
+      const elapsed = performance.now() - start;
+      expect(elapsed).toBeGreaterThanOrEqual(450);
+      expect(elapsed).toBeLessThan(5_000);
+      expect(await engineIndexes('U')).toEqual(before);
+    } finally {
+      await holder`SELECT pg_advisory_unlock_all()`;
+      holder.release();
+    }
+  }, 120_000);
+
   it('refuses on a tx-bound instance', async () => {
     const { ds } = await namespaceWithIndexes();
     await expect(ds.withTransaction(async (tx) => tx.dropNamespaceIndexes?.())).rejects.toThrow(
@@ -272,5 +293,14 @@ describe.skipIf(!POSTGRES_URL)('engine indexes of a dropped namespace', () => {
     await expect(ds.dropEngineIndex('T', wanted as string)).rejects.toMatchObject({
       code: 'still_desired'
     });
+  });
+
+  it('names a unique orphan as one to drop by hand, since remove refuses it', async () => {
+    const { ns, ds, unique } = await namespaceWithIndexes(() => false);
+    const { info } = await ds.storageReport({ partitionBudget: 1e6 });
+    expect(info).toContain(
+      `orphaned index ${unique} on ${ns}/T: no registered type owns it; it is unique, so drop it by hand`
+    );
+    await expect(ds.dropEngineIndex('T', unique)).rejects.toMatchObject({ code: 'unique_index' });
   });
 });

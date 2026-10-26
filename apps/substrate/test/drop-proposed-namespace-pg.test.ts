@@ -147,6 +147,33 @@ describe.skipIf(!POSTGRES_URL)('dropping a proposed namespace (pg)', () => {
     expect(again, again).toMatch(/namespace_retired/);
   });
 
+  it('answers within the lock bound, with a warning, when the index-build lock stays held', async () => {
+    const { propose, drop } = await boot();
+    const proposed = await propose();
+    expect(proposed, proposed).not.toMatch(/error/i);
+    const engineIndexes = await buildDocIndexes(NS);
+    const table = (await engineIndexes())[0]?.table as string;
+    const holder = await sql.reserve();
+    try {
+      await holder`SELECT pg_advisory_lock(hashtext('substrate-index-build:' || current_schema() || '.' || ${table}::text))`;
+      const start = performance.now();
+      const res = await drop();
+      const elapsed = performance.now() - start;
+      expect(res.status, String(res.body)).toBe(200);
+      const { warnings } = JSON.parse(String(res.body)) as { warnings?: string[] };
+      expect(warnings).toEqual([
+        expect.stringMatching(/index-build lock of .* stayed held for over/)
+      ]);
+      // DROP_LOCK_TIMEOUT_MS is 10 s: the route gave up on the lock, not on the test.
+      expect(elapsed).toBeGreaterThanOrEqual(9_000);
+      expect(elapsed).toBeLessThan(20_000);
+      expect(await engineIndexes()).not.toEqual([]);
+    } finally {
+      await holder`SELECT pg_advisory_unlock_all()`;
+      holder.release();
+    }
+  }, 60_000);
+
   it('keeps the unique engine indexes of a namespace declared in code, dropping the rest', async () => {
     const { post } = await boot();
     const engineIndexes = await buildDocIndexes(OWNED);

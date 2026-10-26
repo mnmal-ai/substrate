@@ -5,7 +5,7 @@
  */
 
 import type { ReservedSql, Sql } from 'postgres';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { tryWithPgAdvisoryLock } from '../src/index.js';
 import { withMigrationLock, withTableIndexLock } from '../src/migrate.js';
 
@@ -109,6 +109,29 @@ describe('withTableIndexLock unlock failure', () => {
     expect(await withTableIndexLock(f.sql, f.conn, 'rows', undefined, async () => 1)).toBe(1);
     expect(f.sent).toEqual(['lock', 'unlock', 'unlock']);
     expect(f.pool).toEqual([]);
+  });
+
+  it('names the lock, not its SQL, when the unlock reports it was not held', async () => {
+    const f = fakes(0);
+    f.conn.unsafe = ((text: string) =>
+      Promise.resolve(
+        text.includes('pg_try_advisory_lock')
+          ? [{ acquired: true, pid: 42, started: 't0' }]
+          : [{ released: false }]
+      )) as unknown as ReservedSql['unsafe'];
+    const lines: string[] = [];
+    const write = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      lines.push(String(chunk));
+      return true;
+    });
+    try {
+      await withTableIndexLock(f.sql, f.conn, 'rows', undefined, async () => 1);
+    } finally {
+      write.mockRestore();
+    }
+    expect(lines).toEqual([
+      'substrate: advisory unlock of the index-build rows lock reported it was not held by this session\n'
+    ]);
   });
 
   it('retires the session, and never pools it, when the second unlock fails too', async () => {

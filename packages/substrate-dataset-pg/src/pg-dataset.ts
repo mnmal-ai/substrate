@@ -80,7 +80,7 @@ import {
   undeclaredIndexes
 } from './index-reconciler.js';
 import { detectLayout, type StorageLayout } from './layout.js';
-import { withTableIndexLock } from './migrate.js';
+import { IndexLockAborted, withTableIndexLock } from './migrate.js';
 import type { PgEdgesStore } from './pg-edges-store.js';
 import { PgShortIdStore } from './pg-short-id-store.js';
 import { sqlStringLiteral } from './pg-sql/primitives.js';
@@ -1482,7 +1482,7 @@ export class PgDataset implements Dataset {
       for (const i of own) {
         if (!isEngineOwned(i)) continue;
         info.push(
-          `orphaned index ${i.name} on ${ns}/${type}: no registered type owns it; a signed propose_index remove drops it`
+          `orphaned index ${i.name} on ${ns}/${type}: no registered type owns it; ${i.unique ? 'it is unique, so drop it by hand' : 'a signed propose_index remove drops it'}`
         );
       }
       return;
@@ -1593,10 +1593,14 @@ export class PgDataset implements Dataset {
    * See `Dataset.dropNamespaceIndexes`. On legacy, the engine-owned partial
    * indexes on `rows` scoped to this namespace; on partitioned, the
    * engine-owned indexes on its type partitions, which a namespace drop
-   * empties but keeps. Unique ones only when `opts.unique`. Each table's under its index-build lock, CONCURRENTLY,
-   * each lock wait bounded by `DROP_LOCK_TIMEOUT_MS`.
+   * empties but keeps. Unique ones only when `opts.unique`. Each table's under
+   * its index-build lock, CONCURRENTLY; the wait for that lock and each lock
+   * wait of a drop are bounded by `lockTimeoutMs` (default
+   * `DROP_LOCK_TIMEOUT_MS`), past which it throws `index_drop_timeout`.
    */
-  async dropNamespaceIndexes(opts: { unique?: boolean } = {}): Promise<string[]> {
+  async dropNamespaceIndexes(
+    opts: { unique?: boolean; lockTimeoutMs?: number } = {}
+  ): Promise<string[]> {
     const layout = await this.#layout();
     if (layout === 'absent') return [];
     if (this.#inTx) {
@@ -1605,18 +1609,27 @@ export class PgDataset implements Dataset {
     const sql = this.#sql as Sql;
     const ns = this.namespace;
     const tables = layout === 'legacy' ? ['rows'] : await typePartitions(sql, ns);
+    const timeout = opts.lockTimeoutMs ?? DROP_LOCK_TIMEOUT_MS;
     const dropped: string[] = [];
     const conn = await sql.reserve();
     try {
       for (const table of tables) {
-        await withTableIndexLock(sql, conn, table, undefined, async () => {
-          for (const i of await heldIndexes(conn, [table])) {
-            if (!isEngineOwned(i) || (i.unique && opts.unique !== true)) continue;
-            if (layout === 'legacy' && legacyScope(i.predicate)?.namespace !== ns) continue;
-            await dropIndexBounded(conn, i.name, ns, DROP_LOCK_TIMEOUT_MS);
-            dropped.push(i.name);
-          }
-        });
+        try {
+          await withTableIndexLock(sql, conn, table, AbortSignal.timeout(timeout), async () => {
+            for (const i of await heldIndexes(conn, [table])) {
+              if (!isEngineOwned(i) || (i.unique && opts.unique !== true)) continue;
+              if (layout === 'legacy' && legacyScope(i.predicate)?.namespace !== ns) continue;
+              await dropIndexBounded(conn, i.name, ns, timeout);
+              dropped.push(i.name);
+            }
+          });
+        } catch (err) {
+          if (!(err instanceof IndexLockAborted)) throw err;
+          throw new IndexDropRefusedError(
+            'index_drop_timeout',
+            `the index-build lock of ${table} stayed held for over ${timeout} ms; indexes of ${ns} left in place`
+          );
+        }
       }
     } finally {
       conn.release();
