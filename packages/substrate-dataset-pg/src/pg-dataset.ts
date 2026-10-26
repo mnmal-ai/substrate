@@ -242,6 +242,9 @@ interface SubstrateRowRecord {
   updated_by_id: string | null;
 }
 
+/** Share of `rows` changed since ANALYZE past which its indexes' row counts are stale (autoanalyze's default). */
+const INDEX_COUNT_STALE = 0.1;
+
 /** Rows the legacy `typeStats` sample aims for. */
 const SAMPLE_ROWS = 10_000;
 
@@ -1368,13 +1371,16 @@ export class PgDataset implements Dataset {
     // shortcut: a per-type count(*) over a large shared `rows` costs a scan per
     // pass. Below SAMPLE_ROWS legacy counts exactly; above it a type with a live
     // partial index (every crossRef type has its derived one) takes that index's
-    // reltuples, and any other type its share of a ~SAMPLE_ROWS block sample,
+    // reltuples (while fresh, below), and any other type its share of a ~SAMPLE_ROWS block sample,
     // so a small one may be missing or noisy. Inserts are split by live-row
     // share, not by each type's own insert rate. Partitioning is the upgrade.
     // `n_live_tup` sizes it before the first ANALYZE, when reltuples is -1, so
     // a never-analyzed large `rows` is still sampled rather than scanned.
-    const [table] = await sql<Array<{ size: number; inserts: number }>>`
-      SELECT GREATEST(c.reltuples, COALESCE(s.n_live_tup, 0))::float8 AS size,
+    const [table] = await sql<Array<{ fresh: boolean; size: number; inserts: number }>>`
+      SELECT c.reltuples > 0
+               AND COALESCE(s.n_mod_since_analyze, 0) <= ${INDEX_COUNT_STALE} * c.reltuples
+               AS fresh,
+             GREATEST(c.reltuples, COALESCE(s.n_live_tup, 0))::float8 AS size,
              COALESCE(s.n_tup_ins, 0)::float8 AS inserts
       FROM pg_class c LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
       WHERE c.oid = 'rows'::regclass`;
@@ -1397,7 +1403,11 @@ export class PgDataset implements Dataset {
         liveRows: sampled ? (c.live * size) / total : c.live
       });
     }
-    if (sampled) {
+    // An index's count is as old as the last ANALYZE, VACUUM or build: one built
+    // on a type's empty share reads 0 however many rows follow. So it is trusted
+    // only while `rows` has changed by under INDEX_COUNT_STALE since its last
+    // ANALYZE (`rows.reltuples >= 0` is not enough: that same build sets it to 0).
+    if (sampled && table?.fresh === true) {
       const fromIndex = new Map<string, { namespace: string; type: string; liveRows: number }>();
       for (const i of held) {
         const scope = legacyLiveScope(i.predicate);

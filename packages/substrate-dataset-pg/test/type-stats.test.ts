@@ -116,9 +116,12 @@ describe.skipIf(!POSTGRES_URL)('typeStats', () => {
       await small.write('Small', [{ id: 'a' }, { id: 'b' }, { id: 'c' }]);
       // A rebuild sets the partial index's reltuples to its exact row count.
       const derived = generatedIdentifier(ns, 'Small', 'ref', 'idx');
-      await sql.unsafe(`REINDEX INDEX ${derived}`);
       const n = 30_000;
       await insertAndFlush(sql, ns, 'Big', n);
+      // Analyzed since the inserts, so index counts are fresh; the rebuild makes
+      // the partial index's reltuples its exact row count.
+      await sql`ANALYZE rows`;
+      await sql.unsafe(`REINDEX INDEX ${derived}`);
 
       const stats = await small.typeStats();
       const big = stats.find((s) => s.namespace === ns && s.type === 'Big');
@@ -132,7 +135,7 @@ describe.skipIf(!POSTGRES_URL)('typeStats', () => {
   );
 
   it.skipIf(LAYOUT !== 'legacy')(
-    'samples a large rows table that was never analyzed rather than scanning it',
+    'samples a large never-analyzed rows table, trusting no stale index row count',
     async () => {
       const schema = `ts_fresh_${hex()}`;
       await sql.unsafe(`CREATE SCHEMA ${schema}`);
@@ -146,14 +149,26 @@ describe.skipIf(!POSTGRES_URL)('typeStats', () => {
       try {
         await runMigrations(fresh, { layout: 'legacy' });
         await fresh`ALTER TABLE rows SET (autovacuum_enabled = false)`;
+        // Its derived index built on the empty table: reltuples 0 until ANALYZE.
+        const ds = new PgDataset({
+          namespace: 'fresh',
+          sql: fresh,
+          typeDefLookup: (t, n) => (t === 'Big' && n === 'fresh' ? { fields } : undefined)
+        });
+        await ds.ensureTypeStorage('Big');
         const n = 30_000;
         await insertAndFlush(fresh, 'fresh', 'Big', n);
-        const [rel] = await fresh<Array<{ reltuples: number }>>`
-          SELECT reltuples::float8 AS reltuples FROM pg_class WHERE oid = 'rows'::regclass`;
-        expect(rel?.reltuples).toBe(-1);
+        // The build analyzed the empty table: its index count is 0, now stale.
+        const [rel] = await fresh<Array<{ indexRows: number; changed: number }>>`
+          SELECT (SELECT reltuples::float8 FROM pg_class
+                  WHERE relname = ${generatedIdentifier('fresh', 'Big', 'ref', 'idx')}
+                    AND relnamespace = current_schema()::regnamespace) AS "indexRows",
+                 s.n_mod_since_analyze::float8 AS changed
+          FROM pg_stat_user_tables s WHERE s.relid = 'rows'::regclass`;
+        expect(rel?.indexRows).toBe(0);
+        expect(rel?.changed).toBeGreaterThanOrEqual(n);
 
         statements.length = 0;
-        const ds = new PgDataset({ namespace: 'fresh', sql: fresh });
         const big = (await ds.typeStats()).find((s) => s.type === 'Big');
         expect(statements.some((q) => q.includes('TABLESAMPLE SYSTEM'))).toBe(true);
         expect(big?.liveRows).toBeGreaterThan(n / 2);
