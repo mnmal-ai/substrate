@@ -196,6 +196,19 @@ function suite(make: () => Promise<{ ns: string; datasets: MemoryDatasetRegistry
       });
       expect(indexer.errors ?? [], name).toEqual([]);
     }
+    // Tombstoned storage still counts: a propose-only caller cannot clear it by deleting.
+    const proposalId = randomUUID();
+    const rowId = randomUUID();
+    await home.write('TypeProposal', [
+      { id: proposalId, typeName: 'Buried', fieldsJson: '{}', applied: true, archived: true }
+    ]);
+    await home.write('Buried', [{ id: rowId, brand: 'a', size: 1 }]);
+    await home.tombstone('TypeProposal', [proposalId]);
+    await home.tombstone('Buried', [rowId]);
+    expect((await home.read('Buried', {})).rows).toEqual([]);
+    const buried = await propose(engine, ns, 'Buried', { indexes: [{ fields: ['brand'] }] });
+    expect(code(buried)).toBe('policy_denied');
+    expect(engine.registryFor(ns)?.get('Buried')).toBeUndefined();
     // Without index options the name stays proposable under substrate.propose alone.
     await home.write('Spare', [{ id: randomUUID(), brand: 'a', size: 1 }]);
     expect((await propose(engine, ns, 'Spare', {})).errors ?? []).toEqual([]);

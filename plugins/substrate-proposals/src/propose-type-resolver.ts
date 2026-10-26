@@ -146,14 +146,19 @@ function indexOptionsOf(input: ProposeTypeInput): TypeIndexOptions {
   };
 }
 
-/** Whether `typeName` has storage already: any TypeProposal row by that name, archived ones included, or rows. */
+/**
+ * Whether `typeName` has storage already: any TypeProposal row by that name,
+ * or any row of the type, archived and tombstoned ones included, so a
+ * propose-only caller cannot clear the signal by deleting them.
+ */
 async function hasStorage(dataset: Dataset, typeName: string): Promise<boolean> {
   const proposals = await dataset.read('TypeProposal', {
     where: { typeName: { eq: typeName } },
+    includeDeleted: true,
     limit: 1
   });
   if (proposals.rows.length > 0) return true;
-  return (await dataset.read(typeName, { limit: 1 })).rows.length > 0;
+  return (await dataset.read(typeName, { includeDeleted: true, limit: 1 })).rows.length > 0;
 }
 
 /** Steps 2-7, run while holding the proposal lock for this type name. */
