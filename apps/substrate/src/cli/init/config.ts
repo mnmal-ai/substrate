@@ -143,7 +143,10 @@ export function parseArgs(argv: string[]): InitConfig {
         config.readTargetMs = parsePositive(flag, value);
         break;
       case 'write-heavy':
-        config.writeHeavy = true;
+        if (value !== '' && value !== 'true' && value !== 'false') {
+          throw new Error(`--write-heavy must be true|false, got: ${value}`);
+        }
+        config.writeHeavy = value !== 'false';
         break;
       case 'profile':
         if (!isStoreProfileName(value)) {

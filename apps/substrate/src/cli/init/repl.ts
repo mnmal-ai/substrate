@@ -105,9 +105,9 @@ export async function runRepl(seed: InitConfig): Promise<InitConfig> {
     }));
 
   // --profile settles the profile, so the sizing questions would change nothing.
+  // No TTY, no questions: the sizing flags or the defaults decide.
   const ask = async (message: string, fallback: number, flag: string): Promise<number> =>
-    parsePositive(
-      flag,
+    Number(
       await input({
         message,
         default: String(fallback),
@@ -122,7 +122,8 @@ export async function runRepl(seed: InitConfig): Promise<InitConfig> {
       })
     );
   let { rowsPerDay, retentionDays, readTargetMs, writeHeavy } = seed;
-  if (seed.profile === undefined) {
+  // --profile settles the profile, so the sizing questions would change nothing.
+  if (seed.profile === undefined && process.stdin.isTTY === true) {
     rowsPerDay ??= await ask(
       'Expected rows written per day:',
       DEFAULT_SIZING.rowsPerDay,

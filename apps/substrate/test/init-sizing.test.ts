@@ -69,6 +69,23 @@ describe('substrate init sizing', () => {
     expect(cfg.storeProfile).toBe('personal');
   });
 
+  it('--write-heavy takes bare, true and false, and refuses the rest', () => {
+    expect(parseArgs(['--write-heavy']).writeHeavy).toBe(true);
+    expect(parseArgs(['--write-heavy=true']).writeHeavy).toBe(true);
+    expect(parseArgs(['--write-heavy=false']).writeHeavy).toBe(false);
+    for (const v of ['yes', '1', 'FALSE'])
+      expect(() => parseArgs([`--write-heavy=${v}`])).toThrow(/^--write-heavy must be true\|false/);
+  });
+
+  it('SUBSTRATE_STORE_WRITE_HEAVY parses strictly', () => {
+    const heavy = (v?: string) =>
+      parseEnv(v === undefined ? {} : { SUBSTRATE_STORE_WRITE_HEAVY: v }).storeWriteHeavy;
+    for (const v of [undefined, '', '0', 'false']) expect(heavy(v)).toBe(false);
+    for (const v of ['1', 'true', 'TRUE']) expect(heavy(v)).toBe(true);
+    for (const v of ['yes', 'on', 'tru', '2'])
+      expect(() => heavy(v)).toThrow(/SUBSTRATE_STORE_WRITE_HEAVY/);
+  });
+
   it.each([
     '--rows-per-day=0',
     '--rows-per-day=-5',

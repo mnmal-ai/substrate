@@ -258,11 +258,17 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
     profileRaw ?? null
   );
   const writeHeavyRaw = env.SUBSTRATE_STORE_WRITE_HEAVY;
+  const writeHeavyWord = (writeHeavyRaw ?? '').trim().toLowerCase();
+  if (!['', '0', 'false', '1', 'true'].includes(writeHeavyWord)) {
+    throw new EnvConfigError(
+      `SUBSTRATE_STORE_WRITE_HEAVY must be 1, true, 0 or false, got '${writeHeavyRaw}'`
+    );
+  }
   const storeWriteHeavy = knobs.record(
     'storeWriteHeavy',
     'SUBSTRATE_STORE_WRITE_HEAVY',
     writeHeavyRaw,
-    writeHeavyRaw !== undefined && (writeHeavyRaw === '1' || writeHeavyRaw.toLowerCase() === 'true')
+    writeHeavyWord === '1' || writeHeavyWord === 'true'
   );
   const idempotency = parseIdempotencyConfig(env, knobs);
   const trustedProxies = parseTrustedProxies(env, knobs);
