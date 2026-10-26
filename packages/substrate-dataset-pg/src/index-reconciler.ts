@@ -562,6 +562,8 @@ export interface HeldIndex {
   marked: boolean;
   /** `pg_get_expr` of the predicate, or null for a full index. */
   predicate: string | null;
+  /** The index's `pg_class.reltuples`: for a partial index, the rows under its predicate; -1 unknown. */
+  reltuples: number;
   scans: number;
   sizeBytes: number;
 }
@@ -572,6 +574,7 @@ export async function heldIndexes(sql: Sql, tables: string[]): Promise<HeldIndex
     SELECT t.relname AS "table", c.relname AS name, i.indisunique AS "unique",
            obj_description(i.indexrelid, 'pg_class') IS NOT DISTINCT FROM ${MARK} AS marked,
            pg_get_expr(i.indpred, i.indrelid) AS predicate,
+           c.reltuples::float8 AS reltuples,
            COALESCE(s.idx_scan, 0)::float8 AS scans,
            pg_relation_size(i.indexrelid)::float8 AS "sizeBytes"
     FROM pg_index i
@@ -609,6 +612,25 @@ export function belongsToType(
     index.predicate !== null &&
     (index.predicate === `${scope})` || index.predicate.startsWith(`${scope} AND `))
   );
+}
+
+const LITERAL = "'((?:[^']|'')*)'::text";
+const LIVE_SCOPE = new RegExp(
+  `^\\(\\(namespace = ${LITERAL}\\) AND \\(type = ${LITERAL}\\) AND \\(deleted_at IS NULL\\)\\)$`,
+  's'
+);
+
+/**
+ * The namespace and type a legacy index's predicate is exactly the live scope
+ * of (`namespace = … AND type = … AND deleted_at IS NULL`, as pg deparses the
+ * reconciler's), so its row count is the type's live rows. Else undefined.
+ */
+export function legacyLiveScope(
+  predicate: string | null
+): { namespace: string; type: string } | undefined {
+  const m = predicate === null ? null : LIVE_SCOPE.exec(predicate);
+  if (m === null || m[1] === undefined || m[2] === undefined) return undefined;
+  return { namespace: m[1].replace(/''/g, "'"), type: m[2].replace(/''/g, "'") };
 }
 
 /** Built or adopted by the reconciler: its comment marker and an engine-generated name. */

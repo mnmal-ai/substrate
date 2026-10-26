@@ -1485,20 +1485,22 @@ export class Engine {
         return true;
       }
       throw err;
-    }
-
-    // After natural order is injected, so the shape carries the effective order.
-    // A single-row `id` read is served by the key, so no index could speed it.
-    if (
-      operation === 'query' &&
-      registryEntry.kind === 'type' &&
-      !isVirtual &&
-      args.params?.id === undefined
-    ) {
-      this.#shapeRecorder?.observe(
-        readShapeOf(ns, name, registryEntry.fields, args.params?.where, args.params?.orderBy),
-        performance.now() - t0
-      );
+    } finally {
+      // After natural order is injected, so the shape carries the effective
+      // order; a read that throws (a timeout, a cancel) is recorded too, up to
+      // the throw. A single-row `id` read is served by the key, so no index
+      // could speed it.
+      if (
+        operation === 'query' &&
+        registryEntry.kind === 'type' &&
+        !isVirtual &&
+        args.params?.id === undefined
+      ) {
+        this.#shapeRecorder?.observe(
+          readShapeOf(ns, name, registryEntry.fields, args.params?.where, args.params?.orderBy),
+          performance.now() - t0
+        );
+      }
     }
 
     shapeResult({

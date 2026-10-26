@@ -67,6 +67,7 @@ import {
   type IndexState,
   indexesOn,
   isEngineOwned,
+  legacyLiveScope,
   type ReconcileTypeIndexesArgs,
   reconcileTypeIndexes,
   undeclaredIndexes
@@ -1308,8 +1309,7 @@ export class PgDataset implements Dataset {
    * See `Dataset.typeStats`. Spans every namespace of the database, in a fixed
    * number of queries. Partitioned: each type partition's own statistics;
    * `liveRows` is `reltuples` (or `n_live_tup` before the first ANALYZE) and
-   * counts tombstoned rows too. Legacy: `rows`' statistics split by each
-   * type's share of a block sample.
+   * counts tombstoned rows too. Legacy: see the shortcut below.
    */
   async typeStats(): Promise<TypeStats[]> {
     const layout = await this.#layout();
@@ -1366,35 +1366,60 @@ export class PgDataset implements Dataset {
       return types.map((t) => toStats(t, held));
     }
     // shortcut: a per-type count(*) over a large shared `rows` costs a scan per
-    // pass, so legacy splits `rows`' reltuples and n_tup_ins by each type's share
-    // of a ~SAMPLE_ROWS block sample (exact counts below that). A type too small
-    // to land in the sample is missing, and inserts are split by row share, not
-    // by each type's own insert rate; partitioning is the upgrade.
-    const [table] = await sql<Array<{ reltuples: number; inserts: number }>>`
-      SELECT c.reltuples::float8 AS reltuples, COALESCE(s.n_tup_ins, 0)::float8 AS inserts
+    // pass. Below SAMPLE_ROWS legacy counts exactly; above it a type with a live
+    // partial index (every crossRef type has its derived one) takes that index's
+    // reltuples, and any other type its share of a ~SAMPLE_ROWS block sample,
+    // so a small one may be missing or noisy. Inserts are split by live-row
+    // share, not by each type's own insert rate. Partitioning is the upgrade.
+    // `n_live_tup` sizes it before the first ANALYZE, when reltuples is -1, so
+    // a never-analyzed large `rows` is still sampled rather than scanned.
+    const [table] = await sql<Array<{ size: number; inserts: number }>>`
+      SELECT GREATEST(c.reltuples, COALESCE(s.n_live_tup, 0))::float8 AS size,
+             COALESCE(s.n_tup_ins, 0)::float8 AS inserts
       FROM pg_class c LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
       WHERE c.oid = 'rows'::regclass`;
-    const reltuples = table?.reltuples ?? -1;
-    const sampled = reltuples > SAMPLE_ROWS;
+    const size = table?.size ?? 0;
+    const sampled = size > SAMPLE_ROWS;
     const sample = sql.unsafe(
-      sampled ? `rows TABLESAMPLE SYSTEM (${(100 * SAMPLE_ROWS) / reltuples})` : 'rows'
+      sampled ? `rows TABLESAMPLE SYSTEM (${(100 * SAMPLE_ROWS) / size})` : 'rows'
     );
     const counts = await sql<Array<{ namespace: string; type: string; all: number; live: number }>>`
       SELECT namespace, type, count(*)::float8 AS "all",
              (count(*) FILTER (WHERE deleted_at IS NULL))::float8 AS live
       FROM ${sample} GROUP BY namespace, type`;
     const total = counts.reduce((n, c) => n + c.all, 0);
-    if (total === 0) return [];
-    const scale = sampled ? reltuples / total : 1;
     const held = await heldIndexes(sql, ['rows']);
-    return counts.map((c) =>
+    const live = new Map<string, { namespace: string; type: string; liveRows: number }>();
+    for (const c of counts) {
+      live.set(JSON.stringify([c.namespace, c.type]), {
+        namespace: c.namespace,
+        type: c.type,
+        liveRows: sampled ? (c.live * size) / total : c.live
+      });
+    }
+    if (sampled) {
+      const fromIndex = new Map<string, { namespace: string; type: string; liveRows: number }>();
+      for (const i of held) {
+        const scope = legacyLiveScope(i.predicate);
+        if (scope === undefined || i.reltuples < 0) continue;
+        const key = JSON.stringify([scope.namespace, scope.type]);
+        const seen = fromIndex.get(key);
+        if (seen === undefined || i.reltuples > seen.liveRows) {
+          fromIndex.set(key, { ...scope, liveRows: i.reltuples });
+        }
+      }
+      for (const [key, t] of fromIndex) live.set(key, t);
+    }
+    const liveTotal = Math.max(
+      size,
+      [...live.values()].reduce((n, t) => n + t.liveRows, 0)
+    );
+    return [...live.values()].map((t) =>
       toStats(
         {
-          namespace: c.namespace,
-          type: c.type,
+          ...t,
           table: 'rows',
-          liveRows: c.live * scale,
-          insertsTotal: ((table?.inserts ?? 0) * c.all) / total
+          insertsTotal: liveTotal > 0 ? ((table?.inserts ?? 0) * t.liveRows) / liveTotal : 0
         },
         held
       )

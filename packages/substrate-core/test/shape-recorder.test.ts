@@ -82,14 +82,16 @@ describe('engine read recording', () => {
     addr: { kind: 'struct', fields: { city: { kind: 'scalar', type: 'string' } } }
   };
 
-  function engineWith(recorder: ShapeRecorder): Engine {
+  function engineWith(recorder: ShapeRecorder, fail?: Error): Engine {
     const ds = new MemoryDataset({ namespace: 'shop' });
     const registry = new Registry();
     registry.register('Item', {
       fields: FIELDS,
       orderedBy: { rating: 'desc' },
-      resolver: async (_ctx, args): Promise<ReadResult> =>
-        ds.read('Item', (args.params ?? {}) as ReadParams)
+      resolver: async (_ctx, args): Promise<ReadResult> => {
+        if (fail !== undefined) throw fail;
+        return ds.read('Item', (args.params ?? {}) as ReadParams);
+      }
     });
     const datasets = new MemoryDatasetRegistry();
     datasets.set('shop', ds);
@@ -141,5 +143,22 @@ describe('engine read recording', () => {
       ctx: { identity: null }
     });
     expect(recorder.drain()[0]?.shape.orderBy).toEqual([['rating', 'asc']]);
+  });
+
+  it('records a read that throws, such as a statement timeout', async () => {
+    const recorder = new ShapeRecorder();
+    const engine = engineWith(recorder, new Error('canceling statement due to statement timeout'));
+    await engine
+      .query({
+        frame: {
+          'shop/Item': { params: { where: { kid: { eq: 'k' } } }, fields: { id: true } }
+        },
+        ctx: { identity: null }
+      })
+      .catch(() => {});
+    const [obs] = recorder.drain();
+    expect(obs?.count).toBe(1);
+    expect(obs?.shape.filters).toEqual([{ field: 'kid', op: 'eq' }]);
+    expect(obs?.shape.orderBy).toEqual([['rating', 'desc']]);
   });
 });

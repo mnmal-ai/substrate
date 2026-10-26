@@ -55,7 +55,9 @@ export interface ResolveObservation {
 
 /**
  * One type's table and index statistics, for the index advisor. Counters are
- * cumulative since the server's statistics were last reset.
+ * cumulative since the server's statistics were last reset. Row counts are
+ * estimates. A type ABSENT from a `typeStats()` result is unknown, not empty:
+ * never read its absence as 0 rows (a sampled store can miss a small type).
  */
 export interface TypeStats {
   namespace: string;

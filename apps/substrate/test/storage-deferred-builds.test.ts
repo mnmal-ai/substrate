@@ -174,31 +174,24 @@ describe.skipIf(!POSTGRES_URL)('deferred index builds at boot (pg)', () => {
       coordinators: [plugin],
       systemActor: 'local-dev'
     });
-    const stop = new AbortController();
-    let loop: Promise<void> | undefined;
     try {
       await reconcileRegisteredStorage(composed.engine, composed.datasets, nsDefs);
       const state = async () =>
         (await members.describeStorage('Member')).indexes.find((i) => i.name === plain);
-      loop = runDeferredIndexBuilds(composed.engine, composed.datasets, 100, stop.signal);
-      for (let i = 0; (await state())?.reason !== 'insufficient_disk'; i++) {
-        if (i > 200) throw new Error('the guard never refused');
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
+      // Each pass awaits its builds, so the test drives them directly: no timer, no polling.
+      await buildDeferredIndexes(composed.engine, composed.datasets);
       expect(await valid(plain)).toBeUndefined();
-      expect((await state())?.state).toBe('pending');
+      expect(await state()).toMatchObject({ state: 'pending', reason: 'insufficient_disk' });
 
       allow = true;
-      for (let i = 0; (await state())?.state !== 'valid'; i++) {
-        if (i > 400) throw new Error('no retry built the index');
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
+      await buildDeferredIndexes(composed.engine, composed.datasets, undefined, {
+        onlyUnsettled: true
+      });
       expect(await valid(plain)).toBe(true);
+      expect((await state())?.state).toBe('valid');
       expect((await state())?.reason).toBeUndefined();
 
       // A retry pass leaves a settled type alone.
-      stop.abort();
-      await loop;
       const ensure = vi.spyOn(PgDataset.prototype, 'ensureTypeStorage');
       try {
         await buildDeferredIndexes(composed.engine, composed.datasets, undefined, {
@@ -209,9 +202,55 @@ describe.skipIf(!POSTGRES_URL)('deferred index builds at boot (pg)', () => {
         ensure.mockRestore();
       }
     } finally {
-      stop.abort();
-      await loop;
       await sql`DELETE FROM rows WHERE namespace = ${rns}`;
+      await composed.stop();
+    }
+  }, 60_000);
+
+  it('the retry loop runs a pass after each interval until aborted', async () => {
+    const lns = `${ns}_l`;
+    const def = defineNamespace(lns, {
+      Member: {
+        fields: { cert: { kind: 'scalar', type: 'string' } },
+        indexes: [{ fields: ['cert'], name: `${lns}_cert_ix` }]
+      }
+    });
+    const plugin = { name: lns, contractVersion: '*', namespaces: [def] };
+    const nsDefs = new Map([[lns, def]]);
+    const edges = new PgEdgesStore({ sql });
+    const dataset = new PgDataset({ namespace: 'default', sql, edgesStore: edges });
+    const datasets = buildPluginDatasetMap(
+      [plugin],
+      dataset,
+      sql,
+      edges,
+      makeFieldDefLookupFactory(nsDefs)
+    );
+    const composed = await compose({
+      server: new MemorySubstrateServer(),
+      dataset,
+      edges,
+      datasets,
+      coordinators: [plugin],
+      systemActor: 'local-dev'
+    });
+    // The type's storage exists and its non-unique index is still to build.
+    await reconcileRegisteredStorage(composed.engine, composed.datasets, nsDefs);
+    const stop = new AbortController();
+    // Builds nothing, so the index stays unsettled and every retry pass reaches it;
+    // the second call (the first retry) ends the loop.
+    let calls = 0;
+    const ensure = vi
+      .spyOn(PgDataset.prototype, 'ensureTypeStorage')
+      .mockImplementation(async function (this: PgDataset) {
+        if (this.namespace === lns && ++calls === 2) stop.abort();
+      });
+    try {
+      await runDeferredIndexBuilds(composed.engine, composed.datasets, 1, stop.signal);
+      expect(calls).toBe(2);
+    } finally {
+      ensure.mockRestore();
+      stop.abort();
       await composed.stop();
     }
   }, 60_000);

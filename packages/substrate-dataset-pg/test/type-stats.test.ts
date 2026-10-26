@@ -8,9 +8,9 @@
 import { randomBytes } from 'node:crypto';
 import type { FieldDef, IndexDecl } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { engineIndexesOf, PgDataset, type StorageLayout, typeIndexesOf } from '../src/index.js';
-import { generatedIdentifier } from '../src/migrate.js';
+import { generatedIdentifier, runMigrations } from '../src/migrate.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const LAYOUT = (process.env.SUBSTRATE_STORAGE_LAYOUT ?? 'legacy') as StorageLayout;
@@ -108,18 +108,84 @@ describe.skipIf(!POSTGRES_URL)('typeStats', () => {
     expect(names).toHaveLength(LAYOUT === 'partitioned' ? 4 : 1);
   });
 
-  it.skipIf(LAYOUT !== 'legacy')('splits rows statistics by a sampled share', async () => {
-    const ns = `ts_${hex()}`;
-    const ds = new PgDataset({ namespace: ns, sql });
-    const n = 30_000;
-    await sql`
-      INSERT INTO rows (namespace, type, id, body)
-      SELECT ${ns}, 'Big', g::text, '{}'::jsonb FROM generate_series(1, ${n}) g`;
-    await sql`ANALYZE rows`;
-    const big = (await ds.typeStats()).find((s) => s.namespace === ns && s.type === 'Big');
-    // A block sample: an estimate, not a count.
-    expect(big?.liveRows).toBeGreaterThan(n / 2);
-    expect(big?.liveRows).toBeLessThan(n * 2);
-    await sql`DELETE FROM rows WHERE namespace = ${ns}`;
-  });
+  it.skipIf(LAYOUT !== 'legacy')(
+    'takes a large legacy type from its partial index and the rest from a sample',
+    async () => {
+      const ns = `ts_${hex()}`;
+      const small = await typeWithStorage(ns, 'Small');
+      await small.write('Small', [{ id: 'a' }, { id: 'b' }, { id: 'c' }]);
+      // A rebuild sets the partial index's reltuples to its exact row count.
+      const derived = generatedIdentifier(ns, 'Small', 'ref', 'idx');
+      await sql.unsafe(`REINDEX INDEX ${derived}`);
+      const n = 30_000;
+      await insertAndFlush(sql, ns, 'Big', n);
+
+      const stats = await small.typeStats();
+      const big = stats.find((s) => s.namespace === ns && s.type === 'Big');
+      // A block sample: an estimate, not a count.
+      expect(big?.liveRows).toBeGreaterThan(n / 2);
+      expect(big?.liveRows).toBeLessThan(n * 2);
+      expect(stats.find((s) => s.namespace === ns && s.type === 'Small')?.liveRows).toBe(3);
+      await sql`DELETE FROM rows WHERE namespace = ${ns}`;
+    },
+    60_000
+  );
+
+  it.skipIf(LAYOUT !== 'legacy')(
+    'samples a large rows table that was never analyzed rather than scanning it',
+    async () => {
+      const schema = `ts_fresh_${hex()}`;
+      await sql.unsafe(`CREATE SCHEMA ${schema}`);
+      const url = new URL(POSTGRES_URL as string);
+      url.searchParams.set('options', `-c search_path=${schema},public`);
+      const statements: string[] = [];
+      const fresh = postgres(url.toString(), {
+        onnotice: () => {},
+        debug: (_conn, query) => void statements.push(query)
+      });
+      try {
+        await runMigrations(fresh, { layout: 'legacy' });
+        await fresh`ALTER TABLE rows SET (autovacuum_enabled = false)`;
+        const n = 30_000;
+        await insertAndFlush(fresh, 'fresh', 'Big', n);
+        const [rel] = await fresh<Array<{ reltuples: number }>>`
+          SELECT reltuples::float8 AS reltuples FROM pg_class WHERE oid = 'rows'::regclass`;
+        expect(rel?.reltuples).toBe(-1);
+
+        statements.length = 0;
+        const ds = new PgDataset({ namespace: 'fresh', sql: fresh });
+        const big = (await ds.typeStats()).find((s) => s.type === 'Big');
+        expect(statements.some((q) => q.includes('TABLESAMPLE SYSTEM'))).toBe(true);
+        expect(big?.liveRows).toBeGreaterThan(n / 2);
+        expect(big?.liveRows).toBeLessThan(n * 2);
+      } finally {
+        await fresh.end({ timeout: 5 });
+        await sql.unsafe(`DROP SCHEMA ${schema} CASCADE`);
+      }
+    },
+    60_000
+  );
 });
+
+/** Inserts `n` rows of `ns`/`type`, then flushes this backend's statistics so `n_live_tup` shows them. */
+async function insertAndFlush(db: Sql, ns: string, type: string, n: number): Promise<void> {
+  const conn = await db.reserve();
+  try {
+    await conn`
+      INSERT INTO rows (namespace, type, id, body)
+      SELECT ${ns}, ${type}, g::text, '{}'::jsonb FROM generate_series(1, ${n}) g`;
+    await conn`SELECT pg_stat_force_next_flush()`;
+    await conn`SELECT 1`;
+  } finally {
+    conn.release();
+  }
+  // Flushed: the next read of the statistics, in a new transaction, sees them.
+  await vi.waitFor(
+    async () => {
+      const [s] = await db<Array<{ live: number }>>`
+        SELECT n_live_tup::float8 AS live FROM pg_stat_user_tables WHERE relid = 'rows'::regclass`;
+      expect(s?.live).toBeGreaterThanOrEqual(n);
+    },
+    { timeout: 10_000, interval: 50 }
+  );
+}
