@@ -16,7 +16,7 @@ import type {
   RequestContext
 } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createNoopPubSub, createProposalsPlugin, storageSettled } from '../src/index.js';
 
 const T0 = new Date('2026-10-25T00:00:00Z');
@@ -48,6 +48,19 @@ async function boot(datasets: MemoryDatasetRegistry, owned: string) {
   await loaded.runOnStart(engine);
   return engine;
 }
+
+/** Set to make applying a type's index options fail after validation passed. */
+let failIndexApply = false;
+vi.mock('../src/apply.js', async (orig) => {
+  const real = await orig<typeof import('../src/apply.js')>();
+  return {
+    ...real,
+    applyTypeIndexOptions: (...a: Parameters<typeof real.applyTypeIndexOptions>) => {
+      if (failIndexApply) throw new Error('index build refused');
+      return real.applyTypeIndexOptions(...a);
+    }
+  };
+});
 
 const code = (env: PackEnvelope): string | undefined => env.errors?.[0]?.code;
 
@@ -120,6 +133,30 @@ function suite(make: () => Promise<{ ns: string; datasets: MemoryDatasetRegistry
     expect(row?.indexesJson ?? null).toBeNull();
     expect(row?.orderedByJson ?? null).toBeNull();
     expect(row?.expectedSize ?? null).toBeNull();
+    await storageSettled();
+  });
+
+  it('leaves nothing behind when applying the options fails, and the name can be proposed again', async () => {
+    const { ns, datasets } = await make();
+    const engine = await boot(datasets, ns);
+    failIndexApply = true;
+    let env: PackEnvelope;
+    try {
+      env = await propose(engine, ns, 'Retry', { orderedBy: { size: 'asc' } });
+    } finally {
+      failIndexApply = false;
+    }
+    expect(code(env)).toBe('invalid_params');
+    expect(env.errors?.[0]?.message).toContain('index build refused');
+    expect(engine.registryFor(ns)?.get('Retry')).toBeUndefined();
+    const left = await (datasets.get(ns) as Dataset).read('TypeProposal', {
+      where: { typeName: { eq: 'Retry' } }
+    });
+    expect(left.rows).toEqual([]);
+
+    const again = await propose(engine, ns, 'Retry', { orderedBy: { size: 'asc' } });
+    expect(again.errors ?? []).toEqual([]);
+    expect(engine.registryFor(ns)?.get('Retry')).toMatchObject({ orderedBy: { size: 'asc' } });
     await storageSettled();
   });
 

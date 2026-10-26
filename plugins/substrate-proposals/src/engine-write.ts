@@ -24,7 +24,9 @@ export async function writeInTx(
   ctx: RequestContext,
   args: ResolverArgs,
   op: string,
-  params: Record<string, unknown>
+  params: Record<string, unknown>,
+  /** Skip the op's policy: the caller has already authorised the whole write. */
+  skipPolicy = false
 ): Promise<Row> {
   const entry = registry.get(op);
   if (entry === undefined) throw new Error(`'${op}' is not registered`);
@@ -34,7 +36,7 @@ export async function writeInTx(
     ...(entry.verb !== undefined ? { verb: entry.verb } : {})
   };
   const opArgs: ResolverArgs = { ...args, params, fields: { id: true } };
-  const decision = entry.policy?.(opCtx, opArgs);
+  const decision = skipPolicy ? undefined : entry.policy?.(opCtx, opArgs);
   if (decision !== undefined && !decision.allow) {
     throw new Error(`'${op}' denied: ${decision.reason ?? 'policy denied'}`);
   }

@@ -48,7 +48,6 @@ import {
 import { ProposalError } from './errors.js';
 import type { FieldSpecJson } from './field-spec-json.js';
 import { proposalLockKey, withProposalLock } from './proposal-lock.js';
-import { bodyOf } from './propose-index-resolver.js';
 import type { RegistryStore } from './registry-store.js';
 
 export interface ProposeTypeResolverDeps {
@@ -230,16 +229,17 @@ async function proposeTypeLocked(
   const engine = binding.engine;
 
   if (engine !== undefined) {
-    await writeInTx(binding.registry, ctx, args, 'createTypeProposal', initialParams);
-    // Written straight to the dataset: the table's policy reserves these two
-    // keys for `substrate.index`, which creating a type does not need.
-    if (indexFields.indexesJson !== null || indexFields.orderedByJson !== null) {
-      const created = (await args.dataset.read('TypeProposal', { id: newId })).rows[0];
-      if (!created) throw new Error(`TypeProposal row ${newId} not found after engine create`);
-      await args.dataset.write('TypeProposal', [{ ...bodyOf(created), ...indexFields }], {
-        identity: resolveIdentity(ctx)
-      });
-    }
+    // One write carrying every field. The create policy reserves the index
+    // keys for `substrate.index`; declaring a new type's own needs only the
+    // propose capability, which the resolver's policy has already checked.
+    await writeInTx(
+      binding.registry,
+      ctx,
+      args,
+      'createTypeProposal',
+      { ...initialParams, ...indexFields },
+      true
+    );
   } else {
     const writeResult = await args.dataset.write('TypeProposal', [
       { ...initialParams, ...indexFields } as Row
@@ -264,19 +264,29 @@ async function proposeTypeLocked(
           edges: deps.edges
         });
         if (Object.keys(indexOpts).length > 0) {
-          applyTypeIndexOptions({
-            namespace: deps.namespace,
-            typeName,
-            ...indexOpts,
-            registryStore: deps.registryStore,
-            dataset: deps.dataset,
-            edges: deps.edges
-          });
+          try {
+            applyTypeIndexOptions({
+              namespace: deps.namespace,
+              typeName,
+              ...indexOpts,
+              registryStore: deps.registryStore,
+              dataset: deps.dataset,
+              edges: deps.edges
+            });
+          } catch (cause) {
+            throw new ProposalError(
+              'invalid_params',
+              cause instanceof Error ? cause.message : String(cause),
+              {},
+              { cause }
+            );
+          }
         }
       },
       () => binding.invalidateSchemaCaches?.()
     );
   } catch (cause) {
+    if (cause instanceof ProposalError) throw cause;
     throw new ProposalError(
       'type_already_exists',
       `Could not apply type '${typeName}': ${cause instanceof Error ? cause.message : String(cause)}`,
