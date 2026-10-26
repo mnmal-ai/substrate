@@ -15,6 +15,7 @@ import type {
   Row,
   RowMetadata
 } from '@mnmal-ai/substrate-types';
+import { DEFAULT_ORDERED_BY } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
 import { Engine, MemoryEdgesStore, type NamespaceConfig, Registry } from '../src/index.js';
 
@@ -125,5 +126,55 @@ describe('natural order (memory)', () => {
     expect([...walked].sort()).toEqual(rows.map((r) => r.id));
     expect(new Set(walked).size).toBe(25);
     expect(walked.slice(-5)).toEqual(missing);
+  });
+
+  it('the default natural order is frozen', () => {
+    expect(Object.isFrozen(DEFAULT_ORDERED_BY)).toBe(true);
+  });
+});
+
+describe('cursor order signing (memory)', () => {
+  async function seeded(): Promise<Engine> {
+    const { engine, ds } = engineFor();
+    for (let i = 0; i < 6; i++) {
+      await ds.write('Item', [
+        { id: `r${i}`, rating: i, _metadata: meta(`2026-10-25T00:00:0${i}.000Z`) }
+      ]);
+    }
+    return engine;
+  }
+
+  async function refusal(engine: Engine, params: Record<string, unknown>) {
+    const env = await engine.query({
+      frame: { 'shop/Item': { params: { limit: 2, ...params }, fields: { id: true } } },
+      ctx: { identity: null }
+    });
+    expect('shop/Item' in env.data).toBe(false);
+    expect(env.errors?.[0]?.code).toBe('invalid_cursor');
+    return env.errors?.[0];
+  }
+
+  it('refuses an old-format cursor, which carries no order', async () => {
+    const legacy = Buffer.from(JSON.stringify({ orderByValues: ['r3'], id: 'r3' })).toString(
+      'base64url'
+    );
+    const err = await refusal(await seeded(), { cursor: legacy });
+    expect(err?.message).toMatch(/carries no 'order'/);
+  });
+
+  it('refuses a cursor replayed under a different orderBy', async () => {
+    const engine = await seeded();
+    const first = await engine.query({
+      frame: { 'shop/Item': { params: { limit: 2 }, fields: { id: true } } },
+      ctx: { identity: null }
+    });
+    const cursor = first._pagination?.['shop/Item']?.nextCursor;
+    expect(typeof cursor).toBe('string');
+    const err = await refusal(engine, { cursor, orderBy: [{ rating: 'desc' }] });
+    expect(err?.message).toMatch(/createdAt desc, id asc.*rating desc, id asc/);
+  });
+
+  it('refuses a corrupted cursor', async () => {
+    await refusal(await seeded(), { cursor: 'not!a~cursor' });
   });
 });

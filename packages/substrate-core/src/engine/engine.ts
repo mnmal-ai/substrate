@@ -1434,7 +1434,8 @@ export class Engine {
     ) {
       const orderBy = args.params?.orderBy;
       if (!Array.isArray(orderBy) || orderBy.length === 0) {
-        args.params = { ...args.params, orderBy: [naturalOrderOf(registryEntry)] };
+        // A copy, so nothing downstream can mutate the schema's (or the default's) object.
+        args.params = { ...args.params, orderBy: [{ ...naturalOrderOf(registryEntry) }] };
       }
     }
 

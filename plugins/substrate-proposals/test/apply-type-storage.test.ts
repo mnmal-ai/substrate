@@ -15,8 +15,7 @@ import {
   detectLayout,
   PgDataset,
   PgEdgesStore,
-  partitionName,
-  runMigrations
+  partitionName
 } from '@mnmal-ai/substrate-dataset-pg';
 import type {
   AfterTxWork,
@@ -145,7 +144,7 @@ describe.skipIf(!POSTGRES_URL)('propose_type storage (pg)', () => {
 
   beforeAll(async () => {
     sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
-    await runMigrations(sql);
+    // Migrated once in _global-setup.ts.
     partitioned = (await detectLayout(sql)) === 'partitioned';
   });
 

@@ -232,7 +232,7 @@ export class MemoryDataset implements Dataset {
     // Cursor: drop rows up to and including the cursor tuple.
     let startIdx = 0;
     if (params.cursor !== undefined && params.cursor !== '') {
-      const cursor = decodeCursor(params.cursor);
+      const cursor = decodeCursor(params.cursor, orderBy);
       startIdx = findCursorStart(pool, orderBy, cursor.orderByValues, cursor.id, fieldDefOf);
     }
 
@@ -259,7 +259,8 @@ export class MemoryDataset implements Dataset {
     if (hasMore && last !== undefined) {
       out.nextCursor = encodeCursor({
         orderByValues: orderBy.map(([field]) => getFieldValue(last, field)),
-        id: last.id
+        id: last.id,
+        order: orderBy
       });
     }
 

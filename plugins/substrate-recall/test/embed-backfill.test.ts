@@ -7,7 +7,6 @@ import { EmbedSourceRegistry } from '../src/embed-source-registry.js';
 import type { EmbeddingsStore } from '../src/embeddings-store.js';
 import { embeddingsMigration } from '../src/migrations/0001_embeddings.js';
 import { PgEmbeddingsStore } from '../src/pg-embeddings-store.js';
-import { ensureRows } from './_pg-rows.js';
 
 /** A dataset whose rows carry a `v` marking which version of the row a read saw. */
 function fakeDataset(rows: Record<string, Row>): Dataset {
@@ -125,7 +124,6 @@ describe.skipIf(POSTGRES_URL === undefined)('PgEmbeddingsStore.staleRowIds', () 
   beforeAll(async () => {
     const setupSql = postgres(POSTGRES_URL as string);
     try {
-      await ensureRows(setupSql);
       await embeddingsMigration().apply({ sql: setupSql, metric: () => {} });
     } finally {
       await setupSql.end();

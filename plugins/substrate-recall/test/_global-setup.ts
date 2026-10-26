@@ -17,6 +17,8 @@ import {
   recreatePgTestSchema,
   selectPgTestLayout
 } from '@mnmal-ai/substrate-dataset-pg/testing';
+import postgres from 'postgres';
+import { ensureRows } from './_pg-rows.js';
 
 // Once per storage layout, each in a schema rebuilt every run.
 export default async function setup(): Promise<void> {
@@ -29,5 +31,13 @@ export default async function setup(): Promise<void> {
     packageName,
     createSchema: recreatePgTestSchema
   });
-  if (isolated !== undefined) process.env.POSTGRES_URL = isolated;
+  if (isolated === undefined) return;
+  process.env.POSTGRES_URL = isolated;
+  // Once, here, not per file: see `ensureRows`.
+  const sql = postgres(isolated, { max: 1, onnotice: () => {} });
+  try {
+    await ensureRows(sql);
+  } finally {
+    await sql.end({ timeout: 5 });
+  }
 }

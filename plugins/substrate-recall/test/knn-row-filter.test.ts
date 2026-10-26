@@ -13,7 +13,6 @@ import { matchesRowFilter, rowFilterProblem } from '../src/embeddings-store.js';
 import { InMemoryEmbeddingsStore } from '../src/in-memory-embeddings-store.js';
 import { embeddingsMigration } from '../src/migrations/0001_embeddings.js';
 import { PgEmbeddingsStore } from '../src/pg-embeddings-store.js';
-import { ensureRows } from './_pg-rows.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 // The suites in this package share one embeddings, created at the default 768.
@@ -104,7 +103,6 @@ describe.skipIf(POSTGRES_URL === undefined)(
     beforeAll(async () => {
       sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
       await sql`CREATE EXTENSION IF NOT EXISTS vector`;
-      await ensureRows(sql);
       await embeddingsMigration().apply({ sql, metric: () => {} });
       await sql`DELETE FROM embeddings WHERE row_namespace = 'knn1558'`;
       await sql`DELETE FROM rows WHERE namespace = 'knn1558'`;

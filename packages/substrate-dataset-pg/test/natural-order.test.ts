@@ -9,7 +9,7 @@
 import { Engine, MemoryEdgesStore, type NamespaceConfig, Registry } from '@mnmal-ai/substrate-core';
 import { MemoryDatasetRegistry } from '@mnmal-ai/substrate-dataset-memory';
 import { defineNamespace, field, type TypeInput } from '@mnmal-ai/substrate-sdk';
-import type { OrderedBy, Row, RowMetadata } from '@mnmal-ai/substrate-types';
+import type { FieldDef, OrderedBy, Row, RowMetadata } from '@mnmal-ai/substrate-types';
 import postgres from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { runMigrations } from '../src/migrate.js';
@@ -77,7 +77,12 @@ describe.skipIf(!POSTGRES_URL)('natural order (pg)', () => {
   });
 
   function engineFor(orderedBy?: OrderedBy): { engine: Engine; ds: PgDataset } {
-    const ds = new PgDataset({ namespace: NS, sql });
+    // As the serve path wires it, so declared number and date fields sort by kind.
+    const ds = new PgDataset({
+      namespace: NS,
+      sql,
+      fieldDefLookup: (_type, f) => (fields as Record<string, FieldDef>)[f]
+    });
     const registry = new Registry();
     const edges = new MemoryEdgesStore({ now: () => new Date() });
     defineNamespace(NS, {
@@ -135,6 +140,16 @@ describe.skipIf(!POSTGRES_URL)('natural order (pg)', () => {
     expect((await page(engine)).ids).toEqual(['c', 'a', 'b']);
   });
 
+  it('a number orderedBy sorts numerically, not as text', async () => {
+    const { engine, ds } = engineFor({ rating: 'desc' });
+    await ds.write('Item', [
+      { id: 'nine', rating: 9 },
+      { id: 'hundred', rating: 100 },
+      { id: 'ten', rating: 10 }
+    ]);
+    expect((await page(engine)).ids).toEqual(['hundred', 'ten', 'nine']);
+  });
+
   it('an explicit orderBy wins and natural order is not added', async () => {
     const { engine, ds } = engineFor({ boughtOn: 'asc' });
     await ds.write('Item', [
@@ -184,5 +199,57 @@ describe.skipIf(!POSTGRES_URL)('natural order (pg)', () => {
     expect([...walked].sort()).toEqual(rows.map((r) => r.id));
     expect(new Set(walked).size).toBe(25);
     expect(walked.slice(-5)).toEqual(missing);
+  });
+
+  describe('cursor order signing', () => {
+    async function seeded(): Promise<Engine> {
+      const { engine, ds } = engineFor();
+      for (let i = 0; i < 6; i++) {
+        await ds.write('Item', [
+          { id: `r${i}`, rating: i, _metadata: meta(`2026-10-25T00:00:0${i}.000Z`) }
+        ]);
+      }
+      return engine;
+    }
+
+    async function refusal(engine: Engine, params: Record<string, unknown>) {
+      const env = await engine.query({
+        frame: { [`${NS}/Item`]: { params: { limit: 2, ...params }, fields: { id: true } } },
+        ctx: { identity: null }
+      });
+      expect(`${NS}/Item` in env.data).toBe(false);
+      expect(env.errors?.[0]?.code).toBe('invalid_cursor');
+      return env.errors?.[0];
+    }
+
+    it('refuses an old-format cursor, which carries no order', async () => {
+      // What every pre-upgrade default (id-ordered) pg cursor looks like.
+      const legacy = Buffer.from(JSON.stringify({ orderByValues: [], id: 'r3' })).toString(
+        'base64url'
+      );
+      const err = await refusal(await seeded(), { cursor: legacy });
+      expect(err?.message).toMatch(/carries no 'order'/);
+    });
+
+    it('refuses a cursor replayed under a different orderBy', async () => {
+      const engine = await seeded();
+      const first = await page(engine, { limit: 2 });
+      expect(first.ids).toEqual(['r5', 'r4']);
+      expect(typeof first.nextCursor).toBe('string');
+      const err = await refusal(engine, {
+        cursor: first.nextCursor,
+        orderBy: [{ rating: 'desc' }]
+      });
+      expect(err?.message).toMatch(/createdAt desc, id asc.*rating desc, id asc/);
+      // Replayed under its own order, the same cursor still pages on.
+      expect((await page(engine, { limit: 2, cursor: first.nextCursor })).ids).toEqual([
+        'r3',
+        'r2'
+      ]);
+    });
+
+    it('refuses a corrupted cursor', async () => {
+      await refusal(await seeded(), { cursor: 'not!a~cursor' });
+    });
   });
 });

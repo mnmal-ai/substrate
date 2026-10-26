@@ -360,7 +360,7 @@ export class PgDataset implements Dataset {
     let whereSql = combineAnd(sql, clauses);
     let tailSql: Fragment | null = null;
     if (params.cursor !== undefined && params.cursor !== '') {
-      const cursor = decodeCursor(params.cursor);
+      const cursor = decodeCursor(params.cursor, orderBy);
       const cursorFragment = buildCursorCompare(
         sql,
         orderBy,
@@ -490,7 +490,8 @@ export class PgDataset implements Dataset {
             const alias = sortKeyAliases.get(field);
             return alias === undefined ? null : (lastRaw?.[alias] ?? null);
           }),
-        id: last.id
+        id: last.id,
+        order: orderBy
       });
     }
 

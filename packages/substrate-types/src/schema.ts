@@ -178,7 +178,7 @@ export interface TypeSchema {
 export type OrderedBy = Record<string, 'asc' | 'desc'>;
 
 /** Natural order of a type that declares none: newest first. */
-export const DEFAULT_ORDERED_BY: OrderedBy = { createdAt: 'desc' };
+export const DEFAULT_ORDERED_BY: OrderedBy = Object.freeze<OrderedBy>({ createdAt: 'desc' });
 
 /** The declared natural order, or {@link DEFAULT_ORDERED_BY}. */
 export function naturalOrderOf(schema: Pick<TypeSchema, 'orderedBy'>): OrderedBy {

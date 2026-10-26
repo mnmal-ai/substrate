@@ -11,7 +11,6 @@ import { InMemoryLexicalStore } from '../src/in-memory-lexical-store.js';
 import type { LexicalStore } from '../src/lexical-store.js';
 import { lexicalMigration } from '../src/migrations/0003_lexical.js';
 import { PgLexicalStore } from '../src/pg-lexical-store.js';
-import { ensureRows } from './_pg-rows.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const NS = 'lexfilter';
@@ -109,7 +108,6 @@ describe.skipIf(POSTGRES_URL === undefined)('pg', () => {
   });
   suite('pg lexical store', async () => {
     sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
-    await ensureRows(sql);
     const lex = lexicalMigration();
     await lex.apply({ sql } as unknown as Parameters<typeof lex.apply>[0]);
     await sql`DELETE FROM lexical WHERE row_namespace = ${NS}`;

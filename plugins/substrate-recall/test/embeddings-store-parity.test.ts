@@ -11,7 +11,6 @@ import type { EmbeddingsStore } from '../src/embeddings-store.js';
 import { InMemoryEmbeddingsStore } from '../src/in-memory-embeddings-store.js';
 import { embeddingsMigration } from '../src/migrations/0001_embeddings.js';
 import { PgEmbeddingsStore } from '../src/pg-embeddings-store.js';
-import { ensureRows } from './_pg-rows.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const isPgGated = POSTGRES_URL !== undefined;
@@ -31,8 +30,6 @@ function vec(seed: number, dim = 768): Float32Array {
 async function ensureSchema(url: string): Promise<void> {
   const setupSql = postgres(url);
   try {
-    // rows, for the parity tests' JOIN
-    await ensureRows(setupSql);
     // Create embeddings table + HNSW index + salience columns
     await embeddingsMigration().apply({ sql: setupSql, metric: () => {} });
   } finally {

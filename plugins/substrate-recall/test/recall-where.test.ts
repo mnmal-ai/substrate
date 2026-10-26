@@ -18,7 +18,6 @@ import { PgEmbeddingsStore } from '../src/pg-embeddings-store.js';
 import { PgLexicalStore } from '../src/pg-lexical-store.js';
 import type { RecallDeps, RecallInput } from '../src/recall/types.js';
 import { handleRecallRequest } from '../src/recall-route.js';
-import { ensureRows } from './_pg-rows.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const NS = 'recallwhere';
@@ -198,7 +197,6 @@ describe.skipIf(POSTGRES_URL === undefined)('pg', () => {
   suite('pg stores', async () => {
     sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
     await sql`CREATE EXTENSION IF NOT EXISTS vector`;
-    await ensureRows(sql);
     await embeddingsMigration().apply({ sql, metric: () => {} });
     const lex = lexicalMigration();
     await lex.apply({ sql } as unknown as Parameters<typeof lex.apply>[0]);

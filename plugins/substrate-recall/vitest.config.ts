@@ -15,14 +15,12 @@ export default defineConfig({
     setupFiles: ['./test/_setup.ts'],
     // Pins search_path to a per-package schema BEFORE any worker forks.
     globalSetup: ['./test/_global-setup.ts'],
-    // Pg-gated suites do real DDL — full migration sets including four
-    // `CREATE INDEX CONCURRENTLY` builds. CIC waits on every concurrent
-    // transaction in the DATABASE, not just this schema, so it gets slower as
-    // the other pg packages run alongside; vitest's 5s/10s defaults are sized
-    // for unit tests and timed out under a parallel gate. Raised
-    // only when POSTGRES_URL is set, so non-pg runs keep the tight defaults.
+    // Pg-gated suites do real DDL (recall's own migrations, dropped and
+    // reapplied per test), which vitest's 5s default is sized too tight for
+    // under a parallel gate. The core migrations, whose CREATE INDEX
+    // CONCURRENTLY builds wait on every open transaction in the database, run
+    // once in globalSetup, so hooks keep vitest's default timeout.
     testTimeout: process.env.POSTGRES_URL ? 30_000 : 5_000,
-    hookTimeout: process.env.POSTGRES_URL ? 60_000 : 10_000,
     // Single shared pg database across all pg-gated files (substrate_test). The
     // two live-db suites race on the shared `embeddings` table:
     // migrations.test.ts runs `DROP TABLE … CASCADE` (beforeAll/afterAll +
