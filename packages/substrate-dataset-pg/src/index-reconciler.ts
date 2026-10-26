@@ -120,6 +120,8 @@ interface Spec {
   predicate: string;
   /** A derived index, whose natural-order key may change and still swap. */
   derived?: true;
+  /** The keys a read can use, by field name (metadata columns by their read name), in order. */
+  order: Array<[string, 'asc' | 'desc']>;
 }
 
 export interface ReconcileOptions {
@@ -535,22 +537,24 @@ export function describeTypeIndexes(
   });
 }
 
-const fold = (s: string): string => s.toLowerCase().replace(/[^a-z0-9_]/g, '_');
-
 /**
- * Engine-named indexes among `heldNames` (the indexes on the type's partition)
+ * Engine-owned indexes of the type (`held`: its indexes, by `belongsToType`)
  * that its declaration no longer asks for. They are reported, never dropped:
- * removing an index is the operator's call. Partitioned layout only.
+ * removing an index is the operator's call. Both layouts.
  */
-export function undeclaredIndexes(args: ReconcileTypeIndexesArgs, heldNames: string[]): string[] {
-  if (args.layout !== 'partitioned') return [];
+export function undeclaredIndexes(args: ReconcileTypeIndexesArgs, held: HeldIndex[]): string[] {
   const desired = new Set(desiredSpecs(args).map((s) => s.name));
-  const prefix = `rows_${fold(args.namespace)}_${fold(args.type)}_`;
-  return heldNames
-    .filter(
-      (n) => n.startsWith(prefix) && /_[0-9a-f]{8}_(idx|uniq|gin|base)$/.test(n) && !desired.has(n)
-    )
+  return held
+    .filter((i) => isEngineOwned(i) && !desired.has(i.name))
+    .map((i) => i.name)
     .sort();
+}
+
+/** Each index the reconciler wants for the type, with the keys a read can use, in order. */
+export function desiredIndexKeys(
+  args: ReconcileTypeIndexesArgs
+): Array<{ name: string; keys: Array<[string, 'asc' | 'desc']>; unique: boolean }> {
+  return desiredSpecs(args).map((s) => ({ name: s.name, keys: s.order, unique: s.unique }));
 }
 
 /** An index on the table a type's rows live in, with its usage statistics. */
@@ -619,6 +623,20 @@ const LIVE_SCOPE = new RegExp(
   `^\\(\\(namespace = ${LITERAL}\\) AND \\(type = ${LITERAL}\\) AND \\(deleted_at IS NULL\\)\\)$`,
   's'
 );
+
+const SCOPE = new RegExp(
+  `^\\(\\(namespace = ${LITERAL}\\) AND \\(type = ${LITERAL}\\)(?: AND |\\)$)`,
+  's'
+);
+
+/** The namespace and type a legacy index's predicate is scoped to, as `belongsToType` reads it. Else undefined. */
+export function legacyScope(
+  predicate: string | null
+): { namespace: string; type: string } | undefined {
+  const m = predicate === null ? null : SCOPE.exec(predicate);
+  if (m === null || m[1] === undefined || m[2] === undefined) return undefined;
+  return { namespace: m[1].replace(/''/g, "'"), type: m[2].replace(/''/g, "'") };
+}
 
 /**
  * The namespace and type a legacy index's predicate is exactly the live scope
@@ -714,7 +732,13 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
   // A non-unique btree ends with `id`, so it serves the `id` that ends every
   // ORDER BY as well as the filter. `withoutId` leaves it out, for name hashing.
   // `natural` is a derived index's natural-order key, after the declared ones.
-  const btree = (decl: IndexDecl, name: string, withoutId = false, natural?: string): Spec => {
+  const btree = (
+    decl: IndexDecl,
+    name: string,
+    withoutId = false,
+    natural?: string,
+    naturalKey?: [string, 'asc' | 'desc']
+  ): Spec => {
     const cols = decl.fields.map((f) => (typeof f === 'string' ? { field: f, dir: 'asc' } : f));
     const keys = cols.map((c) => keyExpr(c.field, fields[c.field], promoted));
     let predicate = live;
@@ -754,7 +778,11 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
       unique: decl.unique === true,
       tail: `USING btree (${colSql.join(', ')}) WHERE ${predicate}`,
       keys,
-      predicate
+      predicate,
+      order: [
+        ...cols.map((c): [string, 'asc' | 'desc'] => [c.field, c.dir === 'desc' ? 'desc' : 'asc']),
+        ...(naturalKey !== undefined ? [naturalKey] : [])
+      ]
     };
   };
 
@@ -781,7 +809,8 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
         { fields: [{ field, dir: own ? natDir : 'asc' }] },
         generatedIdentifier(namespace, type, field, 'idx'),
         false,
-        own ? undefined : natural
+        own ? undefined : natural,
+        own ? undefined : [natField, natDir]
       ),
       derived: true
     });
@@ -796,21 +825,27 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
           unique: false,
           tail: `USING gin ((body -> ${sqlStringLiteral(field)}) jsonb_path_ops) WHERE ${live}`,
           keys: [],
-          predicate: live
+          predicate: live,
+          order: []
         });
       }
     }
-    const base = (column: string, tail: string): Spec => ({
+    const base = (column: string, tail: string, order: Spec['order'] = []): Spec => ({
       name: generatedIdentifier(namespace, type, column, 'base'),
       fields: [],
       unique: false,
       tail,
       keys: [],
-      predicate: live
+      predicate: live,
+      order
     });
     specs.push(
-      base('created_at', `USING btree (created_at DESC NULLS LAST, id) WHERE ${live}`),
-      base('updated_at', `USING btree (updated_at DESC NULLS LAST, id) WHERE ${live}`),
+      base('created_at', `USING btree (created_at DESC NULLS LAST, id) WHERE ${live}`, [
+        ['createdAt', 'desc']
+      ]),
+      base('updated_at', `USING btree (updated_at DESC NULLS LAST, id) WHERE ${live}`, [
+        ['updatedAt', 'desc']
+      ]),
       base('deleted_at', 'USING btree (deleted_at) WHERE deleted_at IS NOT NULL')
     );
   }

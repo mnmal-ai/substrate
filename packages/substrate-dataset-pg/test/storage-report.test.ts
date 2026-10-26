@@ -32,9 +32,14 @@ function dataset(ns: string, defs: { current: Record<string, FieldDef> }): PgDat
   return new PgDataset({
     namespace: ns,
     sql,
-    typeDefLookup: (type) => (type === TYPE ? { fields: defs.current } : undefined)
+    typeDefLookup: (type, namespace) =>
+      type === TYPE && namespace === ns ? { fields: defs.current } : undefined
   });
 }
+
+/** Lines naming an undeclared index of `ns`. */
+const undeclaredIn = (warnings: string[], ns: string): string[] =>
+  warnings.filter((w) => w.startsWith('undeclared index') && w.includes(` on ${ns}/`));
 
 const indexed: Record<string, FieldDef> = {
   kid: { kind: 'scalar', type: 'string', indexed: true }
@@ -66,7 +71,7 @@ describe.skipIf(!POSTGRES_URL)('describeStorage', () => {
   });
 });
 
-describe.skipIf(!POSTGRES_URL || LAYOUT !== 'partitioned')('storageReport (partitioned)', () => {
+describe.skipIf(!POSTGRES_URL)('storageReport', () => {
   it('names an engine index that is no longer declared, and keeps it', async () => {
     const ns = freshNs();
     const defs = { current: indexed };
@@ -79,9 +84,72 @@ describe.skipIf(!POSTGRES_URL || LAYOUT !== 'partitioned')('storageReport (parti
     const [held] = await sql`SELECT 1 FROM pg_class WHERE relname = ${name}`;
     expect(held).toBeDefined();
     const { warnings } = await ds.storageReport({ partitionBudget: BIG });
-    expect(warnings).toContain(`undeclared index ${name} on ${ns}/${TYPE}: drop it explicitly`);
+    expect(undeclaredIn(warnings, ns)).toEqual([
+      `undeclared index ${name} on ${ns}/${TYPE}: drop it explicitly`
+    ]);
   });
 
+  it('tells two types apart whose index names fold alike, and finds a truncated name', async () => {
+    // `X_a`/`b_c` and `X_a_b`/`c` both fold to the prefix `rows_x_a_b_c_`.
+    const tag = randomBytes(3).toString('hex');
+    const long = `T${'x'.repeat(60)}`;
+    const types = [
+      { ns: `sr${tag}_a`, type: 'b_c' },
+      { ns: `sr${tag}_a_b`, type: 'c' },
+      { ns: `sr${tag}_l`, type: long }
+    ];
+    const current = new Map(types.map((t) => [`${t.ns}/${t.type}`, indexed]));
+    const ds = (ns: string): PgDataset =>
+      new PgDataset({
+        namespace: ns,
+        sql,
+        typeDefLookup: (type, namespace) => {
+          const fields = current.get(`${namespace}/${type}`);
+          return fields === undefined ? undefined : { fields };
+        }
+      });
+    for (const t of types) await ds(t.ns).ensureTypeStorage(t.type);
+    const [kept, retracted, truncated] = types as [
+      (typeof types)[0],
+      (typeof types)[0],
+      (typeof types)[0]
+    ];
+    current.set(`${retracted.ns}/${retracted.type}`, {});
+    current.set(`${truncated.ns}/${truncated.type}`, {});
+
+    const { warnings } = await ds(kept.ns).storageReport({ partitionBudget: BIG });
+    const name = (t: { ns: string; type: string }): string =>
+      generatedIdentifier(t.ns, t.type, 'kid', 'idx');
+    expect(name(truncated).length).toBeLessThanOrEqual(63);
+    expect(undeclaredIn(warnings, kept.ns)).toEqual([]);
+    expect(undeclaredIn(warnings, retracted.ns)).toEqual([
+      `undeclared index ${name(retracted)} on ${retracted.ns}/${retracted.type}: drop it explicitly`
+    ]);
+    expect(undeclaredIn(warnings, truncated.ns)).toEqual([
+      `undeclared index ${name(truncated)} on ${truncated.ns}/${truncated.type}: drop it explicitly`
+    ]);
+  });
+
+  it('counts open index recommendations as info, never as a warning', async () => {
+    const ds = dataset(freshNs(), { current: {} });
+    const system = new PgDataset({ namespace: '_system', sql });
+    const id = `rec_${randomBytes(4).toString('hex')}`;
+    const before = await ds.storageReport({ partitionBudget: BIG });
+    const count = (info: string[] | undefined): number =>
+      Number(/^(\d+) open index recommendation/.exec(info?.[0] ?? '')?.[1] ?? 0);
+    if (LAYOUT === 'partitioned') await system.ensureTypeStorage('IndexRecommendation');
+    await system.write('IndexRecommendation', [{ id, state: 'open' }]);
+    try {
+      const after = await ds.storageReport({ partitionBudget: BIG });
+      expect(count(after.info)).toBe(count(before.info) + 1);
+      expect(after.warnings.some((w) => w.includes('recommendation'))).toBe(false);
+    } finally {
+      await system.purge('IndexRecommendation', [id]);
+    }
+  });
+});
+
+describe.skipIf(!POSTGRES_URL || LAYOUT !== 'partitioned')('storageReport (partitioned)', () => {
   it('warns about an index on the rows parent', async () => {
     const ns = freshNs();
     const ds = dataset(ns, { current: {} });
@@ -157,9 +225,9 @@ describe.skipIf(!POSTGRES_URL || LAYOUT !== 'partitioned')('storageReport (parti
 });
 
 describe.skipIf(!POSTGRES_URL || LAYOUT !== 'legacy')('storageReport (legacy)', () => {
-  it('never warns', async () => {
+  it('has no partition or parent warnings', async () => {
     const ds = dataset(freshNs(), { current: {} });
-    expect(await ds.storageReport({ partitionBudget: 0 })).toEqual({
+    expect(await ds.storageReport({ partitionBudget: 0 })).toMatchObject({
       layout: 'legacy',
       warnings: []
     });

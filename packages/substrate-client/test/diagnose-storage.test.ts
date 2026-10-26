@@ -62,6 +62,23 @@ describe('diagnose storage check', () => {
     expect(c?.detail).toContain('501 partitions exceed the budget of 500');
   });
 
+  it('is ok, showing each info line, when there are only open recommendations', async () => {
+    mockHandlers(
+      ...base,
+      config({
+        knobs: {},
+        storage: {
+          layout: 'partitioned',
+          warnings: [],
+          info: ['2 open index recommendations: query _system/IndexRecommendation']
+        }
+      })
+    );
+    const c = storage(await run());
+    expect(c?.status).toBe('ok');
+    expect(c?.detail).toContain('2 open index recommendations');
+  });
+
   it('is skip when the caller is not expected to be admin', async () => {
     mockHandlers(...base, config({ knobs: {}, storage: { layout: 'legacy', warnings: [] } }));
     expect(storage(await run(false))?.status).toBe('skip');

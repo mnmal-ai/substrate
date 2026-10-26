@@ -42,6 +42,7 @@ import type {
   FilterCapabilities,
   Id,
   IndexDecl,
+  IndexPlan,
   OrderedBy,
   ReadParams,
   ReadResult,
@@ -63,11 +64,14 @@ import { NamespaceMismatch, ReservedField } from './errors.js';
 import {
   belongsToType,
   describeTypeIndexes,
+  desiredIndexKeys,
+  type HeldIndex,
   heldIndexes,
   type IndexState,
   indexesOn,
   isEngineOwned,
   legacyLiveScope,
+  legacyScope,
   type ReconcileTypeIndexesArgs,
   reconcileTypeIndexes,
   undeclaredIndexes
@@ -121,7 +125,14 @@ export type FieldDefLookup = (type: string, field: string) => FieldDef | undefin
 export type TypeDefLookup = (
   type: string,
   namespace: string
-) => { fields: Record<string, FieldDef>; indexes?: IndexDecl[]; orderedBy?: OrderedBy } | undefined;
+) =>
+  | {
+      fields: Record<string, FieldDef>;
+      indexes?: IndexDecl[];
+      orderedBy?: OrderedBy;
+      expectedSize?: 'small' | 'large';
+    }
+  | undefined;
 
 export interface PgDatasetOptions {
   namespace: string;
@@ -211,6 +222,24 @@ interface DeferredBuild {
 }
 
 /** The CHECKs the engine's own migrations put on `rows`; any other is plugin fan-out. */
+/**
+ * `N open index recommendation(s)` while the index advisor has any, else
+ * nothing. Reads `_system/IndexRecommendation` from this schema's rows, so a
+ * `_system` held elsewhere (memory) reports none.
+ */
+async function openRecommendations(sql: Sql): Promise<string[]> {
+  const [row] = await sql<Array<{ n: number }>>`
+    SELECT count(*)::int AS n FROM rows
+    WHERE namespace = '_system' AND type = 'IndexRecommendation'
+      AND deleted_at IS NULL AND body->>'state' = 'open'`;
+  const n = row?.n ?? 0;
+  return n === 0
+    ? []
+    : [
+        `${n} open index recommendation${n === 1 ? '' : 's'}: query _system/IndexRecommendation, then apply or dismiss each with propose_index`
+      ];
+}
+
 const ENGINE_CHECKS = [
   'rows_created_by_kind_check',
   'rows_updated_by_kind_check',
@@ -1244,8 +1273,22 @@ export class PgDataset implements Dataset {
         'free-disk checks before index builds are off: set SUBSTRATE_INDEX_DISK_PATH to the database volume mount, or to off when the database has no local volume'
       );
     }
-    if (layout !== 'partitioned') return { layout: 'legacy', warnings: building };
+    if (layout === 'absent') return { layout: 'legacy', warnings: building };
     const sql = this.#sql as Sql;
+    const info = await openRecommendations(sql);
+    if (layout !== 'partitioned') {
+      const warnings = [...building];
+      const held = await heldIndexes(sql, ['rows']);
+      const types = new Map<string, { namespace: string; type: string }>();
+      for (const i of held) {
+        const scope = legacyScope(i.predicate);
+        if (scope !== undefined) types.set(JSON.stringify([scope.namespace, scope.type]), scope);
+      }
+      for (const t of types.values()) {
+        this.#undeclared(warnings, t.namespace, t.type, 'legacy', 'rows', held);
+      }
+      return { layout: 'legacy', warnings, info };
+    }
     const warnings = [...(await storageWarnings(sql)), ...building];
     const tree = await sql<Array<{ name: string; parent: string | null; bound: string | null }>>`
       SELECT c.relname AS name, p.relname AS parent, pg_get_expr(c.relpartbound, c.oid) AS bound
@@ -1267,37 +1310,25 @@ export class PgDataset implements Dataset {
         `check ${c.name} is on the rows parent: every partition carries it, and every write evaluates it`
       );
     }
-    const heldBy = new Map<string, string[]>();
     for (const i of indexes) {
-      if (i.table === 'rows') {
-        if (!i.primary) {
-          warnings.push(
-            `index ${i.name} is on the rows parent: every partition carries a copy of it`
-          );
-        }
-        continue;
-      }
-      heldBy.set(i.table, [...(heldBy.get(i.table) ?? []), i.name]);
-    }
-    const nsOf = new Map(tree.map((t) => [t.name, listBound(t.bound)]));
-    for (const part of tree) {
-      const type = listBound(part.bound);
-      const ns = part.parent === null || part.parent === 'rows' ? undefined : nsOf.get(part.parent);
-      if (type === undefined || ns === undefined || this.#typeDefLookup?.(type, ns) === undefined) {
-        continue;
-      }
-      try {
-        for (const name of undeclaredIndexes(
-          this.#indexArgs(type, ns, 'partitioned'),
-          heldBy.get(part.name) ?? []
-        )) {
-          warnings.push(`undeclared index ${name} on ${ns}/${type}: drop it explicitly`);
-        }
-      } catch (err) {
+      if (i.table === 'rows' && !i.primary) {
         warnings.push(
-          `indexes of ${ns}/${type} could not be checked: ${err instanceof Error ? err.message : String(err)}`
+          `index ${i.name} is on the rows parent: every partition carries a copy of it`
         );
       }
+    }
+    const nsOf = new Map(tree.map((t) => [t.name, listBound(t.bound)]));
+    const typeParts = tree.flatMap((part) => {
+      const type = listBound(part.bound);
+      const ns = part.parent === null || part.parent === 'rows' ? undefined : nsOf.get(part.parent);
+      return type === undefined || ns === undefined ? [] : [{ ns, type, table: part.name }];
+    });
+    const held = await heldIndexes(
+      sql,
+      typeParts.map((t) => t.table)
+    );
+    for (const t of typeParts) {
+      this.#undeclared(warnings, t.ns, t.type, 'partitioned', t.table, held);
     }
     const n = tree.length - 1;
     if (n > opts.partitionBudget) {
@@ -1305,7 +1336,40 @@ export class PgDataset implements Dataset {
         `${n} partitions exceed the budget of ${opts.partitionBudget}: move a namespace to its own instance behind a bridge`
       );
     }
-    return { layout: 'partitioned', warnings };
+    return { layout: 'partitioned', warnings, info };
+  }
+
+  /** Warns of each engine-owned index of a known type that its declaration no longer asks for. */
+  #undeclared(
+    warnings: string[],
+    ns: string,
+    type: string,
+    layout: StorageLayout,
+    table: string,
+    held: HeldIndex[]
+  ): void {
+    if (this.#typeDefLookup?.(type, ns) === undefined) return;
+    try {
+      const own = held.filter((i) => belongsToType(i, ns, type, layout, table));
+      for (const name of undeclaredIndexes(this.#indexArgs(type, ns, layout), own)) {
+        warnings.push(`undeclared index ${name} on ${ns}/${type}: drop it explicitly`);
+      }
+    } catch (err) {
+      warnings.push(
+        `indexes of ${ns}/${type} could not be checked: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  /** See `Dataset.indexPlan`. */
+  async indexPlan(type: string, namespace: string): Promise<IndexPlan | undefined> {
+    const def = this.#typeDefLookup?.(type, namespace);
+    const layout = await this.#layout();
+    if (def === undefined || layout === 'absent') return undefined;
+    return {
+      indexes: desiredIndexKeys(this.#indexArgs(type, namespace, layout)),
+      ...(def.expectedSize !== undefined ? { expectedSize: def.expectedSize } : {})
+    };
   }
 
   /**

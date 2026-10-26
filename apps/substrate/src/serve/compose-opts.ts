@@ -107,7 +107,11 @@ export async function buildComposeOpts(args: {
     pageLimits: config.pageLimits,
     subscriptions: { snapshotLimit: config.snapshotLimit },
     // Mounts the admin-gated `GET /substrate/v1/config`.
-    configReport: config.knobs
+    configReport: config.knobs,
+    advisor: {
+      intervalMs: config.advisorIntervalMs,
+      ...(config.storeProfile !== null ? { storeProfile: config.storeProfile } : {})
+    }
   };
   if (dataset.storageReport !== undefined) {
     const report = dataset.storageReport.bind(dataset);

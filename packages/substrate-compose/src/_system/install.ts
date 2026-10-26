@@ -36,6 +36,7 @@ import {
   decodeList,
   grantEntryError,
   isActiveAdminKeyRow,
+  or,
   requireCapability,
   requireNamespace
 } from '@mnmal-ai/substrate-policy';
@@ -51,6 +52,7 @@ import type {
   Row
 } from '@mnmal-ai/substrate-types';
 import { createKeyedMutex } from '@mnmal-ai/substrate-types';
+import type { StoreProfileName } from '../advisor/profiles.js';
 import { type CreateKeyRegistryOptions, createKeyRegistry, type KeyRegistry } from './registry.js';
 import {
   AUDIT_EVENT_FIELDS,
@@ -58,13 +60,21 @@ import {
   type AuditEventKind,
   ENUM_VERDICT_FIELDS,
   ENUM_VERDICT_TYPE,
+  INDEX_RECOMMENDATION_FIELDS,
+  INDEX_RECOMMENDATION_TYPE,
   INVITE_FIELDS,
   INVITE_TYPE,
   KEY_ALGORITHMS,
   KEY_FIELDS,
   KEY_TYPE,
+  STORE_PROFILE_FIELDS,
+  STORE_PROFILE_ID,
+  STORE_PROFILE_TYPE,
   SYSTEM_NAMESPACE
 } from './types.js';
+
+/** The capability that changes indexes: the store profile and index recommendations. */
+export const INDEX_CAPABILITY = 'substrate.index';
 
 /** Advisory-lock key held by key writes that can remove an admin. */
 const KEY_WRITE_LOCK = 'substrate-system:key-write';
@@ -88,6 +98,8 @@ export interface InstallSystemNamespaceOptions {
    * Omit / non-positive → disabled.
    */
   reprimeIntervalMs?: number;
+  /** Seeds the `StoreProfile` row when it does not exist yet. Default `personal`. */
+  storeProfile?: StoreProfileName;
 }
 
 export interface InstalledSystemNamespace {
@@ -690,6 +702,40 @@ export async function installSystemNamespace(
     purgeable: true,
     adminCapability
   });
+
+  // --- StoreProfile, IndexRecommendation ---
+  //
+  // Read and changed by an admin, or by a holder of `substrate.index` on
+  // `_system` (the operator or a designated reviewing agent). The advisor
+  // writes recommendations through the dataset, not through these verbs.
+  const indexGate: Policy = or(
+    adminGate,
+    and(requireCapability(INDEX_CAPABILITY), requireNamespace(SYSTEM_NAMESPACE))
+  );
+  installAutoCrud(opts.registry, STORE_PROFILE_TYPE, opts.dataset, opts.edges, {
+    fields: mergeIdField(STORE_PROFILE_FIELDS),
+    policy: indexGate,
+    adminCapability
+  });
+  installAutoCrud(opts.registry, INDEX_RECOMMENDATION_TYPE, opts.dataset, opts.edges, {
+    fields: mergeIdField(INDEX_RECOMMENDATION_FIELDS),
+    policy: indexGate,
+    purgeable: true,
+    adminCapability
+  });
+  // Seeded once: a profile changed live outlives the env var on restart.
+  await opts.dataset.write(
+    STORE_PROFILE_TYPE,
+    [
+      {
+        id: STORE_PROFILE_ID,
+        profile: opts.storeProfile ?? 'personal',
+        updatedReason:
+          opts.storeProfile === undefined ? 'default' : 'seeded from SUBSTRATE_STORE_PROFILE'
+      }
+    ],
+    { insertOnly: true, identity: { kind: 'system', id: 'bootstrap' } }
+  );
 
   // §5.12 bootstrap audit — idempotent across restarts. See
   // `backfillBootstrapAuditIfNeeded` for the ruleset. Fires after autoCRUD is

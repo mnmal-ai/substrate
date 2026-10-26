@@ -385,6 +385,14 @@ export interface Dataset {
    */
   typeStats?(): Promise<TypeStats[]>;
   /**
+   * The indexes the engine wants for `namespace`/`type` (any namespace, not
+   * only this one), with each one's leading keys, and the type's size hint.
+   * Undefined when the type is unknown. Never changes anything.
+   *
+   * OPTIONAL. Backends that build no indexes omit it.
+   */
+  indexPlan?(type: string, namespace: string): Promise<IndexPlan | undefined>;
+  /**
    * Execute `fn` atomically. All ops performed on the `tx` argument run inside
    * one substrate transaction. If `fn` throws or returns a rejected promise,
    * every mutation inside the callback rolls back. If `fn` resolves, the
@@ -554,4 +562,13 @@ export interface StorageReport {
   /** `unknown` when the report itself failed. */
   layout: 'legacy' | 'partitioned' | 'unknown';
   warnings: string[];
+  /** Worth showing, not a fault: the doctor prints these without failing. */
+  info?: string[];
+}
+
+/** See `Dataset.indexPlan`. */
+export interface IndexPlan {
+  /** Each desired index, its keys in order: a derived index ends with the type's natural order. */
+  indexes: Array<{ name: string; keys: Array<[string, 'asc' | 'desc']>; unique: boolean }>;
+  expectedSize?: 'small' | 'large';
 }

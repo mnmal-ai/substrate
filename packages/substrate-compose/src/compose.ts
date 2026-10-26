@@ -21,6 +21,7 @@ import {
   Registry,
   type RuntimeStats,
   runSweep,
+  ShapeRecorder,
   setCursorSealSecret,
   TaskScheduler
 } from '@mnmal-ai/substrate-core';
@@ -42,6 +43,8 @@ import type {
 } from '@mnmal-ai/substrate-types';
 import { installSystemNamespace, type KeyRegistry, SYSTEM_NAMESPACE } from './_system/index.js';
 import type { RateLimiter } from './_system/rate-limit.js';
+import { createAdvisorMemory, runAdvisorPass } from './advisor/advisor.js';
+import type { StoreProfileName } from './advisor/profiles.js';
 import type { AuthConfig } from './auth.js';
 import { type Capability, withAuth, withSystemActor } from './compose/auth-middleware.js';
 import { resolveBootGuards } from './compose/guards.js';
@@ -200,6 +203,14 @@ export interface ComposeOpts {
   configReport?: ConfigReport;
   /** Reported beside `configReport`; ignored without it. */
   storageReport?: () => Promise<StorageReport>;
+  /**
+   * The index advisor. Every `intervalMs` (`SUBSTRATE_ADVISOR_INTERVAL_MS`)
+   * it turns the reads the engine recorded and the store's statistics into
+   * `_system/IndexRecommendation` rows. Omitted or `intervalMs: 0`: off, and
+   * no read is recorded. `storeProfile` seeds `_system/StoreProfile` when it
+   * has no row yet.
+   */
+  advisor?: { intervalMs: number; storeProfile?: StoreProfileName };
 }
 
 export interface ComposeResult {
@@ -223,6 +234,8 @@ export interface ComposeResult {
    * loop in `main.ts`.
    */
   runSweepNow: () => Promise<SweepState>;
+  /** Run one index-advisor pass now, for tests; null while the advisor is off. */
+  runAdvisorNow: (() => Promise<{ upserted: number }>) | null;
   /**
    * Non-null when any coordinator plugin contributed a `schedule`. The
    * composition root constructs the scheduler, registers every plugin's
@@ -389,6 +402,9 @@ async function composeInner(
   if (opts.auth !== undefined && opts.keyReprimeIntervalMs !== undefined) {
     installSubstrateOpts.reprimeIntervalMs = opts.keyReprimeIntervalMs;
   }
+  if (opts.advisor?.storeProfile !== undefined) {
+    installSubstrateOpts.storeProfile = opts.advisor.storeProfile;
+  }
   const { keyRegistry: substrateKeyRegistry } = await installSystemNamespace(installSubstrateOpts);
   datasets.set(SYSTEM_NAMESPACE, substrateDataset);
   namespaces.set(SYSTEM_NAMESPACE, { registry: substrateRegistry });
@@ -472,6 +488,9 @@ async function composeInner(
     snapshotLimit:
       opts.subscriptions?.snapshotLimit ?? (opts.pageLimits ?? DEFAULT_PAGE_LIMITS).maxLimit
   };
+  const advisorIntervalMs = opts.advisor?.intervalMs ?? 0;
+  const shapeRecorder = advisorIntervalMs > 0 ? new ShapeRecorder() : undefined;
+  if (shapeRecorder !== undefined) engineOpts.shapeRecorder = shapeRecorder;
   const engine = new Engine(engineOpts);
   engineForStats = engine;
 
@@ -564,6 +583,37 @@ async function composeInner(
     await runCoordinatorOnStart(engine);
   }
 
+  // One pass at a time; a pass still running when the next is due is skipped.
+  let advisorPass: Promise<void> | null = null;
+  let advisorTimer: ReturnType<typeof setInterval> | undefined;
+  let runAdvisorNow: ComposeResult['runAdvisorNow'] = null;
+  if (shapeRecorder !== undefined) {
+    const deps = {
+      dataset: opts.dataset,
+      system: substrateDataset,
+      recorder: shapeRecorder,
+      registry: (ns: string) => namespaces.get(ns)?.registry,
+      now: Date.now,
+      memory: createAdvisorMemory()
+    };
+    const pass = (): Promise<{ upserted: number }> => runAdvisorPass(deps);
+    runAdvisorNow = pass;
+    advisorTimer = setInterval(() => {
+      if (advisorPass !== null) return;
+      advisorPass = pass()
+        .then(() => undefined)
+        .catch((err: unknown) => {
+          process.stderr.write(
+            `[substrate] index advisor pass failed and will run again: ${err instanceof Error ? err.message : String(err)}\n`
+          );
+        })
+        .finally(() => {
+          advisorPass = null;
+        });
+    }, advisorIntervalMs);
+    advisorTimer.unref?.();
+  }
+
   return {
     engine,
     // null when auth is off — the caller must not be able to tell "no registry
@@ -574,10 +624,13 @@ async function composeInner(
     edges,
     sweepDeps,
     runSweepNow: (): Promise<SweepState> => runSweep(sweepDeps, { lastSweptCursor: null }),
+    runAdvisorNow,
     scheduler,
     stats,
     stop: async (stopOpts?: { grace?: number; abortInFlight?: boolean }): Promise<void> => {
       sampler.stop();
+      clearInterval(advisorTimer);
+      await advisorPass;
       if (scheduler !== null) await scheduler.stop();
       // Plugin onStop hooks run BEFORE server.stop() — the engine is still
       // alive so plugins can do final writes (e.g. an audit row recording

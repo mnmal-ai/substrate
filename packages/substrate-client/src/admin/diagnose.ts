@@ -563,12 +563,16 @@ export async function diagnose(opts: DiagnoseOpts): Promise<DiagnoseResult> {
     checks.skip(CHECK_STORAGE, 'not asked — the server reports no storage section (memory store)');
   } else {
     const warnings = Array.isArray(storage.warnings) ? storage.warnings.map(String) : [];
+    // Info lines (open index recommendations) are shown, never counted as a fault.
+    const info = Array.isArray(storage.info)
+      ? storage.info.map((l) => `\n${String(l)}`).join('')
+      : '';
     if (warnings.length === 0) {
-      checks.ok(CHECK_STORAGE, `${String(storage.layout)} layout, no warnings`);
+      checks.ok(CHECK_STORAGE, `${String(storage.layout)} layout, no warnings${info}`);
     } else {
       checks.no(
         CHECK_STORAGE,
-        `${String(storage.layout)} layout, ${warnings.length} warning(s):\n${warnings.join('\n')}`,
+        `${String(storage.layout)} layout, ${warnings.length} warning(s):\n${warnings.join('\n')}${info}`,
         'Each warning names what to move or drop; indexes are never dropped automatically.'
       );
     }

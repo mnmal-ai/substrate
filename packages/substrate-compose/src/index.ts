@@ -16,6 +16,18 @@
 
 export * from './_system/index.js';
 export {
+  type AdvisorDeps,
+  type AdvisorMemory,
+  createAdvisorMemory,
+  runAdvisorPass
+} from './advisor/advisor.js';
+export {
+  isStoreProfileName,
+  PROFILES,
+  type ProfileThresholds,
+  type StoreProfileName
+} from './advisor/profiles.js';
+export {
   type AuthConfig,
   AuthConfigError,
   type AuthKey,

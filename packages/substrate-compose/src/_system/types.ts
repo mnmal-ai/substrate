@@ -182,6 +182,45 @@ export const ENUM_VERDICT_FIELDS: Record<string, FieldDef> = {
   /** `namespace/type/field` — the upsert key the writer derives. Indexed for the lookup. */
   verdictKey: field.string()
 };
+export const STORE_PROFILE_TYPE = 'StoreProfile';
+export const INDEX_RECOMMENDATION_TYPE = 'IndexRecommendation';
+/** The one `StoreProfile` row's id. */
+export const STORE_PROFILE_ID = 'store';
+
+/**
+ * `StoreProfile` — one row, id `store`: the sizing profile the index advisor
+ * reads its thresholds from on each pass. Seeded once from
+ * `SUBSTRATE_STORE_PROFILE` (else `personal`), then changed live.
+ */
+export const STORE_PROFILE_FIELDS: Record<string, FieldDef> = {
+  profile: field.enum(['personal', 'growth', 'scale']),
+  updatedReason: field.string({ indexed: false })
+};
+
+/**
+ * `IndexRecommendation` — one index the advisor recommends adding or removing,
+ * with its evidence. The row id is `recKey`, so every advisor process on a
+ * store converges on one row per (action, shape) or (action, index), refreshed
+ * while `open` and never reopened once `accepted` or `dismissed`.
+ */
+export const INDEX_RECOMMENDATION_FIELDS: Record<string, FieldDef> = {
+  /** sha256 of the action and the shape key (or the index name, for `remove`); also the row id. */
+  recKey: field.string(),
+  namespace: field.string(),
+  type: field.string(),
+  action: field.enum(['add', 'remove']),
+  /** The read shape's key (`add`); empty for `remove`. */
+  shape: field.string(),
+  /** The `indexes` entry to add, or `{ drop: <indexName> }`. */
+  declarationJson: field.string({ indexed: false }),
+  /** count, p95Ms, liveRows, writeRatePerMin, window. */
+  evidenceJson: field.string({ indexed: false }),
+  estimatedWriteCost: field.enum(['low', 'medium', 'high']),
+  state: field.enum(['open', 'accepted', 'dismissed', 'superseded']),
+  /** The index to drop, for `remove`. */
+  indexName: field.string({ nullable: true })
+};
+
 export const AUDIT_EVENT_TYPE = 'AuditEvent';
 /**
  * Canonical `kind` values for `AuditEvent`. Not enforced at the schema

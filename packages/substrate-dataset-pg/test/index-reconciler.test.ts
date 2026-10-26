@@ -17,7 +17,7 @@ import {
   type StorageLayout,
   UniqueIndexDuplicatesError
 } from '../src/index.js';
-import { reconcileTypeStatistics } from '../src/index-reconciler.js';
+import { desiredIndexKeys, reconcileTypeStatistics } from '../src/index-reconciler.js';
 import { generatedIdentifier } from '../src/migrate.js';
 import { indexExpressionSql } from '../src/pg-sql/primitives.js';
 import { addTestPromotedColumns } from './_promoted.js';
@@ -821,5 +821,48 @@ describe.skipIf(!POSTGRES_URL)('reconcileTypeIndexes', () => {
         /USING btree \(substrate_ts\(\(body -> 'boughtOn'::text\)\) DESC NULLS LAST, id\) WHERE /
       );
     });
+  });
+});
+
+describe('desiredIndexKeys', () => {
+  const args = (layout: StorageLayout, orderedBy: OrderedBy = DEFAULT_ORDERED_BY) => ({
+    namespace: 'n',
+    type: TYPE,
+    layout,
+    fields: {
+      ...kidIndexed,
+      owner: { kind: 'crossRef', ns: 'n', type: 'U' } as FieldDef
+    },
+    indexes: [{ fields: ['cert', { field: 'observedAt', dir: 'desc' as const }] }],
+    orderedBy
+  });
+  const keysOf = (layout: StorageLayout, orderedBy?: OrderedBy) =>
+    desiredIndexKeys(args(layout, orderedBy)).map((s) => s.keys);
+
+  it('gives a derived index its field then the natural order, and a declaration its own keys', () => {
+    for (const layout of ['legacy', 'partitioned'] as const) {
+      const keys = keysOf(layout);
+      expect(keys).toContainEqual([
+        ['kid', 'asc'],
+        ['createdAt', 'desc']
+      ]);
+      expect(keys).toContainEqual([
+        ['owner', 'asc'],
+        ['createdAt', 'desc']
+      ]);
+      expect(keys).toContainEqual([
+        ['cert', 'asc'],
+        ['observedAt', 'desc']
+      ]);
+    }
+  });
+
+  it('follows a declared natural order, and adds the metadata base keys on partitioned only', () => {
+    expect(keysOf('legacy', { observedAt: 'asc' })).toContainEqual([
+      ['kid', 'asc'],
+      ['observedAt', 'asc']
+    ]);
+    expect(keysOf('partitioned')).toContainEqual([['createdAt', 'desc']]);
+    expect(keysOf('legacy')).not.toContainEqual([['createdAt', 'desc']]);
   });
 });

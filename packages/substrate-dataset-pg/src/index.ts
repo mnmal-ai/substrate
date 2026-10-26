@@ -12,6 +12,7 @@ export {
 } from './enum-check.js';
 export { NamespaceMismatch, ReservedField } from './errors.js';
 export {
+  desiredIndexKeys,
   engineIndexesOf,
   type HeldIndex,
   IndexDefinitionConflictError,

@@ -305,6 +305,8 @@ export interface NamespaceTypeDef {
   indexes?: IndexDecl[];
   /** The type's natural order, the default read order. See {@link OrderedBy}. */
   orderedBy?: OrderedBy;
+  /** Size hint: `large` lowers the index advisor's row minimum for this type. */
+  expectedSize?: 'small' | 'large';
   // [key: string]: unknown absorbs slots NamespaceTypeDef doesn't name
   // (policy, autoCrud, purgeable, adminCapability, etc.).
   [key: string]: unknown;

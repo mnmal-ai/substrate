@@ -118,6 +118,11 @@ export interface TypeInput {
    * (`createdAt`, `updatedAt`). Absent means newest first by `createdAt`.
    */
   orderedBy?: OrderedBy;
+  /**
+   * Expected size. `large` lets the index advisor recommend for this type
+   * from its profile's lower `minRowsLargeHint` rather than `minRows`.
+   */
+  expectedSize?: 'small' | 'large';
 }
 
 export interface DefineNamespaceOptions {
@@ -195,6 +200,12 @@ export function defineNamespace(
   for (const [typeName, typeInput] of Object.entries(types)) {
     for (const decl of typeInput.indexes ?? []) assertIndexDecl(typeName, typeInput.fields, decl);
     if (typeInput.orderedBy !== undefined) assertOrderedBy(typeName, typeInput);
+    const size: unknown = typeInput.expectedSize;
+    if (size !== undefined && size !== 'small' && size !== 'large') {
+      throw new Error(
+        `expectedSize on ${typeName} must be 'small' or 'large', got '${String(size)}'`
+      );
+    }
   }
 
   if (opts.annotations !== undefined) assertJsonValue(opts.annotations, 'annotations');
