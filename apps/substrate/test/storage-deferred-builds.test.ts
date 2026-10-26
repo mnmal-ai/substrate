@@ -12,7 +12,12 @@
 
 import { randomUUID } from 'node:crypto';
 import { compose } from '@mnmal-ai/substrate-compose';
-import { PgDataset, PgEdgesStore, runMigrations } from '@mnmal-ai/substrate-dataset-pg';
+import {
+  type DiskGuard,
+  PgDataset,
+  PgEdgesStore,
+  runMigrations
+} from '@mnmal-ai/substrate-dataset-pg';
 import { defineNamespace } from '@mnmal-ai/substrate-sdk';
 import { MemorySubstrateServer } from '@mnmal-ai/substrate-server-memory';
 import postgres, { type Sql } from 'postgres';
@@ -22,7 +27,8 @@ import {
   buildPluginDatasetMap,
   makeFieldDefLookupFactory,
   reconcileDeclaredStorage,
-  reconcileRegisteredStorage
+  reconcileRegisteredStorage,
+  runDeferredIndexBuilds
 } from '../src/serve/wiring.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
@@ -128,6 +134,71 @@ describe.skipIf(!POSTGRES_URL)('deferred index builds at boot (pg)', () => {
         )
       ).toEqual([]);
     } finally {
+      await composed.stop();
+    }
+  }, 60_000);
+
+  it('retries a build the disk guard refused on a later pass, without a reboot', async () => {
+    const rns = `${ns}_r`;
+    const plain = `${rns}_cert_ix`;
+    const def = defineNamespace(rns, {
+      Member: {
+        fields: { cert: { kind: 'scalar', type: 'string' } },
+        indexes: [{ fields: ['cert'], name: plain }]
+      }
+    });
+    const plugin = { name: rns, contractVersion: '*', namespaces: [def] };
+    const nsDefs = new Map([[rns, def]]);
+    let allow = false;
+    const guard: DiskGuard = {
+      path: '/var/lib/postgresql',
+      check: async (n) => (allow ? { ok: true } : { ok: false, freeBytes: 0, needBytes: n })
+    };
+    const edges = new PgEdgesStore({ sql });
+    const dataset = new PgDataset({ namespace: 'default', sql, edgesStore: edges });
+    const datasets = buildPluginDatasetMap(
+      [plugin],
+      dataset,
+      sql,
+      edges,
+      makeFieldDefLookupFactory(nsDefs),
+      undefined,
+      guard
+    );
+    const members = datasets[rns] as PgDataset;
+    const composed = await compose({
+      server: new MemorySubstrateServer(),
+      dataset,
+      edges,
+      datasets,
+      coordinators: [plugin],
+      systemActor: 'local-dev'
+    });
+    const stop = new AbortController();
+    let loop: Promise<void> | undefined;
+    try {
+      await reconcileRegisteredStorage(composed.engine, composed.datasets, nsDefs);
+      const state = async () =>
+        (await members.describeStorage('Member')).indexes.find((i) => i.name === plain);
+      loop = runDeferredIndexBuilds(composed.engine, composed.datasets, 100, stop.signal);
+      for (let i = 0; (await state())?.reason !== 'insufficient_disk'; i++) {
+        if (i > 200) throw new Error('the guard never refused');
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(await valid(plain)).toBeUndefined();
+      expect((await state())?.state).toBe('pending');
+
+      allow = true;
+      for (let i = 0; (await state())?.state !== 'valid'; i++) {
+        if (i > 400) throw new Error('no retry built the index');
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(await valid(plain)).toBe(true);
+      expect((await state())?.reason).toBeUndefined();
+    } finally {
+      stop.abort();
+      await loop;
+      await sql`DELETE FROM rows WHERE namespace = ${rns}`;
       await composed.stop();
     }
   }, 60_000);

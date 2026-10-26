@@ -22,6 +22,7 @@ const DEFAULT_TOMBSTONE_RETENTION_DAYS = 30;
 const DEFAULT_SHUTDOWN_GRACE_MS = 5_000;
 const DEFAULT_PARTITION_BUDGET = 500;
 const DEFAULT_INDEX_DISK_MARGIN_MB = 2048;
+const DEFAULT_INDEX_RETRY_INTERVAL_MS = 600_000;
 export const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DEFAULT_PORT = 3100;
 
@@ -66,8 +67,14 @@ export interface ParsedConfig {
    * index build. `null` turns the check off, and the config report says so.
    */
   indexDiskPath: string | null;
-  /** `SUBSTRATE_INDEX_DISK_MARGIN_MB` — free space a build must leave. Default 2048. */
+  /** `SUBSTRATE_INDEX_DISK_MARGIN_MB` — free space a build must leave. Default 2048; 0 requires only the estimate. */
   indexDiskMarginMb: number;
+  /**
+   * `SUBSTRATE_INDEX_RETRY_INTERVAL_MS` — how often the background pass
+   * retries types with a non-unique index still pending or failed. Default
+   * 10 minutes; 0 leaves them to the next boot.
+   */
+  indexRetryIntervalMs: number;
   /**
    * §5.13 mutation idempotency config. `disabled` kills dedup entirely (the
    * engine never sees a store); `defaultTtlMs === null` leaves the engine's
@@ -204,13 +211,21 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
     env.SUBSTRATE_INDEX_DISK_PATH,
     nonEmpty(env.SUBSTRATE_INDEX_DISK_PATH?.trim()) ?? null
   );
-  const indexDiskMarginMb = parsePositiveIntEnv(
+  const indexDiskMarginMb = parseNonNegativeIntEnv(
     env,
     knobs,
     'indexDiskMarginMb',
     'SUBSTRATE_INDEX_DISK_MARGIN_MB',
     DEFAULT_INDEX_DISK_MARGIN_MB,
     'megabytes'
+  );
+  const indexRetryIntervalMs = parseNonNegativeIntEnv(
+    env,
+    knobs,
+    'indexRetryIntervalMs',
+    'SUBSTRATE_INDEX_RETRY_INTERVAL_MS',
+    DEFAULT_INDEX_RETRY_INTERVAL_MS,
+    'milliseconds, 0 to disable'
   );
   const idempotency = parseIdempotencyConfig(env, knobs);
   const trustedProxies = parseTrustedProxies(env, knobs);
@@ -296,6 +311,7 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
     partitionBudget,
     indexDiskPath,
     indexDiskMarginMb,
+    indexRetryIntervalMs,
     idempotency,
     trustedProxies,
     port,
@@ -466,6 +482,25 @@ function parseCorsConfig(
     );
   }
   return note({ origins, credentials: true });
+}
+
+/** As {@link parsePositiveIntEnv}, but 0 is allowed. */
+function parseNonNegativeIntEnv(
+  env: NodeJS.ProcessEnv,
+  knobs: KnobRecorder,
+  key: string,
+  varName: string,
+  defaultValue: number,
+  units: string
+): number {
+  const raw = nonEmpty(env[varName]);
+  const n = raw === undefined ? defaultValue : Number(raw);
+  if (!Number.isInteger(n) || n < 0) {
+    throw new EnvConfigError(
+      `${varName}: got '${raw}' — expected a non-negative integer (${units})`
+    );
+  }
+  return knobs.record(key, varName, env[varName], n);
 }
 
 /**

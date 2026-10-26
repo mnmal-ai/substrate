@@ -31,6 +31,12 @@ describe('makeDiskGuard', () => {
     });
   });
 
+  it('with a zero margin requires only the estimate itself', async () => {
+    const guard = makeDiskGuard({ path: '/data', marginBytes: 0, statfs: fs(300) });
+    expect(await guard.check(300 * MB)).toEqual({ ok: true });
+    expect((await guard.check(300 * MB + 1)).ok).toBe(false);
+  });
+
   it('always allows when no path is set, and never stats', async () => {
     const guard = makeDiskGuard({
       marginBytes: 100 * MB,

@@ -7,6 +7,7 @@
  * registry, pending MCP tools).
  */
 
+import { setTimeout as sleep } from 'node:timers/promises';
 import {
   DEFAULT_NAMESPACE,
   kernelMigrationTracking,
@@ -338,11 +339,13 @@ export async function reconcileRegisteredStorage(
 export async function buildDeferredIndexes(
   engine: Pick<Engine, 'federatedSchema' | 'registryFor'>,
   datasets: ComposedDatasets,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  opts: { onlyUnsettled?: boolean } = {}
 ): Promise<void> {
   for (const { ns, type, dataset } of registeredTypes(engine, datasets)) {
     if (signal?.aborted === true) return;
     try {
+      if (opts.onlyUnsettled === true && !(await unsettled(dataset, type))) continue;
       await dataset?.ensureTypeStorage?.(type, {
         indexes: 'nonUnique',
         ...(signal !== undefined ? { signal } : {})
@@ -352,6 +355,38 @@ export async function buildDeferredIndexes(
         `indexes of ${ns}/${type} were not built and will be retried at the next boot: ${message(err)}\n`
       );
     }
+  }
+}
+
+/** Whether `type` has a non-unique index still pending or failed. */
+async function unsettled(dataset: Dataset | undefined, type: string): Promise<boolean> {
+  const report = await dataset?.describeStorage?.(type);
+  return (report?.indexes ?? []).some(
+    (i) => !i.unique && (i.state === 'pending' || i.state === 'failed')
+  );
+}
+
+/**
+ * The boot pass of {@link buildDeferredIndexes}, then every `intervalMs` a
+ * pass over only the types with a non-unique index still pending or failed,
+ * such as one the disk guard refused. 0 runs the boot pass alone. Passes run
+ * one after another, so never overlap. Resolves once `signal` aborts.
+ */
+export async function runDeferredIndexBuilds(
+  engine: Pick<Engine, 'federatedSchema' | 'registryFor'>,
+  datasets: ComposedDatasets,
+  intervalMs: number,
+  signal: AbortSignal
+): Promise<void> {
+  await buildDeferredIndexes(engine, datasets, signal);
+  while (intervalMs > 0 && !signal.aborted) {
+    try {
+      // Unref'd, so a pending wait never holds the process open.
+      await sleep(intervalMs, undefined, { signal, ref: false });
+    } catch {
+      return;
+    }
+    await buildDeferredIndexes(engine, datasets, signal, { onlyUnsettled: true });
   }
 }
 
