@@ -369,9 +369,10 @@ export interface Dataset {
   /**
    * The database-wide storage layout and what an operator should look at:
    * rows parked in DEFAULT partitions, indexes and CHECK constraints on the
-   * `rows` parent, engine-named indexes no longer declared, indexes this
-   * process has yet to build or failed to build, and a partition count over
-   * `partitionBudget`. Never changes anything.
+   * `rows` parent, indexes this process has yet to build or failed to build,
+   * and a partition count over `partitionBudget`; and, as `info`, engine
+   * indexes no longer declared and open index recommendations. Never changes
+   * anything.
    *
    * OPTIONAL. Backends without per-type storage omit it.
    */

@@ -1285,7 +1285,7 @@ export class PgDataset implements Dataset {
         if (scope !== undefined) types.set(JSON.stringify([scope.namespace, scope.type]), scope);
       }
       for (const t of types.values()) {
-        this.#undeclared(warnings, t.namespace, t.type, 'legacy', 'rows', held);
+        this.#undeclared(warnings, info, t.namespace, t.type, 'legacy', 'rows', held);
       }
       return { layout: 'legacy', warnings, info };
     }
@@ -1328,7 +1328,7 @@ export class PgDataset implements Dataset {
       typeParts.map((t) => t.table)
     );
     for (const t of typeParts) {
-      this.#undeclared(warnings, t.ns, t.type, 'partitioned', t.table, held);
+      this.#undeclared(warnings, info, t.ns, t.type, 'partitioned', t.table, held);
     }
     const n = tree.length - 1;
     if (n > opts.partitionBudget) {
@@ -1339,9 +1339,14 @@ export class PgDataset implements Dataset {
     return { layout: 'partitioned', warnings, info };
   }
 
-  /** Warns of each engine-owned index of a known type that its declaration no longer asks for. */
+  /**
+   * Notes, as info, each engine-owned index of a known type that its
+   * declaration no longer asks for: the index advisor recommends its removal
+   * on evidence, so it is not a fault. A type that cannot be checked warns.
+   */
   #undeclared(
     warnings: string[],
+    info: string[],
     ns: string,
     type: string,
     layout: StorageLayout,
@@ -1352,7 +1357,9 @@ export class PgDataset implements Dataset {
     try {
       const own = held.filter((i) => belongsToType(i, ns, type, layout, table));
       for (const name of undeclaredIndexes(this.#indexArgs(type, ns, layout), own)) {
-        warnings.push(`undeclared index ${name} on ${ns}/${type}: drop it explicitly`);
+        info.push(
+          `undeclared index ${name} on ${ns}/${type}: kept until a signed remove drops it (the index advisor recommends one when it goes unused)`
+        );
       }
     } catch (err) {
       warnings.push(
@@ -1382,19 +1389,33 @@ export class PgDataset implements Dataset {
     const layout = await this.#layout();
     if (layout === 'absent') return [];
     const sql = this.#sql as Sql;
+    const [db] = await sql<Array<{ since: string | null }>>`
+      SELECT to_char(stats_reset AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS since
+      FROM pg_stat_database WHERE datname = current_database()`;
+    const statsSince = db?.since ?? null;
     const toStats = (
-      t: { namespace: string; type: string; table: string; liveRows: number; insertsTotal: number },
+      t: {
+        namespace: string;
+        type: string;
+        table: string;
+        liveRows: number;
+        insertsTotal: number;
+        writesTotal: number;
+      },
       held: Awaited<ReturnType<typeof heldIndexes>>
     ): TypeStats => ({
       namespace: t.namespace,
       type: t.type,
       liveRows: Math.round(t.liveRows),
       insertsTotal: Math.round(t.insertsTotal),
+      writesTotal: Math.round(t.writesTotal),
+      statsSince,
       indexes: held
         .filter((i) => belongsToType(i, t.namespace, t.type, layout, t.table))
         .map((i) => ({
           name: i.name,
           scans: i.scans,
+          lastScanAt: i.lastScanAt,
           sizeBytes: i.sizeBytes,
           unique: i.unique,
           engineOwned: isEngineOwned(i)
@@ -1408,6 +1429,7 @@ export class PgDataset implements Dataset {
           bound: string;
           liveRows: number;
           insertsTotal: number;
+          writesTotal: number;
         }>
       >`
         SELECT c.relname AS "table",
@@ -1415,7 +1437,8 @@ export class PgDataset implements Dataset {
                pg_get_expr(c.relpartbound, c.oid) AS bound,
                (CASE WHEN c.reltuples >= 0 THEN c.reltuples ELSE COALESCE(s.n_live_tup, 0) END)::float8
                  AS "liveRows",
-               COALESCE(s.n_tup_ins, 0)::float8 AS "insertsTotal"
+               COALESCE(s.n_tup_ins, 0)::float8 AS "insertsTotal",
+               COALESCE(s.n_tup_ins + s.n_tup_upd + s.n_tup_del, 0)::float8 AS "writesTotal"
         FROM pg_partition_tree('rows') t
         JOIN pg_class c ON c.oid = t.relid
         JOIN pg_class p ON p.oid = t.parentrelid
@@ -1437,15 +1460,18 @@ export class PgDataset implements Dataset {
     // partial index (every crossRef type has its derived one) takes that index's
     // reltuples (while fresh, below), and any other type its share of a ~SAMPLE_ROWS block sample,
     // so a small one may be missing or noisy. Inserts are split by live-row
-    // share, not by each type's own insert rate. Partitioning is the upgrade.
+    // share (writes too), not by each type's own rate. Partitioning is the upgrade.
     // `n_live_tup` sizes it before the first ANALYZE, when reltuples is -1, so
     // a never-analyzed large `rows` is still sampled rather than scanned.
-    const [table] = await sql<Array<{ fresh: boolean; size: number; inserts: number }>>`
+    const [table] = await sql<
+      Array<{ fresh: boolean; size: number; inserts: number; writes: number }>
+    >`
       SELECT c.reltuples > 0
                AND COALESCE(s.n_mod_since_analyze, 0) <= ${INDEX_COUNT_STALE} * c.reltuples
                AS fresh,
              GREATEST(c.reltuples, COALESCE(s.n_live_tup, 0))::float8 AS size,
-             COALESCE(s.n_tup_ins, 0)::float8 AS inserts
+             COALESCE(s.n_tup_ins, 0)::float8 AS inserts,
+             COALESCE(s.n_tup_ins + s.n_tup_upd + s.n_tup_del, 0)::float8 AS writes
       FROM pg_class c LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
       WHERE c.oid = 'rows'::regclass`;
     const size = table?.size ?? 0;
@@ -1488,12 +1514,15 @@ export class PgDataset implements Dataset {
       size,
       [...live.values()].reduce((n, t) => n + t.liveRows, 0)
     );
+    const share = (n: number | undefined, rows: number): number =>
+      liveTotal > 0 ? ((n ?? 0) * rows) / liveTotal : 0;
     return [...live.values()].map((t) =>
       toStats(
         {
           ...t,
           table: 'rows',
-          insertsTotal: liveTotal > 0 ? ((table?.inserts ?? 0) * t.liveRows) / liveTotal : 0
+          insertsTotal: share(table?.inserts, t.liveRows),
+          writesTotal: share(table?.writes, t.liveRows)
         },
         held
       )

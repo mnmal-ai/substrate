@@ -351,7 +351,8 @@ function desiredStatistics(
   for (const spec of specs) {
     for (const [i, expr] of spec.keys.entries()) {
       const field = spec.fields[i] as string;
-      if (Object.hasOwn(promoted, field) || byField.has(field)) continue;
+      const plain = metadataColumn(field) !== undefined;
+      if (plain || Object.hasOwn(promoted, field) || byField.has(field)) continue;
       // The expression is in the name, so a changed one is a new object and the old one goes.
       const hash = createHash('sha256').update(expr).digest('hex').slice(0, 6);
       byField.set(field, {
@@ -569,6 +570,8 @@ export interface HeldIndex {
   /** The index's `pg_class.reltuples`: for a partial index, the rows under its predicate; -1 unknown. */
   reltuples: number;
   scans: number;
+  /** `pg_stat_user_indexes.last_idx_scan` (ISO), null when never scanned since the last reset. */
+  lastScanAt: string | null;
   sizeBytes: number;
 }
 
@@ -580,6 +583,7 @@ export async function heldIndexes(sql: Sql, tables: string[]): Promise<HeldIndex
            pg_get_expr(i.indpred, i.indrelid) AS predicate,
            c.reltuples::float8 AS reltuples,
            COALESCE(s.idx_scan, 0)::float8 AS scans,
+           to_char(s.last_idx_scan AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "lastScanAt",
            pg_relation_size(i.indexrelid)::float8 AS "sizeBytes"
     FROM pg_index i
     JOIN pg_class c ON c.oid = i.indexrelid
@@ -699,11 +703,23 @@ async function targetTable(sql: Sql, args: ReconcileTypeIndexesArgs): Promise<st
   return part;
 }
 
+/** Metadata columns an index may key on, by the name reads use: plain columns, as natural order keys them. */
+const METADATA_COLUMNS: Readonly<Record<string, string>> = {
+  createdAt: 'created_at',
+  updatedAt: 'updated_at'
+};
+
+// The metadata column shadows a body field of the same name, in orderBy and where alike.
+const metadataColumn = (field: string): string | undefined =>
+  Object.hasOwn(METADATA_COLUMNS, field) ? METADATA_COLUMNS[field] : undefined;
+
 function keyExpr(
   field: string,
   def: FieldDef | undefined,
   promoted: PromotedBodyColumnMap
 ): string {
+  const column = metadataColumn(field);
+  if (column !== undefined) return column;
   // A bare column name, validated by `resolvePromotedColumns` in `desiredSpecs`.
   // Text keys under "C", as the compiler compares promoted text in every operator.
   const meta = Object.hasOwn(promoted, field) ? promoted[field] : undefined;
@@ -790,12 +806,7 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
   // reads in natural order with no Sort; on the natural-order field itself it
   // is (field DIR, id). Both layouts: on legacy it is partial on `rows`.
   const [natField, natDir] = Object.entries(args.orderedBy)[0] ?? ['createdAt', 'desc'];
-  const natKey =
-    natField === 'createdAt'
-      ? 'created_at'
-      : natField === 'updatedAt'
-        ? 'updated_at'
-        : `(${keyExpr(natField, fields[natField], promoted)})`;
+  const natKey = metadataColumn(natField) ?? `(${keyExpr(natField, fields[natField], promoted)})`;
   const natural = `${natKey}${natDir === 'desc' ? ' DESC NULLS LAST' : ''}`;
   for (const [field, def] of Object.entries(fields)) {
     const wanted =

@@ -131,7 +131,9 @@ describe.skipIf(!POSTGRES_URL)('index advisor (pg)', () => {
       });
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({ type: 'Task', action: 'add', state: 'open' });
-      expect(JSON.parse(String(rows[0]?.declarationJson))).toEqual({ fields: ['status'] });
+      expect(JSON.parse(String(rows[0]?.declarationJson))).toEqual({
+        fields: ['status', { field: 'createdAt', dir: 'desc' }]
+      });
       const evidence = JSON.parse(String(rows[0]?.evidenceJson));
       expect(evidence.count).toBe(3);
       expect(evidence.liveRows).toBeGreaterThanOrEqual(1_000);

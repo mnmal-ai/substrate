@@ -64,9 +64,15 @@ export interface TypeStats {
   type: string;
   liveRows: number;
   insertsTotal: number;
+  /** Rows inserted, updated and deleted: the write volume behind `statsSince`. */
+  writesTotal: number;
+  /** When the database's statistics were last reset (ISO), or null when never: the counters' origin. */
+  statsSince: string | null;
   indexes: Array<{
     name: string;
     scans: number;
+    /** The last scan (ISO), or null when none since `statsSince`. */
+    lastScanAt: string | null;
     sizeBytes: number;
     unique: boolean;
     /** Built or adopted by the engine's index reconciler for this type. */

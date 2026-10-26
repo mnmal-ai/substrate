@@ -389,6 +389,63 @@ async function customPlan(
   }
 }
 
+// A declaration may key on a metadata column, as natural order does: the
+// index advisor's `{ fields: [eq, { field: 'createdAt', dir: 'desc' }] }`.
+describe.skipIf(!POSTGRES_URL)('index use: a declared metadata order key', () => {
+  const taskNs = `iu_task_${hex()}`;
+  const type = 'Task';
+  const taskFields: Record<string, FieldDef> = { status: { kind: 'scalar', type: 'string' } };
+  const N = 20_000;
+  let tasks: PgDataset;
+
+  beforeAll(async () => {
+    if (!POSTGRES_URL) return;
+    tasks = new PgDataset({
+      namespace: taskNs,
+      sql: traced,
+      fieldDefLookup: (_t, f) => taskFields[f],
+      typeDefLookup: () => ({
+        fields: taskFields,
+        indexes: [{ fields: ['status', { field: 'createdAt', dir: 'desc' }] }]
+      })
+    });
+    await tasks.ensureTypeStorage(type);
+    for (let start = 0; start < N; start += 2000) {
+      await tasks.write(
+        type,
+        Array.from({ length: 2000 }, (_, k) => ({
+          id: `t${start + k}`,
+          status: `s${(start + k) % 20}`
+        }))
+      );
+    }
+    await sql`ANALYZE rows`;
+  }, 120_000);
+
+  it('status eq in the default order, limit 10: the declared index, no Sort under the limit', async () => {
+    const name = generatedIdentifier(taskNs, type, 'status_createdAt', 'idx');
+    const params: ReadParams = {
+      where: { status: { eq: 's7' } },
+      orderBy: [{ ...DEFAULT_ORDERED_BY }],
+      limit: 10
+    };
+    for (const mode of ['force_custom_plan', 'force_generic_plan'] as const) {
+      const plan = await customPlan(params, tasks, type, mode);
+      expect(indexesUsed(plan), `${mode}: ${JSON.stringify(nodeTypes(plan))}`).toContain(
+        `Index Scan on ${name}`
+      );
+      const limit = (n: PlanNode): PlanNode | undefined =>
+        n['Node Type'] === 'Limit' ? n : (n.Plans ?? []).map(limit).find((x) => x !== undefined);
+      const under = limit(plan);
+      expect(under, mode).toBeDefined();
+      expect(
+        nodeTypes(under as PlanNode).filter((t) => /Sort/.test(t)),
+        mode
+      ).toEqual([]);
+    }
+  });
+});
+
 // The default order ends with `id`, so a non-unique index that does not end
 // with it serves the filter but not the order: the planner either sorts every
 // match or walks the primary key in id order, filtering every row.

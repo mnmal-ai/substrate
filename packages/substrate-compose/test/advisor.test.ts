@@ -26,7 +26,11 @@ import {
   STORE_PROFILE_TYPE
 } from '../src/index.js';
 
-const DAY = 24 * 60 * 60 * 1000;
+const NOW = Date.parse('2026-10-01T00:00:00Z');
+/** The database's statistics were last reset ten days before NOW. */
+const RESET = '2026-09-21T00:00:00.000000Z';
+/** Writes since RESET that average `perMin` a minute at NOW. */
+const writesAt = (perMin: number): number => (perMin * (NOW - Date.parse(RESET))) / 60_000;
 const FIELDS: Record<string, FieldDef> = {
   status: field.string(),
   owner: { kind: 'crossRef', ns: 'app', type: 'User' } as FieldDef,
@@ -46,23 +50,19 @@ function world(store: Store, system = new MemoryDataset({ namespace: '_system' }
       ns === 'app' && type === 'Task' ? store.plan : undefined
   } as unknown as Dataset;
   const registry = { get: () => ({ kind: 'type', fields: FIELDS }) } as unknown as Registry;
-  let clock = Date.parse('2026-10-01T00:00:00Z');
   const recorder = new ShapeRecorder();
   const deps: AdvisorDeps = {
     dataset,
     system,
     recorder,
     registry: () => registry,
-    now: () => clock,
+    now: () => NOW,
     memory: createAdvisorMemory()
   };
   return {
     deps,
     system,
     recorder,
-    tick: (ms: number) => {
-      clock += ms;
-    },
     recs: async (): Promise<Row[]> => (await system.read(INDEX_RECOMMENDATION_TYPE, {})).rows,
     setProfile: (profile: string) =>
       system.write(STORE_PROFILE_TYPE, [{ id: 'store', profile, updatedReason: 'test' }])
@@ -78,14 +78,27 @@ const shape = (filters: ReadShape['filters'], orderBy = NATURAL): ReadShape => (
 const stats = (
   liveRows: number,
   indexes: TypeStats['indexes'] = [],
-  insertsTotal = 0
+  writesTotal = 0,
+  statsSince: string | null = RESET
 ): TypeStats => ({
   namespace: 'app',
   type: 'Task',
   liveRows,
-  insertsTotal,
+  insertsTotal: writesTotal,
+  writesTotal,
+  statsSince,
   indexes
 });
+const index = (name: string, over: Partial<TypeStats['indexes'][0]> = {}) => ({
+  name,
+  scans: 3,
+  lastScanAt: null,
+  sizeBytes: 8192,
+  unique: false,
+  engineOwned: true,
+  ...over
+});
+const OLD = 'rows_app_task_old_0badf00d_idx';
 const statusEq = shape([{ field: 'status', op: 'eq' }]);
 
 describe('runAdvisorPass', () => {
@@ -104,8 +117,10 @@ describe('runAdvisorPass', () => {
       estimatedWriteCost: 'low'
     });
     expect(rec?.recKey).toBe(rec?.id);
-    // createdAt is a metadata column, so the declaration stops before it.
-    expect(JSON.parse(String(rec?.declarationJson))).toEqual({ fields: ['status'] });
+    // The natural order's metadata column is a key too, so the index serves the order.
+    expect(JSON.parse(String(rec?.declarationJson))).toEqual({
+      fields: ['status', { field: 'createdAt', dir: 'desc' }]
+    });
     expect(JSON.parse(String(rec?.evidenceJson))).toMatchObject({ count: 2, liveRows: 30_000 });
   });
 
@@ -152,20 +167,14 @@ describe('runAdvisorPass', () => {
     expect(await runAdvisorPass(w.deps)).toEqual({ upserted: 2 });
     const decls = (await w.recs()).map((r) => JSON.parse(String(r.declarationJson)));
     expect(decls).toContainEqual({ fields: ['status', { field: 'dueOn', dir: 'asc' }] });
-    expect(decls).toContainEqual({ fields: ['status', 'owner'] });
+    expect(decls).toContainEqual({
+      fields: ['status', 'owner', { field: 'createdAt', dir: 'desc' }]
+    });
   });
 
   it('recommends remove for an unused engine-owned non-unique index under write load', async () => {
-    const index = (name: string, over: Partial<TypeStats['indexes'][0]> = {}) => ({
-      name,
-      scans: 3,
-      sizeBytes: 8192,
-      unique: false,
-      engineOwned: true,
-      ...over
-    });
     const indexes = [
-      index('rows_app_task_old_0badf00d_idx'),
+      index(OLD),
       index('rows_app_task_kept_0badf00d_idx'),
       index('rows_app_task_key_0badf00d_uniq', { unique: true }),
       index('rows_app_task_created_at_0badf00d_base'),
@@ -174,25 +183,76 @@ describe('runAdvisorPass', () => {
     const plan: IndexPlan = {
       indexes: [{ name: 'rows_app_task_kept_0badf00d_idx', keys: [], unique: false }]
     };
-    const store: Store = { stats: [stats(10, indexes, 0)], plan };
+    const store: Store = { stats: [stats(10, indexes, writesAt(100))], plan };
     const w = world(store);
     await w.setProfile('scale');
-    expect(await runAdvisorPass(w.deps)).toEqual({ upserted: 0 });
-    // A day on, scans unchanged, 100 inserts a minute.
-    w.tick(DAY);
-    store.stats = [stats(10, indexes, 100 * 24 * 60)];
     expect(await runAdvisorPass(w.deps)).toEqual({ upserted: 1 });
     const [rec] = await w.recs();
     expect(rec).toMatchObject({
       action: 'remove',
-      indexName: 'rows_app_task_old_0badf00d_idx',
+      indexName: OLD,
       state: 'open',
       estimatedWriteCost: 'medium'
     });
-    // A scan restarts its window.
-    store.stats = [stats(10, [index('rows_app_task_old_0badf00d_idx', { scans: 4 })], 1e9)];
-    w.tick(DAY);
+  });
+
+  it('a restarted advisor still recommends remove: the evidence is the database statistics', async () => {
+    const store: Store = { stats: [stats(10, [index(OLD)], writesAt(100))], plan: { indexes: [] } };
+    const system = new MemoryDataset({ namespace: '_system' });
+    const first = world(store, system);
+    await first.setProfile('scale');
+    // A fresh instance, with no memory of any earlier pass, stands in for a restart.
+    expect(await runAdvisorPass(world(store, system).deps)).toEqual({ upserted: 1 });
+    expect((await first.recs())[0]).toMatchObject({ action: 'remove', indexName: OLD });
+  });
+
+  it('does not recommend remove for a recent scan, light writes, or statistics never reset', async () => {
+    const cases: TypeStats[] = [
+      stats(10, [index(OLD, { lastScanAt: '2026-09-30T12:00:00.000000Z' })], writesAt(100)),
+      stats(10, [index(OLD)], writesAt(5)),
+      // No reset: no origin for the rate, and a fresh process has only just seen the index.
+      stats(10, [index(OLD)], writesAt(100), null)
+    ];
+    for (const c of cases) {
+      const w = world({ stats: [c], plan: { indexes: [] } });
+      await w.setProfile('scale');
+      expect(await runAdvisorPass(w.deps), JSON.stringify(c)).toEqual({ upserted: 0 });
+    }
+  });
+
+  it('supersedes an open add once its shape is served, and an open remove once its index is wanted or gone', async () => {
+    const store: Store = {
+      stats: [stats(1_000_000, [index(OLD)], writesAt(100))],
+      plan: { indexes: [] }
+    };
+    const w = world(store);
+    await w.setProfile('scale');
+    w.recorder.observe(statusEq, 500);
+    expect(await runAdvisorPass(w.deps)).toEqual({ upserted: 2 });
+    const state = async (action: string) =>
+      (await w.recs()).find((r) => r.action === action)?.state;
+
+    store.plan = {
+      indexes: [{ name: 'decl', keys: [['status', 'asc'], ...NATURAL], unique: false }]
+    };
+    await runAdvisorPass(w.deps);
+    expect(await state('add')).toBe('superseded');
+    expect(await state('remove')).toBe('open');
+
+    store.stats = [stats(1_000_000, [], writesAt(100))];
+    await runAdvisorPass(w.deps);
+    expect(await state('remove')).toBe('superseded');
+
+    // The index is back and unused again: the same row reopens.
+    store.stats = [stats(1_000_000, [index(OLD)], writesAt(100))];
+    expect(await runAdvisorPass(w.deps)).toEqual({ upserted: 1 });
+    expect(await state('remove')).toBe('open');
+    expect(await w.recs()).toHaveLength(2);
+
+    // Wanted again (declared once more): superseded, and not reopened while wanted.
+    store.plan = { indexes: [{ name: OLD, keys: [], unique: false }] };
     expect(await runAdvisorPass(w.deps)).toEqual({ upserted: 0 });
+    expect(await state('remove')).toBe('superseded');
   });
 
   it('two passes, and two advisor instances, leave one row per recKey', async () => {

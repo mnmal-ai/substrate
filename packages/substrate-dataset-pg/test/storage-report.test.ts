@@ -4,7 +4,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import type { FieldDef } from '@mnmal-ai/substrate-types';
+import type { FieldDef, StorageReport } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset } from '../src/index.js';
@@ -37,9 +37,16 @@ function dataset(ns: string, defs: { current: Record<string, FieldDef> }): PgDat
   });
 }
 
-/** Lines naming an undeclared index of `ns`. */
-const undeclaredIn = (warnings: string[], ns: string): string[] =>
-  warnings.filter((w) => w.startsWith('undeclared index') && w.includes(` on ${ns}/`));
+/** The undeclared indexes of `ns` a report names: in `info`, never in `warnings`. */
+const undeclaredIn = (report: StorageReport, ns: string): string[] => {
+  const named = (lines: string[]) =>
+    lines.flatMap((w) => {
+      const m = /^undeclared index (\S+) on (\S+)\/\S+: /.exec(w);
+      return m?.[2] === ns ? [m[1] as string] : [];
+    });
+  expect(named(report.warnings)).toEqual([]);
+  return named(report.info ?? []);
+};
 
 const indexed: Record<string, FieldDef> = {
   kid: { kind: 'scalar', type: 'string', indexed: true }
@@ -72,7 +79,7 @@ describe.skipIf(!POSTGRES_URL)('describeStorage', () => {
 });
 
 describe.skipIf(!POSTGRES_URL)('storageReport', () => {
-  it('names an engine index that is no longer declared, and keeps it', async () => {
+  it('notes an engine index that is no longer declared as info, and keeps it', async () => {
     const ns = freshNs();
     const defs = { current: indexed };
     const ds = dataset(ns, defs);
@@ -83,10 +90,7 @@ describe.skipIf(!POSTGRES_URL)('storageReport', () => {
     const name = generatedIdentifier(ns, TYPE, 'kid', 'idx');
     const [held] = await sql`SELECT 1 FROM pg_class WHERE relname = ${name}`;
     expect(held).toBeDefined();
-    const { warnings } = await ds.storageReport({ partitionBudget: BIG });
-    expect(undeclaredIn(warnings, ns)).toEqual([
-      `undeclared index ${name} on ${ns}/${TYPE}: drop it explicitly`
-    ]);
+    expect(undeclaredIn(await ds.storageReport({ partitionBudget: BIG }), ns)).toEqual([name]);
   });
 
   it('tells two types apart whose index names fold alike, and finds a truncated name', async () => {
@@ -117,17 +121,13 @@ describe.skipIf(!POSTGRES_URL)('storageReport', () => {
     current.set(`${retracted.ns}/${retracted.type}`, {});
     current.set(`${truncated.ns}/${truncated.type}`, {});
 
-    const { warnings } = await ds(kept.ns).storageReport({ partitionBudget: BIG });
+    const report = await ds(kept.ns).storageReport({ partitionBudget: BIG });
     const name = (t: { ns: string; type: string }): string =>
       generatedIdentifier(t.ns, t.type, 'kid', 'idx');
     expect(name(truncated).length).toBeLessThanOrEqual(63);
-    expect(undeclaredIn(warnings, kept.ns)).toEqual([]);
-    expect(undeclaredIn(warnings, retracted.ns)).toEqual([
-      `undeclared index ${name(retracted)} on ${retracted.ns}/${retracted.type}: drop it explicitly`
-    ]);
-    expect(undeclaredIn(warnings, truncated.ns)).toEqual([
-      `undeclared index ${name(truncated)} on ${truncated.ns}/${truncated.type}: drop it explicitly`
-    ]);
+    expect(undeclaredIn(report, kept.ns)).toEqual([]);
+    expect(undeclaredIn(report, retracted.ns)).toEqual([name(retracted)]);
+    expect(undeclaredIn(report, truncated.ns)).toEqual([name(truncated)]);
   });
 
   it('counts open index recommendations as info, never as a warning', async () => {

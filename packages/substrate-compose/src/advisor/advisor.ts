@@ -45,16 +45,19 @@ import {
 
 const ADVISOR: ActorIdentity = { kind: 'system', id: 'index-advisor' };
 
-/** What the advisor carries from one pass to the next. */
+/**
+ * What the advisor carries from one pass to the next. Evidence comes from
+ * the database's own statistics, so a restart loses nothing that decides a
+ * recommendation: `firstSeen` only stands in for an index's age while the
+ * database's statistics have never been reset.
+ */
 export interface AdvisorMemory {
   lastPassAt?: number;
-  /** Per type: its insert count when first seen, for the write rate. */
-  inserts: Map<string, { total: number; at: number }>;
-  /** Per index: its scan count, and since when it has stood there. */
-  scans: Map<string, { scans: number; since: number }>;
+  /** Per index: when this process first saw it. */
+  firstSeen: Map<string, number>;
 }
 
-export const createAdvisorMemory = (): AdvisorMemory => ({ inserts: new Map(), scans: new Map() });
+export const createAdvisorMemory = (): AdvisorMemory => ({ firstSeen: new Map() });
 
 export interface AdvisorDeps {
   /** The store: `typeStats` and `indexPlan` span every namespace. */
@@ -65,8 +68,6 @@ export interface AdvisorDeps {
   /** Each namespace's registry, for a type's declared fields. */
   registry: (namespace: string) => Registry | undefined;
   now: () => number;
-  // shortcut: in-process, so a restart restarts every unused-index window and
-  // write-rate baseline; persist them if restarts outpace `unusedWindowMs`.
   memory: AdvisorMemory;
 }
 
@@ -87,8 +88,43 @@ function serves(
   });
 }
 
-const indexable = (def: FieldDef | undefined): boolean =>
-  def?.kind === 'crossRef' || (def?.kind === 'scalar' && def.type !== 'json');
+/** What an `indexes` entry may key on: a declared scalar or crossRef, or a metadata column. */
+const declarable = (field: string, def: FieldDef | undefined): boolean =>
+  field === 'createdAt' ||
+  field === 'updatedAt' ||
+  def?.kind === 'crossRef' ||
+  (def?.kind === 'scalar' && def.type !== 'json');
+
+/** The shape a `shapeKey` names, or undefined when it does not parse. */
+function shapeOf(key: string): ReadShape | undefined {
+  try {
+    const [namespace, type, filters, orderBy] = JSON.parse(key) as [
+      string,
+      string,
+      string[],
+      ReadShape['orderBy']
+    ];
+    return {
+      namespace,
+      type,
+      filters: filters.map((f) => {
+        const at = f.lastIndexOf(' ');
+        return { field: f.slice(0, at), op: f.slice(at + 1) };
+      }),
+      orderBy
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/** The equality fields and the order (less a trailing `id`) an index must lead with. */
+function servedBy(shape: ReadShape): { eq: string[]; order: ReadShape['orderBy'] } {
+  const eq = [...new Set(shape.filters.filter((f) => f.op === 'eq').map((f) => f.field))];
+  // Every btree ends with `id`, so a trailing `id` in the order is served whatever precedes it.
+  const order = shape.orderBy.filter(([f], i, all) => !(f === 'id' && i === all.length - 1));
+  return { eq, order };
+}
 
 function writeCost(rate: number | undefined, t: ProfileThresholds): 'low' | 'medium' | 'high' {
   if (rate === undefined || rate < t.minWriteRatePerMin) return 'low';
@@ -102,10 +138,10 @@ async function readProfile(system: Dataset): Promise<StoreProfileName> {
 }
 
 /**
- * One row per `recKey`, which is also its id: inserted `open`, or, when it
- * exists, its evidence refreshed only while it is still `open`. Both steps are
- * atomic, so advisors on one store converge on one row and never reopen an
- * accepted or dismissed one.
+ * One row per `recKey`, which is also its id: inserted `open`; or, when it
+ * exists, its evidence refreshed while `open`, or reopened when `superseded`
+ * (the evidence is back). Each step is atomic, so advisors on one store
+ * converge on one row and never reopen an accepted or dismissed one.
  */
 async function upsert(system: Dataset, row: Row & { id: string }, at: Date): Promise<boolean> {
   const inserted = await system.write(
@@ -123,7 +159,16 @@ async function upsert(system: Dataset, row: Row & { id: string }, at: Date): Pro
     ADVISOR,
     at
   );
-  return updated.matched;
+  if (updated.matched) return true;
+  const reopened = await system.conditionalUpdate(
+    INDEX_RECOMMENDATION_TYPE,
+    id,
+    { state: 'superseded' },
+    { ...refresh, state: 'open' },
+    ADVISOR,
+    at
+  );
+  return reopened.matched;
 }
 
 export async function runAdvisorPass(deps: AdvisorDeps): Promise<{ upserted: number }> {
@@ -137,17 +182,14 @@ export async function runAdvisorPass(deps: AdvisorDeps): Promise<{ upserted: num
   const t = PROFILES[await readProfile(system)];
 
   const stats = new Map<string, TypeStats>();
+  // Writes per minute, averaged since the database's statistics were reset.
+  // Never reset: no origin, so no rate, and no `remove`.
   const rates = new Map<string, number>();
   for (const s of await dataset.typeStats()) {
     const key = typeKey(s.namespace, s.type);
     stats.set(key, s);
-    const base = memory.inserts.get(key);
-    if (base === undefined || s.insertsTotal < base.total) {
-      // First sight, or the counters were reset: the window starts now.
-      memory.inserts.set(key, { total: s.insertsTotal, at: now });
-    } else if (now > base.at) {
-      rates.set(key, ((s.insertsTotal - base.total) * 60_000) / (now - base.at));
-    }
+    const since = s.statsSince === null ? Number.NaN : Date.parse(s.statsSince);
+    if (now > since) rates.set(key, (s.writesTotal * 60_000) / (now - since));
   }
   const plans = new Map<string, Promise<IndexPlan | undefined>>();
   const planOf = (namespace: string, type: string): Promise<IndexPlan | undefined> => {
@@ -177,13 +219,16 @@ export async function runAdvisorPass(deps: AdvisorDeps): Promise<{ upserted: num
     const rate = rates.get(key);
     for (const i of s.indexes) {
       if (!i.engineOwned || i.unique || desired.has(i.name) || i.name.endsWith('_base')) continue;
-      const scanKey = `${key}\0${i.name}`;
-      const seen = memory.scans.get(scanKey);
-      if (seen === undefined || seen.scans !== i.scans) {
-        memory.scans.set(scanKey, { scans: i.scans, since: now });
-        continue;
-      }
-      if (now - seen.since < t.unusedWindowMs) continue;
+      // Unused: no scan within the window, and known to have existed for all of it.
+      // pg records no index creation time, so its age is counted from the
+      // statistics' reset, or failing one, from when this process first saw it.
+      const seenKey = `${key}\0${i.name}`;
+      const firstSeen = memory.firstSeen.get(seenKey) ?? now;
+      memory.firstSeen.set(seenKey, firstSeen);
+      const since = s.statsSince !== null ? Date.parse(s.statsSince) : firstSeen;
+      const lastScan = i.lastScanAt === null ? undefined : Date.parse(i.lastScanAt);
+      if (lastScan !== undefined && now - lastScan < t.unusedWindowMs) continue;
+      if (now - since < t.unusedWindowMs) continue;
       if (rate === undefined || rate < t.minWriteRatePerMin) continue;
       const rec: Row & { id: string } = {
         id: sha256(`remove${i.name}`),
@@ -195,17 +240,54 @@ export async function runAdvisorPass(deps: AdvisorDeps): Promise<{ upserted: num
         declarationJson: JSON.stringify({ drop: i.name }),
         evidenceJson: JSON.stringify({
           scans: i.scans,
+          lastScanAt: i.lastScanAt,
           sizeBytes: i.sizeBytes,
           liveRows: s.liveRows,
           writeRatePerMin: rate,
-          window: now - seen.since
+          window: t.unusedWindowMs
         }),
         estimatedWriteCost: writeCost(rate, t)
       };
       if (await upsert(system, rec, at)) upserted++;
     }
   }
+  await supersede();
   return { upserted };
+
+  /** Open recommendations the store no longer needs: a shape now served, an index gone or wanted again. */
+  async function supersede(): Promise<void> {
+    const { rows } = await system.read(INDEX_RECOMMENDATION_TYPE, {
+      where: { state: { eq: 'open' } }
+    });
+    for (const row of rows) {
+      const namespace = String(row.namespace);
+      const type = String(row.type);
+      const s = stats.get(typeKey(namespace, type));
+      // Unknown types are left as they are.
+      const plan = s === undefined ? undefined : await planOf(namespace, type);
+      if (s === undefined || plan === undefined) continue;
+      let done = false;
+      if (row.action === 'add') {
+        const shape = shapeOf(String(row.shape));
+        if (shape === undefined) continue;
+        const { eq, order } = servedBy(shape);
+        done = plan.indexes.some((i) => serves(i.keys, eq, order));
+      } else if (row.action === 'remove') {
+        const name = String(row.indexName);
+        done = !s.indexes.some((i) => i.name === name) || plan.indexes.some((i) => i.name === name);
+      }
+      if (done) {
+        await system.conditionalUpdate(
+          INDEX_RECOMMENDATION_TYPE,
+          row.id,
+          { state: 'open' },
+          { state: 'superseded' },
+          ADVISOR,
+          at
+        );
+      }
+    }
+  }
 
   async function addFor(
     shape: ReadShape,
@@ -222,18 +304,15 @@ export async function runAdvisorPass(deps: AdvisorDeps): Promise<{ upserted: num
     if (plan === undefined) return undefined;
     const min = plan.expectedSize === 'large' ? t.minRowsLargeHint : t.minRows;
     if (s.liveRows < min) return undefined;
-    const eq = [...new Set(shape.filters.filter((f) => f.op === 'eq').map((f) => f.field))];
-    // Every btree ends with `id`, so a trailing `id` in the order is served whatever precedes it.
-    const order = shape.orderBy.filter(([f], i, all) => !(f === 'id' && i === all.length - 1));
+    const { eq, order } = servedBy(shape);
     if (plan.indexes.some((i) => serves(i.keys, eq, order))) return undefined;
 
-    // An `indexes` entry names declared scalar or crossRef fields only: the
-    // filter's that are, then the order's up to its first that is not (a
-    // metadata column such as `createdAt`, which a derived index carries).
+    // An `indexes` entry keys on what `declarable` allows: the filter's
+    // fields that qualify, then the order's up to its first that does not.
     const entry = deps.registry(shape.namespace)?.get(shape.type);
     const fields = entry?.kind === 'type' ? entry.fields : {};
-    const declEq = eq.filter((f) => indexable(fields[f]));
-    const stop = order.findIndex(([f]) => !indexable(fields[f]));
+    const declEq = eq.filter((f) => declarable(f, fields[f]));
+    const stop = order.findIndex(([f]) => !declarable(f, fields[f]));
     const declOrder = stop === -1 ? order : order.slice(0, stop);
     if (declEq.length + declOrder.length === 0) return undefined;
     // A declaration an index already covers would add nothing.

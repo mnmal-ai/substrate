@@ -260,7 +260,7 @@ export function defineNamespace(
 /** Lower-snake, within pg's 63-byte identifier limit. */
 const INDEX_NAME_PATTERN = /^[a-z_][a-z0-9_]{0,62}$/;
 
-/** Throws unless every key and predicate field is a btree-indexable declared field. */
+/** Throws unless every key is a btree-indexable declared field or `createdAt`/`updatedAt`, and every predicate field a declared one. */
 function assertIndexDecl(
   typeName: string,
   fields: Record<string, FieldDef>,
@@ -280,12 +280,16 @@ function assertIndexDecl(
   if (!Array.isArray(decl.fields) || decl.fields.length === 0) {
     throw new Error(`${where}: fields must be a non-empty array`);
   }
+  // A key may also be a metadata column, which an index keys as natural order does.
+  const assertKey = (name: string): void => {
+    if (name !== 'createdAt' && name !== 'updatedAt') assertField(name);
+  };
   for (const f of decl.fields) {
     if (typeof f === 'string') {
-      assertField(f);
+      assertKey(f);
       continue;
     }
-    assertField(f.field);
+    assertKey(f.field);
     if (f.dir !== 'asc' && f.dir !== 'desc') {
       throw new Error(
         `${where}: dir of '${f.field}' must be 'asc' or 'desc', got '${String(f.dir)}'`
