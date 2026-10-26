@@ -333,7 +333,7 @@ export async function reconcileRegisteredStorage(
  * Builds the non-unique indexes of every registered type, one type at a time.
  * Started after the server listens: until an index is valid, filters it would
  * serve scan. Never rejects: a type whose build fails is logged, and reported
- * `failed`, until the next boot retries it. `signal` cancels the build in
+ * `failed`, until the next build pass (periodic, or the next boot) retries it. `signal` cancels the build in
  * flight, whose INVALID leftover the next reconcile drops, and skips the rest.
  */
 export async function buildDeferredIndexes(
@@ -352,7 +352,7 @@ export async function buildDeferredIndexes(
       });
     } catch (err) {
       process.stderr.write(
-        `indexes of ${ns}/${type} were not built and will be retried at the next boot: ${message(err)}\n`
+        `indexes of ${ns}/${type} were not built and will be retried by the next build pass: ${message(err)}\n`
       );
     }
   }

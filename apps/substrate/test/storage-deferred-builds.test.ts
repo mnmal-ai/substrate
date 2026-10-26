@@ -238,8 +238,19 @@ describe.skipIf(!POSTGRES_URL)('deferred index builds at boot (pg)', () => {
     await reconcileRegisteredStorage(composed.engine, composed.datasets, nsDefs);
     const stop = new AbortController();
     // Builds nothing, so the index stays unsettled and every retry pass reaches it;
-    // the second call (the first retry) ends the loop.
+    // the second call (the first retry) ends the loop. Every retry pass reads the
+    // type's storage first, so a cap on those reads ends the loop even if a
+    // regression stops a pass from reaching the build: it fails, never hangs.
     let calls = 0;
+    let retryReads = 0;
+    const describe = PgDataset.prototype.describeStorage;
+    const reads = vi.spyOn(PgDataset.prototype, 'describeStorage').mockImplementation(function (
+      this: PgDataset,
+      type: string
+    ) {
+      if (this.namespace === lns && ++retryReads >= 3) stop.abort();
+      return describe.call(this, type);
+    });
     const ensure = vi
       .spyOn(PgDataset.prototype, 'ensureTypeStorage')
       .mockImplementation(async function (this: PgDataset) {
@@ -247,9 +258,10 @@ describe.skipIf(!POSTGRES_URL)('deferred index builds at boot (pg)', () => {
       });
     try {
       await runDeferredIndexBuilds(composed.engine, composed.datasets, 1, stop.signal);
-      expect(calls).toBe(2);
+      expect(calls, 'a retry pass after the interval reached the unsettled type').toBe(2);
     } finally {
       ensure.mockRestore();
+      reads.mockRestore();
       stop.abort();
       await composed.stop();
     }
