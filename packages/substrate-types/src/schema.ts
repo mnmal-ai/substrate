@@ -145,11 +145,10 @@ export interface FieldDefList {
   kind: 'list';
   of: FieldDef;
   /**
-   * When true, the field is server-side filterable via the `has` (element
-   * membership) operator without `_allowTableScan`, and is backed by a GIN
+   * When true, the `has` (element membership) operator is backed by a GIN
    * index on `(body -> '<field>')`. List fields are stored as native JSONB
-   * arrays. Default false — an unindexed list field rejects `has` unless the
-   * caller opts into a table scan. The substrate binary derives the matching GIN
+   * arrays. Default false — `has` on an unindexed list still works, by
+   * scanning the type's rows. The substrate binary derives the matching GIN
    * as an idempotent migration at boot from this flag; no hand-authored
    * migration is needed per field.
    */
@@ -282,8 +281,8 @@ export interface PackEnvelope {
        * The where-clause reached the substrate without being schema-validated,
        * because the type is registered but absent from its namespace's
        * published schema (e.g. runtime-created types). The result is still
-       * correct — substrates refuse a predicate they cannot honour — but an
-       * unindexed filter scans instead of rejecting.
+       * correct — substrates refuse a predicate they cannot honour — but the
+       * engine's operator and operand check did not run.
        */
       filterValidationSkipped?: string;
     }

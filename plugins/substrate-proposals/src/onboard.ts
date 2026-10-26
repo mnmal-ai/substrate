@@ -160,7 +160,7 @@ export function buildOnboardBody(ownedNamespaces: ReadonlyArray<string>): Onboar
           shape:
             '{ kind: "scalar", type: "string"|"number"|"boolean"|"date"|"json", indexed?: bool, nullable?: bool }',
           notes:
-            'indexed defaults to true for string/number/boolean/date, and is forced false for json (opaque body — no per-leaf filtering). readonly is reserved for engine-managed fields. ' +
+            'indexed defaults to false: every field filters and sorts without an index, so set indexed: true only where a read needs the speed. readonly is reserved for engine-managed fields. ' +
             'Use type:"json" for arbitrary nested blobs you do not need to filter on (audit details, free-form metadata). ' +
             'Use kind:"struct" instead when you have a known nested shape and want per-field where-clause support.'
         },

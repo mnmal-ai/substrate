@@ -11,8 +11,7 @@
  *
  * Filter contract (§5.2): `read()` honours `where` + `orderBy` + `cursor` in
  * addition to the id/ids/includeDeleted/limit short-circuit. Filter evaluation
- * is in-memory; there's no indexing, so the validator (upstream, in the
- * engine) is what gates unindexed-field scans.
+ * is in-memory; there's no indexing, so every filter is a scan.
  */
 
 import { randomUUID } from 'node:crypto';

@@ -621,10 +621,13 @@ swapping it to the right definition.
 
 ### Indexes
 
-On the partitioned layout the engine indexes every field whose `indexed` is
-`true` (the default for most builders, see below), plus `created_at`,
-`updated_at` and tombstones. Add `indexes` on a type for what a single field
-cannot serve: composites and unique constraints.
+Every field filters and sorts whether or not it is indexed; an index only
+makes it faster. On the partitioned layout the engine indexes every field
+whose `indexed` is `true` (the default only for `crossRef`, see below), plus
+`created_at`, `updated_at` and tombstones. Add `indexes` on a type for what a
+single field cannot serve: composites and unique constraints. A composite led
+by a field already serves filters on that field alone, so the field needs no
+`indexed: true` of its own.
 
 ```ts
 Listing: {
@@ -676,8 +679,8 @@ the next boot. A removed declaration leaves its index in place.
 
 **What it costs.**
 
-- Each index adds write cost. Index the fields you filter on, not every field;
-  set `indexed: false` on the rest.
+- Each index adds write cost. Set `indexed: true` only on the fields your
+  hot reads filter on; the rest scan.
 - The reconciler also owns one `CREATE STATISTICS` per indexed body
   expression, and runs `ANALYZE` once when it creates one, because the planner
   needs it for row estimates on body-field filters.
@@ -702,15 +705,15 @@ Every `field.*` builder in `@mnmal-ai/substrate/sdk` returns a plain
 
 | Builder | Shape | Default `indexed` | Use for |
 |---|---|---|---|
-| `field.string(opts?)` | `{kind:'scalar',type:'string'}` | `true` | Names, identifiers, short text. |
-| `field.number(opts?)` | `{kind:'scalar',type:'number'}` | `true` | Counts, scores, money in minor units. |
-| `field.boolean(opts?)` | `{kind:'scalar',type:'boolean'}` | `true` | Flags. |
-| `field.date(opts?)` | `{kind:'scalar',type:'date'}` | `true` | Timestamps. `serverSet: 'create' \| 'update' \| 'both'` marks one your server code sets; autoCRUD rejects client values for it. A date with no offset is read as UTC, so writers should send an offset or `Z`. |
-| `field.enum(values, opts?)` | string scalar with `enum` | `true` | A closed set of values. |
-| `field.vocab(values, opts?)` | string scalar with `enum` + `aliases` | `true` | A governed vocabulary: aliases are normalised to canonical values on write and in filters. `strict: false` admits unknown values. |
+| `field.string(opts?)` | `{kind:'scalar',type:'string'}` | `false` | Names, identifiers, short text. |
+| `field.number(opts?)` | `{kind:'scalar',type:'number'}` | `false` | Counts, scores, money in minor units. |
+| `field.boolean(opts?)` | `{kind:'scalar',type:'boolean'}` | `false` | Flags. |
+| `field.date(opts?)` | `{kind:'scalar',type:'date'}` | `false` | Timestamps. `serverSet: 'create' \| 'update' \| 'both'` marks one your server code sets; autoCRUD rejects client values for it. A date with no offset is read as UTC, so writers should send an offset or `Z`. |
+| `field.enum(values, opts?)` | string scalar with `enum` | `false` | A closed set of values. |
+| `field.vocab(values, opts?)` | string scalar with `enum` + `aliases` | `false` | A governed vocabulary: aliases are normalised to canonical values on write and in filters. `strict: false` admits unknown values. |
 | `field.json(opts?)` | `{kind:'scalar',type:'json'}` | `false` | Opaque bodies. See below. |
 | `field.struct(fields, opts?)` | `{kind:'struct',fields}` | n/a | A known nested shape you want to filter on per leaf. |
-| `field.list(of, opts?)` | `{kind:'list',of}` | `false` | Homogeneous lists. `indexed: true` enables server-side `has` filtering. |
+| `field.list(of, opts?)` | `{kind:'list',of}` | `false` | Homogeneous lists. `indexed: true` backs `has` with a GIN. |
 | `field.crossRef(ns, type, opts?)` | `{kind:'crossRef',ns,type,onDelete}` | `true` | An edge to a row of another type, in any namespace. |
 
 Common options:
@@ -730,8 +733,8 @@ Common options:
   You can still filter inside one with a path predicate,
   `where: { payload: { path: ['year'], gt: 1990 } }`. Matching is type-strict
   (`1995` does not match `"1995"`). Equality-style predicates are
-  index-served only with `field.json({ indexed: true })`; otherwise the query
-  needs `_allowTableScan: true`. JSON fields cannot be ordered by.
+  index-served only with `field.json({ indexed: true })`; anything else scans
+  the type's rows. JSON fields cannot be ordered by.
 
 ### crossRef behaviour
 
@@ -774,7 +777,7 @@ For every type that does not opt out:
 - `get<Type>({ id })`: one row by id (or short id), or `null`.
 - `<Type>({ where?, orderBy?, limit?, cursor?, id?, ids?, includeDeleted?, _allowTableScan? })`:
   the list query, addressed by the bare `<ns>/<Type>` key. Unknown params are
-  rejected with `unknown_param`.
+  rejected with `unknown_param`. `_allowTableScan` is deprecated and ignored.
 
 The autoCRUD resolvers write through the dataset, run `postWrite` for create
 and update (not delete), and emit write events to subscribers after the

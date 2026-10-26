@@ -157,7 +157,7 @@ Or proposed at runtime through the proposals plugin (§5.15):
     "proposedReason": "need prices" } } }
 ```
 
-The field DSL (`field.*`) covers scalars (`string`, `number`, `boolean`, `date`, `json`, plus `enum` and `vocab` string variants), `crossRef`, `struct` and `list`. Every `FieldDef` may carry `nullable` — metadata only: the engine does not enforce it, but schema consumers use it to document shapes that legitimately produce `null`. Scalars may carry `indexed` (whether a field is filterable without a table scan, §5.2), `readonly`, and `serverSet` (a server-managed timestamp the caller cannot supply).
+The field DSL (`field.*`) covers scalars (`string`, `number`, `boolean`, `date`, `json`, plus `enum` and `vocab` string variants), `crossRef`, `struct` and `list`. Every `FieldDef` may carry `nullable` — metadata only: the engine does not enforce it, but schema consumers use it to document shapes that legitimately produce `null`. Scalars may carry `indexed` (whether the engine builds an index for the field; default false, and every field filters either way, §5.2), `readonly`, and `serverSet` (a server-managed timestamp the caller cannot supply).
 
 A type input to `defineNamespace` carries its fields plus optional `policy` (§4.4), `autoCrud: false` (opt out), `purgeable`, `adminCapability`, a `postWrite` hook and `embed` metadata (consumed by the recall plugin, §5.10).
 
@@ -303,7 +303,7 @@ interface ReadParams {
   orderBy?: OrderByClause[];          // §5.2; id appended as final tie-breaker
   limit?: number;                     // MUST be pushed down to storage
   cursor?: string;                    // from a prior ReadResult.nextCursor
-  _allowTableScan?: boolean;          // permit filtering on unindexed fields
+  _allowTableScan?: boolean;          // deprecated, ignored
 }
 
 interface ReadResult { rows: Row[]; nextCursor?: string; hasMore: boolean; }
@@ -581,7 +581,7 @@ Hard-destructive operations (purge, the admin drop routes) can be switched off p
 | boolean | `eq` |
 | crossRef | `eq`, `neq`, `in`, `nin` on the target id (`neq: null` finds rows that point at something) |
 | list | `has` (element membership) |
-| json | through a path predicate only: `{ values: { path: ['year'], gt: 1990 } }`. Supports the string set plus `has`. Type-strict: `1995` does not match `"1995"`. Equality-style predicates are index-served when the field is declared `field.json({ indexed: true })`; anything else needs `_allowTableScan`. |
+| json | through a path predicate only: `{ values: { path: ['year'], gt: 1990 } }`. Supports the string set plus `has`. Type-strict: `1995` does not match `"1995"`. Equality-style predicates are index-served when the field is declared `field.json({ indexed: true })`; anything else scans the type's rows. |
 
 `eq: null` is the is-null test and works on every kind.
 
@@ -593,7 +593,7 @@ Plugins can contribute extra operators (the recall plugin adds `embeddingSimilar
 
 - **Validate against the schema before dispatch.** Unknown fields (`unknown_field`), unknown operators and type-mismatched values are rejected with a `FilterValidationError` and never reach the dataset. An unknown name in a filter is rejected because a filter the server cannot evaluate would silently widen the result.
 - **Negotiate with the dataset.** Each dataset declares `capabilities.operators` per field kind; the engine rejects anything the dataset cannot evaluate, rather than returning silently empty results.
-- **Enforce indexing.** Filters on unindexed fields are rejected (`unindexed_field`) unless the request passes `_allowTableScan: true`, which a policy can restrict.
+- **Never refuse for want of an index.** A filter or sort on an unindexed field is accepted and scans. `_allowTableScan` is accepted and ignored, and `unindexed_field` is no longer produced.
 
 **Pagination is cursor-based.** The cursor is opaque: base64url(JSON) of the last row's `orderBy` values plus its id. The next page re-runs the query with `(orderBy tuple) > (last seen tuple)` — exclusive, so it starts after the cursor row. With `id` as the final tie-breaker this survives data changes between pages without duplicates or gaps. If `orderBy` omits `id`, the engine appends `{ id: 'asc' }`. The `where` clause re-applies on every page. The envelope carries `_pagination[key] = { nextCursor?, hasMore }`. Under a row-filter policy the cursor is sealed (encrypted with a key derived from `SUBSTRATE_STREAM_TICKET_SECRET`, or held only by the process when that is unset), because the row it names may be one the caller cannot see; without the secret a sealed cursor stops opening when the server restarts or on another replica. An unsealed cursor is refused there.
 
@@ -633,7 +633,7 @@ A subscribe frame has the same shape as a query frame and returns an initial sna
 - **The snapshot** honours `where`, `orderBy` and `limit` exactly like a query, and row-filter obligations apply.
 - **Pushes are filtered server-side** against the subscription's `where` and the row-filter obligations captured at subscribe time. A row that stops matching yields `remove`; a row that starts matching yields `add`; a row that still matches yields `update`.
 - **`orderBy` is advisory for pushes.** The client places updates in its own ordered view.
-- **Subscribe params are a subset of query params:** `where`, `orderBy`, `_allowTableScan`. `limit` is refused (`unknown_param`) because a capped live view would need server-side state to stay meaningful.
+- **Subscribe params are a subset of query params:** `where`, `orderBy`, and the ignored `_allowTableScan`. `limit` is refused (`unknown_param`) because a capped live view would need server-side state to stay meaningful.
 - **`remove` carries only the id** (`removedId`). The client already has the row.
 - **Write events.** Write-path resolvers announce committed writes via `args.onWrite({ ns, type, id, operation, row? })`. The engine collects them inside the transaction and fans out only after commit, so a rolled-back mutation pushes nothing.
 

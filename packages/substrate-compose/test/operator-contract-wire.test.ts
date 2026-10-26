@@ -31,10 +31,8 @@ const KEY = `${NS}/Note`;
  * One field of every kind the contract reports, so the generated probes cover
  * the whole published map rather than the string case twice.
  *
- * `tags` is declared `indexed: true` deliberately: list fields default to
- * unindexed, and an unindexed field is refused with `unindexed_field` BEFORE
- * the operator allowlist is consulted, so every `has` probe would fail for a
- * reason that has nothing to do with operators.
+ * `tags` is declared `indexed: true` so the `has` probes run against an
+ * index-backed list, the shape a real author would publish.
  */
 const notesPlugin: CoordinatorPlugin = {
   name: 'operator-contract-fixture',

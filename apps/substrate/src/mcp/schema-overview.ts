@@ -13,7 +13,6 @@ interface FieldShape {
   fields?: Record<string, unknown>;
   enum?: unknown[];
   nullable?: boolean;
-  indexed?: boolean;
   readonly?: boolean;
   serverSet?: unknown;
 }
@@ -63,7 +62,6 @@ function fieldType(f: FieldShape, ns: string): string {
   else if (Array.isArray(f.enum)) t = f.nullable ? `(${enumText(f.enum)})` : enumText(f.enum);
   else t = safe(f.type ?? f.kind, NAME);
   const tags: string[] = [];
-  if (f.indexed === false) tags.push('unindexed');
   if (f.readonly === true || (f.serverSet !== undefined && f.serverSet !== false))
     tags.push('readonly');
   return `${t}${f.nullable ? '?' : ''}${tags.length > 0 ? ` [${tags.join(', ')}]` : ''}`;
@@ -96,7 +94,7 @@ export function schemaOverview(
 /** How to read the overview; rides beside it in the tool result and the instructions. */
 export const OVERVIEW_LEGEND =
   'Each type is `field: type` pairs. `a|b` is an enum, `?` nullable, `T[]` a list, `→Type` a reference ' +
-  '(`→ns/Type` across namespaces). [unindexed] fields need `_allowTableScan` to filter on; [readonly] ' +
+  '(`→ns/Type` across namespaces). Every field filters and sorts; [readonly] ' +
   'fields are server-set. Generated get/create/update/delete<Type> mutations are not listed; `mutations` ' +
   "holds the rest. For a type's exact write contract call `schema` with `namespace` and `type`.";
 

@@ -22,7 +22,6 @@ import {
   getExtensionOperator,
   isJsonPathPredicate,
   JSON_PATH_OPS as JSON_PATH_OP_LIST,
-  jsonPathNeedsScan,
   jsonPathOperandProblem,
   jsonPathProblem,
   LIST_OPS as LIST_OP_LIST,
@@ -51,6 +50,7 @@ export type FilterErrorCode =
   | 'unknown_field'
   | 'unknown_operator'
   | 'type_mismatch'
+  /** @deprecated Never produced: filters no longer refuse an unindexed field. Removed next release. */
   | 'unindexed_field'
   | 'orderby_nonscalar'
   | 'capability_unsupported'
@@ -110,8 +110,7 @@ const LOGICAL_KEYS = new Set(['AND', 'OR', 'NOT']);
  * Walk context. `insideStruct` is set once the walk descends into a struct's
  * sub-schema, where json path predicates are not supported.
  */
-interface IndexedCheck {
-  allowTableScan: boolean;
+interface WalkContext {
   insideStruct?: boolean;
 }
 
@@ -356,7 +355,7 @@ function validateLeaf(
   leaf: unknown,
   path: string[],
   capabilities: FilterCapabilities,
-  indexedCheck: IndexedCheck
+  ctx: WalkContext
 ): void {
   // Struct fields take nested WhereClause — recurse into the sub-schema.
   if (fieldDef.kind === 'struct') {
@@ -372,7 +371,7 @@ function validateLeaf(
       (fieldDef as FieldDefStruct).fields,
       path,
       capabilities,
-      { ...indexedCheck, insideStruct: true }
+      { ...ctx, insideStruct: true }
     );
     return;
   }
@@ -380,8 +379,7 @@ function validateLeaf(
   // list fields: element-membership via `has`. The operand is a
   // single element validated against the list's declared element type. Lists of
   // structs / nested lists / opaque json have no primitive element to match —
-  // reject those. Indexed gate defaults to false (a list field is filterable
-  // only when explicitly flagged or under _allowTableScan).
+  // reject those.
   if (fieldDef.kind === 'list') {
     const listDef = fieldDef as FieldDefList;
     const elementKind = fieldKindOf(listDef.of);
@@ -389,14 +387,6 @@ function validateLeaf(
       throw new FilterValidationError(
         'unknown_operator',
         `field '${fieldName}' is a list of ${elementKind} — only lists of scalars / refs support 'has'`,
-        path
-      );
-    }
-
-    if (listDef.indexed !== true && !indexedCheck.allowTableScan) {
-      throw new FilterValidationError(
-        'unindexed_field',
-        `field '${fieldName}' is an unindexed list — set { indexed: true } on the field or params._allowTableScan to override`,
         path
       );
     }
@@ -450,28 +440,15 @@ function validateLeaf(
   if (kind === 'scalar.json') {
     // pg's struct walk has no json-path branch and no GIN is derived for a
     // nested field, so accepting this would let memory answer what pg refuses.
-    if (indexedCheck.insideStruct === true && isJsonPathPredicate(leaf)) {
+    if (ctx.insideStruct === true && isJsonPathPredicate(leaf)) {
       throw new FilterValidationError(
         'unknown_operator',
         `json path filters apply to top-level json fields only — '${fieldName}' is inside a struct (kind=scalar.json)`,
         [...path, 'path']
       );
     }
-    validateJsonPathLeaf(fieldName, isIndexed(fieldDef), leaf, path, capabilities, indexedCheck);
+    validateJsonPathLeaf(fieldName, leaf, path, capabilities);
     return;
-  }
-
-  // Indexed-field enforcement is load-bearing for the filter contract. Without
-  // an index, the substrate scans — which is fine for dev, terrible in prod.
-  // We read `indexed` off scalar fields and crossRefs both; the crossRef case
-  // is a naked index question too (the column the id lives in).
-  const indexed = isIndexed(fieldDef);
-  if (!indexed && !indexedCheck.allowTableScan) {
-    throw new FilterValidationError(
-      'unindexed_field',
-      `field '${fieldName}' is not indexed — set params._allowTableScan to override`,
-      path
-    );
   }
 
   if (leaf === null || typeof leaf !== 'object' || Array.isArray(leaf)) {
@@ -527,19 +504,16 @@ function validateLeaf(
 const JSON_PATH_HINT = 'address inside it with { path: [...], <op>: ... }';
 
 /**
- * A json field is filterable only through a path predicate. The
- * index gate is per operator AND per field: `eq`/`in`/`has` compile to
- * containment, which the GIN derived for `field.json({ indexed: true })`
- * serves; every other operator, and every operator on an unindexed json
- * field, scans the (namespace, type) partition.
+ * A json field is filterable only through a path predicate. `eq`/`in`/`has`
+ * compile to containment, which the GIN derived for
+ * `field.json({ indexed: true })` serves; anything else scans the
+ * (namespace, type) partition. Either way it is accepted.
  */
 function validateJsonPathLeaf(
   fieldName: string,
-  fieldIndexed: boolean,
   leaf: unknown,
   path: string[],
-  capabilities: FilterCapabilities,
-  indexedCheck: IndexedCheck
+  capabilities: FilterCapabilities
 ): void {
   const obj =
     leaf !== null && typeof leaf === 'object' && !Array.isArray(leaf)
@@ -610,24 +584,7 @@ function validateJsonPathLeaf(
         [...path, op]
       );
     }
-    if ((!fieldIndexed || jsonPathNeedsScan(op, operand)) && !indexedCheck.allowTableScan) {
-      throw new FilterValidationError(
-        'unindexed_field',
-        `operator '${op}' on json field '${fieldName}' scans the type's rows — set params._allowTableScan to override (eq, in and has are index-served on a field declared field.json({ indexed: true }))`,
-        [...path, op]
-      );
-    }
   }
-}
-
-function isIndexed(def: FieldDef): boolean {
-  if (def.kind === 'scalar') return (def as FieldDefScalar).indexed === true;
-  if (def.kind === 'crossRef') {
-    // CrossRef fields are indexed by default — the edge store demands fast
-    // lookup by id (§4.6). Treat them as indexed for filter purposes.
-    return true;
-  }
-  return false;
 }
 
 function validateWhereAgainstFields(
@@ -635,7 +592,7 @@ function validateWhereAgainstFields(
   fields: Record<string, FieldDef>,
   path: string[],
   capabilities: FilterCapabilities,
-  indexedCheck: IndexedCheck
+  ctx: WalkContext
 ): void {
   if (where === null || typeof where !== 'object' || Array.isArray(where)) {
     throw new FilterValidationError('type_mismatch', 'where must be an object', path);
@@ -674,7 +631,7 @@ function validateWhereAgainstFields(
             fields,
             [...path, k, String(i)],
             capabilities,
-            indexedCheck
+            ctx
           );
         });
       } else if (k === 'NOT') {
@@ -684,13 +641,7 @@ function validateWhereAgainstFields(
             k
           ]);
         }
-        validateWhereAgainstFields(
-          child as WhereClause,
-          fields,
-          [...path, k],
-          capabilities,
-          indexedCheck
-        );
+        validateWhereAgainstFields(child as WhereClause, fields, [...path, k], capabilities, ctx);
       }
     }
     return;
@@ -735,7 +686,7 @@ function validateWhereAgainstFields(
       (where as Record<string, unknown>)[fieldName],
       [...path, fieldName],
       capabilities,
-      indexedCheck
+      ctx
     );
   }
 }
@@ -822,20 +773,20 @@ function validateOrderBy(
 export interface ValidateFilterInput {
   where?: WhereClause;
   orderBy?: OrderByClause[];
+  /** @deprecated Accepted and ignored: filters never refuse an unindexed field. */
   allowTableScan?: boolean;
   typeSchema: TypeSchema;
   capabilities: FilterCapabilities;
 }
 
 export function validateFilter(input: ValidateFilterInput): void {
-  const allowTableScan = input.allowTableScan === true;
   if (input.where !== undefined) {
     validateWhereAgainstFields(
       input.where,
       input.typeSchema.fields,
       ['where'],
       input.capabilities,
-      { allowTableScan }
+      {}
     );
   }
   if (input.orderBy !== undefined) {

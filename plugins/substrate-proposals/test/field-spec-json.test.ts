@@ -1,3 +1,4 @@
+import { field } from '@mnmal-ai/substrate-sdk';
 import { describe, expect, it } from 'vitest';
 import { type FieldSpecJson, parseFieldSpec, stringifyFieldDef } from '../src/field-spec-json.js';
 
@@ -100,6 +101,15 @@ describe('FieldSpecJson round-trip', () => {
   });
 });
 
+describe('indexed defaults', () => {
+  it('a proposed scalar defaults indexed false like field.string(); a crossRef stays true', () => {
+    expect(parseFieldSpec({ kind: 'scalar', type: 'string' })).toEqual(field.string());
+    expect(parseFieldSpec({ kind: 'crossRef', ns: 'a', type: 'B' })).toMatchObject({
+      indexed: true
+    });
+  });
+});
+
 describe('vocabulary specs', () => {
   const spec: FieldSpecJson = {
     kind: 'scalar',
@@ -111,7 +121,7 @@ describe('vocabulary specs', () => {
   };
 
   it('round-trips aliases, strict and implies', () => {
-    expect(stringifyFieldDef(parseFieldSpec(spec))).toEqual({ ...spec, indexed: true });
+    expect(stringifyFieldDef(parseFieldSpec(spec))).toEqual({ ...spec, indexed: false });
   });
 
   it('refuses an alias pointing outside the vocabulary', () => {

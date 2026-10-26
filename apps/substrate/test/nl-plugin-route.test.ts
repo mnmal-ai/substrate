@@ -144,7 +144,7 @@ describe('the NL routes', () => {
   it('POST /substrate/v1/nl answers a question as JSON with a rows outcome', async () => {
     ctx = await mkServer({});
     await seedTodo(ctx.server);
-    // `status` is unindexed in the fixture, so ask for plain todos: the engine would reject a status filter.
+    // `status` is unindexed in the fixture and the NL pack only learns indexed fields, so ask for plain todos.
     const res = await ctx.server.inject(ask({ namespace: 'default', question: 'todos' }));
     expect(res.status).toBe(200);
     const parsed = jsonBody<{

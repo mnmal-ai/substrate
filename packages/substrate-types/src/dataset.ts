@@ -104,9 +104,8 @@ export interface ReadParams {
    */
   cursor?: string;
   /**
-   * Admin-gated escape hatch for filtering on unindexed fields. Absent → the
-   * validator rejects filters on any `indexed: false` field. Policies can pin
-   * this to admin identities.
+   * @deprecated Accepted and ignored. Filters on unindexed fields are no
+   * longer refused, so there is nothing left to override.
    */
   _allowTableScan?: boolean;
   /**

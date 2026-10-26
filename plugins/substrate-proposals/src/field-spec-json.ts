@@ -122,7 +122,8 @@ export function parseFieldSpec(json: FieldSpecJson): FieldDef {
       const def: FieldDefScalar = {
         kind: 'scalar',
         type: json.type,
-        indexed: json.indexed ?? true
+        // Same default as the SDK's field builders: proposed types behave like code-defined ones.
+        indexed: json.indexed ?? false
       };
       if (json.nullable !== undefined) def.nullable = json.nullable;
       if (json.readonly !== undefined) def.readonly = json.readonly;
