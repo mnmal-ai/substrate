@@ -197,7 +197,7 @@ describe.skipIf(POSTGRES_URL === undefined)('pg', () => {
   suite('pg stores', async () => {
     sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
     await sql`CREATE EXTENSION IF NOT EXISTS vector`;
-    await embeddingsMigration().apply({ sql, metric: () => {} });
+    await embeddingsMigration().apply({ sql, metric: () => {}, layout: null });
     const lex = lexicalMigration();
     await lex.apply({ sql } as unknown as Parameters<typeof lex.apply>[0]);
     await clean();

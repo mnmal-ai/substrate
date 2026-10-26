@@ -13,7 +13,11 @@
  */
 
 import type { AuthConfig, ContractCheck } from '@mnmal-ai/substrate-compose';
-import { deriveListIndexMigration, runDerivedMigrations } from '@mnmal-ai/substrate-dataset-pg';
+import {
+  deriveListIndexMigration,
+  detectLayout,
+  runDerivedMigrations
+} from '@mnmal-ai/substrate-dataset-pg';
 import type {
   CoordinatorPlugin,
   Dataset,
@@ -104,8 +108,16 @@ export async function composeKernelPhase(args: {
 }): Promise<void> {
   const { kernel, server, storeSql, coordinators, kernelAuth, trustedProxies } = args;
   await reconcileDeclaredStorage(args.datasetFor, args.nsDefs);
+  // `rows` exists by now (runMigrations ran when the store opened).
+  let layout: 'legacy' | 'partitioned' | null = null;
+  if (storeSql !== null) {
+    const detected = await detectLayout(storeSql);
+    if (detected === 'absent') throw new Error('kernel migrations need `rows`, but it is absent');
+    layout = detected;
+  }
   await composeKernelPlugins(kernel, {
     sql: storeSql,
+    layout,
     // Coordinators are LOADED above but compose below, so their declared
     // namespaces are known here while the engine has not yet registered them.
     // That is what a substrate reconciler wants: the configured intent, before

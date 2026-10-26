@@ -44,13 +44,13 @@ describe.skipIf(!isPgGated)('embeddingsMigration', () => {
   });
 
   it('apply creates the embeddings table + hnsw index', async () => {
-    await embeddingsMigration().apply({ sql, metric: () => {} });
+    await embeddingsMigration().apply({ sql, metric: () => {}, layout: null });
     expect(await tableExists(sql)).toBe(true);
     expect(await indexNames(sql)).toContain('embeddings_hnsw');
   });
 
   it('apply creates the salience columns with their defaults', async () => {
-    await embeddingsMigration().apply({ sql, metric: () => {} });
+    await embeddingsMigration().apply({ sql, metric: () => {}, layout: null });
     const cols = await sql<Array<{ column_name: string; column_default: string | null }>>`
       SELECT column_name, column_default FROM information_schema.columns
       WHERE table_schema = current_schema() AND table_name = 'embeddings'
@@ -63,14 +63,14 @@ describe.skipIf(!isPgGated)('embeddingsMigration', () => {
   });
 
   it('apply is idempotent — re-applying after creation is a no-op', async () => {
-    await embeddingsMigration().apply({ sql, metric: () => {} });
-    await embeddingsMigration().apply({ sql, metric: () => {} });
+    await embeddingsMigration().apply({ sql, metric: () => {}, layout: null });
+    await embeddingsMigration().apply({ sql, metric: () => {}, layout: null });
     expect(await tableExists(sql)).toBe(true);
   });
 
   it('rollback drops the table + indexes', async () => {
-    await embeddingsMigration().apply({ sql, metric: () => {} });
-    await embeddingsMigration().rollback?.({ sql, metric: () => {} });
+    await embeddingsMigration().apply({ sql, metric: () => {}, layout: null });
+    await embeddingsMigration().rollback?.({ sql, metric: () => {}, layout: null });
     expect(await tableExists(sql)).toBe(false);
   });
 
@@ -80,7 +80,7 @@ describe.skipIf(!isPgGated)('embeddingsMigration', () => {
       dimension: 1024,
       hnswM: 24,
       hnswEfConstruction: 200
-    }).apply({ sql, metric: () => {} });
+    }).apply({ sql, metric: () => {}, layout: null });
 
     // format_type renders the column as `vector(N)` regardless of the
     // underlying atttypmod encoding — the most portable way to assert dim.

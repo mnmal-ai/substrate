@@ -718,6 +718,13 @@ export interface KernelPlugin {
   migrations?: KernelMigration[];
 
   /**
+   * Names of the tables (in the store's schema) this plugin keeps data in.
+   * `substrate-admin migrate-store` copies them alongside the engine's own
+   * tables and refuses a source table that nothing declares.
+   */
+  storeTables?: readonly string[];
+
+  /**
    * Filter operators contributed to the where-clause grammar. Each entry
    * registers a custom operator (e.g. `embeddingSimilar`) the engine's
    * query validator + substrate executor can dispatch to.
@@ -785,6 +792,12 @@ export interface KernelMigrationContext {
    * binary is running against the in-memory dataset.
    */
   sql: unknown | null;
+  /**
+   * How `rows` is stored: `'partitioned'` (LIST(namespace) then LIST(type)) or
+   * `'legacy'` (one plain table). `null` on the in-memory dataset. PG refuses
+   * a unique index on a partitioned parent, so DDL on `rows` must branch on this.
+   */
+  layout: 'legacy' | 'partitioned' | null;
   metric(name: string, payload?: unknown): void;
 }
 

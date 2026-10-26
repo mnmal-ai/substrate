@@ -297,6 +297,7 @@ export function createRecallPlugin(cfg: RecallPluginConfig): KernelPlugin {
   return {
     name: 'substrate-recall',
     contractVersion: '>=1.0.0-alpha.0 <2.0.0',
+    storeTables: ['embeddings', 'lexical', 'recall_clusters', 'recall_cluster_members'],
 
     // Every boot, not once: migrations are recorded by id, so a store
     // whose first boot had no embedder kept the 768 default forever. Only

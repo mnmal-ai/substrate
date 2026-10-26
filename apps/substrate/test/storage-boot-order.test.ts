@@ -111,6 +111,33 @@ describe.skipIf(!POSTGRES_URL)('declared storage at boot (pg)', () => {
     return seen;
   }
 
+  it('passes the store layout to kernel migrations', async () => {
+    let layout: string | null | undefined;
+    const probe: KernelPlugin = {
+      name: `kbootorder-layout-${randomUUID().slice(0, 8)}`,
+      contractVersion: '*',
+      migrations: [
+        {
+          id: randomUUID(),
+          async apply(ctx) {
+            layout = ctx.layout;
+          }
+        }
+      ]
+    };
+    await composeKernelPhase({
+      kernel: [probe],
+      server: {} as SubstrateServer,
+      storeSql: sql,
+      coordinators: [],
+      kernelAuth: null,
+      trustedProxies: new Set(),
+      datasetFor: () => undefined,
+      nsDefs: new Map()
+    });
+    expect(layout).toBe(partitioned ? 'partitioned' : 'legacy');
+  }, 20_000);
+
   it('builds the declared unique index before a kernel migration runs', async () => {
     const c = coordinator();
     const seen = await bootKernel(c);

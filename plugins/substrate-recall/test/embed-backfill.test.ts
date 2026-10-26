@@ -124,7 +124,7 @@ describe.skipIf(POSTGRES_URL === undefined)('PgEmbeddingsStore.staleRowIds', () 
   beforeAll(async () => {
     const setupSql = postgres(POSTGRES_URL as string);
     try {
-      await embeddingsMigration().apply({ sql: setupSql, metric: () => {} });
+      await embeddingsMigration().apply({ sql: setupSql, metric: () => {}, layout: null });
     } finally {
       await setupSql.end();
     }

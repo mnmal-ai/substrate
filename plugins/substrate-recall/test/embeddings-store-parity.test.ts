@@ -31,7 +31,7 @@ async function ensureSchema(url: string): Promise<void> {
   const setupSql = postgres(url);
   try {
     // Create embeddings table + HNSW index + salience columns
-    await embeddingsMigration().apply({ sql: setupSql, metric: () => {} });
+    await embeddingsMigration().apply({ sql: setupSql, metric: () => {}, layout: null });
   } finally {
     await setupSql.end();
   }

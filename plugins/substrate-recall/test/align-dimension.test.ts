@@ -42,7 +42,11 @@ describe.skipIf(POSTGRES_URL === undefined)('alignVectorDimensions', () => {
         updated_at timestamptz NOT NULL DEFAULT now(),
         PRIMARY KEY (row_namespace, row_type, row_id)
       )`);
-    await recallClustersMigration({ dimension: 768 }).apply({ sql, metric: () => {} });
+    await recallClustersMigration({ dimension: 768 }).apply({
+      sql,
+      metric: () => {},
+      layout: null
+    });
   });
 
   it('realigns BOTH empty columns, and rebuilds the HNSW index', async () => {
