@@ -248,7 +248,9 @@ describe.skipIf(!POSTGRES_URL)('storage for registered types (pg)', () => {
     const { warnings } = await new PgDataset({ namespace: ns, sql }).storageReport({
       partitionBudget: Infinity
     });
-    expect(warnings.filter((w) => w.includes(ns) || w.includes(CONTROL))).toEqual([]);
+    // Only the DEFAULT-partition lines: the report also carries deferred index builds.
+    const parked = warnings.filter((w) => / holds \d+ rows of /.test(w));
+    expect(parked.filter((w) => w.includes(ns) || w.includes(CONTROL))).toEqual([]);
   });
 
   it('builds the implicit index of a field proposed on a declared type', async () => {
