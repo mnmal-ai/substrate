@@ -94,7 +94,7 @@ export interface ProposeIndexInput {
 }
 
 /** A read row without the engine fields reads add (`shortId`), for writing back. */
-function bodyOf(row: Row): Row {
+export function bodyOf(row: Row): Row {
   const body = { ...row };
   for (const name of RESERVED_AUTOCRUD_FIELD_NAMES) delete body[name];
   return body;

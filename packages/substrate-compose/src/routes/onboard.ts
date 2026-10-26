@@ -141,7 +141,7 @@ const WS_INSTRUCTIONS = {
     notes: [
       'ops are `subscribe` | `stream` | `cancel` | `whoami` — any other `op`, and any frame missing a string `id`, is refused with { id:"", kind:"error", errors:[{ code:"invalid_frame" }] }',
       'server replies { id, kind:"snapshot", data:{ "<ns>/<TypeName>": rows }, shapes } immediately, then pushes kind:"add" | "update" | "remove" (a remove carries `removedId`, no `data`)',
-      'PARAMS ARE NARROWER THAN QUERY: subscribe accepts only `where`, `orderBy` and the deprecated, ignored `_allowTableScan`. `limit` is a POST /substrate/v1/query param and is refused here with code `unknown_param` — the allowlist is in the message',
+      'PARAMS ARE NARROWER THAN QUERY: subscribe accepts only `where` and `orderBy`. `limit` is a POST /substrate/v1/query param and is refused here with code `unknown_param` — the allowlist is in the message',
       'multi-key subscribe IS supported (unlike stream); one socket multiplexes many sessions, keyed by your `id`',
       'cancel with { id, op:"cancel" } — the server acknowledges a cancelled SUBSCRIBE with { id, kind:"end", final:true }',
       '`{ id, op:"whoami" }` answers { id, kind:"whoami", data:{ authEnabled, identity } } without opening a session — ask it on the socket rather than over HTTP when the socket is what you are asking about',

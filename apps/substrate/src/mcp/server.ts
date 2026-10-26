@@ -317,16 +317,19 @@ export interface ProposeTypeArgs {
   typeName: string;
   fields: Record<string, unknown>;
   proposedReason: string;
+  orderedBy?: Record<string, 'asc' | 'desc'>;
+  indexes?: Record<string, unknown>[];
+  expectedSize?: 'small' | 'large';
 }
 
 export function createProposeTypeHandler(
   endpoint: string
 ): (args: ProposeTypeArgs) => Promise<ToolResult> {
-  return async ({ namespace, typeName, fields, proposedReason }) => {
+  return async ({ namespace, ...params }) => {
     try {
       const payload = {
         [`${namespace}/propose_type`]: {
-          params: { typeName, fields, proposedReason },
+          params,
           fields: { id: true, typeName: true, applied: true, appliedAt: true }
         }
       };
@@ -609,7 +612,24 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
           proposedReason: z
             .string()
             .min(1)
-            .describe('Short human-readable justification. Why is this type being added?')
+            .describe('Short human-readable justification. Why is this type being added?'),
+          orderedBy: z
+            .record(z.string(), z.enum(['asc', 'desc']))
+            .optional()
+            .describe(
+              'What order do you usually read this in? { "<field>": "asc" | "desc" } over a ' +
+                'date or number field, or createdAt / updatedAt. Omit for newest first.'
+            ),
+          indexes: z
+            .array(z.record(z.string(), z.unknown()))
+            .optional()
+            .describe(
+              'Indexes the reads will need: [{ "fields": ["brand"] }]. Never unique or named.'
+            ),
+          expectedSize: z
+            .enum(['small', 'large'])
+            .optional()
+            .describe('"large" if the type will hold many rows, so indexes are advised sooner.')
         }
       },
       handler: createProposeTypeHandler(endpoint)

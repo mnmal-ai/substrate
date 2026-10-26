@@ -109,13 +109,18 @@ function installProposedType(
   registry: AutoCrudRegistry,
   args: Pick<ApplyTypeProposalArgs, 'typeName' | 'fields' | 'dataset' | 'edges'>
 ): void {
+  installAutoCrud(registry, args.typeName, args.dataset, args.edges, {
+    fields: proposedFieldDefs(args.fields)
+  });
+}
+
+/** A proposed type's field specs as FieldDefs, with the engine-reserved fields added. */
+export function proposedFieldDefs(fields: Record<string, FieldSpecJson>): Record<string, FieldDef> {
   const fieldDefs: Record<string, FieldDef> = {};
-  for (const [name, spec] of Object.entries(args.fields)) {
+  for (const [name, spec] of Object.entries(fields)) {
     fieldDefs[name] = parseFieldSpec(spec);
   }
-  Object.assign(fieldDefs, RESERVED_AUTOCRUD_FIELDS);
-
-  installAutoCrud(registry, args.typeName, args.dataset, args.edges, { fields: fieldDefs });
+  return Object.assign(fieldDefs, RESERVED_AUTOCRUD_FIELDS);
 }
 
 /**

@@ -23,11 +23,21 @@ import { resolveIdentity } from '@mnmal-ai/substrate-sdk';
 import type {
   Dataset,
   EdgesStore,
+  IndexDecl,
+  OrderedBy,
   RequestContext,
   ResolverArgs,
   Row
 } from '@mnmal-ai/substrate-types';
-import { applyTypeProposal, assertValidTypeProposal, typeProposalRegistryKeys } from './apply.js';
+import {
+  applyTypeIndexOptions,
+  applyTypeProposal,
+  assertValidTypeIndexOptions,
+  assertValidTypeProposal,
+  proposedFieldDefs,
+  type TypeIndexOptions,
+  typeProposalRegistryKeys
+} from './apply.js';
 import type { PubSub } from './config.js';
 import {
   applyUntilRollback,
@@ -38,6 +48,7 @@ import {
 import { ProposalError } from './errors.js';
 import type { FieldSpecJson } from './field-spec-json.js';
 import { proposalLockKey, withProposalLock } from './proposal-lock.js';
+import { bodyOf } from './propose-index-resolver.js';
 import type { RegistryStore } from './registry-store.js';
 
 export interface ProposeTypeResolverDeps {
@@ -55,6 +66,12 @@ export interface ProposeTypeInput {
   typeName: string;
   fields: Record<string, FieldSpecJson>;
   proposedReason: string;
+  /** Natural read order; omitted means the default (`createdAt` descending). */
+  orderedBy?: OrderedBy;
+  /** Declared indexes, beyond the crossRef ones the engine builds itself. */
+  indexes?: IndexDecl[];
+  /** Hint for the index advisor: a `'large'` type is recommended indexes sooner. */
+  expectedSize?: 'small' | 'large';
 }
 
 function parseInput(params: Record<string, unknown>): ProposeTypeInput {
@@ -62,6 +79,12 @@ function parseInput(params: Record<string, unknown>): ProposeTypeInput {
   if (proposedReason !== undefined && typeof proposedReason !== 'string') {
     throw new ProposalError('invalid_params', "'proposedReason' must be a string", {
       param: 'proposedReason'
+    });
+  }
+  const { expectedSize } = params;
+  if (expectedSize !== undefined && expectedSize !== 'small' && expectedSize !== 'large') {
+    throw new ProposalError('invalid_params', "'expectedSize' must be 'small' or 'large'", {
+      param: 'expectedSize'
     });
   }
   return { ...params, proposedReason: proposedReason ?? '' } as ProposeTypeInput;
@@ -90,12 +113,36 @@ export function makeProposeTypeResolver(
       (ns, type) =>
         (ns === deps.namespace && type === input.typeName) || deps.registryStore.ownsType(ns, type)
     );
+    // A new type is empty, so declaring its order and indexes needs only the
+    // propose capability; changing them on an existing type is `propose_index`.
+    try {
+      assertValidTypeIndexOptions(
+        input.typeName,
+        proposedFieldDefs(input.fields),
+        indexOptionsOf(input)
+      );
+    } catch (cause) {
+      throw new ProposalError(
+        'invalid_params',
+        cause instanceof Error ? cause.message : String(cause),
+        {},
+        { cause }
+      );
+    }
     // The caller's transaction, so the lock, reads and writes share its one
     // connection.
     const dataset = args.dataset ?? deps.dataset;
     return withProposalLock(dataset, proposalLockKey('type', deps.namespace, input.typeName), () =>
       proposeTypeLocked(deps, ctx, { ...args, dataset }, input)
     );
+  };
+}
+
+function indexOptionsOf(input: ProposeTypeInput): TypeIndexOptions {
+  const { indexes, orderedBy } = input;
+  return {
+    ...(indexes?.length ? { indexes } : {}),
+    ...(orderedBy !== undefined ? { orderedBy } : {})
   };
 }
 
@@ -170,7 +217,13 @@ async function proposeTypeLocked(
     appliedAt: null,
     resultingSchemaVersion: null,
     supersededByCode: false,
-    archived: false
+    archived: false,
+    expectedSize: input.expectedSize ?? null
+  };
+  const indexOpts = indexOptionsOf(input);
+  const indexFields: Record<string, unknown> = {
+    indexesJson: indexOpts.indexes ? JSON.stringify(indexOpts.indexes) : null,
+    orderedByJson: indexOpts.orderedBy ? JSON.stringify(indexOpts.orderedBy) : null
   };
 
   const binding = deps.registryStore.getBinding(deps.namespace);
@@ -178,8 +231,19 @@ async function proposeTypeLocked(
 
   if (engine !== undefined) {
     await writeInTx(binding.registry, ctx, args, 'createTypeProposal', initialParams);
+    // Written straight to the dataset: the table's policy reserves these two
+    // keys for `substrate.index`, which creating a type does not need.
+    if (indexFields.indexesJson !== null || indexFields.orderedByJson !== null) {
+      const created = (await args.dataset.read('TypeProposal', { id: newId })).rows[0];
+      if (!created) throw new Error(`TypeProposal row ${newId} not found after engine create`);
+      await args.dataset.write('TypeProposal', [{ ...bodyOf(created), ...indexFields }], {
+        identity: resolveIdentity(ctx)
+      });
+    }
   } else {
-    const writeResult = await args.dataset.write('TypeProposal', [initialParams as Row]);
+    const writeResult = await args.dataset.write('TypeProposal', [
+      { ...initialParams, ...indexFields } as Row
+    ]);
     if (!writeResult.ids[0]) {
       throw new Error('dataset.write did not return an id for TypeProposal');
     }
@@ -190,7 +254,7 @@ async function proposeTypeLocked(
     applyUntilRollback(
       args,
       binding.registry,
-      () =>
+      () => {
         applyTypeProposal({
           namespace: deps.namespace,
           typeName,
@@ -198,7 +262,18 @@ async function proposeTypeLocked(
           registryStore: deps.registryStore,
           dataset: deps.dataset,
           edges: deps.edges
-        }),
+        });
+        if (Object.keys(indexOpts).length > 0) {
+          applyTypeIndexOptions({
+            namespace: deps.namespace,
+            typeName,
+            ...indexOpts,
+            registryStore: deps.registryStore,
+            dataset: deps.dataset,
+            edges: deps.edges
+          });
+        }
+      },
       () => binding.invalidateSchemaCaches?.()
     );
   } catch (cause) {

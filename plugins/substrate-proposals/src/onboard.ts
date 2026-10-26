@@ -110,7 +110,14 @@ export function buildOnboardBody(ownedNamespaces: ReadonlyArray<string>): Onboar
           typeName: 'string — PascalCase, unique within the namespace',
           fields:
             'object — FieldSpecJson map keyed by camelCase field name (see fieldSpecJson below)',
-          proposedReason: 'string — short human-readable rationale'
+          proposedReason: 'string — short human-readable rationale',
+          orderedBy:
+            'optional { "<field>": "asc"|"desc" } — ask yourself what order this is usually read in. ' +
+            'A date or number field, or createdAt / updatedAt. Defaults to createdAt desc.',
+          indexes:
+            'optional [{ fields: [...] }] — indexes the usual reads need. Never unique or named. ' +
+            'Needs no extra capability on a new type; changing them later needs substrate.index.',
+          expectedSize: 'optional "small"|"large" — "large" gets index advice sooner'
         },
         returns: {
           id: 'uuid — the TypeProposal record id',
