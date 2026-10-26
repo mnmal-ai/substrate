@@ -107,7 +107,7 @@ import {
   whereReferencesField
 } from './pg-sql.js';
 import { type PgHandle, txScopeIdFor } from './tx-scope.js';
-import { ensureTypeStorage, findPartition, ident, storageWarnings } from './type-storage.js';
+import { ensureTypeStorage, ident, storageWarnings, typePartition } from './type-storage.js';
 
 // The pool-owned instance holds `Sql`; tx-scoped instances hold the
 // `TransactionSql` from `sql.begin(fn)`. Only `Sql` exposes `begin`, so that
@@ -1311,10 +1311,11 @@ export class PgDataset implements Dataset {
     const layout = await this.#layout();
     if (layout === 'absent') return [];
     const args = this.#indexArgs(type, this.namespace, layout);
-    if (layout === 'partitioned') {
-      const sql = this.#sql as Sql;
-      const nsPart = await findPartition(sql, 'rows', this.namespace);
-      if (nsPart === undefined || (await findPartition(sql, nsPart, type)) === undefined) return [];
+    if (
+      layout === 'partitioned' &&
+      (await typePartition(this.#sql as Sql, this.namespace, type)) === undefined
+    ) {
+      return [];
     }
     return pendingIndexBuilds(this.#sql as Sql, args);
   }
@@ -1330,8 +1331,7 @@ export class PgDataset implements Dataset {
         indexes: this.#withBuilds(describeTypeIndexes(args, await heldIndexes(sql, ['rows'])))
       };
     }
-    const nsPart = await findPartition(sql, 'rows', this.namespace);
-    const partition = nsPart === undefined ? undefined : await findPartition(sql, nsPart, type);
+    const partition = await typePartition(sql, this.namespace, type);
     if (partition === undefined) return { layout, indexes: [] };
     return {
       layout,

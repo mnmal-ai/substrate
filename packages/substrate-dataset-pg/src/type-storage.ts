@@ -64,6 +64,22 @@ export async function findPartition(
   return row?.relname;
 }
 
+/** The partition of `namespace`/`type` (current schema), found by both bounds in one query. */
+export async function typePartition(
+  sql: Handle,
+  namespace: string,
+  type: string
+): Promise<string | undefined> {
+  const [row] = await sql<Array<{ relname: string }>>`
+    SELECT c.relname FROM pg_partition_tree('rows') t
+    JOIN pg_class c ON c.oid = t.relid
+    JOIN pg_class p ON p.oid = t.parentrelid
+    WHERE t.level = 2
+      AND pg_get_expr(p.relpartbound, p.oid) = ${boundText(namespace)}
+      AND pg_get_expr(c.relpartbound, c.oid) = ${boundText(type)}`;
+  return row?.relname;
+}
+
 async function freeName(sql: Handle, preferred: string, seed: unknown): Promise<string> {
   for (const name of [preferred, hashedName(preferred, seed)]) {
     if (name.length > MAX_IDENTIFIER) continue;
@@ -205,8 +221,8 @@ async function withRetry<T>(namespace: string, type: string, fn: () => Promise<T
  * the catalog. Partitioned layout only.
  */
 export async function ensureTypeStorage(sql: Sql, namespace: string, type: string): Promise<void> {
+  if ((await typePartition(sql, namespace, type)) !== undefined) return;
   let nsPart = await findPartition(sql, 'rows', namespace);
-  if (nsPart !== undefined && (await findPartition(sql, nsPart, type)) !== undefined) return;
 
   if (nsPart === undefined) {
     nsPart = await withRetry(namespace, type, () =>

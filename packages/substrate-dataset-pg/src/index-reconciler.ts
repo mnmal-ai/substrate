@@ -51,7 +51,7 @@ import {
   resolvePromotedColumns,
   sqlStringLiteral
 } from './pg-sql/primitives.js';
-import { findPartition, ident } from './type-storage.js';
+import { ident, typePartition } from './type-storage.js';
 
 export interface IndexState {
   name: string;
@@ -685,13 +685,8 @@ export async function typeIndexesOf(
   type: string,
   layout: StorageLayout
 ): Promise<Array<HeldIndex & { engineOwned: boolean }>> {
-  let table = 'rows';
-  if (layout === 'partitioned') {
-    const nsPart = await findPartition(sql, 'rows', namespace);
-    const part = nsPart === undefined ? undefined : await findPartition(sql, nsPart, type);
-    if (part === undefined) return [];
-    table = part;
-  }
+  const table = layout === 'partitioned' ? await typePartition(sql, namespace, type) : 'rows';
+  if (table === undefined) return [];
   return (await heldIndexes(sql, [table]))
     .filter((i) => belongsToType(i, namespace, type, layout, table))
     .map((i) => ({ ...i, engineOwned: isEngineOwned(i) }));
@@ -709,8 +704,7 @@ export async function engineIndexesOf(
 
 async function targetTable(sql: Sql, args: ReconcileTypeIndexesArgs): Promise<string> {
   if (args.layout === 'legacy') return 'rows';
-  const nsPart = await findPartition(sql, 'rows', args.namespace);
-  const part = nsPart === undefined ? undefined : await findPartition(sql, nsPart, args.type);
+  const part = await typePartition(sql, args.namespace, args.type);
   if (part === undefined) {
     throw new Error(
       `${args.namespace}/${args.type} has no partition; call ensureTypeStorage before reconciling its indexes`
