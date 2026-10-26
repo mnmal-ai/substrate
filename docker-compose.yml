@@ -6,7 +6,7 @@ name: substrate
 
 services:
   postgres:
-    image: pgvector/pgvector:pg17
+    image: pgvector/pgvector:pg18
     environment:
       POSTGRES_USER: substrate
       POSTGRES_PASSWORD: substrate
@@ -14,7 +14,8 @@ services:
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # PostgreSQL 18+ images keep data in a major-version subdirectory of this mount.
+      - postgres_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U substrate -d substrate"]
       interval: 5s

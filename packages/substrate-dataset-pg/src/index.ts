@@ -46,5 +46,10 @@ export type {
   PromotedBodyColumnMap,
   PromotedColumnLookup
 } from './pg-sql.js';
+export {
+  assertServerVersion,
+  MIN_SERVER_VERSION_NUM,
+  UnsupportedServerVersionError
+} from './server-version.js';
 export { type PgHandle, txScopeIdFor } from './tx-scope.js';
 export { TypeStorageLockTimeoutError } from './type-storage.js';

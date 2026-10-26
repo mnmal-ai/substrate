@@ -70,7 +70,7 @@ jobs:
     # red or never run, so publish cannot trust CI ran on this commit.
     services:
       postgres:
-        image: pgvector/pgvector:pg17
+        image: pgvector/pgvector:pg18
         env:
           POSTGRES_PASSWORD: ci-superuser-only
         ports: ['5432:5432']

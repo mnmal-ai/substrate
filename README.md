@@ -18,7 +18,7 @@ curl -s -X POST http://localhost:3100/substrate/v1/query \
 
 ## Install and run
 
-Substrate needs Node `>=26.2.0`. A durable deployment needs Postgres with the [pgvector](https://github.com/pgvector/pgvector) extension; an in-memory store is available for trying it out.
+Substrate needs Node `>=26.2.0`. A durable deployment needs PostgreSQL 18 or newer with the [pgvector](https://github.com/pgvector/pgvector) extension; an in-memory store is available for trying it out.
 
 ### Docker
 
@@ -53,7 +53,7 @@ set -a && source .env && set +a
 ```bash
 pnpm install
 pnpm build
-docker compose up -d postgres   # pgvector/pgvector:pg17 on localhost:5432 (user/password: substrate)
+docker compose up -d postgres   # pgvector/pgvector:pg18 on localhost:5432 (user/password: substrate)
 SUBSTRATE_DATABASE_URL=postgres://substrate:substrate@localhost:5432/substrate \
 SUBSTRATE_SYSTEM_ACTOR=local-dev \
   pnpm --filter @mnmal-ai/substrate dev

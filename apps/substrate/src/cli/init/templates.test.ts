@@ -123,7 +123,12 @@ describe('dockerComposeTemplate', () => {
   });
 
   it('includes pgvector image when store=postgres', () => {
-    expect(dockerComposeTemplate(baseConfig)).toContain('pgvector/pgvector:pg17');
+    expect(dockerComposeTemplate(baseConfig)).toContain('pgvector/pgvector:pg18');
+  });
+
+  it('mounts the data volume where PostgreSQL 18+ images expect it', () => {
+    // The pg18 image refuses to start with a mount at /var/lib/postgresql/data.
+    expect(dockerComposeTemplate(baseConfig)).toContain('./data/pg:/var/lib/postgresql\n');
   });
 
   it('binds postgres to 127.0.0.1:<pgPort>', () => {

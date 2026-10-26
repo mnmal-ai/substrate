@@ -15,7 +15,7 @@ The binary itself is a thin shell: it loads plugins from a shared `node_modules`
 **`SUBSTRATE_DATABASE_URL`: the store.** Two modes:
 
 - `memory`: data lives in the process. Zero setup, gone on restart. Good for exploration and tests.
-- `postgres://...`: durable. Postgres needs the [pgvector](https://github.com/pgvector/pgvector) extension, because the recall plugin stores embedding vectors next to rows. The `pgvector/pgvector:pg17` image has it.
+- `postgres://...`: durable. It needs PostgreSQL 18 or newer with the [pgvector](https://github.com/pgvector/pgvector) extension, because the recall plugin stores embedding vectors next to rows. The `pgvector/pgvector:pg18` image has it.
 
 **`SUBSTRATE_PLUGIN_DIR`: the plugin root.** A plugin is a package with a `"substrate"` field in its `package.json` naming its tier and entry point. The loader scans `node_modules` under `SUBSTRATE_PLUGIN_DIR` for such packages and composes them in tier order: kernel plugins (engine extensions such as `substrate-recall`) first, then coordinators (plugins that own namespaces). A plugin contributes namespaces, resolvers and routes under `/substrate/v1/plugins/<name>/`. Two plugins are built into `@mnmal-ai/substrate` and load whenever it sits in `SUBSTRATE_PLUGIN_DIR`: `substrate-recall` (kernel) and `substrate-proposals` (coordinator).
 
@@ -124,10 +124,10 @@ Recall and proposals are built into the binary, so they are never in the plugin 
 │
 │   (postgres mode only)
 ├── .env.docker                   # postgres password, user, database name
-├── docker-compose.yml            # pgvector/pgvector:pg17 on 127.0.0.1:<pg-port>
+├── docker-compose.yml            # pgvector/pgvector:pg18 on 127.0.0.1:<pg-port>
 ├── postgres-init/
 │   └── 01-create-database.sql
-└── data/pg/                      # postgres data volume
+└── data/pg/                      # postgres data volume (data in data/pg/18/)
 ```
 
 **`package.json`** lists `@mnmal-ai/substrate` and each chosen plugin as dependencies, pinned to the binary's major, plus `fastembed` when the embedder runs in-process (`minilm`, `bge-base`). One `pnpm install` puts them all in a single shared `node_modules`.

@@ -39,6 +39,9 @@ function makeFakeSqlForRehash(appliedRows: ReadonlyArray<AppliedRow>): {
 
   const tag = ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.join('?').trim();
+    if (/current_setting\('server_version_num'\)/.test(text)) {
+      return Promise.resolve([{ num: 180000 }]);
+    }
     ranStatements.push(text);
 
     if (/^SELECT version, checksum FROM migrations/i.test(text)) {

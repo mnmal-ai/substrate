@@ -4,7 +4,7 @@ Internal: bundled into `@mnmal-ai/substrate` and not published; it is not part o
 
 PostgreSQL implementation of `Dataset` (spec §4.5), with the edges, idempotency and short-id stores.
 
-Selected by the binary when `SUBSTRATE_DATABASE_URL` is a `postgres://` URL. Migrations in `src/migrations/` apply idempotently at boot.
+Selected by the binary when `SUBSTRATE_DATABASE_URL` is a `postgres://` URL. Migrations in `src/migrations/` apply idempotently at boot. The server must be PostgreSQL 18 or newer: `runMigrations` refuses an older one with `UnsupportedServerVersionError` before touching the store.
 
 ## Schema
 
@@ -73,7 +73,7 @@ Each pg-gated package then runs in a schema of its own inside that database, so 
 A throwaway setup that satisfies the guards:
 
 ```bash
-docker run --rm -d --name substrate-pg -e POSTGRES_PASSWORD=postgres -p 5432:5432 pgvector/pgvector:pg17
+docker run --rm -d --name substrate-pg -e POSTGRES_PASSWORD=postgres -p 5432:5432 pgvector/pgvector:pg18
 
 docker exec substrate-pg psql -U postgres \
   -c "CREATE ROLE substrate_test LOGIN PASSWORD 'substrate_test'" \

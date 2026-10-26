@@ -122,7 +122,7 @@ name: ${ctx.composeName}
 
 services:
   postgres:
-    image: pgvector/pgvector:pg17
+    image: pgvector/pgvector:pg18
     restart: unless-stopped
     environment:
       POSTGRES_USER: \${POSTGRES_USER:-substrate}
@@ -131,7 +131,7 @@ services:
     ports:
       - "127.0.0.1:${ctx.pgPort}:5432"
     volumes:
-      - ./data/pg:/var/lib/postgresql/data
+      - ./data/pg:/var/lib/postgresql
       - ./postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U \${POSTGRES_USER:-substrate} -d \${SUBSTRATE_DATABASE_NAME:-${ctx.dbName}}"]
@@ -149,7 +149,7 @@ services:
   # Each dump is a gzipped plain SQL file: restore with gunzip -c <file> | psql.
   #
   #  postgres-backup:
-  #    image: pgvector/pgvector:pg17
+  #    image: pgvector/pgvector:pg18
   #    restart: unless-stopped
   #    depends_on:
   #      postgres:

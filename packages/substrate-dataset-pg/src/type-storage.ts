@@ -250,13 +250,13 @@ export async function storageWarnings(sql: Sql): Promise<string[]> {
   const held = await sql.unsafe<
     Array<{ part: string; namespace: string; type: string; n: number }>
   >(
-    defaults
+    `${defaults
       .map(
         ({ relname }) =>
           `SELECT '${relname.replace(/'/g, "''")}' AS part, namespace, type, count(*)::int AS n
            FROM ${ident(relname)} GROUP BY namespace, type`
       )
-      .join(' UNION ALL ') + ' ORDER BY part, namespace, type'
+      .join(' UNION ALL ')} ORDER BY part, namespace, type`
   );
   return held.map((h) => `${h.part} holds ${h.n} rows of ${h.namespace}/${h.type}`);
 }
