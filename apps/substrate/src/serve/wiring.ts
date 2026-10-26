@@ -220,17 +220,32 @@ export function makeTypeDefLookupFactory(
   const lookup: TypeDefLookup = (type, namespace) => {
     const declared = nsDefs.get(namespace)?.types?.[type];
     const entry = registryFor(namespace)?.get(type);
-    if (entry?.kind !== 'type') return declared;
+    const registered = entry?.kind === 'type' ? entry : undefined;
+    // Indexes take the natural order reads use: the registry entry's. Before the
+    // entry exists, the declared one, which autoCRUD installs on the entry; an
+    // `autoCrud: false` type registers its own entry, so its declared
+    // `orderedBy` never reaches reads and is not used here either.
+    const orderedBy =
+      registered !== undefined
+        ? registered.orderedBy
+        : declared?.autoCrud === false
+          ? undefined
+          : declared?.orderedBy;
+    if (registered === undefined && (declared === undefined || orderedBy === declared.orderedBy)) {
+      return declared;
+    }
+    const { orderedBy: _ignored, ...rest } = declared ?? { fields: {} };
     // autoCRUD registers the reserved descriptor itself; a type without
     // autoCRUD may declare a body field of the same name.
-    const live = Object.fromEntries(
-      Object.entries(entry.fields).filter(([, def]) => !isReservedAutoCrudField(def))
-    );
-    // The registry's natural order is the one reads use, so indexes follow it.
-    const orderedBy = entry.orderedBy ?? declared?.orderedBy;
+    const live =
+      registered === undefined
+        ? {}
+        : Object.fromEntries(
+            Object.entries(registered.fields).filter(([, def]) => !isReservedAutoCrudField(def))
+          );
     return {
-      ...declared,
-      fields: { ...declared?.fields, ...live },
+      ...rest,
+      fields: { ...rest.fields, ...live },
       ...(orderedBy !== undefined ? { orderedBy } : {})
     };
   };

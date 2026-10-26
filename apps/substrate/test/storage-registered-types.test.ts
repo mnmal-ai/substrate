@@ -27,6 +27,7 @@ import {
 } from '@mnmal-ai/substrate-proposals';
 import { defineNamespace, RESERVED_AUTOCRUD_FIELDS } from '@mnmal-ai/substrate-sdk';
 import { MemorySubstrateServer } from '@mnmal-ai/substrate-server-memory';
+import { naturalOrderOf, type OrderedBy } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -77,6 +78,30 @@ describe('makeTypeDefLookupFactory', () => {
       fields: { title: { kind: 'scalar', type: 'string' }, sku: proposed },
       indexes: [{ fields: ['title'], name: 'kl_doc_title' }]
     });
+  });
+
+  it('resolves the natural order as reads do, autoCRUD or not', () => {
+    const at = { kind: 'scalar', type: 'date' } as const;
+    const ordered = defineNamespace('ko', {
+      Crud: { fields: { at }, orderedBy: { at: 'desc' } },
+      Hand: { fields: { at }, orderedBy: { at: 'desc' }, autoCrud: false }
+    });
+    // What each registry entry carries: autoCRUD installs the declared order;
+    // a hand-registered (`autoCrud: false`) entry carries none.
+    const entries: Record<string, { kind: 'type'; fields: object; orderedBy?: OrderedBy }> = {
+      Crud: { kind: 'type', fields: { at }, orderedBy: { at: 'desc' } },
+      Hand: { kind: 'type', fields: { at } }
+    };
+    const live = { get: (t: string) => entries[t] } as never;
+    const empty = { get: () => undefined } as never;
+    for (const reg of [live, empty]) {
+      const lookup = makeTypeDefLookupFactory(new Map([['ko', ordered]]), () => reg)('ko');
+      // Reads use naturalOrderOf(entry): `at desc` for Crud, the default for Hand.
+      expect(naturalOrderOf(lookup('Crud', 'ko') ?? {})).toEqual({ at: 'desc' });
+      expect(naturalOrderOf(lookup('Hand', 'ko') ?? {})).toEqual(
+        naturalOrderOf(entries.Hand ?? {})
+      );
+    }
   });
 
   it('keeps a shortId body field that autoCRUD did not register', () => {

@@ -147,6 +147,18 @@ describe.skipIf(!POSTGRES_URL)('reconcileTypeIndexes', () => {
       expect((await indexState(own?.name ?? ''))?.def).toContain('archived');
     });
 
+    it('on a crossRef, a plain one-field declaration is its derived index', async () => {
+      const { ns } = await fixture();
+      // Spec rule (derived keys): the derived (kid, created_at DESC, id) serves
+      // it, and a crossRef never sorts, so no second (kid, id) is built.
+      const refKid: Record<string, FieldDef> = {
+        ...withArchived,
+        kid: { kind: 'crossRef', ns: 'x', type: 'K', onDelete: 'set_null' }
+      };
+      const states = kidStates(await reconcile(ns, [{ fields: ['kid'] }], refKid));
+      expect(states.map((x) => x.name)).toEqual([generatedIdentifier(ns, TYPE, 'kid', 'idx')]);
+    });
+
     it('identical to the implicit one, is the same index', async () => {
       const { ns } = await fixture();
       // Spec rule (derived keys): a derived index is (field, natural key, id),
@@ -524,6 +536,43 @@ describe.skipIf(!POSTGRES_URL)('reconcileTypeIndexes', () => {
         dropped: [statName(ns, 'kid')]
       });
       expect(await held()).toBe(0);
+    });
+
+    it('do not follow a same-named index the engine does not own, nor an invalid one', async () => {
+      const { ns, ds, target, live } = await fixture();
+      await ds.write(TYPE, [
+        { id: 'a', kid: 'k' },
+        { id: 'b', kid: 'k' }
+      ]);
+      const idxName = generatedIdentifier(ns, TYPE, 'kid', 'idx');
+      const held = async () =>
+        (
+          await sql<Array<{ name: string }>>`
+            SELECT stxname AS name FROM pg_statistic_ext WHERE stxname = ${statName(ns, 'kid')}`
+        ).length;
+      // Unmarked: the engine's name, but not built or adopted by it.
+      await reconcile(ns, [], kidIndexed);
+      await sql.unsafe(`COMMENT ON INDEX ${idxName} IS NULL`);
+      expect(await reconcileTypeStatistics(sql, statArgs(ns, []))).toMatchObject({
+        dropped: [statName(ns, 'kid')]
+      });
+      // Invalid: a failed concurrent build, marked.
+      await sql.unsafe(`DROP INDEX ${idxName}`);
+      await reconcile(ns, [], kidIndexed);
+      expect(await held()).toBe(1);
+      await sql.unsafe(`DROP INDEX ${idxName}`);
+      await expect(
+        sql.unsafe(
+          `CREATE UNIQUE INDEX CONCURRENTLY ${idxName} ON ${target} (((body ->> 'kid') COLLATE "C")) WHERE ${live}`
+        )
+      ).rejects.toThrow();
+      await sql.unsafe(`COMMENT ON INDEX ${idxName} IS 'substrate: reconciled'`);
+      expect((await indexState(idxName))?.valid).toBe(false);
+      expect(await reconcileTypeStatistics(sql, statArgs(ns, []))).toMatchObject({
+        dropped: [statName(ns, 'kid')]
+      });
+      expect(await held()).toBe(0);
+      await sql.unsafe(`DROP INDEX ${idxName}`);
     });
 
     it('are not created for a promoted field', async () => {

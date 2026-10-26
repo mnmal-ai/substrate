@@ -378,12 +378,17 @@ async function reconcileStatistics(
     }
   };
   let marked: Array<{ name: string; table: string }> = [];
-  // Statistics follow every field index still held, declared or left over
-  // (indexes are never dropped here), so estimates hold until it is removed.
+  // Statistics follow every engine field index still held and valid, declared
+  // or left over (indexes are never dropped here), so estimates hold until it
+  // is removed. A hand-made index of the name, or a failed build, does not count.
   const leftovers: Array<Pick<Spec, 'fields' | 'keys'>> = [];
   const found = await attempt('lookup', async () => {
     marked = await heldStatistics(conn, args);
-    const held = new Set((await indexesOn(conn, target)).map((i) => i.name));
+    const held = new Set(
+      (await indexesOn(conn, target))
+        .filter((i) => i.marked && i.valid && i.ready)
+        .map((i) => i.name)
+    );
     for (const [field, def] of Object.entries(args.fields)) {
       const isBtree = def.kind === 'crossRef' || (def.kind === 'scalar' && def.type !== 'json');
       if (isBtree && held.has(generatedIdentifier(args.namespace, args.type, field, 'idx'))) {
@@ -466,12 +471,15 @@ export interface CatalogIndex {
   name: string;
   valid: boolean;
   ready: boolean;
+  /** Marked as built or adopted by this reconciler. */
+  marked: boolean;
 }
 
 /** The indexes on `table` (current schema). */
 export async function indexesOn(sql: Sql, table: string): Promise<CatalogIndex[]> {
   return sql<CatalogIndex[]>`
-    SELECT c.relname AS name, i.indisvalid AS valid, i.indisready AS ready
+    SELECT c.relname AS name, i.indisvalid AS valid, i.indisready AS ready,
+           obj_description(i.indexrelid, 'pg_class') IS NOT DISTINCT FROM ${MARK} AS marked
     FROM pg_index i
     JOIN pg_class c ON c.oid = i.indexrelid
     JOIN pg_class t ON t.oid = i.indrelid
@@ -672,6 +680,21 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
     );
   }
   for (const decl of args.indexes) {
+    // An unnamed, plain one-field declaration on a crossRef is served by its
+    // derived index (a crossRef never sorts, so `(f, id)` would add nothing).
+    const only = decl.fields.length === 1 ? decl.fields[0] : undefined;
+    const onlyField =
+      typeof only === 'string' ? only : only?.dir === 'asc' ? only.field : undefined;
+    if (
+      decl.name === undefined &&
+      decl.unique !== true &&
+      (decl.where === undefined || decl.where === 'live') &&
+      onlyField !== undefined &&
+      fields[onlyField]?.kind === 'crossRef' &&
+      specs.some((s) => s.derived === true && s.fields[0] === onlyField)
+    ) {
+      continue;
+    }
     const keys = decl.fields.map((f) => (typeof f === 'string' ? f : f.field)).join('_');
     const suffix = decl.unique === true ? 'uniq' : 'idx';
     let name = decl.name ?? generatedIdentifier(namespace, type, keys, suffix);

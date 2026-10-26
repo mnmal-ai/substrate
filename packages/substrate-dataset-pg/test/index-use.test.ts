@@ -361,8 +361,13 @@ const nodeTypes = (node: PlanNode, out: string[] = []): string[] => {
   return out;
 };
 
-/** The plan of the statement `read()` sends for `params`, under a forced custom plan. */
-async function customPlan(params: ReadParams, dataset: PgDataset, type: string): Promise<PlanNode> {
+/** The plan of the statement `read()` sends for `params`, under a forced custom (or `mode`) plan. */
+async function customPlan(
+  params: ReadParams,
+  dataset: PgDataset,
+  type: string,
+  mode: 'force_custom_plan' | 'force_generic_plan' = 'force_custom_plan'
+): Promise<PlanNode> {
   const { query, parameters, types } = await compiled(params, dataset, type);
   const conn = await sql.reserve();
   try {
@@ -375,7 +380,7 @@ async function customPlan(params: ReadParams, dataset: PgDataset, type: string):
     // A repeated statement reports type 0 (the client reuses its prepared one): let pg infer.
     const declared = types.includes(0) ? '' : `(${names.map((n) => n.t).join(', ')})`;
     await conn.unsafe(`PREPARE iu_custom${declared} AS ${query}`);
-    await conn.unsafe('SET plan_cache_mode = force_custom_plan');
+    await conn.unsafe(`SET plan_cache_mode = ${mode}`);
     return planOf(await conn.unsafe(`EXPLAIN (FORMAT JSON) EXECUTE iu_custom(${literals})`));
   } finally {
     await conn.unsafe('DEALLOCATE ALL');
@@ -430,23 +435,31 @@ describe.skipIf(!POSTGRES_URL)('index use: the default order', () => {
   });
 
   it('where ref = X in the natural order, limit 10: the derived index, no Sort under the limit', async () => {
-    const plan = await customPlan(
-      { where: { ref: { eq: 'r7' } }, orderBy: [{ createdAt: 'desc' }], limit: 10 },
-      certs,
-      type
-    );
-    if (process.env.INDEX_USE_LOG) console.log(JSON.stringify(plan, null, 1));
-    expect(indexesUsed(plan), JSON.stringify(nodeTypes(plan))).toContain(
-      `Index Scan on ${generatedIdentifier(certNs, type, 'ref', 'idx')}`
-    );
-    // The read re-sorts its at most limit + 1 rows after the short-id join, by
-    // the projected timestamp text; what matters is that no Sort sits under
-    // the LIMIT, where it would sort every match.
-    const limit = (n: PlanNode): PlanNode | undefined =>
-      n['Node Type'] === 'Limit' ? n : (n.Plans ?? []).map(limit).find((x) => x !== undefined);
-    const under = limit(plan);
-    expect(under, JSON.stringify(nodeTypes(plan))).toBeDefined();
-    expect(nodeTypes(under as PlanNode).filter((t) => /Sort/.test(t))).toEqual([]);
+    const params: ReadParams = {
+      where: { ref: { eq: 'r7' } },
+      orderBy: [{ createdAt: 'desc' }],
+      limit: 10
+    };
+    // Generic too: on legacy the partial index serves only if the planner
+    // proves its inlined ns/type predicate without the bound values.
+    for (const mode of ['force_custom_plan', 'force_generic_plan'] as const) {
+      const plan = await customPlan(params, certs, type, mode);
+      if (process.env.INDEX_USE_LOG) console.log(mode, JSON.stringify(plan, null, 1));
+      expect(indexesUsed(plan), `${mode}: ${JSON.stringify(nodeTypes(plan))}`).toContain(
+        `Index Scan on ${generatedIdentifier(certNs, type, 'ref', 'idx')}`
+      );
+      // The read re-sorts its at most limit + 1 rows after the short-id join, by
+      // the projected timestamp text; what matters is that no Sort sits under
+      // the LIMIT, where it would sort every match.
+      const limit = (n: PlanNode): PlanNode | undefined =>
+        n['Node Type'] === 'Limit' ? n : (n.Plans ?? []).map(limit).find((x) => x !== undefined);
+      const under = limit(plan);
+      expect(under, `${mode}: ${JSON.stringify(nodeTypes(plan))}`).toBeDefined();
+      expect(
+        nodeTypes(under as PlanNode).filter((t) => /Sort/.test(t)),
+        mode
+      ).toEqual([]);
+    }
   });
 
   it('keyset paging over where <field> = X returns every match exactly once', async () => {
