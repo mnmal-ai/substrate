@@ -71,7 +71,8 @@ const DROP_REFUSALS: ReadonlySet<string> = new Set([
   'unknown_index',
   'not_engine_owned',
   'unique_index',
-  'still_desired'
+  'still_desired',
+  'index_drop_timeout'
 ]);
 
 export interface ProposeIndexResolverDeps {
@@ -133,6 +134,15 @@ export function makeProposeIndexResolver(
   deps: ProposeIndexResolverDeps
 ): (ctx: RequestContext, args: ResolverArgs) => Promise<Row> {
   return async (ctx, args) => {
+    // A remove's concurrent drop waits on every transaction holding a lock on
+    // the table, its own caller's included, which pg cannot detect.
+    if ((args.txEntries ?? 1) > 1) {
+      throw new ProposalError(
+        'propose_index_not_alone',
+        'propose_index must be the only entry in its mutate request; send it on its own',
+        { entries: args.txEntries }
+      );
+    }
     const input = parseInput(args.params ?? {});
     // One call at a time per type, across processes when the dataset can lock.
     const lockOn = deps.datasetFor(SYSTEM_NAMESPACE) ?? args.dataset;
@@ -417,7 +427,8 @@ async function removeIndex(
     const code = (err as { code?: unknown }).code;
     if (typeof code !== 'string' || !DROP_REFUSALS.has(code)) throw err;
     const message = err instanceof Error ? err.message : String(err);
-    if (rec !== undefined) {
+    // A timeout is transient: the recommendation goes back to open, not stale.
+    if (rec !== undefined && code !== 'index_drop_timeout') {
       // A retry after a drop whose recommendation was not yet closed: done, not stale.
       const done =
         code === 'unknown_index' &&

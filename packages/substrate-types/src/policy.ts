@@ -142,6 +142,12 @@ export interface ResolverArgs {
    * the tx-scoped `dataset` handle instead. Absent on the query/subscribe path.
    */
   resolveDataset?: (ns: string) => Dataset | undefined;
+  /**
+   * Engine-injected on mutate: how many frame entries share this call's
+   * transaction, itself included. A resolver whose effect waits on other
+   * transactions (a concurrent index drop) refuses to share one.
+   */
+  txEntries?: number;
 }
 
 /**

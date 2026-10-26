@@ -381,7 +381,8 @@ export function toResolverArgs(
   onWrite?: (event: WriteEvent) => void,
   signal?: AbortSignal,
   resolveDataset?: (ns: string) => Dataset | undefined,
-  afterTx?: (fn: AfterTxWork) => void
+  afterTx?: (fn: AfterTxWork) => void,
+  txEntries?: number
 ): ResolverArgs {
   // Virtual namespaces own no dataset — omit the key (NOT
   // `dataset: undefined`, which exactOptionalPropertyTypes rejects).
@@ -393,6 +394,7 @@ export function toResolverArgs(
   if (signal !== undefined) args.signal = signal;
   if (resolveDataset !== undefined) args.resolveDataset = resolveDataset;
   if (afterTx !== undefined) args.afterTx = afterTx;
+  if (txEntries !== undefined) args.txEntries = txEntries;
   return args;
 }
 

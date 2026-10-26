@@ -80,7 +80,8 @@ type RunEntryRest = [
   parsed: ParsedKey | null,
   onWrite?: (event: WriteEvent) => void,
   signal?: AbortSignal,
-  afterTx?: (fn: AfterTxWork) => void
+  afterTx?: (fn: AfterTxWork) => void,
+  txEntries?: number
 ];
 
 /** Unwinds the shared single-frame tx; the refusing entry's error is already on the envelope. */
@@ -981,7 +982,8 @@ export class Engine {
           parsed,
           (event) => pending.push(event),
           signal,
-          (fn) => settled.push(fn)
+          (fn) => settled.push(fn),
+          singleFrameKeys.length
         );
         // Any refusal of this key (grant, policy, validation, a resolver's
         // frame error) unwinds the bucket: the entries commit together or not at all.
@@ -1311,7 +1313,8 @@ export class Engine {
     parsed: ParsedKey | null,
     onWrite?: (event: WriteEvent) => void,
     signal?: AbortSignal,
-    afterTx?: (fn: AfterTxWork) => void
+    afterTx?: (fn: AfterTxWork) => void,
+    txEntries?: number
   ): Promise<boolean> {
     if (!parsed) {
       addError(
@@ -1389,7 +1392,8 @@ export class Engine {
       onWrite,
       signal,
       (ns) => this.#datasets.get(ns),
-      afterTx
+      afterTx,
+      txEntries
     );
     const decision = evaluatePolicy(registryEntry.policy, ctx, args);
 
@@ -1734,7 +1738,8 @@ export class Engine {
             parsed,
             arrayOnWrite,
             signal,
-            (fn) => settled.push(fn)
+            (fn) => settled.push(fn),
+            frames.length
           );
           failedIndex = undefined;
           const entry: {

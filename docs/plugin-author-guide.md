@@ -821,6 +821,15 @@ index now serves, or a `remove` whose index is wanted again, is refused
 `_system/AuditEvent` of kind `index_proposed` carrying the reason, the
 recommendation and the change; that is the only record of a drop.
 
+Send `propose_index` on its own. A mutate request that carries anything else
+in the same transaction (another op-key beside it, or a batch array of more
+than one entry) is refused `propose_index_not_alone`, and nothing in that
+transaction changes: a concurrent drop waits for every transaction that holds
+a lock on the table, its caller's included. A drop that still waits more
+than 10 seconds on another transaction (a long export, say) gives up with
+`index_drop_timeout`; the recommendation stays `open`, and a retry once that
+transaction ends finishes it.
+
 #### Profiles
 
 Thresholds come from a sizing profile, held in the single

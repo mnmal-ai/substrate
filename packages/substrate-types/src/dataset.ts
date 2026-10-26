@@ -403,7 +403,9 @@ export interface Dataset {
    * remove. Only an engine-owned, non-unique index the engine no longer wants
    * (a leftover or a retracted declaration) is dropped; anything else is
    * refused with an error whose `code` is `unknown_index`, `not_engine_owned`,
-   * `unique_index` or `still_desired`, and nothing is dropped.
+   * `unique_index` or `still_desired`, and nothing is dropped. A drop that
+   * waits longer than `lockTimeoutMs` on another transaction is abandoned with
+   * `index_drop_timeout`; the index may then be left invalid, and a retry drops it.
    *
    * OPTIONAL. Backends that build no indexes omit it (the memory dataset):
    * there, `propose_index remove` has no index to find, so it is refused
@@ -415,6 +417,8 @@ export interface Dataset {
     opts?: {
       /** Runs once every check has passed, just before the drop; a throw drops nothing. */
       beforeDrop?: () => Promise<void>;
+      /** The drop's bound on each lock wait, in ms. Defaults to the backend's own. */
+      lockTimeoutMs?: number;
     }
   ): Promise<void>;
   /**

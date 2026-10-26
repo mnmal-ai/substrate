@@ -31,7 +31,9 @@ export type ProposalErrorCode =
   | 'still_desired'
   | 'unknown_recommendation'
   | 'recommendation_closed'
-  | 'recommendation_stale';
+  | 'recommendation_stale'
+  | 'propose_index_not_alone'
+  | 'index_drop_timeout';
 
 /**
  * Structured error for proposal operations with stable error codes.

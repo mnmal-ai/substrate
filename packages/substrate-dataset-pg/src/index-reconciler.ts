@@ -100,7 +100,12 @@ export class IndexDefinitionConflictError extends Error {
 /** `PgDataset.dropEngineIndex` refused, and dropped nothing. */
 export class IndexDropRefusedError extends Error {
   constructor(
-    readonly code: 'unknown_index' | 'not_engine_owned' | 'unique_index' | 'still_desired',
+    readonly code:
+      | 'unknown_index'
+      | 'not_engine_owned'
+      | 'unique_index'
+      | 'still_desired'
+      | 'index_drop_timeout',
     message: string
   ) {
     super(message);

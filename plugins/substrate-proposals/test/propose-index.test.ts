@@ -186,6 +186,26 @@ describe('propose_index (memory)', () => {
     await storageSettled();
   });
 
+  it('refuses a batch of propose_index calls, which share one transaction', async () => {
+    const { engine } = await setup();
+    const add = (field: string) => ({
+      params: {
+        namespace: NS,
+        type: 'Sneaker',
+        action: 'add',
+        declaration: { fields: [field] },
+        reason: 'test'
+      },
+      fields: { id: true }
+    });
+    const env = await engine.mutate({
+      frame: { '_system_proposals/propose_index': [add('brand'), add('size')] },
+      ctx: REVIEWER
+    });
+    expect(env.errors?.map((e) => e.code)).toContain('propose_index_not_alone');
+    expect(sneaker(engine)?.indexes).toBeUndefined();
+  });
+
   it("applies a peer's index change when notified", async () => {
     const handlers = new Map<string, Array<(p: string) => void | Promise<void>>>();
     const loopback: PubSub = {
@@ -852,6 +872,98 @@ describe.skipIf(!POSTGRES_URL)('propose_index (pg)', () => {
         )
       ).toBe('still_desired');
     }
+  });
+
+  it('refuses propose_index sharing its transaction with a write, and changes nothing', async () => {
+    const { type, leftovers } = await codeType([{ fields: ['brand', 'size'] }]);
+    const name = leftovers[0] as string;
+    const noteType = `Note${randomUUID().slice(0, 8)}`;
+    const proposed = await engine.mutate({
+      frame: {
+        [`${APP}/propose_type`]: {
+          params: {
+            typeName: noteType,
+            fields: { brand: { kind: 'scalar', type: 'string' } },
+            proposedReason: 'r'
+          },
+          fields: { id: true }
+        }
+      },
+      ctx: PROPOSER
+    });
+    expect(proposed.errors ?? []).toEqual([]);
+    await storageSettled();
+    const env = await engine.mutate({
+      frame: {
+        [`${APP}/create${noteType}`]: { params: { brand: 'x' }, fields: { id: true } },
+        '_system_proposals/propose_index': {
+          params: { namespace: CODE, type, action: 'remove', indexName: name, reason: 'test' },
+          fields: { id: true }
+        }
+      },
+      ctx: REVIEWER
+    });
+    expect(env.errors?.map((e) => e.code)).toContain('propose_index_not_alone');
+    const [count] = await sql<Array<{ n: number }>>`
+      SELECT count(*)::int AS n FROM rows WHERE namespace = ${APP} AND type = ${noteType}`;
+    expect(count?.n).toBe(0);
+    expect(await indexNames(type)).toContain(name);
+  });
+
+  it('gives up a drop that waits on another transaction, and reopens its recommendation', async () => {
+    const { type, leftovers } = await codeType([{ fields: ['brand', 'size'] }]);
+    const name = leftovers[0] as string;
+    const table = layout === 'partitioned' ? partitionName(CODE, type) : 'rows';
+    const rec = recommendation({ namespace: CODE, type, action: 'remove', indexName: name });
+    await system.write('IndexRecommendation', [rec]);
+    const LOCK_TIMEOUT_MS = 500;
+    const drop = codeDataset.dropEngineIndex.bind(codeDataset);
+    codeDataset.dropEngineIndex = (t, n, opts) =>
+      drop(t, n, { ...opts, lockTimeoutMs: LOCK_TIMEOUT_MS });
+    // Another transaction holds a lock on the table until released.
+    let release = (): void => {};
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let locked = (): void => {};
+    const holding = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+    const holder = sql.begin(async (tx) => {
+      await tx.unsafe(`SELECT 1 FROM ${table} LIMIT 1`);
+      locked();
+      await released;
+    });
+    try {
+      await holding;
+      const t0 = performance.now();
+      const env = await proposeIndex(engine, {
+        namespace: CODE,
+        type,
+        action: 'remove',
+        recommendationId: rec.id
+      });
+      const elapsed = performance.now() - t0;
+      expect(code(env)).toBe('index_drop_timeout');
+      // Bounded by the lock timeout, never by the holder: a wait per drop phase, plus the checks.
+      expect(elapsed).toBeGreaterThanOrEqual(LOCK_TIMEOUT_MS);
+      expect(elapsed).toBeLessThan(LOCK_TIMEOUT_MS * 3 + 5_000);
+      expect(await recState(system, rec.id)).toBe('open');
+    } finally {
+      release();
+      await holder;
+      codeDataset.dropEngineIndex = drop;
+    }
+    // Once the holder ends, the same recommendation drops it.
+    const retried = await proposeIndex(engine, {
+      namespace: CODE,
+      type,
+      action: 'remove',
+      recommendationId: rec.id
+    });
+    expect(retried.errors ?? []).toEqual([]);
+    expect(await indexNames(type)).not.toContain(name);
+    expect(await recState(system, rec.id)).toBe('accepted');
   });
 
   it('refuses remove of a list GIN index the engine does not own or still wants', async () => {

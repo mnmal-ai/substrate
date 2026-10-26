@@ -281,6 +281,14 @@ interface SubstrateRowRecord {
 /** Share of `rows` changed since ANALYZE past which its indexes' row counts are stale (autoanalyze's default). */
 const INDEX_COUNT_STALE = 0.1;
 
+/**
+ * `dropEngineIndex`'s bound on each lock wait. A request transaction ends in
+ * well under this; one still open after it is a long export or a caller
+ * waiting on the drop itself, and the drop holds the table's index-build lock
+ * and two connections while it waits, so it gives up and the caller retries.
+ */
+const DROP_LOCK_TIMEOUT_MS = 10_000;
+
 /** Rows the legacy `typeStats` sample aims for. */
 const SAMPLE_ROWS = 10_000;
 
@@ -1448,11 +1456,15 @@ export class PgDataset implements Dataset {
    * this type (`typeIndexesOf`); the wanted set is the reconciler's own
    * (`desiredIndexKeys`), so only a leftover or a retracted declaration goes.
    * Refuses with `IndexDropRefusedError`.
+   *
+   * The drop waits for every transaction holding a lock on the table, and pg
+   * cannot see a cycle through a caller that waits on this call, so each wait
+   * is bounded by `lockTimeoutMs` (default `DROP_LOCK_TIMEOUT_MS`).
    */
   async dropEngineIndex(
     type: string,
     name: string,
-    opts: { beforeDrop?: () => Promise<void> } = {}
+    opts: { beforeDrop?: () => Promise<void>; lockTimeoutMs?: number } = {}
   ): Promise<void> {
     const layout = await this.#layout();
     if (this.#inTx) {
@@ -1503,7 +1515,19 @@ export class PgDataset implements Dataset {
           );
         }
         await opts.beforeDrop?.();
-        await conn.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS ${ident(name)}`);
+        const timeout = Math.max(1, Math.trunc(opts.lockTimeoutMs ?? DROP_LOCK_TIMEOUT_MS));
+        try {
+          await conn.unsafe(`SET lock_timeout = ${timeout}`);
+          await conn.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS ${ident(name)}`);
+        } catch (err) {
+          if ((err as { code?: unknown }).code !== '55P03') throw err;
+          throw new IndexDropRefusedError(
+            'index_drop_timeout',
+            `dropping index ${name} on ${where} waited over ${timeout} ms on another transaction; retry once it ends`
+          );
+        } finally {
+          await conn.unsafe('RESET lock_timeout');
+        }
       });
     } finally {
       conn.release();
