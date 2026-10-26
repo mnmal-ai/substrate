@@ -239,7 +239,7 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('index use: implicit indexes (par
   }
 });
 
-describe.skipIf(!POSTGRES_URL)(`index use: declared indexes (${LAYOUT})`, () => {
+describe.skipIf(!POSTGRES_URL)('index use: declared indexes', () => {
   for (const [name, params, expected] of declaredCases) {
     it(name, async () => expectServedBy(name, await plans(params), expected()));
   }
@@ -375,7 +375,7 @@ async function customPlan(params: ReadParams, dataset: PgDataset, type: string):
 // The default order ends with `id`, so a non-unique index that does not end
 // with it serves the filter but not the order: the planner either sorts every
 // match or walks the primary key in id order, filtering every row.
-describe.skipIf(!POSTGRES_URL)(`index use: the default order (${LAYOUT})`, () => {
+describe.skipIf(!POSTGRES_URL)('index use: the default order', () => {
   const certNs = `iu_cert_${hex()}`;
   const type = 'Cert';
   const name = `rows_iu_cert_${hex()}`;
@@ -445,7 +445,7 @@ const conditions = (
 
 // `id` is NOT NULL, so its keyset compare carries no `IS NULL` arm and the
 // primary key serves it as a range rather than filtering every earlier row.
-describe.skipIf(!POSTGRES_URL)(`index use: id keyset cursor (${LAYOUT})`, () => {
+describe.skipIf(!POSTGRES_URL)('index use: id keyset cursor', () => {
   const byId: ReadParams = { orderBy: [{ id: 'asc' }], limit: 500 };
 
   it('page 2 of an id-ordered read bounds id in an Index Cond, with no IS NULL filter', async () => {
@@ -492,7 +492,7 @@ const scanRows = (
 // Every reconciled index is partial, and the planner reads no expression
 // statistics from a partial index; without the reconciler's statistics object
 // every value of `body ->> f` estimates at the same default selectivity.
-describe.skipIf(!POSTGRES_URL)(`index use: expression statistics (${LAYOUT})`, () => {
+describe.skipIf(!POSTGRES_URL)('index use: expression statistics', () => {
   const statNs = `iu_stat_${hex()}`;
   const type = 'Grade';
   const name = `rows_iu_grade_${hex()}`;

@@ -90,7 +90,7 @@ async function indexState(name: string) {
   return row;
 }
 
-describe.skipIf(!POSTGRES_URL)(`reconcileTypeIndexes (${LAYOUT})`, () => {
+describe.skipIf(!POSTGRES_URL)('reconcileTypeIndexes', () => {
   it('creates a declared composite, then leaves it unchanged', async () => {
     const { ns } = await fixture();
     const name = `rows_c_${hex()}`;

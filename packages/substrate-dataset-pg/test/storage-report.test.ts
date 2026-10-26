@@ -40,7 +40,7 @@ const indexed: Record<string, FieldDef> = {
   kid: { kind: 'scalar', type: 'string', indexed: true }
 };
 
-describe.skipIf(!POSTGRES_URL)(`describeStorage (${LAYOUT})`, () => {
+describe.skipIf(!POSTGRES_URL)('describeStorage', () => {
   it('reports the layout, the partition and a valid declared index', async () => {
     const ns = freshNs();
     const ds = dataset(ns, { current: indexed });
