@@ -189,19 +189,17 @@ describe('validateFilter — where clause', () => {
     );
   });
 
-  it('rejects filters on unindexed fields by default', () => {
-    expectCode(
-      () =>
-        validateFilter({
-          where: { priority: { eq: 5 } },
-          typeSchema: SCHEMA,
-          capabilities: CAPS
-        }),
-      'unindexed_field'
+  it('accepts eq on an unindexed scalar without _allowTableScan', () => {
+    expectOk(() =>
+      validateFilter({
+        where: { priority: { eq: 5 } },
+        typeSchema: SCHEMA,
+        capabilities: CAPS
+      })
     );
   });
 
-  it('allows filters on unindexed fields when _allowTableScan is set', () => {
+  it('accepts _allowTableScan and ignores it', () => {
     expectOk(() =>
       validateFilter({
         where: { priority: { eq: 5 } },
@@ -271,14 +269,12 @@ describe('validateFilter — where clause', () => {
         capabilities: CAPS
       })
     );
-    expectCode(
-      () =>
-        validateFilter({
-          where: { address: { zip: { eq: '12345' } } },
-          typeSchema: SCHEMA,
-          capabilities: CAPS
-        }),
-      'unindexed_field'
+    expectOk(() =>
+      validateFilter({
+        where: { address: { zip: { eq: '12345' } } },
+        typeSchema: SCHEMA,
+        capabilities: CAPS
+      })
     );
   });
 
@@ -722,15 +718,13 @@ describe('validateFilter — list fields (has)', () => {
     );
   });
 
-  it('rejects `has` on an unindexed list without _allowTableScan', () => {
-    expectCode(
-      () =>
-        validateFilter({ where: { labels: { has: 'x' } }, typeSchema: SCHEMA, capabilities: CAPS }),
-      'unindexed_field'
+  it('accepts `has` on an unindexed list without _allowTableScan', () => {
+    expectOk(() =>
+      validateFilter({ where: { labels: { has: 'x' } }, typeSchema: SCHEMA, capabilities: CAPS })
     );
   });
 
-  it('allows `has` on an unindexed list with _allowTableScan', () => {
+  it('accepts `has` on an unindexed list with _allowTableScan (ignored)', () => {
     expectOk(() =>
       validateFilter({
         where: { labels: { has: 'x' } },

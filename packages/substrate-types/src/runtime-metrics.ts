@@ -53,6 +53,31 @@ export interface ResolveObservation {
   caller?: string;
 }
 
+/**
+ * One type's table and index statistics, for the index advisor. Counters are
+ * cumulative since the server's statistics were last reset. Row counts are
+ * estimates. A type ABSENT from a `typeStats()` result is unknown, not empty:
+ * never read its absence as 0 rows (a sampled store can miss a small type).
+ */
+export interface TypeStats {
+  namespace: string;
+  type: string;
+  liveRows: number;
+  insertsTotal: number;
+  updatesTotal: number;
+  deletesTotal: number;
+  indexes: Array<{
+    name: string;
+    scans: number;
+    /** The last scan (ISO), or null when none since the statistics were last reset. */
+    lastScanAt: string | null;
+    sizeBytes: number;
+    unique: boolean;
+    /** Built or adopted by the engine's index reconciler for this type. */
+    engineOwned: boolean;
+  }>;
+}
+
 /** What GET /substrate/v1/metrics returns. The new fields are optional so an older server still type-checks. */
 export interface RuntimeMetrics {
   since: string;

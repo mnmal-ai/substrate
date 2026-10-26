@@ -27,6 +27,8 @@ import type {
   FieldDef,
   FieldDefStruct,
   Id,
+  IndexDecl,
+  OrderedBy,
   Policy,
   ReadResult,
   RequestContext,
@@ -106,6 +108,9 @@ export interface AutoCrudRegistry {
       kind?: 'type' | 'mutation';
       params?: Record<string, FieldDef>;
       returns?: FieldDef;
+      orderedBy?: OrderedBy;
+      indexes?: IndexDecl[];
+      expectedSize?: 'small' | 'large';
       /** Semantic autoCRUD verb threaded to policies via ctx.verb. */
       verb?: AutoCrudVerb;
     }
@@ -136,6 +141,12 @@ export interface InstallAutoCrudOptions {
    * Delete resolver does NOT invoke this hook.
    */
   postWrite?: PostWriteHook;
+  /** The type's natural order — published on the type entry's schema. */
+  orderedBy?: OrderedBy;
+  /** Declared indexes, kept on the type entry for storage to build (proposed types). */
+  indexes?: IndexDecl[];
+  /** Size hint, kept on the type entry for the index advisor (proposed types). */
+  expectedSize?: 'small' | 'large';
 }
 
 export interface CreateResolverWithEdgesOptions {
@@ -346,7 +357,10 @@ export function installAutoCrud(
     resolver: list,
     kind: 'type',
     ...(policy !== undefined ? { policy } : {}),
-    ...(fields !== undefined ? { fields } : {})
+    ...(fields !== undefined ? { fields } : {}),
+    ...(options.orderedBy !== undefined ? { orderedBy: options.orderedBy } : {}),
+    ...(options.indexes !== undefined ? { indexes: options.indexes } : {}),
+    ...(options.expectedSize !== undefined ? { expectedSize: options.expectedSize } : {})
   });
 
   // `get<TypeName>` / `create<TypeName>` / `delete<TypeName>` — capitalise

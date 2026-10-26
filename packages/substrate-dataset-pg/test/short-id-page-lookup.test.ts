@@ -171,7 +171,10 @@ async function planOf(params: ReadParams, settings: string[], analyze: boolean):
 /** The analysed generic plan of the statement `read()` sends for a deep id-ordered page. */
 const genericPlan = (): Promise<PlanNode> =>
   planOf(
-    { limit: PAGE, cursor: encodeCursor({ orderByValues: [], id: rid(15_000) }) },
+    {
+      limit: PAGE,
+      cursor: encodeCursor({ orderByValues: [], id: rid(15_000), order: [['id', 'asc']] })
+    },
     ['plan_cache_mode = force_generic_plan'],
     true
   );
@@ -237,7 +240,15 @@ describe.skipIf(!POSTGRES_URL)('read: short id lookup for the returned page only
   }, 60_000);
 
   // A deep page: about half the dated rows sort before the cursor.
-  const deepDateCursor = encodeCursor({ orderByValues: [iso(500)], id: rid(500) });
+  const deepDateCursor = (dir: 'asc' | 'desc'): string =>
+    encodeCursor({
+      orderByValues: [iso(500)],
+      id: rid(500),
+      order: [
+        ['d', dir],
+        ['id', 'asc']
+      ]
+    });
 
   for (const [dir, index, bound] of [
     ['desc', () => D_IDX, /<=/],
@@ -245,7 +256,11 @@ describe.skipIf(!POSTGRES_URL)('read: short id lookup for the returned page only
   ] as const)
     for (const mode of ['force_custom_plan', 'force_generic_plan']) {
       it(`a deep page by a nullable date ${dir} bounds the date in the index scan (${mode})`, async () => {
-        const params: ReadParams = { orderBy: [{ d: dir }], limit: PAGE, cursor: deepDateCursor };
+        const params: ReadParams = {
+          orderBy: [{ d: dir }],
+          limit: PAGE,
+          cursor: deepDateCursor(dir)
+        };
         const all = nodes(await planOf(params, [`plan_cache_mode = ${mode}`], true));
         const listing = all.map((n) => `${n['Node Type']} ${n['Index Name'] ?? ''}`).join(', ');
         if (partitioned) {
@@ -276,7 +291,14 @@ describe.skipIf(!POSTGRES_URL)('read: short id lookup for the returned page only
     }
 
   it('a cursor already in the null tail bounds it in the index scan', async () => {
-    const tailCursor = encodeCursor({ orderByValues: [null], id: rid(19 * 500) });
+    const tailCursor = encodeCursor({
+      orderByValues: [null],
+      id: rid(19 * 500),
+      order: [
+        ['d', 'desc'],
+        ['id', 'asc']
+      ]
+    });
     const params: ReadParams = { orderBy: [{ d: 'desc' }], limit: 100, cursor: tailCursor };
     for (const mode of ['force_custom_plan', 'force_generic_plan']) {
       const all = nodes(await planOf(params, [`plan_cache_mode = ${mode}`], true));
@@ -461,7 +483,14 @@ describe.skipIf(!POSTGRES_URL)('read: short id lookup for the returned page only
     const page = await raceDs.read(RACE, {
       orderBy: [{ d: 'desc' }],
       limit: 100,
-      cursor: encodeCursor({ orderByValues: [iso(4)], id: rid(4) })
+      cursor: encodeCursor({
+        orderByValues: [iso(4)],
+        id: rid(4),
+        order: [
+          ['d', 'desc'],
+          ['id', 'asc']
+        ]
+      })
     });
     expect(pageQueries).toBe(2);
     const ids = page.rows.map((r) => r.id);

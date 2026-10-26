@@ -42,29 +42,46 @@ import type {
   FilterCapabilities,
   Id,
   IndexDecl,
+  IndexPlan,
+  OrderedBy,
   ReadParams,
   ReadResult,
   Row,
   RowMetadata,
   StorageReport,
   TxScopeHandles,
+  TypeStats,
   TypeStorageReport,
   UpdateFieldRef,
   WriteOptions,
-  WriteResult
+  WriteResult,
+  WriteRow
 } from '@mnmal-ai/substrate-types';
+import { assertNoRepeatedIds, naturalOrderOf } from '@mnmal-ai/substrate-types';
 import type { Sql } from 'postgres';
 import { withPgAdvisoryLock } from './advisory-lock.js';
+import type { DiskGuard } from './disk-guard.js';
 import { NamespaceMismatch, ReservedField } from './errors.js';
 import {
+  belongsToType,
   describeTypeIndexes,
+  desiredIndexKeys,
+  type HeldIndex,
+  heldIndexes,
+  IndexDropRefusedError,
   type IndexState,
   indexesOn,
+  isEngineOwned,
+  legacyLiveScope,
+  legacyScope,
+  pendingIndexBuilds,
   type ReconcileTypeIndexesArgs,
   reconcileTypeIndexes,
+  typeIndexesOf,
   undeclaredIndexes
 } from './index-reconciler.js';
 import { detectLayout, type StorageLayout } from './layout.js';
+import { withTableIndexLock } from './migrate.js';
 import type { PgEdgesStore } from './pg-edges-store.js';
 import { PgShortIdStore } from './pg-short-id-store.js';
 import { sqlStringLiteral } from './pg-sql/primitives.js';
@@ -91,7 +108,7 @@ import {
   whereReferencesField
 } from './pg-sql.js';
 import { type PgHandle, txScopeIdFor } from './tx-scope.js';
-import { ensureTypeStorage, findPartition, storageWarnings } from './type-storage.js';
+import { ensureTypeStorage, findPartition, ident, storageWarnings } from './type-storage.js';
 
 // The pool-owned instance holds `Sql`; tx-scoped instances hold the
 // `TransactionSql` from `sql.begin(fn)`. Only `Sql` exposes `begin`, so that
@@ -113,7 +130,15 @@ export type FieldDefLookup = (type: string, field: string) => FieldDef | undefin
 export type TypeDefLookup = (
   type: string,
   namespace: string
-) => { fields: Record<string, FieldDef>; indexes?: IndexDecl[] } | undefined;
+) =>
+  | {
+      fields: Record<string, FieldDef>;
+      indexes?: IndexDecl[];
+      orderedBy?: OrderedBy;
+      ordering?: 'visible';
+      expectedSize?: 'small' | 'large';
+    }
+  | undefined;
 
 export interface PgDatasetOptions {
   namespace: string;
@@ -163,6 +188,13 @@ export interface PgDatasetOptions {
    * type's indexes from. Without it only the engine's own indexes are built.
    */
   typeDefLookup?: TypeDefLookup;
+  /**
+   * Checked before each non-unique index build `ensureTypeStorage` runs; a
+   * refused build stays `pending` (`insufficient_disk`) until a later pass.
+   * Without one nothing is checked. With one that has no path, nothing is
+   * checked either, and `storageReport` says so.
+   */
+  diskGuard?: DiskGuard;
 }
 
 interface InternalPgSubstrateDatasetOptions {
@@ -181,6 +213,7 @@ interface InternalPgSubstrateDatasetOptions {
   /** Shared with the instance this one was derived from. */
   layoutCache?: LayoutCache;
   typeDefLookup?: TypeDefLookup;
+  diskGuard?: DiskGuard;
 }
 
 /** An index whose build this process deferred, is running, or saw fail. */
@@ -190,6 +223,8 @@ interface DeferredBuild {
   type: string;
   /** Why it failed: an error code, then a short reason. */
   error?: string;
+  /** Why it is pending, when the disk guard refused it. */
+  reason?: 'insufficient_disk';
 }
 
 /** The CHECKs the engine's own migrations put on `rows`; any other is plugin fan-out. */
@@ -198,6 +233,24 @@ const ENGINE_CHECKS = [
   'rows_updated_by_kind_check',
   'rows_id_uuid_format'
 ];
+
+/**
+ * `N open index recommendation(s)` while the index advisor has any, else
+ * nothing. Reads `_system/IndexRecommendation` from this schema's rows, so a
+ * `_system` held elsewhere (memory) reports none.
+ */
+async function openRecommendations(sql: Sql): Promise<string[]> {
+  const [row] = await sql<Array<{ n: number }>>`
+    SELECT count(*)::int AS n FROM rows
+    WHERE namespace = '_system' AND type = 'IndexRecommendation'
+      AND deleted_at IS NULL AND body->>'state' = 'open'`;
+  const n = row?.n ?? 0;
+  return n === 0
+    ? []
+    : [
+        `${n} open index recommendation${n === 1 ? '' : 's'}: query _system/IndexRecommendation, then apply or dismiss each with propose_index`
+      ];
+}
 
 /** Per pool, so every dataset on it reports what the others deferred. */
 const deferredBuilds = new WeakMap<object, Map<string, DeferredBuild>>();
@@ -222,7 +275,27 @@ interface SubstrateRowRecord {
   created_by_id: string | null;
   updated_by_kind: string | null;
   updated_by_id: string | null;
+  /** bigint as a string; null off visible-order types. */
+  seq: string | null;
 }
+
+/** Share of `rows` changed since ANALYZE past which its indexes' row counts are stale (autoanalyze's default). */
+const INDEX_COUNT_STALE = 0.1;
+
+/**
+ * `dropEngineIndex`'s bound on each lock wait. A request transaction ends in
+ * well under this; one still open after it is a long export or a caller
+ * waiting on the drop itself, and the drop holds the table's index-build lock
+ * and two connections while it waits, so it gives up and the caller retries.
+ */
+const DROP_LOCK_TIMEOUT_MS = 10_000;
+
+/** Rows the legacy `typeStats` sample aims for. */
+const SAMPLE_ROWS = 10_000;
+
+/** The value of a one-value LIST partition bound as `pg_get_expr` prints it. */
+const listBound = (b: string | null): string | undefined =>
+  b === null ? undefined : /^FOR VALUES IN \('(.*)'\)$/s.exec(b)?.[1]?.replace(/''/g, "'");
 
 export class PgDataset implements Dataset {
   readonly namespace: string;
@@ -249,6 +322,7 @@ export class PgDataset implements Dataset {
   readonly #promotedFor: PromotedColumnLookup;
   readonly #layoutCache: LayoutCache;
   readonly #typeDefLookup: TypeDefLookup | null;
+  readonly #diskGuard: DiskGuard | undefined;
 
   constructor(options: PgDatasetOptions | InternalPgSubstrateDatasetOptions) {
     this.namespace = options.namespace;
@@ -274,6 +348,7 @@ export class PgDataset implements Dataset {
     this.#promotedFor = resolvePromotedColumns(this.#promotedColumns);
     this.#layoutCache = ('layoutCache' in options ? options.layoutCache : undefined) ?? {};
     this.#typeDefLookup = options.typeDefLookup ?? null;
+    this.#diskGuard = options.diskGuard;
   }
 
   /**
@@ -360,7 +435,7 @@ export class PgDataset implements Dataset {
     let whereSql = combineAnd(sql, clauses);
     let tailSql: Fragment | null = null;
     if (params.cursor !== undefined && params.cursor !== '') {
-      const cursor = decodeCursor(params.cursor);
+      const cursor = decodeCursor(params.cursor, orderBy);
       const cursorFragment = buildCursorCompare(
         sql,
         orderBy,
@@ -421,7 +496,7 @@ export class PgDataset implements Dataset {
           SELECT r.id, ${bodyProjection} AS body, r.deleted_at, s.short_id,
                  r.created_at, r.updated_at,
                  r.created_by_kind, r.created_by_id,
-                 r.updated_by_kind, r.updated_by_id${sortKeyProjection}
+                 r.updated_by_kind, r.updated_by_id, r.seq${sortKeyProjection}
           FROM rows r
           LEFT JOIN short_ids s
             ON s.namespace = r.namespace
@@ -437,7 +512,7 @@ export class PgDataset implements Dataset {
             SELECT r.id, ${bodyProjection} AS body, r.deleted_at,
                    r.created_at, r.updated_at,
                    r.created_by_kind, r.created_by_id,
-                   r.updated_by_kind, r.updated_by_id,
+                   r.updated_by_kind, r.updated_by_id, r.seq,
                    r.namespace, r.type${sortKeyProjection}
             FROM rows r
             WHERE ${where}
@@ -490,7 +565,8 @@ export class PgDataset implements Dataset {
             const alias = sortKeyAliases.get(field);
             return alias === undefined ? null : (lastRaw?.[alias] ?? null);
           }),
-        id: last.id
+        id: last.id,
+        order: orderBy
       });
     }
 
@@ -505,11 +581,37 @@ export class PgDataset implements Dataset {
     return out;
   }
 
-  async write(type: string, rows: Row[], options?: WriteOptions): Promise<WriteResult> {
-    const ids: Id[] = [];
-    if (rows.length === 0) return { written: 0, ids, rows: [] };
+  /**
+   * Upsert `rows`. A row without an `id` gets one from the database's
+   * `uuidv7()`, returned in `ids` in input order. Limits of a v7 id: it is
+   * never a happened-before signal; ids sort in creation order only within one
+   * connection (across connections within a millisecond, and for
+   * client-supplied ids, order is arbitrary); it reveals its creation time;
+   * and deciding who won (last-writer-wins, `conditionalUpdate`) uses the
+   * database's transaction time or a per-row version, never the id.
+   *
+   * A supplied id repeated in one batch: under `insertOnly` the first
+   * occurrence lands and the rest are skipped; otherwise the batch is refused.
+   *
+   * On an `ordering: 'visible'` type each inserted row gets the next `seq`,
+   * consecutive in input order, under a per-type transaction lock held until
+   * commit, so seq order is commit order. A row that already exists keeps its
+   * seq, and one `insertOnly` skips gets none.
+   */
+  async write(type: string, rows: WriteRow[], options?: WriteOptions): Promise<WriteResult> {
+    if (rows.length === 0) return { written: 0, ids: [], rows: [] };
+    if (options?.insertOnly !== true) assertNoRepeatedIds(type, rows);
+
+    const visible = this.#typeDefLookup?.(type, this.namespace)?.ordering === 'visible';
+    // The seq lock must be held to commit, so it needs a transaction to live in.
+    if (visible && !this.#inTx) {
+      return this.withTransaction((tx) => tx.write(type, rows, options));
+    }
 
     const sql = this.#sql;
+    if (visible) {
+      await sql`SELECT pg_advisory_xact_lock(hashtext('substrate-visible-seq:' || current_schema() || ':' || ${this.namespace} || '/' || ${type}))`;
+    }
 
     const fallbackNow = (options?.now ?? new Date()).toISOString();
     const fallbackActor = options?.identity ?? null;
@@ -518,7 +620,7 @@ export class PgDataset implements Dataset {
     // are stripped from the body: each lives only in its own column(s).
     const namespaces: string[] = [];
     const types: string[] = [];
-    const idsCol: string[] = [];
+    const idsCol: (string | null)[] = [];
     const bodies: string[] = [];
     const createdAts: (string | null)[] = [];
     const updatedAts: (string | null)[] = [];
@@ -528,9 +630,6 @@ export class PgDataset implements Dataset {
     const updatedByIds: (string | null)[] = [];
 
     for (const row of rows) {
-      if (row.id === undefined || row.id === null) {
-        throw new Error(`write: row.id is required (type='${type}')`);
-      }
       // The engine always supplies _metadata; raw writes get it auto-filled.
       const meta: RowMetadata = (row._metadata as RowMetadata | undefined) ?? {
         createdAt: fallbackNow,
@@ -538,17 +637,16 @@ export class PgDataset implements Dataset {
         createdBy: fallbackActor,
         updatedBy: fallbackActor
       };
-      const sanitised: Record<string, unknown> = { id: row.id };
+      const sanitised: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(row)) {
         if (k === RESERVED_DELETED_AT) continue;
         if (k === '_metadata') continue;
-        if (k === 'id') continue;
+        if (k === 'id' && v == null) continue;
         sanitised[k] = v;
       }
-      ids.push(row.id);
       namespaces.push(this.namespace);
       types.push(type);
-      idsCol.push(idToText(row.id));
+      idsCol.push(row.id == null ? null : idToText(row.id));
       // Bound as text and cast `::jsonb` in SQL: postgres.js's bulk path does
       // not reliably round-trip objects through jsonb.
       bodies.push(JSON.stringify(sanitised));
@@ -617,16 +715,51 @@ export class PgDataset implements Dataset {
           updated_by_kind = COALESCE(EXCLUDED.updated_by_kind, rows.updated_by_kind),
           updated_by_id   = COALESCE(EXCLUDED.updated_by_id, rows.updated_by_id)${conflictColumnUpdates}`;
 
+    // Visible order: `seqd` numbers the rows that will be inserted (the first
+    // occurrence of an id with no row yet) on from the type's last seq, in
+    // input order; `counted` advances that counter. Both read under the lock,
+    // so no other writer of the type can interleave. Relies on READ COMMITTED:
+    // this statement's snapshot, taken after the lock, sees every earlier
+    // holder's commit.
+    const seqCtes = visible
+      ? sql`,
+      seqd AS (
+        SELECT f.*, CASE WHEN f.fresh THEN
+            COALESCE((SELECT v.last_seq FROM visible_seqs v WHERE ${this.#scope(type, 'v.')}), 0)
+            + count(*) FILTER (WHERE f.fresh) OVER (ORDER BY f.ord)
+          END AS sq
+        FROM (
+          SELECT i.*, i.ord = min(i.ord) OVER (PARTITION BY i.rid) AS first,
+                 i.ord = min(i.ord) OVER (PARTITION BY i.rid) AND NOT EXISTS (
+                   SELECT 1 FROM rows r WHERE ${this.#scope(type, 'r.')} AND r.id = i.rid
+                 ) AS fresh
+          FROM input i
+        ) f
+      ),
+      counted AS (
+        INSERT INTO visible_seqs (namespace, type, last_seq)
+        SELECT ns, ty, max(sq) FROM seqd WHERE sq IS NOT NULL GROUP BY ns, ty
+        ON CONFLICT (namespace, type) DO UPDATE SET last_seq = EXCLUDED.last_seq
+      )`
+      : sql``;
+    // A repeated id's later occurrences are skipped under insertOnly anyway;
+    // leaving them out makes the first one the one that lands, with its seq.
+    const insertSource = visible ? sql`seqd WHERE first` : sql`input`;
+    const seqColumn = visible ? sql`, seq` : sql``;
+    const seqValue = visible ? sql`, sq` : sql``;
+
     // Single round-trip upsert + merged-row read. The CTE pipeline:
     //   `input`     — UNNEST of caller arrays WITH ORDINALITY, to preserve
-    //                 input order.
+    //                 input order; a null id becomes `uuidv7()` here, once
+    //                 per row, so the final join sees the assigned id.
     //   `upserted`  — the INSERT...ON CONFLICT...DO UPDATE, RETURNING the
     //                 post-merge row state.
     //   final SELECT joins back to `input.ord` and the short-id sidecar so
     //                 callers get the same shape `read()` emits.
     const records = await sql<SubstrateRowRecord[]>`
       WITH input AS (
-        SELECT *
+        SELECT ns, ty, COALESCE(rid, uuidv7()::text) AS rid, bod,
+               ca, ua, cbk, cbi, ubk, ubi, ord
         FROM UNNEST(
           ${namespaces}::text[],
           ${types}::text[],
@@ -639,26 +772,26 @@ export class PgDataset implements Dataset {
           ${updatedByKinds}::text[],
           ${updatedByIds}::text[]
         ) WITH ORDINALITY AS t(ns, ty, rid, bod, ca, ua, cbk, cbi, ubk, ubi, ord)
-      ),
+      )${seqCtes},
       upserted AS (
         INSERT INTO rows (namespace, type, id, body, deleted_at,
           created_at, updated_at, created_by_kind, created_by_id,
-          updated_by_kind, updated_by_id${insertColumnList})
+          updated_by_kind, updated_by_id${insertColumnList}${seqColumn})
         SELECT
           ns, ty, rid, bod::jsonb, NULL::timestamptz,
-          ca::timestamptz, ua::timestamptz, cbk, cbi, ubk, ubi${insertColumnValues}
-        FROM input
+          ca::timestamptz, ua::timestamptz, cbk, cbi, ubk, ubi${insertColumnValues}${seqValue}
+        FROM ${insertSource}
         ${onConflict}
         RETURNING namespace, type, id, body, deleted_at,
                   created_at, updated_at, created_by_kind, created_by_id,
-                  updated_by_kind, updated_by_id
+                  updated_by_kind, updated_by_id, seq
       )
       SELECT u.id, u.body, u.deleted_at, s.short_id,
              u.created_at, u.updated_at,
              u.created_by_kind, u.created_by_id,
-             u.updated_by_kind, u.updated_by_id
+             u.updated_by_kind, u.updated_by_id, u.seq
       FROM upserted u
-      JOIN input i ON i.rid = u.id
+      JOIN (SELECT rid, min(ord) AS ord FROM input GROUP BY rid) i ON i.rid = u.id
       LEFT JOIN short_ids s
         ON s.namespace = u.namespace
        AND s.type = u.type
@@ -667,10 +800,7 @@ export class PgDataset implements Dataset {
     `;
 
     const merged = records.map((r) => this.materialize(r));
-    if (options?.insertOnly === true) {
-      return { written: merged.length, ids: merged.map((r) => r.id), rows: merged };
-    }
-    return { written: ids.length, ids, rows: merged };
+    return { written: merged.length, ids: merged.map((r) => r.id), rows: merged };
   }
 
   async tombstone(type: string, ids: Id[]): Promise<DeleteResult> {
@@ -843,12 +973,12 @@ export class PgDataset implements Dataset {
           AND ${deletedGuard}
           AND ${matchSql}
         RETURNING namespace, type, id, body, deleted_at, created_at, updated_at,
-                  created_by_kind, created_by_id, updated_by_kind, updated_by_id
+                  created_by_kind, created_by_id, updated_by_kind, updated_by_id, seq
       )
       SELECT u.id, u.body, u.deleted_at, s.short_id,
              u.created_at, u.updated_at,
              u.created_by_kind, u.created_by_id,
-             u.updated_by_kind, u.updated_by_id
+             u.updated_by_kind, u.updated_by_id, u.seq
       FROM updated u
       LEFT JOIN short_ids s
         ON s.namespace = u.namespace
@@ -1049,7 +1179,8 @@ export class PgDataset implements Dataset {
       ...(this.#fieldDefLookup !== null ? { fieldDefLookup: this.#fieldDefLookup } : {}),
       promotedColumns: this.#promotedColumns,
       layoutCache: this.#layoutCache,
-      ...(this.#typeDefLookup !== null ? { typeDefLookup: this.#typeDefLookup } : {})
+      ...(this.#typeDefLookup !== null ? { typeDefLookup: this.#typeDefLookup } : {}),
+      ...(this.#diskGuard !== undefined ? { diskGuard: this.#diskGuard } : {})
     });
   }
 
@@ -1087,7 +1218,8 @@ export class PgDataset implements Dataset {
         builds.set(s.name, {
           state: s.state,
           type: qualified,
-          ...(s.error !== undefined ? { error: s.error } : {})
+          ...(s.error !== undefined ? { error: s.error } : {}),
+          ...(s.reason !== undefined ? { reason: s.reason } : {})
         });
       } else {
         builds.delete(s.name);
@@ -1099,7 +1231,8 @@ export class PgDataset implements Dataset {
         only: opts.indexes ?? 'all',
         onBuild: (name) => builds.set(name, { state: 'building', type: qualified }),
         onState: record,
-        ...(opts.signal !== undefined ? { signal: opts.signal } : {})
+        ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+        ...(this.#diskGuard !== undefined ? { diskGuard: this.#diskGuard } : {})
       });
     } catch (err) {
       // Only the indexes this pass had not settled; one it settled keeps its state.
@@ -1111,6 +1244,7 @@ export class PgDataset implements Dataset {
         if (b.type === qualified && b.state !== 'failed') {
           b.state = 'failed';
           b.error = reason;
+          delete b.reason;
         }
       }
       throw err;
@@ -1149,7 +1283,8 @@ export class PgDataset implements Dataset {
       return {
         ...s,
         state: build.state,
-        ...(build.error !== undefined ? { error: build.error } : {})
+        ...(build.error !== undefined ? { error: build.error } : {}),
+        ...(build.reason !== undefined ? { reason: build.reason } : {})
       };
     });
   }
@@ -1162,8 +1297,27 @@ export class PgDataset implements Dataset {
       layout,
       fields: def?.fields ?? {},
       indexes: def?.indexes ?? [],
+      orderedBy: naturalOrderOf(def ?? {}),
+      ...(def?.ordering !== undefined ? { ordering: def.ordering } : {}),
       promotedColumns: this.#promotedColumns
     };
+  }
+
+  /**
+   * The type's non-unique indexes the next build pass would build or swap,
+   * each with the disk guard's estimate. Empty when the store or the type's
+   * storage does not exist yet. Changes nothing.
+   */
+  async pendingIndexBuilds(type: string): Promise<Array<{ name: string; estimateBytes: number }>> {
+    const layout = await this.#layout();
+    if (layout === 'absent') return [];
+    const args = this.#indexArgs(type, this.namespace, layout);
+    if (layout === 'partitioned') {
+      const sql = this.#sql as Sql;
+      const nsPart = await findPartition(sql, 'rows', this.namespace);
+      if (nsPart === undefined || (await findPartition(sql, nsPart, type)) === undefined) return [];
+    }
+    return pendingIndexBuilds(this.#sql as Sql, args);
   }
 
   /** See `Dataset.describeStorage`. Reads the catalog only, in a fixed number of queries. */
@@ -1198,11 +1352,31 @@ export class PgDataset implements Dataset {
       .sort(([a], [b]) => a.localeCompare(b))
       .map(
         ([name, b]) =>
-          `index ${name} on ${b.type} is ${b.state}${b.error !== undefined ? ` (${b.error})` : ''}: ` +
+          `index ${name} on ${b.type} is ${b.state}${b.error !== undefined ? ` (${b.error})` : ''}` +
+          `${b.reason !== undefined ? ` (${b.reason})` : ''}: ` +
           'filters it would serve scan until it is valid'
       );
-    if (layout !== 'partitioned') return { layout: 'legacy', warnings: building };
+    if (this.#diskGuard !== undefined && this.#diskGuard.path === undefined) {
+      building.push(
+        'free-disk checks before index builds are off: set SUBSTRATE_INDEX_DISK_PATH to the database volume mount, or to off when the database has no local volume'
+      );
+    }
+    if (layout === 'absent') return { layout: 'legacy', warnings: building };
     const sql = this.#sql as Sql;
+    const info = await openRecommendations(sql);
+    if (layout !== 'partitioned') {
+      const warnings = [...building];
+      const held = await heldIndexes(sql, ['rows']);
+      const types = new Map<string, { namespace: string; type: string }>();
+      for (const i of held) {
+        const scope = legacyScope(i.predicate);
+        if (scope !== undefined) types.set(JSON.stringify([scope.namespace, scope.type]), scope);
+      }
+      for (const t of types.values()) {
+        this.#undeclared(warnings, info, t.namespace, t.type, 'legacy', 'rows', held);
+      }
+      return { layout: 'legacy', warnings, info };
+    }
     const warnings = [...(await storageWarnings(sql)), ...building];
     const tree = await sql<Array<{ name: string; parent: string | null; bound: string | null }>>`
       SELECT c.relname AS name, p.relname AS parent, pg_get_expr(c.relpartbound, c.oid) AS bound
@@ -1224,39 +1398,25 @@ export class PgDataset implements Dataset {
         `check ${c.name} is on the rows parent: every partition carries it, and every write evaluates it`
       );
     }
-    const heldBy = new Map<string, string[]>();
     for (const i of indexes) {
-      if (i.table === 'rows') {
-        if (!i.primary) {
-          warnings.push(
-            `index ${i.name} is on the rows parent: every partition carries a copy of it`
-          );
-        }
-        continue;
-      }
-      heldBy.set(i.table, [...(heldBy.get(i.table) ?? []), i.name]);
-    }
-    const bound = (b: string | null): string | undefined =>
-      b === null ? undefined : /^FOR VALUES IN \('(.*)'\)$/s.exec(b)?.[1]?.replace(/''/g, "'");
-    const nsOf = new Map(tree.map((t) => [t.name, bound(t.bound)]));
-    for (const part of tree) {
-      const type = bound(part.bound);
-      const ns = part.parent === null || part.parent === 'rows' ? undefined : nsOf.get(part.parent);
-      if (type === undefined || ns === undefined || this.#typeDefLookup?.(type, ns) === undefined) {
-        continue;
-      }
-      try {
-        for (const name of undeclaredIndexes(
-          this.#indexArgs(type, ns, 'partitioned'),
-          heldBy.get(part.name) ?? []
-        )) {
-          warnings.push(`undeclared index ${name} on ${ns}/${type}: drop it explicitly`);
-        }
-      } catch (err) {
+      if (i.table === 'rows' && !i.primary) {
         warnings.push(
-          `indexes of ${ns}/${type} could not be checked: ${err instanceof Error ? err.message : String(err)}`
+          `index ${i.name} is on the rows parent: every partition carries a copy of it`
         );
       }
+    }
+    const nsOf = new Map(tree.map((t) => [t.name, listBound(t.bound)]));
+    const typeParts = tree.flatMap((part) => {
+      const type = listBound(part.bound);
+      const ns = part.parent === null || part.parent === 'rows' ? undefined : nsOf.get(part.parent);
+      return type === undefined || ns === undefined ? [] : [{ ns, type, table: part.name }];
+    });
+    const held = await heldIndexes(
+      sql,
+      typeParts.map((t) => t.table)
+    );
+    for (const t of typeParts) {
+      this.#undeclared(warnings, info, t.ns, t.type, 'partitioned', t.table, held);
     }
     const n = tree.length - 1;
     if (n > opts.partitionBudget) {
@@ -1264,7 +1424,300 @@ export class PgDataset implements Dataset {
         `${n} partitions exceed the budget of ${opts.partitionBudget}: move a namespace to its own instance behind a bridge`
       );
     }
-    return { layout: 'partitioned', warnings };
+    return { layout: 'partitioned', warnings, info };
+  }
+
+  /**
+   * Notes, as info, each engine-owned index of a known type that its
+   * declaration no longer asks for: the index advisor recommends its removal
+   * on evidence, so it is not a fault. A type that cannot be checked warns.
+   */
+  #undeclared(
+    warnings: string[],
+    info: string[],
+    ns: string,
+    type: string,
+    layout: StorageLayout,
+    table: string,
+    held: HeldIndex[]
+  ): void {
+    if (this.#typeDefLookup?.(type, ns) === undefined) return;
+    try {
+      const own = held.filter((i) => belongsToType(i, ns, type, layout, table));
+      for (const name of undeclaredIndexes(this.#indexArgs(type, ns, layout), own)) {
+        info.push(
+          `undeclared index ${name} on ${ns}/${type}: kept until a signed remove drops it (the index advisor recommends one when it goes unused)`
+        );
+      }
+    } catch (err) {
+      warnings.push(
+        `indexes of ${ns}/${type} could not be checked: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  /** See `Dataset.indexPlan`. */
+  async indexPlan(type: string, namespace: string): Promise<IndexPlan | undefined> {
+    const def = this.#typeDefLookup?.(type, namespace);
+    const layout = await this.#layout();
+    if (def === undefined || layout === 'absent') return undefined;
+    return {
+      indexes: desiredIndexKeys(this.#indexArgs(type, namespace, layout)),
+      ...(def.expectedSize !== undefined ? { expectedSize: def.expectedSize } : {})
+    };
+  }
+
+  /**
+   * See `Dataset.dropEngineIndex`. Checks and drops under the table's index
+   * build lock, so a reconcile cannot rebuild or swap the index in between.
+   * Ownership is the reconciler's marker and generated name on an index of
+   * this type (`typeIndexesOf`); the wanted set is the reconciler's own
+   * (`desiredIndexKeys`), so only a leftover or a retracted declaration goes.
+   * Refuses with `IndexDropRefusedError`.
+   *
+   * The drop waits for every transaction holding a lock on the table, and pg
+   * cannot see a cycle through a caller that waits on this call, so each wait
+   * is bounded by `lockTimeoutMs` (default `DROP_LOCK_TIMEOUT_MS`).
+   */
+  async dropEngineIndex(
+    type: string,
+    name: string,
+    opts: { beforeDrop?: () => Promise<void>; lockTimeoutMs?: number } = {}
+  ): Promise<void> {
+    const layout = await this.#layout();
+    if (this.#inTx) {
+      throw new Error('PgDataset.dropEngineIndex cannot be called on a tx-bound instance');
+    }
+    const where = `${this.namespace}/${type}`;
+    if (layout === 'absent') {
+      throw new IndexDropRefusedError('unknown_index', `no index ${name} on ${where}`);
+    }
+    const sql = this.#sql as Sql;
+    const find = async () =>
+      (await typeIndexesOf(sql, this.namespace, type, layout)).find((i) => i.name === name);
+    const seen = await find();
+    if (seen === undefined) {
+      throw new IndexDropRefusedError('unknown_index', `no index ${name} on ${where}`);
+    }
+    const conn = await sql.reserve();
+    try {
+      await withTableIndexLock(sql, conn, seen.table, undefined, async () => {
+        // Again under the lock: a reconcile may have swapped or rebuilt it.
+        const index = await find();
+        if (index === undefined) {
+          throw new IndexDropRefusedError('unknown_index', `no index ${name} on ${where}`);
+        }
+        if (!index.engineOwned) {
+          throw new IndexDropRefusedError(
+            'not_engine_owned',
+            `index ${name} on ${where} was not created by substrate; drop it by hand if it must go`
+          );
+        }
+        if (index.unique) {
+          throw new IndexDropRefusedError(
+            'unique_index',
+            `index ${name} on ${where} is unique; retract its declaration instead`
+          );
+        }
+        // Without the type's definition the wanted set is unknown, so nothing is a leftover.
+        const wanted = this.#typeDefLookup?.(type, this.namespace) !== undefined;
+        const desired = wanted
+          ? desiredIndexKeys(this.#indexArgs(type, this.namespace, layout)).some(
+              (d) => d.name === name
+            )
+          : true;
+        if (desired || name.endsWith('_base')) {
+          throw new IndexDropRefusedError(
+            'still_desired',
+            `index ${name} on ${where} is one the engine builds for this type; dropping it would only rebuild it`
+          );
+        }
+        await opts.beforeDrop?.();
+        const timeout = Math.max(1, Math.trunc(opts.lockTimeoutMs ?? DROP_LOCK_TIMEOUT_MS));
+        try {
+          await conn.unsafe(`SET lock_timeout = ${timeout}`);
+          await conn.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS ${ident(name)}`);
+        } catch (err) {
+          if ((err as { code?: unknown }).code !== '55P03') throw err;
+          throw new IndexDropRefusedError(
+            'index_drop_timeout',
+            `dropping index ${name} on ${where} waited over ${timeout} ms on another transaction; retry once it ends`
+          );
+        } finally {
+          await conn.unsafe('RESET lock_timeout');
+        }
+      });
+    } finally {
+      conn.release();
+    }
+  }
+
+  /** See `Dataset.indexDeclarationOf`. */
+  async indexDeclarationOf(type: string, name: string): Promise<IndexDecl | undefined> {
+    const layout = await this.#layout();
+    if (layout === 'absent') return undefined;
+    const args = this.#indexArgs(type, this.namespace, layout);
+    const others = new Set(desiredIndexKeys({ ...args, indexes: [] }).map((d) => d.name));
+    return args.indexes.find((decl) =>
+      desiredIndexKeys({ ...args, indexes: [decl] }).some(
+        (d) => d.name === name && !others.has(d.name)
+      )
+    );
+  }
+
+  /**
+   * See `Dataset.typeStats`. Spans every namespace of the database, in a fixed
+   * number of queries. Partitioned: each type partition's own statistics;
+   * `liveRows` is `reltuples` (or `n_live_tup` before the first ANALYZE) and
+   * counts tombstoned rows too. Legacy: see the shortcut below.
+   */
+  async typeStats(): Promise<TypeStats[]> {
+    const layout = await this.#layout();
+    if (layout === 'absent') return [];
+    const sql = this.#sql as Sql;
+    const toStats = (
+      t: {
+        namespace: string;
+        type: string;
+        table: string;
+        liveRows: number;
+        insertsTotal: number;
+        updatesTotal: number;
+        deletesTotal: number;
+      },
+      held: Awaited<ReturnType<typeof heldIndexes>>
+    ): TypeStats => ({
+      namespace: t.namespace,
+      type: t.type,
+      liveRows: Math.round(t.liveRows),
+      insertsTotal: Math.round(t.insertsTotal),
+      updatesTotal: Math.round(t.updatesTotal),
+      deletesTotal: Math.round(t.deletesTotal),
+      indexes: held
+        .filter((i) => belongsToType(i, t.namespace, t.type, layout, t.table))
+        .map((i) => ({
+          name: i.name,
+          scans: i.scans,
+          lastScanAt: i.lastScanAt,
+          sizeBytes: i.sizeBytes,
+          unique: i.unique,
+          engineOwned: isEngineOwned(i)
+        }))
+    });
+    if (layout === 'partitioned') {
+      const parts = await sql<
+        Array<{
+          table: string;
+          nsBound: string;
+          bound: string;
+          liveRows: number;
+          insertsTotal: number;
+          updatesTotal: number;
+          deletesTotal: number;
+        }>
+      >`
+        SELECT c.relname AS "table",
+               pg_get_expr(p.relpartbound, p.oid) AS "nsBound",
+               pg_get_expr(c.relpartbound, c.oid) AS bound,
+               (CASE WHEN c.reltuples >= 0 THEN c.reltuples ELSE COALESCE(s.n_live_tup, 0) END)::float8
+                 AS "liveRows",
+               COALESCE(s.n_tup_ins, 0)::float8 AS "insertsTotal",
+               COALESCE(s.n_tup_upd, 0)::float8 AS "updatesTotal",
+               COALESCE(s.n_tup_del, 0)::float8 AS "deletesTotal"
+        FROM pg_partition_tree('rows') t
+        JOIN pg_class c ON c.oid = t.relid
+        JOIN pg_class p ON p.oid = t.parentrelid
+        LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
+        WHERE t.level = 2`;
+      const types = parts.flatMap((p) => {
+        const namespace = listBound(p.nsBound);
+        const type = listBound(p.bound);
+        return namespace === undefined || type === undefined ? [] : [{ ...p, namespace, type }];
+      });
+      const held = await heldIndexes(
+        sql,
+        types.map((t) => t.table)
+      );
+      return types.map((t) => toStats(t, held));
+    }
+    // shortcut: a per-type count(*) over a large shared `rows` costs a scan per
+    // pass. Below SAMPLE_ROWS legacy counts exactly; above it a type with a live
+    // partial index (every crossRef type has its derived one) takes that index's
+    // reltuples (while fresh, below), and any other type its share of a ~SAMPLE_ROWS block sample,
+    // so a small one may be missing or noisy. Inserts are split by live-row
+    // share (writes too), not by each type's own rate: a type's share falls as
+    // others grow, so its counters can drop and the advisor re-baselines it,
+    // which only delays a `remove`. Partitioning is the upgrade.
+    // `n_live_tup` sizes it before the first ANALYZE, when reltuples is -1, so
+    // a never-analyzed large `rows` is still sampled rather than scanned.
+    const [table] = await sql<
+      Array<{ fresh: boolean; size: number; inserts: number; updates: number; deletes: number }>
+    >`
+      SELECT c.reltuples > 0
+               AND COALESCE(s.n_mod_since_analyze, 0) <= ${INDEX_COUNT_STALE} * c.reltuples
+               AS fresh,
+             GREATEST(c.reltuples, COALESCE(s.n_live_tup, 0))::float8 AS size,
+             COALESCE(s.n_tup_ins, 0)::float8 AS inserts,
+             COALESCE(s.n_tup_upd, 0)::float8 AS updates,
+             COALESCE(s.n_tup_del, 0)::float8 AS deletes
+      FROM pg_class c LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
+      WHERE c.oid = 'rows'::regclass`;
+    const size = table?.size ?? 0;
+    const sampled = size > SAMPLE_ROWS;
+    const sample = sql.unsafe(
+      sampled ? `rows TABLESAMPLE SYSTEM (${(100 * SAMPLE_ROWS) / size})` : 'rows'
+    );
+    const counts = await sql<Array<{ namespace: string; type: string; all: number; live: number }>>`
+      SELECT namespace, type, count(*)::float8 AS "all",
+             (count(*) FILTER (WHERE deleted_at IS NULL))::float8 AS live
+      FROM ${sample} GROUP BY namespace, type`;
+    const total = counts.reduce((n, c) => n + c.all, 0);
+    const held = await heldIndexes(sql, ['rows']);
+    const live = new Map<string, { namespace: string; type: string; liveRows: number }>();
+    for (const c of counts) {
+      live.set(JSON.stringify([c.namespace, c.type]), {
+        namespace: c.namespace,
+        type: c.type,
+        liveRows: sampled ? (c.live * size) / total : c.live
+      });
+    }
+    // An index's count is as old as the last ANALYZE, VACUUM or build: one built
+    // on a type's empty share reads 0 however many rows follow. So it is trusted
+    // only while `rows` has changed by under INDEX_COUNT_STALE since its last
+    // ANALYZE (`rows.reltuples >= 0` is not enough: that same build sets it to 0).
+    if (sampled && table?.fresh === true) {
+      const fromIndex = new Map<string, { namespace: string; type: string; liveRows: number }>();
+      for (const i of held) {
+        const scope = legacyLiveScope(i.predicate);
+        // 0 is no evidence of an empty type: ANALYZE estimates a partial index's
+        // count from its sample, which can miss a small type on a large `rows`.
+        if (scope === undefined || i.reltuples <= 0) continue;
+        const key = JSON.stringify([scope.namespace, scope.type]);
+        const seen = fromIndex.get(key);
+        if (seen === undefined || i.reltuples > seen.liveRows) {
+          fromIndex.set(key, { ...scope, liveRows: i.reltuples });
+        }
+      }
+      for (const [key, t] of fromIndex) live.set(key, t);
+    }
+    const liveTotal = Math.max(
+      size,
+      [...live.values()].reduce((n, t) => n + t.liveRows, 0)
+    );
+    const share = (n: number | undefined, rows: number): number =>
+      liveTotal > 0 ? ((n ?? 0) * rows) / liveTotal : 0;
+    return [...live.values()].map((t) =>
+      toStats(
+        {
+          ...t,
+          table: 'rows',
+          insertsTotal: share(table?.inserts, t.liveRows),
+          updatesTotal: share(table?.updates, t.liveRows),
+          deletesTotal: share(table?.deletes, t.liveRows)
+        },
+        held
+      )
+    );
   }
 
   private materialize(record: SubstrateRowRecord): Row {

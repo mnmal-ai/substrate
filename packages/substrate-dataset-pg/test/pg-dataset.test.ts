@@ -149,13 +149,6 @@ describe.skipIf(!POSTGRES_URL)('PgDataset', () => {
       expect(all[0]?._deletedAt).toBeInstanceOf(Date);
     });
 
-    it('rejects missing id', async () => {
-      await expect(
-        // biome-ignore lint/suspicious/noExplicitAny: intentionally-missing id
-        ds.write('Todo', [{ title: 'a' } as any])
-      ).rejects.toThrow(/row.id is required/);
-    });
-
     it('preserves numeric id round-trip', async () => {
       await ds.write('Todo', [{ id: 42, title: 'n' }]);
       const { rows } = await ds.read('Todo', { id: 42 });

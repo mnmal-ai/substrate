@@ -20,7 +20,13 @@ export {
   NUMBER_OPS,
   STRING_OPS
 } from './builtin-operators.js';
-export { CursorDecodeError, type CursorPayload, decodeCursor, encodeCursor } from './cursor.js';
+export {
+  CursorDecodeError,
+  type CursorOrder,
+  type CursorPayload,
+  decodeCursor,
+  encodeCursor
+} from './cursor.js';
 export {
   clearExtensionOperators,
   computedFieldOwner,

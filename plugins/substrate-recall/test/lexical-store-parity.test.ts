@@ -17,7 +17,6 @@ import { InMemoryLexicalStore } from '../src/in-memory-lexical-store.js';
 import type { LexicalStore } from '../src/lexical-store.js';
 import { lexicalMigration } from '../src/migrations/0003_lexical.js';
 import { PgLexicalStore } from '../src/pg-lexical-store.js';
-import { ensureRows } from './_pg-rows.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const isPgGated = POSTGRES_URL !== undefined;
@@ -34,7 +33,6 @@ const CORPUS: Array<{ id: string; text: string }> = [
 async function ensureSchema(url: string): Promise<void> {
   const sql = postgres(url);
   try {
-    await ensureRows(sql);
     const migration = lexicalMigration();
     // KernelMigrationContext carries more than this migration reads; `sql`
     // is the only member it touches.

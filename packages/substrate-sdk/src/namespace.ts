@@ -35,6 +35,7 @@ import type {
   NamespaceDefinition,
   NamespaceInstallContext,
   NamespaceTypeDef,
+  OrderedBy,
   Policy,
   PostWriteHook,
   Row
@@ -111,6 +112,37 @@ export interface TypeInput {
    * scalar (not json) or crossRef fields. See `IndexDecl`.
    */
   indexes?: IndexDecl[];
+  /**
+   * The type's natural order: what a read with no `orderBy` returns. Exactly
+   * one key, a declared date or number field or a metadata column
+   * (`createdAt`, `updatedAt`, or `seq` on a visible-order type). Absent
+   * means newest first by `createdAt`.
+   */
+  orderedBy?: OrderedBy;
+  /**
+   * `'visible'`: each inserted row gets `_metadata.seq`, strictly increasing
+   * per type in commit order, so a reader paging by `seq` never sees a higher
+   * seq before a lower one becomes visible. An upsert of an existing row keeps
+   * its seq. `seq` is filterable, sortable, and valid in `orderedBy`.
+   *
+   * Cost: writes to the type are serialised. Each insert holds a per-type
+   * transaction lock from seq assignment to commit, so one writer's open
+   * transaction blocks every other writer of the type until it ends. Other
+   * types are unaffected and pay nothing.
+   *
+   * Two transactions that write two visible-order types in opposite orders
+   * can deadlock; Postgres aborts one with 40P01. Write them in a consistent
+   * order.
+   *
+   * Making an existing type visible assigns no seq to its old rows: they keep
+   * a null seq and sort after every new row.
+   */
+  ordering?: 'visible';
+  /**
+   * Expected size. `large` lets the index advisor recommend for this type
+   * from its profile's lower `minRowsLargeHint` rather than `minRows`.
+   */
+  expectedSize?: 'small' | 'large';
 }
 
 export interface DefineNamespaceOptions {
@@ -187,6 +219,17 @@ export function defineNamespace(
 
   for (const [typeName, typeInput] of Object.entries(types)) {
     for (const decl of typeInput.indexes ?? []) assertIndexDecl(typeName, typeInput.fields, decl);
+    const ordering: unknown = typeInput.ordering;
+    if (ordering !== undefined && ordering !== 'visible') {
+      throw new Error(`ordering on ${typeName} must be 'visible', got '${String(ordering)}'`);
+    }
+    if (typeInput.orderedBy !== undefined) assertOrderedBy(typeName, typeInput);
+    const size: unknown = typeInput.expectedSize;
+    if (size !== undefined && size !== 'small' && size !== 'large') {
+      throw new Error(
+        `expectedSize on ${typeName} must be 'small' or 'large', got '${String(size)}'`
+      );
+    }
   }
 
   if (opts.annotations !== undefined) assertJsonValue(opts.annotations, 'annotations');
@@ -218,6 +261,7 @@ export function defineNamespace(
         const installOpts: Parameters<typeof installAutoCrud>[4] = {
           fields: augmentedFields
         };
+        if (typeInput.orderedBy !== undefined) installOpts.orderedBy = typeInput.orderedBy;
         if (combined !== undefined) installOpts.policy = combined;
         if (typeInput.purgeable === true) installOpts.purgeable = true;
         if (typeInput.adminCapability !== undefined) {
@@ -240,8 +284,8 @@ export function defineNamespace(
 /** Lower-snake, within pg's 63-byte identifier limit. */
 const INDEX_NAME_PATTERN = /^[a-z_][a-z0-9_]{0,62}$/;
 
-/** Throws unless every key and predicate field is a btree-indexable declared field. */
-function assertIndexDecl(
+/** Throws unless every key is a btree-indexable declared field or `createdAt`/`updatedAt`, and every predicate field a declared one. */
+export function assertIndexDecl(
   typeName: string,
   fields: Record<string, FieldDef>,
   decl: IndexDecl
@@ -260,12 +304,16 @@ function assertIndexDecl(
   if (!Array.isArray(decl.fields) || decl.fields.length === 0) {
     throw new Error(`${where}: fields must be a non-empty array`);
   }
+  // A key may also be a metadata column, which an index keys as natural order does.
+  const assertKey = (name: string): void => {
+    if (name !== 'createdAt' && name !== 'updatedAt') assertField(name);
+  };
   for (const f of decl.fields) {
     if (typeof f === 'string') {
-      assertField(f);
+      assertKey(f);
       continue;
     }
-    assertField(f.field);
+    assertKey(f.field);
     if (f.dir !== 'asc' && f.dir !== 'desc') {
       throw new Error(
         `${where}: dir of '${f.field}' must be 'asc' or 'desc', got '${String(f.dir)}'`
@@ -293,6 +341,42 @@ function assertIndexDecl(
   }
   if (decl.name !== undefined && !INDEX_NAME_PATTERN.test(decl.name)) {
     throw new Error(`${where}: name '${decl.name}' must match ${INDEX_NAME_PATTERN.source}`);
+  }
+}
+
+/** Metadata columns a type may take as its natural order. */
+const ORDERED_BY_METADATA_COLUMNS: ReadonlySet<string> = new Set(['createdAt', 'updatedAt']);
+
+/**
+ * Throws unless `orderedBy` is one key, on a date or number field or a metadata
+ * column; `seq` only on a type declared `ordering: 'visible'`.
+ */
+export function assertOrderedBy(
+  typeName: string,
+  def: Pick<TypeInput, 'fields' | 'orderedBy' | 'ordering'>
+): void {
+  const where = `orderedBy on ${typeName}`;
+  const entries = Object.entries(def.orderedBy ?? {});
+  if (entries.length !== 1) {
+    throw new Error(`${where}: must name exactly one field, got ${entries.length}`);
+  }
+  const [name, dir] = entries[0] as [string, unknown];
+  if (dir !== 'asc' && dir !== 'desc') {
+    throw new Error(`${where}: dir of '${name}' must be 'asc' or 'desc', got '${String(dir)}'`);
+  }
+  if (ORDERED_BY_METADATA_COLUMNS.has(name)) return;
+  if (name === 'seq') {
+    if (def.ordering === 'visible') return;
+    throw new Error(`${where}: 'seq' needs the type to declare ordering: 'visible'`);
+  }
+  const field = def.fields[name];
+  if (field === undefined) throw new Error(`${where}: unknown field '${name}'`);
+  if (!(field.kind === 'scalar' && (field.type === 'date' || field.type === 'number'))) {
+    const kind = field.kind === 'scalar' ? field.type : field.kind;
+    throw new Error(
+      `${where}: field '${name}' is ${kind}; only date and number fields, ` +
+        `or ${[...ORDERED_BY_METADATA_COLUMNS].join(', ')}, can be a natural order`
+    );
   }
 }
 

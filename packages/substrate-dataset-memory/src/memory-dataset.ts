@@ -11,8 +11,7 @@
  *
  * Filter contract (§5.2): `read()` honours `where` + `orderBy` + `cursor` in
  * addition to the id/ids/includeDeleted/limit short-circuit. Filter evaluation
- * is in-memory; there's no indexing, so the validator (upstream, in the
- * engine) is what gates unindexed-field scans.
+ * is in-memory; there's no indexing, so every filter is a scan.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -49,11 +48,13 @@ import type {
   UpdateFieldRef,
   WhereClause,
   WriteOptions,
-  WriteResult
+  WriteResult,
+  WriteRow
 } from '@mnmal-ai/substrate-types';
-import { createKeyedMutex } from '@mnmal-ai/substrate-types';
+import { assertNoRepeatedIds, createKeyedMutex } from '@mnmal-ai/substrate-types';
 import { NamespaceMismatch, ReservedField } from './errors.js';
 import { MemoryShortIdStore, type ShortIdBucketSnapshot } from './memory-short-id-store.js';
+import { uuidv7 } from './uuidv7.js';
 
 export interface MemoryDatasetOptions {
   namespace: string;
@@ -74,6 +75,11 @@ export interface MemoryDatasetOptions {
    * instants, as the pg dataset's lookup does; without it they compare as text.
    */
   fieldDefLookup?: (type: string, field: string) => FieldDef | undefined;
+  /**
+   * The namespace's type definitions; a type declared `ordering: 'visible'`
+   * gets `_metadata.seq` on insert, as the pg dataset's lookup does.
+   */
+  typeDefLookup?: (type: string, namespace: string) => { ordering?: 'visible' } | undefined;
 }
 
 const RESERVED_DELETED_AT = '_deletedAt';
@@ -85,19 +91,31 @@ const RESERVED_DELETED_AT = '_deletedAt';
  * existing when incoming is null.
  */
 function mergeRowMetadata(existing: RowMetadata | undefined, incoming: RowMetadata): RowMetadata {
-  if (existing === undefined) return incoming;
+  if (existing === undefined) return withoutSeq(incoming);
   return {
     createdAt: existing.createdAt ?? incoming.createdAt,
     updatedAt: incoming.updatedAt ?? existing.updatedAt,
     createdBy: existing.createdBy ?? incoming.createdBy,
-    updatedBy: incoming.updatedBy ?? existing.updatedBy
+    updatedBy: incoming.updatedBy ?? existing.updatedBy,
+    // seq is assigned on insert only; a caller never sets or changes it.
+    ...(existing.seq !== undefined ? { seq: existing.seq } : {})
   };
+}
+
+function withoutSeq(meta: RowMetadata): RowMetadata {
+  if (meta.seq === undefined) return meta;
+  const { seq: _seq, ...rest } = meta;
+  return rest;
 }
 
 export class MemoryDataset implements Dataset {
   readonly namespace: string;
   readonly txScopeId: string;
   readonly #fieldDefLookup: MemoryDatasetOptions['fieldDefLookup'];
+  // TS-private, not `#`: write() must work through a Proxy, as `store` does.
+  private readonly typeDefLookup: MemoryDatasetOptions['typeDefLookup'];
+  /** Last seq assigned per visible-order type; never decreases, as pg's `visible_seqs`. */
+  private seqs = new Map<string, number>();
   // Full builtin operator set — everything the validator recognises. A
   // deliberate narrowing would override per kind here and fail the
   // allowlist-parity test loudly.
@@ -142,6 +160,7 @@ export class MemoryDataset implements Dataset {
     this.namespace = options.namespace;
     this.txScopeId = options.txScopeId ?? `mem:${randomUUID()}`;
     this.#fieldDefLookup = options.fieldDefLookup;
+    this.typeDefLookup = options.typeDefLookup;
   }
 
   private bucket(type: string): Map<Id, Row> {
@@ -232,7 +251,7 @@ export class MemoryDataset implements Dataset {
     // Cursor: drop rows up to and including the cursor tuple.
     let startIdx = 0;
     if (params.cursor !== undefined && params.cursor !== '') {
-      const cursor = decodeCursor(params.cursor);
+      const cursor = decodeCursor(params.cursor, orderBy);
       startIdx = findCursorStart(pool, orderBy, cursor.orderByValues, cursor.id, fieldDefOf);
     }
 
@@ -259,7 +278,8 @@ export class MemoryDataset implements Dataset {
     if (hasMore && last !== undefined) {
       out.nextCursor = encodeCursor({
         orderByValues: orderBy.map(([field]) => getFieldValue(last, field)),
-        id: last.id
+        id: last.id,
+        order: orderBy
       });
     }
 
@@ -276,17 +296,19 @@ export class MemoryDataset implements Dataset {
     return out;
   }
 
-  async write(type: string, rows: Row[], options?: WriteOptions): Promise<WriteResult> {
+  async write(type: string, rows: WriteRow[], options?: WriteOptions): Promise<WriteResult> {
+    if (options?.insertOnly !== true) assertNoRepeatedIds(type, rows);
     const b = this.bucket(type);
     const ids: Id[] = [];
     const merged: Row[] = [];
     const fallbackNow = (options?.now ?? new Date()).toISOString();
     const fallbackActor = options?.identity ?? null;
+    // Writes here are serial, so assignment order is commit order.
+    const visible = this.typeDefLookup?.(type, this.namespace)?.ordering === 'visible';
 
-    for (const row of rows) {
-      if (row.id === undefined || row.id === null) {
-        throw new Error(`write: row.id is required (type='${type}')`);
-      }
+    for (const input of rows) {
+      // An id-less row gets a v7 UUID (see uuidv7.ts for its limits).
+      const row: Row = { ...input, id: input.id ?? uuidv7() };
 
       // Auto-fill _metadata when the caller didn't supply one. Engine path
       // (autocrud-create/update) always supplies _metadata itself; this branch
@@ -332,6 +354,13 @@ export class MemoryDataset implements Dataset {
         b.set(rowToWrite.id, landed);
       } else {
         landed = sanitised;
+        const meta = landed._metadata as RowMetadata | undefined;
+        if (meta !== undefined) landed._metadata = withoutSeq(meta);
+        if (visible) {
+          const seq = (this.seqs.get(type) ?? 0) + 1;
+          this.seqs.set(type, seq);
+          landed._metadata = { ...(landed._metadata as RowMetadata), seq };
+        }
         b.set(rowToWrite.id, landed);
       }
       ids.push(row.id);
@@ -448,7 +477,8 @@ export class MemoryDataset implements Dataset {
       createdAt: prior?.createdAt ?? null,
       createdBy: prior?.createdBy ?? null,
       updatedAt: (now ?? new Date()).toISOString(),
-      updatedBy
+      updatedBy,
+      ...(prior?.seq !== undefined ? { seq: prior.seq } : {})
     };
     row._metadata = meta;
     return { matched: true, row: { ...row } };
@@ -468,7 +498,21 @@ export class MemoryDataset implements Dataset {
     const row = b.get(ref.id);
     if (!row) return; // silent no-op
 
+    // seq is the dataset's, never the caller's, as on pg where it has its own column.
+    const seq = (row._metadata as RowMetadata | undefined)?.seq;
     row[fieldName] = value;
+    if (fieldName === '_metadata' && (value != null || seq !== undefined)) {
+      // A null clears the columns, as pg's UPDATE does, but not seq.
+      const meta = withoutSeq(
+        (value ?? {
+          createdAt: null,
+          updatedAt: null,
+          createdBy: null,
+          updatedBy: null
+        }) as RowMetadata
+      );
+      row._metadata = seq !== undefined ? { ...meta, seq } : meta;
+    }
   }
 
   /**
@@ -498,6 +542,7 @@ export class MemoryDataset implements Dataset {
       snapshot.set(type, cloned);
     }
 
+    const seqSnapshot = new Map(this.seqs);
     const undoLog: Array<{ type: string; shortId: number; rowId: string }> = [];
     const dropUndoLog: Array<{ type: string; snapshot: ShortIdBucketSnapshot }> = [];
     this.#inTx = true;
@@ -507,6 +552,7 @@ export class MemoryDataset implements Dataset {
       return await fn(this);
     } catch (err) {
       this.store = snapshot;
+      this.seqs = seqSnapshot;
       // Replay the drop-undo log in reverse order. Each entry restores an
       // entire bucket that was deleted by dropType/dropNamespace during the tx.
       for (let i = dropUndoLog.length - 1; i >= 0; i--) {
@@ -565,7 +611,8 @@ export class MemoryDataset implements Dataset {
   forNamespace(namespace: string): Dataset {
     return new MemoryDataset({
       namespace,
-      ...(this.#fieldDefLookup !== undefined ? { fieldDefLookup: this.#fieldDefLookup } : {})
+      ...(this.#fieldDefLookup !== undefined ? { fieldDefLookup: this.#fieldDefLookup } : {}),
+      ...(this.typeDefLookup !== undefined ? { typeDefLookup: this.typeDefLookup } : {})
     });
   }
 }
@@ -649,7 +696,7 @@ function findCursorStart(
   orderBy.forEach(([field], i) => {
     const v = cursorValues[i];
     if (field === 'id') return;
-    if (field === 'createdAt' || field === 'updatedAt') meta[field] = v;
+    if (field === 'createdAt' || field === 'updatedAt' || field === 'seq') meta[field] = v;
     else if (field === 'createdById') createdBy.id = v;
     else if (field === 'createdByKind') createdBy.kind = v;
     else if (field === 'updatedById') updatedBy.id = v;

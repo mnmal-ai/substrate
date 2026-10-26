@@ -44,7 +44,8 @@ import {
   type SubscriptionHandle,
   type SubscriptionStatsSnapshot,
   toResolverArgs,
-  withCanonicalMetadataFilters
+  withCanonicalMetadataFilters,
+  withNaturalOrder
 } from './internals.js';
 
 /**
@@ -666,6 +667,9 @@ export class SubscribeSubsystem {
     };
     this.#registerEntry(subscriptionEntry);
 
+    // The snapshot reads in the type's natural order unless it names one, as a query does.
+    const ordered = withNaturalOrder(args.params, registryEntry, dataset);
+    if (ordered !== undefined) args.params = ordered;
     // One row past the cap is enough to tell the snapshot is too large.
     const snapshotLimit = registryEntry.kind === 'type' ? this.#snapshotLimit : undefined;
     if (snapshotLimit !== undefined) args.params = { ...args.params, limit: snapshotLimit + 1 };

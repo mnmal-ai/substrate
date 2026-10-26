@@ -63,8 +63,12 @@ export function assembleRowMetadata(record: {
   created_by_id: string | null;
   updated_by_kind: string | null;
   updated_by_id: string | null;
+  /** bigint, which postgres.js returns as a string. */
+  seq?: string | null;
 }): RowMetadata | undefined {
+  const seq = record.seq == null ? undefined : Number(record.seq);
   if (
+    seq === undefined &&
     record.created_at === null &&
     record.updated_at === null &&
     record.created_by_kind === null &&
@@ -86,6 +90,7 @@ export function assembleRowMetadata(record: {
     createdAt: record.created_at !== null ? record.created_at.toISOString() : null,
     updatedAt: record.updated_at !== null ? record.updated_at.toISOString() : null,
     createdBy,
-    updatedBy
+    updatedBy,
+    ...(seq !== undefined ? { seq } : {})
   };
 }

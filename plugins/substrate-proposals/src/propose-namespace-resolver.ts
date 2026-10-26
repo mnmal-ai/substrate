@@ -41,7 +41,6 @@
  * is not restored on restart.
  */
 
-import { randomUUID } from 'node:crypto';
 import { resolveIdentity } from '@mnmal-ai/substrate-sdk';
 import type {
   Dataset,
@@ -73,6 +72,8 @@ export interface ProposeNamespaceResolverDeps {
   edges: EdgesStore;
   pubsub: PubSub;
   proposeCapability?: string;
+  /** Capability that writes to a proposal row's indexes need; see `proposeToWrite`. */
+  indexCapability?: string;
   /** See InstallHotAddedNamespaceArgs.registerProposalMutations. */
   registerProposalMutations?: InstallHotAddedNamespaceArgs['registerProposalMutations'];
 }
@@ -192,9 +193,8 @@ async function proposeNamespaceLocked(
   if (prior !== undefined) {
     proposalId = String(prior.id);
   } else {
-    proposalId = randomUUID();
-    await writeInTx(controlBinding.registry, ctx, args, 'createNamespaceProposal', {
-      id: proposalId,
+    // The dataset assigns the proposal's id.
+    const created = await writeInTx(controlBinding.registry, ctx, args, 'createNamespaceProposal', {
       ns,
       proposedBy,
       proposedAt: new Date(),
@@ -204,6 +204,7 @@ async function proposeNamespaceLocked(
       supersededByCode: false,
       archived: false
     });
+    proposalId = String(created.id);
   }
 
   // Steps 5+6 — append to engine + install TypeProposal/FieldProposal on
@@ -218,6 +219,7 @@ async function proposeNamespaceLocked(
       engine: controlEngine,
       edges: deps.edges,
       ...(deps.proposeCapability !== undefined && { proposeCapability: deps.proposeCapability }),
+      ...(deps.indexCapability !== undefined && { indexCapability: deps.indexCapability }),
       ...(deps.registerProposalMutations !== undefined && {
         registerProposalMutations: deps.registerProposalMutations
       })

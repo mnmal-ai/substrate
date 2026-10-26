@@ -21,8 +21,7 @@ const todoFields: Record<string, FieldDef> = {
   id: { kind: 'scalar', type: 'string', indexed: true },
   title: { kind: 'scalar', type: 'string', indexed: true },
   done: { kind: 'scalar', type: 'boolean', indexed: true, default: false },
-  // Deliberately unindexed so integration tests can exercise
-  // _allowTableScan + the unindexed_field rejection path.
+  // Deliberately unindexed: filters on it are accepted all the same.
   priority: { kind: 'scalar', type: 'number', default: 0 },
   // Engine-allocated sequence number per (ns, type).
   shortId: { kind: 'scalar', type: 'number', indexed: true, readonly: true },

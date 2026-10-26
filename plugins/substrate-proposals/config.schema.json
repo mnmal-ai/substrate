@@ -14,6 +14,11 @@
       "default": "substrate.propose",
       "type": "string",
       "minLength": 1
+    },
+    "indexCapability": {
+      "default": "substrate.index",
+      "type": "string",
+      "minLength": 1
     }
   },
   "additionalProperties": false

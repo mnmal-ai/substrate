@@ -15,7 +15,7 @@ import {
   formatDoctorReport,
   reconcileIdentities,
   runDoctor
-} from '../src/bin/admin.js';
+} from '../src/admin/index.js';
 
 const ROUTE: AdminTarget = { kind: 'route', baseUrl: 'https://h.test', source: 'flag' };
 const ENV: AdminCliEnv = { SUBSTRATE_ADMIN_TOKEN: 'Bearer t' };

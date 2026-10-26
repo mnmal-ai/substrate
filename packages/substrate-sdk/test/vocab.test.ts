@@ -45,7 +45,6 @@ describe('field.vocab', () => {
     expect(status).toEqual({
       kind: 'scalar',
       type: 'string',
-      indexed: true,
       enum: ['open', 'active', 'superseded'],
       aliases: { accepted: 'active', adopted: 'active', decided: 'active' }
     });

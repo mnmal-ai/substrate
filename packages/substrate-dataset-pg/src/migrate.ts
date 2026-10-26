@@ -45,7 +45,12 @@ import {
   CONCURRENT_STATEMENTS as SAFE_CASTS_CONCURRENT,
   TX_STATEMENTS as SAFE_CASTS_TX
 } from './migrations/0003_safe_casts.js';
+import {
+  CONCURRENT_STATEMENTS as VISIBLE_SEQ_CONCURRENT,
+  TX_STATEMENTS as VISIBLE_SEQ_TX
+} from './migrations/0004_visible_seq.js';
 import { sqlStringLiteral } from './pg-sql/primitives.js';
+import { assertServerVersion } from './server-version.js';
 
 /**
  * Internal canonical migration shape after normalisation. The framework
@@ -99,6 +104,11 @@ const SHARED_INPUTS: ReadonlyArray<MigrationInput> = [
     version: '0003_safe_casts',
     txStatements: SAFE_CASTS_TX,
     concurrentStatements: SAFE_CASTS_CONCURRENT
+  },
+  {
+    version: '0004_visible_seq',
+    txStatements: VISIBLE_SEQ_TX,
+    concurrentStatements: VISIBLE_SEQ_CONCURRENT
   }
 ];
 
@@ -273,6 +283,7 @@ export interface RunMigrationsOptions {
 }
 
 export async function runMigrations(sql: Sql, opts: RunMigrationsOptions = {}): Promise<void> {
+  await assertServerVersion(sql);
   // Serialises concurrent boots, which otherwise race on every DDL step.
   //
   // The lock is polled with pg_try_advisory_lock, not blocking
@@ -355,7 +366,7 @@ export class IndexLockAborted extends Error {
  * Runs `fn` while `conn` holds the index-build advisory lock of `table` (in the
  * current schema). Every engine CREATE or DROP INDEX CONCURRENTLY, swap and
  * statistics step on a table runs under it: two concurrent builds on one table
- * deadlock in Postgres (measured on pg17: one is aborted with 40P01), while
+ * deadlock in Postgres (measured on pg17 and pg18: one is aborted with 40P01), while
  * builds on different tables do not. It is taken after the migration lock,
  * never before it, so a holder of this lock never waits for the migration lock.
  *

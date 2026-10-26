@@ -525,6 +525,32 @@ describe('parseEnv', () => {
     }
   });
 
+  it('index disk check: off without a path, margin defaults to 2048 MB', () => {
+    expect(parseEnv({}).indexDiskPath).toBeNull();
+    expect(parseEnv({ SUBSTRATE_INDEX_DISK_PATH: 'off' }).indexDiskPath).toBe('off');
+    expect(parseEnv({ SUBSTRATE_INDEX_DISK_PATH: 'OFF' }).indexDiskPath).toBe('off');
+    expect(parseEnv({}).indexDiskMarginMb).toBe(2048);
+    const cfg = parseEnv({
+      SUBSTRATE_INDEX_DISK_PATH: '/var/lib/postgresql',
+      SUBSTRATE_INDEX_DISK_MARGIN_MB: '512'
+    });
+    expect(cfg.indexDiskPath).toBe('/var/lib/postgresql');
+    expect(cfg.indexDiskMarginMb).toBe(512);
+    expect(parseEnv({ SUBSTRATE_INDEX_DISK_MARGIN_MB: '0' }).indexDiskMarginMb).toBe(0);
+    for (const bad of ['-1', '1.5', 'abc']) {
+      expect(() => parseEnv({ SUBSTRATE_INDEX_DISK_MARGIN_MB: bad })).toThrow(EnvConfigError);
+    }
+  });
+
+  it('index retry interval: defaults to 10 minutes, 0 disables, refuses anything else', () => {
+    expect(parseEnv({}).indexRetryIntervalMs).toBe(600_000);
+    expect(parseEnv({ SUBSTRATE_INDEX_RETRY_INTERVAL_MS: '0' }).indexRetryIntervalMs).toBe(0);
+    expect(parseEnv({ SUBSTRATE_INDEX_RETRY_INTERVAL_MS: '5000' }).indexRetryIntervalMs).toBe(5000);
+    for (const bad of ['-1', '1.5', 'abc']) {
+      expect(() => parseEnv({ SUBSTRATE_INDEX_RETRY_INTERVAL_MS: bad })).toThrow(EnvConfigError);
+    }
+  });
+
   // Regression: docker-compose `${VAR:-}` substitution passes `""` when an
   // operator leaves the .env line blank. parseInt('') is NaN, and NaN in
   // setInterval fires continuously, so empty must mean "not set".

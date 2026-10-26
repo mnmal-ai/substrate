@@ -26,7 +26,7 @@ import type {
   RequestContext,
   ResolverArgs
 } from './policy.js';
-import type { FieldDef, PackEnvelope, Schema } from './schema.js';
+import type { FieldDef, OrderedBy, PackEnvelope, Schema } from './schema.js';
 import type { HttpHandler, HttpMethod, PluginRouter } from './server.js';
 
 /** Whether a registry entry is a top-level addressable type or a mutation. */
@@ -58,6 +58,12 @@ export interface RegistryEntryInput {
   kind?: RegistryEntryKind;
   params?: Record<string, FieldDef>;
   returns?: FieldDef;
+  /** Natural order of a `kind: 'type'` entry; published on its `TypeSchema`. */
+  orderedBy?: OrderedBy;
+  /** Declared indexes of a `kind: 'type'` entry installed at runtime (a proposed type). */
+  indexes?: IndexDecl[];
+  /** A proposed type's size hint; `large` lowers the index advisor's row minimum. */
+  expectedSize?: 'small' | 'large';
   /**
    * Semantic verb for autoCRUD-registered mutations. The engine
    * threads this into `RequestContext.verb` at dispatch so type-/plugin-level
@@ -82,6 +88,12 @@ export interface RegistryEntry {
   params: Record<string, FieldDef>;
   /** Present only for `kind: 'mutation'` entries that declared a return shape. */
   returns?: FieldDef;
+  /** Mirrors `RegistryEntryInput.orderedBy`. */
+  orderedBy?: OrderedBy;
+  /** Mirrors `RegistryEntryInput.indexes`. */
+  indexes?: IndexDecl[];
+  /** Mirrors `RegistryEntryInput.expectedSize`. */
+  expectedSize?: 'small' | 'large';
   /** Mirrors `RegistryEntryInput.verb` — present when the registrant stamped one. */
   verb?: AutoCrudVerb;
 }
@@ -299,6 +311,12 @@ export interface NamespaceTypeDef {
   };
   /** Composite and unique indexes the engine builds for this type. See {@link IndexDecl}. */
   indexes?: IndexDecl[];
+  /** The type's natural order, the default read order. See {@link OrderedBy}. */
+  orderedBy?: OrderedBy;
+  /** See the SDK's `TypeInput.ordering`. */
+  ordering?: 'visible';
+  /** Size hint: `large` lowers the index advisor's row minimum for this type. */
+  expectedSize?: 'small' | 'large';
   // [key: string]: unknown absorbs slots NamespaceTypeDef doesn't name
   // (policy, autoCrud, purgeable, adminCapability, etc.).
   [key: string]: unknown;

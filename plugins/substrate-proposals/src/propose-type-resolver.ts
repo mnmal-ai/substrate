@@ -17,17 +17,27 @@
  * (`applyUntilRollback`), so the type never outlives its row.
  */
 
-import { randomUUID } from 'node:crypto';
 import { publishSchema } from '@mnmal-ai/substrate-core';
 import { resolveIdentity } from '@mnmal-ai/substrate-sdk';
 import type {
   Dataset,
   EdgesStore,
+  Id,
+  IndexDecl,
+  OrderedBy,
   RequestContext,
   ResolverArgs,
   Row
 } from '@mnmal-ai/substrate-types';
-import { applyTypeProposal, assertValidTypeProposal, typeProposalRegistryKeys } from './apply.js';
+import {
+  applyTypeIndexOptions,
+  applyTypeProposal,
+  assertValidTypeIndexOptions,
+  assertValidTypeProposal,
+  proposedFieldDefs,
+  type TypeIndexOptions,
+  typeProposalRegistryKeys
+} from './apply.js';
 import type { PubSub } from './config.js';
 import {
   applyUntilRollback,
@@ -55,6 +65,12 @@ export interface ProposeTypeInput {
   typeName: string;
   fields: Record<string, FieldSpecJson>;
   proposedReason: string;
+  /** Natural read order; omitted means the default (`createdAt` descending). */
+  orderedBy?: OrderedBy;
+  /** Declared indexes, beyond the crossRef ones the engine builds itself. */
+  indexes?: IndexDecl[];
+  /** Hint for the index advisor: a `'large'` type is recommended indexes sooner. */
+  expectedSize?: 'small' | 'large';
 }
 
 function parseInput(params: Record<string, unknown>): ProposeTypeInput {
@@ -62,6 +78,12 @@ function parseInput(params: Record<string, unknown>): ProposeTypeInput {
   if (proposedReason !== undefined && typeof proposedReason !== 'string') {
     throw new ProposalError('invalid_params', "'proposedReason' must be a string", {
       param: 'proposedReason'
+    });
+  }
+  const { expectedSize } = params;
+  if (expectedSize !== undefined && expectedSize !== 'small' && expectedSize !== 'large') {
+    throw new ProposalError('invalid_params', "'expectedSize' must be 'small' or 'large'", {
+      param: 'expectedSize'
     });
   }
   return { ...params, proposedReason: proposedReason ?? '' } as ProposeTypeInput;
@@ -90,6 +112,22 @@ export function makeProposeTypeResolver(
       (ns, type) =>
         (ns === deps.namespace && type === input.typeName) || deps.registryStore.ownsType(ns, type)
     );
+    // A new type is empty, so declaring its order and indexes needs only the
+    // propose capability; changing them on an existing type is `propose_index`.
+    try {
+      assertValidTypeIndexOptions(
+        input.typeName,
+        proposedFieldDefs(input.fields),
+        indexOptionsOf(input)
+      );
+    } catch (cause) {
+      throw new ProposalError(
+        'invalid_params',
+        cause instanceof Error ? cause.message : String(cause),
+        {},
+        { cause }
+      );
+    }
     // The caller's transaction, so the lock, reads and writes share its one
     // connection.
     const dataset = args.dataset ?? deps.dataset;
@@ -97,6 +135,30 @@ export function makeProposeTypeResolver(
       proposeTypeLocked(deps, ctx, { ...args, dataset }, input)
     );
   };
+}
+
+function indexOptionsOf(input: ProposeTypeInput): TypeIndexOptions {
+  const { indexes, orderedBy, expectedSize } = input;
+  return {
+    ...(indexes?.length ? { indexes } : {}),
+    ...(orderedBy !== undefined ? { orderedBy } : {}),
+    ...(expectedSize !== undefined ? { expectedSize } : {})
+  };
+}
+
+/**
+ * Whether `typeName` has storage already: any TypeProposal row by that name,
+ * or any row of the type, archived and tombstoned ones included, so a
+ * propose-only caller cannot clear the signal by deleting them.
+ */
+async function hasStorage(dataset: Dataset, typeName: string): Promise<boolean> {
+  const proposals = await dataset.read('TypeProposal', {
+    where: { typeName: { eq: typeName } },
+    includeDeleted: true,
+    limit: 1
+  });
+  if (proposals.rows.length > 0) return true;
+  return (await dataset.read(typeName, { includeDeleted: true, limit: 1 })).rows.length > 0;
 }
 
 /** Steps 2-7, run while holding the proposal lock for this type name. */
@@ -158,9 +220,7 @@ async function proposeTypeLocked(
   // otherwise (resolver-direct tests).
   const proposedAt = new Date();
   const fieldsJson = JSON.stringify(fields);
-  const newId = randomUUID();
   const initialParams: Record<string, unknown> = {
-    id: newId,
     typeName,
     fieldsJson,
     proposedBy,
@@ -170,19 +230,45 @@ async function proposeTypeLocked(
     appliedAt: null,
     resultingSchemaVersion: null,
     supersededByCode: false,
-    archived: false
+    archived: false,
+    expectedSize: input.expectedSize ?? null
+  };
+  const indexOpts = indexOptionsOf(input);
+  const indexFields: Record<string, unknown> = {
+    indexesJson: indexOpts.indexes ? JSON.stringify(indexOpts.indexes) : null,
+    orderedByJson: indexOpts.orderedBy ? JSON.stringify(indexOpts.orderedBy) : null
   };
 
   const binding = deps.registryStore.getBinding(deps.namespace);
   const engine = binding.engine;
 
+  // The dataset assigns the proposal's id.
+  let newId: Id;
   if (engine !== undefined) {
-    await writeInTx(binding.registry, ctx, args, 'createTypeProposal', initialParams);
+    // One write carrying every field. The create policy reserves the index
+    // keys for `substrate.index`; declaring a new type's own needs only the
+    // propose capability, which the resolver's policy has already checked.
+    // A name that already has storage (an archived proposal, or rows) is an
+    // existing type, whose index options keep the create policy's gate.
+    const declaresIndexes = indexOpts.indexes !== undefined || indexOpts.orderedBy !== undefined;
+    const created = await writeInTx(
+      binding.registry,
+      ctx,
+      args,
+      'createTypeProposal',
+      { ...initialParams, ...indexFields },
+      !(declaresIndexes && (await hasStorage(args.dataset, typeName)))
+    );
+    newId = created.id;
   } else {
-    const writeResult = await args.dataset.write('TypeProposal', [initialParams as Row]);
-    if (!writeResult.ids[0]) {
+    const writeResult = await args.dataset.write('TypeProposal', [
+      { ...initialParams, ...indexFields }
+    ]);
+    const id = writeResult.ids[0];
+    if (id === undefined) {
       throw new Error('dataset.write did not return an id for TypeProposal');
     }
+    newId = id;
   }
 
   // Step 4 — apply the type to the live registry
@@ -190,7 +276,7 @@ async function proposeTypeLocked(
     applyUntilRollback(
       args,
       binding.registry,
-      () =>
+      () => {
         applyTypeProposal({
           namespace: deps.namespace,
           typeName,
@@ -198,10 +284,31 @@ async function proposeTypeLocked(
           registryStore: deps.registryStore,
           dataset: deps.dataset,
           edges: deps.edges
-        }),
+        });
+        if (Object.keys(indexOpts).length > 0) {
+          try {
+            applyTypeIndexOptions({
+              namespace: deps.namespace,
+              typeName,
+              ...indexOpts,
+              registryStore: deps.registryStore,
+              dataset: deps.dataset,
+              edges: deps.edges
+            });
+          } catch (cause) {
+            throw new ProposalError(
+              'invalid_params',
+              cause instanceof Error ? cause.message : String(cause),
+              {},
+              { cause }
+            );
+          }
+        }
+      },
       () => binding.invalidateSchemaCaches?.()
     );
   } catch (cause) {
+    if (cause instanceof ProposalError) throw cause;
     throw new ProposalError(
       'type_already_exists',
       `Could not apply type '${typeName}': ${cause instanceof Error ? cause.message : String(cause)}`,

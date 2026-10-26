@@ -16,6 +16,18 @@
 
 export * from './_system/index.js';
 export {
+  type AdvisorDeps,
+  type AdvisorState,
+  planServesShape,
+  runAdvisorPass
+} from './advisor/advisor.js';
+export {
+  isStoreProfileName,
+  PROFILES,
+  type ProfileThresholds,
+  type StoreProfileName
+} from './advisor/profiles.js';
+export {
   type AuthConfig,
   AuthConfigError,
   type AuthKey,
@@ -47,6 +59,7 @@ export {
   kernelMigrationTracking,
   mountKernelRoute
 } from './kernel.js';
+export { uuidFromName } from './name-uuid.js';
 export type { ConfigReport, KnobReport } from './routes/config-echo.js';
 export {
   buildContext,

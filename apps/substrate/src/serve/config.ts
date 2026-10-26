@@ -8,7 +8,9 @@ import {
   type AuthConfig,
   type ConfigReport,
   type ContractViolation,
-  parseAuthConfig
+  isStoreProfileName,
+  parseAuthConfig,
+  type StoreProfileName
 } from '@mnmal-ai/substrate-compose';
 import { MemoryBridgeCredentialStore } from '@mnmal-ai/substrate-core';
 import { parsePositiveInt, type TlsConfig } from '@mnmal-ai/substrate-types';
@@ -21,6 +23,9 @@ const DEFAULT_INVITE_SWEEP_INTERVAL_MS = 3_600_000;
 const DEFAULT_TOMBSTONE_RETENTION_DAYS = 30;
 const DEFAULT_SHUTDOWN_GRACE_MS = 5_000;
 const DEFAULT_PARTITION_BUDGET = 500;
+const DEFAULT_INDEX_DISK_MARGIN_MB = 2048;
+const DEFAULT_INDEX_RETRY_INTERVAL_MS = 600_000;
+const DEFAULT_ADVISOR_INTERVAL_MS = 600_000;
 export const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DEFAULT_PORT = 3100;
 
@@ -59,6 +64,27 @@ export interface ParsedConfig {
   shutdownGraceMs: number;
   /** `SUBSTRATE_PARTITION_BUDGET` — partitions under `rows` beyond which the config report warns. */
   partitionBudget: number;
+  /**
+   * `SUBSTRATE_INDEX_DISK_PATH` — the database volume's mount, when the
+   * database is local, whose free space is checked before each background
+   * index build. `'off'` turns the check off, for a database with no local
+   * volume. `null` (unset) leaves it off too, and the storage report says so.
+   */
+  indexDiskPath: string | 'off' | null;
+  /** `SUBSTRATE_INDEX_DISK_MARGIN_MB` — free space a build must leave. Default 2048; 0 requires only the estimate. */
+  indexDiskMarginMb: number;
+  /**
+   * `SUBSTRATE_INDEX_RETRY_INTERVAL_MS` — how often the background pass
+   * retries types with a non-unique index still pending or failed. Default
+   * 10 minutes; 0 leaves them to the next boot.
+   */
+  indexRetryIntervalMs: number;
+  /** `SUBSTRATE_ADVISOR_INTERVAL_MS` — how often the index advisor runs. Default 10 minutes; 0 turns it off. */
+  advisorIntervalMs: number;
+  /** `SUBSTRATE_STORE_PROFILE` — seeds `_system/StoreProfile` once; unset seeds `personal`. */
+  storeProfile: StoreProfileName | null;
+  /** `SUBSTRATE_STORE_WRITE_HEAVY=1` — the advisor halves its write-rate threshold for removing unused indexes. */
+  storeWriteHeavy: boolean;
   /**
    * §5.13 mutation idempotency config. `disabled` kills dedup entirely (the
    * engine never sees a store); `defaultTtlMs === null` leaves the engine's
@@ -189,6 +215,61 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
     DEFAULT_PARTITION_BUDGET,
     'partitions'
   );
+  const indexDiskPath = knobs.record(
+    'indexDiskPath',
+    'SUBSTRATE_INDEX_DISK_PATH',
+    env.SUBSTRATE_INDEX_DISK_PATH,
+    diskPathOf(nonEmpty(env.SUBSTRATE_INDEX_DISK_PATH?.trim()))
+  );
+  const indexDiskMarginMb = parseNonNegativeIntEnv(
+    env,
+    knobs,
+    'indexDiskMarginMb',
+    'SUBSTRATE_INDEX_DISK_MARGIN_MB',
+    DEFAULT_INDEX_DISK_MARGIN_MB,
+    'megabytes'
+  );
+  const indexRetryIntervalMs = parseNonNegativeIntEnv(
+    env,
+    knobs,
+    'indexRetryIntervalMs',
+    'SUBSTRATE_INDEX_RETRY_INTERVAL_MS',
+    DEFAULT_INDEX_RETRY_INTERVAL_MS,
+    'milliseconds, 0 to disable'
+  );
+  const advisorIntervalMs = parseNonNegativeIntEnv(
+    env,
+    knobs,
+    'advisorIntervalMs',
+    'SUBSTRATE_ADVISOR_INTERVAL_MS',
+    DEFAULT_ADVISOR_INTERVAL_MS,
+    'milliseconds, 0 to disable'
+  );
+  const profileRaw = nonEmpty(env.SUBSTRATE_STORE_PROFILE?.trim());
+  if (profileRaw !== undefined && !isStoreProfileName(profileRaw)) {
+    throw new EnvConfigError(
+      `SUBSTRATE_STORE_PROFILE must be personal, growth or scale, got '${profileRaw}'`
+    );
+  }
+  const storeProfile = knobs.record(
+    'storeProfile',
+    'SUBSTRATE_STORE_PROFILE',
+    env.SUBSTRATE_STORE_PROFILE,
+    profileRaw ?? null
+  );
+  const writeHeavyRaw = env.SUBSTRATE_STORE_WRITE_HEAVY;
+  const writeHeavyWord = (writeHeavyRaw ?? '').trim().toLowerCase();
+  if (!['', '0', 'false', '1', 'true'].includes(writeHeavyWord)) {
+    throw new EnvConfigError(
+      `SUBSTRATE_STORE_WRITE_HEAVY must be 1, true, 0 or false, got '${writeHeavyRaw}'`
+    );
+  }
+  const storeWriteHeavy = knobs.record(
+    'storeWriteHeavy',
+    'SUBSTRATE_STORE_WRITE_HEAVY',
+    writeHeavyRaw,
+    writeHeavyWord === '1' || writeHeavyWord === 'true'
+  );
   const idempotency = parseIdempotencyConfig(env, knobs);
   const trustedProxies = parseTrustedProxies(env, knobs);
   const port = parsePort(env, knobs);
@@ -271,6 +352,12 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
     tombstoneRetentionDays,
     shutdownGraceMs,
     partitionBudget,
+    indexDiskPath,
+    indexDiskMarginMb,
+    indexRetryIntervalMs,
+    advisorIntervalMs,
+    storeProfile,
+    storeWriteHeavy,
     idempotency,
     trustedProxies,
     port,
@@ -441,6 +528,28 @@ function parseCorsConfig(
     );
   }
   return note({ origins, credentials: true });
+}
+
+const diskPathOf = (raw: string | undefined): string | 'off' | null =>
+  raw === undefined ? null : raw.toLowerCase() === 'off' ? 'off' : raw;
+
+/** As {@link parsePositiveIntEnv}, but 0 is allowed. */
+function parseNonNegativeIntEnv(
+  env: NodeJS.ProcessEnv,
+  knobs: KnobRecorder,
+  key: string,
+  varName: string,
+  defaultValue: number,
+  units: string
+): number {
+  const raw = nonEmpty(env[varName]);
+  const n = raw === undefined ? defaultValue : Number(raw);
+  if (!Number.isInteger(n) || n < 0) {
+    throw new EnvConfigError(
+      `${varName}: got '${raw}' — expected a non-negative integer (${units})`
+    );
+  }
+  return knobs.record(key, varName, env[varName], n);
 }
 
 /**

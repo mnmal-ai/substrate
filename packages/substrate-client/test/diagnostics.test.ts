@@ -274,7 +274,7 @@ describe('diagnostics beyond unknown projection fields', () => {
 });
 
 describe('default sink beyond projection fields', () => {
-  it('explains that an unindexed filter scanned instead of rejecting', () => {
+  it('explains that the filter skipped schema validation', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     createDefaultDiagnosticsSink()({
       opKey: 'claude/Todo',
@@ -283,9 +283,7 @@ describe('default sink beyond projection fields', () => {
     });
     const msg = warn.mock.calls[0]?.[0] as string;
     expect(msg).toContain('claude/Todo');
-    // Case-insensitive: the message emphasises SCANNED in caps, and the
-    // assertion is about what it says, not how it shouts.
-    expect(msg.toLowerCase()).toContain('scan');
+    expect(msg).toContain('not schema-validated');
     // The projection wording must not leak into a diagnostic about filters —
     // an operator reading "projected field(s) the type does not declare" here
     // goes and diffs a projection that was never the problem.

@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import type { StoreProfileName } from '@mnmal-ai/substrate-compose';
 import type { EmbedderMode } from './config.js';
 import { pluginNpmName, pluginRange } from './plugins.js';
 
@@ -17,6 +18,8 @@ export interface TemplateContext {
   readonly dbName: string;
   readonly composeName: string;
   readonly substrateVersion: string;
+  readonly storeProfile: StoreProfileName;
+  readonly writeHeavy: boolean;
 }
 
 export function envBinaryTemplate(ctx: TemplateContext): string {
@@ -28,10 +31,22 @@ export function envBinaryTemplate(ctx: TemplateContext): string {
 
   if (ctx.store === 'postgres') {
     lines.push(
-      `SUBSTRATE_DATABASE_URL=postgres://substrate:${ctx.pgPassword}@127.0.0.1:${ctx.pgPort}/${ctx.dbName}`
+      `SUBSTRATE_DATABASE_URL=postgres://substrate:${ctx.pgPassword}@127.0.0.1:${ctx.pgPort}/${ctx.dbName}`,
+      '# Set to the database volume mount path when the database runs on this host, to check free disk before index builds.',
+      'SUBSTRATE_INDEX_DISK_PATH=off'
     );
   } else {
     lines.push('SUBSTRATE_DATABASE_URL=memory');
+  }
+  lines.push('');
+
+  lines.push(
+    '# Sizing profile: how sensitive the index advisor is. Seeds the store once; change it live afterwards.'
+  );
+  lines.push(`SUBSTRATE_STORE_PROFILE=${ctx.storeProfile}`);
+  if (ctx.writeHeavy) {
+    lines.push('# Write-heavy store: the advisor flags unused indexes at half the write rate.');
+    lines.push('SUBSTRATE_STORE_WRITE_HEAVY=1');
   }
   lines.push('');
 
@@ -122,7 +137,7 @@ name: ${ctx.composeName}
 
 services:
   postgres:
-    image: pgvector/pgvector:pg17
+    image: pgvector/pgvector:pg18
     restart: unless-stopped
     environment:
       POSTGRES_USER: \${POSTGRES_USER:-substrate}
@@ -131,7 +146,7 @@ services:
     ports:
       - "127.0.0.1:${ctx.pgPort}:5432"
     volumes:
-      - ./data/pg:/var/lib/postgresql/data
+      - ./data/pg:/var/lib/postgresql
       - ./postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U \${POSTGRES_USER:-substrate} -d \${SUBSTRATE_DATABASE_NAME:-${ctx.dbName}}"]
@@ -149,7 +164,7 @@ services:
   # Each dump is a gzipped plain SQL file: restore with gunzip -c <file> | psql.
   #
   #  postgres-backup:
-  #    image: pgvector/pgvector:pg17
+  #    image: pgvector/pgvector:pg18
   #    restart: unless-stopped
   #    depends_on:
   #      postgres:

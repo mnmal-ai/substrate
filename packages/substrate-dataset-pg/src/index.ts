@@ -4,6 +4,7 @@
 
 export type { IndexDecl } from '@mnmal-ai/substrate-types';
 export { tryWithPgAdvisoryLock } from './advisory-lock.js';
+export { type DiskGuard, makeDiskGuard } from './disk-guard.js';
 export {
   type EnumCheckInput,
   type EnumCheckStatements,
@@ -11,10 +12,15 @@ export {
 } from './enum-check.js';
 export { NamespaceMismatch, ReservedField } from './errors.js';
 export {
+  desiredIndexKeys,
+  engineIndexesOf,
+  type HeldIndex,
   IndexDefinitionConflictError,
+  IndexDropRefusedError,
   type IndexState,
   type ReconcileTypeIndexesArgs,
   reconcileTypeIndexes,
+  typeIndexesOf,
   UniqueIndexDuplicatesError
 } from './index-reconciler.js';
 export { detectLayout, partitionName, type StorageLayout } from './layout.js';
@@ -46,5 +52,10 @@ export type {
   PromotedBodyColumnMap,
   PromotedColumnLookup
 } from './pg-sql.js';
+export {
+  assertServerVersion,
+  MIN_SERVER_VERSION_NUM,
+  UnsupportedServerVersionError
+} from './server-version.js';
 export { type PgHandle, txScopeIdFor } from './tx-scope.js';
 export { TypeStorageLockTimeoutError } from './type-storage.js';

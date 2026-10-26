@@ -37,7 +37,8 @@ import {
   parseQualifiedKey,
   type StreamHandle,
   type StreamInput,
-  withCanonicalMetadataFilters
+  withCanonicalMetadataFilters,
+  withNaturalOrder
 } from './internals.js';
 
 export interface StreamSubsystemDeps {
@@ -338,6 +339,10 @@ export class StreamSubsystem {
         }
       }
     }
+
+    // A stream reads in the type's natural order unless it names one, as a query does.
+    const ordered = withNaturalOrder(args.params, registryEntry, dataset);
+    if (ordered !== undefined) args.params = ordered;
 
     let result: Row | Row[] | ReadResult | AsyncIterable<Row> | null;
     try {

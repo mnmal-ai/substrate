@@ -1,4 +1,5 @@
 {
   "ownedNamespaces": [],
-  "proposeCapability": "substrate.propose"
+  "proposeCapability": "substrate.propose",
+  "indexCapability": "substrate.index"
 }

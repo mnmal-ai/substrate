@@ -14,7 +14,7 @@
  * the probe cannot see, and reports a partial landing rather than a 201.
  */
 
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import type { Engine } from '@mnmal-ai/substrate-core';
 import { encodeList } from '@mnmal-ai/substrate-policy';
 import type { HttpHandler, SubstrateResponse } from '@mnmal-ai/substrate-types';
@@ -296,9 +296,8 @@ export function keysRoute(engine: Engine, opts: KeysRouteOptions): HttpHandler {
     const frame: Record<string, unknown> = {
       [keyFrameKey]: {
         params: {
-          // Always a fresh row: a revoked one stays behind as the audit record,
-          // as `rotate` leaves it, and creates are insert-only.
-          id: randomUUID(),
+          // No id: always a fresh row, so a revoked one stays behind as the
+          // audit record, as `rotate` leaves it.
           kid: b.kid,
           name: b.name,
           algorithm: b.algorithm,

@@ -13,8 +13,10 @@
  * envelope's `_pagination` block.
  */
 
-import type { ActorIdentity, Id, Row } from './core.js';
+import type { ActorIdentity, Id, Row, WriteRow } from './core.js';
 import type { EdgesStore } from './edge.js';
+import type { IndexDecl } from './plugin.js';
+import type { TypeStats } from './runtime-metrics.js';
 
 /**
  * Handles yielded by `Dataset.withScopedTransaction`. Contains the
@@ -104,9 +106,8 @@ export interface ReadParams {
    */
   cursor?: string;
   /**
-   * Admin-gated escape hatch for filtering on unindexed fields. Absent → the
-   * validator rejects filters on any `indexed: false` field. Policies can pin
-   * this to admin identities.
+   * @deprecated Accepted and ignored. Filters on unindexed fields are no
+   * longer refused, so there is nothing left to override.
    */
   _allowTableScan?: boolean;
   /**
@@ -144,6 +145,10 @@ export interface ReadResult {
 
 export interface WriteResult {
   written: number;
+  /**
+   * One per written row, in input order: a supplied id verbatim, otherwise
+   * the id the dataset assigned. Under `insertOnly`, skipped rows are absent.
+   */
   ids: Id[];
   /**
    * Merged rows after upsert — substrates populate this with the post-merge
@@ -254,7 +259,7 @@ export interface Dataset {
    */
   readonly txScopeId: string;
   read(type: string, params: ReadParams): Promise<ReadResult>;
-  write(type: string, rows: Row[], options?: WriteOptions): Promise<WriteResult>;
+  write(type: string, rows: WriteRow[], options?: WriteOptions): Promise<WriteResult>;
   tombstone(type: string, ids: Id[]): Promise<DeleteResult>;
   purge(type: string, ids: Id[]): Promise<DeleteResult>;
   /**
@@ -369,13 +374,62 @@ export interface Dataset {
   /**
    * The database-wide storage layout and what an operator should look at:
    * rows parked in DEFAULT partitions, indexes and CHECK constraints on the
-   * `rows` parent, engine-named indexes no longer declared, indexes this
-   * process has yet to build or failed to build, and a partition count over
-   * `partitionBudget`. Never changes anything.
+   * `rows` parent, indexes this process has yet to build or failed to build,
+   * and a partition count over `partitionBudget`; and, as `info`, engine
+   * indexes no longer declared and open index recommendations. Never changes
+   * anything.
    *
    * OPTIONAL. Backends without per-type storage omit it.
    */
   storageReport?(opts: { partitionBudget: number }): Promise<StorageReport>;
+  /**
+   * Table and index statistics for every type the store holds, every
+   * namespace, read from the database's own statistics. Estimates, never a
+   * count. Never changes anything.
+   *
+   * OPTIONAL. Backends without such statistics omit it.
+   */
+  typeStats?(): Promise<TypeStats[]>;
+  /**
+   * The indexes the engine wants for `namespace`/`type` (any namespace, not
+   * only this one), with each one's leading keys, and the type's size hint.
+   * Undefined when the type is unknown. Never changes anything.
+   *
+   * OPTIONAL. Backends that build no indexes omit it.
+   */
+  indexPlan?(type: string, namespace: string): Promise<IndexPlan | undefined>;
+  /**
+   * Drop index `name` of this namespace's `type`, a signed `propose_index`
+   * remove. Only an engine-owned, non-unique index the engine no longer wants
+   * (a leftover or a retracted declaration) is dropped; anything else is
+   * refused with an error whose `code` is `unknown_index`, `not_engine_owned`,
+   * `unique_index` or `still_desired`, and nothing is dropped. A drop that
+   * waits longer than `lockTimeoutMs` on another transaction is abandoned with
+   * `index_drop_timeout`; the index may then be left invalid, and a retry drops it.
+   *
+   * OPTIONAL. Backends that build no indexes omit it (the memory dataset):
+   * there, `propose_index remove` has no index to find, so it is refused
+   * `unknown_index`, and a remove recommendation it names is superseded.
+   */
+  dropEngineIndex?(
+    type: string,
+    name: string,
+    opts?: {
+      /** Runs once every check has passed, just before the drop; a throw drops nothing. */
+      beforeDrop?: () => Promise<void>;
+      /** The drop's bound on each lock wait, in ms. Defaults to the backend's own. */
+      lockTimeoutMs?: number;
+    }
+  ): Promise<void>;
+  /**
+   * The entry of this namespace's `type`'s declared `indexes` whose index is
+   * named `name`, or undefined when no declaration builds it (a derived or
+   * engine index, or none). `propose_index remove` retracts it when it is a
+   * proposed type's. Never changes anything.
+   *
+   * OPTIONAL. Backends that build no indexes omit it.
+   */
+  indexDeclarationOf?(type: string, name: string): Promise<IndexDecl | undefined>;
   /**
    * Execute `fn` atomically. All ops performed on the `tx` argument run inside
    * one substrate transaction. If `fn` throws or returns a rejected promise,
@@ -531,6 +585,8 @@ export interface TypeIndexState {
   outcome: 'created' | 'adopted' | 'swapped' | 'unchanged';
   /** Why a `failed` index failed: an error code, then a short reason. */
   error?: string;
+  /** Why a `pending` index was not built: the free-disk check refused it. */
+  reason?: 'insufficient_disk';
 }
 
 /** Where a type's rows live: `partition` is set on the partitioned layout once the type has one. */
@@ -544,4 +600,19 @@ export interface StorageReport {
   /** `unknown` when the report itself failed. */
   layout: 'legacy' | 'partitioned' | 'unknown';
   warnings: string[];
+  /** Worth showing, not a fault: the doctor prints these without failing. */
+  info?: string[];
+}
+
+/** See `Dataset.indexPlan`. */
+export interface IndexPlan {
+  /** Each desired index, its keys in order: a derived index ends with the type's natural order. */
+  indexes: Array<{
+    name: string;
+    keys: Array<[string, 'asc' | 'desc']>;
+    unique: boolean;
+    /** A partial index's predicate beyond `live`: it serves only reads that `eq` each field to its value. */
+    only?: Record<string, boolean | null>;
+  }>;
+  expectedSize?: 'small' | 'large';
 }

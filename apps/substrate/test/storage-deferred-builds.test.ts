@@ -12,17 +12,24 @@
 
 import { randomUUID } from 'node:crypto';
 import { compose } from '@mnmal-ai/substrate-compose';
-import { PgDataset, PgEdgesStore, runMigrations } from '@mnmal-ai/substrate-dataset-pg';
+import {
+  type DiskGuard,
+  PgDataset,
+  PgEdgesStore,
+  runMigrations
+} from '@mnmal-ai/substrate-dataset-pg';
 import { defineNamespace } from '@mnmal-ai/substrate-sdk';
 import { MemorySubstrateServer } from '@mnmal-ai/substrate-server-memory';
 import postgres, { type Sql } from 'postgres';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   buildDeferredIndexes,
   buildPluginDatasetMap,
   makeFieldDefLookupFactory,
   reconcileDeclaredStorage,
-  reconcileRegisteredStorage
+  reconcileRegisteredStorage,
+  reportUnguardedIndexBuilds,
+  runDeferredIndexBuilds
 } from '../src/serve/wiring.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
@@ -128,6 +135,180 @@ describe.skipIf(!POSTGRES_URL)('deferred index builds at boot (pg)', () => {
         )
       ).toEqual([]);
     } finally {
+      await composed.stop();
+    }
+  }, 60_000);
+
+  it('logs the pending builds and their estimate when no disk path guards them', async () => {
+    const def = defineNamespace(`${ns}_unguarded`, {
+      Note: {
+        fields: { topic: { kind: 'scalar', type: 'string' } },
+        indexes: [{ fields: ['topic'] }]
+      }
+    });
+    const plugin = { name: def.namespace, contractVersion: '*', namespaces: [def] };
+    const nsDefs = new Map([[def.namespace, def]]);
+    const edges = new PgEdgesStore({ sql });
+    const dataset = new PgDataset({ namespace: 'default', sql, edgesStore: edges });
+    const datasets = buildPluginDatasetMap(
+      [plugin],
+      dataset,
+      sql,
+      edges,
+      makeFieldDefLookupFactory(nsDefs)
+    );
+    await reconcileDeclaredStorage((n) => datasets[n], nsDefs);
+    const composed = await compose({
+      server: new MemorySubstrateServer(),
+      dataset,
+      edges,
+      datasets,
+      coordinators: [plugin],
+      systemActor: 'local-dev'
+    });
+    try {
+      await reconcileRegisteredStorage(composed.engine, composed.datasets, nsDefs);
+      const lines: string[] = [];
+      await reportUnguardedIndexBuilds(composed.engine, composed.datasets, (l) => lines.push(l));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatch(
+        /^\d+ index builds? pending, estimated \d+\.\d GiB in total, and SUBSTRATE_INDEX_DISK_PATH is unset/
+      );
+      await buildDeferredIndexes(composed.engine, composed.datasets);
+      lines.length = 0;
+      await reportUnguardedIndexBuilds(composed.engine, composed.datasets, (l) => lines.push(l));
+      expect(lines).toEqual([]);
+    } finally {
+      await composed.stop();
+      await sql`DELETE FROM rows WHERE namespace = ${def.namespace}`;
+    }
+  }, 60_000);
+
+  it('retries a build the disk guard refused on a later pass, without a reboot', async () => {
+    const rns = `${ns}_r`;
+    const plain = `${rns}_cert_ix`;
+    const def = defineNamespace(rns, {
+      Member: {
+        fields: { cert: { kind: 'scalar', type: 'string' } },
+        indexes: [{ fields: ['cert'], name: plain }]
+      }
+    });
+    const plugin = { name: rns, contractVersion: '*', namespaces: [def] };
+    const nsDefs = new Map([[rns, def]]);
+    let allow = false;
+    const guard: DiskGuard = {
+      path: '/var/lib/postgresql',
+      check: async (n) => (allow ? { ok: true } : { ok: false, freeBytes: 0, needBytes: n })
+    };
+    const edges = new PgEdgesStore({ sql });
+    const dataset = new PgDataset({ namespace: 'default', sql, edgesStore: edges });
+    const datasets = buildPluginDatasetMap(
+      [plugin],
+      dataset,
+      sql,
+      edges,
+      makeFieldDefLookupFactory(nsDefs),
+      undefined,
+      guard
+    );
+    const members = datasets[rns] as PgDataset;
+    const composed = await compose({
+      server: new MemorySubstrateServer(),
+      dataset,
+      edges,
+      datasets,
+      coordinators: [plugin],
+      systemActor: 'local-dev'
+    });
+    try {
+      await reconcileRegisteredStorage(composed.engine, composed.datasets, nsDefs);
+      const state = async () =>
+        (await members.describeStorage('Member')).indexes.find((i) => i.name === plain);
+      // Each pass awaits its builds, so the test drives them directly: no timer, no polling.
+      await buildDeferredIndexes(composed.engine, composed.datasets);
+      expect(await valid(plain)).toBeUndefined();
+      expect(await state()).toMatchObject({ state: 'pending', reason: 'insufficient_disk' });
+
+      allow = true;
+      await buildDeferredIndexes(composed.engine, composed.datasets, undefined, {
+        onlyUnsettled: true
+      });
+      expect(await valid(plain)).toBe(true);
+      expect((await state())?.state).toBe('valid');
+      expect((await state())?.reason).toBeUndefined();
+
+      // A retry pass leaves a settled type alone.
+      const ensure = vi.spyOn(PgDataset.prototype, 'ensureTypeStorage');
+      try {
+        await buildDeferredIndexes(composed.engine, composed.datasets, undefined, {
+          onlyUnsettled: true
+        });
+        expect(ensure.mock.contexts.filter((c) => (c as PgDataset).namespace === rns)).toEqual([]);
+      } finally {
+        ensure.mockRestore();
+      }
+    } finally {
+      await sql`DELETE FROM rows WHERE namespace = ${rns}`;
+      await composed.stop();
+    }
+  }, 60_000);
+
+  it('the retry loop runs a pass after each interval until aborted', async () => {
+    const lns = `${ns}_l`;
+    const def = defineNamespace(lns, {
+      Member: {
+        fields: { cert: { kind: 'scalar', type: 'string' } },
+        indexes: [{ fields: ['cert'], name: `${lns}_cert_ix` }]
+      }
+    });
+    const plugin = { name: lns, contractVersion: '*', namespaces: [def] };
+    const nsDefs = new Map([[lns, def]]);
+    const edges = new PgEdgesStore({ sql });
+    const dataset = new PgDataset({ namespace: 'default', sql, edgesStore: edges });
+    const datasets = buildPluginDatasetMap(
+      [plugin],
+      dataset,
+      sql,
+      edges,
+      makeFieldDefLookupFactory(nsDefs)
+    );
+    const composed = await compose({
+      server: new MemorySubstrateServer(),
+      dataset,
+      edges,
+      datasets,
+      coordinators: [plugin],
+      systemActor: 'local-dev'
+    });
+    // The type's storage exists and its non-unique index is still to build.
+    await reconcileRegisteredStorage(composed.engine, composed.datasets, nsDefs);
+    const stop = new AbortController();
+    // Builds nothing, so the index stays unsettled and every retry pass reaches it;
+    // the second call (the first retry) ends the loop. Every retry pass reads the
+    // type's storage first, so a cap on those reads ends the loop even if a
+    // regression stops a pass from reaching the build: it fails, never hangs.
+    let calls = 0;
+    let retryReads = 0;
+    const describe = PgDataset.prototype.describeStorage;
+    const reads = vi.spyOn(PgDataset.prototype, 'describeStorage').mockImplementation(function (
+      this: PgDataset,
+      type: string
+    ) {
+      if (this.namespace === lns && ++retryReads >= 3) stop.abort();
+      return describe.call(this, type);
+    });
+    const ensure = vi
+      .spyOn(PgDataset.prototype, 'ensureTypeStorage')
+      .mockImplementation(async function (this: PgDataset) {
+        if (this.namespace === lns && ++calls === 2) stop.abort();
+      });
+    try {
+      await runDeferredIndexBuilds(composed.engine, composed.datasets, 1, stop.signal);
+      expect(calls, 'a retry pass after the interval reached the unsettled type').toBe(2);
+    } finally {
+      ensure.mockRestore();
+      reads.mockRestore();
+      stop.abort();
       await composed.stop();
     }
   }, 60_000);

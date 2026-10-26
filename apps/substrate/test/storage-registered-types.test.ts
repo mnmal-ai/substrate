@@ -27,6 +27,7 @@ import {
 } from '@mnmal-ai/substrate-proposals';
 import { defineNamespace, RESERVED_AUTOCRUD_FIELDS } from '@mnmal-ai/substrate-sdk';
 import { MemorySubstrateServer } from '@mnmal-ai/substrate-server-memory';
+import { naturalOrderOf, type OrderedBy } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -79,6 +80,30 @@ describe('makeTypeDefLookupFactory', () => {
     });
   });
 
+  it('resolves the natural order as reads do, autoCRUD or not', () => {
+    const at = { kind: 'scalar', type: 'date' } as const;
+    const ordered = defineNamespace('ko', {
+      Crud: { fields: { at }, orderedBy: { at: 'desc' } },
+      Hand: { fields: { at }, orderedBy: { at: 'desc' }, autoCrud: false }
+    });
+    // What each registry entry carries: autoCRUD installs the declared order;
+    // a hand-registered (`autoCrud: false`) entry carries none.
+    const entries: Record<string, { kind: 'type'; fields: object; orderedBy?: OrderedBy }> = {
+      Crud: { kind: 'type', fields: { at }, orderedBy: { at: 'desc' } },
+      Hand: { kind: 'type', fields: { at } }
+    };
+    const live = { get: (t: string) => entries[t] } as never;
+    const empty = { get: () => undefined } as never;
+    for (const reg of [live, empty]) {
+      const lookup = makeTypeDefLookupFactory(new Map([['ko', ordered]]), () => reg)('ko');
+      // Reads use naturalOrderOf(entry): `at desc` for Crud, the default for Hand.
+      expect(naturalOrderOf(lookup('Crud', 'ko') ?? {})).toEqual({ at: 'desc' });
+      expect(naturalOrderOf(lookup('Hand', 'ko') ?? {})).toEqual(
+        naturalOrderOf(entries.Hand ?? {})
+      );
+    }
+  });
+
   it('keeps a shortId body field that autoCRUD did not register', () => {
     const own = { kind: 'scalar', type: 'number', indexed: true } as const;
     const plain = { get: () => ({ kind: 'type', fields: { shortId: own } }) } as never;
@@ -95,6 +120,15 @@ describe('makeTypeDefLookupFactory', () => {
     const dup = { get: () => ({ kind: 'type', fields: { shortId: copy } }) } as never;
     const lookup = makeTypeDefLookupFactory(new Map(), () => dup)('kl');
     expect(lookup('Raw', 'kl')).toEqual({ fields: {} });
+  });
+
+  it("takes a proposed type's indexes from its registry entry", () => {
+    const decl = [{ fields: ['sku'] }];
+    const reg = {
+      get: () => ({ kind: 'type', fields: { sku: proposed }, indexes: decl })
+    } as never;
+    const lookup = makeTypeDefLookupFactory(new Map(), () => reg)('kl');
+    expect(lookup('Item', 'kl')).toEqual({ fields: { sku: proposed }, indexes: decl });
   });
 
   it('answers the declaration alone until the registry resolves', () => {
@@ -197,7 +231,7 @@ describe.skipIf(!POSTGRES_URL)('storage for registered types (pg)', () => {
 
   async function hasPartition(namespace: string, type: string): Promise<boolean> {
     const [row] = await sql<Array<{ present: boolean }>>`
-      SELECT to_regclass(${partitionName(namespace, type)}) IS NOT NULL AS present`;
+      SELECT to_regclass(format('%I.%I', current_schema(), ${partitionName(namespace, type)}::text)) IS NOT NULL AS present`;
     return row?.present === true;
   }
 
@@ -234,9 +268,8 @@ describe.skipIf(!POSTGRES_URL)('storage for registered types (pg)', () => {
     try {
       await docs.ensureTypeStorage('Doc');
       const states = (await docs.describeStorage('Doc')).indexes;
-      expect(states.find((i) => i.fields.join() === 'sku')?.state).toBe(
-        partitioned ? 'valid' : undefined
-      );
+      // Spec rule (derived indexes, both layouts): legacy builds it too, on `rows`.
+      expect(states.find((i) => i.fields.join() === 'sku')?.state).toBe('valid');
       expect(states.some((i) => i.fields.join() === 'title')).toBe(false);
     } finally {
       await sql`DELETE FROM rows WHERE namespace = ${kns}`;

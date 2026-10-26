@@ -28,6 +28,7 @@ export {
 export {
   type AuditEmitInput,
   buildAuditRow,
+  INDEX_CAPABILITY,
   type InstalledSystemNamespace,
   type InstallSystemNamespaceOptions,
   installSystemNamespace
@@ -59,6 +60,9 @@ export {
   registerRoute
 } from './routes.js';
 export {
+  ADVISOR_STATE_FIELDS,
+  ADVISOR_STATE_ID,
+  ADVISOR_STATE_TYPE,
   AUDIT_EVENT_FIELDS,
   AUDIT_EVENT_KINDS,
   AUDIT_EVENT_TYPE,
@@ -66,6 +70,8 @@ export {
   ENUM_VERDICT_FIELDS,
   ENUM_VERDICT_TYPE,
   type IdentityDirectoryConfig,
+  INDEX_RECOMMENDATION_FIELDS,
+  INDEX_RECOMMENDATION_TYPE,
   INVITE_FIELDS,
   INVITE_TYPE,
   isKeyAlgorithm,
@@ -73,6 +79,9 @@ export {
   KEY_FIELDS,
   KEY_TYPE,
   type KeyAlgorithm,
+  STORE_PROFILE_FIELDS,
+  STORE_PROFILE_ID,
+  STORE_PROFILE_TYPE,
   SYSTEM_NAMESPACE
 } from './types.js';
 export {

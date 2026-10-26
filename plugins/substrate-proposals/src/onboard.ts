@@ -110,7 +110,14 @@ export function buildOnboardBody(ownedNamespaces: ReadonlyArray<string>): Onboar
           typeName: 'string — PascalCase, unique within the namespace',
           fields:
             'object — FieldSpecJson map keyed by camelCase field name (see fieldSpecJson below)',
-          proposedReason: 'string — short human-readable rationale'
+          proposedReason: 'string — short human-readable rationale',
+          orderedBy:
+            'optional { "<field>": "asc"|"desc" } — ask yourself what order this is usually read in. ' +
+            'A date or number field, or createdAt / updatedAt. Defaults to createdAt desc.',
+          indexes:
+            'optional [{ fields: [...] }] — indexes the usual reads need. Never unique or named. ' +
+            'Needs no extra capability on a new type; changing them later needs substrate.index.',
+          expectedSize: 'optional "small"|"large" — "large" gets index advice sooner'
         },
         returns: {
           id: 'uuid — the TypeProposal record id',
@@ -160,7 +167,7 @@ export function buildOnboardBody(ownedNamespaces: ReadonlyArray<string>): Onboar
           shape:
             '{ kind: "scalar", type: "string"|"number"|"boolean"|"date"|"json", indexed?: bool, nullable?: bool }',
           notes:
-            'indexed defaults to true for string/number/boolean/date, and is forced false for json (opaque body — no per-leaf filtering). readonly is reserved for engine-managed fields. ' +
+            'indexed is unset by default (no index; crossRef defaults to indexed: true). No field needs an index to filter, and non-json scalars sort without one, so set indexed: true only where a read needs the speed. indexed: false also marks a field as not a search handle (long-form prose). json filters by path only and never sorts. readonly is reserved for engine-managed fields. ' +
             'Use type:"json" for arbitrary nested blobs you do not need to filter on (audit details, free-form metadata). ' +
             'Use kind:"struct" instead when you have a known nested shape and want per-field where-clause support.'
         },

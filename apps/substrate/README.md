@@ -2,7 +2,7 @@
 
 The `substrate` binary: the server, the stdio MCP server, and the runtime scaffolder, plus `substrate-admin` for key management. The same package carries the libraries for plugin authors and clients, and two built-in plugins: `substrate-recall` (kernel) and `substrate-proposals` (coordinator).
 
-It runs as a real install: the binary and its plugins resolve from one shared `node_modules`, so every plugin sees the same copy of every shared package. `substrate init` scaffolds such a runtime directory. Node `>=26.2.0` is required; a durable deployment also needs Postgres with the `pgvector` extension. Walkthrough: [`docs/getting-started.md`](https://github.com/mnmal-ai/substrate/blob/main/docs/getting-started.md).
+It runs as a real install: the binary and its plugins resolve from one shared `node_modules`, so every plugin sees the same copy of every shared package. `substrate init` scaffolds such a runtime directory. Node `>=26.12.1` is required; a durable deployment also needs PostgreSQL 18 or newer with the `pgvector` extension. Walkthrough: [`docs/getting-started.md`](https://github.com/mnmal-ai/substrate/blob/main/docs/getting-started.md).
 
 ## Library subpaths
 
@@ -99,7 +99,7 @@ set -a && source .env && set +a
 ./node_modules/.bin/substrate serve
 ```
 
-`substrate init` writes a `package.json` pinning `@mnmal-ai/substrate` and the chosen optional plugins, a `pnpm-workspace.yaml`, a `.env` with `SUBSTRATE_PLUGIN_DIR=.`, a `substrate-recall.config.json` for the embedder, and, unless `--store=memory`, a `docker-compose.yml` running `pgvector/pgvector:pg17`. Flags: `--store=memory|postgres`, `--port`, `--pg-port`, `--plugins=<csv>` (from `cortext`, `substrate-nl`, `substrate-sentinel`; none by default), `--embedder=bge-base|minilm|ollama|none` (default `bge-base`), `--tls --tls-cert-path --tls-key-path`, `--substrate-url`, `--yes`, `--force`.
+`substrate init` writes a `package.json` pinning `@mnmal-ai/substrate` and the chosen optional plugins, a `pnpm-workspace.yaml`, a `.env` with `SUBSTRATE_PLUGIN_DIR=.`, a `substrate-recall.config.json` for the embedder, and, unless `--store=memory`, a `docker-compose.yml` running `pgvector/pgvector:pg18`. Flags: `--store=memory|postgres`, `--port`, `--pg-port`, `--plugins=<csv>` (from `cortext`, `substrate-nl`, `substrate-sentinel`; none by default), `--embedder=bge-base|minilm|ollama|none` (default `bge-base`), `--tls --tls-cert-path --tls-key-path`, `--substrate-url`, `--yes`, `--force`.
 
 `SUBSTRATE_PLUGIN_DIR` is the directory whose `node_modules/` holds the plugins; in a scaffolded runtime that is the runtime directory itself. Recall and proposals load from `@mnmal-ai/substrate` itself, so they are present whenever the binary is installed there. Kernel plugins (`substrate-recall`, `substrate-nl`) compose first, then coordinators (`substrate-proposals`, `substrate-sentinel`, …), alphabetical within each tier. Per-plugin overrides live at `<SUBSTRATE_PLUGIN_DIR>/<pkg-basename>.config.json`. With `SUBSTRATE_PLUGIN_DIR` unset the binary boots with only the `_system` admin namespace and `/health`. Set, it must hold a `package.json` listing the plugins under `dependencies`, installed into its `node_modules/`; a missing `package.json`, or listed plugins with no `node_modules/`, refuses boot with a message naming the fix.
 
@@ -141,6 +141,12 @@ The main ones; `substrate --help` and the header of `apps/substrate/src/main.ts`
 | `SUBSTRATE_TLS_KEY_PATH` / `SUBSTRATE_TLS_CERT_PATH` / `SUBSTRATE_TLS_CA_PATH` | Serve HTTPS. Key and cert are required together. |
 | `SUBSTRATE_NAMESPACE` | Default namespace for recall requests that omit one. |
 | `SUBSTRATE_SWEEP_INTERVAL_MS` | Edge-sweep cadence (default 300000) |
+| `SUBSTRATE_INDEX_DISK_PATH` | The database volume's mount, when the database is on this host: free space there is checked before each background index build. `off` skips the check. |
+| `SUBSTRATE_INDEX_DISK_MARGIN_MB` | Free space a build must leave (default 2048; `0` requires only the estimate). |
+| `SUBSTRATE_INDEX_RETRY_INTERVAL_MS` | How often pending or failed index builds are retried (default 600000; `0` leaves them to the next boot). |
+| `SUBSTRATE_ADVISOR_INTERVAL_MS` | How often the index advisor writes `_system/IndexRecommendation` rows (default 600000; `0` turns it off). |
+| `SUBSTRATE_STORE_PROFILE` | `personal`, `growth` or `scale`: seeds `_system/StoreProfile` once, so changing it later does not change an existing store. |
+| `SUBSTRATE_STORE_WRITE_HEAVY` | `1` or `true`, read on every boot: halves the write rate at which the advisor recommends removing an unused index. |
 | `SUBSTRATE_CORS_ORIGINS` | Comma-separated allowed origins, or `*`. Unset registers no CORS handling. |
 
 Natural-language query and the recall embedder are not configured by environment: they read `substrate-nl.config.json` and `substrate-recall.config.json` in the plugin directory.

@@ -169,4 +169,24 @@ describe('proposal records', () => {
     const status = engine.registryFor('app')?.get('Task')?.fields.status as { enum?: string[] };
     expect(status.enum).toEqual(['open', 'done']);
   });
+
+  it('keep an unset indexed unset across store and replay', async () => {
+    const ds = new MemoryDataset({ namespace: 'app' });
+    const fields = {
+      title: { kind: 'scalar', type: 'string' },
+      body: { kind: 'scalar', type: 'string', indexed: false },
+      code: { kind: 'scalar', type: 'string', indexed: true }
+    };
+    await ds.write('TypeProposal', [
+      row({ id: 'n', typeName: 'Note', fieldsJson: JSON.stringify(fields) })
+    ]);
+    const { engine } = await boot(ds);
+    const replayed = engine.registryFor('app')?.get('Note')?.fields as Record<
+      string,
+      { indexed?: boolean }
+    >;
+    expect('indexed' in (replayed.title ?? {})).toBe(false);
+    expect(replayed.body?.indexed).toBe(false);
+    expect(replayed.code?.indexed).toBe(true);
+  });
 });

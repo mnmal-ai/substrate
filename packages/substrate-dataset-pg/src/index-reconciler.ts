@@ -1,11 +1,12 @@
 /**
  * Builds a type's indexes and keeps them matching their declaration.
  *
- * The desired set is, on the partitioned layout, every `indexed: true` field
- * (btree on the compiler's expression, or GIN `jsonb_path_ops` for list and
- * json fields), the engine's timestamp and tombstone indexes, and the declared
- * `indexes`, all on the type's partition. On the legacy layout it is only the
- * declared `indexes`, as partial indexes on `rows` scoped to the type.
+ * The desired set is, in both layouts, a derived btree per crossRef (unless
+ * `indexed: false`) and per `indexed: true` scalar, keyed (field, natural-order
+ * key, id), and the declared `indexes`. The partitioned layout adds GIN
+ * `jsonb_path_ops` for `indexed: true` list and json fields and the engine's
+ * timestamp and tombstone indexes. Partitioned indexes are on the type's
+ * partition; legacy ones are partial indexes on `rows` scoped to the type.
  *
  * Each desired index is compared, by name, with what the catalog holds:
  * identical is kept; same table, uniqueness and key fields but a different
@@ -32,8 +33,9 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { FieldDef, IndexDecl } from '@mnmal-ai/substrate-types';
+import type { FieldDef, IndexDecl, OrderedBy } from '@mnmal-ai/substrate-types';
 import type { Sql } from 'postgres';
+import type { DiskGuard } from './disk-guard.js';
 import { MAX_IDENTIFIER, type StorageLayout } from './layout.js';
 import {
   abortableSleep,
@@ -59,6 +61,8 @@ export interface IndexState {
   outcome: 'created' | 'adopted' | 'swapped' | 'unchanged';
   /** Why a `failed` index failed: an error code, then a short reason. */
   error?: string;
+  /** Why a `pending` index was not built: the disk guard refused it. */
+  reason?: 'insufficient_disk';
 }
 
 /** A unique index was declared over values that are already duplicated among live rows. */
@@ -93,12 +97,32 @@ export class IndexDefinitionConflictError extends Error {
   }
 }
 
+/** `PgDataset.dropEngineIndex` refused, and dropped nothing. */
+export class IndexDropRefusedError extends Error {
+  constructor(
+    readonly code:
+      | 'unknown_index'
+      | 'not_engine_owned'
+      | 'unique_index'
+      | 'still_desired'
+      | 'index_drop_timeout',
+    message: string
+  ) {
+    super(message);
+    this.name = 'IndexDropRefusedError';
+  }
+}
+
 export interface ReconcileTypeIndexesArgs {
   namespace: string;
   type: string;
   layout: StorageLayout;
   fields: Record<string, FieldDef>;
   indexes: IndexDecl[];
+  /** The type's natural order, which every derived index carries after its field. */
+  orderedBy: OrderedBy;
+  /** `'visible'` adds the `(seq, id)` index that serves reads in commit order. */
+  ordering?: 'visible';
   /** The namespace's promoted columns: a promoted field indexes on its column, as the compiler filters on it. */
   promotedColumns?: PromotedBodyColumnMap;
 }
@@ -112,6 +136,12 @@ interface Spec {
   /** Key expressions, for the duplicate count. */
   keys: string[];
   predicate: string;
+  /** A derived index, whose natural-order key may change and still swap. */
+  derived?: true;
+  /** The keys a read can use, by field name (metadata columns by their read name), in order. */
+  order: Array<[string, 'asc' | 'desc']>;
+  /** A declared `where` beyond `live`: the read must `eq` each field to its value. */
+  only?: Record<string, boolean | null>;
 }
 
 export interface ReconcileOptions {
@@ -131,6 +161,21 @@ export interface ReconcileOptions {
    * leaves an INVALID index the next reconcile drops. The rest is skipped.
    */
   signal?: AbortSignal;
+  /** Checked before each non-unique build; a refusal leaves the index `pending` for the next pass. */
+  diskGuard?: DiskGuard;
+}
+
+/**
+ * The last failure logged per index, so a retry pass that fails the same way
+ * stays quiet. shortcut: keyed by index name across schemas, process-wide.
+ */
+const lastLogged = new Map<string, string>();
+
+/** Writes `text` unless `key` is what was last logged for index `name`. */
+function logChanged(name: string, key: string, text: string): void {
+  if (lastLogged.get(name) === key) return;
+  lastLogged.set(name, key);
+  process.stderr.write(text);
 }
 
 /** Pause after a non-unique build releases its table lock, so a polling waiter gets it. */
@@ -219,11 +264,12 @@ async function reconcileNonUnique(
           if (err instanceof IndexLockAborted) return out;
           // A non-unique index costs only speed, so a conflict fails it alone.
           if (!(err instanceof IndexDefinitionConflictError)) throw err;
-          process.stderr.write(`${err.message}\n`);
+          logChanged(spec.name, err.message, `${err.message}\n`);
           state = indexState(spec, 'failed', 'unchanged', conflictReason(err));
         }
         await abortableSleep(YIELD_MS, opts.signal);
       }
+      if (state.state === 'valid') lastLogged.delete(spec.name);
       opts.onState?.(state);
       out.push(state);
       if (opts.signal?.aborted === true) return out;
@@ -318,14 +364,15 @@ const STAT_NAME = /_[0-9a-f]{8}_stat$/;
 /** One per body-keyed key expression; a promoted column has column statistics already. */
 function desiredStatistics(
   args: ReconcileTypeIndexesArgs,
-  specs: Spec[]
+  specs: Array<Pick<Spec, 'fields' | 'keys'>>
 ): Array<{ name: string; expr: string }> {
   const promoted = args.promotedColumns ?? {};
   const byField = new Map<string, { name: string; expr: string }>();
   for (const spec of specs) {
     for (const [i, expr] of spec.keys.entries()) {
       const field = spec.fields[i] as string;
-      if (Object.hasOwn(promoted, field) || byField.has(field)) continue;
+      const plain = metadataColumn(field) !== undefined;
+      if (plain || Object.hasOwn(promoted, field) || byField.has(field)) continue;
       // The expression is in the name, so a changed one is a new object and the old one goes.
       const hash = createHash('sha256').update(expr).digest('hex').slice(0, 6);
       byField.set(field, {
@@ -372,12 +419,31 @@ async function reconcileStatistics(
       return false;
     }
   };
-  const desired = desiredStatistics(args, specs);
-  const wanted = new Set(desired.map((d) => d.name));
   let marked: Array<{ name: string; table: string }> = [];
-  if (!(await attempt('lookup', async () => (marked = await heldStatistics(conn, args))))) {
-    return out;
-  }
+  // Statistics follow every engine field index still held and valid, declared
+  // or left over (indexes are never dropped here), so estimates hold until it
+  // is removed. A hand-made index of the name, or a failed build, does not count.
+  const leftovers: Array<Pick<Spec, 'fields' | 'keys'>> = [];
+  const found = await attempt('lookup', async () => {
+    marked = await heldStatistics(conn, args);
+    const held = new Set(
+      (await indexesOn(conn, target))
+        .filter((i) => i.marked && i.valid && i.ready)
+        .map((i) => i.name)
+    );
+    for (const [field, def] of Object.entries(args.fields)) {
+      const isBtree = def.kind === 'crossRef' || (def.kind === 'scalar' && def.type !== 'json');
+      if (isBtree && held.has(generatedIdentifier(args.namespace, args.type, field, 'idx'))) {
+        leftovers.push({
+          fields: [field],
+          keys: [keyExpr(field, def, args.promotedColumns ?? {})]
+        });
+      }
+    }
+  });
+  if (!found) return out;
+  const desired = desiredStatistics(args, [...specs, ...leftovers]);
+  const wanted = new Set(desired.map((d) => d.name));
   const held: string[] = [];
   for (const { name, table } of marked) {
     if (wanted.has(name) && table === target) {
@@ -447,12 +513,15 @@ export interface CatalogIndex {
   name: string;
   valid: boolean;
   ready: boolean;
+  /** Marked as built or adopted by this reconciler. */
+  marked: boolean;
 }
 
 /** The indexes on `table` (current schema). */
 export async function indexesOn(sql: Sql, table: string): Promise<CatalogIndex[]> {
   return sql<CatalogIndex[]>`
-    SELECT c.relname AS name, i.indisvalid AS valid, i.indisready AS ready
+    SELECT c.relname AS name, i.indisvalid AS valid, i.indisready AS ready,
+           obj_description(i.indexrelid, 'pg_class') IS NOT DISTINCT FROM ${MARK} AS marked
     FROM pg_index i
     JOIN pg_class c ON c.oid = i.indexrelid
     JOIN pg_class t ON t.oid = i.indrelid
@@ -489,22 +558,180 @@ export function describeTypeIndexes(
   });
 }
 
-const fold = (s: string): string => s.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+/**
+ * Engine-owned indexes of the type (`held`: its indexes, by `belongsToType`)
+ * that its declaration no longer asks for. They are reported, never dropped:
+ * removing an index is the operator's call. Both layouts.
+ */
+export function undeclaredIndexes(args: ReconcileTypeIndexesArgs, held: HeldIndex[]): string[] {
+  const desired = new Set(desiredSpecs(args).map((s) => s.name));
+  return held
+    .filter((i) => isEngineOwned(i) && !desired.has(i.name))
+    .map((i) => i.name)
+    .sort();
+}
 
 /**
- * Engine-named indexes among `heldNames` (the indexes on the type's partition)
- * that its declaration no longer asks for. They are reported, never dropped:
- * removing an index is the operator's call. Partitioned layout only.
+ * The legacy migrations' shared per-type order indexes on `rows`
+ * (`0001_baseline`): `(namespace, type, created_at|updated_at DESC)`, live.
+ * Not the reconciler's, so never `remove` candidates, but they serve reads.
  */
-export function undeclaredIndexes(args: ReconcileTypeIndexesArgs, heldNames: string[]): string[] {
-  if (args.layout !== 'partitioned') return [];
-  const desired = new Set(desiredSpecs(args).map((s) => s.name));
-  const prefix = `rows_${fold(args.namespace)}_${fold(args.type)}_`;
-  return heldNames
-    .filter(
-      (n) => n.startsWith(prefix) && /_[0-9a-f]{8}_(idx|uniq|gin|base)$/.test(n) && !desired.has(n)
-    )
-    .sort();
+const LEGACY_SHARED_KEYS: ReadonlyArray<{ name: string; keys: Array<[string, 'asc' | 'desc']> }> = [
+  { name: 'rows_ns_type_created_at_idx', keys: [['createdAt', 'desc']] },
+  { name: 'rows_ns_type_updated_at_idx', keys: [['updatedAt', 'desc']] }
+];
+
+/**
+ * Each index that serves the type's reads, with the keys a read can use, in
+ * order: the reconciler's, and on legacy the migrations' shared order indexes.
+ */
+export function desiredIndexKeys(args: ReconcileTypeIndexesArgs): Array<{
+  name: string;
+  keys: Array<[string, 'asc' | 'desc']>;
+  unique: boolean;
+  only?: Record<string, boolean | null>;
+}> {
+  const own = desiredSpecs(args).map((s) => ({
+    name: s.name,
+    keys: s.order,
+    unique: s.unique,
+    ...(s.only !== undefined ? { only: s.only } : {})
+  }));
+  if (args.layout !== 'legacy') return own;
+  return [...own, ...LEGACY_SHARED_KEYS.map((k) => ({ ...k, unique: false }))];
+}
+
+/** An index on the table a type's rows live in, with its usage statistics. */
+export interface HeldIndex {
+  table: string;
+  name: string;
+  unique: boolean;
+  /** Carries the reconciler's comment marker. */
+  marked: boolean;
+  /** `pg_get_expr` of the predicate, or null for a full index. */
+  predicate: string | null;
+  /** The index's `pg_class.reltuples`: for a partial index, the rows under its predicate; -1 unknown. */
+  reltuples: number;
+  scans: number;
+  /** `pg_stat_user_indexes.last_idx_scan` (ISO), null when never scanned since the last reset. */
+  lastScanAt: string | null;
+  sizeBytes: number;
+}
+
+/** Every index on `tables` (current schema), with its scan count and size. */
+export async function heldIndexes(sql: Sql, tables: string[]): Promise<HeldIndex[]> {
+  return sql<HeldIndex[]>`
+    SELECT t.relname AS "table", c.relname AS name, i.indisunique AS "unique",
+           obj_description(i.indexrelid, 'pg_class') IS NOT DISTINCT FROM ${MARK} AS marked,
+           pg_get_expr(i.indpred, i.indrelid) AS predicate,
+           c.reltuples::float8 AS reltuples,
+           COALESCE(s.idx_scan, 0)::float8 AS scans,
+           to_char(s.last_idx_scan AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "lastScanAt",
+           pg_relation_size(i.indexrelid)::float8 AS "sizeBytes"
+    FROM pg_index i
+    JOIN pg_class c ON c.oid = i.indexrelid
+    JOIN pg_class t ON t.oid = i.indrelid
+    LEFT JOIN pg_stat_user_indexes s ON s.indexrelid = i.indexrelid
+    WHERE t.relnamespace = current_schema()::regnamespace AND t.relname = ANY(${tables})
+    ORDER BY c.relname`;
+}
+
+/** The name tail `generatedIdentifier` gives every engine index, whatever truncated its head. */
+const ENGINE_SUFFIX = /_[0-9a-f]{8}_(idx|uniq|gin|base)$/;
+
+/**
+ * Whether `index` belongs to `namespace`/`type`: on partitioned, it is on the
+ * type's own partition (`table`, resolved by bound); on legacy, it is on `rows`
+ * and its predicate opens with the type's exact namespace and type literals,
+ * as pg deparses the predicate the reconciler emits. Never by name prefix:
+ * names fold, so two types can share one, and a long one is truncated.
+ */
+export function belongsToType(
+  index: HeldIndex,
+  namespace: string,
+  type: string,
+  layout: StorageLayout,
+  table: string
+): boolean {
+  if (index.table !== table) return false;
+  if (layout === 'partitioned') return true;
+  // pg deparses a literal with quotes doubled and backslashes as-is
+  // (standard_conforming_strings on), whatever form it was written in.
+  const lit = (v: string): string => `'${v.replace(/'/g, "''")}'::text`;
+  const scope = `((namespace = ${lit(namespace)}) AND (type = ${lit(type)})`;
+  return (
+    index.predicate !== null &&
+    (index.predicate === `${scope})` || index.predicate.startsWith(`${scope} AND `))
+  );
+}
+
+const LITERAL = "'((?:[^']|'')*)'::text";
+const LIVE_SCOPE = new RegExp(
+  `^\\(\\(namespace = ${LITERAL}\\) AND \\(type = ${LITERAL}\\) AND \\(deleted_at IS NULL\\)\\)$`,
+  's'
+);
+
+const SCOPE = new RegExp(
+  `^\\(\\(namespace = ${LITERAL}\\) AND \\(type = ${LITERAL}\\)(?: AND |\\)$)`,
+  's'
+);
+
+/** The namespace and type a legacy index's predicate is scoped to, as `belongsToType` reads it. Else undefined. */
+export function legacyScope(
+  predicate: string | null
+): { namespace: string; type: string } | undefined {
+  const m = predicate === null ? null : SCOPE.exec(predicate);
+  if (m === null || m[1] === undefined || m[2] === undefined) return undefined;
+  return { namespace: m[1].replace(/''/g, "'"), type: m[2].replace(/''/g, "'") };
+}
+
+/**
+ * The namespace and type a legacy index's predicate is exactly the live scope
+ * of (`namespace = … AND type = … AND deleted_at IS NULL`, as pg deparses the
+ * reconciler's), so its row count is the type's live rows. Else undefined.
+ */
+export function legacyLiveScope(
+  predicate: string | null
+): { namespace: string; type: string } | undefined {
+  const m = predicate === null ? null : LIVE_SCOPE.exec(predicate);
+  if (m === null || m[1] === undefined || m[2] === undefined) return undefined;
+  return { namespace: m[1].replace(/''/g, "'"), type: m[2].replace(/''/g, "'") };
+}
+
+/** Built or adopted by the reconciler: its comment marker and an engine-generated name. */
+export const isEngineOwned = (index: HeldIndex): boolean =>
+  index.marked && ENGINE_SUFFIX.test(index.name);
+
+/**
+ * Every index of `namespace`/`type` (see `belongsToType`), each flagged
+ * whether the engine owns it. `[]` when the type has no partition yet.
+ */
+export async function typeIndexesOf(
+  sql: Sql,
+  namespace: string,
+  type: string,
+  layout: StorageLayout
+): Promise<Array<HeldIndex & { engineOwned: boolean }>> {
+  let table = 'rows';
+  if (layout === 'partitioned') {
+    const nsPart = await findPartition(sql, 'rows', namespace);
+    const part = nsPart === undefined ? undefined : await findPartition(sql, nsPart, type);
+    if (part === undefined) return [];
+    table = part;
+  }
+  return (await heldIndexes(sql, [table]))
+    .filter((i) => belongsToType(i, namespace, type, layout, table))
+    .map((i) => ({ ...i, engineOwned: isEngineOwned(i) }));
+}
+
+/** The engine-owned indexes of `namespace`/`type`, by `typeIndexesOf`'s rule. */
+export async function engineIndexesOf(
+  sql: Sql,
+  namespace: string,
+  type: string,
+  layout: StorageLayout
+): Promise<HeldIndex[]> {
+  return (await typeIndexesOf(sql, namespace, type, layout)).filter((i) => i.engineOwned);
 }
 
 async function targetTable(sql: Sql, args: ReconcileTypeIndexesArgs): Promise<string> {
@@ -519,11 +746,24 @@ async function targetTable(sql: Sql, args: ReconcileTypeIndexesArgs): Promise<st
   return part;
 }
 
+/** Metadata columns an index may key on, by the name reads use: plain columns, as natural order keys them. */
+const METADATA_COLUMNS: Readonly<Record<string, string>> = {
+  createdAt: 'created_at',
+  updatedAt: 'updated_at',
+  seq: 'seq'
+};
+
+// The metadata column shadows a body field of the same name, in orderBy and where alike.
+const metadataColumn = (field: string): string | undefined =>
+  Object.hasOwn(METADATA_COLUMNS, field) ? METADATA_COLUMNS[field] : undefined;
+
 function keyExpr(
   field: string,
   def: FieldDef | undefined,
   promoted: PromotedBodyColumnMap
 ): string {
+  const column = metadataColumn(field);
+  if (column !== undefined) return column;
   // A bare column name, validated by `resolvePromotedColumns` in `desiredSpecs`.
   // Text keys under "C", as the compiler compares promoted text in every operator.
   const meta = Object.hasOwn(promoted, field) ? promoted[field] : undefined;
@@ -551,7 +791,14 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
   const specs: Spec[] = [];
   // A non-unique btree ends with `id`, so it serves the `id` that ends every
   // ORDER BY as well as the filter. `withoutId` leaves it out, for name hashing.
-  const btree = (decl: IndexDecl, name: string, withoutId = false): Spec => {
+  // `natural` is a derived index's natural-order key, after the declared ones.
+  const btree = (
+    decl: IndexDecl,
+    name: string,
+    withoutId = false,
+    natural?: string,
+    naturalKey?: [string, 'asc' | 'desc']
+  ): Spec => {
     const cols = decl.fields.map((f) => (typeof f === 'string' ? { field: f, dir: 'asc' } : f));
     const keys = cols.map((c) => keyExpr(c.field, fields[c.field], promoted));
     let predicate = live;
@@ -583,6 +830,7 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
       }
     }
     const colSql = keys.map((k, i) => `(${k})${cols[i]?.dir === 'desc' ? ' DESC NULLS LAST' : ''}`);
+    if (natural !== undefined) colSql.push(natural);
     if (decl.unique !== true && !withoutId) colSql.push('id');
     return {
       name,
@@ -590,10 +838,39 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
       unique: decl.unique === true,
       tail: `USING btree (${colSql.join(', ')}) WHERE ${predicate}`,
       keys,
-      predicate
+      predicate,
+      ...(decl.where !== undefined && decl.where !== 'live' ? { only: { ...decl.where } } : {}),
+      order: [
+        ...cols.map((c): [string, 'asc' | 'desc'] => [c.field, c.dir === 'desc' ? 'desc' : 'asc']),
+        ...(naturalKey !== undefined ? [naturalKey] : [])
+      ]
     };
   };
 
+  // A derived btree is (field, natural key, id), so a filter on the field
+  // reads in natural order with no Sort; on the natural-order field itself it
+  // is (field DIR, id). Both layouts: on legacy it is partial on `rows`.
+  const [natField, natDir] = Object.entries(args.orderedBy)[0] ?? ['createdAt', 'desc'];
+  const natKey = metadataColumn(natField) ?? `(${keyExpr(natField, fields[natField], promoted)})`;
+  const natural = `${natKey}${natDir === 'desc' ? ' DESC NULLS LAST' : ''}`;
+  for (const [field, def] of Object.entries(fields)) {
+    const wanted =
+      def.kind === 'crossRef'
+        ? def.indexed !== false
+        : def.kind === 'scalar' && def.type !== 'json' && def.indexed === true;
+    if (!wanted) continue;
+    const own = field === natField;
+    specs.push({
+      ...btree(
+        { fields: [{ field, dir: own ? natDir : 'asc' }] },
+        generatedIdentifier(namespace, type, field, 'idx'),
+        false,
+        own ? undefined : natural,
+        own ? undefined : [natField, natDir]
+      ),
+      derived: true
+    });
+  }
   if (layout === 'partitioned') {
     for (const [field, def] of Object.entries(fields)) {
       if (def.kind === 'struct' || def.indexed !== true) continue;
@@ -604,32 +881,57 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
           unique: false,
           tail: `USING gin ((body -> ${sqlStringLiteral(field)}) jsonb_path_ops) WHERE ${live}`,
           keys: [],
-          predicate: live
+          predicate: live,
+          order: []
         });
-      } else {
-        // Dates are read newest first, which a backward scan of an ASC index
-        // cannot serve: it would put NULLs first, and orderBy puts them last.
-        const dir = def.kind === 'scalar' && def.type === 'date' ? 'desc' : 'asc';
-        specs.push(
-          btree({ fields: [{ field, dir }] }, generatedIdentifier(namespace, type, field, 'idx'))
-        );
       }
     }
-    const base = (column: string, tail: string): Spec => ({
+    const base = (column: string, tail: string, order: Spec['order'] = []): Spec => ({
       name: generatedIdentifier(namespace, type, column, 'base'),
       fields: [],
       unique: false,
       tail,
       keys: [],
-      predicate: live
+      predicate: live,
+      order
     });
     specs.push(
-      base('created_at', `USING btree (created_at DESC NULLS LAST, id) WHERE ${live}`),
-      base('updated_at', `USING btree (updated_at DESC NULLS LAST, id) WHERE ${live}`),
+      base('created_at', `USING btree (created_at DESC NULLS LAST, id) WHERE ${live}`, [
+        ['createdAt', 'desc']
+      ]),
+      base('updated_at', `USING btree (updated_at DESC NULLS LAST, id) WHERE ${live}`, [
+        ['updatedAt', 'desc']
+      ]),
       base('deleted_at', 'USING btree (deleted_at) WHERE deleted_at IS NOT NULL')
     );
   }
+  if (args.ordering === 'visible') {
+    specs.push({
+      name: generatedIdentifier(namespace, type, 'seq', 'base'),
+      fields: [],
+      unique: false,
+      tail: `USING btree (seq, id) WHERE ${live}`,
+      keys: [],
+      predicate: live,
+      order: [['seq', 'asc']]
+    });
+  }
   for (const decl of args.indexes) {
+    // An unnamed, plain one-field declaration on a crossRef is served by its
+    // derived index (a crossRef never sorts, so `(f, id)` would add nothing).
+    const only = decl.fields.length === 1 ? decl.fields[0] : undefined;
+    const onlyField =
+      typeof only === 'string' ? only : only?.dir === 'asc' ? only.field : undefined;
+    if (
+      decl.name === undefined &&
+      decl.unique !== true &&
+      (decl.where === undefined || decl.where === 'live') &&
+      onlyField !== undefined &&
+      fields[onlyField]?.kind === 'crossRef' &&
+      specs.some((s) => s.derived === true && s.fields[0] === onlyField)
+    ) {
+      continue;
+    }
     const keys = decl.fields.map((f) => (typeof f === 'string' ? f : f.field)).join('_');
     const suffix = decl.unique === true ? 'uniq' : 'idx';
     let name = decl.name ?? generatedIdentifier(namespace, type, keys, suffix);
@@ -783,7 +1085,6 @@ async function reconcileOne(
 ): Promise<IndexState> {
   const report = (state: IndexState['state'], outcome: IndexState['outcome']): IndexState =>
     indexState(spec, state, outcome);
-  const failed = (reason: string): IndexState => indexState(spec, 'failed', 'unchanged', reason);
   // Only a non-unique index's work is cancelled; a unique one must finish.
   const signal = spec.unique ? undefined : opts.signal;
   const swapName = swapNameFor(spec.name);
@@ -810,7 +1111,7 @@ async function reconcileOne(
   const existing = named ?? leftover;
   if (existing === undefined) {
     const built = await build(conn, args, target, spec, spec.name, opts);
-    if (built !== undefined) return failed(built);
+    if (built !== undefined) return built;
     await mark(conn, spec.name);
     return report(await stateOf(conn, spec.name), 'created');
   }
@@ -822,19 +1123,22 @@ async function reconcileOne(
   const fieldOf = new Map(
     Object.entries(args.promotedColumns ?? {}).map(([field, meta]) => [meta.column, field])
   );
-  const keyIdentity = (d: Described): string => {
+  const keyIdentity = (d: Described): string[] => {
     const keys = d.keyFields.map((k) => fieldOf.get(k) ?? k);
     if (!d.unique && keys.length > 1 && keys.at(-1) === 'id') keys.pop();
-    return keys.join('\n');
+    return keys;
   };
+  // A derived index is identified by its field alone, so a change of natural
+  // order (or the shape before it carried one) swaps rather than conflicting.
+  const have = keyIdentity(existing);
+  const want = keyIdentity(desired);
+  const n = spec.fields.length;
+  const sameKeys =
+    spec.derived === true
+      ? have.length <= n + 1 && have.slice(0, n).join('\n') === want.slice(0, n).join('\n')
+      : have.join('\n') === want.join('\n');
   // Swappable when only the expression text or the predicate differs.
-  if (
-    !(
-      existing.table === target &&
-      existing.unique === desired.unique &&
-      keyIdentity(existing) === keyIdentity(desired)
-    )
-  ) {
+  if (!(existing.table === target && existing.unique === desired.unique && sameKeys)) {
     throw new IndexDefinitionConflictError(
       spec.name,
       existing.def.replace(
@@ -850,7 +1154,7 @@ async function reconcileOne(
       await conn.unsafe(`ALTER INDEX ${swapName} RENAME TO ${spec.name}`);
     } else {
       const built = await build(conn, args, target, spec, spec.name, opts);
-      if (built !== undefined) return failed(built);
+      if (built !== undefined) return built;
       await dropConcurrently(conn, swapName, signal);
     }
     await mark(conn, spec.name);
@@ -873,7 +1177,7 @@ async function reconcileOne(
     // `named` keeps enforcing while the stale leftover goes.
     if (leftover !== undefined) await dropConcurrently(conn, swapName, signal);
     const built = await build(conn, args, target, spec, swapName, opts);
-    if (built !== undefined) return failed(built);
+    if (built !== undefined) return built;
   }
   // A successful CREATE INDEX CONCURRENTLY returns only once the index is
   // valid and ready, so the old one can go.
@@ -885,9 +1189,10 @@ async function reconcileOne(
 
 /**
  * Builds `spec` as `name` CONCURRENTLY, refusing a unique one over duplicate
- * live values. Returns the reason when a non-unique build fails or is
- * cancelled through `opts.signal`, which costs only a scan until the next
- * reconcile drops the INVALID leftover and retries it; a unique one throws.
+ * live values. Returns `failed` when a non-unique build fails or is cancelled
+ * through `opts.signal`, which costs only a scan until the next reconcile
+ * drops the INVALID leftover and retries it, and `pending` when the disk
+ * guard refuses it; a unique one throws.
  */
 async function build(
   conn: Sql,
@@ -896,8 +1201,21 @@ async function build(
   spec: Spec,
   name: string,
   opts: ReconcileOptions
-): Promise<string | undefined> {
+): Promise<IndexState | undefined> {
   if (spec.unique) await assertNoDuplicates(conn, args, target, spec);
+  if (!spec.unique && opts.diskGuard !== undefined) {
+    const need = await buildEstimate(conn, target, spec.name);
+    const verdict = await opts.diskGuard.check(need);
+    if (!verdict.ok) {
+      logChanged(
+        spec.name,
+        'insufficient_disk',
+        `index ${name} on ${target} was not built and will be retried: ${verdict.freeBytes} bytes free, ` +
+          `${verdict.needBytes} needed (estimate plus margin)\n`
+      );
+      return { ...indexState(spec, 'pending', 'unchanged'), reason: 'insufficient_disk' };
+    }
+  }
   opts.onBuild?.(spec.name);
   // No lock_timeout: CONCURRENTLY takes SHARE UPDATE EXCLUSIVE, which a
   // queued request holds against DDL and VACUUM only, never readers or
@@ -915,11 +1233,58 @@ async function build(
   } catch (err) {
     if (spec.unique) throw err;
     const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(
+    logChanged(
+      spec.name,
+      `build_failed: ${message}`,
       `index ${name} on ${target} failed to build and will be retried: ${message}\n`
     );
-    return `build_failed: ${message}`;
+    return indexState(spec, 'failed', 'unchanged', `build_failed: ${message}`);
   }
+}
+
+/**
+ * The type's non-unique indexes a reconcile would build or swap (not held
+ * exactly as declared), each with the disk guard's estimate for its build.
+ * Changes nothing; the type's storage must exist.
+ */
+export async function pendingIndexBuilds(
+  sql: Sql,
+  args: ReconcileTypeIndexesArgs
+): Promise<Array<{ name: string; estimateBytes: number }>> {
+  const specs = desiredSpecs(args).filter((s) => !s.unique);
+  if (specs.length === 0) return [];
+  const target = await targetTable(sql, args);
+  const conn = await sql.reserve();
+  try {
+    const desired = await deparse(conn, specs);
+    const out: Array<{ name: string; estimateBytes: number }> = [];
+    for (const [i, spec] of specs.entries()) {
+      if ((await heldAsDeclared(conn, target, spec, desired[i] as Described)) !== undefined) {
+        continue;
+      }
+      out.push({ name: spec.name, estimateBytes: await buildEstimate(conn, target, spec.name) });
+    }
+    return out;
+  } finally {
+    conn.release();
+  }
+}
+
+/**
+ * Bytes a build of index `name` on `target` may take: the index it replaces (under
+ * its name or as a `__swap` leftover), else 30% of the table.
+ * shortcut: on legacy the table is the shared `rows`, so a new index is
+ * estimated against every type's rows, pessimistic but safe; estimate from the
+ * type's own rows if that refuses builds a full disk could hold.
+ */
+async function buildEstimate(conn: Sql, target: string, name: string): Promise<number> {
+  const [row] = await conn<Array<{ n: string }>>`
+    SELECT COALESCE(
+      pg_relation_size(to_regclass(${name})),
+      pg_relation_size(to_regclass(${swapNameFor(name)})),
+      (pg_table_size(to_regclass(${ident(target)})) * 0.3)::bigint,
+      0)::text AS n`;
+  return Number(row?.n ?? 0);
 }
 
 /** Runs `text` on `conn`, cancelling it in flight when `signal` aborts. */

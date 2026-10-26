@@ -16,6 +16,32 @@ export interface Row {
   [field: string]: unknown;
 }
 
+/**
+ * A row as passed to `Dataset.write`. `id` may be omitted: the dataset then
+ * assigns a version-7 UUID and returns it in `WriteResult.ids`.
+ */
+export interface WriteRow {
+  id?: Id;
+  _deletedAt?: Date | null;
+  _metadata?: RowMetadata;
+  [field: string]: unknown;
+}
+
+/**
+ * Refuse an upsert batch that names one id twice: the datasets would
+ * otherwise disagree (pg cannot update a row twice in one statement).
+ */
+export function assertNoRepeatedIds(type: string, rows: readonly WriteRow[]): void {
+  const seen = new Set<string>();
+  for (const { id } of rows) {
+    if (id == null) continue;
+    const key = String(id);
+    if (seen.has(key))
+      throw new Error(`write: id '${key}' appears twice in one batch (type='${type}')`);
+    seen.add(key);
+  }
+}
+
 export type IdentityKind = 'agent' | 'user' | 'system';
 
 /**
@@ -32,6 +58,11 @@ export interface RowMetadata {
   readonly updatedAt: string | null;
   readonly createdBy: ActorIdentity | null;
   readonly updatedBy: ActorIdentity | null;
+  /**
+   * The row's place in its type's commit order, on a type declared
+   * `ordering: 'visible'`; absent on every other type. Assigned on insert only.
+   */
+  readonly seq?: number;
 }
 
 export const CLIENT_SUPPLIED_SERVER_FIELD = 'client_supplied_server_field' as const;

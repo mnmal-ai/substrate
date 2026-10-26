@@ -7,11 +7,17 @@
  * substrate plugin migration.
  */
 
+import { statfs as fsStatfs } from 'node:fs/promises';
 import { type ComposeOpts, SYSTEM_NAMESPACE } from '@mnmal-ai/substrate-compose';
 import type { MemoryBridgeRegistry } from '@mnmal-ai/substrate-core';
 import { MemoryIdempotencyStore } from '@mnmal-ai/substrate-core';
-import type { FieldDefLookup, PgEdgesStore, TypeDefLookup } from '@mnmal-ai/substrate-dataset-pg';
-import { PgIdempotencyStore } from '@mnmal-ai/substrate-dataset-pg';
+import type {
+  DiskGuard,
+  FieldDefLookup,
+  PgEdgesStore,
+  TypeDefLookup
+} from '@mnmal-ai/substrate-dataset-pg';
+import { makeDiskGuard, PgIdempotencyStore } from '@mnmal-ai/substrate-dataset-pg';
 import {
   loadConfig as loadSentinelClientConfig,
   type SentinelClientConfig
@@ -25,8 +31,7 @@ import type {
   SubstrateServer
 } from '@mnmal-ai/substrate-types';
 import type { Sql } from 'postgres';
-import type { ParsedConfig } from './config.js';
-import { readPackageVersion } from './config.js';
+import { EnvConfigError, type ParsedConfig, readPackageVersion } from './config.js';
 import { buildBridgeRegistry, buildPluginDatasetMap, ensureMigrationsTable } from './wiring.js';
 
 export interface ComposedOpts {
@@ -41,6 +46,32 @@ export interface ComposedOpts {
   disposeBridges: () => void;
 }
 
+/**
+ * The free-disk check every pg dataset runs before a background index build,
+ * or none when `SUBSTRATE_INDEX_DISK_PATH=off`. A configured path is statted
+ * once here, so a typo fails the boot rather than every build.
+ */
+export async function indexDiskGuard(
+  config: Pick<ParsedConfig, 'indexDiskPath' | 'indexDiskMarginMb'>,
+  statfs: (p: string) => Promise<unknown> = (p) => fsStatfs(p)
+): Promise<DiskGuard | undefined> {
+  const path = config.indexDiskPath;
+  if (path === 'off') return undefined;
+  if (path !== null) {
+    try {
+      await statfs(path);
+    } catch (err) {
+      throw new EnvConfigError(
+        `SUBSTRATE_INDEX_DISK_PATH: ${path} is not readable: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+  return makeDiskGuard({
+    ...(path !== null ? { path } : {}),
+    marginBytes: config.indexDiskMarginMb * 1024 * 1024
+  });
+}
+
 export async function buildComposeOpts(args: {
   config: ParsedConfig;
   server: SubstrateServer;
@@ -52,6 +83,7 @@ export async function buildComposeOpts(args: {
   fieldDefLookupFor: (namespace: string) => FieldDefLookup;
   typeDefLookup: TypeDefLookup;
   kernel: KernelPlugin[];
+  diskGuard?: DiskGuard | undefined;
 }): Promise<ComposedOpts> {
   const {
     config,
@@ -63,7 +95,8 @@ export async function buildComposeOpts(args: {
     substrateNamespaceDataset,
     fieldDefLookupFor,
     typeDefLookup,
-    kernel
+    kernel,
+    diskGuard
   } = args;
 
   const composeOpts: ComposeOpts = {
@@ -74,7 +107,12 @@ export async function buildComposeOpts(args: {
     pageLimits: config.pageLimits,
     subscriptions: { snapshotLimit: config.snapshotLimit },
     // Mounts the admin-gated `GET /substrate/v1/config`.
-    configReport: config.knobs
+    configReport: config.knobs,
+    advisor: {
+      intervalMs: config.advisorIntervalMs,
+      ...(config.storeProfile !== null ? { storeProfile: config.storeProfile } : {}),
+      writeHeavy: config.storeWriteHeavy
+    }
   };
   if (dataset.storageReport !== undefined) {
     const report = dataset.storageReport.bind(dataset);
@@ -88,7 +126,8 @@ export async function buildComposeOpts(args: {
       storeSql,
       storeSql !== null ? (edges as PgEdgesStore) : null,
       fieldDefLookupFor,
-      typeDefLookup
+      typeDefLookup,
+      diskGuard
     );
   }
   // When pg-backed, thread the `_system` namespace dataset into compose so

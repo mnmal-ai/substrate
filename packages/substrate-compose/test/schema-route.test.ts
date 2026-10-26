@@ -448,6 +448,7 @@ describe('the metadata filter names are published beside the operators', () => {
         'createdById',
         'createdByKind',
         'id',
+        'seq',
         'updatedAt',
         'updatedById',
         'updatedByKind'

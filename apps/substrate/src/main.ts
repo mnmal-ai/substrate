@@ -68,7 +68,7 @@ import { FastifySubstrateServer } from '@mnmal-ai/substrate-server-fastify';
 import type { NamespaceDefinition } from '@mnmal-ai/substrate-types';
 import { startBackground } from './serve/background.js';
 import { reportBoot } from './serve/boot-report.js';
-import { buildComposeOpts } from './serve/compose-opts.js';
+import { buildComposeOpts, indexDiskGuard } from './serve/compose-opts.js';
 import {
   BINARY_CONTRACT_VERSION,
   type BridgeSpec,
@@ -87,13 +87,14 @@ import { installShutdown } from './serve/shutdown.js';
 import { buildRecallStores } from './serve/stores.js';
 import {
   buildBridgeRegistry,
-  buildDeferredIndexes,
   buildPluginDatasetMap,
   extractIndexedListFields,
   makeFieldDefLookupFactory,
   makeTypeDefLookupFactory,
   reconcileRegisteredStorage,
   redactStoreSpec,
+  reportUnguardedIndexBuilds,
+  runDeferredIndexBuilds,
   wireStore
 } from './serve/wiring.js';
 
@@ -134,6 +135,7 @@ export async function runServe(): Promise<void> {
   const nsDefs = new Map<string, NamespaceDefinition>();
   const fieldDefLookupFor = makeFieldDefLookupFactory(nsDefs);
 
+  const diskGuard = await indexDiskGuard(config);
   const refs = createLateRefs(config.auth);
   // Types no definition declares resolve from the engine's registry once it exists.
   const typeDefLookupFor = makeTypeDefLookupFactory(nsDefs, (ns) =>
@@ -146,7 +148,7 @@ export async function runServe(): Promise<void> {
     substrateNamespaceDataset,
     sql: storeSql,
     close: closeStore
-  } = await wireStore(config.storeSpec, fieldDefLookupFor, typeDefLookupFor);
+  } = await wireStore(config.storeSpec, fieldDefLookupFor, typeDefLookupFor, diskGuard);
 
   const pluginDir = resolvePluginDir();
   const { datasetRegistryRef, resolveDataset, engineRef, checkReadPolicy, checkWritePolicy } = refs;
@@ -201,7 +203,8 @@ export async function runServe(): Promise<void> {
       substrateNamespaceDataset,
       fieldDefLookupFor,
       typeDefLookup: typeDefLookupFor(DEFAULT_NAMESPACE),
-      kernel
+      kernel,
+      diskGuard
     });
 
   await composeKernelPhase({
@@ -230,10 +233,16 @@ export async function runServe(): Promise<void> {
   // Types compose registered (`_system`, install-time, replayed proposals),
   // after the engine ref is set so their fields resolve from its registry.
   await reconcileRegisteredStorage(engine, composedDatasets, nsDefs);
+  if (config.indexDiskPath === null) await reportUnguardedIndexBuilds(engine, composedDatasets);
 
   const info = await server.start({ host: config.host, port: config.port });
   const indexBuilds = new AbortController();
-  const deferredIndexes = buildDeferredIndexes(engine, composedDatasets, indexBuilds.signal);
+  const deferredIndexes = runDeferredIndexBuilds(
+    engine,
+    composedDatasets,
+    config.indexRetryIntervalMs,
+    indexBuilds.signal
+  );
   if (scheduler !== null) scheduler.start();
   reportBoot({
     config,

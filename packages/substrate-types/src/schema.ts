@@ -20,6 +20,13 @@ export interface FieldDefScalar {
    * inner keys, use `field.struct` instead.
    */
   type: 'string' | 'number' | 'boolean' | 'date' | 'json';
+  /**
+   * Tri-state. `true` builds an index (a btree; a GIN for json). Unset means
+   * no index. `false` means no index AND not a search handle: long-form
+   * prose that NL and similar consumers leave out. The field filters either
+   * way. Physical consumers test `=== true`, so never normalise unset to
+   * `false`.
+   */
   indexed?: boolean;
   /** Metadata: when true, consumers SHOULD expect `null` as a legitimate value. */
   nullable?: boolean;
@@ -145,11 +152,10 @@ export interface FieldDefList {
   kind: 'list';
   of: FieldDef;
   /**
-   * When true, the field is server-side filterable via the `has` (element
-   * membership) operator without `_allowTableScan`, and is backed by a GIN
+   * When true, the `has` (element membership) operator is backed by a GIN
    * index on `(body -> '<field>')`. List fields are stored as native JSONB
-   * arrays. Default false — an unindexed list field rejects `has` unless the
-   * caller opts into a table scan. The substrate binary derives the matching GIN
+   * arrays. Default false — `has` on an unindexed list still works, by
+   * scanning the type's rows. The substrate binary derives the matching GIN
    * as an idempotent migration at boot from this flag; no hand-authored
    * migration is needed per field.
    */
@@ -167,6 +173,22 @@ export type FieldDef = FieldDefScalar | FieldDefCrossRef | FieldDefStruct | Fiel
  */
 export interface TypeSchema {
   fields: Record<string, FieldDef>;
+  /** The type's natural order; absent means {@link DEFAULT_ORDERED_BY}. */
+  orderedBy?: OrderedBy;
+}
+
+/**
+ * A type's natural order: exactly one `{ field: direction }` key, the order a
+ * read with no `orderBy` returns. The datasets still append `id` as the tie-break.
+ */
+export type OrderedBy = Record<string, 'asc' | 'desc'>;
+
+/** Natural order of a type that declares none: newest first. */
+export const DEFAULT_ORDERED_BY: OrderedBy = Object.freeze<OrderedBy>({ createdAt: 'desc' });
+
+/** The declared natural order, or {@link DEFAULT_ORDERED_BY}. */
+export function naturalOrderOf(schema: Pick<TypeSchema, 'orderedBy'>): OrderedBy {
+  return schema.orderedBy ?? DEFAULT_ORDERED_BY;
 }
 
 /**
@@ -266,8 +288,8 @@ export interface PackEnvelope {
        * The where-clause reached the substrate without being schema-validated,
        * because the type is registered but absent from its namespace's
        * published schema (e.g. runtime-created types). The result is still
-       * correct — substrates refuse a predicate they cannot honour — but an
-       * unindexed filter scans instead of rejecting.
+       * correct — substrates refuse a predicate they cannot honour — but the
+       * engine's operator and operand check did not run.
        */
       filterValidationSkipped?: string;
     }

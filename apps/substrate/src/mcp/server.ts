@@ -317,16 +317,19 @@ export interface ProposeTypeArgs {
   typeName: string;
   fields: Record<string, unknown>;
   proposedReason: string;
+  orderedBy?: Record<string, 'asc' | 'desc'>;
+  indexes?: Record<string, unknown>[];
+  expectedSize?: 'small' | 'large';
 }
 
 export function createProposeTypeHandler(
   endpoint: string
 ): (args: ProposeTypeArgs) => Promise<ToolResult> {
-  return async ({ namespace, typeName, fields, proposedReason }) => {
+  return async ({ namespace, ...params }) => {
     try {
       const payload = {
         [`${namespace}/propose_type`]: {
-          params: { typeName, fields, proposedReason },
+          params,
           fields: { id: true, typeName: true, applied: true, appliedAt: true }
         }
       };
@@ -359,6 +362,37 @@ export function createProposeFieldHandler(
       };
       const envelope = await postSubstrate(endpoint, '/substrate/v1/mutate', payload);
       return okResult(envelope);
+    } catch (err) {
+      return errorResult(toMessage(err));
+    }
+  };
+}
+
+export interface ProposeIndexArgs {
+  namespace: string;
+  type: string;
+  action: 'add' | 'remove' | 'dismiss' | 'orderedBy';
+  reason: string;
+  recommendationId?: string | undefined;
+  declaration?: Record<string, unknown> | undefined;
+  orderedBy?: Record<string, 'asc' | 'desc'> | undefined;
+  indexName?: string | undefined;
+}
+
+/** `propose_index` lives on the proposals control plane; `namespace` names the target. */
+export function createProposeIndexHandler(
+  endpoint: string
+): (args: ProposeIndexArgs) => Promise<ToolResult> {
+  return async (args) => {
+    try {
+      const params = Object.fromEntries(Object.entries(args).filter(([, v]) => v !== undefined));
+      const payload = {
+        '_system_proposals/propose_index': {
+          params,
+          fields: { id: true, action: true, namespace: true, type: true, indexName: true }
+        }
+      };
+      return okResult(await postSubstrate(endpoint, '/substrate/v1/mutate', payload));
     } catch (err) {
       return errorResult(toMessage(err));
     }
@@ -578,7 +612,24 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
           proposedReason: z
             .string()
             .min(1)
-            .describe('Short human-readable justification. Why is this type being added?')
+            .describe('Short human-readable justification. Why is this type being added?'),
+          orderedBy: z
+            .record(z.string(), z.enum(['asc', 'desc']))
+            .optional()
+            .describe(
+              'What order do you usually read this in? { "<field>": "asc" | "desc" } over a ' +
+                'date or number field, or createdAt / updatedAt. Omit for newest first.'
+            ),
+          indexes: z
+            .array(z.record(z.string(), z.unknown()))
+            .optional()
+            .describe(
+              'Indexes the reads will need: [{ "fields": ["brand"] }]. Never unique or named.'
+            ),
+          expectedSize: z
+            .enum(['small', 'large'])
+            .optional()
+            .describe('"large" if the type will hold many rows, so indexes are advised sooner.')
         }
       },
       handler: createProposeTypeHandler(endpoint)
@@ -613,6 +664,48 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
         }
       },
       handler: createProposeFieldHandler(endpoint)
+    },
+    {
+      name: 'propose_index',
+      config: {
+        description:
+          'Apply or dismiss an index recommendation (query `_system/IndexRecommendation`), ' +
+          'or change indexes directly. `add` / `orderedBy` work on proposed types only ' +
+          '(`index_on_code_defined_type` otherwise); `remove` drops an engine-owned, ' +
+          'non-unique index the engine no longer wants, on any type (`not_engine_owned`, ' +
+          '`unique_index`, `still_desired`, `unknown_index`). A referenced recommendation ' +
+          'moves to accepted or dismissed; a closed one is refused (`recommendation_closed`), ' +
+          'one whose evidence no longer holds is superseded (`recommendation_stale`). ' +
+          'Requires the `substrate.index` capability in the target namespace.',
+        inputSchema: {
+          namespace: z.string().min(1).describe('Namespace of the type whose indexes change.'),
+          type: z.string().min(1).describe('Type name, e.g. "Sneaker".'),
+          action: z.enum(['add', 'remove', 'dismiss', 'orderedBy']),
+          reason: z.string().min(1).describe('Short human-readable justification.'),
+          recommendationId: z
+            .string()
+            .min(1)
+            .optional()
+            .describe('The IndexRecommendation row id; required for dismiss.'),
+          declaration: z
+            .record(z.string(), z.unknown())
+            .optional()
+            .describe(
+              'add: an index declaration, e.g. { "fields": ["brand", { "field": "size", "dir": "desc" }] }. ' +
+                "Defaults to the recommendation's."
+            ),
+          orderedBy: z
+            .record(z.string(), z.enum(['asc', 'desc']))
+            .optional()
+            .describe('orderedBy: the natural order, one key, e.g. { "releasedAt": "desc" }.'),
+          indexName: z
+            .string()
+            .min(1)
+            .optional()
+            .describe("remove: the index to drop. Defaults to the recommendation's.")
+        }
+      },
+      handler: createProposeIndexHandler(endpoint)
     },
     {
       name: 'drop_namespace',

@@ -29,13 +29,14 @@
  * the client deserves a dedicated code to branch on.
  */
 
-import { randomUUID } from 'node:crypto';
 import { ResolverFrameError } from '@mnmal-ai/substrate-core';
 import {
   and,
   decodeList,
+  denyVerbs,
   grantEntryError,
   isActiveAdminKeyRow,
+  or,
   requireCapability,
   requireNamespace
 } from '@mnmal-ai/substrate-policy';
@@ -48,23 +49,35 @@ import type {
   Registry,
   RequestContext,
   ResolverArgs,
-  Row
+  Row,
+  WriteRow
 } from '@mnmal-ai/substrate-types';
 import { createKeyedMutex } from '@mnmal-ai/substrate-types';
+import type { StoreProfileName } from '../advisor/profiles.js';
 import { type CreateKeyRegistryOptions, createKeyRegistry, type KeyRegistry } from './registry.js';
 import {
+  ADVISOR_STATE_FIELDS,
+  ADVISOR_STATE_TYPE,
   AUDIT_EVENT_FIELDS,
   AUDIT_EVENT_TYPE,
   type AuditEventKind,
   ENUM_VERDICT_FIELDS,
   ENUM_VERDICT_TYPE,
+  INDEX_RECOMMENDATION_FIELDS,
+  INDEX_RECOMMENDATION_TYPE,
   INVITE_FIELDS,
   INVITE_TYPE,
   KEY_ALGORITHMS,
   KEY_FIELDS,
   KEY_TYPE,
+  STORE_PROFILE_FIELDS,
+  STORE_PROFILE_ID,
+  STORE_PROFILE_TYPE,
   SYSTEM_NAMESPACE
 } from './types.js';
+
+/** The capability that changes indexes: the store profile and index recommendations. */
+export const INDEX_CAPABILITY = 'substrate.index';
 
 /** Advisory-lock key held by key writes that can remove an admin. */
 const KEY_WRITE_LOCK = 'substrate-system:key-write';
@@ -88,6 +101,8 @@ export interface InstallSystemNamespaceOptions {
    * Omit / non-positive → disabled.
    */
   reprimeIntervalMs?: number;
+  /** Seeds the `StoreProfile` row when it does not exist yet. Default `personal`. */
+  storeProfile?: StoreProfileName;
 }
 
 export interface InstalledSystemNamespace {
@@ -224,11 +239,10 @@ export interface AuditEmitInput {
 /**
  * Build the AuditEvent row. Shared between the interceptor emits (which
  * write via `args.dataset` to stay in-tx) and the route emits (which write via
- * the ambient dataset post-tx). `id` is a random UUID.
+ * the ambient dataset post-tx). The dataset assigns the `id`.
  */
-export function buildAuditRow(input: AuditEmitInput): Row {
-  const row: Row = {
-    id: randomUUID(),
+export function buildAuditRow(input: AuditEmitInput): WriteRow {
+  const row: WriteRow = {
     ts: input.now.toISOString(),
     actorKid: input.actorKid,
     kind: input.kind,
@@ -690,6 +704,50 @@ export async function installSystemNamespace(
     purgeable: true,
     adminCapability
   });
+
+  // --- StoreProfile, IndexRecommendation ---
+  //
+  // Read and changed by an admin, or by a holder of `substrate.index` on
+  // `_system` (the operator or a designated reviewing agent). The advisor
+  // writes recommendations through the dataset, not through these verbs.
+  const indexGate: Policy = or(
+    adminGate,
+    and(requireCapability(INDEX_CAPABILITY), requireNamespace(SYSTEM_NAMESPACE))
+  );
+  installAutoCrud(opts.registry, STORE_PROFILE_TYPE, opts.dataset, opts.edges, {
+    fields: mergeIdField(STORE_PROFILE_FIELDS),
+    policy: indexGate,
+    adminCapability
+  });
+  installAutoCrud(opts.registry, INDEX_RECOMMENDATION_TYPE, opts.dataset, opts.edges, {
+    fields: mergeIdField(INDEX_RECOMMENDATION_FIELDS),
+    policy: indexGate,
+    purgeable: true,
+    adminCapability
+  });
+  // Admins read the advisor's baseline; every write verb is refused for
+  // everyone, so evidence behind a `remove` cannot be backdated by a caller.
+  installAutoCrud(opts.registry, ADVISOR_STATE_TYPE, opts.dataset, opts.edges, {
+    fields: mergeIdField(ADVISOR_STATE_FIELDS),
+    policy: and(
+      adminGate,
+      denyVerbs(['create', 'update', 'delete'], 'AdvisorState is written by the index advisor only')
+    ),
+    adminCapability
+  });
+  // Seeded once: a profile changed live outlives the env var on restart.
+  await opts.dataset.write(
+    STORE_PROFILE_TYPE,
+    [
+      {
+        id: STORE_PROFILE_ID,
+        profile: opts.storeProfile ?? 'personal',
+        updatedReason:
+          opts.storeProfile === undefined ? 'default' : 'seeded from SUBSTRATE_STORE_PROFILE'
+      }
+    ],
+    { insertOnly: true, identity: { kind: 'system', id: 'bootstrap' } }
+  );
 
   // §5.12 bootstrap audit — idempotent across restarts. See
   // `backfillBootstrapAuditIfNeeded` for the ruleset. Fires after autoCRUD is

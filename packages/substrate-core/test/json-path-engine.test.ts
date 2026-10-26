@@ -78,7 +78,7 @@ describe('json path predicates through the engine', () => {
     expect(frames.some((f) => f.kind === 'error')).toBe(false);
   });
 
-  it('a scanning operator without _allowTableScan is refused at subscribe time, naming the operator', async () => {
+  it('a scanning operator without _allowTableScan is accepted at subscribe time', async () => {
     const engine = setup();
     const frames: WsResponseFrame[] = [];
     await engine.subscribe({
@@ -92,10 +92,8 @@ describe('json path predicates through the engine', () => {
       ctx: ctx(),
       onFrame: (f) => void frames.push(f)
     });
-    const err = frames.find((f) => f.kind === 'error') as {
-      errors: Array<{ code: string; message: string }>;
-    };
-    expect(err.errors[0]?.code).toBe('unindexed_field');
-    expect(err.errors[0]?.message).toContain("'gt'");
+    await settled(frames, (f) => f.some((x) => x.kind === 'snapshot' || x.kind === 'error'));
+    expect(frames.some((f) => f.kind === 'error')).toBe(false);
+    expect(frames.some((f) => f.kind === 'snapshot')).toBe(true);
   });
 });

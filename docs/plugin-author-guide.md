@@ -621,17 +621,88 @@ swapping it to the right definition.
 
 ### Indexes
 
-On the partitioned layout the engine indexes every field whose `indexed` is
-`true` (the default for most builders, see below), plus `created_at`,
-`updated_at` and tombstones. Add `indexes` on a type for what a single field
-cannot serve: composites and unique constraints.
+Start with no indexes and no ordering choices. The model case: someone tells
+an agent "track my sneaker collection: brand, model, year bought, colour, a
+rating, and let me search on any of them."
 
 ```ts
-Listing: {
-  fields: { cert: field.string(), observedAt: field.date(), sku: field.string() },
+Sneaker: {
+  fields: {
+    brand: field.string(),
+    model: field.string(),
+    yearBought: field.number(),
+    colour: field.string(),
+    rating: field.number()
+  }
+}
+```
+
+That is the whole definition. Filtering and sorting work on every one of
+those fields, and nothing refuses a query because a field has no index: a
+filter or sort on a field nothing serves scans, and gets slower as the type
+grows, but it never fails. (`unindexed_field` is no longer raised, and the
+`_allowTableScan` param is accepted and ignored.) Indexes arrive when the data
+and the reads call for them, and substrate tells you which.
+
+**What is automatic.**
+
+- A natural order for every type (below).
+- An index on every `crossRef`, keyed `(ref, natural order, id)`, built from
+  the first boot whatever the table's size, so "the children of this parent"
+  and edge walks stay fast as a child type balloons. `indexed: false` on the
+  crossRef opts out.
+- On the partitioned layout, indexes on `created_at`, `updated_at` and
+  tombstones.
+
+Nothing else is indexed until you ask. A scalar left unset gets no index;
+`indexed: true` builds `(field, natural order, id)`; `indexed: false` also
+builds none, and marks the field as not a search handle, so NL leaves it out.
+Long-form fields (`body`, `summary`, `notes`) are best left unset.
+
+#### Natural order
+
+Every type has a natural order: what a read returns when it gives no
+`orderBy`. Declare it with `orderedBy`, exactly one key, ascending or
+descending:
+
+```ts
+Sneaker: { fields: { /* … */ }, orderedBy: { yearBought: 'desc' } }
+```
+
+- The key is a declared date or number field, or a metadata column
+  (`createdAt`, `updatedAt`, and `seq` on a visible-order type).
+- Undeclared, it is `{ createdAt: 'desc' }`: newest first. `id` is always the
+  final tie-breaker. **This is the default read order**, for a query, a
+  subscription's snapshot and a stream alike. Before this release
+  it was `id` ascending, which over random ids meant nothing; pass `orderBy`
+  to get any other order. An explicit `orderBy` is unaffected.
+- `updatedAt` is mutable, so with `orderedBy: { updatedAt: … }` a row that is
+  updated moves, and can move between pages while you page. `createdAt` and a
+  field you never change do not move.
+- A cursor carries the order it was issued under. One issued before the
+  upgrade, or under a different order, is refused with `invalid_cursor`; start
+  the read again.
+- Changing `orderedBy` swaps the type's derived indexes in the background at
+  the next boot.
+
+A type proposed at runtime takes the same options on `propose_type`:
+`orderedBy`, `indexes` and `expectedSize`. Creating a type, with its order and
+indexes, needs only `substrate.propose`.
+
+#### Declared indexes
+
+Add `indexes` on a type for what a single field cannot serve: composites and
+unique constraints. A declared composite with no `where` of its own, led by a
+field, already serves filters on that field alone, so the field needs no
+`indexed: true`. A composite with its own `where` serves the field only for
+queries that imply that predicate.
+
+```ts
+Sneaker: {
+  fields: { /* … */ },
   indexes: [
-    { fields: ['cert', { field: 'observedAt', dir: 'desc' }] },
-    { fields: ['sku'], unique: true, where: 'live', name: 'listing_sku_uniq' }
+    { fields: ['brand', { field: 'yearBought', dir: 'desc' }] },
+    { fields: ['sku'], unique: true, where: 'live', name: 'sneaker_sku_uniq' }
   ]
 }
 ```
@@ -652,43 +723,223 @@ Listing: {
   in key fields or uniqueness is refused with `index_definition_conflict`.
   Two declarations resolving to one name with different definitions fail the
   same way.
+- `expectedSize: 'small' | 'large'` on the type: `large` lets the advisor
+  recommend for it from a lower row count (below).
 
 The engine reconciles at boot, building concurrently. Unique indexes are
 built before the server starts, and the boot fails if one cannot be built.
 Non-unique indexes build in the background once the server is serving, one
 type at a time. Until one is valid, filters it would serve scan, and doctor
-reports it `pending`, `building` or `failed`; a failed build is retried at
-the next boot. A removed declaration leaves its index in place.
+reports it `pending`, `building` or `failed`; a failed or pending build is
+retried every `SUBSTRATE_INDEX_RETRY_INTERVAL_MS` (default 600000; `0` leaves
+it to the next boot). A removed declaration leaves its index in place.
 
 **What serves a query.**
 
 - Every non-unique btree ends in `id` ascending, so a filter plus the default
   page order is one index range. Unique indexes do not get the `id`.
-- Implicit date indexes are newest-first (`DESC NULLS LAST`). An oldest-first
-  sort on a date is not index-served unless you declare an ASC index.
+- A field's own index is `(field, natural order, id)`, so a filter on it reads
+  in the type's natural order with no sort. On the natural-order field itself
+  it is `(field, id)` in that direction.
 - Filtering on one field and sorting by another needs a composite, e.g.
-  `(cert, observedAt desc)`. A range on one field with a sort by another is
-  the known trade-off: no single index serves both, and the planner picks one
-  side.
+  `(brand, yearBought desc)`.
 - Keyset paging (the `cursor`) is index-served for `id` and for a sort key
   that may be null: a range bound first, then the null tail. Page cost stays
   flat with depth.
 
+**The range-plus-sort trade-off.** A range on one field sorted by another
+(`yearBought > 2015`, newest `rating` first) has no single btree that serves
+both. An equality on A then a sort by B is one composite `(A, B)`. A range on
+A is served by A's index, and then the rows must be sorted; or the planner
+walks an index in B order and discards rows that miss the range. Which it
+chooses depends on how much of the type the range keeps: a narrow range
+scans A's index and sorts the few rows, a wide one walks B's order and
+stops early once the page is full. Neither is wrong, and substrate does not
+try to out-plan Postgres. If the slow one is your hot read, index for it
+(`(B)` for a wide range with a small page, `(A)` for a narrow one) or
+turn the range into an equality.
+
 **What it costs.**
 
-- Each index adds write cost. Index the fields you filter on, not every field;
-  set `indexed: false` on the rest.
+- Each index adds write cost. Set `indexed: true` only on the fields your
+  hot reads filter on; the rest scan until the advisor says otherwise.
 - The reconciler also owns one `CREATE STATISTICS` per indexed body
   expression, and runs `ANALYZE` once when it creates one, because the planner
   needs it for row estimates on body-field filters.
-- The first boot after a release that changes an index's shape rebuilds
-  each affected non-unique index concurrently, in the background after the
-  server starts. Each rebuild briefly needs twice that index's disk, and
-  filters it serves scan until it is done. On a test host this took about
-  6.4 minutes for 25M rows across 19 indexes.
 
-On the legacy layout only declared `indexes` are built, as partial indexes
-scoped to the type.
+On the legacy layout field and declared indexes are built as partial indexes
+on `rows` scoped to the type; the per-type timestamp and tombstone indexes are
+partitioned-only.
+
+#### Recommendations and `propose_index`
+
+The engine records the shape of every read (type, filter fields, order) with
+its duration, and samples each type's size, write rate and index scan counts
+from Postgres. In the served binary an advisor reads them every ten minutes
+(`SUBSTRATE_ADVISOR_INTERVAL_MS`; `0` turns it off) and writes
+`_system/IndexRecommendation` rows. It builds and drops nothing.
+
+- `add`: a filter-and-order shape read often enough to count (a few dozen
+  reads in a window), with a p95 at or over the profile's slow threshold, on
+  a type with enough live rows, and no index the type has serves it. The row's
+  `declarationJson` is the exact `indexes` entry.
+- `remove`: an index the engine owns and no longer wants (a former default, a
+  retracted declaration) with no scans over the profile's window, on a type
+  with real write volume. Unique indexes and indexes the engine does not own
+  are never recommended.
+- Each row carries its `evidenceJson` (read count, p95, live rows, write
+  rate, window) and an `estimatedWriteCost`. There is one row per action and
+  shape (or index), refreshed while `open`. Its `state` is `open`,
+  `accepted`, `dismissed` or `superseded`. Doctor shows the open count as an
+  info line; it never fails the check.
+
+A signed `propose_index` (`_system_proposals/propose_index`, with
+`params.namespace` naming the type's namespace) is the approval. It needs the
+`substrate.index` grant in that namespace, which is separate from
+`substrate.propose`, and it takes effect on the call: there is no pending
+state. `action` is one of:
+
+| `action` | Effect |
+|---|---|
+| `add` | Appends `declaration` (default: the recommendation's) to a proposed type and builds it in the background. |
+| `orderedBy` | Sets a proposed type's natural order; its derived indexes swap. |
+| `remove` | Drops an engine-owned, non-unique index (`indexName`, default the recommendation's), on any type. |
+| `dismiss` | Closes the recommendation (`recommendationId`) without acting. |
+
+`add` and `orderedBy` apply to proposed types only; on a type defined in code
+they are refused `index_on_code_defined_type`, and the recommendation stays
+advice for the plugin author to apply in `defineNamespace`. `remove` drops
+only what the engine owns: another index is `not_engine_owned`, a unique one
+`unique_index`, one still declared or derived `still_desired`, and a name that
+is not there `unknown_index` (on the memory dataset, which builds no indexes,
+always). A `remove` with no recommendation of an index only a proposed type
+declares retracts that declaration, then drops the index.
+
+A recommendation is checked again when it is applied: an `add` whose shape an
+index now serves, or a `remove` whose index is wanted again, is refused
+`recommendation_stale` and the row is marked `superseded`; one no longer
+`open` is `recommendation_closed`. A `remove` recommendation is keyed by its
+index name, so once dismissed it never reopens, even for a later index of the
+same name. Every applied call writes a
+`_system/AuditEvent` of kind `index_proposed` carrying the reason, the
+recommendation and the change; that is the only record of a drop.
+
+Send `propose_index` on its own. A mutate request that carries anything else
+in the same transaction (another op-key beside it, or a batch array of more
+than one entry) is refused `propose_index_not_alone`, and nothing in that
+transaction changes: a concurrent drop waits for every transaction that holds
+a lock on the table, its caller's included. A drop that still waits more
+than 10 seconds on another transaction (a long export, say) gives up with
+`index_drop_timeout`; the recommendation stays `open`, and a retry once that
+transaction ends finishes it. Until then the index can be left INVALID: unused by
+reads but still maintained on every write.
+
+#### Profiles
+
+Thresholds come from a sizing profile, held in the single
+`_system/StoreProfile` row (id `5703e000-0000-4000-8000-000000000001`),
+which an admin or a holder of `substrate.index` on `_system` can change live.
+
+| | `personal` | `growth` | `scale` |
+|---|---|---|---|
+| Slow p95 | 250 ms | 100 ms | 50 ms |
+| Live rows before `add` | 100,000 | 50,000 | 20,000 |
+| Same, `expectedSize: 'large'` | 10,000 | 5,000 | 1,000 |
+| Unused for | 7 days | 3 days | 1 day |
+| Writes/min before `remove` | 100 | 50 | 20 |
+
+`SUBSTRATE_STORE_PROFILE` seeds the row once, when the store is first
+composed; changing the env var later does not change an existing store, edit
+the row. `SUBSTRATE_STORE_WRITE_HEAVY=1` is read on every boot and halves the
+writes-per-minute threshold, so a write-heavy store sheds unused indexes
+sooner. `substrate init` asks four sizing questions (rows per day, days kept,
+read latency target, whether write throughput is a priority) and writes both
+variables to `.env`; `--rows-per-day`, `--retention-days`, `--read-target-ms`,
+`--write-heavy` and `--profile` answer them non-interactively. Profiles only
+tune when a recommendation is written. No profile builds an index.
+
+#### Visible-order types
+
+`ordering: 'visible'` on a type (code-defined only) gives each inserted row a
+`_metadata.seq`, strictly increasing in commit order, so a reader paging by
+`seq` never sees a later row before an earlier one. `seq` is filterable,
+sortable, and valid in `orderedBy`. The cost is concurrency:
+
+- Writes to the type are serialised. Each insert holds a per-type transaction
+  lock from assigning `seq` to commit, so one writer's open transaction blocks
+  every other writer of that type. Other types pay nothing.
+- A transaction that writes two visible types in opposite order from another
+  can deadlock; Postgres aborts one with `40P01`. Write them in a consistent
+  order.
+- Making an existing type visible gives its old rows no `seq`: they stay null
+  and sort after every new row.
+- The counter never decreases, so a dropped and re-created type continues it.
+
+#### Ids
+
+New row ids are assigned by the dataset (Postgres `uuidv7()`; the memory
+dataset does the same), so inserts land at the end of the `id` index and ids
+roughly follow creation time. That is all they do:
+
+- An id is never a happened-before signal. Ids sort in creation order only
+  within one connection; across connections within a millisecond, and for ids
+  you supply, order is arbitrary.
+- Never decide who won (last writer, `conditionalUpdate`) by id. Use
+  transaction time or a per-row version.
+- An id reveals its creation time.
+- A write that repeats an id in one batch is refused (under `insertOnly` the
+  first occurrence lands and the rest are skipped).
+- Key ids (kids) stay random.
+
+`shortId` is the small human handle a row gets on create. It is per store and
+not identity: the same row has a different `shortId` in another store, so
+carry `id` across export and import, never `shortId`.
+
+#### Upgrading an existing store
+
+The first boot after the release builds every derived index (each
+crossRef's and each `indexed: true` field's) in its new
+`(field, natural order, id)` shape, one at a time, in the background. What
+that costs depends on the layout:
+
+- **Partitioned:** each derived index is swapped. The old index serves until
+  its replacement is valid, and each swap needs about twice that index's disk
+  for a while.
+- **Legacy:** nothing is swapped. Each derived index is a new partial index
+  on the shared `rows` table, so each one is a full scan of `rows`, estimated
+  at 30% of its size, and the old indexes stay until removed. Each type that
+  gains a statistics object also runs one `ANALYZE rows`.
+
+Before each build the dataset compares free space on the database volume
+against an estimate (the size of the index it replaces, a leftover `__swap`
+index included, else 30% of the table; sort temp space is not included) plus
+a margin, and waits, reporting `pending` with `insufficient_disk`, when there
+is not room.
+
+Two steps are required before the first boot on an existing store:
+
+1. Stop every instance on the store. Migration `0004` adds a column to
+   `rows`; behind a query or an index build from another process it blocks
+   every reader and writer of `rows` until that finishes.
+2. Set `SUBSTRATE_INDEX_DISK_PATH` to the mount of the PostgreSQL data
+   directory. An existing service has no such setting, and unset, the check is
+   off: the boot then logs how many builds are pending and their estimated
+   total.
+
+Configure the guard with:
+
+- `SUBSTRATE_INDEX_DISK_PATH`: the database volume's mount, when the
+  database is on this host. `off` turns the check off for a database with no
+  local volume (`substrate init` writes `off`). Unset, the check is also off,
+  and doctor says so.
+- `SUBSTRATE_INDEX_DISK_MARGIN_MB`: free space a build must leave. Default
+  2048; `0` requires only the estimate.
+
+Indexes that were `indexed: true` only by the old SDK default stay in place
+until the advisor recommends their removal and a `propose_index remove`
+drops them. Also new in this release: PostgreSQL 18 is the minimum (boot
+refuses older servers; see the dataset-pg README's upgrading section) and
+Node `26.12.1`.
 
 The engine injects `id`, `shortId` and the `_metadata` fields (`createdAt`,
 `updatedAt`, `createdBy`, `updatedBy`). Declaring `shortId` yourself is
@@ -702,15 +953,15 @@ Every `field.*` builder in `@mnmal-ai/substrate/sdk` returns a plain
 
 | Builder | Shape | Default `indexed` | Use for |
 |---|---|---|---|
-| `field.string(opts?)` | `{kind:'scalar',type:'string'}` | `true` | Names, identifiers, short text. |
-| `field.number(opts?)` | `{kind:'scalar',type:'number'}` | `true` | Counts, scores, money in minor units. |
-| `field.boolean(opts?)` | `{kind:'scalar',type:'boolean'}` | `true` | Flags. |
-| `field.date(opts?)` | `{kind:'scalar',type:'date'}` | `true` | Timestamps. `serverSet: 'create' \| 'update' \| 'both'` marks one your server code sets; autoCRUD rejects client values for it. A date with no offset is read as UTC, so writers should send an offset or `Z`. |
-| `field.enum(values, opts?)` | string scalar with `enum` | `true` | A closed set of values. |
-| `field.vocab(values, opts?)` | string scalar with `enum` + `aliases` | `true` | A governed vocabulary: aliases are normalised to canonical values on write and in filters. `strict: false` admits unknown values. |
+| `field.string(opts?)` | `{kind:'scalar',type:'string'}` | unset | Names, identifiers, short text. |
+| `field.number(opts?)` | `{kind:'scalar',type:'number'}` | unset | Counts, scores, money in minor units. |
+| `field.boolean(opts?)` | `{kind:'scalar',type:'boolean'}` | unset | Flags. |
+| `field.date(opts?)` | `{kind:'scalar',type:'date'}` | unset | Timestamps. `serverSet: 'create' \| 'update' \| 'both'` marks one your server code sets; autoCRUD rejects client values for it. A date with no offset is read as UTC, so writers should send an offset or `Z`. |
+| `field.enum(values, opts?)` | string scalar with `enum` | unset | A closed set of values. |
+| `field.vocab(values, opts?)` | string scalar with `enum` + `aliases` | unset | A governed vocabulary: aliases are normalised to canonical values on write and in filters. `strict: false` admits unknown values. |
 | `field.json(opts?)` | `{kind:'scalar',type:'json'}` | `false` | Opaque bodies. See below. |
 | `field.struct(fields, opts?)` | `{kind:'struct',fields}` | n/a | A known nested shape you want to filter on per leaf. |
-| `field.list(of, opts?)` | `{kind:'list',of}` | `false` | Homogeneous lists. `indexed: true` enables server-side `has` filtering. |
+| `field.list(of, opts?)` | `{kind:'list',of}` | `false` | Homogeneous lists. `indexed: true` backs `has` with a GIN. |
 | `field.crossRef(ns, type, opts?)` | `{kind:'crossRef',ns,type,onDelete}` | `true` | An edge to a row of another type, in any namespace. |
 
 Common options:
@@ -730,8 +981,8 @@ Common options:
   You can still filter inside one with a path predicate,
   `where: { payload: { path: ['year'], gt: 1990 } }`. Matching is type-strict
   (`1995` does not match `"1995"`). Equality-style predicates are
-  index-served only with `field.json({ indexed: true })`; otherwise the query
-  needs `_allowTableScan: true`. JSON fields cannot be ordered by.
+  index-served only with `field.json({ indexed: true })`; anything else scans
+  the type's rows. JSON fields cannot be ordered by.
 
 ### crossRef behaviour
 
@@ -774,7 +1025,7 @@ For every type that does not opt out:
 - `get<Type>({ id })`: one row by id (or short id), or `null`.
 - `<Type>({ where?, orderBy?, limit?, cursor?, id?, ids?, includeDeleted?, _allowTableScan? })`:
   the list query, addressed by the bare `<ns>/<Type>` key. Unknown params are
-  rejected with `unknown_param`.
+  rejected with `unknown_param`. `_allowTableScan` is deprecated and ignored.
 
 The autoCRUD resolvers write through the dataset, run `postWrite` for create
 and update (not delete), and emit write events to subscribers after the

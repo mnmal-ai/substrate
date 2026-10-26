@@ -13,6 +13,7 @@ import {
   createMutateHandler,
   createNlHandler,
   createProposeFieldHandler,
+  createProposeIndexHandler,
   createProposeTypeHandler,
   createQueryHandler,
   createSchemaHandler,
@@ -378,6 +379,29 @@ describe('propose_type / propose_field handlers', () => {
     expect(frame.params.fieldName).toBe('color');
     expect(frame.params.fieldSpec).toEqual({ kind: 'scalar', type: 'string' });
     expect(frame.params).not.toHaveProperty('proposedBy');
+  });
+
+  it('propose_index builds a _system_proposals/propose_index frame naming the target', async () => {
+    const { captured } = captureMutateFetch({ data: {} });
+    const result = await createProposeIndexHandler(TEST_ENDPOINT)({
+      namespace: 'home',
+      type: 'Dress',
+      action: 'remove',
+      indexName: 'home_dress_x_0123abcd_idx',
+      reason: 'unused',
+      recommendationId: undefined
+    });
+    expect(result.isError).toBeUndefined();
+    const frame = captured.frame?.['_system_proposals/propose_index'] as {
+      params: Record<string, unknown>;
+    };
+    expect(frame.params).toEqual({
+      namespace: 'home',
+      type: 'Dress',
+      action: 'remove',
+      indexName: 'home_dress_x_0123abcd_idx',
+      reason: 'unused'
+    });
   });
 
   it('propose_type surfaces transport errors as isError', async () => {

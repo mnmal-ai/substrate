@@ -4,6 +4,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { listExtensionOperators, whereContainsOperator } from '@mnmal-ai/substrate-filter';
 import {
   type AfterTxWork,
   type BridgeFrame,
@@ -20,6 +21,7 @@ import {
   type IdempotencyStore,
   isResolverFrameError,
   type NamespaceConfig,
+  naturalOrderOf,
   normaliseMetadataOrderBy,
   normaliseMetadataWhere,
   type OrderByClause,
@@ -28,6 +30,7 @@ import {
   parseQualifiedKey,
   type QualifiedFrame,
   type ReadResult,
+  type RegistryEntry,
   type RequestContext,
   type ResolveObservation,
   type ResolverArgs,
@@ -37,6 +40,7 @@ import {
   type WriteEvent,
   type WsResponseFrame
 } from '@mnmal-ai/substrate-types';
+import type { ShapeRecorder } from '../advisor/shape-recorder.js';
 
 // Re-exported from substrate-types for this package's internal import sites.
 export type { NamespaceConfig };
@@ -126,6 +130,12 @@ export interface EngineOptions {
    * does no timing at all.
    */
   onResolve?: (o: ResolveObservation) => void;
+  /**
+   * Observes each successful local read of a type: its shape (filtered fields
+   * and operators, the effective order including the natural one) and how long
+   * the resolver took. For the index advisor; absent means no recording.
+   */
+  shapeRecorder?: Pick<ShapeRecorder, 'observe'>;
   /**
    * Idempotency dedup (§5.13). Absent → no dedup; `FrameEntry.idempotencyKey`
    * is ignored on mutate (queries ignore it unconditionally). Present → the
@@ -374,7 +384,8 @@ export function toResolverArgs(
   onWrite?: (event: WriteEvent) => void,
   signal?: AbortSignal,
   resolveDataset?: (ns: string) => Dataset | undefined,
-  afterTx?: (fn: AfterTxWork) => void
+  afterTx?: (fn: AfterTxWork) => void,
+  txEntries?: number
 ): ResolverArgs {
   // Virtual namespaces own no dataset — omit the key (NOT
   // `dataset: undefined`, which exactOptionalPropertyTypes rejects).
@@ -386,7 +397,34 @@ export function toResolverArgs(
   if (signal !== undefined) args.signal = signal;
   if (resolveDataset !== undefined) args.resolveDataset = resolveDataset;
   if (afterTx !== undefined) args.afterTx = afterTx;
+  if (txEntries !== undefined) args.txEntries = txEntries;
   return args;
+}
+
+/**
+ * `params` with the type's natural order as `orderBy` when it names none: the
+ * default read order of a query, a subscription's snapshot and a stream. A
+ * single-row `id` read has no order, and get-shaped resolvers refuse one. An
+ * extension operator (semantic, …) in `where` keeps its relevance order.
+ * Returns `params` itself when nothing is added.
+ */
+export function withNaturalOrder(
+  params: Record<string, unknown> | undefined,
+  entry: Pick<RegistryEntry, 'kind' | 'orderedBy'>,
+  dataset: Dataset | undefined
+): Record<string, unknown> | undefined {
+  if (
+    entry.kind !== 'type' ||
+    dataset?.capabilities.orderBy !== true ||
+    params?.id !== undefined ||
+    listExtensionOperators().some((op) => whereContainsOperator(params?.where, op))
+  ) {
+    return params;
+  }
+  const orderBy = params?.orderBy;
+  if (Array.isArray(orderBy) && orderBy.length > 0) return params;
+  // A copy, so nothing downstream can mutate the schema's (or the default's) object.
+  return { ...params, orderBy: [{ ...naturalOrderOf(entry) }] };
 }
 
 /**

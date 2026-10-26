@@ -47,7 +47,8 @@ const METADATA_COLUMN_PROJECTIONS: Record<string, (row: Row) => unknown> = {
   createdById: (row: Row) => row._metadata?.createdBy?.id ?? null,
   createdByKind: (row: Row) => row._metadata?.createdBy?.kind ?? null,
   updatedById: (row: Row) => row._metadata?.updatedBy?.id ?? null,
-  updatedByKind: (row: Row) => row._metadata?.updatedBy?.kind ?? null
+  updatedByKind: (row: Row) => row._metadata?.updatedBy?.kind ?? null,
+  seq: (row: Row) => row._metadata?.seq ?? null
 } as const;
 
 /**

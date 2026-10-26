@@ -70,7 +70,7 @@ jobs:
     # red or never run, so publish cannot trust CI ran on this commit.
     services:
       postgres:
-        image: pgvector/pgvector:pg17
+        image: pgvector/pgvector:pg18
         env:
           POSTGRES_PASSWORD: ci-superuser-only
         ports: ['5432:5432']
@@ -187,11 +187,11 @@ jobs:
           name: npm-packages
           path: ${{ runner.temp }}/pkg
 
-      # npm >= 11.5.1 does the OIDC exchange itself; Node 22 is above the
-      # 22.14.0 trusted publishing needs.
+      # npm >= 11.5.1 does the OIDC exchange itself. Node is held at the
+      # workspace engines floor.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
-          node-version: 24
+          node-version: 26.12.1
           package-manager-cache: false
 
       # Idempotent: a version already on npmjs is skipped, so a re-run after a

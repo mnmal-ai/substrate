@@ -13,11 +13,22 @@
 
 import {
   type AutoCrudRegistry,
+  assertIndexDecl,
+  assertOrderedBy,
   autoCrudOptionsOf,
+  type InstallAutoCrudOptions,
   installAutoCrud,
   RESERVED_AUTOCRUD_FIELDS
 } from '@mnmal-ai/substrate-sdk';
-import type { Dataset, EdgesStore, FieldDef } from '@mnmal-ai/substrate-types';
+import {
+  canonicalize,
+  type Dataset,
+  type EdgesStore,
+  type FieldDef,
+  type IndexDecl,
+  type OrderedBy,
+  type Registry
+} from '@mnmal-ai/substrate-types';
 import { ProposalError } from './errors.js';
 import {
   assertCrossRefsOwned,
@@ -98,13 +109,18 @@ function installProposedType(
   registry: AutoCrudRegistry,
   args: Pick<ApplyTypeProposalArgs, 'typeName' | 'fields' | 'dataset' | 'edges'>
 ): void {
+  installAutoCrud(registry, args.typeName, args.dataset, args.edges, {
+    fields: proposedFieldDefs(args.fields)
+  });
+}
+
+/** A proposed type's field specs as FieldDefs, with the engine-reserved fields added. */
+export function proposedFieldDefs(fields: Record<string, FieldSpecJson>): Record<string, FieldDef> {
   const fieldDefs: Record<string, FieldDef> = {};
-  for (const [name, spec] of Object.entries(args.fields)) {
+  for (const [name, spec] of Object.entries(fields)) {
     fieldDefs[name] = parseFieldSpec(spec);
   }
-  Object.assign(fieldDefs, RESERVED_AUTOCRUD_FIELDS);
-
-  installAutoCrud(registry, args.typeName, args.dataset, args.edges, { fields: fieldDefs });
+  return Object.assign(fieldDefs, RESERVED_AUTOCRUD_FIELDS);
 }
 
 /**
@@ -154,6 +170,153 @@ export interface ApplyFieldProposalArgs {
   edges: EdgesStore;
 }
 
+/** A proposed type's indexes, natural order and size hint, as its TypeProposal row stores them. */
+export interface TypeIndexOptions {
+  indexes?: IndexDecl[];
+  orderedBy?: OrderedBy;
+  expectedSize?: 'small' | 'large';
+}
+
+/**
+ * Parses a TypeProposal row's `indexesJson` / `orderedByJson` / `expectedSize`
+ * (null or absent: none). An `expectedSize` other than `small` or `large` is
+ * left out and handed to `onInvalidSize`, so a bad hint never costs the type
+ * its indexes or order.
+ */
+export function typeIndexOptionsOf(
+  row: Record<string, unknown>,
+  onInvalidSize?: (err: Error) => void
+): TypeIndexOptions {
+  const parse = (v: unknown): unknown => (typeof v === 'string' ? JSON.parse(v) : undefined);
+  const indexes = parse(row.indexesJson) as IndexDecl[] | undefined;
+  const orderedBy = parse(row.orderedByJson) as OrderedBy | undefined;
+  const size = row.expectedSize ?? undefined;
+  const expectedSize = size === 'small' || size === 'large' ? size : undefined;
+  if (size !== undefined && expectedSize === undefined) {
+    onInvalidSize?.(
+      new Error(
+        `expectedSize on ${String(row.typeName)} must be 'small' or 'large', got '${String(size)}'; ignored`
+      )
+    );
+  }
+  return {
+    ...(indexes !== undefined ? { indexes } : {}),
+    ...(orderedBy !== undefined ? { orderedBy } : {}),
+    ...(expectedSize !== undefined ? { expectedSize } : {})
+  };
+}
+
+/**
+ * Refuse indexes or a natural order `propose_index` would not accept: each
+ * index as code may declare it, but never unique and never named (a name
+ * adopts whatever index already holds it), so every one is the engine's own,
+ * non-unique and generated. Rows are caller-written, so replay checks too.
+ *
+ * @throws Error naming the first problem
+ */
+export function assertValidTypeIndexOptions(
+  typeName: string,
+  fields: Record<string, FieldDef>,
+  opts: TypeIndexOptions
+): void {
+  if (opts.indexes !== undefined && !Array.isArray(opts.indexes)) {
+    throw new Error(`indexes on ${typeName} must be an array`);
+  }
+  for (const decl of opts.indexes ?? []) {
+    if (typeof decl !== 'object' || decl === null) {
+      throw new Error(`index on ${typeName}: must be an object`);
+    }
+    assertIndexDecl(typeName, fields, decl);
+    if (decl.unique !== undefined) {
+      throw new Error(`index on ${typeName}: a proposed index is never unique`);
+    }
+    if (decl.name !== undefined) {
+      throw new Error(`index on ${typeName}: a proposed index takes a generated name`);
+    }
+  }
+  if (opts.orderedBy !== undefined)
+    assertOrderedBy(typeName, { fields, orderedBy: opts.orderedBy });
+  if (
+    opts.expectedSize !== undefined &&
+    opts.expectedSize !== 'small' &&
+    opts.expectedSize !== 'large'
+  ) {
+    throw new Error(`expectedSize on ${typeName} must be 'small' or 'large'`);
+  }
+}
+
+/**
+ * Reinstall `typeName`'s autoCRUD surface with `patch` over the options it was
+ * installed with (policy, postWrite, purge, indexes, order), swapping every
+ * entry through `registry.replace` so DuplicateRegistration is never thrown.
+ */
+function reinstallType(
+  registry: Registry,
+  typeName: string,
+  dataset: Dataset,
+  edges: EdgesStore,
+  patch: (prior: InstallAutoCrudOptions) => InstallAutoCrudOptions
+): void {
+  const existing = registry.get(typeName);
+  if (!existing) throw new Error(`type '${typeName}' not registered`);
+  const replaceWriter = {
+    register: (
+      key: Parameters<typeof registry.replace>[0],
+      input: Parameters<typeof registry.replace>[1]
+    ) => registry.replace(key, input),
+    replace: registry.replace.bind(registry)
+  };
+  const prior = autoCrudOptionsOf(existing.resolver) ?? {
+    policy: existing.policy,
+    fields: existing.fields
+  };
+  installAutoCrud(replaceWriter, typeName, dataset, edges, patch(prior));
+}
+
+export interface ApplyTypeIndexOptionsArgs extends TypeIndexOptions {
+  namespace: string;
+  typeName: string;
+  registryStore: RegistryStore;
+  dataset: Dataset;
+  edges: EdgesStore;
+}
+
+/**
+ * Give a registered proposed type the indexes and natural order its row
+ * stores, validated against the fields it has now (proposed ones included).
+ * Storage builds them on the next `ensureTypeStorage`.
+ */
+export function applyTypeIndexOptions(args: ApplyTypeIndexOptionsArgs): void {
+  const binding = args.registryStore.getBinding(args.namespace);
+  const existing = binding.registry.get(args.typeName);
+  if (!existing) throw new Error(`type '${args.typeName}' not registered`);
+  assertValidTypeIndexOptions(args.typeName, existing.fields, args);
+  reinstallType(binding.registry, args.typeName, args.dataset, args.edges, (prior) => {
+    const { indexes: _i, orderedBy: _o, expectedSize: _s, ...rest } = prior;
+    return {
+      ...rest,
+      ...(args.indexes !== undefined ? { indexes: args.indexes } : {}),
+      ...(args.orderedBy !== undefined ? { orderedBy: args.orderedBy } : {}),
+      ...(args.expectedSize !== undefined ? { expectedSize: args.expectedSize } : {})
+    };
+  });
+  binding.invalidateSchemaCaches?.();
+}
+
+/** Whether the type entry already carries exactly these options. */
+export function hasTypeIndexOptions(entry: TypeIndexOptions, opts: TypeIndexOptions): boolean {
+  return (
+    sameJson(entry.indexes, opts.indexes) &&
+    sameJson(entry.orderedBy, opts.orderedBy) &&
+    entry.expectedSize === opts.expectedSize
+  );
+}
+
+/** Deep equality of JSON values, whatever order their keys were written in. */
+export function sameJson(a: unknown, b: unknown): boolean {
+  return JSON.stringify(canonicalize(a)) === JSON.stringify(canonicalize(b));
+}
+
 /**
  * Extend an already-registered type with a new field.
  *
@@ -171,8 +334,7 @@ export function applyFieldProposal(args: ApplyFieldProposalArgs): void {
     store.ownsNamespace(ns)
   );
   const binding = store.getBinding(args.namespace);
-  const registry = binding.registry;
-  const existing = registry.get(args.targetType);
+  const existing = binding.registry.get(args.targetType);
   if (!existing) {
     throw new Error(`applyFieldProposal: target type '${args.targetType}' not registered`);
   }
@@ -180,21 +342,11 @@ export function applyFieldProposal(args: ApplyFieldProposalArgs): void {
     ...existing.fields,
     [args.fieldName]: parseFieldSpec(args.fieldSpec)
   };
-  // Funnel installAutoCrud's `register` calls through `replace` so the existing
-  // type entry + mutations are swapped atomically without DuplicateRegistration.
-  const replaceWriter = {
-    register: (
-      key: Parameters<typeof registry.replace>[0],
-      input: Parameters<typeof registry.replace>[1]
-    ) => registry.replace(key, input),
-    replace: registry.replace.bind(registry)
-  };
-  // Keep what the type was installed with (policy, postWrite, purge); only the fields change.
-  const prior = autoCrudOptionsOf(existing.resolver) ?? { policy: existing.policy };
-  installAutoCrud(replaceWriter, args.targetType, args.dataset, args.edges, {
+  // Keep what the type was installed with (policy, postWrite, purge, indexes); only the fields change.
+  reinstallType(binding.registry, args.targetType, args.dataset, args.edges, (prior) => ({
     ...prior,
     fields: nextFields
-  });
+  }));
 
   // Drop the engine's cached schema views so federatedSchema() and
   // schemaFor(ns) reflect the new field immediately.

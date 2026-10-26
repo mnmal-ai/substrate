@@ -98,7 +98,8 @@ function packField(name: string, def: FieldDef, operators: BuildPackInput['opera
         name,
         kind: 'scalar',
         valueType: def.type,
-        indexed: def.indexed === true,
+        // A handle unless explicitly opted out; unset `indexed` only means no btree.
+        indexed: def.indexed !== false,
         operators: [...(operators[`scalar.${def.type}`] ?? [])],
         phrases,
         ...(def.enum !== undefined ? { enum: [...def.enum] } : {}),

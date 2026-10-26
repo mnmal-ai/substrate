@@ -1025,7 +1025,7 @@ describe('Engine — §5.2 filter validation + pagination envelope', () => {
     expect(env.data['default/Todo']).toBeUndefined();
   });
 
-  it('unindexed field filter surfaces unindexed_field (and _allowTableScan overrides)', async () => {
+  it('an unindexed field filter is accepted, with or without the ignored _allowTableScan', async () => {
     const registry = new Registry();
     registry.register('Todo', {
       resolver: async () => [],
@@ -1034,11 +1034,11 @@ describe('Engine — §5.2 filter validation + pagination envelope', () => {
       }
     });
     const { engine } = singleNs(registry);
-    const denied = await engine.query({
+    const plain = await engine.query({
       frame: { 'default/Todo': { params: { where: { priority: { eq: 5 } } } } },
       ctx: makeCtx()
     });
-    expect(denied.errors?.[0]?.code).toBe('unindexed_field');
+    expect(plain.errors).toBeUndefined();
 
     const allowed = await engine.query({
       frame: {

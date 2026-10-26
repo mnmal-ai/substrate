@@ -79,6 +79,8 @@ export const INVITE_FIELDS: Record<string, FieldDef> = {
  *   - `field_backfilled`       : `backfillFieldRoute` wrote per-row values of one field, metadata preserved
  *   - `type_dropped`           : `dropTypeRoute` dropped every row in a single type
  *   - `destructive_op_refused` : kill switch refused a hard-destructive operation
+ *   - `index_proposed`         : `propose_index` added, removed or reordered an index, or
+ *                                dismissed a recommendation; `details` names the action
  *
  * `details` is an opaque JSON body — `field.json()` round-trips the value
  * unchanged through encoder/decoder, no JSON.stringify boundary needed.
@@ -182,6 +184,62 @@ export const ENUM_VERDICT_FIELDS: Record<string, FieldDef> = {
   /** `namespace/type/field` — the upsert key the writer derives. Indexed for the lookup. */
   verdictKey: field.string()
 };
+export const STORE_PROFILE_TYPE = 'StoreProfile';
+export const INDEX_RECOMMENDATION_TYPE = 'IndexRecommendation';
+/**
+ * The one `StoreProfile` row's id. A fixed UUID, not a name, so the row passes
+ * the `rows_id_uuid_format` CHECK that `SUBSTRATE_ENFORCE_UUID_CHECK` installs.
+ */
+export const STORE_PROFILE_ID = '5703e000-0000-4000-8000-000000000001';
+
+/**
+ * `StoreProfile` — one row, id `STORE_PROFILE_ID`: the sizing profile the index advisor
+ * reads its thresholds from on each pass. Seeded once from
+ * `SUBSTRATE_STORE_PROFILE` (else `personal`), then changed live.
+ */
+export const STORE_PROFILE_FIELDS: Record<string, FieldDef> = {
+  profile: field.enum(['personal', 'growth', 'scale']),
+  updatedReason: field.string({ indexed: false })
+};
+
+export const ADVISOR_STATE_TYPE = 'AdvisorState';
+/** The one `AdvisorState` row's id: a fixed UUID, for the same CHECK. */
+export const ADVISOR_STATE_ID = '5703e000-0000-4000-8000-000000000002';
+
+/**
+ * `AdvisorState` — one row, id `ADVISOR_STATE_ID`: the index advisor's persisted
+ * baseline (`{ epoch, types, indexes }`, see `AdvisorState` in the advisor).
+ * Written only by the advisor through the dataset; admins may read it, and
+ * no caller may write it.
+ */
+export const ADVISOR_STATE_FIELDS: Record<string, FieldDef> = {
+  stateJson: field.string({ indexed: false })
+};
+
+/**
+ * `IndexRecommendation` — one index the advisor recommends adding or removing,
+ * with its evidence. The row id is a version-8 UUID derived from `recKey`, so
+ * every advisor process on a store converges on one row per (action, shape) or (action, index), refreshed
+ * while `open` and never reopened once `accepted` or `dismissed`.
+ */
+export const INDEX_RECOMMENDATION_FIELDS: Record<string, FieldDef> = {
+  /** sha256 of the action and the shape key (or the index name, for `remove`); the row id derives from it. */
+  recKey: field.string(),
+  namespace: field.string(),
+  type: field.string(),
+  action: field.enum(['add', 'remove']),
+  /** The read shape's key (`add`); empty for `remove`. */
+  shape: field.string(),
+  /** The `indexes` entry to add, or `{ drop: <indexName> }`. */
+  declarationJson: field.string({ indexed: false }),
+  /** count, p95Ms, liveRows, writeRatePerMin, window. */
+  evidenceJson: field.string({ indexed: false }),
+  estimatedWriteCost: field.enum(['low', 'medium', 'high']),
+  state: field.enum(['open', 'accepted', 'dismissed', 'superseded']),
+  /** The index to drop, for `remove`. */
+  indexName: field.string({ nullable: true })
+};
+
 export const AUDIT_EVENT_TYPE = 'AuditEvent';
 /**
  * Canonical `kind` values for `AuditEvent`. Not enforced at the schema
@@ -202,7 +260,8 @@ export type AuditEventKind =
   | 'type_dropped'
   | 'vocab_normalised'
   | 'field_backfilled'
-  | 'destructive_op_refused';
+  | 'destructive_op_refused'
+  | 'index_proposed';
 
 export const AUDIT_EVENT_KINDS: ReadonlySet<AuditEventKind> = new Set<AuditEventKind>([
   'bootstrap',
@@ -217,7 +276,8 @@ export const AUDIT_EVENT_KINDS: ReadonlySet<AuditEventKind> = new Set<AuditEvent
   'type_dropped',
   'vocab_normalised',
   'field_backfilled',
-  'destructive_op_refused'
+  'destructive_op_refused',
+  'index_proposed'
 ]);
 
 /** Subset of `JwtAlg` the dataset accepts. HS256 is rejected at write-time. */

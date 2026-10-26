@@ -3,7 +3,7 @@
  *
  * Honours every documented field on `ReadParams`: `id` / `ids` (single-row
  * / multi-row shortcuts), `where`, `orderBy`, `limit`, `cursor`,
- * `includeDeleted`, `_allowTableScan`. The engine validates the
+ * `includeDeleted`, `_allowTableScan` (deprecated, ignored). The engine validates the
  * where/orderBy shape BEFORE this resolver is invoked (via
  * FilterValidationError); we additionally reject any OTHER top-level params
  * key with `unknown_param` so typos (`order` for `orderBy`, etc.) fail loud

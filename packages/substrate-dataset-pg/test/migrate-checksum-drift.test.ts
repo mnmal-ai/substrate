@@ -21,6 +21,9 @@ function makeFakeSqlWithApplied(
   const ranStatements: string[] = [];
   const tag = ((strings: TemplateStringsArray, ..._values: unknown[]) => {
     const text = strings.join('?').trim();
+    if (/current_setting\('server_version_num'\)/.test(text)) {
+      return Promise.resolve([{ num: 180000 }]);
+    }
     ranStatements.push(text);
     if (/^SELECT version, checksum FROM migrations/i.test(text)) {
       return Promise.resolve(appliedRows.map((r) => ({ ...r })));

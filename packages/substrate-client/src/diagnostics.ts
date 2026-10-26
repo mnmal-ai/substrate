@@ -75,8 +75,8 @@ export interface Diagnostic {
    * substrate's explanation.
    *
    * Results are still correct — a substrate refuses a predicate it cannot
-   * honour. What is lost is the indexed-field check, so an unindexed filter
-   * SCANS instead of being rejected.
+   * honour. What is lost is the engine's operator and operand check, so a
+   * malformed filter fails later and less clearly, or not at all.
    */
   filterValidationSkipped?: string;
   /**
@@ -188,10 +188,10 @@ export function createDefaultDiagnosticsSink(): DiagnosticsSink {
     }
     if (filterValidationSkipped !== undefined) {
       parts.push(
-        `the where-clause was not schema-validated (${filterValidationSkipped}), so an ` +
-          'unindexed filter SCANNED rather than being rejected. Results are still correct — ' +
-          'the substrate refuses a predicate it cannot honour — but the cost is unbounded ' +
-          'on a large table.'
+        `the where-clause was not schema-validated (${filterValidationSkipped}), so its ` +
+          'operators and operands were never checked against the field kinds. Results are ' +
+          'still correct — the substrate refuses a predicate it cannot honour — but a ' +
+          'malformed filter fails later and less clearly.'
       );
     }
     if (unrecognized.length > 0) {

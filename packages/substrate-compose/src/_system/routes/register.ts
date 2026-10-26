@@ -9,7 +9,7 @@
  * atomically against concurrent registers.
  */
 
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import type { Dataset, HttpHandler, SubstrateResponse } from '@mnmal-ai/substrate-types';
 import { extractClientIp, ipCapKey, jsonResponse } from '../../routes/helpers.js';
 import { buildAuditRow } from '../install.js';
@@ -159,7 +159,6 @@ export function registerRoute(
 
     // 16 random bytes → a 22-char base64url kid; collisions are negligible.
     const kid = base64Url(randomBytes(16));
-    const rowId = randomUUID(); // row id is a UUID (constraint-safe); kid is the principal field
     const createdAt = now();
 
     const inviteNamespacesRaw = invite.namespaces;
@@ -190,7 +189,6 @@ export function registerRoute(
           KEY_TYPE,
           [
             {
-              id: rowId,
               kid,
               name: body.keyName,
               algorithm: body.algorithm,

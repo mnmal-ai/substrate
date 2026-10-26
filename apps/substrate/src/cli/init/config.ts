@@ -1,3 +1,6 @@
+import { isStoreProfileName, type StoreProfileName } from '@mnmal-ai/substrate-compose';
+import { parsePositive } from './sizing.js';
+
 export type StoreMode = 'memory' | 'postgres';
 /**
  * `bge-base` is the default, in-process with no service: the model the fleet
@@ -20,6 +23,13 @@ export interface InitConfig {
   tls: boolean;
   tlsCertPath: string | undefined;
   tlsKeyPath: string | undefined;
+  /** Sizing answers; unset ones fall back to `DEFAULT_SIZING`. */
+  rowsPerDay: number | undefined;
+  retentionDays: number | undefined;
+  readTargetMs: number | undefined;
+  writeHeavy: boolean;
+  /** `--profile`: overrides the profile the answers would pick. */
+  profile: StoreProfileName | undefined;
   yes: boolean;
   force: boolean;
 }
@@ -35,7 +45,12 @@ const KNOWN_FLAGS = new Set([
   'substrate-url',
   'tls',
   'tls-cert-path',
-  'tls-key-path'
+  'tls-key-path',
+  'rows-per-day',
+  'retention-days',
+  'read-target-ms',
+  'write-heavy',
+  'profile'
 ]);
 
 export function parsePort(flag: string, value: string): number {
@@ -58,6 +73,11 @@ export function parseArgs(argv: string[]): InitConfig {
     tls: false,
     tlsCertPath: undefined,
     tlsKeyPath: undefined,
+    rowsPerDay: undefined,
+    retentionDays: undefined,
+    readTargetMs: undefined,
+    writeHeavy: false,
+    profile: undefined,
     yes: false,
     force: false
   };
@@ -112,6 +132,27 @@ export function parseArgs(argv: string[]): InitConfig {
           throw new Error(`--embedder must be ${EMBEDDER_MODES.join('|')}, got: ${value}`);
         }
         config.embedder = value;
+        break;
+      case 'rows-per-day':
+        config.rowsPerDay = parsePositive(flag, value);
+        break;
+      case 'retention-days':
+        config.retentionDays = parsePositive(flag, value);
+        break;
+      case 'read-target-ms':
+        config.readTargetMs = parsePositive(flag, value);
+        break;
+      case 'write-heavy':
+        if (value !== '' && value !== 'true' && value !== 'false') {
+          throw new Error(`--write-heavy must be true|false, got: ${value}`);
+        }
+        config.writeHeavy = value !== 'false';
+        break;
+      case 'profile':
+        if (!isStoreProfileName(value)) {
+          throw new Error(`--profile must be personal|growth|scale, got: ${value}`);
+        }
+        config.profile = value;
         break;
       case 'substrate-url':
         config.substrateUrl = value;

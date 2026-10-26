@@ -36,6 +36,12 @@ import type {
 } from '@mnmal-ai/substrate-types';
 
 export interface ScalarFieldOptions {
+  /**
+   * `true` builds a btree for this field. Leave it unset for no index: the
+   * field still filters and sorts, by scanning. `false` also means no index,
+   * and marks the field as not a search handle (long-form prose), so NL
+   * leaves it out.
+   */
   indexed?: boolean;
   nullable?: boolean;
   /**
@@ -97,9 +103,9 @@ export interface StructFieldOptions {
 
 export interface ListFieldOptions {
   /**
-   * Opt the list field into server-side `has` (element-membership) filtering
-   * without `_allowTableScan`. The substrate binary auto-derives the backing GIN as
-   * a tracked migration at boot — no per-field migration to author.
+   * Back the list field's `has` (element-membership) filter with a GIN, which
+   * the substrate binary derives as a tracked migration at boot — no per-field
+   * migration to author. Without it `has` still works, by scanning.
    * Default false. See `FieldDefList.indexed`.
    */
   indexed?: boolean;
@@ -110,8 +116,9 @@ function makeScalar(
   type: FieldDefScalar['type'],
   opts: ScalarFieldOptions | undefined
 ): FieldDefScalar {
-  const indexed = opts?.indexed ?? true;
-  const def: FieldDefScalar = { kind: 'scalar', type, indexed };
+  // Unset means no index; an explicit false also says "not a search handle".
+  const def: FieldDefScalar = { kind: 'scalar', type };
+  if (opts?.indexed !== undefined) def.indexed = opts.indexed;
   if (opts?.nullable !== undefined) def.nullable = opts.nullable;
   if (opts?.readonly !== undefined) def.readonly = opts.readonly;
   if (opts?.default !== undefined) def.default = opts.default;
@@ -238,8 +245,7 @@ export const field = {
    * JSON body. Value round-trips unchanged. Filter a value INSIDE it with a
    * path predicate — `{ values: { path: ['year'], gt: 1990 } }` — which is
    * type-strict. `eq` / `in` / `has` are index-served only with
-   * `{ indexed: true }`; everything else scans the type's rows and needs
-   * `_allowTableScan`. No ordering. When inner keys are known at schema time,
+   * `{ indexed: true }`; everything else scans the type's rows. No ordering. When inner keys are known at schema time,
    * `field.struct` is still the better fit: declared, indexed, orderable.
    */
   json(opts?: JsonFieldOptions): FieldDefScalar {

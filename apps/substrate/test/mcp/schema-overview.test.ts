@@ -29,7 +29,7 @@ describe('schemaOverview', () => {
   it('renders each type as one line of field: type, listing only non-generated mutations', () => {
     const o = schemaOverview(federated);
     expect(o.notes?.types.Note).toBe(
-      'title: string, body: string? [unindexed], status: open|done, stage: (a|b)?, tags: string[]?, ' +
+      'title: string, body: string?, status: open|done, stage: (a|b)?, tags: string[]?, ' +
         'author: →people/Person, parent: →Note?, meta: {a, b}, shortId: number [readonly]'
     );
     expect(o.notes?.mutations).toEqual(['archiveAll']);

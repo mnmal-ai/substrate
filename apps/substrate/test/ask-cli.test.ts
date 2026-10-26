@@ -136,11 +136,11 @@ describe('substrate ask', () => {
       source: 'handoff',
       handoff: 'judge unavailable',
       frame: { 'a/B': {} },
-      errors: [{ code: 'unindexed_field' }]
+      errors: [{ code: 'unknown_operator' }]
     });
     expect(r.out.split('\n')[0]).toBe('▸ a/B · handoff (judge unavailable) · rejected');
     expect(r.out).not.toContain('0 rows');
-    expect(r.out).toContain('✗ {"code":"unindexed_field"}');
+    expect(r.out).toContain('✗ {"code":"unknown_operator"}');
     expect(r.code).toBe(1);
   });
 

@@ -56,6 +56,7 @@ import type {
   WriteEvent
 } from '@mnmal-ai/substrate-types';
 import { isResolverFrameError, isRestrictViolation } from '@mnmal-ai/substrate-types';
+import { readShapeOf } from '../advisor/shape-recorder.js';
 import { applyLostNamespace } from '../apply-lost-namespace.js';
 
 /** Local query keys dispatched at once; the rest wait for a free slot. */
@@ -71,7 +72,8 @@ type RunEntryRest = [
   parsed: ParsedKey | null,
   onWrite?: (event: WriteEvent) => void,
   signal?: AbortSignal,
-  afterTx?: (fn: AfterTxWork) => void
+  afterTx?: (fn: AfterTxWork) => void,
+  txEntries?: number
 ];
 
 /** Unwinds the shared single-frame tx; the refusing entry's error is already on the envelope. */
@@ -141,7 +143,8 @@ import {
   type SubscriptionStatsSnapshot,
   scopeBridgeIdempotency,
   toResolverArgs,
-  withCanonicalMetadataFilters
+  withCanonicalMetadataFilters,
+  withNaturalOrder
 } from './internals.js';
 import {
   type LocalTxScopePartition,
@@ -190,6 +193,7 @@ export class Engine {
   readonly #edges: EdgesStore;
   readonly #metric: MetricFn;
   readonly #onResolve: ((o: ResolveObservation) => void) | undefined;
+  readonly #shapeRecorder: EngineOptions['shapeRecorder'];
   readonly #idempotency: { store: IdempotencyStore; defaultTtlMs: number } | undefined;
   /**
    * Mutates under a dedup key that are still running. The store only sees a
@@ -226,6 +230,7 @@ export class Engine {
     this.#edges = opts.edges;
     this.#metric = opts.metric ?? ((): void => {});
     this.#onResolve = opts.onResolve;
+    this.#shapeRecorder = opts.shapeRecorder;
     this.#idempotency =
       opts.idempotency !== undefined
         ? {
@@ -970,7 +975,8 @@ export class Engine {
           parsed,
           (event) => pending.push(event),
           signal,
-          (fn) => settled.push(fn)
+          (fn) => settled.push(fn),
+          singleFrameKeys.length
         );
         // Any refusal of this key (grant, policy, validation, a resolver's
         // frame error) unwinds the bucket: the entries commit together or not at all.
@@ -1300,7 +1306,8 @@ export class Engine {
     parsed: ParsedKey | null,
     onWrite?: (event: WriteEvent) => void,
     signal?: AbortSignal,
-    afterTx?: (fn: AfterTxWork) => void
+    afterTx?: (fn: AfterTxWork) => void,
+    txEntries?: number
   ): Promise<boolean> {
     if (!parsed) {
       addError(
@@ -1378,7 +1385,8 @@ export class Engine {
       onWrite,
       signal,
       (ns) => this.#datasets.get(ns),
-      afterTx
+      afterTx,
+      txEntries
     );
     const decision = evaluatePolicy(registryEntry.policy, ctx, args);
 
@@ -1411,6 +1419,12 @@ export class Engine {
     });
     if (!guardOk) return false;
 
+    // A query reads in the type's natural order unless it names one.
+    if (operation === 'query' && !isVirtual) {
+      const params = withNaturalOrder(args.params, registryEntry, dataset);
+      if (params !== undefined) args.params = params;
+    }
+
     // A throw here propagates out of the surrounding withTransaction (on
     // mutate) and rolls back every prior frame entry — the G1 contract.
     // Exception: `RestrictViolation` (§6.2) is a clean refusal, NOT a rollback
@@ -1432,6 +1446,7 @@ export class Engine {
     }
 
     let result: Row | Row[] | ReadResult | AsyncIterable<Row> | null;
+    const t0 = performance.now();
     try {
       result = await registryEntry.resolver(ctx, args);
     } catch (err) {
@@ -1453,6 +1468,22 @@ export class Engine {
         return true;
       }
       throw err;
+    } finally {
+      // After natural order is injected, so the shape carries the effective
+      // order; a read that throws (a timeout, a cancel) is recorded too, up to
+      // the throw. A single-row `id` read is served by the key, so no index
+      // could speed it.
+      if (
+        operation === 'query' &&
+        registryEntry.kind === 'type' &&
+        !isVirtual &&
+        args.params?.id === undefined
+      ) {
+        this.#shapeRecorder?.observe(
+          readShapeOf(ns, name, registryEntry.fields, args.params?.where, args.params?.orderBy),
+          performance.now() - t0
+        );
+      }
     }
 
     shapeResult({
@@ -1686,7 +1717,8 @@ export class Engine {
             parsed,
             arrayOnWrite,
             signal,
-            (fn) => settled.push(fn)
+            (fn) => settled.push(fn),
+            frames.length
           );
           failedIndex = undefined;
           const entry: {
