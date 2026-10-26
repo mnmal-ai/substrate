@@ -1593,10 +1593,10 @@ export class PgDataset implements Dataset {
    * See `Dataset.dropNamespaceIndexes`. On legacy, the engine-owned partial
    * indexes on `rows` scoped to this namespace; on partitioned, the
    * engine-owned indexes on its type partitions, which a namespace drop
-   * empties but keeps. Each table's under its index-build lock, CONCURRENTLY,
+   * empties but keeps. Unique ones only when `opts.unique`. Each table's under its index-build lock, CONCURRENTLY,
    * each lock wait bounded by `DROP_LOCK_TIMEOUT_MS`.
    */
-  async dropNamespaceIndexes(): Promise<string[]> {
+  async dropNamespaceIndexes(opts: { unique?: boolean } = {}): Promise<string[]> {
     const layout = await this.#layout();
     if (layout === 'absent') return [];
     if (this.#inTx) {
@@ -1611,7 +1611,7 @@ export class PgDataset implements Dataset {
       for (const table of tables) {
         await withTableIndexLock(sql, conn, table, undefined, async () => {
           for (const i of await heldIndexes(conn, [table])) {
-            if (!isEngineOwned(i)) continue;
+            if (!isEngineOwned(i) || (i.unique && opts.unique !== true)) continue;
             if (layout === 'legacy' && legacyScope(i.predicate)?.namespace !== ns) continue;
             await dropIndexBounded(conn, i.name, ns, DROP_LOCK_TIMEOUT_MS);
             dropped.push(i.name);

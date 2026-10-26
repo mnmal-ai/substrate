@@ -417,15 +417,19 @@ export interface Dataset {
     }
   ): Promise<void>;
   /**
-   * Drop every engine-owned index of this namespace, after a namespace drop
+   * Drop the engine-owned indexes of this namespace, after a namespace drop
    * has committed: its types leave the engine, so nothing would remove them.
-   * Returns the names dropped. Never inside a transaction; a tx-bound
-   * instance throws. A lock wait that times out throws `index_drop_timeout`,
-   * leaving the rest for `storageReport` to list as orphaned.
+   * Non-unique ones only, unless `unique`, which the caller passes only when
+   * the namespace is declared nowhere (in no code and no live proposal): a
+   * declared namespace's types come back, and until the reconciler rebuilds a
+   * unique index, writes would not be held to it. Returns the names dropped.
+   * Never inside a transaction; a tx-bound instance throws. A lock wait that
+   * times out throws `index_drop_timeout`, leaving the rest for
+   * `storageReport` to list as orphaned.
    *
    * OPTIONAL. Backends that build no indexes omit it.
    */
-  dropNamespaceIndexes?(): Promise<string[]>;
+  dropNamespaceIndexes?(opts?: { unique?: boolean }): Promise<string[]>;
   /**
    * The entry of this namespace's `type`'s declared `indexes` whose index is
    * named `name`, or undefined when no declaration builds it (a derived or

@@ -226,7 +226,7 @@ describe.skipIf(!POSTGRES_URL)('engine indexes of a dropped namespace', () => {
     return { ns, ds, unique, engineIndexes };
   }
 
-  it('drops every engine index of the namespace, unique ones too, and no other namespace', async () => {
+  it('drops the non-unique engine indexes of the namespace and keeps unique ones, then drops those only when asked', async () => {
     const a = await namespaceWithIndexes();
     const b = await namespaceWithIndexes();
     const before = [...(await a.engineIndexes('T')), ...(await a.engineIndexes('U'))];
@@ -234,12 +234,16 @@ describe.skipIf(!POSTGRES_URL)('engine indexes of a dropped namespace', () => {
     const kept = await b.engineIndexes('T');
 
     await a.ds.withTransaction((tx) => tx.dropNamespace());
-    expect((await a.ds.dropNamespaceIndexes()).sort()).toEqual(before.sort());
-
-    expect(await a.engineIndexes('T')).toEqual([]);
+    // Declared somewhere: the unique index stays for the reconciler.
+    expect((await a.ds.dropNamespaceIndexes()).sort()).toEqual(
+      before.filter((n) => n !== a.unique).sort()
+    );
+    expect(await a.engineIndexes('T')).toEqual([a.unique]);
     expect(await a.engineIndexes('U')).toEqual([]);
+    // Declared nowhere: the unique index goes too.
+    expect(await a.ds.dropNamespaceIndexes({ unique: true })).toEqual([a.unique]);
+    expect(await a.engineIndexes('T')).toEqual([]);
     expect(await b.engineIndexes('T')).toEqual(kept);
-    expect(await a.ds.dropNamespaceIndexes()).toEqual([]);
     // Four types' concurrent builds on the shared legacy rows, then the drops.
   }, 120_000);
 
