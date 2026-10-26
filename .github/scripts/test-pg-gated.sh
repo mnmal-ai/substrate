@@ -35,31 +35,28 @@ const otherGates = ['apps/substrate/test/hive-integration.test.ts',
   'plugins/substrate-recall/test/corpus-regression.test.ts'];
 const fs = require('node:fs');
 let bad = 0;
-// The partitioned pass may skip legacy-only tests, but only ones that passed
-// in the default pass, which proves POSTGRES_URL reached them.
-const check = (label, report, allowed) => {
-  const passedNames = new Set();
-  let passed = 0;
-  for (const f of report.testResults) {
-    if (otherGates.some((g) => f.name.endsWith(g))) continue;
-    for (const t of f.assertionResults) {
-      if (t.status === 'passed') {
-        passed++;
-        passedNames.add(t.fullName);
-      } else if (t.status !== 'failed' && !allowed.has(t.fullName)) {
+// Each pass may skip a layout-specific test, but only one that passed in the
+// other pass, which proves POSTGRES_URL reached it.
+const tests = (report) =>
+  report.testResults
+    .filter((f) => !otherGates.some((g) => f.name.endsWith(g)))
+    .flatMap((f) => f.assertionResults);
+const passedIn = (list) => new Set(list.filter((t) => t.status === 'passed').map((t) => t.fullName));
+for (const d of dirs) {
+  const base = `${out}/pg-${d.replaceAll('/', '-')}`;
+  const passes = [[d, tests(require(`${base}.json`))]];
+  if (fs.existsSync(`${base}-partitioned.json`)) {
+    passes.push([`${d} (partitioned)`, tests(require(`${base}-partitioned.json`))]);
+  }
+  const passedAnywhere = new Set(passes.flatMap(([, list]) => [...passedIn(list)]));
+  for (const [label, list] of passes) {
+    for (const t of list) {
+      if (t.status !== 'passed' && t.status !== 'failed' && !passedAnywhere.has(t.fullName)) {
         bad++;
         console.error(`::error::${label}: ${t.status}: ${t.fullName}`);
       }
     }
-  }
-  console.log(`${label}: ${passed} passed`);
-  return passedNames;
-};
-for (const d of dirs) {
-  const base = `${out}/pg-${d.replaceAll('/', '-')}`;
-  const passed = check(d, require(`${base}.json`), new Set());
-  if (fs.existsSync(`${base}-partitioned.json`)) {
-    check(`${d} (partitioned)`, require(`${base}-partitioned.json`), passed);
+    console.log(`${label}: ${passedIn(list).size} passed`);
   }
 }
 if (bad > 0) {
