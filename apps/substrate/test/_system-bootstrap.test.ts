@@ -17,7 +17,7 @@ import { PgDataset, runMigrations } from '@mnmal-ai/substrate-dataset-pg';
 import { ADMIN_CAPABILITIES } from '@mnmal-ai/substrate-policy';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { main, runBootstrap } from '../src/bin/admin.js';
+import { main, runBootstrap } from '../src/admin/index.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 

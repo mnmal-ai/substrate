@@ -20,7 +20,7 @@ import { KEY_TYPE, SYSTEM_NAMESPACE } from '@mnmal-ai/substrate-compose';
 import { runMigrations } from '@mnmal-ai/substrate-dataset-pg';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { main } from '../src/bin/admin.js';
+import { main } from '../src/admin/index.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const KID = 'rotate-pg-fixture@TestHost';

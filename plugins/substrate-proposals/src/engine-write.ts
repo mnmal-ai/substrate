@@ -2,13 +2,14 @@
  * Shared helpers used by the propose_* resolvers.
  */
 
-import type {
-  Dataset,
-  Registry,
-  RegistryEntry,
-  RequestContext,
-  ResolverArgs,
-  Row
+import {
+  type Dataset,
+  type Registry,
+  type RegistryEntry,
+  type RequestContext,
+  type ResolverArgs,
+  ResolverFrameError,
+  type Row
 } from '@mnmal-ai/substrate-types';
 
 /**
@@ -17,7 +18,8 @@ import type {
  * A nested `engine.mutate` would open a second transaction, and so take a
  * second pooled connection, beside the one the proposal already holds.
  *
- * @throws Error when `op` is not registered, its policy denies, or it returns no row
+ * @throws ResolverFrameError `policy_denied` when its policy denies
+ * @throws Error when `op` is not registered or returns no row
  */
 export async function writeInTx(
   registry: Registry,
@@ -38,7 +40,10 @@ export async function writeInTx(
   const opArgs: ResolverArgs = { ...args, params, fields: { id: true } };
   const decision = skipPolicy ? undefined : entry.policy?.(opCtx, opArgs);
   if (decision !== undefined && !decision.allow) {
-    throw new Error(`'${op}' denied: ${decision.reason ?? 'policy denied'}`);
+    throw new ResolverFrameError(
+      'policy_denied',
+      `'${op}' denied: ${decision.reason ?? 'policy denied'}`
+    );
   }
   const row = await entry.resolver(opCtx, opArgs);
   if (row === null || typeof row !== 'object' || Array.isArray(row)) {

@@ -1,5 +1,6 @@
 /**
- * Natural order: a query with no `orderBy` reads in the type's `orderedBy`,
+ * Natural order: a query (and a subscription snapshot, and a stream) with no
+ * `orderBy` reads in the type's `orderedBy`,
  * newest-first by `createdAt` when the type declares none. Memory dataset; the
  * pg twin is substrate-dataset-pg/test/natural-order.test.ts. The
  * `defineNamespace` refusals live there, because core cannot import the SDK.
@@ -13,7 +14,8 @@ import type {
   ReadParams,
   ReadResult,
   Row,
-  RowMetadata
+  RowMetadata,
+  WsResponseFrame
 } from '@mnmal-ai/substrate-types';
 import { DEFAULT_ORDERED_BY } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
@@ -47,7 +49,14 @@ function engineFor(orderedBy?: OrderedBy): {
       if (typeof p.limit === 'number') read.limit = p.limit;
       if (typeof p.cursor === 'string') read.cursor = p.cursor;
       seen.push(read);
-      return ds.read('Item', read);
+      const result = ds.read('Item', read);
+      // A stream dispatch (it carries the abort signal) takes the rows one by one.
+      if (args.signal !== undefined) {
+        return (async function* () {
+          yield* (await result).rows;
+        })() as never;
+      }
+      return result;
     }
   });
   const datasets = new MemoryDatasetRegistry();
@@ -126,6 +135,57 @@ describe('natural order (memory)', () => {
     expect([...walked].sort()).toEqual(rows.map((r) => r.id));
     expect(new Set(walked).size).toBe(25);
     expect(walked.slice(-5)).toEqual(missing);
+  });
+
+  it('a subscription snapshot and a stream read in natural order, as a query does', async () => {
+    const { engine, ds, seen } = engineFor({ boughtOn: 'asc' });
+    await ds.write('Item', [
+      { id: 'b', boughtOn: '2026-01-02T00:00:00.000Z' },
+      { id: 'c', boughtOn: '2026-01-01T00:00:00.000Z' },
+      { id: 'a', boughtOn: '2026-01-03T00:00:00.000Z' }
+    ]);
+    const queried = await ids(engine);
+    expect(queried).toEqual(['c', 'b', 'a']);
+
+    const frames: WsResponseFrame[] = [];
+    const handle = await engine.subscribe({
+      id: 'sub',
+      frame: { 'shop/Item': { params: {}, fields: { id: true } } },
+      ctx: { identity: null },
+      onFrame: (f) => void frames.push(f)
+    });
+    handle.cancel();
+    const snapshot = frames.find((f) => f.kind === 'snapshot');
+    const snapRows = (snapshot?.data?.['shop/Item'] ?? []) as Row[];
+    expect(snapRows.map((r) => String(r.id))).toEqual(queried);
+    expect(seen.at(-1)?.orderBy).toEqual([{ boughtOn: 'asc' }]);
+
+    const chunks: WsResponseFrame[] = [];
+    await engine.stream({
+      id: 'str',
+      frame: { 'shop/Item': { params: {}, fields: { id: true } } },
+      ctx: { identity: null },
+      onFrame: (f) => void chunks.push(f)
+    });
+    for (let i = 0; !chunks.some((f) => f.kind === 'end' || f.kind === 'error'); i++) {
+      if (i > 1000) throw new Error('stream did not end');
+      await new Promise<void>((r) => setImmediate(r));
+    }
+    expect(chunks.find((f) => f.kind === 'error')).toBeUndefined();
+    expect(
+      chunks
+        .filter((f) => f.kind === 'chunk')
+        .map((f) => String((f.data?.['shop/Item'] as Row | undefined)?.id))
+    ).toEqual(queried);
+
+    // An explicit orderBy wins on both.
+    await engine.subscribe({
+      id: 'sub2',
+      frame: { 'shop/Item': { params: { orderBy: [{ boughtOn: 'desc' }] }, fields: { id: true } } },
+      ctx: { identity: null },
+      onFrame: () => {}
+    });
+    expect(seen.at(-1)?.orderBy).toEqual([{ boughtOn: 'desc' }]);
   });
 
   it('the default natural order is frozen', () => {

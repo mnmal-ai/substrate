@@ -29,11 +29,7 @@
  *     `Row` → `'single'`.
  */
 
-import {
-  getExtensionOperator,
-  listExtensionOperators,
-  whereContainsOperator
-} from '@mnmal-ai/substrate-filter';
+import { getExtensionOperator, listExtensionOperators } from '@mnmal-ai/substrate-filter';
 import type {
   AfterTxWork,
   AutoCrudVerb,
@@ -59,11 +55,7 @@ import type {
   SweepDeps,
   WriteEvent
 } from '@mnmal-ai/substrate-types';
-import {
-  isResolverFrameError,
-  isRestrictViolation,
-  naturalOrderOf
-} from '@mnmal-ai/substrate-types';
+import { isResolverFrameError, isRestrictViolation } from '@mnmal-ai/substrate-types';
 import { readShapeOf } from '../advisor/shape-recorder.js';
 import { applyLostNamespace } from '../apply-lost-namespace.js';
 
@@ -151,7 +143,8 @@ import {
   type SubscriptionStatsSnapshot,
   scopeBridgeIdempotency,
   toResolverArgs,
-  withCanonicalMetadataFilters
+  withCanonicalMetadataFilters,
+  withNaturalOrder
 } from './internals.js';
 import {
   type LocalTxScopePartition,
@@ -1426,24 +1419,10 @@ export class Engine {
     });
     if (!guardOk) return false;
 
-    // The one place natural order becomes the default read order. Subscriptions
-    // and streams keep their own ordering and do not pass through here. A
-    // single-row `id` read has no order, and get-shaped resolvers refuse one.
-    // An extension operator (semantic, …) in `where` keeps its relevance order.
-    const where = args.params?.where;
-    if (
-      operation === 'query' &&
-      registryEntry.kind === 'type' &&
-      !isVirtual &&
-      dataset?.capabilities.orderBy === true &&
-      args.params?.id === undefined &&
-      !listExtensionOperators().some((op) => whereContainsOperator(where, op))
-    ) {
-      const orderBy = args.params?.orderBy;
-      if (!Array.isArray(orderBy) || orderBy.length === 0) {
-        // A copy, so nothing downstream can mutate the schema's (or the default's) object.
-        args.params = { ...args.params, orderBy: [{ ...naturalOrderOf(registryEntry) }] };
-      }
+    // A query reads in the type's natural order unless it names one.
+    if (operation === 'query' && !isVirtual) {
+      const params = withNaturalOrder(args.params, registryEntry, dataset);
+      if (params !== undefined) args.params = params;
     }
 
     // A throw here propagates out of the surrounding withTransaction (on

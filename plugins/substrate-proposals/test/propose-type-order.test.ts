@@ -32,6 +32,15 @@ const PROPOSER: Partial<RequestContext> = {
   meta: {}
 };
 
+const INDEXER: Partial<RequestContext> = {
+  ...PROPOSER,
+  identity: {
+    id: 'indexer',
+    tokenId: 'indexer',
+    grants: { '*': ['read', 'mutate', 'substrate.propose', 'substrate.index'] }
+  }
+};
+
 /** The latest engine booted per namespace, for the pg datasets' type lookup. */
 const engines = new Map<string, Engine>();
 
@@ -160,6 +169,36 @@ function suite(make: () => Promise<{ ns: string; datasets: MemoryDatasetRegistry
     const again = await propose(engine, ns, 'Retry', { orderedBy: { size: 'asc' } });
     expect(again.errors ?? []).toEqual([]);
     expect(engine.registryFor(ns)?.get('Retry')).toMatchObject({ orderedBy: { size: 'asc' } });
+    await storageSettled();
+  });
+
+  it('treats a name with storage as an existing type, whose index options need substrate.index', async () => {
+    const { ns, datasets } = await make();
+    const engine = await boot(datasets, ns);
+    const home = datasets.get(ns) as Dataset;
+    // Rows left by an earlier type of the name, and an archived proposal of another.
+    await home.write('Ghost', [{ id: randomUUID(), brand: 'a', size: 1 }]);
+    await home.write('TypeProposal', [
+      { id: randomUUID(), typeName: 'Gone', fieldsJson: '{}', applied: true, archived: true }
+    ]);
+    for (const name of ['Ghost', 'Gone']) {
+      const env = await propose(engine, ns, name, { orderedBy: { size: 'asc' } });
+      expect(code(env), name).toBe('policy_denied');
+      expect(engine.registryFor(ns)?.get(name)).toBeUndefined();
+      const indexer = await engine.mutate({
+        frame: {
+          [`${ns}/propose_type`]: {
+            params: { typeName: name, fields, proposedReason: 'r', orderedBy: { size: 'asc' } },
+            fields: { id: true }
+          }
+        },
+        ctx: INDEXER
+      });
+      expect(indexer.errors ?? [], name).toEqual([]);
+    }
+    // Without index options the name stays proposable under substrate.propose alone.
+    await home.write('Spare', [{ id: randomUUID(), brand: 'a', size: 1 }]);
+    expect((await propose(engine, ns, 'Spare', {})).errors ?? []).toEqual([]);
     await storageSettled();
   });
 

@@ -672,7 +672,8 @@ Sneaker: { fields: { /* … */ }, orderedBy: { yearBought: 'desc' } }
 - The key is a declared date or number field, or a metadata column
   (`createdAt`, `updatedAt`, and `seq` on a visible-order type).
 - Undeclared, it is `{ createdAt: 'desc' }`: newest first. `id` is always the
-  final tie-breaker. **This is the default read order.** Before this release
+  final tie-breaker. **This is the default read order**, for a query, a
+  subscription's snapshot and a stream alike. Before this release
   it was `id` ascending, which over random ids meant nothing; pass `orderBy`
   to get any other order. An explicit `orderBy` is unaffected.
 - `updatedAt` is mutable, so with `orderedBy: { updatedAt: … }` a row that is
@@ -817,7 +818,9 @@ declares retracts that declaration, then drops the index.
 A recommendation is checked again when it is applied: an `add` whose shape an
 index now serves, or a `remove` whose index is wanted again, is refused
 `recommendation_stale` and the row is marked `superseded`; one no longer
-`open` is `recommendation_closed`. Every applied call writes a
+`open` is `recommendation_closed`. A `remove` recommendation is keyed by its
+index name, so once dismissed it never reopens, even for a later index of the
+same name. Every applied call writes a
 `_system/AuditEvent` of kind `index_proposed` carrying the reason, the
 recommendation and the change; that is the only record of a drop.
 

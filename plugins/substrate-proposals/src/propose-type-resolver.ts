@@ -146,6 +146,16 @@ function indexOptionsOf(input: ProposeTypeInput): TypeIndexOptions {
   };
 }
 
+/** Whether `typeName` has storage already: any TypeProposal row by that name, archived ones included, or rows. */
+async function hasStorage(dataset: Dataset, typeName: string): Promise<boolean> {
+  const proposals = await dataset.read('TypeProposal', {
+    where: { typeName: { eq: typeName } },
+    limit: 1
+  });
+  if (proposals.rows.length > 0) return true;
+  return (await dataset.read(typeName, { limit: 1 })).rows.length > 0;
+}
+
 /** Steps 2-7, run while holding the proposal lock for this type name. */
 async function proposeTypeLocked(
   deps: ProposeTypeResolverDeps,
@@ -233,13 +243,16 @@ async function proposeTypeLocked(
     // One write carrying every field. The create policy reserves the index
     // keys for `substrate.index`; declaring a new type's own needs only the
     // propose capability, which the resolver's policy has already checked.
+    // A name that already has storage (an archived proposal, or rows) is an
+    // existing type, whose index options keep the create policy's gate.
+    const declaresIndexes = indexOpts.indexes !== undefined || indexOpts.orderedBy !== undefined;
     const created = await writeInTx(
       binding.registry,
       ctx,
       args,
       'createTypeProposal',
       { ...initialParams, ...indexFields },
-      true
+      !(declaresIndexes && (await hasStorage(args.dataset, typeName)))
     );
     newId = created.id;
   } else {

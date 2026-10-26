@@ -4,6 +4,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { listExtensionOperators, whereContainsOperator } from '@mnmal-ai/substrate-filter';
 import {
   type AfterTxWork,
   type BridgeFrame,
@@ -20,6 +21,7 @@ import {
   type IdempotencyStore,
   isResolverFrameError,
   type NamespaceConfig,
+  naturalOrderOf,
   normaliseMetadataOrderBy,
   normaliseMetadataWhere,
   type OrderByClause,
@@ -28,6 +30,7 @@ import {
   parseQualifiedKey,
   type QualifiedFrame,
   type ReadResult,
+  type RegistryEntry,
   type RequestContext,
   type ResolveObservation,
   type ResolverArgs,
@@ -396,6 +399,32 @@ export function toResolverArgs(
   if (afterTx !== undefined) args.afterTx = afterTx;
   if (txEntries !== undefined) args.txEntries = txEntries;
   return args;
+}
+
+/**
+ * `params` with the type's natural order as `orderBy` when it names none: the
+ * default read order of a query, a subscription's snapshot and a stream. A
+ * single-row `id` read has no order, and get-shaped resolvers refuse one. An
+ * extension operator (semantic, …) in `where` keeps its relevance order.
+ * Returns `params` itself when nothing is added.
+ */
+export function withNaturalOrder(
+  params: Record<string, unknown> | undefined,
+  entry: Pick<RegistryEntry, 'kind' | 'orderedBy'>,
+  dataset: Dataset | undefined
+): Record<string, unknown> | undefined {
+  if (
+    entry.kind !== 'type' ||
+    dataset?.capabilities.orderBy !== true ||
+    params?.id !== undefined ||
+    listExtensionOperators().some((op) => whereContainsOperator(params?.where, op))
+  ) {
+    return params;
+  }
+  const orderBy = params?.orderBy;
+  if (Array.isArray(orderBy) && orderBy.length > 0) return params;
+  // A copy, so nothing downstream can mutate the schema's (or the default's) object.
+  return { ...params, orderBy: [{ ...naturalOrderOf(entry) }] };
 }
 
 /**
