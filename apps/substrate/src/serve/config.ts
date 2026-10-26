@@ -20,6 +20,7 @@ const DEFAULT_SWEEP_INTERVAL_MS = 300_000;
 const DEFAULT_INVITE_SWEEP_INTERVAL_MS = 3_600_000;
 const DEFAULT_TOMBSTONE_RETENTION_DAYS = 30;
 const DEFAULT_SHUTDOWN_GRACE_MS = 5_000;
+const DEFAULT_PARTITION_BUDGET = 500;
 export const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DEFAULT_PORT = 3100;
 
@@ -56,6 +57,8 @@ export interface ParsedConfig {
    * the backstop, not the primary stop mechanism. Default 5s.
    */
   shutdownGraceMs: number;
+  /** `SUBSTRATE_PARTITION_BUDGET` — partitions under `rows` beyond which the config report warns. */
+  partitionBudget: number;
   /**
    * §5.13 mutation idempotency config. `disabled` kills dedup entirely (the
    * engine never sees a store); `defaultTtlMs === null` leaves the engine's
@@ -178,6 +181,14 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
   const inviteSweepIntervalMs = parseInviteSweepIntervalMs(env, knobs);
   const tombstoneRetentionDays = parseTombstoneRetentionDays(env, knobs);
   const shutdownGraceMs = parseShutdownGraceMs(env, knobs);
+  const partitionBudget = parsePositiveIntEnv(
+    env,
+    knobs,
+    'partitionBudget',
+    'SUBSTRATE_PARTITION_BUDGET',
+    DEFAULT_PARTITION_BUDGET,
+    'partitions'
+  );
   const idempotency = parseIdempotencyConfig(env, knobs);
   const trustedProxies = parseTrustedProxies(env, knobs);
   const port = parsePort(env, knobs);
@@ -259,6 +270,7 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
     inviteSweepIntervalMs,
     tombstoneRetentionDays,
     shutdownGraceMs,
+    partitionBudget,
     idempotency,
     trustedProxies,
     port,

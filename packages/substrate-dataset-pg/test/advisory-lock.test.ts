@@ -40,10 +40,10 @@ describe.skipIf(POSTGRES_URL === undefined)('PgDataset.withAdvisoryLock', () => 
 
   async function anotherSessionCanTake(key: string): Promise<boolean> {
     const [row] = await probe<Array<{ acquired: boolean }>>`
-      SELECT pg_try_advisory_lock(hashtext(${key})) AS acquired
+      SELECT pg_try_advisory_lock(hashtext(current_schema() || ':' || ${key})) AS acquired
     `;
     if (row?.acquired === true) {
-      await probe`SELECT pg_advisory_unlock(hashtext(${key}))`;
+      await probe`SELECT pg_advisory_unlock(hashtext(current_schema() || ':' || ${key}))`;
       return true;
     }
     return false;

@@ -29,7 +29,12 @@ import type {
 } from '@mnmal-ai/substrate-types';
 import { applyTypeProposal, assertValidTypeProposal, typeProposalRegistryKeys } from './apply.js';
 import type { PubSub } from './config.js';
-import { applyUntilRollback, notifyAfterCommit, writeInTx } from './engine-write.js';
+import {
+  applyUntilRollback,
+  ensureStorageAfterCommit,
+  notifyAfterCommit,
+  writeInTx
+} from './engine-write.js';
 import { ProposalError } from './errors.js';
 import type { FieldSpecJson } from './field-spec-json.js';
 import { proposalLockKey, withProposalLock } from './proposal-lock.js';
@@ -241,6 +246,7 @@ async function proposeTypeLocked(
   await notifyAfterCommit(args, () =>
     deps.pubsub.notify(deps.channelFor(deps.namespace), String(newId))
   );
+  ensureStorageAfterCommit(args.afterTx, deps.dataset, typeName);
 
   // Step 7 — return the applied row
   return appliedRow;

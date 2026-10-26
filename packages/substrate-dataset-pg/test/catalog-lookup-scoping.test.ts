@@ -17,8 +17,10 @@
 import postgres, { type Sql } from 'postgres';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runMigrations } from '../src/index.js';
+import { SYSTEM_KEY_PARTITION } from '../src/migrations/0001p_partitioned_baseline.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
+const PARTITIONED = process.env.SUBSTRATE_STORAGE_LAYOUT === 'partitioned';
 
 /**
  * Names the real assertions in this suite match on. Both must be objects the
@@ -26,7 +28,10 @@ const POSTGRES_URL = process.env.POSTGRES_URL;
  * `rows_body_gin`) is absent here, leaving only the decoy.
  */
 const REAL_CONSTRAINT = 'rows_created_by_kind_check';
-const REAL_INDEX = 'rows_ns_type_created_at_idx';
+// A partitioned `rows` has no parent-level indexes, so there the real index
+// is the live-kid index on the `_system` Key partition.
+const REAL_INDEX = PARTITIONED ? 'substrate_key_live_kid_uniq' : 'rows_ns_type_created_at_idx';
+const INDEX_TABLE = PARTITIONED ? SYSTEM_KEY_PARTITION : 'rows';
 
 describe.skipIf(!POSTGRES_URL)('catalog lookups are scoped, proven by decoys', () => {
   let sql: Sql;
@@ -55,8 +60,8 @@ describe.skipIf(!POSTGRES_URL)('catalog lookups are scoped, proven by decoys', (
 
     // Decoy 2 — same INDEX name, different schema.
     await sql`CREATE SCHEMA decoy`;
-    await sql`CREATE TABLE decoy.rows (body jsonb)`;
-    await sql.unsafe(`CREATE INDEX ${REAL_INDEX} ON decoy.rows USING gin (body)`);
+    await sql.unsafe(`CREATE TABLE decoy.${INDEX_TABLE} (body jsonb)`);
+    await sql.unsafe(`CREATE INDEX ${REAL_INDEX} ON decoy.${INDEX_TABLE} USING gin (body)`);
   });
 
   afterEach(async () => {
@@ -105,7 +110,7 @@ describe.skipIf(!POSTGRES_URL)('catalog lookups are scoped, proven by decoys', (
     const rows = await sql<{ indexname: string }[]>`
       SELECT indexname FROM pg_indexes
       WHERE schemaname = current_schema()
-        AND tablename = 'rows'
+        AND tablename = ${INDEX_TABLE}
         AND indexname = ${REAL_INDEX}
     `;
     expect(rows.map((r) => r.indexname)).toEqual([REAL_INDEX]);
@@ -119,11 +124,11 @@ describe.skipIf(!POSTGRES_URL)('catalog lookups are scoped, proven by decoys', (
   it('tablename alone is NOT sufficient — the reason lookups qualify by schema', async () => {
     const byTable = await sql<{ schemaname: string }[]>`
       SELECT schemaname FROM pg_indexes
-      WHERE tablename = 'rows' AND indexname = ${REAL_INDEX}
+      WHERE tablename = ${INDEX_TABLE} AND indexname = ${REAL_INDEX}
     `;
     const bySchema = await sql<{ schemaname: string }[]>`
       SELECT schemaname FROM pg_indexes
-      WHERE schemaname = current_schema() AND tablename = 'rows' AND indexname = ${REAL_INDEX}
+      WHERE schemaname = current_schema() AND tablename = ${INDEX_TABLE} AND indexname = ${REAL_INDEX}
     `;
     // Asserts which schemas each form returns, not a count: tablename-only
     // reaches ACROSS schemas, schemaname does not.

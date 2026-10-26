@@ -598,6 +598,7 @@ Every type gets a full autoCRUD surface (`createDress`, `getDress`,
 | `purgeable: true` | Also install the admin-only `purge<Type>` mutation. |
 | `adminCapability` | Capability required for admin verbs (default `'admin'`). |
 | `postWrite` | Hook run after every committed create or update; it cannot veto the write. |
+| `indexes` | Composite and unique indexes the engine builds and maintains (see [Indexes](#indexes)). |
 | `embed` / `lexical` | Recall source slots (see [Opting into recall](#opting-into-recall-from-a-coordinator)). |
 
 `defineNamespace` also accepts `opts.annotations`, opaque JSON passed through
@@ -605,8 +606,89 @@ to the namespace schema for consumers such as `substrate-nl`, and
 `opts.promotedColumns`, which names body keys the pg dataset mirrors into
 dedicated `rows` columns so filters and sorts on them hit an index
 (`{ status: { column: 'status', kind: 'text' } }`). Your plugin's own
-migration creates the columns and their indexes; the engine creates none.
-Reads return the body as stored, and filters use the column.
+migration creates the columns. Reads return the body as stored, and filters
+use the column.
+
+Index a promoted field through `indexes` (see [Indexes](#indexes)): the
+engine builds declared indexes over a promoted field on its column, in the
+form its filters compare. An index you write by hand must match that form
+or it serves nothing, and nothing reports it. Key a text column as
+`(col COLLATE "C")`, because filters compare promoted text under `"C"`, `eq`
+included. A raw expression index over a body field must use the filter
+compiler's expressions, such as `((body ->> 'f') COLLATE "C")`. Better, move
+the index into `indexes` with its existing `name`, and the engine adopts it,
+swapping it to the right definition.
+
+### Indexes
+
+On the partitioned layout the engine indexes every field whose `indexed` is
+`true` (the default for most builders, see below), plus `created_at`,
+`updated_at` and tombstones. Add `indexes` on a type for what a single field
+cannot serve: composites and unique constraints.
+
+```ts
+Listing: {
+  fields: { cert: field.string(), observedAt: field.date(), sku: field.string() },
+  indexes: [
+    { fields: ['cert', { field: 'observedAt', dir: 'desc' }] },
+    { fields: ['sku'], unique: true, where: 'live', name: 'listing_sku_uniq' }
+  ]
+}
+```
+
+- `fields`: key fields in order. Each is a name (ascending) or
+  `{ field, dir }`. Scalar and crossRef fields only; `field.json` is refused.
+  Both directions sort NULLs last, as `orderBy` does.
+- `unique`: refused at boot, with `unique_index_duplicates`, while live rows
+  already hold duplicate values.
+- `where`: every index covers live (not deleted) rows only. `'live'` adds
+  nothing to that; a record such as `{ archived: false, owner: null }` also
+  requires each field to match: `true` or `false` on a boolean field, and
+  `null` (IS NULL) on any scalar field.
+- `name`: the Postgres index name (`[a-z_][a-z0-9_]*`, at most 63 bytes, not
+  ending `__swap`). Omit it and one is generated. An existing index of that
+  name with the same key fields and uniqueness is adopted, and swapped to the
+  declared definition if the expression or predicate differs. One that differs
+  in key fields or uniqueness is refused with `index_definition_conflict`.
+  Two declarations resolving to one name with different definitions fail the
+  same way.
+
+The engine reconciles at boot, building concurrently. Unique indexes are
+built before the server starts, and the boot fails if one cannot be built.
+Non-unique indexes build in the background once the server is serving, one
+type at a time. Until one is valid, filters it would serve scan, and doctor
+reports it `pending`, `building` or `failed`; a failed build is retried at
+the next boot. A removed declaration leaves its index in place.
+
+**What serves a query.**
+
+- Every non-unique btree ends in `id` ascending, so a filter plus the default
+  page order is one index range. Unique indexes do not get the `id`.
+- Implicit date indexes are newest-first (`DESC NULLS LAST`). An oldest-first
+  sort on a date is not index-served unless you declare an ASC index.
+- Filtering on one field and sorting by another needs a composite, e.g.
+  `(cert, observedAt desc)`. A range on one field with a sort by another is
+  the known trade-off: no single index serves both, and the planner picks one
+  side.
+- Keyset paging (the `cursor`) is index-served for `id` and for a sort key
+  that may be null: a range bound first, then the null tail. Page cost stays
+  flat with depth.
+
+**What it costs.**
+
+- Each index adds write cost. Index the fields you filter on, not every field;
+  set `indexed: false` on the rest.
+- The reconciler also owns one `CREATE STATISTICS` per indexed body
+  expression, and runs `ANALYZE` once when it creates one, because the planner
+  needs it for row estimates on body-field filters.
+- The first boot after a release that changes an index's shape rebuilds
+  each affected non-unique index concurrently, in the background after the
+  server starts. Each rebuild briefly needs twice that index's disk, and
+  filters it serves scan until it is done. On a test host this took about
+  6.4 minutes for 25M rows across 19 indexes.
+
+On the legacy layout only declared `indexes` are built, as partial indexes
+scoped to the type.
 
 The engine injects `id`, `shortId` and the `_metadata` fields (`createdAt`,
 `updatedAt`, `createdBy`, `updatedBy`). Declaring `shortId` yourself is
@@ -623,7 +705,7 @@ Every `field.*` builder in `@mnmal-ai/substrate/sdk` returns a plain
 | `field.string(opts?)` | `{kind:'scalar',type:'string'}` | `true` | Names, identifiers, short text. |
 | `field.number(opts?)` | `{kind:'scalar',type:'number'}` | `true` | Counts, scores, money in minor units. |
 | `field.boolean(opts?)` | `{kind:'scalar',type:'boolean'}` | `true` | Flags. |
-| `field.date(opts?)` | `{kind:'scalar',type:'date'}` | `true` | Timestamps. `serverSet: 'create' \| 'update' \| 'both'` marks one your server code sets; autoCRUD rejects client values for it. |
+| `field.date(opts?)` | `{kind:'scalar',type:'date'}` | `true` | Timestamps. `serverSet: 'create' \| 'update' \| 'both'` marks one your server code sets; autoCRUD rejects client values for it. A date with no offset is read as UTC, so writers should send an offset or `Z`. |
 | `field.enum(values, opts?)` | string scalar with `enum` | `true` | A closed set of values. |
 | `field.vocab(values, opts?)` | string scalar with `enum` + `aliases` | `true` | A governed vocabulary: aliases are normalised to canonical values on write and in filters. `strict: false` admits unknown values. |
 | `field.json(opts?)` | `{kind:'scalar',type:'json'}` | `false` | Opaque bodies. See below. |

@@ -226,6 +226,27 @@ export interface EmbedSourceContext {
 }
 
 /**
+ * A declared index over a type's scalar or crossRef fields, built by the
+ * engine with the same expressions the filter compiler emits.
+ *
+ * - `fields`: key columns in order; `dir` defaults to `asc`. Both directions
+ *   sort NULLs last, as `orderBy` does.
+ * - `unique`: refused at build time while duplicate live values exist.
+ * - `where`: always ANDed with "not deleted". `'live'` adds nothing more; a
+ *   record adds equality to a boolean (or IS NULL for `null`) on the type's
+ *   own fields. Only those operands compile to literals, which a generic plan
+ *   needs to match the index predicate.
+ * - `name`: the pg index name to own or adopt; generated when omitted. It may
+ *   not end in `__swap`, the reconciler's temporary suffix.
+ */
+export interface IndexDecl {
+  fields: Array<string | { field: string; dir: 'asc' | 'desc' }>;
+  unique?: boolean;
+  where?: 'live' | Record<string, boolean | null>;
+  name?: string;
+}
+
+/**
  * Structural shape of a type definition, mirroring `TypeInput` from
  * @mnmal-ai/substrate-sdk (redeclared to avoid a substrate-types → substrate-sdk import
  * cycle). Substrate plugins read it structurally; slots not named here pass
@@ -276,6 +297,8 @@ export interface NamespaceTypeDef {
   lexical?: {
     source: (row: Row) => string | null | undefined | Promise<string | null | undefined>;
   };
+  /** Composite and unique indexes the engine builds for this type. See {@link IndexDecl}. */
+  indexes?: IndexDecl[];
   // [key: string]: unknown absorbs slots NamespaceTypeDef doesn't name
   // (policy, autoCrud, purgeable, adminCapability, etc.).
   [key: string]: unknown;

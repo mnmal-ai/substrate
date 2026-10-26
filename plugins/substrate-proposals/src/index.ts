@@ -46,6 +46,7 @@ import { RegistryStore } from './registry-store.js';
 
 export type { ProposalsPluginConfig, PubSub } from './config.js';
 export { createNoopPubSub } from './config.js';
+export { storageSettled } from './engine-write.js';
 export { ProposalError } from './errors.js';
 export type {
   CrossRefSpec,

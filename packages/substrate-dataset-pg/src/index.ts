@@ -2,6 +2,7 @@
  * @mnmal-ai/substrate-dataset-pg — Postgres-backed reference Dataset + EdgesStore.
  */
 
+export type { IndexDecl } from '@mnmal-ai/substrate-types';
 export { tryWithPgAdvisoryLock } from './advisory-lock.js';
 export {
   type EnumCheckInput,
@@ -10,18 +11,29 @@ export {
 } from './enum-check.js';
 export { NamespaceMismatch, ReservedField } from './errors.js';
 export {
+  IndexDefinitionConflictError,
+  type IndexState,
+  type ReconcileTypeIndexesArgs,
+  reconcileTypeIndexes,
+  UniqueIndexDuplicatesError
+} from './index-reconciler.js';
+export { detectLayout, partitionName, type StorageLayout } from './layout.js';
+export {
   deriveListIndexMigration,
   type IndexedListField,
   MigrationChecksumDriftError,
   type MigrationInput,
   pendingMigrations,
+  type RunMigrationsOptions,
   runDerivedMigrations,
-  runMigrations
+  runMigrations,
+  StorageLayoutMismatchError
 } from './migrate.js';
 export {
   type FieldDefLookup,
   PgDataset,
-  type PgDatasetOptions
+  type PgDatasetOptions,
+  type TypeDefLookup
 } from './pg-dataset.js';
 export { PgEdgesStore, type PgEdgesStoreOptions } from './pg-edges-store.js';
 export {
@@ -35,3 +47,4 @@ export type {
   PromotedColumnLookup
 } from './pg-sql.js';
 export { type PgHandle, txScopeIdFor } from './tx-scope.js';
+export { TypeStorageLockTimeoutError } from './type-storage.js';

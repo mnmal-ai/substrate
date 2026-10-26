@@ -13,7 +13,12 @@ export interface ShutdownArgs {
   disposeBridges: () => void;
   stop: (opts?: { grace?: number; abortInFlight?: boolean }) => Promise<void>;
   closeStore: (() => Promise<void>) | null;
+  /** Cancels the background index builds and waits for them to stop. */
+  stopIndexBuilds?: () => Promise<void>;
 }
+
+/** The longest shutdown waits for the background index builds to stop. */
+const INDEX_BUILDS_STOP_MS = 2000;
 
 /**
  * Re-entrancy guard: systemd retries SIGTERM under load, and a double-fire
@@ -21,8 +26,16 @@ export interface ShutdownArgs {
  * flips on first entry and stays set; subsequent signals just log.
  */
 export function installShutdown(args: ShutdownArgs): void {
-  const { config, sweepTimer, inviteSweepTimer, sentinelClient, disposeBridges, stop, closeStore } =
-    args;
+  const {
+    config,
+    sweepTimer,
+    inviteSweepTimer,
+    sentinelClient,
+    disposeBridges,
+    stop,
+    closeStore,
+    stopIndexBuilds
+  } = args;
   let shuttingDown = false;
   const shutdown = (signal: string): void => {
     if (shuttingDown) {
@@ -41,6 +54,28 @@ export function installShutdown(args: ShutdownArgs): void {
     }, config.shutdownGraceMs + 1000).unref();
     clearInterval(sweepTimer);
     if (inviteSweepTimer !== null) clearInterval(inviteSweepTimer);
+    // A cancelled CREATE INDEX CONCURRENTLY leaves an INVALID index, which
+    // the next boot's reconcile drops and rebuilds. Lock waits and builds stop
+    // at once; a catalog step that cannot be cancelled gets a bounded wait,
+    // then is abandoned to closeStore, which drops its connection after a
+    // bounded wait of its own.
+    const buildsBound = Math.min(INDEX_BUILDS_STOP_MS, config.shutdownGraceMs / 2);
+    const stopBuilds = new Promise<void>((resolve) => {
+      if (stopIndexBuilds === undefined) return resolve();
+      const timer = setTimeout(() => {
+        process.stderr.write(
+          `index builds did not stop within ${buildsBound}ms; abandoning them\n`
+        );
+        resolve();
+      }, buildsBound);
+      timer.unref();
+      void stopIndexBuilds()
+        .catch(() => undefined)
+        .then(() => {
+          clearTimeout(timer);
+          resolve();
+        });
+    });
     const stopSentinel =
       sentinelClient !== null
         ? sentinelClient.stop().catch((err: unknown) => {
@@ -55,6 +90,7 @@ export function installShutdown(args: ShutdownArgs): void {
         return stop({ grace: config.shutdownGraceMs, abortInFlight: true });
       })
       .then(async () => {
+        await stopBuilds;
         if (closeStore) await closeStore();
       })
       .then(() => {

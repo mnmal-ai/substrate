@@ -76,6 +76,9 @@ function stubFetch(opts: StubOpts): typeof fetch {
       };
       return json(w.status, w.body);
     }
+    if (url.endsWith('/substrate/v1/config')) {
+      return json(200, { knobs: {}, storage: { layout: 'partitioned', warnings: [] } });
+    }
     if (url.endsWith('/substrate/v1/query')) {
       expect(init?.method).toBe('POST');
       const frameKey = Object.keys(JSON.parse(String(init?.body)) as Record<string, unknown>)[0];

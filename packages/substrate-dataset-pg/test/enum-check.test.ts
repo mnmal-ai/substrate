@@ -139,7 +139,7 @@ describe.skipIf(!POSTGRES_URL)('enumCheckStatements — live DDL proof', () => {
     // Out-of-vocab on the guarded field is refused.
     await expect(
       sql`INSERT INTO rows (namespace, type, id, body) VALUES (${NS}, ${TYPE}, ${`${id}-bad`}, ${sql.json({ mode: 'zzz' })})`
-    ).rejects.toThrow(/new row for relation "rows" violates check constraint/);
+    ).rejects.toThrow(/new row for relation "rows[a-z0-9_]*" violates check constraint/);
 
     await sql`DELETE FROM rows WHERE namespace = ${NS} AND type = ${TYPE}`;
     await sql`DELETE FROM rows WHERE namespace = 'other' AND type = ${TYPE}`;

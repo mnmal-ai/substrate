@@ -8,6 +8,7 @@
 
 export * from './autocrud/index.js';
 export {
+  isReservedAutoCrudField,
   RESERVED_AUTOCRUD_FIELD_NAMES,
   RESERVED_AUTOCRUD_FIELDS
 } from './autocrud/reserved.js';

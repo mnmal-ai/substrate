@@ -329,7 +329,7 @@ export interface Dataset {
    * Run `fn` while holding a mutual-exclusion lock named `key`, waiting until
    * it is free. Excludes every other holder of the same key on this substrate:
    * pg holds a session advisory lock, so the exclusion spans processes sharing
-   * the database; memory excludes holders on this dataset instance only.
+   * the store's database schema; memory excludes holders on this dataset instance only.
    * Released when `fn` settles, whether it resolves or throws, except on a
    * pg tx-bound dataset, where it is held until the transaction ends so the
    * next holder sees what this one committed. Not re-entrant:
@@ -341,6 +341,41 @@ export interface Dataset {
    * @throws whatever `fn` throws, after the lock is released
    */
   withAdvisoryLock?<T>(key: string, fn: () => Promise<T>): Promise<T>;
+  /**
+   * Prepare dedicated storage for `type` in this namespace, moving any rows
+   * already written for it there. Idempotent, and safe beside concurrent
+   * reads and writes: no row is lost, duplicated or seen twice. That holds for
+   * READ COMMITTED readers; a REPEATABLE READ snapshot taken before the move
+   * can miss the moved rows. Also builds the type's indexes, including its
+   * declared `indexes`, and throws when a unique one cannot be built.
+   *
+   * `indexes` picks which: `unique` builds only the unique ones and leaves the
+   * rest `pending`, for a later `nonUnique` call to build. `signal` cancels an
+   * in-flight non-unique build, which the next call retries. Default `all`.
+   *
+   * OPTIONAL. Backends without per-type storage omit it.
+   */
+  ensureTypeStorage?(
+    type: string,
+    opts?: { indexes?: 'all' | 'unique' | 'nonUnique'; signal?: AbortSignal }
+  ): Promise<void>;
+  /**
+   * Where `type`'s rows live and how its declared indexes stand, read from the
+   * catalog without building anything.
+   *
+   * OPTIONAL. Backends without per-type storage omit it.
+   */
+  describeStorage?(type: string): Promise<TypeStorageReport>;
+  /**
+   * The database-wide storage layout and what an operator should look at:
+   * rows parked in DEFAULT partitions, indexes and CHECK constraints on the
+   * `rows` parent, engine-named indexes no longer declared, indexes this
+   * process has yet to build or failed to build, and a partition count over
+   * `partitionBudget`. Never changes anything.
+   *
+   * OPTIONAL. Backends without per-type storage omit it.
+   */
+  storageReport?(opts: { partitionBudget: number }): Promise<StorageReport>;
   /**
    * Execute `fn` atomically. All ops performed on the `tx` argument run inside
    * one substrate transaction. If `fn` throws or returns a rejected promise,
@@ -481,4 +516,32 @@ export interface DatasetRegistry {
    * Optional: same rationale as `onNamespaceLost`.
    */
   dispose?(ns: string): void;
+}
+
+/**
+ * One declared index of a type and its state: as the catalog holds it, or,
+ * while this process defers or runs its build, `pending`, `building` or
+ * `failed`. Filters on an index that is not `valid` scan.
+ */
+export interface TypeIndexState {
+  name: string;
+  fields: string[];
+  unique: boolean;
+  state: 'valid' | 'building' | 'pending' | 'invalid' | 'failed';
+  outcome: 'created' | 'adopted' | 'swapped' | 'unchanged';
+  /** Why a `failed` index failed: an error code, then a short reason. */
+  error?: string;
+}
+
+/** Where a type's rows live: `partition` is set on the partitioned layout once the type has one. */
+export interface TypeStorageReport {
+  layout: 'legacy' | 'partitioned';
+  partition?: string;
+  indexes: TypeIndexState[];
+}
+
+export interface StorageReport {
+  /** `unknown` when the report itself failed. */
+  layout: 'legacy' | 'partitioned' | 'unknown';
+  warnings: string[];
 }

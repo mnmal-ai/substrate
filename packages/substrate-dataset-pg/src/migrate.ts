@@ -29,12 +29,23 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { Sql } from 'postgres';
+import type { ReservedSql, Sql } from 'postgres';
+import { retireSession, SESSION_COLUMNS, type Session } from './advisory-lock.js';
+import { detectLayout, type StorageLayout } from './layout.js';
 import {
   CONCURRENT_STATEMENTS as BASELINE_CONCURRENT,
   TX_STATEMENTS as BASELINE_TX
 } from './migrations/0001_baseline.js';
+import {
+  CONCURRENT_STATEMENTS as PARTITIONED_BASELINE_CONCURRENT,
+  TX_STATEMENTS as PARTITIONED_BASELINE_TX
+} from './migrations/0001p_partitioned_baseline.js';
 import { TX_STATEMENTS as UUID_CHECK_TX } from './migrations/0002_uuid_format_check.js';
+import {
+  CONCURRENT_STATEMENTS as SAFE_CASTS_CONCURRENT,
+  TX_STATEMENTS as SAFE_CASTS_TX
+} from './migrations/0003_safe_casts.js';
+import { sqlStringLiteral } from './pg-sql/primitives.js';
 
 /**
  * Internal canonical migration shape after normalisation. The framework
@@ -70,11 +81,24 @@ export type MigrationInput =
       readonly concurrentStatements?: never;
     };
 
-const MIGRATION_INPUTS: ReadonlyArray<MigrationInput> = [
+const LEGACY_BASELINE: MigrationInput = {
+  version: '0001_baseline',
+  txStatements: BASELINE_TX,
+  concurrentStatements: BASELINE_CONCURRENT
+};
+
+const PARTITIONED_BASELINE: MigrationInput = {
+  version: '0001p_partitioned_baseline',
+  txStatements: PARTITIONED_BASELINE_TX,
+  concurrentStatements: PARTITIONED_BASELINE_CONCURRENT
+};
+
+/** Migrations after the baseline, run in both layouts. */
+const SHARED_INPUTS: ReadonlyArray<MigrationInput> = [
   {
-    version: '0001_baseline',
-    txStatements: BASELINE_TX,
-    concurrentStatements: BASELINE_CONCURRENT
+    version: '0003_safe_casts',
+    txStatements: SAFE_CASTS_TX,
+    concurrentStatements: SAFE_CASTS_CONCURRENT
   }
 ];
 
@@ -104,22 +128,72 @@ const UUID_CHECK_INPUT: MigrationInput = {
 };
 
 /**
- * @internal — the always-on migration list, exported for unit tests. The
- * gated 0002 is appended by `getMigrationList`.
- */
-export const MIGRATIONS: ReadonlyArray<Migration> = MIGRATION_INPUTS.map(normalise);
-
-/**
- * @internal — returns the migration list including the gated 0002 when
- * `SUBSTRATE_ENFORCE_UUID_CHECK=true` (or the explicit override is true). Used by
- * `runMigrations` and exported for the focused test that exercises the
- * CHECK constraint.
+ * @internal — the baseline for `layout`, then the gated 0002 when
+ * `SUBSTRATE_ENFORCE_UUID_CHECK=true` (or the explicit override is true), then
+ * the migrations both layouts share. Used by `runMigrations` and exported for
+ * unit tests.
  */
 export function getMigrationList(
-  enforceUuidCheck: boolean | undefined = process.env.SUBSTRATE_ENFORCE_UUID_CHECK === 'true'
+  enforceUuidCheck: boolean | undefined = process.env.SUBSTRATE_ENFORCE_UUID_CHECK === 'true',
+  layout: StorageLayout = 'legacy'
 ): ReadonlyArray<Migration> {
-  if (enforceUuidCheck !== true) return MIGRATIONS;
-  return [...MIGRATIONS, normalise(UUID_CHECK_INPUT)];
+  const baseline = layout === 'partitioned' ? PARTITIONED_BASELINE : LEGACY_BASELINE;
+  const gated = enforceUuidCheck === true ? [UUID_CHECK_INPUT] : [];
+  return [baseline, ...gated, ...SHARED_INPUTS].map(normalise);
+}
+
+/** @internal — the legacy layout's always-on list, exported for unit tests. */
+export const MIGRATIONS: ReadonlyArray<Migration> = getMigrationList(false);
+
+/**
+ * Raised when the ledger records one layout's baseline but `rows` has the
+ * other layout, which means the schema was changed outside the runner.
+ */
+export class StorageLayoutMismatchError extends Error {
+  override readonly name = 'StorageLayoutMismatchError';
+
+  constructor(layout: StorageLayout, recordedBaseline: string) {
+    super(
+      `rows is ${layout} but the migrations ledger records ` +
+        `${recordedBaseline}. A database keeps the layout it was created with; ` +
+        'restore the matching schema or migrate into a fresh one.'
+    );
+  }
+}
+
+/**
+ * The layout migrations target: the layout `rows` has; else the one the
+ * ledger's baseline records; else `fallback`, then `SUBSTRATE_STORAGE_LAYOUT`,
+ * then `partitioned`. Throws when `rows` and the ledger disagree.
+ */
+async function resolveLayout(
+  sql: Sql,
+  applied: ReadonlySet<string>,
+  fallback: StorageLayout | undefined
+): Promise<StorageLayout> {
+  const recorded: StorageLayout | undefined = applied.has(LEGACY_BASELINE.version)
+    ? 'legacy'
+    : applied.has(PARTITIONED_BASELINE.version)
+      ? 'partitioned'
+      : undefined;
+  const actual = await detectLayout(sql);
+  if (actual === 'absent') {
+    return recorded ?? fallback ?? envLayout() ?? 'partitioned';
+  }
+  if (recorded !== undefined && recorded !== actual) {
+    throw new StorageLayoutMismatchError(
+      actual,
+      recorded === 'legacy' ? LEGACY_BASELINE.version : PARTITIONED_BASELINE.version
+    );
+  }
+  return actual;
+}
+
+function envLayout(): StorageLayout | undefined {
+  const v = process.env.SUBSTRATE_STORAGE_LAYOUT;
+  if (v === undefined || v === '') return undefined;
+  if (v === 'legacy' || v === 'partitioned') return v;
+  throw new Error(`SUBSTRATE_STORAGE_LAYOUT must be 'legacy' or 'partitioned', got '${v}'`);
 }
 
 /**
@@ -190,6 +264,12 @@ export interface RunMigrationsOptions {
    * Production bootstraps shouldn't pass this — let the env decide.
    */
   enforceUuidCheck?: boolean;
+  /**
+   * The layout for a database with no `rows` yet. Ignored once `rows` exists,
+   * since a database keeps its layout. Defaults to `SUBSTRATE_STORAGE_LAYOUT`,
+   * then `partitioned`.
+   */
+  layout?: StorageLayout;
 }
 
 export async function runMigrations(sql: Sql, opts: RunMigrationsOptions = {}): Promise<void> {
@@ -198,11 +278,12 @@ export async function runMigrations(sql: Sql, opts: RunMigrationsOptions = {}): 
   // The lock is polled with pg_try_advisory_lock, not blocking
   // pg_advisory_lock: a blocked waiter holds a transaction open, and the
   // holder's CREATE INDEX CONCURRENTLY waits on it, which deadlocks.
-  await withMigrationLock(sql, (conn) => runMigrationsLocked(conn, opts));
+  await withMigrationLock(sql, (conn) => runMigrationsLocked(sql, conn, opts));
 }
 
 /**
- * Runs `fn` while holding the migration advisory lock on one reserved connection.
+ * Runs `fn` while holding the migration advisory lock of the current schema on
+ * one reserved connection.
  *
  * The lock and unlock must share a session: through the pool, the unlock can
  * land on another connection and leave the lock held. `fn` is handed that same
@@ -222,25 +303,36 @@ export async function pendingMigrations(sql: Sql): Promise<string[]> {
     ledger?.present === true
       ? new Set((await sql<AppliedRow[]>`SELECT version FROM migrations`).map((r) => r.version))
       : new Set<string>();
-  return getMigrationList()
+  const layout = await resolveLayout(sql, applied, undefined);
+  return getMigrationList(undefined, layout)
     .map((m) => m.version)
     .filter((v) => !applied.has(v));
 }
 
-export async function withMigrationLock<T>(sql: Sql, fn: (conn: Sql) => Promise<T>): Promise<T> {
+/** Reserved connections whose session {@link withTableIndexLock} terminated. */
+const retired = new WeakSet<ReservedSql>();
+
+export async function withMigrationLock<T>(
+  sql: Sql,
+  fn: (conn: ReservedSql) => Promise<T>
+): Promise<T> {
   const lockConn = await sql.reserve();
   try {
     await acquireMigrationLock(lockConn);
     try {
       return await fn(lockConn);
     } finally {
-      const [row] = await lockConn<Array<{ released: boolean }>>`
-        SELECT pg_advisory_unlock(hashtext('substrate-migrations')) AS released
-      `;
-      if (row?.released === false) {
-        process.stderr.write(
-          'substrate migrations: advisory unlock reported the lock was not held by this session\n'
-        );
+      // A retired session released the lock as it ended; unlocking on it would
+      // only replace the error that retired it with a connection error.
+      if (!retired.has(lockConn)) {
+        const [row] = await lockConn<Array<{ released: boolean }>>`
+          SELECT pg_advisory_unlock(hashtext('substrate-migrations:' || current_schema())) AS released
+        `;
+        if (row?.released === false) {
+          process.stderr.write(
+            'substrate migrations: advisory unlock reported the lock was not held by this session\n'
+          );
+        }
       }
     }
   } finally {
@@ -248,17 +340,110 @@ export async function withMigrationLock<T>(sql: Sql, fn: (conn: Sql) => Promise<
   }
 }
 
+/** Per schema and table; `$1` is the table name. */
+const INDEX_LOCK_KEY = `hashtext('substrate-index-build:' || current_schema() || '.' || $1::text)`;
+
+/** `withTableIndexLock` gave up waiting because its signal aborted. */
+export class IndexLockAborted extends Error {
+  constructor() {
+    super('index build lock wait aborted');
+    this.name = 'IndexLockAborted';
+  }
+}
+
+/**
+ * Runs `fn` while `conn` holds the index-build advisory lock of `table` (in the
+ * current schema). Every engine CREATE or DROP INDEX CONCURRENTLY, swap and
+ * statistics step on a table runs under it: two concurrent builds on one table
+ * deadlock in Postgres (measured on pg17: one is aborted with 40P01), while
+ * builds on different tables do not. It is taken after the migration lock,
+ * never before it, so a holder of this lock never waits for the migration lock.
+ *
+ * `conn` must be a connection reserved from `sql` with no open transaction,
+ * and so with no snapshot a holder's concurrent build would wait for. The lock
+ * is polled, as the migration lock is, and the poll gives up with
+ * {@link IndexLockAborted} once `signal` aborts. If the lock cannot be
+ * released, `conn`'s session is retired from `sql`, and the caller's
+ * `release()` of `conn` becomes a no-op, so it never returns to the pool.
+ */
+export async function withTableIndexLock<T>(
+  sql: Sql,
+  conn: ReservedSql,
+  table: string,
+  signal: AbortSignal | undefined,
+  fn: () => Promise<T>
+): Promise<T> {
+  let session: Session;
+  for (;;) {
+    if (signal?.aborted === true) throw new IndexLockAborted();
+    const [row] = await conn.unsafe<Array<Session & { acquired: boolean }>>(
+      `SELECT pg_try_advisory_lock(${INDEX_LOCK_KEY}) AS acquired, ${SESSION_COLUMNS}`,
+      [table]
+    );
+    if (row?.acquired === true) {
+      session = row;
+      break;
+    }
+    await abortableSleep(250, signal);
+  }
+  try {
+    return await fn();
+  } finally {
+    await releaseTableIndexLock(sql, conn, table, session);
+  }
+}
+
+/** Unlocks what {@link withTableIndexLock} took, or retires the session that may still hold it. */
+async function releaseTableIndexLock(
+  sql: Sql,
+  conn: ReservedSql,
+  table: string,
+  session: Session
+): Promise<void> {
+  const unlock = () => conn.unsafe(`SELECT pg_advisory_unlock(${INDEX_LOCK_KEY})`, [table]);
+  try {
+    // A cancel sent for fn's last statement can land on the unlock instead.
+    // It is one-shot, so a second unlock normally holds.
+    await unlock().catch(unlock);
+  } catch (err) {
+    // The session may still hold the lock, so it must not be pooled.
+    if (!(await retireSession(sql, session))) {
+      retired.add(conn);
+      conn.release = () => {};
+    }
+    throw err;
+  }
+}
+
+/** Resolves after `ms`, or as soon as `signal` aborts. */
+export function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const done = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener('abort', done, { once: true });
+  });
+}
+
 async function acquireMigrationLock(sql: Sql): Promise<void> {
   while (true) {
     const result = await sql<Array<{ acquired: boolean }>>`
-      SELECT pg_try_advisory_lock(hashtext('substrate-migrations')) AS acquired
+      SELECT pg_try_advisory_lock(hashtext('substrate-migrations:' || current_schema())) AS acquired
     `;
     if (result[0]?.acquired === true) return;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
 }
 
-async function runMigrationsLocked(sql: Sql, opts: RunMigrationsOptions): Promise<void> {
+/** `sql` is the pool; `conn` holds the migration lock and runs every statement. */
+async function runMigrationsLocked(
+  pool: Sql,
+  sql: ReservedSql,
+  opts: RunMigrationsOptions
+): Promise<void> {
   if (opts.force === true) {
     await sql`DROP TABLE IF EXISTS migrations`;
   }
@@ -296,7 +481,7 @@ async function runMigrationsLocked(sql: Sql, opts: RunMigrationsOptions): Promis
   //
   // Iterates the FULL list including gated 0002, even when the gate is off:
   // a previously applied gated migration must still be rehashed.
-  const REHASH_LIST = getMigrationList(true);
+  const REHASH_LIST = [...getMigrationList(true), normalise(PARTITIONED_BASELINE)];
   const buildSha = process.env.SUBSTRATE_BUILD_SHA ?? 'unknown';
   for (const migration of REHASH_LIST) {
     const recorded = appliedByVersion.get(migration.version);
@@ -319,13 +504,14 @@ async function runMigrationsLocked(sql: Sql, opts: RunMigrationsOptions): Promis
     appliedByVersion.set(migration.version, current);
   }
 
-  for (const migration of getMigrationList(opts.enforceUuidCheck)) {
+  const layout = await resolveLayout(sql, new Set(appliedByVersion.keys()), opts.layout);
+  for (const migration of getMigrationList(opts.enforceUuidCheck, layout)) {
     const recorded = appliedByVersion.get(migration.version);
     if (recorded !== undefined) {
       // The rehash pass above guarantees the recorded checksum is current.
       continue;
     }
-    await applyOneMigration(sql, migration);
+    await applyOneMigration(pool, sql, migration);
   }
 }
 
@@ -337,7 +523,7 @@ async function runMigrationsLocked(sql: Sql, opts: RunMigrationsOptions): Promis
  * succeeds, so a partial concurrent failure leaves the migration "in progress"
  * and a re-run (statements are IF [NOT] EXISTS guarded) resumes it.
  */
-async function applyOneMigration(sql: Sql, migration: Migration): Promise<void> {
+async function applyOneMigration(pool: Sql, sql: ReservedSql, migration: Migration): Promise<void> {
   if (migration.txStatements.length > 0) {
     // Explicit statements: `sql` is the reserved lock connection, which has no begin().
     await sql.unsafe('BEGIN');
@@ -351,18 +537,24 @@ async function applyOneMigration(sql: Sql, migration: Migration): Promise<void> 
       throw err;
     }
   }
-  for (const stmt of migration.concurrentStatements) {
-    try {
-      await dropInvalidIndexFor(sql, stmt);
-      await sql.unsafe(stmt);
-    } catch (err) {
-      process.stderr.write(
-        `migration ${migration.version}: concurrent-phase failure on statement; ` +
-          `tx-phase changes are durable, re-run to resume concurrent phase: ` +
-          `${err instanceof Error ? err.message : String(err)}\n`
-      );
-      throw err;
+  const concurrentPhase = async (): Promise<void> => {
+    for (const stmt of migration.concurrentStatements) {
+      try {
+        await dropInvalidIndexFor(sql, stmt);
+        await sql.unsafe(stmt);
+      } catch (err) {
+        process.stderr.write(
+          `migration ${migration.version}: concurrent-phase failure on statement; ` +
+            `tx-phase changes are durable, re-run to resume concurrent phase: ` +
+            `${err instanceof Error ? err.message : String(err)}\n`
+        );
+        throw err;
+      }
     }
+  };
+  // Builds CONCURRENTLY on `rows` among others, as the reconciler's legacy builds do.
+  if (migration.concurrentStatements.length > 0) {
+    await withTableIndexLock(pool, sql, 'rows', undefined, concurrentPhase);
   }
   await sql`
     INSERT INTO migrations (version, checksum)
@@ -380,12 +572,22 @@ const CONCURRENT_INDEX_RE =
  */
 async function dropInvalidIndexFor(sql: Sql, stmt: string): Promise<void> {
   const name = CONCURRENT_INDEX_RE.exec(stmt)?.[1];
-  if (name === undefined) return;
+  if (name !== undefined) await dropIndexIfInvalid(sql, name);
+}
+
+/**
+ * Drops index `name` (a bare lower-snake identifier) when it exists and is
+ * INVALID, as a failed concurrent build leaves it. True when it dropped one.
+ */
+export async function dropIndexIfInvalid(sql: Sql, name: string): Promise<boolean> {
+  if (!/^[a-z_][a-z0-9_]*$/.test(name)) throw new Error(`not a bare index name: '${name}'`);
   const [row] = await sql<Array<{ invalid: boolean }>>`
     SELECT NOT indisvalid AS invalid FROM pg_index WHERE indexrelid = to_regclass(${name})
   `;
+  if (row?.invalid !== true) return false;
   // The name matched an identifier pattern, which licenses `unsafe`.
-  if (row?.invalid === true) await sql.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS ${name}`);
+  await sql.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS ${name}`);
+  return true;
 }
 
 /**
@@ -419,10 +621,7 @@ export function generatedIdentifier(
   return `rows_${fold(namespace)}_${fold(type)}_${fold(field)}`.slice(0, 63 - tail.length) + tail;
 }
 
-/** Escape a value embedded in a single-quoted SQL string literal (defense-in-depth). */
-function sqlStringLiteral(s: string): string {
-  return s.replace(/'/g, "''");
-}
+const LIST_GIN_PREFIX = 'list-gin:';
 
 /**
  * Derives the tracked, idempotent CONCURRENTLY GIN migration for one indexed
@@ -434,12 +633,12 @@ export function deriveListIndexMigration(f: IndexedListField): MigrationInput {
   const type = sqlStringLiteral(f.type);
   const field = sqlStringLiteral(f.field);
   return {
-    version: `list-gin:${f.namespace}:${f.type}:${f.field}`,
+    version: `${LIST_GIN_PREFIX}${f.namespace}:${f.type}:${f.field}`,
     txStatements: [],
     concurrentStatements: [
       `CREATE INDEX CONCURRENTLY IF NOT EXISTS ${name}\n` +
-        `  ON rows USING GIN ((body -> '${field}') jsonb_path_ops)\n` +
-        `  WHERE namespace = '${ns}' AND type = '${type}' AND deleted_at IS NULL`
+        `  ON rows USING GIN ((body -> ${field}) jsonb_path_ops)\n` +
+        `  WHERE namespace = ${ns} AND type = ${type} AND deleted_at IS NULL`
     ]
   };
 }
@@ -449,11 +648,17 @@ export function deriveListIndexMigration(f: IndexedListField): MigrationInput {
  * advisory-locked machinery as the static list. Called after plugins load,
  * since `runMigrations` has no field-def knowledge. Idempotent: applied
  * versions are skipped.
+ *
+ * On the partitioned layout the list/json GIN migrations are skipped: those
+ * indexes live on each type's partition, built by `reconcileTypeIndexes`, and
+ * Postgres cannot build one CONCURRENTLY on the partitioned parent.
  */
 export async function runDerivedMigrations(
   sql: Sql,
-  derived: ReadonlyArray<MigrationInput>
+  all: ReadonlyArray<MigrationInput>
 ): Promise<void> {
+  const partitioned = all.length > 0 && (await detectLayout(sql)) === 'partitioned';
+  const derived = partitioned ? all.filter((m) => !m.version.startsWith(LIST_GIN_PREFIX)) : all;
   if (derived.length === 0) return;
   await withMigrationLock(sql, async (conn) => {
     await conn`
@@ -465,10 +670,7 @@ export async function runDerivedMigrations(
     `;
     const applied = await conn<Array<{ version: string }>>`SELECT version FROM migrations`;
     const appliedVersions = new Set(applied.map((r) => r.version));
-    for (const input of derived) {
-      const migration = normalise(input);
-      if (appliedVersions.has(migration.version)) continue;
-      await applyOneMigration(conn, migration);
-    }
+    const pending = derived.map(normalise).filter((m) => !appliedVersions.has(m.version));
+    for (const migration of pending) await applyOneMigration(sql, conn, migration);
   });
 }

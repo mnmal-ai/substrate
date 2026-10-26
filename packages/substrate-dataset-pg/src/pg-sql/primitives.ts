@@ -6,11 +6,12 @@
  * SQL-injection contract: every caller-supplied
  * value flows through postgres.js's parameterised tagged-template slots.
  * `sql.unsafe(...)` is used ONLY for identifiers/cast suffixes drawn from
- * closed constant maps in this file, never for caller input.
+ * closed constant maps in this file, and for field names inlined as escaped
+ * literals by `sqlStringLiteral`.
  */
 
 import type { Id } from '@mnmal-ai/substrate-types';
-import { UnsupportedFilterError } from '@mnmal-ai/substrate-types';
+import { normalizeIsoTimestamp, UnsupportedFilterError } from '@mnmal-ai/substrate-types';
 import type { PendingQuery, Row as PgRow, Sql, TransactionSql } from 'postgres';
 
 export type Fragment = PendingQuery<PgRow[]>;
@@ -109,7 +110,9 @@ export const NON_BODY_FIELD_KEYS = new Set(['_metadata', '_deletedAt', 'shortId'
  */
 export type BodyOrderByCast = 'numeric' | 'timestamptz' | 'boolean';
 
-const isoOf = (v: unknown): string => (v instanceof Date ? v.toISOString() : String(v));
+/** An operand's text: the shared ISO grammar in its explicit-offset form (no offset is UTC), as `substrate_ts` reads a stored value. */
+const isoOf = (v: unknown): string =>
+  v instanceof Date ? v.toISOString() : (normalizeIsoTimestamp(String(v)) ?? String(v));
 
 /**
  * A timestamptz parameter, bound as TEXT and cast in SQL. When pg infers a
@@ -125,6 +128,79 @@ export function tsParam(sql: Sql | TransactionSql, v: unknown): Fragment {
 /** {@link tsParam} for an array operand (`= ANY(...)`). */
 export function tsArrayParam(sql: Sql | TransactionSql, vs: unknown[]): Fragment {
   return sql`${vs.map(isoOf)}::text[]::timestamptz[]`;
+}
+
+/**
+ * A complete SQL string literal for `s`: `'o''neil'`. A value holding a
+ * backslash takes the `E'…'` form with the backslash doubled, because in a
+ * plain literal `standard_conforming_strings = off` would read `\'` as an
+ * escaped quote and let the value break out. Without a backslash the plain
+ * form reads the same under either setting, and keeps the text of existing
+ * index DDL unchanged. pg literals cannot carry NUL, so that is refused.
+ */
+export function sqlStringLiteral(s: string): string {
+  if (s.includes('\0')) {
+    throw new UnsupportedFilterError(s, '<name>', 'refused: the field name contains NUL');
+  }
+  const quoted = s.replace(/'/g, "''");
+  return s.includes('\\') ? `E'${quoted.replace(/\\/g, '\\\\')}'` : `'${quoted}'`;
+}
+
+/**
+ * Body-field expressions as SQL TEXT, with every name inlined as a literal.
+ * The compiler and the index DDL both build from these, because an
+ * expression index serves only a filter whose expression matches it.
+ */
+const jsonSql = (path: readonly string[]): string =>
+  `body${path.map((p) => ` -> ${sqlStringLiteral(p)}`).join('')}`;
+const rawTextSql = (path: readonly string[]): string =>
+  `(${jsonSql(path.slice(0, -1))} ->> ${sqlStringLiteral(path[path.length - 1] as string)})`;
+const textSql = (path: readonly string[]): string => `(${rawTextSql(path)} COLLATE "C")`;
+const numSql = (path: readonly string[]): string => `substrate_num(${jsonSql(path)})`;
+const tsSql = (path: readonly string[]): string => `substrate_ts(${jsonSql(path)})`;
+
+/** A field name as an inlined SQL literal: `'o''neil'`. */
+export function fieldLit(sql: Sql | TransactionSql, name: string): Fragment {
+  return sql.unsafe(sqlStringLiteral(name));
+}
+
+/** `((body -> 'a' ->> 'b') COLLATE "C")`: the one text expression for compares and sorts. */
+export function bodyText(sql: Sql | TransactionSql, path: readonly string[]): Fragment {
+  return sql.unsafe(textSql(path));
+}
+
+/** `(body -> 'a' ->> 'b')` uncollated, for ILIKE, which a "C" collation would not case-fold. */
+export function bodyRawText(sql: Sql | TransactionSql, path: readonly string[]): Fragment {
+  return sql.unsafe(rawTextSql(path));
+}
+
+/** `(body -> 'a' -> 'b')`: the leaf stays jsonb. */
+export function bodyJson(sql: Sql | TransactionSql, path: readonly string[]): Fragment {
+  return sql.unsafe(`(${jsonSql(path)})`);
+}
+
+/** `substrate_num(body -> …)`: the number, or NULL for any other jsonb. */
+export function bodyNum(sql: Sql | TransactionSql, path: readonly string[]): Fragment {
+  return sql.unsafe(numSql(path));
+}
+
+/** `substrate_ts(body -> …)`: the instant, or NULL for anything but an ISO date or date-time string. */
+export function bodyTs(sql: Sql | TransactionSql, path: readonly string[]): Fragment {
+  return sql.unsafe(tsSql(path));
+}
+
+/** The DDL text of the expression the compiler emits for a top-level field. */
+export function indexExpressionSql(kind: 'text' | 'number' | 'date', field: string): string {
+  return kind === 'text' ? textSql([field]) : kind === 'number' ? numSql([field]) : tsSql([field]);
+}
+
+/**
+ * `cond` where `expr` is not NULL, else FALSE, never NULL, so a caller's NOT
+ * stays sound. The bare `cond` conjunct keeps it index-servable, where a
+ * COALESCE would hide it from the planner.
+ */
+export function notNullAnd(sql: Sql | TransactionSql, expr: Fragment, cond: Fragment): Fragment {
+  return sql`(${expr} IS NOT NULL AND ${cond})`;
 }
 
 export type SqlJsonValue = Parameters<Sql['json']>[0];

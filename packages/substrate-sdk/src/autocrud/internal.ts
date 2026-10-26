@@ -1,4 +1,4 @@
-import { canonicalVocabValue } from '@mnmal-ai/substrate-types';
+import { canonicalVocabValue, isIsoTimestamp } from '@mnmal-ai/substrate-types';
 
 /**
  * Internal autoCRUD utilities. Not exported from the package.
@@ -219,29 +219,6 @@ export function assertNoNullOnNonNullable(
     `Cannot ${phase} with null for non-nullable field${offending.length === 1 ? '' : 's'} ${names} — omit ${offending.length === 1 ? 'it' : 'them'} or send a value.`,
     { field: first, fields: offending, phase }
   );
-}
-
-// ISO 8601 date or date-time, the subset pg's timestamptz input also accepts.
-// Anchored and free of nested quantifiers, so no backtracking blow-up. pg
-// caps a zone offset at ±15:59 ("time zone displacement out of range").
-const ISO_TIMESTAMP =
-  /^(\d{4})-(\d{2})-(\d{2})(?:[T ]([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,9})?)?)?(?:Z|[+-](?:0\d|1[0-5])(?::?[0-5]\d)?)?$/;
-
-/**
- * Is this a timestamp pg will cast? `Date.parse` alone is not the test: it
- * accepts `"1"` (2001), `"Oct 21 2026"`, and rolls `"2026-02-30"` to March,
- * all of which pg's `::timestamptz` rejects, which is the failure this guards.
- */
-function isIsoTimestamp(v: string): boolean {
-  const m = ISO_TIMESTAMP.exec(v);
-  if (m === null) return false;
-  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
-  if (y < 1 || mo < 1 || mo > 12 || d < 1) return false; // pg has no year 0000
-  // A day that exists in that month. setUTCFullYear, not Date.UTC, which maps
-  // years 0-99 onto 1900-1999 and so would judge 0004-02-29 by 1904.
-  const probe = new Date(0);
-  probe.setUTCFullYear(y, mo - 1, d);
-  return probe.getUTCDate() === d;
 }
 
 /**

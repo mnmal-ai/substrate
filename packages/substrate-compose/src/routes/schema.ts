@@ -194,14 +194,22 @@ export function schemaForTypeRoute(engine: Engine): HttpHandler {
       // one per field.
       ...operatorContract(engine, ns)
     };
+    // Absent when the dataset keeps no per-type storage. Not part of
+    // `schemaVersion`: it changes as indexes build, with no schema change.
+    // Introspection never fails the schema route: a catalog error omits it.
+    const storage = await engine
+      .datasetFor(ns)
+      ?.describeStorage?.(type)
+      .catch(() => undefined);
+    const withStorage = storage === undefined ? base : { ...base, storage };
     // `mutationNames` rather than nothing: a caller that asked for fields still
     // has to know which mutations exist to write at all, and the names cost a
     // line where the inlined contracts cost five copies of the field block.
     return jsonResponse(
       200,
       shape === 'fields'
-        ? { ...base, mutationNames: Object.keys(mutations).sort() }
-        : { ...base, mutations }
+        ? { ...withStorage, mutationNames: Object.keys(mutations).sort() }
+        : { ...withStorage, mutations }
     );
   };
 }

@@ -13,18 +13,21 @@
 import {
   assertCannotWriteOutsideTestDatabases,
   assertTestDatabase,
-  preparePgTestSchema
+  preparePgTestSchema,
+  recreatePgTestSchema,
+  selectPgTestLayout
 } from '@mnmal-ai/substrate-dataset-pg/testing';
 
+// Once per storage layout, each in a schema rebuilt every run.
 export default async function setup(): Promise<void> {
+  const { packageName } = selectPgTestLayout('substrate-recall');
   // Before preparePgTestSchema, which writes. Here rather than in setupFiles
   // because the reach probe opens a connection per database.
-  assertTestDatabase(process.env.POSTGRES_URL, { packageName: 'substrate-recall' });
-  await assertCannotWriteOutsideTestDatabases(process.env.POSTGRES_URL, {
-    packageName: 'substrate-recall'
-  });
+  assertTestDatabase(process.env.POSTGRES_URL, { packageName });
+  await assertCannotWriteOutsideTestDatabases(process.env.POSTGRES_URL, { packageName });
   const isolated = await preparePgTestSchema(process.env.POSTGRES_URL, {
-    packageName: 'substrate-recall'
+    packageName,
+    createSchema: recreatePgTestSchema
   });
   if (isolated !== undefined) process.env.POSTGRES_URL = isolated;
 }

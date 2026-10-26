@@ -19,6 +19,7 @@ import { generatedIdentifier } from '../src/migrate.js';
 import { buildWhere } from '../src/pg-sql.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
+const PARTITIONED = process.env.SUBSTRATE_STORAGE_LAYOUT === 'partitioned';
 const NS = 'jpath_ns';
 
 const ROWS: Row[] = [
@@ -155,11 +156,22 @@ describe.skipIf(!POSTGRES_URL)('json path parity', () => {
 
   // `field.json({ indexed: true })` derives the same per-field GIN a list
   // field gets (there is no whole-body GIN), so the containment must be
-  // written against `(body -> field)` to match it.
+  // written against `(body -> field)` to match it. On the partitioned layout
+  // the reconciler builds it on the type's partition, under the same name.
   it('eq and has are served by the derived per-field GIN', async () => {
-    await runDerivedMigrations(sql, [
-      deriveListIndexMigration({ namespace: NS, type: 'J', field: 'values' })
-    ]);
+    if (PARTITIONED) {
+      await new PgDataset({
+        namespace: NS,
+        sql,
+        typeDefLookup: () => ({
+          fields: { values: { kind: 'scalar', type: 'json', indexed: true } }
+        })
+      }).ensureTypeStorage('J');
+    } else {
+      await runDerivedMigrations(sql, [
+        deriveListIndexMigration({ namespace: NS, type: 'J', field: 'values' })
+      ]);
+    }
     await pg.write(
       'J',
       Array.from({ length: 2000 }, (_, i) => ({

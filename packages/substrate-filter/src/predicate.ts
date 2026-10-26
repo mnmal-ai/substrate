@@ -16,6 +16,7 @@ import {
   type FieldDef,
   type FieldPredicate,
   METADATA_FILTER_FIELDS,
+  normalizeIsoTimestamp,
   type Row,
   UnsupportedFilterError,
   type WhereClause
@@ -275,30 +276,18 @@ function applyOp(
     case 'neq':
       return !equals(value, operand, asDate);
     case 'gt':
-      // null value cannot satisfy an ordered comparison — null sorts last in
-      // orderBy (matches pg NULLS LAST) but is excluded from range filters.
-      if (value == null) return false;
-      return compareFilterValues(value, operand, asDate) > 0;
+      return rangeCmp(value, operand, asDate) > 0;
     case 'gte':
-      if (value == null) return false;
-      return compareFilterValues(value, operand, asDate) >= 0;
+      return rangeCmp(value, operand, asDate) >= 0;
     case 'lt':
-      if (value == null) return false;
-      return compareFilterValues(value, operand, asDate) < 0;
+      return rangeCmp(value, operand, asDate) < 0;
     case 'lte':
-      if (value == null) return false;
-      return compareFilterValues(value, operand, asDate) <= 0;
+      return rangeCmp(value, operand, asDate) <= 0;
     case 'between': {
       if (!Array.isArray(operand) || operand.length !== 2) {
         throw new UnsupportedFilterError(field, op, 'requires a two-element [low, high] array');
       }
-      // A null row value cannot satisfy an ordered comparison — a data fact,
-      // not a caller error, so it stays a plain non-match.
-      if (value == null) return false;
-      return (
-        compareFilterValues(value, operand[0], asDate) >= 0 &&
-        compareFilterValues(value, operand[1], asDate) <= 0
-      );
+      return rangeCmp(value, operand[0], asDate) >= 0 && rangeCmp(value, operand[1], asDate) <= 0;
     }
     case 'in':
     case 'nin': {
@@ -344,11 +333,30 @@ function equals(a: unknown, b: unknown, asDate = false): boolean {
   // rows whose field is absent (value === undefined), diverging from pg.
   if (a == null && b == null) return true;
   if (asDate || a instanceof Date || b instanceof Date) {
-    const at = toMicros(a);
+    // A stored value pg's substrate_ts reads as NULL never matches.
+    const at = storedMicros(a);
     const bt = toMicros(b);
-    if (at !== undefined && bt !== undefined) return at === bt;
+    return at !== undefined && bt !== undefined && at === bt;
   }
   return a === b;
+}
+
+/**
+ * {@link compareFilterValues} for a range operator, or NaN, which fails every
+ * ordered test, where pg's compare is NULL: a null value, a non-number value
+ * against a number operand (substrate_num), or either side not an instant in
+ * date mode (substrate_ts).
+ */
+function rangeCmp(value: unknown, operand: unknown, asDate: boolean): number {
+  if (value == null) return Number.NaN;
+  if (typeof operand === 'number' && typeof value !== 'number') return Number.NaN;
+  if (
+    (asDate || value instanceof Date || operand instanceof Date) &&
+    (storedMicros(value) === undefined || toMicros(operand) === undefined)
+  ) {
+    return Number.NaN;
+  }
+  return compareFilterValues(value, operand, asDate);
 }
 
 /**
@@ -372,16 +380,50 @@ export function compareFilterValues(a: unknown, b: unknown, asDate = false): num
 }
 
 /**
- * Microseconds since the epoch, pg's timestamptz precision. `Date.parse` keeps
- * only milliseconds, so the 4th–6th fraction digits are added back. A number
- * is read as epoch milliseconds; anything unparseable is `undefined`.
+ * {@link toMicros} for a stored value: `undefined` wherever `substrate_ts` is
+ * NULL, a number included. Only the shared ISO grammar is read; operands are
+ * cast leniently, as pg's `tsParam` casts them.
  */
-function toMicros(v: unknown): number | undefined {
-  if (v instanceof Date) return v.getTime() * 1000;
-  if (typeof v === 'number') return Number.isFinite(v) ? v * 1000 : undefined;
+function storedMicros(v: unknown): bigint | undefined {
+  if (v instanceof Date) return toMicros(v);
+  if (typeof v !== 'string' || normalizeIsoTimestamp(v) === undefined) return undefined;
+  return toMicros(v);
+}
+
+/**
+ * A row value as pg sorts it: a date-field value `substrate_ts` cannot read, or
+ * a number-field value that is not a number, becomes null and sorts last.
+ */
+export function asSortValue(field: string, value: unknown, fieldDefOf?: FieldDefOf): unknown {
+  if (value == null) return value;
+  if (isDateField(field, fieldDefOf)) return storedMicros(value) === undefined ? null : value;
+  const def = METADATA_FILTER_FIELDS[field] ?? fieldDefOf?.(field);
+  if (def?.kind === 'scalar' && def.type === 'number' && typeof value !== 'number') return null;
+  return value;
+}
+
+/**
+ * Microseconds since the epoch, pg's timestamptz precision, as a bigint: a
+ * double is exact only to 2^53 µs (about 1685-2255), and the grammar spans
+ * years 0001-9999. `Date.parse` keeps only milliseconds, so the 4th-6th
+ * fraction digits are added back. A number is read as epoch milliseconds;
+ * anything unparseable is `undefined`.
+ */
+function toMicros(v: unknown): bigint | undefined {
+  if (v instanceof Date) return msToMicros(v.getTime());
+  if (typeof v === 'number') return msToMicros(v);
   if (typeof v !== 'string') return undefined;
-  const ms = Date.parse(v);
-  if (Number.isNaN(ms)) return undefined;
-  const frac = /T[\d:]+\.(\d+)/.exec(v)?.[1] ?? '';
-  return ms * 1000 + Number(frac.padEnd(6, '0').slice(3, 6));
+  // The grammar's own form (no offset is UTC); anything else as Date.parse reads it.
+  const iso = normalizeIsoTimestamp(v) ?? v;
+  const micros = msToMicros(Date.parse(iso));
+  if (micros === undefined) return undefined;
+  const frac = /[T ][\d:]+\.(\d+)/.exec(iso)?.[1] ?? '';
+  return micros + BigInt(frac.padEnd(6, '0').slice(3, 6));
+}
+
+/** Epoch milliseconds as microseconds, exact: `ms * 1000` as a double is not, past 2^53. */
+function msToMicros(ms: number): bigint | undefined {
+  if (!Number.isFinite(ms)) return undefined;
+  const whole = Math.floor(ms);
+  return BigInt(whole) * 1000n + BigInt(Math.round((ms - whole) * 1000));
 }

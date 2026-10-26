@@ -23,6 +23,7 @@ import type {
 import { applyFieldProposal, applyTypeProposal } from './apply.js';
 import type { PubSub } from './config.js';
 import { isProposableNamespace } from './control-plane.js';
+import { ensureStorageAfterCommit } from './engine-write.js';
 import type { FieldSpecJson } from './field-spec-json.js';
 import { defineProposalTypes } from './namespace.js';
 import { CLUSTER_CHANNEL } from './propose-namespace-resolver.js';
@@ -71,6 +72,7 @@ export async function applyProposalFromNotification(
         dataset: binding.dataset,
         edges: binding.edges
       });
+      ensureStorageAfterCommit(undefined, binding.dataset, row.typeName as string);
     }
     return;
   }
@@ -91,6 +93,7 @@ export async function applyProposalFromNotification(
           dataset: binding.dataset,
           edges: binding.edges
         });
+        ensureStorageAfterCommit(undefined, binding.dataset, row.targetType as string);
       }
     }
   }
@@ -140,7 +143,9 @@ export async function reconcileNamespace(args: ReconcileArgs): Promise<void> {
       });
     } catch (err) {
       args.onSkip?.(row, err);
+      continue;
     }
+    ensureStorageAfterCommit(undefined, binding.dataset, row.typeName as string);
   }
 
   const fieldRows = await binding.dataset.read('FieldProposal', {
@@ -171,7 +176,9 @@ export async function reconcileNamespace(args: ReconcileArgs): Promise<void> {
       });
     } catch (err) {
       args.onSkip?.(row, err);
+      continue;
     }
+    ensureStorageAfterCommit(undefined, binding.dataset, row.targetType as string);
   }
 }
 

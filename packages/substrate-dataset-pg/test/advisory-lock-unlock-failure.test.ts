@@ -4,9 +4,10 @@
  * Runs without pg: the reserved connection is a fake.
  */
 
-import type { Sql } from 'postgres';
+import type { ReservedSql, Sql } from 'postgres';
 import { describe, expect, it } from 'vitest';
 import { tryWithPgAdvisoryLock } from '../src/index.js';
+import { withMigrationLock, withTableIndexLock } from '../src/migrate.js';
 
 function fakeSql(failUnlock: boolean, max = 10) {
   const poolQueries: string[] = [];
@@ -67,5 +68,92 @@ describe('tryWithPgAdvisoryLock unlock failure', () => {
       value: 1
     });
     expect(f.released()).toBe(true);
+  });
+});
+
+describe('withTableIndexLock unlock failure', () => {
+  /** A reserved connection whose unlocks fail `failures` times, and the pool it came from. */
+  function fakes(failures: number) {
+    const sent: string[] = [];
+    const pool: string[] = [];
+    let released = false;
+    let unlocks = 0;
+    const conn = {
+      unsafe: (text: string) => {
+        if (text.includes('pg_try_advisory_lock')) {
+          sent.push('lock');
+          return Promise.resolve([{ acquired: true, pid: 42, started: 't0' }]);
+        }
+        sent.push('unlock');
+        unlocks += 1;
+        return unlocks <= failures
+          ? Promise.reject(new Error('canceling statement due to user request'))
+          : Promise.resolve([{ pg_advisory_unlock: true }]);
+      },
+      release: () => {
+        released = true;
+      }
+    } as unknown as ReservedSql;
+    const sql = Object.assign(
+      (_s: TemplateStringsArray, ...values: unknown[]) => {
+        pool.push(`terminate ${values.join(',')}`);
+        return Promise.resolve([{ pg_terminate_backend: true }]);
+      },
+      { options: { max: 10 } }
+    ) as unknown as Sql;
+    return { sql, conn, sent, pool, released: () => released };
+  }
+
+  it('unlocks again when a late cancel lands on the first unlock', async () => {
+    const f = fakes(1);
+    expect(await withTableIndexLock(f.sql, f.conn, 'rows', undefined, async () => 1)).toBe(1);
+    expect(f.sent).toEqual(['lock', 'unlock', 'unlock']);
+    expect(f.pool).toEqual([]);
+  });
+
+  it('retires the session, and never pools it, when the second unlock fails too', async () => {
+    const f = fakes(2);
+    await expect(
+      withTableIndexLock(f.sql, f.conn, 'rows', undefined, async () => 1)
+    ).rejects.toThrow(/canceling statement/);
+    expect(f.pool).toEqual(['terminate 42,t0']);
+    f.conn.release();
+    expect(f.released()).toBe(false);
+  });
+});
+
+describe('withMigrationLock over a retired session', () => {
+  it('rethrows the original unlock error, not a connection error from its own unlock', async () => {
+    const sent: string[] = [];
+    let tableUnlocks = 0;
+    const tag = (strings: TemplateStringsArray) => {
+      const text = strings.join('?');
+      if (text.includes('pg_try_advisory_lock')) {
+        sent.push('migration lock');
+        return Promise.resolve([{ acquired: true }]);
+      }
+      sent.push('migration unlock');
+      return Promise.reject(new Error('write CONNECTION_ENDED'));
+    };
+    const conn = Object.assign(tag, {
+      unsafe: (text: string) => {
+        if (text.includes('pg_try_advisory_lock')) {
+          return Promise.resolve([{ acquired: true, pid: 42, started: 't0' }]);
+        }
+        tableUnlocks += 1;
+        return Promise.reject(new Error(`canceling statement due to user request ${tableUnlocks}`));
+      },
+      release: () => {
+        sent.push('release');
+      }
+    }) as unknown as ReservedSql;
+    const sql = Object.assign(() => Promise.resolve([{ pg_terminate_backend: true }]), {
+      options: { max: 10 },
+      reserve: () => Promise.resolve(conn)
+    }) as unknown as Sql;
+    await expect(
+      withMigrationLock(sql, (c) => withTableIndexLock(sql, c, 'rows', undefined, async () => 1))
+    ).rejects.toThrow('canceling statement due to user request 2');
+    expect(sent).toEqual(['migration lock']);
   });
 });

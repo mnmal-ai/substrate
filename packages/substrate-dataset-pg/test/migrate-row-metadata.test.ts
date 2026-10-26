@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runMigrations } from '../src/index.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
+const PARTITIONED = process.env.SUBSTRATE_STORAGE_LAYOUT === 'partitioned';
 
 describe.skipIf(!POSTGRES_URL)('row-metadata schema migration', () => {
   let sql: Sql;
@@ -49,9 +50,13 @@ describe.skipIf(!POSTGRES_URL)('row-metadata schema migration', () => {
     ]);
   });
 
-  it('adds composite partial indexes on (namespace, type, ts) — replaces single-col globals', async () => {
-    await runMigrations(sql);
-    const idxs = await sql<{ indexname: string; indexdef: string }[]>`
+  // Legacy only: a partitioned `rows` has no parent-level indexes. Its
+  // per-partition timestamp indexes are covered in index-reconciler.test.ts.
+  it.skipIf(PARTITIONED)(
+    'adds composite partial indexes on (namespace, type, ts) — replaces single-col globals',
+    async () => {
+      await runMigrations(sql);
+      const idxs = await sql<{ indexname: string; indexdef: string }[]>`
       SELECT indexname, indexdef FROM pg_indexes
       WHERE schemaname = current_schema() AND tablename = 'rows'
         AND indexname IN (
@@ -60,19 +65,20 @@ describe.skipIf(!POSTGRES_URL)('row-metadata schema migration', () => {
         )
       ORDER BY indexname
     `;
-    expect(idxs.map((i) => i.indexname)).toEqual([
-      'rows_ns_type_created_at_idx',
-      'rows_ns_type_updated_at_idx'
-    ]);
-    // Composite (namespace, type, ts DESC NULLS LAST) — leading namespace+type
-    // lets the planner seek the prefix and walk the timestamp in order.
-    expect(idxs[0]?.indexdef).toMatch(/\(namespace, type, created_at DESC NULLS LAST\)/);
-    expect(idxs[1]?.indexdef).toMatch(/\(namespace, type, updated_at DESC NULLS LAST\)/);
-    // Partial — tombstoned rows stay out of the index entirely.
-    for (const i of idxs) {
-      expect(i.indexdef).toMatch(/WHERE \(deleted_at IS NULL\)/);
+      expect(idxs.map((i) => i.indexname)).toEqual([
+        'rows_ns_type_created_at_idx',
+        'rows_ns_type_updated_at_idx'
+      ]);
+      // Composite (namespace, type, ts DESC NULLS LAST) — leading namespace+type
+      // lets the planner seek the prefix and walk the timestamp in order.
+      expect(idxs[0]?.indexdef).toMatch(/\(namespace, type, created_at DESC NULLS LAST\)/);
+      expect(idxs[1]?.indexdef).toMatch(/\(namespace, type, updated_at DESC NULLS LAST\)/);
+      // Partial — tombstoned rows stay out of the index entirely.
+      for (const i of idxs) {
+        expect(i.indexdef).toMatch(/WHERE \(deleted_at IS NULL\)/);
+      }
     }
-  });
+  );
 
   it('is idempotent — second run does not error', async () => {
     await runMigrations(sql);

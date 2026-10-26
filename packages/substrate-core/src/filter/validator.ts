@@ -38,6 +38,7 @@ import {
   type FieldDefStruct,
   type FieldKind,
   type FilterCapabilities,
+  isImpossibleIsoTimestamp,
   METADATA_FILTER_FIELDS,
   type OrderByClause,
   type TypeSchema,
@@ -311,7 +312,7 @@ function validatePrimitiveKind(
         );
       }
       return;
-    case 'scalar.date':
+    case 'scalar.date': {
       // Dates may be supplied as Date instances or ISO strings — the substrate
       // coerces at evaluation. Reject bare numbers / booleans explicitly.
       if (!(value instanceof Date) && typeof value !== 'string') {
@@ -321,7 +322,21 @@ function validatePrimitiveKind(
           path
         );
       }
+      // Refused here, once for every dataset: memory would roll Feb 30 over to
+      // March, and pg's cast would raise.
+      const field = path.slice(path[0] === 'where' ? 1 : 0, -1).join('.');
+      if (
+        (value instanceof Date && Number.isNaN(value.getTime())) ||
+        (typeof value === 'string' && isImpossibleIsoTimestamp(value))
+      ) {
+        throw new FilterValidationError(
+          'type_mismatch',
+          `operator '${op}' on '${field}': ${String(value)} is not a real date`,
+          path
+        );
+      }
       return;
+    }
     case 'crossRef':
       // crossRef.eq takes an id — string or number (mirrors `Id` in types/core).
       if (typeof value !== 'string' && typeof value !== 'number') {

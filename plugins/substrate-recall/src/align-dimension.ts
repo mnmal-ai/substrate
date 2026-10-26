@@ -12,9 +12,10 @@
  * left alone: re-typing it would reinterpret stored data. The caller decides
  * how to surface that.
  *
- * It runs in one transaction under an advisory lock, so replicas booting
- * together do not race on the DDL, and the table is locked before the
- * emptiness check so a concurrent insert cannot land between check and ALTER.
+ * It runs in one transaction under an advisory lock scoped to the schema, so
+ * replicas booting together do not race on the DDL, and the table is locked
+ * before the emptiness check so a concurrent insert cannot land between check
+ * and ALTER.
  */
 
 import type postgres from 'postgres';
@@ -76,7 +77,7 @@ export async function alignVectorDimensions(s: Sql, opts: AlignOptions): Promise
     );
   }
   return (await s.begin(async (tx) => {
-    await tx`SELECT pg_advisory_xact_lock(hashtext('substrate-recall-align'))`;
+    await tx`SELECT pg_advisory_xact_lock(hashtext('substrate-recall-align:' || current_schema()))`;
     return alignLocked(tx as unknown as Sql, opts);
   })) as AlignmentReport;
 }

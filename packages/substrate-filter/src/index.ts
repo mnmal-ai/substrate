@@ -51,6 +51,7 @@ export {
   preResolveExtensionOperatorsDetailed
 } from './pre-resolve-extension-operators.js';
 export {
+  asSortValue,
   assertWhereHonourable,
   compareFilterValues,
   evaluateWhere,

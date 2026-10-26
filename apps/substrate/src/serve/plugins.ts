@@ -16,6 +16,7 @@ import type { AuthConfig, ContractCheck } from '@mnmal-ai/substrate-compose';
 import { deriveListIndexMigration, runDerivedMigrations } from '@mnmal-ai/substrate-dataset-pg';
 import type {
   CoordinatorPlugin,
+  Dataset,
   KernelPlugin,
   NamespaceDefinition,
   SubstrateServer
@@ -28,6 +29,7 @@ import {
   filterRegistry,
   getAppliedMigrationIds,
   pendingMcpTools,
+  reconcileDeclaredStorage,
   recordMigrationApplied
 } from './wiring.js';
 
@@ -87,7 +89,8 @@ export async function loadServePlugins(opts: {
 /**
  * Compose substrate-tier plugins BEFORE coordinator compose, wiring each
  * KernelPlugin slot (filterOperators, kernelRoutes, mcpTools, migrations,
- * onKernelReady) into the host's registries.
+ * onKernelReady) into the host's registries. Declared storage is reconciled
+ * first, so kernel migrations run against it.
  */
 export async function composeKernelPhase(args: {
   kernel: KernelPlugin[];
@@ -96,8 +99,11 @@ export async function composeKernelPhase(args: {
   coordinators: CoordinatorPlugin[];
   kernelAuth: AuthConfig | null;
   trustedProxies: Set<string>;
+  datasetFor: (ns: string) => Dataset | undefined;
+  nsDefs: Map<string, NamespaceDefinition>;
 }): Promise<void> {
   const { kernel, server, storeSql, coordinators, kernelAuth, trustedProxies } = args;
+  await reconcileDeclaredStorage(args.datasetFor, args.nsDefs);
   await composeKernelPlugins(kernel, {
     sql: storeSql,
     // Coordinators are LOADED above but compose below, so their declared

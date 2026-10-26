@@ -41,11 +41,14 @@ import type {
   FieldDef,
   FilterCapabilities,
   Id,
+  IndexDecl,
   ReadParams,
   ReadResult,
   Row,
   RowMetadata,
+  StorageReport,
   TxScopeHandles,
+  TypeStorageReport,
   UpdateFieldRef,
   WriteOptions,
   WriteResult
@@ -53,15 +56,27 @@ import type {
 import type { Sql } from 'postgres';
 import { withPgAdvisoryLock } from './advisory-lock.js';
 import { NamespaceMismatch, ReservedField } from './errors.js';
+import {
+  describeTypeIndexes,
+  type IndexState,
+  indexesOn,
+  type ReconcileTypeIndexesArgs,
+  reconcileTypeIndexes,
+  undeclaredIndexes
+} from './index-reconciler.js';
+import { detectLayout, type StorageLayout } from './layout.js';
 import type { PgEdgesStore } from './pg-edges-store.js';
 import { PgShortIdStore } from './pg-short-id-store.js';
+import { sqlStringLiteral } from './pg-sql/primitives.js';
 import {
   asJsonValue,
   assembleRowMetadata,
   type BodyOrderByCast,
   buildBodyProjection,
   buildCursorCompare,
+  buildCursorNullTail,
   buildOrderBy,
+  buildProjectedOrderBy,
   buildSortKeyProjection,
   buildWhere,
   combineAnd,
@@ -72,9 +87,11 @@ import {
   type PromotedBodyColumnMap,
   type PromotedColumnLookup,
   resolveBodyOrderByCast,
-  resolvePromotedColumns
+  resolvePromotedColumns,
+  whereReferencesField
 } from './pg-sql.js';
 import { type PgHandle, txScopeIdFor } from './tx-scope.js';
+import { ensureTypeStorage, findPartition, storageWarnings } from './type-storage.js';
 
 // The pool-owned instance holds `Sql`; tx-scoped instances hold the
 // `TransactionSql` from `sql.begin(fn)`. Only `Sql` exposes `begin`, so that
@@ -87,6 +104,16 @@ import { type PgHandle, txScopeIdFor } from './tx-scope.js';
  * `resolveBodyOrderByCast`.
  */
 export type FieldDefLookup = (type: string, field: string) => FieldDef | undefined;
+
+/**
+ * A type's declared fields and indexes, or undefined when the type is unknown.
+ * Called with the asking dataset's namespace, so a `forNamespace` clone that
+ * inherits the lookup resolves its own types.
+ */
+export type TypeDefLookup = (
+  type: string,
+  namespace: string
+) => { fields: Record<string, FieldDef>; indexes?: IndexDecl[] } | undefined;
 
 export interface PgDatasetOptions {
   namespace: string;
@@ -126,10 +153,16 @@ export interface PgDatasetOptions {
    *   - `column` is a BARE name (`'severity'`, not `'r.severity'`) and is
    *     validated as an identifier at construction, because it is interpolated
    *     into SQL as an identifier.
-   *   - Text columns sort and range-compare `COLLATE "C"`, so an index meant
-   *     to serve those must be built `COLLATE "C"` too.
+   *   - Text columns compare `COLLATE "C"` in every operator, eq included,
+   *     so an index meant to serve them must key `(column COLLATE "C")`, as
+   *     declared `indexes` do.
    */
   promotedColumns?: PromotedBodyColumnMap;
+  /**
+   * The namespace's type definitions, which `ensureTypeStorage` builds the
+   * type's indexes from. Without it only the engine's own indexes are built.
+   */
+  typeDefLookup?: TypeDefLookup;
 }
 
 interface InternalPgSubstrateDatasetOptions {
@@ -145,6 +178,33 @@ interface InternalPgSubstrateDatasetOptions {
   fieldDefLookup?: FieldDefLookup;
   /** See `PgDatasetOptions.promotedColumns`. */
   promotedColumns?: PromotedBodyColumnMap;
+  /** Shared with the instance this one was derived from. */
+  layoutCache?: LayoutCache;
+  typeDefLookup?: TypeDefLookup;
+}
+
+/** An index whose build this process deferred, is running, or saw fail. */
+interface DeferredBuild {
+  state: 'pending' | 'building' | 'failed';
+  /** `<namespace>/<type>`. */
+  type: string;
+  /** Why it failed: an error code, then a short reason. */
+  error?: string;
+}
+
+/** The CHECKs the engine's own migrations put on `rows`; any other is plugin fan-out. */
+const ENGINE_CHECKS = [
+  'rows_created_by_kind_check',
+  'rows_updated_by_kind_check',
+  'rows_id_uuid_format'
+];
+
+/** Per pool, so every dataset on it reports what the others deferred. */
+const deferredBuilds = new WeakMap<object, Map<string, DeferredBuild>>();
+
+/** The detected layout, shared by an instance and every clone of it. */
+interface LayoutCache {
+  layout?: StorageLayout;
 }
 
 const RESERVED_DELETED_AT = '_deletedAt';
@@ -153,7 +213,7 @@ interface SubstrateRowRecord {
   id: string;
   body: Record<string, unknown>;
   deleted_at: Date | null;
-  /** Populated by the LEFT JOIN on short_ids; null when no binding exists. */
+  /** From short_ids; null when no binding exists. */
   short_id: number | null;
   // Row-metadata columns. NULL for legacy rows.
   created_at: Date | null;
@@ -187,6 +247,8 @@ export class PgDataset implements Dataset {
    */
   readonly #promotedColumns: PromotedBodyColumnMap;
   readonly #promotedFor: PromotedColumnLookup;
+  readonly #layoutCache: LayoutCache;
+  readonly #typeDefLookup: TypeDefLookup | null;
 
   constructor(options: PgDatasetOptions | InternalPgSubstrateDatasetOptions) {
     this.namespace = options.namespace;
@@ -210,6 +272,8 @@ export class PgDataset implements Dataset {
     this.#promotedColumns = options.promotedColumns ?? {};
     // Validates before any configured column name can reach `sql.unsafe`.
     this.#promotedFor = resolvePromotedColumns(this.#promotedColumns);
+    this.#layoutCache = ('layoutCache' in options ? options.layoutCache : undefined) ?? {};
+    this.#typeDefLookup = options.typeDefLookup ?? null;
   }
 
   /**
@@ -219,6 +283,18 @@ export class PgDataset implements Dataset {
    * Body values extract as text and are cast for comparison only; the filter
    * validator has already rejected type mismatches.
    */
+  /**
+   * `namespace = '<ns>' [AND type = '<type>']` with both inlined as literals,
+   * so plans prune partitions at plan time and a generic plan can still match
+   * a legacy partial index's `namespace = … AND type = …` predicate.
+   */
+  #scope(type?: string, alias = ''): Fragment {
+    const ns = `${alias}namespace = ${sqlStringLiteral(this.namespace)}`;
+    return this.#sql.unsafe(
+      type === undefined ? ns : `${ns} AND ${alias}type = ${sqlStringLiteral(type)}`
+    );
+  }
+
   async read(type: string, params: ReadParams): Promise<ReadResult> {
     const sql = this.#sql;
     const includeDeleted = params.includeDeleted === true;
@@ -243,10 +319,9 @@ export class PgDataset implements Dataset {
     }
 
     // Build WHERE fragment incrementally. Use table alias `r` to avoid
-    // ambiguity with the LEFT-joined short_ids alias `s`.
+    // ambiguity with the short_ids alias `s`.
     const clauses: Fragment[] = [];
-    clauses.push(sql`r.namespace = ${this.namespace}`);
-    clauses.push(sql`r.type = ${type}`);
+    clauses.push(this.#scope(type, 'r.'));
     if (hasIdFilter) clauses.push(sql`r.id = ANY(${idList})`);
     if (!includeDeleted) clauses.push(sql`r.deleted_at IS NULL`);
     // Maps a body field's declared kind to the cast applied to its extraction,
@@ -278,8 +353,12 @@ export class PgDataset implements Dataset {
 
     const orderByCastFor = bodyCastFor;
 
-    // Cursor: add a tuple-compare clause so the next page starts strictly
-    // after the cursor's (orderBy-values, id) tuple.
+    // Cursor: a tuple-compare clause so the page starts strictly after the
+    // cursor's (orderBy-values, id) tuple. It matches only non-null leading
+    // values when the cursor's is non-null; `tailSql` then selects the null
+    // tail that sorts after them, read only if the first query falls short.
+    let whereSql = combineAnd(sql, clauses);
+    let tailSql: Fragment | null = null;
     if (params.cursor !== undefined && params.cursor !== '') {
       const cursor = decodeCursor(params.cursor);
       const cursorFragment = buildCursorCompare(
@@ -290,13 +369,19 @@ export class PgDataset implements Dataset {
         orderByCastFor,
         this.#promotedFor
       );
-      if (cursorFragment !== null) clauses.push(cursorFragment);
+      const tail = buildCursorNullTail(
+        sql,
+        orderBy,
+        cursor.orderByValues,
+        orderByCastFor,
+        this.#promotedFor
+      );
+      if (tail !== null) tailSql = combineAnd(sql, [...clauses, tail]);
+      if (cursorFragment !== null) whereSql = combineAnd(sql, [...clauses, cursorFragment]);
     }
-
-    const whereSql = combineAnd(sql, clauses);
     const orderBySql = buildOrderBy(sql, orderBy, orderByCastFor, this.#promotedFor);
 
-    // Fetch one extra row to determine hasMore without a second query.
+    // Fetch one extra row to determine hasMore without a count query.
     const fetchLimit = limit !== undefined ? limit + 1 : undefined;
 
     // Ships only the requested top-level body keys when `fields` is given,
@@ -314,20 +399,73 @@ export class PgDataset implements Dataset {
       this.#promotedFor
     );
 
-    const rows = await sql<SubstrateRowRecord[]>`
-      SELECT r.id, ${bodyProjection} AS body, r.deleted_at, s.short_id,
-             r.created_at, r.updated_at,
-             r.created_by_kind, r.created_by_id,
-             r.updated_by_kind, r.updated_by_id${sortKeyProjection}
-      FROM rows r
-      LEFT JOIN short_ids s
-        ON s.namespace = r.namespace
-       AND s.type = r.type
-       AND s.row_id = r.id
-      WHERE ${whereSql}
-      ${orderBySql}
-      ${fetchLimit !== undefined ? sql`LIMIT ${fetchLimit}` : sql``}
-    `;
+    // A filter or sort on shortId needs `s.short_id` per candidate, so it
+    // joins before LIMIT. Otherwise the page query runs alone, with nothing
+    // parallel-restricted in it, and short_ids is probed once per row it
+    // returns: the LIMIT keeps the lateral lookup from being flattened into a
+    // join that a generic plan may hash over the type's whole short_ids.
+    // short_ids_row_uniq_idx makes either form match at most one row. The
+    // outer ORDER BY restores the page order over the projected sort keys.
+    const joinShortIds =
+      whereReferencesField(params.where, 'shortId') || orderBy.some(([f]) => f === 'shortId');
+    // Inlined so a generic plan costs the page at its real size rather than
+    // guessing 10% of the type, which favours a parallel full sort over an
+    // index. Safe to inline: `n` derives from `limit`, which is validated and
+    // floored above, and `BigInt()` throws on a non-integer.
+    const inlineLimit = (n: number | undefined): Fragment =>
+      n !== undefined ? sql.unsafe(`LIMIT ${BigInt(n)}`) : sql``;
+    // One page query: phase 1 with the cursor compare, or the null tail.
+    const page = (where: Fragment, n: number | undefined) =>
+      joinShortIds
+        ? sql<SubstrateRowRecord[]>`
+          SELECT r.id, ${bodyProjection} AS body, r.deleted_at, s.short_id,
+                 r.created_at, r.updated_at,
+                 r.created_by_kind, r.created_by_id,
+                 r.updated_by_kind, r.updated_by_id${sortKeyProjection}
+          FROM rows r
+          LEFT JOIN short_ids s
+            ON s.namespace = r.namespace
+           AND s.type = r.type
+           AND s.row_id = r.id
+          WHERE ${where}
+          ${orderBySql}
+          ${n !== undefined ? sql`LIMIT ${n}` : sql``}
+        `
+        : sql<SubstrateRowRecord[]>`
+          SELECT p.*, s.short_id
+          FROM (
+            SELECT r.id, ${bodyProjection} AS body, r.deleted_at,
+                   r.created_at, r.updated_at,
+                   r.created_by_kind, r.created_by_id,
+                   r.updated_by_kind, r.updated_by_id,
+                   r.namespace, r.type${sortKeyProjection}
+            FROM rows r
+            WHERE ${where}
+            ${orderBySql}
+            ${inlineLimit(n)}
+          ) p
+          LEFT JOIN LATERAL (
+            SELECT s.short_id FROM short_ids s
+            WHERE s.namespace = p.namespace AND s.type = p.type AND s.row_id = p.id
+            LIMIT 1
+          ) s ON true
+          ${buildProjectedOrderBy(sql, orderBy, sortKeyAliases, orderByCastFor, this.#promotedFor, 'p')}
+        `;
+
+    // Both queries read the same snapshot only inside a REPEATABLE READ or
+    // SERIALIZABLE transaction; elsewhere each sees its own.
+    let rows: SubstrateRowRecord[] = await page(whereSql, fetchLimit);
+    if (tailSql !== null && (fetchLimit === undefined || rows.length < fetchLimit)) {
+      // A row whose lead turned null after the first query would come back
+      // twice; excluding it in SQL keeps the look-ahead row, and so `hasMore`.
+      // The residual anomaly is a skip: a row that left the tail in between.
+      const unseen = sql`r.id <> ALL(${rows.map((r) => r.id)})`;
+      // The full `fetchLimit`, sliced here, so the tail has one statement text
+      // per shape rather than one per remaining count.
+      const tail = await page(combineAnd(sql, [tailSql, unseen]), fetchLimit);
+      // concat, not push(...): an unlimited tail can exceed the argument limit.
+      rows = rows.concat(fetchLimit === undefined ? tail : tail.slice(0, fetchLimit - rows.length));
+    }
 
     const materialised = rows.map((r) => this.materialize(r));
     let hasMore = false;
@@ -545,8 +683,7 @@ export class PgDataset implements Dataset {
     const rows = await this.#sql<{ id: string; body: Record<string, unknown> }[]>`
       UPDATE rows
       SET deleted_at = now()
-      WHERE namespace = ${this.namespace}
-        AND type = ${type}
+      WHERE ${this.#scope(type)}
         AND id = ANY(${textIds})
         AND deleted_at IS NULL
       RETURNING id, body
@@ -563,8 +700,7 @@ export class PgDataset implements Dataset {
 
     const rows = await this.#sql<{ id: string; body: Record<string, unknown> }[]>`
       DELETE FROM rows
-      WHERE namespace = ${this.namespace}
-        AND type = ${type}
+      WHERE ${this.#scope(type)}
         AND id = ANY(${textIds})
       RETURNING id, body
     `;
@@ -600,7 +736,7 @@ export class PgDataset implements Dataset {
   async dropType(type: string): Promise<DropResult> {
     const rows = await this.#sql<{ id: string }[]>`
       DELETE FROM rows
-      WHERE namespace = ${this.namespace} AND type = ${type}
+      WHERE ${this.#scope(type)}
       RETURNING id
     `;
     const rowsDeleted = rows.length;
@@ -615,7 +751,7 @@ export class PgDataset implements Dataset {
   async dropNamespace(): Promise<DropResult> {
     const rows = await this.#sql<{ id: string }[]>`
       DELETE FROM rows
-      WHERE namespace = ${this.namespace}
+      WHERE ${this.#scope()}
       RETURNING id
     `;
     const rowsDeleted = rows.length;
@@ -702,8 +838,7 @@ export class PgDataset implements Dataset {
       WITH updated AS (
         UPDATE rows
         SET ${interleaved}
-        WHERE namespace = ${this.namespace}
-          AND type = ${type}
+        WHERE ${this.#scope(type)}
           AND id = ${idToText(id)}
           AND ${deletedGuard}
           AND ${matchSql}
@@ -747,8 +882,7 @@ export class PgDataset implements Dataset {
             created_by_id   = ${meta?.createdBy?.id ?? null},
             updated_by_kind = ${meta?.updatedBy?.kind ?? null},
             updated_by_id   = ${meta?.updatedBy?.id ?? null}
-        WHERE namespace = ${this.namespace}
-          AND type = ${ref.type}
+        WHERE ${this.#scope(ref.type)}
           AND id = ${idToText(ref.id)}
       `;
       return; // skip body jsonb_set
@@ -790,8 +924,7 @@ export class PgDataset implements Dataset {
     await this.#sql`
       UPDATE rows
       SET ${interleaved}
-      WHERE namespace = ${this.namespace}
-        AND type = ${ref.type}
+      WHERE ${this.#scope(ref.type)}
         AND id = ${idToText(ref.id)}
     `;
   }
@@ -820,7 +953,9 @@ export class PgDataset implements Dataset {
         inTx: true,
         txScopeId: this.txScopeId,
         ...(this.#fieldDefLookup !== null ? { fieldDefLookup: this.#fieldDefLookup } : {}),
-        promotedColumns: this.#promotedColumns
+        promotedColumns: this.#promotedColumns,
+        layoutCache: this.#layoutCache,
+        ...(this.#typeDefLookup !== null ? { typeDefLookup: this.#typeDefLookup } : {})
       });
       return fn(txDataset);
       // postgres.js's begin<T> wraps the return in UnwrapPromiseArray; for
@@ -854,7 +989,9 @@ export class PgDataset implements Dataset {
             // calls (flattened) retain the same enlistment behaviour.
             ...(this.#edgesStore !== null ? { edgesStore: this.#edgesStore } : {}),
             ...(this.#fieldDefLookup !== null ? { fieldDefLookup: this.#fieldDefLookup } : {}),
-            promotedColumns: this.#promotedColumns
+            promotedColumns: this.#promotedColumns,
+            layoutCache: this.#layoutCache,
+            ...(this.#typeDefLookup !== null ? { typeDefLookup: this.#typeDefLookup } : {})
           })
         );
       }
@@ -873,14 +1010,14 @@ export class PgDataset implements Dataset {
 
   /**
    * See `Dataset.withAdvisoryLock`. Excludes every session on the
-   * database, across processes. On a tx-bound instance the lock is
+   * same schema, across processes. On a tx-bound instance the lock is
    * `pg_advisory_xact_lock` on the transaction's own connection, held until
    * it commits or rolls back: a session lock would need a second connection
    * beside the open transaction.
    */
   async withAdvisoryLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
     if (!this.#inTx) return withPgAdvisoryLock(this.#sql as Sql, key, fn);
-    await this.#sql`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
+    await this.#sql`SELECT pg_advisory_xact_lock(hashtext(current_schema() || ':' || ${key}))`;
     return fn();
   }
 
@@ -907,10 +1044,227 @@ export class PgDataset implements Dataset {
     return new PgDataset({
       namespace,
       sql: this.#sql as Sql,
+      inTx: false,
       ...(this.#edgesStore !== null ? { edgesStore: this.#edgesStore } : {}),
       ...(this.#fieldDefLookup !== null ? { fieldDefLookup: this.#fieldDefLookup } : {}),
-      promotedColumns: this.#promotedColumns
+      promotedColumns: this.#promotedColumns,
+      layoutCache: this.#layoutCache,
+      ...(this.#typeDefLookup !== null ? { typeDefLookup: this.#typeDefLookup } : {})
     });
+  }
+
+  /** The storage layout of `rows`, detected once; `'absent'` is not cached. */
+  async #layout(): Promise<StorageLayout | 'absent'> {
+    if (this.#layoutCache.layout !== undefined) return this.#layoutCache.layout;
+    const layout = await detectLayout(this.#sql as Sql);
+    if (layout !== 'absent') this.#layoutCache.layout = layout;
+    return layout;
+  }
+
+  /**
+   * See `Dataset.ensureTypeStorage`. On the partitioned layout, creates this
+   * namespace's partition and the type's, then reconciles the type's indexes
+   * on it; on legacy, reconciles only its declared `indexes`. Index builds
+   * run CONCURRENTLY, outside any transaction, so a tx-bound instance refuses.
+   * Logs each index it created, adopted or swapped, and records each one
+   * left pending, building or failed for `describeStorage` and `storageReport`.
+   */
+  async ensureTypeStorage(
+    type: string,
+    opts: { indexes?: 'all' | 'unique' | 'nonUnique'; signal?: AbortSignal } = {}
+  ): Promise<void> {
+    const layout = await this.#layout();
+    if (layout === 'absent') return;
+    if (this.#inTx) {
+      throw new Error('PgDataset.ensureTypeStorage cannot be called on a tx-bound instance');
+    }
+    const sql = this.#sql as Sql;
+    if (layout === 'partitioned') await ensureTypeStorage(sql, this.namespace, type);
+    const builds = this.#deferredBuilds();
+    const qualified = `${this.namespace}/${type}`;
+    const record = (s: IndexState): void => {
+      if (s.state === 'pending' || s.state === 'failed') {
+        builds.set(s.name, {
+          state: s.state,
+          type: qualified,
+          ...(s.error !== undefined ? { error: s.error } : {})
+        });
+      } else {
+        builds.delete(s.name);
+      }
+    };
+    let states: IndexState[];
+    try {
+      states = await reconcileTypeIndexes(sql, this.#indexArgs(type, this.namespace, layout), {
+        only: opts.indexes ?? 'all',
+        onBuild: (name) => builds.set(name, { state: 'building', type: qualified }),
+        onState: record,
+        ...(opts.signal !== undefined ? { signal: opts.signal } : {})
+      });
+    } catch (err) {
+      // Only the indexes this pass had not settled; one it settled keeps its state.
+      const code = (err as { code?: unknown }).code;
+      const reason = `${typeof code === 'string' ? code : 'error'}: ${
+        (err instanceof Error ? err.message : String(err)).split('\n')[0]
+      }`;
+      for (const b of builds.values()) {
+        if (b.type === qualified && b.state !== 'failed') {
+          b.state = 'failed';
+          b.error = reason;
+        }
+      }
+      throw err;
+    }
+    for (const s of states) {
+      record(s);
+      if (s.outcome === 'unchanged') continue;
+      process.stdout.write(
+        `[substrate] index ${s.name} on ${this.namespace}/${type}: ${s.outcome} (${s.state})\n`
+      );
+    }
+  }
+
+  /**
+   * Rows parked in DEFAULT partitions across the whole database, every
+   * namespace, not only this one: one line per namespace/type. `[]` on legacy.
+   */
+  async storageWarnings(): Promise<string[]> {
+    if ((await this.#layout()) !== 'partitioned') return [];
+    return storageWarnings(this.#sql as Sql);
+  }
+
+  #deferredBuilds(): Map<string, DeferredBuild> {
+    const builds = deferredBuilds.get(this.#sql) ?? new Map<string, DeferredBuild>();
+    deferredBuilds.set(this.#sql, builds);
+    return builds;
+  }
+
+  /** Each index's catalog state, overridden by what this process knows of its build. */
+  #withBuilds(states: IndexState[]): IndexState[] {
+    const builds = this.#deferredBuilds();
+    return states.map((s) => {
+      const build = builds.get(s.name);
+      if (build === undefined) return s;
+      // A catalog state carries no `error`.
+      return {
+        ...s,
+        state: build.state,
+        ...(build.error !== undefined ? { error: build.error } : {})
+      };
+    });
+  }
+
+  #indexArgs(type: string, namespace: string, layout: StorageLayout): ReconcileTypeIndexesArgs {
+    const def = this.#typeDefLookup?.(type, namespace);
+    return {
+      namespace,
+      type,
+      layout,
+      fields: def?.fields ?? {},
+      indexes: def?.indexes ?? [],
+      promotedColumns: this.#promotedColumns
+    };
+  }
+
+  /** See `Dataset.describeStorage`. Reads the catalog only, in a fixed number of queries. */
+  async describeStorage(type: string): Promise<TypeStorageReport> {
+    const layout = (await this.#layout()) === 'partitioned' ? 'partitioned' : 'legacy';
+    const sql = this.#sql as Sql;
+    const args = this.#indexArgs(type, this.namespace, layout);
+    if (layout === 'legacy') {
+      return {
+        layout,
+        indexes: this.#withBuilds(describeTypeIndexes(args, await indexesOn(sql, 'rows')))
+      };
+    }
+    const nsPart = await findPartition(sql, 'rows', this.namespace);
+    const partition = nsPart === undefined ? undefined : await findPartition(sql, nsPart, type);
+    if (partition === undefined) return { layout, indexes: [] };
+    return {
+      layout,
+      partition,
+      indexes: this.#withBuilds(describeTypeIndexes(args, await indexesOn(sql, partition)))
+    };
+  }
+
+  /**
+   * See `Dataset.storageReport`. Spans every namespace of the database. Reads
+   * the partition tree and every index on it in one query each, so its cost
+   * does not grow with the number of partitions.
+   */
+  async storageReport(opts: { partitionBudget: number }): Promise<StorageReport> {
+    const layout = await this.#layout();
+    const building = [...this.#deferredBuilds()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(
+        ([name, b]) =>
+          `index ${name} on ${b.type} is ${b.state}${b.error !== undefined ? ` (${b.error})` : ''}: ` +
+          'filters it would serve scan until it is valid'
+      );
+    if (layout !== 'partitioned') return { layout: 'legacy', warnings: building };
+    const sql = this.#sql as Sql;
+    const warnings = [...(await storageWarnings(sql)), ...building];
+    const tree = await sql<Array<{ name: string; parent: string | null; bound: string | null }>>`
+      SELECT c.relname AS name, p.relname AS parent, pg_get_expr(c.relpartbound, c.oid) AS bound
+      FROM pg_partition_tree('rows') t
+      JOIN pg_class c ON c.oid = t.relid
+      LEFT JOIN pg_class p ON p.oid = t.parentrelid`;
+    const indexes = await sql<Array<{ table: string; name: string; primary: boolean }>>`
+      SELECT t.relname AS "table", c.relname AS name, i.indisprimary AS "primary"
+      FROM pg_partition_tree('rows') pt
+      JOIN pg_index i ON i.indrelid = pt.relid
+      JOIN pg_class c ON c.oid = i.indexrelid
+      JOIN pg_class t ON t.oid = pt.relid`;
+    const checks = await sql<Array<{ name: string }>>`
+      SELECT conname AS name FROM pg_constraint
+      WHERE contype = 'c' AND conrelid = 'rows'::regclass AND NOT (conname = ANY(${ENGINE_CHECKS}))
+      ORDER BY conname`;
+    for (const c of checks) {
+      warnings.push(
+        `check ${c.name} is on the rows parent: every partition carries it, and every write evaluates it`
+      );
+    }
+    const heldBy = new Map<string, string[]>();
+    for (const i of indexes) {
+      if (i.table === 'rows') {
+        if (!i.primary) {
+          warnings.push(
+            `index ${i.name} is on the rows parent: every partition carries a copy of it`
+          );
+        }
+        continue;
+      }
+      heldBy.set(i.table, [...(heldBy.get(i.table) ?? []), i.name]);
+    }
+    const bound = (b: string | null): string | undefined =>
+      b === null ? undefined : /^FOR VALUES IN \('(.*)'\)$/s.exec(b)?.[1]?.replace(/''/g, "'");
+    const nsOf = new Map(tree.map((t) => [t.name, bound(t.bound)]));
+    for (const part of tree) {
+      const type = bound(part.bound);
+      const ns = part.parent === null || part.parent === 'rows' ? undefined : nsOf.get(part.parent);
+      if (type === undefined || ns === undefined || this.#typeDefLookup?.(type, ns) === undefined) {
+        continue;
+      }
+      try {
+        for (const name of undeclaredIndexes(
+          this.#indexArgs(type, ns, 'partitioned'),
+          heldBy.get(part.name) ?? []
+        )) {
+          warnings.push(`undeclared index ${name} on ${ns}/${type}: drop it explicitly`);
+        }
+      } catch (err) {
+        warnings.push(
+          `indexes of ${ns}/${type} could not be checked: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+    const n = tree.length - 1;
+    if (n > opts.partitionBudget) {
+      warnings.push(
+        `${n} partitions exceed the budget of ${opts.partitionBudget}: move a namespace to its own instance behind a bridge`
+      );
+    }
+    return { layout: 'partitioned', warnings };
   }
 
   private materialize(record: SubstrateRowRecord): Row {
