@@ -29,6 +29,7 @@ export {
   type StructFieldOptions
 } from './field.js';
 export {
+  assertOrderedBy,
   type DefineNamespaceOptions,
   defineNamespace,
   type PostWriteHook,

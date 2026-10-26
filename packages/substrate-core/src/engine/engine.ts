@@ -29,7 +29,11 @@
  *     `Row` → `'single'`.
  */
 
-import { getExtensionOperator, listExtensionOperators } from '@mnmal-ai/substrate-filter';
+import {
+  getExtensionOperator,
+  listExtensionOperators,
+  whereContainsOperator
+} from '@mnmal-ai/substrate-filter';
 import type {
   AfterTxWork,
   AutoCrudVerb,
@@ -55,7 +59,11 @@ import type {
   SweepDeps,
   WriteEvent
 } from '@mnmal-ai/substrate-types';
-import { isResolverFrameError, isRestrictViolation } from '@mnmal-ai/substrate-types';
+import {
+  isResolverFrameError,
+  isRestrictViolation,
+  naturalOrderOf
+} from '@mnmal-ai/substrate-types';
 import { applyLostNamespace } from '../apply-lost-namespace.js';
 
 /** Local query keys dispatched at once; the rest wait for a free slot. */
@@ -1410,6 +1418,25 @@ export class Engine {
       dataset
     });
     if (!guardOk) return false;
+
+    // The one place natural order becomes the default read order. Subscriptions
+    // and streams keep their own ordering and do not pass through here. A
+    // single-row `id` read has no order, and get-shaped resolvers refuse one.
+    // An extension operator (semantic, …) in `where` keeps its relevance order.
+    const where = args.params?.where;
+    if (
+      operation === 'query' &&
+      registryEntry.kind === 'type' &&
+      !isVirtual &&
+      dataset?.capabilities.orderBy === true &&
+      args.params?.id === undefined &&
+      !listExtensionOperators().some((op) => whereContainsOperator(where, op))
+    ) {
+      const orderBy = args.params?.orderBy;
+      if (!Array.isArray(orderBy) || orderBy.length === 0) {
+        args.params = { ...args.params, orderBy: [naturalOrderOf(registryEntry)] };
+      }
+    }
 
     // A throw here propagates out of the surrounding withTransaction (on
     // mutate) and rolls back every prior frame entry — the G1 contract.

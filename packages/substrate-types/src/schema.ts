@@ -167,6 +167,22 @@ export type FieldDef = FieldDefScalar | FieldDefCrossRef | FieldDefStruct | Fiel
  */
 export interface TypeSchema {
   fields: Record<string, FieldDef>;
+  /** The type's natural order; absent means {@link DEFAULT_ORDERED_BY}. */
+  orderedBy?: OrderedBy;
+}
+
+/**
+ * A type's natural order: exactly one `{ field: direction }` key, the order a
+ * read with no `orderBy` returns. The datasets still append `id` as the tie-break.
+ */
+export type OrderedBy = Record<string, 'asc' | 'desc'>;
+
+/** Natural order of a type that declares none: newest first. */
+export const DEFAULT_ORDERED_BY: OrderedBy = { createdAt: 'desc' };
+
+/** The declared natural order, or {@link DEFAULT_ORDERED_BY}. */
+export function naturalOrderOf(schema: Pick<TypeSchema, 'orderedBy'>): OrderedBy {
+  return schema.orderedBy ?? DEFAULT_ORDERED_BY;
 }
 
 /**

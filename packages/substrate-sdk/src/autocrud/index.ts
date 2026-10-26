@@ -27,6 +27,7 @@ import type {
   FieldDef,
   FieldDefStruct,
   Id,
+  OrderedBy,
   Policy,
   ReadResult,
   RequestContext,
@@ -106,6 +107,7 @@ export interface AutoCrudRegistry {
       kind?: 'type' | 'mutation';
       params?: Record<string, FieldDef>;
       returns?: FieldDef;
+      orderedBy?: OrderedBy;
       /** Semantic autoCRUD verb threaded to policies via ctx.verb. */
       verb?: AutoCrudVerb;
     }
@@ -136,6 +138,8 @@ export interface InstallAutoCrudOptions {
    * Delete resolver does NOT invoke this hook.
    */
   postWrite?: PostWriteHook;
+  /** The type's natural order — published on the type entry's schema. */
+  orderedBy?: OrderedBy;
 }
 
 export interface CreateResolverWithEdgesOptions {
@@ -346,7 +350,8 @@ export function installAutoCrud(
     resolver: list,
     kind: 'type',
     ...(policy !== undefined ? { policy } : {}),
-    ...(fields !== undefined ? { fields } : {})
+    ...(fields !== undefined ? { fields } : {}),
+    ...(options.orderedBy !== undefined ? { orderedBy: options.orderedBy } : {})
   });
 
   // `get<TypeName>` / `create<TypeName>` / `delete<TypeName>` — capitalise

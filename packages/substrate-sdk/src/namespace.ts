@@ -35,6 +35,7 @@ import type {
   NamespaceDefinition,
   NamespaceInstallContext,
   NamespaceTypeDef,
+  OrderedBy,
   Policy,
   PostWriteHook,
   Row
@@ -111,6 +112,12 @@ export interface TypeInput {
    * scalar (not json) or crossRef fields. See `IndexDecl`.
    */
   indexes?: IndexDecl[];
+  /**
+   * The type's natural order: what a read with no `orderBy` returns. Exactly
+   * one key, a declared date or number field or a metadata column
+   * (`createdAt`, `updatedAt`). Absent means newest first by `createdAt`.
+   */
+  orderedBy?: OrderedBy;
 }
 
 export interface DefineNamespaceOptions {
@@ -187,6 +194,7 @@ export function defineNamespace(
 
   for (const [typeName, typeInput] of Object.entries(types)) {
     for (const decl of typeInput.indexes ?? []) assertIndexDecl(typeName, typeInput.fields, decl);
+    if (typeInput.orderedBy !== undefined) assertOrderedBy(typeName, typeInput);
   }
 
   if (opts.annotations !== undefined) assertJsonValue(opts.annotations, 'annotations');
@@ -218,6 +226,7 @@ export function defineNamespace(
         const installOpts: Parameters<typeof installAutoCrud>[4] = {
           fields: augmentedFields
         };
+        if (typeInput.orderedBy !== undefined) installOpts.orderedBy = typeInput.orderedBy;
         if (combined !== undefined) installOpts.policy = combined;
         if (typeInput.purgeable === true) installOpts.purgeable = true;
         if (typeInput.adminCapability !== undefined) {
@@ -293,6 +302,35 @@ function assertIndexDecl(
   }
   if (decl.name !== undefined && !INDEX_NAME_PATTERN.test(decl.name)) {
     throw new Error(`${where}: name '${decl.name}' must match ${INDEX_NAME_PATTERN.source}`);
+  }
+}
+
+/** Metadata columns a type may take as its natural order. */
+const ORDERED_BY_METADATA_COLUMNS: ReadonlySet<string> = new Set(['createdAt', 'updatedAt']);
+
+/** Throws unless `orderedBy` is one key, on a date or number field or a metadata column. */
+export function assertOrderedBy(
+  typeName: string,
+  def: Pick<TypeInput, 'fields' | 'orderedBy'>
+): void {
+  const where = `orderedBy on ${typeName}`;
+  const entries = Object.entries(def.orderedBy ?? {});
+  if (entries.length !== 1) {
+    throw new Error(`${where}: must name exactly one field, got ${entries.length}`);
+  }
+  const [name, dir] = entries[0] as [string, unknown];
+  if (dir !== 'asc' && dir !== 'desc') {
+    throw new Error(`${where}: dir of '${name}' must be 'asc' or 'desc', got '${String(dir)}'`);
+  }
+  if (ORDERED_BY_METADATA_COLUMNS.has(name)) return;
+  const field = def.fields[name];
+  if (field === undefined) throw new Error(`${where}: unknown field '${name}'`);
+  if (!(field.kind === 'scalar' && (field.type === 'date' || field.type === 'number'))) {
+    const kind = field.kind === 'scalar' ? field.type : field.kind;
+    throw new Error(
+      `${where}: field '${name}' is ${kind}; only date and number fields, ` +
+        `or ${[...ORDERED_BY_METADATA_COLUMNS].join(', ')}, can be a natural order`
+    );
   }
 }
 

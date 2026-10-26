@@ -604,6 +604,7 @@ export class SubscribeSubsystem {
       rawWhere !== undefined && typeFields !== undefined
         ? (normaliseVocabWhere(rawWhere, typeFields) as WhereClause)
         : rawWhere;
+    // The query default (natural order) is deliberately not applied: subscriptions keep their own ordering.
     const orderBy = params?.orderBy as OrderByClause[] | undefined;
     const allowTableScan = params?._allowTableScan === true;
     if (where !== undefined || orderBy !== undefined) {

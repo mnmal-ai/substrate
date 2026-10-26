@@ -52,7 +52,11 @@ export function publishSchema(registry: Registry): Schema {
         returns: entry.returns ?? UNKNOWN_RETURNS
       };
     } else {
-      types[name] = { fields: entry.fields };
+      // Only when declared, so a type without one keeps its schemaVersion.
+      types[name] =
+        entry.orderedBy !== undefined
+          ? { fields: entry.fields, orderedBy: entry.orderedBy }
+          : { fields: entry.fields };
     }
   }
 
