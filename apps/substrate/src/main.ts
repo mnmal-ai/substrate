@@ -134,7 +134,7 @@ export async function runServe(): Promise<void> {
   const nsDefs = new Map<string, NamespaceDefinition>();
   const fieldDefLookupFor = makeFieldDefLookupFactory(nsDefs);
 
-  const diskGuard = indexDiskGuard(config);
+  const diskGuard = await indexDiskGuard(config);
   const refs = createLateRefs(config.auth);
   // Types no definition declares resolve from the engine's registry once it exists.
   const typeDefLookupFor = makeTypeDefLookupFactory(nsDefs, (ns) =>

@@ -9,7 +9,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { IndexDecl } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { type DiskGuard, makeDiskGuard } from '../src/disk-guard.js';
 import { PgDataset } from '../src/index.js';
 
@@ -159,10 +159,26 @@ describe.skipIf(!POSTGRES_URL)('free-disk check before background index builds',
     expect(guard.estimates).toEqual([Number(size?.n)]);
   });
 
+  it('logs a refusal once, not on every pass that refuses it again', async () => {
+    const guard = switchGuard();
+    guard.allow = false;
+    const { ds, plain } = fixture(guard);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await ds.ensureTypeStorage(TYPE);
+      await ds.ensureTypeStorage(TYPE, { indexes: 'nonUnique' });
+      const lines = stderr.mock.calls.map(([t]) => String(t)).filter((t) => t.includes(plain));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('was not built and will be retried');
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
   it('says disk checks are off when the guard has no path', async () => {
     const { ds } = fixture(makeDiskGuard({ marginBytes: 0 }));
     expect((await ds.storageReport({ partitionBudget: 1e6 })).warnings).toContain(
-      'free-disk checks before index builds are off: set SUBSTRATE_INDEX_DISK_PATH to the database volume'
+      'free-disk checks before index builds are off: set SUBSTRATE_INDEX_DISK_PATH to the database volume mount, or to off when the database has no local volume'
     );
   });
 });

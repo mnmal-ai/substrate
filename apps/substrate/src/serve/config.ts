@@ -64,9 +64,10 @@ export interface ParsedConfig {
   /**
    * `SUBSTRATE_INDEX_DISK_PATH` — the database volume's mount, when the
    * database is local, whose free space is checked before each background
-   * index build. `null` turns the check off, and the config report says so.
+   * index build. `'off'` turns the check off, for a database with no local
+   * volume. `null` (unset) leaves it off too, and the storage report says so.
    */
-  indexDiskPath: string | null;
+  indexDiskPath: string | 'off' | null;
   /** `SUBSTRATE_INDEX_DISK_MARGIN_MB` — free space a build must leave. Default 2048; 0 requires only the estimate. */
   indexDiskMarginMb: number;
   /**
@@ -209,7 +210,7 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
     'indexDiskPath',
     'SUBSTRATE_INDEX_DISK_PATH',
     env.SUBSTRATE_INDEX_DISK_PATH,
-    nonEmpty(env.SUBSTRATE_INDEX_DISK_PATH?.trim()) ?? null
+    diskPathOf(nonEmpty(env.SUBSTRATE_INDEX_DISK_PATH?.trim()))
   );
   const indexDiskMarginMb = parseNonNegativeIntEnv(
     env,
@@ -483,6 +484,9 @@ function parseCorsConfig(
   }
   return note({ origins, credentials: true });
 }
+
+const diskPathOf = (raw: string | undefined): string | 'off' | null =>
+  raw === undefined ? null : raw.toLowerCase() === 'off' ? 'off' : raw;
 
 /** As {@link parsePositiveIntEnv}, but 0 is allowed. */
 function parseNonNegativeIntEnv(

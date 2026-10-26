@@ -7,6 +7,7 @@
  * substrate plugin migration.
  */
 
+import { statfs as fsStatfs } from 'node:fs/promises';
 import { type ComposeOpts, SYSTEM_NAMESPACE } from '@mnmal-ai/substrate-compose';
 import type { MemoryBridgeRegistry } from '@mnmal-ai/substrate-core';
 import { MemoryIdempotencyStore } from '@mnmal-ai/substrate-core';
@@ -30,8 +31,7 @@ import type {
   SubstrateServer
 } from '@mnmal-ai/substrate-types';
 import type { Sql } from 'postgres';
-import type { ParsedConfig } from './config.js';
-import { readPackageVersion } from './config.js';
+import { EnvConfigError, type ParsedConfig, readPackageVersion } from './config.js';
 import { buildBridgeRegistry, buildPluginDatasetMap, ensureMigrationsTable } from './wiring.js';
 
 export interface ComposedOpts {
@@ -46,12 +46,28 @@ export interface ComposedOpts {
   disposeBridges: () => void;
 }
 
-/** The free-disk check every pg dataset runs before a background index build. */
-export function indexDiskGuard(
-  config: Pick<ParsedConfig, 'indexDiskPath' | 'indexDiskMarginMb'>
-): DiskGuard {
+/**
+ * The free-disk check every pg dataset runs before a background index build,
+ * or none when `SUBSTRATE_INDEX_DISK_PATH=off`. A configured path is statted
+ * once here, so a typo fails the boot rather than every build.
+ */
+export async function indexDiskGuard(
+  config: Pick<ParsedConfig, 'indexDiskPath' | 'indexDiskMarginMb'>,
+  statfs: (p: string) => Promise<unknown> = (p) => fsStatfs(p)
+): Promise<DiskGuard | undefined> {
+  const path = config.indexDiskPath;
+  if (path === 'off') return undefined;
+  if (path !== null) {
+    try {
+      await statfs(path);
+    } catch (err) {
+      throw new EnvConfigError(
+        `SUBSTRATE_INDEX_DISK_PATH: ${path} is not readable: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
   return makeDiskGuard({
-    ...(config.indexDiskPath !== null ? { path: config.indexDiskPath } : {}),
+    ...(path !== null ? { path } : {}),
     marginBytes: config.indexDiskMarginMb * 1024 * 1024
   });
 }
@@ -67,7 +83,7 @@ export async function buildComposeOpts(args: {
   fieldDefLookupFor: (namespace: string) => FieldDefLookup;
   typeDefLookup: TypeDefLookup;
   kernel: KernelPlugin[];
-  diskGuard?: DiskGuard;
+  diskGuard?: DiskGuard | undefined;
 }): Promise<ComposedOpts> {
   const {
     config,

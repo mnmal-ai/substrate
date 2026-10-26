@@ -143,6 +143,19 @@ export interface ReconcileOptions {
   diskGuard?: DiskGuard;
 }
 
+/**
+ * The last failure logged per index, so a retry pass that fails the same way
+ * stays quiet. shortcut: keyed by index name across schemas, process-wide.
+ */
+const lastLogged = new Map<string, string>();
+
+/** Writes `text` unless `key` is what was last logged for index `name`. */
+function logChanged(name: string, key: string, text: string): void {
+  if (lastLogged.get(name) === key) return;
+  lastLogged.set(name, key);
+  process.stderr.write(text);
+}
+
 /** Pause after a non-unique build releases its table lock, so a polling waiter gets it. */
 const YIELD_MS = 300;
 
@@ -229,11 +242,12 @@ async function reconcileNonUnique(
           if (err instanceof IndexLockAborted) return out;
           // A non-unique index costs only speed, so a conflict fails it alone.
           if (!(err instanceof IndexDefinitionConflictError)) throw err;
-          process.stderr.write(`${err.message}\n`);
+          logChanged(spec.name, err.message, `${err.message}\n`);
           state = indexState(spec, 'failed', 'unchanged', conflictReason(err));
         }
         await abortableSleep(YIELD_MS, opts.signal);
       }
+      if (state.state === 'valid') lastLogged.delete(spec.name);
       opts.onState?.(state);
       out.push(state);
       if (opts.signal?.aborted === true) return out;
@@ -975,7 +989,9 @@ async function build(
     const need = await buildEstimate(conn, target, spec.name);
     const verdict = await opts.diskGuard.check(need);
     if (!verdict.ok) {
-      process.stderr.write(
+      logChanged(
+        spec.name,
+        'insufficient_disk',
         `index ${name} on ${target} was not built and will be retried: ${verdict.freeBytes} bytes free, ` +
           `${verdict.needBytes} needed (estimate plus margin)\n`
       );
@@ -999,7 +1015,9 @@ async function build(
   } catch (err) {
     if (spec.unique) throw err;
     const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(
+    logChanged(
+      spec.name,
+      `build_failed: ${message}`,
       `index ${name} on ${target} failed to build and will be retried: ${message}\n`
     );
     return indexState(spec, 'failed', 'unchanged', `build_failed: ${message}`);

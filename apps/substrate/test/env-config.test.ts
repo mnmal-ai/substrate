@@ -527,6 +527,8 @@ describe('parseEnv', () => {
 
   it('index disk check: off without a path, margin defaults to 2048 MB', () => {
     expect(parseEnv({}).indexDiskPath).toBeNull();
+    expect(parseEnv({ SUBSTRATE_INDEX_DISK_PATH: 'off' }).indexDiskPath).toBe('off');
+    expect(parseEnv({ SUBSTRATE_INDEX_DISK_PATH: 'OFF' }).indexDiskPath).toBe('off');
     expect(parseEnv({}).indexDiskMarginMb).toBe(2048);
     const cfg = parseEnv({
       SUBSTRATE_INDEX_DISK_PATH: '/var/lib/postgresql',

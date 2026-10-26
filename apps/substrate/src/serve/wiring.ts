@@ -358,17 +358,17 @@ export async function buildDeferredIndexes(
   }
 }
 
-/** Whether `type` has a non-unique index still pending or failed. */
+/** Whether `type` has a non-unique index still pending, failed or invalid. */
 async function unsettled(dataset: Dataset | undefined, type: string): Promise<boolean> {
   const report = await dataset?.describeStorage?.(type);
   return (report?.indexes ?? []).some(
-    (i) => !i.unique && (i.state === 'pending' || i.state === 'failed')
+    (i) => !i.unique && (i.state === 'pending' || i.state === 'failed' || i.state === 'invalid')
   );
 }
 
 /**
  * The boot pass of {@link buildDeferredIndexes}, then every `intervalMs` a
- * pass over only the types with a non-unique index still pending or failed,
+ * pass over only the types with a non-unique index still pending, failed or invalid,
  * such as one the disk guard refused. 0 runs the boot pass alone. Passes run
  * one after another, so never overlap. Resolves once `signal` aborts.
  */

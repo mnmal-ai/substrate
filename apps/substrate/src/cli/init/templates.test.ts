@@ -36,6 +36,16 @@ describe('envBinaryTemplate', () => {
     );
   });
 
+  it('turns the index disk check off explicitly on postgres, with a note on when to set it', () => {
+    const out = envBinaryTemplate(baseConfig);
+    expect(out).toMatch(
+      /# Set to the database volume mount path .*\nSUBSTRATE_INDEX_DISK_PATH=off\n/
+    );
+    expect(envBinaryTemplate({ ...baseConfig, store: 'memory' })).not.toContain(
+      'SUBSTRATE_INDEX_DISK_PATH'
+    );
+  });
+
   it('uses SUBSTRATE_DATABASE_URL=memory when store=memory', () => {
     const out = envBinaryTemplate({ ...baseConfig, store: 'memory' });
     expect(out).toContain('SUBSTRATE_DATABASE_URL=memory');

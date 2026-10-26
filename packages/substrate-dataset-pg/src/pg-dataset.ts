@@ -1130,6 +1130,7 @@ export class PgDataset implements Dataset {
         if (b.type === qualified && b.state !== 'failed') {
           b.state = 'failed';
           b.error = reason;
+          delete b.reason;
         }
       }
       throw err;
@@ -1225,7 +1226,7 @@ export class PgDataset implements Dataset {
       );
     if (this.#diskGuard !== undefined && this.#diskGuard.path === undefined) {
       building.push(
-        'free-disk checks before index builds are off: set SUBSTRATE_INDEX_DISK_PATH to the database volume'
+        'free-disk checks before index builds are off: set SUBSTRATE_INDEX_DISK_PATH to the database volume mount, or to off when the database has no local volume'
       );
     }
     if (layout !== 'partitioned') return { layout: 'legacy', warnings: building };

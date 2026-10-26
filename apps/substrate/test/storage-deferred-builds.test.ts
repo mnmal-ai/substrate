@@ -21,7 +21,7 @@ import {
 import { defineNamespace } from '@mnmal-ai/substrate-sdk';
 import { MemorySubstrateServer } from '@mnmal-ai/substrate-server-memory';
 import postgres, { type Sql } from 'postgres';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   buildDeferredIndexes,
   buildPluginDatasetMap,
@@ -195,6 +195,19 @@ describe.skipIf(!POSTGRES_URL)('deferred index builds at boot (pg)', () => {
       }
       expect(await valid(plain)).toBe(true);
       expect((await state())?.reason).toBeUndefined();
+
+      // A retry pass leaves a settled type alone.
+      stop.abort();
+      await loop;
+      const ensure = vi.spyOn(PgDataset.prototype, 'ensureTypeStorage');
+      try {
+        await buildDeferredIndexes(composed.engine, composed.datasets, undefined, {
+          onlyUnsettled: true
+        });
+        expect(ensure.mock.contexts.filter((c) => (c as PgDataset).namespace === rns)).toEqual([]);
+      } finally {
+        ensure.mockRestore();
+      }
     } finally {
       stop.abort();
       await loop;

@@ -28,7 +28,9 @@ export function envBinaryTemplate(ctx: TemplateContext): string {
 
   if (ctx.store === 'postgres') {
     lines.push(
-      `SUBSTRATE_DATABASE_URL=postgres://substrate:${ctx.pgPassword}@127.0.0.1:${ctx.pgPort}/${ctx.dbName}`
+      `SUBSTRATE_DATABASE_URL=postgres://substrate:${ctx.pgPassword}@127.0.0.1:${ctx.pgPort}/${ctx.dbName}`,
+      '# Set to the database volume mount path when the database runs on this host, to check free disk before index builds.',
+      'SUBSTRATE_INDEX_DISK_PATH=off'
     );
   } else {
     lines.push('SUBSTRATE_DATABASE_URL=memory');
