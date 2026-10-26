@@ -525,6 +525,18 @@ describe('parseEnv', () => {
     }
   });
 
+  it('index disk check: off without a path, margin defaults to 2048 MB', () => {
+    expect(parseEnv({}).indexDiskPath).toBeNull();
+    expect(parseEnv({}).indexDiskMarginMb).toBe(2048);
+    const cfg = parseEnv({
+      SUBSTRATE_INDEX_DISK_PATH: '/var/lib/postgresql',
+      SUBSTRATE_INDEX_DISK_MARGIN_MB: '512'
+    });
+    expect(cfg.indexDiskPath).toBe('/var/lib/postgresql');
+    expect(cfg.indexDiskMarginMb).toBe(512);
+    expect(() => parseEnv({ SUBSTRATE_INDEX_DISK_MARGIN_MB: 'abc' })).toThrow(EnvConfigError);
+  });
+
   // Regression: docker-compose `${VAR:-}` substitution passes `""` when an
   // operator leaves the .env line blank. parseInt('') is NaN, and NaN in
   // setInterval fires continuously, so empty must mean "not set".

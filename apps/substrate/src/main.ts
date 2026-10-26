@@ -68,7 +68,7 @@ import { FastifySubstrateServer } from '@mnmal-ai/substrate-server-fastify';
 import type { NamespaceDefinition } from '@mnmal-ai/substrate-types';
 import { startBackground } from './serve/background.js';
 import { reportBoot } from './serve/boot-report.js';
-import { buildComposeOpts } from './serve/compose-opts.js';
+import { buildComposeOpts, indexDiskGuard } from './serve/compose-opts.js';
 import {
   BINARY_CONTRACT_VERSION,
   type BridgeSpec,
@@ -134,6 +134,7 @@ export async function runServe(): Promise<void> {
   const nsDefs = new Map<string, NamespaceDefinition>();
   const fieldDefLookupFor = makeFieldDefLookupFactory(nsDefs);
 
+  const diskGuard = indexDiskGuard(config);
   const refs = createLateRefs(config.auth);
   // Types no definition declares resolve from the engine's registry once it exists.
   const typeDefLookupFor = makeTypeDefLookupFactory(nsDefs, (ns) =>
@@ -146,7 +147,7 @@ export async function runServe(): Promise<void> {
     substrateNamespaceDataset,
     sql: storeSql,
     close: closeStore
-  } = await wireStore(config.storeSpec, fieldDefLookupFor, typeDefLookupFor);
+  } = await wireStore(config.storeSpec, fieldDefLookupFor, typeDefLookupFor, diskGuard);
 
   const pluginDir = resolvePluginDir();
   const { datasetRegistryRef, resolveDataset, engineRef, checkReadPolicy, checkWritePolicy } = refs;
@@ -201,7 +202,8 @@ export async function runServe(): Promise<void> {
       substrateNamespaceDataset,
       fieldDefLookupFor,
       typeDefLookup: typeDefLookupFor(DEFAULT_NAMESPACE),
-      kernel
+      kernel,
+      diskGuard
     });
 
   await composeKernelPhase({

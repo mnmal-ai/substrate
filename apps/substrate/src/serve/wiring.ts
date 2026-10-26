@@ -21,6 +21,7 @@ import {
 } from '@mnmal-ai/substrate-core';
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
 import {
+  type DiskGuard,
   type FieldDefLookup,
   type IndexedListField,
   PgDataset,
@@ -86,7 +87,8 @@ export interface StoreWiring {
 export async function wireStore(
   storeSpec: string,
   fieldDefLookupFor: (namespace: string) => FieldDefLookup,
-  typeDefLookupFor?: (namespace: string) => TypeDefLookup
+  typeDefLookupFor?: (namespace: string) => TypeDefLookup,
+  diskGuard?: DiskGuard
 ): Promise<StoreWiring> {
   if (storeSpec === 'memory') {
     return {
@@ -113,7 +115,8 @@ export async function wireStore(
         sql,
         edgesStore: edges,
         fieldDefLookup: fieldDefLookupFor(DEFAULT_NAMESPACE),
-        ...(typeDefLookupFor ? { typeDefLookup: typeDefLookupFor(DEFAULT_NAMESPACE) } : {})
+        ...(typeDefLookupFor ? { typeDefLookup: typeDefLookupFor(DEFAULT_NAMESPACE) } : {}),
+        ...(diskGuard !== undefined ? { diskGuard } : {})
       }),
       edges,
       substrateNamespaceDataset: new PgDataset({
@@ -121,7 +124,8 @@ export async function wireStore(
         sql,
         edgesStore: edges,
         fieldDefLookup: fieldDefLookupFor(SYSTEM_NAMESPACE),
-        ...(typeDefLookupFor ? { typeDefLookup: typeDefLookupFor(SYSTEM_NAMESPACE) } : {})
+        ...(typeDefLookupFor ? { typeDefLookup: typeDefLookupFor(SYSTEM_NAMESPACE) } : {}),
+        ...(diskGuard !== undefined ? { diskGuard } : {})
       }),
       sql,
       close: (): Promise<void> => sql.end({ timeout: STORE_END_TIMEOUT_S })
@@ -404,7 +408,8 @@ export function buildPluginDatasetMap(
   sharedSql: Sql | null,
   sharedEdges: PgEdgesStore | null,
   fieldDefLookupFor: (namespace: string) => FieldDefLookup,
-  typeDefLookup?: TypeDefLookup
+  typeDefLookup?: TypeDefLookup,
+  diskGuard?: DiskGuard
 ): Record<string, Dataset> {
   const datasets: Record<string, Dataset> = {};
   for (const plugin of plugins) {
@@ -428,7 +433,8 @@ export function buildPluginDatasetMap(
               // Thread the shared edges store so every plugin-contributed
               // namespace on the same pg pool can enlist edge ops into the
               // substrate tx.
-              ...(sharedEdges !== null ? { edgesStore: sharedEdges } : {})
+              ...(sharedEdges !== null ? { edgesStore: sharedEdges } : {}),
+              ...(diskGuard !== undefined ? { diskGuard } : {})
             })
           : new MemoryDataset({ namespace: ns, fieldDefLookup: fieldDefLookupFor(ns) });
     }

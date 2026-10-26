@@ -530,6 +530,8 @@ export interface TypeIndexState {
   outcome: 'created' | 'adopted' | 'swapped' | 'unchanged';
   /** Why a `failed` index failed: an error code, then a short reason. */
   error?: string;
+  /** Why a `pending` index was not built: the free-disk check refused it. */
+  reason?: 'insufficient_disk';
 }
 
 /** Where a type's rows live: `partition` is set on the partitioned layout once the type has one. */

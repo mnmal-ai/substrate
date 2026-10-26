@@ -21,6 +21,7 @@ const DEFAULT_INVITE_SWEEP_INTERVAL_MS = 3_600_000;
 const DEFAULT_TOMBSTONE_RETENTION_DAYS = 30;
 const DEFAULT_SHUTDOWN_GRACE_MS = 5_000;
 const DEFAULT_PARTITION_BUDGET = 500;
+const DEFAULT_INDEX_DISK_MARGIN_MB = 2048;
 export const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DEFAULT_PORT = 3100;
 
@@ -59,6 +60,14 @@ export interface ParsedConfig {
   shutdownGraceMs: number;
   /** `SUBSTRATE_PARTITION_BUDGET` — partitions under `rows` beyond which the config report warns. */
   partitionBudget: number;
+  /**
+   * `SUBSTRATE_INDEX_DISK_PATH` — the database volume's mount, when the
+   * database is local, whose free space is checked before each background
+   * index build. `null` turns the check off, and the config report says so.
+   */
+  indexDiskPath: string | null;
+  /** `SUBSTRATE_INDEX_DISK_MARGIN_MB` — free space a build must leave. Default 2048. */
+  indexDiskMarginMb: number;
   /**
    * §5.13 mutation idempotency config. `disabled` kills dedup entirely (the
    * engine never sees a store); `defaultTtlMs === null` leaves the engine's
@@ -189,6 +198,20 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
     DEFAULT_PARTITION_BUDGET,
     'partitions'
   );
+  const indexDiskPath = knobs.record(
+    'indexDiskPath',
+    'SUBSTRATE_INDEX_DISK_PATH',
+    env.SUBSTRATE_INDEX_DISK_PATH,
+    nonEmpty(env.SUBSTRATE_INDEX_DISK_PATH?.trim()) ?? null
+  );
+  const indexDiskMarginMb = parsePositiveIntEnv(
+    env,
+    knobs,
+    'indexDiskMarginMb',
+    'SUBSTRATE_INDEX_DISK_MARGIN_MB',
+    DEFAULT_INDEX_DISK_MARGIN_MB,
+    'megabytes'
+  );
   const idempotency = parseIdempotencyConfig(env, knobs);
   const trustedProxies = parseTrustedProxies(env, knobs);
   const port = parsePort(env, knobs);
@@ -271,6 +294,8 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
     tombstoneRetentionDays,
     shutdownGraceMs,
     partitionBudget,
+    indexDiskPath,
+    indexDiskMarginMb,
     idempotency,
     trustedProxies,
     port,

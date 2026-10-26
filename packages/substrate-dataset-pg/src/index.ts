@@ -4,6 +4,7 @@
 
 export type { IndexDecl } from '@mnmal-ai/substrate-types';
 export { tryWithPgAdvisoryLock } from './advisory-lock.js';
+export { type DiskGuard, makeDiskGuard } from './disk-guard.js';
 export {
   type EnumCheckInput,
   type EnumCheckStatements,

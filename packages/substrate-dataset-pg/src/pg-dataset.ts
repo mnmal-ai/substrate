@@ -57,6 +57,7 @@ import type {
 import { naturalOrderOf } from '@mnmal-ai/substrate-types';
 import type { Sql } from 'postgres';
 import { withPgAdvisoryLock } from './advisory-lock.js';
+import type { DiskGuard } from './disk-guard.js';
 import { NamespaceMismatch, ReservedField } from './errors.js';
 import {
   describeTypeIndexes,
@@ -165,6 +166,13 @@ export interface PgDatasetOptions {
    * type's indexes from. Without it only the engine's own indexes are built.
    */
   typeDefLookup?: TypeDefLookup;
+  /**
+   * Checked before each non-unique index build `ensureTypeStorage` runs; a
+   * refused build stays `pending` (`insufficient_disk`) until a later pass.
+   * Without one nothing is checked. With one that has no path, nothing is
+   * checked either, and `storageReport` says so.
+   */
+  diskGuard?: DiskGuard;
 }
 
 interface InternalPgSubstrateDatasetOptions {
@@ -183,6 +191,7 @@ interface InternalPgSubstrateDatasetOptions {
   /** Shared with the instance this one was derived from. */
   layoutCache?: LayoutCache;
   typeDefLookup?: TypeDefLookup;
+  diskGuard?: DiskGuard;
 }
 
 /** An index whose build this process deferred, is running, or saw fail. */
@@ -192,6 +201,8 @@ interface DeferredBuild {
   type: string;
   /** Why it failed: an error code, then a short reason. */
   error?: string;
+  /** Why it is pending, when the disk guard refused it. */
+  reason?: 'insufficient_disk';
 }
 
 /** The CHECKs the engine's own migrations put on `rows`; any other is plugin fan-out. */
@@ -251,6 +262,7 @@ export class PgDataset implements Dataset {
   readonly #promotedFor: PromotedColumnLookup;
   readonly #layoutCache: LayoutCache;
   readonly #typeDefLookup: TypeDefLookup | null;
+  readonly #diskGuard: DiskGuard | undefined;
 
   constructor(options: PgDatasetOptions | InternalPgSubstrateDatasetOptions) {
     this.namespace = options.namespace;
@@ -276,6 +288,7 @@ export class PgDataset implements Dataset {
     this.#promotedFor = resolvePromotedColumns(this.#promotedColumns);
     this.#layoutCache = ('layoutCache' in options ? options.layoutCache : undefined) ?? {};
     this.#typeDefLookup = options.typeDefLookup ?? null;
+    this.#diskGuard = options.diskGuard;
   }
 
   /**
@@ -1052,7 +1065,8 @@ export class PgDataset implements Dataset {
       ...(this.#fieldDefLookup !== null ? { fieldDefLookup: this.#fieldDefLookup } : {}),
       promotedColumns: this.#promotedColumns,
       layoutCache: this.#layoutCache,
-      ...(this.#typeDefLookup !== null ? { typeDefLookup: this.#typeDefLookup } : {})
+      ...(this.#typeDefLookup !== null ? { typeDefLookup: this.#typeDefLookup } : {}),
+      ...(this.#diskGuard !== undefined ? { diskGuard: this.#diskGuard } : {})
     });
   }
 
@@ -1090,7 +1104,8 @@ export class PgDataset implements Dataset {
         builds.set(s.name, {
           state: s.state,
           type: qualified,
-          ...(s.error !== undefined ? { error: s.error } : {})
+          ...(s.error !== undefined ? { error: s.error } : {}),
+          ...(s.reason !== undefined ? { reason: s.reason } : {})
         });
       } else {
         builds.delete(s.name);
@@ -1102,7 +1117,8 @@ export class PgDataset implements Dataset {
         only: opts.indexes ?? 'all',
         onBuild: (name) => builds.set(name, { state: 'building', type: qualified }),
         onState: record,
-        ...(opts.signal !== undefined ? { signal: opts.signal } : {})
+        ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+        ...(this.#diskGuard !== undefined ? { diskGuard: this.#diskGuard } : {})
       });
     } catch (err) {
       // Only the indexes this pass had not settled; one it settled keeps its state.
@@ -1152,7 +1168,8 @@ export class PgDataset implements Dataset {
       return {
         ...s,
         state: build.state,
-        ...(build.error !== undefined ? { error: build.error } : {})
+        ...(build.error !== undefined ? { error: build.error } : {}),
+        ...(build.reason !== undefined ? { reason: build.reason } : {})
       };
     });
   }
@@ -1202,9 +1219,15 @@ export class PgDataset implements Dataset {
       .sort(([a], [b]) => a.localeCompare(b))
       .map(
         ([name, b]) =>
-          `index ${name} on ${b.type} is ${b.state}${b.error !== undefined ? ` (${b.error})` : ''}: ` +
+          `index ${name} on ${b.type} is ${b.state}${b.error !== undefined ? ` (${b.error})` : ''}` +
+          `${b.reason !== undefined ? ` (${b.reason})` : ''}: ` +
           'filters it would serve scan until it is valid'
       );
+    if (this.#diskGuard !== undefined && this.#diskGuard.path === undefined) {
+      building.push(
+        'free-disk checks before index builds are off: set SUBSTRATE_INDEX_DISK_PATH to the database volume'
+      );
+    }
     if (layout !== 'partitioned') return { layout: 'legacy', warnings: building };
     const sql = this.#sql as Sql;
     const warnings = [...(await storageWarnings(sql)), ...building];

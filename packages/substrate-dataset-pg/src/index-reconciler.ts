@@ -35,6 +35,7 @@
 import { createHash } from 'node:crypto';
 import type { FieldDef, IndexDecl, OrderedBy } from '@mnmal-ai/substrate-types';
 import type { Sql } from 'postgres';
+import type { DiskGuard } from './disk-guard.js';
 import { MAX_IDENTIFIER, type StorageLayout } from './layout.js';
 import {
   abortableSleep,
@@ -60,6 +61,8 @@ export interface IndexState {
   outcome: 'created' | 'adopted' | 'swapped' | 'unchanged';
   /** Why a `failed` index failed: an error code, then a short reason. */
   error?: string;
+  /** Why a `pending` index was not built: the disk guard refused it. */
+  reason?: 'insufficient_disk';
 }
 
 /** A unique index was declared over values that are already duplicated among live rows. */
@@ -136,6 +139,8 @@ export interface ReconcileOptions {
    * leaves an INVALID index the next reconcile drops. The rest is skipped.
    */
   signal?: AbortSignal;
+  /** Checked before each non-unique build; a refusal leaves the index `pending` for the next pass. */
+  diskGuard?: DiskGuard;
 }
 
 /** Pause after a non-unique build releases its table lock, so a polling waiter gets it. */
@@ -848,7 +853,6 @@ async function reconcileOne(
 ): Promise<IndexState> {
   const report = (state: IndexState['state'], outcome: IndexState['outcome']): IndexState =>
     indexState(spec, state, outcome);
-  const failed = (reason: string): IndexState => indexState(spec, 'failed', 'unchanged', reason);
   // Only a non-unique index's work is cancelled; a unique one must finish.
   const signal = spec.unique ? undefined : opts.signal;
   const swapName = swapNameFor(spec.name);
@@ -875,7 +879,7 @@ async function reconcileOne(
   const existing = named ?? leftover;
   if (existing === undefined) {
     const built = await build(conn, args, target, spec, spec.name, opts);
-    if (built !== undefined) return failed(built);
+    if (built !== undefined) return built;
     await mark(conn, spec.name);
     return report(await stateOf(conn, spec.name), 'created');
   }
@@ -918,7 +922,7 @@ async function reconcileOne(
       await conn.unsafe(`ALTER INDEX ${swapName} RENAME TO ${spec.name}`);
     } else {
       const built = await build(conn, args, target, spec, spec.name, opts);
-      if (built !== undefined) return failed(built);
+      if (built !== undefined) return built;
       await dropConcurrently(conn, swapName, signal);
     }
     await mark(conn, spec.name);
@@ -941,7 +945,7 @@ async function reconcileOne(
     // `named` keeps enforcing while the stale leftover goes.
     if (leftover !== undefined) await dropConcurrently(conn, swapName, signal);
     const built = await build(conn, args, target, spec, swapName, opts);
-    if (built !== undefined) return failed(built);
+    if (built !== undefined) return built;
   }
   // A successful CREATE INDEX CONCURRENTLY returns only once the index is
   // valid and ready, so the old one can go.
@@ -953,9 +957,10 @@ async function reconcileOne(
 
 /**
  * Builds `spec` as `name` CONCURRENTLY, refusing a unique one over duplicate
- * live values. Returns the reason when a non-unique build fails or is
- * cancelled through `opts.signal`, which costs only a scan until the next
- * reconcile drops the INVALID leftover and retries it; a unique one throws.
+ * live values. Returns `failed` when a non-unique build fails or is cancelled
+ * through `opts.signal`, which costs only a scan until the next reconcile
+ * drops the INVALID leftover and retries it, and `pending` when the disk
+ * guard refuses it; a unique one throws.
  */
 async function build(
   conn: Sql,
@@ -964,8 +969,19 @@ async function build(
   spec: Spec,
   name: string,
   opts: ReconcileOptions
-): Promise<string | undefined> {
+): Promise<IndexState | undefined> {
   if (spec.unique) await assertNoDuplicates(conn, args, target, spec);
+  if (!spec.unique && opts.diskGuard !== undefined) {
+    const need = await buildEstimate(conn, target, spec.name);
+    const verdict = await opts.diskGuard.check(need);
+    if (!verdict.ok) {
+      process.stderr.write(
+        `index ${name} on ${target} was not built and will be retried: ${verdict.freeBytes} bytes free, ` +
+          `${verdict.needBytes} needed (estimate plus margin)\n`
+      );
+      return { ...indexState(spec, 'pending', 'unchanged'), reason: 'insufficient_disk' };
+    }
+  }
   opts.onBuild?.(spec.name);
   // No lock_timeout: CONCURRENTLY takes SHARE UPDATE EXCLUSIVE, which a
   // queued request holds against DDL and VACUUM only, never readers or
@@ -986,8 +1002,25 @@ async function build(
     process.stderr.write(
       `index ${name} on ${target} failed to build and will be retried: ${message}\n`
     );
-    return `build_failed: ${message}`;
+    return indexState(spec, 'failed', 'unchanged', `build_failed: ${message}`);
   }
+}
+
+/**
+ * Bytes a build of index `name` on `target` may take: the index it replaces (under
+ * its name or as a `__swap` leftover), else 30% of the table.
+ * shortcut: on legacy the table is the shared `rows`, so a new index is
+ * estimated against every type's rows, pessimistic but safe; estimate from the
+ * type's own rows if that refuses builds a full disk could hold.
+ */
+async function buildEstimate(conn: Sql, target: string, name: string): Promise<number> {
+  const [row] = await conn<Array<{ n: string }>>`
+    SELECT COALESCE(
+      pg_relation_size(to_regclass(${name})),
+      pg_relation_size(to_regclass(${swapNameFor(name)})),
+      (pg_table_size(to_regclass(${ident(target)})) * 0.3)::bigint,
+      0)::text AS n`;
+  return Number(row?.n ?? 0);
 }
 
 /** Runs `text` on `conn`, cancelling it in flight when `signal` aborts. */
