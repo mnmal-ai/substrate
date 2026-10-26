@@ -28,6 +28,7 @@ import {
   makeFieldDefLookupFactory,
   reconcileDeclaredStorage,
   reconcileRegisteredStorage,
+  reportUnguardedIndexBuilds,
   runDeferredIndexBuilds
 } from '../src/serve/wiring.js';
 
@@ -135,6 +136,51 @@ describe.skipIf(!POSTGRES_URL)('deferred index builds at boot (pg)', () => {
       ).toEqual([]);
     } finally {
       await composed.stop();
+    }
+  }, 60_000);
+
+  it('logs the pending builds and their estimate when no disk path guards them', async () => {
+    const def = defineNamespace(`${ns}_unguarded`, {
+      Note: {
+        fields: { topic: { kind: 'scalar', type: 'string' } },
+        indexes: [{ fields: ['topic'] }]
+      }
+    });
+    const plugin = { name: def.namespace, contractVersion: '*', namespaces: [def] };
+    const nsDefs = new Map([[def.namespace, def]]);
+    const edges = new PgEdgesStore({ sql });
+    const dataset = new PgDataset({ namespace: 'default', sql, edgesStore: edges });
+    const datasets = buildPluginDatasetMap(
+      [plugin],
+      dataset,
+      sql,
+      edges,
+      makeFieldDefLookupFactory(nsDefs)
+    );
+    await reconcileDeclaredStorage((n) => datasets[n], nsDefs);
+    const composed = await compose({
+      server: new MemorySubstrateServer(),
+      dataset,
+      edges,
+      datasets,
+      coordinators: [plugin],
+      systemActor: 'local-dev'
+    });
+    try {
+      await reconcileRegisteredStorage(composed.engine, composed.datasets, nsDefs);
+      const lines: string[] = [];
+      await reportUnguardedIndexBuilds(composed.engine, composed.datasets, (l) => lines.push(l));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatch(
+        /^\d+ index builds? pending, estimated \d+\.\d GiB in total, and SUBSTRATE_INDEX_DISK_PATH is unset/
+      );
+      await buildDeferredIndexes(composed.engine, composed.datasets);
+      lines.length = 0;
+      await reportUnguardedIndexBuilds(composed.engine, composed.datasets, (l) => lines.push(l));
+      expect(lines).toEqual([]);
+    } finally {
+      await composed.stop();
+      await sql`DELETE FROM rows WHERE namespace = ${def.namespace}`;
     }
   }, 60_000);
 

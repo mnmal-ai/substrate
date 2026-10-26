@@ -893,14 +893,36 @@ carry `id` across export and import, never `shortId`.
 
 #### Upgrading an existing store
 
-The first boot after the release swaps every derived index (each crossRef's
-and each `indexed: true` field's) to its new `(field, natural order, id)`
-shape, one at a time, in the background. The old index serves until its
-replacement is valid. Each swap needs about twice that index's disk for a
-while, so before each build the dataset compares free space on the database
-volume against an estimate (the size of the index it replaces, a leftover `__swap` index included, else 30% of the
-table; sort temp space is not included) plus a margin, and waits, reporting
-`pending` with `insufficient_disk`, when there is not room. Configure it with:
+The first boot after the release builds every derived index (each
+crossRef's and each `indexed: true` field's) in its new
+`(field, natural order, id)` shape, one at a time, in the background. What
+that costs depends on the layout:
+
+- **Partitioned:** each derived index is swapped. The old index serves until
+  its replacement is valid, and each swap needs about twice that index's disk
+  for a while.
+- **Legacy:** nothing is swapped. Each derived index is a new partial index
+  on the shared `rows` table, so each one is a full scan of `rows`, estimated
+  at 30% of its size, and the old indexes stay until removed. Each type that
+  gains a statistics object also runs one `ANALYZE rows`.
+
+Before each build the dataset compares free space on the database volume
+against an estimate (the size of the index it replaces, a leftover `__swap`
+index included, else 30% of the table; sort temp space is not included) plus
+a margin, and waits, reporting `pending` with `insufficient_disk`, when there
+is not room.
+
+Two steps are required before the first boot on an existing store:
+
+1. Stop every instance on the store. Migration `0004` adds a column to
+   `rows`; behind a query or an index build from another process it blocks
+   every reader and writer of `rows` until that finishes.
+2. Set `SUBSTRATE_INDEX_DISK_PATH` to the mount of the PostgreSQL data
+   directory. An existing service has no such setting, and unset, the check is
+   off: the boot then logs how many builds are pending and their estimated
+   total.
+
+Configure the guard with:
 
 - `SUBSTRATE_INDEX_DISK_PATH`: the database volume's mount, when the
   database is on this host. `off` turns the check off for a database with no

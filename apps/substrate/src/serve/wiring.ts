@@ -334,6 +334,33 @@ export async function reconcileRegisteredStorage(
 }
 
 /**
+ * When `SUBSTRATE_INDEX_DISK_PATH` is unset, logs how many non-unique index
+ * builds the boot pass faces and their estimated size, since none of them
+ * will be checked against free disk. Logs nothing when none is pending.
+ */
+export async function reportUnguardedIndexBuilds(
+  engine: Pick<Engine, 'federatedSchema' | 'registryFor'>,
+  datasets: ComposedDatasets,
+  write: (line: string) => void = (line) => void process.stderr.write(line)
+): Promise<void> {
+  let count = 0;
+  let bytes = 0;
+  for (const { type, dataset } of registeredTypes(engine, datasets)) {
+    if (!(dataset instanceof PgDataset)) continue;
+    for (const p of await dataset.pendingIndexBuilds(type)) {
+      count++;
+      bytes += p.estimateBytes;
+    }
+  }
+  if (count === 0) return;
+  write(
+    `${count} index build${count === 1 ? '' : 's'} pending, estimated ${(bytes / 2 ** 30).toFixed(1)} GiB in total, ` +
+      'and SUBSTRATE_INDEX_DISK_PATH is unset, so free disk is not checked before them; ' +
+      "set it to the database volume's mount (or 'off')\n"
+  );
+}
+
+/**
  * Builds the non-unique indexes of every registered type, one type at a time.
  * Started after the server listens: until an index is valid, filters it would
  * serve scan. Never rejects: a type whose build fails is logged, and reported

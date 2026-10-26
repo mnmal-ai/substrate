@@ -1243,6 +1243,34 @@ async function build(
 }
 
 /**
+ * The type's non-unique indexes a reconcile would build or swap (not held
+ * exactly as declared), each with the disk guard's estimate for its build.
+ * Changes nothing; the type's storage must exist.
+ */
+export async function pendingIndexBuilds(
+  sql: Sql,
+  args: ReconcileTypeIndexesArgs
+): Promise<Array<{ name: string; estimateBytes: number }>> {
+  const specs = desiredSpecs(args).filter((s) => !s.unique);
+  if (specs.length === 0) return [];
+  const target = await targetTable(sql, args);
+  const conn = await sql.reserve();
+  try {
+    const desired = await deparse(conn, specs);
+    const out: Array<{ name: string; estimateBytes: number }> = [];
+    for (const [i, spec] of specs.entries()) {
+      if ((await heldAsDeclared(conn, target, spec, desired[i] as Described)) !== undefined) {
+        continue;
+      }
+      out.push({ name: spec.name, estimateBytes: await buildEstimate(conn, target, spec.name) });
+    }
+    return out;
+  } finally {
+    conn.release();
+  }
+}
+
+/**
  * Bytes a build of index `name` on `target` may take: the index it replaces (under
  * its name or as a `__swap` leftover), else 30% of the table.
  * shortcut: on legacy the table is the shared `rows`, so a new index is

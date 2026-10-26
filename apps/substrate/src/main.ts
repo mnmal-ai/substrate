@@ -93,6 +93,7 @@ import {
   makeTypeDefLookupFactory,
   reconcileRegisteredStorage,
   redactStoreSpec,
+  reportUnguardedIndexBuilds,
   runDeferredIndexBuilds,
   wireStore
 } from './serve/wiring.js';
@@ -232,6 +233,7 @@ export async function runServe(): Promise<void> {
   // Types compose registered (`_system`, install-time, replayed proposals),
   // after the engine ref is set so their fields resolve from its registry.
   await reconcileRegisteredStorage(engine, composedDatasets, nsDefs);
+  if (config.indexDiskPath === null) await reportUnguardedIndexBuilds(engine, composedDatasets);
 
   const info = await server.start({ host: config.host, port: config.port });
   const indexBuilds = new AbortController();

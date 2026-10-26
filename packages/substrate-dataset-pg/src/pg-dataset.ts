@@ -74,6 +74,7 @@ import {
   isEngineOwned,
   legacyLiveScope,
   legacyScope,
+  pendingIndexBuilds,
   type ReconcileTypeIndexesArgs,
   reconcileTypeIndexes,
   typeIndexesOf,
@@ -1300,6 +1301,23 @@ export class PgDataset implements Dataset {
       ...(def?.ordering !== undefined ? { ordering: def.ordering } : {}),
       promotedColumns: this.#promotedColumns
     };
+  }
+
+  /**
+   * The type's non-unique indexes the next build pass would build or swap,
+   * each with the disk guard's estimate. Empty when the store or the type's
+   * storage does not exist yet. Changes nothing.
+   */
+  async pendingIndexBuilds(type: string): Promise<Array<{ name: string; estimateBytes: number }>> {
+    const layout = await this.#layout();
+    if (layout === 'absent') return [];
+    const args = this.#indexArgs(type, this.namespace, layout);
+    if (layout === 'partitioned') {
+      const sql = this.#sql as Sql;
+      const nsPart = await findPartition(sql, 'rows', this.namespace);
+      if (nsPart === undefined || (await findPartition(sql, nsPart, type)) === undefined) return [];
+    }
+    return pendingIndexBuilds(this.#sql as Sql, args);
   }
 
   /** See `Dataset.describeStorage`. Reads the catalog only, in a fixed number of queries. */

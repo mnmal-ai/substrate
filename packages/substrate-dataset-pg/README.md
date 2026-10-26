@@ -81,7 +81,12 @@ A type declared `ordering: 'visible'` gets `rows.seq` from `visible_seqs`, assig
 
 For a docker volume, the PG 18 images keep data in a major-version subdirectory (`/var/lib/postgresql/18/…`), so mount the volume at `/var/lib/postgresql`, not `/var/lib/postgresql/data` (the repository's compose file and `substrate init` do). An old volume cannot simply be re-pointed at the new image: dump from a PG 17 container, start an empty PG 18 volume, and restore into it (or run `pg_upgrade` with both versions' binaries in one container).
 
-After upgrading, the first boot rebuilds every derived index in the background under the disk guard above; see the plugin author guide.
+After upgrading, the first boot builds indexes in the background under the disk guard above. On the partitioned layout it swaps each derived index to its new shape. On the legacy layout it builds a new partial index on the shared `rows` for each crossRef (and each `indexed: true` field) of each type, each a full scan of `rows` estimated at 30% of its size, plus one `ANALYZE rows` per type that gains statistics. Two steps are required before that first boot on an existing store:
+
+1. Stop every substrate instance on the store. Migration `0004` adds a column to `rows`, which waits behind any open query or index build and then blocks every reader and writer.
+2. Set `SUBSTRATE_INDEX_DISK_PATH` to the mount of the PostgreSQL data directory. Unset, the guard checks nothing, and the boot logs how many builds are pending and their estimated total.
+
+See the plugin author guide.
 
 ### Advisory locks
 
