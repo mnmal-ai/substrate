@@ -116,6 +116,8 @@ export interface ReconcileTypeIndexesArgs {
   indexes: IndexDecl[];
   /** The type's natural order, which every derived index carries after its field. */
   orderedBy: OrderedBy;
+  /** `'visible'` adds the `(seq, id)` index that serves reads in commit order. */
+  ordering?: 'visible';
   /** The namespace's promoted columns: a promoted field indexes on its column, as the compiler filters on it. */
   promotedColumns?: PromotedBodyColumnMap;
 }
@@ -742,7 +744,8 @@ async function targetTable(sql: Sql, args: ReconcileTypeIndexesArgs): Promise<st
 /** Metadata columns an index may key on, by the name reads use: plain columns, as natural order keys them. */
 const METADATA_COLUMNS: Readonly<Record<string, string>> = {
   createdAt: 'created_at',
-  updatedAt: 'updated_at'
+  updatedAt: 'updated_at',
+  seq: 'seq'
 };
 
 // The metadata column shadows a body field of the same name, in orderBy and where alike.
@@ -896,6 +899,17 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
       ]),
       base('deleted_at', 'USING btree (deleted_at) WHERE deleted_at IS NOT NULL')
     );
+  }
+  if (args.ordering === 'visible') {
+    specs.push({
+      name: generatedIdentifier(namespace, type, 'seq', 'base'),
+      fields: [],
+      unique: false,
+      tail: `USING btree (seq, id) WHERE ${live}`,
+      keys: [],
+      predicate: live,
+      order: [['seq', 'asc']]
+    });
   }
   for (const decl of args.indexes) {
     // An unnamed, plain one-field declaration on a crossRef is served by its

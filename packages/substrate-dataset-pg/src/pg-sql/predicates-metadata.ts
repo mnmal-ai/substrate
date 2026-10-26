@@ -33,6 +33,7 @@ export function buildMetadataColumnPredicate(
   predicate: Record<string, unknown>
 ): Fragment | null {
   const colName = METADATA_COLUMNS[field];
+  if (field === 'seq') return seqPredicate(sql, sql.unsafe(colName), predicate);
   const isTimestamp = field === 'createdAt' || field === 'updatedAt';
   const fragments: Fragment[] = [];
 
@@ -141,6 +142,59 @@ export function buildMetadataColumnPredicate(
     if (frag !== null) fragments.push(frag);
   }
 
+  if (fragments.length === 0) return null;
+  return combineAnd(sql, fragments);
+}
+
+/** Predicates on the bigint `seq` column; the validator has already checked operands are numbers. */
+function seqPredicate(
+  sql: Sql | TransactionSql,
+  col: ReturnType<Sql['unsafe']>,
+  predicate: Record<string, unknown>
+): Fragment | null {
+  const n = (v: unknown): Fragment => sql`${String(v)}::bigint`;
+  const fragments: Fragment[] = [];
+  for (const [op, operand] of Object.entries(predicate)) {
+    let frag: Fragment | null = null;
+    switch (op) {
+      case 'eq':
+        frag = operand === null ? sql`${col} IS NULL` : sql`${col} = ${n(operand)}`;
+        break;
+      case 'neq':
+        frag =
+          operand === null ? sql`${col} IS NOT NULL` : sql`${col} IS DISTINCT FROM ${n(operand)}`;
+        break;
+      case 'gt':
+        frag = sql`${col} > ${n(operand)}`;
+        break;
+      case 'gte':
+        frag = sql`${col} >= ${n(operand)}`;
+        break;
+      case 'lt':
+        frag = sql`${col} < ${n(operand)}`;
+        break;
+      case 'lte':
+        frag = sql`${col} <= ${n(operand)}`;
+        break;
+      case 'between':
+        if (!Array.isArray(operand) || operand.length !== 2) {
+          throw new UnsupportedFilterError('seq', op, 'requires a two-element [low, high] array');
+        }
+        frag = sql`${col} BETWEEN ${n(operand[0])} AND ${n(operand[1])}`;
+        break;
+      case 'in':
+      case 'nin':
+        if (Array.isArray(operand)) {
+          const vals = operand.filter((v) => v !== null).map(String);
+          const member = memberOf(sql, col, sql`${vals}::bigint[]`, operand);
+          frag = op === 'in' ? member : sql`NOT ${member}`;
+        }
+        break;
+      default:
+        throw new UnsupportedFilterError('seq', op, 'is not a recognised filter operator');
+    }
+    if (frag !== null) fragments.push(frag);
+  }
   if (fragments.length === 0) return null;
   return combineAnd(sql, fragments);
 }

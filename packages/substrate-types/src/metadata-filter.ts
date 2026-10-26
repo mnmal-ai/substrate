@@ -18,7 +18,9 @@ export const METADATA_FILTER_FIELDS: Readonly<Record<string, FieldDef>> = {
   createdById: { kind: 'scalar', type: 'string', indexed: true },
   createdByKind: { kind: 'scalar', type: 'string', indexed: true },
   updatedById: { kind: 'scalar', type: 'string', indexed: true },
-  updatedByKind: { kind: 'scalar', type: 'string', indexed: true }
+  updatedByKind: { kind: 'scalar', type: 'string', indexed: true },
+  /** Commit order on an `ordering: 'visible'` type; null on every other type. */
+  seq: { kind: 'scalar', type: 'number', indexed: true }
 };
 
 /**

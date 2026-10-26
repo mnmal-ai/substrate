@@ -115,9 +115,22 @@ export interface TypeInput {
   /**
    * The type's natural order: what a read with no `orderBy` returns. Exactly
    * one key, a declared date or number field or a metadata column
-   * (`createdAt`, `updatedAt`). Absent means newest first by `createdAt`.
+   * (`createdAt`, `updatedAt`, or `seq` on a visible-order type). Absent
+   * means newest first by `createdAt`.
    */
   orderedBy?: OrderedBy;
+  /**
+   * `'visible'`: each inserted row gets `_metadata.seq`, strictly increasing
+   * per type in commit order, so a reader paging by `seq` never sees a higher
+   * seq before a lower one becomes visible. An upsert of an existing row keeps
+   * its seq. `seq` is filterable, sortable, and valid in `orderedBy`.
+   *
+   * Cost: writes to the type are serialised. Each insert holds a per-type
+   * transaction lock from seq assignment to commit, so one writer's open
+   * transaction blocks every other writer of the type until it ends. Other
+   * types are unaffected and pay nothing.
+   */
+  ordering?: 'visible';
   /**
    * Expected size. `large` lets the index advisor recommend for this type
    * from its profile's lower `minRowsLargeHint` rather than `minRows`.
@@ -199,6 +212,10 @@ export function defineNamespace(
 
   for (const [typeName, typeInput] of Object.entries(types)) {
     for (const decl of typeInput.indexes ?? []) assertIndexDecl(typeName, typeInput.fields, decl);
+    const ordering: unknown = typeInput.ordering;
+    if (ordering !== undefined && ordering !== 'visible') {
+      throw new Error(`ordering on ${typeName} must be 'visible', got '${String(ordering)}'`);
+    }
     if (typeInput.orderedBy !== undefined) assertOrderedBy(typeName, typeInput);
     const size: unknown = typeInput.expectedSize;
     if (size !== undefined && size !== 'small' && size !== 'large') {
@@ -323,10 +340,13 @@ export function assertIndexDecl(
 /** Metadata columns a type may take as its natural order. */
 const ORDERED_BY_METADATA_COLUMNS: ReadonlySet<string> = new Set(['createdAt', 'updatedAt']);
 
-/** Throws unless `orderedBy` is one key, on a date or number field or a metadata column. */
+/**
+ * Throws unless `orderedBy` is one key, on a date or number field or a metadata
+ * column; `seq` only on a type declared `ordering: 'visible'`.
+ */
 export function assertOrderedBy(
   typeName: string,
-  def: Pick<TypeInput, 'fields' | 'orderedBy'>
+  def: Pick<TypeInput, 'fields' | 'orderedBy' | 'ordering'>
 ): void {
   const where = `orderedBy on ${typeName}`;
   const entries = Object.entries(def.orderedBy ?? {});
@@ -338,6 +358,10 @@ export function assertOrderedBy(
     throw new Error(`${where}: dir of '${name}' must be 'asc' or 'desc', got '${String(dir)}'`);
   }
   if (ORDERED_BY_METADATA_COLUMNS.has(name)) return;
+  if (name === 'seq') {
+    if (def.ordering === 'visible') return;
+    throw new Error(`${where}: 'seq' needs the type to declare ordering: 'visible'`);
+  }
   const field = def.fields[name];
   if (field === undefined) throw new Error(`${where}: unknown field '${name}'`);
   if (!(field.kind === 'scalar' && (field.type === 'date' || field.type === 'number'))) {

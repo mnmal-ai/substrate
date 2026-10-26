@@ -45,6 +45,10 @@ import {
   CONCURRENT_STATEMENTS as SAFE_CASTS_CONCURRENT,
   TX_STATEMENTS as SAFE_CASTS_TX
 } from './migrations/0003_safe_casts.js';
+import {
+  CONCURRENT_STATEMENTS as VISIBLE_SEQ_CONCURRENT,
+  TX_STATEMENTS as VISIBLE_SEQ_TX
+} from './migrations/0004_visible_seq.js';
 import { sqlStringLiteral } from './pg-sql/primitives.js';
 import { assertServerVersion } from './server-version.js';
 
@@ -100,6 +104,11 @@ const SHARED_INPUTS: ReadonlyArray<MigrationInput> = [
     version: '0003_safe_casts',
     txStatements: SAFE_CASTS_TX,
     concurrentStatements: SAFE_CASTS_CONCURRENT
+  },
+  {
+    version: '0004_visible_seq',
+    txStatements: VISIBLE_SEQ_TX,
+    concurrentStatements: VISIBLE_SEQ_CONCURRENT
   }
 ];
 

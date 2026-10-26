@@ -94,7 +94,8 @@ describe.skipIf(!POSTGRES_URL)('storage layout', () => {
     >`SELECT version FROM migrations ORDER BY version`;
     expect(versions.map((r) => r.version)).toEqual([
       '0001p_partitioned_baseline',
-      '0003_safe_casts'
+      '0003_safe_casts',
+      '0004_visible_seq'
     ]);
   });
 

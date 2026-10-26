@@ -95,7 +95,8 @@ export async function wireStore(
     return {
       dataset: new MemoryDataset({
         namespace: DEFAULT_NAMESPACE,
-        fieldDefLookup: fieldDefLookupFor(DEFAULT_NAMESPACE)
+        fieldDefLookup: fieldDefLookupFor(DEFAULT_NAMESPACE),
+        ...(typeDefLookupFor ? { typeDefLookup: typeDefLookupFor(DEFAULT_NAMESPACE) } : {})
       }),
       edges: new MemoryEdgesStore({ now: () => new Date() }),
       substrateNamespaceDataset: null,
@@ -474,7 +475,11 @@ export function buildPluginDatasetMap(
               ...(sharedEdges !== null ? { edgesStore: sharedEdges } : {}),
               ...(diskGuard !== undefined ? { diskGuard } : {})
             })
-          : new MemoryDataset({ namespace: ns, fieldDefLookup: fieldDefLookupFor(ns) });
+          : new MemoryDataset({
+              namespace: ns,
+              fieldDefLookup: fieldDefLookupFor(ns),
+              typeDefLookup: typeDefLookup ?? ((type) => nsDef.types?.[type])
+            });
     }
   }
   return datasets;

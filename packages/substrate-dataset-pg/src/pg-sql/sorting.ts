@@ -117,7 +117,7 @@ function sortExpr(
   // memory dataset do, whatever the database collation.
   if (isMetadataField(field)) {
     const col = METADATA_COLUMNS[field];
-    return field === 'createdAt' || field === 'updatedAt'
+    return field === 'createdAt' || field === 'updatedAt' || field === 'seq'
       ? sql.unsafe(col)
       : sql.unsafe(`${col} COLLATE "C"`);
   }
@@ -227,6 +227,7 @@ function sortParam(
 ): Fragment {
   if (field === 'id') return sql`${idToText(value as Id)}`;
   if (field === 'shortId') return sql`${value as number}`;
+  if (field === 'seq') return sql`${String(value)}::bigint`;
   if (isMetadataField(field)) {
     // Timestamp columns compare as timestamptz so the btree index is usable;
     // the string columns compare directly.

@@ -101,7 +101,7 @@ function lookupField(fields: Record<string, FieldDef>, name: string): FieldDef |
  */
 function metadataHint(fieldName: string): string {
   if (!/^(_metadata|createdBy|updatedBy)(\.|$)/.test(fieldName)) return '';
-  return ' — row metadata is filterable as createdAt, updatedAt, createdBy / updatedBy (an identity id, or { kind, id }), or createdById, createdByKind, updatedById, updatedByKind';
+  return ' — row metadata is filterable as createdAt, updatedAt, createdBy / updatedBy (an identity id, or { kind, id }), or createdById, createdByKind, updatedById, updatedByKind, and seq on a visible-order type';
 }
 
 const LOGICAL_KEYS = new Set(['AND', 'OR', 'NOT']);

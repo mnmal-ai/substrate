@@ -31,7 +31,8 @@ export const METADATA_COLUMNS = {
   createdById: 'r.created_by_id',
   createdByKind: 'r.created_by_kind',
   updatedById: 'r.updated_by_id',
-  updatedByKind: 'r.updated_by_kind'
+  updatedByKind: 'r.updated_by_kind',
+  seq: 'r.seq'
 } as const;
 
 export type MetadataFieldName = keyof typeof METADATA_COLUMNS;

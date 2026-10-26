@@ -58,6 +58,11 @@ export interface RowMetadata {
   readonly updatedAt: string | null;
   readonly createdBy: ActorIdentity | null;
   readonly updatedBy: ActorIdentity | null;
+  /**
+   * The row's place in its type's commit order, on a type declared
+   * `ordering: 'visible'`; absent on every other type. Assigned on insert only.
+   */
+  readonly seq?: number;
 }
 
 export const CLIENT_SUPPLIED_SERVER_FIELD = 'client_supplied_server_field' as const;

@@ -134,6 +134,7 @@ export type TypeDefLookup = (
       fields: Record<string, FieldDef>;
       indexes?: IndexDecl[];
       orderedBy?: OrderedBy;
+      ordering?: 'visible';
       expectedSize?: 'small' | 'large';
     }
   | undefined;
@@ -273,6 +274,8 @@ interface SubstrateRowRecord {
   created_by_id: string | null;
   updated_by_kind: string | null;
   updated_by_id: string | null;
+  /** bigint as a string; null off visible-order types. */
+  seq: string | null;
 }
 
 /** Share of `rows` changed since ANALYZE past which its indexes' row counts are stale (autoanalyze's default). */
@@ -484,7 +487,7 @@ export class PgDataset implements Dataset {
           SELECT r.id, ${bodyProjection} AS body, r.deleted_at, s.short_id,
                  r.created_at, r.updated_at,
                  r.created_by_kind, r.created_by_id,
-                 r.updated_by_kind, r.updated_by_id${sortKeyProjection}
+                 r.updated_by_kind, r.updated_by_id, r.seq${sortKeyProjection}
           FROM rows r
           LEFT JOIN short_ids s
             ON s.namespace = r.namespace
@@ -500,7 +503,7 @@ export class PgDataset implements Dataset {
             SELECT r.id, ${bodyProjection} AS body, r.deleted_at,
                    r.created_at, r.updated_at,
                    r.created_by_kind, r.created_by_id,
-                   r.updated_by_kind, r.updated_by_id,
+                   r.updated_by_kind, r.updated_by_id, r.seq,
                    r.namespace, r.type${sortKeyProjection}
             FROM rows r
             WHERE ${where}
@@ -580,12 +583,26 @@ export class PgDataset implements Dataset {
    *
    * A supplied id repeated in one batch: under `insertOnly` the first
    * occurrence lands and the rest are skipped; otherwise the batch is refused.
+   *
+   * On an `ordering: 'visible'` type each inserted row gets the next `seq`,
+   * consecutive in input order, under a per-type transaction lock held until
+   * commit, so seq order is commit order. A row that already exists keeps its
+   * seq, and one `insertOnly` skips gets none.
    */
   async write(type: string, rows: WriteRow[], options?: WriteOptions): Promise<WriteResult> {
     if (rows.length === 0) return { written: 0, ids: [], rows: [] };
     if (options?.insertOnly !== true) assertNoRepeatedIds(type, rows);
 
+    const visible = this.#typeDefLookup?.(type, this.namespace)?.ordering === 'visible';
+    // The seq lock must be held to commit, so it needs a transaction to live in.
+    if (visible && !this.#inTx) {
+      return this.withTransaction((tx) => tx.write(type, rows, options));
+    }
+
     const sql = this.#sql;
+    if (visible) {
+      await sql`SELECT pg_advisory_xact_lock(hashtext('substrate-visible-seq:' || current_schema() || ':' || ${this.namespace} || '/' || ${type}))`;
+    }
 
     const fallbackNow = (options?.now ?? new Date()).toISOString();
     const fallbackActor = options?.identity ?? null;
@@ -689,6 +706,39 @@ export class PgDataset implements Dataset {
           updated_by_kind = COALESCE(EXCLUDED.updated_by_kind, rows.updated_by_kind),
           updated_by_id   = COALESCE(EXCLUDED.updated_by_id, rows.updated_by_id)${conflictColumnUpdates}`;
 
+    // Visible order: `seqd` numbers the rows that will be inserted (the first
+    // occurrence of an id with no row yet) on from the type's last seq, in
+    // input order; `counted` advances that counter. Both read under the lock,
+    // so no other writer of the type can interleave. Relies on READ COMMITTED:
+    // this statement's snapshot, taken after the lock, sees every earlier
+    // holder's commit.
+    const seqCtes = visible
+      ? sql`,
+      seqd AS (
+        SELECT f.*, CASE WHEN f.fresh THEN
+            COALESCE((SELECT v.last_seq FROM visible_seqs v WHERE ${this.#scope(type, 'v.')}), 0)
+            + count(*) FILTER (WHERE f.fresh) OVER (ORDER BY f.ord)
+          END AS sq
+        FROM (
+          SELECT i.*, i.ord = min(i.ord) OVER (PARTITION BY i.rid) AS first,
+                 i.ord = min(i.ord) OVER (PARTITION BY i.rid) AND NOT EXISTS (
+                   SELECT 1 FROM rows r WHERE ${this.#scope(type, 'r.')} AND r.id = i.rid
+                 ) AS fresh
+          FROM input i
+        ) f
+      ),
+      counted AS (
+        INSERT INTO visible_seqs (namespace, type, last_seq)
+        SELECT ns, ty, max(sq) FROM seqd WHERE sq IS NOT NULL GROUP BY ns, ty
+        ON CONFLICT (namespace, type) DO UPDATE SET last_seq = EXCLUDED.last_seq
+      )`
+      : sql``;
+    // A repeated id's later occurrences are skipped under insertOnly anyway;
+    // leaving them out makes the first one the one that lands, with its seq.
+    const insertSource = visible ? sql`seqd WHERE first` : sql`input`;
+    const seqColumn = visible ? sql`, seq` : sql``;
+    const seqValue = visible ? sql`, sq` : sql``;
+
     // Single round-trip upsert + merged-row read. The CTE pipeline:
     //   `input`     — UNNEST of caller arrays WITH ORDINALITY, to preserve
     //                 input order; a null id becomes `uuidv7()` here, once
@@ -713,24 +763,24 @@ export class PgDataset implements Dataset {
           ${updatedByKinds}::text[],
           ${updatedByIds}::text[]
         ) WITH ORDINALITY AS t(ns, ty, rid, bod, ca, ua, cbk, cbi, ubk, ubi, ord)
-      ),
+      )${seqCtes},
       upserted AS (
         INSERT INTO rows (namespace, type, id, body, deleted_at,
           created_at, updated_at, created_by_kind, created_by_id,
-          updated_by_kind, updated_by_id${insertColumnList})
+          updated_by_kind, updated_by_id${insertColumnList}${seqColumn})
         SELECT
           ns, ty, rid, bod::jsonb, NULL::timestamptz,
-          ca::timestamptz, ua::timestamptz, cbk, cbi, ubk, ubi${insertColumnValues}
-        FROM input
+          ca::timestamptz, ua::timestamptz, cbk, cbi, ubk, ubi${insertColumnValues}${seqValue}
+        FROM ${insertSource}
         ${onConflict}
         RETURNING namespace, type, id, body, deleted_at,
                   created_at, updated_at, created_by_kind, created_by_id,
-                  updated_by_kind, updated_by_id
+                  updated_by_kind, updated_by_id, seq
       )
       SELECT u.id, u.body, u.deleted_at, s.short_id,
              u.created_at, u.updated_at,
              u.created_by_kind, u.created_by_id,
-             u.updated_by_kind, u.updated_by_id
+             u.updated_by_kind, u.updated_by_id, u.seq
       FROM upserted u
       JOIN (SELECT rid, min(ord) AS ord FROM input GROUP BY rid) i ON i.rid = u.id
       LEFT JOIN short_ids s
@@ -914,12 +964,12 @@ export class PgDataset implements Dataset {
           AND ${deletedGuard}
           AND ${matchSql}
         RETURNING namespace, type, id, body, deleted_at, created_at, updated_at,
-                  created_by_kind, created_by_id, updated_by_kind, updated_by_id
+                  created_by_kind, created_by_id, updated_by_kind, updated_by_id, seq
       )
       SELECT u.id, u.body, u.deleted_at, s.short_id,
              u.created_at, u.updated_at,
              u.created_by_kind, u.created_by_id,
-             u.updated_by_kind, u.updated_by_id
+             u.updated_by_kind, u.updated_by_id, u.seq
       FROM updated u
       LEFT JOIN short_ids s
         ON s.namespace = u.namespace
@@ -1239,6 +1289,7 @@ export class PgDataset implements Dataset {
       fields: def?.fields ?? {},
       indexes: def?.indexes ?? [],
       orderedBy: naturalOrderOf(def ?? {}),
+      ...(def?.ordering !== undefined ? { ordering: def.ordering } : {}),
       promotedColumns: this.#promotedColumns
     };
   }
