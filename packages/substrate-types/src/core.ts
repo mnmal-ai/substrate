@@ -16,6 +16,17 @@ export interface Row {
   [field: string]: unknown;
 }
 
+/**
+ * A row as passed to `Dataset.write`. `id` may be omitted: the dataset then
+ * assigns a version-7 UUID and returns it in `WriteResult.ids`.
+ */
+export interface WriteRow {
+  id?: Id;
+  _deletedAt?: Date | null;
+  _metadata?: RowMetadata;
+  [field: string]: unknown;
+}
+
 export type IdentityKind = 'agent' | 'user' | 'system';
 
 /**

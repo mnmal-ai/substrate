@@ -13,7 +13,6 @@
  * the caller's transaction rolls back.
  */
 
-import { randomUUID } from 'node:crypto';
 import {
   type MigrationResult,
   migrateFieldValues,
@@ -24,6 +23,7 @@ import { resolveIdentity } from '@mnmal-ai/substrate-sdk';
 import type {
   Dataset,
   EdgesStore,
+  Id,
   RequestContext,
   ResolverArgs,
   Row
@@ -219,9 +219,7 @@ async function proposeFieldLocked(
   // Step 4 — new field: write the FieldProposal row (applied=false). Engine
   // path runs through autoCRUD; fallback path raw-writes.
   const proposedAt = new Date();
-  const newId = randomUUID();
   const initialParams: Record<string, unknown> = {
-    id: newId,
     targetType,
     fieldName,
     fieldSpecJson: JSON.stringify(fieldSpec),
@@ -237,11 +235,12 @@ async function proposeFieldLocked(
   };
 
   const engine = binding.engine;
-  if (engine !== undefined) {
-    await writeInTx(binding.registry, ctx, args, 'createFieldProposal', initialParams);
-  } else {
-    await args.dataset.write('FieldProposal', [initialParams as Row]);
-  }
+  // The dataset assigns the proposal's id.
+  const newId: Id | undefined =
+    engine !== undefined
+      ? (await writeInTx(binding.registry, ctx, args, 'createFieldProposal', initialParams)).id
+      : (await args.dataset.write('FieldProposal', [initialParams])).ids[0];
+  if (newId === undefined) throw new Error('dataset.write did not return an id for FieldProposal');
 
   // Step 5 — apply the field to the live registry
   try {

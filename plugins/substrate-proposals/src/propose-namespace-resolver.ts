@@ -41,7 +41,6 @@
  * is not restored on restart.
  */
 
-import { randomUUID } from 'node:crypto';
 import { resolveIdentity } from '@mnmal-ai/substrate-sdk';
 import type {
   Dataset,
@@ -194,9 +193,8 @@ async function proposeNamespaceLocked(
   if (prior !== undefined) {
     proposalId = String(prior.id);
   } else {
-    proposalId = randomUUID();
-    await writeInTx(controlBinding.registry, ctx, args, 'createNamespaceProposal', {
-      id: proposalId,
+    // The dataset assigns the proposal's id.
+    const created = await writeInTx(controlBinding.registry, ctx, args, 'createNamespaceProposal', {
       ns,
       proposedBy,
       proposedAt: new Date(),
@@ -206,6 +204,7 @@ async function proposeNamespaceLocked(
       supersededByCode: false,
       archived: false
     });
+    proposalId = String(created.id);
   }
 
   // Steps 5+6 — append to engine + install TypeProposal/FieldProposal on

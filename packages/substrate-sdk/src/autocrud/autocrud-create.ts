@@ -1,11 +1,9 @@
 /**
  * autoCRUD `create<T>` resolver. Spec: §5.1.
  *
- * Accepts the entity body via `params`. Generates a UUID id when absent.
- * `_deletedAt` is stripped at the dataset layer — no sanitation needed here.
- *
- * Design call: id generation is `crypto.randomUUID()` rather than monotonic
- * counters so two engines pointed at the same dataset (future) don't collide.
+ * Accepts the entity body via `params`. When `id` is absent the dataset
+ * assigns a version-7 UUID from its own clock and the resolver takes it from
+ * the write result. `_deletedAt` is stripped at the dataset layer.
  *
  * When `options.fields` is supplied, any field with `readonly: true` is
  * rejected if the caller includes it in params — shortId is the primary use
@@ -13,14 +11,13 @@
  * it in the same transaction via `ds.allocateShortId` / `ds.bindShortId`.
  */
 
-import { randomUUID } from 'node:crypto';
 import type {
   Dataset,
   FieldDef,
-  Id,
   Row,
   RowMetadata,
-  TypedResolver
+  TypedResolver,
+  WriteRow
 } from '@mnmal-ai/substrate-types';
 import { normaliseVocabValues, ResolverFrameError } from '@mnmal-ai/substrate-types';
 import {
@@ -105,7 +102,9 @@ export function createResolver<T extends Row = Row>(
       assertRequiredFields(params, options.fields);
     }
 
-    const id: Id = coerceId(params.id) ?? randomUUID();
+    // Omitted (or not a string/number): the dataset assigns the id.
+    const { id: rawId, ...body } = params;
+    const id = coerceId(rawId);
     // Tier-1 row metadata — server-populated on every create.
     const at = ctx.now.toISOString();
     const actor = resolveIdentity(ctx);
@@ -116,7 +115,7 @@ export function createResolver<T extends Row = Row>(
       updatedBy: actor
     };
 
-    const row: Row = { ...params, id, _metadata } as Row;
+    const row: WriteRow = id === undefined ? { ...body, _metadata } : { ...body, id, _metadata };
     // Insert-only: a row with this id, live or deleted, is never overwritten,
     // and of two concurrent creates with one id exactly one lands.
     // WriteResult.rows[0] carries the substrate's canonical view (post any

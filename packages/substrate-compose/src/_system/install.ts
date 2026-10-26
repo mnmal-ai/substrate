@@ -29,7 +29,6 @@
  * the client deserves a dedicated code to branch on.
  */
 
-import { randomUUID } from 'node:crypto';
 import { ResolverFrameError } from '@mnmal-ai/substrate-core';
 import {
   and,
@@ -50,7 +49,8 @@ import type {
   Registry,
   RequestContext,
   ResolverArgs,
-  Row
+  Row,
+  WriteRow
 } from '@mnmal-ai/substrate-types';
 import { createKeyedMutex } from '@mnmal-ai/substrate-types';
 import type { StoreProfileName } from '../advisor/profiles.js';
@@ -239,11 +239,10 @@ export interface AuditEmitInput {
 /**
  * Build the AuditEvent row. Shared between the interceptor emits (which
  * write via `args.dataset` to stay in-tx) and the route emits (which write via
- * the ambient dataset post-tx). `id` is a random UUID.
+ * the ambient dataset post-tx). The dataset assigns the `id`.
  */
-export function buildAuditRow(input: AuditEmitInput): Row {
-  const row: Row = {
-    id: randomUUID(),
+export function buildAuditRow(input: AuditEmitInput): WriteRow {
+  const row: WriteRow = {
     ts: input.now.toISOString(),
     actorKid: input.actorKid,
     kind: input.kind,

@@ -48,11 +48,13 @@ import type {
   UpdateFieldRef,
   WhereClause,
   WriteOptions,
-  WriteResult
+  WriteResult,
+  WriteRow
 } from '@mnmal-ai/substrate-types';
 import { createKeyedMutex } from '@mnmal-ai/substrate-types';
 import { NamespaceMismatch, ReservedField } from './errors.js';
 import { MemoryShortIdStore, type ShortIdBucketSnapshot } from './memory-short-id-store.js';
+import { uuidv7 } from './uuidv7.js';
 
 export interface MemoryDatasetOptions {
   namespace: string;
@@ -276,17 +278,16 @@ export class MemoryDataset implements Dataset {
     return out;
   }
 
-  async write(type: string, rows: Row[], options?: WriteOptions): Promise<WriteResult> {
+  async write(type: string, rows: WriteRow[], options?: WriteOptions): Promise<WriteResult> {
     const b = this.bucket(type);
     const ids: Id[] = [];
     const merged: Row[] = [];
     const fallbackNow = (options?.now ?? new Date()).toISOString();
     const fallbackActor = options?.identity ?? null;
 
-    for (const row of rows) {
-      if (row.id === undefined || row.id === null) {
-        throw new Error(`write: row.id is required (type='${type}')`);
-      }
+    for (const input of rows) {
+      // An id-less row gets a v7 UUID (see uuidv7.ts for its limits).
+      const row: Row = { ...input, id: input.id ?? uuidv7() };
 
       // Auto-fill _metadata when the caller didn't supply one. Engine path
       // (autocrud-create/update) always supplies _metadata itself; this branch

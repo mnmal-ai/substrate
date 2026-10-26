@@ -300,7 +300,7 @@ export function assertRequiredFields(
 ): void {
   const missing: string[] = [];
   for (const [name, def] of Object.entries(fieldDefs)) {
-    // `id` is engine-generated (randomUUID) when omitted — never required.
+    // `id` is assigned by the dataset when omitted — never required.
     if (name === 'id') continue;
     if (def.kind !== 'scalar') continue;
     if (def.nullable === true || def.default !== undefined || def.readonly === true) continue;

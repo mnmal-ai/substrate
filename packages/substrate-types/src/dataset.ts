@@ -13,7 +13,7 @@
  * envelope's `_pagination` block.
  */
 
-import type { ActorIdentity, Id, Row } from './core.js';
+import type { ActorIdentity, Id, Row, WriteRow } from './core.js';
 import type { EdgesStore } from './edge.js';
 import type { IndexDecl } from './plugin.js';
 import type { TypeStats } from './runtime-metrics.js';
@@ -145,6 +145,10 @@ export interface ReadResult {
 
 export interface WriteResult {
   written: number;
+  /**
+   * One per written row, in input order: a supplied id verbatim, otherwise
+   * the id the dataset assigned. Under `insertOnly`, skipped rows are absent.
+   */
   ids: Id[];
   /**
    * Merged rows after upsert — substrates populate this with the post-merge
@@ -255,7 +259,7 @@ export interface Dataset {
    */
   readonly txScopeId: string;
   read(type: string, params: ReadParams): Promise<ReadResult>;
-  write(type: string, rows: Row[], options?: WriteOptions): Promise<WriteResult>;
+  write(type: string, rows: WriteRow[], options?: WriteOptions): Promise<WriteResult>;
   tombstone(type: string, ids: Id[]): Promise<DeleteResult>;
   purge(type: string, ids: Id[]): Promise<DeleteResult>;
   /**

@@ -7,7 +7,7 @@
  * mail routing and agent listing quietly break.
  */
 
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import {
   AUDIT_EVENT_TYPE,
   buildAuditRow,
@@ -267,7 +267,8 @@ export async function runRegister(
       const { rows: existingRows } = await tx.read(KEY_TYPE, { where: { kid: { eq: args.kid } } });
       const existing = existingRows.find((r) => r.revokedAt == null) ?? existingRows[0];
       let wasRevoked = false;
-      let rowId: string = randomUUID();
+      // Unset for a new principal: the dataset assigns the row id.
+      let rowId: string | undefined;
       if (existing !== undefined) {
         const existingRevokedAt =
           existing.revokedAt instanceof Date
@@ -289,7 +290,7 @@ export async function runRegister(
         KEY_TYPE,
         [
           {
-            id: rowId,
+            ...(rowId !== undefined && { id: rowId }),
             kid: args.kid,
             name: args.name,
             algorithm: 'EdDSA',

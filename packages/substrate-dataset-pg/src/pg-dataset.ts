@@ -54,7 +54,8 @@ import type {
   TypeStorageReport,
   UpdateFieldRef,
   WriteOptions,
-  WriteResult
+  WriteResult,
+  WriteRow
 } from '@mnmal-ai/substrate-types';
 import { naturalOrderOf } from '@mnmal-ai/substrate-types';
 import type { Sql } from 'postgres';
@@ -568,9 +569,15 @@ export class PgDataset implements Dataset {
     return out;
   }
 
-  async write(type: string, rows: Row[], options?: WriteOptions): Promise<WriteResult> {
-    const ids: Id[] = [];
-    if (rows.length === 0) return { written: 0, ids, rows: [] };
+  /**
+   * Upsert `rows`. A row without an `id` gets one from the database's
+   * `uuidv7()`, returned in `ids` in input order. Limits of a v7 id: it is
+   * never a happened-before signal; ids sort in creation order only within one
+   * connection (across connections within a millisecond, and for
+   * client-supplied ids, order is arbitrary); and it reveals its creation time.
+   */
+  async write(type: string, rows: WriteRow[], options?: WriteOptions): Promise<WriteResult> {
+    if (rows.length === 0) return { written: 0, ids: [], rows: [] };
 
     const sql = this.#sql;
 
@@ -581,7 +588,7 @@ export class PgDataset implements Dataset {
     // are stripped from the body: each lives only in its own column(s).
     const namespaces: string[] = [];
     const types: string[] = [];
-    const idsCol: string[] = [];
+    const idsCol: (string | null)[] = [];
     const bodies: string[] = [];
     const createdAts: (string | null)[] = [];
     const updatedAts: (string | null)[] = [];
@@ -591,9 +598,6 @@ export class PgDataset implements Dataset {
     const updatedByIds: (string | null)[] = [];
 
     for (const row of rows) {
-      if (row.id === undefined || row.id === null) {
-        throw new Error(`write: row.id is required (type='${type}')`);
-      }
       // The engine always supplies _metadata; raw writes get it auto-filled.
       const meta: RowMetadata = (row._metadata as RowMetadata | undefined) ?? {
         createdAt: fallbackNow,
@@ -601,17 +605,16 @@ export class PgDataset implements Dataset {
         createdBy: fallbackActor,
         updatedBy: fallbackActor
       };
-      const sanitised: Record<string, unknown> = { id: row.id };
+      const sanitised: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(row)) {
         if (k === RESERVED_DELETED_AT) continue;
         if (k === '_metadata') continue;
-        if (k === 'id') continue;
+        if (k === 'id' && v == null) continue;
         sanitised[k] = v;
       }
-      ids.push(row.id);
       namespaces.push(this.namespace);
       types.push(type);
-      idsCol.push(idToText(row.id));
+      idsCol.push(row.id == null ? null : idToText(row.id));
       // Bound as text and cast `::jsonb` in SQL: postgres.js's bulk path does
       // not reliably round-trip objects through jsonb.
       bodies.push(JSON.stringify(sanitised));
@@ -682,14 +685,16 @@ export class PgDataset implements Dataset {
 
     // Single round-trip upsert + merged-row read. The CTE pipeline:
     //   `input`     — UNNEST of caller arrays WITH ORDINALITY, to preserve
-    //                 input order.
+    //                 input order; a null id becomes `uuidv7()` here, once
+    //                 per row, so the final join sees the assigned id.
     //   `upserted`  — the INSERT...ON CONFLICT...DO UPDATE, RETURNING the
     //                 post-merge row state.
     //   final SELECT joins back to `input.ord` and the short-id sidecar so
     //                 callers get the same shape `read()` emits.
     const records = await sql<SubstrateRowRecord[]>`
       WITH input AS (
-        SELECT *
+        SELECT ns, ty, COALESCE(rid, uuidv7()::text) AS rid, bod,
+               ca, ua, cbk, cbi, ubk, ubi, ord
         FROM UNNEST(
           ${namespaces}::text[],
           ${types}::text[],
@@ -730,10 +735,7 @@ export class PgDataset implements Dataset {
     `;
 
     const merged = records.map((r) => this.materialize(r));
-    if (options?.insertOnly === true) {
-      return { written: merged.length, ids: merged.map((r) => r.id), rows: merged };
-    }
-    return { written: ids.length, ids, rows: merged };
+    return { written: merged.length, ids: merged.map((r) => r.id), rows: merged };
   }
 
   async tombstone(type: string, ids: Id[]): Promise<DeleteResult> {

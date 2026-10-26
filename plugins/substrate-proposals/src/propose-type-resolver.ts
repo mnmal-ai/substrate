@@ -17,12 +17,12 @@
  * (`applyUntilRollback`), so the type never outlives its row.
  */
 
-import { randomUUID } from 'node:crypto';
 import { publishSchema } from '@mnmal-ai/substrate-core';
 import { resolveIdentity } from '@mnmal-ai/substrate-sdk';
 import type {
   Dataset,
   EdgesStore,
+  Id,
   IndexDecl,
   OrderedBy,
   RequestContext,
@@ -204,9 +204,7 @@ async function proposeTypeLocked(
   // otherwise (resolver-direct tests).
   const proposedAt = new Date();
   const fieldsJson = JSON.stringify(fields);
-  const newId = randomUUID();
   const initialParams: Record<string, unknown> = {
-    id: newId,
     typeName,
     fieldsJson,
     proposedBy,
@@ -228,11 +226,13 @@ async function proposeTypeLocked(
   const binding = deps.registryStore.getBinding(deps.namespace);
   const engine = binding.engine;
 
+  // The dataset assigns the proposal's id.
+  let newId: Id;
   if (engine !== undefined) {
     // One write carrying every field. The create policy reserves the index
     // keys for `substrate.index`; declaring a new type's own needs only the
     // propose capability, which the resolver's policy has already checked.
-    await writeInTx(
+    const created = await writeInTx(
       binding.registry,
       ctx,
       args,
@@ -240,13 +240,16 @@ async function proposeTypeLocked(
       { ...initialParams, ...indexFields },
       true
     );
+    newId = created.id;
   } else {
     const writeResult = await args.dataset.write('TypeProposal', [
-      { ...initialParams, ...indexFields } as Row
+      { ...initialParams, ...indexFields }
     ]);
-    if (!writeResult.ids[0]) {
+    const id = writeResult.ids[0];
+    if (id === undefined) {
       throw new Error('dataset.write did not return an id for TypeProposal');
     }
+    newId = id;
   }
 
   // Step 4 — apply the type to the live registry

@@ -32,9 +32,9 @@ import type {
   EdgesStore,
   EngineHandle,
   HttpHandler,
-  Row,
   SubstrateResponse,
-  WriteOptions
+  WriteOptions,
+  WriteRow
 } from '@mnmal-ai/substrate-types';
 import { extractClientIp, jsonResponse } from '../routes/helpers.js';
 import { buildAuditRow } from './install.js';
@@ -182,7 +182,7 @@ interface DropPlan {
   dropRows: (tx: Dataset) => Promise<DropResult>;
   /** Edge cleanup for cascade=delete; null leaves edges untouched. */
   dropEdges: ((edges: EdgesStore) => Promise<number>) | null;
-  auditRow: (counts: DropCounts) => Row;
+  auditRow: (counts: DropCounts) => WriteRow;
   writeOptions: WriteOptions;
   /** Plugins that act inside a namespace drop's transaction; none for a type drop. */
   participants: readonly DropParticipant[];
