@@ -322,6 +322,26 @@ describe.skipIf(!POSTGRES_URL)('visible order (pg)', () => {
     await updateFieldKeepsSeq(ds);
   });
 
+  it('filters seq with every ordered operator, and refuses a malformed between', async () => {
+    await ds.write('Log', [{ msg: 'a' }, { msg: 'b' }, { msg: 'c' }]);
+    const [first] = (await ds.read('Log', { orderBy: [{ seq: 'asc' }], limit: 1 })).rows;
+    const s = seqOf(first) as number;
+    const read = async (where: Record<string, unknown>) =>
+      msgs((await ds.read('Log', { where: { seq: where }, orderBy: [{ seq: 'asc' }] })).rows);
+    expect(await read({ eq: s + 1 })).toEqual(['b']);
+    expect(await read({ neq: s + 1 })).toEqual(['a', 'c']);
+    expect(await read({ neq: null })).toEqual(['a', 'b', 'c']);
+    expect(await read({ eq: null })).toEqual([]);
+    expect(await read({ gt: s, lte: s + 2 })).toEqual(['b', 'c']);
+    expect(await read({ gte: s, lt: s + 1 })).toEqual(['a']);
+    expect(await read({ between: [s + 1, s + 2] })).toEqual(['b', 'c']);
+    expect(await read({ in: [s, s + 2, null] })).toEqual(['a', 'c']);
+    expect(await read({ nin: [s] })).toEqual(['b', 'c']);
+    await expect(read({ between: [s] })).rejects.toThrow(/two-element/);
+    // A timestamp drops a malformed between rather than refusing it.
+    expect((await ds.read('Log', { where: { createdAt: { between: [1] } } })).rows).toHaveLength(3);
+  });
+
   it('non-visible types leave seq null', async () => {
     await ds.write('Note', [{ msg: 'n1' }, { msg: 'n2' }]);
     const [held] = await sql<Array<{ withSeq: number; rows: number }>>`

@@ -293,15 +293,6 @@ export async function runMigrations(sql: Sql, opts: RunMigrationsOptions = {}): 
 }
 
 /**
- * Runs `fn` while holding the migration advisory lock of the current schema on
- * one reserved connection.
- *
- * The lock and unlock must share a session: through the pool, the unlock can
- * land on another connection and leave the lock held. `fn` is handed that same
- * connection, so a pool of one cannot deadlock waiting for a second. It has no
- * `begin()`; open transactions with `BEGIN`/`COMMIT` statements.
- */
-/**
  * Versions of the core migration list not yet applied to `sql`'s database,
  * read without applying or creating anything. All of them when the
  * `migrations` table does not exist.
@@ -320,32 +311,26 @@ export async function pendingMigrations(sql: Sql): Promise<string[]> {
     .filter((v) => !applied.has(v));
 }
 
-/** Reserved connections whose session {@link withTableIndexLock} terminated. */
-const retired = new WeakSet<ReservedSql>();
+const MIGRATION_LOCK_KEY = `hashtext('substrate-migrations:' || current_schema())`;
 
+/**
+ * Runs `fn` while holding the migration advisory lock of the current schema on
+ * one reserved connection.
+ *
+ * The lock and unlock must share a session: through the pool, the unlock can
+ * land on another connection and leave the lock held. `fn` is handed that same
+ * connection, so a pool of one cannot deadlock waiting for a second. It has no
+ * `begin()`; open transactions with `BEGIN`/`COMMIT` statements.
+ */
 export async function withMigrationLock<T>(
   sql: Sql,
   fn: (conn: ReservedSql) => Promise<T>
 ): Promise<T> {
   const lockConn = await sql.reserve();
   try {
-    await acquireMigrationLock(lockConn);
-    try {
-      return await fn(lockConn);
-    } finally {
-      // A retired session released the lock as it ended; unlocking on it would
-      // only replace the error that retired it with a connection error.
-      if (!retired.has(lockConn)) {
-        const [row] = await lockConn<Array<{ released: boolean }>>`
-          SELECT pg_advisory_unlock(hashtext('substrate-migrations:' || current_schema())) AS released
-        `;
-        if (row?.released === false) {
-          process.stderr.write(
-            'substrate migrations: advisory unlock reported the lock was not held by this session\n'
-          );
-        }
-      }
-    }
+    return await withPolledLock(sql, lockConn, 'migration', MIGRATION_LOCK_KEY, [], undefined, () =>
+      fn(lockConn)
+    );
   } finally {
     lockConn.release();
   }
@@ -377,10 +362,30 @@ export class IndexLockAborted extends Error {
  * released, `conn`'s session is retired from `sql`, and the caller's
  * `release()` of `conn` becomes a no-op, so it never returns to the pool.
  */
-export async function withTableIndexLock<T>(
+export function withTableIndexLock<T>(
   sql: Sql,
   conn: ReservedSql,
   table: string,
+  signal: AbortSignal | undefined,
+  fn: () => Promise<T>
+): Promise<T> {
+  return withPolledLock(sql, conn, `index-build ${table}`, INDEX_LOCK_KEY, [table], signal, fn);
+}
+
+/**
+ * Runs `fn` while `conn` holds the session advisory lock `key` (SQL over
+ * `params`; `name` says which in logs), polled every 250 ms with pg_try_advisory_lock until it is free or
+ * `signal` aborts ({@link IndexLockAborted}). If the lock cannot be released,
+ * `conn`'s session is retired from `sql`, since it may still hold the lock,
+ * and `conn.release()` becomes a no-op so it never returns to the pool. When
+ * `fn` threw, its error is the one rethrown.
+ */
+async function withPolledLock<T>(
+  sql: Sql,
+  conn: ReservedSql,
+  name: string,
+  key: string,
+  params: string[],
   signal: AbortSignal | undefined,
   fn: () => Promise<T>
 ): Promise<T> {
@@ -388,8 +393,8 @@ export async function withTableIndexLock<T>(
   for (;;) {
     if (signal?.aborted === true) throw new IndexLockAborted();
     const [row] = await conn.unsafe<Array<Session & { acquired: boolean }>>(
-      `SELECT pg_try_advisory_lock(${INDEX_LOCK_KEY}) AS acquired, ${SESSION_COLUMNS}`,
-      [table]
+      `SELECT pg_try_advisory_lock(${key}) AS acquired, ${SESSION_COLUMNS}`,
+      params
     );
     if (row?.acquired === true) {
       session = row;
@@ -397,33 +402,35 @@ export async function withTableIndexLock<T>(
     }
     await abortableSleep(250, signal);
   }
-  try {
-    return await fn();
-  } finally {
-    await releaseTableIndexLock(sql, conn, table, session);
-  }
-}
-
-/** Unlocks what {@link withTableIndexLock} took, or retires the session that may still hold it. */
-async function releaseTableIndexLock(
-  sql: Sql,
-  conn: ReservedSql,
-  table: string,
-  session: Session
-): Promise<void> {
-  const unlock = () => conn.unsafe(`SELECT pg_advisory_unlock(${INDEX_LOCK_KEY})`, [table]);
-  try {
-    // A cancel sent for fn's last statement can land on the unlock instead.
-    // It is one-shot, so a second unlock normally holds.
-    await unlock().catch(unlock);
-  } catch (err) {
-    // The session may still hold the lock, so it must not be pooled.
-    if (!(await retireSession(sql, session))) {
-      retired.add(conn);
-      conn.release = () => {};
+  const release = async (): Promise<void> => {
+    const unlock = () =>
+      conn.unsafe<Array<{ released: boolean }>>(
+        `SELECT pg_advisory_unlock(${key}) AS released`,
+        params
+      );
+    try {
+      // A cancel sent for fn's last statement can land on the unlock instead.
+      // It is one-shot, so a second unlock normally holds.
+      const [row] = await unlock().catch(unlock);
+      if (row?.released === false) {
+        process.stderr.write(
+          `substrate: advisory unlock of the ${name} lock reported it was not held by this session\n`
+        );
+      }
+    } catch (err) {
+      if (!(await retireSession(sql, session))) conn.release = () => {};
+      throw err;
     }
+  };
+  let result: T;
+  try {
+    result = await fn();
+  } catch (err) {
+    await release().catch(() => {});
     throw err;
   }
+  await release();
+  return result;
 }
 
 /** Resolves after `ms`, or as soon as `signal` aborts. */
@@ -437,16 +444,6 @@ export function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> 
     const timer = setTimeout(done, ms);
     signal?.addEventListener('abort', done, { once: true });
   });
-}
-
-async function acquireMigrationLock(sql: Sql): Promise<void> {
-  while (true) {
-    const result = await sql<Array<{ acquired: boolean }>>`
-      SELECT pg_try_advisory_lock(hashtext('substrate-migrations:' || current_schema())) AS acquired
-    `;
-    if (result[0]?.acquired === true) return;
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
 }
 
 /** `sql` is the pool; `conn` holds the migration lock and runs every statement. */

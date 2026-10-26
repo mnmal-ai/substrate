@@ -34,9 +34,9 @@
 
 import { createHash } from 'node:crypto';
 import type { FieldDef, IndexDecl, OrderedBy } from '@mnmal-ai/substrate-types';
-import type { Sql } from 'postgres';
+import type { ReservedSql, Sql } from 'postgres';
 import type { DiskGuard } from './disk-guard.js';
-import { MAX_IDENTIFIER, type StorageLayout } from './layout.js';
+import { hashedName, MAX_IDENTIFIER, type StorageLayout } from './layout.js';
 import {
   abortableSleep,
   dropIndexIfInvalid,
@@ -51,7 +51,7 @@ import {
   resolvePromotedColumns,
   sqlStringLiteral
 } from './pg-sql/primitives.js';
-import { findPartition, ident } from './type-storage.js';
+import { ident, typePartition } from './type-storage.js';
 
 export interface IndexState {
   name: string;
@@ -192,7 +192,7 @@ const BARE_NAME = /^[a-z_][a-z0-9_]*$/;
  * connection, since it waits for that lock.
  *
  * Unique indexes reconcile under the migration lock, which serialises them
- * with migrations and other boots. Non-unique indexes and statistics take
+ * with migrations and other boots; a type with none takes no migration lock. Non-unique indexes and statistics take
  * only the table's index-build lock (`withTableIndexLock`), one index at a
  * time, so a long build never holds up another process's migrations, nor its
  * unique builds on other tables. An index the catalog already holds as
@@ -211,29 +211,41 @@ export async function reconcileTypeIndexes(
   const first = only === 'unique' ? all : only === 'all' ? unique : [];
   if (first.length > 0) {
     const target = await targetTable(sql, args);
+    const pass = async (conn: ReservedSql): Promise<IndexState[]> => {
+      const desired = await deparse(conn, first);
+      const states: IndexState[] = [];
+      for (const [i, spec] of first.entries()) {
+        const d = desired[i] as Described;
+        const held = await heldAsDeclared(conn, target, spec, d);
+        states.push(
+          held !== undefined
+            ? held
+            : spec.unique
+              ? await withTableIndexLock(sql, conn, target, undefined, () =>
+                  reconcileOne(conn, args, target, spec, d, {})
+                )
+              : indexState(spec, 'pending', 'unchanged')
+        );
+      }
+      return states;
+    };
+    // With nothing unique to build, the pass only reads states, so it takes no lock.
     out.push(
-      ...(await withMigrationLock(sql, async (conn) => {
-        const desired = await deparse(conn, first);
-        const states: IndexState[] = [];
-        for (const [i, spec] of first.entries()) {
-          const d = desired[i] as Described;
-          const held = await heldAsDeclared(conn, target, spec, d);
-          states.push(
-            held !== undefined
-              ? held
-              : spec.unique
-                ? await withTableIndexLock(sql, conn, target, undefined, () =>
-                    reconcileOne(conn, args, target, spec, d, {})
-                  )
-                : indexState(spec, 'pending', 'unchanged')
-          );
-        }
-        return states;
-      }))
+      ...(unique.length > 0 ? await withMigrationLock(sql, pass) : await reserved(sql, pass))
     );
   }
   if (only !== 'unique') out.push(...(await reconcileNonUnique(sql, args, all, opts)));
   return out;
+}
+
+/** Runs `fn` on a connection reserved from `sql`, released after. */
+async function reserved<T>(sql: Sql, fn: (conn: ReservedSql) => Promise<T>): Promise<T> {
+  const conn = await sql.reserve();
+  try {
+    return await fn(conn);
+  } finally {
+    conn.release();
+  }
 }
 
 /** Non-unique indexes, then statistics, each under the table's index-build lock. */
@@ -427,7 +439,7 @@ async function reconcileStatistics(
   const found = await attempt('lookup', async () => {
     marked = await heldStatistics(conn, args);
     const held = new Set(
-      (await indexesOn(conn, target))
+      (await heldIndexes(conn, [target]))
         .filter((i) => i.marked && i.valid && i.ready)
         .map((i) => i.name)
     );
@@ -509,25 +521,6 @@ async function reconcileStatistics(
   return out;
 }
 
-export interface CatalogIndex {
-  name: string;
-  valid: boolean;
-  ready: boolean;
-  /** Marked as built or adopted by this reconciler. */
-  marked: boolean;
-}
-
-/** The indexes on `table` (current schema). */
-export async function indexesOn(sql: Sql, table: string): Promise<CatalogIndex[]> {
-  return sql<CatalogIndex[]>`
-    SELECT c.relname AS name, i.indisvalid AS valid, i.indisready AS ready,
-           obj_description(i.indexrelid, 'pg_class') IS NOT DISTINCT FROM ${MARK} AS marked
-    FROM pg_index i
-    JOIN pg_class c ON c.oid = i.indexrelid
-    JOIN pg_class t ON t.oid = i.indrelid
-    WHERE t.relname = ${table} AND t.relnamespace = current_schema()::regnamespace`;
-}
-
 /**
  * Each index the type should have, as the catalog rows `held` (the indexes on
  * its table) show it. Builds nothing and queries nothing. An index `held`
@@ -535,28 +528,17 @@ export async function indexesOn(sql: Sql, table: string): Promise<CatalogIndex[]
  */
 export function describeTypeIndexes(
   args: ReconcileTypeIndexesArgs,
-  held: CatalogIndex[]
+  held: HeldIndex[]
 ): IndexState[] {
   const byName = new Map(held.map((i) => [i.name, i]));
-  return desiredSpecs(args).map((spec) => {
-    const found = byName.get(spec.name);
-    const state: IndexState['state'] =
-      found === undefined
-        ? 'failed'
-        : found.valid && found.ready
-          ? 'valid'
-          : found.ready
-            ? 'building'
-            : 'invalid';
-    return {
-      name: spec.name,
-      fields: spec.fields,
-      unique: spec.unique,
-      state,
-      outcome: 'unchanged'
-    };
-  });
+  return desiredSpecs(args).map((spec) =>
+    indexState(spec, stateFrom(byName.get(spec.name)), 'unchanged')
+  );
 }
+
+/** A catalog index's state; one that is not there is `failed`, as a build that has not succeeded is. */
+const stateFrom = (d: { valid: boolean; ready: boolean } | undefined): IndexState['state'] =>
+  d === undefined ? 'failed' : d.valid && d.ready ? 'valid' : d.ready ? 'building' : 'invalid';
 
 /**
  * Engine-owned indexes of the type (`held`: its indexes, by `belongsToType`)
@@ -608,6 +590,8 @@ export interface HeldIndex {
   unique: boolean;
   /** Carries the reconciler's comment marker. */
   marked: boolean;
+  valid: boolean;
+  ready: boolean;
   /** `pg_get_expr` of the predicate, or null for a full index. */
   predicate: string | null;
   /** The index's `pg_class.reltuples`: for a partial index, the rows under its predicate; -1 unknown. */
@@ -623,6 +607,7 @@ export async function heldIndexes(sql: Sql, tables: string[]): Promise<HeldIndex
   return sql<HeldIndex[]>`
     SELECT t.relname AS "table", c.relname AS name, i.indisunique AS "unique",
            obj_description(i.indexrelid, 'pg_class') IS NOT DISTINCT FROM ${MARK} AS marked,
+           i.indisvalid AS valid, i.indisready AS ready,
            pg_get_expr(i.indpred, i.indrelid) AS predicate,
            c.reltuples::float8 AS reltuples,
            COALESCE(s.idx_scan, 0)::float8 AS scans,
@@ -712,32 +697,16 @@ export async function typeIndexesOf(
   type: string,
   layout: StorageLayout
 ): Promise<Array<HeldIndex & { engineOwned: boolean }>> {
-  let table = 'rows';
-  if (layout === 'partitioned') {
-    const nsPart = await findPartition(sql, 'rows', namespace);
-    const part = nsPart === undefined ? undefined : await findPartition(sql, nsPart, type);
-    if (part === undefined) return [];
-    table = part;
-  }
+  const table = layout === 'partitioned' ? await typePartition(sql, namespace, type) : 'rows';
+  if (table === undefined) return [];
   return (await heldIndexes(sql, [table]))
     .filter((i) => belongsToType(i, namespace, type, layout, table))
     .map((i) => ({ ...i, engineOwned: isEngineOwned(i) }));
 }
 
-/** The engine-owned indexes of `namespace`/`type`, by `typeIndexesOf`'s rule. */
-export async function engineIndexesOf(
-  sql: Sql,
-  namespace: string,
-  type: string,
-  layout: StorageLayout
-): Promise<HeldIndex[]> {
-  return (await typeIndexesOf(sql, namespace, type, layout)).filter((i) => i.engineOwned);
-}
-
 async function targetTable(sql: Sql, args: ReconcileTypeIndexesArgs): Promise<string> {
   if (args.layout === 'legacy') return 'rows';
-  const nsPart = await findPartition(sql, 'rows', args.namespace);
-  const part = nsPart === undefined ? undefined : await findPartition(sql, nsPart, args.type);
+  const part = await typePartition(sql, args.namespace, args.type);
   if (part === undefined) {
     throw new Error(
       `${args.namespace}/${args.type} has no partition; call ensureTypeStorage before reconciling its indexes`
@@ -1060,19 +1029,11 @@ async function deparse(conn: Sql, specs: Spec[]): Promise<Described[]> {
 function swapNameFor(name: string): string {
   const plain = `${name}__swap`;
   if (plain.length <= MAX_IDENTIFIER) return plain;
-  const hash = createHash('sha256').update(name).digest('hex').slice(0, 8);
-  return `${name.slice(0, MAX_IDENTIFIER - '__swap'.length - hash.length - 1)}_${hash}__swap`;
+  return `${hashedName(name, name, MAX_IDENTIFIER - '__swap'.length)}__swap`;
 }
 
 async function stateOf(conn: Sql, name: string): Promise<IndexState['state']> {
-  const d = await describeIndex(conn, name, 'current');
-  return d === undefined
-    ? 'failed'
-    : d.valid && d.ready
-      ? 'valid'
-      : d.ready
-        ? 'building'
-        : 'invalid';
+  return stateFrom(await describeIndex(conn, name, 'current'));
 }
 
 async function reconcileOne(
@@ -1161,19 +1122,10 @@ async function reconcileOne(
     return report(await stateOf(conn, spec.name), 'swapped');
   }
 
-  if (identical(leftover)) {
-    // Built by an earlier run that stopped before the drop; it is used only
-    // once valid and ready.
-    let ready = leftover?.valid === true && leftover.ready;
-    for (let i = 0; !ready; i++) {
-      if (i >= 100) {
-        throw new Error(`index ${swapName} did not become valid; ${spec.name} left in place`);
-      }
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      const again = await describeIndex(conn, swapName, 'current');
-      ready = again?.valid === true && again.ready;
-    }
-  } else {
+  // A leftover identical to the declaration was built by an earlier run that
+  // stopped before the drop. It is valid and ready: an invalid one was dropped
+  // above, and no build can be in flight under this table's index-build lock.
+  if (!identical(leftover)) {
     // `named` keeps enforcing while the stale leftover goes.
     if (leftover !== undefined) await dropConcurrently(conn, swapName, signal);
     const built = await build(conn, args, target, spec, swapName, opts);

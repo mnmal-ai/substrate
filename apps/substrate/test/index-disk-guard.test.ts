@@ -66,8 +66,11 @@ describe.skipIf(!POSTGRES_URL)('the disk-check warning in the storage report (pg
   it('off: no warning, so doctor storage passes', async () => {
     const r = await report('off');
     expect(r.warnings.filter((w) => OFF_LINE.test(w))).toEqual([]);
-    // Doctor's storage check passes exactly when warnings is empty; legacy has no others.
-    if (r.layout === 'legacy') expect(r.warnings).toEqual([]);
+    // Doctor's storage check passes exactly when warnings is empty. Legacy has
+    // no others but the planning-cost line, which counts every type's indexes.
+    if (r.layout === 'legacy') {
+      expect(r.warnings.filter((w) => !/engine-owned partial indexes/.test(w))).toEqual([]);
+    }
   });
 
   it('unset: warns that disk checks are off', async () => {

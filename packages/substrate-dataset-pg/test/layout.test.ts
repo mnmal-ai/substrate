@@ -13,6 +13,7 @@ import {
   runMigrations,
   StorageLayoutMismatchError
 } from '../src/index.js';
+import { hashedName } from '../src/layout.js';
 import {
   CONCURRENT_STATEMENTS,
   SYSTEM_KEY_PARTITION,
@@ -49,6 +50,12 @@ describe('partitionName', () => {
   it('appends a hash when sanitising changed a name', () => {
     expect(partitionName('A-b', 'T')).toMatch(/^rows__a_b__t_[0-9a-f]{8}$/);
     expect(partitionName('a-b')).not.toBe(partitionName('a_b'));
+  });
+
+  it('cuts a hashed name to the length it is given, room for a suffix', () => {
+    const long = 'x'.repeat(80);
+    expect(hashedName(long, long)).toHaveLength(63);
+    expect(`${hashedName(long, long, 57)}__swap`).toHaveLength(63);
   });
 });
 

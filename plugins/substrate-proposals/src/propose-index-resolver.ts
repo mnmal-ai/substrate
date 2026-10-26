@@ -390,7 +390,9 @@ async function removeIndex(
   const { deps, input, rec } = call;
   const name = input.indexName ?? (rec?.indexName as string | null | undefined) ?? undefined;
   if (name === undefined) throw invalid('indexName', "'remove' needs an indexName");
-  const dataset = deps.datasetFor(input.namespace);
+  // A namespace no longer registered has no dataset of its own, but may still
+  // hold orphaned engine indexes; `_system`'s clone for it reaches them.
+  const dataset = deps.datasetFor(input.namespace) ?? system?.forNamespace(input.namespace);
   await call.claim('accepted');
 
   // A recommendation's evidence is that nothing wants the index; a declared

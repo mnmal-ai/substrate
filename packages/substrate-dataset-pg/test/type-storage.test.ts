@@ -201,9 +201,15 @@ describe.skipIf(!POSTGRES_URL || LAYOUT !== 'partitioned')(
       const ns = freshNs();
       const ds = new PgDataset({ namespace: ns, sql });
       await ds.write('T', [{ id: 'a' }, { id: 'b' }]);
-      expect(await ds.storageWarnings()).toContain(`rows__default holds 2 rows of ${ns}/T`);
+      expect((await ds.storageReport({ partitionBudget: Infinity })).warnings).toContain(
+        `rows__default holds 2 rows of ${ns}/T`
+      );
       await ds.ensureTypeStorage('T');
-      expect((await ds.storageWarnings()).filter((w) => w.includes(ns))).toEqual([]);
+      expect(
+        (await ds.storageReport({ partitionBudget: Infinity })).warnings.filter((w) =>
+          w.includes(ns)
+        )
+      ).toEqual([]);
     });
 
     it('finds partitions by bound, so colliding names never share or confuse a partition', async () => {
@@ -325,7 +331,9 @@ describe.skipIf(!POSTGRES_URL || LAYOUT !== 'legacy')('ensureTypeStorage (legacy
     const after =
       await sql`SELECT count(*)::int AS n FROM pg_class WHERE relnamespace = current_schema()::regnamespace`;
     expect(after).toEqual(before);
-    expect(await ds.storageWarnings()).toEqual([]);
+    expect(
+      (await ds.storageReport({ partitionBudget: Infinity })).warnings.filter((w) => w.includes(ns))
+    ).toEqual([]);
     expect((await ds.read('T', {})).rows).toHaveLength(1);
   });
 });

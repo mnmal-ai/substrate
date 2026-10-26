@@ -8,7 +8,9 @@ import type { FieldDef, StorageReport } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset } from '../src/index.js';
+import { heldIndexes, isEngineOwned } from '../src/index-reconciler.js';
 import { generatedIdentifier } from '../src/migrate.js';
+import { LEGACY_PARTIAL_INDEX_LIMIT } from '../src/pg-dataset.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const LAYOUT = process.env.SUBSTRATE_STORAGE_LAYOUT ?? 'legacy';
@@ -47,6 +49,9 @@ const undeclaredIn = (report: StorageReport, ns: string): string[] => {
   expect(named(report.warnings)).toEqual([]);
   return named(report.info ?? []);
 };
+
+/** The legacy planning-cost warning, which depends on every type's indexes on the shared rows. */
+const PLANNING = /engine-owned partial indexes on the shared rows table/;
 
 const indexed: Record<string, FieldDef> = {
   kid: { kind: 'scalar', type: 'string', indexed: true }
@@ -227,9 +232,36 @@ describe.skipIf(!POSTGRES_URL || LAYOUT !== 'partitioned')('storageReport (parti
 describe.skipIf(!POSTGRES_URL || LAYOUT !== 'legacy')('storageReport (legacy)', () => {
   it('has no partition or parent warnings', async () => {
     const ds = dataset(freshNs(), { current: {} });
-    expect(await ds.storageReport({ partitionBudget: 0 })).toMatchObject({
-      layout: 'legacy',
-      warnings: []
-    });
+    const report = await ds.storageReport({ partitionBudget: 0 });
+    expect(report.layout).toBe('legacy');
+    expect(report.warnings.filter((w) => !PLANNING.test(w))).toEqual([]);
+  });
+
+  it('warns once rows carries more engine-owned partial indexes than the planning limit', async () => {
+    const ns = freshNs();
+    const ds = dataset(ns, { current: {} });
+    const count = async () =>
+      (await heldIndexes(sql, ['rows'])).filter((i) => isEngineOwned(i) && i.predicate !== null)
+        .length;
+    const made: string[] = [];
+    try {
+      for (let i = await count(); i <= LEGACY_PARTIAL_INDEX_LIMIT; i++) {
+        const name = generatedIdentifier(ns, `T${i}`, 'f', 'idx');
+        await sql.unsafe(
+          `CREATE INDEX ${name} ON rows (id) WHERE namespace = '${ns}' AND type = 'T${i}'`
+        );
+        await sql.unsafe(`COMMENT ON INDEX ${name} IS 'substrate: reconciled'`);
+        made.push(name);
+      }
+      const n = await count();
+      expect(n).toBeGreaterThan(LEGACY_PARTIAL_INDEX_LIMIT);
+      const { warnings } = await ds.storageReport({ partitionBudget: BIG });
+      expect(warnings.filter((w) => PLANNING.test(w))).toEqual([
+        `${n} engine-owned partial indexes on the shared rows table, over ${LEGACY_PARTIAL_INDEX_LIMIT}: ` +
+          'every query on rows pays planning time for each; the partitioned layout gives each type its own table and indexes'
+      ]);
+    } finally {
+      for (const name of made) await sql.unsafe(`DROP INDEX IF EXISTS ${name}`);
+    }
   });
 });

@@ -311,7 +311,6 @@ export class StreamSubsystem {
       const params = frame.params;
       const where = params?.where as WhereClause | undefined;
       const orderBy = params?.orderBy as OrderByClause[] | undefined;
-      const allowTableScan = params?._allowTableScan === true;
       if (where !== undefined || orderBy !== undefined) {
         const schema = this.#schemaFor(ns);
         const typeSchema = schema.types[name];
@@ -320,7 +319,6 @@ export class StreamSubsystem {
             validateFilter({
               ...(where !== undefined ? { where } : {}),
               ...(orderBy !== undefined ? { orderBy } : {}),
-              allowTableScan,
               typeSchema,
               capabilities: dataset.capabilities
             });

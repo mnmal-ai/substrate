@@ -60,7 +60,6 @@ export function runFilterGuard(deps: FilterGuardDeps, input: FilterGuardInput): 
   const params = entry.params;
   const where = params?.where as WhereClause | undefined;
   const orderBy = params?.orderBy as OrderByClause[] | undefined;
-  const allowTableScan = params?._allowTableScan === true;
 
   // Computed projections (_score/_vector) require their computing operator in
   // the where-clause, so this runs even when where is absent.
@@ -128,7 +127,6 @@ export function runFilterGuard(deps: FilterGuardDeps, input: FilterGuardInput): 
         validateFilter({
           ...(where !== undefined ? { where } : {}),
           ...(orderBy !== undefined ? { orderBy } : {}),
-          allowTableScan,
           typeSchema,
           capabilities: dataset.capabilities
         });

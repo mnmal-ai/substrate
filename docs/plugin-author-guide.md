@@ -813,7 +813,11 @@ only what the engine owns: another index is `not_engine_owned`, a unique one
 `unique_index`, one still declared or derived `still_desired`, and a name that
 is not there `unknown_index` (on the memory dataset, which builds no indexes,
 always). A `remove` with no recommendation of an index only a proposed type
-declares retracts that declaration, then drops the index.
+declares retracts that declaration, then drops the index. An engine index of a
+type no registered type owns is an orphan: the storage doctor lists it, and
+`remove` drops it, unique ones aside. A namespace drop drops its non-unique
+engine indexes once it commits, and its unique ones too when no code and no
+live proposal declares the namespace.
 
 A recommendation is checked again when it is applied: an `add` whose shape an
 index now serves, or a `remove` whose index is wanted again, is refused

@@ -245,8 +245,12 @@ describe.skipIf(!POSTGRES_URL)('storage for registered types (pg)', () => {
     for (const [n, t] of expected) {
       expect(await hasPartition(n, t), `${n}/${t}`).toBe(partitioned);
     }
-    const warnings = await new PgDataset({ namespace: ns, sql }).storageWarnings();
-    expect(warnings.filter((w) => w.includes(ns) || w.includes(CONTROL))).toEqual([]);
+    const { warnings } = await new PgDataset({ namespace: ns, sql }).storageReport({
+      partitionBudget: Infinity
+    });
+    // Only the DEFAULT-partition lines: the report also carries deferred index builds.
+    const parked = warnings.filter((w) => / holds \d+ rows of /.test(w));
+    expect(parked.filter((w) => w.includes(ns) || w.includes(CONTROL))).toEqual([]);
   });
 
   it('builds the implicit index of a field proposed on a declared type', async () => {

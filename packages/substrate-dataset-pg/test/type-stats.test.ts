@@ -9,7 +9,7 @@ import { randomBytes } from 'node:crypto';
 import type { FieldDef, IndexDecl } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { engineIndexesOf, PgDataset, type StorageLayout, typeIndexesOf } from '../src/index.js';
+import { PgDataset, type StorageLayout, typeIndexesOf } from '../src/index.js';
 import { generatedIdentifier, runMigrations } from '../src/migrate.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
@@ -21,6 +21,9 @@ const fields: Record<string, FieldDef> = {
 };
 
 const hex = () => randomBytes(4).toString('hex');
+
+const engineIndexes = async (sql: Sql, ns: string, type: string, layout: StorageLayout) =>
+  (await typeIndexesOf(sql, ns, type, layout)).filter((i) => i.engineOwned);
 
 let sql: Sql;
 
@@ -74,10 +77,8 @@ describe.skipIf(!POSTGRES_URL)('typeStats', () => {
     await sql.unsafe(`VACUUM (ANALYZE) ${table}`);
 
     const stats = (await ds.typeStats()).find((s) => s.namespace === ns && s.type === 'T');
-    expect((await engineIndexesOf(sql, ns, 'T', LAYOUT)).map((i) => i.name)).toContain(derived);
-    expect((await engineIndexesOf(sql, ns, 'T', LAYOUT)).map((i) => i.name)).not.toContain(
-      lookalike
-    );
+    expect((await engineIndexes(sql, ns, 'T', LAYOUT)).map((i) => i.name)).toContain(derived);
+    expect((await engineIndexes(sql, ns, 'T', LAYOUT)).map((i) => i.name)).not.toContain(lookalike);
     // Documented contract: a type is absent (unknown) or has liveRows >= 1, never 0.
     // A legacy share can be sampled past this 2-row type when `rows` is large;
     // partitioned counts exactly, so there the type must be present.
@@ -106,7 +107,7 @@ describe.skipIf(!POSTGRES_URL)('typeStats', () => {
     await typeWithStorage(two.ns, two.type, [{ fields: ['label'] }]);
 
     const names = async (t: { ns: string; type: string }) =>
-      (await engineIndexesOf(sql, t.ns, t.type, LAYOUT)).map((i) => i.name);
+      (await engineIndexes(sql, t.ns, t.type, LAYOUT)).map((i) => i.name);
     const a = await names(one);
     const b = await names(two);
     expect(a).toContain(generatedIdentifier(one.ns, one.type, 'ref', 'idx'));
@@ -121,7 +122,7 @@ describe.skipIf(!POSTGRES_URL)('typeStats', () => {
     await typeWithStorage(ns, type);
     const derived = generatedIdentifier(ns, type, 'ref', 'idx');
     expect(derived).not.toContain(type.toLowerCase());
-    const names = (await engineIndexesOf(sql, ns, type, LAYOUT)).map((i) => i.name);
+    const names = (await engineIndexes(sql, ns, type, LAYOUT)).map((i) => i.name);
     expect(names).toContain(derived);
     // Partitioned adds the created/updated/deleted base indexes, truncated alike.
     expect(names).toHaveLength(LAYOUT === 'partitioned' ? 4 : 1);

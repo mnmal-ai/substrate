@@ -606,7 +606,6 @@ export class SubscribeSubsystem {
         ? (normaliseVocabWhere(rawWhere, typeFields) as WhereClause)
         : rawWhere;
     const orderBy = params?.orderBy as OrderByClause[] | undefined;
-    const allowTableScan = params?._allowTableScan === true;
     if (where !== undefined || orderBy !== undefined) {
       const schema = this.#schemaFor(ns);
       const typeSchema = schema.types[name];
@@ -615,7 +614,6 @@ export class SubscribeSubsystem {
           validateFilter({
             ...(where !== undefined ? { where } : {}),
             ...(orderBy !== undefined ? { orderBy } : {}),
-            allowTableScan,
             typeSchema,
             capabilities: dataset.capabilities
           });

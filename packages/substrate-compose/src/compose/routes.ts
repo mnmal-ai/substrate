@@ -328,6 +328,8 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
           now: () => new Date(),
           trustedProxies,
           engine,
+          declaredInCode: (ns) =>
+            coordinatorPlugins.some((p) => p.namespaces.some((n) => n.namespace === ns)),
           ...dropGrants
         })
       ),

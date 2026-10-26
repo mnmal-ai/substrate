@@ -35,8 +35,8 @@ export function partitionName(namespace: string, type?: string): string {
   return hashedName(folded, raw);
 }
 
-/** `base` cut to fit 63 bytes with an 8-hex hash of `seed` appended. `base` must be ASCII. */
-export function hashedName(base: string, seed: unknown): string {
+/** `base` cut to fit `max` bytes with an 8-hex hash of `seed` appended. `base` must be ASCII. */
+export function hashedName(base: string, seed: unknown, max = MAX_IDENTIFIER): string {
   const hash = createHash('sha256').update(JSON.stringify(seed)).digest('hex').slice(0, 8);
-  return `${base.slice(0, MAX_IDENTIFIER - hash.length - 1)}_${hash}`;
+  return `${base.slice(0, max - hash.length - 1)}_${hash}`;
 }

@@ -58,7 +58,7 @@ import type {
   WriteRow
 } from '@mnmal-ai/substrate-types';
 import { assertNoRepeatedIds, naturalOrderOf } from '@mnmal-ai/substrate-types';
-import type { Sql } from 'postgres';
+import type { ReservedSql, Sql } from 'postgres';
 import { withPgAdvisoryLock } from './advisory-lock.js';
 import type { DiskGuard } from './disk-guard.js';
 import { NamespaceMismatch, ReservedField } from './errors.js';
@@ -70,7 +70,6 @@ import {
   heldIndexes,
   IndexDropRefusedError,
   type IndexState,
-  indexesOn,
   isEngineOwned,
   legacyLiveScope,
   legacyScope,
@@ -81,7 +80,7 @@ import {
   undeclaredIndexes
 } from './index-reconciler.js';
 import { detectLayout, type StorageLayout } from './layout.js';
-import { withTableIndexLock } from './migrate.js';
+import { IndexLockAborted, withTableIndexLock } from './migrate.js';
 import type { PgEdgesStore } from './pg-edges-store.js';
 import { PgShortIdStore } from './pg-short-id-store.js';
 import { sqlStringLiteral } from './pg-sql/primitives.js';
@@ -108,7 +107,13 @@ import {
   whereReferencesField
 } from './pg-sql.js';
 import { type PgHandle, txScopeIdFor } from './tx-scope.js';
-import { ensureTypeStorage, findPartition, ident, storageWarnings } from './type-storage.js';
+import {
+  ensureTypeStorage,
+  ident,
+  storageWarnings,
+  typePartition,
+  typePartitions
+} from './type-storage.js';
 
 // The pool-owned instance holds `Sql`; tx-scoped instances hold the
 // `TransactionSql` from `sql.begin(fn)`. Only `Sql` exposes `begin`, so that
@@ -290,8 +295,40 @@ const INDEX_COUNT_STALE = 0.1;
  */
 const DROP_LOCK_TIMEOUT_MS = 10_000;
 
+/**
+ * DROP INDEX CONCURRENTLY `name` (of `where`, for messages) on `conn`, each
+ * lock wait bounded by `timeoutMs`; a wait over it throws `index_drop_timeout`.
+ */
+async function dropIndexBounded(
+  conn: ReservedSql,
+  name: string,
+  where: string,
+  timeoutMs: number
+): Promise<void> {
+  const timeout = Math.max(1, Math.trunc(timeoutMs));
+  try {
+    await conn.unsafe(`SET lock_timeout = ${timeout}`);
+    await conn.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS ${ident(name)}`);
+  } catch (err) {
+    if ((err as { code?: unknown }).code !== '55P03') throw err;
+    throw new IndexDropRefusedError(
+      'index_drop_timeout',
+      `dropping index ${name} on ${where} waited over ${timeout} ms on another transaction; retry once it ends`
+    );
+  } finally {
+    await conn.unsafe('RESET lock_timeout');
+  }
+}
+
 /** Rows the legacy `typeStats` sample aims for. */
 const SAMPLE_ROWS = 10_000;
+
+/**
+ * Engine-owned partial indexes on a legacy `rows` above which `storageReport`
+ * warns: the planner checks every partial index's predicate on every query of
+ * `rows`, about 4-5 ms of planning at 50 on PG 18, against ~1 ms to run a page.
+ */
+export const LEGACY_PARTIAL_INDEX_LIMIT = 50;
 
 /** The value of a one-value LIST partition bound as `pg_get_expr` prints it. */
 const listBound = (b: string | null): string | undefined =>
@@ -1258,15 +1295,6 @@ export class PgDataset implements Dataset {
     }
   }
 
-  /**
-   * Rows parked in DEFAULT partitions across the whole database, every
-   * namespace, not only this one: one line per namespace/type. `[]` on legacy.
-   */
-  async storageWarnings(): Promise<string[]> {
-    if ((await this.#layout()) !== 'partitioned') return [];
-    return storageWarnings(this.#sql as Sql);
-  }
-
   #deferredBuilds(): Map<string, DeferredBuild> {
     const builds = deferredBuilds.get(this.#sql) ?? new Map<string, DeferredBuild>();
     deferredBuilds.set(this.#sql, builds);
@@ -1312,10 +1340,11 @@ export class PgDataset implements Dataset {
     const layout = await this.#layout();
     if (layout === 'absent') return [];
     const args = this.#indexArgs(type, this.namespace, layout);
-    if (layout === 'partitioned') {
-      const sql = this.#sql as Sql;
-      const nsPart = await findPartition(sql, 'rows', this.namespace);
-      if (nsPart === undefined || (await findPartition(sql, nsPart, type)) === undefined) return [];
+    if (
+      layout === 'partitioned' &&
+      (await typePartition(this.#sql as Sql, this.namespace, type)) === undefined
+    ) {
+      return [];
     }
     return pendingIndexBuilds(this.#sql as Sql, args);
   }
@@ -1328,16 +1357,15 @@ export class PgDataset implements Dataset {
     if (layout === 'legacy') {
       return {
         layout,
-        indexes: this.#withBuilds(describeTypeIndexes(args, await indexesOn(sql, 'rows')))
+        indexes: this.#withBuilds(describeTypeIndexes(args, await heldIndexes(sql, ['rows'])))
       };
     }
-    const nsPart = await findPartition(sql, 'rows', this.namespace);
-    const partition = nsPart === undefined ? undefined : await findPartition(sql, nsPart, type);
+    const partition = await typePartition(sql, this.namespace, type);
     if (partition === undefined) return { layout, indexes: [] };
     return {
       layout,
       partition,
-      indexes: this.#withBuilds(describeTypeIndexes(args, await indexesOn(sql, partition)))
+      indexes: this.#withBuilds(describeTypeIndexes(args, await heldIndexes(sql, [partition])))
     };
   }
 
@@ -1367,6 +1395,13 @@ export class PgDataset implements Dataset {
     if (layout !== 'partitioned') {
       const warnings = [...building];
       const held = await heldIndexes(sql, ['rows']);
+      const partial = held.filter((i) => isEngineOwned(i) && i.predicate !== null).length;
+      if (partial > LEGACY_PARTIAL_INDEX_LIMIT) {
+        warnings.push(
+          `${partial} engine-owned partial indexes on the shared rows table, over ${LEGACY_PARTIAL_INDEX_LIMIT}: ` +
+            'every query on rows pays planning time for each; the partitioned layout gives each type its own table and indexes'
+        );
+      }
       const types = new Map<string, { namespace: string; type: string }>();
       for (const i of held) {
         const scope = legacyScope(i.predicate);
@@ -1441,9 +1476,18 @@ export class PgDataset implements Dataset {
     table: string,
     held: HeldIndex[]
   ): void {
-    if (this.#typeDefLookup?.(type, ns) === undefined) return;
+    if (this.#typeDefLookup === null) return;
+    const own = held.filter((i) => belongsToType(i, ns, type, layout, table));
+    if (this.#typeDefLookup(type, ns) === undefined) {
+      for (const i of own) {
+        if (!isEngineOwned(i)) continue;
+        info.push(
+          `orphaned index ${i.name} on ${ns}/${type}: no registered type owns it; ${i.unique ? 'it is unique, so drop it by hand' : 'a signed propose_index remove drops it'}`
+        );
+      }
+      return;
+    }
     try {
-      const own = held.filter((i) => belongsToType(i, ns, type, layout, table));
       for (const name of undeclaredIndexes(this.#indexArgs(type, ns, layout), own)) {
         info.push(
           `undeclared index ${name} on ${ns}/${type}: kept until a signed remove drops it (the index advisor recommends one when it goes unused)`
@@ -1519,37 +1563,78 @@ export class PgDataset implements Dataset {
             `index ${name} on ${where} is unique; retract its declaration instead`
           );
         }
-        // Without the type's definition the wanted set is unknown, so nothing is a leftover.
-        const wanted = this.#typeDefLookup?.(type, this.namespace) !== undefined;
-        const desired = wanted
-          ? desiredIndexKeys(this.#indexArgs(type, this.namespace, layout)).some(
-              (d) => d.name === name
-            )
-          : true;
-        if (desired || name.endsWith('_base')) {
+        // Without a lookup the wanted set is unknown, so nothing is a leftover;
+        // a type the lookup does not know is registered nowhere, so all of its
+        // indexes are orphans and none is wanted.
+        const lookup = this.#typeDefLookup;
+        const orphan = lookup !== null && lookup(type, this.namespace) === undefined;
+        const desired =
+          lookup === null ||
+          (!orphan &&
+            (name.endsWith('_base') ||
+              desiredIndexKeys(this.#indexArgs(type, this.namespace, layout)).some(
+                (d) => d.name === name
+              )));
+        if (desired) {
           throw new IndexDropRefusedError(
             'still_desired',
             `index ${name} on ${where} is one the engine builds for this type; dropping it would only rebuild it`
           );
         }
         await opts.beforeDrop?.();
-        const timeout = Math.max(1, Math.trunc(opts.lockTimeoutMs ?? DROP_LOCK_TIMEOUT_MS));
-        try {
-          await conn.unsafe(`SET lock_timeout = ${timeout}`);
-          await conn.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS ${ident(name)}`);
-        } catch (err) {
-          if ((err as { code?: unknown }).code !== '55P03') throw err;
-          throw new IndexDropRefusedError(
-            'index_drop_timeout',
-            `dropping index ${name} on ${where} waited over ${timeout} ms on another transaction; retry once it ends`
-          );
-        } finally {
-          await conn.unsafe('RESET lock_timeout');
-        }
+        await dropIndexBounded(conn, name, where, opts.lockTimeoutMs ?? DROP_LOCK_TIMEOUT_MS);
       });
     } finally {
       conn.release();
     }
+  }
+
+  /**
+   * See `Dataset.dropNamespaceIndexes`. On legacy, the engine-owned partial
+   * indexes on `rows` scoped to this namespace; on partitioned, the
+   * engine-owned indexes on its type partitions, which a namespace drop
+   * empties but keeps. Unique ones only when `opts.unique`. Each table's under
+   * its index-build lock, CONCURRENTLY; the wait for that lock and each lock
+   * wait of a drop are bounded by `lockTimeoutMs` (default
+   * `DROP_LOCK_TIMEOUT_MS`), past which it throws `index_drop_timeout`.
+   */
+  async dropNamespaceIndexes(
+    opts: { unique?: boolean; lockTimeoutMs?: number } = {}
+  ): Promise<string[]> {
+    const layout = await this.#layout();
+    if (layout === 'absent') return [];
+    if (this.#inTx) {
+      throw new Error('PgDataset.dropNamespaceIndexes cannot be called on a tx-bound instance');
+    }
+    const sql = this.#sql as Sql;
+    const ns = this.namespace;
+    const tables = layout === 'legacy' ? ['rows'] : await typePartitions(sql, ns);
+    const timeout = opts.lockTimeoutMs ?? DROP_LOCK_TIMEOUT_MS;
+    const dropped: string[] = [];
+    const conn = await sql.reserve();
+    try {
+      for (const table of tables) {
+        try {
+          await withTableIndexLock(sql, conn, table, AbortSignal.timeout(timeout), async () => {
+            for (const i of await heldIndexes(conn, [table])) {
+              if (!isEngineOwned(i) || (i.unique && opts.unique !== true)) continue;
+              if (layout === 'legacy' && legacyScope(i.predicate)?.namespace !== ns) continue;
+              await dropIndexBounded(conn, i.name, ns, timeout);
+              dropped.push(i.name);
+            }
+          });
+        } catch (err) {
+          if (!(err instanceof IndexLockAborted)) throw err;
+          throw new IndexDropRefusedError(
+            'index_drop_timeout',
+            `the index-build lock of ${table} stayed held for over ${timeout} ms; indexes of ${ns} left in place`
+          );
+        }
+      }
+    } finally {
+      conn.release();
+    }
+    return dropped;
   }
 
   /** See `Dataset.indexDeclarationOf`. */

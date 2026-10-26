@@ -5,7 +5,7 @@
  */
 
 import type { ReservedSql, Sql } from 'postgres';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { tryWithPgAdvisoryLock } from '../src/index.js';
 import { withMigrationLock, withTableIndexLock } from '../src/migrate.js';
 
@@ -111,6 +111,29 @@ describe('withTableIndexLock unlock failure', () => {
     expect(f.pool).toEqual([]);
   });
 
+  it('names the lock, not its SQL, when the unlock reports it was not held', async () => {
+    const f = fakes(0);
+    f.conn.unsafe = ((text: string) =>
+      Promise.resolve(
+        text.includes('pg_try_advisory_lock')
+          ? [{ acquired: true, pid: 42, started: 't0' }]
+          : [{ released: false }]
+      )) as unknown as ReservedSql['unsafe'];
+    const lines: string[] = [];
+    const write = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      lines.push(String(chunk));
+      return true;
+    });
+    try {
+      await withTableIndexLock(f.sql, f.conn, 'rows', undefined, async () => 1);
+    } finally {
+      write.mockRestore();
+    }
+    expect(lines).toEqual([
+      'substrate: advisory unlock of the index-build rows lock reported it was not held by this session\n'
+    ]);
+  });
+
   it('retires the session, and never pools it, when the second unlock fails too', async () => {
     const f = fakes(2);
     await expect(
@@ -122,38 +145,54 @@ describe('withTableIndexLock unlock failure', () => {
   });
 });
 
-describe('withMigrationLock over a retired session', () => {
-  it('rethrows the original unlock error, not a connection error from its own unlock', async () => {
+describe('withMigrationLock unlock failure', () => {
+  /** A reserved connection whose migration unlocks fail, and whose table unlocks fail too when `tableFails`. */
+  function fakes(tableFails: boolean) {
     const sent: string[] = [];
+    const pool: string[] = [];
     let tableUnlocks = 0;
-    const tag = (strings: TemplateStringsArray) => {
-      const text = strings.join('?');
-      if (text.includes('pg_try_advisory_lock')) {
-        sent.push('migration lock');
-        return Promise.resolve([{ acquired: true }]);
-      }
-      sent.push('migration unlock');
-      return Promise.reject(new Error('write CONNECTION_ENDED'));
-    };
-    const conn = Object.assign(tag, {
+    const conn = {
       unsafe: (text: string) => {
         if (text.includes('pg_try_advisory_lock')) {
           return Promise.resolve([{ acquired: true, pid: 42, started: 't0' }]);
         }
+        if (text.includes('substrate-migrations')) {
+          sent.push('migration unlock');
+          return Promise.reject(new Error('write CONNECTION_ENDED'));
+        }
         tableUnlocks += 1;
-        return Promise.reject(new Error(`canceling statement due to user request ${tableUnlocks}`));
+        return tableFails
+          ? Promise.reject(new Error(`canceling statement due to user request ${tableUnlocks}`))
+          : Promise.resolve([{ released: true }]);
       },
       release: () => {
         sent.push('release');
       }
-    }) as unknown as ReservedSql;
-    const sql = Object.assign(() => Promise.resolve([{ pg_terminate_backend: true }]), {
-      options: { max: 10 },
-      reserve: () => Promise.resolve(conn)
-    }) as unknown as Sql;
+    } as unknown as ReservedSql;
+    const sql = Object.assign(
+      (_s: TemplateStringsArray, ...values: unknown[]) => {
+        pool.push(`terminate ${values.join(',')}`);
+        return Promise.resolve([{ pg_terminate_backend: true }]);
+      },
+      { options: { max: 10 }, reserve: () => Promise.resolve(conn) }
+    ) as unknown as Sql;
+    return { sql, sent, pool };
+  }
+
+  it('retires the session, and never pools it, when its own unlock fails', async () => {
+    const f = fakes(false);
+    await expect(withMigrationLock(f.sql, async () => 1)).rejects.toThrow('CONNECTION_ENDED');
+    expect(f.pool).toEqual(['terminate 42,t0']);
+    expect(f.sent).toEqual(['migration unlock', 'migration unlock']);
+  });
+
+  it('rethrows the original unlock error over a nested table lock, not its own', async () => {
+    const f = fakes(true);
     await expect(
-      withMigrationLock(sql, (c) => withTableIndexLock(sql, c, 'rows', undefined, async () => 1))
+      withMigrationLock(f.sql, (c) =>
+        withTableIndexLock(f.sql, c, 'rows', undefined, async () => 1)
+      )
     ).rejects.toThrow('canceling statement due to user request 2');
-    expect(sent).toEqual(['migration lock']);
+    expect(f.sent).not.toContain('release');
   });
 });

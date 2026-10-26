@@ -637,9 +637,21 @@ describe.skipIf(!POSTGRES_URL)('propose_index (pg)', () => {
       APP,
       new PgDataset({ namespace: APP, sql, edgesStore: edges, typeDefLookup: fromRegistry })
     );
-    for (const ns of ['_system_proposals', '_system']) {
-      datasets.set(ns, new PgDataset({ namespace: ns, sql, edgesStore: edges }));
-    }
+    datasets.set(
+      '_system_proposals',
+      new PgDataset({ namespace: '_system_proposals', sql, edgesStore: edges })
+    );
+    // As the binary wires it: one lookup answers for every namespace.
+    datasets.set(
+      '_system',
+      new PgDataset({
+        namespace: '_system',
+        sql,
+        edgesStore: edges,
+        typeDefLookup: (type, ns) =>
+          ns === CODE ? codeTypes.get(type) : ns === APP ? fromRegistry(type) : undefined
+      })
+    );
     engine = await boot(datasets, APP);
     live = engine;
     system = datasets.get('_system') as Dataset;
@@ -742,6 +754,40 @@ describe.skipIf(!POSTGRES_URL)('propose_index (pg)', () => {
 
     const after = await indexNames(type);
     for (const name of [unique, hand, leftover]) expect(after).toContain(name);
+  });
+
+  it('removes an orphaned engine index, of an unregistered type or a namespace no longer registered', async () => {
+    const { type, desired } = await codeType([]);
+    const [derived] = desired.filter((n) => n.endsWith('_idx'));
+    codeTypes.delete(type);
+    const removed = await proposeIndex(engine, {
+      namespace: CODE,
+      type,
+      action: 'remove',
+      indexName: derived
+    });
+    expect(removed.errors ?? []).toEqual([]);
+    expect(await indexNames(type)).not.toContain(derived);
+
+    const gone = `kidxgone${randomUUID().slice(0, 8)}`;
+    const left = new PgDataset({
+      namespace: gone,
+      sql,
+      typeDefLookup: (t) => (t === 'Doc' ? { fields } : undefined)
+    });
+    await left.ensureTypeStorage('Doc');
+    const orphan = (await typeIndexesOf(sql, gone, 'Doc', layout)).find(
+      (i) => i.engineOwned && i.name.endsWith('_idx')
+    )?.name as string;
+    expect(orphan).toBeDefined();
+    const env = await proposeIndex(engine, {
+      namespace: gone,
+      type: 'Doc',
+      action: 'remove',
+      indexName: orphan
+    });
+    expect(env.errors ?? []).toEqual([]);
+    expect(await indexNames('Doc', gone)).not.toContain(orphan);
   });
 
   it('refuses remove of a still-desired index, and supersedes a recommendation for one', async () => {

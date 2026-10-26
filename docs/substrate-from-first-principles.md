@@ -303,7 +303,6 @@ interface ReadParams {
   orderBy?: OrderByClause[];          // §5.2; id appended as final tie-breaker
   limit?: number;                     // MUST be pushed down to storage
   cursor?: string;                    // from a prior ReadResult.nextCursor
-  _allowTableScan?: boolean;          // deprecated, ignored
 }
 
 interface ReadResult { rows: Row[]; nextCursor?: string; hasMore: boolean; }

@@ -6,9 +6,15 @@
  * run safely against a shared dev database without touching other data.
  */
 
+import { randomBytes } from 'node:crypto';
+import type { FieldDef } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { PgDataset, runMigrations } from '../src/index.js';
+import { PgDataset, runMigrations, type StorageLayout, typeIndexesOf } from '../src/index.js';
+import { generatedIdentifier } from '../src/migrate.js';
+import type { TypeDefLookup } from '../src/pg-dataset.js';
+
+type TypeDef = NonNullable<ReturnType<TypeDefLookup>>;
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const TEST_NS = 'test_pg_drop';
@@ -177,5 +183,124 @@ describe.skipIf(!POSTGRES_URL)('PgDataset drop primitives', () => {
       WHERE namespace = ${TEST_NS} AND type = 'Alpha' AND id = 'a1'
     `;
     expect(rows).toHaveLength(1);
+  });
+});
+
+describe.skipIf(!POSTGRES_URL)('engine indexes of a dropped namespace', () => {
+  const LAYOUT = (process.env.SUBSTRATE_STORAGE_LAYOUT ?? 'legacy') as StorageLayout;
+  const ref: FieldDef = { kind: 'crossRef', ns: 'other', type: 'X', onDelete: 'set_null' };
+  let sql: Sql;
+
+  beforeAll(async () => {
+    sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
+  });
+
+  afterAll(async () => {
+    await sql.end();
+  });
+
+  /**
+   * A namespace whose types T (with a unique index) and U are built with their
+   * engine indexes. `ds`'s lookup knows only the types `known` keeps.
+   */
+  async function namespaceWithIndexes(known: (type: string) => boolean = () => true) {
+    const ns = `dropidx_${randomBytes(4).toString('hex')}`;
+    const unique = generatedIdentifier(ns, 'T', 'kid', 'uniq');
+    const defs: Record<string, TypeDef> = {
+      T: {
+        fields: { ref, kid: { kind: 'scalar', type: 'string' } },
+        indexes: [{ fields: ['kid'], unique: true }]
+      },
+      U: { fields: { ref } }
+    };
+    const lookup = (only: (type: string) => boolean) => (type: string, namespace: string) =>
+      namespace === ns && only(type) ? defs[type] : undefined;
+    const builder = new PgDataset({ namespace: ns, sql, typeDefLookup: lookup(() => true) });
+    for (const type of ['T', 'U']) {
+      await builder.write(type, [{ kid: randomBytes(4).toString('hex') }]);
+      await builder.ensureTypeStorage(type);
+    }
+    const ds = new PgDataset({ namespace: ns, sql, typeDefLookup: lookup(known) });
+    const engineIndexes = async (type: string) =>
+      (await typeIndexesOf(sql, ns, type, LAYOUT)).filter((i) => i.engineOwned).map((i) => i.name);
+    return { ns, ds, unique, engineIndexes };
+  }
+
+  it('drops the non-unique engine indexes of the namespace and keeps unique ones, then drops those only when asked', async () => {
+    const a = await namespaceWithIndexes();
+    const b = await namespaceWithIndexes();
+    const before = [...(await a.engineIndexes('T')), ...(await a.engineIndexes('U'))];
+    expect(before).toContain(a.unique);
+    const kept = await b.engineIndexes('T');
+
+    await a.ds.withTransaction((tx) => tx.dropNamespace());
+    // Declared somewhere: the unique index stays for the reconciler.
+    expect((await a.ds.dropNamespaceIndexes()).sort()).toEqual(
+      before.filter((n) => n !== a.unique).sort()
+    );
+    expect(await a.engineIndexes('T')).toEqual([a.unique]);
+    expect(await a.engineIndexes('U')).toEqual([]);
+    // Declared nowhere: the unique index goes too.
+    expect(await a.ds.dropNamespaceIndexes({ unique: true })).toEqual([a.unique]);
+    expect(await a.engineIndexes('T')).toEqual([]);
+    expect(await b.engineIndexes('T')).toEqual(kept);
+    // Four types' concurrent builds on the shared legacy rows, then the drops.
+  }, 120_000);
+
+  it('gives up with index_drop_timeout when the index-build lock stays held past the bound', async () => {
+    const { ns, ds, engineIndexes } = await namespaceWithIndexes();
+    const table = (await typeIndexesOf(sql, ns, 'U', LAYOUT))[0]?.table as string;
+    const holder = await sql.reserve();
+    try {
+      await holder`SELECT pg_advisory_lock(hashtext('substrate-index-build:' || current_schema() || '.' || ${table}::text))`;
+      const before = await engineIndexes('U');
+      const start = performance.now();
+      await expect(ds.dropNamespaceIndexes({ lockTimeoutMs: 500 })).rejects.toMatchObject({
+        code: 'index_drop_timeout'
+      });
+      const elapsed = performance.now() - start;
+      expect(elapsed).toBeGreaterThanOrEqual(450);
+      expect(elapsed).toBeLessThan(5_000);
+      expect(await engineIndexes('U')).toEqual(before);
+    } finally {
+      await holder`SELECT pg_advisory_unlock_all()`;
+      holder.release();
+    }
+  }, 120_000);
+
+  it('refuses on a tx-bound instance', async () => {
+    const { ds } = await namespaceWithIndexes();
+    await expect(ds.withTransaction(async (tx) => tx.dropNamespaceIndexes?.())).rejects.toThrow(
+      /tx-bound/
+    );
+  });
+
+  it('lists an orphaned engine index in storageReport, and a signed remove drops it', async () => {
+    // U is no longer registered: its indexes are orphans.
+    const { ns, ds, engineIndexes } = await namespaceWithIndexes((type) => type !== 'U');
+    const [orphan] = await engineIndexes('U');
+    expect(orphan).toBeDefined();
+    const { info, warnings } = await ds.storageReport({ partitionBudget: 1e6 });
+    expect(info).toContain(
+      `orphaned index ${orphan} on ${ns}/U: no registered type owns it; a signed propose_index remove drops it`
+    );
+    expect(warnings.filter((w) => w.includes(ns))).toEqual([]);
+
+    await ds.dropEngineIndex('U', orphan as string);
+    expect(await engineIndexes('U')).not.toContain(orphan);
+    // A registered type's index is still refused.
+    const [wanted] = (await engineIndexes('T')).filter((n) => n.endsWith('_idx'));
+    await expect(ds.dropEngineIndex('T', wanted as string)).rejects.toMatchObject({
+      code: 'still_desired'
+    });
+  });
+
+  it('names a unique orphan as one to drop by hand, since remove refuses it', async () => {
+    const { ns, ds, unique } = await namespaceWithIndexes(() => false);
+    const { info } = await ds.storageReport({ partitionBudget: 1e6 });
+    expect(info).toContain(
+      `orphaned index ${unique} on ${ns}/T: no registered type owns it; it is unique, so drop it by hand`
+    );
+    await expect(ds.dropEngineIndex('T', unique)).rejects.toMatchObject({ code: 'unique_index' });
   });
 });
