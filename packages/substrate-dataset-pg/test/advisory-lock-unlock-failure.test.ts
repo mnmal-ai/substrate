@@ -170,7 +170,8 @@ describe('withMigrationLock unlock failure', () => {
       }
     } as unknown as ReservedSql;
     const sql = Object.assign(
-      (_s: TemplateStringsArray, ...values: unknown[]) => {
+      (s: TemplateStringsArray, ...values: unknown[]) => {
+        if (s.join('').includes('current_schema()')) return Promise.resolve([{ schema: 'public' }]);
         pool.push(`terminate ${values.join(',')}`);
         return Promise.resolve([{ pg_terminate_backend: true }]);
       },

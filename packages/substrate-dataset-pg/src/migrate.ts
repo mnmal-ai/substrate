@@ -339,12 +339,6 @@ export class UnsupportedSchemaNameError extends Error {
 
 export async function runMigrations(sql: Sql, opts: RunMigrationsOptions = {}): Promise<void> {
   await assertServerVersion(sql);
-  const [current] = await sql<Array<{ schema: string | null }>>`SELECT current_schema() AS schema`;
-  // A NULL current_schema() makes the lock key NULL, which no poll ever acquires.
-  if (current?.schema == null) throw new NoCurrentSchemaError();
-  if (!PLAIN_SCHEMA_NAME.test(current.schema)) {
-    throw new UnsupportedSchemaNameError(current.schema);
-  }
   // Serialises concurrent boots, which otherwise race on every DDL step.
   //
   // The lock is polled with pg_try_advisory_lock, not blocking
@@ -374,6 +368,16 @@ export async function pendingMigrations(sql: Sql): Promise<string[]> {
 
 const MIGRATION_LOCK_KEY = `hashtext('substrate-migrations:' || current_schema())`;
 
+/** Refuses a search_path that resolves to no schema, or a schema name that is not plain lowercase. */
+async function assertStoreSchema(sql: Sql): Promise<void> {
+  const [current] = await sql<Array<{ schema: string | null }>>`SELECT current_schema() AS schema`;
+  // A NULL current_schema() makes the lock key NULL, which no poll ever acquires.
+  if (current?.schema == null) throw new NoCurrentSchemaError();
+  if (!PLAIN_SCHEMA_NAME.test(current.schema)) {
+    throw new UnsupportedSchemaNameError(current.schema);
+  }
+}
+
 /**
  * Runs `fn` while holding the migration advisory lock of the current schema on
  * one reserved connection.
@@ -387,6 +391,7 @@ export async function withMigrationLock<T>(
   sql: Sql,
   fn: (conn: ReservedSql) => Promise<T>
 ): Promise<T> {
+  await assertStoreSchema(sql);
   const lockConn = await sql.reserve();
   try {
     return await withPolledLock(sql, lockConn, 'migration', MIGRATION_LOCK_KEY, [], undefined, () =>
