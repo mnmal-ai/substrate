@@ -195,6 +195,55 @@ describe.skipIf(!POSTGRES_URL)('migrate-store (pg)', () => {
     }
   }, 300_000);
 
+  it('names an INVALID index as a mismatch, and --verify-only rebuilds it and finishes the run', async () => {
+    const s = await openSchemas('partitioned');
+    try {
+      let broken = '';
+      // What a failed CREATE INDEX CONCURRENTLY leaves: an INVALID index under an engine index's name.
+      const breakIndex = async (t: import('postgres').Sql) => {
+        const candidates = await t<{ name: string; tbl: string }[]>`
+          SELECT c.relname AS name, i.indrelid::regclass::text AS tbl
+          FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+          WHERE c.relnamespace = current_schema()::regnamespace AND NOT i.indisunique
+            AND obj_description(c.oid, 'pg_class') = 'substrate: reconciled'
+          ORDER BY c.relname`;
+        for (const c of candidates) {
+          if ((await t.unsafe(`SELECT 1 FROM ${c.tbl} LIMIT 1`)).length === 0) continue;
+          await t.unsafe(`DROP INDEX ${c.name}`);
+          await t
+            .unsafe(
+              `CREATE INDEX CONCURRENTLY ${c.name} ON ${c.tbl} ((1 / (length(id) - length(id))))`
+            )
+            .catch(() => undefined);
+          broken = c.name;
+          return;
+        }
+      };
+      const r = await run(s, ['--json'], { beforeVerify: breakIndex });
+      expect(broken).not.toBe('');
+      expect(r.code, r.out + r.err).toBe(3);
+      const report = JSON.parse(r.out) as { mismatches: { check: string; detail: string }[] };
+      expect(report.mismatches).toEqual([
+        expect.objectContaining({
+          check: 'storage',
+          detail: expect.stringContaining(`index ${broken} on `)
+        })
+      ]);
+      expect(await markerPresent(s)).toBe(true);
+
+      const again = await run(s, ['--verify-only']);
+      expect(again.code, again.out + again.err).toBe(0);
+      expect(again.out).toMatch(/ms: prepare \d+, indexes \d+, verify \d+/);
+      expect(await markerPresent(s)).toBe(false);
+      const [valid] = await s.tgtSql<{ ok: boolean }[]>`
+        SELECT i.indisvalid AS ok FROM pg_index i
+        WHERE i.indexrelid = to_regclass(${`${s.tgtSchema}.${broken}`})`;
+      expect(valid?.ok).toBe(true);
+    } finally {
+      await s.close();
+    }
+  }, 300_000);
+
   it('refuses a source and target that are one store, though their URLs differ', async () => {
     const s = await openSchemas('legacy');
     try {

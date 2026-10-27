@@ -375,15 +375,18 @@ export async function reportUnguardedIndexBuilds(
  * serve scan. Never rejects: a type whose build fails is logged, and reported
  * `failed`, until the next build pass (periodic, or the next boot) retries it. `signal` cancels the build in
  * flight, whose INVALID leftover the next reconcile drops, and skips the rest.
+ * Resolves to the logged failures, one line per type, for a caller that must
+ * not pass over them.
  */
 export async function buildDeferredIndexes(
   engine: Pick<Engine, 'federatedSchema' | 'registryFor'>,
   datasets: ComposedDatasets,
   signal?: AbortSignal,
   opts: { onlyUnsettled?: boolean } = {}
-): Promise<void> {
+): Promise<string[]> {
+  const failures: string[] = [];
   for (const { ns, type, dataset } of registeredTypes(engine, datasets)) {
-    if (signal?.aborted === true) return;
+    if (signal?.aborted === true) break;
     try {
       if (opts.onlyUnsettled === true && !(await unsettled(dataset, type))) continue;
       await dataset?.ensureTypeStorage?.(type, {
@@ -391,11 +394,12 @@ export async function buildDeferredIndexes(
         ...(signal !== undefined ? { signal } : {})
       });
     } catch (err) {
-      process.stderr.write(
-        `indexes of ${ns}/${type} were not built and will be retried by the next build pass: ${message(err)}\n`
-      );
+      const line = `indexes of ${ns}/${type} were not built and will be retried by the next build pass: ${message(err)}`;
+      failures.push(line);
+      process.stderr.write(`${line}\n`);
     }
   }
+  return failures;
 }
 
 /** Whether `type` has a non-unique index still pending, failed or invalid. */

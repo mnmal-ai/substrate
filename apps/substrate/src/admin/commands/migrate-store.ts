@@ -356,16 +356,17 @@ export async function runMigrateStore(
       report.tables = copied.tables;
       ({ keptSeeds, defaulted } = copied);
       tables = pre.plan.tables.map((t) => t.name);
-
-      if (!args.skipIndexBuild) {
-        const booted = target;
-        await phase('indexes', () => buildDeferredIndexes(booted.engine, booted.datasets));
-      }
     }
+
+    // In --verify-only too, so a rerun finishes a run whose index builds failed: the reconcile
+    // drops each INVALID leftover of an engine index and builds it again.
+    const booted = target;
+    const indexFailures = args.skipIndexBuild
+      ? []
+      : await phase('indexes', () => buildDeferredIndexes(booted.engine, booted.datasets));
 
     report.keptSeeds = keptSeeds.map((k) => `${k.namespace}/${k.type}/${k.id}`);
     report.defaulted = defaulted.map((d) => `${d.namespace}/${d.type}`);
-    const booted = target;
     const tsql = booted.sql as Sql;
     await deps.beforeVerify?.(tsql);
     const verified = await phase('verify', () =>
@@ -378,10 +379,12 @@ export async function runMigrateStore(
         partitionBudget: 500,
         storageReport: async (r) => {
           const { warnings } = await (booted.dataset as PgDataset).storageReport(r);
-          if (!args.skipIndexBuild) return { warnings };
+          // A failed build pass and an INVALID index fail verification, each named.
+          const failed = [...indexFailures, ...(await invalidIndexes(tsql))];
+          if (!args.skipIndexBuild) return { warnings: [...warnings, ...failed] };
           // Deferred on purpose: only the exact pending-index warning is let through, and reported.
           report.pendingIndexes = warnings.filter((w) => PENDING_INDEX.test(w));
-          return { warnings: warnings.filter((w) => !PENDING_INDEX.test(w)) };
+          return { warnings: [...warnings.filter((w) => !PENDING_INDEX.test(w)), ...failed] };
         }
       })
     );
@@ -404,6 +407,19 @@ function planOf(plan: CopyPlan): NonNullable<MigrateStoreReport['plan']> {
     estimatedBytes: plan.estimatedBytes,
     skipped: plan.skipped
   };
+}
+
+/** The target schema's INVALID indexes, which a failed CREATE INDEX CONCURRENTLY leaves behind. */
+async function invalidIndexes(sql: Sql): Promise<string[]> {
+  const rows = await sql<{ name: string; tbl: string }[]>`
+    SELECT c.relname AS name, t.relname AS tbl
+    FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_class t ON t.oid = i.indrelid
+    WHERE c.relnamespace = current_schema()::regnamespace AND NOT i.indisvalid
+    ORDER BY c.relname`;
+  return rows.map(
+    (r) =>
+      `index ${r.name} on ${r.tbl} is INVALID: rerun with --verify-only (without --skip-index-build), which rebuilds it`
+  );
 }
 
 /** Refuses a named schema the connection did not land in: an unknown name on search_path falls through to public. */
