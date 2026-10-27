@@ -1,10 +1,14 @@
 /**
  * migrate-store's copy (pg-gated): a legacy or partitioned source copied into
- * a partitioned target that `bootStore` prepared. Recall's tables come from
- * recall's own migrations at a small dimension, applied to both sides.
+ * a partitioned target that `bootStore` prepares, with the built-in recall and
+ * proposals plugins loaded from a plugin dir as serve loads them. The source
+ * gets recall's tables from recall's own migrations.
  */
 
 import { randomBytes } from 'node:crypto';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { PgShortIdStore, runMigrations, type StorageLayout } from '@mnmal-ai/substrate-dataset-pg';
 import { pgTestSchemaName, pgTestSchemaUrl } from '@mnmal-ai/substrate-dataset-pg/testing';
 import {
@@ -16,9 +20,11 @@ import type { KernelMigrationContext } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  type CopyOptions,
   type CopyResult,
   copyStore,
-  MigrateStoreColumnError
+  MigrateStoreColumnError,
+  PHASE1_ROWS
 } from '../src/admin/migrate-store/copy.js';
 import { type CopyPlan, preflight } from '../src/admin/migrate-store/preflight.js';
 import type { ProgressEvent } from '../src/admin/migrate-store/progress.js';
@@ -29,19 +35,31 @@ import { parseEnv } from '../src/serve/config.js';
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const RECALL_TABLES = ['embeddings', 'lexical', 'recall_clusters', 'recall_cluster_members'];
 const STORE_PROFILE_ID = '5703e000-0000-4000-8000-000000000001';
-const DIM = 3;
+/** Recall's default, which the target's recall (no embedder configured) keeps. */
+const DIM = 768;
 
 const uuid = (n: number) => `${String(n).padStart(8, '0')}-0000-4000-8000-000000000000`;
+/** A DIM-long vector literal with a 1 at `i`. */
+const vec = (i: number) =>
+  `[${Array.from({ length: DIM }, (_, j) => (j === i ? 1 : 0)).join(',')}]`;
 
 async function applyRecall(sql: Sql, layout: StorageLayout): Promise<void> {
   const ctx = { sql, layout, metric: () => undefined } as KernelMigrationContext;
-  for (const m of [
-    embeddingsMigration({ dimension: DIM }),
-    recallClustersMigration({ dimension: DIM }),
-    lexicalMigration()
-  ]) {
+  for (const m of [embeddingsMigration(), recallClustersMigration(), lexicalMigration()]) {
     await m.apply(ctx);
   }
+}
+
+/** A plugin dir that loads this package's built-in plugins, recall and proposals. */
+async function makePluginDir(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), 'substrate-migrate-plugins-'));
+  await writeFile(
+    join(dir, 'package.json'),
+    JSON.stringify({ dependencies: { '@mnmal-ai/substrate': '*' } })
+  );
+  await mkdir(join(dir, 'node_modules', '@mnmal-ai'), { recursive: true });
+  await symlink(resolve('.'), join(dir, 'node_modules', '@mnmal-ai', 'substrate'));
+  return dir;
 }
 
 async function seedSource(sql: Sql): Promise<void> {
@@ -53,6 +71,7 @@ async function seedSource(sql: Sql): Promise<void> {
       ('_system', 'Invite', '${uuid(3)}', '{"code":"c"}', NULL, now(), now(), 'user', 'u', 'user', 'u', NULL),
       ('_system', 'AuditEvent', '${uuid(4)}', '{"kind":"k1"}', NULL, now(), now(), 'system', 's', 'system', 's', 1),
       ('_system', 'AuditEvent', '${uuid(5)}', '{"kind":"k2"}', now(), now(), now(), 'system', 's', 'system', 's', 2),
+      ('_system', 'AuditEvent', '${uuid(7)}', '{"kind":"bootstrap","actorKid":"bootstrap"}', NULL, now(), now(), 'system', 'bootstrap', 'system', 'bootstrap', 3),
       ('retired', 'Old', '${uuid(6)}', '{"x":1}', NULL, now(), now(), NULL, NULL, NULL, NULL, NULL);
     INSERT INTO short_ids (namespace, type, short_id, row_id) VALUES
       ('_system', 'Key', 1, '${uuid(1)}'), ('_system', 'Key', 7, '${uuid(2)}'),
@@ -62,16 +81,27 @@ async function seedSource(sql: Sql): Promise<void> {
       ('${uuid(10)}', '_system', 'Key', '${uuid(1)}', '_system', 'Invite', '${uuid(3)}', 'invite', 'orphan', now(), NULL),
       ('${uuid(11)}', '_system', 'Key', '${uuid(2)}', '_system', 'Invite', '${uuid(3)}', 'invite', 'orphan', now(), now());
     INSERT INTO embeddings (row_namespace, row_type, row_id, embedding, model, salience)
-      VALUES ('_system', 'Invite', '${uuid(3)}', '[1,2,3]', 'm', 0.5);
+      VALUES ('_system', 'Invite', '${uuid(3)}', '${vec(0)}', 'm', 0.5);
     INSERT INTO lexical (row_namespace, row_type, row_id, content)
       VALUES ('_system', 'Invite', '${uuid(3)}', 'hello world');
     INSERT INTO recall_clusters (id, centroid, cohesion, label, labelled_by, provenance)
-      VALUES ('c1', '[1,0,0]', 0.9, 'one', 'test', '{}'), ('c2', '[0,1,0]', 0.8, 'two', 'test', '{}'),
-             ('c3', '[0,0,1]', 0.7, 'three', 'test', '{}');
+      VALUES ('c1', '${vec(0)}', 0.9, 'one', 'test', '{}'), ('c2', '${vec(1)}', 0.8, 'two', 'test', '{}'),
+             ('c3', '${vec(2)}', 0.7, 'three', 'test', '{}');
     DELETE FROM recall_clusters WHERE id = 'c1';
     INSERT INTO recall_cluster_members (id, cluster_id, member_ns, member_type, member_id, origin, similarity)
       VALUES ('m1', 'c2', '_system', 'Invite', '${uuid(3)}', 'formed', 0.95),
              ('m2', 'c3', '_system', 'Key', '${uuid(1)}', 'formed', 0.9);`);
+  // A proposed namespace and an applied TypeProposal in it, with rows of the type.
+  await sql`
+    INSERT INTO rows (namespace, type, id, body) VALUES
+      ('_system_proposals', 'NamespaceProposal', ${uuid(30)},
+       ${sql.json({ ns: 'prop', applied: true, archived: false, proposedBy: 'op', proposedReason: 'test' })}),
+      ('prop', 'TypeProposal', ${uuid(31)},
+       ${sql.json({ typeName: 'Note', fieldsJson: JSON.stringify({ title: { kind: 'scalar', type: 'string' } }), applied: true, archived: false, supersededByCode: false })}),
+      ('prop', 'Note', ${uuid(32)}, ${sql.json({ title: 'a' })}),
+      ('prop', 'Note', ${uuid(33)}, ${sql.json({ title: 'b' })})`;
+  await sql`INSERT INTO short_ids (namespace, type, short_id, row_id) VALUES
+    ('prop', 'Note', 1, ${uuid(32)}), ('prop', 'Note', 2, ${uuid(33)}), ('prop', 'TypeProposal', 1, ${uuid(31)})`;
 }
 
 const ORDER: Record<string, string> = {
@@ -110,7 +140,9 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
     let srcUrl: string;
     let srcSql: Sql;
     let tgtSql: Sql;
-    let booted: BootedStore;
+    let pluginDir: string;
+    let boot: () => Promise<BootedStore>;
+    let targets: BootedStore[];
     let plan: CopyPlan;
     const events: ProgressEvent[] = [];
     const opts = { batchRows: 2, onProgress: (e: ProgressEvent) => void events.push(e) };
@@ -131,13 +163,17 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
       await applyRecall(srcSql, sourceLayout);
       await seedSource(srcSql);
 
-      booted = await bootStore({
-        config: parseEnv({ SUBSTRATE_DATABASE_URL: tgtUrl, SUBSTRATE_SYSTEM_ACTOR: 'copy-test' }),
-        pluginDir: null,
-        layout: 'partitioned',
-        allowMigrating: true
-      });
-      await applyRecall(tgtSql, 'partitioned');
+      pluginDir = await makePluginDir();
+      targets = [];
+      boot = () =>
+        bootStore({
+          config: parseEnv({ SUBSTRATE_DATABASE_URL: tgtUrl, SUBSTRATE_SYSTEM_ACTOR: 'copy-test' }),
+          pluginDir,
+          layout: 'partitioned',
+          allowMigrating: true
+        });
+      // Prepare once, so a test can write into the target before the copy boots it again.
+      await (await boot()).close();
 
       const pre = preflight(
         await inspectSource(srcSql),
@@ -158,12 +194,19 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
     });
 
     afterEach(async () => {
-      await booted.close();
+      for (const t of targets) await t.close();
+      await rm(pluginDir, { recursive: true, force: true });
       await srcSql.unsafe(`DROP SCHEMA IF EXISTS ${srcSchema} CASCADE`);
       await tgtSql.unsafe(`DROP SCHEMA IF EXISTS ${tgtSchema} CASCADE`);
       await srcSql.end({ timeout: 5 });
       await tgtSql.end({ timeout: 5 });
     });
+
+    const copy = async (o: CopyOptions = opts) => {
+      const result = await copyStore(srcSql, boot, plan, o);
+      targets.push(result.target);
+      return result;
+    };
 
     const expectVerbatim = async (result: CopyResult) => {
       const seedIds = result.keptSeeds.map((s) => s.id);
@@ -171,7 +214,7 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
     };
 
     it('copies every row, shortId, edge and recall row verbatim', async () => {
-      const result = await copyStore(srcSql, booted, plan, opts);
+      const result = await copy();
       expect(plan.tables.map((t) => t.name)).toEqual([
         'rows',
         'short_ids',
@@ -180,7 +223,7 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
         ...RECALL_TABLES
       ]);
       await expectVerbatim(result);
-      expect(result.tables.find((t) => t.name === 'rows')?.rows).toBe(6);
+      expect(result.tables.find((t) => t.name === 'rows')?.rows).toBe(11);
       expect(events.filter((e) => e.done).map((e) => e.table)).toEqual(
         plan.tables.map((t) => t.name)
       );
@@ -196,13 +239,13 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
     });
 
     it('advances shortId and recall identity sequences past the copied maximum', async () => {
-      await copyStore(srcSql, booted, plan, opts);
+      await copy();
       const ids = new PgShortIdStore(tgtSql);
       expect(await ids.allocateUnbound('_system', 'Key')).toBe(8);
       expect(await ids.allocateUnbound('retired', 'Old')).toBe(3);
       const [c] = await tgtSql<{ short_id: string }[]>`
         INSERT INTO recall_clusters (id, centroid, cohesion, label, labelled_by, provenance)
-        VALUES ('c9', '[1,1,1]', 0.5, 'nine', 'test', '{}') RETURNING short_id`;
+        VALUES ('c9', ${vec(3)}, 0.5, 'nine', 'test', '{}') RETURNING short_id`;
       expect(Number(c?.short_id)).toBe(4);
       const [m] = await tgtSql<{ short_id: string }[]>`
         INSERT INTO recall_cluster_members (id, cluster_id, member_ns, member_type, member_id, origin, similarity)
@@ -210,9 +253,37 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
       expect(Number(m?.short_id)).toBe(3);
     });
 
+    it('replays copied proposals before the rest, so proposed types get their own partitions', async () => {
+      const result = await copy();
+      const parts = await tgtSql<{ type: string; part: string }[]>`
+        SELECT DISTINCT type, tableoid::regclass::text AS part FROM rows WHERE namespace = 'prop' ORDER BY type`;
+      expect(parts.map((p) => p.type)).toEqual(['Note', 'TypeProposal']);
+      for (const p of parts) expect(p.part).not.toMatch(/default/);
+      expect(result.defaulted.filter((d) => d.namespace === 'prop')).toEqual([]);
+      expect(result.target.engine.registryFor('prop')?.get('Note')?.kind).toBe('type');
+    });
+
+    it('splits rows and shortIds between the phases with no row in both or neither', async () => {
+      for (const table of ['rows', 'short_ids']) {
+        const [c] = await srcSql.unsafe(`
+          SELECT count(*) FILTER (WHERE ${PHASE1_ROWS})::int AS p1,
+                 count(*) FILTER (WHERE NOT (${PHASE1_ROWS}))::int AS p2,
+                 count(*)::int AS total FROM ${table}`);
+        expect(c?.p1).toBeGreaterThan(0);
+        expect(c?.p2).toBeGreaterThan(0);
+        expect(c?.p1 + c?.p2).toBe(c?.total);
+      }
+      const result = await copy();
+      const [src] = await srcSql<{ n: number }[]>`SELECT count(*)::int AS n FROM rows`;
+      expect(result.tables.find((t) => t.name === 'rows')?.rows).toBe(src?.n);
+    });
+
     it('lands an undeclared namespace in rows__default and reports it', async () => {
-      const result = await copyStore(srcSql, booted, plan, opts);
+      const result = await copy();
       expect(result.defaulted).toEqual([{ namespace: 'retired', type: 'Old' }]);
+      const [last] = await tgtSql<{ step: string }[]>`
+        SELECT step FROM substrate_migrate_store_progress WHERE step LIKE 'copy:phase%' ORDER BY step DESC LIMIT 1`;
+      expect(last?.step).toBe('copy:phase2');
       const [row] = await tgtSql<{ part: string }[]>`
         SELECT tableoid::regclass::text AS part FROM rows WHERE namespace = 'retired'`;
       expect(row?.part).toBe('rows__default');
@@ -221,7 +292,7 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
     it('replaces a seeded row with the source row of the same id and keeps seeds the source lacks', async () => {
       await srcSql`INSERT INTO rows (namespace, type, id, body) VALUES ('_system', 'StoreProfile', ${STORE_PROFILE_ID}, '{"profile":"source"}')`;
       await tgtSql`INSERT INTO rows (namespace, type, id, body) VALUES ('_system', 'AdvisorState', ${uuid(20)}, '{}')`;
-      const result = await copyStore(srcSql, booted, plan, opts);
+      const result = await copy();
       expect(result.keptSeeds).toEqual([
         { namespace: '_system', type: 'AdvisorState', id: uuid(20) }
       ]);
@@ -246,7 +317,7 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
         },
         { skipTables: [], pluginTables: RECALL_TABLES, dryRun: false }
       ).plan;
-      const err = await copyStore(srcSql, booted, plan, opts).catch((e: unknown) => e);
+      const err = await copy().catch((e: unknown) => e);
       expect(err).toBeInstanceOf(MigrateStoreColumnError);
       expect(err).toMatchObject({ table: 'lexical', column: 'extra' });
       expect(await tgtSql`SELECT id FROM rows`).toEqual([{ id: STORE_PROFILE_ID }]);
@@ -255,9 +326,7 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
     it('fails loudly, naming the table and key, when the target rejects a row', async () => {
       await tgtSql`INSERT INTO edges (id, from_ns, from_type, from_id, to_ns, to_type, to_id, field_name, policy, created_at)
         VALUES (${uuid(10)}, 'a', 'T', 'x', 'a', 'T', 'y', 'f', 'orphan', now())`;
-      await expect(copyStore(srcSql, booted, plan, opts)).rejects.toThrow(
-        /copying edges failed: .*duplicate key.*\(id\)=/
-      );
+      await expect(copy()).rejects.toThrow(/copying edges failed: .*duplicate key.*\(id\)=/);
     });
 
     it('a rerun after an interrupted copy restarts cleanly', async () => {
@@ -267,10 +336,10 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
           if (e.table === 'rows' && e.done) throw new Error('interrupted');
         }
       };
-      await expect(copyStore(srcSql, booted, plan, abort)).rejects.toThrow('interrupted');
-      expect(Number((await tgtSql`SELECT count(*) AS n FROM rows`)[0]?.n)).toBe(7);
+      await expect(copy(abort)).rejects.toThrow('interrupted');
+      expect(Number((await tgtSql`SELECT count(*) AS n FROM rows`)[0]?.n)).toBe(12);
 
-      const result = await copyStore(srcSql, booted, plan, opts);
+      const result = await copy();
       expect(result.keptSeeds).toEqual([
         { namespace: '_system', type: 'StoreProfile', id: STORE_PROFILE_ID }
       ]);

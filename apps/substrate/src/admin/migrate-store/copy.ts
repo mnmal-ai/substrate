@@ -4,6 +4,12 @@
  * `COPY … TO STDOUT` piped into `COPY … FROM STDIN`. Nothing here writes to
  * the source.
  *
+ * Two phases around a re-boot, on one source snapshot. Phase 1 copies the
+ * rows (and their shortIds) that declare storage: `_system`,
+ * `_system_proposals` and every TypeProposal and FieldProposal. The second
+ * boot replays those proposals as serve does, so every proposed type has its
+ * partition before phase 2 copies everything else.
+ *
  * Progress lives in the marker table on the target. A rerun after an
  * interruption restarts cleanly: it truncates the planned tables, keeps the
  * seed rows the first run recorded, and copies again.
@@ -30,6 +36,8 @@ export interface CopyResult {
   keptSeeds: RowKey[];
   /** Source (namespace, type) pairs the target does not register; their rows sit in a DEFAULT partition. */
   defaulted: { namespace: string; type: string }[];
+  /** The second boot, its partitions prepared. The caller closes it. */
+  target: BootedStore;
 }
 
 export interface CopyOptions {
@@ -57,52 +65,103 @@ export class MigrateStoreColumnError extends Error {
 const STARTED = 'copy:started';
 const SEED = 'seed:';
 
+/** The `rows` / `short_ids` predicate phase 1 copies; phase 2 copies its complement. Both columns are NOT NULL. */
+export const PHASE1_ROWS =
+  "namespace IN ('_system', '_system_proposals') OR type IN ('TypeProposal', 'FieldProposal')";
+const PHASED = new Set(['rows', 'short_ids']);
+
 export async function copyStore(
   source: Sql,
-  target: BootedStore,
+  boot: () => Promise<BootedStore>,
   plan: CopyPlan,
   opts: CopyOptions
 ): Promise<CopyResult> {
-  const tsql = target.sql;
-  if (tsql === null) throw new Error('migrate-store copies into a postgres target only');
-  await tsql`CREATE TABLE IF NOT EXISTS ${tsql(MIGRATE_STORE_MARKER_TABLE)} (step text PRIMARY KEY, done_at timestamptz)`;
-  const identity = await checkColumns(tsql, plan);
-
-  const src = await source.reserve();
-  let streaming = false;
+  let target = await boot();
+  // The boot to close on failure; unset while none is open.
+  let open: BootedStore | undefined = target;
   try {
-    await src.unsafe('BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY');
-    await restartIfStarted(tsql, plan);
-    const keptSeeds = await reconcileSeeds(src, tsql, target);
-    const defaulted = await prepareStorage(src, target);
+    let tsql = sqlOf(target);
+    await tsql`CREATE TABLE IF NOT EXISTS ${tsql(MIGRATE_STORE_MARKER_TABLE)} (step text PRIMARY KEY, done_at timestamptz)`;
+    const identity = await checkColumns(tsql, plan);
 
-    const tables: CopyResult['tables'] = [];
-    for (const t of plan.tables) {
-      const start = performance.now();
-      const counter = new RowCounter(t.name, opts.batchRows, opts.onProgress);
-      streaming = true;
-      await copyTable(src, tsql, t, identity.get(t.name) ?? [], counter);
-      streaming = false;
-      await markStep(tsql, `copy:${t.name}`);
-      const done = { name: t.name, rows: counter.rows, bytes: counter.bytes };
-      tables.push({ ...done, ms: Math.round(performance.now() - start) });
-      opts.onProgress({ table: t.name, rows: done.rows, bytes: done.bytes, done: true });
+    const src = await source.reserve();
+    let streaming = false;
+    try {
+      await src.unsafe('BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY');
+      await restartIfStarted(tsql, plan);
+      const keptSeeds = await reconcileSeeds(src, tsql, target);
+
+      const totals = new Map<string, { rows: number; bytes: number; ms: number }>();
+      const copy = async (t: CopyPlanTable, filter: string | null) => {
+        const start = performance.now();
+        const prev = totals.get(t.name) ?? { rows: 0, bytes: 0, ms: 0 };
+        const counter = new RowCounter(t.name, opts.batchRows, opts.onProgress, prev);
+        streaming = true;
+        await copyTable(src, tsql, t, identity.get(t.name) ?? [], counter, filter);
+        streaming = false;
+        totals.set(t.name, {
+          rows: counter.rows,
+          bytes: counter.bytes,
+          ms: prev.ms + Math.round(performance.now() - start)
+        });
+      };
+
+      for (const t of plan.tables.filter((p) => PHASED.has(p.name))) await copy(t, PHASE1_ROWS);
+      await markStep(tsql, 'copy:phase1');
+
+      // Serve's own boot replays the copied proposals and prepares their types' storage.
+      const before = await rowCount(tsql);
+      open = undefined;
+      await target.close();
+      target = await boot();
+      open = target;
+      tsql = sqlOf(target);
+      const after = await rowCount(tsql);
+      if (after !== before) {
+        throw new Error(
+          `the re-boot changed the target's row count from ${before} to ${after}; migrate-store expects it to write nothing`
+        );
+      }
+
+      const defaulted = await prepareStorage(src, target);
+      const tables: CopyResult['tables'] = [];
+      for (const t of plan.tables) {
+        await copy(t, PHASED.has(t.name) ? `NOT (${PHASE1_ROWS})` : null);
+        await markStep(tsql, `copy:${t.name}`);
+        const done = totals.get(t.name) as { rows: number; bytes: number; ms: number };
+        tables.push({ name: t.name, ...done });
+        opts.onProgress({ table: t.name, rows: done.rows, bytes: done.bytes, done: true });
+      }
+      await markStep(tsql, 'copy:phase2');
+
+      await advanceSequences(tsql, identity);
+      await markStep(tsql, 'copy:done');
+      await src.unsafe('COMMIT');
+      src.release();
+      return { tables, keptSeeds, defaulted, target };
+    } catch (err) {
+      const released = src
+        .unsafe('ROLLBACK')
+        .catch(() => undefined)
+        .then(() => src.release());
+      // Mid-table, the ROLLBACK waits for the rest of the source table to drain; don't hold the error for it.
+      if (!streaming) await released;
+      throw err;
     }
-
-    await advanceSequences(tsql, identity);
-    await markStep(tsql, 'copy:done');
-    await src.unsafe('COMMIT');
-    src.release();
-    return { tables, keptSeeds, defaulted };
   } catch (err) {
-    const released = src
-      .unsafe('ROLLBACK')
-      .catch(() => undefined)
-      .then(() => src.release());
-    // Mid-table, the ROLLBACK waits for the rest of the source table to drain; don't hold the error for it.
-    if (!streaming) await released;
+    await open?.close().catch(() => undefined);
     throw err;
   }
+}
+
+function sqlOf(target: BootedStore): Sql {
+  if (target.sql === null) throw new Error('migrate-store copies into a postgres target only');
+  return target.sql;
+}
+
+async function rowCount(tsql: Sql): Promise<number> {
+  const [r] = await tsql<{ n: string }[]>`SELECT count(*)::text AS n FROM rows`;
+  return Number(r?.n ?? 0);
 }
 
 /** Refuses a plan column the target lacks; returns each table's identity-always columns among the planned ones. */
@@ -234,9 +293,13 @@ async function copyTable(
   tsql: Sql,
   t: CopyPlanTable,
   identityCols: string[],
-  counter: RowCounter
+  counter: RowCounter,
+  /** A constant predicate: COPY runs as a simple query, which takes no parameters. */
+  filter: string | null
 ): Promise<void> {
-  const out = await src`COPY (SELECT ${src(t.columns)} FROM ${src(t.name)}) TO STDOUT`.readable();
+  const where = filter === null ? src`` : src`WHERE ${src.unsafe(filter)}`;
+  const out =
+    await src`COPY (SELECT ${src(t.columns)} FROM ${src(t.name)} ${where}) TO STDOUT`.readable();
   // `out` stays out of the pipeline, which would destroy it on failure and leave the connection stuck in COPY OUT.
   const feed = new PassThrough();
   out.on('error', (err) => feed.destroy(err));

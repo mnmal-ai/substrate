@@ -25,10 +25,13 @@ export class RowCounter extends Transform {
   constructor(
     private readonly table: string,
     private readonly batchRows: number,
-    private readonly onProgress: (e: ProgressEvent) => void
+    private readonly onProgress: (e: ProgressEvent) => void,
+    from: { rows: number; bytes: number } = { rows: 0, bytes: 0 }
   ) {
     super();
-    this.#next = batchRows;
+    this.rows = from.rows;
+    this.bytes = from.bytes;
+    this.#next = from.rows - (from.rows % batchRows) + batchRows;
   }
 
   override _transform(chunk: Buffer, _enc: BufferEncoding, cb: (err?: Error | null) => void) {
