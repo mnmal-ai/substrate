@@ -5,7 +5,7 @@ import {
   isDerivedMigration,
   MIGRATE_STORE_MARKER_TABLE
 } from '@mnmal-ai/substrate-dataset-pg';
-import type { SourceInventory } from './source.js';
+import { type SourceInventory, UUID_CHECK_MIGRATION } from './source.js';
 
 export interface TargetFacts {
   serverVersionNum: number;
@@ -118,6 +118,12 @@ export function preflight(
   );
   if (otherBaseline !== undefined && source.appliedMigrations.includes(otherBaseline)) {
     refusals.push(`source ledger records ${otherBaseline} but rows is ${source.layout}`);
+  }
+
+  if (source.appliedMigrations.includes(UUID_CHECK_MIGRATION) && !target.enforceUuidCheck) {
+    refusals.push(
+      `source enforces the UUID check (${UUID_CHECK_MIGRATION}) but the target would not: run migrate-store with the service's environment, which sets SUBSTRATE_ENFORCE_UUID_CHECK=true`
+    );
   }
 
   if (target.enforceUuidCheck && source.nonUuidIds.length > 0) {

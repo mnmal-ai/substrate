@@ -13,6 +13,9 @@ import {
 } from '@mnmal-ai/substrate-dataset-pg';
 import type { Sql } from 'postgres';
 
+/** The ledger version of the opt-in UUID-format CHECKs (`SUBSTRATE_ENFORCE_UUID_CHECK`). */
+export const UUID_CHECK_MIGRATION = '0002_uuid_format_check';
+
 export interface SourceType {
   namespace: string;
   type: string;

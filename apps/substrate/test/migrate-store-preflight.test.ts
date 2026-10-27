@@ -239,6 +239,16 @@ describe('preflight', () => {
     );
   });
 
+  it('refuses a source with the UUID check when the target would not enforce it', () => {
+    const src = source({
+      appliedMigrations: [...source().appliedMigrations, '0002_uuid_format_check']
+    });
+    expect(preflight(src, target(), opts).refusals.join()).toContain(
+      'SUBSTRATE_ENFORCE_UUID_CHECK=true'
+    );
+    expect(preflight(src, target({ enforceUuidCheck: true }), opts).refusals).toEqual([]);
+  });
+
   it('refuses differing recall dimensions naming both', () => {
     const msg = preflight(
       source({ vectorDims: 768 }),
