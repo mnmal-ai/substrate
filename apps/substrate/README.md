@@ -82,7 +82,7 @@ The pieces are exported for use outside the CLI: `createClientFromEnv()` builds 
 
 ### `substrate-admin`
 
-A separate binary for key management: `bootstrap` (seed the genesis admin key), `doctor` (check a deployment end to end), `onboard`, `list`, `register`, `update`, `rotate`, `revoke`. `substrate-admin --help` documents each.
+A separate binary for key management: `bootstrap` (seed the genesis admin key), `doctor` (check a deployment end to end), `onboard`, `list`, `register`, `update`, `rotate`, `revoke`, and `migrate-store` (copy a store into a fresh, empty, partitioned PostgreSQL 18 store and verify it; see [Upgrading](https://github.com/mnmal-ai/substrate/blob/main/packages/substrate-dataset-pg/README.md#upgrading)). `substrate-admin --help` documents each.
 
 ## Install
 

@@ -52,6 +52,9 @@ Both tiers are declared in `@mnmal-ai/substrate/sdk`.
     declares `embeddings`, `lexical`, `recall_clusters` and
     `recall_cluster_members`). `substrate-admin migrate-store` copies them with
     the engine's tables and refuses a source table that nothing declares.
+  - `onKernelStop`: stops whatever `onKernelReady` started (timers, workers).
+    The host calls it before it closes the store, and may call it more than
+    once, so make it idempotent.
   - `filterOperators`: where-clause extensions such as `embeddingSimilar`.
   - `kernelRoutes`: top-level routes under `/substrate/v1/<path>`. The first
     claim wins; a collision refuses boot. Each route must declare a
@@ -65,6 +68,11 @@ Both tiers are declared in `@mnmal-ai/substrate/sdk`.
     registered and before any coordinator composes.
 
   The built-in `substrate-recall` and `substrate-nl` are kernel plugins.
+
+  `KernelLifecycleContext.background` is `false` when the host boots the store
+  only to prepare or copy into it, as `substrate-admin migrate-store` does. In
+  that case do convergent reconciliation, but start no timers, backfills or
+  other background writers, because nothing else may write beside the copy.
 
 Compose order is **kernel first, coordinators second**. Coordinators can rely
 on kernel registrations being live; kernel plugins must not depend on

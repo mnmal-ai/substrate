@@ -67,6 +67,47 @@ A type declared `ordering: 'visible'` gets `rows.seq` from `visible_seqs`, assig
 
 **PostgreSQL 18 is the minimum.** `runMigrations` refuses an older server. A store on 17 moves in one of two ways. Stop every substrate instance first.
 
+### Recommended: `substrate-admin migrate-store`
+
+`migrate-store` copies a store into a fresh, empty, partitioned PostgreSQL 18 store, builds its indexes and verifies the copy against the source. It is the way to PG 18 and to the partitioned layout in one step, and the source is never written, so rolling back is pointing at it again. The source may be PG 17 or later, on either layout.
+
+1. Provision an empty PG 18 database. If recall is used, create the `vector` extension in it first: the command never runs `CREATE EXTENSION`, and refuses a target where a copied table needs an extension that is not available.
+2. Set `SUBSTRATE_INDEX_DISK_PATH` to the mount of the target's data directory, or to `off` when the database has no local volume. A real run refuses without it (a dry run only warns).
+3. Stop every instance of the source service. The command warns when it sees other sessions on the source database, because writes after its snapshot are not copied.
+4. Put the connection strings in `SUBSTRATE_MIGRATE_FROM_URL` and `SUBSTRATE_MIGRATE_TO_URL`, or name other variables with `--from-env` / `--to-env`. A connection string on the command line is refused, and none is printed.
+5. Run `substrate-admin migrate-store --dry-run`, which reports per-type row counts, table sizes, the estimated disk need on the target and every refusal, and writes nothing. Then run it without `--dry-run`. The environment must also carry what `serve` would use (`SUBSTRATE_PLUGIN_DIR` and the plugins' own settings), because the target is prepared with the same migrations and plugins.
+6. On exit `0`, set `SUBSTRATE_DATABASE_URL` to the target and start `serve`. The report prints this step as `switch over`.
+7. To roll back, point `SUBSTRATE_DATABASE_URL` at the source again. Nothing on it changed.
+
+| Flag | Effect |
+|---|---|
+| `--from-env <VAR>` / `--to-env <VAR>` | Name the variables that hold the source and target connection strings (defaults `SUBSTRATE_MIGRATE_FROM_URL`, `SUBSTRATE_MIGRATE_TO_URL`). |
+| `--from-schema <s>` / `--to-schema <s>` | Pin a side to schema `<s>`. The name must be plain lowercase (`[a-z_][a-z0-9_$]*`). This allows a copy within one database; the source and target may not be the same cluster, database and schema. |
+| `--dry-run` | Preflight only. Writes nothing. |
+| `--verify-only` | Verify an existing finished copy against its source. Refused on a target with no completed copy. |
+| `--skip-index-build` | Leave non-unique index builds to the first `serve` boot, which runs them under the disk guard. The pending builds are listed in the report. |
+| `--full-checksum` | Hash every row. The default samples 1000 rows per type. |
+| `--batch-rows <n>` | Rows between progress lines and per copy chunk (default 10000). |
+| `--skip-table <t>` | Waive a source table that nothing declares. Repeatable. |
+| `--json` | The final report as one JSON object on stdout; progress goes to stderr. |
+
+Exit codes: `0` copied and verified, `2` refused or a usage error (nothing was written to the target), `3` verification failed, `1` any other failure.
+
+What to know before a real run:
+
+- A read-only role is enough for the source, and the command opens it read-only.
+- The `idempotency` table is not copied; neither are the migration ledgers, which the target builds for itself.
+- Rerunning after an interruption restarts the copy cleanly: it empties the planned tables and copies again. Until a run has verified, the target keeps an in-progress marker and `serve` refuses to boot it. After a failed verification (exit `3`) the marker stays.
+- A source table that neither the engine nor a loaded kernel plugin declares is refused. Load the plugin that owns it, or pass `--skip-table`.
+- Rows of a type that the target does not declare land in the partitioned layout's DEFAULT partition. The report lists them.
+- If the target's own preparation seeds rows that the source lacks, they are kept and the report lists them. The one that matters is the `_system` `AuditEvent` of kind `bootstrap`, which `serve` records on a store's first boot with keys. A source without it is refused; boot the source once with `serve`, stop it, and rerun.
+- Recall's embedding dimensions must match when the target already has the table.
+- The report gives the time of each phase (preflight, prepare-and-copy, indexes, verify) and each table's copy time. The total of a rehearsal against a copy of the store is the downtime to plan for.
+
+### In place: `pg_upgrade`
+
+For a store that stays on the legacy layout, or when a second copy of the data is not possible:
+
 - `pg_upgrade --link`, which needs no second copy of the data:
   1. Take a rollback copy first: `pg_dumpall` (or a filesystem or volume snapshot) to a disk with room.
   2. Stop the server, and the old cluster.
