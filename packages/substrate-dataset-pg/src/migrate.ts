@@ -40,6 +40,9 @@ import {
   CONCURRENT_STATEMENTS as PARTITIONED_BASELINE_CONCURRENT,
   TX_STATEMENTS as PARTITIONED_BASELINE_TX
 } from './migrations/0001p_partitioned_baseline.js';
+
+export { UUID_REGEX } from './migrations/0002_uuid_format_check.js';
+
 import { TX_STATEMENTS as UUID_CHECK_TX } from './migrations/0002_uuid_format_check.js';
 import {
   CONCURRENT_STATEMENTS as SAFE_CASTS_CONCURRENT,
@@ -138,7 +141,7 @@ const UUID_CHECK_INPUT: MigrationInput = {
 };
 
 /**
- * @internal — the baseline for `layout`, then the gated 0002 when
+ * The baseline for `layout`, then the gated 0002 when
  * `SUBSTRATE_ENFORCE_UUID_CHECK=true` (or the explicit override is true), then
  * the migrations both layouts share. Used by `runMigrations` and exported for
  * unit tests.
@@ -369,7 +372,7 @@ export async function pendingMigrations(sql: Sql): Promise<string[]> {
 const MIGRATION_LOCK_KEY = `hashtext('substrate-migrations:' || current_schema())`;
 
 /** Refuses a search_path that resolves to no schema, or a schema name that is not plain lowercase. */
-async function assertStoreSchema(sql: Sql): Promise<void> {
+export async function assertStoreSchema(sql: Sql): Promise<void> {
   const [current] = await sql<Array<{ schema: string | null }>>`SELECT current_schema() AS schema`;
   // A NULL current_schema() makes the lock key NULL, which no poll ever acquires.
   if (current?.schema == null) throw new NoCurrentSchemaError();

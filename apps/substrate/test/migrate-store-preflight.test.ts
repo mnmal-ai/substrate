@@ -1,0 +1,229 @@
+/**
+ * migrate-store source inspection (pg-gated) and the pure preflight refusals.
+ * The pg suite is skipped unless POSTGRES_URL is set.
+ */
+
+import { randomBytes } from 'node:crypto';
+import { runMigrations } from '@mnmal-ai/substrate-dataset-pg';
+import { pgTestSchemaName, pgTestSchemaUrl } from '@mnmal-ai/substrate-dataset-pg/testing';
+import postgres, { type Sql } from 'postgres';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  type PreflightOptions,
+  preflight,
+  type TargetFacts
+} from '../src/admin/migrate-store/preflight.js';
+import { inspectSource, type SourceInventory } from '../src/admin/migrate-store/source.js';
+
+const POSTGRES_URL = process.env.POSTGRES_URL;
+
+describe.skipIf(!POSTGRES_URL)('inspectSource (pg)', () => {
+  let schema: string;
+  let sql: Sql;
+
+  beforeEach(async () => {
+    const name = `apps/substrate-migrate-src-${randomBytes(4).toString('hex')}`;
+    schema = pgTestSchemaName(name);
+    sql = postgres(pgTestSchemaUrl(POSTGRES_URL as string, name), { max: 1, onnotice: () => {} });
+    await sql.unsafe(`CREATE SCHEMA ${schema}`);
+    await runMigrations(sql, { layout: 'legacy' });
+    await sql.unsafe(`
+      INSERT INTO rows (namespace, type, id, body, deleted_at) VALUES
+        ('a', 'T1', '11111111-1111-4111-8111-111111111111', '{}', NULL),
+        ('a', 'T1', '22222222-2222-4222-8222-222222222222', '{}', now()),
+        ('a', 'T2', '33333333-3333-4333-8333-333333333333', '{}', NULL);
+      CREATE TABLE foo (x int)`);
+  });
+
+  afterEach(async () => {
+    await sql.unsafe(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+    await sql.end({ timeout: 5 });
+  });
+
+  const counters = async () => {
+    await sql`SELECT pg_stat_force_next_flush()`;
+    return sql`SELECT relname, n_tup_ins, n_tup_upd, n_tup_del FROM pg_stat_user_tables
+               WHERE schemaname = current_schema() ORDER BY relname`;
+  };
+
+  it('inventories a legacy source without writing to it', async () => {
+    const before = await counters();
+    const rels = async () =>
+      (
+        await sql`SELECT relname FROM pg_class WHERE relnamespace = current_schema()::regnamespace ORDER BY relname`
+      ).map((r) => r.relname);
+    const relsBefore = await rels();
+    const inv = await inspectSource(sql);
+    expect(inv.layout).toBe('legacy');
+    expect(inv.serverVersionNum).toBeGreaterThanOrEqual(170000);
+    expect(inv.hasSeq).toBe(true);
+    expect(inv.hasVisibleSeqs).toBe(true);
+    expect(inv.appliedMigrations).toContain('0004_visible_seq');
+    expect(inv.types.map((t) => [t.namespace, t.type, t.live, t.deleted])).toEqual([
+      ['a', 'T1', 1, 1],
+      ['a', 'T2', 1, 0]
+    ]);
+    expect(inv.tables).toContain('foo');
+    expect(inv.columns.rows).toContain('body');
+    expect(inv.nonUuidIds).toEqual([]);
+    expect(inv.vectorDims).toBeNull();
+    expect(await counters()).toEqual(before);
+    expect(await rels()).toEqual(relsBefore);
+  });
+
+  it('accepts an alpha.9-level source', async () => {
+    await sql.unsafe(`
+      ALTER TABLE rows DROP COLUMN seq;
+      DROP TABLE visible_seqs;
+      DELETE FROM migrations WHERE version = '0004_visible_seq'`);
+    const inv = await inspectSource(sql);
+    expect(inv.hasSeq).toBe(false);
+    expect(inv.hasVisibleSeqs).toBe(false);
+    const res = preflight(inv, target(), { ...opts, skipTables: ['foo'] });
+    expect(res.refusals).toEqual([]);
+  });
+
+  it('reads the recall dimension from the embedding column', async () => {
+    await sql.unsafe('CREATE TABLE embeddings (id int, embedding vector(768))');
+    expect((await inspectSource(sql)).vectorDims).toBe(768);
+  });
+
+  it('lists non-UUID ids', async () => {
+    await sql.unsafe(
+      `INSERT INTO rows (namespace, type, id, body) VALUES ('a', 'T1', 'not-a-uuid', '{}')`
+    );
+    expect((await inspectSource(sql)).nonUuidIds).toEqual([
+      { namespace: 'a', type: 'T1', id: 'not-a-uuid' }
+    ]);
+  });
+});
+
+const opts: PreflightOptions = { skipTables: [], pluginTables: [], dryRun: false };
+
+function target(over: Partial<TargetFacts> = {}): TargetFacts {
+  return {
+    serverVersionNum: 180000,
+    empty: true,
+    createdByUs: false,
+    enforceUuidCheck: false,
+    recallDims: null,
+    extensionsAvailable: ['vector'],
+    freeBytes: null,
+    ...over
+  };
+}
+
+function source(over: Partial<SourceInventory> = {}): SourceInventory {
+  return {
+    serverVersionNum: 170000,
+    layout: 'legacy',
+    appliedMigrations: ['0001_baseline', '0003_safe_casts', '0004_visible_seq'],
+    hasSeq: true,
+    hasVisibleSeqs: true,
+    types: [],
+    tables: ['rows', 'edges', 'short_ids', 'migrations'],
+    columns: { rows: ['namespace', 'type', 'id', 'body'], edges: ['id'], short_ids: ['namespace'] },
+    tableBytes: { rows: 100, edges: 10, short_ids: 10 },
+    nonUuidIds: [],
+    vectorDims: null,
+    extensions: [],
+    otherSessions: 0,
+    ...over
+  };
+}
+
+describe('preflight', () => {
+  it('passes a clean source and plans engine tables in order with columns', () => {
+    const res = preflight(source(), target(), opts);
+    expect(res.refusals).toEqual([]);
+    expect(res.plan.tables.map((t) => t.name)).toEqual(['rows', 'short_ids', 'edges']);
+    expect(res.plan.tables[0]?.columns).toEqual(['namespace', 'type', 'id', 'body']);
+  });
+
+  it('refuses a non-empty target not created by us, but allows our own', () => {
+    expect(preflight(source(), target({ empty: false }), opts).refusals).toHaveLength(1);
+    expect(preflight(source(), target({ empty: false, createdByUs: true }), opts).refusals).toEqual(
+      []
+    );
+  });
+
+  it('refuses an unknown table until --skip-table names it', () => {
+    const src = source({ tables: ['rows', 'foo'] });
+    expect(preflight(src, target(), opts).refusals.join()).toContain('"foo"');
+    const res = preflight(src, target(), { ...opts, skipTables: ['foo'] });
+    expect(res.refusals).toEqual([]);
+    expect(res.plan.skipped).toEqual(['foo']);
+  });
+
+  it('accepts a plugin-declared table and copies it after the engine tables', () => {
+    const res = preflight(source({ tables: ['rows', 'embeddings'] }), target(), {
+      ...opts,
+      pluginTables: ['embeddings']
+    });
+    expect(res.refusals).toEqual([]);
+    expect(res.plan.tables.map((t) => t.name)).toEqual(['rows', 'embeddings']);
+  });
+
+  it('refuses non-UUID ids only when the check is on', () => {
+    const src = source({ nonUuidIds: [{ namespace: 'a', type: 'T', id: 'x' }] });
+    expect(preflight(src, target(), opts).refusals).toEqual([]);
+    expect(preflight(src, target({ enforceUuidCheck: true }), opts).refusals.join()).toContain(
+      'a/T/x'
+    );
+  });
+
+  it('refuses differing recall dimensions naming both', () => {
+    const msg = preflight(
+      source({ vectorDims: 768 }),
+      target({ recallDims: 384 }),
+      opts
+    ).refusals.join();
+    expect(msg).toContain('768');
+    expect(msg).toContain('384');
+  });
+
+  it('refuses a source below PG 17 and a target below PG 18', () => {
+    expect(
+      preflight(source({ serverVersionNum: 160000 }), target(), opts).refusals.join()
+    ).toContain('160000');
+    expect(
+      preflight(source(), target({ serverVersionNum: 170000 }), opts).refusals.join()
+    ).toContain('target');
+  });
+
+  it('refuses an unknown ledger entry or a missing baseline', () => {
+    expect(
+      preflight(
+        source({ appliedMigrations: ['0001_baseline', '9999_x'] }),
+        target(),
+        opts
+      ).refusals.join()
+    ).toContain('9999_x');
+    expect(
+      preflight(source({ appliedMigrations: ['0003_safe_casts'] }), target(), opts).refusals.join()
+    ).toContain('lacks');
+  });
+
+  it('refuses a missing extension for a copied table', () => {
+    const res = preflight(
+      source({ tables: ['rows', 'embeddings'] }),
+      target({ extensionsAvailable: [] }),
+      { ...opts, pluginTables: ['embeddings'] }
+    );
+    expect(res.refusals.join()).toContain('vector');
+  });
+
+  it('treats a disk shortfall as a refusal in a real run and a warning in a dry run', () => {
+    const t = target({ freeBytes: 1 });
+    expect(preflight(source(), t, opts).refusals.join()).toContain('free disk');
+    const dry = preflight(source(), t, { ...opts, dryRun: true });
+    expect(dry.refusals).toEqual([]);
+    expect(dry.warnings.join()).toContain('free disk');
+  });
+
+  it('warns about other sessions', () => {
+    expect(preflight(source({ otherSessions: 2 }), target(), opts).warnings.join()).toContain(
+      '2 other'
+    );
+  });
+});

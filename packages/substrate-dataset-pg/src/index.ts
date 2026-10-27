@@ -25,7 +25,9 @@ export {
 export { detectLayout, partitionName, type StorageLayout } from './layout.js';
 export {
   assertNotMigrating,
+  assertStoreSchema,
   deriveListIndexMigration,
+  getMigrationList,
   type IndexedListField,
   MIGRATE_STORE_MARKER_TABLE,
   MigrationChecksumDriftError,
@@ -37,7 +39,8 @@ export {
   runMigrations,
   StorageLayoutMismatchError,
   StoreMigrationInProgressError,
-  UnsupportedSchemaNameError
+  UnsupportedSchemaNameError,
+  UUID_REGEX
 } from './migrate.js';
 export {
   type FieldDefLookup,
