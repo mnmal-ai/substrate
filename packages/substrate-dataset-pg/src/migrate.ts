@@ -171,6 +171,29 @@ export class StorageLayoutMismatchError extends Error {
   }
 }
 
+/** The table `substrate-admin migrate-store` keeps its progress in, on the target. */
+export const MIGRATE_STORE_MARKER_TABLE = 'substrate_migrate_store_progress';
+
+export class StoreMigrationInProgressError extends Error {
+  override readonly name = 'StoreMigrationInProgressError';
+
+  constructor() {
+    super(
+      `${MIGRATE_STORE_MARKER_TABLE} exists: substrate-admin migrate-store has not finished ` +
+        'populating this store. Rerun substrate-admin migrate-store to finish or restart it, ' +
+        'then boot.'
+    );
+  }
+}
+
+/** Throws `StoreMigrationInProgressError` when the current schema carries the migrate-store marker. */
+export async function assertNotMigrating(sql: Sql): Promise<void> {
+  const [row] = await sql<Array<{ present: boolean }>>`
+    SELECT to_regclass(current_schema() || '.' || ${MIGRATE_STORE_MARKER_TABLE}) IS NOT NULL AS present
+  `;
+  if (row?.present === true) throw new StoreMigrationInProgressError();
+}
+
 /**
  * The layout migrations target: the layout `rows` has; else the one the
  * ledger's baseline records; else `fallback`, then `SUBSTRATE_STORAGE_LAYOUT`,

@@ -28,6 +28,7 @@ import {
   PgDataset,
   PgEdgesStore,
   runMigrations,
+  type StorageLayout,
   type TypeDefLookup
 } from '@mnmal-ai/substrate-dataset-pg';
 import { getExtensionOperator, registerExtensionOperator } from '@mnmal-ai/substrate-filter';
@@ -89,7 +90,8 @@ export async function wireStore(
   storeSpec: string,
   fieldDefLookupFor: (namespace: string) => FieldDefLookup,
   typeDefLookupFor?: (namespace: string) => TypeDefLookup,
-  diskGuard?: DiskGuard
+  diskGuard?: DiskGuard,
+  layout?: StorageLayout
 ): Promise<StoreWiring> {
   if (storeSpec === 'memory') {
     return {
@@ -106,7 +108,7 @@ export async function wireStore(
   }
   if (storeSpec.startsWith('postgres://') || storeSpec.startsWith('postgresql://')) {
     const sql: Sql = openSql(storeSpec);
-    await runMigrations(sql);
+    await runMigrations(sql, layout !== undefined ? { layout } : {});
     // Edges store linked in via `edgesStore` so the dataset's
     // `withScopedTransaction` can enlist edge mutations into the same pg
     // transaction.

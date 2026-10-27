@@ -1,0 +1,74 @@
+/**
+ * `bootStore` runs serve's boot path against a fresh schema without listening,
+ * and refuses a store that carries the migrate-store marker.
+ *
+ * Skipped unless POSTGRES_URL is set.
+ */
+
+import { randomBytes } from 'node:crypto';
+import {
+  detectLayout,
+  MIGRATE_STORE_MARKER_TABLE,
+  type StorageLayout,
+  StoreMigrationInProgressError
+} from '@mnmal-ai/substrate-dataset-pg';
+import { pgTestSchemaName, pgTestSchemaUrl } from '@mnmal-ai/substrate-dataset-pg/testing';
+import { FastifySubstrateServer } from '@mnmal-ai/substrate-server-fastify';
+import postgres, { type Sql } from 'postgres';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { bootStore } from '../src/serve/boot-store.js';
+import { parseEnv } from '../src/serve/config.js';
+
+const POSTGRES_URL = process.env.POSTGRES_URL;
+
+describe.skipIf(!POSTGRES_URL)('bootStore (pg)', () => {
+  const layout = (process.env.SUBSTRATE_STORAGE_LAYOUT ?? 'partitioned') as StorageLayout;
+  let schema: string;
+  let url: string;
+  let sql: Sql;
+
+  beforeEach(async () => {
+    const name = `apps/substrate-boot-store-${randomBytes(4).toString('hex')}`;
+    schema = pgTestSchemaName(name);
+    url = pgTestSchemaUrl(POSTGRES_URL as string, name);
+    sql = postgres(url, { max: 1, onnotice: () => {} });
+    await sql.unsafe(`CREATE SCHEMA ${schema}`);
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await sql.unsafe(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+    await sql.end({ timeout: 5 });
+  });
+
+  it('boots a store without listening', async () => {
+    const start = vi.spyOn(FastifySubstrateServer.prototype, 'start');
+    const booted = await bootStore({
+      config: parseEnv({ SUBSTRATE_DATABASE_URL: url, SUBSTRATE_SYSTEM_ACTOR: 'boot-store-test' }),
+      pluginDir: null,
+      layout
+    });
+    try {
+      expect(await detectLayout(sql)).toBe(layout);
+      expect(booted.engine.registryFor('_system')?.has('Key')).toBe(true);
+      expect(booted.server).toBeInstanceOf(FastifySubstrateServer);
+      expect(start).not.toHaveBeenCalled();
+    } finally {
+      await booted.close();
+    }
+  });
+
+  it('serve refuses a target that migrate-store has not finished', async () => {
+    await sql.unsafe(`CREATE TABLE ${schema}.${MIGRATE_STORE_MARKER_TABLE} (id int)`);
+    const config = parseEnv({
+      SUBSTRATE_DATABASE_URL: url,
+      SUBSTRATE_SYSTEM_ACTOR: 'boot-store-test'
+    });
+    await expect(bootStore({ config, pluginDir: null, layout })).rejects.toBeInstanceOf(
+      StoreMigrationInProgressError
+    );
+    // migrate-store itself boots past the marker.
+    const booted = await bootStore({ config, pluginDir: null, layout, allowMigrating: true });
+    await booted.close();
+  });
+});

@@ -24,15 +24,18 @@ export {
 } from './index-reconciler.js';
 export { detectLayout, partitionName, type StorageLayout } from './layout.js';
 export {
+  assertNotMigrating,
   deriveListIndexMigration,
   type IndexedListField,
+  MIGRATE_STORE_MARKER_TABLE,
   MigrationChecksumDriftError,
   type MigrationInput,
   pendingMigrations,
   type RunMigrationsOptions,
   runDerivedMigrations,
   runMigrations,
-  StorageLayoutMismatchError
+  StorageLayoutMismatchError,
+  StoreMigrationInProgressError
 } from './migrate.js';
 export {
   type FieldDefLookup,
