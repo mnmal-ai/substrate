@@ -121,7 +121,7 @@ function target(over: Partial<TargetFacts> = {}): TargetFacts {
     createdByUs: false,
     enforceUuidCheck: false,
     recallDims: null,
-    extensionsAvailable: ['vector'],
+    extensions: { vector: '0.8.0' },
     freeBytes: null,
     ...over
   };
@@ -271,13 +271,15 @@ describe('preflight', () => {
     ).toContain('lacks');
   });
 
-  it('refuses a missing extension for a copied table', () => {
-    const res = preflight(
-      source({ tables: ['rows', 'embeddings'] }),
-      target({ extensionsAvailable: [] }),
-      { ...opts, pluginTables: ['embeddings'] }
+  it('refuses a copied table whose extension is not installed in the target database', () => {
+    // pg_available_extensions listing it is not enough: the target role cannot CREATE EXTENSION.
+    const res = preflight(source({ tables: ['rows', 'embeddings'] }), target({ extensions: {} }), {
+      ...opts,
+      pluginTables: ['embeddings']
+    });
+    expect(res.refusals.join()).toContain(
+      'run CREATE EXTENSION vector; in the target database as a superuser'
     );
-    expect(res.refusals.join()).toContain('vector');
   });
 
   it('treats a disk shortfall as a refusal in a real run and a warning in a dry run', () => {

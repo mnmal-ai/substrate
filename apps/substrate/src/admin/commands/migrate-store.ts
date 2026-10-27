@@ -494,8 +494,8 @@ async function targetFacts(
         WHERE attrelid = to_regclass(quote_ident(${facts.schema}) || '.embeddings')
           AND attname = 'embedding' AND NOT attisdropped`
     : [];
-  const extensions = await sql<{ name: string }[]>`
-    SELECT name FROM pg_available_extensions UNION SELECT extname FROM pg_extension`;
+  const extensions = await sql<{ name: string; version: string }[]>`
+    SELECT extname AS name, extversion AS version FROM pg_extension`;
   let freeBytes: number | null = null;
   if (diskPath !== undefined && diskPath.length > 0 && diskPath !== 'off') {
     const s = await statfs(diskPath).catch((err: NodeJS.ErrnoException) => {
@@ -514,7 +514,7 @@ async function targetFacts(
     enforceUuidCheck:
       (env as Record<string, string | undefined>).SUBSTRATE_ENFORCE_UUID_CHECK === 'true',
     recallDims: dims !== undefined && dims.d > 0 ? dims.d : null,
-    extensionsAvailable: extensions.map((e) => e.name),
+    extensions: Object.fromEntries(extensions.map((e) => [e.name, e.version])),
     freeBytes
   };
 }

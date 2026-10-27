@@ -16,8 +16,8 @@ export interface TargetFacts {
   enforceUuidCheck: boolean;
   /** Recall's embedding dimension on the target; null when unknown or absent. */
   recallDims: number | null;
-  /** Names from `pg_available_extensions` plus the installed ones. */
-  extensionsAvailable: string[];
+  /** Extensions installed in the target database (`pg_extension`), name to `extversion`. */
+  extensions: Record<string, string>;
   /** Free bytes under SUBSTRATE_INDEX_DISK_PATH; null when not configured. */
   freeBytes: number | null;
 }
@@ -169,9 +169,10 @@ export function preflight(
 
   for (const t of plan.tables) {
     const ext = TABLE_EXTENSION[t.name];
-    if (ext !== undefined && !target.extensionsAvailable.includes(ext)) {
+    // Installed, not merely available: the target role cannot run CREATE EXTENSION itself.
+    if (ext !== undefined && target.extensions[ext] === undefined) {
       refusals.push(
-        `table "${t.name}" needs extension "${ext}", which is not available on the target; install it there and run CREATE EXTENSION ${ext}`
+        `table "${t.name}" needs extension "${ext}", which is not installed in the target database; run CREATE EXTENSION ${ext}; in the target database as a superuser`
       );
     }
   }

@@ -189,7 +189,7 @@ export async function openPair(
       createdByUs: false,
       enforceUuidCheck: false,
       recallDims: DIM,
-      extensionsAvailable: ['vector'],
+      extensions: { vector: '0.8.0' },
       freeBytes: null
     },
     { skipTables: [], pluginTables: RECALL_TABLES, dryRun: false }

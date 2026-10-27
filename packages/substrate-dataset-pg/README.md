@@ -71,7 +71,7 @@ A type declared `ordering: 'visible'` gets `rows.seq` from `visible_seqs`, assig
 
 `migrate-store` copies a store into a fresh, empty, partitioned PostgreSQL 18 store, builds its indexes and verifies the copy against the source. It is the way to PG 18 and to the partitioned layout in one step, and the source is never written, so rolling back is pointing at it again. The source may be PG 17 or later, on either layout.
 
-1. Provision an empty PG 18 database. If recall is used, create the `vector` extension in it first: the command never runs `CREATE EXTENSION`, and refuses a target where a copied table needs an extension that is not available.
+1. Provision an empty PG 18 database. If recall is used, create the `vector` extension in it first: the command never runs `CREATE EXTENSION`, and refuses a target where a copied table needs an extension that is not installed in the target database.
 2. Set `SUBSTRATE_INDEX_DISK_PATH` to the mount of the target's data directory, or to `off` when the database has no local volume. A real run refuses without it (a dry run only warns).
 3. Stop every instance of the source service. The command warns when it sees other sessions on the source database, because writes after its snapshot are not copied.
 4. Put the connection strings in `SUBSTRATE_MIGRATE_FROM_URL` and `SUBSTRATE_MIGRATE_TO_URL`, or name other variables with `--from-env` / `--to-env`. A connection string on the command line is refused, and none is printed.
