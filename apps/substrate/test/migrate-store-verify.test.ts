@@ -8,6 +8,7 @@ import type { Sql } from 'postgres';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type CopyResult, copyStore } from '../src/admin/migrate-store/copy.js';
 import {
+  fingerprint,
   readCopyState,
   type VerifyOptions,
   verifyStore
@@ -43,6 +44,7 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
     const opts = (o: Partial<VerifyOptions> = {}): VerifyOptions => ({
       keptSeeds: result.keptSeeds,
       defaulted: result.defaulted,
+      tables: pair.plan.tables.map((t) => t.name),
       fullChecksum: false,
       sampleRows: 1000,
       partitionBudget: 500,
@@ -62,7 +64,11 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
 
     it('reads the kept seeds and defaulted types back from the target', async () => {
       const state = await readCopyState(result.target);
-      expect(state).toEqual({ keptSeeds: result.keptSeeds, defaulted: result.defaulted });
+      expect(state).toEqual({
+        keptSeeds: result.keptSeeds,
+        defaulted: result.defaulted,
+        tables: pair.plan.tables.map((t) => t.name).sort()
+      });
       expect(await verify(state)).toEqual({ ok: true, mismatches: [] });
     });
 
@@ -90,6 +96,36 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
       expect(r.ok).toBe(false);
       expect(r.mismatches.map((m) => [m.check, m.type])).toContainEqual(['short_ids', 'Key']);
       expect(await markerPresent()).toBe(true);
+    });
+
+    it('catches a tampered edge target', async () => {
+      await tgtSql`UPDATE edges SET to_id = ${uuid(99)} WHERE id = ${uuid(10)}`;
+      const r = await verify();
+      expect(r.mismatches.map((m) => [m.check, m.type])).toContainEqual(['edges', 'Key']);
+      expect(await markerPresent()).toBe(true);
+    });
+
+    it('catches a tampered visible_seqs row', async () => {
+      await tgtSql`UPDATE visible_seqs SET last_seq = 99`;
+      const r = await verify();
+      expect(r.mismatches).toEqual([expect.objectContaining({ check: 'table' })]);
+      expect(r.mismatches[0]?.detail).toMatch(/^visible_seqs:/);
+    });
+
+    it('catches a tampered recall cluster label', async () => {
+      await tgtSql`UPDATE recall_clusters SET label = 'changed' WHERE id = 'c2'`;
+      const r = await verify();
+      expect(r.mismatches).toEqual([expect.objectContaining({ check: 'table' })]);
+      expect(r.mismatches[0]?.detail).toMatch(/^recall_clusters:/);
+    });
+
+    it('fingerprints a set independent of order, and differs by one row', async () => {
+      const ids = ['a', 'b', 'c', 'd'];
+      expect(await fingerprint(srcSql, ids)).toBe(await fingerprint(srcSql, [...ids].reverse()));
+      expect(await fingerprint(srcSql, ids)).not.toBe(await fingerprint(srcSql, ids.slice(1)));
+      expect(await fingerprint(srcSql, ids)).not.toBe(
+        await fingerprint(srcSql, ['a', 'b', 'c', 'e'])
+      );
     });
 
     it('fails when a declared type has rows in the DEFAULT partition', async () => {

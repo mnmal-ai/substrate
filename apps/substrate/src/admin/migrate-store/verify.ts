@@ -6,6 +6,10 @@
  *
  * Target rows the prepare step seeded and the source lacks (`keptSeeds`) are
  * subtracted from the target side before every comparison.
+ *
+ * Every set is fingerprinted as `count(*)` plus the sum of a 64-bit prefix of
+ * each row's md5. That is independent of row order, of either cluster's
+ * collation, and of any join separator, and it builds no string.
  */
 
 import { MIGRATE_STORE_MARKER_TABLE } from '@mnmal-ai/substrate-dataset-pg';
@@ -17,6 +21,8 @@ export interface VerifyOptions {
   keptSeeds: RowKey[];
   /** Types whose rows are expected in a DEFAULT partition (`CopyResult.defaulted`). */
   defaulted: CopyResult['defaulted'];
+  /** The copied tables (the plan's, or `readCopyState().tables`); `rows`, `short_ids` and `edges` have their own checks. */
+  tables: string[];
   /** Hash every row instead of a sample. */
   fullChecksum: boolean;
   /** Rows hashed per type when not `fullChecksum`. */
@@ -40,13 +46,18 @@ interface Entry {
   value: string;
 }
 
-/** Recall's tables and the expression that keys a row of each. */
-const RECALL_KEYS: Record<string, string> = {
-  embeddings: "row_namespace || '/' || row_type || '/' || row_id",
-  lexical: "row_namespace || '/' || row_type || '/' || row_id",
-  recall_clusters: 'id',
-  recall_cluster_members: 'id'
-};
+const quote = (cols: string[]) => cols.map((c) => `"${c.replace(/"/g, '""')}"`).join(', ');
+
+/** SQL for a set's fingerprint: its size and an order-independent sum of per-row hashes of `expr`. */
+const fp = (expr: string) =>
+  `count(*)::text || ' ' || coalesce(sum(('x' || substr(md5(${expr}), 1, 16))::bit(64)::bigint::numeric), 0)::text`;
+
+/** The fingerprint of a set of ids, as `verifyStore` computes it. */
+export async function fingerprint(sql: Sql, ids: string[]): Promise<string> {
+  const [r] = await sql<{ f: string }[]>`
+    SELECT ${sql.unsafe(fp('id'))} AS f FROM unnest(${ids}::text[]) AS id`;
+  return (r as { f: string }).f;
+}
 
 export async function verifyStore(
   source: Sql,
@@ -56,7 +67,7 @@ export async function verifyStore(
   const readOnly = 'isolation level repeatable read read only';
   const src = await source.begin(readOnly, (tx) => snapshot(tx as unknown as Sql, [], null, opts));
   const tgt = await target.begin(readOnly, (tx) =>
-    snapshot(tx as unknown as Sql, opts.keptSeeds, src.recallTables, opts, src.columns)
+    snapshot(tx as unknown as Sql, opts.keptSeeds, src, opts)
   );
 
   const mismatches: VerifyResult['mismatches'] = [];
@@ -91,18 +102,25 @@ export async function verifyStore(
   return { ok, mismatches };
 }
 
+const COPY_MILESTONES = new Set(['copy:started', 'copy:phase1', 'copy:phase2', 'copy:done']);
+
 /**
  * What a finished copy left behind, for a verification that has no
  * `CopyResult`: the kept seeds from the marker table, and the types the target
- * does not register (their rows sit in a DEFAULT partition).
+ * does not register (their rows sit in a DEFAULT partition), and the copied
+ * tables, which are the marker's `copy:<table>` steps.
  */
 export async function readCopyState(
   target: BootedStore
-): Promise<Pick<CopyResult, 'keptSeeds' | 'defaulted'>> {
+): Promise<Pick<CopyResult, 'keptSeeds' | 'defaulted'> & { tables: string[] }> {
   const sql = target.sql;
   if (sql === null) throw new Error('migrate-store verifies a postgres target only');
   const steps = await sql<{ step: string }[]>`
-    SELECT step FROM ${sql(MIGRATE_STORE_MARKER_TABLE)}`.catch(() => []);
+    SELECT step FROM ${sql(MIGRATE_STORE_MARKER_TABLE)}`.catch((err: { code?: string }) => {
+    // A target with no marker table has no copy to verify; anything else is a real fault.
+    if (err.code === '42P01') return [];
+    throw err;
+  });
   if (!steps.some((s) => s.step === 'copy:done')) {
     throw new Error(
       'the target has no completed migrate-store copy to verify (its in-progress marker is missing or the copy did not finish)'
@@ -121,28 +139,52 @@ export async function readCopyState(
   const defaulted = pairs.filter(
     (p) => registeredDataset(target, p.namespace, p.type)?.ensureTypeStorage === undefined
   );
-  return { keptSeeds, defaulted };
+  const tables = steps
+    .map((s) => s.step)
+    .filter((s) => s.startsWith('copy:') && !COPY_MILESTONES.has(s))
+    .map((s) => s.slice('copy:'.length))
+    .sort();
+  return { keptSeeds, defaulted, tables };
 }
 
-/** Every comparable fact about one side, keyed so the two sides diff by key. */
+interface Snapshot {
+  entries: Map<string, Entry>;
+  /** Per checked table (`rows`, `edges` and the generic ones): its non-generated columns, by name. */
+  columns: Map<string, string[]>;
+}
+
+/** Every comparable fact about one side, keyed so the two sides diff by key. `other` is the source's snapshot when this is the target. */
 async function snapshot(
   tx: Sql,
   seeds: RowKey[],
-  recallFrom: string[] | null,
-  opts: VerifyOptions,
-  otherColumns?: string[]
-): Promise<{ entries: Map<string, Entry>; recallTables: string[]; columns: string[] }> {
+  other: Snapshot | null,
+  opts: VerifyOptions
+): Promise<Snapshot> {
   // Two clusters may differ in these defaults, and they change how a row renders as text.
   await tx`SET LOCAL TimeZone = 'UTC'`;
   await tx`SET LOCAL DateStyle = 'ISO, YMD'`;
   await tx`SET LOCAL extra_float_digits = 3`;
   const entries = new Map<string, Entry>();
+  const columns = new Map<string, string[]>();
   const add = (e: Entry) =>
     entries.set(`${e.check}\0${e.namespace ?? ''}\0${e.type ?? ''}\0${e.what}`, e);
   // Target rows the source cannot have: the kept seeds.
   const notSeed = (ns: string, ty: string, id: string) =>
     tx`(${tx(ns)}, ${tx(ty)}, ${tx(id)}) NOT IN (SELECT * FROM unnest(
       ${seeds.map((k) => k.namespace)}::text[], ${seeds.map((k) => k.type)}::text[], ${seeds.map((k) => k.id)}::text[]))`;
+  // The table's columns both sides have, or null when this side lacks the table. A source lacking one
+  // (seq) must not read as a mismatch, so the target hashes only the source's set.
+  const colsOf = async (table: string): Promise<string[] | null> => {
+    const have = await tx<{ col: string }[]>`
+      SELECT a.attname AS col FROM pg_attribute a
+      WHERE a.attrelid = to_regclass(${table}) AND a.attnum > 0 AND NOT a.attisdropped AND a.attgenerated = ''
+      ORDER BY a.attname`;
+    if (have.length === 0) return null;
+    const theirs = other?.columns.get(table);
+    const cols = have.map((c) => c.col).filter((c) => theirs === undefined || theirs.includes(c));
+    columns.set(table, cols);
+    return cols;
+  };
 
   const counts = await tx<
     { namespace: string; type: string; live: string; deleted: string; ids: string }[]
@@ -150,79 +192,64 @@ async function snapshot(
     SELECT namespace, type,
            count(*) FILTER (WHERE deleted_at IS NULL)::text AS live,
            count(*) FILTER (WHERE deleted_at IS NOT NULL)::text AS deleted,
-           md5(string_agg(id, ',' ORDER BY id)) AS ids
+           ${tx.unsafe(fp('id'))} AS ids
     FROM rows WHERE ${notSeed('namespace', 'type', 'id')} GROUP BY namespace, type`;
   for (const r of counts) {
     const at = { namespace: r.namespace, type: r.type };
     add({ check: 'count', ...at, what: 'live rows', value: r.live });
     add({ check: 'count', ...at, what: 'deleted rows', value: r.deleted });
-    add({ check: 'ids', ...at, what: 'id set hash', value: r.ids });
+    add({ check: 'ids', ...at, what: 'id set', value: r.ids });
   }
 
-  const shorts = await tx<{ namespace: string; type: string; n: string; h: string }[]>`
-    SELECT namespace, type, count(*)::text AS n,
-           md5(string_agg(short_id::text || ':' || row_id, ',' ORDER BY short_id, row_id)) AS h
+  const shorts = await tx<{ namespace: string; type: string; f: string }[]>`
+    SELECT namespace, type, ${tx.unsafe(fp('row(short_id, row_id)::text'))} AS f
     FROM short_ids WHERE ${notSeed('namespace', 'type', 'row_id')} GROUP BY namespace, type`;
   for (const r of shorts) {
-    add({
-      check: 'short_ids',
-      namespace: r.namespace,
-      type: r.type,
-      what: 'shortIds',
-      value: `${r.n} ${r.h}`
-    });
+    add({ check: 'short_ids', namespace: r.namespace, type: r.type, what: 'shortIds', value: r.f });
   }
 
-  const edges = await tx<
-    { namespace: string; type: string; field: string; n: string; h: string }[]
-  >`
-    SELECT from_ns AS namespace, from_type AS type, field_name AS field, count(*)::text AS n,
-           md5(string_agg(id::text || ':' || (deleted_at IS NOT NULL)::text, ',' ORDER BY id)) AS h
-    FROM edges WHERE ${notSeed('from_ns', 'from_type', 'from_id')} GROUP BY from_ns, from_type, field_name`;
-  for (const r of edges) {
-    add({
-      check: 'edges',
-      namespace: r.namespace,
-      type: r.type,
-      what: `edges of ${r.field}`,
-      value: `${r.n} ${r.h}`
-    });
+  const edgeCols = await colsOf('edges');
+  if (edgeCols !== null) {
+    const edges = await tx<{ namespace: string; type: string; field: string; f: string }[]>`
+      SELECT from_ns AS namespace, from_type AS type, field_name AS field,
+             ${tx.unsafe(fp(`row(${quote(edgeCols)})::text`))} AS f
+      FROM edges WHERE ${notSeed('from_ns', 'from_type', 'from_id')} GROUP BY from_ns, from_type, field_name`;
+    for (const r of edges) {
+      add({
+        check: 'edges',
+        namespace: r.namespace,
+        type: r.type,
+        what: `edges of ${r.field}`,
+        value: r.f
+      });
+    }
   }
 
-  // Only columns both sides have: a source lacking one (seq) must not read as a mismatch.
-  const have = (
-    await tx<{ col: string }[]>`
-      SELECT a.attname AS col FROM pg_attribute a
-      WHERE a.attrelid = to_regclass('rows') AND a.attnum > 0 AND NOT a.attisdropped AND a.attgenerated = ''
-      ORDER BY a.attname`
-  ).map((c) => c.col);
-  const columns = otherColumns === undefined ? have : have.filter((c) => otherColumns.includes(c));
+  const rowCols = (await colsOf('rows')) as string[];
   const limit = opts.fullChecksum ? 2147483647 : opts.sampleRows;
-  // The target has every source column, so the source's own set is the common one.
   // One bounded query per type, each on its own scope, so a partitioned store reads only that type's partition.
+  // COLLATE "C" so both clusters pick the same rows whatever their locale.
   for (const { namespace, type } of counts) {
-    const [r] = await tx<{ h: string | null }[]>`
-      SELECT md5(string_agg(h, ',' ORDER BY id)) AS h FROM (
-        SELECT id, md5(row(${tx(columns)})::text) AS h FROM rows
+    const [r] = await tx<{ f: string }[]>`
+      SELECT ${tx.unsafe(fp('h'))} AS f FROM (
+        SELECT row(${tx.unsafe(quote(rowCols))})::text AS h FROM rows
         WHERE namespace = ${namespace} AND type = ${type} AND ${notSeed('namespace', 'type', 'id')}
-        ORDER BY md5(id) LIMIT ${limit}) s`;
-    add({ check: 'sample', namespace, type, what: 'content hash', value: String(r?.h) });
+        ORDER BY md5(id) COLLATE "C" LIMIT ${limit}) s`;
+    add({ check: 'sample', namespace, type, what: 'content', value: String(r?.f) });
   }
 
-  const present = await tx<{ name: string }[]>`
-    SELECT t AS name FROM unnest(${Object.keys(RECALL_KEYS)}::text[]) t WHERE to_regclass(t) IS NOT NULL`;
-  const recallTables = recallFrom ?? present.map((p) => p.name);
-  for (const name of recallTables) {
-    const key = tx.unsafe(RECALL_KEYS[name] as string);
-    if (!present.some((p) => p.name === name)) continue;
-    const where =
-      name === 'embeddings' || name === 'lexical'
-        ? notSeed('row_namespace', 'row_type', 'row_id')
-        : tx`true`;
-    const [r] = await tx<{ n: string; h: string | null }[]>`
-      SELECT count(*)::text AS n, md5(string_agg(${key}, ',' ORDER BY ${key})) AS h
-      FROM ${tx(name)} WHERE ${where}`;
-    add({ check: 'recall', what: name, value: `${r?.n} ${r?.h}` });
+  // Every other copied table: its full content, only for tables the source has.
+  const skip = new Set(['rows', 'short_ids', 'edges']);
+  for (const name of opts.tables.filter((t) => !skip.has(t))) {
+    if (other !== null && !other.columns.has(name)) continue;
+    const cols = await colsOf(name);
+    if (cols === null) continue;
+    const where = ['row_namespace', 'row_type', 'row_id'].every((c) => cols.includes(c))
+      ? notSeed('row_namespace', 'row_type', 'row_id')
+      : tx`true`;
+    const [r] = await tx<{ f: string }[]>`
+      SELECT ${tx.unsafe(fp(`row(${quote(cols)})::text`))} AS f FROM ${tx(name)} WHERE ${where}`;
+    add({ check: 'table', what: name, value: String(r?.f) });
   }
-  return { entries, recallTables, columns };
+  return { entries, columns };
 }
