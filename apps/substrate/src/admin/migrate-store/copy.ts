@@ -62,8 +62,8 @@ export class MigrateStoreColumnError extends Error {
   }
 }
 
-const STARTED = 'copy:started';
-const SEED = 'seed:';
+export const STARTED = 'copy:started';
+export const SEED = 'seed:';
 
 /** The `rows` / `short_ids` predicate phase 1 copies; phase 2 copies its complement. Both columns are NOT NULL. */
 export const PHASE1_ROWS =
@@ -297,7 +297,11 @@ async function reconcileSeeds(src: ReservedSql, tsql: Sql, target: BootedStore):
   return kept;
 }
 
-function registeredDataset(target: BootedStore, ns: string, type: string): Dataset | undefined {
+export function registeredDataset(
+  target: BootedStore,
+  ns: string,
+  type: string
+): Dataset | undefined {
   // `has` first: `get` would allocate a dataset for a virtual namespace.
   if (!target.datasets.has(ns)) return undefined;
   if (target.engine.registryFor(ns)?.get(type)?.kind !== 'type') return undefined;
