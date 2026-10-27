@@ -353,7 +353,7 @@ async function proposeTypeLocked(
   await notifyAfterCommit(args, () =>
     deps.pubsub.notify(deps.channelFor(deps.namespace), String(newId))
   );
-  ensureStorageAfterCommit(args.afterTx, deps.dataset, typeName);
+  ensureStorageAfterCommit(args.afterTx, deps.dataset, typeName, deps.registryStore.storage);
 
   // Step 7 — return the applied row
   return appliedRow;

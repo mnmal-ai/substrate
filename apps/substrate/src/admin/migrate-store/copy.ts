@@ -84,9 +84,9 @@ export async function copyStore(
     await tsql`CREATE TABLE IF NOT EXISTS ${tsql(MIGRATE_STORE_MARKER_TABLE)} (step text PRIMARY KEY, done_at timestamptz)`;
     const identity = await checkColumns(tsql, plan);
     if (await restartIfStarted(tsql, plan)) {
-      // The boot replayed the interrupted run's proposals and started index builds. Close (which waits
-      // for them) and boot fresh before taking the source snapshot: in a same-database copy those
-      // builds would wait on the snapshot, and the re-boot's close on them.
+      // The boot replayed the interrupted run's proposals and started index builds. Close (which ends
+      // them) and boot fresh, now without those proposals, before taking the source snapshot, which
+      // the builds would otherwise wait on in a same-database copy.
       open = undefined;
       await target.close();
       target = await boot();
@@ -184,10 +184,8 @@ async function assertRebootWroteNothing(tsql: Sql): Promise<void> {
     FULL JOIN ${snap} s USING (namespace, type, id)
     WHERE s.id IS NULL OR r.id IS NULL OR r.h <> s.h
     ORDER BY 1, 2, 3, 4 LIMIT 30`;
-  if (diff.length === 0) {
-    await tsql`DROP TABLE ${snap}`;
-    return;
-  }
+  await tsql`DROP TABLE ${snap}`;
+  if (diff.length === 0) return;
   const named = ['added', 'changed', 'removed']
     .map((c) => {
       const rows = diff.filter((d) => d.change === c).slice(0, 10);

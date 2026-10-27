@@ -35,7 +35,6 @@ import {
 } from './capability.js';
 import type { ProposalsPluginConfig } from './config.js';
 import { CONTROL_NAMESPACE, defineControlPlaneTypes } from './control-plane.js';
-import { storageSettled } from './engine-write.js';
 import {
   namespaceDropParticipant,
   reconcileClusterNamespaces,
@@ -314,9 +313,10 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
         registerProposalMutations
       });
     },
-    // Replay and proposals prepare storage in the background; let it finish before the store closes.
+    // Replay and proposals prepare storage in the background: abort it, so a long build cannot
+    // hold shutdown, and let it settle before the store closes.
     async onStop(): Promise<void> {
-      await storageSettled();
+      await registryStore.stopStorage();
     }
   };
 }

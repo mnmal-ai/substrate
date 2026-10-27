@@ -114,10 +114,17 @@ export async function storageSettled(): Promise<void> {
   await Promise.all([...pendingStorage]);
 }
 
-function prepareStorage(dataset: Dataset, type: string): void {
+/** One plugin instance's background storage work, which its stop aborts and awaits. */
+export interface StorageScope {
+  readonly signal: AbortSignal;
+  readonly pending: Set<Promise<void>>;
+}
+
+function prepareStorage(dataset: Dataset, type: string, scope?: StorageScope): void {
+  if (scope?.signal.aborted === true) return;
   const work = (async (): Promise<void> => {
     try {
-      await dataset.ensureTypeStorage?.(type);
+      await dataset.ensureTypeStorage?.(type, scope ? { signal: scope.signal } : undefined);
     } catch (err) {
       process.stderr.write(
         `[substrate-proposals] storage for ${dataset.namespace}/${type} not prepared: ` +
@@ -126,7 +133,11 @@ function prepareStorage(dataset: Dataset, type: string): void {
     }
   })();
   pendingStorage.add(work);
-  void work.finally(() => pendingStorage.delete(work));
+  scope?.pending.add(work);
+  void work.finally(() => {
+    pendingStorage.delete(work);
+    scope?.pending.delete(work);
+  });
 }
 
 /**
@@ -137,18 +148,19 @@ function prepareStorage(dataset: Dataset, type: string): void {
  * bound and must not hold the caller's response; rows written meanwhile land
  * in the DEFAULT partition and are moved. A failure is logged and never
  * undoes the committed proposal; the next boot or proposal retries.
- * {@link storageSettled} awaits it.
+ * {@link storageSettled} awaits it; `scope`'s signal aborts it.
  */
 export function ensureStorageAfterCommit(
   afterTx: ResolverArgs['afterTx'],
   dataset: Dataset,
-  type: string
+  type: string,
+  scope?: StorageScope
 ): void {
   if (afterTx === undefined) {
-    prepareStorage(dataset, type);
+    prepareStorage(dataset, type, scope);
     return;
   }
   afterTx(async ({ committed }) => {
-    if (committed) prepareStorage(dataset, type);
+    if (committed) prepareStorage(dataset, type, scope);
   });
 }

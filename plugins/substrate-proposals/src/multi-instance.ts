@@ -85,7 +85,8 @@ export async function applyProposalFromNotification(
     }
     // A propose_index on a peer changes an applied row's indexes or order.
     changed = replayTypeIndexOptions(args.registryStore, args.namespace, row) || changed;
-    if (changed) ensureStorageAfterCommit(undefined, binding.dataset, typeName);
+    if (changed)
+      ensureStorageAfterCommit(undefined, binding.dataset, typeName, args.registryStore.storage);
     return;
   }
 
@@ -105,7 +106,12 @@ export async function applyProposalFromNotification(
           dataset: binding.dataset,
           edges: binding.edges
         });
-        ensureStorageAfterCommit(undefined, binding.dataset, row.targetType as string);
+        ensureStorageAfterCommit(
+          undefined,
+          binding.dataset,
+          row.targetType as string,
+          args.registryStore.storage
+        );
       }
     }
   }
@@ -233,7 +239,9 @@ export async function reconcileNamespace(args: ReconcileArgs): Promise<void> {
       args.onSkip?.(row, err);
     }
   }
-  for (const type of prepare) ensureStorageAfterCommit(undefined, binding.dataset, type);
+  for (const type of prepare) {
+    ensureStorageAfterCommit(undefined, binding.dataset, type, args.registryStore.storage);
+  }
 }
 
 export interface InstallHotAddedNamespaceArgs {

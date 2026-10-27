@@ -18,7 +18,7 @@ import {
 } from '@mnmal-ai/substrate-recall';
 import type { KernelMigrationContext } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   type CopyOptions,
   type CopyResult,
@@ -27,7 +27,7 @@ import {
   PHASE1_ROWS
 } from '../src/admin/migrate-store/copy.js';
 import { type CopyPlan, preflight } from '../src/admin/migrate-store/preflight.js';
-import type { ProgressEvent } from '../src/admin/migrate-store/progress.js';
+import { type ProgressEvent, RowCounter } from '../src/admin/migrate-store/progress.js';
 import { inspectSource } from '../src/admin/migrate-store/source.js';
 import { type BootedStore, bootStore } from '../src/serve/boot-store.js';
 import { parseEnv } from '../src/serve/config.js';
@@ -329,7 +329,7 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
       await expect(copy()).rejects.toThrow(/copying edges failed: .*duplicate key.*\(id\)=/);
     });
 
-    it('a close after a re-boot leaves no index build running', async () => {
+    it('a close after a re-boot returns promptly and leaves no index build running', async () => {
       await tgtSql`
         INSERT INTO rows (namespace, type, id, body) VALUES
           ('_system_proposals', 'NamespaceProposal', ${uuid(40)},
@@ -340,27 +340,29 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
         SELECT query FROM pg_stat_activity
         WHERE pid <> pg_backend_pid() AND state <> 'idle' AND query ILIKE '%prop%note%'
           AND (query ILIKE '%CREATE INDEX CONCURRENTLY%' OR query ILIKE '%COMMENT ON INDEX%')`;
-      // An open transaction holds the replay's background index builds (CONCURRENTLY waits for it),
-      // so they are still running when close is called.
+      // An open transaction blocks the replay's background builds (CONCURRENTLY waits for it).
       const blocker = await srcSql.reserve();
-      await blocker`BEGIN`;
-      await blocker`SELECT txid_current()`;
-      const booted = await boot();
-      let closed = false;
-      const closing = booted.close().then(() => {
-        closed = true;
-      });
-      await new Promise((r) => setTimeout(r, 4000));
-      // Close returning while a build is still running is the race a later DROP SCHEMA loses.
-      if (closed) expect(await running()).toEqual([]);
-      await blocker`ROLLBACK`;
-      blocker.release();
-      await closing;
-      for (let i = 0; i < 10; i++) {
-        expect(await running()).toEqual([]);
-        await new Promise((r) => setTimeout(r, 100));
+      try {
+        await blocker`BEGIN`;
+        await blocker`SELECT txid_current()`;
+        const booted = await boot();
+        await vi.waitFor(async () => expect(await running()).not.toEqual([]), { timeout: 10_000 });
+        const start = performance.now();
+        await booted.close();
+        // Stop aborts the blocked build instead of waiting on it.
+        expect(performance.now() - start).toBeLessThan(5_000);
+        for (let i = 0; i < 10; i++) {
+          expect(await running()).toEqual([]);
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      } finally {
+        await blocker`ROLLBACK`;
+        blocker.release();
       }
-      // Every build the replay started finished, rather than being cut off by the pool closing.
+      // A later reconcile rebuilds what the abort left INVALID or unbuilt.
+      const again = await boot();
+      await again.datasets.get('prop')?.ensureTypeStorage?.('Note');
+      await again.close();
       const built = await tgtSql<{ name: string; valid: boolean }[]>`
         SELECT c.relname AS name, i.indisvalid AS valid
         FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -403,6 +405,9 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
     it('refuses a re-boot that writes rows, naming them and what to do', async () => {
       await srcSql`DELETE FROM rows WHERE id = ${uuid(7)}`;
       const err = await copy().catch((e: unknown) => e as Error);
+      expect(await tgtSql`SELECT to_regclass('substrate_migrate_store_reboot_rows') AS r`).toEqual([
+        { r: null }
+      ]);
       expect((err as Error).message).toMatch(/added: _system\/AuditEvent\/[0-9a-f-]+/);
       expect((err as Error).message).toContain('substrate serve');
     });
@@ -444,3 +449,11 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
     });
   });
 }
+
+describe('RowCounter', () => {
+  it('refuses a batchRows that is not a positive integer', () => {
+    for (const n of [0, 1.5]) {
+      expect(() => new RowCounter('rows', n, () => undefined)).toThrow(/positive integer/);
+    }
+  });
+});
