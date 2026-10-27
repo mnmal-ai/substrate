@@ -42,6 +42,9 @@ function makeFakeSqlForRehash(appliedRows: ReadonlyArray<AppliedRow>): {
     if (/current_setting\('server_version_num'\)/.test(text)) {
       return Promise.resolve([{ num: 180000 }]);
     }
+    if (/^SELECT current_schema\(\) AS schema$/.test(text)) {
+      return Promise.resolve([{ schema: 'public' }]);
+    }
     ranStatements.push(text);
 
     if (/^SELECT version, checksum FROM migrations/i.test(text)) {

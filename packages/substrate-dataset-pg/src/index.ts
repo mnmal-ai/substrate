@@ -30,12 +30,14 @@ export {
   MIGRATE_STORE_MARKER_TABLE,
   MigrationChecksumDriftError,
   type MigrationInput,
+  NoCurrentSchemaError,
   pendingMigrations,
   type RunMigrationsOptions,
   runDerivedMigrations,
   runMigrations,
   StorageLayoutMismatchError,
-  StoreMigrationInProgressError
+  StoreMigrationInProgressError,
+  UnsupportedSchemaNameError
 } from './migrate.js';
 export {
   type FieldDefLookup,

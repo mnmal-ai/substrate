@@ -312,8 +312,39 @@ export interface RunMigrationsOptions {
   layout?: StorageLayout;
 }
 
+export class NoCurrentSchemaError extends Error {
+  override readonly name = 'NoCurrentSchemaError';
+
+  constructor() {
+    super(
+      'the search_path resolves to no existing schema, so there is nowhere to migrate. ' +
+        'Create the schema, or correct search_path in the connection options.'
+    );
+  }
+}
+
+/** The schema names substrate supports: plain lowercase identifiers that never need quoting. */
+const PLAIN_SCHEMA_NAME = /^[a-z_][a-z0-9_]*$/;
+
+export class UnsupportedSchemaNameError extends Error {
+  override readonly name = 'UnsupportedSchemaNameError';
+
+  constructor(readonly schema: string) {
+    super(
+      `schema ${JSON.stringify(schema)} is not supported: substrate needs a plain lowercase ` +
+        'schema name (lowercase letters, digits and underscores, not starting with a digit).'
+    );
+  }
+}
+
 export async function runMigrations(sql: Sql, opts: RunMigrationsOptions = {}): Promise<void> {
   await assertServerVersion(sql);
+  const [current] = await sql<Array<{ schema: string | null }>>`SELECT current_schema() AS schema`;
+  // A NULL current_schema() makes the lock key NULL, which no poll ever acquires.
+  if (current?.schema == null) throw new NoCurrentSchemaError();
+  if (!PLAIN_SCHEMA_NAME.test(current.schema)) {
+    throw new UnsupportedSchemaNameError(current.schema);
+  }
   // Serialises concurrent boots, which otherwise race on every DDL step.
   //
   // The lock is polled with pg_try_advisory_lock, not blocking

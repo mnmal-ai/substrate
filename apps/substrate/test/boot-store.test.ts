@@ -10,7 +10,8 @@ import {
   detectLayout,
   MIGRATE_STORE_MARKER_TABLE,
   type StorageLayout,
-  StoreMigrationInProgressError
+  StoreMigrationInProgressError,
+  UnsupportedSchemaNameError
 } from '@mnmal-ai/substrate-dataset-pg';
 import { pgTestSchemaName, pgTestSchemaUrl } from '@mnmal-ai/substrate-dataset-pg/testing';
 import { FastifySubstrateServer } from '@mnmal-ai/substrate-server-fastify';
@@ -121,7 +122,7 @@ describe.skipIf(!POSTGRES_URL)('bootStore (pg)', () => {
     }
   });
 
-  it('refuses a marked store whose schema name needs quoting', async () => {
+  it('refuses a marked store whose schema name needs quoting, by its name', async () => {
     const quoted = `${schema}_Mixed`;
     const quotedUrl = withOptions(POSTGRES_URL as string, `-c search_path="${quoted}",public`);
     await sql.unsafe(`CREATE SCHEMA "${quoted}"`);
@@ -133,7 +134,7 @@ describe.skipIf(!POSTGRES_URL)('bootStore (pg)', () => {
           pluginDir: null,
           layout
         })
-      ).rejects.toBeInstanceOf(StoreMigrationInProgressError);
+      ).rejects.toBeInstanceOf(UnsupportedSchemaNameError);
     } finally {
       await sql.unsafe(`DROP SCHEMA IF EXISTS "${quoted}" CASCADE`);
     }
