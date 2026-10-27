@@ -23,7 +23,8 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
     let result: CopyResult;
 
     beforeEach(async () => {
-      pair = await openPair(sourceLayout);
+      // Different session zones per side, as two clusters may have.
+      pair = await openPair(sourceLayout, { src: 'America/Los_Angeles', tgt: 'Pacific/Auckland' });
       ({ srcSql, tgtSql } = pair);
       result = await copyStore(srcSql, pair.boot, pair.plan, {
         batchRows: 100,

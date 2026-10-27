@@ -105,7 +105,11 @@ export interface Pair {
 }
 
 /** A seeded source in `sourceLayout` beside a prepared, empty partitioned target. */
-export async function openPair(sourceLayout: StorageLayout): Promise<Pair> {
+export async function openPair(
+  sourceLayout: StorageLayout,
+  /** Session TimeZone per side, to prove a comparison does not depend on it. */
+  zones: { src?: string; tgt?: string } = {}
+): Promise<Pair> {
   const tag = randomBytes(4).toString('hex');
   const srcName = `apps/substrate-copy-src-${tag}`;
   const tgtName = `apps/substrate-copy-tgt-${tag}`;
@@ -114,9 +118,14 @@ export async function openPair(sourceLayout: StorageLayout): Promise<Pair> {
   const tgtUrl = pgTestSchemaUrl(POSTGRES_URL as string, tgtName);
   const srcSql = postgres(pgTestSchemaUrl(POSTGRES_URL as string, srcName), {
     max: 1,
-    onnotice: () => {}
+    onnotice: () => {},
+    ...(zones.src ? { connection: { TimeZone: zones.src } } : {})
   });
-  const tgtSql = postgres(tgtUrl, { max: 1, onnotice: () => {} });
+  const tgtSql = postgres(tgtUrl, {
+    max: 1,
+    onnotice: () => {},
+    ...(zones.tgt ? { connection: { TimeZone: zones.tgt } } : {})
+  });
   await srcSql.unsafe(`CREATE SCHEMA ${srcSchema}`);
   await tgtSql.unsafe(`CREATE SCHEMA ${tgtSchema}`);
   await runMigrations(srcSql, { layout: sourceLayout });

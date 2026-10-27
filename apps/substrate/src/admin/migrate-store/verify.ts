@@ -132,6 +132,10 @@ async function snapshot(
   opts: VerifyOptions,
   otherColumns?: string[]
 ): Promise<{ entries: Map<string, Entry>; recallTables: string[]; columns: string[] }> {
+  // Two clusters may differ in these defaults, and they change how a row renders as text.
+  await tx`SET LOCAL TimeZone = 'UTC'`;
+  await tx`SET LOCAL DateStyle = 'ISO, YMD'`;
+  await tx`SET LOCAL extra_float_digits = 3`;
   const entries = new Map<string, Entry>();
   const add = (e: Entry) =>
     entries.set(`${e.check}\0${e.namespace ?? ''}\0${e.type ?? ''}\0${e.what}`, e);
@@ -195,20 +199,14 @@ async function snapshot(
   const columns = otherColumns === undefined ? have : have.filter((c) => otherColumns.includes(c));
   const limit = opts.fullChecksum ? 2147483647 : opts.sampleRows;
   // The target has every source column, so the source's own set is the common one.
-  const sample = await tx<{ namespace: string; type: string; h: string }[]>`
-    SELECT namespace, type, md5(string_agg(h, ',' ORDER BY id)) AS h FROM (
-      SELECT namespace, type, id, md5(row(${tx(columns)})::text) AS h,
-             row_number() OVER (PARTITION BY namespace, type ORDER BY md5(id)) AS rn
-      FROM rows WHERE ${notSeed('namespace', 'type', 'id')}) s
-    WHERE rn <= ${limit} GROUP BY namespace, type`;
-  for (const r of sample) {
-    add({
-      check: 'sample',
-      namespace: r.namespace,
-      type: r.type,
-      what: 'content hash',
-      value: r.h
-    });
+  // One bounded query per type, each on its own scope, so a partitioned store reads only that type's partition.
+  for (const { namespace, type } of counts) {
+    const [r] = await tx<{ h: string | null }[]>`
+      SELECT md5(string_agg(h, ',' ORDER BY id)) AS h FROM (
+        SELECT id, md5(row(${tx(columns)})::text) AS h FROM rows
+        WHERE namespace = ${namespace} AND type = ${type} AND ${notSeed('namespace', 'type', 'id')}
+        ORDER BY md5(id) LIMIT ${limit}) s`;
+    add({ check: 'sample', namespace, type, what: 'content hash', value: String(r?.h) });
   }
 
   const present = await tx<{ name: string }[]>`
