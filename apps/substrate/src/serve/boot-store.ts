@@ -215,8 +215,11 @@ export async function bootStore(opts: BootStoreOptions): Promise<BootedStore> {
         closeStore === null
           ? null
           : async () => {
-              await stopKernel();
-              await closeStore();
+              try {
+                await stopKernel();
+              } finally {
+                await closeStore();
+              }
             },
       kernel,
       coordinators,
