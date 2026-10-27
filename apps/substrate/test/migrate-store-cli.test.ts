@@ -153,12 +153,27 @@ describe.skipIf(!POSTGRES_URL)('migrate-store (pg)', () => {
 
   it('exits 3 and keeps the marker when verification fails', async () => {
     const s = await openSchemas('partitioned');
+    // Whatever reaches the real stderr mid-run passes the redactor too: capture it under the command's shim.
+    const stderrWrite = process.stderr.write;
+    const raw: string[] = [];
+    process.stderr.write = ((chunk: string) => {
+      raw.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
     try {
-      const r = await run(s, ['--skip-index-build', '--json'], {
-        beforeVerify: async (t: import('postgres').Sql) => {
-          await t`UPDATE rows SET body = '{"x":2}' WHERE namespace = 'retired'`;
-        }
-      });
+      let r: Awaited<ReturnType<typeof run>>;
+      try {
+        r = await run(s, ['--skip-index-build', '--json'], {
+          beforeVerify: async (t: import('postgres').Sql) => {
+            process.stderr.write(`a writer that leaks ${POSTGRES_URL}\n`);
+            await t`UPDATE rows SET body = '{"x":2}' WHERE namespace = 'retired'`;
+          }
+        });
+      } finally {
+        process.stderr.write = stderrWrite;
+      }
+      expect(raw.join('')).toContain('a writer that leaks <redacted url>');
+      expect(raw.join('')).not.toContain(password);
       expect(r.code).toBe(3);
       const report = JSON.parse(r.out) as {
         ok: boolean;
@@ -179,6 +194,40 @@ describe.skipIf(!POSTGRES_URL)('migrate-store (pg)', () => {
       await s.close();
     }
   }, 300_000);
+
+  it('refuses a source and target that are one store, though their URLs differ', async () => {
+    const s = await openSchemas('legacy');
+    try {
+      const same = `${POSTGRES_URL}${(POSTGRES_URL as string).includes('?') ? '&' : '?'}application_name=other`;
+      for (const mode of [[], ['--verify-only']]) {
+        const said: string[] = [];
+        const code = await migrateStoreCommand(
+          ['--from-schema', s.srcSchema, '--to-schema', s.srcSchema, ...mode],
+          envFor(s, { SUBSTRATE_MIGRATE_TO_URL: same }),
+          (x) => said.push(x),
+          (x) => said.push(x)
+        );
+        expect(code, mode.join()).toBe(2);
+        expect(said.join('')).toContain('the source and the target are the same store');
+      }
+    } finally {
+      await s.close();
+    }
+  }, 120_000);
+
+  it('--verify-only refuses a target with no finished copy, before it boots', async () => {
+    const s = await openSchemas('legacy');
+    try {
+      const r = await run(s, ['--verify-only']);
+      expect(r.code).toBe(2);
+      expect(r.err).toContain('no finished migrate-store copy');
+      const [n] = await s.tgtSql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM pg_class WHERE relnamespace = ${s.tgtSchema}::regnamespace`;
+      expect(n?.n).toBe(0);
+    } finally {
+      await s.close();
+    }
+  }, 120_000);
 
   it('never prints a connection string', async () => {
     const s = await openSchemas('legacy');

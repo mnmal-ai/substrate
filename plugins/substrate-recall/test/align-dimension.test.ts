@@ -1,4 +1,5 @@
 import { FakeEmbedder } from '@mnmal-ai/substrate-embedder/fake';
+import type { Dataset, NamespaceDefinition } from '@mnmal-ai/substrate-types';
 import postgres from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { alignVectorDimensions } from '../src/align-dimension.js';
@@ -101,6 +102,7 @@ describe.skipIf(POSTGRES_URL === undefined)('alignVectorDimensions', () => {
     });
     await plugin.onKernelReady?.({
       lifecycle: 'kernel',
+      background: true,
       sql,
       coordinatorNamespaces: [],
       metric: () => {}
@@ -114,6 +116,7 @@ describe.skipIf(POSTGRES_URL === undefined)('alignVectorDimensions', () => {
     const plugin = createRecallPlugin({ store: new InMemoryEmbeddingsStore() });
     await plugin.onKernelReady?.({
       lifecycle: 'kernel',
+      background: true,
       sql,
       coordinatorNamespaces: [],
       metric: () => {}
@@ -134,6 +137,7 @@ describe.skipIf(POSTGRES_URL === undefined)('alignVectorDimensions', () => {
     });
     await plugin.onKernelReady?.({
       lifecycle: 'kernel',
+      background: true,
       sql,
       coordinatorNamespaces: [],
       metric: (name, payload) => metrics.push([name, payload])
@@ -148,5 +152,69 @@ describe.skipIf(POSTGRES_URL === undefined)('alignVectorDimensions', () => {
         })
       ]
     ]);
+  });
+
+  it('starts the embed backfill only on a background boot, and onKernelStop stops it', async () => {
+    const run = async (background: boolean) => {
+      let embeds = 0;
+      const fake = new FakeEmbedder({ dimension: 1024 });
+      const embedder = Object.assign(Object.create(fake) as FakeEmbedder, {
+        embed: (text: string) => {
+          embeds++;
+          return fake.embed(text);
+        }
+      });
+      class CountingStore extends InMemoryEmbeddingsStore {
+        writes = 0;
+        override async upsert(input: Parameters<InMemoryEmbeddingsStore['upsert']>[0]) {
+          this.writes++;
+          return super.upsert(input);
+        }
+        // Always stale, so every pass writes and a timer left running would show.
+        async staleRowIds() {
+          return ['r1'];
+        }
+      }
+      const store = new CountingStore();
+      const dataset = {
+        read: async () => ({ rows: [{ id: 'r1', body: 'hello' }], hasMore: false })
+      } as unknown as Dataset;
+      const plugin = createRecallPlugin({
+        embedder,
+        store,
+        resolveDataset: () => dataset,
+        embedBackfillIntervalMs: 20
+      });
+      plugin.contributePostWrites?.({
+        namespace: 'notes',
+        types: {
+          Note: {
+            fields: { body: { kind: 'scalar', type: 'string' } },
+            embed: { source: (r: { body?: unknown }) => String(r.body) }
+          }
+        }
+      } as unknown as NamespaceDefinition);
+      await plugin.onKernelReady?.({
+        lifecycle: 'kernel',
+        background,
+        sql,
+        coordinatorNamespaces: [],
+        metric: () => {}
+      });
+      await new Promise((r) => setTimeout(r, 200));
+      const seen = { embeds, writes: store.writes };
+      await plugin.onKernelStop?.();
+      // A pass already in flight may still land.
+      await new Promise((r) => setTimeout(r, 30));
+      const writes = store.writes;
+      await new Promise((r) => setTimeout(r, 100));
+      return { ...seen, afterStop: store.writes - writes };
+    };
+
+    expect(await run(false)).toEqual({ embeds: 0, writes: 0, afterStop: 0 });
+    const on = await run(true);
+    expect(on.embeds).toBeGreaterThan(0);
+    expect(on.writes).toBeGreaterThan(0);
+    expect(on.afterStop).toBe(0);
   });
 });

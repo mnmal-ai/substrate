@@ -43,6 +43,8 @@ export interface MigrateStoreArgs {
 export interface MigrateStoreDeps {
   /** Progress lines, for stderr. */
   progress(line: string): void;
+  /** pg NOTICE lines from the command's own pools, for stderr. */
+  notice?: (line: string) => void;
   /** Test hook: runs on the target between the copy (and index builds) and verification. */
   beforeVerify?: (target: Sql) => Promise<void>;
 }
@@ -169,11 +171,18 @@ export function redactor(secrets: readonly string[]): (s: string) => string {
 export function secretsOf(url: string | undefined): string[] {
   if (url === undefined || url.length === 0) return [];
   const out = [url];
+  let pw = '';
   try {
-    const pw = new URL(url).password;
-    if (pw.length > 0) out.push(pw, decodeURIComponent(pw));
+    pw = new URL(url).password;
   } catch {
     // Not a URL: the whole string is already listed.
+  }
+  if (pw.length === 0) return out;
+  out.push(pw);
+  try {
+    out.push(decodeURIComponent(pw));
+  } catch {
+    // A malformed escape: the raw password is listed.
   }
   return out;
 }
@@ -270,12 +279,17 @@ export async function runMigrateStore(
       config: parseEnv(targetEnv),
       pluginDir,
       layout: 'partitioned',
-      allowMigrating: true
+      allowMigrating: true,
+      // A prepare boot starts no advisor and no plugin backfill, so nothing writes beside the copy.
+      background: false
     });
+  const notices = pgNoticeOptions(deps.notice ?? ((line) => deps.progress(line.trimEnd())));
+  const openFacts = () => postgres(toUrl, { ...notices, max: 1 });
+  const endFacts = (facts: Sql) => facts.end({ timeout: 5 }).catch(() => undefined);
 
   // One connection, so the quiescence count knows what is ours; read-only for the session as a backstop.
   const src = postgres(fromUrl, {
-    ...pgNoticeOptions(),
+    ...notices,
     max: 1,
     connection: { default_transaction_read_only: true }
   });
@@ -285,23 +299,27 @@ export async function runMigrateStore(
     let defaulted: CopyResult['defaulted'];
     let tables: string[];
     if (args.verifyOnly) {
-      const facts = postgres(toUrl, { ...pgNoticeOptions(), max: 1 });
+      const facts = openFacts();
       try {
         await assertSchema(src, args.fromSchema, 'source');
         await assertSchema(facts, args.toSchema, 'target');
+        await assertDistinct(src, facts);
+        // Before the boot, which would otherwise prepare (write) a target that holds no copy.
+        await assertCopyDone(facts);
       } finally {
-        await facts.end({ timeout: 5 });
+        await endFacts(facts);
       }
       target = await phase('prepare', boot);
       const state = await readCopyState(target);
       ({ keptSeeds, defaulted, tables } = state);
     } else {
       const pre = await phase('preflight', async () => {
-        const facts = postgres(toUrl, { ...pgNoticeOptions(), max: 1 });
+        const facts = openFacts();
         try {
           const own = await ownSession(facts);
           await assertSchema(src, args.fromSchema, 'source');
           await assertSchema(facts, args.toSchema, 'target');
+          await assertDistinct(src, facts);
           const source = await inspectSource(src);
           source.otherSessions -= await sessionsOn(src, own);
           const target = await targetFacts(facts, env, diskPath);
@@ -315,7 +333,7 @@ export async function runMigrateStore(
             })
           };
         } finally {
-          await facts.end({ timeout: 5 });
+          await endFacts(facts);
         }
       });
       report.refusals.push(...pre.refusals);
@@ -396,6 +414,35 @@ async function assertSchema(sql: Sql, schema: string | null, side: string): Prom
   }
 }
 
+const storeId = async (sql: Sql) => {
+  const [r] = await sql<{ id: string }[]>`
+    SELECT concat_ws('/', (SELECT system_identifier FROM pg_control_system())::text,
+                     current_database(), current_schema()) AS id`;
+  return r?.id;
+};
+
+/** Refuses a source and target that are one store: same cluster, database and schema. */
+async function assertDistinct(src: Sql, tgt: Sql): Promise<void> {
+  if ((await storeId(src)) === (await storeId(tgt))) {
+    throw new AdminCliError('migrate-store: the source and the target are the same store', 2);
+  }
+}
+
+/** Refuses `--verify-only` on a target with no finished migrate-store copy. */
+async function assertCopyDone(sql: Sql): Promise<void> {
+  const [r] = await sql<{ marker: string | null }[]>`
+    SELECT to_regclass(quote_ident(current_schema()) || '.' || quote_ident(${MIGRATE_STORE_MARKER_TABLE}))::text AS marker`;
+  const done =
+    r?.marker != null &&
+    (await sql`SELECT 1 FROM ${sql(r.marker)} WHERE step = 'copy:done'`).length > 0;
+  if (!done) {
+    throw new AdminCliError(
+      'migrate-store: the target holds no finished migrate-store copy to verify (no in-progress marker with a completed copy)',
+      2
+    );
+  }
+}
+
 interface Session {
   pid: number;
   /** backend_start as epoch text, which no session TimeZone changes. */
@@ -423,24 +470,41 @@ async function targetFacts(
   env: AdminCliEnv,
   diskPath: string | undefined
 ): Promise<TargetFacts> {
-  const [r] = await sql<{ v: number; rows: boolean; marker: boolean; embeddings: boolean }[]>`
-    SELECT current_setting('server_version_num')::int AS v,
-           to_regclass('rows') IS NOT NULL AS rows,
-           to_regclass(${MIGRATE_STORE_MARKER_TABLE}) IS NOT NULL AS marker,
-           to_regclass('embeddings') IS NOT NULL AS embeddings`;
-  const facts = r as { v: number; rows: boolean; marker: boolean; embeddings: boolean };
-  const empty = !facts.rows || (await sql`SELECT 1 FROM rows LIMIT 1`).length === 0;
+  // Qualified with the target's schema, so a same-named table in public (also on search_path) never answers.
+  const [r] = await sql<
+    { v: number; schema: string; rows: boolean; marker: boolean; embeddings: boolean }[]
+  >`
+    SELECT current_setting('server_version_num')::int AS v, current_schema() AS schema,
+           to_regclass(quote_ident(current_schema()) || '.rows') IS NOT NULL AS rows,
+           to_regclass(quote_ident(current_schema()) || '.' || quote_ident(${MIGRATE_STORE_MARKER_TABLE})) IS NOT NULL AS marker,
+           to_regclass(quote_ident(current_schema()) || '.embeddings') IS NOT NULL AS embeddings`;
+  const facts = r as {
+    v: number;
+    schema: string;
+    rows: boolean;
+    marker: boolean;
+    embeddings: boolean;
+  };
+  const empty =
+    !facts.rows || (await sql`SELECT 1 FROM ${sql(facts.schema)}.rows LIMIT 1`).length === 0;
   // shortcut: the dimension is known only once a run created the table; on a fresh target a mismatch fails the copy instead.
   const [dims] = facts.embeddings
     ? await sql<{ d: number }[]>`
         SELECT atttypmod AS d FROM pg_attribute
-        WHERE attrelid = to_regclass('embeddings') AND attname = 'embedding' AND NOT attisdropped`
+        WHERE attrelid = to_regclass(quote_ident(${facts.schema}) || '.embeddings')
+          AND attname = 'embedding' AND NOT attisdropped`
     : [];
   const extensions = await sql<{ name: string }[]>`
     SELECT name FROM pg_available_extensions UNION SELECT extname FROM pg_extension`;
   let freeBytes: number | null = null;
   if (diskPath !== undefined && diskPath.length > 0 && diskPath !== 'off') {
-    const s = await statfs(diskPath);
+    const s = await statfs(diskPath).catch((err: NodeJS.ErrnoException) => {
+      if (err.code !== 'ENOENT') throw err;
+      throw new AdminCliError(
+        `migrate-store: SUBSTRATE_INDEX_DISK_PATH names a path that does not exist; set it to the target database volume mount, or to off`,
+        2
+      );
+    });
     freeBytes = s.bavail * s.bsize;
   }
   return {
@@ -461,6 +525,8 @@ async function storeTables(pluginDir: string | null): Promise<string[]> {
   const { kernel } = await loadPluginsFromDir({
     pluginDir,
     // Nothing runs: the plugins are built to read their declarations, never composed.
+    // shortcut: a plugin whose factory dereferences a host dep at build time throws a TypeError here (exit 1);
+    // pass real deps if one does.
     kernelHostDeps: {} as KernelHostDeps,
     contractCheck: { hostVersion: BINARY_CONTRACT_VERSION, onViolation: refuseContractViolation }
   });
@@ -532,12 +598,14 @@ export async function migrateStoreCommand(
   }
   const redact = redactor([...names].flatMap((n) => secretsOf(vars[n])));
   const err = (s: string) => errOut(redact(s));
-  // The boot prints to process.stdout, which the report owns: send it to stderr meanwhile.
-  const write = process.stdout.write;
-  process.stdout.write = ((chunk: string | Uint8Array) => {
-    err(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString());
-    return true;
-  }) as typeof process.stdout.write;
+  // During the run, what the boot writes to process.stdout (which the report owns) goes to stderr,
+  // and everything reaching stderr passes the redactor. The originals are captured first, so
+  // `errOut` writing through process.stderr reaches the real stream rather than looping.
+  const stdoutWrite = process.stdout.write;
+  const stderrWrite = process.stderr.write;
+  const realStderr = stderrWrite.bind(process.stderr);
+  process.stdout.write = shim((s) => err(s));
+  process.stderr.write = shim((s) => realStderr(redact(s)));
   let report: MigrateStoreReport;
   let json = false;
   try {
@@ -551,8 +619,32 @@ export async function migrateStoreCommand(
     err(`${e instanceof Error ? e.message : String(e)}\n`);
     return e instanceof AdminCliError ? e.exitCode : 1;
   } finally {
-    process.stdout.write = write;
+    process.stdout.write = stdoutWrite;
+    process.stderr.write = stderrWrite;
   }
   out(redact(formatMigrateStoreOutput(report, json)));
   return report.exitCode;
+}
+
+type WriteCallback = (err?: Error | null) => void;
+
+/** A `stream.write` stand-in that hands decoded text to `sink`, honouring `encoding` and `callback`. */
+function shim(sink: (s: string) => void): typeof process.stdout.write {
+  return ((
+    chunk: string | Uint8Array,
+    encoding?: BufferEncoding | WriteCallback,
+    callback?: WriteCallback
+  ) => {
+    const cb = typeof encoding === 'function' ? encoding : callback;
+    const enc = typeof encoding === 'string' ? encoding : undefined;
+    sink(
+      typeof chunk === 'string'
+        ? enc === undefined || enc === 'utf8' || enc === 'utf-8'
+          ? chunk
+          : Buffer.from(chunk, enc).toString('utf8')
+        : Buffer.from(chunk).toString('utf8')
+    );
+    if (cb !== undefined) process.nextTick(cb, null);
+    return true;
+  }) as typeof process.stdout.write;
 }

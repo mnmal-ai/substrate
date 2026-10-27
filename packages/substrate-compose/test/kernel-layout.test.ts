@@ -24,4 +24,27 @@ describe('kernel migration layout', () => {
       expect(seen).toEqual([layout]);
     }
   });
+
+  it('tells onKernelReady whether the boot may start background work, true by default', async () => {
+    for (const background of [undefined, true, false] as const) {
+      const seen: boolean[] = [];
+      const plugin: KernelPlugin = {
+        name: 'stub',
+        contractVersion: '*',
+        onKernelReady: (ctx) => void seen.push(ctx.background)
+      };
+      await composeKernelPlugins([plugin], {
+        sql: null,
+        layout: null,
+        metric: () => undefined,
+        registerKernelRoute: () => undefined,
+        registerMcpTool: () => undefined,
+        registerFilterOperator: () => undefined,
+        applyMigration: async () => undefined,
+        getAppliedMigrationIds: async () => new Set<string>(),
+        ...(background !== undefined ? { background } : {})
+      });
+      expect(seen).toEqual([background ?? true]);
+    }
+  });
 });

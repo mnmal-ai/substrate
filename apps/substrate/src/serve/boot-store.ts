@@ -33,6 +33,12 @@ export interface BootStoreOptions {
   layout?: StorageLayout;
   /** Boot a store that carries the migrate-store marker. Only migrate-store passes it. */
   allowMigrating?: boolean;
+  /**
+   * False starts no background writers: the index advisor is off and kernel
+   * plugins see `background: false`, so recall starts no embed backfill.
+   * migrate-store passes false. Default true.
+   */
+  background?: boolean;
 }
 
 export interface BootedStore {
@@ -63,7 +69,10 @@ export interface BootedStore {
 }
 
 export async function bootStore(opts: BootStoreOptions): Promise<BootedStore> {
-  const { config, pluginDir } = opts;
+  const { pluginDir } = opts;
+  const background = opts.background ?? true;
+  // advisorIntervalMs 0 composes no advisor: no shape recorder, no timer.
+  const config = background ? opts.config : { ...opts.config, advisorIntervalMs: 0 };
 
   // Namespace-def registry backing the per-namespace FieldDefLookup, populated
   // once plugins load. Without it, pg orderBy/range/cursor on numeric/date
@@ -130,6 +139,11 @@ export async function bootStore(opts: BootStoreOptions): Promise<BootedStore> {
       nsDefs,
       storeSql
     });
+    // Before the store closes: a plugin timer must not outlive the pool it writes through.
+    const stopKernel = async () => {
+      for (const plugin of kernel) await plugin.onKernelStop?.();
+    };
+    opened.push(stopKernel);
 
     // TLS must be supplied at FastifySubstrateServer construction — Fastify requires
     // the https options when the instance is created, not at listen().
@@ -165,7 +179,8 @@ export async function bootStore(opts: BootStoreOptions): Promise<BootedStore> {
       kernelAuth: refs.kernelAuth,
       trustedProxies: config.trustedProxies,
       datasetFor: (ns) => composeOpts.datasets?.[ns],
-      nsDefs
+      nsDefs,
+      background
     });
 
     const {
@@ -195,7 +210,14 @@ export async function bootStore(opts: BootStoreOptions): Promise<BootedStore> {
       dataset,
       edges,
       substrateNamespaceDataset,
-      closeStore,
+      // serve's shutdown closes the store directly, so stop the kernel plugins first there too.
+      closeStore:
+        closeStore === null
+          ? null
+          : async () => {
+              await stopKernel();
+              await closeStore();
+            },
       kernel,
       coordinators,
       recallStore,

@@ -97,6 +97,8 @@ export interface KernelComposeContext {
    * "this host does not attribute" rather than being flattened to `[]`.
    */
   coordinatorNamespacesByPlugin?: readonly { plugin: string; namespace: string }[];
+  /** `KernelLifecycleContext.background`; true when absent. */
+  background?: boolean;
 }
 
 export async function composeKernelPlugins(
@@ -143,6 +145,7 @@ export async function composeKernelPlugins(
         ...(ctx.coordinatorNamespacesByPlugin !== undefined
           ? { coordinatorNamespacesByPlugin: ctx.coordinatorNamespacesByPlugin }
           : {}),
+        background: ctx.background ?? true,
         metric: ctx.metric
       };
       await plugin.onKernelReady(lifecycleCtx);
@@ -224,6 +227,8 @@ export interface ComposeKernelOptions {
   registerMcpTool?: (tool: McpToolRegistration) => void;
   coordinatorNamespaces?: readonly string[];
   coordinatorNamespacesByPlugin?: readonly { plugin: string; namespace: string }[];
+  /** `KernelLifecycleContext.background`; true when absent. */
+  background?: boolean;
 }
 
 /**
@@ -261,6 +266,7 @@ export async function composeKernel(
       : {}),
     ...(opts.coordinatorNamespacesByPlugin !== undefined
       ? { coordinatorNamespacesByPlugin: opts.coordinatorNamespacesByPlugin }
-      : {})
+      : {}),
+    ...(opts.background !== undefined ? { background: opts.background } : {})
   });
 }

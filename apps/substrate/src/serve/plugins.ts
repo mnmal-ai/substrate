@@ -107,6 +107,8 @@ export async function composeKernelPhase(args: {
   trustedProxies: Set<string>;
   datasetFor: (ns: string) => Dataset | undefined;
   nsDefs: Map<string, NamespaceDefinition>;
+  /** `KernelLifecycleContext.background`; true when absent. */
+  background?: boolean;
 }): Promise<void> {
   const { kernel, server, storeSql, coordinators, kernelAuth, trustedProxies } = args;
   await reconcileDeclaredStorage(args.datasetFor, args.nsDefs);
@@ -120,6 +122,7 @@ export async function composeKernelPhase(args: {
   await composeKernelPlugins(kernel, {
     sql: storeSql,
     layout,
+    background: args.background ?? true,
     // Coordinators are LOADED above but compose below, so their declared
     // namespaces are known here while the engine has not yet registered them.
     // That is what a substrate reconciler wants: the configured intent, before

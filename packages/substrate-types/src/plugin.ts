@@ -760,6 +760,12 @@ export interface KernelPlugin {
   onKernelReady?(ctx: KernelLifecycleContext): void | Promise<void>;
 
   /**
+   * Stops whatever `onKernelReady` started (timers, workers). The host calls
+   * it before it closes the store, and may call it more than once.
+   */
+  onKernelStop?(): void | Promise<void>;
+
+  /**
    * Contribute postWrite hooks for a coordinator namespace at install time.
    * Called by the engine ONCE per registered coordinator namespace, AFTER
    * substrate composition completes. Returned hooks are merged into the
@@ -923,5 +929,12 @@ export interface KernelLifecycleContext {
    * it with a test, or a rename makes the filter silently match nothing.
    */
   coordinatorNamespacesByPlugin?: readonly { plugin: string; namespace: string }[];
+  /**
+   * Whether this boot may start background work (timers, backfills). False
+   * when the host boots the store only to prepare or copy into it, as
+   * `substrate-admin migrate-store` does: do convergent reconciliation, start
+   * nothing that writes later.
+   */
+  background: boolean;
   metric(name: string, payload?: unknown): void;
 }
