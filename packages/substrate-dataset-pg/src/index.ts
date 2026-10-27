@@ -54,7 +54,7 @@ export {
   PgIdempotencyStore,
   type PgIdempotencyStoreOptions
 } from './pg-idempotency-store.js';
-export { PgShortIdStore } from './pg-short-id-store.js';
+export { PgShortIdStore, seqName } from './pg-short-id-store.js';
 export type {
   PromotedBodyColumn,
   PromotedBodyColumnMap,

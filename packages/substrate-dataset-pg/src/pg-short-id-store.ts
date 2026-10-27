@@ -21,7 +21,7 @@ type PgHandle = Sql | TransactionSql;
  * renaming would restart existing sequences at 1. Underscore-led namespaces
  * such as `_system_proposals` are therefore fine.
  *
- * @internal Exported for unit testing. Not part of the public package API.
+ * Exported for migrate-store, which advances every sequence after a copy.
  */
 export function seqName(ns: string, type: string): string {
   const sanitize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '_');
