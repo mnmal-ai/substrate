@@ -329,6 +329,100 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
       await expect(copy()).rejects.toThrow(/copying edges failed: .*duplicate key.*\(id\)=/);
     });
 
+    it('a close after a re-boot leaves no index build running', async () => {
+      await tgtSql`
+        INSERT INTO rows (namespace, type, id, body) VALUES
+          ('_system_proposals', 'NamespaceProposal', ${uuid(40)},
+           ${tgtSql.json({ ns: 'prop', applied: true, archived: false, proposedBy: 'op', proposedReason: 'test' })}),
+          ('prop', 'TypeProposal', ${uuid(41)},
+           ${tgtSql.json({ typeName: 'Note', fieldsJson: JSON.stringify({ title: { kind: 'scalar', type: 'string' } }), applied: true, archived: false, supersededByCode: false })})`;
+      const running = () => tgtSql<{ query: string }[]>`
+        SELECT query FROM pg_stat_activity
+        WHERE pid <> pg_backend_pid() AND state <> 'idle' AND query ILIKE '%prop%note%'
+          AND (query ILIKE '%CREATE INDEX CONCURRENTLY%' OR query ILIKE '%COMMENT ON INDEX%')`;
+      // An open transaction holds the replay's background index builds (CONCURRENTLY waits for it),
+      // so they are still running when close is called.
+      const blocker = await srcSql.reserve();
+      await blocker`BEGIN`;
+      await blocker`SELECT txid_current()`;
+      const booted = await boot();
+      let closed = false;
+      const closing = booted.close().then(() => {
+        closed = true;
+      });
+      await new Promise((r) => setTimeout(r, 4000));
+      // Close returning while a build is still running is the race a later DROP SCHEMA loses.
+      if (closed) expect(await running()).toEqual([]);
+      await blocker`ROLLBACK`;
+      blocker.release();
+      await closing;
+      for (let i = 0; i < 10; i++) {
+        expect(await running()).toEqual([]);
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      // Every build the replay started finished, rather than being cut off by the pool closing.
+      const built = await tgtSql<{ name: string; valid: boolean }[]>`
+        SELECT c.relname AS name, i.indisvalid AS valid
+        FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = current_schema() AND c.relname LIKE 'rows_prop_note_%' ORDER BY 1`;
+      expect(built.map((b) => b.name.replace(/_[0-9a-f]{8}_base$/, ''))).toEqual([
+        'rows_prop_note_created_at',
+        'rows_prop_note_deleted_at',
+        'rows_prop_note_updated_at'
+      ]);
+      expect(built.every((b) => b.valid)).toBe(true);
+    });
+
+    it('fails loudly on a source duplicate under a unique index instead of defaulting it', async () => {
+      // Proposed indexes are never unique, so the duplicate is two live _system Keys with one kid.
+      await srcSql`DROP INDEX substrate_key_live_kid_uniq`;
+      await srcSql`UPDATE rows SET deleted_at = NULL WHERE id = ${uuid(2)}`;
+      await srcSql`UPDATE rows SET body = ${srcSql.json({ kid: 'a@h', grants: ['x'] })} WHERE id = ${uuid(2)}`;
+      await expect(copy()).rejects.toThrow(
+        /copying rows failed: .*duplicate key.*\(\(body ->> 'kid'::text\)\)=\(a@h\)/
+      );
+    });
+
+    it('fails the copy, naming the type, when storage for a registered type cannot be prepared', async () => {
+      let boots = 0;
+      const failing = async () => {
+        const b = await boot();
+        if (++boots === 2) {
+          const ds = b.datasets.get('prop') as { ensureTypeStorage?: unknown };
+          ds.ensureTypeStorage = async () => {
+            throw new Error('lock wait timed out');
+          };
+        }
+        return b;
+      };
+      await expect(copyStore(srcSql, failing, plan, opts)).rejects.toThrow(
+        /preparing storage for prop\/Note failed: lock wait timed out/
+      );
+    });
+
+    it('refuses a re-boot that writes rows, naming them and what to do', async () => {
+      await srcSql`DELETE FROM rows WHERE id = ${uuid(7)}`;
+      const err = await copy().catch((e: unknown) => e as Error);
+      expect((err as Error).message).toMatch(/added: _system\/AuditEvent\/[0-9a-f-]+/);
+      expect((err as Error).message).toContain('substrate serve');
+    });
+
+    it('a rerun after a crash between the phases gives a verbatim result', async () => {
+      let boots = 0;
+      const crashing = async () => {
+        if (++boots === 2) throw new Error('crashed between phases');
+        return boot();
+      };
+      await expect(copyStore(srcSql, crashing, plan, opts)).rejects.toThrow(
+        'crashed between phases'
+      );
+      const result = await copy();
+      expect(result.keptSeeds).toEqual([
+        { namespace: '_system', type: 'StoreProfile', id: STORE_PROFILE_ID }
+      ]);
+      await expectVerbatim(result);
+    });
+
     it('a rerun after an interrupted copy restarts cleanly', async () => {
       const abort = {
         batchRows: 2,

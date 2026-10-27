@@ -11,7 +11,7 @@
  * partition before phase 2 copies everything else.
  *
  * Progress lives in the marker table on the target. A rerun after an
- * interruption restarts cleanly: it truncates the planned tables, keeps the
+ * interruption restarts cleanly: it empties the planned tables, keeps the
  * seed rows the first run recorded, and copies again.
  */
 
@@ -83,12 +83,21 @@ export async function copyStore(
     let tsql = sqlOf(target);
     await tsql`CREATE TABLE IF NOT EXISTS ${tsql(MIGRATE_STORE_MARKER_TABLE)} (step text PRIMARY KEY, done_at timestamptz)`;
     const identity = await checkColumns(tsql, plan);
+    if (await restartIfStarted(tsql, plan)) {
+      // The boot replayed the interrupted run's proposals and started index builds. Close (which waits
+      // for them) and boot fresh before taking the source snapshot: in a same-database copy those
+      // builds would wait on the snapshot, and the re-boot's close on them.
+      open = undefined;
+      await target.close();
+      target = await boot();
+      open = target;
+      tsql = sqlOf(target);
+    }
 
     const src = await source.reserve();
     let streaming = false;
     try {
       await src.unsafe('BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY');
-      await restartIfStarted(tsql, plan);
       const keptSeeds = await reconcileSeeds(src, tsql, target);
 
       const totals = new Map<string, { rows: number; bytes: number; ms: number }>();
@@ -110,18 +119,13 @@ export async function copyStore(
       await markStep(tsql, 'copy:phase1');
 
       // Serve's own boot replays the copied proposals and prepares their types' storage.
-      const before = await rowCount(tsql);
+      await snapshotRows(tsql);
       open = undefined;
       await target.close();
       target = await boot();
       open = target;
       tsql = sqlOf(target);
-      const after = await rowCount(tsql);
-      if (after !== before) {
-        throw new Error(
-          `the re-boot changed the target's row count from ${before} to ${after}; migrate-store expects it to write nothing`
-        );
-      }
+      await assertRebootWroteNothing(tsql);
 
       const defaulted = await prepareStorage(src, target);
       const tables: CopyResult['tables'] = [];
@@ -143,7 +147,8 @@ export async function copyStore(
       const released = src
         .unsafe('ROLLBACK')
         .catch(() => undefined)
-        .then(() => src.release());
+        .then(() => src.release())
+        .catch(() => undefined);
       // Mid-table, the ROLLBACK waits for the rest of the source table to drain; don't hold the error for it.
       if (!streaming) await released;
       throw err;
@@ -159,9 +164,45 @@ function sqlOf(target: BootedStore): Sql {
   return target.sql;
 }
 
-async function rowCount(tsql: Sql): Promise<number> {
-  const [r] = await tsql<{ n: string }[]>`SELECT count(*)::text AS n FROM rows`;
-  return Number(r?.n ?? 0);
+const SNAPSHOT = 'substrate_migrate_store_reboot_rows';
+
+/** Records every target row's key and content hash, for `assertRebootWroteNothing`. */
+async function snapshotRows(tsql: Sql): Promise<void> {
+  await tsql`DROP TABLE IF EXISTS ${tsql(SNAPSHOT)}`;
+  await tsql`CREATE UNLOGGED TABLE ${tsql(SNAPSHOT)} AS
+             SELECT namespace, type, id, md5(r::text) AS h FROM rows r`;
+}
+
+/** Refuses a re-boot that added, removed or changed a row, naming up to ten of each. */
+async function assertRebootWroteNothing(tsql: Sql): Promise<void> {
+  const snap = tsql(SNAPSHOT);
+  const diff = await tsql<{ change: string; namespace: string; type: string; id: string }[]>`
+    SELECT CASE WHEN s.id IS NULL THEN 'added' WHEN r.id IS NULL THEN 'removed' ELSE 'changed' END AS change,
+           coalesce(r.namespace, s.namespace) AS namespace, coalesce(r.type, s.type) AS type,
+           coalesce(r.id, s.id) AS id
+    FROM (SELECT namespace, type, id, md5(x::text) AS h FROM rows x) r
+    FULL JOIN ${snap} s USING (namespace, type, id)
+    WHERE s.id IS NULL OR r.id IS NULL OR r.h <> s.h
+    ORDER BY 1, 2, 3, 4 LIMIT 30`;
+  if (diff.length === 0) {
+    await tsql`DROP TABLE ${snap}`;
+    return;
+  }
+  const named = ['added', 'changed', 'removed']
+    .map((c) => {
+      const rows = diff.filter((d) => d.change === c).slice(0, 10);
+      return rows.length === 0
+        ? ''
+        : `${c}: ${rows.map((d) => `${d.namespace}/${d.type}/${d.id}`).join(', ')}`;
+    })
+    .filter((s) => s !== '')
+    .join('; ');
+  throw new Error(
+    `the target's re-boot wrote rows the source does not have (${named}). ` +
+      'The boot writes them because the source lacks them, usually the _system/AuditEvent of kind ' +
+      "'bootstrap' that serve records on a store's first boot with keys. Boot the source once with " +
+      'substrate serve so it records them itself, stop it, then rerun migrate-store, which restarts cleanly.'
+  );
 }
 
 /** Refuses a plan column the target lacks; returns each table's identity-always columns among the planned ones. */
@@ -199,27 +240,26 @@ function inKeys(sql: Sql | ReservedSql, keys: RowKey[]) {
     ${keys.map((k) => k.namespace)}::text[], ${keys.map((k) => k.type)}::text[], ${keys.map((k) => k.id)}::text[]))`;
 }
 
-/** After an interrupted run: empties every planned table but the seed rows that run recorded. */
-async function restartIfStarted(tsql: Sql, plan: CopyPlan): Promise<void> {
+/** After an interrupted run: empties every planned table but the seed rows that run recorded. True when it did. */
+async function restartIfStarted(tsql: Sql, plan: CopyPlan): Promise<boolean> {
   const marker = tsql(MIGRATE_STORE_MARKER_TABLE);
   const [started] = await tsql`SELECT 1 FROM ${marker} WHERE step = ${STARTED}`;
-  if (started === undefined) return;
+  if (started === undefined) return false;
   const seeds = (
     await tsql<{ step: string }[]>`SELECT step FROM ${marker} WHERE starts_with(step, ${SEED})`
   ).map((r) => {
     const [namespace, type, id] = JSON.parse(r.step.slice(SEED.length)) as string[];
     return { namespace, type, id } as RowKey;
   });
+  // DELETE rather than TRUNCATE on rows: the boot's replay may be building indexes on its partitions, and a
+  // TRUNCATE there races their catalog updates. Deleting a row deletes its shortIds (ON DELETE CASCADE).
+  const others = plan.tables.map((p) => p.name).filter((n) => n !== 'rows' && n !== 'short_ids');
   await tsql.begin(async (tx) => {
     const t = tx as unknown as Sql;
-    await t`CREATE TEMP TABLE migrate_seed_rows ON COMMIT DROP AS SELECT * FROM rows WHERE ${inKeys(t, seeds)}`;
-    await t`CREATE TEMP TABLE migrate_seed_short_ids ON COMMIT DROP AS
-            SELECT s.* FROM short_ids s JOIN migrate_seed_rows r
-              ON (r.namespace, r.type, r.id) = (s.namespace, s.type, s.row_id)`;
-    await t`TRUNCATE ${t(plan.tables.map((p) => p.name))}`;
-    await t`INSERT INTO rows SELECT * FROM migrate_seed_rows`;
-    await t`INSERT INTO short_ids SELECT * FROM migrate_seed_short_ids`;
+    await t`DELETE FROM rows WHERE NOT ${inKeys(t, seeds)}`;
+    if (others.length > 0) await t`TRUNCATE ${t(others)}`;
   });
+  return true;
 }
 
 /**
@@ -277,12 +317,17 @@ async function prepareStorage(
   const defaulted: CopyResult['defaulted'] = [];
   for (const { namespace, type } of pairs) {
     const dataset = registeredDataset(target, namespace, type);
-    try {
-      if (dataset?.ensureTypeStorage === undefined) throw new Error('not registered');
-      await dataset.ensureTypeStorage(type, { indexes: 'unique' });
-    } catch {
-      // Boot already failed on a declared type's storage; a registry-only type drains out of DEFAULT on serve boot.
+    if (dataset?.ensureTypeStorage === undefined) {
       defaulted.push({ namespace, type });
+      continue;
+    }
+    try {
+      await dataset.ensureTypeStorage(type, { indexes: 'unique' });
+    } catch (err) {
+      throw new Error(
+        `preparing storage for ${namespace}/${type} failed: ${(err as Error).message}`,
+        { cause: err }
+      );
     }
   }
   return defaulted;

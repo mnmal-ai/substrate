@@ -29,6 +29,9 @@ export class RowCounter extends Transform {
     from: { rows: number; bytes: number } = { rows: 0, bytes: 0 }
   ) {
     super();
+    if (!Number.isInteger(batchRows) || batchRows < 1) {
+      throw new Error(`batchRows must be a positive integer (got ${batchRows})`);
+    }
     this.rows = from.rows;
     this.bytes = from.bytes;
     this.#next = from.rows - (from.rows % batchRows) + batchRows;
