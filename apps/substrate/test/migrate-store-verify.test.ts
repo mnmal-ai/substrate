@@ -31,7 +31,8 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
       });
       // The command builds the non-unique indexes before it verifies.
       await buildDeferredIndexes(result.target.engine, result.target.datasets);
-    });
+      // A copy plus index builds takes up to a minute when the whole suite runs at once.
+    }, 240_000);
 
     afterEach(async () => {
       await result.target.close();
