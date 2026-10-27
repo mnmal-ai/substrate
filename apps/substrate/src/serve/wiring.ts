@@ -108,7 +108,12 @@ export async function wireStore(
   }
   if (storeSpec.startsWith('postgres://') || storeSpec.startsWith('postgresql://')) {
     const sql: Sql = openSql(storeSpec);
-    await runMigrations(sql, layout !== undefined ? { layout } : {});
+    try {
+      await runMigrations(sql, layout !== undefined ? { layout } : {});
+    } catch (err) {
+      await sql.end({ timeout: STORE_END_TIMEOUT_S }).catch(() => undefined);
+      throw err;
+    }
     // Edges store linked in via `edgesStore` so the dataset's
     // `withScopedTransaction` can enlist edge mutations into the same pg
     // transaction.

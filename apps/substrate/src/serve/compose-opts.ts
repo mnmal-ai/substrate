@@ -151,50 +151,58 @@ export async function buildComposeOpts(args: {
     config.bridges,
     config.bridgeCreds
   );
-  const sentinelClientConfig = loadSentinelClientConfig(process.env);
-  if (config.bridges.length > 0 || sentinelClientConfig !== null) {
-    composeOpts.bridges = bridgeRegistry;
-  }
-  if (config.auth !== null) {
-    composeOpts.auth = config.auth;
-  }
-  // Public-key-cache re-prime. compose() gates this on auth being enabled, so
-  // passing it through unconditionally is safe.
-  if (config.keyReprimeIntervalMs !== null) {
-    composeOpts.keyReprimeIntervalMs = config.keyReprimeIntervalMs;
-  }
-  // compose() refuses to boot an auth-enabled instance without this — the
-  // ungated browser stream routes authenticate on the ticket signature alone.
-  if (config.systemActor !== null) {
-    composeOpts.systemActor = config.systemActor;
-  }
-  if (config.streamTicketSecret !== null) {
-    composeOpts.streamTicketSecret = config.streamTicketSecret;
-  }
-  // §5.13 mutation idempotency, dedup on unless SUBSTRATE_IDEMPOTENCY_DISABLED.
-  // Pg-backed when storeSql is present, memory otherwise.
-  let idempotencyStore: IdempotencyStore | null = null;
-  if (!config.idempotency.disabled) {
-    idempotencyStore =
-      storeSql !== null ? new PgIdempotencyStore({ sql: storeSql }) : new MemoryIdempotencyStore();
-    const idempotencyOpt: { store: IdempotencyStore; defaultTtlMs?: number } = {
-      store: idempotencyStore
-    };
-    if (config.idempotency.defaultTtlMs !== null) {
-      idempotencyOpt.defaultTtlMs = config.idempotency.defaultTtlMs;
+  // The bridge clients are live from here; a later failure must not leak them.
+  try {
+    const sentinelClientConfig = loadSentinelClientConfig(process.env);
+    if (config.bridges.length > 0 || sentinelClientConfig !== null) {
+      composeOpts.bridges = bridgeRegistry;
     }
-    composeOpts.idempotency = idempotencyOpt;
+    if (config.auth !== null) {
+      composeOpts.auth = config.auth;
+    }
+    // Public-key-cache re-prime. compose() gates this on auth being enabled, so
+    // passing it through unconditionally is safe.
+    if (config.keyReprimeIntervalMs !== null) {
+      composeOpts.keyReprimeIntervalMs = config.keyReprimeIntervalMs;
+    }
+    // compose() refuses to boot an auth-enabled instance without this — the
+    // ungated browser stream routes authenticate on the ticket signature alone.
+    if (config.systemActor !== null) {
+      composeOpts.systemActor = config.systemActor;
+    }
+    if (config.streamTicketSecret !== null) {
+      composeOpts.streamTicketSecret = config.streamTicketSecret;
+    }
+    // §5.13 mutation idempotency, dedup on unless SUBSTRATE_IDEMPOTENCY_DISABLED.
+    // Pg-backed when storeSql is present, memory otherwise.
+    let idempotencyStore: IdempotencyStore | null = null;
+    if (!config.idempotency.disabled) {
+      idempotencyStore =
+        storeSql !== null
+          ? new PgIdempotencyStore({ sql: storeSql })
+          : new MemoryIdempotencyStore();
+      const idempotencyOpt: { store: IdempotencyStore; defaultTtlMs?: number } = {
+        store: idempotencyStore
+      };
+      if (config.idempotency.defaultTtlMs !== null) {
+        idempotencyOpt.defaultTtlMs = config.idempotency.defaultTtlMs;
+      }
+      composeOpts.idempotency = idempotencyOpt;
+    }
+
+    composeOpts.version = readPackageVersion();
+    if (kernel.length > 0) {
+      composeOpts.kernelPlugins = kernel;
+    }
+
+    // Ensure kernel_migrations tracking table exists before any substrate
+    // plugin migration runs. Idempotent (CREATE TABLE IF NOT EXISTS); no-op on memory.
+    // Distinct from migrations (dataset-pg framework's own table).
+    await ensureMigrationsTable(storeSql);
+
+    return { composeOpts, idempotencyStore, sentinelClientConfig, bridgeRegistry, disposeBridges };
+  } catch (err) {
+    disposeBridges();
+    throw err;
   }
-
-  composeOpts.version = readPackageVersion();
-  if (kernel.length > 0) {
-    composeOpts.kernelPlugins = kernel;
-  }
-
-  // Ensure kernel_migrations tracking table exists before any substrate
-  // plugin migration runs. Idempotent (CREATE TABLE IF NOT EXISTS); no-op on memory.
-  // Distinct from migrations (dataset-pg framework's own table).
-  await ensureMigrationsTable(storeSql);
-
-  return { composeOpts, idempotencyStore, sentinelClientConfig, bridgeRegistry, disposeBridges };
 }

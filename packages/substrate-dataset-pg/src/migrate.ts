@@ -186,10 +186,17 @@ export class StoreMigrationInProgressError extends Error {
   }
 }
 
-/** Throws `StoreMigrationInProgressError` when the current schema carries the migrate-store marker. */
+/**
+ * Throws `StoreMigrationInProgressError` when the current schema carries the
+ * migrate-store marker. Compares `nspname` rather than casting, so a schema
+ * name that needs quoting still matches.
+ */
 export async function assertNotMigrating(sql: Sql): Promise<void> {
   const [row] = await sql<Array<{ present: boolean }>>`
-    SELECT to_regclass(current_schema() || '.' || ${MIGRATE_STORE_MARKER_TABLE}) IS NOT NULL AS present
+    SELECT EXISTS (
+      SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE c.relname = ${MIGRATE_STORE_MARKER_TABLE} AND n.nspname = current_schema()
+    ) AS present
   `;
   if (row?.present === true) throw new StoreMigrationInProgressError();
 }
