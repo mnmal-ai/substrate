@@ -71,20 +71,30 @@ A type declared `ordering: 'visible'` gets `rows.seq` from `visible_seqs`, assig
 
 `migrate-store` copies a store into a fresh, empty, partitioned PostgreSQL 18 store, builds its indexes and verifies the copy against the source. It is the way to PG 18 and to the partitioned layout in one step, and the source is never written, so rolling back is pointing at it again. The source may be PG 17 or later, on either layout.
 
-1. Provision an empty PG 18 database. If recall is used, create the `vector` extension in it first: the command never runs `CREATE EXTENSION`, and refuses a target where a copied table needs an extension that is not installed in the target database.
-2. Set `SUBSTRATE_INDEX_DISK_PATH` to the mount of the target's data directory, or to `off` when the database has no local volume. A real run refuses without it (a dry run only warns).
-3. Stop every instance of the source service. The command warns when it sees other sessions on the source database, because writes after its snapshot are not copied.
-4. Put the connection strings in `SUBSTRATE_MIGRATE_FROM_URL` and `SUBSTRATE_MIGRATE_TO_URL`, or name other variables with `--from-env` / `--to-env`. A connection string on the command line is refused, and none is printed.
-5. Run `substrate-admin migrate-store --dry-run`, which reports per-type row counts, table sizes, the estimated disk need on the target and every refusal, and writes nothing. Then run it without `--dry-run`. The environment must also carry what `serve` would use (`SUBSTRATE_PLUGIN_DIR` and the plugins' own settings), because the target is prepared with the same migrations and plugins.
-6. On exit `0`, set `SUBSTRATE_DATABASE_URL` to the target and start `serve`. The report prints this step as `switch over`.
-7. To roll back, point `SUBSTRATE_DATABASE_URL` at the source again. Nothing on it changed.
+1. Provision an empty PG 18 database and prepare it as a superuser. The command never runs these steps itself:
+   - If recall is used, run `CREATE EXTENSION vector;` in the target database. A target where a copied table needs an extension that is not installed there is refused. Install the same pgvector version as the source's: a different version is only a warning, but verification of `embeddings` may then fail.
+   - Make the target role the owner of the database, or of the schema it will use. Since PostgreSQL 15, `public` no longer grants `CREATE` to every role.
+   - Never boot `serve` against the target before migrating. A target that already holds data is refused.
+2. Load the service's environment into the shell that runs the command, so the plugin directory (`SUBSTRATE_PLUGIN_DIR` and the plugins' own settings), `SUBSTRATE_ENFORCE_UUID_CHECK` and `SUBSTRATE_PARTITION_BUDGET` match what `serve` will use. The target is prepared with the same migrations and plugins, and a source with the UUID check is refused when the target would not enforce it.
+3. Then set `SUBSTRATE_INDEX_DISK_PATH` to the mount of the **target's** data volume, or to `off` when the database has no local volume. A real run refuses without it (a dry run only warns).
+4. Stop every instance of the source service, and pause other jobs that read the source, such as backups and dumps, for the duration of the run. The command warns when it sees other sessions on the source database, because writes after its snapshot are not copied.
+5. Put the connection strings in `SUBSTRATE_MIGRATE_FROM_URL` and `SUBSTRATE_MIGRATE_TO_URL`, or name other variables with `--from-env` / `--to-env`. A connection string on the command line is refused, and none is printed.
+6. Run `substrate-admin migrate-store --dry-run`, which reports per-type row counts, table sizes, the estimated disk need on the target, every warning and every refusal, and writes nothing. Then run it without `--dry-run`.
+7. On exit `0`, run `VACUUM (ANALYZE)` on the target, then set `SUBSTRATE_DATABASE_URL` to the target and start `serve`. The report prints the switch as `switch over`.
+8. To roll back, point `SUBSTRATE_DATABASE_URL` at the source again. Nothing on it changed.
+
+Recovering a run that failed:
+
+- If the index builds or the verification failed (exit `3`), run the command again with `--verify-only`. It builds the indexes first, dropping and rebuilding any that a failed build left INVALID, then verifies. Each failed or INVALID index is named in the report as a `storage` mismatch until it builds.
+- A full rerun, without `--verify-only`, restarts the copy from the beginning.
+- After a late crash on a large store, dropping and recreating the target database (then preparing it again as in step 1) is faster than a full rerun, which first empties every copied table.
 
 | Flag | Effect |
 |---|---|
 | `--from-env <VAR>` / `--to-env <VAR>` | Name the variables that hold the source and target connection strings (defaults `SUBSTRATE_MIGRATE_FROM_URL`, `SUBSTRATE_MIGRATE_TO_URL`). |
 | `--from-schema <s>` / `--to-schema <s>` | Pin a side to schema `<s>`. The name must be plain lowercase (`[a-z_][a-z0-9_]*`). This allows a copy within one database; the source and target may not be the same cluster, database and schema. |
 | `--dry-run` | Preflight only. Writes nothing. |
-| `--verify-only` | Verify an existing finished copy against its source. Refused on a target with no completed copy. |
+| `--verify-only` | Build the indexes (unless `--skip-index-build`), then verify an existing finished copy against its source. This finishes a run whose index builds or verification failed. Refused on a target with no completed copy. |
 | `--skip-index-build` | Leave non-unique index builds to the first `serve` boot, which runs them under the disk guard. The pending builds are listed in the report. |
 | `--full-checksum` | Hash every row. The default samples 1000 rows per type. |
 | `--batch-rows <n>` | Rows between progress lines (default 10000). It does not change how the copy is chunked: a rerun restarts the copy from the beginning. |

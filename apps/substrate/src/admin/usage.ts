@@ -61,7 +61,7 @@ export const USAGE = [
   '    SUBSTRATE_INDEX_DISK_PATH must be set (the target volume mount, or off).',
   '    --from-schema / --to-schema <s>  pin a side to schema <s>',
   '    --dry-run          preflight only: the plan, every refusal, nothing written',
-  '    --verify-only      verify a finished copy against its source',
+  '    --verify-only      build indexes, then verify a finished copy against its source',
   '    --skip-index-build leave non-unique index builds to the first serve boot',
   '    --full-checksum    hash every row rather than a sample per type',
   '    --batch-rows <n>   rows between progress lines (default 10000)',
