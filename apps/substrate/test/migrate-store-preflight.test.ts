@@ -140,7 +140,7 @@ function source(over: Partial<SourceInventory> = {}): SourceInventory {
     tableBytes: { rows: 100, edges: 10, short_ids: 10 },
     nonUuidIds: [],
     vectorDims: null,
-    extensions: [],
+    extensions: {},
     otherSessions: 0,
     ...over
   };
@@ -280,6 +280,22 @@ describe('preflight', () => {
     expect(res.refusals.join()).toContain(
       'run CREATE EXTENSION vector; in the target database as a superuser'
     );
+  });
+
+  it("warns, naming both versions, when a copied table's extension differs in version", () => {
+    const tables = { tables: ['rows', 'embeddings'] };
+    const o = { ...opts, pluginTables: ['embeddings'] };
+    const res = preflight(
+      source({ ...tables, extensions: { vector: '0.7.4' } }),
+      target({ extensions: { vector: '0.8.0' } }),
+      o
+    );
+    expect(res.refusals).toEqual([]);
+    expect(res.warnings.join()).toMatch(
+      /"vector" is version 0\.7\.4 on the source and 0\.8\.0 on the target.*embeddings/
+    );
+    const same = { extensions: { vector: '0.8.0' } };
+    expect(preflight(source({ ...tables, ...same }), target(same), o).warnings).toEqual([]);
   });
 
   it('treats a disk shortfall as a refusal in a real run and a warning in a dry run', () => {

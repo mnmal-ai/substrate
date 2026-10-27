@@ -170,9 +170,16 @@ export function preflight(
   for (const t of plan.tables) {
     const ext = TABLE_EXTENSION[t.name];
     // Installed, not merely available: the target role cannot run CREATE EXTENSION itself.
-    if (ext !== undefined && target.extensions[ext] === undefined) {
+    if (ext === undefined) continue;
+    const [from, to] = [source.extensions[ext], target.extensions[ext]];
+    if (to === undefined) {
       refusals.push(
         `table "${t.name}" needs extension "${ext}", which is not installed in the target database; run CREATE EXTENSION ${ext}; in the target database as a superuser`
+      );
+    } else if (from !== undefined && from !== to) {
+      // A warning: the two versions may store and render values identically.
+      warnings.push(
+        `extension "${ext}" is version ${from} on the source and ${to} on the target, so verification of ${t.name} may fail; match the versions`
       );
     }
   }

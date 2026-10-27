@@ -38,7 +38,8 @@ export interface SourceInventory {
   nonUuidIds: { table: string; column: string; namespace: string; type: string; id: string }[];
   /** `atttypmod` of `embeddings.embedding`; null when absent or unconstrained. */
   vectorDims: number | null;
-  extensions: string[];
+  /** Installed extensions, name to `extversion`. */
+  extensions: Record<string, string>;
   /** Other client backends on this database; pg_stat_activity hides other roles' rows from a non-monitoring role. */
   otherSessions: number;
 }
@@ -109,8 +110,8 @@ export async function inspectSource(sql: Sql): Promise<SourceInventory> {
           WHERE a.attrelid = to_regclass('embeddings') AND a.attname = 'embedding' AND NOT a.attisdropped`
       : [];
     const extensions = await tx<
-      { extname: string }[]
-    >`SELECT extname FROM pg_extension ORDER BY extname`;
+      { extname: string; extversion: string }[]
+    >`SELECT extname, extversion FROM pg_extension ORDER BY extname`;
     const [others] = await tx<{ n: string }[]>`
       SELECT count(*)::text AS n FROM pg_stat_activity
       WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_type = 'client backend'`;
@@ -132,7 +133,7 @@ export async function inspectSource(sql: Sql): Promise<SourceInventory> {
       nonUuidIds,
       // pgvector stores the dimension in atttypmod; -1 means unconstrained.
       vectorDims: dims !== undefined && dims.dims > 0 ? dims.dims : null,
-      extensions: extensions.map((e) => e.extname),
+      extensions: Object.fromEntries(extensions.map((e) => [e.extname, e.extversion])),
       otherSessions: Number(others?.n ?? 0)
     } satisfies SourceInventory;
   });
