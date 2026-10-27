@@ -109,6 +109,9 @@ describe.skipIf(!POSTGRES_URL)('inspectSource (pg)', () => {
     expect((await inspectSource(sql)).nonUuidIds).toEqual([
       { table: 'rows', column: 'id', namespace: 'a', type: 'T1', id: 'not-a-uuid' }
     ]);
+    // A ledger that records the UUID check skips the scan, since the CHECKs guarantee the ids.
+    await sql`INSERT INTO migrations (version, checksum) VALUES ('0002_uuid_format_check', 'x')`;
+    expect((await inspectSource(sql)).nonUuidIds).toEqual([]);
   });
 });
 

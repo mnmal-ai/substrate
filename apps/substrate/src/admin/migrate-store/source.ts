@@ -37,7 +37,7 @@ export interface SourceInventory {
   columns: Record<string, string[]>;
   /** Per table in `tables`: `pg_table_size`, summed over partitions. Indexes are not counted. */
   tableBytes: Record<string, number>;
-  /** Up to 20 ids per checked column (rows.id, short_ids.row_id, edges.from_id, edges.to_id) that fail the UUID shape. */
+  /** Up to 20 ids per checked column (rows.id, short_ids.row_id, edges.from_id, edges.to_id) that fail the UUID shape; none read when the ledger records the UUID check. */
   nonUuidIds: { table: string; column: string; namespace: string; type: string; id: string }[];
   /** `atttypmod` of `embeddings.embedding`; null when absent or unconstrained. */
   vectorDims: number | null;
@@ -101,12 +101,15 @@ export async function inspectSource(sql: Sql): Promise<SourceInventory> {
         SELECT ${tx(nsCol)} AS namespace, ${tx(typeCol)} AS type, ${tx(column)} AS id
         FROM ${tx(table)} WHERE ${tx(column)} !~ ${UUID_REGEX}
         ORDER BY 1, 2, 3 LIMIT 20`.then((rs) => rs.map((r) => ({ table, column, ...r })));
-    const nonUuidIds = [
-      ...(await nonUuid('rows', 'id', 'namespace', 'type')),
-      ...(columns.short_ids ? await nonUuid('short_ids', 'row_id', 'namespace', 'type') : []),
-      ...(columns.edges ? await nonUuid('edges', 'from_id', 'from_ns', 'from_type') : []),
-      ...(columns.edges ? await nonUuid('edges', 'to_id', 'to_ns', 'to_type') : [])
-    ];
+    // The UUID CHECKs already guarantee every id the scan would read.
+    const nonUuidIds = appliedMigrations.includes(UUID_CHECK_MIGRATION)
+      ? []
+      : [
+          ...(await nonUuid('rows', 'id', 'namespace', 'type')),
+          ...(columns.short_ids ? await nonUuid('short_ids', 'row_id', 'namespace', 'type') : []),
+          ...(columns.edges ? await nonUuid('edges', 'from_id', 'from_ns', 'from_type') : []),
+          ...(columns.edges ? await nonUuid('edges', 'to_id', 'to_ns', 'to_type') : [])
+        ];
     const [dims] = columns.embeddings
       ? await tx<{ dims: number }[]>`
           SELECT a.atttypmod AS dims FROM pg_attribute a

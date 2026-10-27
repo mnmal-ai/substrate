@@ -327,7 +327,7 @@ export class NoCurrentSchemaError extends Error {
 }
 
 /** The schema names substrate supports: plain lowercase identifiers that never need quoting. */
-const PLAIN_SCHEMA_NAME = /^[a-z_][a-z0-9_]*$/;
+export const PLAIN_SCHEMA_NAME = /^[a-z_][a-z0-9_]*$/;
 
 export class UnsupportedSchemaNameError extends Error {
   override readonly name = 'UnsupportedSchemaNameError';

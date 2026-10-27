@@ -34,6 +34,7 @@ export {
   MigrationChecksumDriftError,
   type MigrationInput,
   NoCurrentSchemaError,
+  PLAIN_SCHEMA_NAME,
   pendingMigrations,
   type RunMigrationsOptions,
   runDerivedMigrations,

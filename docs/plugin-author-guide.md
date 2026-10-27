@@ -73,6 +73,9 @@ Both tiers are declared in `@mnmal-ai/substrate/sdk`.
   only to prepare or copy into it, as `substrate-admin migrate-store` does. In
   that case do convergent reconciliation, but start no timers, backfills or
   other background writers, because nothing else may write beside the copy.
+  A coordinator's `onStart` runs on those boots too and gets no such signal,
+  so never start a writer there: put background work in a kernel plugin's
+  `onKernelReady`, gated on `ctx.background`.
 
 Compose order is **kernel first, coordinators second**. Coordinators can rely
 on kernel registrations being live; kernel plugins must not depend on

@@ -57,6 +57,8 @@ describe('migrate-store argv', () => {
 
   it('refuses --dry-run with --verify-only, and a repeated --from-env', async () => {
     expect((await cli(['migrate-store', '--dry-run', '--verify-only'])).code).toBe(2);
+    // The schema names boot accepts, and no others.
+    expect((await cli(['migrate-store', '--to-schema', 'a$b'])).code).toBe(2);
     expect((await cli(['migrate-store', '--from-env', 'A', '--from-env', 'B'])).code).toBe(2);
   });
 });
@@ -264,12 +266,12 @@ describe.skipIf(!POSTGRES_URL)('migrate-store (pg)', () => {
     }
   }, 120_000);
 
-  it('--verify-only refuses a target with no finished copy, before it boots', async () => {
+  it('--verify-only refuses a target with no marker, before it boots', async () => {
     const s = await openSchemas('legacy');
     try {
       const r = await run(s, ['--verify-only']);
-      expect(r.code).toBe(2);
-      expect(r.err).toContain('no finished migrate-store copy');
+      expect(r.code, r.err).toBe(2);
+      expect(r.err).toContain('already verified, or not a migrate-store target (no marker)');
       const [n] = await s.tgtSql<{ n: number }[]>`
         SELECT count(*)::int AS n FROM pg_class WHERE relnamespace = ${s.tgtSchema}::regnamespace`;
       expect(n?.n).toBe(0);

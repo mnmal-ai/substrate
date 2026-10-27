@@ -6,7 +6,11 @@
  */
 
 import { statfs } from 'node:fs/promises';
-import { MIGRATE_STORE_MARKER_TABLE, type PgDataset } from '@mnmal-ai/substrate-dataset-pg';
+import {
+  MIGRATE_STORE_MARKER_TABLE,
+  type PgDataset,
+  PLAIN_SCHEMA_NAME
+} from '@mnmal-ai/substrate-dataset-pg';
 import postgres, { type Sql } from 'postgres';
 import { pgNoticeOptions } from '../../pg-client.js';
 import { type KernelHostDeps, loadPluginsFromDir } from '../../plugin-dir-loader.js';
@@ -71,7 +75,8 @@ export interface MigrateStoreReport {
 }
 
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const IDENT = /^[a-z_][a-z0-9_$]*$/;
+// The names boot accepts for a schema, so a name that passes here never fails there.
+const IDENT = PLAIN_SCHEMA_NAME;
 const SAFE_VALUE = (flag: string) =>
   `migrate-store: ${flag} takes a plain name (a value that does not fit is not echoed)`;
 
@@ -189,12 +194,17 @@ export function secretsOf(url: string | undefined): string[] {
 
 /** `url` with `search_path` pinned to `schema`, as a startup option so every pooled connection has it. */
 function withSchema(url: string, schema: string | null): string {
-  if (schema === null) return url;
+  return schema === null ? url : withSettings(url, [`search_path=${schema},public`]);
+}
+
+/** `url` with each `name=value` in `settings` as a startup option (`-c`). */
+function withSettings(url: string, settings: string[]): string {
   const u = new URL(url);
   const prior = u.searchParams.get('options');
   const params = [...u.searchParams.entries()].filter(([k]) => k !== 'options');
   // A later -c wins, so the operator's other options stay.
-  params.push(['options', `${prior !== null ? `${prior} ` : ''}-c search_path=${schema},public`]);
+  const added = settings.map((s) => `-c ${s}`).join(' ');
+  params.push(['options', `${prior !== null ? `${prior} ` : ''}${added}`]);
   // By hand: postgres.js needs the space as %20, and URLSearchParams writes +.
   u.search = params.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&');
   return u.toString();
@@ -229,10 +239,12 @@ export async function runMigrateStore(
     return v;
   };
   const fromUrl = withSchema(urlOf(args.fromEnv, 'source'), args.fromSchema);
-  const toUrl = withSchema(urlOf(args.toEnv, 'target'), args.toSchema);
-  if (fromUrl === toUrl) {
+  const toStore = withSchema(urlOf(args.toEnv, 'target'), args.toSchema);
+  if (fromUrl === toStore) {
     throw new AdminCliError('migrate-store: the source and the target are the same store', 2);
   }
+  // Copies and index builds outlast any statement_timeout the role or database sets.
+  const toUrl = withSettings(toStore, ['statement_timeout=0']);
 
   const report: MigrateStoreReport = {
     mode: args.dryRun ? 'dry-run' : args.verifyOnly ? 'verify-only' : 'migrate',
@@ -291,7 +303,14 @@ export async function runMigrateStore(
   const src = postgres(fromUrl, {
     ...notices,
     max: 1,
-    connection: { default_transaction_read_only: true }
+    // The snapshot transaction is held open, idle between reads, for the whole copy and verification.
+    // transaction_timeout exists from PG 17, the oldest source accepted.
+    connection: {
+      default_transaction_read_only: true,
+      statement_timeout: 0,
+      idle_in_transaction_session_timeout: 0,
+      transaction_timeout: 0
+    }
   });
   let target: BootedStore | undefined;
   try {
@@ -376,7 +395,7 @@ export async function runMigrateStore(
         tables,
         fullChecksum: args.fullChecksum,
         sampleRows: 1000,
-        partitionBudget: 500,
+        partitionBudget: parseEnv(targetEnv).partitionBudget,
         storageReport: async (r) => {
           const { warnings } = await (booted.dataset as PgDataset).storageReport(r);
           // A failed build pass and an INVALID index fail verification, each named.
@@ -448,10 +467,14 @@ async function assertDistinct(src: Sql, tgt: Sql): Promise<void> {
 async function assertCopyDone(sql: Sql): Promise<void> {
   const [r] = await sql<{ marker: string | null }[]>`
     SELECT to_regclass(quote_ident(current_schema()) || '.' || quote_ident(${MIGRATE_STORE_MARKER_TABLE}))::text AS marker`;
-  const done =
-    r?.marker != null &&
-    (await sql`SELECT 1 FROM ${sql(r.marker)} WHERE step = 'copy:done'`).length > 0;
-  if (!done) {
+  // A passing verification drops the marker, so its absence is not a missing copy.
+  if (r?.marker == null) {
+    throw new AdminCliError(
+      'migrate-store: the target is already verified, or not a migrate-store target (no marker)',
+      2
+    );
+  }
+  if ((await sql`SELECT 1 FROM ${sql(r.marker)} WHERE step = 'copy:done'`).length === 0) {
     throw new AdminCliError(
       'migrate-store: the target holds no finished migrate-store copy to verify (no in-progress marker with a completed copy)',
       2

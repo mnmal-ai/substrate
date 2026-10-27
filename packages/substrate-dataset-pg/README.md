@@ -82,7 +82,7 @@ A type declared `ordering: 'visible'` gets `rows.seq` from `visible_seqs`, assig
 | Flag | Effect |
 |---|---|
 | `--from-env <VAR>` / `--to-env <VAR>` | Name the variables that hold the source and target connection strings (defaults `SUBSTRATE_MIGRATE_FROM_URL`, `SUBSTRATE_MIGRATE_TO_URL`). |
-| `--from-schema <s>` / `--to-schema <s>` | Pin a side to schema `<s>`. The name must be plain lowercase (`[a-z_][a-z0-9_$]*`). This allows a copy within one database; the source and target may not be the same cluster, database and schema. |
+| `--from-schema <s>` / `--to-schema <s>` | Pin a side to schema `<s>`. The name must be plain lowercase (`[a-z_][a-z0-9_]*`). This allows a copy within one database; the source and target may not be the same cluster, database and schema. |
 | `--dry-run` | Preflight only. Writes nothing. |
 | `--verify-only` | Verify an existing finished copy against its source. Refused on a target with no completed copy. |
 | `--skip-index-build` | Leave non-unique index builds to the first `serve` boot, which runs them under the disk guard. The pending builds are listed in the report. |
