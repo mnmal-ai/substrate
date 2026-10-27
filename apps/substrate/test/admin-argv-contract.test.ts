@@ -42,10 +42,10 @@ describe('every dispatched subcommand declares its argv shape', () => {
     expect(dispatchedCommands()).toEqual(Object.keys(ARGV_SPEC).sort());
   });
 
-  it('finds the eight that exist — so the scrape itself cannot be silently empty', () => {
+  it('finds the nine that exist — so the scrape itself cannot be silently empty', () => {
     // A regex that matches nothing makes the assertion above vacuously true,
     // which is the failure mode this whole file exists to prevent, one level up.
-    expect(dispatchedCommands()).toHaveLength(8);
+    expect(dispatchedCommands()).toHaveLength(9);
   });
 
   it('declares every flag its own usage line advertises', () => {

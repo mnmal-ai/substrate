@@ -104,12 +104,23 @@ export interface Pair {
   close(): Promise<void>;
 }
 
-/** A seeded source in `sourceLayout` beside a prepared, empty partitioned target. */
-export async function openPair(
+export interface Schemas {
+  srcSql: Sql;
+  tgtSql: Sql;
+  srcSchema: string;
+  tgtSchema: string;
+  tgtUrl: string;
+  pluginDir: string;
+  /** Drops both schemas and closes both connections. */
+  close(): Promise<void>;
+}
+
+/** A seeded source schema in `sourceLayout` beside an empty target schema, nothing prepared. */
+export async function openSchemas(
   sourceLayout: StorageLayout,
   /** Session TimeZone per side, to prove a comparison does not depend on it. */
   zones: { src?: string; tgt?: string } = {}
-): Promise<Pair> {
+): Promise<Schemas> {
   const tag = randomBytes(4).toString('hex');
   const srcName = `apps/substrate-copy-src-${tag}`;
   const tgtName = `apps/substrate-copy-tgt-${tag}`;
@@ -131,8 +142,31 @@ export async function openPair(
   await runMigrations(srcSql, { layout: sourceLayout });
   await applyRecall(srcSql, sourceLayout);
   await seedSource(srcSql);
-
   const pluginDir = await makePluginDir();
+  return {
+    srcSql,
+    tgtSql,
+    srcSchema,
+    tgtSchema,
+    tgtUrl,
+    pluginDir,
+    async close() {
+      await rm(pluginDir, { recursive: true, force: true });
+      await srcSql.unsafe(`DROP SCHEMA IF EXISTS ${srcSchema} CASCADE`);
+      await tgtSql.unsafe(`DROP SCHEMA IF EXISTS ${tgtSchema} CASCADE`);
+      await srcSql.end({ timeout: 5 });
+      await tgtSql.end({ timeout: 5 });
+    }
+  };
+}
+
+/** A seeded source in `sourceLayout` beside a prepared, empty partitioned target. */
+export async function openPair(
+  sourceLayout: StorageLayout,
+  /** Session TimeZone per side, to prove a comparison does not depend on it. */
+  zones: { src?: string; tgt?: string } = {}
+): Promise<Pair> {
+  const { srcSql, tgtSql, tgtUrl, pluginDir, close } = await openSchemas(sourceLayout, zones);
   const boot = () =>
     bootStore({
       config: parseEnv({
@@ -162,18 +196,5 @@ export async function openPair(
   );
   if (pre.refusals.length > 0)
     throw new Error(`fixture preflight refused: ${pre.refusals.join('; ')}`);
-  return {
-    srcSql,
-    tgtSql,
-    pluginDir,
-    boot,
-    plan: pre.plan,
-    async close() {
-      await rm(pluginDir, { recursive: true, force: true });
-      await srcSql.unsafe(`DROP SCHEMA IF EXISTS ${srcSchema} CASCADE`);
-      await tgtSql.unsafe(`DROP SCHEMA IF EXISTS ${tgtSchema} CASCADE`);
-      await srcSql.end({ timeout: 5 });
-      await tgtSql.end({ timeout: 5 });
-    }
-  };
+  return { srcSql, tgtSql, pluginDir, boot, plan: pre.plan, close };
 }

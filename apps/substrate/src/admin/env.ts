@@ -29,6 +29,9 @@ export interface AdminCliEnv {
   SUBSTRATE_ADMIN_TOKEN?: string;
   /** kid that pairs with `SUBSTRATE_ADMIN_KEY_PATH`. */
   SUBSTRATE_ADMIN_KEY_ID?: string;
+  /** `migrate-store`'s default source and target connection strings (`--from-env` / `--to-env` name others). */
+  SUBSTRATE_MIGRATE_FROM_URL?: string;
+  SUBSTRATE_MIGRATE_TO_URL?: string;
   HOME?: string;
 }
 

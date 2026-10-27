@@ -22,10 +22,12 @@ export interface ArgvSpec {
   readonly excess?: (tok: string) => string;
   /** `list` alone also accepts the `--flag=value` form. */
   readonly equalsForm?: boolean;
+  /** Exit code of a refusal here; 1 when unset. */
+  readonly exitCode?: number;
 }
 
 /**
- * The seven subcommands, and the whole of what each accepts.
+ * The subcommands, and the whole of what each accepts.
  *
  * This table is also the definition of "known command": `main` refuses anything
  * absent from it BEFORE dispatching, so a subcommand added to the dispatch
@@ -80,6 +82,22 @@ export const ARGV_SPEC: Record<string, ArgvSpec> = {
     valueFlags: ['--name', '--ns', '--caps', '--url'],
     boolFlags: ['--direct', '--allow-unknown-ns', '--widen', '--allow-admin'],
     maxPositionals: 1
+  },
+  'migrate-store': {
+    valueFlags: [
+      '--from-env',
+      '--to-env',
+      '--from-schema',
+      '--to-schema',
+      '--batch-rows',
+      '--skip-table'
+    ],
+    boolFlags: ['--dry-run', '--verify-only', '--json', '--skip-index-build', '--full-checksum'],
+    maxPositionals: 0,
+    hint: ' (connection strings never go on argv: name their environment variables with --from-env / --to-env)',
+    excess: (tok) =>
+      `migrate-store: unexpected argument '${tok}' (connection strings never go on argv: name their environment variables with --from-env / --to-env)`,
+    exitCode: 2
   }
 };
 
@@ -126,12 +144,16 @@ export function validateArgv(cmd: string, tail: readonly string[]): void {
       if (spec.boolFlags.includes(tok)) continue;
       if (spec.equalsForm === true && spec.valueFlags.some((f) => tok.startsWith(`${f}=`)))
         continue;
-      throw argvError(cmd, `${cmd}: unknown flag ${tok}${spec.hint ?? ''}`, 1);
+      throw argvError(cmd, `${cmd}: unknown flag ${tok}${spec.hint ?? ''}`, spec.exitCode ?? 1);
     }
 
     positionals += 1;
     if (positionals > spec.maxPositionals) {
-      throw argvError(cmd, spec.excess?.(tok) ?? `${cmd}: unexpected positional arg '${tok}'`, 1);
+      throw argvError(
+        cmd,
+        spec.excess?.(tok) ?? `${cmd}: unexpected positional arg '${tok}'`,
+        spec.exitCode ?? 1
+      );
     }
   }
 }

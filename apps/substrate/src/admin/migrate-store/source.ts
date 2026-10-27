@@ -63,7 +63,10 @@ export async function inspectSource(sql: Sql): Promise<SourceInventory> {
       : [];
     const tableRows = await tx<{ name: string; bytes: string }[]>`
       SELECT c.relname AS name,
-             (SELECT coalesce(sum(pg_table_size(t.relid)), 0) FROM pg_partition_tree(c.oid) t WHERE t.isleaf)::text AS bytes
+             -- pg_partition_tree is empty for an ordinary table.
+             (CASE WHEN c.relkind = 'p'
+                   THEN (SELECT coalesce(sum(pg_table_size(t.relid)), 0) FROM pg_partition_tree(c.oid) t WHERE t.isleaf)
+                   ELSE pg_table_size(c.oid) END)::text AS bytes
       FROM pg_class c
       WHERE c.relnamespace = current_schema()::regnamespace
         AND c.relkind IN ('r', 'p') AND NOT c.relispartition

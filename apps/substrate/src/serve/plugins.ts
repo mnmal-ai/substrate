@@ -42,8 +42,10 @@ export interface ServePlugins {
   coordinators: CoordinatorPlugin[];
 }
 
-export function resolvePluginDir(): string | null {
-  const pluginDirRaw = process.env.SUBSTRATE_PLUGIN_DIR?.trim();
+export function resolvePluginDir(
+  env: { SUBSTRATE_PLUGIN_DIR?: string } = process.env
+): string | null {
+  const pluginDirRaw = env.SUBSTRATE_PLUGIN_DIR?.trim();
   return pluginDirRaw !== undefined && pluginDirRaw.length > 0 ? pluginDirRaw : null;
 }
 
