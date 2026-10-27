@@ -58,6 +58,26 @@ describe.skipIf(!POSTGRES_URL)('bootStore (pg)', () => {
     }
   });
 
+  it('an explicit layout beats SUBSTRATE_STORAGE_LAYOUT on a fresh store', async () => {
+    const previous = process.env.SUBSTRATE_STORAGE_LAYOUT;
+    process.env.SUBSTRATE_STORAGE_LAYOUT = 'legacy';
+    try {
+      const booted = await bootStore({
+        config: parseEnv({
+          SUBSTRATE_DATABASE_URL: url,
+          SUBSTRATE_SYSTEM_ACTOR: 'boot-store-test'
+        }),
+        pluginDir: null,
+        layout: 'partitioned'
+      });
+      await booted.close();
+      expect(await detectLayout(sql)).toBe('partitioned');
+    } finally {
+      if (previous === undefined) delete process.env.SUBSTRATE_STORAGE_LAYOUT;
+      else process.env.SUBSTRATE_STORAGE_LAYOUT = previous;
+    }
+  });
+
   it('serve refuses a target that migrate-store has not finished', async () => {
     await sql.unsafe(`CREATE TABLE ${schema}.${MIGRATE_STORE_MARKER_TABLE} (id int)`);
     const config = parseEnv({
