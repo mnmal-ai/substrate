@@ -88,12 +88,26 @@ describe.skipIf(!POSTGRES_URL)('inspectSource (pg)', () => {
     expect((await inspectSource(sql)).vectorDims).toBe(768);
   });
 
+  it('finds a non-UUID edge to_id and refuses it under the UUID check', async () => {
+    await sql.unsafe(`INSERT INTO edges (id, from_ns, from_type, from_id, to_ns, to_type, to_id, field_name, policy, created_at)
+      VALUES ('44444444-4444-4444-8444-444444444444', 'a', 'T1', '11111111-1111-4111-8111-111111111111', 'a', 'T2', 'bad-to', 'f', 'orphan', now())`);
+    const inv = await inspectSource(sql);
+    expect(inv.nonUuidIds).toEqual([
+      { table: 'edges', column: 'to_id', namespace: 'a', type: 'T2', id: 'bad-to' }
+    ]);
+    const res = preflight(inv, target({ enforceUuidCheck: true }), {
+      ...opts,
+      skipTables: ['foo']
+    });
+    expect(res.refusals.join()).toContain('edges.to_id=bad-to');
+  });
+
   it('lists non-UUID ids', async () => {
     await sql.unsafe(
       `INSERT INTO rows (namespace, type, id, body) VALUES ('a', 'T1', 'not-a-uuid', '{}')`
     );
     expect((await inspectSource(sql)).nonUuidIds).toEqual([
-      { namespace: 'a', type: 'T1', id: 'not-a-uuid' }
+      { table: 'rows', column: 'id', namespace: 'a', type: 'T1', id: 'not-a-uuid' }
     ]);
   });
 });
@@ -132,7 +146,58 @@ function source(over: Partial<SourceInventory> = {}): SourceInventory {
   };
 }
 
+describe.skipIf(!POSTGRES_URL)('inspectSource, partitioned source (pg)', () => {
+  let schema: string;
+  let sql: Sql;
+
+  beforeEach(async () => {
+    const name = `apps/substrate-migrate-psrc-${randomBytes(4).toString('hex')}`;
+    schema = pgTestSchemaName(name);
+    sql = postgres(pgTestSchemaUrl(POSTGRES_URL as string, name), { max: 1, onnotice: () => {} });
+    await sql.unsafe(`CREATE SCHEMA ${schema}`);
+    await runMigrations(sql, { layout: 'partitioned' });
+    await sql.unsafe(`
+      INSERT INTO rows (namespace, type, id, body, deleted_at) VALUES
+        ('a', 'T1', '11111111-1111-4111-8111-111111111111', '{}', NULL),
+        ('a', 'T1', '22222222-2222-4222-8222-222222222222', '{}', now()),
+        ('a', 'T2', '33333333-3333-4333-8333-333333333333', '{}', NULL),
+        ('_system', 'Key', '55555555-5555-4555-8555-555555555555', '{"kid":"k"}', NULL),
+        ('retired', 'Old', '66666666-6666-4666-8666-666666666666', '{}', NULL)`);
+  });
+
+  afterEach(async () => {
+    await sql.unsafe(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+    await sql.end({ timeout: 5 });
+  });
+
+  it('inventories partitions as part of rows and passes preflight', async () => {
+    const inv = await inspectSource(sql);
+    expect(inv.layout).toBe('partitioned');
+    expect(inv.tables.filter((t) => t.startsWith('rows__'))).toEqual([]);
+    expect(inv.tables).toContain('rows');
+    expect(inv.tableBytes.rows).toBeGreaterThan(0);
+    expect(inv.appliedMigrations).toContain('0001p_partitioned_baseline');
+    expect(inv.types.map((t) => [t.namespace, t.type, t.live, t.deleted]).sort()).toEqual([
+      ['_system', 'Key', 1, 0],
+      ['a', 'T1', 1, 1],
+      ['a', 'T2', 1, 0],
+      ['retired', 'Old', 1, 0]
+    ]);
+    expect(preflight(inv, target(), opts).refusals).toEqual([]);
+  });
+});
+
 describe('preflight', () => {
+  it('ignores derived ledger versions', () => {
+    const src = source({ appliedMigrations: ['0001_baseline', 'list-gin:a:T:f'] });
+    expect(preflight(src, target(), opts).refusals).toEqual([]);
+  });
+
+  it('refuses a ledger baseline that disagrees with the detected layout', () => {
+    const src = source({ layout: 'partitioned' });
+    expect(preflight(src, target(), opts).refusals.join()).toContain('rows is partitioned');
+  });
+
   it('passes a clean source and plans engine tables in order with columns', () => {
     const res = preflight(source(), target(), opts);
     expect(res.refusals).toEqual([]);
@@ -165,10 +230,12 @@ describe('preflight', () => {
   });
 
   it('refuses non-UUID ids only when the check is on', () => {
-    const src = source({ nonUuidIds: [{ namespace: 'a', type: 'T', id: 'x' }] });
+    const src = source({
+      nonUuidIds: [{ table: 'rows', column: 'id', namespace: 'a', type: 'T', id: 'x' }]
+    });
     expect(preflight(src, target(), opts).refusals).toEqual([]);
     expect(preflight(src, target({ enforceUuidCheck: true }), opts).refusals.join()).toContain(
-      'a/T/x'
+      'rows.id=x'
     );
   });
 

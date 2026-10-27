@@ -1,6 +1,10 @@
 /** Pure preflight: turns a source inventory plus target facts into refusals, warnings and a copy plan. */
 
-import { getMigrationList, MIGRATE_STORE_MARKER_TABLE } from '@mnmal-ai/substrate-dataset-pg';
+import {
+  getMigrationList,
+  isDerivedMigration,
+  MIGRATE_STORE_MARKER_TABLE
+} from '@mnmal-ai/substrate-dataset-pg';
 import type { SourceInventory } from './source.js';
 
 export interface TargetFacts {
@@ -91,7 +95,9 @@ export function preflight(
       (m) => m.version
     )
   );
-  const unknownVersions = source.appliedMigrations.filter((v) => !known.has(v));
+  const unknownVersions = source.appliedMigrations.filter(
+    (v) => !known.has(v) && !isDerivedMigration(v)
+  );
   if (unknownVersions.length > 0) {
     refusals.push(
       `source ledger holds migrations this binary does not know: ${unknownVersions.join(', ')}`
@@ -107,13 +113,20 @@ export function preflight(
     refusals.push('target already holds data and was not created by migrate-store');
   }
 
+  const otherBaseline = baselines.find(
+    (b) => b !== getMigrationList(true, source.layout)[0]?.version
+  );
+  if (otherBaseline !== undefined && source.appliedMigrations.includes(otherBaseline)) {
+    refusals.push(`source ledger records ${otherBaseline} but rows is ${source.layout}`);
+  }
+
   if (target.enforceUuidCheck && source.nonUuidIds.length > 0) {
     const sample = source.nonUuidIds
       .slice(0, 5)
-      .map((r) => `${r.namespace}/${r.type}/${r.id}`)
+      .map((r) => `${r.table}.${r.column}=${r.id}`)
       .join(', ');
     refusals.push(
-      `source has non-UUID row ids while the target enforces the UUID check (first ${Math.min(5, source.nonUuidIds.length)} of ${source.nonUuidIds.length}+ shown): ${sample}`
+      `source has ${source.nonUuidIds.length} non-UUID id(s) while the target enforces the UUID check (first 5 shown): ${sample}`
     );
   }
 

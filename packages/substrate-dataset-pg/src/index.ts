@@ -29,6 +29,7 @@ export {
   deriveListIndexMigration,
   getMigrationList,
   type IndexedListField,
+  isDerivedMigration,
   MIGRATE_STORE_MARKER_TABLE,
   MigrationChecksumDriftError,
   type MigrationInput,

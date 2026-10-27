@@ -700,6 +700,11 @@ export function generatedIdentifier(
 
 const LIST_GIN_PREFIX = 'list-gin:';
 
+/** True for a ledger version written by `runDerivedMigrations`, which a store re-derives at boot. */
+export function isDerivedMigration(version: string): boolean {
+  return version.startsWith(LIST_GIN_PREFIX);
+}
+
 /**
  * Derives the tracked, idempotent CONCURRENTLY GIN migration for one indexed
  * field. The version key uses the raw ns/type/field.
