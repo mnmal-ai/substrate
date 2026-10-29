@@ -24,15 +24,26 @@ export {
 } from './index-reconciler.js';
 export { detectLayout, partitionName, type StorageLayout } from './layout.js';
 export {
+  assertNotMigrating,
+  assertStoreSchema,
   deriveListIndexMigration,
+  getMigrationList,
   type IndexedListField,
+  isDerivedMigration,
+  MIGRATE_STORE_MARKER_TABLE,
   MigrationChecksumDriftError,
   type MigrationInput,
+  NoCurrentSchemaError,
+  PLAIN_SCHEMA_NAME,
   pendingMigrations,
   type RunMigrationsOptions,
   runDerivedMigrations,
   runMigrations,
-  StorageLayoutMismatchError
+  StorageLayoutMismatchError,
+  StoreMigrationInProgressError,
+  UnsupportedSchemaNameError,
+  UUID_CHECK_MIGRATION,
+  UUID_REGEX
 } from './migrate.js';
 export {
   type FieldDefLookup,
@@ -45,7 +56,7 @@ export {
   PgIdempotencyStore,
   type PgIdempotencyStoreOptions
 } from './pg-idempotency-store.js';
-export { PgShortIdStore } from './pg-short-id-store.js';
+export { PgShortIdStore, seqName } from './pg-short-id-store.js';
 export type {
   PromotedBodyColumn,
   PromotedBodyColumnMap,

@@ -312,6 +312,11 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
         indexCapability,
         registerProposalMutations
       });
+    },
+    // Replay and proposals prepare storage in the background: abort it, so a long build cannot
+    // hold shutdown, and let it settle before the store closes.
+    async onStop(): Promise<void> {
+      await registryStore.stopStorage();
     }
   };
 }

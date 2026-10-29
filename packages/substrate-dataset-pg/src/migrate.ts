@@ -40,6 +40,9 @@ import {
   CONCURRENT_STATEMENTS as PARTITIONED_BASELINE_CONCURRENT,
   TX_STATEMENTS as PARTITIONED_BASELINE_TX
 } from './migrations/0001p_partitioned_baseline.js';
+
+export { UUID_REGEX } from './migrations/0002_uuid_format_check.js';
+
 import { TX_STATEMENTS as UUID_CHECK_TX } from './migrations/0002_uuid_format_check.js';
 import {
   CONCURRENT_STATEMENTS as SAFE_CASTS_CONCURRENT,
@@ -132,13 +135,16 @@ function normalise(input: MigrationInput): Migration {
  * Registered only when `SUBSTRATE_ENFORCE_UUID_CHECK=true`, because the test
  * corpus uses synthetic non-UUID ids.
  */
+/** The ledger version of the opt-in UUID-format CHECKs. */
+export const UUID_CHECK_MIGRATION = '0002_uuid_format_check';
+
 const UUID_CHECK_INPUT: MigrationInput = {
-  version: '0002_uuid_format_check',
+  version: UUID_CHECK_MIGRATION,
   txStatements: UUID_CHECK_TX
 };
 
 /**
- * @internal — the baseline for `layout`, then the gated 0002 when
+ * The baseline for `layout`, then the gated 0002 when
  * `SUBSTRATE_ENFORCE_UUID_CHECK=true` (or the explicit override is true), then
  * the migrations both layouts share. Used by `runMigrations` and exported for
  * unit tests.
@@ -169,6 +175,36 @@ export class StorageLayoutMismatchError extends Error {
         'restore the matching schema or migrate into a fresh one.'
     );
   }
+}
+
+/** The table `substrate-admin migrate-store` keeps its progress in, on the target. */
+export const MIGRATE_STORE_MARKER_TABLE = 'substrate_migrate_store_progress';
+
+export class StoreMigrationInProgressError extends Error {
+  override readonly name = 'StoreMigrationInProgressError';
+
+  constructor() {
+    super(
+      `${MIGRATE_STORE_MARKER_TABLE} exists: substrate-admin migrate-store has not finished ` +
+        'populating this store. Rerun substrate-admin migrate-store to finish or restart it, ' +
+        'then boot.'
+    );
+  }
+}
+
+/**
+ * Throws `StoreMigrationInProgressError` when the current schema carries the
+ * migrate-store marker. Compares `nspname` rather than casting, so a schema
+ * name that needs quoting still matches.
+ */
+export async function assertNotMigrating(sql: Sql): Promise<void> {
+  const [row] = await sql<Array<{ present: boolean }>>`
+    SELECT EXISTS (
+      SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE c.relname = ${MIGRATE_STORE_MARKER_TABLE} AND n.nspname = current_schema()
+    ) AS present
+  `;
+  if (row?.present === true) throw new StoreMigrationInProgressError();
 }
 
 /**
@@ -282,6 +318,31 @@ export interface RunMigrationsOptions {
   layout?: StorageLayout;
 }
 
+export class NoCurrentSchemaError extends Error {
+  override readonly name = 'NoCurrentSchemaError';
+
+  constructor() {
+    super(
+      'the search_path resolves to no existing schema, so there is nowhere to migrate. ' +
+        'Create the schema, or correct search_path in the connection options.'
+    );
+  }
+}
+
+/** The schema names substrate supports: plain lowercase identifiers that never need quoting. */
+export const PLAIN_SCHEMA_NAME = /^[a-z_][a-z0-9_]*$/;
+
+export class UnsupportedSchemaNameError extends Error {
+  override readonly name = 'UnsupportedSchemaNameError';
+
+  constructor(readonly schema: string) {
+    super(
+      `schema ${JSON.stringify(schema)} is not supported: substrate needs a plain lowercase ` +
+        'schema name (lowercase letters, digits and underscores, not starting with a digit).'
+    );
+  }
+}
+
 export async function runMigrations(sql: Sql, opts: RunMigrationsOptions = {}): Promise<void> {
   await assertServerVersion(sql);
   // Serialises concurrent boots, which otherwise race on every DDL step.
@@ -313,6 +374,16 @@ export async function pendingMigrations(sql: Sql): Promise<string[]> {
 
 const MIGRATION_LOCK_KEY = `hashtext('substrate-migrations:' || current_schema())`;
 
+/** Refuses a search_path that resolves to no schema, or a schema name that is not plain lowercase. */
+export async function assertStoreSchema(sql: Sql): Promise<void> {
+  const [current] = await sql<Array<{ schema: string | null }>>`SELECT current_schema() AS schema`;
+  // A NULL current_schema() makes the lock key NULL, which no poll ever acquires.
+  if (current?.schema == null) throw new NoCurrentSchemaError();
+  if (!PLAIN_SCHEMA_NAME.test(current.schema)) {
+    throw new UnsupportedSchemaNameError(current.schema);
+  }
+}
+
 /**
  * Runs `fn` while holding the migration advisory lock of the current schema on
  * one reserved connection.
@@ -326,6 +397,7 @@ export async function withMigrationLock<T>(
   sql: Sql,
   fn: (conn: ReservedSql) => Promise<T>
 ): Promise<T> {
+  await assertStoreSchema(sql);
   const lockConn = await sql.reserve();
   try {
     return await withPolledLock(sql, lockConn, 'migration', MIGRATION_LOCK_KEY, [], undefined, () =>
@@ -630,6 +702,11 @@ export function generatedIdentifier(
 }
 
 const LIST_GIN_PREFIX = 'list-gin:';
+
+/** True for a ledger version written by `runDerivedMigrations`, which a store re-derives at boot. */
+export function isDerivedMigration(version: string): boolean {
+  return version.startsWith(LIST_GIN_PREFIX);
+}
 
 /**
  * Derives the tracked, idempotent CONCURRENTLY GIN migration for one indexed

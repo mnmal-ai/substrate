@@ -103,7 +103,7 @@ describe.skipIf(POSTGRES_URL === undefined)(
     beforeAll(async () => {
       sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
       await sql`CREATE EXTENSION IF NOT EXISTS vector`;
-      await embeddingsMigration().apply({ sql, metric: () => {} });
+      await embeddingsMigration().apply({ sql, metric: () => {}, layout: null });
       await sql`DELETE FROM embeddings WHERE row_namespace = 'knn1558'`;
       await sql`DELETE FROM rows WHERE namespace = 'knn1558'`;
       store = new PgEmbeddingsStore({ sql });

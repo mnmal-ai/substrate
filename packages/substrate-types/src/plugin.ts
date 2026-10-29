@@ -718,6 +718,13 @@ export interface KernelPlugin {
   migrations?: KernelMigration[];
 
   /**
+   * Names of the tables (in the store's schema) this plugin keeps data in.
+   * `substrate-admin migrate-store` copies them alongside the engine's own
+   * tables and refuses a source table that nothing declares.
+   */
+  storeTables?: readonly string[];
+
+  /**
    * Filter operators contributed to the where-clause grammar. Each entry
    * registers a custom operator (e.g. `embeddingSimilar`) the engine's
    * query validator + substrate executor can dispatch to.
@@ -753,6 +760,12 @@ export interface KernelPlugin {
   onKernelReady?(ctx: KernelLifecycleContext): void | Promise<void>;
 
   /**
+   * Stops whatever `onKernelReady` started (timers, workers). The host calls
+   * it before it closes the store, and may call it more than once.
+   */
+  onKernelStop?(): void | Promise<void>;
+
+  /**
    * Contribute postWrite hooks for a coordinator namespace at install time.
    * Called by the engine ONCE per registered coordinator namespace, AFTER
    * substrate composition completes. Returned hooks are merged into the
@@ -785,6 +798,13 @@ export interface KernelMigrationContext {
    * binary is running against the in-memory dataset.
    */
   sql: unknown | null;
+  /**
+   * How `rows` is stored: `'partitioned'` (LIST(namespace) then LIST(type)) or
+   * `'legacy'` (one plain table). `null` on the in-memory dataset. PG refuses
+   * a unique index on a partitioned parent unless it includes every partition
+   * key column (`namespace`, `type`), so such DDL on `rows` must branch on this.
+   */
+  layout: 'legacy' | 'partitioned' | null;
   metric(name: string, payload?: unknown): void;
 }
 
@@ -909,5 +929,12 @@ export interface KernelLifecycleContext {
    * it with a test, or a rename makes the filter silently match nothing.
    */
   coordinatorNamespacesByPlugin?: readonly { plugin: string; namespace: string }[];
+  /**
+   * Whether this boot may start background work (timers, backfills). False
+   * when the host boots the store only to prepare or copy into it, as
+   * `substrate-admin migrate-store` does: do convergent reconciliation, start
+   * nothing that writes later.
+   */
+  background: boolean;
   metric(name: string, payload?: unknown): void;
 }

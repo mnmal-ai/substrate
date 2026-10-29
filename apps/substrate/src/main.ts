@@ -62,13 +62,10 @@
  * Env parsing is the pure `parseEnv(env)`; `runServe()` sequences the I/O.
  */
 
-import { compose, DEFAULT_NAMESPACE } from '@mnmal-ai/substrate-compose';
 import { validateHardDeleteEnv } from '@mnmal-ai/substrate-core';
-import { FastifySubstrateServer } from '@mnmal-ai/substrate-server-fastify';
-import type { NamespaceDefinition } from '@mnmal-ai/substrate-types';
 import { startBackground } from './serve/background.js';
 import { reportBoot } from './serve/boot-report.js';
-import { buildComposeOpts, indexDiskGuard } from './serve/compose-opts.js';
+import { bootStore } from './serve/boot-store.js';
 import {
   BINARY_CONTRACT_VERSION,
   type BridgeSpec,
@@ -80,22 +77,16 @@ import {
   parseEnv,
   refuseContractViolation
 } from './serve/config.js';
-import { createLateRefs, populateLateRefs } from './serve/late-refs.js';
-import { nlEngineAccess } from './serve/nl-engine.js';
-import { composeKernelPhase, loadServePlugins, resolvePluginDir } from './serve/plugins.js';
+import { resolvePluginDir } from './serve/plugins.js';
 import { installShutdown } from './serve/shutdown.js';
-import { buildRecallStores } from './serve/stores.js';
 import {
   buildBridgeRegistry,
   buildPluginDatasetMap,
   extractIndexedListFields,
   makeFieldDefLookupFactory,
-  makeTypeDefLookupFactory,
-  reconcileRegisteredStorage,
   redactStoreSpec,
   reportUnguardedIndexBuilds,
-  runDeferredIndexBuilds,
-  wireStore
+  runDeferredIndexBuilds
 } from './serve/wiring.js';
 
 /** Re-exported: tests import the serve surface from main.js. */
@@ -129,110 +120,29 @@ export async function runServe(): Promise<void> {
   validateHardDeleteEnv();
   const config = parseEnv(process.env);
 
-  // Namespace-def registry backing the per-namespace FieldDefLookup, populated
-  // once plugins load. Without it, pg orderBy/range/cursor on numeric/date
-  // body fields compares lexicographically ('10' < '2').
-  const nsDefs = new Map<string, NamespaceDefinition>();
-  const fieldDefLookupFor = makeFieldDefLookupFactory(nsDefs);
-
-  const diskGuard = await indexDiskGuard(config);
-  const refs = createLateRefs(config.auth);
-  // Types no definition declares resolve from the engine's registry once it exists.
-  const typeDefLookupFor = makeTypeDefLookupFactory(nsDefs, (ns) =>
-    refs.engineRef.current?.registryFor(ns)
-  );
-
+  const pluginDir = resolvePluginDir();
   const {
+    engine,
+    datasets: composedDatasets,
+    sql: storeSql,
+    server,
     dataset,
     edges,
     substrateNamespaceDataset,
-    sql: storeSql,
-    close: closeStore
-  } = await wireStore(config.storeSpec, fieldDefLookupFor, typeDefLookupFor, diskGuard);
-
-  const pluginDir = resolvePluginDir();
-  const { datasetRegistryRef, resolveDataset, engineRef, checkReadPolicy, checkWritePolicy } = refs;
-
-  const { recallStore, lexicalStore, clusterStore, rowsMissing } = buildRecallStores(
-    storeSql,
-    datasetRegistryRef,
-    resolveDataset
-  );
-
-  const { kernel, coordinators } = await loadServePlugins({
-    pluginDir,
-    kernelHostDeps: {
-      store: recallStore,
-      lexicalStore,
-      resolveDataset,
-      // substrate-recall activation spreading needs an EdgesStore for backward
-      // (inbound) edge lookups.
-      edges,
-      checkReadPolicy,
-      checkWritePolicy,
-      clusters: clusterStore,
-      rowsMissing,
-      nlEngine: nlEngineAccess(engineRef, config.trustedProxies, config.pageLimits)
-    },
-    contractCheck: {
-      hostVersion: BINARY_CONTRACT_VERSION,
-      onViolation: refuseContractViolation
-    },
-    nsDefs,
-    storeSql
-  });
-
-  // TLS must be supplied at FastifySubstrateServer construction — Fastify requires
-  // the https options when the instance is created, not at listen().
-  const server = new FastifySubstrateServer({
-    logger: false,
-    onWarn: (message) => process.stderr.write(`${message}\n`),
-    ...(config.tls !== null ? { tls: config.tls } : {}),
-    ...(config.cors !== null ? { cors: config.cors } : {}),
-    ...(config.bodyLimit !== null ? { bodyLimit: config.bodyLimit } : {})
-  });
-
-  const { composeOpts, idempotencyStore, sentinelClientConfig, bridgeRegistry, disposeBridges } =
-    await buildComposeOpts({
-      config,
-      server,
-      dataset,
-      edges,
-      coordinators,
-      storeSql,
-      substrateNamespaceDataset,
-      fieldDefLookupFor,
-      typeDefLookup: typeDefLookupFor(DEFAULT_NAMESPACE),
-      kernel,
-      diskGuard
-    });
-
-  await composeKernelPhase({
+    closeStore,
     kernel,
-    server,
-    storeSql,
     coordinators,
-    kernelAuth: refs.kernelAuth,
-    trustedProxies: config.trustedProxies,
-    datasetFor: (ns) => composeOpts.datasets?.[ns],
-    nsDefs
-  });
-
-  const {
-    engine,
-    keyRegistry,
+    recallStore,
+    lexicalStore,
+    idempotencyStore,
+    sentinelClientConfig,
+    bridgeRegistry,
+    disposeBridges,
     sweepDeps,
     scheduler,
-    datasets: composedDatasets,
     stop
-  } = await compose(composeOpts);
+  } = await bootStore({ config, pluginDir });
 
-  // Late-bound holders populate from the composed engine.
-  populateLateRefs(refs, composedDatasets, engine, keyRegistry);
-
-  // Types compose registered (`_system`, install-time, replayed proposals),
-  // after the engine ref is set so their fields resolve from its registry.
-  await reconcileRegisteredStorage(engine, composedDatasets, nsDefs);
   if (config.indexDiskPath === null) await reportUnguardedIndexBuilds(engine, composedDatasets);
 
   const info = await server.start({ host: config.host, port: config.port });

@@ -9,7 +9,8 @@
  * The CHECK is the primary enforcement: a direct `dataset.write` bypasses
  * autoCRUD's `randomUUID()` and must supply a UUID-shape id itself.
  */
-const UUID_REGEX = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
+/** The id shape the CHECKs enforce; migrate-store's preflight scans sources against it. */
+export const UUID_REGEX = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
 
 export const TX_STATEMENTS: ReadonlyArray<string> = [
   `DO $$ BEGIN

@@ -16,6 +16,7 @@ import {
   parseListArgs,
   runList
 } from './commands/list.js';
+import { migrateStoreCommand } from './commands/migrate-store.js';
 import { type OnboardIO, onboardCommand } from './commands/onboard.js';
 import {
   formatRegisterOutput,
@@ -83,7 +84,8 @@ export async function main(
       errOut(`unknown command: ${command}\n${USAGE}\n`);
       return 1;
     }
-    validateArgv(command, argv.slice(1));
+    // migrate-store validates its own argv, so a refusal echoing a pasted connection string is redacted.
+    if (command !== 'migrate-store') validateArgv(command, argv.slice(1));
     switch (command) {
       case 'bootstrap': {
         const parsed = parseBootstrapArgs(argv);
@@ -230,6 +232,8 @@ export async function main(
         out(formatUpdateOutput(result));
         return 0;
       }
+      case 'migrate-store':
+        return migrateStoreCommand(argv.slice(1), env, out, errOut);
       default:
         errOut(`unknown command: ${command}\n${USAGE}\n`);
         return 1;

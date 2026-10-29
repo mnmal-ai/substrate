@@ -33,7 +33,7 @@ beforeAll(async () => {
   sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
   await sql`DROP TABLE IF EXISTS recall_cluster_members CASCADE`;
   await sql`DROP TABLE IF EXISTS recall_clusters CASCADE`;
-  await recallClustersMigration({ dimension: DIM }).apply({ sql, metric: () => {} });
+  await recallClustersMigration({ dimension: DIM }).apply({ sql, metric: () => {}, layout: null });
 });
 
 afterAll(async () => {

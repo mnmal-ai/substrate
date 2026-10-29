@@ -294,9 +294,12 @@ export function createRecallPlugin(cfg: RecallPluginConfig): KernelPlugin {
           ...(cfg.runClusterer !== undefined ? { runClusterer: cfg.runClusterer } : {})
         };
 
+  let backfillTimer: ReturnType<typeof setInterval> | undefined;
+
   return {
     name: 'substrate-recall',
     contractVersion: '>=1.0.0-alpha.0 <2.0.0',
+    storeTables: ['embeddings', 'lexical', 'recall_clusters', 'recall_cluster_members'],
 
     // Every boot, not once: migrations are recorded by id, so a store
     // whose first boot had no embedder kept the 768 default forever. Only
@@ -340,12 +343,15 @@ export function createRecallPlugin(cfg: RecallPluginConfig): KernelPlugin {
       const intervalMs = cfg.embedBackfillIntervalMs ?? DEFAULT_EMBED_BACKFILL_INTERVAL_MS;
       const resolveDataset = cfg.resolveDataset;
       if (dimensionMismatch || intervalMs === 0 || resolveDataset === undefined) return;
+      // A boot that only prepares or copies the store (migrate-store) must not write embeddings into it.
+      if (!ctx.background) return;
       // shortcut: every process sharing the store runs this pass; the work is
       // idempotent, so duplicates cost embed calls only. Take a pg advisory lock
       // if a multi-process deployment makes that matter.
       const cursors = new Map<string, string>();
       let running = false;
-      setInterval(() => {
+      clearInterval(backfillTimer);
+      backfillTimer = setInterval(() => {
         if (running) return;
         running = true;
         runEmbedBackfill({
@@ -368,7 +374,13 @@ export function createRecallPlugin(cfg: RecallPluginConfig): KernelPlugin {
           .finally(() => {
             running = false;
           });
-      }, intervalMs).unref();
+      }, intervalMs);
+      backfillTimer.unref();
+    },
+
+    onKernelStop() {
+      clearInterval(backfillTimer);
+      backfillTimer = undefined;
     },
 
     migrations: [
