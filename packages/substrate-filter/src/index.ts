@@ -34,6 +34,7 @@ export {
   hasComputedFields,
   listExtensionOperators,
   registerExtensionOperator,
+  unregisterExtensionOperator,
   whereContainsExtensionOperator,
   whereContainsOperator
 } from './extension-operators.js';

@@ -8,6 +8,7 @@
 import { type ComposeResult, compose, DEFAULT_NAMESPACE } from '@mnmal-ai/substrate-compose';
 import type { Engine } from '@mnmal-ai/substrate-core';
 import { assertNotMigrating, type StorageLayout } from '@mnmal-ai/substrate-dataset-pg';
+import { listExtensionOperators, unregisterExtensionOperator } from '@mnmal-ai/substrate-filter';
 import { FastifySubstrateServer } from '@mnmal-ai/substrate-server-fastify';
 import type { NamespaceDefinition } from '@mnmal-ai/substrate-types';
 import type { Sql } from 'postgres';
@@ -171,6 +172,14 @@ export async function bootStore(opts: BootStoreOptions): Promise<BootedStore> {
       });
     opened.push(disposeBridges);
 
+    // Filter operators live in a process-wide registry. Close takes back this
+    // boot's, so a later boot in the same process can register them again.
+    const operatorsBefore = new Set(listExtensionOperators());
+    opened.push(() => {
+      for (const name of listExtensionOperators()) {
+        if (!operatorsBefore.has(name)) unregisterExtensionOperator(name);
+      }
+    });
     await composeKernelPhase({
       kernel,
       server,

@@ -6,6 +6,8 @@
  */
 
 import { randomBytes } from 'node:crypto';
+import { rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import {
   detectLayout,
   MIGRATE_STORE_MARKER_TABLE,
@@ -14,12 +16,14 @@ import {
   UnsupportedSchemaNameError
 } from '@mnmal-ai/substrate-dataset-pg';
 import { pgTestSchemaName, pgTestSchemaUrl } from '@mnmal-ai/substrate-dataset-pg/testing';
+import { listExtensionOperators } from '@mnmal-ai/substrate-filter';
 import { FastifySubstrateServer } from '@mnmal-ai/substrate-server-fastify';
 import postgres, { type Sql } from 'postgres';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { bootStore } from '../src/serve/boot-store.js';
 import { parseEnv } from '../src/serve/config.js';
 import { wireStore } from '../src/serve/wiring.js';
+import { makePluginDir } from './_fixtures/migrate-store.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 
@@ -90,6 +94,34 @@ describe.skipIf(!POSTGRES_URL)('bootStore (pg)', () => {
     } finally {
       if (previous === undefined) delete process.env.SUBSTRATE_STORAGE_LAYOUT;
       else process.env.SUBSTRATE_STORAGE_LAYOUT = previous;
+    }
+  });
+
+  it('boots twice in one process when a kernel plugin registers a filter operator', async () => {
+    const pluginDir = await makePluginDir();
+    try {
+      // An embedder makes recall register embeddingSimilar; the boot never calls it.
+      await writeFile(
+        join(pluginDir, 'substrate-recall.config.json'),
+        JSON.stringify({
+          embedder: {
+            kind: 'ollama',
+            baseUrl: 'http://127.0.0.1:9',
+            model: 'm',
+            dimension: 768,
+            timeoutMs: 100
+          }
+        })
+      );
+      const config = parseEnv({ SUBSTRATE_DATABASE_URL: url, ...ACTOR });
+      for (let i = 0; i < 2; i++) {
+        const booted = await bootStore({ config, pluginDir, layout, background: false });
+        expect(listExtensionOperators()).toContain('embeddingSimilar');
+        await booted.close();
+        expect(listExtensionOperators()).not.toContain('embeddingSimilar');
+      }
+    } finally {
+      await rm(pluginDir, { recursive: true, force: true });
     }
   });
 
