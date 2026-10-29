@@ -66,9 +66,11 @@ jobs:
   # The pg-gated suites are the only checks on the migrations. The role is
   # least-privilege because the test guards refuse a superuser. Credentials are
   # literals scoped to this throwaway service container.
+  # PRs only: a push to main carries code its PR run already tested, and a
+  # release's publish job runs these suites itself before anything irreversible.
   pg:
     name: Postgres-gated tests
-    if: github.event.pull_request.draft != true
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     permissions:
       contents: read
