@@ -212,9 +212,22 @@ export async function reconcileTypeIndexes(
   if (first.length > 0) {
     const target = await targetTable(sql, args);
     const pass = async (conn: ReservedSql): Promise<IndexState[]> => {
-      const desired = await deparse(conn, first);
+      // A non-unique index not yet built is pending without being deparsed: its
+      // columns may come from a kernel migration, which runs after this pass.
+      const probed: Spec[] = [];
+      for (const spec of first) {
+        if (spec.unique || (await describeIndex(conn, spec.name, 'current')) !== undefined) {
+          probed.push(spec);
+        }
+      }
+      const desired = await deparse(conn, probed);
       const states: IndexState[] = [];
-      for (const [i, spec] of first.entries()) {
+      for (const spec of first) {
+        const i = probed.indexOf(spec);
+        if (i < 0) {
+          states.push(indexState(spec, 'pending', 'unchanged'));
+          continue;
+        }
         const d = desired[i] as Described;
         const held = await heldAsDeclared(conn, target, spec, d);
         states.push(

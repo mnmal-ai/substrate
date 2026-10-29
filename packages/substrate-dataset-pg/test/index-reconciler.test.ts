@@ -124,6 +124,25 @@ describe.skipIf(!POSTGRES_URL)('reconcileTypeIndexes', () => {
     expect(states.find((s) => s.name === kid)).toMatchObject({ state: 'pending', unique: false });
   });
 
+  it('reports an unbuilt non-unique index on a promoted column a kernel migration has yet to add as pending in the unique pass', async () => {
+    const { ns } = await fixture();
+    const states = await reconcileTypeIndexes(
+      sql,
+      {
+        namespace: ns,
+        type: TYPE,
+        layout: LAYOUT,
+        fields: { ...fields, phase: { kind: 'scalar', type: 'string', indexed: true } },
+        indexes: [],
+        orderedBy: DEFAULT_ORDERED_BY,
+        promotedColumns: { phase: { column: 'not_yet_added', kind: 'text' } }
+      },
+      { only: 'unique' }
+    );
+    const phase = generatedIdentifier(ns, TYPE, 'phase', 'idx');
+    expect(states.find((s) => s.name === phase)).toMatchObject({ state: 'pending', unique: false });
+  });
+
   it('creates a declared composite, then leaves it unchanged', async () => {
     const { ns } = await fixture();
     const name = `rows_c_${hex()}`;
