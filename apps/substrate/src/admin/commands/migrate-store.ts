@@ -51,6 +51,8 @@ export interface MigrateStoreDeps {
   notice?: (line: string) => void;
   /** Test hook: runs on the target between the copy (and index builds) and verification. */
   beforeVerify?: (target: Sql) => Promise<void>;
+  /** Test hook: the index build pass, {@link buildDeferredIndexes} when unset. */
+  buildIndexes?: typeof buildDeferredIndexes;
 }
 
 export interface MigrateStoreReport {
@@ -382,7 +384,9 @@ export async function runMigrateStore(
     const booted = target;
     const indexFailures = args.skipIndexBuild
       ? []
-      : await phase('indexes', () => buildDeferredIndexes(booted.engine, booted.datasets));
+      : await phase('indexes', () =>
+          (deps.buildIndexes ?? buildDeferredIndexes)(booted.engine, booted.datasets)
+        );
 
     report.keptSeeds = keptSeeds.map((k) => `${k.namespace}/${k.type}/${k.id}`);
     report.defaulted = defaulted.map((d) => `${d.namespace}/${d.type}`);
@@ -437,7 +441,7 @@ async function invalidIndexes(sql: Sql): Promise<string[]> {
     ORDER BY c.relname`;
   return rows.map(
     (r) =>
-      `index ${r.name} on ${r.tbl} is INVALID: rerun with --verify-only (without --skip-index-build), which rebuilds it`
+      `index ${r.name} on ${r.tbl} is INVALID: rerun with --verify-only (without --skip-index-build), which rebuilds an engine index; drop or REINDEX any other INVALID index by hand`
   );
 }
 
@@ -504,7 +508,7 @@ async function sessionsOn(sql: Sql, s: Session): Promise<number> {
   return r?.n ?? 0;
 }
 
-async function targetFacts(
+export async function targetFacts(
   sql: Sql,
   env: AdminCliEnv,
   diskPath: string | undefined
@@ -533,8 +537,11 @@ async function targetFacts(
         WHERE attrelid = to_regclass(quote_ident(${facts.schema}) || '.embeddings')
           AND attname = 'embedding' AND NOT attisdropped`
     : [];
+  // Only extensions whose schema is on the search_path: elsewhere, their types do not resolve.
   const extensions = await sql<{ name: string; version: string }[]>`
-    SELECT extname AS name, extversion AS version FROM pg_extension`;
+    SELECT e.extname AS name, e.extversion AS version
+    FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace
+    WHERE n.nspname = ANY (current_schemas(true))`;
   let freeBytes: number | null = null;
   if (diskPath !== undefined && diskPath.length > 0 && diskPath !== 'off') {
     const s = await statfs(diskPath).catch((err: NodeJS.ErrnoException) => {
@@ -628,7 +635,7 @@ export async function migrateStoreCommand(
   env: AdminCliEnv,
   out: (s: string) => void,
   errOut: (s: string) => void,
-  hooks: Pick<MigrateStoreDeps, 'beforeVerify'> = {}
+  hooks: Pick<MigrateStoreDeps, 'beforeVerify' | 'buildIndexes'> = {}
 ): Promise<number> {
   const vars = env as Record<string, string | undefined>;
   const names = new Set([DEFAULT_FROM_ENV, DEFAULT_TO_ENV, 'SUBSTRATE_DATABASE_URL']);

@@ -8,6 +8,7 @@ import { migrateStoreCommand } from '../src/admin/commands/migrate-store.js';
 import { main } from '../src/admin/main.js';
 import { bootStore } from '../src/serve/boot-store.js';
 import { parseEnv } from '../src/serve/config.js';
+import { buildDeferredIndexes } from '../src/serve/wiring.js';
 import { openSchemas, POSTGRES_URL, type Schemas } from './_fixtures/migrate-store.js';
 
 const SECRET_URL = 'postgres://someone:hunter2secret@db.example:5432/store';
@@ -241,6 +242,28 @@ describe.skipIf(!POSTGRES_URL)('migrate-store (pg)', () => {
         SELECT i.indisvalid AS ok FROM pg_index i
         WHERE i.indexrelid = to_regclass(${`${s.tgtSchema}.${broken}`})`;
       expect(valid?.ok).toBe(true);
+    } finally {
+      await s.close();
+    }
+  }, 300_000);
+
+  it('names a failed index build as a mismatch and keeps the marker', async () => {
+    const s = await openSchemas('legacy');
+    try {
+      const line =
+        'indexes of a/T1 were not built and will be retried by the next build pass: boom';
+      const r = await run(s, ['--json'], {
+        buildIndexes: async (...a: Parameters<typeof buildDeferredIndexes>) => [
+          ...(await buildDeferredIndexes(...a)),
+          line
+        ]
+      });
+      expect(r.code, r.out + r.err).toBe(3);
+      const report = JSON.parse(r.out) as { mismatches: { check: string; detail: string }[] };
+      expect(report.mismatches).toEqual([
+        expect.objectContaining({ check: 'storage', detail: expect.stringContaining(line) })
+      ]);
+      expect(await markerPresent(s)).toBe(true);
     } finally {
       await s.close();
     }

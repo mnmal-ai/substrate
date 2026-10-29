@@ -72,7 +72,7 @@ A type declared `ordering: 'visible'` gets `rows.seq` from `visible_seqs`, assig
 `migrate-store` copies a store into a fresh, empty, partitioned PostgreSQL 18 store, builds its indexes and verifies the copy against the source. It is the way to PG 18 and to the partitioned layout in one step, and the source is never written, so rolling back is pointing at it again. The source may be PG 17 or later, on either layout.
 
 1. Provision an empty PG 18 database and prepare it as a superuser. The command never runs these steps itself:
-   - If recall is used, run `CREATE EXTENSION vector;` in the target database. A target where a copied table needs an extension that is not installed there is refused. Install the same pgvector version as the source's: a different version is only a warning, but verification of `embeddings` may then fail.
+   - If recall is used, run `CREATE EXTENSION vector;` in the target database. Install it in `public` or the target schema, where the target's search_path finds it. A target where a copied table needs an extension that is not installed on that path is refused. Install the same pgvector version as the source's: a different version is only a warning, but verification of `embeddings` may then fail.
    - Make the target role the owner of the database, or of the schema it will use. Since PostgreSQL 15, `public` no longer grants `CREATE` to every role.
    - Never boot `serve` against the target before migrating. A target that already holds data is refused.
 2. Load the service's environment into the shell that runs the command, so the plugin directory (`SUBSTRATE_PLUGIN_DIR` and the plugins' own settings), `SUBSTRATE_ENFORCE_UUID_CHECK` and `SUBSTRATE_PARTITION_BUDGET` match what `serve` will use. The target is prepared with the same migrations and plugins, and a source with the UUID check is refused when the target would not enforce it.
@@ -85,7 +85,7 @@ A type declared `ordering: 'visible'` gets `rows.seq` from `visible_seqs`, assig
 
 Recovering a run that failed:
 
-- If the index builds or the verification failed (exit `3`), run the command again with `--verify-only`. It builds the indexes first, dropping and rebuilding any that a failed build left INVALID, then verifies. Each failed or INVALID index is named in the report as a `storage` mismatch until it builds.
+- If the index builds or the verification failed (exit `3`), run the command again with `--verify-only`. It builds the indexes first, dropping and rebuilding any that a failed build left INVALID, then verifies. Each failed or INVALID index is named in the report as a `storage` mismatch until it builds. Only engine indexes are rebuilt: drop or `REINDEX` any other INVALID index in the target schema by hand.
 - A full rerun, without `--verify-only`, restarts the copy from the beginning.
 - After a late crash on a large store, dropping and recreating the target database (then preparing it again as in step 1) is faster than a full rerun, which first empties every copied table.
 

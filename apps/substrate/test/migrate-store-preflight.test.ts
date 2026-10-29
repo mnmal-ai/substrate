@@ -8,6 +8,7 @@ import { runMigrations } from '@mnmal-ai/substrate-dataset-pg';
 import { pgTestSchemaName, pgTestSchemaUrl } from '@mnmal-ai/substrate-dataset-pg/testing';
 import postgres, { type Sql } from 'postgres';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { targetFacts } from '../src/admin/commands/migrate-store.js';
 import {
   type PreflightOptions,
   preflight,
@@ -86,6 +87,13 @@ describe.skipIf(!POSTGRES_URL)('inspectSource (pg)', () => {
   it('reads the recall dimension from the embedding column', async () => {
     await sql.unsafe('CREATE TABLE embeddings (id int, embedding vector(768))');
     expect((await inspectSource(sql)).vectorDims).toBe(768);
+  });
+
+  it('counts a target extension only when its schema is on the search_path', async () => {
+    // vector is installed in public, which the test connection's search_path includes.
+    expect((await targetFacts(sql, {}, undefined)).extensions.vector).toBeDefined();
+    await sql.unsafe(`SET search_path TO ${schema}`);
+    expect((await targetFacts(sql, {}, undefined)).extensions.vector).toBeUndefined();
   });
 
   it('finds a non-UUID edge to_id and refuses it under the UUID check', async () => {

@@ -135,8 +135,11 @@ function normalise(input: MigrationInput): Migration {
  * Registered only when `SUBSTRATE_ENFORCE_UUID_CHECK=true`, because the test
  * corpus uses synthetic non-UUID ids.
  */
+/** The ledger version of the opt-in UUID-format CHECKs. */
+export const UUID_CHECK_MIGRATION = '0002_uuid_format_check';
+
 const UUID_CHECK_INPUT: MigrationInput = {
-  version: '0002_uuid_format_check',
+  version: UUID_CHECK_MIGRATION,
   txStatements: UUID_CHECK_TX
 };
 

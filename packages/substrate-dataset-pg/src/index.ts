@@ -42,6 +42,7 @@ export {
   StorageLayoutMismatchError,
   StoreMigrationInProgressError,
   UnsupportedSchemaNameError,
+  UUID_CHECK_MIGRATION,
   UUID_REGEX
 } from './migrate.js';
 export {

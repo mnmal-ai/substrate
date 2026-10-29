@@ -180,7 +180,7 @@ export function preflight(
     const [from, to] = [source.extensions[ext], target.extensions[ext]];
     if (to === undefined) {
       refusals.push(
-        `table "${t.name}" needs extension "${ext}", which is not installed in the target database; run CREATE EXTENSION ${ext}; in the target database as a superuser`
+        `table "${t.name}" needs extension "${ext}", which is not installed in a schema on the target's search_path; run CREATE EXTENSION ${ext}; in the target database as a superuser, in public or the target schema`
       );
     } else if (from !== undefined && from !== to) {
       // A warning: the two versions may store and render values identically.
