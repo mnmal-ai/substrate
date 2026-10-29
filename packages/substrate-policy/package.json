@@ -1,6 +1,6 @@
 {
   "name": "@mnmal-ai/substrate-policy",
-  "version": "1.0.0-alpha.9",
+  "version": "1.0.0-alpha.10",
   "private": true,
   "description": "Declarative policy combinators for Substrate autoCRUD: allow/deny rules over the request context.",
   "license": "Apache-2.0",

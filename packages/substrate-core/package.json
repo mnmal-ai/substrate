@@ -1,6 +1,6 @@
 {
   "name": "@mnmal-ai/substrate-core",
-  "version": "1.0.0-alpha.9",
+  "version": "1.0.0-alpha.10",
   "private": true,
   "description": "Substrate engine core: registry, resolver dispatch, plugin loader, sweep runtime.",
   "license": "Apache-2.0",

@@ -1,6 +1,6 @@
 {
   "name": "@mnmal-ai/substrate-config",
-  "version": "1.0.0-alpha.9",
+  "version": "1.0.0-alpha.10",
   "description": "Shared TypeScript, Biome, and tsdown configs for the Substrate workspace.",
   "license": "Apache-2.0",
   "repository": {
