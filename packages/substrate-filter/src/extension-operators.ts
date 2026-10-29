@@ -124,6 +124,16 @@ export function listExtensionOperators(): ReadonlyArray<string> {
   return Array.from(extensionOperators.keys()).sort();
 }
 
+/** Remove `name` and the computed fields it owns. A no-op when `name` is not registered. */
+export function unregisterExtensionOperator(name: string): void {
+  const op = extensionOperators.get(name);
+  if (op === undefined) return;
+  extensionOperators.delete(name);
+  for (const cf of op.computedFields ?? []) {
+    if (computedFieldOwners.get(cf) === name) computedFieldOwners.delete(cf);
+  }
+}
+
 /** Clear all registered extension operators. Intended for test isolation. */
 export function clearExtensionOperators(): void {
   extensionOperators.clear();
