@@ -471,4 +471,24 @@ describe('never resolved on a silent assumption', () => {
       'window:past 2 days on createdAt (default)'
     );
   });
+
+  it('two compared mentions of one walked type ask: one row meeting both, or two', () => {
+    const r = card('cards with an offer over 50 and an offer under 20');
+    expect(r.status).toBe('clarify');
+    expect(r.reason).toContain('"offer over 50" and "offer under 20"');
+    expect(r.reason).toContain('one Observation meeting both, or two different Observation rows');
+    // One mention with one comparison still composes.
+    expect(card('cards with an offer over 50').status).toBe('resolved');
+  });
+
+  it('a seed window on createdAt in a composed reading is labelled (default)', () => {
+    // The window is nearest "cards" (the seed); Cert has no timeField ruling.
+    const r = card('in the past 2 days how many cards had an asking price');
+    const c = r.candidates[0];
+    const where = (c?.frame['cards/Cert']?.params as { where: { AND: unknown[] } }).where;
+    expect(where.AND).toContainEqual({ createdAt: PAST_2_DAYS });
+    expect(c?.plan.map((p) => p.path[p.path.length - 1])).toContain(
+      'window:past 2 days on createdAt (default)'
+    );
+  });
 });

@@ -444,7 +444,15 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
       });
   }
 
-  // Comparisons.
+  // Comparisons. Two mentions of one walked type each compared are two existentials,
+  // never merged into one walk: which reading was meant is asked.
+  const mentionOf = new Map<Walk, { at: number; text: string }>();
+  const mention = (w: Walk, p: PhraseClaim, text: string) => {
+    const known = mentionOf.get(w);
+    if (known === undefined) mentionOf.set(w, { at: p.at[0], text });
+    else if (known.at !== p.at[0])
+      clarify ??= `"${known.text}" and "${text}": one ${w.type} meeting both, or two different ${w.type} rows?`;
+  };
   for (const c of claims.compares) {
     if (c.cmp.invalid !== undefined) {
       dropped.push({ span: c.span, reason: c.cmp.invalid });
@@ -487,6 +495,7 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
           dropped.push({ span: c.span, reason: `its operand "${o.span}" was dropped` });
           continue;
         }
+        mention(ow, o, `${c.span} ${o.span}`);
         if (ow.path.length > 1 || ow.pick !== undefined) {
           dropped.push({
             span: `${c.span} ${o.span}`,
@@ -516,8 +525,10 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
         }
       ]
     };
-    if (isWalk(sh)) sh.filters.push(part);
-    else seedParts.push(part);
+    if (isWalk(sh)) {
+      mention(sh, s, `${s.span} ${c.span}`);
+      sh.filters.push(part);
+    } else seedParts.push(part);
   }
 
   // The time window binds to the type mentioned nearest it; a tie between two types asks.
