@@ -319,9 +319,16 @@ export class MemoryDataset implements Dataset {
           const [op, [a, b]] = Object.entries(spec)[0] as ['diff' | 'ratio', [string, string]];
           const x = operand(a);
           const y = operand(b);
-          const v =
-            x === null || y === null ? null : op === 'diff' ? x - y : y === 0 ? null : x / y;
-          return [`$${name}`, v] as const;
+          if (x === null || y === null || (op === 'ratio' && y === 0)) {
+            return [`$${name}`, null] as const;
+          }
+          const v = op === 'diff' ? x - y : x / y;
+          // Shared with pg's buildDerive: a magnitude outside [1e-300, 1e300] is
+          // NULL, so overflow and underflow never reach a sort; 0 stays only when
+          // exact (equal diff operands, or a zero numerator).
+          const exactZero = op === 'diff' ? x === y : x === 0;
+          const m = Math.abs(v);
+          return [`$${name}`, m <= 1e300 && (m >= 1e-300 || exactZero) ? v : null] as const;
         });
         const copy: Row = { ...row, ...Object.fromEntries(values) };
         original.set(copy, row);

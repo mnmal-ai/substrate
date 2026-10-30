@@ -1300,6 +1300,40 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('derived ordering (pg)', () => {
     }
   });
 
+  it('a derive outside [1e-300, 1e300] is null and pages, never a float8 error', async () => {
+    // DIFF is ask - grade, RATIO ask / grade.
+    const edge = [
+      { id: 'f1', grade: -1e308, ask: 1e308 }, // diff overflows; ratio -1
+      { id: 'f2', grade: 1e300, ask: 1e-300 }, // diff -1e300; ratio underflows
+      { id: 'f3', grade: 0, ask: 1e301 }, // diff above 1e300; zero divisor
+      { id: 'f4', grade: 5, ask: 0 }, // diff -5; ratio exactly 0
+      { id: 'f5', grade: 5, ask: 5 }, // diff exactly 0; ratio 1
+      { id: 'f6', grade: 1e-10, ask: 1e300 }, // diff 1e300; ratio overflows the log guard
+      { id: 'f7', grade: 1, ask: 3e-301 }, // diff -1; ratio just below 1e-300
+      { id: 'f8', grade: -1.5e307, ask: 1.5e307 }, // diff past the operand guard; ratio -1
+      { id: 'f9', grade: 0, ask: 5e-324 }, // diff below 1e-300; zero divisor
+      { id: 'f10', grade: 4, ask: -2 }, // diff -6; ratio -0.5
+      { id: 'f11', grade: 2e307, ask: 1e307 } // one sign: diff -1e307 is null; ratio 0.5
+    ];
+    await load({ Cert: edge.map((c) => ({ ...c, minObs: 1 })) });
+    for (const dir of ['asc', 'desc'] as const) {
+      for (const derive of [DIFF, RATIO]) {
+        const key = `$${Object.keys(derive)[0]}`;
+        const base = { where: ours, derive, orderBy: [{ [key]: dir }] };
+        const full = (await same('Cert', base)).map(name);
+        const paged = await pages(pg, { ...base, limit: 2 });
+        expect(paged, `${key} ${dir}`).toEqual(await pages(mem, { ...base, limit: 2 }));
+        expect(paged.ids.flat()).toEqual(full);
+      }
+    }
+    const head = async (derive: NonNullable<ReadParams['derive']>, key: string) =>
+      (await same('Cert', { where: ours, derive, orderBy: [{ [key]: 'asc' }], limit: 6 })).map(
+        name
+      );
+    expect(await head(DIFF, '$d')).toEqual(['f2', 'f10', 'f4', 'f7', 'f5', 'f6']);
+    expect((await head(RATIO, '$q')).sort()).toEqual(['f1', 'f10', 'f11', 'f4', 'f5', 'f8']);
+  });
+
   it('derive keyset pages agree with the unpaged read while unrelated rows change', async () => {
     await load({ Cert: certs() });
     const unpaged = { where: ours, derive: DIFF, orderBy: [{ $d: 'desc' as const }] };
