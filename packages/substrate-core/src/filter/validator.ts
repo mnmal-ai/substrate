@@ -956,7 +956,8 @@ export function validateFilter(input: ValidateFilterInput): void {
     bindings: new Map([['$', fields]]),
     hidden: new Set(),
     underOrNot: false,
-    groupBound: false
+    groupBound: false,
+    frameBindings: { count: 0 }
   };
   const h = frameHelpers(input.capabilities);
   const aggs = validateSelection(input.fields, ['fields'], seed, h);

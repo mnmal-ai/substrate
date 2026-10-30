@@ -242,6 +242,24 @@ describe('walk validation', () => {
     ).toEqual({ code: 'walk_binding', path: ['where', 'AND', '1', 'ask', 'gte'] });
   });
 
+  it('caps jointly bound walks at 3 per AND group and 6 per frame', () => {
+    const bound = (...names: string[]) => names.map((as) => listing({ as }));
+    expect(() => check({ AND: bound('A', 'B', 'C') })).not.toThrow();
+    expect(refusal({ AND: bound('A', 'B', 'C', 'D') })).toEqual({
+      code: 'walk_binding',
+      path: ['where']
+    });
+    // 7 across three groups: each group is under the cap, the frame is not.
+    expect(
+      refusal({
+        OR: [{ AND: bound('A', 'B', 'C') }, { AND: bound('D', 'E', 'F') }, { AND: bound('G') }]
+      })
+    ).toEqual({ code: 'walk_binding', path: ['where', 'OR', '2'] });
+    expect(() =>
+      check({ OR: [{ AND: bound('A', 'B', 'C') }, { AND: bound('D', 'E', 'F') }] })
+    ).not.toThrow();
+  });
+
   it('refuses a $ref to an unknown binding or field', () => {
     expect(refusal({ ask: { gte: { $ref: 'X.price' } } })).toEqual({
       code: 'ref_unresolved',

@@ -30,6 +30,7 @@ import {
   getFieldValue,
   isDateField,
   preResolveExtensionOperatorsDetailed,
+  WALK_EVALUATION_BUDGET,
   type WalkContext
 } from '@mnmal-ai/substrate-filter';
 import type {
@@ -81,6 +82,11 @@ export interface MemoryDatasetOptions {
    * gets `_metadata.seq` on insert, as the pg dataset's lookup does.
    */
   typeDefLookup?: (type: string, namespace: string) => { ordering?: 'visible' } | undefined;
+  /**
+   * Internal: binding assignments one read's walks may try before refusing
+   * `walk_budget_exceeded`. Defaults to `WALK_EVALUATION_BUDGET`; tests lower it.
+   */
+  walkBudget?: number;
 }
 
 const RESERVED_DELETED_AT = '_deletedAt';
@@ -115,6 +121,7 @@ export class MemoryDataset implements Dataset {
   readonly #fieldDefLookup: MemoryDatasetOptions['fieldDefLookup'];
   // TS-private, not `#`: write() must work through a Proxy, as `store` does.
   private readonly typeDefLookup: MemoryDatasetOptions['typeDefLookup'];
+  private readonly walkBudget: number;
   /** Last seq assigned per visible-order type; never decreases, as pg's `visible_seqs`. */
   private seqs = new Map<string, number>();
   // Full builtin operator set — everything the validator recognises. A
@@ -162,6 +169,7 @@ export class MemoryDataset implements Dataset {
     this.txScopeId = options.txScopeId ?? `mem:${randomUUID()}`;
     this.#fieldDefLookup = options.fieldDefLookup;
     this.typeDefLookup = options.typeDefLookup;
+    this.walkBudget = options.walkBudget ?? WALK_EVALUATION_BUDGET;
   }
 
   private bucket(type: string): Map<Id, Row> {
@@ -315,6 +323,7 @@ export class MemoryDataset implements Dataset {
     return {
       type,
       bindings: new Map(),
+      budget: { left: this.walkBudget },
       fieldDefOf: (t) => (field) => lookup?.(t, field),
       get: (t, id) => live(this.store.get(t)?.get(id)),
       neighbours: (t, field, id) => {

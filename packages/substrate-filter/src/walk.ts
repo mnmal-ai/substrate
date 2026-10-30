@@ -8,7 +8,15 @@
  * never true. The tree is assumed validated (substrate-core walk-validator).
  */
 
-import type { RefOperand, Row, WalkNode, WalkPick, WhereClause } from '@mnmal-ai/substrate-types';
+import {
+  type RefOperand,
+  ResolverFrameError,
+  type Row,
+  WALK_BUDGET_EXCEEDED,
+  type WalkNode,
+  type WalkPick,
+  type WhereClause
+} from '@mnmal-ai/substrate-types';
 import {
   asSortValue,
   compareFilterValues,
@@ -34,7 +42,12 @@ export interface WalkContext {
   seed: Row;
   /** Rows bound by enclosing `any` walks' `as`. */
   bindings: ReadonlyMap<string, Row>;
+  /** Binding assignments this read may still try, shared by every seed row of the read. */
+  budget: { left: number };
 }
+
+/** Default per-read cap on joint-quantification assignments (each is one binding tried). */
+export const WALK_EVALUATION_BUDGET = 1_000_000;
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -147,6 +160,12 @@ export function evaluateGroup(
     if (i === group.length) return evaluateMembers(row, where, fieldDefOf, ctx, bound);
     const name = names[i] ?? '';
     for (const n of hops[i]?.rows ?? []) {
+      if (--walk.budget.left < 0) {
+        throw new ResolverFrameError(
+          WALK_BUDGET_EXCEEDED,
+          'the walk tried more binding combinations than one read allows; narrow the walks or bind fewer of them'
+        );
+      }
       bindings.set(name, n);
       const ok = group.every((g, j) => {
         if (checkAt[j] !== i || g.where === undefined) return true;

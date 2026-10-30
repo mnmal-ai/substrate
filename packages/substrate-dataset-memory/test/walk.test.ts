@@ -29,8 +29,12 @@ const fieldDefLookup = (type: string, field: string): FieldDef | undefined =>
 
 type Rows = Record<string, Array<Record<string, unknown>>>;
 
-async function dataset(rows: Rows): Promise<MemoryDataset> {
-  const ds = new MemoryDataset({ namespace: 'cards', fieldDefLookup });
+async function dataset(rows: Rows, walkBudget?: number): Promise<MemoryDataset> {
+  const ds = new MemoryDataset({
+    namespace: 'cards',
+    fieldDefLookup,
+    ...(walkBudget !== undefined ? { walkBudget } : {})
+  });
   for (const [type, list] of Object.entries(rows)) await ds.write(type, list as never);
   return ds;
 }
@@ -392,5 +396,61 @@ describe('memory edge walks', () => {
       ]
     } as WhereClause;
     expect(await ids(ds, 'Cert', branch)).toEqual(['c2', 'c3']);
+  });
+
+  it('$ref arithmetic is float64', async () => {
+    // Ruling: IEEE double defines $ref arithmetic (pg casts both sides to
+    // float8), so 0.1 * 3 is 0.30000000000000004, not 0.3.
+    const ds = await dataset({
+      Cert: [{ id: 'c1', ask: 0.1 }],
+      Observation: [{ id: 'o1', cert: 'c1', price: 0.3 }]
+    });
+    const cmp = (op: string) =>
+      ids(ds, 'Cert', obs({ price: { [op]: { $ref: '$.ask', times: 3 } } } as WhereClause));
+    expect(await cmp('eq')).toEqual([]);
+    expect(await cmp('gte')).toEqual([]);
+    expect(await cmp('lt')).toEqual(['c1']);
+  });
+
+  it('a $ref to an _agg throws rather than reading as false', async () => {
+    const ds = await dataset({
+      Cert: [{ id: 'c1' }],
+      Observation: [{ id: 'o1', cert: 'c1', price: 1, observedAt: '2026-10-21T00:00:00Z' }]
+    });
+    const p = { price: { gte: { $ref: '_agg.x' } } } as WhereClause;
+    for (const extra of [{}, { quantifier: 'none' }, { pick: { latest: 'observedAt' } }]) {
+      await expect(ids(ds, 'Cert', obs(p, extra))).rejects.toThrow(/_agg/);
+    }
+  });
+
+  it('joint quantification stops at the per-read budget', async () => {
+    const n = 1100;
+    const listings = Array.from({ length: n }, (_, i) => ({ id: `l${i}`, cert: 'c1', price: 1 }));
+    const observations = Array.from({ length: n }, (_, i) => ({
+      id: `o${i}`,
+      cert: 'c1',
+      price: 1
+    }));
+    // No pair satisfies, so every one of n * n assignments is tried.
+    const where = {
+      AND: [
+        { _walk: { as: 'L', in: 'cards/Listing.cert' } },
+        {
+          _walk: {
+            as: 'O',
+            in: 'cards/Observation.cert',
+            where: { price: { gt: { $ref: 'L.price' } } }
+          }
+        }
+      ]
+    } as WhereClause;
+    const rows = { Cert: [{ id: 'c1' }], Listing: listings, Observation: observations };
+    const capped = await dataset(rows, 100_000);
+    await expect(capped.read('Cert', { where })).rejects.toMatchObject({
+      code: 'walk_budget_exceeded'
+    });
+    // Under the budget the same walk answers.
+    const roomy = await dataset(rows, 2 * n * n);
+    expect((await roomy.read('Cert', { where })).rows).toEqual([]);
   });
 });
