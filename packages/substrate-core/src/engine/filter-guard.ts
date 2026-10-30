@@ -128,7 +128,10 @@ export function runFilterGuard(deps: FilterGuardDeps, input: FilterGuardInput): 
           ...(where !== undefined ? { where } : {}),
           ...(orderBy !== undefined ? { orderBy } : {}),
           typeSchema,
-          capabilities: dataset.capabilities
+          capabilities: dataset.capabilities,
+          schemaOf: (type) => deps.schemaFor(ns).types[type],
+          namespace: ns,
+          typeName: name
         });
       }
     } catch (err) {

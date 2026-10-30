@@ -30,6 +30,10 @@ describe('usesWalkGrammar', () => {
 function build(walksEnabled?: boolean) {
   const registry = new Registry();
   let reached = 0;
+  registry.register('Part', {
+    fields: { thing: { kind: 'crossRef', ns: 'ns', type: 'Thing', onDelete: 'set_null' } },
+    resolver: async () => []
+  });
   registry.register('Thing', {
     resolver: async () => {
       reached++;
@@ -47,7 +51,9 @@ function build(walksEnabled?: boolean) {
   return { engine, reached: () => reached };
 }
 
-const frame = { 'ns/Thing': { params: { where: { _walk: {} } }, fields: { id: true } } };
+const frame = {
+  'ns/Thing': { params: { where: { _walk: { in: 'ns/Part.thing' } } }, fields: { id: true } }
+};
 const ctx = { identity: null, now: new Date(), headers: {}, meta: {} };
 
 describe('engine walk gate', () => {
@@ -61,11 +67,10 @@ describe('engine walk gate', () => {
     expect(reached()).toBe(0);
   });
 
-  // Past the gate: the filter guard (no walk grammar until a later task) is what answers now.
-  it('the same frame with the flag on passes the gate and reaches the filter guard', async () => {
+  it('the same frame with the flag on passes the gate and validation and reaches the resolver', async () => {
     const { engine, reached } = build(true);
     const res = await engine.query({ frame, ctx });
-    expect(res.errors?.map((e) => e.code)).toEqual(['unknown_field']);
-    expect(reached()).toBe(0);
+    expect(res.errors ?? []).toEqual([]);
+    expect(reached()).toBe(1);
   });
 });
