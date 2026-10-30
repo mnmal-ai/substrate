@@ -13,6 +13,10 @@ export interface Row {
    * its own way.
    */
   _metadata?: RowMetadata;
+  /** Per-row walk aggregates (`params.agg`). */
+  _agg?: Record<string, unknown>;
+  /** Nested selections whose cap was hit, by name. */
+  _truncated?: Record<string, true>;
   [field: string]: unknown;
 }
 

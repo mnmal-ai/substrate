@@ -48,12 +48,13 @@ export interface TxScopeHandles {
  */
 export interface FieldPredicate {
   // number / date operators (also reused as string `eq`/`neq`/`in`/`nin`)
-  eq?: number | string | boolean | Date | null;
-  neq?: number | string | boolean | Date | null;
-  gt?: number | string | Date;
-  gte?: number | string | Date;
-  lt?: number | string | Date;
-  lte?: number | string | Date;
+  // Comparison operands may be a walk reference (`{ $ref: 'L.price' }`).
+  eq?: number | string | boolean | Date | null | RefOperand;
+  neq?: number | string | boolean | Date | null | RefOperand;
+  gt?: number | string | Date | RefOperand;
+  gte?: number | string | Date | RefOperand;
+  lt?: number | string | Date | RefOperand;
+  lte?: number | string | Date | RefOperand;
   between?: [number | string | Date, number | string | Date];
   in?: Array<number | string | boolean | Date>;
   nin?: Array<number | string | boolean | Date>;
@@ -82,7 +83,73 @@ export type WhereClause =
   | { AND: WhereClause[] }
   | { OR: WhereClause[] }
   | { NOT: WhereClause }
-  | { [field: string]: FieldPredicate | WhereClause | unknown };
+  | { _walk: WalkNode }
+  | WalkAggPredicate
+  // `_walk`/`_agg?: never` keep a malformed walk from matching this catch-all.
+  | { _walk?: never; _agg?: never; [field: string]: FieldPredicate | WhereClause | unknown };
+
+// ---------------------------------------------------------------------------
+// Typed edge walks (spec 2026-10-24-typed-edge-walks §1)
+// ---------------------------------------------------------------------------
+
+export type WalkPick = { latest: string } | { max: string } | { min: string };
+
+export interface WalkNode {
+  as?: string;
+  /** `'<ns>/<Type>.<field>'`: inbound edge. */
+  in?: string;
+  /** `'<field>'`: outbound edge. */
+  out?: string;
+  where?: WhereClause;
+  quantifier?: 'any' | 'none' | 'all';
+  pick?: WalkPick;
+}
+
+/** `'$.f'` | `'<as>.f'` | `'_agg.<name>'` */
+export interface RefOperand {
+  $ref: string;
+  times?: number;
+  plus?: number;
+}
+
+export type AggFn =
+  | { count: true }
+  | { avg: string }
+  | { sum: string }
+  | { min: string }
+  | { max: string }
+  | { latest: { by: string; value: string } };
+
+export type WalkAgg = { in?: string; out?: string; where?: WhereClause } & AggFn;
+
+export type FrameAgg = Exclude<AggFn, { latest: unknown }>;
+
+export interface BucketSpec {
+  field: string;
+  by: 'day' | 'hour';
+}
+
+export type DeriveSpec = { diff: [string, string] } | { ratio: [string, string] };
+
+export interface NestedSelection {
+  _walk: { in?: string; out?: string; where?: WhereClause };
+  fields: Record<string, unknown>;
+  where?: WhereClause;
+  orderBy?: OrderByClause[];
+  limit?: number;
+}
+
+/** `{ _agg: <walk aggregate>, <cmp>: number }` */
+export type WalkAggPredicate = {
+  _agg: WalkAgg;
+} & (
+  | { eq: number }
+  | { neq: number }
+  | { gt: number }
+  | { gte: number }
+  | { lt: number }
+  | { lte: number }
+);
 
 /**
  * OrderBy clause. One entry per field, direction per field. Engine appends an
@@ -90,6 +157,7 @@ export type WhereClause =
  * deterministic tie-break is what makes cursor pagination stable across pages.
  */
 export interface OrderByClause {
+  /** A `$`-prefixed key orders by a `params.derive` entry. */
   [field: string]: 'asc' | 'desc';
 }
 
@@ -102,6 +170,15 @@ export interface ReadParams {
   where?: WhereClause;
   orderBy?: OrderByClause[];
   limit?: number;
+  /** Return a match count (`ReadResult.count`). */
+  count?: boolean;
+  aggregate?: Record<string, FrameAgg>;
+  bucket?: BucketSpec;
+  derive?: Record<string, DeriveSpec>;
+  /** Per-row walk aggregates, lifted out of `fields` by the list resolver. */
+  agg?: Record<string, WalkAgg>;
+  /** Per-row nested selections, lifted out of `fields` by the list resolver. */
+  nested?: Record<string, NestedSelection>;
   /**
    * Opaque cursor produced by a prior `read()` call. Base64url-encoded JSON
    * (server-built, server-consumed). Callers should treat it as a black box.
@@ -138,6 +215,9 @@ export interface ReadResult {
   rows: Row[];
   nextCursor?: string;
   hasMore: boolean;
+  count?: number;
+  groups?: Array<Record<string, unknown>>;
+  truncated?: boolean;
 }
 
 export interface WriteResult {
