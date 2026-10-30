@@ -14,6 +14,7 @@ import { own } from '../own.js';
 import type { NamespaceRulings, ValueAlias } from '../pack/rulings.js';
 import type { NamespacePack, PackField } from '../pack/types.js';
 import { pluralize, splitWords } from '../pack/words.js';
+import { whereFields } from '../rulings/schema.js';
 import { type DateRange, rangeFor } from './time.js';
 import {
   andOf,
@@ -701,6 +702,17 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
     }
   }
   if (a.ids.length === 0) {
+    // The type's default exclusion, unless the question names a field it tests ("skipped runs").
+    const excluded = own(rulings.typeExcludes, type);
+    const tested: string[] = [];
+    if (excluded !== undefined) whereFields(excluded, tested);
+    if (excluded !== undefined && !tested.some((f) => usedFields.has(f))) {
+      const clause = { NOT: excluded };
+      where.push(clause);
+      wherePlan.set(clause, [
+        { path: ['NOT', `ruling:${type} default exclude`], kind: 'filter', served: false }
+      ]);
+    }
     const statusField = fields.status;
     const live = own(rulings.liveStatus, type);
     if (a.closeVerb && statusField?.enum !== undefined && !byField.has('status')) {
@@ -846,9 +858,21 @@ function creditFieldWords(tokens: Token[], field: PackField | undefined): boolea
 }
 
 function contentWords(tokens: Token[]): string[] {
-  return tokens
-    .filter((t) => !t.used && !GLUE.has(t.text) && !/^\d+$/.test(t.text))
-    .map((t) => t.text);
+  const free = (t: Token | undefined): t is Token =>
+    t !== undefined && !t.used && !GLUE.has(t.text);
+  const num = (t: Token | undefined) => free(t) && /^\d+$/.test(t.text);
+  const out: string[] = [];
+  tokens.forEach((t, i) => {
+    if (!free(t) || num(t)) return;
+    // A number beside an unexplained word is lost with it: "8 cores", never just "cores".
+    const before = num(tokens[i - 1]) ? `${tokens[i - 1]?.text} ` : '';
+    const after =
+      num(tokens[i + 1]) && !(free(tokens[i + 2]) && !num(tokens[i + 2]))
+        ? ` ${tokens[i + 1]?.text}`
+        : '';
+    out.push(`${before}${t.text}${after}`);
+  });
+  return out;
 }
 
 /** Claims the longest n-grams (up to `max` words) for which `accept` returns true. */

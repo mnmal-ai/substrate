@@ -113,6 +113,12 @@ export interface WalkClaims {
   dropped: Dropped[];
 }
 
+const PICKED: Record<PickClaim['kind'], string> = {
+  latest: 'latest',
+  max: 'highest',
+  min: 'lowest'
+};
+
 const PICK_WORDS: Record<string, PickClaim['kind']> = {
   latest: 'latest',
   current: 'latest',
@@ -294,7 +300,7 @@ interface Walk {
   type: string;
   path: Path;
   alias?: string;
-  pick?: { kind: 'latest' | 'max' | 'min'; by: string; source: string };
+  pick?: { kind: 'latest' | 'max' | 'min'; by: string; source: string; span: string };
   filters: Part[];
   window: Part[];
   excludes: Part[];
@@ -367,6 +373,12 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
   const dead = new Set<string>();
   let clarify: string | null = null;
   const timeField = (type: string) => own(rulings.timeField, type) ?? 'createdAt';
+  const typeExclude = (type: string): Part | null => {
+    const where = own(rulings.typeExcludes, type);
+    return where === undefined
+      ? null
+      : filter({ NOT: where }, ['NOT'], `ruling:${type} default exclude`);
+  };
 
   const walkTo = (type: string, span: string): Walk | null => {
     const known = walks.get(type);
@@ -394,7 +406,7 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
       path: paths[0] as Path,
       filters: [],
       window: [],
-      excludes: [],
+      excludes: [typeExclude(type)].filter((x): x is Part => x !== null),
       applied: new Set()
     };
     walks.set(type, w);
@@ -440,7 +452,8 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
     const kind = picked.get(p) ?? p.entry.pick;
     if (kind === undefined) continue;
     const source = picked.has(p) ? `"${claims.picks.find((k) => k.phrase === p)?.span}"` : 'ruling';
-    const pick = { kind, by: kind === 'latest' ? timeField(p.type) : p.field, source };
+    const span = claims.picks.find((k) => k.phrase === p)?.span ?? p.span;
+    const pick = { kind, by: kind === 'latest' ? timeField(p.type) : p.field, source, span };
     if (w.pick !== undefined && (w.pick.kind !== pick.kind || w.pick.by !== pick.by)) {
       clarify ??= `${w.pick.source} and ${pick.source} pick different ${p.type} rows`;
       continue;
@@ -625,6 +638,23 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
 
   if (clarify !== null) return { clarify };
 
+  // The engine picks first and filters the picked row, so an exclusion cannot apply
+  // before a pick: the pick is dropped, and the reading stays strict (so `unknown`).
+  let pickDropped = false;
+  for (const w of walks.values()) {
+    if (w.pick === undefined || w.excludes.length === 0) continue;
+    const names = w.excludes
+      .flatMap((x) => x.plan.map((c) => String(c.path.at(-1)).replace(/^ruling:/, '')))
+      .join(', ');
+    dropped.push({
+      span: w.pick.span,
+      reason: `cannot exclude ${names} before picking the ${PICKED[w.pick.kind]}`,
+      kind: 'filter'
+    });
+    delete w.pick;
+    pickDropped = true;
+  }
+
   // Bindings: every unpicked one-hop walk, so comparisons can name it.
   const taken = new Set<string>();
   const ordered = [...walks.values()].sort((x, y) =>
@@ -647,7 +677,7 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
   };
 
   const parts: Part[] = [...seedParts];
-  for (const w of ordered) parts.push(walkPart(ns, w));
+  for (const w of ordered) parts.push(walkPart(ns, w, typeExclude));
   const composed = parts.map((p) => ({ ...p, clause: resolveRefs(p.clause) as Part['clause'] }));
   return {
     parts: composed,
@@ -661,6 +691,7 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
       seedParts.some((p) => p.plan.some((c) => c.kind === 'ref')) ||
       plan.length > 0,
     strict:
+      pickDropped ||
       ordered.some((w) => w.pick !== undefined) ||
       composed.some((p) => p.plan.some((c) => c.kind === 'ref'))
   };
@@ -671,7 +702,7 @@ function hopKey(ns: string, h: Hop): string {
 }
 
 /** One walk as a (possibly nested) `_walk` clause. */
-function walkPart(ns: string, w: Walk): Part {
+function walkPart(ns: string, w: Walk, exclude: (type: string) => Part | null): Part {
   const inner = andOf([...w.filters, ...w.window, ...w.excludes]);
   const label =
     w.pick === undefined ? 'any' : `pick:${w.pick.kind}(${w.pick.by}) from ${w.pick.source}`;
@@ -691,10 +722,13 @@ function walkPart(ns: string, w: Walk): Part {
   ];
   for (let i = w.path.length - 2; i >= 0; i--) {
     const h = w.path[i] as Hop;
-    node = { ...edge(ns, h), where: { _walk: node } };
+    // A type's default exclusion holds on every hop through it, not only the last.
+    const ex = exclude(h.to);
+    const where = andOf([{ clause: { _walk: node }, plan }, ...(ex !== null ? [ex] : [])]);
+    node = { ...edge(ns, h), where: where?.where };
     plan = [
       { path: ['_walk', hopKey(ns, h), 'any'], kind: 'hop', served: true },
-      ...plan.map((c) => ({ ...c, path: ['_walk', 'where', ...c.path] }))
+      ...(where?.plan ?? []).map((c) => ({ ...c, path: ['_walk', 'where', ...c.path] }))
     ];
   }
   return { clause: { _walk: node }, plan };

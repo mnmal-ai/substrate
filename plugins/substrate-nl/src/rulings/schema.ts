@@ -76,7 +76,8 @@ export const NamespaceRulingsSchema = z
     liveStatus: record.optional(),
     timeField: record.optional(),
     typeNotes: record.optional(),
-    valueAliases: z.record(z.string(), z.array(ValueAliasSchema)).optional()
+    valueAliases: z.record(z.string(), z.array(ValueAliasSchema)).optional(),
+    typeExcludes: z.record(z.string(), z.record(z.string(), z.unknown())).optional()
   })
   .strict() as unknown as z.ZodType<NamespaceRulings>;
 
@@ -100,7 +101,7 @@ export function mergeRulings(
 const COMBINATORS = ['AND', 'OR', 'NOT'];
 
 /** Field names an `exclude` clause names, walked through AND/OR/NOT. Structural only: operator spellings are the engine's to refuse at query time. */
-function whereFields(w: unknown, out: string[]): void {
+export function whereFields(w: unknown, out: string[]): void {
   if (Array.isArray(w)) for (const x of w) whereFields(x, out);
   else if (typeof w === 'object' && w !== null)
     for (const [k, v] of Object.entries(w))
@@ -126,20 +127,23 @@ function phraseProblem(schema: Schema, e: z.infer<typeof FieldPhraseSchema>): st
   }
   if (types.size > 1) return `refers to more than one type (${[...types].join(', ')})`;
   const [type] = types;
-  if (e.exclude !== undefined && type !== undefined) {
-    const names: string[] = [];
-    whereFields(e.exclude, names);
-    const fields = schema.types[type]?.fields ?? {};
-    const bad = names.find(
-      (n) =>
-        !n.startsWith('_') &&
-        !Object.hasOwn(fields, n) &&
-        !Object.hasOwn(METADATA_FILTER_FIELDS, n) &&
-        !Object.hasOwn(METADATA_AUTHOR_FIELDS, n)
-    );
-    if (bad !== undefined) return `exclude names unknown field '${type}.${bad}'`;
-  }
+  if (e.exclude !== undefined && type !== undefined) return excludeProblem(schema, type, e.exclude);
   return undefined;
+}
+
+/** Why an exclude clause does not fit `type`, or undefined. */
+function excludeProblem(schema: Schema, type: string, exclude: unknown): string | undefined {
+  const names: string[] = [];
+  whereFields(exclude, names);
+  const fields = schema.types[type]?.fields ?? {};
+  const bad = names.find(
+    (n) =>
+      !n.startsWith('_') &&
+      !Object.hasOwn(fields, n) &&
+      !Object.hasOwn(METADATA_FILTER_FIELDS, n) &&
+      !Object.hasOwn(METADATA_AUTHOR_FIELDS, n)
+  );
+  return bad !== undefined ? `exclude names unknown field '${type}.${bad}'` : undefined;
 }
 
 /** The effective rulings for one namespace's schema, plus anything that was dropped. */
@@ -183,6 +187,17 @@ export function readRulings(
       else warnings.push(`fieldPhrases '${phrase}' was ignored: ${problem}`);
     }
     rulings.fieldPhrases = kept;
+  }
+  if (rulings.typeExcludes !== undefined) {
+    const kept: NonNullable<NamespaceRulings['typeExcludes']> = {};
+    for (const [type, where] of Object.entries(rulings.typeExcludes)) {
+      const problem = Object.hasOwn(schema.types, type)
+        ? excludeProblem(schema, type, where)
+        : `unknown type '${type}'`;
+      if (problem === undefined) kept[type] = where;
+      else warnings.push(`typeExcludes '${type}' was ignored: ${problem}`);
+    }
+    rulings.typeExcludes = kept;
   }
   return { rulings, warnings };
 }
