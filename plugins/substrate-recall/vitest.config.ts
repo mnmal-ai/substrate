@@ -19,8 +19,10 @@ export default defineConfig({
     // reapplied per test), which vitest's 5s default is sized too tight for
     // under a parallel gate. The core migrations, whose CREATE INDEX
     // CONCURRENTLY builds wait on every open transaction in the database, run
-    // once in globalSetup, so hooks keep vitest's default timeout.
+    // once in globalSetup. Hooks still do per-file DDL, which overruns vitest's
+    // 10s hook default under a full parallel gate.
     testTimeout: process.env.POSTGRES_URL ? 30_000 : 5_000,
+    hookTimeout: process.env.POSTGRES_URL ? 60_000 : 10_000,
     // Single shared pg database across all pg-gated files (substrate_test). The
     // two live-db suites race on the shared `embeddings` table:
     // migrations.test.ts runs `DROP TABLE … CASCADE` (beforeAll/afterAll +
