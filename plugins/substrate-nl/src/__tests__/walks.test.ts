@@ -368,3 +368,107 @@ describe('the judge stays closed', () => {
     expect(r.trail[0]?.rejected).toBe('action "walk" was not offered');
   });
 });
+
+describe('never resolved on a silent assumption', () => {
+  const runsParse = (q: string, rulings = runRulings) => parseQuestion(q, runs, { asOf, rulings });
+
+  it('a comparison binds only to the field phrase right before it', () => {
+    const r = card('how many cards with an offer and listings over 50');
+    expect(r.status).not.toBe('resolved');
+    const cert = r.candidates.find((c) => c.type === 'Cert');
+    expect(JSON.stringify(cert?.frame)).not.toContain('"gt":50');
+    expect(cert?.dropped).toContainEqual({
+      span: 'over 50',
+      reason: 'no field phrase directly before it to compare'
+    });
+  });
+
+  it('"or", "not", "no" and "every" are dropped while composing walks', () => {
+    for (const [q, word] of [
+      ['cards with an offer over 50 or an asking price under 20', 'or'],
+      ['cards selling for 25% over asking price or offer', 'or'],
+      ['cards with an offer not over 50', 'not'],
+      ['cards with no offer over 50', 'no'],
+      ['cards with every offer over 50', 'every']
+    ] as const) {
+      const r = card(q);
+      expect(r.status, q).toBe('partial');
+      expect(
+        r.candidates[0]?.dropped.map((d) => d.span),
+        q
+      ).toContain(word);
+    }
+  });
+
+  it('a judge pick of a reading with drops is not resolved', async () => {
+    const q = 'how many cards with an offer and listings over 50';
+    const parsed = card(q);
+    const i = parsed.candidates.findIndex((c) => c.dropped.length > 0);
+    expect(i).toBeGreaterThanOrEqual(0);
+    const judge: Judge = { decide: async () => ({ action: 'pick', candidate: i }) };
+    const r = await parseWithJudge(q, cards, { asOf, rulings: cardRulings }, judge);
+    expect(r.status).toBe('escalated');
+    if (r.status !== 'escalated') return;
+    expect(r.result.status).toBe('partial');
+    expect(r.result.candidates[0]?.dropped.length).toBeGreaterThan(0);
+  });
+
+  it('two types named together stay separate readings, with no invented walk', () => {
+    const r = card('cards and listings with an offer over 50');
+    expect(r.status).toBe('ambiguous');
+    expect(r.candidates.map((c) => c.type)).toEqual(['Cert', 'Listing']);
+    expect(JSON.stringify(r.candidates[0]?.frame)).not.toContain('Listing.cert');
+  });
+
+  it('a stray comparative alone does not compose', () => {
+    expect(card('cards cheaper than ever').candidates[0]?.dropped ?? []).toEqual([]);
+  });
+
+  it('two different picks on one walk ask', () => {
+    const r = card('cards whose latest offer and highest offer is over 50');
+    expect(r.status).toBe('clarify');
+    expect(r.reason).toBe('"latest" and "highest" pick different Observation rows');
+  });
+
+  it('a derive ordering drops a conflicting "latest", and its limit', () => {
+    const r = card('latest cards by margin');
+    expect(r.status).toBe('partial');
+    expect(r.candidates[0]?.frame['cards/Cert']?.params).toEqual({
+      derive: { margin: { diff: ['$.psaOffer', '$.ask'] } },
+      orderBy: [{ $margin: 'desc' }]
+    });
+    expect(r.candidates[0]?.answer).toBe('rows');
+    expect(r.candidates[0]?.dropped).toEqual([
+      { span: 'latest', reason: 'it conflicts with the derived ordering, which is kept' }
+    ]);
+  });
+
+  it('"N% faster" with N >= 100 is dropped', () => {
+    const r = runsParse('how many tests ran locally 150% faster than on ci');
+    expect(r.status).toBe('partial');
+    expect(r.candidates[0]?.dropped).toEqual([
+      { span: '150% faster than', reason: '150% faster leaves no time to compare against' }
+    ]);
+    expect(JSON.stringify(r.candidates[0]?.frame)).not.toContain('times');
+  });
+
+  it("a phrase said twice adds its ruling's exclude once", () => {
+    const w = cardWhere('how many cards with an asking price and an asking price');
+    expect(w).toEqual({
+      _walk: {
+        as: 'L',
+        in: 'cards/Listing.cert',
+        where: { NOT: { placeholderPrice: { eq: true } } }
+      }
+    });
+  });
+
+  it('a window with no timeField ruling says it used the default', () => {
+    const { timeField: _t, ...noTime } = runRulings;
+    const c = runsParse('how many tests 25% slower than on ci in the past 2 days', noTime)
+      .candidates[0];
+    expect(c?.plan.map((p) => p.path[p.path.length - 1])).toContain(
+      'window:past 2 days on createdAt (default)'
+    );
+  });
+});

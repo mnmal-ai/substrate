@@ -103,6 +103,8 @@ const HISTORY_WORDS = new Set(
     ' '
   )
 );
+/** Connectives a composed reading cannot honour; dropped while composing walks. */
+const CONNECTIVES = new Set(['or', 'not', 'no', 'every']);
 const LATEST = new Set('latest newest recent last'.split(' '));
 const OLDEST = new Set('oldest earliest first'.split(' '));
 const AUTHOR_VERBS = new Set(
@@ -327,10 +329,21 @@ export function parseQuestion(
   });
   if (author !== null)
     evidence.push({ span: author, role: 'author', detail: `createdById startsWith ${author}` });
-  if (Object.keys(rulings.fieldPhrases ?? {}).length > 0)
-    dropComparatives(tokens, walkClaims.dropped);
+  // Only claimed walk material composes: a stray comparative alone does not.
   const composing =
     walkClaims.phrases.length + walkClaims.compares.length + walkClaims.dropped.length > 0;
+  if (composing) {
+    dropComparatives(tokens, walkClaims.dropped);
+    // Walks are read as one AND: a connective that would change that is dropped, never glue.
+    for (const t of tokens) {
+      if (t.used || !CONNECTIVES.has(t.text)) continue;
+      t.used = true;
+      walkClaims.dropped.push({
+        span: t.text,
+        reason: `"${t.text}" is not composed: walk clauses are read as all applying together`
+      });
+    }
+  }
 
   // --- "which <field>" (singular = field answer, plural = group) ---
   const fieldAliases = { ...BUILTIN_FIELD_ALIASES, ...(rulings.fieldAliases ?? {}) };
@@ -394,9 +407,13 @@ export function parseQuestion(
     if (!mentioned.has(ctx.forceType))
       evidence.push({ span: '', role: 'type', detail: ctx.forceType });
   }
-  // Walks: the seed is the type named first; the others are walked to.
+  // Walks: a type a field phrase reaches is walked to, not read as a seed. Types
+  // named with nothing reaching them stay separate readings.
   if (composing && ctx.forceType === undefined && mentioned.size > 0) {
-    types = [[...mentioned].sort(([, x], [, y]) => x.at[0] - y.at[0])[0]?.[0] as string];
+    const reached = new Set(walkClaims.phrases.map((p) => p.type));
+    const byPosition = [...mentioned].sort(([, x], [, y]) => x.at[0] - y.at[0]).map(([t]) => t);
+    const seeds = byPosition.filter((t) => !reached.has(t));
+    types = (seeds.length > 0 ? seeds : byPosition.slice(0, 1)).sort();
   }
   if (types.length === 0 && ids.length > 0 && ctx.defaultIdType !== undefined)
     types = [ctx.defaultIdType];
@@ -540,7 +557,17 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
   const rulings = ctx.rulings ?? {};
   const fields = own(pack.types, type)?.fields ?? {};
   const words = tokens.map((t) => t.text);
-  const ev = [...a.evidence];
+  // A declared derive is the explicit ordering; a recency word beside it conflicts and is dropped.
+  const conflict = a.composed?.params.orderBy !== undefined && a.order !== null;
+  const order = conflict ? null : a.order;
+  const orderSpan = a.evidence.find((e) => e.role === 'order')?.span ?? '';
+  const ev = conflict ? a.evidence.filter((e) => e.role !== 'order') : [...a.evidence];
+  const dropped = [
+    ...(a.composed?.dropped ?? []),
+    ...(conflict
+      ? [{ span: orderSpan, reason: 'it conflicts with the derived ordering, which is kept' }]
+      : [])
+  ];
   const where: Record<string, unknown>[] = [];
 
   if (a.ids.length > 0)
@@ -649,7 +676,7 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
       live !== undefined &&
       statusField?.enum?.includes(live) === true &&
       !usedFields.has('status') &&
-      a.order === null
+      order === null
     ) {
       where.push({ status: { eq: live } });
     }
@@ -690,8 +717,8 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
     ...(all?.plan ?? []).map((c) => ({ ...c, path: ['where', ...c.path] })),
     ...(a.composed?.plan ?? [])
   ];
-  if (a.order !== null) {
-    params.orderBy = [{ createdAt: a.order }];
+  if (order !== null) {
+    params.orderBy = [{ createdAt: order }];
     params.limit = 1;
   }
   Object.assign(params, a.composed?.params ?? {});
@@ -704,7 +731,7 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
         : `field:${a.askField.field}`
       : a.count
         ? 'count'
-        : a.order !== null || a.ids.length === 1
+        : order !== null || a.ids.length === 1
           ? 'single'
           : 'rows';
   return {
@@ -714,7 +741,7 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
     evidence: ev,
     residual: contentWords(tokens),
     plan,
-    dropped: a.composed?.dropped ?? []
+    dropped
   };
 }
 

@@ -241,11 +241,14 @@ export function claimWalkParts(
       object = phraseAt(j);
       if (object === undefined) continue;
     }
-    const subject =
-      wordPhrase ??
-      [...claims.phrases]
-        .reverse()
-        .find((p) => p.at[1] < i && p.field !== undefined && p.entry.value === undefined);
+    // The subject sits right before the comparison, with only glue between ("offer is over 50").
+    const before = [...claims.phrases].reverse().find((p) => p.at[1] < i);
+    const adjacent =
+      before !== undefined &&
+      tokens.slice(before.at[1] + 1, i).every((t) => !t.used && glue.has(t.text)) &&
+      before.field !== undefined &&
+      before.entry.value === undefined;
+    const subject = wordPhrase ?? (adjacent ? before : undefined);
     for (let k = i; k <= at[1]; k++) (tokens[k] as WalkToken).used = true;
     const span = text(tokens, at);
     claims.compares.push({
@@ -292,8 +295,8 @@ interface Walk {
   filters: Part[];
   window: Part[];
   excludes: Part[];
-  /** Phrases already applied, so one phrase's exclude lands once. */
-  applied: Set<PhraseClaim>;
+  /** Phrases already applied, so a phrase said twice adds its ruling's clauses once. */
+  applied: Set<string>;
 }
 
 export interface ComposeInput {
@@ -400,24 +403,21 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
     if (p.field === undefined || p.type === undefined) continue;
     const h = home(p);
     if (h === null) continue;
+    if (isWalk(h) && h.applied.has(p.span)) continue;
     const parts: Part[] = [];
     if (p.entry.value !== undefined)
       parts.push(filter({ [p.field]: { eq: p.entry.value } }, [p.field], `ruling:${p.span}`));
     const excl = p.entry.exclude;
     if (excl !== undefined) {
       const part = filter({ NOT: excl }, ['NOT'], `ruling:${p.span}`);
-      if (isWalk(h)) {
-        if (!h.applied.has(p)) h.excludes.push(part);
-      } else seedParts.push(part);
+      if (isWalk(h)) h.excludes.push(part);
+      else seedParts.push(part);
     }
     if (isWalk(h)) {
       h.filters.push(...parts);
-      h.applied.add(p);
+      h.applied.add(p.span);
     } else seedParts.push(...parts);
   }
-
-  // Types named outright: a walk to each ("cards with listings").
-  for (const m of input.mentions) if (m.type !== seed) walkTo(m.type, m.span);
 
   // Picks: a word, else the phrase's ruling default, else any.
   const picked = new Map<PhraseClaim, PickClaim['kind'] | undefined>();
@@ -429,7 +429,12 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
     const kind = picked.get(p) ?? p.entry.pick;
     if (kind === undefined) continue;
     const source = picked.has(p) ? `"${claims.picks.find((k) => k.phrase === p)?.span}"` : 'ruling';
-    w.pick = { kind, by: kind === 'latest' ? timeField(p.type) : p.field, source };
+    const pick = { kind, by: kind === 'latest' ? timeField(p.type) : p.field, source };
+    if (w.pick !== undefined && (w.pick.kind !== pick.kind || w.pick.by !== pick.by)) {
+      clarify ??= `${w.pick.source} and ${pick.source} pick different ${p.type} rows`;
+      continue;
+    }
+    w.pick = pick;
   }
   for (const k of claims.picks) {
     if (k.phrase.type === seed)
@@ -441,9 +446,16 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
 
   // Comparisons.
   for (const c of claims.compares) {
+    if (c.cmp.invalid !== undefined) {
+      dropped.push({ span: c.span, reason: c.cmp.invalid });
+      continue;
+    }
     const s = c.subject;
     if (s?.type === undefined || s.field === undefined) {
-      dropped.push({ span: c.span, reason: 'no field phrase to compare' });
+      dropped.push({
+        span: c.span,
+        reason: 'no field phrase directly before it to compare'
+      });
       continue;
     }
     const sh = home(s);
@@ -526,17 +538,16 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
       clarify ??= `"${input.time.span}" could window ${nearest.sort().join(' or ')}`;
     } else if (nearest.length === 1 && nearest[0] !== seed) {
       const type = nearest[0] as string;
-      const w = walks.get(type);
+      const w = walkTo(type, input.time.span);
       timeOnSeed = false;
-      if (w === undefined)
-        dropped.push({ span: input.time.span, reason: `it windows ${type}, which was dropped` });
-      else {
+      if (w !== null) {
         const field = timeField(type);
+        const ruled = own(rulings.timeField, type) !== undefined;
         w.window.push(
           filter(
             { [field]: { gte: input.time.range.gte, lt: input.time.range.lt } },
             [field],
-            `window:${input.time.span}`
+            `window:${input.time.span}${ruled ? '' : ` on ${field} (default)`}`
           )
         );
       }

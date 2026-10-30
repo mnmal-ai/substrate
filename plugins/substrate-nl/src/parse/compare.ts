@@ -19,6 +19,8 @@ export interface Comparison {
   value?: number;
   /** Words the phrase took. */
   length: number;
+  /** Read, but not expressible: the caller drops it with this reason. */
+  invalid?: string;
 }
 
 const NUMBER = /^\$?(\d+(?:\.\d+)?)$/;
@@ -34,7 +36,10 @@ export function parseComparison(words: string[]): Comparison | null {
     if (b === 'more' && c === 'than') return { op: 'gte', times: up, length: 3 };
     const length = c === 'than' ? 3 : 2;
     if (b === 'slower') return { op: 'gte', times: up, length };
-    if (b === 'faster') return { op: 'lte', times: (100 - n) / 100, length };
+    if (b === 'faster')
+      return n < 100
+        ? { op: 'lte', times: (100 - n) / 100, length }
+        : { op: 'lte', length, invalid: `${n}% faster leaves no time to compare against` };
     return null;
   }
   const lead = a === 'at' && b === 'least' ? 2 : 0;
