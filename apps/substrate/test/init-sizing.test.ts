@@ -86,6 +86,14 @@ describe('substrate init sizing', () => {
       expect(() => heavy(v)).toThrow(/SUBSTRATE_STORE_WRITE_HEAVY/);
   });
 
+  it("SUBSTRATE_WALKS accepts '', 0, false, 1, true and refuses 'yes'", () => {
+    const walks = (v?: string) =>
+      parseEnv(v === undefined ? {} : { SUBSTRATE_WALKS: v }).walksEnabled;
+    for (const v of [undefined, '', '0', 'false']) expect(walks(v)).toBe(false);
+    for (const v of ['1', 'true']) expect(walks(v)).toBe(true);
+    expect(() => walks('yes')).toThrow(/SUBSTRATE_WALKS/);
+  });
+
   it.each([
     '--rows-per-day=0',
     '--rows-per-day=-5',

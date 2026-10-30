@@ -8,6 +8,10 @@
 
 import type { Edge, EdgeRef } from './edge.js';
 
+/** Refusal codes for the typed-edge-walk grammar (`SUBSTRATE_WALKS`). */
+export const WALKS_DISABLED = 'walks_disabled';
+export const WALKS_NEED_PARTITIONED = 'walks_need_partitioned';
+
 /**
  * Throwable by a resolver to surface a structured per-frame error with a
  * caller-chosen `code` instead of the generic `resolver_error`. The engine's
