@@ -131,6 +131,28 @@ describe('substrate ask', () => {
     expect(r.out).toContain('  plan where._walk.cards/Listing.cert.any (hop)\n');
   });
 
+  it('terminal escapes in server-derived text are neutralised', async () => {
+    const evil = '\x1b]0;pwned\x07Ship\x1b[31mit';
+    const r = await run(['q'], {
+      kind: 'unknown',
+      question: evil,
+      dropped: [{ span: evil, reason: evil, kind: 'filter' }],
+      plan: [{ path: [evil], kind: 'filter', served: false }]
+    });
+    expect(r.out).not.toContain('\x1b');
+    expect(r.out).not.toContain('\x07');
+    expect(r.out).toContain('dropped "Shipit": Shipit');
+    const rows = await run(['q'], {
+      kind: 'rows',
+      source: 'parser',
+      frame: { 'a/B': {} },
+      data: [{ id: evil, title: evil }],
+      dropped: [],
+      plan: []
+    });
+    expect(rows.out).not.toContain('\x1b');
+  });
+
   it('rows print what was dropped; a server count prints the number', async () => {
     const r = await run(['q'], {
       kind: 'rows',

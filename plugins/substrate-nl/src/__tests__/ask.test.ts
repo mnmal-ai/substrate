@@ -392,7 +392,20 @@ const cards: ServedPack = {
       schemaVersion: 'v',
       mutations: {},
       types: {
-        Cert: { fields: { grade: num, psaOffer: num, ask: num } },
+        // A user field named like a walk key must not make a reading strict.
+        Cert: {
+          fields: {
+            grade: num,
+            psaOffer: num,
+            ask: num,
+            pick: {
+              kind: 'scalar' as const,
+              type: 'string' as const,
+              indexed: true,
+              enum: ['gold', 'silver']
+            }
+          }
+        },
         Listing: { fields: { cert: ref('Cert'), price: num, placeholderPrice: bool } },
         Observation: { fields: { cert: ref('Cert'), price: num, observedAt: date } },
         Island: { fields: { size: num, surveyedAt: date } }
@@ -437,6 +450,20 @@ describe('the confidence rule', () => {
       expect.objectContaining({ span: 'past 2 days', kind: 'filter' })
     );
     expect(query).not.toHaveBeenCalled();
+  });
+
+  it('a seed pick-one ("latest") that lost its filters is unknown, never one confident row', async () => {
+    const { e, query } = engine();
+    const o = outcome(await ask('latest card with island size in the past 2 days', e));
+    expect(o).toMatchObject({ kind: 'unknown' });
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it('a field literally named "pick" leaves a rows reading answered, with dropped', async () => {
+    const { e } = engine();
+    const o = outcome(await ask('gold cards with island size', e));
+    expect(o).toMatchObject({ kind: 'rows', dropped: [{ span: 'island size', kind: 'filter' }] });
+    expect(JSON.stringify(o.kind === 'rows' ? o.frame : null)).toContain('"pick":{"eq":"gold"}');
   });
 
   it('a dropped ordering on rows is answered with dropped', async () => {

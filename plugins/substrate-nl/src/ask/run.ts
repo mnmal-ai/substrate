@@ -36,15 +36,6 @@ function executable(c: Candidate, pack: ServedPack, paged = c.answer !== 'count'
   return { [key]: { params, fields } } as Query;
 }
 
-const STRICT_KEYS = new Set(['$ref', 'pick', '_agg', 'aggregate']);
-const hasKey = (v: unknown): boolean =>
-  typeof v === 'object' &&
-  v !== null &&
-  Object.entries(v).some(([k, x]) => STRICT_KEYS.has(k) || hasKey(x));
-
-/** A count, an aggregate, or a reading with a `$ref` comparison or a pick: a lost filter changes its answer. */
-const strict = (c: Candidate): boolean => c.answer === 'count' || hasKey(c.frame);
-
 /** The engine refused `count: true`: walks are off, or the seed is under a row policy. */
 const COUNT_REFUSED = new Set(['walks_disabled', 'row_policy_blocks_walk']);
 
@@ -93,7 +84,7 @@ async function rows(
   leftovers: Dropped[] = []
 ): Promise<NlOutcome> {
   const dropped = [...c.dropped, ...leftovers];
-  if (strict(c) && dropped.some((d) => d.kind === 'filter'))
+  if (c.strict && dropped.some((d) => d.kind === 'filter'))
     return { kind: 'unknown', question, dropped, plan: c.plan };
   let frame = executable(c, deps.pack);
   const key = Object.keys(frame)[0] as string;
@@ -243,8 +234,9 @@ export async function* runAsk(
    * No judge decided: the parser's reading runs as it stands. Its unexplained
    * words are dropped, so a strict reading with any is `unknown`, never a number.
    */
-  const handoff = async (reason: string): Promise<NlOutcome> => {
-    if (best === undefined) return clarify(req.question, reason, first.candidates, deps.pack);
+  const handoff = async (reason: string, parsed = first): Promise<NlOutcome> => {
+    const best = parsed.candidates[0];
+    if (best === undefined) return clarify(req.question, reason, parsed.candidates, deps.pack);
     const leftovers = best.residual.map((w) => ({
       span: w,
       reason: `not understood (${reason})`,
@@ -335,7 +327,8 @@ export async function* runAsk(
           outcome = clarify(req.question, judged.reason, first.candidates, deps.pack);
           break;
         case 'escalated':
-          outcome = await handoff('judge could not decide');
+          // The judge's reading, not the parser's first: an escalated pick carries only its choice.
+          outcome = await handoff('judge could not decide', judged.result);
           break;
       }
     }

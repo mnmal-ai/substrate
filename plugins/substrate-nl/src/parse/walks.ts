@@ -322,7 +322,8 @@ export interface Composed {
   /** The time window was not bound to a walk: the seed takes it as before. */
   timeOnSeed: boolean;
   /** True when anything was composed, so the frame needs the walk grammar. */
-  walked: boolean;
+  walked: boolean /** A `$ref` comparison or a picked walk: a dropped filter changes its answer. */;
+  strict: boolean;
 }
 
 const filter = (clause: Record<string, unknown>, path: string[], label: string): Part => ({
@@ -651,7 +652,10 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
     walked:
       walks.size > 0 ||
       seedParts.some((p) => p.plan.some((c) => c.kind === 'ref')) ||
-      plan.length > 0
+      plan.length > 0,
+    strict:
+      ordered.some((w) => w.pick !== undefined) ||
+      composed.some((p) => p.plan.some((c) => c.kind === 'ref'))
   };
 }
 

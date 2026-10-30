@@ -48,7 +48,11 @@ export interface Candidate {
   /** What the frame does, clause by clause: walks, comparisons, windows, rulings' implicit filters. */
   plan: PlanClause[];
   /** Parts of the question this reading could not express. Dropped, never approximated. */
-  dropped: Dropped[];
+  dropped: Dropped[] /**
+   * A count, an aggregate, a pick-one (of the seed or a walk) or a `$ref`
+   * comparison: a dropped filter would change its answer, so it is `unknown`.
+   */;
+  strict: boolean;
 }
 
 export type ParseStatus = NlParseStatus;
@@ -765,7 +769,8 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
     evidence: ev,
     residual: contentWords(tokens),
     plan,
-    dropped
+    dropped,
+    strict: answer === 'count' || answer === 'single' || a.composed?.strict === true
   };
 }
 

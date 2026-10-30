@@ -5,6 +5,7 @@ import {
   type SubstrateClient
 } from '@mnmal-ai/substrate-client';
 import type { Dropped, NlOutcome, PlanClause } from '@mnmal-ai/substrate-types';
+import { sanitise } from '@mnmal-ai/surface-core/pure';
 
 export interface AskCliOptions {
   write?: (s: string) => void;
@@ -84,7 +85,8 @@ export async function runAsk(argv: string[], options: AskCliOptions = {}): Promi
   }
   const outcome = result.outcome;
   if (json) write(`${JSON.stringify(result, null, 2)}\n`);
-  else write(render(outcome));
+  // Every server- or question-derived string reaches the terminal stripped of escapes, line by line.
+  else write(render(outcome).split('\n').map(sanitise).join('\n'));
   if (outcome === null) return 0;
   if (outcome.kind === 'refuse' || outcome.kind === 'unknown') return 1;
   if (outcome.kind === 'rows' && Array.isArray(outcome.errors) && outcome.errors.length > 0)
@@ -141,8 +143,7 @@ function droppedText(dropped: Dropped[] | undefined): string {
   return (dropped ?? []).map((d) => `  dropped "${d.span}": ${d.reason}\n`).join('');
 }
 
+// No served flag: it prints only on `unknown`, where nothing ran and no engine plan was merged.
 function planText(plan: PlanClause[] | undefined): string {
-  return (plan ?? [])
-    .map((c) => `  plan ${c.path.join('.')} (${c.kind}${c.served ? '' : ', unserved'})\n`)
-    .join('');
+  return (plan ?? []).map((c) => `  plan ${c.path.join('.')} (${c.kind})\n`).join('');
 }
