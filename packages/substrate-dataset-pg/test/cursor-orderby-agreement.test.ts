@@ -339,3 +339,70 @@ describe.skipIf(!POSTGRES_URL)('keyset pagination over sub-millisecond timestamp
     expect(seen).toEqual(['a', 'b', 'c']);
   });
 });
+
+describe.skipIf(!POSTGRES_URL || process.env.SUBSTRATE_TEST_LAYOUT !== 'partitioned')(
+  'keyset pagination over a derived key',
+  () => {
+    // A derived key is computed per row, so the same expression must sort,
+    // project into the cursor and compare against it; its NULLs (a missing
+    // operand, a zero divisor) sort last in both directions, as memory's do.
+    let sql: Sql;
+    const num: FieldDef = { kind: 'scalar', type: 'number' };
+    const fieldDefLookup = (_type: string, field: string): FieldDef | undefined =>
+      field === 'a' || field === 'b' ? num : undefined;
+    const rows: Row[] = [
+      { id: 'k1', a: 6, b: 3 },
+      { id: 'k2', a: 1, b: 0 },
+      { id: 'k3', a: 4, b: 2 },
+      { id: 'k4', b: 5 },
+      { id: 'k5', a: 9, b: 3 },
+      { id: 'k6', a: -2, b: 4 },
+      { id: 'k7', a: 2, b: 1 }
+    ];
+
+    beforeAll(async () => {
+      sql = postgres(POSTGRES_URL as string);
+      await runMigrations(sql);
+    });
+    afterAll(async () => {
+      await sql.end();
+    });
+
+    for (const dir of ['asc', 'desc'] as const) {
+      it(`pages a ratio like the memory backend, nulls last (${dir})`, async () => {
+        await sql`TRUNCATE TABLE rows, short_ids`;
+        const ds = new PgDataset({ namespace: 'cursor_derive', sql, fieldDefLookup });
+        await ds.ensureTypeStorage('Memo');
+        const mem = new MemoryDataset({ namespace: 'cursor_derive', fieldDefLookup });
+        await ds.write('Memo', rows);
+        await mem.write('Memo', rows);
+
+        async function pageAll(dataset: { read: PgDataset['read'] }): Promise<string[]> {
+          const seen: string[] = [];
+          let cursor: string | undefined;
+          for (let page = 0; page < 20; page++) {
+            const res = await dataset.read('Memo', {
+              derive: { r: { ratio: ['$.a', '$.b'] } },
+              orderBy: [{ $r: dir }],
+              limit: 2,
+              ...(cursor === undefined ? {} : { cursor })
+            });
+            seen.push(...res.rows.map((r) => String(r.id)));
+            if (res.nextCursor === undefined) break;
+            cursor = res.nextCursor;
+          }
+          return seen;
+        }
+
+        const pgPages = await pageAll(ds);
+        expect(pgPages).toEqual(await pageAll(mem as unknown as { read: PgDataset['read'] }));
+        // k1, k3 and k7 tie at 2; k2 (zero divisor) and k4 (no a) are the null tail.
+        expect(pgPages).toEqual(
+          dir === 'asc'
+            ? ['k6', 'k1', 'k3', 'k7', 'k5', 'k2', 'k4']
+            : ['k5', 'k1', 'k3', 'k7', 'k6', 'k2', 'k4']
+        );
+      });
+    }
+  }
+);

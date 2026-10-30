@@ -61,7 +61,6 @@ import {
   assertNoRepeatedIds,
   naturalOrderOf,
   ResolverFrameError,
-  WALK_UNSUPPORTED_REF,
   WALKS_NEED_PARTITIONED
 } from '@mnmal-ai/substrate-types';
 import type { MaybeRow, PendingQuery, ReservedSql, Sql } from 'postgres';
@@ -96,7 +95,7 @@ import {
   buildWalkProjection
 } from './pg-sql/aggregate.js';
 import { sqlStringLiteral } from './pg-sql/primitives.js';
-import { walkScope, whereUsesWalks } from './pg-sql/walk.js';
+import { buildDerive, walkScope, whereUsesWalks } from './pg-sql/walk.js';
 import {
   asJsonValue,
   assembleRowMetadata,
@@ -436,13 +435,6 @@ export class PgDataset implements Dataset {
         'walks need the partitioned storage layout; move this store onto it with `substrate-admin migrate-store`'
       );
     }
-    const unsupported = walkParams(params).find((k) => k === 'derive');
-    if (unsupported !== undefined) {
-      throw new ResolverFrameError(
-        WALK_UNSUPPORTED_REF,
-        `'${unsupported}' is not yet supported on pg`
-      );
-    }
     if (!this.#inTx) return this.withTransaction((tx) => tx.read(type, params));
     // LOCAL, so it ends with the transaction (the caller's included), and only
     // ever lowers: a shorter timeout already in effect stays. `setting` is ms.
@@ -556,6 +548,14 @@ export class PgDataset implements Dataset {
     const orderBy = normalizeOrderBy(params.orderBy);
 
     const orderByCastFor = bodyCastFor;
+    // A `$<name>` key sorts by its `params.derive` entry, computed per row.
+    const derive = params.derive;
+    const derivedFor = (field: string): Fragment | undefined => {
+      const name = field.slice(1);
+      if (scope === undefined || derive === undefined || !field.startsWith('$')) return undefined;
+      const spec = Object.hasOwn(derive, name) ? derive[name] : undefined;
+      return spec === undefined ? undefined : buildDerive(sql, name, spec, scope);
+    };
 
     // Cursor: a tuple-compare clause so the page starts strictly after the
     // cursor's (orderBy-values, id) tuple. It matches only non-null leading
@@ -571,19 +571,21 @@ export class PgDataset implements Dataset {
         cursor.orderByValues,
         cursor.id,
         orderByCastFor,
-        this.#promotedFor
+        this.#promotedFor,
+        derivedFor
       );
       const tail = buildCursorNullTail(
         sql,
         orderBy,
         cursor.orderByValues,
         orderByCastFor,
-        this.#promotedFor
+        this.#promotedFor,
+        derivedFor
       );
       if (tail !== null) tailSql = combineAnd(sql, [...clauses, tail]);
       if (cursorFragment !== null) whereSql = combineAnd(sql, [...clauses, cursorFragment]);
     }
-    const orderBySql = buildOrderBy(sql, orderBy, orderByCastFor, this.#promotedFor);
+    const orderBySql = buildOrderBy(sql, orderBy, orderByCastFor, this.#promotedFor, derivedFor);
 
     // Fetch one extra row to determine hasMore without a count query.
     const fetchLimit = limit !== undefined ? limit + 1 : undefined;
@@ -608,7 +610,8 @@ export class PgDataset implements Dataset {
       sql,
       orderBy,
       bodyCastFor,
-      this.#promotedFor
+      this.#promotedFor,
+      derivedFor
     );
 
     // A filter or sort on shortId needs `s.short_id` per candidate, so it
