@@ -419,6 +419,9 @@ export function withNaturalOrder(
     entry.kind !== 'type' ||
     dataset?.capabilities.orderBy !== true ||
     params?.id !== undefined ||
+    // A count or whole-result aggregate returns no rows, so it has no order.
+    params?.count === true ||
+    params?.aggregate !== undefined ||
     listExtensionOperators().some((op) => whereContainsOperator(params?.where, op))
   ) {
     return params;

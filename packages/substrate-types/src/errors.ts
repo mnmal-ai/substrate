@@ -11,6 +11,7 @@ import type { Edge, EdgeRef } from './edge.js';
 /** Refusal codes for the typed-edge-walk grammar (`SUBSTRATE_WALKS`). */
 export const WALKS_DISABLED = 'walks_disabled';
 export const WALKS_NEED_PARTITIONED = 'walks_need_partitioned';
+export const WALKS_IN_SUBSCRIPTION = 'walks_in_subscription';
 
 /**
  * Throwable by a resolver to surface a structured per-frame error with a

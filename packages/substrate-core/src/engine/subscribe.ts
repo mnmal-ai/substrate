@@ -22,11 +22,13 @@ import type {
 import {
   isResolverFrameError,
   normaliseVocabWhere,
+  WALKS_IN_SUBSCRIPTION,
   WS_CODE_SUBSCRIPTION_UNSUPPORTED_FRAME,
   WS_REASON_SUBSCRIPTION_OVERLOADED
 } from '@mnmal-ai/substrate-types';
 import { FilterValidationError, validateFilter } from '../filter/validator.js';
 import { applyObligations, evaluatePolicy } from '../policy-evaluator.js';
+import { walkGrammarPath } from '../walk-gate.js';
 import {
   checkIdentityGrant,
   clientErrorMessage,
@@ -574,6 +576,26 @@ export class SubscribeSubsystem {
     // the caller's selection; the transport projects the response.
     if ((decision.obligations?.length ?? 0) > 0) delete args.fields;
 
+    // Walks are not pushed in v1 (walks spec, Non-goals): refused before the param allowlist.
+    const walkPath = walkGrammarPath(frame as Record<string, unknown>);
+    if (walkPath !== null) {
+      deliverFrame(
+        input.onFrame,
+        {
+          id: input.id,
+          kind: 'error',
+          errors: [
+            {
+              message: `subscribe('${ns}/${name}'): walks are not available in subscriptions`,
+              code: WALKS_IN_SUBSCRIPTION,
+              path: [key, ...walkPath]
+            }
+          ]
+        },
+        this.#metric
+      );
+      return null;
+    }
     const params = frame.params;
     if (params) {
       for (const paramKey of Object.keys(params)) {

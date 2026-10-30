@@ -14,15 +14,19 @@
  */
 
 import type {
+  BucketSpec,
   Dataset,
+  DeriveSpec,
   FieldDef,
-  FieldInput,
+  FrameAgg,
   Id,
+  NestedSelection,
   OrderByClause,
   ReadParams,
   ReadResult,
   Row,
   TypedResolver,
+  WalkAgg,
   WhereClause
 } from '@mnmal-ai/substrate-types';
 import { normaliseVocabWhere } from '@mnmal-ai/substrate-types';
@@ -36,7 +40,11 @@ const KNOWN_LIST_PARAMS: ReadonlySet<string> = new Set([
   'limit',
   'cursor',
   'includeDeleted',
-  '_allowTableScan'
+  '_allowTableScan',
+  'count',
+  'aggregate',
+  'bucket',
+  'derive'
 ]);
 
 function extractLimit(params: Record<string, unknown> | undefined): number | undefined {
@@ -83,11 +91,31 @@ export function listResolver<_T extends Row = Row>(
     if (orderBy !== undefined) readParams.orderBy = orderBy;
     if (typeof cursor === 'string') readParams.cursor = cursor;
     if (includeDeleted === true) readParams.includeDeleted = true;
+    // Walk-grammar params; the engine validated them before this resolver runs.
+    const p = args.params ?? {};
+    if (p.count !== undefined) readParams.count = p.count as boolean;
+    if (p.aggregate !== undefined) readParams.aggregate = p.aggregate as Record<string, FrameAgg>;
+    if (p.bucket !== undefined) readParams.bucket = p.bucket as BucketSpec;
+    if (p.derive !== undefined) readParams.derive = p.derive as Record<string, DeriveSpec>;
     // Forward the caller's field selection so substrates (PgDataset) can
     // narrow the body keys they materialise from storage. Substrates MAY
-    // ignore the hint.
-    const fields = args.fields as FieldInput | undefined;
-    if (fields !== undefined) readParams.fields = fields;
+    // ignore the hint. `_agg` and nested `{ _walk }` selections are lifted out
+    // into `agg` / `nested`; they are not body keys.
+    const fields = args.fields as Record<string, unknown> | undefined;
+    if (fields !== undefined) {
+      const entries = Object.entries(fields);
+      const isNested = (v: unknown) => typeof v === 'object' && v !== null && '_walk' in v;
+      const agg = fields._agg;
+      if (agg !== undefined) readParams.agg = agg as Record<string, WalkAgg>;
+      const nested = entries.filter(([, v]) => isNested(v));
+      if (nested.length > 0) {
+        readParams.nested = Object.fromEntries(nested) as Record<string, NestedSelection>;
+      }
+      readParams.fields =
+        agg !== undefined || nested.length > 0
+          ? Object.fromEntries(entries.filter(([k, v]) => k !== '_agg' && !isNested(v)))
+          : fields;
+    }
 
     if (args.signal !== undefined) readParams.signal = args.signal;
 

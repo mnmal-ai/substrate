@@ -45,10 +45,12 @@ import {
 } from '@mnmal-ai/substrate-types';
 import {
   bindGroup,
-  farScope,
-  resolveHop,
+  type FrameHelpers,
+  validateFrameParams,
   validateRef,
+  validateSelection,
   validateWalk,
+  validateWalkAgg,
   type WalkScope
 } from './walk-validator.js';
 
@@ -69,7 +71,11 @@ export type FilterErrorCode =
   | 'walk_binding'
   | 'walk_quantifier'
   | 'ref_unresolved'
-  | 'ref_kind_mismatch';
+  | 'ref_kind_mismatch'
+  | 'agg_invalid'
+  | 'derive_invalid'
+  | 'bucket_invalid'
+  | 'count_conflict';
 
 export class FilterValidationError extends Error {
   override readonly name = 'FilterValidationError';
@@ -699,14 +705,18 @@ function validateWhereAgainstFields(
           [...path, fieldName]
         );
       }
-      const recurse = (w: unknown, p: string[], scope: WalkScope) =>
-        validateWhereAgainstFields(w as WhereClause, scope.fields, p, capabilities, {
-          walk: scope
-        });
+      const h = frameHelpers(capabilities);
       if (fieldName === '_walk') {
-        validateWalk(record._walk, [...path, '_walk'], ctx.walk, fieldKindOf, recurse);
+        validateWalk(
+          record._walk,
+          [...path, '_walk'],
+          ctx.walk,
+          lookupField,
+          fieldKindOf,
+          h.validateWhere
+        );
       } else {
-        validateAggWalk(record._agg, [...path, '_agg'], ctx.walk, recurse);
+        validateAggPredicate(record, path, ctx.walk, h);
       }
       continue;
     }
@@ -762,23 +772,51 @@ function orNot(ctx: WalkContext): WalkContext {
   return { ...ctx, walk: { ...ctx.walk, underOrNot: true, groupBound: false } };
 }
 
+function frameHelpers(capabilities: FilterCapabilities): FrameHelpers {
+  return {
+    lookup: lookupField,
+    kindOf: fieldKindOf,
+    validateWhere: (w, p, scope) =>
+      validateWhereAgainstFields(w as WhereClause, scope.fields, p, capabilities, { walk: scope }),
+    validateOrderBy: (o, f, p) => validateOrderBy(o, f, capabilities, p)
+  };
+}
+
 /**
- * The walk part of a where-side `_agg`: its `in` / `out` and far-side `where`,
- * checked like a `_walk`. The aggregate function and its comparison are
- * validated with the other aggregate forms.
+ * A where-side `{ _agg, <cmp>: operand }`: the aggregate, then each
+ * comparison against the aggregate's value kind.
  */
-function validateAggWalk(
-  agg: unknown,
+function validateAggPredicate(
+  record: Record<string, unknown>,
   path: string[],
   scope: WalkScope,
-  recurse: (w: unknown, p: string[], scope: WalkScope) => void
+  h: FrameHelpers
 ): void {
-  if (agg === null || typeof agg !== 'object' || Array.isArray(agg)) {
-    throw new FilterValidationError('type_mismatch', '_agg expects an aggregate object', path);
+  const kind = validateWalkAgg(record._agg, [...path, '_agg'], scope, h);
+  const ops = Object.keys(record).filter((k) => AGG_COMPARATORS.has(k));
+  if (ops.length === 0) {
+    throw new FilterValidationError(
+      'agg_invalid',
+      '_agg in a where needs a comparison beside it: eq, neq, gt, gte, lt or lte',
+      [...path, '_agg']
+    );
   }
-  const node = agg as Record<string, unknown>;
-  const hop = resolveHop(node, path, scope);
-  if (node.where !== undefined) recurse(node.where, [...path, 'where'], farScope(scope, hop));
+  for (const op of ops) {
+    const value = record[op];
+    if (value !== null && typeof value === 'object' && '$ref' in value) {
+      validateRef(
+        kind,
+        op,
+        value as Record<string, unknown>,
+        [...path, op],
+        scope,
+        lookupField,
+        fieldKindOf
+      );
+    } else {
+      validateValueShape(kind as FieldKind, op, value, [...path, op]);
+    }
+  }
 }
 
 /** `seq` is a bigint column: every numeric operand must be a safe integer. */
@@ -799,12 +837,16 @@ function assertSeqIntegers(leaf: unknown, path: string[]): void {
 function validateOrderBy(
   orderBy: unknown,
   fields: Record<string, FieldDef>,
-  capabilities: FilterCapabilities
+  capabilities: FilterCapabilities,
+  path: string[] = ['orderBy'],
+  derived: ReadonlySet<string> = new Set()
 ): void {
   if (!capabilities.orderBy) {
-    throw new FilterValidationError('capability_unsupported', 'dataset does not support orderBy', [
-      'orderBy'
-    ]);
+    throw new FilterValidationError(
+      'capability_unsupported',
+      'dataset does not support orderBy',
+      path
+    );
   }
 
   // Reject non-array shapes (e.g. a bare `{ field: dir }`) here; the engine
@@ -813,7 +855,7 @@ function validateOrderBy(
     throw new FilterValidationError(
       'type_mismatch',
       'orderBy must be an array of { field: "asc" | "desc" } entries',
-      ['orderBy']
+      path
     );
   }
 
@@ -822,7 +864,7 @@ function validateOrderBy(
       throw new FilterValidationError(
         'type_mismatch',
         'each orderBy entry must be a { field: "asc" | "desc" } object',
-        ['orderBy', String(i)]
+        [...path, String(i)]
       );
     }
     const entries = Object.entries(clause);
@@ -830,7 +872,7 @@ function validateOrderBy(
       throw new FilterValidationError(
         'type_mismatch',
         'each orderBy entry must have exactly one field',
-        ['orderBy', String(i)]
+        [...path, String(i)]
       );
     }
     const [fieldName, dir] = entries[0] as [string, unknown];
@@ -838,11 +880,20 @@ function validateOrderBy(
       throw new FilterValidationError(
         'type_mismatch',
         `orderBy direction must be 'asc' or 'desc', got ${String(dir)}`,
-        ['orderBy', String(i), fieldName]
+        [...path, String(i), fieldName]
       );
     }
     // `id` is always orderable — it's the implicit tie-breaker.
     if (fieldName === 'id') return;
+    // `$<name>` orders by a `derive` entry (walks spec, goal 8).
+    if (fieldName.startsWith('$')) {
+      if (derived.has(fieldName.slice(1))) return;
+      throw new FilterValidationError(
+        'derive_invalid',
+        `orderBy '${fieldName}' needs derive.${fieldName.slice(1)} in params`,
+        [...path, String(i), fieldName]
+      );
+    }
 
     // Row-metadata projection fields (createdAt/updatedAt/createdBy*/updatedBy*)
     // are virtual filter fields — not declared in type schemas — but the dataset
@@ -853,14 +904,14 @@ function validateOrderBy(
       throw new FilterValidationError(
         'unknown_field',
         `unknown field '${fieldName}' in orderBy${metadataHint(fieldName)}`,
-        ['orderBy', String(i), fieldName]
+        [...path, String(i), fieldName]
       );
     }
     if (def.kind !== 'scalar') {
       throw new FilterValidationError(
         'orderby_nonscalar',
         `orderBy on non-scalar field '${fieldName}' is not supported (kind=${def.kind})`,
-        ['orderBy', String(i), fieldName]
+        [...path, String(i), fieldName]
       );
     }
     // scalar.json is an opaque body — no per-key ordering. Reject with the
@@ -869,7 +920,7 @@ function validateOrderBy(
       throw new FilterValidationError(
         'orderby_nonscalar',
         `orderBy on json field '${fieldName}' is not supported (opaque body)`,
-        ['orderBy', String(i), fieldName]
+        [...path, String(i), fieldName]
       );
     }
   });
@@ -885,26 +936,38 @@ export interface ValidateFilterInput {
   /** The frame's namespace, and the seed type's name in it. */
   namespace?: string;
   typeName?: string;
+  /** Frame params beside where/orderBy, and the field selection (its `_agg` and `{ _walk }` entries). */
+  count?: unknown;
+  aggregate?: unknown;
+  bucket?: unknown;
+  derive?: unknown;
+  cursor?: unknown;
+  fields?: Record<string, unknown>;
 }
 
 export function validateFilter(input: ValidateFilterInput): void {
+  const fields = input.typeSchema.fields;
+  const seed: WalkScope = {
+    ...(input.namespace !== undefined ? { namespace: input.namespace } : {}),
+    ...(input.schemaOf !== undefined ? { schemaOf: input.schemaOf } : {}),
+    ...(input.typeName !== undefined ? { typeName: input.typeName } : {}),
+    fields,
+    depth: 0,
+    bindings: new Map([['$', fields]]),
+    hidden: new Set(),
+    underOrNot: false,
+    groupBound: false
+  };
+  const h = frameHelpers(input.capabilities);
+  const aggs = validateSelection(input.fields, ['fields'], seed, h);
+  const scope = aggs.size > 0 ? { ...seed, aggs } : seed;
   if (input.where !== undefined) {
-    const fields = input.typeSchema.fields;
     validateWhereAgainstFields(input.where, fields, ['where'], input.capabilities, {
-      walk: {
-        ...(input.namespace !== undefined ? { namespace: input.namespace } : {}),
-        ...(input.schemaOf !== undefined ? { schemaOf: input.schemaOf } : {}),
-        ...(input.typeName !== undefined ? { typeName: input.typeName } : {}),
-        fields,
-        depth: 0,
-        bindings: new Map([['$', fields]]),
-        hidden: new Set(),
-        underOrNot: false,
-        groupBound: false
-      }
+      walk: scope
     });
   }
+  const derived = validateFrameParams(input, scope, h);
   if (input.orderBy !== undefined) {
-    validateOrderBy(input.orderBy, input.typeSchema.fields, input.capabilities);
+    validateOrderBy(input.orderBy, fields, input.capabilities, ['orderBy'], derived);
   }
 }
