@@ -300,3 +300,231 @@ describe('walk validation', () => {
     });
   });
 });
+
+type Frame = Omit<Parameters<typeof validateFilter>[0], 'typeSchema' | 'capabilities'>;
+
+function checkFrame(frame: Frame, type = 'Cert'): void {
+  validateFilter({
+    ...frame,
+    typeSchema: SCHEMAS[type] as TypeSchema,
+    capabilities: CAPS,
+    schemaOf: (t) => (Object.hasOwn(SCHEMAS, t) ? SCHEMAS[t] : undefined),
+    namespace: 'cards',
+    typeName: type
+  });
+}
+
+function frameRefusal(frame: Frame, type = 'Cert'): { code: string; path: string[] } {
+  try {
+    checkFrame(frame, type);
+  } catch (err) {
+    if (err instanceof FilterValidationError) return { code: err.code, path: err.path };
+    throw err;
+  }
+  throw new Error('expected a refusal');
+}
+
+const SPEC_AGG = {
+  offers7d: {
+    in: 'cards/Observation.cert',
+    where: { observedAt: { gte: '2026-10-23T00:00:00Z' } },
+    avg: 'price'
+  },
+  obsCount: { in: 'cards/Observation.cert', count: true },
+  latestOffer: { in: 'cards/Observation.cert', latest: { by: 'observedAt', value: 'price' } }
+};
+
+describe('aggregate, derive, bucket, count and nested validation', () => {
+  it("accepts the spec's _agg feature row", () => {
+    expect(() => checkFrame({ fields: { id: true, grade: true, _agg: SPEC_AGG } })).not.toThrow();
+  });
+
+  it('refuses a malformed _agg', () => {
+    expect(
+      frameRefusal({ fields: { _agg: { a: { in: 'cards/Observation.cert', avg: 'observedAt' } } } })
+    ).toEqual({ code: 'agg_invalid', path: ['fields', '_agg', 'a', 'avg'] });
+    expect(
+      frameRefusal({
+        fields: { _agg: { a: { in: 'cards/Observation.cert', count: true, sum: 'price' } } }
+      })
+    ).toEqual({ code: 'agg_invalid', path: ['fields', '_agg', 'a'] });
+    expect(
+      frameRefusal({
+        fields: { _agg: JSON.parse('{"__proto__":{"in":"cards/Observation.cert","count":true}}') }
+      }).code
+    ).toBe('agg_invalid');
+  });
+
+  it('accepts _agg in where with a numeric comparison', () => {
+    expect(() =>
+      check({ _agg: { in: 'cards/Observation.cert', avg: 'price' }, gte: 120 })
+    ).not.toThrow();
+    expect(refusal({ _agg: { in: 'cards/Observation.cert', count: true } })).toEqual({
+      code: 'agg_invalid',
+      path: ['where', '_agg']
+    });
+    expect(refusal({ _agg: { in: 'cards/Observation.cert', count: true }, gte: 'x' }).code).toBe(
+      'type_mismatch'
+    );
+  });
+
+  it('refuses latest on a frame aggregate', () => {
+    expect(
+      frameRefusal({ aggregate: { last: { latest: { by: 'gradedAt', value: 'ask' } } } })
+    ).toEqual({ code: 'agg_invalid', path: ['aggregate', 'last', 'latest'] });
+  });
+
+  it('accepts a whole-result aggregate bucketed by day', () => {
+    expect(() =>
+      checkFrame(
+        {
+          where: { observedAt: { gte: '2026-10-23T00:00:00Z' } },
+          aggregate: { n: { count: true }, avgOffer: { avg: 'price' } },
+          bucket: { field: 'observedAt', by: 'day' }
+        },
+        'Observation'
+      )
+    ).not.toThrow();
+    expect(() =>
+      checkFrame({ aggregate: { n: { count: true } }, bucket: { field: 'createdAt', by: 'hour' } })
+    ).not.toThrow();
+  });
+
+  it('refuses bucket without aggregate', () => {
+    expect(frameRefusal({ bucket: { field: 'gradedAt', by: 'day' } })).toEqual({
+      code: 'bucket_invalid',
+      path: ['bucket']
+    });
+  });
+
+  it('refuses bucket on a non-date field', () => {
+    expect(
+      frameRefusal({ aggregate: { n: { count: true } }, bucket: { field: 'grade', by: 'day' } })
+    ).toEqual({ code: 'bucket_invalid', path: ['bucket', 'field'] });
+    expect(
+      frameRefusal({ aggregate: { n: { count: true } }, bucket: { field: 'gradedAt', by: 'week' } })
+    ).toEqual({ code: 'bucket_invalid', path: ['bucket', 'by'] });
+  });
+
+  it('refuses count with aggregate', () => {
+    expect(frameRefusal({ count: true, aggregate: { n: { count: true } } })).toEqual({
+      code: 'count_conflict',
+      path: ['aggregate']
+    });
+    expect(frameRefusal({ count: true, fields: { id: true, grade: true } })).toEqual({
+      code: 'count_conflict',
+      path: ['fields', 'grade']
+    });
+    expect(frameRefusal({ count: true, orderBy: [{ grade: 'desc' }] })).toEqual({
+      code: 'count_conflict',
+      path: ['orderBy']
+    });
+    expect(() =>
+      checkFrame({ count: true, where: { grade: { eq: 9 } }, fields: { id: true } })
+    ).not.toThrow();
+  });
+
+  it('refuses aggregate with row-only params', () => {
+    expect(frameRefusal({ aggregate: { n: { count: true } }, fields: { _agg: SPEC_AGG } })).toEqual(
+      { code: 'agg_invalid', path: ['fields', '_agg'] }
+    );
+    expect(frameRefusal({ aggregate: { n: { count: true } }, cursor: 'c' })).toEqual({
+      code: 'agg_invalid',
+      path: ['cursor']
+    });
+  });
+
+  it('orderBy $margin requires derive.margin', () => {
+    expect(frameRefusal({ orderBy: [{ $margin: 'desc' }] })).toEqual({
+      code: 'derive_invalid',
+      path: ['orderBy', '0', '$margin']
+    });
+    expect(() =>
+      checkFrame({
+        derive: { margin: { diff: ['$.psaOffer', '$.ask'] } },
+        orderBy: [{ $margin: 'desc' }]
+      })
+    ).not.toThrow();
+    expect(frameRefusal({ derive: { margin: { diff: ['$.label', '$.ask'] } } })).toEqual({
+      code: 'derive_invalid',
+      path: ['derive', 'margin', 'diff', '0']
+    });
+  });
+
+  it('derive operand _agg.x must name a frame _agg', () => {
+    expect(frameRefusal({ derive: { r: { ratio: ['_agg.latestOffer', '$.ask'] } } })).toEqual({
+      code: 'derive_invalid',
+      path: ['derive', 'r', 'ratio', '0']
+    });
+    expect(() =>
+      checkFrame({
+        fields: { id: true, _agg: SPEC_AGG },
+        derive: { r: { ratio: ['_agg.latestOffer', '$.ask'] } },
+        orderBy: [{ $r: 'asc' }]
+      })
+    ).not.toThrow();
+  });
+
+  it("resolves $ref '_agg.<name>' against the frame's _agg", () => {
+    expect(() =>
+      checkFrame({
+        where: { ask: { lt: { $ref: '_agg.offers7d' } } },
+        fields: { _agg: SPEC_AGG }
+      })
+    ).not.toThrow();
+    expect(frameRefusal({ where: { ask: { lt: { $ref: '_agg.nope' } } } }).code).toBe(
+      'ref_unresolved'
+    );
+  });
+
+  it('on a date field a $ref takes plus and refuses times', () => {
+    expect(() =>
+      check({ gradedAt: { gt: { $ref: '$.gradedAt', plus: 86_400_000 } } })
+    ).not.toThrow();
+    expect(refusal({ gradedAt: { gt: { $ref: '$.gradedAt', times: 2 } } }).code).toBe(
+      'ref_kind_mismatch'
+    );
+  });
+
+  it('refuses pick with a none or all quantifier, and resolves pick fields like $ref', () => {
+    expect(
+      refusal({
+        _walk: { in: 'cards/Observation.cert', quantifier: 'none', pick: { latest: 'observedAt' } }
+      }).code
+    ).toBe('walk_quantifier');
+    expect(() =>
+      check({ _walk: { in: 'cards/Observation.cert', pick: { latest: 'createdAt' } } })
+    ).not.toThrow();
+  });
+
+  it('validates nested selections', () => {
+    expect(() =>
+      checkFrame({
+        fields: {
+          id: true,
+          listings: {
+            _walk: { in: 'cards/Listing.cert' },
+            fields: { price: true, seller: true },
+            orderBy: [{ firstSeen: 'desc' }],
+            limit: 5
+          }
+        }
+      })
+    ).not.toThrow();
+    expect(
+      frameRefusal({
+        fields: {
+          listings: { _walk: { in: 'cards/Listing.cert' }, fields: {}, orderBy: [{ grade: 'asc' }] }
+        }
+      })
+    ).toEqual({ code: 'unknown_field', path: ['fields', 'listings', 'orderBy', '0', 'grade'] });
+    expect(
+      frameRefusal({ fields: { listings: { _walk: { in: 'cards/Nope.cert' }, fields: {} } } }).code
+    ).toBe('walk_unknown_ref');
+    expect(
+      frameRefusal({
+        fields: { listings: { _walk: { in: 'cards/Listing.cert' }, fields: {}, limit: -1 } }
+      })
+    ).toEqual({ code: 'type_mismatch', path: ['fields', 'listings', 'limit'] });
+  });
+});

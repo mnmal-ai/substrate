@@ -1072,6 +1072,18 @@ export class Engine {
     const nsCfg = this.#namespaces.get(parsed.ns);
     if (nsCfg === undefined || nsCfg.virtual === true) return entry;
     if (nsCfg.registry.get(parsed.name)?.kind !== 'type') return entry;
+    // A nested `{ _walk }` selection's limit has the same max; it has no cursor in v1.
+    const nested = nestedOverLimit(entry.fields, ['fields'], limits.maxLimit);
+    if (nested !== null) {
+      addError(
+        envelope,
+        [key, ...nested],
+        `nested limit exceeds the maximum page of ${limits.maxLimit}`,
+        'limit_exceeds_max',
+        { max: limits.maxLimit }
+      );
+      return null;
+    }
     const limit = entry.params?.limit;
     if (limit === undefined || limit === null) {
       return { ...entry, params: { ...entry.params, limit: limits.defaultLimit } };
@@ -1902,4 +1914,20 @@ export class Engine {
   stream(input: StreamInput): StreamHandle {
     return this.#stream.stream(input);
   }
+}
+
+/** Path to the first nested `{ _walk }` selection whose numeric `limit` exceeds `max`, at any depth. */
+function nestedOverLimit(fields: unknown, path: string[], max: number): string[] | null {
+  if (typeof fields !== 'object' || fields === null) return null;
+  for (const [name, sel] of Object.entries(fields)) {
+    if (typeof sel !== 'object' || sel === null) continue;
+    const s = sel as Record<string, unknown>;
+    const walk = '_walk' in s;
+    if (walk && typeof s.limit === 'number' && s.limit > max) return [...path, name, 'limit'];
+    const deeper = walk
+      ? nestedOverLimit(s.fields, [...path, name, 'fields'], max)
+      : nestedOverLimit(s, [...path, name], max);
+    if (deeper !== null) return deeper;
+  }
+  return null;
 }

@@ -92,6 +92,34 @@ describe('autocrud.listResolver', () => {
     expect(res.rows.map((r) => r.id)).toEqual([3, 1]);
   });
 
+  it('listResolver lifts _agg and nested selections into ReadParams and passes count/aggregate/bucket/derive through', async () => {
+    const dataset = new MemoryDataset({ namespace: 'default' });
+    const seen: ReadParams[] = [];
+    const read = dataset.read.bind(dataset);
+    dataset.read = (type, params) => {
+      seen.push(params ?? {});
+      return read(type, params);
+    };
+    const agg = { n: { in: 'default/Note.todo', count: true } };
+    const notes = { _walk: { in: 'default/Note.todo' }, fields: { body: true }, limit: 3 };
+    const walkParams = {
+      count: true,
+      aggregate: { n: { count: true } },
+      bucket: { field: 'createdAt', by: 'day' },
+      derive: { m: { diff: ['$.a', '$.b'] } }
+    };
+    await listResolver('Todo', dataset)(makeCtx(), {
+      params: walkParams,
+      fields: { id: true, title: true, _agg: agg, notes }
+    });
+    expect(seen[0]).toEqual({
+      ...walkParams,
+      agg,
+      nested: { notes },
+      fields: { id: true, title: true }
+    });
+  });
+
   it('threads params.includeDeleted through to dataset.read', async () => {
     const dataset = new MemoryDataset({ namespace: 'default' });
     await dataset.write('Todo', [

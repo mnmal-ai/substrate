@@ -1,7 +1,7 @@
 import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-dataset-memory';
 import { describe, expect, it } from 'vitest';
 import { Engine, MemoryEdgesStore, type NamespaceConfig, Registry } from '../src/index.js';
-import { usesWalkGrammar } from '../src/walk-gate.js';
+import { usesWalkGrammar, walkGrammarPath } from '../src/walk-gate.js';
 
 describe('usesWalkGrammar', () => {
   const where = (w: unknown) => usesWalkGrammar({ params: { where: w }, fields: { id: true } });
@@ -15,6 +15,21 @@ describe('usesWalkGrammar', () => {
     expect(usesWalkGrammar({ params: {}, fields: { kids: { _walk: {} } } })).toBe(true);
     for (const k of ['count', 'aggregate', 'bucket', 'derive'])
       expect(usesWalkGrammar({ params: { [k]: true }, fields: { id: true } })).toBe(true);
+  });
+
+  it('finds _agg and { _walk } selections nested inside field sub-selections', () => {
+    expect(walkGrammarPath({ fields: { owner: { inner: { kids: { _walk: {} } } } } })).toEqual([
+      'fields',
+      'owner',
+      'inner',
+      'kids',
+      '_walk'
+    ]);
+    expect(walkGrammarPath({ fields: { owner: { _agg: {} } } })).toEqual([
+      'fields',
+      'owner',
+      '_agg'
+    ]);
   });
 
   it('is false for an ordinary list frame', () => {
@@ -72,5 +87,33 @@ describe('engine walk gate', () => {
     const res = await engine.query({ frame, ctx });
     expect(res.errors ?? []).toEqual([]);
     expect(reached()).toBe(1);
+  });
+
+  it('validates frame params and selections without a where', async () => {
+    const { engine, reached } = build(true);
+    const res = await engine.query({
+      frame: { 'ns/Thing': { params: { count: true }, fields: { id: true, _agg: {} } } },
+      ctx
+    });
+    expect(res.errors?.[0]).toMatchObject({
+      code: 'count_conflict',
+      path: ['ns/Thing', 'fields', '_agg']
+    });
+    expect(reached()).toBe(0);
+  });
+
+  it('refuses a nested limit above the page max with limit_exceeds_max', async () => {
+    const { engine, reached } = build(true);
+    const parts = { _walk: { in: 'ns/Part.thing' }, fields: { id: true }, limit: 11 };
+    const res = await engine.query({
+      frame: { 'ns/Thing': { fields: { id: true, parts } } },
+      ctx,
+      pageLimits: { defaultLimit: 5, maxLimit: 10 }
+    });
+    expect(res.errors?.[0]).toMatchObject({
+      code: 'limit_exceeds_max',
+      path: ['ns/Thing', 'fields', 'parts', 'limit']
+    });
+    expect(reached()).toBe(0);
   });
 });

@@ -1,13 +1,15 @@
 /**
  * Typed edge walk validation (spec 2026-10-24-typed-edge-walks §1, §2).
  *
- * Checks `_walk` nodes, the walk part of a where-side `_agg`, and `$ref`
- * operands. The recursion into a walk's far-side `where` is handed back to the
+ * Checks `_walk` nodes, `_agg` aggregates (where-side and in `fields`),
+ * nested `{ _walk }` selections, `$ref` operands, and the frame params
+ * `count`, `aggregate`, `bucket` and `derive`. The recursion into a walk's far-side `where` is handed back to the
  * filter validator, so the far type's fields and operators are checked exactly
  * as a top-level read of that type would be.
  */
 
 import type { FieldDef, FieldKind, TypeSchema, WalkNode } from '@mnmal-ai/substrate-types';
+import { walkGrammarPath } from '../walk-gate.js';
 import { FilterValidationError } from './validator.js';
 
 export const MAX_WALK_DEPTH = 3;
@@ -33,9 +35,13 @@ export interface WalkScope {
   underOrNot: boolean;
   /** This where-object's AND group was already bound by an enclosing AND. */
   groupBound: boolean;
+  /** The frame's `_agg` names and their value kinds, for `$ref: '_agg.<name>'`. */
+  aggs?: ReadonlyMap<string, string>;
 }
 
 export type FieldLookup = (fields: Record<string, FieldDef>, name: string) => FieldDef | undefined;
+
+const IDENT = /^[A-Za-z][A-Za-z0-9_]*$/;
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -165,7 +171,7 @@ function checkAs(node: Record<string, unknown>, path: string[]): void {
       [...path, 'as']
     );
   }
-  if (typeof node.as !== 'string' || !/^[A-Za-z][A-Za-z0-9_]*$/.test(node.as)) {
+  if (typeof node.as !== 'string' || !IDENT.test(node.as)) {
     fail('walk_binding', "'as' must be an identifier", [...path, 'as']);
   }
 }
@@ -227,6 +233,7 @@ export function validateWalk(
   node: unknown,
   path: string[],
   scope: WalkScope,
+  lookup: FieldLookup,
   kindOf: (def: FieldDef) => string,
   validateWhere: (where: unknown, path: string[], scope: WalkScope) => void
 ): void {
@@ -241,14 +248,19 @@ export function validateWalk(
   checkAs(node, path);
   const hop = resolveHop(node, path, scope);
   const pick = (node as WalkNode).pick;
+  if (pick !== undefined && (q === 'none' || q === 'all')) {
+    fail('walk_quantifier', `a pick walk picks one row; it takes no '${q}' quantifier`, [
+      ...path,
+      'quantifier'
+    ]);
+  }
   if (pick !== undefined) {
     const entries = isObj(pick) ? Object.entries(pick) : [];
     const [k, field] = entries[0] ?? [];
     if (entries.length !== 1 || (k !== 'latest' && k !== 'max' && k !== 'min')) {
       fail('type_mismatch', 'pick is one of { latest }, { max } or { min }', [...path, 'pick']);
     }
-    const def =
-      typeof field === 'string' && Object.hasOwn(hop.fields, field) ? hop.fields[field] : undefined;
+    const def = typeof field === 'string' ? lookup(hop.fields, field) : undefined;
     if (def === undefined)
       fail('unknown_field', `unknown field '${String(field)}' on '${hop.typeName}'`, [
         ...path,
@@ -301,15 +313,37 @@ export function validateRef(
   if (!DATE_OR_NUMBER.has(fieldKind as FieldKind)) {
     fail('ref_kind_mismatch', `a $ref compares number or date fields, not ${fieldKind}`, path);
   }
+  // A date shifts by `plus` milliseconds; scaling one is meaningless.
+  if (fieldKind === 'scalar.date' && operand.times !== undefined) {
+    fail(
+      'ref_kind_mismatch',
+      "a $ref on a date field takes 'plus' (milliseconds), not 'times'",
+      path
+    );
+  }
   const ref = operand.$ref;
   const m = typeof ref === 'string' ? /^([^.]+)\.(.+)$/.exec(ref) : null;
   if (m === null)
     fail(
       'ref_unresolved',
-      `$ref must be '$.<field>' or '<as>.<field>', got '${String(ref)}'`,
+      `$ref must be '$.<field>', '<as>.<field>' or '_agg.<name>', got '${String(ref)}'`,
       path
     );
   const [, name, field] = m as unknown as [string, string, string];
+  if (name === '_agg') {
+    const aggKind = scope.aggs?.get(field);
+    if (aggKind === undefined) {
+      fail('ref_unresolved', `$ref '${ref}': no _agg '${field}' in this frame's fields`, path);
+    }
+    if (aggKind !== fieldKind) {
+      fail(
+        'ref_kind_mismatch',
+        `$ref '${ref}' is ${aggKind}; it is compared with a ${fieldKind} field`,
+        path
+      );
+    }
+    return;
+  }
   if (name !== '$' && (scope.underOrNot || (scope.hidden.has(name) && !scope.bindings.has(name)))) {
     fail(
       'walk_binding',
@@ -327,6 +361,307 @@ export function validateRef(
     fail(
       'ref_kind_mismatch',
       `$ref '${ref}' is ${refKind}; it is compared with a ${fieldKind} field`,
+      path
+    );
+  }
+}
+
+/** What the frame-level checks need from the filter validator. */
+export interface FrameHelpers {
+  lookup: FieldLookup;
+  kindOf: (def: FieldDef) => string;
+  validateWhere: (where: unknown, path: string[], scope: WalkScope) => void;
+  validateOrderBy: (orderBy: unknown, fields: Record<string, FieldDef>, path: string[]) => void;
+}
+
+const AGG_FNS = new Set(['count', 'avg', 'sum', 'min', 'max', 'latest']);
+const WALK_AGG_KEYS = new Set(['in', 'out', 'where']);
+const NO_KEYS = new Set<string>();
+
+/**
+ * One aggregate function over `owner`'s fields, returning its value kind:
+ * `count`, `avg` and `sum` are numbers; `min`, `max` and `latest` take their
+ * field's kind. `latest` picks a row, so only a per-row walk aggregate has it.
+ */
+function aggKind(
+  agg: Record<string, unknown>,
+  extra: ReadonlySet<string>,
+  owner: Hop,
+  path: string[],
+  h: FrameHelpers,
+  allowLatest: boolean
+): string {
+  for (const k of Object.keys(agg)) {
+    if (!extra.has(k) && !AGG_FNS.has(k)) {
+      fail('agg_invalid', `unknown aggregate key '${k}'`, [...path, k]);
+    }
+  }
+  const fns = Object.keys(agg).filter((k) => AGG_FNS.has(k));
+  if (fns.length !== 1) {
+    fail(
+      'agg_invalid',
+      'an aggregate names exactly one of count, avg, sum, min, max or latest',
+      path
+    );
+  }
+  const [fn] = fns as [string];
+  const at = [...path, fn];
+  const v = agg[fn];
+  const field = (name: unknown, p: string[], ok: (kind: string) => boolean, what: string) => {
+    const def = typeof name === 'string' ? h.lookup(owner.fields, name) : undefined;
+    if (def === undefined) {
+      fail('agg_invalid', `unknown field '${String(name)}' on '${owner.typeName}'`, p);
+    }
+    const kind = h.kindOf(def);
+    if (!ok(kind)) fail('agg_invalid', `${fn} needs ${what}; '${String(name)}' is ${kind}`, p);
+    return kind;
+  };
+  switch (fn) {
+    case 'count':
+      if (v !== true) fail('agg_invalid', 'count takes true', at);
+      return 'scalar.number';
+    case 'avg':
+    case 'sum':
+      field(v, at, (k) => k === 'scalar.number', 'a number field');
+      return 'scalar.number';
+    case 'min':
+    case 'max':
+      return field(v, at, (k) => DATE_OR_NUMBER.has(k as FieldKind), 'a number or date field');
+    default: {
+      if (!allowLatest) {
+        fail(
+          'agg_invalid',
+          'latest picks one row per seed row; a frame aggregate takes count, avg, sum, min or max',
+          at
+        );
+      }
+      if (!isObj(v) || Object.keys(v).some((k) => k !== 'by' && k !== 'value')) {
+        fail('agg_invalid', 'latest takes { by: <dateField>, value: <field> }', at);
+      }
+      field(v.by, [...at, 'by'], (k) => k === 'scalar.date', 'a date field');
+      return field(
+        v.value,
+        [...at, 'value'],
+        (k) => k.startsWith('scalar.') && k !== 'scalar.json',
+        'a scalar field'
+      );
+    }
+  }
+}
+
+/** A walk aggregate (`fields._agg` entry or where-side `_agg`): its walk, far `where` and function. Returns its value kind. */
+export function validateWalkAgg(
+  agg: unknown,
+  path: string[],
+  scope: WalkScope,
+  h: FrameHelpers
+): string {
+  if (!isObj(agg)) fail('agg_invalid', '_agg expects an aggregate object', path);
+  const hop = resolveHop(agg, path, scope);
+  const kind = aggKind(agg, WALK_AGG_KEYS, hop, path, h, true);
+  if (agg.where !== undefined) h.validateWhere(agg.where, [...path, 'where'], farScope(scope, hop));
+  return kind;
+}
+
+const NESTED_KEYS = new Set(['_walk', 'fields', 'where', 'orderBy', 'limit']);
+
+/** A nested `{ _walk, fields, where?, orderBy?, limit? }` selection. Its `limit` max is the engine's page max. */
+function validateNested(
+  sel: Record<string, unknown>,
+  path: string[],
+  scope: WalkScope,
+  h: FrameHelpers
+): void {
+  for (const k of Object.keys(sel)) {
+    if (!NESTED_KEYS.has(k))
+      fail('type_mismatch', `unknown nested selection key '${k}'`, [...path, k]);
+  }
+  const walk = sel._walk;
+  const wp = [...path, '_walk'];
+  if (!isObj(walk)) fail('type_mismatch', '_walk expects { in | out, where? }', wp);
+  for (const k of Object.keys(walk)) {
+    if (!WALK_AGG_KEYS.has(k)) {
+      fail('type_mismatch', `a nested _walk takes in, out and where, not '${k}'`, [...wp, k]);
+    }
+  }
+  const hop = resolveHop(walk, wp, scope);
+  const far = farScope(scope, hop);
+  if (walk.where !== undefined) h.validateWhere(walk.where, [...wp, 'where'], far);
+  if (sel.where !== undefined) h.validateWhere(sel.where, [...path, 'where'], far);
+  if (sel.orderBy !== undefined) h.validateOrderBy(sel.orderBy, hop.fields, [...path, 'orderBy']);
+  const limit = sel.limit;
+  if (limit !== undefined && (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 0)) {
+    fail('type_mismatch', 'limit must be a non-negative integer', [...path, 'limit']);
+  }
+  if (!isObj(sel.fields))
+    fail('type_mismatch', 'a nested selection needs fields', [...path, 'fields']);
+  validateSelection(sel.fields, [...path, 'fields'], far, h);
+}
+
+/**
+ * A field selection's `_agg` and nested `{ _walk }` entries, which sit at the
+ * top level of a selection only. Returns the `_agg` names and value kinds.
+ */
+export function validateSelection(
+  fields: unknown,
+  path: string[],
+  scope: WalkScope,
+  h: FrameHelpers
+): Map<string, string> {
+  const aggs = new Map<string, string>();
+  if (!isObj(fields)) return aggs;
+  for (const [name, sel] of Object.entries(fields)) {
+    const at = [...path, name];
+    if (name === '_agg') {
+      if (!isObj(sel)) fail('agg_invalid', '_agg maps names to aggregates', at);
+      // One _agg cannot reference another: validated with no _agg names in scope.
+      const own = { ...scope, aggs: new Map<string, string>() };
+      for (const [n, agg] of Object.entries(sel)) {
+        if (!IDENT.test(n)) {
+          fail('agg_invalid', `aggregate name '${n}' must be an identifier`, [...at, n]);
+        }
+        aggs.set(n, validateWalkAgg(agg, [...at, n], own, h));
+      }
+    } else if (isObj(sel) && Object.hasOwn(sel, '_walk')) {
+      validateNested(sel, at, scope, h);
+    } else if (isObj(sel)) {
+      const deep = walkGrammarPath({ fields: sel });
+      if (deep !== null) {
+        fail(
+          'walk_unsupported_ref',
+          `'${String(deep.at(-1))}' is valid only at the top level of a type's selection`,
+          [...at, ...deep.slice(1)]
+        );
+      }
+    }
+  }
+  return aggs;
+}
+
+export interface FrameParams {
+  count?: unknown;
+  aggregate?: unknown;
+  bucket?: unknown;
+  derive?: unknown;
+  cursor?: unknown;
+  orderBy?: unknown;
+  fields?: Record<string, unknown>;
+}
+
+/**
+ * `count`, `aggregate`, `bucket` and `derive`, and what each excludes.
+ * Returns the derive names `orderBy` may use as `$<name>`.
+ */
+export function validateFrameParams(
+  p: FrameParams,
+  scope: WalkScope,
+  h: FrameHelpers
+): ReadonlySet<string> {
+  if (p.count !== undefined && typeof p.count !== 'boolean') {
+    fail('type_mismatch', 'count takes true or false', ['count']);
+  }
+  if (p.count === true) {
+    for (const k of ['aggregate', 'bucket', 'derive', 'orderBy', 'cursor'] as const) {
+      if (p[k] !== undefined)
+        fail('count_conflict', `count returns a count; it takes no '${k}'`, [k]);
+    }
+    for (const k of Object.keys(p.fields ?? {})) {
+      if (k !== 'id') {
+        fail('count_conflict', `count returns no rows; it selects only id, not '${k}'`, [
+          'fields',
+          k
+        ]);
+      }
+    }
+  }
+  const seed: Hop = { typeName: scope.typeName ?? '', fields: scope.fields };
+  if (p.aggregate !== undefined) {
+    for (const k of ['derive', 'cursor'] as const) {
+      if (p[k] !== undefined) {
+        fail('agg_invalid', `aggregate returns aggregate rows; it takes no '${k}'`, [k]);
+      }
+    }
+    const perRow = walkGrammarPath({ fields: p.fields });
+    if (perRow !== null) {
+      fail(
+        'agg_invalid',
+        'aggregate returns aggregate rows; it takes no per-row _agg or nested selections',
+        perRow
+      );
+    }
+    if (!isObj(p.aggregate) || Object.keys(p.aggregate).length === 0) {
+      fail('agg_invalid', 'aggregate maps names to aggregates', ['aggregate']);
+    }
+    for (const [n, agg] of Object.entries(p.aggregate)) {
+      const at = ['aggregate', n];
+      if (!IDENT.test(n) || (n === 'bucket' && p.bucket !== undefined)) {
+        fail('agg_invalid', `aggregate name '${n}' must be an identifier other than bucket`, at);
+      }
+      if (!isObj(agg)) fail('agg_invalid', 'an aggregate is an object such as { count: true }', at);
+      aggKind(agg, NO_KEYS, seed, at, h, false);
+    }
+  }
+  if (p.bucket !== undefined) {
+    const b = p.bucket;
+    if (p.aggregate === undefined) {
+      fail('bucket_invalid', 'bucket groups an aggregate; it needs aggregate', ['bucket']);
+    }
+    if (!isObj(b) || Object.keys(b).some((k) => k !== 'field' && k !== 'by')) {
+      fail('bucket_invalid', 'bucket takes { field, by }', ['bucket']);
+    }
+    if (b.by !== 'day' && b.by !== 'hour') {
+      fail('bucket_invalid', "bucket by is 'day' or 'hour'", ['bucket', 'by']);
+    }
+    const def = typeof b.field === 'string' ? h.lookup(scope.fields, b.field) : undefined;
+    if (def === undefined || h.kindOf(def) !== 'scalar.date') {
+      fail('bucket_invalid', `bucket field '${String(b.field)}' is not a date field`, [
+        'bucket',
+        'field'
+      ]);
+    }
+  }
+  const derived = new Set<string>();
+  if (p.derive !== undefined) {
+    if (!isObj(p.derive))
+      fail('derive_invalid', 'derive maps names to { diff } or { ratio }', ['derive']);
+    for (const [n, spec] of Object.entries(p.derive)) {
+      const at = ['derive', n];
+      if (!IDENT.test(n)) fail('derive_invalid', `derive name '${n}' must be an identifier`, at);
+      const entries = isObj(spec) ? Object.entries(spec) : [];
+      const [op, operands] = entries[0] ?? [];
+      if (
+        entries.length !== 1 ||
+        (op !== 'diff' && op !== 'ratio') ||
+        !Array.isArray(operands) ||
+        operands.length !== 2
+      ) {
+        fail('derive_invalid', 'a derive is { diff: [a, b] } or { ratio: [a, b] }', at);
+      }
+      operands.forEach((o: unknown, i) => {
+        deriveOperand(o, [...at, op, String(i)], scope, h);
+      });
+      derived.add(n);
+    }
+  }
+  return derived;
+}
+
+/** `$.<number field>` of the seed row, or `_agg.<name>` of a number-valued frame aggregate. */
+function deriveOperand(o: unknown, path: string[], scope: WalkScope, h: FrameHelpers): void {
+  const m = typeof o === 'string' ? /^(\$|_agg)\.(.+)$/.exec(o) : null;
+  let kind: string | undefined;
+  if (m !== null) {
+    const [, src, name] = m as unknown as [string, string, string];
+    if (src === '_agg') kind = scope.aggs?.get(name);
+    else {
+      const def = h.lookup(scope.fields, name);
+      kind = def === undefined ? undefined : h.kindOf(def);
+    }
+  }
+  if (kind !== 'scalar.number') {
+    fail(
+      'derive_invalid',
+      `derive operand '${String(o)}' must be a number field '$.<field>' or a number-valued '_agg.<name>' in this frame's fields`,
       path
     );
   }

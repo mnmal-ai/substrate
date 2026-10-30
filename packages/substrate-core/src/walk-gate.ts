@@ -28,12 +28,18 @@ export function walkGrammarPath(entry: Record<string, unknown>): string[] | null
   const where = inWhere(params.where, ['where']);
   if (where) return where;
   for (const k of WALK_PARAM_KEYS) if (k in params) return [k];
-  const fields = entry.fields;
-  if (isObj(fields)) {
-    for (const [name, sel] of Object.entries(fields)) {
-      if (name === '_agg') return ['fields', name];
-      if (isObj(sel) && '_walk' in sel) return ['fields', name, '_walk'];
-    }
+  return inFields(entry.fields, ['fields']);
+}
+
+/** `_agg` or a `{ _walk }` selection anywhere in a field selection, sub-selections included. */
+function inFields(fields: unknown, path: string[]): string[] | null {
+  if (!isObj(fields)) return null;
+  for (const [name, sel] of Object.entries(fields)) {
+    if (name === '_agg') return [...path, name];
+    if (!isObj(sel)) continue;
+    if ('_walk' in sel) return [...path, name, '_walk'];
+    const hit = inFields(sel, [...path, name]);
+    if (hit) return hit;
   }
   return null;
 }

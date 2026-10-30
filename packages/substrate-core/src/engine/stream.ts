@@ -22,10 +22,12 @@ import type {
 } from '@mnmal-ai/substrate-types';
 import {
   isResolverFrameError,
+  WALKS_IN_SUBSCRIPTION,
   WS_CODE_SUBSCRIPTION_UNSUPPORTED_FRAME
 } from '@mnmal-ai/substrate-types';
 import { FilterValidationError, validateFilter } from '../filter/validator.js';
 import { evaluatePolicy } from '../policy-evaluator.js';
+import { walkGrammarPath } from '../walk-gate.js';
 import {
   checkIdentityGrant,
   clientErrorMessage,
@@ -308,6 +310,15 @@ export class StreamSubsystem {
     if ((decision.obligations?.length ?? 0) > 0) delete args.fields;
 
     if (registryEntry.kind === 'type') {
+      // A stream is a live read like a subscription, so walks are refused the same way (walks spec, Non-goals).
+      const walkPath = walkGrammarPath(frame as Record<string, unknown>);
+      if (walkPath !== null) {
+        await emitError('walks are not available in streams', WALKS_IN_SUBSCRIPTION, [
+          key,
+          ...walkPath
+        ]);
+        return;
+      }
       const params = frame.params;
       const where = params?.where as WhereClause | undefined;
       const orderBy = params?.orderBy as OrderByClause[] | undefined;

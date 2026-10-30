@@ -26,6 +26,7 @@ import {
   type ValidateFilterInput,
   validateFilter
 } from '../filter/validator.js';
+import { usesWalkGrammar } from '../walk-gate.js';
 import { addError } from './internals.js';
 
 /**
@@ -93,7 +94,8 @@ export function runFilterGuard(deps: FilterGuardDeps, input: FilterGuardInput): 
         (f) =>
           !(f in typeSchema.fields) &&
           !PROJECTION_VIRTUAL_KEYS.has(f) &&
-          computedFieldOwner(f) === undefined
+          computedFieldOwner(f) === undefined &&
+          !isWalkSelection(f, (entry.fields as Record<string, unknown>)[f])
       );
       if (unknown.length > 0) {
         envelope._diagnostics ??= {};
@@ -103,7 +105,8 @@ export function runFilterGuard(deps: FilterGuardDeps, input: FilterGuardInput): 
     }
   }
 
-  if (where !== undefined || orderBy !== undefined) {
+  const walks = usesWalkGrammar(entry as Record<string, unknown>);
+  if (where !== undefined || orderBy !== undefined || walks) {
     try {
       let typeSchema = deps.schemaFor(ns).types[name];
       if (typeSchema === undefined) {
@@ -129,6 +132,7 @@ export function runFilterGuard(deps: FilterGuardDeps, input: FilterGuardInput): 
         validateFilter({
           ...(where !== undefined ? { where } : {}),
           ...(orderBy !== undefined ? { orderBy } : {}),
+          ...(walks ? walkInput(entry) : {}),
           typeSchema,
           capabilities: dataset.capabilities,
           schemaOf: (type) => (Object.hasOwn(types, type) ? types[type] : undefined),
@@ -150,4 +154,22 @@ export function runFilterGuard(deps: FilterGuardDeps, input: FilterGuardInput): 
     }
   }
   return true;
+}
+
+/** `_agg` and nested `{ _walk }` selections are walk grammar, not projected fields. */
+function isWalkSelection(name: string, sel: unknown): boolean {
+  return name === '_agg' || (typeof sel === 'object' && sel !== null && '_walk' in sel);
+}
+
+/** The walk-grammar params and field selection `validateFilter` checks. */
+function walkInput(entry: FrameEntry): Partial<ValidateFilterInput> {
+  const { count, aggregate, bucket, derive, cursor } = entry.params ?? {};
+  return {
+    count,
+    aggregate,
+    bucket,
+    derive,
+    cursor,
+    ...(entry.fields !== undefined ? { fields: entry.fields as Record<string, unknown> } : {})
+  };
 }
