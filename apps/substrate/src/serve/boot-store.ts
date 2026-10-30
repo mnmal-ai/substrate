@@ -155,6 +155,12 @@ export async function bootStore(opts: BootStoreOptions): Promise<BootedStore> {
       ...(config.cors !== null ? { cors: config.cors } : {}),
       ...(config.bodyLimit !== null ? { bodyLimit: config.bodyLimit } : {})
     });
+    // A 5xx reaches the client as a bare internal_error, so the cause is logged here.
+    server.onError((err, req) => {
+      if (((err as { statusCode?: number }).statusCode ?? 500) < 500) return;
+      const where = req !== undefined ? `${req.method} ${req.path}` : 'background';
+      process.stderr.write(`[substrate] internal error on ${where}: ${err.stack ?? err.message}\n`);
+    });
 
     const { composeOpts, idempotencyStore, sentinelClientConfig, bridgeRegistry, disposeBridges } =
       await buildComposeOpts({

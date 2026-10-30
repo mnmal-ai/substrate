@@ -154,6 +154,18 @@ describe.skipIf(!POSTGRES_URL)('migrate-store (pg)', () => {
     }
   }, 300_000);
 
+  it('runs with a service env whose listener settings a prepare boot cannot meet', async () => {
+    const s = await openSchemas('legacy');
+    try {
+      // Off loopback with auth on, serve would demand a public origin and a ticket secret.
+      const r = await run(s, [], {}, { HOST: '0.0.0.0', SUBSTRATE_AUTH_MODE: 'required' });
+      expect(r.code, r.out + r.err).toBe(0);
+      expect(r.out).toContain('copied and verified');
+    } finally {
+      await s.close();
+    }
+  }, 300_000);
+
   it('exits 3 and keeps the marker when verification fails', async () => {
     const s = await openSchemas('partitioned');
     // Whatever reaches the real stderr mid-run passes the redactor too: capture it under the command's shim.
@@ -294,7 +306,7 @@ describe.skipIf(!POSTGRES_URL)('migrate-store (pg)', () => {
     try {
       const r = await run(s, ['--verify-only']);
       expect(r.code, r.err).toBe(2);
-      expect(r.err).toContain('already verified, or not a migrate-store target (no marker)');
+      expect(r.out).toContain('already verified, or not a migrate-store target (no marker)');
       const [n] = await s.tgtSql<{ n: number }[]>`
         SELECT count(*)::int AS n FROM pg_class WHERE relnamespace = ${s.tgtSchema}::regnamespace`;
       expect(n?.n).toBe(0);
@@ -312,6 +324,22 @@ describe.skipIf(!POSTGRES_URL)('migrate-store (pg)', () => {
       const r = await run(s, [], {}, { SUBSTRATE_MIGRATE_TO_URL: dead.toString() });
       expect(r.code).toBe(1);
       expect(r.err).not.toBe('');
+    } finally {
+      await s.close();
+    }
+  }, 120_000);
+
+  it('--json still prints a report when the run fails, naming the error and the phase', async () => {
+    const s = await openSchemas('legacy');
+    try {
+      const dead = new URL(POSTGRES_URL as string);
+      dead.port = '1';
+      const r = await run(s, ['--json'], {}, { SUBSTRATE_MIGRATE_TO_URL: dead.toString() });
+      expect(r.code).toBe(1);
+      const report = JSON.parse(r.out);
+      expect(report).toMatchObject({ ok: false, exitCode: 1 });
+      expect(typeof report.error).toBe('string');
+      expect(report.error.length).toBeGreaterThan(0);
     } finally {
       await s.close();
     }

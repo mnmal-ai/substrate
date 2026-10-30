@@ -6,7 +6,7 @@ import { canonicalVocabValue, isIsoTimestamp } from '@mnmal-ai/substrate-types';
 
 export { resolveIdentity } from './resolve-identity.js';
 
-import type { FieldDef, Id } from '@mnmal-ai/substrate-types';
+import type { FieldDef, FieldDefCrossRef, Id } from '@mnmal-ai/substrate-types';
 import {
   CLIENT_SUPPLIED_SERVER_FIELD,
   ResolverFrameError,
@@ -195,7 +195,37 @@ export function dropUndefinedParams(params: Record<string, unknown>): Record<str
 }
 
 /**
- * Refuse an explicit `null` on a non-nullable scalar, on create and update
+ * Whether a crossRef may be absent or null: as it says, or, when it says
+ * nothing, only when its `onDelete` is `set_null` (deleting the target nulls it).
+ */
+export function isNullableCrossRef(def: FieldDefCrossRef): boolean {
+  return def.nullable ?? def.onDelete === 'set_null';
+}
+
+/**
+ * Refuse a crossRef that is non-nullable but `onDelete: 'set_null'`: deleting
+ * its target would null a field the type says cannot be null. Install-time.
+ *
+ * Throws a plain `Error` naming the type and every offending field.
+ */
+export function assertCrossRefDeletePolicies(
+  typeName: string,
+  fieldDefs: Record<string, FieldDef>
+): void {
+  const bad = Object.entries(fieldDefs)
+    .filter(
+      ([, def]) => def.kind === 'crossRef' && def.onDelete === 'set_null' && def.nullable === false
+    )
+    .map(([name]) => `'${name}'`);
+  if (bad.length === 0) return;
+  throw new Error(
+    `type '${typeName}': crossRef field(s) ${bad.join(', ')} are nullable: false but onDelete: 'set_null', ` +
+      "which would null them when the target is deleted. Use onDelete 'cascade' or 'restrict', or make them nullable."
+  );
+}
+
+/**
+ * Refuse an explicit `null` on a non-nullable scalar or crossRef, on create and update
  * alike. Presence is not completeness: a null passes `assertRequiredFields`'
  * key check and would store a row the type says cannot exist. A
  * `default` does not excuse it — the default fills an OMITTED key, and a
@@ -208,7 +238,13 @@ export function assertNoNullOnNonNullable(
 ): void {
   const offending: string[] = [];
   for (const [name, def] of Object.entries(fieldDefs)) {
-    if (name === 'id' || def.kind !== 'scalar' || def.nullable === true) continue;
+    if (name === 'id') continue;
+    if (
+      def.kind === 'crossRef'
+        ? isNullableCrossRef(def)
+        : def.kind !== 'scalar' || def.nullable === true
+    )
+      continue;
     if (Object.hasOwn(params, name) && params[name] === null) offending.push(name);
   }
   if (offending.length === 0) return;
@@ -284,10 +320,11 @@ export function applyScalarDefaults(
  * `{id}`-only rows this guard exists to prevent).
  *
  * Run AFTER applyScalarDefaults so a defaulted field counts as supplied.
- * Scoped to scalars: struct / list / crossRef required-ness is a separate
- * concern (crossRefs are nullable-by-policy via onDelete). readonly fields
- * (engine-allocated, e.g. shortId) and create-gated serverSet date fields
- * (which clients may not supply) are exempt. Create-only.
+ * Covers scalars and crossRefs (a crossRef is required when
+ * `isNullableCrossRef` says it is not nullable); struct and list fields are
+ * not checked. readonly fields (engine-allocated, e.g. shortId) and
+ * create-gated serverSet date fields (which clients may not supply) are
+ * exempt. Create-only.
  *
  * Throws `ResolverFrameError('missing_required_field', ...)` naming EVERY
  * missing field, not just the first, so one malformed create costs one
@@ -302,6 +339,10 @@ export function assertRequiredFields(
   for (const [name, def] of Object.entries(fieldDefs)) {
     // `id` is assigned by the dataset when omitted — never required.
     if (name === 'id') continue;
+    if (def.kind === 'crossRef') {
+      if (!isNullableCrossRef(def) && !Object.hasOwn(params, name)) missing.push(name);
+      continue;
+    }
     if (def.kind !== 'scalar') continue;
     if (def.nullable === true || def.default !== undefined || def.readonly === true) continue;
     // Clients may not supply a create-gated serverSet field, so it cannot be

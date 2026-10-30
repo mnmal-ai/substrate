@@ -45,7 +45,12 @@ import { listResolver } from './autocrud-list.js';
 import { purgeResolver } from './autocrud-purge.js';
 import { updateResolver } from './autocrud-update.js';
 import { assertCrossRefTargetsExist, collectCrossRefFields } from './crossref-existence.js';
-import { assertServerSetFieldsFillable, assertVocabImplications, coerceId } from './internal.js';
+import {
+  assertCrossRefDeletePolicies,
+  assertServerSetFieldsFillable,
+  assertVocabImplications,
+  coerceId
+} from './internal.js';
 
 export { createResolver } from './autocrud-create.js';
 export { deleteResolver } from './autocrud-delete.js';
@@ -303,6 +308,7 @@ export function installAutoCrud(
   const postWrite = options.postWrite;
   if (fields !== undefined) {
     assertServerSetFieldsFillable(typeName, fields);
+    assertCrossRefDeletePolicies(typeName, fields);
     assertVocabImplications(typeName, fields);
   }
 
