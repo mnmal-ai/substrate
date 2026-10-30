@@ -168,8 +168,8 @@ export function buildFrameCount(
  * ascending, rows with no readable date in none, at most `limit` groups.
  * A pick reads the whole result through `pickRow`, shadowing the outer
  * alias; in a bucket it runs in two phases: GROUP BY finds the winning key,
- * then a top-1 on `key = it` (the indexed expression, no bucket in WHERE)
- * fetches that row's stored value.
+ * then a top-1 on `key = it` (the indexed expression; the bucket key only
+ * pins the lookup, never the frame's WHERE) fetches that row's stored value.
  */
 export function buildFrameAggregate(
   sql: Sql | TransactionSql,
@@ -190,8 +190,13 @@ export function buildFrameAggregate(
     else picks.push([name, pick]);
   }
   if (bucket === undefined) {
+    // Scalar subqueries only, so the statement is one row even when nothing matches.
     const picked = picks.map(([name, p]) => sql`${name}::text, ${pickRow(sql, p, r, where)}`);
-    return sql`SELECT ${buildObject(sql, [...aggs, ...picked])} AS g FROM rows ${R} WHERE ${where}`;
+    const whole =
+      aggs.length === 0
+        ? sql`'{}'::jsonb`
+        : sql`(SELECT ${buildObject(sql, aggs)} FROM rows ${R} WHERE ${where})`;
+    return sql`SELECT ${whole} || ${buildObject(sql, picked)} AS g`;
   }
   const [by, fmt] = bucket.by === 'day' ? ['day', 'YYYY-MM-DD'] : ['hour', 'YYYY-MM-DD"T"HH24'];
   // Outside WHERE, so the date index still serves the where's window.
@@ -203,7 +208,12 @@ export function buildFrameAggregate(
     sql``
   );
   const picked = picks.map(([name, p], i) => {
-    const at = combineAnd(sql, [where, sql`${p.key} = ${sql.unsafe(`x.m${i}`)}`]);
+    // Pinned to the bucket: another bucket's row can share the winning instant.
+    const at = combineAnd(sql, [
+      where,
+      sql`${p.key} = ${sql.unsafe(`x.m${i}`)}`,
+      sql`${key} = x.b`
+    ]);
     return sql`${name}::text, ${pickRow(sql, p, r, at)}`;
   });
   const cut = limit === undefined ? sql`` : sql`LIMIT ${limit + 1}`;

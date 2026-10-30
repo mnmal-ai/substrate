@@ -1081,6 +1081,50 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('count, aggregate and bucket (pg)
     expect(none.groups).toEqual([]);
   });
 
+  it('pick-only whole-result aggregates are one group', async () => {
+    await fixture();
+    const picks = { first: { min: 'observedAt' }, last: { max: 'observedAt' } };
+    const only = await sameResult('Observation', {
+      aggregate: picks as unknown as NonNullable<ReadParams['aggregate']>
+    });
+    expect(only.groups).toHaveLength(1);
+    const empty = await sameResult('Observation', {
+      aggregate: picks as unknown as NonNullable<ReadParams['aggregate']>,
+      where: { price: { gt: 1000 } }
+    });
+    expect(empty.groups).toEqual([{ first: null, last: null }]);
+    const mixed = await sameResult('Observation', {
+      aggregate: { ...picks, n: { count: true } } as unknown as NonNullable<
+        ReadParams['aggregate']
+      >,
+      where: { cert: { eq: u('c1') } } as WhereClause
+    });
+    expect(mixed.groups).toHaveLength(1);
+  });
+
+  it("a bucketed pick stays inside its bucket's rows", async () => {
+    const at = (createdAt: string) => ({
+      _metadata: { createdAt, updatedAt: createdAt, createdBy: null, updatedBy: null }
+    });
+    // The same instant stored two ways; pa (the lower id) sits in the other bucket.
+    await load({
+      Observation: [
+        { id: 'pa', observedAt: '2026-10-02T00:00:00Z', ...at('2026-10-01T05:00:00.000Z') },
+        { id: 'pb', observedAt: '2026-10-02T02:00:00+02:00', ...at('2026-10-02T05:00:00.000Z') }
+      ]
+    });
+    const day = await sameResult('Observation', {
+      aggregate: { first: { min: 'observedAt' } } as unknown as NonNullable<
+        ReadParams['aggregate']
+      >,
+      bucket: { field: 'createdAt', by: 'day' }
+    });
+    expect(day.groups).toEqual([
+      { bucket: '2026-10-01', first: '2026-10-02T00:00:00Z' },
+      { bucket: '2026-10-02', first: '2026-10-02T02:00:00+02:00' }
+    ]);
+  });
+
   it('date picks are bounded top-1s, never array_agg', async () => {
     await fixture();
     sent = [];
