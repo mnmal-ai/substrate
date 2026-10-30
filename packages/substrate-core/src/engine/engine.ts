@@ -50,6 +50,7 @@ import type {
   Registry as RegistryInterface,
   RequestContext,
   ResolveObservation,
+  ResolverArgs,
   Row,
   Schema,
   SweepDeps,
@@ -58,7 +59,9 @@ import type {
 import {
   isResolverFrameError,
   isRestrictViolation,
-  WALKS_DISABLED
+  ROW_POLICY_BLOCKS_WALK,
+  WALKS_DISABLED,
+  WALKS_IN_MUTATION
 } from '@mnmal-ai/substrate-types';
 import { readShapeOf } from '../advisor/shape-recorder.js';
 import { applyLostNamespace } from '../apply-lost-namespace.js';
@@ -122,6 +125,7 @@ function grantRefusalCode(verdict: { reason: 'namespace' | 'capability' }): stri
 import { evaluatePolicy } from '../policy-evaluator.js';
 import { Registry } from '../registry.js';
 import { walkGrammarPath } from '../walk-gate.js';
+import { hopResolver, type WalkedType, walkedTypes } from '../walk-types.js';
 import { BridgeSubsystem } from './bridge.js';
 import { isSealedCursor, openCursor } from './cursor-seal.js';
 import { runFilterGuard } from './filter-guard.js';
@@ -523,9 +527,10 @@ export class Engine {
     ns: string,
     type: string,
     identity: Identity | null,
-    probe?: PolicyProbeContext
+    probe?: PolicyProbeContext,
+    args?: ResolverArgs
   ): PolicyDecision {
-    return this.#evaluateEntryPolicy(ns, type, identity, 'query', probe);
+    return this.#evaluateEntryPolicy(ns, type, identity, 'query', probe, undefined, args);
   }
 
   /**
@@ -540,7 +545,8 @@ export class Engine {
     identity: Identity | null,
     operation: 'query' | 'mutate',
     probe: PolicyProbeContext | undefined,
-    verb?: AutoCrudVerb
+    verb?: AutoCrudVerb,
+    args?: ResolverArgs
   ): PolicyDecision {
     if (this.#tombstoned.has(ns)) {
       return { allow: false, reason: `namespace '${ns}' was deleted` };
@@ -569,7 +575,7 @@ export class Engine {
       entry: type,
       ...(verb !== undefined ? { verb } : {})
     };
-    return evaluatePolicy(entry.policy, ctx, {});
+    return evaluatePolicy(entry.policy, ctx, args ?? {});
   }
 
   /**
@@ -1315,6 +1321,66 @@ export class Engine {
     return refused;
   }
 
+  /**
+   * Fail-closed policy for walk grammar (spec §2, §3). A walk is a read of
+   * every type it touches: each walked, aggregated or nested type's read
+   * policy runs with the walk's own `where`, and a deny refuses the frame. Any
+   * obligation, on a walked type or on the seed, is refused too: obligations
+   * filter rows after the read, which cannot reach rows a walk counted,
+   * aggregated or joined. Records the error and returns true on refusal.
+   */
+  #refuseWalkPolicy(
+    envelope: PackEnvelope,
+    key: string,
+    frame: FrameEntry,
+    ns: string,
+    seed: string,
+    ctx: RequestContext,
+    decision: PolicyDecision
+  ): boolean {
+    const seedPath = walkGrammarPath(frame as Record<string, unknown>);
+    if (seedPath === null) return false;
+    const blocked = (d: PolicyDecision) => (d.obligations?.length ?? 0) > 0;
+    const refuse = (path: string[], message: string, code: string) => {
+      addError(envelope, [key, ...path], message, code);
+      this.#metric('engine_walk_policy_refused', { key, code, path });
+      return true;
+    };
+    if (blocked(decision)) {
+      return refuse(
+        seedPath,
+        `'${ns}/${seed}' is row-filtered for this caller, so it cannot be walked from, counted or aggregated`,
+        ROW_POLICY_BLOCKS_WALK
+      );
+    }
+    const types = this.schemaFor(ns).types;
+    let walked: WalkedType[];
+    try {
+      walked = walkedTypes(
+        frame as Record<string, unknown>,
+        seed,
+        hopResolver(ns, (t) => (Object.hasOwn(types, t) ? types[t] : undefined))
+      );
+    } catch {
+      // Validation already resolved every hop; one that no longer resolves is refused, not skipped.
+      return refuse(seedPath, 'a walk in this frame does not resolve', 'policy_denied');
+    }
+    for (const w of walked) {
+      const d = this.evaluateReadPolicy(ns, w.type, ctx.identity ?? null, ctx, {
+        params: w.where !== undefined && w.unfiltered !== true ? { where: w.where } : {}
+      });
+      if (!d.allow) return refuse(w.path, d.reason ?? 'policy denied', 'policy_denied');
+      if (blocked(d)) {
+        return refuse(
+          w.path,
+          `'${ns}/${w.type}' is row-filtered for this caller, so a walk cannot read it`,
+          ROW_POLICY_BLOCKS_WALK
+        );
+      }
+    }
+    return false;
+  }
+
   async #runEntryInner(
     envelope: PackEnvelope,
     key: string,
@@ -1419,6 +1485,32 @@ export class Engine {
     // the caller's selection; the transport projects the response.
     if ((decision.obligations?.length ?? 0) > 0) delete args.fields;
 
+    // Neither path validates walk grammar, so both refuse it whatever the flag:
+    // a mutation's returned-row selection, and a virtual resolver's input.
+    if (operation === 'mutate') {
+      const walkPath = walkGrammarPath({ fields: frame.fields });
+      if (walkPath) {
+        addError(
+          envelope,
+          [key, ...walkPath],
+          'walks are not available in a mutation',
+          WALKS_IN_MUTATION
+        );
+        return false;
+      }
+    } else if (isVirtual) {
+      const walkPath = walkGrammarPath(frame as Record<string, unknown>);
+      if (walkPath) {
+        addError(
+          envelope,
+          [key, ...walkPath],
+          'walks are not available on virtual types',
+          'walk_unsupported_ref'
+        );
+        return false;
+      }
+    }
+
     if (!this.#walksEnabled && operation === 'query' && registryEntry.kind === 'type') {
       const walkPath = walkGrammarPath(frame as Record<string, unknown>);
       if (walkPath) {
@@ -1451,6 +1543,15 @@ export class Engine {
       dataset
     });
     if (!guardOk) return false;
+
+    if (
+      this.#walksEnabled &&
+      operation === 'query' &&
+      registryEntry.kind === 'type' &&
+      this.#refuseWalkPolicy(envelope, key, frame, ns, name, ctx, decision)
+    ) {
+      return false;
+    }
 
     // A query reads in the type's natural order unless it names one.
     if (operation === 'query' && !isVirtual) {
