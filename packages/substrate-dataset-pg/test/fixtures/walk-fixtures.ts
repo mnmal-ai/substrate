@@ -25,7 +25,9 @@ export function walkSchema(ns: string): Record<string, Record<string, FieldDef>>
     Observation: { cert: ref('Cert'), price: num, observedAt: date, status: str },
     Test: { package: str, file: str, name: str, pgGated: bool },
     CiRun: run,
-    LocalRun: { ...run, host: str, cores: num, concurrency: num }
+    LocalRun: { ...run, host: str, cores: num, concurrency: num },
+    /** Never written: a count or aggregate over it still answers its shape. */
+    Empty: { n: num }
   };
 }
 

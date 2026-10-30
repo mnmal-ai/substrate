@@ -583,4 +583,23 @@ describe('aggregate, derive, bucket, count and nested validation', () => {
       });
     }
   });
+
+  it('refuses a nested selection named after a declared field, at any depth', () => {
+    expect(
+      frameRefusal(
+        { fields: { price: true, cert: { _walk: { out: 'cert' }, fields: { grade: true } } } },
+        'Listing'
+      )
+    ).toEqual({ code: 'walk_unsupported_ref', path: ['fields', 'cert'] });
+    expect(
+      frameRefusal({
+        fields: {
+          listings: {
+            _walk: { in: 'cards/Listing.cert' },
+            fields: { cert: { _walk: { out: 'cert' }, fields: {} } }
+          }
+        }
+      })
+    ).toEqual({ code: 'walk_unsupported_ref', path: ['fields', 'listings', 'fields', 'cert'] });
+  });
 });

@@ -253,6 +253,13 @@ const mustAgree: Array<[string, string, ReadParams, Expected]> = [
   ['card yardstick count', 'Cert', { where: CARD_YARDSTICK, count: true }, { count: 1 }],
   ['run yardstick rows', 'Test', { where: RUN_YARDSTICK }, ['t1']],
   ['run yardstick count', 'Test', { where: RUN_YARDSTICK, count: true }, { count: 1 }],
+  ['count over a type never written', 'Empty', { count: true }, { rows: [], count: 0 }],
+  [
+    'aggregate over a type never written',
+    'Empty',
+    { aggregate: aggregate({ n: { count: true } }) },
+    { rows: [], groups: [{ n: 0 }] }
+  ],
   [
     '_agg fields, a feature row per cert',
     'Cert',

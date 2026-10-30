@@ -5,7 +5,7 @@
  */
 
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
-import { decodeEnvelope, PACK_MIME } from '@mnmal-ai/substrate-pack';
+import { decodeEnvelope, PACK_MIME, unpackFrame } from '@mnmal-ai/substrate-pack';
 import { defineNamespace, field } from '@mnmal-ai/substrate-sdk';
 import { MemorySubstrateServer } from '@mnmal-ai/substrate-server-memory';
 import type { FieldInput, PackEnvelope } from '@mnmal-ai/substrate-types';
@@ -131,6 +131,24 @@ describe('/substrate/v1/query walk results', () => {
         expect(env.data).toEqual(json?.data);
         expect(env.shapes).toEqual(json?.shapes);
       }
+
+      // A nested selection reusing a declared field name is refused by the
+      // validator, so the pack encoder never sees it.
+      const clash = await post(
+        {
+          'shop/Note': {
+            fields: { body: true, item: { _walk: { out: 'item' }, fields: { label: true } } }
+          }
+        },
+        true
+      );
+      expect(clash.status).toBe(200);
+      const refused = unpackFrame(clash.body as Buffer) as PackEnvelope;
+      expect(refused.data['shop/Note']).toBeUndefined();
+      expect(refused.errors?.[0]).toMatchObject({
+        code: 'walk_unsupported_ref',
+        path: ['shop/Note', 'fields', 'item']
+      });
     } finally {
       await composed.stop();
     }
