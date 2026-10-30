@@ -13,6 +13,7 @@ import {
   METADATA_COLUMNS,
   type MetadataFieldName,
   metaStr,
+  qualifier,
   tsArrayParam,
   tsParam
 } from './primitives.js';
@@ -27,12 +28,19 @@ import {
  * comes from the constant `METADATA_COLUMNS`, so `sql.unsafe` is safe here.
  */
 
+/** `r.<column>`, or the same column of `alias`'s row. */
+export function metadataColumnSql(field: MetadataFieldName, alias?: string): string {
+  const col = METADATA_COLUMNS[field];
+  return alias === undefined ? col : `${qualifier(alias)}${col.slice('r.'.length)}`;
+}
+
 export function buildMetadataColumnPredicate(
   sql: Sql | TransactionSql,
   field: MetadataFieldName,
-  predicate: Record<string, unknown>
+  predicate: Record<string, unknown>,
+  alias?: string
 ): Fragment | null {
-  const colName = METADATA_COLUMNS[field];
+  const colName = metadataColumnSql(field, alias);
   const col = sql.unsafe(colName);
   if (field === 'seq') {
     // The validator has already checked operands are numbers.

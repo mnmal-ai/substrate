@@ -69,8 +69,10 @@ export {
 } from './predicate.js';
 export {
   applyAgg,
+  bindingWalks,
   computeAgg,
   hop,
+  isRefOperand,
   WALK_EVALUATION_BUDGET,
   type WalkContext
 } from './walk.js';

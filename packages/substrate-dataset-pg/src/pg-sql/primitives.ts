@@ -88,9 +88,9 @@ export function resolvePromotedColumns(map: PromotedBodyColumnMap): PromotedColu
   return (field: string): PromotedBodyColumn | undefined => resolved.get(field);
 }
 
-/** The qualified expression source for a promoted column — `r.<column>`. */
-export function promotedColumnSql(def: PromotedBodyColumn): string {
-  return `r.${def.column}`;
+/** The qualified expression source for a promoted column — `r.<column>`, or `<alias>.<column>`. */
+export function promotedColumnSql(def: PromotedBodyColumn, alias = 'r'): string {
+  return `${qualifier(alias)}${def.column}`;
 }
 
 /**
@@ -150,15 +150,28 @@ export function sqlStringLiteral(s: string): string {
 /**
  * Body-field expressions as SQL TEXT, with every name inlined as a literal.
  * The compiler and the index DDL both build from these, because an
- * expression index serves only a filter whose expression matches it.
+ * expression index serves only a filter whose expression matches it. An
+ * `alias` qualifies `body` (a walk's far row); without one the text is the
+ * index DDL's.
  */
-const jsonSql = (path: readonly string[]): string =>
-  `body${path.map((p) => ` -> ${sqlStringLiteral(p)}`).join('')}`;
-const rawTextSql = (path: readonly string[]): string =>
-  `(${jsonSql(path.slice(0, -1))} ->> ${sqlStringLiteral(path[path.length - 1] as string)})`;
-const textSql = (path: readonly string[]): string => `(${rawTextSql(path)} COLLATE "C")`;
-const numSql = (path: readonly string[]): string => `substrate_num(${jsonSql(path)})`;
-const tsSql = (path: readonly string[]): string => `substrate_ts(${jsonSql(path)})`;
+/** `<alias>.`, checked as a bare identifier since it reaches `sql.unsafe`; empty without one. */
+export function qualifier(alias: string | undefined): string {
+  if (alias === undefined) return '';
+  if (!COLUMN_NAME_PATTERN.test(alias))
+    throw new Error(`internal: '${alias}' is not a table alias`);
+  return `${alias}.`;
+}
+
+const jsonSql = (path: readonly string[], alias?: string): string =>
+  `${qualifier(alias)}body${path.map((p) => ` -> ${sqlStringLiteral(p)}`).join('')}`;
+const rawTextSql = (path: readonly string[], alias?: string): string =>
+  `(${jsonSql(path.slice(0, -1), alias)} ->> ${sqlStringLiteral(path[path.length - 1] as string)})`;
+const textSql = (path: readonly string[], alias?: string): string =>
+  `(${rawTextSql(path, alias)} COLLATE "C")`;
+const numSql = (path: readonly string[], alias?: string): string =>
+  `substrate_num(${jsonSql(path, alias)})`;
+const tsSql = (path: readonly string[], alias?: string): string =>
+  `substrate_ts(${jsonSql(path, alias)})`;
 
 /** A field name as an inlined SQL literal: `'o''neil'`. */
 export function fieldLit(sql: Sql | TransactionSql, name: string): Fragment {
@@ -166,33 +179,61 @@ export function fieldLit(sql: Sql | TransactionSql, name: string): Fragment {
 }
 
 /** `((body -> 'a' ->> 'b') COLLATE "C")`: the one text expression for compares and sorts. */
-export function bodyText(sql: Sql | TransactionSql, path: readonly string[]): Fragment {
-  return sql.unsafe(textSql(path));
+export function bodyText(
+  sql: Sql | TransactionSql,
+  path: readonly string[],
+  alias?: string
+): Fragment {
+  return sql.unsafe(textSql(path, alias));
 }
 
 /** `(body -> 'a' ->> 'b')` uncollated, for ILIKE, which a "C" collation would not case-fold. */
-export function bodyRawText(sql: Sql | TransactionSql, path: readonly string[]): Fragment {
-  return sql.unsafe(rawTextSql(path));
+export function bodyRawText(
+  sql: Sql | TransactionSql,
+  path: readonly string[],
+  alias?: string
+): Fragment {
+  return sql.unsafe(rawTextSql(path, alias));
 }
 
 /** `(body -> 'a' -> 'b')`: the leaf stays jsonb. */
-export function bodyJson(sql: Sql | TransactionSql, path: readonly string[]): Fragment {
-  return sql.unsafe(`(${jsonSql(path)})`);
+export function bodyJson(
+  sql: Sql | TransactionSql,
+  path: readonly string[],
+  alias?: string
+): Fragment {
+  return sql.unsafe(`(${jsonSql(path, alias)})`);
 }
 
 /** `substrate_num(body -> …)`: the number, or NULL for any other jsonb. */
-export function bodyNum(sql: Sql | TransactionSql, path: readonly string[]): Fragment {
-  return sql.unsafe(numSql(path));
+export function bodyNum(
+  sql: Sql | TransactionSql,
+  path: readonly string[],
+  alias?: string
+): Fragment {
+  return sql.unsafe(numSql(path, alias));
 }
 
 /** `substrate_ts(body -> …)`: the instant, or NULL for anything but an ISO date or date-time string. */
-export function bodyTs(sql: Sql | TransactionSql, path: readonly string[]): Fragment {
-  return sql.unsafe(tsSql(path));
+export function bodyTs(
+  sql: Sql | TransactionSql,
+  path: readonly string[],
+  alias?: string
+): Fragment {
+  return sql.unsafe(tsSql(path, alias));
 }
 
-/** The DDL text of the expression the compiler emits for a top-level field. */
-export function indexExpressionSql(kind: 'text' | 'number' | 'date', field: string): string {
-  return kind === 'text' ? textSql([field]) : kind === 'number' ? numSql([field]) : tsSql([field]);
+/** The DDL text of the expression the compiler emits for a top-level field (qualified by `alias`, if given). */
+export function indexExpressionSql(
+  kind: 'text' | 'number' | 'date',
+  field: string,
+  alias?: string
+): string {
+  return kind === 'text'
+    ? textSql([field], alias)
+    : kind === 'number'
+      ? numSql([field], alias)
+      : tsSql([field], alias);
 }
 
 /**

@@ -57,7 +57,13 @@ import type {
   WriteResult,
   WriteRow
 } from '@mnmal-ai/substrate-types';
-import { assertNoRepeatedIds, naturalOrderOf, ResolverFrameError } from '@mnmal-ai/substrate-types';
+import {
+  assertNoRepeatedIds,
+  naturalOrderOf,
+  ResolverFrameError,
+  WALK_UNSUPPORTED_REF,
+  WALKS_NEED_PARTITIONED
+} from '@mnmal-ai/substrate-types';
 import type { MaybeRow, PendingQuery, ReservedSql, Sql } from 'postgres';
 import { withPgAdvisoryLock } from './advisory-lock.js';
 import type { DiskGuard } from './disk-guard.js';
@@ -84,6 +90,7 @@ import { IndexLockAborted, withTableIndexLock } from './migrate.js';
 import type { PgEdgesStore } from './pg-edges-store.js';
 import { PgShortIdStore } from './pg-short-id-store.js';
 import { sqlStringLiteral } from './pg-sql/primitives.js';
+import { walkScope, whereUsesWalks } from './pg-sql/walk.js';
 import {
   asJsonValue,
   assembleRowMetadata,
@@ -340,7 +347,9 @@ export class PgDataset implements Dataset {
   readonly capabilities: FilterCapabilities = {
     operators: fullBuiltinOperators(),
     orderBy: true,
-    cursor: true
+    cursor: true,
+    // Known before the layout is: `read` refuses walks on a legacy store.
+    walks: true
   };
 
   readonly txScopeId: string;
@@ -407,7 +416,39 @@ export class PgDataset implements Dataset {
     );
   }
 
+  /**
+   * The walk grammar (spec 2026-10-24-typed-edge-walks §3) runs on the
+   * partitioned layout only, and in a transaction under a `SET LOCAL`
+   * statement timeout, since pg has no walk evaluation budget. Other reads
+   * are unchanged.
+   */
   async read(type: string, params: ReadParams): Promise<ReadResult> {
+    if (!usesWalkGrammar(params)) return this.#read(type, params, false);
+    if ((await this.#layout()) !== 'partitioned') {
+      throw new ResolverFrameError(
+        WALKS_NEED_PARTITIONED,
+        'walks need the partitioned storage layout; move this store onto it with `substrate-admin migrate-store`'
+      );
+    }
+    const unsupported = (['aggregate', 'bucket', 'derive', 'agg', 'nested'] as const).find(
+      (k) => params[k] !== undefined
+    );
+    if (params.count === true || unsupported !== undefined) {
+      throw new ResolverFrameError(
+        WALK_UNSUPPORTED_REF,
+        `'${unsupported ?? 'count'}' is not yet supported on pg`
+      );
+    }
+    if (!this.#inTx) return this.withTransaction((tx) => tx.read(type, params));
+    // LOCAL: it ends with the transaction, the caller's included.
+    await cancellable(
+      this.#sql`SELECT set_config('statement_timeout', ${String(WALK_STATEMENT_TIMEOUT_MS)}, true)`,
+      params.signal
+    );
+    return this.#read(type, params, true);
+  }
+
+  async #read(type: string, params: ReadParams, walks: boolean): Promise<ReadResult> {
     const sql = this.#sql;
     const includeDeleted = params.includeDeleted === true;
 
@@ -458,7 +499,11 @@ export class PgDataset implements Dataset {
         ...(fieldRequested(params.fields, '_vector') ? { returnVector: true } : {})
       });
       extMeta = detailed.meta;
-      const whereFragment = buildWhere(sql, detailed.where, bodyCastFor, this.#promotedFor);
+      const lookup = this.#fieldDefLookup;
+      const scope = walks
+        ? walkScope(this.namespace, type, 'r', (t, f) => lookup?.(t, f))
+        : undefined;
+      const whereFragment = buildWhere(sql, detailed.where, bodyCastFor, this.#promotedFor, scope);
       if (whereFragment !== null) clauses.push(whereFragment);
     }
 
@@ -1873,6 +1918,19 @@ export class PgDataset implements Dataset {
 }
 
 /** Awaits `query`, cancelling the statement in flight when `signal` aborts. */
+/** The statement timeout a walk read runs under, in milliseconds. */
+export const WALK_STATEMENT_TIMEOUT_MS = 30_000;
+
+/** True when a read uses the walk grammar: in its where, or a walk-only param. */
+function usesWalkGrammar(params: ReadParams): boolean {
+  return (
+    whereUsesWalks(params.where) ||
+    (['count', 'aggregate', 'bucket', 'derive', 'agg', 'nested'] as const).some(
+      (k) => params[k] !== undefined
+    )
+  );
+}
+
 async function cancellable<T extends readonly MaybeRow[]>(
   query: PendingQuery<T>,
   signal: AbortSignal | undefined
