@@ -9,10 +9,12 @@
  */
 
 import {
+  type AggFn,
   type RefOperand,
   ResolverFrameError,
   type Row,
   WALK_BUDGET_EXCEEDED,
+  type WalkAgg,
   type WalkNode,
   type WalkPick,
   type WhereClause
@@ -42,11 +44,16 @@ export interface WalkContext {
   seed: Row;
   /** Rows bound by enclosing `any` walks' `as`. */
   bindings: ReadonlyMap<string, Row>;
-  /** Binding assignments this read may still try, shared by every seed row of the read. */
+  /**
+   * Walk work this read may still do, shared by every seed row of the read:
+   * each far row a hop examines and each binding assignment tried costs one.
+   */
   budget: { left: number };
+  /** The frame's `_agg` value `name` for the seed row, read by `_agg.<name>` operands. */
+  aggValue?: (name: string) => unknown;
 }
 
-/** Default per-read cap on joint-quantification assignments (each is one binding tried). */
+/** Default per-read cap on walk work (far rows examined plus binding assignments tried). */
 export const WALK_EVALUATION_BUDGET = 1_000_000;
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
@@ -73,8 +80,32 @@ function refNames(where: unknown, out = new Set<string>()): Set<string> {
   return out;
 }
 
-/** The far type and the live rows one hop from `row`. */
-function hop(row: Row, node: WalkNode, walk: WalkContext): { type: string; rows: Row[] } {
+function charge(walk: WalkContext, n: number): void {
+  walk.budget.left -= n;
+  if (walk.budget.left < 0) {
+    throw new ResolverFrameError(
+      WALK_BUDGET_EXCEEDED,
+      'the walk examined more rows or binding combinations than one read allows; narrow the walks or bind fewer of them'
+    );
+  }
+}
+
+/** The far type and the live rows one hop from `row`, each charged to the read's budget. */
+export function hop(
+  row: Row,
+  node: { in?: string; out?: string },
+  walk: WalkContext
+): { type: string; rows: Row[] } {
+  const far = hopRows(row, node, walk);
+  charge(walk, far.rows.length);
+  return far;
+}
+
+function hopRows(
+  row: Row,
+  node: { in?: string; out?: string },
+  walk: WalkContext
+): { type: string; rows: Row[] } {
   if (node.in !== undefined) {
     const m = /^[^/]+\/([^./]+)\.(.+)$/.exec(node.in);
     if (m === null)
@@ -96,7 +127,7 @@ function hop(row: Row, node: WalkNode, walk: WalkContext): { type: string; rows:
  * The one neighbour a pick names: by the field descending (latest, max) or
  * ascending (min), nulls last either way, ties by id ascending.
  */
-function pickOne(rows: Row[], pick: WalkPick, fieldDefOf: FieldDefOf): Row | undefined {
+export function pickOne(rows: Row[], pick: WalkPick, fieldDefOf: FieldDefOf): Row | undefined {
   const [dir, field] = Object.entries(pick)[0] as [string, string];
   const asDate = isDateField(field, fieldDefOf);
   const key = (r: Row) =>
@@ -160,12 +191,7 @@ export function evaluateGroup(
     if (i === group.length) return evaluateMembers(row, where, fieldDefOf, ctx, bound);
     const name = names[i] ?? '';
     for (const n of hops[i]?.rows ?? []) {
-      if (--walk.budget.left < 0) {
-        throw new ResolverFrameError(
-          WALK_BUDGET_EXCEEDED,
-          'the walk tried more binding combinations than one read allows; narrow the walks or bind fewer of them'
-        );
-      }
+      charge(walk, 1);
       bindings.set(name, n);
       const ok = group.every((g, j) => {
         if (checkAt[j] !== i || g.where === undefined) return true;
@@ -191,11 +217,17 @@ export function resolveRef(ref: RefOperand, asDate: boolean, walk: WalkContext):
   const dot = ref.$ref.indexOf('.');
   const name = ref.$ref.slice(0, dot);
   const field = ref.$ref.slice(dot + 1);
-  if (name === '_agg')
-    throw new Error(`internal: $ref '${ref.$ref}': _agg operands are not evaluated yet`);
-  const row = name === '$' ? walk.seed : walk.bindings.get(name);
-  if (row === undefined) throw new Error(`internal: $ref '${ref.$ref}' names no binding in scope`);
-  const v = getFieldValue(row, field);
+  let v: unknown;
+  if (name === '_agg') {
+    if (walk.aggValue === undefined)
+      throw new Error(`internal: $ref '${ref.$ref}' names no _agg in this frame`);
+    v = walk.aggValue(field);
+  } else {
+    const row = name === '$' ? walk.seed : walk.bindings.get(name);
+    if (row === undefined)
+      throw new Error(`internal: $ref '${ref.$ref}' names no binding in scope`);
+    v = getFieldValue(row, field);
+  }
   if (v == null) return null;
   if (asDate) {
     const micros = storedMicros(v);
@@ -211,4 +243,74 @@ function isoFromMicros(micros: bigint): string {
   const sub = ((micros % 1000n) + 1000n) % 1000n;
   const ms = Number((micros - sub) / 1000n);
   return new Date(ms).toISOString().replace('Z', `${sub.toString().padStart(3, '0')}Z`);
+}
+
+/**
+ * An aggregate over `rows`: avg/sum read only numbers (nulls and non-numeric
+ * values drop out); min/max read numbers, or instants on a date field and
+ * return the winning row's stored value (ties id ascending); each is null over
+ * none. count counts rows; latest is the stored `value` of the row latest by
+ * `by` (nulls last, ties id ascending), or null. Arithmetic is float64.
+ */
+export function applyAgg(rows: Row[], fn: AggFn, fieldDefOf: FieldDefOf): unknown {
+  if (Object.hasOwn(fn, 'count')) return rows.length;
+  if ('latest' in fn && Object.hasOwn(fn, 'latest')) {
+    const one = pickOne(rows, { latest: fn.latest.by }, fieldDefOf);
+    return one === undefined ? null : (getFieldValue(one, fn.latest.value) ?? null);
+  }
+  // A walk aggregate also carries in/out/where, so find the function key by name.
+  const op = (['avg', 'sum', 'min', 'max'] as const).find((k) => Object.hasOwn(fn, k));
+  if (op === undefined) throw new Error('internal: aggregate names no function');
+  const field = (fn as Record<string, string>)[op] as string;
+  if ((op === 'min' || op === 'max') && isDateField(field, fieldDefOf)) {
+    // pickOne orders a date field as instants, nulls and unreadable values last.
+    const one = pickOne(rows, op === 'min' ? { min: field } : { max: field }, fieldDefOf);
+    const v = one === undefined ? undefined : getFieldValue(one, field);
+    return v == null || storedMicros(v) === undefined ? null : v;
+  }
+  let n = 0;
+  let acc = 0;
+  for (const r of rows) {
+    const v = getFieldValue(r, field);
+    if (typeof v !== 'number') continue;
+    acc = n === 0 ? v : op === 'min' ? Math.min(acc, v) : op === 'max' ? Math.max(acc, v) : acc + v;
+    n++;
+  }
+  if (n === 0) return null;
+  return op === 'avg' ? acc / n : acc;
+}
+
+/** The field an aggregate's value is read from, or undefined for count. */
+function valueField(fn: AggFn): string | undefined {
+  if ('latest' in fn && Object.hasOwn(fn, 'latest')) return fn.latest.value;
+  const op = (['avg', 'sum', 'min', 'max'] as const).find((k) => Object.hasOwn(fn, k));
+  return op === undefined ? undefined : (fn as Record<string, string>)[op];
+}
+
+/**
+ * A walk aggregate for `row`: the hop's live rows that pass the walk's
+ * `where`, aggregated; `asDate` says whether the value is a date (compared
+ * as an instant).
+ */
+export function computeAggTyped(
+  row: Row,
+  spec: WalkAgg,
+  walk: WalkContext
+): { value: unknown; asDate: boolean } {
+  const { type, rows } = hop(row, spec, walk);
+  const fieldDefOf = walk.fieldDefOf(type);
+  const far: WalkContext = { ...walk, type };
+  const where = spec.where;
+  const kept =
+    where === undefined ? rows : rows.filter((n) => evaluateWhere(n, where, fieldDefOf, far));
+  const field = valueField(spec);
+  return {
+    value: applyAgg(kept, spec, fieldDefOf),
+    asDate: field !== undefined && isDateField(field, fieldDefOf)
+  };
+}
+
+/** {@link computeAggTyped}'s value. */
+export function computeAgg(row: Row, spec: WalkAgg, walk: WalkContext): unknown {
+  return computeAggTyped(row, spec, walk).value;
 }

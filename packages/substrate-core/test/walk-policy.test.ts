@@ -43,7 +43,7 @@ function build(
   });
   registry.register('touchThing', { kind: 'mutation', resolver: async () => ({ id: 't1' }) });
   const datasets = new MemoryDatasetRegistry();
-  datasets.set('ns', new MemoryDataset({ namespace: 'ns' }));
+  datasets.set('ns', new MemoryDataset({ namespace: 'ns', walkReference: true }));
   const engine = new Engine({
     namespaces: new Map<string, NamespaceConfig>([['ns', { registry }]]),
     datasets,

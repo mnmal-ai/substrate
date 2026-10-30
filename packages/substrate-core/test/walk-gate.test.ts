@@ -42,7 +42,7 @@ describe('usesWalkGrammar', () => {
   });
 });
 
-function build(walksEnabled?: boolean) {
+function build(walksEnabled?: boolean, walkReference = true) {
   const registry = new Registry();
   let reached = 0;
   registry.register('Part', {
@@ -56,7 +56,7 @@ function build(walksEnabled?: boolean) {
     }
   });
   const datasets = new MemoryDatasetRegistry();
-  datasets.set('ns', new MemoryDataset({ namespace: 'ns' }));
+  datasets.set('ns', new MemoryDataset({ namespace: 'ns', walkReference }));
   const engine = new Engine({
     namespaces: new Map<string, NamespaceConfig>([['ns', { registry }]]),
     datasets,
@@ -115,5 +115,215 @@ describe('engine walk gate', () => {
       path: ['ns/Thing', 'fields', 'parts', 'limit']
     });
     expect(reached()).toBe(0);
+  });
+
+  it('a store that does not declare walks refuses a walk frame with walks_unsupported_store', async () => {
+    const { engine, reached } = build(true, false);
+    for (const f of [
+      frame,
+      { 'ns/Thing': { params: { count: true }, fields: { id: true } } },
+      {
+        'ns/Thing': {
+          fields: { id: true, parts: { _walk: { in: 'ns/Part.thing' }, fields: { id: true } } }
+        }
+      }
+    ]) {
+      const res = await engine.query({ frame: f, ctx });
+      expect(res.errors?.[0]?.code).toBe('walks_unsupported_store');
+    }
+    expect(reached()).toBe(0);
+    // A plain read still answers.
+    const plain = await engine.query({ frame: { 'ns/Thing': { fields: { id: true } } }, ctx });
+    expect(plain.errors ?? []).toEqual([]);
+    expect(reached()).toBe(1);
+  });
+
+  it('the flag gate runs first: flag off answers walks_disabled whatever the store', async () => {
+    const { engine } = build(false, false);
+    const res = await engine.query({ frame, ctx });
+    expect(res.errors?.[0]?.code).toBe('walks_disabled');
+  });
+});
+
+describe('memory walk reference through the engine', () => {
+  function engineFor(walkReference: boolean) {
+    const registry = new Registry();
+    const ds = new MemoryDataset({ namespace: 'ns', walkReference });
+    registry.register('Thing', {
+      resolver: async (_c, args) => ds.read('Thing', args.params ?? {})
+    });
+    registry.register('Part', {
+      fields: { thing: { kind: 'crossRef', ns: 'ns', type: 'Thing', onDelete: 'set_null' } },
+      resolver: async () => []
+    });
+    const datasets = new MemoryDatasetRegistry();
+    datasets.set('ns', ds);
+    const engine = new Engine({
+      namespaces: new Map<string, NamespaceConfig>([['ns', { registry }]]),
+      datasets,
+      edges: new MemoryEdgesStore({ now: () => new Date('2026-04-18T00:00:00Z') }),
+      walksEnabled: true
+    });
+    return { engine, ds };
+  }
+
+  it('without walkReference memory refuses a walk; with it, the walk answers', async () => {
+    for (const walkReference of [false, true]) {
+      const { engine, ds } = engineFor(walkReference);
+      await ds.write('Thing', [{ id: 't1' }, { id: 't2' }]);
+      await ds.write('Part', [{ id: 'p1', thing: 't2' }]);
+      const res = await engine.query({ frame, ctx });
+      if (walkReference) {
+        expect(res.errors ?? []).toEqual([]);
+        expect((res.data['ns/Thing'] as Array<{ id: string }>).map((r) => r.id)).toEqual(['t2']);
+      } else {
+        expect(res.errors?.[0]).toMatchObject({
+          code: 'walks_unsupported_store',
+          path: ['ns/Thing', 'where', '_walk']
+        });
+      }
+    }
+  });
+});
+
+describe('engine page limits on walk results', () => {
+  function engineWith(ds: MemoryDataset | undefined) {
+    const registry = new Registry();
+    const results: unknown[] = [];
+    // Lifts `_agg` and nested selections out of fields, as the list resolver does.
+    const read =
+      (type: string) => async (_c: unknown, args: { params?: unknown; fields?: unknown }) => {
+        const fields = (args.fields ?? {}) as Record<string, unknown>;
+        const nested = Object.fromEntries(
+          Object.entries(fields).filter(
+            ([, v]) => typeof v === 'object' && v !== null && '_walk' in v
+          )
+        );
+        const agg = fields._agg;
+        const result = await ds?.read(type, {
+          ...(args.params as object),
+          nested,
+          ...(agg !== undefined ? { agg } : {})
+        } as never);
+        results.push(result);
+        return result ?? [];
+      };
+    registry.register('Thing', {
+      fields: { at: { kind: 'scalar', type: 'date' } },
+      resolver: read('Thing') as never
+    });
+    registry.register('Part', {
+      fields: { thing: { kind: 'crossRef', ns: 'ns', type: 'Thing', onDelete: 'set_null' } },
+      resolver: read('Part') as never
+    });
+    const datasets = new MemoryDatasetRegistry();
+    if (ds !== undefined) datasets.set('ns', ds);
+    const engine = new Engine({
+      namespaces: new Map<string, NamespaceConfig>([['ns', { registry }]]),
+      datasets,
+      edges: new MemoryEdgesStore({ now: () => new Date('2026-04-18T00:00:00Z') }),
+      walksEnabled: true
+    });
+    return Object.assign(engine, { results });
+  }
+  const pageLimits = { defaultLimit: 2, maxLimit: 10 };
+
+  it('a nested list without a limit is cut at the default page and says _truncated', async () => {
+    const ds = new MemoryDataset({ namespace: 'ns', walkReference: true });
+    await ds.write('Thing', [{ id: 't1' }]);
+    await ds.write(
+      'Part',
+      [1, 2, 3].map((i) => ({ id: `p${i}`, thing: 't1' }))
+    );
+    const res = await engineWith(ds).query({
+      frame: {
+        'ns/Thing': {
+          fields: { id: true, parts: { _walk: { in: 'ns/Part.thing' }, fields: { id: true } } }
+        }
+      },
+      ctx,
+      pageLimits
+    });
+    expect(res.errors ?? []).toEqual([]);
+    const [t1] = res.data['ns/Thing'] as Array<Record<string, unknown>>;
+    expect(t1?.parts).toEqual([{ id: 'p1' }, { id: 'p2' }]);
+    expect(t1?._truncated).toEqual({ parts: true });
+  });
+
+  it('an _agg whose where holds a _walk is not taken for a nested selection', async () => {
+    const ds = new MemoryDataset({
+      namespace: 'ns',
+      walkReference: true,
+      fieldDefLookup: (type, field) =>
+        type === 'Part' && field === 'thing'
+          ? { kind: 'crossRef', ns: 'ns', type: 'Thing', onDelete: 'set_null' }
+          : undefined
+    });
+    await ds.write('Thing', [{ id: 't1' }]);
+    await ds.write('Part', [{ id: 'p1', thing: 't1' }]);
+    const n = { in: 'ns/Part.thing', count: true, where: { _walk: { out: 'thing' } } };
+    const engine = engineWith(ds);
+    const res = await engine.query({
+      frame: {
+        'ns/Thing': {
+          fields: {
+            id: true,
+            _agg: { n },
+            parts: {
+              _walk: { in: 'ns/Part.thing' },
+              fields: {
+                id: true,
+                _agg: {
+                  m: { out: 'thing', count: true, where: { _walk: { in: 'ns/Part.thing' } } }
+                }
+              }
+            }
+          }
+        }
+      },
+      ctx,
+      pageLimits
+    });
+    expect(res.errors ?? []).toEqual([]);
+    const [t1] = res.data['ns/Thing'] as Array<Record<string, unknown>>;
+    expect(t1?._agg).toEqual({ n: 1 });
+    expect(t1?.parts).toEqual([{ id: 'p1', _agg: { m: 1 } }]);
+  });
+
+  it('bucket groups without a limit are cut at the default page and say truncated', async () => {
+    const ds = new MemoryDataset({ namespace: 'ns', walkReference: true });
+    await ds.write(
+      'Thing',
+      ['01', '02', '03'].map((d) => ({ id: `t${d}`, at: `2026-10-${d}T00:00:00Z` }))
+    );
+    const params = {
+      aggregate: { n: { count: true } },
+      bucket: { field: 'at', by: 'day' }
+    };
+    const engine = engineWith(ds);
+    const res = await engine.query({ frame: { 'ns/Thing': { params } }, ctx, pageLimits });
+    expect(res.errors ?? []).toEqual([]);
+    // The envelope does not carry groups yet; the read the engine dispatched does.
+    expect(engine.results).toEqual([
+      {
+        rows: [],
+        hasMore: false,
+        groups: [
+          { bucket: '2026-10-01', n: 1 },
+          { bucket: '2026-10-02', n: 1 }
+        ],
+        truncated: true
+      }
+    ]);
+  });
+
+  it('a walk frame on a type with no dataset is refused and never dispatched', async () => {
+    // The missing dataset is refused before the walk gate (unknown_namespace);
+    // the gate itself also fails closed on an absent dataset.
+    const engine = engineWith(undefined);
+    const res = await engine.query({ frame, ctx });
+    expect(res.errors?.[0]?.code).toBe('unknown_namespace');
+    expect(res.data['ns/Thing']).toBeUndefined();
+    expect(engine.results).toEqual([]);
   });
 });

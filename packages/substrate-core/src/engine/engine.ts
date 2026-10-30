@@ -61,7 +61,8 @@ import {
   isRestrictViolation,
   ROW_POLICY_BLOCKS_WALK,
   WALKS_DISABLED,
-  WALKS_IN_MUTATION
+  WALKS_IN_MUTATION,
+  WALKS_UNSUPPORTED_STORE
 } from '@mnmal-ai/substrate-types';
 import { readShapeOf } from '../advisor/shape-recorder.js';
 import { applyLostNamespace } from '../apply-lost-namespace.js';
@@ -1070,10 +1071,11 @@ export class Engine {
   #applyPageLimits(
     envelope: PackEnvelope,
     key: string,
-    entry: FrameEntry,
+    input: FrameEntry,
     parsed: ParsedKey | null,
     limits: EngineInput['pageLimits']
   ): FrameEntry | null {
+    let entry = input;
     if (limits === undefined || parsed === null) return entry;
     const nsCfg = this.#namespaces.get(parsed.ns);
     if (nsCfg === undefined || nsCfg.virtual === true) return entry;
@@ -1089,6 +1091,10 @@ export class Engine {
         { max: limits.maxLimit }
       );
       return null;
+    }
+    // A nested selection without a limit gets the default page, as a row read does.
+    if (entry.fields !== undefined) {
+      entry = { ...entry, fields: withNestedDefaultLimits(entry.fields, limits.defaultLimit) };
     }
     const limit = entry.params?.limit;
     if (limit === undefined || limit === null) {
@@ -1519,6 +1525,24 @@ export class Engine {
           [key, ...walkPath],
           'the walk grammar is disabled on this server (SUBSTRATE_WALKS)',
           WALKS_DISABLED
+        );
+        return false;
+      }
+    }
+    if (
+      operation === 'query' &&
+      registryEntry.kind === 'type' &&
+      !isVirtual &&
+      // Fail closed: no dataset answers no walks.
+      dataset?.capabilities.walks !== true
+    ) {
+      const walkPath = walkGrammarPath(frame as Record<string, unknown>);
+      if (walkPath) {
+        addError(
+          envelope,
+          [key, ...walkPath],
+          `the '${ns}' store does not answer walks`,
+          WALKS_UNSUPPORTED_STORE
         );
         return false;
       }
@@ -2018,12 +2042,37 @@ export class Engine {
 }
 
 /** Path to the first nested `{ _walk }` selection whose numeric `limit` exceeds `max`, at any depth. */
+/** `fields` with every nested `{ _walk }` selection lacking a `limit` given `limit`, at any depth. */
+function withNestedDefaultLimits<T>(fields: T, limit: number): T {
+  if (typeof fields !== 'object' || fields === null || Array.isArray(fields)) return fields;
+  return Object.fromEntries(
+    Object.entries(fields).map(([name, sel]) => {
+      // `_agg` specs are not selections: their `where` may hold a `_walk`.
+      if (name === '_agg' || typeof sel !== 'object' || sel === null || Array.isArray(sel)) {
+        return [name, sel];
+      }
+      const s = sel as Record<string, unknown>;
+      if (!Object.hasOwn(s, '_walk')) return [name, withNestedDefaultLimits(s, limit)];
+      return [
+        name,
+        {
+          ...s,
+          ...(Object.hasOwn(s, 'fields')
+            ? { fields: withNestedDefaultLimits(s.fields, limit) }
+            : {}),
+          ...(s.limit === undefined || s.limit === null ? { limit } : {})
+        }
+      ];
+    })
+  ) as T;
+}
+
 function nestedOverLimit(fields: unknown, path: string[], max: number): string[] | null {
   if (typeof fields !== 'object' || fields === null) return null;
   for (const [name, sel] of Object.entries(fields)) {
-    if (typeof sel !== 'object' || sel === null) continue;
+    if (name === '_agg' || typeof sel !== 'object' || sel === null) continue;
     const s = sel as Record<string, unknown>;
-    const walk = '_walk' in s;
+    const walk = Object.hasOwn(s, '_walk');
     if (walk && typeof s.limit === 'number' && s.limit > max) return [...path, name, 'limit'];
     const deeper = walk
       ? nestedOverLimit(s.fields, [...path, name, 'fields'], max)

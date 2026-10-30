@@ -36,7 +36,7 @@ function engineFor(orderedBy?: OrderedBy): {
   ds: MemoryDataset;
   seen: ReadParams[];
 } {
-  const ds = new MemoryDataset({ namespace: 'shop' });
+  const ds = new MemoryDataset({ namespace: 'shop', walkReference: true });
   const seen: ReadParams[] = [];
   const registry = new Registry();
   registry.register('Item', {

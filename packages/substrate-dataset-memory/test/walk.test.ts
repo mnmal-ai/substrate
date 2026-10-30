@@ -3,11 +3,12 @@
  * §1, §5). The memory dataset is the reference the pg compiler must match.
  */
 
-import type { FieldDef, WhereClause } from '@mnmal-ai/substrate-types';
+import type { FieldDef, ReadParams, WhereClause } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
 import { MemoryDataset } from '../src/index.js';
 
 const num: FieldDef = { kind: 'scalar', type: 'number' };
+const str: FieldDef = { kind: 'scalar', type: 'string' };
 const date: FieldDef = { kind: 'scalar', type: 'date' };
 const ref = (type: string): FieldDef => ({
   kind: 'crossRef',
@@ -17,9 +18,9 @@ const ref = (type: string): FieldDef => ({
 });
 
 const SCHEMA: Record<string, Record<string, FieldDef>> = {
-  Cert: { grade: num, ask: num },
+  Cert: { grade: num, ask: num, minObs: num },
   Listing: { cert: ref('Cert'), seller: ref('Seller'), price: num, firstSeen: date },
-  Observation: { cert: ref('Cert'), price: num, observedAt: date },
+  Observation: { cert: ref('Cert'), price: num, observedAt: date, status: str },
   Seller: { rating: num }
 };
 const fieldDefLookup = (type: string, field: string): FieldDef | undefined =>
@@ -33,6 +34,7 @@ async function dataset(rows: Rows, walkBudget?: number): Promise<MemoryDataset> 
   const ds = new MemoryDataset({
     namespace: 'cards',
     fieldDefLookup,
+    walkReference: true,
     ...(walkBudget !== undefined ? { walkBudget } : {})
   });
   for (const [type, list] of Object.entries(rows)) await ds.write(type, list as never);
@@ -424,8 +426,9 @@ describe('memory edge walks', () => {
   });
 
   it('joint quantification stops at the per-read budget', async () => {
-    // Small enough for a slow CI runner; the cap below is far under n * n.
-    const n = 300;
+    // Small enough for a slow CI runner: every far row examined is charged, so a
+    // walk costs about n^3; the cap below is far under that, the roomy one above.
+    const n = 60;
     const listings = Array.from({ length: n }, (_, i) => ({ id: `l${i}`, cert: 'c1', price: 1 }));
     const observations = Array.from({ length: n }, (_, i) => ({
       id: `o${i}`,
@@ -446,12 +449,517 @@ describe('memory edge walks', () => {
       ]
     } as WhereClause;
     const rows = { Cert: [{ id: 'c1' }], Listing: listings, Observation: observations };
-    const capped = await dataset(rows, 10_000);
+    const capped = await dataset(rows, 1_000);
     await expect(capped.read('Cert', { where })).rejects.toMatchObject({
       code: 'walk_budget_exceeded'
     });
     // Under the budget the same walk answers.
-    const roomy = await dataset(rows, 2 * n * n);
+    const roomy = await dataset(rows, 4 * n * n * n);
     expect((await roomy.read('Cert', { where })).rows).toEqual([]);
+  });
+});
+
+const OBS = 'cards/Observation.cert';
+
+describe('memory walk aggregates, count, buckets and derive', () => {
+  it('declares walks only as the test reference', () => {
+    expect(new MemoryDataset({ namespace: 'cards' }).capabilities.walks).toBe(false);
+    const ref = new MemoryDataset({ namespace: 'cards', walkReference: true });
+    expect(ref.capabilities.walks).toBe(true);
+    expect(ref.forNamespace('other').capabilities.walks).toBe(true);
+  });
+
+  it('feature row: latest, 7-day avg, count', async () => {
+    const ds = await dataset({
+      Cert: [
+        { id: 'c1', grade: 9 },
+        { id: 'c2', grade: 8 }
+      ],
+      Observation: [
+        { id: 'o1', cert: 'c1', price: 100, observedAt: '2026-10-10T00:00:00Z' },
+        { id: 'o2', cert: 'c1', price: 120, observedAt: '2026-10-20T00:00:00Z' },
+        { id: 'o3', cert: 'c1', price: 140, observedAt: '2026-10-23T00:00:00Z' },
+        { id: 'o4', cert: 'c1', price: 1, observedAt: null }
+      ]
+    });
+    const res = await ds.read('Cert', {
+      orderBy: [{ id: 'asc' }],
+      agg: {
+        offers7d: { in: OBS, where: { observedAt: { gte: '2026-10-17T00:00:00Z' } }, avg: 'price' },
+        obsCount: { in: OBS, count: true },
+        latestOffer: { in: OBS, latest: { by: 'observedAt', value: 'price' } }
+      }
+    });
+    expect(res.rows.map((r) => [r.id, r.grade, r._agg])).toEqual([
+      ['c1', 9, { offers7d: 130, obsCount: 4, latestOffer: 140 }],
+      ['c2', 8, { offers7d: null, obsCount: 0, latestOffer: null }]
+    ]);
+    // The stored rows are not decorated.
+    expect((await ds.read('Cert', { id: 'c1' })).rows[0]?._agg).toBeUndefined();
+  });
+
+  it('avg/sum/min/max ignore nulls; count of none is 0, others null', async () => {
+    const ds = await dataset({
+      Cert: [{ id: 'c1' }, { id: 'c2' }],
+      Observation: [
+        { id: 'o1', cert: 'c1', price: 10 },
+        { id: 'o2', cert: 'c1', price: null },
+        { id: 'o3', cert: 'c1', price: 'n/a' },
+        { id: 'o4', cert: 'c1', price: 30 },
+        { id: 'o5', cert: 'c1' }
+      ]
+    });
+    const agg = {
+      avg: { in: OBS, avg: 'price' },
+      sum: { in: OBS, sum: 'price' },
+      min: { in: OBS, min: 'price' },
+      max: { in: OBS, max: 'price' },
+      n: { in: OBS, count: true }
+    } as ReadParams['agg'];
+    const res = await ds.read('Cert', { orderBy: [{ id: 'asc' }], ...(agg ? { agg } : {}) });
+    expect(res.rows.map((r) => r._agg)).toEqual([
+      { avg: 20, sum: 40, min: 10, max: 30, n: 5 },
+      { avg: null, sum: null, min: null, max: null, n: 0 }
+    ]);
+  });
+
+  it('_agg in where filters', async () => {
+    const ds = await dataset({
+      Cert: [
+        { id: 'c1', ask: 50 },
+        { id: 'c2', ask: 50 },
+        { id: 'c3', ask: 50 }
+      ],
+      Observation: [
+        { id: 'o1', cert: 'c1', price: 60 },
+        { id: 'o2', cert: 'c1', price: 70 },
+        { id: 'o3', cert: 'c1', price: 80 },
+        { id: 'o4', cert: 'c2', price: 10 }
+      ]
+    });
+    const atLeast3 = { _agg: { in: OBS, count: true }, gte: 3 } as WhereClause;
+    expect(await ids(ds, 'Cert', atLeast3)).toEqual(['c1']);
+    // A null aggregate matches nothing, neq included.
+    const avgNeq = { _agg: { in: OBS, avg: 'price' }, neq: 10 } as WhereClause;
+    expect(await ids(ds, 'Cert', avgNeq)).toEqual(['c1']);
+    // A `$ref` to a frame `_agg` reads that seed's value.
+    const res = await ds.read('Cert', {
+      where: obs({ price: { gt: { $ref: '_agg.avgPrice' } } }),
+      agg: { avgPrice: { in: OBS, avg: 'price' } }
+    });
+    expect(res.rows.map((r) => [r.id, r._agg])).toEqual([['c1', { avgPrice: 70 }]]);
+  });
+
+  it('nested list honours its where, orderBy, limit and marks _truncated', async () => {
+    const ds = await dataset({
+      Seller: [{ id: 's1', rating: 5 }],
+      Cert: [{ id: 'c1' }, { id: 'c2' }],
+      Listing: [
+        { id: 'l1', cert: 'c1', seller: 's1', price: 30, firstSeen: '2026-10-01T00:00:00Z' },
+        { id: 'l2', cert: 'c1', seller: 's1', price: 10, firstSeen: '2026-10-03T00:00:00Z' },
+        { id: 'l3', cert: 'c1', seller: 's1', price: 20, firstSeen: '2026-10-02T00:00:00Z' },
+        { id: 'l4', cert: 'c1', price: 99, firstSeen: '2026-10-04T00:00:00Z' },
+        { id: 'l5', cert: 'c2', seller: 's1', price: 5, firstSeen: '2026-10-04T00:00:00Z' }
+      ],
+      Observation: [{ id: 'o1', cert: 'c1', price: 7 }]
+    });
+    const listings = {
+      _walk: { in: 'cards/Listing.cert', where: { price: { lt: 50 } } },
+      where: { seller: { eq: 's1' } },
+      fields: {
+        price: true,
+        seller: { _walk: { out: 'seller' }, fields: { rating: true } },
+        // A nested aggregate hops from the listing back to its cert.
+        _agg: { cheaperObs: { out: 'cert', count: true } }
+      },
+      orderBy: [{ firstSeen: 'desc' }],
+      limit: 2
+    };
+    const res = await ds.read('Cert', {
+      orderBy: [{ id: 'asc' }],
+      nested: { listings } as NonNullable<ReadParams['nested']>
+    });
+    const [c1, c2] = res.rows;
+    expect(c1?.listings).toEqual([
+      { id: 'l2', price: 10, seller: [{ id: 's1', rating: 5 }], _agg: { cheaperObs: 1 } },
+      { id: 'l3', price: 20, seller: [{ id: 's1', rating: 5 }], _agg: { cheaperObs: 1 } }
+    ]);
+    expect(c1?._truncated).toEqual({ listings: true });
+    expect(c2?.listings).toEqual([
+      { id: 'l5', price: 5, seller: [{ id: 's1', rating: 5 }], _agg: { cheaperObs: 1 } }
+    ]);
+    expect(c2?._truncated).toBeUndefined();
+  });
+
+  it('count returns the number and no rows', async () => {
+    const ds = await dataset({
+      Cert: [
+        { id: 'c1', grade: 9 },
+        { id: 'c2', grade: 9 },
+        { id: 'c3', grade: 8 }
+      ],
+      Observation: [{ id: 'o1', cert: 'c1' }]
+    });
+    // The page limit does not cap a count.
+    expect(await ds.read('Cert', { where: { grade: { eq: 9 } }, count: true, limit: 1 })).toEqual({
+      rows: [],
+      hasMore: false,
+      count: 2
+    });
+    expect((await ds.read('Cert', { where: obs(), count: true })).count).toBe(1);
+  });
+
+  it('aggregate over the whole result', async () => {
+    const ds = await dataset({
+      Observation: [
+        { id: 'o1', price: 10 },
+        { id: 'o2', price: 30 },
+        { id: 'o3', price: null },
+        { id: 'o4', price: 100 }
+      ]
+    });
+    const res = await ds.read('Observation', {
+      where: { price: { neq: 100 } },
+      aggregate: { n: { count: true }, avgOffer: { avg: 'price' }, top: { max: 'price' } }
+    });
+    expect(res).toEqual({
+      rows: [],
+      hasMore: false,
+      groups: [{ n: 3, avgOffer: 20, top: 30 }]
+    });
+    // Over no rows: one group, count 0, the rest null.
+    const none = await ds.read('Observation', {
+      where: { price: { gt: 1000 } },
+      aggregate: { n: { count: true }, s: { sum: 'price' } }
+    });
+    expect(none.groups).toEqual([{ n: 0, s: null }]);
+  });
+
+  it('bucket by day in UTC across a midnight boundary', async () => {
+    const ds = await dataset({
+      Observation: [
+        // 23:30 at -02:00 is 01:30 the next day in UTC.
+        { id: 'o1', price: 10, observedAt: '2026-10-24T23:30:00-02:00' },
+        { id: 'o2', price: 20, observedAt: '2026-10-24T23:59:59.999Z' },
+        { id: 'o3', price: 30, observedAt: '2026-10-25T00:00:00Z' },
+        // Null and non-date bucket values fall in no bucket.
+        { id: 'o4', price: 40, observedAt: null },
+        { id: 'o5', price: 50, observedAt: 'yesterday' }
+      ]
+    });
+    const res = await ds.read('Observation', {
+      aggregate: { n: { count: true }, avgOffer: { avg: 'price' } },
+      bucket: { field: 'observedAt', by: 'day' }
+    });
+    expect(res.groups).toEqual([
+      { bucket: '2026-10-24', n: 1, avgOffer: 20 },
+      { bucket: '2026-10-25', n: 2, avgOffer: 20 }
+    ]);
+    expect(res.rows).toEqual([]);
+    expect(res.truncated).toBeUndefined();
+  });
+
+  it('bucket by hour', async () => {
+    const ds = await dataset({
+      Observation: [
+        { id: 'o1', observedAt: '2026-10-24T10:59:59Z' },
+        { id: 'o2', observedAt: '2026-10-24T09:00:00Z' },
+        { id: 'o3', observedAt: '2026-10-24T10:00:00Z' }
+      ]
+    });
+    const res = await ds.read('Observation', {
+      aggregate: { n: { count: true } },
+      bucket: { field: 'observedAt', by: 'hour' }
+    });
+    expect(res.groups).toEqual([
+      { bucket: '2026-10-24T09', n: 1 },
+      { bucket: '2026-10-24T10', n: 2 }
+    ]);
+  });
+
+  it('groups beyond the page max set truncated', async () => {
+    const ds = await dataset({
+      Observation: ['01', '02', '03'].map((d) => ({
+        id: `o${d}`,
+        observedAt: `2026-10-${d}T00:00:00Z`
+      }))
+    });
+    const res = await ds.read('Observation', {
+      aggregate: { n: { count: true } },
+      bucket: { field: 'observedAt', by: 'day' },
+      limit: 2
+    });
+    expect(res).toEqual({
+      rows: [],
+      hasMore: false,
+      groups: [
+        { bucket: '2026-10-01', n: 1 },
+        { bucket: '2026-10-02', n: 1 }
+      ],
+      truncated: true
+    });
+  });
+
+  it('derive diff orders desc and pages with a stable cursor', async () => {
+    const ds = await dataset({
+      Cert: [
+        { id: 'c1', grade: 10, ask: 4 }, // 6
+        { id: 'c2', grade: 10, ask: 1 }, // 9
+        { id: 'c3', grade: 10, ask: 7 }, // 3
+        { id: 'c4', grade: 9, ask: 3 }, // 6, ties c1: id ascending
+        { id: 'c5', grade: 10, ask: 2 } // 8
+      ]
+    });
+    const params: ReadParams = {
+      derive: { margin: { diff: ['$.grade', '$.ask'] } },
+      orderBy: [{ $margin: 'desc' }],
+      limit: 2
+    };
+    const pages: string[][] = [];
+    let cursor: string | undefined;
+    do {
+      const res = await ds.read('Cert', { ...params, ...(cursor ? { cursor } : {}) });
+      pages.push(res.rows.map((r) => String(r.id)));
+      // Derived values order the page; they are not added to the rows.
+      for (const r of res.rows) expect(Object.hasOwn(r, '$margin')).toBe(false);
+      cursor = res.nextCursor;
+    } while (cursor !== undefined);
+    expect(pages).toEqual([['c2', 'c5'], ['c1', 'c4'], ['c3']]);
+    // The cursor is issued for the `$margin` order and refused under another.
+    const first = await ds.read('Cert', params);
+    await expect(
+      ds.read('Cert', { ...params, orderBy: [{ $margin: 'asc' }], cursor: first.nextCursor ?? '' })
+    ).rejects.toMatchObject({ code: 'invalid_cursor' });
+  });
+
+  it('derive null and zero divisor sort last', async () => {
+    const ds = await dataset({
+      Cert: [
+        { id: 'c1', grade: 10, ask: 0 }, // zero divisor
+        { id: 'c2', grade: 10, ask: 5 }, // 2
+        { id: 'c3', ask: 5 }, // null operand
+        { id: 'c4', grade: 10, ask: 2 } // 5
+      ],
+      Observation: [
+        { id: 'o1', cert: 'c2', price: 6 },
+        { id: 'o2', cert: 'c4', price: 1 }
+      ]
+    });
+    const read = async (dir: 'asc' | 'desc') =>
+      (
+        await ds.read('Cert', {
+          derive: { r: { ratio: ['$.grade', '$.ask'] } },
+          orderBy: [{ $r: dir }]
+        })
+      ).rows.map((r) => r.id);
+    expect(await read('desc')).toEqual(['c4', 'c2', 'c1', 'c3']);
+    expect(await read('asc')).toEqual(['c2', 'c4', 'c1', 'c3']);
+    // An `_agg` operand: c1 and c3 have no observations, so a null latest.
+    const byAgg = await ds.read('Cert', {
+      agg: { last: { in: OBS, latest: { by: 'observedAt', value: 'price' } } },
+      derive: { d: { diff: ['_agg.last', '$.ask'] } },
+      orderBy: [{ $d: 'asc' }]
+    });
+    expect(byAgg.rows.map((r) => [r.id, r._agg])).toEqual([
+      ['c4', { last: 1 }],
+      ['c2', { last: 6 }],
+      ['c1', { last: null }],
+      ['c3', { last: null }]
+    ]);
+  });
+});
+
+describe('walk budget covers all walk work', () => {
+  const many = (n: number, f: (i: number) => Record<string, unknown>) =>
+    Array.from({ length: n }, (_, i) => f(i));
+  const rows: Rows = {
+    Cert: [{ id: 'c1' }],
+    Listing: many(50, (i) => ({ id: `l${i}`, cert: 'c1', price: 1 })),
+    Observation: many(50, (i) => ({ id: `o${i}`, cert: 'c1', price: 1 }))
+  };
+  const budgetError = { code: 'walk_budget_exceeded' };
+
+  it('an unbound 3-hop walk', async () => {
+    // 50 listings, each one cert, each 50 observations: 2,600 far rows, none matching.
+    const where = {
+      _walk: {
+        in: 'cards/Listing.cert',
+        where: { _walk: { out: 'cert', where: obs({ price: { gt: 1000 } }) } }
+      }
+    } as WhereClause;
+    await expect((await dataset(rows, 1000)).read('Cert', { where })).rejects.toMatchObject(
+      budgetError
+    );
+    expect((await (await dataset(rows, 10_000)).read('Cert', { where })).rows).toEqual([]);
+  });
+
+  it('an _agg', async () => {
+    const agg = { n: { in: OBS, count: true } } as ReadParams['agg'];
+    const params = { ...(agg ? { agg } : {}) };
+    await expect((await dataset(rows, 10)).read('Cert', params)).rejects.toMatchObject(budgetError);
+    expect((await (await dataset(rows, 100)).read('Cert', params)).rows[0]?._agg).toEqual({
+      n: 50
+    });
+  });
+
+  it('a nested selection', async () => {
+    const nested = {
+      obs: { _walk: { in: OBS }, fields: { price: true }, limit: 1 }
+    } as ReadParams['nested'];
+    const params = { ...(nested ? { nested } : {}) };
+    await expect((await dataset(rows, 10)).read('Cert', params)).rejects.toMatchObject(budgetError);
+    expect((await (await dataset(rows, 100)).read('Cert', params)).rows[0]?._truncated).toEqual({
+      obs: true
+    });
+  });
+});
+
+describe('task 8 review fixes', () => {
+  it('a nested walk back to the seed computes its own _agg, not the frame one', async () => {
+    const ds = await dataset({
+      Cert: [{ id: 'c1' }],
+      Listing: [{ id: 'l1', cert: 'c1', price: 1 }],
+      Observation: [
+        { id: 'o1', cert: 'c1', price: 10 },
+        { id: 'o2', cert: 'c1', price: 30 }
+      ]
+    });
+    const res = await ds.read('Cert', {
+      // A frame `_agg` with the same name `b` but another aggregate.
+      agg: { b: { in: OBS, sum: 'price' } },
+      nested: {
+        listings: {
+          _walk: { in: 'cards/Listing.cert' },
+          fields: {
+            cert: {
+              _walk: { out: 'cert' },
+              fields: { _agg: { b: { in: OBS, count: true }, c: { in: OBS, max: 'price' } } }
+            }
+          }
+        }
+      } as NonNullable<ReadParams['nested']>
+    });
+    expect(res.rows[0]?._agg).toEqual({ b: 40 });
+    expect(res.rows[0]?.listings).toEqual([
+      { id: 'l1', cert: [{ id: 'c1', _agg: { b: 2, c: 30 } }] }
+    ]);
+  });
+
+  it('a $ref beside _agg resolves', async () => {
+    const ds = await dataset({
+      Cert: [{ id: 'c1', minObs: 2 }, { id: 'c2', minObs: 3 }, { id: 'c3' }],
+      Observation: [
+        { id: 'o1', cert: 'c1' },
+        { id: 'o2', cert: 'c1' },
+        { id: 'o3', cert: 'c2' },
+        { id: 'o4', cert: 'c3' }
+      ]
+    });
+    const where = { _agg: { in: OBS, count: true }, gte: { $ref: '$.minObs' } } as WhereClause;
+    // c3's null minObs matches nothing.
+    expect(await ids(ds, 'Cert', where)).toEqual(['c1']);
+    const scaled = {
+      _agg: { in: OBS, count: true },
+      gte: { $ref: '$.minObs', times: 0.5 }
+    } as WhereClause;
+    expect(await ids(ds, 'Cert', scaled)).toEqual(['c1']);
+  });
+
+  it('max over a date projects the latest stored date', async () => {
+    const ds = await dataset({
+      Cert: [{ id: 'c1' }, { id: 'c2' }],
+      Observation: [
+        { id: 'o1', cert: 'c1', observedAt: '2026-10-09T23:30:00Z' },
+        // Later as text, earlier as an instant (2026-10-09T23:00Z).
+        { id: 'o2', cert: 'c1', observedAt: '2026-10-10T01:00:00+02:00' },
+        { id: 'o3', cert: 'c1', observedAt: '2026-09-30T00:00:00Z' },
+        { id: 'o4', cert: 'c1', observedAt: null },
+        { id: 'o5', cert: 'c2', observedAt: 'never' }
+      ]
+    });
+    const res = await ds.read('Cert', {
+      orderBy: [{ id: 'asc' }],
+      agg: {
+        last: { in: OBS, max: 'observedAt' },
+        first: { in: OBS, min: 'observedAt' }
+      }
+    });
+    expect(res.rows.map((r) => r._agg)).toEqual([
+      { last: '2026-10-09T23:30:00Z', first: '2026-09-30T00:00:00Z' },
+      { last: null, first: null }
+    ]);
+    // The frame aggregate reads dates the same way.
+    const whole = await ds.read('Observation', { aggregate: { last: { max: 'observedAt' } } });
+    expect(whole.groups).toEqual([{ last: '2026-10-09T23:30:00Z' }]);
+    // Instants: 2026-10-10T01:00+02:00 is 2026-10-09T23:00Z, after 2026-10-09T00:00Z.
+    const ds2 = await dataset({
+      Cert: [{ id: 'c1' }],
+      Observation: [
+        { id: 'o1', cert: 'c1', observedAt: '2026-10-09T00:00:00Z' },
+        { id: 'o2', cert: 'c1', observedAt: '2026-10-10T01:00:00+02:00' }
+      ]
+    });
+    const r2 = await ds2.read('Cert', { agg: { last: { in: OBS, max: 'observedAt' } } });
+    expect(r2.rows[0]?._agg).toEqual({ last: '2026-10-10T01:00:00+02:00' });
+  });
+
+  it('a where-side latest string value and a date-max predicate match by kind', async () => {
+    const ds = await dataset({
+      Cert: [{ id: 'c1' }, { id: 'c2' }],
+      Observation: [
+        { id: 'o1', cert: 'c1', status: 'listed', observedAt: '2026-10-01T00:00:00Z' },
+        { id: 'o2', cert: 'c1', status: 'sold', observedAt: '2026-10-20T00:00:00Z' },
+        { id: 'o3', cert: 'c2', status: 'sold', observedAt: '2026-10-01T00:00:00Z' },
+        { id: 'o4', cert: 'c2', status: 'listed', observedAt: '2026-10-05T00:00:00+00:00' }
+      ]
+    });
+    const sold = {
+      _agg: { in: OBS, latest: { by: 'observedAt', value: 'status' } },
+      eq: 'sold'
+    } as unknown as WhereClause;
+    expect(await ids(ds, 'Cert', sold)).toEqual(['c1']);
+    // As instants: '2026-10-05T00:00:00+00:00' >= '2026-10-05T00:00:00Z', though as text it sorts before.
+    const recent = {
+      _agg: { in: OBS, max: 'observedAt' },
+      gte: '2026-10-05T00:00:00Z'
+    } as unknown as WhereClause;
+    expect(await ids(ds, 'Cert', recent)).toEqual(['c1', 'c2']);
+  });
+
+  it('$ and _agg.x inside a nested selection where resolve against the seed; absent fields are null', async () => {
+    const ds = await dataset({
+      Cert: [
+        { id: 'c1', ask: 15 },
+        { id: 'c2', ask: 100 }
+      ],
+      Listing: [
+        { id: 'l1', cert: 'c1', price: 10 },
+        { id: 'l2', cert: 'c1', price: 20 },
+        { id: 'l3', cert: 'c1', price: 30 },
+        { id: 'l4', cert: 'c1' },
+        { id: 'l5', cert: 'c2', price: 50 }
+      ]
+    });
+    const res = await ds.read('Cert', {
+      orderBy: [{ id: 'asc' }],
+      // c1: avg 20; c2: avg 50.
+      agg: { avg: { in: 'cards/Listing.cert', avg: 'price' } },
+      nested: {
+        above: {
+          _walk: { in: 'cards/Listing.cert' },
+          where: { price: { gt: { $ref: '$.ask' }, lte: { $ref: '_agg.avg' } } },
+          fields: { price: true, firstSeen: true },
+          orderBy: [{ price: 'asc' }]
+        },
+        all: {
+          _walk: { in: 'cards/Listing.cert' },
+          fields: { price: true },
+          orderBy: [{ id: 'asc' }]
+        }
+      } as NonNullable<ReadParams['nested']>
+    });
+    expect(res.rows[0]?.above).toEqual([{ id: 'l2', price: 20, firstSeen: null }]);
+    expect(res.rows[1]?.above).toEqual([]);
+    expect(res.rows[0]?.all).toContainEqual({ id: 'l4', price: null });
   });
 });
