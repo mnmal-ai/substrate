@@ -31,13 +31,20 @@ export function buildBodyProjection(
     if (NON_BODY_FIELD_KEYS.has(key)) continue;
     bodyKeys.add(key);
   }
-  const keyArr = Array.from(bodyKeys);
-  if (keyArr.length === 0) return sql`'{}'::jsonb`;
-  // Comma-interleaved `'k', <value>` pairs. The output key needs `::text`:
-  // jsonb_build_object's VARIADIC any cannot infer a parameter's type.
-  // pg caps a call at 100 arguments, so each call takes at most 50 keys and
-  // the objects are concatenated with `||`.
-  const pairs: Fragment[] = keyArr.map((k) => sql`${k}::text, r.body->${k}`);
+  return buildObject(
+    sql,
+    Array.from(bodyKeys, (k) => sql`${k}::text, r.body->${k}`)
+  );
+}
+
+/**
+ * A jsonb object from `'k'::text, <value>` pairs (the output key needs
+ * `::text`: jsonb_build_object's VARIADIC any cannot infer a parameter's
+ * type). pg caps a call at 100 arguments, so each call takes at most 50 keys
+ * and the objects are concatenated with `||`.
+ */
+export function buildObject(sql: Sql | TransactionSql, pairs: Fragment[]): Fragment {
+  if (pairs.length === 0) return sql`'{}'::jsonb`;
   const objects: Fragment[] = [];
   for (let i = 0; i < pairs.length; i += MAX_KEYS_PER_CALL) {
     objects.push(sql`jsonb_build_object(${join(pairs.slice(i, i + MAX_KEYS_PER_CALL), sql`,`)})`);

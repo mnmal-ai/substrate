@@ -89,6 +89,7 @@ import { detectLayout, type StorageLayout } from './layout.js';
 import { IndexLockAborted, withTableIndexLock } from './migrate.js';
 import type { PgEdgesStore } from './pg-edges-store.js';
 import { PgShortIdStore } from './pg-short-id-store.js';
+import { buildWalkAgg, buildWalkProjection } from './pg-sql/aggregate.js';
 import { sqlStringLiteral } from './pg-sql/primitives.js';
 import { walkScope, whereUsesWalks } from './pg-sql/walk.js';
 import {
@@ -430,7 +431,7 @@ export class PgDataset implements Dataset {
         'walks need the partitioned storage layout; move this store onto it with `substrate-admin migrate-store`'
       );
     }
-    const unsupported = walkParam(params);
+    const unsupported = walkParams(params).find((k) => k !== 'agg' && k !== 'nested');
     if (unsupported !== undefined) {
       throw new ResolverFrameError(
         WALK_UNSUPPORTED_REF,
@@ -491,6 +492,21 @@ export class PgDataset implements Dataset {
     // Extension-operator side-channel (relevance order, score/vector), applied
     // to the final page below.
     let extMeta: ExtensionOpResultMeta | null = null;
+    // One scope per statement, so walk aliases stay unique across where and projection.
+    const lookup = this.#fieldDefLookup;
+    const scope = walks
+      ? walkScope(this.namespace, type, 'r', (t, f) => lookup?.(t, f))
+      : undefined;
+    const frameAggs = params.agg;
+    if (scope !== undefined && frameAggs !== undefined) {
+      // shortcut: each `_agg.<name>` reference recomputes its subquery; a
+      // LATERAL computed once per seed row would share it, if it ever costs.
+      scope.aggValue = (name) => {
+        const spec = Object.hasOwn(frameAggs, name) ? frameAggs[name] : undefined;
+        if (spec === undefined) throw new Error(`internal: '_agg.${name}' names no frame _agg`);
+        return buildWalkAgg(sql, spec, this.#promotedFor, scope).value;
+      };
+    }
     if (params.where !== undefined) {
       // Resolves extension operators (e.g. embeddingSimilar) to `id IN [...]`
       // clauses before the synchronous SQL builder runs.
@@ -501,10 +517,6 @@ export class PgDataset implements Dataset {
         ...(fieldRequested(params.fields, '_vector') ? { returnVector: true } : {})
       });
       extMeta = detailed.meta;
-      const lookup = this.#fieldDefLookup;
-      const scope = walks
-        ? walkScope(this.namespace, type, 'r', (t, f) => lookup?.(t, f))
-        : undefined;
       const whereFragment = buildWhere(sql, detailed.where, bodyCastFor, this.#promotedFor, scope);
       if (whereFragment !== null) clauses.push(whereFragment);
     }
@@ -546,7 +558,15 @@ export class PgDataset implements Dataset {
 
     // Ships only the requested top-level body keys when `fields` is given,
     // else the full body.
-    const bodyProjection = buildBodyProjection(sql, params.fields);
+    // Walk selections ride in the body, so `materialize` lifts them to the row.
+    const walkProjection =
+      scope === undefined
+        ? null
+        : buildWalkProjection(sql, frameAggs, params.nested ?? {}, this.#promotedFor, scope);
+    const bodyProjection =
+      walkProjection === null
+        ? buildBodyProjection(sql, params.fields)
+        : sql`(${buildBodyProjection(sql, params.fields)} || ${walkProjection})`;
 
     // Projects each sort key so the cursor value comes from the same
     // expression that sorted. A promoted field sorts on its column but
@@ -1922,18 +1942,18 @@ export class PgDataset implements Dataset {
 /** The statement timeout a walk read runs under, in milliseconds, unless a shorter one is set. */
 export const WALK_STATEMENT_TIMEOUT_MS = 30_000;
 
-/** The first walk-only param a read actually uses: `count: true`, or a non-empty object. */
-function walkParam(params: ReadParams): string | undefined {
-  if (params.count === true) return 'count';
-  return (['aggregate', 'bucket', 'derive', 'agg', 'nested'] as const).find((k) => {
+/** The walk-only params a read actually uses: `count: true`, and each non-empty object. */
+function walkParams(params: ReadParams): string[] {
+  const used = (['aggregate', 'bucket', 'derive', 'agg', 'nested'] as const).filter((k) => {
     const v = params[k];
     return typeof v === 'object' && v !== null && Object.keys(v).length > 0;
   });
+  return params.count === true ? ['count', ...used] : used;
 }
 
 /** True when a read uses the walk grammar: in its where, or a walk-only param. */
 function usesWalkGrammar(params: ReadParams): boolean {
-  return whereUsesWalks(params.where) || walkParam(params) !== undefined;
+  return whereUsesWalks(params.where) || walkParams(params).length > 0;
 }
 
 /** Awaits `query`, cancelling the statement in flight when `signal` aborts. */

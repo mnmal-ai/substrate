@@ -8,7 +8,9 @@ import { createHash, randomBytes } from 'node:crypto';
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
 import {
   type FieldDef,
+  type ReadParams,
   ResolverFrameError,
+  type Row,
   WALKS_NEED_PARTITIONED,
   type WhereClause
 } from '@mnmal-ai/substrate-types';
@@ -504,13 +506,11 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walks in where (pg)', () => {
   it('refuses what later tasks compile, by name', async () => {
     const refused = { code: 'walk_unsupported_ref' };
     await expect(pg.read('Cert', { count: true })).rejects.toMatchObject(refused);
+    await expect(pg.read('Cert', { aggregate: { n: { count: true } } })).rejects.toMatchObject(
+      refused
+    );
     await expect(
-      pg.read('Cert', {
-        where: { _agg: { in: IN('Observation'), count: true }, gte: 1 } as unknown as WhereClause
-      })
-    ).rejects.toMatchObject(refused);
-    await expect(
-      pg.read('Cert', { agg: { n: { in: IN('Observation'), count: true } } })
+      pg.read('Cert', { derive: { d: { diff: ['$.ask', '$.grade'] } } })
     ).rejects.toMatchObject(refused);
   });
 
@@ -554,4 +554,334 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walks in where (pg)', () => {
       conn.release();
     }
   }, 60_000);
+});
+
+/** A row without the columns only one dataset fills (`_metadata`, `shortId`). */
+const strip = (r: Row): Row => {
+  const { _metadata: _m, shortId: _s, ...rest } = r;
+  return rest as Row;
+};
+
+/** The rows `params` reads from `type`, asserting pg and memory agree on every key. */
+async function same(type: string, params: ReadParams): Promise<Row[]> {
+  const read = async (ds: PgDataset | MemoryDataset) =>
+    (await ds.read(type, params)).rows.map(strip);
+  const want = await read(mem);
+  expect(await read(pg), JSON.stringify(params)).toEqual(want);
+  return want;
+}
+const name = (r: Row) => names.get(String(r.id)) ?? String(r.id);
+
+describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk aggregates and nested projection (pg)', () => {
+  const AGGS = {
+    n: { in: IN('Observation'), count: true },
+    sold: { in: IN('Observation'), where: { status: { eq: 'sold' } }, count: true },
+    avg: { in: IN('Observation'), avg: 'price' },
+    sum: { in: IN('Observation'), sum: 'price' },
+    lo: { in: IN('Observation'), min: 'price' },
+    hi: { in: IN('Observation'), max: 'price' },
+    first: { in: IN('Observation'), min: 'observedAt' },
+    last: { in: IN('Observation'), max: 'observedAt' },
+    latestPrice: { in: IN('Observation'), latest: { by: 'observedAt', value: 'price' } },
+    latestStatus: { in: IN('Observation'), latest: { by: 'observedAt', value: 'status' } },
+    listings: { in: IN('Listing'), count: true }
+  } as unknown as NonNullable<ReadParams['agg']>;
+
+  it('feature row for 100 hubs equals memory', async () => {
+    const day = (i: number) => `2026-10-${String(1 + (i % 28)).padStart(2, '0')}T0${i % 10}:00:00Z`;
+    await load({
+      Cert: Array.from({ length: 100 }, (_, i) => ({ id: `h${i}`, grade: i % 10, ask: i * 1.5 })),
+      Observation: Array.from({ length: 400 }, (_, i) => ({
+        id: `ho${i}`,
+        cert: `h${(i * 7) % 97}`,
+        ...(i % 11 === 0 ? {} : { price: (i % 13) * 2.5 }),
+        ...(i % 17 === 0 ? {} : { observedAt: day(i) }),
+        status: i % 3 === 0 ? 'sold' : 'listed'
+      })),
+      Listing: Array.from({ length: 60 }, (_, i) => ({
+        id: `hl${i}`,
+        cert: `h${i % 30}`,
+        price: i
+      }))
+    });
+    const rows = await same('Cert', {
+      agg: AGGS,
+      nested: {
+        recent: {
+          _walk: { in: IN('Observation') },
+          fields: { price: true, observedAt: true, status: true },
+          orderBy: [{ observedAt: 'desc' }],
+          limit: 3
+        }
+      },
+      limit: 200
+    });
+    expect(rows).toHaveLength(100);
+    const h3 = rows.find((r) => name(r) === 'h3') as Row;
+    expect((h3._agg as Record<string, unknown>).n).toBeGreaterThan(0);
+    expect(rows.some((r) => r._truncated !== undefined)).toBe(true);
+    expect(rows.some((r) => r._truncated === undefined)).toBe(true);
+    // The three-hub cut is the same with a where and an orderBy on the seed.
+    await same('Cert', {
+      where: { grade: { gte: 5 } },
+      orderBy: [{ ask: 'desc' }],
+      agg: AGGS,
+      limit: 10
+    });
+  });
+
+  it('aggregates ignore nulls and count 0', async () => {
+    await load(
+      {
+        Cert: [{ id: 'c1' }, { id: 'c2' }, { id: 'c3' }],
+        Observation: [
+          { id: 'o1', cert: 'c1', price: 10, observedAt: '2026-10-01T00:00:00Z', status: 'a' },
+          { id: 'o2', cert: 'c1', price: null, observedAt: 'not a date', status: 'b' },
+          { id: 'o3', cert: 'c1', price: 'x', observedAt: '2026-10-03T00:00:00.5Z' },
+          { id: 'o4', cert: 'c1', price: 20.5, status: 'd' },
+          { id: 'o5', cert: 'c2', price: null, observedAt: null },
+          // Equal instants, differently written: the lower id wins.
+          { id: 'o6', cert: 'c3', price: 1, observedAt: '2026-10-05T00:00:00Z', status: 'x' },
+          { id: 'o7', cert: 'c3', price: 2, observedAt: '2026-10-05T01:00:00+01:00' },
+          { id: 'o8', cert: 'c1', price: 99 }
+        ]
+      },
+      { Observation: ['o8'] }
+    );
+    const rows = await same('Cert', { agg: AGGS });
+    const agg = (n: string) =>
+      (rows.find((r) => name(r) === n) as Row)._agg as Record<string, unknown>;
+    expect(agg('c1')).toEqual({
+      n: 4,
+      sold: 0,
+      avg: 15.25,
+      sum: 30.5,
+      lo: 10,
+      hi: 20.5,
+      first: '2026-10-01T00:00:00Z',
+      last: '2026-10-03T00:00:00.5Z',
+      latestPrice: 'x',
+      latestStatus: null,
+      listings: 0
+    });
+    expect(agg('c2')).toEqual({
+      n: 1,
+      sold: 0,
+      avg: null,
+      sum: null,
+      lo: null,
+      hi: null,
+      first: null,
+      last: null,
+      latestPrice: null,
+      latestStatus: null,
+      listings: 0
+    });
+    const o6First = u('o6') < u('o7');
+    expect(agg('c3').first).toEqual(o6First ? '2026-10-05T00:00:00Z' : '2026-10-05T01:00:00+01:00');
+    expect(agg('c3').latestPrice).toEqual(o6First ? 1 : 2);
+  });
+
+  it('_agg in where', async () => {
+    await load({
+      Cert: [
+        { id: 'c1', ask: 10, minObs: 2 },
+        { id: 'c2', ask: 100, minObs: 1 },
+        { id: 'c3', ask: 5, minObs: 0 }
+      ],
+      Observation: [
+        { id: 'o1', cert: 'c1', price: 10, observedAt: '2026-10-01T00:00:00Z', status: 'sold' },
+        { id: 'o2', cert: 'c1', price: 30, observedAt: '2026-10-09T00:00:00Z', status: 'listed' },
+        { id: 'o3', cert: 'c2', price: 0.1, observedAt: '2026-10-05T00:00:00Z', status: 'sold' }
+      ]
+    });
+    const a = (spec: Record<string, unknown>, cmp: Record<string, unknown>) =>
+      ({ _agg: { in: IN('Observation'), ...spec }, ...cmp }) as unknown as WhereClause;
+    expect(await both('Cert', a({ count: true }, { gte: 2 }))).toEqual(['c1']);
+    expect(await both('Cert', a({ count: true }, { eq: 0 }))).toEqual(['c3']);
+    expect(await both('Cert', a({ count: true }, { neq: 1 }))).toEqual(['c1', 'c3']);
+    expect(await both('Cert', a({ avg: 'price' }, { gt: 15, lt: 25 }))).toEqual(['c1']);
+    // A null aggregate matches nothing, neq included; NOT of it matches.
+    expect(await both('Cert', a({ avg: 'price' }, { neq: 20 }))).toEqual(['c2']);
+    expect(await both('Cert', { NOT: a({ avg: 'price' }, { gte: 0 }) } as WhereClause)).toEqual([
+      'c3'
+    ]);
+    expect(await both('Cert', a({ max: 'observedAt' }, { gte: '2026-10-05' }))).toEqual([
+      'c1',
+      'c2'
+    ]);
+    expect(
+      await both('Cert', a({ max: 'observedAt' }, { eq: '2026-10-05T00:00:00.000Z' }))
+    ).toEqual(['c2']);
+    expect(
+      await both('Cert', a({ latest: { by: 'observedAt', value: 'status' } }, { eq: 'listed' }))
+    ).toEqual(['c1']);
+    expect(
+      await both('Cert', a({ latest: { by: 'observedAt', value: 'status' } }, { gt: 'm' }))
+    ).toEqual(['c2']);
+    // A $ref operand: the seed's field, float64.
+    expect(await both('Cert', a({ sum: 'price' }, { gte: { $ref: '$.ask', times: 4 } }))).toEqual([
+      'c1'
+    ]);
+    expect(await both('Cert', a({ sum: 'price' }, { lt: { $ref: '$.ask' } }))).toEqual(['c2']);
+    expect(
+      await both(
+        'Cert',
+        a({ latest: { by: 'observedAt', value: 'price' } }, { gte: { $ref: '$.ask', times: 3 } })
+      )
+    ).toEqual(['c1']);
+    // `_agg.<name>` reads the frame's _agg for the same seed row.
+    const agg = { n: { in: IN('Observation'), count: true } } as unknown as NonNullable<
+      ReadParams['agg']
+    >;
+    const ref = async (where: WhereClause) => {
+      const want = await same('Cert', { where, agg });
+      return want.map(name).sort();
+    };
+    expect(await ref({ minObs: { lte: { $ref: '_agg.n' } } } as WhereClause)).toEqual([
+      'c1',
+      'c2',
+      'c3'
+    ]);
+    expect(await ref({ minObs: { gte: { $ref: '_agg.n', times: 2 } } } as WhereClause)).toEqual([
+      'c3'
+    ]);
+    expect(await ref(a({ count: true }, { gte: { $ref: '_agg.n' } }) as WhereClause)).toEqual([
+      'c1',
+      'c2',
+      'c3'
+    ]);
+    // Inside a walk, `_agg.n` still reads the seed's.
+    expect(await ref(obs({ price: { lt: { $ref: '_agg.n', times: 10 } } } as WhereClause))).toEqual(
+      ['c1', 'c2']
+    );
+  });
+
+  it('nested list ordered newest first, limited, _truncated set only when cut', async () => {
+    await load({
+      Cert: [{ id: 'c1' }, { id: 'c2' }, { id: 'c3' }],
+      Observation: [
+        { id: 'o1', cert: 'c1', price: 1, observedAt: '2026-10-01T00:00:00Z' },
+        { id: 'o2', cert: 'c1', price: 2, observedAt: '2026-10-03T00:00:00Z' },
+        { id: 'o3', cert: 'c1', price: 3, observedAt: '2026-10-02T00:00:00Z' },
+        { id: 'o4', cert: 'c1', price: 4 },
+        { id: 'o5', cert: 'c2', price: 5, observedAt: '2026-10-02T00:00:00Z' },
+        { id: 'o6', cert: 'c2', price: 6, observedAt: '2026-10-04T00:00:00Z' }
+      ]
+    });
+    const nested = (limit: number, extra: Record<string, unknown> = {}) =>
+      ({
+        recent: {
+          _walk: { in: IN('Observation') },
+          fields: { price: true },
+          orderBy: [{ observedAt: 'desc' }],
+          limit,
+          ...extra
+        }
+      }) as unknown as NonNullable<ReadParams['nested']>;
+    const by = (rows: Row[], n: string) => rows.find((r) => name(r) === n) as Row;
+    const prices = (r: Row) => (r.recent as Row[]).map((o) => o.price);
+    let rows = await same('Cert', { nested: nested(2) });
+    expect(prices(by(rows, 'c1'))).toEqual([2, 3]);
+    expect(by(rows, 'c1')._truncated).toEqual({ recent: true });
+    expect(prices(by(rows, 'c2'))).toEqual([6, 5]);
+    expect(by(rows, 'c2')).not.toHaveProperty('_truncated');
+    expect(by(rows, 'c3').recent).toEqual([]);
+    expect(by(rows, 'c3')).not.toHaveProperty('_truncated');
+    // Nulls last; a where on the walk and on the selection; limit 0.
+    rows = await same('Cert', { nested: nested(10) });
+    expect(prices(by(rows, 'c1'))).toEqual([2, 3, 1, 4]);
+    rows = await same('Cert', {
+      nested: nested(10, {
+        _walk: { in: IN('Observation'), where: { price: { gt: 1 } } },
+        where: { price: { lt: 6 } }
+      })
+    });
+    expect(prices(by(rows, 'c2'))).toEqual([5]);
+    rows = await same('Cert', { nested: nested(0) });
+    expect(by(rows, 'c1').recent).toEqual([]);
+    expect(by(rows, 'c1')._truncated).toEqual({ recent: true });
+    expect(by(rows, 'c3')).not.toHaveProperty('_truncated');
+    // Two lists, one cut.
+    rows = await same('Cert', {
+      nested: {
+        ...nested(1),
+        all: { _walk: { in: IN('Observation') }, fields: {}, limit: 10 }
+      } as unknown as NonNullable<ReadParams['nested']>
+    });
+    expect(by(rows, 'c1')._truncated).toEqual({ recent: true });
+    const byId = ['o1', 'o2', 'o3', 'o4'].sort((x, y) => (u(x) < u(y) ? -1 : 1));
+    expect((by(rows, 'c1').all as Row[]).map(name)).toEqual(byId);
+  });
+
+  it("nested projection rows are typed as the far type's schema", async () => {
+    await load({
+      Seller: [{ id: 's1', rating: 4.5 }],
+      Cert: [{ id: 'c1', grade: 9, minObs: 1 }],
+      Listing: [
+        {
+          id: 'l1',
+          cert: 'c1',
+          seller: 's1',
+          price: 12.25,
+          firstSeen: '2026-10-20T00:00:00.123456Z'
+        },
+        { id: 'l2', cert: 'c1', firstSeen: '2026-10-21' }
+      ],
+      Observation: [
+        { id: 'o1', cert: 'c1', price: 3, observedAt: '2026-10-21T00:00:00Z' },
+        { id: 'o2', cert: 'c1', price: 1, observedAt: '2026-10-22T00:00:00Z' }
+      ]
+    });
+    const rows = await same('Cert', {
+      agg: { n: { in: IN('Observation'), count: true } } as unknown as NonNullable<
+        ReadParams['agg']
+      >,
+      nested: {
+        listings: {
+          _walk: { in: IN('Listing') },
+          fields: {
+            cert: true,
+            seller: true,
+            price: true,
+            firstSeen: true,
+            _agg: { obs: { out: 'cert', count: true } },
+            sellerRow: { _walk: { out: 'seller' }, fields: { rating: true }, limit: 5 },
+            certRow: {
+              _walk: { out: 'cert' },
+              fields: {
+                grade: true,
+                obs: {
+                  _walk: { in: IN('Observation') },
+                  // `_agg.n` is the top-level seed's.
+                  where: { price: { lte: { $ref: '_agg.n', times: 2 } } },
+                  fields: { price: true },
+                  orderBy: [{ price: 'asc' }],
+                  limit: 1
+                }
+              },
+              limit: 5
+            }
+          },
+          orderBy: [{ firstSeen: 'asc' }],
+          limit: 5
+        }
+      } as unknown as NonNullable<ReadParams['nested']>
+    });
+    const ls = rows[0]?.listings as Row[];
+    expect(ls[0]).toEqual({
+      id: u('l1'),
+      cert: u('c1'),
+      seller: u('s1'),
+      price: 12.25,
+      firstSeen: '2026-10-20T00:00:00.123456Z',
+      _agg: { obs: 1 },
+      sellerRow: [{ id: u('s1'), rating: 4.5 }],
+      certRow: [
+        { id: u('c1'), grade: 9, obs: [{ id: u('o2'), price: 1 }], _truncated: { obs: true } }
+      ]
+    });
+    expect(ls[1]).toMatchObject({ id: u('l2'), seller: null, price: null, sellerRow: [] });
+    expect(ls[1]).not.toHaveProperty('_metadata');
+  });
 });
