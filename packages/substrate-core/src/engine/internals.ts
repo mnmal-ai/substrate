@@ -107,6 +107,8 @@ export function clientErrorMessage(err: unknown, metric: MetricFn, key: string):
 }
 
 export interface EngineOptions {
+  /** `SUBSTRATE_WALKS`: accept the typed-edge-walk query grammar. Default false. */
+  walksEnabled?: boolean;
   namespaces: Map<string, NamespaceConfig>;
   datasets: DatasetRegistry;
   /**

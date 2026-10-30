@@ -210,6 +210,8 @@ export interface ComposeOpts {
    * no read is recorded. `storeProfile` seeds `_system/StoreProfile` when it
    * has no row yet.
    */
+  /** `SUBSTRATE_WALKS`: accept the typed-edge-walk query grammar. */
+  walksEnabled?: boolean;
   advisor?: { intervalMs: number; storeProfile?: StoreProfileName; writeHeavy?: boolean };
 }
 
@@ -491,6 +493,7 @@ async function composeInner(
   const advisorIntervalMs = opts.advisor?.intervalMs ?? 0;
   const shapeRecorder = advisorIntervalMs > 0 ? new ShapeRecorder() : undefined;
   if (shapeRecorder !== undefined) engineOpts.shapeRecorder = shapeRecorder;
+  if (opts.walksEnabled === true) engineOpts.walksEnabled = true;
   const engine = new Engine(engineOpts);
   engineForStats = engine;
 

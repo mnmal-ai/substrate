@@ -55,7 +55,11 @@ import type {
   SweepDeps,
   WriteEvent
 } from '@mnmal-ai/substrate-types';
-import { isResolverFrameError, isRestrictViolation } from '@mnmal-ai/substrate-types';
+import {
+  isResolverFrameError,
+  isRestrictViolation,
+  WALKS_DISABLED
+} from '@mnmal-ai/substrate-types';
 import { readShapeOf } from '../advisor/shape-recorder.js';
 import { applyLostNamespace } from '../apply-lost-namespace.js';
 
@@ -117,6 +121,7 @@ function grantRefusalCode(verdict: { reason: 'namespace' | 'capability' }): stri
 
 import { evaluatePolicy } from '../policy-evaluator.js';
 import { Registry } from '../registry.js';
+import { walkGrammarPath } from '../walk-gate.js';
 import { BridgeSubsystem } from './bridge.js';
 import { isSealedCursor, openCursor } from './cursor-seal.js';
 import { runFilterGuard } from './filter-guard.js';
@@ -224,12 +229,15 @@ export class Engine {
   /** Bridge-proxy subsystem (§5.8 / §6.5) for bridged query/mutate buckets. */
   readonly #bridgeProxy: BridgeSubsystem;
 
+  readonly #walksEnabled: boolean;
+
   constructor(opts: EngineOptions) {
     this.#namespaces = opts.namespaces;
     this.#datasets = opts.datasets;
     this.#edges = opts.edges;
     this.#metric = opts.metric ?? ((): void => {});
     this.#onResolve = opts.onResolve;
+    this.#walksEnabled = opts.walksEnabled === true;
     this.#shapeRecorder = opts.shapeRecorder;
     this.#idempotency =
       opts.idempotency !== undefined
@@ -1398,6 +1406,19 @@ export class Engine {
     // A row filter reads the whole row, so the substrate must not narrow it to
     // the caller's selection; the transport projects the response.
     if ((decision.obligations?.length ?? 0) > 0) delete args.fields;
+
+    if (!this.#walksEnabled && operation === 'query' && registryEntry.kind === 'type') {
+      const walkPath = walkGrammarPath(frame as Record<string, unknown>);
+      if (walkPath) {
+        addError(
+          envelope,
+          [key, ...walkPath],
+          'the walk grammar is disabled on this server (SUBSTRATE_WALKS)',
+          WALKS_DISABLED
+        );
+        return false;
+      }
+    }
 
     // Filter validation (§5.2) lives in `./filter-guard.js` — same contract:
     // `false` means an error was recorded and dispatch must not proceed.

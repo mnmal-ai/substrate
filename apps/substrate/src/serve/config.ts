@@ -85,6 +85,8 @@ export interface ParsedConfig {
   storeProfile: StoreProfileName | null;
   /** `SUBSTRATE_STORE_WRITE_HEAVY=1` — the advisor halves its write-rate threshold for removing unused indexes. */
   storeWriteHeavy: boolean;
+  /** `SUBSTRATE_WALKS=1` — accept the typed-edge-walk query grammar. Off by default. */
+  walksEnabled: boolean;
   /**
    * §5.13 mutation idempotency config. `disabled` kills dedup entirely (the
    * engine never sees a store); `defaultTtlMs === null` leaves the engine's
@@ -270,6 +272,17 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
     writeHeavyRaw,
     writeHeavyWord === '1' || writeHeavyWord === 'true'
   );
+  const walksRaw = env.SUBSTRATE_WALKS;
+  const walksWord = (walksRaw ?? '').trim().toLowerCase();
+  if (!['', '0', 'false', '1', 'true'].includes(walksWord)) {
+    throw new EnvConfigError(`SUBSTRATE_WALKS must be 1, true, 0 or false, got '${walksRaw}'`);
+  }
+  const walksEnabled = knobs.record(
+    'walksEnabled',
+    'SUBSTRATE_WALKS',
+    walksRaw,
+    walksWord === '1' || walksWord === 'true'
+  );
   const idempotency = parseIdempotencyConfig(env, knobs);
   const trustedProxies = parseTrustedProxies(env, knobs);
   const port = parsePort(env, knobs);
@@ -358,6 +371,7 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
     advisorIntervalMs,
     storeProfile,
     storeWriteHeavy,
+    walksEnabled,
     idempotency,
     trustedProxies,
     port,

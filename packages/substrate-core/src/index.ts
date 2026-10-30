@@ -66,3 +66,4 @@ export {
 export { publishSchema } from './schema-publisher.js';
 export { applyPolicy, loadSweepState, runSweep, saveSweepState } from './sweep.js';
 export { TaskScheduler } from './task-scheduler.js';
+export { usesWalkGrammar, walkGrammarPath } from './walk-gate.js';
