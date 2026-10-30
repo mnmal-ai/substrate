@@ -59,15 +59,46 @@ describe('fieldPhrases', () => {
       fieldPhrases: { '  Asking   Price ': { pick: 'min' } }
     });
     expect(Object.keys(p.fieldPhrases ?? {})).toEqual(['asking price']);
-    expect(() => NamespaceRulingsSchema.parse({ fieldPhrases: { 'A b': {}, 'a  B': {} } })).toThrow(
-      /normalise/
-    );
+    expect(() =>
+      NamespaceRulingsSchema.parse({
+        fieldPhrases: { 'A b': { pick: 'min' }, 'a  B': { pick: 'max' } }
+      })
+    ).toThrow(/normalise/);
   });
   it('refuses value or exclude without field, and unknown keys', () => {
     expect(() => NamespaceRulingsSchema.parse({ fieldPhrases: { x: { value: 1 } } })).toThrow();
     expect(() =>
       NamespaceRulingsSchema.parse({ fieldPhrases: { x: { pick: 'min', nope: 1 } } })
     ).toThrow();
+  });
+  it('refuses an empty entry', () => {
+    expect(() => NamespaceRulingsSchema.parse({ fieldPhrases: { x: {} } })).toThrow(/at least one/);
+  });
+  it('keeps metadata and nested excludes, refuses a dotless field', () => {
+    const r = readRulings(
+      typed({
+        fieldPhrases: {
+          mine: { field: 'Listing.price', exclude: { createdBy: { eq: 'x' }, id: { ne: 'y' } } },
+          nested: {
+            field: 'Listing.price',
+            exclude: { AND: [{ OR: [{ NOT: { status: { eq: 'a' } } }] }] }
+          },
+          bad: { field: 'Listing.price', exclude: { NOT: { ghost: { eq: 1 } } } },
+          dotless: { field: 'Listing' }
+        }
+      })
+    );
+    expect(Object.keys(r.rulings.fieldPhrases ?? {}).sort()).toEqual(['mine', 'nested']);
+    expect(r.warnings).toHaveLength(2);
+  });
+  it('normalises override keys so a differently-cased one replaces the declared', () => {
+    const r = readRulings(typed({ fieldPhrases: { 'asking price': { field: 'Listing.price' } } }), {
+      fieldPhrases: { ' Asking  Price': { field: 'Listing.cost' } }
+    });
+    expect(r.rulings.fieldPhrases).toEqual({ 'asking price': { field: 'Listing.cost' } });
+    const bad = readRulings(typed({}), { fieldPhrases: { x: { pick: 'min', nope: 1 } } } as never);
+    expect(bad.rulings.fieldPhrases).toBeUndefined();
+    expect(bad.warnings).toHaveLength(1);
   });
   it('refuses an entry naming an unknown type or field at load, naming the phrase', () => {
     const r = readRulings(

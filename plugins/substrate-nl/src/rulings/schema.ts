@@ -6,7 +6,11 @@
  * namespace's typo must not take NL down for every namespace, and must not
  * pass silently either.
  */
-import type { Schema } from '@mnmal-ai/substrate/sdk';
+import {
+  METADATA_AUTHOR_FIELDS,
+  METADATA_FILTER_FIELDS,
+  type Schema
+} from '@mnmal-ai/substrate/sdk';
 import { z } from 'zod';
 import type { NamespaceRulings } from '../pack/rulings.js';
 
@@ -43,6 +47,9 @@ const FieldPhraseSchema = z
   .strict()
   .refine((v) => v.field !== undefined || (v.value === undefined && v.exclude === undefined), {
     message: 'value and exclude require field'
+  })
+  .refine((v) => v.field !== undefined || v.derive !== undefined || v.pick !== undefined, {
+    message: 'an entry needs at least one of field, derive, pick'
   });
 
 const FieldPhrasesSchema = z.record(z.string(), FieldPhraseSchema).transform((rec, ctx) => {
@@ -123,7 +130,13 @@ function phraseProblem(schema: Schema, e: z.infer<typeof FieldPhraseSchema>): st
     const names: string[] = [];
     whereFields(e.exclude, names);
     const fields = schema.types[type]?.fields ?? {};
-    const bad = names.find((n) => !n.startsWith('_') && !Object.hasOwn(fields, n));
+    const bad = names.find(
+      (n) =>
+        !n.startsWith('_') &&
+        !Object.hasOwn(fields, n) &&
+        !Object.hasOwn(METADATA_FILTER_FIELDS, n) &&
+        !Object.hasOwn(METADATA_AUTHOR_FIELDS, n)
+    );
     if (bad !== undefined) return `exclude names unknown field '${type}.${bad}'`;
   }
   return undefined;
@@ -145,7 +158,23 @@ export function readRulings(
       warnings.push(`declared rulings are invalid and were ignored (${where})`);
     }
   }
-  const rulings = mergeRulings(declared, override);
+  let normOverride = override;
+  if (override?.fieldPhrases !== undefined) {
+    const p = FieldPhrasesSchema.safeParse(override.fieldPhrases);
+    const { fieldPhrases: _drop, ...rest } = override;
+    if (p.success)
+      normOverride = {
+        ...rest,
+        fieldPhrases: p.data as NonNullable<NamespaceRulings['fieldPhrases']>
+      };
+    else {
+      normOverride = rest;
+      warnings.push(
+        `override fieldPhrases are invalid and were ignored (${p.error.issues.map((i) => i.message).join('; ')})`
+      );
+    }
+  }
+  const rulings = mergeRulings(declared, normOverride);
   if (rulings.fieldPhrases !== undefined) {
     const kept: NonNullable<NamespaceRulings['fieldPhrases']> = {};
     for (const [phrase, entry] of Object.entries(rulings.fieldPhrases)) {
