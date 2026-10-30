@@ -263,12 +263,16 @@ export async function parseWithJudge(
     };
     trail.push(step);
     const prompt = buildJudgePrompt(question, result, pack, context.rulings, rejected);
-    const checked = checkChoice(await judge.decide(prompt, opts.signal), prompt);
+    const reply = await judge.decide(prompt, opts.signal);
+    const checked = checkChoice(reply, prompt);
     if (typeof checked === 'string') {
       step.rejected = checked;
       break;
     }
     step.choice = checked;
+    // The judge chooses; it never authors. Anything it adds (a walk, a comparison) is dropped here, on the record.
+    const extra = Object.keys(reply as object).filter((k) => !Object.hasOwn(checked, k));
+    if (extra.length > 0) step.ignored = extra.sort();
     switch (checked.action) {
       case 'pick':
         return {

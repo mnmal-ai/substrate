@@ -64,6 +64,8 @@ export interface NlJudgeStep {
   choice?: NlJudgeChoice;
   /** Why the reply was not applied. */
   rejected?: string;
+  /** Keys of an applied reply outside the offered options (a walk, a comparison), ignored. */
+  ignored?: string[];
 }
 
 /** What an ask answered. The four kinds are exhaustive. */

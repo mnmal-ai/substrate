@@ -153,6 +153,17 @@ describe('ordering, counting, authors', () => {
     expect(parse('how many open todos do we have?').candidates[0]?.answer).toBe('count');
   });
 
+  it('a count with no walks keeps the paging frame, with no walk in its plan and nothing dropped', () => {
+    const c = parse('how many open todos do we have?').candidates[0];
+    expect(c?.frame['ns/Todo']?.params.count).toBeUndefined();
+    expect(c?.plan).toEqual([]);
+    expect(c?.dropped).toEqual([]);
+  });
+
+  it('keeps a percentage as one word, outside a namespace with fieldPhrases', () => {
+    expect(parse('todos with 25% budget').residual).toContain('25%');
+  });
+
   it('filters by author on createdById', () => {
     expect(JSON.stringify(params('show me todos raised by peer-agent@host'))).toContain(
       '{"createdById":{"startsWith":"peer-agent@host"}}'
