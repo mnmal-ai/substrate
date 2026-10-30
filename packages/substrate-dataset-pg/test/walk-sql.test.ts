@@ -439,6 +439,44 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walks in where (pg)', () => {
     expect(await cmp('lt')).toEqual(['c1']);
   });
 
+  it('$ref arithmetic that overflows or underflows to 0 is never true, never a float8 error', async () => {
+    await load({
+      Cert: [
+        { id: 'c1', ask: 1e308 },
+        { id: 'c2', ask: 5e-324 },
+        { id: 'c3', ask: 1.7976931348623157e308 },
+        { id: 'c4', ask: -1e308 }
+      ],
+      Observation: [
+        { id: 'o1', cert: 'c1', price: 1e308 },
+        { id: 'o2', cert: 'c2', price: 0 },
+        { id: 'o3', cert: 'c3', price: 1 },
+        { id: 'o4', cert: 'c4', price: 0 }
+      ]
+    });
+    const cmp = (op: string, r: Record<string, unknown>) =>
+      both('Cert', obs({ price: { [op]: { $ref: '$.ask', ...r } } } as WhereClause));
+    for (const op of ['eq', 'neq', 'gt', 'gte', 'lt', 'lte']) {
+      for (const r of [
+        { times: 1.25 },
+        { times: 2 },
+        { times: -2 },
+        { times: 0.25, plus: 0 },
+        { times: 5e-324 },
+        { plus: 1e300 },
+        { plus: -1e300 },
+        { times: 1.5, plus: -1e308 }
+      ]) {
+        await cmp(op, r);
+      }
+    }
+    // c1, c3 and c4 overflow under times 2; c2 underflows under times 0.25.
+    expect(await cmp('neq', { times: 2 })).toEqual(['c2']);
+    expect(await cmp('neq', { times: 0.25 })).toEqual(['c1', 'c3', 'c4']);
+    expect(await cmp('lt', { plus: 1e300 })).toEqual(['c1', 'c2']); // c3 overflows
+    expect(await cmp('gt', { plus: -1e300 })).toEqual(['c1', 'c2', 'c4']);
+  });
+
   it('outbound walks and tombstones', async () => {
     await load(
       {
@@ -672,6 +710,45 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk aggregates and nested proje
     const o6First = u('o6') < u('o7');
     expect(agg('c3').first).toEqual(o6First ? '2026-10-05T00:00:00Z' : '2026-10-05T01:00:00+01:00');
     expect(agg('c3').latestPrice).toEqual(o6First ? 1 : 2);
+  });
+
+  it('a sum or avg that overflows is null, never a float8 error', async () => {
+    await load({
+      Cert: [{ id: 'c1' }, { id: 'c2' }, { id: 'c3' }, { id: 'c4' }, { id: 'c5' }],
+      Observation: [
+        { id: 'o1', cert: 'c1', price: 1e308 },
+        { id: 'o2', cert: 'c1', price: 1e308 },
+        { id: 'o3', cert: 'c2', price: -1.7976931348623157e308 },
+        { id: 'o4', cert: 'c2', price: -1e292 }, // past MAX by half an ulp: overflows
+        { id: 'o5', cert: 'c3', price: 1e200 },
+        { id: 'o6', cert: 'c3', price: -1e200 }, // pg's avg(float8) raised here
+        { id: 'o7', cert: 'c4', price: 5e-324 },
+        { id: 'o8', cert: 'c4', price: 0 },
+        { id: 'o9', cert: 'c4', price: 0 }, // avg underflows to 0
+        { id: 'o10', cert: 'c5', price: 1.7976931348623157e308 },
+        { id: 'o11', cert: 'c5', price: 9e291 } // below half an ulp: stays MAX
+      ]
+    });
+    const agg = {
+      avg: { in: IN('Observation'), avg: 'price' },
+      sum: { in: IN('Observation'), sum: 'price' }
+    } as unknown as NonNullable<ReadParams['agg']>;
+    const rows = await same('Cert', { agg, orderBy: [{ id: 'asc' }] });
+    const byName = Object.fromEntries(rows.map((r) => [name(r), r._agg]));
+    expect(byName).toEqual({
+      c1: { avg: null, sum: null },
+      c2: { avg: null, sum: null },
+      c3: { avg: 0, sum: 0 },
+      c4: { avg: 0, sum: 5e-324 },
+      c5: { avg: 1.7976931348623157e308 / 2, sum: 1.7976931348623157e308 }
+    });
+    // A null sum matches no _agg comparison.
+    expect(
+      await both('Cert', {
+        _agg: { in: IN('Observation'), sum: 'price' },
+        gte: 0
+      } as unknown as WhereClause)
+    ).toEqual(['c3', 'c4', 'c5']);
   });
 
   it('_agg in where', async () => {
@@ -1011,6 +1088,21 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('count, aggregate and bucket (pg)
     expect(none.groups).toEqual([
       { n: 0, avg: null, sum: null, lo: null, hi: null, first: null, last: null, firstMade: null }
     ]);
+  });
+
+  it('a whole-result sum or avg that overflows is null', async () => {
+    await load({
+      Observation: [
+        { id: 'o1', price: 1e308 },
+        { id: 'o2', price: 1e308 },
+        { id: 'o3', price: -1e308 }
+      ]
+    });
+    const big = await sameResult('Observation', {
+      aggregate: { avg: { avg: 'price' }, sum: { sum: 'price' } },
+      where: { price: { gt: 0 } }
+    } as unknown as ReadParams);
+    expect(big.groups).toEqual([{ avg: null, sum: null }]);
   });
 
   it('bucket by day crosses UTC midnight as memory does', async () => {

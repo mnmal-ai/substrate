@@ -52,6 +52,10 @@ import {
   CONCURRENT_STATEMENTS as VISIBLE_SEQ_CONCURRENT,
   TX_STATEMENTS as VISIBLE_SEQ_TX
 } from './migrations/0004_visible_seq.js';
+import {
+  CONCURRENT_STATEMENTS as FLOAT_SUM_CONCURRENT,
+  TX_STATEMENTS as FLOAT_SUM_TX
+} from './migrations/0005_float_sum.js';
 import { sqlStringLiteral } from './pg-sql/primitives.js';
 import { assertServerVersion } from './server-version.js';
 
@@ -112,6 +116,11 @@ const SHARED_INPUTS: ReadonlyArray<MigrationInput> = [
     version: '0004_visible_seq',
     txStatements: VISIBLE_SEQ_TX,
     concurrentStatements: VISIBLE_SEQ_CONCURRENT
+  },
+  {
+    version: '0005_float_sum',
+    txStatements: FLOAT_SUM_TX,
+    concurrentStatements: FLOAT_SUM_CONCURRENT
   }
 ];
 

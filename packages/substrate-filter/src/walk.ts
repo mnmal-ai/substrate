@@ -232,8 +232,8 @@ export function evaluateGroup(
 /**
  * A `$ref` operand's value: `$.f` reads the seed, `<as>.f` a binding. A
  * number becomes `value * times + plus`; a date shifts by `plus`
- * milliseconds. A null, or a value its kind cannot read, is `null`, which no
- * comparison matches.
+ * milliseconds. A null, a value its kind cannot read, or arithmetic that
+ * overflows or underflows to 0, is `null`, which no comparison matches.
  */
 export function resolveRef(ref: RefOperand, asDate: boolean, walk: WalkContext): unknown {
   const dot = ref.$ref.indexOf('.');
@@ -257,7 +257,13 @@ export function resolveRef(ref: RefOperand, asDate: boolean, walk: WalkContext):
     return ref.plus ? isoFromMicros(micros + BigInt(Math.round(ref.plus * 1000))) : v;
   }
   if (typeof v !== 'number') return null;
-  return v * (ref.times ?? 1) + (ref.plus ?? 0);
+  // Todo #1809, shared with pg's refOperand: a non-finite result, or a nonzero
+  // product that underflows to 0 (pg's float8 raises on both), is null.
+  const times = ref.times ?? 1;
+  const product = v * times;
+  if (product === 0 && v !== 0 && times !== 0) return null;
+  const out = product + (ref.plus ?? 0);
+  return Number.isFinite(out) ? out : null;
 }
 
 /** An instant in microseconds as an ISO string with six fraction digits. */
@@ -272,7 +278,8 @@ function isoFromMicros(micros: bigint): string {
  * values drop out); min/max read numbers, or instants on a date field and
  * return the winning row's stored value (ties id ascending); each is null over
  * none. count counts rows; latest is the stored `value` of the row latest by
- * `by` (nulls last, ties id ascending), or null. Arithmetic is float64.
+ * `by` (nulls last, ties id ascending), or null. Arithmetic is float64, and
+ * a sum or avg that overflows is null.
  */
 export function applyAgg(rows: Row[], fn: AggFn, fieldDefOf: FieldDefOf): unknown {
   if (Object.hasOwn(fn, 'count')) return rows.length;
@@ -298,7 +305,8 @@ export function applyAgg(rows: Row[], fn: AggFn, fieldDefOf: FieldDefOf): unknow
     acc = n === 0 ? v : op === 'min' ? Math.min(acc, v) : op === 'max' ? Math.max(acc, v) : acc + v;
     n++;
   }
-  if (n === 0) return null;
+  // Todo #1809, shared with pg's substrate_fsum: a sum that overflows is null, avg too.
+  if (n === 0 || !Number.isFinite(acc)) return null;
   return op === 'avg' ? acc / n : acc;
 }
 

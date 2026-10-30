@@ -110,7 +110,21 @@ function aggOver(
   }
   // float8 throughout, so the value is the double memory computes.
   const n = refValue(sql, field, 'number', alias);
-  return { agg: sql`to_jsonb(${sql.unsafe(op)}(${n}))`, kind: 'number' };
+  if (op === 'min' || op === 'max')
+    return { agg: sql`to_jsonb(${sql.unsafe(op)}(${n}))`, kind: 'number' };
+  // Todo #1809, as memory's: a sum that overflows is NULL (substrate_fsum
+  // never raises), and avg is that sum over the count. float8 division raises
+  // when a nonzero quotient underflows to 0, i.e. when |s| ≤ c·2^-1075; so a
+  // tiny s is checked as |s|·2^1000 > c·2^-75 (both exact) and is otherwise 0.
+  const s = sql`substrate_fsum(${n})`;
+  if (op === 'sum') return { agg: sql`to_jsonb(${s})`, kind: 'number' };
+  const c = sql`count(${n})::float8`;
+  return {
+    agg: sql`to_jsonb(CASE WHEN abs(${s}) >= 1e-200 THEN ${s} / ${c}
+      WHEN abs(${s}) * ${sql.unsafe(`'${String(2 ** 1000)}'::float8`)} > ${c} * ${sql.unsafe(`'${String(2 ** -75)}'::float8`)} THEN ${s} / ${c}
+      ELSE ${s} * 0 END)`,
+    kind: 'number'
+  };
 }
 
 /** `p` over the rows aliased `alias` passing `where`: a top-1 an index can serve, never a sort of every row. */

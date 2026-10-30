@@ -102,7 +102,8 @@ describe.skipIf(!POSTGRES_URL)('storage layout', () => {
     expect(versions.map((r) => r.version)).toEqual([
       '0001p_partitioned_baseline',
       '0003_safe_casts',
-      '0004_visible_seq'
+      '0004_visible_seq',
+      '0005_float_sum'
     ]);
   });
 

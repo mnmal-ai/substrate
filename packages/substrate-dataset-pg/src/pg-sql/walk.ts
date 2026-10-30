@@ -319,8 +319,43 @@ export function refOperand(
     right = refValue(sql, refField, kind, target.alias);
   }
   if (kind === 'number') {
-    if (ref.times !== undefined) right = sql`${right} * ${float8Lit(sql, field, op, ref.times)}`;
-    if (ref.plus !== undefined) right = sql`${right} + ${float8Lit(sql, field, op, ref.plus)}`;
+    // Todo #1809, as memory's resolveRef: a product or sum that would be
+    // non-finite, or a nonzero product that underflows to 0, is NULL, which
+    // no comparison matches. float8 raises on each, so the operand is checked
+    // against the exact double bound past which it would, and `times`/`plus`
+    // are literals, so the bound is found here in the same IEEE arithmetic.
+    if (ref.times !== undefined) {
+      const t = float8Lit(sql, field, op, ref.times);
+      const m = Math.abs(ref.times);
+      if (m > 1) {
+        const hi = float8Lit(
+          sql,
+          field,
+          op,
+          largest((x) => Number.isFinite(x * m))
+        );
+        right = sql`(CASE WHEN abs(${right}) <= ${hi} THEN ${right} * ${t} END)`;
+      } else if (m > 0 && m < 1) {
+        const lo = float8Lit(sql, field, op, nextUp(largest((x) => x * m === 0)));
+        right = sql`(CASE WHEN ${right} = 0 OR abs(${right}) >= ${lo} THEN ${right} * ${t} END)`;
+      } else {
+        right = sql`${right} * ${t}`;
+      }
+    }
+    if (ref.plus !== undefined) {
+      const p = ref.plus;
+      const pl = float8Lit(sql, field, op, p);
+      const edge = float8Lit(
+        sql,
+        field,
+        op,
+        largest((x) => Number.isFinite(x + Math.abs(p)))
+      );
+      right =
+        p >= 0
+          ? sql`(CASE WHEN ${right} <= ${edge} THEN ${right} + ${pl} END)`
+          : sql`(CASE WHEN ${right} >= -${edge} THEN ${right} + ${pl} END)`;
+    }
     return sql`(${right})`;
   }
   if (ref.times !== undefined) {
@@ -362,6 +397,30 @@ export function buildDerive(
           WHEN abs(ln(abs(x)) - ln(abs(y))) <= 692
           THEN CASE WHEN abs(x / y) BETWEEN 1e-300 AND 1e300 THEN x / y END END`);
   return sql`(SELECT ${value} FROM (SELECT ${operand(a)} AS x, ${operand(b)} AS y) d)`;
+}
+
+const f64 = new Float64Array(1);
+const u64 = new BigUint64Array(f64.buffer);
+function bitsOf(x: number): bigint {
+  f64[0] = x;
+  return u64[0] as bigint;
+}
+function fromBits(b: bigint): number {
+  u64[0] = b;
+  return f64[0] as number;
+}
+const nextUp = (x: number): number => fromBits(bitsOf(x) + 1n);
+
+/** The largest double in [0, MAX_VALUE] passing `ok`, which holds at 0 and fails past one point. */
+function largest(ok: (x: number) => boolean): number {
+  let lo = 0n; // passes
+  let hi = bitsOf(Number.MAX_VALUE) + 1n; // +Infinity: fails or lies past the range
+  while (hi - lo > 1n) {
+    const mid = (lo + hi) / 2n;
+    if (ok(fromBits(mid))) lo = mid;
+    else hi = mid;
+  }
+  return fromBits(lo);
 }
 
 /** `'<n>'::float8`, inlined: only a finite number reaches the text. */
