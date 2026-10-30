@@ -68,12 +68,32 @@ jobs:
   # literals scoped to this throwaway service container.
   # PRs only: a push to main carries code its PR run already tested, and a
   # release's publish job runs these suites itself before anything irreversible.
-  pg:
-    name: Postgres-gated tests
+  # Each package and layout is its own job, so they run side by side; the
+  # skip check then reads every pass's report.
+  pg-plan:
+    name: Postgres passes
     if: github.event_name == 'pull_request' && github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Plan one pass per package and layout
+        id: plan
+        run: echo "matrix=$(.github/scripts/test-pg-gated.sh plan)" >> "$GITHUB_OUTPUT"
+
+  pg-pass:
+    name: pg ${{ matrix.dir }} (${{ matrix.layout }})
+    needs: pg-plan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.pg-plan.outputs.matrix) }}
     services:
       postgres:
         image: pgvector/pgvector:pg18
@@ -99,7 +119,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build
-        run: pnpm build
+        run: pnpm turbo run build --filter="./${{ matrix.dir }}..."
 
       - name: Provision the least-privilege test role
         run: |
@@ -113,10 +133,47 @@ jobs:
           CREATE EXTENSION IF NOT EXISTS vector;
           SQL
 
-      - name: Test (pg-gated suites run, none skipped)
+      - name: Test
         env:
           POSTGRES_URL: postgres://substrate_test:ci-substrate-test@127.0.0.1:5432/substrate_test
-        run: .github/scripts/test-pg-gated.sh
+          PG_REPORTS: ${{ runner.temp }}/pg-reports
+        run: .github/scripts/test-pg-gated.sh run "${{ matrix.dir }}" "${{ matrix.layout }}"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        if: always()
+        with:
+          name: pg-report-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/pg-reports
+          retention-days: 1
+
+  pg:
+    name: Postgres-gated tests
+    needs: pg-pass
+    if: always() && github.event_name == 'pull_request' && github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Every pass succeeded
+        if: needs.pg-pass.result != 'success'
+        run: |
+          echo "::error::a pg-gated pass did not succeed (${{ needs.pg-pass.result }})"
+          exit 1
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          pattern: pg-report-*
+          path: ${{ runner.temp }}/pg-reports
+          merge-multiple: true
+
+      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d  # v5.2.4
+
+      - name: Every pg-gated test ran, none skipped
+        env:
+          PG_REPORTS: ${{ runner.temp }}/pg-reports
+        run: .github/scripts/test-pg-gated.sh check
 
   # Boots docker-compose.yml as a user would. Runs on every PR because a server
   # change, not an image change, is what breaks the boot.
