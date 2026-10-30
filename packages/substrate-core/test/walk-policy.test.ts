@@ -13,7 +13,10 @@ import { hopResolver, walkedTypes } from '../src/walk-types.js';
 
 const allow: Policy = () => ({ allow: true });
 
-function build(policies: { Thing?: Policy; Part?: Policy; Note?: Policy } = {}) {
+function build(
+  policies: { Thing?: Policy; Part?: Policy; Note?: Policy } = {},
+  walksEnabled = true
+) {
   const registry = new Registry();
   let reached = 0;
   const resolver = async () => {
@@ -38,13 +41,14 @@ function build(policies: { Thing?: Policy; Part?: Policy; Note?: Policy } = {}) 
     resolver,
     policy: policies.Note ?? allow
   });
+  registry.register('touchThing', { kind: 'mutation', resolver: async () => ({ id: 't1' }) });
   const datasets = new MemoryDatasetRegistry();
   datasets.set('ns', new MemoryDataset({ namespace: 'ns' }));
   const engine = new Engine({
     namespaces: new Map<string, NamespaceConfig>([['ns', { registry }]]),
     datasets,
     edges: new MemoryEdgesStore({ now: () => new Date('2026-04-18T00:00:00Z') }),
-    walksEnabled: true
+    walksEnabled
   });
   return { engine, reached: () => reached };
 }
@@ -145,7 +149,7 @@ describe('policy on walked types', () => {
     expect(seen[0]?.params?.where).toEqual({ n: { gt: 2 } });
   });
 
-  it('a caller without read grant on the walked namespace type is refused', async () => {
+  it('a capability-denying policy on the walked type refuses the walk (policy_denied)', async () => {
     const { engine, reached } = build({ Part: requireCapability('parts') });
     const identity = { id: 'agent-1', grants: { ns: ['read'] } };
     const res = await engine.query({ frame: walkFrame, ctx: { ...ctx, identity } });
@@ -158,6 +162,79 @@ describe('policy on walked types', () => {
     const granted = { id: 'agent-1', grants: { ns: ['read', 'parts'] } };
     const ok = await engine.query({ frame: walkFrame, ctx: { ...ctx, identity: granted } });
     expect(ok.errors ?? []).toEqual([]);
+  });
+
+  it('row policy on a walked type blocks a where-side _agg and a nested selection', async () => {
+    const { engine } = build({ Part: row(() => true) });
+    const agg = await engine.query({
+      frame: {
+        'ns/Thing': {
+          params: { where: { _agg: { in: 'ns/Part.thing', count: true }, gt: 1 } },
+          fields: { id: true }
+        }
+      },
+      ctx
+    });
+    expect(agg.errors?.[0]).toMatchObject({
+      code: 'row_policy_blocks_walk',
+      path: ['ns/Thing', 'where', '_agg']
+    });
+    const nested = await engine.query({
+      frame: {
+        'ns/Thing': {
+          params: {},
+          fields: { id: true, parts: { _walk: { in: 'ns/Part.thing' }, fields: { id: true } } }
+        }
+      },
+      ctx
+    });
+    expect(nested.errors?.[0]).toMatchObject({
+      code: 'row_policy_blocks_walk',
+      path: ['ns/Thing', 'fields', 'parts', '_walk']
+    });
+  });
+
+  it('a seed under a row policy is refused for aggregate alone', async () => {
+    const { engine, reached } = build({ Part: row(() => true) });
+    const res = await engine.query({
+      frame: { 'ns/Part': { params: { aggregate: { c: { count: true } } }, fields: { id: true } } },
+      ctx
+    });
+    expect(res.errors?.[0]).toMatchObject({
+      code: 'row_policy_blocks_walk',
+      path: ['ns/Part', 'aggregate']
+    });
+    expect(reached()).toBe(0);
+  });
+
+  it('all and pick walks are judged as unfiltered reads; any keeps its where', async () => {
+    const pub = { n: { gt: 2 } };
+    const seen: unknown[] = [];
+    const publicOnly: Policy = (_ctx, args) => {
+      seen.push(args.params);
+      return JSON.stringify(args.params?.where) === JSON.stringify(pub)
+        ? { allow: true }
+        : { allow: false, reason: 'public parts only' };
+    };
+    const { engine } = build({ Part: publicOnly });
+    const q = (walk: Record<string, unknown>) =>
+      engine.query({
+        frame: {
+          'ns/Thing': {
+            params: { where: { _walk: { in: 'ns/Part.thing', where: pub, ...walk } } },
+            fields: { id: true }
+          }
+        },
+        ctx
+      });
+    expect((await q({})).errors ?? []).toEqual([]);
+    for (const walk of [{ quantifier: 'all' }, { pick: { max: 'n' } }]) {
+      expect((await q(walk)).errors?.[0]).toMatchObject({
+        code: 'policy_denied',
+        path: ['ns/Thing', 'where', '_walk']
+      });
+    }
+    expect(seen).toEqual([{ where: pub }, {}, {}]);
   });
 
   it('checks a type walked at depth, inside OR/NOT and in a far-side where', async () => {
@@ -220,9 +297,82 @@ describe('walkedTypes', () => {
     ]);
   });
 
+  it('keeps an any and an all walk over the same (type, where) apart', () => {
+    const w = { n: { gt: 1 } };
+    const got = walkedTypes(
+      {
+        params: {
+          where: {
+            AND: [
+              { _walk: { in: 'ns/Part.thing', where: w } },
+              { _walk: { in: 'ns/Part.thing', where: w, quantifier: 'all' } }
+            ]
+          }
+        }
+      },
+      'Thing',
+      resolve
+    );
+    expect(got).toEqual([
+      { type: 'Part', where: w, path: ['where', 'AND', '0', '_walk'] },
+      { type: 'Part', where: w, unfiltered: true, path: ['where', 'AND', '1', '_walk'] }
+    ]);
+  });
+
   it('resolves out-walks to the crossRef target', () => {
     expect(
       walkedTypes({ params: { where: { _walk: { out: 'thing' } } } }, 'Part', resolve)
     ).toEqual([{ type: 'Thing', path: ['where', '_walk'] }]);
+  });
+});
+
+describe('walk grammar outside validated query paths', () => {
+  it('a mutation selecting _agg or a nested walk is refused walks_in_mutation, flag on or off', async () => {
+    for (const flag of [true, false]) {
+      const { engine } = build({}, flag);
+      for (const fields of [
+        { id: true, _agg: { parts: { in: 'ns/Part.thing', count: true } } },
+        { id: true, parts: { _walk: { in: 'ns/Part.thing' }, fields: { id: true } } }
+      ]) {
+        const res = await engine.mutate({
+          frame: { 'ns/touchThing': { params: {}, fields } },
+          ctx
+        });
+        expect(res.data).not.toHaveProperty('ns/touchThing');
+        expect(res.errors?.[0]?.code).toBe('walks_in_mutation');
+        expect(res.errors?.[0]?.path?.slice(0, 2)).toEqual(['ns/touchThing', 'fields']);
+      }
+    }
+  });
+
+  it('a virtual type refuses walk grammar with walk_unsupported_ref, flag on or off', async () => {
+    for (const walksEnabled of [true, false]) {
+      let reached = 0;
+      const registry = new Registry();
+      registry.register('Hit', {
+        resolver: async () => {
+          reached++;
+          return [];
+        }
+      });
+      const engine = new Engine({
+        namespaces: new Map<string, NamespaceConfig>([['v', { registry, virtual: true }]]),
+        datasets: new MemoryDatasetRegistry(),
+        edges: new MemoryEdgesStore({ now: () => new Date('2026-04-18T00:00:00Z') }),
+        walksEnabled
+      });
+      const res = await engine.query({
+        frame: {
+          'v/Hit': { params: { where: { _walk: { in: 'v/Part.thing' } } }, fields: { id: true } }
+        },
+        ctx
+      });
+      expect(res.errors?.[0]).toMatchObject({
+        code: 'walk_unsupported_ref',
+        message: 'walks are not available on virtual types',
+        path: ['v/Hit', 'where', '_walk']
+      });
+      expect(reached).toBe(0);
+    }
   });
 });

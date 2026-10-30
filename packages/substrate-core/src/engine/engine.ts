@@ -60,7 +60,8 @@ import {
   isResolverFrameError,
   isRestrictViolation,
   ROW_POLICY_BLOCKS_WALK,
-  WALKS_DISABLED
+  WALKS_DISABLED,
+  WALKS_IN_MUTATION
 } from '@mnmal-ai/substrate-types';
 import { readShapeOf } from '../advisor/shape-recorder.js';
 import { applyLostNamespace } from '../apply-lost-namespace.js';
@@ -1366,7 +1367,7 @@ export class Engine {
     }
     for (const w of walked) {
       const d = this.evaluateReadPolicy(ns, w.type, ctx.identity ?? null, ctx, {
-        params: w.where !== undefined ? { where: w.where } : {}
+        params: w.where !== undefined && w.unfiltered !== true ? { where: w.where } : {}
       });
       if (!d.allow) return refuse(w.path, d.reason ?? 'policy denied', 'policy_denied');
       if (blocked(d)) {
@@ -1483,6 +1484,32 @@ export class Engine {
     // A row filter reads the whole row, so the substrate must not narrow it to
     // the caller's selection; the transport projects the response.
     if ((decision.obligations?.length ?? 0) > 0) delete args.fields;
+
+    // Neither path validates walk grammar, so both refuse it whatever the flag:
+    // a mutation's returned-row selection, and a virtual resolver's input.
+    if (operation === 'mutate') {
+      const walkPath = walkGrammarPath({ fields: frame.fields });
+      if (walkPath) {
+        addError(
+          envelope,
+          [key, ...walkPath],
+          'walks are not available in a mutation',
+          WALKS_IN_MUTATION
+        );
+        return false;
+      }
+    } else if (isVirtual) {
+      const walkPath = walkGrammarPath(frame as Record<string, unknown>);
+      if (walkPath) {
+        addError(
+          envelope,
+          [key, ...walkPath],
+          'walks are not available on virtual types',
+          'walk_unsupported_ref'
+        );
+        return false;
+      }
+    }
 
     if (!this.#walksEnabled && operation === 'query' && registryEntry.kind === 'type') {
       const walkPath = walkGrammarPath(frame as Record<string, unknown>);

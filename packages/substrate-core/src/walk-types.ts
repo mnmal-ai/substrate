@@ -11,6 +11,12 @@ import { resolveHop } from './filter/walk-validator.js';
 export interface WalkedType {
   type: string;
   where?: WhereClause;
+  /**
+   * True for an `all` or `pick` walk: those read far rows the walk's `where`
+   * does not narrow (`all` reads the non-matching ones, `pick` chooses among
+   * every neighbour), so their policy must judge an unfiltered read.
+   */
+  unfiltered?: true;
   /** Path inside the frame entry, e.g. `['where', '_walk']`. */
   path: string[];
 }
@@ -43,7 +49,7 @@ export function hopResolver(
   };
 }
 
-/** Walked types of a frame entry `{ params, fields }` seeded at `seed`, deduplicated by (type, where). */
+/** Walked types of a frame entry `{ params, fields }` seeded at `seed`, deduplicated by (type, where, unfiltered). */
 export function walkedTypes(
   entry: Record<string, unknown>,
   seed: string,
@@ -52,9 +58,15 @@ export function walkedTypes(
   const out = new Map<string, WalkedType>();
   const hop = (node: Record<string, unknown>, from: string, path: string[], where = node.where) => {
     const type = resolve(node, from, path);
-    const k = JSON.stringify([type, where ?? null]);
+    const unfiltered = node.quantifier === 'all' || node.pick !== undefined;
+    const k = JSON.stringify([type, where ?? null, unfiltered]);
     if (!out.has(k)) {
-      out.set(k, { type, path, ...(where !== undefined ? { where: where as WhereClause } : {}) });
+      out.set(k, {
+        type,
+        path,
+        ...(where !== undefined ? { where: where as WhereClause } : {}),
+        ...(unfiltered ? { unfiltered: true as const } : {})
+      });
     }
     return type;
   };
