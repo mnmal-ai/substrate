@@ -64,6 +64,13 @@ export {
   evaluateWhere,
   type FieldDefOf,
   getFieldValue,
-  isDateField
+  isDateField,
+  storedMicros
 } from './predicate.js';
-export { WALK_EVALUATION_BUDGET, type WalkContext } from './walk.js';
+export {
+  applyAgg,
+  computeAgg,
+  hop,
+  WALK_EVALUATION_BUDGET,
+  type WalkContext
+} from './walk.js';

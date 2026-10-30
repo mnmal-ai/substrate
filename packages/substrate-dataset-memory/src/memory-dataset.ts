@@ -16,10 +16,12 @@
 
 import { randomUUID } from 'node:crypto';
 import {
+  applyAgg,
   applyExtensionResultMeta,
   asSortValue,
   assertWhereHonourable,
   compareFilterValues,
+  computeAgg,
   decodeCursor,
   type ExtensionOpResultMeta,
   encodeCursor,
@@ -28,8 +30,10 @@ import {
   fieldRequested,
   fullBuiltinOperators,
   getFieldValue,
+  hop,
   isDateField,
   preResolveExtensionOperatorsDetailed,
+  storedMicros,
   WALK_EVALUATION_BUDGET,
   type WalkContext
 } from '@mnmal-ai/substrate-filter';
@@ -42,12 +46,14 @@ import type {
   FieldDef,
   FilterCapabilities,
   Id,
+  NestedSelection,
   OrderByClause,
   ReadParams,
   ReadResult,
   Row,
   RowMetadata,
   UpdateFieldRef,
+  WalkAgg,
   WhereClause,
   WriteOptions,
   WriteResult,
@@ -87,6 +93,12 @@ export interface MemoryDatasetOptions {
    * `walk_budget_exceeded`. Defaults to `WALK_EVALUATION_BUDGET`; tests lower it.
    */
   walkBudget?: number;
+  /**
+   * Test-only: declare and answer the typed-edge-walk grammar. The memory
+   * dataset is the parity reference for the pg walk compiler, not a walk
+   * store; without this the engine refuses walks on it (`walks_unsupported_store`).
+   */
+  walkReference?: boolean;
 }
 
 const RESERVED_DELETED_AT = '_deletedAt';
@@ -122,16 +134,13 @@ export class MemoryDataset implements Dataset {
   // TS-private, not `#`: write() must work through a Proxy, as `store` does.
   private readonly typeDefLookup: MemoryDatasetOptions['typeDefLookup'];
   private readonly walkBudget: number;
+  private readonly walkReference: boolean;
   /** Last seq assigned per visible-order type; never decreases, as pg's `visible_seqs`. */
   private seqs = new Map<string, number>();
   // Full builtin operator set — everything the validator recognises. A
   // deliberate narrowing would override per kind here and fail the
   // allowlist-parity test loudly.
-  readonly capabilities: FilterCapabilities = {
-    operators: fullBuiltinOperators(),
-    orderBy: true,
-    cursor: true
-  };
+  readonly capabilities: FilterCapabilities;
 
   readonly #advisoryLocks = createKeyedMutex();
 
@@ -170,6 +179,13 @@ export class MemoryDataset implements Dataset {
     this.#fieldDefLookup = options.fieldDefLookup;
     this.typeDefLookup = options.typeDefLookup;
     this.walkBudget = options.walkBudget ?? WALK_EVALUATION_BUDGET;
+    this.walkReference = options.walkReference === true;
+    this.capabilities = {
+      operators: fullBuiltinOperators(),
+      orderBy: true,
+      cursor: true,
+      walks: this.walkReference
+    };
   }
 
   private bucket(type: string): Map<Id, Row> {
@@ -233,8 +249,31 @@ export class MemoryDataset implements Dataset {
     // Collect the candidate pool (tombstone filter + id filter + where).
     // shortId is stored directly on each row at bindShortId time, so reads
     // return rows without any per-row spread allocation.
-    const pool: Row[] = [];
+    let pool: Row[] = [];
     const walk = this.walkContext(type);
+    // A seed's frame `_agg` values, computed on first use (a where or derive
+    // operand may read them) and kept for its projection.
+    const frameAggs = params.agg;
+    const aggCache = new Map<Row, Map<string, unknown>>();
+    const ctxFor = (row: Row): WalkContext => {
+      const ctx: WalkContext = {
+        ...walk,
+        seed: row,
+        aggValue: (name) => {
+          const spec =
+            frameAggs !== undefined && Object.hasOwn(frameAggs, name) ? frameAggs[name] : undefined;
+          if (spec === undefined) throw new Error(`internal: '_agg.${name}' names no frame _agg`);
+          let memo = aggCache.get(row);
+          if (memo === undefined) {
+            memo = new Map();
+            aggCache.set(row, memo);
+          }
+          if (!memo.has(name)) memo.set(name, computeAgg(row, spec, ctx));
+          return memo.get(name);
+        }
+      };
+      return ctx;
+    };
 
     // Short-circuit on id-filter: iterate only the requested ids via Map.get
     // rather than scanning the full bucket.
@@ -250,11 +289,44 @@ export class MemoryDataset implements Dataset {
       if (!includeDeleted && row._deletedAt != null) continue;
       if (
         resolvedWhere !== undefined &&
-        !evaluateWhere(row, resolvedWhere, fieldDefOf, { ...walk, seed: row })
+        !evaluateWhere(row, resolvedWhere, fieldDefOf, ctxFor(row))
       ) {
         continue;
       }
       pool.push(row);
+    }
+
+    // A count or whole-result aggregate returns no rows.
+    if (params.count === true) return { rows: [], hasMore: false, count: pool.length };
+    if (params.aggregate !== undefined) {
+      return aggregateGroups(pool, params.aggregate, params.bucket, limit, fieldDefOf);
+    }
+
+    // Derived values ride on row copies as `$<name>`, so ordering and the
+    // cursor read them as fields; the page returns the originals.
+    const original = new Map<Row, Row>();
+    const derive = params.derive;
+    if (derive !== undefined) {
+      pool = pool.map((row) => {
+        const ctx = ctxFor(row);
+        const operand = (ref: string): number | null => {
+          const v = ref.startsWith('_agg.')
+            ? ctx.aggValue?.(ref.slice(5))
+            : getFieldValue(row, ref.slice(2));
+          return typeof v === 'number' ? v : null;
+        };
+        const values = Object.entries(derive).map(([name, spec]) => {
+          const [op, [a, b]] = Object.entries(spec)[0] as ['diff' | 'ratio', [string, string]];
+          const x = operand(a);
+          const y = operand(b);
+          const v =
+            x === null || y === null ? null : op === 'diff' ? x - y : y === 0 ? null : x / y;
+          return [`$${name}`, v] as const;
+        });
+        const copy: Row = { ...row, ...Object.fromEntries(values) };
+        original.set(copy, row);
+        return copy;
+      });
     }
 
     // OrderBy — always append implicit `{ id: 'asc' }` as final tie-breaker so
@@ -286,6 +358,15 @@ export class MemoryDataset implements Dataset {
     }
 
     const out: ReadResult = { rows: slice, hasMore };
+    // Derived copies back to the originals once the cursor is encoded, below.
+    const page = (rows: Row[]): Row[] => {
+      const base = original.size === 0 ? rows : rows.map((r) => original.get(r) ?? r);
+      if (params.agg === undefined && params.nested === undefined) return base;
+      return base.map((r) => ({
+        ...r,
+        ...walkProjection(r, params.agg, params.nested ?? {}, ctxFor(r))
+      }));
+    };
     // nextCursor is derived from the DATASET-ordered slice (the sorted pool),
     // before any relevance reorder — cursor pagination must keep dataset
     // order between pages.
@@ -297,6 +378,7 @@ export class MemoryDataset implements Dataset {
         order: orderBy
       });
     }
+    out.rows = page(slice);
 
     // Apply the extension-operator side-channel to the final page —
     // relevance reorder (only when the CALLER supplied no orderBy; the
@@ -659,6 +741,8 @@ export class MemoryDataset implements Dataset {
   forNamespace(namespace: string): Dataset {
     return new MemoryDataset({
       namespace,
+      walkBudget: this.walkBudget,
+      walkReference: this.walkReference,
       ...(this.#fieldDefLookup !== undefined ? { fieldDefLookup: this.#fieldDefLookup } : {}),
       ...(this.typeDefLookup !== undefined ? { typeDefLookup: this.typeDefLookup } : {})
     });
@@ -683,6 +767,107 @@ function conditionalMatchEq(actual: unknown, expected: unknown): boolean {
     return false;
   }
   return actual === expected;
+}
+
+/**
+ * A whole-result aggregate: one group, or one per UTC day/hour bucket in
+ * ascending order. A row whose bucket field is null or not a date is in no
+ * bucket. Groups beyond `limit` are cut and say `truncated`.
+ */
+function aggregateGroups(
+  pool: Row[],
+  aggregate: NonNullable<ReadParams['aggregate']>,
+  bucket: ReadParams['bucket'],
+  limit: number | undefined,
+  fieldDefOf: FieldDefOf
+): ReadResult {
+  const values = (rows: Row[]) =>
+    Object.fromEntries(
+      Object.entries(aggregate).map(([name, fn]) => [name, applyAgg(rows, fn, fieldDefOf)])
+    );
+  if (bucket === undefined) return { rows: [], hasMore: false, groups: [values(pool)] };
+  const byKey = new Map<string, Row[]>();
+  for (const row of pool) {
+    const micros = storedMicros(getFieldValue(row, bucket.field));
+    if (micros === undefined) continue;
+    const ms = Number((micros - (((micros % 1000n) + 1000n) % 1000n)) / 1000n);
+    const key = new Date(ms).toISOString().slice(0, bucket.by === 'day' ? 10 : 13);
+    const list = byKey.get(key);
+    if (list === undefined) byKey.set(key, [row]);
+    else list.push(row);
+  }
+  const keys = [...byKey.keys()].sort();
+  const truncated = limit !== undefined && keys.length > limit;
+  const groups = (truncated ? keys.slice(0, limit) : keys).map((key) => ({
+    bucket: key,
+    ...values(byKey.get(key) ?? [])
+  }));
+  return { rows: [], hasMore: false, groups, ...(truncated ? { truncated: true } : {}) };
+}
+
+/**
+ * A row's walk selections: `_agg` values and nested lists, each list
+ * filtered, ordered (id ascending last) and cut to its limit, with
+ * `_truncated` naming the lists that were cut. Nested rows carry `id`, their
+ * selected fields and their own walk selections.
+ */
+function walkProjection(
+  row: Row,
+  aggs: Record<string, WalkAgg> | undefined,
+  nested: Record<string, NestedSelection>,
+  ctx: WalkContext
+): Record<string, unknown> {
+  const out: Array<[string, unknown]> = [];
+  if (aggs !== undefined) {
+    out.push([
+      '_agg',
+      Object.fromEntries(
+        Object.entries(aggs).map(([name, spec]) => [
+          name,
+          // The seed's frame `_agg` values are memoised on the context.
+          ctx.seed === row && ctx.aggValue !== undefined
+            ? ctx.aggValue(name)
+            : computeAgg(row, spec, ctx)
+        ])
+      )
+    ]);
+  }
+  const truncated: Array<[string, true]> = [];
+  for (const [name, sel] of Object.entries(nested)) {
+    const { type, rows } = hop(row, sel._walk, ctx);
+    const fieldDefOf = ctx.fieldDefOf(type);
+    const far: WalkContext = { ...ctx, type };
+    const keep = (n: Row) =>
+      [sel._walk.where, sel.where].every(
+        (w) => w === undefined || evaluateWhere(n, w, fieldDefOf, far)
+      );
+    const order = normalizeOrderBy(sel.orderBy);
+    let list = rows.filter(keep).sort((a, b) => compareByClauses(a, b, order, fieldDefOf));
+    if (sel.limit !== undefined && list.length > sel.limit) {
+      list = list.slice(0, sel.limit);
+      truncated.push([name, true]);
+    }
+    const fields = sel.fields;
+    const isNested = (v: unknown) =>
+      typeof v === 'object' && v !== null && Object.hasOwn(v, '_walk');
+    const subAggs = Object.hasOwn(fields, '_agg')
+      ? (fields._agg as Record<string, WalkAgg>)
+      : undefined;
+    const subNested = Object.fromEntries(
+      Object.entries(fields).filter(([, v]) => isNested(v))
+    ) as Record<string, NestedSelection>;
+    const plain = Object.keys(fields).filter((k) => k !== '_agg' && !isNested(fields[k]));
+    out.push([
+      name,
+      list.map((n) => ({
+        id: n.id,
+        ...Object.fromEntries(plain.filter((k) => Object.hasOwn(n, k)).map((k) => [k, n[k]])),
+        ...walkProjection(n, subAggs, subNested, far)
+      }))
+    ]);
+  }
+  if (truncated.length > 0) out.push(['_truncated', Object.fromEntries(truncated)]);
+  return Object.fromEntries(out);
 }
 
 function normalizeOrderBy(orderBy: OrderByClause[] | undefined): Array<[string, 'asc' | 'desc']> {

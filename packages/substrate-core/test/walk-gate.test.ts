@@ -42,7 +42,7 @@ describe('usesWalkGrammar', () => {
   });
 });
 
-function build(walksEnabled?: boolean) {
+function build(walksEnabled?: boolean, walkReference = true) {
   const registry = new Registry();
   let reached = 0;
   registry.register('Part', {
@@ -56,7 +56,7 @@ function build(walksEnabled?: boolean) {
     }
   });
   const datasets = new MemoryDatasetRegistry();
-  datasets.set('ns', new MemoryDataset({ namespace: 'ns' }));
+  datasets.set('ns', new MemoryDataset({ namespace: 'ns', walkReference }));
   const engine = new Engine({
     namespaces: new Map<string, NamespaceConfig>([['ns', { registry }]]),
     datasets,
@@ -115,5 +115,73 @@ describe('engine walk gate', () => {
       path: ['ns/Thing', 'fields', 'parts', 'limit']
     });
     expect(reached()).toBe(0);
+  });
+
+  it('a store that does not declare walks refuses a walk frame with walks_unsupported_store', async () => {
+    const { engine, reached } = build(true, false);
+    for (const f of [
+      frame,
+      { 'ns/Thing': { params: { count: true }, fields: { id: true } } },
+      {
+        'ns/Thing': {
+          fields: { id: true, parts: { _walk: { in: 'ns/Part.thing' }, fields: { id: true } } }
+        }
+      }
+    ]) {
+      const res = await engine.query({ frame: f, ctx });
+      expect(res.errors?.[0]?.code).toBe('walks_unsupported_store');
+    }
+    expect(reached()).toBe(0);
+    // A plain read still answers.
+    const plain = await engine.query({ frame: { 'ns/Thing': { fields: { id: true } } }, ctx });
+    expect(plain.errors ?? []).toEqual([]);
+    expect(reached()).toBe(1);
+  });
+
+  it('the flag gate runs first: flag off answers walks_disabled whatever the store', async () => {
+    const { engine } = build(false, false);
+    const res = await engine.query({ frame, ctx });
+    expect(res.errors?.[0]?.code).toBe('walks_disabled');
+  });
+});
+
+describe('memory walk reference through the engine', () => {
+  function engineFor(walkReference: boolean) {
+    const registry = new Registry();
+    const ds = new MemoryDataset({ namespace: 'ns', walkReference });
+    registry.register('Thing', {
+      resolver: async (_c, args) => ds.read('Thing', args.params ?? {})
+    });
+    registry.register('Part', {
+      fields: { thing: { kind: 'crossRef', ns: 'ns', type: 'Thing', onDelete: 'set_null' } },
+      resolver: async () => []
+    });
+    const datasets = new MemoryDatasetRegistry();
+    datasets.set('ns', ds);
+    const engine = new Engine({
+      namespaces: new Map<string, NamespaceConfig>([['ns', { registry }]]),
+      datasets,
+      edges: new MemoryEdgesStore({ now: () => new Date('2026-04-18T00:00:00Z') }),
+      walksEnabled: true
+    });
+    return { engine, ds };
+  }
+
+  it('without walkReference memory refuses a walk; with it, the walk answers', async () => {
+    for (const walkReference of [false, true]) {
+      const { engine, ds } = engineFor(walkReference);
+      await ds.write('Thing', [{ id: 't1' }, { id: 't2' }]);
+      await ds.write('Part', [{ id: 'p1', thing: 't2' }]);
+      const res = await engine.query({ frame, ctx });
+      if (walkReference) {
+        expect(res.errors ?? []).toEqual([]);
+        expect((res.data['ns/Thing'] as Array<{ id: string }>).map((r) => r.id)).toEqual(['t2']);
+      } else {
+        expect(res.errors?.[0]).toMatchObject({
+          code: 'walks_unsupported_store',
+          path: ['ns/Thing', 'where', '_walk']
+        });
+      }
+    }
   });
 });

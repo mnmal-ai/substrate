@@ -291,6 +291,11 @@ export interface FilterCapabilities {
   orderBy: boolean;
   /** Does the dataset honour cursor-based pagination? */
   cursor: boolean;
+  /**
+   * Does the dataset answer the typed-edge-walk grammar? The engine refuses a
+   * walk frame on a dataset without it (`walks_unsupported_store`).
+   */
+  walks?: boolean;
 }
 
 export interface UpdateFieldRef {

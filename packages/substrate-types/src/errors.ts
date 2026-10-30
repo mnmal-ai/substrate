@@ -15,6 +15,7 @@ export const WALKS_IN_SUBSCRIPTION = 'walks_in_subscription';
 export const WALKS_IN_MUTATION = 'walks_in_mutation';
 export const ROW_POLICY_BLOCKS_WALK = 'row_policy_blocks_walk';
 export const WALK_BUDGET_EXCEEDED = 'walk_budget_exceeded';
+export const WALKS_UNSUPPORTED_STORE = 'walks_unsupported_store';
 
 /**
  * Throwable by a resolver to surface a structured per-frame error with a

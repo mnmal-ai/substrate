@@ -20,6 +20,7 @@ import {
   type RefOperand,
   type Row,
   UnsupportedFilterError,
+  type WalkAggPredicate,
   type WalkNode,
   type WhereClause
 } from '@mnmal-ai/substrate-types';
@@ -32,6 +33,7 @@ import {
 } from './json-path.js';
 import {
   bindingWalks,
+  computeAgg,
   evaluateGroup,
   evaluateWalk,
   isRefOperand,
@@ -122,6 +124,8 @@ const KNOWN_OPS = new Set<string>([
  */
 export function assertWhereHonourable(where: WhereClause): void {
   if (where === null || typeof where !== 'object' || Array.isArray(where)) return;
+  // `{ _agg, gte: 3 }`: the comparison beside `_agg` is not a field.
+  if (Object.hasOwn(where, '_agg')) return;
   for (const [key, child] of Object.entries(where as Record<string, unknown>)) {
     if (key === 'AND' || key === 'OR') {
       if (Array.isArray(child)) for (const sub of child) assertWhereHonourable(sub as WhereClause);
@@ -237,6 +241,11 @@ export function evaluateMembers(
   bound: ReadonlySet<WalkNode>
 ): boolean {
   if (where === null || typeof where !== 'object' || Array.isArray(where)) return true;
+  if (Object.hasOwn(where, '_agg')) {
+    if (walk === undefined)
+      throw new UnsupportedFilterError('_agg', '<none>', 'walk aggregates need a walk context');
+    return evaluateAggPredicate(row, where as WalkAggPredicate, walk);
+  }
   for (const [k, child] of Object.entries(where as Record<string, unknown>)) {
     if (k === 'AND') {
       if (Array.isArray(child)) {
@@ -262,13 +271,22 @@ export function evaluateMembers(
         throw new UnsupportedFilterError(k, '<none>', 'walks need a walk context');
       const node = child as WalkNode;
       if (!bound.has(node) && !evaluateWalk(row, node, walk)) return false;
-    } else if (k === '_agg') {
-      throw new Error('internal: _agg predicates are not evaluated yet');
     } else {
       const asDate = isDateField(k, fieldDefOf);
       const ref = walk === undefined ? undefined : (r: RefOperand) => resolveRef(r, asDate, walk);
       if (!evaluateFieldPredicate(k, getFieldValue(row, k), child, asDate, ref)) return false;
     }
+  }
+  return true;
+}
+
+/** `{ _agg, <cmp>: n }` on this row; a null aggregate matches nothing, as SQL NULL. */
+function evaluateAggPredicate(row: Row, where: WalkAggPredicate, walk: WalkContext): boolean {
+  const value = computeAgg(row, where._agg, walk);
+  if (typeof value !== 'number') return false;
+  for (const [op, operand] of Object.entries(where)) {
+    if (op === '_agg') continue;
+    if (!applyOp('_agg', op, value, operand, false)) return false;
   }
   return true;
 }

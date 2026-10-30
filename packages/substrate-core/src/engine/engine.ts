@@ -61,7 +61,8 @@ import {
   isRestrictViolation,
   ROW_POLICY_BLOCKS_WALK,
   WALKS_DISABLED,
-  WALKS_IN_MUTATION
+  WALKS_IN_MUTATION,
+  WALKS_UNSUPPORTED_STORE
 } from '@mnmal-ai/substrate-types';
 import { readShapeOf } from '../advisor/shape-recorder.js';
 import { applyLostNamespace } from '../apply-lost-namespace.js';
@@ -1519,6 +1520,24 @@ export class Engine {
           [key, ...walkPath],
           'the walk grammar is disabled on this server (SUBSTRATE_WALKS)',
           WALKS_DISABLED
+        );
+        return false;
+      }
+    }
+    if (
+      operation === 'query' &&
+      registryEntry.kind === 'type' &&
+      !isVirtual &&
+      dataset !== undefined &&
+      dataset.capabilities.walks !== true
+    ) {
+      const walkPath = walkGrammarPath(frame as Record<string, unknown>);
+      if (walkPath) {
+        addError(
+          envelope,
+          [key, ...walkPath],
+          `the '${ns}' store does not answer walks`,
+          WALKS_UNSUPPORTED_STORE
         );
         return false;
       }

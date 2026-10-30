@@ -11,7 +11,7 @@ import { Engine, MemoryEdgesStore, type NamespaceConfig, Registry } from '../src
 
 function buildEngine(): Engine {
   const datasets = new MemoryDatasetRegistry();
-  datasets.set('ns', new MemoryDataset({ namespace: 'ns' }));
+  datasets.set('ns', new MemoryDataset({ namespace: 'ns', walkReference: true }));
   const registry = new Registry();
   registry.register('Part', {
     kind: 'type',
