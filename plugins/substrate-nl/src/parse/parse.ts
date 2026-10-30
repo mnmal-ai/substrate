@@ -340,7 +340,8 @@ export function parseQuestion(
       t.used = true;
       walkClaims.dropped.push({
         span: t.text,
-        reason: `"${t.text}" is not composed: walk clauses are read as all applying together`
+        reason: `"${t.text}" is not composed: walk clauses are read as all applying together`,
+        kind: 'filter'
       });
     }
   }
@@ -565,7 +566,13 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
   const dropped = [
     ...(a.composed?.dropped ?? []),
     ...(conflict
-      ? [{ span: orderSpan, reason: 'it conflicts with the derived ordering, which is kept' }]
+      ? [
+          {
+            span: orderSpan,
+            reason: 'it conflicts with the derived ordering, which is kept',
+            kind: 'order' as const
+          }
+        ]
       : [])
   ];
   const where: Record<string, unknown>[] = [];

@@ -1,4 +1,4 @@
-import type { Query, SubstrateRequest } from '@mnmal-ai/substrate/sdk';
+import type { Dropped, PlanClause, Query, SubstrateRequest } from '@mnmal-ai/substrate/sdk';
 import type { NlEngineAccess, NlEnvelope } from '../access.js';
 import { type Judge, type JudgedResult, parseWithJudge } from '../judge/judge.js';
 import { own } from '../own.js';
@@ -16,34 +16,106 @@ export interface AskDeps {
 
 const RECALL_K = 10;
 
-/** The frame a candidate needs to run: its params plus every projectable field of its type. */
-function executable(c: Candidate, pack: ServedPack): Query {
+/**
+ * The frame a candidate needs to run. A count is the server's `count: true`
+ * over the reading's where; `paged` is the rows frame with every projectable
+ * field, which a count falls back to when the server cannot count.
+ */
+function executable(c: Candidate, pack: ServedPack, paged = c.answer !== 'count'): Query {
   const [key, value] = Object.entries(c.frame)[0] as [string, { params: Record<string, unknown> }];
+  const { count: _count, ...params } = value.params;
+  if (!paged) {
+    // Ordering never changes a count, and the engine refuses one beside `count`.
+    const { orderBy: _o, limit: _l, derive: _d, ...counted } = params;
+    return { [key]: { params: { ...counted, count: true }, fields: { id: true } } } as Query;
+  }
   const fields: Record<string, true> = { id: true };
   for (const [name, f] of Object.entries(own(pack.types, c.type)?.fields ?? {})) {
     if (f.kind !== 'metadata') fields[name] = true;
   }
-  return { [key]: { params: value.params, fields } } as Query;
+  return { [key]: { params, fields } } as Query;
+}
+
+const STRICT_KEYS = new Set(['$ref', 'pick', '_agg', 'aggregate']);
+const hasKey = (v: unknown): boolean =>
+  typeof v === 'object' &&
+  v !== null &&
+  Object.entries(v).some(([k, x]) => STRICT_KEYS.has(k) || hasKey(x));
+
+/** A count, an aggregate, or a reading with a `$ref` comparison or a pick: a lost filter changes its answer. */
+const strict = (c: Candidate): boolean => c.answer === 'count' || hasKey(c.frame);
+
+/** The engine refused `count: true`: walks are off, or the seed is under a row policy. */
+const COUNT_REFUSED = new Set(['walks_disabled', 'row_policy_blocks_walk']);
+
+/**
+ * The parser's plan with the engine's `served`/`recommend` where the engine
+ * planned the same clause (matched by path: the engine's path is a prefix of
+ * the parser's labelled one, or, for a NOT, extends it). Parser-only clauses
+ * keep their entries; engine-only clauses are appended.
+ */
+export function mergePlan(parsed: PlanClause[], engine: PlanClause[] | undefined): PlanClause[] {
+  if (engine === undefined) return parsed;
+  const kindOf = (c: PlanClause) =>
+    c.kind === 'derive' && c.path[0] === 'orderBy' ? 'order' : c.kind;
+  const prefix = (a: string[], b: string[]) =>
+    a.length <= b.length && a.every((x, i) => x === b[i]);
+  const used = new Set<PlanClause>();
+  const out = parsed.map((p) => {
+    const same = engine.filter((e) => kindOf(e) === kindOf(p));
+    const under = same
+      .filter((e) => prefix(e.path, p.path))
+      .sort((x, y) => y.path.length - x.path.length);
+    const matches =
+      under.length > 0
+        ? [under[0] as PlanClause]
+        : same.filter((e) => prefix(p.path.slice(0, -1), e.path));
+    if (matches.length === 0) return p;
+    for (const m of matches) used.add(m);
+    const { recommend: _r, ...rest } = p;
+    const recommend = matches.find((m) => !m.served)?.recommend;
+    return {
+      ...rest,
+      served: matches.every((m) => m.served),
+      ...(recommend !== undefined ? { recommend } : {})
+    };
+  });
+  return [...out, ...engine.filter((e) => !used.has(e))];
 }
 
 async function rows(
   c: Candidate,
   source: 'parser' | 'judge' | 'handoff',
+  question: string,
   http: SubstrateRequest,
   deps: AskDeps,
-  handoff?: string
+  handoff?: string,
+  leftovers: Dropped[] = []
 ): Promise<NlOutcome> {
-  const frame = executable(c, deps.pack);
+  const dropped = [...c.dropped, ...leftovers];
+  if (strict(c) && dropped.some((d) => d.kind === 'filter'))
+    return { kind: 'unknown', question, dropped, plan: c.plan };
+  let frame = executable(c, deps.pack);
   const key = Object.keys(frame)[0] as string;
-  const env = await deps.engine.query(frame, http);
+  let env = await deps.engine.query(frame, http);
+  const refused = (env.errors ?? []).some((e) =>
+    COUNT_REFUSED.has((e as { code?: string }).code ?? '')
+  );
+  const paging = c.answer === 'count' && !(key in (env.data ?? {})) && refused;
+  if (paging) {
+    frame = executable(c, deps.pack, true);
+    env = await deps.engine.query(frame, http);
+  }
   const present = env.data !== undefined && key in env.data;
   const data = present ? env.data?.[key] : undefined;
   const errors = [...(env.errors ?? [])];
   let count: number | undefined;
-  if (c.answer === 'count' && Array.isArray(data)) {
+  if (paging && Array.isArray(data)) {
     const counted = await countRest(frame, key, data.length, env, http, deps);
     if (typeof counted === 'number') count = counted;
     else errors.push(counted);
+  } else if (c.answer === 'count' && typeof (data as { count?: unknown })?.count === 'number') {
+    count = (data as { count: number }).count;
   }
   return {
     kind: 'rows',
@@ -53,13 +125,15 @@ async function rows(
     ...(count !== undefined ? { count } : {}),
     ...(errors.length > 0 ? { errors } : {}),
     source,
-    ...(handoff !== undefined ? { handoff } : {})
+    ...(handoff !== undefined ? { handoff } : {}),
+    dropped,
+    plan: mergePlan(c.plan, env._diagnostics?.[key]?.plan)
   };
 }
 
-// shortcut: counts by paging ids at the engine's default page size, so a type
-// past MAX_COUNT_PAGES pages gets no count; upgrade to a server-side count
-// aggregate when one exists.
+// shortcut: the fallback when the server refuses `count: true` pages ids at the
+// engine's default page size, so a type past MAX_COUNT_PAGES pages gets no
+// count; deleted in Task 23 except for row-policy seeds.
 const MAX_COUNT_PAGES = 1000;
 
 /** The population a count candidate matches: `seen` rows from page one, then id-only pages after its cursor. */
@@ -165,9 +239,23 @@ export async function* runAsk(
   };
   if (isAborted(http)) return yield { event: 'done' };
 
+  /**
+   * No judge decided: the parser's reading runs as it stands. Its unexplained
+   * words are dropped, so a strict reading with any is `unknown`, never a number.
+   */
+  const handoff = async (reason: string): Promise<NlOutcome> => {
+    if (best === undefined) return clarify(req.question, reason, first.candidates, deps.pack);
+    const leftovers = best.residual.map((w) => ({
+      span: w,
+      reason: `not understood (${reason})`,
+      kind: 'filter' as const
+    }));
+    return rows(best, 'handoff', req.question, http, deps, reason, leftovers);
+  };
+
   let outcome: NlOutcome;
   if (first.status === 'resolved' && best !== undefined) {
-    outcome = await rows(best, 'parser', http, deps);
+    outcome = await rows(best, 'parser', req.question, http, deps);
   } else if (first.status === 'refuse') {
     outcome = { kind: 'refuse', reason: first.reason ?? 'refused' };
   } else if (first.status === 'clarify') {
@@ -178,10 +266,7 @@ export async function* runAsk(
       deps.pack
     );
   } else if (deps.judge === undefined) {
-    outcome =
-      best !== undefined
-        ? await rows(best, 'handoff', http, deps, 'judge not configured')
-        : clarify(req.question, 'judge not configured', first.candidates, deps.pack);
+    outcome = await handoff('judge not configured');
   } else {
     yield { event: 'judging', reason: first.reason ?? first.status };
     // setTimeout rather than AbortSignal.timeout: the latter runs on Node's
@@ -226,15 +311,12 @@ export async function* runAsk(
     }
     if (isAborted(http)) return yield { event: 'done' };
     if (judged === undefined) {
-      outcome =
-        best !== undefined
-          ? await rows(best, 'handoff', http, deps, 'judge unavailable')
-          : clarify(req.question, 'judge unavailable', first.candidates, deps.pack);
+      outcome = await handoff('judge unavailable');
     } else {
       yield { event: 'judged', status: judged.status, trail: judged.trail };
       switch (judged.status) {
         case 'resolved':
-          outcome = await rows(judged.candidate, 'judge', http, deps);
+          outcome = await rows(judged.candidate, 'judge', req.question, http, deps);
           break;
         case 'recall':
           // A type the caller forced outranks the judge's pick, as it does for rows.
@@ -253,10 +335,7 @@ export async function* runAsk(
           outcome = clarify(req.question, judged.reason, first.candidates, deps.pack);
           break;
         case 'escalated':
-          outcome =
-            best !== undefined
-              ? await rows(best, 'handoff', http, deps, 'judge could not decide')
-              : clarify(req.question, 'judge could not decide', first.candidates, deps.pack);
+          outcome = await handoff('judge could not decide');
           break;
       }
     }

@@ -118,6 +118,35 @@ describe('substrate ask', () => {
     expect(r.code).toBe(1);
   });
 
+  it('unknown prints the dropped list and the plan, and exits 1', async () => {
+    const r = await run(['q'], {
+      kind: 'unknown',
+      question: 'q',
+      dropped: [{ span: 'past 2 days', reason: 'it windows Island', kind: 'filter' }],
+      plan: [{ path: ['where', '_walk', 'cards/Listing.cert', 'any'], kind: 'hop', served: true }]
+    });
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('? unknown');
+    expect(r.out).toContain('  dropped "past 2 days": it windows Island\n');
+    expect(r.out).toContain('  plan where._walk.cards/Listing.cert.any (hop)\n');
+  });
+
+  it('rows print what was dropped; a server count prints the number', async () => {
+    const r = await run(['q'], {
+      kind: 'rows',
+      source: 'handoff',
+      frame: { 'a/B': {} },
+      answer: 'count',
+      data: { count: 7 },
+      count: 7,
+      dropped: [{ span: 'latest', reason: 'conflicts', kind: 'order' }],
+      plan: []
+    });
+    expect(r.code).toBe(0);
+    expect(r.out.split('\n')[0]).toBe('▸ a/B · handoff · count 7');
+    expect(r.out).toContain('  dropped "latest": conflicts\n');
+  });
+
   it('rows with errors exit 1 and print them', async () => {
     const r = await run(['q'], {
       kind: 'rows',

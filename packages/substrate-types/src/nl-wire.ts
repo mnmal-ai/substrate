@@ -14,6 +14,7 @@
  */
 import type { DeriveSpec, WhereClause } from './dataset.js';
 import type { Query } from './nl.js';
+import type { Dropped, PlanClause } from './schema.js';
 
 export interface NlAskRequest {
   namespace: string;
@@ -68,19 +69,38 @@ export interface NlJudgeStep {
   ignored?: string[];
 }
 
-/** What an ask answered. The four kinds are exhaustive. */
+/** What an ask answered. The five kinds are exhaustive. */
 export type NlOutcome =
   | {
       kind: 'rows';
       frame: Query;
       answer: string;
-      /** Absent on the wire when the engine rejected the frame; `errors` then says why. */
+      /**
+       * Absent on the wire when the engine rejected the frame; `errors` then says why.
+       * On a `count` answer it is the engine's `{ count }`, or the first page of rows
+       * when the server could not count and the rows were paged instead.
+       */
       data: unknown;
-      /** On a `count` answer: every row the frame matches, across pages; `data` holds only the first page. Absent when counting stopped short, with `errors` saying why. */
+      /** On a `count` answer: every row the frame matches. Absent when counting stopped short, with `errors` saying why. */
       count?: number;
       errors?: unknown[];
       source: 'parser' | 'judge' | 'handoff';
       handoff?: string;
+      /** Parts of the question this answer does not reflect. Empty when nothing was lost. */
+      dropped: Dropped[];
+      /** The plan the frame ran, clause by clause, with the engine's served flags where it gave them. */
+      plan: PlanClause[];
+    }
+  | {
+      /**
+       * The question cannot be answered without fabricating: something that
+       * changes which rows count was dropped from a count, aggregate, `$ref`
+       * or pick reading. Nothing ran; `dropped` says what, `plan` what was understood.
+       */
+      kind: 'unknown';
+      question: string;
+      dropped: Dropped[];
+      plan: PlanClause[];
     }
   | {
       kind: 'recall';
@@ -109,7 +129,7 @@ export type NlJudgedStatus = 'resolved' | 'recall' | 'clarify' | 'refuse' | 'esc
 
 /**
  * One SSE event, discriminated by the SSE event name. The terminal answer is
- * named by its outcome kind (`rows` | `recall` | `clarify` | `refuse`) and
+ * named by its outcome kind (`rows` | `recall` | `clarify` | `refuse` | `unknown`) and
  * carries the whole outcome; `done` always follows. An in-band `error` event
  * is not in this union: the client throws on it.
  */
@@ -121,6 +141,7 @@ export type NlWireEvent =
   | { event: 'recall'; data: Extract<NlOutcome, { kind: 'recall' }> }
   | { event: 'clarify'; data: Extract<NlOutcome, { kind: 'clarify' }> }
   | { event: 'refuse'; data: Extract<NlOutcome, { kind: 'refuse' }> }
+  | { event: 'unknown'; data: Extract<NlOutcome, { kind: 'unknown' }> }
   | { event: 'done'; data: Record<string, never> };
 
 /**

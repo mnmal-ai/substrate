@@ -47,6 +47,8 @@ const rowsEv = (n: number, source = 'parser'): NlWireEvent => ({
     frame: { 'journal/Todo': { params: {}, fields: {} } },
     answer: 'rows',
     source: source as 'parser',
+    dropped: [],
+    plan: [],
     data: Array.from({ length: n }, (_, i) => ({ id: `t${i}`, title: `todo ${i}` }))
   }
 });
@@ -224,6 +226,8 @@ describe('substrate.ask', () => {
                 frame: { 'journal/Todo': { params: {}, fields: {} } },
                 answer: 'rows',
                 source: 'parser',
+                dropped: [],
+                plan: [],
                 data: [{ id: 't', title: evil }]
               }
             },
@@ -276,6 +280,12 @@ describe('substrate.ask', () => {
         answer: '',
         source: 'parser',
         errors: [{ code: evil, message: evil }]
+      }),
+      out(KIND.unknown, {
+        kind: 'unknown',
+        question: evil,
+        dropped: [{ span: evil, reason: evil, kind: 'filter' }],
+        plan: []
       }),
       out(KIND.recall, { kind: 'recall', query: 'q', hits: [{ type: evil, id: evil, score: 1 }] }),
       out(KIND.recall, { kind: 'recall', query: 'q', errors: [{ message: evil }] }),

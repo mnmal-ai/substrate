@@ -9,6 +9,7 @@ export const KIND = {
   recall: 'substrate.recall',
   clarify: 'substrate.clarify',
   refuse: 'substrate.refuse',
+  unknown: 'substrate.unknown',
   error: 'substrate.error'
 } as const;
 
@@ -16,6 +17,7 @@ type Rows = Extract<NlOutcome, { kind: 'rows' }>;
 type Recall = Extract<NlOutcome, { kind: 'recall' }>;
 type Clarify = Extract<NlOutcome, { kind: 'clarify' }>;
 type Refuse = Extract<NlOutcome, { kind: 'refuse' }>;
+type Unknown = Extract<NlOutcome, { kind: 'unknown' }>;
 
 // Renderers own their output: everything server-derived is stripped of terminal escapes here.
 const str = (v: unknown) => (v === undefined || v === null ? '' : sanitise(String(v)));
@@ -26,9 +28,13 @@ const errorLines = (errors: unknown[] | undefined) =>
     return sanitise(`${x.code ?? 'error'}${x.message !== undefined ? `: ${x.message}` : ''}`);
   });
 
+// `?? []`: a server from before the confidence rule sends no `dropped`.
+const droppedLines = (dropped: Rows['dropped'] | undefined) =>
+  (dropped ?? []).map((d) => sanitise(`dropped "${d.span}": ${d.reason}`));
+
 export function outcomeChips(o: NlOutcome): Chip[] {
   if (o.kind !== 'rows') return [];
-  const rejected = !Array.isArray(o.data);
+  const rejected = o.data === undefined;
   return [
     { label: `▸ ${frameKey(o)}`, tone: 'query' },
     {
@@ -36,7 +42,9 @@ export function outcomeChips(o: NlOutcome): Chip[] {
       tone: o.source === 'handoff' ? 'warn' : 'dim'
     },
     {
-      label: rejected ? 'rejected' : `${o.count ?? (o.data as unknown[]).length} rows`,
+      label: rejected
+        ? 'rejected'
+        : `${o.count ?? (Array.isArray(o.data) ? o.data.length : 0)} rows`,
       tone: rejected ? 'error' : 'dim'
     }
   ];
@@ -50,6 +58,17 @@ const titleWidth = (columns: number) =>
 const rows: Renderer = ({ data, theme, size }) => {
   const titleCols = titleWidth(size.columns);
   const o = data as Rows;
+  const lost = droppedLines(o.dropped).map((l, i) => (
+    <Text key={`d${i}`} color={theme.color.warn}>{`  ${l}`}</Text>
+  ));
+  if (!Array.isArray(o.data) && typeof o.count === 'number') {
+    return (
+      <Box flexDirection="column">
+        <Text color={theme.color.text}>{o.count}</Text>
+        {lost}
+      </Box>
+    );
+  }
   if (!Array.isArray(o.data)) {
     return (
       <Box flexDirection="column">
@@ -61,9 +80,10 @@ const rows: Renderer = ({ data, theme, size }) => {
     );
   }
   const list = o.data as Record<string, unknown>[];
-  if (list.length === 0) return <Text color={theme.color.dim}>no rows</Text>;
+  if (list.length === 0 && lost.length === 0) return <Text color={theme.color.dim}>no rows</Text>;
   return (
     <Box flexDirection="column">
+      {list.length === 0 ? <Text color={theme.color.dim}>no rows</Text> : null}
       {list.map((r, i) => (
         <Text key={i}>
           <Text color={theme.color.dim}>{padCells(str(r.shortId ?? r.id), COLS.id, true)}</Text>
@@ -76,6 +96,19 @@ const rows: Renderer = ({ data, theme, size }) => {
           {'  '}
           <Text color={theme.color.dimMid}>{padCells(str(r.project), COLS.project)}</Text>
         </Text>
+      ))}
+      {lost}
+    </Box>
+  );
+};
+
+const unknown: Renderer = ({ data, theme }) => {
+  const o = data as Unknown;
+  return (
+    <Box flexDirection="column">
+      <Text color={theme.color.warn}>? unknown: not answered, because part of it was dropped</Text>
+      {droppedLines(o.dropped).map((l, i) => (
+        <Text key={i} color={theme.color.warn}>{`  ${l}`}</Text>
       ))}
     </Box>
   );
@@ -146,5 +179,6 @@ export const renderers: Record<string, Renderer> = {
   [KIND.recall]: recall,
   [KIND.clarify]: clarify,
   [KIND.refuse]: refuse,
+  [KIND.unknown]: unknown,
   [KIND.error]: error
 };
