@@ -139,16 +139,19 @@ export interface NestedSelection {
   limit?: number;
 }
 
-/** `{ _agg: <walk aggregate>, <cmp>: number }` */
+/** An `_agg` comparison operand: a number, a date or string (by the aggregate's kind), or a `$ref`. */
+export type WalkAggOperand = number | string | RefOperand;
+
+/** `{ _agg: <walk aggregate>, <cmp>: <operand> }` */
 export type WalkAggPredicate = {
   _agg: WalkAgg;
 } & (
-  | { eq: number }
-  | { neq: number }
-  | { gt: number }
-  | { gte: number }
-  | { lt: number }
-  | { lte: number }
+  | { eq: WalkAggOperand }
+  | { neq: WalkAggOperand }
+  | { gt: WalkAggOperand }
+  | { gte: WalkAggOperand }
+  | { lt: WalkAggOperand }
+  | { lte: WalkAggOperand }
 );
 
 /**

@@ -185,3 +185,100 @@ describe('memory walk reference through the engine', () => {
     }
   });
 });
+
+describe('engine page limits on walk results', () => {
+  function engineWith(ds: MemoryDataset | undefined) {
+    const registry = new Registry();
+    const results: unknown[] = [];
+    // Lifts `_agg` and nested selections out of fields, as the list resolver does.
+    const read =
+      (type: string) => async (_c: unknown, args: { params?: unknown; fields?: unknown }) => {
+        const fields = (args.fields ?? {}) as Record<string, unknown>;
+        const nested = Object.fromEntries(
+          Object.entries(fields).filter(
+            ([, v]) => typeof v === 'object' && v !== null && '_walk' in v
+          )
+        );
+        const result = await ds?.read(type, { ...(args.params as object), nested } as never);
+        results.push(result);
+        return result ?? [];
+      };
+    registry.register('Thing', {
+      fields: { at: { kind: 'scalar', type: 'date' } },
+      resolver: read('Thing') as never
+    });
+    registry.register('Part', {
+      fields: { thing: { kind: 'crossRef', ns: 'ns', type: 'Thing', onDelete: 'set_null' } },
+      resolver: read('Part') as never
+    });
+    const datasets = new MemoryDatasetRegistry();
+    if (ds !== undefined) datasets.set('ns', ds);
+    const engine = new Engine({
+      namespaces: new Map<string, NamespaceConfig>([['ns', { registry }]]),
+      datasets,
+      edges: new MemoryEdgesStore({ now: () => new Date('2026-04-18T00:00:00Z') }),
+      walksEnabled: true
+    });
+    return Object.assign(engine, { results });
+  }
+  const pageLimits = { defaultLimit: 2, maxLimit: 10 };
+
+  it('a nested list without a limit is cut at the default page and says _truncated', async () => {
+    const ds = new MemoryDataset({ namespace: 'ns', walkReference: true });
+    await ds.write('Thing', [{ id: 't1' }]);
+    await ds.write(
+      'Part',
+      [1, 2, 3].map((i) => ({ id: `p${i}`, thing: 't1' }))
+    );
+    const res = await engineWith(ds).query({
+      frame: {
+        'ns/Thing': {
+          fields: { id: true, parts: { _walk: { in: 'ns/Part.thing' }, fields: { id: true } } }
+        }
+      },
+      ctx,
+      pageLimits
+    });
+    expect(res.errors ?? []).toEqual([]);
+    const [t1] = res.data['ns/Thing'] as Array<Record<string, unknown>>;
+    expect(t1?.parts).toEqual([{ id: 'p1' }, { id: 'p2' }]);
+    expect(t1?._truncated).toEqual({ parts: true });
+  });
+
+  it('bucket groups without a limit are cut at the default page and say truncated', async () => {
+    const ds = new MemoryDataset({ namespace: 'ns', walkReference: true });
+    await ds.write(
+      'Thing',
+      ['01', '02', '03'].map((d) => ({ id: `t${d}`, at: `2026-10-${d}T00:00:00Z` }))
+    );
+    const params = {
+      aggregate: { n: { count: true } },
+      bucket: { field: 'at', by: 'day' }
+    };
+    const engine = engineWith(ds);
+    const res = await engine.query({ frame: { 'ns/Thing': { params } }, ctx, pageLimits });
+    expect(res.errors ?? []).toEqual([]);
+    // The envelope does not carry groups yet; the read the engine dispatched does.
+    expect(engine.results).toEqual([
+      {
+        rows: [],
+        hasMore: false,
+        groups: [
+          { bucket: '2026-10-01', n: 1 },
+          { bucket: '2026-10-02', n: 1 }
+        ],
+        truncated: true
+      }
+    ]);
+  });
+
+  it('a walk frame on a type with no dataset is refused and never dispatched', async () => {
+    // The missing dataset is refused before the walk gate (unknown_namespace);
+    // the gate itself also fails closed on an absent dataset.
+    const engine = engineWith(undefined);
+    const res = await engine.query({ frame, ctx });
+    expect(res.errors?.[0]?.code).toBe('unknown_namespace');
+    expect(res.data['ns/Thing']).toBeUndefined();
+    expect(engine.results).toEqual([]);
+  });
+});

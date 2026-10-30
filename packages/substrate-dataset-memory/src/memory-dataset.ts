@@ -364,7 +364,7 @@ export class MemoryDataset implements Dataset {
       if (params.agg === undefined && params.nested === undefined) return base;
       return base.map((r) => ({
         ...r,
-        ...walkProjection(r, params.agg, params.nested ?? {}, ctxFor(r))
+        ...walkProjection(r, params.agg, params.nested ?? {}, ctxFor(r), true)
       }));
     };
     // nextCursor is derived from the DATASET-ordered slice (the sorted pool),
@@ -809,13 +809,15 @@ function aggregateGroups(
  * A row's walk selections: `_agg` values and nested lists, each list
  * filtered, ordered (id ascending last) and cut to its limit, with
  * `_truncated` naming the lists that were cut. Nested rows carry `id`, their
- * selected fields and their own walk selections.
+ * selected fields (null when absent) and their own walk selections.
  */
 function walkProjection(
   row: Row,
   aggs: Record<string, WalkAgg> | undefined,
   nested: Record<string, NestedSelection>,
-  ctx: WalkContext
+  ctx: WalkContext,
+  /** The frame's own row, whose `_agg` values `ctx.aggValue` memoises. */
+  top = false
 ): Record<string, unknown> {
   const out: Array<[string, unknown]> = [];
   if (aggs !== undefined) {
@@ -824,10 +826,7 @@ function walkProjection(
       Object.fromEntries(
         Object.entries(aggs).map(([name, spec]) => [
           name,
-          // The seed's frame `_agg` values are memoised on the context.
-          ctx.seed === row && ctx.aggValue !== undefined
-            ? ctx.aggValue(name)
-            : computeAgg(row, spec, ctx)
+          top && ctx.aggValue !== undefined ? ctx.aggValue(name) : computeAgg(row, spec, ctx)
         ])
       )
     ]);
@@ -861,8 +860,9 @@ function walkProjection(
       name,
       list.map((n) => ({
         id: n.id,
-        ...Object.fromEntries(plain.filter((k) => Object.hasOwn(n, k)).map((k) => [k, n[k]])),
-        ...walkProjection(n, subAggs, subNested, far)
+        // An absent field is null, as pg's jsonb_build_object gives it.
+        ...Object.fromEntries(plain.map((k) => [k, Object.hasOwn(n, k) ? n[k] : null])),
+        ...walkProjection(n, subAggs, subNested, far, false)
       }))
     ]);
   }

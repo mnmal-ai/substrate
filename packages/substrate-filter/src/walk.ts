@@ -246,10 +246,11 @@ function isoFromMicros(micros: bigint): string {
 }
 
 /**
- * An aggregate over `rows`: avg/sum/min/max read only numbers (nulls and
- * non-numeric values drop out) and are null over none; count counts rows;
- * latest is the `value` of the row latest by `by` (nulls last, ties id
- * ascending), or null. Arithmetic is float64.
+ * An aggregate over `rows`: avg/sum read only numbers (nulls and non-numeric
+ * values drop out); min/max read numbers, or instants on a date field and
+ * return the winning row's stored value (ties id ascending); each is null over
+ * none. count counts rows; latest is the stored `value` of the row latest by
+ * `by` (nulls last, ties id ascending), or null. Arithmetic is float64.
  */
 export function applyAgg(rows: Row[], fn: AggFn, fieldDefOf: FieldDefOf): unknown {
   if (Object.hasOwn(fn, 'count')) return rows.length;
@@ -261,6 +262,12 @@ export function applyAgg(rows: Row[], fn: AggFn, fieldDefOf: FieldDefOf): unknow
   const op = (['avg', 'sum', 'min', 'max'] as const).find((k) => Object.hasOwn(fn, k));
   if (op === undefined) throw new Error('internal: aggregate names no function');
   const field = (fn as Record<string, string>)[op] as string;
+  if ((op === 'min' || op === 'max') && isDateField(field, fieldDefOf)) {
+    // pickOne orders a date field as instants, nulls and unreadable values last.
+    const one = pickOne(rows, op === 'min' ? { min: field } : { max: field }, fieldDefOf);
+    const v = one === undefined ? undefined : getFieldValue(one, field);
+    return v == null || storedMicros(v) === undefined ? null : v;
+  }
   let n = 0;
   let acc = 0;
   for (const r of rows) {
@@ -273,13 +280,37 @@ export function applyAgg(rows: Row[], fn: AggFn, fieldDefOf: FieldDefOf): unknow
   return op === 'avg' ? acc / n : acc;
 }
 
-/** A walk aggregate for `row`: the hop's live rows that pass the walk's `where`, aggregated. */
-export function computeAgg(row: Row, spec: WalkAgg, walk: WalkContext): unknown {
+/** The field an aggregate's value is read from, or undefined for count. */
+function valueField(fn: AggFn): string | undefined {
+  if ('latest' in fn && Object.hasOwn(fn, 'latest')) return fn.latest.value;
+  const op = (['avg', 'sum', 'min', 'max'] as const).find((k) => Object.hasOwn(fn, k));
+  return op === undefined ? undefined : (fn as Record<string, string>)[op];
+}
+
+/**
+ * A walk aggregate for `row`: the hop's live rows that pass the walk's
+ * `where`, aggregated; `asDate` says whether the value is a date (compared
+ * as an instant).
+ */
+export function computeAggTyped(
+  row: Row,
+  spec: WalkAgg,
+  walk: WalkContext
+): { value: unknown; asDate: boolean } {
   const { type, rows } = hop(row, spec, walk);
   const fieldDefOf = walk.fieldDefOf(type);
   const far: WalkContext = { ...walk, type };
   const where = spec.where;
   const kept =
     where === undefined ? rows : rows.filter((n) => evaluateWhere(n, where, fieldDefOf, far));
-  return applyAgg(kept, spec, fieldDefOf);
+  const field = valueField(spec);
+  return {
+    value: applyAgg(kept, spec, fieldDefOf),
+    asDate: field !== undefined && isDateField(field, fieldDefOf)
+  };
+}
+
+/** {@link computeAggTyped}'s value. */
+export function computeAgg(row: Row, spec: WalkAgg, walk: WalkContext): unknown {
+  return computeAggTyped(row, spec, walk).value;
 }
