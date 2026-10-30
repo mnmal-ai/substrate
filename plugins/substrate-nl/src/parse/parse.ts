@@ -21,6 +21,7 @@ import {
   type Composed,
   claimWalkParts,
   compose,
+  defaultYield,
   dropComparatives,
   type Part
 } from './walks.js';
@@ -589,6 +590,7 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
   ];
   const where: Record<string, unknown>[] = [];
   const wherePlan = new Map<Record<string, unknown>, PlanClause[]>();
+  const yields: PlanClause[] = [];
 
   if (a.ids.length > 0)
     where.push({ shortId: a.ids.length === 1 ? { eq: a.ids[0] } : { in: a.ids } });
@@ -702,16 +704,22 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
     }
   }
   if (a.ids.length === 0) {
-    // The type's default exclusion, unless the question names a field it tests ("skipped runs").
+    // The type's default exclusion, unless the question filters a field it tests
+    // ("skipped runs"): then it yields, and the plan says so.
     const excluded = own(rulings.typeExcludes, type);
-    const tested: string[] = [];
-    if (excluded !== undefined) whereFields(excluded, tested);
-    if (excluded !== undefined && !tested.some((f) => usedFields.has(f))) {
-      const clause = { NOT: excluded };
-      where.push(clause);
-      wherePlan.set(clause, [
-        { path: ['NOT', `ruling:${type} default exclude`], kind: 'filter', served: false }
-      ]);
+    if (excluded !== undefined) {
+      const tested: string[] = [];
+      whereFields(excluded, tested);
+      const named = [...usedFields];
+      for (const p of a.composed?.parts ?? []) whereFields(p.clause, named);
+      const yieldTo = tested.find((f) => named.includes(f));
+      if (yieldTo === undefined) {
+        const clause = { NOT: excluded };
+        where.push(clause);
+        wherePlan.set(clause, [
+          { path: ['NOT', `ruling:${type} default exclude`], kind: 'filter', served: false }
+        ]);
+      } else yields.push(defaultYield(type, yieldTo));
     }
     const statusField = fields.status;
     const live = own(rulings.liveStatus, type);
@@ -762,6 +770,7 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
   if (all !== null) params.where = all.where;
   const plan = [
     ...(all?.plan ?? []).map((c) => ({ ...c, path: ['where', ...c.path] })),
+    ...yields,
     ...(a.composed?.plan ?? [])
   ];
   if (order !== null) {

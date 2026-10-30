@@ -309,7 +309,7 @@ describe('pick one', () => {
     expect(c?.dropped).toEqual([
       {
         span: 'lowest',
-        reason: 'cannot exclude asking price before picking the lowest',
+        reason: "cannot pick the lowest Listing while the 'asking price' exclusion applies",
         kind: 'filter'
       }
     ]);
@@ -557,7 +557,8 @@ describe('typeExcludes', () => {
     timeField: { Run: 'at' },
     fieldPhrases: {
       'run duration': { field: 'Run.durationMs' },
-      'job timeout': { field: 'Job.timeoutMin' }
+      'job timeout': { field: 'Job.timeoutMin' },
+      'skipped run': { field: 'Run.status', value: 'skipped' }
     }
   };
   const parse = (q: string) => parseQuestion(q, chain, { asOf, rulings }).candidates[0];
@@ -586,12 +587,28 @@ describe('typeExcludes', () => {
     });
   });
 
+  it('yields visibly to an explicit filter on a field it tests, on the seed and on a walk', () => {
+    const yieldNote = (path: string[]) => ({
+      path: [...path, "ruling:Run default exclude (yields to the question's status filter)"],
+      kind: 'filter',
+      served: false
+    });
+    const seed = parse('how many skipped runs');
+    expect(seed?.frame['c/Run']?.params.where).toEqual({ status: { eq: 'skipped' } });
+    expect(seed?.plan).toContainEqual(yieldNote(['where']));
+    const walk = parse('how many tests with a skipped run');
+    expect(walk?.frame['c/Test']?.params.where).toEqual({
+      _walk: { as: 'R', in: 'c/Run.test', where: { status: { eq: 'skipped' } } }
+    });
+    expect(walk?.plan).toContainEqual(yieldNote(['where', '_walk', 'where']));
+  });
+
   it('drops a pick on the excluded type', () => {
     const c = parse('tests whose latest run duration is over 5');
     expect(c?.dropped).toEqual([
       {
         span: 'latest',
-        reason: 'cannot exclude Run default exclude before picking the latest',
+        reason: "cannot pick the latest Run while the 'Run default exclude' exclusion applies",
         kind: 'filter'
       }
     ]);

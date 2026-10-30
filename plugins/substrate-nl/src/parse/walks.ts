@@ -13,8 +13,18 @@ import type { Dropped, NlFieldPhrase, PlanClause } from '@mnmal-ai/substrate/sdk
 import { own } from '../own.js';
 import type { NamespaceRulings } from '../pack/rulings.js';
 import type { NamespacePack } from '../pack/types.js';
+import { whereFields } from '../rulings/schema.js';
 import { type Comparison, parseComparison } from './compare.js';
 import type { DateRange } from './time.js';
+
+/** The plan note for a type's default exclusion that yielded to the question's own filter on `field`. */
+export function defaultYield(type: string, field: string, path: string[] = ['where']): PlanClause {
+  return {
+    path: [...path, `ruling:${type} default exclude (yields to the question's ${field} filter)`],
+    kind: 'filter',
+    served: false
+  };
+}
 
 export interface Hop {
   dir: 'in' | 'out';
@@ -304,6 +314,8 @@ interface Walk {
   filters: Part[];
   window: Part[];
   excludes: Part[];
+  /** Plan notes with no clause (a default exclusion that yielded), relative to the walk's where. */
+  notes: PlanClause[];
   /** Phrases already applied, so a phrase said twice adds its ruling's clauses once. */
   applied: Set<string>;
 }
@@ -407,6 +419,7 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
       filters: [],
       window: [],
       excludes: [typeExclude(type)].filter((x): x is Part => x !== null),
+      notes: [],
       applied: new Set()
     };
     walks.set(type, w);
@@ -638,17 +651,31 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
 
   if (clarify !== null) return { clarify };
 
+  // A walk's default exclusion yields to the question's own filter on a field it tests,
+  // as the seed's does ("skipped locally" counts skipped runs, never none).
+  for (const w of walks.values()) {
+    const def = typeExclude(w.type);
+    const tested: string[] = [];
+    if (def !== null) whereFields(own(rulings.typeExcludes, w.type), tested);
+    const named: string[] = [];
+    for (const f of w.filters) whereFields(f.clause, named);
+    const yieldTo = tested.find((f) => named.includes(f));
+    if (yieldTo === undefined) continue;
+    w.excludes = w.excludes.filter((x) => !isDefault(x, w.type));
+    w.notes.push(defaultYield(w.type, yieldTo, []));
+  }
+
   // The engine picks first and filters the picked row, so an exclusion cannot apply
   // before a pick: the pick is dropped, and the reading stays strict (so `unknown`).
   let pickDropped = false;
   for (const w of walks.values()) {
     if (w.pick === undefined || w.excludes.length === 0) continue;
     const names = w.excludes
-      .flatMap((x) => x.plan.map((c) => String(c.path.at(-1)).replace(/^ruling:/, '')))
+      .flatMap((x) => x.plan.map((c) => `'${String(c.path.at(-1)).replace(/^ruling:/, '')}'`))
       .join(', ');
     dropped.push({
       span: w.pick.span,
-      reason: `cannot exclude ${names} before picking the ${PICKED[w.pick.kind]}`,
+      reason: `cannot pick the ${PICKED[w.pick.kind]} ${w.type} while the ${names} exclusion applies`,
       kind: 'filter'
     });
     delete w.pick;
@@ -697,6 +724,9 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
   };
 }
 
+const isDefault = (x: Part, type: string) =>
+  x.plan.some((c) => c.path.at(-1) === `ruling:${type} default exclude`);
+
 function hopKey(ns: string, h: Hop): string {
   return h.dir === 'in' ? `${ns}/${h.owner}.${h.field}` : h.field;
 }
@@ -718,7 +748,10 @@ function walkPart(ns: string, w: Walk, exclude: (type: string) => Part | null): 
       kind: 'hop',
       served: true
     },
-    ...(inner?.plan ?? []).map((c) => ({ ...c, path: ['_walk', 'where', ...c.path] }))
+    ...[...(inner?.plan ?? []), ...w.notes].map((c) => ({
+      ...c,
+      path: ['_walk', 'where', ...c.path]
+    }))
   ];
   for (let i = w.path.length - 2; i >= 0; i--) {
     const h = w.path[i] as Hop;

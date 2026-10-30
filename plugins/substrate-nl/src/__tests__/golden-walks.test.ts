@@ -20,7 +20,14 @@ import golden from './fixtures/test-runs-golden.json' with { type: 'json' };
 
 interface Entry {
   question: string;
-  expect: { kind: string; answer?: string; frame?: Record<string, unknown>; dropped?: string[] };
+  expect: {
+    kind: string;
+    answer?: string;
+    frame?: Record<string, unknown>;
+    dropped?: string[];
+    /** Plan clause labels (each clause's last path element) the outcome must carry. */
+    plan?: string[];
+  };
 }
 
 // --- the synthetic domain: example values only ---
@@ -68,6 +75,7 @@ const pack: ServedPack = {
     typeExcludes: { CiRun: excluded, LocalRun: excluded },
     fieldPhrases: {
       'pg-gated': { field: 'Test.pgGated', value: true },
+      'skipped locally': { field: 'LocalRun.status', value: 'skipped' },
       slower: { field: 'LocalRun.durationMs' },
       faster: { field: 'LocalRun.durationMs' },
       'on ci': { field: 'CiRun.durationMs' },
@@ -166,6 +174,10 @@ for (const [label, judge] of [
       expect(fabricated(e, o), JSON.stringify(o)).toBe(false);
       // The expected kind is the confidence rule's; a judge may only make a reading safer.
       if (judge === undefined) expect(o.kind).toBe(e.expect.kind);
+      if (judge === undefined && e.expect.plan !== undefined) {
+        const labels = 'plan' in o ? o.plan.map((c) => c.path.at(-1)) : [];
+        expect(labels).toEqual(expect.arrayContaining(e.expect.plan));
+      }
     });
 
     if (judge !== undefined)

@@ -458,7 +458,8 @@
             ]
           }
         }
-      }
+      },
+      "plan": ["ruling:LocalRun default exclude"]
     }
   },
   {
@@ -738,7 +739,8 @@
           },
           "count": true
         }
-      }
+      },
+      "plan": ["ruling:CiRun default exclude (yields to the question's status filter)"]
     }
   },
   {
@@ -987,7 +989,32 @@
           },
           "count": true
         }
-      }
+      },
+      "plan": ["ruling:LocalRun default exclude (yields to the question's status filter)"]
+    }
+  },
+  {
+    "question": "how many tests skipped locally",
+    "expect": {
+      "kind": "rows",
+      "answer": "count",
+      "frame": {
+        "runs/Test": {
+          "where": {
+            "_walk": {
+              "as": "LR",
+              "in": "runs/LocalRun.test",
+              "where": {
+                "status": {
+                  "eq": "skipped"
+                }
+              }
+            }
+          },
+          "count": true
+        }
+      },
+      "plan": ["ruling:LocalRun default exclude (yields to the question's status filter)"]
     }
   }
 ]
