@@ -243,6 +243,13 @@ describe('diagnostics beyond unknown projection fields', () => {
     expect(sink).not.toHaveBeenCalled();
   });
 
+  it("a walk read's plan is information, never a warning", () => {
+    const sink = vi.fn();
+    const plan = [{ path: ['where', '_walk'], kind: 'hop' as const, served: true }];
+    expect(collectDiagnostics({ 'cards/Cert': { plan } }, sink)).toEqual([]);
+    expect(sink).not.toHaveBeenCalled();
+  });
+
   // The general fix. A published client cannot be recompiled against the
   // substrate it meets at runtime, so the compile-time guard below cannot help
   // there — an older client talking to a newer substrate has to say so itself.

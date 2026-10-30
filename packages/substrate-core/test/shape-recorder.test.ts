@@ -7,6 +7,8 @@
 import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-dataset-memory';
 import type { FieldDef, ReadParams, ReadResult } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
+import { walkShapesOf } from '../src/advisor/shape-recorder.js';
+import { walkSites } from '../src/advisor/walk-service.js';
 import {
   Engine,
   MemoryEdgesStore,
@@ -201,5 +203,67 @@ describe('ShapeRecorder.since', () => {
     t = 5000;
     r.drain();
     expect(r.since).toBe(5000);
+  });
+});
+
+describe('walk shapes', () => {
+  const fields: Record<string, FieldDef> = {
+    grade: { kind: 'scalar', type: 'number' },
+    cert: { kind: 'crossRef', ns: 'cards', type: 'Cert', onDelete: 'set_null' },
+    observedAt: { kind: 'scalar', type: 'date' }
+  };
+  const where = {
+    AND: [
+      { grade: { eq: 9 } },
+      { _walk: { in: 'cards/Observation.cert', where: { observedAt: { gte: 'x' } } } },
+      { _agg: { in: 'cards/Observation.cert', count: true }, gte: { $ref: '$.grade' } }
+    ]
+  };
+
+  it('readShapeOf records no walk grammar as fields', () => {
+    expect(readShapeOf('cards', 'Cert', fields, where, []).filters).toEqual([
+      { field: 'grade', op: 'eq' }
+    ]);
+  });
+
+  it('shape recorder emits a far-type shape per walk', () => {
+    const sites = walkSites(
+      {
+        params: { where },
+        fields: {
+          obs: {
+            _walk: { in: 'cards/Observation.cert' },
+            orderBy: [{ observedAt: 'desc' }]
+          },
+          up: { _walk: { out: 'cert' } }
+        }
+      },
+      'Cert',
+      (node) => (node.in !== undefined ? 'Observation' : 'Cert')
+    );
+    const shapes = walkShapesOf('cards', sites, () => fields);
+    expect(shapes).toEqual([
+      {
+        namespace: 'cards',
+        type: 'Observation',
+        filters: [
+          { field: 'cert', op: 'eq' },
+          { field: 'observedAt', op: 'gte' }
+        ],
+        orderBy: []
+      },
+      {
+        namespace: 'cards',
+        type: 'Observation',
+        filters: [{ field: 'cert', op: 'eq' }],
+        orderBy: []
+      },
+      {
+        namespace: 'cards',
+        type: 'Observation',
+        filters: [{ field: 'cert', op: 'eq' }],
+        orderBy: [['observedAt', 'desc']]
+      }
+    ]);
   });
 });

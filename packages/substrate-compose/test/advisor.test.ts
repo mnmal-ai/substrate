@@ -157,6 +157,25 @@ describe('runAdvisorPass', () => {
     expect(JSON.parse(String(rec?.evidenceJson))).toMatchObject({ count: 40, liveRows: 30_000 });
   });
 
+  it('advisor recommends add for a slow unserved walk shape on a big far type', async () => {
+    // The eager crossRef index serves the hop and natural order only.
+    const eager = { name: 'eager', unique: false, keys: [['owner', 'desc'], ...NATURAL] };
+    const w = world({ stats: [stats(30_000)], plan: { indexes: [eager] } as IndexPlan });
+    await w.setProfile('scale');
+    // What the engine records for a User seed's `{ _walk: { in: 'app/Task.owner' },
+    // orderBy: [{ dueOn: 'desc' }] }` (core's walkShapesOf): the hop's equality, the walk's order.
+    const walk = shape([{ field: 'owner', op: 'eq' }], [['dueOn', 'desc']]);
+    w.recorder.observe(walk, 80);
+    // Served by the eager index: no recommendation.
+    w.recorder.observe(shape([{ field: 'owner', op: 'eq' }]), 80);
+    expect(await runAdvisorPass(w.deps)).toEqual({ upserted: 1 });
+    const [rec] = await w.recs();
+    expect(rec).toMatchObject({ type: 'Task', action: 'add', state: 'open' });
+    expect(JSON.parse(String(rec?.declarationJson))).toEqual({
+      fields: ['owner', { field: 'dueOn', dir: 'desc' }]
+    });
+  });
+
   it('does not recommend for a small type, unless it declares itself large', async () => {
     const store: Store = { stats: [stats(5_000)], plan: { indexes: [] } };
     const w = world(store);

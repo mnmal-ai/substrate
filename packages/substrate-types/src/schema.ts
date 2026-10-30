@@ -10,6 +10,26 @@
  */
 
 import type { OnDelete, OnMissing } from './edge.js';
+import type { IndexDecl } from './plugin.js';
+
+/**
+ * One clause of a walk-grammar read, marked index-served or not (typed edge
+ * walks, goal 7). `path` is inside the frame entry, e.g. `['where', '_walk']`.
+ * An unserved clause names the index that would serve it in `recommend`, when
+ * one can be declared.
+ */
+export interface PlanClause {
+  path: string[];
+  kind: 'hop' | 'filter' | 'order' | 'ref' | 'derive' | 'bucket' | 'agg';
+  served: boolean;
+  recommend?: IndexDecl;
+}
+
+/** Words of a natural-language question the parse did not use, and why. */
+export interface Dropped {
+  span: string;
+  reason: string;
+}
 
 export interface FieldDefScalar {
   kind: 'scalar';
@@ -294,6 +314,12 @@ export interface PackEnvelope {
        * engine's operator and operand check did not run.
        */
       filterValidationSkipped?: string;
+      /**
+       * A walk-grammar read's clauses, each marked index-served or not
+       * (typed edge walks, goal 7). Annotation only: nothing is refused on
+       * it. Absent on ordinary reads, and when the store has no index plan.
+       */
+      plan?: PlanClause[];
     }
   >;
   errors?: Array<{
