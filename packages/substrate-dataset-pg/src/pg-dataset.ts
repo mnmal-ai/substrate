@@ -89,7 +89,12 @@ import { detectLayout, type StorageLayout } from './layout.js';
 import { IndexLockAborted, withTableIndexLock } from './migrate.js';
 import type { PgEdgesStore } from './pg-edges-store.js';
 import { PgShortIdStore } from './pg-short-id-store.js';
-import { buildFrameAggregate, buildWalkAgg, buildWalkProjection } from './pg-sql/aggregate.js';
+import {
+  buildFrameAggregate,
+  buildFrameCount,
+  buildWalkAgg,
+  buildWalkProjection
+} from './pg-sql/aggregate.js';
 import { sqlStringLiteral } from './pg-sql/primitives.js';
 import { walkScope, whereUsesWalks } from './pg-sql/walk.js';
 import {
@@ -528,7 +533,7 @@ export class PgDataset implements Dataset {
       const matched = combineAnd(sql, clauses);
       if (params.count === true) {
         const [row] = await cancellable(
-          sql<Array<{ n: number }>>`SELECT count(*)::float8 AS n FROM rows r WHERE ${matched}`,
+          sql<Array<{ n: number }>>`${buildFrameCount(sql, matched, scope)}`,
           params.signal
         );
         return { rows: [], hasMore: false, count: row?.n ?? 0 };

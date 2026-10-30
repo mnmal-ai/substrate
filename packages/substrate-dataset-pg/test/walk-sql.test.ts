@@ -126,10 +126,10 @@ afterAll(async () => {
 });
 
 /**
- * As index-use's expectServedBy: the statement `read` last sent, prepared,
- * plans on index `idx` under a forced custom plan and a forced generic one.
+ * As index-use's plans: the statement `read` last sent, prepared, as
+ * `EXPLAIN (VERBOSE)` JSON under a forced custom plan and a forced generic one.
  */
-async function expectPlanUses(idx: string): Promise<void> {
+async function plansOf(): Promise<Array<[string, string]>> {
   const { query, parameters, types } = pageQuery();
   const conn = await sql.reserve();
   try {
@@ -140,18 +140,25 @@ async function expectPlanUses(idx: string): Promise<void> {
     const list = (xs: string[]) => (xs.length === 0 ? '' : `(${xs.join(', ')})`);
     const literals = parameters.map((p) => `'${String(p).replace(/'/g, "''")}'`);
     await conn.unsafe(`PREPARE walk_stmt${list(typeNames.map((n) => n.t))} AS ${query}`);
+    const out: Array<[string, string]> = [];
     for (const mode of ['force_custom_plan', 'force_generic_plan']) {
       await conn.unsafe(`SET plan_cache_mode = ${mode}`);
-      const plan = JSON.stringify(
-        await conn.unsafe(`EXPLAIN (FORMAT JSON) EXECUTE walk_stmt${list(literals)}`)
+      const plan = await conn.unsafe(
+        `EXPLAIN (VERBOSE, FORMAT JSON) EXECUTE walk_stmt${list(literals)}`
       );
-      expect(plan, mode).toContain(`"Index Name":"${idx}"`);
+      out.push([mode, JSON.stringify(plan)]);
     }
+    return out;
   } finally {
     await conn.unsafe('DEALLOCATE ALL');
     await conn.unsafe('RESET plan_cache_mode');
     conn.release();
   }
+}
+
+/** The last `read`'s statement plans on index `idx`, custom and generic. */
+async function expectPlanUses(idx: string): Promise<void> {
+  for (const [mode, plan] of await plansOf()) expect(plan, mode).toContain(`"Index Name":"${idx}"`);
 }
 
 /** The page statement the last `read` sent. */
@@ -1021,7 +1028,12 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('count, aggregate and bucket (pg)
     await fixture();
     const all = await sameResult('Observation', { aggregate: FRAME });
     expect(all.groups?.[0]).toMatchObject({ n: 7, hi: 9, first: '2026-10-02T01:30:00+02:00' });
-    await sameResult('Observation', { aggregate: FRAME, where: obs() as WhereClause, limit: 1 });
+    const one = await sameResult('Observation', {
+      aggregate: FRAME,
+      where: obs() as WhereClause,
+      limit: 1
+    });
+    expect(one.groups).toHaveLength(1);
     await sameResult('Observation', {
       aggregate: FRAME,
       where: { cert: { eq: u('c3') } } as WhereClause
@@ -1047,7 +1059,9 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('count, aggregate and bucket (pg)
       ['2026-10-02', 3]
     ]);
     const hour = await sameResult('Observation', {
-      aggregate: { n: { count: true }, avg: { avg: 'price' } } as never,
+      aggregate: { n: { count: true }, avg: { avg: 'price' } } as unknown as NonNullable<
+        ReadParams['aggregate']
+      >,
       bucket: { field: 'observedAt', by: 'hour' }
     });
     expect(hour.groups?.map((g) => g.bucket)).toEqual([
@@ -1056,21 +1070,40 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('count, aggregate and bucket (pg)
       '2026-10-02T01'
     ]);
     await sameResult('Observation', {
-      aggregate: { n: { count: true } } as never,
+      aggregate: { n: { count: true } } as unknown as NonNullable<ReadParams['aggregate']>,
       bucket: { field: 'createdAt', by: 'hour' }
     });
     const none = await sameResult('Observation', {
-      aggregate: { n: { count: true } } as never,
+      aggregate: { n: { count: true } } as unknown as NonNullable<ReadParams['aggregate']>,
       bucket: { field: 'observedAt', by: 'day' },
       where: { price: { gt: 1000 } }
     });
     expect(none.groups).toEqual([]);
   });
 
+  it('date picks are bounded top-1s, never array_agg', async () => {
+    await fixture();
+    sent = [];
+    await pg.read('Observation', {
+      aggregate: { first: { min: 'observedAt' } } as unknown as NonNullable<ReadParams['aggregate']>
+    });
+    for (const [mode, plan] of await plansOf()) expect(plan, mode).not.toContain('array_agg');
+    sent = [];
+    await pg.read('Cert', {
+      agg: {
+        last: { in: IN('Observation'), latest: { by: 'observedAt', value: 'price' } }
+      } as unknown as NonNullable<ReadParams['agg']>
+    });
+    for (const [mode, plan] of await plansOf()) {
+      expect(plan, mode).not.toContain('array_agg');
+      expect(plan, mode).toContain('"Node Type":"Limit"');
+    }
+  });
+
   it('groups beyond the page max set truncated', async () => {
     await fixture();
     const params = {
-      aggregate: { n: { count: true } } as never,
+      aggregate: { n: { count: true } } as unknown as NonNullable<ReadParams['aggregate']>,
       bucket: { field: 'observedAt', by: 'hour' as const }
     };
     const cut = await sameResult('Observation', { ...params, limit: 2 });
@@ -1095,7 +1128,9 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('count, aggregate and bucket (pg)
     await sql`ANALYZE rows`;
     const params: ReadParams = {
       where: { observedAt: { gte: at(96), lt: at(144) } },
-      aggregate: { n: { count: true }, avg: { avg: 'price' } } as never,
+      aggregate: { n: { count: true }, avg: { avg: 'price' } } as unknown as NonNullable<
+        ReadParams['aggregate']
+      >,
       bucket: { field: 'observedAt', by: 'day' },
       limit: 100
     };

@@ -67,27 +67,35 @@ function valueJson(sql: Sql | TransactionSql, field: string, alias: string): Fra
 }
 
 /**
- * `spec` as one aggregate expression over the rows aliased `alias` (jsonb,
- * NULL where memory gives null), and the kind it compares as. A date min/max
- * or a `latest` is the winning row's stored value, ties id ascending.
+ * A pick: the stored `value` of the row first by `key` in `dir` (nulls last,
+ * ties id ascending) among the rows passing `filter` as well.
+ */
+interface Pick {
+  value: string;
+  key: Fragment;
+  dir: 'ASC' | 'DESC';
+  filter?: Fragment;
+}
+
+/**
+ * `spec` over the rows aliased `alias`, and the kind it compares as: an
+ * aggregate expression (jsonb, NULL where memory gives null), or for a date
+ * min/max or a `latest` the pick its caller runs as a bounded top-1.
  */
 function aggOver(
   sql: Sql | TransactionSql,
   spec: WalkAgg | FrameAgg,
   alias: string,
   fieldDef: (field: string) => FieldDef | undefined
-): { value: Fragment; kind: AggKind } {
+): { kind: AggKind } & ({ agg: Fragment; pick?: undefined } | { pick: Pick; agg?: undefined }) {
   const isDate = (f: string) => isDateField(f, fieldDef);
-  const pick = (value: string, key: Fragment, dir: string, filter: Fragment = sql`TRUE`) =>
-    sql`(array_agg(${valueJson(sql, value, alias)} ORDER BY ${key} ${sql.unsafe(dir)} NULLS LAST, ${sql.unsafe(alias)}.id COLLATE "C" ASC) FILTER (WHERE ${filter}))[1]`;
-
-  if (Object.hasOwn(spec, 'count')) return { value: sql`to_jsonb(count(*))`, kind: 'number' };
+  if (Object.hasOwn(spec, 'count')) return { agg: sql`to_jsonb(count(*))`, kind: 'number' };
   if ('latest' in spec && Object.hasOwn(spec, 'latest')) {
     const { by, value } = spec.latest;
     const key = sortKey(sql, by, resolveBodyOrderByCast(fieldDef(by)), alias);
     const numeric = value === 'seq' || resolveBodyOrderByCast(fieldDef(value)) === 'numeric';
     return {
-      value: pick(value, key, 'DESC'),
+      pick: { value, key, dir: 'DESC' },
       kind: isDate(value) ? 'date' : numeric ? 'number' : 'other'
     };
   }
@@ -97,14 +105,19 @@ function aggOver(
   if ((op === 'min' || op === 'max') && isDate(field)) {
     // Unreadable dates drop out, as memory's pick puts them last and then nulls them.
     const ts = refValue(sql, field, 'date', alias);
-    return {
-      value: pick(field, ts, op === 'min' ? 'ASC' : 'DESC', sql`${ts} IS NOT NULL`),
-      kind: 'date'
-    };
+    const dir = op === 'min' ? 'ASC' : 'DESC';
+    return { pick: { value: field, key: ts, dir, filter: sql`${ts} IS NOT NULL` }, kind: 'date' };
   }
   // float8 throughout, so the value is the double memory computes.
   const n = refValue(sql, field, 'number', alias);
-  return { value: sql`to_jsonb(${sql.unsafe(op)}(${n}))`, kind: 'number' };
+  return { agg: sql`to_jsonb(${sql.unsafe(op)}(${n}))`, kind: 'number' };
+}
+
+/** `p` over the rows aliased `alias` passing `where`: a top-1 an index can serve, never a sort of every row. */
+function pickRow(sql: Sql | TransactionSql, p: Pick, alias: string, where: Fragment): Fragment {
+  const a = sql.unsafe(alias);
+  const rows = combineAnd(sql, p.filter === undefined ? [where] : [where, p.filter]);
+  return sql`(SELECT ${valueJson(sql, p.value, alias)} FROM rows ${a} WHERE ${rows} ORDER BY ${p.key} ${sql.unsafe(p.dir)} NULLS LAST, ${a}.id COLLATE "C" ASC LIMIT 1)`;
 }
 
 /**
@@ -129,15 +142,34 @@ export function buildWalkAgg(
           promotedFor,
           { ...scope, alias, type }
         );
-  const { value, kind } = aggOver(sql, spec, alias, (f) => scope.fieldDef(type, f));
+  const { agg, pick, kind } = aggOver(sql, spec, alias, (f) => scope.fieldDef(type, f));
   const rows = combineAnd(sql, far === null ? [cond] : [cond, far]);
-  return { value: sql`(SELECT ${value} FROM rows ${sql.unsafe(alias)} WHERE ${rows})`, kind };
+  return {
+    value:
+      pick === undefined
+        ? sql`(SELECT ${agg} FROM rows ${sql.unsafe(alias)} WHERE ${rows})`
+        : pickRow(sql, pick, alias, rows),
+    kind
+  };
+}
+
+/** The number of `scope`'s rows matching `where`, as one row `{ n }`. */
+export function buildFrameCount(
+  sql: Sql | TransactionSql,
+  where: Fragment,
+  scope: WalkScope
+): Fragment {
+  return sql`SELECT count(*)::float8 AS n FROM rows ${sql.unsafe(scope.alias)} WHERE ${where}`;
 }
 
 /**
  * A whole-result aggregate over `scope`'s rows matching `where`, one row
  * `{ g }` per group: one group, or one per UTC day/hour of `bucket.field`
  * ascending, rows with no readable date in none, at most `limit` groups.
+ * A pick reads the whole result through `pickRow`, shadowing the outer
+ * alias; in a bucket it runs in two phases: GROUP BY finds the winning key,
+ * then a top-1 on `key = it` (the indexed expression, no bucket in WHERE)
+ * fetches that row's stored value.
  */
 export function buildFrameAggregate(
   sql: Sql | TransactionSql,
@@ -148,20 +180,34 @@ export function buildFrameAggregate(
   scope: WalkScope
 ): Fragment {
   const r = scope.alias;
+  const R = sql.unsafe(r);
   const fieldDef = (f: string) => scope.fieldDef(scope.type, f);
-  const obj = buildObject(
-    sql,
-    Object.entries(aggregate).map(
-      ([name, spec]) => sql`${name}::text, ${aggOver(sql, spec, r, fieldDef).value}`
-    )
-  );
-  if (bucket === undefined)
-    return sql`SELECT ${obj} AS g FROM rows ${sql.unsafe(r)} WHERE ${where}`;
+  const aggs: Fragment[] = [];
+  const picks: Array<[string, Pick]> = [];
+  for (const [name, spec] of Object.entries(aggregate)) {
+    const { agg, pick } = aggOver(sql, spec, r, fieldDef);
+    if (pick === undefined) aggs.push(sql`${name}::text, ${agg}`);
+    else picks.push([name, pick]);
+  }
+  if (bucket === undefined) {
+    const picked = picks.map(([name, p]) => sql`${name}::text, ${pickRow(sql, p, r, where)}`);
+    return sql`SELECT ${buildObject(sql, [...aggs, ...picked])} AS g FROM rows ${R} WHERE ${where}`;
+  }
   const [by, fmt] = bucket.by === 'day' ? ['day', 'YYYY-MM-DD'] : ['hour', 'YYYY-MM-DD"T"HH24'];
   // Outside WHERE, so the date index still serves the where's window.
   const key = sql`to_char(date_trunc(${sql.unsafe(`'${by}'`)}, ${refValue(sql, bucket.field, 'date', r)} AT TIME ZONE 'UTC'), ${sql.unsafe(`'${fmt}'`)})`;
+  // Phase one: each pick's winning key per bucket (FrameAgg has no latest, so a key is a date).
+  const winners = picks.reduce(
+    (acc, [, p], i) =>
+      sql`${acc}, ${sql.unsafe(p.dir === 'ASC' ? 'min' : 'max')}(${p.key}) AS ${sql.unsafe(`m${i}`)}`,
+    sql``
+  );
+  const picked = picks.map(([name, p], i) => {
+    const at = combineAnd(sql, [where, sql`${p.key} = ${sql.unsafe(`x.m${i}`)}`]);
+    return sql`${name}::text, ${pickRow(sql, p, r, at)}`;
+  });
   const cut = limit === undefined ? sql`` : sql`LIMIT ${limit + 1}`;
-  return sql`SELECT jsonb_build_object('bucket', x.b) || x.g AS g FROM (SELECT ${key} AS b, ${obj} AS g FROM rows ${sql.unsafe(r)} WHERE ${where} GROUP BY 1) x WHERE x.b IS NOT NULL ORDER BY x.b COLLATE "C" ${cut}`;
+  return sql`SELECT jsonb_build_object('bucket', x.b) || x.g || ${buildObject(sql, picked)} AS g FROM (SELECT ${key} AS b, ${buildObject(sql, aggs)} AS g${winners} FROM rows ${R} WHERE ${where} GROUP BY 1) x WHERE x.b IS NOT NULL ORDER BY x.b COLLATE "C" ${cut}`;
 }
 
 /**

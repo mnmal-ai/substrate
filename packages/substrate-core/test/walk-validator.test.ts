@@ -422,6 +422,11 @@ describe('aggregate, derive, bucket, count and nested validation', () => {
     ).not.toThrow();
   });
 
+  it('refuses an empty aggregate', () => {
+    expect(frameRefusal({ aggregate: {} })).toEqual({ code: 'agg_invalid', path: ['aggregate'] });
+    expect(() => checkFrame({ aggregate: {} })).toThrow('aggregate needs at least one entry');
+  });
+
   it('refuses bucket without aggregate', () => {
     expect(frameRefusal({ bucket: { field: 'gradedAt', by: 'day' } })).toEqual({
       code: 'bucket_invalid',
