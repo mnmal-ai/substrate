@@ -26,9 +26,10 @@ export function buildPromotedBodyColumnPredicate(
   sql: Sql | TransactionSql,
   field: string,
   meta: PromotedBodyColumn,
-  predicate: Record<string, unknown>
+  predicate: Record<string, unknown>,
+  alias?: string
 ): Fragment | null {
-  const col = sql.unsafe(promotedColumnSql(meta));
+  const col = sql.unsafe(promotedColumnSql(meta, alias));
   const isBool = meta.kind === 'boolean';
   const fragments: Fragment[] = [];
 

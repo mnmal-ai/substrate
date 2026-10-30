@@ -41,19 +41,20 @@ function nestPath(path: readonly string[], leaf: unknown): unknown {
 export function buildJsonPathPredicate(
   sql: Sql | TransactionSql,
   field: string,
-  predicate: JsonPathPredicate
+  predicate: JsonPathPredicate,
+  alias?: string
 ): Fragment {
   assertJsonPathPredicate(field, predicate);
   const path = predicate.path;
 
-  const x = bodyJson(sql, [field, ...path]);
+  const x = bodyJson(sql, [field, ...path], alias);
   const text = sql`(${x} #>> '{}')`;
 
   // `IS NOT NULL AND`, not COALESCE: a row with no such field makes the left
   // side SQL NULL, and `FALSE AND NULL` is FALSE, so this is never NULL under a
   // caller's NOT. COALESCE would say the same but hide `@>` from the planner —
   // the index only matches a bare `expr @> const` conjunct.
-  const fieldExpr = bodyJson(sql, [field]);
+  const fieldExpr = bodyJson(sql, [field], alias);
   const containsDoc = (leaf: unknown): Fragment =>
     sql`${fieldExpr} @> ${sql.json(asJsonValue(nestPath(path, leaf)))}`;
   const contains = (leaf: unknown): Fragment =>
