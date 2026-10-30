@@ -199,7 +199,12 @@ describe('engine page limits on walk results', () => {
             ([, v]) => typeof v === 'object' && v !== null && '_walk' in v
           )
         );
-        const result = await ds?.read(type, { ...(args.params as object), nested } as never);
+        const agg = fields._agg;
+        const result = await ds?.read(type, {
+          ...(args.params as object),
+          nested,
+          ...(agg !== undefined ? { agg } : {})
+        } as never);
         results.push(result);
         return result ?? [];
       };
@@ -243,6 +248,46 @@ describe('engine page limits on walk results', () => {
     const [t1] = res.data['ns/Thing'] as Array<Record<string, unknown>>;
     expect(t1?.parts).toEqual([{ id: 'p1' }, { id: 'p2' }]);
     expect(t1?._truncated).toEqual({ parts: true });
+  });
+
+  it('an _agg whose where holds a _walk is not taken for a nested selection', async () => {
+    const ds = new MemoryDataset({
+      namespace: 'ns',
+      walkReference: true,
+      fieldDefLookup: (type, field) =>
+        type === 'Part' && field === 'thing'
+          ? { kind: 'crossRef', ns: 'ns', type: 'Thing', onDelete: 'set_null' }
+          : undefined
+    });
+    await ds.write('Thing', [{ id: 't1' }]);
+    await ds.write('Part', [{ id: 'p1', thing: 't1' }]);
+    const n = { in: 'ns/Part.thing', count: true, where: { _walk: { out: 'thing' } } };
+    const engine = engineWith(ds);
+    const res = await engine.query({
+      frame: {
+        'ns/Thing': {
+          fields: {
+            id: true,
+            _agg: { n },
+            parts: {
+              _walk: { in: 'ns/Part.thing' },
+              fields: {
+                id: true,
+                _agg: {
+                  m: { out: 'thing', count: true, where: { _walk: { in: 'ns/Part.thing' } } }
+                }
+              }
+            }
+          }
+        }
+      },
+      ctx,
+      pageLimits
+    });
+    expect(res.errors ?? []).toEqual([]);
+    const [t1] = res.data['ns/Thing'] as Array<Record<string, unknown>>;
+    expect(t1?._agg).toEqual({ n: 1 });
+    expect(t1?.parts).toEqual([{ id: 'p1', _agg: { m: 1 } }]);
   });
 
   it('bucket groups without a limit are cut at the default page and say truncated', async () => {

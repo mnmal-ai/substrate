@@ -2047,14 +2047,19 @@ function withNestedDefaultLimits<T>(fields: T, limit: number): T {
   if (typeof fields !== 'object' || fields === null || Array.isArray(fields)) return fields;
   return Object.fromEntries(
     Object.entries(fields).map(([name, sel]) => {
-      if (typeof sel !== 'object' || sel === null || Array.isArray(sel)) return [name, sel];
+      // `_agg` specs are not selections: their `where` may hold a `_walk`.
+      if (name === '_agg' || typeof sel !== 'object' || sel === null || Array.isArray(sel)) {
+        return [name, sel];
+      }
       const s = sel as Record<string, unknown>;
       if (!Object.hasOwn(s, '_walk')) return [name, withNestedDefaultLimits(s, limit)];
       return [
         name,
         {
           ...s,
-          fields: withNestedDefaultLimits(s.fields, limit),
+          ...(Object.hasOwn(s, 'fields')
+            ? { fields: withNestedDefaultLimits(s.fields, limit) }
+            : {}),
           ...(s.limit === undefined || s.limit === null ? { limit } : {})
         }
       ];
@@ -2065,9 +2070,9 @@ function withNestedDefaultLimits<T>(fields: T, limit: number): T {
 function nestedOverLimit(fields: unknown, path: string[], max: number): string[] | null {
   if (typeof fields !== 'object' || fields === null) return null;
   for (const [name, sel] of Object.entries(fields)) {
-    if (typeof sel !== 'object' || sel === null) continue;
+    if (name === '_agg' || typeof sel !== 'object' || sel === null) continue;
     const s = sel as Record<string, unknown>;
-    const walk = '_walk' in s;
+    const walk = Object.hasOwn(s, '_walk');
     if (walk && typeof s.limit === 'number' && s.limit > max) return [...path, name, 'limit'];
     const deeper = walk
       ? nestedOverLimit(s.fields, [...path, name, 'fields'], max)
