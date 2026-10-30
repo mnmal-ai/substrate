@@ -29,7 +29,8 @@ import {
   fullBuiltinOperators,
   getFieldValue,
   isDateField,
-  preResolveExtensionOperatorsDetailed
+  preResolveExtensionOperatorsDetailed,
+  type WalkContext
 } from '@mnmal-ai/substrate-filter';
 import type {
   ActorIdentity,
@@ -225,6 +226,7 @@ export class MemoryDataset implements Dataset {
     // shortId is stored directly on each row at bindShortId time, so reads
     // return rows without any per-row spread allocation.
     const pool: Row[] = [];
+    const walk = this.walkContext(type);
 
     // Short-circuit on id-filter: iterate only the requested ids via Map.get
     // rather than scanning the full bucket.
@@ -238,7 +240,12 @@ export class MemoryDataset implements Dataset {
       : b.values();
     for (const row of candidates) {
       if (!includeDeleted && row._deletedAt != null) continue;
-      if (resolvedWhere !== undefined && !evaluateWhere(row, resolvedWhere, fieldDefOf)) continue;
+      if (
+        resolvedWhere !== undefined &&
+        !evaluateWhere(row, resolvedWhere, fieldDefOf, { ...walk, seed: row })
+      ) {
+        continue;
+      }
       pool.push(row);
     }
 
@@ -294,6 +301,38 @@ export class MemoryDataset implements Dataset {
       });
     }
     return out;
+  }
+
+  /**
+   * Walks over this namespace's live rows, for one read. Neighbours follow the
+   * row body's crossRef value (spec 2026-10-24-typed-edge-walks §1), indexed
+   * per (type, field) on first use.
+   */
+  private walkContext(type: string): Omit<WalkContext, 'seed'> {
+    const lookup = this.#fieldDefLookup;
+    const index = new Map<string, Map<unknown, Row[]>>();
+    const live = (r: Row | undefined) => (r === undefined || r._deletedAt != null ? undefined : r);
+    return {
+      type,
+      bindings: new Map(),
+      fieldDefOf: (t) => (field) => lookup?.(t, field),
+      get: (t, id) => live(this.store.get(t)?.get(id)),
+      neighbours: (t, field, id) => {
+        const key = `${t}\0${field}`;
+        let byValue = index.get(key);
+        if (byValue === undefined) {
+          byValue = new Map();
+          for (const r of this.store.get(t)?.values() ?? []) {
+            if (r._deletedAt != null || !Object.hasOwn(r, field)) continue;
+            const list = byValue.get(r[field]);
+            if (list === undefined) byValue.set(r[field], [r]);
+            else list.push(r);
+          }
+          index.set(key, byValue);
+        }
+        return byValue.get(id) ?? [];
+      }
+    };
   }
 
   async write(type: string, rows: WriteRow[], options?: WriteOptions): Promise<WriteResult> {

@@ -66,3 +66,4 @@ export {
   getFieldValue,
   isDateField
 } from './predicate.js';
+export type { WalkContext } from './walk.js';
