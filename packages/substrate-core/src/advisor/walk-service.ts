@@ -130,17 +130,28 @@ export function walkSites(
 const COMBINATORS = new Set(['AND', 'OR', 'NOT']);
 const SKIP = new Set(['_walk', '_agg', '$ref']);
 
-/** The predicates of one type's `where`, not descending into walks: a field, its path, and whether its operand is a `$ref`. */
-function predicates(
-  where: unknown,
-  fields: Fields | undefined,
-  path: string[]
-): Array<{ field: string; path: string[]; ref: boolean }> {
-  const out: Array<{ field: string; path: string[]; ref: boolean }> = [];
-  const visit = (w: unknown, defs: Fields | undefined, prefix: string, at: string[]): void => {
+interface Predicate {
+  field: string;
+  path: string[];
+  /** Its operand is a `$ref`. */
+  ref: boolean;
+  /** It narrows the result: AND-ed at the top (never under OR or NOT), with an operator besides `neq`. */
+  bounds: boolean;
+}
+
+/** The predicates of one type's `where`, not descending into walks. */
+function predicates(where: unknown, fields: Fields | undefined, path: string[]): Predicate[] {
+  const out: Predicate[] = [];
+  const visit = (
+    w: unknown,
+    defs: Fields | undefined,
+    prefix: string,
+    at: string[],
+    conjunct = true
+  ): void => {
     if (Array.isArray(w)) {
       w.forEach((c, i) => {
-        visit(c, defs, prefix, [...at, String(i)]);
+        visit(c, defs, prefix, [...at, String(i)], conjunct);
       });
       return;
     }
@@ -149,15 +160,15 @@ function predicates(
     for (const [k, v] of Object.entries(w)) {
       if (SKIP.has(k)) continue;
       if (COMBINATORS.has(k)) {
-        visit(v, defs, prefix, [...at, k]);
+        visit(v, defs, prefix, [...at, k], conjunct && k === 'AND');
         continue;
       }
       const def = defs !== undefined && Object.hasOwn(defs, k) ? defs[k] : undefined;
-      if (def?.kind === 'struct') visit(v, def.fields, `${prefix}${k}.`, [...at, k]);
+      if (def?.kind === 'struct') visit(v, def.fields, `${prefix}${k}.`, [...at, k], conjunct);
       else if (isObj(v)) {
-        const ops = Object.values(v);
-        const ref = ops.some((o) => isObj(o) && '$ref' in o);
-        out.push({ field: `${prefix}${k}`, path: [...at, k], ref });
+        const ref = Object.values(v).some((o) => isObj(o) && '$ref' in o);
+        const bounds = conjunct && Object.keys(v).some((op) => op !== 'neq');
+        out.push({ field: `${prefix}${k}`, path: [...at, k], ref, bounds });
       }
     }
   };
@@ -194,15 +205,17 @@ export interface ClassifyInput {
 
 /**
  * Each clause of a walk-grammar frame, served or not (spec §2):
- * - every hop is served, inbound by the eager `(crossRef, natural order, id)`
- *   index and outbound by the primary key;
+ * - a hop is served, inbound by the eager `(crossRef, natural order)` index
+ *   (absent for a crossRef declared `indexed: false`) and outbound by the
+ *   primary key;
  * - a far filter or order is served when a full index on the far type leads
  *   with the hop's crossRef and that field next (after an outbound hop the
  *   far row is one primary-key read, so all of it is served);
  * - a `$ref` predicate is a residual on rows already narrowed: always served;
  * - a seed filter, or a bucket's field, is served by an index leading with it;
  * - a derived ordering is served only when a served seed filter bounds the
- *   result, and no index ever serves it, so it recommends none;
+ *   result (AND-ed, not under OR or NOT, and not only `neq`); no index ever
+ *   serves it, so it recommends none;
  * - anything else is unserved, recommending the index that would serve it
  *   when its fields can be declared.
  */
@@ -236,14 +249,16 @@ export function classifyWalkService(
       continue;
     }
     const served = leads(seedIndexes, [p.field], []);
-    bounded ||= served;
+    bounded ||= served && p.bounds;
     clause(p.path, 'filter', served, seed, [p.field]);
   }
 
   for (const s of walkSites(entry, seed, input.resolve)) {
-    out.push({ path: s.path, kind: 'hop', served: true });
     const farIndexes = indexesOf(s.far);
     const cr = s.crossRef;
+    // A crossRef declared `indexed: false` has no eager index to serve its hop.
+    const hop = cr === undefined || leads(farIndexes, [cr], []);
+    clause(s.path, 'hop', hop, s.far, cr === undefined ? [] : [cr]);
     for (const w of s.wheres) {
       for (const p of predicates(w.where, fieldsOf(s.far), w.path)) {
         if (p.ref) out.push({ path: p.path, kind: 'ref', served: true });

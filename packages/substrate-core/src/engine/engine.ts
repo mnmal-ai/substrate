@@ -1360,6 +1360,7 @@ export class Engine {
    */
   async #walkPlan(
     dataset: Dataset,
+    key: string,
     frame: FrameEntry,
     ns: string,
     seed: string,
@@ -1370,7 +1371,11 @@ export class Engine {
     let plans: Array<IndexPlan | undefined>;
     try {
       plans = await Promise.all(types.map((t) => dataset.indexPlan?.(t, ns)));
-    } catch {
+    } catch (err) {
+      this.#metric('engine_walk_plan_failed', {
+        key,
+        error: err instanceof Error ? err.message : String(err)
+      });
       return undefined;
     }
     if (plans.some((p) => p === undefined)) return undefined;
@@ -1715,7 +1720,7 @@ export class Engine {
     }
 
     if (walkScan !== undefined && dataset !== undefined) {
-      const plan = await this.#walkPlan(dataset, frame, ns, name, walkScan);
+      const plan = await this.#walkPlan(dataset, key, frame, ns, name, walkScan);
       if (plan !== undefined) {
         envelope._diagnostics ??= {};
         envelope._diagnostics[key] = { ...(envelope._diagnostics[key] ?? {}), plan };

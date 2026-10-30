@@ -158,8 +158,8 @@ describe('runAdvisorPass', () => {
   });
 
   it('advisor recommends add for a slow unserved walk shape on a big far type', async () => {
-    // The eager crossRef index serves the hop and natural order only.
-    const eager = { name: 'eager', unique: false, keys: [['owner', 'desc'], ...NATURAL] };
+    // `desiredIndexKeys`' derived crossRef index (field, natural order) serves the hop and natural order only.
+    const eager = { name: 'eager', unique: false, keys: [['owner', 'asc'], ...NATURAL] };
     const w = world({ stats: [stats(30_000)], plan: { indexes: [eager] } as IndexPlan });
     await w.setProfile('scale');
     // What the engine records for a User seed's `{ _walk: { in: 'app/Task.owner' },

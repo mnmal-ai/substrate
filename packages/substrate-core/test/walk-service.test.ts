@@ -39,7 +39,8 @@ const TYPES: Record<string, Record<string, FieldDef>> = {
     observedAt: { kind: 'scalar', type: 'date' },
     price: { kind: 'scalar', type: 'number' }
   },
-  Listing: { cert: crossRef('Cert'), price: { kind: 'scalar', type: 'number' } }
+  Listing: { cert: crossRef('Cert'), price: { kind: 'scalar', type: 'number' } },
+  Note: { cert: { ...crossRef('Cert'), indexed: false } as FieldDef }
 };
 
 type Indexes = IndexPlan['indexes'];
@@ -48,12 +49,14 @@ const idx = (name: string, ...keys: Array<[string, 'asc' | 'desc']>) => ({
   keys,
   unique: false
 });
-const eager = (ref: string) =>
-  idx(`${ref}_eager`, [ref, 'desc'], ['createdAt', 'desc'], ['id', 'desc']);
+/** `desiredIndexKeys`' derived crossRef index: the field, then the natural order (createdAt desc). */
+const eager = (ref: string) => idx(`${ref}_eager`, [ref, 'asc'], ['createdAt', 'desc']);
 const INDEXES: Record<string, Indexes> = {
   Cert: [idx('grade', ['grade', 'asc'], ['id', 'asc'])],
   Observation: [eager('cert'), idx('cert_observed', ['cert', 'asc'], ['observedAt', 'desc'])],
-  Listing: [eager('cert')]
+  Listing: [eager('cert')],
+  // `indexed: false`: no derived index.
+  Note: []
 };
 
 const schemaOf = (t: string) => (Object.hasOwn(TYPES, t) ? { fields: TYPES[t] ?? {} } : undefined);
@@ -90,6 +93,15 @@ describe('classifyWalkService', () => {
       path: ['fields', '_agg', 'n', 'count'],
       kind: 'agg',
       served: true
+    });
+  });
+
+  it('a hop over a crossRef with no eager index is unserved and recommends (crossRef)', () => {
+    expect(at(classify(where({ _walk: { in: 'cards/Note.cert' } })), 'where', '_walk')).toEqual({
+      path: ['where', '_walk'],
+      kind: 'hop',
+      served: false,
+      recommend: { fields: ['cert'] }
     });
   });
 
@@ -183,6 +195,19 @@ describe('classifyWalkService', () => {
       params: { ...frame().params, where: { id: { neq: 'x' } } }
     });
     expect(at(unbounded, 'orderBy', '0')?.served).toBe(false);
+    // Served, yet bounding nothing: under NOT or OR, or only `neq`.
+    for (const w of [
+      { NOT: { grade: { eq: 9 } } },
+      { OR: [{ grade: { eq: 9 } }, { grade: { eq: 10 } }] },
+      { grade: { neq: 9 } }
+    ]) {
+      const plan = classify(frame(w));
+      expect(plan.find((c) => c.kind === 'filter')?.served, JSON.stringify(w)).toBe(true);
+      expect(at(plan, 'orderBy', '0')?.served, JSON.stringify(w)).toBe(false);
+    }
+    expect(at(classify(frame({ AND: [{ grade: { gte: 9 } }] })), 'orderBy', '0')?.served).toBe(
+      true
+    );
   });
 
   it("a bucket is served by its field's index, and recommends one otherwise", () => {
@@ -199,11 +224,15 @@ describe('classifyWalkService', () => {
 });
 
 describe('engine: plan and walk shapes', () => {
-  function build(withPlan: boolean, recorder?: ShapeRecorder) {
+  const metrics: string[] = [];
+  function build(withPlan: boolean | 'throws', recorder?: ShapeRecorder) {
     const ds = new MemoryDataset({ namespace: 'cards', walkReference: true });
-    if (withPlan) {
+    if (withPlan !== false) {
       Object.assign(ds, {
-        indexPlan: async (type: string) => ({ indexes: INDEXES[type] ?? [] })
+        indexPlan: async (type: string) => {
+          if (withPlan === 'throws') throw new Error('catalog gone');
+          return { indexes: INDEXES[type] ?? [] };
+        }
       });
     }
     const registry = new Registry();
@@ -222,6 +251,7 @@ describe('engine: plan and walk shapes', () => {
       datasets,
       edges: new MemoryEdgesStore({ now: () => new Date() }),
       walksEnabled: true,
+      metric: (name) => metrics.push(name),
       ...(recorder !== undefined ? { shapeRecorder: recorder } : {})
     });
   }
@@ -254,6 +284,14 @@ describe('engine: plan and walk shapes', () => {
     const memory = await build(false).query({ frame: walkFrame, ctx });
     expect(memory.errors).toBeUndefined();
     expect(memory._diagnostics).toBeUndefined();
+  });
+
+  it('a failing index plan is a metric and no plan, never a failed read', async () => {
+    metrics.length = 0;
+    const env = await build('throws').query({ frame: walkFrame, ctx });
+    expect(env.errors).toBeUndefined();
+    expect(env._diagnostics).toBeUndefined();
+    expect(metrics).toContain('engine_walk_plan_failed');
   });
 
   it('records the seed shape without walk keys, and one far-type shape per walk', async () => {
