@@ -58,7 +58,7 @@ import type {
   WriteRow
 } from '@mnmal-ai/substrate-types';
 import { assertNoRepeatedIds, naturalOrderOf, ResolverFrameError } from '@mnmal-ai/substrate-types';
-import type { ReservedSql, Sql } from 'postgres';
+import type { MaybeRow, PendingQuery, ReservedSql, Sql } from 'postgres';
 import { withPgAdvisoryLock } from './advisory-lock.js';
 import type { DiskGuard } from './disk-guard.js';
 import { NamespaceMismatch, ReservedField } from './errors.js';
@@ -416,6 +416,7 @@ export class PgDataset implements Dataset {
         ? Math.floor(params.limit)
         : undefined;
 
+    params.signal?.throwIfAborted();
     // Fast path: limit === 0 returns empty without hitting the db.
     if (limit === 0) return { rows: [], hasMore: false };
 
@@ -566,7 +567,7 @@ export class PgDataset implements Dataset {
 
     // Both queries read the same snapshot only inside a REPEATABLE READ or
     // SERIALIZABLE transaction; elsewhere each sees its own.
-    let rows: SubstrateRowRecord[] = await page(whereSql, fetchLimit);
+    let rows: SubstrateRowRecord[] = await cancellable(page(whereSql, fetchLimit), params.signal);
     if (tailSql !== null && (fetchLimit === undefined || rows.length < fetchLimit)) {
       // A row whose lead turned null after the first query would come back
       // twice; excluding it in SQL keeps the look-ahead row, and so `hasMore`.
@@ -574,7 +575,10 @@ export class PgDataset implements Dataset {
       const unseen = sql`r.id <> ALL(${rows.map((r) => r.id)})`;
       // The full `fetchLimit`, sliced here, so the tail has one statement text
       // per shape rather than one per remaining count.
-      const tail = await page(combineAnd(sql, [tailSql, unseen]), fetchLimit);
+      const tail = await cancellable(
+        page(combineAnd(sql, [tailSql, unseen]), fetchLimit),
+        params.signal
+      );
       // concat, not push(...): an unlimited tail can exceed the argument limit.
       rows = rows.concat(fetchLimit === undefined ? tail : tail.slice(0, fetchLimit - rows.length));
     }
@@ -1865,5 +1869,27 @@ export class PgDataset implements Dataset {
     const bodyId = body.id;
     if (typeof bodyId === 'number' || typeof bodyId === 'string') return bodyId;
     return textId;
+  }
+}
+
+/** Awaits `query`, cancelling the statement in flight when `signal` aborts. */
+async function cancellable<T extends readonly MaybeRow[]>(
+  query: PendingQuery<T>,
+  signal: AbortSignal | undefined
+): Promise<T> {
+  // Typed void, but returns the cancel request's promise, which may reject.
+  const cancel = (): void => {
+    Promise.resolve(query.cancel() as unknown).catch(() => undefined);
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    if (signal?.aborted === true) cancel();
+    return await query;
+  } catch (err) {
+    // pg reports its own cancel as 57014; surface the caller's reason instead.
+    if (signal?.aborted === true) signal.throwIfAborted();
+    throw err;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
   }
 }
