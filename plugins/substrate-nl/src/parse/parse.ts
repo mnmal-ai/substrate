@@ -564,10 +564,16 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
   const fields = own(pack.types, type)?.fields ?? {};
   const words = tokens.map((t) => t.text);
   // A declared derive is the explicit ordering; a recency word beside it conflicts and is dropped.
-  const conflict = a.composed?.params.orderBy !== undefined && a.order !== null;
-  const order = conflict ? null : a.order;
-  const orderSpan = a.evidence.find((e) => e.role === 'order')?.span ?? '';
-  const ev = conflict ? a.evidence.filter((e) => e.role !== 'order') : [...a.evidence];
+  const seedLatest = a.composed?.seedLatest;
+  const evidence =
+    a.order === null && seedLatest !== undefined
+      ? [...a.evidence, { span: seedLatest, role: 'order' as const, detail: 'desc, limit 1' }]
+      : a.evidence;
+  const recency = a.order ?? (seedLatest !== undefined ? 'desc' : null);
+  const conflict = a.composed?.params.orderBy !== undefined && recency !== null;
+  const order = conflict ? null : recency;
+  const orderSpan = evidence.find((e) => e.role === 'order')?.span ?? '';
+  const ev = conflict ? evidence.filter((e) => e.role !== 'order') : [...evidence];
   const dropped = [
     ...(a.composed?.dropped ?? []),
     ...(conflict
@@ -747,7 +753,8 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
     ...(a.composed?.plan ?? [])
   ];
   if (order !== null) {
-    params.orderBy = [{ createdAt: order }];
+    // "latest" is by the type's ruled date, as a window and a walk's pick are.
+    params.orderBy = [{ [own(rulings.timeField, type) ?? 'createdAt']: order }];
     params.limit = 1;
   }
   Object.assign(params, a.composed?.params ?? {});

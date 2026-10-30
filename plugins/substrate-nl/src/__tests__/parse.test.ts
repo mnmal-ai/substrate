@@ -481,5 +481,8 @@ describe('time field ruling', () => {
       );
     expect(p('sessions yesterday', { SessionLog: 'startedAt' })).toContain('"startedAt"');
     expect(p('sessions yesterday')).toContain('"createdAt"');
+    expect(p('latest sessions', { SessionLog: 'startedAt' })).toContain(
+      '"orderBy":[{"startedAt":"desc"}]'
+    );
   });
 });

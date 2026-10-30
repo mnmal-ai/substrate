@@ -325,6 +325,8 @@ export interface Composed {
   walked: boolean;
   /** A `$ref` comparison or a picked walk: a dropped filter changes its answer. */
   strict: boolean;
+  /** The recency word ("latest") claimed by a seed phrase: the seed is ordered by it. */
+  seedLatest?: string;
 }
 
 const filter = (clause: Record<string, unknown>, path: string[], label: string): Part => ({
@@ -445,8 +447,11 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
     }
     w.pick = pick;
   }
+  // "the latest pg-gated test": a recency word on a seed phrase is the seed's own "latest".
+  let seedLatest: string | undefined;
   for (const k of claims.picks) {
-    if (k.phrase.type === seed)
+    if (k.phrase.type === seed && k.kind === 'latest') seedLatest = k.span;
+    else if (k.phrase.type === seed)
       dropped.push({
         span: `${k.span} ${k.phrase.span}`,
         reason: `"${k.span}" picks one neighbour, and ${seed} is the type being asked about`,
@@ -650,6 +655,7 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
     plan,
     dropped,
     timeOnSeed,
+    ...(seedLatest !== undefined ? { seedLatest } : {}),
     walked:
       walks.size > 0 ||
       seedParts.some((p) => p.plan.some((c) => c.kind === 'ref')) ||

@@ -320,6 +320,18 @@ describe('pick one', () => {
     ]);
   });
 
+  it('"latest" on a seed phrase orders the seed; "highest" there is dropped', () => {
+    const c = card('the latest valued psa 9 card').candidates[0];
+    expect(c?.frame['cards/Cert']?.params).toEqual({
+      where: { grade: { eq: 9 } },
+      orderBy: [{ createdAt: 'desc' }],
+      limit: 1
+    });
+    expect(c?.answer).toBe('single');
+    expect(c?.strict).toBe(true);
+    expect(card('the highest valued psa 9 cards').candidates[0]?.dropped[0]?.kind).toBe('order');
+  });
+
   it('a picked neighbour is never a comparison operand', () => {
     const r = card('cards selling for 25% over the lowest asking price');
     expect(r.status).toBe('partial');
