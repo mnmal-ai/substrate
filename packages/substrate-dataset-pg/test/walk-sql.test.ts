@@ -9,6 +9,7 @@ import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
 import {
   type FieldDef,
   type ReadParams,
+  type ReadResult,
   ResolverFrameError,
   type Row,
   WALKS_NEED_PARTITIONED,
@@ -30,7 +31,12 @@ const ref = (type: string): FieldDef => ({ kind: 'crossRef', ns: NS, type, onDel
 const SCHEMA: Record<string, Record<string, FieldDef>> = {
   Cert: { grade: num, ask: num, minObs: num },
   Listing: { cert: ref('Cert'), seller: ref('Seller'), price: num, firstSeen: date },
-  Observation: { cert: ref('Cert'), price: num, observedAt: date, status: str },
+  Observation: {
+    cert: ref('Cert'),
+    price: num,
+    observedAt: { ...date, indexed: true },
+    status: str
+  },
   Seller: { rating: num }
 };
 const fieldDefLookup = (type: string, field: string): FieldDef | undefined =>
@@ -118,6 +124,35 @@ afterAll(async () => {
   await traced.end({ timeout: 5 });
   await sql.end({ timeout: 5 });
 });
+
+/**
+ * As index-use's expectServedBy: the statement `read` last sent, prepared,
+ * plans on index `idx` under a forced custom plan and a forced generic one.
+ */
+async function expectPlanUses(idx: string): Promise<void> {
+  const { query, parameters, types } = pageQuery();
+  const conn = await sql.reserve();
+  try {
+    // An untyped (0) parameter is declared unknown, so PREPARE infers it.
+    const typeNames = await conn<Array<{ t: string }>>`
+      SELECT CASE oid WHEN 0 THEN 'unknown' ELSE format_type(oid, NULL) END AS t FROM unnest(${types}::oid[]) WITH ORDINALITY u(oid, k)
+      ORDER BY k`;
+    const list = (xs: string[]) => (xs.length === 0 ? '' : `(${xs.join(', ')})`);
+    const literals = parameters.map((p) => `'${String(p).replace(/'/g, "''")}'`);
+    await conn.unsafe(`PREPARE walk_stmt${list(typeNames.map((n) => n.t))} AS ${query}`);
+    for (const mode of ['force_custom_plan', 'force_generic_plan']) {
+      await conn.unsafe(`SET plan_cache_mode = ${mode}`);
+      const plan = JSON.stringify(
+        await conn.unsafe(`EXPLAIN (FORMAT JSON) EXECUTE walk_stmt${list(literals)}`)
+      );
+      expect(plan, mode).toContain(`"Index Name":"${idx}"`);
+    }
+  } finally {
+    await conn.unsafe('DEALLOCATE ALL');
+    await conn.unsafe('RESET plan_cache_mode');
+    conn.release();
+  }
+}
 
 /** The page statement the last `read` sent. */
 const pageQuery = () =>
@@ -505,10 +540,6 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walks in where (pg)', () => {
 
   it('refuses what later tasks compile, by name', async () => {
     const refused = { code: 'walk_unsupported_ref' };
-    await expect(pg.read('Cert', { count: true })).rejects.toMatchObject(refused);
-    await expect(pg.read('Cert', { aggregate: { n: { count: true } } })).rejects.toMatchObject(
-      refused
-    );
     await expect(
       pg.read('Cert', { derive: { d: { diff: ['$.ask', '$.grade'] } } })
     ).rejects.toMatchObject(refused);
@@ -528,31 +559,11 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walks in where (pg)', () => {
     await pg.read('Cert', {
       where: { AND: [{ id: { eq: u('ix7') } }, obs({ price: { gt: 10 } })] } as WhereClause
     });
-    const { query, parameters, types } = pageQuery();
     const idx = generatedIdentifier(NS, 'Observation', 'cert', 'idx');
-    expect(query).toContain(`((w1.body ->> 'cert') COLLATE "C") = (r.id::text COLLATE "C")`);
-    // As index-use's expectServedBy: the statement read() sent, prepared, under
-    // a forced custom plan and a forced generic one.
-    const conn = await sql.reserve();
-    try {
-      const typeNames = await conn<Array<{ t: string }>>`
-        SELECT format_type(oid, NULL) AS t FROM unnest(${types}::oid[]) WITH ORDINALITY u(oid, k)
-        ORDER BY k`;
-      const list = (xs: string[]) => (xs.length === 0 ? '' : `(${xs.join(', ')})`);
-      const literals = parameters.map((p) => `'${String(p).replace(/'/g, "''")}'`);
-      await conn.unsafe(`PREPARE walk_stmt${list(typeNames.map((n) => n.t))} AS ${query}`);
-      for (const mode of ['force_custom_plan', 'force_generic_plan']) {
-        await conn.unsafe(`SET plan_cache_mode = ${mode}`);
-        const plan = JSON.stringify(
-          await conn.unsafe(`EXPLAIN (FORMAT JSON) EXECUTE walk_stmt${list(literals)}`)
-        );
-        expect(plan, mode).toContain(`"Index Name":"${idx}"`);
-      }
-    } finally {
-      await conn.unsafe('DEALLOCATE ALL');
-      await conn.unsafe('RESET plan_cache_mode');
-      conn.release();
-    }
+    expect(pageQuery().query).toContain(
+      `((w1.body ->> 'cert') COLLATE "C") = (r.id::text COLLATE "C")`
+    );
+    await expectPlanUses(idx);
   }, 60_000);
 });
 
@@ -936,4 +947,161 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk aggregates and nested proje
       oldest: '2026-10-01T00:00:00.123Z'
     });
   });
+});
+
+/** The whole-result answer `params` reads from `type`, asserting pg and memory agree. */
+async function sameResult(type: string, params: ReadParams): Promise<ReadResult> {
+  const pick = ({ rows, hasMore, count, groups, truncated }: ReadResult) =>
+    ({ rows, hasMore, count, groups, truncated }) as ReadResult;
+  const want = pick(await mem.read(type, params));
+  expect(pick(await pg.read(type, params)), JSON.stringify(params)).toEqual(want);
+  return want;
+}
+
+describe.skipIf(!POSTGRES_URL || !PARTITIONED)('count, aggregate and bucket (pg)', () => {
+  const FRAME = {
+    n: { count: true },
+    avg: { avg: 'price' },
+    sum: { sum: 'price' },
+    lo: { min: 'price' },
+    hi: { max: 'price' },
+    first: { min: 'observedAt' },
+    last: { max: 'observedAt' },
+    firstMade: { min: 'createdAt' }
+  } as unknown as NonNullable<ReadParams['aggregate']>;
+  // Supplied, so pg and memory hold the same createdAt.
+  const made = (i: number) => ({
+    _metadata: {
+      createdAt: `2026-10-0${1 + (i % 3)}T1${i}:00:00.000Z`,
+      updatedAt: '2026-10-05T00:00:00.000Z',
+      createdBy: null,
+      updatedBy: null
+    }
+  });
+  const fixture = () =>
+    load(
+      {
+        Cert: [
+          { id: 'c1', grade: 9 },
+          { id: 'c2', grade: 9 },
+          { id: 'c3', grade: 8 },
+          { id: 'c4', grade: 9 }
+        ],
+        Observation: [
+          {
+            id: 'o1',
+            cert: 'c1',
+            price: 0.1,
+            observedAt: '2026-10-01T23:59:59.999999Z',
+            ...made(1)
+          },
+          { id: 'o2', cert: 'c1', price: 0.2, observedAt: '2026-10-02T00:00:00Z', ...made(2) },
+          { id: 'o3', cert: 'c2', price: 'x', observedAt: '2026-10-02T01:30:00+02:00', ...made(3) },
+          { id: 'o4', cert: 'c2', observedAt: '2026-10-01T22:00:00-03:00', ...made(4) },
+          { id: 'o5', cert: 'c3', price: 7, ...made(5) },
+          { id: 'o6', cert: 'c3', price: 8, observedAt: 'not a date', ...made(6) },
+          { id: 'o7', cert: 'c3', price: 9, observedAt: '2026-10-02T00:00:00.000Z', ...made(7) },
+          { id: 'o8', cert: 'c4', price: 100, observedAt: '2026-10-03T00:00:00Z', ...made(8) }
+        ]
+      },
+      { Observation: ['o8'] }
+    );
+
+  it('count equals memory, with walks in where', async () => {
+    await fixture();
+    expect((await sameResult('Cert', { count: true })).count).toBe(4);
+    const sold = { AND: [{ grade: { eq: 9 } }, obs({ price: { gt: 0.15 } })] } as WhereClause;
+    expect((await sameResult('Cert', { count: true, where: sold })).count).toBe(1);
+    // o8 is tombstoned: c4 has no live observation.
+    expect((await sameResult('Cert', { count: true, where: obs() })).count).toBe(3);
+    expect((await sameResult('Cert', { count: true, where: { grade: { eq: 1 } } })).count).toBe(0);
+  });
+
+  it('aggregate over the whole result', async () => {
+    await fixture();
+    const all = await sameResult('Observation', { aggregate: FRAME });
+    expect(all.groups?.[0]).toMatchObject({ n: 7, hi: 9, first: '2026-10-02T01:30:00+02:00' });
+    await sameResult('Observation', { aggregate: FRAME, where: obs() as WhereClause, limit: 1 });
+    await sameResult('Observation', {
+      aggregate: FRAME,
+      where: { cert: { eq: u('c3') } } as WhereClause
+    });
+    // An empty match is one group: count 0, the rest null.
+    const none = await sameResult('Observation', {
+      aggregate: FRAME,
+      where: { price: { gt: 1000 } }
+    });
+    expect(none.groups).toEqual([
+      { n: 0, avg: null, sum: null, lo: null, hi: null, first: null, last: null, firstMade: null }
+    ]);
+  });
+
+  it('bucket by day crosses UTC midnight as memory does', async () => {
+    await fixture();
+    const day = await sameResult('Observation', {
+      aggregate: FRAME,
+      bucket: { field: 'observedAt', by: 'day' }
+    });
+    expect(day.groups?.map((g) => [g.bucket, g.n])).toEqual([
+      ['2026-10-01', 2],
+      ['2026-10-02', 3]
+    ]);
+    const hour = await sameResult('Observation', {
+      aggregate: { n: { count: true }, avg: { avg: 'price' } } as never,
+      bucket: { field: 'observedAt', by: 'hour' }
+    });
+    expect(hour.groups?.map((g) => g.bucket)).toEqual([
+      '2026-10-01T23',
+      '2026-10-02T00',
+      '2026-10-02T01'
+    ]);
+    await sameResult('Observation', {
+      aggregate: { n: { count: true } } as never,
+      bucket: { field: 'createdAt', by: 'hour' }
+    });
+    const none = await sameResult('Observation', {
+      aggregate: { n: { count: true } } as never,
+      bucket: { field: 'observedAt', by: 'day' },
+      where: { price: { gt: 1000 } }
+    });
+    expect(none.groups).toEqual([]);
+  });
+
+  it('groups beyond the page max set truncated', async () => {
+    await fixture();
+    const params = {
+      aggregate: { n: { count: true } } as never,
+      bucket: { field: 'observedAt', by: 'hour' as const }
+    };
+    const cut = await sameResult('Observation', { ...params, limit: 2 });
+    expect(cut).toMatchObject({ truncated: true });
+    expect(cut.groups).toHaveLength(2);
+    expect(await sameResult('Observation', { ...params, limit: 3 })).not.toHaveProperty(
+      'truncated',
+      true
+    );
+    await sameResult('Observation', { ...params, limit: 0 });
+  });
+
+  it('a windowed bucket query is served by the date index', async () => {
+    const at = (i: number) => new Date(Date.UTC(2026, 0, 1) + i * 3_600_000).toISOString();
+    await load({
+      Observation: Array.from({ length: 5000 }, (_, i) => ({
+        id: `wo${i}`,
+        price: i % 50,
+        observedAt: at(i)
+      }))
+    });
+    await sql`ANALYZE rows`;
+    const params: ReadParams = {
+      where: { observedAt: { gte: at(96), lt: at(144) } },
+      aggregate: { n: { count: true }, avg: { avg: 'price' } } as never,
+      bucket: { field: 'observedAt', by: 'day' },
+      limit: 100
+    };
+    expect((await sameResult('Observation', params)).groups).toHaveLength(2);
+    sent = [];
+    await pg.read('Observation', params);
+    await expectPlanUses(generatedIdentifier(NS, 'Observation', 'observedAt', 'idx'));
+  }, 60_000);
 });
