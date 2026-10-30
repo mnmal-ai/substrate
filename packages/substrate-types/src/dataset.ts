@@ -94,6 +94,8 @@ export interface OrderByClause {
 }
 
 export interface ReadParams {
+  /** Aborts the read. Substrates that can (PgDataset) cancel the in-flight statement; others MAY ignore it. */
+  signal?: AbortSignal;
   id?: Id;
   ids?: Id[];
   includeDeleted?: boolean;

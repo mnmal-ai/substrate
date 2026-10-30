@@ -1,6 +1,12 @@
 import { Engine, MemoryEdgesStore, type NamespaceConfig, Registry } from '@mnmal-ai/substrate-core';
 import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-dataset-memory';
-import type { FieldDef, Policy, RequestContext, WriteEvent } from '@mnmal-ai/substrate-types';
+import type {
+  FieldDef,
+  Policy,
+  ReadParams,
+  RequestContext,
+  WriteEvent
+} from '@mnmal-ai/substrate-types';
 import { ResolverFrameError } from '@mnmal-ai/substrate-types';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
@@ -51,6 +57,19 @@ describe('autocrud.listResolver', () => {
     const res = await listResolver('Todo', dataset)(makeCtx(), { params: { limit: 2 } });
     expect(res.rows).toHaveLength(2);
     expect(res.hasMore).toBe(true);
+  });
+
+  it('forwards args.signal into ReadParams', async () => {
+    const dataset = new MemoryDataset({ namespace: 'default' });
+    let seen: ReadParams | undefined;
+    const spy = Object.create(dataset) as MemoryDataset;
+    spy.read = (type, params) => {
+      seen = params;
+      return dataset.read(type, params);
+    };
+    const controller = new AbortController();
+    await listResolver('Todo', spy)(makeCtx(), { signal: controller.signal });
+    expect(seen?.signal).toBe(controller.signal);
   });
 
   it('returns [] for unknown type', async () => {

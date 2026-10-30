@@ -89,6 +89,8 @@ export function listResolver<_T extends Row = Row>(
     const fields = args.fields as FieldInput | undefined;
     if (fields !== undefined) readParams.fields = fields;
 
+    if (args.signal !== undefined) readParams.signal = args.signal;
+
     return ds.read(typeName, readParams);
   };
 }
