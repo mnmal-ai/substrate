@@ -195,6 +195,17 @@ const leads = (indexes: PlanIndex[], lead: string[], next: string[]): boolean =>
     (i) => i.only === undefined && [...lead, ...next].every((f, n) => i.keys[n]?.[0] === f)
   );
 
+/** The fields that follow `lead` as the next key of a full index, i.e. what a walk through `lead` is served on. */
+export const nextKeys = (indexes: PlanIndex[], lead: string): string[] => [
+  ...new Set(
+    indexes.flatMap((i) =>
+      i.only === undefined && i.keys[0]?.[0] === lead && i.keys[1] !== undefined
+        ? [i.keys[1][0]]
+        : []
+    )
+  )
+];
+
 export interface ClassifyInput {
   entry: Record<string, unknown>;
   seed: string;

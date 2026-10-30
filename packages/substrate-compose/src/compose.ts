@@ -546,6 +546,7 @@ async function composeInner(
     auth,
     streamTicketSecret,
     version: opts.version,
+    walksEnabled: opts.walksEnabled === true,
     stats,
     routeEventMetric,
     substrateDataset,

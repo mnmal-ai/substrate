@@ -142,8 +142,8 @@ export interface NlPackField {
   /** `metadata` marks a server-managed virtual (createdAt, createdById, ...). */
   kind: 'scalar' | 'crossRef' | 'list' | 'struct' | 'metadata';
   valueType?: string;
-  /** crossRef target type. */
-  target?: string;
+  /** crossRef target. */
+  target?: { namespace: string; type: string };
   indexed: boolean;
   operators: string[];
   phrases: string[];
