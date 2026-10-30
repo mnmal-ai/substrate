@@ -231,12 +231,14 @@ export interface Schema {
 }
 
 /**
- * Per-key shape. A single frame resolves to `'single' | 'list'`. A batched
- * mutate op-key (array of frames) resolves to `Array<'single' | 'list'>` —
- * one shape per frame, in frame-array order. The decoder keys off the
- * discriminator: string → single frame; array → batched.
+ * Per-key shape. A single frame resolves to `'single' | 'list'`, or for a
+ * walk read to `'count'` (`data[key]` is `{ count }`) or `'groups'`
+ * (`data[key]` is `{ groups, truncated? }`). A batched mutate op-key (array
+ * of frames) resolves to `Array<'single' | 'list'>` — one shape per frame, in
+ * frame-array order. The decoder keys off the discriminator: string → single
+ * frame; array → batched.
  */
-export type EnvelopeShape = 'single' | 'list' | Array<'single' | 'list'>;
+export type EnvelopeShape = 'single' | 'list' | 'count' | 'groups' | Array<'single' | 'list'>;
 
 /**
  * The response envelope. Spec: §7.0.

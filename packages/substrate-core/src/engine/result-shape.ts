@@ -50,6 +50,22 @@ export function shapeResult(input: ShapeResultInput): void {
   }
 
   if (isReadResult(result)) {
+    // A count or whole-result aggregate carries no rows and no page. A seed
+    // under a row-filter obligation is refused before it is counted, so
+    // there is nothing to filter here.
+    if (result.count !== undefined) {
+      envelope.data[key] = { count: result.count };
+      envelope.shapes[key] = 'count';
+      return;
+    }
+    if (result.groups !== undefined) {
+      envelope.data[key] = {
+        groups: result.groups,
+        ...(result.truncated === true ? { truncated: true } : {})
+      };
+      envelope.shapes[key] = 'groups';
+      return;
+    }
     // Paged list. Pull pagination metadata into envelope._pagination; apply
     // row-filter obligations to the rows only.
     const filtered = applyObligations(decision, result.rows, ctx);

@@ -1886,7 +1886,8 @@ export class Engine {
           } = {};
           if (key in scratch.data) entry.data = scratch.data[key];
           const shape = scratch.shapes[key];
-          if (typeof shape === 'string') entry.shape = shape;
+          // A mutate frame is rows; only a read is shaped `count` or `groups`.
+          if (shape === 'single' || shape === 'list') entry.shape = shape;
           if (scratch.errors !== undefined && scratch.errors.length > 0) {
             entry.errors = scratch.errors;
             // An array under one op-key is ONE transaction: a frame that

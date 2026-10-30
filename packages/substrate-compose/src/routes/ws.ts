@@ -146,7 +146,8 @@ function encodeDataForPack(
     // the batched mutate surface is §5.13 and is rejected on subscribe/stream
     // entry. Narrow to the single-frame shape so the encoder can dispatch
     // cleanly; the array arm is unreachable here by contract.
-    const shape: 'single' | 'list' | undefined = Array.isArray(rawShape) ? undefined : rawShape;
+    // Nor a count or groups map: subscriptions take no walk params.
+    const shape = rawShape === 'single' || rawShape === 'list' ? rawShape : undefined;
     encoded[key] = encodeByShape(value, fields, schema, name, shape, {
       schemas,
       currentNs: ns
