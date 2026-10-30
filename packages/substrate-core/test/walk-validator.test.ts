@@ -147,6 +147,27 @@ describe('walk validation', () => {
     });
   });
 
+  it('refuses a prototype-key type name as an unknown type', () => {
+    // A plain-object type map, as the published schema uses, so `constructor` resolves to Object.
+    const types: Record<string, TypeSchema> = { ...SCHEMAS };
+    for (const type of ['constructor', '__proto__', 'toString']) {
+      try {
+        validateFilter({
+          where: { _walk: { in: `cards/${type}.x` } } as WhereClause,
+          typeSchema: SCHEMAS.Cert as TypeSchema,
+          capabilities: CAPS,
+          schemaOf: (t) => types[t],
+          namespace: 'cards',
+          typeName: 'Cert'
+        });
+        throw new Error('expected a refusal');
+      } catch (err) {
+        expect(err).toBeInstanceOf(FilterValidationError);
+        expect(err).toMatchObject({ code: 'walk_unknown_ref', path: ['where', '_walk', 'in'] });
+      }
+    }
+  });
+
   it('refuses a list crossRef and a struct-nested crossRef', () => {
     expect(refusal({ _walk: { in: 'cards/Listing.certs' } })).toEqual({
       code: 'walk_unsupported_ref',

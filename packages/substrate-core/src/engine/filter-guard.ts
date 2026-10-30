@@ -124,12 +124,14 @@ export function runFilterGuard(deps: FilterGuardDeps, input: FilterGuardInput): 
           filterValidationSkipped: `type '${name}' is registered but absent from the '${ns}' schema`
         };
       } else {
+        // Own keys only: a caller's type name may be `constructor` or `__proto__`.
+        const types = deps.schemaFor(ns).types;
         validateFilter({
           ...(where !== undefined ? { where } : {}),
           ...(orderBy !== undefined ? { orderBy } : {}),
           typeSchema,
           capabilities: dataset.capabilities,
-          schemaOf: (type) => deps.schemaFor(ns).types[type],
+          schemaOf: (type) => (Object.hasOwn(types, type) ? types[type] : undefined),
           namespace: ns,
           typeName: name
         });

@@ -48,6 +48,15 @@ function fail(
   throw new FilterValidationError(code, msg, path);
 }
 
+/** A type's schema, or undefined for anything that is not one (e.g. a prototype key like `constructor`). */
+function schemaIn(
+  schemaOf: (type: string) => TypeSchema | undefined,
+  type: string
+): TypeSchema | undefined {
+  const s: unknown = schemaOf(type);
+  return isObj(s) && isObj(s.fields) ? (s as unknown as TypeSchema) : undefined;
+}
+
 export interface Hop {
   typeName: string;
   fields: Record<string, FieldDef>;
@@ -85,7 +94,7 @@ export function resolveHop(node: Record<string, unknown>, path: string[], scope:
     if (ns !== namespace) {
       fail('walk_cross_namespace', `a walk stays in namespace '${namespace}', not '${ns}'`, at);
     }
-    const far = schemaOf(type);
+    const far = schemaIn(schemaOf, type);
     if (far === undefined) fail('walk_unknown_ref', `unknown type '${ns}/${type}'`, at);
     farType = type;
     fieldPath = field;
@@ -128,7 +137,7 @@ export function resolveHop(node: Record<string, unknown>, path: string[], scope:
     }
     return { typeName: farType, fields: fieldOwner };
   }
-  const far = schemaOf(def.type);
+  const far = schemaIn(schemaOf, def.type);
   if (far === undefined) fail('walk_unknown_ref', `unknown type '${def.ns}/${def.type}'`, at);
   return { typeName: def.type, fields: far.fields };
 }
