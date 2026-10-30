@@ -64,7 +64,8 @@ function engineFor(orderedBy?: OrderedBy): {
   const engine = new Engine({
     namespaces: new Map<string, NamespaceConfig>([['shop', { registry }]]),
     datasets,
-    edges: new MemoryEdgesStore({ now: () => new Date() })
+    edges: new MemoryEdgesStore({ now: () => new Date() }),
+    walksEnabled: true
   });
   return { engine, ds, seen };
 }
@@ -106,6 +107,19 @@ describe('natural order (memory)', () => {
     ]);
     expect(await ids(engine, { orderBy: [{ rating: 'desc' }] })).toEqual(['b', 'c', 'a']);
     expect(seen.at(-1)?.orderBy).toEqual([{ rating: 'desc' }]);
+  });
+
+  it('a count or aggregate frame gets no natural order', async () => {
+    const { engine, seen } = engineFor();
+    for (const params of [{ count: true }, { aggregate: { n: { count: true } } }]) {
+      const env = await engine.query({
+        frame: { 'shop/Item': { params, fields: { id: true } } },
+        ctx: { identity: null }
+      });
+      expect(env.errors).toBeUndefined();
+      expect(seen.at(-1)?.orderBy).toBeUndefined();
+    }
+    expect(seen).toHaveLength(2);
   });
 
   it('rows missing the orderedBy field sort last and page exactly once', async () => {

@@ -576,18 +576,19 @@ export function validateFrameParams(
   }
   const seed: Hop = { typeName: scope.typeName ?? '', fields: scope.fields };
   if (p.aggregate !== undefined) {
-    for (const k of ['derive', 'cursor'] as const) {
+    // `limit` stays: it caps the bucket rows.
+    for (const k of ['derive', 'orderBy', 'cursor'] as const) {
       if (p[k] !== undefined) {
         fail('agg_invalid', `aggregate returns aggregate rows; it takes no '${k}'`, [k]);
       }
     }
-    const perRow = walkGrammarPath({ fields: p.fields });
-    if (perRow !== null) {
-      fail(
-        'agg_invalid',
-        'aggregate returns aggregate rows; it takes no per-row _agg or nested selections',
-        perRow
-      );
+    for (const k of Object.keys(p.fields ?? {})) {
+      if (k !== 'id') {
+        fail('agg_invalid', `aggregate returns aggregate rows; it selects only id, not '${k}'`, [
+          'fields',
+          k
+        ]);
+      }
     }
     if (!isObj(p.aggregate) || Object.keys(p.aggregate).length === 0) {
       fail('agg_invalid', 'aggregate maps names to aggregates', ['aggregate']);

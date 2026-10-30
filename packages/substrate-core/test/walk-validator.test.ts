@@ -432,6 +432,12 @@ describe('aggregate, derive, bucket, count and nested validation', () => {
       code: 'agg_invalid',
       path: ['cursor']
     });
+    expect(
+      frameRefusal({ aggregate: { n: { count: true } }, orderBy: [{ grade: 'desc' }] })
+    ).toEqual({ code: 'agg_invalid', path: ['orderBy'] });
+    expect(
+      frameRefusal({ aggregate: { n: { count: true } }, fields: { id: true, grade: true } })
+    ).toEqual({ code: 'agg_invalid', path: ['fields', 'grade'] });
   });
 
   it('orderBy $margin requires derive.margin', () => {
