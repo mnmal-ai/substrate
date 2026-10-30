@@ -43,6 +43,14 @@ import {
   type TypeSchema,
   type WhereClause
 } from '@mnmal-ai/substrate-types';
+import {
+  bindGroup,
+  farScope,
+  resolveHop,
+  validateRef,
+  validateWalk,
+  type WalkScope
+} from './walk-validator.js';
 
 export { clearExtensionOperators, getExtensionOperator, registerExtensionOperator };
 
@@ -53,7 +61,15 @@ export type FilterErrorCode =
   | 'orderby_nonscalar'
   | 'capability_unsupported'
   | 'invalid_between'
-  | 'invalid_logical';
+  | 'invalid_logical'
+  | 'walk_unknown_ref'
+  | 'walk_unsupported_ref'
+  | 'walk_cross_namespace'
+  | 'walk_too_deep'
+  | 'walk_binding'
+  | 'walk_quantifier'
+  | 'ref_unresolved'
+  | 'ref_kind_mismatch';
 
 export class FilterValidationError extends Error {
   override readonly name = 'FilterValidationError';
@@ -110,6 +126,8 @@ const LOGICAL_KEYS = new Set(['AND', 'OR', 'NOT']);
  */
 interface WalkContext {
   insideStruct?: boolean;
+  /** Edge-walk scope: bindings, depth, and the lookup walks resolve through. */
+  walk: WalkScope;
 }
 
 /**
@@ -494,6 +512,18 @@ function validateLeaf(
         [...path, op]
       );
     }
+    if (value !== null && typeof value === 'object' && '$ref' in value) {
+      validateRef(
+        kind,
+        op,
+        value as Record<string, unknown>,
+        [...path, op],
+        ctx.walk,
+        lookupField,
+        fieldKindOf
+      );
+      continue;
+    }
     const nullable = fieldDef.kind === 'scalar' && (fieldDef as FieldDefScalar).nullable === true;
     validateValueShape(kind, op, value, [...path, op], nullable);
   }
@@ -595,6 +625,8 @@ function validateWhereAgainstFields(
   if (where === null || typeof where !== 'object' || Array.isArray(where)) {
     throw new FilterValidationError('type_mismatch', 'where must be an object', path);
   }
+  // This object is an AND group unless an enclosing AND already bound it.
+  if (!ctx.walk.groupBound) ctx = { ...ctx, walk: bindGroup(where, path, ctx.walk) };
 
   // Detect logical combinators. The rule: if ANY key is a combinator, every
   // key must be a combinator — mixing fields with AND/OR/NOT is ambiguous
@@ -629,7 +661,7 @@ function validateWhereAgainstFields(
             fields,
             [...path, k, String(i)],
             capabilities,
-            ctx
+            k === 'AND' ? ctx : orNot(ctx)
           );
         });
       } else if (k === 'NOT') {
@@ -639,15 +671,46 @@ function validateWhereAgainstFields(
             k
           ]);
         }
-        validateWhereAgainstFields(child as WhereClause, fields, [...path, k], capabilities, ctx);
+        validateWhereAgainstFields(
+          child as WhereClause,
+          fields,
+          [...path, k],
+          capabilities,
+          orNot(ctx)
+        );
       }
     }
     return;
   }
 
   // Flat field map — each key is a field name; each value is a leaf predicate
-  // (or nested WhereClause for struct fields).
+  // (or nested WhereClause for struct fields). `_walk` and `_agg` are reserved
+  // here and AND with their siblings: a type field literally named `_walk` or
+  // `_agg` is not addressable in a where. Beside `_agg`, the comparison keys
+  // are its operator, not fields.
+  const record = where as Record<string, unknown>;
+  const hasAgg = Object.hasOwn(record, '_agg');
   for (const fieldName of keys) {
+    if (fieldName === '_walk' || fieldName === '_agg') {
+      if (ctx.insideStruct === true) {
+        throw new FilterValidationError(
+          'walk_unsupported_ref',
+          `${fieldName} is not valid inside a struct`,
+          [...path, fieldName]
+        );
+      }
+      const recurse = (w: unknown, p: string[], scope: WalkScope) =>
+        validateWhereAgainstFields(w as WhereClause, scope.fields, p, capabilities, {
+          walk: scope
+        });
+      if (fieldName === '_walk') {
+        validateWalk(record._walk, [...path, '_walk'], ctx.walk, fieldKindOf, recurse);
+      } else {
+        validateAggWalk(record._agg, [...path, '_agg'], ctx.walk, recurse);
+      }
+      continue;
+    }
+    if (hasAgg && AGG_COMPARATORS.has(fieldName)) continue;
     // Check the type's declared fields first, then fall back to the
     // metadata virtual field definitions (createdAt, updatedAt, createdById,
     // createdByKind, updatedById, updatedByKind) — these map onto row._metadata
@@ -690,6 +753,32 @@ function validateWhereAgainstFields(
       assertSeqIntegers((where as Record<string, unknown>)[fieldName], [...path, fieldName]);
     }
   }
+}
+
+const AGG_COMPARATORS = new Set(['eq', 'neq', 'gt', 'gte', 'lt', 'lte']);
+
+/** Inside OR / NOT: a fresh group, and no binding is referenceable. */
+function orNot(ctx: WalkContext): WalkContext {
+  return { ...ctx, walk: { ...ctx.walk, underOrNot: true, groupBound: false } };
+}
+
+/**
+ * The walk part of a where-side `_agg`: its `in` / `out` and far-side `where`,
+ * checked like a `_walk`. The aggregate function and its comparison are
+ * validated with the other aggregate forms.
+ */
+function validateAggWalk(
+  agg: unknown,
+  path: string[],
+  scope: WalkScope,
+  recurse: (w: unknown, p: string[], scope: WalkScope) => void
+): void {
+  if (agg === null || typeof agg !== 'object' || Array.isArray(agg)) {
+    throw new FilterValidationError('type_mismatch', '_agg expects an aggregate object', path);
+  }
+  const node = agg as Record<string, unknown>;
+  const hop = resolveHop(node, path, scope);
+  if (node.where !== undefined) recurse(node.where, [...path, 'where'], farScope(scope, hop));
 }
 
 /** `seq` is a bigint column: every numeric operand must be a safe integer. */
@@ -791,17 +880,29 @@ export interface ValidateFilterInput {
   orderBy?: OrderByClause[];
   typeSchema: TypeSchema;
   capabilities: FilterCapabilities;
+  /** Resolves a type in `namespace`; walks are refused without it. */
+  schemaOf?: (type: string) => TypeSchema | undefined;
+  /** The frame's namespace, and the seed type's name in it. */
+  namespace?: string;
+  typeName?: string;
 }
 
 export function validateFilter(input: ValidateFilterInput): void {
   if (input.where !== undefined) {
-    validateWhereAgainstFields(
-      input.where,
-      input.typeSchema.fields,
-      ['where'],
-      input.capabilities,
-      {}
-    );
+    const fields = input.typeSchema.fields;
+    validateWhereAgainstFields(input.where, fields, ['where'], input.capabilities, {
+      walk: {
+        ...(input.namespace !== undefined ? { namespace: input.namespace } : {}),
+        ...(input.schemaOf !== undefined ? { schemaOf: input.schemaOf } : {}),
+        ...(input.typeName !== undefined ? { typeName: input.typeName } : {}),
+        fields,
+        depth: 0,
+        bindings: new Map([['$', fields]]),
+        hidden: new Set(),
+        underOrNot: false,
+        groupBound: false
+      }
+    });
   }
   if (input.orderBy !== undefined) {
     validateOrderBy(input.orderBy, input.typeSchema.fields, input.capabilities);
