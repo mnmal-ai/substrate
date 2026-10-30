@@ -278,6 +278,35 @@ describe('substrate ask', () => {
     expect(out).toMatch(/^substrate ask: .*\n$/);
   });
 
+  it('a server error message is stripped of terminal escapes', async () => {
+    let out = '';
+    const evil = (async () =>
+      new Response(JSON.stringify({ message: 'bad\x1b]0;pwned\x07 \x1b[31mthing' }), {
+        status: 500,
+        headers: { 'content-type': 'application/json' }
+      })) as unknown as typeof fetch;
+    expect(
+      await runAsk(['q'], {
+        env: { SUBSTRATE_URL: 'http://h', SUBSTRATE_NAMESPACE: 'notes' },
+        fetchImpl: evil,
+        write: (s) => (out += s)
+      })
+    ).toBe(1);
+    expect(out).toBe('substrate ask: bad thing\n');
+  });
+
+  it('--json escapes C1 controls, which JSON.stringify leaves raw', async () => {
+    let out = '';
+    await runAsk(['--json', 'q'], {
+      env: { SUBSTRATE_URL: 'http://h', SUBSTRATE_NAMESPACE: 'notes' },
+      fetchImpl: fake({ kind: 'refuse', reason: 'a\u009b31mb\u009d0;x' }),
+      write: (s) => (out += s)
+    });
+    expect(out).not.toMatch(/[\u0080-\u009f]/);
+    expect(out).toContain('a\\u009b31mb\\u009d0;x');
+    expect(JSON.parse(out).outcome.reason).toBe('a\u009b31mb\u009d0;x');
+  });
+
   it('a value flag does not swallow another flag; -- ends flags', async () => {
     expect(
       await runAsk(['--ns', '--json', 'q'], {

@@ -66,7 +66,7 @@ export async function runAsk(argv: string[], options: AskCliOptions = {}): Promi
       ...(options.fetchImpl !== undefined ? { fetch: options.fetchImpl } : {})
     }));
   } catch (err) {
-    write(`substrate ask: agent identity: ${messageOf(err)}\n`);
+    write(`substrate ask: agent identity: ${sanitise(messageOf(err))}\n`);
     return 2;
   }
   let result: Awaited<ReturnType<typeof client.nl.askJson>>;
@@ -79,12 +79,16 @@ export async function runAsk(argv: string[], options: AskCliOptions = {}): Promi
     if (err instanceof NetworkError && err.status === 404 && err.code !== 'nl_unknown_namespace')
       write('substrate ask: the server has no NL route (is @mnmal-ai/substrate-nl installed?)\n');
     else if (err instanceof NetworkError && err.serverMessage !== undefined)
-      write(`substrate ask: ${err.serverMessage}\n`);
-    else write(`substrate ask: ${messageOf(err)}\n`);
+      write(`substrate ask: ${sanitise(err.serverMessage)}\n`);
+    else write(`substrate ask: ${sanitise(messageOf(err))}\n`);
     return 1;
   }
   const outcome = result.outcome;
-  if (json) write(`${JSON.stringify(result, null, 2)}\n`);
+  // JSON.stringify escapes C0 but not C1 controls (U+009B is a CSI to some terminals).
+  if (json)
+    write(
+      `${JSON.stringify(result, null, 2).replace(/[\u0080-\u009f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)}\n`
+    );
   // Every server- or question-derived string reaches the terminal stripped of escapes, line by line.
   else write(render(outcome).split('\n').map(sanitise).join('\n'));
   if (outcome === null) return 0;

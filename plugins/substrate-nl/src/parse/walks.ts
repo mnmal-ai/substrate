@@ -322,7 +322,8 @@ export interface Composed {
   /** The time window was not bound to a walk: the seed takes it as before. */
   timeOnSeed: boolean;
   /** True when anything was composed, so the frame needs the walk grammar. */
-  walked: boolean /** A `$ref` comparison or a picked walk: a dropped filter changes its answer. */;
+  walked: boolean;
+  /** A `$ref` comparison or a picked walk: a dropped filter changes its answer. */
   strict: boolean;
 }
 

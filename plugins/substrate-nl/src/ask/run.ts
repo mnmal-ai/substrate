@@ -328,7 +328,11 @@ export async function* runAsk(
           break;
         case 'escalated':
           // The judge's reading, not the parser's first: an escalated pick carries only its choice.
-          outcome = await handoff('judge could not decide', judged.result);
+          // A re-parse (type, bind) that left no reading falls back to the parser's, under the same rule.
+          outcome = await handoff(
+            'judge could not decide',
+            judged.result.candidates.length > 0 ? judged.result : first
+          );
           break;
       }
     }

@@ -70,3 +70,25 @@ it("an escalated pick hands off the judge's reading: strict with drops is unknow
   expect(outcome).toMatchObject({ kind: 'unknown', dropped: [{ span: 'over 50' }] });
   expect(query).not.toHaveBeenCalled();
 });
+
+it("an escalated re-parse with no reading falls back to the parser's, under the same rule", async () => {
+  const q = 'how many listings and cards selling for over 50';
+  vi.mocked(parseWithJudge).mockResolvedValue({
+    status: 'escalated',
+    result: { status: 'unparsed', candidates: [], residual: [], reason: 'none' },
+    trail: []
+  });
+  const query = vi.fn(async (f: Query) => ({
+    data: { [Object.keys(f)[0] as string]: { count: 9 } }
+  }));
+  const engine: NlEngineAccess = { federatedSchema: () => ({}), operators: () => ({}), query };
+  let outcome: unknown;
+  for await (const ev of runAsk({ namespace: 'cards', question: q }, http as SubstrateRequest, {
+    pack,
+    engine,
+    judge: { decide: vi.fn() },
+    now: () => new Date('2026-10-30T12:00:00Z')
+  }))
+    if (ev.event === 'outcome') outcome = ev.outcome;
+  expect(outcome).toMatchObject({ kind: 'rows', source: 'handoff', count: 9 });
+});

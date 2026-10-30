@@ -459,6 +459,15 @@ describe('the confidence rule', () => {
     expect(query).not.toHaveBeenCalled();
   });
 
+  it.each([
+    'which grade has the latest card with island size in the past 2 days',
+    'latest card which grade with island size'
+  ])('a field question over a seed pick-one that lost a filter is unknown: %s', async (q) => {
+    const { e, query } = engine();
+    expect(outcome(await ask(q, e))).toMatchObject({ kind: 'unknown' });
+    expect(query).not.toHaveBeenCalled();
+  });
+
   it('a field literally named "pick" leaves a rows reading answered, with dropped', async () => {
     const { e } = engine();
     const o = outcome(await ask('gold cards with island size', e));
