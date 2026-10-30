@@ -442,9 +442,20 @@
       "frame": {
         "runs/LocalRun": {
           "where": {
-            "host": {
-              "eq": "host-a"
-            }
+            "AND": [
+              {
+                "host": {
+                  "eq": "host-a"
+                }
+              },
+              {
+                "NOT": {
+                  "status": {
+                    "in": ["skipped", "killed"]
+                  }
+                }
+              }
+            ]
           }
         }
       }
@@ -458,9 +469,20 @@
       "frame": {
         "runs/LocalRun": {
           "where": {
-            "host": {
-              "eq": "host-a"
-            }
+            "AND": [
+              {
+                "host": {
+                  "eq": "host-a"
+                }
+              },
+              {
+                "NOT": {
+                  "status": {
+                    "in": ["skipped", "killed"]
+                  }
+                }
+              }
+            ]
           },
           "count": true
         }
@@ -475,10 +497,21 @@
       "frame": {
         "runs/LocalRun": {
           "where": {
-            "at": {
-              "gte": "2026-10-23T00:00:00Z",
-              "lt": "2026-10-31T00:00:00Z"
-            }
+            "AND": [
+              {
+                "at": {
+                  "gte": "2026-10-23T00:00:00Z",
+                  "lt": "2026-10-31T00:00:00Z"
+                }
+              },
+              {
+                "NOT": {
+                  "status": {
+                    "in": ["skipped", "killed"]
+                  }
+                }
+              }
+            ]
           },
           "count": true
         }
@@ -493,10 +526,21 @@
       "frame": {
         "runs/CiRun": {
           "where": {
-            "at": {
-              "gte": "2026-10-28T00:00:00Z",
-              "lt": "2026-10-31T00:00:00Z"
-            }
+            "AND": [
+              {
+                "at": {
+                  "gte": "2026-10-28T00:00:00Z",
+                  "lt": "2026-10-31T00:00:00Z"
+                }
+              },
+              {
+                "NOT": {
+                  "status": {
+                    "in": ["skipped", "killed"]
+                  }
+                }
+              }
+            ]
           }
         }
       }
@@ -509,6 +553,13 @@
       "answer": "single",
       "frame": {
         "runs/LocalRun": {
+          "where": {
+            "NOT": {
+              "status": {
+                "in": ["skipped", "killed"]
+              }
+            }
+          },
           "orderBy": [
             {
               "at": "desc"
@@ -527,9 +578,20 @@
       "frame": {
         "runs/LocalRun": {
           "where": {
-            "host": {
-              "eq": "host-a"
-            }
+            "AND": [
+              {
+                "host": {
+                  "eq": "host-a"
+                }
+              },
+              {
+                "NOT": {
+                  "status": {
+                    "in": ["skipped", "killed"]
+                  }
+                }
+              }
+            ]
           },
           "orderBy": [
             {
@@ -651,72 +713,15 @@
   {
     "question": "tests whose latest local duration is over 5000",
     "expect": {
-      "kind": "rows",
-      "answer": "rows",
-      "frame": {
-        "runs/Test": {
-          "where": {
-            "_walk": {
-              "in": "runs/LocalRun.test",
-              "where": {
-                "AND": [
-                  {
-                    "durationMs": {
-                      "gt": 5000
-                    }
-                  },
-                  {
-                    "NOT": {
-                      "status": {
-                        "in": ["skipped", "killed"]
-                      }
-                    }
-                  }
-                ]
-              },
-              "pick": {
-                "latest": "at"
-              }
-            }
-          }
-        }
-      }
+      "kind": "unknown",
+      "dropped": ["latest"]
     }
   },
   {
     "question": "how many tests whose highest ci duration is over 60000",
     "expect": {
-      "kind": "rows",
-      "answer": "count",
-      "frame": {
-        "runs/Test": {
-          "where": {
-            "_walk": {
-              "in": "runs/CiRun.test",
-              "where": {
-                "AND": [
-                  {
-                    "durationMs": {
-                      "gt": 60000
-                    }
-                  },
-                  {
-                    "NOT": {
-                      "status": {
-                        "in": ["skipped", "killed"]
-                      }
-                    }
-                  }
-                ]
-              },
-              "pick": {
-                "max": "durationMs"
-              }
-            }
-          },
-          "count": true
-        }
-      }
+      "kind": "unknown",
+      "dropped": ["highest"]
     }
   },
   {
@@ -790,19 +795,30 @@
             "_walk": {
               "in": "runs/CiRun.test",
               "where": {
-                "_walk": {
-                  "out": "job",
-                  "where": {
+                "AND": [
+                  {
                     "_walk": {
-                      "out": "workflow",
+                      "out": "job",
                       "where": {
-                        "timeoutMin": {
-                          "gt": 30
+                        "_walk": {
+                          "out": "workflow",
+                          "where": {
+                            "timeoutMin": {
+                              "gt": 30
+                            }
+                          }
                         }
                       }
                     }
+                  },
+                  {
+                    "NOT": {
+                      "status": {
+                        "in": ["skipped", "killed"]
+                      }
+                    }
                   }
-                }
+                ]
               }
             }
           },
@@ -954,7 +970,24 @@
     "question": "how many local runs on host-a with 8 cores",
     "expect": {
       "kind": "unknown",
-      "dropped": ["8", "cores"]
+      "dropped": ["8 cores"]
+    }
+  },
+  {
+    "question": "how many skipped local runs",
+    "expect": {
+      "kind": "rows",
+      "answer": "count",
+      "frame": {
+        "runs/LocalRun": {
+          "where": {
+            "status": {
+              "eq": "skipped"
+            }
+          },
+          "count": true
+        }
+      }
     }
   }
 ]

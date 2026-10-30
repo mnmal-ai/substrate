@@ -36,7 +36,7 @@ const ref = (type: string) => ({
 });
 const status = { ...str, enum: ['passed', 'failed', 'skipped', 'killed'] };
 const run = { test: ref('Test'), at: date, durationMs: num, setupMs: num, status };
-// Ruling: a skipped or memory-killed run never counts toward "slower" or a duration.
+// Ruling (shape 7): a skipped or memory-killed run never counts, unless asked for.
 const excluded = { status: { in: ['skipped', 'killed'] } };
 const pack: ServedPack = {
   ...buildNamespacePack({
@@ -65,14 +65,15 @@ const pack: ServedPack = {
   rulings: {
     typeAliases: { locally: 'LocalRun' },
     timeField: { CiRun: 'at', LocalRun: 'at' },
+    typeExcludes: { CiRun: excluded, LocalRun: excluded },
     fieldPhrases: {
       'pg-gated': { field: 'Test.pgGated', value: true },
-      slower: { field: 'LocalRun.durationMs', exclude: excluded },
-      faster: { field: 'LocalRun.durationMs', exclude: excluded },
-      'on ci': { field: 'CiRun.durationMs', exclude: excluded },
-      'local duration': { field: 'LocalRun.durationMs', exclude: excluded },
-      'ci duration': { field: 'CiRun.durationMs', exclude: excluded },
-      'local setup': { field: 'LocalRun.setupMs', exclude: excluded },
+      slower: { field: 'LocalRun.durationMs' },
+      faster: { field: 'LocalRun.durationMs' },
+      'on ci': { field: 'CiRun.durationMs' },
+      'local duration': { field: 'LocalRun.durationMs' },
+      'ci duration': { field: 'CiRun.durationMs' },
+      'local setup': { field: 'LocalRun.setupMs' },
       'workflow timeout': { field: 'Workflow.timeoutMin' },
       'repo size': { field: 'Repo.sizeMb' }
     }
@@ -166,6 +167,16 @@ for (const [label, judge] of [
       // The expected kind is the confidence rule's; a judge may only make a reading safer.
       if (judge === undefined) expect(o.kind).toBe(e.expect.kind);
     });
+
+    if (judge !== undefined)
+      it('a word the judge called noise stays in dropped', async () => {
+        const o = await ask('which tests are flaky', judge);
+        expect(o).toMatchObject({
+          kind: 'rows',
+          source: 'judge',
+          dropped: [{ span: 'flaky', reason: 'judge: noise', kind: 'filter' }]
+        });
+      });
 
     it('fabricates nothing', () => {
       expect(score.fabrications).toEqual([]);
