@@ -10,7 +10,6 @@ import { encodeCursor } from '@mnmal-ai/substrate-filter';
 import {
   type FieldDef,
   type ReadParams,
-  type ReadResult,
   ResolverFrameError,
   type Row,
   WALKS_NEED_PARTITIONED,
@@ -20,6 +19,7 @@ import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset } from '../src/index.js';
 import { generatedIdentifier } from '../src/migrate.js';
+import { walkComparers } from './_walk-helpers.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const PARTITIONED = process.env.SUBSTRATE_TEST_LAYOUT === 'partitioned';
@@ -89,16 +89,10 @@ async function load(rows: Rows, tombstoned: Record<string, string[]> = {}): Prom
   }
 }
 
-/** The fixture names of the `type` rows matching `where`, asserting pg and memory agree. */
-async function both(type: string, where: WhereClause, includeDeleted = false): Promise<string[]> {
-  const read = async (ds: PgDataset | MemoryDataset) =>
-    (await ds.read(type, { where, ...(includeDeleted ? { includeDeleted } : {}) })).rows
-      .map((r) => names.get(String(r.id)) ?? String(r.id))
-      .sort();
-  const want = await read(mem);
-  expect(await read(pg), JSON.stringify(where)).toEqual(want);
-  return want;
-}
+const { both, same, sameResult } = walkComparers(
+  () => ({ pg, mem }),
+  (id) => names.get(id) ?? id
+);
 
 beforeAll(async () => {
   if (!POSTGRES_URL) return;
@@ -568,20 +562,6 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walks in where (pg)', () => {
   }, 60_000);
 });
 
-/** A row without the columns only one dataset fills (`_metadata`, `shortId`). */
-const strip = (r: Row): Row => {
-  const { _metadata: _m, shortId: _s, ...rest } = r;
-  return rest as Row;
-};
-
-/** The rows `params` reads from `type`, asserting pg and memory agree on every key. */
-async function same(type: string, params: ReadParams): Promise<Row[]> {
-  const read = async (ds: PgDataset | MemoryDataset) =>
-    (await ds.read(type, params)).rows.map(strip);
-  const want = await read(mem);
-  expect(await read(pg), JSON.stringify(params)).toEqual(want);
-  return want;
-}
 const name = (r: Row) => names.get(String(r.id)) ?? String(r.id);
 
 describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk aggregates and nested projection (pg)', () => {
@@ -949,15 +929,6 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk aggregates and nested proje
     });
   });
 });
-
-/** The whole-result answer `params` reads from `type`, asserting pg and memory agree. */
-async function sameResult(type: string, params: ReadParams): Promise<ReadResult> {
-  const pick = ({ rows, hasMore, count, groups, truncated }: ReadResult) =>
-    ({ rows, hasMore, count, groups, truncated }) as ReadResult;
-  const want = pick(await mem.read(type, params));
-  expect(pick(await pg.read(type, params)), JSON.stringify(params)).toEqual(want);
-  return want;
-}
 
 describe.skipIf(!POSTGRES_URL || !PARTITIONED)('count, aggregate and bucket (pg)', () => {
   const FRAME = {
