@@ -279,7 +279,7 @@ function isoFromMicros(micros: bigint): string {
  * return the winning row's stored value (ties id ascending); each is null over
  * none. count counts rows; latest is the stored `value` of the row latest by
  * `by` (nulls last, ties id ascending), or null. Arithmetic is float64, and
- * a sum or avg that overflows is null.
+ * a sum past float64's range is null.
  */
 export function applyAgg(rows: Row[], fn: AggFn, fieldDefOf: FieldDefOf): unknown {
   if (Object.hasOwn(fn, 'count')) return rows.length;
@@ -305,8 +305,20 @@ export function applyAgg(rows: Row[], fn: AggFn, fieldDefOf: FieldDefOf): unknow
     acc = n === 0 ? v : op === 'min' ? Math.min(acc, v) : op === 'max' ? Math.max(acc, v) : acc + v;
     n++;
   }
-  // Todo #1809, shared with pg's substrate_fsum: a sum that overflows is null, avg too.
-  if (n === 0 || !Number.isFinite(acc)) return null;
+  if (n === 0) return null;
+  if (!Number.isFinite(acc) && (op === 'sum' || op === 'avg')) {
+    // Todo #1809: pg sums exactly and is null only when the exact sum is past
+    // float8's range. Near enough, cheaply: re-sum scaled by 2^-64, so no
+    // partial sum overflows. Order and cancellation drift between this and
+    // the exact sum is accepted, as for the last bit of avg/sum.
+    let scaled = 0;
+    for (const r of rows) {
+      const v = getFieldValue(r, field);
+      if (typeof v === 'number') scaled += v * 2 ** -64;
+    }
+    const out = (op === 'avg' ? scaled / n : scaled) * 2 ** 64;
+    return Number.isFinite(out) ? out : null;
+  }
   return op === 'avg' ? acc / n : acc;
 }
 

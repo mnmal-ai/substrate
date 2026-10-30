@@ -555,7 +555,7 @@ describe('memory walk aggregates, count, buckets and derive', () => {
     ]);
   });
 
-  it('a sum or avg that overflows is null, walk and frame alike', async () => {
+  it('a sum past float64 is null, its avg is not; walk and frame alike', async () => {
     const ds = await dataset({
       Cert: [{ id: 'c1' }, { id: 'c2' }],
       Observation: [
@@ -571,14 +571,19 @@ describe('memory walk aggregates, count, buckets and derive', () => {
     } as ReadParams['agg'];
     const res = await ds.read('Cert', { orderBy: [{ id: 'asc' }], ...(agg ? { agg } : {}) });
     expect(res.rows.map((r) => r._agg)).toEqual([
-      { avg: null, sum: null },
+      { avg: 1e308, sum: null },
       { avg: 0, sum: 0 }
     ]);
-    const frame = await ds.read('Observation', {
-      where: { price: { gt: 0 } },
-      aggregate: { avg: { avg: 'price' }, sum: { sum: 'price' } }
-    });
-    expect(frame.groups).toEqual([{ avg: null, sum: null }]);
+    const frame = (where: WhereClause) =>
+      ds.read('Observation', {
+        where,
+        aggregate: { avg: { avg: 'price' }, sum: { sum: 'price' } }
+      });
+    expect((await frame({ price: { gt: 0 } })).groups).toEqual([{ avg: 1e308, sum: null }]);
+    // A running sum that overflows and comes back is that value, as pg's exact sum.
+    expect((await frame({ id: { in: ['o1', 'o2', 'o4'] } })).groups).toEqual([
+      { avg: 1e308 / 3, sum: 1e308 }
+    ]);
   });
 
   it('_agg in where filters', async () => {
