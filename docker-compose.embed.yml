@@ -7,7 +7,7 @@
 
 services:
   ollama:
-    image: ollama/ollama:0.40.8
+    image: ollama/ollama:0.40.13
     volumes:
       - ollama_models:/root/.ollama
     healthcheck:
@@ -17,7 +17,7 @@ services:
       retries: 10
 
   ollama-pull:
-    image: ollama/ollama:0.40.8
+    image: ollama/ollama:0.40.13
     environment:
       OLLAMA_HOST: ollama:11434
     command: ["pull", "hf.co/CompendiumLabs/bge-base-en-v1.5-gguf:F16"]
