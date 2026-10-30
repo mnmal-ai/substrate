@@ -18,6 +18,7 @@
  * The tree is assumed validated (substrate-core walk-validator).
  */
 
+import { groupConjuncts, refNames } from '@mnmal-ai/substrate-filter';
 import {
   type FieldDef,
   type RefOperand,
@@ -187,16 +188,6 @@ function sortKey(
   return bodyText(sql, [field], alias);
 }
 
-/** Binding names a `$ref` anywhere below `where` reads. */
-function refNames(where: unknown, out = new Set<string>()): Set<string> {
-  if (Array.isArray(where)) for (const w of where) refNames(w, out);
-  else if (isObj(where)) {
-    if (typeof where.$ref === 'string') out.add(where.$ref.split('.', 1)[0] ?? '');
-    for (const v of Object.values(where)) refNames(v, out);
-  }
-  return out;
-}
-
 /**
  * An AND group whose `any` walks with `as` are jointly quantified: one EXISTS
  * with a `rows` alias per binding, holding each binding's hop and where and
@@ -210,18 +201,8 @@ export function buildGroup(
   promotedFor: PromotedColumnLookup,
   scope: WalkScope
 ): Fragment | null {
-  // Flattened exactly as `bindingWalks` collects: the object's keys and its AND conjuncts'.
-  const binds: WalkNode[] = [];
-  const items: WhereClause[] = [];
-  const flatten = (w: Record<string, unknown>): void => {
-    for (const [k, v] of Object.entries(w)) {
-      if (k === 'AND') {
-        if (Array.isArray(v)) for (const sub of v) if (isObj(sub)) flatten(sub);
-      } else if (k === '_walk' && isObj(v) && typeof v.as === 'string') binds.push(v as WalkNode);
-      else items.push({ [k]: v } as WhereClause);
-    }
-  };
-  flatten(where as Record<string, unknown>);
+  // The memory reference's own grouping, so the two quantify the same bindings jointly.
+  const { binds, items } = groupConjuncts(where);
 
   const bindings = new Map(scope.bindings);
   const hops = binds.map((node) => {

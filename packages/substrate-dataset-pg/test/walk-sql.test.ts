@@ -130,6 +130,11 @@ describe.skipIf(!POSTGRES_URL || PARTITIONED)('walks on a legacy store (pg)', ()
     // A read without walks is untouched.
     await expect(pg.read('Cert', { where: { grade: { eq: 9 } } })).resolves.toBeDefined();
   });
+
+  it('a read carrying count: false or empty walk params is a plain read', async () => {
+    await expect(pg.read('Cert', { count: false })).resolves.toMatchObject({ rows: [] });
+    await expect(pg.read('Cert', { agg: {}, nested: {} })).resolves.toMatchObject({ rows: [] });
+  });
 });
 
 describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walks in where (pg)', () => {
@@ -216,6 +221,20 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walks in where (pg)', () => {
     expect(q.match(/EXISTS/g)).toHaveLength(1);
     expect(q).toMatch(/FROM rows w1, rows w2/);
     expect(sent.some((s) => /set_config\('statement_timeout'/.test(s.query))).toBe(true);
+  });
+
+  it('the walk timeout lowers statement_timeout, never raises it', async () => {
+    const shown = async (preset: string | null): Promise<string> =>
+      sql.begin(async (tx) => {
+        if (preset !== null) await tx.unsafe(`SET LOCAL statement_timeout = '${preset}'`);
+        const inTx = new PgDataset({ namespace: NS, sql: tx, inTx: true, fieldDefLookup });
+        await inTx.read('Cert', { where: obs() });
+        const [row] = await tx<Array<{ statement_timeout: string }>>`SHOW statement_timeout`;
+        return row?.statement_timeout ?? '';
+      });
+    expect(await shown('5s')).toBe('5s');
+    expect(await shown(null)).toBe('30s');
+    expect(await shown('2min')).toBe('30s');
   });
 
   it('none, all and any, and nulls under all', async () => {

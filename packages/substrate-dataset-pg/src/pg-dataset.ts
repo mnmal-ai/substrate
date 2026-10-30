@@ -430,19 +430,21 @@ export class PgDataset implements Dataset {
         'walks need the partitioned storage layout; move this store onto it with `substrate-admin migrate-store`'
       );
     }
-    const unsupported = (['aggregate', 'bucket', 'derive', 'agg', 'nested'] as const).find(
-      (k) => params[k] !== undefined
-    );
-    if (params.count === true || unsupported !== undefined) {
+    const unsupported = walkParam(params);
+    if (unsupported !== undefined) {
       throw new ResolverFrameError(
         WALK_UNSUPPORTED_REF,
-        `'${unsupported ?? 'count'}' is not yet supported on pg`
+        `'${unsupported}' is not yet supported on pg`
       );
     }
     if (!this.#inTx) return this.withTransaction((tx) => tx.read(type, params));
-    // LOCAL: it ends with the transaction, the caller's included.
+    // LOCAL, so it ends with the transaction (the caller's included), and only
+    // ever lowers: a shorter timeout already in effect stays. `setting` is ms.
+    const ms = String(WALK_STATEMENT_TIMEOUT_MS);
     await cancellable(
-      this.#sql`SELECT set_config('statement_timeout', ${String(WALK_STATEMENT_TIMEOUT_MS)}, true)`,
+      this.#sql`
+        SELECT set_config('statement_timeout', ${ms}, true) FROM pg_settings
+        WHERE name = 'statement_timeout' AND (setting::bigint = 0 OR setting::bigint > ${ms}::bigint)`,
       params.signal
     );
     return this.#read(type, params, true);
@@ -1917,20 +1919,24 @@ export class PgDataset implements Dataset {
   }
 }
 
-/** Awaits `query`, cancelling the statement in flight when `signal` aborts. */
-/** The statement timeout a walk read runs under, in milliseconds. */
+/** The statement timeout a walk read runs under, in milliseconds, unless a shorter one is set. */
 export const WALK_STATEMENT_TIMEOUT_MS = 30_000;
+
+/** The first walk-only param a read actually uses: `count: true`, or a non-empty object. */
+function walkParam(params: ReadParams): string | undefined {
+  if (params.count === true) return 'count';
+  return (['aggregate', 'bucket', 'derive', 'agg', 'nested'] as const).find((k) => {
+    const v = params[k];
+    return typeof v === 'object' && v !== null && Object.keys(v).length > 0;
+  });
+}
 
 /** True when a read uses the walk grammar: in its where, or a walk-only param. */
 function usesWalkGrammar(params: ReadParams): boolean {
-  return (
-    whereUsesWalks(params.where) ||
-    (['count', 'aggregate', 'bucket', 'derive', 'agg', 'nested'] as const).some(
-      (k) => params[k] !== undefined
-    )
-  );
+  return whereUsesWalks(params.where) || walkParam(params) !== undefined;
 }
 
+/** Awaits `query`, cancelling the statement in flight when `signal` aborts. */
 async function cancellable<T extends readonly MaybeRow[]>(
   query: PendingQuery<T>,
   signal: AbortSignal | undefined

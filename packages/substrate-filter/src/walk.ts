@@ -61,17 +61,33 @@ const isObj = (v: unknown): v is Record<string, unknown> =>
 
 export const isRefOperand = (v: unknown): v is RefOperand => isObj(v) && typeof v.$ref === 'string';
 
-/** The `any` walks with `as` in this AND group: the object's own `_walk` and, through AND, its conjuncts'. */
-export function bindingWalks(where: unknown, out: WalkNode[] = []): WalkNode[] {
+/**
+ * One AND group, flattened: its `any` walks with `as` (the object's own
+ * `_walk`, then, through AND, its conjuncts') and every other conjunct as a
+ * one-key clause. OR and NOT stay whole, so their walks start their own group.
+ */
+export function groupConjuncts(
+  where: unknown,
+  out: { binds: WalkNode[]; items: WhereClause[] } = { binds: [], items: [] }
+): { binds: WalkNode[]; items: WhereClause[] } {
   if (!isObj(where)) return out;
   const w = where._walk;
-  if (isObj(w) && typeof w.as === 'string') out.push(w as WalkNode);
-  if (Array.isArray(where.AND)) for (const sub of where.AND) bindingWalks(sub, out);
+  if (isObj(w) && typeof w.as === 'string') out.binds.push(w as WalkNode);
+  else if (Object.hasOwn(where, '_walk')) out.items.push({ _walk: w } as WhereClause);
+  if (Array.isArray(where.AND)) for (const sub of where.AND) groupConjuncts(sub, out);
+  for (const [k, v] of Object.entries(where)) {
+    if (k !== '_walk' && k !== 'AND') out.items.push({ [k]: v } as WhereClause);
+  }
   return out;
 }
 
+/** The `any` walks with `as` in this AND group (see {@link groupConjuncts}). */
+export function bindingWalks(where: unknown): WalkNode[] {
+  return groupConjuncts(where).binds;
+}
+
 /** Binding names a `$ref` anywhere below `where` reads. */
-function refNames(where: unknown, out = new Set<string>()): Set<string> {
+export function refNames(where: unknown, out = new Set<string>()): Set<string> {
   if (Array.isArray(where)) for (const w of where) refNames(w, out);
   else if (isObj(where)) {
     if (typeof where.$ref === 'string') out.add(where.$ref.split('.', 1)[0] ?? '');

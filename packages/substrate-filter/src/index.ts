@@ -71,8 +71,10 @@ export {
   applyAgg,
   bindingWalks,
   computeAgg,
+  groupConjuncts,
   hop,
   isRefOperand,
+  refNames,
   WALK_EVALUATION_BUDGET,
   type WalkContext
 } from './walk.js';
