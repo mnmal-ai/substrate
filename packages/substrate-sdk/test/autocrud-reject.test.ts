@@ -18,6 +18,7 @@ import {
   purgeResolver,
   updateResolver
 } from '../src/autocrud/index.js';
+import { assertCrossRefDeletePolicies } from '../src/autocrud/internal.js';
 
 /** Minimal fields map for the Thing type under test. */
 const THING_FIELDS: Record<string, FieldDef> = {
@@ -560,6 +561,76 @@ describe('autoCRUD — scalar defaults + required fields', () => {
       const row = await update(makeCtx(), { params: { id: 'r1', title: undefined, note: null } });
       expect(row).toMatchObject({ title: 'original', note: null });
     });
+  });
+});
+
+describe('autoCRUD — required crossRefs', () => {
+  // task: cascade with nullable unset, so required. parent: set_null with nullable unset, so optional.
+  const FIELDS: Record<string, FieldDef> = {
+    id: { kind: 'scalar', type: 'string' },
+    title: { kind: 'scalar', type: 'string', nullable: true },
+    task: { kind: 'crossRef', ns: 'default', type: 'Task', onDelete: 'cascade' },
+    parent: { kind: 'crossRef', ns: 'default', type: 'Thing', onDelete: 'set_null' }
+  };
+
+  it('create refuses omitting a non-nullable crossRef', async () => {
+    const resolver = createResolver('Thing', new MemoryDataset({ namespace: 'default' }), {
+      fields: FIELDS
+    });
+    await expect(resolver(makeCtx(), { params: { title: 'x' } })).rejects.toThrow(
+      expect.objectContaining({
+        code: 'missing_required_field',
+        details: expect.objectContaining({ fields: ['task'], phase: 'create' })
+      })
+    );
+  });
+
+  it('create refuses an explicit null on a non-nullable crossRef', async () => {
+    const resolver = createResolver('Thing', new MemoryDataset({ namespace: 'default' }), {
+      fields: FIELDS
+    });
+    await expect(resolver(makeCtx(), { params: { task: null } })).rejects.toThrow(
+      expect.objectContaining({
+        code: 'null_not_allowed',
+        details: expect.objectContaining({ field: 'task' })
+      })
+    );
+  });
+
+  it('nullable crossRefs, explicitly or by onDelete set_null, may be omitted', async () => {
+    const fields = { ...FIELDS, task: { ...FIELDS.task, nullable: true } as FieldDef };
+    const resolver = createResolver('Thing', new MemoryDataset({ namespace: 'default' }), {
+      fields
+    });
+    const row = await resolver(makeCtx(), { params: { title: 'x' } });
+    expect(row).toMatchObject({ title: 'x' });
+  });
+
+  it('update refuses nulling a non-nullable crossRef', async () => {
+    const dataset = new MemoryDataset({ namespace: 'default' });
+    await dataset.write('Thing', [{ id: 'r1', title: 'x', task: 't1' }]);
+    const update = updateResolver('Thing', dataset, makeEdges(), { fields: FIELDS });
+    await expect(update(makeCtx(), { params: { id: 'r1', task: null } })).rejects.toThrow(
+      expect.objectContaining({
+        code: 'null_not_allowed',
+        details: expect.objectContaining({ phase: 'update' })
+      })
+    );
+  });
+
+  it('registration refuses nullable: false with onDelete set_null', () => {
+    expect(() =>
+      assertCrossRefDeletePolicies('Thing', {
+        parent: {
+          kind: 'crossRef',
+          ns: 'default',
+          type: 'Thing',
+          onDelete: 'set_null',
+          nullable: false
+        }
+      })
+    ).toThrow(/'parent'.*nullable: false but onDelete: 'set_null'/);
+    expect(() => assertCrossRefDeletePolicies('Thing', FIELDS)).not.toThrow();
   });
 });
 

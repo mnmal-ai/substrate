@@ -41,7 +41,10 @@ import type {
   Row
 } from '@mnmal-ai/substrate-types';
 import { installAutoCrud } from './autocrud/index.js';
-import { assertServerSetFieldsFillable } from './autocrud/internal.js';
+import {
+  assertCrossRefDeletePolicies,
+  assertServerSetFieldsFillable
+} from './autocrud/internal.js';
 import { RESERVED_AUTOCRUD_FIELD_NAMES, RESERVED_AUTOCRUD_FIELDS } from './autocrud/reserved.js';
 
 export type { PostWriteHook };
@@ -215,6 +218,7 @@ export function defineNamespace(
       }
     }
     assertServerSetFieldsFillable(typeName, typeInput.fields);
+    assertCrossRefDeletePolicies(typeName, typeInput.fields);
   }
 
   for (const [typeName, typeInput] of Object.entries(types)) {

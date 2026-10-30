@@ -57,7 +57,7 @@ import type {
   WriteResult,
   WriteRow
 } from '@mnmal-ai/substrate-types';
-import { assertNoRepeatedIds, naturalOrderOf } from '@mnmal-ai/substrate-types';
+import { assertNoRepeatedIds, naturalOrderOf, ResolverFrameError } from '@mnmal-ai/substrate-types';
 import type { ReservedSql, Sql } from 'postgres';
 import { withPgAdvisoryLock } from './advisory-lock.js';
 import type { DiskGuard } from './disk-guard.js';
@@ -834,7 +834,9 @@ export class PgDataset implements Dataset {
        AND s.type = u.type
        AND s.row_id = u.id
       ORDER BY i.ord
-    `;
+    `.catch((err: unknown) => {
+      throw this.#uniqueViolation(type, err);
+    });
 
     const merged = records.map((r) => this.materialize(r));
     return { written: merged.length, ids: merged.map((r) => r.id), rows: merged };
@@ -1315,6 +1317,32 @@ export class PgDataset implements Dataset {
         ...(build.reason !== undefined ? { reason: build.reason } : {})
       };
     });
+  }
+
+  /**
+   * A write's error as the caller should see it: a declared unique index's
+   * conflict (23505) becomes `unique_violation` naming the index and its
+   * fields; anything else is returned unchanged.
+   */
+  #uniqueViolation(type: string, err: unknown): unknown {
+    const pgErr = err as { code?: unknown; constraint_name?: unknown };
+    if (pgErr?.code !== '23505' || typeof pgErr.constraint_name !== 'string') return err;
+    const index = pgErr.constraint_name;
+    // The cached layout only: the failed statement may have aborted this transaction.
+    const layout = this.#layoutCache.layout;
+    const declared =
+      layout === undefined
+        ? undefined
+        : desiredIndexKeys(this.#indexArgs(type, this.namespace, layout)).find(
+            (d) => d.name === index
+          );
+    const fields = declared?.keys.map(([field]) => field) ?? [];
+    return new ResolverFrameError(
+      'unique_violation',
+      `${this.namespace}/${type}: a row already holds these values for unique index ${index}` +
+        (fields.length > 0 ? ` (${fields.join(', ')})` : ''),
+      { index, fields }
+    );
   }
 
   #indexArgs(type: string, namespace: string, layout: StorageLayout): ReconcileTypeIndexesArgs {

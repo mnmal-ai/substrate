@@ -5,6 +5,7 @@
  * variables only, and nothing this command prints carries one.
  */
 
+import { randomBytes } from 'node:crypto';
 import { statfs } from 'node:fs/promises';
 import {
   MIGRATE_STORE_MARKER_TABLE,
@@ -58,8 +59,11 @@ export interface MigrateStoreDeps {
 export interface MigrateStoreReport {
   mode: 'dry-run' | 'migrate' | 'verify-only';
   ok: boolean;
-  exitCode: 0 | 2 | 3;
+  exitCode: 0 | 1 | 2 | 3;
   refusals: string[];
+  /** Why a run failed outside a refusal or a verification (exit 1), and in which phase. */
+  error?: string;
+  failedPhase?: string;
   warnings: string[];
   /** The source's types (dry run). */
   types?: SourceType[];
@@ -263,17 +267,21 @@ export async function runMigrateStore(
     mismatches: [],
     switchOver: null
   };
-  const finish = (exitCode: 0 | 2 | 3) => {
+  const finish = (exitCode: 0 | 1 | 2 | 3) => {
     report.exitCode = exitCode;
     report.ok = exitCode === 0;
     report.totalMs = Math.round(performance.now() - started);
     return report;
   };
+  let running: string | undefined;
   const phase = async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
     deps.progress(`migrate-store: ${name}`);
     const t = performance.now();
+    running = name;
     try {
-      return await fn();
+      const out = await fn();
+      running = undefined;
+      return out;
     } finally {
       report.phases[name] = Math.round(performance.now() - t);
     }
@@ -285,8 +293,16 @@ export async function runMigrateStore(
   }
   if (report.refusals.length > 0) return finish(2);
 
-  // The target's serve env: everything the operator set, the store swapped for the target.
-  const targetEnv: Record<string, string | undefined> = { ...vars, SUBSTRATE_DATABASE_URL: toUrl };
+  // The target's serve env: everything the operator set, the store swapped for the target. A
+  // prepare boot never listens, so the listener's own requirements (a public origin off loopback,
+  // a stream-ticket secret under auth) are met with a loopback host and a throwaway secret.
+  const targetEnv: Record<string, string | undefined> = {
+    ...vars,
+    SUBSTRATE_DATABASE_URL: toUrl,
+    HOST: '127.0.0.1',
+    SUBSTRATE_STREAM_TICKET_SECRET:
+      vars.SUBSTRATE_STREAM_TICKET_SECRET?.trim() || randomBytes(32).toString('hex')
+  };
   const pluginDir = resolvePluginDir(targetEnv);
   const boot = () =>
     bootStore({
@@ -418,6 +434,16 @@ export async function runMigrateStore(
       `${args.toSchema !== null ? ` with search_path ${args.toSchema},public (options=-c search_path=${args.toSchema},public)` : ''}` +
       ', then start serve. The source is untouched: pointing back at it is the rollback.';
     return finish(0);
+  } catch (e) {
+    // Past this point a failure still returns the report, so a --json caller gets one.
+    const message = e instanceof Error ? e.message : String(e);
+    if (e instanceof AdminCliError && (e.exitCode === 2 || e.exitCode === 3)) {
+      report.refusals.push(message);
+      return finish(e.exitCode);
+    }
+    report.error = message;
+    if (running !== undefined) report.failedPhase = running;
+    return finish(1);
   } finally {
     await target?.close().catch(() => undefined);
     await src.end({ timeout: 5 }).catch(() => undefined);
@@ -589,7 +615,9 @@ export function formatMigrateStoreOutput(r: MigrateStoreReport, json: boolean): 
         : 'copied and verified'
       : r.exitCode === 3
         ? 'VERIFICATION FAILED: the target keeps its in-progress marker, so serve will not boot it'
-        : 'REFUSED: nothing was written to the target';
+        : r.exitCode === 1
+          ? `FAILED${r.failedPhase !== undefined ? ` in ${r.failedPhase}` : ''}: ${r.error ?? 'unknown error'}`
+          : 'REFUSED: nothing was written to the target';
   lines.push(`migrate-store (${r.mode}): ${verdict}`);
   for (const x of r.refusals) lines.push(`  refused: ${x}`);
   for (const x of r.warnings) lines.push(`  warning: ${x}`);
