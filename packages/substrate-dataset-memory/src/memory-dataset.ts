@@ -29,7 +29,9 @@ import {
   fullBuiltinOperators,
   getFieldValue,
   isDateField,
-  preResolveExtensionOperatorsDetailed
+  preResolveExtensionOperatorsDetailed,
+  WALK_EVALUATION_BUDGET,
+  type WalkContext
 } from '@mnmal-ai/substrate-filter';
 import type {
   ActorIdentity,
@@ -80,6 +82,11 @@ export interface MemoryDatasetOptions {
    * gets `_metadata.seq` on insert, as the pg dataset's lookup does.
    */
   typeDefLookup?: (type: string, namespace: string) => { ordering?: 'visible' } | undefined;
+  /**
+   * Internal: binding assignments one read's walks may try before refusing
+   * `walk_budget_exceeded`. Defaults to `WALK_EVALUATION_BUDGET`; tests lower it.
+   */
+  walkBudget?: number;
 }
 
 const RESERVED_DELETED_AT = '_deletedAt';
@@ -114,6 +121,7 @@ export class MemoryDataset implements Dataset {
   readonly #fieldDefLookup: MemoryDatasetOptions['fieldDefLookup'];
   // TS-private, not `#`: write() must work through a Proxy, as `store` does.
   private readonly typeDefLookup: MemoryDatasetOptions['typeDefLookup'];
+  private readonly walkBudget: number;
   /** Last seq assigned per visible-order type; never decreases, as pg's `visible_seqs`. */
   private seqs = new Map<string, number>();
   // Full builtin operator set — everything the validator recognises. A
@@ -161,6 +169,7 @@ export class MemoryDataset implements Dataset {
     this.txScopeId = options.txScopeId ?? `mem:${randomUUID()}`;
     this.#fieldDefLookup = options.fieldDefLookup;
     this.typeDefLookup = options.typeDefLookup;
+    this.walkBudget = options.walkBudget ?? WALK_EVALUATION_BUDGET;
   }
 
   private bucket(type: string): Map<Id, Row> {
@@ -225,6 +234,7 @@ export class MemoryDataset implements Dataset {
     // shortId is stored directly on each row at bindShortId time, so reads
     // return rows without any per-row spread allocation.
     const pool: Row[] = [];
+    const walk = this.walkContext(type);
 
     // Short-circuit on id-filter: iterate only the requested ids via Map.get
     // rather than scanning the full bucket.
@@ -238,7 +248,12 @@ export class MemoryDataset implements Dataset {
       : b.values();
     for (const row of candidates) {
       if (!includeDeleted && row._deletedAt != null) continue;
-      if (resolvedWhere !== undefined && !evaluateWhere(row, resolvedWhere, fieldDefOf)) continue;
+      if (
+        resolvedWhere !== undefined &&
+        !evaluateWhere(row, resolvedWhere, fieldDefOf, { ...walk, seed: row })
+      ) {
+        continue;
+      }
       pool.push(row);
     }
 
@@ -294,6 +309,39 @@ export class MemoryDataset implements Dataset {
       });
     }
     return out;
+  }
+
+  /**
+   * Walks over this namespace's live rows, for one read. Neighbours follow the
+   * row body's crossRef value (spec 2026-10-24-typed-edge-walks §1), indexed
+   * per (type, field) on first use.
+   */
+  private walkContext(type: string): Omit<WalkContext, 'seed'> {
+    const lookup = this.#fieldDefLookup;
+    const index = new Map<string, Map<unknown, Row[]>>();
+    const live = (r: Row | undefined) => (r === undefined || r._deletedAt != null ? undefined : r);
+    return {
+      type,
+      bindings: new Map(),
+      budget: { left: this.walkBudget },
+      fieldDefOf: (t) => (field) => lookup?.(t, field),
+      get: (t, id) => live(this.store.get(t)?.get(id)),
+      neighbours: (t, field, id) => {
+        const key = `${t}\0${field}`;
+        let byValue = index.get(key);
+        if (byValue === undefined) {
+          byValue = new Map();
+          for (const r of this.store.get(t)?.values() ?? []) {
+            if (r._deletedAt != null || !Object.hasOwn(r, field)) continue;
+            const list = byValue.get(r[field]);
+            if (list === undefined) byValue.set(r[field], [r]);
+            else list.push(r);
+          }
+          index.set(key, byValue);
+        }
+        return byValue.get(id) ?? [];
+      }
+    };
   }
 
   async write(type: string, rows: WriteRow[], options?: WriteOptions): Promise<WriteResult> {

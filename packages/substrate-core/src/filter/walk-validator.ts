@@ -13,6 +13,9 @@ import { walkGrammarPath } from '../walk-gate.js';
 import { FilterValidationError } from './validator.js';
 
 export const MAX_WALK_DEPTH = 3;
+/** Joint quantification enumerates the product of the bound walks' neighbourhoods, so cap the factors. */
+export const MAX_GROUP_BINDINGS = 3;
+export const MAX_FRAME_BINDINGS = 6;
 
 const COMPARISON_OPS = new Set(['eq', 'neq', 'gt', 'gte', 'lt', 'lte']);
 const WALK_KEYS = new Set(['as', 'in', 'out', 'where', 'quantifier', 'pick']);
@@ -37,6 +40,8 @@ export interface WalkScope {
   groupBound: boolean;
   /** The frame's `_agg` names and their value kinds, for `$ref: '_agg.<name>'`. */
   aggs?: ReadonlyMap<string, string>;
+  /** `as` bindings made so far in this frame, shared by every scope derived from the seed. */
+  frameBindings?: { count: number };
 }
 
 export type FieldLookup = (fields: Record<string, FieldDef>, name: string) => FieldDef | undefined;
@@ -215,6 +220,20 @@ export function bindGroup(where: unknown, path: string[], scope: WalkScope): Wal
   hiddenNames(where, false, hidden);
   if (walks.every(([n]) => n.as === undefined) && hidden.size === scope.hidden.size) {
     return { ...scope, groupBound: true };
+  }
+  const bound = walks.filter(([n]) => n.as !== undefined);
+  if (bound.length > MAX_GROUP_BINDINGS) {
+    fail(
+      'walk_binding',
+      `an AND group binds at most ${MAX_GROUP_BINDINGS} walks with 'as', got ${bound.length}`,
+      path
+    );
+  }
+  if (scope.frameBindings !== undefined) {
+    scope.frameBindings.count += bound.length;
+    if (scope.frameBindings.count > MAX_FRAME_BINDINGS) {
+      fail('walk_binding', `a frame binds at most ${MAX_FRAME_BINDINGS} walks with 'as'`, path);
+    }
   }
   const bindings = new Map(scope.bindings);
   for (const [node, at] of walks) {

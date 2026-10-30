@@ -17,8 +17,10 @@ import {
   type FieldPredicate,
   METADATA_FILTER_FIELDS,
   normalizeIsoTimestamp,
+  type RefOperand,
   type Row,
   UnsupportedFilterError,
+  type WalkNode,
   type WhereClause
 } from '@mnmal-ai/substrate-types';
 import { getExtensionOperator } from './extension-operators.js';
@@ -28,6 +30,14 @@ import {
   evaluateJsonPathPredicate,
   isJsonPathPredicate
 } from './json-path.js';
+import {
+  bindingWalks,
+  evaluateGroup,
+  evaluateWalk,
+  isRefOperand,
+  resolveRef,
+  type WalkContext
+} from './walk.js';
 
 /**
  * Tier-1 row-metadata column projections.
@@ -59,9 +69,11 @@ const METADATA_COLUMN_PROJECTIONS: Record<string, (row: Row) => unknown> = {
  * (`row[name]`), preserving the existing filter semantics.
  */
 export function getFieldValue(row: Row, name: string): unknown {
-  const projector = METADATA_COLUMN_PROJECTIONS[name];
-  if (projector !== undefined) return projector(row);
-  return row[name];
+  // Own properties only: a name like `constructor` must not read the prototype.
+  if (Object.hasOwn(METADATA_COLUMN_PROJECTIONS, name)) {
+    return (METADATA_COLUMN_PROJECTIONS[name] as (row: Row) => unknown)(row);
+  }
+  return Object.hasOwn(row, name) ? row[name] : undefined;
 }
 
 /** A type's field declarations, by top-level field name. */
@@ -119,6 +131,14 @@ export function assertWhereHonourable(where: WhereClause): void {
       assertWhereHonourable(child as WhereClause);
       continue;
     }
+    // Walk nodes and walk aggregates are shaped by the walk validator; only a
+    // walk's far-side where is checked here.
+    if (key === '_walk') {
+      const far = (child as WalkNode | null)?.where;
+      if (far !== undefined) assertWhereHonourable(far);
+      continue;
+    }
+    if (key === '_agg') continue;
     if (getExtensionOperator(key) !== undefined) continue;
     assertFieldPredicateHonourable(key, child);
   }
@@ -184,21 +204,51 @@ function assertFieldPredicateHonourable(field: string, predicate: unknown): void
  * `fieldDefOf` names the row type's declared fields, so `date` fields compare
  * as instants (as pg's timestamptz does). Without it, only `createdAt` and
  * `updatedAt` do; nested struct fields always compare as written.
+ *
+ * `walk` lets `_walk` nodes and `$ref` operands reach other rows; without it
+ * either one throws. The `any` walks with `as` in one AND group are jointly
+ * quantified (see `evaluateGroup`).
  */
-export function evaluateWhere(row: Row, where: WhereClause, fieldDefOf?: FieldDefOf): boolean {
+export function evaluateWhere(
+  row: Row,
+  where: WhereClause,
+  fieldDefOf?: FieldDefOf,
+  walk?: WalkContext
+): boolean {
+  if (walk !== undefined) {
+    const group = bindingWalks(where);
+    if (group.length > 0) return evaluateGroup(row, where, fieldDefOf, walk, group);
+  }
+  return evaluateMembers(row, where, fieldDefOf, walk, NO_WALKS);
+}
+
+const NO_WALKS: ReadonlySet<WalkNode> = new Set();
+
+/**
+ * {@link evaluateWhere} for one AND group under its current assignment: the
+ * `bound` walks hold already, so they are skipped. Conjuncts stay in the
+ * group; OR and NOT branches start their own.
+ */
+export function evaluateMembers(
+  row: Row,
+  where: WhereClause,
+  fieldDefOf: FieldDefOf | undefined,
+  walk: WalkContext | undefined,
+  bound: ReadonlySet<WalkNode>
+): boolean {
   if (where === null || typeof where !== 'object' || Array.isArray(where)) return true;
   for (const [k, child] of Object.entries(where as Record<string, unknown>)) {
     if (k === 'AND') {
       if (Array.isArray(child)) {
         for (const sub of child) {
-          if (!evaluateWhere(row, sub as WhereClause, fieldDefOf)) return false;
+          if (!evaluateMembers(row, sub as WhereClause, fieldDefOf, walk, bound)) return false;
         }
       }
     } else if (k === 'OR') {
       if (Array.isArray(child)) {
         let any = false;
         for (const sub of child) {
-          if (evaluateWhere(row, sub as WhereClause, fieldDefOf)) {
+          if (evaluateWhere(row, sub as WhereClause, fieldDefOf, walk)) {
             any = true;
             break;
           }
@@ -206,10 +256,18 @@ export function evaluateWhere(row: Row, where: WhereClause, fieldDefOf?: FieldDe
         if (!any) return false;
       }
     } else if (k === 'NOT') {
-      if (evaluateWhere(row, child as WhereClause, fieldDefOf)) return false;
+      if (evaluateWhere(row, child as WhereClause, fieldDefOf, walk)) return false;
+    } else if (k === '_walk') {
+      if (walk === undefined)
+        throw new UnsupportedFilterError(k, '<none>', 'walks need a walk context');
+      const node = child as WalkNode;
+      if (!bound.has(node) && !evaluateWalk(row, node, walk)) return false;
+    } else if (k === '_agg') {
+      throw new Error('internal: _agg predicates are not evaluated yet');
     } else {
       const asDate = isDateField(k, fieldDefOf);
-      if (!evaluateFieldPredicate(k, getFieldValue(row, k), child, asDate)) return false;
+      const ref = walk === undefined ? undefined : (r: RefOperand) => resolveRef(r, asDate, walk);
+      if (!evaluateFieldPredicate(k, getFieldValue(row, k), child, asDate, ref)) return false;
     }
   }
   return true;
@@ -219,7 +277,8 @@ function evaluateFieldPredicate(
   field: string,
   value: unknown,
   predicate: unknown,
-  asDate = false
+  asDate = false,
+  ref?: (operand: RefOperand) => unknown
 ): boolean {
   if (predicate === null || typeof predicate !== 'object' || Array.isArray(predicate)) {
     // `where: { kind: 'depends_on' }` — a bare value where an operator object
@@ -258,7 +317,15 @@ function evaluateFieldPredicate(
   }
 
   for (const op of keys) {
-    const operand = p[op as keyof FieldPredicate] as unknown;
+    let operand = p[op as keyof FieldPredicate] as unknown;
+    if (isRefOperand(operand)) {
+      if (ref === undefined)
+        throw new UnsupportedFilterError(field, op, '$ref needs a walk context');
+      operand = ref(operand);
+      // A null `$ref` is never true, eq and neq included: they keep their
+      // is-null meaning only for a literal null.
+      if (operand == null) return false;
+    }
     if (!applyOp(field, op, value, operand, asDate)) return false;
   }
   return true;
@@ -385,7 +452,7 @@ export function compareFilterValues(a: unknown, b: unknown, asDate = false): num
  * NULL, a number included. Only the shared ISO grammar is read; operands are
  * cast leniently, as pg's `tsParam` casts them.
  */
-function storedMicros(v: unknown): bigint | undefined {
+export function storedMicros(v: unknown): bigint | undefined {
   if (v instanceof Date) return toMicros(v);
   if (typeof v !== 'string' || normalizeIsoTimestamp(v) === undefined) return undefined;
   return toMicros(v);
