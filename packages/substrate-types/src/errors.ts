@@ -12,6 +12,7 @@ import type { Edge, EdgeRef } from './edge.js';
 export const WALKS_DISABLED = 'walks_disabled';
 export const WALKS_NEED_PARTITIONED = 'walks_need_partitioned';
 export const WALKS_IN_SUBSCRIPTION = 'walks_in_subscription';
+export const ROW_POLICY_BLOCKS_WALK = 'row_policy_blocks_walk';
 
 /**
  * Throwable by a resolver to surface a structured per-frame error with a
