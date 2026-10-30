@@ -1,0 +1,960 @@
+[
+  {
+    "question": "How many pg-gated tests ran locally 25% slower than on CI in the past 2 days?",
+    "expect": {
+      "kind": "rows",
+      "answer": "count",
+      "frame": {
+        "runs/Test": {
+          "where": {
+            "AND": [
+              {
+                "pgGated": {
+                  "eq": true
+                }
+              },
+              {
+                "_walk": {
+                  "as": "CR",
+                  "in": "runs/CiRun.test",
+                  "where": {
+                    "AND": [
+                      {
+                        "at": {
+                          "gte": "2026-10-28T00:00:00Z",
+                          "lt": "2026-10-31T00:00:00Z"
+                        }
+                      },
+                      {
+                        "NOT": {
+                          "status": {
+                            "in": ["skipped", "killed"]
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "_walk": {
+                  "as": "LR",
+                  "in": "runs/LocalRun.test",
+                  "where": {
+                    "AND": [
+                      {
+                        "durationMs": {
+                          "gte": {
+                            "$ref": "CR.durationMs",
+                            "times": 1.25
+                          }
+                        }
+                      },
+                      {
+                        "NOT": {
+                          "status": {
+                            "in": ["skipped", "killed"]
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "count": true
+        }
+      }
+    }
+  },
+  {
+    "question": "Which pg-gated tests ran locally 25% slower than on CI in the past 2 days?",
+    "expect": {
+      "kind": "rows",
+      "answer": "rows",
+      "frame": {
+        "runs/Test": {
+          "where": {
+            "AND": [
+              {
+                "pgGated": {
+                  "eq": true
+                }
+              },
+              {
+                "_walk": {
+                  "as": "CR",
+                  "in": "runs/CiRun.test",
+                  "where": {
+                    "AND": [
+                      {
+                        "at": {
+                          "gte": "2026-10-28T00:00:00Z",
+                          "lt": "2026-10-31T00:00:00Z"
+                        }
+                      },
+                      {
+                        "NOT": {
+                          "status": {
+                            "in": ["skipped", "killed"]
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "_walk": {
+                  "as": "LR",
+                  "in": "runs/LocalRun.test",
+                  "where": {
+                    "AND": [
+                      {
+                        "durationMs": {
+                          "gte": {
+                            "$ref": "CR.durationMs",
+                            "times": 1.25
+                          }
+                        }
+                      },
+                      {
+                        "NOT": {
+                          "status": {
+                            "in": ["skipped", "killed"]
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    "question": "how many tests ran locally 20% faster than on ci",
+    "expect": {
+      "kind": "rows",
+      "answer": "count",
+      "frame": {
+        "runs/Test": {
+          "where": {
+            "AND": [
+              {
+                "_walk": {
+                  "as": "CR",
+                  "in": "runs/CiRun.test",
+                  "where": {
+                    "NOT": {
+                      "status": {
+                        "in": ["skipped", "killed"]
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "_walk": {
+                  "as": "LR",
+                  "in": "runs/LocalRun.test",
+                  "where": {
+                    "AND": [
+                      {
+                        "durationMs": {
+                          "lte": {
+                            "$ref": "CR.durationMs",
+                            "times": 0.8
+                          }
+                        }
+                      },
+                      {
+                        "NOT": {
+                          "status": {
+                            "in": ["skipped", "killed"]
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "count": true
+        }
+      }
+    }
+  },
+  {
+    "question": "tests that ran locally 20% faster than on ci",
+    "expect": {
+      "kind": "rows",
+      "answer": "rows",
+      "frame": {
+        "runs/Test": {
+          "where": {
+            "AND": [
+              {
+                "_walk": {
+                  "as": "CR",
+                  "in": "runs/CiRun.test",
+                  "where": {
+                    "NOT": {
+                      "status": {
+                        "in": ["skipped", "killed"]
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "_walk": {
+                  "as": "LR",
+                  "in": "runs/LocalRun.test",
+                  "where": {
+                    "AND": [
+                      {
+                        "durationMs": {
+                          "lte": {
+                            "$ref": "CR.durationMs",
+                            "times": 0.8
+                          }
+                        }
+                      },
+                      {
+                        "NOT": {
+                          "status": {
+                            "in": ["skipped", "killed"]
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    "question": "how many pg-gated tests ran locally 50% slower than on ci",
+    "expect": {
+      "kind": "rows",
+      "answer": "count",
+      "frame": {
+        "runs/Test": {
+          "where": {
+            "AND": [
+              {
+                "pgGated": {
+                  "eq": true
+                }
+              },
+              {
+                "_walk": {
+                  "as": "CR",
+                  "in": "runs/CiRun.test",
+                  "where": {
+                    "NOT": {
+                      "status": {
+                        "in": ["skipped", "killed"]
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "_walk": {
+                  "as": "LR",
+                  "in": "runs/LocalRun.test",
+                  "where": {
+                    "AND": [
+                      {
+                        "durationMs": {
+                          "gte": {
+                            "$ref": "CR.durationMs",
+                            "times": 1.5
+                          }
+                        }
+                      },
+                      {
+                        "NOT": {
+                          "status": {
+                            "in": ["skipped", "killed"]
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "count": true
+        }
+      }
+    }
+  },
+  {
+    "question": "how many tests with a local duration at least 2x the ci duration",
+    "expect": {
+      "kind": "rows",
+      "answer": "count",
+      "frame": {
+        "runs/Test": {
+          "where": {
+            "AND": [
+              {
+                "_walk": {
+                  "as": "CR",
+                  "in": "runs/CiRun.test",
+                  "where": {
+                    "NOT": {
+                      "status": {
+                        "in": ["skipped", "killed"]
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "_walk": {
+                  "as": "LR",
+                  "in": "runs/LocalRun.test",
+                  "where": {
+                    "AND": [
+                      {
+                        "durationMs": {
+                          "gte": {
+                            "$ref": "CR.durationMs",
+                            "times": 2
+                          }
+                        }
+                      },
+                      {
+                        "NOT": {
+                          "status": {
+                            "in": ["skipped", "killed"]
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "count": true
+        }
+      }
+    }
+  },
+  {
+    "question": "how many tests",
+    "expect": {
+      "kind": "rows",
+      "answer": "count",
+      "frame": {
+        "runs/Test": {
+          "count": true
+        }
+      }
+    }
+  },
+  {
+    "question": "pg-gated tests",
+    "expect": {
+      "kind": "rows",
+      "answer": "rows",
+      "frame": {
+        "runs/Test": {
+          "where": {
+            "pgGated": {
+              "eq": true
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "question": "how many pg-gated tests",
+    "expect": {
+      "kind": "rows",
+      "answer": "count",
+      "frame": {
+        "runs/Test": {
+          "where": {
+            "pgGated": {
+              "eq": true
+            }
+          },
+          "count": true
+        }
+      }
+    }
+  },
+  {
+    "question": "tests in pkg-core",
+    "expect": {
+      "kind": "rows",
+      "answer": "rows",
+      "frame": {
+        "runs/Test": {
+          "where": {
+            "package": {
+              "eq": "pkg-core"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "question": "how many tests in pkg-core",
+    "expect": {
+      "kind": "rows",
+      "answer": "count",
+      "frame": {
+        "runs/Test": {
+          "where": {
+            "package": {
+              "eq": "pkg-core"
+            }
+          },
+          "count": true
+        }
+      }
+    }
+  },
+  {
+    "question": "local runs on host-a",
+    "expect": {
+      "kind": "rows",
+      "answer": "rows",
+      "frame": {
+        "runs/LocalRun": {
+          "where": {
+            "host": {
+              "eq": "host-a"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "question": "how many local runs on host-a",
+    "expect": {
+      "kind": "rows",
+      "answer": "count",
+      "frame": {
+        "runs/LocalRun": {
+          "where": {
+            "host": {
+              "eq": "host-a"
+            }
+          },
+          "count": true
+        }
+      }
+    }
+  },
+  {
+    "question": "how many local runs in the past 7 days",
+    "expect": {
+      "kind": "rows",
+      "answer": "count",
+      "frame": {
+        "runs/LocalRun": {
+          "where": {
+            "at": {
+              "gte": "2026-10-23T00:00:00Z",
+              "lt": "2026-10-31T00:00:00Z"
+            }
+          },
+          "count": true
+        }
+      }
+    }
+  },
+  {
+    "question": "ci runs in the past 2 days",
+    "expect": {
+      "kind": "rows",
+      "answer": "rows",
+      "frame": {
+        "runs/CiRun": {
+          "where": {
+            "at": {
+              "gte": "2026-10-28T00:00:00Z",
+              "lt": "2026-10-31T00:00:00Z"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "question": "latest local run",
+    "expect": {
+      "kind": "rows",
+      "answer": "single",
+      "frame": {
+        "runs/LocalRun": {
+          "orderBy": [
+            {
+              "at": "desc"
+            }
+          ],
+          "limit": 1
+        }
+      }
+    }
+  },
+  {
+    "question": "the latest local run on host-a",
+    "expect": {
+      "kind": "rows",
+      "answer": "single",
+      "frame": {
+        "runs/LocalRun": {
+          "where": {
+            "host": {
+              "eq": "host-a"
+            }
+          },
+          "orderBy": [
+            {
+              "at": "desc"
+            }
+          ],
+          "limit": 1
+        }
+      }
+    }
+  },
+  {
+    "question": "tests with a local duration over 5000",
+    "expect": {
+      "kind": "rows",
+      "answer": "rows",
+      "frame": {
+        "runs/Test": {
+          "where": {
+            "_walk": {
+              "as": "LR",
+              "in": "runs/LocalRun.test",
+              "where": {
+                "AND": [
+                  {
+                    "durationMs": {
+                      "gt": 5000
+                    }
+                  },
+                  {
+                    "NOT": {
+                      "status": {
+                        "in": ["skipped", "killed"]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "question": "how many tests with a local duration over 5000",
+    "expect": {
+      "kind": "rows",
+      "answer": "count",
+      "frame": {
+        "runs/Test": {
+          "where": {
+            "_walk": {
+              "as": "LR",
+              "in": "runs/LocalRun.test",
+              "where": {
+                "AND": [
+                  {
+                    "durationMs": {
+                      "gt": 5000
+                    }
+                  },
+                  {
+                    "NOT": {
+                      "status": {
+                        "in": ["skipped", "killed"]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "count": true
+        }
+      }
+    }
+  },
+  {
+    "question": "how many tests with a ci duration over 5000 in the past 2 days",
+    "expect": {
+      "kind": "rows",
+      "answer": "count",
+      "frame": {
+        "runs/Test": {
+          "where": {
+            "_walk": {
+              "as": "CR",
+              "in": "runs/CiRun.test",
+              "where": {
+                "AND": [
+                  {
+                    "durationMs": {
+                      "gt": 5000
+                    }
+                  },
+                  {
+                    "at": {
+                      "gte": "2026-10-28T00:00:00Z",
+                      "lt": "2026-10-31T00:00:00Z"
+                    }
+                  },
+                  {
+                    "NOT": {
+                      "status": {
+                        "in": ["skipped", "killed"]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "count": true
+        }
+      }
+    }
+  },
+  {
+    "question": "tests whose latest local duration is over 5000",
+    "expect": {
+      "kind": "rows",
+      "answer": "rows",
+      "frame": {
+        "runs/Test": {
+          "where": {
+            "_walk": {
+              "in": "runs/LocalRun.test",
+              "where": {
+                "AND": [
+                  {
+                    "durationMs": {
+                      "gt": 5000
+                    }
+                  },
+                  {
+                    "NOT": {
+                      "status": {
+                        "in": ["skipped", "killed"]
+                      }
+                    }
+                  }
+                ]
+              },
+              "pick": {
+                "latest": "at"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "question": "how many tests whose highest ci duration is over 60000",
+    "expect": {
+      "kind": "rows",
+      "answer": "count",
+      "frame": {
+        "runs/Test": {
+          "where": {
+            "_walk": {
+              "in": "runs/CiRun.test",
+              "where": {
+                "AND": [
+                  {
+                    "durationMs": {
+                      "gt": 60000
+                    }
+                  },
+                  {
+                    "NOT": {
+                      "status": {
+                        "in": ["skipped", "killed"]
+                      }
+                    }
+                  }
+                ]
+              },
+              "pick": {
+                "max": "durationMs"
+              }
+            }
+          },
+          "count": true
+        }
+      }
+    }
+  },
+  {
+    "question": "how many failed ci runs",
+    "expect": {
+      "kind": "rows",
+      "answer": "count",
+      "frame": {
+        "runs/CiRun": {
+          "where": {
+            "status": {
+              "eq": "failed"
+            }
+          },
+          "count": true
+        }
+      }
+    }
+  },
+  {
+    "question": "how many pg-gated tests with a local setup over 1000",
+    "expect": {
+      "kind": "rows",
+      "answer": "count",
+      "frame": {
+        "runs/Test": {
+          "where": {
+            "AND": [
+              {
+                "pgGated": {
+                  "eq": true
+                }
+              },
+              {
+                "_walk": {
+                  "as": "LR",
+                  "in": "runs/LocalRun.test",
+                  "where": {
+                    "AND": [
+                      {
+                        "setupMs": {
+                          "gt": 1000
+                        }
+                      },
+                      {
+                        "NOT": {
+                          "status": {
+                            "in": ["skipped", "killed"]
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "count": true
+        }
+      }
+    }
+  },
+  {
+    "question": "how many tests with a workflow timeout over 30",
+    "expect": {
+      "kind": "rows",
+      "answer": "count",
+      "frame": {
+        "runs/Test": {
+          "where": {
+            "_walk": {
+              "in": "runs/CiRun.test",
+              "where": {
+                "_walk": {
+                  "out": "job",
+                  "where": {
+                    "_walk": {
+                      "out": "workflow",
+                      "where": {
+                        "timeoutMin": {
+                          "gt": 30
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "count": true
+        }
+      }
+    }
+  },
+  {
+    "question": "latest pg-gated test",
+    "expect": {
+      "kind": "rows",
+      "answer": "single",
+      "frame": {
+        "runs/Test": {
+          "where": {
+            "pgGated": {
+              "eq": true
+            }
+          },
+          "orderBy": [
+            {
+              "createdAt": "desc"
+            }
+          ],
+          "limit": 1
+        }
+      }
+    }
+  },
+  {
+    "question": "list tests by spread",
+    "expect": {
+      "kind": "rows",
+      "answer": "rows",
+      "frame": {
+        "runs/Test": {}
+      },
+      "dropped": ["by spread"]
+    }
+  },
+  {
+    "question": "delete all failed ci runs",
+    "expect": {
+      "kind": "refuse"
+    }
+  },
+  {
+    "question": "how many tests ran locally 25% slower than on ci because of postgres",
+    "expect": {
+      "kind": "unknown",
+      "dropped": ["because", "postgres"]
+    }
+  },
+  {
+    "question": "how many flaky tests",
+    "expect": {
+      "kind": "unknown",
+      "dropped": ["flaky"]
+    }
+  },
+  {
+    "question": "which tests are flaky",
+    "expect": {
+      "kind": "rows",
+      "answer": "rows",
+      "frame": {
+        "runs/Test": {}
+      },
+      "dropped": ["flaky"]
+    }
+  },
+  {
+    "question": "how many tests ran locally cheaper than on ci",
+    "expect": {
+      "kind": "unknown",
+      "dropped": ["cheaper than"]
+    }
+  },
+  {
+    "question": "how many tests with a local duration over 5000 or a ci duration over 5000",
+    "expect": {
+      "kind": "unknown",
+      "dropped": ["or"]
+    }
+  },
+  {
+    "question": "how many tests ran locally slower than on ci or failed on ci",
+    "expect": {
+      "kind": "clarify"
+    }
+  },
+  {
+    "question": "how many tests with an open todo",
+    "expect": {
+      "kind": "unknown",
+      "dropped": ["open", "todo"]
+    }
+  },
+  {
+    "question": "how many tests with a repo size over 100",
+    "expect": {
+      "kind": "unknown",
+      "dropped": ["repo size", "over 100"]
+    }
+  },
+  {
+    "question": "how many tests ran locally 25% slower than the median on ci",
+    "expect": {
+      "kind": "unknown",
+      "dropped": ["25%", "than", "median"]
+    }
+  },
+  {
+    "question": "how many tests ran locally 150% faster than on ci",
+    "expect": {
+      "kind": "unknown",
+      "dropped": ["150% faster than"]
+    }
+  },
+  {
+    "question": "how many tests with a local duration over 5000 and a local duration under 100",
+    "expect": {
+      "kind": "clarify"
+    }
+  },
+  {
+    "question": "how many tests with no local duration over 5000",
+    "expect": {
+      "kind": "unknown",
+      "dropped": ["no"]
+    }
+  },
+  {
+    "question": "how many tests with every ci duration over 1000",
+    "expect": {
+      "kind": "unknown",
+      "dropped": ["every"]
+    }
+  },
+  {
+    "question": "latest pg-gated test that is flaky",
+    "expect": {
+      "kind": "unknown",
+      "dropped": ["flaky"]
+    }
+  },
+  {
+    "question": "how many local runs on host-a with 8 cores",
+    "expect": {
+      "kind": "unknown",
+      "dropped": ["8", "cores"]
+    }
+  }
+]
