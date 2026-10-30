@@ -426,8 +426,9 @@ describe('memory edge walks', () => {
   });
 
   it('joint quantification stops at the per-read budget', async () => {
-    // Small enough for a slow CI runner; the cap below is far under n * n.
-    const n = 300;
+    // Small enough for a slow CI runner: every far row examined is charged, so a
+    // walk costs about n^3; the cap below is far under that, the roomy one above.
+    const n = 60;
     const listings = Array.from({ length: n }, (_, i) => ({ id: `l${i}`, cert: 'c1', price: 1 }));
     const observations = Array.from({ length: n }, (_, i) => ({
       id: `o${i}`,
@@ -448,12 +449,12 @@ describe('memory edge walks', () => {
       ]
     } as WhereClause;
     const rows = { Cert: [{ id: 'c1' }], Listing: listings, Observation: observations };
-    const capped = await dataset(rows, 10_000);
+    const capped = await dataset(rows, 1_000);
     await expect(capped.read('Cert', { where })).rejects.toMatchObject({
       code: 'walk_budget_exceeded'
     });
     // Under the budget the same walk answers.
-    const roomy = await dataset(rows, 2 * n * n);
+    const roomy = await dataset(rows, 4 * n * n * n);
     expect((await roomy.read('Cert', { where })).rows).toEqual([]);
   });
 });
