@@ -483,6 +483,8 @@ export function validateWalkAgg(
 }
 
 const NESTED_KEYS = new Set(['_walk', 'fields', 'where', 'orderBy', 'limit']);
+/** Top-level row columns a nested row does not carry. */
+const NESTED_ROW_ONLY = ['_metadata', 'shortId', '_deletedAt'] as const;
 
 /** A nested `{ _walk, fields, where?, orderBy?, limit? }` selection. Its `limit` max is the engine's page max. */
 function validateNested(
@@ -507,13 +509,30 @@ function validateNested(
   const far = farScope(scope, hop);
   if (walk.where !== undefined) h.validateWhere(walk.where, [...wp, 'where'], far);
   if (sel.where !== undefined) h.validateWhere(sel.where, [...path, 'where'], far);
-  if (sel.orderBy !== undefined) h.validateOrderBy(sel.orderBy, hop.fields, [...path, 'orderBy']);
+  if (sel.orderBy !== undefined) {
+    for (const [i, clause] of (Array.isArray(sel.orderBy) ? sel.orderBy : []).entries()) {
+      if (isObj(clause) && Object.hasOwn(clause, 'shortId')) {
+        fail('unknown_field', 'shortId cannot order a nested list', [
+          ...path,
+          'orderBy',
+          String(i),
+          'shortId'
+        ]);
+      }
+    }
+    h.validateOrderBy(sel.orderBy, hop.fields, [...path, 'orderBy']);
+  }
   const limit = sel.limit;
   if (limit !== undefined && (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 0)) {
     fail('type_mismatch', 'limit must be a non-negative integer', [...path, 'limit']);
   }
   if (!isObj(sel.fields))
     fail('type_mismatch', 'a nested selection needs fields', [...path, 'fields']);
+  for (const k of NESTED_ROW_ONLY) {
+    if (Object.hasOwn(sel.fields, k)) {
+      fail('unknown_field', `'${k}' is not available in nested selections`, [...path, 'fields', k]);
+    }
+  }
   validateSelection(sel.fields, [...path, 'fields'], far, h);
 }
 

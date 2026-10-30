@@ -246,13 +246,7 @@ export function buildNested(
     .filter((f): f is Fragment => f !== null);
 
   const order = normalizeOrderBy(sel.orderBy).map(([field, dir]) => {
-    if (field === 'shortId') {
-      throw new UnsupportedFilterError(
-        field,
-        'orderBy',
-        'a nested selection cannot order by shortId'
-      );
-    }
+    // shortId never reaches here: the walk validator refuses it in a nested orderBy.
     const key =
       field === 'id'
         ? sql.unsafe(`${alias}.id COLLATE "C"`)

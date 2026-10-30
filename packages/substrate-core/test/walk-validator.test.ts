@@ -384,6 +384,20 @@ describe('aggregate, derive, bucket, count and nested validation', () => {
     expect(refusal({ _agg: { in: 'cards/Observation.cert', count: true }, gte: 'x' }).code).toBe(
       'type_mismatch'
     );
+    // Only comparisons sit beside _agg; a field or walk there is refused, not ANDed.
+    expect(
+      refusal({ _agg: { in: 'cards/Observation.cert', count: true }, gte: 2, grade: { eq: 9 } })
+    ).toEqual({ code: 'agg_invalid', path: ['where', 'grade'] });
+    expect(
+      refusal({
+        _agg: { in: 'cards/Observation.cert', count: true },
+        gte: 2,
+        _walk: { in: 'cards/Listing.cert' }
+      }).code
+    ).toBe('agg_invalid');
+    expect(() =>
+      check({ _agg: { in: 'cards/Observation.cert', avg: 'price' }, gt: 1, lt: 9 })
+    ).not.toThrow();
   });
 
   it('refuses latest on a frame aggregate', () => {
@@ -550,5 +564,18 @@ describe('aggregate, derive, bucket, count and nested validation', () => {
         fields: { listings: { _walk: { in: 'cards/Listing.cert' }, fields: {}, limit: -1 } }
       })
     ).toEqual({ code: 'type_mismatch', path: ['fields', 'listings', 'limit'] });
+    const nested = (extra: Record<string, unknown>) => ({
+      fields: { listings: { _walk: { in: 'cards/Listing.cert' }, fields: {}, ...extra } }
+    });
+    expect(frameRefusal(nested({ orderBy: [{ price: 'asc' }, { shortId: 'desc' }] }))).toEqual({
+      code: 'unknown_field',
+      path: ['fields', 'listings', 'orderBy', '1', 'shortId']
+    });
+    for (const k of ['_metadata', 'shortId', '_deletedAt']) {
+      expect(frameRefusal(nested({ fields: { price: true, [k]: true } }))).toEqual({
+        code: 'unknown_field',
+        path: ['fields', 'listings', 'fields', k]
+      });
+    }
   });
 });

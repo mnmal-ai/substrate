@@ -719,6 +719,15 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk aggregates and nested proje
     expect(
       await both('Cert', a({ latest: { by: 'observedAt', value: 'status' } }, { gt: 'm' }))
     ).toEqual(['c2']);
+    // Beside an `as` binding, the comparison stays whole in the group.
+    expect(
+      await both('Cert', {
+        AND: [
+          { _walk: { as: 'O', in: IN('Observation') } },
+          { _agg: { in: IN('Observation'), count: true }, gte: 2 }
+        ]
+      } as unknown as WhereClause)
+    ).toEqual(['c1']);
     // A $ref operand: the seed's field, float64.
     expect(await both('Cert', a({ sum: 'price' }, { gte: { $ref: '$.ask', times: 4 } }))).toEqual([
       'c1'
@@ -883,5 +892,48 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk aggregates and nested proje
     });
     expect(ls[1]).toMatchObject({ id: u('l2'), seller: null, price: null, sellerRow: [] });
     expect(ls[1]).not.toHaveProperty('_metadata');
+  });
+
+  it('metadata in nested orderBy and aggregates matches memory', async () => {
+    const meta = (createdAt: string, by: string) => ({
+      _metadata: {
+        createdAt,
+        updatedAt: createdAt,
+        createdBy: { kind: 'agent', id: by },
+        updatedBy: null
+      }
+    });
+    await load({
+      Cert: [{ id: 'c1' }, { id: 'c2' }],
+      Observation: [
+        { id: 'o1', cert: 'c1', price: 1, ...meta('2026-10-01T00:00:00.123Z', 'a') },
+        { id: 'o2', cert: 'c1', price: 2, ...meta('2026-10-03T00:00:00.000Z', 'B') },
+        { id: 'o3', cert: 'c1', price: 3, ...meta('2026-10-03T00:00:00.000Z', 'b') },
+        { id: 'o4', cert: 'c2', price: 4, ...meta('2026-10-02T12:30:00.500Z', 'A') }
+      ]
+    });
+    const rows = await same('Cert', {
+      agg: {
+        last: { in: IN('Observation'), latest: { by: 'createdAt', value: 'createdAt' } },
+        newest: { in: IN('Observation'), max: 'createdAt' },
+        oldest: { in: IN('Observation'), min: 'createdAt' },
+        by: { in: IN('Observation'), latest: { by: 'createdAt', value: 'createdById' } }
+      } as unknown as NonNullable<ReadParams['agg']>,
+      nested: {
+        obs: {
+          _walk: { in: IN('Observation') },
+          fields: { price: true },
+          orderBy: [{ createdById: 'asc' }],
+          limit: 10
+        }
+      } as unknown as NonNullable<ReadParams['nested']>
+    });
+    const c1 = rows.find((r) => name(r) === 'c1') as Row;
+    // Byte order: 'B' before 'a' before 'b'.
+    expect((c1.obs as Row[]).map((o) => o.price)).toEqual([2, 1, 3]);
+    expect(c1._agg).toMatchObject({
+      newest: '2026-10-03T00:00:00.000Z',
+      oldest: '2026-10-01T00:00:00.123Z'
+    });
   });
 });

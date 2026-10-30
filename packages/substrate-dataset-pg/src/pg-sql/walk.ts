@@ -182,7 +182,12 @@ export function sortKey(
   cast: BodyOrderByCast | null,
   alias: string
 ): Fragment {
-  if (isMetadataField(field)) return sql.unsafe(metadataColumnSql(field, alias));
+  if (isMetadataField(field)) {
+    // Text columns sort by byte order, as the main read's sortExpr and memory do.
+    const col = metadataColumnSql(field, alias);
+    const ordered = field === 'createdAt' || field === 'updatedAt' || field === 'seq';
+    return sql.unsafe(ordered ? col : `${col} COLLATE "C"`);
+  }
   if (cast === 'numeric') return bodyNum(sql, [field], alias);
   if (cast === 'timestamptz') return bodyTs(sql, [field], alias);
   return bodyText(sql, [field], alias);
