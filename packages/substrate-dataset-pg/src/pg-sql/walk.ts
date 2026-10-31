@@ -20,6 +20,7 @@
 
 import { groupConjuncts, refNames } from '@mnmal-ai/substrate-filter';
 import {
+  type DeriveSpec,
   type FieldDef,
   type RefOperand,
   UnsupportedFilterError,
@@ -331,6 +332,24 @@ export function refOperand(
   return micros === 0
     ? right
     : sql`(${right} + ${sql.unsafe(`(${micros})`)} * interval '1 microsecond')`;
+}
+
+/**
+ * A `params.derive` value for the seed row, as float8: `diff` is a − b and
+ * `ratio` a / b, NULL for a null or non-numeric operand or a zero divisor, as
+ * memory's. Operands are `$.<field>` or `_agg.<name>`, read as `$ref`s are.
+ */
+export function buildDerive(
+  sql: Sql | TransactionSql,
+  name: string,
+  spec: DeriveSpec,
+  scope: WalkScope
+): Fragment {
+  const [op, [a, b]] = Object.entries(spec)[0] as ['diff' | 'ratio', [string, string]];
+  const operand = (r: string) => refOperand(sql, `$${name}`, op, { $ref: r }, 'number', scope);
+  return op === 'diff'
+    ? sql`(${operand(a)} - ${operand(b)})`
+    : sql`(${operand(a)} / NULLIF(${operand(b)}, 0))`;
 }
 
 /** `'<n>'::float8`, inlined: only a finite number reaches the text. */

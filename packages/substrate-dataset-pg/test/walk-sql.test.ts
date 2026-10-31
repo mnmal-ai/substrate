@@ -6,6 +6,7 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
+import { encodeCursor } from '@mnmal-ai/substrate-filter';
 import {
   type FieldDef,
   type ReadParams,
@@ -543,13 +544,6 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walks in where (pg)', () => {
       ]
     } as WhereClause;
     expect(await both('Cert', branch)).toEqual(['c2', 'c3']);
-  });
-
-  it('refuses what later tasks compile, by name', async () => {
-    const refused = { code: 'walk_unsupported_ref' };
-    await expect(
-      pg.read('Cert', { derive: { d: { diff: ['$.ask', '$.grade'] } } })
-    ).rejects.toMatchObject(refused);
   });
 
   it('the inbound hop is served by the eager crossRef index', async () => {
@@ -1183,4 +1177,176 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('count, aggregate and bucket (pg)
     await pg.read('Observation', params);
     await expectPlanUses(generatedIdentifier(NS, 'Observation', 'observedAt', 'idx'));
   }, 60_000);
+});
+
+describe.skipIf(!POSTGRES_URL || !PARTITIONED)('derived ordering (pg)', () => {
+  const DIFF = { d: { diff: ['$.ask', '$.grade'] } } as NonNullable<ReadParams['derive']>;
+  const RATIO = { q: { ratio: ['$.ask', '$.grade'] } } as NonNullable<ReadParams['derive']>;
+  // minObs 1 marks the result's rows; 0 marks the unrelated ones.
+  const certs = () => [
+    { id: 'd1', grade: 9, ask: 10, minObs: 1 },
+    { id: 'd2', grade: 8, ask: 10, minObs: 1 },
+    { id: 'd3', grade: 2, ask: 3, minObs: 1 },
+    { id: 'd4', grade: 0, ask: 5, minObs: 1 },
+    { id: 'd5', grade: 5, minObs: 1 },
+    { id: 'd6', grade: 'x', ask: 4, minObs: 1 },
+    { id: 'd7', grade: 1, ask: 3, minObs: 1 },
+    { id: 'd8', grade: 7, ask: 9, minObs: 1 },
+    { id: 'd9', grade: 0.1, ask: 0.3, minObs: 1 },
+    { id: 'd10', grade: 3, ask: -6, minObs: 1 },
+    { id: 'd11', ask: 1, minObs: 1 },
+    { id: 'd12', grade: 4, ask: 1e-9, minObs: 1 },
+    { id: 'u1', grade: 2, ask: 4, minObs: 0 },
+    { id: 'u2', grade: 1, ask: 0, minObs: 0 }
+  ];
+  const ours = { minObs: { eq: 1 } } as WhereClause;
+
+  /**
+   * Every page of `params` from `ds`, with the (derived value, id) each page's
+   * cursor carries; `between` runs after each page. Memory's cursor also lists
+   * the id among its values and pg's does not, so the payloads are compared by key.
+   */
+  async function pages(
+    ds: PgDataset | MemoryDataset,
+    params: ReadParams,
+    between?: () => Promise<void>
+  ): Promise<{ ids: string[][]; cursors: unknown[] }> {
+    const ids: string[][] = [];
+    const cursors: unknown[] = [];
+    let cursor: string | undefined;
+    for (let i = 0; i < 30; i++) {
+      const res = await ds.read('Cert', { ...params, ...(cursor === undefined ? {} : { cursor }) });
+      ids.push(res.rows.map(name));
+      if (res.nextCursor !== undefined) {
+        const c = JSON.parse(Buffer.from(res.nextCursor, 'base64url').toString('utf8'));
+        cursors.push([c.orderByValues[0], c.id]);
+      }
+      if (res.nextCursor === undefined) break;
+      cursor = res.nextCursor;
+      await between?.();
+    }
+    return { ids, cursors };
+  }
+
+  it('derive orders like memory, nulls and zero divisor last', async () => {
+    await load({ Cert: certs() });
+    for (const dir of ['asc', 'desc'] as const) {
+      for (const derive of [DIFF, RATIO]) {
+        const key = `$${Object.keys(derive)[0]}`;
+        const order = (await same('Cert', { where: ours, derive, orderBy: [{ [key]: dir }] })).map(
+          name
+        );
+        // d5 (no ask), d6 (non-numeric grade) and d11 (no grade) have no value, nor
+        // d4 under ratio (zero divisor): they come last in both directions.
+        const tail = derive === RATIO ? ['d11', 'd4', 'd5', 'd6'] : ['d11', 'd5', 'd6'];
+        expect([...order.slice(-tail.length)].sort(), `${key} ${dir}`).toEqual(tail);
+        await same('Cert', {
+          where: ours,
+          derive,
+          orderBy: [{ minObs: 'asc' }, { [key]: dir }],
+          limit: 5
+        });
+      }
+    }
+  });
+
+  it('ratio against a pick-one _agg', async () => {
+    const at = (d: number) => `2026-10-0${d}T00:00:00Z`;
+    await load({
+      Cert: certs(),
+      Observation: [
+        { id: 'p1', cert: 'd1', price: 4, observedAt: at(1) },
+        { id: 'p2', cert: 'd1', price: 5, observedAt: at(2) },
+        { id: 'p3', cert: 'd2', price: 0, observedAt: at(2) },
+        { id: 'p4', cert: 'd3', price: 'x', observedAt: at(3) },
+        { id: 'p5', cert: 'd7', price: 3, observedAt: at(1) },
+        { id: 'p6', cert: 'd8', price: 0.7, observedAt: at(4) },
+        { id: 'p7', cert: 'd9', price: 3, observedAt: at(4) },
+        { id: 'p8', cert: 'd10', price: -2, observedAt: at(5) }
+      ]
+    });
+    const agg = {
+      lp: { in: IN('Observation'), latest: { by: 'observedAt', value: 'price' } }
+    } as unknown as NonNullable<ReadParams['agg']>;
+    const derive = { m: { ratio: ['$.ask', '_agg.lp'] } } as NonNullable<ReadParams['derive']>;
+    for (const dir of ['asc', 'desc'] as const) {
+      const rows = await same('Cert', { where: ours, agg, derive, orderBy: [{ $m: dir }] });
+      // d1 10/5, d7 3/3, d8 9/0.7, d9 0.3/3, d10 -6/-2; the rest have no value.
+      const valued =
+        dir === 'desc' ? ['d8', 'd10', 'd1', 'd7', 'd9'] : ['d9', 'd7', 'd1', 'd10', 'd8'];
+      expect(rows.map(name).slice(0, 5)).toEqual(valued);
+      const paged = await pages(pg, { where: ours, agg, derive, orderBy: [{ $m: dir }], limit: 2 });
+      expect(paged).toEqual(
+        await pages(mem, { where: ours, agg, derive, orderBy: [{ $m: dir }], limit: 2 })
+      );
+      expect(paged.ids.flat()).toEqual(rows.map(name));
+    }
+  });
+
+  it('derive keyset pages agree with the unpaged read, null tail included', async () => {
+    await load({ Cert: certs() });
+    for (const dir of ['asc', 'desc'] as const) {
+      for (const derive of [DIFF, RATIO]) {
+        const key = `$${Object.keys(derive)[0]}`;
+        const base = { where: ours, derive, orderBy: [{ [key]: dir }] };
+        const full = (await pg.read('Cert', base)).rows.map(name);
+        for (const limit of [1, 2, 3, 5]) {
+          const paged = await pages(pg, { ...base, limit });
+          // Each cursor carries memory's value and id.
+          expect(paged, `${key} ${dir} ${limit}`).toEqual(await pages(mem, { ...base, limit }));
+          expect(paged.ids.flat()).toEqual(full);
+        }
+      }
+    }
+  });
+
+  it('derive keyset pages agree with the unpaged read while unrelated rows change', async () => {
+    await load({ Cert: certs() });
+    const unpaged = { where: ours, derive: DIFF, orderBy: [{ $d: 'desc' as const }] };
+    const base = { ...unpaged, limit: 2 };
+    const full = (await pg.read('Cert', unpaged)).rows.map(name);
+    // Unrelated rows whose values land among the result's, rewritten and added between pages.
+    let n = 0;
+    const churn = (ds: PgDataset | MemoryDataset) => async () => {
+      n++;
+      await ds.write(
+        'Cert',
+        fx([
+          { id: 'u1', grade: n % 3, ask: 2 + (n % 5), minObs: 0 },
+          { id: 'u2', grade: 1, ask: n, minObs: 0 },
+          { id: `un${n}`, grade: 0, ask: n % 4, minObs: 0 }
+        ]) as never
+      );
+    };
+    const paged = await pages(pg, base, churn(pg));
+    n = 0;
+    expect(paged).toEqual(await pages(mem, base, churn(mem)));
+    expect(paged.ids.flat()).toEqual(full);
+    expect(n).toBeGreaterThan(3);
+  });
+
+  it('a cursor replayed in the other direction, or forged, is invalid_cursor', async () => {
+    await load({ Cert: certs() });
+    const base = { where: ours, derive: DIFF, limit: 2 };
+    const first = await pg.read('Cert', { ...base, orderBy: [{ $d: 'desc' }] });
+    expect(first.nextCursor).toBeDefined();
+    const flipped = {
+      ...base,
+      orderBy: [{ $d: 'asc' as const }],
+      cursor: String(first.nextCursor)
+    };
+    await expect(pg.read('Cert', flipped)).rejects.toMatchObject({ code: 'invalid_cursor' });
+    await expect(mem.read('Cert', flipped)).rejects.toMatchObject({ code: 'invalid_cursor' });
+    const forged = encodeCursor({
+      orderByValues: ['1; DROP TABLE rows'],
+      id: u('d1'),
+      order: [
+        ['$d', 'desc'],
+        ['id', 'asc']
+      ]
+    });
+    await expect(
+      pg.read('Cert', { ...base, orderBy: [{ $d: 'desc' }], cursor: forged })
+    ).rejects.toMatchObject({ code: 'invalid_cursor' });
+  });
 });
