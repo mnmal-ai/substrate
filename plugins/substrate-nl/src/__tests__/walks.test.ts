@@ -220,8 +220,12 @@ describe('paths', () => {
     const c = r.candidates[0];
     expect(c?.frame).toEqual({ 'm/Person': { params: {} } });
     expect(c?.dropped).toEqual([
-      { span: 'island size', reason: 'no crossRef path from Person to Island within 3 hops' },
-      { span: 'over 5', reason: 'its field "island size" was dropped' }
+      {
+        span: 'island size',
+        reason: 'no crossRef path from Person to Island within 3 hops',
+        kind: 'filter'
+      },
+      { span: 'over 5', reason: 'its field "island size" was dropped', kind: 'filter' }
     ]);
   });
 
@@ -261,7 +265,8 @@ describe('comparisons', () => {
     expect(r.status).toBe('partial');
     expect(r.candidates[0]?.dropped).toContainEqual({
       span: 'cheaper than',
-      reason: 'this comparison is not in the comparison lexicon'
+      reason: 'this comparison is not in the comparison lexicon',
+      kind: 'filter'
     });
   });
 });
@@ -320,7 +325,8 @@ describe('pick one', () => {
     expect(r.status).toBe('partial');
     expect(r.candidates[0]?.dropped).toContainEqual({
       span: '25% over asking price',
-      reason: 'a picked Listing cannot be referenced'
+      reason: 'a picked Listing cannot be referenced',
+      kind: 'filter'
     });
   });
 });
@@ -336,7 +342,11 @@ describe('derived ordering', () => {
     const u = card('list cards by spread');
     expect(u.status).toBe('partial');
     expect(u.candidates[0]?.dropped).toEqual([
-      { span: 'by spread', reason: 'no derived value "spread" is declared for this namespace' }
+      {
+        span: 'by spread',
+        reason: 'no derived value "spread" is declared for this namespace',
+        kind: 'order'
+      }
     ]);
   });
 });
@@ -379,7 +389,8 @@ describe('never resolved on a silent assumption', () => {
     expect(JSON.stringify(cert?.frame)).not.toContain('"gt":50');
     expect(cert?.dropped).toContainEqual({
       span: 'over 50',
-      reason: 'no field phrase directly before it to compare'
+      reason: 'no field phrase directly before it to compare',
+      kind: 'filter'
     });
   });
 
@@ -439,7 +450,11 @@ describe('never resolved on a silent assumption', () => {
     });
     expect(r.candidates[0]?.answer).toBe('rows');
     expect(r.candidates[0]?.dropped).toEqual([
-      { span: 'latest', reason: 'it conflicts with the derived ordering, which is kept' }
+      {
+        span: 'latest',
+        reason: 'it conflicts with the derived ordering, which is kept',
+        kind: 'order'
+      }
     ]);
   });
 
@@ -447,7 +462,11 @@ describe('never resolved on a silent assumption', () => {
     const r = runsParse('how many tests ran locally 150% faster than on ci');
     expect(r.status).toBe('partial');
     expect(r.candidates[0]?.dropped).toEqual([
-      { span: '150% faster than', reason: '150% faster leaves no time to compare against' }
+      {
+        span: '150% faster than',
+        reason: '150% faster leaves no time to compare against',
+        kind: 'filter'
+      }
     ]);
     expect(JSON.stringify(r.candidates[0]?.frame)).not.toContain('times');
   });
@@ -467,6 +486,26 @@ describe('never resolved on a silent assumption', () => {
     const { timeField: _t, ...noTime } = runRulings;
     const c = runsParse('how many tests 25% slower than on ci in the past 2 days', noTime)
       .candidates[0];
+    expect(c?.plan.map((p) => p.path[p.path.length - 1])).toContain(
+      'window:past 2 days on createdAt (default)'
+    );
+  });
+
+  it('two compared mentions of one walked type ask: one row meeting both, or two', () => {
+    const r = card('cards with an offer over 50 and an offer under 20');
+    expect(r.status).toBe('clarify');
+    expect(r.reason).toContain('"offer over 50" and "offer under 20"');
+    expect(r.reason).toContain('one Observation meeting both, or two different Observation rows');
+    // One mention with one comparison still composes.
+    expect(card('cards with an offer over 50').status).toBe('resolved');
+  });
+
+  it('a seed window on createdAt in a composed reading is labelled (default)', () => {
+    // The window is nearest "cards" (the seed); Cert has no timeField ruling.
+    const c = card('in the past 2 days how many cards had an asking price').candidates[0];
+    expect(c?.frame['cards/Cert']?.params.where).toMatchObject({ AND: expect.any(Array) });
+    const where = c?.frame['cards/Cert']?.params.where as { AND: unknown[] };
+    expect(where.AND).toContainEqual({ createdAt: PAST_2_DAYS });
     expect(c?.plan.map((p) => p.path[p.path.length - 1])).toContain(
       'window:past 2 days on createdAt (default)'
     );

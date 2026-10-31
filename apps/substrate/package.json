@@ -63,6 +63,7 @@
     "@mnmal-ai/substrate-server-fastify": "workspace:*",
     "@mnmal-ai/substrate-server-memory": "workspace:*",
     "@mnmal-ai/substrate-types": "workspace:*",
+    "@mnmal-ai/surface-core": "catalog:",
     "@types/node": "catalog:",
     "@types/semver": "catalog:",
     "@types/ws": "catalog:",

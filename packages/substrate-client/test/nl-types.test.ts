@@ -89,4 +89,32 @@ describe('client.nl is typed end to end, with no casts', () => {
     expect(posted).toEqual([{ namespace: 'ns', question: 'open', type: 'Todo' }]);
     if (res.outcome?.kind === 'refuse') expect(res.outcome.reason).toBe('x');
   });
+
+  it("an 'unknown' event carries the dropped list and the plan", async () => {
+    const UNKNOWN: Extract<NlOutcome, { kind: 'unknown' }> = {
+      kind: 'unknown',
+      question: 'how many todos zorblax',
+      dropped: [{ span: 'zorblax', reason: 'not understood', kind: 'filter' }],
+      plan: []
+    };
+    mockHandlers(
+      http.post(
+        `${ENDPOINT}/substrate/v1/nl`,
+        () =>
+          new HttpResponse(
+            `event: unknown\ndata: ${JSON.stringify(UNKNOWN)}\n\nevent: done\ndata: {}\n\n`,
+            { headers: { 'content-type': 'text/event-stream' } }
+          )
+      )
+    );
+    const c = new SubstrateClient({ endpoint: ENDPOINT });
+    const seen: string[] = [];
+    for await (const ev of c.nl.ask({ namespace: 'ns', question: UNKNOWN.question })) {
+      if (ev.event === 'unknown') {
+        expectTypeOf(ev.data.dropped[0]?.kind).toEqualTypeOf<'filter' | 'order' | undefined>();
+        seen.push(...ev.data.dropped.map((d) => d.span));
+      }
+    }
+    expect(seen).toEqual(['zorblax']);
+  });
 });

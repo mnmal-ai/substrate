@@ -4,7 +4,8 @@ import {
   NetworkError,
   type SubstrateClient
 } from '@mnmal-ai/substrate-client';
-import type { NlOutcome } from '@mnmal-ai/substrate-types';
+import type { Dropped, NlOutcome, PlanClause } from '@mnmal-ai/substrate-types';
+import { sanitise } from '@mnmal-ai/surface-core/pure';
 
 export interface AskCliOptions {
   write?: (s: string) => void;
@@ -65,7 +66,7 @@ export async function runAsk(argv: string[], options: AskCliOptions = {}): Promi
       ...(options.fetchImpl !== undefined ? { fetch: options.fetchImpl } : {})
     }));
   } catch (err) {
-    write(`substrate ask: agent identity: ${messageOf(err)}\n`);
+    write(`substrate ask: agent identity: ${sanitise(messageOf(err))}\n`);
     return 2;
   }
   let result: Awaited<ReturnType<typeof client.nl.askJson>>;
@@ -78,15 +79,20 @@ export async function runAsk(argv: string[], options: AskCliOptions = {}): Promi
     if (err instanceof NetworkError && err.status === 404 && err.code !== 'nl_unknown_namespace')
       write('substrate ask: the server has no NL route (is @mnmal-ai/substrate-nl installed?)\n');
     else if (err instanceof NetworkError && err.serverMessage !== undefined)
-      write(`substrate ask: ${err.serverMessage}\n`);
-    else write(`substrate ask: ${messageOf(err)}\n`);
+      write(`substrate ask: ${sanitise(err.serverMessage)}\n`);
+    else write(`substrate ask: ${sanitise(messageOf(err))}\n`);
     return 1;
   }
   const outcome = result.outcome;
-  if (json) write(`${JSON.stringify(result, null, 2)}\n`);
-  else write(render(outcome));
+  // JSON.stringify escapes C0 but not C1 controls (U+009B is a CSI to some terminals).
+  if (json)
+    write(
+      `${JSON.stringify(result, null, 2).replace(/[\u0080-\u009f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)}\n`
+    );
+  // Every server- or question-derived string reaches the terminal stripped of escapes, line by line.
+  else write(render(outcome).split('\n').map(sanitise).join('\n'));
   if (outcome === null) return 0;
-  if (outcome.kind === 'refuse') return 1;
+  if (outcome.kind === 'refuse' || outcome.kind === 'unknown') return 1;
   if (outcome.kind === 'rows' && Array.isArray(outcome.errors) && outcome.errors.length > 0)
     return 1;
   return 0;
@@ -103,7 +109,12 @@ function render(o: NlOutcome | null): string {
       const key = Object.keys(o.frame)[0] ?? '?';
       // A rejected frame arrives with no `data` key at all; that is not zero rows.
       const rows = Array.isArray(o.data) ? (o.data as Record<string, unknown>[]) : undefined;
-      const tail = rows === undefined ? 'rejected' : `${rows.length} rows`;
+      const tail =
+        o.count !== undefined
+          ? `count ${o.count}`
+          : rows === undefined
+            ? 'rejected'
+            : `${rows.length} rows`;
       const head = `▸ ${key} · ${o.source}${o.handoff !== undefined ? ` (${o.handoff})` : ''} · ${tail}\n`;
       const errs = (o.errors ?? []).map((e) => `  ✗ ${JSON.stringify(e)}\n`).join('');
       const body = (rows ?? [])
@@ -112,7 +123,7 @@ function render(o: NlOutcome | null): string {
             `  ${String(r.shortId ?? r.id ?? '')}  ${String(r.title ?? r.synopsis ?? r.name ?? '')}\n`
         )
         .join('');
-      return head + errs + body;
+      return head + errs + droppedText(o.dropped) + body;
     }
     case 'recall': {
       const errs = (o.errors ?? []).map((e) => `  ✗ ${JSON.stringify(e)}\n`).join('');
@@ -126,5 +137,17 @@ function render(o: NlOutcome | null): string {
     }
     case 'refuse':
       return `✗ ${o.reason}\n`;
+    case 'unknown':
+      return `? unknown: not answered, because part of the question was dropped\n${droppedText(o.dropped)}${planText(o.plan)}`;
   }
+}
+
+// `?? []`: a server from before the confidence rule sends no `dropped` or `plan`.
+function droppedText(dropped: Dropped[] | undefined): string {
+  return (dropped ?? []).map((d) => `  dropped "${d.span}": ${d.reason}\n`).join('');
+}
+
+// No served flag: it prints only on `unknown`, where nothing ran and no engine plan was merged.
+function planText(plan: PlanClause[] | undefined): string {
+  return (plan ?? []).map((c) => `  plan ${c.path.join('.')} (${c.kind})\n`).join('');
 }

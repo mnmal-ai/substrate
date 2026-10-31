@@ -195,7 +195,8 @@ export function claimWalkParts(
     } else {
       claims.dropped.push({
         span: p.span,
-        reason: `"${p.span}" is a derived value; it orders a list only as "by ${p.span}"`
+        reason: `"${p.span}" is a derived value; it orders a list only as "by ${p.span}"`,
+        kind: 'filter'
       });
     }
   }
@@ -207,7 +208,8 @@ export function claimWalkParts(
     next.used = true;
     claims.dropped.push({
       span: `by ${next.text}`,
-      reason: `no derived value "${next.text}" is declared for this namespace`
+      reason: `no derived value "${next.text}" is declared for this namespace`,
+      kind: 'order'
     });
   });
 
@@ -272,7 +274,8 @@ export function dropComparatives(tokens: WalkToken[], dropped: Dropped[]): void 
     for (const w of words) w.used = true;
     dropped.push({
       span: words.map((w) => w.text).join(' '),
-      reason: 'this comparison is not in the comparison lexicon'
+      reason: 'this comparison is not in the comparison lexicon',
+      kind: 'filter'
     });
   });
 }
@@ -320,6 +323,8 @@ export interface Composed {
   timeOnSeed: boolean;
   /** True when anything was composed, so the frame needs the walk grammar. */
   walked: boolean;
+  /** A `$ref` comparison or a picked walk: a dropped filter changes its answer. */
+  strict: boolean;
 }
 
 const filter = (clause: Record<string, unknown>, path: string[], label: string): Part => ({
@@ -368,7 +373,11 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
     const paths = findPaths(pack, seed, type);
     if (paths.length === 0) {
       dead.add(type);
-      dropped.push({ span, reason: `no crossRef path from ${seed} to ${type} within 3 hops` });
+      dropped.push({
+        span,
+        reason: `no crossRef path from ${seed} to ${type} within 3 hops`,
+        kind: 'filter'
+      });
       return null;
     }
     if (paths.length > 1) {
@@ -440,27 +449,37 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
     if (k.phrase.type === seed)
       dropped.push({
         span: `${k.span} ${k.phrase.span}`,
-        reason: `"${k.span}" picks one neighbour, and ${seed} is the type being asked about`
+        reason: `"${k.span}" picks one neighbour, and ${seed} is the type being asked about`,
+        kind: 'order'
       });
   }
 
-  // Comparisons.
+  // Comparisons. Two mentions of one walked type each compared are two existentials,
+  // never merged into one walk: which reading was meant is asked.
+  const mentionOf = new Map<Walk, { at: number; text: string }>();
+  const mention = (w: Walk, p: PhraseClaim, text: string) => {
+    const known = mentionOf.get(w);
+    if (known === undefined) mentionOf.set(w, { at: p.at[0], text });
+    else if (known.at !== p.at[0])
+      clarify ??= `"${known.text}" and "${text}": one ${w.type} meeting both, or two different ${w.type} rows?`;
+  };
   for (const c of claims.compares) {
     if (c.cmp.invalid !== undefined) {
-      dropped.push({ span: c.span, reason: c.cmp.invalid });
+      dropped.push({ span: c.span, reason: c.cmp.invalid, kind: 'filter' });
       continue;
     }
     const s = c.subject;
     if (s?.type === undefined || s.field === undefined) {
       dropped.push({
         span: c.span,
-        reason: 'no field phrase directly before it to compare'
+        reason: 'no field phrase directly before it to compare',
+        kind: 'filter'
       });
       continue;
     }
     const sh = home(s);
     if (sh === null) {
-      dropped.push({ span: c.span, reason: `its field "${s.span}" was dropped` });
+      dropped.push({ span: c.span, reason: `its field "${s.span}" was dropped`, kind: 'filter' });
       continue;
     }
     let operand: unknown;
@@ -469,7 +488,7 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
     else {
       const o = c.object;
       if (o?.type === undefined || o.field === undefined) {
-        dropped.push({ span: c.span, reason: 'nothing to compare against' });
+        dropped.push({ span: c.span, reason: 'nothing to compare against', kind: 'filter' });
         continue;
       }
       let ref: string;
@@ -478,22 +497,29 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
         if (o.type === s.type) {
           dropped.push({
             span: `${c.span} ${o.span}`,
-            reason: `comparing two fields of one ${o.type} is not expressible`
+            reason: `comparing two fields of one ${o.type} is not expressible`,
+            kind: 'filter'
           });
           continue;
         }
         const ow = walkTo(o.type, o.span);
         if (ow === null) {
-          dropped.push({ span: c.span, reason: `its operand "${o.span}" was dropped` });
+          dropped.push({
+            span: c.span,
+            reason: `its operand "${o.span}" was dropped`,
+            kind: 'filter'
+          });
           continue;
         }
+        mention(ow, o, `${c.span} ${o.span}`);
         if (ow.path.length > 1 || ow.pick !== undefined) {
           dropped.push({
             span: `${c.span} ${o.span}`,
             reason:
               ow.pick !== undefined
                 ? `a picked ${o.type} cannot be referenced`
-                : `a comparison against a ${ow.path.length}-hop walk is not expressible`
+                : `a comparison against a ${ow.path.length}-hop walk is not expressible`,
+            kind: 'filter'
           });
           continue;
         }
@@ -516,8 +542,10 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
         }
       ]
     };
-    if (isWalk(sh)) sh.filters.push(part);
-    else seedParts.push(part);
+    if (isWalk(sh)) {
+      mention(sh, s, `${s.span} ${c.span}`);
+      sh.filters.push(part);
+    } else seedParts.push(part);
   }
 
   // The time window binds to the type mentioned nearest it; a tie between two types asks.
@@ -540,7 +568,13 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
       const type = nearest[0] as string;
       const w = walkTo(type, input.time.span);
       timeOnSeed = false;
-      if (w !== null) {
+      if (w === null)
+        dropped.push({
+          span: input.time.span,
+          reason: `it windows ${type}, which no walk from ${seed} reaches`,
+          kind: 'filter'
+        });
+      else {
         const field = timeField(type);
         const ruled = own(rulings.timeField, type) !== undefined;
         w.window.push(
@@ -565,7 +599,8 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
     if (!onSeed) {
       dropped.push({
         span: `by ${d.span}`,
-        reason: `"${d.span}" derives from fields of another type than ${seed}`
+        reason: `"${d.span}" derives from fields of another type than ${seed}`,
+        kind: 'order'
       });
       continue;
     }
@@ -618,7 +653,10 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
     walked:
       walks.size > 0 ||
       seedParts.some((p) => p.plan.some((c) => c.kind === 'ref')) ||
-      plan.length > 0
+      plan.length > 0,
+    strict:
+      ordered.some((w) => w.pick !== undefined) ||
+      composed.some((p) => p.plan.some((c) => c.kind === 'ref'))
   };
 }
 

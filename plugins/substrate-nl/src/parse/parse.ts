@@ -49,6 +49,11 @@ export interface Candidate {
   plan: PlanClause[];
   /** Parts of the question this reading could not express. Dropped, never approximated. */
   dropped: Dropped[];
+  /**
+   * A count, an aggregate, a pick-one (of the seed or a walk) or a `$ref`
+   * comparison: a dropped filter would change its answer, so it is `unknown`.
+   */
+  strict: boolean;
 }
 
 export type ParseStatus = NlParseStatus;
@@ -340,7 +345,8 @@ export function parseQuestion(
       t.used = true;
       walkClaims.dropped.push({
         span: t.text,
-        reason: `"${t.text}" is not composed: walk clauses are read as all applying together`
+        reason: `"${t.text}" is not composed: walk clauses are read as all applying together`,
+        kind: 'filter'
       });
     }
   }
@@ -565,10 +571,17 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
   const dropped = [
     ...(a.composed?.dropped ?? []),
     ...(conflict
-      ? [{ span: orderSpan, reason: 'it conflicts with the derived ordering, which is kept' }]
+      ? [
+          {
+            span: orderSpan,
+            reason: 'it conflicts with the derived ordering, which is kept',
+            kind: 'order' as const
+          }
+        ]
       : [])
   ];
   const where: Record<string, unknown>[] = [];
+  const wherePlan = new Map<Record<string, unknown>, PlanClause[]>();
 
   if (a.ids.length > 0)
     where.push({ shortId: a.ids.length === 1 ? { eq: a.ids[0] } : { in: a.ids } });
@@ -663,7 +676,23 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
     const dateField =
       named?.[0] ??
       (a.closeVerb || a.updateVerb ? 'updatedAt' : (own(rulings.timeField, type) ?? 'createdAt'));
-    where.push({ [dateField]: { gte: a.time.range.gte, lt: a.time.range.lt } });
+    const clause = { [dateField]: { gte: a.time.range.gte, lt: a.time.range.lt } };
+    where.push(clause);
+    // In a composed reading the seed's window is a plan clause like a walk's, default named.
+    if (a.composed !== undefined) {
+      const ruled =
+        named !== undefined ||
+        a.closeVerb ||
+        a.updateVerb ||
+        own(rulings.timeField, type) !== undefined;
+      wherePlan.set(clause, [
+        {
+          path: [dateField, `window:${a.time.span}${ruled ? '' : ` on ${dateField} (default)`}`],
+          kind: 'filter',
+          served: false
+        }
+      ]);
+    }
   }
   if (a.ids.length === 0) {
     const statusField = fields.status;
@@ -708,7 +737,7 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
 
   const params: Record<string, unknown> = {};
   const parts: Part[] = [
-    ...where.map((clause) => ({ clause, plan: [] })),
+    ...where.map((clause) => ({ clause, plan: wherePlan.get(clause) ?? [] })),
     ...(a.composed?.parts ?? [])
   ];
   const all = andOf(parts);
@@ -741,7 +770,9 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
     evidence: ev,
     residual: contentWords(tokens),
     plan,
-    dropped
+    dropped,
+    // From the pick-one itself, not the answer label: "which grade" over "latest" still picks one.
+    strict: a.count || order !== null || a.ids.length === 1 || a.composed?.strict === true
   };
 }
 

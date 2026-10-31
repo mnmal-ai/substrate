@@ -1,11 +1,13 @@
-import type { Query, SubstrateRequest } from '@mnmal-ai/substrate/sdk';
+import type { NlOutcome, PlanClause, Query, SubstrateRequest } from '@mnmal-ai/substrate/sdk';
 import { describe, expect, it, vi } from 'vitest';
 import type { NlEngineAccess, NlEnvelope } from '../access.js';
+import { toSseStream } from '../ask/encode.js';
 import type { NlEvent } from '../ask/events.js';
-import { runAsk } from '../ask/run.js';
+import { mergePlan, runAsk } from '../ask/run.js';
 import type { Judge } from '../judge/judge.js';
+import { buildNamespacePack } from '../pack/build.js';
 import type { ServedPack } from '../pack/service.js';
-import { pack as basePack, rulings } from './_fixture.js';
+import { pack as basePack, OPERATORS, rulings } from './_fixture.js';
 
 const pack: ServedPack = { ...basePack, rulings, warnings: [] };
 const http: SubstrateRequest = {
@@ -51,10 +53,56 @@ describe('runAsk', () => {
     expect(sent['ns/Todo']?.fields).toMatchObject({ id: true, title: true, status: true });
   });
 
+  it('count answers use count: true (no paging calls)', async () => {
+    const { e, query } = engine((f) => ({
+      data: { [Object.keys(f)[0] as string]: { count: 4321 } }
+    }));
+    const o = outcome(
+      await collect(
+        runAsk({ namespace: 'ns', question: 'how many open todos' }, http, { pack, engine: e })
+      )
+    );
+    expect(o).toMatchObject({ kind: 'rows', answer: 'count', count: 4321, dropped: [], plan: [] });
+    expect(query).toHaveBeenCalledTimes(1);
+    const sent = query.mock.calls[0]?.[0] as Record<
+      string,
+      { params: Record<string, unknown>; fields: unknown }
+    >;
+    expect(sent['ns/Todo']?.params.count).toBe(true);
+    expect(sent['ns/Todo']?.fields).toEqual({ id: true });
+  });
+
+  it.each(['walks_disabled', 'row_policy_blocks_walk'])(
+    'a count refused with %s falls back to paging',
+    async (code) => {
+      const { e, query } = engine((f) => {
+        const key = Object.keys(f)[0] as string;
+        const params = (f as Record<string, { params: Record<string, unknown> }>)[key]?.params;
+        if (params?.count === true) return { data: {}, errors: [{ code, message: 'no' }] };
+        return {
+          data: { [key]: [{ id: '1' }, { id: '2' }] },
+          _pagination: { [key]: { hasMore: false } }
+        };
+      });
+      const o = outcome(
+        await collect(
+          runAsk({ namespace: 'ns', question: 'how many open todos' }, http, { pack, engine: e })
+        )
+      );
+      expect(o).toMatchObject({ kind: 'rows', answer: 'count', count: 2 });
+      expect(o).not.toHaveProperty('errors');
+      expect(query).toHaveBeenCalledTimes(2);
+    }
+  );
+
   it('counts every page, not just the first', async () => {
     const { e, query } = engine((f) => {
       const key = Object.keys(f)[0] as string;
-      const cursor = (f as Record<string, { params: { cursor?: string } }>)[key]?.params.cursor;
+      const p = (f as Record<string, { params: { cursor?: string; count?: boolean } }>)[key]
+        ?.params;
+      if (p?.count === true)
+        return { data: {}, errors: [{ code: 'walks_disabled', message: 'off' }] };
+      const cursor = p?.cursor;
       const ids = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `${cursor}-${i}` }));
       if (cursor === undefined)
         return {
@@ -75,14 +123,18 @@ describe('runAsk', () => {
     );
     expect(o).toMatchObject({ kind: 'rows', answer: 'count', count: 217 });
     expect((o as { data: unknown[] }).data).toHaveLength(100);
-    const later = query.mock.calls[1]?.[0] as Record<string, { fields: Record<string, boolean> }>;
+    const later = query.mock.calls[2]?.[0] as Record<string, { fields: Record<string, boolean> }>;
     expect(later['ns/Todo']?.fields).toEqual({ id: true });
   });
 
   it('omits the count and says why when a later page fails', async () => {
     const { e } = engine((f) => {
       const key = Object.keys(f)[0] as string;
-      const cursor = (f as Record<string, { params: { cursor?: string } }>)[key]?.params.cursor;
+      const p = (f as Record<string, { params: { cursor?: string; count?: boolean } }>)[key]
+        ?.params;
+      if (p?.count === true)
+        return { data: {}, errors: [{ code: 'walks_disabled', message: 'off' }] };
+      const cursor = p?.cursor;
       if (cursor === undefined)
         return {
           data: { [key]: [{ id: '1' }] },
@@ -320,5 +372,238 @@ describe('runAsk', () => {
       })
     );
     expect(Object.keys(query.mock.calls[0]?.[0] ?? {})[0]).toBe('ns/Decision');
+  });
+});
+
+// --- walk readings: the confidence rule on the wire ---
+const num = { kind: 'scalar' as const, type: 'number' as const, indexed: true };
+const bool = { kind: 'scalar' as const, type: 'boolean' as const, indexed: true };
+const date = { kind: 'scalar' as const, type: 'date' as const, indexed: true };
+const ref = (type: string) => ({
+  kind: 'crossRef' as const,
+  ns: 'cards',
+  type,
+  onDelete: 'restrict' as const
+});
+const cards: ServedPack = {
+  ...buildNamespacePack({
+    namespace: 'cards',
+    schema: {
+      schemaVersion: 'v',
+      mutations: {},
+      types: {
+        // A user field named like a walk key must not make a reading strict.
+        Cert: {
+          fields: {
+            grade: num,
+            psaOffer: num,
+            ask: num,
+            pick: {
+              kind: 'scalar' as const,
+              type: 'string' as const,
+              indexed: true,
+              enum: ['gold', 'silver']
+            }
+          }
+        },
+        Listing: { fields: { cert: ref('Cert'), price: num, placeholderPrice: bool } },
+        Observation: { fields: { cert: ref('Cert'), price: num, observedAt: date } },
+        Island: { fields: { size: num, surveyedAt: date } }
+      }
+    },
+    operators: OPERATORS,
+    profile: { types: {} }
+  }),
+  rulings: {
+    typeAliases: { cards: 'Cert', card: 'Cert' },
+    timeField: { Observation: 'observedAt', Island: 'surveyedAt' },
+    fieldPhrases: {
+      'asking price': { field: 'Listing.price', exclude: { placeholderPrice: { eq: true } } },
+      'selling for': { field: 'Observation.price' },
+      'island size': { field: 'Island.size' },
+      margin: { derive: { diff: ['Cert.psaOffer', 'Cert.ask'] } }
+    }
+  },
+  warnings: []
+};
+const now = () => new Date('2026-10-30T12:00:00Z');
+const ask = (question: string, e: NlEngineAccess, judgeFn?: Judge) =>
+  collect(
+    runAsk({ namespace: 'cards', question }, http, {
+      pack: cards,
+      engine: e,
+      now,
+      ...(judgeFn !== undefined ? { judge: judgeFn } : {})
+    })
+  );
+
+describe('the confidence rule', () => {
+  it('a dropped window under a count is unknown with dropped naming the span', async () => {
+    const { e, query } = engine();
+    const o = outcome(await ask('how many cards with island size in the past 2 days', e));
+    expect(o).toMatchObject({
+      kind: 'unknown',
+      question: 'how many cards with island size in the past 2 days'
+    });
+    const u = o as Extract<NlOutcome, { kind: 'unknown' }>;
+    expect(u.dropped).toContainEqual(
+      expect.objectContaining({ span: 'past 2 days', kind: 'filter' })
+    );
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it('a seed pick-one ("latest") that lost its filters is unknown, never one confident row', async () => {
+    const { e, query } = engine();
+    const o = outcome(await ask('latest card with island size in the past 2 days', e));
+    expect(o).toMatchObject({ kind: 'unknown' });
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'which grade has the latest card with island size in the past 2 days',
+    'latest card which grade with island size'
+  ])('a field question over a seed pick-one that lost a filter is unknown: %s', async (q) => {
+    const { e, query } = engine();
+    expect(outcome(await ask(q, e))).toMatchObject({ kind: 'unknown' });
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it('a field literally named "pick" leaves a rows reading answered, with dropped', async () => {
+    const { e } = engine();
+    const o = outcome(await ask('gold cards with island size', e));
+    expect(o).toMatchObject({ kind: 'rows', dropped: [{ span: 'island size', kind: 'filter' }] });
+    expect(JSON.stringify(o.kind === 'rows' ? o.frame : null)).toContain('"pick":{"eq":"gold"}');
+  });
+
+  it('a dropped ordering on rows is answered with dropped', async () => {
+    const { e } = engine();
+    const o = outcome(await ask('latest cards by margin', e));
+    expect(o).toMatchObject({
+      kind: 'rows',
+      answer: 'rows',
+      dropped: [{ span: 'latest', kind: 'order' }]
+    });
+  });
+
+  it('a dropped ordering under a count is still answered', async () => {
+    const { e } = engine((f) => ({ data: { [Object.keys(f)[0] as string]: { count: 3 } } }));
+    const o = outcome(await ask('how many latest cards by margin', e));
+    expect(o).toMatchObject({ kind: 'rows', answer: 'count', count: 3 });
+    const sent = (o as { frame: Record<string, { params: Record<string, unknown> }> }).frame;
+    expect(sent['cards/Cert']?.params).not.toHaveProperty('orderBy');
+  });
+
+  it('no judge + count + leftover content words → unknown, never a handoff number', async () => {
+    const { e, query } = engine();
+    const o = outcome(
+      await collect(
+        runAsk({ namespace: 'ns', question: 'how many zorblax todos' }, http, { pack, engine: e })
+      )
+    );
+    expect(o).toMatchObject({
+      kind: 'unknown',
+      dropped: [{ span: 'zorblax', kind: 'filter' }]
+    });
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it('an escalating judge leaves a count with leftovers unknown', async () => {
+    const { e } = engine();
+    const o = outcome(
+      await collect(
+        runAsk({ namespace: 'ns', question: 'how many zorblax todos' }, http, {
+          pack,
+          engine: e,
+          judge: judge({ action: 'escalate' })
+        })
+      )
+    );
+    expect(o).toMatchObject({ kind: 'unknown' });
+  });
+
+  it('no judge + rows + leftovers → rows with dropped (handoff)', async () => {
+    const { e } = engine();
+    const o = outcome(
+      await collect(
+        runAsk({ namespace: 'ns', question: 'zorblax quux todos' }, http, { pack, engine: e })
+      )
+    );
+    expect(o).toMatchObject({ kind: 'rows', source: 'handoff' });
+    expect((o as { dropped: { span: string }[] }).dropped.map((d) => d.span)).toEqual([
+      'zorblax',
+      'quux'
+    ]);
+  });
+
+  it('rows and unknown carry plan, including ruling exclusions and served flags', async () => {
+    const enginePlan: PlanClause[] = [
+      { path: ['where', '_walk'], kind: 'hop', served: true },
+      {
+        path: ['where', '_walk', 'where', 'NOT', 'placeholderPrice'],
+        kind: 'filter',
+        served: false,
+        recommend: { fields: ['cert', 'placeholderPrice'] }
+      }
+    ];
+    const { e } = engine((f) => {
+      const key = Object.keys(f)[0] as string;
+      return { data: { [key]: [] }, _diagnostics: { [key]: { plan: enginePlan } } };
+    });
+    const o = outcome(await ask('cards with an asking price', e));
+    expect(o).toMatchObject({ kind: 'rows', dropped: [] });
+    const plan = (o as { plan: PlanClause[] }).plan;
+    expect(plan).toContainEqual({
+      path: ['where', '_walk', 'cards/Listing.cert', 'any'],
+      kind: 'hop',
+      served: true
+    });
+    // The exclusion keeps its ruling label and takes the engine's flags.
+    expect(plan).toContainEqual({
+      path: ['where', '_walk', 'where', 'NOT', 'ruling:asking price'],
+      kind: 'filter',
+      served: false,
+      recommend: { fields: ['cert', 'placeholderPrice'] }
+    });
+
+    const u = outcome(await ask('how many cards with an asking price or island size', e));
+    expect(u).toMatchObject({ kind: 'unknown' });
+    expect((u as { plan: PlanClause[] }).plan.map((p) => p.path.at(-1))).toContain(
+      'ruling:asking price'
+    );
+  });
+
+  it("SSE names the unknown outcome's event 'unknown'", async () => {
+    const { e } = engine();
+    const stream = toSseStream(
+      runAsk({ namespace: 'ns', question: 'how many zorblax todos' }, http, { pack, engine: e })
+    );
+    const text = await new Response(stream).text();
+    expect(text).toContain('event: unknown\n');
+  });
+});
+
+describe('mergePlan', () => {
+  it('takes served flags by path; parser-only and engine-only clauses both stay', () => {
+    const parsed: PlanClause[] = [
+      {
+        path: ['where', '_walk', 'where', 'price', 'gt', 'compare:over 50'],
+        kind: 'filter',
+        served: false
+      },
+      { path: ['derive', 'margin', 'ruling:margin'], kind: 'derive', served: false },
+      { path: ['orderBy', '0', '$margin', 'desc (default)'], kind: 'order', served: false }
+    ];
+    const merged = mergePlan(parsed, [
+      { path: ['where', '_walk'], kind: 'hop', served: true },
+      { path: ['where', '_walk', 'where', 'price'], kind: 'filter', served: true },
+      { path: ['orderBy', '0'], kind: 'derive', served: true }
+    ]);
+    expect(merged).toEqual([
+      { ...parsed[0], served: true },
+      parsed[1],
+      { ...parsed[2], served: true },
+      { path: ['where', '_walk'], kind: 'hop', served: true }
+    ]);
+    expect(mergePlan(parsed, undefined)).toBe(parsed);
   });
 });

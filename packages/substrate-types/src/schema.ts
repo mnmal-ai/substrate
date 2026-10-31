@@ -29,6 +29,13 @@ export interface PlanClause {
 export interface Dropped {
   span: string;
   reason: string;
+  /**
+   * What the loss changes. `filter`: which rows match (a filter, comparison,
+   * walk, time window or connective), so a count, aggregate, `$ref` or pick
+   * reading that lost it is `unknown`. `order`: an ordering, limit or
+   * projection; the matched rows are the same and the answer stands.
+   */
+  kind: 'filter' | 'order';
 }
 
 export interface FieldDefScalar {

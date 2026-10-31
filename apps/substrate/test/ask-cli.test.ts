@@ -118,6 +118,57 @@ describe('substrate ask', () => {
     expect(r.code).toBe(1);
   });
 
+  it('unknown prints the dropped list and the plan, and exits 1', async () => {
+    const r = await run(['q'], {
+      kind: 'unknown',
+      question: 'q',
+      dropped: [{ span: 'past 2 days', reason: 'it windows Island', kind: 'filter' }],
+      plan: [{ path: ['where', '_walk', 'cards/Listing.cert', 'any'], kind: 'hop', served: true }]
+    });
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('? unknown');
+    expect(r.out).toContain('  dropped "past 2 days": it windows Island\n');
+    expect(r.out).toContain('  plan where._walk.cards/Listing.cert.any (hop)\n');
+  });
+
+  it('terminal escapes in server-derived text are neutralised', async () => {
+    const evil = '\x1b]0;pwned\x07Ship\x1b[31mit';
+    const r = await run(['q'], {
+      kind: 'unknown',
+      question: evil,
+      dropped: [{ span: evil, reason: evil, kind: 'filter' }],
+      plan: [{ path: [evil], kind: 'filter', served: false }]
+    });
+    expect(r.out).not.toContain('\x1b');
+    expect(r.out).not.toContain('\x07');
+    expect(r.out).toContain('dropped "Shipit": Shipit');
+    const rows = await run(['q'], {
+      kind: 'rows',
+      source: 'parser',
+      frame: { 'a/B': {} },
+      data: [{ id: evil, title: evil }],
+      dropped: [],
+      plan: []
+    });
+    expect(rows.out).not.toContain('\x1b');
+  });
+
+  it('rows print what was dropped; a server count prints the number', async () => {
+    const r = await run(['q'], {
+      kind: 'rows',
+      source: 'handoff',
+      frame: { 'a/B': {} },
+      answer: 'count',
+      data: { count: 7 },
+      count: 7,
+      dropped: [{ span: 'latest', reason: 'conflicts', kind: 'order' }],
+      plan: []
+    });
+    expect(r.code).toBe(0);
+    expect(r.out.split('\n')[0]).toBe('▸ a/B · handoff · count 7');
+    expect(r.out).toContain('  dropped "latest": conflicts\n');
+  });
+
   it('rows with errors exit 1 and print them', async () => {
     const r = await run(['q'], {
       kind: 'rows',
@@ -225,6 +276,35 @@ describe('substrate ask', () => {
       })
     ).toBe(1);
     expect(out).toMatch(/^substrate ask: .*\n$/);
+  });
+
+  it('a server error message is stripped of terminal escapes', async () => {
+    let out = '';
+    const evil = (async () =>
+      new Response(JSON.stringify({ message: 'bad\x1b]0;pwned\x07 \x1b[31mthing' }), {
+        status: 500,
+        headers: { 'content-type': 'application/json' }
+      })) as unknown as typeof fetch;
+    expect(
+      await runAsk(['q'], {
+        env: { SUBSTRATE_URL: 'http://h', SUBSTRATE_NAMESPACE: 'notes' },
+        fetchImpl: evil,
+        write: (s) => (out += s)
+      })
+    ).toBe(1);
+    expect(out).toBe('substrate ask: bad thing\n');
+  });
+
+  it('--json escapes C1 controls, which JSON.stringify leaves raw', async () => {
+    let out = '';
+    await runAsk(['--json', 'q'], {
+      env: { SUBSTRATE_URL: 'http://h', SUBSTRATE_NAMESPACE: 'notes' },
+      fetchImpl: fake({ kind: 'refuse', reason: 'a\u009b31mb\u009d0;x' }),
+      write: (s) => (out += s)
+    });
+    expect(out).not.toMatch(/[\u0080-\u009f]/);
+    expect(out).toContain('a\\u009b31mb\\u009d0;x');
+    expect(JSON.parse(out).outcome.reason).toBe('a\u009b31mb\u009d0;x');
   });
 
   it('a value flag does not swallow another flag; -- ends flags', async () => {
