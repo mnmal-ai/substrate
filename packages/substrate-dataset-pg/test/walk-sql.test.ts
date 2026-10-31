@@ -10,7 +10,6 @@ import { encodeCursor } from '@mnmal-ai/substrate-filter';
 import {
   type FieldDef,
   type ReadParams,
-  type ReadResult,
   ResolverFrameError,
   type Row,
   WALKS_NEED_PARTITIONED,
@@ -20,6 +19,7 @@ import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset } from '../src/index.js';
 import { generatedIdentifier } from '../src/migrate.js';
+import { walkComparers } from './_walk-helpers.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const PARTITIONED = process.env.SUBSTRATE_TEST_LAYOUT === 'partitioned';
@@ -89,16 +89,10 @@ async function load(rows: Rows, tombstoned: Record<string, string[]> = {}): Prom
   }
 }
 
-/** The fixture names of the `type` rows matching `where`, asserting pg and memory agree. */
-async function both(type: string, where: WhereClause, includeDeleted = false): Promise<string[]> {
-  const read = async (ds: PgDataset | MemoryDataset) =>
-    (await ds.read(type, { where, ...(includeDeleted ? { includeDeleted } : {}) })).rows
-      .map((r) => names.get(String(r.id)) ?? String(r.id))
-      .sort();
-  const want = await read(mem);
-  expect(await read(pg), JSON.stringify(where)).toEqual(want);
-  return want;
-}
+const { both, same, sameResult } = walkComparers(
+  () => ({ pg, mem }),
+  (id) => names.get(id) ?? id
+);
 
 beforeAll(async () => {
   if (!POSTGRES_URL) return;
@@ -568,20 +562,6 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walks in where (pg)', () => {
   }, 60_000);
 });
 
-/** A row without the columns only one dataset fills (`_metadata`, `shortId`). */
-const strip = (r: Row): Row => {
-  const { _metadata: _m, shortId: _s, ...rest } = r;
-  return rest as Row;
-};
-
-/** The rows `params` reads from `type`, asserting pg and memory agree on every key. */
-async function same(type: string, params: ReadParams): Promise<Row[]> {
-  const read = async (ds: PgDataset | MemoryDataset) =>
-    (await ds.read(type, params)).rows.map(strip);
-  const want = await read(mem);
-  expect(await read(pg), JSON.stringify(params)).toEqual(want);
-  return want;
-}
 const name = (r: Row) => names.get(String(r.id)) ?? String(r.id);
 
 describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk aggregates and nested projection (pg)', () => {
@@ -950,15 +930,6 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk aggregates and nested proje
   });
 });
 
-/** The whole-result answer `params` reads from `type`, asserting pg and memory agree. */
-async function sameResult(type: string, params: ReadParams): Promise<ReadResult> {
-  const pick = ({ rows, hasMore, count, groups, truncated }: ReadResult) =>
-    ({ rows, hasMore, count, groups, truncated }) as ReadResult;
-  const want = pick(await mem.read(type, params));
-  expect(pick(await pg.read(type, params)), JSON.stringify(params)).toEqual(want);
-  return want;
-}
-
 describe.skipIf(!POSTGRES_URL || !PARTITIONED)('count, aggregate and bucket (pg)', () => {
   const FRAME = {
     n: { count: true },
@@ -1298,6 +1269,40 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('derived ordering (pg)', () => {
         }
       }
     }
+  });
+
+  it('a derive outside [1e-300, 1e300] is null and pages, never a float8 error', async () => {
+    // DIFF is ask - grade, RATIO ask / grade.
+    const edge = [
+      { id: 'f1', grade: -1e308, ask: 1e308 }, // diff overflows; ratio -1
+      { id: 'f2', grade: 1e300, ask: 1e-300 }, // diff -1e300; ratio underflows
+      { id: 'f3', grade: 0, ask: 1e301 }, // diff above 1e300; zero divisor
+      { id: 'f4', grade: 5, ask: 0 }, // diff -5; ratio exactly 0
+      { id: 'f5', grade: 5, ask: 5 }, // diff exactly 0; ratio 1
+      { id: 'f6', grade: 1e-10, ask: 1e300 }, // diff 1e300; ratio overflows the log guard
+      { id: 'f7', grade: 1, ask: 3e-301 }, // diff -1; ratio just below 1e-300
+      { id: 'f8', grade: -1.5e307, ask: 1.5e307 }, // diff past the operand guard; ratio -1
+      { id: 'f9', grade: 0, ask: 5e-324 }, // diff below 1e-300; zero divisor
+      { id: 'f10', grade: 4, ask: -2 }, // diff -6; ratio -0.5
+      { id: 'f11', grade: 2e307, ask: 1e307 } // one sign: diff -1e307 is null; ratio 0.5
+    ];
+    await load({ Cert: edge.map((c) => ({ ...c, minObs: 1 })) });
+    for (const dir of ['asc', 'desc'] as const) {
+      for (const derive of [DIFF, RATIO]) {
+        const key = `$${Object.keys(derive)[0]}`;
+        const base = { where: ours, derive, orderBy: [{ [key]: dir }] };
+        const full = (await same('Cert', base)).map(name);
+        const paged = await pages(pg, { ...base, limit: 2 });
+        expect(paged, `${key} ${dir}`).toEqual(await pages(mem, { ...base, limit: 2 }));
+        expect(paged.ids.flat()).toEqual(full);
+      }
+    }
+    const head = async (derive: NonNullable<ReadParams['derive']>, key: string) =>
+      (await same('Cert', { where: ours, derive, orderBy: [{ [key]: 'asc' }], limit: 6 })).map(
+        name
+      );
+    expect(await head(DIFF, '$d')).toEqual(['f2', 'f10', 'f4', 'f7', 'f5', 'f6']);
+    expect((await head(RATIO, '$q')).sort()).toEqual(['f1', 'f10', 'f11', 'f4', 'f5', 'f8']);
   });
 
   it('derive keyset pages agree with the unpaged read while unrelated rows change', async () => {

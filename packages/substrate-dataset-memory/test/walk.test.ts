@@ -732,6 +732,31 @@ describe('memory walk aggregates, count, buckets and derive', () => {
     ).rejects.toMatchObject({ code: 'invalid_cursor' });
   });
 
+  it('a derive outside [1e-300, 1e300] is null; an exact 0 stays', async () => {
+    const ds = await dataset({
+      Cert: [
+        { id: 'c1', grade: 1e308, ask: -1e308 }, // diff overflows; ratio -1
+        { id: 'c2', grade: 1e-300, ask: 1e300 }, // diff -1e300; ratio underflows to 0
+        { id: 'c3', grade: 1e301, ask: 1 }, // both above 1e300
+        { id: 'c4', grade: 0, ask: 5 }, // diff -5; ratio exactly 0
+        { id: 'c5', grade: 5, ask: 5 }, // diff exactly 0; ratio 1
+        { id: 'c6', grade: 5e-324, ask: 0 } // diff below 1e-300; zero divisor
+      ]
+    });
+    const order = async (op: 'diff' | 'ratio') =>
+      (
+        await ds.read('Cert', {
+          derive: { v: { [op]: ['$.grade', '$.ask'] } } as unknown as NonNullable<
+            ReadParams['derive']
+          >,
+          orderBy: [{ $v: 'asc' }]
+        })
+      ).rows.map((r) => r.id);
+    // Valued rows by value, then the null tail by id.
+    expect(await order('diff')).toEqual(['c2', 'c4', 'c5', 'c1', 'c3', 'c6']);
+    expect(await order('ratio')).toEqual(['c1', 'c4', 'c5', 'c2', 'c3', 'c6']);
+  });
+
   it('derive null and zero divisor sort last', async () => {
     const ds = await dataset({
       Cert: [
