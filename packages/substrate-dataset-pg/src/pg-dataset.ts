@@ -548,20 +548,50 @@ export class PgDataset implements Dataset {
     const orderBy = normalizeOrderBy(params.orderBy);
 
     const orderByCastFor = bodyCastFor;
-    // A `$<name>` key sorts by its `params.derive` entry, computed per row.
+    // A filter or sort on shortId needs `s.short_id` per candidate, so it
+    // joins before LIMIT (see `page` below).
+    const joinShortIds =
+      whereReferencesField(params.where, 'shortId') || orderBy.some(([f]) => f === 'shortId');
+
+    // A `$<name>` key sorts by its `params.derive` entry. Each is computed once
+    // per matched row, as a column of a fenced subquery the page reads as `r`,
+    // so ORDER BY, the cursor compare and the projected sort key share it.
+    // shortcut: with the shortId join the where reads `s`, so there the
+    // expression is inlined at each use; fence that join too if it ever costs.
     const derive = params.derive;
-    const derivedFor = (field: string): Fragment | undefined => {
+    const derived = new Map<string, string>();
+    const derivedExpr = (field: string): Fragment | undefined => {
       const name = field.slice(1);
       if (scope === undefined || derive === undefined || !field.startsWith('$')) return undefined;
       const spec = Object.hasOwn(derive, name) ? derive[name] : undefined;
       return spec === undefined ? undefined : buildDerive(sql, name, spec, scope);
     };
+    const fenced: Fragment[] = [];
+    if (!joinShortIds) {
+      for (const [field] of orderBy) {
+        const expr = derivedExpr(field);
+        if (expr === undefined || derived.has(field)) continue;
+        const col = `__derive_${derived.size}`;
+        derived.set(field, col);
+        fenced.push(sql`, ${expr} AS ${sql.unsafe(col)}`);
+      }
+    }
+    const derivedFor = (field: string): Fragment | undefined => {
+      const col = derived.get(field);
+      return col === undefined ? derivedExpr(field) : sql.unsafe(`r.${col}`);
+    };
+    // OFFSET 0 keeps the subquery from being flattened back into one evaluation per use.
+    const from =
+      fenced.length === 0
+        ? sql`rows r`
+        : sql`(SELECT r.*${fenced} FROM rows r WHERE ${combineAnd(sql, clauses)} OFFSET 0) r`;
+    const base = fenced.length === 0 ? clauses : [];
 
     // Cursor: a tuple-compare clause so the page starts strictly after the
     // cursor's (orderBy-values, id) tuple. It matches only non-null leading
     // values when the cursor's is non-null; `tailSql` then selects the null
     // tail that sorts after them, read only if the first query falls short.
-    let whereSql = combineAnd(sql, clauses);
+    let whereSql = combineAnd(sql, base);
     let tailSql: Fragment | null = null;
     if (params.cursor !== undefined && params.cursor !== '') {
       const cursor = decodeCursor(params.cursor, orderBy);
@@ -582,8 +612,8 @@ export class PgDataset implements Dataset {
         this.#promotedFor,
         derivedFor
       );
-      if (tail !== null) tailSql = combineAnd(sql, [...clauses, tail]);
-      if (cursorFragment !== null) whereSql = combineAnd(sql, [...clauses, cursorFragment]);
+      if (tail !== null) tailSql = combineAnd(sql, [...base, tail]);
+      if (cursorFragment !== null) whereSql = combineAnd(sql, [...base, cursorFragment]);
     }
     const orderBySql = buildOrderBy(sql, orderBy, orderByCastFor, this.#promotedFor, derivedFor);
 
@@ -614,15 +644,13 @@ export class PgDataset implements Dataset {
       derivedFor
     );
 
-    // A filter or sort on shortId needs `s.short_id` per candidate, so it
-    // joins before LIMIT. Otherwise the page query runs alone, with nothing
-    // parallel-restricted in it, and short_ids is probed once per row it
-    // returns: the LIMIT keeps the lateral lookup from being flattened into a
-    // join that a generic plan may hash over the type's whole short_ids.
-    // short_ids_row_uniq_idx makes either form match at most one row. The
-    // outer ORDER BY restores the page order over the projected sort keys.
-    const joinShortIds =
-      whereReferencesField(params.where, 'shortId') || orderBy.some(([f]) => f === 'shortId');
+    // With `joinShortIds`, short_ids joins before LIMIT. Otherwise the page
+    // query runs alone, with nothing parallel-restricted in it, and short_ids
+    // is probed once per row it returns: the LIMIT keeps the lateral lookup
+    // from being flattened into a join that a generic plan may hash over the
+    // type's whole short_ids. short_ids_row_uniq_idx makes either form match
+    // at most one row. The outer ORDER BY restores the page order over the
+    // projected sort keys.
     // Inlined so a generic plan costs the page at its real size rather than
     // guessing 10% of the type, which favours a parallel full sort over an
     // index. Safe to inline: `n` derives from `limit`, which is validated and
@@ -637,7 +665,7 @@ export class PgDataset implements Dataset {
                  r.created_at, r.updated_at,
                  r.created_by_kind, r.created_by_id,
                  r.updated_by_kind, r.updated_by_id, r.seq${sortKeyProjection}
-          FROM rows r
+          FROM ${from}
           LEFT JOIN short_ids s
             ON s.namespace = r.namespace
            AND s.type = r.type
@@ -654,7 +682,7 @@ export class PgDataset implements Dataset {
                    r.created_by_kind, r.created_by_id,
                    r.updated_by_kind, r.updated_by_id, r.seq,
                    r.namespace, r.type${sortKeyProjection}
-            FROM rows r
+            FROM ${from}
             WHERE ${where}
             ${orderBySql}
             ${inlineLimit(n)}

@@ -186,6 +186,56 @@ export function buildWalkAgg(
   return { value, kind };
 }
 
+/**
+ * A row's `_agg` selections as one jsonb object. Counts, sums, averages and
+ * numeric min/max over the same hop and `where` are one scan of the
+ * neighbourhood, not one each; a pick is its own probe.
+ */
+function buildWalkAggs(
+  sql: Sql | TransactionSql,
+  aggs: Record<string, WalkAgg>,
+  promotedFor: PromotedColumnLookup,
+  scope: WalkScope
+): Fragment {
+  const shared = new Map<string, Array<[string, WalkAgg]>>();
+  const parts: Fragment[] = [];
+  const own: Fragment[] = [];
+  for (const [name, spec] of Object.entries(aggs)) {
+    const { type } = hop(sql, spec, scope, 'x');
+    if (aggOver(sql, spec, 'x', (f) => scope.fieldDef(type, f)).pick !== undefined) {
+      own.push(sql`${name}::text, ${buildWalkAgg(sql, spec, promotedFor, scope).value}`);
+      continue;
+    }
+    const key = JSON.stringify([spec.in, spec.out, spec.where]);
+    shared.set(key, [...(shared.get(key) ?? []), [name, spec]]);
+  }
+  for (const group of shared.values()) {
+    const [, first] = group[0] as [string, WalkAgg];
+    const alias = scope.nextAlias();
+    const { type, cond } = hop(sql, first, scope, alias);
+    const far =
+      first.where === undefined
+        ? null
+        : buildWhere(
+            sql,
+            first.where,
+            (f) => resolveBodyOrderByCast(scope.fieldDef(type, f)),
+            promotedFor,
+            { ...scope, alias, type }
+          );
+    const values = group.map(([name, spec]) => {
+      const { agg } = aggOver(sql, spec, alias, (f) => scope.fieldDef(type, f));
+      return sql`${name}::text, ${agg as Fragment}`;
+    });
+    const rows = combineAnd(sql, far === null ? [cond] : [cond, far]);
+    parts.push(
+      sql`(SELECT ${buildObject(sql, values)} FROM rows ${sql.unsafe(alias)} WHERE ${rows})`
+    );
+  }
+  if (own.length > 0 || parts.length === 0) parts.push(buildObject(sql, own));
+  return parts.reduce((a, b) => sql`${a} || ${b}`);
+}
+
 /** The number of `scope`'s rows matching `where`, as one row `{ n }`. */
 export function buildFrameCount(
   sql: Sql | TransactionSql,
@@ -314,12 +364,8 @@ export function buildWalkProjection(
   scope: WalkScope
 ): Fragment | null {
   const pairs: Fragment[] = [];
-  if (aggs !== undefined) {
-    const values = Object.entries(aggs).map(
-      ([name, spec]) => sql`${name}::text, ${buildWalkAgg(sql, spec, promotedFor, scope).value}`
-    );
-    pairs.push(sql`'_agg'::text, ${buildObject(sql, values)}`);
-  }
+  if (aggs !== undefined)
+    pairs.push(sql`'_agg'::text, ${buildWalkAggs(sql, aggs, promotedFor, scope)}`);
   const lists = Object.entries(nested);
   if (lists.length === 0) return pairs.length === 0 ? null : buildObject(sql, pairs);
   const x = scope.nextAlias();
@@ -343,7 +389,8 @@ export function buildWalkProjection(
       ? sql``
       : sql` || jsonb_strip_nulls(jsonb_build_object('_truncated', NULLIF(jsonb_strip_nulls(${buildObject(sql, cut)}), '{}'::jsonb)))`;
   const list = cols.flatMap((c, i) => (i === 0 ? [c] : [sql`,`, c]));
-  return sql`(SELECT ${buildObject(sql, pairs)}${truncated} FROM (SELECT ${list}) ${sql.unsafe(x)})`;
+  // OFFSET 0 keeps the subquery from being flattened, which would inline each list at both reads.
+  return sql`(SELECT ${buildObject(sql, pairs)}${truncated} FROM (SELECT ${list} OFFSET 0) ${sql.unsafe(x)})`;
 }
 
 /**

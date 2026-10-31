@@ -154,7 +154,12 @@ async function probes(params: ReadParams, bound: number): Promise<PlanNode[]> {
   return plan;
 }
 
+/** Every walk scan's loops, summed: how many times a read ran a neighbour lookup. */
+const lookups = (plan: PlanNode[]) =>
+  walkScans(plan).reduce((n, s) => n + Number(s['Actual Loops']), 0);
+
 const IN = `${NS}/Nbr.hub`;
+const HUBS = 10;
 
 describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk plan shapes (pg)', () => {
   it('a pick is an index probe in either index direction, ties and nulls as memory', async () => {
@@ -254,5 +259,57 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk plan shapes (pg)', () => {
         3
       )
     });
+  }, 60_000);
+
+  it('a cut nested list is read once per hub, not again for its _truncated flag', async () => {
+    const plan = await probes(
+      {
+        nested: {
+          top: {
+            _walk: { in: IN },
+            fields: { price: true },
+            orderBy: [{ price: 'desc' }],
+            limit: 2
+          }
+        }
+      } as unknown as ReadParams,
+      2 + 1 + 4
+    );
+    expect(lookups(plan)).toBeLessThanOrEqual(HUBS);
+  }, 60_000);
+
+  it('aggregates over one hop and where share one scan per hub', async () => {
+    const where = { at: { gte: '2026-10-05T00:00:00Z' } };
+    const plan = await probes(
+      {
+        agg: {
+          n: { in: IN, where, count: true },
+          avg: { in: IN, where, avg: 'price' },
+          hi: { in: IN, where, max: 'price' },
+          all: { in: IN, count: true }
+        }
+      } as unknown as ReadParams,
+      PER_HUB
+    );
+    // One scan for the three windowed aggregates, one for the unwindowed count.
+    expect(lookups(plan)).toBeLessThanOrEqual(2 * HUBS);
+  }, 60_000);
+
+  it('a derived order evaluates its operands once per matched row', async () => {
+    const agg = { lp: { in: IN, latest: { by: 'at', value: 'price' } } };
+    for (const dir of ['asc', 'desc'] as const) {
+      const plan = await probes(
+        {
+          agg,
+          derive: { m: { diff: ['_agg.lp', '$.ask'] } },
+          orderBy: [{ $m: dir }],
+          limit: 3
+        } as unknown as ReadParams,
+        8
+      );
+      // A pick is at most three probes (max, the rows at it, the null tail): once per hub
+      // for the order, and once per hub at most for the projected `_agg`.
+      expect(lookups(plan)).toBeLessThanOrEqual(2 * 3 * HUBS);
+    }
   }, 60_000);
 });

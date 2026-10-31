@@ -441,7 +441,8 @@ export function buildDerive(
       : sql.unsafe(`CASE WHEN y = 0 THEN NULL WHEN x = 0 THEN x / y
           WHEN abs(ln(abs(x)) - ln(abs(y))) <= 692
           THEN CASE WHEN abs(x / y) BETWEEN 1e-300 AND 1e300 THEN x / y END END`);
-  return sql`(SELECT ${value} FROM (SELECT ${operand(a)} AS x, ${operand(b)} AS y) d)`;
+  // OFFSET 0 reads each operand once; flattened, every x and y above would recompute it.
+  return sql`(SELECT ${value} FROM (SELECT ${operand(a)} AS x, ${operand(b)} AS y OFFSET 0) d)`;
 }
 
 const f64 = new Float64Array(1);
