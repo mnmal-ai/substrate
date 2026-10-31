@@ -553,39 +553,30 @@ export class PgDataset implements Dataset {
     const joinShortIds =
       whereReferencesField(params.where, 'shortId') || orderBy.some(([f]) => f === 'shortId');
 
-    // A `$<name>` key sorts by its `params.derive` entry. Each is computed once
-    // per matched row, as a column of a fenced subquery the page reads as `r`,
-    // so ORDER BY, the cursor compare and the projected sort key share it.
+    // A `$<name>` key sorts by its `params.derive` entry. A leading one, which
+    // every matched row needs, is computed once per row as a column of a fenced
+    // subquery the page reads as `r`, so ORDER BY, the cursor compare and the
+    // projected sort key share it. A later one is inlined: an index on the lead
+    // then computes it only for the rows it reads.
     // shortcut: with the shortId join the where reads `s`, so there the
     // expression is inlined at each use; fence that join too if it ever costs.
     const derive = params.derive;
-    const derived = new Map<string, string>();
     const derivedExpr = (field: string): Fragment | undefined => {
       const name = field.slice(1);
       if (scope === undefined || derive === undefined || !field.startsWith('$')) return undefined;
       const spec = Object.hasOwn(derive, name) ? derive[name] : undefined;
       return spec === undefined ? undefined : buildDerive(sql, name, spec, scope);
     };
-    const fenced: Fragment[] = [];
-    if (!joinShortIds) {
-      for (const [field] of orderBy) {
-        const expr = derivedExpr(field);
-        if (expr === undefined || derived.has(field)) continue;
-        const col = `__derive_${derived.size}`;
-        derived.set(field, col);
-        fenced.push(sql`, ${expr} AS ${sql.unsafe(col)}`);
-      }
-    }
-    const derivedFor = (field: string): Fragment | undefined => {
-      const col = derived.get(field);
-      return col === undefined ? derivedExpr(field) : sql.unsafe(`r.${col}`);
-    };
+    const lead = orderBy[0]?.[0] ?? 'id';
+    const fenced = joinShortIds ? undefined : derivedExpr(lead);
+    const derivedFor = (field: string): Fragment | undefined =>
+      fenced !== undefined && field === lead ? sql`r.__derive_0` : derivedExpr(field);
     // OFFSET 0 keeps the subquery from being flattened back into one evaluation per use.
     const from =
-      fenced.length === 0
+      fenced === undefined
         ? sql`rows r`
-        : sql`(SELECT r.*${fenced} FROM rows r WHERE ${combineAnd(sql, clauses)} OFFSET 0) r`;
-    const base = fenced.length === 0 ? clauses : [];
+        : sql`(SELECT r.*, ${fenced} AS __derive_0 FROM rows r WHERE ${combineAnd(sql, clauses)} OFFSET 0) r`;
+    const base = fenced === undefined ? clauses : [];
 
     // Cursor: a tuple-compare clause so the page starts strictly after the
     // cursor's (orderBy-values, id) tuple. It matches only non-null leading
