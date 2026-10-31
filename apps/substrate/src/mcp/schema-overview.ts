@@ -106,13 +106,12 @@ export const OVERVIEW_LEGEND =
   'fields are server-set. Generated get/create/update/delete<Type> mutations are not listed; `mutations` ' +
   "holds the rest. For a type's exact write contract call `schema` with `namespace` and `type`.";
 
-/** Added to the legend only where the server accepts walks. */
+/** Appended to the overview legend. */
 const WALK_LEGEND =
   ' `←Type.field` is a reference TO this type; follow it backwards with `_walk: { in: "ns/Type.field" }` ' +
   'in `where`, as a nested `fields` entry, or in `_agg`.';
 
-export const overviewLegend = (walks: boolean): string =>
-  walks ? OVERVIEW_LEGEND + WALK_LEGEND : OVERVIEW_LEGEND;
+export const overviewLegend = OVERVIEW_LEGEND + WALK_LEGEND;
 
 /** Past this, the instructions carry only type names; the full overview is one `schema` call away. */
 const INSTRUCTIONS_OVERVIEW_MAX = 12_000;
@@ -129,17 +128,14 @@ const CONVENTIONS = [
 ].join('\n');
 
 /** The MCP `instructions` text: the conventions, then this server's types as of session start. */
-export function buildInstructions(
-  overview: Record<string, NamespaceOverview> | null,
-  walks = false
-): string {
+export function buildInstructions(overview: Record<string, NamespaceOverview> | null): string {
   if (overview === null) {
     return `${CONVENTIONS}\n\nThe type list was unavailable at session start; call \`schema\` with no arguments for it.`;
   }
   const full = JSON.stringify(overview);
   const body =
     full.length <= INSTRUCTIONS_OVERVIEW_MAX
-      ? `${overviewLegend(walks)}\n${full}`
+      ? `${overviewLegend}\n${full}`
       : `Type names only (the full overview is large; call \`schema\` with no arguments for fields):\n${JSON.stringify(
           Object.fromEntries(Object.entries(overview).map(([ns, o]) => [ns, Object.keys(o.types)]))
         )}`;

@@ -63,7 +63,6 @@ export interface CoreRoutesArgs {
   auth: AuthConfig | undefined;
   streamTicketSecret: string | undefined;
   version: string | undefined;
-  walksEnabled?: boolean;
   stats: RuntimeStats;
   routeEventMetric: (name: string, payload?: unknown) => void;
   substrateDataset: Dataset;
@@ -100,7 +99,6 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
     auth,
     streamTicketSecret,
     version,
-    walksEnabled,
     stats,
     routeEventMetric,
     substrateDataset,
@@ -124,8 +122,7 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
     '/health',
     healthRoute({
       version: version ?? '0.0.0',
-      startedAt: Date.now(),
-      walks: walksEnabled === true
+      startedAt: Date.now()
     })
   );
   // Schema discovery and onboarding sit behind `read`, like /substrate/v1/query: the

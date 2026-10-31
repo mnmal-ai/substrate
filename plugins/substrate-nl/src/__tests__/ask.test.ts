@@ -72,7 +72,7 @@ describe('runAsk', () => {
     expect(sent['ns/Todo']?.fields).toEqual({ id: true });
   });
 
-  it.each(['walks_disabled', 'row_policy_blocks_walk'])(
+  it.each(['row_policy_blocks_walk'])(
     'a count refused with %s falls back to paging',
     async (code) => {
       const { e, query } = engine((f) => {
@@ -101,7 +101,7 @@ describe('runAsk', () => {
       const p = (f as Record<string, { params: { cursor?: string; count?: boolean } }>)[key]
         ?.params;
       if (p?.count === true)
-        return { data: {}, errors: [{ code: 'walks_disabled', message: 'off' }] };
+        return { data: {}, errors: [{ code: 'row_policy_blocks_walk', message: 'off' }] };
       const cursor = p?.cursor;
       const ids = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `${cursor}-${i}` }));
       if (cursor === undefined)
@@ -133,7 +133,7 @@ describe('runAsk', () => {
       const p = (f as Record<string, { params: { cursor?: string; count?: boolean } }>)[key]
         ?.params;
       if (p?.count === true)
-        return { data: {}, errors: [{ code: 'walks_disabled', message: 'off' }] };
+        return { data: {}, errors: [{ code: 'row_policy_blocks_walk', message: 'off' }] };
       const cursor = p?.cursor;
       if (cursor === undefined)
         return {

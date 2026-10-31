@@ -52,15 +52,13 @@ describe('walk discoverability', () => {
 
   it('overview renders inbound refs and the walk legend line', () => {
     expect(schemaOverview(walkSchema).shop?.types.Order).toBe('←Item.order');
-    expect(overviewLegend(true)).toContain('`←Type.field`');
-    expect(overviewLegend(false)).not.toContain('_walk');
-    expect(buildInstructions(schemaOverview(walkSchema), true)).toContain('_walk');
-    expect(buildInstructions(schemaOverview(walkSchema))).not.toContain('_walk');
+    expect(overviewLegend).toContain('`←Type.field`');
+    expect(buildInstructions(schemaOverview(walkSchema))).toContain('_walk');
   });
 
-  it('teaches walks in the query tool only when the server accepts them', async () => {
-    const descriptionOf = async (walks: boolean) => {
-      const server = createMcpServer('http://127.0.0.1:1', { walks });
+  it('teaches walks in the query tool', async () => {
+    const descriptionOf = async () => {
+      const server = createMcpServer('http://127.0.0.1:1');
       const [a, b] = InMemoryTransport.createLinkedPair();
       const client = new Client({ name: 't', version: '0' });
       await Promise.all([server.connect(a), client.connect(b)]);
@@ -68,8 +66,7 @@ describe('walk discoverability', () => {
       await client.close();
       return q?.description ?? '';
     };
-    expect(await descriptionOf(true)).toContain('shop/Item.order');
-    expect(await descriptionOf(false)).not.toContain('_walk');
+    expect(await descriptionOf()).toContain('shop/Item.order');
   });
 });
 

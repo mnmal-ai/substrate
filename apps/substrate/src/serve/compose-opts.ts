@@ -108,7 +108,6 @@ export async function buildComposeOpts(args: {
     subscriptions: { snapshotLimit: config.snapshotLimit },
     // Mounts the admin-gated `GET /substrate/v1/config`.
     configReport: config.knobs,
-    walksEnabled: config.walksEnabled,
     advisor: {
       intervalMs: config.advisorIntervalMs,
       ...(config.storeProfile !== null ? { storeProfile: config.storeProfile } : {}),

@@ -228,8 +228,7 @@ export async function recall(endpoint: string, body: RecallInput): Promise<Recal
 }
 
 export function createSchemaHandler(
-  endpoint: string,
-  walks = false
+  endpoint: string
 ): (args?: {
   namespace?: string;
   type?: string;
@@ -250,7 +249,7 @@ export function createSchemaHandler(
           endpoint,
           '/substrate/v1/federated-schema'
         );
-        return okResult({ legend: overviewLegend(walks), overview: schemaOverview(federated) });
+        return okResult({ legend: overviewLegend, overview: schemaOverview(federated) });
       } catch (err) {
         return errorResult(toMessage(err));
       }
@@ -459,8 +458,6 @@ export interface McpServerOptions {
   tools?: string;
   /** Sent to the client at initialize; clients put it in the agent's context. */
   instructions?: string;
-  /** The server accepts the walk grammar (`/health` says so); the tool text teaches it only then. */
-  walks?: boolean;
 }
 
 const WALK_DESCRIPTION =
@@ -528,7 +525,7 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
             )
         }
       },
-      handler: createSchemaHandler(endpoint, options.walks === true)
+      handler: createSchemaHandler(endpoint)
     },
     {
       name: 'query',
@@ -537,7 +534,7 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
           'Query Substrate. payload is a single frame object mapping qualified keys ' +
           '(<ns>/<Type>) to { params, fields }. ONE call can span multiple ' +
           'namespaces — e.g. { "prices/Price": {...}, "products/Product": {...} }.' +
-          (options.walks === true ? WALK_DESCRIPTION : ''),
+          WALK_DESCRIPTION,
         inputSchema: {
           payload: payloadSchema(
             'Query frame. Example: { "default/Todo": { "params": { "limit": 20 }, ' +
@@ -916,16 +913,6 @@ function resolveToolAllowlist(raw: string | undefined, known: string[]): Set<str
   return new Set(names);
 }
 
-/** Whether the server accepts walks, from its open `/health`; false when slow, down or older. */
-async function fetchWalks(endpoint: string): Promise<boolean> {
-  const timeout = new Promise<false>((resolve) => setTimeout(() => resolve(false), 5000).unref());
-  const fetched = getSubstrate<{ walks?: boolean }>(endpoint, '/health').then(
-    (h) => h.walks === true,
-    () => false
-  );
-  return Promise.race([fetched, timeout]);
-}
-
 /** The overview for the session's instructions, or null when the server is slow or down. */
 async function fetchOverview(endpoint: string): Promise<ReturnType<typeof schemaOverview> | null> {
   const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000).unref());
@@ -943,13 +930,11 @@ async function fetchOverview(endpoint: string): Promise<ReturnType<typeof schema
 export async function runMcp(): Promise<void> {
   const endpoint = process.env.SUBSTRATE_URL ?? 'http://localhost:3100';
   configureAgentAuth(process.env, endpoint);
-  const walks = await fetchWalks(endpoint);
   const server = createMcpServer(endpoint, {
     ...(process.env.SUBSTRATE_MCP_TOOLS === undefined
       ? {}
       : { tools: process.env.SUBSTRATE_MCP_TOOLS }),
-    walks,
-    instructions: buildInstructions(await fetchOverview(endpoint), walks)
+    instructions: buildInstructions(await fetchOverview(endpoint))
   });
   const transport = new StdioServerTransport();
   await server.connect(transport);

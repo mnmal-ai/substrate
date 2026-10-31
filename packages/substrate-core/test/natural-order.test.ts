@@ -64,8 +64,7 @@ function engineFor(orderedBy?: OrderedBy): {
   const engine = new Engine({
     namespaces: new Map<string, NamespaceConfig>([['shop', { registry }]]),
     datasets,
-    edges: new MemoryEdgesStore({ now: () => new Date() }),
-    walksEnabled: true
+    edges: new MemoryEdgesStore({ now: () => new Date() })
   });
   return { engine, ds, seen };
 }

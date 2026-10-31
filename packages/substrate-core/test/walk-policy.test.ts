@@ -13,10 +13,7 @@ import { hopResolver, walkedTypes } from '../src/walk-types.js';
 
 const allow: Policy = () => ({ allow: true });
 
-function build(
-  policies: { Thing?: Policy; Part?: Policy; Note?: Policy } = {},
-  walksEnabled = true
-) {
+function build(policies: { Thing?: Policy; Part?: Policy; Note?: Policy } = {}) {
   const registry = new Registry();
   let reached = 0;
   const resolver = async () => {
@@ -47,8 +44,7 @@ function build(
   const engine = new Engine({
     namespaces: new Map<string, NamespaceConfig>([['ns', { registry }]]),
     datasets,
-    edges: new MemoryEdgesStore({ now: () => new Date('2026-04-18T00:00:00Z') }),
-    walksEnabled
+    edges: new MemoryEdgesStore({ now: () => new Date('2026-04-18T00:00:00Z') })
   });
   return { engine, reached: () => reached };
 }
@@ -327,9 +323,9 @@ describe('walkedTypes', () => {
 });
 
 describe('walk grammar outside validated query paths', () => {
-  it('a mutation selecting _agg or a nested walk is refused walks_in_mutation, flag on or off', async () => {
-    for (const flag of [true, false]) {
-      const { engine } = build({}, flag);
+  it('a mutation selecting _agg or a nested walk is refused walks_in_mutation', async () => {
+    {
+      const { engine } = build();
       for (const fields of [
         { id: true, _agg: { parts: { in: 'ns/Part.thing', count: true } } },
         { id: true, parts: { _walk: { in: 'ns/Part.thing' }, fields: { id: true } } }
@@ -345,34 +341,31 @@ describe('walk grammar outside validated query paths', () => {
     }
   });
 
-  it('a virtual type refuses walk grammar with walk_unsupported_ref, flag on or off', async () => {
-    for (const walksEnabled of [true, false]) {
-      let reached = 0;
-      const registry = new Registry();
-      registry.register('Hit', {
-        resolver: async () => {
-          reached++;
-          return [];
-        }
-      });
-      const engine = new Engine({
-        namespaces: new Map<string, NamespaceConfig>([['v', { registry, virtual: true }]]),
-        datasets: new MemoryDatasetRegistry(),
-        edges: new MemoryEdgesStore({ now: () => new Date('2026-04-18T00:00:00Z') }),
-        walksEnabled
-      });
-      const res = await engine.query({
-        frame: {
-          'v/Hit': { params: { where: { _walk: { in: 'v/Part.thing' } } }, fields: { id: true } }
-        },
-        ctx
-      });
-      expect(res.errors?.[0]).toMatchObject({
-        code: 'walk_unsupported_ref',
-        message: 'walks are not available on virtual types',
-        path: ['v/Hit', 'where', '_walk']
-      });
-      expect(reached).toBe(0);
-    }
+  it('a virtual type refuses walk grammar with walk_unsupported_ref', async () => {
+    let reached = 0;
+    const registry = new Registry();
+    registry.register('Hit', {
+      resolver: async () => {
+        reached++;
+        return [];
+      }
+    });
+    const engine = new Engine({
+      namespaces: new Map<string, NamespaceConfig>([['v', { registry, virtual: true }]]),
+      datasets: new MemoryDatasetRegistry(),
+      edges: new MemoryEdgesStore({ now: () => new Date('2026-04-18T00:00:00Z') })
+    });
+    const res = await engine.query({
+      frame: {
+        'v/Hit': { params: { where: { _walk: { in: 'v/Part.thing' } } }, fields: { id: true } }
+      },
+      ctx
+    });
+    expect(res.errors?.[0]).toMatchObject({
+      code: 'walk_unsupported_ref',
+      message: 'walks are not available on virtual types',
+      path: ['v/Hit', 'where', '_walk']
+    });
+    expect(reached).toBe(0);
   });
 });

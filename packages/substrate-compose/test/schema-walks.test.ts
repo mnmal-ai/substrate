@@ -60,15 +60,14 @@ afterEach(async () => {
   await server.stop({ grace: 0 });
 });
 
-async function boot(dataset: MemoryDataset, walksEnabled = false) {
+async function boot(dataset: MemoryDataset) {
   server = new FastifySubstrateServer();
   await compose({
     systemActor: 'test',
     server,
     dataset: new MemoryDataset({ namespace: 'default' }),
     datasets: { [NS]: dataset },
-    coordinators: [plugin],
-    walksEnabled
+    coordinators: [plugin]
   });
   const { address, port } = await server.start({ host: '127.0.0.1', port: 0 });
   return `http://${address}:${port}`;
@@ -96,11 +95,8 @@ describe('walk discoverability in the schema', () => {
     expect(await get(`${url}/substrate/v1/schema/${NS}/Item`)).not.toHaveProperty('servedAfterHop');
   });
 
-  it('health says walks are on only when the flag is', async () => {
+  it('health keeps the walks field for older bridges', async () => {
     const url = await boot(new MemoryDataset({ namespace: NS }));
-    expect(await get(`${url}/health`)).not.toHaveProperty('walks');
-    await server.stop({ grace: 0 });
-    const on = await boot(new MemoryDataset({ namespace: NS }), true);
-    expect((await get(`${on}/health`)).walks).toBe(true);
+    expect((await get(`${url}/health`)).walks).toBe(true);
   });
 });
