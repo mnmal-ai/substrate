@@ -136,9 +136,34 @@ describe('classifyWalkService', () => {
         a: { _walk: { in: 'cards/Observation.cert' }, orderBy: [{ createdAt: 'desc' }] },
         b: { _walk: { in: 'cards/Observation.cert' }, orderBy: [{ observedAt: 'desc' }] },
         c: { _walk: { in: 'cards/Listing.cert' }, orderBy: [{ price: 'asc' }] },
-        _agg: { last: { in: 'cards/Listing.cert', latest: { by: 'price', value: 'price' } } }
+        d: { _walk: { in: 'cards/Observation.cert' }, orderBy: [{ observedAt: 'asc' }] },
+        _agg: {
+          last: { in: 'cards/Listing.cert', latest: { by: 'price', value: 'price' } },
+          first: { in: 'cards/Observation.cert', min: 'observedAt' }
+        }
       }
     });
+    // A list's LIMIT needs the index in its own direction: (cert, observedAt DESC) read
+    // backward is nulls first, so it does not serve observedAt ascending.
+    expect(at(plan, 'fields', 'd', 'orderBy')).toMatchObject({
+      served: false,
+      recommend: { fields: ['cert', { field: 'observedAt', dir: 'asc' }] }
+    });
+    // shortcut pinned: an orderBy that spells out its `id` tie-break is reported unserved,
+    // though the index plus an incremental sort on id serves it. Conservative, so honest.
+    const spelled = classify({
+      params: {},
+      fields: {
+        id: true,
+        e: {
+          _walk: { in: 'cards/Observation.cert' },
+          orderBy: [{ observedAt: 'desc' }, { id: 'asc' }]
+        }
+      }
+    });
+    expect(at(spelled, 'fields', 'e', 'orderBy')?.served).toBe(false);
+    // A pick or min/max is a min/max probe, which either direction serves.
+    expect(at(plan, 'fields', '_agg', 'first', 'min')?.served).toBe(true);
     expect(at(plan, 'fields', 'a', 'orderBy')?.served).toBe(true);
     expect(at(plan, 'fields', 'b', 'orderBy')?.served).toBe(true);
     expect(at(plan, 'fields', 'c', 'orderBy')).toMatchObject({

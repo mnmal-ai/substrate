@@ -8,8 +8,8 @@
  * - every far row is pinned to its namespace and type (partition pruning) and
  *   must be live;
  * - `any` → EXISTS, `none` → NOT EXISTS, `all` → NOT EXISTS of a neighbour
- *   whose predicate IS NOT TRUE, `pick` → the one neighbour of a LATERAL
- *   `ORDER BY … NULLS LAST, id LIMIT 1`;
+ *   whose predicate IS NOT TRUE, `pick` → the one neighbour `firstRow`
+ *   finds by index probes;
  * - the `any` walks with `as` in one AND group are ONE EXISTS over all their
  *   rows, so they are jointly quantified;
  * - a `$ref` comparison is never true when either side is NULL, eq and neq
@@ -161,8 +161,8 @@ export function buildWalk(
   if (node.pick !== undefined) {
     const [dir, field] = Object.entries(node.pick)[0] as [string, string];
     const key = sortKey(sql, field, castFor(scope, type)(field), alias);
-    const order = sql.unsafe(dir === 'min' ? 'ASC NULLS LAST' : 'DESC NULLS LAST');
-    return sql`EXISTS (SELECT 1 FROM LATERAL (SELECT ${a}.* FROM rows ${a} WHERE ${cond} ORDER BY ${key} ${order}, ${a}.id COLLATE "C" ASC LIMIT 1) ${a}${far === null ? sql`` : sql` WHERE ${far}`})`;
+    const picked = firstRow(sql, sql`${a}.*`, alias, cond, key, dir === 'min' ? 'ASC' : 'DESC');
+    return sql`EXISTS (SELECT 1 FROM (${picked}) ${a}${far === null ? sql`` : sql` WHERE ${far}`})`;
   }
   const rows = sql`SELECT 1 FROM rows ${a} WHERE ${cond}`;
   switch (node.quantifier ?? 'any') {
@@ -174,6 +174,37 @@ export function buildWalk(
     default:
       return sql`EXISTS (${rows}${far === null ? sql`` : sql` AND ${far}`})`;
   }
+}
+
+/**
+ * `select` of the first `alias` row passing `where` by `key` in `dir`, nulls
+ * last, ties id ascending: at most one row. Not `ORDER BY key … LIMIT 1`,
+ * which only an index in exactly that direction serves: min/max(key) is an
+ * index probe in either direction, then the rows at that key are fetched by
+ * it, and only when no key is present (and `nullable`), the least id with a
+ * null key. The subquery repeats `where` under the same alias, shadowing the
+ * outer row; `where` is so written out three times, with its parameters,
+ * which compounds per nesting level (bounded by walk depth, far below pg's
+ * 65,535-parameter cap).
+ */
+export function firstRow(
+  sql: Sql | TransactionSql,
+  select: Fragment,
+  alias: string,
+  where: Fragment,
+  key: Fragment,
+  dir: 'ASC' | 'DESC',
+  nullable = true
+): Fragment {
+  const a = sql.unsafe(alias);
+  const best = sql.unsafe(dir === 'ASC' ? 'min' : 'max');
+  const byId = sql.unsafe(`ORDER BY ${alias}.id COLLATE "C" ASC LIMIT 1`);
+  const keyed = sql`SELECT ${select} FROM rows ${a} WHERE ${where} AND ${key} = (SELECT ${best}(${key}) FROM rows ${a} WHERE ${where}) ${byId}`;
+  if (!nullable) return keyed;
+  // Invariant: the null branch answers only when the keyed one is empty, because a
+  // non-parallel Append runs its children in order under LIMIT 1. `where` is always
+  // correlated (the hop), which keeps this subplan non-parallel; keep it so.
+  return sql`(${keyed}) UNION ALL (SELECT ${select} FROM rows ${a} WHERE ${where} AND ${key} IS NULL ${byId}) LIMIT 1`;
 }
 
 /** A pick's ordering key: an instant for a date, a number for a number. */
