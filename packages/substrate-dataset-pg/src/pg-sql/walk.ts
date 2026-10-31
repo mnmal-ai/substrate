@@ -181,8 +181,11 @@ export function buildWalk(
  * last, ties id ascending: at most one row. Not `ORDER BY key … LIMIT 1`,
  * which only an index in exactly that direction serves: min/max(key) is an
  * index probe in either direction, then the rows at that key are fetched by
- * it, and only when no key is present, the least id with a null key. The
- * subquery repeats `where` under the same alias, shadowing the outer row.
+ * it, and only when no key is present (and `nullable`), the least id with a
+ * null key. The subquery repeats `where` under the same alias, shadowing the
+ * outer row; `where` is so written out three times, with its parameters,
+ * which compounds per nesting level (bounded by walk depth, far below pg's
+ * 65,535-parameter cap).
  */
 export function firstRow(
   sql: Sql | TransactionSql,
@@ -190,12 +193,18 @@ export function firstRow(
   alias: string,
   where: Fragment,
   key: Fragment,
-  dir: 'ASC' | 'DESC'
+  dir: 'ASC' | 'DESC',
+  nullable = true
 ): Fragment {
   const a = sql.unsafe(alias);
   const best = sql.unsafe(dir === 'ASC' ? 'min' : 'max');
   const byId = sql.unsafe(`ORDER BY ${alias}.id COLLATE "C" ASC LIMIT 1`);
-  return sql`(SELECT ${select} FROM rows ${a} WHERE ${where} AND ${key} = (SELECT ${best}(${key}) FROM rows ${a} WHERE ${where}) ${byId}) UNION ALL (SELECT ${select} FROM rows ${a} WHERE ${where} AND ${key} IS NULL ${byId}) LIMIT 1`;
+  const keyed = sql`SELECT ${select} FROM rows ${a} WHERE ${where} AND ${key} = (SELECT ${best}(${key}) FROM rows ${a} WHERE ${where}) ${byId}`;
+  if (!nullable) return keyed;
+  // Invariant: the null branch answers only when the keyed one is empty, because a
+  // non-parallel Append runs its children in order under LIMIT 1. `where` is always
+  // correlated (the hop), which keeps this subplan non-parallel; keep it so.
+  return sql`(${keyed}) UNION ALL (SELECT ${select} FROM rows ${a} WHERE ${where} AND ${key} IS NULL ${byId}) LIMIT 1`;
 }
 
 /** A pick's ordering key: an instant for a date, a number for a number. */

@@ -179,7 +179,9 @@ export function buildWalkAgg(
           alias,
           pick.filter === undefined ? rows : combineAnd(sql, [rows, pick.filter]),
           pick.key,
-          pick.dir
+          pick.dir,
+          // A date min/max filter already drops null keys.
+          pick.filter === undefined
         )})`;
   return { value, kind };
 }

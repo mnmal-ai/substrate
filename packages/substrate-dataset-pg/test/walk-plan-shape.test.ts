@@ -131,11 +131,15 @@ async function analyzed(): Promise<PlanNode[]> {
   }
 }
 
-/** The walk scans: the far rows a walk reads. */
+/** The walk table scans: the far rows a walk reads. */
 const walkScans = (plan: PlanNode[]) =>
-  plan.filter((n) => /Scan/.test(String(n['Node Type'])) && /^w\d+(_\d+)?$/.test(String(n.Alias)));
+  plan.filter((n) => n['Relation Name'] !== undefined && /^w\d+(_\d+)?$/.test(String(n.Alias)));
 
-/** Reads `params` through both datasets, then asserts no walk scan read more than `bound` rows per loop. */
+/**
+ * Reads `params` through both datasets, then asserts no walk scan read more
+ * than `bound` rows per loop: those it returned plus those its filter removed,
+ * so a scan of the neighbourhood that filters down to a few rows still fails.
+ */
 async function probes(params: ReadParams, bound: number): Promise<PlanNode[]> {
   sent = [];
   await same('Hub', { limit: 20, ...params });
@@ -144,7 +148,8 @@ async function probes(params: ReadParams, bound: number): Promise<PlanNode[]> {
   expect(scans.length).toBeGreaterThan(0);
   for (const s of scans) {
     expect(s['Node Type'], JSON.stringify(s)).not.toBe('Seq Scan');
-    expect(Number(s['Actual Rows']), JSON.stringify(s)).toBeLessThanOrEqual(bound);
+    const read = Number(s['Actual Rows']) + Number(s['Rows Removed by Filter'] ?? 0);
+    expect(read, JSON.stringify(s)).toBeLessThanOrEqual(bound);
   }
   return plan;
 }
@@ -200,5 +205,54 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk plan shapes (pg)', () => {
         limit + 1 + 4
       );
     }
+  }, 60_000);
+  it('a filtered latest aggregate picks among the rows its where keeps', async () => {
+    // The where drops each hub's top price and its newest rows: filter, then pick.
+    await same('Hub', {
+      agg: {
+        cheap: { in: IN, where: { price: { lt: 90 } }, latest: { by: 'price', value: 'at' } },
+        early: {
+          in: IN,
+          where: { at: { lt: '2026-10-05T00:00:00Z' } },
+          latest: { by: 'at', value: 'price' }
+        },
+        none: { in: IN, where: { price: { gt: 1000 } }, latest: { by: 'at', value: 'price' } }
+      }
+    } as unknown as ReadParams);
+  }, 60_000);
+
+  it('nested lists at the cut, across tied keys, and inside a nested row', async () => {
+    const list = (fields: Record<string, unknown>, orderBy: unknown[], limit: number) =>
+      ({ top: { _walk: { in: IN }, fields, orderBy, limit } }) as unknown as NonNullable<
+        ReadParams['nested']
+      >;
+    // h8 holds exactly 6: a limit of 6 is not cut there.
+    const rows = await same('Hub', {
+      limit: 20,
+      nested: list({ price: true }, [{ at: 'desc' }], 6)
+    });
+    const h8 = rows.find((r) => names.get(String(r.id)) === 'h8');
+    expect(h8?.top).toHaveLength(6);
+    expect(h8).not.toHaveProperty('_truncated');
+    // Ties on price straddle the cut; the second key and the id break them.
+    for (const limit of [1, 3, 5]) {
+      await same('Hub', {
+        limit: 20,
+        nested: list({ price: true, at: true }, [{ price: 'desc' }, { at: 'asc' }], limit)
+      });
+    }
+    // A list in each listed row (back to the hub), itself cut.
+    await same('Hub', {
+      limit: 20,
+      nested: list(
+        {
+          price: true,
+          back: { _walk: { out: 'hub' }, fields: { ask: true }, limit: 1 },
+          sib: { _walk: { out: 'hub' }, fields: {}, limit: 0 }
+        },
+        [{ price: 'desc' }],
+        3
+      )
+    });
   }, 60_000);
 });
