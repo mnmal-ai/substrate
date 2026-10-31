@@ -39,10 +39,13 @@ import type {
   DropParticipant,
   EdgesStore,
   EngineInput,
+  FieldDef,
   FrameEntry,
   IdempotencyStore,
   Identity,
+  IndexPlan,
   PackEnvelope,
+  PlanClause,
   PolicyDecision,
   PolicyProbeContext,
   QualifiedFrame,
@@ -64,11 +67,19 @@ import {
   WALKS_IN_MUTATION,
   WALKS_UNSUPPORTED_STORE
 } from '@mnmal-ai/substrate-types';
-import { readShapeOf } from '../advisor/shape-recorder.js';
+import { readShapeOf, walkShapesOf } from '../advisor/shape-recorder.js';
+import { classifyWalkService, type WalkSite, walkSites } from '../advisor/walk-service.js';
 import { applyLostNamespace } from '../apply-lost-namespace.js';
 
 /** Local query keys dispatched at once; the rest wait for a free slot. */
 const QUERY_KEY_CONCURRENCY = 16;
+
+/** A walk-grammar frame's walks, resolved once for the shape recorder and the plan. */
+interface WalkScan {
+  sites: WalkSite[];
+  resolve: HopResolver;
+  fieldsOf: (type: string) => Record<string, FieldDef> | undefined;
+}
 
 /** `#runEntry`'s parameters after `(envelope, key)`. */
 type RunEntryRest = [
@@ -125,8 +136,8 @@ function grantRefusalCode(verdict: { reason: 'namespace' | 'capability' }): stri
 
 import { evaluatePolicy } from '../policy-evaluator.js';
 import { Registry } from '../registry.js';
-import { walkGrammarPath } from '../walk-gate.js';
-import { hopResolver, type WalkedType, walkedTypes } from '../walk-types.js';
+import { usesWalkGrammar, walkGrammarPath } from '../walk-gate.js';
+import { type HopResolver, hopResolver, type WalkedType, walkedTypes } from '../walk-types.js';
 import { BridgeSubsystem } from './bridge.js';
 import { isSealedCursor, openCursor } from './cursor-seal.js';
 import { runFilterGuard } from './filter-guard.js';
@@ -1327,6 +1338,59 @@ export class Engine {
     return refused;
   }
 
+  /** The walk sites of a walk-grammar query frame, or undefined for an ordinary one. */
+  #walkSitesOf(frame: FrameEntry, ns: string, seed: string): WalkScan | undefined {
+    if (!usesWalkGrammar(frame as Record<string, unknown>)) return undefined;
+    const types = this.schemaFor(ns).types;
+    const schemaOf = (t: string) => (Object.hasOwn(types, t) ? types[t] : undefined);
+    const resolve = hopResolver(ns, schemaOf);
+    try {
+      const sites = walkSites(frame as Record<string, unknown>, seed, resolve);
+      return { sites, resolve, fieldsOf: (t) => schemaOf(t)?.fields };
+    } catch {
+      // Validation resolved every hop already; a describer never fails the read.
+      return undefined;
+    }
+  }
+
+  /**
+   * The frame's clauses marked index-served (goal 7), from the store's index
+   * plans. Undefined when the store has none (memory) or any type's plan is
+   * unknown: a plan that cannot be judged is omitted, never guessed.
+   */
+  async #walkPlan(
+    dataset: Dataset,
+    key: string,
+    frame: FrameEntry,
+    ns: string,
+    seed: string,
+    scan: WalkScan
+  ): Promise<PlanClause[] | undefined> {
+    if (dataset.indexPlan === undefined) return undefined;
+    const types = [...new Set([seed, ...scan.sites.map((s) => s.far)])];
+    let plans: Array<IndexPlan | undefined>;
+    try {
+      plans = await Promise.all(types.map((t) => dataset.indexPlan?.(t, ns)));
+    } catch (err) {
+      this.#metric('engine_walk_plan_failed', {
+        key,
+        error: err instanceof Error ? err.message : String(err)
+      });
+      return undefined;
+    }
+    if (plans.some((p) => p === undefined)) return undefined;
+    const byType = new Map(types.map((t, i) => [t, plans[i]?.indexes ?? []]));
+    return classifyWalkService(
+      {
+        entry: frame as Record<string, unknown>,
+        seed,
+        resolve: scan.resolve,
+        fieldsOf: scan.fieldsOf
+      },
+      (t) => byType.get(t) ?? []
+    );
+  }
+
   /**
    * Fail-closed policy for walk grammar (spec §2, §3). A walk is a read of
    * every type it touches: each walked, aggregated or nested type's read
@@ -1603,6 +1667,10 @@ export class Engine {
       args.params = { ...args.params, cursor: opened };
     }
 
+    const walkScan =
+      operation === 'query' && registryEntry.kind === 'type' && !isVirtual
+        ? this.#walkSitesOf(frame, ns, name)
+        : undefined;
     let result: Row | Row[] | ReadResult | AsyncIterable<Row> | null;
     const t0 = performance.now();
     try {
@@ -1637,10 +1705,25 @@ export class Engine {
         !isVirtual &&
         args.params?.id === undefined
       ) {
+        const ms = performance.now() - t0;
         this.#shapeRecorder?.observe(
           readShapeOf(ns, name, registryEntry.fields, args.params?.where, args.params?.orderBy),
-          performance.now() - t0
+          ms
         );
+        // Each walk is charged the whole read's time: the far reads run inside it.
+        if (walkScan !== undefined && this.#shapeRecorder !== undefined) {
+          for (const s of walkShapesOf(ns, walkScan.sites, walkScan.fieldsOf)) {
+            this.#shapeRecorder.observe(s, ms);
+          }
+        }
+      }
+    }
+
+    if (walkScan !== undefined && dataset !== undefined) {
+      const plan = await this.#walkPlan(dataset, key, frame, ns, name, walkScan);
+      if (plan !== undefined) {
+        envelope._diagnostics ??= {};
+        envelope._diagnostics[key] = { ...(envelope._diagnostics[key] ?? {}), plan };
       }
     }
 

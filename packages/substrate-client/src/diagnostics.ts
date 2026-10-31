@@ -36,7 +36,12 @@ type EnvelopeDiagnosticEntry = EnvelopeDiagnostics[string];
  * teaching the sink to describe it would be caught by the tests rather than
  * shipped as a silent no-op.
  */
-const HANDLED_ENVELOPE_KEYS = ['unknownProjectionFields', 'filterValidationSkipped'] as const;
+const HANDLED_ENVELOPE_KEYS = [
+  'unknownProjectionFields',
+  'filterValidationSkipped',
+  // A walk read's served/unserved annotation: information, not a fault, so it never warns.
+  'plan'
+] as const;
 const HANDLED = new Set<string>(HANDLED_ENVELOPE_KEYS);
 
 /**

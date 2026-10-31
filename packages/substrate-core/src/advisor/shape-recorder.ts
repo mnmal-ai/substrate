@@ -6,6 +6,7 @@
 
 import type { FieldDef } from '@mnmal-ai/substrate-types';
 import { LogHistogram } from '../metrics/histogram.js';
+import type { WalkSite } from './walk-service.js';
 
 export interface ReadShape {
   namespace: string;
@@ -32,6 +33,8 @@ export function shapeKey(s: ReadShape): string {
 }
 
 const COMBINATORS = new Set(['AND', 'OR', 'NOT']);
+/** Walk grammar inside a `where`: walks are recorded as far-type shapes of their own, never as fields. */
+const WALK_KEYS = new Set(['_walk', '_agg', '$ref']);
 
 const isObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v) && !(v instanceof Date);
@@ -57,8 +60,10 @@ export function readShapeOf(
     prefix: string,
     conjunct: boolean
   ): void => {
-    if (!isObject(w)) return;
+    // A where-side `_agg` node's comparison is on the aggregate, not on a field.
+    if (!isObject(w) || Object.hasOwn(w, '_agg')) return;
     for (const [k, v] of Object.entries(w)) {
+      if (WALK_KEYS.has(k)) continue;
       if (COMBINATORS.has(k)) {
         const under = conjunct && k === 'AND';
         if (!under) disjunctive = true;
@@ -93,6 +98,30 @@ export function readShapeOf(
     ...(disjunctive ? { disjunctive: true as const } : {}),
     ...(Object.keys(literals).length > 0 ? { literals } : {})
   };
+}
+
+/**
+ * One far-type shape per inbound walk: the far rows are read by the hop's
+ * crossRef (an equality per seed row), then the walk's own filters, in the
+ * walk's order. An outbound hop reads one row by primary key, which no index
+ * could speed, so it has none.
+ */
+export function walkShapesOf(
+  namespace: string,
+  sites: WalkSite[],
+  fieldsOf: (type: string) => Record<string, FieldDef> | undefined
+): ReadShape[] {
+  const out: ReadShape[] = [];
+  for (const s of sites) {
+    if (s.crossRef === undefined) continue;
+    const wheres = s.wheres.map((w) => w.where);
+    const where = wheres.length === 1 ? wheres[0] : { AND: wheres };
+    const order = (s.order?.by ?? []).map(([f, d]) => ({ [f]: d }));
+    const shape = readShapeOf(namespace, s.far, fieldsOf(s.far) ?? {}, where, order);
+    shape.filters.unshift({ field: s.crossRef, op: 'eq' });
+    out.push(shape);
+  }
+  return out;
 }
 
 /** Distinct shapes held between drains; past it the least recently seen is dropped. */
