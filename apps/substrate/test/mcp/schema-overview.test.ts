@@ -1,7 +1,11 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { describe, expect, it } from 'vitest';
-import { buildInstructions, schemaOverview } from '../../src/mcp/schema-overview.js';
+import {
+  buildInstructions,
+  overviewLegend,
+  schemaOverview
+} from '../../src/mcp/schema-overview.js';
 import { createMcpServer } from '../../src/mcp/server.js';
 
 const federated = {
@@ -33,6 +37,39 @@ describe('schemaOverview', () => {
         'author: →people/Person, parent: →Note?, meta: {a, b}, shortId: number [readonly]'
     );
     expect(o.notes?.mutations).toEqual(['archiveAll']);
+  });
+});
+
+describe('walk discoverability', () => {
+  const walkSchema = {
+    shop: {
+      types: {
+        Order: { fields: {}, inboundRefs: [{ type: 'Item', field: 'order' }] },
+        Item: { fields: { order: { kind: 'crossRef', ns: 'shop', type: 'Order' } } }
+      }
+    }
+  };
+
+  it('overview renders inbound refs and the walk legend line', () => {
+    expect(schemaOverview(walkSchema).shop?.types.Order).toBe('←Item.order');
+    expect(overviewLegend(true)).toContain('`←Type.field`');
+    expect(overviewLegend(false)).not.toContain('_walk');
+    expect(buildInstructions(schemaOverview(walkSchema), true)).toContain('_walk');
+    expect(buildInstructions(schemaOverview(walkSchema))).not.toContain('_walk');
+  });
+
+  it('teaches walks in the query tool only when the server accepts them', async () => {
+    const descriptionOf = async (walks: boolean) => {
+      const server = createMcpServer('http://127.0.0.1:1', { walks });
+      const [a, b] = InMemoryTransport.createLinkedPair();
+      const client = new Client({ name: 't', version: '0' });
+      await Promise.all([server.connect(a), client.connect(b)]);
+      const q = (await client.listTools()).tools.find((t) => t.name === 'query');
+      await client.close();
+      return q?.description ?? '';
+    };
+    expect(await descriptionOf(true)).toContain('shop/Item.order');
+    expect(await descriptionOf(false)).not.toContain('_walk');
   });
 });
 

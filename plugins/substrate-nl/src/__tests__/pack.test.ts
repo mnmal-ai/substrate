@@ -73,8 +73,8 @@ const profile: NamespaceProfile = {
   }
 };
 
-const build = () =>
-  buildNamespacePack({ namespace: 'journal', schema, operators: OPERATORS, profile });
+const build = (s: Schema = schema) =>
+  buildNamespacePack({ namespace: 'journal', schema: s, operators: OPERATORS, profile });
 
 describe('buildNamespacePack', () => {
   it('names each type by singular, plural and head noun', () => {
@@ -101,10 +101,32 @@ describe('buildNamespacePack', () => {
     expect(f?.targetDate?.operators).toEqual(OPERATORS['scalar.date']);
     expect(f?.owner).toMatchObject({
       kind: 'crossRef',
-      target: 'AgentIdentity',
+      target: { namespace: 'journal', type: 'AgentIdentity' },
+      indexed: true,
       operators: ['eq', 'in']
     });
     expect(f?.tags).toMatchObject({ kind: 'list', operators: ['has'] });
+  });
+
+  it('marks a crossRef indexed unless it declares indexed: false', () => {
+    const owner = schema.types.Todo?.fields.owner;
+    if (owner?.kind !== 'crossRef') throw new Error('fixture');
+    const off: Schema = {
+      ...schema,
+      types: {
+        ...schema.types,
+        Todo: {
+          fields: { ...schema.types.Todo?.fields, owner: { ...owner, indexed: false } }
+        }
+      }
+    };
+    expect(build(off).types.Todo?.fields.owner?.indexed).toBe(false);
+    const { indexed: _drop, ...unset } = owner;
+    const dflt: Schema = {
+      ...schema,
+      types: { ...schema.types, Todo: { fields: { ...schema.types.Todo?.fields, owner: unset } } }
+    };
+    expect(build(dflt).types.Todo?.fields.owner?.indexed).toBe(true);
   });
 
   it('adds the filterable metadata virtuals to every type', () => {

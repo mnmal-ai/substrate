@@ -22,6 +22,7 @@ export {
   ShapeRecorder,
   shapeKey
 } from './advisor/shape-recorder.js';
+export { nextKeys } from './advisor/walk-service.js';
 export { BridgeUnreachableError } from './bridge-unreachable-error.js';
 export { setCursorSealSecret } from './engine/cursor-seal.js';
 export {

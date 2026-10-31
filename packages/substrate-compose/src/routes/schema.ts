@@ -23,7 +23,7 @@
  */
 
 import { isDeepStrictEqual } from 'node:util';
-import { type Engine, effectiveFilterOperators } from '@mnmal-ai/substrate-core';
+import { type Engine, effectiveFilterOperators, nextKeys } from '@mnmal-ai/substrate-core';
 import {
   type FieldDef,
   type FieldKind,
@@ -202,14 +202,28 @@ export function schemaForTypeRoute(engine: Engine): HttpHandler {
       ?.describeStorage?.(type)
       .catch(() => undefined);
     const withStorage = storage === undefined ? base : { ...base, storage };
+    // Annotation only: for each crossRef of this type, the fields an index
+    // serves once a walk has hopped through it. Omitted where no plan exists.
+    const dataset = engine.datasetFor(ns);
+    const plan = await dataset?.indexPlan?.(type, ns).catch(() => undefined);
+    const crossRefs = Object.entries(typeSchema.fields).filter(([, d]) => d.kind === 'crossRef');
+    const withHops =
+      plan === undefined || crossRefs.length === 0
+        ? withStorage
+        : {
+            ...withStorage,
+            servedAfterHop: Object.fromEntries(
+              crossRefs.map(([f]) => [f, nextKeys(plan.indexes, f)])
+            )
+          };
     // `mutationNames` rather than nothing: a caller that asked for fields still
     // has to know which mutations exist to write at all, and the names cost a
     // line where the inlined contracts cost five copies of the field block.
     return jsonResponse(
       200,
       shape === 'fields'
-        ? { ...withStorage, mutationNames: Object.keys(mutations).sort() }
-        : { ...withStorage, mutations }
+        ? { ...withHops, mutationNames: Object.keys(mutations).sort() }
+        : { ...withHops, mutations }
     );
   };
 }

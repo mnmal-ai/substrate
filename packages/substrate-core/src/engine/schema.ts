@@ -10,7 +10,7 @@
 
 import type { BridgeRegistry, NamespaceConfig, Schema } from '@mnmal-ai/substrate-types';
 import { canonicalize } from '../canonicalize.js';
-import { publishSchema, sha256Short } from '../schema-publisher.js';
+import { publishSchema, sha256Short, withInboundRefs } from '../schema-publisher.js';
 
 export interface SchemaSubsystemDeps {
   /** Live namespace map (shared by reference with the engine). */
@@ -66,7 +66,7 @@ export class SchemaSubsystem {
     const epoch = cfg.registry.epoch;
     const cached = epoch === undefined ? undefined : this.#schemaCache.get(ns);
     if (cached !== undefined && cached.epoch === epoch) return cached.schema;
-    const schema = publishSchema(cfg.registry);
+    const schema = withInboundRefs(publishSchema(cfg.registry), ns);
     const withVirtual: Schema = cfg.virtual === true ? { ...schema, virtual: true } : schema;
     // Annotations ride beside the hash, like `virtual`: `publishSchema` hashes
     // only types + mutations, so an annotations change never moves schemaVersion.

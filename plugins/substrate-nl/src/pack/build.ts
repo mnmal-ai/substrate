@@ -109,8 +109,9 @@ function packField(name: string, def: FieldDef, operators: BuildPackInput['opera
       return {
         name,
         kind: 'crossRef',
-        target: def.type,
-        indexed: def.indexed === true,
+        target: { namespace: def.ns, type: def.type },
+        // Mirrors the reconciler: a crossRef is indexed unless it opts out.
+        indexed: def.indexed !== false,
         operators: [...(operators.crossRef ?? [])],
         phrases
       };

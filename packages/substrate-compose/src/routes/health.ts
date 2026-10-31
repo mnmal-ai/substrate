@@ -21,6 +21,8 @@ export interface HealthDeps {
   version: string;
   /** `Date.now()` timestamp at server start. Set once in compose(). */
   startedAt: number;
+  /** `SUBSTRATE_WALKS`: lets the MCP bridge teach the walk grammar only where it is accepted. */
+  walks?: boolean;
 }
 
 export function healthRoute(deps: HealthDeps): HttpHandler {
@@ -28,6 +30,7 @@ export function healthRoute(deps: HealthDeps): HttpHandler {
     jsonResponse(200, {
       status: 'ok',
       version: deps.version,
+      ...(deps.walks === true ? { walks: true } : {}),
       uptimeSeconds: Math.floor((Date.now() - deps.startedAt) / 1000)
     });
 }

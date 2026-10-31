@@ -20,7 +20,7 @@ import { z } from 'zod';
 // binary carries the literal value.
 import pkg from '../../package.json' with { type: 'json' };
 import { makeAgentJwtProvider, resolveAgentCapabilities } from './agent-jwt.js';
-import { buildInstructions, OVERVIEW_LEGEND, schemaOverview } from './schema-overview.js';
+import { buildInstructions, overviewLegend, schemaOverview } from './schema-overview.js';
 
 /** The version the MCP server reports in its initialize serverInfo. */
 export const MCP_SERVER_VERSION: string =
@@ -228,7 +228,8 @@ export async function recall(endpoint: string, body: RecallInput): Promise<Recal
 }
 
 export function createSchemaHandler(
-  endpoint: string
+  endpoint: string,
+  walks = false
 ): (args?: {
   namespace?: string;
   type?: string;
@@ -249,7 +250,7 @@ export function createSchemaHandler(
           endpoint,
           '/substrate/v1/federated-schema'
         );
-        return okResult({ legend: OVERVIEW_LEGEND, overview: schemaOverview(federated) });
+        return okResult({ legend: overviewLegend(walks), overview: schemaOverview(federated) });
       } catch (err) {
         return errorResult(toMessage(err));
       }
@@ -458,7 +459,17 @@ export interface McpServerOptions {
   tools?: string;
   /** Sent to the client at initialize; clients put it in the agent's context. */
   instructions?: string;
+  /** The server accepts the walk grammar (`/health` says so); the tool text teaches it only then. */
+  walks?: boolean;
 }
+
+const WALK_DESCRIPTION =
+  ' WALKS: a reference field is followed backwards with `_walk`, which names the inbound field as ' +
+  '"ns/Type.field" (the schema overview marks it `←Type.field`). It filters in `where`, ' +
+  'aggregates in `fields._agg`, or nests rows in `fields`. Example: orders with an item ' +
+  'priced over 50, and their item count: { "shop/Order": { "params": { "where": { "_walk": ' +
+  '{ "in": "shop/Item.order", "where": { "price": { "gt": 50 } } } } }, "fields": { "id": true, ' +
+  '"_agg": { "items": { "in": "shop/Item.order", "count": true } } } } }.';
 
 export function createMcpServer(endpoint: string, options: McpServerOptions = {}): McpServer {
   const server = new McpServer(
@@ -517,7 +528,7 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
             )
         }
       },
-      handler: createSchemaHandler(endpoint)
+      handler: createSchemaHandler(endpoint, options.walks === true)
     },
     {
       name: 'query',
@@ -525,7 +536,8 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
         description:
           'Query Substrate. payload is a single frame object mapping qualified keys ' +
           '(<ns>/<Type>) to { params, fields }. ONE call can span multiple ' +
-          'namespaces — e.g. { "prices/Price": {...}, "products/Product": {...} }.',
+          'namespaces — e.g. { "prices/Price": {...}, "products/Product": {...} }.' +
+          (options.walks === true ? WALK_DESCRIPTION : ''),
         inputSchema: {
           payload: payloadSchema(
             'Query frame. Example: { "default/Todo": { "params": { "limit": 20 }, ' +
@@ -904,6 +916,16 @@ function resolveToolAllowlist(raw: string | undefined, known: string[]): Set<str
   return new Set(names);
 }
 
+/** Whether the server accepts walks, from its open `/health`; false when slow, down or older. */
+async function fetchWalks(endpoint: string): Promise<boolean> {
+  const timeout = new Promise<false>((resolve) => setTimeout(() => resolve(false), 5000).unref());
+  const fetched = getSubstrate<{ walks?: boolean }>(endpoint, '/health').then(
+    (h) => h.walks === true,
+    () => false
+  );
+  return Promise.race([fetched, timeout]);
+}
+
 /** The overview for the session's instructions, or null when the server is slow or down. */
 async function fetchOverview(endpoint: string): Promise<ReturnType<typeof schemaOverview> | null> {
   const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000).unref());
@@ -921,11 +943,13 @@ async function fetchOverview(endpoint: string): Promise<ReturnType<typeof schema
 export async function runMcp(): Promise<void> {
   const endpoint = process.env.SUBSTRATE_URL ?? 'http://localhost:3100';
   configureAgentAuth(process.env, endpoint);
+  const walks = await fetchWalks(endpoint);
   const server = createMcpServer(endpoint, {
     ...(process.env.SUBSTRATE_MCP_TOOLS === undefined
       ? {}
       : { tools: process.env.SUBSTRATE_MCP_TOOLS }),
-    instructions: buildInstructions(await fetchOverview(endpoint))
+    walks,
+    instructions: buildInstructions(await fetchOverview(endpoint), walks)
   });
   const transport = new StdioServerTransport();
   await server.connect(transport);

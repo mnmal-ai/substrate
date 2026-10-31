@@ -18,7 +18,10 @@ interface FieldShape {
 }
 
 interface NamespaceSchema {
-  types?: Record<string, { fields?: Record<string, FieldShape> }>;
+  types?: Record<
+    string,
+    { fields?: Record<string, FieldShape>; inboundRefs?: Array<{ type: string; field: string }> }
+  >;
   mutations?: Record<string, unknown>;
 }
 
@@ -77,9 +80,13 @@ export function schemaOverview(
     const typeDefs = schema.types ?? {};
     const types: Record<string, string> = {};
     for (const [name, def] of Object.entries(typeDefs)) {
-      types[safe(name, NAME)] = Object.entries(def.fields ?? {})
-        .map(([field, shape]) => `${safe(field, NAME)}: ${fieldType(shape, ns)}`)
-        .join(', ');
+      // `←Type.field`: a same-namespace reference to this type, the start of an inbound walk.
+      types[safe(name, NAME)] = [
+        ...Object.entries(def.fields ?? {}).map(
+          ([field, shape]) => `${safe(field, NAME)}: ${fieldType(shape, ns)}`
+        ),
+        ...(def.inboundRefs ?? []).map((r) => `←${safe(r.type, NAME)}.${safe(r.field, NAME)}`)
+      ].join(', ');
     }
     const custom = Object.keys(schema.mutations ?? {}).filter((m) => {
       const crud = AUTO_CRUD.exec(m);
@@ -99,6 +106,14 @@ export const OVERVIEW_LEGEND =
   'fields are server-set. Generated get/create/update/delete<Type> mutations are not listed; `mutations` ' +
   "holds the rest. For a type's exact write contract call `schema` with `namespace` and `type`.";
 
+/** Added to the legend only where the server accepts walks. */
+const WALK_LEGEND =
+  ' `←Type.field` is a reference TO this type; follow it backwards with `_walk: { in: "ns/Type.field" }` ' +
+  'in `where`, as a nested `fields` entry, or in `_agg`.';
+
+export const overviewLegend = (walks: boolean): string =>
+  walks ? OVERVIEW_LEGEND + WALK_LEGEND : OVERVIEW_LEGEND;
+
 /** Past this, the instructions carry only type names; the full overview is one `schema` call away. */
 const INSTRUCTIONS_OVERVIEW_MAX = 12_000;
 
@@ -114,14 +129,17 @@ const CONVENTIONS = [
 ].join('\n');
 
 /** The MCP `instructions` text: the conventions, then this server's types as of session start. */
-export function buildInstructions(overview: Record<string, NamespaceOverview> | null): string {
+export function buildInstructions(
+  overview: Record<string, NamespaceOverview> | null,
+  walks = false
+): string {
   if (overview === null) {
     return `${CONVENTIONS}\n\nThe type list was unavailable at session start; call \`schema\` with no arguments for it.`;
   }
   const full = JSON.stringify(overview);
   const body =
     full.length <= INSTRUCTIONS_OVERVIEW_MAX
-      ? `${OVERVIEW_LEGEND}\n${full}`
+      ? `${overviewLegend(walks)}\n${full}`
       : `Type names only (the full overview is large; call \`schema\` with no arguments for fields):\n${JSON.stringify(
           Object.fromEntries(Object.entries(overview).map(([ns, o]) => [ns, Object.keys(o.types)]))
         )}`;
