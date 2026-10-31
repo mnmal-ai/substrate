@@ -89,7 +89,12 @@ import { detectLayout, type StorageLayout } from './layout.js';
 import { IndexLockAborted, withTableIndexLock } from './migrate.js';
 import type { PgEdgesStore } from './pg-edges-store.js';
 import { PgShortIdStore } from './pg-short-id-store.js';
-import { buildWalkAgg, buildWalkProjection } from './pg-sql/aggregate.js';
+import {
+  buildFrameAggregate,
+  buildFrameCount,
+  buildWalkAgg,
+  buildWalkProjection
+} from './pg-sql/aggregate.js';
 import { sqlStringLiteral } from './pg-sql/primitives.js';
 import { walkScope, whereUsesWalks } from './pg-sql/walk.js';
 import {
@@ -431,7 +436,7 @@ export class PgDataset implements Dataset {
         'walks need the partitioned storage layout; move this store onto it with `substrate-admin migrate-store`'
       );
     }
-    const unsupported = walkParams(params).find((k) => k !== 'agg' && k !== 'nested');
+    const unsupported = walkParams(params).find((k) => k === 'derive');
     if (unsupported !== undefined) {
       throw new ResolverFrameError(
         WALK_UNSUPPORTED_REF,
@@ -461,8 +466,10 @@ export class PgDataset implements Dataset {
         : undefined;
 
     params.signal?.throwIfAborted();
-    // Fast path: limit === 0 returns empty without hitting the db.
-    if (limit === 0) return { rows: [], hasMore: false };
+    // Fast path: limit === 0 returns empty without hitting the db. A count or
+    // whole-result aggregate still answers, as memory's does.
+    const wholeResult = params.count === true || params.aggregate !== undefined;
+    if (limit === 0 && !wholeResult) return { rows: [], hasMore: false };
 
     const idList: string[] = [];
     let hasIdFilter = false;
@@ -519,6 +526,31 @@ export class PgDataset implements Dataset {
       extMeta = detailed.meta;
       const whereFragment = buildWhere(sql, detailed.where, bodyCastFor, this.#promotedFor, scope);
       if (whereFragment !== null) clauses.push(whereFragment);
+    }
+
+    // A count or whole-result aggregate returns no rows, and ignores any cursor.
+    if (wholeResult && scope !== undefined) {
+      const matched = combineAnd(sql, clauses);
+      if (params.count === true) {
+        const [row] = await cancellable(
+          sql<Array<{ n: number }>>`${buildFrameCount(sql, matched, scope)}`,
+          params.signal
+        );
+        return { rows: [], hasMore: false, count: row?.n ?? 0 };
+      }
+      const aggregate = params.aggregate ?? {};
+      const statement = buildFrameAggregate(sql, aggregate, params.bucket, matched, limit, scope);
+      const groups = (
+        await cancellable(sql<Array<{ g: Record<string, unknown> }>>`${statement}`, params.signal)
+      ).map((x) => x.g);
+      // Only buckets are cut: memory's single group ignores limit.
+      const truncated = params.bucket !== undefined && limit !== undefined && groups.length > limit;
+      return {
+        rows: [],
+        hasMore: false,
+        groups: truncated ? groups.slice(0, limit) : groups,
+        ...(truncated ? { truncated: true } : {})
+      };
     }
 
     const orderBy = normalizeOrderBy(params.orderBy);

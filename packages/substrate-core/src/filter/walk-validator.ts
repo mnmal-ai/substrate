@@ -628,8 +628,10 @@ export function validateFrameParams(
         ]);
       }
     }
-    if (!isObj(p.aggregate) || Object.keys(p.aggregate).length === 0) {
+    if (!isObj(p.aggregate))
       fail('agg_invalid', 'aggregate maps names to aggregates', ['aggregate']);
+    if (Object.keys(p.aggregate).length === 0) {
+      fail('agg_invalid', 'aggregate needs at least one entry', ['aggregate']);
     }
     for (const [n, agg] of Object.entries(p.aggregate)) {
       const at = ['aggregate', n];
