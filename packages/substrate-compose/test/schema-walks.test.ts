@@ -74,6 +74,7 @@ async function boot(dataset: MemoryDataset, walksEnabled = false) {
   return `http://${address}:${port}`;
 }
 
+// biome-ignore lint/suspicious/noExplicitAny: schema JSON is read by deep path
 const get = async (url: string) => (await fetch(url)).json() as Promise<Record<string, any>>;
 
 describe('walk discoverability in the schema', () => {
