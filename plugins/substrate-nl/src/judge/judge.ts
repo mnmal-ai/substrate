@@ -263,19 +263,30 @@ export async function parseWithJudge(
     };
     trail.push(step);
     const prompt = buildJudgePrompt(question, result, pack, context.rulings, rejected);
-    const checked = checkChoice(await judge.decide(prompt, opts.signal), prompt);
+    const reply = await judge.decide(prompt, opts.signal);
+    const checked = checkChoice(reply, prompt);
     if (typeof checked === 'string') {
       step.rejected = checked;
       break;
     }
     step.choice = checked;
+    // The judge chooses; it never authors. Anything it adds (a walk, a comparison) is dropped here, on the record.
+    const extra = Object.keys(reply as object).filter((k) => !Object.hasOwn(checked, k));
+    if (extra.length > 0) step.ignored = extra.sort();
     switch (checked.action) {
-      case 'pick':
-        return {
-          status: 'resolved',
-          candidate: result.candidates[checked.candidate as number] as Candidate,
-          trail
-        };
+      case 'pick': {
+        const chosen = result.candidates[checked.candidate as number] as Candidate;
+        // A reading that dropped part of the question is never resolved, by anyone.
+        if (chosen.dropped.length > 0) {
+          const reason = `dropped: ${chosen.dropped.map((d) => `"${d.span}" (${d.reason})`).join('; ')}`;
+          return {
+            status: 'escalated',
+            result: { status: 'partial', candidates: [chosen], residual: chosen.residual, reason },
+            trail
+          };
+        }
+        return { status: 'resolved', candidate: chosen, trail };
+      }
       case 'recall':
         return { status: 'recall', query: question, type: checked.type as string, trail };
       case 'clarify':
