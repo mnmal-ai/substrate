@@ -285,6 +285,16 @@ export async function parseWithJudge(
             trail
           };
         }
+        // Calling words noise under a count, pick-one or `$ref` changes which rows count: a
+        // judge's guess, not a choice. Escalated, so the handoff drops them and answers `unknown`.
+        if (chosen.strict && chosen.residual.length > 0) {
+          const reason = `unexplained under a strict reading: ${chosen.residual.join(', ')}`;
+          return {
+            status: 'escalated',
+            result: { status: 'partial', candidates: [chosen], residual: chosen.residual, reason },
+            trail
+          };
+        }
         return { status: 'resolved', candidate: chosen, trail };
       }
       case 'recall':

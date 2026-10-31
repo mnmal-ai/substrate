@@ -298,9 +298,22 @@ describe('pick one', () => {
     expect(walkOf('cards whose most recent offer is over 50').pick).toEqual({
       latest: 'observedAt'
     });
-    const low = walkOf('cards with the lowest asking price under 20');
+    const low = walkOf('cards with the lowest offer under 20');
     expect(low.pick).toEqual({ min: 'price' });
     expect(low.as).toBeUndefined();
+  });
+
+  it('an exclusion cannot apply before a pick: the pick is dropped and the reading stays strict', () => {
+    const c = card('cards with the lowest asking price under 20').candidates[0];
+    expect(JSON.stringify(c?.frame)).not.toContain('"pick"');
+    expect(c?.dropped).toEqual([
+      {
+        span: 'lowest',
+        reason: "cannot pick the lowest Listing while the 'asking price' exclusion applies",
+        kind: 'filter'
+      }
+    ]);
+    expect(c?.strict).toBe(true);
   });
 
   it('no word → any, and the plan says any; a ruling default overrides', () => {
@@ -318,6 +331,18 @@ describe('pick one', () => {
       'cards/Observation.cert',
       'pick:latest(observedAt) from ruling'
     ]);
+  });
+
+  it('"latest" on a seed phrase orders the seed; "highest" there is dropped', () => {
+    const c = card('the latest valued psa 9 card').candidates[0];
+    expect(c?.frame['cards/Cert']?.params).toEqual({
+      where: { grade: { eq: 9 } },
+      orderBy: [{ createdAt: 'desc' }],
+      limit: 1
+    });
+    expect(c?.answer).toBe('single');
+    expect(c?.strict).toBe(true);
+    expect(card('the highest valued psa 9 cards').candidates[0]?.dropped[0]?.kind).toBe('order');
   });
 
   it('a picked neighbour is never a comparison operand', () => {
@@ -509,5 +534,84 @@ describe('never resolved on a silent assumption', () => {
     expect(c?.plan.map((p) => p.path[p.path.length - 1])).toContain(
       'window:past 2 days on createdAt (default)'
     );
+  });
+});
+
+describe('typeExcludes', () => {
+  const skip = { status: { in: ['skipped', 'killed'] } };
+  const chain = packOf('c', {
+    Test: { fields: { name: str } },
+    Run: {
+      fields: {
+        test: ref('c', 'Test'),
+        job: ref('c', 'Job'),
+        durationMs: num,
+        status: { ...str, enum: ['passed', 'skipped', 'killed'] },
+        at: date
+      }
+    },
+    Job: { fields: { timeoutMin: num } }
+  });
+  const rulings: NamespaceRulings = {
+    typeExcludes: { Run: skip },
+    timeField: { Run: 'at' },
+    fieldPhrases: {
+      'run duration': { field: 'Run.durationMs' },
+      'job timeout': { field: 'Job.timeoutMin' },
+      'skipped run': { field: 'Run.status', value: 'skipped' }
+    }
+  };
+  const parse = (q: string) => parseQuestion(q, chain, { asOf, rulings }).candidates[0];
+  const label = ['NOT', 'ruling:Run default exclude'];
+
+  it('applies to the seed, with its own plan clause; a question naming the field opts out', () => {
+    const c = parse('how many runs');
+    expect(c?.frame['c/Run']?.params.where).toEqual({ NOT: skip });
+    expect(c?.plan).toContainEqual({ path: ['where', ...label], kind: 'filter', served: false });
+    expect(JSON.stringify(parse('how many skipped runs')?.frame)).not.toContain('NOT');
+  });
+
+  it('applies on a walk and on every hop through the type', () => {
+    expect(parse('tests with a run duration over 5')?.frame['c/Test']?.params.where).toEqual({
+      _walk: {
+        as: 'R',
+        in: 'c/Run.test',
+        where: { AND: [{ durationMs: { gt: 5 } }, { NOT: skip }] }
+      }
+    });
+    expect(parse('tests with a job timeout over 5')?.frame['c/Test']?.params.where).toEqual({
+      _walk: {
+        in: 'c/Run.test',
+        where: { AND: [{ _walk: { out: 'job', where: { timeoutMin: { gt: 5 } } } }, { NOT: skip }] }
+      }
+    });
+  });
+
+  it('yields visibly to an explicit filter on a field it tests, on the seed and on a walk', () => {
+    const yieldNote = (path: string[]) => ({
+      path: [...path, "ruling:Run default exclude (yields to the question's status filter)"],
+      kind: 'filter',
+      served: false
+    });
+    const seed = parse('how many skipped runs');
+    expect(seed?.frame['c/Run']?.params.where).toEqual({ status: { eq: 'skipped' } });
+    expect(seed?.plan).toContainEqual(yieldNote(['where']));
+    const walk = parse('how many tests with a skipped run');
+    expect(walk?.frame['c/Test']?.params.where).toEqual({
+      _walk: { as: 'R', in: 'c/Run.test', where: { status: { eq: 'skipped' } } }
+    });
+    expect(walk?.plan).toContainEqual(yieldNote(['where', '_walk', 'where']));
+  });
+
+  it('drops a pick on the excluded type', () => {
+    const c = parse('tests whose latest run duration is over 5');
+    expect(c?.dropped).toEqual([
+      {
+        span: 'latest',
+        reason: "cannot pick the latest Run while the 'Run default exclude' exclusion applies",
+        kind: 'filter'
+      }
+    ]);
+    expect(c?.strict).toBe(true);
   });
 });

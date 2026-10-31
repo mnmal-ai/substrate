@@ -118,6 +118,33 @@ describe('fieldPhrases', () => {
   });
 });
 
+describe('typeExcludes', () => {
+  const typed = (nl: unknown): Schema =>
+    ({
+      ...schema({ nl }),
+      types: { Run: { fields: { status: { kind: 'string' } } } }
+    }) as unknown as Schema;
+
+  it('keeps a clause on known fields (metadata allowed); refuses unknown types and fields', () => {
+    const r = readRulings(
+      typed({
+        typeExcludes: {
+          Run: { OR: [{ status: { in: ['skipped'] } }, { createdBy: { eq: 'x' } }] },
+          Nope: { status: { eq: 'a' } }
+        }
+      })
+    );
+    expect(Object.keys(r.rulings.typeExcludes ?? {})).toEqual(['Run']);
+    expect(r.warnings).toEqual(["typeExcludes 'Nope' was ignored: unknown type 'Nope'"]);
+    const bad = readRulings(typed({ typeExcludes: { Run: { ghost: { eq: 1 } } } }));
+    expect(bad.rulings.typeExcludes).toEqual({});
+    expect(bad.warnings[0]).toMatch(/unknown field 'Run.ghost'/);
+  });
+  it('is strict: a non-object clause invalidates the declared rulings', () => {
+    expect(() => NamespaceRulingsSchema.parse({ typeExcludes: { Run: 'skipped' } })).toThrow();
+  });
+});
+
 describe('mergeRulings', () => {
   it('merges per top-level key, the override winning per entry', () => {
     const merged = mergeRulings(

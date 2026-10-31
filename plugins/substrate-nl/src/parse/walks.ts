@@ -13,8 +13,18 @@ import type { Dropped, NlFieldPhrase, PlanClause } from '@mnmal-ai/substrate/sdk
 import { own } from '../own.js';
 import type { NamespaceRulings } from '../pack/rulings.js';
 import type { NamespacePack } from '../pack/types.js';
+import { whereFields } from '../rulings/schema.js';
 import { type Comparison, parseComparison } from './compare.js';
 import type { DateRange } from './time.js';
+
+/** The plan note for a type's default exclusion that yielded to the question's own filter on `field`. */
+export function defaultYield(type: string, field: string, path: string[] = ['where']): PlanClause {
+  return {
+    path: [...path, `ruling:${type} default exclude (yields to the question's ${field} filter)`],
+    kind: 'filter',
+    served: false
+  };
+}
 
 export interface Hop {
   dir: 'in' | 'out';
@@ -112,6 +122,12 @@ export interface WalkClaims {
   derives: PhraseClaim[];
   dropped: Dropped[];
 }
+
+const PICKED: Record<PickClaim['kind'], string> = {
+  latest: 'latest',
+  max: 'highest',
+  min: 'lowest'
+};
 
 const PICK_WORDS: Record<string, PickClaim['kind']> = {
   latest: 'latest',
@@ -294,10 +310,12 @@ interface Walk {
   type: string;
   path: Path;
   alias?: string;
-  pick?: { kind: 'latest' | 'max' | 'min'; by: string; source: string };
+  pick?: { kind: 'latest' | 'max' | 'min'; by: string; source: string; span: string };
   filters: Part[];
   window: Part[];
   excludes: Part[];
+  /** Plan notes with no clause (a default exclusion that yielded), relative to the walk's where. */
+  notes: PlanClause[];
   /** Phrases already applied, so a phrase said twice adds its ruling's clauses once. */
   applied: Set<string>;
 }
@@ -325,6 +343,8 @@ export interface Composed {
   walked: boolean;
   /** A `$ref` comparison or a picked walk: a dropped filter changes its answer. */
   strict: boolean;
+  /** The recency word ("latest") claimed by a seed phrase: the seed is ordered by it. */
+  seedLatest?: string;
 }
 
 const filter = (clause: Record<string, unknown>, path: string[], label: string): Part => ({
@@ -365,6 +385,12 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
   const dead = new Set<string>();
   let clarify: string | null = null;
   const timeField = (type: string) => own(rulings.timeField, type) ?? 'createdAt';
+  const typeExclude = (type: string): Part | null => {
+    const where = own(rulings.typeExcludes, type);
+    return where === undefined
+      ? null
+      : filter({ NOT: where }, ['NOT'], `ruling:${type} default exclude`);
+  };
 
   const walkTo = (type: string, span: string): Walk | null => {
     const known = walks.get(type);
@@ -392,7 +418,8 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
       path: paths[0] as Path,
       filters: [],
       window: [],
-      excludes: [],
+      excludes: [typeExclude(type)].filter((x): x is Part => x !== null),
+      notes: [],
       applied: new Set()
     };
     walks.set(type, w);
@@ -438,15 +465,19 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
     const kind = picked.get(p) ?? p.entry.pick;
     if (kind === undefined) continue;
     const source = picked.has(p) ? `"${claims.picks.find((k) => k.phrase === p)?.span}"` : 'ruling';
-    const pick = { kind, by: kind === 'latest' ? timeField(p.type) : p.field, source };
+    const span = claims.picks.find((k) => k.phrase === p)?.span ?? p.span;
+    const pick = { kind, by: kind === 'latest' ? timeField(p.type) : p.field, source, span };
     if (w.pick !== undefined && (w.pick.kind !== pick.kind || w.pick.by !== pick.by)) {
       clarify ??= `${w.pick.source} and ${pick.source} pick different ${p.type} rows`;
       continue;
     }
     w.pick = pick;
   }
+  // "the latest pg-gated test": a recency word on a seed phrase is the seed's own "latest".
+  let seedLatest: string | undefined;
   for (const k of claims.picks) {
-    if (k.phrase.type === seed)
+    if (k.phrase.type === seed && k.kind === 'latest') seedLatest = k.span;
+    else if (k.phrase.type === seed)
       dropped.push({
         span: `${k.span} ${k.phrase.span}`,
         reason: `"${k.span}" picks one neighbour, and ${seed} is the type being asked about`,
@@ -620,6 +651,37 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
 
   if (clarify !== null) return { clarify };
 
+  // A walk's default exclusion yields to the question's own filter on a field it tests,
+  // as the seed's does ("skipped locally" counts skipped runs, never none).
+  for (const w of walks.values()) {
+    const def = typeExclude(w.type);
+    const tested: string[] = [];
+    if (def !== null) whereFields(own(rulings.typeExcludes, w.type), tested);
+    const named: string[] = [];
+    for (const f of w.filters) whereFields(f.clause, named);
+    const yieldTo = tested.find((f) => named.includes(f));
+    if (yieldTo === undefined) continue;
+    w.excludes = w.excludes.filter((x) => !isDefault(x, w.type));
+    w.notes.push(defaultYield(w.type, yieldTo, []));
+  }
+
+  // The engine picks first and filters the picked row, so an exclusion cannot apply
+  // before a pick: the pick is dropped, and the reading stays strict (so `unknown`).
+  let pickDropped = false;
+  for (const w of walks.values()) {
+    if (w.pick === undefined || w.excludes.length === 0) continue;
+    const names = w.excludes
+      .flatMap((x) => x.plan.map((c) => `'${String(c.path.at(-1)).replace(/^ruling:/, '')}'`))
+      .join(', ');
+    dropped.push({
+      span: w.pick.span,
+      reason: `cannot pick the ${PICKED[w.pick.kind]} ${w.type} while the ${names} exclusion applies`,
+      kind: 'filter'
+    });
+    delete w.pick;
+    pickDropped = true;
+  }
+
   // Bindings: every unpicked one-hop walk, so comparisons can name it.
   const taken = new Set<string>();
   const ordered = [...walks.values()].sort((x, y) =>
@@ -642,7 +704,7 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
   };
 
   const parts: Part[] = [...seedParts];
-  for (const w of ordered) parts.push(walkPart(ns, w));
+  for (const w of ordered) parts.push(walkPart(ns, w, typeExclude));
   const composed = parts.map((p) => ({ ...p, clause: resolveRefs(p.clause) as Part['clause'] }));
   return {
     parts: composed,
@@ -650,22 +712,27 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
     plan,
     dropped,
     timeOnSeed,
+    ...(seedLatest !== undefined ? { seedLatest } : {}),
     walked:
       walks.size > 0 ||
       seedParts.some((p) => p.plan.some((c) => c.kind === 'ref')) ||
       plan.length > 0,
     strict:
+      pickDropped ||
       ordered.some((w) => w.pick !== undefined) ||
       composed.some((p) => p.plan.some((c) => c.kind === 'ref'))
   };
 }
+
+const isDefault = (x: Part, type: string) =>
+  x.plan.some((c) => c.path.at(-1) === `ruling:${type} default exclude`);
 
 function hopKey(ns: string, h: Hop): string {
   return h.dir === 'in' ? `${ns}/${h.owner}.${h.field}` : h.field;
 }
 
 /** One walk as a (possibly nested) `_walk` clause. */
-function walkPart(ns: string, w: Walk): Part {
+function walkPart(ns: string, w: Walk, exclude: (type: string) => Part | null): Part {
   const inner = andOf([...w.filters, ...w.window, ...w.excludes]);
   const label =
     w.pick === undefined ? 'any' : `pick:${w.pick.kind}(${w.pick.by}) from ${w.pick.source}`;
@@ -681,14 +748,20 @@ function walkPart(ns: string, w: Walk): Part {
       kind: 'hop',
       served: true
     },
-    ...(inner?.plan ?? []).map((c) => ({ ...c, path: ['_walk', 'where', ...c.path] }))
+    ...[...(inner?.plan ?? []), ...w.notes].map((c) => ({
+      ...c,
+      path: ['_walk', 'where', ...c.path]
+    }))
   ];
   for (let i = w.path.length - 2; i >= 0; i--) {
     const h = w.path[i] as Hop;
-    node = { ...edge(ns, h), where: { _walk: node } };
+    // A type's default exclusion holds on every hop through it, not only the last.
+    const ex = exclude(h.to);
+    const where = andOf([{ clause: { _walk: node }, plan }, ...(ex !== null ? [ex] : [])]);
+    node = { ...edge(ns, h), where: where?.where };
     plan = [
       { path: ['_walk', hopKey(ns, h), 'any'], kind: 'hop', served: true },
-      ...plan.map((c) => ({ ...c, path: ['_walk', 'where', ...c.path] }))
+      ...(where?.plan ?? []).map((c) => ({ ...c, path: ['_walk', 'where', ...c.path] }))
     ];
   }
   return { clause: { _walk: node }, plan };

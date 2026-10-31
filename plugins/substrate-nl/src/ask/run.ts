@@ -307,9 +307,24 @@ export async function* runAsk(
     } else {
       yield { event: 'judged', status: judged.status, trail: judged.trail };
       switch (judged.status) {
-        case 'resolved':
-          outcome = await rows(judged.candidate, 'judge', req.question, http, deps);
+        case 'resolved': {
+          // Words the judge's pick called noise are still lost from the answer: say so.
+          const noise = judged.candidate.residual.map((w) => ({
+            span: w,
+            reason: 'judge: noise',
+            kind: 'filter' as const
+          }));
+          outcome = await rows(
+            judged.candidate,
+            'judge',
+            req.question,
+            http,
+            deps,
+            undefined,
+            noise
+          );
           break;
+        }
         case 'recall':
           // A type the caller forced outranks the judge's pick, as it does for rows.
           outcome = await recall(

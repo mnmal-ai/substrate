@@ -249,6 +249,12 @@ export interface NlNamespaceRulings {
   typeNotes?: Record<string, string>;
   /** A phrase that means a predicate, e.g. `accepted` -> Decision.status in [active, accepted]. */
   valueAliases?: Record<string, NlValueAlias[]>;
+  /**
+   * Rows of a type that never count unless asked for, e.g. `Run` -> `{ status: { in: ['skipped'] } }`.
+   * Applied as `NOT <clause>` whenever NL reads the type, as the seed or through a walk,
+   * and shown in `plan` as `ruling:<Type> default exclude`.
+   */
+  typeExcludes?: Record<string, WhereClause>;
 }
 
 /** The body of `GET /substrate/v1/nl/pack/:ns`. */

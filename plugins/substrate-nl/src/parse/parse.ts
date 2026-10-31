@@ -14,12 +14,14 @@ import { own } from '../own.js';
 import type { NamespaceRulings, ValueAlias } from '../pack/rulings.js';
 import type { NamespacePack, PackField } from '../pack/types.js';
 import { pluralize, splitWords } from '../pack/words.js';
+import { whereFields } from '../rulings/schema.js';
 import { type DateRange, rangeFor } from './time.js';
 import {
   andOf,
   type Composed,
   claimWalkParts,
   compose,
+  defaultYield,
   dropComparatives,
   type Part
 } from './walks.js';
@@ -564,10 +566,16 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
   const fields = own(pack.types, type)?.fields ?? {};
   const words = tokens.map((t) => t.text);
   // A declared derive is the explicit ordering; a recency word beside it conflicts and is dropped.
-  const conflict = a.composed?.params.orderBy !== undefined && a.order !== null;
-  const order = conflict ? null : a.order;
-  const orderSpan = a.evidence.find((e) => e.role === 'order')?.span ?? '';
-  const ev = conflict ? a.evidence.filter((e) => e.role !== 'order') : [...a.evidence];
+  const seedLatest = a.composed?.seedLatest;
+  const evidence =
+    a.order === null && seedLatest !== undefined
+      ? [...a.evidence, { span: seedLatest, role: 'order' as const, detail: 'desc, limit 1' }]
+      : a.evidence;
+  const recency = a.order ?? (seedLatest !== undefined ? 'desc' : null);
+  const conflict = a.composed?.params.orderBy !== undefined && recency !== null;
+  const order = conflict ? null : recency;
+  const orderSpan = evidence.find((e) => e.role === 'order')?.span ?? '';
+  const ev = conflict ? evidence.filter((e) => e.role !== 'order') : [...evidence];
   const dropped = [
     ...(a.composed?.dropped ?? []),
     ...(conflict
@@ -582,6 +590,7 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
   ];
   const where: Record<string, unknown>[] = [];
   const wherePlan = new Map<Record<string, unknown>, PlanClause[]>();
+  const yields: PlanClause[] = [];
 
   if (a.ids.length > 0)
     where.push({ shortId: a.ids.length === 1 ? { eq: a.ids[0] } : { in: a.ids } });
@@ -695,6 +704,23 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
     }
   }
   if (a.ids.length === 0) {
+    // The type's default exclusion, unless the question filters a field it tests
+    // ("skipped runs"): then it yields, and the plan says so.
+    const excluded = own(rulings.typeExcludes, type);
+    if (excluded !== undefined) {
+      const tested: string[] = [];
+      whereFields(excluded, tested);
+      const named = [...usedFields];
+      for (const p of a.composed?.parts ?? []) whereFields(p.clause, named);
+      const yieldTo = tested.find((f) => named.includes(f));
+      if (yieldTo === undefined) {
+        const clause = { NOT: excluded };
+        where.push(clause);
+        wherePlan.set(clause, [
+          { path: ['NOT', `ruling:${type} default exclude`], kind: 'filter', served: false }
+        ]);
+      } else yields.push(defaultYield(type, yieldTo));
+    }
     const statusField = fields.status;
     const live = own(rulings.liveStatus, type);
     if (a.closeVerb && statusField?.enum !== undefined && !byField.has('status')) {
@@ -744,10 +770,12 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
   if (all !== null) params.where = all.where;
   const plan = [
     ...(all?.plan ?? []).map((c) => ({ ...c, path: ['where', ...c.path] })),
+    ...yields,
     ...(a.composed?.plan ?? [])
   ];
   if (order !== null) {
-    params.orderBy = [{ createdAt: order }];
+    // "latest" is by the type's ruled date, as a window and a walk's pick are.
+    params.orderBy = [{ [own(rulings.timeField, type) ?? 'createdAt']: order }];
     params.limit = 1;
   }
   Object.assign(params, a.composed?.params ?? {});
@@ -839,9 +867,21 @@ function creditFieldWords(tokens: Token[], field: PackField | undefined): boolea
 }
 
 function contentWords(tokens: Token[]): string[] {
-  return tokens
-    .filter((t) => !t.used && !GLUE.has(t.text) && !/^\d+$/.test(t.text))
-    .map((t) => t.text);
+  const free = (t: Token | undefined): t is Token =>
+    t !== undefined && !t.used && !GLUE.has(t.text);
+  const num = (t: Token | undefined) => free(t) && /^\d+$/.test(t.text);
+  const out: string[] = [];
+  tokens.forEach((t, i) => {
+    if (!free(t) || num(t)) return;
+    // A number beside an unexplained word is lost with it: "8 cores", never just "cores".
+    const before = num(tokens[i - 1]) ? `${tokens[i - 1]?.text} ` : '';
+    const after =
+      num(tokens[i + 1]) && !(free(tokens[i + 2]) && !num(tokens[i + 2]))
+        ? ` ${tokens[i + 1]?.text}`
+        : '';
+    out.push(`${before}${t.text}${after}`);
+  });
+  return out;
 }
 
 /** Claims the longest n-grams (up to `max` words) for which `accept` returns true. */
