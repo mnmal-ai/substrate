@@ -41,6 +41,7 @@ import { buildObject } from './projection.js';
 import { normalizeOrderBy, resolveBodyOrderByCast } from './sorting.js';
 import {
   compareRef,
+  firstRow,
   float8Lit,
   hop,
   refIsCostly,
@@ -168,13 +169,19 @@ export function buildWalkAgg(
         );
   const { agg, pick, kind } = aggOver(sql, spec, alias, (f) => scope.fieldDef(type, f));
   const rows = combineAnd(sql, far === null ? [cond] : [cond, far]);
-  return {
-    value:
-      pick === undefined
-        ? sql`(SELECT ${agg} FROM rows ${sql.unsafe(alias)} WHERE ${rows})`
-        : pickRow(sql, pick, alias, rows),
-    kind
-  };
+  // A neighbour pick is an index probe; pickRow's top-1 sorts what the frame matched.
+  const value =
+    pick === undefined
+      ? sql`(SELECT ${agg} FROM rows ${sql.unsafe(alias)} WHERE ${rows})`
+      : sql`(${firstRow(
+          sql,
+          valueJson(sql, pick.value, alias),
+          alias,
+          pick.filter === undefined ? rows : combineAnd(sql, [rows, pick.filter]),
+          pick.key,
+          pick.dir
+        )})`;
+  return { value, kind };
 }
 
 /** The number of `scope`'s rows matching `where`, as one row `{ n }`. */
@@ -389,5 +396,6 @@ export function buildNested(
   ]);
   const sub = buildWalkProjection(sql, subAggs, subNested, promotedFor, farScope);
   const row = sub === null ? obj : sql`${obj} || ${sub}`;
-  return sql`(SELECT COALESCE(jsonb_agg(${row} ORDER BY ${a}.__rn), '[]'::jsonb) FROM (SELECT ${a}.*, row_number() OVER (ORDER BY ${orderBy}) AS __rn FROM rows ${a} WHERE ${combineAnd(sql, [cond, ...filters])} ORDER BY __rn ${limit}) ${a})`;
+  // The LIMIT is on the order itself, so an index in that order stops after it.
+  return sql`(SELECT COALESCE(jsonb_agg(${row} ORDER BY ${orderBy}), '[]'::jsonb) FROM (SELECT ${a}.* FROM rows ${a} WHERE ${combineAnd(sql, [cond, ...filters])} ORDER BY ${orderBy} ${limit}) ${a})`;
 }

@@ -2,7 +2,7 @@
  * The walk plan (typed edge walks goal 7) against pg's real `indexPlan`: an
  * engine walk read on pg reports each clause served or unserved from the
  * reconciler's own desired indexes, the derived crossRef index and a declared
- * `(cert, observedAt DESC)`. Walks need the partitioned layout.
+ * `(cert, observedAt DESC)`, which serves a nested list only in its direction. Walks need the partitioned layout.
  */
 
 import { randomBytes } from 'node:crypto';
@@ -104,6 +104,13 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk plan from pg indexPlan', ()
               orderBy: [{ createdAt: 'desc' }],
               limit: 3
             },
+            oldest: {
+              _walk: { in: OBS },
+              fields: { id: true },
+              orderBy: [{ observedAt: 'asc' }],
+              limit: 3
+            },
+            _agg: { first: { in: OBS, min: 'observedAt' } },
             notes: { _walk: { in: `${NS}/Note.cert` }, fields: { id: true } }
           }
         }
@@ -124,6 +131,17 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk plan from pg indexPlan', ()
       { path: ['fields', 'recent', 'orderBy'], kind: 'order', served: true },
       { path: ['fields', 'natural', '_walk'], kind: 'hop', served: true },
       { path: ['fields', 'natural', 'orderBy'], kind: 'order', served: true },
+      { path: ['fields', 'oldest', '_walk'], kind: 'hop', served: true },
+      // The declared index is descending; a list's LIMIT reads it only in that order.
+      {
+        path: ['fields', 'oldest', 'orderBy'],
+        kind: 'order',
+        served: false,
+        recommend: { fields: ['cert', { field: 'observedAt', dir: 'asc' }] }
+      },
+      { path: ['fields', '_agg', 'first'], kind: 'hop', served: true },
+      // A min is a probe either direction of the index serves.
+      { path: ['fields', '_agg', 'first', 'min'], kind: 'agg', served: true },
       // `indexed: false`: no derived index serves the hop.
       {
         path: ['fields', 'notes', '_walk'],

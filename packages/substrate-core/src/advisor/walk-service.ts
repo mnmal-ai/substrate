@@ -20,8 +20,13 @@ export interface WalkSite {
   crossRef?: string;
   /** Each `where` filtering the far rows, with its path. */
   wheres: Array<{ where: unknown; path: string[] }>;
-  /** The order the far rows are read in, when one matters: a nested `orderBy`, a pick, or a latest/min/max aggregate. */
-  order?: { by: Order; path: string[]; kind: 'order' | 'agg' };
+  /**
+   * The order the far rows are read in, when one matters: a nested `orderBy`,
+   * a pick, or a latest/min/max aggregate. `exact`: only an index in this very
+   * direction serves it (a nested list's LIMIT); a pick is a min/max probe,
+   * which an index serves in either direction.
+   */
+  order?: { by: Order; path: string[]; kind: 'order' | 'agg'; exact?: true };
   /** A count, avg or sum aggregate: it reads every neighbour, which the hop alone narrows. */
   agg?: string[];
 }
@@ -113,7 +118,7 @@ export function walkSites(
         const wp = [...at, '_walk'];
         const s = site(sel._walk, type, wp);
         const by = orderOf(sel.orderBy);
-        if (by.length > 0) s.order = { by, path: [...at, 'orderBy'], kind: 'order' };
+        if (by.length > 0) s.order = { by, path: [...at, 'orderBy'], kind: 'order', exact: true };
         addWhere(s, sel._walk.where, [...wp, 'where']);
         addWhere(s, sel.where, [...at, 'where']);
         inFields(sel.fields, s.far, [...at, 'fields']);
@@ -187,12 +192,19 @@ type PlanIndex = IndexPlan['indexes'][number];
 
 /**
  * Whether some full index's keys begin with `lead` and then `next`, by field
- * name. shortcut: direction is not compared (a btree scans either way, but a
- * mixed-direction order may still sort); compare it if plans start lying.
+ * name, and when `next` gives a direction, in it: an index key is ascending
+ * or descending, nulls last either way, so one scanned forward is the order
+ * `<dir> NULLS LAST` that reads compile to, and one scanned backward is not.
  */
-const leads = (indexes: PlanIndex[], lead: string[], next: string[]): boolean =>
+const leads = (indexes: PlanIndex[], lead: string[], next: Array<string | [string, string]>) =>
   indexes.some(
-    (i) => i.only === undefined && [...lead, ...next].every((f, n) => i.keys[n]?.[0] === f)
+    (i) =>
+      i.only === undefined &&
+      [...lead, ...next].every((k, n) =>
+        typeof k === 'string'
+          ? i.keys[n]?.[0] === k
+          : i.keys[n]?.[0] === k[0] && i.keys[n]?.[1] === k[1]
+      )
   );
 
 /** The fields that follow `lead` as the next key of a full index, i.e. what a walk through `lead` is served on. */
@@ -219,9 +231,10 @@ export interface ClassifyInput {
  * - a hop is served, inbound by the eager `(crossRef, natural order)` index
  *   (absent for a crossRef declared `indexed: false`) and outbound by the
  *   primary key;
- * - a far filter or order is served when a full index on the far type leads
- *   with the hop's crossRef and that field next (after an outbound hop the
- *   far row is one primary-key read, so all of it is served);
+ * - a far filter, pick or latest/min/max is served when a full index on the
+ *   far type leads with the hop's crossRef and that field next, and a nested
+ *   list's order when its keys follow in its directions too (after an
+ *   outbound hop the far row is one primary-key read, so all of it is served);
  * - a `$ref` predicate is a residual on rows already narrowed: always served;
  * - a seed filter, or a bucket's field, is served by an index leading with it;
  * - a derived ordering is served only when a served seed filter bounds the
@@ -280,13 +293,13 @@ export function classifyWalkService(
       }
     }
     if (s.order !== undefined) {
-      const { by, path, kind } = s.order;
+      const { by, path, kind, exact } = s.order;
       const served =
         cr === undefined ||
         leads(
           farIndexes,
           [cr],
-          by.map(([f]) => f)
+          by.map(([f, d]) => (exact ? [f, d] : f))
         );
       const keys = cr === undefined ? [] : [cr, ...by.map(([field, dir]) => ({ field, dir }))];
       clause(path, kind, served, s.far, keys);

@@ -8,8 +8,8 @@
  * - every far row is pinned to its namespace and type (partition pruning) and
  *   must be live;
  * - `any` → EXISTS, `none` → NOT EXISTS, `all` → NOT EXISTS of a neighbour
- *   whose predicate IS NOT TRUE, `pick` → the one neighbour of a LATERAL
- *   `ORDER BY … NULLS LAST, id LIMIT 1`;
+ *   whose predicate IS NOT TRUE, `pick` → the one neighbour `firstRow`
+ *   finds by index probes;
  * - the `any` walks with `as` in one AND group are ONE EXISTS over all their
  *   rows, so they are jointly quantified;
  * - a `$ref` comparison is never true when either side is NULL, eq and neq
@@ -161,8 +161,8 @@ export function buildWalk(
   if (node.pick !== undefined) {
     const [dir, field] = Object.entries(node.pick)[0] as [string, string];
     const key = sortKey(sql, field, castFor(scope, type)(field), alias);
-    const order = sql.unsafe(dir === 'min' ? 'ASC NULLS LAST' : 'DESC NULLS LAST');
-    return sql`EXISTS (SELECT 1 FROM LATERAL (SELECT ${a}.* FROM rows ${a} WHERE ${cond} ORDER BY ${key} ${order}, ${a}.id COLLATE "C" ASC LIMIT 1) ${a}${far === null ? sql`` : sql` WHERE ${far}`})`;
+    const picked = firstRow(sql, sql`${a}.*`, alias, cond, key, dir === 'min' ? 'ASC' : 'DESC');
+    return sql`EXISTS (SELECT 1 FROM (${picked}) ${a}${far === null ? sql`` : sql` WHERE ${far}`})`;
   }
   const rows = sql`SELECT 1 FROM rows ${a} WHERE ${cond}`;
   switch (node.quantifier ?? 'any') {
@@ -174,6 +174,28 @@ export function buildWalk(
     default:
       return sql`EXISTS (${rows}${far === null ? sql`` : sql` AND ${far}`})`;
   }
+}
+
+/**
+ * `select` of the first `alias` row passing `where` by `key` in `dir`, nulls
+ * last, ties id ascending: at most one row. Not `ORDER BY key … LIMIT 1`,
+ * which only an index in exactly that direction serves: min/max(key) is an
+ * index probe in either direction, then the rows at that key are fetched by
+ * it, and only when no key is present, the least id with a null key. The
+ * subquery repeats `where` under the same alias, shadowing the outer row.
+ */
+export function firstRow(
+  sql: Sql | TransactionSql,
+  select: Fragment,
+  alias: string,
+  where: Fragment,
+  key: Fragment,
+  dir: 'ASC' | 'DESC'
+): Fragment {
+  const a = sql.unsafe(alias);
+  const best = sql.unsafe(dir === 'ASC' ? 'min' : 'max');
+  const byId = sql.unsafe(`ORDER BY ${alias}.id COLLATE "C" ASC LIMIT 1`);
+  return sql`(SELECT ${select} FROM rows ${a} WHERE ${where} AND ${key} = (SELECT ${best}(${key}) FROM rows ${a} WHERE ${where}) ${byId}) UNION ALL (SELECT ${select} FROM rows ${a} WHERE ${where} AND ${key} IS NULL ${byId}) LIMIT 1`;
 }
 
 /** A pick's ordering key: an instant for a date, a number for a number. */
