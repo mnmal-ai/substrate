@@ -324,20 +324,18 @@ describe('walkedTypes', () => {
 
 describe('walk grammar outside validated query paths', () => {
   it('a mutation selecting _agg or a nested walk is refused walks_in_mutation', async () => {
-    {
-      const { engine } = build();
-      for (const fields of [
-        { id: true, _agg: { parts: { in: 'ns/Part.thing', count: true } } },
-        { id: true, parts: { _walk: { in: 'ns/Part.thing' }, fields: { id: true } } }
-      ]) {
-        const res = await engine.mutate({
-          frame: { 'ns/touchThing': { params: {}, fields } },
-          ctx
-        });
-        expect(res.data).not.toHaveProperty('ns/touchThing');
-        expect(res.errors?.[0]?.code).toBe('walks_in_mutation');
-        expect(res.errors?.[0]?.path?.slice(0, 2)).toEqual(['ns/touchThing', 'fields']);
-      }
+    const { engine } = build();
+    for (const fields of [
+      { id: true, _agg: { parts: { in: 'ns/Part.thing', count: true } } },
+      { id: true, parts: { _walk: { in: 'ns/Part.thing' }, fields: { id: true } } }
+    ]) {
+      const res = await engine.mutate({
+        frame: { 'ns/touchThing': { params: {}, fields } },
+        ctx
+      });
+      expect(res.data).not.toHaveProperty('ns/touchThing');
+      expect(res.errors?.[0]?.code).toBe('walks_in_mutation');
+      expect(res.errors?.[0]?.path?.slice(0, 2)).toEqual(['ns/touchThing', 'fields']);
     }
   });
 
