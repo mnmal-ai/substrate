@@ -29,6 +29,7 @@ import type { Sql, TransactionSql } from 'postgres';
 import { metadataColumnSql } from './predicates-metadata.js';
 import {
   bodyJson,
+  bodyNum,
   combineAnd,
   type Fragment,
   isMetadataField,
@@ -42,6 +43,7 @@ import {
   compareRef,
   float8Lit,
   hop,
+  refIsCostly,
   refOperand,
   refValue,
   sortKey,
@@ -110,8 +112,30 @@ function aggOver(
   }
   // float8 throughout, so the value is the double memory computes.
   const n = refValue(sql, field, 'number', alias);
-  return { agg: sql`to_jsonb(${sql.unsafe(op)}(${n}))`, kind: 'number' };
+  if (op === 'min' || op === 'max')
+    return { agg: sql`to_jsonb(${sql.unsafe(op)}(${n}))`, kind: 'number' };
+  // Todo #1809: sum and avg are exact, in numeric (substrate_num reads the
+  // stored decimal, never ::float8::numeric, which keeps 15 digits), then cast
+  // once to float8. That cast raises where the double would be ±Infinity or a
+  // nonzero value would round to 0, so those are decided first, exactly: a sum
+  // past MAX by half an ulp or more is NULL, as memory's; a tiny one is 0, as
+  // memory's float64 arithmetic gives. Memory sums in float64, so the last bit,
+  // and overflow under cancellation, can differ: accepted, as for avg/sum before.
+  const v = isMetadataField(field)
+    ? sql.unsafe(`${metadataColumnSql(field, alias)}::numeric`)
+    : bodyNum(sql, [field], alias);
+  const s = sql`${sql.unsafe(op)}(${v})`;
+  return {
+    agg: sql`to_jsonb(CASE WHEN abs(${s}) >= ${sql.unsafe(OVERFLOW)} THEN NULL
+      WHEN abs(${s}) <= ${sql.unsafe(UNDERFLOW)} THEN 0::float8 ELSE ${s}::float8 END)`,
+    kind: 'number'
+  };
 }
+
+/** 2^1024 − 2^970, the least value float8 rounds to Infinity, as an exact numeric. */
+const OVERFLOW = `${2n ** 1024n - 2n ** 970n}::numeric`;
+/** 2^-1075 (= 5^1075 / 10^1075), the greatest value float8 rounds to 0, as an exact numeric. */
+const UNDERFLOW = `0.${(5n ** 1075n).toString().padStart(1075, '0')}::numeric`;
 
 /** `p` over the rows aliased `alias` passing `where`: a top-1 an index can serve, never a sort of every row. */
 function pickRow(sql: Sql | TransactionSql, p: Pick, alias: string, where: Fragment): Fragment {
@@ -245,7 +269,8 @@ export function buildAggPredicate(
         throw new UnsupportedFilterError('_agg', op, 'a $ref compares number or date aggregates');
       }
       const left = kind === 'date' ? sql`substrate_ts(${v})` : sql`substrate_num(${v})::float8`;
-      parts.push(compareRef(sql, '_agg', op, left, refOperand(sql, '_agg', op, raw, kind, scope)));
+      const right = refOperand(sql, '_agg', op, raw, kind, scope);
+      parts.push(compareRef(sql, '_agg', op, left, right, refIsCostly(raw)));
     } else if (kind === 'date') {
       parts.push(compareRef(sql, '_agg', op, sql`substrate_ts(${v})`, tsParam(sql, raw)));
     } else if (kind === 'number' || typeof raw === 'number') {

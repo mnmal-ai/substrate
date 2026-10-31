@@ -283,8 +283,19 @@ export function buildRefCompare(
   }
   const kind = cast === 'numeric' ? 'number' : 'date';
   const right = refOperand(sql, field, op, ref, kind, scope);
-  return compareRef(sql, field, op, refValue(sql, field, kind, scope.alias), right);
+  return compareRef(
+    sql,
+    field,
+    op,
+    refValue(sql, field, kind, scope.alias),
+    right,
+    refIsCostly(ref)
+  );
 }
+
+/** A `$ref` operand that compiles to a subquery (an _agg, or guarded arithmetic), so is read once. */
+export const refIsCostly = (ref: RefOperand): boolean =>
+  ref.$ref.startsWith('_agg.') || ref.times !== undefined || ref.plus !== undefined;
 
 /**
  * A `$ref` operand's value, typed by `kind`: `$.f` reads the seed, `<as>.f` a
@@ -319,9 +330,47 @@ export function refOperand(
     right = refValue(sql, refField, kind, target.alias);
   }
   if (kind === 'number') {
-    if (ref.times !== undefined) right = sql`${right} * ${float8Lit(sql, field, op, ref.times)}`;
-    if (ref.plus !== undefined) right = sql`${right} + ${float8Lit(sql, field, op, ref.plus)}`;
-    return sql`(${right})`;
+    // Todo #1809, as memory's resolveRef: a product or sum that would be
+    // non-finite, or a nonzero product that underflows to 0, is NULL, which
+    // no comparison matches. float8 raises on each, so the operand is checked
+    // against the exact double bound past which it would, and `times`/`plus`
+    // are literals, so the bound is found here in the same IEEE arithmetic.
+    // The operand is read once, as `rv`; the guards nest, so none is skipped.
+    if (ref.times === undefined && ref.plus === undefined) return sql`(${right})`;
+    const guards: Fragment[] = [];
+    let value: Fragment = sql`rv`;
+    if (ref.times !== undefined) {
+      const m = Math.abs(ref.times);
+      if (m > 1) {
+        const hi = float8Lit(
+          sql,
+          field,
+          op,
+          largest((x) => Number.isFinite(x * m))
+        );
+        guards.push(sql`abs(rv) <= ${hi}`);
+      } else if (m > 0 && m < 1) {
+        const lo = float8Lit(sql, field, op, nextUp(largest((x) => x * m === 0)));
+        guards.push(sql`rv = 0 OR abs(rv) >= ${lo}`);
+      }
+      value = sql`rv * ${float8Lit(sql, field, op, ref.times)}`;
+    }
+    if (ref.plus !== undefined) {
+      const p = ref.plus;
+      const edge = float8Lit(
+        sql,
+        field,
+        op,
+        largest((x) => Number.isFinite(x + Math.abs(p)))
+      );
+      guards.push(p >= 0 ? sql`${value} <= ${edge}` : sql`${value} >= -${edge}`);
+      value = sql`${value} + ${float8Lit(sql, field, op, p)}`;
+    }
+    const guarded = guards.reduceRight<Fragment>(
+      (inner, g) => sql`CASE WHEN ${g} THEN ${inner} END`,
+      value
+    );
+    return sql`(SELECT ${guarded} FROM (SELECT ${right} AS rv OFFSET 0) ref_g)`;
   }
   if (ref.times !== undefined) {
     throw new UnsupportedFilterError(field, op, "a date $ref takes 'plus', not 'times'");
@@ -364,6 +413,30 @@ export function buildDerive(
   return sql`(SELECT ${value} FROM (SELECT ${operand(a)} AS x, ${operand(b)} AS y) d)`;
 }
 
+const f64 = new Float64Array(1);
+const u64 = new BigUint64Array(f64.buffer);
+function bitsOf(x: number): bigint {
+  f64[0] = x;
+  return u64[0] as bigint;
+}
+function fromBits(b: bigint): number {
+  u64[0] = b;
+  return f64[0] as number;
+}
+const nextUp = (x: number): number => fromBits(bitsOf(x) + 1n);
+
+/** The largest double in [0, MAX_VALUE] passing `ok`, which holds at 0 and fails past one point. */
+function largest(ok: (x: number) => boolean): number {
+  let lo = 0n; // passes
+  let hi = bitsOf(Number.MAX_VALUE) + 1n; // +Infinity: fails or lies past the range
+  while (hi - lo > 1n) {
+    const mid = (lo + hi) / 2n;
+    if (ok(fromBits(mid))) lo = mid;
+    else hi = mid;
+  }
+  return fromBits(lo);
+}
+
 /** `'<n>'::float8`, inlined: only a finite number reaches the text. */
 export function float8Lit(
   sql: Sql | TransactionSql,
@@ -380,15 +453,21 @@ export function float8Lit(
 /**
  * `left <op> right`, never NULL and true only when both sides are present;
  * `neq` is true for a NULL `left` against a present `right`, as memory's
- * `!equals` is.
+ * `!equals` is. `once` reads `right` once, through a subquery, for an
+ * operand too costly to repeat.
  */
 export function compareRef(
   sql: Sql | TransactionSql,
   field: string,
   op: string,
   left: Fragment,
-  right: Fragment
+  right: Fragment,
+  once = false
 ): Fragment {
+  if (once) {
+    const inner = compareRef(sql, field, op, left, sql`cv`);
+    return sql`(SELECT ${inner} FROM (SELECT ${right} AS cv OFFSET 0) cmp_g)`;
+  }
   const cmp = (o: string): Fragment =>
     sql`(${left} IS NOT NULL AND ${right} IS NOT NULL AND ${left} ${sql.unsafe(o)} ${right})`;
   switch (op) {

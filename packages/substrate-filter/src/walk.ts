@@ -232,8 +232,8 @@ export function evaluateGroup(
 /**
  * A `$ref` operand's value: `$.f` reads the seed, `<as>.f` a binding. A
  * number becomes `value * times + plus`; a date shifts by `plus`
- * milliseconds. A null, or a value its kind cannot read, is `null`, which no
- * comparison matches.
+ * milliseconds. A null, a value its kind cannot read, or arithmetic that
+ * overflows or underflows to 0, is `null`, which no comparison matches.
  */
 export function resolveRef(ref: RefOperand, asDate: boolean, walk: WalkContext): unknown {
   const dot = ref.$ref.indexOf('.');
@@ -257,7 +257,13 @@ export function resolveRef(ref: RefOperand, asDate: boolean, walk: WalkContext):
     return ref.plus ? isoFromMicros(micros + BigInt(Math.round(ref.plus * 1000))) : v;
   }
   if (typeof v !== 'number') return null;
-  return v * (ref.times ?? 1) + (ref.plus ?? 0);
+  // Todo #1809, shared with pg's refOperand: a non-finite result, or a nonzero
+  // product that underflows to 0 (pg's float8 raises on both), is null.
+  const times = ref.times ?? 1;
+  const product = v * times;
+  if (product === 0 && v !== 0 && times !== 0) return null;
+  const out = product + (ref.plus ?? 0);
+  return Number.isFinite(out) ? out : null;
 }
 
 /** An instant in microseconds as an ISO string with six fraction digits. */
@@ -272,7 +278,8 @@ function isoFromMicros(micros: bigint): string {
  * values drop out); min/max read numbers, or instants on a date field and
  * return the winning row's stored value (ties id ascending); each is null over
  * none. count counts rows; latest is the stored `value` of the row latest by
- * `by` (nulls last, ties id ascending), or null. Arithmetic is float64.
+ * `by` (nulls last, ties id ascending), or null. Arithmetic is float64, and
+ * a sum past float64's range is null.
  */
 export function applyAgg(rows: Row[], fn: AggFn, fieldDefOf: FieldDefOf): unknown {
   if (Object.hasOwn(fn, 'count')) return rows.length;
@@ -299,6 +306,19 @@ export function applyAgg(rows: Row[], fn: AggFn, fieldDefOf: FieldDefOf): unknow
     n++;
   }
   if (n === 0) return null;
+  if (!Number.isFinite(acc) && (op === 'sum' || op === 'avg')) {
+    // Todo #1809: pg sums exactly and is null only when the exact sum is past
+    // float8's range. Near enough, cheaply: re-sum scaled by 2^-64, so no
+    // partial sum overflows. Order and cancellation drift between this and
+    // the exact sum is accepted, as for the last bit of avg/sum.
+    let scaled = 0;
+    for (const r of rows) {
+      const v = getFieldValue(r, field);
+      if (typeof v === 'number') scaled += v * 2 ** -64;
+    }
+    const out = (op === 'avg' ? scaled / n : scaled) * 2 ** 64;
+    return Number.isFinite(out) ? out : null;
+  }
   return op === 'avg' ? acc / n : acc;
 }
 

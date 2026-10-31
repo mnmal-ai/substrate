@@ -414,6 +414,40 @@ describe('memory edge walks', () => {
     expect(await cmp('lt')).toEqual(['c1']);
   });
 
+  it('$ref arithmetic that overflows or underflows to 0 is never true', async () => {
+    // Ruling (Todo #1809): a non-finite `value * times + plus`, or a nonzero
+    // product that underflows to 0 (pg raises there), compares as a null $ref.
+    const ds = await dataset({
+      Cert: [
+        { id: 'c1', ask: 1e308 },
+        { id: 'c2', ask: 5e-324 },
+        { id: 'c3', ask: 1.7976931348623157e308 }
+      ],
+      Observation: [
+        { id: 'o1', cert: 'c1', price: 1e308 },
+        { id: 'o2', cert: 'c2', price: 0 },
+        { id: 'o3', cert: 'c3', price: 1 }
+      ]
+    });
+    const cmp = (op: string, r: Record<string, unknown>) =>
+      ids(ds, 'Cert', obs({ price: { [op]: { $ref: '$.ask', ...r } } } as WhereClause));
+    // c1 and c3 overflow under times 2 and c2 under-flows under times 0.25;
+    // c3 overflows under plus 1e300. Those never match, neq included.
+    const want: Record<string, [string[], string[], string[]]> = {
+      eq: [[], [], []],
+      neq: [['c2'], ['c1', 'c3'], ['c1', 'c2']],
+      gt: [[], ['c1'], []],
+      gte: [[], ['c1'], []],
+      lt: [['c2'], ['c3'], ['c1', 'c2']],
+      lte: [['c2'], ['c3'], ['c1', 'c2']]
+    };
+    for (const [op, [twice, quarter, plus]] of Object.entries(want)) {
+      expect(await cmp(op, { times: 2 }), op).toEqual(twice);
+      expect(await cmp(op, { times: 0.25, plus: 0 }), op).toEqual(quarter);
+      expect(await cmp(op, { plus: 1e300 }), op).toEqual(plus);
+    }
+  });
+
   it('a $ref to an _agg throws rather than reading as false', async () => {
     const ds = await dataset({
       Cert: [{ id: 'c1' }],
@@ -520,6 +554,37 @@ describe('memory walk aggregates, count, buckets and derive', () => {
     expect(res.rows.map((r) => r._agg)).toEqual([
       { avg: 20, sum: 40, min: 10, max: 30, n: 5 },
       { avg: null, sum: null, min: null, max: null, n: 0 }
+    ]);
+  });
+
+  it('a sum past float64 is null, its avg is not; walk and frame alike', async () => {
+    const ds = await dataset({
+      Cert: [{ id: 'c1' }, { id: 'c2' }],
+      Observation: [
+        { id: 'o1', cert: 'c1', price: 1e308 },
+        { id: 'o2', cert: 'c1', price: 1e308 },
+        { id: 'o3', cert: 'c2', price: 1e308 },
+        { id: 'o4', cert: 'c2', price: -1e308 }
+      ]
+    });
+    const agg = {
+      avg: { in: OBS, avg: 'price' },
+      sum: { in: OBS, sum: 'price' }
+    } as ReadParams['agg'];
+    const res = await ds.read('Cert', { orderBy: [{ id: 'asc' }], ...(agg ? { agg } : {}) });
+    expect(res.rows.map((r) => r._agg)).toEqual([
+      { avg: 1e308, sum: null },
+      { avg: 0, sum: 0 }
+    ]);
+    const frame = (where: WhereClause) =>
+      ds.read('Observation', {
+        where,
+        aggregate: { avg: { avg: 'price' }, sum: { sum: 'price' } }
+      });
+    expect((await frame({ price: { gt: 0 } })).groups).toEqual([{ avg: 1e308, sum: null }]);
+    // A running sum that overflows and comes back is that value, as pg's exact sum.
+    expect((await frame({ id: { in: ['o1', 'o2', 'o4'] } })).groups).toEqual([
+      { avg: 1e308 / 3, sum: 1e308 }
     ]);
   });
 
