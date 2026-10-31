@@ -50,7 +50,11 @@ function u(name: string): string {
 /** Hubs h0–h7 hold 400 neighbours each, h8 6 with no `at` or price, h9 none. */
 const PER_HUB = 400;
 function fixture() {
-  const hubs = Array.from({ length: 10 }, (_, h) => ({ id: u(`h${h}`), ask: h * 10 }));
+  // Asks tie in threes and h9 has none, so a derived key ties and goes null.
+  const hubs = Array.from({ length: 10 }, (_, h) => ({
+    id: u(`h${h}`),
+    ...(h === 9 ? {} : { ask: (h % 3) * 10 })
+  }));
   const nbrs: Array<Record<string, unknown>> = [];
   for (let h = 0; h < 8; h++) {
     for (let i = 0; i < PER_HUB; i++) {
@@ -154,7 +158,12 @@ async function probes(params: ReadParams, bound: number): Promise<PlanNode[]> {
   return plan;
 }
 
+/** Every walk scan's loops, summed: how many times a read ran a neighbour lookup. */
+const lookups = (plan: PlanNode[]) =>
+  walkScans(plan).reduce((n, s) => n + Number(s['Actual Loops']), 0);
+
 const IN = `${NS}/Nbr.hub`;
+const HUBS = 10;
 
 describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk plan shapes (pg)', () => {
   it('a pick is an index probe in either index direction, ties and nulls as memory', async () => {
@@ -254,5 +263,105 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk plan shapes (pg)', () => {
         3
       )
     });
+  }, 60_000);
+
+  it('a cut nested list is read once per hub, not again for its _truncated flag', async () => {
+    const plan = await probes(
+      {
+        nested: {
+          top: {
+            _walk: { in: IN },
+            fields: { price: true },
+            orderBy: [{ price: 'desc' }],
+            limit: 2
+          }
+        }
+      } as unknown as ReadParams,
+      2 + 1 + 4
+    );
+    expect(lookups(plan)).toBeLessThanOrEqual(HUBS);
+  }, 60_000);
+
+  it('aggregates over one hop and where share one scan per hub', async () => {
+    const where = { at: { gte: '2026-10-05T00:00:00Z' } };
+    const plan = await probes(
+      {
+        agg: {
+          n: { in: IN, where, count: true },
+          avg: { in: IN, where, avg: 'price' },
+          hi: { in: IN, where, max: 'price' },
+          all: { in: IN, count: true }
+        }
+      } as unknown as ReadParams,
+      PER_HUB
+    );
+    // One scan for the three windowed aggregates, one for the unwindowed count.
+    expect(lookups(plan)).toBeLessThanOrEqual(2 * HUBS);
+  }, 60_000);
+
+  it('a derived order evaluates its operands once per matched row', async () => {
+    const agg = { lp: { in: IN, latest: { by: 'at', value: 'price' } } };
+    for (const dir of ['asc', 'desc'] as const) {
+      const plan = await probes(
+        {
+          agg,
+          derive: { m: { diff: ['_agg.lp', '$.ask'] } },
+          orderBy: [{ $m: dir }],
+          limit: 3
+        } as unknown as ReadParams,
+        8
+      );
+      // A pick is at most three probes (max, the rows at it, the null tail): once per hub
+      // for the order, and once per hub at most for the projected `_agg`.
+      expect(lookups(plan)).toBeLessThanOrEqual(2 * 3 * HUBS);
+    }
+  }, 60_000);
+  it('one _agg mixing a pick with shared aggregates over different wheres', async () => {
+    const early = { at: { lt: '2026-10-05T00:00:00Z' } };
+    const late = { at: { gte: '2026-10-05T00:00:00Z' } };
+    await same('Hub', {
+      agg: {
+        lp: { in: IN, latest: { by: 'at', value: 'price' } },
+        n: { in: IN, count: true },
+        // price is absent on some neighbours: sum and avg skip them, count does not.
+        sum: { in: IN, sum: 'price' },
+        en: { in: IN, where: early, count: true },
+        eavg: { in: IN, where: early, avg: 'price' },
+        ln: { in: IN, where: late, count: true },
+        lhi: { in: IN, where: late, max: 'price' }
+      }
+    } as unknown as ReadParams);
+  }, 60_000);
+
+  it('derive pages agree with memory as a later key and beside a shortId join', async () => {
+    const base = {
+      agg: { lp: { in: IN, latest: { by: 'at', value: 'price' } } },
+      derive: { m: { diff: ['_agg.lp', '$.ask'] } }
+    };
+    const variants = [
+      { orderBy: [{ ask: 'desc' }, { $m: 'asc' }] },
+      { orderBy: [{ $m: 'desc' }] },
+      // A shortId key forces the short_ids join, where derive is inlined. Rows written
+      // straight to a dataset have no shortId on either side, so it orders as a tie.
+      { orderBy: [{ $m: 'asc' }, { shortId: 'asc' }] }
+    ];
+    for (const v of variants) {
+      const params = { ...base, ...v } as unknown as ReadParams;
+      const full = (await same('Hub', params)).map((r) => names.get(String(r.id)));
+      for (const limit of [1, 3]) {
+        const paged = async (ds: PgDataset | MemoryDataset) => {
+          const ids: unknown[] = [];
+          let cursor: string | undefined;
+          do {
+            const res = await ds.read('Hub', { ...params, limit, ...(cursor ? { cursor } : {}) });
+            ids.push(...res.rows.map((r) => names.get(String(r.id))));
+            cursor = res.nextCursor;
+          } while (cursor !== undefined);
+          return ids;
+        };
+        expect(await paged(pg), JSON.stringify(v)).toEqual(await paged(mem));
+        expect(await paged(pg), JSON.stringify(v)).toEqual(full);
+      }
+    }
   }, 60_000);
 });
