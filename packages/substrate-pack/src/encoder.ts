@@ -20,6 +20,7 @@
 
 import {
   assertNever,
+  type EnvelopeShape,
   type FieldDef,
   type FieldDefCrossRef,
   type FieldDefList,
@@ -36,7 +37,8 @@ import {
   type RowPlanCache,
   getFieldDefPlan as sharedGetFieldDefPlan,
   getRowPlan as sharedGetRowPlan,
-  resolveFieldMap as sharedResolveFieldMap
+  resolveFieldMap as sharedResolveFieldMap,
+  type WalkSlot
 } from './_plan-cache.js';
 
 export interface EncodeContext {
@@ -122,6 +124,12 @@ export function encodePositionalFromFieldDef(
 export function encodeEnvelope(envelope: PackEnvelope, ctx: EncodeEnvelopeCtx): Buffer {
   const rewritten: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(envelope.data)) {
+    // `{ count }` and `{ groups, truncated? }` carry no rows to position:
+    // they ride as named maps, and `shapes[key]` says which.
+    if (isAggShape(envelope.shapes[key])) {
+      rewritten[key] = value;
+      continue;
+    }
     const returns = ctx.returnsByKey?.[key];
     if (returns !== undefined) {
       const currentNs = ctx.currentNsByKey[key];
@@ -172,6 +180,11 @@ export function encodeEnvelope(envelope: PackEnvelope, ctx: EncodeEnvelopeCtx): 
   return Buffer.from(pack(out));
 }
 
+/** A shape whose value is a `{ count }` or `{ groups }` map, not rows. */
+export function isAggShape(shape: EnvelopeShape | undefined): shape is 'count' | 'groups' {
+  return shape === 'count' || shape === 'groups';
+}
+
 /**
  * Encode a single envelope value against its declared `returns` FieldDef,
  * honouring the envelope's single-vs-list shape for that key. `single` encodes
@@ -185,7 +198,7 @@ function encodePositionalForShape(
   value: unknown,
   def: FieldDef,
   schema: Schema,
-  shape: 'single' | 'list' | Array<'single' | 'list'> | undefined,
+  shape: EnvelopeShape | undefined,
   ctx: EncodeContext
 ): unknown {
   if (value === null || value === undefined) return null;
@@ -248,16 +261,55 @@ function encodeRowWithPlan(
   // Mutable path stack — push before recursion, pop after. Allocates only on
   // throw (the error class snapshots the path).
   for (let i = 0; i < len; i++) {
-    const entry = plan[i] as readonly [string, true | FieldInput, FieldDef | undefined];
+    const entry = plan[i] as RowPlan[number];
     const field = entry[0];
     const selection = entry[1];
     const def = entry[2];
     const value = Object.hasOwn(rowObj, field) ? rowObj[field] : undefined;
     path.push(field);
-    tuple[i] = encodeField(value, selection, def, schema, path, ctx);
+    const slot = entry[3];
+    tuple[i] =
+      slot === undefined
+        ? encodeField(value, selection, def, schema, path, ctx)
+        : encodeWalkSlot(value, slot, schema, path, ctx);
     path.pop();
   }
   return tuple;
+}
+
+function encodeWalkSlot(
+  value: unknown,
+  slot: WalkSlot,
+  schema: Schema,
+  path: string[],
+  ctx: EncodeContext
+): unknown {
+  if (value === null || value === undefined) return null;
+  switch (slot.kind) {
+    case 'truncated':
+      return value;
+    case 'agg': {
+      if (typeof value !== 'object' || Array.isArray(value)) {
+        throw new PackEncodeError('expected object for _agg', path);
+      }
+      const aggs = value as Record<string, unknown>;
+      return slot.names.map((n) => coerceScalar(Object.hasOwn(aggs, n) ? aggs[n] : null));
+    }
+    case 'nested': {
+      if (!Array.isArray(value)) {
+        throw new PackEncodeError('expected array for nested selection', path);
+      }
+      const plan = getRowPlan(slot.fields, resolveFieldMap(schema, slot.type, path));
+      return value.map((row, idx) => {
+        path.push(`[${idx}]`);
+        const out = encodeRowWithPlan(row, plan, schema, path, ctx);
+        path.pop();
+        return out;
+      });
+    }
+    default:
+      return assertNever(slot);
+  }
 }
 
 function encodeField(

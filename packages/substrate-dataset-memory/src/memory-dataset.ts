@@ -205,8 +205,12 @@ export class MemoryDataset implements Dataset {
     // sits ahead of the unknown-type return.
     if (params.where !== undefined) assertWhereHonourable(params.where);
 
-    const b = this.store.get(type);
-    if (!b) return { rows: [], hasMore: false };
+    const stored = this.store.get(type);
+    // A count or aggregate over a type with no rows still answers its shape.
+    if (!stored && params.count !== true && params.aggregate === undefined) {
+      return { rows: [], hasMore: false };
+    }
+    const b = stored ?? new Map<Id, Row>();
 
     const includeDeleted = params.includeDeleted === true;
     const lookup = this.#fieldDefLookup;

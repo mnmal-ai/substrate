@@ -561,6 +561,15 @@ export function validateSelection(
         aggs.set(n, validateWalkAgg(agg, [...at, n], own, h));
       }
     } else if (isObj(sel) && Object.hasOwn(sel, '_walk')) {
+      // The nested list lands under its name in the row, and the wire plans
+      // a declared name as that field, so the name must be free.
+      if (Object.hasOwn(scope.fields, name)) {
+        fail(
+          'walk_unsupported_ref',
+          `a nested selection cannot reuse the declared field name '${name}'; name it something else`,
+          at
+        );
+      }
       validateNested(sel, at, scope, h);
     } else if (isObj(sel)) {
       const deep = walkGrammarPath({ fields: sel });

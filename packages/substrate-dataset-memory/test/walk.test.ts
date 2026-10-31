@@ -988,3 +988,12 @@ describe('task 8 review fixes', () => {
     expect(res.rows[0]?.all).toContainEqual({ id: 'l4', price: null });
   });
 });
+
+describe('count and aggregate over a type never written', () => {
+  it('answers its shape, not an empty page', async () => {
+    const ds = await dataset({});
+    expect(await ds.read('Cert', { count: true })).toEqual({ rows: [], hasMore: false, count: 0 });
+    const agg = await ds.read('Observation', { aggregate: { n: { count: true } } });
+    expect(agg.groups).toEqual([{ n: 0 }]);
+  });
+});

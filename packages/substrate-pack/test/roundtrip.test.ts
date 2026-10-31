@@ -1,4 +1,5 @@
 import type { FieldDef, FieldInput, PackEnvelope, Schema } from '@mnmal-ai/substrate-types';
+import { unpack } from 'msgpackr';
 import { describe, expect, it } from 'vitest';
 import { decodeEnvelope } from '../src/decoder.js';
 import { encodeEnvelope } from '../src/encoder.js';
@@ -366,5 +367,128 @@ describe('envelope roundtrip', () => {
     // decoded value is a Date again with equal epoch ms.
     expect(got.at).toBeInstanceOf(Date);
     expect((got.at as Date).getTime()).toBe(when.getTime());
+  });
+});
+
+describe('walk results roundtrip', () => {
+  const schema: Schema = {
+    schemaVersion: 'walks001',
+    types: {
+      Cert: {
+        fields: {
+          id: { kind: 'scalar', type: 'string' },
+          grade: { kind: 'scalar', type: 'number' }
+        }
+      },
+      Listing: {
+        fields: {
+          id: { kind: 'scalar', type: 'string' },
+          cert: { kind: 'crossRef', ns: 'cards', type: 'Cert', onDelete: 'set_null' },
+          price: { kind: 'scalar', type: 'number' },
+          seenAt: { kind: 'scalar', type: 'date' }
+        }
+      }
+    },
+    mutations: {}
+  };
+  const ctxFor = (key: string, type: string, fields: FieldInput) => ({
+    fieldsByKey: { [key]: fields },
+    typeByKey: { [key]: type },
+    schemas: { cards: schema },
+    currentNsByKey: { [key]: 'cards' }
+  });
+  const roundtrip = (env: PackEnvelope, ctx: ReturnType<typeof ctxFor>) =>
+    decodeEnvelope(encodeEnvelope(env, ctx), ctx);
+
+  it('nested lists roundtrip positionally under the far type plan', () => {
+    // A selection holds walk grammar the FieldInput type does not describe.
+    const fields = {
+      grade: true,
+      listings: { _walk: { in: 'cards/Listing.cert' }, fields: { price: true }, limit: 1 },
+      none: { _walk: { in: 'cards/Listing.cert' }, fields: { seenAt: true } }
+    } as unknown as FieldInput;
+    // `out` resolves the far type through the crossRef.
+    const outFields = {
+      price: true,
+      hub: { _walk: { out: 'cert' }, fields: { grade: true } }
+    } as unknown as FieldInput;
+    const rows = [
+      {
+        grade: 9,
+        listings: [{ id: 'l1', price: 120 }],
+        none: [],
+        _truncated: { listings: true }
+      },
+      { grade: 8, listings: [], none: [] }
+    ];
+    const ctx = ctxFor('cards/Cert', 'Cert', fields);
+    const encoded = encodeEnvelope(
+      { schemaVersion: 'walks001', data: { 'cards/Cert': rows }, shapes: { 'cards/Cert': 'list' } },
+      ctx
+    );
+    // Positional: [grade, listings, none, _truncated], each listing [id, price].
+    const raw = unpack(encoded) as PackEnvelope;
+    expect(raw.data['cards/Cert']).toEqual([
+      [9, [['l1', 120]], [], { listings: true }],
+      [8, [], [], null]
+    ]);
+    expect(decodeEnvelope(encoded, ctx).data['cards/Cert']).toEqual(rows);
+
+    const outRows = [{ price: 5, hub: [{ id: 'c1', grade: null }] }];
+    const outCtx = ctxFor('cards/Listing', 'Listing', outFields);
+    const out = roundtrip(
+      {
+        schemaVersion: 'walks001',
+        data: { 'cards/Listing': outRows },
+        shapes: { 'cards/Listing': 'list' }
+      },
+      outCtx
+    );
+    expect(out.data['cards/Listing']).toEqual(outRows);
+  });
+
+  it('_agg values roundtrip in declared order', () => {
+    const fields = {
+      grade: true,
+      _agg: {
+        n: { in: 'cards/Listing.cert', count: true },
+        last: { in: 'cards/Listing.cert', latest: { by: 'seenAt', value: 'seenAt' } }
+      }
+    } as unknown as FieldInput;
+    const when = new Date('2026-10-24T00:00:00Z');
+    // Stored out of order: the wire follows the selection, not the row.
+    const row = { grade: 9, _agg: { last: when, n: 3 } };
+    const ctx = ctxFor('cards/Cert', 'Cert', fields);
+    const env: PackEnvelope = {
+      schemaVersion: 'walks001',
+      data: { 'cards/Cert': row },
+      shapes: { 'cards/Cert': 'single' }
+    };
+    const raw = unpack(encodeEnvelope(env, ctx)) as PackEnvelope;
+    expect(raw.data['cards/Cert']).toEqual([9, [3, when]]);
+    expect(roundtrip(env, ctx).data['cards/Cert']).toEqual({
+      grade: 9,
+      _agg: { n: 3, last: when }
+    });
+  });
+
+  it('count and groups envelopes roundtrip', () => {
+    const ctx = ctxFor('cards/Cert', 'Cert', { id: true });
+    const env: PackEnvelope = {
+      schemaVersion: 'walks001',
+      data: {
+        'cards/Cert': { count: 42 },
+        'cards/Listing': { groups: [{ bucket: '2026-10-24', n: 2, avg: 1.5 }], truncated: true }
+      },
+      shapes: { 'cards/Cert': 'count', 'cards/Listing': 'groups' }
+    };
+    const out = roundtrip(env, {
+      ...ctx,
+      fieldsByKey: { ...ctx.fieldsByKey, 'cards/Listing': { id: true } },
+      typeByKey: { ...ctx.typeByKey, 'cards/Listing': 'Listing' },
+      currentNsByKey: { ...ctx.currentNsByKey, 'cards/Listing': 'cards' }
+    });
+    expect(out.data).toEqual(env.data);
+    expect(out.shapes).toEqual(env.shapes);
   });
 });

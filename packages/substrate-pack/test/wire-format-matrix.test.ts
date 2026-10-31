@@ -527,3 +527,84 @@ describe('§7.0/§7.3 — envelope header fields survive roundtrip', () => {
     expect(raw.data).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Walk results (typed edge walks). New vectors only: the ones above are
+// untouched, and a selection without walk grammar encodes exactly as before.
+// ---------------------------------------------------------------------------
+
+// [title, _agg [notes], notes [[id, body]], _truncated]
+const GOLDEN_WALK_NESTED_ROW =
+  'de0003ad736368656d6156657273696f6eac616161616262626263636363a464617461de0001ac64656661756c742f546f646f94a5616c70686191029192a26e31a56669727374de0001a56e6f746573c3a6736861706573de0001ac64656661756c742f546f646fa673696e676c65';
+
+const WALK_SCHEMA: Schema = {
+  schemaVersion: 'aaaabbbbcccc',
+  types: {
+    Todo: { fields: TODO_FIELDS },
+    Note: {
+      fields: {
+        id: { kind: 'scalar', type: 'string' },
+        todo: { kind: 'crossRef', ns: 'default', type: 'Todo', onDelete: 'set_null' },
+        body: { kind: 'scalar', type: 'string' }
+      }
+    }
+  },
+  mutations: {}
+};
+
+function walkScenario(): EnvelopeScenario {
+  // Walk grammar sits in the selection beside plain fields.
+  const fields = {
+    title: true,
+    _agg: { notes: { in: 'default/Note.todo', count: true } },
+    notes: { _walk: { in: 'default/Note.todo' }, fields: { body: true }, limit: 1 }
+  } as unknown as FieldInput;
+  return {
+    envelope: {
+      schemaVersion: WALK_SCHEMA.schemaVersion,
+      data: {
+        'default/Todo': {
+          title: 'alpha',
+          _agg: { notes: 2 },
+          notes: [{ id: 'n1', body: 'first' }],
+          _truncated: { notes: true }
+        }
+      },
+      shapes: { 'default/Todo': 'single' }
+    },
+    ctx: {
+      fieldsByKey: { 'default/Todo': fields },
+      typeByKey: { 'default/Todo': 'Todo' },
+      schemas: { default: WALK_SCHEMA },
+      currentNsByKey: { 'default/Todo': 'default' }
+    }
+  };
+}
+
+describe('walk results on the positional wire', () => {
+  it('one nested row matches golden hex', () => {
+    const { envelope, ctx } = walkScenario();
+    expect(toHex(encodeEnvelope(envelope, ctx))).toBe(GOLDEN_WALK_NESTED_ROW);
+  });
+
+  it('nested row, _agg and _truncated decode to the JSON form', () => {
+    const { envelope, ctx } = walkScenario();
+    const json = JSON.parse(JSON.stringify(envelope)) as PackEnvelope;
+    expect(decodeEnvelope(encodeEnvelope(envelope, ctx), ctx).data).toEqual(json.data);
+  });
+
+  it('count and groups envelopes decode to the JSON form', () => {
+    const envelope: PackEnvelope = {
+      schemaVersion: BASE_SCHEMA.schemaVersion,
+      data: { 'default/Todo': { count: 7 }, 'default/Tag': { groups: [{ n: 7 }] } },
+      shapes: { 'default/Todo': 'count', 'default/Tag': 'groups' }
+    };
+    const ctx = {
+      fieldsByKey: { 'default/Todo': TODO_FIELD_INPUT, 'default/Tag': TAG_FIELD_INPUT },
+      typeByKey: { 'default/Todo': 'Todo', 'default/Tag': 'Tag' },
+      schemas: { default: CATALOG_SCHEMA },
+      currentNsByKey: { 'default/Todo': 'default', 'default/Tag': 'default' }
+    };
+    expect(decodeEnvelope(encodeEnvelope(envelope, ctx), ctx).data).toEqual(envelope.data);
+  });
+});
