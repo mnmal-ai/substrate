@@ -12,6 +12,7 @@
  * `hits` key. Test for presence (`Array.isArray`, `'data' in o`); do not rely on
  * `=== undefined` of a field the type marks required.
  */
+import type { DeriveSpec, WhereClause } from './dataset.js';
 import type { Query } from './nl.js';
 
 export interface NlAskRequest {
@@ -186,7 +187,22 @@ export interface NlValueAlias {
   contains?: string;
 }
 
+/** One `fieldPhrases` ruling: what a phrase binds to. Field refs are `'<Type>.<field>'` in the ruling's namespace. */
+export interface NlFieldPhrase {
+  field?: string;
+  /** Needs `field`: an equality binding ("valued PSA 9" -> Cert.grade = 9). */
+  value?: unknown;
+  /** Needs `field`: the implicit filter on that field's type. Never silent: it shows in `plan`. */
+  exclude?: WhereClause;
+  /** Operands are `'<Type>.<field>'`, both on one type. */
+  derive?: DeriveSpec;
+  /** A namespace default pick for this phrase. */
+  pick?: 'latest' | 'max' | 'min';
+}
+
 export interface NlNamespaceRulings {
+  /** Phrases bound to fields, values, implicit filters, derived orderings and pick defaults. Keys are normalised (trimmed, single-spaced, lower-cased). */
+  fieldPhrases?: Record<string, NlFieldPhrase>;
   /** Types never scoped to the asking project (their `project` means "belongs to", not "applies to"). */
   unscopedTypes?: string[];
   /** Extra phrases naming a type, e.g. `backlog` -> Task. Win over the generated phrases. */
