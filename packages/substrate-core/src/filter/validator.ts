@@ -793,6 +793,16 @@ function validateAggPredicate(
   h: FrameHelpers
 ): void {
   const kind = validateWalkAgg(record._agg, [...path, '_agg'], scope, h);
+  // The object is one comparison: a field or walk beside `_agg` is refused, not ANDed.
+  for (const k of Object.keys(record)) {
+    if (k !== '_agg' && !AGG_COMPARATORS.has(k)) {
+      throw new FilterValidationError(
+        'agg_invalid',
+        `'${k}' cannot sit beside _agg; only eq, neq, gt, gte, lt and lte can. Put it in its own clause under AND`,
+        [...path, k]
+      );
+    }
+  }
   const ops = Object.keys(record).filter((k) => AGG_COMPARATORS.has(k));
   if (ops.length === 0) {
     throw new FilterValidationError(

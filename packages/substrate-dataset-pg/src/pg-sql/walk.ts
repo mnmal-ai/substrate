@@ -22,9 +22,7 @@ import { groupConjuncts, refNames } from '@mnmal-ai/substrate-filter';
 import {
   type FieldDef,
   type RefOperand,
-  ResolverFrameError,
   UnsupportedFilterError,
-  WALK_UNSUPPORTED_REF,
   type WalkNode,
   type WhereClause
 } from '@mnmal-ai/substrate-types';
@@ -61,6 +59,8 @@ export interface WalkScope {
   /** A fresh table alias, unique within the statement. */
   nextAlias(): string;
   fieldDef(type: string, field: string): FieldDef | undefined;
+  /** The frame's `_agg` value `name` for the seed row, as jsonb, read by `_agg.<name>` operands. */
+  aggValue?: (name: string) => Fragment;
 }
 
 /** The scope of a read's top-level where, over `type` rows aliased `alias`. */
@@ -104,7 +104,7 @@ const castFor =
  * The far type of one hop from `scope`'s row, and the condition that pins the
  * far row `alias` to it: namespace, type, live, and the crossRef join.
  */
-function hop(
+export function hop(
   sql: Sql | TransactionSql,
   node: { in?: string; out?: string },
   scope: WalkScope,
@@ -176,13 +176,18 @@ export function buildWalk(
 }
 
 /** A pick's ordering key: an instant for a date, a number for a number. */
-function sortKey(
+export function sortKey(
   sql: Sql | TransactionSql,
   field: string,
   cast: BodyOrderByCast | null,
   alias: string
 ): Fragment {
-  if (isMetadataField(field)) return sql.unsafe(metadataColumnSql(field, alias));
+  if (isMetadataField(field)) {
+    // Text columns sort by byte order, as the main read's sortExpr and memory do.
+    const col = metadataColumnSql(field, alias);
+    const ordered = field === 'createdAt' || field === 'updatedAt' || field === 'seq';
+    return sql.unsafe(ordered ? col : `${col} COLLATE "C"`);
+  }
   if (cast === 'numeric') return bodyNum(sql, [field], alias);
   if (cast === 'timestamptz') return bodyTs(sql, [field], alias);
   return bodyText(sql, [field], alias);
@@ -235,7 +240,7 @@ export function buildGroup(
 }
 
 /** The value a `$ref` comparison reads from `field` of `alias`'s row, by kind. */
-function refValue(
+export function refValue(
   sql: Sql | TransactionSql,
   field: string,
   kind: 'number' | 'date',
@@ -276,43 +281,83 @@ export function buildRefCompare(
     throw new UnsupportedFilterError(field, op, 'a $ref compares number or date fields');
   }
   const kind = cast === 'numeric' ? 'number' : 'date';
+  const right = refOperand(sql, field, op, ref, kind, scope);
+  return compareRef(sql, field, op, refValue(sql, field, kind, scope.alias), right);
+}
+
+/**
+ * A `$ref` operand's value, typed by `kind`: `$.f` reads the seed, `<as>.f` a
+ * binding, `_agg.<name>` the frame's aggregate for the seed row. Numbers are
+ * float8 with `times`/`plus` inlined; a date shifts by `plus` milliseconds,
+ * to the microsecond. NULL where memory's `resolveRef` is null.
+ */
+export function refOperand(
+  sql: Sql | TransactionSql,
+  field: string,
+  op: string,
+  ref: RefOperand,
+  kind: 'number' | 'date',
+  scope: WalkScope
+): Fragment {
   const dot = ref.$ref.indexOf('.');
   const name = ref.$ref.slice(0, dot);
   const refField = ref.$ref.slice(dot + 1);
+  let right: Fragment;
   if (name === '_agg') {
-    throw new ResolverFrameError(
-      WALK_UNSUPPORTED_REF,
-      `$ref '${ref.$ref}' is not yet supported on pg`
-    );
-  }
-  const target =
-    name === '$' ? { alias: scope.seedAlias, type: scope.seedType } : scope.bindings.get(name);
-  if (dot < 0 || target === undefined) {
-    throw new UnsupportedFilterError(field, op, `$ref '${ref.$ref}' names no binding in scope`);
-  }
-  const left = refValue(sql, field, kind, scope.alias);
-  let right = refValue(sql, refField, kind, target.alias);
-  // `'<n>'::float8`, inlined: only a finite number reaches the text.
-  const lit = (n: unknown): Fragment => {
-    if (typeof n !== 'number' || !Number.isFinite(n)) {
-      throw new UnsupportedFilterError(field, op, '$ref times and plus must be finite numbers');
+    if (scope.aggValue === undefined) {
+      throw new UnsupportedFilterError(field, op, `$ref '${ref.$ref}' names no _agg in this frame`);
     }
-    return sql.unsafe(`'${String(n)}'::float8`);
-  };
-  if (kind === 'number') {
-    if (ref.times !== undefined) right = sql`${right} * ${lit(ref.times)}`;
-    if (ref.plus !== undefined) right = sql`${right} + ${lit(ref.plus)}`;
-    right = sql`(${right})`;
+    const v = scope.aggValue(refField);
+    right = kind === 'number' ? sql`substrate_num(${v})::float8` : sql`substrate_ts(${v})`;
   } else {
-    if (ref.times !== undefined) {
-      throw new UnsupportedFilterError(field, op, "a date $ref takes 'plus', not 'times'");
+    const target =
+      name === '$' ? { alias: scope.seedAlias, type: scope.seedType } : scope.bindings.get(name);
+    if (dot < 0 || target === undefined) {
+      throw new UnsupportedFilterError(field, op, `$ref '${ref.$ref}' names no binding in scope`);
     }
-    if (ref.plus !== undefined) lit(ref.plus);
-    // As memory: the shift is `plus` ms rounded to whole microseconds.
-    const micros = ref.plus === undefined ? 0 : Math.round(ref.plus * 1000);
-    if (micros !== 0)
-      right = sql`(${right} + ${sql.unsafe(`(${micros})`)} * interval '1 microsecond')`;
+    right = refValue(sql, refField, kind, target.alias);
   }
+  if (kind === 'number') {
+    if (ref.times !== undefined) right = sql`${right} * ${float8Lit(sql, field, op, ref.times)}`;
+    if (ref.plus !== undefined) right = sql`${right} + ${float8Lit(sql, field, op, ref.plus)}`;
+    return sql`(${right})`;
+  }
+  if (ref.times !== undefined) {
+    throw new UnsupportedFilterError(field, op, "a date $ref takes 'plus', not 'times'");
+  }
+  if (ref.plus !== undefined) float8Lit(sql, field, op, ref.plus);
+  // As memory: the shift is `plus` ms rounded to whole microseconds.
+  const micros = ref.plus === undefined ? 0 : Math.round(ref.plus * 1000);
+  return micros === 0
+    ? right
+    : sql`(${right} + ${sql.unsafe(`(${micros})`)} * interval '1 microsecond')`;
+}
+
+/** `'<n>'::float8`, inlined: only a finite number reaches the text. */
+export function float8Lit(
+  sql: Sql | TransactionSql,
+  field: string,
+  op: string,
+  n: unknown
+): Fragment {
+  if (typeof n !== 'number' || !Number.isFinite(n)) {
+    throw new UnsupportedFilterError(field, op, 'numeric operands must be finite numbers');
+  }
+  return sql.unsafe(`'${String(n)}'::float8`);
+}
+
+/**
+ * `left <op> right`, never NULL and true only when both sides are present;
+ * `neq` is true for a NULL `left` against a present `right`, as memory's
+ * `!equals` is.
+ */
+export function compareRef(
+  sql: Sql | TransactionSql,
+  field: string,
+  op: string,
+  left: Fragment,
+  right: Fragment
+): Fragment {
   const cmp = (o: string): Fragment =>
     sql`(${left} IS NOT NULL AND ${right} IS NOT NULL AND ${left} ${sql.unsafe(o)} ${right})`;
   switch (op) {

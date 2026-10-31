@@ -11,10 +11,12 @@ import {
   ResolverFrameError,
   UnsupportedFilterError,
   WALK_UNSUPPORTED_REF,
+  type WalkAggPredicate,
   type WalkNode,
   type WhereClause
 } from '@mnmal-ai/substrate-types';
 import type { Sql, TransactionSql } from 'postgres';
+import { buildAggPredicate } from './aggregate.js';
 import { buildJsonPathPredicate } from './predicates-json-path.js';
 import { buildMetadataColumnPredicate } from './predicates-metadata.js';
 import { buildPromotedBodyColumnPredicate } from './predicates-promoted.js';
@@ -59,6 +61,13 @@ export function buildWhere(
   if (where === null || typeof where !== 'object' || Array.isArray(where)) return null;
   const keys = Object.keys(where);
   if (keys.length === 0) return null;
+  // As memory's evaluateMembers: an object holding `_agg` is one aggregate comparison.
+  if (Object.hasOwn(where, '_agg')) {
+    if (scope === undefined) {
+      throw new ResolverFrameError(WALK_UNSUPPORTED_REF, `'_agg' is not supported here`);
+    }
+    return buildAggPredicate(sql, where as WalkAggPredicate, promotedFor, scope);
+  }
   if (scope !== undefined && bindingWalks(where).length > 0) {
     return buildGroup(sql, where, castFor, promotedFor, scope);
   }
@@ -80,12 +89,9 @@ export function buildWhere(
     } else if (k === 'NOT') {
       const inner = buildWhere(sql, child as WhereClause, castFor, promotedFor, scope);
       if (inner !== null) fragments.push(sql`NOT (${inner})`);
-    } else if (k === '_walk' || k === '_agg') {
-      if (scope === undefined || k === '_agg') {
-        throw new ResolverFrameError(
-          WALK_UNSUPPORTED_REF,
-          `'${k}' in where is not yet supported on pg`
-        );
+    } else if (k === '_walk') {
+      if (scope === undefined) {
+        throw new ResolverFrameError(WALK_UNSUPPORTED_REF, `'_walk' is not supported here`);
       }
       fragments.push(buildWalk(sql, child as WalkNode, promotedFor, scope));
     } else {

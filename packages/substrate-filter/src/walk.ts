@@ -64,13 +64,19 @@ export const isRefOperand = (v: unknown): v is RefOperand => isObj(v) && typeof 
 /**
  * One AND group, flattened: its `any` walks with `as` (the object's own
  * `_walk`, then, through AND, its conjuncts') and every other conjunct as a
- * one-key clause. OR and NOT stay whole, so their walks start their own group.
+ * one-key clause, except a `{ _agg, <cmp> }` object, which stays whole. OR
+ * and NOT stay whole, so their walks start their own group.
  */
 export function groupConjuncts(
   where: unknown,
   out: { binds: WalkNode[]; items: WhereClause[] } = { binds: [], items: [] }
 ): { binds: WalkNode[]; items: WhereClause[] } {
   if (!isObj(where)) return out;
+  // `{ _agg, <cmp> }` is one comparison: kept whole, never split into its keys.
+  if (Object.hasOwn(where, '_agg')) {
+    out.items.push(where as WhereClause);
+    return out;
+  }
   const w = where._walk;
   if (isObj(w) && typeof w.as === 'string') out.binds.push(w as WalkNode);
   else if (Object.hasOwn(where, '_walk')) out.items.push({ _walk: w } as WhereClause);
@@ -146,8 +152,8 @@ function hopRows(
 export function pickOne(rows: Row[], pick: WalkPick, fieldDefOf: FieldDefOf): Row | undefined {
   const [dir, field] = Object.entries(pick)[0] as [string, string];
   const asDate = isDateField(field, fieldDefOf);
-  const key = (r: Row) =>
-    asSortValue(field, Object.hasOwn(r, field) ? r[field] : undefined, fieldDefOf);
+  // getFieldValue, so a metadata field (createdAt) reads its `_metadata` value.
+  const key = (r: Row) => asSortValue(field, getFieldValue(r, field), fieldDefOf);
   const before = (a: Row, b: Row): boolean => {
     const va = key(a);
     const vb = key(b);
