@@ -466,7 +466,17 @@ const WALK_DESCRIPTION =
   'aggregates in `fields._agg`, or nests rows in `fields`. Example: orders with an item ' +
   'priced over 50, and their item count: { "shop/Order": { "params": { "where": { "_walk": ' +
   '{ "in": "shop/Item.order", "where": { "price": { "gt": 50 } } } } }, "fields": { "id": true, ' +
-  '"_agg": { "items": { "in": "shop/Item.order", "count": true } } } } }.';
+  '"_agg": { "items": { "in": "shop/Item.order", "count": true } } } } }. ' +
+  '`out: "field"` follows a reference forwards. A `_walk` takes `quantifier` "any" (default), ' +
+  '"none" or "all", or `pick` one neighbour by { "latest": <date> }, { "max": <f> } or { "min": <f> }; ' +
+  'an "any" walk binds `as: "L"`, and a later comparison reads it as { "$ref": "L.price", "times": 1.25 } ' +
+  '(`$.f` is the seed row, `_agg.<name>` an aggregate; `times`/`plus` scale numbers, `plus` shifts a ' +
+  'date in ms). `_agg` also takes avg/sum/min/max: <field> or latest: { by, value }, and in `where` ' +
+  'compares beside a comparison: { "_agg": { "in": ..., "count": true }, "gte": 3 }. Frame params: ' +
+  '`count: true` answers { count }; `aggregate: { name: { sum: "price" } }` with optional `bucket: ' +
+  '{ field, by: "day"|"hour" }` answers groups; `derive: { m: { diff|ratio: ["_agg.x", "$.f"] } }` ' +
+  'is ordered by `orderBy: [{ "$m": "desc" }]`. Walks are query-only: subscribe, stream and mutate ' +
+  'refuse them, as does a store without walks (walks_unsupported_store).';
 
 export function createMcpServer(endpoint: string, options: McpServerOptions = {}): McpServer {
   const server = new McpServer(
