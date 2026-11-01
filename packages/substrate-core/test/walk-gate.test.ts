@@ -126,6 +126,17 @@ describe('engine walk gate', () => {
     expect(plain.errors ?? []).toEqual([]);
     expect(reached()).toBe(1);
   });
+
+  it('count: false is not walk grammar, so a store without walks answers it', async () => {
+    expect(usesWalkGrammar({ params: { count: false } })).toBe(false);
+    const { engine, reached } = build(false);
+    const res = await engine.query({
+      frame: { 'ns/Thing': { params: { count: false }, fields: { id: true } } },
+      ctx
+    });
+    expect(res.errors ?? []).toEqual([]);
+    expect(reached()).toBe(1);
+  });
 });
 
 describe('memory walk reference through the engine', () => {
