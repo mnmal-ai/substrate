@@ -50,9 +50,21 @@ export type RegistryEntryResolver = (
   args: ResolverArgs
 ) => Promise<Row | Row[] | ReadResult | AsyncIterable<Row> | null> | AsyncIterable<Row>;
 
+/**
+ * Set-wise resolver for a mutate array: one call for every uncached element,
+ * in order, returning one entry per element. Throw `BatchElementError(i, cause)`
+ * to refuse element `i`; any throw rolls back the whole array.
+ */
+export type BatchResolver = (
+  ctx: RequestContext,
+  args: readonly ResolverArgs[]
+) => Promise<Array<Row | null>>;
+
 /** Input shape for `Registry.register` / `Registry.replace`. */
 export interface RegistryEntryInput {
   resolver: RegistryEntryResolver;
+  /** When present, a mutate array calls this once instead of `resolver` per element. */
+  batch?: BatchResolver;
   policy?: Policy;
   fields?: Record<string, FieldDef>;
   kind?: RegistryEntryKind;
@@ -81,6 +93,8 @@ export interface RegistryEntryInput {
  */
 export interface RegistryEntry {
   resolver: RegistryEntryResolver;
+  /** Mirrors `RegistryEntryInput.batch`. */
+  batch?: BatchResolver;
   policy: Policy;
   fields: Record<string, FieldDef>;
   kind: RegistryEntryKind;

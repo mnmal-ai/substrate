@@ -33,6 +33,7 @@ import { getExtensionOperator, listExtensionOperators } from '@mnmal-ai/substrat
 import type {
   AfterTxWork,
   AutoCrudVerb,
+  BatchResolver,
   BridgeRegistry,
   Dataset,
   DatasetRegistry,
@@ -52,6 +53,7 @@ import type {
   PolicyProbeContext,
   QualifiedFrame,
   ReadResult,
+  RegistryEntry,
   Registry as RegistryInterface,
   RequestContext,
   ResolveObservation,
@@ -62,6 +64,8 @@ import type {
   WriteEvent
 } from '@mnmal-ai/substrate-types';
 import {
+  BatchElementError,
+  isBatchElementError,
   isResolverFrameError,
   isRestrictViolation,
   naturalOrderOf,
@@ -115,8 +119,71 @@ class SharedTxRefusal extends Error {
  */
 class BatchedFrameRefusal extends Error {
   override readonly name = 'BatchedFrameRefusal';
-  constructor(readonly frameErrors: Array<{ message: string; path?: string[]; code?: string }>) {
+  constructor(readonly frameErrors: FrameErrors) {
     super(frameErrors[0]?.message ?? 'batched frame refused');
+  }
+}
+
+type FrameErrors = Array<{ message: string; path?: string[]; code?: string }>;
+
+/** One element of a mutate array before the tx: a cached replay, or a slot to run. */
+interface ArraySlot {
+  cached: boolean;
+  data?: unknown;
+  shape?: 'single' | 'list';
+  dedupKey?: string;
+  errors?: FrameErrors;
+}
+
+/** What one array element left under `key` in its scratch envelope. */
+interface SlotResult {
+  data?: unknown;
+  shape?: 'single' | 'list';
+  errors?: FrameErrors;
+}
+
+function slotResultOf(scratch: PackEnvelope, key: string): SlotResult {
+  const entry: SlotResult = {};
+  if (key in scratch.data) entry.data = scratch.data[key];
+  const shape = scratch.shapes[key];
+  // A mutate frame is rows; only a read is shaped `count` or `groups`.
+  if (shape === 'single' || shape === 'list') entry.shape = shape;
+  if (scratch.errors !== undefined && scratch.errors.length > 0) entry.errors = scratch.errors;
+  return entry;
+}
+
+function cachedSlotResult(slot: ArraySlot): SlotResult {
+  return {
+    ...(slot.data !== undefined ? { data: slot.data } : {}),
+    ...(slot.shape !== undefined ? { shape: slot.shape } : {}),
+    ...(slot.errors !== undefined ? { errors: slot.errors } : {})
+  };
+}
+
+/** Everything `#runEntryInner` settles before it calls the resolver. */
+interface PreparedEntry {
+  registryEntry: RegistryEntry;
+  frame: FrameEntry;
+  ctx: RequestContext;
+  args: ResolverArgs;
+  decision: PolicyDecision;
+  ns: string;
+  name: string;
+  isVirtual: boolean;
+  dataset: Dataset | undefined;
+  walkScan: WalkScan | undefined;
+}
+
+/** Hand `o` to the resolve hook; a metrics sink must never change what the caller gets. */
+function observe(hook: (o: ResolveObservation) => void, o: ResolveObservation): void {
+  try {
+    const ret: unknown = hook(o);
+    // An async hook's rejection must not become an unhandled rejection.
+    if (typeof (ret as PromiseLike<unknown> | undefined)?.then === 'function') {
+      Promise.resolve(ret).catch(() => {});
+    }
+  } catch {
+    // Swallowed: see above.
   }
 }
 
@@ -144,7 +211,7 @@ import { usesWalkGrammar, walkGrammarPath } from '../walk-gate.js';
 import { type HopResolver, hopResolver, type WalkedType, walkedTypes } from '../walk-types.js';
 import { BridgeSubsystem } from './bridge.js';
 import { isSealedCursor, openCursor } from './cursor-seal.js';
-import { runFilterGuard } from './filter-guard.js';
+import { type FilterGuardDeps, runFilterGuard } from './filter-guard.js';
 import {
   addError,
   addTopLevelError,
@@ -219,6 +286,12 @@ export class Engine {
   readonly #edges: EdgesStore;
   readonly #metric: MetricFn;
   readonly #onResolve: ((o: ResolveObservation) => void) | undefined;
+  /** Built once rather than per entry: every frame entry reaches the filter guard. */
+  readonly #guardDeps: FilterGuardDeps = {
+    schemaFor: (ns) => this.schemaFor(ns),
+    invalidateSchemaCaches: (ns) => this.invalidateSchemaCaches(ns),
+    metric: (name, payload) => this.#metric(name, payload)
+  };
   readonly #shapeRecorder: EngineOptions['shapeRecorder'];
   readonly #idempotency: { store: IdempotencyStore; defaultTtlMs: number } | undefined;
   /**
@@ -241,7 +314,7 @@ export class Engine {
   /**
    * Live subscription subsystem (§5.4, §5.13). Owns the subscription bus, the
    * back-pressure queue, and the WriteEvent fanout. The mutate path calls
-   * `this.#subscribe.dispatchWrite(event)` after each write event; everything
+   * `this.#subscribe.dispatchWrites(events)` after the write events; everything
    * else lives behind the subsystem's surface.
    */
   readonly #subscribe: SubscribeSubsystem;
@@ -919,9 +992,7 @@ export class Engine {
     // rolled-back writes. Dispatch is synchronous (enqueue-only); each
     // subscription's per-entry drain task serialises the async `onFrame`
     // calls so a slow consumer cannot stall this call.
-    for (const event of writeBatch) {
-      this.#subscribe.dispatchWrite(event);
-    }
+    this.#subscribe.dispatchWrites(writeBatch);
 
     return this.#finaliseMutateEnvelope(envelope, keys, idempotencyResolution, callerKey);
   }
@@ -1295,23 +1366,14 @@ export class Engine {
     const caller = callerId !== undefined ? { caller: callerId } : {};
     const before = envelope.errors?.length ?? 0;
     const t0 = performance.now();
-    const emit = (o: Omit<ResolveObservation, 'key' | 'kind' | 'durationMs' | 'caller'>): void => {
-      try {
-        const ret: unknown = hook({
-          key: obsKey,
-          kind,
-          durationMs: performance.now() - t0,
-          ...caller,
-          ...o
-        });
-        // An async hook's rejection must not become an unhandled rejection.
-        if (typeof (ret as PromiseLike<unknown> | undefined)?.then === 'function') {
-          Promise.resolve(ret).catch(() => {});
-        }
-      } catch {
-        // A metrics sink must never change what the caller gets.
-      }
-    };
+    const emit = (o: Omit<ResolveObservation, 'key' | 'kind' | 'durationMs' | 'caller'>): void =>
+      observe(hook, {
+        key: obsKey,
+        kind,
+        durationMs: performance.now() - t0,
+        ...caller,
+        ...o
+      });
     let refused: boolean;
     try {
       refused = await this.#runEntryInner(envelope, key, ...rest);
@@ -1488,7 +1550,12 @@ export class Engine {
     return false;
   }
 
-  async #runEntryInner(
+  /**
+   * Everything a frame entry does before its resolver runs: the grant, the
+   * lookups, policy, the walk refusals, the filter guard, the cursor and the
+   * resolver args. Synchronous. Returns null once it has recorded a refusal.
+   */
+  #prepareEntry(
     envelope: PackEnvelope,
     key: string,
     entry: FrameEntry,
@@ -1501,7 +1568,7 @@ export class Engine {
     signal?: AbortSignal,
     afterTx?: (fn: AfterTxWork) => void,
     txEntries?: number
-  ): Promise<boolean> {
+  ): PreparedEntry | null {
     if (!parsed) {
       addError(
         envelope,
@@ -1510,26 +1577,26 @@ export class Engine {
         'unqualified_key'
       );
       this.#metric('engine_unqualified_key', key);
-      return false;
+      return null;
     }
 
     const { ns, name } = parsed;
 
     // §5.12 per-frame grant gate (namespace and capability). Per-key failure —
     // other keys in the same payload still resolve.
-    if (this.#refuseUngranted(envelope, key, ns, ctxBase.identity, operation)) return false;
+    if (this.#refuseUngranted(envelope, key, ns, ctxBase.identity, operation)) return null;
 
     if (this.#tombstoned.has(ns)) {
       addError(envelope, [key], `namespace '${ns}' was deleted`, 'namespace_tombstoned');
       this.#metric('engine_namespace_tombstoned_reject', { key, ns });
-      return false;
+      return null;
     }
 
     const nsCfg = this.#namespaces.get(ns);
     if (!nsCfg) {
       addError(envelope, [key], `unknown namespace '${ns}'`, 'unknown_namespace');
       this.#metric('engine_unknown_namespace', ns);
-      return false;
+      return null;
     }
 
     // Virtual namespaces own no storage: skip the dataset
@@ -1545,14 +1612,14 @@ export class Engine {
       // error code as "ns not present at all" so callers have one thing to fix.
       addError(envelope, [key], `unknown namespace '${ns}'`, 'unknown_namespace');
       this.#metric('engine_unknown_namespace', ns);
-      return false;
+      return null;
     }
 
     const registryEntry = nsCfg.registry.get(name);
     if (!registryEntry) {
       addError(envelope, [key], `unknown name '${name}' in namespace '${ns}'`, 'unknown_name');
       this.#metric('engine_unknown_name', { ns, name });
-      return false;
+      return null;
     }
 
     // Metadata spellings the read path returns (`createdBy`, `_metadata`, …)
@@ -1592,7 +1659,7 @@ export class Engine {
     if (!decision.allow) {
       addError(envelope, [key], decision.reason ?? 'policy denied', 'policy_denied');
       this.#metric('engine_policy_denied', { key, reason: decision.reason });
-      return false;
+      return null;
     }
     // A row filter reads the whole row, so the substrate must not narrow it to
     // the caller's selection; the transport projects the response.
@@ -1609,7 +1676,7 @@ export class Engine {
           'walks are not available in a mutation',
           WALKS_IN_MUTATION
         );
-        return false;
+        return null;
       }
     } else if (isVirtual) {
       const walkPath = walkGrammarPath(frame as Record<string, unknown>);
@@ -1620,7 +1687,7 @@ export class Engine {
           'walks are not available on virtual types',
           WALK_UNSUPPORTED_REF
         );
-        return false;
+        return null;
       }
     }
 
@@ -1639,18 +1706,13 @@ export class Engine {
           `the '${ns}' store does not answer walks`,
           WALKS_UNSUPPORTED_STORE
         );
-        return false;
+        return null;
       }
     }
 
     // Filter validation (§5.2) lives in `./filter-guard.js` — same contract:
     // `false` means an error was recorded and dispatch must not proceed.
-    const guardDeps = {
-      schemaFor: (ns: string) => this.schemaFor(ns),
-      invalidateSchemaCaches: (ns: string) => this.invalidateSchemaCaches(ns),
-      metric: (name: string, payload?: unknown) => this.#metric(name, payload)
-    };
-    const guardOk = runFilterGuard(guardDeps, {
+    const guardOk = runFilterGuard(this.#guardDeps, {
       envelope,
       key,
       entry: frame,
@@ -1661,14 +1723,14 @@ export class Engine {
       isVirtual,
       dataset
     });
-    if (!guardOk) return false;
+    if (!guardOk) return null;
 
     if (
       operation === 'query' &&
       registryEntry.kind === 'type' &&
       this.#refuseWalkPolicy(envelope, key, frame, ns, name, ctx, decision)
     ) {
-      return false;
+      return null;
     }
 
     // A query reads in the type's natural order unless it names one.
@@ -1677,13 +1739,6 @@ export class Engine {
       if (params !== undefined) args.params = params;
     }
 
-    // A throw here propagates out of the surrounding withTransaction (on
-    // mutate) and rolls back every prior frame entry — the G1 contract.
-    // Exception: `RestrictViolation` (§6.2) is a clean refusal, NOT a rollback
-    // trigger. The target row was never tombstoned; other frame entries retain
-    // their own work. We surface it in envelope.errors with a dedicated code so
-    // callers can distinguish "your delete was blocked by an edge" from a
-    // substrate failure.
     const cursor = args.params?.cursor;
     if (typeof cursor === 'string') {
       // Under a row filter only a sealed cursor is accepted: that is all this
@@ -1692,7 +1747,7 @@ export class Engine {
       const opened = filtering && !isSealedCursor(cursor) ? null : openCursor(cursor);
       if (opened === null) {
         addError(envelope, [key], 'cursor is not one this server issued', 'invalid_cursor');
-        return false;
+        return null;
       }
       args.params = { ...args.params, cursor: opened };
     }
@@ -1713,6 +1768,58 @@ export class Engine {
       const tools = walkScan ?? this.#walkTools(ns);
       args.fields = withNestedNaturalOrder(args.fields, name, tools.resolve, tools.naturalOrder);
     }
+    return {
+      registryEntry,
+      frame,
+      ctx,
+      args,
+      decision,
+      ns,
+      name,
+      isVirtual,
+      dataset,
+      walkScan
+    };
+  }
+
+  async #runEntryInner(
+    envelope: PackEnvelope,
+    key: string,
+    entry: FrameEntry,
+    ctxBase: Omit<RequestContext, 'namespace'>,
+    operation: 'query' | 'mutate',
+    tx: Dataset | null,
+    txEdges: EdgesStore | null,
+    parsed: ParsedKey | null,
+    onWrite?: (event: WriteEvent) => void,
+    signal?: AbortSignal,
+    afterTx?: (fn: AfterTxWork) => void,
+    txEntries?: number
+  ): Promise<boolean> {
+    const prepared = this.#prepareEntry(
+      envelope,
+      key,
+      entry,
+      ctxBase,
+      operation,
+      tx,
+      txEdges,
+      parsed,
+      onWrite,
+      signal,
+      afterTx,
+      txEntries
+    );
+    if (prepared === null) return false;
+    const { registryEntry, frame, ctx, args, decision, ns, name, isVirtual, dataset, walkScan } =
+      prepared;
+    // A throw here propagates out of the surrounding withTransaction (on
+    // mutate) and rolls back every prior frame entry — the G1 contract.
+    // Exception: `RestrictViolation` (§6.2) is a clean refusal, NOT a rollback
+    // trigger. The target row was never tombstoned; other frame entries retain
+    // their own work. We surface it in envelope.errors with a dedicated code so
+    // callers can distinguish "your delete was blocked by an edge" from a
+    // substrate failure.
     let result: Row | Row[] | ReadResult | AsyncIterable<Row> | null;
     const t0 = performance.now();
     try {
@@ -1776,7 +1883,7 @@ export class Engine {
       ctx,
       decision,
       result,
-      metric: (name: string, payload?: unknown) => this.#metric(name, payload)
+      metric: this.#metric
     });
     return false;
   }
@@ -1904,16 +2011,9 @@ export class Engine {
     // cached mini-envelope verbatim and skips the resolver at that index.
     // A cache MISS records the dedupKey so we can `.put()` after the whole
     // array commits.
-    interface Slot {
-      cached: boolean;
-      data?: unknown;
-      shape?: 'single' | 'list';
-      dedupKey?: string;
-      errors?: Array<{ message: string; path?: string[]; code?: string }>;
-    }
     // Fan out the pre-flight idempotency `.get()` lookups in one await; `get`
     // is read-only and per-key isolated, so ordering doesn't matter.
-    const slots: Slot[] = new Array(frames.length);
+    const slots: ArraySlot[] = new Array(frames.length);
     const dedupKeys: Array<string | undefined> = new Array(frames.length);
     // Caller-scope each per-slot dedup key so a batched replay
     // by a different requester re-dispatches instead of returning the first
@@ -1939,7 +2039,7 @@ export class Engine {
       if (dedupKey !== undefined && cached !== undefined) {
         this.#metric('engine_idempotency_hit', { dedupKey });
         const cachedShape = cached.shapes[key];
-        const slot: Slot = { cached: true, data: cached.data[key] };
+        const slot: ArraySlot = { cached: true, data: cached.data[key] };
         if (cachedShape === 'single' || cachedShape === 'list') slot.shape = cachedShape;
         if (cached.errors !== undefined) slot.errors = cached.errors;
         slots[i] = slot;
@@ -1961,25 +2061,37 @@ export class Engine {
     // Scratch envelope per frame: #runEntry writes data/shape/errors keyed
     // by the qualified key. Collecting them one-at-a-time lets us assemble
     // the Array<slot> at the end.
-    const scratchResults: Array<{
-      data?: unknown;
-      shape?: 'single' | 'list';
-      errors?: Array<{ message: string; path?: string[]; code?: string }>;
-    }> = new Array(frames.length);
+    const scratchResults: SlotResult[] = new Array(frames.length);
+    // A batch resolver takes the uncached elements in one call (Task 4).
+    const batch = nsCfg.registry.get(parsed.name)?.batch;
 
     let frameError: Error | undefined;
     let failedIndex: number | undefined;
     const settled: AfterTxWork[] = [];
     try {
       await this.#withRowsAndEdgesTx(dataset, ns, async (txDs, txEdges) => {
+        if (batch !== undefined) {
+          await this.#runBatch(
+            batch,
+            key,
+            parsed,
+            frames,
+            slots,
+            scratchResults,
+            ctxBase,
+            txDs,
+            txEdges,
+            arrayOnWrite,
+            signal,
+            (fn) => settled.push(fn),
+            envelope.schemaVersion
+          );
+          return;
+        }
         for (let i = 0; i < frames.length; i++) {
-          const slot = slots[i] as Slot;
+          const slot = slots[i] as ArraySlot;
           if (slot.cached) {
-            scratchResults[i] = {
-              ...(slot.data !== undefined ? { data: slot.data } : {}),
-              ...(slot.shape !== undefined ? { shape: slot.shape } : {}),
-              ...(slot.errors !== undefined ? { errors: slot.errors } : {})
-            };
+            scratchResults[i] = cachedSlotResult(slot);
             continue;
           }
           const frame = frames[i] as FrameEntry;
@@ -2004,29 +2116,25 @@ export class Engine {
             frames.length
           );
           failedIndex = undefined;
-          const entry: {
-            data?: unknown;
-            shape?: 'single' | 'list';
-            errors?: Array<{ message: string; path?: string[]; code?: string }>;
-          } = {};
-          if (key in scratch.data) entry.data = scratch.data[key];
-          const shape = scratch.shapes[key];
-          // A mutate frame is rows; only a read is shaped `count` or `groups`.
-          if (shape === 'single' || shape === 'list') entry.shape = shape;
-          if (scratch.errors !== undefined && scratch.errors.length > 0) {
-            entry.errors = scratch.errors;
+          const entry = slotResultOf(scratch, key);
+          scratchResults[i] = entry;
+          if (entry.errors !== undefined) {
             // An array under one op-key is ONE transaction: a frame that
             // refused via the envelope must unwind it just like one that
             // threw, or the frames before it commit.
-            scratchResults[i] = entry;
             failedIndex = i;
-            throw new BatchedFrameRefusal(scratch.errors);
+            throw new BatchedFrameRefusal(entry.errors);
           }
-          scratchResults[i] = entry;
         }
       });
     } catch (err) {
-      frameError = err instanceof Error ? err : new Error(String(err));
+      let thrown: unknown = err;
+      // #runBatch names the refusing slot this way; a per-element resolver never does.
+      if (batch !== undefined && isBatchElementError(err)) {
+        failedIndex = err.index;
+        thrown = err.cause;
+      }
+      frameError = thrown instanceof Error ? thrown : new Error(String(thrown));
     }
     await this.#runSettled(settled, frameError === undefined);
 
@@ -2091,7 +2199,7 @@ export class Engine {
     if (this.#idempotency !== undefined) {
       const puts: Array<Promise<void>> = [];
       for (let i = 0; i < frames.length; i++) {
-        const slot = slots[i] as Slot;
+        const slot = slots[i] as ArraySlot;
         if (slot.cached) continue;
         if (slot.dedupKey === undefined) continue;
         const result = scratchResults[i];
@@ -2127,6 +2235,159 @@ export class Engine {
     // non-batched semantics (pushes fire post-commit).
     for (const event of arrayWriteBatch) {
       onWrite(event);
+    }
+  }
+
+  /**
+   * The batch branch of `#runArrayEntry`, inside its transaction. Prepares
+   * every uncached element as `#runEntryInner` would, calls `batch` once with
+   * their args in slot order, then shapes each result under its own frame and
+   * decision. A refusal at slot `i` throws `BatchElementError(i, …)` with a
+   * `BatchedFrameRefusal` carrying the element's own errors, or the raw cause
+   * when it is not a frame refusal; `#runArrayEntry` unwraps it into today's
+   * rollback envelope. Cached slots are filled and skipped; when every slot is
+   * cached, `batch` is not called.
+   */
+  async #runBatch(
+    batch: BatchResolver,
+    key: string,
+    parsed: ParsedKey,
+    frames: Array<FrameEntry>,
+    slots: readonly ArraySlot[],
+    results: SlotResult[],
+    ctxBase: Omit<RequestContext, 'namespace'>,
+    txDs: Dataset,
+    txEdges: EdgesStore,
+    onWrite: (event: WriteEvent) => void,
+    signal: AbortSignal | undefined,
+    afterTx: (fn: AfterTxWork) => void,
+    schemaVersion: string
+  ): Promise<void> {
+    const hook = this.#onResolve;
+    const callerId = ctxBase.identity?.id;
+    const t0 = performance.now();
+    const report = (ok: boolean, durationMs: number, err?: { code?: string; message: string }) => {
+      if (hook === undefined) return;
+      observe(hook, {
+        key,
+        kind: 'mutate',
+        durationMs,
+        ok,
+        ...(callerId !== undefined ? { caller: callerId } : {}),
+        ...(err?.code !== undefined ? { code: err.code } : {}),
+        ...(err !== undefined ? { message: err.message } : {})
+      });
+    };
+
+    const at: number[] = [];
+    const prepared: PreparedEntry[] = [];
+    for (let i = 0; i < frames.length; i++) {
+      const slot = slots[i] as ArraySlot;
+      if (slot.cached) {
+        results[i] = cachedSlotResult(slot);
+        continue;
+      }
+      const scratch: PackEnvelope = { schemaVersion, data: {}, shapes: {} };
+      let p: PreparedEntry | null;
+      try {
+        p = this.#prepareEntry(
+          scratch,
+          key,
+          frames[i] as FrameEntry,
+          ctxBase,
+          'mutate',
+          txDs,
+          txEdges,
+          parsed,
+          onWrite,
+          signal,
+          afterTx,
+          frames.length
+        );
+      } catch (err) {
+        report(false, performance.now() - t0, {
+          code: 'exception',
+          message: err instanceof Error ? err.message : String(err)
+        });
+        throw new BatchElementError(i, err);
+      }
+      if (p === null) {
+        const refused = slotResultOf(scratch, key);
+        results[i] = refused;
+        const errors = refused.errors ?? [];
+        report(false, performance.now() - t0, errors[0]);
+        throw new BatchElementError(i, new BatchedFrameRefusal(errors));
+      }
+      at.push(i);
+      prepared.push(p);
+    }
+    if (prepared.length === 0) return;
+
+    let rows: Array<Row | null>;
+    try {
+      rows = await batch(
+        (prepared[0] as PreparedEntry).ctx,
+        prepared.map((p) => p.args)
+      );
+    } catch (err) {
+      const elapsed = performance.now() - t0;
+      const slot = isBatchElementError(err) ? at[err.index] : undefined;
+      if (!isBatchElementError(err) || slot === undefined) {
+        // Not attributable to one element: today's "internal error" at [key].
+        const message = err instanceof Error ? err.message : String(err);
+        for (let j = 0; j < prepared.length; j++) {
+          report(false, elapsed / prepared.length, { code: 'exception', message });
+        }
+        // An out-of-range index must not be read back as a slot by the caller.
+        throw isBatchElementError(err) ? new Error(message) : err;
+      }
+      const cause = err.cause;
+      let refusal: unknown = cause;
+      let code = 'exception';
+      if (isRestrictViolation(cause)) {
+        code = 'restrict_violation';
+        refusal = new BatchedFrameRefusal([{ message: cause.message, path: [key], code }]);
+        this.#metric('engine_restrict_violation', { key, blockedBy: cause.blockedBy.length });
+      } else if (isResolverFrameError(cause)) {
+        code = cause.code;
+        refusal = new BatchedFrameRefusal([{ message: cause.message, path: [key], code }]);
+        this.#metric('engine_resolver_frame_error', { key, code });
+      }
+      // As the per-element loop reports: the elements before it resolved, then it refused.
+      for (let j = 0; j < err.index; j++) report(true, elapsed / prepared.length);
+      report(false, elapsed / prepared.length, {
+        code,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      throw new BatchElementError(slot, refusal);
+    }
+    if (!Array.isArray(rows) || rows.length !== prepared.length) {
+      throw new Error(
+        `batch resolver for '${key}' returned ${Array.isArray(rows) ? rows.length : typeof rows} results for ${prepared.length} elements`
+      );
+    }
+
+    const share = (performance.now() - t0) / prepared.length;
+    for (let j = 0; j < prepared.length; j++) {
+      const p = prepared[j] as PreparedEntry;
+      const i = at[j] as number;
+      const scratch: PackEnvelope = { schemaVersion, data: {}, shapes: {} };
+      shapeResult({
+        envelope: scratch,
+        key,
+        entry: p.frame,
+        ctx: p.ctx,
+        decision: p.decision,
+        result: rows[j] ?? null,
+        metric: this.#metric
+      });
+      const shaped = slotResultOf(scratch, key);
+      results[i] = shaped;
+      if (shaped.errors !== undefined) {
+        report(false, share, shaped.errors[0]);
+        throw new BatchElementError(i, new BatchedFrameRefusal(shaped.errors));
+      }
+      report(true, share);
     }
   }
 

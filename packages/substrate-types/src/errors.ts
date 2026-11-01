@@ -184,6 +184,36 @@ export class BridgeUnreachableError extends Error {
 }
 
 /**
+ * Thrown by a `BatchResolver` to refuse element `index` of its args list. The
+ * engine rolls back the whole array and reports `cause` as the per-element
+ * resolver would have: a `ResolverFrameError` or `RestrictViolation` keeps
+ * its code at `[key]`, and `batched_frame_rolled_back` names the element.
+ */
+export class BatchElementError extends Error {
+  override readonly name = 'BatchElementError';
+
+  constructor(
+    readonly index: number,
+    override readonly cause: unknown
+  ) {
+    super(
+      `batch element ${index} refused: ${cause instanceof Error ? cause.message : String(cause)}`
+    );
+  }
+}
+
+/** Recognise a {@link BatchElementError} across module-realm boundaries. */
+export function isBatchElementError(err: unknown): err is BatchElementError {
+  if (err instanceof BatchElementError) return true;
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as { name?: unknown }).name === 'BatchElementError' &&
+    typeof (err as { index?: unknown }).index === 'number'
+  );
+}
+
+/**
  * Recognise a {@link ResolverFrameError} across module-realm boundaries.
  *
  * Plain `instanceof` is realm-fragile whenever this class exists twice in one

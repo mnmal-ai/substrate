@@ -1,6 +1,6 @@
 /**
  * SubscribeSubsystem — owns the live subscription bus and WriteEvent fanout
- * (§5.4, §5.13). Mutate feeds it through `dispatchWrite(event)`.
+ * (§5.4, §5.13). Mutate feeds it through `dispatchWrites(events)`.
  */
 
 import { evaluateWhere, whereContainsExtensionOperator } from '@mnmal-ai/substrate-filter';
@@ -342,6 +342,38 @@ export class SubscribeSubsystem {
     for (const entry of bucket) {
       if (entry.closed) continue;
       this.#emitToSubscription(entry, event);
+    }
+  }
+
+  /**
+   * `dispatchWrite` for every event of one committed mutate, bucket by bucket:
+   * one pass groups the events by subscription bucket, then each subscriber
+   * takes its bucket's events in emit order. Each subscriber's frames, and
+   * their order, are exactly those of `dispatchWrite` per event. Events of a
+   * type nobody subscribes to cost one lookup.
+   */
+  dispatchWrites(events: readonly WriteEvent[]): void {
+    if (events.length <= 1) {
+      if (events.length === 1) this.dispatchWrite(events[0] as WriteEvent);
+      return;
+    }
+    const byBucket = new Map<Set<SubscriptionEntry>, WriteEvent[]>();
+    for (const event of events) {
+      const bucket = this.#subscriptions.get(`${event.ns}/${event.type}`);
+      if (bucket === undefined || bucket.size === 0) continue;
+      const list = byBucket.get(bucket);
+      if (list === undefined) byBucket.set(bucket, [event]);
+      else list.push(event);
+    }
+    for (const [bucket, list] of byBucket) {
+      for (const entry of bucket) {
+        for (const event of list) {
+          // Per event, as dispatchWrite would find it: an emit can overload
+          // the entry or unregister it (a where that throws) mid-list.
+          if (entry.closed || !bucket.has(entry)) break;
+          this.#emitToSubscription(entry, event);
+        }
+      }
     }
   }
 
