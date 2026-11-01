@@ -88,7 +88,7 @@ import {
 import { detectLayout, type StorageLayout } from './layout.js';
 import { IndexLockAborted, withTableIndexLock } from './migrate.js';
 import type { PgEdgesStore } from './pg-edges-store.js';
-import { PgShortIdStore } from './pg-short-id-store.js';
+import { PgShortIdStore, parseShortId } from './pg-short-id-store.js';
 import {
   buildFrameAggregate,
   buildFrameCount,
@@ -1434,6 +1434,106 @@ export class PgDataset implements Dataset {
 
   async resolveShortId(type: string, shortId: number): Promise<string | null> {
     return this.#shortIds.resolveShortId(this.namespace, type, shortId);
+  }
+
+  async allocateShortIds(type: string, count: number): Promise<number[]> {
+    return this.#shortIds.allocateUnboundMany(this.namespace, type, count);
+  }
+
+  async bindShortIds(
+    type: string,
+    pairs: ReadonlyArray<{ shortId: number; rowId: string }>
+  ): Promise<void> {
+    await this.#shortIds.bindMany(this.namespace, type, pairs);
+  }
+
+  async resolveShortIds(
+    type: string,
+    shortIds: readonly number[]
+  ): Promise<ReadonlyMap<number, string>> {
+    const out = new Map<number, string>();
+    if (shortIds.length === 0) return out;
+    // One statement: the ids go in as one array, and the join to `rows` keeps
+    // live rows only, so a tombstoned or purged row's id never resolves.
+    const records = await this.#sql<Array<{ short_id: string; row_id: string }>>`
+      SELECT s.short_id, s.row_id
+      FROM unnest(${[...new Set(shortIds)].map(String)}::bigint[]) AS q(short_id)
+      JOIN short_ids s
+        ON s.namespace = ${this.namespace}::text AND s.type = ${type}::text AND s.short_id = q.short_id
+      JOIN rows r
+        ON r.namespace = s.namespace AND r.type = s.type AND r.id = s.row_id
+       AND r.deleted_at IS NULL
+    `;
+    for (const r of records) out.set(parseShortId(r.short_id), r.row_id);
+    return out;
+  }
+
+  async patchRows(
+    type: string,
+    patches: ReadonlyArray<{ id: Id; patch: Record<string, unknown> }>,
+    actor: ActorIdentity | null,
+    now: Date
+  ): Promise<Array<Row | null>> {
+    if (patches.length === 0) return [];
+    const sql = this.#sql;
+    // A repeated id folds into one patch, later keys winning: UPDATE ... FROM
+    // applies one source row per target row, so duplicates must not reach it.
+    const folded = new Map<string, Record<string, unknown>>();
+    for (const p of patches) {
+      const merged = { ...folded.get(idToText(p.id)) };
+      for (const [k, v] of Object.entries(p.patch)) {
+        if (k !== RESERVED_DELETED_AT && k !== 'id') merged[k] = v;
+      }
+      folded.set(idToText(p.id), merged);
+    }
+    const ids = [...folded.keys()];
+    // Text cast to jsonb in SQL, as write() does: the bulk path does not
+    // round-trip objects through jsonb reliably.
+    const bodies = ids.map((id) => JSON.stringify(folded.get(id)));
+    const updatedBy: ActorIdentity = actor ?? { kind: 'system', id: 'anonymous' };
+
+    // Each promoted column follows its key in that row's patch: present
+    // overrides (null clears), absent keeps. Same rule as write()'s conflict arm.
+    const mirrors: Fragment[] = [];
+    for (const [field, meta] of Object.entries(this.#promotedColumns)) {
+      const cast = meta.kind === 'boolean' ? sql`::boolean` : sql``;
+      const col = sql.unsafe(meta.column);
+      mirrors.push(
+        sql`, ${col} = CASE WHEN i.patch ? ${field} THEN (i.patch->>${field})${cast} ELSE ${sql.unsafe(`r.${meta.column}`)} END`
+      );
+    }
+
+    const records = await sql<SubstrateRowRecord[]>`
+      WITH input AS (
+        SELECT rid, patch::jsonb AS patch
+        FROM unnest(${ids}::text[], ${bodies}::text[]) AS t(rid, patch)
+      ),
+      updated AS (
+        UPDATE rows r
+        SET body = r.body || i.patch,
+            updated_at = ${now}::timestamptz,
+            updated_by_kind = ${updatedBy.kind}::text,
+            updated_by_id = ${updatedBy.id}::text
+            ${mirrors.length === 0 ? sql`` : (mirrors as unknown as Fragment)}
+        FROM input i
+        WHERE ${this.#scope(type, 'r.')}
+          AND r.id = i.rid
+          AND r.deleted_at IS NULL
+        RETURNING r.namespace, r.type, r.id, r.body, r.deleted_at, r.created_at, r.updated_at,
+                  r.created_by_kind, r.created_by_id, r.updated_by_kind, r.updated_by_id, r.seq
+      )
+      SELECT u.id, u.body, u.deleted_at, s.short_id,
+             u.created_at, u.updated_at,
+             u.created_by_kind, u.created_by_id,
+             u.updated_by_kind, u.updated_by_id, u.seq
+      FROM updated u
+      LEFT JOIN short_ids s
+        ON s.namespace = u.namespace
+       AND s.type = u.type
+       AND s.row_id = u.id
+    `;
+    const byId = new Map(records.map((r) => [r.id, this.materialize(r)]));
+    return patches.map((p) => byId.get(idToText(p.id)) ?? null);
   }
 
   async getShortIdForRow(type: string, rowId: string): Promise<number | null> {

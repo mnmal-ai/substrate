@@ -38,9 +38,14 @@ const shapes = (es: Edge[]): Array<Record<string, unknown>> =>
 describe.skipIf(!POSTGRES_URL)('EdgesStore conformance (memory vs pg)', () => {
   let sql: Sql;
   let stores: Array<[string, EdgesStore]>;
+  let statements: string[] = [];
 
   beforeAll(async () => {
-    sql = postgres(POSTGRES_URL as string);
+    sql = postgres(POSTGRES_URL as string, {
+      debug: (_conn, query) => {
+        statements.push(query);
+      }
+    });
     await runMigrations(sql);
   });
 
@@ -358,5 +363,101 @@ describe.skipIf(!POSTGRES_URL)('EdgesStore conformance (memory vs pg)', () => {
     expect(mem.txScopeId.length).toBeGreaterThan(0);
     expect(pg.txScopeId.length).toBeGreaterThan(0);
     expect(mem.txScopeId).not.toBe(pg.txScopeId);
+  });
+
+  describe('multi-row primitives', () => {
+    const inputs = () =>
+      [
+        { from: ref('A', '1'), to: ref('B', '9'), fieldName: 'bee', policy: 'cascade' as const },
+        {
+          from: { ...ref('A', '2'), bridged: true },
+          to: ref('B', '9'),
+          fieldName: 'bee',
+          policy: 'restrict' as const
+        },
+        { from: ref('A', '1'), to: ref('C', '7'), fieldName: 'see', policy: 'set_null' as const }
+      ] as const;
+
+    it('writeMany(3) equals three write() calls, by findEdgesFromMany', async () => {
+      const seen = await bothAgree(async (s) => {
+        const many = await s.writeMany(inputs());
+        const manyFrom = shapes(await s.findEdgesFromMany([ref('A', '1'), ref('A', '2')]));
+        // The same edges again under another field name (a logical identity is unique).
+        const one: Edge[] = [];
+        for (const i of inputs()) one.push(await s.write({ ...i, fieldName: `${i.fieldName}2` }));
+        const both = shapes(await s.findEdgesFromMany([ref('A', '1'), ref('A', '2')]));
+        const bare = (es: Edge[]) =>
+          shapes(es).map((e) => ({ ...e, fieldName: String(e.fieldName).replace(/2$/, '') }));
+        return { returned: bare(many), alike: bare(one), manyFrom, both };
+      });
+      expect(seen.returned).toEqual(seen.alike);
+      expect(seen.manyFrom).toHaveLength(3);
+      expect(seen.both).toHaveLength(6);
+    });
+
+    it('findEdgesFromMany dedupes a repeated ref and hides tombstoned edges', async () => {
+      const got = await bothAgree(async (s) => {
+        const [first] = await s.writeMany(inputs());
+        await s.tombstone((first as Edge).id);
+        return shapes(await s.findEdgesFromMany([ref('A', '1'), ref('A', '1'), ref('A', '2')]));
+      });
+      expect(got).toHaveLength(2);
+    });
+
+    it('tombstoneMany hides each from findEdgesFrom', async () => {
+      const left = await bothAgree(async (s) => {
+        const written = await s.writeMany(inputs());
+        const [a, b] = written as [Edge, Edge, Edge];
+        await s.tombstoneMany([a.id, b.id, '00000000-0000-0000-0000-000000000000']);
+        return [
+          shapes(await s.findEdgesFrom(ref('A', '1'))),
+          shapes(await s.findEdgesFrom(ref('A', '2')))
+        ];
+      });
+      expect(left.map((l) => l.length)).toEqual([1, 0]);
+    });
+
+    it('tombstoneMany keeps the first stamp, as tombstone does', async () => {
+      const [[, mem], [, pg]] = stores as [[string, EdgesStore], [string, EdgesStore]];
+      const first = new Date('2026-09-01T00:00:00.000Z');
+      for (const s of [mem, pg]) {
+        const [e] = await s.writeMany(inputs());
+        await s.tombstoneMany([(e as Edge).id], first);
+        await s.tombstoneMany([(e as Edge).id], new Date('2026-10-01T00:00:00.000Z'));
+      }
+      const rows = await sql`SELECT deleted_at FROM edges WHERE deleted_at IS NOT NULL`;
+      expect(rows.map((r) => (r.deleted_at as Date).toISOString())).toEqual([first.toISOString()]);
+    });
+
+    it('an empty call returns at once and sends no SQL', async () => {
+      const [[, mem], [, pg]] = stores as [[string, EdgesStore], [string, EdgesStore]];
+      statements = [];
+      expect(await pg.writeMany([])).toEqual([]);
+      expect(await pg.findEdgesFromMany([])).toEqual([]);
+      await pg.tombstoneMany([]);
+      expect(statements).toEqual([]);
+      expect(await mem.writeMany([])).toEqual([]);
+      expect(await mem.findEdgesFromMany([])).toEqual([]);
+      await mem.tombstoneMany([]);
+    });
+
+    it('each pg primitive is one statement whatever the batch size', async () => {
+      const [, [, pg]] = stores as [[string, EdgesStore], [string, EdgesStore]];
+      const many = Array.from({ length: 40 }, (_, i) => ({
+        from: ref('A', String(i)),
+        to: ref('B', '9'),
+        fieldName: 'bee',
+        policy: 'cascade' as const
+      }));
+      statements = [];
+      const written = await pg.writeMany(many);
+      expect(statements).toHaveLength(1);
+      statements = [];
+      await pg.findEdgesFromMany(many.map((m) => m.from));
+      expect(statements).toHaveLength(1);
+      statements = [];
+      await pg.tombstoneMany(written.map((e) => e.id));
+      expect(statements).toHaveLength(1);
+    });
   });
 });

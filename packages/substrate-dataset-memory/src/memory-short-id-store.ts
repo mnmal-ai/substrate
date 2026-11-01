@@ -51,6 +51,14 @@ export class MemoryShortIdStore {
     return b.next++;
   }
 
+  /** `count` consecutive `allocateUnbound` ids, ascending. */
+  async allocateUnboundMany(ns: string, type: string, count: number): Promise<number[]> {
+    const b = this.bucket(ns, type);
+    const first = b.next;
+    b.next += count;
+    return Array.from({ length: count }, (_, i) => first + i);
+  }
+
   /**
    * Record the (shortId → rowId) pairing. Safe to call without a prior
    * `allocateUnbound` (the mapping is stored unconditionally).
@@ -64,6 +72,15 @@ export class MemoryShortIdStore {
 
   async resolveShortId(ns: string, type: string, shortId: number): Promise<string | null> {
     return this.bucket(ns, type).byShort.get(shortId) ?? null;
+  }
+
+  /** `bind` for many pairs. */
+  async bindMany(
+    ns: string,
+    type: string,
+    pairs: ReadonlyArray<{ shortId: number; rowId: string }>
+  ): Promise<void> {
+    for (const p of pairs) await this.bind(ns, type, p.shortId, p.rowId);
   }
 
   async getShortIdForRow(ns: string, type: string, rowId: string): Promise<number | null> {

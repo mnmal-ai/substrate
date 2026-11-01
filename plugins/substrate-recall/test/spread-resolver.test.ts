@@ -34,12 +34,15 @@ function makeEdgesStub(inboundByRef: Record<string, Edge[]>): EdgesStore {
     write: async () => {
       throw new Error('not implemented in stub');
     },
+    writeMany: async () => [],
+    tombstoneMany: async () => undefined,
     tombstone: async () => undefined,
     update: async () => undefined,
     readNextBatch: async () => ({ edges: [], lastId: null }),
     findEdgesTo: async (ref) => inboundByRef[key(ref)] ?? [],
     findEdgesToMany: async (refs) => refs.flatMap((r) => inboundByRef[key(r)] ?? []),
     findEdgesFrom: async () => [],
+    findEdgesFromMany: async () => [],
     canDelete: async () => ({ ok: true }),
     findBlocked: async () => [],
     findEdgesTouchingNamespace: async () => [],

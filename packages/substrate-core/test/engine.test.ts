@@ -649,6 +649,10 @@ describe('Engine — multi-namespace dispatch', () => {
       allocateShortId: (type) => inner.allocateShortId(type),
       bindShortId: (type, shortId, rowId) => inner.bindShortId(type, shortId, rowId),
       resolveShortId: (type, shortId) => inner.resolveShortId(type, shortId),
+      allocateShortIds: (type, count) => inner.allocateShortIds(type, count),
+      bindShortIds: (type, pairs) => inner.bindShortIds(type, pairs),
+      resolveShortIds: (type, shortIds) => inner.resolveShortIds(type, shortIds),
+      patchRows: (type, patches, actor, now) => inner.patchRows(type, patches, actor, now),
       getShortIdForRow: (type, rowId) => inner.getShortIdForRow(type, rowId),
       forNamespace: (ns) => inner.forNamespace(ns)
     });

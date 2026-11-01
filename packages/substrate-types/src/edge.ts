@@ -63,7 +63,18 @@ export interface EdgesStore {
    */
   readonly txScopeId: string;
   write(input: EdgeWriteInput): Promise<Edge>;
+  /**
+   * `write` for many inputs, returned in input order (pg: one multi-row
+   * INSERT whatever the count). Empty `inputs` returns `[]` and sends nothing.
+   */
+  writeMany(inputs: readonly EdgeWriteInput[]): Promise<Edge[]>;
   tombstone(id: string, at?: Date): Promise<void>;
+  /**
+   * `tombstone` for many ids with one stamp (pg: one statement). Unknown and
+   * already-tombstoned ids are skipped, the latter keeping their first stamp.
+   * Empty `ids` does nothing and sends nothing.
+   */
+  tombstoneMany(ids: readonly string[], at?: Date): Promise<void>;
   update(patch: EdgePatch): Promise<void>;
   readNextBatch(
     cursorId: string | null,
@@ -77,6 +88,11 @@ export interface EdgesStore {
    */
   findEdgesToMany(refs: readonly EdgeRef[]): Promise<Edge[]>;
   findEdgesFrom(ref: EdgeRef): Promise<Edge[]>;
+  /**
+   * Batched `findEdgesFrom`: all live outbound edges whose `from` matches ANY
+   * of `refs`, in a single round-trip, as `findEdgesToMany` does for `to`.
+   */
+  findEdgesFromMany(refs: readonly EdgeRef[]): Promise<Edge[]>;
   canDelete(ref: EdgeRef): Promise<CanDeleteResult>;
   findBlocked(): Promise<Edge[]>;
   /**
