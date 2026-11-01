@@ -108,10 +108,11 @@ function fixture() {
   }
   for (let i = 0; i < 4; i++) obs.push({ id: u(`o8_${i}`), hub: u('h8'), at: day(0), price: i });
   for (let i = 0; i < 5; i++) obs.push({ id: u(`o_none_${i}`), at: day(9), price: i });
-  // Ranks tie in pairs; h8 holds 2, h9 none.
+  // Ranks tie in pairs; h8 holds 2, h9 none. As many per hub as Nbr's order of
+  // magnitude, so the planner reads a hub's list by the index, not a seq scan.
   const lst: Array<Record<string, unknown>> = [];
   for (let h = 0; h < 9; h++) {
-    for (let i = 0; i < (h === 8 ? 2 : 12); i++) {
+    for (let i = 0; i < (h === 8 ? 2 : LST_PER_HUB); i++) {
       lst.push({ id: u(`l${h}_${i}`), hub: u(`h${h}`), ...(i % 5 === 4 ? {} : { rank: i >> 1 }) });
     }
   }
@@ -119,6 +120,7 @@ function fixture() {
 }
 
 const SEEDS_PER_HUB = 20;
+const LST_PER_HUB = 200;
 /** Midnight UTC `n` days after the first of the window's month. */
 const day = (n: number) => new Date(Date.UTC(2026, 9, 20 + n)).toISOString();
 
@@ -684,10 +686,10 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk plan shapes (pg)', () => {
       }) as unknown as NonNullable<ReadParams['nested']>;
 
     it('ties break by id, and the cut and _truncated agree with memory', async () => {
-      for (const limit of [1, 2, 3, 12, 13]) {
+      for (const limit of [1, 2, 3, 12, LST_PER_HUB, LST_PER_HUB + 1]) {
         const rows = await same('Hub', { nested: natural(limit) });
         const h0 = rows.find((r) => names.get(String(r.id)) === 'h0');
-        expect(h0?.top).toHaveLength(Math.min(limit, 12));
+        expect(h0?.top).toHaveLength(Math.min(limit, LST_PER_HUB));
       }
     }, 60_000);
 
