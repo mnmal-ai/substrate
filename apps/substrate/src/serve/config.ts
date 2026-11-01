@@ -226,6 +226,12 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
     DEFAULT_STATEMENT_TIMEOUT_MS,
     'milliseconds'
   );
+  // Postgres takes statement_timeout as an int4 of milliseconds.
+  if (statementTimeoutMs > 2_147_483_647) {
+    throw new EnvConfigError(
+      `SUBSTRATE_STATEMENT_TIMEOUT_MS must be at most 2147483647 (got '${statementTimeoutMs}')`
+    );
+  }
   const indexDiskPath = knobs.record(
     'indexDiskPath',
     'SUBSTRATE_INDEX_DISK_PATH',

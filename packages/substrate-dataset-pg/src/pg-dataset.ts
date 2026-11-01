@@ -456,24 +456,35 @@ export class PgDataset implements Dataset {
     // LOCAL, so it ends with the transaction (the caller's included), and only
     // ever lowers: a shorter timeout already in effect stays. `setting` is ms.
     const ms = String(this.#statementTimeoutMs);
+    let lowered = false;
     try {
-      await cancellable(
+      // A row comes back only when this set_config lowered the timeout.
+      const set = await cancellable(
         this.#sql`
         SELECT set_config('statement_timeout', ${ms}, true) FROM pg_settings
         WHERE name = 'statement_timeout' AND (setting::bigint = 0 OR setting::bigint > ${ms}::bigint)`,
         params.signal
       );
+      lowered = set.length > 0;
       return await this.#read(type, params, true);
     } catch (err) {
-      throw this.#queryTimeout(type, err, params.signal, this.#statementTimeoutMs) ?? err;
+      throw (
+        this.#queryTimeout(
+          type,
+          err,
+          params.signal,
+          lowered ? this.#statementTimeoutMs : undefined
+        ) ?? err
+      );
     }
   }
 
   /**
    * A statement-timeout cancel (57014) as `query_timeout`, else null.
    * `cancellable` already swaps a caller's abort for its reason, and the
-   * signal check keeps one that races the cancel an abort. `timeoutMs` is
-   * omitted when the limit is not substrate's own (a role or database setting).
+   * signal check keeps one that races the cancel an abort. 57014 also covers an
+   * operator's cancel, so the message does not claim a timeout. `timeoutMs` is
+   * omitted when the limit is not known to be substrate's own.
    */
   #queryTimeout(
     type: string,
@@ -486,8 +497,8 @@ export class PgDataset implements Dataset {
     }
     return new ResolverFrameError(
       QUERY_TIMEOUT,
-      `${this.namespace}/${type}: the read exceeded the statement timeout` +
-        (timeoutMs !== undefined ? ` of ${timeoutMs} ms` : ''),
+      `${this.namespace}/${type}: the read was cancelled by the server (statement timeout or cancel)` +
+        (timeoutMs !== undefined ? `; the limit is ${timeoutMs} ms` : ''),
       timeoutMs !== undefined ? { timeoutMs } : undefined
     );
   }

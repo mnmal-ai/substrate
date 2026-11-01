@@ -528,7 +528,10 @@ describe('parseEnv', () => {
   it('statement timeout: defaults to 30000, honours an override, refuses anything else', () => {
     expect(parseEnv({}).statementTimeoutMs).toBe(30_000);
     expect(parseEnv({ SUBSTRATE_STATEMENT_TIMEOUT_MS: '5000' }).statementTimeoutMs).toBe(5000);
-    for (const bad of ['0', '-1', '1.5', 'abc']) {
+    expect(parseEnv({ SUBSTRATE_STATEMENT_TIMEOUT_MS: '2147483647' }).statementTimeoutMs).toBe(
+      2_147_483_647
+    );
+    for (const bad of ['0', '-1', '1.5', 'abc', '2147483648']) {
       expect(() => parseEnv({ SUBSTRATE_STATEMENT_TIMEOUT_MS: bad })).toThrow(EnvConfigError);
     }
   });
