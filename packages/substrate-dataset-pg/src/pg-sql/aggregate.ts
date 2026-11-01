@@ -41,7 +41,6 @@ import { buildObject } from './projection.js';
 import { normalizeOrderBy, resolveBodyOrderByCast } from './sorting.js';
 import {
   compareRef,
-  firstRow,
   float8Lit,
   hop,
   refIsCostly,
@@ -75,6 +74,8 @@ function valueJson(sql: Sql | TransactionSql, field: string, alias: string): Fra
  */
 interface Pick {
   value: string;
+  /** The field `key` reads, by which an index on it is found. */
+  by: string;
   key: Fragment;
   dir: 'ASC' | 'DESC';
   filter?: Fragment;
@@ -98,7 +99,7 @@ function aggOver(
     const key = sortKey(sql, by, resolveBodyOrderByCast(fieldDef(by)), alias);
     const numeric = value === 'seq' || resolveBodyOrderByCast(fieldDef(value)) === 'numeric';
     return {
-      pick: { value, key, dir: 'DESC' },
+      pick: { value, by, key, dir: 'DESC' },
       kind: isDate(value) ? 'date' : numeric ? 'number' : 'other'
     };
   }
@@ -109,7 +110,10 @@ function aggOver(
     // Unreadable dates drop out, as memory's pick puts them last and then nulls them.
     const ts = refValue(sql, field, 'date', alias);
     const dir = op === 'min' ? 'ASC' : 'DESC';
-    return { pick: { value: field, key: ts, dir, filter: sql`${ts} IS NOT NULL` }, kind: 'date' };
+    return {
+      pick: { value: field, by: field, key: ts, dir, filter: sql`${ts} IS NOT NULL` },
+      kind: 'date'
+    };
   }
   // float8 throughout, so the value is the double memory computes.
   const n = refValue(sql, field, 'number', alias);
@@ -138,11 +142,33 @@ const OVERFLOW = `${2n ** 1024n - 2n ** 970n}::numeric`;
 /** 2^-1075 (= 5^1075 / 10^1075), the greatest value float8 rounds to 0, as an exact numeric. */
 const UNDERFLOW = `0.${(5n ** 1075n).toString().padStart(1075, '0')}::numeric`;
 
-/** `p` over the rows aliased `alias` passing `where`: a top-1 an index can serve, never a sort of every row. */
-function pickRow(sql: Sql | TransactionSql, p: Pick, alias: string, where: Fragment): Fragment {
+/**
+ * `p` over the rows aliased `alias` passing `where`: `ORDER BY key, id LIMIT 1`,
+ * a top-1 an index can serve, never a sort of every row. An index keyed the
+ * other way (`indexDir`) is read backward, nulls first, so the order is
+ * written nulls first over the non-null keys, which that scan serves, and the
+ * least id with a null key follows only when there is none: the same row.
+ */
+function pickRow(
+  sql: Sql | TransactionSql,
+  p: Pick,
+  alias: string,
+  where: Fragment,
+  indexDir?: 'asc' | 'desc'
+): Fragment {
   const a = sql.unsafe(alias);
-  const rows = combineAnd(sql, p.filter === undefined ? [where] : [where, p.filter]);
-  return sql`(SELECT ${valueJson(sql, p.value, alias)} FROM rows ${a} WHERE ${rows} ORDER BY ${p.key} ${sql.unsafe(p.dir)} NULLS LAST, ${a}.id COLLATE "C" ASC LIMIT 1)`;
+  const select = valueJson(sql, p.value, alias);
+  const byId = sql`${a}.id COLLATE "C" ASC LIMIT 1`;
+  const backward = indexDir !== undefined && indexDir !== p.dir.toLowerCase();
+  // A date min/max filter already drops null keys; otherwise a backward read drops them here.
+  const notNull = p.filter ?? (backward ? sql`${p.key} IS NOT NULL` : undefined);
+  const rows = combineAnd(sql, notNull === undefined ? [where] : [where, notNull]);
+  const nulls = sql.unsafe(`${p.dir} NULLS ${backward ? 'FIRST' : 'LAST'}`);
+  const keyed = sql`SELECT ${select} FROM rows ${a} WHERE ${rows} ORDER BY ${p.key} ${nulls}, ${byId}`;
+  if (!backward || p.filter !== undefined) return sql`(${keyed})`;
+  // As firstRow's: a correlated, non-parallel Append runs in order under LIMIT 1,
+  // so the null branch answers only when the keyed one is empty.
+  return sql`((${keyed}) UNION ALL (SELECT ${select} FROM rows ${a} WHERE ${where} AND ${p.key} IS NULL ORDER BY ${byId}) LIMIT 1)`;
 }
 
 /**
@@ -156,7 +182,7 @@ export function buildWalkAgg(
   scope: WalkScope
 ): { value: Fragment; kind: AggKind } {
   const alias = scope.nextAlias();
-  const { type, cond } = hop(sql, spec, scope, alias);
+  const { type, cond, via } = hop(sql, spec, scope, alias);
   const far =
     spec.where === undefined
       ? null
@@ -169,20 +195,19 @@ export function buildWalkAgg(
         );
   const { agg, pick, kind } = aggOver(sql, spec, alias, (f) => scope.fieldDef(type, f));
   const rows = combineAnd(sql, far === null ? [cond] : [cond, far]);
-  // A neighbour pick is an index probe; pickRow's top-1 sorts what the frame matched.
+  // Todo #1819: a pick is a top-1 in the (crossRef, key) index's own order, one
+  // probe per hub; a max(key) subquery is a full Aggregate wherever pg's
+  // min/max rewrite does not fire, which reads every neighbour.
   const value =
     pick === undefined
       ? sql`(SELECT ${agg} FROM rows ${sql.unsafe(alias)} WHERE ${rows})`
-      : sql`(${firstRow(
+      : pickRow(
           sql,
-          valueJson(sql, pick.value, alias),
+          pick,
           alias,
-          pick.filter === undefined ? rows : combineAnd(sql, [rows, pick.filter]),
-          pick.key,
-          pick.dir,
-          // A date min/max filter already drops null keys.
-          pick.filter === undefined
-        )})`;
+          rows,
+          via === undefined ? undefined : scope.indexDir?.(type, via, pick.by)
+        );
   return { value, kind };
 }
 
