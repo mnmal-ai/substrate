@@ -35,7 +35,8 @@ export class ResolverTable {
     }
     row.calls++;
     if (!o.ok) row.errors++;
-    row.hist.observe(o.durationMs);
+    // A batch call is one latency sample, taken from its first element.
+    if ((o.batchIndex ?? 0) === 0) row.hist.observe(o.durationMs);
     row.lastAt = this.#now();
     this.#rows.set(o.key, row);
   }

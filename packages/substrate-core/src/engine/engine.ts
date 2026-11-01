@@ -2266,10 +2266,12 @@ export class Engine {
     const hook = this.#onResolve;
     const callerId = ctxBase.identity?.id;
     const t0 = performance.now();
+    // Set once the batch is called; until then an observation is per element.
+    let batchSize = 0;
     const report = (
       ok: boolean,
       durationMs: number,
-      batchSize: number | undefined,
+      batchIndex: number | undefined,
       err?: { code?: string; message: string }
     ) => {
       if (hook === undefined) return;
@@ -2278,7 +2280,7 @@ export class Engine {
         kind: 'mutate',
         durationMs,
         ok,
-        ...(batchSize !== undefined ? { batchSize } : {}),
+        ...(batchIndex !== undefined ? { batchSize, batchIndex } : {}),
         ...(callerId !== undefined ? { caller: callerId } : {}),
         ...(err?.code !== undefined ? { code: err.code } : {}),
         ...(err !== undefined ? { message: err.message } : {})
@@ -2332,6 +2334,7 @@ export class Engine {
     // Every observation of one batch carries the batch call's real time and
     // its size, so a consumer can tell an amortised call from a single one.
     const n = prepared.length;
+    batchSize = n;
     const tb = performance.now();
     let rows: Array<Row | null>;
     try {
@@ -2351,7 +2354,7 @@ export class Engine {
           ? new Error(`batch resolver for '${key}' refused element ${err.index} of ${n}`)
           : err;
         const refusal = this.#batchFrameRefusal(key, cause);
-        report(false, ms, n, {
+        report(false, ms, 0, {
           code: refusal?.frameErrors[0]?.code ?? 'exception',
           message: cause instanceof Error ? cause.message : String(cause)
         });
@@ -2360,8 +2363,8 @@ export class Engine {
       const cause = err.cause;
       const refusal = this.#batchFrameRefusal(key, cause);
       // As the per-element loop reports: the elements before it resolved, then it refused.
-      for (let j = 0; j < err.index; j++) report(true, ms, n);
-      report(false, ms, n, {
+      for (let j = 0; j < err.index; j++) report(true, ms, j);
+      report(false, ms, err.index, {
         code: refusal?.frameErrors[0]?.code ?? 'exception',
         message: cause instanceof Error ? cause.message : String(cause)
       });
@@ -2372,7 +2375,7 @@ export class Engine {
       const wrong = new Error(
         `batch resolver for '${key}' returned ${Array.isArray(rows) ? rows.length : typeof rows} results for ${n} elements`
       );
-      report(false, ms, n, { code: 'exception', message: wrong.message });
+      report(false, ms, 0, { code: 'exception', message: wrong.message });
       throw wrong;
     }
 
@@ -2392,10 +2395,10 @@ export class Engine {
       const shaped = slotResultOf(scratch, key);
       results[i] = shaped;
       if (shaped.errors !== undefined) {
-        report(false, ms, n, shaped.errors[0]);
+        report(false, ms, j, shaped.errors[0]);
         throw new BatchElementError(i, new BatchedFrameRefusal(shaped.errors));
       }
-      report(true, ms, n);
+      report(true, ms, j);
     }
   }
 

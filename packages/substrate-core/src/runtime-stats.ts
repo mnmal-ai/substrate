@@ -123,16 +123,19 @@ export function createRuntimeStats(deps: RuntimeStatsDeps): RuntimeStats {
       const o = { ...raw, key: scrub(raw.key) };
       resolvers.observe(o);
       const at = now().toISOString();
-      // Last 10 observations at or above the running global p99; everything is
-      // eligible until 100 have been seen.
-      // The threshold is the p99 bucket's lower bound, and the reference
-      // histogram restarts every 10,000 observations so it tracks current load.
-      const eligible = seen < 100 || o.durationMs >= allHist.percentileLowerBound(0.99);
-      allHist.observe(o.durationMs);
-      if (++seen % 10_000 === 0) allHist = new LogHistogram();
-      if (eligible && o.key !== UNKNOWN) {
-        slowest.unshift({ key: o.key, kind: o.kind, durationMs: round(o.durationMs), at });
-        slowest.length = Math.min(slowest.length, 10);
+      // A batch call is one latency sample, taken from its first element.
+      if ((o.batchIndex ?? 0) === 0) {
+        // Last 10 observations at or above the running global p99; everything is
+        // eligible until 100 have been seen.
+        // The threshold is the p99 bucket's lower bound, and the reference
+        // histogram restarts every 10,000 observations so it tracks current load.
+        const eligible = seen < 100 || o.durationMs >= allHist.percentileLowerBound(0.99);
+        allHist.observe(o.durationMs);
+        if (++seen % 10_000 === 0) allHist = new LogHistogram();
+        if (eligible && o.key !== UNKNOWN) {
+          slowest.unshift({ key: o.key, kind: o.kind, durationMs: round(o.durationMs), at });
+          slowest.length = Math.min(slowest.length, 10);
+        }
       }
       if (!o.ok) {
         const code = scrub(o.code ?? 'error');

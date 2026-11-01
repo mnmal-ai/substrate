@@ -57,6 +57,12 @@ export interface ResolveObservation {
    * them. Absent for a per-element resolve.
    */
   batchSize?: number;
+  /**
+   * The element's position (0..batchSize-1) in its batch call; set with
+   * `batchSize`. Latency aggregates take a batch once, from index 0, so one
+   * call's time is not counted batchSize times. Call counts take every element.
+   */
+  batchIndex?: number;
 }
 
 /**

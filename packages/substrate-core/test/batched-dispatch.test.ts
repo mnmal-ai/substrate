@@ -358,6 +358,7 @@ describe('batch resolvers: one call per mutate array', () => {
       expect(o.durationMs).toBe(seen[0]?.durationMs);
       expect(o.durationMs).toBeGreaterThanOrEqual(0);
     }
+    expect(seen.map((o) => o.batchIndex)).toEqual([0, 1, 2, 3]);
   });
 
   it('onResolve reports the refusing element of a rolled-back batch', async () => {
