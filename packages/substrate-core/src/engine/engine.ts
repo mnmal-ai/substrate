@@ -1360,16 +1360,29 @@ export class Engine {
     return hopFrom(from);
   }
 
+  /** Hop resolution, field declarations and natural order over namespace `ns`'s schema. */
+  #walkTools(ns: string): Omit<WalkScan, 'sites'> {
+    const types = this.schemaFor(ns).types;
+    const schemaOf = (t: string) => (Object.hasOwn(types, t) ? types[t] : undefined);
+    return {
+      resolve: hopResolver(ns, schemaOf),
+      fieldsOf: (t) => schemaOf(t)?.fields,
+      naturalOrder: (t) => naturalOrderOf(schemaOf(t) ?? {})
+    };
+  }
+
   /** The walk sites of a walk-grammar query frame, or undefined for an ordinary one. */
   #walkSitesOf(frame: FrameEntry, ns: string, seed: string): WalkScan | undefined {
     if (!usesWalkGrammar(frame as Record<string, unknown>)) return undefined;
-    const types = this.schemaFor(ns).types;
-    const schemaOf = (t: string) => (Object.hasOwn(types, t) ? types[t] : undefined);
-    const resolve = hopResolver(ns, schemaOf);
-    const naturalOrder = (t: string) => naturalOrderOf(schemaOf(t) ?? {});
+    const tools = this.#walkTools(ns);
     try {
-      const sites = walkSites(frame as Record<string, unknown>, seed, resolve, naturalOrder);
-      return { sites, resolve, fieldsOf: (t) => schemaOf(t)?.fields, naturalOrder };
+      const sites = walkSites(
+        frame as Record<string, unknown>,
+        seed,
+        tools.resolve,
+        tools.naturalOrder
+      );
+      return { sites, ...tools };
     } catch {
       // Validation resolved every hop already; a describer never fails the read.
       return undefined;
@@ -1688,14 +1701,17 @@ export class Engine {
       operation === 'query' && registryEntry.kind === 'type' && !isVirtual
         ? this.#walkSitesOf(frame, ns, name)
         : undefined;
-    // A nested walk list reads in its far type's natural order unless it names one (#1821).
-    if (walkScan !== undefined && args.fields !== undefined) {
-      args.fields = withNestedNaturalOrder(
-        args.fields,
-        name,
-        walkScan.resolve,
-        walkScan.naturalOrder
-      );
+    // A nested walk list reads in its far type's natural order unless it names one (#1821),
+    // even when the plan's describer gave up; validation resolved every hop, so this does not throw.
+    if (
+      operation === 'query' &&
+      registryEntry.kind === 'type' &&
+      !isVirtual &&
+      args.fields !== undefined &&
+      usesWalkGrammar(frame as Record<string, unknown>)
+    ) {
+      const tools = walkScan ?? this.#walkTools(ns);
+      args.fields = withNestedNaturalOrder(args.fields, name, tools.resolve, tools.naturalOrder);
     }
     let result: Row | Row[] | ReadResult | AsyncIterable<Row> | null;
     const t0 = performance.now();
