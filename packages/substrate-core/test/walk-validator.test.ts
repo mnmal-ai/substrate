@@ -5,6 +5,7 @@
 import type { FilterCapabilities, TypeSchema, WhereClause } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
 import { FilterValidationError, validateFilter } from '../src/filter/validator.js';
+import { MAX_DATE_SHIFT_MS } from '../src/filter/walk-validator.js';
 
 const ref = (type: string, ns = 'cards') =>
   ({ kind: 'crossRef', ns, type, onDelete: 'set_null' }) as const;
@@ -547,6 +548,20 @@ describe('aggregate, derive, bucket, count and nested validation', () => {
     expect(refusal({ gradedAt: { gt: { $ref: '$.gradedAt', times: 2 } } }).code).toBe(
       'ref_kind_mismatch'
     );
+  });
+
+  it('bounds a date $ref shift at MAX_DATE_SHIFT_MS either way', () => {
+    for (const plus of [MAX_DATE_SHIFT_MS, -MAX_DATE_SHIFT_MS]) {
+      expect(() => check({ gradedAt: { gt: { $ref: '$.gradedAt', plus } } })).not.toThrow();
+    }
+    for (const plus of [MAX_DATE_SHIFT_MS + 1, -MAX_DATE_SHIFT_MS - 1, 1e17, -1e15]) {
+      expect(refusal({ gradedAt: { gt: { $ref: '$.gradedAt', plus } } })).toEqual({
+        code: 'type_mismatch',
+        path: ['where', 'gradedAt', 'gt', 'plus']
+      });
+    }
+    // A number $ref is not a date shift and keeps any finite plus.
+    expect(() => check({ ask: { gt: { $ref: '$.ask', plus: 1e17 } } })).not.toThrow();
   });
 
   it('refuses pick with a none or all quantifier, and resolves pick fields like $ref', () => {
