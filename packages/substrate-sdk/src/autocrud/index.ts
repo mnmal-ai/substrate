@@ -306,33 +306,24 @@ export function installAutoCrud(
   const update: AutoCrudResolver = singleFrame<Row | null>(updateBatch);
   const del: AutoCrudResolver = singleFrame<Row>(deleteBatch);
   const purge: AutoCrudResolver = purgeResolver(typeName, dataset);
-  // By filter is served only while update<T> and delete<T> are these very
-  // entries: a plugin that replaced either (an interceptor, custom logic)
-  // would be bypassed. Checked per call, so a later replace counts too. A
-  // registry that cannot be read back fails closed.
+  // updateMany<T> is served only while update<T> is this very entry, and
+  // deleteMany<T> only while delete<T> is: a plugin that replaced one (an
+  // interceptor, custom logic) would be bypassed. Checked per call, so a later
+  // replace counts too. A registry that cannot be read back fails closed.
   const cap = capOf(typeName);
-  const ownsSingleRowWrites = (): boolean => {
+  const stillOwn = (key: string, own: AutoCrudResolver) => (): boolean => {
     const get = registry.get?.bind(registry);
-    return (
-      get !== undefined &&
-      get(`update${cap}`)?.resolver === update &&
-      get(`delete${cap}`)?.resolver === del
-    );
+    return get !== undefined && get(key)?.resolver === own;
   };
-  const filterOpts = { ...hooks, ownsSingleRowWrites };
   // A mutation's result is an opaque row to the engine; this one carries no `id`.
-  const updateMany = updateManyResolver(
-    typeName,
-    dataset,
-    edges,
-    filterOpts
-  ) as unknown as AutoCrudResolver;
-  const deleteMany = deleteManyResolver(
-    typeName,
-    dataset,
-    edges,
-    filterOpts
-  ) as unknown as AutoCrudResolver;
+  const updateMany = updateManyResolver(typeName, dataset, edges, {
+    ...hooks,
+    ownsSingleRowWrite: stillOwn(`update${cap}`, update)
+  }) as unknown as AutoCrudResolver;
+  const deleteMany = deleteManyResolver(typeName, dataset, edges, {
+    ...hooks,
+    ownsSingleRowWrite: stillOwn(`delete${cap}`, del)
+  }) as unknown as AutoCrudResolver;
 
   // `returns` defers to the type's declared fields (if any). No fields → no
   // struct shape for the return; substrate-pack sees the mutation returns struct

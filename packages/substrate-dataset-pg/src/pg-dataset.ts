@@ -1081,14 +1081,27 @@ export class PgDataset implements Dataset {
     const textIds = ids.map(idToText);
 
     // Only stamp rows that are not already tombstoned — tombstone is terminal
-    // and must preserve the original timestamp on a second call.
+    // and must preserve the original timestamp on a second call. The rows are
+    // locked in id order first, as patchRows locks, so overlapping concurrent
+    // tombstones queue instead of deadlocking.
     const rows = await this.#sql<{ id: string; body: Record<string, unknown> }[]>`
-      UPDATE rows
+      WITH locked AS MATERIALIZED (
+        SELECT count(*) AS n FROM (
+          SELECT r.id FROM rows r
+          WHERE ${this.#scope(type, 'r.')}
+            AND r.id = ANY(${textIds})
+            AND r.deleted_at IS NULL
+          ORDER BY r.id
+          FOR NO KEY UPDATE OF r
+        ) x
+      )
+      UPDATE rows r
       SET deleted_at = now()
-      WHERE ${this.#scope(type)}
-        AND id = ANY(${textIds})
-        AND deleted_at IS NULL
-      RETURNING id, body
+      FROM locked
+      WHERE ${this.#scope(type, 'r.')}
+        AND r.id = ANY(${textIds})
+        AND r.deleted_at IS NULL
+      RETURNING r.id, r.body
     `;
 
     const stamped: Id[] = rows.map((r) => this.extractOriginalId(r.id, r.body));

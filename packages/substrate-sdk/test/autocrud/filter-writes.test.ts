@@ -148,34 +148,31 @@ describe('by filter refuses what update<T> refuses, and what a plugin took over'
     }
   });
 
-  for (const verb of ['update', 'delete'] as const) {
-    it(`a namespace that replaces ${verb}<T> gets capability_unsupported from ${verb}Many<T>`, async () => {
+  for (const [replaced, other] of [
+    ['update', 'delete'],
+    ['delete', 'update']
+  ] as const) {
+    it(`replacing ${replaced}<T> refuses ${replaced}Many<T> and leaves ${other}Many<T> working`, async () => {
       const { registry, call, dataset } = await seeded();
-      const own = registry.get(`${verb}Item`);
+      const own = registry.get(`${replaced}Item`);
       if (own === undefined) throw new Error('not installed');
-      registry.replace(`${verb}Item`, { ...own, resolver: async () => null });
-      const params =
-        verb === 'update'
-          ? { where: { status: { eq: 'open' } }, set: { title: 'x' } }
-          : { where: { status: { eq: 'open' } } };
-      for (const name of ['updateManyItem', 'deleteManyItem']) {
-        await expect(
-          call(name, name.startsWith('update') ? 'update' : 'delete', {
-            params: name.startsWith('update') ? params : { where: params.where }
-          })
-        ).rejects.toMatchObject({ code: 'capability_unsupported' });
-      }
-      expect((await dataset.read('Item', {})).rows.map((r) => r.title)).toEqual(['a', 'b', 'c']);
-      // Putting autoCRUD's own entry back serves it again.
-      registry.replace(`${verb}Item`, own);
+      registry.replace(`${replaced}Item`, { ...own, resolver: async () => null });
+      const paramsFor = (verb: 'update' | 'delete', status: string) => ({
+        where: { status: { eq: status } },
+        ...(verb === 'update' ? { set: { title: 'x' } } : {})
+      });
       await expect(
-        call(`${verb}ManyItem`, verb, {
-          params: {
-            where: { status: { eq: 'closed' } },
-            ...(verb === 'update' ? { set: { title: 'y' } } : {})
-          }
-        })
-      ).resolves.toMatchObject({ count: 1 });
+        call(`${replaced}ManyItem`, replaced, { params: paramsFor(replaced, 'open') })
+      ).rejects.toMatchObject({ code: 'capability_unsupported' });
+      expect((await dataset.read('Item', {})).rows.map((r) => r.title)).toEqual(['a', 'b', 'c']);
+      await expect(
+        call(`${other}ManyItem`, other, { params: paramsFor(other, 'closed') })
+      ).resolves.toMatchObject({ count: 1, ids: ['c'] });
+      // Putting autoCRUD's own entry back serves it again.
+      registry.replace(`${replaced}Item`, own);
+      await expect(
+        call(`${replaced}ManyItem`, replaced, { params: paramsFor(replaced, 'open') })
+      ).resolves.toMatchObject({ count: 2 });
     });
   }
 

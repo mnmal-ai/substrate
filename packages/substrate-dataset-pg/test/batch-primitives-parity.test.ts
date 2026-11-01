@@ -436,4 +436,64 @@ describe('batch primitives (memory vs pg)', () => {
       }
     }
   );
+
+  // Two transactions tombstoning overlapping rows in opposite orders. The rows
+  // lie in the heap high id first, with updatedAt falling as the id rises. One
+  // client reads them through the newest-first (namespace, type, updated_at)
+  // index, low id first; the other has index scans off, so it walks the heap,
+  // high id first.
+  // The locks are taken in id order inside the one statement, so they queue
+  // rather than deadlock (40P01).
+  it.skipIf(!HAS_PG)(
+    'overlapping concurrent tombstones in opposite orders do not deadlock',
+    async () => {
+      const heapOrder = postgres(POSTGRES_URL as string, {
+        onnotice: () => {},
+        connection: {
+          enable_indexscan: 'off',
+          enable_bitmapscan: 'off',
+          enable_indexonlyscan: 'off'
+        }
+      });
+      try {
+        const viaIndex = datasets[1]?.[1] as Dataset;
+        const viaHeap = new PgDataset({ namespace: NS, sql: heapOrder });
+        const tombstone = (ds: Dataset, ids: string[]) =>
+          ds.withTransaction((tx) => tx.tombstone('Item', ids));
+        for (let round = 0; round < 15; round++) {
+          const ids = Array.from(
+            { length: 300 },
+            (_, i) => `d${String(round).padStart(2, '0')}_${String(i).padStart(3, '0')}`
+          );
+          // Written descending, so the heap holds them high id first.
+          await viaIndex.write(
+            'Item',
+            ids
+              .map((id, i) => {
+                const at = new Date(NOW.getTime() - i).toISOString();
+                return {
+                  id,
+                  n: 0,
+                  _metadata: { createdAt: at, updatedAt: at, createdBy: ACTOR, updatedBy: ACTOR }
+                };
+              })
+              .reverse()
+          );
+          const results = await Promise.allSettled([
+            tombstone(viaIndex, ids.slice(0, 200)),
+            tombstone(viaHeap, ids.slice(100)),
+            tombstone(viaHeap, ids),
+            tombstone(viaIndex, ids.slice(50, 250))
+          ]);
+          const failed = results.filter((r) => r.status === 'rejected');
+          expect(
+            failed.map((r) => String((r as PromiseRejectedResult).reason)),
+            `round ${round}`
+          ).toEqual([]);
+        }
+      } finally {
+        await heapOrder.end();
+      }
+    }
+  );
 });

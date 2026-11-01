@@ -303,15 +303,18 @@ describe('updateMany / deleteMany: memory vs pg through Engine', () => {
     });
   });
 
+  // Owner-style: bob reads only the items owned by o0 or o2; anyone else reads all.
+  // The predicate reads a real field, so it would drop a result struct that lacks it.
+  const bobsItems = rowPolicy((c, r) => {
+    const owner = (r as { owner?: unknown }).owner;
+    return c.identity?.id !== 'bob' || owner === 'o0' || owner === 'o2';
+  });
+
   it('row-policy type: filtered form equals unfiltered form on rows the caller may see', async () => {
-    const hide = rowPolicy(
-      (c, r) => (r as { title?: string }).title !== `hidden from ${c.identity?.id}`
-    );
     await onBoth(async (byFilter, other) => {
-      const byId = await other(hide);
-      const seedRows = items(4);
-      seedRows[1] = { ...seedRows[1], title: 'hidden from bob' };
-      for (const s of [byFilter, byId]) await s.seed(seedRows);
+      const byId = await other(bobsItems);
+      // Owners o0, o1, o2, o0: bob cannot see i001.
+      for (const s of [byFilter, byId]) await s.seed(items(4));
 
       // The filtered form: one updateMany as bob.
       const env = byFilter.strip(
@@ -327,21 +330,45 @@ describe('updateMany / deleteMany: memory vs pg through Engine', () => {
       const visible = (await byId.query('Item', { where: { status: { eq: 'open' } } }, 'bob')).data[
         `${byId.ns}/Item`
       ] as Array<{ id: string }>;
+      expect(visible.map((v) => String(v.id)).sort()).toEqual(['i000', 'i002', 'i003']);
       for (const { id } of visible) {
         expect(
           (await byId.mutate('updateItem', { id, status: 'closed' }, 'bob')).errors
         ).toBeUndefined();
       }
       expect(env.data.updateManyItem).toEqual({
-        count: visible.length,
-        ids: visible.map((v) => String(v.id)).sort(),
+        count: 3,
+        ids: ['i000', 'i002', 'i003'],
         idsTruncated: false
       });
       const after = await byFilter.snapshot();
       expect(after).toEqual(await byId.snapshot());
-      expect(after).toContain('i001:hidden from bob:open:true');
+      expect(after).toContain('i001:item 1:open:true');
       return { env, after };
-    }, hide);
+    }, bobsItems);
+  });
+
+  it('row-policy type: deleteMany as a row-filtered caller returns the whole result', async () => {
+    await onBoth(async (s) => {
+      await s.seed(items(4));
+      const env = s.strip(
+        await s.mutate('deleteManyItem', { where: { status: { eq: 'open' } } }, 'bob')
+      );
+      expect(env.errors).toEqual([]);
+      expect(env.data.deleteManyItem).toEqual({
+        count: 3,
+        ids: ['i000', 'i002', 'i003'],
+        idsTruncated: false
+      });
+      const after = await s.snapshot();
+      expect(after).toEqual([
+        'i000:item 0:open:false',
+        'i001:item 1:open:true',
+        'i002:item 2:open:false',
+        'i003:item 3:open:false'
+      ]);
+      return { env, after };
+    }, bobsItems);
   });
 
   it('deleteMany with a restrict inbound edge → restrict_violation, nothing tombstoned', async () => {
@@ -562,17 +589,22 @@ describe('updateMany / deleteMany: memory vs pg through Engine', () => {
           where: { status: { eq: 'open' } },
           set: { title: 'swept' }
         });
-        // Commit only once the filter write is blocked on that row lock.
+        let settled = false;
+        void pending.finally(() => {
+          settled = true;
+        });
+        // Commit only once a backend is blocked by this one (the blocker's own
+        // pid named in its pg_blocking_pids): the filter write, waiting on i001.
         const deadline = Date.now() + 10_000;
         for (;;) {
           const [row] = await conn<Array<{ n: number }>>`
             SELECT count(*)::int AS n FROM pg_stat_activity
-            WHERE datname = current_database() AND pid <> pg_backend_pid()
-              AND wait_event_type = 'Lock'`;
+            WHERE pg_backend_pid() = ANY(pg_blocking_pids(pid))`;
           if ((row?.n ?? 0) > 0) break;
           if (Date.now() > deadline) throw new Error('the filter write never blocked on the lock');
           await new Promise((r) => setTimeout(r, 10));
         }
+        expect(settled).toBe(false);
         await conn`COMMIT`;
         const env = s.strip(await pending);
         expect(env.errors).toEqual([]);

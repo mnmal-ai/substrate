@@ -14,8 +14,8 @@
  *   then by those ids: one `patchRows` (constant text, locks in id order), or
  *   `deleteRows` (restrict gate, then one `tombstone`).
  *
- * Neither is served while a plugin has replaced the type's `update<T>` or
- * `delete<T>`: the custom logic there would be bypassed.
+ * Neither is served while a plugin has replaced its single-row counterpart
+ * (`update<T>` / `delete<T>`): the custom logic there would be bypassed.
  *
  * Every changed row is announced with `onWrite`, so subscribers and post-write
  * hooks see each id. The result is `{ count, ids, idsTruncated }`, `ids` cut
@@ -56,11 +56,12 @@ export interface FilterWriteMutationResult {
 
 export interface FilterWriteResolverOptions extends BatchResolverOptions {
   /**
-   * Whether the type's `update<T>` and `delete<T>` are still autoCRUD's own
-   * entries. When a plugin replaced either with custom logic, writing by
-   * filter would bypass it, so the resolver refuses. Absent: served.
+   * Whether the type's single-row counterpart (`update<T>` for updateMany,
+   * `delete<T>` for deleteMany) is still autoCRUD's own entry. When a plugin
+   * replaced it with custom logic, writing by filter would bypass that, so the
+   * resolver refuses. Absent: served.
    */
-  ownsSingleRowWrites?: () => boolean;
+  ownsSingleRowWrite?: () => boolean;
 }
 
 /** `updateMany<T>`: `set` merged into every live row `where` matches. */
@@ -75,7 +76,7 @@ export function updateManyResolver(
   const op = `updateMany${typeName}`;
   return async (ctx, args) => {
     const ds = args.dataset ?? dataset;
-    if (opts.ownsSingleRowWrites?.() === false) throw replaced(op, typeName);
+    if (opts.ownsSingleRowWrite?.() === false) throw replaced(op, `update${typeName}`);
     const where = whereOf(op, args.params);
     const raw = args.params?.set;
     if (!isPlainObject(raw) || Object.keys(raw).length === 0) {
@@ -127,6 +128,9 @@ export function updateManyResolver(
     for (const row of rows) {
       args.onWrite?.({ ns: ds.namespace, type: typeName, id: row.id, operation: 'update', row });
       if (postWrite !== undefined) {
+        // shortcut: one post-commit re-read per row, up to maxMatch, as
+        // update<T> does per row; upgrade to one batched re-read if by-filter
+        // writes show up hot in the workload matrix.
         await runPostWrite(postWrite, typeName, dataset, row, ctx, args);
       }
     }
@@ -139,13 +143,13 @@ export function deleteManyResolver(
   typeName: string,
   dataset: Dataset,
   edges: EdgesStore,
-  opts: Pick<FilterWriteResolverOptions, 'policy' | 'ownsSingleRowWrites'> = {}
+  opts: Pick<FilterWriteResolverOptions, 'policy' | 'ownsSingleRowWrite'> = {}
 ): TypedResolver<FilterWriteMutationResult> {
   const { policy } = opts;
   const op = `deleteMany${typeName}`;
   return async (ctx, args) => {
     const ds = args.dataset ?? dataset;
-    if (opts.ownsSingleRowWrites?.() === false) throw replaced(op, typeName);
+    if (opts.ownsSingleRowWrite?.() === false) throw replaced(op, `delete${typeName}`);
     const edgeStore = args.edges ?? edges;
     const where = whereOf(op, args.params);
     const { maxMatch, idsCap } = args.filterWriteLimits ?? DEFAULT_FILTER_WRITE_LIMITS;
@@ -203,6 +207,9 @@ async function policyKept(
   set: Record<string, unknown>
 ): Promise<Row[]> {
   const { rows } = await ds.read(typeName, { where, limit: maxMatch + 1 });
+  // shortcut: the cap counts rows the caller's row filter hides, so a refusal
+  // reveals that more than maxMatch rows exist (as hasMore does in
+  // result-shape.ts); upgrade by compiling row policies into the read's where.
   if (rows.length > maxMatch) throw filterTooBroad(ds.namespace, typeName, maxMatch);
   const kept: Row[] = [];
   for (const row of rows) {
@@ -221,10 +228,10 @@ async function policyKept(
   return kept;
 }
 
-function replaced(op: string, typeName: string): ResolverFrameError {
+function replaced(op: string, single: string): ResolverFrameError {
   return new ResolverFrameError(
     'capability_unsupported',
-    `${op}: update${typeName} or delete${typeName} has custom logic that a write by filter would bypass; write by id`
+    `${op}: ${single} has custom logic that a write by filter would bypass; write by id`
   );
 }
 

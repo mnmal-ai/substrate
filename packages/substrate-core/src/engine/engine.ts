@@ -1931,7 +1931,8 @@ export class Engine {
       ctx,
       decision,
       result,
-      metric: this.#metric
+      metric: this.#metric,
+      resolverFiltered: registryEntry.filterTarget !== undefined
     });
     return false;
   }
@@ -2460,7 +2461,8 @@ export class Engine {
         ctx: p.ctx,
         decision: p.decision,
         result: rows[j] ?? null,
-        metric: this.#metric
+        metric: this.#metric,
+        resolverFiltered: p.registryEntry.filterTarget !== undefined
       });
       const shaped = slotResultOf(scratch, key);
       results[i] = shaped;
