@@ -1523,7 +1523,7 @@ export class PgDataset implements Dataset {
             AND r.id = ANY(${ids}::text[])
             AND r.deleted_at IS NULL
           ORDER BY r.id
-          FOR UPDATE OF r
+          FOR NO KEY UPDATE OF r
         ) x
       ),
       updated AS (
