@@ -14,7 +14,7 @@
  * the concrete `Registry` class in `@mnmal-ai/substrate-core` implements it.
  */
 
-import type { Row } from './core.js';
+import type { ActorIdentity, Id, Row } from './core.js';
 import type { Dataset, ReadResult } from './dataset.js';
 import type { EdgesStore } from './edge.js';
 import type {
@@ -24,7 +24,8 @@ import type {
   PolicyDecision,
   PolicyProbeContext,
   RequestContext,
-  ResolverArgs
+  ResolverArgs,
+  WriteEvent
 } from './policy.js';
 import type { FieldDef, OrderedBy, PackEnvelope, Schema } from './schema.js';
 import type { HttpHandler, HttpMethod, PluginRouter } from './server.js';
@@ -463,6 +464,26 @@ export interface NamespaceConfig {
 }
 
 /**
+ * What a coordinator's `onCommittedWrites` hook is told: one `(namespace, type,
+ * operation)` group of one committed transaction. `ids` keep the order the
+ * writes were emitted in. `actor` is who the request was attributed to, or
+ * null for a request with no recognisable identity.
+ */
+export interface CommittedWriteBatch {
+  namespace: string;
+  type: string;
+  operation: 'create' | 'update' | 'delete';
+  actor: ActorIdentity | null;
+  ids: Id[];
+}
+
+/**
+ * Runs after the write's response, never awaited by the mutate. A throw or a
+ * rejection is recorded as a `/health` warning and does not touch the write.
+ */
+export type CommittedWritesHook = (batch: CommittedWriteBatch) => void | Promise<void>;
+
+/**
  * Narrow engine handle threaded into scheduled-task / plugin-route contexts.
  * The concrete `Engine` class in `@mnmal-ai/substrate-core` satisfies this
  * structurally; plugin code binds against this handle without importing the
@@ -471,6 +492,14 @@ export interface NamespaceConfig {
 export interface EngineHandle {
   query(input: EngineInput): Promise<PackEnvelope>;
   mutate(input: EngineInput): Promise<PackEnvelope>;
+  /**
+   * Announce writes that were committed outside `mutate`: they reach
+   * subscribers, then every coordinator's `onCommittedWrites`, as a commit
+   * through `mutate` would. This is not a transaction and checks nothing: the
+   * caller guarantees `events` are already committed, since an announced write
+   * that rolls back cannot be taken back.
+   */
+  announceWrites(events: readonly WriteEvent[], actor: ActorIdentity | null): Promise<void>;
   /**
    * Evaluate the read policy for a type entry without dispatching it.
    * Out-of-band read surfaces (kernel routes returning row data
@@ -642,6 +671,12 @@ export interface CoordinatorPlugin {
    * `NamespaceInstallContext.pluginPolicy`.
    */
   policies?: Policy[];
+  /**
+   * Told what each committed transaction wrote, once per `(namespace, type,
+   * operation)` rather than once per row. Runs after the response, in commit
+   * order per plugin; a slow hook delays only this plugin's later calls.
+   */
+  onCommittedWrites?: CommittedWritesHook;
   /**
    * Post-register lifecycle hook. Fires after every plugin's `install()`
    * resolves — use this for resource priming that needs the full namespace

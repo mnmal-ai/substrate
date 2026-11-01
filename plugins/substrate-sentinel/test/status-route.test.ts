@@ -148,6 +148,7 @@ describe('registerSentinelStatusRoute', () => {
       mutate: async () => {
         throw new Error('not used');
       },
+      announceWrites: async (): Promise<void> => {},
       invalidateSchemaCaches: (): void => {},
       addNamespace: (_ns: string, _config: NamespaceConfig): void => {
         throw new Error('test fake: addNamespace not supported');

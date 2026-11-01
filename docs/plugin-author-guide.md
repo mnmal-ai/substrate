@@ -578,6 +578,49 @@ may do.
 and database are still live, so final writes are possible. A failing
 `onStop` is logged and does not stop other plugins from tearing down.
 
+## Post-write hooks
+
+A coordinator can set `onCommittedWrites` to learn what was written, once per
+batch instead of once per row:
+
+```ts
+const plugin: CoordinatorPlugin = {
+  name: 'indexer',
+  contractVersion: '>=1.0.0-alpha.0 <2.0.0',
+  namespaces: [/* … */],
+  async onCommittedWrites(batch) {
+    // batch: { namespace, type, operation, actor, ids }
+    await reindex(batch.namespace, batch.type, batch.ids);
+  }
+};
+```
+
+**When it runs.** After a transaction commits: once for the single-frame
+bucket of a `mutate`, and once for each array key (each array is its own
+transaction). A rolled-back array calls nothing. The hook runs after the
+response and the mutate never waits for it.
+
+**What it is told.** One call per `(namespace, type, operation)` group in that
+transaction. Groups come in the order they first appeared, and `ids` keep the
+order the writes were made in. `actor` is who the request was attributed to, or
+`null` when its identity names no agent, user or system actor. Hooks of
+different plugins are called in plugin registration order.
+
+**Failures only warn.** A throw or a rejected promise never changes the write's
+response. It is counted as `engine_post_write_hook_error` and shown in
+`GET /health` as `warnings`, `post-write hook <plugin> failed at <time>:
+<message>`, until that plugin's next successful call. `status` stays `ok`.
+
+**A slow hook stalls only its own plugin.** Each plugin's calls run one after
+another in commit order, so a hung hook holds back that plugin's later calls
+and nothing else: not the mutate, and not other plugins. A hook that needs to
+give up must time itself out.
+
+A server-internal writer that commits outside `mutate` reaches the same hooks,
+and subscribers, with `engine.announceWrites(events, actor)` on the
+`EngineHandle`. It is not a transaction: call it only for writes that are
+already committed.
+
 ## Defining a namespace
 
 `defineNamespace(name, types, opts?)` returns a `NamespaceDefinition` whose

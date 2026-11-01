@@ -122,7 +122,8 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
     '/health',
     healthRoute({
       version: version ?? '0.0.0',
-      startedAt: Date.now()
+      startedAt: Date.now(),
+      warnings: async () => engine.postWriteWarnings()
     })
   );
   // Schema discovery and onboarding sit behind `read`, like /substrate/v1/query: the

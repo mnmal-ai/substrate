@@ -1,7 +1,7 @@
 /**
  * GET /health — unauthenticated liveness probe.
  *
- * Returns 200 + `{ status: 'ok', version, uptimeSeconds }` unconditionally
+ * Returns 200 + `{ status: 'ok', warnings, version, uptimeSeconds }` unconditionally
  * when the server is up. Probes and load balancers just need a 200 — the body
  * is a small diagnostic for humans running `curl /health` from the terminal.
  *
@@ -21,12 +21,18 @@ export interface HealthDeps {
   version: string;
   /** `Date.now()` timestamp at server start. Set once in compose(). */
   startedAt: number;
+  /**
+   * Standing faults that do not make the server unhealthy, e.g. a coordinator's
+   * post-write hook failing. They never change `status`.
+   */
+  warnings: () => Promise<string[]>;
 }
 
 export function healthRoute(deps: HealthDeps): HttpHandler {
   return async () =>
     jsonResponse(200, {
       status: 'ok',
+      warnings: await deps.warnings(),
       version: deps.version,
       // Kept for older MCP bridges, which read it to decide whether to teach walks.
       walks: true,

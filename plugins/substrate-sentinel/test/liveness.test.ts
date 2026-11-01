@@ -54,6 +54,7 @@ function makeEngine(): {
       mutates.push({ frame: input.frame as Record<string, unknown> });
       return emptyEnvelope();
     },
+    announceWrites: async (): Promise<void> => {},
     invalidateSchemaCaches: (): void => {},
     addNamespace: (_ns: string, _config: NamespaceConfig): void => {
       throw new Error('test fake: addNamespace not supported');
