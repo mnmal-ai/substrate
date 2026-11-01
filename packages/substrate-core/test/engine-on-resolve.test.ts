@@ -1,5 +1,6 @@
 import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-dataset-memory';
 import {
+  QUERY_TIMEOUT,
   type RequestContext,
   type ResolveObservation,
   ResolverFrameError
@@ -72,6 +73,21 @@ describe('Engine onResolve', () => {
     expect(ok).toMatchObject({ kind: 'query', ok: true });
     expect(bad).toMatchObject({ ok: false, code: 'policy_denied', message: 'nope' });
     for (const o of seen) expect(o.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('a query_timeout refusal reaches the envelope with its path and timeoutMs, not a thrown error', async () => {
+    const engine = build(undefined, (r) =>
+      r.register('Slow', {
+        resolver: async () => {
+          throw new ResolverFrameError(QUERY_TIMEOUT, 'timed out', { timeoutMs: 50 });
+        }
+      })
+    );
+    const env = await engine.query({ frame: { 'ns/Slow': f, 'ns/Ok': f }, ctx: makeCtx() });
+    expect(env.errors).toEqual([
+      { message: 'timed out', code: 'query_timeout', path: ['ns/Slow'], details: { timeoutMs: 50 } }
+    ]);
+    expect(env.data['ns/Ok']).toBeDefined();
   });
 
   it('carries the caller identity id, and no caller when anonymous', async () => {

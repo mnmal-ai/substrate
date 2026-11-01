@@ -60,6 +60,7 @@ import type {
 import {
   assertNoRepeatedIds,
   naturalOrderOf,
+  QUERY_TIMEOUT,
   ResolverFrameError,
   WALKS_NEED_PARTITIONED
 } from '@mnmal-ai/substrate-types';
@@ -212,6 +213,12 @@ export interface PgDatasetOptions {
    * checked either, and `storageReport` says so.
    */
   diskGuard?: DiskGuard;
+  /**
+   * The statement timeout a walk read runs under, in ms (default
+   * `WALK_STATEMENT_TIMEOUT_MS`). A read it cancels is refused as
+   * `query_timeout`.
+   */
+  statementTimeoutMs?: number;
 }
 
 interface InternalPgSubstrateDatasetOptions {
@@ -231,6 +238,7 @@ interface InternalPgSubstrateDatasetOptions {
   layoutCache?: LayoutCache;
   typeDefLookup?: TypeDefLookup;
   diskGuard?: DiskGuard;
+  statementTimeoutMs?: number;
 }
 
 /** An index whose build this process deferred, is running, or saw fail. */
@@ -374,6 +382,7 @@ export class PgDataset implements Dataset {
   readonly #layoutCache: LayoutCache;
   readonly #typeDefLookup: TypeDefLookup | null;
   readonly #diskGuard: DiskGuard | undefined;
+  readonly #statementTimeoutMs: number;
 
   constructor(options: PgDatasetOptions | InternalPgSubstrateDatasetOptions) {
     this.namespace = options.namespace;
@@ -400,6 +409,7 @@ export class PgDataset implements Dataset {
     this.#layoutCache = ('layoutCache' in options ? options.layoutCache : undefined) ?? {};
     this.#typeDefLookup = options.typeDefLookup ?? null;
     this.#diskGuard = options.diskGuard;
+    this.#statementTimeoutMs = options.statementTimeoutMs ?? WALK_STATEMENT_TIMEOUT_MS;
   }
 
   /**
@@ -428,7 +438,14 @@ export class PgDataset implements Dataset {
    * are unchanged.
    */
   async read(type: string, params: ReadParams): Promise<ReadResult> {
-    if (!usesWalkGrammar(params)) return this.#read(type, params, false);
+    if (!usesWalkGrammar(params)) {
+      try {
+        return await this.#read(type, params, false);
+      } catch (err) {
+        // A role- or database-level statement_timeout: its value is not known here.
+        throw this.#queryTimeout(type, err, params.signal) ?? err;
+      }
+    }
     if ((await this.#layout()) !== 'partitioned') {
       throw new ResolverFrameError(
         WALKS_NEED_PARTITIONED,
@@ -438,14 +455,52 @@ export class PgDataset implements Dataset {
     if (!this.#inTx) return this.withTransaction((tx) => tx.read(type, params));
     // LOCAL, so it ends with the transaction (the caller's included), and only
     // ever lowers: a shorter timeout already in effect stays. `setting` is ms.
-    const ms = String(WALK_STATEMENT_TIMEOUT_MS);
-    await cancellable(
-      this.#sql`
+    const ms = String(this.#statementTimeoutMs);
+    let lowered = false;
+    try {
+      // A row comes back only when this set_config lowered the timeout.
+      const set = await cancellable(
+        this.#sql`
         SELECT set_config('statement_timeout', ${ms}, true) FROM pg_settings
         WHERE name = 'statement_timeout' AND (setting::bigint = 0 OR setting::bigint > ${ms}::bigint)`,
-      params.signal
+        params.signal
+      );
+      lowered = set.length > 0;
+      return await this.#read(type, params, true);
+    } catch (err) {
+      throw (
+        this.#queryTimeout(
+          type,
+          err,
+          params.signal,
+          lowered ? this.#statementTimeoutMs : undefined
+        ) ?? err
+      );
+    }
+  }
+
+  /**
+   * A statement-timeout cancel (57014) as `query_timeout`, else null.
+   * `cancellable` already swaps a caller's abort for its reason, and the
+   * signal check keeps one that races the cancel an abort. 57014 also covers an
+   * operator's cancel, so the message does not claim a timeout. `timeoutMs` is
+   * omitted when the limit is not known to be substrate's own.
+   */
+  #queryTimeout(
+    type: string,
+    err: unknown,
+    signal: AbortSignal | undefined,
+    timeoutMs?: number
+  ): ResolverFrameError | null {
+    if ((err as { code?: unknown } | null)?.code !== '57014' || signal?.aborted === true) {
+      return null;
+    }
+    return new ResolverFrameError(
+      QUERY_TIMEOUT,
+      `${this.namespace}/${type}: the read was cancelled by the server (statement timeout or cancel)` +
+        (timeoutMs !== undefined ? `; the limit is ${timeoutMs} ms` : ''),
+      timeoutMs !== undefined ? { timeoutMs } : undefined
     );
-    return this.#read(type, params, true);
   }
 
   async #read(type: string, params: ReadParams, walks: boolean): Promise<ReadResult> {
@@ -1256,6 +1311,7 @@ export class PgDataset implements Dataset {
         ...(this.#fieldDefLookup !== null ? { fieldDefLookup: this.#fieldDefLookup } : {}),
         promotedColumns: this.#promotedColumns,
         layoutCache: this.#layoutCache,
+        statementTimeoutMs: this.#statementTimeoutMs,
         ...(this.#typeDefLookup !== null ? { typeDefLookup: this.#typeDefLookup } : {})
       });
       return fn(txDataset);
@@ -1292,6 +1348,7 @@ export class PgDataset implements Dataset {
             ...(this.#fieldDefLookup !== null ? { fieldDefLookup: this.#fieldDefLookup } : {}),
             promotedColumns: this.#promotedColumns,
             layoutCache: this.#layoutCache,
+            statementTimeoutMs: this.#statementTimeoutMs,
             ...(this.#typeDefLookup !== null ? { typeDefLookup: this.#typeDefLookup } : {})
           })
         );
@@ -1350,6 +1407,7 @@ export class PgDataset implements Dataset {
       ...(this.#fieldDefLookup !== null ? { fieldDefLookup: this.#fieldDefLookup } : {}),
       promotedColumns: this.#promotedColumns,
       layoutCache: this.#layoutCache,
+      statementTimeoutMs: this.#statementTimeoutMs,
       ...(this.#typeDefLookup !== null ? { typeDefLookup: this.#typeDefLookup } : {}),
       ...(this.#diskGuard !== undefined ? { diskGuard: this.#diskGuard } : {})
     });

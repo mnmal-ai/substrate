@@ -91,7 +91,8 @@ export async function wireStore(
   fieldDefLookupFor: (namespace: string) => FieldDefLookup,
   typeDefLookupFor?: (namespace: string) => TypeDefLookup,
   diskGuard?: DiskGuard,
-  layout?: StorageLayout
+  layout?: StorageLayout,
+  statementTimeoutMs?: number
 ): Promise<StoreWiring> {
   if (storeSpec === 'memory') {
     return {
@@ -125,7 +126,8 @@ export async function wireStore(
         edgesStore: edges,
         fieldDefLookup: fieldDefLookupFor(DEFAULT_NAMESPACE),
         ...(typeDefLookupFor ? { typeDefLookup: typeDefLookupFor(DEFAULT_NAMESPACE) } : {}),
-        ...(diskGuard !== undefined ? { diskGuard } : {})
+        ...(diskGuard !== undefined ? { diskGuard } : {}),
+        ...(statementTimeoutMs !== undefined ? { statementTimeoutMs } : {})
       }),
       edges,
       substrateNamespaceDataset: new PgDataset({
@@ -134,7 +136,8 @@ export async function wireStore(
         edgesStore: edges,
         fieldDefLookup: fieldDefLookupFor(SYSTEM_NAMESPACE),
         ...(typeDefLookupFor ? { typeDefLookup: typeDefLookupFor(SYSTEM_NAMESPACE) } : {}),
-        ...(diskGuard !== undefined ? { diskGuard } : {})
+        ...(diskGuard !== undefined ? { diskGuard } : {}),
+        ...(statementTimeoutMs !== undefined ? { statementTimeoutMs } : {})
       }),
       sql,
       close: (): Promise<void> => sql.end({ timeout: STORE_END_TIMEOUT_S })
@@ -488,7 +491,8 @@ export function buildPluginDatasetMap(
   sharedEdges: PgEdgesStore | null,
   fieldDefLookupFor: (namespace: string) => FieldDefLookup,
   typeDefLookup?: TypeDefLookup,
-  diskGuard?: DiskGuard
+  diskGuard?: DiskGuard,
+  statementTimeoutMs?: number
 ): Record<string, Dataset> {
   const datasets: Record<string, Dataset> = {};
   for (const plugin of plugins) {
@@ -513,7 +517,8 @@ export function buildPluginDatasetMap(
               // namespace on the same pg pool can enlist edge ops into the
               // substrate tx.
               ...(sharedEdges !== null ? { edgesStore: sharedEdges } : {}),
-              ...(diskGuard !== undefined ? { diskGuard } : {})
+              ...(diskGuard !== undefined ? { diskGuard } : {}),
+              ...(statementTimeoutMs !== undefined ? { statementTimeoutMs } : {})
             })
           : new MemoryDataset({
               namespace: ns,

@@ -99,7 +99,8 @@ export async function bootStore(opts: BootStoreOptions): Promise<BootedStore> {
     fieldDefLookupFor,
     typeDefLookupFor,
     diskGuard,
-    opts.layout
+    opts.layout,
+    config.statementTimeoutMs
   );
 
   // Released in reverse order if a later step throws.
