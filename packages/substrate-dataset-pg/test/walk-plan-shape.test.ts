@@ -83,6 +83,14 @@ function fixture() {
     }
   }
   for (let i = 0; i < 6; i++) nbrs.push({ id: u(`n8_${i}`), hub: u('h8') });
+  for (let i = 0; i < 5; i++) {
+    nbrs.push({
+      id: u(`n_dead_${i}`),
+      hub: u('h_dead'),
+      at: new Date(Date.UTC(2026, 9, 9)).toISOString(),
+      price: 99
+    });
+  }
   // SEEDS_PER_HUB seeds on every hub (h9's has no neighbours), five with no
   // hub and three on a hub that does not exist.
   const seeds: Array<Record<string, unknown>> = [];
@@ -93,6 +101,8 @@ function fixture() {
   }
   for (let i = 0; i < 5; i++) seeds.push({ id: u(`s_none_${i}`), ask: 0 });
   for (let i = 0; i < 3; i++) seeds.push({ id: u(`s_gone_${i}`), hub: u('h_gone'), ask: 0 });
+  // Three on a hub that is tombstoned in setup, though its neighbours stay live.
+  for (let i = 0; i < 3; i++) seeds.push({ id: u(`s_dead_${i}`), hub: u('h_dead'), ask: 0 });
   // h0–h7 hold 30 reads over 10 days, some without `at` or price; h8's are
   // all before the window; five in it have no hub.
   const obs: Array<Record<string, unknown>> = [];
@@ -148,6 +158,11 @@ beforeAll(async () => {
   for (const [type, rows] of Object.entries(fixture())) {
     await pg.write(type, rows as never);
     await mem.write(type, rows as never);
+  }
+  // A dead hub: its seeds and neighbours live, it not.
+  for (const ds of [pg, mem]) {
+    await ds.write('Hub', [{ id: u('h_dead'), ask: 0 }] as never);
+    await ds.tombstone('Hub', [u('h_dead')]);
   }
   await sql`ANALYZE rows`;
 }, 120_000);
@@ -512,10 +527,14 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk plan shapes (pg)', () => {
       expect(count).toBeGreaterThan(0);
       expect(count).toBeLessThan(HUBS * SEEDS_PER_HUB);
       const plan = await analyzed();
-      // Per hub (h0–h9, the missing one and no hub): the max probe, the rows at it,
-      // and only where neither has a key, the null tail. Per seed it would be 200+.
+      // Per hub (h0–h9, the missing, the dead and no hub): the max probe, the rows
+      // at it, and only where neither has a key, the null tail. Per seed it is 200+.
       expect(loopsOf(plan, 'Nbr')).toBeGreaterThan(0);
-      expect(loopsOf(plan, 'Nbr')).toBeLessThanOrEqual(3 * (HUBS + 2));
+      expect(loopsOf(plan, 'Nbr')).toBeLessThanOrEqual(3 * (HUBS + 3));
+      // The seeds read the pick CTE once, through a join: one CTE Scan, one loop.
+      const cteScans = plan.filter((n) => n['Node Type'] === 'CTE Scan');
+      expect(cteScans.length, JSON.stringify(cteScans)).toBe(1);
+      expect(Number(cteScans[0]?.['Actual Loops'])).toBe(1);
       for (const s of scansOf(plan, 'Nbr')) expect(s['Node Type']).not.toBe('Seq Scan');
     }, 60_000);
 
@@ -539,7 +558,7 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk plan shapes (pg)', () => {
       // A hub with no neighbours (h9), or none at all: no pick, so no match, and none passes `none`.
       const rows = await same('Seed', { where: shared({ latest: 'at' }) as WhereClause });
       const hit = new Set(rows.map((r) => String(names.get(String(r.id)))));
-      expect([...hit].some((n) => /^s(9|_none|_gone)/.test(n))).toBe(false);
+      expect([...hit].some((n) => /^s(9|_none|_gone|_dead)/.test(n))).toBe(false);
       expect(hit.has('s0_0')).toBe(true);
     }, 120_000);
 
@@ -591,7 +610,8 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk plan shapes (pg)', () => {
       const ids = [
         ...Array.from({ length: HUBS }, (_, h) => [u(`s${h}_0`), u(`s${h}_3`)]).flat(),
         u('s_none_0'),
-        u('s_gone_0')
+        u('s_gone_0'),
+        u('s_dead_0')
       ];
       for (const [where, shares] of cases) {
         for (const params of [

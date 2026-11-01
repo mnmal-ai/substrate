@@ -40,6 +40,88 @@ function render(q: unknown): string {
   return out;
 }
 
+/** Paren depth before each index of `text`, skipping quoted literals. */
+function depths(text: string): number[] {
+  const out: number[] = [];
+  let d = 0;
+  let quoted = false;
+  for (const ch of text) {
+    out.push(d);
+    if (ch === "'") quoted = !quoted;
+    else if (!quoted && ch === '(') d++;
+    else if (!quoted && ch === ')') d--;
+  }
+  return out;
+}
+
+/** The statement after `WITH …`, and each CTE's name and body, by structure alone. */
+function split(text: string): { main: string; ctes: Array<{ name: string; body: string }> } {
+  const d = depths(text);
+  const ctes: Array<{ name: string; body: string }> = [];
+  const head = /(\w+) AS MATERIALIZED \(/g;
+  let end = 0;
+  for (let m = head.exec(text); m !== null; m = head.exec(text)) {
+    if (d[m.index] !== 0) continue;
+    const open = m.index + m[0].length - 1;
+    let close = open + 1;
+    while (close < text.length && !(text[close] === ')' && d[close] === 1)) close++;
+    ctes.push({ name: m[1] as string, body: text.slice(open + 1, close) });
+    end = close + 1;
+  }
+  return { main: text.slice(end), ctes };
+}
+
+/** Balanced `( … )` substrings holding a comparison or an AND at their own top level. */
+function predicates(text: string): string[] {
+  const out: string[] = [];
+  const stack: number[] = [];
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "'") quoted = !quoted;
+    if (quoted) continue;
+    if (ch === '(') stack.push(i);
+    else if (ch === ')') {
+      const inner = text.slice((stack.pop() as number) + 1, i);
+      let flat = inner;
+      for (let prev = ''; prev !== flat; ) {
+        prev = flat;
+        flat = flat.replace(/\([^()]*\)/g, '_');
+      }
+      if (/ AND | >= | <= | = | > | < /.test(flat)) out.push(inner);
+    }
+  }
+  return out;
+}
+
+/**
+ * The per-hub form's structure (#1815 measure): each CTE the main statement
+ * reads is a relation of its FROM/JOIN at depth 0, never inside a (correlated)
+ * subquery pg may nest-loop over, and no predicate reading a CTE's row in
+ * the main statement is also in that CTE: each conjunct is evaluated once.
+ * Keyed on structure, with aliases normalised; never on a type or field.
+ */
+function expectJoinedOnce(text: string): void {
+  const { main, ctes } = split(text);
+  expect(ctes.length).toBeGreaterThan(0);
+  const d = depths(main);
+  for (const { name, body } of ctes) {
+    const rel = new RegExp(`(FROM|JOIN|,)\\s+${name}\\b(?!\\.)`, 'g');
+    let seen = 0;
+    for (let m = rel.exec(main); m !== null; m = rel.exec(main)) {
+      seen++;
+      expect(d[m.index], `${name} read inside a subquery`).toBe(0);
+      expect(m[1], `${name} read but not joined`).toBe('JOIN');
+    }
+    expect(seen, `${name} joined once`).toBe(1);
+    const norm = (t: string) => t.replace(new RegExp(`\\b(${name}|w\\d+)\\b`, 'g'), 'X');
+    const inCte = norm(body);
+    for (const p of predicates(main).filter((x) => x.includes(`${name}.`))) {
+      expect(inCte.includes(norm(p)), `evaluated twice: ${p}`).toBe(false);
+    }
+  }
+}
+
 const NS = 'ns';
 const ref = (type: string): FieldDef => ({ kind: 'crossRef', ns: NS, type, onDelete: 'set_null' });
 const FIELDS: Record<string, Record<string, FieldDef>> = {
@@ -68,9 +150,9 @@ const seedBase = (ids = false) => ({ clauses: ids ? [BASE, IDS] : [BASE], ids })
 
 /** The where (and the CTEs it reads) of a Cert read with `params`, as pg-dataset compiles them. */
 function compileWhere(params: ReadParams, s: WalkScope = walkScope(NS, 'Cert', 'r', fieldDef)) {
-  prepareSharedPicks(sql, params, seedBase(), castFor, () => undefined, s);
+  const joins = prepareSharedPicks(sql, params, seedBase(), castFor, () => undefined, s);
   const where = buildWhere(sql, params.where as WhereClause, castFor, () => undefined, s);
-  return render(sql`${withCtes(sql, s)}SELECT 1 FROM rows r WHERE ${BASE} AND ${where}`);
+  return render(sql`${withCtes(sql, s)}SELECT 1 FROM rows r${joins} WHERE ${BASE} AND ${where}`);
 }
 
 const yardstick = {
@@ -97,12 +179,26 @@ const yardstick = {
 } as unknown as WhereClause;
 
 describe('a pick shared through an outbound hop: one probe per hub', () => {
-  it('a count compiles it once per distinct hub of the seeds, then joins on __hub', () => {
+  it('the structure check rejects a CTE read in a subquery, or a conjunct read twice', () => {
+    const cte =
+      'WITH c_1 AS MATERIALIZED (SELECT h.id AS __hub, w1.* FROM rows w1 WHERE (f(w1.body) >= $)) ';
+    // The pre-measure shape: the CTE inside a correlated EXISTS, its conjunct repeated.
+    const nested = `${cte}SELECT 1 FROM rows r WHERE EXISTS (SELECT 1 FROM rows w2, c_1 w3 WHERE w3.__hub = w2.id AND (f(w3.body) >= $))`;
+    expect(() => expectJoinedOnce(nested)).toThrow();
+    const twice = `${cte}SELECT 1 FROM rows r LEFT JOIN c_1 ON c_1.__hub = r.x WHERE (f(c_1.body) >= $)`;
+    expect(() => expectJoinedOnce(twice)).toThrow(/evaluated twice/);
+    expectJoinedOnce(
+      `${cte}SELECT 1 FROM rows r LEFT JOIN c_1 ON c_1.__hub = r.x WHERE (g(c_1.body) >= r.y)`
+    );
+  });
+
+  it('a count compiles it once per distinct hub of the seeds, then LEFT JOINs it on __hub', () => {
     const text = compileWhere({ where: yardstick, count: true });
-    const [ctes, main] = text.split(') SELECT 1 FROM rows r WHERE');
-    // The hubs: the distinct `spec` of the seeds passing the plain conjuncts.
+    expectJoinedOnce(text);
+    const [ctes, main] = text.split(') SELECT 1 FROM rows r');
+    // The hubs: the distinct `spec` of the seeds passing the plain conjuncts, whose hub row is live.
     expect(ctes).toMatch(
-      /^WITH pick_w1 AS MATERIALIZED \(SELECT h\.id AS __hub, w1\.\* FROM \(SELECT DISTINCT \(r\.body ->> 'spec'\) AS id FROM rows r WHERE \( r\.namespace = 'ns' AND r\.type = 'Cert' AND .*substrate_num\(r\.body -> 'grade'\).*\) h CROSS JOIN LATERAL/
+      /^WITH pick_w1 AS MATERIALIZED \(SELECT h\.id AS __hub, w1\.\* FROM \(SELECT DISTINCT \(r\.body ->> 'spec'\) AS id FROM rows r WHERE \( r\.namespace = 'ns' AND r\.type = 'Cert' AND .*substrate_num\(r\.body -> 'grade'\).*\) h JOIN rows (w\d+) ON \1\.namespace = 'ns' AND \1\.type = 'Spec' AND \1\.deleted_at IS NULL AND \1\.id::text = h\.id CROSS JOIN LATERAL/
     );
     // The pick, keyed on the hub and nothing of the seed.
     expect(ctes).toContain(`((w1.body ->> 'spec') COLLATE "C") = (h.id::text COLLATE "C")`);
@@ -111,13 +207,14 @@ describe('a pick shared through an outbound hop: one probe per hub', () => {
     // Only hubs with a neighbour passing the pick's seed-independent `at` bound are
     // probed, and only picks passing it are kept; never the `$.ask` comparison.
     expect(ctes).toMatch(
-      /\) w1 WHERE EXISTS \(SELECT 1 FROM rows w2 WHERE w2\.namespace = 'ns' AND w2\.type = 'Sale' .*= \(h\.id::text COLLATE "C"\) AND .*substrate_ts\(w2\.body -> 'at'\) >= .*\) AND .*substrate_ts\(w1\.body -> 'at'\) >= /
+      /\) w1 WHERE \( EXISTS \(SELECT 1 FROM rows w2 WHERE w2\.namespace = 'ns' AND w2\.type = 'Sale' .*= \(h\.id::text COLLATE "C"\) AND .*substrate_ts\(w2\.body -> 'at'\) >= .*\) AND .*substrate_ts\(w1\.body -> 'at'\) >= /
     );
-    // Each seed joins its hub's picked row; the pick's where, $.ask included, is tested per seed.
-    expect(main).toContain('FROM rows w3, pick_w1 w4 WHERE');
-    expect(main).toContain('w4.__hub = w3.id::text');
-    expect(main).toContain("substrate_num(w4.body -> 'price')");
+    // Each seed joins its hub's row of the CTE; only the pick's $-reading conjunct is left.
+    expect(main).toMatch(/^ LEFT JOIN pick_w1 ON pick_w1\.__hub = \(r\.body ->> 'spec'\) WHERE /);
+    expect(main).toContain('pick_w1.__hub IS NOT NULL');
+    expect(main).toContain("substrate_num(pick_w1.body -> 'price')");
     expect(main).toContain("substrate_num(r.body -> 'ask')");
+    expect(main).not.toContain("'at'");
     expect(main).not.toMatch(/\bmax\(/);
   });
 
@@ -144,10 +241,8 @@ describe('a pick shared through an outbound hop: one probe per hub', () => {
         ]
       } as unknown as WhereClause
     });
-    const hubs = text.slice(
-      text.indexOf('SELECT DISTINCT'),
-      text.indexOf(') h CROSS JOIN LATERAL')
-    );
+    expectJoinedOnce(text);
+    const hubs = text.slice(text.indexOf('SELECT DISTINCT'), text.indexOf(') h JOIN rows'));
     // The selective window walk and the _agg comparison narrow the hubs.
     expect(hubs).toMatch(
       /EXISTS \(SELECT 1 FROM rows w\d+ WHERE w\d+\.namespace = 'ns' AND w\d+\.type = 'Obs'.*>= /
@@ -169,13 +264,14 @@ describe('a pick shared through an outbound hop: one probe per hub', () => {
         AND: [hubWith({ _walk: pickAt({ latest: 'at' }) }), other]
       } as unknown as WhereClause
     });
-    const ctes = text.slice(0, text.indexOf(') SELECT 1 FROM rows r WHERE'));
+    expectJoinedOnce(text);
+    const ctes = text.slice(0, text.indexOf(') SELECT 1 FROM rows r'));
     expect(ctes.match(/pick_w\d+ AS MATERIALIZED/g)).toHaveLength(2);
     // Each hub set is the seeds' plain filter alone: no pick of the other hub walk, per seed.
     const hubSets = ctes
       .split('SELECT DISTINCT')
       .slice(1)
-      .map((h) => h.slice(0, h.indexOf(') h CROSS JOIN LATERAL')));
+      .map((h) => h.slice(0, h.indexOf(') h JOIN rows')));
     expect(hubSets).toHaveLength(2);
     for (const hubs of hubSets) {
       expect(hubs).not.toContain("'Sale'");
@@ -208,14 +304,17 @@ describe('a pick shared through an outbound hop: one probe per hub', () => {
         ]
       })
     });
-    const main = text.slice(text.indexOf(') SELECT 1 FROM rows r WHERE'));
+    expectJoinedOnce(text);
+    const main = text.slice(text.indexOf(') SELECT 1 FROM rows r'));
     expect(text.match(/pick_w\d+ AS MATERIALIZED/g)).toHaveLength(2);
-    // One EXISTS: the hub row and both picked rows, each on __hub.
+    // Both picks' CTEs joined on the seed's hub; each must be present.
     expect(main).toMatch(
-      /EXISTS \(SELECT 1 FROM rows (w\d+), pick_w\d+ (w\d+), pick_w\d+ (w\d+) WHERE .*\2\.__hub = \1\.id::text AND .*\3\.__hub = \1\.id::text/
+      /LEFT JOIN (pick_w\d+) ON \1\.__hub = \(r\.body ->> 'spec'\) LEFT JOIN (pick_w\d+) ON \2\.__hub = \(r\.body ->> 'spec'\) WHERE .*\1\.__hub IS NOT NULL.*\2\.__hub IS NOT NULL/
     );
-    // The rest of the hub's where: its plain conjunct and the bind's jointly quantified EXISTS.
-    expect(main).toMatch(/substrate_num\(w\d+\.body -> 'tier'\)/);
+    // The rest of the hub's where, on the hub row: its plain conjunct and the bind's EXISTS.
+    expect(main).toMatch(
+      /EXISTS \(SELECT 1 FROM rows (w\d+) WHERE \1\.namespace = 'ns' AND \1\.type = 'Spec' .*substrate_num\(\1\.body -> 'tier'\)/
+    );
     expect(main).toMatch(
       /EXISTS \(SELECT 1 FROM rows w\d+ WHERE .*'Sale'.*substrate_num\(w\d+\.body -> 'price'\)/
     );
