@@ -62,6 +62,8 @@ export interface WalkScope {
   fieldDef(type: string, field: string): FieldDef | undefined;
   /** The frame's `_agg` value `name` for the seed row, as jsonb, read by `_agg.<name>` operands. */
   aggValue?: (name: string) => Fragment;
+  /** The direction of `key` in a full index on `type` keyed `(crossRef, key, …)`, when one is declared. */
+  indexDir?: (type: string, crossRef: string, key: string) => 'asc' | 'desc' | undefined;
 }
 
 /** The scope of a read's top-level where, over `type` rows aliased `alias`. */
@@ -110,8 +112,9 @@ export function hop(
   node: { in?: string; out?: string },
   scope: WalkScope,
   alias: string
-): { type: string; cond: Fragment } {
+): { type: string; cond: Fragment; via?: string } {
   let type: string;
+  let via: string | undefined;
   let join: Fragment;
   const near = qualifier(scope.alias);
   if (node.in !== undefined) {
@@ -120,6 +123,7 @@ export function hop(
       throw new Error(`internal: walk 'in' '${node.in}' is not '<ns>/<Type>.<field>'`);
     const [, farType, field] = m as unknown as [string, string, string];
     type = farType;
+    via = field;
     // Verbatim the eager crossRef index's key, so the index serves the hop.
     join = sql.unsafe(
       `${indexExpressionSql('text', field, alias)} = (${near}id::text COLLATE "C")`
@@ -138,6 +142,7 @@ export function hop(
   // the far row is pinned to the dataset's, as the memory reference reads it.
   return {
     type,
+    ...(via === undefined ? {} : { via }),
     cond: sql`${sql.unsafe(
       `${far}namespace = ${sqlStringLiteral(scope.namespace)} AND ${far}type = ${sqlStringLiteral(type)} AND ${far}deleted_at IS NULL`
     )} AND ${join}`

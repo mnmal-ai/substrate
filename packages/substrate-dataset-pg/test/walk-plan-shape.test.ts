@@ -197,6 +197,73 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk plan shapes (pg)', () => {
     );
   }, 60_000);
 
+  it('a latest aggregate is one top-1 per hub, never a max() over its neighbours (#1819)', async () => {
+    /** No Aggregate node reads a walk scan: a max(key) over the hub would. */
+    const noNeighbourAggregate = (plan: PlanNode[]) => {
+      for (const n of plan.filter((p) => p['Node Type'] === 'Aggregate')) {
+        expect(walkScans(nodes(n)), JSON.stringify(n)).toHaveLength(0);
+      }
+    };
+    // `at` on the ascending index (read backward), `price` on the descending one (forward).
+    for (const [by, value] of [
+      ['at', 'price'],
+      ['price', 'at']
+    ]) {
+      const plan = await probes(
+        { agg: { lp: { in: IN, latest: { by, value } } } } as unknown as ReadParams,
+        8
+      );
+      noNeighbourAggregate(plan);
+      // One probe per hub, plus the null tail where no key is present (h8, h9).
+      // A max(key) and then the rows at it is two per hub.
+      expect(lookups(plan)).toBeLessThanOrEqual(HUBS + 2);
+    }
+    // Inside derive: ordering every hub, then projecting the page's.
+    for (const by of ['at', 'price']) {
+      const plan = await probes(
+        {
+          agg: { lp: { in: IN, latest: { by, value: 'price' } } },
+          derive: { m: { diff: ['_agg.lp', '$.ask'] } },
+          orderBy: [{ $m: 'desc' }],
+          limit: 3
+        } as unknown as ReadParams,
+        8
+      );
+      noNeighbourAggregate(plan);
+      expect(lookups(plan)).toBeLessThanOrEqual(2 * (HUBS + 2));
+    }
+  }, 60_000);
+
+  it('a latest aggregate keeps ties, nulls and the empty hub as memory, in both index directions', async () => {
+    // Ties: two neighbours per instant, each price ~4 times. Nulls: some rows
+    // lack `at` or price, and h8 has neither. Empty: h9.
+    for (const by of ['at', 'price']) {
+      const lp = { in: IN, latest: { by, value: by === 'at' ? 'price' : 'at' } };
+      await same('Hub', { agg: { lp } } as unknown as ReadParams);
+      // Only the null-keyed rows: the least id among them, on h8 and every hub.
+      await same('Hub', {
+        agg: { lp: { ...lp, where: { [by]: { eq: null } } } }
+      } as unknown as ReadParams);
+      // In derive, as an order: a numeric value, so the order is real.
+      const num = { in: IN, latest: { by, value: 'price' } };
+      for (const dir of ['asc', 'desc'] as const) {
+        const rows = await same('Hub', {
+          agg: { lp: num },
+          derive: { m: { diff: ['_agg.lp', '$.ask'] } },
+          orderBy: [{ $m: dir }]
+        } as unknown as ReadParams);
+        const m = rows.flatMap((r) => {
+          const lp = (r._agg as Record<string, unknown> | undefined)?.lp;
+          return typeof lp === 'number' && typeof r.ask === 'number' ? [lp - r.ask] : [];
+        });
+        expect(new Set(m).size, JSON.stringify(rows)).toBeGreaterThanOrEqual(2);
+      }
+      await same('Hub', {
+        where: { _agg: { in: IN, latest: { by, value: 'price' } }, gte: 50 }
+      } as unknown as ReadParams);
+    }
+  }, 60_000);
+
   it('a nested latest-N list on an index in its order reads N rows, not the neighbourhood', async () => {
     for (const limit of [1, 5]) {
       await probes(
@@ -311,9 +378,9 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk plan shapes (pg)', () => {
         } as unknown as ReadParams,
         8
       );
-      // A pick is at most three probes (max, the rows at it, the null tail): once per hub
-      // for the order, and once per hub at most for the projected `_agg`.
-      expect(lookups(plan)).toBeLessThanOrEqual(2 * 3 * HUBS);
+      // A latest is one top-1 per hub, plus the null tail where no key is present
+      // (h8, h9): once for the order, and at most once more for the projected `_agg`.
+      expect(lookups(plan)).toBeLessThanOrEqual(2 * (HUBS + 2));
     }
   }, 60_000);
   it('one _agg mixing a pick with shared aggregates over different wheres', async () => {

@@ -496,6 +496,13 @@ export class PgDataset implements Dataset {
     const scope = walks
       ? walkScope(this.namespace, type, 'r', (t, f) => lookup?.(t, f))
       : undefined;
+    if (scope !== undefined) {
+      // As the plan advisor's `leads`: a full index, the crossRef first, `key` next.
+      scope.indexDir = (t, crossRef, key) =>
+        desiredIndexKeys(this.#indexArgs(t, this.namespace, 'partitioned')).find(
+          (i) => i.only === undefined && i.keys[0]?.[0] === crossRef && i.keys[1]?.[0] === key
+        )?.keys[1]?.[1];
+    }
     const frameAggs = params.agg;
     if (scope !== undefined && frameAggs !== undefined) {
       // shortcut: each `_agg.<name>` reference recomputes its subquery; a

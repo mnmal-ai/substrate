@@ -24,7 +24,8 @@ export interface WalkSite {
    * The order the far rows are read in, when one matters: a nested `orderBy`,
    * a pick, or a latest/min/max aggregate. `exact`: only an index in this very
    * direction serves it (a nested list's LIMIT); a pick is a min/max probe,
-   * which an index serves in either direction.
+   * and a latest/min/max aggregate a top-1 written in the index's own
+   * direction, so an index serves either in either direction.
    */
   order?: { by: Order; path: string[]; kind: 'order' | 'agg'; exact?: true };
   /** A count, avg or sum aggregate: it reads every neighbour, which the hop alone narrows. */
