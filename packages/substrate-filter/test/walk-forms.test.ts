@@ -39,6 +39,13 @@ describe('sharedPicks', () => {
     const bound = { ...pick, where: { price: { gte: { $ref: 'x.ask' } } } };
     const w = where({ _walk: { out: 'spec', where: { _walk: bound } } });
     expect(sharedPicks({ where: w, count: true }).size).toBe(0);
+    // A hub walk reading a top-level bind compiles inside the bind's EXISTS.
+    const reads = {
+      out: 'spec',
+      where: { AND: [{ ask: { lte: { $ref: 'B.ask' } } }, { _walk: pick }] }
+    };
+    const withBind = where({ AND: [{ _walk: { in: 'ns/X.c', as: 'B' } }, { _walk: reads }] });
+    expect(sharedPicks({ where: withBind, count: true }).size).toBe(0);
     // An inbound first hop reaches a hub only its seed does: nothing to share.
     const inbound = where({ _walk: { in: 'ns/Spec.x', where: { _walk: pick } } });
     expect(sharedPicks({ where: inbound, count: true }).size).toBe(0);

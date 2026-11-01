@@ -48,7 +48,7 @@ const FIELDS: Record<string, Record<string, FieldDef>> = {
     ask: { kind: 'scalar', type: 'number' },
     spec: ref('Spec')
   },
-  Spec: {},
+  Spec: { tier: { kind: 'scalar', type: 'number' } },
   Sale: {
     spec: ref('Spec'),
     at: { kind: 'scalar', type: 'date' },
@@ -63,10 +63,12 @@ const FIELDS: Record<string, Record<string, FieldDef>> = {
 const fieldDef = (t: string, f: string) => FIELDS[t]?.[f];
 const castFor = (f: string) => resolveBodyOrderByCast(fieldDef('Cert', f));
 const BASE = sql`r.namespace = 'ns' AND r.type = 'Cert'`;
+const IDS = sql`r.id = ANY('{a,b}')`;
+const seedBase = (ids = false) => ({ clauses: ids ? [BASE, IDS] : [BASE], ids });
 
 /** The where (and the CTEs it reads) of a Cert read with `params`, as pg-dataset compiles them. */
 function compileWhere(params: ReadParams, s: WalkScope = walkScope(NS, 'Cert', 'r', fieldDef)) {
-  prepareSharedPicks(sql, params, [BASE], castFor, () => undefined, s);
+  prepareSharedPicks(sql, params, seedBase(), castFor, () => undefined, s);
   const where = buildWhere(sql, params.where as WhereClause, castFor, () => undefined, s);
   return render(sql`${withCtes(sql, s)}SELECT 1 FROM rows r WHERE ${BASE} AND ${where}`);
 }
@@ -106,12 +108,108 @@ describe('a pick shared through an outbound hop: one probe per hub', () => {
     expect(ctes).toContain(`((w1.body ->> 'spec') COLLATE "C") = (h.id::text COLLATE "C")`);
     expect(ctes).toMatch(/\bmax\(substrate_ts\(w1\.body -> 'at'\)\)/);
     expect(ctes).not.toContain("r.body -> 'ask'");
+    // Only hubs with a neighbour passing the pick's seed-independent `at` bound are
+    // probed, and only picks passing it are kept; never the `$.ask` comparison.
+    expect(ctes).toMatch(
+      /\) w1 WHERE EXISTS \(SELECT 1 FROM rows w2 WHERE w2\.namespace = 'ns' AND w2\.type = 'Sale' .*= \(h\.id::text COLLATE "C"\) AND .*substrate_ts\(w2\.body -> 'at'\) >= .*\) AND .*substrate_ts\(w1\.body -> 'at'\) >= /
+    );
     // Each seed joins its hub's picked row; the pick's where, $.ask included, is tested per seed.
-    expect(main).toContain('FROM rows w2, pick_w1 w3 WHERE');
-    expect(main).toContain('w3.__hub = w2.id::text');
-    expect(main).toContain("substrate_num(w3.body -> 'price')");
+    expect(main).toContain('FROM rows w3, pick_w1 w4 WHERE');
+    expect(main).toContain('w4.__hub = w3.id::text');
+    expect(main).toContain("substrate_num(w4.body -> 'price')");
     expect(main).toContain("substrate_num(r.body -> 'ask')");
     expect(main).not.toMatch(/\bmax\(/);
+  });
+
+  const pickAt = (pick: Record<string, unknown>) => ({
+    in: 'ns/Sale.spec',
+    pick,
+    where: { at: { gte: '2026-10-01' } }
+  });
+  const hubWith = (where: unknown, extra: Record<string, unknown> = {}) =>
+    ({ _walk: { out: 'spec', where, ...extra } }) as unknown as WhereClause;
+
+  it('narrows the hubs by every other top-level conjunct, walks and _agg included, not by binds', () => {
+    const recent = { _walk: { in: 'ns/Obs.cert', where: { at: { gte: '2026-10-30T00:00:00Z' } } } };
+    const bind = { _walk: { in: 'ns/Obs.cert', as: 'o', where: { price: { gt: 1 } } } };
+    const text = compileWhere({
+      count: true,
+      where: {
+        AND: [
+          recent,
+          { _agg: { in: 'ns/Obs.cert', count: true }, gte: 2 },
+          bind,
+          { ask: { lte: { $ref: 'o.price' } } },
+          hubWith({ _walk: pickAt({ latest: 'at' }) })
+        ]
+      } as unknown as WhereClause
+    });
+    const hubs = text.slice(
+      text.indexOf('SELECT DISTINCT'),
+      text.indexOf(') h CROSS JOIN LATERAL')
+    );
+    // The selective window walk and the _agg comparison narrow the hubs.
+    expect(hubs).toMatch(
+      /EXISTS \(SELECT 1 FROM rows w\d+ WHERE w\d+\.namespace = 'ns' AND w\d+\.type = 'Obs'.*>= /
+    );
+    expect(hubs).toMatch(/count\(\*\)/);
+    // The bind and what reads it are quantified jointly, so they stay out; so does the hub walk.
+    expect(hubs).not.toContain('price');
+    expect(hubs).not.toContain('pick_');
+    expect(hubs).not.toContain("'Spec'");
+  });
+
+  it('a hub walk reading a top-level bind is not shared', () => {
+    const bind = { _walk: { in: 'ns/Obs.cert', as: 'o' } };
+    const hub = hubWith({
+      AND: [{ tier: { lte: { $ref: 'o.price' } } }, { _walk: pickAt({ latest: 'at' }) }]
+    });
+    const text = compileWhere({
+      count: true,
+      where: { AND: [bind, hub] } as unknown as WhereClause
+    });
+    expect(text).not.toContain('WITH');
+  });
+
+  it("keeps the hub where's other conjuncts and binds, and joins two picks of one hub", () => {
+    const text = compileWhere({
+      count: true,
+      where: hubWith({
+        AND: [
+          { _walk: { in: 'ns/Sale.spec', as: 's', where: { price: { gte: 5 } } } },
+          { tier: { lte: { $ref: 's.price' } } },
+          { tier: { gte: 1 } },
+          { _walk: pickAt({ latest: 'at' }) },
+          { _walk: { in: 'ns/Sale.spec', pick: { max: 'price' } } }
+        ]
+      })
+    });
+    const main = text.slice(text.indexOf(') SELECT 1 FROM rows r WHERE'));
+    expect(text.match(/pick_w\d+ AS MATERIALIZED/g)).toHaveLength(2);
+    // One EXISTS: the hub row and both picked rows, each on __hub.
+    expect(main).toMatch(
+      /EXISTS \(SELECT 1 FROM rows (w\d+), pick_w\d+ (w\d+), pick_w\d+ (w\d+) WHERE .*\2\.__hub = \1\.id::text AND .*\3\.__hub = \1\.id::text/
+    );
+    // The rest of the hub's where: its plain conjunct and the bind's jointly quantified EXISTS.
+    expect(main).toMatch(/substrate_num\(w\d+\.body -> 'tier'\)/);
+    expect(main).toMatch(
+      /EXISTS \(SELECT 1 FROM rows w\d+ WHERE .*'Sale'.*substrate_num\(w\d+\.body -> 'price'\)/
+    );
+    // The unfiltered pick has no candidate filter.
+    expect(text).toMatch(
+      /pick_w\d+ AS MATERIALIZED \(SELECT h\.id AS __hub, (w\d+)\.\* FROM .* LIMIT 1\) \1\)/
+    );
+  });
+
+  it('a none or all hub walk, or one under OR, keeps the per-seed probe', () => {
+    const pick = { _walk: pickAt({ latest: 'at' }) };
+    for (const where of [
+      hubWith(pick, { quantifier: 'none' }),
+      hubWith(pick, { quantifier: 'all' }),
+      { OR: [hubWith(pick), { grade: { eq: 1 } }] } as unknown as WhereClause
+    ]) {
+      expect(compileWhere({ count: true, where })).not.toContain('WITH');
+    }
   });
 
   it('a page of a few seeds keeps the per-seed probe', () => {
@@ -134,14 +232,16 @@ describe('a frame _agg over its seeds window: one group-by pass', () => {
       } as Record<string, WalkAgg>,
       ...(limit === undefined ? {} : { limit })
     }) as ReadParams;
-  function page(p: ReadParams): string {
+  function page(p: ReadParams, ids = false): string {
     const s = walkScope(NS, 'Cert', 'r', fieldDef);
     const joins = prepareWindows(
       sql,
       p,
+      seedBase(ids),
+      castFor,
       () => undefined,
       s,
-      (t, f) => t === 'Obs' && f === 'at'
+      (t: string, f: string) => t === 'Obs' && f === 'at'
     );
     const where = buildWhere(sql, p.where as WhereClause, castFor, () => undefined, s);
     const proj = buildWalkProjection(sql, p.agg, {}, () => undefined, s);
@@ -163,6 +263,27 @@ describe('a frame _agg over its seeds window: one group-by pass', () => {
     const correlated = text.match(/= \(r\.id::text COLLATE "C"\) AND/g) ?? [];
     expect(correlated).toHaveLength(1);
     expect(text).toMatch(/ORDER BY substrate_ts\(w\d+\.body -> 'at'\) DESC NULLS LAST/);
+  });
+
+  it('semi-joins the window keys to the seeds when ids or another conjunct narrows them', () => {
+    const own = page(params());
+    expect(own).not.toContain('IN (SELECT r.id::text');
+    const ids = page(params(), true);
+    expect(ids).toMatch(/WITH win_w1 AS MATERIALIZED \(.* GROUP BY 1\)/s);
+    const cte = ids.slice(0, ids.indexOf('GROUP BY 1'));
+    expect(cte).toContain(
+      `((w1.body ->> 'cert') COLLATE "C") IN (SELECT r.id::text COLLATE "C" FROM rows r WHERE ( r.namespace = 'ns' AND r.type = 'Cert' AND r.id = ANY('{a,b}')))`
+    );
+    const graded = page({
+      ...params(),
+      where: { AND: [{ grade: { eq: 9 } }, params().where] } as unknown as WhereClause
+    });
+    const gcte = graded.slice(0, graded.indexOf('GROUP BY 1'));
+    expect(gcte).toMatch(
+      /IN \(SELECT r\.id::text COLLATE "C" FROM rows r WHERE .*substrate_num\(r\.body -> 'grade'\)/s
+    );
+    // The window's own walk is implied by the key, so it is not repeated there.
+    expect(gcte.match(/'Obs'/g)).toHaveLength(1);
   });
 
   it('a page of a few seeds keeps the per-seed aggregates', () => {

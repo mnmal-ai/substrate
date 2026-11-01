@@ -541,6 +541,66 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk plan shapes (pg)', () => {
       expect(hit.has('s0_0')).toBe(true);
     }, 120_000);
 
+    it('a shared pick answers as memory beside other conjuncts, binds, a second pick and other quantifiers', async () => {
+      const pAt = { _walk: { in: IN, pick: { latest: 'at' }, where: overAsk } };
+      const pMax = {
+        _walk: { in: IN, pick: { max: 'price' }, where: { at: { gte: '2026-10-05T00:00:00Z' } } }
+      };
+      const hubWalk = (where: unknown, extra: Record<string, unknown> = {}) => ({
+        _walk: { out: 'hub', where, ...extra }
+      });
+      const wheres = [
+        // The hub where's other conjuncts: a bind and the comparison reading it.
+        hubWalk({
+          AND: [
+            { _walk: { in: IN, as: 'n', where: { price: { gte: 40 } } } },
+            { ask: { lte: { $ref: 'n.price' } } },
+            pAt
+          ]
+        }),
+        // Two picks of one hub.
+        hubWalk({ AND: [pAt, pMax] }),
+        // Not shared: none and all.
+        hubWalk(pAt, { quantifier: 'none' }),
+        hubWalk(pAt, { quantifier: 'all' }),
+        // A selective non-plain seed conjunct narrows the hubs computed.
+        { AND: [{ _walk: { out: 'hub', where: { ask: { gte: 10 } } } }, hubWalk(pAt)] },
+        { AND: [{ _agg: { out: 'hub', count: true }, gte: 1 }, hubWalk(pMax)] },
+        // A seed-level bind, and the comparison reading it, stay out of the hub filter.
+        {
+          AND: [
+            { _walk: { out: 'hub', as: 'H' } },
+            { ask: { lte: { $ref: 'H.ask' } } },
+            hubWalk(pAt)
+          ]
+        }
+      ] as unknown as WhereClause[];
+      for (const where of wheres) {
+        await sameResult('Seed', { count: true, where });
+        await same('Seed', { where });
+      }
+    }, 120_000);
+
+    it('a cursor chain whose limit, and so form, changes between pages agrees with memory', async () => {
+      const where = shared({ latest: 'at' }, overAsk) as WhereClause;
+      const chain = async (ds: PgDataset | MemoryDataset, limits: number[]) => {
+        const ids: unknown[] = [];
+        let cursor: string | undefined;
+        let i = 0;
+        do {
+          const limit = limits[i++ % limits.length] as number;
+          const res = await ds.read('Seed', { where, limit, ...(cursor ? { cursor } : {}) });
+          ids.push(...res.rows.map((r) => names.get(String(r.id))));
+          cursor = res.nextCursor;
+        } while (cursor !== undefined);
+        return ids;
+      };
+      // 7 is per seed, 2000 per hub; the cursor carries over.
+      for (const limits of [[7, 2000], [2000], [7]]) {
+        expect(await chain(pg, limits)).toEqual(await chain(mem, limits));
+      }
+    }, 120_000);
+
     const window = { at: { gte: day(7) } };
     const windowRead = (w: Record<string, unknown> = window, extra: Record<string, unknown> = {}) =>
       ({
@@ -593,6 +653,12 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk plan shapes (pg)', () => {
         };
         expect(await paged(pg)).toEqual(await paged(mem));
       }
+      // `ids` and a plain conjunct narrow the window's keys to the seeds.
+      await same('Hub', { ...windowRead(), ids: [u('h0'), u('h3'), u('h8')] });
+      await same('Hub', {
+        ...windowRead(),
+        where: { AND: [{ ask: { gte: 10 } }, { _walk: { in: OBS, where: window } }] }
+      } as unknown as ReadParams);
       // Beside a per-seed pick and a `$ref` aggregate over the same window.
       await same('Hub', {
         ...windowRead(),
