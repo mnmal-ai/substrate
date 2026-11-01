@@ -32,7 +32,7 @@ export {
   resolvePromotedColumns,
   type SqlJsonValue
 } from './pg-sql/primitives.js';
-export { assembleRowMetadata, buildBodyProjection } from './pg-sql/projection.js';
+export { assembleRowMetadata, buildBodyProjection, isAbsentMarker } from './pg-sql/projection.js';
 export {
   buildCursorCompare,
   buildCursorNullTail,

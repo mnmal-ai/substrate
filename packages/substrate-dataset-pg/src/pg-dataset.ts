@@ -120,6 +120,7 @@ import {
   conditionalMatchFragment,
   type Fragment,
   idToText,
+  isAbsentMarker,
   normalizeOrderBy,
   type PromotedBodyColumnMap,
   type PromotedColumnLookup,
@@ -2087,6 +2088,7 @@ export class PgDataset implements Dataset {
       if (k === 'id') continue;
       if (k === RESERVED_DELETED_AT) continue; // defensive — should never appear in body
       if (k === '_metadata') continue; // defensive — stripped on write, but guard on read too
+      if (isAbsentMarker(v)) continue; // a projected key the row lacks
       // A null on a declared scalar or crossRef reads back absent, as on memory.
       if (v === null && fields !== undefined && Object.hasOwn(fields, k)) {
         const def = fields[k];

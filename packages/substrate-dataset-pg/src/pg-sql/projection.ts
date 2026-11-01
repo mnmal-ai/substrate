@@ -3,6 +3,7 @@
  * metadata columns fold back into the `RowMetadata` shape callers see.
  */
 
+import { randomUUID } from 'node:crypto';
 import type { ActorIdentity, ReadParams, RowMetadata } from '@mnmal-ai/substrate-types';
 import type { Sql, TransactionSql } from 'postgres';
 import { type Fragment, NON_BODY_FIELD_KEYS } from './primitives.js';
@@ -12,7 +13,7 @@ import { type Fragment, NON_BODY_FIELD_KEYS } from './primitives.js';
  *
  *   - `fields === undefined` → the full body.
  *   - `fields` supplied → `jsonb_build_object(...)` over `id` plus the
- *     requested top-level body keys, less the keys the row lacks. `id` is
+ *     requested top-level body keys; one the row lacks is the absent marker. `id` is
  *     always included because `materialize()` reads `body.id` to preserve
  *     numeric ids.
  *
@@ -32,15 +33,31 @@ export function buildBodyProjection(
     if (NON_BODY_FIELD_KEYS.has(key)) continue;
     bodyKeys.add(key);
   }
-  const keys = Array.from(bodyKeys);
-  // `r.body->k` is SQL NULL for a key the row lacks and jsonb `null` for a stored
-  // null; jsonb_build_object turns both into `"k": null`. The lacking keys are
-  // subtracted again, so a projected-absent key reads absent, as on memory.
-  const absent = keys.map((k) => sql`CASE WHEN r.body->${k} IS NULL THEN ${k}::text END`);
-  return sql`(${buildObject(
+  // A key the row lacks projects as the marker, which `materialize` drops. A stored
+  // json `null` comes through as itself. One extraction per key: testing presence in
+  // SQL (`->` twice, or `?`) detoasts a large body once more per access, which
+  // tripled the cost of a projected read on a TOASTed body.
+  return buildObject(
     sql,
-    keys.map((k) => sql`${k}::text, r.body->${k}`)
-  )} - ARRAY[${join(absent, sql`,`)}]::text[])`;
+    Array.from(
+      bodyKeys,
+      (k) => sql`${k}::text, COALESCE(r.body->${k}, ${sql.unsafe(ABSENT_LITERAL)})`
+    )
+  );
+}
+
+/**
+ * Stands in for a projected key the row lacks. The nonce is per process and never
+ * stored or sent to a client, so no stored value can equal it. The literal is
+ * built here from hex only, so it is safe to inline (a parameter would be cast
+ * per row under a generic plan).
+ */
+const ABSENT_KEY = `$absent:${randomUUID()}`;
+const ABSENT_LITERAL = `'{"${ABSENT_KEY}":1}'::jsonb`;
+
+/** True for the value `buildBodyProjection` gives a key the row lacks. */
+export function isAbsentMarker(v: unknown): boolean {
+  return typeof v === 'object' && v !== null && Object.hasOwn(v, ABSENT_KEY);
 }
 
 /**
