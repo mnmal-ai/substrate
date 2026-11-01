@@ -48,6 +48,12 @@ import { syncCrossRefEdges } from './crossref-edge-sync.js';
 import { assertCrossRefTargetsExistMany, collectCrossRefFields } from './crossref-existence.js';
 import { resolveIdentity } from './internal.js';
 
+/**
+ * `count` is every row changed. `ids` are the changed ids in ascending order,
+ * compared as strings code unit by code unit, cut to the first `idsCap`; so
+ * the same rows give the same ids on every path and dataset, whatever order
+ * the store returned them in. `idsTruncated` says whether more changed.
+ */
 export interface FilterWriteMutationResult {
   count: number;
   ids: Id[];
@@ -246,11 +252,16 @@ function whereOf(op: string, params: Record<string, unknown> | undefined): Where
 }
 
 function resultOf(rows: FilterWriteResult['rows'], idsCap: number): FilterWriteMutationResult {
-  return {
-    count: rows.length,
-    ids: rows.slice(0, idsCap).map((r) => r.id),
-    idsTruncated: rows.length > idsCap
-  };
+  // A plain code-unit compare, not pg's: the id column sorts by the database's
+  // locale collation, which memory cannot reproduce.
+  const ids = rows
+    .map((r) => r.id)
+    .sort((a, b) => {
+      const x = String(a);
+      const y = String(b);
+      return x < y ? -1 : x > y ? 1 : 0;
+    });
+  return { count: rows.length, ids: ids.slice(0, idsCap), idsTruncated: rows.length > idsCap };
 }
 
 function unsupported(op: string, ds: Dataset): ResolverFrameError {

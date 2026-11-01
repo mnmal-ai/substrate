@@ -64,13 +64,6 @@ const items = (n: number, status = 'open'): Params[] =>
     owner: `o${i % 3}`
   }));
 
-/** A by-filter result with its ids sorted: pg returns them in no set order. */
-function sorted(result: unknown): unknown {
-  const r = result as { ids?: unknown[] } | null | undefined;
-  if (r === null || r === undefined || !Array.isArray(r.ids)) return result;
-  return { ...r, ids: r.ids.map(String).sort() };
-}
-
 describe('updateMany / deleteMany: memory vs pg through Engine', () => {
   let sql: Sql | undefined;
   let seq = 0;
@@ -139,10 +132,13 @@ describe('updateMany / deleteMany: memory vs pg through Engine', () => {
         frame: { [`${ns}/${type}`]: { params, fields: { id: true } } },
         ctx: { ...ctx(as), operation: 'query' }
       });
-    /** The envelope with the namespace taken out of keys and paths, ids sorted. */
+    /**
+     * The envelope with the namespace taken out of keys and paths. Ids are left
+     * in the order the server gave: ascending is the contract under test.
+     */
     const strip = (env: PackEnvelope) => {
       const data: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(env.data)) data[k.slice(ns.length + 1)] = sorted(v);
+      for (const [k, v] of Object.entries(env.data)) data[k.slice(ns.length + 1)] = v;
       const errors = (env.errors ?? []).map((e) => ({
         code: e.code,
         path: e.path?.map((p) => p.replace(`${ns}/`, ''))
@@ -244,11 +240,9 @@ describe('updateMany / deleteMany: memory vs pg through Engine', () => {
         ids: string[];
         idsTruncated: boolean;
       };
-      expect(r.count).toBe(4);
-      expect(r.ids).toHaveLength(LIMITS.idsCap);
-      expect(r.idsTruncated).toBe(true);
-      expect(new Set(r.ids).size).toBe(LIMITS.idsCap);
-      return { count: r.count, idsLength: r.ids.length, truncated: r.idsTruncated };
+      // The lowest idsCap ids, ascending, whatever order the store returned.
+      expect(r).toEqual({ count: 4, ids: ['i000', 'i001', 'i002'], idsTruncated: true });
+      return r;
     });
   });
 
@@ -259,7 +253,11 @@ describe('updateMany / deleteMany: memory vs pg through Engine', () => {
         await s.mutate('updateManyItem', { where: { status: { eq: 'open' } }, set: { title: 'a' } })
       );
       expect(exact.errors).toEqual([]);
-      expect((exact.data.updateManyItem as { count: number }).count).toBe(LIMITS.maxMatch);
+      expect(exact.data.updateManyItem).toEqual({
+        count: LIMITS.maxMatch,
+        ids: ['i000', 'i001', 'i002'],
+        idsTruncated: true
+      });
 
       expect(
         (await s.mutate('createItem', { id: 'extra', title: 'extra', status: 'open', owner: 'o0' }))
