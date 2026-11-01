@@ -138,7 +138,8 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk plan from pg indexPlan', ()
         served: false,
         recommend: { fields: ['cert', { field: 'observedAt', dir: 'asc' }] }
       },
-      { path: ['fields', '_agg', 'first'], kind: 'hop', served: true },
+      // One probe per seed: an `_agg` min is a top-1, never a window group-by (#1815).
+      { path: ['fields', '_agg', 'first'], kind: 'hop', served: true, form: 'per-seed' },
       // A min is a probe either direction of the index serves.
       { path: ['fields', '_agg', 'first', 'min'], kind: 'agg', served: true },
       // `indexed: false`: no derived index serves the hop.
@@ -147,6 +148,13 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk plan from pg indexPlan', ()
         kind: 'hop',
         served: false,
         recommend: { fields: ['cert'] }
+      },
+      // No orderBy: the list reads in Note's natural order (#1821), unserved without the hop's index.
+      {
+        path: ['fields', 'notes', 'orderBy'],
+        kind: 'order',
+        served: false,
+        recommend: { fields: ['cert', { field: 'createdAt', dir: 'desc' }] }
       }
     ]);
   });
