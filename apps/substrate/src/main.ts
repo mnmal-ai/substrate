@@ -37,6 +37,8 @@
  *   SUBSTRATE_BODY_LIMIT_BYTES         max request body size in bytes (optional). Unset =
  *                            Fastify's 1 MiB default. Raise for bulk batched
  *                            mutation frames that exceed 1 MiB.
+ *   SUBSTRATE_STATEMENT_TIMEOUT_MS  statement timeout for walk reads in ms (default 30000);
+ *                            a cancelled read is refused `query_timeout`
  *   SUBSTRATE_SWEEP_INTERVAL_MS  sweep cadence in ms (default 300000)
  *   SUBSTRATE_INVITE_SWEEP_INTERVAL_MS  invite reaper cadence in ms (default 3600000 = 1h)
  *   SUBSTRATE_TOMBSTONE_RETENTION_DAYS  retention window for tombstoned rows /

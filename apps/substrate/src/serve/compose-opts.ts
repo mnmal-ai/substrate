@@ -127,7 +127,8 @@ export async function buildComposeOpts(args: {
       storeSql !== null ? (edges as PgEdgesStore) : null,
       fieldDefLookupFor,
       typeDefLookup,
-      diskGuard
+      diskGuard,
+      config.statementTimeoutMs
     );
   }
   // When pg-backed, thread the `_system` namespace dataset into compose so

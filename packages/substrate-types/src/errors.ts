@@ -15,6 +15,8 @@ export const WALKS_IN_MUTATION = 'walks_in_mutation';
 export const ROW_POLICY_BLOCKS_WALK = 'row_policy_blocks_walk';
 export const WALK_BUDGET_EXCEEDED = 'walk_budget_exceeded';
 export const WALKS_UNSUPPORTED_STORE = 'walks_unsupported_store';
+/** A read cancelled by the store's statement timeout; `details: { timeoutMs }`. */
+export const QUERY_TIMEOUT = 'query_timeout';
 /**
  * A walk construct refused where it cannot be answered: inside a struct, over
  * a list or struct-nested crossRef, under a reused field name, on a virtual

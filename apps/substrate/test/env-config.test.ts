@@ -525,6 +525,14 @@ describe('parseEnv', () => {
     }
   });
 
+  it('statement timeout: defaults to 30000, honours an override, refuses anything else', () => {
+    expect(parseEnv({}).statementTimeoutMs).toBe(30_000);
+    expect(parseEnv({ SUBSTRATE_STATEMENT_TIMEOUT_MS: '5000' }).statementTimeoutMs).toBe(5000);
+    for (const bad of ['0', '-1', '1.5', 'abc']) {
+      expect(() => parseEnv({ SUBSTRATE_STATEMENT_TIMEOUT_MS: bad })).toThrow(EnvConfigError);
+    }
+  });
+
   it('index disk check: off without a path, margin defaults to 2048 MB', () => {
     expect(parseEnv({}).indexDiskPath).toBeNull();
     expect(parseEnv({ SUBSTRATE_INDEX_DISK_PATH: 'off' }).indexDiskPath).toBe('off');

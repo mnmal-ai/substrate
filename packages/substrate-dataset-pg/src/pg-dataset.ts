@@ -60,6 +60,7 @@ import type {
 import {
   assertNoRepeatedIds,
   naturalOrderOf,
+  QUERY_TIMEOUT,
   ResolverFrameError,
   WALKS_NEED_PARTITIONED
 } from '@mnmal-ai/substrate-types';
@@ -212,6 +213,12 @@ export interface PgDatasetOptions {
    * checked either, and `storageReport` says so.
    */
   diskGuard?: DiskGuard;
+  /**
+   * The statement timeout a walk read runs under, in ms (default
+   * `WALK_STATEMENT_TIMEOUT_MS`). A read it cancels is refused as
+   * `query_timeout`.
+   */
+  statementTimeoutMs?: number;
 }
 
 interface InternalPgSubstrateDatasetOptions {
@@ -231,6 +238,7 @@ interface InternalPgSubstrateDatasetOptions {
   layoutCache?: LayoutCache;
   typeDefLookup?: TypeDefLookup;
   diskGuard?: DiskGuard;
+  statementTimeoutMs?: number;
 }
 
 /** An index whose build this process deferred, is running, or saw fail. */
@@ -374,6 +382,7 @@ export class PgDataset implements Dataset {
   readonly #layoutCache: LayoutCache;
   readonly #typeDefLookup: TypeDefLookup | null;
   readonly #diskGuard: DiskGuard | undefined;
+  readonly #statementTimeoutMs: number;
 
   constructor(options: PgDatasetOptions | InternalPgSubstrateDatasetOptions) {
     this.namespace = options.namespace;
@@ -400,6 +409,7 @@ export class PgDataset implements Dataset {
     this.#layoutCache = ('layoutCache' in options ? options.layoutCache : undefined) ?? {};
     this.#typeDefLookup = options.typeDefLookup ?? null;
     this.#diskGuard = options.diskGuard;
+    this.#statementTimeoutMs = options.statementTimeoutMs ?? WALK_STATEMENT_TIMEOUT_MS;
   }
 
   /**
@@ -438,14 +448,25 @@ export class PgDataset implements Dataset {
     if (!this.#inTx) return this.withTransaction((tx) => tx.read(type, params));
     // LOCAL, so it ends with the transaction (the caller's included), and only
     // ever lowers: a shorter timeout already in effect stays. `setting` is ms.
-    const ms = String(WALK_STATEMENT_TIMEOUT_MS);
-    await cancellable(
-      this.#sql`
+    const ms = String(this.#statementTimeoutMs);
+    try {
+      await cancellable(
+        this.#sql`
         SELECT set_config('statement_timeout', ${ms}, true) FROM pg_settings
         WHERE name = 'statement_timeout' AND (setting::bigint = 0 OR setting::bigint > ${ms}::bigint)`,
-      params.signal
-    );
-    return this.#read(type, params, true);
+        params.signal
+      );
+      return await this.#read(type, params, true);
+    } catch (err) {
+      // `cancellable` already swaps a caller's abort for its reason, so a 57014 here is the timeout.
+      const pgErr = err as { code?: unknown; message?: unknown };
+      if (pgErr?.code !== '57014' || params.signal?.aborted === true) throw err;
+      throw new ResolverFrameError(
+        QUERY_TIMEOUT,
+        `${this.namespace}/${type}: the read exceeded the ${this.#statementTimeoutMs} ms statement timeout`,
+        { timeoutMs: this.#statementTimeoutMs }
+      );
+    }
   }
 
   async #read(type: string, params: ReadParams, walks: boolean): Promise<ReadResult> {
@@ -1256,6 +1277,7 @@ export class PgDataset implements Dataset {
         ...(this.#fieldDefLookup !== null ? { fieldDefLookup: this.#fieldDefLookup } : {}),
         promotedColumns: this.#promotedColumns,
         layoutCache: this.#layoutCache,
+        statementTimeoutMs: this.#statementTimeoutMs,
         ...(this.#typeDefLookup !== null ? { typeDefLookup: this.#typeDefLookup } : {})
       });
       return fn(txDataset);
@@ -1292,6 +1314,7 @@ export class PgDataset implements Dataset {
             ...(this.#fieldDefLookup !== null ? { fieldDefLookup: this.#fieldDefLookup } : {}),
             promotedColumns: this.#promotedColumns,
             layoutCache: this.#layoutCache,
+            statementTimeoutMs: this.#statementTimeoutMs,
             ...(this.#typeDefLookup !== null ? { typeDefLookup: this.#typeDefLookup } : {})
           })
         );
@@ -1350,6 +1373,7 @@ export class PgDataset implements Dataset {
       ...(this.#fieldDefLookup !== null ? { fieldDefLookup: this.#fieldDefLookup } : {}),
       promotedColumns: this.#promotedColumns,
       layoutCache: this.#layoutCache,
+      statementTimeoutMs: this.#statementTimeoutMs,
       ...(this.#typeDefLookup !== null ? { typeDefLookup: this.#typeDefLookup } : {}),
       ...(this.#diskGuard !== undefined ? { diskGuard: this.#diskGuard } : {})
     });

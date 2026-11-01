@@ -19,6 +19,7 @@ import { createKnobRecorder, type KnobRecorder, nonEmpty } from './knobs.js';
 import { redactStoreSpec } from './wiring.js';
 
 const DEFAULT_SWEEP_INTERVAL_MS = 300_000;
+const DEFAULT_STATEMENT_TIMEOUT_MS = 30_000;
 const DEFAULT_INVITE_SWEEP_INTERVAL_MS = 3_600_000;
 const DEFAULT_TOMBSTONE_RETENTION_DAYS = 30;
 const DEFAULT_SHUTDOWN_GRACE_MS = 5_000;
@@ -64,6 +65,8 @@ export interface ParsedConfig {
   shutdownGraceMs: number;
   /** `SUBSTRATE_PARTITION_BUDGET` — partitions under `rows` beyond which the config report warns. */
   partitionBudget: number;
+  /** `SUBSTRATE_STATEMENT_TIMEOUT_MS` — the statement timeout a walk read runs under; a read it cancels is refused `query_timeout`. */
+  statementTimeoutMs: number;
   /**
    * `SUBSTRATE_INDEX_DISK_PATH` — the database volume's mount, when the
    * database is local, whose free space is checked before each background
@@ -215,6 +218,14 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
     DEFAULT_PARTITION_BUDGET,
     'partitions'
   );
+  const statementTimeoutMs = parsePositiveIntEnv(
+    env,
+    knobs,
+    'statementTimeoutMs',
+    'SUBSTRATE_STATEMENT_TIMEOUT_MS',
+    DEFAULT_STATEMENT_TIMEOUT_MS,
+    'milliseconds'
+  );
   const indexDiskPath = knobs.record(
     'indexDiskPath',
     'SUBSTRATE_INDEX_DISK_PATH',
@@ -352,6 +363,7 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
     tombstoneRetentionDays,
     shutdownGraceMs,
     partitionBudget,
+    statementTimeoutMs,
     indexDiskPath,
     indexDiskMarginMb,
     indexRetryIntervalMs,
