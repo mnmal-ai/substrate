@@ -23,6 +23,12 @@ export interface PlanClause {
   kind: 'hop' | 'filter' | 'order' | 'ref' | 'derive' | 'bucket' | 'agg';
   served: boolean;
   recommend?: IndexDecl;
+  /**
+   * On the hop of a pick or a frame `_agg`: how the store evaluates it.
+   * `per-seed` probes once per seed row; `per-hub` computes a pick once per
+   * hub many seeds share; `group-by` aggregates a window in one pass.
+   */
+  form?: 'per-seed' | 'per-hub' | 'group-by';
 }
 
 /** Words of a natural-language question the parse did not use, and why. */

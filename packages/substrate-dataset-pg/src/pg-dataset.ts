@@ -93,10 +93,17 @@ import {
   buildFrameAggregate,
   buildFrameCount,
   buildWalkAgg,
-  buildWalkProjection
+  buildWalkProjection,
+  prepareWindows
 } from './pg-sql/aggregate.js';
 import { sqlStringLiteral } from './pg-sql/primitives.js';
-import { buildDerive, walkScope, whereUsesWalks } from './pg-sql/walk.js';
+import {
+  buildDerive,
+  prepareSharedPicks,
+  walkScope,
+  whereUsesWalks,
+  withCtes
+} from './pg-sql/walk.js';
 import {
   asJsonValue,
   assembleRowMetadata,
@@ -568,6 +575,11 @@ export class PgDataset implements Dataset {
         return buildWalkAgg(sql, spec, this.#promotedFor, scope).value;
       };
     }
+    // #1815: shared forms, registered once the where's extension operators
+    // are resolved, so their seed filters compile. Joined to the page.
+    let windowJoins = sql``;
+    // The pick CTEs' LEFT JOINs, which the statement reading the where carries.
+    let pickJoins = sql``;
     if (params.where !== undefined) {
       // Resolves extension operators (e.g. embeddingSimilar) to `id IN [...]`
       // clauses before the synchronous SQL builder runs.
@@ -578,6 +590,25 @@ export class PgDataset implements Dataset {
         ...(fieldRequested(params.fields, '_vector') ? { returnVector: true } : {})
       });
       extMeta = detailed.meta;
+      if (scope !== undefined) {
+        const resolved = { ...params, where: detailed.where };
+        const base = { clauses: [...clauses], ids: hasIdFilter };
+        // A frame `_agg` window read by every seed is one group-by pass.
+        windowJoins = prepareWindows(
+          sql,
+          resolved,
+          base,
+          bodyCastFor,
+          this.#promotedFor,
+          scope,
+          (t, field) =>
+            desiredIndexKeys(this.#indexArgs(t, this.namespace, 'partitioned')).some(
+              (i) => i.only === undefined && i.keys[0]?.[0] === field
+            )
+        );
+        // A pick many seeds share through one hub is computed once per hub.
+        pickJoins = prepareSharedPicks(sql, resolved, base, bodyCastFor, this.#promotedFor, scope);
+      }
       const whereFragment = buildWhere(sql, detailed.where, bodyCastFor, this.#promotedFor, scope);
       if (whereFragment !== null) clauses.push(whereFragment);
     }
@@ -587,7 +618,9 @@ export class PgDataset implements Dataset {
       const matched = combineAnd(sql, clauses);
       if (params.count === true) {
         const [row] = await cancellable(
-          sql<Array<{ n: number }>>`${buildFrameCount(sql, matched, scope)}`,
+          sql<
+            Array<{ n: number }>
+          >`${withCtes(sql, scope)}${buildFrameCount(sql, matched, scope, pickJoins)}`,
           params.signal
         );
         return { rows: [], hasMore: false, count: row?.n ?? 0 };
@@ -595,7 +628,10 @@ export class PgDataset implements Dataset {
       const aggregate = params.aggregate ?? {};
       const statement = buildFrameAggregate(sql, aggregate, params.bucket, matched, limit, scope);
       const groups = (
-        await cancellable(sql<Array<{ g: Record<string, unknown> }>>`${statement}`, params.signal)
+        await cancellable(
+          sql<Array<{ g: Record<string, unknown> }>>`${withCtes(sql, scope)}${statement}`,
+          params.signal
+        )
       ).map((x) => x.g);
       // Only buckets are cut: memory's single group ignores limit.
       const truncated = params.bucket !== undefined && limit !== undefined && groups.length > limit;
@@ -636,8 +672,9 @@ export class PgDataset implements Dataset {
     // OFFSET 0 keeps the subquery from being flattened back into one evaluation per use.
     const from =
       fenced === undefined
-        ? sql`rows r`
-        : sql`(SELECT r.*, ${fenced} AS __derive_0 FROM rows r WHERE ${combineAnd(sql, clauses)} OFFSET 0) r`;
+        ? sql`rows r${pickJoins}${windowJoins}`
+        : sql`(SELECT r.*, ${fenced} AS __derive_0 FROM rows r${pickJoins} WHERE ${combineAnd(sql, clauses)} OFFSET 0) r${windowJoins}`;
+    const ctes = withCtes(sql, scope);
     const base = fenced === undefined ? clauses : [];
 
     // Cursor: a tuple-compare clause so the page starts strictly after the
@@ -711,7 +748,7 @@ export class PgDataset implements Dataset {
     const inlineLimit = (n: number | undefined): Fragment =>
       n !== undefined ? sql.unsafe(`LIMIT ${BigInt(n)}`) : sql``;
     // One page query: phase 1 with the cursor compare, or the null tail.
-    const page = (where: Fragment, n: number | undefined) =>
+    const statement = (where: Fragment, n: number | undefined) =>
       joinShortIds
         ? sql<SubstrateRowRecord[]>`
           SELECT r.id, ${bodyProjection} AS body, r.deleted_at, s.short_id,
@@ -747,6 +784,12 @@ export class PgDataset implements Dataset {
           ) s ON true
           ${buildProjectedOrderBy(sql, orderBy, sortKeyAliases, orderByCastFor, this.#promotedFor, 'p')}
         `;
+    // The CTEs ride in front only when there are any, so a plain read's text
+    // is exactly what it was (callers and tests key on its leading SELECT).
+    const page = (where: Fragment, n: number | undefined) =>
+      scope?.ctes === undefined || scope.ctes.length === 0
+        ? statement(where, n)
+        : sql<SubstrateRowRecord[]>`${ctes}${statement(where, n)}`;
 
     // Both queries read the same snapshot only inside a REPEATABLE READ or
     // SERIALIZABLE transaction; elsewhere each sees its own.
@@ -758,6 +801,8 @@ export class PgDataset implements Dataset {
       const unseen = sql`r.id <> ALL(${rows.map((r) => r.id)})`;
       // The full `fetchLimit`, sliced here, so the tail has one statement text
       // per shape rather than one per remaining count.
+      // It recomputes the read's CTEs (#1815): a CTE lives for one statement,
+      // and the tail runs only when a cursor reaches the null-keyed rows.
       const tail = await cancellable(
         page(combineAnd(sql, [tailSql, unseen]), fetchLimit),
         params.signal

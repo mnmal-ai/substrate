@@ -5,7 +5,15 @@
  * here refuses anything; it only describes.
  */
 
-import type { FieldDef, IndexPlan, PlanClause } from '@mnmal-ai/substrate-types';
+import { sharedPicks, windowGroupBy } from '@mnmal-ai/substrate-filter';
+import type {
+  FieldDef,
+  IndexPlan,
+  OrderedBy,
+  PlanClause,
+  WalkAgg,
+  WhereClause
+} from '@mnmal-ai/substrate-types';
 import type { HopResolver } from '../walk-types.js';
 
 type Order = Array<[string, 'asc' | 'desc']>;
@@ -15,14 +23,17 @@ type Fields = Record<string, FieldDef>;
 export interface WalkSite {
   /** The hop node's path inside the frame entry. */
   path: string[];
+  /** The hop node itself: a `_walk`, an `_agg` or a nested selection's `_walk`. */
+  node: Record<string, unknown>;
   far: string;
   /** The far type's crossRef an inbound hop follows; undefined for an outbound hop (a primary-key read). */
   crossRef?: string;
   /** Each `where` filtering the far rows, with its path. */
   wheres: Array<{ where: unknown; path: string[] }>;
   /**
-   * The order the far rows are read in, when one matters: a nested `orderBy`,
-   * a pick, or a latest/min/max aggregate. `exact`: only an index in this very
+   * The order the far rows are read in, when one matters: a nested `orderBy`
+   * (or, absent one, the far type's natural order, which the engine gives
+   * it), a pick, or a latest/min/max aggregate. `exact`: only an index in this very
    * direction serves it (a nested list's LIMIT); a pick is a min/max probe,
    * and a latest/min/max aggregate a top-1 written in the index's own
    * direction, so an index serves either in either direction.
@@ -46,16 +57,21 @@ function orderOf(orderBy: unknown): Order {
   return out;
 }
 
-/** Every walk site of a frame entry `{ params, fields }` seeded at `seed`, at any depth. */
+/**
+ * Every walk site of a frame entry `{ params, fields }` seeded at `seed`, at
+ * any depth. `naturalOrder` gives a nested list without `orderBy` its far
+ * type's natural order, as the engine reads it (#1821).
+ */
 export function walkSites(
   entry: Record<string, unknown>,
   seed: string,
-  resolve: HopResolver
+  resolve: HopResolver,
+  naturalOrder?: (type: string) => OrderedBy
 ): WalkSite[] {
   const out: WalkSite[] = [];
   const site = (node: Record<string, unknown>, from: string, path: string[]): WalkSite => {
     const far = resolve(node, from, path);
-    const s: WalkSite = { path, far, wheres: [] };
+    const s: WalkSite = { path, node, far, wheres: [] };
     // Validation proved `in` is '<ns>/<Type>.<field>' with no dot in the type.
     if (typeof node.in === 'string') s.crossRef = node.in.slice(node.in.indexOf('.') + 1);
     out.push(s);
@@ -118,7 +134,8 @@ export function walkSites(
       } else if (isObj(sel) && isObj(sel._walk)) {
         const wp = [...at, '_walk'];
         const s = site(sel._walk, type, wp);
-        const by = orderOf(sel.orderBy);
+        let by = orderOf(sel.orderBy);
+        if (by.length === 0 && naturalOrder !== undefined) by = orderOf([naturalOrder(s.far)]);
         if (by.length > 0) s.order = { by, path: [...at, 'orderBy'], kind: 'order', exact: true };
         addWhere(s, sel._walk.where, [...wp, 'where']);
         addWhere(s, sel.where, [...at, 'where']);
@@ -225,6 +242,8 @@ export interface ClassifyInput {
   resolve: HopResolver;
   /** A type's declared fields, for what an index may key on. */
   fieldsOf: (type: string) => Fields | undefined;
+  /** A type's natural order: a nested list without `orderBy` reads in it (#1821). */
+  naturalOrder?: (type: string) => OrderedBy;
 }
 
 /**
@@ -278,12 +297,32 @@ export function classifyWalkService(
     clause(p.path, 'filter', served, seed, [p.field]);
   }
 
-  for (const s of walkSites(entry, seed, input.resolve)) {
+  const shared = sharedPicks(params as Parameters<typeof sharedPicks>[0]);
+  /** #1815: how a pick or a frame `_agg` is evaluated, by the rules pg compiles to. */
+  const formOf = (s: WalkSite, indexes: PlanIndex[]): PlanClause['form'] => {
+    const top = s.path.length === 3 && s.path[0] === 'fields' && s.path[1] === '_agg';
+    if (s.node.pick !== undefined) return shared.has(s.node) ? 'per-hub' : 'per-seed';
+    if (!top) return undefined;
+    const fields = fieldsOf(s.far);
+    const def = (f: string) =>
+      fields !== undefined && Object.hasOwn(fields, f) ? fields[f] : undefined;
+    const grouped = windowGroupBy(
+      s.node as WalkAgg,
+      params as { where?: WhereClause; limit?: number },
+      def,
+      (f) => leads(indexes, [f], [])
+    );
+    return grouped ? 'group-by' : 'per-seed';
+  };
+
+  for (const s of walkSites(entry, seed, input.resolve, input.naturalOrder)) {
     const farIndexes = indexesOf(s.far);
     const cr = s.crossRef;
     // A crossRef declared `indexed: false` has no eager index to serve its hop.
     const hop = cr === undefined || leads(farIndexes, [cr], []);
     clause(s.path, 'hop', hop, s.far, cr === undefined ? [] : [cr]);
+    const form = formOf(s, farIndexes);
+    if (form !== undefined) (out[out.length - 1] as PlanClause).form = form;
     for (const w of s.wheres) {
       for (const p of predicates(w.where, fieldsOf(s.far), w.path)) {
         if (p.ref) out.push({ path: p.path, kind: 'ref', served: true });

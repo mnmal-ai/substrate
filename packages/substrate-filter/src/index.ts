@@ -78,3 +78,11 @@ export {
   WALK_EVALUATION_BUDGET,
   type WalkContext
 } from './walk.js';
+export {
+  EVERY_SEED_LIMIT,
+  isPickAgg,
+  readsEverySeed,
+  sharedPicks,
+  type WalkForm,
+  windowGroupBy
+} from './walk-forms.js';
