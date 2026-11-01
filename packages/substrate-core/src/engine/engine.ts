@@ -64,6 +64,7 @@ import {
   isResolverFrameError,
   isRestrictViolation,
   ROW_POLICY_BLOCKS_WALK,
+  WALK_UNSUPPORTED_REF,
   WALKS_IN_MUTATION,
   WALKS_UNSUPPORTED_STORE
 } from '@mnmal-ai/substrate-types';
@@ -1598,7 +1599,7 @@ export class Engine {
           envelope,
           [key, ...walkPath],
           'walks are not available on virtual types',
-          'walk_unsupported_ref'
+          WALK_UNSUPPORTED_REF
         );
         return false;
       }
@@ -2135,7 +2136,6 @@ export class Engine {
   }
 }
 
-/** Path to the first nested `{ _walk }` selection whose numeric `limit` exceeds `max`, at any depth. */
 /** `fields` with every nested `{ _walk }` selection lacking a `limit` given `limit`, at any depth. */
 function withNestedDefaultLimits<T>(fields: T, limit: number): T {
   if (typeof fields !== 'object' || fields === null || Array.isArray(fields)) return fields;
@@ -2161,6 +2161,7 @@ function withNestedDefaultLimits<T>(fields: T, limit: number): T {
   ) as T;
 }
 
+/** Path to the first nested `{ _walk }` selection whose numeric `limit` exceeds `max`, at any depth. */
 function nestedOverLimit(fields: unknown, path: string[], max: number): string[] | null {
   if (typeof fields !== 'object' || fields === null) return null;
   for (const [name, sel] of Object.entries(fields)) {

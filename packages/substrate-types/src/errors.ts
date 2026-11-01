@@ -15,7 +15,11 @@ export const WALKS_IN_MUTATION = 'walks_in_mutation';
 export const ROW_POLICY_BLOCKS_WALK = 'row_policy_blocks_walk';
 export const WALK_BUDGET_EXCEEDED = 'walk_budget_exceeded';
 export const WALKS_UNSUPPORTED_STORE = 'walks_unsupported_store';
-/** A walk construct this store does not answer yet. */
+/**
+ * A walk construct refused where it cannot be answered: inside a struct, over
+ * a list or struct-nested crossRef, under a reused field name, on a virtual
+ * type, or on a read path that does not evaluate walks.
+ */
 export const WALK_UNSUPPORTED_REF = 'walk_unsupported_ref';
 
 /**
