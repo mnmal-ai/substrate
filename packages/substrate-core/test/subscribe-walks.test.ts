@@ -22,8 +22,7 @@ function buildEngine(): Engine {
   return new Engine({
     namespaces: new Map<string, NamespaceConfig>([['ns', { registry }]]),
     datasets,
-    edges: new MemoryEdgesStore({ now: () => new Date('2026-10-30T00:00:00Z') }),
-    walksEnabled: true
+    edges: new MemoryEdgesStore({ now: () => new Date('2026-10-30T00:00:00Z') })
   });
 }
 

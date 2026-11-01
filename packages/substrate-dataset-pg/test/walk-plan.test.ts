@@ -64,8 +64,7 @@ beforeAll(async () => {
   engine = new Engine({
     namespaces: new Map<string, NamespaceConfig>([[NS, { registry }]]),
     datasets,
-    edges: new MemoryEdgesStore({ now: () => new Date() }),
-    walksEnabled: true
+    edges: new MemoryEdgesStore({ now: () => new Date() })
   });
 });
 

@@ -63,7 +63,6 @@ import {
   isResolverFrameError,
   isRestrictViolation,
   ROW_POLICY_BLOCKS_WALK,
-  WALKS_DISABLED,
   WALKS_IN_MUTATION,
   WALKS_UNSUPPORTED_STORE
 } from '@mnmal-ai/substrate-types';
@@ -245,15 +244,12 @@ export class Engine {
   /** Bridge-proxy subsystem (§5.8 / §6.5) for bridged query/mutate buckets. */
   readonly #bridgeProxy: BridgeSubsystem;
 
-  readonly #walksEnabled: boolean;
-
   constructor(opts: EngineOptions) {
     this.#namespaces = opts.namespaces;
     this.#datasets = opts.datasets;
     this.#edges = opts.edges;
     this.#metric = opts.metric ?? ((): void => {});
     this.#onResolve = opts.onResolve;
-    this.#walksEnabled = opts.walksEnabled === true;
     this.#shapeRecorder = opts.shapeRecorder;
     this.#idempotency =
       opts.idempotency !== undefined
@@ -1581,18 +1577,6 @@ export class Engine {
       }
     }
 
-    if (!this.#walksEnabled && operation === 'query' && registryEntry.kind === 'type') {
-      const walkPath = walkGrammarPath(frame as Record<string, unknown>);
-      if (walkPath) {
-        addError(
-          envelope,
-          [key, ...walkPath],
-          'the walk grammar is disabled on this server (SUBSTRATE_WALKS)',
-          WALKS_DISABLED
-        );
-        return false;
-      }
-    }
     if (
       operation === 'query' &&
       registryEntry.kind === 'type' &&
@@ -1633,7 +1617,6 @@ export class Engine {
     if (!guardOk) return false;
 
     if (
-      this.#walksEnabled &&
       operation === 'query' &&
       registryEntry.kind === 'type' &&
       this.#refuseWalkPolicy(envelope, key, frame, ns, name, ctx, decision)

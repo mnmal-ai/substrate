@@ -37,7 +37,6 @@ describe('/substrate/v1/query walk results', () => {
       server,
       dataset,
       datasets: { shop: dataset },
-      walksEnabled: true,
       coordinators: [
         {
           name: 'shop',

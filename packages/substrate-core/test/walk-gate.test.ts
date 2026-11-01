@@ -42,7 +42,7 @@ describe('usesWalkGrammar', () => {
   });
 });
 
-function build(walksEnabled?: boolean, walkReference = true) {
+function build(walkReference = true) {
   const registry = new Registry();
   let reached = 0;
   registry.register('Part', {
@@ -60,8 +60,7 @@ function build(walksEnabled?: boolean, walkReference = true) {
   const engine = new Engine({
     namespaces: new Map<string, NamespaceConfig>([['ns', { registry }]]),
     datasets,
-    edges: new MemoryEdgesStore({ now: () => new Date('2026-04-18T00:00:00Z') }),
-    ...(walksEnabled !== undefined ? { walksEnabled } : {})
+    edges: new MemoryEdgesStore({ now: () => new Date('2026-04-18T00:00:00Z') })
   });
   return { engine, reached: () => reached };
 }
@@ -72,25 +71,15 @@ const frame = {
 const ctx = { identity: null, now: new Date(), headers: {}, meta: {} };
 
 describe('engine walk gate', () => {
-  it("a walk frame with the flag off is refused walks_disabled at path [key, 'where', '_walk']", async () => {
+  it('a walk frame passes the gate and validation and reaches the resolver', async () => {
     const { engine, reached } = build();
-    const res = await engine.query({ frame, ctx });
-    expect(res.errors?.[0]).toMatchObject({
-      code: 'walks_disabled',
-      path: ['ns/Thing', 'where', '_walk']
-    });
-    expect(reached()).toBe(0);
-  });
-
-  it('the same frame with the flag on passes the gate and validation and reaches the resolver', async () => {
-    const { engine, reached } = build(true);
     const res = await engine.query({ frame, ctx });
     expect(res.errors ?? []).toEqual([]);
     expect(reached()).toBe(1);
   });
 
   it('validates frame params and selections without a where', async () => {
-    const { engine, reached } = build(true);
+    const { engine, reached } = build();
     const res = await engine.query({
       frame: { 'ns/Thing': { params: { count: true }, fields: { id: true, _agg: {} } } },
       ctx
@@ -103,7 +92,7 @@ describe('engine walk gate', () => {
   });
 
   it('refuses a nested limit above the page max with limit_exceeds_max', async () => {
-    const { engine, reached } = build(true);
+    const { engine, reached } = build();
     const parts = { _walk: { in: 'ns/Part.thing' }, fields: { id: true }, limit: 11 };
     const res = await engine.query({
       frame: { 'ns/Thing': { fields: { id: true, parts } } },
@@ -118,7 +107,7 @@ describe('engine walk gate', () => {
   });
 
   it('a store that does not declare walks refuses a walk frame with walks_unsupported_store', async () => {
-    const { engine, reached } = build(true, false);
+    const { engine, reached } = build(false);
     for (const f of [
       frame,
       { 'ns/Thing': { params: { count: true }, fields: { id: true } } },
@@ -136,12 +125,6 @@ describe('engine walk gate', () => {
     const plain = await engine.query({ frame: { 'ns/Thing': { fields: { id: true } } }, ctx });
     expect(plain.errors ?? []).toEqual([]);
     expect(reached()).toBe(1);
-  });
-
-  it('the flag gate runs first: flag off answers walks_disabled whatever the store', async () => {
-    const { engine } = build(false, false);
-    const res = await engine.query({ frame, ctx });
-    expect(res.errors?.[0]?.code).toBe('walks_disabled');
   });
 });
 
@@ -161,8 +144,7 @@ describe('memory walk reference through the engine', () => {
     const engine = new Engine({
       namespaces: new Map<string, NamespaceConfig>([['ns', { registry }]]),
       datasets,
-      edges: new MemoryEdgesStore({ now: () => new Date('2026-04-18T00:00:00Z') }),
-      walksEnabled: true
+      edges: new MemoryEdgesStore({ now: () => new Date('2026-04-18T00:00:00Z') })
     });
     return { engine, ds };
   }
@@ -221,8 +203,7 @@ describe('engine page limits on walk results', () => {
     const engine = new Engine({
       namespaces: new Map<string, NamespaceConfig>([['ns', { registry }]]),
       datasets,
-      edges: new MemoryEdgesStore({ now: () => new Date('2026-04-18T00:00:00Z') }),
-      walksEnabled: true
+      edges: new MemoryEdgesStore({ now: () => new Date('2026-04-18T00:00:00Z') })
     });
     return Object.assign(engine, { results });
   }

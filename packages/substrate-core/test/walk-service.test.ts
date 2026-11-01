@@ -275,7 +275,6 @@ describe('engine: plan and walk shapes', () => {
       namespaces: new Map<string, NamespaceConfig>([['cards', { registry }]]),
       datasets,
       edges: new MemoryEdgesStore({ now: () => new Date() }),
-      walksEnabled: true,
       metric: (name) => metrics.push(name),
       ...(recorder !== undefined ? { shapeRecorder: recorder } : {})
     });

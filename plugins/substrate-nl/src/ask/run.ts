@@ -36,8 +36,8 @@ function executable(c: Candidate, pack: ServedPack, paged = c.answer !== 'count'
   return { [key]: { params, fields } } as Query;
 }
 
-/** The engine refused `count: true`: walks are off, or the seed is under a row policy. */
-const COUNT_REFUSED = new Set(['walks_disabled', 'row_policy_blocks_walk']);
+/** The engine refused `count: true`: the seed is under a row policy. */
+const COUNT_REFUSED = new Set(['row_policy_blocks_walk']);
 
 /**
  * The parser's plan with the engine's `served`/`recommend` where the engine

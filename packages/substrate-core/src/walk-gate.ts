@@ -1,4 +1,4 @@
-/** Structural detector for the typed-edge-walk query grammar, which sits behind `SUBSTRATE_WALKS`. */
+/** Structural detector for the typed-edge-walk query grammar. Subscriptions and streams use it to refuse walks (query-only). */
 
 const WALK_PARAM_KEYS = ['count', 'aggregate', 'bucket', 'derive'];
 
