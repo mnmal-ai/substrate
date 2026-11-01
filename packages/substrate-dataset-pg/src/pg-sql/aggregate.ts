@@ -14,7 +14,7 @@
  * The tree is assumed validated (substrate-core walk-validator).
  */
 
-import { isDateField, isRefOperand } from '@mnmal-ai/substrate-filter';
+import { isDateField, isRefOperand, windowGroupBy } from '@mnmal-ai/substrate-filter';
 import {
   type BucketSpec,
   type FieldDef,
@@ -32,9 +32,11 @@ import {
   bodyNum,
   combineAnd,
   type Fragment,
+  indexExpressionSql,
   isMetadataField,
   NON_BODY_FIELD_KEYS,
   type PromotedColumnLookup,
+  qualifier,
   tsParam
 } from './primitives.js';
 import { buildObject } from './projection.js';
@@ -47,7 +49,8 @@ import {
   refOperand,
   refValue,
   sortKey,
-  type WalkScope
+  type WalkScope,
+  windowKey
 } from './walk.js';
 import { buildWhere } from './where.js';
 
@@ -211,6 +214,88 @@ export function buildWalkAgg(
   return { value, kind };
 }
 
+/** One hop and where's shared aggregates over `alias` rows: the jsonb object, the hop and the where. */
+function sharedScan(
+  sql: Sql | TransactionSql,
+  group: Array<[string, WalkAgg]>,
+  promotedFor: PromotedColumnLookup,
+  scope: WalkScope,
+  alias: string
+): {
+  type: string;
+  via?: string;
+  cond: Fragment;
+  pin: Fragment;
+  far: Fragment | null;
+  obj: Fragment;
+} {
+  const [, first] = group[0] as [string, WalkAgg];
+  const h = hop(sql, first, scope, alias);
+  const far =
+    first.where === undefined
+      ? null
+      : buildWhere(
+          sql,
+          first.where,
+          (f) => resolveBodyOrderByCast(scope.fieldDef(h.type, f)),
+          promotedFor,
+          { ...scope, alias, type: h.type }
+        );
+  const values = group.map(([name, spec]) => {
+    const { agg } = aggOver(sql, spec, alias, (f) => scope.fieldDef(h.type, f));
+    return sql`${name}::text, ${agg as Fragment}`;
+  });
+  return { ...h, far, obj: buildObject(sql, values) };
+}
+
+/**
+ * Registers the frame `_agg` windows the group-by rule picks (#1815,
+ * `windowGroupBy` holds the rule) and returns the page's LEFT JOINs to them.
+ * Each window is one CTE: its aggregates over the far rows in the window,
+ * `GROUP BY` the crossRef (`__k`, the eager index's key; null keys left out,
+ * since they join no seed), one pass over the window's index range. A seed
+ * reads its group by key, and the where's walk over the same window becomes
+ * `id IN` its keys, so the window is read once for both.
+ */
+export function prepareWindows(
+  sql: Sql | TransactionSql,
+  params: {
+    where?: WhereClause;
+    agg?: Record<string, WalkAgg>;
+    count?: boolean;
+    aggregate?: unknown;
+    limit?: number;
+  },
+  promotedFor: PromotedColumnLookup,
+  scope: WalkScope,
+  indexed: (type: string, field: string) => boolean
+): Fragment {
+  const groups = new Map<string, Array<[string, WalkAgg]>>();
+  for (const [name, spec] of Object.entries(params.agg ?? {})) {
+    const { type } = hop(sql, spec, scope, 'x');
+    const fieldDef = (f: string) => scope.fieldDef(type, f);
+    if (!windowGroupBy(spec, params, fieldDef, (f) => indexed(type, f))) continue;
+    const key = windowKey(spec);
+    groups.set(key, [...(groups.get(key) ?? []), [name, spec]]);
+  }
+  let joins = sql``;
+  for (const [key, group] of groups) {
+    const alias = scope.nextAlias();
+    const cte = `win_${alias}`;
+    const { via, pin, far, obj } = sharedScan(sql, group, promotedFor, scope, alias);
+    const k = sql.unsafe(indexExpressionSql('text', via as string, alias));
+    const rows = combineAnd(sql, [pin, sql`${k} IS NOT NULL`, ...(far === null ? [] : [far])]);
+    scope.ctes ??= [];
+    scope.ctes.push(
+      sql`${sql.unsafe(cte)} AS MATERIALIZED (SELECT ${k} AS __k, ${obj} AS __g FROM rows ${sql.unsafe(alias)} WHERE ${rows} GROUP BY 1)`
+    );
+    scope.windows ??= new Map();
+    scope.windows.set(key, cte);
+    joins = sql`${joins} LEFT JOIN ${sql.unsafe(cte)} ON ${sql.unsafe(`${cte}.__k = (${qualifier(scope.alias)}id::text COLLATE "C")`)}`;
+  }
+  return joins;
+}
+
 /**
  * A row's `_agg` selections as one jsonb object. Counts, sums, averages and
  * numeric min/max over the same hop and `where` are one scan of the
@@ -231,31 +316,22 @@ function buildWalkAggs(
       own.push(sql`${name}::text, ${buildWalkAgg(sql, spec, promotedFor, scope).value}`);
       continue;
     }
-    const key = JSON.stringify([spec.in, spec.out, spec.where]);
+    const key = windowKey(spec);
     shared.set(key, [...(shared.get(key) ?? []), [name, spec]]);
   }
-  for (const group of shared.values()) {
-    const [, first] = group[0] as [string, WalkAgg];
+  for (const [key, group] of shared) {
     const alias = scope.nextAlias();
-    const { type, cond } = hop(sql, first, scope, alias);
-    const far =
-      first.where === undefined
-        ? null
-        : buildWhere(
-            sql,
-            first.where,
-            (f) => resolveBodyOrderByCast(scope.fieldDef(type, f)),
-            promotedFor,
-            { ...scope, alias, type }
-          );
-    const values = group.map(([name, spec]) => {
-      const { agg } = aggOver(sql, spec, alias, (f) => scope.fieldDef(type, f));
-      return sql`${name}::text, ${agg as Fragment}`;
-    });
+    const { cond, obj, far } = sharedScan(sql, group, promotedFor, scope, alias);
+    const window = scope.alias === scope.seedAlias ? scope.windows?.get(key) : undefined;
+    if (window !== undefined) {
+      // A seed with no row in the window reads the aggregates of none: count 0, the rest null.
+      parts.push(
+        sql`COALESCE(${sql.unsafe(`${window}.__g`)}, (SELECT ${obj} FROM rows ${sql.unsafe(alias)} WHERE FALSE))`
+      );
+      continue;
+    }
     const rows = combineAnd(sql, far === null ? [cond] : [cond, far]);
-    parts.push(
-      sql`(SELECT ${buildObject(sql, values)} FROM rows ${sql.unsafe(alias)} WHERE ${rows})`
-    );
+    parts.push(sql`(SELECT ${obj} FROM rows ${sql.unsafe(alias)} WHERE ${rows})`);
   }
   if (own.length > 0 || parts.length === 0) parts.push(buildObject(sql, own));
   return parts.reduce((a, b) => sql`${a} || ${b}`);

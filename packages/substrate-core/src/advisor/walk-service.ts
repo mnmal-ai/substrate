@@ -5,7 +5,14 @@
  * here refuses anything; it only describes.
  */
 
-import type { FieldDef, IndexPlan, PlanClause } from '@mnmal-ai/substrate-types';
+import { sharedPicks, windowGroupBy } from '@mnmal-ai/substrate-filter';
+import type {
+  FieldDef,
+  IndexPlan,
+  PlanClause,
+  WalkAgg,
+  WhereClause
+} from '@mnmal-ai/substrate-types';
 import type { HopResolver } from '../walk-types.js';
 
 type Order = Array<[string, 'asc' | 'desc']>;
@@ -15,6 +22,8 @@ type Fields = Record<string, FieldDef>;
 export interface WalkSite {
   /** The hop node's path inside the frame entry. */
   path: string[];
+  /** The hop node itself: a `_walk`, an `_agg` or a nested selection's `_walk`. */
+  node: Record<string, unknown>;
   far: string;
   /** The far type's crossRef an inbound hop follows; undefined for an outbound hop (a primary-key read). */
   crossRef?: string;
@@ -55,7 +64,7 @@ export function walkSites(
   const out: WalkSite[] = [];
   const site = (node: Record<string, unknown>, from: string, path: string[]): WalkSite => {
     const far = resolve(node, from, path);
-    const s: WalkSite = { path, far, wheres: [] };
+    const s: WalkSite = { path, node, far, wheres: [] };
     // Validation proved `in` is '<ns>/<Type>.<field>' with no dot in the type.
     if (typeof node.in === 'string') s.crossRef = node.in.slice(node.in.indexOf('.') + 1);
     out.push(s);
@@ -278,12 +287,32 @@ export function classifyWalkService(
     clause(p.path, 'filter', served, seed, [p.field]);
   }
 
+  const shared = sharedPicks(params as Parameters<typeof sharedPicks>[0]);
+  /** #1815: how a pick or a frame `_agg` is evaluated, by the rules pg compiles to. */
+  const formOf = (s: WalkSite, indexes: PlanIndex[]): PlanClause['form'] => {
+    const top = s.path.length === 3 && s.path[0] === 'fields' && s.path[1] === '_agg';
+    if (s.node.pick !== undefined) return shared.has(s.node) ? 'per-hub' : 'per-seed';
+    if (!top) return undefined;
+    const fields = fieldsOf(s.far);
+    const def = (f: string) =>
+      fields !== undefined && Object.hasOwn(fields, f) ? fields[f] : undefined;
+    const grouped = windowGroupBy(
+      s.node as WalkAgg,
+      params as { where?: WhereClause; limit?: number },
+      def,
+      (f) => leads(indexes, [f], [])
+    );
+    return grouped ? 'group-by' : 'per-seed';
+  };
+
   for (const s of walkSites(entry, seed, input.resolve)) {
     const farIndexes = indexesOf(s.far);
     const cr = s.crossRef;
     // A crossRef declared `indexed: false` has no eager index to serve its hop.
     const hop = cr === undefined || leads(farIndexes, [cr], []);
     clause(s.path, 'hop', hop, s.far, cr === undefined ? [] : [cr]);
+    const form = formOf(s, farIndexes);
+    if (form !== undefined) (out[out.length - 1] as PlanClause).form = form;
     for (const w of s.wheres) {
       for (const p of predicates(w.where, fieldsOf(s.far), w.path)) {
         if (p.ref) out.push({ path: p.path, kind: 'ref', served: true });

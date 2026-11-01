@@ -93,10 +93,17 @@ import {
   buildFrameAggregate,
   buildFrameCount,
   buildWalkAgg,
-  buildWalkProjection
+  buildWalkProjection,
+  prepareWindows
 } from './pg-sql/aggregate.js';
 import { sqlStringLiteral } from './pg-sql/primitives.js';
-import { buildDerive, walkScope, whereUsesWalks } from './pg-sql/walk.js';
+import {
+  buildDerive,
+  prepareSharedPicks,
+  walkScope,
+  whereUsesWalks,
+  withCtes
+} from './pg-sql/walk.js';
 import {
   asJsonValue,
   assembleRowMetadata,
@@ -568,6 +575,15 @@ export class PgDataset implements Dataset {
         return buildWalkAgg(sql, spec, this.#promotedFor, scope).value;
       };
     }
+    // #1815: a frame `_agg` window read by every seed is one group-by pass, joined to the page.
+    const windowJoins =
+      scope === undefined
+        ? sql``
+        : prepareWindows(sql, params, this.#promotedFor, scope, (t, field) =>
+            desiredIndexKeys(this.#indexArgs(t, this.namespace, 'partitioned')).some(
+              (i) => i.only === undefined && i.keys[0]?.[0] === field
+            )
+          );
     if (params.where !== undefined) {
       // Resolves extension operators (e.g. embeddingSimilar) to `id IN [...]`
       // clauses before the synchronous SQL builder runs.
@@ -578,6 +594,17 @@ export class PgDataset implements Dataset {
         ...(fieldRequested(params.fields, '_vector') ? { returnVector: true } : {})
       });
       extMeta = detailed.meta;
+      // #1815: a pick many seeds share through one hub is computed once per hub.
+      if (scope !== undefined) {
+        prepareSharedPicks(
+          sql,
+          { ...params, where: detailed.where },
+          [...clauses],
+          bodyCastFor,
+          this.#promotedFor,
+          scope
+        );
+      }
       const whereFragment = buildWhere(sql, detailed.where, bodyCastFor, this.#promotedFor, scope);
       if (whereFragment !== null) clauses.push(whereFragment);
     }
@@ -587,7 +614,7 @@ export class PgDataset implements Dataset {
       const matched = combineAnd(sql, clauses);
       if (params.count === true) {
         const [row] = await cancellable(
-          sql<Array<{ n: number }>>`${buildFrameCount(sql, matched, scope)}`,
+          sql<Array<{ n: number }>>`${withCtes(sql, scope)}${buildFrameCount(sql, matched, scope)}`,
           params.signal
         );
         return { rows: [], hasMore: false, count: row?.n ?? 0 };
@@ -595,7 +622,10 @@ export class PgDataset implements Dataset {
       const aggregate = params.aggregate ?? {};
       const statement = buildFrameAggregate(sql, aggregate, params.bucket, matched, limit, scope);
       const groups = (
-        await cancellable(sql<Array<{ g: Record<string, unknown> }>>`${statement}`, params.signal)
+        await cancellable(
+          sql<Array<{ g: Record<string, unknown> }>>`${withCtes(sql, scope)}${statement}`,
+          params.signal
+        )
       ).map((x) => x.g);
       // Only buckets are cut: memory's single group ignores limit.
       const truncated = params.bucket !== undefined && limit !== undefined && groups.length > limit;
@@ -636,8 +666,9 @@ export class PgDataset implements Dataset {
     // OFFSET 0 keeps the subquery from being flattened back into one evaluation per use.
     const from =
       fenced === undefined
-        ? sql`rows r`
-        : sql`(SELECT r.*, ${fenced} AS __derive_0 FROM rows r WHERE ${combineAnd(sql, clauses)} OFFSET 0) r`;
+        ? sql`rows r${windowJoins}`
+        : sql`(SELECT r.*, ${fenced} AS __derive_0 FROM rows r WHERE ${combineAnd(sql, clauses)} OFFSET 0) r${windowJoins}`;
+    const ctes = withCtes(sql, scope);
     const base = fenced === undefined ? clauses : [];
 
     // Cursor: a tuple-compare clause so the page starts strictly after the
@@ -714,7 +745,7 @@ export class PgDataset implements Dataset {
     const page = (where: Fragment, n: number | undefined) =>
       joinShortIds
         ? sql<SubstrateRowRecord[]>`
-          SELECT r.id, ${bodyProjection} AS body, r.deleted_at, s.short_id,
+          ${ctes}SELECT r.id, ${bodyProjection} AS body, r.deleted_at, s.short_id,
                  r.created_at, r.updated_at,
                  r.created_by_kind, r.created_by_id,
                  r.updated_by_kind, r.updated_by_id, r.seq${sortKeyProjection}
@@ -728,7 +759,7 @@ export class PgDataset implements Dataset {
           ${n !== undefined ? sql`LIMIT ${n}` : sql``}
         `
         : sql<SubstrateRowRecord[]>`
-          SELECT p.*, s.short_id
+          ${ctes}SELECT p.*, s.short_id
           FROM (
             SELECT r.id, ${bodyProjection} AS body, r.deleted_at,
                    r.created_at, r.updated_at,

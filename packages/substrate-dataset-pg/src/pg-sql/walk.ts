@@ -18,7 +18,7 @@
  * The tree is assumed validated (substrate-core walk-validator).
  */
 
-import { groupConjuncts, refNames } from '@mnmal-ai/substrate-filter';
+import { groupConjuncts, refNames, sharedPicks } from '@mnmal-ai/substrate-filter';
 import {
   type DeriveSpec,
   type FieldDef,
@@ -64,6 +64,23 @@ export interface WalkScope {
   aggValue?: (name: string) => Fragment;
   /** The direction of `key` in a full index on `type` keyed `(crossRef, key, …)`, when one is declared. */
   indexDir?: (type: string, crossRef: string, key: string) => 'asc' | 'desc' | undefined;
+  /** Statement-level CTEs every statement of the read starts with (`WITH …`), shared by all seeds. */
+  ctes?: Fragment[];
+  /** Per-hub picks (#1815): a hub walk, and each of its picks' CTE, keyed `__hub`. */
+  hubPicks?: Map<WalkNode, Array<{ pick: WalkNode; cte: string }>>;
+  /** Group-by windows (#1815): the CTE of a frame `_agg` window, by `windowKey`. */
+  windows?: Map<string, string>;
+}
+
+/** A hop and where, as JSON: the walks and aggregates over one window share it. */
+export const windowKey = (node: { in?: string; out?: string; where?: unknown }): string =>
+  JSON.stringify([node.in, node.out, node.where]);
+
+/** `WITH …` for the read's CTEs, or nothing. */
+export function withCtes(sql: Sql | TransactionSql, scope: WalkScope | undefined): Fragment {
+  const ctes = scope?.ctes ?? [];
+  if (ctes.length === 0) return sql``;
+  return sql`WITH ${ctes.reduce((a, b) => sql`${a}, ${b}`)} `;
 }
 
 /** The scope of a read's top-level where, over `type` rows aliased `alias`. */
@@ -112,7 +129,7 @@ export function hop(
   node: { in?: string; out?: string },
   scope: WalkScope,
   alias: string
-): { type: string; cond: Fragment; via?: string } {
+): { type: string; cond: Fragment; via?: string; pin: Fragment } {
   let type: string;
   let via: string | undefined;
   let join: Fragment;
@@ -140,13 +157,10 @@ export function hop(
   const far = qualifier(alias);
   // A walk never leaves the frame's namespace (the validator refuses it), so
   // the far row is pinned to the dataset's, as the memory reference reads it.
-  return {
-    type,
-    ...(via === undefined ? {} : { via }),
-    cond: sql`${sql.unsafe(
-      `${far}namespace = ${sqlStringLiteral(scope.namespace)} AND ${far}type = ${sqlStringLiteral(type)} AND ${far}deleted_at IS NULL`
-    )} AND ${join}`
-  };
+  const pin: Fragment = sql`${sql.unsafe(
+    `${far}namespace = ${sqlStringLiteral(scope.namespace)} AND ${far}type = ${sqlStringLiteral(type)} AND ${far}deleted_at IS NULL`
+  )}`;
+  return { type, ...(via === undefined ? {} : { via }), pin, cond: sql`${pin} AND ${join}` };
 }
 
 /** A walk without `as` (any, none, all or pick), under the current bindings. */
@@ -156,6 +170,18 @@ export function buildWalk(
   promotedFor: PromotedColumnLookup,
   scope: WalkScope
 ): Fragment {
+  const shared = scope.hubPicks?.get(node);
+  if (shared !== undefined) return buildHubWalk(sql, node, shared, promotedFor, scope);
+  const window =
+    node.pick === undefined &&
+    (node.quantifier ?? 'any') === 'any' &&
+    scope.alias === scope.seedAlias
+      ? scope.windows?.get(windowKey(node))
+      : undefined;
+  if (window !== undefined) {
+    // The window's keys are exactly the seeds with a neighbour in it (null keys left out).
+    return sql`(${sql.unsafe(`${qualifier(scope.alias)}id::text COLLATE "C"`)}) IN (SELECT __k FROM ${sql.unsafe(window)})`;
+  }
   const alias = scope.nextAlias();
   const a = sql.unsafe(alias);
   const { type, cond } = hop(sql, node, scope, alias);
@@ -166,6 +192,7 @@ export function buildWalk(
   if (node.pick !== undefined) {
     const [dir, field] = Object.entries(node.pick)[0] as [string, string];
     const key = sortKey(sql, field, castFor(scope, type)(field), alias);
+    // Correlated on the lateral `h`, so firstRow's in-order, non-parallel Append still holds.
     const picked = firstRow(sql, sql`${a}.*`, alias, cond, key, dir === 'min' ? 'ASC' : 'DESC');
     return sql`EXISTS (SELECT 1 FROM (${picked}) ${a}${far === null ? sql`` : sql` WHERE ${far}`})`;
   }
@@ -179,6 +206,95 @@ export function buildWalk(
     default:
       return sql`EXISTS (${rows}${far === null ? sql`` : sql` AND ${far}`})`;
   }
+}
+
+/**
+ * Registers the read's per-hub picks (#1815, `sharedPicks` holds the rule).
+ * Each is a CTE of the picked row of every distinct hub that the seeds
+ * passing `base` and the where's plain conjuncts reach, keyed `__hub`: a
+ * superset of the hubs any matching seed reaches, since every matching seed
+ * passes those conjuncts. The pick depends only on the hub, so this is the
+ * same row each seed's probe would find; its where is still tested per seed.
+ */
+export function prepareSharedPicks(
+  sql: Sql | TransactionSql,
+  params: { where?: WhereClause; count?: boolean; aggregate?: unknown; limit?: number },
+  base: Fragment[],
+  rowCastFor: (field: string) => BodyOrderByCast | null,
+  promotedFor: PromotedColumnLookup,
+  scope: WalkScope
+): void {
+  const picks = sharedPicks(params);
+  if (picks.size === 0) return;
+  const plain = groupConjuncts(params.where).items.filter((i) => !whereUsesWalks(i));
+  const seeds = combineAnd(sql, [
+    ...base,
+    ...plain.flatMap((i) => buildWhere(sql, i, rowCastFor, promotedFor, scope) ?? [])
+  ]);
+  scope.hubPicks ??= new Map();
+  scope.ctes ??= [];
+  for (const [pick, hub] of picks) {
+    const hubType = scope.fieldDef(scope.seedType, hub.out as string);
+    if (hubType?.kind !== 'crossRef') continue;
+    const alias = scope.nextAlias();
+    const a = sql.unsafe(alias);
+    const cte = `pick_${alias}`;
+    const { type, cond } = hop(sql, pick, { ...scope, alias: 'h', type: hubType.type }, alias);
+    const [dir, field] = Object.entries(pick.pick ?? {})[0] as [string, string];
+    const key = sortKey(sql, field, castFor(scope, type)(field), alias);
+    // Correlated on the lateral `h`, so firstRow's in-order, non-parallel Append still holds.
+    const picked = firstRow(sql, sql`${a}.*`, alias, cond, key, dir === 'min' ? 'ASC' : 'DESC');
+    const hubs = sql`SELECT DISTINCT ${bodyRawText(sql, [hub.out as string], scope.seedAlias)} AS id FROM rows ${sql.unsafe(scope.seedAlias)} WHERE ${seeds}`;
+    scope.ctes.push(
+      sql`${sql.unsafe(cte)} AS MATERIALIZED (SELECT h.id AS __hub, ${a}.* FROM (${hubs}) h CROSS JOIN LATERAL (${picked}) ${a})`
+    );
+    scope.hubPicks.set(hub, [...(scope.hubPicks.get(hub) ?? []), { pick, cte }]);
+  }
+}
+
+/**
+ * A hub walk with per-hub picks among its where's conjuncts: one EXISTS
+ * joining the hub row to each pick's CTE row on `__hub`, so a seed reads its
+ * hub's picked row from the shared table instead of probing for it. The rest
+ * of the where stays as it compiles alone. Same rows: each pick is an AND
+ * conjunct of an `any` walk, and ∃h: A(h) ∧ ∃p ∈ pick(h): P(p) ≡ ∃h, p: A ∧ P.
+ */
+function buildHubWalk(
+  sql: Sql | TransactionSql,
+  node: WalkNode,
+  shared: Array<{ pick: WalkNode; cte: string }>,
+  promotedFor: PromotedColumnLookup,
+  scope: WalkScope
+): Fragment {
+  const alias = scope.nextAlias();
+  const { type, cond } = hop(sql, node, scope, alias);
+  const near: WalkScope = { ...scope, alias, type };
+  const from = [`rows ${alias}`];
+  const parts: Fragment[] = [cond];
+  for (const { pick, cte } of shared) {
+    const p = scope.nextAlias();
+    from.push(`${cte} ${p}`);
+    parts.push(sql.unsafe(`${p}.__hub = ${alias}.id::text`));
+    if (pick.where === undefined) continue;
+    const pickType = hop(sql, pick, near, p).type;
+    const f = buildWhere(sql, pick.where, castFor(scope, pickType), promotedFor, {
+      ...near,
+      alias: p,
+      type: pickType
+    });
+    if (f !== null) parts.push(f);
+  }
+  const picks = new Set(shared.map((s) => s.pick));
+  const { binds, items } = groupConjuncts(node.where);
+  const rest = [
+    ...binds.map((b) => ({ _walk: b }) as WhereClause),
+    ...items.filter((i) => !picks.has((i as { _walk?: WalkNode })._walk as WalkNode))
+  ];
+  if (rest.length > 0) {
+    const f = buildWhere(sql, { AND: rest }, castFor(scope, type), promotedFor, near);
+    if (f !== null) parts.push(f);
+  }
+  return sql`EXISTS (SELECT 1 FROM ${sql.unsafe(from.join(', '))} WHERE ${combineAnd(sql, parts)})`;
 }
 
 /**
