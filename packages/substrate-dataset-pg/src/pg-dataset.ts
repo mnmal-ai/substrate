@@ -1452,12 +1452,15 @@ export class PgDataset implements Dataset {
     shortIds: readonly number[]
   ): Promise<ReadonlyMap<number, string>> {
     const out = new Map<number, string>();
-    if (shortIds.length === 0) return out;
+    // A non-integer cannot be bound, so it resolves to nothing, as in memory;
+    // it must not reach the bigint cast, which would throw.
+    const valid = [...new Set(shortIds)].filter(Number.isSafeInteger);
+    if (valid.length === 0) return out;
     // One statement: the ids go in as one array, and the join to `rows` keeps
     // live rows only, so a tombstoned or purged row's id never resolves.
     const records = await this.#sql<Array<{ short_id: string; row_id: string }>>`
       SELECT s.short_id, s.row_id
-      FROM unnest(${[...new Set(shortIds)].map(String)}::bigint[]) AS q(short_id)
+      FROM unnest(${valid.map(String)}::bigint[]) AS q(short_id)
       JOIN short_ids s
         ON s.namespace = ${this.namespace}::text AND s.type = ${type}::text AND s.short_id = q.short_id
       JOIN rows r
@@ -1508,6 +1511,21 @@ export class PgDataset implements Dataset {
         SELECT rid, patch::jsonb AS patch
         FROM unnest(${ids}::text[], ${bodies}::text[]) AS t(rid, patch)
       ),
+      -- Lock the target rows in id order, whatever order the plan or the
+      -- caller visits them in, so overlapping concurrent batches queue
+      -- instead of deadlocking. The aggregate drains the locking scan, and
+      -- the UPDATE below joins its single row, so no row is updated before
+      -- every lock is held.
+      locked AS MATERIALIZED (
+        SELECT count(*) AS n FROM (
+          SELECT r.id FROM rows r
+          WHERE ${this.#scope(type, 'r.')}
+            AND r.id = ANY(${ids}::text[])
+            AND r.deleted_at IS NULL
+          ORDER BY r.id
+          FOR UPDATE OF r
+        ) x
+      ),
       updated AS (
         UPDATE rows r
         SET body = r.body || i.patch,
@@ -1515,7 +1533,7 @@ export class PgDataset implements Dataset {
             updated_by_kind = ${updatedBy.kind}::text,
             updated_by_id = ${updatedBy.id}::text
             ${mirrors.length === 0 ? sql`` : (mirrors as unknown as Fragment)}
-        FROM input i
+        FROM input i, locked
         WHERE ${this.#scope(type, 'r.')}
           AND r.id = i.rid
           AND r.deleted_at IS NULL

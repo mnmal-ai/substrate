@@ -19,35 +19,40 @@ const NS = 'batch_prim';
 const NOW = new Date('2026-11-01T12:00:00.000Z');
 const ACTOR = { kind: 'agent', id: 'tester' } as const;
 
-describe.skipIf(!POSTGRES_URL)('batch primitives (memory vs pg)', () => {
-  let sql: Sql;
-  let statements: string[];
+// The memory half runs without POSTGRES_URL; the pg half and the pg-only
+// tests (promoted columns, statement counts, locking) need it.
+const HAS_PG = Boolean(POSTGRES_URL);
+
+describe('batch primitives (memory vs pg)', () => {
+  let sql: Sql | undefined;
+  let statements: string[] = [];
   let datasets: Array<[string, Dataset]>;
+  const pgSql = (): Sql => sql as Sql;
 
   beforeAll(async () => {
+    if (!HAS_PG) return;
     sql = postgres(POSTGRES_URL as string, {
       onnotice: () => {},
       debug: (_conn, query) => {
         statements.push(query);
       }
     });
-    statements = [];
     await addTestPromotedColumns(sql);
   });
 
   afterAll(async () => {
+    if (sql === undefined) return;
     await dropTestPromotedColumns(sql);
     await sql.end();
   });
 
   beforeEach(async () => {
+    datasets = [['memory', new MemoryDataset({ namespace: NS })]];
+    if (sql === undefined) return;
     await sql`DELETE FROM rows WHERE namespace = ${NS}`;
     const pg = new PgDataset({ namespace: NS, sql, promotedColumns: TEST_PROMOTED });
     if (PARTITIONED) await pg.ensureTypeStorage('Item');
-    datasets = [
-      ['memory', new MemoryDataset({ namespace: NS })],
-      ['pg', pg]
-    ];
+    datasets.push(['pg', pg]);
   });
 
   const each = (fn: (name: string, ds: Dataset) => Promise<void>) => async () => {
@@ -211,28 +216,31 @@ describe.skipIf(!POSTGRES_URL)('batch primitives (memory vs pg)', () => {
     })
   );
 
-  it('patchRows mirrors a promoted column from the patch, per row, and keeps it when absent', async () => {
-    const pg = datasets[1]?.[1] as Dataset;
-    await pg.write('Item', [
-      { id: 'a', status: 'open', project: 'p', archived: false },
-      { id: 'b', status: 'open', project: 'p', archived: false }
-    ]);
-    await pg.patchRows(
-      'Item',
-      [
-        { id: 'a', patch: { status: 'closed', archived: true } },
-        { id: 'b', patch: { project: null } }
-      ],
-      ACTOR,
-      NOW
-    );
-    const cols = await sql`SELECT id, status, project, archived FROM rows
+  it.skipIf(!HAS_PG)(
+    'patchRows mirrors a promoted column from the patch, per row, and keeps it when absent',
+    async () => {
+      const pg = datasets[1]?.[1] as Dataset;
+      await pg.write('Item', [
+        { id: 'a', status: 'open', project: 'p', archived: false },
+        { id: 'b', status: 'open', project: 'p', archived: false }
+      ]);
+      await pg.patchRows(
+        'Item',
+        [
+          { id: 'a', patch: { status: 'closed', archived: true } },
+          { id: 'b', patch: { project: null } }
+        ],
+        ACTOR,
+        NOW
+      );
+      const cols = await pgSql()`SELECT id, status, project, archived FROM rows
       WHERE namespace = ${NS} AND type = 'Item' ORDER BY id`;
-    expect(cols.map((r) => [r.id, r.status, r.project, r.archived])).toEqual([
-      ['a', 'closed', 'p', true],
-      ['b', 'open', null, false]
-    ]);
-  });
+      expect(cols.map((r) => [r.id, r.status, r.project, r.archived])).toEqual([
+        ['a', 'closed', 'p', true],
+        ['b', 'open', null, false]
+      ]);
+    }
+  );
 
   it(
     'empty input returns an empty result',
@@ -244,56 +252,134 @@ describe.skipIf(!POSTGRES_URL)('batch primitives (memory vs pg)', () => {
     })
   );
 
-  describe('pg statements', () => {
+  it(
+    'allocateShortIds refuses a count that is not a non-negative safe integer, and never rewinds',
+    each(async (_n, ds) => {
+      const before = await ds.allocateShortIds('Item', 5);
+      for (const bad of [-3, 2.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53]) {
+        await expect(ds.allocateShortIds('Item', bad), String(bad)).rejects.toThrow(
+          /count must be a non-negative integer/
+        );
+      }
+      const after = await ds.allocateShortIds('Item', 1);
+      expect(after[0]).toBeGreaterThan(before[4] as number);
+    })
+  );
+
+  it(
+    'resolveShortIds skips ids that are not integers',
+    each(async (_n, ds) => {
+      await ds.write('Item', [{ id: 'a' }]);
+      const [id] = await ds.allocateShortIds('Item', 1);
+      await ds.bindShortIds('Item', [{ shortId: id as number, rowId: 'a' }]);
+      const got = await ds.resolveShortIds('Item', [
+        1.5,
+        Number.NaN,
+        Number.POSITIVE_INFINITY,
+        id as number
+      ]);
+      expect([...got]).toEqual([[id, 'a']]);
+      expect((await ds.resolveShortIds('Item', [1.5, Number.NaN])).size).toBe(0);
+    })
+  );
+
+  describe.skipIf(!HAS_PG)('pg statements', () => {
     let pg: Dataset;
     beforeEach(() => {
       pg = datasets[1]?.[1] as Dataset;
     });
 
-    it('an empty call sends no SQL', async () => {
+    it('an empty call, or one with no valid id, sends no SQL', async () => {
       await pg.allocateShortId('Item'); // creates the sequence
       const out = await sent(async () => {
         await pg.allocateShortIds('Item', 0);
         await pg.bindShortIds('Item', []);
         await pg.resolveShortIds('Item', []);
+        await pg.resolveShortIds('Item', [1.5, Number.NaN]);
         await pg.patchRows('Item', [], ACTOR, NOW);
       });
       expect(out).toEqual([]);
     });
 
-    it('each primitive is one statement whatever the batch size', async () => {
-      const n = 50;
-      const ids = Array.from({ length: n }, (_, i) => `r${i}`);
-      await pg.write(
-        'Item',
-        ids.map((id) => ({ id }))
-      );
+    it('a fresh store sends the ensureSequence statement before its first allocation', async () => {
+      // PgShortIdStore caches ensured sequences per instance, and every
+      // transaction-bound PgDataset has its own, so the first allocation of a
+      // type in a transaction costs one extra statement (it takes an advisory
+      // xact lock too).
+      const fresh = new PgDataset({ namespace: NS, sql: pgSql(), promotedColumns: TEST_PROMOTED });
+      const first = await sent(() => fresh.allocateShortIds('Item', 3));
+      expect(first).toHaveLength(2);
+      expect(first[0]).toMatch(/CREATE SEQUENCE/);
+      expect(await sent(() => fresh.allocateShortIds('Item', 3))).toHaveLength(1);
+    });
+
+    it('each primitive is one statement, and the same text, whatever the batch size', async () => {
       await pg.allocateShortId('Item'); // creates the sequence, once
-      let shorts: number[] = [];
-      expect(
-        await sent(async () => {
+      const run = async (n: number, tag: string) => {
+        const ids = Array.from({ length: n }, (_, i) => `${tag}${i}`);
+        await pg.write(
+          'Item',
+          ids.map((id) => ({ id }))
+        );
+        let shorts: number[] = [];
+        const texts: Record<string, string[]> = {};
+        texts.allocate = await sent(async () => {
           shorts = await pg.allocateShortIds('Item', n);
-        })
-      ).toHaveLength(1);
-      expect(
-        await sent(() =>
+        });
+        texts.bind = await sent(() =>
           pg.bindShortIds(
             'Item',
             ids.map((rowId, i) => ({ shortId: shorts[i] as number, rowId }))
           )
-        )
-      ).toHaveLength(1);
-      expect(await sent(() => pg.resolveShortIds('Item', shorts))).toHaveLength(1);
-      expect(
-        await sent(() =>
+        );
+        texts.resolve = await sent(() => pg.resolveShortIds('Item', shorts));
+        texts.patch = await sent(() =>
           pg.patchRows(
             'Item',
             ids.map((id) => ({ id, patch: { t: id } })),
             ACTOR,
             NOW
           )
-        )
-      ).toHaveLength(1);
+        );
+        return texts;
+      };
+      const runs = [await run(1, 'a'), await run(3, 'b'), await run(50, 'c')];
+      for (const name of ['allocate', 'bind', 'resolve', 'patch']) {
+        for (const r of runs) expect(r[name], name).toHaveLength(1);
+        expect(new Set(runs.map((r) => r[name]?.[0])).size, `${name} text varies`).toBe(1);
+      }
     });
   });
+
+  // Two transactions patching overlapping rows in opposite orders. The row
+  // locks are taken in id order inside the one statement, so they queue
+  // rather than deadlock (40P01).
+  it.skipIf(!HAS_PG)(
+    'overlapping concurrent patchRows in opposite orders do not deadlock',
+    async () => {
+      const pg = datasets[1]?.[1] as Dataset;
+      const ids = Array.from({ length: 300 }, (_, i) => `r${String(i).padStart(3, '0')}`);
+      await pg.write(
+        'Item',
+        ids.map((id) => ({ id, n: 0 }))
+      );
+      const asc = ids.map((id) => ({ id, patch: { n: 1 } }));
+      const desc = [...asc].reverse();
+      const patch = (list: typeof asc) =>
+        pg.withTransaction((tx) => tx.patchRows('Item', list, ACTOR, NOW));
+      for (let round = 0; round < 25; round++) {
+        const results = await Promise.allSettled([
+          patch(asc),
+          patch(desc),
+          patch(desc),
+          patch(asc)
+        ]);
+        const failed = results.filter((r) => r.status === 'rejected');
+        expect(
+          failed.map((r) => String((r as PromiseRejectedResult).reason)),
+          `round ${round}`
+        ).toEqual([]);
+      }
+    }
+  );
 });
