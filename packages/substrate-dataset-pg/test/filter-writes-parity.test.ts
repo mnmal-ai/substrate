@@ -549,7 +549,9 @@ describe('updateMany / deleteMany: memory vs pg through Engine', () => {
     async () => {
       const s = await stack('pg', fresh());
       await s.seed(items(3));
-      const conn = await (sql as Sql).reserve();
+      // Its own client, so the engine's pool is untouched.
+      const blocker = postgres(POSTGRES_URL as string, { max: 1, onnotice: () => {} });
+      const conn = await blocker.reserve();
       try {
         await conn`BEGIN`;
         // Another writer moves i001 out of the filter and holds its row lock.
@@ -560,7 +562,17 @@ describe('updateMany / deleteMany: memory vs pg through Engine', () => {
           where: { status: { eq: 'open' } },
           set: { title: 'swept' }
         });
-        await new Promise((r) => setTimeout(r, 300));
+        // Commit only once the filter write is blocked on that row lock.
+        const deadline = Date.now() + 10_000;
+        for (;;) {
+          const [row] = await conn<Array<{ n: number }>>`
+            SELECT count(*)::int AS n FROM pg_stat_activity
+            WHERE datname = current_database() AND pid <> pg_backend_pid()
+              AND wait_event_type = 'Lock'`;
+          if ((row?.n ?? 0) > 0) break;
+          if (Date.now() > deadline) throw new Error('the filter write never blocked on the lock');
+          await new Promise((r) => setTimeout(r, 10));
+        }
         await conn`COMMIT`;
         const env = s.strip(await pending);
         expect(env.errors).toEqual([]);
@@ -576,6 +588,48 @@ describe('updateMany / deleteMany: memory vs pg through Engine', () => {
         ]);
       } finally {
         conn.release();
+        await blocker.end();
+      }
+    }
+  );
+
+  // Two filter writes over overlapping rows, run concurrently. `m` locks its
+  // matches in id order, so they queue rather than deadlock (40P01).
+  it.skipIf(POSTGRES_URL === undefined)(
+    'overlapping concurrent updateMany calls do not deadlock',
+    async () => {
+      const s = await stack('pg', fresh());
+      await s.seed([]);
+      const rows = Array.from({ length: 300 }, (_, i) => ({
+        id: `r${String(i).padStart(3, '0')}`,
+        title: `t${String(i).padStart(3, '0')}`,
+        status: 'open',
+        owner: 'o0'
+      }));
+      // Stored in descending id order, so a scan on the body field visits rows
+      // high id first while one on the id index visits them low id first:
+      // without the id-ordered lock the two lock in opposite orders.
+      await s.dataset.write('Item', [...rows].reverse());
+      // The two sets overlap on r100..r199.
+      const low = { title: { lt: 't200' } };
+      const high = { id: { in: rows.slice(100).map((r) => r.id) } };
+      const run = (where: Params, status: string) =>
+        s.dataset.withTransaction(async (tx) => {
+          if (tx.updateWhere === undefined) throw new Error('pg writes by filter');
+          return tx.updateWhere('Item', where, { status }, { maxMatch: 1000 });
+        });
+      for (let round = 0; round < 15; round++) {
+        const results = await Promise.allSettled([
+          run(low, 'closed'),
+          run(high, 'open'),
+          run(high, 'closed'),
+          run(low, 'open')
+        ]);
+        const failed = results.filter((r) => r.status === 'rejected');
+        expect(
+          failed.map((r) => String((r as PromiseRejectedResult).reason)),
+          `round ${round}`
+        ).toEqual([]);
       }
     }
   );

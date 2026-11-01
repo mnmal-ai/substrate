@@ -1607,7 +1607,9 @@ export class PgDataset implements Dataset {
    * too-broad filter tells from zero matches. Under READ COMMITTED a row a
    * concurrent writer changed is re-tested on its new version after the lock
    * (`FOR UPDATE`), so one moved out of the filter is neither locked nor
-   * written. `preImage` returns the rows without the write's `deleted_at`.
+   * written. Locks are taken in id order, so overlapping filter writes queue
+   * rather than deadlock. `preImage` returns the rows without the write's
+   * `deleted_at`.
    */
   async #filterWrite(
     type: string,
@@ -1638,6 +1640,7 @@ export class PgDataset implements Dataset {
       WITH m AS (
         SELECT r.id AS mid FROM rows r ${matchJoin}
         WHERE ${this.#scope(type, 'r.')} AND ${filter} AND r.deleted_at IS NULL
+        ORDER BY r.id
         LIMIT ${maxMatch + 1}
         FOR UPDATE OF r
       ),

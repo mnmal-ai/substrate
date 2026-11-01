@@ -110,6 +110,103 @@ describe('updateMany / deleteMany resolvers', () => {
   });
 });
 
+describe('by filter refuses what update<T> refuses, and what a plugin took over', () => {
+  it('a readonly or server-managed field in set is refused as update<T> refuses it', async () => {
+    const dataset = new MemoryDataset({ namespace: 'app' });
+    const edges = new MemoryEdgesStore({ now: () => NOW });
+    const registry = new Registry();
+    installAutoCrud(registry, 'Item', dataset, edges, {
+      fields: {
+        ...ITEM,
+        shortId: { kind: 'scalar', type: 'number', readonly: true },
+        closedAt: { kind: 'scalar', type: 'date', serverSet: 'update', nullable: true }
+      }
+    });
+    await dataset.write('Item', [{ id: 'a', title: 'a', status: 'open' }]);
+    const codeOf = async (name: string, params: Record<string, unknown>) => {
+      try {
+        await registry.get(name)?.resolver(ctx('update'), { dataset, edges, params });
+        return 'accepted';
+      } catch (err) {
+        return (err as { code?: string }).code;
+      }
+    };
+    // update<T> accepts a readonly field in a patch today; by filter matches it.
+    expect(await codeOf('updateManyItem', { where: {}, set: { shortId: 7 } })).toBe(
+      await codeOf('updateItem', { id: 'a', shortId: 7 })
+    );
+    for (const patch of [
+      { createdAt: '2026-01-01T00:00:00.000Z' },
+      { _metadata: {} },
+      { closedAt: '2026-01-01T00:00:00.000Z' },
+      { _deletedAt: '2026-01-01T00:00:00.000Z' }
+    ]) {
+      const byId = await codeOf('updateItem', { id: 'a', ...patch });
+      const byFilter = await codeOf('updateManyItem', { where: { id: { eq: 'a' } }, set: patch });
+      expect(byFilter, JSON.stringify(patch)).toBe(byId);
+      expect(byFilter, JSON.stringify(patch)).not.toBe('accepted');
+    }
+  });
+
+  for (const verb of ['update', 'delete'] as const) {
+    it(`a namespace that replaces ${verb}<T> gets capability_unsupported from ${verb}Many<T>`, async () => {
+      const { registry, call, dataset } = await seeded();
+      const own = registry.get(`${verb}Item`);
+      if (own === undefined) throw new Error('not installed');
+      registry.replace(`${verb}Item`, { ...own, resolver: async () => null });
+      const params =
+        verb === 'update'
+          ? { where: { status: { eq: 'open' } }, set: { title: 'x' } }
+          : { where: { status: { eq: 'open' } } };
+      for (const name of ['updateManyItem', 'deleteManyItem']) {
+        await expect(
+          call(name, name.startsWith('update') ? 'update' : 'delete', {
+            params: name.startsWith('update') ? params : { where: params.where }
+          })
+        ).rejects.toMatchObject({ code: 'capability_unsupported' });
+      }
+      expect((await dataset.read('Item', {})).rows.map((r) => r.title)).toEqual(['a', 'b', 'c']);
+      // Putting autoCRUD's own entry back serves it again.
+      registry.replace(`${verb}Item`, own);
+      await expect(
+        call(`${verb}ManyItem`, verb, {
+          params: {
+            where: { status: { eq: 'closed' } },
+            ...(verb === 'update' ? { set: { title: 'y' } } : {})
+          }
+        })
+      ).resolves.toMatchObject({ count: 1 });
+    });
+  }
+
+  it('a registry without get fails closed', async () => {
+    const dataset = new MemoryDataset({ namespace: 'app' });
+    const edges = new MemoryEdgesStore({ now: () => NOW });
+    const entries = new Map<
+      string,
+      { resolver: (c: RequestContext, a: ResolverArgs) => unknown }
+    >();
+    installAutoCrud(
+      { register: (k, input) => void entries.set(k, input) },
+      'Item',
+      dataset,
+      edges,
+      {
+        fields: ITEM
+      }
+    );
+    await expect(
+      Promise.resolve(
+        entries.get('deleteManyItem')?.resolver(ctx('delete'), {
+          dataset,
+          edges,
+          params: { where: {} }
+        })
+      )
+    ).rejects.toMatchObject({ code: 'capability_unsupported' });
+  });
+});
+
 describe('X and ManyX in one namespace', () => {
   const fields = { id: field.string(), title: field.string() };
 

@@ -306,18 +306,32 @@ export function installAutoCrud(
   const update: AutoCrudResolver = singleFrame<Row | null>(updateBatch);
   const del: AutoCrudResolver = singleFrame<Row>(deleteBatch);
   const purge: AutoCrudResolver = purgeResolver(typeName, dataset);
+  // By filter is served only while update<T> and delete<T> are these very
+  // entries: a plugin that replaced either (an interceptor, custom logic)
+  // would be bypassed. Checked per call, so a later replace counts too. A
+  // registry that cannot be read back fails closed.
+  const cap = capOf(typeName);
+  const ownsSingleRowWrites = (): boolean => {
+    const get = registry.get?.bind(registry);
+    return (
+      get !== undefined &&
+      get(`update${cap}`)?.resolver === update &&
+      get(`delete${cap}`)?.resolver === del
+    );
+  };
+  const filterOpts = { ...hooks, ownsSingleRowWrites };
   // A mutation's result is an opaque row to the engine; this one carries no `id`.
   const updateMany = updateManyResolver(
     typeName,
     dataset,
     edges,
-    hooks
+    filterOpts
   ) as unknown as AutoCrudResolver;
   const deleteMany = deleteManyResolver(
     typeName,
     dataset,
     edges,
-    hooks
+    filterOpts
   ) as unknown as AutoCrudResolver;
 
   // `returns` defers to the type's declared fields (if any). No fields → no
@@ -340,8 +354,6 @@ export function installAutoCrud(
   // first char of `typeName`. Casing is an ergonomic convention, not a
   // discriminator; `kind: 'mutation'` is what routes these to
   // `Schema.mutations`.
-  const cap = capOf(typeName);
-
   registry.register(`get${cap}`, {
     resolver: get,
     kind: 'mutation',
