@@ -72,7 +72,7 @@ describe('runAsk', () => {
     expect(sent['ns/Todo']?.fields).toEqual({ id: true });
   });
 
-  it.each(['row_policy_blocks_walk'])(
+  it.each(['row_policy_blocks_walk', 'walks_unsupported_store', 'walks_need_partitioned'])(
     'a count refused with %s falls back to paging',
     async (code) => {
       const { e, query } = engine((f) => {
