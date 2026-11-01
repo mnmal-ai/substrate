@@ -346,35 +346,13 @@ export class SubscribeSubsystem {
   }
 
   /**
-   * `dispatchWrite` for every event of one committed mutate, bucket by bucket:
-   * one pass groups the events by subscription bucket, then each subscriber
-   * takes its bucket's events in emit order. Each subscriber's frames, and
-   * their order, are exactly those of `dispatchWrite` per event. Events of a
-   * type nobody subscribes to cost one lookup.
+   * `dispatchWrite` for every event of one committed mutate, in emit order.
+   * Not grouped by type: one subscription can span several types under one
+   * id and `onFrame`, and an idle entry's first frame is delivered
+   * synchronously, so grouping would reorder that subscription's wire.
    */
   dispatchWrites(events: readonly WriteEvent[]): void {
-    if (events.length <= 1) {
-      if (events.length === 1) this.dispatchWrite(events[0] as WriteEvent);
-      return;
-    }
-    const byBucket = new Map<Set<SubscriptionEntry>, WriteEvent[]>();
-    for (const event of events) {
-      const bucket = this.#subscriptions.get(`${event.ns}/${event.type}`);
-      if (bucket === undefined || bucket.size === 0) continue;
-      const list = byBucket.get(bucket);
-      if (list === undefined) byBucket.set(bucket, [event]);
-      else list.push(event);
-    }
-    for (const [bucket, list] of byBucket) {
-      for (const entry of bucket) {
-        for (const event of list) {
-          // Per event, as dispatchWrite would find it: an emit can overload
-          // the entry or unregister it (a where that throws) mid-list.
-          if (entry.closed || !bucket.has(entry)) break;
-          this.#emitToSubscription(entry, event);
-        }
-      }
-    }
+    for (const event of events) this.dispatchWrite(event);
   }
 
   #buildSubscribeContext(caller: Partial<RequestContext>): Omit<RequestContext, 'namespace'> {

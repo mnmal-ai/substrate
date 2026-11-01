@@ -243,18 +243,67 @@ describe('batch resolvers: one call per mutate array', () => {
     expect(await ids(dataset)).toEqual([]);
   });
 
-  it('any other throw from batch rolls back all as an internal error at [key]', async () => {
+  it('any other throw from batch rolls back all as an internal error at [key], observed once', async () => {
+    const seen: ResolveObservation[] = [];
     const { engine, dataset } = build({
+      onResolve: (o) => void seen.push(o),
       batch: async (_ctx, argsList) => {
         await argsList[0]?.dataset?.write('Thing', argsList.map(thingOf));
         throw new Error('connection reset');
       }
     });
-    const env = await engine.mutate({ frame: { [KEY]: frames(3) }, ctx: ctxFor() });
+    const env = await engine.mutate({ frame: { [KEY]: frames(50) }, ctx: ctxFor() });
 
     expect(codesAt(env.errors)).toEqual([{ code: 'batched_frame_rolled_back', path: [KEY] }]);
     expect(env.errors?.[0]?.message).toContain('internal error');
     expect(await ids(dataset)).toEqual([]);
+    // One failure, not 50: a failed batch must not flush the runtime error ring.
+    expect(seen.map((o) => ({ ok: o.ok, code: o.code, batchSize: o.batchSize }))).toEqual([
+      { ok: false, code: 'exception', batchSize: 50 }
+    ]);
+  });
+
+  it('a bare ResolverFrameError from batch keeps its code at [key]', async () => {
+    const seen: ResolveObservation[] = [];
+    const { engine, dataset } = build({
+      onResolve: (o) => void seen.push(o),
+      batch: async (_ctx, argsList) => {
+        await argsList[0]?.dataset?.write('Thing', argsList.map(thingOf));
+        throw new ResolverFrameError('query_timeout', 'statement timeout');
+      }
+    });
+    const env = await engine.mutate({ frame: { [KEY]: frames(5) }, ctx: ctxFor() });
+
+    expect(codesAt(env.errors)).toEqual([
+      { code: 'query_timeout', path: [KEY] },
+      { code: 'batched_frame_rolled_back', path: [KEY] }
+    ]);
+    expect(env.errors?.[0]?.message).toBe('statement timeout');
+    expect(env.errors?.[1]?.message).toContain('statement timeout');
+    expect(env.data[KEY]).toBeUndefined();
+    expect(await ids(dataset)).toEqual([]);
+    expect(seen.map((o) => ({ ok: o.ok, code: o.code, batchSize: o.batchSize }))).toEqual([
+      { ok: false, code: 'query_timeout', batchSize: 5 }
+    ]);
+  });
+
+  it('a wrong-length result or an out-of-range element index is one exception observation', async () => {
+    for (const batch of [
+      async () => [] as Row[],
+      async () => {
+        throw new BatchElementError(9, new ResolverFrameError('id_exists', 'dup'));
+      }
+    ] satisfies BatchResolver[]) {
+      const seen: ResolveObservation[] = [];
+      const { engine } = build({ onResolve: (o) => void seen.push(o), batch });
+      const env = await engine.mutate({ frame: { [KEY]: frames(3) }, ctx: ctxFor() });
+
+      expect(codesAt(env.errors)).toEqual([{ code: 'batched_frame_rolled_back', path: [KEY] }]);
+      expect(env.errors?.[0]?.message).toContain('internal error');
+      expect(seen.map((o) => ({ ok: o.ok, code: o.code, batchSize: o.batchSize }))).toEqual([
+        { ok: false, code: 'exception', batchSize: 3 }
+      ]);
+    }
   });
 
   it('policy deny on element 3 refuses at index 3 before batch runs', async () => {
@@ -298,7 +347,15 @@ describe('batch resolvers: one call per mutate array', () => {
 
     expect(seen).toHaveLength(4);
     for (const o of seen) {
-      expect(o).toMatchObject({ key: KEY, kind: 'mutate', ok: true, caller: 'alice@host' });
+      expect(o).toMatchObject({
+        key: KEY,
+        kind: 'mutate',
+        ok: true,
+        caller: 'alice@host',
+        batchSize: 4
+      });
+      // The batch call's real time, not a 1/N share.
+      expect(o.durationMs).toBe(seen[0]?.durationMs);
       expect(o.durationMs).toBeGreaterThanOrEqual(0);
     }
   });
@@ -414,7 +471,43 @@ function pushes(sub: string, c: Collector, type: string): Array<[string, string,
     ]);
 }
 
-describe('dispatchWrites: post-commit fanout grouped by type', () => {
+describe('dispatchWrites: post-commit fanout', () => {
+  it('one subscription over two types gets frames in emit order', async () => {
+    // One subscribe() with two keys shares one id and one onFrame. Events:
+    // Thing a (no match), Log log-a, Thing b (match).
+    const { engine } = build();
+    const c = collector();
+    await engine.subscribe({
+      id: 's1',
+      frame: {
+        [`${NS}/Thing`]: { params: { where: { title: { eq: 'x' } } } },
+        [`${NS}/Log`]: {}
+      },
+      ctx: ctxFor(),
+      onFrame: c.onFrame
+    });
+
+    const env = await engine.mutate({
+      frame: {
+        [KEY]: [
+          { params: { id: 'a', title: 'y', kind: 'log' } },
+          { params: { id: 'b', title: 'x' } }
+        ]
+      },
+      ctx: ctxFor()
+    });
+    expect(env.errors).toBeUndefined();
+    await quiesce();
+
+    const wire = c.frames
+      .filter((f) => f.kind !== 'snapshot')
+      .map((f) => {
+        const data = (f.data ?? {}) as Record<string, Row>;
+        return `${f.kind}:${(data[`${NS}/Thing`] ?? data[`${NS}/Log`])?.id}`;
+      });
+    expect(wire).toEqual(['add:log-a', 'add:b']);
+  });
+
   it('row-policy subscriber gets frames only for rows it may see', async () => {
     const { engine } = build({
       typePolicy: row<Row>((c, r) => r.owner === c.identity?.id)

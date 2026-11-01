@@ -2266,13 +2266,19 @@ export class Engine {
     const hook = this.#onResolve;
     const callerId = ctxBase.identity?.id;
     const t0 = performance.now();
-    const report = (ok: boolean, durationMs: number, err?: { code?: string; message: string }) => {
+    const report = (
+      ok: boolean,
+      durationMs: number,
+      batchSize: number | undefined,
+      err?: { code?: string; message: string }
+    ) => {
       if (hook === undefined) return;
       observe(hook, {
         key,
         kind: 'mutate',
         durationMs,
         ok,
+        ...(batchSize !== undefined ? { batchSize } : {}),
         ...(callerId !== undefined ? { caller: callerId } : {}),
         ...(err?.code !== undefined ? { code: err.code } : {}),
         ...(err !== undefined ? { message: err.message } : {})
@@ -2305,7 +2311,7 @@ export class Engine {
           frames.length
         );
       } catch (err) {
-        report(false, performance.now() - t0, {
+        report(false, performance.now() - t0, undefined, {
           code: 'exception',
           message: err instanceof Error ? err.message : String(err)
         });
@@ -2315,7 +2321,7 @@ export class Engine {
         const refused = slotResultOf(scratch, key);
         results[i] = refused;
         const errors = refused.errors ?? [];
-        report(false, performance.now() - t0, errors[0]);
+        report(false, performance.now() - t0, undefined, errors[0]);
         throw new BatchElementError(i, new BatchedFrameRefusal(errors));
       }
       at.push(i);
@@ -2323,6 +2329,10 @@ export class Engine {
     }
     if (prepared.length === 0) return;
 
+    // Every observation of one batch carries the batch call's real time and
+    // its size, so a consumer can tell an amortised call from a single one.
+    const n = prepared.length;
+    const tb = performance.now();
     let rows: Array<Row | null>;
     try {
       rows = await batch(
@@ -2330,45 +2340,43 @@ export class Engine {
         prepared.map((p) => p.args)
       );
     } catch (err) {
-      const elapsed = performance.now() - t0;
+      const ms = performance.now() - tb;
       const slot = isBatchElementError(err) ? at[err.index] : undefined;
       if (!isBatchElementError(err) || slot === undefined) {
-        // Not attributable to one element: today's "internal error" at [key].
-        const message = err instanceof Error ? err.message : String(err);
-        for (let j = 0; j < prepared.length; j++) {
-          report(false, elapsed / prepared.length, { code: 'exception', message });
-        }
-        // An out-of-range index must not be read back as a slot by the caller.
-        throw isBatchElementError(err) ? new Error(message) : err;
+        // Not attributable to one element: one observation for the batch. A
+        // frame refusal keeps its code at [key]; anything else is today's
+        // "internal error" at [key]. An out-of-range index is the latter, and
+        // must not be read back as a slot by the caller.
+        const cause = isBatchElementError(err)
+          ? new Error(`batch resolver for '${key}' refused element ${err.index} of ${n}`)
+          : err;
+        const refusal = this.#batchFrameRefusal(key, cause);
+        report(false, ms, n, {
+          code: refusal?.frameErrors[0]?.code ?? 'exception',
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+        throw refusal ?? cause;
       }
       const cause = err.cause;
-      let refusal: unknown = cause;
-      let code = 'exception';
-      if (isRestrictViolation(cause)) {
-        code = 'restrict_violation';
-        refusal = new BatchedFrameRefusal([{ message: cause.message, path: [key], code }]);
-        this.#metric('engine_restrict_violation', { key, blockedBy: cause.blockedBy.length });
-      } else if (isResolverFrameError(cause)) {
-        code = cause.code;
-        refusal = new BatchedFrameRefusal([{ message: cause.message, path: [key], code }]);
-        this.#metric('engine_resolver_frame_error', { key, code });
-      }
+      const refusal = this.#batchFrameRefusal(key, cause);
       // As the per-element loop reports: the elements before it resolved, then it refused.
-      for (let j = 0; j < err.index; j++) report(true, elapsed / prepared.length);
-      report(false, elapsed / prepared.length, {
-        code,
+      for (let j = 0; j < err.index; j++) report(true, ms, n);
+      report(false, ms, n, {
+        code: refusal?.frameErrors[0]?.code ?? 'exception',
         message: cause instanceof Error ? cause.message : String(cause)
       });
-      throw new BatchElementError(slot, refusal);
+      throw new BatchElementError(slot, refusal ?? cause);
     }
-    if (!Array.isArray(rows) || rows.length !== prepared.length) {
-      throw new Error(
-        `batch resolver for '${key}' returned ${Array.isArray(rows) ? rows.length : typeof rows} results for ${prepared.length} elements`
+    const ms = performance.now() - tb;
+    if (!Array.isArray(rows) || rows.length !== n) {
+      const wrong = new Error(
+        `batch resolver for '${key}' returned ${Array.isArray(rows) ? rows.length : typeof rows} results for ${n} elements`
       );
+      report(false, ms, n, { code: 'exception', message: wrong.message });
+      throw wrong;
     }
 
-    const share = (performance.now() - t0) / prepared.length;
-    for (let j = 0; j < prepared.length; j++) {
+    for (let j = 0; j < n; j++) {
       const p = prepared[j] as PreparedEntry;
       const i = at[j] as number;
       const scratch: PackEnvelope = { schemaVersion, data: {}, shapes: {} };
@@ -2384,11 +2392,30 @@ export class Engine {
       const shaped = slotResultOf(scratch, key);
       results[i] = shaped;
       if (shaped.errors !== undefined) {
-        report(false, share, shaped.errors[0]);
+        report(false, ms, n, shaped.errors[0]);
         throw new BatchElementError(i, new BatchedFrameRefusal(shaped.errors));
       }
-      report(true, share);
+      report(true, ms, n);
     }
+  }
+
+  /**
+   * A batch's `ResolverFrameError` or `RestrictViolation` as the per-element
+   * resolver catch records it: its own code at `[key]`, with the same metric.
+   * Undefined for any other error.
+   */
+  #batchFrameRefusal(key: string, cause: unknown): BatchedFrameRefusal | undefined {
+    if (isRestrictViolation(cause)) {
+      this.#metric('engine_restrict_violation', { key, blockedBy: cause.blockedBy.length });
+      return new BatchedFrameRefusal([
+        { message: cause.message, path: [key], code: 'restrict_violation' }
+      ]);
+    }
+    if (isResolverFrameError(cause)) {
+      this.#metric('engine_resolver_frame_error', { key, code: cause.code });
+      return new BatchedFrameRefusal([{ message: cause.message, path: [key], code: cause.code }]);
+    }
+    return undefined;
   }
 
   /**

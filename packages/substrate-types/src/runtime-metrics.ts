@@ -51,6 +51,12 @@ export interface ResolveObservation {
   message?: string;
   /** The verified identity's id; absent for an anonymous caller. */
   caller?: string;
+  /**
+   * Set when the element ran in a batch resolver call: the number of elements
+   * in that call. `durationMs` is then the whole call's time, shared by all of
+   * them. Absent for a per-element resolve.
+   */
+  batchSize?: number;
 }
 
 /**
