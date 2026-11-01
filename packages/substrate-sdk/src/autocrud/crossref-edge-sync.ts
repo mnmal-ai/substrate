@@ -9,37 +9,19 @@
  * repointing means tombstone the stale edge(s) + write a new one.
  */
 
-import type { Edge, EdgeRef, EdgesStore, EdgeWriteInput } from '@mnmal-ai/substrate-types';
+import type { Edge, EdgeRef, EdgeWriteInput } from '@mnmal-ai/substrate-types';
 import type { CrossRefFieldInfo } from './crossref-existence.js';
 
 /**
  * Reconcile first-class edges against an update patch. For every crossRef
  * field that is a KEY in `patchParams` (a field simply absent from the patch
  * is left untouched — partial updates must not churn edges for fields the
- * caller never mentioned), this tombstones the field's current live edge(s)
- * and writes a fresh edge at the new target when the target actually changed.
+ * caller never mentioned), the field's current live edge(s) are tombstoned
+ * and a fresh edge written at the new target when the target actually changed.
  * A no-op repoint (same target, or clearing an already-null field) is
  * detected and skipped so a no-change update doesn't churn edge history.
- */
-export async function reconcileCrossRefEdgesOnUpdate(
-  edges: EdgesStore,
-  fromRef: EdgeRef,
-  crossRefs: readonly CrossRefFieldInfo[],
-  patchParams: Record<string, unknown>
-): Promise<void> {
-  if (!crossRefs.some(({ fieldName }) => Object.hasOwn(patchParams, fieldName))) return;
-  const plan = planCrossRefEdges(
-    await edges.findEdgesFrom(fromRef),
-    fromRef,
-    crossRefs,
-    patchParams
-  );
-  await edges.tombstoneMany(plan.tombstone);
-  await edges.writeMany(plan.write);
-}
-
-/**
- * The edge changes one update patch needs, given the owner's live outbound
+ *
+ * Returns the edge changes one update patch needs, given the owner's live outbound
  * edges: the stale edge ids to tombstone and the fresh edges to write. Pure,
  * so a batch plans every element from one `findEdgesFromMany` and applies them
  * with one `tombstoneMany` and one `writeMany`.

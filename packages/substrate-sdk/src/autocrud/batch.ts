@@ -138,6 +138,9 @@ async function eachAlone(
 }
 
 function namesARowTwice(rows: ReadonlyArray<Row | null>): boolean {
+  // shortcut: keyed by String(id), so on memory a numeric 5 and a string '5'
+  // count as one row, where sequential memory dispatch keeps them apart (pg
+  // stores ids as text, so it agrees); key by type too if memory ever needs it.
   const seen = new Set<string>();
   for (const r of rows) {
     if (r === null) continue;
@@ -231,6 +234,7 @@ export function createBatchResolver(
 
     if (crossRefs.length > 0) {
       // An element may reference a row an EARLIER element creates.
+      // shortcut: String(id) keys conflate 5 and '5' on memory (see namesARowTwice).
       const pending = new Map<string, number>();
       for (const [i, args] of list.entries()) {
         const id = coerceId(args.params?.id);
@@ -446,7 +450,9 @@ export function updateBatchResolver(
       const byOwner = new Map<string, Edge[]>();
       for (const e of await edgeStore.findEdgesFromMany(refs)) {
         const key = String(e.from.id);
-        byOwner.set(key, [...(byOwner.get(key) ?? []), e]);
+        const owned = byOwner.get(key);
+        if (owned === undefined) byOwner.set(key, [e]);
+        else owned.push(e);
       }
       const tombstone: string[] = [];
       const write: EdgeWriteInput[] = [];

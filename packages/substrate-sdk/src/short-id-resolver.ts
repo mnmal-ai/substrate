@@ -76,6 +76,9 @@ export async function resolveEntityRows(
 ): Promise<Array<Row | null>> {
   const given = [...new Set(inputs.filter((i): i is Id => i !== undefined))];
   if (given.length === 0) return inputs.map(() => null);
+  // shortcut: keyed by String(id), so on memory a numeric 5 and a string '5'
+  // in one call resolve alike, where `resolveEntityRow` keeps them apart (pg
+  // stores ids as text, so it agrees); key by type too if memory ever needs it.
   const byId = new Map<string, Row>();
   for (const r of (await dataset.read(type, { ids: given, includeDeleted: false })).rows) {
     byId.set(String(r.id), r);

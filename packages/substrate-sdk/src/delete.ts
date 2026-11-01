@@ -42,7 +42,8 @@ export interface DeleteRowsArgs {
 
 /**
  * `deleteRow` for many rows of one type in the dataset's namespace: one
- * `findEdgesToMany` gates them all, then one `tombstone` call. Throws
+ * `findEdgesToMany` gates them all (one `canDelete` for a single row), then
+ * one `tombstone` call. Throws
  * `RestrictViolation` for the first id, in `ids` order, that a live `restrict`
  * edge blocks, before tombstoning anything. Returns the ids tombstoned.
  */
@@ -54,10 +55,19 @@ export async function deleteRows(args: DeleteRowsArgs): Promise<Id[]> {
     id
   }));
   const blocked = new Map<string, Edge[]>();
-  for (const e of await args.edges.findEdgesToMany(refs)) {
-    if (e.policy !== 'restrict' || e.deletedAt != null) continue;
-    const key = String(e.to.id);
-    blocked.set(key, [...(blocked.get(key) ?? []), e]);
+  const only = refs.length === 1 ? refs[0] : undefined;
+  if (only !== undefined) {
+    // One row: `canDelete` filters `restrict` in the store (in SQL on pg).
+    const gate = await args.edges.canDelete(only);
+    if (!gate.ok) blocked.set(String(only.id), gate.blockedBy);
+  } else {
+    for (const e of await args.edges.findEdgesToMany(refs)) {
+      if (e.policy !== 'restrict' || e.deletedAt != null) continue;
+      const key = String(e.to.id);
+      const by = blocked.get(key);
+      if (by === undefined) blocked.set(key, [e]);
+      else by.push(e);
+    }
   }
   for (const ref of refs) {
     const by = blocked.get(String(ref.id));

@@ -14,11 +14,7 @@ import type {
   Id,
   ResolverArgs
 } from '@mnmal-ai/substrate-types';
-import {
-  BatchElementError,
-  isBatchElementError,
-  MissingReferentError
-} from '@mnmal-ai/substrate-types';
+import { BatchElementError, MissingReferentError } from '@mnmal-ai/substrate-types';
 import { parseShortForm } from '../short-id-resolver.js';
 
 export interface CrossRefFieldInfo {
@@ -39,10 +35,24 @@ export function collectCrossRefFields(
 }
 
 /**
- * Verify each crossRef's target row exists (live, non-tombstoned). Same-ns
+ * Same-type ids an earlier element of this batch creates: `ids` maps each id
+ * to the index of the first element that creates it.
+ */
+export interface PendingIds {
+  type: string;
+  ids: ReadonlyMap<string, number>;
+}
+
+/**
+ * Refuse a crossRef to a missing target, for a batch: element `i`'s values are
+ * `values[i]`. For each target type it reads the distinct values once, then
+ * resolves the misses that parse as a short id with one `resolveShortIds`.
+ * A value that `pending` names counts as existing for element `i` only when
+ * the element creating it comes before `i`, as sequential dispatch has it
+ * written by then. Throws `BatchElementError(i, MissingReferentError)` for
+ * the lowest refused element, fields checked in declared order. Same-ns
  * targets read the tx-scoped `args.dataset`; cross-ns targets read the
- * committed `args.resolveDataset(ns)` view. Throws MissingReferentError on the
- * first missing target.
+ * committed `args.resolveDataset(ns)` view.
  *
  * Enforcement is ON by default: a crossRef is a PK<->FK relationship. Three
  * states:
@@ -56,37 +66,6 @@ export function collectCrossRefFields(
  *              impossible should fail at registration, not at write time.
  *   'allow'    never enforce. The deliberate opt-out, for a genuinely soft
  *              reference.
- */
-export async function assertCrossRefTargetsExist(
-  args: ResolverArgs,
-  crossRefs: CrossRefFieldInfo[],
-  values: Record<string, unknown>,
-  fromNs: string
-): Promise<void> {
-  try {
-    await assertCrossRefTargetsExistMany(args, crossRefs, [values], fromNs);
-  } catch (err) {
-    throw isBatchElementError(err) ? err.cause : err;
-  }
-}
-
-/**
- * Same-type ids an earlier element of this batch creates: `ids` maps each id
- * to the index of the first element that creates it.
- */
-export interface PendingIds {
-  type: string;
-  ids: ReadonlyMap<string, number>;
-}
-
-/**
- * `assertCrossRefTargetsExist` for a batch: element `i`'s values are
- * `values[i]`. For each target type it reads the distinct values once, then
- * resolves the misses that parse as a short id with one `resolveShortIds`.
- * A value that `pending` names counts as existing for element `i` only when
- * the element creating it comes before `i`, as sequential dispatch has it
- * written by then. Throws `BatchElementError(i, MissingReferentError)` for
- * the lowest refused element, fields checked in declared order.
  */
 export async function assertCrossRefTargetsExistMany(
   args: ResolverArgs,
@@ -149,6 +128,10 @@ export async function assertCrossRefTargetsExistMany(
         def.ns === fromNs && pending?.type === def.type
           ? pending.ids.get(String(value))
           : undefined;
+      // shortcut: pending ids are matched by id only, so a crossRef naming an
+      // earlier element of this batch by its shortId is missing_referent here,
+      // while sequential dispatch accepts it; allocate shortIds before this
+      // check if a caller ever needs that.
       if (earlier !== undefined && earlier < i) continue;
       throw new BatchElementError(i, missing);
     }
@@ -167,7 +150,9 @@ async function existingIds(ds: Dataset, type: string, inputs: Id[]): Promise<Set
     if (found.has(String(input))) continue;
     const shortId = parseShortForm(input);
     if (shortId === null) continue;
-    shortOf.set(shortId, [...(shortOf.get(shortId) ?? []), String(input)]);
+    const same = shortOf.get(shortId);
+    if (same === undefined) shortOf.set(shortId, [String(input)]);
+    else same.push(String(input));
   }
   if (shortOf.size === 0) return found;
   const bound = await ds.resolveShortIds(type, [...shortOf.keys()]);

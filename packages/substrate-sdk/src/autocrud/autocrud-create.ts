@@ -28,11 +28,6 @@ import {
   dropUndefinedParams
 } from './internal.js';
 
-export interface CreateResolverOptions {
-  /** Type field definitions. Used to detect readonly fields and drive shortId allocation. */
-  fields?: Record<string, FieldDef>;
-}
-
 /**
  * One create element's validation, run in JS before any write: returns the
  * row to insert, without `_metadata`, and with no `id` when the dataset is to

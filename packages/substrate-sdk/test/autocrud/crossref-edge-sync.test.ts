@@ -5,19 +5,31 @@
  * edge per crossRef value. Repointing a crossRef via update must move the
  * edge too, or the sweep's applyPolicy walks a stale edge for onDelete.
  *
- * `reconcileCrossRefEdgesOnUpdate` is unit-tested directly against a bare
- * EdgesStore; the second describe block drives the same behaviour through
+ * `planCrossRefEdges` is unit-tested against a bare EdgesStore, applied as
+ * the update batch applies it; the second describe block drives the same behaviour through
  * the real `updateResolver` to prove the wiring, not just the helper.
  */
 
 import { MemoryEdgesStore } from '@mnmal-ai/substrate-core';
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
-import type { Edge, EdgeRef, RequestContext } from '@mnmal-ai/substrate-types';
+import type { Edge, EdgeRef, EdgesStore, RequestContext } from '@mnmal-ai/substrate-types';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { reconcileCrossRefEdgesOnUpdate } from '../../src/autocrud/crossref-edge-sync.js';
+import { planCrossRefEdges } from '../../src/autocrud/crossref-edge-sync.js';
 import type { CrossRefFieldInfo } from '../../src/autocrud/crossref-existence.js';
 import { createResolverWithEdges, updateResolver } from '../../src/autocrud/index.js';
 import { field } from '../../src/field.js';
+
+/** One owner's reconcile, applied as the update batch applies a plan. */
+async function reconcileCrossRefEdgesOnUpdate(
+  edges: EdgesStore,
+  fromRef: EdgeRef,
+  crossRefs: readonly CrossRefFieldInfo[],
+  patch: Record<string, unknown>
+): Promise<void> {
+  const plan = planCrossRefEdges(await edges.findEdgesFrom(fromRef), fromRef, crossRefs, patch);
+  await edges.tombstoneMany(plan.tombstone);
+  await edges.writeMany(plan.write);
+}
 
 function makeEdgesStore(): MemoryEdgesStore {
   return new MemoryEdgesStore({ now: () => new Date('2026-07-12T00:00:00Z') });
@@ -40,7 +52,7 @@ const TRACE_CROSSREF: CrossRefFieldInfo = {
   def: field.crossRef('main', 'Trace', { nullable: true })
 };
 
-describe('reconcileCrossRefEdgesOnUpdate (unit)', () => {
+describe('planCrossRefEdges (unit)', () => {
   const owner: EdgeRef = { ns: 'main', type: 'Constituent', id: 'c1' };
   let edges: MemoryEdgesStore;
 
