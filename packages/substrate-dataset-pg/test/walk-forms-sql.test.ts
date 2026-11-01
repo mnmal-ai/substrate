@@ -8,9 +8,11 @@
  * Pure: nothing connects to a database.
  */
 
+import { encodeCursor } from '@mnmal-ai/substrate-filter';
 import type { FieldDef, ReadParams, WalkAgg, WhereClause } from '@mnmal-ai/substrate-types';
 import postgres from 'postgres';
 import { afterAll, describe, expect, it } from 'vitest';
+import { PgDataset } from '../src/index.js';
 import { buildWalkProjection, prepareWindows } from '../src/pg-sql/aggregate.js';
 import { resolveBodyOrderByCast } from '../src/pg-sql/sorting.js';
 import { prepareSharedPicks, type WalkScope, walkScope, withCtes } from '../src/pg-sql/walk.js';
@@ -104,13 +106,26 @@ function predicates(text: string): string[] {
 function expectJoinedOnce(text: string): void {
   const { main, ctes } = split(text);
   expect(ctes.length).toBeGreaterThan(0);
-  const d = depths(main);
+  // The opening paren of each group enclosing an index: a reference inside a group is
+  // allowed only when every such group is a derived table (it follows FROM or JOIN).
+  const opens: number[][] = [];
+  const stack: number[] = [];
+  let quoted = false;
+  for (let i = 0; i < main.length; i++) {
+    opens.push([...stack]);
+    const ch = main[i];
+    if (ch === "'") quoted = !quoted;
+    else if (!quoted && ch === '(') stack.push(i);
+    else if (!quoted && ch === ')') stack.pop();
+  }
+  const derivedOnly = (at: number) =>
+    (opens[at] ?? []).every((o) => /(FROM|JOIN)\s*$/.test(main.slice(0, o)));
   for (const { name, body } of ctes) {
     const rel = new RegExp(`(FROM|JOIN|,)\\s+${name}\\b(?!\\.)`, 'g');
     let seen = 0;
     for (let m = rel.exec(main); m !== null; m = rel.exec(main)) {
       seen++;
-      expect(d[m.index], `${name} read inside a subquery`).toBe(0);
+      expect(derivedOnly(m.index), `${name} read inside a subquery`).toBe(true);
       expect(m[1], `${name} read but not joined`).toBe('JOIN');
     }
     expect(seen, `${name} joined once`).toBe(1);
@@ -178,6 +193,113 @@ const yardstick = {
   ]
 } as unknown as WhereClause;
 
+/**
+ * A pg dataset over a handle that records each statement it sends, rendered,
+ * and answers every one with no rows: the statements pg-dataset itself
+ * builds, FROM, joins and all, with nothing connected.
+ */
+function capturing(): { ds: PgDataset; sent: string[] } {
+  const sent: string[] = [];
+  const handle = new Proxy(sql, {
+    apply(target, thisArg, args: unknown[]) {
+      const q = Reflect.apply(target, thisArg, args) as Promise<unknown>;
+      Object.defineProperty(q, 'then', {
+        value: (ok: (v: unknown) => unknown, ko: (e: unknown) => unknown) => {
+          sent.push(render(q));
+          return Promise.resolve([]).then(ok, ko);
+        }
+      });
+      return q;
+    }
+  });
+  const typeDefLookup = (t: string) =>
+    FIELDS[t] === undefined ? undefined : { fields: FIELDS[t] };
+  const ds = new PgDataset({
+    namespace: NS,
+    sql: handle,
+    inTx: true,
+    txScopeId: 'capture',
+    layoutCache: { layout: 'partitioned' },
+    fieldDefLookup: fieldDef,
+    typeDefLookup
+  } as never);
+  return { ds, sent };
+}
+/** The statements a read sends that read its rows (`FROM rows r`). */
+async function statements(params: ReadParams): Promise<string[]> {
+  const { ds, sent } = capturing();
+  await ds.read('Cert', params);
+  return sent.filter((q) => / FROM rows r\b/.test(q));
+}
+/** Every column a CTE exports is `__`-named, so none can collide with a row column. */
+function expectPrivateColumns(text: string): void {
+  for (const { body } of split(text).ctes) {
+    const d = depths(body);
+    let from = body.indexOf(' FROM ');
+    while (from >= 0 && d[from] !== 0) from = body.indexOf(' FROM ', from + 1);
+    const list = body.slice(body.indexOf('SELECT ') + 7, from);
+    for (const item of list.split(', ')) expect(item, body).toMatch(/ AS __\w+$/);
+  }
+}
+
+describe('the per-hub form in the statements pg-dataset sends', () => {
+  it('a count, a page, a body-ordered page and a cursor page join the CTE once, in FROM', async () => {
+    const cursor = encodeCursor({
+      orderByValues: [5],
+      id: 'x',
+      order: [
+        ['ask', 'desc'],
+        ['id', 'asc']
+      ]
+    });
+    const reads: ReadParams[] = [
+      { where: yardstick, count: true },
+      { where: yardstick },
+      { where: yardstick, orderBy: [{ ask: 'desc' }] },
+      // The cursor page and its null tail, both sent since no rows come back.
+      { where: yardstick, orderBy: [{ ask: 'desc' }], cursor },
+      {
+        where: yardstick,
+        limit: 2000,
+        cursor: encodeCursor({ orderByValues: [], id: 'x', order: [['id', 'asc']] })
+      },
+      // A shortId key: the page joins short_ids beside the CTE.
+      { where: yardstick, orderBy: [{ shortId: 'asc' }] },
+      // A derived order: the CTE's join sits inside the fence.
+      {
+        where: yardstick,
+        agg: { n: { out: 'spec', count: true } } as Record<string, WalkAgg>,
+        derive: { m: { diff: ['_agg.n', '$.ask'] } },
+        orderBy: [{ $m: 'desc' }]
+      }
+    ];
+    for (const params of reads) {
+      const sent = await statements(params);
+      expect(sent.length, JSON.stringify(params)).toBeGreaterThan(0);
+      for (const text of sent) {
+        expectJoinedOnce(text);
+        expectPrivateColumns(text);
+      }
+    }
+    expect(await statements({ where: yardstick, orderBy: [{ ask: 'desc' }], cursor })).toHaveLength(
+      2
+    );
+  });
+
+  it('a whole-result aggregate keeps the per-seed form', async () => {
+    const [text] = await statements({ where: yardstick, aggregate: { n: { count: true } } });
+    expect(text).toBeDefined();
+    expect(text).not.toContain('WITH');
+    expect(text).not.toMatch(/pick_w\d+/);
+    expect(text).toMatch(/\bmax\(substrate_ts\(w\d+\.body -> 'at'\)\)/);
+  });
+
+  it('a page of a few seeds sends the per-seed form', async () => {
+    const [text] = await statements({ where: yardstick, limit: 20 });
+    expect(text).not.toContain('WITH');
+  });
+});
+
 describe('a pick shared through an outbound hop: one probe per hub', () => {
   it('the structure check rejects a CTE read in a subquery, or a conjunct read twice', () => {
     const cte =
@@ -198,7 +320,7 @@ describe('a pick shared through an outbound hop: one probe per hub', () => {
     const [ctes, main] = text.split(') SELECT 1 FROM rows r');
     // The hubs: the distinct `spec` of the seeds passing the plain conjuncts, whose hub row is live.
     expect(ctes).toMatch(
-      /^WITH pick_w1 AS MATERIALIZED \(SELECT h\.id AS __hub, w1\.\* FROM \(SELECT DISTINCT \(r\.body ->> 'spec'\) AS id FROM rows r WHERE \( r\.namespace = 'ns' AND r\.type = 'Cert' AND .*substrate_num\(r\.body -> 'grade'\).*\) h JOIN rows (w\d+) ON \1\.namespace = 'ns' AND \1\.type = 'Spec' AND \1\.deleted_at IS NULL AND \1\.id::text = h\.id CROSS JOIN LATERAL/
+      /^WITH pick_w1 AS MATERIALIZED \(SELECT h\.id AS __hub, w1\.__row AS __row FROM \(SELECT DISTINCT \(r\.body ->> 'spec'\) AS id FROM rows r WHERE \( r\.namespace = 'ns' AND r\.type = 'Cert' AND .*substrate_num\(r\.body -> 'grade'\).*\) h JOIN rows (w\d+) ON \( \1\.namespace = 'ns' AND \1\.type = 'Spec' AND \1\.deleted_at IS NULL AND \1\.id::text = h\.id\) CROSS JOIN LATERAL/
     );
     // The pick, keyed on the hub and nothing of the seed.
     expect(ctes).toContain(`((w1.body ->> 'spec') COLLATE "C") = (h.id::text COLLATE "C")`);
@@ -212,7 +334,12 @@ describe('a pick shared through an outbound hop: one probe per hub', () => {
     // Each seed joins its hub's row of the CTE; only the pick's $-reading conjunct is left.
     expect(main).toMatch(/^ LEFT JOIN pick_w1 ON pick_w1\.__hub = \(r\.body ->> 'spec'\) WHERE /);
     expect(main).toContain('pick_w1.__hub IS NOT NULL');
-    expect(main).toContain("substrate_num(pick_w1.body -> 'price')");
+    // …read over the picked row expanded from `__row`, one row, not a scan of the CTE.
+    expect(main).toMatch(
+      /EXISTS \(SELECT 1 FROM \(SELECT \(pick_w1\.__row\)\.\*\) (w\d+) WHERE .*substrate_num\(\1\.body -> 'price'\)/
+    );
+    // No hub-row probe per seed: the hub where has nothing but its pick.
+    expect(main).not.toContain("'Spec'");
     expect(main).toContain("substrate_num(r.body -> 'ask')");
     expect(main).not.toContain("'at'");
     expect(main).not.toMatch(/\bmax\(/);
@@ -311,16 +438,22 @@ describe('a pick shared through an outbound hop: one probe per hub', () => {
     expect(main).toMatch(
       /LEFT JOIN (pick_w\d+) ON \1\.__hub = \(r\.body ->> 'spec'\) LEFT JOIN (pick_w\d+) ON \2\.__hub = \(r\.body ->> 'spec'\) WHERE .*\1\.__hub IS NOT NULL.*\2\.__hub IS NOT NULL/
     );
-    // The rest of the hub's where, on the hub row: its plain conjunct and the bind's EXISTS.
-    expect(main).toMatch(
-      /EXISTS \(SELECT 1 FROM rows (w\d+) WHERE \1\.namespace = 'ns' AND \1\.type = 'Spec' .*substrate_num\(\1\.body -> 'tier'\)/
+    // The hub where's own conjunct (`tier >= 1`) once per hub, on the first CTE's hub row.
+    const first = split(text).ctes[0]?.body ?? '';
+    expect(first).toMatch(
+      /JOIN rows (w\d+) ON \( \1\.namespace = 'ns' AND \1\.type = 'Spec' .*AND \(+substrate_num\(\1\.body -> 'tier'\) IS NOT NULL AND substrate_num\(\1\.body -> 'tier'\) >= /
     );
+    // Per seed, on the hub row, only the bind and the conjunct reading it.
+    expect(main).toMatch(
+      /EXISTS \(SELECT 1 FROM rows (w\d+) WHERE \1\.namespace = 'ns' AND \1\.type = 'Spec' .*substrate_num\(\1\.body -> 'tier'\)::float8 <= /
+    );
+    expect(main).not.toMatch(/substrate_num\(w\d+\.body -> 'tier'\) >= /);
     expect(main).toMatch(
       /EXISTS \(SELECT 1 FROM rows w\d+ WHERE .*'Sale'.*substrate_num\(w\d+\.body -> 'price'\)/
     );
     // The unfiltered pick has no candidate filter.
     expect(text).toMatch(
-      /pick_w\d+ AS MATERIALIZED \(SELECT h\.id AS __hub, (w\d+)\.\* FROM .* LIMIT 1\) \1\)/
+      /pick_w\d+ AS MATERIALIZED \(SELECT h\.id AS __hub, (w\d+)\.__row AS __row FROM .* LIMIT 1\) \1\)/
     );
   });
 

@@ -412,6 +412,11 @@ describe('walk forms (#1815) and a nested list in natural order (#1821)', () => 
     expect(at(run({ params: { limit: 20, where } }, 'Observation'), ...path)?.form).toBe(
       'per-seed'
     );
+    // A whole-result aggregate keeps the per-seed form.
+    const aggregate = { n: { count: true } };
+    expect(at(run({ params: { aggregate, where } }, 'Observation'), ...path)?.form).toBe(
+      'per-seed'
+    );
     // Under OR the hub walk is not a conjunct of the seed's where.
     expect(
       at(

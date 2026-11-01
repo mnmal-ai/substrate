@@ -630,13 +630,22 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk plan shapes (pg)', () => {
 
     it('a cursor chain whose limit, and so form, changes between pages agrees with memory', async () => {
       const where = shared({ latest: 'at' }, overAsk) as WhereClause;
-      const chain = async (ds: PgDataset | MemoryDataset, limits: number[]) => {
+      const chain = async (
+        ds: PgDataset | MemoryDataset,
+        limits: number[],
+        orderBy?: ReadParams['orderBy']
+      ) => {
         const ids: unknown[] = [];
         let cursor: string | undefined;
         let i = 0;
         do {
           const limit = limits[i++ % limits.length] as number;
-          const res = await ds.read('Seed', { where, limit, ...(cursor ? { cursor } : {}) });
+          const res = await ds.read('Seed', {
+            where,
+            limit,
+            ...(orderBy ? { orderBy } : {}),
+            ...(cursor ? { cursor } : {})
+          });
           ids.push(...res.rows.map((r) => names.get(String(r.id))));
           cursor = res.nextCursor;
         } while (cursor !== undefined);
@@ -645,6 +654,9 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk plan shapes (pg)', () => {
       // 7 is per seed, 2000 per hub; the cursor carries over.
       for (const limits of [[7, 2000], [2000], [7]]) {
         expect(await chain(pg, limits)).toEqual(await chain(mem, limits));
+        // A body-field order on a per-hub page: its sort keys and cursor read the seed's body.
+        const byAsk = [{ ask: 'desc' }] as ReadParams['orderBy'];
+        expect(await chain(pg, limits, byAsk)).toEqual(await chain(mem, limits, byAsk));
       }
     }, 120_000);
 

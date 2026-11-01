@@ -46,6 +46,10 @@ describe('sharedPicks', () => {
     };
     const withBind = where({ AND: [{ _walk: { in: 'ns/X.c', as: 'B' } }, { _walk: reads }] });
     expect(sharedPicks({ where: withBind, count: true }).size).toBe(0);
+    // A whole-result aggregate re-reads the where in its own subqueries: per seed.
+    expect(
+      sharedPicks({ where: where({ _walk: hub }), aggregate: { n: { count: true } } }).size
+    ).toBe(0);
     // An inbound first hop reaches a hub only its seed does: nothing to share.
     const inbound = where({ _walk: { in: 'ns/Spec.x', where: { _walk: pick } } });
     expect(sharedPicks({ where: inbound, count: true }).size).toBe(0);
