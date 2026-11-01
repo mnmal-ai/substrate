@@ -23,8 +23,11 @@ const fields: Record<string, FieldDef> = {
   due: field.date(),
   meta: field.json(),
   tags: field.list(field.string()),
+  addr: field.struct({ street: field.string() }),
+  gone: field.string(),
   ref: field.crossRef(NS, TYPE)
 };
+// `Other` has no def at all, as a type proposed before its registry entry exists.
 const typeDefLookup = (type: string) => (type === TYPE ? { fields } : undefined);
 const fieldDefLookup = (type: string, name: string) => (type === TYPE ? fields[name] : undefined);
 
@@ -98,6 +101,52 @@ function suite(label: string, make: () => Dataset | Promise<Dataset>): void {
       expect('ref' in (await read(referrer))).toBe(false);
     });
 
+    it('projecting a json field the row lacks reads absent; one holding null reads null', async () => {
+      const lacking = randomUUID();
+      const holding = randomUUID();
+      await ds.write(TYPE, [{ id: lacking }, { id: holding, meta: null, tags: null }]);
+      const project = async (id: string, f: string) =>
+        ((await ds.read(TYPE, { id, fields: { [f]: true } })).rows[0] ?? {}) as Row;
+      for (const f of ['meta', 'tags', 'addr'])
+        expect(f in (await project(lacking, f))).toBe(false);
+      expect((await project(holding, 'meta')).meta).toBeNull();
+      expect((await project(holding, 'tags')).tags).toBeNull();
+    });
+
+    it('projecting a field the def does not declare reads absent when missing, null when stored', async () => {
+      const id = randomUUID();
+      await ds.write(TYPE, [{ id, undeclared: null }]);
+      const [row] = (await ds.read(TYPE, { id, fields: { undeclared: true, nothere: true } })).rows;
+      expect((row as Row).undeclared).toBeNull();
+      expect('nothere' in (row as Row)).toBe(false);
+    });
+
+    it('a type with no def keeps an explicit null', async () => {
+      const id = randomUUID();
+      const { rows } = await ds.write('Other', [{ id, title: null }]);
+      expect((rows[0] as Row).title).toBeNull();
+      expect(((await ds.read('Other', { id })).rows[0] as Row).title).toBeNull();
+    });
+
+    it("a struct's inner null is kept", async () => {
+      const id = randomUUID();
+      await ds.write(TYPE, [{ id, addr: { street: null } }]);
+      expect((await read(id)).addr).toEqual({ street: null });
+    });
+
+    it('a field removed from the def keeps its null', async () => {
+      const id = randomUUID();
+      await ds.write(TYPE, [{ id, gone: null }]);
+      expect('gone' in (await read(id))).toBe(false);
+      const removed = fields.gone as FieldDef;
+      delete fields.gone;
+      try {
+        expect((await read(id)).gone).toBeNull();
+      } finally {
+        fields.gone = removed;
+      }
+    });
+
     it('a field added at runtime is absent on rows written before it existed', async () => {
       const ids = [randomUUID(), randomUUID()];
       await ds.write(
@@ -123,17 +172,18 @@ suite('null reads absent (memory)', () =>
 
 describe.skipIf(!POSTGRES_URL)('null reads absent (pg)', () => {
   let sql: ReturnType<typeof postgres>;
+  let pg: PgDataset | undefined;
   beforeAll(() => {
     if (POSTGRES_URL) sql = postgres(POSTGRES_URL, { onnotice: () => {} });
   });
   afterAll(async () => {
     if (!POSTGRES_URL) return;
-    await sql`DELETE FROM rows WHERE namespace = ${NS}`;
+    await pg?.dropNamespace();
     await sql.end({ timeout: 5 });
   });
 
   suite('pg', async () => {
-    const pg = new PgDataset({ namespace: NS, sql, typeDefLookup, fieldDefLookup });
+    pg = new PgDataset({ namespace: NS, sql, typeDefLookup, fieldDefLookup });
     if (PARTITIONED) await pg.ensureTypeStorage(TYPE);
     return pg;
   });

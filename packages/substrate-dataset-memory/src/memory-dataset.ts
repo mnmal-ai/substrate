@@ -374,14 +374,15 @@ export class MemoryDataset implements Dataset {
 
     const out: ReadResult = { rows: slice, hasMore };
     // Derived copies back to the originals once the cursor is encoded, below.
+    const columns = this.columnFieldNames(type);
     const page = (rows: Row[]): Row[] => {
       const base = original.size === 0 ? rows : rows.map((r) => original.get(r) ?? r);
       // Last, so the walk memo (keyed by the stored row) still hits.
       if (params.agg === undefined && params.nested === undefined) {
-        return base.map((r) => this.withoutNullColumns(type, r));
+        return base.map((r) => withoutNullColumns(columns, r));
       }
       return base.map((r) =>
-        this.withoutNullColumns(type, {
+        withoutNullColumns(columns, {
           ...r,
           ...walkProjection(r, params.agg, params.nested ?? {}, ctxFor(r), true)
         })
@@ -454,7 +455,9 @@ export class MemoryDataset implements Dataset {
     const fallbackNow = (options?.now ?? new Date()).toISOString();
     const fallbackActor = options?.identity ?? null;
     // Writes here are serial, so assignment order is commit order.
-    const visible = this.typeDefLookup?.(type, this.namespace)?.ordering === 'visible';
+    const def = this.typeDefLookup?.(type, this.namespace);
+    const visible = def?.ordering === 'visible';
+    const columns = columnFieldNames(def?.fields);
 
     for (const input of rows) {
       // An id-less row gets a v7 UUID (see uuidv7.ts for its limits).
@@ -520,28 +523,15 @@ export class MemoryDataset implements Dataset {
       // above preserves it via `{ ...existing, ...sanitised }`). For create
       // paths shortId is bound after write, so it is absent here — the
       // autoCRUD create resolver merges it into its own returned shape.
-      merged.push(this.withoutNullColumns(type, { ...landed }));
+      merged.push(withoutNullColumns(columns, { ...landed }));
     }
 
     return { written: ids.length, ids, rows: merged };
   }
 
-  /**
-   * The row as it reads back: a declared scalar or crossRef holding `null` is
-   * absent, as on pg. The stored row keeps its null; the same row comes back
-   * when it has none.
-   */
-  private withoutNullColumns(type: string, row: Row): Row {
-    const fields = this.typeDefLookup?.(type, this.namespace)?.fields;
-    if (fields === undefined) return row;
-    let out = row;
-    for (const [k, v] of Object.entries(row)) {
-      const def = v === null && Object.hasOwn(fields, k) ? fields[k] : undefined;
-      if (def === undefined || !isColumnField(def)) continue;
-      if (out === row) out = { ...row };
-      delete out[k];
-    }
-    return out;
+  /** The type's column fields, looked up once per call rather than per row. */
+  private columnFieldNames(type: string): string[] {
+    return columnFieldNames(this.typeDefLookup?.(type, this.namespace)?.fields);
   }
 
   async tombstone(type: string, ids: Id[]): Promise<DeleteResult> {
@@ -649,7 +639,10 @@ export class MemoryDataset implements Dataset {
       ...(prior?.seq !== undefined ? { seq: prior.seq } : {})
     };
     row._metadata = meta;
-    return { matched: true, row: this.withoutNullColumns(type, { ...row }) };
+    return {
+      matched: true,
+      row: withoutNullColumns(this.columnFieldNames(type), { ...row })
+    };
   }
 
   async updateField(ref: UpdateFieldRef, fieldName: string, value: unknown): Promise<void> {
@@ -790,6 +783,25 @@ export class MemoryDataset implements Dataset {
 // ---------------------------------------------------------------------------
 // Filter evaluation helpers
 // ---------------------------------------------------------------------------
+
+/** The names of the declared fields that read back absent when null (`isColumnField`). */
+function columnFieldNames(fields: Record<string, FieldDef> | undefined): string[] {
+  return Object.entries(fields ?? {}).flatMap(([k, def]) => (isColumnField(def) ? [k] : []));
+}
+
+/**
+ * The row as it reads back: a column field holding `null` is absent, as on pg.
+ * The stored row keeps its null; the same row comes back when it has none.
+ */
+function withoutNullColumns(columns: string[], row: Row): Row {
+  let out = row;
+  for (const k of columns) {
+    if (row[k] !== null) continue;
+    if (out === row) out = { ...row };
+    delete out[k];
+  }
+  return out;
+}
 
 /**
  * Equality predicate used by `conditionalUpdate`. Handles the three shapes

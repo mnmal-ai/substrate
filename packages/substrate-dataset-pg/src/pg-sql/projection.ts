@@ -12,8 +12,9 @@ import { type Fragment, NON_BODY_FIELD_KEYS } from './primitives.js';
  *
  *   - `fields === undefined` → the full body.
  *   - `fields` supplied → `jsonb_build_object(...)` over `id` plus the
- *     requested top-level body keys. `id` is always included because
- *     `materialize()` reads `body.id` to preserve numeric ids.
+ *     requested top-level body keys, less the keys the row lacks. `id` is
+ *     always included because `materialize()` reads `body.id` to preserve
+ *     numeric ids.
  *
  * Keys are bound as parameters, never concatenated.
  */
@@ -31,10 +32,15 @@ export function buildBodyProjection(
     if (NON_BODY_FIELD_KEYS.has(key)) continue;
     bodyKeys.add(key);
   }
-  return buildObject(
+  const keys = Array.from(bodyKeys);
+  // `r.body->k` is SQL NULL for a key the row lacks and jsonb `null` for a stored
+  // null; jsonb_build_object turns both into `"k": null`. The lacking keys are
+  // subtracted again, so a projected-absent key reads absent, as on memory.
+  const absent = keys.map((k) => sql`CASE WHEN r.body->${k} IS NULL THEN ${k}::text END`);
+  return sql`(${buildObject(
     sql,
-    Array.from(bodyKeys, (k) => sql`${k}::text, r.body->${k}`)
-  );
+    keys.map((k) => sql`${k}::text, r.body->${k}`)
+  )} - ARRAY[${join(absent, sql`,`)}]::text[])`;
 }
 
 /**

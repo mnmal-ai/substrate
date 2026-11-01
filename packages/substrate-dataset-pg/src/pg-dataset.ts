@@ -813,7 +813,7 @@ export class PgDataset implements Dataset {
     }
 
     const fields = this.#typeDefLookup?.(type, this.namespace)?.fields;
-    const materialised = rows.map((r) => this.materialize(type, r, fields));
+    const materialised = rows.map((r) => this.materialize(r, fields));
     let hasMore = false;
     let sliced = materialised;
     if (limit !== undefined && materialised.length > limit) {
@@ -1073,7 +1073,7 @@ export class PgDataset implements Dataset {
     });
 
     const fields = this.#typeDefLookup?.(type, this.namespace)?.fields;
-    const merged = records.map((r) => this.materialize(type, r, fields));
+    const merged = records.map((r) => this.materialize(r, fields));
     return { written: merged.length, ids: merged.map((r) => r.id), rows: merged };
   }
 
@@ -1262,7 +1262,8 @@ export class PgDataset implements Dataset {
 
     const row = rows[0];
     if (row === undefined) return { matched: false, row: null };
-    return { matched: true, row: this.materialize(type, row) };
+    const fields = this.#typeDefLookup?.(type, this.namespace)?.fields;
+    return { matched: true, row: this.materialize(row, fields) };
   }
 
   async updateField(ref: UpdateFieldRef, fieldName: string, value: unknown): Promise<void> {
@@ -2071,11 +2072,10 @@ export class PgDataset implements Dataset {
     );
   }
 
-  /** `fields` is the type's, looked up once by a caller that materializes many rows. */
+  /** `fields` is the type's, which the caller looks up once however many rows it builds. */
   private materialize(
-    type: string,
     record: SubstrateRowRecord,
-    fields = this.#typeDefLookup?.(type, this.namespace)?.fields
+    fields: Record<string, FieldDef> | undefined
   ): Row {
     const body = record.body ?? {};
     // Prefer the body.id (preserves number vs string at write time) over the
