@@ -244,13 +244,19 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk plan shapes (pg)', () => {
       await same('Hub', {
         agg: { lp: { ...lp, where: { [by]: { eq: null } } } }
       } as unknown as ReadParams);
-      // In derive, as an order and a filter.
+      // In derive, as an order: a numeric value, so the order is real.
+      const num = { in: IN, latest: { by, value: 'price' } };
       for (const dir of ['asc', 'desc'] as const) {
-        await same('Hub', {
-          agg: { lp },
+        const rows = await same('Hub', {
+          agg: { lp: num },
           derive: { m: { diff: ['_agg.lp', '$.ask'] } },
           orderBy: [{ $m: dir }]
         } as unknown as ReadParams);
+        const m = rows.flatMap((r) => {
+          const lp = (r._agg as Record<string, unknown> | undefined)?.lp;
+          return typeof lp === 'number' && typeof r.ask === 'number' ? [lp - r.ask] : [];
+        });
+        expect(new Set(m).size, JSON.stringify(rows)).toBeGreaterThanOrEqual(2);
       }
       await same('Hub', {
         where: { _agg: { in: IN, latest: { by, value: 'price' } }, gte: 50 }
@@ -372,9 +378,9 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk plan shapes (pg)', () => {
         } as unknown as ReadParams,
         8
       );
-      // A pick is at most three probes (max, the rows at it, the null tail): once per hub
-      // for the order, and once per hub at most for the projected `_agg`.
-      expect(lookups(plan)).toBeLessThanOrEqual(2 * 3 * HUBS);
+      // A latest is one top-1 per hub, plus the null tail where no key is present
+      // (h8, h9): once for the order, and at most once more for the projected `_agg`.
+      expect(lookups(plan)).toBeLessThanOrEqual(2 * (HUBS + 2));
     }
   }, 60_000);
   it('one _agg mixing a pick with shared aggregates over different wheres', async () => {
