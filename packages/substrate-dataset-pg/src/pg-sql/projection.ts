@@ -48,7 +48,8 @@ export function buildBodyProjection(
 
 /**
  * Stands in for a projected key the row lacks. The nonce is per process and never
- * stored or sent to a client, so no stored value can equal it. The literal is
+ * stored or sent to a client (keep it so: never log it or a result row), which is
+ * why no stored value can equal it. The literal is
  * built here from hex only, so it is safe to inline (a parameter would be cast
  * per row under a generic plan).
  */

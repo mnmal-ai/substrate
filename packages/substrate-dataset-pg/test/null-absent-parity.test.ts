@@ -11,6 +11,7 @@ import { type Dataset, type FieldDef, isColumnField, type Row } from '@mnmal-ai/
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset } from '../src/pg-dataset.js';
+import { findPartition, ident } from '../src/type-storage.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const PARTITIONED = process.env.SUBSTRATE_TEST_LAYOUT === 'partitioned';
@@ -172,19 +173,82 @@ suite('null reads absent (memory)', () =>
 
 describe.skipIf(!POSTGRES_URL)('null reads absent (pg)', () => {
   let sql: ReturnType<typeof postgres>;
-  let pg: PgDataset | undefined;
+  let pg: PgDataset;
   beforeAll(() => {
-    if (POSTGRES_URL) sql = postgres(POSTGRES_URL, { onnotice: () => {} });
+    if (!POSTGRES_URL) return;
+    sql = postgres(POSTGRES_URL, { onnotice: () => {} });
+    pg = new PgDataset({ namespace: NS, sql, typeDefLookup, fieldDefLookup });
   });
   afterAll(async () => {
     if (!POSTGRES_URL) return;
-    await pg?.dropNamespace();
+    await pg.dropNamespace();
+    // dropNamespace empties the partitions but keeps them.
+    const nsPart = await findPartition(sql, 'rows', NS);
+    if (nsPart !== undefined) await sql.unsafe(`DROP TABLE IF EXISTS ${ident(nsPart)} CASCADE`);
     await sql.end({ timeout: 5 });
   });
 
   suite('pg', async () => {
-    pg = new PgDataset({ namespace: NS, sql, typeDefLookup, fieldDefLookup });
     if (PARTITIONED) await pg.ensureTypeStorage(TYPE);
     return pg;
+  });
+
+  // The projection stands a marker in for a key the row lacks and `materialize`
+  // drops it. None of these read shapes may let it out.
+  describe('a projected key the row lacks, under each read shape', () => {
+    const ids = [randomUUID(), randomUUID(), randomUUID()].sort();
+    const where = { id: { in: ids } };
+    const fieldsHint = { title: true, meta: true };
+
+    beforeAll(async () => {
+      if (PARTITIONED) await pg.ensureTypeStorage(TYPE);
+      await pg.write(
+        TYPE,
+        ids.map((id, n) => ({ id, title: `t${n}` }))
+      );
+    });
+
+    const clean = (result: unknown, rows: Row[]) => {
+      expect(JSON.stringify(result)).not.toContain('$absent:');
+      for (const row of rows) expect('meta' in row).toBe(false);
+    };
+
+    it('a page with hasMore and nextCursor, then the page after it', async () => {
+      const params = { where, fields: fieldsHint, orderBy: [{ title: 'asc' }] as never, limit: 2 };
+      const first = await pg.read(TYPE, params);
+      expect(first.hasMore).toBe(true);
+      expect(first.nextCursor).toBeDefined();
+      clean(first, first.rows);
+      const second = await pg.read(TYPE, { ...params, cursor: first.nextCursor as string });
+      expect(second.rows).toHaveLength(1);
+      clean(second, second.rows);
+    });
+
+    it('the joinShortIds shape', async () => {
+      const result = await pg.read(TYPE, {
+        where,
+        fields: fieldsHint,
+        orderBy: [{ shortId: 'asc' }] as never,
+        limit: 2
+      });
+      expect(result.rows).toHaveLength(2);
+      clean(result, result.rows);
+    });
+
+    // Walks run only on the partitioned layout.
+    it.skipIf(!PARTITIONED)('a nested walk list and an _agg', async () => {
+      const [parent, child] = ids as [string, string, string];
+      await pg.write(TYPE, [{ id: child, title: 't-child', ref: parent }]);
+      const into = `${NS}/${TYPE}.ref`;
+      const result = await pg.read(TYPE, {
+        where: { id: { eq: parent } },
+        fields: fieldsHint,
+        nested: { kids: { _walk: { in: into }, fields: { title: true }, limit: 5 } } as never,
+        agg: { n: { in: into, count: true } } as never
+      });
+      expect(result.rows).toHaveLength(1);
+      clean(result, result.rows);
+      expect(result.rows[0]).toMatchObject({ kids: [{ title: 't-child' }], _agg: { n: 1 } });
+    });
   });
 });

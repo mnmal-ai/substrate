@@ -184,7 +184,7 @@ export interface FieldDefCrossRef {
 export interface FieldDefStruct {
   kind: 'struct';
   fields: Record<string, FieldDef>;
-  /** Metadata: when true, consumers SHOULD expect `null` as a legitimate value, and an absent key. */
+  /** Metadata: when true, the value may be `null` or absent. */
   nullable?: boolean;
 }
 
@@ -200,7 +200,7 @@ export interface FieldDefList {
    * migration is needed per field.
    */
   indexed?: boolean;
-  /** Metadata: when true, consumers SHOULD expect `null` as a legitimate value, and an absent key. */
+  /** Metadata: when true, the value may be `null` or absent. */
   nullable?: boolean;
 }
 
