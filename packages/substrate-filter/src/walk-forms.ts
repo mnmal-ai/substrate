@@ -21,7 +21,12 @@ import { groupConjuncts, refNames } from './walk.js';
 
 export type WalkForm = 'per-seed' | 'per-hub' | 'group-by';
 
-/** A page larger than this (the default max page) wants every seed rather than a page of them. */
+/**
+ * A page larger than this (the default max page) wants every seed rather than a page of them.
+ * Fixed rather than the configured `maxLimit`, which the datasets never see. So under default
+ * page limits the shared forms apply to counts and whole-result aggregates, and to pages only
+ * for callers with a raised `maxLimit` or in-process reads with no limit.
+ */
 export const EVERY_SEED_LIMIT = 1000;
 
 /** True when a read evaluates its walks for every matching seed: a count, a whole-result aggregate, or a page with no limit or one over {@link EVERY_SEED_LIMIT}. */
@@ -53,10 +58,12 @@ const isAny = (w: WalkNode) => w.pick === undefined && (w.quantifier ?? 'any') =
 /**
  * The `per-hub` rule. A pick P is shared, mapped to its hub walk O, when the
  * read wants every seed, O is a top-level AND conjunct `{ _walk: { out, where } }`
- * of the seed's where (an `any` walk, no `as`), P is an inbound pick among
- * O's where's AND conjuncts, and P's where reads no binding but `$` (or a
- * frame `_agg`). Picking depends only on the hub, and `$` is read after the
- * pick, so P's where is still tested per seed.
+ * of the seed's where (an `any` walk, no `as`) that reads no top-level `as`
+ * binding, P is an inbound pick among O's where's AND conjuncts, and P's
+ * where reads no binding but `$` (or a frame `_agg`). Picking depends only on
+ * the hub, and `$` is read after the pick, so P's where is still tested per
+ * seed. O reading a top-level binding would compile inside that binding's
+ * EXISTS, where the shared CTE could not be hashed.
  */
 export function sharedPicks(params: {
   where?: WhereClause;
@@ -66,8 +73,10 @@ export function sharedPicks(params: {
 }): Map<WalkNode, WalkNode> {
   const out = new Map<WalkNode, WalkNode>();
   if (!readsEverySeed(params)) return out;
+  const bound = new Set(groupConjuncts(params.where).binds.map((b) => b.as));
   for (const o of conjunctWalks(params.where)) {
     if (typeof o.out !== 'string' || !isAny(o)) continue;
+    if ([...refNames(o.where)].some((n) => bound.has(n))) continue;
     for (const p of conjunctWalks(o.where)) {
       if (typeof p.in !== 'string' || p.pick === undefined) continue;
       if ([...refNames(p.where)].every((n) => n === '$' || n === '_agg')) out.set(p, o);
@@ -106,8 +115,11 @@ export const isPickAgg = (spec: WalkAgg, fieldDef: (field: string) => FieldDef |
  *   holds, AND-ed at the top, a range on a field `indexed` on the far type
  *   (an index leads with it), so the window is one index range;
  * - the seed's where has, AND-ed at the top, an `any` walk over the same hop
- *   and the very same `where` (compared as JSON): the seeds are then exactly
- *   the window's keys, so aggregating the whole window wastes nothing.
+ *   and the very same `where` (compared as JSON; a mismatch only misses the
+ *   form): every seed is then one of the window's keys, so the window is
+ *   read anyway. The seeds may be fewer than the keys; the pg compiler
+ *   semi-joins the keys to the seeds' other conjuncts, so the pass covers
+ *   only the keys that can match.
  */
 export function windowGroupBy(
   spec: WalkAgg,

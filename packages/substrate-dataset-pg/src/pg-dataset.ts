@@ -575,15 +575,9 @@ export class PgDataset implements Dataset {
         return buildWalkAgg(sql, spec, this.#promotedFor, scope).value;
       };
     }
-    // #1815: a frame `_agg` window read by every seed is one group-by pass, joined to the page.
-    const windowJoins =
-      scope === undefined
-        ? sql``
-        : prepareWindows(sql, params, this.#promotedFor, scope, (t, field) =>
-            desiredIndexKeys(this.#indexArgs(t, this.namespace, 'partitioned')).some(
-              (i) => i.only === undefined && i.keys[0]?.[0] === field
-            )
-          );
+    // #1815: shared forms, registered once the where's extension operators
+    // are resolved, so their seed filters compile. Joined to the page.
+    let windowJoins = sql``;
     if (params.where !== undefined) {
       // Resolves extension operators (e.g. embeddingSimilar) to `id IN [...]`
       // clauses before the synchronous SQL builder runs.
@@ -594,16 +588,24 @@ export class PgDataset implements Dataset {
         ...(fieldRequested(params.fields, '_vector') ? { returnVector: true } : {})
       });
       extMeta = detailed.meta;
-      // #1815: a pick many seeds share through one hub is computed once per hub.
       if (scope !== undefined) {
-        prepareSharedPicks(
+        const resolved = { ...params, where: detailed.where };
+        const base = { clauses: [...clauses], ids: hasIdFilter };
+        // A frame `_agg` window read by every seed is one group-by pass.
+        windowJoins = prepareWindows(
           sql,
-          { ...params, where: detailed.where },
-          [...clauses],
+          resolved,
+          base,
           bodyCastFor,
           this.#promotedFor,
-          scope
+          scope,
+          (t, field) =>
+            desiredIndexKeys(this.#indexArgs(t, this.namespace, 'partitioned')).some(
+              (i) => i.only === undefined && i.keys[0]?.[0] === field
+            )
         );
+        // A pick many seeds share through one hub is computed once per hub.
+        prepareSharedPicks(sql, resolved, base, bodyCastFor, this.#promotedFor, scope);
       }
       const whereFragment = buildWhere(sql, detailed.where, bodyCastFor, this.#promotedFor, scope);
       if (whereFragment !== null) clauses.push(whereFragment);
@@ -789,6 +791,8 @@ export class PgDataset implements Dataset {
       const unseen = sql`r.id <> ALL(${rows.map((r) => r.id)})`;
       // The full `fetchLimit`, sliced here, so the tail has one statement text
       // per shape rather than one per remaining count.
+      // It recomputes the read's CTEs (#1815): a CTE lives for one statement,
+      // and the tail runs only when a cursor reaches the null-keyed rows.
       const tail = await cancellable(
         page(combineAnd(sql, [tailSql, unseen]), fetchLimit),
         params.signal

@@ -23,11 +23,13 @@ import {
   UnsupportedFilterError,
   type WalkAgg,
   type WalkAggPredicate,
+  type WalkNode,
   type WhereClause
 } from '@mnmal-ai/substrate-types';
 import type { Sql, TransactionSql } from 'postgres';
 import { metadataColumnSql } from './predicates-metadata.js';
 import {
+  type BodyOrderByCast,
   bodyJson,
   bodyNum,
   combineAnd,
@@ -48,6 +50,8 @@ import {
   refIsCostly,
   refOperand,
   refValue,
+  type SeedBase,
+  seedFilter,
   sortKey,
   type WalkScope,
   windowKey
@@ -256,6 +260,11 @@ function sharedScan(
  * since they join no seed), one pass over the window's index range. A seed
  * reads its group by key, and the where's walk over the same window becomes
  * `id IN` its keys, so the window is read once for both.
+ *
+ * The seeds are a subset of the keys. When the read's other conjuncts (or
+ * `ids`) narrow the seeds, the keys are semi-joined to them inside the CTE,
+ * so `certId in [100 ids]` aggregates only those certs' rows, and pg may
+ * read them by the (crossRef, …) index instead of the whole window.
  */
 export function prepareWindows(
   sql: Sql | TransactionSql,
@@ -266,6 +275,8 @@ export function prepareWindows(
     aggregate?: unknown;
     limit?: number;
   },
+  base: SeedBase,
+  rowCastFor: (field: string) => BodyOrderByCast | null,
   promotedFor: PromotedColumnLookup,
   scope: WalkScope,
   indexed: (type: string, field: string) => boolean
@@ -284,7 +295,23 @@ export function prepareWindows(
     const cte = `win_${alias}`;
     const { via, pin, far, obj } = sharedScan(sql, group, promotedFor, scope, alias);
     const k = sql.unsafe(indexExpressionSql('text', via as string, alias));
-    const rows = combineAnd(sql, [pin, sql`${k} IS NOT NULL`, ...(far === null ? [] : [far])]);
+    // The window's own walks are implied by `__k`; every other conjunct narrows it.
+    const seeds = seedFilter(sql, params.where, base, rowCastFor, promotedFor, scope, (i) => {
+      const w = (i as { _walk?: WalkNode })._walk;
+      return w !== undefined && windowKey(w) === key;
+    });
+    const r = scope.seedAlias;
+    const mine = seeds.narrows
+      ? [
+          sql`${k} IN (SELECT ${sql.unsafe(`${r}.id::text COLLATE "C"`)} FROM rows ${sql.unsafe(r)} WHERE ${seeds.filter})`
+        ]
+      : [];
+    const rows = combineAnd(sql, [
+      pin,
+      sql`${k} IS NOT NULL`,
+      ...(far === null ? [] : [far]),
+      ...mine
+    ]);
     scope.ctes ??= [];
     scope.ctes.push(
       sql`${sql.unsafe(cte)} AS MATERIALIZED (SELECT ${k} AS __k, ${obj} AS __g FROM rows ${sql.unsafe(alias)} WHERE ${rows} GROUP BY 1)`
