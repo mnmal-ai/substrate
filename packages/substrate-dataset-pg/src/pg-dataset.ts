@@ -438,7 +438,14 @@ export class PgDataset implements Dataset {
    * are unchanged.
    */
   async read(type: string, params: ReadParams): Promise<ReadResult> {
-    if (!usesWalkGrammar(params)) return this.#read(type, params, false);
+    if (!usesWalkGrammar(params)) {
+      try {
+        return await this.#read(type, params, false);
+      } catch (err) {
+        // A role- or database-level statement_timeout: its value is not known here.
+        throw this.#queryTimeout(type, err, params.signal) ?? err;
+      }
+    }
     if ((await this.#layout()) !== 'partitioned') {
       throw new ResolverFrameError(
         WALKS_NEED_PARTITIONED,
@@ -458,15 +465,31 @@ export class PgDataset implements Dataset {
       );
       return await this.#read(type, params, true);
     } catch (err) {
-      // `cancellable` already swaps a caller's abort for its reason, so a 57014 here is the timeout.
-      const pgErr = err as { code?: unknown; message?: unknown };
-      if (pgErr?.code !== '57014' || params.signal?.aborted === true) throw err;
-      throw new ResolverFrameError(
-        QUERY_TIMEOUT,
-        `${this.namespace}/${type}: the read exceeded the ${this.#statementTimeoutMs} ms statement timeout`,
-        { timeoutMs: this.#statementTimeoutMs }
-      );
+      throw this.#queryTimeout(type, err, params.signal, this.#statementTimeoutMs) ?? err;
     }
+  }
+
+  /**
+   * A statement-timeout cancel (57014) as `query_timeout`, else null.
+   * `cancellable` already swaps a caller's abort for its reason, and the
+   * signal check keeps one that races the cancel an abort. `timeoutMs` is
+   * omitted when the limit is not substrate's own (a role or database setting).
+   */
+  #queryTimeout(
+    type: string,
+    err: unknown,
+    signal: AbortSignal | undefined,
+    timeoutMs?: number
+  ): ResolverFrameError | null {
+    if ((err as { code?: unknown } | null)?.code !== '57014' || signal?.aborted === true) {
+      return null;
+    }
+    return new ResolverFrameError(
+      QUERY_TIMEOUT,
+      `${this.namespace}/${type}: the read exceeded the statement timeout` +
+        (timeoutMs !== undefined ? ` of ${timeoutMs} ms` : ''),
+      timeoutMs !== undefined ? { timeoutMs } : undefined
+    );
   }
 
   async #read(type: string, params: ReadParams, walks: boolean): Promise<ReadResult> {

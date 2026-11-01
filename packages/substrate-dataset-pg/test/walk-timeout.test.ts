@@ -17,7 +17,7 @@ const NS = `walk_timeout_${randomBytes(4).toString('hex')}`;
 const TIMEOUT_MS = 200;
 const WALK = { _walk: { in: `${NS}/Observation.cert` } } as unknown as WhereClause;
 
-describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk read timeout (pg)', () => {
+describe.skipIf(!POSTGRES_URL)('read timeout (pg)', () => {
   let sql: ReturnType<typeof postgres>;
   let reader: ReturnType<typeof postgres>;
   let locker: ReturnType<typeof postgres>;
@@ -30,7 +30,7 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk read timeout (pg)', () => {
     reader = postgres(POSTGRES_URL, { max: 1, onnotice: () => {} });
     locker = postgres(POSTGRES_URL, { max: 1, onnotice: () => {} });
     ds = new PgDataset({ namespace: NS, sql: reader, statementTimeoutMs: TIMEOUT_MS });
-    for (const type of ['Cert', 'Observation']) await ds.ensureTypeStorage(type);
+    if (PARTITIONED) for (const type of ['Cert', 'Observation']) await ds.ensureTypeStorage(type);
     await ds.read('Cert', {}); // warms the layout cache before the lock is taken
   });
 
@@ -60,16 +60,41 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk read timeout (pg)', () => {
     }
   }
 
-  it('refuses a read that outlives the statement timeout as query_timeout', async () => {
-    await underLock(async () => {
-      const err = await ds.read('Cert', { where: WALK }).catch((e: unknown) => e);
-      expect(err).toBeInstanceOf(ResolverFrameError);
-      expect(err).toMatchObject({ code: QUERY_TIMEOUT, details: { timeoutMs: TIMEOUT_MS } });
+  it('refuses a plain read under a role-style statement_timeout as query_timeout, no timeoutMs', async () => {
+    // A session-level setting stands in for a role or database one: substrate did not set it.
+    const limited = postgres(POSTGRES_URL as string, {
+      max: 1,
+      onnotice: () => {},
+      connection: { statement_timeout: TIMEOUT_MS }
     });
-    expect((await ds.read('Cert', {})).rows).toEqual([]);
+    try {
+      const plain = new PgDataset({ namespace: NS, sql: limited });
+      await plain.read('Cert', {});
+      await underLock(async () => {
+        const err = await plain.read('Cert', {}).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(ResolverFrameError);
+        expect(err).toMatchObject({ code: QUERY_TIMEOUT });
+        expect((err as ResolverFrameError).details).toBeUndefined();
+      });
+      await expect(plain.read('Cert', {})).resolves.toMatchObject({ rows: [] });
+    } finally {
+      await limited.end();
+    }
   });
 
-  it('keeps a caller abort an AbortError, not query_timeout', async () => {
+  it.skipIf(!PARTITIONED)(
+    'refuses a walk read that outlives the statement timeout as query_timeout',
+    async () => {
+      await underLock(async () => {
+        const err = await ds.read('Cert', { where: WALK }).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(ResolverFrameError);
+        expect(err).toMatchObject({ code: QUERY_TIMEOUT, details: { timeoutMs: TIMEOUT_MS } });
+      });
+      expect((await ds.read('Cert', {})).rows).toEqual([]);
+    }
+  );
+
+  it.skipIf(!PARTITIONED)('keeps a caller abort an AbortError, not query_timeout', async () => {
     await underLock(async () => {
       const controller = new AbortController();
       const pending = ds.read('Cert', { where: WALK, signal: controller.signal });
