@@ -450,14 +450,135 @@ describe('autoCRUD batch resolvers: memory vs pg through Engine', () => {
     });
   });
 
+  // pg only: memory enforces no unique index, so there is nothing to compare it with.
+  describe.skipIf(!POSTGRES_URL)('a unique index conflict in a batch (pg)', () => {
+    /**
+     * `Slot` has a unique index on `code`. `perElement` takes the batch
+     * resolvers off the entries, so an array runs the per-element loop:
+     * sequential dispatch, the reference.
+     */
+    async function slots(perElement: boolean) {
+      const ns = fresh();
+      const ds = new PgDataset({
+        namespace: ns,
+        sql: sql as Sql,
+        typeDefLookup: () => ({
+          fields: { code: { kind: 'scalar', type: 'string' } },
+          indexes: [{ fields: ['code'], unique: true, where: 'live', name: `${ns}_code_uq` }]
+        })
+      });
+      await ds.ensureTypeStorage('Slot');
+      const registry = new Registry();
+      installAutoCrud(registry, 'Slot', ds, new MemoryEdgesStore({ now: () => NOW }), {
+        fields: { id: field.string(), code: field.string() }
+      });
+      if (perElement) {
+        for (const op of ['createSlot', 'updateSlot']) {
+          delete (registry.get(op) as { batch?: unknown }).batch;
+        }
+      }
+      const datasets = new MemoryDatasetRegistry();
+      datasets.set(ns, ds);
+      const engine = new Engine({
+        namespaces: new Map<string, NamespaceConfig>([[ns, { registry }]]),
+        datasets,
+        edges: new MemoryEdgesStore({ now: () => NOW })
+      });
+      const mutate = async (op: string, params: Params | Params[]) => {
+        const env = await engine.mutate({
+          frame: {
+            [`${ns}/${op}`]: Array.isArray(params)
+              ? params.map((p) => ({ params: p, fields: { id: true, code: true } }))
+              : { params, fields: { id: true, code: true } }
+          },
+          ctx: ctx()
+        });
+        return {
+          data: norm(env.data[`${ns}/${op}`]),
+          errors: (env.errors ?? []).map((e) => ({
+            code: e.code,
+            path: e.path?.map((x) => x.replace(`${ns}/`, '')),
+            message: e.message.replaceAll(ns, '<ns>')
+          }))
+        };
+      };
+      expect(
+        (
+          await mutate('createSlot', [
+            { id: 'a', code: 'x' },
+            { id: 'b', code: 'y' },
+            { id: 'c', code: 'z' }
+          ])
+        ).errors
+      ).toEqual([]);
+      return { mutate, ds };
+    }
+
+    const cases: Array<[string, string, Params[], string]> = [
+      [
+        'create: conflict with an existing row',
+        'createSlot',
+        [
+          { id: 'd', code: 'w' },
+          { id: 'e', code: 'x' },
+          { id: 'f', code: 'v' }
+        ],
+        '1'
+      ],
+      [
+        'create: two elements collide',
+        'createSlot',
+        [
+          { id: 'd', code: 'w' },
+          { id: 'e', code: 'v' },
+          { id: 'f', code: 'v' }
+        ],
+        '2'
+      ],
+      [
+        'update: conflict with an existing row',
+        'updateSlot',
+        [
+          { id: 'a', code: 'w' },
+          { id: 'b', code: 'z' }
+        ],
+        '1'
+      ],
+      [
+        'update: two elements collide',
+        'updateSlot',
+        [
+          { id: 'a', code: 'm' },
+          { id: 'b', code: 'n' },
+          { id: 'c', code: 'm' }
+        ],
+        '2'
+      ]
+    ];
+    for (const [name, op, params, at] of cases) {
+      it(`${name}: unique_violation at its index, as sequential`, async () => {
+        const batched = await slots(false);
+        const loop = await slots(true);
+        const env = await batched.mutate(op, params);
+        expect(env.errors.map(({ code, path }) => ({ code, path }))).toEqual([
+          { code: 'unique_violation', path: [op] },
+          { code: 'batched_frame_rolled_back', path: [op, at] }
+        ]);
+        expect(env).toEqual(await loop.mutate(op, params));
+        const live = (await batched.ds.read('Slot', {})).rows.map(
+          (r) => `${String(r.id)}=${String(r.code)}`
+        );
+        expect(live.sort()).toEqual(['a=x', 'b=y', 'c=z']);
+      });
+    }
+  });
+
   describe.skipIf(!POSTGRES_URL)('statements a batch sends (pg)', () => {
-    /** Statements `fn` sends, without transaction and savepoint plumbing. */
+    /** Every statement `fn` sends, transaction plumbing included. */
     async function sent(fn: () => Promise<unknown>): Promise<string[]> {
       statements = [];
       await fn();
-      return statements.filter(
-        (q) => !/^\s*(begin|commit|rollback|savepoint|release|select set_config)/i.test(q)
-      );
+      return statements;
     }
 
     it('create, update and delete send the same statements for 5 elements as for 50', async () => {
