@@ -551,35 +551,60 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk plan shapes (pg)', () => {
       const hubWalk = (where: unknown, extra: Record<string, unknown> = {}) => ({
         _walk: { out: 'hub', where, ...extra }
       });
-      const wheres = [
-        // The hub where's other conjuncts: a bind and the comparison reading it.
-        hubWalk({
-          AND: [
-            { _walk: { in: IN, as: 'n', where: { price: { gte: 40 } } } },
-            { ask: { lte: { $ref: 'n.price' } } },
-            pAt
-          ]
-        }),
+      // [where, shared]: whether pg compiles the per-hub form.
+      const cases: Array<[unknown, boolean]> = [
+        // The hub where's other conjuncts: a bind and the comparison reading it. The bind is
+        // narrow (each price ≥ 95 is held by ~24 of a hub's 400), since memory evaluates the
+        // pick once per binding and its walk budget would otherwise run out.
+        [
+          hubWalk({
+            AND: [
+              { _walk: { in: IN, as: 'n', where: { price: { gte: 95 } } } },
+              { ask: { lte: { $ref: 'n.price' } } },
+              pAt
+            ]
+          }),
+          true
+        ],
         // Two picks of one hub.
-        hubWalk({ AND: [pAt, pMax] }),
+        [hubWalk({ AND: [pAt, pMax] }), true],
         // Not shared: none and all.
-        hubWalk(pAt, { quantifier: 'none' }),
-        hubWalk(pAt, { quantifier: 'all' }),
+        [hubWalk(pAt, { quantifier: 'none' }), false],
+        [hubWalk(pAt, { quantifier: 'all' }), false],
         // A selective non-plain seed conjunct narrows the hubs computed.
-        { AND: [{ _walk: { out: 'hub', where: { ask: { gte: 10 } } } }, hubWalk(pAt)] },
-        { AND: [{ _agg: { out: 'hub', count: true }, gte: 1 }, hubWalk(pMax)] },
+        [{ AND: [{ _walk: { out: 'hub', where: { ask: { gte: 10 } } } }, hubWalk(pAt)] }, true],
+        [{ AND: [{ _agg: { out: 'hub', count: true }, gte: 1 }, hubWalk(pMax)] }, true],
         // A seed-level bind, and the comparison reading it, stay out of the hub filter.
-        {
-          AND: [
-            { _walk: { out: 'hub', as: 'H' } },
-            { ask: { lte: { $ref: 'H.ask' } } },
-            hubWalk(pAt)
-          ]
+        [
+          {
+            AND: [
+              { _walk: { out: 'hub', as: 'H' } },
+              { ask: { lte: { $ref: 'H.ask' } } },
+              hubWalk(pAt)
+            ]
+          },
+          true
+        ]
+      ];
+      // Two seeds per hub, one with no hub and one on a missing hub: still several seeds
+      // per hub, and within memory's default walk budget.
+      const ids = [
+        ...Array.from({ length: HUBS }, (_, h) => [u(`s${h}_0`), u(`s${h}_3`)]).flat(),
+        u('s_none_0'),
+        u('s_gone_0')
+      ];
+      for (const [where, shares] of cases) {
+        for (const params of [
+          { count: true, where, ids },
+          { where, ids }
+        ] as ReadParams[]) {
+          sent = [];
+          if (params.count === true) await sameResult('Seed', params);
+          else await same('Seed', params);
+          // pg still compiles the shared form, or keeps the per-seed one, at this size.
+          const shared = sent.some((q) => /pick_w\d+ AS MATERIALIZED/.test(q.query));
+          expect(shared, JSON.stringify(where)).toBe(shares);
         }
-      ] as unknown as WhereClause[];
-      for (const where of wheres) {
-        await sameResult('Seed', { count: true, where });
-        await same('Seed', { where });
       }
     }, 120_000);
 
