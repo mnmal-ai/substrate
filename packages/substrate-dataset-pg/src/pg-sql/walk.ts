@@ -208,6 +208,15 @@ export function buildWalk(
   }
 }
 
+/** True when a `pick` walk sits anywhere in `where`. */
+const holdsPick = (where: unknown): boolean =>
+  Array.isArray(where)
+    ? where.some(holdsPick)
+    : isObj(where) &&
+      Object.entries(where).some(
+        ([k, v]) => (k === '_walk' && isObj(v) && v.pick !== undefined) || holdsPick(v)
+      );
+
 /** The seeds a read's CTEs may narrow to: its own clauses (scope, `ids`, live), and whether `ids` is among them. */
 export interface SeedBase {
   clauses: Fragment[];
@@ -220,7 +229,10 @@ export interface SeedBase {
  * and the conjuncts that read them (a bind is quantified jointly, so alone
  * it is no conjunct). Walks and `_agg` comparisons included, so a selective
  * one narrows a CTE as it narrows the read. Compiled without the shared
- * forms, so no CTE reads another. `narrows`: anything beyond the type's rows.
+ * forms, so no CTE reads another. A conjunct holding a `pick` (so any shared
+ * hub walk) is left out too: compiled per seed it would probe once per seed
+ * inside the CTE, the cost the shared form exists to avoid. Leaving out a
+ * conjunct only widens the superset. `narrows`: anything beyond the type's rows.
  */
 export function seedFilter(
   sql: Sql | TransactionSql,
@@ -235,7 +247,7 @@ export function seedFilter(
   const bound = new Set(binds.map((b) => b.as));
   const { hubPicks: _p, windows: _w, ...plain } = scope;
   const parts = items
-    .filter((i) => !skip(i) && ![...refNames(i)].some((n) => bound.has(n)))
+    .filter((i) => !skip(i) && !holdsPick(i) && ![...refNames(i)].some((n) => bound.has(n)))
     .flatMap((i) => buildWhere(sql, i, rowCastFor, promotedFor, plain) ?? []);
   return {
     filter: combineAnd(sql, [...base.clauses, ...parts]),

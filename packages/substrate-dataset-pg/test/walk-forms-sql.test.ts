@@ -159,6 +159,30 @@ describe('a pick shared through an outbound hop: one probe per hub', () => {
     expect(hubs).not.toContain("'Spec'");
   });
 
+  it("leaves a second shared hub walk out of each CTE's hub filter", () => {
+    const other = {
+      _walk: { out: 'spec', where: { _walk: { in: 'ns/Sale.spec', pick: { max: 'price' } } } }
+    };
+    const text = compileWhere({
+      count: true,
+      where: {
+        AND: [hubWith({ _walk: pickAt({ latest: 'at' }) }), other]
+      } as unknown as WhereClause
+    });
+    const ctes = text.slice(0, text.indexOf(') SELECT 1 FROM rows r WHERE'));
+    expect(ctes.match(/pick_w\d+ AS MATERIALIZED/g)).toHaveLength(2);
+    // Each hub set is the seeds' plain filter alone: no pick of the other hub walk, per seed.
+    const hubSets = ctes
+      .split('SELECT DISTINCT')
+      .slice(1)
+      .map((h) => h.slice(0, h.indexOf(') h CROSS JOIN LATERAL')));
+    expect(hubSets).toHaveLength(2);
+    for (const hubs of hubSets) {
+      expect(hubs).not.toContain("'Sale'");
+      expect(hubs).not.toContain("'Spec'");
+    }
+  });
+
   it('a hub walk reading a top-level bind is not shared', () => {
     const bind = { _walk: { in: 'ns/Obs.cert', as: 'o' } };
     const hub = hubWith({
@@ -284,6 +308,44 @@ describe('a frame _agg over its seeds window: one group-by pass', () => {
     );
     // The window's own walk is implied by the key, so it is not repeated there.
     expect(gcte.match(/'Obs'/g)).toHaveLength(1);
+  });
+
+  it("leaves a shared pick's hub walk out of the window's seed semi-join", () => {
+    const s = walkScope(NS, 'Cert', 'r', fieldDef);
+    const pickHub = {
+      _walk: {
+        out: 'spec',
+        where: {
+          _walk: {
+            in: 'ns/Sale.spec',
+            pick: { latest: 'at' },
+            where: { at: { gte: '2026-10-01' } }
+          }
+        }
+      }
+    };
+    const p = {
+      ...params(),
+      where: { AND: [{ grade: { eq: 9 } }, pickHub, params().where] }
+    } as unknown as ReadParams;
+    const base = seedBase();
+    prepareWindows(
+      sql,
+      p,
+      base,
+      castFor,
+      () => undefined,
+      s,
+      (t: string, f: string) => t === 'Obs' && f === 'at'
+    );
+    prepareSharedPicks(sql, p, base, castFor, () => undefined, s);
+    const text = render(withCtes(sql, s));
+    const win = text.slice(text.indexOf('win_w'), text.indexOf('GROUP BY 1'));
+    // Narrowed by the plain conjunct, but no per-seed pick inside the window's CTE.
+    expect(win).toMatch(/IN \(SELECT r\.id::text COLLATE "C" FROM rows r WHERE .*'grade'/s);
+    expect(win).not.toContain("'Sale'");
+    expect(win).not.toContain("'Spec'");
+    expect(text).toMatch(/pick_w\d+ AS MATERIALIZED/);
   });
 
   it('a page of a few seeds keeps the per-seed aggregates', () => {
