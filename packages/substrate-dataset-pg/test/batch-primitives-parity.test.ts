@@ -438,12 +438,12 @@ describe('batch primitives (memory vs pg)', () => {
   );
 
   // Two transactions tombstoning overlapping rows in opposite orders. The rows
-  // lie in the heap high id first, with updatedAt falling as the id rises. One
-  // client reads them through the newest-first (namespace, type, updated_at)
-  // index, low id first; the other has index scans off, so it walks the heap,
-  // high id first.
-  // The locks are taken in id order inside the one statement, so they queue
-  // rather than deadlock (40P01).
+  // lie in the heap high id first, with updatedAt falling as the id rises.
+  // Both plans are pinned per connection: one client has seq and bitmap scans
+  // off, so it reads through an index (the newest-first (namespace, type,
+  // updated_at) one, or the id one), low id first; the other has index scans
+  // off, so it walks the heap, high id first. The locks are taken in id order
+  // inside the one statement, so they queue rather than deadlock (40P01).
   it.skipIf(!HAS_PG)(
     'overlapping concurrent tombstones in opposite orders do not deadlock',
     async () => {
@@ -455,8 +455,12 @@ describe('batch primitives (memory vs pg)', () => {
           enable_indexonlyscan: 'off'
         }
       });
+      const indexOrder = postgres(POSTGRES_URL as string, {
+        onnotice: () => {},
+        connection: { enable_seqscan: 'off', enable_bitmapscan: 'off' }
+      });
       try {
-        const viaIndex = datasets[1]?.[1] as Dataset;
+        const viaIndex = new PgDataset({ namespace: NS, sql: indexOrder });
         const viaHeap = new PgDataset({ namespace: NS, sql: heapOrder });
         const tombstone = (ds: Dataset, ids: string[]) =>
           ds.withTransaction((tx) => tx.tombstone('Item', ids));
@@ -493,6 +497,7 @@ describe('batch primitives (memory vs pg)', () => {
         }
       } finally {
         await heapOrder.end();
+        await indexOrder.end();
       }
     }
   );
