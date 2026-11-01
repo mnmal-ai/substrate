@@ -9,7 +9,7 @@
  * repointing means tombstone the stale edge(s) + write a new one.
  */
 
-import type { EdgeRef, EdgesStore } from '@mnmal-ai/substrate-types';
+import type { Edge, EdgeRef, EdgesStore, EdgeWriteInput } from '@mnmal-ai/substrate-types';
 import type { CrossRefFieldInfo } from './crossref-existence.js';
 
 /**
@@ -27,46 +27,57 @@ export async function reconcileCrossRefEdgesOnUpdate(
   crossRefs: readonly CrossRefFieldInfo[],
   patchParams: Record<string, unknown>
 ): Promise<void> {
-  const touched = crossRefs.filter(({ fieldName }) => Object.hasOwn(patchParams, fieldName));
-  if (touched.length === 0) return;
-
-  // All crossRef fields share the same from-ref, so one lookup serves them all.
-  const currentEdgesFromOwner = await edges.findEdgesFrom(fromRef);
-
-  // Distinct fieldNames map to distinct edges, so each field's reconcile is
-  // independent — run them concurrently, mirroring how
-  // `createResolverWithEdges` parallelizes its per-field edge writes.
-  await Promise.all(
-    touched.map(async ({ fieldName, def }) => {
-      const rawValue = patchParams[fieldName];
-      const newId: string | number | null =
-        typeof rawValue === 'string' || typeof rawValue === 'number' ? rawValue : null;
-
-      const currentEdges = currentEdgesFromOwner.filter((e) => e.fieldName === fieldName);
-      const currentId = currentEdges[0]?.to.id ?? null;
-
-      // Only a single (or zero) current edge can be "unchanged" — with 2+ live
-      // edges for one (from, fieldName) the invariant is already broken, so
-      // always reconcile (tombstone all + write one) to self-heal, even when
-      // the new value happens to match the first duplicate's target.
-      const unchanged =
-        currentEdges.length <= 1 &&
-        (currentId === null
-          ? newId === null
-          : newId !== null && String(currentId) === String(newId));
-      if (unchanged) return;
-
-      for (const edge of currentEdges) {
-        await edges.tombstone(edge.id);
-      }
-      if (newId !== null) {
-        await edges.write({
-          from: fromRef,
-          to: { ns: def.ns, type: def.type, id: newId },
-          fieldName,
-          policy: def.onDelete
-        });
-      }
-    })
+  if (!crossRefs.some(({ fieldName }) => Object.hasOwn(patchParams, fieldName))) return;
+  const plan = planCrossRefEdges(
+    await edges.findEdgesFrom(fromRef),
+    fromRef,
+    crossRefs,
+    patchParams
   );
+  await edges.tombstoneMany(plan.tombstone);
+  await edges.writeMany(plan.write);
+}
+
+/**
+ * The edge changes one update patch needs, given the owner's live outbound
+ * edges: the stale edge ids to tombstone and the fresh edges to write. Pure,
+ * so a batch plans every element from one `findEdgesFromMany` and applies them
+ * with one `tombstoneMany` and one `writeMany`.
+ */
+export function planCrossRefEdges(
+  currentEdgesFromOwner: readonly Edge[],
+  fromRef: EdgeRef,
+  crossRefs: readonly CrossRefFieldInfo[],
+  patchParams: Record<string, unknown>
+): { tombstone: string[]; write: EdgeWriteInput[] } {
+  const plan: { tombstone: string[]; write: EdgeWriteInput[] } = { tombstone: [], write: [] };
+  for (const { fieldName, def } of crossRefs) {
+    if (!Object.hasOwn(patchParams, fieldName)) continue;
+    const rawValue = patchParams[fieldName];
+    const newId: string | number | null =
+      typeof rawValue === 'string' || typeof rawValue === 'number' ? rawValue : null;
+
+    const currentEdges = currentEdgesFromOwner.filter((e) => e.fieldName === fieldName);
+    const currentId = currentEdges[0]?.to.id ?? null;
+
+    // Only a single (or zero) current edge can be "unchanged" — with 2+ live
+    // edges for one (from, fieldName) the invariant is already broken, so
+    // always reconcile (tombstone all + write one) to self-heal, even when
+    // the new value happens to match the first duplicate's target.
+    const unchanged =
+      currentEdges.length <= 1 &&
+      (currentId === null ? newId === null : newId !== null && String(currentId) === String(newId));
+    if (unchanged) continue;
+
+    for (const edge of currentEdges) plan.tombstone.push(edge.id);
+    if (newId !== null) {
+      plan.write.push({
+        from: fromRef,
+        to: { ns: def.ns, type: def.type, id: newId },
+        fieldName,
+        policy: def.onDelete
+      });
+    }
+  }
+  return plan;
 }
