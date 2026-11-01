@@ -45,6 +45,8 @@ import type {
   DropResult,
   FieldDef,
   FilterCapabilities,
+  FilterWriteOptions,
+  FilterWriteResult,
   Id,
   NestedSelection,
   OrderByClause,
@@ -59,7 +61,7 @@ import type {
   WriteResult,
   WriteRow
 } from '@mnmal-ai/substrate-types';
-import { assertNoRepeatedIds, createKeyedMutex } from '@mnmal-ai/substrate-types';
+import { assertNoRepeatedIds, createKeyedMutex, filterTooBroad } from '@mnmal-ai/substrate-types';
 import { NamespaceMismatch, ReservedField } from './errors.js';
 import { MemoryShortIdStore, type ShortIdBucketSnapshot } from './memory-short-id-store.js';
 import { uuidv7 } from './uuidv7.js';
@@ -788,6 +790,44 @@ export class MemoryDataset implements Dataset {
       done.set(id, r.matched ? r.row : null);
     }
     return patches.map((p) => done.get(p.id) ?? null);
+  }
+
+  async updateWhere(
+    type: string,
+    where: WhereClause,
+    set: Record<string, unknown>,
+    opts: FilterWriteOptions
+  ): Promise<FilterWriteResult> {
+    const matched = await this.#matchForWrite(type, where, opts.maxMatch);
+    const patched = await this.patchRows(
+      type,
+      matched.map((r) => ({ id: r.id, patch: set })),
+      opts.actor ?? null,
+      opts.now ?? new Date()
+    );
+    const rows = patched.filter((r): r is Row => r !== null);
+    return { count: rows.length, ids: rows.map((r) => r.id), rows };
+  }
+
+  async deleteWhere(
+    type: string,
+    where: WhereClause,
+    opts: FilterWriteOptions
+  ): Promise<FilterWriteResult> {
+    // Copies: the tombstone stamps the stored rows in place.
+    const rows = (await this.#matchForWrite(type, where, opts.maxMatch)).map((r) => ({ ...r }));
+    await this.tombstone(
+      type,
+      rows.map((r) => r.id)
+    );
+    return { count: rows.length, ids: rows.map((r) => r.id), rows };
+  }
+
+  /** The live rows `where` matches, refused past `maxMatch` before anything changes. */
+  async #matchForWrite(type: string, where: WhereClause, maxMatch: number): Promise<Row[]> {
+    const { rows } = await this.read(type, { where, limit: maxMatch + 1 });
+    if (rows.length > maxMatch) throw filterTooBroad(this.namespace, type, maxMatch);
+    return rows;
   }
 
   async getShortIdForRow(type: string, rowId: string): Promise<number | null> {

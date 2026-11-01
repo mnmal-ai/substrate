@@ -8,6 +8,9 @@
 
 import type { Edge, EdgeRef } from './edge.js';
 
+/** A by-filter write matched more rows than `SUBSTRATE_FILTER_WRITE_MAX_MATCH`; nothing changed. */
+export const FILTER_TOO_BROAD = 'filter_too_broad';
+
 /** Refusal codes for the typed-edge-walk grammar. */
 export const WALKS_NEED_PARTITIONED = 'walks_need_partitioned';
 export const WALKS_IN_SUBSCRIPTION = 'walks_in_subscription';
@@ -57,6 +60,19 @@ export class ResolverFrameError extends Error {
     this.code = code;
     if (details !== undefined) this.details = details;
   }
+}
+
+/** `filter_too_broad`: a by-filter write on `<namespace>/<type>` matched more than `maxMatch` rows. */
+export function filterTooBroad(
+  namespace: string,
+  type: string,
+  maxMatch: number
+): ResolverFrameError {
+  return new ResolverFrameError(
+    FILTER_TOO_BROAD,
+    `${namespace}/${type}: the filter matches more than ${maxMatch} rows; nothing changed. Narrow the where, or raise SUBSTRATE_FILTER_WRITE_MAX_MATCH`,
+    { maxMatch }
+  );
 }
 
 /**

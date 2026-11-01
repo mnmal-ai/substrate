@@ -24,8 +24,6 @@ import type {
   ActorIdentity,
   BatchResolver,
   Dataset,
-  Edge,
-  EdgeRef,
   EdgesStore,
   EdgeWriteInput,
   FieldDef,
@@ -50,7 +48,7 @@ import { resolveEntityRows } from '../short-id-resolver.js';
 import { prepareCreateRow } from './autocrud-create.js';
 import { type DeleteResolverResult, prepareDelete } from './autocrud-delete.js';
 import { prepareUpdate, updateNotFound } from './autocrud-update.js';
-import { planCrossRefEdges } from './crossref-edge-sync.js';
+import { syncCrossRefEdges } from './crossref-edge-sync.js';
 import { assertCrossRefTargetsExistMany, collectCrossRefFields } from './crossref-existence.js';
 import { coerceId, resolveIdentity } from './internal.js';
 
@@ -178,7 +176,7 @@ export function guardRowWrites(
  * rolled-back write or hold a connection across the transaction. A rolled-back
  * write skips it. Outside a transaction (no `afterTx`) it runs at once.
  */
-async function runPostWrite(
+export async function runPostWrite(
   postWrite: PostWriteHook,
   typeName: string,
   dataset: Dataset,
@@ -435,36 +433,12 @@ export function updateBatchResolver(
     }
     refusal.throwIfRefused();
 
-    const edgeStore = first.edges ?? edges;
-    const touched = writers.filter((w) =>
-      crossRefs.some(({ fieldName }) => Object.hasOwn(w.params, fieldName))
+    await syncCrossRefEdges(
+      first.edges ?? edges,
+      { ns: ds.namespace, type: typeName },
+      crossRefs,
+      writers.map((w) => ({ id: w.target.id, params: w.params }))
     );
-    if (touched.length > 0) {
-      // A repointed crossRef must not leave the old edge live, or the sweep's
-      // applyPolicy fires onDelete against the stale target.
-      const refs: EdgeRef[] = touched.map((w) => ({
-        ns: ds.namespace,
-        type: typeName,
-        id: w.target.id
-      }));
-      const byOwner = new Map<string, Edge[]>();
-      for (const e of await edgeStore.findEdgesFromMany(refs)) {
-        const key = String(e.from.id);
-        const owned = byOwner.get(key);
-        if (owned === undefined) byOwner.set(key, [e]);
-        else owned.push(e);
-      }
-      const tombstone: string[] = [];
-      const write: EdgeWriteInput[] = [];
-      for (const [k, w] of touched.entries()) {
-        const ref = refs[k] as EdgeRef;
-        const plan = planCrossRefEdges(byOwner.get(String(ref.id)) ?? [], ref, crossRefs, w.params);
-        tombstone.push(...plan.tombstone);
-        write.push(...plan.write);
-      }
-      await edgeStore.tombstoneMany(tombstone);
-      await edgeStore.writeMany(write);
-    }
 
     for (const [i, row] of merged.entries()) {
       if (row === null) continue;

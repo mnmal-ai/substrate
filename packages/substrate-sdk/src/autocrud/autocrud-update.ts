@@ -105,7 +105,18 @@ export function prepareUpdate(
       { field: 'id' }
     );
   }
+  return { id, params: preparePatch(rawParams, fields) };
+}
 
+/**
+ * An update's checks on everything but the id, run in JS before any write:
+ * returns the normalised params. `update<T>` runs it on `{ id, ...patch }`,
+ * `updateMany<T>` on its `set`, so both refuse the same patches.
+ */
+export function preparePatch(
+  rawParams: Record<string, unknown> | undefined,
+  fields: Record<string, FieldDef> | undefined
+): Record<string, unknown> {
   // Reject client-supplied server fields (Tier-1: row metadata;
   // Tier-2: serverSet date fields). Runs before field iteration so the error
   // code is unambiguous.
@@ -136,7 +147,7 @@ export function prepareUpdate(
     assertNoNullOnNonNullable(params, fields, 'update');
     assertScalarTypes(params, fields, 'update');
   }
-  return { id, params };
+  return params;
 }
 
 /**

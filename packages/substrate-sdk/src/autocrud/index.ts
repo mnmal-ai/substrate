@@ -10,9 +10,8 @@
  *   - mutation: `updateTodo` (id-based multi-field update, one `write()`
  *     inside the engine's G1 transaction)
  *   - mutation: `deleteTodo` (two-phase delete, §6.2)
- *
- * Filter-based update — `updateTodo({ where }, { ...newFields })` — is spec
- * §5.2.1 and not implemented.
+ *   - mutation: `updateManyTodo` (`{ where, set }`) and `deleteManyTodo`
+ *     (`{ where }`), by filter (`./filter-writes.ts`)
  *
  * `registry` is typed structurally via `AutoCrudRegistry` so this package takes
  * no runtime dependency on `@mnmal-ai/substrate-core`; the core `Registry`
@@ -46,6 +45,7 @@ import {
   singleFrame,
   updateBatchResolver
 } from './batch.js';
+import { deleteManyResolver, updateManyResolver } from './filter-writes.js';
 import {
   assertCrossRefDeletePolicies,
   assertServerSetFieldsFillable,
@@ -58,6 +58,8 @@ export { purgeResolver } from './autocrud-purge.js';
 export type { UpdateResolverOptions } from './autocrud-update.js';
 export { applyUpdatePatch } from './autocrud-update.js';
 export { createResolver, deleteResolver, updateResolver } from './batch.js';
+export type { FilterWriteMutationResult } from './filter-writes.js';
+export { deleteManyResolver, updateManyResolver } from './filter-writes.js';
 
 /**
  * The narrow surface `installAutoCrud` needs from a registry. The core
@@ -89,8 +91,31 @@ export interface AutoCrudRegistry {
       expectedSize?: 'small' | 'large';
       /** Semantic autoCRUD verb threaded to policies via ctx.verb. */
       verb?: AutoCrudVerb;
+      /** The type a by-filter mutation writes; the engine validates its `where`. */
+      filterTarget?: string;
     }
   ): void;
+  /** When present, lets `installAutoCrud` refuse a type whose keys collide with another's. */
+  get?(typeName: string): { kind?: string; resolver: object } | undefined;
+}
+
+/**
+ * A namespace declares both `X` and `ManyX`: `X`'s `updateManyX` /
+ * `deleteManyX` are `ManyX`'s `update<T>` / `delete<T>` keys.
+ */
+export class AutoCrudNameCollisionError extends Error {
+  override readonly name = 'AutoCrudNameCollisionError';
+
+  constructor(
+    readonly namespace: string,
+    readonly type: string,
+    readonly other: string
+  ) {
+    super(
+      `namespace '${namespace}' declares both '${type}' and '${other}': their generated ` +
+        'updateMany/deleteMany and update/delete mutation keys collide. Rename one of the types.'
+    );
+  }
 }
 
 export interface InstallAutoCrudOptions {
@@ -180,6 +205,21 @@ function deleteReturnFieldDef(): FieldDefStruct {
   };
 }
 
+/** `updateMany<T>` / `deleteMany<T>` return shape: `{ count, ids, idsTruncated }`. */
+function filterWriteReturnFieldDef(): FieldDefStruct {
+  return {
+    kind: 'struct',
+    fields: {
+      count: { kind: 'scalar', type: 'number' },
+      ids: { kind: 'list', of: ID_FIELD },
+      idsTruncated: { kind: 'scalar', type: 'boolean' }
+    }
+  };
+}
+
+/** `updateMany<T>`'s params: a filter and a patch. Both opaque here; the engine and resolver check them. */
+const FILTER_WHERE: FieldDef = { kind: 'scalar', type: 'json' };
+
 /** `purge<T>` return shape: `{ id, purged }`. */
 function purgeReturnFieldDef(): FieldDefStruct {
   return {
@@ -202,6 +242,33 @@ export function autoCrudOptionsOf(typeResolver: object): InstallAutoCrudOptions 
   return installedOptions.get(typeResolver);
 }
 
+/** `X`'s first letter upper-cased: the suffix of its generated mutation keys. */
+function capOf(typeName: string): string {
+  return typeName.charAt(0).toUpperCase() + typeName.slice(1);
+}
+
+/**
+ * Throws when another autoCRUD type in `registry` would register the same
+ * mutation keys: `X` against `ManyX`, in either install order. A registry
+ * without `get` (a reinstall's replace writer) is not checked.
+ */
+function assertNoManyCollision(registry: AutoCrudRegistry, dataset: Dataset, typeName: string) {
+  const get = registry.get?.bind(registry);
+  if (get === undefined) return;
+  const cap = capOf(typeName);
+  const others = [`Many${cap}`, `many${cap}`];
+  if (cap.startsWith('Many') && cap.length > 4) {
+    const base = cap.slice(4);
+    others.push(base, base.charAt(0).toLowerCase() + base.slice(1));
+  }
+  for (const other of others) {
+    const entry = other === typeName ? undefined : get(other);
+    if (entry?.kind === 'type' && autoCrudOptionsOf(entry.resolver) !== undefined) {
+      throw new AutoCrudNameCollisionError(dataset.namespace, typeName, other);
+    }
+  }
+}
+
 export function installAutoCrud(
   registry: AutoCrudRegistry,
   typeName: string,
@@ -209,6 +276,7 @@ export function installAutoCrud(
   edges: EdgesStore,
   options: InstallAutoCrudOptions = {}
 ): void {
+  assertNoManyCollision(registry, dataset, typeName);
   const policy = options.policy;
   const fields = options.fields;
   const postWrite = options.postWrite;
@@ -238,6 +306,19 @@ export function installAutoCrud(
   const update: AutoCrudResolver = singleFrame<Row | null>(updateBatch);
   const del: AutoCrudResolver = singleFrame<Row>(deleteBatch);
   const purge: AutoCrudResolver = purgeResolver(typeName, dataset);
+  // A mutation's result is an opaque row to the engine; this one carries no `id`.
+  const updateMany = updateManyResolver(
+    typeName,
+    dataset,
+    edges,
+    hooks
+  ) as unknown as AutoCrudResolver;
+  const deleteMany = deleteManyResolver(
+    typeName,
+    dataset,
+    edges,
+    hooks
+  ) as unknown as AutoCrudResolver;
 
   // `returns` defers to the type's declared fields (if any). No fields → no
   // struct shape for the return; substrate-pack sees the mutation returns struct
@@ -259,7 +340,7 @@ export function installAutoCrud(
   // first char of `typeName`. Casing is an ergonomic convention, not a
   // discriminator; `kind: 'mutation'` is what routes these to
   // `Schema.mutations`.
-  const cap = typeName.charAt(0).toUpperCase() + typeName.slice(1);
+  const cap = capOf(typeName);
 
   registry.register(`get${cap}`, {
     resolver: get,
@@ -311,6 +392,28 @@ export function installAutoCrud(
     // delete returns `{ id, deleted }` — intentionally doesn't carry the
     // type's `fields` map. Emitting the type's schema on a delete mutation
     // would mislead clients into thinking they can select arbitrary fields.
+  });
+
+  // By filter. The engine validates `where` against `filterTarget` as a
+  // query's, and the resolver checks `set` as update<T> checks a patch.
+  registry.register(`updateMany${cap}`, {
+    resolver: updateMany,
+    kind: 'mutation',
+    verb: 'update',
+    filterTarget: typeName,
+    params: { where: FILTER_WHERE, set: typeStructFieldDef(typeFields) },
+    returns: filterWriteReturnFieldDef(),
+    ...(policy !== undefined ? { policy } : {})
+  });
+
+  registry.register(`deleteMany${cap}`, {
+    resolver: deleteMany,
+    kind: 'mutation',
+    verb: 'delete',
+    filterTarget: typeName,
+    params: { where: FILTER_WHERE },
+    returns: filterWriteReturnFieldDef(),
+    ...(policy !== undefined ? { policy } : {})
   });
 
   // §5.1 admin-only hard-delete. Opt-in: callers that want a purge surface

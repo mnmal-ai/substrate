@@ -9,7 +9,7 @@
  * repointing means tombstone the stale edge(s) + write a new one.
  */
 
-import type { Edge, EdgeRef, EdgeWriteInput } from '@mnmal-ai/substrate-types';
+import type { Edge, EdgeRef, EdgesStore, EdgeWriteInput, Id } from '@mnmal-ai/substrate-types';
 import type { CrossRefFieldInfo } from './crossref-existence.js';
 
 /**
@@ -62,4 +62,41 @@ export function planCrossRefEdges(
     }
   }
   return plan;
+}
+
+/**
+ * Applies `planCrossRefEdges` to every updated row whose patch names a
+ * crossRef: one `findEdgesFromMany`, one `tombstoneMany`, one `writeMany`.
+ * A repointed crossRef must not leave the old edge live, or the sweep's
+ * applyPolicy fires onDelete against the stale target. Sends nothing when no
+ * patch names a crossRef.
+ */
+export async function syncCrossRefEdges(
+  edgeStore: EdgesStore,
+  owner: { ns: string; type: string },
+  crossRefs: CrossRefFieldInfo[],
+  updated: ReadonlyArray<{ id: Id; params: Record<string, unknown> }>
+): Promise<void> {
+  const touched = updated.filter((u) =>
+    crossRefs.some(({ fieldName }) => Object.hasOwn(u.params, fieldName))
+  );
+  if (touched.length === 0) return;
+  const refs: EdgeRef[] = touched.map((u) => ({ ...owner, id: u.id }));
+  const byOwner = new Map<string, Edge[]>();
+  for (const e of await edgeStore.findEdgesFromMany(refs)) {
+    const key = String(e.from.id);
+    const owned = byOwner.get(key);
+    if (owned === undefined) byOwner.set(key, [e]);
+    else owned.push(e);
+  }
+  const tombstone: string[] = [];
+  const write: EdgeWriteInput[] = [];
+  for (const [k, u] of touched.entries()) {
+    const ref = refs[k] as EdgeRef;
+    const plan = planCrossRefEdges(byOwner.get(String(ref.id)) ?? [], ref, crossRefs, u.params);
+    tombstone.push(...plan.tombstone);
+    write.push(...plan.write);
+  }
+  await edgeStore.tombstoneMany(tombstone);
+  await edgeStore.writeMany(write);
 }

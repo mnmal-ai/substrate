@@ -13,7 +13,12 @@ import {
   type StoreProfileName
 } from '@mnmal-ai/substrate-compose';
 import { MemoryBridgeCredentialStore } from '@mnmal-ai/substrate-core';
-import { parsePositiveInt, type TlsConfig } from '@mnmal-ai/substrate-types';
+import {
+  DEFAULT_FILTER_WRITE_LIMITS,
+  type FilterWriteLimits,
+  parsePositiveInt,
+  type TlsConfig
+} from '@mnmal-ai/substrate-types';
 import pkg from '../../package.json' with { type: 'json' };
 import { createKnobRecorder, type KnobRecorder, nonEmpty } from './knobs.js';
 import { redactStoreSpec } from './wiring.js';
@@ -118,6 +123,8 @@ export interface ParsedConfig {
   pageLimits: { defaultLimit: number; maxLimit: number };
   /** Most rows a subscription snapshot may return (`SUBSTRATE_SNAPSHOT_LIMIT`, default the max page). */
   snapshotLimit: number;
+  /** Caps on `updateMany<T>` / `deleteMany<T>` (`SUBSTRATE_FILTER_WRITE_MAX_MATCH` / `_IDS_CAP`). */
+  filterWriteLimits: FilterWriteLimits;
   /**
    * Periodic re-prime interval (ms) for the `KeyRegistry` public-key
    * cache; bounds revocation staleness. Defaults to
@@ -340,6 +347,7 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
   const bodyLimit = parseBodyLimit(env, knobs);
   const pageLimits = parsePageLimits(env, knobs);
   const snapshotLimit = parseSnapshotLimit(env, knobs, pageLimits.maxLimit);
+  const filterWriteLimits = parseFilterWriteLimits(env, knobs);
   const keyReprimeIntervalMs = parseKeyReprimeIntervalMs(env, knobs);
   knobs.recordSecret(
     'streamTicketSecret',
@@ -384,6 +392,7 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
     bodyLimit,
     pageLimits,
     snapshotLimit,
+    filterWriteLimits,
     keyReprimeIntervalMs,
     knobs: knobs.report(),
     streamTicketSecret,
@@ -481,6 +490,30 @@ function parseSnapshotLimit(env: NodeJS.ProcessEnv, knobs: KnobRecorder, fallbac
     );
   }
   return knobs.record('snapshotLimit', 'SUBSTRATE_SNAPSHOT_LIMIT', env.SUBSTRATE_SNAPSHOT_LIMIT, v);
+}
+
+/** Parse `SUBSTRATE_FILTER_WRITE_MAX_MATCH` (10000) and `SUBSTRATE_FILTER_WRITE_IDS_CAP` (1000). */
+function parseFilterWriteLimits(env: NodeJS.ProcessEnv, knobs: KnobRecorder): FilterWriteLimits {
+  const read = (key: string, name: string, fallback: number): number => {
+    const raw = nonEmpty(env[name]);
+    const v = raw === undefined ? fallback : Number(raw);
+    if (!Number.isSafeInteger(v) || v <= 0) {
+      throw new EnvConfigError(`${name}: invalid value '${raw}' — expected a positive integer`);
+    }
+    return knobs.record(key, name, env[name], v);
+  };
+  return {
+    maxMatch: read(
+      'filterWriteMaxMatch',
+      'SUBSTRATE_FILTER_WRITE_MAX_MATCH',
+      DEFAULT_FILTER_WRITE_LIMITS.maxMatch
+    ),
+    idsCap: read(
+      'filterWriteIdsCap',
+      'SUBSTRATE_FILTER_WRITE_IDS_CAP',
+      DEFAULT_FILTER_WRITE_LIMITS.idsCap
+    )
+  };
 }
 
 /**

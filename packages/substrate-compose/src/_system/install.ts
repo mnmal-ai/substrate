@@ -602,6 +602,17 @@ export async function installSystemNamespace(
       })
   };
 
+  // By filter would skip every per-key step above (the lock, the
+  // admin-survives guard, the revocation audit, the cache eviction), so keys
+  // are written one id at a time.
+  for (const name of ['updateManyKey', 'deleteManyKey']) {
+    keyInterceptors[name] = () => async () => {
+      throw new ResolverFrameError(
+        'capability_unsupported',
+        `${name}: keys are written one id at a time; use ${name.replace('Many', '')}`
+      );
+    };
+  }
   const wrappedForSubstrateKey = wrapRegistryMutations(opts.registry, keyInterceptors);
   installAutoCrud(wrappedForSubstrateKey, KEY_TYPE, opts.dataset, opts.edges, {
     fields: mergeIdField(KEY_FIELDS),

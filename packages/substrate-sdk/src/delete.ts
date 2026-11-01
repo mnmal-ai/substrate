@@ -49,19 +49,35 @@ export interface DeleteRowsArgs {
  */
 export async function deleteRows(args: DeleteRowsArgs): Promise<Id[]> {
   if (args.ids.length === 0) return [];
-  const refs: EdgeRef[] = args.ids.map((id) => ({
-    ns: args.dataset.namespace,
-    type: args.type,
-    id
-  }));
+  await assertNoRestrictEdges(
+    args.edges,
+    { ns: args.dataset.namespace, type: args.type },
+    args.ids
+  );
+  const { ids } = await args.dataset.tombstone(args.type, args.ids);
+  return ids;
+}
+
+/**
+ * The restrict gate of `deleteRows`: one `findEdgesToMany` (one `canDelete`
+ * for a single row). Throws `RestrictViolation` for the first id, in `ids`
+ * order, that a live `restrict` edge points at. Sends nothing for no ids.
+ */
+export async function assertNoRestrictEdges(
+  edges: EdgesStore,
+  target: { ns: string; type: string },
+  ids: readonly Id[]
+): Promise<void> {
+  if (ids.length === 0) return;
+  const refs: EdgeRef[] = ids.map((id) => ({ ...target, id }));
   const blocked = new Map<string, Edge[]>();
   const only = refs.length === 1 ? refs[0] : undefined;
   if (only !== undefined) {
     // One row: `canDelete` filters `restrict` in the store (in SQL on pg).
-    const gate = await args.edges.canDelete(only);
+    const gate = await edges.canDelete(only);
     if (!gate.ok) blocked.set(String(only.id), gate.blockedBy);
   } else {
-    for (const e of await args.edges.findEdgesToMany(refs)) {
+    for (const e of await edges.findEdgesToMany(refs)) {
       if (e.policy !== 'restrict' || e.deletedAt != null) continue;
       const key = String(e.to.id);
       const by = blocked.get(key);
@@ -73,6 +89,4 @@ export async function deleteRows(args: DeleteRowsArgs): Promise<Id[]> {
     const by = blocked.get(String(ref.id));
     if (by !== undefined) throw new RestrictViolation(ref, by);
   }
-  const { ids } = await args.dataset.tombstone(args.type, args.ids);
-  return ids;
 }

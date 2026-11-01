@@ -42,6 +42,7 @@ import type {
   EdgesStore,
   EngineInput,
   FieldDef,
+  FilterWriteLimits,
   FrameEntry,
   IdempotencyStore,
   Identity,
@@ -66,6 +67,7 @@ import type {
 } from '@mnmal-ai/substrate-types';
 import {
   BatchElementError,
+  DEFAULT_FILTER_WRITE_LIMITS,
   isBatchElementError,
   isResolverFrameError,
   isRestrictViolation,
@@ -308,6 +310,7 @@ export class Engine {
     metric: (name, payload) => this.#metric(name, payload)
   };
   readonly #committed: CommittedWritesQueue;
+  readonly #filterWriteLimits: FilterWriteLimits;
   readonly #shapeRecorder: EngineOptions['shapeRecorder'];
   readonly #idempotency: { store: IdempotencyStore; defaultTtlMs: number } | undefined;
   /**
@@ -347,6 +350,7 @@ export class Engine {
     this.#onResolve = opts.onResolve;
     this.#committed = new CommittedWritesQueue(opts.committedWritesHooks ?? [], this.#metric);
     this.#shapeRecorder = opts.shapeRecorder;
+    this.#filterWriteLimits = opts.filterWriteLimits ?? DEFAULT_FILTER_WRITE_LIMITS;
     this.#idempotency =
       opts.idempotency !== undefined
         ? {
@@ -1657,6 +1661,8 @@ export class Engine {
       return null;
     }
 
+    // A by-filter mutation's `where` is a query's `where` on its target type.
+    const filterTarget = operation === 'mutate' ? registryEntry.filterTarget : undefined;
     // Metadata spellings the read path returns (`createdBy`, `_metadata`, …)
     // reach policy, validation and the resolver as the canonical columns.
     const frame =
@@ -1668,7 +1674,9 @@ export class Engine {
               ? this.#metadataHop(ns, name)
               : undefined
           )
-        : entry;
+        : filterTarget !== undefined
+          ? withCanonicalMetadataFilters(entry, nsCfg.registry.get(filterTarget)?.fields ?? {})
+          : entry;
 
     // Thread the entry name + autoCRUD verb so policies can discriminate
     // resolvers (get<T> vs delete<T> otherwise look identical).
@@ -1699,11 +1707,15 @@ export class Engine {
     // A row filter reads the whole row, so the substrate must not narrow it to
     // the caller's selection; the transport projects the response.
     if ((decision.obligations?.length ?? 0) > 0) delete args.fields;
+    if (filterTarget !== undefined) args.filterWriteLimits = this.#filterWriteLimits;
 
     // Neither path validates walk grammar, so both refuse it whatever the flag:
     // a mutation's returned-row selection, and a virtual resolver's input.
     if (operation === 'mutate') {
-      const walkPath = walkGrammarPath({ fields: frame.fields });
+      const walkPath = walkGrammarPath({
+        fields: frame.fields,
+        ...(filterTarget !== undefined ? { params: { where: frame.params?.where } } : {})
+      });
       if (walkPath) {
         addError(
           envelope,
@@ -1756,7 +1768,8 @@ export class Engine {
       operation,
       entryKind: registryEntry.kind,
       isVirtual,
-      dataset
+      dataset,
+      ...(filterTarget !== undefined ? { filterTarget } : {})
     });
     if (!guardOk) return null;
 

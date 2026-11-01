@@ -73,6 +73,22 @@ describe.skipIf(!POSTGRES_URL)('PgDatasetOptions.promotedColumns', () => {
     expect(row?.body_val).toBe('critical');
   });
 
+  it('mirrors a custom promoted key on an updateWhere, and keeps it when set omits it', async () => {
+    await ds.write('Alert', [
+      { id: 'a3', severity: 'low', note: 'x' },
+      { id: 'a4', severity: 'low', note: 'y' }
+    ]);
+    await ds.updateWhere('Alert', { note: { eq: 'x' } }, { severity: 'critical' }, { maxMatch: 5 });
+    await ds.updateWhere('Alert', { note: { eq: 'y' } }, { note: 'z' }, { maxMatch: 5 });
+
+    const rows = await sql`SELECT id, severity, body ->> 'severity' AS body_val
+                           FROM rows WHERE id IN ('a3', 'a4') ORDER BY id`;
+    expect(rows.map((r) => [r.id, r.severity, r.body_val])).toEqual([
+      ['a3', 'critical', 'critical'],
+      ['a4', 'low', 'low']
+    ]);
+  });
+
   it('routes a filter on the custom key to the column', async () => {
     await ds.write('Alert', [
       { id: 'f1', severity: 'high' },

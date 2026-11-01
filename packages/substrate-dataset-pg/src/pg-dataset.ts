@@ -40,6 +40,8 @@ import type {
   DropResult,
   FieldDef,
   FilterCapabilities,
+  FilterWriteOptions,
+  FilterWriteResult,
   Id,
   IndexDecl,
   IndexPlan,
@@ -53,12 +55,14 @@ import type {
   TypeStats,
   TypeStorageReport,
   UpdateFieldRef,
+  WhereClause,
   WriteOptions,
   WriteResult,
   WriteRow
 } from '@mnmal-ai/substrate-types';
 import {
   assertNoRepeatedIds,
+  filterTooBroad,
   naturalOrderOf,
   QUERY_TIMEOUT,
   ResolverFrameError,
@@ -545,10 +549,7 @@ export class PgDataset implements Dataset {
     // Maps a body field's declared kind to the cast applied to its extraction,
     // for both sorting and WHERE. Null when no lookup is wired or the field is
     // undeclared; the builders then infer from the operand.
-    const bodyCastFor = (field: string): BodyOrderByCast | null => {
-      if (this.#fieldDefLookup === null) return null;
-      return resolveBodyOrderByCast(this.#fieldDefLookup(type, field));
-    };
+    const bodyCastFor = this.#castFor(type);
 
     // Extension-operator side-channel (relevance order, score/vector), applied
     // to the final page below.
@@ -1555,6 +1556,121 @@ export class PgDataset implements Dataset {
     });
     const byId = new Map(records.map((r) => [r.id, this.materialize(r)]));
     return patches.map((p) => byId.get(idToText(p.id)) ?? null);
+  }
+
+  async updateWhere(
+    type: string,
+    where: WhereClause,
+    set: Record<string, unknown>,
+    opts: FilterWriteOptions
+  ): Promise<FilterWriteResult> {
+    const sql = this.#sql;
+    const patch: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(set)) {
+      if (k !== RESERVED_DELETED_AT && k !== 'id') patch[k] = v;
+    }
+    // Bound as text and cast in SQL, as patchRows does: a string bound as jsonb is a JSON string.
+    const body = JSON.stringify(patch);
+    const updatedBy: ActorIdentity = opts.actor ?? { kind: 'system', id: 'anonymous' };
+    // Each promoted column follows its key in the patch, as in patchRows. The
+    // CASE keeps the text the same whichever keys `set` names.
+    const mirrors: Fragment[] = [];
+    for (const [field, meta] of Object.entries(this.#promotedColumns)) {
+      const cast = meta.kind === 'boolean' ? sql`::boolean` : sql``;
+      mirrors.push(
+        sql`, ${sql.unsafe(meta.column)} = CASE WHEN ${body}::text::jsonb ? ${field} THEN (${body}::text::jsonb->>${field})${cast} ELSE ${sql.unsafe(`r.${meta.column}`)} END`
+      );
+    }
+    const assign = sql`body = r.body || ${body}::text::jsonb,
+            updated_at = ${opts.now ?? new Date()}::timestamptz,
+            updated_by_kind = ${updatedBy.kind}::text,
+            updated_by_id = ${updatedBy.id}::text
+            ${mirrors.length === 0 ? sql`` : (mirrors as unknown as Fragment)}`;
+    return this.#filterWrite(type, where, opts.maxMatch, assign, false).catch((err: unknown) => {
+      // A set onto a declared unique index's values: refused as `patchRows` refuses it.
+      throw this.#uniqueViolation(type, err);
+    });
+  }
+
+  async deleteWhere(
+    type: string,
+    where: WhereClause,
+    opts: FilterWriteOptions
+  ): Promise<FilterWriteResult> {
+    return this.#filterWrite(type, where, opts.maxMatch, this.#sql`deleted_at = now()`, true);
+  }
+
+  /**
+   * One statement: `m` locks up to `maxMatch + 1` live matches, `u` writes
+   * them only when there are at most `maxMatch`, re-testing `where` on each,
+   * and the outer select always returns one row carrying `count(m)`, so a
+   * too-broad filter tells from zero matches. Under READ COMMITTED a row a
+   * concurrent writer changed is re-tested on its new version after the lock
+   * (`FOR UPDATE`), so one moved out of the filter is neither locked nor
+   * written. `preImage` returns the rows without the write's `deleted_at`.
+   */
+  async #filterWrite(
+    type: string,
+    where: WhereClause,
+    maxMatch: number,
+    assign: Fragment,
+    preImage: boolean
+  ): Promise<FilterWriteResult> {
+    const sql = this.#sql;
+    // k as memory's read passes it: the match limit.
+    const { where: resolved } = await preResolveExtensionOperatorsDetailed(where, {
+      namespace: this.namespace,
+      type,
+      k: maxMatch + 1
+    });
+    const filter = buildWhere(sql, resolved, this.#castFor(type), this.#promotedFor) ?? sql`true`;
+    // shortId lives on the sidecar, so a where that reads it joins short_ids, as `read` does.
+    const joinShortIds = whereReferencesField(resolved, 'shortId');
+    const matchJoin = joinShortIds
+      ? sql`LEFT JOIN short_ids s ON s.namespace = r.namespace AND s.type = r.type AND s.row_id = r.id`
+      : sql``;
+    // The UPDATE target cannot appear in a FROM join's ON, so the sidecar joins
+    // on m, whose column is `mid` so an unqualified `id` in the where stays r's.
+    const writeJoin = joinShortIds
+      ? sql`LEFT JOIN short_ids s ON ${this.#scope(type, 's.')} AND s.row_id = m.mid`
+      : sql``;
+    const records = await sql<Array<SubstrateRowRecord & { matched: number }>>`
+      WITH m AS (
+        SELECT r.id AS mid FROM rows r ${matchJoin}
+        WHERE ${this.#scope(type, 'r.')} AND ${filter} AND r.deleted_at IS NULL
+        LIMIT ${maxMatch + 1}
+        FOR UPDATE OF r
+      ),
+      u AS (
+        UPDATE rows r SET ${assign}
+        FROM m ${writeJoin}
+        WHERE ${this.#scope(type, 'r.')} AND r.id = m.mid
+          AND (SELECT count(*) FROM m) <= ${maxMatch}
+          AND ${filter} AND r.deleted_at IS NULL
+        RETURNING r.namespace, r.type, r.id, r.body, r.deleted_at, r.created_at, r.updated_at,
+                  r.created_by_kind, r.created_by_id, r.updated_by_kind, r.updated_by_id, r.seq
+      )
+      SELECT (SELECT count(*) FROM m)::int AS matched,
+             u.id, u.body, ${preImage ? sql`NULL::timestamptz` : sql`u.deleted_at`} AS deleted_at,
+             sid.short_id, u.created_at, u.updated_at,
+             u.created_by_kind, u.created_by_id,
+             u.updated_by_kind, u.updated_by_id, u.seq
+      FROM (SELECT 1) one
+      LEFT JOIN u ON true
+      LEFT JOIN short_ids sid
+        ON sid.namespace = u.namespace AND sid.type = u.type AND sid.row_id = u.id
+    `;
+    if ((records[0]?.matched ?? 0) > maxMatch) throw filterTooBroad(this.namespace, type, maxMatch);
+    const rows = records.filter((r) => r.id !== null).map((r) => this.materialize(r));
+    return { count: rows.length, ids: rows.map((r) => r.id), rows };
+  }
+
+  /** A body field's declared kind as the cast its extraction takes; null when undeclared. */
+  #castFor(type: string): (field: string) => BodyOrderByCast | null {
+    return (field) =>
+      this.#fieldDefLookup === null
+        ? null
+        : resolveBodyOrderByCast(this.#fieldDefLookup(type, field));
   }
 
   async getShortIdForRow(type: string, rowId: string): Promise<number | null> {

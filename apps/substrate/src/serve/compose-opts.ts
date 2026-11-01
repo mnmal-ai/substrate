@@ -106,6 +106,7 @@ export async function buildComposeOpts(args: {
     trustedProxies: config.trustedProxies,
     pageLimits: config.pageLimits,
     subscriptions: { snapshotLimit: config.snapshotLimit },
+    filterWriteLimits: config.filterWriteLimits,
     // Mounts the admin-gated `GET /substrate/v1/config`.
     configReport: config.knobs,
     advisor: {

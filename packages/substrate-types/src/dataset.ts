@@ -267,6 +267,40 @@ export interface DeleteResult {
   ids: Id[];
 }
 
+/** Options of `Dataset.updateWhere` / `deleteWhere`. */
+export interface FilterWriteOptions {
+  /** Most rows the filter may match; one more refuses the write with `filter_too_broad`. */
+  maxMatch: number;
+  /** Stamped as `updatedBy` (update only); the anonymous system actor when absent. */
+  actor?: ActorIdentity;
+  /** Stamped as `updatedAt` (update only); the clock when absent. */
+  now?: Date;
+}
+
+/**
+ * What a by-filter write changed: every changed id, and the changed rows
+ * (post-images for an update, pre-images for a delete). Both are bounded by
+ * `maxMatch`.
+ */
+export interface FilterWriteResult {
+  count: number;
+  ids: Id[];
+  rows: Row[];
+}
+
+/** The caps on `updateMany<T>` / `deleteMany<T>`. */
+export interface FilterWriteLimits {
+  /** Most rows one filter may match (`SUBSTRATE_FILTER_WRITE_MAX_MATCH`). */
+  maxMatch: number;
+  /** Most ids one result returns (`SUBSTRATE_FILTER_WRITE_IDS_CAP`). */
+  idsCap: number;
+}
+
+export const DEFAULT_FILTER_WRITE_LIMITS: Readonly<FilterWriteLimits> = Object.freeze({
+  maxMatch: 10_000,
+  idsCap: 1_000
+});
+
 export interface DropResult {
   /** Number of rows physically removed. */
   rowsDeleted: number;
@@ -660,6 +694,32 @@ export interface Dataset {
     actor: ActorIdentity | null,
     now: Date
   ): Promise<Array<Row | null>>;
+
+  /**
+   * Update every live row of `type` matching `where`: merges `set` into each,
+   * as `patchRows` does, and stamps `updatedAt` / `updatedBy`. When more than
+   * `opts.maxMatch` rows match it throws `ResolverFrameError('filter_too_broad')`
+   * and changes nothing; zero matches is `{ count: 0 }`. pg runs one
+   * statement, which locks the matched rows and re-tests `where` on each, so
+   * a row a concurrent writer moved out of the filter is not updated.
+   */
+  updateWhere?(
+    type: string,
+    where: WhereClause,
+    set: Record<string, unknown>,
+    opts: FilterWriteOptions
+  ): Promise<FilterWriteResult>;
+
+  /**
+   * Tombstone every live row of `type` matching `where`, under the same cap
+   * and lock as `updateWhere`. `rows` are the pre-images. Checks no edges:
+   * the caller gates `restrict` and rolls back.
+   */
+  deleteWhere?(
+    type: string,
+    where: WhereClause,
+    opts: FilterWriteOptions
+  ): Promise<FilterWriteResult>;
 
   /**
    * Inverse of `resolveShortId` — look up the short id assigned to a
