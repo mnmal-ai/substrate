@@ -81,7 +81,12 @@ describe('engine walk gate', () => {
   it('validates frame params and selections without a where', async () => {
     const { engine, reached } = build();
     const res = await engine.query({
-      frame: { 'ns/Thing': { params: { count: true }, fields: { id: true, _agg: {} } } },
+      frame: {
+        'ns/Thing': {
+          params: { count: true },
+          fields: { id: true, _agg: { n: { in: 'ns/Part.thing', count: true } } }
+        }
+      },
       ctx
     });
     expect(res.errors?.[0]).toMatchObject({

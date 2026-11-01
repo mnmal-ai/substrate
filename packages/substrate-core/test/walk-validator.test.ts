@@ -387,6 +387,10 @@ describe('aggregate, derive, bucket, count and nested validation', () => {
         fields: { _agg: JSON.parse('{"__proto__":{"in":"cards/Observation.cert","count":true}}') }
       }).code
     ).toBe('agg_invalid');
+    expect(frameRefusal({ fields: { id: true, _agg: {} } })).toEqual({
+      code: 'agg_invalid',
+      path: ['fields', '_agg']
+    });
   });
 
   it('accepts _agg in where with a numeric comparison', () => {

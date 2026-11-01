@@ -552,6 +552,8 @@ export function validateSelection(
     const at = [...path, name];
     if (name === '_agg') {
       if (!isObj(sel)) fail('agg_invalid', '_agg maps names to aggregates', at);
+      // As `aggregate: {}` is (Ruling 35): an empty one is not a walk read on pg.
+      if (Object.keys(sel).length === 0) fail('agg_invalid', '_agg needs at least one entry', at);
       // One _agg cannot reference another: validated with no _agg names in scope.
       const own = { ...scope, aggs: new Map<string, string>() };
       for (const [n, agg] of Object.entries(sel)) {
