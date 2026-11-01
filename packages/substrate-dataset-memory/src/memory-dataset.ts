@@ -745,6 +745,51 @@ export class MemoryDataset implements Dataset {
     return this.shortIds.resolveShortId(this.namespace, type, shortId);
   }
 
+  async allocateShortIds(type: string, count: number): Promise<number[]> {
+    return this.shortIds.allocateUnboundMany(this.namespace, type, count);
+  }
+
+  async bindShortIds(
+    type: string,
+    pairs: ReadonlyArray<{ shortId: number; rowId: string }>
+  ): Promise<void> {
+    // Through bindShortId, which also stamps the row and records the tx undo.
+    for (const p of pairs) await this.bindShortId(type, p.shortId, p.rowId);
+  }
+
+  async resolveShortIds(
+    type: string,
+    shortIds: readonly number[]
+  ): Promise<ReadonlyMap<number, string>> {
+    const out = new Map<number, string>();
+    const b = this.store.get(type);
+    for (const shortId of new Set(shortIds)) {
+      const rowId = await this.shortIds.resolveShortId(this.namespace, type, shortId);
+      if (rowId !== null && b?.get(rowId) !== undefined && b.get(rowId)?._deletedAt == null) {
+        out.set(shortId, rowId);
+      }
+    }
+    return out;
+  }
+
+  async patchRows(
+    type: string,
+    patches: ReadonlyArray<{ id: Id; patch: Record<string, unknown> }>,
+    actor: ActorIdentity | null,
+    now: Date
+  ): Promise<Array<Row | null>> {
+    // A repeated id folds into one patch, later keys winning, as pg's single
+    // UPDATE needs; every slot for it then holds the final row.
+    const folded = new Map<Id, Record<string, unknown>>();
+    for (const p of patches) folded.set(p.id, { ...folded.get(p.id), ...p.patch });
+    const done = new Map<Id, Row | null>();
+    for (const [id, patch] of folded) {
+      const r = await this.conditionalUpdate(type, id, {}, patch, actor ?? undefined, now);
+      done.set(id, r.matched ? r.row : null);
+    }
+    return patches.map((p) => done.get(p.id) ?? null);
+  }
+
   async getShortIdForRow(type: string, rowId: string): Promise<number | null> {
     return this.shortIds.getShortIdForRow(this.namespace, type, rowId);
   }

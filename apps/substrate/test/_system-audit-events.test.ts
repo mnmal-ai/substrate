@@ -931,6 +931,17 @@ class AuditFailingDataset implements Dataset {
   resolveShortId: Dataset['resolveShortId'] = (type, shortId) =>
     this.#inner.resolveShortId(type, shortId);
 
+  allocateShortIds: Dataset['allocateShortIds'] = (type, count) =>
+    this.#inner.allocateShortIds(type, count);
+
+  bindShortIds: Dataset['bindShortIds'] = (type, pairs) => this.#inner.bindShortIds(type, pairs);
+
+  resolveShortIds: Dataset['resolveShortIds'] = (type, shortIds) =>
+    this.#inner.resolveShortIds(type, shortIds);
+
+  patchRows: Dataset['patchRows'] = (type, patches, actor, now) =>
+    this.#inner.patchRows(type, patches, actor, now);
+
   getShortIdForRow: Dataset['getShortIdForRow'] = (type, rowId) =>
     this.#inner.getShortIdForRow(type, rowId);
 

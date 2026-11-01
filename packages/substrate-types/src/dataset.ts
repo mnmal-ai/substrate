@@ -615,6 +615,53 @@ export interface Dataset {
   resolveShortId(type: string, shortId: number): Promise<string | null>;
 
   /**
+   * `count` fresh short ids for `type`, ascending, in one call (pg: one
+   * statement whatever `count`). Like `allocateShortId`, binds nothing.
+   * `count` of 0 returns `[]` and sends nothing.
+   */
+  allocateShortIds(type: string, count: number): Promise<number[]>;
+
+  /**
+   * `bindShortId` for many pairs at once (pg: one statement). Idempotent per
+   * pair, as `bindShortId` is. An empty `pairs` does nothing and sends nothing.
+   */
+  bindShortIds(
+    type: string,
+    pairs: ReadonlyArray<{ shortId: number; rowId: string }>
+  ): Promise<void>;
+
+  /**
+   * Set-wise `resolveShortId` for the LIVE rows among `shortIds` (pg: one
+   * statement). A short id with no binding, or whose row is tombstoned or
+   * purged, is absent from the map: the answer `resolveShortId` then a live
+   * `read` gives, which is how callers resolve today. Repeats in `shortIds`
+   * are deduped. An empty `shortIds` returns an empty map and sends nothing.
+   */
+  resolveShortIds(type: string, shortIds: readonly number[]): Promise<ReadonlyMap<number, string>>;
+
+  /**
+   * Multi-row `update`: merges each patch into its LIVE row with today's
+   * semantics (a key absent from the patch keeps its value, `null` clears it;
+   * `id` and `_deletedAt` keys are ignored), stamps `updatedAt` = `now` and
+   * `updatedBy` = `actor` (the anonymous system actor when `null`), as
+   * `conditionalUpdate` does. pg runs one statement whatever the batch size.
+   *
+   * The result has one entry per patch, in order: the merged row, or `null`
+   * when `id` is not live. It never revives a tombstoned row or re-creates a
+   * purged one.
+   *
+   * A repeated `id` is allowed: its patches apply in input order (later keys
+   * win, as sequential patches would) and every slot for that id holds the
+   * final merged row. An empty `patches` returns `[]` and sends nothing.
+   */
+  patchRows(
+    type: string,
+    patches: ReadonlyArray<{ id: Id; patch: Record<string, unknown> }>,
+    actor: ActorIdentity | null,
+    now: Date
+  ): Promise<Array<Row | null>>;
+
+  /**
    * Inverse of `resolveShortId` — look up the short id assigned to a
    * given row id. Returns null if no sidecar entry exists (e.g. rows written
    * before short ids were allocated).

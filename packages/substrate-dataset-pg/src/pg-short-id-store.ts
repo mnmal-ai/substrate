@@ -80,6 +80,25 @@ export class PgShortIdStore {
   }
 
   /**
+   * `count` consecutive-or-interleaved sequence values, ascending, in one
+   * statement whatever `count`. Under concurrent allocators the values need
+   * not be contiguous, but are distinct and above any earlier allocation.
+   */
+  async allocateUnboundMany(ns: string, type: string, count: number): Promise<number[]> {
+    if (!Number.isSafeInteger(count) || count < 0) {
+      throw new Error(`PgShortIdStore: count must be a non-negative integer, got ${count}`);
+    }
+    if (count === 0) return [];
+    const name = await this.ensureSequence(ns, type);
+    // ORDER BY: nextval is evaluated per row in no promised order.
+    const rows = await this.sql.unsafe<Array<{ n: string }>>(
+      `SELECT n FROM (SELECT nextval('"${name}"') AS n FROM generate_series(1, $1::int)) s ORDER BY n`,
+      [count]
+    );
+    return rows.map((r) => parseShortId(r.n));
+  }
+
+  /**
    * Bind a previously-allocated short-id to a row. `ON CONFLICT DO NOTHING`
    * covers both the PK `(namespace, type, short_id)` and the UNIQUE index
    * `(namespace, type, row_id)` — idempotent for backfill re-runs.
@@ -88,6 +107,22 @@ export class PgShortIdStore {
     await this.sql`
       INSERT INTO short_ids (namespace, type, short_id, row_id)
       VALUES (${ns}, ${type}, ${shortId}, ${rowId})
+      ON CONFLICT DO NOTHING
+    `;
+  }
+
+  /** `bind` for many pairs in one statement (arrays through `unnest`). */
+  async bindMany(
+    ns: string,
+    type: string,
+    pairs: ReadonlyArray<{ shortId: number; rowId: string }>
+  ): Promise<void> {
+    if (pairs.length === 0) return;
+    await this.sql`
+      INSERT INTO short_ids (namespace, type, short_id, row_id)
+      SELECT ${ns}::text, ${type}::text, t.short_id, t.row_id
+      FROM unnest(${pairs.map((p) => String(p.shortId))}::bigint[], ${pairs.map((p) => p.rowId)}::text[])
+        AS t(short_id, row_id)
       ON CONFLICT DO NOTHING
     `;
   }
