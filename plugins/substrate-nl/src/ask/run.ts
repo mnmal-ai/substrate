@@ -1,4 +1,12 @@
-import type { Dropped, PlanClause, Query, SubstrateRequest } from '@mnmal-ai/substrate/sdk';
+import {
+  type Dropped,
+  type PlanClause,
+  type Query,
+  ROW_POLICY_BLOCKS_WALK,
+  type SubstrateRequest,
+  WALKS_NEED_PARTITIONED,
+  WALKS_UNSUPPORTED_STORE
+} from '@mnmal-ai/substrate/sdk';
 import type { NlEngineAccess, NlEnvelope } from '../access.js';
 import { type Judge, type JudgedResult, parseWithJudge } from '../judge/judge.js';
 import { own } from '../own.js';
@@ -36,8 +44,16 @@ function executable(c: Candidate, pack: ServedPack, paged = c.answer !== 'count'
   return { [key]: { params, fields } } as Query;
 }
 
-/** The engine refused `count: true`: the seed is under a row policy. */
-const COUNT_REFUSED = new Set(['row_policy_blocks_walk']);
+/**
+ * The engine refused `count: true`: the seed is under a row policy, or the
+ * store (memory, legacy-layout pg) answers no walk grammar. A plain paged read
+ * works in every case.
+ */
+const COUNT_REFUSED = new Set([
+  ROW_POLICY_BLOCKS_WALK,
+  WALKS_UNSUPPORTED_STORE,
+  WALKS_NEED_PARTITIONED
+]);
 
 /**
  * The parser's plan with the engine's `served`/`recommend` where the engine
@@ -122,9 +138,9 @@ async function rows(
   };
 }
 
-// shortcut: the fallback when the server refuses `count: true` pages ids at the
-// engine's default page size, so a type past MAX_COUNT_PAGES pages gets no
-// count; deleted in Task 23 except for row-policy seeds.
+// shortcut: the fallback when the server refuses `count: true` (a row-policy
+// seed, or a store without walks) pages ids at the engine's default page size,
+// so a type past MAX_COUNT_PAGES pages gets no count.
 const MAX_COUNT_PAGES = 1000;
 
 /** The population a count candidate matches: `seen` rows from page one, then id-only pages after its cursor. */

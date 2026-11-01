@@ -5,6 +5,7 @@
 import type { FilterCapabilities, TypeSchema, WhereClause } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
 import { FilterValidationError, validateFilter } from '../src/filter/validator.js';
+import { MAX_DATE_SHIFT_MS } from '../src/filter/walk-validator.js';
 
 const ref = (type: string, ns = 'cards') =>
   ({ kind: 'crossRef', ns, type, onDelete: 'set_null' }) as const;
@@ -38,7 +39,8 @@ const SCHEMAS: Record<string, TypeSchema> = {
       cert: ref('Cert'),
       price: { kind: 'scalar', type: 'number' },
       observedAt: { kind: 'scalar', type: 'date' },
-      elsewhere: ref('Cert', 'other')
+      elsewhere: ref('Cert', 'other'),
+      dims: { kind: 'struct', fields: { w: { kind: 'scalar', type: 'number' } } }
     }
   }
 };
@@ -166,6 +168,21 @@ describe('walk validation', () => {
         expect(err).toMatchObject({ code: 'walk_unknown_ref', path: ['where', '_walk', 'in'] });
       }
     }
+  });
+
+  it('refuses a $ref inside a struct sub-filter', () => {
+    expect(
+      refusal({
+        _walk: { in: 'cards/Observation.cert', where: { dims: { w: { gt: { $ref: '$.ask' } } } } }
+      })
+    ).toEqual({
+      code: 'walk_unsupported_ref',
+      path: ['where', '_walk', 'where', 'dims', 'w', 'gt']
+    });
+    expect(refusal({ dims: { w: { gt: { $ref: '$.price' } } } }, 'Observation')).toEqual({
+      code: 'walk_unsupported_ref',
+      path: ['where', 'dims', 'w', 'gt']
+    });
   });
 
   it('refuses a list crossRef and a struct-nested crossRef', () => {
@@ -371,6 +388,10 @@ describe('aggregate, derive, bucket, count and nested validation', () => {
         fields: { _agg: JSON.parse('{"__proto__":{"in":"cards/Observation.cert","count":true}}') }
       }).code
     ).toBe('agg_invalid');
+    expect(frameRefusal({ fields: { id: true, _agg: {} } })).toEqual({
+      code: 'agg_invalid',
+      path: ['fields', '_agg']
+    });
   });
 
   it('accepts _agg in where with a numeric comparison', () => {
@@ -527,6 +548,20 @@ describe('aggregate, derive, bucket, count and nested validation', () => {
     expect(refusal({ gradedAt: { gt: { $ref: '$.gradedAt', times: 2 } } }).code).toBe(
       'ref_kind_mismatch'
     );
+  });
+
+  it('bounds a date $ref shift at MAX_DATE_SHIFT_MS either way', () => {
+    for (const plus of [MAX_DATE_SHIFT_MS, -MAX_DATE_SHIFT_MS]) {
+      expect(() => check({ gradedAt: { gt: { $ref: '$.gradedAt', plus } } })).not.toThrow();
+    }
+    for (const plus of [MAX_DATE_SHIFT_MS + 1, -MAX_DATE_SHIFT_MS - 1, 1e17, -1e15]) {
+      expect(refusal({ gradedAt: { gt: { $ref: '$.gradedAt', plus } } })).toEqual({
+        code: 'type_mismatch',
+        path: ['where', 'gradedAt', 'gt', 'plus']
+      });
+    }
+    // A number $ref is not a date shift and keeps any finite plus.
+    expect(() => check({ ask: { gt: { $ref: '$.ask', plus: 1e17 } } })).not.toThrow();
   });
 
   it('refuses pick with a none or all quantifier, and resolves pick fields like $ref', () => {

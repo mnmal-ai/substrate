@@ -16,6 +16,8 @@ export const MAX_WALK_DEPTH = 3;
 /** Joint quantification enumerates the product of the bound walks' neighbourhoods, so cap the factors. */
 export const MAX_GROUP_BINDINGS = 3;
 export const MAX_FRAME_BINDINGS = 6;
+// ~317 years: a date from 4396 BC to 275443 AD shifts inside pg timestamptz (from 4713 BC) and JS Date (±8.64e15 ms).
+export const MAX_DATE_SHIFT_MS = 1e13;
 
 const COMPARISON_OPS = new Set(['eq', 'neq', 'gt', 'gte', 'lt', 'lte']);
 const WALK_KEYS = new Set(['as', 'in', 'out', 'where', 'quantifier', 'pick']);
@@ -340,6 +342,17 @@ export function validateRef(
       path
     );
   }
+  if (
+    fieldKind === 'scalar.date' &&
+    typeof operand.plus === 'number' &&
+    Math.abs(operand.plus) > MAX_DATE_SHIFT_MS
+  ) {
+    fail(
+      'type_mismatch',
+      `a date $ref shifts by at most ${MAX_DATE_SHIFT_MS} ms either way, got ${operand.plus}`,
+      [...path, 'plus']
+    );
+  }
   const ref = operand.$ref;
   const m = typeof ref === 'string' ? /^([^.]+)\.(.+)$/.exec(ref) : null;
   if (m === null)
@@ -552,6 +565,8 @@ export function validateSelection(
     const at = [...path, name];
     if (name === '_agg') {
       if (!isObj(sel)) fail('agg_invalid', '_agg maps names to aggregates', at);
+      // As `aggregate: {}` is (Ruling 35): an empty one is not a walk read on pg.
+      if (Object.keys(sel).length === 0) fail('agg_invalid', '_agg needs at least one entry', at);
       // One _agg cannot reference another: validated with no _agg names in scope.
       const own = { ...scope, aggs: new Map<string, string>() };
       for (const [n, agg] of Object.entries(sel)) {

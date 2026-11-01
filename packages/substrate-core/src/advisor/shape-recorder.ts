@@ -34,7 +34,7 @@ export function shapeKey(s: ReadShape): string {
 
 const COMBINATORS = new Set(['AND', 'OR', 'NOT']);
 /** Walk grammar inside a `where`: walks are recorded as far-type shapes of their own, never as fields. */
-const WALK_KEYS = new Set(['_walk', '_agg', '$ref']);
+const WALK_KEYS = new Set(['_walk', '_agg']);
 
 const isObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v) && !(v instanceof Date);

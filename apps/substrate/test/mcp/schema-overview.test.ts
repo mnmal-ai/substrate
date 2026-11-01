@@ -66,7 +66,23 @@ describe('walk discoverability', () => {
       await client.close();
       return q?.description ?? '';
     };
-    expect(await descriptionOf()).toContain('shop/Item.order');
+    const text = await descriptionOf();
+    expect(text).toContain('shop/Item.order');
+    // Every walk construct is discoverable from the tool text.
+    for (const term of [
+      '`count: true`',
+      '`aggregate:',
+      '`bucket:',
+      '`derive:',
+      '"$m"',
+      '"$ref"',
+      '`times`/`plus`',
+      '`pick`',
+      '`quantifier`',
+      'query-only'
+    ]) {
+      expect(text).toContain(term);
+    }
   });
 });
 

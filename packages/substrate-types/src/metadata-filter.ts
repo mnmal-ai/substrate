@@ -140,22 +140,42 @@ function putResolved(b: Builder, name: string, pred: unknown): void {
 }
 
 /**
+ * The far side of a walk hop (`{ in }` / `{ out }`): its fields and its own
+ * hops, or undefined when the hop does not resolve (the validator refuses it).
+ */
+export type MetadataHop = (
+  node: Record<string, unknown>
+) => { fields: Record<string, FieldDef>; hop: MetadataHop } | undefined;
+
+/** A `_walk` / `_agg` node with its `where` rewritten against the far type. */
+export function normaliseWalkNode(node: unknown, hop: MetadataHop | undefined): unknown {
+  if (hop === undefined || !isRecord(node) || node.where === undefined) return node;
+  const far = hop(node);
+  if (far === undefined) return node;
+  return { ...node, where: normaliseMetadataWhere(node.where, far.fields, far.hop) };
+}
+
+/**
  * Rewrites every metadata spelling in a `where` clause onto the canonical
- * columns, through AND / OR / NOT. A name the type declares as a field of its
- * own is left alone, and so is anything that is not a metadata spelling, for
- * the validator to judge.
+ * columns, through AND / OR / NOT and, given `hop`, into each `_walk` / `_agg`
+ * against its far type. A name the type declares as a field of its own is
+ * left alone, and so is anything that is not a metadata spelling, for the
+ * validator to judge.
  */
 export function normaliseMetadataWhere(
   where: unknown,
-  fieldDefs: Record<string, FieldDef>
+  fieldDefs: Record<string, FieldDef>,
+  hop?: MetadataHop
 ): unknown {
   if (!isRecord(where)) return where;
   const b = new Builder();
   for (const [key, value] of Object.entries(where)) {
     if ((key === 'AND' || key === 'OR') && Array.isArray(value)) {
-      b.out[key] = value.map((w) => normaliseMetadataWhere(w, fieldDefs));
+      b.out[key] = value.map((w) => normaliseMetadataWhere(w, fieldDefs, hop));
     } else if (key === 'NOT') {
-      b.out[key] = normaliseMetadataWhere(value, fieldDefs);
+      b.out[key] = normaliseMetadataWhere(value, fieldDefs, hop);
+    } else if (key === '_walk' || key === '_agg') {
+      b.put(key, normaliseWalkNode(value, hop));
     } else if (Object.hasOwn(fieldDefs, key)) {
       b.put(key, value);
     } else if (key === '_metadata' && isRecord(value)) {

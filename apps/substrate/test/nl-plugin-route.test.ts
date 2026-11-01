@@ -165,6 +165,19 @@ describe('the NL routes', () => {
     expect(names).toEqual(['parsed', 'rows', 'done']);
   });
 
+  it('a count on the memory store, which refuses count: true, falls back to paging', async () => {
+    ctx = await mkServer({});
+    await seedTodo(ctx.server);
+    await seedTodo(ctx.server);
+    const res = await ctx.server.inject(
+      ask({ namespace: 'default', question: 'how many open todos' })
+    );
+    expect(res.status).toBe(200);
+    const { outcome } = jsonBody<{ outcome: Record<string, unknown> }>(res);
+    expect(outcome).toMatchObject({ kind: 'rows', answer: 'count', count: 2 });
+    expect(outcome).not.toHaveProperty('errors');
+  });
+
   it('GET /substrate/v1/nl/pack/:ns serves the pack, then 304 on a matching etag', async () => {
     ctx = await mkServer({});
     const first = await ctx.server.inject({ method: 'GET', path: '/substrate/v1/nl/pack/default' });

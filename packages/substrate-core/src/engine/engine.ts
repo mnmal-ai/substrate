@@ -44,6 +44,7 @@ import type {
   IdempotencyStore,
   Identity,
   IndexPlan,
+  MetadataHop,
   PackEnvelope,
   PlanClause,
   PolicyDecision,
@@ -63,6 +64,7 @@ import {
   isResolverFrameError,
   isRestrictViolation,
   ROW_POLICY_BLOCKS_WALK,
+  WALK_UNSUPPORTED_REF,
   WALKS_IN_MUTATION,
   WALKS_UNSUPPORTED_STORE
 } from '@mnmal-ai/substrate-types';
@@ -1334,6 +1336,26 @@ export class Engine {
     return refused;
   }
 
+  /** Far-type resolution for the metadata rewrite; a hop that does not resolve is left to the validator. */
+  #metadataHop(ns: string, from: string): MetadataHop {
+    const types = this.schemaFor(ns).types;
+    const schemaOf = (t: string) => (Object.hasOwn(types, t) ? types[t] : undefined);
+    const resolve = hopResolver(ns, schemaOf);
+    const hopFrom =
+      (type: string): MetadataHop =>
+      (node) => {
+        let far: string;
+        try {
+          far = resolve(node, type, []);
+        } catch {
+          return undefined;
+        }
+        const fields = schemaOf(far)?.fields;
+        return fields !== undefined ? { fields, hop: hopFrom(far) } : undefined;
+      };
+    return hopFrom(from);
+  }
+
   /** The walk sites of a walk-grammar query frame, or undefined for an ordinary one. */
   #walkSitesOf(frame: FrameEntry, ns: string, seed: string): WalkScan | undefined {
     if (!usesWalkGrammar(frame as Record<string, unknown>)) return undefined;
@@ -1518,7 +1540,13 @@ export class Engine {
     // reach policy, validation and the resolver as the canonical columns.
     const frame =
       operation === 'query' && registryEntry.kind === 'type'
-        ? withCanonicalMetadataFilters(entry, registryEntry.fields)
+        ? withCanonicalMetadataFilters(
+            entry,
+            registryEntry.fields,
+            usesWalkGrammar(entry as Record<string, unknown>)
+              ? this.#metadataHop(ns, name)
+              : undefined
+          )
         : entry;
 
     // Thread the entry name + autoCRUD verb so policies can discriminate
@@ -1571,7 +1599,7 @@ export class Engine {
           envelope,
           [key, ...walkPath],
           'walks are not available on virtual types',
-          'walk_unsupported_ref'
+          WALK_UNSUPPORTED_REF
         );
         return false;
       }
@@ -2108,7 +2136,6 @@ export class Engine {
   }
 }
 
-/** Path to the first nested `{ _walk }` selection whose numeric `limit` exceeds `max`, at any depth. */
 /** `fields` with every nested `{ _walk }` selection lacking a `limit` given `limit`, at any depth. */
 function withNestedDefaultLimits<T>(fields: T, limit: number): T {
   if (typeof fields !== 'object' || fields === null || Array.isArray(fields)) return fields;
@@ -2134,6 +2161,7 @@ function withNestedDefaultLimits<T>(fields: T, limit: number): T {
   ) as T;
 }
 
+/** Path to the first nested `{ _walk }` selection whose numeric `limit` exceeds `max`, at any depth. */
 function nestedOverLimit(fields: unknown, path: string[], max: number): string[] | null {
   if (typeof fields !== 'object' || fields === null) return null;
   for (const [name, sel] of Object.entries(fields)) {

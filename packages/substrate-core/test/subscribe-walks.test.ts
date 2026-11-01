@@ -64,3 +64,26 @@ describe('subscribe — walks', () => {
     expect(engine.activeSubscriptionCount()).toBe(0);
   });
 });
+
+describe('stream — walks', () => {
+  it('a stream with a _walk is refused walks_in_subscription, then ends', async () => {
+    const engine = buildEngine();
+    const frames: WsResponseFrame[] = [];
+    engine.stream({
+      id: 'str',
+      frame: {
+        'ns/Thing': { params: { where: { _walk: { in: 'ns/Part.thing' } } }, fields: { id: true } }
+      },
+      ctx: {},
+      onFrame: (f) => void frames.push(f)
+    });
+    for (let i = 0; i < 100 && !frames.some((f) => f.kind === 'end'); i++) {
+      await new Promise<void>((r) => setImmediate(r));
+    }
+    expect(frames.map((f) => f.kind)).toEqual(['error', 'end']);
+    expect(frames[0]?.errors?.[0]).toMatchObject({
+      code: 'walks_in_subscription',
+      path: ['ns/Thing', 'where', '_walk']
+    });
+  });
+});

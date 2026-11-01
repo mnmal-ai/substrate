@@ -1,6 +1,6 @@
 /** Structural detector for the typed-edge-walk query grammar. Subscriptions and streams use it to refuse walks (query-only). */
 
-const WALK_PARAM_KEYS = ['count', 'aggregate', 'bucket', 'derive'];
+const WALK_PARAM_KEYS = ['aggregate', 'bucket', 'derive'];
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -27,6 +27,8 @@ export function walkGrammarPath(entry: Record<string, unknown>): string[] | null
   const params = isObj(entry.params) ? entry.params : {};
   const where = inWhere(params.where, ['where']);
   if (where) return where;
+  // Only `count: true` is walk grammar, as pg's walkParams reads it.
+  if (params.count === true) return ['count'];
   for (const k of WALK_PARAM_KEYS) if (k in params) return [k];
   return inFields(entry.fields, ['fields']);
 }

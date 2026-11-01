@@ -9,6 +9,8 @@ import { createHash, randomBytes } from 'node:crypto';
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
 import {
   type FieldDef,
+  type MetadataHop,
+  normaliseMetadataWhere,
   type ReadParams,
   type Row,
   WALK_BUDGET_EXCEEDED,
@@ -461,6 +463,30 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk parity across memory and pg
         expect(paged, JSON.stringify(base)).toEqual(await pages(mem, { ...base, limit: 2 }));
         expect(paged.flat()).toEqual(full);
       }
+    }
+  });
+
+  it('metadata spellings inside a walk, as the engine rewrites them, agree', async () => {
+    // The engine's rewrite with a hop that always resolves; the fixtures carry no author.
+    const hop: MetadataHop = () => ({ fields: {}, hop });
+    const read = async (where: Record<string, unknown>) =>
+      (await same('Cert', { where: normaliseMetadataWhere(obs(where), {}, hop) as WhereClause }))
+        .map(name)
+        .sort();
+    const everyObserved = (await same('Cert', { where: obs() })).map(name).sort();
+    expect(everyObserved.length).toBeGreaterThan(0);
+    for (const where of [
+      { createdBy: { eq: null } },
+      { 'createdBy.id': { eq: null } },
+      { _metadata: { createdAt: { gt: '1970-01-02T00:00:00Z' } } }
+    ]) {
+      expect(await read(where), JSON.stringify(where)).toEqual(everyObserved);
+    }
+    for (const where of [
+      { createdBy: { eq: 'kid-1' } },
+      { createdBy: { eq: { kind: 'agent', id: 'kid-1' } } }
+    ]) {
+      expect(await read(where), JSON.stringify(where)).toEqual([]);
     }
   });
 });

@@ -81,7 +81,12 @@ describe('engine walk gate', () => {
   it('validates frame params and selections without a where', async () => {
     const { engine, reached } = build();
     const res = await engine.query({
-      frame: { 'ns/Thing': { params: { count: true }, fields: { id: true, _agg: {} } } },
+      frame: {
+        'ns/Thing': {
+          params: { count: true },
+          fields: { id: true, _agg: { n: { in: 'ns/Part.thing', count: true } } }
+        }
+      },
       ctx
     });
     expect(res.errors?.[0]).toMatchObject({
@@ -124,6 +129,17 @@ describe('engine walk gate', () => {
     // A plain read still answers.
     const plain = await engine.query({ frame: { 'ns/Thing': { fields: { id: true } } }, ctx });
     expect(plain.errors ?? []).toEqual([]);
+    expect(reached()).toBe(1);
+  });
+
+  it('count: false is not walk grammar, so a store without walks answers it', async () => {
+    expect(usesWalkGrammar({ params: { count: false } })).toBe(false);
+    const { engine, reached } = build(false);
+    const res = await engine.query({
+      frame: { 'ns/Thing': { params: { count: false }, fields: { id: true } } },
+      ctx
+    });
+    expect(res.errors ?? []).toEqual([]);
     expect(reached()).toBe(1);
   });
 });
