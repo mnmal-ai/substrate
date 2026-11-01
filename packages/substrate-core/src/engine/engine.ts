@@ -44,6 +44,7 @@ import type {
   IdempotencyStore,
   Identity,
   IndexPlan,
+  MetadataHop,
   PackEnvelope,
   PlanClause,
   PolicyDecision,
@@ -1334,6 +1335,26 @@ export class Engine {
     return refused;
   }
 
+  /** Far-type resolution for the metadata rewrite; a hop that does not resolve is left to the validator. */
+  #metadataHop(ns: string, from: string): MetadataHop {
+    const types = this.schemaFor(ns).types;
+    const schemaOf = (t: string) => (Object.hasOwn(types, t) ? types[t] : undefined);
+    const resolve = hopResolver(ns, schemaOf);
+    const hopFrom =
+      (type: string): MetadataHop =>
+      (node) => {
+        let far: string;
+        try {
+          far = resolve(node, type, []);
+        } catch {
+          return undefined;
+        }
+        const fields = schemaOf(far)?.fields;
+        return fields !== undefined ? { fields, hop: hopFrom(far) } : undefined;
+      };
+    return hopFrom(from);
+  }
+
   /** The walk sites of a walk-grammar query frame, or undefined for an ordinary one. */
   #walkSitesOf(frame: FrameEntry, ns: string, seed: string): WalkScan | undefined {
     if (!usesWalkGrammar(frame as Record<string, unknown>)) return undefined;
@@ -1518,7 +1539,13 @@ export class Engine {
     // reach policy, validation and the resolver as the canonical columns.
     const frame =
       operation === 'query' && registryEntry.kind === 'type'
-        ? withCanonicalMetadataFilters(entry, registryEntry.fields)
+        ? withCanonicalMetadataFilters(
+            entry,
+            registryEntry.fields,
+            usesWalkGrammar(entry as Record<string, unknown>)
+              ? this.#metadataHop(ns, name)
+              : undefined
+          )
         : entry;
 
     // Thread the entry name + autoCRUD verb so policies can discriminate

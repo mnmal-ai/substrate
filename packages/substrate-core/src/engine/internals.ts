@@ -20,10 +20,12 @@ import {
   grantOf,
   type IdempotencyStore,
   isResolverFrameError,
+  type MetadataHop,
   type NamespaceConfig,
   naturalOrderOf,
   normaliseMetadataOrderBy,
   normaliseMetadataWhere,
+  normaliseWalkNode,
   type OrderByClause,
   type PackEnvelope,
   type ParsedKey,
@@ -432,31 +434,77 @@ export function withNaturalOrder(
 
 /**
  * The frame with its `where` / `orderBy` metadata spellings rewritten onto the
- * canonical columns (`createdBy` -> `createdById`, …). Returns the same frame
- * when it carries neither.
+ * canonical columns (`createdBy` -> `createdById`, …). Given `hop`, every walk
+ * subtree is rewritten against its far type too: a `_walk` / `_agg` where, a
+ * field `_agg`, and a nested `{ _walk }` selection's `where`, `orderBy` and
+ * `fields`. Returns the same frame when there is nothing to rewrite.
  */
 export function withCanonicalMetadataFilters(
   entry: FrameEntry,
-  fields: Record<string, FieldDef>
+  fields: Record<string, FieldDef>,
+  hop?: MetadataHop
 ): FrameEntry {
-  const params = entry.params;
-  if (params === undefined || (params.where === undefined && params.orderBy === undefined)) {
-    return entry;
-  }
+  const params = canonicalParams(entry.params, fields, hop);
+  const selection = hop !== undefined ? canonicalFields(entry.fields, hop) : entry.fields;
+  if (params === entry.params && selection === entry.fields) return entry;
   return {
     ...entry,
-    params: {
-      ...params,
-      ...(params.where !== undefined
-        ? { where: normaliseMetadataWhere(params.where, fields) }
-        : {}),
-      ...(params.orderBy !== undefined
-        ? { orderBy: normaliseMetadataOrderBy(params.orderBy, fields) }
-        : {})
-    }
+    ...(params !== undefined ? { params } : {}),
+    ...(selection !== undefined ? { fields: selection } : {})
   };
 }
 
+function canonicalParams(
+  params: Record<string, unknown> | undefined,
+  fields: Record<string, FieldDef>,
+  hop: MetadataHop | undefined
+): Record<string, unknown> | undefined {
+  if (params === undefined || (params.where === undefined && params.orderBy === undefined)) {
+    return params;
+  }
+  return {
+    ...params,
+    ...(params.where !== undefined
+      ? { where: normaliseMetadataWhere(params.where, fields, hop) }
+      : {}),
+    ...(params.orderBy !== undefined
+      ? { orderBy: normaliseMetadataOrderBy(params.orderBy, fields) }
+      : {})
+  };
+}
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/** A field selection with its `_agg` wheres and nested `{ _walk }` selections rewritten. */
+function canonicalFields(
+  selection: Record<string, unknown> | undefined,
+  hop: MetadataHop
+): Record<string, unknown> | undefined {
+  if (selection === undefined) return selection;
+  let out: Record<string, unknown> | undefined;
+  const set = (name: string, v: unknown) => {
+    out ??= { ...selection };
+    out[name] = v;
+  };
+  for (const [name, sel] of Object.entries(selection)) {
+    if (name === '_agg' && isPlainObject(sel)) {
+      set(
+        name,
+        Object.fromEntries(Object.entries(sel).map(([n, a]) => [n, normaliseWalkNode(a, hop)]))
+      );
+    } else if (isPlainObject(sel) && isPlainObject(sel._walk)) {
+      const far = hop(sel._walk);
+      if (far === undefined) continue;
+      set(name, {
+        ...canonicalParams(sel, far.fields, far.hop),
+        _walk: normaliseWalkNode(sel._walk, hop),
+        ...(isPlainObject(sel.fields) ? { fields: canonicalFields(sel.fields, far.hop) } : {})
+      });
+    }
+  }
+  return out ?? selection;
+}
 export function addError(
   envelope: PackEnvelope,
   path: string[],
