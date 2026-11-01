@@ -744,10 +744,10 @@ export class PgDataset implements Dataset {
     const inlineLimit = (n: number | undefined): Fragment =>
       n !== undefined ? sql.unsafe(`LIMIT ${BigInt(n)}`) : sql``;
     // One page query: phase 1 with the cursor compare, or the null tail.
-    const page = (where: Fragment, n: number | undefined) =>
+    const statement = (where: Fragment, n: number | undefined) =>
       joinShortIds
         ? sql<SubstrateRowRecord[]>`
-          ${ctes}SELECT r.id, ${bodyProjection} AS body, r.deleted_at, s.short_id,
+          SELECT r.id, ${bodyProjection} AS body, r.deleted_at, s.short_id,
                  r.created_at, r.updated_at,
                  r.created_by_kind, r.created_by_id,
                  r.updated_by_kind, r.updated_by_id, r.seq${sortKeyProjection}
@@ -761,7 +761,7 @@ export class PgDataset implements Dataset {
           ${n !== undefined ? sql`LIMIT ${n}` : sql``}
         `
         : sql<SubstrateRowRecord[]>`
-          ${ctes}SELECT p.*, s.short_id
+          SELECT p.*, s.short_id
           FROM (
             SELECT r.id, ${bodyProjection} AS body, r.deleted_at,
                    r.created_at, r.updated_at,
@@ -780,6 +780,12 @@ export class PgDataset implements Dataset {
           ) s ON true
           ${buildProjectedOrderBy(sql, orderBy, sortKeyAliases, orderByCastFor, this.#promotedFor, 'p')}
         `;
+    // The CTEs ride in front only when there are any, so a plain read's text
+    // is exactly what it was (callers and tests key on its leading SELECT).
+    const page = (where: Fragment, n: number | undefined) =>
+      scope?.ctes === undefined || scope.ctes.length === 0
+        ? statement(where, n)
+        : sql<SubstrateRowRecord[]>`${ctes}${statement(where, n)}`;
 
     // Both queries read the same snapshot only inside a REPEATABLE READ or
     // SERIALIZABLE transaction; elsewhere each sees its own.
