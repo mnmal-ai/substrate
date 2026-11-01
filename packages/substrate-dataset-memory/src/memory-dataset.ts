@@ -59,7 +59,7 @@ import type {
   WriteResult,
   WriteRow
 } from '@mnmal-ai/substrate-types';
-import { assertNoRepeatedIds, createKeyedMutex } from '@mnmal-ai/substrate-types';
+import { assertNoRepeatedIds, createKeyedMutex, isColumnField } from '@mnmal-ai/substrate-types';
 import { NamespaceMismatch, ReservedField } from './errors.js';
 import { MemoryShortIdStore, type ShortIdBucketSnapshot } from './memory-short-id-store.js';
 import { uuidv7 } from './uuidv7.js';
@@ -85,9 +85,13 @@ export interface MemoryDatasetOptions {
   fieldDefLookup?: (type: string, field: string) => FieldDef | undefined;
   /**
    * The namespace's type definitions; a type declared `ordering: 'visible'`
-   * gets `_metadata.seq` on insert, as the pg dataset's lookup does.
+   * gets `_metadata.seq` on insert, as the pg dataset's lookup does. Its
+   * `fields` say which keys read back absent when null (`isColumnField`).
    */
-  typeDefLookup?: (type: string, namespace: string) => { ordering?: 'visible' } | undefined;
+  typeDefLookup?: (
+    type: string,
+    namespace: string
+  ) => { ordering?: 'visible'; fields?: Record<string, FieldDef> } | undefined;
   /**
    * Internal: binding assignments one read's walks may try before refusing
    * `walk_budget_exceeded`. Defaults to `WALK_EVALUATION_BUDGET`; tests lower it.
@@ -372,11 +376,16 @@ export class MemoryDataset implements Dataset {
     // Derived copies back to the originals once the cursor is encoded, below.
     const page = (rows: Row[]): Row[] => {
       const base = original.size === 0 ? rows : rows.map((r) => original.get(r) ?? r);
-      if (params.agg === undefined && params.nested === undefined) return base;
-      return base.map((r) => ({
-        ...r,
-        ...walkProjection(r, params.agg, params.nested ?? {}, ctxFor(r), true)
-      }));
+      // Last, so the walk memo (keyed by the stored row) still hits.
+      if (params.agg === undefined && params.nested === undefined) {
+        return base.map((r) => this.withoutNullColumns(type, r));
+      }
+      return base.map((r) =>
+        this.withoutNullColumns(type, {
+          ...r,
+          ...walkProjection(r, params.agg, params.nested ?? {}, ctxFor(r), true)
+        })
+      );
     };
     // nextCursor is derived from the DATASET-ordered slice (the sorted pool),
     // before any relevance reorder — cursor pagination must keep dataset
@@ -511,10 +520,28 @@ export class MemoryDataset implements Dataset {
       // above preserves it via `{ ...existing, ...sanitised }`). For create
       // paths shortId is bound after write, so it is absent here — the
       // autoCRUD create resolver merges it into its own returned shape.
-      merged.push({ ...landed });
+      merged.push(this.withoutNullColumns(type, { ...landed }));
     }
 
     return { written: ids.length, ids, rows: merged };
+  }
+
+  /**
+   * The row as it reads back: a declared scalar or crossRef holding `null` is
+   * absent, as on pg. The stored row keeps its null; the same row comes back
+   * when it has none.
+   */
+  private withoutNullColumns(type: string, row: Row): Row {
+    const fields = this.typeDefLookup?.(type, this.namespace)?.fields;
+    if (fields === undefined) return row;
+    let out = row;
+    for (const [k, v] of Object.entries(row)) {
+      const def = v === null && Object.hasOwn(fields, k) ? fields[k] : undefined;
+      if (def === undefined || !isColumnField(def)) continue;
+      if (out === row) out = { ...row };
+      delete out[k];
+    }
+    return out;
   }
 
   async tombstone(type: string, ids: Id[]): Promise<DeleteResult> {
@@ -622,7 +649,7 @@ export class MemoryDataset implements Dataset {
       ...(prior?.seq !== undefined ? { seq: prior.seq } : {})
     };
     row._metadata = meta;
-    return { matched: true, row: { ...row } };
+    return { matched: true, row: this.withoutNullColumns(type, { ...row }) };
   }
 
   async updateField(ref: UpdateFieldRef, fieldName: string, value: unknown): Promise<void> {

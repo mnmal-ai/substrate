@@ -200,6 +200,17 @@ export interface FieldDefList {
 export type FieldDef = FieldDefScalar | FieldDefCrossRef | FieldDefStruct | FieldDefList;
 
 /**
+ * True when the field's value is a typed column: a scalar other than `json` that
+ * the server does not own, or a crossRef. An explicit `null` on such a field
+ * reads back as absent. A json, struct or list field keeps its `null`, and a
+ * readonly scalar such as `shortId` is the server's.
+ */
+export function isColumnField(def: FieldDef): boolean {
+  if (def.kind === 'crossRef') return true;
+  return def.kind === 'scalar' && def.type !== 'json' && def.readonly !== true;
+}
+
+/**
  * Per-type schema entry. Fields may be declared at registration time; MVP emits
  * `fields: {}` for types registered without a field map (e.g. mutations whose
  * shape is inferred from the resolver's return).

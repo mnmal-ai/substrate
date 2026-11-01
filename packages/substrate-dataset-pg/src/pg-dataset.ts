@@ -59,6 +59,7 @@ import type {
 } from '@mnmal-ai/substrate-types';
 import {
   assertNoRepeatedIds,
+  isColumnField,
   naturalOrderOf,
   QUERY_TIMEOUT,
   ResolverFrameError,
@@ -811,7 +812,8 @@ export class PgDataset implements Dataset {
       rows = rows.concat(fetchLimit === undefined ? tail : tail.slice(0, fetchLimit - rows.length));
     }
 
-    const materialised = rows.map((r) => this.materialize(r));
+    const fields = this.#typeDefLookup?.(type, this.namespace)?.fields;
+    const materialised = rows.map((r) => this.materialize(type, r, fields));
     let hasMore = false;
     let sliced = materialised;
     if (limit !== undefined && materialised.length > limit) {
@@ -1070,7 +1072,8 @@ export class PgDataset implements Dataset {
       throw this.#uniqueViolation(type, err);
     });
 
-    const merged = records.map((r) => this.materialize(r));
+    const fields = this.#typeDefLookup?.(type, this.namespace)?.fields;
+    const merged = records.map((r) => this.materialize(type, r, fields));
     return { written: merged.length, ids: merged.map((r) => r.id), rows: merged };
   }
 
@@ -1259,7 +1262,7 @@ export class PgDataset implements Dataset {
 
     const row = rows[0];
     if (row === undefined) return { matched: false, row: null };
-    return { matched: true, row: this.materialize(row) };
+    return { matched: true, row: this.materialize(type, row) };
   }
 
   async updateField(ref: UpdateFieldRef, fieldName: string, value: unknown): Promise<void> {
@@ -2068,7 +2071,12 @@ export class PgDataset implements Dataset {
     );
   }
 
-  private materialize(record: SubstrateRowRecord): Row {
+  /** `fields` is the type's, looked up once by a caller that materializes many rows. */
+  private materialize(
+    type: string,
+    record: SubstrateRowRecord,
+    fields = this.#typeDefLookup?.(type, this.namespace)?.fields
+  ): Row {
     const body = record.body ?? {};
     // Prefer the body.id (preserves number vs string at write time) over the
     // text PK column when present.
@@ -2079,6 +2087,11 @@ export class PgDataset implements Dataset {
       if (k === 'id') continue;
       if (k === RESERVED_DELETED_AT) continue; // defensive — should never appear in body
       if (k === '_metadata') continue; // defensive — stripped on write, but guard on read too
+      // A null on a declared scalar or crossRef reads back absent, as on memory.
+      if (v === null && fields !== undefined && Object.hasOwn(fields, k)) {
+        const def = fields[k];
+        if (def !== undefined && isColumnField(def)) continue;
+      }
       out[k] = v;
     }
     if (record.deleted_at !== null) {
