@@ -9,6 +9,7 @@ import { sharedPicks, windowGroupBy } from '@mnmal-ai/substrate-filter';
 import type {
   FieldDef,
   IndexPlan,
+  OrderedBy,
   PlanClause,
   WalkAgg,
   WhereClause
@@ -30,8 +31,9 @@ export interface WalkSite {
   /** Each `where` filtering the far rows, with its path. */
   wheres: Array<{ where: unknown; path: string[] }>;
   /**
-   * The order the far rows are read in, when one matters: a nested `orderBy`,
-   * a pick, or a latest/min/max aggregate. `exact`: only an index in this very
+   * The order the far rows are read in, when one matters: a nested `orderBy`
+   * (or, absent one, the far type's natural order, which the engine gives
+   * it), a pick, or a latest/min/max aggregate. `exact`: only an index in this very
    * direction serves it (a nested list's LIMIT); a pick is a min/max probe,
    * and a latest/min/max aggregate a top-1 written in the index's own
    * direction, so an index serves either in either direction.
@@ -55,11 +57,16 @@ function orderOf(orderBy: unknown): Order {
   return out;
 }
 
-/** Every walk site of a frame entry `{ params, fields }` seeded at `seed`, at any depth. */
+/**
+ * Every walk site of a frame entry `{ params, fields }` seeded at `seed`, at
+ * any depth. `naturalOrder` gives a nested list without `orderBy` its far
+ * type's natural order, as the engine reads it (#1821).
+ */
 export function walkSites(
   entry: Record<string, unknown>,
   seed: string,
-  resolve: HopResolver
+  resolve: HopResolver,
+  naturalOrder?: (type: string) => OrderedBy
 ): WalkSite[] {
   const out: WalkSite[] = [];
   const site = (node: Record<string, unknown>, from: string, path: string[]): WalkSite => {
@@ -127,7 +134,8 @@ export function walkSites(
       } else if (isObj(sel) && isObj(sel._walk)) {
         const wp = [...at, '_walk'];
         const s = site(sel._walk, type, wp);
-        const by = orderOf(sel.orderBy);
+        let by = orderOf(sel.orderBy);
+        if (by.length === 0 && naturalOrder !== undefined) by = orderOf([naturalOrder(s.far)]);
         if (by.length > 0) s.order = { by, path: [...at, 'orderBy'], kind: 'order', exact: true };
         addWhere(s, sel._walk.where, [...wp, 'where']);
         addWhere(s, sel.where, [...at, 'where']);
@@ -234,6 +242,8 @@ export interface ClassifyInput {
   resolve: HopResolver;
   /** A type's declared fields, for what an index may key on. */
   fieldsOf: (type: string) => Fields | undefined;
+  /** A type's natural order: a nested list without `orderBy` reads in it (#1821). */
+  naturalOrder?: (type: string) => OrderedBy;
 }
 
 /**
@@ -305,7 +315,7 @@ export function classifyWalkService(
     return grouped ? 'group-by' : 'per-seed';
   };
 
-  for (const s of walkSites(entry, seed, input.resolve)) {
+  for (const s of walkSites(entry, seed, input.resolve, input.naturalOrder)) {
     const farIndexes = indexesOf(s.far);
     const cr = s.crossRef;
     // A crossRef declared `indexed: false` has no eager index to serve its hop.

@@ -515,6 +515,7 @@ export function buildNested(
     .map((w) => buildWhere(sql, w, castFor, promotedFor, farScope))
     .filter((f): f is Fragment => f !== null);
 
+  // The engine gives a list with no orderBy its far type's natural order (#1821); bare, it is id.
   const order = normalizeOrderBy(sel.orderBy).map(([field, dir]) => {
     // shortId never reaches here: the walk validator refuses it in a nested orderBy.
     const key =

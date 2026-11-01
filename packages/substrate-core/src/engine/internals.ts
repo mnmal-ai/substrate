@@ -27,6 +27,7 @@ import {
   normaliseMetadataWhere,
   normaliseWalkNode,
   type OrderByClause,
+  type OrderedBy,
   type PackEnvelope,
   type ParsedKey,
   parseQualifiedKey,
@@ -43,6 +44,7 @@ import {
   type WsResponseFrame
 } from '@mnmal-ai/substrate-types';
 import type { ShapeRecorder } from '../advisor/shape-recorder.js';
+import type { HopResolver } from '../walk-types.js';
 
 // Re-exported from substrate-types for this package's internal import sites.
 export type { NamespaceConfig };
@@ -430,6 +432,37 @@ export function withNaturalOrder(
   if (Array.isArray(orderBy) && orderBy.length > 0) return params;
   // A copy, so nothing downstream can mutate the schema's (or the default's) object.
   return { ...params, orderBy: [{ ...naturalOrderOf(entry) }] };
+}
+
+/**
+ * `fields` with each nested `{ _walk }` selection that names no `orderBy`
+ * given its far type's natural order, at any depth: a nested list reads as a
+ * top-level read of its type does, served by the eager `(crossRef, natural
+ * order, id)` index; the datasets append `id` as the tie-break. Returns
+ * `fields` itself when nothing is added.
+ */
+export function withNestedNaturalOrder<T>(
+  fields: T,
+  from: string,
+  resolve: HopResolver,
+  orderOf: (type: string) => OrderedBy
+): T {
+  if (typeof fields !== 'object' || fields === null || Array.isArray(fields)) return fields;
+  let changed = false;
+  const out = Object.entries(fields).map(([name, sel]) => {
+    const s = sel as Record<string, unknown>;
+    // `_agg` specs are not selections: their `where` may hold a `_walk`.
+    if (name === '_agg' || typeof sel !== 'object' || sel === null || !Object.hasOwn(s, '_walk')) {
+      return [name, sel];
+    }
+    const far = resolve(s._walk as Record<string, unknown>, from, [name]);
+    const sub = withNestedNaturalOrder(s.fields, far, resolve, orderOf);
+    const ordered = Array.isArray(s.orderBy) && s.orderBy.length > 0;
+    if (ordered && sub === s.fields) return [name, sel];
+    changed = true;
+    return [name, { ...s, fields: sub, ...(ordered ? {} : { orderBy: [{ ...orderOf(far) }] }) }];
+  });
+  return changed ? (Object.fromEntries(out) as T) : fields;
 }
 
 /**

@@ -45,6 +45,7 @@ import type {
   Identity,
   IndexPlan,
   MetadataHop,
+  OrderedBy,
   PackEnvelope,
   PlanClause,
   PolicyDecision,
@@ -63,6 +64,7 @@ import type {
 import {
   isResolverFrameError,
   isRestrictViolation,
+  naturalOrderOf,
   ROW_POLICY_BLOCKS_WALK,
   WALK_UNSUPPORTED_REF,
   WALKS_IN_MUTATION,
@@ -80,6 +82,7 @@ interface WalkScan {
   sites: WalkSite[];
   resolve: HopResolver;
   fieldsOf: (type: string) => Record<string, FieldDef> | undefined;
+  naturalOrder: (type: string) => OrderedBy;
 }
 
 /** `#runEntry`'s parameters after `(envelope, key)`. */
@@ -166,7 +169,8 @@ import {
   scopeBridgeIdempotency,
   toResolverArgs,
   withCanonicalMetadataFilters,
-  withNaturalOrder
+  withNaturalOrder,
+  withNestedNaturalOrder
 } from './internals.js';
 import {
   type LocalTxScopePartition,
@@ -1362,9 +1366,10 @@ export class Engine {
     const types = this.schemaFor(ns).types;
     const schemaOf = (t: string) => (Object.hasOwn(types, t) ? types[t] : undefined);
     const resolve = hopResolver(ns, schemaOf);
+    const naturalOrder = (t: string) => naturalOrderOf(schemaOf(t) ?? {});
     try {
-      const sites = walkSites(frame as Record<string, unknown>, seed, resolve);
-      return { sites, resolve, fieldsOf: (t) => schemaOf(t)?.fields };
+      const sites = walkSites(frame as Record<string, unknown>, seed, resolve, naturalOrder);
+      return { sites, resolve, fieldsOf: (t) => schemaOf(t)?.fields, naturalOrder };
     } catch {
       // Validation resolved every hop already; a describer never fails the read.
       return undefined;
@@ -1403,7 +1408,8 @@ export class Engine {
         entry: frame as Record<string, unknown>,
         seed,
         resolve: scan.resolve,
-        fieldsOf: scan.fieldsOf
+        fieldsOf: scan.fieldsOf,
+        naturalOrder: scan.naturalOrder
       },
       (t) => byType.get(t) ?? []
     );
@@ -1682,6 +1688,15 @@ export class Engine {
       operation === 'query' && registryEntry.kind === 'type' && !isVirtual
         ? this.#walkSitesOf(frame, ns, name)
         : undefined;
+    // A nested walk list reads in its far type's natural order unless it names one (#1821).
+    if (walkScan !== undefined && args.fields !== undefined) {
+      args.fields = withNestedNaturalOrder(
+        args.fields,
+        name,
+        walkScan.resolve,
+        walkScan.naturalOrder
+      );
+    }
     let result: Row | Row[] | ReadResult | AsyncIterable<Row> | null;
     const t0 = performance.now();
     try {

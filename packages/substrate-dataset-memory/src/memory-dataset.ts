@@ -851,6 +851,7 @@ function walkProjection(
       [sel._walk.where, sel.where].every(
         (w) => w === undefined || evaluateWhere(n, w, fieldDefOf, far)
       );
+    // The engine gives a list with no orderBy its far type's natural order (#1821); bare, it is id.
     const order = normalizeOrderBy(sel.orderBy);
     let list = rows.filter(keep).sort((a, b) => compareByClauses(a, b, order, fieldDefOf));
     if (sel.limit !== undefined && list.length > sel.limit) {
