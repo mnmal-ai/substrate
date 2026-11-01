@@ -38,7 +38,8 @@ const SCHEMAS: Record<string, TypeSchema> = {
       cert: ref('Cert'),
       price: { kind: 'scalar', type: 'number' },
       observedAt: { kind: 'scalar', type: 'date' },
-      elsewhere: ref('Cert', 'other')
+      elsewhere: ref('Cert', 'other'),
+      dims: { kind: 'struct', fields: { w: { kind: 'scalar', type: 'number' } } }
     }
   }
 };
@@ -166,6 +167,21 @@ describe('walk validation', () => {
         expect(err).toMatchObject({ code: 'walk_unknown_ref', path: ['where', '_walk', 'in'] });
       }
     }
+  });
+
+  it('refuses a $ref inside a struct sub-filter', () => {
+    expect(
+      refusal({
+        _walk: { in: 'cards/Observation.cert', where: { dims: { w: { gt: { $ref: '$.ask' } } } } }
+      })
+    ).toEqual({
+      code: 'walk_unsupported_ref',
+      path: ['where', '_walk', 'where', 'dims', 'w', 'gt']
+    });
+    expect(refusal({ dims: { w: { gt: { $ref: '$.price' } } } }, 'Observation')).toEqual({
+      code: 'walk_unsupported_ref',
+      path: ['where', 'dims', 'w', 'gt']
+    });
   });
 
   it('refuses a list crossRef and a struct-nested crossRef', () => {

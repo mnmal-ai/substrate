@@ -519,6 +519,13 @@ function validateLeaf(
       );
     }
     if (value !== null && typeof value === 'object' && '$ref' in value) {
+      if (ctx.insideStruct === true) {
+        throw new FilterValidationError(
+          'walk_unsupported_ref',
+          `$ref is not valid inside a struct ('${fieldName}')`,
+          [...path, op]
+        );
+      }
       validateRef(
         kind,
         op,
