@@ -129,9 +129,16 @@ function expectJoinedOnce(text: string): void {
       expect(m[1], `${name} read but not joined`).toBe('JOIN');
     }
     expect(seen, `${name} joined once`).toBe(1);
-    const norm = (t: string) => t.replace(new RegExp(`\\b(${name}|w\\d+)\\b`, 'g'), 'X');
+    // Whatever reads the CTE's row in the main statement: the CTE itself, and each derived
+    // table expanding one of its columns, `(SELECT (<cte>.<col>).*) <alias>`.
+    const readers = [name];
+    const expand = new RegExp(`\\(SELECT \\(${name}\\.\\w+\\)\\.\\*\\) (\\w+)`, 'g');
+    for (let m = expand.exec(main); m !== null; m = expand.exec(main)) readers.push(m[1] as string);
+    const norm = (t: string) =>
+      t.replace(new RegExp(`\\b(${readers.join('|')}|w\\d+)\\b`, 'g'), 'X');
     const inCte = norm(body);
-    for (const p of predicates(main).filter((x) => x.includes(`${name}.`))) {
+    const reads = (x: string) => readers.some((a) => x.includes(`${a}.`));
+    for (const p of predicates(main).filter(reads)) {
       expect(inCte.includes(norm(p)), `evaluated twice: ${p}`).toBe(false);
     }
   }
@@ -302,16 +309,17 @@ describe('the per-hub form in the statements pg-dataset sends', () => {
 
 describe('a pick shared through an outbound hop: one probe per hub', () => {
   it('the structure check rejects a CTE read in a subquery, or a conjunct read twice', () => {
+    // The shape the compiler emits: the CTE exports `__hub` and `__row`, and the main
+    // statement reads the pick through `(SELECT (<cte>.__row).*) <alias>`.
     const cte =
-      'WITH c_1 AS MATERIALIZED (SELECT h.id AS __hub, w1.* FROM rows w1 WHERE (f(w1.body) >= $)) ';
-    // The pre-measure shape: the CTE inside a correlated EXISTS, its conjunct repeated.
-    const nested = `${cte}SELECT 1 FROM rows r WHERE EXISTS (SELECT 1 FROM rows w2, c_1 w3 WHERE w3.__hub = w2.id AND (f(w3.body) >= $))`;
-    expect(() => expectJoinedOnce(nested)).toThrow();
-    const twice = `${cte}SELECT 1 FROM rows r LEFT JOIN c_1 ON c_1.__hub = r.x WHERE (f(c_1.body) >= $)`;
-    expect(() => expectJoinedOnce(twice)).toThrow(/evaluated twice/);
-    expectJoinedOnce(
-      `${cte}SELECT 1 FROM rows r LEFT JOIN c_1 ON c_1.__hub = r.x WHERE (g(c_1.body) >= r.y)`
-    );
+      'WITH c_1 AS MATERIALIZED (SELECT h.id AS __hub, w1.__row AS __row FROM h CROSS JOIN LATERAL (SELECT w1.*, w1 AS __row FROM rows w1) w1 WHERE (f(w1.body) >= $)) ';
+    const joined = `${cte}SELECT 1 FROM rows r LEFT JOIN c_1 ON c_1.__hub = r.x WHERE (c_1.__hub IS NOT NULL AND EXISTS (SELECT 1 FROM (SELECT (c_1.__row).*) w2 WHERE `;
+    expectJoinedOnce(`${joined}(g(w2.body) >= r.y)))`);
+    // The seed-independent conjunct repeated on the expanded row.
+    expect(() => expectJoinedOnce(`${joined}(f(w2.body) >= $)))`)).toThrow(/evaluated twice/);
+    // The pre-measure shape: the CTE inside a correlated EXISTS.
+    const nested = `${cte}SELECT 1 FROM rows r WHERE EXISTS (SELECT 1 FROM rows w2, c_1 w3 WHERE w3.__hub = w2.id AND (g(w3.body) >= r.y))`;
+    expect(() => expectJoinedOnce(nested)).toThrow(/inside a subquery/);
   });
 
   it('a count compiles it once per distinct hub of the seeds, then LEFT JOINs it on __hub', () => {
