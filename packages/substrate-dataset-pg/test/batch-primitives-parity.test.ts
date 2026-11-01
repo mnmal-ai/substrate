@@ -49,6 +49,11 @@ describe('batch primitives (memory vs pg)', () => {
   beforeEach(async () => {
     datasets = [['memory', new MemoryDataset({ namespace: NS })]];
     if (sql === undefined) return;
+    // Both explicitly: short_ids only follows rows through an ON DELETE CASCADE
+    // foreign key, which other test files drop (`DROP TABLE rows CASCADE`) and
+    // later migrations do not restore. A stale binding to a reused row id would
+    // make bindShortIds' ON CONFLICT DO NOTHING keep the old id.
+    await sql`DELETE FROM short_ids WHERE namespace = ${NS}`;
     await sql`DELETE FROM rows WHERE namespace = ${NS}`;
     const pg = new PgDataset({ namespace: NS, sql, promotedColumns: TEST_PROMOTED });
     if (PARTITIONED) await pg.ensureTypeStorage('Item');
@@ -91,6 +96,55 @@ describe('batch primitives (memory vs pg)', () => {
       for (const [i, rowId] of ['a', 'b', 'c'].entries()) {
         expect(await ds.resolveShortId('Item', ids[i] as number)).toBe(rowId);
         expect(await ds.getShortIdForRow('Item', rowId)).toBe(ids[i]);
+      }
+    })
+  );
+
+  it(
+    'bindShortIds on a row that already has a short id behaves as bindShortId does, per dataset',
+    each(async (name, ds) => {
+      const rows = ['s1', 's2', 'b1', 'b2'];
+      await ds.write(
+        'Item',
+        rows.map((id) => ({ id }))
+      );
+      // Each row gets one id, then rebinds: s1/b1 once, s2/b2 twice in a row.
+      const ids = await ds.allocateShortIds('Item', 10);
+      const plan: Record<string, number[]> = {
+        s1: [ids[0], ids[4]],
+        s2: [ids[1], ids[5], ids[6]],
+        b1: [ids[2], ids[7]],
+        b2: [ids[3], ids[8], ids[9]]
+      } as Record<string, number[]>;
+      for (const rowId of rows)
+        await ds.bindShortId('Item', (plan[rowId] as number[])[0] as number, rowId);
+      for (const rowId of ['s1', 's2']) {
+        for (const id of (plan[rowId] as number[]).slice(1))
+          await ds.bindShortId('Item', id, rowId);
+      }
+      await ds.bindShortIds(
+        'Item',
+        ['b1', 'b2'].flatMap((rowId) =>
+          (plan[rowId] as number[]).slice(1).map((shortId) => ({ shortId, rowId }))
+        )
+      );
+      // What each of a row's candidate ids resolves to, and which one the row reports.
+      const observe = async (rowId: string) => {
+        const candidates = plan[rowId] as number[];
+        return {
+          reported: candidates.indexOf((await ds.getShortIdForRow('Item', rowId)) as number),
+          resolves: await Promise.all(
+            candidates.map(async (id) => (await ds.resolveShortId('Item', id)) === rowId)
+          )
+        };
+      };
+      expect([await observe('b1'), await observe('b2')]).toEqual([
+        await observe('s1'),
+        await observe('s2')
+      ]);
+      if (name === 'pg') {
+        // Postgres keeps the first binding and ignores the rest (ON CONFLICT DO NOTHING).
+        expect(await observe('b2')).toEqual({ reported: 0, resolves: [true, false, false] });
       }
     })
   );
