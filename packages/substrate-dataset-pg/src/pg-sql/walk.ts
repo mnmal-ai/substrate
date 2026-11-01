@@ -256,18 +256,25 @@ export function seedFilter(
 }
 
 /**
- * Registers the read's per-hub picks (#1815, `sharedPicks` holds the rule).
- * Each is a CTE of the picked row of every distinct hub the seeds reach,
- * keyed `__hub`, for the seeds passing every other top-level conjunct
- * (`seedFilter`): a superset of the hubs any matching seed reaches. The pick
- * depends only on the hub, so this is the row each seed's probe would find.
+ * Registers the read's per-hub picks (#1815, `sharedPicks` holds the rule)
+ * and returns the LEFT JOINs the statement reading the seeds' where must
+ * carry. Each pick is a CTE of every distinct hub the seeds reach (those
+ * passing every other top-level conjunct, `seedFilter`: a superset of the
+ * hubs any matching seed reaches) whose hub row exists and whose pick
+ * passes the pick's seed-independent conjuncts (no `_walk`, `_agg` or
+ * `$ref`, e.g. `soldAt >= since`), with that picked row, keyed `__hub`.
  *
- * The pick's seed-independent conjuncts (no `_walk`, `_agg` or `$ref`, e.g.
- * `soldAt >= since`) then narrow it twice, both only dropping hubs whose pick
- * fails them, so whose seeds fail the pick's where anyway: a hub is probed
- * only when some neighbour passes them (pg may answer that from the far
- * side's range index or by a probe per hub), and the CTE keeps only picks
- * that pass. The pick's whole where is still tested per seed, `$` included.
+ * The seeds read it through `LEFT JOIN pick ON __hub = <seed's hub>`, a
+ * join pg can hash: never a correlated EXISTS over the CTE, which pg may
+ * nest-loop and so rescan once per seed (it cannot estimate jsonb seed
+ * filters, so it may think there are few). At most one CTE row per hub, so
+ * the join never multiplies a seed. Each conjunct is evaluated once: the
+ * seed-independent ones in the CTE, the rest (reading `$`) per seed.
+ *
+ * Inside the CTE a hub is probed only when some neighbour passes those
+ * conjuncts (pg may answer that from the far side's range index or by a
+ * probe per hub), and only a pick that passes them is kept. Both drop only
+ * hubs whose seeds fail the pick's where anyway.
  */
 export function prepareSharedPicks(
   sql: Sql | TransactionSql,
@@ -276,9 +283,10 @@ export function prepareSharedPicks(
   rowCastFor: (field: string) => BodyOrderByCast | null,
   promotedFor: PromotedColumnLookup,
   scope: WalkScope
-): void {
+): Fragment {
   const picks = sharedPicks(params);
-  if (picks.size === 0) return;
+  let joins = sql``;
+  if (picks.size === 0) return joins;
   scope.hubPicks ??= new Map();
   scope.ctes ??= [];
   for (const [pick, hub] of picks) {
@@ -315,25 +323,38 @@ export function prepareSharedPicks(
             type
           });
     const kept = farWhere(alias);
-    let candidates = sql``;
+    const filters: Fragment[] = [];
     if (kept !== null) {
       const f = scope.nextAlias();
-      const some = sql`EXISTS (SELECT 1 FROM rows ${sql.unsafe(f)} WHERE ${hop(sql, pick, hubScope, f).cond} AND ${farWhere(f) as Fragment})`;
-      candidates = sql` WHERE ${some} AND ${kept}`;
+      filters.push(
+        sql`EXISTS (SELECT 1 FROM rows ${sql.unsafe(f)} WHERE ${hop(sql, pick, hubScope, f).cond} AND ${farWhere(f) as Fragment})`,
+        kept
+      );
     }
+    // The hub row itself, live and of its type: the hub walk's own hop, once per hub.
+    const hb = scope.nextAlias();
+    const live = hop(sql, hub, { ...scope, alias: scope.seedAlias }, hb).pin;
+    const hubRow = sql`JOIN rows ${sql.unsafe(hb)} ON ${live} AND ${sql.unsafe(`${hb}.id::text = h.id`)}`;
+    const where = filters.length === 0 ? sql`` : sql` WHERE ${combineAnd(sql, filters)}`;
     scope.ctes.push(
-      sql`${sql.unsafe(cte)} AS MATERIALIZED (SELECT h.id AS __hub, ${a}.* FROM (${hubs}) h CROSS JOIN LATERAL (${picked}) ${a}${candidates})`
+      sql`${sql.unsafe(cte)} AS MATERIALIZED (SELECT h.id AS __hub, ${a}.* FROM (${hubs}) h ${hubRow} CROSS JOIN LATERAL (${picked}) ${a}${where})`
     );
+    joins = sql`${joins} LEFT JOIN ${sql.unsafe(cte)} ON ${sql.unsafe(`${cte}.__hub = `)}${bodyRawText(sql, [hub.out as string], scope.seedAlias)}`;
     scope.hubPicks.set(hub, [...(scope.hubPicks.get(hub) ?? []), { pick, cte }]);
   }
+  return joins;
 }
 
 /**
- * A hub walk with per-hub picks among its where's conjuncts: one EXISTS
- * joining the hub row to each pick's CTE row on `__hub`, so a seed reads its
- * hub's picked row from the shared table instead of probing for it. The rest
- * of the where stays as it compiles alone. Same rows: each pick is an AND
- * conjunct of an `any` walk, and ∃h: A(h) ∧ ∃p ∈ pick(h): P(p) ≡ ∃h, p: A ∧ P.
+ * A hub walk with per-hub picks among its where's conjuncts, read from the
+ * picks' CTEs the statement LEFT JOINs (see `prepareSharedPicks`): each
+ * pick's row is present (so is the hub row, and the pick passes its
+ * seed-independent conjuncts) and passes the rest of its where, which reads
+ * `$`. The hub where's other conjuncts, if any, are one EXISTS on the hub
+ * row. Same rows: an outbound hop reaches at most one hub row (its id), so
+ * ∃h: A(h) ∧ ∃p ∈ pick(h): P(p) ≡ (∃h: A(h)) ∧ (∃h: ∃p ∈ pick(h): P(p)),
+ * since each pick is an AND conjunct of an `any` walk. Two-valued (`IS
+ * TRUE`), as the EXISTS was.
  */
 function buildHubWalk(
   sql: Sql | TransactionSql,
@@ -342,20 +363,22 @@ function buildHubWalk(
   promotedFor: PromotedColumnLookup,
   scope: WalkScope
 ): Fragment {
-  const alias = scope.nextAlias();
-  const { type, cond } = hop(sql, node, scope, alias);
-  const near: WalkScope = { ...scope, alias, type };
-  const from = [`rows ${alias}`];
-  const parts: Fragment[] = [cond];
+  const hubType = hop(sql, node, scope, 'x').type;
+  const near: WalkScope = { ...scope, type: hubType };
+  const parts: Fragment[] = [];
   for (const { pick, cte } of shared) {
-    const p = scope.nextAlias();
-    from.push(`${cte} ${p}`);
-    parts.push(sql.unsafe(`${p}.__hub = ${alias}.id::text`));
-    if (pick.where === undefined) continue;
-    const pickType = hop(sql, pick, near, p).type;
-    const f = buildWhere(sql, pick.where, castFor(scope, pickType), promotedFor, {
+    parts.push(sql.unsafe(`${cte}.__hub IS NOT NULL`));
+    const pickType = hop(sql, pick, near, cte).type;
+    // The seed-independent conjuncts were applied in the CTE; the rest are read here.
+    const { binds, items } = groupConjuncts(pick.where);
+    const rest = [
+      ...binds.map((b) => ({ _walk: b }) as WhereClause),
+      ...items.filter((i) => whereUsesWalks(i))
+    ];
+    if (rest.length === 0) continue;
+    const f = buildWhere(sql, { AND: rest }, castFor(scope, pickType), promotedFor, {
       ...near,
-      alias: p,
+      alias: cte,
       type: pickType
     });
     if (f !== null) parts.push(f);
@@ -367,10 +390,18 @@ function buildHubWalk(
     ...items.filter((i) => !picks.has((i as { _walk?: WalkNode })._walk as WalkNode))
   ];
   if (rest.length > 0) {
-    const f = buildWhere(sql, { AND: rest }, castFor(scope, type), promotedFor, near);
-    if (f !== null) parts.push(f);
+    const alias = scope.nextAlias();
+    const { type, cond } = hop(sql, node, scope, alias);
+    const f = buildWhere(sql, { AND: rest }, castFor(scope, type), promotedFor, {
+      ...scope,
+      alias,
+      type
+    });
+    parts.push(
+      sql`EXISTS (SELECT 1 FROM rows ${sql.unsafe(alias)} WHERE ${f === null ? cond : sql`${cond} AND ${f}`})`
+    );
   }
-  return sql`EXISTS (SELECT 1 FROM ${sql.unsafe(from.join(', '))} WHERE ${combineAnd(sql, parts)})`;
+  return sql`(${combineAnd(sql, parts)} IS TRUE)`;
 }
 
 /**

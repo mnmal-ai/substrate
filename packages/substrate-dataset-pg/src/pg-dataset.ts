@@ -578,6 +578,8 @@ export class PgDataset implements Dataset {
     // #1815: shared forms, registered once the where's extension operators
     // are resolved, so their seed filters compile. Joined to the page.
     let windowJoins = sql``;
+    // The pick CTEs' LEFT JOINs, which the statement reading the where carries.
+    let pickJoins = sql``;
     if (params.where !== undefined) {
       // Resolves extension operators (e.g. embeddingSimilar) to `id IN [...]`
       // clauses before the synchronous SQL builder runs.
@@ -605,7 +607,7 @@ export class PgDataset implements Dataset {
             )
         );
         // A pick many seeds share through one hub is computed once per hub.
-        prepareSharedPicks(sql, resolved, base, bodyCastFor, this.#promotedFor, scope);
+        pickJoins = prepareSharedPicks(sql, resolved, base, bodyCastFor, this.#promotedFor, scope);
       }
       const whereFragment = buildWhere(sql, detailed.where, bodyCastFor, this.#promotedFor, scope);
       if (whereFragment !== null) clauses.push(whereFragment);
@@ -616,7 +618,9 @@ export class PgDataset implements Dataset {
       const matched = combineAnd(sql, clauses);
       if (params.count === true) {
         const [row] = await cancellable(
-          sql<Array<{ n: number }>>`${withCtes(sql, scope)}${buildFrameCount(sql, matched, scope)}`,
+          sql<
+            Array<{ n: number }>
+          >`${withCtes(sql, scope)}${buildFrameCount(sql, matched, scope, pickJoins)}`,
           params.signal
         );
         return { rows: [], hasMore: false, count: row?.n ?? 0 };
@@ -668,8 +672,8 @@ export class PgDataset implements Dataset {
     // OFFSET 0 keeps the subquery from being flattened back into one evaluation per use.
     const from =
       fenced === undefined
-        ? sql`rows r${windowJoins}`
-        : sql`(SELECT r.*, ${fenced} AS __derive_0 FROM rows r WHERE ${combineAnd(sql, clauses)} OFFSET 0) r${windowJoins}`;
+        ? sql`rows r${pickJoins}${windowJoins}`
+        : sql`(SELECT r.*, ${fenced} AS __derive_0 FROM rows r${pickJoins} WHERE ${combineAnd(sql, clauses)} OFFSET 0) r${windowJoins}`;
     const ctes = withCtes(sql, scope);
     const base = fenced === undefined ? clauses : [];
 

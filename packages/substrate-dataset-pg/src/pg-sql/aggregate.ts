@@ -368,9 +368,10 @@ function buildWalkAggs(
 export function buildFrameCount(
   sql: Sql | TransactionSql,
   where: Fragment,
-  scope: WalkScope
+  scope: WalkScope,
+  joins: Fragment = sql``
 ): Fragment {
-  return sql`SELECT count(*)::float8 AS n FROM rows ${sql.unsafe(scope.alias)} WHERE ${where}`;
+  return sql`SELECT count(*)::float8 AS n FROM rows ${sql.unsafe(scope.alias)}${joins} WHERE ${where}`;
 }
 
 /**

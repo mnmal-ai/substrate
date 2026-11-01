@@ -57,7 +57,8 @@ const isAny = (w: WalkNode) => w.pick === undefined && (w.quantifier ?? 'any') =
 
 /**
  * The `per-hub` rule. A pick P is shared, mapped to its hub walk O, when the
- * read wants every seed, O is a top-level AND conjunct `{ _walk: { out, where } }`
+ * read wants every seed and is a count or a page (not a whole-result
+ * aggregate), O is a top-level AND conjunct `{ _walk: { out, where } }`
  * of the seed's where (an `any` walk, no `as`) that reads no top-level `as`
  * binding, P is an inbound pick among O's where's AND conjuncts, and P's
  * where reads no binding but `$` (or a frame `_agg`). Picking depends only on
@@ -72,7 +73,9 @@ export function sharedPicks(params: {
   limit?: number;
 }): Map<WalkNode, WalkNode> {
   const out = new Map<WalkNode, WalkNode>();
-  if (!readsEverySeed(params)) return out;
+  // A whole-result aggregate re-reads the where in its own subqueries, which
+  // cannot carry the picks' join; it keeps the per-seed form.
+  if (!readsEverySeed(params) || params.aggregate !== undefined) return out;
   const bound = new Set(groupConjuncts(params.where).binds.map((b) => b.as));
   for (const o of conjunctWalks(params.where)) {
     if (typeof o.out !== 'string' || !isAny(o)) continue;
