@@ -126,6 +126,19 @@ class BatchedFrameRefusal extends Error {
 
 type FrameErrors = Array<{ message: string; path?: string[]; code?: string }>;
 
+/**
+ * A batch resolver refused with a frame error that names no element (on pg, a
+ * `unique_violation` from its set-wise write). `#runArrayEntry` rolls the
+ * attempt back and re-runs the array per element to find the element and the
+ * envelope sequential dispatch gives.
+ */
+class BatchRefusalWithoutIndex extends Error {
+  override readonly name = 'BatchRefusalWithoutIndex';
+  constructor(override readonly cause: Error) {
+    super(cause.message);
+  }
+}
+
 /** One element of a mutate array before the tx: a cached replay, or a slot to run. */
 interface ArraySlot {
   cached: boolean;
@@ -2053,7 +2066,7 @@ export class Engine {
     // Write-event capture is per-array so a rolled-back array never emits
     // pushes. The outer call merges these into the parent writeBatch after
     // this call returns successfully.
-    const arrayWriteBatch: WriteEvent[] = [];
+    let arrayWriteBatch: WriteEvent[] = [];
     const arrayOnWrite = (event: WriteEvent): void => {
       arrayWriteBatch.push(event);
     };
@@ -2061,82 +2074,98 @@ export class Engine {
     // Scratch envelope per frame: #runEntry writes data/shape/errors keyed
     // by the qualified key. Collecting them one-at-a-time lets us assemble
     // the Array<slot> at the end.
-    const scratchResults: SlotResult[] = new Array(frames.length);
+    let scratchResults: SlotResult[] = new Array(frames.length);
     // A batch resolver takes the uncached elements in one call (Task 4).
     const batch = nsCfg.registry.get(parsed.name)?.batch;
 
-    let frameError: Error | undefined;
-    let failedIndex: number | undefined;
-    const settled: AfterTxWork[] = [];
-    try {
-      await this.#withRowsAndEdgesTx(dataset, ns, async (txDs, txEdges) => {
-        if (batch !== undefined) {
-          await this.#runBatch(
-            batch,
-            key,
-            parsed,
-            frames,
-            slots,
-            scratchResults,
-            ctxBase,
-            txDs,
-            txEdges,
-            arrayOnWrite,
-            signal,
-            (fn) => settled.push(fn),
-            envelope.schemaVersion
-          );
-          return;
-        }
-        for (let i = 0; i < frames.length; i++) {
-          const slot = slots[i] as ArraySlot;
-          if (slot.cached) {
-            scratchResults[i] = cachedSlotResult(slot);
-            continue;
+    /** One attempt in its own transaction: `batch` once, or the per-element loop. */
+    const attempt = async (
+      useBatch: boolean
+    ): Promise<{ frameError: Error | undefined; failedIndex: number | undefined }> => {
+      let failedIndex: number | undefined;
+      let frameError: Error | undefined;
+      const settled: AfterTxWork[] = [];
+      try {
+        await this.#withRowsAndEdgesTx(dataset, ns, async (txDs, txEdges) => {
+          if (useBatch && batch !== undefined) {
+            await this.#runBatch(
+              batch,
+              key,
+              parsed,
+              frames,
+              slots,
+              scratchResults,
+              ctxBase,
+              txDs,
+              txEdges,
+              arrayOnWrite,
+              signal,
+              (fn) => settled.push(fn),
+              envelope.schemaVersion
+            );
+            return;
           }
-          const frame = frames[i] as FrameEntry;
-          const scratch: PackEnvelope = {
-            schemaVersion: envelope.schemaVersion,
-            data: {},
-            shapes: {}
-          };
-          failedIndex = i;
-          await this.#runEntry(
-            scratch,
-            key,
-            frame,
-            ctxBase,
-            'mutate',
-            txDs,
-            txEdges,
-            parsed,
-            arrayOnWrite,
-            signal,
-            (fn) => settled.push(fn),
-            frames.length
-          );
-          failedIndex = undefined;
-          const entry = slotResultOf(scratch, key);
-          scratchResults[i] = entry;
-          if (entry.errors !== undefined) {
-            // An array under one op-key is ONE transaction: a frame that
-            // refused via the envelope must unwind it just like one that
-            // threw, or the frames before it commit.
+          for (let i = 0; i < frames.length; i++) {
+            const slot = slots[i] as ArraySlot;
+            if (slot.cached) {
+              scratchResults[i] = cachedSlotResult(slot);
+              continue;
+            }
+            const frame = frames[i] as FrameEntry;
+            const scratch: PackEnvelope = {
+              schemaVersion: envelope.schemaVersion,
+              data: {},
+              shapes: {}
+            };
             failedIndex = i;
-            throw new BatchedFrameRefusal(entry.errors);
+            await this.#runEntry(
+              scratch,
+              key,
+              frame,
+              ctxBase,
+              'mutate',
+              txDs,
+              txEdges,
+              parsed,
+              arrayOnWrite,
+              signal,
+              (fn) => settled.push(fn),
+              frames.length
+            );
+            failedIndex = undefined;
+            const entry = slotResultOf(scratch, key);
+            scratchResults[i] = entry;
+            if (entry.errors !== undefined) {
+              // An array under one op-key is ONE transaction: a frame that
+              // refused via the envelope must unwind it just like one that
+              // threw, or the frames before it commit.
+              failedIndex = i;
+              throw new BatchedFrameRefusal(entry.errors);
+            }
           }
+        });
+      } catch (err) {
+        let thrown: unknown = err;
+        // #runBatch names the refusing slot this way; a per-element resolver never does.
+        if (useBatch && isBatchElementError(err)) {
+          failedIndex = err.index;
+          thrown = err.cause;
         }
-      });
-    } catch (err) {
-      let thrown: unknown = err;
-      // #runBatch names the refusing slot this way; a per-element resolver never does.
-      if (batch !== undefined && isBatchElementError(err)) {
-        failedIndex = err.index;
-        thrown = err.cause;
+        frameError = thrown instanceof Error ? thrown : new Error(String(thrown));
       }
-      frameError = thrown instanceof Error ? thrown : new Error(String(thrown));
+      await this.#runSettled(settled, frameError === undefined);
+      return { frameError, failedIndex };
+    };
+
+    let { frameError, failedIndex } = await attempt(batch !== undefined);
+    if (frameError instanceof BatchRefusalWithoutIndex) {
+      // The first attempt rolled back and its settled work ran uncommitted.
+      // Its one failed observation stands, since that call really failed; the
+      // re-run reports per element. At most one re-run: the loop never calls `batch`.
+      arrayWriteBatch = [];
+      scratchResults = new Array(frames.length);
+      ({ frameError, failedIndex } = await attempt(false));
     }
-    await this.#runSettled(settled, frameError === undefined);
 
     if (frameError !== undefined) {
       // Whole-array rollback. `failedIndex` (set just before each `#runEntry`)
@@ -2345,20 +2374,26 @@ export class Engine {
     } catch (err) {
       const ms = performance.now() - tb;
       const slot = isBatchElementError(err) ? at[err.index] : undefined;
+      if (!isBatchElementError(err) && (isResolverFrameError(err) || isRestrictViolation(err))) {
+        // A refusal that names no element: #runArrayEntry re-runs the array per element.
+        report(false, ms, 0, {
+          code: isRestrictViolation(err) ? 'restrict_violation' : err.code,
+          message: err.message
+        });
+        throw new BatchRefusalWithoutIndex(err);
+      }
       if (!isBatchElementError(err) || slot === undefined) {
-        // Not attributable to one element: one observation for the batch. A
-        // frame refusal keeps its code at [key]; anything else is today's
-        // "internal error" at [key]. An out-of-range index is the latter, and
-        // must not be read back as a slot by the caller.
+        // Not attributable to one element: one observation for the batch,
+        // reported as today's "internal error" at [key]. An out-of-range index
+        // is one too, and must not be read back as a slot by the caller.
         const cause = isBatchElementError(err)
           ? new Error(`batch resolver for '${key}' refused element ${err.index} of ${n}`)
           : err;
-        const refusal = this.#batchFrameRefusal(key, cause);
         report(false, ms, 0, {
-          code: refusal?.frameErrors[0]?.code ?? 'exception',
+          code: 'exception',
           message: cause instanceof Error ? cause.message : String(cause)
         });
-        throw refusal ?? cause;
+        throw cause;
       }
       const cause = err.cause;
       const refusal = this.#batchFrameRefusal(key, cause);

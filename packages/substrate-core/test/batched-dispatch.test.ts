@@ -71,6 +71,10 @@ interface Built {
 function build(
   opts: {
     batch?: BatchResolver;
+    /** No `batch` on the entry: the per-element loop, as a reference. */
+    noBatch?: boolean;
+    /** The per-element resolver; by default it must never run. */
+    resolver?: (args: ResolverArgs) => Promise<Row>;
     policy?: Policy;
     typePolicy?: Policy;
     idempotency?: boolean;
@@ -128,11 +132,12 @@ function build(
   });
   registry.register('createThing', {
     kind: 'mutation',
-    resolver: async () => {
+    resolver: async (_ctx, args) => {
       counters.resolverCalls++;
+      if (opts.resolver !== undefined) return opts.resolver(args);
       throw new Error('per-element resolver must not run when batch is registered');
     },
-    batch,
+    ...(opts.noBatch === true ? {} : { batch }),
     ...(opts.policy !== undefined ? { policy: opts.policy } : {})
   });
 
@@ -263,28 +268,77 @@ describe('batch resolvers: one call per mutate array', () => {
     ]);
   });
 
-  it('a bare ResolverFrameError from batch keeps its code at [key]', async () => {
-    const seen: ResolveObservation[] = [];
-    const { engine, dataset } = build({
-      onResolve: (o) => void seen.push(o),
-      batch: async (_ctx, argsList) => {
-        await argsList[0]?.dataset?.write('Thing', argsList.map(thingOf));
-        throw new ResolverFrameError('query_timeout', 'statement timeout');
-      }
-    });
-    const env = await engine.mutate({ frame: { [KEY]: frames(5) }, ctx: ctxFor() });
+  /** Writes its element; refuses `t2` when `refuse` is set, as a unique index would. */
+  const perElement =
+    (refuse: boolean) =>
+    async (args: ResolverArgs): Promise<Row> => {
+      const r = thingOf(args);
+      if (refuse && r.id === 't2') throw new ResolverFrameError('unique_violation', 'dup t2');
+      await args.dataset?.write('Thing', [r]);
+      args.onWrite?.({ ns: NS, type: 'Thing', id: r.id, operation: 'create', row: r });
+      return r;
+    };
+  const bareRefusal =
+    (code: string): BatchResolver =>
+    async (_ctx, argsList) => {
+      await argsList[0]?.dataset?.write('Thing', argsList.map(thingOf));
+      throw new ResolverFrameError(code, `${code} somewhere in the batch`);
+    };
 
+  it("a bare ResolverFrameError from batch re-runs the array per element: the envelope is the loop's", async () => {
+    const seen: ResolveObservation[] = [];
+    const batched = build({
+      onResolve: (o) => void seen.push(o),
+      batch: bareRefusal('unique_violation'),
+      resolver: perElement(true)
+    });
+    const loop = build({ noBatch: true, resolver: perElement(true) });
+    const env = await batched.engine.mutate({ frame: { [KEY]: frames(5) }, ctx: ctxFor() });
+    const ref = await loop.engine.mutate({ frame: { [KEY]: frames(5) }, ctx: ctxFor() });
+
+    expect(env).toEqual(ref);
     expect(codesAt(env.errors)).toEqual([
-      { code: 'query_timeout', path: [KEY] },
-      { code: 'batched_frame_rolled_back', path: [KEY] }
+      { code: 'unique_violation', path: [KEY] },
+      { code: 'batched_frame_rolled_back', path: [KEY, '2'] }
     ]);
-    expect(env.errors?.[0]?.message).toBe('statement timeout');
-    expect(env.errors?.[1]?.message).toContain('statement timeout');
-    expect(env.data[KEY]).toBeUndefined();
-    expect(await ids(dataset)).toEqual([]);
-    expect(seen.map((o) => ({ ok: o.ok, code: o.code, batchSize: o.batchSize }))).toEqual([
-      { ok: false, code: 'query_timeout', batchSize: 5 }
+    expect(batched.counters.batchCalls).toBe(1);
+    expect(batched.counters.resolverCalls).toBe(3);
+    expect(await ids(batched.dataset)).toEqual([]);
+    // The failed batch call keeps its one observation; the re-run reports per element.
+    expect(seen[0]).toMatchObject({ ok: false, code: 'unique_violation', batchSize: 5 });
+    expect(seen.slice(1).map((o) => ({ ok: o.ok, batchSize: o.batchSize }))).toEqual([
+      { ok: true, batchSize: undefined },
+      { ok: true, batchSize: undefined },
+      { ok: false, batchSize: undefined }
     ]);
+  });
+
+  it("a re-run the first attempt's fault does not hit commits, as the loop would", async () => {
+    const seen: ResolveObservation[] = [];
+    const writes: WsResponseFrame[] = [];
+    const batched = build({
+      onResolve: (o) => void seen.push(o),
+      batch: bareRefusal('query_timeout'),
+      resolver: perElement(false)
+    });
+    const loop = build({ noBatch: true, resolver: perElement(false) });
+    const handle = await batched.engine.subscribe({
+      id: 's',
+      frame: { 'default/Thing': { params: {}, fields: { id: true } } },
+      ctx: ctxFor(),
+      onFrame: (f) => void writes.push(f)
+    });
+    const env = await batched.engine.mutate({ frame: { [KEY]: frames(5) }, ctx: ctxFor() });
+    const ref = await loop.engine.mutate({ frame: { [KEY]: frames(5) }, ctx: ctxFor() });
+    handle.cancel();
+
+    expect(env).toEqual(ref);
+    expect(env.errors).toBeUndefined();
+    expect(await ids(batched.dataset)).toEqual(['t0', 't1', 't2', 't3', 't4']);
+    // Only the committed re-run's writes reach subscribers, once each.
+    expect(writes.filter((f) => f.kind === 'add')).toHaveLength(5);
+    expect(seen.map((o) => o.ok)).toEqual([false, true, true, true, true, true]);
+    expect(seen[0]).toMatchObject({ code: 'query_timeout', batchSize: 5 });
   });
 
   it('a wrong-length result or an out-of-range element index is one exception observation', async () => {
