@@ -78,7 +78,7 @@ import {
 import { readShapeOf, walkShapesOf } from '../advisor/shape-recorder.js';
 import { classifyWalkService, type WalkSite, walkSites } from '../advisor/walk-service.js';
 import { applyLostNamespace } from '../apply-lost-namespace.js';
-import { CommittedWritesQueue } from './committed-writes.js';
+import { actorOf, CommittedWritesQueue } from './committed-writes.js';
 
 /** Local query keys dispatched at once; the rest wait for a free slot. */
 const QUERY_KEY_CONCURRENCY = 16;
@@ -973,9 +973,11 @@ export class Engine {
       writeBatch.push(event);
     };
 
-    // Where each committed transaction's events end in `writeBatch`: the
-    // single-frame bucket's, then one per array key. Tracked only with hooks.
-    const cuts: number[] | null = this.#committed.active ? [] : null;
+    // Hooks are told at each commit (the single-frame bucket, then each array
+    // key), so a later throw cannot lose an earlier commit. With none, no work.
+    const hooked = this.#committed.active;
+    const actor = hooked ? actorOf(identity) : null;
+    let announced = 0;
 
     await this.#dispatchSingleFrameLocal(
       envelope,
@@ -987,7 +989,7 @@ export class Engine {
       onWrite,
       signal
     );
-    cuts?.push(writeBatch.length);
+    if (hooked) announced = this.#announceCommit(writeBatch, announced, actor);
 
     // Batched op-keys: one isolated tx per array (§5.13). Each array commits
     // or rolls back independently of every other op-key and of the single-
@@ -1005,7 +1007,7 @@ export class Engine {
         onWrite,
         signal
       );
-      cuts?.push(writeBatch.length);
+      if (hooked) announced = this.#announceCommit(writeBatch, announced, actor);
     }
 
     await Promise.all(bridgePromises);
@@ -1016,16 +1018,18 @@ export class Engine {
     // subscription's per-entry drain task serialises the async `onFrame`
     // calls so a slow consumer cannot stall this call.
     this.#subscribe.dispatchWrites(writeBatch);
-    if (cuts !== null) {
-      const actor = this.#committed.actorOf(identity);
-      let from = 0;
-      for (const cut of cuts) {
-        this.#committed.queue(writeBatch.slice(from, cut), actor);
-        from = cut;
-      }
-    }
 
     return this.#finaliseMutateEnvelope(envelope, keys, idempotencyResolution, callerKey);
+  }
+
+  /** Queue the hooks for the events a commit added past `from`; returns the new `from`. */
+  #announceCommit(
+    writeBatch: readonly WriteEvent[],
+    from: number,
+    actor: ActorIdentity | null
+  ): number {
+    this.#committed.queue(writeBatch.slice(from), actor);
+    return writeBatch.length;
   }
 
   /**

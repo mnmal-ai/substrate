@@ -143,8 +143,9 @@ export interface EngineOptions {
   shapeRecorder?: Pick<ShapeRecorder, 'observe'>;
   /**
    * Coordinators' `onCommittedWrites` hooks, in registration order. Called
-   * once per `(namespace, type, operation)` per committed transaction, after
-   * the response and never awaited by it; a failure is a `/health` warning.
+   * once per `(namespace, type, operation)` per committed transaction, as
+   * that transaction commits and never awaited by the mutate; a failure is a
+   * `/health` warning.
    */
   committedWritesHooks?: ReadonlyArray<{ plugin: string; hook: CommittedWritesHook }>;
   /**

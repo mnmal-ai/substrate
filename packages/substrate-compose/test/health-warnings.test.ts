@@ -48,6 +48,8 @@ describe('/health warnings', () => {
     const body = await (await fetch(`${url}/health`)).json();
     expect(body.status).toBe('ok');
     expect(body.warnings).toHaveLength(1);
-    expect(body.warnings[0]).toMatch(/^post-write hook indexer failed at .+: index down$/);
+    // /health needs no key, so the hook's own message must not appear.
+    expect(body.warnings[0]).toMatch(/^post-write hook indexer failed at \S+$/);
+    expect(JSON.stringify(body)).not.toContain('index down');
   });
 });

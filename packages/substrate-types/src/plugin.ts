@@ -474,12 +474,13 @@ export interface CommittedWriteBatch {
   type: string;
   operation: 'create' | 'update' | 'delete';
   actor: ActorIdentity | null;
-  ids: Id[];
+  ids: readonly Id[];
 }
 
 /**
- * Runs after the write's response, never awaited by the mutate. A throw or a
- * rejection is recorded as a `/health` warning and does not touch the write.
+ * Never awaited by the mutate, so keep its synchronous part cheap. A throw or a
+ * rejection is recorded as a `/health` warning (plugin name and time, not the
+ * message) and does not touch the write.
  */
 export type CommittedWritesHook = (batch: CommittedWriteBatch) => void | Promise<void>;
 
@@ -673,8 +674,8 @@ export interface CoordinatorPlugin {
   policies?: Policy[];
   /**
    * Told what each committed transaction wrote, once per `(namespace, type,
-   * operation)` rather than once per row. Runs after the response, in commit
-   * order per plugin; a slow hook delays only this plugin's later calls.
+   * operation)` rather than once per row. Never awaited by the mutate, run in
+   * commit order per plugin; a slow hook delays only this plugin's later calls.
    */
   onCommittedWrites?: CommittedWritesHook;
   /**

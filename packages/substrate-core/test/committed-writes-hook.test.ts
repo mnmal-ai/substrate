@@ -1,16 +1,18 @@
 /**
  * Coordinator `onCommittedWrites`: one call per (namespace, type, operation)
- * per committed transaction, after the response, never awaited by the mutate.
+ * per committed transaction, at each commit, never awaited by the mutate.
  */
 
 import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-dataset-memory';
-import type {
-  CommittedWriteBatch,
-  CommittedWritesHook,
-  EngineHandle,
-  RequestContext,
-  Resolver,
-  Row
+import {
+  type CommittedWriteBatch,
+  type CommittedWritesHook,
+  type EngineHandle,
+  type IdempotencyStore,
+  type RequestContext,
+  type Resolver,
+  ResolverFrameError,
+  type Row
 } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
 import type { NamespaceConfig } from '../src/index.js';
@@ -23,7 +25,10 @@ const ctx = {
   identity: { id: 'caller', agentKeyId: 'agent-1', grants: { '*': ['read', 'mutate'] } }
 } as unknown as RequestContext;
 
-function boot(hooks: Array<{ plugin: string; hook: CommittedWritesHook }>): {
+function boot(
+  hooks: Array<{ plugin: string; hook: CommittedWritesHook }>,
+  extra: Partial<ConstructorParameters<typeof Engine>[0]> = {}
+): {
   engine: Engine;
   registry: Registry;
   metrics: Array<{ name: string; payload: unknown }>;
@@ -38,7 +43,8 @@ function boot(hooks: Array<{ plugin: string; hook: CommittedWritesHook }>): {
     datasets,
     edges: new MemoryEdgesStore({ now: () => new Date() }),
     metric: (name, payload) => metrics.push({ name, payload }),
-    committedWritesHooks: hooks
+    committedWritesHooks: hooks,
+    ...extra
   });
   for (const type of ['Todo', 'Note']) {
     registry.register(type, {
@@ -54,6 +60,7 @@ function boot(hooks: Array<{ plugin: string; hook: CommittedWritesHook }>): {
       return row;
     };
     registry.register(`create${type}`, { kind: 'mutation', resolver });
+    if (type === 'Todo') registry.register('createTodoBulk', { kind: 'mutation', resolver });
   }
   return { engine, registry, metrics };
 }
@@ -120,11 +127,13 @@ describe('onCommittedWrites', () => {
     expect(env.errors ?? []).toEqual([]);
     await engine.hooksSettled();
     expect(engine.postWriteWarnings()).toHaveLength(1);
-    expect(engine.postWriteWarnings()[0]).toMatch(
-      /^post-write hook flaky failed at .+: hook broke$/
-    );
-    expect(metrics.find((m) => m.name === 'engine_post_write_hook_error')?.payload).toMatchObject({
-      plugin: 'flaky'
+    // /health is unauthenticated: the warning names the plugin, never the message.
+    expect(engine.postWriteWarnings()[0]).toMatch(/^post-write hook flaky failed at \S+$/);
+    expect(engine.postWriteWarnings()[0]).not.toContain('hook broke');
+    // The operator still gets the message, through the metric sink.
+    expect(metrics.find((m) => m.name === 'engine_post_write_hook_error')?.payload).toEqual({
+      plugin: 'flaky',
+      error: 'hook broke'
     });
 
     fail = false;
@@ -137,7 +146,7 @@ describe('onCommittedWrites', () => {
     const { engine } = boot([{ plugin: 'async', hook: () => Promise.reject(new Error('late')) }]);
     await engine.mutate({ frame: { [`${NS}/createTodo`]: { params: { id: 'a' } } }, ctx });
     await engine.hooksSettled();
-    expect(engine.postWriteWarnings()[0]).toMatch(/post-write hook async failed .*: late$/);
+    expect(engine.postWriteWarnings()[0]).toMatch(/^post-write hook async failed at \S+$/);
   });
 
   it('hung hook: mutate returns first; the next write runs after it, in order', async () => {
@@ -177,12 +186,18 @@ describe('onCommittedWrites', () => {
     const calls: CommittedWriteBatch[] = [];
     const { engine } = boot([{ plugin: 'p', hook: (b) => void calls.push(b) }]);
     const pushed: unknown[] = [];
+    let onPush: () => void = () => {};
+    const pushSeen = new Promise<void>((r) => {
+      onPush = r;
+    });
     await engine.subscribe({
       id: 'sub',
       frame: { [`${NS}/Todo`]: { params: {}, fields: { id: true } } },
       ctx,
       onFrame: (f: { kind: string }) => {
-        if (f.kind !== 'snapshot') pushed.push(f);
+        if (f.kind === 'snapshot') return;
+        pushed.push(f);
+        onPush();
       }
     });
     const handle: EngineHandle = engine;
@@ -192,7 +207,7 @@ describe('onCommittedWrites', () => {
       id: 'sweeper'
     });
     await engine.hooksSettled();
-    await new Promise((r) => setTimeout(r, 20));
+    await pushSeen;
     expect(calls).toEqual([
       {
         namespace: NS,
@@ -203,5 +218,84 @@ describe('onCommittedWrites', () => {
       }
     ]);
     expect(pushed.length).toBeGreaterThan(0);
+  });
+
+  it('a single-frame create and an array create of one type in one mutate → two calls', async () => {
+    const calls: CommittedWriteBatch[] = [];
+    const { engine } = boot([{ plugin: 'p', hook: (b) => void calls.push(b) }]);
+    await engine.mutate({
+      frame: {
+        [`${NS}/createTodo`]: { params: { id: 'a' } },
+        [`${NS}/createTodoBulk`]: [{ params: { id: 'b' } }, { params: { id: 'c' } }]
+      },
+      ctx
+    });
+    await engine.hooksSettled();
+    expect(calls.map((c) => c.ids)).toEqual([['a'], ['b', 'c']]);
+  });
+
+  it('plugins are called in registration order, each with the same frozen ids', async () => {
+    const order: string[] = [];
+    const seen: Array<readonly unknown[]> = [];
+    const mk = (plugin: string): { plugin: string; hook: CommittedWritesHook } => ({
+      plugin,
+      hook: (b) => {
+        order.push(plugin);
+        seen.push(b.ids);
+      }
+    });
+    const { engine } = boot([mk('first'), mk('second')]);
+    await engine.mutate({ frame: { [`${NS}/createTodo`]: ids(3) }, ctx });
+    await engine.hooksSettled();
+    expect(order).toEqual(['first', 'second']);
+    expect(Object.isFrozen(seen[0])).toBe(true);
+    expect(seen[0]).toBe(seen[1]);
+  });
+
+  it("Task 5's retry: a bare batch refusal re-runs per element; one call carries the final ids", async () => {
+    const calls: CommittedWriteBatch[] = [];
+    const { engine, registry } = boot([{ plugin: 'p', hook: (b) => void calls.push(b) }]);
+    const emit = (a: { onWrite?: (e: never) => void }, id: string): void =>
+      a.onWrite?.({ ns: NS, type: 'Todo', id, operation: 'create', row: { id } } as never);
+    registry.register('createRetry', {
+      kind: 'mutation',
+      resolver: async (_c, args) => {
+        const id = String((args.params as { id: string }).id);
+        emit(args, `final-${id}`);
+        return { id } as Row;
+      },
+      batch: async (_c, argsList) => {
+        for (const a of argsList) emit(a, `first-${String((a.params as { id: string }).id)}`);
+        throw new ResolverFrameError('unique_violation', 'somewhere in the batch');
+      }
+    });
+    const env = await engine.mutate({ frame: { [`${NS}/createRetry`]: ids(3) }, ctx });
+    expect(env.errors ?? []).toEqual([]);
+    await engine.hooksSettled();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.ids).toEqual(['final-t0', 'final-t1', 'final-t2']);
+  });
+
+  it('an array key that throws after the single-frame bucket committed still calls the hook', async () => {
+    const calls: CommittedWriteBatch[] = [];
+    const store: IdempotencyStore = {
+      get: () => Promise.reject(new Error('idempotency store down')),
+      put: async () => {},
+      reapExpired: async () => ({ deleted: 0 })
+    };
+    const { engine } = boot([{ plugin: 'p', hook: (b) => void calls.push(b) }], {
+      idempotency: { store }
+    });
+    await expect(
+      engine.mutate({
+        frame: {
+          [`${NS}/createNote`]: { params: { id: 'n1' } },
+          [`${NS}/createTodo`]: [{ params: { id: 't1' }, idempotencyKey: 'k' }]
+        },
+        ctx
+      })
+    ).rejects.toThrow('idempotency store down');
+    await engine.hooksSettled();
+    expect(calls.map((c) => [c.type, c.ids])).toEqual([['Note', ['n1']]]);
   });
 });

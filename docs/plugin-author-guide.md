@@ -597,19 +597,22 @@ const plugin: CoordinatorPlugin = {
 
 **When it runs.** After a transaction commits: once for the single-frame
 bucket of a `mutate`, and once for each array key (each array is its own
-transaction). A rolled-back array calls nothing. The hook runs after the
-response and the mutate never waits for it.
+transaction). A rolled-back array calls nothing. The mutate
+never waits for the hook, but it may start before the response is sent, so keep
+a hook's synchronous part cheap.
 
 **What it is told.** One call per `(namespace, type, operation)` group in that
 transaction. Groups come in the order they first appeared, and `ids` keep the
-order the writes were made in. `actor` is who the request was attributed to, or
+order the writes were made in. `ids` is read-only and shared by every plugin. `actor` is who the request was attributed to, or
 `null` when its identity names no agent, user or system actor. Hooks of
 different plugins are called in plugin registration order.
 
 **Failures only warn.** A throw or a rejected promise never changes the write's
-response. It is counted as `engine_post_write_hook_error` and shown in
-`GET /health` as `warnings`, `post-write hook <plugin> failed at <time>:
-<message>`, until that plugin's next successful call. `status` stays `ok`.
+response. It is counted as `engine_post_write_hook_error`, with the message
+going to the operator's metric log, and shown in `GET /health` as `warnings`,
+`post-write hook <plugin> failed at <time>`, until that plugin's next
+successful call. The message is left out because `/health` needs no key.
+`status` stays `ok`.
 
 **A slow hook stalls only its own plugin.** Each plugin's calls run one after
 another in commit order, so a hung hook holds back that plugin's later calls
