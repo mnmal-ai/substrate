@@ -9,11 +9,9 @@
  *   the safe casts are 0003's.
  * - `substrate_type_tables` and `substrate_type_fields` are the type catalog.
  *
- * `UUID_CHECK_STATEMENTS` follow `TX_STATEMENTS` when
- * `SUBSTRATE_ENFORCE_UUID_CHECK=true`, as 0002 does on the old layouts.
+ * The opt-in UUID CHECKs are `0002t_uuid_format_check`, gated as 0002 is.
  */
 
-import { UUID_REGEX } from '../uuid-check.js';
 import { TX_STATEMENTS as SAFE_CASTS } from './0003_safe_casts.js';
 
 export const TX_STATEMENTS: ReadonlyArray<string> = [
@@ -94,20 +92,6 @@ export const TX_STATEMENTS: ReadonlyArray<string> = [
     CONSTRAINT substrate_type_fields_state_check
       CHECK (state IN ('column','pending','promoting','orphaned'))
   )`
-];
-
-const uuidCheck = (table: string, column: string): string =>
-  `DO $$ BEGIN
-    ALTER TABLE ${table} ADD CONSTRAINT ${table}_${column}_uuid_format
-      CHECK (${column} ~ '${UUID_REGEX}');
-  EXCEPTION WHEN duplicate_object THEN NULL;
-  END $$`;
-
-export const UUID_CHECK_STATEMENTS: ReadonlyArray<string> = [
-  uuidCheck('row_ids', 'id'),
-  uuidCheck('short_ids', 'row_id'),
-  uuidCheck('edges', 'from_id'),
-  uuidCheck('edges', 'to_id')
 ];
 
 export const CONCURRENT_STATEMENTS: ReadonlyArray<string> = [

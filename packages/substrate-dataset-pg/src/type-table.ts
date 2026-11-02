@@ -257,7 +257,7 @@ async function ensureIn(tx: TransactionSql, args: EnsureTypeTableArgs): Promise<
         await setState(field, 'promoting');
         changed = true;
       }
-      if (JSON.stringify(row.vocab ?? null) !== JSON.stringify(vocab ?? null)) {
+      if (!sameVocab(row.vocab, vocab)) {
         // On a lock timeout the old vocabulary stays recorded, and the next boot retries.
         const applied =
           row.state === 'pending' ||
@@ -301,9 +301,22 @@ function vocabOf(def: FieldDef): readonly string[] | undefined {
   return def.kind === 'scalar' ? def.enum : undefined;
 }
 
-/** `typeTableName`, or a hashed variant when another relation holds that name. */
+/** Order-insensitive: a reordered enum checks the same values. */
+function sameVocab(a: readonly string[] | null, b: readonly string[] | undefined): boolean {
+  const key = (v: readonly string[] | null | undefined) =>
+    JSON.stringify(v == null ? null : [...v].sort());
+  return key(a) === key(b);
+}
+
+/**
+ * `typeTableName`, or a hashed variant when another relation holds that name.
+ * Two types can fold to one clean name (`a__b`/`c` and `a`/`b__c`); a lock on
+ * the name makes the second creator see the first's table and take the hash.
+ */
 async function freeTableName(tx: TransactionSql, namespace: string, type: string): Promise<string> {
   const preferred = typeTableName(namespace, type);
+  await tx`SELECT pg_advisory_xact_lock(hashtext(
+    current_schema() || ':substrate-type-table-name:' || ${preferred}))`;
   const taken = await tx`
     SELECT 1 FROM pg_class
     WHERE relname = ${preferred} AND relnamespace = current_schema()::regnamespace`;

@@ -42,10 +42,10 @@ import {
 } from './migrations/0001p_partitioned_baseline.js';
 import {
   CONCURRENT_STATEMENTS as TABLES_BASELINE_CONCURRENT,
-  TX_STATEMENTS as TABLES_BASELINE_TX,
-  UUID_CHECK_STATEMENTS as TABLES_UUID_CHECK_TX
+  TX_STATEMENTS as TABLES_BASELINE_TX
 } from './migrations/0001t_tables_baseline.js';
 import { TX_STATEMENTS as UUID_CHECK_TX } from './migrations/0002_uuid_format_check.js';
+import { TX_STATEMENTS as TABLES_UUID_CHECK_TX } from './migrations/0002t_uuid_format_check.js';
 import {
   CONCURRENT_STATEMENTS as SAFE_CASTS_CONCURRENT,
   TX_STATEMENTS as SAFE_CASTS_TX
@@ -106,16 +106,11 @@ const PARTITIONED_BASELINE: MigrationInput = {
 
 const TABLES_BASELINE_VERSION = '0001t_tables_baseline';
 
-/** The `tables` layout's baseline, with the UUID CHECKs when `enforceUuidCheck`. */
-function tablesBaseline(enforceUuidCheck: boolean): MigrationInput {
-  return {
-    version: TABLES_BASELINE_VERSION,
-    txStatements: enforceUuidCheck
-      ? [...TABLES_BASELINE_TX, ...TABLES_UUID_CHECK_TX]
-      : TABLES_BASELINE_TX,
-    concurrentStatements: TABLES_BASELINE_CONCURRENT
-  };
-}
+const TABLES_BASELINE: MigrationInput = {
+  version: TABLES_BASELINE_VERSION,
+  txStatements: TABLES_BASELINE_TX,
+  concurrentStatements: TABLES_BASELINE_CONCURRENT
+};
 
 /** Migrations after the baseline, run in both old layouts. */
 const SHARED_INPUTS: ReadonlyArray<MigrationInput> = [
@@ -156,20 +151,29 @@ const UUID_CHECK_INPUT: MigrationInput = {
   txStatements: UUID_CHECK_TX
 };
 
+/** The `tables` layout's UUID CHECKs, under the same ledger version and gate. */
+const TABLES_UUID_CHECK_INPUT: MigrationInput = {
+  version: UUID_CHECK_MIGRATION,
+  txStatements: TABLES_UUID_CHECK_TX
+};
+
 /**
  * The baseline for `layout`, then the gated 0002 when
  * `SUBSTRATE_ENFORCE_UUID_CHECK=true` (or the explicit override is true), then
  * the migrations both old layouts share. The `tables` layout has its baseline
- * only, which carries the UUID CHECKs itself. Used by `runMigrations` and
+ * and, gated the same way, its own UUID CHECKs. Used by `runMigrations` and
  * exported for unit tests.
  */
 export function getMigrationList(
   enforceUuidCheck: boolean | undefined = process.env.SUBSTRATE_ENFORCE_UUID_CHECK === 'true',
   layout: StorageLayout = 'legacy'
 ): ReadonlyArray<Migration> {
-  if (layout === 'tables') return [normalise(tablesBaseline(enforceUuidCheck === true))];
+  const gate = enforceUuidCheck === true;
+  if (layout === 'tables') {
+    return [TABLES_BASELINE, ...(gate ? [TABLES_UUID_CHECK_INPUT] : [])].map(normalise);
+  }
   const baseline = layout === 'partitioned' ? PARTITIONED_BASELINE : LEGACY_BASELINE;
-  const gated = enforceUuidCheck === true ? [UUID_CHECK_INPUT] : [];
+  const gated = gate ? [UUID_CHECK_INPUT] : [];
   return [baseline, ...gated, ...SHARED_INPUTS].map(normalise);
 }
 
@@ -580,12 +584,12 @@ async function runMigrationsLocked(
   //
   // Iterates the FULL list including gated 0002, even when the gate is off:
   // a previously applied gated migration must still be rehashed.
-  // The tables baseline is rehashed in the variant the gate selects now.
-  const REHASH_LIST = [
-    ...getMigrationList(true),
-    normalise(PARTITIONED_BASELINE),
-    ...getMigrationList(opts.enforceUuidCheck, 'tables')
-  ];
+  // Per layout, since 0002 is one ledger version with each layout's own text.
+  const layout = await resolveLayout(sql, new Set(appliedByVersion.keys()), opts.layout);
+  const REHASH_LIST =
+    layout === 'tables'
+      ? getMigrationList(true, 'tables')
+      : [...getMigrationList(true), normalise(PARTITIONED_BASELINE)];
   const buildSha = process.env.SUBSTRATE_BUILD_SHA ?? 'unknown';
   for (const migration of REHASH_LIST) {
     const recorded = appliedByVersion.get(migration.version);
@@ -608,7 +612,6 @@ async function runMigrationsLocked(
     appliedByVersion.set(migration.version, current);
   }
 
-  const layout = await resolveLayout(sql, new Set(appliedByVersion.keys()), opts.layout);
   for (const migration of getMigrationList(opts.enforceUuidCheck, layout)) {
     const recorded = appliedByVersion.get(migration.version);
     if (recorded !== undefined) {
