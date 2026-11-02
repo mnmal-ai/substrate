@@ -50,6 +50,33 @@ describe('applyFieldProposal', () => {
     expect(keys).toContain('color');
   });
 
+  it("keeps updateMany served after the reinstall: update<T> is still autoCRUD's own", async () => {
+    const { registry, dataset, edges, registryStore } = makeTestDeps();
+    const fields = { name: { kind: 'scalar', type: 'string' } } satisfies Record<
+      string,
+      FieldSpecJson
+    >;
+    applyTypeProposal({ namespace: NS, typeName: 'Dress', fields, registryStore, dataset, edges });
+    applyFieldProposal({
+      namespace: NS,
+      targetType: 'Dress',
+      fieldName: 'color',
+      fieldSpec: { kind: 'scalar', type: 'string' },
+      registryStore,
+      dataset,
+      edges
+    });
+    await dataset.write('Dress', [{ id: 'd1', name: 'a' }]);
+    const ctx = {
+      identity: { kind: 'agent', id: 't', agentKeyId: 't', grants: { '*': ['mutate'] } },
+      now: new Date()
+    } as unknown as RequestContext;
+    const result = await registry
+      .get('updateManyDress')
+      ?.resolver(ctx, { dataset, edges, params: { where: {}, set: { color: 'red' } } });
+    expect(result).toMatchObject({ count: 1, ids: ['d1'] });
+  });
+
   it('refuses a proposal type as the target', () => {
     const { registry, dataset, edges, registryStore } = makeTestDeps();
     installAutoCrud(registry, 'TypeProposal', dataset, edges, {

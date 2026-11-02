@@ -88,6 +88,7 @@ export class Registry extends RegistryBase implements RegistryInterface {
     if (input.expectedSize !== undefined) entry.expectedSize = input.expectedSize;
     if (input.verb !== undefined) entry.verb = input.verb;
     if (input.batch !== undefined) entry.batch = input.batch;
+    if (input.filterTarget !== undefined) entry.filterTarget = input.filterTarget;
     this.entries.set(name, entry);
   }
 
@@ -115,6 +116,7 @@ export class Registry extends RegistryBase implements RegistryInterface {
     if (input.expectedSize !== undefined) entry.expectedSize = input.expectedSize;
     if (input.verb !== undefined) entry.verb = input.verb;
     if (input.batch !== undefined) entry.batch = input.batch;
+    if (input.filterTarget !== undefined) entry.filterTarget = input.filterTarget;
     this.entries.set(name, entry);
   }
 

@@ -83,6 +83,26 @@ function suite(label: string, make: () => Dataset | Promise<Dataset>): void {
       expect('title' in (await read(id))).toBe(false);
     });
 
+    it('patchRows and updateWhere {title: null} return and read back without title', async () => {
+      const [a, b] = [randomUUID(), randomUUID()];
+      await ds.write(TYPE, [
+        { id: a, title: 'a' },
+        { id: b, title: 'b' }
+      ]);
+      const now = new Date();
+      const [patched] = await ds.patchRows(TYPE, [{ id: a, patch: { title: null } }], null, now);
+      const filtered = await ds.updateWhere?.(
+        TYPE,
+        { id: { eq: b } },
+        { title: null },
+        { maxMatch: 1, now }
+      );
+      expect(filtered?.count).toBe(1);
+      for (const row of [patched as Row, ...(filtered?.rows ?? []), await read(a), await read(b)]) {
+        expect('title' in row).toBe(false);
+      }
+    });
+
     it('conditionalUpdate match {title: null} matches an absent title', async () => {
       const id = randomUUID();
       await ds.write(TYPE, [{ id }]);

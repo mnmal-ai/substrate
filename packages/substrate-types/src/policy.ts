@@ -6,7 +6,7 @@
  */
 
 import type { Row } from './core.js';
-import type { Dataset, ReadResult } from './dataset.js';
+import type { Dataset, FilterWriteLimits, ReadResult } from './dataset.js';
 import type { EdgesStore } from './edge.js';
 
 export interface Identity {
@@ -148,6 +148,8 @@ export interface ResolverArgs {
    * transactions (a concurrent index drop) refuses to share one.
    */
   txEntries?: number;
+  /** Engine-injected on `updateMany<T>` / `deleteMany<T>`: the deployment's caps. */
+  filterWriteLimits?: FilterWriteLimits;
 }
 
 /**

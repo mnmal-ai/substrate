@@ -229,8 +229,9 @@ export function schemaForTypeRoute(engine: Engine): HttpHandler {
 }
 
 /**
- * A mutation targets a type when its name is a lowercase verb followed by
- * exactly the type name (`createTodo`, `purgeTodo`), or when it returns the
+ * A mutation targets a type when its name is a lowercase verb, optionally
+ * followed by `Many`, then exactly the type name (`createTodo`, `purgeTodo`,
+ * `updateManyTodo`), or when it returns the
  * type's row — a struct, or a list of structs, carrying exactly the type's
  * fields (`markAgentMessageRead`).
  */
@@ -240,7 +241,7 @@ function mutationTargetsType(
   type: string,
   fields: Record<string, FieldDef>
 ): boolean {
-  if (name.endsWith(type) && /^[a-z]+$/.test(name.slice(0, -type.length))) return true;
+  if (name.endsWith(type) && /^[a-z]+(Many)?$/.test(name.slice(0, -type.length))) return true;
   const row = def.returns.kind === 'list' ? def.returns.of : def.returns;
   return row.kind === 'struct' && isDeepStrictEqual(row.fields, fields);
 }

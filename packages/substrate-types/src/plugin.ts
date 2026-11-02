@@ -84,6 +84,11 @@ export interface RegistryEntryInput {
    * string matching. Omit for type entries and custom mutations.
    */
   verb?: AutoCrudVerb;
+  /**
+   * The type a by-filter mutation (`updateMany<T>` / `deleteMany<T>`) writes.
+   * The engine validates `params.where` against it as a query's `where`.
+   */
+  filterTarget?: string;
 }
 
 /**
@@ -111,6 +116,8 @@ export interface RegistryEntry {
   expectedSize?: 'small' | 'large';
   /** Mirrors `RegistryEntryInput.verb` — present when the registrant stamped one. */
   verb?: AutoCrudVerb;
+  /** Mirrors `RegistryEntryInput.filterTarget`. */
+  filterTarget?: string;
 }
 
 /**

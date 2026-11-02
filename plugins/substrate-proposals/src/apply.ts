@@ -264,7 +264,10 @@ function reinstallType(
       key: Parameters<typeof registry.replace>[0],
       input: Parameters<typeof registry.replace>[1]
     ) => registry.replace(key, input),
-    replace: registry.replace.bind(registry)
+    replace: registry.replace.bind(registry),
+    // Read back by the reinstalled updateMany/deleteMany, which are served
+    // only while update<T>/delete<T> are autoCRUD's own entries.
+    get: registry.get.bind(registry)
   };
   const prior = autoCrudOptionsOf(existing.resolver) ?? {
     policy: existing.policy,

@@ -33,10 +33,18 @@ export interface ShapeResultInput {
   decision: PolicyDecision;
   result: Row | Row[] | ReadResult | AsyncIterable<Row> | null;
   metric(name: string, payload?: unknown): void;
+  /**
+   * The resolver applied the row filter to the rows it wrote and returns no
+   * rows (a by-filter mutation's `{ count, ids, idsTruncated }`): obligations
+   * are not run on the result.
+   */
+  resolverFiltered?: boolean;
 }
 
 export function shapeResult(input: ShapeResultInput): void {
-  const { envelope, key, entry, ctx, decision, result, metric } = input;
+  const { envelope, key, entry, ctx, result, metric } = input;
+  const decision: PolicyDecision =
+    input.resolverFiltered === true ? { ...input.decision, obligations: [] } : input.decision;
 
   if (isAsyncIterable<Row>(result)) {
     addError(

@@ -32,6 +32,7 @@ import type {
   CoordinatorPlugin,
   Dataset,
   EdgesStore,
+  FilterWriteLimits,
   HttpHandler,
   IdempotencyStore,
   KernelPlugin,
@@ -171,6 +172,12 @@ export interface ComposeOpts {
    * `maxLimit` also caps every subscription snapshot.
    */
   pageLimits?: { defaultLimit: number; maxLimit: number };
+  /**
+   * Caps on `updateMany<T>` / `deleteMany<T>`: the most rows one filter may
+   * match (more is refused `filter_too_broad`), and the most ids a result
+   * returns. Defaults to 10000 and 1000.
+   */
+  filterWriteLimits?: FilterWriteLimits;
   /**
    * Opt-in periodic re-prime interval (ms) for the
    * `KeyRegistry` public-key cache. Bounds cross-instance revocation
@@ -491,6 +498,7 @@ async function composeInner(
   const advisorIntervalMs = opts.advisor?.intervalMs ?? 0;
   const shapeRecorder = advisorIntervalMs > 0 ? new ShapeRecorder() : undefined;
   if (shapeRecorder !== undefined) engineOpts.shapeRecorder = shapeRecorder;
+  if (opts.filterWriteLimits !== undefined) engineOpts.filterWriteLimits = opts.filterWriteLimits;
   engineOpts.committedWritesHooks = coordinatorPlugins.flatMap((p) =>
     p.onCommittedWrites !== undefined ? [{ plugin: p.name, hook: p.onCommittedWrites }] : []
   );

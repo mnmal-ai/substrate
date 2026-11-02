@@ -575,7 +575,10 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
             'Mutation frame. Single: { "default/createTodo": { "params": { "title": "..." }, ' +
               '"fields": { "id": true } } }. Batched atomic: ' +
               '{ "default/updateTodo": [ { "params": { "id": "1", "done": true }, "fields": { "id": true } }, ' +
-              '{ "params": { "id": "2", "done": true }, "fields": { "id": true } } ] }.'
+              '{ "params": { "id": "2", "done": true }, "fields": { "id": true } } ] }. ' +
+              'By filter: { "default/updateManyTodo": { "params": { "where": { "done": { "eq": false } }, ' +
+              '"set": { "done": true } }, "fields": { "count": true, "ids": true, "idsTruncated": true } } }; ' +
+              'deleteMany<Type> takes only "where".'
           )
         }
       },

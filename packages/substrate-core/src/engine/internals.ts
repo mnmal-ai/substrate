@@ -16,6 +16,7 @@ import {
   type EdgesStore,
   type FieldDef,
   type FieldInput,
+  type FilterWriteLimits,
   type FrameEntry,
   grantedIn,
   grantOf,
@@ -148,6 +149,8 @@ export interface EngineOptions {
    * `/health` warning.
    */
   committedWritesHooks?: ReadonlyArray<{ plugin: string; hook: CommittedWritesHook }>;
+  /** Caps on `updateMany<T>` / `deleteMany<T>`; `DEFAULT_FILTER_WRITE_LIMITS` when absent. */
+  filterWriteLimits?: FilterWriteLimits;
   /**
    * Idempotency dedup (§5.13). Absent → no dedup; `FrameEntry.idempotencyKey`
    * is ignored on mutate (queries ignore it unconditionally). Present → the
