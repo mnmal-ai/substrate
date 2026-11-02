@@ -1572,7 +1572,8 @@ export class PgDataset implements Dataset {
       // A patch onto a declared unique index's values: refused as `write` refuses it.
       throw this.#uniqueViolation(type, err);
     });
-    const byId = new Map(records.map((r) => [r.id, this.materialize(r)]));
+    const fields = this.#typeDefLookup?.(type, this.namespace)?.fields;
+    const byId = new Map(records.map((r) => [r.id, this.materialize(r, fields)]));
     return patches.map((p) => byId.get(idToText(p.id)) ?? null);
   }
 
@@ -1682,7 +1683,8 @@ export class PgDataset implements Dataset {
         ON sid.namespace = u.namespace AND sid.type = u.type AND sid.row_id = u.id
     `;
     if ((records[0]?.matched ?? 0) > maxMatch) throw filterTooBroad(this.namespace, type, maxMatch);
-    const rows = records.filter((r) => r.id !== null).map((r) => this.materialize(r));
+    const fields = this.#typeDefLookup?.(type, this.namespace)?.fields;
+    const rows = records.filter((r) => r.id !== null).map((r) => this.materialize(r, fields));
     return { count: rows.length, ids: rows.map((r) => r.id), rows };
   }
 

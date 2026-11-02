@@ -61,7 +61,12 @@ import type {
   WriteResult,
   WriteRow
 } from '@mnmal-ai/substrate-types';
-import { assertNoRepeatedIds, createKeyedMutex, filterTooBroad, isColumnField } from '@mnmal-ai/substrate-types';
+import {
+  assertNoRepeatedIds,
+  createKeyedMutex,
+  filterTooBroad,
+  isColumnField
+} from '@mnmal-ai/substrate-types';
 import { NamespaceMismatch, ReservedField } from './errors.js';
 import { MemoryShortIdStore, type ShortIdBucketSnapshot } from './memory-short-id-store.js';
 import { uuidv7 } from './uuidv7.js';
