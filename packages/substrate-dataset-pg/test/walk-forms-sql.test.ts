@@ -17,6 +17,7 @@ import { buildWalkProjection, prepareWindows } from '../src/pg-sql/aggregate.js'
 import { resolveBodyOrderByCast } from '../src/pg-sql/sorting.js';
 import { prepareSharedPicks, type WalkScope, walkScope, withCtes } from '../src/pg-sql/walk.js';
 import { buildWhere } from '../src/pg-sql/where.js';
+import { rowsTypeTable } from '../src/type-table.js';
 
 const sql = postgres('postgres://nobody@127.0.0.1:1/none');
 afterAll(() => sql.end());
@@ -165,15 +166,20 @@ const FIELDS: Record<string, Record<string, FieldDef>> = {
   }
 };
 const fieldDef = (t: string, f: string) => FIELDS[t]?.[f];
+const tableFor = (t: string) => rowsTypeTable(NS, t, () => undefined);
+const CERT = tableFor('Cert');
 const castFor = (f: string) => resolveBodyOrderByCast(fieldDef('Cert', f));
 const BASE = sql`r.namespace = 'ns' AND r.type = 'Cert'`;
 const IDS = sql`r.id = ANY('{a,b}')`;
 const seedBase = (ids = false) => ({ clauses: ids ? [BASE, IDS] : [BASE], ids });
 
 /** The where (and the CTEs it reads) of a Cert read with `params`, as pg-dataset compiles them. */
-function compileWhere(params: ReadParams, s: WalkScope = walkScope(NS, 'Cert', 'r', fieldDef)) {
-  const joins = prepareSharedPicks(sql, params, seedBase(), castFor, () => undefined, s);
-  const where = buildWhere(sql, params.where as WhereClause, castFor, () => undefined, s);
+function compileWhere(
+  params: ReadParams,
+  s: WalkScope = walkScope(NS, 'Cert', 'r', fieldDef, tableFor)
+) {
+  const joins = prepareSharedPicks(sql, params, seedBase(), castFor, CERT, s);
+  const where = buildWhere(sql, params.where as WhereClause, castFor, CERT, s);
   return render(sql`${withCtes(sql, s)}SELECT 1 FROM rows r${joins} WHERE ${BASE} AND ${where}`);
 }
 
@@ -497,18 +503,18 @@ describe('a frame _agg over its seeds window: one group-by pass', () => {
       ...(limit === undefined ? {} : { limit })
     }) as ReadParams;
   function page(p: ReadParams, ids = false): string {
-    const s = walkScope(NS, 'Cert', 'r', fieldDef);
+    const s = walkScope(NS, 'Cert', 'r', fieldDef, tableFor);
     const joins = prepareWindows(
       sql,
       p,
       seedBase(ids),
       castFor,
-      () => undefined,
+      CERT,
       s,
       (t: string, f: string) => t === 'Obs' && f === 'at'
     );
-    const where = buildWhere(sql, p.where as WhereClause, castFor, () => undefined, s);
-    const proj = buildWalkProjection(sql, p.agg, {}, () => undefined, s);
+    const where = buildWhere(sql, p.where as WhereClause, castFor, CERT, s);
+    const proj = buildWalkProjection(sql, p.agg, {}, CERT, s);
     return render(
       sql`${withCtes(sql, s)}SELECT ${proj} AS w FROM rows r${joins} WHERE ${BASE} AND ${where}`
     );
@@ -551,7 +557,7 @@ describe('a frame _agg over its seeds window: one group-by pass', () => {
   });
 
   it("leaves a shared pick's hub walk out of the window's seed semi-join", () => {
-    const s = walkScope(NS, 'Cert', 'r', fieldDef);
+    const s = walkScope(NS, 'Cert', 'r', fieldDef, tableFor);
     const pickHub = {
       _walk: {
         out: 'spec',
@@ -574,11 +580,11 @@ describe('a frame _agg over its seeds window: one group-by pass', () => {
       p,
       base,
       castFor,
-      () => undefined,
+      CERT,
       s,
       (t: string, f: string) => t === 'Obs' && f === 'at'
     );
-    prepareSharedPicks(sql, p, base, castFor, () => undefined, s);
+    prepareSharedPicks(sql, p, base, castFor, CERT, s);
     const text = render(withCtes(sql, s));
     const win = text.slice(text.indexOf('win_w'), text.indexOf('GROUP BY 1'));
     // Narrowed by the plain conjunct, but no per-seed pick inside the window's CTE.

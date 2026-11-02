@@ -13,6 +13,8 @@
 import type { Id } from '@mnmal-ai/substrate-types';
 import { normalizeIsoTimestamp, UnsupportedFilterError } from '@mnmal-ai/substrate-types';
 import type { PendingQuery, Row as PgRow, Sql, TransactionSql } from 'postgres';
+import { extraWins, RAW_KEY } from '../row-codec.js';
+import type { ColumnKind, TypedColumn, TypeTable } from '../type-table.js';
 
 export type Fragment = PendingQuery<PgRow[]>;
 
@@ -99,7 +101,7 @@ export function promotedColumnSql(def: PromotedBodyColumn, alias = 'r'): string 
  * `materialize()` (`id` lives both in the column and in body, but is force-
  * included by the projection builder regardless of whether the caller asked).
  *
- * Used by `buildBodyProjection` to filter caller-supplied `fields` keys when
+ * Used by `buildRowProjection` to filter caller-supplied `fields` keys when
  * deciding which body keys to materialise from JSONB.
  */
 export const NON_BODY_FIELD_KEYS = new Set(['_metadata', '_deletedAt', 'shortId']);
@@ -162,16 +164,164 @@ export function qualifier(alias: string | undefined): string {
   return `${alias}.`;
 }
 
-const jsonSql = (path: readonly string[], alias?: string): string =>
-  `${qualifier(alias)}body${path.map((p) => ` -> ${sqlStringLiteral(p)}`).join('')}`;
-const rawTextSql = (path: readonly string[], alias?: string): string =>
-  `(${jsonSql(path.slice(0, -1), alias)} ->> ${sqlStringLiteral(path[path.length - 1] as string)})`;
-const textSql = (path: readonly string[], alias?: string): string =>
-  `(${rawTextSql(path, alias)} COLLATE "C")`;
-const numSql = (path: readonly string[], alias?: string): string =>
-  `substrate_num(${jsonSql(path, alias)})`;
-const tsSql = (path: readonly string[], alias?: string): string =>
-  `substrate_ts(${jsonSql(path, alias)})`;
+/** The row's jsonb column: `body` on the old layouts, `extra` on a type table. */
+export type JsonbColumn = TypeTable['jsonb'];
+
+const jsonSql = (path: readonly string[], alias?: string, jsonb: JsonbColumn = 'body'): string =>
+  `${qualifier(alias)}${jsonb}${path.map((p) => ` -> ${sqlStringLiteral(p)}`).join('')}`;
+const rawTextSql = (path: readonly string[], alias?: string, jsonb?: JsonbColumn): string =>
+  `(${jsonSql(path.slice(0, -1), alias, jsonb)} ->> ${sqlStringLiteral(path[path.length - 1] as string)})`;
+const textSql = (path: readonly string[], alias?: string, jsonb?: JsonbColumn): string =>
+  `(${rawTextSql(path, alias, jsonb)} COLLATE "C")`;
+const numSql = (path: readonly string[], alias?: string, jsonb?: JsonbColumn): string =>
+  `substrate_num(${jsonSql(path, alias, jsonb)})`;
+const tsSql = (path: readonly string[], alias?: string, jsonb?: JsonbColumn): string =>
+  `substrate_ts(${jsonSql(path, alias, jsonb)})`;
+
+/** What a field expression yields: compare and sort forms, uncollated text (ILIKE), or the jsonb value. */
+export type FieldAs = 'text' | 'rawText' | 'number' | 'date' | 'boolean' | 'json';
+
+/** The jsonb-path expression for `as`: the one every body/extra builder below emits. */
+function pathSql(
+  path: readonly string[],
+  as: FieldAs,
+  alias?: string,
+  jsonb?: JsonbColumn
+): string {
+  switch (as) {
+    case 'text':
+      return textSql(path, alias, jsonb);
+    case 'rawText':
+      return rawTextSql(path, alias, jsonb);
+    case 'number':
+      return numSql(path, alias, jsonb);
+    case 'date':
+      return tsSql(path, alias, jsonb);
+    case 'boolean':
+      return `${rawTextSql(path, alias, jsonb)}::boolean`;
+    case 'json':
+      return `(${jsonSql(path, alias, jsonb)})`;
+  }
+}
+
+/** The `as` a column of `kind` compares and sorts as. */
+export function columnAs(kind: ColumnKind): Exclude<FieldAs, 'rawText' | 'json'> {
+  return kind === 'number' || kind === 'date' || kind === 'boolean' ? kind : 'text';
+}
+
+/**
+ * A date column as text in the `toISOString()` grammar with microseconds, read
+ * in UTC whatever the session TimeZone: pg prints an old instant with an LMT
+ * offset in a non-UTC session, which postgres.js reads as Invalid Date. A
+ * column holds years 1 to 9999 UTC only where `decodeRow` reads it: the codec
+ * nulls an instant before year 1 (which `YYYY` would print without its BC) and
+ * shields any other value whose text differs from the written one under `$raw`.
+ */
+export const utcTextSql = (expr: string, frac: 'MS' | 'US'): string =>
+  `to_char(${expr} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.${frac}"Z"')`;
+
+/** `alias.<column>`, checked as a bare identifier since it reaches `sql.unsafe`. */
+export function columnSql(column: TypedColumn, alias?: string): string {
+  if (!COLUMN_NAME_PATTERN.test(column.column)) {
+    throw new Error(`internal: '${column.column}' is not a bare column name`);
+  }
+  return `${qualifier(alias)}${column.column}`;
+}
+
+/** A column read as `as`: itself for its own kind; jsonb or `decodeRow`'s text for a value read. */
+function columnExprSql(column: TypedColumn, as: FieldAs, alias?: string): string {
+  const col = columnSql(column, alias);
+  switch (as) {
+    case 'json':
+      return column.kind === 'date' ? `to_jsonb(${utcTextSql(col, 'MS')})` : `to_jsonb(${col})`;
+    case 'rawText':
+      // Uncollated, as `->>` is, so ILIKE case-folds under the database collation. A
+      // crossRef column has the database collation already, as `id` does.
+      if (column.kind === 'text' || column.kind === 'enum') return `(${col} COLLATE "default")`;
+      if (column.kind === 'crossRef') return col;
+      return column.kind === 'date' ? utcTextSql(col, 'MS') : `${col}::text`;
+    default:
+      // Text and enum columns are `COLLATE "C"` already, so a compare needs no COLLATE; a
+      // crossRef compares for equality (joins with `id`) and is ordered by `columnOrderExpr`.
+      return col;
+  }
+}
+
+/**
+ * A `promoting` or `orphaned` field's `extra` value as `as`, which never raises:
+ * the field may hold anything (an orphaned one is undeclared), so a value that
+ * does not fit reads NULL, which matches nothing, as memory's compare does.
+ * `substrate_num` and `substrate_ts` are already safe; a boolean is guarded here.
+ */
+function extraBranchSql(field: string, as: FieldAs, kind: ColumnKind, alias?: string): string {
+  const name = sqlStringLiteral(field);
+  const v = `${qualifier(alias)}extra -> ${name}`;
+  switch (as) {
+    case 'boolean':
+      return `CASE WHEN jsonb_typeof(${v}) = 'boolean' THEN (${v})::boolean END`;
+    case 'json':
+      // A null in `extra` reads absent, as `decodeRow` has it; `->>` already gives NULL for it.
+      return `NULLIF(${pathSql([field], as, alias, 'extra')}, 'null'::jsonb)`;
+    case 'text':
+      // Uncollated for a crossRef, as its column is.
+      return pathSql([field], kind === 'crossRef' ? 'rawText' : 'text', alias, 'extra');
+    default:
+      return pathSql([field], as, alias, 'extra');
+  }
+}
+
+/**
+ * A top-level field of `table`'s row as `as`. A `column`-state field is its
+ * column; a `promoting` or `orphaned` one is its `extra` key when present, else
+ * its column: `extraWins` in row-codec.ts, the one rule `decodeRow` reads by
+ * (F13, F35), so filters and reads cannot disagree. Any other field, and every
+ * field of a `rowsTypeTable`, is the `body`/`extra` path expression. A `json`
+ * read also overlays `$raw`, last, as `decodeRow` does.
+ *
+ * A promoting number is numeric in both branches: `substrate_num` gives the
+ * stored decimal exactly (Todo #1809), and a float8 CASE would round it, or
+ * raise on one past float8's range.
+ */
+export function fieldExprSql(table: TypeTable, field: string, as: FieldAs, alias?: string): string {
+  const c = table.column(field);
+  if (c === undefined) return pathSql([field], as, alias, table.jsonb);
+  const col = columnExprSql(c, as, alias);
+  if (!extraWins(c)) return as === 'json' ? rawOverlay(field, col, alias) : col;
+  const q = qualifier(alias);
+  const fromColumn = as === 'number' ? `${col}::numeric` : col;
+  const value = `CASE WHEN ${q}extra ? ${sqlStringLiteral(field)} THEN ${extraBranchSql(field, as, c.kind, alias)} ELSE ${fromColumn} END`;
+  return as === 'json' ? rawOverlay(field, value, alias) : value;
+}
+
+/** `value` under the field's `$raw` entry, which `decodeRow` overlays last. */
+const rawOverlay = (field: string, value: string, alias?: string): string =>
+  `COALESCE(${qualifier(alias)}extra -> ${sqlStringLiteral(RAW_KEY)} -> ${sqlStringLiteral(field)}, ${value})`;
+
+/**
+ * A column field as it orders (sorts, ranges, pick keys): its compare form, in
+ * byte order as memory sorts. Text and enum columns are `"C"` already; a
+ * crossRef column has the database collation, so it is ordered under `"C"`.
+ */
+export function columnOrderExpr(
+  sql: Sql | TransactionSql,
+  table: TypeTable,
+  column: TypedColumn,
+  alias?: string
+): Fragment {
+  const e = fieldExprSql(table, column.field, columnAs(column.kind), alias);
+  return sql.unsafe(column.kind === 'crossRef' ? `(${e} COLLATE "C")` : e);
+}
+
+/** {@link fieldExprSql} as a fragment. */
+export function fieldExpr(
+  sql: Sql | TransactionSql,
+  table: TypeTable,
+  field: string,
+  as: FieldAs,
+  alias?: string
+): Fragment {
+  return sql.unsafe(fieldExprSql(table, field, as, alias));
+}
 
 /** A field name as an inlined SQL literal: `'o''neil'`. */
 export function fieldLit(sql: Sql | TransactionSql, name: string): Fragment {
@@ -182,45 +332,50 @@ export function fieldLit(sql: Sql | TransactionSql, name: string): Fragment {
 export function bodyText(
   sql: Sql | TransactionSql,
   path: readonly string[],
-  alias?: string
+  alias?: string,
+  jsonb?: JsonbColumn
 ): Fragment {
-  return sql.unsafe(textSql(path, alias));
+  return sql.unsafe(pathSql(path, 'text', alias, jsonb));
 }
 
 /** `(body -> 'a' ->> 'b')` uncollated, for ILIKE, which a "C" collation would not case-fold. */
 export function bodyRawText(
   sql: Sql | TransactionSql,
   path: readonly string[],
-  alias?: string
+  alias?: string,
+  jsonb?: JsonbColumn
 ): Fragment {
-  return sql.unsafe(rawTextSql(path, alias));
+  return sql.unsafe(pathSql(path, 'rawText', alias, jsonb));
 }
 
 /** `(body -> 'a' -> 'b')`: the leaf stays jsonb. */
 export function bodyJson(
   sql: Sql | TransactionSql,
   path: readonly string[],
-  alias?: string
+  alias?: string,
+  jsonb?: JsonbColumn
 ): Fragment {
-  return sql.unsafe(`(${jsonSql(path, alias)})`);
+  return sql.unsafe(pathSql(path, 'json', alias, jsonb));
 }
 
 /** `substrate_num(body -> …)`: the number, or NULL for any other jsonb. */
 export function bodyNum(
   sql: Sql | TransactionSql,
   path: readonly string[],
-  alias?: string
+  alias?: string,
+  jsonb?: JsonbColumn
 ): Fragment {
-  return sql.unsafe(numSql(path, alias));
+  return sql.unsafe(pathSql(path, 'number', alias, jsonb));
 }
 
 /** `substrate_ts(body -> …)`: the instant, or NULL for anything but an ISO date or date-time string. */
 export function bodyTs(
   sql: Sql | TransactionSql,
   path: readonly string[],
-  alias?: string
+  alias?: string,
+  jsonb?: JsonbColumn
 ): Fragment {
-  return sql.unsafe(tsSql(path, alias));
+  return sql.unsafe(pathSql(path, 'date', alias, jsonb));
 }
 
 /** The DDL text of the expression the compiler emits for a top-level field (qualified by `alias`, if given). */
@@ -229,11 +384,7 @@ export function indexExpressionSql(
   field: string,
   alias?: string
 ): string {
-  return kind === 'text'
-    ? textSql([field], alias)
-    : kind === 'number'
-      ? numSql([field], alias)
-      : tsSql([field], alias);
+  return pathSql([field], kind, alias);
 }
 
 /**

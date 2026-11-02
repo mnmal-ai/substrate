@@ -5,7 +5,7 @@
  * here refuses anything; it only describes.
  */
 
-import { sharedPicks, windowGroupBy } from '@mnmal-ai/substrate-filter';
+import { forEachWalkHop, sharedPicks, windowGroupBy } from '@mnmal-ai/substrate-filter';
 import type {
   FieldDef,
   IndexPlan,
@@ -69,84 +69,51 @@ export function walkSites(
   naturalOrder?: (type: string) => OrderedBy
 ): WalkSite[] {
   const out: WalkSite[] = [];
-  const site = (node: Record<string, unknown>, from: string, path: string[]): WalkSite => {
+  forEachWalkHop(entry, seed, ({ kind, node, path, selection }, from) => {
     const far = resolve(node, from, path);
     const s: WalkSite = { path, node, far, wheres: [] };
     // Validation proved `in` is '<ns>/<Type>.<field>' with no dot in the type.
     if (typeof node.in === 'string') s.crossRef = node.in.slice(node.in.indexOf('.') + 1);
     out.push(s);
-    return s;
-  };
-  const addWhere = (s: WalkSite, where: unknown, path: string[]) => {
-    if (where === undefined) return;
-    s.wheres.push({ where, path });
-    inWhere(where, s.far, path);
-  };
-
-  const inWhere = (v: unknown, type: string, path: string[]): void => {
-    if (Array.isArray(v)) {
-      v.forEach((c, i) => {
-        inWhere(c, type, [...path, String(i)]);
-      });
-      return;
-    }
-    if (!isObj(v)) return;
-    for (const [k, child] of Object.entries(v)) {
-      const at = [...path, k];
-      if (k === '_walk' && isObj(child)) {
-        const s = site(child, type, at);
-        const pick = isObj(child.pick) ? Object.entries(child.pick)[0] : undefined;
-        if (pick !== undefined) {
-          const [fn, field] = pick;
-          s.order = {
-            by: [[String(field), fn === 'min' ? 'asc' : 'desc']],
-            path: [...at, 'pick'],
-            kind: 'order'
-          };
-        }
-        addWhere(s, child.where, [...at, 'where']);
-      } else if (k === '_agg' && isObj(child)) {
-        agg(child, type, at);
-      } else inWhere(child, type, at);
-    }
-  };
-
-  const agg = (node: Record<string, unknown>, from: string, path: string[]) => {
-    const s = site(node, from, path);
-    if (isObj(node.latest)) {
-      s.order = { by: [[String(node.latest.by), 'desc']], path: [...path, 'latest'], kind: 'agg' };
-    } else if (typeof node.min === 'string' || typeof node.max === 'string') {
-      const fn = typeof node.min === 'string' ? 'min' : 'max';
-      const by: Order = [[String(node[fn]), fn === 'min' ? 'asc' : 'desc']];
-      s.order = { by, path: [...path, fn], kind: 'agg' };
-    } else {
-      s.agg = [...path, ['count', 'avg', 'sum'].find((k) => k in node) ?? 'count'];
-    }
-    addWhere(s, node.where, [...path, 'where']);
-  };
-
-  const inFields = (fields: unknown, type: string, path: string[]): void => {
-    if (!isObj(fields)) return;
-    for (const [name, sel] of Object.entries(fields)) {
-      const at = [...path, name];
-      if (name === '_agg' && isObj(sel)) {
-        for (const [n, a] of Object.entries(sel)) if (isObj(a)) agg(a, type, [...at, n]);
-      } else if (isObj(sel) && isObj(sel._walk)) {
-        const wp = [...at, '_walk'];
-        const s = site(sel._walk, type, wp);
-        let by = orderOf(sel.orderBy);
-        if (by.length === 0 && naturalOrder !== undefined) by = orderOf([naturalOrder(s.far)]);
-        if (by.length > 0) s.order = { by, path: [...at, 'orderBy'], kind: 'order', exact: true };
-        addWhere(s, sel._walk.where, [...wp, 'where']);
-        addWhere(s, sel.where, [...at, 'where']);
-        inFields(sel.fields, s.far, [...at, 'fields']);
+    const addWhere = (where: unknown, at: string[]) => {
+      if (where !== undefined) s.wheres.push({ where, path: at });
+    };
+    if (kind === 'walk') {
+      const pick = isObj(node.pick) ? Object.entries(node.pick)[0] : undefined;
+      if (pick !== undefined) {
+        const [fn, field] = pick;
+        s.order = {
+          by: [[String(field), fn === 'min' ? 'asc' : 'desc']],
+          path: [...path, 'pick'],
+          kind: 'order'
+        };
       }
+      addWhere(node.where, [...path, 'where']);
+    } else if (kind === 'agg') {
+      if (isObj(node.latest)) {
+        s.order = {
+          by: [[String(node.latest.by), 'desc']],
+          path: [...path, 'latest'],
+          kind: 'agg'
+        };
+      } else if (typeof node.min === 'string' || typeof node.max === 'string') {
+        const fn = typeof node.min === 'string' ? 'min' : 'max';
+        const by: Order = [[String(node[fn]), fn === 'min' ? 'asc' : 'desc']];
+        s.order = { by, path: [...path, fn], kind: 'agg' };
+      } else {
+        s.agg = [...path, ['count', 'avg', 'sum'].find((k) => k in node) ?? 'count'];
+      }
+      addWhere(node.where, [...path, 'where']);
+    } else if (selection !== undefined) {
+      const { sel, path: at } = selection;
+      let by = orderOf(sel.orderBy);
+      if (by.length === 0 && naturalOrder !== undefined) by = orderOf([naturalOrder(far)]);
+      if (by.length > 0) s.order = { by, path: [...at, 'orderBy'], kind: 'order', exact: true };
+      addWhere(node.where, [...path, 'where']);
+      addWhere(sel.where, [...at, 'where']);
     }
-  };
-
-  const params = isObj(entry.params) ? entry.params : {};
-  inWhere(params.where, seed, ['where']);
-  inFields(entry.fields, seed, ['fields']);
+    return far;
+  });
   return out;
 }
 

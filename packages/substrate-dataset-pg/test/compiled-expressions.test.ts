@@ -20,6 +20,7 @@ import {
   indexExpressionSql
 } from '../src/pg-sql/primitives.js';
 import { buildWhere } from '../src/pg-sql.js';
+import { rowsTypeTable } from '../src/type-table.js';
 
 const sql = postgres('postgres://nobody@127.0.0.1:1/none');
 afterAll(() => sql.end());
@@ -55,7 +56,7 @@ const compile = (where: WhereClause): string =>
       sql,
       where,
       (f) => casts[f] ?? null,
-      () => undefined
+      rowsTypeTable('ns', 'T', () => undefined)
     ) as unknown as QueryParts
   );
 

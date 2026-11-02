@@ -169,6 +169,7 @@ function readBack(kind: ColumnKind, v: string | number | boolean): unknown {
 /** A column value as pg returns it, in the JSON form a row carries: dates as `toISOString()`. */
 function canonical(kind: ColumnKind, value: unknown): unknown {
   if (kind !== 'date') return value;
-  // TZ-dependent until Task 10 projects date columns as UTC text: an LMT offset reads as Invalid Date.
+  // `buildRowProjection` gives UTC text (`utcTextSql`), which reads the same in any session TimeZone;
+  // a Date from a plain SELECT is TZ-dependent, as pg prints an old instant with an LMT offset.
   return (value instanceof Date ? value : new Date(String(value))).toISOString();
 }

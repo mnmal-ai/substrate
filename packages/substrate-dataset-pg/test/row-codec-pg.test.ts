@@ -8,6 +8,7 @@ import { field } from '@mnmal-ai/substrate-sdk';
 import type { FieldDef } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { buildRowProjection } from '../src/pg-sql/projection.js';
 import { decodeRow, encodeRow, RAW_KEY } from '../src/row-codec.js';
 import { ensureTypeTable, loadTypeTable, type TypeTable } from '../src/type-table.js';
 
@@ -75,6 +76,10 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('row codec through a type table', () =
   });
 
   afterAll(async () => {
+    // Drop this run's type table and catalog rows so repeated runs leave nothing behind.
+    if (table !== undefined) await sql.unsafe(`DROP TABLE IF EXISTS ${table.from}`);
+    await sql`DELETE FROM substrate_type_fields WHERE namespace = ${NS}`;
+    await sql`DELETE FROM substrate_type_tables WHERE namespace = ${NS}`;
     await sql.end({ timeout: 5 });
   });
 
@@ -134,6 +139,25 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('row codec through a type table', () =
     const [pending] = await sql<Array<{ later: string }>>`
       SELECT extra ->> 'later' AS later FROM ${sql(tableName)} WHERE id = 'r7'`;
     expect(pending?.later).toBe('soon');
+  });
+
+  it('rows read through buildRowProjection decode the same in a non-UTC session', async () => {
+    // pg prints an 1850 instant with an LMT offset in this zone, which postgres.js misreads.
+    await write('tz0', { title: 'lmt', due: '1850-06-01T12:00:00.000Z' });
+    const reserved = await sql.reserve();
+    try {
+      await reserved`SET TIME ZONE 'America/New_York'`;
+      const records = await reserved<Array<Record<string, unknown>>>`
+        SELECT r.id, ${buildRowProjection(reserved, table, undefined)}
+        FROM ${reserved(tableName)} r WHERE r.id LIKE 'r%' OR r.id = 'tz0' ORDER BY r.id`;
+      expect(records.map((r) => decodeRow(table, r))).toEqual([
+        ...ROWS.map((r) => expected(table, r)),
+        { title: 'lmt', due: '1850-06-01T12:00:00.000Z' }
+      ]);
+    } finally {
+      await reserved`RESET TIME ZONE`;
+      reserved.release();
+    }
   });
 
   it('dates keep the shared grammar instant at microseconds, whatever the process TZ', async () => {

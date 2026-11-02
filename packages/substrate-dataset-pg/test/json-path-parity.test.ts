@@ -17,6 +17,7 @@ import {
 } from '../src/index.js';
 import { generatedIdentifier } from '../src/migrate.js';
 import { buildWhere } from '../src/pg-sql.js';
+import { rowsTypeTable } from '../src/type-table.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const PARTITIONED = process.env.SUBSTRATE_STORAGE_LAYOUT === 'partitioned';
@@ -190,7 +191,7 @@ describe.skipIf(!POSTGRES_URL)('json path parity', () => {
           tx,
           where,
           () => null,
-          () => undefined
+          rowsTypeTable(NS, 'J', () => undefined)
         );
         return tx`EXPLAIN SELECT id FROM rows
                   WHERE namespace = ${NS} AND type = 'J' AND deleted_at IS NULL AND ${frag!}`;

@@ -6,44 +6,83 @@
 import { randomUUID } from 'node:crypto';
 import type { ActorIdentity, ReadParams, RowMetadata } from '@mnmal-ai/substrate-types';
 import type { Sql, TransactionSql } from 'postgres';
-import { type Fragment, NON_BODY_FIELD_KEYS } from './primitives.js';
+import { RAW_KEY } from '../row-codec.js';
+import type { TypeTable } from '../type-table.js';
+import {
+  columnSql,
+  type Fragment,
+  NON_BODY_FIELD_KEYS,
+  qualifier,
+  utcTextSql
+} from './primitives.js';
 
 /**
- * Returns the body SELECT expression for a read.
+ * The SELECT items carrying a read's row, `walk` (its walk selections, a jsonb
+ * object) merged in. Metadata columns are named alike in every layout, so the
+ * caller selects those.
  *
+ * On `rows`, `<body> AS body`:
  *   - `fields === undefined` → the full body.
  *   - `fields` supplied → `jsonb_build_object(...)` over `id` plus the
  *     requested top-level body keys; one the row lacks is the absent marker. `id` is
  *     always included because `materialize()` reads `body.id` to preserve
  *     numeric ids.
  *
+ * On a type table, for `decodeRow`: each column (of a requested field, when
+ * `fields` is given), `orphaned` ones included (F35), a date column as UTC
+ * text; then `extra AS extra`, whole, or its requested keys with `id` and
+ * `$raw` kept. `walk` rides in `extra`, which `decodeRow` copies to the row.
+ *
  * Keys are bound as parameters, never concatenated.
  */
-export function buildBodyProjection(
+export function buildRowProjection(
   sql: Sql | TransactionSql,
-  fields: ReadParams['fields']
+  table: TypeTable,
+  fields: ReadParams['fields'],
+  alias = 'r',
+  walk: Fragment | null = null
 ): Fragment {
-  // The body is authoritative: every write path sets a promoted column from
-  // the same value it writes to the body, so a read never needs the column.
-  if (fields === undefined) return sql`r.body`;
+  const q = qualifier(alias);
   // Force-include `id`; filter out row-metadata-style keys that don't live
   // in body. Use a Set for stable de-dup if the caller passed `id` explicitly.
-  const bodyKeys = new Set<string>(['id']);
-  for (const key of Object.keys(fields)) {
-    if (NON_BODY_FIELD_KEYS.has(key)) continue;
-    bodyKeys.add(key);
+  const keys = new Set<string>(['id']);
+  for (const key of Object.keys(fields ?? {})) {
+    if (!NON_BODY_FIELD_KEYS.has(key)) keys.add(key);
   }
-  // A key the row lacks projects as the marker, which `materialize` drops. A stored
-  // json `null` comes through as itself. One extraction per key: testing presence in
-  // SQL (`->` twice, or `?`) detoasts a large body once more per access, which
-  // tripled the cost of a projected read on a TOASTed body.
-  return buildObject(
-    sql,
-    Array.from(
-      bodyKeys,
-      (k) => sql`${k}::text, COALESCE(r.body->${k}, ${sql.unsafe(ABSENT_LITERAL)})`
-    )
-  );
+  const merged = (doc: Fragment): Fragment => (walk === null ? doc : sql`(${doc} || ${walk})`);
+  if (table.jsonb === 'body') {
+    // The body is authoritative: every write path sets a promoted column from
+    // the same value it writes to the body, so a read never needs the column.
+    if (fields === undefined) return sql`${merged(sql.unsafe(`${q}body`))} AS body`;
+    // A key the row lacks projects as the marker, which `materialize` drops. A stored
+    // json `null` comes through as itself. One extraction per key: testing presence in
+    // SQL (`->` twice, or `?`) detoasts a large body once more per access, which
+    // tripled the cost of a projected read on a TOASTed body.
+    const body = buildObject(
+      sql,
+      Array.from(
+        keys,
+        (k) =>
+          sql`${k}::text, COALESCE(${sql.unsafe(`${q}body`)}->${k}, ${sql.unsafe(ABSENT_LITERAL)})`
+      )
+    );
+    return sql`${merged(body)} AS body`;
+  }
+  const columns = table
+    .columns()
+    .filter((c) => fields === undefined || Object.hasOwn(fields, c.field))
+    .map((c) => {
+      const col = columnSql(c, alias);
+      // `decodeRow` reads a date column's text the same in any session TimeZone.
+      return c.kind === 'date' ? `${utcTextSql(col, 'US')} AS ${c.column}` : col;
+    });
+  // One pass over `extra` (it may be TOASTed), not one extraction per key.
+  const extra: Fragment =
+    fields === undefined
+      ? sql.unsafe(`${q}extra`)
+      : sql`COALESCE((SELECT jsonb_object_agg(e.key, e.value) FROM jsonb_each(${sql.unsafe(`${q}extra`)}) e WHERE e.key = ANY(${[...keys, RAW_KEY]}::text[])), '{}'::jsonb)`;
+  const head = columns.length === 0 ? '' : `${columns.join(', ')}, `;
+  return sql`${sql.unsafe(head)}${merged(extra)} AS extra`;
 }
 
 /**
@@ -56,7 +95,7 @@ export function buildBodyProjection(
 const ABSENT_KEY = `$absent:${randomUUID()}`;
 const ABSENT_LITERAL = `'{"${ABSENT_KEY}":1}'::jsonb`;
 
-/** True for the value `buildBodyProjection` gives a key the row lacks. */
+/** True for the value `buildRowProjection` gives a key the row lacks on `rows`. */
 export function isAbsentMarker(v: unknown): boolean {
   return typeof v === 'object' && v !== null && Object.hasOwn(v, ABSENT_KEY);
 }

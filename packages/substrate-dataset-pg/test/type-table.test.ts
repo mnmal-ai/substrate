@@ -295,7 +295,9 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('tables layout', () => {
     const text = { type: 'text', collation: 'C' };
     expect(cols[columnName('title')]).toEqual(text);
     expect(cols[columnName('status')]).toEqual(text);
-    expect(cols[columnName('ref')]).toEqual(text);
+    // A crossRef column has `id`'s collation, so a walk joins the two bare.
+    expect(cols[columnName('ref')]).toEqual(cols.id);
+    expect(cols.id?.collation).not.toBe('C');
     expect(cols[columnName('price')]).toEqual({ type: 'double precision', collation: null });
     expect(cols[columnName('observedAt')]).toEqual({
       type: 'timestamp with time zone',
