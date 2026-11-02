@@ -491,6 +491,9 @@ async function composeInner(
   const advisorIntervalMs = opts.advisor?.intervalMs ?? 0;
   const shapeRecorder = advisorIntervalMs > 0 ? new ShapeRecorder() : undefined;
   if (shapeRecorder !== undefined) engineOpts.shapeRecorder = shapeRecorder;
+  engineOpts.committedWritesHooks = coordinatorPlugins.flatMap((p) =>
+    p.onCommittedWrites !== undefined ? [{ plugin: p.name, hook: p.onCommittedWrites }] : []
+  );
   const engine = new Engine(engineOpts);
   engineForStats = engine;
 

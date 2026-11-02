@@ -9,6 +9,7 @@ import {
   type AfterTxWork,
   type BridgeFrame,
   type BridgeRegistry,
+  type CommittedWritesHook,
   coversNamespace,
   type Dataset,
   type DatasetRegistry,
@@ -140,6 +141,13 @@ export interface EngineOptions {
    * the resolver took. For the index advisor; absent means no recording.
    */
   shapeRecorder?: Pick<ShapeRecorder, 'observe'>;
+  /**
+   * Coordinators' `onCommittedWrites` hooks, in registration order. Called
+   * once per `(namespace, type, operation)` per committed transaction, as
+   * that transaction commits and never awaited by the mutate; a failure is a
+   * `/health` warning.
+   */
+  committedWritesHooks?: ReadonlyArray<{ plugin: string; hook: CommittedWritesHook }>;
   /**
    * Idempotency dedup (§5.13). Absent → no dedup; `FrameEntry.idempotencyKey`
    * is ignored on mutate (queries ignore it unconditionally). Present → the

@@ -31,6 +31,7 @@
 
 import { getExtensionOperator, listExtensionOperators } from '@mnmal-ai/substrate-filter';
 import type {
+  ActorIdentity,
   AfterTxWork,
   AutoCrudVerb,
   BatchResolver,
@@ -77,6 +78,7 @@ import {
 import { readShapeOf, walkShapesOf } from '../advisor/shape-recorder.js';
 import { classifyWalkService, type WalkSite, walkSites } from '../advisor/walk-service.js';
 import { applyLostNamespace } from '../apply-lost-namespace.js';
+import { actorOf, CommittedWritesQueue } from './committed-writes.js';
 
 /** Local query keys dispatched at once; the rest wait for a free slot. */
 const QUERY_KEY_CONCURRENCY = 16;
@@ -305,6 +307,7 @@ export class Engine {
     invalidateSchemaCaches: (ns) => this.invalidateSchemaCaches(ns),
     metric: (name, payload) => this.#metric(name, payload)
   };
+  readonly #committed: CommittedWritesQueue;
   readonly #shapeRecorder: EngineOptions['shapeRecorder'];
   readonly #idempotency: { store: IdempotencyStore; defaultTtlMs: number } | undefined;
   /**
@@ -342,6 +345,7 @@ export class Engine {
     this.#edges = opts.edges;
     this.#metric = opts.metric ?? ((): void => {});
     this.#onResolve = opts.onResolve;
+    this.#committed = new CommittedWritesQueue(opts.committedWritesHooks ?? [], this.#metric);
     this.#shapeRecorder = opts.shapeRecorder;
     this.#idempotency =
       opts.idempotency !== undefined
@@ -969,6 +973,12 @@ export class Engine {
       writeBatch.push(event);
     };
 
+    // Hooks are told at each commit (the single-frame bucket, then each array
+    // key), so a later throw cannot lose an earlier commit. With none, no work.
+    const hooked = this.#committed.active;
+    const actor = hooked ? actorOf(identity) : null;
+    let announced = 0;
+
     await this.#dispatchSingleFrameLocal(
       envelope,
       input.frame,
@@ -979,6 +989,7 @@ export class Engine {
       onWrite,
       signal
     );
+    if (hooked) announced = this.#announceCommit(writeBatch, announced, actor);
 
     // Batched op-keys: one isolated tx per array (§5.13). Each array commits
     // or rolls back independently of every other op-key and of the single-
@@ -996,6 +1007,7 @@ export class Engine {
         onWrite,
         signal
       );
+      if (hooked) announced = this.#announceCommit(writeBatch, announced, actor);
     }
 
     await Promise.all(bridgePromises);
@@ -1008,6 +1020,16 @@ export class Engine {
     this.#subscribe.dispatchWrites(writeBatch);
 
     return this.#finaliseMutateEnvelope(envelope, keys, idempotencyResolution, callerKey);
+  }
+
+  /** Queue the hooks for the events a commit added past `from`; returns the new `from`. */
+  #announceCommit(
+    writeBatch: readonly WriteEvent[],
+    from: number,
+    actor: ActorIdentity | null
+  ): number {
+    this.#committed.queue(writeBatch.slice(from), actor);
+    return writeBatch.length;
   }
 
   /**
@@ -2463,6 +2485,28 @@ export class Engine {
    */
   async subscribe(input: SubscribeInput): Promise<SubscriptionHandle> {
     return this.#subscribe.subscribe(input);
+  }
+
+  /**
+   * Announce writes committed outside `mutate` (a server-internal writer): they
+   * reach subscribers, then the coordinators' `onCommittedWrites` hooks, as a
+   * commit through `mutate` would. This is not a transaction and checks
+   * nothing: the caller guarantees `events` are already committed.
+   */
+  announceWrites(events: readonly WriteEvent[], actor: ActorIdentity | null): Promise<void> {
+    this.#subscribe.dispatchWrites(events);
+    this.#committed.queue(events, actor);
+    return Promise.resolve();
+  }
+
+  /** Resolves once every post-write hook call queued so far has finished. */
+  hooksSettled(): Promise<void> {
+    return this.#committed.settled();
+  }
+
+  /** The last failure per plugin whose post-write hook has not succeeded since. */
+  postWriteWarnings(): string[] {
+    return this.#committed.warnings();
   }
 
   /**
