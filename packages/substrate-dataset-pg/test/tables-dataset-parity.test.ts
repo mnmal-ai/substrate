@@ -20,7 +20,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PgDataset } from '../src/index.js';
 import { applyPatch, encodeRow } from '../src/row-codec.js';
 import { loadTypeTable, type TypeTable } from '../src/type-table.js';
-import { inputCte, mergeAssignments, setList } from '../src/write-rows.js';
+import { inputCte, mergeAssignments, setList, writeRowsStatement } from '../src/write-rows.js';
 import { clearNamespace, dropNamespace, TABLES } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
@@ -486,6 +486,28 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('PgDataset on type tables vs memory', 
       { id: 'k1', kid: 'abc' },
       { id: 'k2', kid: 'def' }
     ]);
+  });
+
+  it('a writer whose cached table predates a column declared on the empty table still lands a readable value', async () => {
+    // Writer W cached Late's table before `late` was declared. Another process
+    // declares it on the still-empty table; before W's notification lands, W
+    // writes `late` through its stale table, as its write path does: encoded
+    // against that table (so `late` goes to `extra`) by the shared statement.
+    defs.Late = { fields: { a: field.string() } };
+    await pg.ensureTypeStorage('Late');
+    const stale = await table('Late');
+    defs.Late = { fields: { a: field.string(), late: field.string() } };
+    await pg.ensureTypeStorage('Late');
+    await sql`${writeRowsStatement(
+      sql,
+      stale,
+      [{ ...encodeRow(stale, { id: 'w1', late: 'x' }), id: 'w1' }],
+      { insertOnly: false, visibleOrder: false, metadata: 'stamp' }
+    )}`;
+    expect((await pg.read('Late', {})).rows.map(strip)).toEqual([{ id: 'w1', late: 'x' }]);
+    expect((await pg.read('Late', { where: { late: { eq: 'x' } } })).rows.map((r) => r.id)).toEqual(
+      ['w1']
+    );
   });
 
   it('storage reports refuse on tables rather than report the store as legacy', async () => {

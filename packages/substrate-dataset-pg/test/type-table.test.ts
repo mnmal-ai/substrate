@@ -368,15 +368,6 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('tables layout', () => {
     });
   });
 
-  it('a field declared on a table that has rows starts promoting, since rows may hold it in extra', async () => {
-    const type = freshType();
-    await ensure(type, { title: field.string() });
-    await sql.unsafe(`INSERT INTO "${await tableOf(type)}" (id, extra) VALUES ('a', '{"n": 2}')`);
-    const change = await ensure(type, { title: field.string(), n: field.number() });
-    expect(change).toEqual({ created: false, added: ['n'], pending: [], orphaned: [] });
-    expect((await loadTypeTable(sql, NS, type))?.column('n')?.state).toBe('promoting');
-  });
-
   it('createOnly creates a missing table, and changes nothing on an existing one', async () => {
     const type = freshType();
     const only = (fields: Record<string, FieldDef>) =>
@@ -391,10 +382,11 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('tables layout', () => {
     expect((await only({})).created).toBe(true);
     await ensure(type, { title: field.string() });
     expect(await only({})).toEqual({ created: false, added: [], pending: [], orphaned: [] });
-    expect((await loadTypeTable(sql, NS, type))?.column('title')?.state).toBe('column');
+    // Added after the CREATE, so promoting; createOnly left it so, not orphaned.
+    expect((await loadTypeTable(sql, NS, type))?.column('title')?.state).toBe('promoting');
   });
 
-  it("newFields:'column' adds the column", async () => {
+  it("newFields:'column' adds the column, recorded promoting even on an empty table", async () => {
     const type = freshType();
     await ensure(type, { title: field.string() });
     const change = await ensure(type, { title: field.string(), n: field.number() });
@@ -403,7 +395,17 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('tables layout', () => {
       type: 'double precision',
       collation: null
     });
-    expect((await loadTypeTable(sql, NS, type))?.column('n')?.state).toBe('column');
+    // A writer whose cached table predates the column puts `n` in `extra`;
+    // promoting keeps it readable until the sweep (Task 13).
+    expect((await loadTypeTable(sql, NS, type))?.column('n')?.state).toBe('promoting');
+  });
+
+  it('a field declared on a table that has rows starts promoting too', async () => {
+    const type = freshType();
+    await ensure(type, { title: field.string() });
+    await sql.unsafe(`INSERT INTO "${await tableOf(type)}" (id, extra) VALUES ('a', '{"n": 2}')`);
+    await ensure(type, { title: field.string(), n: field.number() });
+    expect((await loadTypeTable(sql, NS, type))?.column('n')?.state).toBe('promoting');
   });
 
   it('held ACCESS SHARE lock: ADD COLUMN gives up within 4 s and records pending', async () => {

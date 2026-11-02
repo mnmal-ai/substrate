@@ -193,7 +193,7 @@ export class FieldKindChangedError extends Error {
 
 export interface TypeTableChange {
   created: boolean;
-  /** Fields that got a column: `column`, or `promoting` on a table that already has rows. */
+  /** Fields that got a column: `column` in a CREATE, `promoting` when added to an existing table. */
   added: string[];
   /** Fields newly recorded `pending`. */
   pending: string[];
@@ -265,19 +265,10 @@ async function ensureIn(tx: TransactionSql, args: EnsureTypeTableArgs): Promise<
   } else if (args.createOnly !== true) {
     const table = ident(existing.table_name);
     const catalog = new Map((await catalogOf(tx, namespace, type)).map((r) => [r.field, r]));
-    // A new column on a table with rows starts `promoting`: their values for it
-    // may sit in `extra` (written before it was declared, or by a process whose
-    // cached table predates it), which `extraWins` keeps readable until the sweep.
-    let populated: boolean | undefined;
-    const hasRows = async (): Promise<boolean> => {
-      if (populated === undefined) {
-        const [r] = await tx.unsafe<Array<{ e: boolean }>>(
-          `SELECT EXISTS (SELECT 1 FROM ${table}) AS e`
-        );
-        populated = r?.e === true;
-      }
-      return populated;
-    };
+    // A column added to an existing table starts `promoting`, empty or not: a
+    // writer whose cached table predates it puts the field's value in `extra`,
+    // which `extraWins` keeps readable until the sweep moves it (Task 13). Only
+    // a table's first CREATE declares fields `column` outright.
     for (const [field, { kind, vocab }] of declared) {
       const row = catalog.get(field);
       if (row === undefined) {
@@ -288,8 +279,7 @@ async function ensureIn(tx: TransactionSql, args: EnsureTypeTableArgs): Promise<
         ];
         const added =
           newFields === 'column' && (await ddl(tx, `ALTER TABLE ${table} ${clauses.join(', ')}`));
-        const state = !added ? 'pending' : (await hasRows()) ? 'promoting' : 'column';
-        await record(field, kind, state, vocab);
+        await record(field, kind, added ? 'promoting' : 'pending', vocab);
         (added ? change.added : change.pending).push(field);
         continue;
       }
