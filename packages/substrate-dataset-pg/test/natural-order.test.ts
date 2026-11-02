@@ -14,6 +14,7 @@ import postgres from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { runMigrations } from '../src/migrate.js';
 import { PgDataset } from '../src/pg-dataset.js';
+import { clearNamespace } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const NS = 'test_natural_order';
@@ -66,13 +67,13 @@ describe.skipIf(!POSTGRES_URL)('natural order (pg)', () => {
   });
 
   beforeEach(async () => {
-    await sql`DELETE FROM rows WHERE namespace = ${NS}`;
+    await clearNamespace(sql, NS);
     statements.length = 0;
   });
 
   afterAll(async () => {
     if (!POSTGRES_URL) return;
-    await sql`DELETE FROM rows WHERE namespace = ${NS}`;
+    await clearNamespace(sql, NS);
     await sql.end();
   });
 

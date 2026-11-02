@@ -18,6 +18,7 @@ import postgres, { type Sql } from 'postgres';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runMigrations } from '../src/index.js';
 import { SYSTEM_KEY_PARTITION } from '../src/migrations/0001p_partitioned_baseline.js';
+import { TABLES } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const PARTITIONED = process.env.SUBSTRATE_STORAGE_LAYOUT === 'partitioned';
@@ -33,7 +34,8 @@ const REAL_CONSTRAINT = 'rows_created_by_kind_check';
 const REAL_INDEX = PARTITIONED ? 'substrate_key_live_kid_uniq' : 'rows_ns_type_created_at_idx';
 const INDEX_TABLE = PARTITIONED ? SYSTEM_KEY_PARTITION : 'rows';
 
-describe.skipIf(!POSTGRES_URL)('catalog lookups are scoped, proven by decoys', () => {
+// Its decoys are planted against `rows` and its indexes, which `tables` lacks (Task 12).
+describe.skipIf(!POSTGRES_URL || TABLES)('catalog lookups are scoped, proven by decoys', () => {
   let sql: Sql;
   /**
    * The schema this suite's own migrations land in. Read from the connection

@@ -11,6 +11,7 @@ import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { PgDataset, type StorageLayout, typeIndexesOf } from '../src/index.js';
 import { generatedIdentifier, runMigrations } from '../src/migrate.js';
+import { TABLES } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const LAYOUT = (process.env.SUBSTRATE_STORAGE_LAYOUT ?? 'legacy') as StorageLayout;
@@ -50,7 +51,8 @@ async function typeWithStorage(
   return ds;
 }
 
-describe.skipIf(!POSTGRES_URL)('typeStats', () => {
+// typeStats reads `rows` or its partitions; a type table's is Task 12's.
+describe.skipIf(!POSTGRES_URL || TABLES)('typeStats', () => {
   it('reports live rows and the type indexes, flagging the engine-owned ones', async () => {
     const ns = `ts_${hex()}`;
     // Rows first, so the partial index is built over them and counts them

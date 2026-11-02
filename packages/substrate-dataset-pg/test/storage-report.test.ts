@@ -11,6 +11,7 @@ import { PgDataset } from '../src/index.js';
 import { heldIndexes, isEngineOwned } from '../src/index-reconciler.js';
 import { generatedIdentifier } from '../src/migrate.js';
 import { LEGACY_PARTIAL_INDEX_LIMIT } from '../src/pg-dataset.js';
+import { TABLES } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const LAYOUT = process.env.SUBSTRATE_STORAGE_LAYOUT ?? 'legacy';
@@ -57,7 +58,8 @@ const indexed: Record<string, FieldDef> = {
   kid: { kind: 'scalar', type: 'string', indexed: true }
 };
 
-describe.skipIf(!POSTGRES_URL)('describeStorage', () => {
+// Indexes on type tables are Task 12's; the `rows` they reconcile does not exist on `tables`.
+describe.skipIf(!POSTGRES_URL || TABLES)('describeStorage', () => {
   it('reports the layout, the partition and a valid declared index', async () => {
     const ns = freshNs();
     const ds = dataset(ns, { current: indexed });
@@ -83,7 +85,8 @@ describe.skipIf(!POSTGRES_URL)('describeStorage', () => {
   });
 });
 
-describe.skipIf(!POSTGRES_URL)('storageReport', () => {
+// Indexes on type tables are Task 12's; the `rows` they reconcile does not exist on `tables`.
+describe.skipIf(!POSTGRES_URL || TABLES)('storageReport', () => {
   it('notes an engine index that is no longer declared as info, and keeps it', async () => {
     const ns = freshNs();
     const defs = { current: indexed };

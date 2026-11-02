@@ -158,6 +158,20 @@ describe('a type table compiles against its columns', () => {
     expect(where({ title: { contains: 'a' } })).toContain(`(f_title COLLATE "default") ILIKE $`);
   });
 
+  it('a null check stays the bare column test, with $raw as a filter (ruling A)', () => {
+    // `f_price IS NULL` first, so the column's index still serves it.
+    expect(where({ price: { eq: null } })).toBe(
+      `(((f_price IS NULL AND (extra -> '$raw' ? 'price') IS NOT TRUE)))`
+    );
+    expect(where({ price: { neq: null } })).toBe(
+      `(((f_price IS NOT NULL OR (extra -> '$raw' ? 'price') IS TRUE)))`
+    );
+    // A promoting field reads its JSON value, `$raw` overlaid.
+    expect(where({ qty: { eq: null } })).toMatch(
+      /^\(\(COALESCE\(extra -> '\$raw' -> 'qty', .*\) IS NULL\)\)$/
+    );
+  });
+
   it('promoting field → CASE WHEN extra ? key THEN extra cast ELSE column END (F13)', () => {
     expect(where({ status: { eq: 'open' } })).toContain(
       `CASE WHEN extra ? 'status' THEN ((extra ->> 'status') COLLATE "C") ELSE f_status END = $::text`
@@ -204,7 +218,7 @@ describe('every column kind and state', () => {
 
   it('a promoting number is numeric in both branches, a date compares as an instant', () => {
     expect(where({ qty: { gt: 1 } })).toContain(
-      `CASE WHEN extra ? 'qty' THEN substrate_num(extra -> 'qty') ELSE f_qty::numeric END > $`
+      `CASE WHEN extra ? 'qty' THEN substrate_num(extra -> 'qty') ELSE f_qty::text::numeric END > $`
     );
     expect(where({ seenAt: { gte: '2026-01-01' } })).toContain(
       `CASE WHEN extra ? 'seenAt' THEN substrate_ts(extra -> 'seenAt') ELSE ${SEEN} END >= $::text::timestamptz`
@@ -229,9 +243,9 @@ describe('every column kind and state', () => {
         s
       )
     );
-    expect(text).toContain('sum(r.f_price::numeric)');
+    expect(text).toContain('sum(r.f_price::text::numeric)');
     expect(text).toContain(
-      `sum(CASE WHEN r.extra ? 'qty' THEN substrate_num(r.extra -> 'qty') ELSE r.f_qty::numeric END::numeric)`
+      `sum(CASE WHEN r.extra ? 'qty' THEN substrate_num(r.extra -> 'qty') ELSE r.f_qty::text::numeric END)`
     );
   });
 

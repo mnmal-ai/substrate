@@ -12,6 +12,7 @@ import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { type DiskGuard, makeDiskGuard } from '../src/disk-guard.js';
 import { PgDataset } from '../src/index.js';
+import { TABLES } from './_layout.js';
 
 const MB = 1024 * 1024;
 const fs = (freeMb: number) => async () => ({ bavail: BigInt(freeMb * 256), bsize: 4096n });
@@ -106,7 +107,8 @@ async function indexDef(name: string): Promise<string | undefined> {
 const described = async (ds: PgDataset, name: string) =>
   (await ds.describeStorage(TYPE)).indexes.find((i) => i.name === name);
 
-describe.skipIf(!POSTGRES_URL)('free-disk check before background index builds', () => {
+// Indexes on type tables are Task 12's; the `rows` they reconcile does not exist on `tables`.
+describe.skipIf(!POSTGRES_URL || TABLES)('free-disk check before background index builds', () => {
   it('leaves a refused build absent and pending, while unique builds and reads go on', async () => {
     const guard = switchGuard();
     guard.allow = false;

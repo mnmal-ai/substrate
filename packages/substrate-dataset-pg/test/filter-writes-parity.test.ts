@@ -22,6 +22,7 @@ import type {
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset, PgEdgesStore } from '../src/index.js';
+import { dropNamespacesLike, relationOf, TABLES } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const PARTITIONED = process.env.SUBSTRATE_TEST_LAYOUT === 'partitioned';
@@ -79,7 +80,7 @@ describe('updateMany / deleteMany: memory vs pg through Engine', () => {
     const like = `${PREFIX}%`;
     await sql`DELETE FROM short_ids WHERE namespace LIKE ${like}`;
     await sql`DELETE FROM edges WHERE from_ns LIKE ${like} OR to_ns LIKE ${like}`;
-    await sql`DELETE FROM rows WHERE namespace LIKE ${like}`;
+    await dropNamespacesLike(sql, PREFIX);
     await sql.end();
   });
 
@@ -580,9 +581,11 @@ describe('updateMany / deleteMany: memory vs pg through Engine', () => {
       try {
         await conn`BEGIN`;
         // Another writer moves i001 out of the filter and holds its row lock.
-        await conn`
-          UPDATE rows SET body = body || '{"status":"closed"}'::jsonb
-          WHERE namespace = ${s.ns} AND type = 'Item' AND id = 'i001'`;
+        const col = TABLES ? 'extra' : 'body';
+        await conn.unsafe(
+          `UPDATE ${await relationOf(conn, s.ns, 'Item')} SET ${col} = ${col} || '{"status":"closed"}'::jsonb
+           WHERE ${TABLES ? '' : `namespace = '${s.ns}' AND type = 'Item' AND `}id = 'i001'`
+        );
         const pending = s.mutate('updateManyItem', {
           where: { status: { eq: 'open' } },
           set: { title: 'swept' }

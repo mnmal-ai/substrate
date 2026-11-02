@@ -16,12 +16,17 @@
 import postgres, { type Sql } from 'postgres';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { MigrationChecksumDriftError, runMigrations } from '../src/index.js';
+import { TABLES } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const BASELINE =
   process.env.SUBSTRATE_STORAGE_LAYOUT === 'partitioned'
     ? '0001p_partitioned_baseline'
-    : '0001_baseline';
+    : TABLES
+      ? '0001t_tables_baseline'
+      : '0001_baseline';
+/** The table holding (or, on `tables`, registering) every row. */
+const ROWS = TABLES ? 'row_ids' : 'rows';
 
 describe.skipIf(!POSTGRES_URL)('runMigrations idempotency', () => {
   let sql: Sql;
@@ -42,14 +47,11 @@ describe.skipIf(!POSTGRES_URL)('runMigrations idempotency', () => {
     const tables = await sql<{ table_name: string }[]>`
       SELECT table_name FROM information_schema.tables
       WHERE table_schema = current_schema()
-        AND table_name IN ('rows', 'edges', 'idempotency', 'short_ids')
+        AND table_name IN (${ROWS}, 'edges', 'idempotency', 'short_ids')
     `;
-    expect(tables.map((t) => t.table_name).sort()).toEqual([
-      'edges',
-      'idempotency',
-      'rows',
-      'short_ids'
-    ]);
+    expect(tables.map((t) => t.table_name).sort()).toEqual(
+      ['edges', 'idempotency', ROWS, 'short_ids'].sort()
+    );
   });
 });
 

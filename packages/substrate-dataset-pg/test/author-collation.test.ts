@@ -11,6 +11,7 @@ import type { Dataset, Row, RowMetadata } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset, runMigrations } from '../src/index.js';
+import { clearNamespace } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 
@@ -33,13 +34,13 @@ describe.skipIf(!POSTGRES_URL)('author columns compare by byte order', () => {
   beforeAll(async () => {
     sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
     await runMigrations(sql);
-    await sql`DELETE FROM rows WHERE namespace = 'author_collation'`;
+    await clearNamespace(sql, 'author_collation');
     pg = new PgDataset({ namespace: 'author_collation', sql });
     await pg.write('Note', ROWS);
     await mem.write('Note', ROWS);
   });
   afterAll(async () => {
-    await sql`DELETE FROM rows WHERE namespace = 'author_collation'`;
+    await clearNamespace(sql, 'author_collation');
     await sql.end();
   });
 

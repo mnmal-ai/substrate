@@ -22,10 +22,12 @@ import type {
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset } from '../src/index.js';
+import { dropNamespace, TABLES } from './_layout.js';
 import { strip } from './_walk-helpers.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
-const PARTITIONED = process.env.SUBSTRATE_TEST_LAYOUT === 'partitioned';
+/** Walks run on the partitioned and `tables` layouts; legacy refuses them. */
+const WALK_LAYOUT = process.env.SUBSTRATE_TEST_LAYOUT === 'partitioned' || TABLES;
 const NS = `wform_${randomBytes(4).toString('hex')}`;
 
 const num: FieldDef = { kind: 'scalar', type: 'number' };
@@ -125,7 +127,7 @@ let onPg: Engine;
 let onMem: Engine;
 
 beforeAll(async () => {
-  if (!POSTGRES_URL || !PARTITIONED) return;
+  if (!POSTGRES_URL || !WALK_LAYOUT) return;
   sql = postgres(POSTGRES_URL, { onnotice: () => {} });
   const pg = new PgDataset({ namespace: NS, sql, fieldDefLookup, typeDefLookup: typeDef });
   for (const type of Object.keys(TYPES)) await pg.ensureTypeStorage(type);
@@ -134,14 +136,14 @@ beforeAll(async () => {
     await pg.write(type, rows as never);
     await mem.write(type, rows as never);
   }
-  await sql`ANALYZE rows`;
+  if (!TABLES) await sql`ANALYZE rows`;
   onPg = engineOver(pg);
   onMem = engineOver(mem);
 }, 120_000);
 
 afterAll(async () => {
-  if (!POSTGRES_URL || !PARTITIONED) return;
-  await sql`DELETE FROM rows WHERE namespace = ${NS}`;
+  if (!POSTGRES_URL || !WALK_LAYOUT) return;
+  await dropNamespace(sql, NS);
   await sql.end({ timeout: 5 });
 });
 
@@ -209,7 +211,7 @@ const WINDOW = {
   }
 };
 
-describe.skipIf(!POSTGRES_URL || !PARTITIONED)(
+describe.skipIf(!POSTGRES_URL || !WALK_LAYOUT)(
   'walk forms through the engine (pg = memory)',
   () => {
     it('a shared pick: per-hub on a count and a page of every seed, per-seed on a short page', async () => {

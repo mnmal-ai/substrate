@@ -5,6 +5,7 @@
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PgDataset, PgEdgesStore, runMigrations } from '../src/index.js';
+import { relationOf, rowsWhere, truncateRows } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const DAY_MS = 86_400_000;
@@ -22,7 +23,8 @@ describe.skipIf(!POSTGRES_URL)('purgeTombstonedRows / purgeTombstonedEdges', () 
   });
 
   beforeEach(async () => {
-    await sql`TRUNCATE TABLE rows, edges, short_ids`;
+    await truncateRows(sql);
+    await sql`TRUNCATE TABLE edges`;
   });
 
   it('purges only tombstones past the horizon, in every namespace', async () => {
@@ -33,10 +35,11 @@ describe.skipIf(!POSTGRES_URL)('purgeTombstonedRows / purgeTombstonedEdges', () 
       const ds = new PgDataset({ namespace: ns, sql });
       await ds.write('T', [{ id: 'live' }, { id: 'fresh' }, { id: 'old' }]);
       await ds.tombstone('T', ['fresh', 'old']);
-      await sql`
-        UPDATE rows SET deleted_at = ${new Date(now - 31 * DAY_MS)}
-        WHERE namespace = ${ns} AND id = 'old'
-      `;
+      // Both namespaces' `old` rows on `rows`, which the loop's second pass repeats.
+      await sql.unsafe(
+        `UPDATE ${await relationOf(sql, ns, 'T')} SET deleted_at = $1 WHERE id = 'old'`,
+        [new Date(now - 31 * DAY_MS)]
+      );
       for (const [id, at] of [
         ['live', undefined],
         ['fresh', new Date(now)],
@@ -56,7 +59,13 @@ describe.skipIf(!POSTGRES_URL)('purgeTombstonedRows / purgeTombstonedEdges', () 
     expect(await ds.purgeTombstonedRows({ olderThan })).toEqual({ deleted: 2 });
     expect(await edges.purgeTombstonedEdges({ olderThan })).toEqual({ deleted: 2 });
 
-    const rows = await sql`SELECT namespace, id FROM rows ORDER BY namespace, id`;
+    const rows = [];
+    for (const ns of ['ns_a', 'ns_b']) {
+      const ids = await sql.unsafe(
+        `SELECT id FROM ${await rowsWhere(sql, ns, 'T')} true ORDER BY id`
+      );
+      rows.push(...ids.map((r) => ({ namespace: ns, id: r.id })));
+    }
     expect(rows.map((r) => `${r.namespace}/${r.id}`)).toEqual([
       'ns_a/fresh',
       'ns_a/live',

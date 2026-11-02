@@ -9,6 +9,7 @@ import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { enumCheckStatements } from '../src/enum-check.js';
 import { runMigrations } from '../src/migrate.js';
+import { TABLES } from './_layout.js';
 
 const squash = (sql: string): string =>
   sql
@@ -97,7 +98,8 @@ describe('enumCheckStatements', () => {
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 
-describe.skipIf(!POSTGRES_URL)('enumCheckStatements — live DDL proof', () => {
+// Plugin enum CHECKs fan out onto `rows`; a type table's enum column carries its own.
+describe.skipIf(!POSTGRES_URL || TABLES)('enumCheckStatements — live DDL proof', () => {
   let sql: Sql;
   const NS = 'coverage-probe';
   const TYPE = 'Probe';

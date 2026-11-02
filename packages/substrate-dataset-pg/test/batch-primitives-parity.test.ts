@@ -11,6 +11,7 @@ import type { Dataset } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PgDataset } from '../src/index.js';
+import { clearNamespace, dropNamespace, TABLES } from './_layout.js';
 import { addTestPromotedColumns, dropTestPromotedColumns, TEST_PROMOTED } from './_promoted.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
@@ -37,12 +38,14 @@ describe('batch primitives (memory vs pg)', () => {
         statements.push(query);
       }
     });
-    await addTestPromotedColumns(sql);
+    // Promoted columns are a `rows` feature; a type table types its fields itself.
+    if (!TABLES) await addTestPromotedColumns(sql);
   });
 
   afterAll(async () => {
     if (sql === undefined) return;
-    await dropTestPromotedColumns(sql);
+    if (!TABLES) await dropTestPromotedColumns(sql);
+    await dropNamespace(sql, NS);
     await sql.end();
   });
 
@@ -54,7 +57,7 @@ describe('batch primitives (memory vs pg)', () => {
     // later migrations do not restore. A stale binding to a reused row id would
     // make bindShortIds' ON CONFLICT DO NOTHING keep the old id.
     await sql`DELETE FROM short_ids WHERE namespace = ${NS}`;
-    await sql`DELETE FROM rows WHERE namespace = ${NS}`;
+    await clearNamespace(sql, NS);
     const pg = new PgDataset({ namespace: NS, sql, promotedColumns: TEST_PROMOTED });
     if (PARTITIONED) await pg.ensureTypeStorage('Item');
     datasets.push(['pg', pg]);
@@ -270,7 +273,7 @@ describe('batch primitives (memory vs pg)', () => {
     })
   );
 
-  it.skipIf(!HAS_PG)(
+  it.skipIf(!HAS_PG || TABLES)(
     'patchRows mirrors a promoted column from the patch, per row, and keeps it when absent',
     async () => {
       const pg = datasets[1]?.[1] as Dataset;

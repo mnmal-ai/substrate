@@ -13,6 +13,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PgDataset, runMigrations, type StorageLayout, typeIndexesOf } from '../src/index.js';
 import { generatedIdentifier } from '../src/migrate.js';
 import type { TypeDefLookup } from '../src/pg-dataset.js';
+import { clearNamespace, dropNamespace, rowsWhere, TABLES } from './_layout.js';
 
 type TypeDef = NonNullable<ReturnType<TypeDefLookup>>;
 
@@ -29,12 +30,13 @@ describe.skipIf(!POSTGRES_URL)('PgDataset drop primitives', () => {
   });
 
   afterAll(async () => {
+    await dropNamespace(sql, TEST_NS);
     await sql.end();
   });
 
   beforeEach(async () => {
     // Scope cleanup to the test namespace only.
-    await sql`DELETE FROM rows      WHERE namespace = ${TEST_NS}`;
+    await clearNamespace(sql, TEST_NS);
     await sql`DELETE FROM short_ids WHERE namespace = ${TEST_NS}`;
     ds = new PgDataset({ namespace: TEST_NS, sql });
   });
@@ -54,17 +56,15 @@ describe.skipIf(!POSTGRES_URL)('PgDataset drop primitives', () => {
     expect(result.rowsDeleted).toBe(2);
 
     // Alpha rows are gone.
-    const alphaRows = await sql<{ id: string }[]>`
-      SELECT id FROM rows
-      WHERE namespace = ${TEST_NS} AND type = 'Alpha'
-    `;
+    const alphaRows = await sql.unsafe<{ id: string }[]>(
+      `SELECT id FROM ${await rowsWhere(sql, TEST_NS, 'Alpha')} true`
+    );
     expect(alphaRows).toHaveLength(0);
 
     // Beta row is untouched.
-    const betaRows = await sql<{ id: string }[]>`
-      SELECT id FROM rows
-      WHERE namespace = ${TEST_NS} AND type = 'Beta'
-    `;
+    const betaRows = await sql.unsafe<{ id: string }[]>(
+      `SELECT id FROM ${await rowsWhere(sql, TEST_NS, 'Beta')} true`
+    );
     expect(betaRows).toHaveLength(1);
   });
 
@@ -114,10 +114,9 @@ describe.skipIf(!POSTGRES_URL)('PgDataset drop primitives', () => {
     await ds.tombstone('Alpha', ['a1']);
 
     // Verify the tombstone is there (deleted_at IS NOT NULL) before drop.
-    const tombstoned = await sql<{ id: string; deleted_at: Date | null }[]>`
-      SELECT id, deleted_at FROM rows
-      WHERE namespace = ${TEST_NS} AND type = 'Alpha' AND id = 'a1'
-    `;
+    const tombstoned = await sql.unsafe<{ id: string; deleted_at: Date | null }[]>(
+      `SELECT id, deleted_at FROM ${await rowsWhere(sql, TEST_NS, 'Alpha')} id = 'a1'`
+    );
     expect(tombstoned).toHaveLength(1);
     expect(tombstoned[0]?.deleted_at).not.toBeNull();
 
@@ -125,10 +124,9 @@ describe.skipIf(!POSTGRES_URL)('PgDataset drop primitives', () => {
     expect(result.rowsDeleted).toBe(1);
 
     // Row is gone from the table entirely.
-    const after = await sql<{ id: string }[]>`
-      SELECT id FROM rows
-      WHERE namespace = ${TEST_NS} AND type = 'Alpha'
-    `;
+    const after = await sql.unsafe<{ id: string }[]>(
+      `SELECT id FROM ${await rowsWhere(sql, TEST_NS, 'Alpha')} true`
+    );
     expect(after).toHaveLength(0);
   });
 
@@ -151,10 +149,10 @@ describe.skipIf(!POSTGRES_URL)('PgDataset drop primitives', () => {
     const result = await ds.dropNamespace();
     expect(result.rowsDeleted).toBe(3);
 
-    const rows = await sql<{ id: string }[]>`
-      SELECT id FROM rows WHERE namespace = ${TEST_NS}
-    `;
-    expect(rows).toHaveLength(0);
+    for (const type of ['Alpha', 'Beta']) {
+      const rows = await sql.unsafe(`SELECT id FROM ${await rowsWhere(sql, TEST_NS, type)} true`);
+      expect(rows).toHaveLength(0);
+    }
 
     const shortIds = await sql<{ short_id: number }[]>`
       SELECT short_id FROM short_ids WHERE namespace = ${TEST_NS}
@@ -178,15 +176,15 @@ describe.skipIf(!POSTGRES_URL)('PgDataset drop primitives', () => {
     ).rejects.toThrow('boom');
 
     // Row must still be present after the rolled-back transaction.
-    const rows = await sql<{ id: string }[]>`
-      SELECT id FROM rows
-      WHERE namespace = ${TEST_NS} AND type = 'Alpha' AND id = 'a1'
-    `;
+    const rows = await sql.unsafe<{ id: string }[]>(
+      `SELECT id FROM ${await rowsWhere(sql, TEST_NS, 'Alpha')} id = 'a1'`
+    );
     expect(rows).toHaveLength(1);
   });
 });
 
-describe.skipIf(!POSTGRES_URL)('engine indexes of a dropped namespace', () => {
+// Engine indexes on type tables are Task 12's.
+describe.skipIf(!POSTGRES_URL || TABLES)('engine indexes of a dropped namespace', () => {
   const LAYOUT = (process.env.SUBSTRATE_STORAGE_LAYOUT ?? 'legacy') as StorageLayout;
   const ref: FieldDef = { kind: 'crossRef', ns: 'other', type: 'X', onDelete: 'set_null' };
   let sql: Sql;

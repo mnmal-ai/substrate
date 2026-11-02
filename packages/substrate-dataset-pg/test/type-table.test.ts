@@ -368,7 +368,25 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('tables layout', () => {
     });
   });
 
-  it("newFields:'column' adds the column", async () => {
+  it('createOnly creates a missing table, and changes nothing on an existing one', async () => {
+    const type = freshType();
+    const only = (fields: Record<string, FieldDef>) =>
+      ensureTypeTable(sql, {
+        namespace: NS,
+        type,
+        fields,
+        newFields: 'column',
+        enforceUuidCheck: false,
+        createOnly: true
+      });
+    expect((await only({})).created).toBe(true);
+    await ensure(type, { title: field.string() });
+    expect(await only({})).toEqual({ created: false, added: [], pending: [], orphaned: [] });
+    // Added after the CREATE, so promoting; createOnly left it so, not orphaned.
+    expect((await loadTypeTable(sql, NS, type))?.column('title')?.state).toBe('promoting');
+  });
+
+  it("newFields:'column' adds the column, recorded promoting even on an empty table", async () => {
     const type = freshType();
     await ensure(type, { title: field.string() });
     const change = await ensure(type, { title: field.string(), n: field.number() });
@@ -377,7 +395,17 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('tables layout', () => {
       type: 'double precision',
       collation: null
     });
-    expect((await loadTypeTable(sql, NS, type))?.column('n')?.state).toBe('column');
+    // A writer whose cached table predates the column puts `n` in `extra`;
+    // promoting keeps it readable until the sweep (Task 13).
+    expect((await loadTypeTable(sql, NS, type))?.column('n')?.state).toBe('promoting');
+  });
+
+  it('a field declared on a table that has rows starts promoting too', async () => {
+    const type = freshType();
+    await ensure(type, { title: field.string() });
+    await sql.unsafe(`INSERT INTO "${await tableOf(type)}" (id, extra) VALUES ('a', '{"n": 2}')`);
+    await ensure(type, { title: field.string(), n: field.number() });
+    expect((await loadTypeTable(sql, NS, type))?.column('n')?.state).toBe('promoting');
   });
 
   it('held ACCESS SHARE lock: ADD COLUMN gives up within 4 s and records pending', async () => {
@@ -501,6 +529,25 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('tables layout', () => {
       sql.unsafe(`INSERT INTO "${table}" (id, "${columnName('status')}") VALUES ('b', 'bogus')`)
     ).rejects.toMatchObject({ code: '23514' });
     expect((await loadTypeTable(sql, NS, type))?.column('status')?.vocab).toEqual(['open', 'done']);
+  });
+
+  it('a narrowed enum vocabulary keeps the recorded values and the CHECK, so old rows still update', async () => {
+    const type = freshType();
+    await ensure(type, { status: field.enum(['open', 'done']), note: field.string() });
+    const table = await tableOf(type);
+    await sql.unsafe(`INSERT INTO "${table}" (id, "${columnName('status')}") VALUES ('a', 'done')`);
+    const change = await ensure(type, { status: field.enum(['open']), note: field.string() });
+    expect(change).toEqual({ created: false, added: [], pending: [], orphaned: [] });
+    expect((await loadTypeTable(sql, NS, type))?.column('status')?.vocab).toEqual(['open', 'done']);
+    // pg re-checks a CHECK on every UPDATE; a narrowed one would refuse this.
+    await sql.unsafe(`UPDATE "${table}" SET "${columnName('note')}" = 'x' WHERE id = 'a'`);
+    // Widening again appends to what is recorded.
+    await ensure(type, { status: field.enum(['open', 'new']), note: field.string() });
+    expect((await loadTypeTable(sql, NS, type))?.column('status')?.vocab).toEqual([
+      'open',
+      'done',
+      'new'
+    ]);
   });
 
   it('a reordered enum vocabulary is no change', async () => {

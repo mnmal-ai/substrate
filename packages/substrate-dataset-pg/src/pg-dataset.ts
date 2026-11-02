@@ -69,7 +69,7 @@ import {
   ResolverFrameError,
   WALKS_NEED_PARTITIONED
 } from '@mnmal-ai/substrate-types';
-import type { MaybeRow, PendingQuery, ReservedSql, Sql } from 'postgres';
+import type { MaybeRow, PendingQuery, ReservedSql, Sql, TransactionSql } from 'postgres';
 import { withPgAdvisoryLock } from './advisory-lock.js';
 import type { DiskGuard } from './disk-guard.js';
 import { NamespaceMismatch, ReservedField } from './errors.js';
@@ -134,6 +134,7 @@ import {
   resolvePromotedColumns,
   whereReferencesField
 } from './pg-sql.js';
+import { decodeRow, encodeRow, RAW_KEY } from './row-codec.js';
 import { type PgHandle, txScopeIdFor } from './tx-scope.js';
 import {
   ensureTypeStorage,
@@ -142,7 +143,23 @@ import {
   typePartition,
   typePartitions
 } from './type-storage.js';
-import { rowsTypeTable } from './type-table.js';
+import {
+  absentTypeTable,
+  ensureTypeTable,
+  loadTypeTable,
+  rowsTypeTable,
+  type TypeTable
+} from './type-table.js';
+import { UUID_CHECK_MIGRATION } from './uuid-check.js';
+import {
+  inputCte,
+  mergeAssignments,
+  type RowToWrite,
+  returnedRowSql,
+  setList,
+  shortIdJoinSql,
+  writeRowsStatement
+} from './write-rows.js';
 
 // The pool-owned instance holds `Sql`; tx-scoped instances hold the
 // `TransactionSql` from `sql.begin(fn)`. Only `Sql` exposes `begin`, so that
@@ -255,7 +272,47 @@ interface InternalPgSubstrateDatasetOptions {
   typeDefLookup?: TypeDefLookup;
   diskGuard?: DiskGuard;
   statementTimeoutMs?: number;
+  /** The pool's type-table cache, shared with the instance this one was derived from. */
+  tableCache?: TableCache;
+  /** The enclosing transaction's tables, which enter `tableCache` on commit only. */
+  txTables?: TxTables;
 }
+
+/**
+ * A pool's type-table descriptors on the `tables` layout. A
+ * `substrate_catalog` notification (sent by `ensureTypeTable` on any change,
+ * delivered at commit) drops its type's entry, and a (re)connect of the
+ * listener drops them all, since notifications may have been missed.
+ */
+interface TableCache {
+  /** The pool, which LISTENs on a connection of its own. */
+  sql: PgHandle;
+  tables: Map<string, TypeTable>;
+  /** Bumped on each drop, so a load that raced a notification is not cached. */
+  gen: number;
+  /** True once listening; false when LISTEN failed, and then nothing is cached. */
+  listening?: Promise<boolean>;
+  uuidCheck?: boolean;
+}
+
+/** One cache per pool. */
+const tableCaches = new WeakMap<object, TableCache>();
+
+function tableCacheFor(sql: PgHandle): TableCache {
+  let cache = tableCaches.get(sql);
+  if (cache === undefined) {
+    cache = { sql, tables: new Map(), gen: 0 };
+    tableCaches.set(sql, cache);
+  }
+  return cache;
+}
+
+/**
+ * The tables a transaction loaded or created, each with the cache generation
+ * it was loaded at. They enter the pool's cache when the transaction commits,
+ * so a rolled-back CREATE or ALTER is never cached (F18).
+ */
+type TxTables = Map<string, { table: TypeTable; gen: number }>;
 
 /** An index whose build this process deferred, is running, or saw fail. */
 interface DeferredBuild {
@@ -303,6 +360,9 @@ interface LayoutCache {
 
 const RESERVED_DELETED_AT = '_deletedAt';
 
+/** The `updatedBy` a write without an actor stamps. */
+const ANONYMOUS: ActorIdentity = { kind: 'system', id: 'anonymous' };
+
 interface SubstrateRowRecord {
   id: string;
   body: Record<string, unknown>;
@@ -319,6 +379,9 @@ interface SubstrateRowRecord {
   /** bigint as a string; null off visible-order types. */
   seq: string | null;
 }
+
+/** A type-table row as returned for `decodeRow`: `extra` and its columns in place of `body`. */
+type TableRowRecord = Omit<SubstrateRowRecord, 'body'> & { extra: Record<string, unknown> };
 
 /** Share of `rows` changed since ANALYZE past which its indexes' row counts are stale (autoanalyze's default). */
 const INDEX_COUNT_STALE = 0.1;
@@ -399,6 +462,8 @@ export class PgDataset implements Dataset {
   readonly #typeDefLookup: TypeDefLookup | null;
   readonly #diskGuard: DiskGuard | undefined;
   readonly #statementTimeoutMs: number;
+  readonly #tableCache: TableCache;
+  readonly #txTables: TxTables | null;
 
   constructor(options: PgDatasetOptions | InternalPgSubstrateDatasetOptions) {
     this.namespace = options.namespace;
@@ -426,6 +491,115 @@ export class PgDataset implements Dataset {
     this.#typeDefLookup = options.typeDefLookup ?? null;
     this.#diskGuard = options.diskGuard;
     this.#statementTimeoutMs = options.statementTimeoutMs ?? WALK_STATEMENT_TIMEOUT_MS;
+    this.#tableCache =
+      ('tableCache' in options ? options.tableCache : undefined) ?? tableCacheFor(options.sql);
+    this.#txTables = ('txTables' in options ? options.txTables : undefined) ?? null;
+  }
+
+  /**
+   * `type`'s table: `rows` on the old layouts; on `tables` its type table, or
+   * undefined when it has none yet. Cached per pool (see `TableCache`); inside
+   * a transaction, in the transaction's own map until it commits.
+   */
+  async #tableFor(type: string): Promise<TypeTable | undefined> {
+    const layout = await this.#layout();
+    if (layout !== 'tables') return rowsTypeTable(this.namespace, type, this.#promotedFor);
+    const key = `${this.namespace}/${type}`;
+    const local = this.#txTables?.get(key);
+    if (local !== undefined) return local.table;
+    const cache = this.#tableCache;
+    const listening = await this.#listen();
+    const hit = cache.tables.get(key);
+    if (hit !== undefined) return hit;
+    const gen = cache.gen;
+    const table = await loadTypeTable(this.#sql, this.namespace, type);
+    if (table !== undefined) this.#remember(key, table, gen, listening);
+    return table;
+  }
+
+  /** {@link #tableFor}, creating the type's table when it has none (first write). */
+  async #writeTable(type: string): Promise<TypeTable> {
+    const found = await this.#tableFor(type);
+    if (found !== undefined) return found;
+    const gen = this.#tableCache.gen;
+    const def = this.#typeDefLookup?.(type, this.namespace);
+    const args = {
+      namespace: this.namespace,
+      type,
+      fields: def?.fields ?? {},
+      newFields: 'column' as const,
+      enforceUuidCheck: await this.#uuidCheck(),
+      // Without a def the fields are unknown: create the table, never redeclare one.
+      createOnly: def === undefined
+    };
+    // In a caller's transaction the DDL joins it under a savepoint (F18), so a
+    // failure there leaves the caller's transaction usable. Its type-table
+    // advisory lock is then held until that transaction ends, so two
+    // transactions making first writes of two new types in opposite orders can
+    // deadlock; pg detects it (40P01) and aborts one. By F18's design.
+    if (this.#inTx) {
+      await (this.#sql as TransactionSql).savepoint((sp) => ensureTypeTable(sp, args));
+    } else {
+      await ensureTypeTable(this.#sql, args);
+    }
+    const table = await loadTypeTable(this.#sql, this.namespace, type);
+    if (table === undefined) throw new Error(`internal: ${this.namespace}/${type} has no table`);
+    this.#remember(`${this.namespace}/${type}`, table, gen, await this.#listen());
+    return table;
+  }
+
+  #remember(key: string, table: TypeTable, gen: number, listening: boolean): void {
+    if (this.#inTx) {
+      // -1 never matches, so a table loaded without a listener never enters the cache.
+      this.#txTables?.set(key, { table, gen: listening ? gen : -1 });
+    } else if (listening && this.#tableCache.gen === gen) {
+      this.#tableCache.tables.set(key, table);
+    }
+  }
+
+  /** Starts the pool's catalog LISTEN once; resolves false when it cannot. */
+  #listen(): Promise<boolean> {
+    const cache = this.#tableCache;
+    const drop = (key?: string) => {
+      if (key === undefined) cache.tables.clear();
+      else cache.tables.delete(key);
+      cache.gen++;
+    };
+    // Only a pool can LISTEN (on a connection of its own); on any other handle nothing is cached.
+    const pool = cache.sql as Partial<Sql>;
+    cache.listening ??=
+      typeof pool.listen !== 'function'
+        ? Promise.resolve(false)
+        : pool
+            .listen(
+              'substrate_catalog',
+              (key) => drop(key),
+              () => drop()
+            )
+            .then(
+              () => true,
+              () => false
+            );
+    return cache.listening;
+  }
+
+  /** Whether new type tables take the opt-in UUID CHECK: the store applied that migration. */
+  async #uuidCheck(): Promise<boolean> {
+    const cache = this.#tableCache;
+    if (cache.uuidCheck === undefined) {
+      const [row] = await this.#sql<Array<{ on: boolean }>>`
+        SELECT EXISTS (SELECT 1 FROM migrations WHERE version = ${UUID_CHECK_MIGRATION}) AS on`;
+      cache.uuidCheck = row?.on === true;
+    }
+    return cache.uuidCheck;
+  }
+
+  /** Moves a committed transaction's tables into the pool's cache, unless a notification intervened. */
+  #commitTables(txTables: TxTables): void {
+    const cache = this.#tableCache;
+    for (const [key, { table, gen }] of txTables) {
+      if (cache.gen === gen) cache.tables.set(key, table);
+    }
   }
 
   /**
@@ -462,7 +636,7 @@ export class PgDataset implements Dataset {
         throw this.#queryTimeout(type, err, params.signal) ?? err;
       }
     }
-    if ((await this.#layout()) !== 'partitioned') {
+    if ((await this.#layout()) === 'legacy') {
       throw new ResolverFrameError(
         WALKS_NEED_PARTITIONED,
         'walks need the partitioned storage layout; move this store onto it with `substrate-admin migrate-store`'
@@ -545,10 +719,25 @@ export class PgDataset implements Dataset {
       hasIdFilter = true;
     }
 
+    // The compiler cannot await, so the seed's and every far type's table is
+    // loaded first (F19). On the old layouts each is `rows`; on `tables` a type
+    // with no table yet reads as an empty one.
+    const lookup = this.#fieldDefLookup;
+    const fieldDef = (t: string, f: string) => lookup?.(t, f);
+    const tableFor = tableLookup(
+      await Promise.all(
+        [...(walks ? walkTypes(params, type, fieldDef) : [type])].map(
+          async (t) => (await this.#tableFor(t)) ?? absentTypeTable(this.namespace, t)
+        )
+      )
+    );
+    const table = tableFor(type);
+
     // Build WHERE fragment incrementally. Use table alias `r` to avoid
     // ambiguity with the short_ids alias `s`.
     const clauses: Fragment[] = [];
-    clauses.push(this.#scope(type, 'r.'));
+    const tableScope = table.scope('r');
+    if (tableScope !== null) clauses.push(sql.unsafe(tableScope));
     if (hasIdFilter) clauses.push(sql`r.id = ANY(${idList})`);
     if (!includeDeleted) clauses.push(sql`r.deleted_at IS NULL`);
     // Maps a body field's declared kind to the cast applied to its extraction,
@@ -560,16 +749,6 @@ export class PgDataset implements Dataset {
     // to the final page below.
     let extMeta: ExtensionOpResultMeta | null = null;
     // One scope per statement, so walk aliases stay unique across where and projection.
-    const lookup = this.#fieldDefLookup;
-    const fieldDef = (t: string, f: string) => lookup?.(t, f);
-    // The compiler cannot await, so the seed's and every far type's table is
-    // loaded first (F19). On the old layouts each is `rows`.
-    const tableFor = tableLookup(
-      [...(walks ? walkTypes(params, type, fieldDef) : [type])].map((t) =>
-        rowsTypeTable(this.namespace, t, this.#promotedFor)
-      )
-    );
-    const table = tableFor(type);
     const scope = walks ? walkScope(this.namespace, type, 'r', fieldDef, tableFor) : undefined;
     if (scope !== undefined) {
       // As the plan advisor's `leads`: a full index, the crossRef first, `key` next.
@@ -676,10 +855,11 @@ export class PgDataset implements Dataset {
     const derivedFor = (field: string): Fragment | undefined =>
       fenced !== undefined && field === lead ? sql`r.__derive_0` : derivedExpr(field);
     // OFFSET 0 keeps the subquery from being flattened back into one evaluation per use.
+    const rel = sql.unsafe(table.from);
     const from =
       fenced === undefined
-        ? sql`rows r${pickJoins}${windowJoins}`
-        : sql`(SELECT r.*, ${fenced} AS __derive_0 FROM rows r${pickJoins} WHERE ${combineAnd(sql, clauses)} OFFSET 0) r${windowJoins}`;
+        ? sql`${rel} r${pickJoins}${windowJoins}`
+        : sql`(SELECT r.*, ${fenced} AS __derive_0 FROM ${rel} r${pickJoins} WHERE ${combineAnd(sql, clauses)} OFFSET 0) r${windowJoins}`;
     const ctes = withCtes(sql, scope);
     const base = fenced === undefined ? clauses : [];
 
@@ -743,7 +923,18 @@ export class PgDataset implements Dataset {
     // from being flattened into a join that a generic plan may hash over the
     // type's whole short_ids. short_ids_row_uniq_idx makes either form match
     // at most one row. The outer ORDER BY restores the page order over the
-    // projected sort keys.
+    // projected sort keys. A type table's row carries no namespace or type, so
+    // its own are selected as literals.
+    const owner = sql.unsafe(
+      table.scope() === null
+        ? `${sqlStringLiteral(this.namespace)}::text AS namespace, ${sqlStringLiteral(type)}::text AS type`
+        : 'r.namespace, r.type'
+    );
+    const ownerOn = sql.unsafe(
+      table.scope() === null
+        ? `s.namespace = ${sqlStringLiteral(this.namespace)} AND s.type = ${sqlStringLiteral(type)}`
+        : 's.namespace = r.namespace\n           AND s.type = r.type'
+    );
     // Inlined so a generic plan costs the page at its real size rather than
     // guessing 10% of the type, which favours a parallel full sort over an
     // index. Safe to inline: `n` derives from `limit`, which is validated and
@@ -760,8 +951,7 @@ export class PgDataset implements Dataset {
                  r.updated_by_kind, r.updated_by_id, r.seq${sortKeyProjection}
           FROM ${from}
           LEFT JOIN short_ids s
-            ON s.namespace = r.namespace
-           AND s.type = r.type
+            ON ${ownerOn}
            AND s.row_id = r.id
           WHERE ${where}
           ${orderBySql}
@@ -774,7 +964,7 @@ export class PgDataset implements Dataset {
                    r.created_at, r.updated_at,
                    r.created_by_kind, r.created_by_id,
                    r.updated_by_kind, r.updated_by_id, r.seq,
-                   r.namespace, r.type${sortKeyProjection}
+                   ${owner}${sortKeyProjection}
             FROM ${from}
             WHERE ${where}
             ${orderBySql}
@@ -815,7 +1005,7 @@ export class PgDataset implements Dataset {
     }
 
     const fields = this.#typeDefLookup?.(type, this.namespace)?.fields;
-    const materialised = rows.map((r) => this.materialize(r, fields));
+    const materialised = rows.map((r) => this.materialize(r, fields, table, params.fields));
     let hasMore = false;
     let sliced = materialised;
     if (limit !== undefined && materialised.length > limit) {
@@ -881,10 +1071,12 @@ export class PgDataset implements Dataset {
       return this.withTransaction((tx) => tx.write(type, rows, options));
     }
 
+    const table = await this.#writeTable(type);
     const sql = this.#sql;
     if (visible) {
       await sql`SELECT pg_advisory_xact_lock(hashtext('substrate-visible-seq:' || current_schema() || ':' || ${this.namespace} || '/' || ${type}))`;
     }
+    if (table.scope() === null) return this.#writeRows(type, table, rows, visible, options);
 
     const fallbackNow = (options?.now ?? new Date()).toISOString();
     const fallbackActor = options?.identity ?? null;
@@ -1079,10 +1271,54 @@ export class PgDataset implements Dataset {
     return { written: merged.length, ids: merged.map((r) => r.id), rows: merged };
   }
 
+  /** `write` on a type table: one statement whatever the batch size (F41). */
+  async #writeRows(
+    type: string,
+    table: TypeTable,
+    rows: WriteRow[],
+    visible: boolean,
+    options: WriteOptions | undefined
+  ): Promise<WriteResult> {
+    const encoded: RowToWrite[] = rows.map((row) => {
+      const sanitised: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(row)) {
+        if (k === RESERVED_DELETED_AT || k === '_metadata') continue;
+        if (k === 'id' && v == null) continue;
+        sanitised[k] = v;
+      }
+      return {
+        ...encodeRow(table, sanitised),
+        id: row.id == null ? null : idToText(row.id),
+        ...(row._metadata != null ? { metadata: row._metadata as RowMetadata } : {})
+      };
+    });
+    const records = (await this.#sql`${writeRowsStatement(this.#sql, table, encoded, {
+      insertOnly: options?.insertOnly === true,
+      visibleOrder: visible,
+      metadata: 'stamp',
+      actor: options?.identity ?? null,
+      ...(options?.now !== undefined ? { now: options.now } : {})
+    })}`.catch((err: unknown) => {
+      throw this.#uniqueViolation(type, err);
+    })) as unknown as TableRowRecord[];
+    const fields = this.#typeDefLookup?.(type, this.namespace)?.fields;
+    const merged = records.map((r) => this.materialize(r, fields, table));
+    return { written: merged.length, ids: merged.map((r) => r.id), rows: merged };
+  }
+
+  /** `<table's scope> AND ` on `rows`, nothing on a type table. */
+  #scopeAnd(table: TypeTable, alias?: string): Fragment {
+    const scope = table.scope(alias);
+    return this.#sql.unsafe(scope === null ? '' : `${scope} AND `);
+  }
+
   async tombstone(type: string, ids: Id[]): Promise<DeleteResult> {
     if (ids.length === 0) return { deleted: 0, ids: [] };
+    const table = await this.#tableFor(type);
+    if (table === undefined) return { deleted: 0, ids: [] };
 
     const textIds = ids.map(idToText);
+    const rel = this.#sql.unsafe(table.from);
 
     // Only stamp rows that are not already tombstoned — tombstone is terminal
     // and must preserve the original timestamp on a second call. The rows are
@@ -1091,38 +1327,49 @@ export class PgDataset implements Dataset {
     const rows = await this.#sql<{ id: string; body: Record<string, unknown> }[]>`
       WITH locked AS MATERIALIZED (
         SELECT count(*) AS n FROM (
-          SELECT r.id FROM rows r
-          WHERE ${this.#scope(type, 'r.')}
-            AND r.id = ANY(${textIds})
+          SELECT r.id FROM ${rel} r
+          WHERE ${this.#scopeAnd(table, 'r')}r.id = ANY(${textIds})
             AND r.deleted_at IS NULL
           ORDER BY r.id
           FOR NO KEY UPDATE OF r
         ) x
       )
-      UPDATE rows r
+      UPDATE ${rel} r
       SET deleted_at = now()
       FROM locked
-      WHERE ${this.#scope(type, 'r.')}
-        AND r.id = ANY(${textIds})
+      WHERE ${this.#scopeAnd(table, 'r')}r.id = ANY(${textIds})
         AND r.deleted_at IS NULL
-      RETURNING r.id, r.body
+      RETURNING r.id, ${this.#sql.unsafe(`r.${table.jsonb}`)} AS body
     `;
 
     const stamped: Id[] = rows.map((r) => this.extractOriginalId(r.id, r.body));
     return { deleted: stamped.length, ids: stamped };
   }
 
+  /** On a type table, `deleted` also leaves `row_ids`, and `short_ids` cascade from there. */
   async purge(type: string, ids: Id[]): Promise<DeleteResult> {
     if (ids.length === 0) return { deleted: 0, ids: [] };
+    const table = await this.#tableFor(type);
+    if (table === undefined) return { deleted: 0, ids: [] };
 
     const textIds = ids.map(idToText);
-
-    const rows = await this.#sql<{ id: string; body: Record<string, unknown> }[]>`
-      DELETE FROM rows
-      WHERE ${this.#scope(type)}
-        AND id = ANY(${textIds})
-      RETURNING id, body
-    `;
+    const sql = this.#sql;
+    const rows =
+      table.scope() === null
+        ? await sql<{ id: string; body: Record<string, unknown> }[]>`
+          WITH d AS (
+            DELETE FROM ${sql.unsafe(table.from)} WHERE id = ANY(${textIds}) RETURNING id, extra AS body
+          ), reg AS (
+            DELETE FROM row_ids
+            WHERE namespace = ${this.namespace} AND type = ${type} AND id IN (SELECT id FROM d)
+          )
+          SELECT id, body FROM d`
+        : await sql<{ id: string; body: Record<string, unknown> }[]>`
+          DELETE FROM rows
+          WHERE ${this.#scope(type)}
+            AND id = ANY(${textIds})
+          RETURNING id, body
+        `;
 
     const removed: Id[] = rows.map((r) => this.extractOriginalId(r.id, r.body));
     return { deleted: removed.length, ids: removed };
@@ -1133,10 +1380,31 @@ export class PgDataset implements Dataset {
    * across ALL namespaces (the table is substrate-shared). Called by the sweep
    * loop. Returns the number of rows deleted.
    *
-   * Short-id mappings are left in place, as in `purge()`: a row id can
-   * reappear after a tombstone + rewrite.
+   * Short-id mappings are left in place on `rows`, as in `purge()`: a row id
+   * can reappear after a tombstone + rewrite. On `tables` each type table is
+   * swept in turn, and a swept row leaves `row_ids`, its short id cascading.
    */
   async purgeTombstonedRows(opts: { olderThan: Date }): Promise<{ deleted: number }> {
+    if ((await this.#layout()) === 'tables') {
+      const sql = this.#sql;
+      let deleted = 0;
+      const tables = await sql<Array<{ namespace: string; type: string; table_name: string }>>`
+        SELECT namespace, type, table_name FROM substrate_type_tables`;
+      for (const t of tables) {
+        const [row] = await sql<Array<{ n: number }>>`
+          WITH d AS (
+            DELETE FROM ${sql.unsafe(ident(t.table_name))}
+            WHERE deleted_at IS NOT NULL AND deleted_at < ${opts.olderThan}
+            RETURNING id
+          ), reg AS (
+            DELETE FROM row_ids
+            WHERE namespace = ${t.namespace} AND type = ${t.type} AND id IN (SELECT id FROM d)
+          )
+          SELECT count(*)::int AS n FROM d`;
+        deleted += row?.n ?? 0;
+      }
+      return { deleted };
+    }
     const rows = await this.#sql<{ id: string }[]>`
       DELETE FROM rows
       WHERE deleted_at IS NOT NULL
@@ -1150,10 +1418,21 @@ export class PgDataset implements Dataset {
    * Hard-delete every row for `type` in this namespace, including tombstoned
    * rows (`deleted_at IS NOT NULL`). Short-id mappings for that type are
    * removed in the same logical operation. Both deletes run through `this.#sql`
-   * so they participate in any surrounding `withTransaction` boundary.
+   * so they participate in any surrounding `withTransaction` boundary. A type
+   * table is emptied, not dropped.
    */
   async dropType(type: string): Promise<DropResult> {
-    const rows = await this.#sql<{ id: string }[]>`
+    const table = await this.#tableFor(type);
+    if (table !== undefined && table.scope() === null) {
+      // First, so the count is not lost to the cascade from row_ids.
+      const shortIdsDeleted = await this.#shortIds.dropType(this.namespace, type);
+      const rowsDeleted = await this.#emptyTable(type, table.from);
+      return { rowsDeleted, shortIdsDeleted };
+    }
+    const rows =
+      table === undefined
+        ? []
+        : await this.#sql<{ id: string }[]>`
       DELETE FROM rows
       WHERE ${this.#scope(type)}
       RETURNING id
@@ -1163,11 +1442,29 @@ export class PgDataset implements Dataset {
     return { rowsDeleted, shortIdsDeleted };
   }
 
+  /** Deletes every row of `type`'s table `from` and its `row_ids`; the count of rows. */
+  async #emptyTable(type: string, from: string): Promise<number> {
+    const [row] = await this.#sql<Array<{ n: number }>>`
+      WITH d AS (DELETE FROM ${this.#sql.unsafe(from)} RETURNING id),
+      reg AS (DELETE FROM row_ids WHERE namespace = ${this.namespace} AND type = ${type})
+      SELECT count(*)::int AS n FROM d`;
+    return row?.n ?? 0;
+  }
+
   /**
    * Hard-delete every row across all types in this namespace, including
    * tombstoned rows. Short-id mappings for all types are removed too.
    */
   async dropNamespace(): Promise<DropResult> {
+    if ((await this.#layout()) === 'tables') {
+      const shortIdsDeleted = await this.#shortIds.dropNamespace(this.namespace);
+      const tables = await this.#sql<Array<{ type: string; table_name: string }>>`
+        SELECT type, table_name FROM substrate_type_tables WHERE namespace = ${this.namespace}`;
+      let rowsDeleted = 0;
+      for (const t of tables) rowsDeleted += await this.#emptyTable(t.type, ident(t.table_name));
+      await this.#sql`DELETE FROM row_ids WHERE namespace = ${this.namespace}`;
+      return { rowsDeleted, shortIdsDeleted };
+    }
     const rows = await this.#sql<{ id: string }[]>`
       DELETE FROM rows
       WHERE ${this.#scope()}
@@ -1202,12 +1499,27 @@ export class PgDataset implements Dataset {
       if (k === 'id') continue;
       sanitisedUpdates[k] = v;
     }
+    const table = await this.#tableFor(type);
+    if (table === undefined) return { matched: false, row: null };
 
     const matchClauses: Fragment[] = [];
     for (const [field, expected] of Object.entries(match)) {
-      matchClauses.push(conditionalMatchFragment(sql, field, expected));
+      matchClauses.push(conditionalMatchFragment(sql, field, expected, table));
     }
     const matchSql = matchClauses.length === 0 ? sql`TRUE` : combineAnd(sql, matchClauses);
+    if (table.scope() === null) {
+      const stamp = sql`updated_at = ${now === undefined ? sql`now()` : sql`${now}`},
+        updated_by_kind = ${(actor ?? ANONYMOUS).kind}, updated_by_id = ${(actor ?? ANONYMOUS).id}`;
+      const [row] = await this.#patchTable(
+        type,
+        table,
+        [{ id: idToText(id), patch: sanitisedUpdates }],
+        stamp,
+        matchSql,
+        true
+      );
+      return row === undefined ? { matched: false, row: null } : { matched: true, row };
+    }
 
     // Nulls are deliberately kept: a caller-supplied `null` is a real value.
     const updatesJson = sql.json(asJsonValue(sanitisedUpdates));
@@ -1290,22 +1602,36 @@ export class PgDataset implements Dataset {
       throw new ReservedField(fieldName);
     }
 
+    const table = await this.#tableFor(ref.type);
+    if (table === undefined) return;
+
     // _metadata lives only in the dedicated columns, which is where
     // materialize() reads it; writing it to the body would never be read.
     if (fieldName === '_metadata') {
       const meta = value as RowMetadata | null | undefined;
       await this.#sql`
-        UPDATE rows
+        UPDATE ${this.#sql.unsafe(table.from)}
         SET created_at      = ${meta?.createdAt ?? null},
             updated_at      = ${meta?.updatedAt ?? null},
             created_by_kind = ${meta?.createdBy?.kind ?? null},
             created_by_id   = ${meta?.createdBy?.id ?? null},
             updated_by_kind = ${meta?.updatedBy?.kind ?? null},
             updated_by_id   = ${meta?.updatedBy?.id ?? null}
-        WHERE ${this.#scope(ref.type)}
-          AND id = ${idToText(ref.id)}
+        WHERE ${this.#scopeAnd(table)}id = ${idToText(ref.id)}
       `;
       return; // skip body jsonb_set
+    }
+    if (table.scope() === null) {
+      // As jsonb_set below: no metadata stamp, and a tombstoned row is set too.
+      await this.#patchTable(
+        ref.type,
+        table,
+        [{ id: idToText(ref.id), patch: { [fieldName]: value ?? null } }],
+        null,
+        null,
+        false
+      );
+      return;
     }
 
     // jsonb_set with a single-element path creates the key if absent; missing
@@ -1366,7 +1692,8 @@ export class PgDataset implements Dataset {
     // outside a tx is always `Sql` — only the internal tx-scoped instance
     // holds a `TransactionSql`, and that path enters the `#inTx` branch.
     const rootSql = this.#sql as Sql;
-    return rootSql.begin<T>(async (txSql) => {
+    const txTables: TxTables = new Map();
+    const out = (await rootSql.begin<T>(async (txSql) => {
       const txDataset = new PgDataset({
         namespace: this.namespace,
         sql: txSql,
@@ -1376,12 +1703,16 @@ export class PgDataset implements Dataset {
         promotedColumns: this.#promotedColumns,
         layoutCache: this.#layoutCache,
         statementTimeoutMs: this.#statementTimeoutMs,
-        ...(this.#typeDefLookup !== null ? { typeDefLookup: this.#typeDefLookup } : {})
+        ...(this.#typeDefLookup !== null ? { typeDefLookup: this.#typeDefLookup } : {}),
+        tableCache: this.#tableCache,
+        txTables
       });
       return fn(txDataset);
       // postgres.js's begin<T> wraps the return in UnwrapPromiseArray; for
       // our `Promise<T>`-returning fn it collapses to `T`.
-    }) as Promise<T>;
+    })) as T;
+    this.#commitTables(txTables);
+    return out;
   }
 
   /**
@@ -1396,6 +1727,7 @@ export class PgDataset implements Dataset {
     namespaces: ReadonlyArray<string>,
     fn: (handles: TxScopeHandles) => Promise<T>
   ): Promise<T> {
+    const txTables: TxTables = this.#txTables ?? new Map();
     const buildHandles = (handle: PgHandle): TxScopeHandles => {
       const datasets = new Map<string, Dataset>();
       for (const ns of namespaces) {
@@ -1413,7 +1745,9 @@ export class PgDataset implements Dataset {
             promotedColumns: this.#promotedColumns,
             layoutCache: this.#layoutCache,
             statementTimeoutMs: this.#statementTimeoutMs,
-            ...(this.#typeDefLookup !== null ? { typeDefLookup: this.#typeDefLookup } : {})
+            ...(this.#typeDefLookup !== null ? { typeDefLookup: this.#typeDefLookup } : {}),
+            tableCache: this.#tableCache,
+            txTables
           })
         );
       }
@@ -1425,9 +1759,11 @@ export class PgDataset implements Dataset {
     if (this.#inTx) return fn(buildHandles(this.#sql));
 
     const rootSql = this.#sql as Sql;
-    return rootSql.begin<T>(async (txSql) => {
+    const out = (await rootSql.begin<T>(async (txSql) => {
       return fn(buildHandles(txSql));
-    }) as Promise<T>;
+    })) as T;
+    this.#commitTables(txTables);
+    return out;
   }
 
   /**
@@ -1475,6 +1811,8 @@ export class PgDataset implements Dataset {
     // it must not reach the bigint cast, which would throw.
     const valid = [...new Set(shortIds)].filter(Number.isSafeInteger);
     if (valid.length === 0) return out;
+    const table = await this.#tableFor(type);
+    if (table === undefined) return out;
     // One statement: the ids go in as one array, and the join to `rows` keeps
     // live rows only, so a tombstoned or purged row's id never resolves.
     const records = await this.#sql<Array<{ short_id: string; row_id: string }>>`
@@ -1482,8 +1820,8 @@ export class PgDataset implements Dataset {
       FROM unnest(${valid.map(String)}::bigint[]) AS q(short_id)
       JOIN short_ids s
         ON s.namespace = ${this.namespace}::text AND s.type = ${type}::text AND s.short_id = q.short_id
-      JOIN rows r
-        ON r.namespace = s.namespace AND r.type = s.type AND r.id = s.row_id
+      JOIN ${this.#sql.unsafe(table.from)} r
+        ON ${this.#sql.unsafe(table.scope() === null ? '' : 'r.namespace = s.namespace AND r.type = s.type AND ')}r.id = s.row_id
        AND r.deleted_at IS NULL
     `;
     for (const r of records) out.set(parseShortId(r.short_id), r.row_id);
@@ -1509,6 +1847,22 @@ export class PgDataset implements Dataset {
       folded.set(idToText(p.id), merged);
     }
     const ids = [...folded.keys()];
+    const table = await this.#tableFor(type);
+    if (table === undefined) return patches.map(() => null);
+    if (table.scope() === null) {
+      const updatedBy = actor ?? ANONYMOUS;
+      const rows = await this.#patchTable(
+        type,
+        table,
+        ids.map((id) => ({ id, patch: folded.get(id) ?? {} })),
+        sql`updated_at = ${now}::timestamptz, updated_by_kind = ${updatedBy.kind}::text,
+            updated_by_id = ${updatedBy.id}::text`,
+        null,
+        true
+      );
+      const byId = new Map(rows.map((r) => [idToText(r.id), r]));
+      return patches.map((p) => byId.get(idToText(p.id)) ?? null);
+    }
     // Text cast to jsonb in SQL, as write() does: the bulk path does not
     // round-trip objects through jsonb reliably.
     const bodies = ids.map((id) => JSON.stringify(folded.get(id)));
@@ -1577,6 +1931,52 @@ export class PgDataset implements Dataset {
     return patches.map((p) => byId.get(idToText(p.id)) ?? null);
   }
 
+  /**
+   * Merges each patch into its row of type table `table` in one statement, by
+   * `applyPatch`'s rule, and returns the rows it changed. `stamp` adds SET
+   * items; `match` must also hold on the stored row. `live`: only live rows,
+   * locked in id order first, as `patchRows` on `rows` locks.
+   */
+  async #patchTable(
+    type: string,
+    table: TypeTable,
+    patches: ReadonlyArray<{ id: string; patch: Record<string, unknown> }>,
+    stamp: Fragment | null,
+    match: Fragment | null,
+    live: boolean
+  ): Promise<Row[]> {
+    const sql = this.#sql;
+    const rel = sql.unsafe(table.from);
+    const ids = patches.map((p) => p.id);
+    const encoded = patches.map((p) => ({ ...encodeRow(table, p.patch), id: p.id }));
+    const locked = live
+      ? sql`,
+      locked AS MATERIALIZED (
+        SELECT count(*) AS n FROM (
+          SELECT t.id FROM ${rel} t
+          WHERE t.id = ANY(${ids}::text[]) AND t.deleted_at IS NULL
+          ORDER BY t.id
+          FOR NO KEY UPDATE OF t
+        ) x
+      )`
+      : sql``;
+    const records = (await sql`
+      WITH ${inputCte(sql, table, encoded)}${locked},
+      updated AS (
+        UPDATE ${rel} t
+        SET ${sql.unsafe(setList(mergeAssignments(table, 't', 'i')))}${stamp === null ? sql`` : sql`, ${stamp}`}
+        FROM input i${live ? sql`, locked` : sql``}
+        WHERE t.id = i.rid${live ? sql` AND t.deleted_at IS NULL` : sql``}${match === null ? sql`` : sql` AND ${match}`}
+        RETURNING t.*
+      )
+      SELECT ${returnedRowSql(sql, table, 'u')} FROM updated u ${sql.unsafe(shortIdJoinSql(table, 'u.id'))}
+    `.catch((err: unknown) => {
+      throw this.#uniqueViolation(type, err);
+    })) as unknown as TableRowRecord[];
+    const fields = this.#typeDefLookup?.(type, this.namespace)?.fields;
+    return records.map((r) => this.materialize(r, fields, table));
+  }
+
   async updateWhere(
     type: string,
     where: WhereClause,
@@ -1588,9 +1988,24 @@ export class PgDataset implements Dataset {
     for (const [k, v] of Object.entries(set)) {
       if (k !== RESERVED_DELETED_AT && k !== 'id') patch[k] = v;
     }
+    const table = await this.#tableFor(type);
+    if (table === undefined) return { count: 0, ids: [], rows: [] };
+    const updatedBy: ActorIdentity = opts.actor ?? ANONYMOUS;
+    const stamp = sql`updated_at = ${opts.now ?? new Date()}::timestamptz,
+            updated_by_kind = ${updatedBy.kind}::text,
+            updated_by_id = ${updatedBy.id}::text`;
+    if (table.scope() === null) {
+      // One input row, which every matched row merges.
+      const input = inputCte(sql, table, [{ ...encodeRow(table, patch), id: '' }]);
+      const assign = sql`${sql.unsafe(setList(mergeAssignments(table, 'r', 'i')))}, ${stamp}`;
+      return this.#filterWrite(type, where, opts.maxMatch, assign, false, table, input).catch(
+        (err: unknown) => {
+          throw this.#uniqueViolation(type, err);
+        }
+      );
+    }
     // Bound as text and cast in SQL, as patchRows does: a string bound as jsonb is a JSON string.
     const body = JSON.stringify(patch);
-    const updatedBy: ActorIdentity = opts.actor ?? { kind: 'system', id: 'anonymous' };
     // Each promoted column follows its key in the patch, as in patchRows. The
     // CASE keeps the text the same whichever keys `set` names.
     const mirrors: Fragment[] = [];
@@ -1601,14 +2016,14 @@ export class PgDataset implements Dataset {
       );
     }
     const assign = sql`body = r.body || ${body}::text::jsonb,
-            updated_at = ${opts.now ?? new Date()}::timestamptz,
-            updated_by_kind = ${updatedBy.kind}::text,
-            updated_by_id = ${updatedBy.id}::text
+            ${stamp}
             ${mirrors.length === 0 ? sql`` : (mirrors as unknown as Fragment)}`;
-    return this.#filterWrite(type, where, opts.maxMatch, assign, false).catch((err: unknown) => {
-      // A set onto a declared unique index's values: refused as `patchRows` refuses it.
-      throw this.#uniqueViolation(type, err);
-    });
+    return this.#filterWrite(type, where, opts.maxMatch, assign, false, table, null).catch(
+      (err: unknown) => {
+        // A set onto a declared unique index's values: refused as `patchRows` refuses it.
+        throw this.#uniqueViolation(type, err);
+      }
+    );
   }
 
   async deleteWhere(
@@ -1616,7 +2031,17 @@ export class PgDataset implements Dataset {
     where: WhereClause,
     opts: FilterWriteOptions
   ): Promise<FilterWriteResult> {
-    return this.#filterWrite(type, where, opts.maxMatch, this.#sql`deleted_at = now()`, true);
+    const table = await this.#tableFor(type);
+    if (table === undefined) return { count: 0, ids: [], rows: [] };
+    return this.#filterWrite(
+      type,
+      where,
+      opts.maxMatch,
+      this.#sql`deleted_at = now()`,
+      true,
+      table,
+      null
+    );
   }
 
   /**
@@ -1628,14 +2053,16 @@ export class PgDataset implements Dataset {
    * (`FOR UPDATE`), so one moved out of the filter is neither locked nor
    * written. Locks are taken in id order, so overlapping filter writes queue
    * rather than deadlock. `preImage` returns the rows without the write's
-   * `deleted_at`.
+   * `deleted_at`. On a type table, `input` is the CTE `assign` reads as `i`.
    */
   async #filterWrite(
     type: string,
     where: WhereClause,
     maxMatch: number,
     assign: Fragment,
-    preImage: boolean
+    preImage: boolean,
+    table: TypeTable,
+    input: Fragment | null
   ): Promise<FilterWriteResult> {
     const sql = this.#sql;
     // k as memory's read passes it: the match limit.
@@ -1644,10 +2071,48 @@ export class PgDataset implements Dataset {
       type,
       k: maxMatch + 1
     });
-    const table = rowsTypeTable(this.namespace, type, this.#promotedFor);
     const filter = buildWhere(sql, resolved, this.#castFor(type), table) ?? sql`true`;
     // shortId lives on the sidecar, so a where that reads it joins short_ids, as `read` does.
     const joinShortIds = whereReferencesField(resolved, 'shortId');
+    const fields = this.#typeDefLookup?.(type, this.namespace)?.fields;
+    if (table.scope() === null) {
+      const rel = sql.unsafe(table.from);
+      // As on `rows`: the UPDATE target cannot appear in a FROM join's ON, so the sidecar joins on m.
+      const sidecar = (id: string) =>
+        joinShortIds ? sql.unsafe(shortIdJoinSql(table, id)) : sql``;
+      const records = (await sql`
+        WITH ${input === null ? sql`` : sql`${input},`}
+        m AS (
+          SELECT r.id AS mid FROM ${rel} r ${sidecar('r.id')}
+          WHERE ${filter} AND r.deleted_at IS NULL
+          ORDER BY r.id
+          LIMIT ${maxMatch + 1}
+          FOR UPDATE OF r
+        ),
+        u AS (
+          UPDATE ${rel} r SET ${assign}
+          FROM m ${sidecar('m.mid')}${input === null ? sql`` : sql`, input i`}
+          WHERE r.id = m.mid
+            AND (SELECT count(*) FROM m) <= ${maxMatch}
+            AND ${filter} AND r.deleted_at IS NULL
+          RETURNING r.*
+        )
+        SELECT (SELECT count(*) FROM m)::int AS matched, ${returnedRowSql(sql, table, 'u')}
+        FROM (SELECT 1) one
+        LEFT JOIN u ON true
+        ${sql.unsafe(shortIdJoinSql(table, 'u.id'))}
+      `) as unknown as Array<TableRowRecord & { matched: number }>;
+      if ((records[0]?.matched ?? 0) > maxMatch)
+        throw filterTooBroad(this.namespace, type, maxMatch);
+      const rows = records
+        .filter((r) => r.id !== null)
+        .map((r) => {
+          const row = this.materialize(r, fields, table);
+          if (preImage) delete row._deletedAt;
+          return row;
+        });
+      return { count: rows.length, ids: rows.map((r) => r.id), rows };
+    }
     const matchJoin = joinShortIds
       ? sql`LEFT JOIN short_ids s ON s.namespace = r.namespace AND s.type = r.type AND s.row_id = r.id`
       : sql``;
@@ -1684,7 +2149,6 @@ export class PgDataset implements Dataset {
         ON sid.namespace = u.namespace AND sid.type = u.type AND sid.row_id = u.id
     `;
     if ((records[0]?.matched ?? 0) > maxMatch) throw filterTooBroad(this.namespace, type, maxMatch);
-    const fields = this.#typeDefLookup?.(type, this.namespace)?.fields;
     const rows = records.filter((r) => r.id !== null).map((r) => this.materialize(r, fields));
     return { count: rows.length, ids: rows.map((r) => r.id), rows };
   }
@@ -1715,7 +2179,8 @@ export class PgDataset implements Dataset {
       layoutCache: this.#layoutCache,
       statementTimeoutMs: this.#statementTimeoutMs,
       ...(this.#typeDefLookup !== null ? { typeDefLookup: this.#typeDefLookup } : {}),
-      ...(this.#diskGuard !== undefined ? { diskGuard: this.#diskGuard } : {})
+      ...(this.#diskGuard !== undefined ? { diskGuard: this.#diskGuard } : {}),
+      tableCache: this.#tableCache
     });
   }
 
@@ -1734,17 +2199,45 @@ export class PgDataset implements Dataset {
    * run CONCURRENTLY, outside any transaction, so a tx-bound instance refuses.
    * Logs each index it created, adopted or swapped, and records each one
    * left pending, building or failed for `describeStorage` and `storageReport`.
+   *
+   * On `tables`, brings the type's table in line with its declared fields
+   * (`ensureTypeTable`; a new field gets its column, or `pending` under
+   * `newFields: 'pending'`) and returns the fields that went `pending` in this
+   * call (F12). Its indexes are not built yet. The old layouts return none.
    */
   async ensureTypeStorage(
     type: string,
-    opts: { indexes?: 'all' | 'unique' | 'nonUnique'; signal?: AbortSignal } = {}
-  ): Promise<void> {
+    opts: {
+      indexes?: 'all' | 'unique' | 'nonUnique';
+      signal?: AbortSignal;
+      newFields?: 'column' | 'pending';
+    } = {}
+  ): Promise<{ pending: string[] }> {
     const layout = await this.#layout();
-    if (layout === 'absent') return;
+    if (layout === 'absent') return { pending: [] };
     if (this.#inTx) {
       throw new Error('PgDataset.ensureTypeStorage cannot be called on a tx-bound instance');
     }
     const sql = this.#sql as Sql;
+    if (layout === 'tables') {
+      const def = this.#typeDefLookup?.(type, this.namespace);
+      const change = await ensureTypeTable(sql, {
+        namespace: this.namespace,
+        type,
+        fields: def?.fields ?? {},
+        newFields: opts.newFields ?? 'column',
+        enforceUuidCheck: await this.#uuidCheck(),
+        // A dataset that does not know the type (an admin tool, bootstrap) may
+        // create its table but never changes its declarations: `{}` would
+        // orphan every column.
+        createOnly: def === undefined
+      });
+      // Committed: drop the cached table now rather than when the notification lands.
+      this.#tableCache.tables.delete(`${this.namespace}/${type}`);
+      this.#tableCache.gen++;
+      // shortcut: a type table's indexes are built by Task 12 (Todo #1858); none are reconciled yet.
+      return { pending: change.pending };
+    }
     if (layout === 'partitioned') await ensureTypeStorage(sql, this.namespace, type);
     const builds = this.#deferredBuilds();
     const qualified = `${this.namespace}/${type}`;
@@ -1791,6 +2284,7 @@ export class PgDataset implements Dataset {
         `[substrate] index ${s.name} on ${this.namespace}/${type}: ${s.outcome} (${s.state})\n`
       );
     }
+    return { pending: [] };
   }
 
   #deferredBuilds(): Map<string, DeferredBuild> {
@@ -1863,6 +2357,7 @@ export class PgDataset implements Dataset {
   async pendingIndexBuilds(type: string): Promise<Array<{ name: string; estimateBytes: number }>> {
     const layout = await this.#layout();
     if (layout === 'absent') return [];
+    if (layout === 'tables') throw notOnTables('pendingIndexBuilds');
     const args = this.#indexArgs(type, this.namespace, layout);
     if (
       layout === 'partitioned' &&
@@ -1875,7 +2370,9 @@ export class PgDataset implements Dataset {
 
   /** See `Dataset.describeStorage`. Reads the catalog only, in a fixed number of queries. */
   async describeStorage(type: string): Promise<TypeStorageReport> {
-    const layout = (await this.#layout()) === 'partitioned' ? 'partitioned' : 'legacy';
+    const detected = await this.#layout();
+    if (detected === 'tables') throw notOnTables('describeStorage');
+    const layout = detected === 'partitioned' ? 'partitioned' : 'legacy';
     const sql = this.#sql as Sql;
     const args = this.#indexArgs(type, this.namespace, layout);
     if (layout === 'legacy') {
@@ -1900,6 +2397,7 @@ export class PgDataset implements Dataset {
    */
   async storageReport(opts: { partitionBudget: number }): Promise<StorageReport> {
     const layout = await this.#layout();
+    if (layout === 'tables') throw notOnTables('storageReport');
     const building = [...this.#deferredBuilds()]
       .sort(([a], [b]) => a.localeCompare(b))
       .map(
@@ -2329,12 +2827,29 @@ export class PgDataset implements Dataset {
     );
   }
 
-  /** `fields` is the type's, which the caller looks up once however many rows it builds. */
+  /**
+   * `fields` is the type's, which the caller looks up once however many rows it
+   * builds. A type-table row (`table` is one) is decoded first; `requested`,
+   * a read's `fields`, then trims the `$raw` entries `decodeRow` overlays, since
+   * the projection keeps `$raw` whole.
+   */
   private materialize(
-    record: SubstrateRowRecord,
-    fields: Record<string, FieldDef> | undefined
+    record: SubstrateRowRecord | TableRowRecord,
+    fields: Record<string, FieldDef> | undefined,
+    table?: TypeTable,
+    requested?: ReadParams['fields']
   ): Row {
-    const body = record.body ?? {};
+    let body: Record<string, unknown>;
+    if ('body' in record) {
+      body = record.body ?? {};
+    } else {
+      if (table === undefined) throw new Error('internal: a type-table row needs its table');
+      body = decodeRow(table, record);
+      const raw = (record.extra as Record<string, unknown> | null)?.[RAW_KEY];
+      if (requested !== undefined && raw !== null && typeof raw === 'object') {
+        for (const k of Object.keys(raw)) if (!Object.hasOwn(requested, k)) delete body[k];
+      }
+    }
     // Prefer the body.id (preserves number vs string at write time) over the
     // text PK column when present.
     const originalId = this.extractOriginalId(record.id, body);
@@ -2372,6 +2887,17 @@ export class PgDataset implements Dataset {
     if (typeof bodyId === 'number' || typeof bodyId === 'string') return bodyId;
     return textId;
   }
+}
+
+/**
+ * A storage report the `tables` layout cannot give yet: it reads `rows` and its
+ * partitions, and Task 12 builds and reports a type table's indexes. Thrown
+ * rather than reporting the store as legacy.
+ */
+function notOnTables(method: string): Error {
+  return new Error(
+    `PgDataset.${method} is not available on the tables layout until type-table indexes are built and reported (typed-tables Task 12)`
+  );
 }
 
 /** The statement timeout a walk read runs under, in milliseconds, unless a shorter one is set. */

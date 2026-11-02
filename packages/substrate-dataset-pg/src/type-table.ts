@@ -103,6 +103,24 @@ export function rowsTypeTable(
   };
 }
 
+/**
+ * A type on the `tables` layout that has no table yet: an empty relation with
+ * a type table's fixed columns, so a read of it compiles and finds nothing.
+ */
+export function absentTypeTable(namespace: string, type: string): TypeTable {
+  return {
+    namespace,
+    type,
+    from: "(SELECT NULL::text AS id, NULL::timestamptz AS deleted_at, NULL::timestamptz AS created_at, NULL::timestamptz AS updated_at, NULL::text AS created_by_kind, NULL::text AS created_by_id, NULL::text AS updated_by_kind, NULL::text AS updated_by_id, NULL::bigint AS seq, '{}'::jsonb AS extra WHERE false)",
+    jsonb: 'extra',
+    scope: () => null,
+    column: () => undefined,
+    columns: () => [],
+    pending: [],
+    orphaned: []
+  };
+}
+
 type FieldState = 'pending' | TypedColumn['state'];
 
 interface CatalogRow {
@@ -175,7 +193,7 @@ export class FieldKindChangedError extends Error {
 
 export interface TypeTableChange {
   created: boolean;
-  /** Fields that got a column. */
+  /** Fields that got a column: `column` in a CREATE, `promoting` when added to an existing table. */
   added: string[];
   /** Fields newly recorded `pending`. */
   pending: string[];
@@ -190,6 +208,12 @@ export interface EnsureTypeTableArgs {
   /** What a declared field without a column gets: its column now, or `pending` for the sweep. */
   newFields: 'column' | 'pending';
   enforceUuidCheck: boolean;
+  /**
+   * Create the table when it is missing, and otherwise change nothing: for a
+   * caller that does not know the type's fields, whose empty `fields` would
+   * otherwise orphan every column.
+   */
+  createOnly?: boolean;
 }
 
 /** How long one ADD COLUMN or CHECK change may queue writers behind its lock. */
@@ -238,9 +262,13 @@ async function ensureIn(tx: TransactionSql, args: EnsureTypeTableArgs): Promise<
              VALUES (${namespace}, ${type}, ${table})`;
     for (const [field, { kind, vocab }] of declared) await record(field, kind, 'column', vocab);
     change.created = true;
-  } else {
+  } else if (args.createOnly !== true) {
     const table = ident(existing.table_name);
     const catalog = new Map((await catalogOf(tx, namespace, type)).map((r) => [r.field, r]));
+    // A column added to an existing table starts `promoting`, empty or not: a
+    // writer whose cached table predates it puts the field's value in `extra`,
+    // which `extraWins` keeps readable until the sweep moves it (Task 13). Only
+    // a table's first CREATE declares fields `column` outright.
     for (const [field, { kind, vocab }] of declared) {
       const row = catalog.get(field);
       if (row === undefined) {
@@ -251,7 +279,7 @@ async function ensureIn(tx: TransactionSql, args: EnsureTypeTableArgs): Promise<
         ];
         const added =
           newFields === 'column' && (await ddl(tx, `ALTER TABLE ${table} ${clauses.join(', ')}`));
-        await record(field, kind, added ? 'column' : 'pending', vocab);
+        await record(field, kind, added ? 'promoting' : 'pending', vocab);
         (added ? change.added : change.pending).push(field);
         continue;
       }
@@ -263,17 +291,17 @@ async function ensureIn(tx: TransactionSql, args: EnsureTypeTableArgs): Promise<
         await setState(field, 'promoting');
         changed = true;
       }
-      if (!sameVocab(row.vocab, vocab)) {
+      const widened = widen(row.vocab, vocab);
+      if (widened !== undefined) {
         // On a lock timeout the old vocabulary stays recorded, and the next boot retries.
         const applied =
           row.state === 'pending' ||
           (await ddl(
             tx,
-            `ALTER TABLE ${table} ${enumCheckClauses(row.column_name, vocab).join(', ')}`
+            `ALTER TABLE ${table} ${enumCheckClauses(row.column_name, widened).join(', ')}`
           ));
         if (applied) {
-          await tx`UPDATE substrate_type_fields
-                   SET vocab = ${vocab === undefined ? null : tx.array([...vocab])}
+          await tx`UPDATE substrate_type_fields SET vocab = ${tx.array(widened)}
                    WHERE namespace = ${namespace} AND type = ${type} AND field = ${field}`;
           changed = true;
         }
@@ -307,11 +335,21 @@ function vocabOf(def: FieldDef): readonly string[] | undefined {
   return def.kind === 'scalar' ? def.enum : undefined;
 }
 
-/** Order-insensitive: a reordered enum checks the same values. */
-function sameVocab(a: readonly string[] | null, b: readonly string[] | undefined): boolean {
-  const key = (v: readonly string[] | null | undefined) =>
-    JSON.stringify(v == null ? null : [...v].sort());
-  return key(a) === key(b);
+/**
+ * The recorded vocabulary with `declared`'s new values appended, or undefined
+ * when it already holds them all. Only ever widens: a value dropped from the
+ * declaration stays recorded and in the CHECK, because pg re-checks a CHECK on
+ * every UPDATE of a row, so a narrowed one would refuse any update of a row
+ * still holding the dropped value. The codec admits a recorded value to the
+ * column, so such a row reads and filters as written.
+ */
+function widen(
+  recorded: readonly string[] | null,
+  declared: readonly string[] | undefined
+): string[] | undefined {
+  const have = recorded ?? [];
+  const added = (declared ?? []).filter((v) => !have.includes(v));
+  return added.length === 0 ? undefined : [...have, ...added];
 }
 
 /**

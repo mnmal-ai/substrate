@@ -18,11 +18,15 @@ import type { FieldDef, Row } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PgDataset, runMigrations } from '../src/index.js';
+import { relationOf, TABLES, truncateRows } from './_layout.js';
 import { addTestPromotedColumns, dropTestPromotedColumns, TEST_PROMOTED } from './_promoted.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 
-describe.skipIf(!POSTGRES_URL)('keyset pagination agrees with the unpaginated read', () => {
+// Promoted columns are added to `rows`; a type table types its fields itself.
+const ROWS_PG = POSTGRES_URL !== undefined && !TABLES;
+
+describe.skipIf(!ROWS_PG)('keyset pagination agrees with the unpaginated read', () => {
   let sql: Sql;
   let ds: PgDataset;
 
@@ -36,7 +40,7 @@ describe.skipIf(!POSTGRES_URL)('keyset pagination agrees with the unpaginated re
     await sql.end();
   });
   beforeEach(async () => {
-    await sql`TRUNCATE TABLE rows, short_ids`;
+    await truncateRows(sql);
     ds = new PgDataset({ namespace: 'cursor_agree', sql, promotedColumns: TEST_PROMOTED });
   });
 
@@ -288,7 +292,7 @@ describe.skipIf(!POSTGRES_URL)('keyset pagination over sub-millisecond timestamp
 
   for (const dir of ['asc', 'desc'] as const) {
     it(`pages a microsecond-precision date field without repeats (${dir})`, async () => {
-      await sql`TRUNCATE TABLE rows, short_ids`;
+      await truncateRows(sql);
       const ds = new PgDataset({ namespace: 'cursor_usec', sql, fieldDefLookup: dueAtIsDate });
       await ds.write('Memo', [
         { id: 'a', dueAt: '2026-10-21T10:00:00.123456Z' },
@@ -314,15 +318,16 @@ describe.skipIf(!POSTGRES_URL)('keyset pagination over sub-millisecond timestamp
   }
 
   it('pages createdAt the same way when it carries microseconds', async () => {
-    await sql`TRUNCATE TABLE rows, short_ids`;
+    await truncateRows(sql);
     const ds = new PgDataset({ namespace: 'cursor_usec', sql });
     await ds.write('Memo', [{ id: 'a' }, { id: 'b' }, { id: 'c' }] as Row[]);
     // Writes through a path that stamps now() carry microseconds.
-    await sql`
-      UPDATE rows
-      SET created_at = '2026-10-21T10:00:00.123456Z'::timestamptz
-        + (CASE id::text WHEN 'a' THEN 1 WHEN 'b' THEN 2 ELSE 3 END) * interval '1 microsecond'
-      WHERE namespace = 'cursor_usec'`;
+    await sql.unsafe(
+      `UPDATE ${await relationOf(sql, 'cursor_usec', 'Memo')}
+       SET created_at = '2026-10-21T10:00:00.123456Z'::timestamptz
+         + (CASE id::text WHEN 'a' THEN 1 WHEN 'b' THEN 2 ELSE 3 END) * interval '1 microsecond'
+       ${TABLES ? '' : "WHERE namespace = 'cursor_usec'"}`
+    );
     const seen: string[] = [];
     let cursor: string | undefined;
     for (let page = 0; page < 10; page++) {
@@ -340,7 +345,8 @@ describe.skipIf(!POSTGRES_URL)('keyset pagination over sub-millisecond timestamp
   });
 });
 
-describe.skipIf(!POSTGRES_URL || process.env.SUBSTRATE_TEST_LAYOUT !== 'partitioned')(
+// Derived keys are walk grammar: the partitioned and `tables` layouts.
+describe.skipIf(!POSTGRES_URL || (process.env.SUBSTRATE_TEST_LAYOUT ?? 'legacy') === 'legacy')(
   'keyset pagination over a derived key',
   () => {
     // A derived key is computed per row, so the same expression must sort,
@@ -370,7 +376,7 @@ describe.skipIf(!POSTGRES_URL || process.env.SUBSTRATE_TEST_LAYOUT !== 'partitio
 
     for (const dir of ['asc', 'desc'] as const) {
       it(`pages a ratio like the memory backend, nulls last (${dir})`, async () => {
-        await sql`TRUNCATE TABLE rows, short_ids`;
+        await truncateRows(sql);
         const ds = new PgDataset({ namespace: 'cursor_derive', sql, fieldDefLookup });
         await ds.ensureTypeStorage('Memo');
         const mem = new MemoryDataset({ namespace: 'cursor_derive', fieldDefLookup });

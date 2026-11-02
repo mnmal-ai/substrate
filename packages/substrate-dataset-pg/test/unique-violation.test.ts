@@ -12,6 +12,7 @@ import { isResolverFrameError } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset } from '../src/index.js';
+import { TABLES } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const TYPE = 'Checkpoint';
@@ -54,7 +55,9 @@ const refusal = async (write: Promise<unknown>) => {
   return err as { code: string; message: string; details?: Record<string, unknown> };
 };
 
-describe.skipIf(!POSTGRES_URL)('a declared unique index conflict (pg)', () => {
+// Needs the declared unique index built, which Task 12 does on type tables;
+// tables-dataset-parity covers the refusal with a stand-in index.
+describe.skipIf(!POSTGRES_URL || TABLES)('a declared unique index conflict (pg)', () => {
   it('is refused as unique_violation naming the index and its fields', async () => {
     const { ds, index } = await fixture();
     const err = await refusal(ds.write(TYPE, [{ task: 't1', revision: 1 }]));

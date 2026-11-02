@@ -763,14 +763,17 @@ export function deriveListIndexMigration(f: IndexedListField): MigrationInput {
  *
  * On the partitioned layout the list/json GIN migrations are skipped: those
  * indexes live on each type's partition, built by `reconcileTypeIndexes`, and
- * Postgres cannot build one CONCURRENTLY on the partitioned parent.
+ * Postgres cannot build one CONCURRENTLY on the partitioned parent. On
+ * `tables` they are skipped too, as there is no `rows`.
  */
 export async function runDerivedMigrations(
   sql: Sql,
   all: ReadonlyArray<MigrationInput>
 ): Promise<void> {
-  const partitioned = all.length > 0 && (await detectLayout(sql)) === 'partitioned';
-  const derived = partitioned ? all.filter((m) => !m.version.startsWith(LIST_GIN_PREFIX)) : all;
+  // On `tables` there is no `rows` to aim them at; each type table's indexes are its own (Task 12).
+  const layout = all.length > 0 ? await detectLayout(sql) : 'absent';
+  const perType = layout === 'partitioned' || layout === 'tables';
+  const derived = perType ? all.filter((m) => !m.version.startsWith(LIST_GIN_PREFIX)) : all;
   if (derived.length === 0) return;
   await withMigrationLock(sql, async (conn) => {
     await conn`

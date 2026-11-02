@@ -81,10 +81,11 @@ describe('propose_type prepares the type storage after commit', () => {
     calls: string[] = [];
     fail: Error | undefined;
     hold: Promise<void> | undefined;
-    async ensureTypeStorage(type: string): Promise<void> {
+    async ensureTypeStorage(type: string): Promise<{ pending: string[] }> {
       this.calls.push(type);
       await this.hold;
       if (this.fail !== undefined) throw this.fail;
+      return { pending: [] };
     }
   }
 

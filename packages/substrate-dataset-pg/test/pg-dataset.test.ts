@@ -1,6 +1,7 @@
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { NamespaceMismatch, PgDataset, ReservedField, runMigrations } from '../src/index.js';
+import { clearNamespace, rowsWhere, seedRowId, truncateRows } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 
@@ -20,7 +21,7 @@ describe.skipIf(!POSTGRES_URL)('PgDataset', () => {
   beforeEach(async () => {
     // Truncate sidecar too — without this, shortId allocations accumulate
     // across runs on a long-lived local DB and fail strict toEqual assertions.
-    await sql`TRUNCATE TABLE rows, short_ids`;
+    await truncateRows(sql);
     ds = new PgDataset({ namespace: 'test_ns', sql });
   });
 
@@ -557,13 +558,12 @@ describe.skipIf(!POSTGRES_URL)('PgDataset', () => {
       expect(meta?.createdBy).toEqual({ kind: 'agent', id: 'a-original' });
 
       // Direct column probe — the columns themselves must hold the new values.
-      const cols = await sql<
+      const cols = await sql.unsafe<
         { updated_by_kind: string; updated_by_id: string; created_by_id: string }[]
-      >`
-        SELECT updated_by_kind, updated_by_id, created_by_id
-        FROM rows
-        WHERE namespace = 'test_ns' AND type = 'Invite' AND id = 'meta-1'
-      `;
+      >(
+        `SELECT updated_by_kind, updated_by_id, created_by_id
+         FROM ${await rowsWhere(sql, 'test_ns', 'Invite')} id = 'meta-1'`
+      );
       expect(cols[0]?.updated_by_kind).toBe('agent');
       expect(cols[0]?.updated_by_id).toBe('kid-abc');
       expect(cols[0]?.created_by_id).toBe('a-original');
@@ -602,10 +602,10 @@ describe.skipIf(!POSTGRES_URL)('PgDataset', () => {
         { consumedBy: 'attempted' }
       );
       expect(res.matched).toBe(false);
-      const cols = await sql<{ updated_at: Date; updated_by_id: string }[]>`
-        SELECT updated_at, updated_by_id FROM rows
-        WHERE namespace = 'test_ns' AND type = 'Invite' AND id = 'meta-fail'
-      `;
+      const cols = await sql.unsafe<{ updated_at: Date; updated_by_id: string }[]>(
+        `SELECT updated_at, updated_by_id
+         FROM ${await rowsWhere(sql, 'test_ns', 'Invite')} id = 'meta-fail'`
+      );
       expect(cols[0]?.updated_at?.toISOString()).toBe(original);
       expect(cols[0]?.updated_by_id).toBe('a1');
     });
@@ -620,21 +620,14 @@ describe.skipIf(!POSTGRES_URL)('PgDataset', () => {
      * jsonb — these unit tests only exercise the short-id path.
      */
     async function seedRow(type: string, id: string): Promise<void> {
-      await sql`
-        INSERT INTO rows (namespace, type, id, body)
-        VALUES (${TEST_SHORT_ID_NS}, ${type}, ${id}, '{}'::jsonb)
-        ON CONFLICT (namespace, type, id) DO NOTHING
-      `;
+      await seedRowId(sql, TEST_SHORT_ID_NS, type, id);
     }
 
     beforeEach(async () => {
       // Clean up rows + short-id rows + sequences for this test namespace.
       // Deleting rows cascades to short_ids via the FK from
       // migration 0010; both are deleted for explicitness.
-      await sql`
-        DELETE FROM rows
-        WHERE namespace = ${TEST_SHORT_ID_NS}
-      `;
+      await clearNamespace(sql, TEST_SHORT_ID_NS);
       await sql`
         DELETE FROM short_ids
         WHERE namespace = ${TEST_SHORT_ID_NS}
@@ -703,7 +696,7 @@ describe.skipIf(!POSTGRES_URL)('PgDataset', () => {
       const READ_SHORT_ID_NS = 'test_pg_dataset_read_shortid';
 
       beforeEach(async () => {
-        await sql`DELETE FROM rows WHERE namespace = ${READ_SHORT_ID_NS}`;
+        await clearNamespace(sql, READ_SHORT_ID_NS);
         await sql`DELETE FROM short_ids WHERE namespace = ${READ_SHORT_ID_NS}`;
         const seqs = await sql<Array<{ sequencename: string }>>`
           SELECT sequencename FROM pg_sequences

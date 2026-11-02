@@ -27,6 +27,7 @@ import {
   type WhereClause
 } from '@mnmal-ai/substrate-types';
 import type { Sql, TransactionSql } from 'postgres';
+import { extraWins } from '../row-codec.js';
 import type { TypeTable } from '../type-table.js';
 import { metadataColumnSql } from './predicates-metadata.js';
 import {
@@ -138,12 +139,15 @@ function aggOver(
   // past MAX by half an ulp or more is NULL, as memory's; a tiny one is 0, as
   // memory's float64 arithmetic gives. Memory sums in float64, so the last bit,
   // and overflow under cancellation, can differ: accepted, as for avg/sum before.
-  // A number column is float8, so it is cast to numeric too.
+  // A `column`-state number is float8, so it is cast to numeric too, through
+  // its shortest exact text: float8::numeric keeps 15 digits. Any other number
+  // field reads as numeric already.
+  const c = table.column(field);
   const v = isMetadataField(field)
     ? sql.unsafe(`${metadataColumnSql(field, alias)}::numeric`)
-    : table.column(field) === undefined
+    : c === undefined || extraWins(c)
       ? fieldExpr(sql, table, field, 'number', alias)
-      : sql`${fieldExpr(sql, table, field, 'number', alias)}::numeric`;
+      : sql`${fieldExpr(sql, table, field, 'number', alias)}::text::numeric`;
   const s = sql`${sql.unsafe(op)}(${v})`;
   return {
     agg: sql`to_jsonb(CASE WHEN abs(${s}) >= ${sql.unsafe(OVERFLOW)} THEN NULL

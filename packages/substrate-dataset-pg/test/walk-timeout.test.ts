@@ -10,9 +10,11 @@ import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset } from '../src/index.js';
 import { runMigrations } from '../src/migrate.js';
+import { dropNamespace, relationOf, TABLES } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
-const PARTITIONED = process.env.SUBSTRATE_TEST_LAYOUT === 'partitioned';
+/** Walks run on the partitioned and `tables` layouts; legacy refuses them. */
+const WALK_LAYOUT = process.env.SUBSTRATE_TEST_LAYOUT === 'partitioned' || TABLES;
 const NS = `walk_timeout_${randomBytes(4).toString('hex')}`;
 const TIMEOUT_MS = 200;
 const WALK = { _walk: { in: `${NS}/Observation.cert` } } as unknown as WhereClause;
@@ -30,24 +32,24 @@ describe.skipIf(!POSTGRES_URL)('read timeout (pg)', () => {
     reader = postgres(POSTGRES_URL, { max: 1, onnotice: () => {} });
     locker = postgres(POSTGRES_URL, { max: 1, onnotice: () => {} });
     ds = new PgDataset({ namespace: NS, sql: reader, statementTimeoutMs: TIMEOUT_MS });
-    if (PARTITIONED) for (const type of ['Cert', 'Observation']) await ds.ensureTypeStorage(type);
+    if (WALK_LAYOUT) for (const type of ['Cert', 'Observation']) await ds.ensureTypeStorage(type);
     await ds.read('Cert', {}); // warms the layout cache before the lock is taken
   });
 
   afterAll(async () => {
     if (!POSTGRES_URL) return;
-    await sql`DELETE FROM rows WHERE namespace = ${NS}`;
+    await dropNamespace(sql, NS);
     await Promise.all([sql.end(), reader.end(), locker.end()]);
   });
 
-  /** Runs `fn` while another connection holds an exclusive lock on `rows`. */
+  /** Runs `fn` while another connection holds an exclusive lock on Cert's rows. */
   async function underLock(fn: () => Promise<void>): Promise<void> {
     let release: () => void = () => {};
     const held = new Promise<void>((r) => (release = r));
     let locked: () => void = () => {};
     const gotLock = new Promise<void>((r) => (locked = r));
     const holder = locker.begin(async (tx) => {
-      await tx`LOCK TABLE rows IN ACCESS EXCLUSIVE MODE`;
+      await tx.unsafe(`LOCK TABLE ${await relationOf(tx, NS, 'Cert')} IN ACCESS EXCLUSIVE MODE`);
       locked();
       await held;
     });
@@ -82,7 +84,7 @@ describe.skipIf(!POSTGRES_URL)('read timeout (pg)', () => {
     }
   });
 
-  it.skipIf(!PARTITIONED)(
+  it.skipIf(!WALK_LAYOUT)(
     'refuses a walk read that outlives the statement timeout as query_timeout',
     async () => {
       await underLock(async () => {
@@ -94,7 +96,7 @@ describe.skipIf(!POSTGRES_URL)('read timeout (pg)', () => {
     }
   );
 
-  it.skipIf(!PARTITIONED)('keeps a caller abort an AbortError, not query_timeout', async () => {
+  it.skipIf(!WALK_LAYOUT)('keeps a caller abort an AbortError, not query_timeout', async () => {
     await underLock(async () => {
       const controller = new AbortController();
       const pending = ds.read('Cert', { where: WALK, signal: controller.signal });

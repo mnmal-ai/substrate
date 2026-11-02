@@ -20,6 +20,7 @@ import {
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset } from '../src/index.js';
+import { dropNamespace, TABLES } from './_layout.js';
 import { walkComparers } from './_walk-helpers.js';
 import {
   CARDS,
@@ -31,7 +32,8 @@ import {
 } from './fixtures/walk-fixtures.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
-const PARTITIONED = process.env.SUBSTRATE_TEST_LAYOUT === 'partitioned';
+/** Walks run on the partitioned and `tables` layouts; legacy refuses them. */
+const WALK_LAYOUT = process.env.SUBSTRATE_TEST_LAYOUT === 'partitioned' || TABLES;
 const NS = `wpar_${randomBytes(4).toString('hex')}`;
 const SCHEMA = walkSchema(NS);
 const fieldDefLookup = (type: string, field: string): FieldDef | undefined =>
@@ -389,7 +391,7 @@ beforeAll(async () => {
   if (!POSTGRES_URL) return;
   sql = postgres(POSTGRES_URL, { onnotice: () => {} });
   pg = new PgDataset({ namespace: NS, sql, fieldDefLookup, typeDefLookup });
-  if (!PARTITIONED) return;
+  if (!WALK_LAYOUT) return;
   for (const type of Object.keys(SCHEMA)) await pg.ensureTypeStorage(type);
   for (const [type, rows] of Object.entries({ ...CARDS, ...RUNS })) {
     await pg.write(type, fx(rows) as never);
@@ -400,18 +402,18 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (!POSTGRES_URL) return;
-  await sql`DELETE FROM rows WHERE namespace = ${NS}`;
+  await dropNamespace(sql, NS);
   await sql.end({ timeout: 5 });
 });
 
-describe.skipIf(!POSTGRES_URL || PARTITIONED)('walk parity, legacy pass (pg)', () => {
+describe.skipIf(!POSTGRES_URL || WALK_LAYOUT)('walk parity, legacy pass (pg)', () => {
   it.each(mustRefuse.filter((c) => c[1] === 'legacy pg'))('%s refuses', async (...c) => {
     const [, , type, params, code] = c;
     await expect(pg.read(type, params)).rejects.toMatchObject({ code });
   });
 });
 
-describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk parity across memory and pg', () => {
+describe.skipIf(!POSTGRES_URL || !WALK_LAYOUT)('walk parity across memory and pg', () => {
   it.each(mustAgree)('%s', async (_name, type, params, expected) => {
     if (params.count === true || params.aggregate !== undefined) {
       expect(await sameResult(type, params)).toMatchObject(expected);
