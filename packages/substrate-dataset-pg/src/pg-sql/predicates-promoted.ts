@@ -1,17 +1,24 @@
 /**
- * WHERE predicates against body-promoted columns. These read the column
- * ONLY, with no body fallback — see `PgDatasetOptions.promotedColumns`.
+ * WHERE predicates against dedicated columns: the old layouts' body-promoted
+ * columns, which read the column ONLY, with no body fallback (see
+ * `PgDatasetOptions.promotedColumns`), and a type table's typed columns.
  */
 
 import { UnsupportedFilterError } from '@mnmal-ai/substrate-types';
 import type { Sql, TransactionSql } from 'postgres';
+import type { TypedColumn, TypeTable } from '../type-table.js';
 import {
+  columnAs,
   combineAnd,
   combineOr,
   escapeLike,
   type Fragment,
+  fieldExpr,
+  notNullAnd,
   type PromotedBodyColumn,
-  promotedColumnSql
+  promotedColumnSql,
+  tsArrayParam,
+  tsParam
 } from './primitives.js';
 
 /**
@@ -160,6 +167,171 @@ export function buildPromotedBodyColumnPredicate(
     fragments.push(frag);
   }
 
+  if (fragments.length === 0) return null;
+  return combineAnd(sql, fragments);
+}
+
+/**
+ * Builds the WHERE predicate for `field`, a typed column of `table`, read
+ * through `fieldExpr` (so a `promoting` or `orphaned` field's `extra` key wins
+ * when present). As memory's evaluator: an operand of another type than the
+ * column's never equals or orders (so `neq`/`nin` admit it), a null is the
+ * is-null filter, and a compare on an absent value is FALSE, never NULL, so a
+ * caller's NOT stays sound. Throws `UnsupportedFilterError` as the body path does.
+ */
+export function buildColumnPredicate(
+  sql: Sql | TransactionSql,
+  field: string,
+  table: TypeTable,
+  column: TypedColumn,
+  predicate: Record<string, unknown>,
+  alias?: string
+): Fragment | null {
+  const as = columnAs(column.kind);
+  const expr = fieldExpr(sql, table, field, as, alias);
+  /** `v` bound as the column's type, or undefined when it is of another type. */
+  const param = (v: unknown): Fragment | undefined => {
+    switch (as) {
+      case 'text':
+        if (typeof v === 'string') return sql`${v}::text`;
+        // A numeric crossRef id is held as its text, as the codec writes it.
+        return column.kind === 'crossRef' && typeof v === 'number'
+          ? sql`${String(v)}::text`
+          : undefined;
+      case 'number':
+        return typeof v === 'number' ? sql`${v}` : undefined;
+      case 'date':
+        return typeof v === 'string' || v instanceof Date ? tsParam(sql, v) : undefined;
+      case 'boolean':
+        // Inlined, so a generic plan can still match a partial index's predicate.
+        return typeof v === 'boolean' ? sql.unsafe(v ? 'TRUE' : 'FALSE') : undefined;
+    }
+  };
+  const fits = (v: unknown): boolean => param(v) !== undefined;
+  const guarded = (cond: Fragment): Fragment => notNullAnd(sql, expr, cond);
+  /** `expr = ANY(...)` over the non-null members that fit; FALSE when none does. */
+  const anyOf = (values: unknown[]): Fragment => {
+    const fit = values.filter(fits);
+    if (fit.length === 0) return sql`FALSE`;
+    const list =
+      as === 'date'
+        ? tsArrayParam(sql, fit)
+        : as === 'number'
+          ? sql`${fit as number[]}::float8[]`
+          : as === 'boolean'
+            ? sql`${fit as boolean[]}::boolean[]`
+            : sql`${fit.map(String)}::text[]`;
+    return guarded(sql`${expr} = ANY(${list})`);
+  };
+  const ordered = (op: string, v: unknown): Fragment | undefined => {
+    if (typeof v !== 'number' && typeof v !== 'string' && !(v instanceof Date)) {
+      throw new UnsupportedFilterError(
+        field,
+        op,
+        `cannot compare against a ${v === null ? 'null' : typeof v} value`
+      );
+    }
+    return param(v);
+  };
+
+  const fragments: Fragment[] = [];
+  for (const [op, operand] of Object.entries(predicate)) {
+    switch (op) {
+      case 'eq': {
+        const p = param(operand);
+        fragments.push(
+          operand === null
+            ? sql`${expr} IS NULL`
+            : p === undefined
+              ? sql`FALSE`
+              : guarded(sql`${expr} = ${p}`)
+        );
+        break;
+      }
+      case 'neq': {
+        const p = param(operand);
+        fragments.push(
+          operand === null
+            ? sql`${expr} IS NOT NULL`
+            : p === undefined
+              ? sql`TRUE`
+              : sql`${expr} IS DISTINCT FROM ${p}`
+        );
+        break;
+      }
+      case 'gt':
+      case 'gte':
+      case 'lt':
+      case 'lte': {
+        const p = ordered(op, operand);
+        // Template slots are value slots, so the operator comes from this closed set.
+        const cmp = sql.unsafe({ gt: '>', gte: '>=', lt: '<', lte: '<=' }[op]);
+        fragments.push(p === undefined ? sql`FALSE` : guarded(sql`${expr} ${cmp} ${p}`));
+        break;
+      }
+      case 'between': {
+        if (!Array.isArray(operand) || operand.length !== 2) {
+          throw new UnsupportedFilterError(field, op, 'requires a two-element [low, high] array');
+        }
+        const lo = ordered(op, operand[0]);
+        const hi = ordered(op, operand[1]);
+        fragments.push(
+          lo === undefined || hi === undefined
+            ? sql`FALSE`
+            : guarded(sql`${expr} BETWEEN ${lo} AND ${hi}`)
+        );
+        break;
+      }
+      case 'in': {
+        if (!Array.isArray(operand)) {
+          throw new UnsupportedFilterError(field, op, 'requires an array value');
+        }
+        // A null member means "or absent", as in memory.
+        const values = operand.filter((v) => v !== null && v !== undefined);
+        const any = anyOf(values);
+        fragments.push(values.length < operand.length ? sql`(${any} OR ${expr} IS NULL)` : any);
+        break;
+      }
+      case 'nin': {
+        if (!Array.isArray(operand)) {
+          throw new UnsupportedFilterError(field, op, 'requires an array value');
+        }
+        const values = operand.filter((v) => v !== null && v !== undefined);
+        fragments.push(
+          operand.length === 0
+            ? sql`TRUE`
+            : values.length < operand.length
+              ? values.length === 0
+                ? sql`${expr} IS NOT NULL`
+                : sql`(${expr} IS NOT NULL AND NOT ${anyOf(values)})`
+              : sql`(${expr} IS NULL OR NOT ${anyOf(values)})`
+        );
+        break;
+      }
+      case 'contains':
+      case 'startsWith':
+      case 'endsWith': {
+        if (typeof operand !== 'string') {
+          throw new UnsupportedFilterError(field, op, 'requires a string value');
+        }
+        // Memory matches only a string value: a number or boolean never does.
+        if (as !== 'text' && as !== 'date') {
+          fragments.push(sql`FALSE`);
+          break;
+        }
+        const e = escapeLike(operand);
+        const pattern = op === 'contains' ? `%${e}%` : op === 'startsWith' ? `${e}%` : `%${e}`;
+        fragments.push(sql`${fieldExpr(sql, table, field, 'rawText', alias)} ILIKE ${pattern}`);
+        break;
+      }
+      case 'has':
+        // List membership: a scalar column is never a list.
+        fragments.push(sql`FALSE`);
+        break;
+      default:
+        throw new UnsupportedFilterError(field, op, 'is not a recognised filter operator');
+    }
+  }
   if (fragments.length === 0) return null;
   return combineAnd(sql, fragments);
 }

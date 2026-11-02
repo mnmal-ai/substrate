@@ -13,6 +13,7 @@ import postgres from 'postgres';
 import { afterAll, describe, expect, it } from 'vitest';
 import { buildAggPredicate, buildWalkAgg, buildWalkProjection } from '../src/pg-sql/aggregate.js';
 import { buildDerive, type WalkScope, walkScope } from '../src/pg-sql/walk.js';
+import { rowsTypeTable } from '../src/type-table.js';
 
 const sql = postgres('postgres://nobody@127.0.0.1:1/none');
 afterAll(() => sql.end());
@@ -48,16 +49,18 @@ const FIELDS: Record<string, Record<string, FieldDef>> = {
   }
 };
 const IN = `${NS}/Nbr.hub`;
+const tableFor = (t: string) => rowsTypeTable(NS, t, () => undefined);
+const HUB = tableFor('Hub');
 
 /** A seed scope over Hub whose (hub, `key`) index runs in `dirs[key]`. */
 function scope(dirs: Record<string, 'asc' | 'desc'>): WalkScope {
-  const s = walkScope(NS, 'Hub', 'r', (t, f) => FIELDS[t]?.[f]);
+  const s = walkScope(NS, 'Hub', 'r', (t, f) => FIELDS[t]?.[f], tableFor);
   s.indexDir = (t, crossRef, key) =>
     t === 'Nbr' && crossRef === 'hub' && Object.hasOwn(dirs, key) ? dirs[key] : undefined;
   return s;
 }
 const project = (aggs: Record<string, WalkAgg>, s: WalkScope) =>
-  render(buildWalkProjection(sql, aggs, {}, () => undefined, s));
+  render(buildWalkProjection(sql, aggs, {}, HUB, s));
 
 const latestAt: WalkAgg = { in: IN, latest: { by: 'at', value: 'price' } } as WalkAgg;
 const AT = `substrate_ts(w1.body -> 'at')`;
@@ -111,14 +114,14 @@ describe('walk _agg picks compile to an index-order top-1', () => {
     // As the pg dataset wires it.
     s.aggValue = (name) => {
       if (name !== 'lp') throw new Error(name);
-      return buildWalkAgg(sql, latestAt, () => undefined, s).value;
+      return buildWalkAgg(sql, latestAt, HUB, s).value;
     };
     const derive = render(buildDerive(sql, 'm', { diff: ['_agg.lp', '$.ask'] }, s));
     const pred = render(
       buildAggPredicate(
         sql,
         { _agg: latestAt, gte: 50 } as WalkAggPredicate,
-        () => undefined,
+        HUB,
         scope({ at: 'desc' })
       )
     );

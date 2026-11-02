@@ -105,7 +105,9 @@ import { sqlStringLiteral } from './pg-sql/primitives.js';
 import {
   buildDerive,
   prepareSharedPicks,
+  tableLookup,
   walkScope,
+  walkTypes,
   whereUsesWalks,
   withCtes
 } from './pg-sql/walk.js';
@@ -113,11 +115,11 @@ import {
   asJsonValue,
   assembleRowMetadata,
   type BodyOrderByCast,
-  buildBodyProjection,
   buildCursorCompare,
   buildCursorNullTail,
   buildOrderBy,
   buildProjectedOrderBy,
+  buildRowProjection,
   buildSortKeyProjection,
   buildWhere,
   combineAnd,
@@ -140,6 +142,7 @@ import {
   typePartition,
   typePartitions
 } from './type-storage.js';
+import { rowsTypeTable } from './type-table.js';
 
 // The pool-owned instance holds `Sql`; tx-scoped instances hold the
 // `TransactionSql` from `sql.begin(fn)`. Only `Sql` exposes `begin`, so that
@@ -558,9 +561,16 @@ export class PgDataset implements Dataset {
     let extMeta: ExtensionOpResultMeta | null = null;
     // One scope per statement, so walk aliases stay unique across where and projection.
     const lookup = this.#fieldDefLookup;
-    const scope = walks
-      ? walkScope(this.namespace, type, 'r', (t, f) => lookup?.(t, f))
-      : undefined;
+    const fieldDef = (t: string, f: string) => lookup?.(t, f);
+    // The compiler cannot await, so the seed's and every far type's table is
+    // loaded first (F19). On the old layouts each is `rows`.
+    const tableFor = tableLookup(
+      [...(walks ? walkTypes(params, type, fieldDef) : [type])].map((t) =>
+        rowsTypeTable(this.namespace, t, this.#promotedFor)
+      )
+    );
+    const table = tableFor(type);
+    const scope = walks ? walkScope(this.namespace, type, 'r', fieldDef, tableFor) : undefined;
     if (scope !== undefined) {
       // As the plan advisor's `leads`: a full index, the crossRef first, `key` next.
       scope.indexDir = (t, crossRef, key) =>
@@ -575,7 +585,7 @@ export class PgDataset implements Dataset {
       scope.aggValue = (name) => {
         const spec = Object.hasOwn(frameAggs, name) ? frameAggs[name] : undefined;
         if (spec === undefined) throw new Error(`internal: '_agg.${name}' names no frame _agg`);
-        return buildWalkAgg(sql, spec, this.#promotedFor, scope).value;
+        return buildWalkAgg(sql, spec, table, scope).value;
       };
     }
     // #1815: shared forms, registered once the where's extension operators
@@ -597,22 +607,15 @@ export class PgDataset implements Dataset {
         const resolved = { ...params, where: detailed.where };
         const base = { clauses: [...clauses], ids: hasIdFilter };
         // A frame `_agg` window read by every seed is one group-by pass.
-        windowJoins = prepareWindows(
-          sql,
-          resolved,
-          base,
-          bodyCastFor,
-          this.#promotedFor,
-          scope,
-          (t, field) =>
-            desiredIndexKeys(this.#indexArgs(t, this.namespace, 'partitioned')).some(
-              (i) => i.only === undefined && i.keys[0]?.[0] === field
-            )
+        windowJoins = prepareWindows(sql, resolved, base, bodyCastFor, table, scope, (t, field) =>
+          desiredIndexKeys(this.#indexArgs(t, this.namespace, 'partitioned')).some(
+            (i) => i.only === undefined && i.keys[0]?.[0] === field
+          )
         );
         // A pick many seeds share through one hub is computed once per hub.
-        pickJoins = prepareSharedPicks(sql, resolved, base, bodyCastFor, this.#promotedFor, scope);
+        pickJoins = prepareSharedPicks(sql, resolved, base, bodyCastFor, table, scope);
       }
-      const whereFragment = buildWhere(sql, detailed.where, bodyCastFor, this.#promotedFor, scope);
+      const whereFragment = buildWhere(sql, detailed.where, bodyCastFor, table, scope);
       if (whereFragment !== null) clauses.push(whereFragment);
     }
 
@@ -694,7 +697,7 @@ export class PgDataset implements Dataset {
         cursor.orderByValues,
         cursor.id,
         orderByCastFor,
-        this.#promotedFor,
+        table,
         derivedFor
       );
       const tail = buildCursorNullTail(
@@ -702,13 +705,13 @@ export class PgDataset implements Dataset {
         orderBy,
         cursor.orderByValues,
         orderByCastFor,
-        this.#promotedFor,
+        table,
         derivedFor
       );
       if (tail !== null) tailSql = combineAnd(sql, [...base, tail]);
       if (cursorFragment !== null) whereSql = combineAnd(sql, [...base, cursorFragment]);
     }
-    const orderBySql = buildOrderBy(sql, orderBy, orderByCastFor, this.#promotedFor, derivedFor);
+    const orderBySql = buildOrderBy(sql, orderBy, orderByCastFor, table, derivedFor);
 
     // Fetch one extra row to determine hasMore without a count query.
     const fetchLimit = limit !== undefined ? limit + 1 : undefined;
@@ -719,11 +722,8 @@ export class PgDataset implements Dataset {
     const walkProjection =
       scope === undefined
         ? null
-        : buildWalkProjection(sql, frameAggs, params.nested ?? {}, this.#promotedFor, scope);
-    const bodyProjection =
-      walkProjection === null
-        ? buildBodyProjection(sql, params.fields)
-        : sql`(${buildBodyProjection(sql, params.fields)} || ${walkProjection})`;
+        : buildWalkProjection(sql, frameAggs, params.nested ?? {}, table, scope);
+    const rowProjection = buildRowProjection(sql, table, params.fields, 'r', walkProjection);
 
     // Projects each sort key so the cursor value comes from the same
     // expression that sorted. A promoted field sorts on its column but
@@ -733,7 +733,7 @@ export class PgDataset implements Dataset {
       sql,
       orderBy,
       bodyCastFor,
-      this.#promotedFor,
+      table,
       derivedFor
     );
 
@@ -754,7 +754,7 @@ export class PgDataset implements Dataset {
     const statement = (where: Fragment, n: number | undefined) =>
       joinShortIds
         ? sql<SubstrateRowRecord[]>`
-          SELECT r.id, ${bodyProjection} AS body, r.deleted_at, s.short_id,
+          SELECT r.id, ${rowProjection}, r.deleted_at, s.short_id,
                  r.created_at, r.updated_at,
                  r.created_by_kind, r.created_by_id,
                  r.updated_by_kind, r.updated_by_id, r.seq${sortKeyProjection}
@@ -770,7 +770,7 @@ export class PgDataset implements Dataset {
         : sql<SubstrateRowRecord[]>`
           SELECT p.*, s.short_id
           FROM (
-            SELECT r.id, ${bodyProjection} AS body, r.deleted_at,
+            SELECT r.id, ${rowProjection}, r.deleted_at,
                    r.created_at, r.updated_at,
                    r.created_by_kind, r.created_by_id,
                    r.updated_by_kind, r.updated_by_id, r.seq,
@@ -785,7 +785,7 @@ export class PgDataset implements Dataset {
             WHERE s.namespace = p.namespace AND s.type = p.type AND s.row_id = p.id
             LIMIT 1
           ) s ON true
-          ${buildProjectedOrderBy(sql, orderBy, sortKeyAliases, orderByCastFor, this.#promotedFor, 'p')}
+          ${buildProjectedOrderBy(sql, orderBy, sortKeyAliases, orderByCastFor, table, 'p')}
         `;
     // The CTEs ride in front only when there are any, so a plain read's text
     // is exactly what it was (callers and tests key on its leading SELECT).
@@ -1644,7 +1644,8 @@ export class PgDataset implements Dataset {
       type,
       k: maxMatch + 1
     });
-    const filter = buildWhere(sql, resolved, this.#castFor(type), this.#promotedFor) ?? sql`true`;
+    const table = rowsTypeTable(this.namespace, type, this.#promotedFor);
+    const filter = buildWhere(sql, resolved, this.#castFor(type), table) ?? sql`true`;
     // shortId lives on the sidecar, so a where that reads it joins short_ids, as `read` does.
     const joinShortIds = whereReferencesField(resolved, 'shortId');
     const matchJoin = joinShortIds

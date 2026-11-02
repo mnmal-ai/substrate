@@ -3,10 +3,11 @@
  * §1, §3, §5). The memory dataset's evaluator (`@mnmal-ai/substrate-filter`
  * walk.ts) is the reference; these fragments answer the same rows:
  *
- * - a hop follows the crossRef value in the row BODY: inbound through the
- *   eager crossRef index expression, outbound through the far row's id;
- * - every far row is pinned to its namespace and type (partition pruning) and
- *   must be live;
+ * - a hop follows the crossRef value in the row (its column on a type table,
+ *   else its BODY or `extra` key): inbound through the eager crossRef index
+ *   expression, outbound through the far row's id;
+ * - every far row is read from its type's table (`scope.tableFor`), pinned to
+ *   its namespace and type there on `rows` (partition pruning), and must be live;
  * - `any` → EXISTS, `none` → NOT EXISTS, `all` → NOT EXISTS of a neighbour
  *   whose predicate IS NOT TRUE, `pick` → the one neighbour `firstRow`
  *   finds by index probes;
@@ -28,20 +29,20 @@ import {
   type WhereClause
 } from '@mnmal-ai/substrate-types';
 import type { Sql, TransactionSql } from 'postgres';
+import type { TypeTable } from '../type-table.js';
 import { metadataColumnSql } from './predicates-metadata.js';
 import {
   type BodyOrderByCast,
   bodyNum,
-  bodyRawText,
   bodyText,
   bodyTs,
+  columnAs,
   combineAnd,
   type Fragment,
-  indexExpressionSql,
+  fieldExpr,
+  fieldExprSql,
   isMetadataField,
-  type PromotedColumnLookup,
-  qualifier,
-  sqlStringLiteral
+  qualifier
 } from './primitives.js';
 import { resolveBodyOrderByCast } from './sorting.js';
 import { buildWhere } from './where.js';
@@ -60,6 +61,12 @@ export interface WalkScope {
   /** A fresh table alias, unique within the statement. */
   nextAlias(): string;
   fieldDef(type: string, field: string): FieldDef | undefined;
+  /**
+   * The table of `type` in this namespace. Synchronous, since the compiler
+   * cannot await: the caller preloads the seed and every far type
+   * ({@link walkTypes}) and this throws on a type it was not given (F19).
+   */
+  tableFor(type: string): TypeTable;
   /** The frame's `_agg` value `name` for the seed row, as jsonb, read by `_agg.<name>` operands. */
   aggValue?: (name: string) => Fragment;
   /** The direction of `key` in a full index on `type` keyed `(crossRef, key, …)`, when one is declared. */
@@ -88,7 +95,8 @@ export function walkScope(
   namespace: string,
   type: string,
   alias: string,
-  fieldDef: (type: string, field: string) => FieldDef | undefined
+  fieldDef: (type: string, field: string) => FieldDef | undefined,
+  tableFor: (type: string) => TypeTable
 ): WalkScope {
   let n = 0;
   return {
@@ -99,8 +107,80 @@ export function walkScope(
     seedType: type,
     bindings: new Map(),
     nextAlias: () => `w${++n}`,
-    fieldDef
+    fieldDef,
+    tableFor
   };
+}
+
+/** A map lookup over `tables` by type, which throws on a type it does not hold (F19). */
+export function tableLookup(tables: readonly TypeTable[]): (type: string) => TypeTable {
+  const byType = new Map(tables.map((t) => [t.type, t]));
+  return (type) => {
+    const t = byType.get(type);
+    if (t === undefined) throw new Error(`internal: no type table was preloaded for '${type}'`);
+    return t;
+  };
+}
+
+/** The far type of hop `node` from a `near` row, or undefined when it names none. */
+export function farTypeOf(
+  node: { in?: string; out?: string },
+  near: string,
+  fieldDef: (type: string, field: string) => FieldDef | undefined
+): string | undefined {
+  if (node.in !== undefined) return /^[^/]+\/([^./]+)\./.exec(node.in)?.[1];
+  const def = fieldDef(near, node.out ?? '');
+  return def?.kind === 'crossRef' ? def.type : undefined;
+}
+
+/**
+ * The seed and every type a read's walks reach (where, `_agg`, nested, at any
+ * depth): the types `tableFor` must be given before compiling (F19), as
+ * substrate-core's `walkSites` finds them. A hop naming no type is left to
+ * `hop`, which refuses it.
+ */
+export function walkTypes(
+  params: { where?: unknown; agg?: unknown; nested?: unknown },
+  seed: string,
+  fieldDef: (type: string, field: string) => FieldDef | undefined
+): Set<string> {
+  const types = new Set([seed]);
+  const hopTo = (node: Record<string, unknown>, near: string, ...wheres: unknown[]) => {
+    const far = farTypeOf(node as { in?: string; out?: string }, near, fieldDef);
+    if (far === undefined) return undefined;
+    types.add(far);
+    for (const w of wheres) inWhere(w, far);
+    return far;
+  };
+  const inWhere = (v: unknown, type: string): void => {
+    if (Array.isArray(v)) {
+      for (const c of v) inWhere(c, type);
+      return;
+    }
+    if (!isObj(v)) return;
+    for (const [k, c] of Object.entries(v)) {
+      if ((k === '_walk' || k === '_agg') && isObj(c)) hopTo(c, type, c.where);
+      else inWhere(c, type);
+    }
+  };
+  const inAggs = (aggs: unknown, type: string) => {
+    if (isObj(aggs))
+      for (const spec of Object.values(aggs)) if (isObj(spec)) hopTo(spec, type, spec.where);
+  };
+  const inNested = (sels: unknown, type: string) => {
+    if (!isObj(sels)) return;
+    for (const sel of Object.values(sels)) {
+      if (!isObj(sel) || !isObj(sel._walk)) continue;
+      const far = hopTo(sel._walk, type, sel._walk.where, sel.where);
+      if (far === undefined || !isObj(sel.fields)) continue;
+      inAggs(sel.fields._agg, far);
+      inNested(sel.fields, far);
+    }
+  };
+  inWhere(params.where, seed);
+  inAggs(params.agg, seed);
+  inNested(params.nested, seed);
+  return types;
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
@@ -121,19 +201,20 @@ const castFor =
     resolveBodyOrderByCast(scope.fieldDef(type, field));
 
 /**
- * The far type of one hop from `scope`'s row, and the condition that pins the
- * far row `alias` to it: namespace, type, live, and the crossRef join.
+ * The far type of one hop from `scope`'s row (whose table is `near`), the
+ * table `from` its rows are read FROM, and the condition that pins the far row
+ * `alias` to it: namespace and type on `rows`, live, and the crossRef join.
  */
 export function hop(
   sql: Sql | TransactionSql,
   node: { in?: string; out?: string },
   scope: WalkScope,
-  alias: string
-): { type: string; cond: Fragment; via?: string; pin: Fragment } {
+  alias: string,
+  near: TypeTable
+): { type: string; from: string; cond: Fragment; via?: string; pin: Fragment } {
   let type: string;
   let via: string | undefined;
   let join: Fragment;
-  const near = qualifier(scope.alias);
   if (node.in !== undefined) {
     const m = /^[^/]+\/([^./]+)\.(.+)$/.exec(node.in);
     if (m === null)
@@ -141,9 +222,9 @@ export function hop(
     const [, farType, field] = m as unknown as [string, string, string];
     type = farType;
     via = field;
-    // Verbatim the eager crossRef index's key, so the index serves the hop.
+    // Verbatim the eager crossRef index's key (the column, on a type table), so the index serves the hop.
     join = sql.unsafe(
-      `${indexExpressionSql('text', field, alias)} = (${near}id::text COLLATE "C")`
+      `${fieldExprSql(scope.tableFor(type), field, 'text', alias)} = (${qualifier(scope.alias)}id::text COLLATE "C")`
     );
   } else {
     const field = node.out ?? '';
@@ -152,26 +233,34 @@ export function hop(
       throw new Error(`internal: walk 'out' '${field}' is not a crossRef on '${scope.type}'`);
     }
     type = def.type;
-    join = sql`${sql.unsafe(`${qualifier(alias)}id::text`)} = ${bodyRawText(sql, [field], scope.alias)}`;
+    // Uncollated (a column is cast to the default collation), so the far id's index serves it.
+    join = sql`${sql.unsafe(`${qualifier(alias)}id::text`)} = ${fieldExpr(sql, near, field, 'rawText', scope.alias)}`;
   }
-  const far = qualifier(alias);
+  const table = scope.tableFor(type);
   // A walk never leaves the frame's namespace (the validator refuses it), so
   // the far row is pinned to the dataset's, as the memory reference reads it.
+  const scoped = table.scope(alias);
   const pin: Fragment = sql`${sql.unsafe(
-    `${far}namespace = ${sqlStringLiteral(scope.namespace)} AND ${far}type = ${sqlStringLiteral(type)} AND ${far}deleted_at IS NULL`
+    `${scoped === null ? '' : `${scoped} AND `}${qualifier(alias)}deleted_at IS NULL`
   )}`;
-  return { type, ...(via === undefined ? {} : { via }), pin, cond: sql`${pin} AND ${join}` };
+  return {
+    type,
+    from: table.from,
+    ...(via === undefined ? {} : { via }),
+    pin,
+    cond: sql`${pin} AND ${join}`
+  };
 }
 
 /** A walk without `as` (any, none, all or pick), under the current bindings. */
 export function buildWalk(
   sql: Sql | TransactionSql,
   node: WalkNode,
-  promotedFor: PromotedColumnLookup,
+  table: TypeTable,
   scope: WalkScope
 ): Fragment {
   const shared = scope.hubPicks?.get(node);
-  if (shared !== undefined) return buildHubWalk(sql, node, shared, promotedFor, scope);
+  if (shared !== undefined) return buildHubWalk(sql, node, shared, table, scope);
   const window =
     node.pick === undefined &&
     (node.quantifier ?? 'any') === 'any' &&
@@ -184,19 +273,28 @@ export function buildWalk(
   }
   const alias = scope.nextAlias();
   const a = sql.unsafe(alias);
-  const { type, cond } = hop(sql, node, scope, alias);
+  const { type, from, cond } = hop(sql, node, scope, alias, table);
+  const farTable = scope.tableFor(type);
   const far =
     node.where === undefined
       ? null
-      : buildWhere(sql, node.where, castFor(scope, type), promotedFor, { ...scope, alias, type });
+      : buildWhere(sql, node.where, castFor(scope, type), farTable, { ...scope, alias, type });
   if (node.pick !== undefined) {
     const [dir, field] = Object.entries(node.pick)[0] as [string, string];
-    const key = sortKey(sql, field, castFor(scope, type)(field), alias);
+    const key = sortKey(sql, farTable, field, castFor(scope, type)(field), alias);
     // Correlated on the lateral `h`, so firstRow's in-order, non-parallel Append still holds.
-    const picked = firstRow(sql, sql`${a}.*`, alias, cond, key, dir === 'min' ? 'ASC' : 'DESC');
+    const picked = firstRow(
+      sql,
+      sql`${a}.*`,
+      from,
+      alias,
+      cond,
+      key,
+      dir === 'min' ? 'ASC' : 'DESC'
+    );
     return sql`EXISTS (SELECT 1 FROM (${picked}) ${a}${far === null ? sql`` : sql` WHERE ${far}`})`;
   }
-  const rows = sql`SELECT 1 FROM rows ${a} WHERE ${cond}`;
+  const rows = sql`SELECT 1 FROM ${sql.unsafe(from)} ${a} WHERE ${cond}`;
   switch (node.quantifier ?? 'any') {
     case 'none':
       return sql`NOT EXISTS (${rows}${far === null ? sql`` : sql` AND ${far}`})`;
@@ -260,7 +358,7 @@ export function seedFilter(
   where: WhereClause | undefined,
   base: SeedBase,
   rowCastFor: (field: string) => BodyOrderByCast | null,
-  promotedFor: PromotedColumnLookup,
+  table: TypeTable,
   scope: WalkScope,
   skip: (item: WhereClause) => boolean
 ): { filter: Fragment; narrows: boolean } {
@@ -269,7 +367,7 @@ export function seedFilter(
   const { hubPicks: _p, windows: _w, ...plain } = scope;
   const parts = items
     .filter((i) => !skip(i) && !holdsPick(i) && ![...refNames(i)].some((n) => bound.has(n)))
-    .flatMap((i) => buildWhere(sql, i, rowCastFor, promotedFor, plain) ?? []);
+    .flatMap((i) => buildWhere(sql, i, rowCastFor, table, plain) ?? []);
   return {
     filter: combineAnd(sql, [...base.clauses, ...parts]),
     narrows: base.ids || parts.length > 0
@@ -306,7 +404,7 @@ export function prepareSharedPicks(
   params: { where?: WhereClause; count?: boolean; aggregate?: unknown; limit?: number },
   base: SeedBase,
   rowCastFor: (field: string) => BodyOrderByCast | null,
-  promotedFor: PromotedColumnLookup,
+  table: TypeTable,
   scope: WalkScope
 ): Fragment {
   const picks = sharedPicks(params);
@@ -325,34 +423,39 @@ export function prepareSharedPicks(
       params.where,
       base,
       rowCastFor,
-      promotedFor,
+      table,
       scope,
       (i) => (i as { _walk?: WalkNode })._walk === hub
     );
     const hubScope: WalkScope = { ...scope, alias: 'h', type: hubType.type };
+    const hubTable = scope.tableFor(hubType.type);
     const alias = scope.nextAlias();
     const a = sql.unsafe(alias);
     const cte = `pick_${alias}`;
-    const { type, cond } = hop(sql, pick, hubScope, alias);
+    const { type, from, cond } = hop(sql, pick, hubScope, alias, hubTable);
+    const farTable = scope.tableFor(type);
     const [dir, field] = Object.entries(pick.pick ?? {})[0] as [string, string];
-    const key = sortKey(sql, field, castFor(scope, type)(field), alias);
+    const key = sortKey(sql, farTable, field, castFor(scope, type)(field), alias);
     // Correlated on the lateral `h`, so firstRow's in-order, non-parallel Append still holds.
     // The picked row also as one `rows` value, `__row`: the CTE exports only `__`-named
     // columns, so none can collide with the seed row's unqualified columns in the main query.
     const picked = firstRow(
       sql,
       sql`${a}.*, ${a} AS __row`,
+      from,
       alias,
       cond,
       key,
       dir === 'min' ? 'ASC' : 'DESC'
     );
-    const hubs = sql`SELECT DISTINCT ${bodyRawText(sql, [hub.out as string], scope.seedAlias)} AS id FROM rows ${sql.unsafe(scope.seedAlias)} WHERE ${filter}`;
+    // Uncollated, so the hub row's id index serves the join below.
+    const hubOf = fieldExpr(sql, table, hub.out as string, 'rawText', scope.seedAlias);
+    const hubs = sql`SELECT DISTINCT ${hubOf} AS id FROM ${sql.unsafe(table.from)} ${sql.unsafe(scope.seedAlias)} WHERE ${filter}`;
     const own = groupConjuncts(pick.where).items.filter((i) => !whereUsesWalks(i));
     const farWhere = (at: string): Fragment | null =>
       own.length === 0
         ? null
-        : buildWhere(sql, { AND: own }, castFor(scope, type), promotedFor, {
+        : buildWhere(sql, { AND: own }, castFor(scope, type), farTable, {
             ...hubScope,
             alias: at,
             type
@@ -362,19 +465,19 @@ export function prepareSharedPicks(
     if (kept !== null) {
       const f = scope.nextAlias();
       filters.push(
-        sql`EXISTS (SELECT 1 FROM rows ${sql.unsafe(f)} WHERE ${hop(sql, pick, hubScope, f).cond} AND ${farWhere(f) as Fragment})`,
+        sql`EXISTS (SELECT 1 FROM ${sql.unsafe(from)} ${sql.unsafe(f)} WHERE ${hop(sql, pick, hubScope, f, hubTable).cond} AND ${farWhere(f) as Fragment})`,
         kept
       );
     }
     // The hub row itself, live and of its type: the hub walk's own hop, once per hub.
     const hb = scope.nextAlias();
-    const live = hop(sql, hub, { ...scope, alias: scope.seedAlias }, hb).pin;
+    const live = hop(sql, hub, { ...scope, alias: scope.seedAlias }, hb, table).pin;
     const on: Fragment[] = [live, sql.unsafe(`${hb}.id::text = h.id`)];
     // The hub where's own conjuncts, once per hub, in the hub's first CTE.
     if (scope.hubPicks.get(hub) === undefined) {
       const { own } = splitHubWhere(hub, sharedOf(hub));
       if (own.length > 0) {
-        const f = buildWhere(sql, { AND: own }, castFor(scope, hubType.type), promotedFor, {
+        const f = buildWhere(sql, { AND: own }, castFor(scope, hubType.type), hubTable, {
           ...plain,
           alias: hb,
           type: hubType.type
@@ -382,12 +485,12 @@ export function prepareSharedPicks(
         if (f !== null) on.push(f);
       }
     }
-    const hubRow = sql`JOIN rows ${sql.unsafe(hb)} ON ${combineAnd(sql, on)}`;
+    const hubRow = sql`JOIN ${sql.unsafe(hubTable.from)} ${sql.unsafe(hb)} ON ${combineAnd(sql, on)}`;
     const where = filters.length === 0 ? sql`` : sql` WHERE ${combineAnd(sql, filters)}`;
     scope.ctes.push(
       sql`${sql.unsafe(cte)} AS MATERIALIZED (SELECT h.id AS __hub, ${a}.__row AS __row FROM (${hubs}) h ${hubRow} CROSS JOIN LATERAL (${picked}) ${a}${where})`
     );
-    joins = sql`${joins} LEFT JOIN ${sql.unsafe(cte)} ON ${sql.unsafe(`${cte}.__hub = `)}${bodyRawText(sql, [hub.out as string], scope.seedAlias)}`;
+    joins = sql`${joins} LEFT JOIN ${sql.unsafe(cte)} ON ${sql.unsafe(`${cte}.__hub = `)}${hubOf}`;
     scope.hubPicks.set(hub, [...(scope.hubPicks.get(hub) ?? []), { pick, cte }]);
   }
   return joins;
@@ -408,15 +511,15 @@ function buildHubWalk(
   sql: Sql | TransactionSql,
   node: WalkNode,
   shared: Array<{ pick: WalkNode; cte: string }>,
-  promotedFor: PromotedColumnLookup,
+  table: TypeTable,
   scope: WalkScope
 ): Fragment {
-  const hubType = hop(sql, node, scope, 'x').type;
+  const hubType = hop(sql, node, scope, 'x', table).type;
   const near: WalkScope = { ...scope, type: hubType };
   const parts: Fragment[] = [];
   for (const { pick, cte } of shared) {
     parts.push(sql.unsafe(`${cte}.__hub IS NOT NULL`));
-    const pickType = hop(sql, pick, near, 'x').type;
+    const pickType = hop(sql, pick, near, 'x', scope.tableFor(hubType)).type;
     // The seed-independent conjuncts were applied in the CTE; the rest are read here, over
     // the picked row expanded from `__row` (one row, never a scan of the CTE).
     const { binds, items } = groupConjuncts(pick.where);
@@ -426,7 +529,7 @@ function buildHubWalk(
     ];
     if (rest.length === 0) continue;
     const p = scope.nextAlias();
-    const f = buildWhere(sql, { AND: rest }, castFor(scope, pickType), promotedFor, {
+    const f = buildWhere(sql, { AND: rest }, castFor(scope, pickType), scope.tableFor(pickType), {
       ...near,
       alias: p,
       type: pickType
@@ -440,21 +543,21 @@ function buildHubWalk(
   const { rest } = splitHubWhere(node, new Set(shared.map((s) => s.pick)));
   if (rest.length > 0) {
     const alias = scope.nextAlias();
-    const { type, cond } = hop(sql, node, scope, alias);
-    const f = buildWhere(sql, { AND: rest }, castFor(scope, type), promotedFor, {
+    const { type, from, cond } = hop(sql, node, scope, alias, table);
+    const f = buildWhere(sql, { AND: rest }, castFor(scope, type), scope.tableFor(type), {
       ...scope,
       alias,
       type
     });
     parts.push(
-      sql`EXISTS (SELECT 1 FROM rows ${sql.unsafe(alias)} WHERE ${f === null ? cond : sql`${cond} AND ${f}`})`
+      sql`EXISTS (SELECT 1 FROM ${sql.unsafe(from)} ${sql.unsafe(alias)} WHERE ${f === null ? cond : sql`${cond} AND ${f}`})`
     );
   }
   return sql`(${combineAnd(sql, parts)} IS TRUE)`;
 }
 
 /**
- * `select` of the first `alias` row passing `where` by `key` in `dir`, nulls
+ * `select` of the first `alias` row of table `from` passing `where` by `key` in `dir`, nulls
  * last, ties id ascending: at most one row. Not `ORDER BY key … LIMIT 1`,
  * which only an index in exactly that direction serves: min/max(key) is an
  * index probe in either direction, then the rows at that key are fetched by
@@ -467,6 +570,7 @@ function buildHubWalk(
 export function firstRow(
   sql: Sql | TransactionSql,
   select: Fragment,
+  from: string,
   alias: string,
   where: Fragment,
   key: Fragment,
@@ -474,19 +578,21 @@ export function firstRow(
   nullable = true
 ): Fragment {
   const a = sql.unsafe(alias);
+  const t = sql.unsafe(from);
   const best = sql.unsafe(dir === 'ASC' ? 'min' : 'max');
   const byId = sql.unsafe(`ORDER BY ${alias}.id COLLATE "C" ASC LIMIT 1`);
-  const keyed = sql`SELECT ${select} FROM rows ${a} WHERE ${where} AND ${key} = (SELECT ${best}(${key}) FROM rows ${a} WHERE ${where}) ${byId}`;
+  const keyed = sql`SELECT ${select} FROM ${t} ${a} WHERE ${where} AND ${key} = (SELECT ${best}(${key}) FROM ${t} ${a} WHERE ${where}) ${byId}`;
   if (!nullable) return keyed;
   // Invariant: the null branch answers only when the keyed one is empty, because a
   // non-parallel Append runs its children in order under LIMIT 1. `where` is always
   // correlated (the hop), which keeps this subplan non-parallel; keep it so.
-  return sql`(${keyed}) UNION ALL (SELECT ${select} FROM rows ${a} WHERE ${where} AND ${key} IS NULL ${byId}) LIMIT 1`;
+  return sql`(${keyed}) UNION ALL (SELECT ${select} FROM ${t} ${a} WHERE ${where} AND ${key} IS NULL ${byId}) LIMIT 1`;
 }
 
-/** A pick's ordering key: an instant for a date, a number for a number. */
+/** A pick's ordering key, of `table`'s row `alias`: an instant for a date, a number for a number. */
 export function sortKey(
   sql: Sql | TransactionSql,
+  table: TypeTable,
   field: string,
   cast: BodyOrderByCast | null,
   alias: string
@@ -497,9 +603,11 @@ export function sortKey(
     const ordered = field === 'createdAt' || field === 'updatedAt' || field === 'seq';
     return sql.unsafe(ordered ? col : `${col} COLLATE "C"`);
   }
-  if (cast === 'numeric') return bodyNum(sql, [field], alias);
-  if (cast === 'timestamptz') return bodyTs(sql, [field], alias);
-  return bodyText(sql, [field], alias);
+  const column = table.column(field);
+  if (column !== undefined) return fieldExpr(sql, table, field, columnAs(column.kind), alias);
+  if (cast === 'numeric') return bodyNum(sql, [field], alias, table.jsonb);
+  if (cast === 'timestamptz') return bodyTs(sql, [field], alias, table.jsonb);
+  return bodyText(sql, [field], alias, table.jsonb);
 }
 
 /**
@@ -512,7 +620,7 @@ export function buildGroup(
   sql: Sql | TransactionSql,
   where: WhereClause,
   rowCastFor: (field: string) => BodyOrderByCast | null,
-  promotedFor: PromotedColumnLookup,
+  table: TypeTable,
   scope: WalkScope
 ): Fragment | null {
   // The memory reference's own grouping, so the two quantify the same bindings jointly.
@@ -521,7 +629,7 @@ export function buildGroup(
   const bindings = new Map(scope.bindings);
   const hops = binds.map((node) => {
     const alias = scope.nextAlias();
-    const h = hop(sql, node, scope, alias);
+    const h = hop(sql, node, scope, alias, table);
     bindings.set(node.as as string, { alias, type: h.type });
     return { node, alias, ...h };
   });
@@ -529,7 +637,7 @@ export function buildGroup(
   const inside: Fragment[] = hops.map((h) => h.cond);
   for (const h of hops) {
     if (h.node.where === undefined) continue;
-    const f = buildWhere(sql, h.node.where, castFor(scope, h.type), promotedFor, {
+    const f = buildWhere(sql, h.node.where, castFor(scope, h.type), scope.tableFor(h.type), {
       ...group,
       alias: h.alias,
       type: h.type
@@ -540,17 +648,18 @@ export function buildGroup(
   const outside: Fragment[] = [];
   for (const item of items) {
     const bound = [...refNames(item)].some((n) => names.has(n));
-    const f = buildWhere(sql, item, rowCastFor, promotedFor, bound ? group : scope);
+    const f = buildWhere(sql, item, rowCastFor, table, bound ? group : scope);
     if (f !== null) (bound ? inside : outside).push(f);
   }
-  const from = sql.unsafe(hops.map((h) => `rows ${h.alias}`).join(', '));
+  const from = sql.unsafe(hops.map((h) => `${h.from} ${h.alias}`).join(', '));
   outside.push(sql`EXISTS (SELECT 1 FROM ${from} WHERE ${combineAnd(sql, inside)})`);
   return combineAnd(sql, outside);
 }
 
-/** The value a `$ref` comparison reads from `field` of `alias`'s row, by kind. */
+/** The value a `$ref` comparison reads from `field` of `table`'s row `alias`, by kind. */
 export function refValue(
   sql: Sql | TransactionSql,
+  table: TypeTable,
   field: string,
   kind: 'number' | 'date',
   alias: string
@@ -560,8 +669,8 @@ export function refValue(
     return sql.unsafe(kind === 'number' ? `${col}::float8` : col);
   }
   return kind === 'number'
-    ? sql`${bodyNum(sql, [field], alias)}::float8`
-    : bodyTs(sql, [field], alias);
+    ? sql`${fieldExpr(sql, table, field, 'number', alias)}::float8`
+    : fieldExpr(sql, table, field, 'date', alias);
 }
 
 /**
@@ -595,7 +704,7 @@ export function buildRefCompare(
     sql,
     field,
     op,
-    refValue(sql, field, kind, scope.alias),
+    refValue(sql, scope.tableFor(scope.type), field, kind, scope.alias),
     right,
     refIsCostly(ref)
   );
@@ -635,7 +744,7 @@ export function refOperand(
     if (dot < 0 || target === undefined) {
       throw new UnsupportedFilterError(field, op, `$ref '${ref.$ref}' names no binding in scope`);
     }
-    right = refValue(sql, refField, kind, target.alias);
+    right = refValue(sql, scope.tableFor(target.type), refField, kind, target.alias);
   }
   if (kind === 'number') {
     // Todo #1809, as memory's resolveRef: a product or sum that would be

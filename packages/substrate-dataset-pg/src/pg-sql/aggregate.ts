@@ -27,17 +27,16 @@ import {
   type WhereClause
 } from '@mnmal-ai/substrate-types';
 import type { Sql, TransactionSql } from 'postgres';
+import type { TypeTable } from '../type-table.js';
 import { metadataColumnSql } from './predicates-metadata.js';
 import {
   type BodyOrderByCast,
-  bodyJson,
-  bodyNum,
   combineAnd,
   type Fragment,
-  indexExpressionSql,
+  fieldExpr,
+  fieldExprSql,
   isMetadataField,
   NON_BODY_FIELD_KEYS,
-  type PromotedColumnLookup,
   qualifier,
   tsParam
 } from './primitives.js';
@@ -63,9 +62,14 @@ type AggKind = 'number' | 'date' | 'other';
 
 const AGG_OPS = ['avg', 'sum', 'min', 'max'] as const;
 
-/** A field of `alias`'s row as memory's `getFieldValue` reads it, as jsonb. */
-function valueJson(sql: Sql | TransactionSql, field: string, alias: string): Fragment {
-  if (!isMetadataField(field)) return bodyJson(sql, [field], alias);
+/** A field of `table`'s row `alias` as memory's `getFieldValue` reads it, as jsonb. */
+function valueJson(
+  sql: Sql | TransactionSql,
+  table: TypeTable,
+  field: string,
+  alias: string
+): Fragment {
+  if (!isMetadataField(field)) return fieldExpr(sql, table, field, 'json', alias);
   const col = metadataColumnSql(field, alias);
   // As `materialize` renders a timestamp column: a JS Date's ISO string.
   return sql.unsafe(
@@ -89,13 +93,14 @@ interface Pick {
 }
 
 /**
- * `spec` over the rows aliased `alias`, and the kind it compares as: an
+ * `spec` over `table`'s rows aliased `alias`, and the kind it compares as: an
  * aggregate expression (jsonb, NULL where memory gives null), or for a date
  * min/max or a `latest` the pick its caller runs as a bounded top-1.
  */
 function aggOver(
   sql: Sql | TransactionSql,
   spec: WalkAgg | FrameAgg,
+  table: TypeTable,
   alias: string,
   fieldDef: (field: string) => FieldDef | undefined
 ): { kind: AggKind } & ({ agg: Fragment; pick?: undefined } | { pick: Pick; agg?: undefined }) {
@@ -103,7 +108,7 @@ function aggOver(
   if (Object.hasOwn(spec, 'count')) return { agg: sql`to_jsonb(count(*))`, kind: 'number' };
   if ('latest' in spec && Object.hasOwn(spec, 'latest')) {
     const { by, value } = spec.latest;
-    const key = sortKey(sql, by, resolveBodyOrderByCast(fieldDef(by)), alias);
+    const key = sortKey(sql, table, by, resolveBodyOrderByCast(fieldDef(by)), alias);
     const numeric = value === 'seq' || resolveBodyOrderByCast(fieldDef(value)) === 'numeric';
     return {
       pick: { value, by, key, dir: 'DESC' },
@@ -115,7 +120,7 @@ function aggOver(
   const field = (spec as unknown as Record<string, string>)[op] as string;
   if ((op === 'min' || op === 'max') && isDate(field)) {
     // Unreadable dates drop out, as memory's pick puts them last and then nulls them.
-    const ts = refValue(sql, field, 'date', alias);
+    const ts = refValue(sql, table, field, 'date', alias);
     const dir = op === 'min' ? 'ASC' : 'DESC';
     return {
       pick: { value: field, by: field, key: ts, dir, filter: sql`${ts} IS NOT NULL` },
@@ -123,7 +128,7 @@ function aggOver(
     };
   }
   // float8 throughout, so the value is the double memory computes.
-  const n = refValue(sql, field, 'number', alias);
+  const n = refValue(sql, table, field, 'number', alias);
   if (op === 'min' || op === 'max')
     return { agg: sql`to_jsonb(${sql.unsafe(op)}(${n}))`, kind: 'number' };
   // Todo #1809: sum and avg are exact, in numeric (substrate_num reads the
@@ -133,9 +138,12 @@ function aggOver(
   // past MAX by half an ulp or more is NULL, as memory's; a tiny one is 0, as
   // memory's float64 arithmetic gives. Memory sums in float64, so the last bit,
   // and overflow under cancellation, can differ: accepted, as for avg/sum before.
+  // A number column is float8, so it is cast to numeric too.
   const v = isMetadataField(field)
     ? sql.unsafe(`${metadataColumnSql(field, alias)}::numeric`)
-    : bodyNum(sql, [field], alias);
+    : table.column(field) === undefined
+      ? fieldExpr(sql, table, field, 'number', alias)
+      : sql`${fieldExpr(sql, table, field, 'number', alias)}::numeric`;
   const s = sql`${sql.unsafe(op)}(${v})`;
   return {
     agg: sql`to_jsonb(CASE WHEN abs(${s}) >= ${sql.unsafe(OVERFLOW)} THEN NULL
@@ -150,7 +158,7 @@ const OVERFLOW = `${2n ** 1024n - 2n ** 970n}::numeric`;
 const UNDERFLOW = `0.${(5n ** 1075n).toString().padStart(1075, '0')}::numeric`;
 
 /**
- * `p` over the rows aliased `alias` passing `where`: `ORDER BY key, id LIMIT 1`,
+ * `p` over `table`'s rows aliased `alias` passing `where`: `ORDER BY key, id LIMIT 1`,
  * a top-1 an index can serve, never a sort of every row. An index keyed the
  * other way (`indexDir`) is read backward, nulls first, so the order is
  * written nulls first over the non-null keys, which that scan serves, and the
@@ -159,23 +167,25 @@ const UNDERFLOW = `0.${(5n ** 1075n).toString().padStart(1075, '0')}::numeric`;
 function pickRow(
   sql: Sql | TransactionSql,
   p: Pick,
+  table: TypeTable,
   alias: string,
   where: Fragment,
   indexDir?: 'asc' | 'desc'
 ): Fragment {
   const a = sql.unsafe(alias);
-  const select = valueJson(sql, p.value, alias);
+  const t = sql.unsafe(table.from);
+  const select = valueJson(sql, table, p.value, alias);
   const byId = sql`${a}.id COLLATE "C" ASC LIMIT 1`;
   const backward = indexDir !== undefined && indexDir !== p.dir.toLowerCase();
   // A date min/max filter already drops null keys; otherwise a backward read drops them here.
   const notNull = p.filter ?? (backward ? sql`${p.key} IS NOT NULL` : undefined);
   const rows = combineAnd(sql, notNull === undefined ? [where] : [where, notNull]);
   const nulls = sql.unsafe(`${p.dir} NULLS ${backward ? 'FIRST' : 'LAST'}`);
-  const keyed = sql`SELECT ${select} FROM rows ${a} WHERE ${rows} ORDER BY ${p.key} ${nulls}, ${byId}`;
+  const keyed = sql`SELECT ${select} FROM ${t} ${a} WHERE ${rows} ORDER BY ${p.key} ${nulls}, ${byId}`;
   if (!backward || p.filter !== undefined) return sql`(${keyed})`;
   // As firstRow's: a correlated, non-parallel Append runs in order under LIMIT 1,
   // so the null branch answers only when the keyed one is empty.
-  return sql`((${keyed}) UNION ALL (SELECT ${select} FROM rows ${a} WHERE ${where} AND ${p.key} IS NULL ORDER BY ${byId}) LIMIT 1)`;
+  return sql`((${keyed}) UNION ALL (SELECT ${select} FROM ${t} ${a} WHERE ${where} AND ${p.key} IS NULL ORDER BY ${byId}) LIMIT 1)`;
 }
 
 /**
@@ -185,11 +195,12 @@ function pickRow(
 export function buildWalkAgg(
   sql: Sql | TransactionSql,
   spec: WalkAgg,
-  promotedFor: PromotedColumnLookup,
+  table: TypeTable,
   scope: WalkScope
 ): { value: Fragment; kind: AggKind } {
   const alias = scope.nextAlias();
-  const { type, cond, via } = hop(sql, spec, scope, alias);
+  const { type, from, cond, via } = hop(sql, spec, scope, alias, table);
+  const farTable = scope.tableFor(type);
   const far =
     spec.where === undefined
       ? null
@@ -197,20 +208,21 @@ export function buildWalkAgg(
           sql,
           spec.where,
           (f) => resolveBodyOrderByCast(scope.fieldDef(type, f)),
-          promotedFor,
+          farTable,
           { ...scope, alias, type }
         );
-  const { agg, pick, kind } = aggOver(sql, spec, alias, (f) => scope.fieldDef(type, f));
+  const { agg, pick, kind } = aggOver(sql, spec, farTable, alias, (f) => scope.fieldDef(type, f));
   const rows = combineAnd(sql, far === null ? [cond] : [cond, far]);
   // Todo #1819: a pick is a top-1 in the (crossRef, key) index's own order, one
   // probe per hub; a max(key) subquery is a full Aggregate wherever pg's
   // min/max rewrite does not fire, which reads every neighbour.
   const value =
     pick === undefined
-      ? sql`(SELECT ${agg} FROM rows ${sql.unsafe(alias)} WHERE ${rows})`
+      ? sql`(SELECT ${agg} FROM ${sql.unsafe(from)} ${sql.unsafe(alias)} WHERE ${rows})`
       : pickRow(
           sql,
           pick,
+          farTable,
           alias,
           rows,
           via === undefined ? undefined : scope.indexDir?.(type, via, pick.by)
@@ -222,11 +234,12 @@ export function buildWalkAgg(
 function sharedScan(
   sql: Sql | TransactionSql,
   group: Array<[string, WalkAgg]>,
-  promotedFor: PromotedColumnLookup,
+  table: TypeTable,
   scope: WalkScope,
   alias: string
 ): {
   type: string;
+  from: string;
   via?: string;
   cond: Fragment;
   pin: Fragment;
@@ -234,7 +247,8 @@ function sharedScan(
   obj: Fragment;
 } {
   const [, first] = group[0] as [string, WalkAgg];
-  const h = hop(sql, first, scope, alias);
+  const h = hop(sql, first, scope, alias, table);
+  const farTable = scope.tableFor(h.type);
   const far =
     first.where === undefined
       ? null
@@ -242,11 +256,11 @@ function sharedScan(
           sql,
           first.where,
           (f) => resolveBodyOrderByCast(scope.fieldDef(h.type, f)),
-          promotedFor,
+          farTable,
           { ...scope, alias, type: h.type }
         );
   const values = group.map(([name, spec]) => {
-    const { agg } = aggOver(sql, spec, alias, (f) => scope.fieldDef(h.type, f));
+    const { agg } = aggOver(sql, spec, farTable, alias, (f) => scope.fieldDef(h.type, f));
     return sql`${name}::text, ${agg as Fragment}`;
   });
   return { ...h, far, obj: buildObject(sql, values) };
@@ -277,13 +291,13 @@ export function prepareWindows(
   },
   base: SeedBase,
   rowCastFor: (field: string) => BodyOrderByCast | null,
-  promotedFor: PromotedColumnLookup,
+  table: TypeTable,
   scope: WalkScope,
   indexed: (type: string, field: string) => boolean
 ): Fragment {
   const groups = new Map<string, Array<[string, WalkAgg]>>();
   for (const [name, spec] of Object.entries(params.agg ?? {})) {
-    const { type } = hop(sql, spec, scope, 'x');
+    const { type } = hop(sql, spec, scope, 'x', table);
     const fieldDef = (f: string) => scope.fieldDef(type, f);
     if (!windowGroupBy(spec, params, fieldDef, (f) => indexed(type, f))) continue;
     const key = windowKey(spec);
@@ -293,17 +307,17 @@ export function prepareWindows(
   for (const [key, group] of groups) {
     const alias = scope.nextAlias();
     const cte = `win_${alias}`;
-    const { via, pin, far, obj } = sharedScan(sql, group, promotedFor, scope, alias);
-    const k = sql.unsafe(indexExpressionSql('text', via as string, alias));
+    const { type, from, via, pin, far, obj } = sharedScan(sql, group, table, scope, alias);
+    const k = sql.unsafe(fieldExprSql(scope.tableFor(type), via as string, 'text', alias));
     // The window's own walks are implied by `__k`; every other conjunct narrows it.
-    const seeds = seedFilter(sql, params.where, base, rowCastFor, promotedFor, scope, (i) => {
+    const seeds = seedFilter(sql, params.where, base, rowCastFor, table, scope, (i) => {
       const w = (i as { _walk?: WalkNode })._walk;
       return w !== undefined && windowKey(w) === key;
     });
     const r = scope.seedAlias;
     const mine = seeds.narrows
       ? [
-          sql`${k} IN (SELECT ${sql.unsafe(`${r}.id::text COLLATE "C"`)} FROM rows ${sql.unsafe(r)} WHERE ${seeds.filter})`
+          sql`${k} IN (SELECT ${sql.unsafe(`${r}.id::text COLLATE "C"`)} FROM ${sql.unsafe(table.from)} ${sql.unsafe(r)} WHERE ${seeds.filter})`
         ]
       : [];
     const rows = combineAnd(sql, [
@@ -314,7 +328,7 @@ export function prepareWindows(
     ]);
     scope.ctes ??= [];
     scope.ctes.push(
-      sql`${sql.unsafe(cte)} AS MATERIALIZED (SELECT ${k} AS __k, ${obj} AS __g FROM rows ${sql.unsafe(alias)} WHERE ${rows} GROUP BY 1)`
+      sql`${sql.unsafe(cte)} AS MATERIALIZED (SELECT ${k} AS __k, ${obj} AS __g FROM ${sql.unsafe(from)} ${sql.unsafe(alias)} WHERE ${rows} GROUP BY 1)`
     );
     scope.windows ??= new Map();
     scope.windows.set(key, cte);
@@ -331,16 +345,17 @@ export function prepareWindows(
 function buildWalkAggs(
   sql: Sql | TransactionSql,
   aggs: Record<string, WalkAgg>,
-  promotedFor: PromotedColumnLookup,
+  table: TypeTable,
   scope: WalkScope
 ): Fragment {
   const shared = new Map<string, Array<[string, WalkAgg]>>();
   const parts: Fragment[] = [];
   const own: Fragment[] = [];
   for (const [name, spec] of Object.entries(aggs)) {
-    const { type } = hop(sql, spec, scope, 'x');
-    if (aggOver(sql, spec, 'x', (f) => scope.fieldDef(type, f)).pick !== undefined) {
-      own.push(sql`${name}::text, ${buildWalkAgg(sql, spec, promotedFor, scope).value}`);
+    const { type } = hop(sql, spec, scope, 'x', table);
+    const far = scope.tableFor(type);
+    if (aggOver(sql, spec, far, 'x', (f) => scope.fieldDef(type, f)).pick !== undefined) {
+      own.push(sql`${name}::text, ${buildWalkAgg(sql, spec, table, scope).value}`);
       continue;
     }
     const key = windowKey(spec);
@@ -348,17 +363,17 @@ function buildWalkAggs(
   }
   for (const [key, group] of shared) {
     const alias = scope.nextAlias();
-    const { cond, obj, far } = sharedScan(sql, group, promotedFor, scope, alias);
+    const { from, cond, obj, far } = sharedScan(sql, group, table, scope, alias);
     const window = scope.alias === scope.seedAlias ? scope.windows?.get(key) : undefined;
     if (window !== undefined) {
       // A seed with no row in the window reads the aggregates of none: count 0, the rest null.
       parts.push(
-        sql`COALESCE(${sql.unsafe(`${window}.__g`)}, (SELECT ${obj} FROM rows ${sql.unsafe(alias)} WHERE FALSE))`
+        sql`COALESCE(${sql.unsafe(`${window}.__g`)}, (SELECT ${obj} FROM ${sql.unsafe(from)} ${sql.unsafe(alias)} WHERE FALSE))`
       );
       continue;
     }
     const rows = combineAnd(sql, far === null ? [cond] : [cond, far]);
-    parts.push(sql`(SELECT ${obj} FROM rows ${sql.unsafe(alias)} WHERE ${rows})`);
+    parts.push(sql`(SELECT ${obj} FROM ${sql.unsafe(from)} ${sql.unsafe(alias)} WHERE ${rows})`);
   }
   if (own.length > 0 || parts.length === 0) parts.push(buildObject(sql, own));
   return parts.reduce((a, b) => sql`${a} || ${b}`);
@@ -371,7 +386,8 @@ export function buildFrameCount(
   scope: WalkScope,
   joins: Fragment = sql``
 ): Fragment {
-  return sql`SELECT count(*)::float8 AS n FROM rows ${sql.unsafe(scope.alias)}${joins} WHERE ${where}`;
+  const from = scope.tableFor(scope.type).from;
+  return sql`SELECT count(*)::float8 AS n FROM ${sql.unsafe(from)} ${sql.unsafe(scope.alias)}${joins} WHERE ${where}`;
 }
 
 /**
@@ -393,26 +409,30 @@ export function buildFrameAggregate(
 ): Fragment {
   const r = scope.alias;
   const R = sql.unsafe(r);
+  const table = scope.tableFor(scope.type);
+  const T = sql.unsafe(table.from);
   const fieldDef = (f: string) => scope.fieldDef(scope.type, f);
   const aggs: Fragment[] = [];
   const picks: Array<[string, Pick]> = [];
   for (const [name, spec] of Object.entries(aggregate)) {
-    const { agg, pick } = aggOver(sql, spec, r, fieldDef);
+    const { agg, pick } = aggOver(sql, spec, table, r, fieldDef);
     if (pick === undefined) aggs.push(sql`${name}::text, ${agg}`);
     else picks.push([name, pick]);
   }
   if (bucket === undefined) {
     // Scalar subqueries only, so the statement is one row even when nothing matches.
-    const picked = picks.map(([name, p]) => sql`${name}::text, ${pickRow(sql, p, r, where)}`);
+    const picked = picks.map(
+      ([name, p]) => sql`${name}::text, ${pickRow(sql, p, table, r, where)}`
+    );
     const whole =
       aggs.length === 0
         ? sql`'{}'::jsonb`
-        : sql`(SELECT ${buildObject(sql, aggs)} FROM rows ${R} WHERE ${where})`;
+        : sql`(SELECT ${buildObject(sql, aggs)} FROM ${T} ${R} WHERE ${where})`;
     return sql`SELECT ${whole} || ${buildObject(sql, picked)} AS g`;
   }
   const [by, fmt] = bucket.by === 'day' ? ['day', 'YYYY-MM-DD'] : ['hour', 'YYYY-MM-DD"T"HH24'];
   // Outside WHERE, so the date index still serves the where's window.
-  const key = sql`to_char(date_trunc(${sql.unsafe(`'${by}'`)}, ${refValue(sql, bucket.field, 'date', r)} AT TIME ZONE 'UTC'), ${sql.unsafe(`'${fmt}'`)})`;
+  const key = sql`to_char(date_trunc(${sql.unsafe(`'${by}'`)}, ${refValue(sql, table, bucket.field, 'date', r)} AT TIME ZONE 'UTC'), ${sql.unsafe(`'${fmt}'`)})`;
   // Phase one: each pick's winning key per bucket (FrameAgg has no latest, so a key is a date).
   const winners = picks.reduce(
     (acc, [, p], i) =>
@@ -426,10 +446,10 @@ export function buildFrameAggregate(
       sql`${p.key} = ${sql.unsafe(`x.m${i}`)}`,
       sql`${key} = x.b`
     ]);
-    return sql`${name}::text, ${pickRow(sql, p, r, at)}`;
+    return sql`${name}::text, ${pickRow(sql, p, table, r, at)}`;
   });
   const cut = limit === undefined ? sql`` : sql`LIMIT ${limit + 1}`;
-  return sql`SELECT jsonb_build_object('bucket', x.b) || x.g || ${buildObject(sql, picked)} AS g FROM (SELECT ${key} AS b, ${buildObject(sql, aggs)} AS g${winners} FROM rows ${R} WHERE ${where} GROUP BY 1) x WHERE x.b IS NOT NULL ORDER BY x.b COLLATE "C" ${cut}`;
+  return sql`SELECT jsonb_build_object('bucket', x.b) || x.g || ${buildObject(sql, picked)} AS g FROM (SELECT ${key} AS b, ${buildObject(sql, aggs)} AS g${winners} FROM ${T} ${R} WHERE ${where} GROUP BY 1) x WHERE x.b IS NOT NULL ORDER BY x.b COLLATE "C" ${cut}`;
 }
 
 /**
@@ -441,10 +461,10 @@ export function buildFrameAggregate(
 export function buildAggPredicate(
   sql: Sql | TransactionSql,
   where: WalkAggPredicate,
-  promotedFor: PromotedColumnLookup,
+  table: TypeTable,
   scope: WalkScope
 ): Fragment {
-  const { value, kind } = buildWalkAgg(sql, where._agg, promotedFor, scope);
+  const { value, kind } = buildWalkAgg(sql, where._agg, table, scope);
   const x = scope.nextAlias();
   const v = sql.unsafe(`${x}.v`);
   const parts: Fragment[] = [sql`${v} IS NOT NULL AND ${v} <> 'null'::jsonb`];
@@ -489,12 +509,11 @@ export function buildWalkProjection(
   sql: Sql | TransactionSql,
   aggs: Record<string, WalkAgg> | undefined,
   nested: Record<string, NestedSelection>,
-  promotedFor: PromotedColumnLookup,
+  table: TypeTable,
   scope: WalkScope
 ): Fragment | null {
   const pairs: Fragment[] = [];
-  if (aggs !== undefined)
-    pairs.push(sql`'_agg'::text, ${buildWalkAggs(sql, aggs, promotedFor, scope)}`);
+  if (aggs !== undefined) pairs.push(sql`'_agg'::text, ${buildWalkAggs(sql, aggs, table, scope)}`);
   const lists = Object.entries(nested);
   if (lists.length === 0) return pairs.length === 0 ? null : buildObject(sql, pairs);
   const x = scope.nextAlias();
@@ -502,7 +521,7 @@ export function buildWalkProjection(
   const cut: Fragment[] = [];
   for (const [i, [name, sel]] of lists.entries()) {
     const col = sql.unsafe(`${x}.c${i}`);
-    cols.push(sql`${buildNested(sql, sel, promotedFor, scope)} AS ${sql.unsafe(`c${i}`)}`);
+    cols.push(sql`${buildNested(sql, sel, table, scope)} AS ${sql.unsafe(`c${i}`)}`);
     if (sel.limit === undefined) {
       pairs.push(sql`${name}::text, ${col}`);
     } else {
@@ -530,17 +549,18 @@ export function buildWalkProjection(
 export function buildNested(
   sql: Sql | TransactionSql,
   sel: NestedSelection,
-  promotedFor: PromotedColumnLookup,
+  table: TypeTable,
   scope: WalkScope
 ): Fragment {
   const alias = scope.nextAlias();
   const a = sql.unsafe(alias);
-  const { type, cond } = hop(sql, sel._walk, scope, alias);
+  const { type, from, cond } = hop(sql, sel._walk, scope, alias, table);
+  const farTable = scope.tableFor(type);
   const castFor = (f: string) => resolveBodyOrderByCast(scope.fieldDef(type, f));
   const farScope: WalkScope = { ...scope, alias, type };
   const filters = [sel._walk.where, sel.where]
     .filter((w): w is WhereClause => w !== undefined)
-    .map((w) => buildWhere(sql, w, castFor, promotedFor, farScope))
+    .map((w) => buildWhere(sql, w, castFor, farTable, farScope))
     .filter((f): f is Fragment => f !== null);
 
   // The engine gives a list with no orderBy its far type's natural order (#1821); bare, it is id.
@@ -549,7 +569,7 @@ export function buildNested(
     const key =
       field === 'id'
         ? sql.unsafe(`${alias}.id COLLATE "C"`)
-        : sortKey(sql, field, castFor(field), alias);
+        : sortKey(sql, farTable, field, castFor(field), alias);
     return sql`${key} ${sql.unsafe(dir === 'asc' ? 'ASC' : 'DESC')} NULLS LAST`;
   });
   const orderBy = order.flatMap((o, i) => (i === 0 ? [o] : [sql`,`, o]));
@@ -565,16 +585,17 @@ export function buildNested(
   const plain = Object.keys(fields).filter(
     (k) => k !== 'id' && k !== '_agg' && !NON_BODY_FIELD_KEYS.has(k) && !isNested(fields[k])
   );
-  // The id as `materialize` reads it: the body's when it is a number or string.
+  // The id as `materialize` reads it: the body's (`extra`'s) when it is a number or string.
+  const doc = `${alias}.${farTable.jsonb}`;
   const id = sql.unsafe(
-    `CASE WHEN jsonb_typeof(${alias}.body -> 'id') IN ('number', 'string') THEN ${alias}.body -> 'id' ELSE to_jsonb(${alias}.id) END`
+    `CASE WHEN jsonb_typeof(${doc} -> 'id') IN ('number', 'string') THEN ${doc} -> 'id' ELSE to_jsonb(${alias}.id) END`
   );
   const obj = buildObject(sql, [
     sql`'id'::text, ${id}`,
-    ...plain.map((k) => sql`${k}::text, ${bodyJson(sql, [k], alias)}`)
+    ...plain.map((k) => sql`${k}::text, ${fieldExpr(sql, farTable, k, 'json', alias)}`)
   ]);
-  const sub = buildWalkProjection(sql, subAggs, subNested, promotedFor, farScope);
+  const sub = buildWalkProjection(sql, subAggs, subNested, farTable, farScope);
   const row = sub === null ? obj : sql`${obj} || ${sub}`;
   // The LIMIT is on the order itself, so an index in that order stops after it.
-  return sql`(SELECT COALESCE(jsonb_agg(${row} ORDER BY ${orderBy}), '[]'::jsonb) FROM (SELECT ${a}.* FROM rows ${a} WHERE ${combineAnd(sql, [cond, ...filters])} ORDER BY ${orderBy} ${limit}) ${a})`;
+  return sql`(SELECT COALESCE(jsonb_agg(${row} ORDER BY ${orderBy}), '[]'::jsonb) FROM (SELECT ${a}.* FROM ${sql.unsafe(from)} ${a} WHERE ${combineAnd(sql, [cond, ...filters])} ORDER BY ${orderBy} ${limit}) ${a})`;
 }
