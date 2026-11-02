@@ -1554,7 +1554,10 @@ export class PgDataset implements Dataset {
         ON s.namespace = u.namespace
        AND s.type = u.type
        AND s.row_id = u.id
-    `;
+    `.catch((err: unknown) => {
+      // A patch onto a declared unique index's values: refused as `write` refuses it.
+      throw this.#uniqueViolation(type, err);
+    });
     const fields = this.#typeDefLookup?.(type, this.namespace)?.fields;
     const byId = new Map(records.map((r) => [r.id, this.materialize(r, fields)]));
     return patches.map((p) => byId.get(idToText(p.id)) ?? null);

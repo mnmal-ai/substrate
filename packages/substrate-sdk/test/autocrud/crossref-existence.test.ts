@@ -1,8 +1,13 @@
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
-import { MissingReferentError, type ResolverArgs } from '@mnmal-ai/substrate-types';
+import {
+  isBatchElementError,
+  MissingReferentError,
+  type ResolverArgs
+} from '@mnmal-ai/substrate-types';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
-  assertCrossRefTargetsExist,
+  assertCrossRefTargetsExistMany,
+  type CrossRefFieldInfo,
   collectCrossRefFields
 } from '../../src/autocrud/crossref-existence.js';
 import { field } from '../../src/field.js';
@@ -11,7 +16,21 @@ const traceRef = field.crossRef('main', 'Trace', { onMissing: 'reject' });
 const softRef = field.crossRef('main', 'Trace'); // onMissing absent => enforce where enforceable
 const crossNsRef = field.crossRef('other', 'Thing', { onMissing: 'reject' });
 
-describe('assertCrossRefTargetsExist', () => {
+/** The batch check on one element, its refusal unwrapped as a single frame sees it. */
+async function assertCrossRefTargetsExist(
+  args: ResolverArgs,
+  crossRefs: CrossRefFieldInfo[],
+  values: Record<string, unknown>,
+  fromNs: string
+): Promise<void> {
+  try {
+    await assertCrossRefTargetsExistMany(args, crossRefs, [values], fromNs);
+  } catch (err) {
+    throw isBatchElementError(err) ? err.cause : err;
+  }
+}
+
+describe('assertCrossRefTargetsExistMany, one element', () => {
   let ds: MemoryDataset;
   beforeEach(async () => {
     ds = new MemoryDataset({ namespace: 'main' });

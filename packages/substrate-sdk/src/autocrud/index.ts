@@ -19,14 +19,14 @@
  * satisfies the interface shape.
  */
 
-import { and, applyRowFilters, requireCapability } from '@mnmal-ai/substrate-policy';
+import { and, requireCapability } from '@mnmal-ai/substrate-policy';
 import type {
   AutoCrudVerb,
+  BatchResolver,
   Dataset,
   EdgesStore,
   FieldDef,
   FieldDefStruct,
-  Id,
   IndexDecl,
   OrderedBy,
   Policy,
@@ -37,28 +37,27 @@ import type {
   TypedResolver
 } from '@mnmal-ai/substrate-types';
 import type { PostWriteHook } from '../namespace.js';
-import { resolveEntityId } from '../short-id-resolver.js';
-import { createResolver } from './autocrud-create.js';
-import { deleteResolver } from './autocrud-delete.js';
 import { getResolver } from './autocrud-get.js';
 import { listResolver } from './autocrud-list.js';
 import { purgeResolver } from './autocrud-purge.js';
-import { updateResolver } from './autocrud-update.js';
-import { assertCrossRefTargetsExist, collectCrossRefFields } from './crossref-existence.js';
+import {
+  createBatchResolver,
+  deleteBatchResolver,
+  singleFrame,
+  updateBatchResolver
+} from './batch.js';
 import {
   assertCrossRefDeletePolicies,
   assertServerSetFieldsFillable,
-  assertVocabImplications,
-  coerceId
+  assertVocabImplications
 } from './internal.js';
 
-export { createResolver } from './autocrud-create.js';
-export { deleteResolver } from './autocrud-delete.js';
 export { getResolver } from './autocrud-get.js';
 export { listResolver } from './autocrud-list.js';
 export { purgeResolver } from './autocrud-purge.js';
 export type { UpdateResolverOptions } from './autocrud-update.js';
-export { applyUpdatePatch, updateResolver } from './autocrud-update.js';
+export { applyUpdatePatch } from './autocrud-update.js';
+export { createResolver, deleteResolver, updateResolver } from './batch.js';
 
 /**
  * The narrow surface `installAutoCrud` needs from a registry. The core
@@ -68,36 +67,6 @@ export { applyUpdatePatch, updateResolver } from './autocrud-update.js';
  * `(ctx, args) => Promise<Row | Row[] | null>` so autocrud's `get` can surface
  * null without sentinel gymnastics.
  */
-/**
- * A row policy filters what a read returns, so on its own it would let an
- * update or delete reach a row the caller cannot read. Run the policy's row
- * filters against the stored row first and answer as for a missing row.
- */
-function guardRowWrite(
-  typeName: string,
-  dataset: Dataset,
-  policy: Policy | undefined,
-  hidden: (id: Id) => Row | null,
-  resolver: AutoCrudResolver
-): AutoCrudResolver {
-  if (policy === undefined) return resolver;
-  return async (ctx, args) => {
-    const id = coerceId(args.params?.id);
-    if (id === undefined) return resolver(ctx, args);
-    const decision = policy(ctx, args);
-    if (decision.obligations === undefined || decision.obligations.length === 0) {
-      return resolver(ctx, args);
-    }
-    const ds = args.dataset ?? dataset;
-    const rowId = await resolveEntityId(ds, typeName, id);
-    const stored = rowId === null ? undefined : (await ds.read(typeName, { id: rowId })).rows[0];
-    if (stored !== undefined && applyRowFilters(decision, [stored], ctx).length === 0) {
-      return hidden(id);
-    }
-    return resolver(ctx, args);
-  };
-}
-
 export type AutoCrudResolver = (
   ctx: RequestContext,
   args: ResolverArgs
@@ -108,6 +77,8 @@ export interface AutoCrudRegistry {
     typeName: string,
     input: {
       resolver: AutoCrudResolver;
+      /** Set-wise resolver for a mutate array of this mutation. */
+      batch?: BatchResolver;
       policy?: Policy;
       fields?: Record<string, FieldDef>;
       kind?: 'type' | 'mutation';
@@ -181,72 +152,7 @@ export function createResolverWithEdges(
   edges: EdgesStore,
   options: CreateResolverWithEdgesOptions = {}
 ): TypedResolver<Row> {
-  const { fields, postWrite } = options;
-  const crossRefs = collectCrossRefFields(fields);
-  const base = createResolver(typeName, dataset, fields !== undefined ? { fields } : {});
-
-  return async (ctx, args) => {
-    const ds = args.dataset ?? dataset;
-    // Refuse edges to non-existent targets before writing anything.
-    await assertCrossRefTargetsExist(args, crossRefs, args.params ?? {}, ds.namespace);
-
-    // `base` returns the stored canonical row.
-    const createdRow = await base(ctx, args);
-    const edgeStore = args.edges ?? edges;
-
-    // Each crossRef field maps to one independent edge write — no inter-write
-    // dependency — so fire them concurrently.
-    const edgeWrites: Array<Promise<unknown>> = [];
-    for (const { fieldName, def } of crossRefs) {
-      const value = createdRow[fieldName];
-      if (value == null) continue;
-      if (typeof value !== 'string' && typeof value !== 'number') continue;
-      edgeWrites.push(
-        edgeStore.write({
-          from: { ns: ds.namespace, type: typeName, id: createdRow.id },
-          to: { ns: def.ns, type: def.type, id: value },
-          fieldName,
-          policy: def.onDelete
-        })
-      );
-    }
-    if (edgeWrites.length > 0) await Promise.all(edgeWrites);
-
-    if (postWrite !== undefined) {
-      await runPostWrite(postWrite, typeName, dataset, createdRow, ctx, args);
-    }
-    return createdRow;
-  };
-}
-
-/**
- * Runs `postWrite` once the engine transaction commits, on the row as
- * committed, so its side effects (embeddings, indexes) never describe a
- * rolled-back write or hold a connection across the transaction. A rolled-back
- * write skips it. Outside a transaction (no `afterTx`) it runs at once.
- */
-async function runPostWrite(
-  postWrite: PostWriteHook,
-  typeName: string,
-  dataset: Dataset,
-  row: Row,
-  ctx: RequestContext,
-  args: ResolverArgs
-): Promise<void> {
-  if (args.afterTx === undefined) {
-    await postWrite(row, ctx);
-    return;
-  }
-  args.afterTx(async (outcome) => {
-    // shortcut: a commit whose reply was lost reads as a rollback, so its row
-    // is never indexed until POST /substrate/v1/embed/reindex or
-    // /substrate/v1/lexical/reindex runs; re-read by id after reconnect to
-    // recover it automatically.
-    if (!outcome.committed) return;
-    const { rows } = await dataset.read(typeName, { id: row.id });
-    const committed = rows[0];
-    if (committed !== undefined) await postWrite(committed, ctx);
-  });
+  return singleFrame<Row>(createBatchResolver(typeName, dataset, edges, options));
 }
 
 /**
@@ -319,38 +225,18 @@ export function installAutoCrud(
   );
   installedOptions.set(list, options);
   const get: AutoCrudResolver = getResolver(typeName, dataset);
-  const create: AutoCrudResolver = createResolverWithEdges(typeName, dataset, edges, {
+  const hooks = {
     ...(fields !== undefined ? { fields } : {}),
+    ...(policy !== undefined ? { policy } : {}),
     ...(postWrite !== undefined ? { postWrite } : {})
-  });
-  const baseUpdate = updateResolver(
-    typeName,
-    dataset,
-    edges,
-    fields !== undefined ? { fields } : {}
-  );
-  const update: AutoCrudResolver = guardRowWrite(
-    typeName,
-    dataset,
-    policy,
-    () => null,
-    postWrite !== undefined
-      ? async (ctx, args) => {
-          const result = await baseUpdate(ctx, args);
-          if (result !== null) {
-            await runPostWrite(postWrite, typeName, dataset, result as Row, ctx, args);
-          }
-          return result;
-        }
-      : (baseUpdate as AutoCrudResolver)
-  );
-  const del: AutoCrudResolver = guardRowWrite(
-    typeName,
-    dataset,
-    policy,
-    (id) => ({ id, deleted: false }) as unknown as Row,
-    deleteResolver(typeName, dataset, edges)
-  );
+  };
+  // A mutate array calls the batch resolver once; a single frame calls it with one element.
+  const createBatch = createBatchResolver(typeName, dataset, edges, hooks);
+  const updateBatch = updateBatchResolver(typeName, dataset, edges, hooks);
+  const deleteBatch = deleteBatchResolver(typeName, dataset, edges, hooks);
+  const create: AutoCrudResolver = singleFrame<Row>(createBatch);
+  const update: AutoCrudResolver = singleFrame<Row | null>(updateBatch);
+  const del: AutoCrudResolver = singleFrame<Row>(deleteBatch);
   const purge: AutoCrudResolver = purgeResolver(typeName, dataset);
 
   // `returns` defers to the type's declared fields (if any). No fields → no
@@ -387,6 +273,7 @@ export function installAutoCrud(
 
   registry.register(`create${cap}`, {
     resolver: create,
+    batch: createBatch,
     kind: 'mutation',
     verb: 'create',
     // `create<T>`'s params mirror the type's fields. The resolver accepts a
@@ -401,6 +288,7 @@ export function installAutoCrud(
 
   registry.register(`update${cap}`, {
     resolver: update,
+    batch: updateBatch,
     kind: 'mutation',
     verb: 'update',
     // `update<T>` requires `id` plus any field to change. We declare the full
@@ -414,6 +302,7 @@ export function installAutoCrud(
 
   registry.register(`delete${cap}`, {
     resolver: del,
+    batch: deleteBatch,
     kind: 'mutation',
     verb: 'delete',
     params: { id: ID_FIELD },

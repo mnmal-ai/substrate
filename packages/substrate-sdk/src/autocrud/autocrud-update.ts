@@ -1,9 +1,10 @@
 /**
  * autoCRUD `update<T>` resolver. Spec: §5.1, §5.2.1 (id-based form).
  *
- * Shape: `params = { id, ...newFields }`. One `conditionalUpdate()` per
- * update against the live row: it preserves createdAt/createdBy (no
- * pre-read) and returns the merged row (no post-read).
+ * Shape: `params = { id, ...newFields }`. The resolvers live in `batch.ts`:
+ * the single-frame resolver is the batch resolver called with one element,
+ * and a batch applies every patch with one live-only `patchRows`, which
+ * preserves createdAt/createdBy and returns the merged rows.
  * Runs inside the engine's G1 transaction via `args.dataset` — a mid-update
  * throw rolls back the frame.
  *
@@ -17,18 +18,13 @@
 
 import type {
   Dataset,
-  EdgesStore,
   FieldDef,
   Id,
   RequestContext,
   ResolverArgs,
-  Row,
-  TypedResolver
+  Row
 } from '@mnmal-ai/substrate-types';
 import { normaliseVocabValues, ReservedField, ResolverFrameError } from '@mnmal-ai/substrate-types';
-import { resolveEntityId } from '../short-id-resolver.js';
-import { reconcileCrossRefEdgesOnUpdate } from './crossref-edge-sync.js';
-import { assertCrossRefTargetsExist, collectCrossRefFields } from './crossref-existence.js';
 import {
   assertEnumValues,
   assertNoClientServerFields,
@@ -90,109 +86,68 @@ export async function applyUpdatePatch(
   return merged;
 }
 
-export function updateResolver<T extends Row = Row>(
+/**
+ * One update element's validation, run in JS before any write: returns the
+ * requested id and the normalised params (the patch plus `id`). Throws the
+ * element's refusal. The single and batch update resolvers both call it, so
+ * the checks exist once.
+ */
+export function prepareUpdate(
   typeName: string,
-  dataset: Dataset,
-  edges: EdgesStore,
-  options: UpdateResolverOptions = {}
-): TypedResolver<T | null> {
-  const crossRefs = collectCrossRefFields(options.fields);
+  rawParams: Record<string, unknown> | undefined,
+  fields: Record<string, FieldDef> | undefined
+): { id: Id; params: Record<string, unknown> } {
+  const id = coerceId(rawParams?.id);
+  if (id === undefined) {
+    throw new ResolverFrameError(
+      'missing_id',
+      `updateResolver('${typeName}'): params.id is required`,
+      { field: 'id' }
+    );
+  }
 
-  return async (ctx, args) => {
-    // Prefer engine-supplied handle (tx view on mutate — matches G1 contract).
-    const ds = args.dataset ?? dataset;
-    const id = coerceId(args.params?.id);
-    if (id === undefined) {
-      throw new ResolverFrameError(
-        'missing_id',
-        `updateResolver('${typeName}'): params.id is required`,
-        { field: 'id' }
-      );
-    }
+  // Reject client-supplied server fields (Tier-1: row metadata;
+  // Tier-2: serverSet date fields). Runs before field iteration so the error
+  // code is unambiguous.
+  if (fields) {
+    assertNoClientServerFields(rawParams ?? {}, fields, 'update');
+  }
 
-    // Reject client-supplied server fields (Tier-1: row metadata;
-    // Tier-2: serverSet date fields). Runs before field iteration so the error
-    // code is unambiguous.
-    if (options.fields) {
-      assertNoClientServerFields(args.params ?? {}, options.fields, 'update');
-    }
+  // Synonyms in a governed vocabulary are stored as their canonical value.
+  // An undefined value is an unsent key in a partial patch, not a write.
+  const sent = dropUndefinedParams(rawParams ?? {});
+  const params = fields !== undefined ? normaliseVocabValues(sent, fields) : sent;
 
-    // Synonyms in a governed vocabulary are stored as their canonical value.
-    // An undefined value is an unsent key in a partial patch, not a write.
-    const sent = dropUndefinedParams(args.params ?? {});
-    const inParams =
-      options.fields !== undefined ? normaliseVocabValues(sent, options.fields) : sent;
+  // Reserved-field guard: `_deletedAt` must never flow through update —
+  // tombstone is the only safe path. Throw before any DB work.
+  if ('_deletedAt' in params) {
+    throw new ReservedField('_deletedAt');
+  }
 
-    // Reserved-field guard: `_deletedAt` must never flow through update —
-    // tombstone is the only safe path. Throw before any DB work.
-    if ('_deletedAt' in inParams) {
-      throw new ReservedField('_deletedAt');
-    }
-
+  if (fields) {
     // Controlled-vocabulary guard. Runs after reserved-field guards so those
     // error codes take precedence. Only the patch's present keys are checked.
-    if (options.fields) {
-      assertEnumValues(inParams, options.fields);
-    }
-
+    assertEnumValues(params, fields);
     // Contract guard: the declared FieldDef map is the allow-list. Reject any
     // undeclared key in the patch so a stale field name fails loud instead of
-    // being spread into the row body. Runs LAST so the reserved-field / enum
-    // guards keep their more-specific codes.
-    if (options.fields) {
-      assertNoUnknownFields(inParams, options.fields, 'update');
-      assertNoNullOnNonNullable(inParams, options.fields, 'update');
-      assertScalarTypes(inParams, options.fields, 'update');
-    }
+    // being spread into the row body. Runs after the reserved-field / enum
+    // guards so they keep their more-specific codes.
+    assertNoUnknownFields(params, fields, 'update');
+    assertNoNullOnNonNullable(params, fields, 'update');
+    assertScalarTypes(params, fields, 'update');
+  }
+  return { id, params };
+}
 
-    // Resolve short-form (e.g. "1") to the underlying row id.
-    //
-    // A MISS IS REPORTED, not swallowed: a null result beside empty `errors`
-    // reads exactly like a write that landed. `get` still returns null — asking
-    // about a missing row has a true answer; asserting a write against one
-    // does not.
-    const rowId = await resolveEntityId(ds, typeName, id);
-    if (rowId === null) {
-      throw new ResolverFrameError(
-        'not_found',
-        `updateResolver('${typeName}'): no row with id '${String(id)}'`,
-        { field: 'id' }
-      );
-    }
-
-    // Refuse repointing a crossRef to a missing target (unless the field
-    // declares onMissing: 'allow'). Runs after the row-existence check so an
-    // update to a non-existent row reports `not_found` first.
-    const params = inParams;
-    await assertCrossRefTargetsExist(args, crossRefs, params, ds.namespace);
-
-    // Single ds.write carries the whole patch + bumps metadata atomically
-    // (the COALESCE idiom lives in applyUpdatePatch).
-    const patchFields: Record<string, unknown> = {};
-    for (const [field, value] of Object.entries(params)) {
-      if (field === 'id') continue;
-      patchFields[field] = value;
-    }
-    const merged = await applyUpdatePatch(ds, typeName, rowId, patchFields, ctx, args.onWrite);
-    if (merged === null) {
-      throw new ResolverFrameError(
-        'not_found',
-        `updateResolver('${typeName}'): no row with id '${String(id)}'`,
-        { field: 'id' }
-      );
-    }
-    if (crossRefs.length > 0) {
-      // Reconcile first-class edges against the patch — the row write above
-      // only touches the stored field value; a repointed
-      // crossRef otherwise leaves the old edge live, and the sweep's
-      // applyPolicy fires onDelete against the stale target. Runs after the
-      // row write commits so a mid-reconcile throw doesn't leave the row
-      // patched with no edge (the engine's G1 transaction still unwinds the
-      // whole frame on throw, edges included).
-      const edgeStore = args.edges ?? edges;
-      const fromRef = { ns: ds.namespace, type: typeName, id: rowId };
-      await reconcileCrossRefEdgesOnUpdate(edgeStore, fromRef, crossRefs, params);
-    }
-    return merged as T;
-  };
+/**
+ * The reported miss of an update: a null result beside empty `errors` reads
+ * exactly like a write that landed. `get` still returns null — asking about a
+ * missing row has a true answer; asserting a write against one does not.
+ */
+export function updateNotFound(typeName: string, id: Id): ResolverFrameError {
+  return new ResolverFrameError(
+    'not_found',
+    `updateResolver('${typeName}'): no row with id '${String(id)}'`,
+    { field: 'id' }
+  );
 }

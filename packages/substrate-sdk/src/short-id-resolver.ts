@@ -63,6 +63,55 @@ export async function resolveEntityRow(
 }
 
 /**
+ * `resolveEntityRow` for many inputs, in input order, with the same answer per
+ * input: one raw-id read, then ONE `resolveShortIds` for the raw misses that
+ * parse as a short id, then one read of the rows those name. `resolveShortIds`
+ * answers live rows only, which is what the single form's follow-up live read
+ * gives. An `undefined` input answers null.
+ */
+export async function resolveEntityRows(
+  dataset: Dataset,
+  type: string,
+  inputs: ReadonlyArray<Id | undefined>
+): Promise<Array<Row | null>> {
+  const given = [...new Set(inputs.filter((i): i is Id => i !== undefined))];
+  if (given.length === 0) return inputs.map(() => null);
+  // shortcut: keyed by String(id), so on memory a numeric 5 and a string '5'
+  // in one call resolve alike, where `resolveEntityRow` keeps them apart (pg
+  // stores ids as text, so it agrees); key by type too if memory ever needs it.
+  const byId = new Map<string, Row>();
+  for (const r of (await dataset.read(type, { ids: given, includeDeleted: false })).rows) {
+    byId.set(String(r.id), r);
+  }
+  const shortOf = new Map<string, number>();
+  for (const input of given) {
+    if (byId.has(String(input))) continue;
+    const shortId = parseShortForm(input);
+    if (shortId !== null) shortOf.set(String(input), shortId);
+  }
+  const viaShort = new Map<number, Row>();
+  if (shortOf.size > 0) {
+    const bound = await dataset.resolveShortIds(type, [...shortOf.values()]);
+    const ids = [...new Set(bound.values())];
+    if (ids.length > 0) {
+      const { rows } = await dataset.read(type, { ids, includeDeleted: false });
+      const fetched = new Map(rows.map((r) => [String(r.id), r]));
+      for (const [shortId, id] of bound) {
+        const r = fetched.get(id);
+        if (r !== undefined) viaShort.set(shortId, r);
+      }
+    }
+  }
+  return inputs.map((input) => {
+    if (input === undefined) return null;
+    const raw = byId.get(String(input));
+    if (raw !== undefined) return raw;
+    const shortId = shortOf.get(String(input));
+    return shortId === undefined ? null : (viaShort.get(shortId) ?? null);
+  });
+}
+
+/**
  * Short-form gate shared by both resolvers: numeric-string inputs only.
  * PostgreSQL bigint holds up to 2^63, but JS Number precision ends at
  * Number.MAX_SAFE_INTEGER (2^53 - 1). Values beyond that silently truncate
@@ -71,7 +120,7 @@ export async function resolveEntityRow(
  * explicitly for any out-of-range input — no real deployment will approach
  * 2^53 sequence values.
  */
-function parseShortForm(input: Id): number | null {
+export function parseShortForm(input: Id): number | null {
   const inputStr = String(input);
   if (!INT_RE.test(inputStr)) return null;
   if (inputStr.length > 16) return null;

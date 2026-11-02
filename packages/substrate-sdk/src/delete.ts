@@ -8,7 +8,7 @@
  * deliberately stays narrow so the outer path is auditable in one file.
  */
 
-import type { Dataset, EdgeRef, EdgesStore } from '@mnmal-ai/substrate-types';
+import type { Dataset, Edge, EdgeRef, EdgesStore, Id } from '@mnmal-ai/substrate-types';
 import { RestrictViolation } from '@mnmal-ai/substrate-types';
 
 export interface DeleteRowArgs {
@@ -31,4 +31,48 @@ export async function deleteRow(args: DeleteRowArgs): Promise<DeleteRowResult> {
 
   await args.dataset.tombstone(args.ref.type, [args.ref.id]);
   return { ok: true, tombstonedAt: args.now() };
+}
+
+export interface DeleteRowsArgs {
+  dataset: Dataset;
+  edges: EdgesStore;
+  type: string;
+  ids: Id[];
+}
+
+/**
+ * `deleteRow` for many rows of one type in the dataset's namespace: one
+ * `findEdgesToMany` gates them all (one `canDelete` for a single row), then
+ * one `tombstone` call. Throws
+ * `RestrictViolation` for the first id, in `ids` order, that a live `restrict`
+ * edge blocks, before tombstoning anything. Returns the ids tombstoned.
+ */
+export async function deleteRows(args: DeleteRowsArgs): Promise<Id[]> {
+  if (args.ids.length === 0) return [];
+  const refs: EdgeRef[] = args.ids.map((id) => ({
+    ns: args.dataset.namespace,
+    type: args.type,
+    id
+  }));
+  const blocked = new Map<string, Edge[]>();
+  const only = refs.length === 1 ? refs[0] : undefined;
+  if (only !== undefined) {
+    // One row: `canDelete` filters `restrict` in the store (in SQL on pg).
+    const gate = await args.edges.canDelete(only);
+    if (!gate.ok) blocked.set(String(only.id), gate.blockedBy);
+  } else {
+    for (const e of await args.edges.findEdgesToMany(refs)) {
+      if (e.policy !== 'restrict' || e.deletedAt != null) continue;
+      const key = String(e.to.id);
+      const by = blocked.get(key);
+      if (by === undefined) blocked.set(key, [e]);
+      else by.push(e);
+    }
+  }
+  for (const ref of refs) {
+    const by = blocked.get(String(ref.id));
+    if (by !== undefined) throw new RestrictViolation(ref, by);
+  }
+  const { ids } = await args.dataset.tombstone(args.type, args.ids);
+  return ids;
 }

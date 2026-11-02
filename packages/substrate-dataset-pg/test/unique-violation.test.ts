@@ -73,6 +73,16 @@ describe.skipIf(!POSTGRES_URL)('a declared unique index conflict (pg)', () => {
     expect(err.details).toEqual({ index, fields: ['task', 'revision'] });
   });
 
+  it('refuses a patchRows onto the indexed values the same way', async () => {
+    const { ds, index } = await fixture();
+    const [row] = (await ds.write(TYPE, [{ task: 't1', revision: 2 }])).rows;
+    const err = await refusal(
+      ds.patchRows(TYPE, [{ id: row?.id ?? '', patch: { revision: 1 } }], null, new Date())
+    );
+    expect(err.code).toBe('unique_violation');
+    expect(err.details).toEqual({ index, fields: ['task', 'revision'] });
+  });
+
   it('leaves a non-colliding write alone', async () => {
     const { ds } = await fixture();
     await ds.write(TYPE, [{ task: 't1', revision: 2 }]);
