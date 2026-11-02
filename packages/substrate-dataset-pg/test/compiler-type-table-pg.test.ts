@@ -94,6 +94,10 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('type-table SQL against a type table',
   });
 
   afterAll(async () => {
+    // Drop this run's type table and catalog rows so repeated runs leave nothing behind.
+    if (table !== undefined) await sql.unsafe(`DROP TABLE IF EXISTS ${table.from}`);
+    await sql`DELETE FROM substrate_type_fields WHERE namespace = ${NS}`;
+    await sql`DELETE FROM substrate_type_tables WHERE namespace = ${NS}`;
     await sql.end({ timeout: 5 });
   });
 
