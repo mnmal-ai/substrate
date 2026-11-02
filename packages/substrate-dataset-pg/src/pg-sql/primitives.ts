@@ -288,7 +288,8 @@ export function fieldExprSql(table: TypeTable, field: string, as: FieldAs, alias
   const col = columnExprSql(c, as, alias);
   if (!extraWins(c)) return as === 'json' ? rawOverlay(field, col, alias) : col;
   const q = qualifier(alias);
-  const fromColumn = as === 'number' ? `${col}::numeric` : col;
+  // Through text: float8::numeric keeps 15 digits, the shortest exact text all of them.
+  const fromColumn = as === 'number' ? `${col}::text::numeric` : col;
   const value = `CASE WHEN ${q}extra ? ${sqlStringLiteral(field)} THEN ${extraBranchSql(field, as, c.kind, alias)} ELSE ${fromColumn} END`;
   return as === 'json' ? rawOverlay(field, value, alias) : value;
 }

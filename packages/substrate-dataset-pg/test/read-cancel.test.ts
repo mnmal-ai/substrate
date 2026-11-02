@@ -7,6 +7,7 @@ import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { runMigrations } from '../src/migrate.js';
 import { PgDataset } from '../src/pg-dataset.js';
+import { clearNamespace, relationOf } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const NS = 'test_read_cancel';
@@ -27,7 +28,7 @@ describe.skipIf(!POSTGRES_URL)('read cancellation (pg)', () => {
 
   afterAll(async () => {
     if (!POSTGRES_URL) return;
-    await sql`DELETE FROM rows WHERE namespace = ${NS}`;
+    await clearNamespace(sql, NS);
     await Promise.all([sql.end(), reader.end(), locker.end()]);
   });
 
@@ -42,7 +43,7 @@ describe.skipIf(!POSTGRES_URL)('read cancellation (pg)', () => {
     let locked: () => void = () => {};
     const gotLock = new Promise<void>((r) => (locked = r));
     const holder = locker.begin(async (tx) => {
-      await tx`LOCK TABLE rows IN ACCESS EXCLUSIVE MODE`;
+      await tx.unsafe(`LOCK TABLE ${await relationOf(tx, NS, 'Item')} IN ACCESS EXCLUSIVE MODE`);
       locked();
       await held;
     });

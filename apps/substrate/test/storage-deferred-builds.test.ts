@@ -301,6 +301,7 @@ describe.skipIf(!POSTGRES_URL)('deferred index builds at boot (pg)', () => {
       .spyOn(PgDataset.prototype, 'ensureTypeStorage')
       .mockImplementation(async function (this: PgDataset) {
         if (this.namespace === lns && ++calls === 2) stop.abort();
+        return { pending: [] };
       });
     try {
       await runDeferredIndexBuilds(composed.engine, composed.datasets, 1, stop.signal);

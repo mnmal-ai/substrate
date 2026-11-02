@@ -8,6 +8,7 @@
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PgDataset, runMigrations } from '../src/index.js';
+import { truncateRows } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 
@@ -25,7 +26,7 @@ describe.skipIf(!POSTGRES_URL)('PgDataset — §5.2 filter', () => {
   });
 
   beforeEach(async () => {
-    await sql`TRUNCATE TABLE rows, short_ids`;
+    await truncateRows(sql);
     ds = new PgDataset({ namespace: 'test_ns', sql });
   });
 
@@ -262,7 +263,7 @@ describe.skipIf(!POSTGRES_URL)('PgDataset — §5.2 filter', () => {
       // JSONB ->> returns text — sort is lexicographic. We use zero-padded
       // string ids so the id tie-break is stable. For numeric orderBy the
       // test uses 2-digit numbers so text-sort matches numeric-sort.
-      await sql`TRUNCATE TABLE rows, short_ids`;
+      await truncateRows(sql);
       await ds.write('T', [
         { id: '1', n: '30' },
         { id: '2', n: '10' },

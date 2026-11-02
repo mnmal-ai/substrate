@@ -478,12 +478,22 @@ export interface Dataset {
    * rest `pending`, for a later `nonUnique` call to build. `signal` cancels an
    * in-flight non-unique build, which the next call retries. Default `all`.
    *
+   * On a store keeping each type in a table of its own, also brings that
+   * table in line with the type's declared fields: a newly declared field gets
+   * its column, or, with `newFields: 'pending'`, is recorded `pending` for a
+   * background sweep to add. Resolves with the fields that went `pending` in
+   * this call; a store without such tables resolves `{ pending: [] }`.
+   *
    * OPTIONAL. Backends without per-type storage omit it.
    */
   ensureTypeStorage?(
     type: string,
-    opts?: { indexes?: 'all' | 'unique' | 'nonUnique'; signal?: AbortSignal }
-  ): Promise<void>;
+    opts?: {
+      indexes?: 'all' | 'unique' | 'nonUnique';
+      signal?: AbortSignal;
+      newFields?: 'column' | 'pending';
+    }
+  ): Promise<{ pending: string[] }>;
   /**
    * Where `type`'s rows live and how its declared indexes stand, read from the
    * catalog without building anything.

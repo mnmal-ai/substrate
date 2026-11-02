@@ -14,6 +14,7 @@
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { deriveListIndexMigration, runDerivedMigrations, runMigrations } from '../src/index.js';
+import { TABLES } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const PARTITIONED = process.env.SUBSTRATE_STORAGE_LAYOUT === 'partitioned';
@@ -46,7 +47,8 @@ describe('deriveListIndexMigration (pure)', () => {
 
 // Legacy only: on the partitioned layout list/json GIN indexes are built per
 // type partition by the index reconciler instead.
-describe.skipIf(!POSTGRES_URL || PARTITIONED)('runDerivedMigrations', () => {
+// On `tables` the list GINs are skipped, as on partitioned; Task 12 builds them per type table.
+describe.skipIf(!POSTGRES_URL || PARTITIONED || TABLES)('runDerivedMigrations', () => {
   let sql: Sql;
 
   beforeAll(async () => {

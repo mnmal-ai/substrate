@@ -19,6 +19,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { runMigrations } from '../src/migrate.js';
 import { PgDataset } from '../src/pg-dataset.js';
 import { PgEdgesStore } from '../src/pg-edges-store.js';
+import { clearNamespace } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const NS_A = 'test_xns_credential';
@@ -50,7 +51,7 @@ describe.skipIf(!POSTGRES_URL)('cross-namespace atomicity on one pg tx scope', (
   });
 
   beforeEach(async () => {
-    await sql`DELETE FROM rows WHERE namespace IN (${NS_A}, ${NS_B})`;
+    for (const ns of [NS_A, NS_B]) await clearNamespace(sql, ns);
   });
 
   afterAll(async () => {

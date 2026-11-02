@@ -13,6 +13,7 @@ import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { runMigrations } from '../src/migrate.js';
 import { PgShortIdStore } from '../src/pg-short-id-store.js';
+import { clearNamespace, seedRowId } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 
@@ -37,10 +38,7 @@ describe.skipIf(!POSTGRES_URL)('PgShortIdStore', () => {
     // 0010 adds an FK from short_ids -> rows ON DELETE CASCADE,
     // so deleting rows here also clears the matching short-id rows.
     // short_ids is also cleared directly, for explicitness.
-    await sql`
-      DELETE FROM rows
-      WHERE namespace IN (${TEST_NS_A}, ${TEST_NS_B})
-    `;
+    for (const ns of [TEST_NS_A, TEST_NS_B]) await clearNamespace(sql, ns);
     await sql`
       DELETE FROM short_ids
       WHERE namespace IN (${TEST_NS_A}, ${TEST_NS_B})
@@ -63,11 +61,7 @@ describe.skipIf(!POSTGRES_URL)('PgShortIdStore', () => {
    * and don't care about row contents.
    */
   async function seedRow(ns: string, type: string, id: string): Promise<void> {
-    await sql`
-      INSERT INTO rows (namespace, type, id, body)
-      VALUES (${ns}, ${type}, ${id}, '{}'::jsonb)
-      ON CONFLICT (namespace, type, id) DO NOTHING
-    `;
+    await seedRowId(sql, ns, type, id);
   }
 
   it('allocates monotonic ids per (ns, type) via postgres sequence', async () => {

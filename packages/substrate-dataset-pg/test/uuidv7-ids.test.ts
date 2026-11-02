@@ -5,6 +5,7 @@
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PgDataset, runMigrations } from '../src/index.js';
+import { clearNamespace } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const NS = 'test_uuidv7_ids';
@@ -26,7 +27,7 @@ describe.skipIf(!POSTGRES_URL)('uuidv7 ids (pg)', () => {
   });
 
   beforeEach(async () => {
-    await sql`DELETE FROM rows WHERE namespace = ${NS}`;
+    await clearNamespace(sql, NS);
   });
 
   it('an id-less create gets a version-7 UUID from the database', async () => {

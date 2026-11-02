@@ -33,6 +33,7 @@ import {
   combineOr,
   escapeLike,
   type Fragment,
+  fieldExpr,
   idToText,
   isMetadataField,
   type JsonbColumn,
@@ -668,8 +669,21 @@ function rangeCmp(
 export function conditionalMatchFragment(
   sql: Sql | TransactionSql,
   field: string,
-  expected: unknown
+  expected: unknown,
+  table?: TypeTable
 ): Fragment {
+  if (table !== undefined && table.jsonb === 'extra') {
+    // A type table's row as `decodeRow` reads it, compared as memory compares:
+    // by JSON value, so `5` never matches `'5'`; a stored null matches null.
+    const v = fieldExpr(sql, table, field, 'json');
+    if (expected === null || expected === undefined) {
+      return sql`(${v} IS NULL OR ${v} = 'null'::jsonb)`;
+    }
+    if (expected instanceof Date) {
+      return sql`${fieldExpr(sql, table, field, 'date')} = ${tsParam(sql, expected)}`;
+    }
+    return sql`${v} = ${JSON.stringify(expected)}::text::jsonb`;
+  }
   const textExpr = bodyText(sql, [field]);
   if (expected === null || expected === undefined) return sql`${textExpr} IS NULL`;
   if (typeof expected === 'boolean') {

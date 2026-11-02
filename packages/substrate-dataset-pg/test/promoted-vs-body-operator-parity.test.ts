@@ -21,6 +21,7 @@ import type { Row, WhereClause } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PgDataset, runMigrations } from '../src/index.js';
+import { TABLES } from './_layout.js';
 import { addTestPromotedColumns, dropTestPromotedColumns, TEST_PROMOTED } from './_promoted.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
@@ -59,7 +60,8 @@ const CASES: Array<{ name: string; predicate: Record<string, unknown> }> = [
   { name: "nin ['alpha','gamma']", predicate: { nin: ['alpha', 'gamma'] } }
 ];
 
-describe.skipIf(!POSTGRES_URL)(
+// Promoted columns are added to `rows`; a type table types its fields itself.
+describe.skipIf(!POSTGRES_URL || TABLES)(
   'promoted column and body field answer operators identically',
   () => {
     let sql: Sql;

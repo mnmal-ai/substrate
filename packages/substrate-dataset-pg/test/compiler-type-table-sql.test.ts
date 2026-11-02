@@ -204,7 +204,7 @@ describe('every column kind and state', () => {
 
   it('a promoting number is numeric in both branches, a date compares as an instant', () => {
     expect(where({ qty: { gt: 1 } })).toContain(
-      `CASE WHEN extra ? 'qty' THEN substrate_num(extra -> 'qty') ELSE f_qty::numeric END > $`
+      `CASE WHEN extra ? 'qty' THEN substrate_num(extra -> 'qty') ELSE f_qty::text::numeric END > $`
     );
     expect(where({ seenAt: { gte: '2026-01-01' } })).toContain(
       `CASE WHEN extra ? 'seenAt' THEN substrate_ts(extra -> 'seenAt') ELSE ${SEEN} END >= $::text::timestamptz`
@@ -229,9 +229,9 @@ describe('every column kind and state', () => {
         s
       )
     );
-    expect(text).toContain('sum(r.f_price::numeric)');
+    expect(text).toContain('sum(r.f_price::text::numeric)');
     expect(text).toContain(
-      `sum(CASE WHEN r.extra ? 'qty' THEN substrate_num(r.extra -> 'qty') ELSE r.f_qty::numeric END::numeric)`
+      `sum(CASE WHEN r.extra ? 'qty' THEN substrate_num(r.extra -> 'qty') ELSE r.f_qty::text::numeric END)`
     );
   });
 

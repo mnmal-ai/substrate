@@ -12,11 +12,13 @@
 import postgres, { type Sql } from 'postgres';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runMigrations } from '../src/index.js';
+import { TABLES } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const PARTITIONED = process.env.SUBSTRATE_STORAGE_LAYOUT === 'partitioned';
 
-describe.skipIf(!POSTGRES_URL)('row-metadata schema migration', () => {
+// The metadata columns of `rows`; a type table is created with them.
+describe.skipIf(!POSTGRES_URL || TABLES)('row-metadata schema migration', () => {
   let sql: Sql;
 
   beforeEach(async () => {

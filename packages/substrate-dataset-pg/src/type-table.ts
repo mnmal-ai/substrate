@@ -103,6 +103,24 @@ export function rowsTypeTable(
   };
 }
 
+/**
+ * A type on the `tables` layout that has no table yet: an empty relation with
+ * a type table's fixed columns, so a read of it compiles and finds nothing.
+ */
+export function absentTypeTable(namespace: string, type: string): TypeTable {
+  return {
+    namespace,
+    type,
+    from: "(SELECT NULL::text AS id, NULL::timestamptz AS deleted_at, NULL::timestamptz AS created_at, NULL::timestamptz AS updated_at, NULL::text AS created_by_kind, NULL::text AS created_by_id, NULL::text AS updated_by_kind, NULL::text AS updated_by_id, NULL::bigint AS seq, '{}'::jsonb AS extra WHERE false)",
+    jsonb: 'extra',
+    scope: () => null,
+    column: () => undefined,
+    columns: () => [],
+    pending: [],
+    orphaned: []
+  };
+}
+
 type FieldState = 'pending' | TypedColumn['state'];
 
 interface CatalogRow {
@@ -263,17 +281,17 @@ async function ensureIn(tx: TransactionSql, args: EnsureTypeTableArgs): Promise<
         await setState(field, 'promoting');
         changed = true;
       }
-      if (!sameVocab(row.vocab, vocab)) {
+      const widened = widen(row.vocab, vocab);
+      if (widened !== undefined) {
         // On a lock timeout the old vocabulary stays recorded, and the next boot retries.
         const applied =
           row.state === 'pending' ||
           (await ddl(
             tx,
-            `ALTER TABLE ${table} ${enumCheckClauses(row.column_name, vocab).join(', ')}`
+            `ALTER TABLE ${table} ${enumCheckClauses(row.column_name, widened).join(', ')}`
           ));
         if (applied) {
-          await tx`UPDATE substrate_type_fields
-                   SET vocab = ${vocab === undefined ? null : tx.array([...vocab])}
+          await tx`UPDATE substrate_type_fields SET vocab = ${tx.array(widened)}
                    WHERE namespace = ${namespace} AND type = ${type} AND field = ${field}`;
           changed = true;
         }
@@ -307,11 +325,21 @@ function vocabOf(def: FieldDef): readonly string[] | undefined {
   return def.kind === 'scalar' ? def.enum : undefined;
 }
 
-/** Order-insensitive: a reordered enum checks the same values. */
-function sameVocab(a: readonly string[] | null, b: readonly string[] | undefined): boolean {
-  const key = (v: readonly string[] | null | undefined) =>
-    JSON.stringify(v == null ? null : [...v].sort());
-  return key(a) === key(b);
+/**
+ * The recorded vocabulary with `declared`'s new values appended, or undefined
+ * when it already holds them all. Only ever widens: a value dropped from the
+ * declaration stays recorded and in the CHECK, because pg re-checks a CHECK on
+ * every UPDATE of a row, so a narrowed one would refuse any update of a row
+ * still holding the dropped value. The codec admits a recorded value to the
+ * column, so such a row reads and filters as written.
+ */
+function widen(
+  recorded: readonly string[] | null,
+  declared: readonly string[] | undefined
+): string[] | undefined {
+  const have = recorded ?? [];
+  const added = (declared ?? []).filter((v) => !have.includes(v));
+  return added.length === 0 ? undefined : [...have, ...added];
 }
 
 /**

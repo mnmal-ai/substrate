@@ -18,6 +18,7 @@ import {
 import { generatedIdentifier } from '../src/migrate.js';
 import { buildWhere } from '../src/pg-sql.js';
 import { rowsTypeTable } from '../src/type-table.js';
+import { TABLES, truncateRows } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const PARTITIONED = process.env.SUBSTRATE_STORAGE_LAYOUT === 'partitioned';
@@ -54,7 +55,7 @@ describe.skipIf(!POSTGRES_URL)('json path parity', () => {
     await sql.end();
   });
   beforeEach(async () => {
-    await sql`TRUNCATE TABLE rows, short_ids`;
+    await truncateRows(sql);
     pg = new PgDataset({ namespace: NS, sql });
     mem = new MemoryDataset({ namespace: NS });
     await pg.write('J', ROWS);
@@ -159,7 +160,8 @@ describe.skipIf(!POSTGRES_URL)('json path parity', () => {
   // field gets (there is no whole-body GIN), so the containment must be
   // written against `(body -> field)` to match it. On the partitioned layout
   // the reconciler builds it on the type's partition, under the same name.
-  it('eq and has are served by the derived per-field GIN', async () => {
+  // Task 12 builds a type table's indexes; on `tables` no GIN is derived on `rows`.
+  it.skipIf(TABLES)('eq and has are served by the derived per-field GIN', async () => {
     if (PARTITIONED) {
       await new PgDataset({
         namespace: NS,

@@ -16,6 +16,7 @@ import type { IndexDecl } from '@mnmal-ai/substrate-types';
 import postgres, { type ReservedSql, type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset, partitionName, runMigrations } from '../src/index.js';
+import { TABLES } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const LAYOUT = process.env.SUBSTRATE_STORAGE_LAYOUT ?? 'legacy';
@@ -104,7 +105,8 @@ async function until(check: () => Promise<boolean>, what: string): Promise<void>
   throw new Error(`timed out waiting for ${what}`);
 }
 
-describe.skipIf(!POSTGRES_URL)('deferred non-unique index builds', () => {
+// Indexes on type tables are Task 12's; the `rows` they reconcile does not exist on `tables`.
+describe.skipIf(!POSTGRES_URL || TABLES)('deferred non-unique index builds', () => {
   it('builds unique indexes first, leaving the rest pending, then building, then valid', async () => {
     const { ns, ds, unique, plain } = fixture();
     await ds.ensureTypeStorage(TYPE, { indexes: 'unique' });

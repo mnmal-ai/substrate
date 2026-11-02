@@ -8,6 +8,7 @@
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset, runMigrations } from '../src/index.js';
+import { clearNamespace } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const KEYS = Array.from({ length: 120 }, (_, i) => `f${i}`);
@@ -19,12 +20,12 @@ describe.skipIf(!POSTGRES_URL)('wide projections', () => {
   beforeAll(async () => {
     sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
     await runMigrations(sql);
-    await sql`DELETE FROM rows WHERE namespace = 'wide_projection'`;
+    await clearNamespace(sql, 'wide_projection');
     ds = new PgDataset({ namespace: 'wide_projection', sql });
     await ds.write('Wide', [{ id: 'w1', ...Object.fromEntries(KEYS.map((k, i) => [k, i])) }]);
   });
   afterAll(async () => {
-    await sql`DELETE FROM rows WHERE namespace = 'wide_projection'`;
+    await clearNamespace(sql, 'wide_projection');
     await sql.end();
   });
 

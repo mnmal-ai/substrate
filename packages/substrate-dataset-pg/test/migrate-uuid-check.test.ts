@@ -13,10 +13,12 @@
 import postgres, { type Sql } from 'postgres';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { checksum, getMigrationList, runMigrations } from '../src/migrate.js';
+import { TABLES } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 
-describe.skipIf(!POSTGRES_URL)('0002_uuid_format_check — gated CHECK constraints', () => {
+// 0002 checks `rows`; the `tables` layout runs 0002t instead.
+describe.skipIf(!POSTGRES_URL || TABLES)('0002_uuid_format_check — gated CHECK constraints', () => {
   let sql: Sql;
 
   beforeAll(async () => {

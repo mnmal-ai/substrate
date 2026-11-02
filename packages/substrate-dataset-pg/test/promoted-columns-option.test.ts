@@ -17,6 +17,7 @@ import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PgDataset, runMigrations } from '../src/index.js';
 import type { PromotedBodyColumnMap } from '../src/pg-sql.js';
+import { TABLES } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 
@@ -25,7 +26,8 @@ const WITH_SEVERITY: PromotedBodyColumnMap = {
   severity: { column: 'severity', kind: 'text' }
 };
 
-describe.skipIf(!POSTGRES_URL)('PgDatasetOptions.promotedColumns', () => {
+// Promoted columns are added to `rows`; a type table types its fields itself.
+describe.skipIf(!POSTGRES_URL || TABLES)('PgDatasetOptions.promotedColumns', () => {
   let sql: Sql;
   let ds: PgDataset;
 

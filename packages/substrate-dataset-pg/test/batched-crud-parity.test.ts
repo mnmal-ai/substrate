@@ -24,6 +24,7 @@ import type {
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset, PgEdgesStore } from '../src/index.js';
+import { dropNamespacesLike, TABLES } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const PARTITIONED = process.env.SUBSTRATE_TEST_LAYOUT === 'partitioned';
@@ -99,7 +100,7 @@ describe('autoCRUD batch resolvers: memory vs pg through Engine', () => {
     const like = `${PREFIX}%`;
     await sql`DELETE FROM short_ids WHERE namespace LIKE ${like}`;
     await sql`DELETE FROM edges WHERE from_ns LIKE ${like} OR to_ns LIKE ${like}`;
-    await sql`DELETE FROM rows WHERE namespace LIKE ${like}`;
+    await dropNamespacesLike(sql, PREFIX);
     await sql.end();
   });
 
@@ -451,7 +452,8 @@ describe('autoCRUD batch resolvers: memory vs pg through Engine', () => {
   });
 
   // pg only: memory enforces no unique index, so there is nothing to compare it with.
-  describe.skipIf(!POSTGRES_URL)('a unique index conflict in a batch (pg)', () => {
+  // Needs the unique index built, which Task 12 does on type tables.
+  describe.skipIf(!POSTGRES_URL || TABLES)('a unique index conflict in a batch (pg)', () => {
     /**
      * `Slot` has a unique index on `code`. `perElement` takes the batch
      * resolvers off the entries, so an array runs the per-element loop:

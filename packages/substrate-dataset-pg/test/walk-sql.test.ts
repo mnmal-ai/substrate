@@ -19,10 +19,12 @@ import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset } from '../src/index.js';
 import { generatedIdentifier } from '../src/migrate.js';
+import { clearNamespace, dropNamespace, TABLES } from './_layout.js';
 import { walkComparers } from './_walk-helpers.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
-const PARTITIONED = process.env.SUBSTRATE_TEST_LAYOUT === 'partitioned';
+/** Walks run on the partitioned and `tables` layouts; legacy refuses them. */
+const WALK_LAYOUT = process.env.SUBSTRATE_TEST_LAYOUT === 'partitioned' || TABLES;
 const NS = `walk_${randomBytes(4).toString('hex')}`;
 
 const num: FieldDef = { kind: 'scalar', type: 'number' };
@@ -76,7 +78,7 @@ let sent: Array<{ query: string; parameters: unknown[]; types: number[] }> = [];
 
 /** Loads `rows` into both datasets, replacing what was there. */
 async function load(rows: Rows, tombstoned: Record<string, string[]> = {}): Promise<void> {
-  await sql`DELETE FROM rows WHERE namespace = ${NS}`;
+  await clearNamespace(sql, NS);
   mem = new MemoryDataset({ namespace: NS, fieldDefLookup, walkReference: true });
   for (const [type, list] of Object.entries(rows)) {
     if (list.length === 0) continue;
@@ -110,12 +112,12 @@ beforeAll(async () => {
     typeDefLookup: (type) =>
       Object.hasOwn(SCHEMA, type) ? { fields: SCHEMA[type] ?? {} } : undefined
   });
-  if (PARTITIONED) for (const type of Object.keys(SCHEMA)) await pg.ensureTypeStorage(type);
+  if (WALK_LAYOUT) for (const type of Object.keys(SCHEMA)) await pg.ensureTypeStorage(type);
 });
 
 afterAll(async () => {
   if (!POSTGRES_URL) return;
-  await sql`DELETE FROM rows WHERE namespace = ${NS}`;
+  await dropNamespace(sql, NS);
   await traced.end({ timeout: 5 });
   await sql.end({ timeout: 5 });
 });
@@ -158,9 +160,13 @@ async function expectPlanUses(idx: string): Promise<void> {
 
 /** The page statement the last `read` sent. */
 const pageQuery = () =>
-  sent.find((s) => /FROM rows r/.test(s.query)) ?? { query: '', parameters: [], types: [] };
+  sent.find((s) => /FROM (rows|"t__[^"]*") r\b/.test(s.query)) ?? {
+    query: '',
+    parameters: [],
+    types: []
+  };
 
-describe.skipIf(!POSTGRES_URL || PARTITIONED)('walks on a legacy store (pg)', () => {
+describe.skipIf(!POSTGRES_URL || WALK_LAYOUT)('walks on a legacy store (pg)', () => {
   it('legacy store refuses walks_need_partitioned naming migrate-store', async () => {
     const err = await pg.read('Cert', { where: obs() }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ResolverFrameError);
@@ -176,7 +182,7 @@ describe.skipIf(!POSTGRES_URL || PARTITIONED)('walks on a legacy store (pg)', ()
   });
 });
 
-describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walks in where (pg)', () => {
+describe.skipIf(!POSTGRES_URL || !WALK_LAYOUT)('walks in where (pg)', () => {
   it('declares the walks capability', () => {
     expect(pg.capabilities.walks).toBe(true);
   });
@@ -258,7 +264,7 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walks in where (pg)', () => {
     });
     const q = pageQuery().query;
     expect(q.match(/EXISTS/g)).toHaveLength(1);
-    expect(q).toMatch(/FROM rows w1, rows w2/);
+    expect(q).toMatch(/FROM \S+ w1, \S+ w2/);
     expect(sent.some((s) => /set_config\('statement_timeout'/.test(s.query))).toBe(true);
   });
 
@@ -578,31 +584,36 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walks in where (pg)', () => {
     expect(await both('Cert', branch)).toEqual(['c2', 'c3']);
   });
 
-  it('the inbound hop is served by the eager crossRef index', async () => {
-    await load({
-      Cert: Array.from({ length: 50 }, (_, i) => ({ id: `ix${i}` })),
-      Observation: Array.from({ length: 5000 }, (_, i) => ({
-        id: `ixo${i}`,
-        cert: `ix${i % 50}`,
-        price: i
-      }))
-    });
-    await sql`ANALYZE rows`;
-    sent = [];
-    await pg.read('Cert', {
-      where: { AND: [{ id: { eq: u('ix7') } }, obs({ price: { gt: 10 } })] } as WhereClause
-    });
-    const idx = generatedIdentifier(NS, 'Observation', 'cert', 'idx');
-    expect(pageQuery().query).toContain(
-      `((w1.body ->> 'cert') COLLATE "C") = (r.id::text COLLATE "C")`
-    );
-    await expectPlanUses(idx);
-  }, 60_000);
+  // Task 12 builds a type table's indexes.
+  it.skipIf(TABLES)(
+    'the inbound hop is served by the eager crossRef index',
+    async () => {
+      await load({
+        Cert: Array.from({ length: 50 }, (_, i) => ({ id: `ix${i}` })),
+        Observation: Array.from({ length: 5000 }, (_, i) => ({
+          id: `ixo${i}`,
+          cert: `ix${i % 50}`,
+          price: i
+        }))
+      });
+      await sql`ANALYZE rows`;
+      sent = [];
+      await pg.read('Cert', {
+        where: { AND: [{ id: { eq: u('ix7') } }, obs({ price: { gt: 10 } })] } as WhereClause
+      });
+      const idx = generatedIdentifier(NS, 'Observation', 'cert', 'idx');
+      expect(pageQuery().query).toContain(
+        `((w1.body ->> 'cert') COLLATE "C") = (r.id::text COLLATE "C")`
+      );
+      await expectPlanUses(idx);
+    },
+    60_000
+  );
 });
 
 const name = (r: Row) => names.get(String(r.id)) ?? String(r.id);
 
-describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk aggregates and nested projection (pg)', () => {
+describe.skipIf(!POSTGRES_URL || !WALK_LAYOUT)('walk aggregates and nested projection (pg)', () => {
   const AGGS = {
     n: { in: IN('Observation'), count: true },
     sold: { in: IN('Observation'), where: { status: { eq: 'sold' } }, count: true },
@@ -1032,7 +1043,7 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk aggregates and nested proje
   });
 });
 
-describe.skipIf(!POSTGRES_URL || !PARTITIONED)('count, aggregate and bucket (pg)', () => {
+describe.skipIf(!POSTGRES_URL || !WALK_LAYOUT)('count, aggregate and bucket (pg)', () => {
   const FRAME = {
     n: { count: true },
     avg: { avg: 'price' },
@@ -1269,32 +1280,37 @@ describe.skipIf(!POSTGRES_URL || !PARTITIONED)('count, aggregate and bucket (pg)
     await sameResult('Observation', { ...params, limit: 0 });
   });
 
-  it('a windowed bucket query is served by the date index', async () => {
-    const at = (i: number) => new Date(Date.UTC(2026, 0, 1) + i * 3_600_000).toISOString();
-    await load({
-      Observation: Array.from({ length: 5000 }, (_, i) => ({
-        id: `wo${i}`,
-        price: i % 50,
-        observedAt: at(i)
-      }))
-    });
-    await sql`ANALYZE rows`;
-    const params: ReadParams = {
-      where: { observedAt: { gte: at(96), lt: at(144) } },
-      aggregate: { n: { count: true }, avg: { avg: 'price' } } as unknown as NonNullable<
-        ReadParams['aggregate']
-      >,
-      bucket: { field: 'observedAt', by: 'day' },
-      limit: 100
-    };
-    expect((await sameResult('Observation', params)).groups).toHaveLength(2);
-    sent = [];
-    await pg.read('Observation', params);
-    await expectPlanUses(generatedIdentifier(NS, 'Observation', 'observedAt', 'idx'));
-  }, 60_000);
+  // Task 12 builds a type table's indexes.
+  it.skipIf(TABLES)(
+    'a windowed bucket query is served by the date index',
+    async () => {
+      const at = (i: number) => new Date(Date.UTC(2026, 0, 1) + i * 3_600_000).toISOString();
+      await load({
+        Observation: Array.from({ length: 5000 }, (_, i) => ({
+          id: `wo${i}`,
+          price: i % 50,
+          observedAt: at(i)
+        }))
+      });
+      await sql`ANALYZE rows`;
+      const params: ReadParams = {
+        where: { observedAt: { gte: at(96), lt: at(144) } },
+        aggregate: { n: { count: true }, avg: { avg: 'price' } } as unknown as NonNullable<
+          ReadParams['aggregate']
+        >,
+        bucket: { field: 'observedAt', by: 'day' },
+        limit: 100
+      };
+      expect((await sameResult('Observation', params)).groups).toHaveLength(2);
+      sent = [];
+      await pg.read('Observation', params);
+      await expectPlanUses(generatedIdentifier(NS, 'Observation', 'observedAt', 'idx'));
+    },
+    60_000
+  );
 });
 
-describe.skipIf(!POSTGRES_URL || !PARTITIONED)('derived ordering (pg)', () => {
+describe.skipIf(!POSTGRES_URL || !WALK_LAYOUT)('derived ordering (pg)', () => {
   const DIFF = { d: { diff: ['$.ask', '$.grade'] } } as NonNullable<ReadParams['derive']>;
   const RATIO = { q: { ratio: ['$.ask', '$.grade'] } } as NonNullable<ReadParams['derive']>;
   // minObs 1 marks the result's rows; 0 marks the unrelated ones.

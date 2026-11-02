@@ -503,6 +503,25 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('tables layout', () => {
     expect((await loadTypeTable(sql, NS, type))?.column('status')?.vocab).toEqual(['open', 'done']);
   });
 
+  it('a narrowed enum vocabulary keeps the recorded values and the CHECK, so old rows still update', async () => {
+    const type = freshType();
+    await ensure(type, { status: field.enum(['open', 'done']), note: field.string() });
+    const table = await tableOf(type);
+    await sql.unsafe(`INSERT INTO "${table}" (id, "${columnName('status')}") VALUES ('a', 'done')`);
+    const change = await ensure(type, { status: field.enum(['open']), note: field.string() });
+    expect(change).toEqual({ created: false, added: [], pending: [], orphaned: [] });
+    expect((await loadTypeTable(sql, NS, type))?.column('status')?.vocab).toEqual(['open', 'done']);
+    // pg re-checks a CHECK on every UPDATE; a narrowed one would refuse this.
+    await sql.unsafe(`UPDATE "${table}" SET "${columnName('note')}" = 'x' WHERE id = 'a'`);
+    // Widening again appends to what is recorded.
+    await ensure(type, { status: field.enum(['open', 'new']), note: field.string() });
+    expect((await loadTypeTable(sql, NS, type))?.column('status')?.vocab).toEqual([
+      'open',
+      'done',
+      'new'
+    ]);
+  });
+
   it('a reordered enum vocabulary is no change', async () => {
     const type = freshType();
     await ensure(type, { status: field.enum(['open', 'done']) });

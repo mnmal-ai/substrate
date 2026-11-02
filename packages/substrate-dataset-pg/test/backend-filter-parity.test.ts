@@ -17,6 +17,7 @@ import type { FieldDef, Row, RowMetadata, WhereClause } from '@mnmal-ai/substrat
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PgDataset, runMigrations } from '../src/index.js';
+import { TABLES, truncateRows } from './_layout.js';
 import { addTestPromotedColumns, dropTestPromotedColumns, TEST_PROMOTED } from './_promoted.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
@@ -77,16 +78,17 @@ describe.skipIf(!POSTGRES_URL)('backend filter parity', () => {
   beforeAll(async () => {
     sql = postgres(POSTGRES_URL as string);
     await runMigrations(sql);
-    await addTestPromotedColumns(sql);
+    // A type table ignores promoted columns, and `rows` to add them to does not exist.
+    if (!TABLES) await addTestPromotedColumns(sql);
   });
 
   afterAll(async () => {
-    await dropTestPromotedColumns(sql);
+    if (!TABLES) await dropTestPromotedColumns(sql);
     await sql.end();
   });
 
   beforeEach(async () => {
-    await sql`TRUNCATE TABLE rows, short_ids`;
+    await truncateRows(sql);
     pg = new PgDataset({ namespace: 'parity_ns', sql, promotedColumns: TEST_PROMOTED });
     mem = new MemoryDataset({ namespace: 'parity_ns' });
     await pg.write('P', ROWS);
@@ -237,7 +239,7 @@ describe.skipIf(!POSTGRES_URL)('backend filter parity', () => {
    * silently could not be applied leaves nothing at all to notice.
    */
   it('both backends refuse an unhonourable filter even when there is nothing to filter', async () => {
-    await sql`TRUNCATE TABLE rows, short_ids`;
+    await truncateRows(sql);
     const emptyPg = new PgDataset({ namespace: 'parity_ns', sql, promotedColumns: TEST_PROMOTED });
     const emptyMem = new MemoryDataset({ namespace: 'parity_ns' });
 
@@ -277,28 +279,32 @@ describe.skipIf(!POSTGRES_URL)('backend filter parity', () => {
    * validator, which holds the schema and so can always decide, rejects unknown
    * operators upstream on every path it runs.
    */
-  it('resolves an operator-shaped typo from the row, and defers to the validator without one', async () => {
-    const where = { project: { bogusOp: { eq: 'x' } } } as WhereClause;
+  // `project` is promoted on `rows`, where the column predicate refuses the typo; a type table has no promoted columns.
+  it.skipIf(TABLES)(
+    'resolves an operator-shaped typo from the row, and defers to the validator without one',
+    async () => {
+      const where = { project: { bogusOp: { eq: 'x' } } } as WhereClause;
 
-    // With rows present, both substrates decide it.
-    expect(await run(pg, where)).toEqual({ kind: 'refused' });
-    expect(await run(mem, where)).toEqual({ kind: 'refused' });
+      // With rows present, both substrates decide it.
+      expect(await run(pg, where)).toEqual({ kind: 'refused' });
+      expect(await run(mem, where)).toEqual({ kind: 'refused' });
 
-    // With nothing to decide against, memory defers.
-    await sql`TRUNCATE TABLE rows, short_ids`;
-    expect(
-      await run(
-        new PgDataset({ namespace: 'parity_ns', sql, promotedColumns: TEST_PROMOTED }),
-        where
-      )
-    ).toEqual({
-      kind: 'refused'
-    });
-    expect(await run(new MemoryDataset({ namespace: 'parity_ns' }), where)).toEqual({
-      kind: 'rows',
-      ids: []
-    });
-  });
+      // With nothing to decide against, memory defers.
+      await truncateRows(sql);
+      expect(
+        await run(
+          new PgDataset({ namespace: 'parity_ns', sql, promotedColumns: TEST_PROMOTED }),
+          where
+        )
+      ).toEqual({
+        kind: 'refused'
+      });
+      expect(await run(new MemoryDataset({ namespace: 'parity_ns' }), where)).toEqual({
+        kind: 'rows',
+        ids: []
+      });
+    }
+  );
 
   it('pg refuses a non-number shortId operand rather than dropping it', async () => {
     for (const op of ['eq', 'neq', 'gt', 'gte', 'lt', 'lte']) {
@@ -442,14 +448,15 @@ describe.skipIf(!POSTGRES_URL)('backend filter parity over NULL values', () => {
   beforeAll(async () => {
     sql = postgres(POSTGRES_URL as string);
     await runMigrations(sql);
-    await addTestPromotedColumns(sql);
+    // A type table ignores promoted columns, and `rows` to add them to does not exist.
+    if (!TABLES) await addTestPromotedColumns(sql);
   });
   afterAll(async () => {
-    await dropTestPromotedColumns(sql);
+    if (!TABLES) await dropTestPromotedColumns(sql);
     await sql.end();
   });
   beforeEach(async () => {
-    await sql`TRUNCATE TABLE rows, short_ids`;
+    await truncateRows(sql);
     pg = new PgDataset({ namespace: 'parity_null_ns', sql, promotedColumns: TEST_PROMOTED });
     mem = new MemoryDataset({ namespace: 'parity_null_ns' });
     await pg.write('P', NULL_ROWS);

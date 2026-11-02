@@ -21,6 +21,7 @@ import postgres from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { runMigrations } from '../src/migrate.js';
 import { PgDataset } from '../src/pg-dataset.js';
+import { clearNamespace } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 
@@ -55,7 +56,7 @@ describe.skipIf(!POSTGRES_URL)('cross-namespace batched mutate (engine + pg)', (
   });
 
   beforeEach(async () => {
-    await sql`DELETE FROM rows WHERE namespace IN (${NS_A}, ${NS_B})`;
+    for (const ns of [NS_A, NS_B]) await clearNamespace(sql, ns);
   });
 
   afterAll(async () => {

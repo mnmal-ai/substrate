@@ -16,6 +16,7 @@ import type { FieldDef, IndexDecl, ReadParams } from '@mnmal-ai/substrate-types'
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { detectLayout, PgDataset } from '../src/index.js';
+import { clearNamespace, TABLES } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const TYPE = 'Paged';
@@ -55,7 +56,7 @@ let ds: PgDataset;
 let partitioned = false;
 
 beforeAll(async () => {
-  if (!POSTGRES_URL) return;
+  if (!POSTGRES_URL || TABLES) return;
   sql = postgres(POSTGRES_URL, { onnotice: () => {} });
   partitioned = (await detectLayout(sql)) === 'partitioned';
   traced = postgres(POSTGRES_URL, {
@@ -105,8 +106,8 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
-  if (!POSTGRES_URL) return;
-  await sql`DELETE FROM rows WHERE namespace = ${ns}`;
+  if (!POSTGRES_URL || TABLES) return;
+  await clearNamespace(sql, ns);
   await traced.end({ timeout: 5 });
   await sql.end({ timeout: 5 });
 });
@@ -179,7 +180,8 @@ const genericPlan = (): Promise<PlanNode> =>
     true
   );
 
-describe.skipIf(!POSTGRES_URL)('read: short id lookup for the returned page only', () => {
+// Plans over the type's declared indexes, which Task 12 builds on type tables.
+describe.skipIf(!POSTGRES_URL || TABLES)('read: short id lookup for the returned page only', () => {
   it('a deep id-ordered page never reads short_ids beyond the page (generic plan)', async () => {
     const all = nodes(await genericPlan());
     const joins = all.filter(

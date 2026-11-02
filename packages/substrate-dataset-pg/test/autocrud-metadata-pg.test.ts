@@ -20,6 +20,7 @@ import type {
 import postgres, { type Sql } from 'postgres';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { PgDataset, runMigrations } from '../src/index.js';
+import { dropNamespace, rowsWhere, TABLES } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 
@@ -62,7 +63,9 @@ describe.skipIf(!POSTGRES_URL)('PG dataset autocrud update round-trip (regressio
 
   beforeEach(async () => {
     sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
-    await sql`DROP TABLE IF EXISTS rows CASCADE`;
+    // A fresh store: `rows` re-created, or on `tables` this namespace's tables dropped.
+    if (TABLES) await dropNamespace(sql, 'test');
+    else await sql`DROP TABLE IF EXISTS rows CASCADE`;
     // `force: true` drops the migration-tracking table so the framework
     // re-applies every migration on this call, recreating rows.
     await runMigrations(sql, { force: true });
@@ -96,7 +99,7 @@ describe.skipIf(!POSTGRES_URL)('PG dataset autocrud update round-trip (regressio
     await ds.updateField({ ns: 'test', type: 'Thing', id: 'r1' }, '_metadata', newMeta);
 
     // 3. Direct SQL probe: verify columns hold the new values
-    const cols = await sql<
+    const cols = await sql.unsafe<
       {
         created_at: Date | null;
         updated_at: Date | null;
@@ -106,12 +109,11 @@ describe.skipIf(!POSTGRES_URL)('PG dataset autocrud update round-trip (regressio
         updated_by_id: string | null;
         body: Record<string, unknown>;
       }[]
-    >`
-        SELECT created_at, updated_at, created_by_kind, created_by_id,
-               updated_by_kind, updated_by_id, body
-        FROM rows
-        WHERE namespace = 'test' AND type = 'Thing' AND id = 'r1'
-      `;
+    >(
+      `SELECT created_at, updated_at, created_by_kind, created_by_id,
+              updated_by_kind, updated_by_id, ${TABLES ? 'extra' : 'body'} AS body
+       FROM ${await rowsWhere(sql, 'test', 'Thing')} id = 'r1'`
+    );
 
     expect(cols[0]?.created_at?.toISOString()).toBe('2026-04-25T00:00:00.000Z');
     expect(cols[0]?.updated_at?.toISOString()).toBe('2026-04-25T01:00:00.000Z');
@@ -166,7 +168,7 @@ describe.skipIf(!POSTGRES_URL)('PG dataset autocrud update round-trip (regressio
       params: { id: 'r3', name: 'patched' }
     });
 
-    const cols = await sql<
+    const cols = await sql.unsafe<
       {
         created_at: Date | null;
         updated_at: Date | null;
@@ -174,11 +176,10 @@ describe.skipIf(!POSTGRES_URL)('PG dataset autocrud update round-trip (regressio
         updated_by_id: string | null;
         body: Record<string, unknown>;
       }[]
-    >`
-        SELECT created_at, updated_at, created_by_id, updated_by_id, body
-        FROM rows
-        WHERE namespace = 'test' AND type = 'Thing' AND id = 'r3'
-      `;
+    >(
+      `SELECT created_at, updated_at, created_by_id, updated_by_id, ${TABLES ? 'extra' : 'body'} AS body
+       FROM ${await rowsWhere(sql, 'test', 'Thing')} id = 'r3'`
+    );
 
     expect(cols[0]?.created_at?.toISOString()).toBe('2026-04-25T00:00:00.000Z');
     expect(cols[0]?.updated_at?.toISOString()).toBe('2026-04-25T01:00:00.000Z');
