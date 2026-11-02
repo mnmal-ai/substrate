@@ -40,10 +40,12 @@ import {
   CONCURRENT_STATEMENTS as PARTITIONED_BASELINE_CONCURRENT,
   TX_STATEMENTS as PARTITIONED_BASELINE_TX
 } from './migrations/0001p_partitioned_baseline.js';
-
-export { UUID_REGEX } from './migrations/0002_uuid_format_check.js';
-
+import {
+  CONCURRENT_STATEMENTS as TABLES_BASELINE_CONCURRENT,
+  TX_STATEMENTS as TABLES_BASELINE_TX
+} from './migrations/0001t_tables_baseline.js';
 import { TX_STATEMENTS as UUID_CHECK_TX } from './migrations/0002_uuid_format_check.js';
+import { TX_STATEMENTS as TABLES_UUID_CHECK_TX } from './migrations/0002t_uuid_format_check.js';
 import {
   CONCURRENT_STATEMENTS as SAFE_CASTS_CONCURRENT,
   TX_STATEMENTS as SAFE_CASTS_TX
@@ -54,6 +56,7 @@ import {
 } from './migrations/0004_visible_seq.js';
 import { sqlStringLiteral } from './pg-sql/primitives.js';
 import { assertServerVersion } from './server-version.js';
+import { UUID_CHECK_MIGRATION } from './uuid-check.js';
 
 /**
  * Internal canonical migration shape after normalisation. The framework
@@ -101,7 +104,15 @@ const PARTITIONED_BASELINE: MigrationInput = {
   concurrentStatements: PARTITIONED_BASELINE_CONCURRENT
 };
 
-/** Migrations after the baseline, run in both layouts. */
+const TABLES_BASELINE_VERSION = '0001t_tables_baseline';
+
+const TABLES_BASELINE: MigrationInput = {
+  version: TABLES_BASELINE_VERSION,
+  txStatements: TABLES_BASELINE_TX,
+  concurrentStatements: TABLES_BASELINE_CONCURRENT
+};
+
+/** Migrations after the baseline, run in both old layouts. */
 const SHARED_INPUTS: ReadonlyArray<MigrationInput> = [
   {
     version: '0003_safe_casts',
@@ -135,26 +146,34 @@ function normalise(input: MigrationInput): Migration {
  * Registered only when `SUBSTRATE_ENFORCE_UUID_CHECK=true`, because the test
  * corpus uses synthetic non-UUID ids.
  */
-/** The ledger version of the opt-in UUID-format CHECKs. */
-export const UUID_CHECK_MIGRATION = '0002_uuid_format_check';
-
 const UUID_CHECK_INPUT: MigrationInput = {
   version: UUID_CHECK_MIGRATION,
   txStatements: UUID_CHECK_TX
 };
 
+/** The `tables` layout's UUID CHECKs, under the same ledger version and gate. */
+const TABLES_UUID_CHECK_INPUT: MigrationInput = {
+  version: UUID_CHECK_MIGRATION,
+  txStatements: TABLES_UUID_CHECK_TX
+};
+
 /**
  * The baseline for `layout`, then the gated 0002 when
  * `SUBSTRATE_ENFORCE_UUID_CHECK=true` (or the explicit override is true), then
- * the migrations both layouts share. Used by `runMigrations` and exported for
- * unit tests.
+ * the migrations both old layouts share. The `tables` layout has its baseline
+ * and, gated the same way, its own UUID CHECKs. Used by `runMigrations` and
+ * exported for unit tests.
  */
 export function getMigrationList(
   enforceUuidCheck: boolean | undefined = process.env.SUBSTRATE_ENFORCE_UUID_CHECK === 'true',
   layout: StorageLayout = 'legacy'
 ): ReadonlyArray<Migration> {
+  const gate = enforceUuidCheck === true;
+  if (layout === 'tables') {
+    return [TABLES_BASELINE, ...(gate ? [TABLES_UUID_CHECK_INPUT] : [])].map(normalise);
+  }
   const baseline = layout === 'partitioned' ? PARTITIONED_BASELINE : LEGACY_BASELINE;
-  const gated = enforceUuidCheck === true ? [UUID_CHECK_INPUT] : [];
+  const gated = gate ? [UUID_CHECK_INPUT] : [];
   return [baseline, ...gated, ...SHARED_INPUTS].map(normalise);
 }
 
@@ -217,29 +236,33 @@ async function resolveLayout(
   applied: ReadonlySet<string>,
   fallback: StorageLayout | undefined
 ): Promise<StorageLayout> {
-  const recorded: StorageLayout | undefined = applied.has(LEGACY_BASELINE.version)
-    ? 'legacy'
-    : applied.has(PARTITIONED_BASELINE.version)
-      ? 'partitioned'
-      : undefined;
+  const recorded = (Object.keys(BASELINE_VERSIONS) as StorageLayout[]).find((l) =>
+    applied.has(BASELINE_VERSIONS[l])
+  );
   const actual = await detectLayout(sql);
   if (actual === 'absent') {
     return recorded ?? fallback ?? envLayout() ?? 'partitioned';
   }
   if (recorded !== undefined && recorded !== actual) {
-    throw new StorageLayoutMismatchError(
-      actual,
-      recorded === 'legacy' ? LEGACY_BASELINE.version : PARTITIONED_BASELINE.version
-    );
+    throw new StorageLayoutMismatchError(actual, BASELINE_VERSIONS[recorded]);
   }
   return actual;
 }
 
+/** Each layout's baseline ledger version. */
+const BASELINE_VERSIONS: Readonly<Record<StorageLayout, string>> = {
+  legacy: LEGACY_BASELINE.version,
+  partitioned: PARTITIONED_BASELINE.version,
+  tables: TABLES_BASELINE_VERSION
+};
+
 function envLayout(): StorageLayout | undefined {
   const v = process.env.SUBSTRATE_STORAGE_LAYOUT;
   if (v === undefined || v === '') return undefined;
-  if (v === 'legacy' || v === 'partitioned') return v;
-  throw new Error(`SUBSTRATE_STORAGE_LAYOUT must be 'legacy' or 'partitioned', got '${v}'`);
+  if (v === 'legacy' || v === 'partitioned' || v === 'tables') return v;
+  throw new Error(
+    `SUBSTRATE_STORAGE_LAYOUT must be 'legacy', 'partitioned' or 'tables', got '${v}'`
+  );
 }
 
 /**
@@ -561,7 +584,12 @@ async function runMigrationsLocked(
   //
   // Iterates the FULL list including gated 0002, even when the gate is off:
   // a previously applied gated migration must still be rehashed.
-  const REHASH_LIST = [...getMigrationList(true), normalise(PARTITIONED_BASELINE)];
+  // Per layout, since 0002 is one ledger version with each layout's own text.
+  const layout = await resolveLayout(sql, new Set(appliedByVersion.keys()), opts.layout);
+  const REHASH_LIST =
+    layout === 'tables'
+      ? getMigrationList(true, 'tables')
+      : [...getMigrationList(true), normalise(PARTITIONED_BASELINE)];
   const buildSha = process.env.SUBSTRATE_BUILD_SHA ?? 'unknown';
   for (const migration of REHASH_LIST) {
     const recorded = appliedByVersion.get(migration.version);
@@ -584,7 +612,6 @@ async function runMigrationsLocked(
     appliedByVersion.set(migration.version, current);
   }
 
-  const layout = await resolveLayout(sql, new Set(appliedByVersion.keys()), opts.layout);
   for (const migration of getMigrationList(opts.enforceUuidCheck, layout)) {
     const recorded = appliedByVersion.get(migration.version);
     if (recorded !== undefined) {

@@ -18,25 +18,29 @@ dirs() {
     cut -d/ -f1-2 | sort -u
 }
 
-# One pass per package, and a second on the partitioned layout for a package
-# with a test:partitioned script.
+# The layouts beyond legacy; a package with a test:<layout> script gets a pass on each.
+extra_layouts=(partitioned tables)
+
+# One legacy pass per package, and one more per extra layout it has a script for.
 passes() {
-  local d
+  local d l
   for d in $(dirs); do
     echo "$d legacy"
-    if grep -q '"test:partitioned"' "$d/package.json"; then echo "$d partitioned"; fi
+    for l in "${extra_layouts[@]}"; do
+      if grep -q "\"test:$l\"" "$d/package.json"; then echo "$d $l"; fi
+    done
   done
 }
 
-report() { echo "$out/pg-${1//\//-}$([ "$2" = partitioned ] && echo -partitioned).json"; }
+report() { echo "$out/pg-${1//\//-}$([ "$2" != legacy ] && echo "-$2").json"; }
 
 run() {
   local d=$1 layout=$2
   : "${POSTGRES_URL:?POSTGRES_URL must name the substrate_test database}"
   echo "::group::$d ($layout)"
   # Each package's globalSetup moves it into a schema of its own.
-  if [ "$layout" = partitioned ]; then
-    pnpm -C "$d" run test:partitioned --reporter=default --reporter=json --outputFile="$(report "$d" "$layout")"
+  if [ "$layout" != legacy ]; then
+    pnpm -C "$d" run "test:$layout" --reporter=default --reporter=json --outputFile="$(report "$d" "$layout")"
   else
     pnpm -C "$d" exec vitest run --reporter=default --reporter=json --outputFile="$(report "$d" "$layout")"
   fi
@@ -47,16 +51,16 @@ check() {
   local -a ds
   mapfile -t ds < <(dirs)
   [ "${#ds[@]}" -gt 0 ] || { echo "::error::no pg-gated packages found"; exit 1; }
-  node - "$out" "${ds[@]}" <<'JS'
-const [out, ...dirs] = process.argv.slice(2);
+  node - "$out" "${extra_layouts[*]}" "${ds[@]}" <<'JS'
+const [out, extraLayouts, ...dirs] = process.argv.slice(2);
 // Gated on env vars other than POSTGRES_URL (a hive topology, a holomap
 // fixture), so their skips say nothing about whether pg reached the suites.
 const otherGates = ['apps/substrate/test/hive-integration.test.ts',
   'plugins/substrate-recall/test/corpus-regression.test.ts'];
 const fs = require('node:fs');
 let bad = 0;
-// Each pass may skip a layout-specific test, but only one that passed in the
-// other pass, which proves POSTGRES_URL reached it.
+// Each pass may skip a layout-specific test, but only one that passed in
+// another pass, which proves POSTGRES_URL reached it.
 const tests = (report) =>
   report.testResults
     .filter((f) => !otherGates.some((g) => f.name.endsWith(g)))
@@ -70,11 +74,13 @@ for (const d of dirs) {
     continue;
   }
   const passes = [[d, tests(require(`${base}.json`))]];
-  if (fs.existsSync(`${base}-partitioned.json`)) {
-    passes.push([`${d} (partitioned)`, tests(require(`${base}-partitioned.json`))]);
-  } else if (fs.readFileSync(`${d}/package.json`, 'utf8').includes('"test:partitioned"')) {
-    bad++;
-    console.error(`::error::${d}: no partitioned report; its partitioned pass did not run`);
+  for (const layout of extraLayouts.split(' ')) {
+    if (fs.existsSync(`${base}-${layout}.json`)) {
+      passes.push([`${d} (${layout})`, tests(require(`${base}-${layout}.json`))]);
+    } else if (fs.readFileSync(`${d}/package.json`, 'utf8').includes(`"test:${layout}"`)) {
+      bad++;
+      console.error(`::error::${d}: no ${layout} report; its ${layout} pass did not run`);
+    }
   }
   const passedAnywhere = new Set(passes.flatMap(([, list]) => [...passedIn(list)]));
   for (const [label, list] of passes) {

@@ -798,14 +798,14 @@ export interface TypeIndexState {
 
 /** Where a type's rows live: `partition` is set on the partitioned layout once the type has one. */
 export interface TypeStorageReport {
-  layout: 'legacy' | 'partitioned';
+  layout: 'legacy' | 'partitioned' | 'tables';
   partition?: string;
   indexes: TypeIndexState[];
 }
 
 export interface StorageReport {
   /** `unknown` when the report itself failed. */
-  layout: 'legacy' | 'partitioned' | 'unknown';
+  layout: 'legacy' | 'partitioned' | 'tables' | 'unknown';
   warnings: string[];
   /** Worth showing, not a fault: the doctor prints these without failing. */
   info?: string[];
