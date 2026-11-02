@@ -61,7 +61,11 @@ export interface FieldDefScalar {
    * `false`.
    */
   indexed?: boolean;
-  /** Metadata: when true, consumers SHOULD expect `null` as a legitimate value. */
+  /**
+   * Metadata: when true, the value may be unset. A string, number, boolean or
+   * date reads back as an absent key then, never `null` (`isColumnField`); a
+   * `json` field keeps an explicit `null`.
+   */
   nullable?: boolean;
   /**
    * Metadata: when true, this field is populated by the engine (not the caller)
@@ -144,7 +148,10 @@ export interface FieldDefCrossRef {
    * presence of the crossRef itself.
    */
   indexed?: boolean;
-  /** Metadata: when true, consumers SHOULD expect `null` as a legitimate value. */
+  /**
+   * Metadata: when true, the value may be unset. An unset field reads back as an
+   * absent key, never `null` (`isColumnField`).
+   */
   nullable?: boolean;
   /**
    * Activation-spreading opt-in. When `spread: true`,
@@ -177,7 +184,7 @@ export interface FieldDefCrossRef {
 export interface FieldDefStruct {
   kind: 'struct';
   fields: Record<string, FieldDef>;
-  /** Metadata: when true, consumers SHOULD expect `null` as a legitimate value. */
+  /** Metadata: when true, the value may be `null` or absent. */
   nullable?: boolean;
 }
 
@@ -193,11 +200,22 @@ export interface FieldDefList {
    * migration is needed per field.
    */
   indexed?: boolean;
-  /** Metadata: when true, consumers SHOULD expect `null` as a legitimate value. */
+  /** Metadata: when true, the value may be `null` or absent. */
   nullable?: boolean;
 }
 
 export type FieldDef = FieldDefScalar | FieldDefCrossRef | FieldDefStruct | FieldDefList;
+
+/**
+ * True when the field's value is a typed column: a scalar other than `json` that
+ * the server does not own, or a crossRef. An explicit `null` on such a field
+ * reads back as absent. A json, struct or list field keeps its `null`, and a
+ * readonly scalar such as `shortId` is the server's.
+ */
+export function isColumnField(def: FieldDef): boolean {
+  if (def.kind === 'crossRef') return true;
+  return def.kind === 'scalar' && def.type !== 'json' && def.readonly !== true;
+}
 
 /**
  * Per-type schema entry. Fields may be declared at registration time; MVP emits
