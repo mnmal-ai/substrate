@@ -1555,7 +1555,8 @@ export class PgDataset implements Dataset {
        AND s.type = u.type
        AND s.row_id = u.id
     `;
-    const byId = new Map(records.map((r) => [r.id, this.materialize(r)]));
+    const fields = this.#typeDefLookup?.(type, this.namespace)?.fields;
+    const byId = new Map(records.map((r) => [r.id, this.materialize(r, fields)]));
     return patches.map((p) => byId.get(idToText(p.id)) ?? null);
   }
 
