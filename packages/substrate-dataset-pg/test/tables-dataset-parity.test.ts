@@ -466,6 +466,36 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('PgDataset on type tables vs memory', 
     expect((await pg.read('Fresh', {})).rows.map(strip)).toEqual([{ id: 'f2', a: 'y' }]);
   });
 
+  it('a dataset without the type def never redeclares its table; a field declared over rows starts promoting', async () => {
+    // As `substrate-admin bootstrap` then serve: a bare dataset writes first.
+    const bare = new PgDataset({ namespace: NS, sql });
+    await bare.ensureTypeStorage('Key');
+    await bare.write('Key', [{ id: 'k1', kid: 'abc' }]);
+    defs.Key = { fields: { kid: field.string() } };
+    await pg.ensureTypeStorage('Key');
+    expect((await table('Key')).column('kid')?.state).toBe('promoting');
+    const ids = async (where?: WhereClause) =>
+      (await pg.read('Key', where === undefined ? {} : { where })).rows.map(strip);
+    expect(await ids()).toEqual([{ id: 'k1', kid: 'abc' }]);
+    expect(await ids({ kid: { eq: 'abc' } })).toEqual([{ id: 'k1', kid: 'abc' }]);
+    // The bare dataset again: it changes nothing, so nothing is orphaned.
+    expect(await bare.ensureTypeStorage('Key')).toEqual({ pending: [] });
+    await bare.write('Key', [{ id: 'k2', kid: 'def' }]);
+    expect((await table('Key')).column('kid')?.state).toBe('promoting');
+    expect(await ids({ kid: { in: ['abc', 'def'] } })).toEqual([
+      { id: 'k1', kid: 'abc' },
+      { id: 'k2', kid: 'def' }
+    ]);
+  });
+
+  it('storage reports refuse on tables rather than report the store as legacy', async () => {
+    await seed();
+    const refused = /not available on the tables layout/;
+    await expect(pg.describeStorage('Item')).rejects.toThrow(refused);
+    await expect(pg.pendingIndexBuilds('Item')).rejects.toThrow(refused);
+    await expect(pg.storageReport({ partitionBudget: 100 })).rejects.toThrow(refused);
+  });
+
   it('ensureTypeStorage returns the fields that went pending; [] when none did (F12)', async () => {
     defs.Pend = { fields: { a: field.string() } };
     expect(await pg.ensureTypeStorage('Pend')).toEqual({ pending: [] });
@@ -530,26 +560,8 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('PgDataset on type tables vs memory', 
     await same('Item', { includeDeleted: true }, true);
   });
 
-  it('the write SQL merges as applyPatch does (seeded random patches)', async () => {
-    let seedN = 42;
-    const rand = () => {
-      seedN = (seedN * 1103515245 + 12345) % 2 ** 31;
-      return seedN / 2 ** 31;
-    };
-    const pick = <T>(xs: readonly T[]): T => xs[Math.floor(rand() * xs.length)] as T;
-    const values: Record<string, unknown[]> = {
-      title: ['a', 'b', null, 3],
-      status: ['open', 'zzz', null],
-      n: [1, 2.5, null, 'x'],
-      due: ['2026-01-01T00:00:00.000Z', '2026-01-01', null, 'nope'],
-      done: [true, false, null],
-      owner: ['p1', 7, null],
-      meta: [{ a: 1 }, null],
-      other: ['o', null],
-      more: [1, null]
-    };
-    await pg.write('Item', [{ id: 'seed' }]);
-    const t = await table('Item');
+  /** A stored type-table row as the codec's oracle sees it: columns, dates as UTC text, and `extra`. */
+  function storedRow(t: TypeTable) {
     const select = `SELECT id, extra, ${t
       .columns()
       .map((c) =>
@@ -570,6 +582,78 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('PgDataset on type tables vs memory', 
           return [k, c?.kind === 'date' && typeof v === 'string' ? new Date(v).toISOString() : v];
         })
       );
+    return { stored, norm };
+  }
+
+  it('a write racing an uncommitted insert of its id merges over it (conflict arm)', async () => {
+    await pg.write('Item', [{ id: 'warm' }]);
+    const t = await table('Item');
+    const b = { title: 'B', n: 1, meta: { x: 1 }, other: 'kept' };
+    const a = { n: 2, status: 'zzz', done: null, more: 3 };
+    const blocker = postgres(POSTGRES_URL as string, { max: 1, onnotice: () => {} });
+    try {
+      let inserted: (tx: postgres.TransactionSql) => void = () => {};
+      const ready = new Promise<postgres.TransactionSql>((r) => (inserted = r));
+      let release: () => void = () => {};
+      const held = new Promise<void>((r) => (release = r));
+      const txB = blocker.begin(async (tx) => {
+        const dsB = new PgDataset({ namespace: NS, sql: tx, inTx: true, typeDefLookup } as never);
+        await dsB.write('Item', [{ id: 'race', ...b }]);
+        inserted(tx);
+        await held;
+      });
+      const tx = await ready;
+      // A's UPDATE finds no committed row; its INSERT waits on B's uncommitted one.
+      const pending = pg.write('Item', [{ id: 'race', ...a }]);
+      const deadline = Date.now() + 10_000;
+      for (;;) {
+        const [w] = await tx<Array<{ n: number }>>`
+          SELECT count(*)::int AS n FROM pg_stat_activity
+          WHERE pg_backend_pid() = ANY(pg_blocking_pids(pid))`;
+        if ((w?.n ?? 0) > 0) break;
+        if (Date.now() > deadline) {
+          release();
+          throw new Error('A never blocked on B');
+        }
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      release();
+      await txB;
+      await pending;
+    } finally {
+      await blocker.end({ timeout: 5 });
+    }
+    const { stored, norm } = storedRow(t);
+    const want = applyPatch(
+      applyPatch({}, encodeRow(t, { id: 'race', ...b })),
+      encodeRow(t, { id: 'race', ...a })
+    );
+    const got = await stored('race');
+    expect(norm(got)).toMatchObject(norm(want));
+    expect(got.extra).toEqual(want.extra);
+  });
+
+  it('the write SQL merges as applyPatch does (seeded random patches)', async () => {
+    let seedN = 42;
+    const rand = () => {
+      seedN = (seedN * 1103515245 + 12345) % 2 ** 31;
+      return seedN / 2 ** 31;
+    };
+    const pick = <T>(xs: readonly T[]): T => xs[Math.floor(rand() * xs.length)] as T;
+    const values: Record<string, unknown[]> = {
+      title: ['a', 'b', null, 3],
+      status: ['open', 'zzz', null],
+      n: [1, 2.5, null, 'x'],
+      due: ['2026-01-01T00:00:00.000Z', '2026-01-01', null, 'nope'],
+      done: [true, false, null],
+      owner: ['p1', 7, null],
+      meta: [{ a: 1 }, null],
+      other: ['o', null],
+      more: [1, null]
+    };
+    await pg.write('Item', [{ id: 'seed' }]);
+    const t = await table('Item');
+    const { stored, norm } = storedRow(t);
     for (let round = 0; round < 60; round++) {
       const before = await stored('seed');
       const patch: Record<string, unknown> = {};
@@ -592,19 +676,35 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('PgDataset on type tables vs memory', 
       return { memory: await ids(mem), pg: await ids(pg) };
     };
 
+    // Operator ruling A: an operand its column cannot hold is not looked up in
+    // `$raw`, so it matches nothing on pg. Memory matches it; accepted.
     it.fails('an out-of-vocab enum value: eq on it', async () => {
       const r = await misfit([{ id: 'm1', status: 'zzz' }], { status: { eq: 'zzz' } });
       expect(r.pg).toEqual(r.memory);
     });
 
-    it.fails('an out-of-vocab enum value: eq null', async () => {
+    it('an out-of-vocab enum value: eq null', async () => {
       const r = await misfit([{ id: 'm1', status: 'zzz' }], { status: { eq: null } });
       expect(r.pg).toEqual(r.memory);
     });
 
-    it.fails("a misfit kind ('5' in a number field): eq null", async () => {
+    it("a misfit kind ('5' in a number field): eq null", async () => {
       const r = await misfit([{ id: 'm1', n: '5' as never }], { n: { eq: null } });
       expect(r.pg).toEqual(r.memory);
+    });
+
+    it('a misfit kind: every null form (neq, in and nin with null)', async () => {
+      for (const [, ds] of both()) {
+        await ds.write('Item', [{ id: 'm1', n: '5' as never }, { id: 'm2', n: 3 }, { id: 'm3' }]);
+      }
+      for (const where of [
+        { n: { neq: null } },
+        { n: { in: [null, 3] } },
+        { n: { nin: [null] } },
+        { n: { nin: [null, 3] } }
+      ] as WhereClause[]) {
+        await same('Item', { where }, true);
+      }
     });
 
     it("a misfit kind ('5' in a number field): gt 1", async () => {
@@ -640,7 +740,7 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('PgDataset on type tables vs memory', 
       }
     });
 
-    it.fails('a promoting field whose extra holds another type: eq null', async () => {
+    it('a promoting field whose extra holds another type: eq null', async () => {
       await promotingMisfit();
       await same('Gone', { where: { drop: { eq: null } } }, true);
     });

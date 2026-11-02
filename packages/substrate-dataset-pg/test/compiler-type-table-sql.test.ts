@@ -158,6 +158,20 @@ describe('a type table compiles against its columns', () => {
     expect(where({ title: { contains: 'a' } })).toContain(`(f_title COLLATE "default") ILIKE $`);
   });
 
+  it('a null check stays the bare column test, with $raw as a filter (ruling A)', () => {
+    // `f_price IS NULL` first, so the column's index still serves it.
+    expect(where({ price: { eq: null } })).toBe(
+      `(((f_price IS NULL AND (extra -> '$raw' ? 'price') IS NOT TRUE)))`
+    );
+    expect(where({ price: { neq: null } })).toBe(
+      `(((f_price IS NOT NULL OR (extra -> '$raw' ? 'price') IS TRUE)))`
+    );
+    // A promoting field reads its JSON value, `$raw` overlaid.
+    expect(where({ qty: { eq: null } })).toMatch(
+      /^\(\(COALESCE\(extra -> '\$raw' -> 'qty', .*\) IS NULL\)\)$/
+    );
+  });
+
   it('promoting field → CASE WHEN extra ? key THEN extra cast ELSE column END (F13)', () => {
     expect(where({ status: { eq: 'open' } })).toContain(
       `CASE WHEN extra ? 'status' THEN ((extra ->> 'status') COLLATE "C") ELSE f_status END = $::text`

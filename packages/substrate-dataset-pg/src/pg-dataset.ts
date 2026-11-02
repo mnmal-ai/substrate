@@ -522,15 +522,21 @@ export class PgDataset implements Dataset {
     const found = await this.#tableFor(type);
     if (found !== undefined) return found;
     const gen = this.#tableCache.gen;
+    const def = this.#typeDefLookup?.(type, this.namespace);
     const args = {
       namespace: this.namespace,
       type,
-      fields: this.#typeDefLookup?.(type, this.namespace)?.fields ?? {},
+      fields: def?.fields ?? {},
       newFields: 'column' as const,
-      enforceUuidCheck: await this.#uuidCheck()
+      enforceUuidCheck: await this.#uuidCheck(),
+      // Without a def the fields are unknown: create the table, never redeclare one.
+      createOnly: def === undefined
     };
     // In a caller's transaction the DDL joins it under a savepoint (F18), so a
-    // failure there leaves the caller's transaction usable.
+    // failure there leaves the caller's transaction usable. Its type-table
+    // advisory lock is then held until that transaction ends, so two
+    // transactions making first writes of two new types in opposite orders can
+    // deadlock; pg detects it (40P01) and aborts one. By F18's design.
     if (this.#inTx) {
       await (this.#sql as TransactionSql).savepoint((sp) => ensureTypeTable(sp, args));
     } else {
@@ -2214,12 +2220,17 @@ export class PgDataset implements Dataset {
     }
     const sql = this.#sql as Sql;
     if (layout === 'tables') {
+      const def = this.#typeDefLookup?.(type, this.namespace);
       const change = await ensureTypeTable(sql, {
         namespace: this.namespace,
         type,
-        fields: this.#typeDefLookup?.(type, this.namespace)?.fields ?? {},
+        fields: def?.fields ?? {},
         newFields: opts.newFields ?? 'column',
-        enforceUuidCheck: await this.#uuidCheck()
+        enforceUuidCheck: await this.#uuidCheck(),
+        // A dataset that does not know the type (an admin tool, bootstrap) may
+        // create its table but never changes its declarations: `{}` would
+        // orphan every column.
+        createOnly: def === undefined
       });
       // Committed: drop the cached table now rather than when the notification lands.
       this.#tableCache.tables.delete(`${this.namespace}/${type}`);
@@ -2346,6 +2357,7 @@ export class PgDataset implements Dataset {
   async pendingIndexBuilds(type: string): Promise<Array<{ name: string; estimateBytes: number }>> {
     const layout = await this.#layout();
     if (layout === 'absent') return [];
+    if (layout === 'tables') throw notOnTables('pendingIndexBuilds');
     const args = this.#indexArgs(type, this.namespace, layout);
     if (
       layout === 'partitioned' &&
@@ -2358,7 +2370,9 @@ export class PgDataset implements Dataset {
 
   /** See `Dataset.describeStorage`. Reads the catalog only, in a fixed number of queries. */
   async describeStorage(type: string): Promise<TypeStorageReport> {
-    const layout = (await this.#layout()) === 'partitioned' ? 'partitioned' : 'legacy';
+    const detected = await this.#layout();
+    if (detected === 'tables') throw notOnTables('describeStorage');
+    const layout = detected === 'partitioned' ? 'partitioned' : 'legacy';
     const sql = this.#sql as Sql;
     const args = this.#indexArgs(type, this.namespace, layout);
     if (layout === 'legacy') {
@@ -2383,6 +2397,7 @@ export class PgDataset implements Dataset {
    */
   async storageReport(opts: { partitionBudget: number }): Promise<StorageReport> {
     const layout = await this.#layout();
+    if (layout === 'tables') throw notOnTables('storageReport');
     const building = [...this.#deferredBuilds()]
       .sort(([a], [b]) => a.localeCompare(b))
       .map(
@@ -2872,6 +2887,17 @@ export class PgDataset implements Dataset {
     if (typeof bodyId === 'number' || typeof bodyId === 'string') return bodyId;
     return textId;
   }
+}
+
+/**
+ * A storage report the `tables` layout cannot give yet: it reads `rows` and its
+ * partitions, and Task 12 builds and reports a type table's indexes. Thrown
+ * rather than reporting the store as legacy.
+ */
+function notOnTables(method: string): Error {
+  return new Error(
+    `PgDataset.${method} is not available on the tables layout until type-table indexes are built and reported (typed-tables Task 12)`
+  );
 }
 
 /** The statement timeout a walk read runs under, in milliseconds, unless a shorter one is set. */

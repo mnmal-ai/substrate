@@ -193,7 +193,7 @@ export class FieldKindChangedError extends Error {
 
 export interface TypeTableChange {
   created: boolean;
-  /** Fields that got a column. */
+  /** Fields that got a column: `column`, or `promoting` on a table that already has rows. */
   added: string[];
   /** Fields newly recorded `pending`. */
   pending: string[];
@@ -208,6 +208,12 @@ export interface EnsureTypeTableArgs {
   /** What a declared field without a column gets: its column now, or `pending` for the sweep. */
   newFields: 'column' | 'pending';
   enforceUuidCheck: boolean;
+  /**
+   * Create the table when it is missing, and otherwise change nothing: for a
+   * caller that does not know the type's fields, whose empty `fields` would
+   * otherwise orphan every column.
+   */
+  createOnly?: boolean;
 }
 
 /** How long one ADD COLUMN or CHECK change may queue writers behind its lock. */
@@ -256,9 +262,22 @@ async function ensureIn(tx: TransactionSql, args: EnsureTypeTableArgs): Promise<
              VALUES (${namespace}, ${type}, ${table})`;
     for (const [field, { kind, vocab }] of declared) await record(field, kind, 'column', vocab);
     change.created = true;
-  } else {
+  } else if (args.createOnly !== true) {
     const table = ident(existing.table_name);
     const catalog = new Map((await catalogOf(tx, namespace, type)).map((r) => [r.field, r]));
+    // A new column on a table with rows starts `promoting`: their values for it
+    // may sit in `extra` (written before it was declared, or by a process whose
+    // cached table predates it), which `extraWins` keeps readable until the sweep.
+    let populated: boolean | undefined;
+    const hasRows = async (): Promise<boolean> => {
+      if (populated === undefined) {
+        const [r] = await tx.unsafe<Array<{ e: boolean }>>(
+          `SELECT EXISTS (SELECT 1 FROM ${table}) AS e`
+        );
+        populated = r?.e === true;
+      }
+      return populated;
+    };
     for (const [field, { kind, vocab }] of declared) {
       const row = catalog.get(field);
       if (row === undefined) {
@@ -269,7 +288,8 @@ async function ensureIn(tx: TransactionSql, args: EnsureTypeTableArgs): Promise<
         ];
         const added =
           newFields === 'column' && (await ddl(tx, `ALTER TABLE ${table} ${clauses.join(', ')}`));
-        await record(field, kind, added ? 'column' : 'pending', vocab);
+        const state = !added ? 'pending' : (await hasRows()) ? 'promoting' : 'column';
+        await record(field, kind, state, vocab);
         (added ? change.added : change.pending).push(field);
         continue;
       }

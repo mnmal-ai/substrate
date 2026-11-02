@@ -160,7 +160,7 @@ async function expectPlanUses(idx: string): Promise<void> {
 
 /** The page statement the last `read` sent. */
 const pageQuery = () =>
-  sent.find((s) => /FROM (rows|"t__[^"]*") r\b/.test(s.query)) ?? {
+  sent.find((s) => (TABLES ? /FROM "t__[^"]*" r\b/ : /FROM rows r/).test(s.query)) ?? {
     query: '',
     parameters: [],
     types: []
@@ -264,7 +264,7 @@ describe.skipIf(!POSTGRES_URL || !WALK_LAYOUT)('walks in where (pg)', () => {
     });
     const q = pageQuery().query;
     expect(q.match(/EXISTS/g)).toHaveLength(1);
-    expect(q).toMatch(/FROM \S+ w1, \S+ w2/);
+    expect(q).toMatch(TABLES ? /FROM \S+ w1, \S+ w2/ : /FROM rows w1, rows w2/);
     expect(sent.some((s) => /set_config\('statement_timeout'/.test(s.query))).toBe(true);
   });
 

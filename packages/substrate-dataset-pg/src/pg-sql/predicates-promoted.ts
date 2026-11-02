@@ -6,6 +6,7 @@
 
 import { UnsupportedFilterError } from '@mnmal-ai/substrate-types';
 import type { Sql, TransactionSql } from 'postgres';
+import { extraWins, RAW_KEY } from '../row-codec.js';
 import type { TypedColumn, TypeTable } from '../type-table.js';
 import {
   columnAs,
@@ -18,6 +19,8 @@ import {
   notNullAnd,
   type PromotedBodyColumn,
   promotedColumnSql,
+  qualifier,
+  sqlStringLiteral,
   tsArrayParam,
   tsParam
 } from './primitives.js';
@@ -211,6 +214,26 @@ export function buildColumnPredicate(
     }
   };
   const fits = (v: unknown): boolean => param(v) !== undefined;
+  /**
+   * Null as `decodeRow` reads it (amendment 4, operator ruling A): a value the
+   * column cannot hold sits in `$raw` with the column NULL, so it is not null.
+   * A `column`-state field keeps the bare `col IS NULL` its index serves, with
+   * the `$raw` test as a filter on the rows it returns; a promoting or orphaned
+   * field reads its JSON value, `$raw` overlaid. Never NULL itself, so a NOT
+   * around it stays sound. An operand the column cannot hold (an enum value
+   * outside the recorded vocabulary) is not looked up in `$raw`: it matches
+   * nothing (ruling A, option 3).
+   */
+  const json = fieldExpr(sql, table, field, 'json', alias);
+  const raw = sql.unsafe(
+    `(${qualifier(alias)}extra -> ${sqlStringLiteral(RAW_KEY)} ? ${sqlStringLiteral(field)})`
+  );
+  const isNull = extraWins(column)
+    ? sql`${json} IS NULL`
+    : sql`(${expr} IS NULL AND ${raw} IS NOT TRUE)`;
+  const isNotNull = extraWins(column)
+    ? sql`${json} IS NOT NULL`
+    : sql`(${expr} IS NOT NULL OR ${raw} IS TRUE)`;
   const guarded = (cond: Fragment): Fragment => notNullAnd(sql, expr, cond);
   /** `expr = ANY(...)` over the non-null members that fit; FALSE when none does. */
   const anyOf = (values: unknown[]): Fragment => {
@@ -243,11 +266,7 @@ export function buildColumnPredicate(
       case 'eq': {
         const p = param(operand);
         fragments.push(
-          operand === null
-            ? sql`${expr} IS NULL`
-            : p === undefined
-              ? sql`FALSE`
-              : guarded(sql`${expr} = ${p}`)
+          operand === null ? isNull : p === undefined ? sql`FALSE` : guarded(sql`${expr} = ${p}`)
         );
         break;
       }
@@ -255,7 +274,7 @@ export function buildColumnPredicate(
         const p = param(operand);
         fragments.push(
           operand === null
-            ? sql`${expr} IS NOT NULL`
+            ? isNotNull
             : p === undefined
               ? sql`TRUE`
               : sql`${expr} IS DISTINCT FROM ${p}`
@@ -292,7 +311,7 @@ export function buildColumnPredicate(
         // A null member means "or absent", as in memory.
         const values = operand.filter((v) => v !== null && v !== undefined);
         const any = anyOf(values);
-        fragments.push(values.length < operand.length ? sql`(${any} OR ${expr} IS NULL)` : any);
+        fragments.push(values.length < operand.length ? sql`(${any} OR ${isNull})` : any);
         break;
       }
       case 'nin': {
@@ -305,8 +324,8 @@ export function buildColumnPredicate(
             ? sql`TRUE`
             : values.length < operand.length
               ? values.length === 0
-                ? sql`${expr} IS NOT NULL`
-                : sql`(${expr} IS NOT NULL AND NOT ${anyOf(values)})`
+                ? isNotNull
+                : sql`(${isNotNull} AND NOT ${anyOf(values)})`
               : sql`(${expr} IS NULL OR NOT ${anyOf(values)})`
         );
         break;

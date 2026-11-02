@@ -157,8 +157,9 @@ function suite(label: string, make: () => Dataset | Promise<Dataset>): void {
       expect((await read(id)).addr).toEqual({ street: null });
     });
 
-    // A type table stores no null for a declared column field (it reads absent,
-    // Task 2's contract), so once the field is removed there is no null to keep.
+    // Operator ruling B (Task 11 review): a type table stores no null for a
+    // declared column field (it reads absent, Task 2's contract), so once the
+    // field is removed from code it reads absent, not null. Accepted.
     it.skipIf(label === 'pg' && TABLES)('a field removed from the def keeps its null', async () => {
       const id = randomUUID();
       await ds.write(TYPE, [{ id, gone: null }]);

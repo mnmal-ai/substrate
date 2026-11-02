@@ -368,6 +368,32 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('tables layout', () => {
     });
   });
 
+  it('a field declared on a table that has rows starts promoting, since rows may hold it in extra', async () => {
+    const type = freshType();
+    await ensure(type, { title: field.string() });
+    await sql.unsafe(`INSERT INTO "${await tableOf(type)}" (id, extra) VALUES ('a', '{"n": 2}')`);
+    const change = await ensure(type, { title: field.string(), n: field.number() });
+    expect(change).toEqual({ created: false, added: ['n'], pending: [], orphaned: [] });
+    expect((await loadTypeTable(sql, NS, type))?.column('n')?.state).toBe('promoting');
+  });
+
+  it('createOnly creates a missing table, and changes nothing on an existing one', async () => {
+    const type = freshType();
+    const only = (fields: Record<string, FieldDef>) =>
+      ensureTypeTable(sql, {
+        namespace: NS,
+        type,
+        fields,
+        newFields: 'column',
+        enforceUuidCheck: false,
+        createOnly: true
+      });
+    expect((await only({})).created).toBe(true);
+    await ensure(type, { title: field.string() });
+    expect(await only({})).toEqual({ created: false, added: [], pending: [], orphaned: [] });
+    expect((await loadTypeTable(sql, NS, type))?.column('title')?.state).toBe('column');
+  });
+
   it("newFields:'column' adds the column", async () => {
     const type = freshType();
     await ensure(type, { title: field.string() });
