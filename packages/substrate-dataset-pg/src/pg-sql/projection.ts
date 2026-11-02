@@ -3,6 +3,7 @@
  * metadata columns fold back into the `RowMetadata` shape callers see.
  */
 
+import { randomUUID } from 'node:crypto';
 import type { ActorIdentity, ReadParams, RowMetadata } from '@mnmal-ai/substrate-types';
 import type { Sql, TransactionSql } from 'postgres';
 import { type Fragment, NON_BODY_FIELD_KEYS } from './primitives.js';
@@ -12,8 +13,9 @@ import { type Fragment, NON_BODY_FIELD_KEYS } from './primitives.js';
  *
  *   - `fields === undefined` → the full body.
  *   - `fields` supplied → `jsonb_build_object(...)` over `id` plus the
- *     requested top-level body keys. `id` is always included because
- *     `materialize()` reads `body.id` to preserve numeric ids.
+ *     requested top-level body keys; one the row lacks is the absent marker. `id` is
+ *     always included because `materialize()` reads `body.id` to preserve
+ *     numeric ids.
  *
  * Keys are bound as parameters, never concatenated.
  */
@@ -31,10 +33,32 @@ export function buildBodyProjection(
     if (NON_BODY_FIELD_KEYS.has(key)) continue;
     bodyKeys.add(key);
   }
+  // A key the row lacks projects as the marker, which `materialize` drops. A stored
+  // json `null` comes through as itself. One extraction per key: testing presence in
+  // SQL (`->` twice, or `?`) detoasts a large body once more per access, which
+  // tripled the cost of a projected read on a TOASTed body.
   return buildObject(
     sql,
-    Array.from(bodyKeys, (k) => sql`${k}::text, r.body->${k}`)
+    Array.from(
+      bodyKeys,
+      (k) => sql`${k}::text, COALESCE(r.body->${k}, ${sql.unsafe(ABSENT_LITERAL)})`
+    )
   );
+}
+
+/**
+ * Stands in for a projected key the row lacks. The nonce is per process and never
+ * stored or sent to a client (keep it so: never log it or a result row), which is
+ * why no stored value can equal it. The literal is
+ * built here from hex only, so it is safe to inline (a parameter would be cast
+ * per row under a generic plan).
+ */
+const ABSENT_KEY = `$absent:${randomUUID()}`;
+const ABSENT_LITERAL = `'{"${ABSENT_KEY}":1}'::jsonb`;
+
+/** True for the value `buildBodyProjection` gives a key the row lacks. */
+export function isAbsentMarker(v: unknown): boolean {
+  return typeof v === 'object' && v !== null && Object.hasOwn(v, ABSENT_KEY);
 }
 
 /**

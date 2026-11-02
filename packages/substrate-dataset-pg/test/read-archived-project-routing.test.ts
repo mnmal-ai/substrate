@@ -163,7 +163,8 @@ describe.skipIf(!POSTGRES_URL)('PgDataset: archived + project read-path routing'
       fields: { id: true, archived: true, project: true }
     });
     const { _metadata, ...row } = result.rows[0] as Record<string, unknown>;
-    expect(row).toEqual({ id: 'm2', archived: true, project: null });
+    // The body lacks `project`, so it is absent (not the column's 'substrate').
+    expect(row).toEqual({ id: 'm2', archived: true });
   });
 
   it('adds no phantom promoted keys to a body that never had them', async () => {
