@@ -8,7 +8,7 @@
  * apart from that `$raw` copy.
  */
 
-import { ReservedField } from '@mnmal-ai/substrate-types';
+import { normalizeIsoTimestamp, ReservedField } from '@mnmal-ai/substrate-types';
 import type { ColumnKind, TypedColumn, TypeTable } from './type-table.js';
 
 /** The reserved `extra` key holding each column field's written value when its column differs. */
@@ -18,6 +18,9 @@ export interface EncodedRow {
   /**
    * Keyed by column name: every column field the row writes. `null` when the
    * column is set NULL, for an explicit null or a value the column cannot hold.
+   * A date column's value is the shared ISO grammar's text with microseconds:
+   * bind it as text (`::text::timestamptz`, as `tsParam` does), never through a
+   * JS Date, which keeps milliseconds only.
    */
   columns: Record<string, string | number | boolean | null>;
   /** Undeclared keys, non-column fields, `pending` fields and `orphaned` columns' fields. */
@@ -26,6 +29,13 @@ export interface EncodedRow {
   raw: Record<string, unknown>;
   /** Declared column fields (`pending` included) the row sets to null; they read back absent. */
   clear: string[];
+  /**
+   * Every key of the written row. Remove these keys from `extra` and from
+   * `extra.$raw` before merging `extra`/`raw`; drop `$raw` when it ends empty.
+   * That one rule clears a stale `$raw`, a `promoting` field's old `extra` key
+   * and a cleared field's key, in every state. {@link applyPatch} is it in JS.
+   */
+  unset: string[];
 }
 
 /**
@@ -33,20 +43,22 @@ export interface EncodedRow {
  * 14's `rowJson`: for a `promoting` or `orphaned` column, the field's `extra`
  * key wins when present, else the column. A `column`-state field reads its
  * column only, because a write never puts it in `extra`. `$raw` overlays last.
+ * A `null` in `extra` on a declared column field (`promoting` or `pending`)
+ * reads absent, as Task 2's contract has it.
  */
 export function extraWins(column: TypedColumn): boolean {
   return column.state !== 'column';
 }
 
 /**
- * Splits `row` into columns, `extra`, `$raw` and cleared fields. A
- * `promoting` field goes to its column, and the writer must also strip its
- * `extra` key in the same statement (Task 11). An `orphaned` column is never
- * written: its field is undeclared, so the value goes to `extra`.
+ * Splits `row` into columns, `extra`, `$raw`, cleared fields and the keys to
+ * unset. An `orphaned` column is never written: its field is undeclared, so the
+ * value goes to `extra`. A non-finite number on a column field is refused with
+ * a RangeError, because jsonb would turn its `$raw` copy into `null`.
  */
 export function encodeRow(table: TypeTable, row: Record<string, unknown>): EncodedRow {
-  if (Object.hasOwn(row, RAW_KEY)) throw new ReservedField(RAW_KEY);
-  const out: EncodedRow = { columns: {}, extra: {}, raw: {}, clear: [] };
+  if (Object.hasOwn(row, RAW_KEY)) throw new ReservedField(RAW_KEY, 'by a create or an update');
+  const out: EncodedRow = { columns: {}, extra: {}, raw: {}, clear: [], unset: Object.keys(row) };
   for (const [field, value] of Object.entries(row)) {
     const c = table.column(field);
     const held = c !== undefined && c.state !== 'orphaned' ? c : undefined;
@@ -59,10 +71,12 @@ export function encodeRow(table: TypeTable, row: Record<string, unknown>): Encod
       out.extra[field] = value;
       continue;
     }
+    if (typeof value === 'number' && !Number.isFinite(value)) {
+      throw new RangeError(`field '${field}' is ${value}, which a row cannot store`);
+    }
     const v = toColumn(held, value);
     out.columns[held.column] = v;
-    // Column values are already canonical, so strict equality is the deep-equal check.
-    if (v !== value) out.raw[field] = value;
+    if (v === null || readBack(held.kind, v) !== value) out.raw[field] = value;
   }
   return out;
 }
@@ -86,14 +100,36 @@ export function decodeRow(
   for (const [k, v] of Object.entries(extra)) {
     if (k === RAW_KEY) continue;
     const c = table.column(k);
-    if (c === undefined || extraWins(c)) out[k] = v;
+    if (c !== undefined && !extraWins(c)) continue;
+    const declared = c !== undefined ? c.state === 'promoting' : table.pending.includes(k);
+    if (v === null && declared) delete out[k];
+    else out[k] = v;
   }
   const raw = extra[RAW_KEY];
   if (raw !== null && typeof raw === 'object') Object.assign(out, raw);
   return out;
 }
 
-/** The value `column` holds for `value`, in canonical form; `null` when it cannot hold it. */
+/**
+ * `record` after writing `encoded` over it, by the rule on
+ * {@link EncodedRow.unset}. The oracle the writer's SQL is tested against:
+ * `(extra - unset) || extra_new || {$raw: (extra->'$raw' - unset) || raw}`.
+ */
+export function applyPatch(
+  record: Record<string, unknown>,
+  encoded: EncodedRow
+): Record<string, unknown> {
+  const prior = (record.extra ?? {}) as Record<string, unknown>;
+  const unset = new Set([...encoded.unset, RAW_KEY]);
+  const keep = (o: Record<string, unknown>) =>
+    Object.fromEntries(Object.entries(o).filter(([k]) => !unset.has(k)));
+  const extra = { ...keep(prior), ...encoded.extra };
+  const raw = { ...keep((prior[RAW_KEY] ?? {}) as Record<string, unknown>), ...encoded.raw };
+  if (Object.keys(raw).length > 0) extra[RAW_KEY] = raw;
+  return { ...record, ...encoded.columns, extra };
+}
+
+/** The value `column` holds for `value`; `null` when it cannot hold it. */
 function toColumn(column: TypedColumn, value: unknown): string | number | boolean | null {
   switch (column.kind) {
     case 'text':
@@ -101,20 +137,25 @@ function toColumn(column: TypedColumn, value: unknown): string | number | boolea
     case 'enum':
       return typeof value === 'string' && (column.vocab ?? []).includes(value) ? value : null;
     case 'crossRef':
-      if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+      if (typeof value === 'number') return String(value);
       return typeof value === 'string' ? value : null;
     case 'number':
-      return typeof value === 'number' && Number.isFinite(value) ? value : null;
+      return typeof value === 'number' ? value : null;
     case 'boolean':
       return typeof value === 'boolean' ? value : null;
-    case 'date': {
-      if (typeof value !== 'string') return null;
-      const d = new Date(value);
-      // pg's timestamptz takes years 1..9999 in ISO form; outside that, or invalid, it misfits.
-      const year = d.getUTCFullYear();
-      return Number.isNaN(d.getTime()) || year < 1 || year > 9999 ? null : d.toISOString();
-    }
+    case 'date':
+      // The one date grammar memory and `substrate_ts` read; no offset is UTC.
+      return typeof value === 'string' ? (normalizeIsoTimestamp(value) ?? null) : null;
   }
+}
+
+/** What reading column value `v` back gives, or `undefined` when that read is lossy. */
+function readBack(kind: ColumnKind, v: string | number | boolean): unknown {
+  if (kind !== 'date') return v;
+  const d = new Date(v as string);
+  // postgres.js parses pg's output with `new Date`, which maps years 0-99 onto
+  // 19xx; <= 100 because a session offset can print a UTC year-100 instant as 99.
+  return d.getUTCFullYear() <= 100 ? undefined : d.toISOString();
 }
 
 /** A column value as pg returns it, in the JSON form a row carries: dates as `toISOString()`. */

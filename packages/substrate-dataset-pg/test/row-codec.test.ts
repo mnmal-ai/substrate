@@ -5,7 +5,7 @@
 
 import { ReservedField } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
-import { decodeRow, encodeRow, RAW_KEY } from '../src/row-codec.js';
+import { applyPatch, decodeRow, type EncodedRow, encodeRow, RAW_KEY } from '../src/row-codec.js';
 import type { TypedColumn, TypeTable } from '../src/type-table.js';
 
 function tableOf(columns: TypedColumn[], pending: string[] = []): TypeTable {
@@ -50,31 +50,36 @@ const TABLE = tableOf(
   ['later']
 );
 
-/** What pg hands back for an encoded row: dates as `Date`, `$raw` inside `extra`. */
-function stored(table: TypeTable, row: Record<string, unknown>): Record<string, unknown> {
-  const { columns, extra, raw } = encodeRow(table, row);
-  const record: Record<string, unknown> = {};
-  for (const c of table.columns()) {
-    const v = columns[c.column] ?? null;
-    record[c.column] = c.kind === 'date' && typeof v === 'string' ? new Date(v) : v;
+/** A type-table row with every column NULL and an empty `extra`. */
+const EMPTY: Record<string, unknown> = {
+  ...Object.fromEntries(TABLE.columns().map((c) => [c.column, null])),
+  extra: {}
+};
+
+/** `encoded` written over `record`, read back as pg hands it over: dates as `Date`. */
+function write(record: Record<string, unknown>, encoded: EncodedRow): Record<string, unknown> {
+  const next = applyPatch(record, encoded);
+  for (const c of TABLE.columns()) {
+    const v = next[c.column];
+    if (c.kind === 'date' && typeof v === 'string') next[c.column] = new Date(v);
   }
-  record.extra = Object.keys(raw).length === 0 ? extra : { ...extra, [RAW_KEY]: raw };
-  return record;
+  return next;
 }
 
-const roundTrip = (row: Record<string, unknown>) => decodeRow(TABLE, stored(TABLE, row));
+const stored = (row: Record<string, unknown>) => write(EMPTY, encodeRow(TABLE, row));
+const roundTrip = (row: Record<string, unknown>) => decodeRow(TABLE, stored(row));
 
 describe('row codec', () => {
   it("date '2026-10-26' round-trips exactly; column holds 2026-10-26T00:00:00Z", () => {
     const e = encodeRow(TABLE, { due: '2026-10-26' });
-    expect(e.columns.f_due).toBe('2026-10-26T00:00:00.000Z');
+    expect(e.columns.f_due).toBe('2026-10-26T00:00:00Z');
     expect(e.raw).toEqual({ due: '2026-10-26' });
     expect(roundTrip({ due: '2026-10-26' })).toEqual({ due: '2026-10-26' });
   });
 
   it("'2026-10-26T10:00:00+02:00' round-trips; column 08:00Z", () => {
     const e = encodeRow(TABLE, { due: '2026-10-26T10:00:00+02:00' });
-    expect(e.columns.f_due).toBe('2026-10-26T08:00:00.000Z');
+    expect(new Date(e.columns.f_due as string).toISOString()).toBe('2026-10-26T08:00:00.000Z');
     expect(roundTrip({ due: '2026-10-26T10:00:00+02:00' })).toEqual({
       due: '2026-10-26T10:00:00+02:00'
     });
@@ -82,14 +87,35 @@ describe('row codec', () => {
 
   it('nine fractional digits round-trip', () => {
     const due = '2026-10-26T10:00:00.123456789Z';
-    expect(encodeRow(TABLE, { due }).columns.f_due).toBe('2026-10-26T10:00:00.123Z');
+    // The column keeps microseconds, the precision memory and `substrate_ts` compare at.
+    expect(encodeRow(TABLE, { due }).columns.f_due).toBe('2026-10-26T10:00:00.123456Z');
     expect(roundTrip({ due })).toEqual({ due });
+  });
+
+  it('dates follow the shared ISO grammar: no offset is UTC, loose or impossible text misfits', () => {
+    expect(encodeRow(TABLE, { due: '2026-10-26T10:00:00' }).columns.f_due).toBe(
+      '2026-10-26T10:00:00Z'
+    );
+    for (const due of ['2026-02-30', '1', 'March 7, 2026']) {
+      const e = encodeRow(TABLE, { due });
+      expect(e.columns.f_due, due).toBeNull();
+      expect(e.raw, due).toEqual({ due });
+    }
+  });
+
+  it('a year below 101 keeps its column and a $raw copy, even in canonical form', () => {
+    for (const due of ['0099-06-01T00:00:00.000Z', '0100-01-01T00:00:00.000Z']) {
+      const e = encodeRow(TABLE, { due });
+      expect(e.columns.f_due, due).toBe(due);
+      expect(e.raw, due).toEqual({ due });
+    }
+    expect(encodeRow(TABLE, { due: '0101-01-01T00:00:00.000Z' }).raw).toEqual({});
   });
 
   it('canonical ISO date stores no $raw', () => {
     const due = '2026-10-26T10:00:00.000Z';
     const e = encodeRow(TABLE, { due });
-    expect(e).toEqual({ columns: { f_due: due }, extra: {}, raw: {}, clear: [] });
+    expect(e).toEqual({ columns: { f_due: due }, extra: {}, raw: {}, clear: [], unset: ['due'] });
     expect(roundTrip({ due })).toEqual({ due });
   });
 
@@ -149,7 +175,8 @@ describe('row codec', () => {
       columns: {},
       extra: { note: 'hi', blob: null, list: [1, 2] },
       raw: {},
-      clear: []
+      clear: [],
+      unset: ['note', 'blob', 'list']
     });
     expect(roundTrip({ note: 'hi', blob: null, list: [1, 2] })).toEqual({
       note: 'hi',
@@ -160,7 +187,13 @@ describe('row codec', () => {
 
   it('pending field → extra', () => {
     const e = encodeRow(TABLE, { later: 'soon' });
-    expect(e).toEqual({ columns: {}, extra: { later: 'soon' }, raw: {}, clear: [] });
+    expect(e).toEqual({
+      columns: {},
+      extra: { later: 'soon' },
+      raw: {},
+      clear: [],
+      unset: ['later']
+    });
     expect(roundTrip({ later: 'soon' })).toEqual({ later: 'soon' });
   });
 
@@ -169,24 +202,76 @@ describe('row codec', () => {
       columns: { f_moving: 'm' },
       extra: {},
       raw: {},
-      clear: []
+      clear: [],
+      unset: ['moving']
     });
-    const base = { ...stored(TABLE, {}), f_moving: 'old' };
+    const base = { ...EMPTY, f_moving: 'old' };
     expect(decodeRow(TABLE, base)).toEqual({ moving: 'old' });
     expect(decodeRow(TABLE, { ...base, extra: { moving: 'new' } })).toEqual({ moving: 'new' });
   });
 
   it('orphaned column value decodes as an extra; an extra key of the same name wins', () => {
     const e = encodeRow(TABLE, { gone: 'x' });
-    expect(e).toEqual({ columns: {}, extra: { gone: 'x' }, raw: {}, clear: [] });
-    const base = { ...stored(TABLE, {}), f_gone: 'kept' };
+    expect(e).toEqual({ columns: {}, extra: { gone: 'x' }, raw: {}, clear: [], unset: ['gone'] });
+    const base = { ...EMPTY, f_gone: 'kept' };
     expect(decodeRow(TABLE, base)).toEqual({ gone: 'kept' });
     expect(decodeRow(TABLE, { ...base, extra: { gone: 'newer' } })).toEqual({ gone: 'newer' });
   });
 
   it('a stray extra key never shadows a column-state field', () => {
-    const record = { ...stored(TABLE, { title: 't' }), extra: { title: 'stale' } };
+    const record = { ...stored({ title: 't' }), extra: { title: 'stale' } };
     expect(decodeRow(TABLE, record)).toEqual({ title: 't' });
+  });
+
+  it('a null in extra on a declared column field reads absent; on an undeclared one, null', () => {
+    const record = {
+      ...EMPTY,
+      f_moving: 'old',
+      f_gone: 'kept',
+      extra: { later: null, moving: null, gone: null, note: null }
+    };
+    // `moving` is promoting: its extra key wins, and that key is a null, so absent.
+    expect(decodeRow(TABLE, record)).toEqual({ gone: null, note: null });
+  });
+
+  it('a non-finite number on a column field is refused', () => {
+    for (const v of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      expect(() => encodeRow(TABLE, { count: v })).toThrow(RangeError);
+      expect(() => encodeRow(TABLE, { title: v })).toThrow(RangeError);
+    }
+  });
+
+  describe('a patch over a stored row', () => {
+    const patch = (record: Record<string, unknown>, row: Record<string, unknown>) =>
+      decodeRow(TABLE, write(record, encodeRow(TABLE, row)));
+
+    it('a stale $raw is dropped when its field is written again', () => {
+      const before = stored({ title: 't', count: '5' });
+      expect(patch(before, { count: 7 })).toEqual({ title: 't', count: 7 });
+      expect(patch(before, { count: null })).toEqual({ title: 't' });
+      expect(write(before, encodeRow(TABLE, { count: 7 })).extra).toEqual({});
+    });
+
+    it('a promoting write strips the old extra key', () => {
+      const before = { ...EMPTY, extra: { moving: 'old' } };
+      const after = write(before, encodeRow(TABLE, { moving: 'new' }));
+      expect(after.extra).toEqual({});
+      expect(decodeRow(TABLE, after)).toEqual({ moving: 'new' });
+    });
+
+    it('a pending null removes the key', () => {
+      const before = stored({ later: 'soon', note: 'n' });
+      const after = write(before, encodeRow(TABLE, { later: null }));
+      expect(after.extra).toEqual({ note: 'n' });
+      expect(decodeRow(TABLE, after)).toEqual({ note: 'n' });
+    });
+
+    it("an orphaned field's column-era $raw is dropped when it is written as an extra", () => {
+      const before = { ...EMPTY, f_gone: '42', extra: { [RAW_KEY]: { gone: 42, title: 5 } } };
+      const after = write(before, encodeRow(TABLE, { gone: 'x' }));
+      expect(after.extra).toEqual({ gone: 'x', [RAW_KEY]: { title: 5 } });
+      expect(decodeRow(TABLE, after)).toEqual({ gone: 'x', title: 5 });
+    });
   });
 
   it('no declared column key ever lands in extra', () => {
@@ -203,11 +288,20 @@ describe('row codec', () => {
       -0,
       1.5,
       42,
+      Number.MAX_SAFE_INTEGER,
+      2 ** 60,
+      1e300,
+      Number.NaN,
       true,
       false,
       '2026-10-26',
       '2026-10-26T10:00:00.000Z',
+      '2026-10-26T10:00:00.123456Z',
       '2026-10-26T10:00:00+02:00',
+      '2026-10-26T10:00:00',
+      '0099-06-01',
+      '0050-01-01T00:00:00.000Z',
+      '2026-02-30',
       'not a date',
       [1, 'a'],
       { a: 1 }
@@ -218,23 +312,45 @@ describe('row codec', () => {
         .filter((c) => c.state !== 'orphaned')
         .map((c) => c.field)
     );
-    for (let i = 0; i < 2000; i++) {
-      const row: Record<string, unknown> = {};
-      for (const k of keys) if (rand() < 0.5) row[k] = pick(values);
-      const e = encodeRow(TABLE, row);
-      for (const k of Object.keys(e.extra)) expect(held.has(k), `${k} in ${i}`).toBe(false);
-      for (const k of Object.keys(e.raw)) expect(held.has(k), `$raw ${k} in ${i}`).toBe(true);
-      // An explicit null on a declared column field reads back absent; the rest exactly.
-      const expected = Object.fromEntries(
-        Object.entries(row).filter(([k, v]) => !(v === null && (held.has(k) || k === 'later')))
-      );
-      expect(roundTrip(row), `row ${i}`).toEqual(expected);
+    const declared = (k: string) => held.has(k) || TABLE.pending.includes(k);
+    for (let i = 0; i < 500; i++) {
+      // A row's life: up to four patches, each over what the last one stored.
+      let record = EMPTY;
+      const model: Record<string, unknown> = {};
+      for (let p = 0, n = 1 + Math.floor(rand() * 4); p < n; p++) {
+        const row: Record<string, unknown> = {};
+        for (const k of keys) if (rand() < 0.4) row[k] = pick(values);
+        const nonFinite = Object.entries(row).some(
+          ([k, v]) => held.has(k) && typeof v === 'number' && !Number.isFinite(v)
+        );
+        if (nonFinite) {
+          expect(() => encodeRow(TABLE, row), `row ${i}.${p}`).toThrow(RangeError);
+          continue;
+        }
+        const e = encodeRow(TABLE, row);
+        for (const k of Object.keys(e.extra)) expect(held.has(k), `${k} in ${i}.${p}`).toBe(false);
+        for (const k of Object.keys(e.raw))
+          expect(held.has(k), `$raw ${k} in ${i}.${p}`).toBe(true);
+        record = write(record, e);
+        // An explicit null on a declared column field reads back absent; the rest as written.
+        for (const [k, v] of Object.entries(row)) {
+          if (v === null && declared(k)) delete model[k];
+          else model[k] = v;
+        }
+        expect(decodeRow(TABLE, record), `row ${i}.${p}`).toEqual(model);
+      }
     }
   });
 
   it('$raw input refused', () => {
     expect(() => encodeRow(TABLE, { [RAW_KEY]: {} })).toThrow(ReservedField);
-    expect(() => encodeRow(TABLE, { [RAW_KEY]: {} })).toThrow(`'${RAW_KEY}'`);
+    expect(() => encodeRow(TABLE, { [RAW_KEY]: {} })).toThrow(
+      "field '$raw' is reserved and cannot be written by a create or an update"
+    );
+    // The existing callers' message is unchanged.
+    expect(new ReservedField('_deletedAt').message).toBe(
+      "field '_deletedAt' is reserved and cannot be written via updateField"
+    );
   });
 });
 

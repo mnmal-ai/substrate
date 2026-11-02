@@ -78,10 +78,23 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('row codec through a type table', () =
     await sql.end({ timeout: 5 });
   });
 
+  /** INSERTs `row`, binding dates and `extra` as text so postgres.js never routes them through a JS Date. */
   async function write(id: string, row: Record<string, unknown>): Promise<void> {
     const { columns, extra, raw } = encodeRow(table, row);
     const stored = Object.keys(raw).length === 0 ? extra : { ...extra, [RAW_KEY]: raw };
-    await sql`INSERT INTO ${sql(tableName)} ${sql({ id, extra: sql.json(stored as Parameters<typeof sql.json>[0]), ...columns })}`;
+    const dates = new Set(table.columns().flatMap((c) => (c.kind === 'date' ? [c.column] : [])));
+    const names = ['id', 'extra', ...Object.keys(columns)];
+    const casts = names.map((n, i) =>
+      n === 'extra'
+        ? `$${i + 1}::text::jsonb`
+        : dates.has(n)
+          ? `$${i + 1}::text::timestamptz`
+          : `$${i + 1}`
+    );
+    await sql.unsafe(
+      `INSERT INTO ${table.from} (${names.map((n) => `"${n}"`).join(', ')}) VALUES (${casts.join(', ')})`,
+      [id, JSON.stringify(stored), ...Object.values(columns)]
+    );
   }
 
   it('the catalog gives the states the rows exercise', () => {
@@ -93,7 +106,7 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('row codec through a type table', () =
   it('rows round-trip through INSERT and SELECT', async () => {
     for (const [i, row] of ROWS.entries()) await write(`r${i}`, row);
     const records = await sql<Array<Record<string, unknown>>>`
-      SELECT * FROM ${sql(tableName)} ORDER BY id`;
+      SELECT * FROM ${sql(tableName)} WHERE id LIKE 'r%' ORDER BY id`;
     expect(records.map((r) => decodeRow(table, r))).toEqual(ROWS.map((r) => expected(table, r)));
   });
 
@@ -121,5 +134,47 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('row codec through a type table', () =
     const [pending] = await sql<Array<{ later: string }>>`
       SELECT extra ->> 'later' AS later FROM ${sql(tableName)} WHERE id = 'r7'`;
     expect(pending?.later).toBe('soon');
+  });
+
+  it('dates keep the shared grammar instant at microseconds, whatever the process TZ', async () => {
+    const DATES = [
+      '2026-10-26T10:00:00.123456Z',
+      '2026-10-26T10:00:00',
+      '2026-02-30',
+      '0099-06-01',
+      '0099-06-01T00:00:00.000Z'
+    ];
+    const tz = process.env.TZ;
+    process.env.TZ = 'America/New_York';
+    try {
+      // Offset-less text would read as local time through `new Date`.
+      expect(new Date('2026-10-26T10:00:00').toISOString()).toBe('2026-10-26T14:00:00.000Z');
+      for (const [i, due] of DATES.entries()) await write(`d${i}`, { due });
+      const rows = await sql<Array<Record<string, unknown>>>`
+        SELECT *,
+          f_due = '2026-10-26T10:00:00.123456Z'::timestamptz AS micros,
+          f_due = '2026-10-26T10:00:00Z'::timestamptz AS utc,
+          f_due IS NULL AS null_due,
+          f_due = '0099-06-01T00:00:00Z'::timestamptz AS y99
+        FROM ${sql(tableName)} WHERE id LIKE 'd%' ORDER BY id`;
+      const checks = rows.map(({ micros, utc, null_due, y99 }) => ({ micros, utc, null_due, y99 }));
+      const only = (k: string) => ({
+        micros: k === 'micros',
+        utc: k === 'utc',
+        null_due: k === 'null_due',
+        y99: k === 'y99'
+      });
+      expect(checks).toEqual([
+        only('micros'),
+        only('utc'),
+        { micros: null, utc: null, null_due: true, y99: null },
+        only('y99'),
+        only('y99')
+      ]);
+      expect(rows.map((r) => decodeRow(table, r))).toEqual(DATES.map((due) => ({ due })));
+    } finally {
+      if (tz === undefined) delete process.env.TZ;
+      else process.env.TZ = tz;
+    }
   });
 });
