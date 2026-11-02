@@ -61,7 +61,7 @@ import type {
   WriteResult,
   WriteRow
 } from '@mnmal-ai/substrate-types';
-import { assertNoRepeatedIds, createKeyedMutex, filterTooBroad } from '@mnmal-ai/substrate-types';
+import { assertNoRepeatedIds, createKeyedMutex, filterTooBroad, isColumnField } from '@mnmal-ai/substrate-types';
 import { NamespaceMismatch, ReservedField } from './errors.js';
 import { MemoryShortIdStore, type ShortIdBucketSnapshot } from './memory-short-id-store.js';
 import { uuidv7 } from './uuidv7.js';
@@ -87,9 +87,13 @@ export interface MemoryDatasetOptions {
   fieldDefLookup?: (type: string, field: string) => FieldDef | undefined;
   /**
    * The namespace's type definitions; a type declared `ordering: 'visible'`
-   * gets `_metadata.seq` on insert, as the pg dataset's lookup does.
+   * gets `_metadata.seq` on insert, as the pg dataset's lookup does. Its
+   * `fields` say which keys read back absent when null (`isColumnField`).
    */
-  typeDefLookup?: (type: string, namespace: string) => { ordering?: 'visible' } | undefined;
+  typeDefLookup?: (
+    type: string,
+    namespace: string
+  ) => { ordering?: 'visible'; fields?: Record<string, FieldDef> } | undefined;
   /**
    * Internal: binding assignments one read's walks may try before refusing
    * `walk_budget_exceeded`. Defaults to `WALK_EVALUATION_BUDGET`; tests lower it.
@@ -372,13 +376,19 @@ export class MemoryDataset implements Dataset {
 
     const out: ReadResult = { rows: slice, hasMore };
     // Derived copies back to the originals once the cursor is encoded, below.
+    const columns = this.columnFieldNames(type);
     const page = (rows: Row[]): Row[] => {
       const base = original.size === 0 ? rows : rows.map((r) => original.get(r) ?? r);
-      if (params.agg === undefined && params.nested === undefined) return base;
-      return base.map((r) => ({
-        ...r,
-        ...walkProjection(r, params.agg, params.nested ?? {}, ctxFor(r), true)
-      }));
+      // Last, so the walk memo (keyed by the stored row) still hits.
+      if (params.agg === undefined && params.nested === undefined) {
+        return base.map((r) => withoutNullColumns(columns, r));
+      }
+      return base.map((r) =>
+        withoutNullColumns(columns, {
+          ...r,
+          ...walkProjection(r, params.agg, params.nested ?? {}, ctxFor(r), true)
+        })
+      );
     };
     // nextCursor is derived from the DATASET-ordered slice (the sorted pool),
     // before any relevance reorder — cursor pagination must keep dataset
@@ -447,7 +457,9 @@ export class MemoryDataset implements Dataset {
     const fallbackNow = (options?.now ?? new Date()).toISOString();
     const fallbackActor = options?.identity ?? null;
     // Writes here are serial, so assignment order is commit order.
-    const visible = this.typeDefLookup?.(type, this.namespace)?.ordering === 'visible';
+    const def = this.typeDefLookup?.(type, this.namespace);
+    const visible = def?.ordering === 'visible';
+    const columns = columnFieldNames(def?.fields);
 
     for (const input of rows) {
       // An id-less row gets a v7 UUID (see uuidv7.ts for its limits).
@@ -513,10 +525,15 @@ export class MemoryDataset implements Dataset {
       // above preserves it via `{ ...existing, ...sanitised }`). For create
       // paths shortId is bound after write, so it is absent here — the
       // autoCRUD create resolver merges it into its own returned shape.
-      merged.push({ ...landed });
+      merged.push(withoutNullColumns(columns, { ...landed }));
     }
 
     return { written: ids.length, ids, rows: merged };
+  }
+
+  /** The type's column fields, looked up once per call rather than per row. */
+  private columnFieldNames(type: string): string[] {
+    return columnFieldNames(this.typeDefLookup?.(type, this.namespace)?.fields);
   }
 
   async tombstone(type: string, ids: Id[]): Promise<DeleteResult> {
@@ -624,7 +641,10 @@ export class MemoryDataset implements Dataset {
       ...(prior?.seq !== undefined ? { seq: prior.seq } : {})
     };
     row._metadata = meta;
-    return { matched: true, row: { ...row } };
+    return {
+      matched: true,
+      row: withoutNullColumns(this.columnFieldNames(type), { ...row })
+    };
   }
 
   async updateField(ref: UpdateFieldRef, fieldName: string, value: unknown): Promise<void> {
@@ -848,6 +868,25 @@ export class MemoryDataset implements Dataset {
 // ---------------------------------------------------------------------------
 // Filter evaluation helpers
 // ---------------------------------------------------------------------------
+
+/** The names of the declared fields that read back absent when null (`isColumnField`). */
+function columnFieldNames(fields: Record<string, FieldDef> | undefined): string[] {
+  return Object.entries(fields ?? {}).flatMap(([k, def]) => (isColumnField(def) ? [k] : []));
+}
+
+/**
+ * The row as it reads back: a column field holding `null` is absent, as on pg.
+ * The stored row keeps its null; the same row comes back when it has none.
+ */
+function withoutNullColumns(columns: string[], row: Row): Row {
+  let out = row;
+  for (const k of columns) {
+    if (row[k] !== null) continue;
+    if (out === row) out = { ...row };
+    delete out[k];
+  }
+  return out;
+}
 
 /**
  * Equality predicate used by `conditionalUpdate`. Handles the three shapes

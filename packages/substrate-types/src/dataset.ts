@@ -417,8 +417,9 @@ export interface Dataset {
    *
    * Semantics:
    *   - Equality is strict (`===`) for scalars; `Date` compares by
-   *     `.getTime()`; `null` matches only a stored `null` (including
-   *     intentionally-null fields set via `updateField`), never an absent field.
+   *     `.getTime()`; `null` matches a stored `null` or an absent field, on both
+   *     datasets. A declared scalar or crossRef set to `null` reads back absent
+   *     (`isColumnField`), so it matches `null` all the same.
    *   - A missing row fails the match even when `match` is empty — the
    *     operation is "update this existing row if predicate holds".
    *   - `updates` is merged onto the stored row the same way `write()` upserts

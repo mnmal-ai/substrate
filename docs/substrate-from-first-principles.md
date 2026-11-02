@@ -245,7 +245,8 @@ Obligations are an extension channel. Composition MUST preserve them (`and`/`or`
 import { and, requireCapability, requireIdentity, row } from '@mnmal-ai/substrate/sdk';
 
 const canMutate   = requireCapability('mutate');
-const ownRowsOnly = row<Price>((ctx, price) => price.ownerId === ctx.identity?.id);
+// A null field reads back absent, so guard it: an unset owner must never equal an anonymous caller.
+const ownRowsOnly = row<Price>((ctx, price) => price.ownerId != null && price.ownerId === ctx.identity?.id);
 
 defineNamespace('prices', {
   Price: {

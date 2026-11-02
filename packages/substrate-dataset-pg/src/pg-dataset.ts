@@ -63,6 +63,7 @@ import type {
 import {
   assertNoRepeatedIds,
   filterTooBroad,
+  isColumnField,
   naturalOrderOf,
   QUERY_TIMEOUT,
   ResolverFrameError,
@@ -123,6 +124,7 @@ import {
   conditionalMatchFragment,
   type Fragment,
   idToText,
+  isAbsentMarker,
   normalizeOrderBy,
   type PromotedBodyColumnMap,
   type PromotedColumnLookup,
@@ -812,7 +814,8 @@ export class PgDataset implements Dataset {
       rows = rows.concat(fetchLimit === undefined ? tail : tail.slice(0, fetchLimit - rows.length));
     }
 
-    const materialised = rows.map((r) => this.materialize(r));
+    const fields = this.#typeDefLookup?.(type, this.namespace)?.fields;
+    const materialised = rows.map((r) => this.materialize(r, fields));
     let hasMore = false;
     let sliced = materialised;
     if (limit !== undefined && materialised.length > limit) {
@@ -1071,7 +1074,8 @@ export class PgDataset implements Dataset {
       throw this.#uniqueViolation(type, err);
     });
 
-    const merged = records.map((r) => this.materialize(r));
+    const fields = this.#typeDefLookup?.(type, this.namespace)?.fields;
+    const merged = records.map((r) => this.materialize(r, fields));
     return { written: merged.length, ids: merged.map((r) => r.id), rows: merged };
   }
 
@@ -1273,7 +1277,8 @@ export class PgDataset implements Dataset {
 
     const row = rows[0];
     if (row === undefined) return { matched: false, row: null };
-    return { matched: true, row: this.materialize(row) };
+    const fields = this.#typeDefLookup?.(type, this.namespace)?.fields;
+    return { matched: true, row: this.materialize(row, fields) };
   }
 
   async updateField(ref: UpdateFieldRef, fieldName: string, value: unknown): Promise<void> {
@@ -2321,7 +2326,11 @@ export class PgDataset implements Dataset {
     );
   }
 
-  private materialize(record: SubstrateRowRecord): Row {
+  /** `fields` is the type's, which the caller looks up once however many rows it builds. */
+  private materialize(
+    record: SubstrateRowRecord,
+    fields: Record<string, FieldDef> | undefined
+  ): Row {
     const body = record.body ?? {};
     // Prefer the body.id (preserves number vs string at write time) over the
     // text PK column when present.
@@ -2332,6 +2341,12 @@ export class PgDataset implements Dataset {
       if (k === 'id') continue;
       if (k === RESERVED_DELETED_AT) continue; // defensive — should never appear in body
       if (k === '_metadata') continue; // defensive — stripped on write, but guard on read too
+      if (isAbsentMarker(v)) continue; // a projected key the row lacks
+      // A null on a declared scalar or crossRef reads back absent, as on memory.
+      if (v === null && fields !== undefined && Object.hasOwn(fields, k)) {
+        const def = fields[k];
+        if (def !== undefined && isColumnField(def)) continue;
+      }
       out[k] = v;
     }
     if (record.deleted_at !== null) {
