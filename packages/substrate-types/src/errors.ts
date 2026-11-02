@@ -147,13 +147,14 @@ export class NamespaceMismatch extends Error {
 
 /**
  * Thrown by `Dataset.updateField` when the caller targets a reserved
- * field name (e.g. `_deletedAt`). Spec §4.5.
+ * field name (e.g. `_deletedAt`), and by any other write path that refuses
+ * one; `how` names that path in the message. Spec §4.5.
  */
 export class ReservedField extends Error {
   override readonly name = 'ReservedField';
 
-  constructor(field: string) {
-    super(`field '${field}' is reserved and cannot be written via updateField`);
+  constructor(field: string, how = 'via updateField') {
+    super(`field '${field}' is reserved and cannot be written ${how}`);
   }
 }
 
