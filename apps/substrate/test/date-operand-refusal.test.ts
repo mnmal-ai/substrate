@@ -22,6 +22,7 @@ import type {
 } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, describe, expect, it } from 'vitest';
+import { deleteNamespaces } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const ns = `dor_${randomUUID().slice(0, 8)}`;
@@ -37,7 +38,7 @@ const ctx: Partial<RequestContext> = {
 let sql: Sql | undefined;
 afterAll(async () => {
   if (sql === undefined) return;
-  await sql`DELETE FROM rows WHERE namespace = ${ns}`;
+  await deleteNamespaces(sql, ns);
   await sql.end({ timeout: 5 });
 });
 

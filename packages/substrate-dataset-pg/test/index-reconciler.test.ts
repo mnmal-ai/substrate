@@ -18,8 +18,10 @@ import {
   UniqueIndexDuplicatesError
 } from '../src/index.js';
 import { desiredIndexKeys, reconcileTypeStatistics } from '../src/index-reconciler.js';
+import { columnName } from '../src/layout.js';
 import { generatedIdentifier, withMigrationLock } from '../src/migrate.js';
 import { indexExpressionSql } from '../src/pg-sql/primitives.js';
+import { ensureTypeTable, typeTableOf } from '../src/type-table.js';
 import { TABLES } from './_layout.js';
 import { addTestPromotedColumns } from './_promoted.js';
 
@@ -38,6 +40,52 @@ const kidIndexed: Record<string, FieldDef> = {
 };
 
 const hex = () => randomBytes(4).toString('hex');
+
+/**
+ * On `tables`, every field this file declares gets its column at the type
+ * table's CREATE, so an index keys on it; `kid` is text there, whatever kind a
+ * test declares it.
+ */
+const TABLE_FIELDS: Record<string, FieldDef> = {
+  ...fields,
+  archived: { kind: 'scalar', type: 'boolean' },
+  n: { kind: 'scalar', type: 'number' },
+  owner: { kind: 'crossRef', ns: 'x', type: 'Owner', onDelete: 'set_null' },
+  boughtOn: { kind: 'scalar', type: 'date' }
+};
+
+/** Key expressions as pg deparses them: a body path on the old layouts, a column on `tables`. */
+const KEY = TABLES
+  ? {
+      cert: columnName('cert'),
+      kid: columnName('kid'),
+      observedAt: columnName('observedAt'),
+      owner: columnName('owner'),
+      boughtOn: columnName('boughtOn')
+    }
+  : {
+      cert: `((body ->> 'cert'::text)) COLLATE "C"`,
+      kid: `((body ->> 'kid'::text)) COLLATE "C"`,
+      observedAt: `substrate_ts((body -> 'observedAt'::text))`,
+      owner: `((body ->> 'owner'::text)) COLLATE "C"`,
+      boughtOn: `substrate_ts((body -> 'boughtOn'::text))`
+    };
+/** Index keys a test builds by hand, as it writes them. */
+const HAND = TABLES
+  ? { cert: 'f_cert', certPlain: 'f_cert', kid: 'f_kid', kidCollated: 'f_kid' }
+  : {
+      cert: `((body ->> 'cert') COLLATE "C")`,
+      certPlain: `(body ->> 'cert')`,
+      kid: `(body ->> 'kid')`,
+      kidCollated: `((body ->> 'kid') COLLATE "C")`
+    };
+/**
+ * On `tables` a hand-built `(f_kid)` keys as the reconciler's does, so its
+ * predicate differs instead, which makes it a swap rather than a match.
+ */
+const otherLive = (live: string): string => (TABLES ? `${live} AND id IS NOT NULL` : live);
+/** A statement that opens a snapshot, so a concurrent build waits for it. */
+const SNAPSHOT = TABLES ? 'SELECT 1' : 'SELECT count(*) FROM rows';
 
 let sql: Sql;
 
@@ -61,6 +109,18 @@ interface Fixture {
 async function fixture(): Promise<Fixture> {
   const ns = `ir_${hex()}`;
   const ds = new PgDataset({ namespace: ns, sql });
+  if (TABLES) {
+    await ensureTypeTable(sql, {
+      namespace: ns,
+      type: TYPE,
+      fields: TABLE_FIELDS,
+      newFields: 'column',
+      enforceUuidCheck: false
+    });
+    const target = await typeTableOf(sql, ns, TYPE);
+    if (target === undefined) throw new Error('type table missing');
+    return { ns, ds, target, live: 'deleted_at IS NULL' };
+  }
   if (LAYOUT === 'legacy') {
     return {
       ns,
@@ -103,8 +163,7 @@ async function indexState(name: string) {
   return row;
 }
 
-// Indexes on type tables are Task 12's; the `rows` they reconcile does not exist on `tables`.
-describe.skipIf(!POSTGRES_URL || TABLES)('reconcileTypeIndexes', () => {
+describe.skipIf(!POSTGRES_URL)('reconcileTypeIndexes', () => {
   it('reports a type with no unique index in the unique pass without taking the migration lock', async () => {
     const { ns } = await fixture();
     // Held here, so a pass that waited for it would never return.
@@ -159,7 +218,7 @@ describe.skipIf(!POSTGRES_URL || TABLES)('reconcileTypeIndexes', () => {
     });
     const state = await indexState(name);
     expect(state?.valid).toBe(true);
-    expect(state?.def).toContain(`substrate_ts((body -> 'observedAt'::text)) DESC NULLS LAST`);
+    expect(state?.def).toContain(`${KEY.observedAt} DESC NULLS LAST`);
 
     const second = await reconcile(ns, [decl]);
     expect(second.find((s) => s.name === name)).toMatchObject({
@@ -229,9 +288,7 @@ describe.skipIf(!POSTGRES_URL || TABLES)('reconcileTypeIndexes', () => {
   it('adopts an identical index it did not build', async () => {
     const { ns, target, live } = await fixture();
     const name = `rows_a_${hex()}`;
-    await sql.unsafe(
-      `CREATE INDEX ${name} ON ${target} (((body ->> 'cert') COLLATE "C"), id) WHERE ${live}`
-    );
+    await sql.unsafe(`CREATE INDEX ${name} ON ${target} (${HAND.cert}, id) WHERE ${live}`);
     const s = (await reconcile(ns, [{ fields: ['cert'], name }])).find((x) => x.name === name);
     expect(s).toMatchObject({ name, outcome: 'adopted', state: 'valid' });
   });
@@ -243,13 +300,15 @@ describe.skipIf(!POSTGRES_URL || TABLES)('reconcileTypeIndexes', () => {
       { id: 'a', kid: 'k1' },
       { id: 'b', kid: 'k2' }
     ]);
-    await sql.unsafe(`CREATE UNIQUE INDEX ${name} ON ${target} ((body ->> 'kid')) WHERE ${live}`);
+    await sql.unsafe(
+      `CREATE UNIQUE INDEX ${name} ON ${target} (${HAND.kid}) WHERE ${otherLive(live)}`
+    );
 
     // An open snapshot holds the concurrent build in its last wait, with both
     // indexes in place.
     const blocker = await sql.reserve();
     await blocker`BEGIN ISOLATION LEVEL REPEATABLE READ`;
-    await blocker`SELECT count(*) FROM rows`;
+    await blocker.unsafe(SNAPSHOT);
     let swapping: ReturnType<typeof reconcile> | undefined;
     try {
       swapping = reconcile(ns, [{ fields: ['kid'], unique: true, where: 'live', name }]);
@@ -270,7 +329,9 @@ describe.skipIf(!POSTGRES_URL || TABLES)('reconcileTypeIndexes', () => {
 
     const s = (await (swapping as ReturnType<typeof reconcile>)).find((x) => x.name === name);
     expect(s).toMatchObject({ name, unique: true, outcome: 'swapped', state: 'valid' });
-    expect((await indexState(name))?.def).toContain(`COLLATE "C"`);
+    expect((await indexState(name))?.def).toContain(
+      TABLES ? `(f_kid) WHERE (deleted_at IS NULL)` : `COLLATE "C"`
+    );
     expect(await indexState(`${name}__swap`)).toBeUndefined();
     await expect(ds.write(TYPE, [{ id: 'dup2', kid: 'k2' }])).rejects.toThrow(/unique|duplicate/i);
   });
@@ -286,12 +347,12 @@ describe.skipIf(!POSTGRES_URL || TABLES)('reconcileTypeIndexes', () => {
     // An interrupted earlier swap: the old index is gone and the __swap, built
     // to a since-changed declaration, is the only thing enforcing uniqueness.
     await sql.unsafe(
-      `CREATE UNIQUE INDEX ${swapName} ON ${target} ((body ->> 'kid')) WHERE ${live}`
+      `CREATE UNIQUE INDEX ${swapName} ON ${target} (${HAND.kid}) WHERE ${otherLive(live)}`
     );
 
     const blocker = await sql.reserve();
     await blocker`BEGIN ISOLATION LEVEL REPEATABLE READ`;
-    await blocker`SELECT count(*) FROM rows`;
+    await blocker.unsafe(SNAPSHOT);
     let swapping: ReturnType<typeof reconcile> | undefined;
     try {
       swapping = reconcile(ns, [{ fields: ['kid'], unique: true, where: 'live', name }]);
@@ -311,31 +372,37 @@ describe.skipIf(!POSTGRES_URL || TABLES)('reconcileTypeIndexes', () => {
 
     const s = (await (swapping as ReturnType<typeof reconcile>)).find((x) => x.name === name);
     expect(s).toMatchObject({ outcome: 'swapped', state: 'valid' });
-    expect((await indexState(name))?.def).toContain(`COLLATE "C"`);
+    expect((await indexState(name))?.def).toContain(
+      TABLES ? `(f_kid) WHERE (deleted_at IS NULL)` : `COLLATE "C"`
+    );
     expect(await indexState(swapName)).toBeUndefined();
     await expect(ds.write(TYPE, [{ id: 'dup2', kid: 'k2' }])).rejects.toThrow(/unique|duplicate/i);
   });
 
-  it('swaps a body-keyed index onto the column once its field is promoted', async () => {
-    await addTestPromotedColumns(sql);
-    const { ns, target, live } = await fixture();
-    const name = `rows_p_${hex()}`;
-    await sql.unsafe(`CREATE INDEX ${name} ON ${target} ((body ->> 'status')) WHERE ${live}`);
-    const states = await reconcileTypeIndexes(sql, {
-      namespace: ns,
-      type: TYPE,
-      layout: LAYOUT,
-      orderedBy: DEFAULT_ORDERED_BY,
-      fields: { ...fields, status: { kind: 'scalar', type: 'string' } },
-      indexes: [{ fields: ['status'], name }],
-      promotedColumns: { status: { column: 'status', kind: 'text' } }
-    });
-    expect(states.find((x) => x.name === name)).toMatchObject({
-      outcome: 'swapped',
-      state: 'valid'
-    });
-    expect((await indexState(name))?.def).toMatch(/\(status COLLATE "C", id\)/);
-  });
+  // Promoted body columns are the old layouts' `rows`; a type table has columns of its own.
+  it.skipIf(TABLES)(
+    'swaps a body-keyed index onto the column once its field is promoted',
+    async () => {
+      await addTestPromotedColumns(sql);
+      const { ns, target, live } = await fixture();
+      const name = `rows_p_${hex()}`;
+      await sql.unsafe(`CREATE INDEX ${name} ON ${target} ((body ->> 'status')) WHERE ${live}`);
+      const states = await reconcileTypeIndexes(sql, {
+        namespace: ns,
+        type: TYPE,
+        layout: LAYOUT,
+        orderedBy: DEFAULT_ORDERED_BY,
+        fields: { ...fields, status: { kind: 'scalar', type: 'string' } },
+        indexes: [{ fields: ['status'], name }],
+        promotedColumns: { status: { column: 'status', kind: 'text' } }
+      });
+      expect(states.find((x) => x.name === name)).toMatchObject({
+        outcome: 'swapped',
+        state: 'valid'
+      });
+      expect((await indexState(name))?.def).toMatch(/\(status COLLATE "C", id\)/);
+    }
+  );
 
   describe('a trailing id key', () => {
     /** The key-column list of `def`, which ends `, id` on a non-unique btree. */
@@ -360,19 +427,17 @@ describe.skipIf(!POSTGRES_URL || TABLES)('reconcileTypeIndexes', () => {
         ],
         datey
       );
-      expect(keyList((await indexState(single))?.def)).toBe(
-        `((body ->> 'cert'::text)) COLLATE "C", id`
-      );
+      expect(keyList((await indexState(single))?.def)).toBe(`${KEY.cert}, id`);
       expect(keyList((await indexState(composite))?.def)).toBe(
-        `((body ->> 'cert'::text)) COLLATE "C", substrate_ts((body -> 'observedAt'::text)) DESC NULLS LAST, id`
+        `${KEY.cert}, ${KEY.observedAt} DESC NULLS LAST, id`
       );
-      expect(keyList((await indexState(unique))?.def)).toBe(`((body ->> 'kid'::text)) COLLATE "C"`);
+      expect(keyList((await indexState(unique))?.def)).toBe(KEY.kid);
       // Spec rule (derived keys, both layouts): the natural key replaces the
       // implicit date DESC rule, so a date field is ascending, then created_at.
       expect(
         keyList((await indexState(generatedIdentifier(ns, TYPE, 'observedAt', 'idx')))?.def)
-      ).toBe(`substrate_ts((body -> 'observedAt'::text)), created_at DESC NULLS LAST, id`);
-      if (LAYOUT === 'partitioned') {
+      ).toBe(`${KEY.observedAt}, created_at DESC NULLS LAST, id`);
+      if (LAYOUT !== 'legacy') {
         expect(
           keyList((await indexState(generatedIdentifier(ns, TYPE, 'created_at', 'base')))?.def)
         ).toBe('created_at DESC NULLS LAST, id');
@@ -382,14 +447,10 @@ describe.skipIf(!POSTGRES_URL || TABLES)('reconcileTypeIndexes', () => {
     it('swaps an index of the shape without it in place of conflicting', async () => {
       const { ns, target, live } = await fixture();
       const name = `rows_o_${hex()}`;
-      await sql.unsafe(
-        `CREATE INDEX ${name} ON ${target} (((body ->> 'cert') COLLATE "C")) WHERE ${live}`
-      );
+      await sql.unsafe(`CREATE INDEX ${name} ON ${target} (${HAND.cert}) WHERE ${live}`);
       const s = (await reconcile(ns, [{ fields: ['cert'], name }])).find((x) => x.name === name);
       expect(s).toMatchObject({ name, outcome: 'swapped', state: 'valid' });
-      expect(keyList((await indexState(name))?.def)).toBe(
-        `((body ->> 'cert'::text)) COLLATE "C", id`
-      );
+      expect(keyList((await indexState(name))?.def)).toBe(`${KEY.cert}, id`);
       expect(await indexState(`${name}__swap`)).toBeUndefined();
     });
 
@@ -397,9 +458,7 @@ describe.skipIf(!POSTGRES_URL || TABLES)('reconcileTypeIndexes', () => {
       const { ns, target, live } = await fixture();
       const name = `rows_d_${hex()}`;
       const after = `rows_e_${hex()}`;
-      await sql.unsafe(
-        `CREATE INDEX ${name} ON ${target} (((body ->> 'cert') COLLATE "C")) WHERE ${live}`
-      );
+      await sql.unsafe(`CREATE INDEX ${name} ON ${target} (${HAND.cert}) WHERE ${live}`);
       const states = await reconcile(ns, [
         { fields: ['kid'], name },
         { fields: ['observedAt'], name: after }
@@ -408,17 +467,20 @@ describe.skipIf(!POSTGRES_URL || TABLES)('reconcileTypeIndexes', () => {
         state: 'failed',
         error: `index_definition_conflict: ${name} exists with a different definition; drop or rename it`
       });
-      expect(keyList((await indexState(name))?.def)).toContain(`'cert'`);
+      expect(keyList((await indexState(name))?.def)).toContain(TABLES ? 'f_cert' : `'cert'`);
       // The declaration after it, and the type's statistics, still reconcile.
       expect(states.find((x) => x.name === after)).toMatchObject({ state: 'valid' });
       const [stats] = await sql<Array<{ n: number }>>`
         SELECT count(*)::int AS n FROM pg_statistic_ext
         WHERE obj_description(oid, 'pg_statistic_ext') = ${`substrate: statistics of ${JSON.stringify([ns, TYPE])}`}`;
-      expect(stats?.n).toBeGreaterThan(0);
+      // A column key has column statistics, so `tables` builds no object.
+      if (TABLES) expect(stats?.n).toBe(0);
+      else expect(stats?.n).toBeGreaterThan(0);
     });
   });
 
-  describe('expression statistics', () => {
+  // Body-keyed expressions; a type table keys on columns (see 'on a type table' below).
+  describe.skipIf(TABLES)('expression statistics', () => {
     /** The statistics objects on `target`, with their expressions. */
     const statsOn = async (target: string) =>
       sql<Array<{ name: string; exprs: string[] }>>`
@@ -664,7 +726,7 @@ describe.skipIf(!POSTGRES_URL || TABLES)('reconcileTypeIndexes', () => {
   it('refuses an existing index of the same name on a different field', async () => {
     const { ns, target, live } = await fixture();
     const name = `rows_y_${hex()}`;
-    await sql.unsafe(`CREATE UNIQUE INDEX ${name} ON ${target} ((body ->> 'cert')) WHERE ${live}`);
+    await sql.unsafe(`CREATE UNIQUE INDEX ${name} ON ${target} (${HAND.certPlain}) WHERE ${live}`);
     const err = await reconcile(ns, [{ fields: ['kid'], unique: true, where: 'live', name }]).catch(
       (e: unknown) => e
     );
@@ -674,8 +736,8 @@ describe.skipIf(!POSTGRES_URL || TABLES)('reconcileTypeIndexes', () => {
       indexName: name,
       name: 'IndexDefinitionConflictError'
     });
-    expect((err as IndexDefinitionConflictError).existing).toContain(`'cert'`);
-    expect((err as IndexDefinitionConflictError).declared).toContain(`'kid'`);
+    expect((err as IndexDefinitionConflictError).existing).toContain(TABLES ? 'f_cert' : `'cert'`);
+    expect((err as IndexDefinitionConflictError).declared).toContain(TABLES ? 'f_kid' : `'kid'`);
   });
 
   it('refuses a unique index over duplicate live values and builds nothing', async () => {
@@ -709,7 +771,7 @@ describe.skipIf(!POSTGRES_URL || TABLES)('reconcileTypeIndexes', () => {
     ]);
     await expect(
       sql.unsafe(
-        `CREATE UNIQUE INDEX CONCURRENTLY ${name}__swap ON ${target} (((body ->> 'kid') COLLATE "C")) WHERE ${live}`
+        `CREATE UNIQUE INDEX CONCURRENTLY ${name}__swap ON ${target} (${HAND.kidCollated}) WHERE ${live}`
       )
     ).rejects.toThrow();
     expect((await indexState(`${name}__swap`))?.valid).toBe(false);
@@ -776,6 +838,91 @@ describe.skipIf(!POSTGRES_URL || TABLES)('reconcileTypeIndexes', () => {
     }
   );
 
+  describe.skipIf(!TABLES)('on a type table', () => {
+    it('declared index keys columns: CREATE INDEX … (f_cert, f_observedat DESC, id) WHERE deleted_at IS NULL', async () => {
+      const { ns, target } = await fixture();
+      const name = `rows_c_${hex()}`;
+      await reconcile(ns, [{ fields: ['cert', { field: 'observedAt', dir: 'desc' }], name }]);
+      const state = await indexState(name);
+      expect(state?.valid).toBe(true);
+      expect(state?.def).toMatch(new RegExp(`^CREATE INDEX ${name} ON \\S+\\.${target} `));
+      expect(state?.def).toMatch(
+        /USING btree \(f_cert, f_observedat_[0-9a-f]{8} DESC NULLS LAST, id\) WHERE \(deleted_at IS NULL\)$/
+      );
+    });
+
+    it('implicit, list, json and engine base indexes land on the type table, with no statistics object', async () => {
+      const { ns, target } = await fixture();
+      const states = await reconcile(ns, [], {
+        ...kidIndexed,
+        n: { kind: 'scalar', type: 'number', indexed: true },
+        tags: { kind: 'list', of: { kind: 'scalar', type: 'string' }, indexed: true },
+        values: { kind: 'scalar', type: 'json', indexed: true }
+      });
+      expect(states.every((s) => s.state === 'valid')).toBe(true);
+      const defs = (
+        await sql<Array<{ def: string }>>`
+          SELECT pg_get_indexdef(i.indexrelid) AS def FROM pg_index i
+          WHERE i.indrelid = to_regclass(${target})`
+      ).map((r) => r.def);
+      const expected = [
+        `USING btree (f_kid, created_at DESC NULLS LAST, id) WHERE (deleted_at IS NULL)`,
+        `USING btree (f_n, created_at DESC NULLS LAST, id) WHERE (deleted_at IS NULL)`,
+        `USING gin (((extra -> 'tags'::text)) jsonb_path_ops) WHERE (deleted_at IS NULL)`,
+        `USING gin (((extra -> 'values'::text)) jsonb_path_ops) WHERE (deleted_at IS NULL)`,
+        `USING btree (created_at DESC NULLS LAST, id) WHERE (deleted_at IS NULL)`,
+        `USING btree (updated_at DESC NULLS LAST, id) WHERE (deleted_at IS NULL)`,
+        `USING btree (deleted_at) WHERE (deleted_at IS NOT NULL)`
+      ];
+      for (const e of expected)
+        expect(
+          defs.some((d) => d.endsWith(e)),
+          e
+        ).toBe(true);
+      const [stats] = await sql<Array<{ n: number }>>`
+        SELECT count(*)::int AS n FROM pg_statistic_ext WHERE stxrelid = to_regclass(${target})`;
+      expect(stats?.n).toBe(0);
+    });
+
+    it('a boolean or null predicate compares the column', async () => {
+      const { ns } = await fixture();
+      const name = `rows_b_${hex()}`;
+      await reconcile(
+        ns,
+        [{ fields: ['kid'], unique: true, where: { archived: false, observedAt: null }, name }],
+        TABLE_FIELDS
+      );
+      expect((await indexState(name))?.def).toMatch(
+        /USING btree \(f_kid\) WHERE \(\(deleted_at IS NULL\) AND \(f_archived = false\) AND \(f_observedat_[0-9a-f]{8} IS NULL\)\)$/
+      );
+    });
+
+    it('an index reading a column the table lacks yet (a pending field) waits, pending, until it exists', async () => {
+      const { ns, target } = await fixture();
+      const late: Record<string, FieldDef> = {
+        ...fields,
+        phase: { kind: 'scalar', type: 'string', indexed: true }
+      };
+      const uniq = `rows_l_${hex()}`;
+      const decls: IndexDecl[] = [{ fields: ['phase'], unique: true, name: uniq }];
+      const phase = generatedIdentifier(ns, TYPE, 'phase', 'idx');
+      const before = await reconcile(ns, decls, late);
+      expect(before.find((s) => s.name === phase)).toMatchObject({ state: 'pending' });
+      expect(before.find((s) => s.name === uniq)).toMatchObject({ state: 'pending', unique: true });
+      expect(await indexState(phase)).toBeUndefined();
+      await sql.unsafe(`ALTER TABLE ${target} ADD COLUMN f_phase text COLLATE "C"`);
+      const after = await reconcile(ns, decls, late);
+      expect(after.find((s) => s.name === phase)).toMatchObject({
+        state: 'valid',
+        outcome: 'created'
+      });
+      expect(after.find((s) => s.name === uniq)).toMatchObject({
+        state: 'valid',
+        outcome: 'created'
+      });
+    });
+  });
+
   describe('derived indexes in natural order', () => {
     const withRef: Record<string, FieldDef> = {
       ...fields,
@@ -783,23 +930,21 @@ describe.skipIf(!POSTGRES_URL || TABLES)('reconcileTypeIndexes', () => {
       boughtOn: { kind: 'scalar', type: 'date' }
     };
     const ownerIdx = (ns: string) => generatedIdentifier(ns, TYPE, 'owner', 'idx');
-    const bought = `substrate_ts((body -> 'boughtOn'::text)) DESC NULLS LAST`;
+    const bought = `${KEY.boughtOn} DESC NULLS LAST`;
 
     it('a crossRef index is (ref, created_at DESC NULLS LAST, id) by default', async () => {
       const { ns } = await fixture();
       const s = (await reconcile(ns, [], withRef)).find((x) => x.name === ownerIdx(ns));
       expect(s).toMatchObject({ fields: ['owner'], state: 'valid', outcome: 'created' });
-      expect((await indexState(ownerIdx(ns)))?.def).toMatch(
-        /\(\(\(body ->> 'owner'::text\)\) COLLATE "C", created_at DESC NULLS LAST, id\) WHERE /
+      expect((await indexState(ownerIdx(ns)))?.def).toContain(
+        `(${KEY.owner}, created_at DESC NULLS LAST, id) WHERE `
       );
     });
 
     it('a crossRef index follows a declared orderedBy body date', async () => {
       const { ns } = await fixture();
       await reconcile(ns, [], withRef, { boughtOn: 'desc' });
-      expect((await indexState(ownerIdx(ns)))?.def).toContain(
-        `((body ->> 'owner'::text)) COLLATE "C", ${bought}, id)`
-      );
+      expect((await indexState(ownerIdx(ns)))?.def).toContain(`${KEY.owner}, ${bought}, id)`);
     });
 
     it('a crossRef declared indexed:false gets no derived index', async () => {
@@ -827,7 +972,7 @@ describe.skipIf(!POSTGRES_URL || TABLES)('reconcileTypeIndexes', () => {
       // An open snapshot holds the concurrent build in its last wait, mid-swap.
       const blocker = await sql.reserve();
       await blocker`BEGIN ISOLATION LEVEL REPEATABLE READ`;
-      await blocker`SELECT count(*) FROM rows`;
+      await blocker.unsafe(SNAPSHOT);
       let swapping: ReturnType<typeof reconcile> | undefined;
       try {
         swapping = reconcile(ns, [], withRef, { boughtOn: 'desc' });
@@ -847,7 +992,7 @@ describe.skipIf(!POSTGRES_URL || TABLES)('reconcileTypeIndexes', () => {
         (x) => x.name === ownerIdx(ns)
       );
       expect(s).toMatchObject({ outcome: 'swapped', state: 'valid' });
-      expect((await indexState(ownerIdx(ns)))?.def).toContain(`COLLATE "C", ${bought}, id)`);
+      expect((await indexState(ownerIdx(ns)))?.def).toContain(`${KEY.owner}, ${bought}, id)`);
       expect(await indexState(`${ownerIdx(ns)}__swap`)).toBeUndefined();
     });
 
@@ -859,8 +1004,8 @@ describe.skipIf(!POSTGRES_URL || TABLES)('reconcileTypeIndexes', () => {
         { ...withRef, boughtOn: { kind: 'scalar', type: 'date', indexed: true } },
         { boughtOn: 'desc' }
       );
-      expect((await indexState(generatedIdentifier(ns, TYPE, 'boughtOn', 'idx')))?.def).toMatch(
-        /USING btree \(substrate_ts\(\(body -> 'boughtOn'::text\)\) DESC NULLS LAST, id\) WHERE /
+      expect((await indexState(generatedIdentifier(ns, TYPE, 'boughtOn', 'idx')))?.def).toContain(
+        `USING btree (${KEY.boughtOn} DESC NULLS LAST, id) WHERE `
       );
     });
   });

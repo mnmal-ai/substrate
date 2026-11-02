@@ -17,8 +17,11 @@ import {
 import { inspectSource, type SourceInventory } from '../src/admin/migrate-store/source.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
+/** The `tables` pass (`test:tables`). */
+const TABLES_RUN = process.env.SUBSTRATE_TEST_LAYOUT === 'tables';
 
-describe.skipIf(!POSTGRES_URL)('inspectSource (pg)', () => {
+// migrate-store targets an old layout until Task 15 converts into `tables` (F15).
+describe.skipIf(!POSTGRES_URL || TABLES_RUN)('inspectSource (pg)', () => {
   let schema: string;
   let sql: Sql;
 
@@ -157,7 +160,8 @@ function source(over: Partial<SourceInventory> = {}): SourceInventory {
   };
 }
 
-describe.skipIf(!POSTGRES_URL)('inspectSource, partitioned source (pg)', () => {
+// migrate-store targets an old layout until Task 15 converts into `tables` (F15).
+describe.skipIf(!POSTGRES_URL || TABLES_RUN)('inspectSource, partitioned source (pg)', () => {
   let schema: string;
   let sql: Sql;
 

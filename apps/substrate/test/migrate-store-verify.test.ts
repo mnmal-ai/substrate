@@ -14,10 +14,11 @@ import {
   verifyStore
 } from '../src/admin/migrate-store/verify.js';
 import { buildDeferredIndexes } from '../src/serve/wiring.js';
-import { openPair, type Pair, POSTGRES_URL, uuid } from './_fixtures/migrate-store.js';
+import { MIGRATE_PG, openPair, type Pair, uuid } from './_fixtures/migrate-store.js';
 
 for (const sourceLayout of ['legacy', 'partitioned'] as const) {
-  describe.skipIf(!POSTGRES_URL)(`verifyStore from a ${sourceLayout} source (pg)`, () => {
+  // migrate-store targets an old layout until Task 15 converts into `tables` (F15).
+  describe.skipIf(!MIGRATE_PG)(`verifyStore from a ${sourceLayout} source (pg)`, () => {
     let pair: Pair;
     let srcSql: Sql;
     let tgtSql: Sql;

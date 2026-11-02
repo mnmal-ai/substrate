@@ -1,12 +1,14 @@
 /**
  * Builds a type's indexes and keeps them matching their declaration.
  *
- * The desired set is, in both layouts, a derived btree per crossRef (unless
+ * The desired set is, in every layout, a derived btree per crossRef (unless
  * `indexed: false`) and per `indexed: true` scalar, keyed (field, natural-order
- * key, id), and the declared `indexes`. The partitioned layout adds GIN
- * `jsonb_path_ops` for `indexed: true` list and json fields and the engine's
- * timestamp and tombstone indexes. Partitioned indexes are on the type's
- * partition; legacy ones are partial indexes on `rows` scoped to the type.
+ * key, id), and the declared `indexes`. The partitioned and tables layouts add
+ * GIN `jsonb_path_ops` for `indexed: true` list and json fields and the
+ * engine's timestamp and tombstone indexes. Partitioned indexes are on the
+ * type's partition, and tables ones on its type table, where a column field
+ * keys on its column; legacy ones are partial indexes on `rows` scoped to the
+ * type.
  *
  * Each desired index is compared, by name, with what the catalog holds:
  * identical is kept; same table, uniqueness and key fields but a different
@@ -17,9 +19,9 @@
  * on an empty temp table first.
  *
  * Every index is partial, and the planner ignores a partial index's
- * expression statistics, so each body-keyed key expression also gets an
- * expression statistics object on the same table (`_stat`), marked as this
- * type's. One whose expression is no longer indexed is dropped.
+ * expression statistics, so each body-keyed key expression (never a column)
+ * also gets an expression statistics object on the same table (`_stat`),
+ * marked as this type's. One whose expression is no longer indexed is dropped.
  *
  * Builds run CONCURRENTLY, so never inside a transaction, and each under its
  * table's index-build lock, since two concurrent builds on one table deadlock.
@@ -36,7 +38,7 @@ import { createHash } from 'node:crypto';
 import type { FieldDef, IndexDecl, OrderedBy } from '@mnmal-ai/substrate-types';
 import type { ReservedSql, Sql } from 'postgres';
 import type { DiskGuard } from './disk-guard.js';
-import { hashedName, MAX_IDENTIFIER, type StorageLayout } from './layout.js';
+import { columnName, hashedName, MAX_IDENTIFIER, type StorageLayout } from './layout.js';
 import {
   abortableSleep,
   dropIndexIfInvalid,
@@ -52,6 +54,7 @@ import {
   sqlStringLiteral
 } from './pg-sql/primitives.js';
 import { ident, typePartition } from './type-storage.js';
+import { columnKindOf, typeTableOf } from './type-table.js';
 
 export interface IndexState {
   name: string;
@@ -142,6 +145,8 @@ interface Spec {
   order: Array<[string, 'asc' | 'desc']>;
   /** A declared `where` beyond `live`: the read must `eq` each field to its value. */
   only?: Record<string, boolean | null>;
+  /** The type-table columns it reads (`tables` only): it waits, `pending`, while one is missing. */
+  columns?: string[];
 }
 
 export interface ReconcileOptions {
@@ -211,16 +216,18 @@ export async function reconcileTypeIndexes(
   const first = only === 'unique' ? all : only === 'all' ? unique : [];
   if (first.length > 0) {
     const target = await targetTable(sql, args);
+    const waiting = await waitingForColumns(sql, target, first);
     const pass = async (conn: ReservedSql): Promise<IndexState[]> => {
       // A non-unique index not yet built is pending without being deparsed: its
       // columns may come from a kernel migration, which runs after this pass.
       const probed: Spec[] = [];
       for (const spec of first) {
+        if (waiting.has(spec.name)) continue;
         if (spec.unique || (await describeIndex(conn, spec.name, 'current')) !== undefined) {
           probed.push(spec);
         }
       }
-      const desired = await deparse(conn, probed);
+      const desired = await deparse(conn, probed, probeSource(args, target));
       const states: IndexState[] = [];
       for (const spec of first) {
         const i = probed.indexOf(spec);
@@ -273,12 +280,20 @@ async function reconcileNonUnique(
     return [];
   }
   const target = await targetTable(sql, args);
+  const waiting = await waitingForColumns(sql, target, specs);
+  const buildable = specs.filter((s) => !waiting.has(s.name));
   const conn = await sql.reserve();
   const out: IndexState[] = [];
   try {
-    const desired = await deparse(conn, specs);
-    for (const [i, spec] of specs.entries()) {
-      const d = desired[i] as Described;
+    const desired = await deparse(conn, buildable, probeSource(args, target));
+    for (const spec of specs) {
+      if (waiting.has(spec.name)) {
+        const state = indexState(spec, 'pending', 'unchanged');
+        opts.onState?.(state);
+        out.push(state);
+        continue;
+      }
+      const d = desired[buildable.indexOf(spec)] as Described;
       let state = await heldAsDeclared(conn, target, spec, d);
       if (state === undefined) {
         try {
@@ -386,17 +401,22 @@ const statMark = (args: ReconcileTypeIndexesArgs): string =>
   `substrate: statistics of ${JSON.stringify([args.namespace, args.type])}`;
 const STAT_NAME = /_[0-9a-f]{8}_stat$/;
 
-/** One per body-keyed key expression; a promoted column has column statistics already. */
+/**
+ * One per body-keyed key expression; a promoted or type-table column has
+ * column statistics already.
+ */
 function desiredStatistics(
   args: ReconcileTypeIndexesArgs,
   specs: Array<Pick<Spec, 'fields' | 'keys'>>
 ): Array<{ name: string; expr: string }> {
-  const promoted = args.promotedColumns ?? {};
+  const promoted = promotedOf(args);
   const byField = new Map<string, { name: string; expr: string }>();
   for (const spec of specs) {
     for (const [i, expr] of spec.keys.entries()) {
       const field = spec.fields[i] as string;
-      const plain = metadataColumn(field) !== undefined;
+      const plain =
+        metadataColumn(field) !== undefined ||
+        typedColumn(field, args.fields[field], args.layout) !== undefined;
       if (plain || Object.hasOwn(promoted, field) || byField.has(field)) continue;
       // The expression is in the name, so a changed one is a new object and the old one goes.
       const hash = createHash('sha256').update(expr).digest('hex').slice(0, 6);
@@ -461,7 +481,7 @@ async function reconcileStatistics(
       if (isBtree && held.has(generatedIdentifier(args.namespace, args.type, field, 'idx'))) {
         leftovers.push({
           fields: [field],
-          keys: [keyExpr(field, def, args.promotedColumns ?? {})]
+          keys: [keyExpr(field, def, promotedOf(args), args.layout)]
         });
       }
     }
@@ -639,7 +659,8 @@ const ENGINE_SUFFIX = /_[0-9a-f]{8}_(idx|uniq|gin|base)$/;
 
 /**
  * Whether `index` belongs to `namespace`/`type`: on partitioned, it is on the
- * type's own partition (`table`, resolved by bound); on legacy, it is on `rows`
+ * type's own partition (`table`, resolved by bound); on tables, on its type
+ * table; on legacy, it is on `rows`
  * and its predicate opens with the type's exact namespace and type literals,
  * as pg deparses the predicate the reconciler emits. Never by name prefix:
  * names fold, so two types can share one, and a long one is truncated.
@@ -652,7 +673,7 @@ export function belongsToType(
   table: string
 ): boolean {
   if (index.table !== table) return false;
-  if (layout === 'partitioned') return true;
+  if (layout !== 'legacy') return true;
   // pg deparses a literal with quotes doubled and backslashes as-is
   // (standard_conforming_strings on), whatever form it was written in.
   const lit = (v: string): string => `'${v.replace(/'/g, "''")}'::text`;
@@ -702,7 +723,7 @@ export const isEngineOwned = (index: HeldIndex): boolean =>
 
 /**
  * Every index of `namespace`/`type` (see `belongsToType`), each flagged
- * whether the engine owns it. `[]` when the type has no partition yet.
+ * whether the engine owns it. `[]` when the type has no partition or table yet.
  */
 export async function typeIndexesOf(
   sql: Sql,
@@ -710,22 +731,72 @@ export async function typeIndexesOf(
   type: string,
   layout: StorageLayout
 ): Promise<Array<HeldIndex & { engineOwned: boolean }>> {
-  const table = layout === 'partitioned' ? await typePartition(sql, namespace, type) : 'rows';
+  const table = await typeRelation(sql, namespace, type, layout);
   if (table === undefined) return [];
   return (await heldIndexes(sql, [table]))
     .filter((i) => belongsToType(i, namespace, type, layout, table))
     .map((i) => ({ ...i, engineOwned: isEngineOwned(i) }));
 }
 
+/** The table `namespace`/`type`'s rows (and indexes) are on, unquoted; undefined before it exists. */
+export async function typeRelation(
+  sql: Sql,
+  namespace: string,
+  type: string,
+  layout: StorageLayout
+): Promise<string | undefined> {
+  if (layout === 'legacy') return 'rows';
+  return layout === 'partitioned'
+    ? typePartition(sql, namespace, type)
+    : typeTableOf(sql, namespace, type);
+}
+
 async function targetTable(sql: Sql, args: ReconcileTypeIndexesArgs): Promise<string> {
-  if (args.layout === 'legacy') return 'rows';
-  const part = await typePartition(sql, args.namespace, args.type);
-  if (part === undefined) {
+  const table = await typeRelation(sql, args.namespace, args.type, args.layout);
+  if (table === undefined) {
+    const what = args.layout === 'tables' ? 'table' : 'partition';
     throw new Error(
-      `${args.namespace}/${args.type} has no partition; call ensureTypeStorage before reconciling its indexes`
+      `${args.namespace}/${args.type} has no ${what}; call ensureTypeStorage before reconciling its indexes`
     );
   }
-  return part;
+  return table;
+}
+
+/**
+ * The names of `specs` reading a column `target` lacks: a `pending` field's,
+ * until the promotion sweep adds it. Old-layout specs read none.
+ */
+async function waitingForColumns(sql: Sql, target: string, specs: Spec[]): Promise<Set<string>> {
+  if (!specs.some((s) => (s.columns ?? []).length > 0)) return new Set();
+  const held = new Set(
+    (
+      await sql<Array<{ name: string }>>`
+        SELECT attname AS name FROM pg_attribute
+        WHERE attrelid = to_regclass(${ident(target)}) AND attnum > 0 AND NOT attisdropped`
+    ).map((r) => r.name)
+  );
+  return new Set(
+    specs.filter((s) => (s.columns ?? []).some((c) => !held.has(c))).map((s) => s.name)
+  );
+}
+
+/** What `deparse` builds its probe table LIKE: the type table, or `rows`, whose columns every old-layout table shares. */
+const probeSource = (args: ReconcileTypeIndexesArgs, target: string): string =>
+  args.layout === 'tables' ? ident(target) : 'rows';
+
+/** Promoted body columns apply to the old layouts' `rows` only. */
+const promotedOf = (args: ReconcileTypeIndexesArgs): PromotedBodyColumnMap =>
+  args.layout === 'tables' ? {} : (args.promotedColumns ?? {});
+
+/** On `tables`, the column a declared column field keys and filters on; else undefined. */
+function typedColumn(
+  field: string,
+  def: FieldDef | undefined,
+  layout: StorageLayout
+): string | undefined {
+  return layout === 'tables' && def !== undefined && columnKindOf(def) !== undefined
+    ? columnName(field)
+    : undefined;
 }
 
 /** Metadata columns an index may key on, by the name reads use: plain columns, as natural order keys them. */
@@ -742,19 +813,28 @@ const metadataColumn = (field: string): string | undefined =>
 function keyExpr(
   field: string,
   def: FieldDef | undefined,
-  promoted: PromotedBodyColumnMap
+  promoted: PromotedBodyColumnMap,
+  layout: StorageLayout
 ): string {
   const column = metadataColumn(field);
   if (column !== undefined) return column;
+  // Whatever the field's state: a `promoting` one reads through `extraWins`,
+  // which this index serves once the sweep has made it `column`. Text and
+  // enum columns are "C" already.
+  const typed = typedColumn(field, def, layout);
+  if (typed !== undefined) return ident(typed);
   // A bare column name, validated by `resolvePromotedColumns` in `desiredSpecs`.
   // Text keys under "C", as the compiler compares promoted text in every operator.
   const meta = Object.hasOwn(promoted, field) ? promoted[field] : undefined;
   if (meta !== undefined) return meta.kind === 'text' ? `${meta.column} COLLATE "C"` : meta.column;
-  if (def?.kind === 'crossRef') return indexExpressionSql('text', field);
+  const jsonb = layout === 'tables' ? 'extra' : undefined;
+  if (def?.kind === 'crossRef') return indexExpressionSql('text', field, undefined, jsonb);
   if (def?.kind === 'scalar' && def.type !== 'json') {
     return indexExpressionSql(
       def.type === 'number' ? 'number' : def.type === 'date' ? 'date' : 'text',
-      field
+      field,
+      undefined,
+      jsonb
     );
   }
   throw new Error(
@@ -764,8 +844,12 @@ function keyExpr(
 
 function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
   const { namespace, type, layout, fields } = args;
-  const promoted = args.promotedColumns ?? {};
-  resolvePromotedColumns(promoted);
+  resolvePromotedColumns(args.promotedColumns ?? {});
+  const promoted = promotedOf(args);
+  const jsonb = layout === 'tables' ? 'extra' : undefined;
+  /** The type-table columns `names` read (`tables` only). */
+  const columnsOf = (names: string[]): string[] =>
+    names.flatMap((f) => typedColumn(f, fields[f], layout) ?? []);
   const live =
     layout === 'legacy'
       ? `namespace = ${sqlStringLiteral(namespace)} AND type = ${sqlStringLiteral(type)} AND deleted_at IS NULL`
@@ -782,13 +866,18 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
     naturalKey?: [string, 'asc' | 'desc']
   ): Spec => {
     const cols = decl.fields.map((f) => (typeof f === 'string' ? { field: f, dir: 'asc' } : f));
-    const keys = cols.map((c) => keyExpr(c.field, fields[c.field], promoted));
+    const keys = cols.map((c) => keyExpr(c.field, fields[c.field], promoted, layout));
+    const reads = columnsOf(
+      cols.map((c) => c.field).filter((f) => metadataColumn(f) === undefined)
+    );
     let predicate = live;
     if (decl.where !== undefined && decl.where !== 'live') {
+      reads.push(...columnsOf(Object.keys(decl.where)));
       // Exactly the compiler's `eq` for a boolean or null operand, which it inlines.
       for (const [f, v] of Object.entries(decl.where)) {
         const meta = Object.hasOwn(promoted, f) ? promoted[f] : undefined;
-        const column = meta?.column;
+        const typed = typedColumn(f, fields[f], layout);
+        const column = meta?.column ?? (typed !== undefined ? ident(typed) : undefined);
         if (v !== null && typeof v !== 'boolean') {
           throw new Error(`index predicate on '${f}' must be a boolean or null`);
         }
@@ -802,7 +891,7 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
             `index predicate '${f}: ${v}' compares a boolean, but '${f}' is not a boolean field`
           );
         }
-        const lhs = column ?? indexExpressionSql('text', f);
+        const lhs = column ?? indexExpressionSql('text', f, undefined, jsonb);
         predicate +=
           v === null
             ? ` AND ${lhs} IS NULL`
@@ -813,6 +902,9 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
     }
     const colSql = keys.map((k, i) => `(${k})${cols[i]?.dir === 'desc' ? ' DESC NULLS LAST' : ''}`);
     if (natural !== undefined) colSql.push(natural);
+    if (naturalKey !== undefined && metadataColumn(naturalKey[0]) === undefined) {
+      reads.push(...columnsOf([naturalKey[0]]));
+    }
     if (decl.unique !== true && !withoutId) colSql.push('id');
     return {
       name,
@@ -822,6 +914,7 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
       keys,
       predicate,
       ...(decl.where !== undefined && decl.where !== 'live' ? { only: { ...decl.where } } : {}),
+      ...(reads.length > 0 ? { columns: [...new Set(reads)] } : {}),
       order: [
         ...cols.map((c): [string, 'asc' | 'desc'] => [c.field, c.dir === 'desc' ? 'desc' : 'asc']),
         ...(naturalKey !== undefined ? [naturalKey] : [])
@@ -833,7 +926,8 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
   // reads in natural order with no Sort; on the natural-order field itself it
   // is (field DIR, id). Both layouts: on legacy it is partial on `rows`.
   const [natField, natDir] = Object.entries(args.orderedBy)[0] ?? ['createdAt', 'desc'];
-  const natKey = metadataColumn(natField) ?? `(${keyExpr(natField, fields[natField], promoted)})`;
+  const natKey =
+    metadataColumn(natField) ?? `(${keyExpr(natField, fields[natField], promoted, layout)})`;
   const natural = `${natKey}${natDir === 'desc' ? ' DESC NULLS LAST' : ''}`;
   for (const [field, def] of Object.entries(fields)) {
     const wanted =
@@ -853,7 +947,7 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
       derived: true
     });
   }
-  if (layout === 'partitioned') {
+  if (layout !== 'legacy') {
     for (const [field, def] of Object.entries(fields)) {
       if (def.kind === 'struct' || def.indexed !== true) continue;
       if (def.kind === 'list' || (def.kind === 'scalar' && def.type === 'json')) {
@@ -861,7 +955,7 @@ function desiredSpecs(args: ReconcileTypeIndexesArgs): Spec[] {
           name: generatedIdentifier(namespace, type, field, 'gin'),
           fields: [field],
           unique: false,
-          tail: `USING gin ((body -> ${sqlStringLiteral(field)}) jsonb_path_ops) WHERE ${live}`,
+          tail: `USING gin ((${jsonb ?? 'body'} -> ${sqlStringLiteral(field)}) jsonb_path_ops) WHERE ${live}`,
           keys: [],
           predicate: live,
           order: []
@@ -1021,11 +1115,11 @@ async function describeIndex(
   return row === undefined ? undefined : described(row);
 }
 
-/** Each spec as pg deparses it, built on an empty temp copy of `rows` and rolled back. */
-async function deparse(conn: Sql, specs: Spec[]): Promise<Described[]> {
+/** Each spec as pg deparses it, built on an empty temp copy of `like` and rolled back. */
+async function deparse(conn: Sql, specs: Spec[], like: string): Promise<Described[]> {
   await conn.unsafe('BEGIN');
   try {
-    await conn.unsafe('CREATE TEMP TABLE substrate_index_probe (LIKE rows)');
+    await conn.unsafe(`CREATE TEMP TABLE substrate_index_probe (LIKE ${like})`);
     const out: Described[] = [];
     for (const [i, spec] of specs.entries()) {
       const name = `substrate_index_probe_${i}`;
@@ -1094,9 +1188,16 @@ async function reconcileOne(
   // field promoted since swaps onto the column rather than conflicting. A
   // non-unique index's trailing `id` is not part of the identity, so one
   // without it swaps.
-  const fieldOf = new Map(
-    Object.entries(args.promotedColumns ?? {}).map(([field, meta]) => [meta.column, field])
-  );
+  const fieldOf = new Map([
+    ...Object.entries(promotedOf(args)).map(([field, meta]): [string, string] => [
+      meta.column,
+      field
+    ]),
+    ...Object.entries(args.fields).flatMap(([field, def]): Array<[string, string]> => {
+      const typed = typedColumn(field, def, args.layout);
+      return typed === undefined ? [] : [[typed, field]];
+    })
+  ]);
   const keyIdentity = (d: Described): string[] => {
     const keys = d.keyFields.map((k) => fieldOf.get(k) ?? k);
     if (!d.unique && keys.length > 1 && keys.at(-1) === 'id') keys.pop();
@@ -1216,12 +1317,16 @@ export async function pendingIndexBuilds(
   sql: Sql,
   args: ReconcileTypeIndexesArgs
 ): Promise<Array<{ name: string; estimateBytes: number }>> {
-  const specs = desiredSpecs(args).filter((s) => !s.unique);
-  if (specs.length === 0) return [];
+  const all = desiredSpecs(args).filter((s) => !s.unique);
+  if (all.length === 0) return [];
   const target = await targetTable(sql, args);
+  // One that waits for a column cannot be built yet, so it is no build to plan for.
+  const waiting = await waitingForColumns(sql, target, all);
+  const specs = all.filter((s) => !waiting.has(s.name));
+  if (specs.length === 0) return [];
   const conn = await sql.reserve();
   try {
-    const desired = await deparse(conn, specs);
+    const desired = await deparse(conn, specs, probeSource(args, target));
     const out: Array<{ name: string; estimateBytes: number }> = [];
     for (const [i, spec] of specs.entries()) {
       if ((await heldAsDeclared(conn, target, spec, desired[i] as Described)) !== undefined) {

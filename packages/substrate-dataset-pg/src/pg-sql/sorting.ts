@@ -83,17 +83,23 @@ export function resolveBodyOrderByCast(def: FieldDef | undefined): BodyOrderByCa
   }
 }
 
+/**
+ * `alias` qualifies a type table's columns: in ORDER BY a bare name is the
+ * SELECT list's column of that name first, and a date column is projected
+ * under its own name as text, which no index on the column serves.
+ */
 export function buildOrderBy(
   sql: Sql | TransactionSql,
   orderBy: Array<[string, 'asc' | 'desc']>,
   castFor: (field: string) => BodyOrderByCast | null,
   table: TypeTable,
-  derivedFor: DerivedLookup = noDerived
+  derivedFor: DerivedLookup = noDerived,
+  alias?: string
 ): Fragment {
   if (orderBy.length === 0) return sql``;
   const parts: Fragment[] = [];
   for (const [field, dir] of orderBy) {
-    parts.push(orderByFragment(sql, field, dir, castFor(field), table, derivedFor));
+    parts.push(orderByFragment(sql, field, dir, castFor(field), table, derivedFor, alias));
   }
   if (parts.length === 1) return sql`ORDER BY ${parts[0] as Fragment}`;
   // Flat composition, as in combineAnd.
@@ -117,7 +123,8 @@ function sortExpr(
   field: string,
   bodyCast: BodyOrderByCast | null,
   table: TypeTable,
-  derivedFor: DerivedLookup
+  derivedFor: DerivedLookup,
+  alias?: string
 ): Fragment {
   if (field === 'id') return sql`id`;
   const derived = derivedFor(field);
@@ -143,7 +150,7 @@ function sortExpr(
   }
   // A type table's column field sorts by its column's kind.
   const column = table.column(field);
-  if (column !== undefined) return columnOrderExpr(sql, table, column);
+  if (column !== undefined) return columnOrderExpr(sql, table, column, alias);
   // Body field: cast by declared kind when known, else text compare.
   return bodyOrderByExpr(sql, field, bodyCast, table);
 }
@@ -292,9 +299,10 @@ function orderByFragment(
   dir: 'asc' | 'desc',
   bodyCast: BodyOrderByCast | null,
   table: TypeTable,
-  derivedFor: DerivedLookup
+  derivedFor: DerivedLookup,
+  alias?: string
 ): Fragment {
-  const expr = sortExpr(sql, field, bodyCast, table, derivedFor);
+  const expr = sortExpr(sql, field, bodyCast, table, derivedFor, alias);
   // NULLS LAST in both directions, matching the memory dataset.
   // `cursorCmpFragment` must agree or pagination drops the null rows.
   return dir === 'asc' ? sql`${expr} ASC NULLS LAST` : sql`${expr} DESC NULLS LAST`;

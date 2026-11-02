@@ -24,7 +24,7 @@ import type {
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset, PgEdgesStore } from '../src/index.js';
-import { dropNamespacesLike, TABLES } from './_layout.js';
+import { dropNamespacesLike } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const PARTITIONED = process.env.SUBSTRATE_TEST_LAYOUT === 'partitioned';
@@ -452,8 +452,7 @@ describe('autoCRUD batch resolvers: memory vs pg through Engine', () => {
   });
 
   // pg only: memory enforces no unique index, so there is nothing to compare it with.
-  // Needs the unique index built, which Task 12 does on type tables.
-  describe.skipIf(!POSTGRES_URL || TABLES)('a unique index conflict in a batch (pg)', () => {
+  describe.skipIf(!POSTGRES_URL)('a unique index conflict in a batch (pg)', () => {
     /**
      * `Slot` has a unique index on `code`. `perElement` takes the batch
      * resolvers off the entries, so an array runs the per-element loop:
@@ -576,11 +575,15 @@ describe('autoCRUD batch resolvers: memory vs pg through Engine', () => {
   });
 
   describe.skipIf(!POSTGRES_URL)('statements a batch sends (pg)', () => {
-    /** Every statement `fn` sends, transaction plumbing included. */
+    /**
+     * Every statement `fn` sends, transaction plumbing included, but not the
+     * `tables` layout's type-table catalog lookups: once per type, and whether
+     * one is sent depends on when the cache's async catalog notification lands.
+     */
     async function sent(fn: () => Promise<unknown>): Promise<string[]> {
       statements = [];
       await fn();
-      return statements;
+      return statements.filter((q) => !/FROM substrate_type_(tables|fields)\b/.test(q));
     }
 
     it('create, update and delete send the same statements for 5 elements as for 50', async () => {

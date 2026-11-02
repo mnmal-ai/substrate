@@ -27,6 +27,7 @@ import type { Schema, SubstrateResponse } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { fixturePlugin } from './_fixtures/fixture-plugin.js';
+import { truncateRows } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 
@@ -57,7 +58,7 @@ describe.skipIf(!POSTGRES_URL)('apps/substrate pg integration', () => {
 
   beforeEach(async () => {
     // Each test starts with clean substrate state so assertions are stable.
-    await sql`TRUNCATE TABLE rows, short_ids`;
+    await truncateRows(sql);
     await sql`TRUNCATE TABLE edges`;
   });
 

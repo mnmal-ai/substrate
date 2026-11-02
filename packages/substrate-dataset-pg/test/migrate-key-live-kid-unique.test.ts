@@ -21,7 +21,7 @@ const TYPE = 'Key';
 const INDEXED_TABLE =
   process.env.SUBSTRATE_STORAGE_LAYOUT === 'partitioned' ? partitionName(NS, TYPE) : 'rows';
 
-// The live-kid unique index on a type table is Task 12 (Todo #1858).
+// The baseline's live-kid index on `rows`; on a type table `_system/Key` declares it (Task 16, Todo #1858).
 describe.skipIf(!POSTGRES_URL || TABLES)('unique LIVE kid per principal', () => {
   let sql: Sql;
 

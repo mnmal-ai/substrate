@@ -16,7 +16,8 @@ import type { IndexDecl } from '@mnmal-ai/substrate-types';
 import postgres, { type ReservedSql, type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset, partitionName, runMigrations } from '../src/index.js';
-import { TABLES } from './_layout.js';
+import { typeTableOf } from '../src/type-table.js';
+import { relationOf, TABLES } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const LAYOUT = process.env.SUBSTRATE_STORAGE_LAYOUT ?? 'legacy';
@@ -56,9 +57,15 @@ function fixture() {
   return { ns, ds, unique, plain, declared };
 }
 
+/** The table `type`'s indexes live on, unquoted. */
+async function indexTable(ns: string, type: string): Promise<string> {
+  if (TABLES) return (await typeTableOf(sql, ns, type)) as string;
+  return LAYOUT === 'partitioned' ? partitionName(ns, type) : 'rows';
+}
+
 /** Holds the index-build lock of the table `type`'s indexes live on, from another session. */
 async function holdIndexLock(ns: string, type: string): Promise<{ release(): Promise<void> }> {
-  const table = LAYOUT === 'partitioned' ? partitionName(ns, type) : 'rows';
+  const table = await indexTable(ns, type);
   const conn: ReservedSql = await sql.reserve();
   const key = `hashtext('substrate-index-build:' || current_schema() || '.' || $1::text)`;
   await conn.unsafe(`SELECT pg_advisory_lock(${key})`, [table]);
@@ -87,8 +94,14 @@ const building = async (ds: PgDataset) =>
 async function holdBuilds(ns: string): Promise<{ release(): Promise<void> }> {
   const conn: ReservedSql = await sql.reserve();
   await conn`BEGIN`;
-  await conn`INSERT INTO rows (namespace, type, id, body)
-    VALUES (${ns}, ${TYPE}, ${randomUUID()}, ${sql.json({ kid: randomUUID() })})`;
+  if (TABLES) {
+    await conn.unsafe(`INSERT INTO ${await relationOf(sql, ns, TYPE)} (id) VALUES ($1)`, [
+      randomUUID()
+    ]);
+  } else {
+    await conn`INSERT INTO rows (namespace, type, id, body)
+      VALUES (${ns}, ${TYPE}, ${randomUUID()}, ${sql.json({ kid: randomUUID() })})`;
+  }
   return {
     async release() {
       await conn`COMMIT`;
@@ -105,8 +118,7 @@ async function until(check: () => Promise<boolean>, what: string): Promise<void>
   throw new Error(`timed out waiting for ${what}`);
 }
 
-// Indexes on type tables are Task 12's; the `rows` they reconcile does not exist on `tables`.
-describe.skipIf(!POSTGRES_URL || TABLES)('deferred non-unique index builds', () => {
+describe.skipIf(!POSTGRES_URL)('deferred non-unique index builds', () => {
   it('builds unique indexes first, leaving the rest pending, then building, then valid', async () => {
     const { ns, ds, unique, plain } = fixture();
     await ds.ensureTypeStorage(TYPE, { indexes: 'unique' });
@@ -183,8 +195,10 @@ describe.skipIf(!POSTGRES_URL || TABLES)('deferred non-unique index builds', () 
     ];
     await ds.ensureTypeStorage(TYPE, { indexes: 'unique' });
     // An index of the declared name on another field: a conflict, not a swap.
-    const table = LAYOUT === 'partitioned' ? partitionName(ns, TYPE) : 'rows';
-    await sql.unsafe(`CREATE INDEX ${plain} ON "${table}" ((body ->> 'kid'))`);
+    const table = await indexTable(ns, TYPE);
+    await sql.unsafe(
+      `CREATE INDEX ${plain} ON "${table}" (${TABLES ? 'f_kid' : `(body ->> 'kid')`})`
+    );
     await ds.ensureTypeStorage(TYPE, { indexes: 'nonUnique' });
     const reason = `index_definition_conflict: ${plain} exists with a different definition; drop or rename it`;
     const described = (await ds.describeStorage(TYPE)).indexes;

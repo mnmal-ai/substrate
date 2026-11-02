@@ -20,6 +20,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset, reconcileTypeIndexes, type StorageLayout } from '../src/index.js';
 import { generatedIdentifier } from '../src/migrate.js';
 import type { PromotedBodyColumnMap } from '../src/pg-sql.js';
+import { dropNamespace, relationOf, TABLES } from './_layout.js';
 import { addTestPromotedColumns } from './_promoted.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
@@ -61,8 +62,12 @@ let traced: Sql;
 let sent: Array<{ query: string; parameters: unknown[]; types: number[] }> = [];
 let ds: PgDataset;
 
-// Plans over indexes Task 12 builds on type tables; none exist on `tables` yet.
-const SKIP = !POSTGRES_URL || LAYOUT === 'tables';
+const SKIP = !POSTGRES_URL;
+
+/** ANALYZE the relation `type`'s rows live in: `rows`, or its type table. */
+const analyze = async (namespace: string, type: string): Promise<void> => {
+  await sql.unsafe(`ANALYZE ${await relationOf(sql, namespace, type)}`);
+};
 
 beforeAll(async () => {
   if (SKIP) return;
@@ -80,7 +85,8 @@ beforeAll(async () => {
     fieldDefLookup: (type, field) => (type === TYPE ? fields[field] : undefined),
     typeDefLookup: (type) => (type === TYPE ? { fields, indexes } : undefined)
   });
-  await addTestPromotedColumns(sql);
+  // Promoted columns are `rows`' own; on `tables`, `project` is a column of the type table.
+  if (!TABLES) await addTestPromotedColumns(sql);
   await ds.ensureTypeStorage(TYPE);
   for (let start = 0; start < ROWS; start += 1000) {
     await ds.write(
@@ -103,7 +109,7 @@ beforeAll(async () => {
       })
     );
   }
-  await sql`ANALYZE rows`;
+  await analyze(ns, TYPE);
 }, 120_000);
 
 afterAll(async () => {
@@ -119,7 +125,7 @@ async function compiled(
 ): Promise<{ query: string; parameters: unknown[]; types: number[] }> {
   sent = [];
   await dataset.read(type, params);
-  const q = sent.find((s) => /FROM rows r/.test(s.query));
+  const q = sent.find((s) => /FROM (rows|"t__[^"]+") r\b/.test(s.query));
   if (q === undefined) throw new Error('read sent no SELECT');
   return q;
 }
@@ -160,6 +166,10 @@ async function plans(
     );
     // A read with no bound values prepares and executes without a parameter list.
     const list = (items: string[]) => (items.length === 0 ? '' : `(${items.join(', ')})`);
+    // A type table holds only its own type's rows, so a seq scan of it is cheap
+    // where one of the shared `rows` is not; what this asks is whether the index
+    // matches the expression, so the scan is taken off the table.
+    if (TABLES) await conn.unsafe('SET enable_seqscan = off');
     await conn.unsafe(`PREPARE iu_stmt${list(names.map((n) => n.t))} AS ${query}`);
     const explain = async (mode: string): Promise<string[]> => {
       await conn.unsafe(`SET plan_cache_mode = ${mode}`);
@@ -173,6 +183,7 @@ async function plans(
   } finally {
     await conn.unsafe('DEALLOCATE ALL');
     await conn.unsafe('RESET plan_cache_mode');
+    await conn.unsafe('RESET enable_seqscan');
     conn.release();
   }
 }
@@ -217,8 +228,8 @@ const implicitCases: Array<[string, ReadParams, () => string]> = [
   ['date orderBy asc', { orderBy: [{ at: 'asc' }], limit: 10 }, () => idx('at')],
   ['crossRef eq', { where: { owner: { eq: 'o7' } } }, () => idx('owner')],
   ['crossRef in', { where: { owner: { in: ['o7', 'o8'] } } }, () => idx('owner')],
-  // GIN for list fields stays partitioned-only; legacy derives it by migration.
-  ...(PARTITIONED
+  // GIN for list fields is per type (partitioned, tables); legacy derives it by migration.
+  ...(LAYOUT !== 'legacy'
     ? ([['list has', { where: { tags: { has: 'g7' } } }, () => idx('tags', 'gin')]] satisfies Array<
         [string, ReadParams, () => string]
       >)
@@ -289,72 +300,76 @@ describe.skipIf(SKIP)('index use: declared indexes', () => {
   // cortext's AgentMessage: `status` and `archived` are promoted columns, and
   // the fleet already holds a hand-built index of the declared name whose
   // predicate is `archived IS NOT TRUE`.
-  it('swaps a legacy-style index over promoted columns, and the swap serves reads', async () => {
-    const type = 'AgentMessage';
-    const msgNs = `iu_msg_${hex()}`;
-    const name = `rows_agent_message_recipient_idx_${hex()}`;
-    const promotedColumns: PromotedBodyColumnMap = {
-      status: { column: 'status', kind: 'text' },
-      archived: { column: 'archived', kind: 'boolean' }
-    };
-    const msgFields: Record<string, FieldDef> = {
-      recipient: { kind: 'crossRef', ns: msgNs, type: 'AgentIdentity', onDelete: 'set_null' },
-      status: { kind: 'scalar', type: 'string' },
-      archived: { kind: 'scalar', type: 'boolean' }
-    };
-    const msgs = new PgDataset({
-      namespace: msgNs,
-      sql: traced,
-      promotedColumns,
-      fieldDefLookup: (_t, f) => msgFields[f]
-    });
-    await msgs.ensureTypeStorage(type);
-    await msgs.write(
-      type,
-      Array.from({ length: ROWS }, (_, i) => ({
-        id: `m${i}`,
-        recipient: `u${i % 200}`,
-        status: `s${i % 5}`,
-        archived: i % 2 === 0
-      }))
-    );
-    const [part] = await sql<Array<{ relname: string }>>`
+  // Promoted columns live on `rows`; a type table has no such index to swap.
+  it.skipIf(TABLES)(
+    'swaps a legacy-style index over promoted columns, and the swap serves reads',
+    async () => {
+      const type = 'AgentMessage';
+      const msgNs = `iu_msg_${hex()}`;
+      const name = `rows_agent_message_recipient_idx_${hex()}`;
+      const promotedColumns: PromotedBodyColumnMap = {
+        status: { column: 'status', kind: 'text' },
+        archived: { column: 'archived', kind: 'boolean' }
+      };
+      const msgFields: Record<string, FieldDef> = {
+        recipient: { kind: 'crossRef', ns: msgNs, type: 'AgentIdentity', onDelete: 'set_null' },
+        status: { kind: 'scalar', type: 'string' },
+        archived: { kind: 'scalar', type: 'boolean' }
+      };
+      const msgs = new PgDataset({
+        namespace: msgNs,
+        sql: traced,
+        promotedColumns,
+        fieldDefLookup: (_t, f) => msgFields[f]
+      });
+      await msgs.ensureTypeStorage(type);
+      await msgs.write(
+        type,
+        Array.from({ length: ROWS }, (_, i) => ({
+          id: `m${i}`,
+          recipient: `u${i % 200}`,
+          status: `s${i % 5}`,
+          archived: i % 2 === 0
+        }))
+      );
+      const [part] = await sql<Array<{ relname: string }>>`
       SELECT c.relname FROM pg_partition_tree('rows') t JOIN pg_class c ON c.oid = t.relid
       WHERE t.isleaf AND pg_get_expr(c.relpartbound, c.oid) = ${`FOR VALUES IN ('${type}')`}
         AND t.parentrelid = (
           SELECT c2.oid FROM pg_partition_tree('rows') t2 JOIN pg_class c2 ON c2.oid = t2.relid
           WHERE pg_get_expr(c2.relpartbound, c2.oid) = ${`FOR VALUES IN ('${msgNs}')`})`;
-    const target = PARTITIONED ? (part?.relname as string) : 'rows';
-    const scope = PARTITIONED ? '' : `namespace = '${msgNs}' AND type = '${type}' AND `;
-    await sql.unsafe(
-      `CREATE INDEX ${name} ON ${target} ((body ->> 'recipient'), status)
+      const target = PARTITIONED ? (part?.relname as string) : 'rows';
+      const scope = PARTITIONED ? '' : `namespace = '${msgNs}' AND type = '${type}' AND `;
+      await sql.unsafe(
+        `CREATE INDEX ${name} ON ${target} ((body ->> 'recipient'), status)
        WHERE ${scope}deleted_at IS NULL AND archived IS NOT TRUE`
-    );
+      );
 
-    const states = await reconcileTypeIndexes(sql, {
-      namespace: msgNs,
-      type,
-      layout: LAYOUT,
-      orderedBy: DEFAULT_ORDERED_BY,
-      fields: msgFields,
-      promotedColumns,
-      indexes: [{ fields: ['recipient', 'status'], where: { archived: false }, name }]
-    });
-    expect(states.find((s) => s.name === name)).toMatchObject({
-      outcome: 'swapped',
-      state: 'valid'
-    });
-    await sql.unsafe(`ANALYZE ${target}`);
-    await expectServedBy(
-      'promoted partial (recipient, status) where archived = false',
-      await plans(
-        { where: { recipient: { eq: 'u7' }, status: { eq: 's2' }, archived: { eq: false } } },
-        msgs,
-        type
-      ),
-      name
-    );
-  });
+      const states = await reconcileTypeIndexes(sql, {
+        namespace: msgNs,
+        type,
+        layout: LAYOUT,
+        orderedBy: DEFAULT_ORDERED_BY,
+        fields: msgFields,
+        promotedColumns,
+        indexes: [{ fields: ['recipient', 'status'], where: { archived: false }, name }]
+      });
+      expect(states.find((s) => s.name === name)).toMatchObject({
+        outcome: 'swapped',
+        state: 'valid'
+      });
+      await sql.unsafe(`ANALYZE ${target}`);
+      await expectServedBy(
+        'promoted partial (recipient, status) where archived = false',
+        await plans(
+          { where: { recipient: { eq: 'u7' }, status: { eq: 's2' }, archived: { eq: false } } },
+          msgs,
+          type
+        ),
+        name
+      );
+    }
+  );
 });
 
 /** Every node type in the plan. */
@@ -422,12 +437,13 @@ describe.skipIf(SKIP)('index use: a declared metadata order key', () => {
         }))
       );
     }
-    await sql`ANALYZE rows`;
+    await analyze(taskNs, type);
   }, 120_000);
 
   // Leave `rows` as large as it was: later files' sampled statistics depend on its size.
   afterAll(async () => {
     if (!POSTGRES_URL) return;
+    if (TABLES) return void (await dropNamespace(sql, taskNs));
     await sql`DELETE FROM rows WHERE namespace = ${taskNs}`;
     await sql`ANALYZE rows`;
   });
@@ -491,7 +507,7 @@ describe.skipIf(SKIP)('index use: the default order', () => {
         }))
       );
     }
-    await sql`ANALYZE rows`;
+    await analyze(certNs, type);
   }, 120_000);
 
   it('where <field> = X, limit 100: one range scan of the declared index, no Sort', async () => {
@@ -636,7 +652,7 @@ describe.skipIf(SKIP)('index use: expression statistics', () => {
         })
       );
     }
-    await sql`ANALYZE rows`;
+    await analyze(statNs, type);
   }, 120_000);
 
   it('estimates a hot value well above a rare one', async () => {

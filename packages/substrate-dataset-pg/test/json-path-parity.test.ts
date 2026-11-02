@@ -17,8 +17,8 @@ import {
 } from '../src/index.js';
 import { generatedIdentifier } from '../src/migrate.js';
 import { buildWhere } from '../src/pg-sql.js';
-import { rowsTypeTable } from '../src/type-table.js';
-import { TABLES, truncateRows } from './_layout.js';
+import { loadTypeTable, rowsTypeTable, type TypeTable } from '../src/type-table.js';
+import { relationOf, TABLES, truncateRows } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const PARTITIONED = process.env.SUBSTRATE_STORAGE_LAYOUT === 'partitioned';
@@ -159,10 +159,10 @@ describe.skipIf(!POSTGRES_URL)('json path parity', () => {
   // `field.json({ indexed: true })` derives the same per-field GIN a list
   // field gets (there is no whole-body GIN), so the containment must be
   // written against `(body -> field)` to match it. On the partitioned layout
-  // the reconciler builds it on the type's partition, under the same name.
-  // Task 12 builds a type table's indexes; on `tables` no GIN is derived on `rows`.
-  it.skipIf(TABLES)('eq and has are served by the derived per-field GIN', async () => {
-    if (PARTITIONED) {
+  // the reconciler builds it on the type's partition, under the same name, and
+  // on `tables` on the type table, over `(extra -> field)`.
+  it('eq and has are served by the derived per-field GIN', async () => {
+    if (PARTITIONED || TABLES) {
       await new PgDataset({
         namespace: NS,
         sql,
@@ -182,21 +182,20 @@ describe.skipIf(!POSTGRES_URL)('json path parity', () => {
         values: { year: i, tags: [`t${i}`] }
       }))
     );
-    await sql`ANALYZE rows`;
+    await sql.unsafe(`ANALYZE ${await relationOf(sql, NS, 'J')}`);
+    const table: TypeTable = TABLES
+      ? ((await loadTypeTable(sql, NS, 'J')) as TypeTable)
+      : rowsTypeTable(NS, 'J', () => undefined);
+    const scope = table.scope();
     for (const where of [
       y({ eq: 7 }),
       { values: { path: ['tags'], has: 't7' } }
     ] as WhereClause[]) {
       const plan = await sql.begin(async (tx) => {
         await tx`SET LOCAL enable_seqscan = off`;
-        const frag = buildWhere(
-          tx,
-          where,
-          () => null,
-          rowsTypeTable(NS, 'J', () => undefined)
-        );
-        return tx`EXPLAIN SELECT id FROM rows
-                  WHERE namespace = ${NS} AND type = 'J' AND deleted_at IS NULL AND ${frag!}`;
+        const frag = buildWhere(tx, where, () => null, table);
+        return tx`EXPLAIN SELECT id FROM ${tx.unsafe(table.from)}
+                  WHERE ${tx.unsafe(scope === null ? '' : `${scope} AND `)}deleted_at IS NULL AND ${frag!}`;
       });
       const text = plan.map((r) => String(r['QUERY PLAN'])).join('\n');
       expect(text, text).toContain(generatedIdentifier(NS, 'J', 'values', 'gin'));

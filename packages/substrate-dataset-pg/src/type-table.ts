@@ -131,15 +131,25 @@ interface CatalogRow {
   vocab: string[] | null;
 }
 
+/** The name (unquoted) of `namespace`/`type`'s table, or `undefined` when it has none yet. */
+export async function typeTableOf(
+  sql: PgHandle,
+  namespace: string,
+  type: string
+): Promise<string | undefined> {
+  const [table] = await sql<Array<{ table_name: string }>>`
+    SELECT table_name FROM substrate_type_tables WHERE namespace = ${namespace} AND type = ${type}`;
+  return table?.table_name;
+}
+
 /** The type table of `namespace`/`type`, or `undefined` when it has none yet. */
 export async function loadTypeTable(
   sql: PgHandle,
   namespace: string,
   type: string
 ): Promise<TypeTable | undefined> {
-  const [table] = await sql<Array<{ table_name: string }>>`
-    SELECT table_name FROM substrate_type_tables WHERE namespace = ${namespace} AND type = ${type}`;
-  if (table === undefined) return undefined;
+  const tableName = await typeTableOf(sql, namespace, type);
+  if (tableName === undefined) return undefined;
   const rows = await catalogOf(sql, namespace, type);
   const columns: TypedColumn[] = [];
   for (const r of rows) {
@@ -156,7 +166,7 @@ export async function loadTypeTable(
   return {
     namespace,
     type,
-    from: ident(table.table_name),
+    from: ident(tableName),
     jsonb: 'extra',
     scope: () => null,
     column: (field) => byField.get(field),

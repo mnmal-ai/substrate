@@ -58,8 +58,7 @@ const indexed: Record<string, FieldDef> = {
   kid: { kind: 'scalar', type: 'string', indexed: true }
 };
 
-// Indexes on type tables are Task 12's; the `rows` they reconcile does not exist on `tables`.
-describe.skipIf(!POSTGRES_URL || TABLES)('describeStorage', () => {
+describe.skipIf(!POSTGRES_URL)('describeStorage', () => {
   it('reports the layout, the partition and a valid declared index', async () => {
     const ns = freshNs();
     const ds = dataset(ns, { current: indexed });
@@ -67,6 +66,7 @@ describe.skipIf(!POSTGRES_URL || TABLES)('describeStorage', () => {
     const report = await ds.describeStorage(TYPE);
     expect(report.layout).toBe(LAYOUT);
     expect(report.partition !== undefined).toBe(LAYOUT === 'partitioned');
+    expect(report.table !== undefined).toBe(TABLES);
     // Spec rule (derived indexes, both layouts): legacy builds the derived
     // index too, as a partial index on `rows`, so both layouts report it.
     const name = generatedIdentifier(ns, TYPE, 'kid', 'idx');
@@ -77,16 +77,31 @@ describe.skipIf(!POSTGRES_URL || TABLES)('describeStorage', () => {
   });
 
   it('builds nothing: a type never ensured has no partition and no indexes', async () => {
-    if (LAYOUT !== 'partitioned') return;
+    if (LAYOUT === 'legacy') return;
     const ns = freshNs();
     const report = await dataset(ns, { current: indexed }).describeStorage(TYPE);
     expect(report.partition).toBeUndefined();
+    expect(report.table).toBeUndefined();
     expect(report.indexes).toEqual([]);
+  });
+
+  it.skipIf(!TABLES)('describeStorage lists pending and orphaned fields', async () => {
+    const ns = freshNs();
+    const defs: { current: Record<string, FieldDef> } = {
+      current: { a: { kind: 'scalar', type: 'string' }, b: { kind: 'scalar', type: 'number' } }
+    };
+    const ds = dataset(ns, defs);
+    await ds.ensureTypeStorage(TYPE);
+    expect(await ds.describeStorage(TYPE)).toMatchObject({ pending: [], orphaned: [] });
+    defs.current = { a: { kind: 'scalar', type: 'string' }, c: { kind: 'scalar', type: 'date' } };
+    await ds.ensureTypeStorage(TYPE, { newFields: 'pending' });
+    const report = await ds.describeStorage(TYPE);
+    expect(report).toMatchObject({ layout: 'tables', pending: ['c'], orphaned: ['b'] });
+    expect(report.table).toMatch(/^t__sr_/);
   });
 });
 
-// Indexes on type tables are Task 12's; the `rows` they reconcile does not exist on `tables`.
-describe.skipIf(!POSTGRES_URL || TABLES)('storageReport', () => {
+describe.skipIf(!POSTGRES_URL)('storageReport', () => {
   it('notes an engine index that is no longer declared as info, and keeps it', async () => {
     const ns = freshNs();
     const defs = { current: indexed };
@@ -228,6 +243,23 @@ describe.skipIf(!POSTGRES_URL || LAYOUT !== 'partitioned')('storageReport (parti
     const over = await ds.storageReport({ partitionBudget: n - 1 });
     expect(over.warnings).toContain(
       `${n} partitions exceed the budget of ${n - 1}: move a namespace to its own instance behind a bridge`
+    );
+  });
+});
+
+describe.skipIf(!POSTGRES_URL || !TABLES)('storageReport (tables)', () => {
+  it('counts type tables against the partition budget', async () => {
+    const ds = dataset(freshNs(), { current: {} });
+    await ds.ensureTypeStorage(TYPE);
+    const [count] = await sql<Array<{ n: number }>>`
+      SELECT count(*)::int AS n FROM substrate_type_tables`;
+    const n = count?.n as number;
+    const at = await ds.storageReport({ partitionBudget: n });
+    expect(at.layout).toBe('tables');
+    expect(at.warnings.some((w) => w.includes('exceed the budget'))).toBe(false);
+    const over = await ds.storageReport({ partitionBudget: n - 1 });
+    expect(over.warnings).toContain(
+      `${n} type tables exceed the budget of ${n - 1}: move a namespace to its own instance behind a bridge`
     );
   });
 });

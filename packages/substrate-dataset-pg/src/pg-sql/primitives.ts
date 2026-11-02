@@ -383,9 +383,10 @@ export function bodyTs(
 export function indexExpressionSql(
   kind: 'text' | 'number' | 'date',
   field: string,
-  alias?: string
+  alias?: string,
+  jsonb?: JsonbColumn
 ): string {
-  return pathSql([field], kind, alias);
+  return pathSql([field], kind, alias, jsonb);
 }
 
 /**

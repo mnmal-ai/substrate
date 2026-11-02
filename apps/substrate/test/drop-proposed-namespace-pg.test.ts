@@ -18,6 +18,7 @@ import { createNoopPubSub, createProposalsPlugin } from '@mnmal-ai/substrate-pro
 import { MemorySubstrateServer } from '@mnmal-ai/substrate-server-memory';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { deleteNamespaces, TABLES } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const SECRET = 'drop-proposed-secret';
@@ -59,7 +60,7 @@ describe.skipIf(!POSTGRES_URL)('dropping a proposed namespace (pg)', () => {
 
   afterEach(async () => {
     while (stops.length > 0) await stops.pop()?.();
-    await sql`DELETE FROM rows WHERE namespace IN (${NS}, ${CONTROL}, ${OWNED})`;
+    await deleteNamespaces(sql, NS, CONTROL, OWNED);
   });
 
   const buildDocIndexes = (ns: string) => buildDocIndexesWith(sql, ns);
@@ -69,7 +70,7 @@ describe.skipIf(!POSTGRES_URL)('dropping a proposed namespace (pg)', () => {
   });
 
   async function boot() {
-    await sql`DELETE FROM rows WHERE namespace IN (${NS}, ${CONTROL})`;
+    await deleteNamespaces(sql, NS, CONTROL);
     const edges = new PgEdgesStore({ sql });
     const server = new MemorySubstrateServer();
     const composed = await compose({
@@ -120,9 +121,16 @@ describe.skipIf(!POSTGRES_URL)('dropping a proposed namespace (pg)', () => {
     };
     const drop = () => post('/substrate/v1/_system/drop-namespace', { namespace: NS, confirm: NS });
     const archivedFlags = async (): Promise<unknown[]> =>
-      (
-        await sql`SELECT body->>'archived' AS a FROM rows WHERE namespace = ${CONTROL} AND body->>'ns' = ${NS}`
-      ).map((r) => r.a);
+      TABLES
+        ? (
+            await new PgDataset({ namespace: CONTROL, sql }).read('NamespaceProposal', {
+              where: { ns: { eq: NS } },
+              includeDeleted: true
+            })
+          ).rows.map((r) => String(r.archived))
+        : (
+            await sql`SELECT body->>'archived' AS a FROM rows WHERE namespace = ${CONTROL} AND body->>'ns' = ${NS}`
+          ).map((r) => r.a);
     return { engine: composed.engine, propose, drop, archivedFlags, post };
   }
 
