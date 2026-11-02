@@ -86,3 +86,4 @@ export {
   type WalkForm,
   windowGroupBy
 } from './walk-forms.js';
+export { forEachWalkHop, type WalkHop } from './walk-hops.js';

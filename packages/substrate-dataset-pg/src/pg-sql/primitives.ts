@@ -231,18 +231,42 @@ export function columnSql(column: TypedColumn, alias?: string): string {
 /** A column read as `as`: itself for its own kind; jsonb or `decodeRow`'s text for a value read. */
 function columnExprSql(column: TypedColumn, as: FieldAs, alias?: string): string {
   const col = columnSql(column, alias);
-  const isText = columnAs(column.kind) === 'text';
   switch (as) {
     case 'json':
       return column.kind === 'date' ? `to_jsonb(${utcTextSql(col, 'MS')})` : `to_jsonb(${col})`;
     case 'rawText':
-      // Uncollated, as `->>` is: ILIKE case-folds under the database collation,
-      // and a join on the default-collated `id` keeps its index (a "C" compare cannot use it).
-      if (isText) return `(${col} COLLATE "default")`;
+      // Uncollated, as `->>` is, so ILIKE case-folds under the database collation. A
+      // crossRef column has the database collation already, as `id` does.
+      if (column.kind === 'text' || column.kind === 'enum') return `(${col} COLLATE "default")`;
+      if (column.kind === 'crossRef') return col;
       return column.kind === 'date' ? utcTextSql(col, 'MS') : `${col}::text`;
     default:
-      // The text kinds are `COLLATE "C"` columns already, so a compare needs no COLLATE.
+      // Text and enum columns are `COLLATE "C"` already, so a compare needs no COLLATE; a
+      // crossRef compares for equality (joins with `id`) and is ordered by `columnOrderExpr`.
       return col;
+  }
+}
+
+/**
+ * A `promoting` or `orphaned` field's `extra` value as `as`, which never raises:
+ * the field may hold anything (an orphaned one is undeclared), so a value that
+ * does not fit reads NULL, which matches nothing, as memory's compare does.
+ * `substrate_num` and `substrate_ts` are already safe; a boolean is guarded here.
+ */
+function extraBranchSql(field: string, as: FieldAs, kind: ColumnKind, alias?: string): string {
+  const name = sqlStringLiteral(field);
+  const v = `${qualifier(alias)}extra -> ${name}`;
+  switch (as) {
+    case 'boolean':
+      return `CASE WHEN jsonb_typeof(${v}) = 'boolean' THEN (${v})::boolean END`;
+    case 'json':
+      // A null in `extra` reads absent, as `decodeRow` has it; `->>` already gives NULL for it.
+      return `NULLIF(${pathSql([field], as, alias, 'extra')}, 'null'::jsonb)`;
+    case 'text':
+      // Uncollated for a crossRef, as its column is.
+      return pathSql([field], kind === 'crossRef' ? 'rawText' : 'text', alias, 'extra');
+    default:
+      return pathSql([field], as, alias, 'extra');
   }
 }
 
@@ -253,24 +277,39 @@ function columnExprSql(column: TypedColumn, as: FieldAs, alias?: string): string
  * (F13, F35), so filters and reads cannot disagree. Any other field, and every
  * field of a `rowsTypeTable`, is the `body`/`extra` path expression. A `json`
  * read also overlays `$raw`, last, as `decodeRow` does.
+ *
+ * A promoting number is numeric in both branches: `substrate_num` gives the
+ * stored decimal exactly (Todo #1809), and a float8 CASE would round it, or
+ * raise on one past float8's range.
  */
 export function fieldExprSql(table: TypeTable, field: string, as: FieldAs, alias?: string): string {
   const c = table.column(field);
   if (c === undefined) return pathSql([field], as, alias, table.jsonb);
   const col = columnExprSql(c, as, alias);
+  if (!extraWins(c)) return as === 'json' ? rawOverlay(field, col, alias) : col;
   const q = qualifier(alias);
-  const name = sqlStringLiteral(field);
-  // A null in `extra` reads absent, as `decodeRow` has it; `->>` already gives NULL for it.
-  const fromExtra =
-    as === 'json'
-      ? `NULLIF(${pathSql([field], as, alias, 'extra')}, 'null'::jsonb)`
-      : pathSql([field], as, alias, 'extra');
-  const value = extraWins(c)
-    ? `CASE WHEN ${q}extra ? ${name} THEN ${fromExtra} ELSE ${col} END`
-    : col;
-  return as === 'json'
-    ? `COALESCE(${q}extra -> ${sqlStringLiteral(RAW_KEY)} -> ${name}, ${value})`
-    : value;
+  const fromColumn = as === 'number' ? `${col}::numeric` : col;
+  const value = `CASE WHEN ${q}extra ? ${sqlStringLiteral(field)} THEN ${extraBranchSql(field, as, c.kind, alias)} ELSE ${fromColumn} END`;
+  return as === 'json' ? rawOverlay(field, value, alias) : value;
+}
+
+/** `value` under the field's `$raw` entry, which `decodeRow` overlays last. */
+const rawOverlay = (field: string, value: string, alias?: string): string =>
+  `COALESCE(${qualifier(alias)}extra -> ${sqlStringLiteral(RAW_KEY)} -> ${sqlStringLiteral(field)}, ${value})`;
+
+/**
+ * A column field as it orders (sorts, ranges, pick keys): its compare form, in
+ * byte order as memory sorts. Text and enum columns are `"C"` already; a
+ * crossRef column has the database collation, so it is ordered under `"C"`.
+ */
+export function columnOrderExpr(
+  sql: Sql | TransactionSql,
+  table: TypeTable,
+  column: TypedColumn,
+  alias?: string
+): Fragment {
+  const e = fieldExprSql(table, column.field, columnAs(column.kind), alias);
+  return sql.unsafe(column.kind === 'crossRef' ? `(${e} COLLATE "C")` : e);
 }
 
 /** {@link fieldExprSql} as a fragment. */

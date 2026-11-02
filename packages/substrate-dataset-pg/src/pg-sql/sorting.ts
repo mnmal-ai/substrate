@@ -16,10 +16,10 @@ import {
   bodyText,
   bodyTs,
   columnAs,
+  columnOrderExpr,
   combineAnd,
   combineOr,
   type Fragment,
-  fieldExpr,
   idToText,
   isMetadataField,
   METADATA_COLUMNS,
@@ -143,7 +143,7 @@ function sortExpr(
   }
   // A type table's column field sorts by its column's kind.
   const column = table.column(field);
-  if (column !== undefined) return fieldExpr(sql, table, field, columnAs(column.kind));
+  if (column !== undefined) return columnOrderExpr(sql, table, column);
   // Body field: cast by declared kind when known, else text compare.
   return bodyOrderByExpr(sql, field, bodyCast, table);
 }
@@ -275,7 +275,8 @@ function sortParam(
       case 'date':
         return tsParam(sql, value);
       case 'number':
-        return sql`${value as number}::float8`;
+        // numeric, as a promoting field's key is; a float8 column takes it as float8.
+        return sql`${value as number}::numeric`;
       case 'boolean':
         return sql`${Boolean(value)}::boolean`;
       default:

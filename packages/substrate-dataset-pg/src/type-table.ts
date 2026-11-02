@@ -40,10 +40,16 @@ export function columnKindOf(def: FieldDef): ColumnKind | undefined {
   throw new Error(`internal: isColumnField admitted a ${def.kind} field with no column kind`);
 }
 
+/**
+ * Text and enum columns are `"C"`, so compares and sorts are byte order, as
+ * memory's. A crossRef column has `id`'s collation (the database default), so a
+ * walk joins `far.id = near.f_x` (and `far.f_x = near.id`) bare, and an index
+ * on either side serves it; it is ordered under `"C"` where it sorts.
+ */
 const PG_TYPE: Readonly<Record<ColumnKind, string>> = {
   text: 'text COLLATE "C"',
   enum: 'text COLLATE "C"',
-  crossRef: 'text COLLATE "C"',
+  crossRef: 'text',
   number: 'double precision',
   date: 'timestamptz',
   boolean: 'boolean'

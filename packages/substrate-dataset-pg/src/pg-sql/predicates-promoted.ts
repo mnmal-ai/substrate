@@ -9,6 +9,7 @@ import type { Sql, TransactionSql } from 'postgres';
 import type { TypedColumn, TypeTable } from '../type-table.js';
 import {
   columnAs,
+  columnOrderExpr,
   combineAnd,
   combineOr,
   escapeLike,
@@ -189,6 +190,8 @@ export function buildColumnPredicate(
 ): Fragment | null {
   const as = columnAs(column.kind);
   const expr = fieldExpr(sql, table, field, as, alias);
+  // Ranges compare in byte order, as memory does (a crossRef column is not "C").
+  const byOrder = columnOrderExpr(sql, table, column, alias);
   /** `v` bound as the column's type, or undefined when it is of another type. */
   const param = (v: unknown): Fragment | undefined => {
     switch (as) {
@@ -217,7 +220,7 @@ export function buildColumnPredicate(
       as === 'date'
         ? tsArrayParam(sql, fit)
         : as === 'number'
-          ? sql`${fit as number[]}::float8[]`
+          ? sql`${fit as number[]}::numeric[]`
           : as === 'boolean'
             ? sql`${fit as boolean[]}::boolean[]`
             : sql`${fit.map(String)}::text[]`;
@@ -266,7 +269,7 @@ export function buildColumnPredicate(
         const p = ordered(op, operand);
         // Template slots are value slots, so the operator comes from this closed set.
         const cmp = sql.unsafe({ gt: '>', gte: '>=', lt: '<', lte: '<=' }[op]);
-        fragments.push(p === undefined ? sql`FALSE` : guarded(sql`${expr} ${cmp} ${p}`));
+        fragments.push(p === undefined ? sql`FALSE` : guarded(sql`${byOrder} ${cmp} ${p}`));
         break;
       }
       case 'between': {
@@ -278,7 +281,7 @@ export function buildColumnPredicate(
         fragments.push(
           lo === undefined || hi === undefined
             ? sql`FALSE`
-            : guarded(sql`${expr} BETWEEN ${lo} AND ${hi}`)
+            : guarded(sql`${byOrder} BETWEEN ${lo} AND ${hi}`)
         );
         break;
       }

@@ -308,7 +308,9 @@ export function prepareWindows(
     const alias = scope.nextAlias();
     const cte = `win_${alias}`;
     const { type, from, via, pin, far, obj } = sharedScan(sql, group, table, scope, alias);
-    const k = sql.unsafe(fieldExprSql(scope.tableFor(type), via as string, 'text', alias));
+    const farTable = scope.tableFor(type);
+    // Bare for a crossRef column, which has `id`'s collation.
+    const k = sql.unsafe(fieldExprSql(farTable, via as string, 'text', alias));
     // The window's own walks are implied by `__k`; every other conjunct narrows it.
     const seeds = seedFilter(sql, params.where, base, rowCastFor, table, scope, (i) => {
       const w = (i as { _walk?: WalkNode })._walk;
@@ -317,7 +319,7 @@ export function prepareWindows(
     const r = scope.seedAlias;
     const mine = seeds.narrows
       ? [
-          sql`${k} IN (SELECT ${sql.unsafe(`${r}.id::text COLLATE "C"`)} FROM ${sql.unsafe(table.from)} ${sql.unsafe(r)} WHERE ${seeds.filter})`
+          sql`${k} IN (SELECT ${sql.unsafe(farTable.column(via as string) === undefined ? `${r}.id::text COLLATE "C"` : `${r}.id`)} FROM ${sql.unsafe(table.from)} ${sql.unsafe(r)} WHERE ${seeds.filter})`
         ]
       : [];
     const rows = combineAnd(sql, [

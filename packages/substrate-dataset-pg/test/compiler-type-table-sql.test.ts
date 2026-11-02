@@ -12,10 +12,17 @@ import type { FieldDef, WhereClause } from '@mnmal-ai/substrate-types';
 import postgres from 'postgres';
 import { afterAll, describe, expect, it } from 'vitest';
 import { columnName, typeTableName } from '../src/layout.js';
+import { buildFrameAggregate, buildNested, prepareWindows } from '../src/pg-sql/aggregate.js';
 import { resolvePromotedColumns } from '../src/pg-sql/primitives.js';
 import { buildRowProjection } from '../src/pg-sql/projection.js';
 import { buildOrderBy, buildSortKeyProjection } from '../src/pg-sql/sorting.js';
-import { tableLookup, walkScope, walkTypes } from '../src/pg-sql/walk.js';
+import {
+  prepareSharedPicks,
+  tableLookup,
+  walkScope,
+  walkTypes,
+  withCtes
+} from '../src/pg-sql/walk.js';
 import { buildWhere } from '../src/pg-sql/where.js';
 import { decodeRow } from '../src/row-codec.js';
 import { ident } from '../src/type-storage.js';
@@ -84,14 +91,35 @@ const OBS = typed('Obs', [
   ['observedAt', 'date'],
   ['cert', 'crossRef'],
   ['status', 'text', 'promoting'],
-  ['gone', 'text', 'orphaned']
+  ['gone', 'text', 'orphaned'],
+  ['qty', 'number', 'promoting'],
+  ['seenAt', 'date', 'promoting'],
+  ['flag', 'boolean', 'promoting']
 ]);
-const CERT = typed('Cert', [['grade', 'number']]);
+const CERT = typed('Cert', [
+  ['grade', 'number'],
+  ['spec', 'crossRef']
+]);
+const SPEC = typed('Spec', [['tier', 'number']]);
+const SALE = typed('Sale', [
+  ['spec', 'crossRef'],
+  ['at', 'date'],
+  ['price', 'number']
+]);
 const AT = columnName('observedAt');
+const SEEN = columnName('seenAt');
 
-const CERT_REF: FieldDef = { kind: 'crossRef', ns: NS, type: 'Cert', onDelete: 'set_null' };
-const fieldDef = (t: string, f: string): FieldDef | undefined =>
-  t === 'Obs' && f === 'cert' ? CERT_REF : undefined;
+const ref = (type: string): FieldDef => ({ kind: 'crossRef', ns: NS, type, onDelete: 'set_null' });
+const FIELDS: Record<string, Record<string, FieldDef>> = {
+  Obs: {
+    cert: ref('Cert'),
+    price: { kind: 'scalar', type: 'number' },
+    observedAt: { kind: 'scalar', type: 'date', indexed: true }
+  },
+  Cert: { spec: ref('Spec') },
+  Sale: { spec: ref('Spec'), at: { kind: 'scalar', type: 'date' } }
+};
+const fieldDef = (t: string, f: string): FieldDef | undefined => FIELDS[t]?.[f];
 const castFor = (f: string) => (f === 'observedAt' ? 'timestamptz' : null);
 const where = (w: unknown, table: TypeTable = OBS) =>
   render(buildWhere(sql, w as WhereClause, castFor, table));
@@ -165,6 +193,76 @@ describe('a type table compiles against its columns', () => {
   });
 });
 
+describe('every column kind and state', () => {
+  it('a crossRef column compares bare for equality and in "C" byte order for ranges and sorts', () => {
+    expect(where({ cert: { eq: 'c' } })).toContain('f_cert = $::text');
+    expect(where({ cert: { gt: 'c' } })).toContain('(f_cert COLLATE "C") > $::text');
+    expect(render(buildOrderBy(sql, [['cert', 'asc']], castFor, OBS))).toBe(
+      'ORDER BY (f_cert COLLATE "C") ASC NULLS LAST'
+    );
+  });
+
+  it('a promoting number is numeric in both branches, a date compares as an instant', () => {
+    expect(where({ qty: { gt: 1 } })).toContain(
+      `CASE WHEN extra ? 'qty' THEN substrate_num(extra -> 'qty') ELSE f_qty::numeric END > $`
+    );
+    expect(where({ seenAt: { gte: '2026-01-01' } })).toContain(
+      `CASE WHEN extra ? 'seenAt' THEN substrate_ts(extra -> 'seenAt') ELSE ${SEEN} END >= $::text::timestamptz`
+    );
+  });
+
+  it("a promoting boolean's extra branch never raises: a non-boolean reads NULL", () => {
+    expect(where({ flag: { eq: true } })).toContain(
+      `CASE WHEN extra ? 'flag' THEN CASE WHEN jsonb_typeof(extra -> 'flag') = 'boolean' THEN (extra -> 'flag')::boolean END ELSE f_flag END = TRUE`
+    );
+  });
+
+  it('sum is exact: numeric over a number column and over a promoting one', () => {
+    const s = walkScope(NS, 'Obs', 'r', fieldDef, tableLookup([OBS]));
+    const text = render(
+      buildFrameAggregate(
+        sql,
+        { p: { sum: 'price' }, q: { sum: 'qty' } },
+        undefined,
+        sql`TRUE`,
+        undefined,
+        s
+      )
+    );
+    expect(text).toContain('sum(r.f_price::numeric)');
+    expect(text).toContain(
+      `sum(CASE WHEN r.extra ? 'qty' THEN substrate_num(r.extra -> 'qty') ELSE r.f_qty::numeric END::numeric)`
+    );
+  });
+
+  it('a nested list reads each field as jsonb: to_jsonb, a date as UTC ms text, $raw over all, null as absent', () => {
+    const s = walkScope(NS, 'Cert', 'r', fieldDef, tableLookup([CERT, OBS]));
+    const text = render(
+      buildNested(
+        sql,
+        {
+          _walk: { in: 'ns/Obs.cert' },
+          fields: { title: true, observedAt: true, status: true, note: true }
+        } as never,
+        CERT,
+        s
+      )
+    );
+    expect(text).toContain(`FROM ${OBS.from} w1 WHERE`);
+    expect(text).toContain(
+      `CASE WHEN jsonb_typeof(w1.extra -> 'id') IN ('number', 'string') THEN w1.extra -> 'id' ELSE to_jsonb(w1.id) END`
+    );
+    expect(text).toContain(`COALESCE(w1.extra -> '$raw' -> 'title', to_jsonb(w1.f_title))`);
+    expect(text).toContain(
+      `COALESCE(w1.extra -> '$raw' -> 'observedAt', to_jsonb(to_char(w1.${AT} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')))`
+    );
+    expect(text).toContain(
+      `COALESCE(w1.extra -> '$raw' -> 'status', CASE WHEN w1.extra ? 'status' THEN NULLIF((w1.extra -> 'status'), 'null'::jsonb) ELSE to_jsonb(w1.f_status) END)`
+    );
+    expect(text).toContain(`(w1.extra -> 'note')`);
+  });
+});
+
 describe('a walk reads each type from its own table', () => {
   const tableFor = tableLookup([OBS, CERT]);
   const scope = (type: string) => walkScope(NS, type, 'r', fieldDef, tableFor);
@@ -180,15 +278,47 @@ describe('a walk reads each type from its own table', () => {
       )
     );
     expect(out).toContain(`FROM ${CERT.from} w1 WHERE`);
-    // Uncollated, so the far id's (default-collation) index serves the probe.
-    expect(out).toContain(`w1.deleted_at IS NULL AND w1.id::text = (r.f_cert COLLATE "default")`);
+    // Bare: a crossRef column has `id`'s collation, so an index on either side serves it.
+    expect(out).toContain(`w1.deleted_at IS NULL AND w1.id = r.f_cert AND`);
     expect(out).toContain('w1.f_grade > $');
     expect(out).not.toContain('namespace');
     const inbound = render(
       buildWhere(sql, { _walk: { in: 'ns/Obs.cert' } } as WhereClause, castFor, CERT, scope('Cert'))
     );
     expect(inbound).toContain(`FROM ${OBS.from} w1 WHERE`);
-    expect(inbound).toContain(`w1.f_cert = (r.id::text COLLATE "C")`);
+    expect(inbound).toContain(`w1.deleted_at IS NULL AND w1.f_cert = r.id)`);
+  });
+
+  it('the window key and its seed semi-join are bare crossRef columns', () => {
+    const s = walkScope(NS, 'Cert', 'r', fieldDef, tableLookup([CERT, OBS]));
+    const w = { observedAt: { gte: '2026-10-29T00:00:00Z' } };
+    const p = {
+      where: { _walk: { in: 'ns/Obs.cert', where: w } },
+      agg: { n: { in: 'ns/Obs.cert', where: w, count: true } }
+    } as never;
+    const base = { clauses: [sql`r.id = ANY('{a,b}')`], ids: true };
+    const joins = render(
+      prepareWindows(sql, p, base, castFor, CERT, s, (t, f) => t === 'Obs' && f === 'observedAt')
+    );
+    const ctes = render(withCtes(sql, s));
+    expect(ctes).toContain('SELECT w1.f_cert AS __k');
+    expect(ctes).toContain(`w1.f_cert IN (SELECT r.id FROM ${CERT.from} r WHERE`);
+    expect(joins).toContain('LEFT JOIN win_w1 ON');
+  });
+
+  it("a shared pick's hubs are the bare crossRef column, joined bare", () => {
+    const s = walkScope(NS, 'Cert', 'r', fieldDef, tableLookup([CERT, SPEC, SALE]));
+    const p = {
+      count: true,
+      where: {
+        _walk: { out: 'spec', where: { _walk: { in: 'ns/Sale.spec', pick: { latest: 'at' } } } }
+      }
+    } as never;
+    const joins = render(prepareSharedPicks(sql, p, { clauses: [], ids: false }, castFor, CERT, s));
+    const ctes = render(withCtes(sql, s));
+    expect(ctes).toContain(`SELECT DISTINCT r.f_spec AS id FROM ${CERT.from} r`);
+    expect(ctes).toContain('w1.f_spec = h.id');
+    expect(joins).toMatch(/LEFT JOIN pick_w\d+ ON pick_w\d+\.__hub = r\.f_spec$/);
   });
 
   it('tableFor on a type not preloaded throws, naming the type (F19)', () => {

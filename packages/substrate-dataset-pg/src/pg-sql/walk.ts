@@ -19,7 +19,7 @@
  * The tree is assumed validated (substrate-core walk-validator).
  */
 
-import { groupConjuncts, refNames, sharedPicks } from '@mnmal-ai/substrate-filter';
+import { forEachWalkHop, groupConjuncts, refNames, sharedPicks } from '@mnmal-ai/substrate-filter';
 import {
   type DeriveSpec,
   type FieldDef,
@@ -36,7 +36,7 @@ import {
   bodyNum,
   bodyText,
   bodyTs,
-  columnAs,
+  columnOrderExpr,
   combineAnd,
   type Fragment,
   fieldExpr,
@@ -134,10 +134,11 @@ export function farTypeOf(
 }
 
 /**
- * The seed and every type a read's walks reach (where, `_agg`, nested, at any
- * depth): the types `tableFor` must be given before compiling (F19), as
- * substrate-core's `walkSites` finds them. A hop naming no type is left to
- * `hop`, which refuses it.
+ * The seed and every type a read's walks reach (where, frame `agg`, nested, at
+ * any depth): the types `tableFor` must be given before compiling (F19). The
+ * hops are substrate-filter's `forEachWalkHop`, which substrate-core's walk
+ * sites and walked types share. A hop naming no type is left to `hop`, which
+ * refuses it.
  */
 export function walkTypes(
   params: { where?: unknown; agg?: unknown; nested?: unknown },
@@ -145,41 +146,13 @@ export function walkTypes(
   fieldDef: (type: string, field: string) => FieldDef | undefined
 ): Set<string> {
   const types = new Set([seed]);
-  const hopTo = (node: Record<string, unknown>, near: string, ...wheres: unknown[]) => {
+  // The frame entry these params were split from: nested selections and `_agg` under `fields`.
+  const fields = { ...(isObj(params.nested) ? params.nested : {}), _agg: params.agg };
+  forEachWalkHop({ params: { where: params.where }, fields }, seed, ({ node }, near) => {
     const far = farTypeOf(node as { in?: string; out?: string }, near, fieldDef);
-    if (far === undefined) return undefined;
-    types.add(far);
-    for (const w of wheres) inWhere(w, far);
+    if (far !== undefined) types.add(far);
     return far;
-  };
-  const inWhere = (v: unknown, type: string): void => {
-    if (Array.isArray(v)) {
-      for (const c of v) inWhere(c, type);
-      return;
-    }
-    if (!isObj(v)) return;
-    for (const [k, c] of Object.entries(v)) {
-      if ((k === '_walk' || k === '_agg') && isObj(c)) hopTo(c, type, c.where);
-      else inWhere(c, type);
-    }
-  };
-  const inAggs = (aggs: unknown, type: string) => {
-    if (isObj(aggs))
-      for (const spec of Object.values(aggs)) if (isObj(spec)) hopTo(spec, type, spec.where);
-  };
-  const inNested = (sels: unknown, type: string) => {
-    if (!isObj(sels)) return;
-    for (const sel of Object.values(sels)) {
-      if (!isObj(sel) || !isObj(sel._walk)) continue;
-      const far = hopTo(sel._walk, type, sel._walk.where, sel.where);
-      if (far === undefined || !isObj(sel.fields)) continue;
-      inAggs(sel.fields._agg, far);
-      inNested(sel.fields, far);
-    }
-  };
-  inWhere(params.where, seed);
-  inAggs(params.agg, seed);
-  inNested(params.nested, seed);
+  });
   return types;
 }
 
@@ -222,10 +195,14 @@ export function hop(
     const [, farType, field] = m as unknown as [string, string, string];
     type = farType;
     via = field;
-    // Verbatim the eager crossRef index's key (the column, on a type table), so the index serves the hop.
-    join = sql.unsafe(
-      `${fieldExprSql(scope.tableFor(type), field, 'text', alias)} = (${qualifier(scope.alias)}id::text COLLATE "C")`
-    );
+    // Verbatim the eager crossRef index's key, so the index serves the hop. A
+    // crossRef column has `id`'s collation, so it joins bare.
+    const farTable = scope.tableFor(type);
+    const nearId =
+      farTable.column(field) === undefined
+        ? `(${qualifier(scope.alias)}id::text COLLATE "C")`
+        : `${qualifier(scope.alias)}id`;
+    join = sql.unsafe(`${fieldExprSql(farTable, field, 'text', alias)} = ${nearId}`);
   } else {
     const field = node.out ?? '';
     const def = scope.fieldDef(scope.type, field);
@@ -233,8 +210,9 @@ export function hop(
       throw new Error(`internal: walk 'out' '${field}' is not a crossRef on '${scope.type}'`);
     }
     type = def.type;
-    // Uncollated (a column is cast to the default collation), so the far id's index serves it.
-    join = sql`${sql.unsafe(`${qualifier(alias)}id::text`)} = ${fieldExpr(sql, near, field, 'rawText', scope.alias)}`;
+    // Uncollated, as `id` is, so the far id's index serves it; a crossRef column joins bare.
+    const farId = `${qualifier(alias)}id${near.column(field) === undefined ? '::text' : ''}`;
+    join = sql`${sql.unsafe(farId)} = ${fieldExpr(sql, near, field, 'rawText', scope.alias)}`;
   }
   const table = scope.tableFor(type);
   // A walk never leaves the frame's namespace (the validator refuses it), so
@@ -604,7 +582,7 @@ export function sortKey(
     return sql.unsafe(ordered ? col : `${col} COLLATE "C"`);
   }
   const column = table.column(field);
-  if (column !== undefined) return fieldExpr(sql, table, field, columnAs(column.kind), alias);
+  if (column !== undefined) return columnOrderExpr(sql, table, column, alias);
   if (cast === 'numeric') return bodyNum(sql, [field], alias, table.jsonb);
   if (cast === 'timestamptz') return bodyTs(sql, [field], alias, table.jsonb);
   return bodyText(sql, [field], alias, table.jsonb);

@@ -5,6 +5,7 @@
  * frame runs, so a walk can never read rows a top-level read could not.
  */
 
+import { forEachWalkHop } from '@mnmal-ai/substrate-filter';
 import type { TypeSchema, WhereClause } from '@mnmal-ai/substrate-types';
 import { resolveHop } from './filter/walk-validator.js';
 
@@ -71,52 +72,16 @@ export function walkedTypes(
     return type;
   };
 
-  // Generic descent, like the walk gate's: a `_walk` / `_agg` anywhere in a where is found.
-  const inWhere = (v: unknown, type: string, path: string[]): void => {
-    if (Array.isArray(v)) {
-      v.forEach((c, i) => {
-        inWhere(c, type, [...path, String(i)]);
-      });
-      return;
-    }
-    if (!isObj(v)) return;
-    for (const [k, child] of Object.entries(v)) {
-      const at = [...path, k];
-      if ((k === '_walk' || k === '_agg') && isObj(child)) {
-        const far = hop(child, type, at);
-        inWhere(child.where, far, [...at, 'where']);
-      } else inWhere(child, type, at);
-    }
-  };
-
-  const inFields = (fields: unknown, type: string, path: string[]): void => {
-    if (!isObj(fields)) return;
-    for (const [name, sel] of Object.entries(fields)) {
-      const at = [...path, name];
-      if (name === '_agg' && isObj(sel)) {
-        for (const [n, agg] of Object.entries(sel)) {
-          if (!isObj(agg)) continue;
-          const far = hop(agg, type, [...at, n]);
-          inWhere(agg.where, far, [...at, n, 'where']);
-        }
-      } else if (isObj(sel) && isObj(sel._walk)) {
-        const walk = sel._walk;
-        const wp = [...at, '_walk'];
-        // Both wheres filter the far rows, so the policy sees them together.
-        const where =
-          walk.where !== undefined && sel.where !== undefined
-            ? { AND: [walk.where, sel.where] }
-            : (walk.where ?? sel.where);
-        const far = hop(walk, type, wp, where);
-        inWhere(walk.where, far, [...wp, 'where']);
-        inWhere(sel.where, far, [...at, 'where']);
-        inFields(sel.fields, far, [...at, 'fields']);
-      }
-    }
-  };
-
-  const params = isObj(entry.params) ? entry.params : {};
-  inWhere(params.where, seed, ['where']);
-  inFields(entry.fields, seed, ['fields']);
+  forEachWalkHop(entry, seed, ({ node, path, selection }, from) => {
+    // A nested list's two wheres both filter the far rows, so the policy sees them together.
+    const sel = selection?.sel;
+    const where =
+      sel === undefined
+        ? node.where
+        : node.where !== undefined && sel.where !== undefined
+          ? { AND: [node.where, sel.where] }
+          : (node.where ?? sel.where);
+    return hop(node, from, path, where);
+  });
   return [...out.values()];
 }
