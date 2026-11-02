@@ -1,6 +1,6 @@
 /**
  * SubscribeSubsystem — owns the live subscription bus and WriteEvent fanout
- * (§5.4, §5.13). Mutate feeds it through `dispatchWrite(event)`.
+ * (§5.4, §5.13). Mutate feeds it through `dispatchWrites(events)`.
  */
 
 import { evaluateWhere, whereContainsExtensionOperator } from '@mnmal-ai/substrate-filter';
@@ -343,6 +343,16 @@ export class SubscribeSubsystem {
       if (entry.closed) continue;
       this.#emitToSubscription(entry, event);
     }
+  }
+
+  /**
+   * `dispatchWrite` for every event of one committed mutate, in emit order.
+   * Not grouped by type: one subscription can span several types under one
+   * id and `onFrame`, and an idle entry's first frame is delivered
+   * synchronously, so grouping would reorder that subscription's wire.
+   */
+  dispatchWrites(events: readonly WriteEvent[]): void {
+    for (const event of events) this.dispatchWrite(event);
   }
 
   #buildSubscribeContext(caller: Partial<RequestContext>): Omit<RequestContext, 'namespace'> {
