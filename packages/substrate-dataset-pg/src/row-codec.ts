@@ -92,10 +92,14 @@ export function decodeRow(
 ): Record<string, unknown> {
   // Read once: `extra` may be TOASTed, so each access would detoast it again.
   const extra = (record.extra ?? {}) as Record<string, unknown>;
+  const raw = extra[RAW_KEY];
+  const overlay = raw !== null && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
   const out: Record<string, unknown> = {};
   for (const c of table.columns()) {
     const v = record[c.column];
-    if (v !== null && v !== undefined) out[c.field] = canonical(c.kind, v);
+    // A `$raw` entry overlays the column, so an unreadable column value there is never read.
+    if (v === null || v === undefined || Object.hasOwn(overlay, c.field)) continue;
+    out[c.field] = canonical(c.kind, v);
   }
   for (const [k, v] of Object.entries(extra)) {
     if (k === RAW_KEY) continue;
@@ -105,8 +109,7 @@ export function decodeRow(
     if (v === null && declared) delete out[k];
     else out[k] = v;
   }
-  const raw = extra[RAW_KEY];
-  if (raw !== null && typeof raw === 'object') Object.assign(out, raw);
+  Object.assign(out, overlay);
   return out;
 }
 
@@ -143,9 +146,14 @@ function toColumn(column: TypedColumn, value: unknown): string | number | boolea
       return typeof value === 'number' ? value : null;
     case 'boolean':
       return typeof value === 'boolean' ? value : null;
-    case 'date':
+    case 'date': {
+      if (typeof value !== 'string') return null;
       // The one date grammar memory and `substrate_ts` read; no offset is UTC.
-      return typeof value === 'string' ? (normalizeIsoTimestamp(value) ?? null) : null;
+      const iso = normalizeIsoTimestamp(value);
+      // The grammar bounds the local year only: an offset can put the instant in
+      // 1 BC, which pg prints with `BC` and postgres.js reads as Invalid Date.
+      return iso === undefined || new Date(iso).getUTCFullYear() < 1 ? null : iso;
+    }
   }
 }
 
@@ -161,5 +169,6 @@ function readBack(kind: ColumnKind, v: string | number | boolean): unknown {
 /** A column value as pg returns it, in the JSON form a row carries: dates as `toISOString()`. */
 function canonical(kind: ColumnKind, value: unknown): unknown {
   if (kind !== 'date') return value;
+  // TZ-dependent until Task 10 projects date columns as UTC text: an LMT offset reads as Invalid Date.
   return (value instanceof Date ? value : new Date(String(value))).toISOString();
 }

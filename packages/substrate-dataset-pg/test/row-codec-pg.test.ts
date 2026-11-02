@@ -142,7 +142,8 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('row codec through a type table', () =
       '2026-10-26T10:00:00',
       '2026-02-30',
       '0099-06-01',
-      '0099-06-01T00:00:00.000Z'
+      '0099-06-01T00:00:00.000Z',
+      '0001-01-01T00:30:00+01:00'
     ];
     const tz = process.env.TZ;
     process.env.TZ = 'America/New_York';
@@ -169,7 +170,8 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('row codec through a type table', () =
         only('utc'),
         { micros: null, utc: null, null_due: true, y99: null },
         only('y99'),
-        only('y99')
+        only('y99'),
+        { micros: null, utc: null, null_due: true, y99: null }
       ]);
       expect(rows.map((r) => decodeRow(table, r))).toEqual(DATES.map((due) => ({ due })));
     } finally {

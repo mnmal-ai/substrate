@@ -234,6 +234,24 @@ describe('row codec', () => {
     expect(decodeRow(TABLE, record)).toEqual({ gone: null, note: null });
   });
 
+  it('an instant before year 1 UTC goes to $raw with the column null', () => {
+    const due = '0001-01-01T00:30:00+01:00';
+    const e = encodeRow(TABLE, { due });
+    expect(e.columns.f_due).toBeNull();
+    expect(e.raw).toEqual({ due });
+    expect(encodeRow(TABLE, { due: '0001-01-01T00:30:00Z' }).columns.f_due).toBe(
+      '0001-01-01T00:30:00Z'
+    );
+  });
+
+  it('an unreadable column value is left to its $raw entry, and throws without one', () => {
+    const record = { ...EMPTY, f_due: new Date(Number.NaN) };
+    expect(decodeRow(TABLE, { ...record, extra: { [RAW_KEY]: { due: '0001-01-01' } } })).toEqual({
+      due: '0001-01-01'
+    });
+    expect(() => decodeRow(TABLE, record)).toThrow(RangeError);
+  });
+
   it('a non-finite number on a column field is refused', () => {
     for (const v of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
       expect(() => encodeRow(TABLE, { count: v })).toThrow(RangeError);
