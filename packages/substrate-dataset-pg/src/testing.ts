@@ -401,12 +401,14 @@ export async function preparePgTestSchema(
  * Call from `globalSetup`, before `preparePgTestSchema`.
  */
 export function selectPgTestLayout(packageName: string): {
-  layout: 'legacy' | 'partitioned';
+  layout: 'legacy' | 'partitioned' | 'tables';
   packageName: string;
 } {
   const layout = process.env.SUBSTRATE_TEST_LAYOUT ?? 'legacy';
-  if (layout !== 'legacy' && layout !== 'partitioned') {
-    throw new Error(`SUBSTRATE_TEST_LAYOUT must be 'legacy' or 'partitioned', got '${layout}'`);
+  if (layout !== 'legacy' && layout !== 'partitioned' && layout !== 'tables') {
+    throw new Error(
+      `SUBSTRATE_TEST_LAYOUT must be 'legacy', 'partitioned' or 'tables', got '${layout}'`
+    );
   }
   process.env.SUBSTRATE_STORAGE_LAYOUT = layout;
   return { layout, packageName: `${packageName}-${layout}` };

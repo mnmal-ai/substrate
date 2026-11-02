@@ -22,7 +22,13 @@ export {
   typeIndexesOf,
   UniqueIndexDuplicatesError
 } from './index-reconciler.js';
-export { detectLayout, partitionName, type StorageLayout } from './layout.js';
+export {
+  columnName,
+  detectLayout,
+  partitionName,
+  type StorageLayout,
+  typeTableName
+} from './layout.js';
 export {
   assertNotMigrating,
   assertStoreSchema,
@@ -41,9 +47,7 @@ export {
   runMigrations,
   StorageLayoutMismatchError,
   StoreMigrationInProgressError,
-  UnsupportedSchemaNameError,
-  UUID_CHECK_MIGRATION,
-  UUID_REGEX
+  UnsupportedSchemaNameError
 } from './migrate.js';
 export {
   type FieldDefLookup,
@@ -69,3 +73,15 @@ export {
 } from './server-version.js';
 export { type PgHandle, txScopeIdFor } from './tx-scope.js';
 export { TypeStorageLockTimeoutError } from './type-storage.js';
+export {
+  type ColumnKind,
+  columnKindOf,
+  ensureTypeTable,
+  FieldKindChangedError,
+  loadTypeTable,
+  rowsTypeTable,
+  type TypedColumn,
+  type TypeTable,
+  type TypeTableChange
+} from './type-table.js';
+export { UUID_CHECK_MIGRATION, UUID_REGEX } from './uuid-check.js';

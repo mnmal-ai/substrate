@@ -113,7 +113,7 @@ export async function composeKernelPhase(args: {
   const { kernel, server, storeSql, coordinators, kernelAuth, trustedProxies } = args;
   await reconcileDeclaredStorage(args.datasetFor, args.nsDefs);
   // `rows` exists by now (runMigrations ran when the store opened).
-  let layout: 'legacy' | 'partitioned' | null = null;
+  let layout: 'legacy' | 'partitioned' | 'tables' | null = null;
   if (storeSql !== null) {
     const detected = await detectLayout(storeSql);
     if (detected === 'absent') throw new Error('kernel migrations need `rows`, but it is absent');
