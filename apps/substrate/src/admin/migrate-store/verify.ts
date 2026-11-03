@@ -13,10 +13,10 @@
  * collation, and of any join separator, and it builds no string. Row content
  * is compared as the dataset reads it: the target's row as `decodeRow` builds
  * it, the source's body under the same read rule (an explicit null on a
- * declared column field reads absent), plus every metadata column.
+ * declared column field reads absent), both as jsonb text, so a number's
+ * stored text counts, plus every metadata column.
  */
 
-import { createHash } from 'node:crypto';
 import {
   loadTypeTable,
   MIGRATE_STORE_MARKER_TABLE,
@@ -215,19 +215,6 @@ async function typeTables(tx: Sql): Promise<Map<string, TypeTable>> {
 
 const META = `deleted_at::text, created_at::text, updated_at::text, created_by_kind, created_by_id, updated_by_kind, updated_by_id`;
 
-/** A JSON value with object keys sorted, so equal values print equal. */
-function canonical(v: unknown): string {
-  if (Array.isArray(v)) return `[${v.map(canonical).join(',')}]`;
-  if (v !== null && typeof v === 'object') {
-    const o = v as Record<string, unknown>;
-    return `{${Object.keys(o)
-      .sort()
-      .map((k) => `${JSON.stringify(k)}:${canonical(o[k])}`)
-      .join(',')}}`;
-  }
-  return JSON.stringify(v);
-}
-
 /**
  * Every comparable fact about one side, keyed so the two sides diff by key.
  * `other` is the source's snapshot when this is the target; `types` are the
@@ -346,49 +333,41 @@ async function snapshot(
     }
   }
 
-  // Row content as read, one bounded pass per type in md5(id) order: COLLATE "C" so both clusters
-  // pick the same rows whatever their locale. The source hashes `seq` only when it has one.
+  // Row content as stored jsonb text, one bounded pass per type in md5(id) order: COLLATE "C" so
+  // both clusters pick the same rows whatever their locale. jsonb text is canonical (sorted keys) and
+  // keeps each number's text, so a number stored differently fails. The source hashes `seq` only
+  // when it has one.
   const hasSeq =
     side === 'source'
       ? (await colsOf('rows'))?.includes('seq') === true
       : other?.columns.get('rows')?.includes('seq') !== false;
+  const meta = `row(${META}, ${hasSeq ? 'seq::text' : 'NULL::text'})::text`;
   for (const { namespace, type } of counted) {
-    const table = types.get(`${namespace}/${type}`);
-    const hash = createHash('sha256');
-    let n = 0;
-    const seq = hasSeq ? 'seq::text' : 'NULL::text';
-    let query: string;
+    let rows: string;
     let params: unknown[];
     if (side === 'source') {
-      query = `SELECT id, body AS row, ${META}, ${seq} AS seq FROM rows
-               WHERE namespace = $1 AND type = $2 ORDER BY md5(id) COLLATE "C" LIMIT ${limit}`;
-      params = [namespace, type];
+      // The read rule: an explicit null on a declared column field reads absent.
+      const table = types.get(`${namespace}/${type}`);
+      const declared = [
+        ...(table?.columns().filter((c) => c.state !== 'orphaned') ?? []).map((c) => c.field),
+        ...(table?.pending ?? [])
+      ];
+      rows = `SELECT (SELECT coalesce(jsonb_object_agg(k, v), '{}'::jsonb) FROM jsonb_each(body) e(k, v)
+                      WHERE NOT (v = 'null'::jsonb AND k = ANY($3::text[])))::text || E'\n' || ${meta} AS h
+              FROM rows WHERE namespace = $1 AND type = $2 ORDER BY md5(id) COLLATE "C" LIMIT ${limit}`;
+      params = [namespace, type, declared];
     } else {
       const ref = await typeTableRef(tx, namespace, type);
       if (ref === undefined) continue;
-      query = `SELECT x.id, ${ref.rowJson('x')} AS row, ${META}, ${seq} AS seq FROM ${ref.from} x
-               WHERE NOT (x.id = ANY($1::text[])) ORDER BY md5(x.id) COLLATE "C" LIMIT ${limit}`;
+      rows = `SELECT ${ref.rowJson('x')}::text || E'\n' || ${meta} AS h FROM ${ref.from} x
+              WHERE NOT (x.id = ANY($1::text[])) ORDER BY md5(x.id) COLLATE "C" LIMIT ${limit}`;
       params = [seedIds(namespace, type)];
     }
-    const cursor = tx.unsafe<Array<Record<string, unknown>>>(query, params as never[]).cursor(1000);
-    for await (const batch of cursor) {
-      for (const r of batch) {
-        const row = { ...(r.row as Record<string, unknown>) };
-        // The read rule: an explicit null on a declared column field reads absent.
-        if (side === 'source' && table !== undefined) {
-          for (const [k, v] of Object.entries(row)) {
-            const c = table.column(k);
-            const declared =
-              (c !== undefined && c.state !== 'orphaned') || table.pending.includes(k);
-            if (v === null && declared) delete row[k];
-          }
-        }
-        const { row: _row, ...meta } = r;
-        hash.update(`${canonical(row)}\n${canonical(meta)}\n`);
-        n++;
-      }
-    }
-    add({ check: 'sample', namespace, type, what: 'content', value: `${n} ${hash.digest('hex')}` });
+    const [r] = await tx.unsafe<{ f: string }[]>(
+      `SELECT ${fp('h')} AS f FROM (${rows}) s`,
+      params as never[]
+    );
+    add({ check: 'sample', namespace, type, what: 'content', value: String(r?.f) });
   }
 
   // Every other copied table: its full content, only for tables the source has.

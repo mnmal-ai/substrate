@@ -99,6 +99,44 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
       expect(await markerPresent()).toBe(true);
     });
 
+    it('catches a changed column value', async () => {
+      await tgtSql.unsafe(
+        `UPDATE ${await relation('_system', 'Key')} SET f_kid = 'changed' WHERE id = $1`,
+        [uuid(1)]
+      );
+      const r = await verify();
+      expect(r.ok).toBe(false);
+      expect(r.mismatches).toEqual([
+        expect.objectContaining({ check: 'sample', namespace: '_system', type: 'Key' })
+      ]);
+    });
+
+    it('catches a changed metadata value', async () => {
+      await tgtSql.unsafe(
+        `UPDATE ${await relation('_system', 'Invite')} SET created_by_id = 'changed' WHERE id = $1`,
+        [uuid(3)]
+      );
+      const r = await verify();
+      expect(r.ok).toBe(false);
+      expect(r.mismatches).toEqual([
+        expect.objectContaining({ check: 'sample', namespace: '_system', type: 'Invite' })
+      ]);
+    });
+
+    it('catches a stored number whose text differs though its value does not (1.0 against 1)', async () => {
+      const old = await relation('retired', 'Old');
+      expect(await tgtSql.unsafe(`SELECT extra::text AS e FROM ${old}`)).toEqual([
+        { e: '{"x": 1}' }
+      ]);
+      await tgtSql.unsafe(`UPDATE ${old} SET extra = '{"x": 1.0}'`);
+      const r = await verify({ fullChecksum: true });
+      expect(r.ok).toBe(false);
+      expect(r.mismatches).toEqual([
+        expect.objectContaining({ check: 'sample', namespace: 'retired', type: 'Old' })
+      ]);
+      expect(await markerPresent()).toBe(true);
+    });
+
     it('catches a changed shortId', async () => {
       await tgtSql`UPDATE short_ids SET short_id = 99 WHERE row_id = ${uuid(1)}`;
       const r = await verify();

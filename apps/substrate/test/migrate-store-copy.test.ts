@@ -137,9 +137,26 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
       expect(events.filter((e) => e.done).map((e) => e.table)).toEqual(
         plan.tables.map((t) => t.name)
       );
-      // Converted rows report per batch, once each batchRows boundary is crossed.
-      expect(events.some((e) => e.table === 'rows' && !e.done && e.rows >= 2 && e.rows < 11)).toBe(
-        true
+      // Converted rows report per batch of 2 within a type, once each batchRows boundary is
+      // crossed, in the copy's type order; phase 2 counts on from phase 1.
+      const expected: number[] = [];
+      let total = 0;
+      let next = 2;
+      for (const phase of [PHASE1_ROWS, `NOT (${PHASE1_ROWS})`]) {
+        const perType = await srcSql.unsafe<{ n: number }[]>(
+          `SELECT count(*)::int AS n FROM rows WHERE ${phase} GROUP BY namespace, type ORDER BY namespace, type`
+        );
+        for (const { n } of perType) {
+          for (let left = n; left > 0; left -= 2) {
+            total += Math.min(2, left);
+            if (total < next) continue;
+            next = total - (total % 2) + 2;
+            expected.push(total);
+          }
+        }
+      }
+      expect(events.filter((e) => e.table === 'rows' && !e.done).map((e) => e.rows)).toEqual(
+        expected
       );
       // Declared types land in their own tables, their fields in columns.
       const key = await typeTableRef(tgtSql, '_system', 'Key');
@@ -303,7 +320,11 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
         SELECT c.relname AS name, i.indisvalid AS valid
         FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
         WHERE i.indrelid = ${note?.from as string}::regclass AND NOT i.indisprimary ORDER BY 1`;
-      expect(built.length).toBeGreaterThan(0);
+      expect(built.map((b) => b.name.replace(/_[0-9a-f]{8}_base$/, ''))).toEqual([
+        'rows_prop_note_created_at',
+        'rows_prop_note_deleted_at',
+        'rows_prop_note_updated_at'
+      ]);
       expect(built.every((b) => b.valid)).toBe(true);
     });
 

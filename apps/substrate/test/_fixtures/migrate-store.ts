@@ -11,7 +11,6 @@ import { randomBytes } from 'node:crypto';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { pgTestSchemaName, pgTestSchemaUrl } from '@mnmal-ai/substrate-dataset-pg/testing';
 import {
   embeddingsMigration,
@@ -110,7 +109,8 @@ export async function makePluginDir(): Promise<string> {
       substrate: { tier: 'coordinator', entry: './index.js' }
     })
   );
-  const sdk = pathToFileURL(resolve('../../packages/substrate-sdk/dist/index.js')).href;
+  // The built sdk, which the fixture plugin imports as serve would load it.
+  const sdk = new URL('../../../../packages/substrate-sdk/dist/index.js', import.meta.url).href;
   await writeFile(join(conv, 'index.js'), CONV_PLUGIN(sdk));
   return dir;
 }

@@ -30,6 +30,7 @@ import {
   loadTypeTable,
   MIGRATE_STORE_MARKER_TABLE,
   type Misfit,
+  parseSourceBody,
   type SourceRow,
   seqName,
   type TypeTable,
@@ -484,16 +485,21 @@ async function convertRows(
     const key = `${namespace}/${type}`;
     const table = tables.get(key);
     if (table === undefined) throw new Error(`internal: no table prepared for ${key}`);
-    const cursor = src<Array<SourceRow & { bytes: number }>>`
-      SELECT id, body, deleted_at::text, created_at::text, updated_at::text,
+    // The body as text, parsed so no number changes its text (`parseSourceBody`).
+    const cursor = src<Array<Omit<SourceRow, 'body'> & { body: string }>>`
+      SELECT id, body::text AS body, deleted_at::text, created_at::text, updated_at::text,
              created_by_kind, created_by_id, updated_by_kind, updated_by_id,
-             ${seq} AS seq, octet_length(body::text) AS bytes
+             ${seq} AS seq
       FROM rows WHERE namespace = ${namespace} AND type = ${type} ${where}
       ORDER BY id`.cursor(batchRows);
     for await (const batch of cursor) {
       let result: Awaited<ReturnType<typeof copyRows>>;
       try {
-        result = await copyRows(tsql, table, batch);
+        result = await copyRows(
+          tsql,
+          table,
+          batch.map((r) => ({ ...r, body: parseSourceBody(r.body) }))
+        );
       } catch (err) {
         throw rowsError(key, err);
       }
@@ -510,7 +516,7 @@ async function convertRows(
       }
       counter.add(
         batch.length,
-        batch.reduce((n, r) => n + Number(r.bytes), 0)
+        batch.reduce((n, r) => n + Buffer.byteLength(r.body), 0)
       );
     }
   }
@@ -521,8 +527,8 @@ function rowsError(key: string, err: unknown): Error {
   const pg = err as { code?: unknown; constraint_name?: unknown; detail?: unknown };
   if (pg?.code === '23505' && typeof pg.constraint_name === 'string') {
     return new Error(
-      `copying rows failed: ${key}: unique index ${pg.constraint_name} refuses a source row, ` +
-        `because two live source rows hold one value${typeof pg.detail === 'string' ? ` (${pg.detail})` : ''}. ` +
+      `copying rows failed: ${key}: unique index ${pg.constraint_name} refuses a source row whose key ` +
+        `another row already holds${typeof pg.detail === 'string' ? ` (${pg.detail})` : ''}. ` +
         'Resolve the duplicate in the source, then rerun migrate-store, which restarts cleanly.',
       { cause: err }
     );

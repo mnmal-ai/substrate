@@ -61,7 +61,27 @@ const TYPED: Record<string, Record<string, unknown>> = {
   [T(7)]: { $raw: { title: 'x' }, title: 'y' }
 };
 
+/**
+ * `conv/Typed` bodies whose numbers a JS double would change, as jsonb text
+ * (inserted as text: `sql.json` would round them in JS first).
+ */
+const N = (n: number) => uuid(180 + n);
+const NUMERIC: Record<string, string> = {
+  // Beyond double precision on the number column, in a json field, and in extra; `1.0` and
+  // `1e400` in extra.
+  [N(1)]:
+    '{"count": 12345678901234567890, "meta": {"big": 12345678901234567890, "p": 0.10000000000000000555}, "big": 12345678901234567890, "one": 1.0, "huge": 1e400}',
+  // `1.0` on the number column: the double holds its value exactly, so the column takes it, and
+  // `$raw` keeps the text jsonb would render as `1`.
+  [N(2)]: '{"count": 1.0}',
+  // An integer a double holds exactly but jsonb renders as 1152921504606847000.
+  [N(3)]: '{"count": 1152921504606846976}'
+};
+
 async function seedConv(sql: Sql): Promise<void> {
+  for (const [id, text] of Object.entries(NUMERIC)) {
+    await sql`INSERT INTO rows (namespace, type, id, body) VALUES (${CONV}, 'Typed', ${id}, ${text}::text::jsonb)`;
+  }
   for (const [id, body] of Object.entries(TYPED)) {
     const n = Number(id.slice(0, 8));
     await sql`
@@ -166,7 +186,8 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
     const conv = () => result.target.datasets.get(CONV) as PgDataset;
 
     it('target reads equal source bodies under the read rules (explicit null on a declared scalar absent, everything else identical)', async () => {
-      const { rows } = await conv().read('Typed', { includeDeleted: true, limit: 100 });
+      const { rows: all } = await conv().read('Typed', { includeDeleted: true, limit: 100 });
+      const rows = all.filter((r) => Object.hasOwn(TYPED, r.id));
       const expected = Object.fromEntries(
         Object.entries(TYPED).map(([id, body]) => {
           const b = { ...body };
@@ -184,7 +205,11 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
       const viaSql = await pair.tgtSql.unsafe<{ id: string; row: Record<string, unknown> }[]>(
         `SELECT x.id, ${ref?.rowJson('x')} AS row FROM ${ref?.from} x`
       );
-      expect(Object.fromEntries(viaSql.map((r) => [r.id, r.row]))).toEqual(expected);
+      expect(
+        Object.fromEntries(
+          viaSql.filter((r) => Object.hasOwn(TYPED, r.id)).map((r) => [r.id, r.row])
+        )
+      ).toEqual(expected);
       // Well-typed values sit in their columns; the offset date's instant too.
       const [t1] = await pair.tgtSql.unsafe<Record<string, unknown>[]>(
         `SELECT f_title, f_count, f_flag, f_status, f_ref, extra FROM ${ref?.from} WHERE id = $1`,
@@ -212,7 +237,8 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
         { id: T(2), field: 'when' },
         { id: T(2), field: 'flag' },
         { id: T(2), field: 'status' },
-        { id: T(7), field: '$raw' }
+        { id: T(7), field: '$raw' },
+        { id: N(1), field: 'count' }
       ];
       expect(result.misfits[`${CONV}/Typed`]?.count).toBe(misfits.length);
       expect(result.misfits[`${CONV}/Typed`]?.first).toEqual(expect.arrayContaining(misfits));
@@ -220,6 +246,56 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
       const { rows } = await conv().read('Typed', { where: { id: { eq: T(2) } } as never });
       expect(bodies(rows)[T(2)]).toEqual(TYPED[T(2)]);
       expect(Object.keys(result.misfits).sort()).toEqual([`${CONV}/Typed`]);
+    });
+
+    it('numbers keep their exact source text in extra, json fields and $raw; a number column takes only an exact value', async () => {
+      const ref = await typeTableRef(pair.tgtSql, CONV, 'Typed');
+      const stored = async (id: string) => {
+        const [r] = await pair.tgtSql.unsafe<
+          { count: number | null; extra: string; raw: string | null }[]
+        >(
+          `SELECT f_count AS count, (extra - '$raw')::text AS extra, (extra -> '$raw')::text AS raw
+           FROM ${ref?.from} WHERE id = $1`,
+          [id]
+        );
+        return r;
+      };
+      const source = async (id: string, without: string) => {
+        const [r] = await pair.srcSql<{ rest: string; count: string | null }[]>`
+          SELECT (body - ${without}::text)::text AS rest, (body -> 'count')::text AS count
+          FROM rows WHERE id = ${id}`;
+        return r;
+      };
+      // Beyond double precision on the column: NULL, the exact text under $raw, a misfit.
+      const big = await stored(N(1));
+      expect(big?.count).toBeNull();
+      expect(big?.raw).toBe('{"count": 12345678901234567890}');
+      // extra holds every other key with its exact text, the json field and 1.0 and 1e400 included.
+      expect(big?.extra).toBe((await source(N(1), 'count'))?.rest);
+      // jsonb prints 1e400 in full, and the copy keeps every digit of it.
+      expect(big?.extra).toBe(
+        `{"big": 12345678901234567890, "one": 1.0, "huge": 1${'0'.repeat(400)}, "meta": {"p": 0.10000000000000000555, "big": 12345678901234567890}}`
+      );
+      // 1.0 on the column: the column holds 1, $raw keeps "1.0", no misfit.
+      const one = await stored(N(2));
+      expect(one).toEqual({ count: 1, extra: '{}', raw: '{"count": 1.0}' });
+      // 2^60: the column holds it exactly; $raw keeps the text jsonb would render otherwise.
+      const pow = await stored(N(3));
+      expect(pow).toEqual({ count: 2 ** 60, extra: '{}', raw: '{"count": 1152921504606846976}' });
+      for (const id of [N(2), N(3)]) {
+        expect(result.misfits[`${CONV}/Typed`]?.first).not.toContainEqual({ id, field: 'count' });
+      }
+      // The row as stored jsonb text equals the source body, number for number.
+      for (const id of Object.keys(NUMERIC)) {
+        const [t] = await pair.tgtSql.unsafe<{ row: string }[]>(
+          `SELECT ${ref?.rowJson('x')}::text AS row FROM ${ref?.from} x WHERE x.id = $1`,
+          [id]
+        );
+        const [s] = await pair.srcSql<
+          { row: string }[]
+        >`SELECT body::text AS row FROM rows WHERE id = ${id}`;
+        expect(t?.row).toBe(s?.row);
+      }
     });
 
     it('tombstones, metadata, shortIds and seq preserved', async () => {
@@ -251,7 +327,7 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
       // Every id is registered for its type, once.
       const [ids] = await pair.tgtSql<{ n: number }[]>`
         SELECT count(*)::int AS n FROM row_ids WHERE namespace = ${CONV} AND type = 'Typed'`;
-      expect(ids?.n).toBe(Object.keys(TYPED).length);
+      expect(ids?.n).toBe(Object.keys(TYPED).length + Object.keys(NUMERIC).length);
     });
 
     it('verify passes; per-type counts equal', async () => {
