@@ -221,6 +221,46 @@ describe.skipIf(!POSTGRES_URL)('read: short id lookup for the returned page only
     expect(below.filter((n) => n['Parent Relationship'] === 'SubPlan')).toEqual([]);
   });
 
+  it('a projected read trims `extra` without a per-row SubPlan, and can still run in parallel', async () => {
+    const plan = await planOf(
+      {
+        where: { n: { gte: 100 } },
+        orderBy: [{ d: 'desc' }],
+        limit: 50,
+        fields: { id: true, n: true, d: true }
+      },
+      [
+        'parallel_setup_cost = 0',
+        'parallel_tuple_cost = 0',
+        'min_parallel_table_scan_size = 0',
+        'min_parallel_index_scan_size = 0'
+      ],
+      false
+    );
+    const all = nodes(plan);
+    // The trim was a SubPlan (an Aggregate over a Function Scan of jsonb_each) per row (#1864).
+    expect(all.filter((n) => n['Node Type'] === 'Function Scan')).toEqual([]);
+    expect(all.filter((n) => n['Parent Relationship'] === 'SubPlan')).toEqual([]);
+    const page = all.find((n) => n['Node Type'] === 'Limit');
+    expect(nodes(page as PlanNode).some((n) => /^Gather( Merge)?$/.test(n['Node Type']))).toBe(
+      true
+    );
+    // And the trimmed rows still answer as the whole ones do.
+    const whole = (await ds.read(TYPE, { where: { n: { lt: 40 } }, orderBy: [{ id: 'asc' }] }))
+      .rows;
+    const trimmed = (
+      await ds.read(TYPE, {
+        where: { n: { lt: 40 } },
+        orderBy: [{ id: 'asc' }],
+        fields: { id: true, n: true, d: true }
+      })
+    ).rows;
+    expect(trimmed.map(({ id, n, d }) => ({ id, n, d }))).toEqual(
+      whole.map(({ id, n, d }) => ({ id, n, d }))
+    );
+    expect(trimmed.every((r) => !Object.hasOwn(r, 'g'))).toBe(true);
+  });
+
   it('a full id-ordered paged walk returns every row once with its short id or none', async () => {
     const seen: Array<{ id: unknown; shortId: unknown }> = [];
     let cursor: string | undefined;

@@ -361,10 +361,15 @@ describe('a date column reads the same whatever the session TimeZone', () => {
       `to_char(r.${AT} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS ${AT}`
     );
     expect(text).toContain('r.extra AS extra');
-    // A projected subset keeps `$raw`, which overlays any column it shields.
-    expect(render(buildRowProjection(sql, OBS, { observedAt: true }))).toMatch(
-      /jsonb_each\(r\.extra\) e WHERE e\.key = ANY\(\$::text\[\]\)/
-    );
+    // A projected subset keeps `id` and `$raw` (which overlays any column it shields), a
+    // key at a time with no per-row subquery (#1864); a `column` field's `extra` key is unread.
+    const pick =
+      /CASE WHEN r\.extra \? \$::text THEN jsonb_build_object\(\$::text, r\.extra -> \$::text\) ELSE '\{\}'::jsonb END/g;
+    const columnOnly = render(buildRowProjection(sql, OBS, { observedAt: true }));
+    expect(columnOnly.match(pick)).toHaveLength(2);
+    expect(columnOnly).not.toContain('jsonb_each');
+    // A `promoting` field may still be in `extra`, so it is picked too.
+    expect(render(buildRowProjection(sql, OBS, { status: true })).match(pick)).toHaveLength(3);
   });
 
   it('decodeRow reads that text as the canonical form a Date gives', () => {
