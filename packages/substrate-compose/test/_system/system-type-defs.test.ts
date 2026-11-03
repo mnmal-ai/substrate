@@ -14,7 +14,7 @@ import { KEY_TYPE, SYSTEM_NAMESPACE } from '../../src/_system/types.js';
 import { SYSTEM_TYPE_DEFS } from '../../src/index.js';
 
 describe('SYSTEM_TYPE_DEFS', () => {
-  it("matches each registered _system type's body fields and indexes", async () => {
+  it('lists every registered _system type, with its body fields and indexes', async () => {
     const registry = new Registry();
     await installSystemNamespace({
       registry,
@@ -31,6 +31,13 @@ describe('SYSTEM_TYPE_DEFS', () => {
       expect(def.fields, type).toEqual(registered);
       expect(def.indexes, type).toEqual(entry.indexes);
     }
+    // The other way: a `_system` type the install registers is in the table, so
+    // one added without an entry fails here rather than in a bare admin table.
+    const registeredTypes = [...registry.all()]
+      .filter(([, entry]) => entry.kind === 'type')
+      .map(([type]) => type)
+      .sort();
+    expect(registeredTypes).toEqual(Object.keys(SYSTEM_TYPE_DEFS).sort());
     expect(SYSTEM_TYPE_DEFS[KEY_TYPE]?.indexes?.map((i) => i.name)).toEqual([
       'substrate_key_live_kid_uniq'
     ]);
