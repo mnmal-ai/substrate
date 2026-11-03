@@ -137,6 +137,31 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
       expect(await markerPresent()).toBe(true);
     });
 
+    it('catches two rows of a type swapping their contents', async () => {
+      const ae = await relation('_system', 'AuditEvent');
+      // Two live events, uuid(4) and uuid(7), swap everything but their ids: as a set, the rows'
+      // contents are unchanged, so only a hash that binds content to its id sees it.
+      const cols = (
+        await tgtSql<{ c: string }[]>`
+          SELECT quote_ident(attname) AS c FROM pg_attribute
+          WHERE attrelid = ${ae}::regclass AND attnum > 0 AND NOT attisdropped AND attname <> 'id'`
+      )
+        .map((r) => r.c)
+        .join(', ');
+      await tgtSql.unsafe(
+        `UPDATE ${ae} t SET (${cols}) = (SELECT ${cols} FROM ${ae} o
+           WHERE o.id = CASE WHEN t.id = $1 THEN $2 ELSE $1 END)
+         WHERE t.id IN ($1, $2)`,
+        [uuid(4), uuid(7)]
+      );
+      const r = await verify();
+      expect(r.ok).toBe(false);
+      expect(r.mismatches).toEqual([
+        expect.objectContaining({ check: 'sample', namespace: '_system', type: 'AuditEvent' })
+      ]);
+      expect(await markerPresent()).toBe(true);
+    });
+
     it('catches a changed shortId', async () => {
       await tgtSql`UPDATE short_ids SET short_id = 99 WHERE row_id = ${uuid(1)}`;
       const r = await verify();

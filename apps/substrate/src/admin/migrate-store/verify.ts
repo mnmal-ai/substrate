@@ -333,7 +333,7 @@ async function snapshot(
     }
   }
 
-  // Row content as stored jsonb text, one bounded pass per type in md5(id) order: COLLATE "C" so
+  // Row content (id first, so a swap between rows counts) as stored jsonb text, one bounded pass per type in md5(id) order: COLLATE "C" so
   // both clusters pick the same rows whatever their locale. jsonb text is canonical (sorted keys) and
   // keeps each number's text, so a number stored differently fails. The source hashes `seq` only
   // when it has one.
@@ -352,14 +352,14 @@ async function snapshot(
         ...(table?.columns().filter((c) => c.state !== 'orphaned') ?? []).map((c) => c.field),
         ...(table?.pending ?? [])
       ];
-      rows = `SELECT (SELECT coalesce(jsonb_object_agg(k, v), '{}'::jsonb) FROM jsonb_each(body) e(k, v)
+      rows = `SELECT id || E'\n' || (SELECT coalesce(jsonb_object_agg(k, v), '{}'::jsonb) FROM jsonb_each(body) e(k, v)
                       WHERE NOT (v = 'null'::jsonb AND k = ANY($3::text[])))::text || E'\n' || ${meta} AS h
               FROM rows WHERE namespace = $1 AND type = $2 ORDER BY md5(id) COLLATE "C" LIMIT ${limit}`;
       params = [namespace, type, declared];
     } else {
       const ref = await typeTableRef(tx, namespace, type);
       if (ref === undefined) continue;
-      rows = `SELECT ${ref.rowJson('x')}::text || E'\n' || ${meta} AS h FROM ${ref.from} x
+      rows = `SELECT x.id || E'\n' || ${ref.rowJson('x')}::text || E'\n' || ${meta} AS h FROM ${ref.from} x
               WHERE NOT (x.id = ANY($1::text[])) ORDER BY md5(x.id) COLLATE "C" LIMIT ${limit}`;
       params = [seedIds(namespace, type)];
     }
