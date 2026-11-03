@@ -13,7 +13,7 @@ import postgres from 'postgres';
 import { afterAll, describe, expect, it } from 'vitest';
 import { buildAggPredicate, buildWalkAgg, buildWalkProjection } from '../src/pg-sql/aggregate.js';
 import { buildDerive, type WalkScope, walkScope } from '../src/pg-sql/walk.js';
-import { rowsTypeTable } from '../src/type-table.js';
+import { bareTypeTable } from './_layout.js';
 
 const sql = postgres('postgres://nobody@127.0.0.1:1/none');
 afterAll(() => sql.end());
@@ -49,7 +49,7 @@ const FIELDS: Record<string, Record<string, FieldDef>> = {
   }
 };
 const IN = `${NS}/Nbr.hub`;
-const tableFor = (t: string) => rowsTypeTable(NS, t, () => undefined);
+const tableFor = (t: string) => bareTypeTable(NS, t);
 const HUB = tableFor('Hub');
 
 /** A seed scope over Hub whose (hub, `key`) index runs in `dirs[key]`. */
@@ -63,7 +63,7 @@ const project = (aggs: Record<string, WalkAgg>, s: WalkScope) =>
   render(buildWalkProjection(sql, aggs, {}, HUB, s));
 
 const latestAt: WalkAgg = { in: IN, latest: { by: 'at', value: 'price' } } as WalkAgg;
-const AT = `substrate_ts(w1.body -> 'at')`;
+const AT = `substrate_ts(w1.extra -> 'at')`;
 const BY_ID = `w1.id COLLATE "C" ASC LIMIT 1`;
 
 describe('walk _agg picks compile to an index-order top-1', () => {
@@ -104,7 +104,7 @@ describe('walk _agg picks compile to an index-order top-1', () => {
   it('the far where stays inside the probe', () => {
     const filtered = { ...latestAt, where: { price: { lt: 90 } } } as WalkAgg;
     const text = project({ lp: filtered }, scope({ at: 'asc' }));
-    const price = `substrate_num(w1.body -> 'price') < `;
+    const price = `substrate_num(w1.extra -> 'price') < `;
     // In the keyed branch and in the null tail alike.
     expect(text.split(price)).toHaveLength(3);
   });
@@ -126,7 +126,7 @@ describe('walk _agg picks compile to an index-order top-1', () => {
       )
     );
     for (const text of [derive, pred]) {
-      expect(text).toMatch(/ORDER BY substrate_ts\(w\d+\.body -> 'at'\) DESC NULLS LAST/);
+      expect(text).toMatch(/ORDER BY substrate_ts\(w\d+\.extra -> 'at'\) DESC NULLS LAST/);
       expect(text).not.toMatch(/\bmax\(/);
     }
   });

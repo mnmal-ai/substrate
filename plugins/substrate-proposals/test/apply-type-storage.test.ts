@@ -11,12 +11,7 @@
 import { randomUUID } from 'node:crypto';
 import { Engine, loadPlugins, MemoryEdgesStore, Registry } from '@mnmal-ai/substrate-core';
 import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-dataset-memory';
-import {
-  detectLayout,
-  PgDataset,
-  PgEdgesStore,
-  partitionName
-} from '@mnmal-ai/substrate-dataset-pg';
+import { PgDataset, PgEdgesStore } from '@mnmal-ai/substrate-dataset-pg';
 import type {
   AfterTxWork,
   Dataset,
@@ -30,7 +25,7 @@ import { createNoopPubSub } from '../src/config.js';
 import { createProposalsPlugin, storageSettled } from '../src/index.js';
 import { makeProposeTypeResolver } from '../src/propose-type-resolver.js';
 import { RegistryStore } from '../src/registry-store.js';
-import { deleteNamespaces, TABLES } from './_layout.js';
+import { deleteNamespaces } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const NS = 'kapplystorage';
@@ -141,13 +136,11 @@ describe('propose_type prepares the type storage after commit', () => {
 
 describe.skipIf(!POSTGRES_URL)('propose_type storage (pg)', () => {
   let sql: Sql;
-  let partitioned: boolean;
   let typeName: string;
 
   beforeAll(async () => {
     sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
     // Migrated once in _global-setup.ts.
-    partitioned = (await detectLayout(sql)) === 'partitioned';
   });
 
   afterAll(async () => {
@@ -156,25 +149,15 @@ describe.skipIf(!POSTGRES_URL)('propose_type storage (pg)', () => {
 
   beforeEach(async () => {
     await deleteNamespaces(sql, NS, '_system_proposals');
-    // Partitions cannot be dropped under the short_ids FK, so each test proposes a type of its own.
+    // Each test proposes a type of its own, so no table from an earlier one is reused.
     typeName = `Dress${randomUUID().slice(0, 8)}`;
   });
 
-  async function partitionCount(): Promise<number | null> {
-    if (!partitioned) return null;
-    const [row] = await sql<Array<{ n: number }>>`
-      SELECT count(*)::int AS n FROM ${sql(partitionName(NS, typeName))}`;
-    return row?.n ?? 0;
-  }
-
   async function liveCount(): Promise<number> {
-    if (TABLES) return (await new PgDataset({ namespace: NS, sql }).read(typeName, {})).rows.length;
-    const [row] = await sql<Array<{ n: number }>>`
-      SELECT count(*)::int AS n FROM rows WHERE namespace = ${NS} AND type = ${typeName}`;
-    return row?.n ?? 0;
+    return (await new PgDataset({ namespace: NS, sql }).read(typeName, {})).rows.length;
   }
 
-  it('moves a row written between apply and commit into the new partition', async () => {
+  it("keeps a row written between apply and commit, in the type's table", async () => {
     const dataset = new PgDataset({ namespace: NS, sql });
     const { args, settle } = heldTx(typeName);
     await proposeType(dataset)(CTX, args);
@@ -182,10 +165,9 @@ describe.skipIf(!POSTGRES_URL)('propose_type storage (pg)', () => {
     await settle(true);
     await storageSettled();
     expect(await liveCount()).toBe(1);
-    expect(await partitionCount()).toBe(partitioned ? 1 : null);
   }, 20_000);
 
-  it('through the engine, a row written as the mutation returns ends in the new partition', async () => {
+  it("through the engine, a row written as the mutation returns is kept, in the type's table", async () => {
     const edges = new PgEdgesStore({ sql });
     const datasets = new MemoryDatasetRegistry();
     for (const ns of [NS, '_system_proposals']) {
@@ -219,6 +201,5 @@ describe.skipIf(!POSTGRES_URL)('propose_type storage (pg)', () => {
     await datasets.get(NS)?.write(typeName, [{ id: 'd1', name: 'late' }]);
     await storageSettled();
     expect(await liveCount()).toBe(1);
-    expect(await partitionCount()).toBe(partitioned ? 1 : null);
   }, 20_000);
 });

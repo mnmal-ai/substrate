@@ -125,7 +125,7 @@ describe('runMigrations — one-shot checksum rehash', () => {
   it('rewrites a stale recorded checksum in-place + boot succeeds', async () => {
     // Seed every migration with the CURRENT checksum, then make one stale.
     // The rehash must rewrite it before the verify loop sees it.
-    const staleVersion = '0001_baseline';
+    const staleVersion = '0001t_tables_baseline';
     const staleValue = 'legacy_format_checksum_94ae4a84';
     const appliedRows = MIGRATIONS.map((m) => ({
       version: m.version,
@@ -153,7 +153,7 @@ describe('runMigrations — one-shot checksum rehash', () => {
   });
 
   it('emits a WARN-level stderr log per rewrite naming version + both checksums', async () => {
-    const staleVersion = '0001_baseline';
+    const staleVersion = '0001t_tables_baseline';
     const staleValue = 'legacy_format_checksum_94ae4a84';
     const appliedRows = MIGRATIONS.map((m) => ({
       version: m.version,
@@ -224,7 +224,7 @@ describe('runMigrations — one-shot checksum rehash', () => {
   it('rewrites multiple stale rows in one boot', async () => {
     // Two stale rows — rehash should fix both before the verify loop runs.
     // The full list (with the gated 0002) supplies the second migration.
-    const stale1 = '0001_baseline';
+    const stale1 = '0001t_tables_baseline';
     const stale2 = '0002_uuid_format_check';
     const appliedRows = getMigrationList(true).map((m) => ({
       version: m.version,

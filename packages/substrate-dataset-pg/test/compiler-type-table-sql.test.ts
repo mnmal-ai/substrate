@@ -2,8 +2,7 @@
  * The SQL the compiler emits over a `TypeTable` (typed-tables Task 10): a
  * column field compares on its column, a `promoting` or `orphaned` one on its
  * `extra` key while present (the precedence `decodeRow` reads by), everything
- * else on `extra`, and a walk reads each far type from its own table. On
- * `rowsTypeTable` the text is today's, which the existing SQL suites pin.
+ * else on `extra`, and a walk reads each far type from its own table.
  *
  * Pure: nothing connects to a database.
  */
@@ -11,9 +10,8 @@
 import type { FieldDef, WhereClause } from '@mnmal-ai/substrate-types';
 import postgres from 'postgres';
 import { afterAll, describe, expect, it } from 'vitest';
-import { columnName, typeTableName } from '../src/layout.js';
+import { columnName, ident, typeTableName } from '../src/layout.js';
 import { buildFrameAggregate, buildNested, prepareWindows } from '../src/pg-sql/aggregate.js';
-import { resolvePromotedColumns } from '../src/pg-sql/primitives.js';
 import { buildRowProjection } from '../src/pg-sql/projection.js';
 import { buildOrderBy, buildSortKeyProjection } from '../src/pg-sql/sorting.js';
 import {
@@ -25,13 +23,8 @@ import {
 } from '../src/pg-sql/walk.js';
 import { buildWhere } from '../src/pg-sql/where.js';
 import { decodeRow } from '../src/row-codec.js';
-import { ident } from '../src/type-storage.js';
-import {
-  type ColumnKind,
-  rowsTypeTable,
-  type TypedColumn,
-  type TypeTable
-} from '../src/type-table.js';
+
+import type { ColumnKind, TypedColumn, TypeTable } from '../src/type-table.js';
 
 const sql = postgres('postgres://nobody@127.0.0.1:1/none');
 afterAll(() => sql.end());
@@ -77,7 +70,6 @@ function typed(
     type,
     from: ident(typeTableName(NS, type)),
     jsonb: 'extra',
-    scope: () => null,
     column: (f) => byField.get(f),
     columns: () => columns,
     pending,
@@ -359,25 +351,6 @@ describe('a walk reads each type from its own table', () => {
       fieldDef
     );
     expect([...types].sort()).toEqual(['Cert', 'Note', 'Obs', 'Sale', 'Tag']);
-  });
-});
-
-describe('the old layouts keep their promoted columns (F20)', () => {
-  const promoted = resolvePromotedColumns({
-    project: { column: 'project', kind: 'text' },
-    archived: { column: 'archived', kind: 'boolean' }
-  });
-  const ROWS = rowsTypeTable(NS, 'T', promoted);
-
-  it(`rowsTypeTable with a promoted column emits today's COLLATE "C" and boolean absent→false SQL`, () => {
-    expect(ROWS.column('project')).toBeUndefined();
-    const text = where({ project: { eq: 'p' }, archived: { eq: false } }, ROWS);
-    // The column is NOT NULL DEFAULT false, so `= FALSE` matches a row that never set it.
-    expect(text).toBe('( (r.project COLLATE "C" = $::text) AND (r.archived = FALSE))');
-    expect(render(buildOrderBy(sql, [['project', 'asc']], castFor, ROWS))).toBe(
-      'ORDER BY r.project COLLATE "C" ASC NULLS LAST'
-    );
-    expect(where({ other: { eq: 'o' } }, ROWS)).toBe(`((((body ->> 'other') COLLATE "C") = $))`);
   });
 });
 

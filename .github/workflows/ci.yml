@@ -68,8 +68,8 @@ jobs:
   # literals scoped to this throwaway service container.
   # PRs only: a push to main carries code its PR run already tested, and a
   # release's publish job runs these suites itself before anything irreversible.
-  # Each package and layout is its own job, so they run side by side; the
-  # skip check then reads every pass's report.
+  # Each package is its own job, so they run side by side; the skip check
+  # then reads every pass's report.
   pg-plan:
     name: Postgres passes
     if: github.event_name == 'pull_request' && github.event.pull_request.draft != true
@@ -81,12 +81,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - name: Plan one pass per package and layout
+      - name: Plan one pass per package
         id: plan
         run: echo "matrix=$(.github/scripts/test-pg-gated.sh plan)" >> "$GITHUB_OUTPUT"
 
   pg-pass:
-    name: pg ${{ matrix.dir }} (${{ matrix.layout }})
+    name: pg ${{ matrix.dir }}
     needs: pg-plan
     runs-on: ubuntu-latest
     permissions:
@@ -137,7 +137,7 @@ jobs:
         env:
           POSTGRES_URL: postgres://substrate_test:ci-substrate-test@127.0.0.1:5432/substrate_test
           PG_REPORTS: ${{ runner.temp }}/pg-reports
-        run: .github/scripts/test-pg-gated.sh run "${{ matrix.dir }}" "${{ matrix.layout }}"
+        run: .github/scripts/test-pg-gated.sh run "${{ matrix.dir }}"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: always()

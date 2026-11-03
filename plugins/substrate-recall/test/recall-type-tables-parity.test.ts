@@ -16,7 +16,6 @@ import { embeddingsMigration } from '../src/migrations/0001_embeddings.js';
 import { lexicalMigration } from '../src/migrations/0003_lexical.js';
 import { PgEmbeddingsStore } from '../src/pg-embeddings-store.js';
 import { PgLexicalStore } from '../src/pg-lexical-store.js';
-import { TABLES } from './_pg-rows.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const DIM = 768;
@@ -79,7 +78,7 @@ const byId = (rows: Row[]) =>
     rows.map(({ _metadata: _m, ...r }) => [String(r.id), r as Record<string, unknown>])
   );
 
-describe.skipIf(!POSTGRES_URL || !TABLES)('recall rows on type tables equal dataset.read', () => {
+describe.skipIf(!POSTGRES_URL)('recall rows on type tables equal dataset.read', () => {
   let sql: Sql;
   let ds: PgDataset;
   let emb: PgEmbeddingsStore;
@@ -440,86 +439,5 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('recall rows on type tables equal data
     }
     expect(await emb.purgeOrphans()).toBe(0);
     expect(await lex.purgeOrphans()).toBe(0);
-  });
-});
-
-/**
- * Every statement the pg recall stores send on an old layout, against a
- * snapshot taken from the code before type tables: `legacy` writes it, and
- * `partitioned` must match it, so neither layout's recall SQL changed, nor its
- * count. The layout is probed once per handle, before the capture.
- */
-describe.skipIf(!POSTGRES_URL || TABLES)('recall SQL on the old layouts', () => {
-  const SNS = 'rtt_snapshot';
-  let sql: Sql;
-  const statements: string[] = [];
-
-  beforeAll(async () => {
-    sql = postgres(POSTGRES_URL as string, {
-      onnotice: () => {},
-      debug: (_c, q) => {
-        statements.push(q);
-      }
-    });
-    await sql`CREATE EXTENSION IF NOT EXISTS vector`;
-    await embeddingsMigration().apply({ sql, metric: () => {}, layout: null });
-    const lexical = lexicalMigration();
-    await lexical.apply({ sql } as unknown as Parameters<typeof lexical.apply>[0]);
-    await sql`DELETE FROM embeddings WHERE row_namespace = ${SNS}`;
-    await sql`DELETE FROM lexical WHERE row_namespace = ${SNS}`;
-    await sql`DELETE FROM rows WHERE namespace = ${SNS}`;
-    await sql`INSERT INTO rows (namespace, type, id, body)
-      VALUES (${SNS}, 'Doc', 'd1', ${sql.json({ id: 'd1', project: 'p' })})`;
-  });
-
-  afterAll(async () => {
-    await sql`DELETE FROM embeddings WHERE row_namespace = ${SNS}`;
-    await sql`DELETE FROM lexical WHERE row_namespace = ${SNS}`;
-    await sql`DELETE FROM rows WHERE namespace = ${SNS}`;
-    await sql.end({ timeout: 5 });
-  });
-
-  it('is the statements recall sent before type tables', async () => {
-    const emb = new PgEmbeddingsStore({ sql });
-    const lex = new PgLexicalStore(sql);
-    const at = { rowNamespace: SNS, rowType: 'Doc', rowId: 'd1' };
-    await emb.upsert({ ...at, vector: near(0.1), model: MODEL });
-    await lex.upsert({ ...at, text: 'hello world' });
-    // The handle's one layout probe, before the capture: after it a call makes no query main did not.
-    await lex.countIndexed(SNS, 'Doc');
-    statements.length = 0;
-
-    const knn = { namespace: SNS, type: 'Doc', model: MODEL, vector: query, k: 5 };
-    expect(await emb.knnSearch(knn)).toHaveLength(1);
-    expect(
-      await emb.knnSearch({ ...knn, rowFilter: { project: { in: ['p', null] } } })
-    ).toHaveLength(1);
-    expect(
-      await emb.fetchEmbeddings([{ namespace: SNS, type: 'Doc', id: 'd1' }], MODEL)
-    ).toHaveLength(1);
-    expect(
-      await emb.selectCandidates(
-        {
-          scopes: [{ namespace: SNS, type: 'Doc' }],
-          excludeTextPrefixes: [{ field: 'project', prefix: 'x' }],
-          limit: 5
-        },
-        MODEL
-      )
-    ).toHaveLength(1);
-    expect(await emb.staleRowIds({ namespace: SNS, type: 'Doc', afterId: '', limit: 5 })).toEqual(
-      []
-    );
-    await emb.purgeOrphans();
-    const lexical = { namespace: SNS, type: 'Doc', k: 5 };
-    expect(await lex.search({ ...lexical, query: 'hello' })).toHaveLength(1);
-    expect(
-      await lex.search({ ...lexical, query: 'hello nothing', rowFilter: { project: { eq: 'p' } } })
-    ).toHaveLength(1);
-    expect(await lex.countIndexed(SNS, 'Doc')).toBe(1);
-    await lex.purgeOrphans();
-
-    // Unfiltered: the same statements as main, and as many.
-    expect(statements).toMatchSnapshot();
   });
 });

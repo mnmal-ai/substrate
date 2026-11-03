@@ -1,15 +1,11 @@
 /**
- * The storage layout this run's pg suites built (`SUBSTRATE_TEST_LAYOUT`), and
- * the raw-SQL cleanup the suites need in each: the old layouts keep every row
- * in `rows`; on `tables` each type has a table of its own, listed in
- * `substrate_type_tables`, and its ids in `row_ids`.
+ * The raw-SQL cleanup the pg suites need: each type has a table of its own,
+ * listed in `substrate_type_tables`, and its ids in `row_ids`.
  */
 
 import { PgDataset } from '@mnmal-ai/substrate-dataset-pg';
 import type { WhereClause } from '@mnmal-ai/substrate-types';
 import type { Sql } from 'postgres';
-
-export const TABLES = process.env.SUBSTRATE_TEST_LAYOUT === 'tables';
 
 const quote = (name: string): string => `"${name.replace(/"/g, '""')}"`;
 
@@ -24,32 +20,20 @@ async function typeTables(sql: Sql, namespaces: string[], like?: string): Promis
   return rows.map((r) => quote(r.table_name));
 }
 
-/** `DELETE FROM rows WHERE namespace IN (…)`; on `tables`, the namespaces' type tables and ids. */
+/** Deletes the rows and ids of the namespaces, keeping their type tables. */
 export async function deleteNamespaces(sql: Sql, ...namespaces: string[]): Promise<void> {
-  if (!TABLES) {
-    await sql`DELETE FROM rows WHERE namespace = ANY(${namespaces})`;
-    return;
-  }
   for (const t of await typeTables(sql, namespaces)) await sql.unsafe(`DELETE FROM ${t}`);
   await sql`DELETE FROM row_ids WHERE namespace = ANY(${namespaces})`;
 }
 
-/** `DELETE FROM rows WHERE namespace LIKE like`, in either layout. */
+/** {@link deleteNamespaces} for every namespace `LIKE like`. */
 export async function deleteNamespacesLike(sql: Sql, like: string): Promise<void> {
-  if (!TABLES) {
-    await sql`DELETE FROM rows WHERE namespace LIKE ${like}`;
-    return;
-  }
   for (const t of await typeTables(sql, [], like)) await sql.unsafe(`DELETE FROM ${t}`);
   await sql`DELETE FROM row_ids WHERE namespace LIKE ${like}`;
 }
 
-/** `TRUNCATE TABLE rows, short_ids`; on `tables`, every type table, `row_ids` and `short_ids`. */
+/** Every type table, `row_ids` and `short_ids`, truncated. */
 export async function truncateRows(sql: Sql): Promise<void> {
-  if (!TABLES) {
-    await sql`TRUNCATE TABLE rows, short_ids`;
-    return;
-  }
   const tables = await sql<Array<{ table_name: string }>>`
     SELECT table_name FROM substrate_type_tables`;
   await sql.unsafe(
@@ -57,13 +41,12 @@ export async function truncateRows(sql: Sql): Promise<void> {
   );
 }
 
-/** The relation `namespace`/`type`'s rows live in, quoted: `rows`, or its type table (undefined before it has one). */
+/** The type table `namespace`/`type`'s rows live in, quoted (undefined before it has one). */
 export async function relationOf(
   sql: Sql,
   namespace: string,
   type: string
 ): Promise<string | undefined> {
-  if (!TABLES) return 'rows';
   const [t] = await sql<Array<{ table_name: string }>>`
     SELECT table_name FROM substrate_type_tables WHERE namespace = ${namespace} AND type = ${type}`;
   return t === undefined ? undefined : quote(t.table_name);
@@ -72,8 +55,7 @@ export async function relationOf(
 /**
  * Purges the rows of `namespace`/`type` that `where` matches, tombstoned ones
  * too, through the dataset, so a field is found wherever its value lives (a
- * column, or `extra` while it is promoting). For the `tables` runs; the old
- * layouts' suites keep their own `DELETE FROM rows`.
+ * column, or `extra` while it is promoting).
  */
 export async function purgeWhere(
   sql: Sql,
@@ -96,7 +78,7 @@ export async function purgeWhere(
 
 const UUID_PATTERN = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
 
-/** The `tables` layout's rows (and ids) whose id is not UUID-shaped, which its UUID CHECKs refuse. */
+/** The rows (and ids) whose id is not UUID-shaped, which the UUID CHECKs refuse. */
 export async function deleteNonUuidTypeTableRows(sql: Sql): Promise<void> {
   const tables = await sql<Array<{ table_name: string }>>`
     SELECT table_name FROM substrate_type_tables`;
@@ -106,7 +88,7 @@ export async function deleteNonUuidTypeTableRows(sql: Sql): Promise<void> {
   await sql`DELETE FROM row_ids WHERE id !~ ${UUID_PATTERN}`;
 }
 
-/** Drops the `tables` layout's UUID CHECKs on `row_ids` and on every type table. */
+/** Drops the UUID CHECKs on `row_ids` and on every type table. */
 export async function dropTypeTableUuidChecks(sql: Sql): Promise<void> {
   await sql`ALTER TABLE row_ids DROP CONSTRAINT IF EXISTS row_ids_id_uuid_format`;
   const tables = await sql<Array<{ table_name: string }>>`

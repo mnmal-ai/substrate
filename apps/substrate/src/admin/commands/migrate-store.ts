@@ -321,7 +321,6 @@ export async function runMigrateStore(
     bootStore({
       config: parseEnv(targetEnv),
       pluginDir,
-      layout: 'tables',
       allowMigrating: true,
       // A prepare boot starts no advisor and no plugin backfill, so nothing writes beside the copy.
       background: false

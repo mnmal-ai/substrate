@@ -18,7 +18,6 @@ import { buildWhere } from '../src/pg-sql/where.js';
 import { ensureTypeTable, loadTypeTable, type TypeTable } from '../src/type-table.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
-const TABLES = process.env.SUBSTRATE_TEST_LAYOUT === 'tables';
 const NS = `ct_${randomBytes(4).toString('hex')}`;
 
 const PROMOTING: Record<string, FieldDef> = {
@@ -32,7 +31,7 @@ const ORPHANED: Record<string, FieldDef> = {
   oseen: field.date()
 };
 
-describe.skipIf(!POSTGRES_URL || !TABLES)('type-table SQL against a type table', () => {
+describe.skipIf(!POSTGRES_URL)('type-table SQL against a type table', () => {
   let sql: Sql;
   let table: TypeTable;
 

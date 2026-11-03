@@ -10,25 +10,27 @@
  * - `promoting`: the column exists, and values are still moving out of `extra`;
  * - `orphaned`: the field is no longer declared. Its column is kept, and its
  *   values stay readable as undeclared extras.
- *
- * `rowsTypeTable` describes the old layouts' `rows` in the same shape, so the
- * SQL builders take one descriptor whatever the layout.
  */
 
 import { type FieldDef, isColumnField } from '@mnmal-ai/substrate-types';
 import type { Sql, TransactionSql } from 'postgres';
-import { cachedLayout, columnName, hashedName, MAX_IDENTIFIER, typeTableName } from './layout.js';
+import {
+  cachedLayout,
+  columnName,
+  hashedName,
+  ident,
+  MAX_IDENTIFIER,
+  typeTableName
+} from './layout.js';
 import {
   columnSql,
   fieldExprSql,
-  type PromotedColumnLookup,
   qualifier,
   sqlStringLiteral,
   utcTextSql
 } from './pg-sql/primitives.js';
 import { extraWins, RAW_KEY } from './row-codec.js';
 import type { PgHandle } from './tx-scope.js';
-import { ident } from './type-storage.js';
 import { UUID_REGEX } from './uuid-check.js';
 
 export type ColumnKind = 'text' | 'enum' | 'number' | 'date' | 'boolean' | 'crossRef';
@@ -74,45 +76,19 @@ export interface TypedColumn {
 export interface TypeTable {
   namespace: string;
   type: string;
-  /** The table, as a quoted identifier (`rows` on the old layouts). */
+  /** The table, as a quoted identifier. */
   from: string;
-  jsonb: 'body' | 'extra';
-  /** The namespace/type predicate on `rows`; `null` on a type's own table. */
-  scope(alias?: string): string | null;
+  /** The jsonb column holding every field without a column of its own. */
+  jsonb: 'extra';
   column(field: string): TypedColumn | undefined;
   columns(): readonly TypedColumn[];
   /** Declared fields whose values live in `extra` until they get a column. */
   pending: readonly string[];
   orphaned: readonly string[];
-  /** The old layouts' promoted body columns; set only by `rowsTypeTable`. */
-  promoted?: PromotedColumnLookup;
-}
-
-/** `rows` on the old layouts: every field in `body`, apart from `promoted` ones. */
-export function rowsTypeTable(
-  namespace: string,
-  type: string,
-  promoted: PromotedColumnLookup
-): TypeTable {
-  return {
-    namespace,
-    type,
-    from: 'rows',
-    jsonb: 'body',
-    scope: (alias) => {
-      const q = qualifier(alias);
-      return `${q}namespace = ${sqlStringLiteral(namespace)} AND ${q}type = ${sqlStringLiteral(type)}`;
-    },
-    column: () => undefined,
-    columns: () => [],
-    pending: [],
-    orphaned: [],
-    promoted
-  };
 }
 
 /**
- * A type on the `tables` layout that has no table yet: an empty relation with
+ * A type that has no table yet: an empty relation with
  * a type table's fixed columns, so a read of it compiles and finds nothing.
  */
 export function absentTypeTable(namespace: string, type: string): TypeTable {
@@ -121,7 +97,6 @@ export function absentTypeTable(namespace: string, type: string): TypeTable {
     type,
     from: "(SELECT NULL::text AS id, NULL::timestamptz AS deleted_at, NULL::timestamptz AS created_at, NULL::timestamptz AS updated_at, NULL::text AS created_by_kind, NULL::text AS created_by_id, NULL::text AS updated_by_kind, NULL::text AS updated_by_id, NULL::bigint AS seq, '{}'::jsonb AS extra WHERE false)",
     jsonb: 'extra',
-    scope: () => null,
     column: () => undefined,
     columns: () => [],
     pending: [],
@@ -134,11 +109,9 @@ export function absentTypeTable(namespace: string, type: string): TypeTable {
  * as SQL over a caller's alias of `from`.
  */
 export interface TypeTableRef {
-  /** `rows` on the old layouts, else the type's table, quoted. */
+  /** The type's table, quoted. */
   from: string;
-  /** The namespace/type predicate on `rows`; `null` on a type's own table. */
-  scope(alias: string): string | null;
-  /** The row as `dataset.read` returns it (`decodeRow`'s, built in SQL); `alias.body` on the old layouts. */
+  /** The row as `dataset.read` returns it (`decodeRow`'s, built in SQL). */
   rowJson(alias: string): string;
   /** A top-level field as the text `rowJson(alias) ->> field` gives, which a row filter compares. */
   text(alias: string, field: string): string;
@@ -146,33 +119,28 @@ export interface TypeTableRef {
 
 /**
  * The {@link TypeTableRef} of `namespace`/`type`, or `undefined` when it has no
- * rows to read: no table yet on `tables`, or no schema at all. The layout is
- * cached per handle ({@link cachedLayout}), and on `tables` the descriptor in
- * the pool's {@link TableCache}, which `PgDataset` shares; a hit makes no query.
+ * rows to read: no table yet, or no store schema at all. The layout is cached
+ * per handle ({@link cachedLayout}), and the descriptor in the pool's
+ * {@link TableCache}, which `PgDataset` shares; a hit makes no query.
  */
 export async function typeTableRef(
   sql: PgHandle,
   namespace: string,
   type: string
 ): Promise<TypeTableRef | undefined> {
-  const layout = await cachedLayout(sql as Sql);
-  if (layout === 'absent') return undefined;
-  const table =
-    layout === 'tables'
-      ? await cachedTypeTable(sql, namespace, type)
-      : rowsTypeTable(namespace, type, () => undefined);
+  // Boot refuses an old layout, so anything but `tables` has no type tables to read.
+  if ((await cachedLayout(sql as Sql)) !== 'tables') return undefined;
+  const table = await cachedTypeTable(sql, namespace, type);
   if (table === undefined) return undefined;
   return {
     from: table.from,
-    scope: (alias) => table.scope(alias),
-    rowJson: (alias) =>
-      table.jsonb === 'body' ? `${qualifier(alias)}body` : rowJsonSql(table, alias),
+    rowJson: (alias) => rowJsonSql(table, alias),
     text: (alias, field) => `(${fieldExprSql(table, field, 'json', alias)} #>> '{}')`
   };
 }
 
 /**
- * A pool's type-table descriptors on the `tables` layout. A
+ * A pool's type-table descriptors. A
  * `substrate_catalog` notification (sent by `ensureTypeTable` on any change,
  * delivered at commit) drops its type's entry, and a (re)connect of the
  * listener drops them all, since notifications may have been missed.
@@ -355,7 +323,6 @@ export async function loadTypeTable(
     type,
     from: ident(tableName),
     jsonb: 'extra',
-    scope: () => null,
     column: (field) => byField.get(field),
     columns: () => columns,
     pending: rows.filter((r) => r.state === 'pending').map((r) => r.field),

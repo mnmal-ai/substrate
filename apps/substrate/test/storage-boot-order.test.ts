@@ -12,10 +12,8 @@
 
 import { randomUUID } from 'node:crypto';
 import {
-  detectLayout,
   PgDataset,
   PgEdgesStore,
-  partitionName,
   runMigrations,
   typeTableName
 } from '@mnmal-ai/substrate-dataset-pg';
@@ -34,7 +32,7 @@ import {
   ensureMigrationsTable,
   makeFieldDefLookupFactory
 } from '../src/serve/wiring.js';
-import { deleteNamespacesLike, TABLES } from './_layout.js';
+import { deleteNamespacesLike } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 
@@ -58,13 +56,11 @@ function coordinator(): {
 
 describe.skipIf(!POSTGRES_URL)('declared storage at boot (pg)', () => {
   let sql: Sql;
-  let partitioned: boolean;
 
   beforeAll(async () => {
     sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
     await runMigrations(sql);
     await ensureMigrationsTable(sql);
-    partitioned = (await detectLayout(sql)) === 'partitioned';
   });
 
   afterAll(async () => {
@@ -137,31 +133,25 @@ describe.skipIf(!POSTGRES_URL)('declared storage at boot (pg)', () => {
       datasetFor: () => undefined,
       nsDefs: new Map()
     });
-    expect(layout).toBe(TABLES ? 'tables' : partitioned ? 'partitioned' : 'legacy');
+    expect(layout).toBe('tables');
   }, 20_000);
 
   it('builds the declared unique index before a kernel migration runs', async () => {
     const c = coordinator();
     const seen = await bootKernel(c);
-    expect(seen).toEqual({
-      indexTable: TABLES
-        ? typeTableName(c.ns, 'Member')
-        : partitioned
-          ? partitionName(c.ns, 'Member')
-          : 'rows'
-    });
+    expect(seen).toEqual({ indexTable: typeTableName(c.ns, 'Member') });
   }, 20_000);
 
   it('fails the boot naming the duplicates when the unique index cannot be built', async () => {
     const c = coordinator();
-    // On `tables` the writer knows Member, so `kid` has its column from the
-    // table's CREATE, as the index reads it. A writer without the def would put
+    // The writer knows Member, so `kid` has its column from the table's
+    // CREATE, as the index reads it. A writer without the def would put
     // `kid` in `extra`, which a column index cannot see until the promotion
     // sweep (Task 13) moves it.
     const ds = new PgDataset({
       namespace: c.ns,
       sql,
-      ...(TABLES ? { typeDefLookup: () => c.def.types?.Member } : {})
+      typeDefLookup: () => c.def.types?.Member
     });
     await ds.write('Member', [
       { id: 'a', kid: 'dup' },

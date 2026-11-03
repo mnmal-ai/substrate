@@ -5,7 +5,7 @@
  * values, and rebuilt when a failed concurrent build left one INVALID.
  */
 
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { DEFAULT_ORDERED_BY, type FieldDef, type OrderedBy } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -14,19 +14,14 @@ import {
   IndexDefinitionConflictError,
   PgDataset,
   reconcileTypeIndexes,
-  type StorageLayout,
   UniqueIndexDuplicatesError
 } from '../src/index.js';
-import { desiredIndexKeys, reconcileTypeStatistics } from '../src/index-reconciler.js';
+import { desiredIndexKeys } from '../src/index-reconciler.js';
 import { columnName } from '../src/layout.js';
 import { generatedIdentifier, withMigrationLock } from '../src/migrate.js';
-import { indexExpressionSql } from '../src/pg-sql/primitives.js';
 import { ensureTypeTable, typeTableOf } from '../src/type-table.js';
-import { TABLES } from './_layout.js';
-import { addTestPromotedColumns } from './_promoted.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
-const LAYOUT = (process.env.SUBSTRATE_STORAGE_LAYOUT ?? 'legacy') as StorageLayout;
 const TYPE = 'T';
 
 const fields: Record<string, FieldDef> = {
@@ -42,9 +37,8 @@ const kidIndexed: Record<string, FieldDef> = {
 const hex = () => randomBytes(4).toString('hex');
 
 /**
- * On `tables`, every field this file declares gets its column at the type
- * table's CREATE, so an index keys on it; `kid` is text there, whatever kind a
- * test declares it.
+ * Every field this file declares gets its column at the type table's CREATE,
+ * so an index keys on it; `kid` is text there, whatever kind a test declares it.
  */
 const TABLE_FIELDS: Record<string, FieldDef> = {
   ...fields,
@@ -54,38 +48,23 @@ const TABLE_FIELDS: Record<string, FieldDef> = {
   boughtOn: { kind: 'scalar', type: 'date' }
 };
 
-/** Key expressions as pg deparses them: a body path on the old layouts, a column on `tables`. */
-const KEY = TABLES
-  ? {
-      cert: columnName('cert'),
-      kid: columnName('kid'),
-      observedAt: columnName('observedAt'),
-      owner: columnName('owner'),
-      boughtOn: columnName('boughtOn')
-    }
-  : {
-      cert: `((body ->> 'cert'::text)) COLLATE "C"`,
-      kid: `((body ->> 'kid'::text)) COLLATE "C"`,
-      observedAt: `substrate_ts((body -> 'observedAt'::text))`,
-      owner: `((body ->> 'owner'::text)) COLLATE "C"`,
-      boughtOn: `substrate_ts((body -> 'boughtOn'::text))`
-    };
+/** Key expressions as pg deparses them: each field's column. */
+const KEY = {
+  cert: columnName('cert'),
+  kid: columnName('kid'),
+  observedAt: columnName('observedAt'),
+  owner: columnName('owner'),
+  boughtOn: columnName('boughtOn')
+};
 /** Index keys a test builds by hand, as it writes them. */
-const HAND = TABLES
-  ? { cert: 'f_cert', certPlain: 'f_cert', kid: 'f_kid', kidCollated: 'f_kid' }
-  : {
-      cert: `((body ->> 'cert') COLLATE "C")`,
-      certPlain: `(body ->> 'cert')`,
-      kid: `(body ->> 'kid')`,
-      kidCollated: `((body ->> 'kid') COLLATE "C")`
-    };
+const HAND = { cert: 'f_cert', certPlain: 'f_cert', kid: 'f_kid', kidCollated: 'f_kid' };
 /**
- * On `tables` a hand-built `(f_kid)` keys as the reconciler's does, so its
- * predicate differs instead, which makes it a swap rather than a match.
+ * A hand-built `(f_kid)` keys as the reconciler's does, so its predicate
+ * differs instead, which makes it a swap rather than a match.
  */
-const otherLive = (live: string): string => (TABLES ? `${live} AND id IS NOT NULL` : live);
+const otherLive = (live: string): string => `${live} AND id IS NOT NULL`;
 /** A statement that opens a snapshot, so a concurrent build waits for it. */
-const SNAPSHOT = TABLES ? 'SELECT 1' : 'SELECT count(*) FROM rows';
+const SNAPSHOT = 'SELECT 1';
 
 let sql: Sql;
 
@@ -109,36 +88,16 @@ interface Fixture {
 async function fixture(): Promise<Fixture> {
   const ns = `ir_${hex()}`;
   const ds = new PgDataset({ namespace: ns, sql });
-  if (TABLES) {
-    await ensureTypeTable(sql, {
-      namespace: ns,
-      type: TYPE,
-      fields: TABLE_FIELDS,
-      newFields: 'column',
-      enforceUuidCheck: false
-    });
-    const target = await typeTableOf(sql, ns, TYPE);
-    if (target === undefined) throw new Error('type table missing');
-    return { ns, ds, target, live: 'deleted_at IS NULL' };
-  }
-  if (LAYOUT === 'legacy') {
-    return {
-      ns,
-      ds,
-      target: 'rows',
-      live: `namespace = '${ns}' AND type = '${TYPE}' AND deleted_at IS NULL`
-    };
-  }
-  await ds.ensureTypeStorage(TYPE);
-  const [row] = await sql<Array<{ relname: string }>>`
-    SELECT c.relname FROM pg_partition_tree('rows') t
-    JOIN pg_class c ON c.oid = t.relid
-    WHERE t.isleaf AND pg_get_expr(c.relpartbound, c.oid) = ${`FOR VALUES IN ('${TYPE}')`}
-      AND t.parentrelid = (
-        SELECT c2.oid FROM pg_partition_tree('rows') t2 JOIN pg_class c2 ON c2.oid = t2.relid
-        WHERE pg_get_expr(c2.relpartbound, c2.oid) = ${`FOR VALUES IN ('${ns}')`})`;
-  if (row === undefined) throw new Error('type partition missing');
-  return { ns, ds, target: row.relname, live: 'deleted_at IS NULL' };
+  await ensureTypeTable(sql, {
+    namespace: ns,
+    type: TYPE,
+    fields: TABLE_FIELDS,
+    newFields: 'column',
+    enforceUuidCheck: false
+  });
+  const target = await typeTableOf(sql, ns, TYPE);
+  if (target === undefined) throw new Error('type table missing');
+  return { ns, ds, target, live: 'deleted_at IS NULL' };
 }
 
 const reconcile = (
@@ -150,7 +109,6 @@ const reconcile = (
   reconcileTypeIndexes(sql, {
     namespace: ns,
     type: TYPE,
-    layout: LAYOUT,
     fields: f,
     indexes,
     orderedBy
@@ -173,7 +131,6 @@ describe.skipIf(!POSTGRES_URL)('reconcileTypeIndexes', () => {
         {
           namespace: ns,
           type: TYPE,
-          layout: LAYOUT,
           fields: kidIndexed,
           indexes: [],
           orderedBy: DEFAULT_ORDERED_BY
@@ -185,18 +142,16 @@ describe.skipIf(!POSTGRES_URL)('reconcileTypeIndexes', () => {
     expect(states.find((s) => s.name === kid)).toMatchObject({ state: 'pending', unique: false });
   });
 
-  it('reports an unbuilt non-unique index on a promoted column a kernel migration has yet to add as pending in the unique pass', async () => {
+  it('reports an unbuilt non-unique index on a column the table lacks yet as pending in the unique pass', async () => {
     const { ns } = await fixture();
     const states = await reconcileTypeIndexes(
       sql,
       {
         namespace: ns,
         type: TYPE,
-        layout: LAYOUT,
         fields: { ...fields, phase: { kind: 'scalar', type: 'string', indexed: true } },
         indexes: [],
-        orderedBy: DEFAULT_ORDERED_BY,
-        promotedColumns: { phase: { column: 'not_yet_added', kind: 'text' } }
+        orderedBy: DEFAULT_ORDERED_BY
       },
       { only: 'unique' }
     );
@@ -240,7 +195,6 @@ describe.skipIf(!POSTGRES_URL)('reconcileTypeIndexes', () => {
       const decl: IndexDecl = { fields: ['kid'], where: { archived: false } };
       const states = kidStates(await reconcile(ns, [decl], withArchived));
       const implicit = generatedIdentifier(ns, TYPE, 'kid', 'idx');
-      // Spec rule (derived indexes, both layouts): legacy builds the derived one too.
       expect(states).toHaveLength(2);
       for (const st of states) expect((await indexState(st.name))?.valid).toBe(true);
       const own = states.find((x) => x.name !== implicit);
@@ -329,9 +283,7 @@ describe.skipIf(!POSTGRES_URL)('reconcileTypeIndexes', () => {
 
     const s = (await (swapping as ReturnType<typeof reconcile>)).find((x) => x.name === name);
     expect(s).toMatchObject({ name, unique: true, outcome: 'swapped', state: 'valid' });
-    expect((await indexState(name))?.def).toContain(
-      TABLES ? `(f_kid) WHERE (deleted_at IS NULL)` : `COLLATE "C"`
-    );
+    expect((await indexState(name))?.def).toContain(`(f_kid) WHERE (deleted_at IS NULL)`);
     expect(await indexState(`${name}__swap`)).toBeUndefined();
     await expect(ds.write(TYPE, [{ id: 'dup2', kid: 'k2' }])).rejects.toThrow(/unique|duplicate/i);
   });
@@ -372,37 +324,10 @@ describe.skipIf(!POSTGRES_URL)('reconcileTypeIndexes', () => {
 
     const s = (await (swapping as ReturnType<typeof reconcile>)).find((x) => x.name === name);
     expect(s).toMatchObject({ outcome: 'swapped', state: 'valid' });
-    expect((await indexState(name))?.def).toContain(
-      TABLES ? `(f_kid) WHERE (deleted_at IS NULL)` : `COLLATE "C"`
-    );
+    expect((await indexState(name))?.def).toContain(`(f_kid) WHERE (deleted_at IS NULL)`);
     expect(await indexState(swapName)).toBeUndefined();
     await expect(ds.write(TYPE, [{ id: 'dup2', kid: 'k2' }])).rejects.toThrow(/unique|duplicate/i);
   });
-
-  // Promoted body columns are the old layouts' `rows`; a type table has columns of its own.
-  it.skipIf(TABLES)(
-    'swaps a body-keyed index onto the column once its field is promoted',
-    async () => {
-      await addTestPromotedColumns(sql);
-      const { ns, target, live } = await fixture();
-      const name = `rows_p_${hex()}`;
-      await sql.unsafe(`CREATE INDEX ${name} ON ${target} ((body ->> 'status')) WHERE ${live}`);
-      const states = await reconcileTypeIndexes(sql, {
-        namespace: ns,
-        type: TYPE,
-        layout: LAYOUT,
-        orderedBy: DEFAULT_ORDERED_BY,
-        fields: { ...fields, status: { kind: 'scalar', type: 'string' } },
-        indexes: [{ fields: ['status'], name }],
-        promotedColumns: { status: { column: 'status', kind: 'text' } }
-      });
-      expect(states.find((x) => x.name === name)).toMatchObject({
-        outcome: 'swapped',
-        state: 'valid'
-      });
-      expect((await indexState(name))?.def).toMatch(/\(status COLLATE "C", id\)/);
-    }
-  );
 
   describe('a trailing id key', () => {
     /** The key-column list of `def`, which ends `, id` on a non-unique btree. */
@@ -432,16 +357,14 @@ describe.skipIf(!POSTGRES_URL)('reconcileTypeIndexes', () => {
         `${KEY.cert}, ${KEY.observedAt} DESC NULLS LAST, id`
       );
       expect(keyList((await indexState(unique))?.def)).toBe(KEY.kid);
-      // Spec rule (derived keys, both layouts): the natural key replaces the
-      // implicit date DESC rule, so a date field is ascending, then created_at.
+      // Spec rule (derived keys): the natural key replaces the implicit date
+      // DESC rule, so a date field is ascending, then created_at.
       expect(
         keyList((await indexState(generatedIdentifier(ns, TYPE, 'observedAt', 'idx')))?.def)
       ).toBe(`${KEY.observedAt}, created_at DESC NULLS LAST, id`);
-      if (LAYOUT !== 'legacy') {
-        expect(
-          keyList((await indexState(generatedIdentifier(ns, TYPE, 'created_at', 'base')))?.def)
-        ).toBe('created_at DESC NULLS LAST, id');
-      }
+      expect(
+        keyList((await indexState(generatedIdentifier(ns, TYPE, 'created_at', 'base')))?.def)
+      ).toBe('created_at DESC NULLS LAST, id');
     });
 
     it('swaps an index of the shape without it in place of conflicting', async () => {
@@ -467,236 +390,14 @@ describe.skipIf(!POSTGRES_URL)('reconcileTypeIndexes', () => {
         state: 'failed',
         error: `index_definition_conflict: ${name} exists with a different definition; drop or rename it`
       });
-      expect(keyList((await indexState(name))?.def)).toContain(TABLES ? 'f_cert' : `'cert'`);
+      expect(keyList((await indexState(name))?.def)).toContain('f_cert');
       // The declaration after it, and the type's statistics, still reconcile.
       expect(states.find((x) => x.name === after)).toMatchObject({ state: 'valid' });
       const [stats] = await sql<Array<{ n: number }>>`
         SELECT count(*)::int AS n FROM pg_statistic_ext
         WHERE obj_description(oid, 'pg_statistic_ext') = ${`substrate: statistics of ${JSON.stringify([ns, TYPE])}`}`;
-      // A column key has column statistics, so `tables` builds no object.
-      if (TABLES) expect(stats?.n).toBe(0);
-      else expect(stats?.n).toBeGreaterThan(0);
-    });
-  });
-
-  // Body-keyed expressions; a type table keys on columns (see 'on a type table' below).
-  describe.skipIf(TABLES)('expression statistics', () => {
-    /** The statistics objects on `target`, with their expressions. */
-    const statsOn = async (target: string) =>
-      sql<Array<{ name: string; exprs: string[] }>>`
-        SELECT stxname AS name, pg_get_statisticsobjdef_expressions(oid) AS exprs
-        FROM pg_statistic_ext WHERE stxrelid = to_regclass(${`"${target}"`}) ORDER BY stxname`;
-    const ours = (ns: string, field: string) =>
-      new RegExp(`^rows_${ns}_t_${field.toLowerCase()}_[0-9a-f]{6}_[0-9a-f]{8}_stat$`);
-
-    const statArgs = (ns: string, indexes: IndexDecl[], type = TYPE) => ({
-      namespace: ns,
-      type,
-      layout: LAYOUT,
-      orderedBy: DEFAULT_ORDERED_BY,
-      fields,
-      indexes
-    });
-    /** `sql`, but every `unsafe` statement on a reserved connection matching `fails` rejects. */
-    const failing = (fails: RegExp): Sql =>
-      new Proxy(sql, {
-        get(target, prop, receiver) {
-          if (prop !== 'reserve') return Reflect.get(target, prop, receiver);
-          return async () => {
-            const conn = await target.reserve();
-            return new Proxy(conn, {
-              get(c, p, r) {
-                if (p !== 'unsafe') return Reflect.get(c, p, r);
-                return (q: string, ...rest: unknown[]) =>
-                  fails.test(q)
-                    ? Promise.reject(new Error(`stubbed failure: ${q}`))
-                    : (c.unsafe as (...a: unknown[]) => unknown)(q, ...rest);
-              }
-            });
-          };
-        }
-      });
-    const statName = (ns: string, field: string, type = TYPE) =>
-      generatedIdentifier(
-        ns,
-        type,
-        `${field}_${createHash('sha256').update(indexExpressionSql('text', field)).digest('hex').slice(0, 6)}`,
-        'stat'
-      );
-
-    it('are created per body-keyed key, once, dropped with the declaration, and nothing else is touched', async () => {
-      const { ns, ds, target } = await fixture();
-      // A row, so the ANALYZE fills the objects and a second reconcile has nothing to do.
-      await ds.write(TYPE, [{ id: 'a', cert: 'c', kid: 'k' }]);
-      const foreign = `other_stat_${hex()}`;
-      await sql.unsafe(`CREATE STATISTICS ${foreign} ON ((body ->> 'kid')) FROM "${target}"`);
-      try {
-        const decls: IndexDecl[] = [
-          { fields: ['cert'], name: `rows_s_${hex()}` },
-          { fields: ['kid'], unique: true, name: `rows_u_${hex()}` }
-        ];
-        await reconcile(ns, decls);
-        const after = await statsOn(target);
-        const cert = after.find((x) => x.name === statName(ns, 'cert'));
-        const kid = after.find((x) => x.name === statName(ns, 'kid'));
-        expect(cert?.exprs).toEqual([`((body ->> 'cert'::text) COLLATE "C")`]);
-        expect(kid?.exprs).toEqual([`((body ->> 'kid'::text) COLLATE "C")`]);
-
-        const again = await reconcileTypeStatistics(sql, statArgs(ns, decls));
-        expect(again).toEqual({ created: [], dropped: [], analyzed: false });
-
-        await reconcile(ns, []);
-        const left = (await statsOn(target)).map((x) => x.name);
-        expect(left).not.toContain(cert?.name);
-        expect(left).not.toContain(kid?.name);
-        expect(left).toContain(foreign);
-      } finally {
-        await sql.unsafe(`DROP STATISTICS IF EXISTS ${foreign}`);
-      }
-    });
-
-    it('a failed drop is logged, the reconcile completes, and the next one drops it', async () => {
-      const { ns, target } = await fixture();
-      const decls: IndexDecl[] = [{ fields: ['cert'], name: `rows_s_${hex()}` }];
-      await reconcile(ns, decls);
-      const name = statName(ns, 'cert');
-      await expect(
-        reconcileTypeIndexes(failing(/^DROP STATISTICS/), statArgs(ns, []))
-      ).resolves.toBeDefined();
-      expect((await statsOn(target)).map((x) => x.name)).toContain(name);
-      expect(await reconcileTypeStatistics(sql, statArgs(ns, []))).toMatchObject({
-        dropped: [name]
-      });
-    });
-
-    it('a failed ANALYZE is retried by the next reconcile', async () => {
-      const { ns, ds } = await fixture();
-      await ds.write(TYPE, [{ id: 'a', cert: 'c' }]);
-      const decls: IndexDecl[] = [{ fields: ['cert'], name: `rows_s_${hex()}` }];
-      const first = await reconcileTypeStatistics(failing(/^ANALYZE/), statArgs(ns, decls));
-      expect(first).toEqual({ created: [statName(ns, 'cert')], dropped: [], analyzed: false });
-      expect(await reconcileTypeStatistics(sql, statArgs(ns, decls))).toEqual({
-        created: [],
-        dropped: [],
-        analyzed: true
-      });
-      expect((await reconcileTypeStatistics(sql, statArgs(ns, decls))).analyzed).toBe(false);
-    });
-
-    it("never claims an object of its name that is not marked as the type's", async () => {
-      const { ns, target } = await fixture();
-      const name = statName(ns, 'cert');
-      await sql.unsafe(`CREATE STATISTICS ${name} ON ((body ->> 'kid')) FROM "${target}"`);
-      try {
-        const out = await reconcileTypeStatistics(
-          sql,
-          statArgs(ns, [{ fields: ['cert'], name: `rows_s_${hex()}` }])
-        );
-        expect(out.created).toEqual([]);
-        const [row] = await sql<Array<{ comment: string | null }>>`
-          SELECT obj_description(oid, 'pg_statistic_ext') AS comment
-          FROM pg_statistic_ext WHERE stxname = ${name}`;
-        expect(row?.comment).toBeNull();
-      } finally {
-        await sql.unsafe(`DROP STATISTICS IF EXISTS ${name}`);
-      }
-    });
-
-    it.skipIf(LAYOUT !== 'legacy')(
-      "legacy: one type's reconcile leaves another type's object on rows alone",
-      async () => {
-        const { ns } = await fixture();
-        const decls: IndexDecl[] = [{ fields: ['cert'], name: `rows_s_${hex()}` }];
-        const other = {
-          ...statArgs(ns, [{ fields: ['cert'], name: `rows_o_${hex()}` }]),
-          type: 'U'
-        };
-        await reconcileTypeIndexes(sql, statArgs(ns, decls));
-        await reconcileTypeIndexes(sql, other);
-        await reconcileTypeIndexes(sql, { ...other, indexes: [] });
-        const names = (await statsOn('rows')).map((x) => x.name);
-        expect(names).toContain(statName(ns, 'cert'));
-        expect(names).not.toContain(statName(ns, 'cert', 'U'));
-      }
-    );
-
-    it('follow a derived index left over after its field stops asking for one', async () => {
-      const { ns, ds } = await fixture();
-      await ds.write(TYPE, [{ id: 'a', kid: 'k' }]);
-      const idxName = generatedIdentifier(ns, TYPE, 'kid', 'idx');
-      await reconcile(ns, [], kidIndexed);
-      expect((await indexState(idxName))?.valid).toBe(true);
-      // `fields` declares kid with indexed unset: the index stays, so its statistics do.
-      await reconcile(ns, []);
-      expect((await indexState(idxName))?.valid).toBe(true);
-      const held = async () =>
-        (
-          await sql<Array<{ name: string }>>`
-            SELECT stxname AS name FROM pg_statistic_ext WHERE stxname = ${statName(ns, 'kid')}`
-        ).length;
-      expect(await held()).toBe(1);
-      await sql.unsafe(`DROP INDEX ${idxName}`);
-      expect(await reconcileTypeStatistics(sql, statArgs(ns, []))).toMatchObject({
-        dropped: [statName(ns, 'kid')]
-      });
-      expect(await held()).toBe(0);
-    });
-
-    it('do not follow a same-named index the engine does not own, nor an invalid one', async () => {
-      const { ns, ds, target, live } = await fixture();
-      await ds.write(TYPE, [
-        { id: 'a', kid: 'k' },
-        { id: 'b', kid: 'k' }
-      ]);
-      const idxName = generatedIdentifier(ns, TYPE, 'kid', 'idx');
-      const held = async () =>
-        (
-          await sql<Array<{ name: string }>>`
-            SELECT stxname AS name FROM pg_statistic_ext WHERE stxname = ${statName(ns, 'kid')}`
-        ).length;
-      // Unmarked: the engine's name, but not built or adopted by it.
-      await reconcile(ns, [], kidIndexed);
-      await sql.unsafe(`COMMENT ON INDEX ${idxName} IS NULL`);
-      expect(await reconcileTypeStatistics(sql, statArgs(ns, []))).toMatchObject({
-        dropped: [statName(ns, 'kid')]
-      });
-      // Invalid: a failed concurrent build, marked.
-      await sql.unsafe(`DROP INDEX ${idxName}`);
-      await reconcile(ns, [], kidIndexed);
-      expect(await held()).toBe(1);
-      await sql.unsafe(`DROP INDEX ${idxName}`);
-      await expect(
-        sql.unsafe(
-          `CREATE UNIQUE INDEX CONCURRENTLY ${idxName} ON ${target} (((body ->> 'kid') COLLATE "C")) WHERE ${live}`
-        )
-      ).rejects.toThrow();
-      await sql.unsafe(`COMMENT ON INDEX ${idxName} IS 'substrate: reconciled'`);
-      expect((await indexState(idxName))?.valid).toBe(false);
-      expect(await reconcileTypeStatistics(sql, statArgs(ns, []))).toMatchObject({
-        dropped: [statName(ns, 'kid')]
-      });
-      expect(await held()).toBe(0);
-      await sql.unsafe(`DROP INDEX ${idxName}`);
-    });
-
-    it('are not created for a promoted field', async () => {
-      await addTestPromotedColumns(sql);
-      const { ns, target } = await fixture();
-      await reconcileTypeIndexes(sql, {
-        namespace: ns,
-        type: TYPE,
-        layout: LAYOUT,
-        orderedBy: DEFAULT_ORDERED_BY,
-        fields: { ...fields, status: { kind: 'scalar', type: 'string' } },
-        indexes: [
-          { fields: ['status'], name: `rows_p_${hex()}` },
-          { fields: ['cert'], name: `rows_s_${hex()}` }
-        ],
-        promotedColumns: { status: { column: 'status', kind: 'text' } }
-      });
-      const names = (await statsOn(target)).map((x) => x.name);
-      expect(names.some((n) => ours(ns, 'cert').test(n))).toBe(true);
-      expect(names.some((n) => ours(ns, 'status').test(n))).toBe(false);
+      // A column key has column statistics, so no object is built.
+      expect(stats?.n).toBe(0);
     });
   });
 
@@ -736,8 +437,8 @@ describe.skipIf(!POSTGRES_URL)('reconcileTypeIndexes', () => {
       indexName: name,
       name: 'IndexDefinitionConflictError'
     });
-    expect((err as IndexDefinitionConflictError).existing).toContain(TABLES ? 'f_cert' : `'cert'`);
-    expect((err as IndexDefinitionConflictError).declared).toContain(TABLES ? 'f_kid' : `'kid'`);
+    expect((err as IndexDefinitionConflictError).existing).toContain('f_cert');
+    expect((err as IndexDefinitionConflictError).declared).toContain('f_kid');
   });
 
   it('refuses a unique index over duplicate live values and builds nothing', async () => {
@@ -784,61 +485,7 @@ describe.skipIf(!POSTGRES_URL)('reconcileTypeIndexes', () => {
     expect(await indexState(`${name}__swap`)).toBeUndefined();
   });
 
-  // Spec rule (derived indexes, both layouts): this was "an implicit indexed
-  // field creates nothing" on legacy; legacy now builds the derived index.
-  it.skipIf(LAYOUT !== 'legacy')(
-    'builds derived indexes as partial indexes on rows, scoped to the type',
-    async () => {
-      const { ns } = await fixture();
-      const name = generatedIdentifier(ns, TYPE, 'kid', 'idx');
-      expect(await reconcile(ns, [], kidIndexed)).toMatchObject([{ name, state: 'valid' }]);
-      const made = await sql<Array<{ indexname: string; tablename: string; indexdef: string }>>`
-        SELECT indexname, tablename, indexdef FROM pg_indexes
-        WHERE schemaname = current_schema() AND indexdef LIKE ${`%'${ns}'%`}`;
-      expect(made).toHaveLength(1);
-      expect(made[0]).toMatchObject({ indexname: name, tablename: 'rows' });
-      expect(made[0]?.indexdef).toContain(
-        `USING btree (((body ->> 'kid'::text)) COLLATE "C", created_at DESC NULLS LAST, id) ` +
-          `WHERE ((namespace = '${ns}'::text) AND (type = '${TYPE}'::text) AND (deleted_at IS NULL))`
-      );
-    }
-  );
-
-  it.skipIf(LAYOUT !== 'partitioned')(
-    'partitioned: implicit, list, json and engine base indexes land on the type partition',
-    async () => {
-      const { ns, target } = await fixture();
-      const states = await reconcile(ns, [], {
-        ...kidIndexed,
-        n: { kind: 'scalar', type: 'number', indexed: true },
-        tags: { kind: 'list', of: { kind: 'scalar', type: 'string' }, indexed: true },
-        values: { kind: 'scalar', type: 'json', indexed: true }
-      });
-      expect(states.every((s) => s.state === 'valid')).toBe(true);
-      const defs = (
-        await sql<Array<{ def: string }>>`
-          SELECT pg_get_indexdef(i.indexrelid) AS def FROM pg_index i
-          WHERE i.indrelid = to_regclass(${target})`
-      ).map((r) => r.def);
-      const expected = [
-        // Spec rule (derived keys): (field, natural key, id), natural key created_at DESC.
-        `USING btree (((body ->> 'kid'::text)) COLLATE "C", created_at DESC NULLS LAST, id) WHERE (deleted_at IS NULL)`,
-        `USING btree (substrate_num((body -> 'n'::text)), created_at DESC NULLS LAST, id) WHERE (deleted_at IS NULL)`,
-        `USING gin (((body -> 'tags'::text)) jsonb_path_ops) WHERE (deleted_at IS NULL)`,
-        `USING gin (((body -> 'values'::text)) jsonb_path_ops) WHERE (deleted_at IS NULL)`,
-        `USING btree (created_at DESC NULLS LAST, id) WHERE (deleted_at IS NULL)`,
-        `USING btree (updated_at DESC NULLS LAST, id) WHERE (deleted_at IS NULL)`,
-        `USING btree (deleted_at) WHERE (deleted_at IS NOT NULL)`
-      ];
-      for (const e of expected)
-        expect(
-          defs.some((d) => d.endsWith(e)),
-          e
-        ).toBe(true);
-    }
-  );
-
-  describe.skipIf(!TABLES)('on a type table', () => {
+  describe('on a type table', () => {
     it('declared index keys columns: CREATE INDEX … (f_cert, f_observedat DESC, id) WHERE deleted_at IS NULL', async () => {
       const { ns, target } = await fixture();
       const name = `rows_c_${hex()}`;
@@ -920,6 +567,56 @@ describe.skipIf(!POSTGRES_URL)('reconcileTypeIndexes', () => {
         state: 'valid',
         outcome: 'created'
       });
+    });
+
+    it('unique index on Key.kid where revokedAt null rejects a second live kid', async () => {
+      // `_system/Key`'s declaration (substrate-compose `_system/types.ts`), on a namespace of its own.
+      const ns = `ir_${hex()}`;
+      const keyDef = {
+        fields: {
+          kid: { kind: 'scalar', type: 'string' },
+          name: { kind: 'scalar', type: 'string' },
+          revokedAt: { kind: 'scalar', type: 'date', nullable: true }
+        } satisfies Record<string, FieldDef>,
+        indexes: [
+          {
+            name: 'substrate_key_live_kid_uniq',
+            fields: ['kid'],
+            unique: true,
+            where: { revokedAt: null }
+          }
+        ] satisfies IndexDecl[]
+      };
+      const ds = new PgDataset({
+        namespace: ns,
+        sql,
+        typeDefLookup: (type) => (type === 'Key' ? keyDef : undefined)
+      });
+      await ds.ensureTypeStorage('Key');
+      expect((await ds.describeStorage('Key')).indexes).toContainEqual(
+        expect.objectContaining({
+          name: 'substrate_key_live_kid_uniq',
+          unique: true,
+          state: 'valid'
+        })
+      );
+      const kid = `k-${hex()}`;
+      await ds.write('Key', [{ id: `${kid}-1`, kid, name: 'one' }]);
+      // A revoked key may share the kid.
+      await ds.write('Key', [
+        { id: `${kid}-2`, kid, name: 'revoked', revokedAt: '2026-01-01T00:00:00.000Z' }
+      ]);
+      const err = await ds
+        .write('Key', [{ id: `${kid}-4`, kid, name: 'second live' }])
+        .catch((e: unknown) => e);
+      expect((err as { code?: string }).code).toBe('unique_violation');
+      expect((err as Error).message).toContain('substrate_key_live_kid_uniq');
+      expect((err as Error).message).toContain('(kid)');
+      // Once the live key is tombstoned, a new live one may take the kid.
+      await ds.tombstone('Key', [`${kid}-1`]);
+      await ds.write('Key', [{ id: `${kid}-5`, kid, name: 'replacement' }]);
+      const { rows } = await ds.read('Key', { where: { kid: { eq: kid } } });
+      expect(rows.map((r) => r.id).sort()).toEqual([`${kid}-2`, `${kid}-5`]);
     });
   });
 
@@ -1012,10 +709,9 @@ describe.skipIf(!POSTGRES_URL)('reconcileTypeIndexes', () => {
 });
 
 describe('desiredIndexKeys', () => {
-  const args = (layout: StorageLayout, orderedBy: OrderedBy = DEFAULT_ORDERED_BY) => ({
+  const args = (orderedBy: OrderedBy = DEFAULT_ORDERED_BY) => ({
     namespace: 'n',
     type: TYPE,
-    layout,
     fields: {
       ...kidIndexed,
       owner: { kind: 'crossRef', ns: 'n', type: 'U' } as FieldDef
@@ -1023,46 +719,36 @@ describe('desiredIndexKeys', () => {
     indexes: [{ fields: ['cert', { field: 'observedAt', dir: 'desc' as const }] }],
     orderedBy
   });
-  const keysOf = (layout: StorageLayout, orderedBy?: OrderedBy) =>
-    desiredIndexKeys(args(layout, orderedBy)).map((s) => s.keys);
+  const keysOf = (orderedBy?: OrderedBy) => desiredIndexKeys(args(orderedBy)).map((s) => s.keys);
 
   it('gives a derived index its field then the natural order, and a declaration its own keys', () => {
-    for (const layout of ['legacy', 'partitioned'] as const) {
-      const keys = keysOf(layout);
-      expect(keys).toContainEqual([
-        ['kid', 'asc'],
-        ['createdAt', 'desc']
-      ]);
-      expect(keys).toContainEqual([
-        ['owner', 'asc'],
-        ['createdAt', 'desc']
-      ]);
-      expect(keys).toContainEqual([
-        ['cert', 'asc'],
-        ['observedAt', 'desc']
-      ]);
-    }
+    const keys = keysOf();
+    expect(keys).toContainEqual([
+      ['kid', 'asc'],
+      ['createdAt', 'desc']
+    ]);
+    expect(keys).toContainEqual([
+      ['owner', 'asc'],
+      ['createdAt', 'desc']
+    ]);
+    expect(keys).toContainEqual([
+      ['cert', 'asc'],
+      ['observedAt', 'desc']
+    ]);
   });
 
-  it('follows a declared natural order, and has the metadata order keys on both layouts', () => {
-    expect(keysOf('legacy', { observedAt: 'asc' })).toContainEqual([
+  it('follows a declared natural order, and has the metadata order keys', () => {
+    expect(keysOf({ observedAt: 'asc' })).toContainEqual([
       ['kid', 'asc'],
       ['observedAt', 'asc']
     ]);
-    expect(keysOf('partitioned')).toContainEqual([['createdAt', 'desc']]);
-    // Legacy: the migrations' shared (namespace, type, created_at|updated_at) indexes.
-    const legacy = desiredIndexKeys(args('legacy'));
-    expect(legacy).toContainEqual({
-      name: 'rows_ns_type_created_at_idx',
-      keys: [['createdAt', 'desc']],
-      unique: false
-    });
-    expect(legacy.map((k) => k.name)).toContain('rows_ns_type_updated_at_idx');
+    expect(keysOf()).toContainEqual([['createdAt', 'desc']]);
+    expect(keysOf()).toContainEqual([['updatedAt', 'desc']]);
   });
 
   it("carries a partial declaration's predicate, which a read must match", () => {
     const keys = desiredIndexKeys({
-      ...args('partitioned'),
+      ...args(),
       fields: { ...kidIndexed, archived: { kind: 'scalar', type: 'boolean' } },
       indexes: [{ fields: ['cert'], where: { archived: false } }]
     });

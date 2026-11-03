@@ -17,17 +17,11 @@ import { PgDataset, runMigrations } from '@mnmal-ai/substrate-dataset-pg';
 import { ADMIN_CAPABILITIES } from '@mnmal-ai/substrate-policy';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import {
-  deleteNonUuidTypeTableRows,
-  dropTypeTableUuidChecks,
-  purgeWhere,
-  TABLES
-} from './_layout.js';
+import { deleteNonUuidTypeTableRows, dropTypeTableUuidChecks, purgeWhere } from './_layout.js';
 
-/** Every `_system/Key` row: `DELETE FROM rows` on the old layouts, its type table's on `tables`. */
+/** Every `_system/Key` row, purged from its type table. */
 async function deleteKeys(sql: Sql): Promise<void> {
-  if (TABLES) await purgeWhere(sql, SYSTEM_NAMESPACE, KEY_TYPE);
-  else await sql`DELETE FROM rows WHERE namespace = ${SYSTEM_NAMESPACE} AND type = ${KEY_TYPE}`;
+  await purgeWhere(sql, SYSTEM_NAMESPACE, KEY_TYPE);
 }
 
 import { main, runBootstrap } from '../src/admin/index.js';
@@ -348,14 +342,7 @@ describe.skipIf(!POSTGRES_URL)('substrate-admin bootstrap (SUBSTRATE_ENFORCE_UUI
        WHERE from_id !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
           OR to_id   !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
     `;
-    if (TABLES) {
-      await deleteNonUuidTypeTableRows(sql);
-    } else {
-      await sql`
-        DELETE FROM rows
-         WHERE id !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-      `;
-    }
+    await deleteNonUuidTypeTableRows(sql);
     // Re-run migrations with the gate flipped on. `force: true` clears the
     // tracking table so 0002 actually applies on a DB that was already
     // migrated under the default (unconstrained) gate.
@@ -365,8 +352,7 @@ describe.skipIf(!POSTGRES_URL)('substrate-admin bootstrap (SUBSTRATE_ENFORCE_UUI
   afterAll(async () => {
     // Strip the constraints + 0002's tracking row so unrelated pg-gated tests
     // sharing this DB don't inherit constrained schema between runs.
-    if (TABLES) await dropTypeTableUuidChecks(sql);
-    else await sql`ALTER TABLE rows DROP CONSTRAINT IF EXISTS rows_id_uuid_format`;
+    await dropTypeTableUuidChecks(sql);
     await sql`ALTER TABLE short_ids DROP CONSTRAINT IF EXISTS short_ids_row_id_uuid_format`;
     await sql`ALTER TABLE edges DROP CONSTRAINT IF EXISTS edges_from_id_uuid_format`;
     await sql`ALTER TABLE edges DROP CONSTRAINT IF EXISTS edges_to_id_uuid_format`;

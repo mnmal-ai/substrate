@@ -15,7 +15,7 @@ import type { ActorIdentity, RowMetadata } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { PgDataset, runMigrations } from '../src/index.js';
-import { dropNamespace, rowsWhere, TABLES } from './_layout.js';
+import { dropNamespace, rowsWhere } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 
@@ -32,9 +32,8 @@ describe.skipIf(!POSTGRES_URL)(
 
     beforeEach(async () => {
       sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
-      // A fresh store: `rows` re-created, or on `tables` this namespace's tables dropped.
-      if (TABLES) await dropNamespace(sql, 'test');
-      else await sql`DROP TABLE IF EXISTS rows CASCADE`;
+      // A fresh store: this namespace's tables dropped.
+      await dropNamespace(sql, 'test');
       await runMigrations(sql, { force: true });
       ds = new PgDataset({ namespace: 'test', sql });
     });
@@ -57,7 +56,7 @@ describe.skipIf(!POSTGRES_URL)(
         ]);
         // Verify body does not carry timestamp keys (finalize precondition)
         const rows = await sql.unsafe<{ id: string; body: Record<string, unknown> }[]>(
-          `SELECT id, ${TABLES ? 'extra' : 'body'} AS body
+          `SELECT id, extra AS body
            FROM ${await rowsWhere(sql, 'test', 'Thing')} true ORDER BY id`
         );
         for (const row of rows) {

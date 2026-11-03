@@ -22,7 +22,7 @@ import { MemorySubstrateServer } from '@mnmal-ai/substrate-server-memory';
 import type { Dataset } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { purgeWhere, TABLES } from './_layout.js';
+import { purgeWhere } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const SECRET = 'keys-reregister-secret';
@@ -116,9 +116,7 @@ describe('re-registering a revoked kid through the route', () => {
   describe.skipIf(!POSTGRES_URL)('pg', () => {
     let sql: Sql;
     const clear = async () => {
-      if (TABLES) await purgeWhere(sql, SYSTEM_NAMESPACE, KEY_TYPE, { kid: { eq: KID } });
-      else
-        await sql`DELETE FROM rows WHERE namespace = ${SYSTEM_NAMESPACE} AND type = ${KEY_TYPE} AND body->>'kid' = ${KID}`;
+      await purgeWhere(sql, SYSTEM_NAMESPACE, KEY_TYPE, { kid: { eq: KID } });
     };
     beforeAll(async () => {
       sql = postgres(POSTGRES_URL as string);

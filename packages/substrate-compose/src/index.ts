@@ -56,6 +56,7 @@ export {
 export {
   composeKernelPlugins,
   type KernelComposeContext,
+  KernelMigrationLayoutError,
   kernelMigrationTracking,
   mountKernelRoute
 } from './kernel.js';

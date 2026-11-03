@@ -44,56 +44,10 @@ export function isMetadataField(field: string): field is MetadataFieldName {
 }
 
 /**
- * A body key mirrored into a dedicated column on `rows`, so filters and
- * sorts on it hit an index instead of extracting from JSONB.
- *
- * `column` is a BARE column name, not a qualified `r.<col>` fragment: taking a
- * fragment from a caller would put caller text into `sql.unsafe`.
- */
-export interface PromotedBodyColumn {
-  column: string;
-  kind: 'boolean' | 'text';
-}
-
-export type PromotedBodyColumnMap = Readonly<Record<string, PromotedBodyColumn>>;
-
-/**
- * Resolves a field name to its promoted column, or `undefined`.
- */
-export type PromotedColumnLookup = (field: string) => PromotedBodyColumn | undefined;
-
-/**
  * Legal bare column identifier: lower-snake, no quoting, no qualifier. This
- * allow-list is what stands between a caller-supplied map and `sql.unsafe`.
+ * allow-list is what stands between an identifier and `sql.unsafe`.
  */
 const COLUMN_NAME_PATTERN = /^[a-z_][a-z0-9_]*$/;
-
-/**
- * Validates a caller-supplied map and returns the lookup the SQL builders use.
- * Throws if any column is not a bare identifier.
- *
- * The validation is load-bearing: the builders interpolate the column through
- * `sql.unsafe`, and the map may come from config.
- */
-export function resolvePromotedColumns(map: PromotedBodyColumnMap): PromotedColumnLookup {
-  const resolved = new Map<string, PromotedBodyColumn>();
-  for (const [field, def] of Object.entries(map)) {
-    if (!COLUMN_NAME_PATTERN.test(def.column)) {
-      throw new Error(
-        `promotedColumns['${field}']: column '${def.column}' is not a bare identifier ` +
-          `(expected ${COLUMN_NAME_PATTERN.source}). The table qualifier is added internally; ` +
-          `pass 'severity', not 'r.severity'.`
-      );
-    }
-    resolved.set(field, def);
-  }
-  return (field: string): PromotedBodyColumn | undefined => resolved.get(field);
-}
-
-/** The qualified expression source for a promoted column — `r.<column>`, or `<alias>.<column>`. */
-export function promotedColumnSql(def: PromotedBodyColumn, alias = 'r'): string {
-  return `${qualifier(alias)}${def.column}`;
-}
 
 /**
  * Row-shape keys that DO NOT live in `r.body` — they're synthesised from
@@ -164,10 +118,10 @@ export function qualifier(alias: string | undefined): string {
   return `${alias}.`;
 }
 
-/** The row's jsonb column: `body` on the old layouts, `extra` on a type table. */
+/** The row's jsonb column: `extra` on a type table. */
 export type JsonbColumn = TypeTable['jsonb'];
 
-const jsonSql = (path: readonly string[], alias?: string, jsonb: JsonbColumn = 'body'): string =>
+const jsonSql = (path: readonly string[], alias?: string, jsonb: JsonbColumn = 'extra'): string =>
   `${qualifier(alias)}${jsonb}${path.map((p) => ` -> ${sqlStringLiteral(p)}`).join('')}`;
 const rawTextSql = (path: readonly string[], alias?: string, jsonb?: JsonbColumn): string =>
   `(${jsonSql(path.slice(0, -1), alias, jsonb)} ->> ${sqlStringLiteral(path[path.length - 1] as string)})`;
@@ -274,8 +228,8 @@ function extraBranchSql(field: string, as: FieldAs, kind: ColumnKind, alias?: st
  * A top-level field of `table`'s row as `as`. A `column`-state field is its
  * column; a `promoting` or `orphaned` one is its `extra` key when present, else
  * its column: `extraWins` in row-codec.ts, the one rule `decodeRow` reads by
- * (F13, F35), so filters and reads cannot disagree. Any other field, and every
- * field of a `rowsTypeTable`, is the `body`/`extra` path expression. A `json`
+ * (F13, F35), so filters and reads cannot disagree. Any other field is its
+ * `extra` path expression. A `json`
  * read also overlays `$raw`, last, as `decodeRow` does.
  *
  * A promoting number is numeric in both branches: `substrate_num` gives the

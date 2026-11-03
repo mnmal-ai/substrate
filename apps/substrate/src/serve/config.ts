@@ -171,7 +171,16 @@ export class EnvConfigError extends Error {
  * reading the auth and TLS PEM / JSON files. Throws `EnvConfigError` on any
  * malformed input.
  */
+/** Set once the retired `SUBSTRATE_STORAGE_LAYOUT` has been warned about. */
+let warnedStorageLayout = false;
+
 export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
+  if (env.SUBSTRATE_STORAGE_LAYOUT !== undefined && !warnedStorageLayout) {
+    warnedStorageLayout = true;
+    process.stderr.write(
+      'warning: SUBSTRATE_STORAGE_LAYOUT is no longer read; every store uses per-type tables\n'
+    );
+  }
   const knobs = createKnobRecorder();
   const storeSpec = env.SUBSTRATE_DATABASE_URL ?? 'memory';
   // The RECORDED value is redacted; `storeSpec` itself stays intact because it

@@ -3,7 +3,6 @@
  * metadata columns fold back into the `RowMetadata` shape callers see.
  */
 
-import { randomUUID } from 'node:crypto';
 import type { ActorIdentity, ReadParams, RowMetadata } from '@mnmal-ai/substrate-types';
 import type { Sql, TransactionSql } from 'postgres';
 import { RAW_KEY } from '../row-codec.js';
@@ -18,17 +17,9 @@ import {
 
 /**
  * The SELECT items carrying a read's row, `walk` (its walk selections, a jsonb
- * object) merged in. Metadata columns are named alike in every layout, so the
- * caller selects those.
+ * object) merged in. The caller selects the metadata columns.
  *
- * On `rows`, `<body> AS body`:
- *   - `fields === undefined` → the full body.
- *   - `fields` supplied → `jsonb_build_object(...)` over `id` plus the
- *     requested top-level body keys; one the row lacks is the absent marker. `id` is
- *     always included because `materialize()` reads `body.id` to preserve
- *     numeric ids.
- *
- * On a type table, for `decodeRow`: each column (of a requested field, when
+ * For `decodeRow`: each column (of a requested field, when
  * `fields` is given), `orphaned` ones included (F35), a date column as UTC
  * text; then `extra AS extra`, whole, or its requested keys with `id` and
  * `$raw` kept. `walk` rides in `extra`, which `decodeRow` copies to the row.
@@ -50,24 +41,6 @@ export function buildRowProjection(
     if (!NON_BODY_FIELD_KEYS.has(key)) keys.add(key);
   }
   const merged = (doc: Fragment): Fragment => (walk === null ? doc : sql`(${doc} || ${walk})`);
-  if (table.jsonb === 'body') {
-    // The body is authoritative: every write path sets a promoted column from
-    // the same value it writes to the body, so a read never needs the column.
-    if (fields === undefined) return sql`${merged(sql.unsafe(`${q}body`))} AS body`;
-    // A key the row lacks projects as the marker, which `materialize` drops. A stored
-    // json `null` comes through as itself. One extraction per key: testing presence in
-    // SQL (`->` twice, or `?`) detoasts a large body once more per access, which
-    // tripled the cost of a projected read on a TOASTed body.
-    const body = buildObject(
-      sql,
-      Array.from(
-        keys,
-        (k) =>
-          sql`${k}::text, COALESCE(${sql.unsafe(`${q}body`)}->${k}, ${sql.unsafe(ABSENT_LITERAL)})`
-      )
-    );
-    return sql`${merged(body)} AS body`;
-  }
   const columns = table
     .columns()
     .filter((c) => fields === undefined || Object.hasOwn(fields, c.field))
@@ -83,21 +56,6 @@ export function buildRowProjection(
       : sql`COALESCE((SELECT jsonb_object_agg(e.key, e.value) FROM jsonb_each(${sql.unsafe(`${q}extra`)}) e WHERE e.key = ANY(${[...keys, RAW_KEY]}::text[])), '{}'::jsonb)`;
   const head = columns.length === 0 ? '' : `${columns.join(', ')}, `;
   return sql`${sql.unsafe(head)}${merged(extra)} AS extra`;
-}
-
-/**
- * Stands in for a projected key the row lacks. The nonce is per process and never
- * stored or sent to a client (keep it so: never log it or a result row), which is
- * why no stored value can equal it. The literal is
- * built here from hex only, so it is safe to inline (a parameter would be cast
- * per row under a generic plan).
- */
-const ABSENT_KEY = `$absent:${randomUUID()}`;
-const ABSENT_LITERAL = `'{"${ABSENT_KEY}":1}'::jsonb`;
-
-/** True for the value `buildRowProjection` gives a key the row lacks on `rows`. */
-export function isAbsentMarker(v: unknown): boolean {
-  return typeof v === 'object' && v !== null && Object.hasOwn(v, ABSENT_KEY);
 }
 
 /**

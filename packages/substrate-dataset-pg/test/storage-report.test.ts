@@ -8,13 +8,9 @@ import type { FieldDef, IndexDecl, StorageReport } from '@mnmal-ai/substrate-typ
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset } from '../src/index.js';
-import { heldIndexes, isEngineOwned } from '../src/index-reconciler.js';
 import { generatedIdentifier } from '../src/migrate.js';
-import { LEGACY_PARTIAL_INDEX_LIMIT } from '../src/pg-dataset.js';
-import { TABLES } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
-const LAYOUT = process.env.SUBSTRATE_STORAGE_LAYOUT ?? 'legacy';
 const TYPE = 'T';
 const BIG = 1_000_000;
 
@@ -51,24 +47,18 @@ const undeclaredIn = (report: StorageReport, ns: string): string[] => {
   return named(report.info ?? []);
 };
 
-/** The legacy planning-cost warning, which depends on every type's indexes on the shared rows. */
-const PLANNING = /engine-owned partial indexes on the shared rows table/;
-
 const indexed: Record<string, FieldDef> = {
   kid: { kind: 'scalar', type: 'string', indexed: true }
 };
 
 describe.skipIf(!POSTGRES_URL)('describeStorage', () => {
-  it('reports the layout, the partition and a valid declared index', async () => {
+  it('reports the layout, the table and a valid declared index', async () => {
     const ns = freshNs();
     const ds = dataset(ns, { current: indexed });
     await ds.ensureTypeStorage(TYPE);
     const report = await ds.describeStorage(TYPE);
-    expect(report.layout).toBe(LAYOUT);
-    expect(report.partition !== undefined).toBe(LAYOUT === 'partitioned');
-    expect(report.table !== undefined).toBe(TABLES);
-    // Spec rule (derived indexes, both layouts): legacy builds the derived
-    // index too, as a partial index on `rows`, so both layouts report it.
+    expect(report.layout).toBe('tables');
+    expect(report.table).toBeDefined();
     const name = generatedIdentifier(ns, TYPE, 'kid', 'idx');
     expect(report.indexes.find((i) => i.name === name)).toMatchObject({
       fields: ['kid'],
@@ -76,16 +66,14 @@ describe.skipIf(!POSTGRES_URL)('describeStorage', () => {
     });
   });
 
-  it('builds nothing: a type never ensured has no partition and no indexes', async () => {
-    if (LAYOUT === 'legacy') return;
+  it('builds nothing: a type never ensured has no table and no indexes', async () => {
     const ns = freshNs();
     const report = await dataset(ns, { current: indexed }).describeStorage(TYPE);
-    expect(report.partition).toBeUndefined();
     expect(report.table).toBeUndefined();
     expect(report.indexes).toEqual([]);
   });
 
-  it.skipIf(!TABLES)('describeStorage lists pending and orphaned fields', async () => {
+  it('describeStorage lists pending and orphaned fields', async () => {
     const ns = freshNs();
     const defs: { current: Record<string, FieldDef> } = {
       current: { a: { kind: 'scalar', type: 'string' }, b: { kind: 'scalar', type: 'number' } }
@@ -100,68 +88,65 @@ describe.skipIf(!POSTGRES_URL)('describeStorage', () => {
     expect(report.table).toMatch(/^t__sr_/);
   });
 
-  it.skipIf(!TABLES)(
-    'an index over a field not yet `column` is pending, not valid or failed, and serves no read',
-    async () => {
-      const ns = freshNs();
-      const uniq = `rows_sr_u_${randomBytes(4).toString('hex')}`;
-      const plain = `rows_sr_p_${randomBytes(4).toString('hex')}`;
-      const late = `rows_sr_l_${randomBytes(4).toString('hex')}`;
-      const defs: { current: Record<string, FieldDef> } = {
-        current: { a: { kind: 'scalar', type: 'string' } }
-      };
-      let indexes: IndexDecl[] = [];
-      const ds = new PgDataset({
+  it('an index over a field not yet `column` is pending, not valid or failed, and serves no read', async () => {
+    const ns = freshNs();
+    const uniq = `rows_sr_u_${randomBytes(4).toString('hex')}`;
+    const plain = `rows_sr_p_${randomBytes(4).toString('hex')}`;
+    const late = `rows_sr_l_${randomBytes(4).toString('hex')}`;
+    const defs: { current: Record<string, FieldDef> } = {
+      current: { a: { kind: 'scalar', type: 'string' } }
+    };
+    let indexes: IndexDecl[] = [];
+    const ds = new PgDataset({
+      namespace: ns,
+      sql,
+      typeDefLookup: (type, namespace) =>
+        type === TYPE && namespace === ns ? { fields: defs.current, indexes } : undefined
+    });
+    await ds.ensureTypeStorage(TYPE);
+    // Added to an existing table, `b` gets its column `promoting`; `c` is recorded `pending`.
+    defs.current = { ...defs.current, b: { kind: 'scalar', type: 'string' } };
+    indexes = [
+      { fields: ['b'], unique: true, name: uniq },
+      { fields: ['b'], name: plain }
+    ];
+    await ds.ensureTypeStorage(TYPE);
+    defs.current = { ...defs.current, c: { kind: 'scalar', type: 'string' } };
+    indexes = [...indexes, { fields: ['c'], name: late }];
+    await ds.ensureTypeStorage(TYPE, { newFields: 'pending' });
+    // As another process sees it: no deferred-build record of its own.
+    const other = postgres(POSTGRES_URL as string, { onnotice: () => {} });
+    try {
+      const fresh = new PgDataset({
         namespace: ns,
-        sql,
-        typeDefLookup: (type, namespace) =>
-          type === TYPE && namespace === ns ? { fields: defs.current, indexes } : undefined
+        sql: other,
+        typeDefLookup: () => ({ fields: defs.current, indexes })
       });
-      await ds.ensureTypeStorage(TYPE);
-      // Added to an existing table, `b` gets its column `promoting`; `c` is recorded `pending`.
-      defs.current = { ...defs.current, b: { kind: 'scalar', type: 'string' } };
-      indexes = [
-        { fields: ['b'], unique: true, name: uniq },
-        { fields: ['b'], name: plain }
-      ];
-      await ds.ensureTypeStorage(TYPE);
-      defs.current = { ...defs.current, c: { kind: 'scalar', type: 'string' } };
-      indexes = [...indexes, { fields: ['c'], name: late }];
-      await ds.ensureTypeStorage(TYPE, { newFields: 'pending' });
-      // As another process sees it: no deferred-build record of its own.
-      const other = postgres(POSTGRES_URL as string, { onnotice: () => {} });
-      try {
-        const fresh = new PgDataset({
-          namespace: ns,
-          sql: other,
-          typeDefLookup: () => ({ fields: defs.current, indexes })
-        });
-        const states = async (d: PgDataset) =>
-          Object.fromEntries((await d.describeStorage(TYPE)).indexes.map((i) => [i.name, i.state]));
-        for (const d of [ds, fresh]) {
-          expect(await states(d)).toMatchObject({
-            [uniq]: 'pending',
-            [plain]: 'pending',
-            [late]: 'pending'
-          });
-        }
-        const planned = async () =>
-          ((await fresh.indexPlan(TYPE, ns))?.indexes ?? []).map((i) => i.name);
-        expect(await planned()).not.toContain(plain);
-        expect(await planned()).not.toContain(uniq);
-        // The sweep settles `b` (Task 13): then its indexes are valid and serve reads.
-        await sql`UPDATE substrate_type_fields SET state = 'column' WHERE namespace = ${ns} AND field = 'b'`;
-        expect(await states(fresh)).toMatchObject({
-          [uniq]: 'valid',
-          [plain]: 'valid',
+      const states = async (d: PgDataset) =>
+        Object.fromEntries((await d.describeStorage(TYPE)).indexes.map((i) => [i.name, i.state]));
+      for (const d of [ds, fresh]) {
+        expect(await states(d)).toMatchObject({
+          [uniq]: 'pending',
+          [plain]: 'pending',
           [late]: 'pending'
         });
-        expect(await planned()).toEqual(expect.arrayContaining([uniq, plain]));
-      } finally {
-        await other.end({ timeout: 5 });
       }
+      const planned = async () =>
+        ((await fresh.indexPlan(TYPE, ns))?.indexes ?? []).map((i) => i.name);
+      expect(await planned()).not.toContain(plain);
+      expect(await planned()).not.toContain(uniq);
+      // The sweep settles `b` (Task 13): then its indexes are valid and serve reads.
+      await sql`UPDATE substrate_type_fields SET state = 'column' WHERE namespace = ${ns} AND field = 'b'`;
+      expect(await states(fresh)).toMatchObject({
+        [uniq]: 'valid',
+        [plain]: 'valid',
+        [late]: 'pending'
+      });
+      expect(await planned()).toEqual(expect.arrayContaining([uniq, plain]));
+    } finally {
+      await other.end({ timeout: 5 });
     }
-  );
+  });
 });
 
 describe.skipIf(!POSTGRES_URL)('storageReport', () => {
@@ -223,7 +208,6 @@ describe.skipIf(!POSTGRES_URL)('storageReport', () => {
     const before = await ds.storageReport({ partitionBudget: BIG });
     const count = (info: string[] | undefined): number =>
       Number(/^(\d+) open index recommendation/.exec(info?.[0] ?? '')?.[1] ?? 0);
-    if (LAYOUT === 'partitioned') await system.ensureTypeStorage('IndexRecommendation');
     await system.write('IndexRecommendation', [{ id, state: 'open' }]);
     try {
       const after = await ds.storageReport({ partitionBudget: BIG });
@@ -235,82 +219,7 @@ describe.skipIf(!POSTGRES_URL)('storageReport', () => {
   });
 });
 
-describe.skipIf(!POSTGRES_URL || LAYOUT !== 'partitioned')('storageReport (partitioned)', () => {
-  it('warns about an index on the rows parent', async () => {
-    const ns = freshNs();
-    const ds = dataset(ns, { current: {} });
-    const idx = `rows_parent_probe_${randomBytes(4).toString('hex')}`;
-    await sql.unsafe(`CREATE INDEX ${idx} ON rows (id)`);
-    try {
-      const { warnings } = await ds.storageReport({ partitionBudget: BIG });
-      expect(warnings.some((w) => w.startsWith(`index ${idx} is on the rows parent`))).toBe(true);
-    } finally {
-      await sql.unsafe(`DROP INDEX ${idx}`);
-    }
-  });
-
-  it("warns about a plugin CHECK on the rows parent, not the engine's own", async () => {
-    const ds = dataset(freshNs(), { current: {} });
-    const check = `rows_parent_check_${randomBytes(4).toString('hex')}`;
-    await sql.unsafe(`ALTER TABLE rows ADD CONSTRAINT ${check} CHECK (type <> '') NOT VALID`);
-    try {
-      const { warnings } = await ds.storageReport({ partitionBudget: BIG });
-      expect(warnings).toContain(
-        `check ${check} is on the rows parent: every partition carries it, and every write evaluates it`
-      );
-      expect(warnings.some((w) => w.includes('rows_created_by_kind_check'))).toBe(false);
-    } finally {
-      await sql.unsafe(`ALTER TABLE rows DROP CONSTRAINT ${check}`);
-    }
-  });
-
-  it('reads the catalog in a fixed number of queries however many partitions exist', async () => {
-    let queries = 0;
-    const counting = postgres(POSTGRES_URL as string, {
-      onnotice: () => {},
-      debug: () => {
-        queries++;
-      }
-    });
-    try {
-      const measure = async (types: number): Promise<number> => {
-        const ns = freshNs();
-        const names = Array.from({ length: types }, (_, i) => `T${i}`);
-        const ds = new PgDataset({
-          namespace: ns,
-          sql: counting,
-          typeDefLookup: () => ({ fields: indexed })
-        });
-        for (const t of names) await ds.ensureTypeStorage(t);
-        queries = 0;
-        await ds.storageReport({ partitionBudget: BIG });
-        return queries;
-      };
-      const few = await measure(2);
-      const many = await measure(10);
-      expect(many).toBe(few);
-    } finally {
-      await counting.end({ timeout: 5 });
-    }
-  });
-
-  it('warns once the partition count exceeds the budget, and not at it', async () => {
-    const ns = freshNs();
-    const ds = dataset(ns, { current: {} });
-    await ds.ensureTypeStorage(TYPE);
-    const [count] = await sql<Array<{ n: number }>>`
-      SELECT (count(*) - 1)::int AS n FROM pg_partition_tree('rows')`;
-    const n = count?.n as number;
-    const at = await ds.storageReport({ partitionBudget: n });
-    expect(at.warnings.some((w) => w.includes('exceed the budget'))).toBe(false);
-    const over = await ds.storageReport({ partitionBudget: n - 1 });
-    expect(over.warnings).toContain(
-      `${n} partitions exceed the budget of ${n - 1}: move a namespace to its own instance behind a bridge`
-    );
-  });
-});
-
-describe.skipIf(!POSTGRES_URL || !TABLES)('storageReport (tables)', () => {
+describe.skipIf(!POSTGRES_URL)('storageReport (tables)', () => {
   it('counts type tables against the partition budget', async () => {
     const ds = dataset(freshNs(), { current: {} });
     await ds.ensureTypeStorage(TYPE);
@@ -324,42 +233,5 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('storageReport (tables)', () => {
     expect(over.warnings).toContain(
       `${n} type tables exceed the budget of ${n - 1}: move a namespace to its own instance behind a bridge`
     );
-  });
-});
-
-describe.skipIf(!POSTGRES_URL || LAYOUT !== 'legacy')('storageReport (legacy)', () => {
-  it('has no partition or parent warnings', async () => {
-    const ds = dataset(freshNs(), { current: {} });
-    const report = await ds.storageReport({ partitionBudget: 0 });
-    expect(report.layout).toBe('legacy');
-    expect(report.warnings.filter((w) => !PLANNING.test(w))).toEqual([]);
-  });
-
-  it('warns once rows carries more engine-owned partial indexes than the planning limit', async () => {
-    const ns = freshNs();
-    const ds = dataset(ns, { current: {} });
-    const count = async () =>
-      (await heldIndexes(sql, ['rows'])).filter((i) => isEngineOwned(i) && i.predicate !== null)
-        .length;
-    const made: string[] = [];
-    try {
-      for (let i = await count(); i <= LEGACY_PARTIAL_INDEX_LIMIT; i++) {
-        const name = generatedIdentifier(ns, `T${i}`, 'f', 'idx');
-        await sql.unsafe(
-          `CREATE INDEX ${name} ON rows (id) WHERE namespace = '${ns}' AND type = 'T${i}'`
-        );
-        await sql.unsafe(`COMMENT ON INDEX ${name} IS 'substrate: reconciled'`);
-        made.push(name);
-      }
-      const n = await count();
-      expect(n).toBeGreaterThan(LEGACY_PARTIAL_INDEX_LIMIT);
-      const { warnings } = await ds.storageReport({ partitionBudget: BIG });
-      expect(warnings.filter((w) => PLANNING.test(w))).toEqual([
-        `${n} engine-owned partial indexes on the shared rows table, over ${LEGACY_PARTIAL_INDEX_LIMIT}: ` +
-          'every query on rows pays planning time for each; the partitioned layout gives each type its own table and indexes'
-      ]);
-    } finally {
-      for (const name of made) await sql.unsafe(`DROP INDEX IF EXISTS ${name}`);
-    }
   });
 });

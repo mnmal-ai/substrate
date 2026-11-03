@@ -41,7 +41,8 @@ export const vec = (i: number) =>
   `[${Array.from({ length: DIM }, (_, j) => (j === i ? 1 : 0)).join(',')}]`;
 
 export async function applyRecall(sql: Sql, layout: OldLayout): Promise<void> {
-  const ctx = { sql, layout, metric: () => undefined } as KernelMigrationContext;
+  // As the last release that booted an old layout passed it; recall's migrations ignore it.
+  const ctx = { sql, layout, metric: () => undefined } as unknown as KernelMigrationContext;
   for (const m of [embeddingsMigration(), recallClustersMigration(), lexicalMigration()]) {
     await m.apply(ctx);
   }
@@ -238,7 +239,6 @@ export async function openPair(
         SUBSTRATE_INDEX_DISK_PATH: 'off'
       }),
       pluginDir,
-      layout: 'tables',
       allowMigrating: true,
       background: false
     });

@@ -17,7 +17,7 @@ import { buildWalkProjection, prepareWindows } from '../src/pg-sql/aggregate.js'
 import { resolveBodyOrderByCast } from '../src/pg-sql/sorting.js';
 import { prepareSharedPicks, type WalkScope, walkScope, withCtes } from '../src/pg-sql/walk.js';
 import { buildWhere } from '../src/pg-sql/where.js';
-import { rowsTypeTable } from '../src/type-table.js';
+import { bareTypeTable } from './_layout.js';
 
 const sql = postgres('postgres://nobody@127.0.0.1:1/none');
 afterAll(() => sql.end());
@@ -166,7 +166,7 @@ const FIELDS: Record<string, Record<string, FieldDef>> = {
   }
 };
 const fieldDef = (t: string, f: string) => FIELDS[t]?.[f];
-const tableFor = (t: string) => rowsTypeTable(NS, t, () => undefined);
+const tableFor = (t: string) => bareTypeTable(NS, t);
 const CERT = tableFor('Cert');
 const castFor = (f: string) => resolveBodyOrderByCast(fieldDef('Cert', f));
 const BASE = sql`r.namespace = 'ns' AND r.type = 'Cert'`;
@@ -232,17 +232,19 @@ function capturing(): { ds: PgDataset; sent: string[] } {
     sql: handle,
     inTx: true,
     txScopeId: 'capture',
-    layoutCache: { layout: 'partitioned' },
+    layoutCache: { layout: 'tables' },
     fieldDefLookup: fieldDef,
     typeDefLookup
   } as never);
   return { ds, sent };
 }
-/** The statements a read sends that read its rows (`FROM rows r`). */
+/** The statements a read sends that read its rows (`FROM <its table> r`); a type with no table reads an empty one. */
 async function statements(params: ReadParams): Promise<string[]> {
   const { ds, sent } = capturing();
   await ds.read('Cert', params);
-  return sent.filter((q) => / FROM rows r\b/.test(q));
+  return sent.filter((q) =>
+    / FROM (\(SELECT NULL::text AS id\b.*?WHERE false\)|"t__[^"]+") r\b/.test(q)
+  );
 }
 /** Every column a CTE exports is `__`-named, so none can collide with a row column. */
 function expectPrivateColumns(text: string): void {
@@ -304,7 +306,7 @@ describe('the per-hub form in the statements pg-dataset sends', () => {
     expect(text).toBeDefined();
     expect(text).not.toContain('WITH');
     expect(text).not.toMatch(/pick_w\d+/);
-    expect(text).toMatch(/\bmax\(substrate_ts\(w\d+\.body -> 'at'\)\)/);
+    expect(text).toMatch(/\bmax\(substrate_ts\(w\d+\.extra -> 'at'\)\)/);
   });
 
   it('a page of a few seeds sends the per-seed form', async () => {
@@ -334,27 +336,27 @@ describe('a pick shared through an outbound hop: one probe per hub', () => {
     const [ctes, main] = text.split(') SELECT 1 FROM rows r');
     // The hubs: the distinct `spec` of the seeds passing the plain conjuncts, whose hub row is live.
     expect(ctes).toMatch(
-      /^WITH pick_w1 AS MATERIALIZED \(SELECT h\.id AS __hub, w1\.__row AS __row FROM \(SELECT DISTINCT \(r\.body ->> 'spec'\) AS id FROM rows r WHERE \( r\.namespace = 'ns' AND r\.type = 'Cert' AND .*substrate_num\(r\.body -> 'grade'\).*\) h JOIN rows (w\d+) ON \( \1\.namespace = 'ns' AND \1\.type = 'Spec' AND \1\.deleted_at IS NULL AND \1\.id::text = h\.id\) CROSS JOIN LATERAL/
+      /^WITH pick_w1 AS MATERIALIZED \(SELECT h\.id AS __hub, w1\.__row AS __row FROM \(SELECT DISTINCT \(r\.extra ->> 'spec'\) AS id FROM "t__ns__cert_[0-9a-f]{8}" r WHERE \( r\.namespace = 'ns' AND r\.type = 'Cert' AND .*substrate_num\(r\.extra -> 'grade'\).*\) h JOIN "t__ns__spec_[0-9a-f]{8}" (w\d+) ON \( \1\.deleted_at IS NULL AND \1\.id::text = h\.id\) CROSS JOIN LATERAL/
     );
     // The pick, keyed on the hub and nothing of the seed.
-    expect(ctes).toContain(`((w1.body ->> 'spec') COLLATE "C") = (h.id::text COLLATE "C")`);
-    expect(ctes).toMatch(/\bmax\(substrate_ts\(w1\.body -> 'at'\)\)/);
-    expect(ctes).not.toContain("r.body -> 'ask'");
+    expect(ctes).toContain(`((w1.extra ->> 'spec') COLLATE "C") = (h.id::text COLLATE "C")`);
+    expect(ctes).toMatch(/\bmax\(substrate_ts\(w1\.extra -> 'at'\)\)/);
+    expect(ctes).not.toContain("r.extra -> 'ask'");
     // Only hubs with a neighbour passing the pick's seed-independent `at` bound are
     // probed, and only picks passing it are kept; never the `$.ask` comparison.
     expect(ctes).toMatch(
-      /\) w1 WHERE \( EXISTS \(SELECT 1 FROM rows w2 WHERE w2\.namespace = 'ns' AND w2\.type = 'Sale' .*= \(h\.id::text COLLATE "C"\) AND .*substrate_ts\(w2\.body -> 'at'\) >= .*\) AND .*substrate_ts\(w1\.body -> 'at'\) >= /
+      /\) w1 WHERE \( EXISTS \(SELECT 1 FROM "t__ns__sale_[0-9a-f]{8}" w2 WHERE .*= \(h\.id::text COLLATE "C"\) AND .*substrate_ts\(w2\.extra -> 'at'\) >= .*\) AND .*substrate_ts\(w1\.extra -> 'at'\) >= /
     );
     // Each seed joins its hub's row of the CTE; only the pick's $-reading conjunct is left.
-    expect(main).toMatch(/^ LEFT JOIN pick_w1 ON pick_w1\.__hub = \(r\.body ->> 'spec'\) WHERE /);
+    expect(main).toMatch(/^ LEFT JOIN pick_w1 ON pick_w1\.__hub = \(r\.extra ->> 'spec'\) WHERE /);
     expect(main).toContain('pick_w1.__hub IS NOT NULL');
     // …read over the picked row expanded from `__row`, one row, not a scan of the CTE.
     expect(main).toMatch(
-      /EXISTS \(SELECT 1 FROM \(SELECT \(pick_w1\.__row\)\.\*\) (w\d+) WHERE .*substrate_num\(\1\.body -> 'price'\)/
+      /EXISTS \(SELECT 1 FROM \(SELECT \(pick_w1\.__row\)\.\*\) (w\d+) WHERE .*substrate_num\(\1\.extra -> 'price'\)/
     );
     // No hub-row probe per seed: the hub where has nothing but its pick.
     expect(main).not.toContain("'Spec'");
-    expect(main).toContain("substrate_num(r.body -> 'ask')");
+    expect(main).toContain("substrate_num(r.extra -> 'ask')");
     expect(main).not.toContain("'at'");
     expect(main).not.toMatch(/\bmax\(/);
   });
@@ -383,11 +385,9 @@ describe('a pick shared through an outbound hop: one probe per hub', () => {
       } as unknown as WhereClause
     });
     expectJoinedOnce(text);
-    const hubs = text.slice(text.indexOf('SELECT DISTINCT'), text.indexOf(') h JOIN rows'));
+    const hubs = text.slice(text.indexOf('SELECT DISTINCT'), text.indexOf(') h JOIN '));
     // The selective window walk and the _agg comparison narrow the hubs.
-    expect(hubs).toMatch(
-      /EXISTS \(SELECT 1 FROM rows w\d+ WHERE w\d+\.namespace = 'ns' AND w\d+\.type = 'Obs'.*>= /
-    );
+    expect(hubs).toMatch(/EXISTS \(SELECT 1 FROM "t__ns__obs_[0-9a-f]{8}" w\d+ WHERE.*>= /);
     expect(hubs).toMatch(/count\(\*\)/);
     // The bind and what reads it are quantified jointly, so they stay out; so does the hub walk.
     expect(hubs).not.toContain('price');
@@ -412,7 +412,7 @@ describe('a pick shared through an outbound hop: one probe per hub', () => {
     const hubSets = ctes
       .split('SELECT DISTINCT')
       .slice(1)
-      .map((h) => h.slice(0, h.indexOf(') h JOIN rows')));
+      .map((h) => h.slice(0, h.indexOf(') h JOIN ')));
     expect(hubSets).toHaveLength(2);
     for (const hubs of hubSets) {
       expect(hubs).not.toContain("'Sale'");
@@ -450,20 +450,20 @@ describe('a pick shared through an outbound hop: one probe per hub', () => {
     expect(text.match(/pick_w\d+ AS MATERIALIZED/g)).toHaveLength(2);
     // Both picks' CTEs joined on the seed's hub; each must be present.
     expect(main).toMatch(
-      /LEFT JOIN (pick_w\d+) ON \1\.__hub = \(r\.body ->> 'spec'\) LEFT JOIN (pick_w\d+) ON \2\.__hub = \(r\.body ->> 'spec'\) WHERE .*\1\.__hub IS NOT NULL.*\2\.__hub IS NOT NULL/
+      /LEFT JOIN (pick_w\d+) ON \1\.__hub = \(r\.extra ->> 'spec'\) LEFT JOIN (pick_w\d+) ON \2\.__hub = \(r\.extra ->> 'spec'\) WHERE .*\1\.__hub IS NOT NULL.*\2\.__hub IS NOT NULL/
     );
     // The hub where's own conjunct (`tier >= 1`) once per hub, on the first CTE's hub row.
     const first = split(text).ctes[0]?.body ?? '';
     expect(first).toMatch(
-      /JOIN rows (w\d+) ON \( \1\.namespace = 'ns' AND \1\.type = 'Spec' .*AND \(+substrate_num\(\1\.body -> 'tier'\) IS NOT NULL AND substrate_num\(\1\.body -> 'tier'\) >= /
+      /JOIN "t__ns__spec_[0-9a-f]{8}" (w\d+) ON \( .*AND \(+substrate_num\(\1\.extra -> 'tier'\) IS NOT NULL AND substrate_num\(\1\.extra -> 'tier'\) >= /
     );
     // Per seed, on the hub row, only the bind and the conjunct reading it.
     expect(main).toMatch(
-      /EXISTS \(SELECT 1 FROM rows (w\d+) WHERE \1\.namespace = 'ns' AND \1\.type = 'Spec' .*substrate_num\(\1\.body -> 'tier'\)::float8 <= /
+      /EXISTS \(SELECT 1 FROM "t__ns__spec_[0-9a-f]{8}" (w\d+) WHERE .*substrate_num\(\1\.extra -> 'tier'\)::float8 <= /
     );
-    expect(main).not.toMatch(/substrate_num\(w\d+\.body -> 'tier'\) >= /);
+    expect(main).not.toMatch(/substrate_num\(w\d+\.extra -> 'tier'\) >= /);
     expect(main).toMatch(
-      /EXISTS \(SELECT 1 FROM rows w\d+ WHERE .*'Sale'.*substrate_num\(w\d+\.body -> 'price'\)/
+      /EXISTS \(SELECT 1 FROM "t__ns__sale_[0-9a-f]{8}" w\d+ WHERE .*substrate_num\(w\d+\.extra -> 'price'\)/
     );
     // The unfiltered pick has no candidate filter.
     expect(text).toMatch(
@@ -485,7 +485,7 @@ describe('a pick shared through an outbound hop: one probe per hub', () => {
   it('a page of a few seeds keeps the per-seed probe', () => {
     const text = compileWhere({ where: yardstick, limit: 20 });
     expect(text).not.toContain('WITH');
-    expect(text).toMatch(/EXISTS \(SELECT 1 FROM \(\(SELECT w2\.\* FROM rows w2 .*max\(/);
+    expect(text).toMatch(/EXISTS \(SELECT 1 FROM \(\(SELECT w2\.\* FROM \S+ w2 .*max\(/);
   });
 });
 
@@ -523,7 +523,7 @@ describe('a frame _agg over its seeds window: one group-by pass', () => {
   it('aggregates the window once, GROUP BY the crossRef, null keys left out', () => {
     const text = page(params());
     expect(text).toMatch(
-      /^WITH win_w1 AS MATERIALIZED \(SELECT \(\(w1\.body ->> 'cert'\) COLLATE "C"\) AS __k, .*count\(\*\).*avg\(.* AS __g FROM rows w1 WHERE \( w1\.namespace = 'ns' AND w1\.type = 'Obs' AND w1\.deleted_at IS NULL AND \(\(w1\.body ->> 'cert'\) COLLATE "C"\) IS NOT NULL AND .*substrate_ts\(w1\.body -> 'at'\) >= .* GROUP BY 1\)/s
+      /^WITH win_w1 AS MATERIALIZED \(SELECT \(\(w1\.extra ->> 'cert'\) COLLATE "C"\) AS __k, .*count\(\*\).*avg\(.* AS __g FROM "t__ns__obs_[0-9a-f]{8}" w1 WHERE \( w1\.deleted_at IS NULL AND \(\(w1\.extra ->> 'cert'\) COLLATE "C"\) IS NOT NULL AND .*substrate_ts\(w1\.extra -> 'at'\) >= .* GROUP BY 1\)/s
     );
     // The seeds are the window's keys, and each reads its group, or the aggregates of none.
     expect(text).toContain(`((r.id::text COLLATE "C") IN (SELECT __k FROM win_w1))`);
@@ -532,7 +532,7 @@ describe('a frame _agg over its seeds window: one group-by pass', () => {
     // One read of Obs for the window; the date max stays a per-seed top-1.
     const correlated = text.match(/= \(r\.id::text COLLATE "C"\) AND/g) ?? [];
     expect(correlated).toHaveLength(1);
-    expect(text).toMatch(/ORDER BY substrate_ts\(w\d+\.body -> 'at'\) DESC NULLS LAST/);
+    expect(text).toMatch(/ORDER BY substrate_ts\(w\d+\.extra -> 'at'\) DESC NULLS LAST/);
   });
 
   it('semi-joins the window keys to the seeds when ids or another conjunct narrows them', () => {
@@ -542,7 +542,7 @@ describe('a frame _agg over its seeds window: one group-by pass', () => {
     expect(ids).toMatch(/WITH win_w1 AS MATERIALIZED \(.* GROUP BY 1\)/s);
     const cte = ids.slice(0, ids.indexOf('GROUP BY 1'));
     expect(cte).toContain(
-      `((w1.body ->> 'cert') COLLATE "C") IN (SELECT r.id::text COLLATE "C" FROM rows r WHERE ( r.namespace = 'ns' AND r.type = 'Cert' AND r.id = ANY('{a,b}')))`
+      `((w1.extra ->> 'cert') COLLATE "C") IN (SELECT r.id::text COLLATE "C" FROM ${CERT.from} r WHERE ( r.namespace = 'ns' AND r.type = 'Cert' AND r.id = ANY('{a,b}')))`
     );
     const graded = page({
       ...params(),
@@ -550,10 +550,10 @@ describe('a frame _agg over its seeds window: one group-by pass', () => {
     });
     const gcte = graded.slice(0, graded.indexOf('GROUP BY 1'));
     expect(gcte).toMatch(
-      /IN \(SELECT r\.id::text COLLATE "C" FROM rows r WHERE .*substrate_num\(r\.body -> 'grade'\)/s
+      /IN \(SELECT r\.id::text COLLATE "C" FROM "t__ns__cert_[0-9a-f]{8}" r WHERE .*substrate_num\(r\.extra -> 'grade'\)/s
     );
     // The window's own walk is implied by the key, so it is not repeated there.
-    expect(gcte.match(/'Obs'/g)).toHaveLength(1);
+    expect(gcte.match(/"t__ns__obs_[0-9a-f]{8}"/g)).toHaveLength(1);
   });
 
   it("leaves a shared pick's hub walk out of the window's seed semi-join", () => {
@@ -588,7 +588,9 @@ describe('a frame _agg over its seeds window: one group-by pass', () => {
     const text = render(withCtes(sql, s));
     const win = text.slice(text.indexOf('win_w'), text.indexOf('GROUP BY 1'));
     // Narrowed by the plain conjunct, but no per-seed pick inside the window's CTE.
-    expect(win).toMatch(/IN \(SELECT r\.id::text COLLATE "C" FROM rows r WHERE .*'grade'/s);
+    expect(win).toMatch(
+      /IN \(SELECT r\.id::text COLLATE "C" FROM "t__ns__cert_[0-9a-f]{8}" r WHERE .*'grade'/s
+    );
     expect(win).not.toContain("'Sale'");
     expect(win).not.toContain("'Spec'");
     expect(text).toMatch(/pick_w\d+ AS MATERIALIZED/);
@@ -598,6 +600,6 @@ describe('a frame _agg over its seeds window: one group-by pass', () => {
     const text = page(params(20));
     expect(text).not.toContain('WITH');
     expect(text).not.toContain('GROUP BY');
-    expect(text).toContain('EXISTS (SELECT 1 FROM rows w');
+    expect(text).toMatch(/EXISTS \(SELECT 1 FROM "t__ns__\w+" w/);
   });
 });

@@ -28,7 +28,6 @@ import {
   PgDataset,
   PgEdgesStore,
   runMigrations,
-  type StorageLayout,
   type TypeDefLookup
 } from '@mnmal-ai/substrate-dataset-pg';
 import { getExtensionOperator, registerExtensionOperator } from '@mnmal-ai/substrate-filter';
@@ -91,7 +90,6 @@ export async function wireStore(
   fieldDefLookupFor: (namespace: string) => FieldDefLookup,
   typeDefLookupFor?: (namespace: string) => TypeDefLookup,
   diskGuard?: DiskGuard,
-  layout?: StorageLayout,
   statementTimeoutMs?: number
 ): Promise<StoreWiring> {
   if (storeSpec === 'memory') {
@@ -110,7 +108,7 @@ export async function wireStore(
   if (storeSpec.startsWith('postgres://') || storeSpec.startsWith('postgresql://')) {
     const sql: Sql = openSql(storeSpec);
     try {
-      await runMigrations(sql, layout !== undefined ? { layout } : {});
+      await runMigrations(sql);
     } catch (err) {
       await sql.end({ timeout: STORE_END_TIMEOUT_S }).catch(() => undefined);
       throw err;
@@ -275,7 +273,7 @@ export function makeTypeDefLookupFactory(
 
 /**
  * Prepares storage for every type the namespace definitions declare: its
- * partition and its unique indexes, through `Dataset.ensureTypeStorage`. Runs
+ * table and its unique indexes, through `Dataset.ensureTypeStorage`. Runs
  * before any kernel migration, so a migration can rely on a declared unique
  * index. Non-unique indexes are left to {@link buildDeferredIndexes}. Errors
  * propagate and fail the boot, among them `UniqueIndexDuplicatesError` and
@@ -321,7 +319,7 @@ export function* registeredTypes(
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 /**
- * Prepares storage, partition and unique indexes, for every type registered in
+ * Prepares storage, table and unique indexes, for every type registered in
  * every local namespace once compose has run: `_system`, install-time types
  * such as the proposals plugin's, and proposed types replayed at start.
  * Namespaces without a local dataset (bridged, virtual) are skipped. A type the
@@ -470,8 +468,8 @@ export function extractIndexedListFields(
  * Pick per-namespace datasets for plugin-contributed namespaces.
  *
  * When the store is pg (`sharedSql` is non-null) every plugin namespace is
- * backed by a `PgDataset` pointing at the same connection pool — they
- * coexist in one `rows` table keyed by the `namespace` column, which
+ * backed by a `PgDataset` pointing at the same connection pool — each
+ * type in a table of its own, listed by namespace in the type catalog, which
  * is the core multi-namespace model. Multi-pg (namespace → distinct DB)
  * deployments should override `datasets` on the `compose()` call site
  * directly; this helper only covers the common single-pg-many-namespaces
@@ -511,9 +509,7 @@ export function buildPluginDatasetMap(
               sql: sharedSql,
               fieldDefLookup: fieldDefLookupFor(ns),
               typeDefLookup: typeDefLookup ?? ((type) => nsDef.types?.[type]),
-              ...(nsDef.promotedColumns !== undefined
-                ? { promotedColumns: nsDef.promotedColumns }
-                : {}),
+              // `nsDef.promotedColumns` is deprecated and ignored: every declared scalar is a column.
               // Thread the shared edges store so every plugin-contributed
               // namespace on the same pg pool can enlist edge ops into the
               // substrate tx.

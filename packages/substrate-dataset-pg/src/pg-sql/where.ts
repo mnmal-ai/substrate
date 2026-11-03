@@ -20,7 +20,7 @@ import type { TypeTable } from '../type-table.js';
 import { buildAggPredicate } from './aggregate.js';
 import { buildJsonPathPredicate } from './predicates-json-path.js';
 import { buildMetadataColumnPredicate } from './predicates-metadata.js';
-import { buildColumnPredicate, buildPromotedBodyColumnPredicate } from './predicates-promoted.js';
+import { buildColumnPredicate } from './predicates-promoted.js';
 import {
   asJsonValue,
   type BodyOrderByCast,
@@ -160,10 +160,7 @@ function buildFieldPredicate(
   // row has no join, so it looks its short id up; a type table's row carries no
   // namespace or type, so the lookup names its table's.
   if (field === 'shortId') {
-    const owner =
-      table.scope(alias) === null
-        ? `ws.namespace = ${sqlStringLiteral(table.namespace)} AND ws.type = ${sqlStringLiteral(table.type)}`
-        : `ws.namespace = ${alias}.namespace AND ws.type = ${alias}.type`;
+    const owner = `ws.namespace = ${sqlStringLiteral(table.namespace)} AND ws.type = ${sqlStringLiteral(table.type)}`;
     const col =
       scope === undefined || scope.alias === scope.seedAlias
         ? sql`s.short_id`
@@ -175,18 +172,6 @@ function buildFieldPredicate(
   // Row-metadata fields route to dedicated columns — not body->> extraction.
   if (isMetadataField(field)) {
     return buildMetadataColumnPredicate(sql, field, predicate as Record<string, unknown>, alias);
-  }
-  // Body-promoted fields route to their dedicated column only (no body
-  // fallback). See `PgDatasetOptions.promotedColumns`. Only `rowsTypeTable` has them (F20).
-  const promotedField = table.promoted?.(field);
-  if (promotedField !== undefined) {
-    return buildPromotedBodyColumnPredicate(
-      sql,
-      field,
-      promotedField,
-      predicate as Record<string, unknown>,
-      alias
-    );
   }
   // Json path predicate. Only an ARRAY-valued `path` — a struct
   // sub-field that happens to be named `path` carries an object and falls

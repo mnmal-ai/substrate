@@ -24,10 +24,9 @@ import type {
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset, PgEdgesStore } from '../src/index.js';
-import { dropNamespacesLike, TABLES } from './_layout.js';
+import { dropNamespacesLike } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
-const PARTITIONED = process.env.SUBSTRATE_TEST_LAYOUT === 'partitioned';
 const NOW = new Date('2026-11-01T12:00:00.000Z');
 const PREFIX = 'bcrud';
 const ITEM_SEL = { id: true, title: true, owner: true, parent: true, shortId: true };
@@ -110,10 +109,6 @@ describe('autoCRUD batch resolvers: memory vs pg through Engine', () => {
     if (kind === 'pg') {
       const pgEdges = new PgEdgesStore({ sql: sql as Sql });
       const pg = new PgDataset({ namespace: ns, sql: sql as Sql, edgesStore: pgEdges });
-      if (PARTITIONED) {
-        await pg.ensureTypeStorage('Owner');
-        await pg.ensureTypeStorage('Item');
-      }
       dataset = pg;
       edges = pgEdges;
     } else {
@@ -577,18 +572,17 @@ describe('autoCRUD batch resolvers: memory vs pg through Engine', () => {
   describe.skipIf(!POSTGRES_URL)('statements a batch sends (pg)', () => {
     /** A `tables` type-table catalog lookup (`loadTypeTable`). */
     const CATALOG = /FROM substrate_type_(tables|fields)\b/;
-    /** Per call of `sent`, on `tables`: the catalog lookups it dropped. */
+    /** Per call of `sent`: the catalog lookups it dropped. */
     let lookups: number[] = [];
     /**
-     * Every statement `fn` sends, transaction plumbing included. On `tables`
-     * the type-table catalog lookups are counted apart: whether one is sent
+     * Every statement `fn` sends, transaction plumbing included. The
+     * type-table catalog lookups are counted apart: whether one is sent
      * depends on when the cache's async catalog notification lands, so they
      * are bounded per type below rather than compared exactly.
      */
     async function sent(fn: () => Promise<unknown>): Promise<string[]> {
       statements = [];
       await fn();
-      if (!TABLES) return statements;
       lookups.push(statements.filter((q) => CATALOG.test(q)).length);
       return statements.filter((q) => !CATALOG.test(q));
     }
@@ -629,7 +623,7 @@ describe('autoCRUD batch resolvers: memory vs pg through Engine', () => {
       // Catalog lookups are per type, never per element: measured [7, 2, 0, 0]
       // (create, update, byShort, delete) for 5 and for 50 alike, the create
       // making Item's table. A late notification can add one reload (two).
-      if (TABLES) expect(Math.max(...lookups), JSON.stringify(lookups)).toBeLessThanOrEqual(9);
+      expect(Math.max(...lookups), JSON.stringify(lookups)).toBeLessThanOrEqual(9);
     });
   });
 });

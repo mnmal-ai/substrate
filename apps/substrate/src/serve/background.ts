@@ -103,7 +103,7 @@ export function startBackground(args: {
     // Third stage: hard-delete tombstoned rows + edges
     // past their retention horizon. Pg-backed only; the dataset's
     // `purgeTombstonedRows` is substrate-wide so one call covers every
-    // namespace's tombstones in the shared `rows` table.
+    // namespace's tombstones, type table by type table.
     const purgeFn =
       pgDatasetForPurge !== null && pgEdgesForPurge !== null
         ? async (): Promise<{ rows: number; edges: number }> => {

@@ -1,17 +1,30 @@
 /** Pure preflight: turns a source inventory plus target facts into refusals, warnings and a copy plan. */
 
 import {
-  getMigrationList,
+  type DetectedLayout,
   isDerivedMigration,
-  MIGRATE_STORE_MARKER_TABLE,
-  type StorageLayout
+  MIGRATE_STORE_MARKER_TABLE
 } from '@mnmal-ai/substrate-dataset-pg';
 import { type SourceInventory, UUID_CHECK_MIGRATION } from './source.js';
+
+/** Each old layout's baseline ledger version, as the last release that booted it recorded it. */
+const OLD_BASELINES: Readonly<Record<SourceInventory['layout'], string>> = {
+  legacy: '0001_baseline',
+  partitioned: '0001p_partitioned_baseline'
+};
+
+/** Every static ledger version an old-layout store can hold. */
+const OLD_MIGRATIONS: ReadonlySet<string> = new Set([
+  ...Object.values(OLD_BASELINES),
+  UUID_CHECK_MIGRATION,
+  '0003_safe_casts',
+  '0004_visible_seq'
+]);
 
 export interface TargetFacts {
   serverVersionNum: number;
   /** The target schema's layout; migrate-store copies into `tables` (or a schema with none yet). */
-  layout: StorageLayout | 'absent';
+  layout: DetectedLayout;
   /** No substrate data: no tables, or no row in `rows` or `row_ids`. */
   empty: boolean;
   /** Carries the migrate-store marker, so a rerun may reuse it. */
@@ -90,17 +103,9 @@ export function preflight(
     );
   }
 
-  const baselines = [
-    getMigrationList(true, 'legacy')[0],
-    getMigrationList(true, 'partitioned')[0]
-  ].map((m) => m?.version);
-  const known = new Set(
-    [...getMigrationList(true, 'legacy'), ...getMigrationList(true, 'partitioned')].map(
-      (m) => m.version
-    )
-  );
+  const baselines = Object.values(OLD_BASELINES);
   const unknownVersions = source.appliedMigrations.filter(
-    (v) => !known.has(v) && !isDerivedMigration(v)
+    (v) => !OLD_MIGRATIONS.has(v) && !isDerivedMigration(v)
   );
   if (unknownVersions.length > 0) {
     refusals.push(
@@ -123,9 +128,7 @@ export function preflight(
     refusals.push('target already holds data and was not created by migrate-store');
   }
 
-  const otherBaseline = baselines.find(
-    (b) => b !== getMigrationList(true, source.layout)[0]?.version
-  );
+  const otherBaseline = baselines.find((b) => b !== OLD_BASELINES[source.layout]);
   if (otherBaseline !== undefined && source.appliedMigrations.includes(otherBaseline)) {
     refusals.push(`source ledger records ${otherBaseline} but rows is ${source.layout}`);
   }

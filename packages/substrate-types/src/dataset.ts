@@ -403,7 +403,7 @@ export interface Dataset {
    * Physically delete every row AND short-id for `this.namespace`, across
    * every type. Equivalent to calling `dropType` for each distinct type
    * seen in storage, but substrate impls SHOULD use a single bulk DELETE
-   * where available (pg: `DELETE FROM rows WHERE namespace = $1`).
+   * where available (pg: one DELETE per type table).
    *
    * Same atomicity rules as `dropType`. Same "ignores archived state".
    */
@@ -527,11 +527,10 @@ export interface Dataset {
   fieldWarnings?(): Promise<string[]>;
   /**
    * The database-wide storage layout and what an operator should look at:
-   * rows parked in DEFAULT partitions, indexes and CHECK constraints on the
-   * `rows` parent, indexes this process has yet to build or failed to build,
-   * and a partition count over `partitionBudget`; and, as `info`, engine
-   * indexes no longer declared and open index recommendations. Never changes
-   * anything.
+   * indexes this process has yet to build or failed to build, fields whose
+   * promotion failed, and a type-table count over `partitionBudget`; and, as
+   * `info`, engine indexes no longer declared, pending and orphaned fields,
+   * and open index recommendations. Never changes anything.
    *
    * OPTIONAL. Backends without per-type storage omit it.
    */
@@ -830,18 +829,14 @@ export interface TypeIndexState {
   reason?: 'insufficient_disk';
 }
 
-/**
- * Where a type's rows live: `partition` is set on the partitioned layout once
- * the type has one, and `table` on the tables layout once it has its table.
- */
+/** Where a type's rows live: `table` is set once the type has its table. */
 export interface TypeStorageReport {
-  layout: 'legacy' | 'partitioned' | 'tables';
-  partition?: string;
+  layout: 'tables';
   table?: string;
   indexes: TypeIndexState[];
-  /** Tables layout: declared fields whose values live in `extra` until they get a column. */
+  /** Declared fields whose values live in `extra` until they get a column. */
   pending?: string[];
-  /** Tables layout: fields no longer declared whose columns are kept. */
+  /** Fields no longer declared whose columns are kept. */
   orphaned?: string[];
 }
 
@@ -862,7 +857,7 @@ export interface PromotionEvent {
 
 export interface StorageReport {
   /** `unknown` when the report itself failed. */
-  layout: 'legacy' | 'partitioned' | 'tables' | 'unknown';
+  layout: 'tables' | 'unknown';
   warnings: string[];
   /** Worth showing, not a fault: the doctor prints these without failing. */
   info?: string[];

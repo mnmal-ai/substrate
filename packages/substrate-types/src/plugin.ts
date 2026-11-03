@@ -361,10 +361,10 @@ export interface NamespaceDefinition {
    */
   annotations?: Readonly<Record<string, unknown>>;
   /**
-   * Body keys a SQL dataset mirrors into dedicated `rows` columns, so filters
-   * and sorts on them hit an index. The declaring plugin creates the columns in
-   * its kernel migrations; the engine creates none. `column` is a bare
-   * identifier.
+   * @deprecated Ignored. Every declared scalar is a column of its type's
+   * table, so there is nothing left to promote. It was the old layouts' body
+   * keys mirrored into dedicated `rows` columns; it still type-checks, so a
+   * plugin that sets it boots unchanged.
    */
   promotedColumns?: Readonly<Record<string, { column: string; kind: 'boolean' | 'text' }>>;
   /**
@@ -856,13 +856,12 @@ export interface KernelMigrationContext {
    */
   sql: unknown | null;
   /**
-   * How rows are stored: `'partitioned'` (`rows` LIST(namespace) then
-   * LIST(type)), `'legacy'` (`rows` as one plain table) or `'tables'` (one
-   * table per type, and no `rows`). `null` on the in-memory dataset. PG refuses
-   * a unique index on a partitioned parent unless it includes every partition
-   * key column (`namespace`, `type`), so such DDL on `rows` must branch on this.
+   * How rows are stored: `'tables'`, one table per type and no `rows` table,
+   * the only layout a store boots. `null` on the in-memory dataset. A
+   * migration that still runs DDL on `rows` fails, and the host names its
+   * plugin (`KernelMigrationLayoutError`).
    */
-  layout: 'legacy' | 'partitioned' | 'tables' | null;
+  layout: 'tables' | null;
   metric(name: string, payload?: unknown): void;
 }
 

@@ -42,12 +42,11 @@ Both tiers are declared in `@mnmal-ai/substrate/sdk`.
 - **`KernelPlugin`** extends the kernel. It does not own data namespaces. It
   can contribute:
   - `migrations`: schema migrations, applied idempotently at every boot and
-    tracked by id. `ctx.layout` tells a migration how `rows` is stored:
-    `'partitioned'`, `'legacy'`, or `null` on the in-memory dataset. PG refuses
-    a unique index on a partitioned parent unless it includes every partition
-    key column (`namespace`, `type`), so a unique index on `rows` that omits
-    them must branch on `layout`: on `'partitioned'`, declare it as a type
-    index instead.
+    tracked by id. `ctx.layout` is `'tables'` (each type in a table of its
+    own, and no `rows` table) or `null` on the in-memory dataset. A migration
+    must not touch `rows`: DDL on it fails, and the host refuses the boot with
+    `KernelMigrationLayoutError`, naming the plugin to upgrade. Index a type
+    through its definition's `indexes` instead.
   - `storeTables`: the names of the tables the plugin keeps data in (recall
     declares `embeddings`, `lexical`, `recall_clusters` and
     `recall_cluster_members`). `substrate-admin migrate-store` copies them with
@@ -668,22 +667,16 @@ Every type gets a full autoCRUD surface (`createDress`, `getDress`,
 | `embed` / `lexical` | Recall source slots (see [Opting into recall](#opting-into-recall-from-a-coordinator)). |
 
 `defineNamespace` also accepts `opts.annotations`, opaque JSON passed through
-to the namespace schema for consumers such as `substrate-nl`, and
-`opts.promotedColumns`, which names body keys the pg dataset mirrors into
-dedicated `rows` columns so filters and sorts on them hit an index
-(`{ status: { column: 'status', kind: 'text' } }`). Your plugin's own
-migration creates the columns. Reads return the body as stored, and filters
-use the column.
+to the namespace schema for consumers such as `substrate-nl`.
+`opts.promotedColumns` is deprecated and ignored: every declared scalar or
+crossRef field is a typed column of its type's table already, so there is
+nothing to promote, and a plugin that still sets it boots unchanged.
 
-Index a promoted field through `indexes` (see [Indexes](#indexes)): the
-engine builds declared indexes over a promoted field on its column, in the
-form its filters compare. An index you write by hand must match that form
-or it serves nothing, and nothing reports it. Key a text column as
-`(col COLLATE "C")`, because filters compare promoted text under `"C"`, `eq`
-included. A raw expression index over a body field must use the filter
-compiler's expressions, such as `((body ->> 'f') COLLATE "C")`. Better, move
-the index into `indexes` with its existing `name`, and the engine adopts it,
-swapping it to the right definition.
+Index a field through `indexes` (see [Indexes](#indexes)): the engine builds
+declared indexes on the field's column, in the form its filters compare. An
+index you write by hand must match that form or it serves nothing, and
+nothing reports it. Better, move the index into `indexes` with its existing
+`name`, and the engine adopts it, swapping it to the right definition.
 
 ### Indexes
 
@@ -717,8 +710,7 @@ and the reads call for them, and substrate tells you which.
   the first boot whatever the table's size, so "the children of this parent"
   and edge walks stay fast as a child type balloons. `indexed: false` on the
   crossRef opts out.
-- On the partitioned layout, indexes on `created_at`, `updated_at` and
-  tombstones.
+- Indexes on `created_at`, `updated_at` and tombstones.
 
 Nothing else is indexed until you ask. A scalar left unset gets no index;
 `indexed: true` builds `(field, natural order, id)`; `indexed: false` also
@@ -829,13 +821,10 @@ turn the range into an equality.
 
 - Each index adds write cost. Set `indexed: true` only on the fields your
   hot reads filter on; the rest scan until the advisor says otherwise.
-- The reconciler also owns one `CREATE STATISTICS` per indexed body
-  expression, and runs `ANALYZE` once when it creates one, because the planner
-  needs it for row estimates on body-field filters.
 
-On the legacy layout field and declared indexes are built as partial indexes
-on `rows` scoped to the type; the per-type timestamp and tombstone indexes are
-partitioned-only.
+Every index is on the type's own table. A field not yet in its column (one
+`propose_field` added at runtime, until the promotion sweep moves it) gets its
+index once the column exists; meanwhile the index reports `pending`.
 
 #### Recommendations and `propose_index`
 
@@ -967,34 +956,18 @@ carry `id` across export and import, never `shortId`.
 
 #### Upgrading an existing store
 
-The first boot after the release builds every derived index (each
-crossRef's and each `indexed: true` field's) in its new
-`(field, natural order, id)` shape, one at a time, in the background. What
-that costs depends on the layout:
+A store in an old layout (`legacy` or `partitioned`) is refused at boot:
+copy it into a fresh store with `substrate-admin migrate-store`, which only
+reads the source. The copy builds every type's indexes on its table.
 
-- **Partitioned:** each derived index is swapped. The old index serves until
-  its replacement is valid, and each swap needs about twice that index's disk
-  for a while.
-- **Legacy:** nothing is swapped. Each derived index is a new partial index
-  on the shared `rows` table, so each one is a full scan of `rows`, estimated
-  at 30% of its size, and the old indexes stay until removed. Each type that
-  gains a statistics object also runs one `ANALYZE rows`.
-
-Before each build the dataset compares free space on the database volume
-against an estimate (the size of the index it replaces, a leftover `__swap`
-index included, else 30% of the table; sort temp space is not included) plus
-a margin, and waits, reporting `pending` with `insufficient_disk`, when there
-is not room.
-
-Two steps are required before the first boot on an existing store:
-
-1. Stop every instance on the store. Migration `0004` adds a column to
-   `rows`; behind a query or an index build from another process it blocks
-   every reader and writer of `rows` until that finishes.
-2. Set `SUBSTRATE_INDEX_DISK_PATH` to the mount of the PostgreSQL data
-   directory. An existing service has no such setting, and unset, the check is
-   off: the boot then logs how many builds are pending and their estimated
-   total.
+Before each background build the dataset compares free space on the database
+volume against an estimate (the size of the index it replaces, a leftover
+`__swap` index included, else 30% of the table; sort temp space is not
+included) plus a margin, and waits, reporting `pending` with
+`insufficient_disk`, when there is not room. Set `SUBSTRATE_INDEX_DISK_PATH`
+to the mount of the PostgreSQL data directory before the first boot; unset,
+the check is off, and the boot logs how many builds are pending and their
+estimated total.
 
 Configure the guard with:
 

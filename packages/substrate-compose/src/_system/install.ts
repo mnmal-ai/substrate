@@ -69,6 +69,7 @@ import {
   INVITE_TYPE,
   KEY_ALGORITHMS,
   KEY_FIELDS,
+  KEY_INDEXES,
   KEY_TYPE,
   STORE_PROFILE_FIELDS,
   STORE_PROFILE_ID,
@@ -605,6 +606,7 @@ export async function installSystemNamespace(
   const wrappedForSubstrateKey = wrapRegistryMutations(opts.registry, keyInterceptors);
   installAutoCrud(wrappedForSubstrateKey, KEY_TYPE, opts.dataset, opts.edges, {
     fields: mergeIdField(KEY_FIELDS),
+    indexes: KEY_INDEXES,
     policy: adminGate,
     purgeable: true,
     adminCapability

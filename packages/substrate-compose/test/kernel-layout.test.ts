@@ -4,7 +4,7 @@ import { composeKernelPlugins } from '../src/kernel.js';
 
 describe('kernel migration layout', () => {
   it('passes the store layout to kernel migrations', async () => {
-    for (const layout of ['legacy', 'partitioned', null] as const) {
+    for (const layout of ['tables', null] as const) {
       const seen: unknown[] = [];
       const plugin: KernelPlugin = {
         name: 'stub',

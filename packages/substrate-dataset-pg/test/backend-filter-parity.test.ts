@@ -17,16 +17,14 @@ import type { FieldDef, Row, RowMetadata, WhereClause } from '@mnmal-ai/substrat
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PgDataset, runMigrations } from '../src/index.js';
-import { TABLES, truncateRows } from './_layout.js';
-import { addTestPromotedColumns, dropTestPromotedColumns, TEST_PROMOTED } from './_promoted.js';
+import { truncateRows } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 
 /**
- * `project`, `status` and `priority` are body-PROMOTED columns on pg (they get
- * real columns, not JSONB body extraction) and plain body fields in memory.
- * That asymmetry is exactly where the operator support drifted apart, so the
- * fixtures exercise promoted and non-promoted string fields side by side.
+ * `project`, `status` and `priority` were the old layouts' body-promoted
+ * columns, where the operator support drifted apart; the fixtures keep
+ * exercising them beside the other string fields.
  */
 const md = (id: string): RowMetadata => ({
   createdAt: '2026-01-01T00:00:00.000Z',
@@ -78,18 +76,15 @@ describe.skipIf(!POSTGRES_URL)('backend filter parity', () => {
   beforeAll(async () => {
     sql = postgres(POSTGRES_URL as string);
     await runMigrations(sql);
-    // A type table ignores promoted columns, and `rows` to add them to does not exist.
-    if (!TABLES) await addTestPromotedColumns(sql);
   });
 
   afterAll(async () => {
-    if (!TABLES) await dropTestPromotedColumns(sql);
     await sql.end();
   });
 
   beforeEach(async () => {
     await truncateRows(sql);
-    pg = new PgDataset({ namespace: 'parity_ns', sql, promotedColumns: TEST_PROMOTED });
+    pg = new PgDataset({ namespace: 'parity_ns', sql });
     mem = new MemoryDataset({ namespace: 'parity_ns' });
     await pg.write('P', ROWS);
     await mem.write('P', ROWS);
@@ -240,7 +235,7 @@ describe.skipIf(!POSTGRES_URL)('backend filter parity', () => {
    */
   it('both backends refuse an unhonourable filter even when there is nothing to filter', async () => {
     await truncateRows(sql);
-    const emptyPg = new PgDataset({ namespace: 'parity_ns', sql, promotedColumns: TEST_PROMOTED });
+    const emptyPg = new PgDataset({ namespace: 'parity_ns', sql });
     const emptyMem = new MemoryDataset({ namespace: 'parity_ns' });
 
     for (const where of [
@@ -257,54 +252,6 @@ describe.skipIf(!POSTGRES_URL)('backend filter parity', () => {
       });
     }
   });
-
-  /**
-   * The exact boundary of substrate-level refusal, pinned so it stays a
-   * decision rather than becoming a surprise.
-   *
-   * `{ project: { bogusOp: { eq: 'x' } } }` is structurally identical to the
-   * legitimate nested-struct filter `{ address: { city: { eq: 'x' } } }`.
-   * Two things can still resolve it, and memory uses whichever it has:
-   *
-   *   a ROW    — 'substrate' is a string, so no nested struct can apply, so those
-   *              keys were operators and none is recognised. Refused.
-   *   NOTHING  — an empty collection offers no value to contradict the struct
-   *              reading, so memory declines to guess rather than break every
-   *              struct filter.
-   *
-   * pg refuses either way: `project` is a promoted column, which cannot be
-   * struct-nested, so its keys are read as operators.
-   *
-   * The empty-collection asymmetry is acceptable ONLY because the filter
-   * validator, which holds the schema and so can always decide, rejects unknown
-   * operators upstream on every path it runs.
-   */
-  // `project` is promoted on `rows`, where the column predicate refuses the typo; a type table has no promoted columns.
-  it.skipIf(TABLES)(
-    'resolves an operator-shaped typo from the row, and defers to the validator without one',
-    async () => {
-      const where = { project: { bogusOp: { eq: 'x' } } } as WhereClause;
-
-      // With rows present, both substrates decide it.
-      expect(await run(pg, where)).toEqual({ kind: 'refused' });
-      expect(await run(mem, where)).toEqual({ kind: 'refused' });
-
-      // With nothing to decide against, memory defers.
-      await truncateRows(sql);
-      expect(
-        await run(
-          new PgDataset({ namespace: 'parity_ns', sql, promotedColumns: TEST_PROMOTED }),
-          where
-        )
-      ).toEqual({
-        kind: 'refused'
-      });
-      expect(await run(new MemoryDataset({ namespace: 'parity_ns' }), where)).toEqual({
-        kind: 'rows',
-        ids: []
-      });
-    }
-  );
 
   it('pg refuses a non-number shortId operand rather than dropping it', async () => {
     for (const op of ['eq', 'neq', 'gt', 'gte', 'lt', 'lte']) {
@@ -448,16 +395,13 @@ describe.skipIf(!POSTGRES_URL)('backend filter parity over NULL values', () => {
   beforeAll(async () => {
     sql = postgres(POSTGRES_URL as string);
     await runMigrations(sql);
-    // A type table ignores promoted columns, and `rows` to add them to does not exist.
-    if (!TABLES) await addTestPromotedColumns(sql);
   });
   afterAll(async () => {
-    if (!TABLES) await dropTestPromotedColumns(sql);
     await sql.end();
   });
   beforeEach(async () => {
     await truncateRows(sql);
-    pg = new PgDataset({ namespace: 'parity_null_ns', sql, promotedColumns: TEST_PROMOTED });
+    pg = new PgDataset({ namespace: 'parity_null_ns', sql });
     mem = new MemoryDataset({ namespace: 'parity_null_ns' });
     await pg.write('P', NULL_ROWS);
     await mem.write('P', NULL_ROWS);
@@ -471,9 +415,8 @@ describe.skipIf(!POSTGRES_URL)('backend filter parity over NULL values', () => {
     return rows.map((r) => String(r.id)).sort();
   };
 
-  // `project` is a body-PROMOTED column on pg and a plain body key in memory;
-  // `owner` is a plain body key on both. Both are exercised because the two pg
-  // storage paths handle nulls by different routes.
+  // `project` and `owner` are both plain jsonb keys here (no declared fields);
+  // both are kept, as the old layouts routed them differently.
   const cases: Array<[string, WhereClause, string[]]> = [
     ['project neq admits null', { project: { neq: 'substrate' } }, ['n2', 'n3']],
     ['project nin admits null', { project: { nin: ['substrate'] } }, ['n2', 'n3']],

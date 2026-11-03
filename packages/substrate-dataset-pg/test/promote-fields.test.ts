@@ -14,7 +14,7 @@ import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { FieldKindChangedError, PgDataset, promotePendingFields } from '../src/index.js';
 import { loadTypeTable } from '../src/type-table.js';
-import { dropNamespace, TABLES } from './_layout.js';
+import { dropNamespace } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const hex = () => randomBytes(4).toString('hex');
@@ -31,19 +31,6 @@ describe('promotePendingFields is feature-detected', () => {
   });
 });
 
-describe.skipIf(!POSTGRES_URL || TABLES)('the old layouts have no pending fields', () => {
-  it('the sweep promotes nothing and warns of nothing', async () => {
-    const sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
-    try {
-      const ds = new PgDataset({ namespace: `pfo_${hex()}`, sql });
-      expect(await ds.promotePendingFields({ lockTimeoutMs: 100, batchRows: 10 })).toEqual([]);
-      expect(await ds.fieldWarnings()).toEqual([]);
-    } finally {
-      await sql.end({ timeout: 5 });
-    }
-  });
-});
-
 const strip = ({ _metadata: _m, shortId: _s, ...rest }: Row): Row => rest as Row;
 /** A stored `extra` without the row's own `id`, which the writer keeps there as `body` kept it. */
 const extraOf = (r: Record<string, unknown>) => {
@@ -52,7 +39,7 @@ const extraOf = (r: Record<string, unknown>) => {
 };
 const byId = (a: Row, b: Row) => String(a.id).localeCompare(String(b.id));
 
-describe.skipIf(!POSTGRES_URL || !TABLES)('pending fields and the promotion sweep', () => {
+describe.skipIf(!POSTGRES_URL)('pending fields and the promotion sweep', () => {
   let sql: Sql;
   let ns: string;
   let defs: Record<string, Def>;

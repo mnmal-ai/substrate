@@ -10,14 +10,10 @@ import { randomUUID } from 'node:crypto';
 import { Engine, loadPlugins, MemoryEdgesStore } from '@mnmal-ai/substrate-core';
 import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-dataset-memory';
 import {
-  deriveListIndexMigration,
   desiredIndexKeys,
   detectLayout,
   PgDataset,
   PgEdgesStore,
-  partitionName,
-  runDerivedMigrations,
-  type StorageLayout,
   typeIndexesOf
 } from '@mnmal-ai/substrate-dataset-pg';
 import { isReservedAutoCrudField } from '@mnmal-ai/substrate-sdk';
@@ -39,7 +35,7 @@ import {
   type PubSub,
   storageSettled
 } from '../src/index.js';
-import { relationOf, TABLES } from './_layout.js';
+import { relationOf } from './_layout.js';
 
 const T0 = new Date('2026-10-25T00:00:00Z');
 
@@ -593,7 +589,6 @@ describe.skipIf(!POSTGRES_URL)('propose_index (pg)', () => {
   const APP = 'kidxapp';
   const CODE = 'kidxcode';
   let sql: Sql;
-  let layout: StorageLayout;
   let engine: Engine;
   let system: Dataset;
   let codeDataset: PgDataset;
@@ -609,9 +604,7 @@ describe.skipIf(!POSTGRES_URL)('propose_index (pg)', () => {
 
   beforeAll(async () => {
     sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
-    const detected = await detectLayout(sql);
-    if (detected === 'absent') throw new Error('test schema is not migrated');
-    layout = detected;
+    if ((await detectLayout(sql)) !== 'tables') throw new Error('test schema is not migrated');
     const edges = new PgEdgesStore({ sql });
     const datasets = new MemoryDatasetRegistry();
     let live: Engine | undefined;
@@ -664,7 +657,7 @@ describe.skipIf(!POSTGRES_URL)('propose_index (pg)', () => {
   });
 
   async function indexNames(type: string, ns = CODE): Promise<string[]> {
-    return (await typeIndexesOf(sql, ns, type, layout)).map((i) => i.name);
+    return (await typeIndexesOf(sql, ns, type)).map((i) => i.name);
   }
 
   /** A code-defined type built with `indexes`, then retracted to `keep`: returns the leftovers. */
@@ -683,12 +676,11 @@ describe.skipIf(!POSTGRES_URL)('propose_index (pg)', () => {
     const desired = desiredIndexKeys({
       namespace: CODE,
       type,
-      layout,
       fields,
       indexes: keep,
       orderedBy: { createdAt: 'desc' }
     }).map((d) => d.name);
-    const owned = (await typeIndexesOf(sql, CODE, type, layout)).filter((i) => i.engineOwned);
+    const owned = (await typeIndexesOf(sql, CODE, type)).filter((i) => i.engineOwned);
     return {
       type,
       desired: owned.map((i) => i.name).filter((n) => desired.includes(n)),
@@ -719,17 +711,13 @@ describe.skipIf(!POSTGRES_URL)('propose_index (pg)', () => {
       [{ fields: ['size'], unique: true }]
     );
     const leftover = leftovers[0] as string;
-    const unique = (await typeIndexesOf(sql, CODE, type, layout)).find(
+    const unique = (await typeIndexesOf(sql, CODE, type)).find(
       (i) => i.unique && i.engineOwned
     )?.name;
     expect(unique).toBeDefined();
-    const table =
-      layout === 'partitioned' ? partitionName(CODE, type) : await relationOf(sql, CODE, type);
-    const scope =
-      layout === 'legacy' ? `namespace = '${CODE}' AND type = '${type}'` : 'deleted_at IS NULL';
-    const key = layout === 'tables' ? 'id' : "(body->>'brand')";
+    const table = await relationOf(sql, CODE, type);
     const hand = `hand_${randomUUID().slice(0, 8)}`;
-    await sql.unsafe(`CREATE INDEX ${hand} ON ${table} (${key}) WHERE ${scope}`);
+    await sql.unsafe(`CREATE INDEX ${hand} ON ${table} (id) WHERE deleted_at IS NULL`);
 
     const remove = (indexName: string) =>
       proposeIndex(engine, { namespace: CODE, type, action: 'remove', indexName });
@@ -777,7 +765,7 @@ describe.skipIf(!POSTGRES_URL)('propose_index (pg)', () => {
       typeDefLookup: (t) => (t === 'Doc' ? { fields } : undefined)
     });
     await left.ensureTypeStorage('Doc');
-    const orphan = (await typeIndexesOf(sql, gone, 'Doc', layout)).find(
+    const orphan = (await typeIndexesOf(sql, gone, 'Doc')).find(
       (i) => i.engineOwned && i.name.endsWith('_idx')
     )?.name as string;
     expect(orphan).toBeDefined();
@@ -801,7 +789,7 @@ describe.skipIf(!POSTGRES_URL)('propose_index (pg)', () => {
         await proposeIndex(engine, { namespace: CODE, type, action: 'remove', indexName: wanted })
       )
     ).toBe('still_desired');
-    // The partitioned and tables layouts' engine timestamp and tombstone indexes, never removable.
+    // The engine's timestamp and tombstone indexes, never removable.
     for (const base of desired.filter((n) => n.endsWith('_base'))) {
       expect(
         code(
@@ -809,7 +797,7 @@ describe.skipIf(!POSTGRES_URL)('propose_index (pg)', () => {
         )
       ).toBe('still_desired');
     }
-    expect(desired.some((n) => n.endsWith('_base'))).toBe(layout !== 'legacy');
+    expect(desired.some((n) => n.endsWith('_base'))).toBe(true);
     const rec = recommendation({ namespace: CODE, type, action: 'remove', indexName: wanted });
     await system.write('IndexRecommendation', [rec]);
     const env = await proposeIndex(engine, {
@@ -853,7 +841,7 @@ describe.skipIf(!POSTGRES_URL)('propose_index (pg)', () => {
     });
     expect(env.errors ?? []).toEqual([]);
     await storageSettled();
-    const added = (await typeIndexesOf(sql, APP, typeName, layout)).filter(
+    const added = (await typeIndexesOf(sql, APP, typeName)).filter(
       (i) => i.engineOwned && !before.includes(i.name)
     );
     expect(added).toHaveLength(1);
@@ -888,33 +876,24 @@ describe.skipIf(!POSTGRES_URL)('propose_index (pg)', () => {
     expect(removed.errors ?? []).toEqual([]);
     expect(await indexNames(typeName, APP)).not.toContain(name);
     expect(engine.registryFor(APP)?.get(typeName)?.indexes).toBeUndefined();
-    const [row] = TABLES
-      ? (
-          await (engine.datasetFor(APP) as Dataset).read('TypeProposal', {
-            where: { typeName: { eq: typeName } }
-          })
-        ).rows.map((r) => ({ indexes: r.indexesJson ?? null }))
-      : await sql<Array<{ indexes: string | null }>>`
-        SELECT body->>'indexesJson' AS indexes FROM rows
-        WHERE namespace = ${APP} AND type = 'TypeProposal' AND body->>'typeName' = ${typeName}`;
+    const [row] = (
+      await (engine.datasetFor(APP) as Dataset).read('TypeProposal', {
+        where: { typeName: { eq: typeName } }
+      })
+    ).rows.map((r) => ({ indexes: r.indexesJson ?? null }));
     expect(row?.indexes).toBeNull();
     // A reconcile does not bring it back.
     await (engine.datasetFor(APP) as PgDataset).ensureTypeStorage(typeName);
     expect(await indexNames(typeName, APP)).not.toContain(name);
-    const [audit] = TABLES
-      ? (await system.read('AuditEvent', {})).rows
-          .map((r) => ({ details: r.details as Record<string, unknown> }))
-          .filter((r) => r.details?.indexName === name)
-      : await sql<Array<{ details: Record<string, unknown> }>>`
-      SELECT body->'details' AS details FROM rows
-      WHERE namespace = '_system' AND type = 'AuditEvent'
-        AND body->'details'->>'indexName' = ${name}`;
+    const [audit] = (await system.read('AuditEvent', {})).rows
+      .map((r) => ({ details: r.details as Record<string, unknown> }))
+      .filter((r) => r.details?.indexName === name);
     expect(audit?.details).toMatchObject({
       action: 'remove',
       retracted: { fields: ['brand', { field: 'updatedAt', dir: 'desc' }] }
     });
     // Its derived siblings are still wanted for other reasons, and stay refused.
-    const derived = (await typeIndexesOf(sql, APP, typeName, layout)).find(
+    const derived = (await typeIndexesOf(sql, APP, typeName)).find(
       (i) => i.engineOwned && !i.unique
     )?.name;
     if (derived !== undefined) {
@@ -961,10 +940,9 @@ describe.skipIf(!POSTGRES_URL)('propose_index (pg)', () => {
       ctx: REVIEWER
     });
     expect(env.errors?.map((e) => e.code)).toContain('propose_index_not_alone');
-    const [count] = TABLES
-      ? [{ n: (await (engine.datasetFor(APP) as Dataset).read(noteType, {})).rows.length }]
-      : await sql<Array<{ n: number }>>`
-      SELECT count(*)::int AS n FROM rows WHERE namespace = ${APP} AND type = ${noteType}`;
+    const [count] = [
+      { n: (await (engine.datasetFor(APP) as Dataset).read(noteType, {})).rows.length }
+    ];
     expect(count?.n).toBe(0);
     expect(await indexNames(type)).toContain(name);
   });
@@ -972,8 +950,7 @@ describe.skipIf(!POSTGRES_URL)('propose_index (pg)', () => {
   it('gives up a drop that waits on another transaction, and reopens its recommendation', async () => {
     const { type, leftovers } = await codeType([{ fields: ['brand', 'size'] }]);
     const name = leftovers[0] as string;
-    const table =
-      layout === 'partitioned' ? partitionName(CODE, type) : await relationOf(sql, CODE, type);
+    const table = await relationOf(sql, CODE, type);
     const rec = recommendation({ namespace: CODE, type, action: 'remove', indexName: name });
     await system.write('IndexRecommendation', [rec]);
     const LOCK_TIMEOUT_MS = 500;
@@ -1030,14 +1007,8 @@ describe.skipIf(!POSTGRES_URL)('propose_index (pg)', () => {
     const type = `Tagged${randomUUID().slice(0, 8)}`;
     const tags: FieldDef = { kind: 'list', of: { kind: 'scalar', type: 'string' }, indexed: true };
     codeTypes.set(type, { fields: { ...fields, tags } });
-    if (layout === 'legacy') {
-      // The legacy layout's list GIN comes from the migrations ledger, unmarked.
-      await runDerivedMigrations(sql, [
-        deriveListIndexMigration({ namespace: CODE, type, field: 'tags' })
-      ]);
-    }
     await codeDataset.ensureTypeStorage(type);
-    const gin = (await typeIndexesOf(sql, CODE, type, layout)).find((i) => i.name.endsWith('_gin'));
+    const gin = (await typeIndexesOf(sql, CODE, type)).find((i) => i.name.endsWith('_gin'));
     expect(gin).toBeDefined();
     const env = await proposeIndex(engine, {
       namespace: CODE,
@@ -1045,7 +1016,7 @@ describe.skipIf(!POSTGRES_URL)('propose_index (pg)', () => {
       action: 'remove',
       indexName: gin?.name as string
     });
-    expect(code(env)).toBe(layout === 'legacy' ? 'not_engine_owned' : 'still_desired');
+    expect(code(env)).toBe('still_desired');
     expect(await indexNames(type)).toContain(gin?.name);
   });
 });

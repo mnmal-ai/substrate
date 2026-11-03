@@ -17,23 +17,17 @@ import {
 } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { PgDataset, reconcileTypeIndexes, type StorageLayout } from '../src/index.js';
+import { PgDataset } from '../src/index.js';
 import { generatedIdentifier } from '../src/migrate.js';
-import type { PromotedBodyColumnMap } from '../src/pg-sql.js';
-import { dropNamespace, relationOf, TABLES } from './_layout.js';
-import { addTestPromotedColumns } from './_promoted.js';
+import { dropNamespace, relationOf } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
-const LAYOUT = (process.env.SUBSTRATE_STORAGE_LAYOUT ?? 'legacy') as StorageLayout;
-const PARTITIONED = LAYOUT === 'partitioned';
 const TYPE = 'Obs';
 const ROWS = 5000;
 const hex = () => randomBytes(4).toString('hex');
 const COMPOSITE = `rows_iu_${hex()}`;
 const PARTIAL = `rows_iu_partial_${hex()}`;
-const PROMOTED_TEXT = `rows_iu_project_${hex()}`;
-/** `project` lives in a promoted text column. */
-const obsPromoted: PromotedBodyColumnMap = { project: { column: 'project', kind: 'text' } };
+const TEXT_INDEX = `rows_iu_project_${hex()}`;
 
 const fields: Record<string, FieldDef> = {
   title: { kind: 'scalar', type: 'string', indexed: true },
@@ -50,7 +44,7 @@ const fields: Record<string, FieldDef> = {
 const indexes: IndexDecl[] = [
   { fields: ['cert', { field: 'observedAt', dir: 'desc' }], name: COMPOSITE },
   { fields: ['grp'], where: { archived: false }, name: PARTIAL },
-  { fields: ['project'], name: PROMOTED_TEXT }
+  { fields: ['project'], name: TEXT_INDEX }
 ];
 
 const ns = `iu_${hex()}`;
@@ -64,7 +58,7 @@ let ds: PgDataset;
 
 const SKIP = !POSTGRES_URL;
 
-/** ANALYZE the relation `type`'s rows live in: `rows`, or its type table. */
+/** ANALYZE `type`'s table. */
 const analyze = async (namespace: string, type: string): Promise<void> => {
   await sql.unsafe(`ANALYZE ${await relationOf(sql, namespace, type)}`);
 };
@@ -81,12 +75,9 @@ beforeAll(async () => {
   ds = new PgDataset({
     namespace: ns,
     sql: traced,
-    promotedColumns: obsPromoted,
     fieldDefLookup: (type, field) => (type === TYPE ? fields[field] : undefined),
     typeDefLookup: (type) => (type === TYPE ? { fields, indexes } : undefined)
   });
-  // Promoted columns are `rows`' own; on `tables`, `project` is a column of the type table.
-  if (!TABLES) await addTestPromotedColumns(sql);
   await ds.ensureTypeStorage(TYPE);
   for (let start = 0; start < ROWS; start += 1000) {
     await ds.write(
@@ -125,7 +116,7 @@ async function compiled(
 ): Promise<{ query: string; parameters: unknown[]; types: number[] }> {
   sent = [];
   await dataset.read(type, params);
-  const q = sent.find((s) => /FROM (rows|"t__[^"]+") r\b/.test(s.query));
+  const q = sent.find((s) => /FROM "t__[^"]+" r\b/.test(s.query));
   if (q === undefined) throw new Error('read sent no SELECT');
   return q;
 }
@@ -166,10 +157,10 @@ async function plans(
     );
     // A read with no bound values prepares and executes without a parameter list.
     const list = (items: string[]) => (items.length === 0 ? '' : `(${items.join(', ')})`);
-    // A type table holds only its own type's rows, so a seq scan of it is cheap
-    // where one of the shared `rows` is not; what this asks is whether the index
-    // matches the expression, so the scan is taken off the table.
-    if (TABLES) await conn.unsafe('SET enable_seqscan = off');
+    // A type table holds only its own type's rows, so a seq scan of it is
+    // cheap; what this asks is whether the index matches the expression, so
+    // the scan is taken off the table.
+    await conn.unsafe('SET enable_seqscan = off');
     await conn.unsafe(`PREPARE iu_stmt${list(names.map((n) => n.t))} AS ${query}`);
     const explain = async (mode: string): Promise<string[]> => {
       await conn.unsafe(`SET plan_cache_mode = ${mode}`);
@@ -228,29 +219,24 @@ const implicitCases: Array<[string, ReadParams, () => string]> = [
   ['date orderBy asc', { orderBy: [{ at: 'asc' }], limit: 10 }, () => idx('at')],
   ['crossRef eq', { where: { owner: { eq: 'o7' } } }, () => idx('owner')],
   ['crossRef in', { where: { owner: { in: ['o7', 'o8'] } } }, () => idx('owner')],
-  // GIN for list fields is per type (partitioned, tables); legacy derives it by migration.
-  ...(LAYOUT !== 'legacy'
-    ? ([['list has', { where: { tags: { has: 'g7' } } }, () => idx('tags', 'gin')]] satisfies Array<
-        [string, ReadParams, () => string]
-      >)
-    : [])
+  ['list has', { where: { tags: { has: 'g7' } } }, () => idx('tags', 'gin')]
 ];
 
-/** Served by declared indexes, in both layouts. */
+/** Served by declared indexes. */
 const declaredCases: Array<[string, ReadParams, () => string]> = [
   [
     'composite eq + orderBy desc',
     { where: { cert: { eq: 'c7' } }, orderBy: [{ observedAt: 'desc' }], limit: 10 },
     () => COMPOSITE
   ],
-  ['promoted text eq', { where: { project: { eq: 'j00042' } } }, () => PROMOTED_TEXT],
-  ['promoted text in', { where: { project: { in: ['j00001', 'j00002'] } } }, () => PROMOTED_TEXT],
+  ['text column eq', { where: { project: { eq: 'j00042' } } }, () => TEXT_INDEX],
+  ['text column in', { where: { project: { in: ['j00001', 'j00002'] } } }, () => TEXT_INDEX],
   [
-    'promoted text between',
+    'text column between',
     { where: { project: { between: ['j00010', 'j00020'] } } },
-    () => PROMOTED_TEXT
+    () => TEXT_INDEX
   ],
-  ['promoted text orderBy', { orderBy: [{ project: 'asc' }], limit: 10 }, () => PROMOTED_TEXT],
+  ['text column orderBy', { orderBy: [{ project: 'asc' }], limit: 10 }, () => TEXT_INDEX],
   [
     'partial (archived: false) eq',
     { where: { grp: { eq: 'p7' }, archived: { eq: false } } },
@@ -296,80 +282,6 @@ describe.skipIf(SKIP)('index use: declared indexes', () => {
       await ds.purge(TYPE, Object.keys(at));
     }
   });
-
-  // cortext's AgentMessage: `status` and `archived` are promoted columns, and
-  // the fleet already holds a hand-built index of the declared name whose
-  // predicate is `archived IS NOT TRUE`.
-  // Promoted columns live on `rows`; a type table has no such index to swap.
-  it.skipIf(TABLES)(
-    'swaps a legacy-style index over promoted columns, and the swap serves reads',
-    async () => {
-      const type = 'AgentMessage';
-      const msgNs = `iu_msg_${hex()}`;
-      const name = `rows_agent_message_recipient_idx_${hex()}`;
-      const promotedColumns: PromotedBodyColumnMap = {
-        status: { column: 'status', kind: 'text' },
-        archived: { column: 'archived', kind: 'boolean' }
-      };
-      const msgFields: Record<string, FieldDef> = {
-        recipient: { kind: 'crossRef', ns: msgNs, type: 'AgentIdentity', onDelete: 'set_null' },
-        status: { kind: 'scalar', type: 'string' },
-        archived: { kind: 'scalar', type: 'boolean' }
-      };
-      const msgs = new PgDataset({
-        namespace: msgNs,
-        sql: traced,
-        promotedColumns,
-        fieldDefLookup: (_t, f) => msgFields[f]
-      });
-      await msgs.ensureTypeStorage(type);
-      await msgs.write(
-        type,
-        Array.from({ length: ROWS }, (_, i) => ({
-          id: `m${i}`,
-          recipient: `u${i % 200}`,
-          status: `s${i % 5}`,
-          archived: i % 2 === 0
-        }))
-      );
-      const [part] = await sql<Array<{ relname: string }>>`
-      SELECT c.relname FROM pg_partition_tree('rows') t JOIN pg_class c ON c.oid = t.relid
-      WHERE t.isleaf AND pg_get_expr(c.relpartbound, c.oid) = ${`FOR VALUES IN ('${type}')`}
-        AND t.parentrelid = (
-          SELECT c2.oid FROM pg_partition_tree('rows') t2 JOIN pg_class c2 ON c2.oid = t2.relid
-          WHERE pg_get_expr(c2.relpartbound, c2.oid) = ${`FOR VALUES IN ('${msgNs}')`})`;
-      const target = PARTITIONED ? (part?.relname as string) : 'rows';
-      const scope = PARTITIONED ? '' : `namespace = '${msgNs}' AND type = '${type}' AND `;
-      await sql.unsafe(
-        `CREATE INDEX ${name} ON ${target} ((body ->> 'recipient'), status)
-       WHERE ${scope}deleted_at IS NULL AND archived IS NOT TRUE`
-      );
-
-      const states = await reconcileTypeIndexes(sql, {
-        namespace: msgNs,
-        type,
-        layout: LAYOUT,
-        orderedBy: DEFAULT_ORDERED_BY,
-        fields: msgFields,
-        promotedColumns,
-        indexes: [{ fields: ['recipient', 'status'], where: { archived: false }, name }]
-      });
-      expect(states.find((s) => s.name === name)).toMatchObject({
-        outcome: 'swapped',
-        state: 'valid'
-      });
-      await sql.unsafe(`ANALYZE ${target}`);
-      await expectServedBy(
-        'promoted partial (recipient, status) where archived = false',
-        await plans(
-          { where: { recipient: { eq: 'u7' }, status: { eq: 's2' }, archived: { eq: false } } },
-          msgs,
-          type
-        ),
-        name
-      );
-    }
-  );
 });
 
 /** Every node type in the plan. */
@@ -440,12 +352,9 @@ describe.skipIf(SKIP)('index use: a declared metadata order key', () => {
     await analyze(taskNs, type);
   }, 120_000);
 
-  // Leave `rows` as large as it was: later files' sampled statistics depend on its size.
   afterAll(async () => {
     if (!POSTGRES_URL) return;
-    if (TABLES) return void (await dropNamespace(sql, taskNs));
-    await sql`DELETE FROM rows WHERE namespace = ${taskNs}`;
-    await sql`ANALYZE rows`;
+    await dropNamespace(sql, taskNs);
   });
 
   it('status eq in the default order, limit 10: the declared index, no Sort under the limit', async () => {
@@ -622,8 +531,8 @@ const scanRows = (
 };
 
 // Every reconciled index is partial, and the planner reads no expression
-// statistics from a partial index; without the reconciler's statistics object
-// every value of `body ->> f` estimates at the same default selectivity.
+// statistics from a partial index; a declared scalar is a column, whose own
+// statistics tell a hot value from a rare one.
 describe.skipIf(SKIP)('index use: expression statistics', () => {
   const statNs = `iu_stat_${hex()}`;
   const type = 'Grade';
@@ -640,7 +549,7 @@ describe.skipIf(SKIP)('index use: expression statistics', () => {
       fieldDefLookup: (_t, f) => gradeFields[f],
       typeDefLookup: () => ({ fields: gradeFields, indexes: [{ fields: ['grade'], name }] })
     });
-    // Builds the index and its statistics object, before the rows exist.
+    // Builds the index before the rows exist.
     await grades.ensureTypeStorage(type);
     // 10% share one hot value; the rest hold a value of their own.
     for (let start = 0; start < N; start += 3000) {

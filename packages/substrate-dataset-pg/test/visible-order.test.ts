@@ -13,7 +13,7 @@ import postgres from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { runMigrations } from '../src/migrate.js';
 import { PgDataset } from '../src/pg-dataset.js';
-import { clearNamespace, rowsWhere, TABLES } from './_layout.js';
+import { clearNamespace, rowsWhere } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const NS = 'test_visible_order';
@@ -357,8 +357,7 @@ describe.skipIf(!POSTGRES_URL)('visible order (pg)', () => {
     expect(read.rows.map(seqOf)).toEqual([undefined, undefined]);
   });
 
-  // Task 12 builds a type table's indexes.
-  it.skipIf(TABLES)('builds the seq index for a visible-order type only', async () => {
+  it('builds the seq index for a visible-order type only', async () => {
     await ds.write('Log', [{ msg: 'a' }]);
     await ds.write('Note', [{ msg: 'n' }]);
     await ds.ensureTypeStorage('Log');

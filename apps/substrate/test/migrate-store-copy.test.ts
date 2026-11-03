@@ -328,8 +328,31 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
       expect(built.every((b) => b.valid)).toBe(true);
     });
 
-    // A source duplicate under a declared unique index: migrate-store-convert.test.ts, with a
-    // declared index (the `_system/Key` live-kid index is declared on type tables in Task 16).
+    it('fails loudly on two live _system/Key rows sharing a kid, naming substrate_key_live_kid_uniq and the kid', async () => {
+      // A store whose index was lost: the frozen DDL builds it, so drop it to seed the duplicate.
+      await srcSql`DROP INDEX substrate_key_live_kid_uniq`;
+      await srcSql`INSERT INTO rows (namespace, type, id, body) VALUES
+        ('_system', 'Key', ${uuid(40)}, ${srcSql.json({ kid: 'a@h', grants: ['y'] })})`;
+      const err = (await copy().catch((e: unknown) => e)) as Error;
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).toContain('_system/Key');
+      expect(err.message).toContain('substrate_key_live_kid_uniq');
+      expect(err.message).toContain('a@h');
+      expect(
+        (await tgtSql`SELECT to_regclass('substrate_migrate_store_progress') AS r`)[0]?.r
+      ).not.toBeNull();
+    });
+
+    it('copies a revoked _system/Key beside a live one with the same kid', async () => {
+      await srcSql`INSERT INTO rows (namespace, type, id, body) VALUES
+        ('_system', 'Key', ${uuid(41)}, ${srcSql.json({ kid: 'a@h', grants: ['y'], revokedAt: '2026-01-01T00:00:00.000Z' })})`;
+      const result = await copy();
+      const { rows } = await (result.target.datasets.get('_system') as PgDataset).read('Key', {
+        where: { kid: { eq: 'a@h' } },
+        includeDeleted: true
+      });
+      expect(rows.map((r) => r.id).sort()).toEqual([uuid(1), uuid(41)]);
+    });
 
     it('fails the copy, naming the type, when storage for a registered type cannot be prepared', async () => {
       let boots = 0;

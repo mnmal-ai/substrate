@@ -13,13 +13,7 @@
 import { randomUUID } from 'node:crypto';
 import { compose, SYSTEM_NAMESPACE } from '@mnmal-ai/substrate-compose';
 import type { Engine } from '@mnmal-ai/substrate-core';
-import {
-  detectLayout,
-  PgDataset,
-  PgEdgesStore,
-  partitionName,
-  runMigrations
-} from '@mnmal-ai/substrate-dataset-pg';
+import { PgDataset, PgEdgesStore, runMigrations } from '@mnmal-ai/substrate-dataset-pg';
 import {
   createNoopPubSub,
   createProposalsPlugin,
@@ -170,7 +164,6 @@ describe('reconcileRegisteredStorage failure policy', () => {
 
 describe.skipIf(!POSTGRES_URL)('storage for registered types (pg)', () => {
   let sql: Sql;
-  let partitioned: boolean;
   let ns: string;
   let nsDefs: Map<string, ReturnType<typeof defineNamespace>>;
   let engine: Engine;
@@ -179,7 +172,6 @@ describe.skipIf(!POSTGRES_URL)('storage for registered types (pg)', () => {
   beforeAll(async () => {
     sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
     await runMigrations(sql);
-    partitioned = (await detectLayout(sql)) === 'partitioned';
     ns = `ksweep_${randomUUID().slice(0, 8)}`;
 
     const plugin = createProposalsPlugin({ ownedNamespaces: [ns], pubsub: createNoopPubSub() });
@@ -230,13 +222,14 @@ describe.skipIf(!POSTGRES_URL)('storage for registered types (pg)', () => {
     await sql.end();
   });
 
-  async function hasPartition(namespace: string, type: string): Promise<boolean> {
-    const [row] = await sql<Array<{ present: boolean }>>`
-      SELECT to_regclass(format('%I.%I', current_schema(), ${partitionName(namespace, type)}::text)) IS NOT NULL AS present`;
-    return row?.present === true;
+  /** The type table of `namespace`/`type`, unquoted, or undefined before it has one. */
+  async function tableOf(namespace: string, type: string): Promise<string | undefined> {
+    const [row] = await sql<Array<{ table_name: string }>>`
+      SELECT table_name FROM substrate_type_tables WHERE namespace = ${namespace} AND type = ${type}`;
+    return row?.table_name;
   }
 
-  it('gives install-time and _system types partitions, leaving none of their rows in DEFAULT', async () => {
+  it('gives install-time and _system types tables of their own', async () => {
     const expected = [
       [ns, 'TypeProposal'],
       [ns, 'FieldProposal'],
@@ -244,14 +237,8 @@ describe.skipIf(!POSTGRES_URL)('storage for registered types (pg)', () => {
       [SYSTEM_NAMESPACE, 'Key']
     ] as const;
     for (const [n, t] of expected) {
-      expect(await hasPartition(n, t), `${n}/${t}`).toBe(partitioned);
+      expect(await tableOf(n, t), `${n}/${t}`).toBeDefined();
     }
-    const { warnings } = await new PgDataset({ namespace: ns, sql }).storageReport({
-      partitionBudget: Infinity
-    });
-    // Only the DEFAULT-partition lines: the report also carries deferred index builds.
-    const parked = warnings.filter((w) => / holds \d+ rows of /.test(w));
-    expect(parked.filter((w) => w.includes(ns) || w.includes(CONTROL))).toEqual([]);
   });
 
   it('builds the implicit index of a field proposed on a declared type', async () => {
@@ -273,7 +260,6 @@ describe.skipIf(!POSTGRES_URL)('storage for registered types (pg)', () => {
     try {
       await docs.ensureTypeStorage('Doc');
       const states = (await docs.describeStorage('Doc')).indexes;
-      // Spec rule (derived indexes, both layouts): legacy builds it too, on `rows`.
       expect(states.find((i) => i.fields.join() === 'sku')?.state).toBe('valid');
       expect(states.some((i) => i.fields.join() === 'title')).toBe(false);
     } finally {
@@ -281,7 +267,7 @@ describe.skipIf(!POSTGRES_URL)('storage for registered types (pg)', () => {
     }
   }, 20_000);
 
-  it('builds the indexed fields of a proposed type on its partition', async () => {
+  it('builds the indexed fields of a proposed type on its table', async () => {
     const type = `Sku${randomUUID().slice(0, 8)}`;
     const env = await engine.mutate({
       frame: {
@@ -305,7 +291,7 @@ describe.skipIf(!POSTGRES_URL)('storage for registered types (pg)', () => {
     await storageSettled();
     const indexes = await sql<Array<{ indexdef: string }>>`
       SELECT indexdef FROM pg_indexes
-      WHERE schemaname = current_schema() AND tablename = ${partitionName(ns, type)}`;
-    expect(indexes.some((i) => i.indexdef.includes(`'sku'`))).toBe(partitioned);
+      WHERE schemaname = current_schema() AND tablename = ${(await tableOf(ns, type)) ?? ''}`;
+    expect(indexes.some((i) => i.indexdef.includes('(f_sku'))).toBe(true);
   }, 20_000);
 });

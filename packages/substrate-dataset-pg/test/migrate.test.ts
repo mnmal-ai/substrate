@@ -16,17 +16,11 @@
 import postgres, { type Sql } from 'postgres';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { MigrationChecksumDriftError, runMigrations } from '../src/index.js';
-import { TABLES } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
-const BASELINE =
-  process.env.SUBSTRATE_STORAGE_LAYOUT === 'partitioned'
-    ? '0001p_partitioned_baseline'
-    : TABLES
-      ? '0001t_tables_baseline'
-      : '0001_baseline';
-/** The table holding (or, on `tables`, registering) every row. */
-const ROWS = TABLES ? 'row_ids' : 'rows';
+const BASELINE = '0001t_tables_baseline';
+/** The table registering every row. */
+const ROWS = 'row_ids';
 
 describe.skipIf(!POSTGRES_URL)('runMigrations idempotency', () => {
   let sql: Sql;
@@ -250,18 +244,22 @@ describe.skipIf(!POSTGRES_URL)('migration framework — tracking + force', () =>
   it('MigrationChecksumDriftError class is still exported for callers that detect drift outside the runner', () => {
     // The runner no longer throws it, but the class stays exported for
     // callers that detect drift through another channel.
-    const err = new MigrationChecksumDriftError('0001_baseline', 'recorded_value', 'current_value');
+    const err = new MigrationChecksumDriftError(
+      '0001t_tables_baseline',
+      'recorded_value',
+      'current_value'
+    );
     expect(err.name).toBe('MigrationChecksumDriftError');
-    expect(err.version).toBe('0001_baseline');
+    expect(err.version).toBe('0001t_tables_baseline');
     expect(err.recordedChecksum).toBe('recorded_value');
     expect(err.currentChecksum).toBe('current_value');
-    expect(err.message).toContain('0001_baseline');
+    expect(err.message).toContain('0001t_tables_baseline');
   });
 });
 
 describe('MigrationChecksumDriftError message', () => {
   it('names the supported remedy, not an env var nothing reads', () => {
-    const err = new MigrationChecksumDriftError('0001_baseline', 'recorded', 'current');
+    const err = new MigrationChecksumDriftError('0001t_tables_baseline', 'recorded', 'current');
     expect(err.message).not.toContain('SUBSTRATE_MIGRATIONS_ALLOW_DRIFT');
     expect(err.message).toContain('runMigrations');
     expect(err.message).toContain('migrations_audit');

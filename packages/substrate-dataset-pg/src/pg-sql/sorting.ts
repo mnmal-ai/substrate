@@ -23,7 +23,6 @@ import {
   idToText,
   isMetadataField,
   METADATA_COLUMNS,
-  promotedColumnSql,
   scalarParam,
   tsParam
 } from './primitives.js';
@@ -133,7 +132,7 @@ function sortExpr(
   // through to `body ->> 'shortId'`, which is always NULL — every row collapses
   // to insertion order regardless of direction.
   if (field === 'shortId') return sql`s.short_id`;
-  // Metadata + promoted columns are drawn from closed constant maps, never from
+  // Metadata columns are drawn from closed constant maps, never from
   // caller input — the `sql.unsafe` contract in this file's header.
   // Text columns sort by byte order (COLLATE "C"), as body text and the
   // memory dataset do, whatever the database collation.
@@ -142,11 +141,6 @@ function sortExpr(
     return field === 'createdAt' || field === 'updatedAt' || field === 'seq'
       ? sql.unsafe(col)
       : sql.unsafe(`${col} COLLATE "C"`);
-  }
-  const promoted = table.promoted?.(field);
-  if (promoted !== undefined) {
-    const col = promotedColumnSql(promoted);
-    return sql.unsafe(promoted.kind === 'text' ? `${col} COLLATE "C"` : col);
   }
   // A type table's column field sorts by its column's kind.
   const column = table.column(field);
@@ -201,7 +195,7 @@ function sortKeyIsTimestamp(
   table: TypeTable
 ): boolean {
   if (field === 'createdAt' || field === 'updatedAt') return true;
-  if (isMetadataField(field) || table.promoted?.(field) !== undefined) return false;
+  if (isMetadataField(field)) return false;
   const column = table.column(field);
   return column === undefined ? cast === 'timestamptz' : column.kind === 'date';
 }
@@ -267,14 +261,6 @@ function sortParam(
     return field === 'createdAt' || field === 'updatedAt'
       ? tsParam(sql, value)
       : sql`${value as string}`;
-  }
-  const promoted = table.promoted?.(field);
-  if (promoted !== undefined) {
-    // The column is typed, so bind the operand to that type rather than letting
-    // pg infer from a text literal.
-    return promoted.kind === 'boolean'
-      ? sql`${Boolean(value)}::boolean`
-      : sql`${String(value)}::text`;
   }
   const column = table.column(field);
   if (column !== undefined) {

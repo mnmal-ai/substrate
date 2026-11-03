@@ -1,19 +1,24 @@
 /**
- * How rows are stored. `partitioned` is `rows` LIST(namespace) then LIST(type);
- * `legacy` is `rows` as one plain table; `tables` is one table per type, listed
- * in `substrate_type_tables`. A database keeps the layout it was created with.
+ * How rows are stored: `tables`, one table per type, listed in
+ * `substrate_type_tables`. That is the only layout this release boots. The
+ * old ones are still detected, for boot's refusal and for `migrate-store`,
+ * which reads them as a source: `partitioned` is `rows` LIST(namespace) then
+ * LIST(type), and `legacy` is `rows` as one plain table.
  */
 
 import { createHash } from 'node:crypto';
 import type { Sql } from 'postgres';
 
-export type StorageLayout = 'legacy' | 'partitioned' | 'tables';
+export type StorageLayout = 'tables';
+
+/** What {@link detectLayout} finds: a layout this release boots, an old one, or none. */
+export type DetectedLayout = StorageLayout | 'legacy' | 'partitioned' | 'absent';
 
 /**
  * The layout of the current schema: that of `rows` when it exists, else
  * `tables` when `substrate_type_tables` does, else `'absent'`.
  */
-export async function detectLayout(sql: Sql): Promise<StorageLayout | 'absent'> {
+export async function detectLayout(sql: Sql): Promise<DetectedLayout> {
   const found = await sql<Array<{ relname: string; relkind: string }>>`
     SELECT c.relname::text AS relname, c.relkind::text AS relkind FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -25,13 +30,13 @@ export async function detectLayout(sql: Sql): Promise<StorageLayout | 'absent'> 
 }
 
 /** Each handle's layout, once it has one: a store keeps the layout it was created with. */
-const layouts = new WeakMap<object, StorageLayout>();
+const layouts = new WeakMap<object, Exclude<DetectedLayout, 'absent'>>();
 
 /**
  * {@link detectLayout}, cached per handle. `'absent'` is not cached, since a
  * handle may be made before the migrations run.
  */
-export async function cachedLayout(sql: Sql): Promise<StorageLayout | 'absent'> {
+export async function cachedLayout(sql: Sql): Promise<DetectedLayout> {
   const known = layouts.get(sql);
   if (known !== undefined) return known;
   const layout = await detectLayout(sql);
@@ -39,24 +44,24 @@ export async function cachedLayout(sql: Sql): Promise<StorageLayout | 'absent'> 
   return layout;
 }
 
+/** `name` as a quoted SQL identifier. */
+export function ident(name: string): string {
+  return `"${name.replace(/"/g, '""')}"`;
+}
+
 /** pg's identifier limit, in bytes. */
 export const MAX_IDENTIFIER = 63;
 
 /**
- * `rows__<ns>` or `rows__<ns>__<type>`, folded to `[a-z0-9_]`. When folding
+ * `t__<ns>__<type>`, folded to `[a-z0-9_]`: a type's table. When folding
  * changed a name, or the result is too long for pg, an 8-hex hash of the raw
- * names is appended so distinct names never share a partition.
+ * names is appended so distinct types never share a table.
  */
-export function partitionName(namespace: string, type?: string): string {
-  return foldedName('rows__', type === undefined ? [namespace] : [namespace, type]);
-}
-
-/** `t__<ns>__<type>`, folded and hashed as `partitionName` is: the `tables` layout's type table. */
 export function typeTableName(namespace: string, type: string): string {
   return foldedName('t__', [namespace, type]);
 }
 
-/** `f_<field>`, folded and hashed as `partitionName` is, so it never clashes with a metadata column. */
+/** `f_<field>`, folded and hashed as `typeTableName` is, so it never clashes with a metadata column. */
 export function columnName(field: string): string {
   return foldedName('f_', [field]);
 }

@@ -33,14 +33,14 @@ import {
   reconcileDeclaredStorage,
   reconcileRegisteredStorage
 } from '../src/serve/wiring.js';
-import { deleteNamespaces, purgeWhere, relationOf, TABLES } from './_layout.js';
+import { deleteNamespaces, purgeWhere, relationOf } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const ROWS = 3_000;
 
 /**
- * `n` live rows of `namespace`/`type` with `status: 'open'`, by one INSERT: into
- * `rows`, or on `tables` into the type table's `status` column (and `row_ids`).
+ * `n` live rows of `namespace`/`type` with `status: 'open'`, by one INSERT into
+ * the type table's `status` column (and `row_ids`).
  */
 async function insertOpen(
   db: Sql | ReservedSql,
@@ -48,12 +48,6 @@ async function insertOpen(
   type: string,
   n: number
 ): Promise<void> {
-  if (!TABLES) {
-    await db`INSERT INTO rows (namespace, type, id, body)
-      SELECT ${namespace}, ${type}, gen_random_uuid()::text, jsonb_build_object('status', 'open')
-      FROM generate_series(1, ${n})`;
-    return;
-  }
   const rel = await relationOf(db as Sql, namespace, type);
   await db.unsafe(
     `WITH ins AS (
@@ -66,12 +60,7 @@ async function insertOpen(
 
 /** The advisor's `_system/IndexRecommendation` rows for `namespace`. */
 async function deleteRecommendations(sql: Sql, namespace: string): Promise<void> {
-  if (TABLES) {
-    await purgeWhere(sql, '_system', 'IndexRecommendation', { namespace: { eq: namespace } });
-    return;
-  }
-  await sql`DELETE FROM rows WHERE namespace = '_system' AND type = 'IndexRecommendation'
-    AND body->>'namespace' = ${namespace}`;
+  await purgeWhere(sql, '_system', 'IndexRecommendation', { namespace: { eq: namespace } });
 }
 const ctx: Partial<RequestContext> = {
   identity: { kind: 'system', id: 'test', grants: { '*': ['read', 'mutate'] } }
@@ -89,12 +78,8 @@ describe.skipIf(!POSTGRES_URL)('index advisor (pg)', () => {
   afterAll(async () => {
     await deleteNamespaces(sql, ns);
     await deleteRecommendations(sql, ns);
-    if (TABLES) {
-      await purgeWhere(sql, '_system', 'StoreProfile');
-      await purgeWhere(sql, '_system', 'AdvisorState');
-    } else {
-      await sql`DELETE FROM rows WHERE namespace = '_system' AND type IN ('StoreProfile', 'AdvisorState')`;
-    }
+    await purgeWhere(sql, '_system', 'StoreProfile');
+    await purgeWhere(sql, '_system', 'AdvisorState');
     await sql.end();
   });
 
@@ -277,8 +262,8 @@ describe.skipIf(!POSTGRES_URL)('index advisor (pg)', () => {
           ctx: proposer
         });
         expect(env.errors ?? []).toEqual([]);
-        // On `tables` the rows go into the type table, which the background storage work creates.
-        if (TABLES) await storageSettled();
+        // The rows go into the type table, which the background storage work creates.
+        await storageSettled();
         await insertOpen(sql, pns, typeName, ROWS);
       }
       await storageSettled();
@@ -346,8 +331,7 @@ describe.skipIf(!POSTGRES_URL)('index advisor (pg)', () => {
     await system.write('StoreProfile', [
       { id: STORE_PROFILE_ID, profile: 'scale', updatedReason: 'test' }
     ]);
-    if (TABLES) await purgeWhere(sql, '_system', 'AdvisorState');
-    else await sql`DELETE FROM rows WHERE namespace = '_system' AND type = 'AdvisorState'`;
+    await purgeWhere(sql, '_system', 'AdvisorState');
     // Meant for a database whose statistics were never reset, as the test database's.
     const [db] = await sql<Array<{ reset: Date | null }>>`
       SELECT stats_reset AS reset FROM pg_stat_database WHERE datname = current_database()`;

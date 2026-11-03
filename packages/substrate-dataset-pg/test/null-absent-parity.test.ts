@@ -11,12 +11,9 @@ import { type Dataset, type FieldDef, isColumnField, type Row } from '@mnmal-ai/
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset } from '../src/pg-dataset.js';
-import { findPartition, ident } from '../src/type-storage.js';
-import { TABLES } from './_layout.js';
+import { dropNamespace } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
-/** Walks run on the partitioned and `tables` layouts; legacy refuses them. */
-const WALK_LAYOUT = process.env.SUBSTRATE_TEST_LAYOUT === 'partitioned' || TABLES;
 const NS = `nullabs_${randomBytes(4).toString('hex')}`;
 const TYPE = 'Item';
 
@@ -159,19 +156,21 @@ function suite(label: string, make: () => Dataset | Promise<Dataset>): void {
 
     // Operator ruling B (Task 11 review): a type table stores no null for a
     // declared column field (it reads absent, Task 2's contract), so once the
-    // field is removed from code it reads absent, not null. Accepted.
-    it.skipIf(label === 'pg' && TABLES)('a field removed from the def keeps its null', async () => {
-      const id = randomUUID();
-      await ds.write(TYPE, [{ id, gone: null }]);
-      expect('gone' in (await read(id))).toBe(false);
-      const removed = fields.gone as FieldDef;
-      delete fields.gone;
-      try {
-        expect((await read(id)).gone).toBeNull();
-      } finally {
-        fields.gone = removed;
-      }
-    });
+    // field is removed from code it reads absent, not null. Accepted, so this
+    // runs on memory only.
+    if (label !== 'pg')
+      it('a field removed from the def keeps its null', async () => {
+        const id = randomUUID();
+        await ds.write(TYPE, [{ id, gone: null }]);
+        expect('gone' in (await read(id))).toBe(false);
+        const removed = fields.gone as FieldDef;
+        delete fields.gone;
+        try {
+          expect((await read(id)).gone).toBeNull();
+        } finally {
+          fields.gone = removed;
+        }
+      });
 
     it('a field added at runtime is absent on rows written before it existed', async () => {
       const ids = [randomUUID(), randomUUID()];
@@ -207,14 +206,13 @@ describe.skipIf(!POSTGRES_URL)('null reads absent (pg)', () => {
   afterAll(async () => {
     if (!POSTGRES_URL) return;
     await pg.dropNamespace();
-    // dropNamespace empties the partitions but keeps them.
-    const nsPart = await findPartition(sql, 'rows', NS);
-    if (nsPart !== undefined) await sql.unsafe(`DROP TABLE IF EXISTS ${ident(nsPart)} CASCADE`);
+    // dropNamespace empties the type tables but keeps them.
+    await dropNamespace(sql, NS);
     await sql.end({ timeout: 5 });
   });
 
   suite('pg', async () => {
-    if (WALK_LAYOUT) await pg.ensureTypeStorage(TYPE);
+    await pg.ensureTypeStorage(TYPE);
     return pg;
   });
 
@@ -226,7 +224,7 @@ describe.skipIf(!POSTGRES_URL)('null reads absent (pg)', () => {
     const fieldsHint = { title: true, meta: true };
 
     beforeAll(async () => {
-      if (WALK_LAYOUT) await pg.ensureTypeStorage(TYPE);
+      await pg.ensureTypeStorage(TYPE);
       await pg.write(
         TYPE,
         ids.map((id, n) => ({ id, title: `t${n}` }))
@@ -260,8 +258,7 @@ describe.skipIf(!POSTGRES_URL)('null reads absent (pg)', () => {
       clean(result, result.rows);
     });
 
-    // Walks run only on the partitioned layout.
-    it.skipIf(!WALK_LAYOUT)('a nested walk list and an _agg', async () => {
+    it('a nested walk list and an _agg', async () => {
       const [parent, child] = ids as [string, string, string];
       await pg.write(TYPE, [{ id: child, title: 't-child', ref: parent }]);
       const into = `${NS}/${TYPE}.ref`;

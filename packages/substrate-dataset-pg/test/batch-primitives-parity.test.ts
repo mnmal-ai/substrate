@@ -11,17 +11,15 @@ import type { Dataset } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PgDataset } from '../src/index.js';
-import { clearNamespace, dropNamespace, TABLES } from './_layout.js';
-import { addTestPromotedColumns, dropTestPromotedColumns, TEST_PROMOTED } from './_promoted.js';
+import { clearNamespace, dropNamespace } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
-const PARTITIONED = process.env.SUBSTRATE_TEST_LAYOUT === 'partitioned';
 const NS = 'batch_prim';
 const NOW = new Date('2026-11-01T12:00:00.000Z');
 const ACTOR = { kind: 'agent', id: 'tester' } as const;
 
 // The memory half runs without POSTGRES_URL; the pg half and the pg-only
-// tests (promoted columns, statement counts, locking) need it.
+// tests (statement counts, locking) need it.
 const HAS_PG = Boolean(POSTGRES_URL);
 
 describe('batch primitives (memory vs pg)', () => {
@@ -38,13 +36,10 @@ describe('batch primitives (memory vs pg)', () => {
         statements.push(query);
       }
     });
-    // Promoted columns are a `rows` feature; a type table types its fields itself.
-    if (!TABLES) await addTestPromotedColumns(sql);
   });
 
   afterAll(async () => {
     if (sql === undefined) return;
-    if (!TABLES) await dropTestPromotedColumns(sql);
     await dropNamespace(sql, NS);
     await sql.end();
   });
@@ -52,14 +47,11 @@ describe('batch primitives (memory vs pg)', () => {
   beforeEach(async () => {
     datasets = [['memory', new MemoryDataset({ namespace: NS })]];
     if (sql === undefined) return;
-    // Both explicitly: short_ids only follows rows through an ON DELETE CASCADE
-    // foreign key, which other test files drop (`DROP TABLE rows CASCADE`) and
-    // later migrations do not restore. A stale binding to a reused row id would
-    // make bindShortIds' ON CONFLICT DO NOTHING keep the old id.
+    // Both explicitly: a stale binding to a reused row id would make
+    // bindShortIds' ON CONFLICT DO NOTHING keep the old id.
     await sql`DELETE FROM short_ids WHERE namespace = ${NS}`;
     await clearNamespace(sql, NS);
-    const pg = new PgDataset({ namespace: NS, sql, promotedColumns: TEST_PROMOTED });
-    if (PARTITIONED) await pg.ensureTypeStorage('Item');
+    const pg = new PgDataset({ namespace: NS, sql });
     datasets.push(['pg', pg]);
   });
 
@@ -273,32 +265,6 @@ describe('batch primitives (memory vs pg)', () => {
     })
   );
 
-  it.skipIf(!HAS_PG || TABLES)(
-    'patchRows mirrors a promoted column from the patch, per row, and keeps it when absent',
-    async () => {
-      const pg = datasets[1]?.[1] as Dataset;
-      await pg.write('Item', [
-        { id: 'a', status: 'open', project: 'p', archived: false },
-        { id: 'b', status: 'open', project: 'p', archived: false }
-      ]);
-      await pg.patchRows(
-        'Item',
-        [
-          { id: 'a', patch: { status: 'closed', archived: true } },
-          { id: 'b', patch: { project: null } }
-        ],
-        ACTOR,
-        NOW
-      );
-      const cols = await pgSql()`SELECT id, status, project, archived FROM rows
-      WHERE namespace = ${NS} AND type = 'Item' ORDER BY id`;
-      expect(cols.map((r) => [r.id, r.status, r.project, r.archived])).toEqual([
-        ['a', 'closed', 'p', true],
-        ['b', 'open', null, false]
-      ]);
-    }
-  );
-
   it(
     'empty input returns an empty result',
     each(async (_n, ds) => {
@@ -363,7 +329,7 @@ describe('batch primitives (memory vs pg)', () => {
       // transaction-bound PgDataset has its own, so the first allocation of a
       // type in a transaction costs one extra statement (it takes an advisory
       // xact lock too).
-      const fresh = new PgDataset({ namespace: NS, sql: pgSql(), promotedColumns: TEST_PROMOTED });
+      const fresh = new PgDataset({ namespace: NS, sql: pgSql() });
       const first = await sent(() => fresh.allocateShortIds('Item', 3));
       expect(first).toHaveLength(2);
       expect(first[0]).toMatch(/CREATE SEQUENCE/);
