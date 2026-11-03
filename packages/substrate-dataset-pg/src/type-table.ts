@@ -17,8 +17,16 @@
 
 import { type FieldDef, isColumnField } from '@mnmal-ai/substrate-types';
 import type { Sql, TransactionSql } from 'postgres';
-import { columnName, hashedName, MAX_IDENTIFIER, typeTableName } from './layout.js';
-import { type PromotedColumnLookup, qualifier, sqlStringLiteral } from './pg-sql/primitives.js';
+import { columnName, detectLayout, hashedName, MAX_IDENTIFIER, typeTableName } from './layout.js';
+import {
+  columnSql,
+  fieldExprSql,
+  type PromotedColumnLookup,
+  qualifier,
+  sqlStringLiteral,
+  utcTextSql
+} from './pg-sql/primitives.js';
+import { extraWins, RAW_KEY } from './row-codec.js';
 import type { PgHandle } from './tx-scope.js';
 import { ident } from './type-storage.js';
 import { UUID_REGEX } from './uuid-check.js';
@@ -119,6 +127,88 @@ export function absentTypeTable(namespace: string, type: string): TypeTable {
     pending: [],
     orphaned: []
   };
+}
+
+/**
+ * Where a reader outside `PgDataset` (recall) finds `namespace`/`type`'s rows,
+ * as SQL over a caller's alias of `from`.
+ */
+export interface TypeTableRef {
+  /** `rows` on the old layouts, else the type's table, quoted. */
+  from: string;
+  /** The namespace/type predicate on `rows`; `null` on a type's own table. */
+  scope(alias: string): string | null;
+  /** The row as `dataset.read` returns it (`decodeRow`'s, built in SQL); `alias.body` on the old layouts. */
+  rowJson(alias: string): string;
+  /** A top-level field as the text `rowJson(alias) ->> field` gives, which a row filter compares. */
+  text(alias: string, field: string): string;
+}
+
+/**
+ * The {@link TypeTableRef} of `namespace`/`type`, or `undefined` when it has no
+ * rows to read: no table yet on `tables`, or no schema at all. Uncached: each
+ * call probes the layout (one catalog query), and on `tables` loads the
+ * descriptor (two more, one when the type has no table).
+ */
+export async function typeTableRef(
+  sql: PgHandle,
+  namespace: string,
+  type: string
+): Promise<TypeTableRef | undefined> {
+  const layout = await detectLayout(sql as Sql);
+  if (layout === 'absent') return undefined;
+  const table =
+    layout === 'tables'
+      ? await loadTypeTable(sql, namespace, type)
+      : rowsTypeTable(namespace, type, () => undefined);
+  if (table === undefined) return undefined;
+  return {
+    from: table.from,
+    scope: (alias) => table.scope(alias),
+    rowJson: (alias) =>
+      table.jsonb === 'body' ? `${qualifier(alias)}body` : rowJsonSql(table, alias),
+    text: (alias, field) => `(${fieldExprSql(table, field, 'json', alias)} #>> '{}')`
+  };
+}
+
+/** pg's argument limit is 100, so `jsonb_build_object` takes at most 50 pairs. */
+const MAX_PAIRS = 50;
+
+/**
+ * `decodeRow` in SQL: the non-null columns, then `extra` but `$raw` and the
+ * `column`-state fields' keys, less a `promoting` or `pending` field whose
+ * `extra` value is null (it reads absent, column and all), then `$raw` over all.
+ * Only the columns' object is stripped of nulls: a null in `extra`, or nested
+ * in a json value, is the row's.
+ */
+function rowJsonSql(table: TypeTable, alias: string): string {
+  const q = qualifier(alias);
+  const lit = sqlStringLiteral;
+  const columns = table.columns();
+  const pairs = columns.map((c) => {
+    const col = columnSql(c, alias);
+    return `${lit(c.field)}, ${c.kind === 'date' ? utcTextSql(col, 'MS') : col}`;
+  });
+  const objects: string[] = [];
+  for (let i = 0; i < pairs.length; i += MAX_PAIRS) {
+    objects.push(
+      `jsonb_strip_nulls(jsonb_build_object(${pairs.slice(i, i + MAX_PAIRS).join(', ')}))`
+    );
+  }
+  const fromColumns = objects.length === 0 ? "'{}'::jsonb" : objects.join(' || ');
+  const dropped = [RAW_KEY, ...columns.filter((c) => !extraWins(c)).map((c) => c.field)];
+  let row = `(${fromColumns} || (${q}extra - ARRAY[${dropped.map(lit).join(', ')}]::text[]))`;
+  const nullable = [
+    ...columns.filter((c) => c.state === 'promoting').map((c) => c.field),
+    ...table.pending
+  ];
+  if (nullable.length > 0) {
+    const absent = nullable.map(
+      (f) => `CASE WHEN ${q}extra -> ${lit(f)} = 'null'::jsonb THEN ${lit(f)} END`
+    );
+    row = `(${row} - ARRAY[${absent.join(', ')}]::text[])`;
+  }
+  return `(${row} || COALESCE(${q}extra -> ${lit(RAW_KEY)}, '{}'::jsonb))`;
 }
 
 type FieldState = 'pending' | TypedColumn['state'];

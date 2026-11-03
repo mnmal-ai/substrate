@@ -43,6 +43,8 @@ function makeFakeSql(handler: (text: string, values: unknown[]) => unknown): {
   const calls: Captured[] = [];
   const fn = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.join('?');
+    // The stores' layout probe, answered as a `legacy` store; not recorded, as it is not recall SQL.
+    if (text.includes('pg_class')) return [{ relname: 'rows', relkind: 'r' }];
     calls.push({ text, values });
     return handler(text, values);
   }) as FakeSql;

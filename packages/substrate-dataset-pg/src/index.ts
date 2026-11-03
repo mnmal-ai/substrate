@@ -87,6 +87,8 @@ export {
   rowsTypeTable,
   type TypedColumn,
   type TypeTable,
-  type TypeTableChange
+  type TypeTableChange,
+  type TypeTableRef,
+  typeTableRef
 } from './type-table.js';
 export { UUID_CHECK_MIGRATION, UUID_REGEX } from './uuid-check.js';

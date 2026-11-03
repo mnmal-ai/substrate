@@ -1,0 +1,215 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`recall SQL on the old layouts > is the statements recall sent before type tables 1`] = `
+[
+  "begin ",
+  "SET LOCAL hnsw.iterative_scan = 'strict_order'",
+  "SET LOCAL hnsw.ef_search = 200",
+  "
+        SELECT
+          r.body              AS row,
+          1 - (e.embedding <=> $1::vector) AS score,
+          e.salience  AS salience
+          
+        FROM embeddings e
+        JOIN rows r
+          ON r.namespace = e.row_namespace
+         AND r.type      = e.row_type
+         AND r.id        = e.row_id
+        WHERE e.row_namespace = $2
+          AND e.row_type      = $3
+          AND e.model         = $4
+          AND r.deleted_at IS NULL
+          AND 1 - (e.embedding <=> $5::vector) >= $6
+          
+        ORDER BY e.embedding <=> $7::vector
+        LIMIT $8
+      ",
+  "commit",
+  "begin ",
+  "SET LOCAL hnsw.iterative_scan = 'strict_order'",
+  "SET LOCAL hnsw.ef_search = 200",
+  "
+        SELECT
+          r.body              AS row,
+          1 - (e.embedding <=> $1::vector) AS score,
+          e.salience  AS salience
+          
+        FROM embeddings e
+        JOIN rows r
+          ON r.namespace = e.row_namespace
+         AND r.type      = e.row_type
+         AND r.id        = e.row_id
+        WHERE e.row_namespace = $2
+          AND e.row_type      = $3
+          AND e.model         = $4
+          AND r.deleted_at IS NULL
+          AND 1 - (e.embedding <=> $5::vector) >= $6
+           AND ((r.body ->> $7) = ANY($8::text[]) OR (r.body ->> $9) IS NULL)
+        ORDER BY e.embedding <=> $10::vector
+        LIMIT $11
+      ",
+  "commit",
+  "
+      SELECT e.row_namespace, e.row_type, e.row_id, e.embedding::text AS embedding,
+             r.body AS body, e.salience
+      FROM (VALUES ($1,$2,$3)) AS t(ns, ty, id)
+      JOIN embeddings e
+        ON e.row_namespace = t.ns AND e.row_type = t.ty AND e.row_id = t.id
+      JOIN rows r
+        ON r.namespace = e.row_namespace AND r.type = e.row_type AND r.id = e.row_id
+      WHERE e.model = $4
+        AND r.deleted_at IS NULL
+    ",
+  "
+      SELECT e.row_namespace, e.row_type, e.row_id, e.embedding::text AS embedding,
+             r.body AS body
+      FROM embeddings e
+      JOIN rows r
+        ON r.namespace = e.row_namespace
+       AND r.type      = e.row_type
+       AND r.id        = e.row_id
+      JOIN unnest($1::text[], $2::text[]) AS scope(ns, type)
+        ON scope.ns = e.row_namespace AND scope.type = e.row_type
+      WHERE e.model = $3
+        AND r.deleted_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1
+          FROM unnest($4::text[], $5::text[]) AS ex(field, prefix)
+          -- starts_with(), not LIKE: a caller-supplied prefix must be matched
+          -- literally. LIKE treats '_' and '%' in the prefix as wildcards, so
+          -- a prefix like 'perf_seed' would also exclude 'perfXseed…' — the
+          -- in-memory side (String(value).startsWith(...)) never had that
+          -- hazard, so the two implementations silently disagreed. Restricted
+          -- to scalar JSON values (jsonb_typeof) to match the in-memory side,
+          -- which coerces only string/number/boolean via String(value) — a
+          -- composite (object/array) has no agreed-on text rendering between
+          -- pg's jsonb ->> and JS's String(), so both sides now treat a
+          -- composite as never-excluded rather than risk disagreeing.
+          WHERE jsonb_typeof(r.body -> ex.field) IN ('string', 'number', 'boolean')
+            AND starts_with(r.body ->> ex.field, ex.prefix)
+        )
+      ORDER BY e.row_namespace COLLATE "C" ASC, e.row_type COLLATE "C" ASC, e.row_id COLLATE "C" ASC
+      LIMIT $6
+    ",
+  "
+      SELECT r.id FROM rows r
+      WHERE r.namespace = $1
+        AND r.type      = $2
+        AND r.deleted_at IS NULL
+        AND r.id > $3
+        AND NOT EXISTS (
+          SELECT 1 FROM embeddings e
+          WHERE e.row_namespace = r.namespace
+            AND e.row_type      = r.type
+            AND e.row_id        = r.id
+            AND (r.updated_at IS NULL OR e.updated_at >= r.updated_at)
+        )
+      ORDER BY r.id
+      LIMIT $4
+    ",
+  "
+      DELETE FROM embeddings e
+      WHERE NOT EXISTS (
+        SELECT 1 FROM rows r
+        WHERE r.namespace = e.row_namespace
+          AND r.type      = e.row_type
+          AND r.id        = e.row_id
+          AND r.deleted_at IS NULL
+      )
+    ",
+  "
+      SELECT
+        l.row_namespace,
+        l.row_type,
+        l.row_id,
+        r.body AS body,
+        ts_rank(l.tsv, q.query)      AS score
+      FROM lexical l
+      CROSS JOIN websearch_to_tsquery($1, $2) AS q(query)
+      JOIN rows r
+        ON r.namespace = l.row_namespace
+       AND r.type      = l.row_type
+       AND r.id        = l.row_id
+      WHERE l.row_namespace = $3
+        AND l.row_type      = $4
+        AND r.deleted_at IS NULL
+        AND q.query IS NOT NULL
+        AND l.tsv @@ q.query
+        
+      ORDER BY score DESC, l.row_id ASC
+      LIMIT $5
+    ",
+  "
+      SELECT
+        l.row_namespace,
+        l.row_type,
+        l.row_id,
+        r.body AS body,
+        ts_rank(l.tsv, q.query)      AS score
+      FROM lexical l
+      CROSS JOIN websearch_to_tsquery($1, $2) AS q(query)
+      JOIN rows r
+        ON r.namespace = l.row_namespace
+       AND r.type      = l.row_type
+       AND r.id        = l.row_id
+      WHERE l.row_namespace = $3
+        AND l.row_type      = $4
+        AND r.deleted_at IS NULL
+        AND q.query IS NOT NULL
+        AND l.tsv @@ q.query
+         AND (r.body ->> $5) = ANY($6::text[])
+      ORDER BY score DESC, l.row_id ASC
+      LIMIT $7
+    ",
+  "
+      SELECT
+        l.row_namespace,
+        l.row_type,
+        l.row_id,
+        r.body AS body,
+        ts_rank(l.tsv, q.query)      AS score
+      FROM lexical l
+      CROSS JOIN (
+          SELECT CASE
+                   WHEN position('!' in t) > 0 THEN NULL
+                   ELSE replace(t, ' & ', ' | ')::tsquery
+                 END AS query
+          FROM (SELECT websearch_to_tsquery($1, $2)::text AS t) s
+        ) AS q(query)
+      JOIN rows r
+        ON r.namespace = l.row_namespace
+       AND r.type      = l.row_type
+       AND r.id        = l.row_id
+      WHERE l.row_namespace = $3
+        AND l.row_type      = $4
+        AND r.deleted_at IS NULL
+        AND q.query IS NOT NULL
+        AND l.tsv @@ q.query
+         AND (r.body ->> $5) = ANY($6::text[])
+      ORDER BY score DESC, l.row_id ASC
+      LIMIT $7
+    ",
+  "
+      SELECT COUNT(*) AS n
+      FROM lexical l
+      JOIN rows r
+        ON r.namespace = l.row_namespace
+       AND r.type      = l.row_type
+       AND r.id        = l.row_id
+      WHERE l.row_namespace = $1
+        AND l.row_type      = $2
+        AND r.deleted_at IS NULL
+    ",
+  "
+      DELETE FROM lexical l
+      WHERE NOT EXISTS (
+        SELECT 1 FROM rows r
+        WHERE r.namespace = l.row_namespace
+          AND r.type      = l.row_type
+          AND r.id        = l.row_id
+          AND r.deleted_at IS NULL
+      )
+    ",
+]
+`;
