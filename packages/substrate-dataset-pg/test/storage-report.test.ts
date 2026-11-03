@@ -136,13 +136,16 @@ describe.skipIf(!POSTGRES_URL)('describeStorage', () => {
       expect(await planned()).not.toContain(plain);
       expect(await planned()).not.toContain(uniq);
       // The sweep settles `b` (Task 13): then its indexes are valid and serve reads.
+      // As `moveFieldState` does: the state change and its catalog notification.
       await sql`UPDATE substrate_type_fields SET state = 'column' WHERE namespace = ${ns} AND field = 'b'`;
+      await sql`SELECT pg_notify('substrate_catalog', ${`${ns}/${TYPE}`})`;
       expect(await states(fresh)).toMatchObject({
         [uniq]: 'valid',
         [plain]: 'valid',
         [late]: 'pending'
       });
-      expect(await planned()).toEqual(expect.arrayContaining([uniq, plain]));
+      // indexPlan reads through the TableCache, which drops the table when the notification lands.
+      await expect.poll(planned).toEqual(expect.arrayContaining([uniq, plain]));
     } finally {
       await other.end({ timeout: 5 });
     }
