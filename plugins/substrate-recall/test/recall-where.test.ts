@@ -18,6 +18,7 @@ import { PgEmbeddingsStore } from '../src/pg-embeddings-store.js';
 import { PgLexicalStore } from '../src/pg-lexical-store.js';
 import type { RecallDeps, RecallInput } from '../src/recall/types.js';
 import { handleRecallRequest } from '../src/recall-route.js';
+import { deleteRows, putRows } from './_pg-rows.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const NS = 'recallwhere';
@@ -187,7 +188,7 @@ describe.skipIf(POSTGRES_URL === undefined)('pg', () => {
   const clean = async () => {
     await sql`DELETE FROM embeddings WHERE row_namespace = ${NS}`;
     await sql`DELETE FROM lexical WHERE row_namespace = ${NS}`;
-    await sql`DELETE FROM rows WHERE namespace = ${NS}`;
+    await deleteRows(sql, NS);
   };
   afterAll(async () => {
     await clean();
@@ -205,8 +206,7 @@ describe.skipIf(POSTGRES_URL === undefined)('pg', () => {
     const lexicalStore = new PgLexicalStore(sql);
     for (const s of SEEDS) {
       const body = s.project === null ? { id: s.id } : { id: s.id, project: s.project };
-      await sql`INSERT INTO rows (namespace, type, id, body)
-        VALUES (${NS}, ${s.type}, ${s.id}, ${sql.json(body)})`;
+      await putRows(sql, [{ namespace: NS, type: s.type, id: s.id, body }]);
       await store.upsert({
         rowNamespace: NS,
         rowType: s.type,

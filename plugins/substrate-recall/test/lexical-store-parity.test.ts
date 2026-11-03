@@ -17,6 +17,7 @@ import { InMemoryLexicalStore } from '../src/in-memory-lexical-store.js';
 import type { LexicalStore } from '../src/lexical-store.js';
 import { lexicalMigration } from '../src/migrations/0003_lexical.js';
 import { PgLexicalStore } from '../src/pg-lexical-store.js';
+import { deleteRows, putRows, tombstoneRow } from './_pg-rows.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const isPgGated = POSTGRES_URL !== undefined;
@@ -45,11 +46,7 @@ async function ensureSchema(url: string): Promise<void> {
 /** Seed rows so the store's INNER JOIN can resolve a body. */
 async function seedRows(sql: ReturnType<typeof postgres>): Promise<void> {
   for (const { id } of CORPUS) {
-    await sql`
-      INSERT INTO rows (namespace, type, id, body, deleted_at)
-      VALUES (${NS}, ${TYPE}, ${id}, ${sql.json({ id })}, NULL)
-      ON CONFLICT (namespace, type, id) DO UPDATE SET deleted_at = NULL
-    `;
+    await putRows(sql, [{ namespace: NS, type: TYPE, id, body: { id }, deletedAt: null }]);
   }
 }
 
@@ -103,10 +100,7 @@ describe.skipIf(!isPgGated)('LexicalStore parity (memory vs pg)', () => {
   });
 
   it('excludes a soft-deleted row in both backends', async () => {
-    await sql`
-      UPDATE rows SET deleted_at = now()
-      WHERE namespace = ${NS} AND type = ${TYPE} AND id = 'holiday'
-    `;
+    await tombstoneRow(sql, NS, TYPE, 'holiday');
     const memWithRows = new InMemoryLexicalStore({
       datasetFor: () =>
         ({
@@ -144,12 +138,9 @@ describe.skipIf(!isPgGated)('LexicalStore parity (memory vs pg)', () => {
   });
 
   it('purgeOrphans removes the text of tombstoned and dropped rows, keeps live ones', async () => {
-    await sql`
-      UPDATE rows SET deleted_at = now()
-      WHERE namespace = ${NS} AND type = ${TYPE} AND id = 'holiday'
-    `;
+    await tombstoneRow(sql, NS, TYPE, 'holiday');
     // A drop or a tombstone purge hard-deletes the row.
-    await sql`DELETE FROM rows WHERE namespace = ${NS} AND type = ${TYPE} AND id = 'warship'`;
+    await deleteRows(sql, NS, TYPE, 'warship');
 
     expect(await pg.purgeOrphans()).toBeGreaterThanOrEqual(2);
     const left = await sql<{ row_id: string }[]>`
@@ -166,21 +157,16 @@ describe.skipIf(!isPgGated)('LexicalStore parity (memory vs pg)', () => {
   });
 
   it('countIndexed excludes a soft-deleted row in pg, matching search', async () => {
-    await sql`
-      UPDATE rows SET deleted_at = now()
-      WHERE namespace = ${NS} AND type = ${TYPE} AND id = 'holiday'
-    `;
+    await tombstoneRow(sql, NS, TYPE, 'holiday');
     // Same liveness predicate as search: the count names rows recall could
     // return, not orphaned index entries.
     expect(await pg.countIndexed(NS, TYPE)).toBe(CORPUS.length - 1);
   });
 
   it('scopes to (namespace, type) in both backends', async () => {
-    await sql`
-      INSERT INTO rows (namespace, type, id, body, deleted_at)
-      VALUES ('labs', 'Trace', 'other', ${sql.json({ id: 'other' })}, NULL)
-      ON CONFLICT (namespace, type, id) DO NOTHING
-    `;
+    await putRows(sql, [
+      { namespace: 'labs', type: 'Trace', id: 'other', body: { id: 'other' }, deletedAt: null }
+    ]);
     await pg.upsert({
       rowNamespace: 'labs',
       rowType: 'Trace',
@@ -283,11 +269,9 @@ describe.skipIf(!isPgGated)('PgLexicalStore: behaviour the memory store cannot m
    * discriminator.
    */
   it('does not widen a query the strict pass already answered', async () => {
-    await sql`
-      INSERT INTO rows (namespace, type, id, body, deleted_at)
-      VALUES (${NS}, ${TYPE}, 'brochure', ${sql.json({ id: 'brochure' })}, NULL)
-      ON CONFLICT (namespace, type, id) DO UPDATE SET deleted_at = NULL
-    `;
+    await putRows(sql, [
+      { namespace: NS, type: TYPE, id: 'brochure', body: { id: 'brochure' }, deletedAt: null }
+    ]);
     await pg.upsert({
       rowNamespace: NS,
       rowType: TYPE,

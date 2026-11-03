@@ -149,9 +149,12 @@ import {
 import {
   absentTypeTable,
   ensureTypeTable,
+  listenTableCache,
   loadTypeTable,
   rowsTypeTable,
-  type TypeTable
+  type TableCache,
+  type TypeTable,
+  tableCacheFor
 } from './type-table.js';
 import { UUID_CHECK_MIGRATION } from './uuid-check.js';
 import {
@@ -279,37 +282,6 @@ interface InternalPgSubstrateDatasetOptions {
   tableCache?: TableCache;
   /** The enclosing transaction's tables, which enter `tableCache` on commit only. */
   txTables?: TxTables;
-}
-
-/**
- * A pool's type-table descriptors on the `tables` layout. A
- * `substrate_catalog` notification (sent by `ensureTypeTable` on any change,
- * delivered at commit) drops its type's entry, and a (re)connect of the
- * listener drops them all, since notifications may have been missed.
- */
-interface TableCache {
-  /** The pool, which LISTENs on a connection of its own. */
-  sql: PgHandle;
-  /** `null` is a cached miss: the type has no table yet. */
-  tables: Map<string, TypeTable | null>;
-  /** Bumped on each drop, so a load that raced a notification is not cached. */
-  gen: number;
-  /** True once listening; false when LISTEN failed, and then nothing is cached. */
-  listening?: Promise<boolean>;
-  /** Only `true` is kept: the migration can be applied while this process runs, never unapplied. */
-  uuidCheck?: true;
-}
-
-/** One cache per pool. */
-const tableCaches = new WeakMap<object, TableCache>();
-
-function tableCacheFor(sql: PgHandle): TableCache {
-  let cache = tableCaches.get(sql);
-  if (cache === undefined) {
-    cache = { sql, tables: new Map(), gen: 0 };
-    tableCaches.set(sql, cache);
-  }
-  return cache;
 }
 
 /**
@@ -588,28 +560,7 @@ export class PgDataset implements Dataset {
 
   /** Starts the pool's catalog LISTEN once; resolves false when it cannot. */
   #listen(): Promise<boolean> {
-    const cache = this.#tableCache;
-    const drop = (key?: string) => {
-      if (key === undefined) cache.tables.clear();
-      else cache.tables.delete(key);
-      cache.gen++;
-    };
-    // Only a pool can LISTEN (on a connection of its own); on any other handle nothing is cached.
-    const pool = cache.sql as Partial<Sql>;
-    cache.listening ??=
-      typeof pool.listen !== 'function'
-        ? Promise.resolve(false)
-        : pool
-            .listen(
-              'substrate_catalog',
-              (key) => drop(key),
-              () => drop()
-            )
-            .then(
-              () => true,
-              () => false
-            );
-    return cache.listening;
+    return listenTableCache(this.#tableCache);
   }
 
   /** Whether new type tables take the opt-in UUID CHECK: the store applied that migration. */

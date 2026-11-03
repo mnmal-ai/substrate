@@ -7,6 +7,7 @@ import { EmbedSourceRegistry } from '../src/embed-source-registry.js';
 import type { EmbeddingsStore } from '../src/embeddings-store.js';
 import { embeddingsMigration } from '../src/migrations/0001_embeddings.js';
 import { PgEmbeddingsStore } from '../src/pg-embeddings-store.js';
+import { putRows, truncateRows } from './_pg-rows.js';
 
 /** A dataset whose rows carry a `v` marking which version of the row a read saw. */
 function fakeDataset(rows: Record<string, Row>): Dataset {
@@ -133,7 +134,7 @@ describe.skipIf(POSTGRES_URL === undefined)('PgEmbeddingsStore.staleRowIds', () 
   beforeEach(async () => {
     sql = postgres(POSTGRES_URL as string);
     await sql`TRUNCATE TABLE embeddings CASCADE`;
-    await sql`TRUNCATE TABLE rows CASCADE`;
+    await truncateRows(sql);
   });
 
   afterEach(async () => {
@@ -143,15 +144,22 @@ describe.skipIf(POSTGRES_URL === undefined)('PgEmbeddingsStore.staleRowIds', () 
   it('finds rows with no vector or a vector older than the row, live rows only', async () => {
     const t0 = new Date('2026-10-01T00:00:00Z');
     const t1 = new Date('2026-10-02T00:00:00Z');
-    await sql`
-      INSERT INTO rows (namespace, type, id, body, updated_at, deleted_at) VALUES
-        ('notes', 'Note', 'fresh',   ${sql.json({})}, ${t0}, NULL),
-        ('notes', 'Note', 'missing', ${sql.json({})}, ${t0}, NULL),
-        ('notes', 'Note', 'stale',   ${sql.json({})}, ${t1}, NULL),
-        ('notes', 'Note', 'gone',    ${sql.json({})}, ${t0}, now()),
-        ('notes', 'Note', 'legacy',  ${sql.json({})}, NULL,  NULL),
-        ('notes', 'Other', 'x',      ${sql.json({})}, ${t0}, NULL)
-    `;
+    const row = (type: string, id: string, updatedAt: Date | null, deletedAt: Date | null) => ({
+      namespace: 'notes',
+      type,
+      id,
+      body: {},
+      updatedAt,
+      deletedAt
+    });
+    await putRows(sql, [
+      row('Note', 'fresh', t0, null),
+      row('Note', 'missing', t0, null),
+      row('Note', 'stale', t1, null),
+      row('Note', 'gone', t0, new Date()),
+      row('Note', 'legacy', null, null),
+      row('Other', 'x', t0, null)
+    ]);
     const store = new PgEmbeddingsStore({ sql });
     for (const id of ['fresh', 'stale', 'legacy']) {
       await store.upsert({

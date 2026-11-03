@@ -23,6 +23,7 @@ export {
   UniqueIndexDuplicatesError
 } from './index-reconciler.js';
 export {
+  cachedLayout,
   columnName,
   detectLayout,
   partitionName,
@@ -85,8 +86,13 @@ export {
   FieldKindChangedError,
   loadTypeTable,
   rowsTypeTable,
+  type TableCache,
   type TypedColumn,
   type TypeTable,
-  type TypeTableChange
+  type TypeTableChange,
+  type TypeTableRef,
+  tableCacheFor,
+  typeTableRef,
+  whileNoTypeTable
 } from './type-table.js';
 export { UUID_CHECK_MIGRATION, UUID_REGEX } from './uuid-check.js';

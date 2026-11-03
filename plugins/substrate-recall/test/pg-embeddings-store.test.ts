@@ -31,6 +31,8 @@ function makeFakeSql(handler: (text: string, values: unknown[]) => unknown): {
   const calls: Captured[] = [];
   const fn = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.join('?');
+    // The stores' layout probe, answered as a `legacy` store; not recorded, as it is not recall SQL.
+    if (text.includes('pg_class')) return [{ relname: 'rows', relkind: 'r' }];
     calls.push({ text, values });
     return handler(text, values);
   }) as FakeSql;
@@ -258,6 +260,8 @@ describe('PgEmbeddingsStore.knnSearch', () => {
     let beginCalls = 0;
     const innerCalls: Captured[] = [];
     const fn = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      // The layout probe, as in `makeFakeSql`.
+      if (strings.join('?').includes('pg_class')) return [{ relname: 'rows', relkind: 'r' }];
       innerCalls.push({ text: strings.join('?'), values });
       return [];
     }) as FakeSql;

@@ -17,8 +17,16 @@
 
 import { type FieldDef, isColumnField } from '@mnmal-ai/substrate-types';
 import type { Sql, TransactionSql } from 'postgres';
-import { columnName, hashedName, MAX_IDENTIFIER, typeTableName } from './layout.js';
-import { type PromotedColumnLookup, qualifier, sqlStringLiteral } from './pg-sql/primitives.js';
+import { cachedLayout, columnName, hashedName, MAX_IDENTIFIER, typeTableName } from './layout.js';
+import {
+  columnSql,
+  fieldExprSql,
+  type PromotedColumnLookup,
+  qualifier,
+  sqlStringLiteral,
+  utcTextSql
+} from './pg-sql/primitives.js';
+import { extraWins, RAW_KEY } from './row-codec.js';
 import type { PgHandle } from './tx-scope.js';
 import { ident } from './type-storage.js';
 import { UUID_REGEX } from './uuid-check.js';
@@ -119,6 +127,185 @@ export function absentTypeTable(namespace: string, type: string): TypeTable {
     pending: [],
     orphaned: []
   };
+}
+
+/**
+ * Where a reader outside `PgDataset` (recall) finds `namespace`/`type`'s rows,
+ * as SQL over a caller's alias of `from`.
+ */
+export interface TypeTableRef {
+  /** `rows` on the old layouts, else the type's table, quoted. */
+  from: string;
+  /** The namespace/type predicate on `rows`; `null` on a type's own table. */
+  scope(alias: string): string | null;
+  /** The row as `dataset.read` returns it (`decodeRow`'s, built in SQL); `alias.body` on the old layouts. */
+  rowJson(alias: string): string;
+  /** A top-level field as the text `rowJson(alias) ->> field` gives, which a row filter compares. */
+  text(alias: string, field: string): string;
+}
+
+/**
+ * The {@link TypeTableRef} of `namespace`/`type`, or `undefined` when it has no
+ * rows to read: no table yet on `tables`, or no schema at all. The layout is
+ * cached per handle ({@link cachedLayout}), and on `tables` the descriptor in
+ * the pool's {@link TableCache}, which `PgDataset` shares; a hit makes no query.
+ */
+export async function typeTableRef(
+  sql: PgHandle,
+  namespace: string,
+  type: string
+): Promise<TypeTableRef | undefined> {
+  const layout = await cachedLayout(sql as Sql);
+  if (layout === 'absent') return undefined;
+  const table =
+    layout === 'tables'
+      ? await cachedTypeTable(sql, namespace, type)
+      : rowsTypeTable(namespace, type, () => undefined);
+  if (table === undefined) return undefined;
+  return {
+    from: table.from,
+    scope: (alias) => table.scope(alias),
+    rowJson: (alias) =>
+      table.jsonb === 'body' ? `${qualifier(alias)}body` : rowJsonSql(table, alias),
+    text: (alias, field) => `(${fieldExprSql(table, field, 'json', alias)} #>> '{}')`
+  };
+}
+
+/**
+ * A pool's type-table descriptors on the `tables` layout. A
+ * `substrate_catalog` notification (sent by `ensureTypeTable` on any change,
+ * delivered at commit) drops its type's entry, and a (re)connect of the
+ * listener drops them all, since notifications may have been missed.
+ */
+export interface TableCache {
+  /** The pool, which LISTENs on a connection of its own. */
+  sql: PgHandle;
+  /** `null` is a cached miss: the type has no table yet. */
+  tables: Map<string, TypeTable | null>;
+  /** Bumped on each drop, so a load that raced a notification is not cached. */
+  gen: number;
+  /** True once listening; false when LISTEN failed, and then nothing is cached. */
+  listening?: Promise<boolean>;
+  /** Only `true` is kept: the migration can be applied while this process runs, never unapplied. */
+  uuidCheck?: true;
+}
+
+/** One cache per pool. */
+const tableCaches = new WeakMap<object, TableCache>();
+
+/** The pool's {@link TableCache}, shared by every `PgDataset` and `typeTableRef` on it. */
+export function tableCacheFor(sql: PgHandle): TableCache {
+  let cache = tableCaches.get(sql);
+  if (cache === undefined) {
+    cache = { sql, tables: new Map(), gen: 0 };
+    tableCaches.set(sql, cache);
+  }
+  return cache;
+}
+
+/** Starts the pool's catalog LISTEN once; resolves false when it cannot. */
+export function listenTableCache(cache: TableCache): Promise<boolean> {
+  const drop = (key?: string) => {
+    if (key === undefined) cache.tables.clear();
+    else cache.tables.delete(key);
+    cache.gen++;
+  };
+  // Only a pool can LISTEN (on a connection of its own); on any other handle nothing is cached.
+  const pool = cache.sql as Partial<Sql>;
+  cache.listening ??=
+    typeof pool.listen !== 'function'
+      ? Promise.resolve(false)
+      : pool
+          .listen(
+            'substrate_catalog',
+            (key) => drop(key),
+            () => drop()
+          )
+          .then(
+            () => true,
+            () => false
+          );
+  return cache.listening;
+}
+
+/**
+ * `namespace`/`type`'s descriptor through the pool's {@link TableCache}, as
+ * `PgDataset` reads it outside a transaction: a hit, a miss included, makes no
+ * query; a load that raced a notification is not cached.
+ */
+async function cachedTypeTable(
+  sql: PgHandle,
+  namespace: string,
+  type: string
+): Promise<TypeTable | undefined> {
+  const cache = tableCacheFor(sql);
+  const key = `${namespace}/${type}`;
+  const listening = await listenTableCache(cache);
+  const hit = cache.tables.get(key);
+  if (hit !== undefined) return hit ?? undefined;
+  const gen = cache.gen;
+  const table = await loadTypeTable(sql, namespace, type);
+  if (listening && cache.gen === gen) cache.tables.set(key, table ?? null);
+  return table;
+}
+
+/**
+ * Runs `fn` in a transaction under `namespace`/`type`'s type-table lock, the
+ * one a first write's CREATE takes, but only while the type still has no table;
+ * `undefined`, running nothing, once it has one. So what `fn` does on "no
+ * table" cannot interleave with that type's first write.
+ */
+export async function whileNoTypeTable<T>(
+  sql: Sql,
+  namespace: string,
+  type: string,
+  fn: (tx: TransactionSql) => Promise<T>
+): Promise<T | undefined> {
+  return (await sql.begin(async (tx) => {
+    await lockTypeTable(tx, namespace, type);
+    if ((await typeTableOf(tx, namespace, type)) !== undefined) return undefined;
+    return fn(tx);
+  })) as T | undefined;
+}
+
+/** pg's argument limit is 100, so `jsonb_build_object` takes at most 50 pairs. */
+const MAX_PAIRS = 50;
+
+/**
+ * `decodeRow` in SQL: the non-null columns, then `extra` but `$raw` and the
+ * `column`-state fields' keys, less a `promoting` or `pending` field whose
+ * `extra` value is null (it reads absent, column and all), then `$raw` over all.
+ * Only the columns' object is stripped of nulls: a null in `extra`, or nested
+ * in a json value, is the row's.
+ */
+function rowJsonSql(table: TypeTable, alias: string): string {
+  const q = qualifier(alias);
+  const lit = sqlStringLiteral;
+  const columns = table.columns();
+  const pairs = columns.map((c) => {
+    const col = columnSql(c, alias);
+    return `${lit(c.field)}, ${c.kind === 'date' ? utcTextSql(col, 'MS') : col}`;
+  });
+  const objects: string[] = [];
+  for (let i = 0; i < pairs.length; i += MAX_PAIRS) {
+    objects.push(
+      `jsonb_strip_nulls(jsonb_build_object(${pairs.slice(i, i + MAX_PAIRS).join(', ')}))`
+    );
+  }
+  const fromColumns = objects.length === 0 ? "'{}'::jsonb" : objects.join(' || ');
+  const dropped = [RAW_KEY, ...columns.filter((c) => !extraWins(c)).map((c) => c.field)];
+  let row = `(${fromColumns} || (${q}extra - ARRAY[${dropped.map(lit).join(', ')}]::text[]))`;
+  const nullable = [
+    ...columns.filter((c) => c.state === 'promoting').map((c) => c.field),
+    ...table.pending
+  ];
+  if (nullable.length > 0) {
+    const absent = nullable.map(
+      (f) => `CASE WHEN ${q}extra -> ${lit(f)} = 'null'::jsonb THEN ${lit(f)} END`
+    );
+    row = `(${row} - ARRAY[${absent.join(', ')}]::text[])`;
+  }
+  return `(${row} || COALESCE(${q}extra -> ${lit(RAW_KEY)}, '{}'::jsonb))`;
 }
 
 type FieldState = 'pending' | TypedColumn['state'];

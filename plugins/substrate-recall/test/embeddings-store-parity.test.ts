@@ -11,6 +11,7 @@ import type { EmbeddingsStore } from '../src/embeddings-store.js';
 import { InMemoryEmbeddingsStore } from '../src/in-memory-embeddings-store.js';
 import { embeddingsMigration } from '../src/migrations/0001_embeddings.js';
 import { PgEmbeddingsStore } from '../src/pg-embeddings-store.js';
+import { putRows, truncateRows } from './_pg-rows.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const isPgGated = POSTGRES_URL !== undefined;
@@ -55,7 +56,7 @@ describe.skipIf(!isPgGated)('fetchEmbeddings parity (memory vs pg)', () => {
 
     // Clean up embeddings and rows before each test
     await sql`TRUNCATE TABLE embeddings CASCADE`;
-    await sql`TRUNCATE TABLE rows CASCADE`;
+    await truncateRows(sql);
   });
 
   afterEach(async () => {
@@ -98,12 +99,10 @@ describe.skipIf(!isPgGated)('fetchEmbeddings parity (memory vs pg)', () => {
     });
 
     // Populate rows so the pg JOIN succeeds
-    await sql`
-      INSERT INTO rows (namespace, type, id, body)
-      VALUES
-        ('claude', 'Decision', 'dec-1', ${sql.json({ id: 'dec-1', topic: 'A' })}),
-        ('claude', 'Decision', 'dec-2', ${sql.json({ id: 'dec-2', topic: 'B' })})
-    `;
+    await putRows(sql, [
+      { namespace: 'claude', type: 'Decision', id: 'dec-1', body: { id: 'dec-1', topic: 'A' } },
+      { namespace: 'claude', type: 'Decision', id: 'dec-2', body: { id: 'dec-2', topic: 'B' } }
+    ]);
 
     const refs = [
       { namespace: 'claude', type: 'Decision', id: 'dec-1' },
@@ -140,10 +139,9 @@ describe.skipIf(!isPgGated)('fetchEmbeddings parity (memory vs pg)', () => {
         model: 'm:3'
       });
     }
-    await sql`
-      INSERT INTO rows (namespace, type, id, body)
-      VALUES ('claude', 'Decision', 'dec-1', ${sql.json({ id: 'dec-1', topic: 'A' })})
-    `;
+    await putRows(sql, [
+      { namespace: 'claude', type: 'Decision', id: 'dec-1', body: { id: 'dec-1', topic: 'A' } }
+    ]);
 
     // A never-reinforced row reads 0 on both sides, not undefined — the
     // distinction matters downstream, where `log(1 + salience)` on undefined
@@ -196,10 +194,9 @@ describe.skipIf(!isPgGated)('fetchEmbeddings parity (memory vs pg)', () => {
       vector: v,
       model: 'm:3'
     });
-    await sql`
-      INSERT INTO rows (namespace, type, id, body)
-      VALUES ('claude', 'Decision', 'dec-1', ${sql.json({ id: 'dec-1' })})
-    `;
+    await putRows(sql, [
+      { namespace: 'claude', type: 'Decision', id: 'dec-1', body: { id: 'dec-1' } }
+    ]);
     await pg.boostSalience([ref], 168);
     // One half-life ago.
     await sql`UPDATE embeddings SET salience_updated_at = now() - interval '10 hours'`;
@@ -233,10 +230,9 @@ describe.skipIf(!isPgGated)('fetchEmbeddings parity (memory vs pg)', () => {
       vector: v1,
       model: 'm:3'
     });
-    await sql`
-      INSERT INTO rows (namespace, type, id, body)
-      VALUES ('claude', 'Decision', 'dec-1', ${sql.json({ id: 'dec-1' })})
-    `;
+    await putRows(sql, [
+      { namespace: 'claude', type: 'Decision', id: 'dec-1', body: { id: 'dec-1' } }
+    ]);
 
     const memOut = await mem.fetchEmbeddings(
       [
@@ -275,10 +271,9 @@ describe.skipIf(!isPgGated)('fetchEmbeddings parity (memory vs pg)', () => {
       vector: v1,
       model: 'm:3'
     });
-    await sql`
-      INSERT INTO rows (namespace, type, id, body)
-      VALUES ('claude', 'Decision', 'dec-1', ${sql.json({ id: 'dec-1' })})
-    `;
+    await putRows(sql, [
+      { namespace: 'claude', type: 'Decision', id: 'dec-1', body: { id: 'dec-1' } }
+    ]);
 
     const memOut = await mem.fetchEmbeddings(
       [{ namespace: 'claude', type: 'Decision', id: 'dec-1' }],
@@ -311,10 +306,7 @@ describe.skipIf(!isPgGated)('fetchEmbeddings parity (memory vs pg)', () => {
     });
 
     const rowBody = { id: 'dec-1', topic: 'auth', choice: 'rotate', rationale: 'leak' };
-    await sql`
-      INSERT INTO rows (namespace, type, id, body)
-      VALUES ('claude', 'Decision', 'dec-1', ${sql.json(rowBody)})
-    `;
+    await putRows(sql, [{ namespace: 'claude', type: 'Decision', id: 'dec-1', body: rowBody }]);
 
     const memOut = await mem.fetchEmbeddings(
       [{ namespace: 'claude', type: 'Decision', id: 'dec-1' }],
@@ -394,7 +386,7 @@ describe.skipIf(!isPgGated)('deletion semantics', () => {
   beforeEach(async () => {
     sql = postgres(POSTGRES_URL as string);
     await sql`TRUNCATE TABLE embeddings CASCADE`;
-    await sql`TRUNCATE TABLE rows CASCADE`;
+    await truncateRows(sql);
   });
 
   afterEach(async () => {
@@ -402,12 +394,22 @@ describe.skipIf(!isPgGated)('deletion semantics', () => {
   });
 
   async function seedPg(store: PgEmbeddingsStore): Promise<void> {
-    await sql`
-      INSERT INTO rows (namespace, type, id, body, deleted_at)
-      VALUES
-        ('claude', 'Decision', 'live-1', ${sql.json({ id: 'live-1', topic: 'live' })}, NULL),
-        ('claude', 'Decision', 'del-1',  ${sql.json({ id: 'del-1', topic: 'deleted' })}, now())
-    `;
+    await putRows(sql, [
+      {
+        namespace: 'claude',
+        type: 'Decision',
+        id: 'live-1',
+        body: { id: 'live-1', topic: 'live' },
+        deletedAt: null
+      },
+      {
+        namespace: 'claude',
+        type: 'Decision',
+        id: 'del-1',
+        body: { id: 'del-1', topic: 'deleted' },
+        deletedAt: new Date()
+      }
+    ]);
     await store.upsert({
       rowNamespace: 'claude',
       rowType: 'Decision',
@@ -550,7 +552,7 @@ describe.skipIf(!isPgGated)('knnSearch returnVector parity (memory vs pg)', () =
     mem = new InMemoryEmbeddingsStore();
     pg = new PgEmbeddingsStore({ sql });
     await sql`TRUNCATE TABLE embeddings CASCADE`;
-    await sql`TRUNCATE TABLE rows CASCADE`;
+    await truncateRows(sql);
 
     const v1 = vec(1);
     for (const store of [mem, pg]) {
@@ -562,10 +564,9 @@ describe.skipIf(!isPgGated)('knnSearch returnVector parity (memory vs pg)', () =
         model: 'm:3'
       });
     }
-    await sql`
-      INSERT INTO rows (namespace, type, id, body)
-      VALUES ('claude', 'Decision', 'dec-1', ${sql.json({ id: 'dec-1', topic: 'A' })})
-    `;
+    await putRows(sql, [
+      { namespace: 'claude', type: 'Decision', id: 'dec-1', body: { id: 'dec-1', topic: 'A' } }
+    ]);
   });
 
   afterEach(async () => {
@@ -618,7 +619,7 @@ describe.skipIf(!isPgGated)('knnSearch model filter and salience decay (memory v
   beforeEach(async () => {
     sql = postgres(POSTGRES_URL as string);
     await sql`TRUNCATE TABLE embeddings CASCADE`;
-    await sql`TRUNCATE TABLE rows CASCADE`;
+    await truncateRows(sql);
   });
 
   afterEach(async () => {
@@ -640,7 +641,7 @@ describe.skipIf(!isPgGated)('knnSearch model filter and salience decay (memory v
           model: 'old:768'
         });
       }
-      await sql`INSERT INTO rows (namespace, type, id, body) VALUES ('app', 'Doc', ${`old-${i}`}, ${sql.json({})})`;
+      await putRows(sql, [{ namespace: 'app', type: 'Doc', id: `old-${i}`, body: {} }]);
     }
     for (let i = 0; i < 3; i++) {
       for (const store of [mem, pg]) {
@@ -652,7 +653,7 @@ describe.skipIf(!isPgGated)('knnSearch model filter and salience decay (memory v
           model: 'new:768'
         });
       }
-      await sql`INSERT INTO rows (namespace, type, id, body) VALUES ('app', 'Doc', ${`new-${i}`}, ${sql.json({})})`;
+      await putRows(sql, [{ namespace: 'app', type: 'Doc', id: `new-${i}`, body: {} }]);
     }
     const input = { namespace: 'app', type: 'Doc', model: 'new:768', vector: vec(1), k: 3 };
     expect((await mem.knnSearch(input)).length).toBe(3);
@@ -662,7 +663,7 @@ describe.skipIf(!isPgGated)('knnSearch model filter and salience decay (memory v
   it('an older upsert never replaces a newer vector, on both stores', async () => {
     const mem = new InMemoryEmbeddingsStore();
     const pg = new PgEmbeddingsStore({ sql });
-    await sql`INSERT INTO rows (namespace, type, id, body) VALUES ('app', 'Doc', 'd1', ${sql.json({})})`;
+    await putRows(sql, [{ namespace: 'app', type: 'Doc', id: 'd1', body: {} }]);
     const later = new Date('2026-01-02T00:00:00Z');
     const earlier = new Date('2026-01-01T00:00:00Z');
     for (const store of [mem, pg]) {
@@ -731,7 +732,7 @@ describe.skipIf(!isPgGated)('selectCandidates parity (memory vs pg)', () => {
     });
     pg = new PgEmbeddingsStore({ sql });
     await sql`TRUNCATE TABLE embeddings CASCADE`;
-    await sql`TRUNCATE TABLE rows CASCADE`;
+    await truncateRows(sql);
   });
 
   afterEach(async () => {
@@ -755,11 +756,7 @@ describe.skipIf(!isPgGated)('selectCandidates parity (memory vs pg)', () => {
     memBodies.set(`${namespace}/${type}/${id}`, body);
     await mem.upsert({ rowNamespace: namespace, rowType: type, rowId: id, vector, model });
     await pg.upsert({ rowNamespace: namespace, rowType: type, rowId: id, vector, model });
-    await sql`
-      INSERT INTO rows (namespace, type, id, body)
-      VALUES (${namespace}, ${type}, ${id}, ${sql.json(body)})
-      ON CONFLICT (namespace, type, id) DO UPDATE SET body = EXCLUDED.body
-    `;
+    await putRows(sql, [{ namespace, type, id, body }]);
   }
 
   function stores(): Array<{ name: string; store: EmbeddingsStore }> {
