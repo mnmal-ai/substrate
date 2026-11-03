@@ -81,7 +81,11 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('pending fields and the promotion swee
     if (t === undefined) throw new Error(`no table for ${type}`);
     return t.from;
   };
-  const warnings = async () => (await pg.fieldWarnings()).filter((w) => w.startsWith(`${ns}/`));
+  /** This namespace's detailed field lines, from the (admin-gated) storage report. */
+  const warnings = async () => {
+    const report = await pg.storageReport({ partitionBudget: 1_000_000 });
+    return [...report.warnings, ...(report.info ?? [])].filter((w) => w.startsWith(`${ns}/`));
+  };
   async function same(type: string, params: ReadParams): Promise<Row[]> {
     const read = async (ds: PgDataset | MemoryDataset) =>
       (await ds.read(type, params)).rows.map(strip).sort(byId);
@@ -147,6 +151,15 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('pending fields and the promotion swee
     expect(await warnings()).toEqual([
       `${ns}/Note.rank is pending: held in jsonb until promoted (attempt 0)`
     ]);
+  });
+
+  it('fieldWarnings, which /health shows unauthenticated, counts and names nothing', async () => {
+    await pendingRank();
+    const lines = await pg.fieldWarnings();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/^\d+ fields? pending promotion(; .*)? — see the storage report$/);
+    expect(lines.join('\n')).not.toContain(ns);
+    expect(lines.join('\n')).not.toContain('rank');
   });
 
   it('the sweep promotes: column filled, extra key gone, storage settled, event promoted', async () => {
@@ -237,7 +250,7 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('pending fields and the promotion swee
     }
     expect(kinds).toEqual(['busy:1', 'busy:2', 'failed:3']);
     expect(await warnings()).toEqual([
-      `${ns}/Note.rank is pending: held in jsonb until promoted (attempt 3)`
+      `${ns}/Note.rank promotion failed (attempt 3): its table's lock was held past 50 ms`
     ]);
     // Once the lock is free it promotes, and the count starts again.
     expect((await sweep()).map((e) => e.kind)).toEqual(['promoted']);
@@ -337,7 +350,7 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('pending fields and the promotion swee
     const report = await pg.describeStorage('Note');
     expect(report.indexes.find((i) => i.name === index)?.state).toBe('pending');
     expect(await warnings()).toEqual([
-      `${ns}/Note.code is promoting: its promotion failed (attempt 1); see _system/AuditEvent`
+      `${ns}/Note.code promotion failed (attempt 1): unique index ${index} refuses a duplicate value of code`
     ]);
     await same('Note', {});
     await same('Note', { where: { code: { eq: 'X' } } });
@@ -434,5 +447,210 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('pending fields and the promotion swee
       onEvent: (e) => seen.push(`${e.type}.${e.field}:${e.kind}`)
     });
     expect(seen).toEqual(['Note.rank:promoted']);
+  });
+
+  /** `Note.code` added in code over rows that carry it: `promoting`, with `index` unique on it. */
+  async function promotingCode(index: string, rows: Row[]): Promise<void> {
+    await write('Note', rows);
+    defs.Note = {
+      fields: { title: field.string(), code: field.string() },
+      indexes: [{ name: index, fields: ['code'], unique: true }]
+    };
+    await pg.ensureTypeStorage('Note');
+    expect(await state('Note', 'code')).toMatchObject({ state: 'promoting' });
+  }
+  /** The sql-level sweep with `reconcile` run in step 4 (and again after), as PgDataset wires it. */
+  const sweepWith = (
+    reconcile: (ns: string, type: string) => Promise<void>,
+    signal?: AbortSignal
+  ) =>
+    promotePendingFields(sql, {
+      lockTimeoutMs: 2000,
+      batchRows: 100,
+      namespace: ns,
+      reconcile,
+      ...(signal !== undefined ? { signal } : {})
+    });
+
+  it('a boot that orphans the field mid-sweep wins: the sweep never records it column', async () => {
+    await pendingRank();
+    await write('Note', [{ id: 'n1', rank: 4 }]);
+    let orphaned = false;
+    const events = await sweepWith(async () => {
+      if (orphaned) return;
+      orphaned = true;
+      // A rolling deploy's boot whose code no longer declares `rank`.
+      defs.Note = { fields: { title: field.string() } };
+      await pg.ensureTypeStorage('Note');
+    });
+    expect(orphaned).toBe(true);
+    expect(await state('Note', 'rank')).toMatchObject({ state: 'orphaned' });
+    expect(events.map((e) => e.kind)).not.toContain('promoted');
+    await same('Note', {});
+  });
+
+  it('a unique duplicate first seen in the straggler pass: failed, the field stays column, no row lost', async () => {
+    const index = `pf_code_${hex()}`;
+    await promotingCode(index, [
+      { id: 'n1', title: 'a', code: 'X' },
+      { id: 'n2', title: 'b', code: 'Y' }
+    ]);
+    const t = await loadTypeTable(sql, ns, 'Note');
+    let injected = false;
+    const events = await sweepWith(async () => {
+      if (injected) return;
+      injected = true;
+      // A writer with a stale table, between the backfill and the straggler pass.
+      await sql.unsafe(`UPDATE ${t?.from} SET extra = extra || '{"code": "X"}' WHERE id = 'n2'`);
+    });
+    expect(events).toEqual([
+      {
+        kind: 'failed',
+        namespace: ns,
+        type: 'Note',
+        field: 'code',
+        attempts: 1,
+        error: `unique index ${index} refuses a duplicate value of code`
+      }
+    ]);
+    expect(await state('Note', 'code')).toEqual({ state: 'column', attempts: 1 });
+    expect((await pg.read('Note', {})).rows.map((r) => r.id).sort()).toEqual(['n1', 'n2']);
+    const [held] = await sql.unsafe(`SELECT extra FROM ${t?.from} WHERE id = 'n2'`);
+    expect(extraOf(held as Record<string, unknown>)).toEqual({ code: 'X' });
+    expect(await warnings()).toEqual([
+      `${ns}/Note.code promotion failed (attempt 1): unique index ${index} refuses a duplicate value of code`
+    ]);
+    // The next sweep runs the straggler pass again; once the duplicate is resolved it finishes.
+    expect((await sweep()).map((e) => e.kind)).toEqual(['failed']);
+    await sql.unsafe(`UPDATE ${t?.from} SET extra = extra || '{"code": "Z"}' WHERE id = 'n2'`);
+    expect((await sweep()).map((e) => e.kind)).toEqual(['promoted']);
+    expect(await state('Note', 'code')).toEqual({ state: 'column', attempts: 0 });
+    expect((await pg.read('Note', { ids: ['n2'] })).rows.map((r) => r.code)).toEqual(['Z']);
+    expect(await warnings()).toEqual([]);
+  });
+
+  it('a value in extra colliding with one already in the column fails the field, naming the index', async () => {
+    const index = `pf_code_${hex()}`;
+    await promotingCode(index, [
+      { id: 'n1', title: 'a', code: 'X' },
+      { id: 'n2', title: 'b', code: 'X' }
+    ]);
+    // n1's value moves into the column by a current write; n2's stays in extra.
+    await write('Note', [{ id: 'n1', code: 'X' }]);
+    const [event] = await sweep();
+    expect(event).toMatchObject({
+      kind: 'failed',
+      error: `unique index ${index} refuses a duplicate value of code`
+    });
+    expect(await state('Note', 'code')).toMatchObject({ state: 'promoting' });
+    await same('Note', {});
+  });
+
+  it('a deadlock with a writer is busy, not failed, and the next sweep promotes', async () => {
+    await write('Note', [
+      { id: 'n1', title: 'a', rank: 1 },
+      { id: 'n2', title: 'b', rank: 2 }
+    ]);
+    defs.Note = { fields: { title: field.string(), rank: field.number() } };
+    await pg.ensureTypeStorage('Note');
+    const table = await tableOf('Note');
+    const writer = await sql.reserve();
+    let events: Awaited<ReturnType<typeof sweep>> = [];
+    try {
+      await writer`BEGIN`;
+      await writer.unsafe(`UPDATE ${table} SET extra = extra WHERE id = 'n2'`);
+      const swept = sweep();
+      // The sweep locks n1, then waits on n2; the writer then wants n1. The sweep
+      // waited first, so its deadlock check fires first and it is the victim.
+      await new Promise((r) => setTimeout(r, 300));
+      // `.then` sends it: a postgres.js query is lazy until awaited.
+      const wants = writer
+        .unsafe(`SELECT 1 FROM ${table} WHERE id = 'n1' FOR UPDATE`)
+        .then(() => 'locked');
+      events = await swept;
+      expect(await wants).toBe('locked');
+    } finally {
+      await writer`ROLLBACK`;
+      writer.release();
+    }
+    expect(events).toEqual([
+      { kind: 'busy', namespace: ns, type: 'Note', field: 'rank', attempts: 1 }
+    ]);
+    expect((await sweep()).map((e) => e.kind)).toEqual(['promoted']);
+  });
+
+  it('an abort stops a sweep mid-backfill at once, with no lock held', async () => {
+    const abort = new AbortController();
+    let pagesAfterAbort = 0;
+    let pagesSeen = 0;
+    let abortedAt = 0;
+    const watched = postgres(POSTGRES_URL as string, {
+      onnotice: () => {},
+      debug: (_c, query) => {
+        if (!/WHERE id > \$\d+ ORDER BY id LIMIT/.test(query)) return;
+        if (abort.signal.aborted) pagesAfterAbort++;
+        else if (++pagesSeen === 3) {
+          abortedAt = Date.now();
+          abort.abort();
+        }
+      }
+    });
+    try {
+      const ds = new PgDataset({ namespace: ns, sql: watched, ...lookup });
+      await ds.write(
+        'Note',
+        Array.from({ length: 500 }, (_, i) => ({ id: `r${String(i).padStart(4, '0')}`, rank: i }))
+      );
+      defs.Note = { fields: { title: field.string(), rank: field.number() } };
+      await ds.ensureTypeStorage('Note', { newFields: 'pending' });
+      const events = await ds.promotePendingFields({
+        lockTimeoutMs: 2000,
+        batchRows: 10,
+        namespace: ns,
+        signal: abort.signal
+      });
+      const stoppedIn = Date.now() - abortedAt;
+      expect(abort.signal.aborted).toBe(true);
+      expect(events).toEqual([]);
+      // The page in flight finishes; none starts after it, far inside the 2 s lock timeout.
+      expect(pagesAfterAbort).toBe(0);
+      expect(stoppedIn).toBeLessThan(500);
+    } finally {
+      await watched.end({ timeout: 5 });
+    }
+    // Not counted as an attempt, and left promoting for the next sweep.
+    expect(await state('Note', 'rank')).toEqual({ state: 'promoting', attempts: 0 });
+    expect((await sweep()).map((e) => e.kind)).toEqual(['promoted']);
+  });
+
+  it("a first write's type lock held in a transaction: the sweep is busy within its timeout", async () => {
+    await pendingRank();
+    const holder = await sql.reserve();
+    const started = Date.now();
+    let events: Awaited<ReturnType<typeof sweep>> = [];
+    try {
+      await holder`BEGIN`;
+      await holder`SELECT pg_advisory_xact_lock(hashtext(
+        current_schema() || ':substrate-type-table:' || ${ns} || '/Note'))`;
+      events = await sweep({ lockTimeoutMs: 200 });
+    } finally {
+      await holder`ROLLBACK`;
+      holder.release();
+    }
+    expect(Date.now() - started).toBeLessThan(1500);
+    expect(events.map((e) => e.kind)).toEqual(['busy']);
+  });
+
+  it('a current write strips the extra key in column state too (as in promoting: tables-dataset-parity F13)', async () => {
+    await pendingRank();
+    await sweep();
+    const t = await loadTypeTable(sql, ns, 'Note');
+    expect(t?.column('rank')?.state).toBe('column');
+    await sql.unsafe(`UPDATE ${t?.from} SET extra = extra || '{"rank": 9}' WHERE id = 'n1'`);
+    await pg.write('Note', [{ id: 'n1', rank: 3 }]);
+    const [row] = await sql.unsafe(
+      `SELECT ${t?.column('rank')?.column} AS c, extra FROM ${t?.from} WHERE id = 'n1'`
+    );
+    expect([row?.c, extraOf(row as Record<string, unknown>)]).toEqual([3, {}]);
   });
 });

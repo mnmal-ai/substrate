@@ -517,10 +517,10 @@ export interface Dataset {
     signal?: AbortSignal;
   }): Promise<PromotionEvent[]>;
   /**
-   * One line per field an operator should know about, store-wide: a field
-   * held in jsonb until it is promoted, one whose promotion failed, and one no
-   * longer declared whose column is kept. Carries no error text, since
-   * `/health` shows it unauthenticated.
+   * Store-wide counts of the fields an operator should know about: held in
+   * jsonb until promoted, whose promotion failed, and no longer declared with
+   * their column kept. Counts only, with no namespace, type, field or error
+   * text, since `/health` shows it unauthenticated; `storageReport` names them.
    *
    * OPTIONAL. Backends with no per-type tables omit it.
    */

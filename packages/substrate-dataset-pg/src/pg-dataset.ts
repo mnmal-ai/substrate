@@ -136,7 +136,7 @@ import {
   resolvePromotedColumns,
   whereReferencesField
 } from './pg-sql.js';
-import { promotePendingFields } from './promote.js';
+import { PROMOTION_FAILED_AFTER, promotePendingFields } from './promote.js';
 import { decodeRow, encodeRow, RAW_KEY } from './row-codec.js';
 import { type PgHandle, txScopeIdFor } from './tx-scope.js';
 import {
@@ -2361,24 +2361,59 @@ export class PgDataset implements Dataset {
     });
   }
 
-  /** See `Dataset.fieldWarnings`. Store-wide; none on the old layouts. */
+  /**
+   * See `Dataset.fieldWarnings`. Store-wide; none on the old layouts. Counts
+   * only, since `/health` shows it unauthenticated: the named lines are in
+   * `storageReport`, which is admin-gated.
+   */
   async fieldWarnings(): Promise<string[]> {
     if ((await this.#layout()) !== 'tables') return [];
+    const lines = await this.#fieldLines();
+    const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+    const pending = lines.filter((l) => l.state === 'pending').length;
+    const failed = lines.filter((l) => l.failed).length;
+    const orphaned = lines.filter((l) => l.state === 'orphaned').length;
+    const parts = [
+      ...(pending > 0
+        ? [plural(pending, 'field pending promotion', 'fields pending promotion')]
+        : []),
+      ...(failed > 0 ? [plural(failed, 'promotion failed', 'promotions failed')] : []),
+      ...(orphaned > 0 ? [plural(orphaned, 'field orphaned', 'fields orphaned')] : [])
+    ];
+    return parts.length === 0 ? [] : [`${parts.join('; ')} — see the storage report`];
+  }
+
+  /**
+   * Each field an operator should know about, by name: a pending one, one
+   * whose promotion failed (a `promoting` or `column` field with an error, or a
+   * `pending` one busy {@link PROMOTION_FAILED_AFTER} sweeps in a row), and an
+   * orphaned one.
+   */
+  async #fieldLines(): Promise<Array<{ state: string; failed: boolean; line: string }>> {
     const rows = await this.#sql<
-      Array<{ namespace: string; type: string; field: string; state: string; attempts: number }>
+      Array<{
+        namespace: string;
+        type: string;
+        field: string;
+        state: string;
+        attempts: number;
+        last_error: string | null;
+      }>
     >`
-      SELECT namespace, type, field, state, attempts FROM substrate_type_fields
-      WHERE state IN ('pending', 'orphaned') OR (state = 'promoting' AND last_error IS NOT NULL)
+      SELECT namespace, type, field, state, attempts, last_error FROM substrate_type_fields
+      WHERE state IN ('pending', 'orphaned')
+         OR (state IN ('promoting', 'column') AND last_error IS NOT NULL)
       ORDER BY namespace COLLATE "C", type COLLATE "C", field COLLATE "C"`;
     return rows.map((r) => {
       const name = `${r.namespace}/${r.type}.${r.field}`;
-      if (r.state === 'pending') {
-        return `${name} is pending: held in jsonb until promoted (attempt ${r.attempts})`;
-      }
-      if (r.state === 'orphaned') {
-        return `${name} is orphaned: no longer declared; values readable as extras`;
-      }
-      return `${name} is promoting: its promotion failed (attempt ${r.attempts}); see _system/AuditEvent`;
+      const failed =
+        r.last_error !== null && (r.state !== 'pending' || r.attempts >= PROMOTION_FAILED_AFTER);
+      const line = failed
+        ? `${name} promotion failed (attempt ${r.attempts}): ${r.last_error}`
+        : r.state === 'orphaned'
+          ? `${name} is orphaned: no longer declared; values readable as extras`
+          : `${name} is pending: held in jsonb until promoted (attempt ${r.attempts})`;
+      return { state: r.state, failed, line };
     });
   }
 
@@ -2537,6 +2572,8 @@ export class PgDataset implements Dataset {
         const own = heldBy.get(t.table) ?? [];
         this.#undeclared(warnings, info, t.namespace, t.type, 'tables', t.table, own);
       }
+      // A failed promotion is a fault; a pending or orphaned field is a state worth showing.
+      for (const f of await this.#fieldLines()) (f.failed ? warnings : info).push(f.line);
       if (tables.length > opts.partitionBudget) {
         warnings.push(
           `${tables.length} type tables exceed the budget of ${opts.partitionBudget}: move a namespace to its own instance behind a bridge`

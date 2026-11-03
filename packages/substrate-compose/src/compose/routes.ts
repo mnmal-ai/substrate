@@ -321,6 +321,18 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
         )
       };
     };
+  // A store-wide action needs admin held store-wide: the `'*'` entry itself, not admin in some namespace.
+  const adminStoreWide =
+    (handler: HttpHandler): HttpHandler =>
+    async (req) => {
+      if (auth === undefined) return handler(req);
+      if (grantedIn(grantOf(req.identity ?? null), '*').includes(adminCap)) return handler(req);
+      return {
+        status: 403,
+        headers: { 'content-type': 'application/json' },
+        body: Buffer.from(JSON.stringify({ code: 'forbidden', required: `*:${adminCap}` }), 'utf8')
+      };
+    };
   // A drop's edges can reach other namespaces; the routes ask about those here.
   const dropGrants =
     auth === undefined
@@ -412,11 +424,11 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
       'admin'
     )
   );
-  // Store-wide, so gated on admin itself rather than admin in a named namespace.
+  // Store-wide: it locks and reports every namespace's tables, so admin must be held for `'*'`.
   server.route(
     'POST',
     '/substrate/v1/_system/promote-fields',
-    gate(promoteFieldsRoute(promoteFields), 'admin')
+    gate(adminStoreWide(promoteFieldsRoute(promoteFields)), 'admin')
   );
   server.route(
     'POST',

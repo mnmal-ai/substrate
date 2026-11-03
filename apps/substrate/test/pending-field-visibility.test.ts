@@ -29,6 +29,7 @@ import {
   PgEdgesStore,
   runMigrations
 } from '@mnmal-ai/substrate-dataset-pg';
+import { pgTestSchemaName, pgTestSchemaUrl } from '@mnmal-ai/substrate-dataset-pg/testing';
 import {
   createNoopPubSub,
   createProposalsPlugin,
@@ -43,6 +44,8 @@ import {
   formatPromoteFieldsOutput,
   promoteFieldsCommand
 } from '../src/admin/commands/promote-fields.js';
+import { bootStore } from '../src/serve/boot-store.js';
+import { parseEnv } from '../src/serve/config.js';
 import { makeTypeDefLookupFactory, reconcileDeclaredStorage } from '../src/serve/wiring.js';
 import { deleteNamespaces, relationOf, TABLES } from './_layout.js';
 
@@ -167,18 +170,48 @@ describe.skipIf(!POSTGRES_URL)('pending runtime fields, seen and promoted', () =
     };
     const rankDef = async () =>
       (json(await get(`/substrate/v1/schema/${ns}/Note`)).fields as Record<string, object>).rank;
-    const healthLines = async () =>
-      (json(await get('/health')).warnings as string[]).filter((w) => w.startsWith(`${ns}/`));
-    return { ns, composed, post, get, mutate, audit, proposeRankOnLiveNote, rankDef, healthLines };
+    /** `/health`, asked as an anonymous caller would ask it. */
+    const health = async () =>
+      json(await server.inject({ method: 'GET', path: '/health' })) as {
+        status: string;
+        warnings: string[];
+      };
+    /** The admin-gated storage report's lines naming this namespace's fields. */
+    const reportLines = async () => {
+      const r = await pg('default').storageReport({ partitionBudget: 1_000_000 });
+      return [...r.warnings, ...(r.info ?? [])].filter((w) => w.startsWith(`${ns}/`));
+    };
+    return {
+      ns,
+      composed,
+      post,
+      get,
+      mutate,
+      audit,
+      proposeRankOnLiveNote,
+      rankDef,
+      health,
+      reportLines
+    };
   }
 
   it.skipIf(!TABLES)(
     "propose_field on a live type → schema storage:'pending', a /health warning, a field_pending event; the sweep promotes it",
     async () => {
-      const { ns, post, get, audit, proposeRankOnLiveNote, rankDef, healthLines } = await boot();
+      const { ns, post, get, audit, proposeRankOnLiveNote, rankDef, health, reportLines } =
+        await boot();
       await proposeRankOnLiveNote();
       expect(await rankDef()).toMatchObject({ storage: 'pending' });
-      expect(await healthLines()).toEqual([
+      // Unauthenticated: a count, store-wide, naming no namespace, type or field.
+      const pendingHealth = await health();
+      expect(pendingHealth.status).toBe('ok');
+      expect(pendingHealth.warnings).toContainEqual(
+        expect.stringMatching(/^\d+ fields? pending promotion(; .*)? — see the storage report$/)
+      );
+      expect(JSON.stringify(pendingHealth)).not.toContain(ns);
+      expect(JSON.stringify(pendingHealth)).not.toContain('rank');
+      // The names are on the admin-gated storage report.
+      expect(await reportLines()).toEqual([
         `${ns}/Note.rank is pending: held in jsonb until promoted (attempt 0)`
       ]);
       await until(() => audit.length >= 1);
@@ -209,7 +242,8 @@ describe.skipIf(!POSTGRES_URL)('pending runtime fields, seen and promoted', () =
         details: { namespace: ns, type: 'Note', field: 'rank', attempts: 1 }
       });
       expect(await rankDef()).not.toHaveProperty('storage');
-      expect(await healthLines()).toEqual([]);
+      expect(await reportLines()).toEqual([]);
+      expect(JSON.stringify(await health())).not.toContain(ns);
       const after = json(
         await post('/substrate/v1/query', {
           [`${ns}/Note`]: { params: { where: { rank: { eq: 3 } } }, fields: { title: true } }
@@ -221,13 +255,13 @@ describe.skipIf(!POSTGRES_URL)('pending runtime fields, seen and promoted', () =
   );
 
   it.skipIf(TABLES)('propose_field on an old layout emits no field_pending event', async () => {
-    const { audit, proposeRankOnLiveNote, rankDef, healthLines } = await boot();
+    const { audit, proposeRankOnLiveNote, rankDef, health } = await boot();
     await proposeRankOnLiveNote();
     // Give a stray event the time a real one takes to arrive.
     await new Promise((r) => setTimeout(r, 300));
     expect(audit).toEqual([]);
     expect(await rankDef()).not.toHaveProperty('storage');
-    expect(await healthLines()).toEqual([]);
+    expect((await health()).warnings.filter((w) => w.includes('pending promotion'))).toEqual([]);
   });
 
   it('substrate-admin promote-fields reaches the route', async () => {
@@ -301,6 +335,56 @@ describe.skipIf(!POSTGRES_URL)('pending runtime fields, seen and promoted', () =
         reader.release();
       }
       expect(await stateOf(ns, 'weight')).toBe('pending');
+    });
+
+    it('a field added in code reaches column at boot, without waiting for an interval', async () => {
+      const name = `apps/substrate-boot-sweep-${hex()}`;
+      const url = pgTestSchemaUrl(POSTGRES_URL as string, name);
+      const own = postgres(url, { max: 2, onnotice: () => {} });
+      await own.unsafe(`CREATE SCHEMA ${pgTestSchemaName(name)}`);
+      const config = parseEnv({
+        SUBSTRATE_DATABASE_URL: url,
+        SUBSTRATE_SYSTEM_ACTOR: 'boot-sweep'
+      });
+      try {
+        // Migrate the fresh schema, starting nothing in the background.
+        await (
+          await bootStore({ config, pluginDir: null, layout: 'tables', background: false })
+        ).close();
+        const ns = 'kbootsweep';
+        const nsDefs = new Map<string, NamespaceDefinition>([
+          [ns, itemDef({ title: field.string() })]
+        ]);
+        const ds = new PgDataset({
+          namespace: ns,
+          sql: own,
+          typeDefLookup: makeTypeDefLookupFactory(nsDefs)(ns)
+        });
+        await ds.write('Item', [{ title: 'a', size: 2 }]);
+        nsDefs.set(ns, itemDef({ title: field.string(), size: field.number() }));
+        await ds.ensureTypeStorage('Item');
+        const state = async () =>
+          (
+            await own<Array<{ state: string }>>`
+              SELECT state FROM substrate_type_fields
+              WHERE namespace = ${ns} AND type = 'Item' AND field = 'size'`
+          )[0]?.state;
+        expect(await state()).toBe('promoting');
+        // SUBSTRATE_PROMOTE_INTERVAL_MS is its 6 h default: only the boot sweep can do this.
+        const booted = await bootStore({ config, pluginDir: null, layout: 'tables' });
+        try {
+          const deadline = Date.now() + 10_000;
+          while ((await state()) !== 'column' && Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 50));
+          }
+          expect(await state()).toBe('column');
+        } finally {
+          await booted.close();
+        }
+      } finally {
+        await own.unsafe(`DROP SCHEMA IF EXISTS ${pgTestSchemaName(name)} CASCADE`);
+        await own.end({ timeout: 5 });
+      }
     });
 
     it('a kind change in code refuses the boot, naming FieldKindChangedError', async () => {

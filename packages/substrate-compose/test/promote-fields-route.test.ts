@@ -50,7 +50,7 @@ class SweepingDataset extends MemoryDataset {
   calls: Array<{ lockTimeoutMs: number; batchRows: number; signal?: AbortSignal }> = [];
   hold = false;
   warnings: () => Promise<string[]> = async () => [
-    `${NS}/Note.size is pending: held in jsonb until promoted (attempt 1)`
+    '1 field pending promotion — see the storage report'
   ];
 
   async promotePendingFields(opts: {
@@ -98,17 +98,15 @@ async function boot(dataset: SweepingDataset, intervalMs = 0) {
     streamTicketSecret: 'promote-fields-ticket',
     promoteFields: { intervalMs }
   });
-  const token = (capabilities: string[]) =>
-    signHs256(
-      { sub: 'op', exp: Math.floor(Date.now() / 1000) + 120, capabilities, ns: ['*'] },
-      SECRET,
-      { kid: 'file' }
-    );
-  const post = (capabilities: string[]) =>
+  const token = (capabilities: string[], ns: string[] = ['*']) =>
+    signHs256({ sub: 'op', exp: Math.floor(Date.now() / 1000) + 120, capabilities, ns }, SECRET, {
+      kid: 'file'
+    });
+  const post = (capabilities: string[], ns?: string[]) =>
     server.inject({
       method: 'POST',
       path: '/substrate/v1/_system/promote-fields',
-      headers: { authorization: `Bearer ${token(capabilities)}` }
+      headers: { authorization: `Bearer ${token(capabilities, ns)}` }
     });
   const get = (path: string) =>
     server.inject({
@@ -153,6 +151,17 @@ describe('POST /substrate/v1/_system/promote-fields', () => {
     const { post } = await boot(dataset);
     expect((await post(['read', 'mutate'])).status).toBe(403);
     expect(dataset.calls).toHaveLength(0);
+  });
+
+  it('needs admin held store-wide: an admin of one namespace is refused, a * admin runs it', async () => {
+    const dataset = new SweepingDataset({ namespace: 'default' });
+    const { post } = await boot(dataset);
+    const scoped = await post(['admin', 'read'], [NS]);
+    expect(scoped.status).toBe(403);
+    expect(json(scoped)).toEqual({ code: 'forbidden', required: '*:admin' });
+    expect(dataset.calls).toHaveLength(0);
+    expect((await post(['admin'], ['*'])).status).toBe(200);
+    expect(dataset.calls).toHaveLength(1);
   });
 
   it('runs one sweep and answers its events; promoted and failed are audited and announced, busy is not', async () => {
@@ -212,9 +221,7 @@ describe('field warnings and pending fields on the read surfaces', () => {
     const { get } = await boot(dataset);
     const body = json(await get('/health'));
     expect(body.status).toBe('ok');
-    expect(body.warnings).toEqual([
-      `${NS}/Note.size is pending: held in jsonb until promoted (attempt 1)`
-    ]);
+    expect(body.warnings).toEqual(['1 field pending promotion — see the storage report']);
     dataset.warnings = async () => {
       throw new Error('catalog down');
     };
