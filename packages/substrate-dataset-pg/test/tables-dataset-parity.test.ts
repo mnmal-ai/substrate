@@ -551,6 +551,20 @@ describe.skipIf(!POSTGRES_URL)('PgDataset on type tables vs memory', () => {
     ]);
   });
 
+  it('a warm walk read and its index plan issue no catalog statement', async () => {
+    await seed();
+    const catalog = () =>
+      statements.filter((q) => /substrate_type_tables|substrate_type_fields/.test(q));
+    const walk = { where: { _walk: { out: 'owner', where: { name: { eq: 'Ann' } } } } };
+    await pg.read('Item', walk);
+    await pg.indexPlan('Item', NS);
+    statements = [];
+    await pg.read('Item', walk);
+    expect(await pg.indexPlan('Person', NS)).toBeDefined();
+    await pg.indexPlan('Item', NS);
+    expect(catalog()).toEqual([]);
+  });
+
   it('a UUID-check migration applied while running reaches the tables created after it', async () => {
     // A pool of its own, so the check it caches never reaches this suite's tables.
     const own = postgres(POSTGRES_URL as string, { onnotice: () => {} });

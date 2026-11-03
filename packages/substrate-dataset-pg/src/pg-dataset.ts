@@ -408,9 +408,9 @@ export class PgDataset implements Dataset {
    * migrated). Cached per pool (see `TableCache`); inside a transaction, in
    * the transaction's own map until it commits.
    */
-  async #tableFor(type: string): Promise<TypeTable | undefined> {
+  async #tableFor(type: string, namespace = this.namespace): Promise<TypeTable | undefined> {
     if ((await this.#layout()) === 'absent') return undefined;
-    const key = `${this.namespace}/${type}`;
+    const key = `${namespace}/${type}`;
     const local = this.#txTables?.get(key);
     if (local !== undefined) return local.table;
     const cache = this.#tableCache;
@@ -421,7 +421,7 @@ export class PgDataset implements Dataset {
     // its notification lands.
     if (hit !== undefined && (hit !== null || !this.#inTx)) return hit ?? undefined;
     const gen = cache.gen;
-    const table = await loadTypeTable(this.#sql, this.namespace, type);
+    const table = await loadTypeTable(this.#sql, namespace, type);
     // A miss is cached too, so a never-written type reads without a catalog
     // query; its creation's notification drops it, as it drops a table.
     this.#remember(key, table ?? null, gen, listening);
@@ -1943,8 +1943,9 @@ export class PgDataset implements Dataset {
   async indexPlan(type: string, namespace: string): Promise<IndexPlan | undefined> {
     const def = this.#typeDefLookup?.(type, namespace);
     if (def === undefined || (await this.#layout()) === 'absent') return undefined;
-    // An index over a field not yet `column` serves no read.
-    const table = await loadTypeTable(this.#sql, namespace, type);
+    // An index over a field not yet `column` serves no read. Every walk read asks (its
+    // plan diagnostics), so through the TableCache like the read itself.
+    const table = await this.#tableFor(type, namespace);
     return {
       indexes: desiredIndexKeys({
         ...this.#indexArgs(type, namespace),
