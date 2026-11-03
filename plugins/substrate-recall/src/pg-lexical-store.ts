@@ -7,7 +7,7 @@
  * arm after it has stopped surfacing through the dense one.
  */
 
-import { detectLayout, type TypeTableRef, typeTableRef } from '@mnmal-ai/substrate-dataset-pg';
+import { cachedLayout, type TypeTableRef, typeTableRef } from '@mnmal-ai/substrate-dataset-pg';
 import type postgres from 'postgres';
 import type {
   LexicalStore,
@@ -76,7 +76,7 @@ export class PgLexicalStore implements LexicalStore {
    * @returns number of orphaned lexical rows deleted.
    */
   async purgeOrphans(): Promise<number> {
-    if ((await detectLayout(this.#sql)) === 'tables') {
+    if ((await cachedLayout(this.#sql)) === 'tables') {
       return purgeTypeTableOrphans(this.#sql, 'lexical');
     }
     const result = await this.#sql`

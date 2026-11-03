@@ -9,7 +9,12 @@
  * the row `dataset.read` returns.
  */
 
-import { type PgHandle, type TypeTableRef, typeTableRef } from '@mnmal-ai/substrate-dataset-pg';
+import {
+  type PgHandle,
+  type TypeTableRef,
+  typeTableRef,
+  whileNoTypeTable
+} from '@mnmal-ai/substrate-dataset-pg';
 import type postgres from 'postgres';
 import type { Sql } from 'postgres';
 import { type KnnRowFilter, ROW_FILTER_FIELD } from './embeddings-store.js';
@@ -116,6 +121,20 @@ export async function purgeTypeTableOrphans(
     SELECT DISTINCT row_namespace AS namespace, row_type AS type FROM ${sql(table)}`;
   let deleted = 0;
   for (const scope of await scopedRefs(sql, types)) {
+    if (scope.ref === undefined) {
+      // Under the type-table lock, re-checked: a first write that created the
+      // table since the refs loaded must not lose the entries it has just made.
+      // Such a type's orphans wait for the next sweep.
+      const result = await whileNoTypeTable(
+        sql,
+        scope.namespace,
+        scope.type,
+        (tx) => tx`DELETE FROM ${tx(table)}
+          WHERE row_namespace = ${scope.namespace} AND row_type = ${scope.type}`
+      );
+      deleted += result?.count ?? 0;
+      continue;
+    }
     const result = await sql`
       DELETE FROM ${sql(table)} o
       WHERE o.row_namespace = ${scope.namespace}

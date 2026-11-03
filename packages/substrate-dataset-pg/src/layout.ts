@@ -24,6 +24,21 @@ export async function detectLayout(sql: Sql): Promise<StorageLayout | 'absent'> 
   return found.length > 0 ? 'tables' : 'absent';
 }
 
+/** Each handle's layout, once it has one: a store keeps the layout it was created with. */
+const layouts = new WeakMap<object, StorageLayout>();
+
+/**
+ * {@link detectLayout}, cached per handle. `'absent'` is not cached, since a
+ * handle may be made before the migrations run.
+ */
+export async function cachedLayout(sql: Sql): Promise<StorageLayout | 'absent'> {
+  const known = layouts.get(sql);
+  if (known !== undefined) return known;
+  const layout = await detectLayout(sql);
+  if (layout !== 'absent') layouts.set(sql, layout);
+  return layout;
+}
+
 /** pg's identifier limit, in bytes. */
 export const MAX_IDENTIFIER = 63;
 

@@ -7,7 +7,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { PgDataset } from '@mnmal-ai/substrate-dataset-pg';
+import { ensureTypeTable, loadTypeTable, PgDataset } from '@mnmal-ai/substrate-dataset-pg';
 import type { FieldDef, Row } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -297,6 +297,128 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('recall rows on type tables equal data
     }
   });
 
+  it('a multi-type fetchEmbeddings looks each id up in its own type only', async () => {
+    await ds.write('Doc', [
+      { id: 'd1', title: 'doc one' },
+      { id: 'd2', title: 'doc two' }
+    ]);
+    // `d1` is an id of both types, with different rows.
+    await ds.write('Other', [
+      { id: 'o1', a: 'other one' },
+      { id: 'd1', a: 'other d1' }
+    ]);
+    await index('Doc', ['d1', 'd2']);
+    await index('Other', ['o1', 'd1']);
+    const ids = [
+      { namespace: NS, type: 'Doc', id: 'd1' },
+      { namespace: NS, type: 'Other', id: 'o1' },
+      { namespace: NS, type: 'Doc', id: 'd2' },
+      { namespace: NS, type: 'Other', id: 'd1' },
+      { namespace: NS, type: 'Other', id: 'missing' },
+      { namespace: NS, type: 'Never', id: 'n1' }
+    ];
+    const fetched = await emb.fetchEmbeddings(ids, MODEL);
+    const got = Object.fromEntries(fetched.map((f) => [`${f.type}/${f.id}`, f.row]));
+    const docs = await datasetRows('Doc', ['d1', 'd2']);
+    const others = await datasetRows('Other', ['o1', 'd1']);
+    expect(got).toEqual({
+      'Doc/d1': docs.d1,
+      'Doc/d2': docs.d2,
+      'Other/o1': others.o1,
+      'Other/d1': others.d1
+    });
+  });
+
+  it('a cached descriptor costs no catalog query, and a field added or orphaned elsewhere shows once its notification lands', async () => {
+    const statements: string[] = [];
+    const watched = postgres(POSTGRES_URL as string, {
+      onnotice: () => {},
+      debug: (_c, q) => {
+        statements.push(q);
+      }
+    });
+    // Another process's pool, with a dataset of its own: its catalog changes reach `watched` by notification only.
+    const other = postgres(POSTGRES_URL as string, { onnotice: () => {} });
+    try {
+      const otherDs = new PgDataset({ namespace: NS, sql: other, fieldDefLookup, typeDefLookup });
+      const store = new PgEmbeddingsStore({ sql: watched });
+      const knn = async () =>
+        Object.fromEntries(
+          (
+            await store.knnSearch({
+              namespace: NS,
+              type: 'Gone',
+              model: MODEL,
+              vector: query,
+              k: 9
+            })
+          ).map((h) => [String(h.row.id), h.row])
+        );
+      const fresh = async () => byId((await otherDs.read('Gone', { ids: ['g1'] })).rows);
+
+      await otherDs.write('Gone', [{ id: 'g1', keep: 'k', drop: 5 }]);
+      await index('Gone', ['g1']);
+      expect(await knn()).toEqual(await fresh());
+      statements.length = 0;
+      expect(await knn()).toEqual(await fresh());
+      expect(statements.filter((s) => /pg_class|substrate_type_/.test(s))).toEqual([]);
+
+      // Orphaned: a new write lands in `extra`, which a stale `column` descriptor would drop.
+      defs.Gone = { fields: { keep: str } };
+      await otherDs.ensureTypeStorage('Gone');
+      await otherDs.write('Gone', [{ id: 'g1', drop: 6 }]);
+      expect((await fresh()).g1?.drop).toBe(6);
+      await expect.poll(knn, { timeout: 5000 }).toEqual(await fresh());
+
+      // Added: a new field's column, which a stale descriptor has no column for.
+      defs.Gone = { fields: { keep: str, n2: num } };
+      await otherDs.ensureTypeStorage('Gone');
+      await otherDs.write('Gone', [{ id: 'g1', n2: 3 }]);
+      expect((await fresh()).g1?.n2).toBe(3);
+      await expect.poll(knn, { timeout: 5000 }).toEqual(await fresh());
+    } finally {
+      await watched.end({ timeout: 5 });
+      await other.end({ timeout: 5 });
+    }
+  });
+
+  it('purgeOrphans keeps the entries of a type whose first write lands while it runs', async () => {
+    const at = { rowNamespace: NS, rowType: 'Late', rowId: 'l1' };
+    await emb.upsert({ ...at, vector: near(0.1), model: MODEL });
+    await lex.upsert({ ...at, text: 'late' });
+    let release = () => {};
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // A first write held open after its CREATE, which holds the type-table lock to its commit.
+    const first = sql.begin(async (tx) => {
+      const args = { namespace: NS, type: 'Late', fields: {}, newFields: 'column' as const };
+      await ensureTypeTable(tx, { ...args, enforceUuidCheck: false });
+      await released;
+      const table = await loadTypeTable(tx, NS, 'Late');
+      await tx`INSERT INTO ${tx.unsafe(table?.from ?? 'missing')} (id, extra)
+        VALUES ('l1', ${tx.json({ id: 'l1' })})`;
+    });
+    const waiters = async () =>
+      Number(
+        (
+          await sql<Array<{ n: number }>>`
+            SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`
+        )[0]?.n
+      );
+    const purges = Promise.all([emb.purgeOrphans(), lex.purgeOrphans()]);
+    // Both sweeps saw no table, and now wait on the first write's lock.
+    await expect.poll(waiters, { timeout: 10_000 }).toBeGreaterThanOrEqual(2);
+    release();
+    await first;
+    await purges;
+    for (const table of ['embeddings', 'lexical']) {
+      const left = await sql`
+        SELECT row_id FROM ${sql(table)} WHERE row_namespace = ${NS} AND row_type = 'Late'`;
+      expect(left.map((r) => r.row_id)).toEqual(['l1']);
+    }
+  });
+
   it('purgeOrphans removes entries of tombstoned and purged rows and of a dropped type', async () => {
     await ds.write('Doc', [{ id: 'live' }, { id: 'tomb' }, { id: 'gone' }]);
     await ds.write('Other', [{ id: 'o1', a: 'x' }]);
@@ -324,8 +446,8 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('recall rows on type tables equal data
 /**
  * Every statement the pg recall stores send on an old layout, against a
  * snapshot taken from the code before type tables: `legacy` writes it, and
- * `partitioned` must match it, so neither layout's recall SQL changed. The
- * layout probe a store now makes first is left out, as it is not recall SQL.
+ * `partitioned` must match it, so neither layout's recall SQL changed, nor its
+ * count. The layout is probed once per handle, before the capture.
  */
 describe.skipIf(!POSTGRES_URL || TABLES)('recall SQL on the old layouts', () => {
   const SNS = 'rtt_snapshot';
@@ -363,6 +485,8 @@ describe.skipIf(!POSTGRES_URL || TABLES)('recall SQL on the old layouts', () => 
     const at = { rowNamespace: SNS, rowType: 'Doc', rowId: 'd1' };
     await emb.upsert({ ...at, vector: near(0.1), model: MODEL });
     await lex.upsert({ ...at, text: 'hello world' });
+    // The handle's one layout probe, before the capture: after it a call makes no query main did not.
+    await lex.countIndexed(SNS, 'Doc');
     statements.length = 0;
 
     const knn = { namespace: SNS, type: 'Doc', model: MODEL, vector: query, k: 5 };
@@ -395,7 +519,7 @@ describe.skipIf(!POSTGRES_URL || TABLES)('recall SQL on the old layouts', () => 
     expect(await lex.countIndexed(SNS, 'Doc')).toBe(1);
     await lex.purgeOrphans();
 
-    const recallSql = statements.filter((s) => !s.includes('pg_class'));
-    expect(recallSql).toMatchSnapshot();
+    // Unfiltered: the same statements as main, and as many.
+    expect(statements).toMatchSnapshot();
   });
 });
