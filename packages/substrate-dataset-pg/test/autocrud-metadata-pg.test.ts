@@ -20,7 +20,7 @@ import type {
 import postgres, { type Sql } from 'postgres';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { PgDataset, runMigrations } from '../src/index.js';
-import { dropNamespace, rowsWhere, TABLES } from './_layout.js';
+import { dropNamespace, rowsWhere } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 
@@ -63,11 +63,10 @@ describe.skipIf(!POSTGRES_URL)('PG dataset autocrud update round-trip (regressio
 
   beforeEach(async () => {
     sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
-    // A fresh store: `rows` re-created, or on `tables` this namespace's tables dropped.
-    if (TABLES) await dropNamespace(sql, 'test');
-    else await sql`DROP TABLE IF EXISTS rows CASCADE`;
+    // A fresh store: this namespace's tables dropped.
+    await dropNamespace(sql, 'test');
     // `force: true` drops the migration-tracking table so the framework
-    // re-applies every migration on this call, recreating rows.
+    // re-applies every migration on this call.
     await runMigrations(sql, { force: true });
     ds = new PgDataset({ namespace: 'test', sql });
   });
@@ -111,7 +110,7 @@ describe.skipIf(!POSTGRES_URL)('PG dataset autocrud update round-trip (regressio
       }[]
     >(
       `SELECT created_at, updated_at, created_by_kind, created_by_id,
-              updated_by_kind, updated_by_id, ${TABLES ? 'extra' : 'body'} AS body
+              updated_by_kind, updated_by_id, extra AS body
        FROM ${await rowsWhere(sql, 'test', 'Thing')} id = 'r1'`
     );
 
@@ -177,7 +176,7 @@ describe.skipIf(!POSTGRES_URL)('PG dataset autocrud update round-trip (regressio
         body: Record<string, unknown>;
       }[]
     >(
-      `SELECT created_at, updated_at, created_by_id, updated_by_id, ${TABLES ? 'extra' : 'body'} AS body
+      `SELECT created_at, updated_at, created_by_id, updated_by_id, extra AS body
        FROM ${await rowsWhere(sql, 'test', 'Thing')} id = 'r3'`
     );
 

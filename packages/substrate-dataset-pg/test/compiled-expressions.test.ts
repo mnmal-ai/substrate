@@ -1,5 +1,5 @@
 /**
- * The SQL text the filter compiler emits for body fields. Expression indexes
+ * The SQL text the filter compiler emits for fields held in `extra`. Expression indexes
  * only serve a filter whose expression matches theirs, so field names are
  * inlined literals (never bind parameters), numbers and dates go through the
  * safe casts, and text compares under one collation.
@@ -20,7 +20,7 @@ import {
   indexExpressionSql
 } from '../src/pg-sql/primitives.js';
 import { buildWhere } from '../src/pg-sql.js';
-import { rowsTypeTable } from '../src/type-table.js';
+import { bareTypeTable } from './_layout.js';
 
 const sql = postgres('postgres://nobody@127.0.0.1:1/none');
 afterAll(() => sql.end());
@@ -56,45 +56,45 @@ const compile = (where: WhereClause): string =>
       sql,
       where,
       (f) => casts[f] ?? null,
-      rowsTypeTable('ns', 'T', () => undefined)
+      bareTypeTable('ns', 'T')
     ) as unknown as QueryParts
   );
 
 describe('compiled body-field expressions', () => {
   it('numbers go through substrate_num with an inlined name', () => {
     const text = compile({ price: { gt: 5 } });
-    expect(text).toContain(`substrate_num(body -> 'price')`);
+    expect(text).toContain(`substrate_num(extra -> 'price')`);
     expect(text).not.toMatch(/->>? \$/);
   });
 
   it('declared dates go through substrate_ts', () => {
     const text = compile({ at: { gte: '2026-10-24T00:00:00Z' } });
-    expect(text).toContain(`substrate_ts(body -> 'at')`);
+    expect(text).toContain(`substrate_ts(extra -> 'at')`);
     expect(text).not.toMatch(/->>? \$/);
   });
 
   it('text eq and ranges share one collated expression', () => {
     for (const where of [{ title: { eq: 'x' } }, { title: { between: ['a', 'b'] } }]) {
       const text = compile(where as WhereClause);
-      expect(text).toContain(`((body ->> 'title') COLLATE "C")`);
+      expect(text).toContain(`((extra ->> 'title') COLLATE "C")`);
       expect(text).not.toMatch(/->>? \$/);
     }
   });
 
   it('pattern operators stay on the uncollated text', () => {
     const text = compile({ title: { contains: 'x' } });
-    expect(text).toContain(`(body ->> 'title') ILIKE`);
+    expect(text).toContain(`(extra ->> 'title') ILIKE`);
     expect(text).not.toContain('COLLATE');
   });
 
   it('struct paths inline every segment', () => {
     const text = compile({ meta: { region: { eq: 'x' } } } as WhereClause);
-    expect(text).toContain(`((body -> 'meta' ->> 'region') COLLATE "C")`);
+    expect(text).toContain(`((extra -> 'meta' ->> 'region') COLLATE "C")`);
   });
 
   it('json path segments are inlined', () => {
     const text = compile({ values: { path: ['a', 'b'], gt: 1 } } as WhereClause);
-    expect(text).toContain(`(body -> 'values' -> 'a' -> 'b')`);
+    expect(text).toContain(`(extra -> 'values' -> 'a' -> 'b')`);
     expect(text).not.toMatch(/-> \$/);
   });
 
@@ -108,9 +108,9 @@ describe('compiled body-field expressions', () => {
 
   it('indexExpressionSql is the text the compiler emits', () => {
     const r = (f: Fragment): string => render(f as unknown as QueryParts);
-    expect(indexExpressionSql('text', 'f')).toBe(`((body ->> 'f') COLLATE "C")`);
-    expect(indexExpressionSql('number', 'f')).toBe(`substrate_num(body -> 'f')`);
-    expect(indexExpressionSql('date', 'f')).toBe(`substrate_ts(body -> 'f')`);
+    expect(indexExpressionSql('text', 'f')).toBe(`((extra ->> 'f') COLLATE "C")`);
+    expect(indexExpressionSql('number', 'f')).toBe(`substrate_num(extra -> 'f')`);
+    expect(indexExpressionSql('date', 'f')).toBe(`substrate_ts(extra -> 'f')`);
     expect(r(bodyText(sql, ['f']))).toBe(indexExpressionSql('text', 'f'));
     expect(r(bodyNum(sql, ['f']))).toBe(indexExpressionSql('number', 'f'));
     expect(r(bodyTs(sql, ['f']))).toBe(indexExpressionSql('date', 'f'));
@@ -118,6 +118,6 @@ describe('compiled body-field expressions', () => {
     // A backslash takes the E'' form, which reads the same whatever
     // standard_conforming_strings says.
     expect(r(fieldLit(sql, "a\\'b"))).toBe(`E'a\\\\''b'`);
-    expect(indexExpressionSql('text', 'a\\b')).toBe(`((body ->> E'a\\\\b') COLLATE "C")`);
+    expect(indexExpressionSql('text', 'a\\b')).toBe(`((extra ->> E'a\\\\b') COLLATE "C")`);
   });
 });

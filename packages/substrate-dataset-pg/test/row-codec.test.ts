@@ -15,7 +15,6 @@ function tableOf(columns: TypedColumn[], pending: string[] = []): TypeTable {
     type: 'T',
     from: '"t__n__t"',
     jsonb: 'extra',
-    scope: () => null,
     column: (field) => byField.get(field),
     columns: () => columns,
     pending,
@@ -110,6 +109,17 @@ describe('row codec', () => {
       expect(e.raw, due).toEqual({ due });
     }
     expect(encodeRow(TABLE, { due: '0101-01-01T00:00:00.000Z' }).raw).toEqual({});
+  });
+
+  it('a JS Date is written as its JSON text: the column holds the instant, no $raw', () => {
+    const due = new Date('2026-10-26T10:00:00.000Z');
+    expect(encodeRow(TABLE, { due })).toEqual({
+      columns: { f_due: '2026-10-26T10:00:00.000Z' },
+      extra: {},
+      raw: {},
+      clear: [],
+      unset: ['due']
+    });
   });
 
   it('canonical ISO date stores no $raw', () => {

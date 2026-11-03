@@ -27,9 +27,7 @@ describe.skipIf(!POSTGRES_URL)('pg schema isolation', () => {
       const rows = await sql<Array<{ schema: string; path: string }>>`
         SELECT current_schema()::text AS schema, current_setting('search_path') AS path
       `;
-      expect(rows[0]?.schema).toBe(
-        pgTestSchemaName(`substrate-dataset-pg-${process.env.SUBSTRATE_STORAGE_LAYOUT}`)
-      );
+      expect(rows[0]?.schema).toBe(pgTestSchemaName('substrate-dataset-pg'));
       // `public` has to stay reachable: the `vector` type and its `hnsw`
       // operator class live there and resolve by search_path.
       expect(rows[0]?.path).toContain('public');

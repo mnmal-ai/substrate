@@ -22,7 +22,7 @@ import type {
 import { unresolvedRow } from './row-visibility.js';
 
 /**
- * Resolves a row body, mirroring pg's join against `rows`.
+ * Resolves a row body, mirroring pg's join against the type's table.
  *
  * Signature matches `InMemoryEmbeddingsStoreOptions.datasetFor` deliberately:
  * a host wires both from the same registry lookup.

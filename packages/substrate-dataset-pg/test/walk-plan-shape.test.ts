@@ -16,10 +16,10 @@ import type { FieldDef, IndexDecl, ReadParams, WhereClause } from '@mnmal-ai/sub
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset } from '../src/index.js';
+import { dropNamespace, relationOf } from './_layout.js';
 import { walkComparers } from './_walk-helpers.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
-const PARTITIONED = process.env.SUBSTRATE_TEST_LAYOUT === 'partitioned';
 const NS = `wshape_${randomBytes(4).toString('hex')}`;
 
 const num: FieldDef = { kind: 'scalar', type: 'number' };
@@ -144,7 +144,7 @@ const { same, sameResult } = walkComparers(
 );
 
 beforeAll(async () => {
-  if (!POSTGRES_URL || !PARTITIONED) return;
+  if (!POSTGRES_URL) return;
   sql = postgres(POSTGRES_URL, { onnotice: () => {} });
   const traced = postgres(POSTGRES_URL, {
     onnotice: () => {},
@@ -164,12 +164,13 @@ beforeAll(async () => {
     await ds.write('Hub', [{ id: u('h_dead'), ask: 0 }] as never);
     await ds.tombstone('Hub', [u('h_dead')]);
   }
-  await sql`ANALYZE rows`;
+  for (const type of Object.keys(TYPES))
+    await sql.unsafe(`ANALYZE ${await relationOf(sql, NS, type)}`);
 }, 120_000);
 
 afterAll(async () => {
-  if (!POSTGRES_URL || !PARTITIONED) return;
-  await sql`DELETE FROM rows WHERE namespace = ${NS}`;
+  if (!POSTGRES_URL) return;
+  await dropNamespace(sql, NS);
   await sql.end({ timeout: 5 });
 });
 
@@ -178,7 +179,7 @@ const nodes = (n: PlanNode): PlanNode[] => [n, ...(n.Plans ?? []).flatMap(nodes)
 
 /** `EXPLAIN (ANALYZE)` of the page statement the last read sent, as a custom plan. */
 async function analyzed(): Promise<PlanNode[]> {
-  const page = [...sent].reverse().find((s) => /FROM rows r/.test(s.query));
+  const page = [...sent].reverse().find((s) => /FROM "t__[^"]+" r\b/.test(s.query));
   if (page === undefined) throw new Error('no page statement was sent');
   const conn = await sql.reserve();
   try {
@@ -233,7 +234,7 @@ const IN = `${NS}/Nbr.hub`;
 const OBS = `${NS}/Obs.hub`;
 const HUBS = 10;
 
-/** The scans of one far type's rows: its partition, `rows__<ns>__<type>` folded, then hashed. */
+/** The scans of one far type's rows: its table, `t__<ns>__<type>` folded, then hashed. */
 const scansOf = (plan: PlanNode[], type: string) => {
   const partition = new RegExp(`__${type.toLowerCase()}(_[0-9a-f]{8})?$`);
   return walkScans(plan).filter((n) => partition.test(String(n['Relation Name'])));
@@ -242,7 +243,7 @@ const scansOf = (plan: PlanNode[], type: string) => {
 const loopsOf = (plan: PlanNode[], type: string) =>
   scansOf(plan, type).reduce((n, s) => n + Number(s['Actual Loops']), 0);
 
-describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk plan shapes (pg)', () => {
+describe.skipIf(!POSTGRES_URL)('walk plan shapes (pg)', () => {
   it('a pick is an index probe in either index direction, ties and nulls as memory', async () => {
     // Latest by `at` on the ascending index; max and min price on the descending one.
     for (const pick of [{ latest: 'at' }, { max: 'price' }, { min: 'price' }]) {

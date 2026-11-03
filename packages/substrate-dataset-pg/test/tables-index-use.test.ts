@@ -13,7 +13,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset } from '../src/index.js';
 import { generatedIdentifier } from '../src/migrate.js';
 import { loadTypeTable } from '../src/type-table.js';
-import { dropNamespace, TABLES } from './_layout.js';
+import { dropNamespace } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const NS = `tiu_${randomBytes(4).toString('hex')}`;
@@ -45,7 +45,7 @@ function indexesUsed(node: PlanNode, out: string[] = []): string[] {
   return out;
 }
 
-describe.skipIf(!POSTGRES_URL || !TABLES)('index use on a type table', () => {
+describe.skipIf(!POSTGRES_URL)('index use on a type table', () => {
   beforeAll(async () => {
     sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
     traced = postgres(POSTGRES_URL as string, {

@@ -101,6 +101,36 @@ export interface KernelComposeContext {
   background?: boolean;
 }
 
+/**
+ * A kernel migration ran DDL on `rows`, which a store on per-type tables does
+ * not have (pg 42P01). The plugin predates the `tables` layout and must be
+ * upgraded before this store boots with it.
+ */
+export class KernelMigrationLayoutError extends Error {
+  override readonly name = 'KernelMigrationLayoutError';
+
+  constructor(
+    readonly plugin: string,
+    readonly id: string,
+    options?: { cause?: unknown }
+  ) {
+    super(
+      `kernel plugin ${plugin}: migration ${id} needs the \`rows\` table, which a store on per-type ` +
+        `tables does not have. Upgrade ${plugin} to a release whose migrations support the tables layout, then boot.`,
+      options
+    );
+  }
+}
+
+/** pg's undefined_table on `rows`, schema-qualified or not, as postgres.js reports it. */
+const isRowsMissing = (err: unknown): boolean => {
+  const e = err as { code?: unknown; message?: unknown } | null;
+  // Bare or schema-qualified: `relation "rows"` or `relation "public.rows"`.
+  return (
+    e?.code === '42P01' && typeof e.message === 'string' && /"(?:[^".]+\.)?rows"/.test(e.message)
+  );
+};
+
 export async function composeKernelPlugins(
   plugins: KernelPlugin[],
   ctx: KernelComposeContext
@@ -113,7 +143,14 @@ export async function composeKernelPlugins(
           ctx.metric('kernel.migration_skipped', { plugin: plugin.name, id: migration.id });
           continue;
         }
-        await migration.apply({ sql: ctx.sql, layout: ctx.layout, metric: ctx.metric });
+        try {
+          await migration.apply({ sql: ctx.sql, layout: ctx.layout, metric: ctx.metric });
+        } catch (err) {
+          if (isRowsMissing(err)) {
+            throw new KernelMigrationLayoutError(plugin.name, migration.id, { cause: err });
+          }
+          throw err;
+        }
         await ctx.applyMigration(plugin.name, migration.id);
       }
     }

@@ -12,9 +12,9 @@ import type { FieldDef, IndexDecl, ReadParams, ReadResult } from '@mnmal-ai/subs
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset } from '../src/index.js';
+import { dropNamespace } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
-const PARTITIONED = process.env.SUBSTRATE_TEST_LAYOUT === 'partitioned';
 const NS = `wplan_${randomBytes(4).toString('hex')}`;
 
 const ref = (type: string, extra: Partial<FieldDef> = {}): FieldDef =>
@@ -38,7 +38,7 @@ let pg: PgDataset;
 let engine: Engine;
 
 beforeAll(async () => {
-  if (!POSTGRES_URL || !PARTITIONED) return;
+  if (!POSTGRES_URL) return;
   sql = postgres(POSTGRES_URL, { onnotice: () => {} });
   pg = new PgDataset({
     namespace: NS,
@@ -69,12 +69,12 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (!POSTGRES_URL || !PARTITIONED) return;
-  await sql`DELETE FROM rows WHERE namespace = ${NS}`;
+  if (!POSTGRES_URL) return;
+  await dropNamespace(sql, NS);
   await sql.end({ timeout: 5 });
 });
 
-describe.skipIf(!POSTGRES_URL || !PARTITIONED)('walk plan from pg indexPlan', () => {
+describe.skipIf(!POSTGRES_URL)('walk plan from pg indexPlan', () => {
   it('marks hops, declared and derived index service, and recommends the missing index', async () => {
     const OBS = `${NS}/Observation.cert`;
     const key = `${NS}/Cert`;

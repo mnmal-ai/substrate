@@ -17,7 +17,7 @@
 import postgres, { type Sql } from 'postgres';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { PgDataset, runMigrations } from '../src/index.js';
-import { dropNamespace, TABLES } from './_layout.js';
+import { dropNamespace } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 
@@ -27,9 +27,8 @@ describe.skipIf(!POSTGRES_URL)('PG dataset orderBy + cursor on shortId sidecar',
 
   beforeEach(async () => {
     sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
-    // A fresh store: `rows` re-created, or on `tables` this namespace's tables dropped.
-    if (TABLES) await dropNamespace(sql, 'test');
-    else await sql`DROP TABLE IF EXISTS rows CASCADE`;
+    // A fresh store: this namespace's tables dropped.
+    await dropNamespace(sql, 'test');
     await sql`DROP TABLE IF EXISTS short_ids CASCADE`;
     await runMigrations(sql, { force: true });
     ds = new PgDataset({ namespace: 'test', sql });

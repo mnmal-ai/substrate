@@ -1,8 +1,7 @@
 /**
  * Cross-dataset walk parity (spec 2026-10-24-typed-edge-walks §4): every case
  * reads the two named fixtures through pg and the memory reference, expects
- * the same answer from both, and checks that answer. Walks need the
- * partitioned layout, so the legacy pass only proves the refusal.
+ * the same answer from both, and checks that answer.
  */
 
 import { createHash, randomBytes } from 'node:crypto';
@@ -14,13 +13,12 @@ import {
   type ReadParams,
   type Row,
   WALK_BUDGET_EXCEEDED,
-  WALKS_NEED_PARTITIONED,
   type WhereClause
 } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset } from '../src/index.js';
-import { dropNamespace, TABLES } from './_layout.js';
+import { dropNamespace } from './_layout.js';
 import { walkComparers } from './_walk-helpers.js';
 import {
   CARDS,
@@ -32,8 +30,6 @@ import {
 } from './fixtures/walk-fixtures.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
-/** Walks run on the partitioned and `tables` layouts; legacy refuses them. */
-const WALK_LAYOUT = process.env.SUBSTRATE_TEST_LAYOUT === 'partitioned' || TABLES;
 const NS = `wpar_${randomBytes(4).toString('hex')}`;
 const SCHEMA = walkSchema(NS);
 const fieldDefLookup = (type: string, field: string): FieldDef | undefined =>
@@ -363,14 +359,7 @@ const mustAgree: Array<[string, string, ReadParams, Expected]> = [
 ];
 
 /** [name, where it is raised, type, params, code]: only codes a dataset raises. */
-const mustRefuse: Array<[string, 'legacy pg' | 'memory budget', string, ReadParams, string]> = [
-  [
-    'a walk on a legacy store',
-    'legacy pg',
-    'Cert',
-    { where: CARD_YARDSTICK },
-    WALKS_NEED_PARTITIONED
-  ],
+const mustRefuse: Array<[string, 'memory budget', string, ReadParams, string]> = [
   [
     'the card yardstick over a lowered budget',
     'memory budget',
@@ -391,7 +380,6 @@ beforeAll(async () => {
   if (!POSTGRES_URL) return;
   sql = postgres(POSTGRES_URL, { onnotice: () => {} });
   pg = new PgDataset({ namespace: NS, sql, fieldDefLookup, typeDefLookup });
-  if (!WALK_LAYOUT) return;
   for (const type of Object.keys(SCHEMA)) await pg.ensureTypeStorage(type);
   for (const [type, rows] of Object.entries({ ...CARDS, ...RUNS })) {
     await pg.write(type, fx(rows) as never);
@@ -406,14 +394,7 @@ afterAll(async () => {
   await sql.end({ timeout: 5 });
 });
 
-describe.skipIf(!POSTGRES_URL || WALK_LAYOUT)('walk parity, legacy pass (pg)', () => {
-  it.each(mustRefuse.filter((c) => c[1] === 'legacy pg'))('%s refuses', async (...c) => {
-    const [, , type, params, code] = c;
-    await expect(pg.read(type, params)).rejects.toMatchObject({ code });
-  });
-});
-
-describe.skipIf(!POSTGRES_URL || !WALK_LAYOUT)('walk parity across memory and pg', () => {
+describe.skipIf(!POSTGRES_URL)('walk parity across memory and pg', () => {
   it.each(mustAgree)('%s', async (_name, type, params, expected) => {
     if (params.count === true || params.aggregate !== undefined) {
       expect(await sameResult(type, params)).toMatchObject(expected);

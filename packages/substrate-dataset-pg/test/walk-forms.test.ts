@@ -3,8 +3,7 @@
  * the engine, on pg and on the memory reference side by side: the same frame
  * answers the same on both, the pg plan names the form it compiled, a row
  * policy on the far type refuses the frame alike on both, and a nested list
- * with no orderBy reads in the far type's natural order. Walks need the
- * partitioned layout.
+ * with no orderBy reads in the far type's natural order.
  */
 
 import { createHash, randomBytes } from 'node:crypto';
@@ -22,12 +21,10 @@ import type {
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset } from '../src/index.js';
-import { dropNamespace, TABLES } from './_layout.js';
+import { dropNamespace } from './_layout.js';
 import { strip } from './_walk-helpers.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
-/** Walks run on the partitioned and `tables` layouts; legacy refuses them. */
-const WALK_LAYOUT = process.env.SUBSTRATE_TEST_LAYOUT === 'partitioned' || TABLES;
 const NS = `wform_${randomBytes(4).toString('hex')}`;
 
 const num: FieldDef = { kind: 'scalar', type: 'number' };
@@ -127,7 +124,7 @@ let onPg: Engine;
 let onMem: Engine;
 
 beforeAll(async () => {
-  if (!POSTGRES_URL || !WALK_LAYOUT) return;
+  if (!POSTGRES_URL) return;
   sql = postgres(POSTGRES_URL, { onnotice: () => {} });
   const pg = new PgDataset({ namespace: NS, sql, fieldDefLookup, typeDefLookup: typeDef });
   for (const type of Object.keys(TYPES)) await pg.ensureTypeStorage(type);
@@ -136,13 +133,12 @@ beforeAll(async () => {
     await pg.write(type, rows as never);
     await mem.write(type, rows as never);
   }
-  if (!TABLES) await sql`ANALYZE rows`;
   onPg = engineOver(pg);
   onMem = engineOver(mem);
 }, 120_000);
 
 afterAll(async () => {
-  if (!POSTGRES_URL || !WALK_LAYOUT) return;
+  if (!POSTGRES_URL) return;
   await dropNamespace(sql, NS);
   await sql.end({ timeout: 5 });
 });
@@ -211,84 +207,81 @@ const WINDOW = {
   }
 };
 
-describe.skipIf(!POSTGRES_URL || !WALK_LAYOUT)(
-  'walk forms through the engine (pg = memory)',
-  () => {
-    it('a shared pick: per-hub on a count and a page of every seed, per-seed on a short page', async () => {
-      const path = ['where', '_walk', 'where', '_walk'];
-      const count = await both('Seed', { params: { count: true, where: HUB_PICK } });
-      expect(formAt(count, 'Seed', path)).toBe('per-hub');
-      const all = await both('Seed', {
-        params: { where: HUB_PICK, limit: 5000 },
-        fields: { id: true }
-      });
-      expect(formAt(all, 'Seed', path)).toBe('per-hub');
-      const page = await both('Seed', {
-        params: { where: HUB_PICK, limit: 4 },
-        fields: { id: true }
-      });
-      expect(formAt(page, 'Seed', path)).toBe('per-seed');
-    }, 60_000);
+describe.skipIf(!POSTGRES_URL)('walk forms through the engine (pg = memory)', () => {
+  it('a shared pick: per-hub on a count and a page of every seed, per-seed on a short page', async () => {
+    const path = ['where', '_walk', 'where', '_walk'];
+    const count = await both('Seed', { params: { count: true, where: HUB_PICK } });
+    expect(formAt(count, 'Seed', path)).toBe('per-hub');
+    const all = await both('Seed', {
+      params: { where: HUB_PICK, limit: 5000 },
+      fields: { id: true }
+    });
+    expect(formAt(all, 'Seed', path)).toBe('per-hub');
+    const page = await both('Seed', {
+      params: { where: HUB_PICK, limit: 4 },
+      fields: { id: true }
+    });
+    expect(formAt(page, 'Seed', path)).toBe('per-seed');
+  }, 60_000);
 
-    it('a window: group-by for every seed, per-seed for a short page, the same answers', async () => {
-      const all = await both('Hub', WINDOW);
-      for (const n of ['n', 'avg', 'hi']) {
-        expect(formAt(all, 'Hub', ['fields', '_agg', n])).toBe('group-by');
-      }
-      const page = await both('Hub', { ...WINDOW, params: { ...WINDOW.params, limit: 2 } });
-      expect(formAt(page, 'Hub', ['fields', '_agg', 'n'])).toBe('per-seed');
-      // An empty window.
-      const none = { at: { gte: day(30) } };
-      await both('Hub', {
-        params: { where: { _walk: { in: OBS, where: none } }, limit: 5000 },
-        fields: { id: true, _agg: { n: { in: OBS, where: none, count: true } } }
-      });
-    }, 60_000);
+  it('a window: group-by for every seed, per-seed for a short page, the same answers', async () => {
+    const all = await both('Hub', WINDOW);
+    for (const n of ['n', 'avg', 'hi']) {
+      expect(formAt(all, 'Hub', ['fields', '_agg', n])).toBe('group-by');
+    }
+    const page = await both('Hub', { ...WINDOW, params: { ...WINDOW.params, limit: 2 } });
+    expect(formAt(page, 'Hub', ['fields', '_agg', 'n'])).toBe('per-seed');
+    // An empty window.
+    const none = { at: { gte: day(30) } };
+    await both('Hub', {
+      params: { where: { _walk: { in: OBS, where: none } }, limit: 5000 },
+      fields: { id: true, _agg: { n: { in: OBS, where: none, count: true } } }
+    });
+  }, 60_000);
 
-    it('a row policy on the far type refuses the shared forms alike on both', async () => {
-      const rowPolicy: Policy = () => ({
-        allow: true,
-        obligations: [{ kind: 'row-filter', predicate: () => true } as never]
+  it('a row policy on the far type refuses the shared forms alike on both', async () => {
+    const rowPolicy: Policy = () => ({
+      allow: true,
+      obligations: [{ kind: 'row-filter', predicate: () => true } as never]
+    });
+    try {
+      policies.Sale = rowPolicy;
+      const pick = await both('Seed', { params: { count: true, where: HUB_PICK } });
+      expect(pick.errors?.[0]?.code).toBe('row_policy_blocks_walk');
+      policies.Sale = undefined;
+      policies.Obs = rowPolicy;
+      const window = await both('Hub', WINDOW);
+      expect(window.errors?.[0]?.code).toBe('row_policy_blocks_walk');
+      policies.Obs = undefined;
+      policies.Lst = rowPolicy;
+      const list = await both('Hub', {
+        params: {},
+        fields: { id: true, top: { _walk: { in: `${NS}/Lst.hub` }, fields: { rank: true } } }
       });
-      try {
-        policies.Sale = rowPolicy;
-        const pick = await both('Seed', { params: { count: true, where: HUB_PICK } });
-        expect(pick.errors?.[0]?.code).toBe('row_policy_blocks_walk');
-        policies.Sale = undefined;
-        policies.Obs = rowPolicy;
-        const window = await both('Hub', WINDOW);
-        expect(window.errors?.[0]?.code).toBe('row_policy_blocks_walk');
-        policies.Obs = undefined;
-        policies.Lst = rowPolicy;
-        const list = await both('Hub', {
-          params: {},
-          fields: { id: true, top: { _walk: { in: `${NS}/Lst.hub` }, fields: { rank: true } } }
-        });
-        expect(list.errors?.[0]?.code).toBe('row_policy_blocks_walk');
-      } finally {
-        for (const t of Object.keys(policies)) policies[t] = undefined;
-      }
-    }, 60_000);
+      expect(list.errors?.[0]?.code).toBe('row_policy_blocks_walk');
+    } finally {
+      for (const t of Object.keys(policies)) policies[t] = undefined;
+    }
+  }, 60_000);
 
-    it("a nested list with no orderBy reads in the far type's natural order, ties by id (#1821)", async () => {
-      for (const limit of [1, 2, 3, 5, 6]) {
-        const env = await both('Hub', {
-          params: {},
-          fields: {
-            id: true,
-            top: { _walk: { in: `${NS}/Lst.hub` }, fields: { rank: true }, limit }
-          }
-        });
-        const h0 = (env.data[key('Hub')] as Row[]).find((r) => names.get(String(r.id)) === 'h0');
-        const ranks = ((h0?.top ?? []) as Array<{ rank: number | null }>).map((l) => l.rank);
-        // rank ascending, the unranked last.
-        expect(ranks).toEqual([0, 0, 1, 1, 2, null].slice(0, limit));
-        expect(h0?._truncated).toEqual(limit < 6 ? { top: true } : undefined);
-        // The plan names that order, served by the eager (hub, rank, id) index.
-        expect(
-          planOf(env, 'Hub').find((c) => c.path.join('.') === 'fields.top.orderBy')
-        ).toMatchObject({ kind: 'order', served: true });
-      }
-    }, 60_000);
-  }
-);
+  it("a nested list with no orderBy reads in the far type's natural order, ties by id (#1821)", async () => {
+    for (const limit of [1, 2, 3, 5, 6]) {
+      const env = await both('Hub', {
+        params: {},
+        fields: {
+          id: true,
+          top: { _walk: { in: `${NS}/Lst.hub` }, fields: { rank: true }, limit }
+        }
+      });
+      const h0 = (env.data[key('Hub')] as Row[]).find((r) => names.get(String(r.id)) === 'h0');
+      const ranks = ((h0?.top ?? []) as Array<{ rank: number | null }>).map((l) => l.rank);
+      // rank ascending, the unranked last.
+      expect(ranks).toEqual([0, 0, 1, 1, 2, null].slice(0, limit));
+      expect(h0?._truncated).toEqual(limit < 6 ? { top: true } : undefined);
+      // The plan names that order, served by the eager (hub, rank, id) index.
+      expect(
+        planOf(env, 'Hub').find((c) => c.path.join('.') === 'fields.top.orderBy')
+      ).toMatchObject({ kind: 'order', served: true });
+    }
+  }, 60_000);
+});

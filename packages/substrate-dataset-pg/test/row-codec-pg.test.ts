@@ -13,7 +13,6 @@ import { decodeRow, encodeRow, RAW_KEY } from '../src/row-codec.js';
 import { ensureTypeTable, loadTypeTable, type TypeTable } from '../src/type-table.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
-const TABLES = process.env.SUBSTRATE_TEST_LAYOUT === 'tables';
 const NS = `rc_${randomBytes(4).toString('hex')}`;
 
 const BASE: Record<string, FieldDef> = {
@@ -48,7 +47,7 @@ const expected = (table: TypeTable, row: Record<string, unknown>) =>
     })
   );
 
-describe.skipIf(!POSTGRES_URL || !TABLES)('row codec through a type table', () => {
+describe.skipIf(!POSTGRES_URL)('row codec through a type table', () => {
   let sql: Sql;
   let table: TypeTable;
   let tableName: string;

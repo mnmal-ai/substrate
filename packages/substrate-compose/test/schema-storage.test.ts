@@ -19,8 +19,8 @@ const plugin: CoordinatorPlugin = {
 };
 
 const REPORT: TypeStorageReport = {
-  layout: 'partitioned',
-  partition: 'rows__stor__note',
+  layout: 'tables',
+  table: 't__stor__note',
   indexes: [{ name: 'i', fields: ['text'], unique: false, state: 'valid', outcome: 'unchanged' }]
 };
 
@@ -77,14 +77,14 @@ describe('storage in the schema and config routes', () => {
       new MemoryDataset({ namespace: NS }),
       async () =>
         ({
-          layout: 'partitioned',
-          warnings: ['rows__default holds 2 rows of a/b']
+          layout: 'tables',
+          warnings: ['index i on a/b is pending: filters it would serve scan until it is valid']
         }) as never
     );
     const body = await get(`${url}/substrate/v1/config`);
     expect(body.storage).toEqual({
-      layout: 'partitioned',
-      warnings: ['rows__default holds 2 rows of a/b']
+      layout: 'tables',
+      warnings: ['index i on a/b is pending: filters it would serve scan until it is valid']
     });
   });
 

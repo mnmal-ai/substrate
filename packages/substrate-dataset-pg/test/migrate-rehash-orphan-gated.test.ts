@@ -194,7 +194,7 @@ describe('runMigrations — rehash loop iterates full migration list', () => {
     const gated = full.find((m) => m.version === '0002_uuid_format_check');
     expect(gated).toBeDefined();
 
-    const staleBase = '0001_baseline';
+    const staleBase = '0001t_tables_baseline';
     const appliedRows: AppliedRow[] = [
       ...MIGRATIONS.map((m) => ({
         version: m.version,

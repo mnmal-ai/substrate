@@ -1,16 +1,10 @@
 /**
- * Keyset pagination must return the same rows as an unpaginated read.
- *
- * That holds only if the ORDER BY expression and the cursor comparison read
- * the SAME source for every field kind (a promoted field's column, not its
- * body copy), and if the cursor honours the `NULLS LAST` that ORDER BY emits:
- * a bare `expr > $1` is NULL for a NULL key, dropping those rows from every
- * later page. The NULL half applies to any field kind, so the cases span all
- * three.
- *
- * The fixtures deliberately contain body/column divergence and nulls: with
- * fully-populated, normally-written rows both expressions coincide and the
- * NULLS-LAST branch is never reached, so neither defect would show.
+ * Keyset pagination must return the same rows as an unpaginated read: the
+ * ORDER BY and the cursor compare read one source (a column, or an `extra`
+ * key) whether or not the sort key is projected, the cursor honours the
+ * `NULLS LAST` ORDER BY emits, it carries a sort key at full precision, and a
+ * derived key sorts, projects into the cursor and compares through one
+ * expression.
  */
 
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
@@ -18,48 +12,50 @@ import type { FieldDef, Row } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PgDataset, runMigrations } from '../src/index.js';
-import { relationOf, TABLES, truncateRows } from './_layout.js';
-import { addTestPromotedColumns, dropTestPromotedColumns, TEST_PROMOTED } from './_promoted.js';
+import { clearNamespace, relationOf, truncateRows } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 
-// Promoted columns are added to `rows`; a type table types its fields itself.
-const ROWS_PG = POSTGRES_URL !== undefined && !TABLES;
-
-describe.skipIf(!ROWS_PG)('keyset pagination agrees with the unpaginated read', () => {
+// `status` is a declared field, so a column; `label` is undeclared, so an `extra` key.
+describe.skipIf(!POSTGRES_URL)('keyset pagination agrees with the unpaginated read', () => {
+  const NS = 'cursor_agree';
+  const fields: Record<string, FieldDef> = { status: { kind: 'scalar', type: 'string' } };
   let sql: Sql;
   let ds: PgDataset;
 
   beforeAll(async () => {
-    sql = postgres(POSTGRES_URL as string);
+    sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
     await runMigrations(sql);
-    await addTestPromotedColumns(sql);
   });
   afterAll(async () => {
-    await dropTestPromotedColumns(sql);
+    await clearNamespace(sql, NS);
     await sql.end();
   });
   beforeEach(async () => {
-    await truncateRows(sql);
-    ds = new PgDataset({ namespace: 'cursor_agree', sql, promotedColumns: TEST_PROMOTED });
+    await clearNamespace(sql, NS);
+    ds = new PgDataset({
+      namespace: NS,
+      sql,
+      fieldDefLookup: (_t, f) => fields[f],
+      typeDefLookup: (type) => (type === 'Memo' ? { fields } : undefined)
+    });
   });
 
   /** Walk every page, returning the ids in order. */
   async function paginate(
+    dataset: { read: PgDataset['read'] },
     field: string,
     dir: 'asc' | 'desc',
-    limit: number,
-    fields?: Record<string, boolean>
+    projection?: Record<string, boolean>
   ): Promise<string[]> {
     const seen: string[] = [];
     let cursor: string | undefined;
-    // Bounded so a cursor that fails to advance cannot spin forever; any real
-    // fixture here needs far fewer pages than this.
+    // Bounded so a cursor that fails to advance cannot spin forever.
     for (let page = 0; page < 20; page++) {
-      const res = await ds.read('Memo', {
+      const res = await dataset.read('Memo', {
         orderBy: [{ [field]: dir }],
-        limit,
-        ...(fields === undefined ? {} : { fields }),
+        limit: 2,
+        ...(projection === undefined ? {} : { fields: projection }),
         ...(cursor === undefined ? {} : { cursor })
       });
       seen.push(...res.rows.map((r) => String(r.id)));
@@ -73,205 +69,79 @@ describe.skipIf(!ROWS_PG)('keyset pagination agrees with the unpaginated read', 
   async function fullRead(
     field: string,
     dir: 'asc' | 'desc',
-    fields?: Record<string, boolean>
+    projection?: Record<string, boolean>
   ): Promise<string[]> {
     const res = await ds.read('Memo', {
       orderBy: [{ [field]: dir }],
-      ...(fields === undefined ? {} : { fields })
+      ...(projection === undefined ? {} : { fields: projection })
     });
     return res.rows.map((r) => String(r.id));
   }
 
+  const withNulls = (field: string, prefix: string): Row[] => [
+    { id: `${prefix}1`, [field]: 'aaa' },
+    { id: `${prefix}2`, [field]: null },
+    { id: `${prefix}3`, [field]: 'ccc' },
+    { id: `${prefix}4`, [field]: null },
+    { id: `${prefix}5`, [field]: 'eee' }
+  ];
+  const projection = { id: true };
+
   for (const dir of ['asc', 'desc'] as const) {
-    it(`promoted field with a NULL column: pages match the full read (${dir})`, async () => {
-      await ds.write('Memo', [
-        { id: 'm1', status: 'aaa' },
-        { id: 'm2', status: 'bbb' },
-        { id: 'm3', status: 'ccc' },
-        { id: 'm4', status: 'ddd' }
-      ]);
-      // The state a host migration creates: column added to a populated table,
-      // no backfill. Body keeps its value, the column is NULL.
-      await sql`UPDATE rows SET status = NULL WHERE id IN ('m2','m3')`;
+    for (const [field, where] of [
+      ['label', 'an extra key'],
+      ['status', 'a column']
+    ] as const) {
+      it(`${where} with null values: pages match the full read (${dir})`, async () => {
+        await ds.write('Memo', withNulls(field, 'n'));
+        const paged = await paginate(ds, field, dir);
+        expect(paged).toEqual(await fullRead(field, dir));
+        expect(paged).toHaveLength(5);
+      });
 
-      const full = await fullRead('status', dir);
-      const paged = await paginate('status', dir, 2);
+      it(`${where} NOT in the projection: pages match the full read (${dir})`, async () => {
+        await ds.write(
+          'Memo',
+          ['aaa', 'bbb', 'ccc', 'ddd', 'eee'].map((v, i) => ({ id: `p${i}`, [field]: v }))
+        );
+        const paged = await paginate(ds, field, dir, projection);
+        expect(paged).toEqual(await fullRead(field, dir, projection));
+        // The discriminating assertion: a lost cursor value stops after page one.
+        expect(paged).toHaveLength(5);
+      });
 
-      expect(paged).toEqual(full);
+      it(`${where} NOT projected, with nulls: pages match the full read (${dir})`, async () => {
+        await ds.write('Memo', withNulls(field, 'q'));
+        const paged = await paginate(ds, field, dir, projection);
+        expect(paged).toEqual(await fullRead(field, dir, projection));
+        expect(paged).toHaveLength(5);
+      });
+    }
+
+    it(`metadata field with no _metadata projected stays correct (${dir})`, async () => {
+      await ds.write('Memo', [{ id: 's1' }, { id: 's2' }, { id: 's3' }, { id: 's4' }]);
+      const paged = await paginate(ds, 'createdAt', dir, projection);
+      expect(paged).toEqual(await fullRead('createdAt', dir, projection));
       expect(paged).toHaveLength(4);
-    });
-
-    it(`plain body field with null values: pages match the full read (${dir})`, async () => {
-      // No promoted column involved: the NULLS-LAST half, which applies to
-      // every field kind.
-      await ds.write('Memo', [
-        { id: 'b1', label: 'aaa' },
-        { id: 'b2', label: null },
-        { id: 'b3', label: 'ccc' },
-        { id: 'b4', label: null },
-        { id: 'b5', label: 'eee' }
-      ]);
-
-      const full = await fullRead('label', dir);
-      const paged = await paginate('label', dir, 2);
-
-      expect(paged).toEqual(full);
-      expect(paged).toHaveLength(5);
-    });
-
-    it(`promoted field, all columns populated: unchanged behaviour (${dir})`, async () => {
-      // Control: the ordinary path, so a regression there cannot hide behind
-      // the two cases above.
-      await ds.write('Memo', [
-        { id: 'c1', status: 'aaa' },
-        { id: 'c2', status: 'bbb' },
-        { id: 'c3', status: 'ccc' }
-      ]);
-
-      const full = await fullRead('status', dir);
-      const paged = await paginate('status', dir, 2);
-
-      expect(paged).toEqual(full);
-      expect(paged).toHaveLength(3);
     });
   }
 
   it('paginates a null-bearing sort key identically to the memory backend', async () => {
-    // Null handling lives in each SUBSTRATE's own cursor compiler, so only a
-    // substrate-vs-substrate comparison can pin it (transport parity cannot).
-    //
-    // A plain body field, because `status` is a promoted COLUMN on pg and an
-    // ordinary body key in memory: comparing those would be comparing two
-    // different things and calling the difference a bug.
-    const rows: Row[] = [
-      { id: 'p1', label: 'aaa' },
-      { id: 'p2', label: null },
-      { id: 'p3', label: 'ccc' },
-      { id: 'p4', label: null },
-      { id: 'p5', label: 'eee' }
-    ];
-    const mem = new MemoryDataset({ namespace: 'cursor_agree' });
-    await mem.write('Memo', rows);
-    await ds.write('Memo', rows);
-
-    async function pageAll(dataset: { read: PgDataset['read'] }): Promise<string[]> {
-      const seen: string[] = [];
-      let cursor: string | undefined;
-      for (let page = 0; page < 20; page++) {
-        const res = await dataset.read('Memo', {
-          orderBy: [{ label: 'asc' }],
-          limit: 2,
-          ...(cursor === undefined ? {} : { cursor })
-        });
-        seen.push(...res.rows.map((r) => String(r.id)));
-        const next = (res as { nextCursor?: string | null }).nextCursor;
-        if (next === undefined || next === null || res.rows.length === 0) break;
-        cursor = next;
-      }
-      return seen;
+    // Null handling lives in each dataset's own cursor compiler, so only a
+    // dataset-vs-dataset comparison can pin it.
+    for (const field of ['label', 'status']) {
+      const mem = new MemoryDataset({ namespace: NS, fieldDefLookup: (_t, f) => fields[f] });
+      await clearNamespace(sql, NS);
+      const rows = withNulls(field, `m${field}`);
+      await ds.write('Memo', rows);
+      await mem.write('Memo', rows);
+      const pg = await paginate(ds, field, 'asc');
+      expect(pg).toEqual(
+        await paginate(mem as unknown as { read: PgDataset['read'] }, field, 'asc')
+      );
+      expect(pg).toHaveLength(5);
     }
-
-    const pgPages = await pageAll(ds);
-    const memPages = await pageAll(mem as unknown as { read: PgDataset['read'] });
-
-    expect(pgPages).toEqual(memPages);
-    expect(pgPages).toHaveLength(5);
   });
-
-  it('a promoted field with a NULL column is sorted by the COLUMN, not the body', async () => {
-    // Pins the source of truth rather than only the pagination invariant: the
-    // two could agree while both read the wrong expression.
-    await ds.write('Memo', [
-      { id: 'z1', status: 'zzz' },
-      { id: 'z2', status: 'aaa' }
-    ]);
-    await sql`UPDATE rows SET status = NULL WHERE id = 'z2'`;
-
-    // Body says z2 sorts first ('aaa' < 'zzz'); the column says z2 is NULL and
-    // therefore sorts LAST. Column wins.
-    expect(await fullRead('status', 'asc')).toEqual(['z1', 'z2']);
-  });
-
-  /**
-   * The sort field is NOT projected.
-   *
-   * The cases above read the full body, so the cursor can take the sort value
-   * off the materialized row. With `fields: { id: true }` a body-stored sort
-   * value is absent from the row; the cursor must still carry it, or page two
-   * matches nothing and a prefix is reported as the complete read.
-   *
-   * Promoted and metadata fields are CONTROLS: they are read from columns, so
-   * they do not exercise the body path.
-   */
-  for (const dir of ['asc', 'desc'] as const) {
-    it(`body field NOT in the projection: pages match the full read (${dir})`, async () => {
-      await ds.write('Memo', [
-        { id: 'p1', label: 'aaa' },
-        { id: 'p2', label: 'bbb' },
-        { id: 'p3', label: 'ccc' },
-        { id: 'p4', label: 'ddd' },
-        { id: 'p5', label: 'eee' }
-      ]);
-
-      const projection = { id: true };
-      const full = await fullRead('label', dir, projection);
-      const paged = await paginate('label', dir, 2, projection);
-
-      expect(paged).toEqual(full);
-      // The discriminating assertion: a lost cursor value stops after page one.
-      expect(paged).toHaveLength(5);
-    });
-
-    it(`body field NOT projected, with nulls: pages match the full read (${dir})`, async () => {
-      // Both at once: an unprojected sort key AND the NULLS-LAST branch.
-      await ds.write('Memo', [
-        { id: 'q1', label: 'aaa' },
-        { id: 'q2', label: null },
-        { id: 'q3', label: 'ccc' },
-        { id: 'q4', label: null },
-        { id: 'q5', label: 'eee' }
-      ]);
-
-      const projection = { id: true };
-      const full = await fullRead('label', dir, projection);
-      const paged = await paginate('label', dir, 2, projection);
-
-      expect(paged).toEqual(full);
-      expect(paged).toHaveLength(5);
-    });
-
-    it(`promoted field NOT in the projection stays correct (${dir})`, async () => {
-      await ds.write('Memo', [
-        { id: 'r1', status: 'aaa' },
-        { id: 'r2', status: 'bbb' },
-        { id: 'r3', status: 'ccc' },
-        { id: 'r4', status: 'ddd' }
-      ]);
-
-      const projection = { id: true };
-      const full = await fullRead('status', dir, projection);
-      const paged = await paginate('status', dir, 2, projection);
-
-      expect(paged).toEqual(full);
-      expect(paged).toHaveLength(4);
-    });
-
-    it(`metadata field with no _metadata projected stays correct (${dir})`, async () => {
-      await ds.write('Memo', [
-        { id: 's1', label: 'aaa' },
-        { id: 's2', label: 'bbb' },
-        { id: 's3', label: 'ccc' },
-        { id: 's4', label: 'ddd' }
-      ]);
-
-      const projection = { id: true };
-      const full = await fullRead('createdAt', dir, projection);
-      const paged = await paginate('createdAt', dir, 2, projection);
-
-      expect(paged).toEqual(full);
-      expect(paged).toHaveLength(4);
-    });
-  }
 });
 
 describe.skipIf(!POSTGRES_URL)('keyset pagination over sub-millisecond timestamps', () => {
@@ -325,8 +195,7 @@ describe.skipIf(!POSTGRES_URL)('keyset pagination over sub-millisecond timestamp
     await sql.unsafe(
       `UPDATE ${await relationOf(sql, 'cursor_usec', 'Memo')}
        SET created_at = '2026-10-21T10:00:00.123456Z'::timestamptz
-         + (CASE id::text WHEN 'a' THEN 1 WHEN 'b' THEN 2 ELSE 3 END) * interval '1 microsecond'
-       ${TABLES ? '' : "WHERE namespace = 'cursor_usec'"}`
+         + (CASE id::text WHEN 'a' THEN 1 WHEN 'b' THEN 2 ELSE 3 END) * interval '1 microsecond'`
     );
     const seen: string[] = [];
     let cursor: string | undefined;
@@ -345,70 +214,67 @@ describe.skipIf(!POSTGRES_URL)('keyset pagination over sub-millisecond timestamp
   });
 });
 
-// Derived keys are walk grammar: the partitioned and `tables` layouts.
-describe.skipIf(!POSTGRES_URL || (process.env.SUBSTRATE_TEST_LAYOUT ?? 'legacy') === 'legacy')(
-  'keyset pagination over a derived key',
-  () => {
-    // A derived key is computed per row, so the same expression must sort,
-    // project into the cursor and compare against it; its NULLs (a missing
-    // operand, a zero divisor) sort last in both directions, as memory's do.
-    let sql: Sql;
-    const num: FieldDef = { kind: 'scalar', type: 'number' };
-    const fieldDefLookup = (_type: string, field: string): FieldDef | undefined =>
-      field === 'a' || field === 'b' ? num : undefined;
-    const rows: Row[] = [
-      { id: 'k1', a: 6, b: 3 },
-      { id: 'k2', a: 1, b: 0 },
-      { id: 'k3', a: 4, b: 2 },
-      { id: 'k4', b: 5 },
-      { id: 'k5', a: 9, b: 3 },
-      { id: 'k6', a: -2, b: 4 },
-      { id: 'k7', a: 2, b: 1 }
-    ];
+// Derived keys are walk grammar.
+describe.skipIf(!POSTGRES_URL)('keyset pagination over a derived key', () => {
+  // A derived key is computed per row, so the same expression must sort,
+  // project into the cursor and compare against it; its NULLs (a missing
+  // operand, a zero divisor) sort last in both directions, as memory's do.
+  let sql: Sql;
+  const num: FieldDef = { kind: 'scalar', type: 'number' };
+  const fieldDefLookup = (_type: string, field: string): FieldDef | undefined =>
+    field === 'a' || field === 'b' ? num : undefined;
+  const rows: Row[] = [
+    { id: 'k1', a: 6, b: 3 },
+    { id: 'k2', a: 1, b: 0 },
+    { id: 'k3', a: 4, b: 2 },
+    { id: 'k4', b: 5 },
+    { id: 'k5', a: 9, b: 3 },
+    { id: 'k6', a: -2, b: 4 },
+    { id: 'k7', a: 2, b: 1 }
+  ];
 
-    beforeAll(async () => {
-      sql = postgres(POSTGRES_URL as string);
-      await runMigrations(sql);
-    });
-    afterAll(async () => {
-      await sql.end();
-    });
+  beforeAll(async () => {
+    sql = postgres(POSTGRES_URL as string);
+    await runMigrations(sql);
+  });
+  afterAll(async () => {
+    await sql.end();
+  });
 
-    for (const dir of ['asc', 'desc'] as const) {
-      it(`pages a ratio like the memory backend, nulls last (${dir})`, async () => {
-        await truncateRows(sql);
-        const ds = new PgDataset({ namespace: 'cursor_derive', sql, fieldDefLookup });
-        await ds.ensureTypeStorage('Memo');
-        const mem = new MemoryDataset({ namespace: 'cursor_derive', fieldDefLookup });
-        await ds.write('Memo', rows);
-        await mem.write('Memo', rows);
+  for (const dir of ['asc', 'desc'] as const) {
+    it(`pages a ratio like the memory backend, nulls last (${dir})`, async () => {
+      await truncateRows(sql);
+      const ds = new PgDataset({ namespace: 'cursor_derive', sql, fieldDefLookup });
+      await ds.ensureTypeStorage('Memo');
+      const mem = new MemoryDataset({ namespace: 'cursor_derive', fieldDefLookup });
+      await ds.write('Memo', rows);
+      await mem.write('Memo', rows);
 
-        async function pageAll(dataset: { read: PgDataset['read'] }): Promise<string[]> {
-          const seen: string[] = [];
-          let cursor: string | undefined;
-          for (let page = 0; page < 20; page++) {
-            const res = await dataset.read('Memo', {
-              derive: { r: { ratio: ['$.a', '$.b'] } },
-              orderBy: [{ $r: dir }],
-              limit: 2,
-              ...(cursor === undefined ? {} : { cursor })
-            });
-            seen.push(...res.rows.map((r) => String(r.id)));
-            if (res.nextCursor === undefined) break;
-            cursor = res.nextCursor;
-          }
-          return seen;
+      async function pageAll(dataset: { read: PgDataset['read'] }): Promise<string[]> {
+        const seen: string[] = [];
+        let cursor: string | undefined;
+        for (let page = 0; page < 20; page++) {
+          const res = await dataset.read('Memo', {
+            derive: { r: { ratio: ['$.a', '$.b'] } },
+            orderBy: [{ $r: dir }],
+            limit: 2,
+            ...(cursor === undefined ? {} : { cursor })
+          });
+          seen.push(...res.rows.map((r) => String(r.id)));
+          if (res.nextCursor === undefined) break;
+          cursor = res.nextCursor;
         }
+        return seen;
+      }
 
-        const pgPages = await pageAll(ds);
-        expect(pgPages).toEqual(await pageAll(mem as unknown as { read: PgDataset['read'] }));
-        // k1, k3 and k7 tie at 2; k2 (zero divisor) and k4 (no a) are the null tail.
-        expect(pgPages).toEqual(
-          dir === 'asc'
-            ? ['k6', 'k1', 'k3', 'k7', 'k5', 'k2', 'k4']
-            : ['k5', 'k1', 'k3', 'k7', 'k6', 'k2', 'k4']
-        );
-      });
-    }
+      const pgPages = await pageAll(ds);
+      expect(pgPages).toEqual(await pageAll(mem as unknown as { read: PgDataset['read'] }));
+      // k1, k3 and k7 tie at 2; k2 (zero divisor) and k4 (no a) are the null tail.
+      expect(pgPages).toEqual(
+        dir === 'asc'
+          ? ['k6', 'k1', 'k3', 'k7', 'k5', 'k2', 'k4']
+          : ['k5', 'k1', 'k3', 'k7', 'k6', 'k2', 'k4']
+      );
+    });
   }
-);
+});

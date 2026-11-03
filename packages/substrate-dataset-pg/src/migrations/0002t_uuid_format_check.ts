@@ -1,7 +1,7 @@
 /**
  * 0002t_uuid_format_check — the `tables` layout's opt-in UUID-format CHECKs,
- * recorded under the same ledger version as 0002 (`UUID_CHECK_MIGRATION`) and
- * gated the same way, by `SUBSTRATE_ENFORCE_UUID_CHECK=true`. It covers
+ * recorded under the old layouts' 0002 ledger version (`UUID_CHECK_MIGRATION`) and
+ * gated by `SUBSTRATE_ENFORCE_UUID_CHECK=true`. It covers
  * `row_ids.id`, `short_ids.row_id`, `edges.from_id`, `edges.to_id`, and the
  * `id` of every type table that exists when it runs; `ensureTypeTable` adds the
  * CHECK to tables it creates under the gate.

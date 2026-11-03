@@ -21,7 +21,7 @@ import { PgDataset, UUID_CHECK_MIGRATION } from '../src/index.js';
 import { applyPatch, encodeRow } from '../src/row-codec.js';
 import { loadTypeTable, type TypeTable } from '../src/type-table.js';
 import { inputCte, mergeAssignments, setList, writeRowsStatement } from '../src/write-rows.js';
-import { clearNamespace, dropNamespace, TABLES } from './_layout.js';
+import { clearNamespace, dropNamespace } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const NS = `tdp_${randomBytes(4).toString('hex')}`;
@@ -113,7 +113,7 @@ const strip = ({ _metadata: _m, shortId: _s, ...rest }: Row): Row =>
   (rest._deletedAt === undefined ? rest : { ...rest, _deletedAt: true }) as Row;
 const byId = (a: Row, b: Row) => String(a.id).localeCompare(String(b.id));
 
-describe.skipIf(!POSTGRES_URL || !TABLES)('PgDataset on type tables vs memory', () => {
+describe.skipIf(!POSTGRES_URL)('PgDataset on type tables vs memory', () => {
   let sql: Sql;
   let statements: string[] = [];
   let pg: PgDataset;

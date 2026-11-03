@@ -31,7 +31,7 @@ import {
   reportUnguardedIndexBuilds,
   runDeferredIndexBuilds
 } from '../src/serve/wiring.js';
-import { deleteNamespaces, relationOf, TABLES } from './_layout.js';
+import { deleteNamespaces, relationOf } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 
@@ -103,14 +103,9 @@ describe.skipIf(!POSTGRES_URL)('deferred index builds at boot (pg)', () => {
 
       const hold = await sql.reserve();
       await hold`BEGIN`;
-      if (TABLES) {
-        await hold.unsafe(`INSERT INTO ${await relationOf(sql, ns, 'Member')} (id) VALUES ($1)`, [
-          randomUUID()
-        ]);
-      } else {
-        await hold`INSERT INTO rows (namespace, type, id, body)
-          VALUES (${ns}, 'Member', ${randomUUID()}, ${sql.json({ kid: randomUUID() })})`;
-      }
+      await hold.unsafe(`INSERT INTO ${await relationOf(sql, ns, 'Member')} (id) VALUES ($1)`, [
+        randomUUID()
+      ]);
       let settled = false;
       const builds = buildDeferredIndexes(composed.engine, composed.datasets).then(() => {
         settled = true;

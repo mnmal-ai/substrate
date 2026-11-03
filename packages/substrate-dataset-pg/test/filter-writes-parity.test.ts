@@ -22,10 +22,9 @@ import type {
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset, PgEdgesStore } from '../src/index.js';
-import { dropNamespacesLike, relationOf, TABLES } from './_layout.js';
+import { dropNamespacesLike, relationOf } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
-const PARTITIONED = process.env.SUBSTRATE_TEST_LAYOUT === 'partitioned';
 const NOW = new Date('2026-11-01T12:00:00.000Z');
 const PREFIX = 'fwrite';
 const LIMITS = { maxMatch: 5, idsCap: 3 };
@@ -90,10 +89,6 @@ describe('updateMany / deleteMany: memory vs pg through Engine', () => {
     if (kind === 'pg') {
       const pgEdges = new PgEdgesStore({ sql: sql as Sql });
       const pg = new PgDataset({ namespace: ns, sql: sql as Sql, edgesStore: pgEdges });
-      if (PARTITIONED) {
-        await pg.ensureTypeStorage('Owner');
-        await pg.ensureTypeStorage('Item');
-      }
       dataset = pg;
       edges = pgEdges;
     } else {
@@ -581,10 +576,9 @@ describe('updateMany / deleteMany: memory vs pg through Engine', () => {
       try {
         await conn`BEGIN`;
         // Another writer moves i001 out of the filter and holds its row lock.
-        const col = TABLES ? 'extra' : 'body';
         await conn.unsafe(
-          `UPDATE ${await relationOf(conn, s.ns, 'Item')} SET ${col} = ${col} || '{"status":"closed"}'::jsonb
-           WHERE ${TABLES ? '' : `namespace = '${s.ns}' AND type = 'Item' AND `}id = 'i001'`
+          `UPDATE ${await relationOf(conn, s.ns, 'Item')} SET extra = extra || '{"status":"closed"}'::jsonb
+           WHERE id = 'i001'`
         );
         const pending = s.mutate('updateManyItem', {
           where: { status: { eq: 'open' } },

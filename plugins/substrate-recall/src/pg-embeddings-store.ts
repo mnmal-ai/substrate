@@ -15,12 +15,7 @@
  * reason.
  */
 
-import {
-  cachedLayout,
-  type PgHandle,
-  txScopeIdFor,
-  typeTableRef
-} from '@mnmal-ai/substrate-dataset-pg';
+import { type PgHandle, txScopeIdFor, typeTableRef } from '@mnmal-ai/substrate-dataset-pg';
 import type { Sql } from 'postgres';
 import type { Candidate, CandidateSelector } from './candidate-selection.js';
 import type {
@@ -33,7 +28,6 @@ import type {
   SalienceTarget
 } from './embeddings-store.js';
 import {
-  isRowsRef,
   purgeTypeTableOrphans,
   ROW_BODY_SQL,
   rowFilterSql,
@@ -247,16 +241,14 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
       WHERE e.model = ${model}
         AND r.deleted_at IS NULL
     `;
-    // On `tables`, one statement per type, so each id is looked up in its own type's table only.
-    const rows = scoped.some((s) => s.ref !== undefined && isRowsRef(s.ref))
-      ? await fetch(ids, rowsFrom(sql, scoped))
-      : (
-          await Promise.all(
-            scoped
-              .filter((s) => s.ref !== undefined)
-              .map((s) => fetch(byType.get(`${s.namespace}/${s.type}`) ?? [], rowsFrom(sql, [s])))
-          )
-        ).flat();
+    // One statement per type, so each id is looked up in its own type's table only.
+    const rows = (
+      await Promise.all(
+        scoped
+          .filter((s) => s.ref !== undefined)
+          .map((s) => fetch(byType.get(`${s.namespace}/${s.type}`) ?? [], rowsFrom(sql, [s])))
+      )
+    ).flat();
 
     return rows.map((r) => ({
       namespace: r.row_namespace,
@@ -333,7 +325,7 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
 
   /**
    * Deletes every embedding whose backing row is missing or soft-deleted.
-   * Needed because `embeddings` has no FK to `rows` and no
+   * Needed because `embeddings` has no FK to the type tables and no
    * dataset delete path touches it; tombstones are terminal, so soft-deleted
    * rows are safe to collect immediately. Run as a sweep stage by the binary.
    *
@@ -369,18 +361,6 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
   }
 
   async purgeOrphans(): Promise<number> {
-    const sql = this.#sql as Sql;
-    if ((await cachedLayout(sql)) === 'tables') return purgeTypeTableOrphans(sql, 'embeddings');
-    const result = await sql`
-      DELETE FROM embeddings e
-      WHERE NOT EXISTS (
-        SELECT 1 FROM rows r
-        WHERE r.namespace = e.row_namespace
-          AND r.type      = e.row_type
-          AND r.id        = e.row_id
-          AND r.deleted_at IS NULL
-      )
-    `;
-    return result.count;
+    return purgeTypeTableOrphans(this.#sql as Sql, 'embeddings');
   }
 }

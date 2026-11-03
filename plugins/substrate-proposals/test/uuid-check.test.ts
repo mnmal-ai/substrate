@@ -1,6 +1,6 @@
 /**
- * Every row id the engine mints passes migration 0002's `rows_id_uuid_format`
- * CHECK (`SUBSTRATE_ENFORCE_UUID_CHECK=true`): the `_system` install's
+ * Every row id the engine mints passes the opt-in UUID-format CHECKs on
+ * `row_ids` and each type table (`SUBSTRATE_ENFORCE_UUID_CHECK=true`): the `_system` install's
  * StoreProfile seed, an advisor pass's IndexRecommendation and AdvisorState,
  * and the AuditEvent of a recommendation-based `propose_index` add and remove.
  *
@@ -22,7 +22,6 @@ import {
   PgDataset,
   PgEdgesStore,
   runMigrations,
-  type StorageLayout,
   typeIndexesOf
 } from '@mnmal-ai/substrate-dataset-pg';
 import {
@@ -40,6 +39,7 @@ import type {
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNoopPubSub, createProposalsPlugin, storageSettled } from '../src/index.js';
+import { relationOf } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -57,7 +57,6 @@ describe.skipIf(!POSTGRES_URL)('engine row ids under the UUID-format CHECK (pg)'
   const CODE = 'kuuidcode';
   let sql: Sql;
   let schema: string;
-  let layout: StorageLayout;
   let engine: Engine;
   let system: PgDataset;
   let app: PgDataset;
@@ -65,16 +64,15 @@ describe.skipIf(!POSTGRES_URL)('engine row ids under the UUID-format CHECK (pg)'
   const codeTypes = new Map<string, NamespaceTypeDef>();
 
   beforeAll(async () => {
-    layout = process.env.SUBSTRATE_TEST_LAYOUT === 'partitioned' ? 'partitioned' : 'legacy';
-    const pkg = `substrate-proposals-uuidcheck-${layout}`;
+    const pkg = 'substrate-proposals-uuidcheck';
     schema = pgTestSchemaName(pkg);
     const url = pgTestSchemaUrl(POSTGRES_URL as string, pkg);
     await recreatePgTestSchema(url, schema);
     sql = postgres(url, { onnotice: () => {} });
-    await runMigrations(sql, { layout, enforceUuidCheck: true });
+    await runMigrations(sql, { enforceUuidCheck: true });
     const [check] = await sql`
       SELECT 1 FROM pg_constraint c JOIN pg_namespace n ON n.oid = c.connamespace
-      WHERE c.conname = 'rows_id_uuid_format' AND n.nspname = ${schema}`;
+      WHERE c.conname = 'row_ids_id_uuid_format' AND n.nspname = ${schema}`;
     expect(check).toBeDefined();
 
     const edges = new PgEdgesStore({ sql });
@@ -168,10 +166,15 @@ describe.skipIf(!POSTGRES_URL)('engine row ids under the UUID-format CHECK (pg)'
     expect(proposed.errors ?? []).toEqual([]);
     await storageSettled();
     // Above the scale profile's 20,000-row minimum.
-    await sql`INSERT INTO rows (namespace, type, id, body)
-      SELECT ${APP}, ${type}, gen_random_uuid()::text, jsonb_build_object('brand', 'b')
-      FROM generate_series(1, 25000)`;
-    await sql`ANALYZE rows`;
+    const rel = await relationOf(sql, APP, type);
+    await sql.unsafe(
+      `WITH ins AS (
+         INSERT INTO ${rel} (id, f_brand)
+         SELECT gen_random_uuid()::text, 'b' FROM generate_series(1, 25000) RETURNING id)
+       INSERT INTO row_ids (namespace, type, id) SELECT $1, $2, id FROM ins`,
+      [APP, type]
+    );
+    await sql.unsafe(`ANALYZE ${rel}`);
 
     // Twenty slow reads of `brand eq`, the scale profile's minReads.
     const recorder = new ShapeRecorder();
@@ -220,12 +223,11 @@ describe.skipIf(!POSTGRES_URL)('engine row ids under the UUID-format CHECK (pg)'
     const desired = desiredIndexKeys({
       namespace: CODE,
       type: gadget,
-      layout,
       fields,
       indexes: [],
       orderedBy: { createdAt: 'desc' }
     }).map((d) => d.name);
-    const leftover = (await typeIndexesOf(sql, CODE, gadget, layout)).find(
+    const leftover = (await typeIndexesOf(sql, CODE, gadget)).find(
       (i) => i.engineOwned && !desired.includes(i.name)
     )?.name as string;
     expect(leftover).toBeDefined();
@@ -252,9 +254,7 @@ describe.skipIf(!POSTGRES_URL)('engine row ids under the UUID-format CHECK (pg)'
       recommendationId: removeId
     });
     expect(removed.errors ?? []).toEqual([]);
-    expect((await typeIndexesOf(sql, CODE, gadget, layout)).map((i) => i.name)).not.toContain(
-      leftover
-    );
+    expect((await typeIndexesOf(sql, CODE, gadget)).map((i) => i.name)).not.toContain(leftover);
     expect(await auditOf(removeId)).toBeDefined();
   }, 60_000);
 });

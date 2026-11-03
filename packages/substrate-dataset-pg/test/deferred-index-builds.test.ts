@@ -15,12 +15,11 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import type { IndexDecl } from '@mnmal-ai/substrate-types';
 import postgres, { type ReservedSql, type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { PgDataset, partitionName, runMigrations } from '../src/index.js';
+import { PgDataset, runMigrations } from '../src/index.js';
 import { typeTableOf } from '../src/type-table.js';
-import { relationOf, TABLES } from './_layout.js';
+import { relationOf } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
-const LAYOUT = process.env.SUBSTRATE_STORAGE_LAYOUT ?? 'legacy';
 const TYPE = 'T';
 
 let sql: Sql;
@@ -59,8 +58,7 @@ function fixture() {
 
 /** The table `type`'s indexes live on, unquoted. */
 async function indexTable(ns: string, type: string): Promise<string> {
-  if (TABLES) return (await typeTableOf(sql, ns, type)) as string;
-  return LAYOUT === 'partitioned' ? partitionName(ns, type) : 'rows';
+  return (await typeTableOf(sql, ns, type)) as string;
 }
 
 /** Holds the index-build lock of the table `type`'s indexes live on, from another session. */
@@ -86,7 +84,7 @@ async function catalogValid(name: string): Promise<boolean | undefined> {
 const stateOf = async (ds: PgDataset, name: string) =>
   (await ds.describeStorage(TYPE)).indexes.find((i) => i.name === name)?.state;
 
-/** The index whose build is running; on the partitioned layout the engine's own come first. */
+/** The index whose build is running; the engine's own come first. */
 const building = async (ds: PgDataset) =>
   (await ds.describeStorage(TYPE)).indexes.find((i) => i.state === 'building')?.name;
 
@@ -94,14 +92,9 @@ const building = async (ds: PgDataset) =>
 async function holdBuilds(ns: string): Promise<{ release(): Promise<void> }> {
   const conn: ReservedSql = await sql.reserve();
   await conn`BEGIN`;
-  if (TABLES) {
-    await conn.unsafe(`INSERT INTO ${await relationOf(sql, ns, TYPE)} (id) VALUES ($1)`, [
-      randomUUID()
-    ]);
-  } else {
-    await conn`INSERT INTO rows (namespace, type, id, body)
-      VALUES (${ns}, ${TYPE}, ${randomUUID()}, ${sql.json({ kid: randomUUID() })})`;
-  }
+  await conn.unsafe(`INSERT INTO ${await relationOf(sql, ns, TYPE)} (id) VALUES ($1)`, [
+    randomUUID()
+  ]);
   return {
     async release() {
       await conn`COMMIT`;
@@ -196,9 +189,7 @@ describe.skipIf(!POSTGRES_URL)('deferred non-unique index builds', () => {
     await ds.ensureTypeStorage(TYPE, { indexes: 'unique' });
     // An index of the declared name on another field: a conflict, not a swap.
     const table = await indexTable(ns, TYPE);
-    await sql.unsafe(
-      `CREATE INDEX ${plain} ON "${table}" (${TABLES ? 'f_kid' : `(body ->> 'kid')`})`
-    );
+    await sql.unsafe(`CREATE INDEX ${plain} ON "${table}" (f_kid)`);
     await ds.ensureTypeStorage(TYPE, { indexes: 'nonUnique' });
     const reason = `index_definition_conflict: ${plain} exists with a different definition; drop or rename it`;
     const described = (await ds.describeStorage(TYPE)).indexes;
@@ -229,13 +220,11 @@ describe.skipIf(!POSTGRES_URL)('deferred non-unique index builds', () => {
       await runMigrations(sql);
       await ds.ensureTypeStorage(TYPE, { indexes: 'unique' });
       expect(await stateOf(ds, unique)).toBe('valid');
-      if (LAYOUT === 'partitioned') {
-        // A unique index still to build, on another table, builds meanwhile.
-        const otherUnique = `${ns}_u_kid_uq`;
-        declared[other] = [{ fields: ['kid'], unique: true, where: 'live', name: otherUnique }];
-        await ds.ensureTypeStorage(other, { indexes: 'unique' });
-        expect(await catalogValid(otherUnique)).toBe(true);
-      }
+      // A unique index still to build, on another table, builds meanwhile.
+      const otherUnique = `${ns}_u_kid_uq`;
+      declared[other] = [{ fields: ['kid'], unique: true, where: 'live', name: otherUnique }];
+      await ds.ensureTypeStorage(other, { indexes: 'unique' });
+      expect(await catalogValid(otherUnique)).toBe(true);
       expect(settled).toBe(false);
     } finally {
       await hold.release();

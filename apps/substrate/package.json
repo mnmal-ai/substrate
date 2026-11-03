@@ -25,8 +25,6 @@
     "prepack": "TURBO_TELEMETRY_DISABLED=1 turbo run build --filter=@mnmal-ai/substrate",
     "dev": "tsx src/bin/substrate.ts serve",
     "test": "vitest run",
-    "test:partitioned": "SUBSTRATE_TEST_LAYOUT=partitioned vitest run",
-    "test:tables": "SUBSTRATE_TEST_LAYOUT=tables vitest run",
     "check-types": "tsc -p tsconfig.json --noEmit",
     "lint": "biome check ."
   },

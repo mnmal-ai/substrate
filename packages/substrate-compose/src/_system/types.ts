@@ -19,7 +19,7 @@
  */
 
 import { field } from '@mnmal-ai/substrate-sdk';
-import type { FieldDef } from '@mnmal-ai/substrate-types';
+import type { FieldDef, IndexDecl } from '@mnmal-ai/substrate-types';
 
 export const KEY_FIELDS: Record<string, FieldDef> = {
   // The principal identity an agent signs with (JWT `kid`). Indexed so the
@@ -41,6 +41,15 @@ export const KEY_FIELDS: Record<string, FieldDef> = {
   // Nullable — only set when the key is revoked.
   revokedAt: field.date({ nullable: true })
 };
+
+/**
+ * One live key per kid: two would make verification ambiguous. Revoked and
+ * tombstoned keys may share it. The name is the one the old layouts' baseline
+ * gave the same index on `rows`.
+ */
+export const KEY_INDEXES: IndexDecl[] = [
+  { name: 'substrate_key_live_kid_uniq', fields: ['kid'], unique: true, where: { revokedAt: null } }
+];
 
 export const INVITE_FIELDS: Record<string, FieldDef> = {
   // `id` is the 32-byte base64url invite code — that IS the PK in autoCRUD.

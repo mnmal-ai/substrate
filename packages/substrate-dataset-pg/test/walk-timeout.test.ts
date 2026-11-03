@@ -10,11 +10,9 @@ import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset } from '../src/index.js';
 import { runMigrations } from '../src/migrate.js';
-import { dropNamespace, relationOf, TABLES } from './_layout.js';
+import { dropNamespace, relationOf } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
-/** Walks run on the partitioned and `tables` layouts; legacy refuses them. */
-const WALK_LAYOUT = process.env.SUBSTRATE_TEST_LAYOUT === 'partitioned' || TABLES;
 const NS = `walk_timeout_${randomBytes(4).toString('hex')}`;
 const TIMEOUT_MS = 200;
 const WALK = { _walk: { in: `${NS}/Observation.cert` } } as unknown as WhereClause;
@@ -32,7 +30,7 @@ describe.skipIf(!POSTGRES_URL)('read timeout (pg)', () => {
     reader = postgres(POSTGRES_URL, { max: 1, onnotice: () => {} });
     locker = postgres(POSTGRES_URL, { max: 1, onnotice: () => {} });
     ds = new PgDataset({ namespace: NS, sql: reader, statementTimeoutMs: TIMEOUT_MS });
-    if (WALK_LAYOUT) for (const type of ['Cert', 'Observation']) await ds.ensureTypeStorage(type);
+    for (const type of ['Cert', 'Observation']) await ds.ensureTypeStorage(type);
     await ds.read('Cert', {}); // warms the layout cache before the lock is taken
   });
 
@@ -84,19 +82,16 @@ describe.skipIf(!POSTGRES_URL)('read timeout (pg)', () => {
     }
   });
 
-  it.skipIf(!WALK_LAYOUT)(
-    'refuses a walk read that outlives the statement timeout as query_timeout',
-    async () => {
-      await underLock(async () => {
-        const err = await ds.read('Cert', { where: WALK }).catch((e: unknown) => e);
-        expect(err).toBeInstanceOf(ResolverFrameError);
-        expect(err).toMatchObject({ code: QUERY_TIMEOUT, details: { timeoutMs: TIMEOUT_MS } });
-      });
-      expect((await ds.read('Cert', {})).rows).toEqual([]);
-    }
-  );
+  it('refuses a walk read that outlives the statement timeout as query_timeout', async () => {
+    await underLock(async () => {
+      const err = await ds.read('Cert', { where: WALK }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ResolverFrameError);
+      expect(err).toMatchObject({ code: QUERY_TIMEOUT, details: { timeoutMs: TIMEOUT_MS } });
+    });
+    expect((await ds.read('Cert', {})).rows).toEqual([]);
+  });
 
-  it.skipIf(!WALK_LAYOUT)('keeps a caller abort an AbortError, not query_timeout', async () => {
+  it('keeps a caller abort an AbortError, not query_timeout', async () => {
     await underLock(async () => {
       const controller = new AbortController();
       const pending = ds.read('Cert', { where: WALK, signal: controller.signal });

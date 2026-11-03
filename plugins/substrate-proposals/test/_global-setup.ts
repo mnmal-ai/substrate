@@ -1,7 +1,6 @@
 /**
- * Give this package's pg-gated suite a schema of its own, once per storage
- * layout and rebuilt every run, before any worker forks so each inherits the
- * rewritten `POSTGRES_URL`. A no-op without `POSTGRES_URL`.
+ * Give this package's pg-gated suite a schema of its own, rebuilt every run,
+ * before any worker forks so each inherits the rewritten `POSTGRES_URL`. A no-op without `POSTGRES_URL`.
  */
 
 import { runMigrations } from '@mnmal-ai/substrate-dataset-pg';
@@ -10,13 +9,12 @@ import {
   assertNotSuperuser,
   assertTestDatabase,
   preparePgTestSchema,
-  recreatePgTestSchema,
-  selectPgTestLayout
+  recreatePgTestSchema
 } from '@mnmal-ai/substrate-dataset-pg/testing';
 import postgres from 'postgres';
 
 export default async function setup(): Promise<void> {
-  const { layout, packageName } = selectPgTestLayout('substrate-proposals');
+  const packageName = 'substrate-proposals';
   assertTestDatabase(process.env.POSTGRES_URL, { packageName });
   await assertNotSuperuser(process.env.POSTGRES_URL, { packageName });
   await assertCannotWriteOutsideTestDatabases(process.env.POSTGRES_URL, { packageName });
@@ -31,7 +29,7 @@ export default async function setup(): Promise<void> {
   // hook timeout that wait flaked while other packages' suites ran.
   const sql = postgres(isolated, { max: 1, onnotice: () => {} });
   try {
-    await runMigrations(sql, { layout });
+    await runMigrations(sql);
   } finally {
     await sql.end({ timeout: 5 });
   }

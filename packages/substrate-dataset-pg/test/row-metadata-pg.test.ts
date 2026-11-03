@@ -17,11 +17,11 @@ import {
 import postgres, { type Sql } from 'postgres';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { PgDataset, runMigrations } from '../src/index.js';
-import { dropNamespace, rowsWhere, TABLES } from './_layout.js';
+import { dropNamespace, rowsWhere } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 /** The row's jsonb column. */
-const BODY = TABLES ? 'extra' : 'body';
+const BODY = 'extra';
 
 function metadata(at: string, by: ActorIdentity): RowMetadata {
   return { createdAt: at, updatedAt: at, createdBy: by, updatedBy: by };
@@ -33,9 +33,8 @@ describe.skipIf(!POSTGRES_URL)('PG dataset row metadata', () => {
 
   beforeEach(async () => {
     sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
-    // A fresh store: `rows` re-created, or on `tables` this namespace's tables dropped.
-    if (TABLES) await dropNamespace(sql, 'test');
-    else await sql`DROP TABLE IF EXISTS rows CASCADE`;
+    // A fresh store: this namespace's tables dropped.
+    await dropNamespace(sql, 'test');
     await runMigrations(sql, { force: true });
     ds = new PgDataset({ namespace: 'test', sql });
   });

@@ -45,6 +45,7 @@ import type {
   Dataset,
   EdgesStore,
   FieldDef,
+  IndexDecl,
   Policy,
   Registry,
   RequestContext,
@@ -69,6 +70,7 @@ import {
   INVITE_TYPE,
   KEY_ALGORITHMS,
   KEY_FIELDS,
+  KEY_INDEXES,
   KEY_TYPE,
   STORE_PROFILE_FIELDS,
   STORE_PROFILE_ID,
@@ -604,7 +606,8 @@ export async function installSystemNamespace(
 
   const wrappedForSubstrateKey = wrapRegistryMutations(opts.registry, keyInterceptors);
   installAutoCrud(wrappedForSubstrateKey, KEY_TYPE, opts.dataset, opts.edges, {
-    fields: mergeIdField(KEY_FIELDS),
+    fields: KEY_DEF.fields,
+    indexes: KEY_DEF.indexes,
     policy: adminGate,
     purgeable: true,
     adminCapability
@@ -653,7 +656,7 @@ export async function installSystemNamespace(
   };
   const wrappedForSubstrateInvite = wrapRegistryMutations(opts.registry, inviteInterceptors);
   installAutoCrud(wrappedForSubstrateInvite, INVITE_TYPE, opts.dataset, opts.edges, {
-    fields: mergeIdField(INVITE_FIELDS),
+    fields: INVITE_DEF.fields,
     policy: adminGate,
     purgeable: true,
     adminCapability
@@ -686,7 +689,7 @@ export async function installSystemNamespace(
   };
   const wrappedForSubstrateAuditEvent = wrapRegistryMutations(opts.registry, auditInterceptors);
   installAutoCrud(wrappedForSubstrateAuditEvent, AUDIT_EVENT_TYPE, opts.dataset, opts.edges, {
-    fields: mergeIdField(AUDIT_EVENT_FIELDS),
+    fields: AUDIT_EVENT_DEF.fields,
     policy: adminGate,
     purgeable: true,
     adminCapability
@@ -699,7 +702,7 @@ export async function installSystemNamespace(
   // append-only: one live verdict per (namespace, type, field), rewritten each
   // run. No interceptors: a purged verdict is restored by the next run.
   installAutoCrud(opts.registry, ENUM_VERDICT_TYPE, opts.dataset, opts.edges, {
-    fields: mergeIdField(ENUM_VERDICT_FIELDS),
+    fields: ENUM_VERDICT_DEF.fields,
     policy: adminGate,
     purgeable: true,
     adminCapability
@@ -715,12 +718,12 @@ export async function installSystemNamespace(
     and(requireCapability(INDEX_CAPABILITY), requireNamespace(SYSTEM_NAMESPACE))
   );
   installAutoCrud(opts.registry, STORE_PROFILE_TYPE, opts.dataset, opts.edges, {
-    fields: mergeIdField(STORE_PROFILE_FIELDS),
+    fields: STORE_PROFILE_DEF.fields,
     policy: indexGate,
     adminCapability
   });
   installAutoCrud(opts.registry, INDEX_RECOMMENDATION_TYPE, opts.dataset, opts.edges, {
-    fields: mergeIdField(INDEX_RECOMMENDATION_FIELDS),
+    fields: INDEX_RECOMMENDATION_DEF.fields,
     policy: indexGate,
     purgeable: true,
     adminCapability
@@ -728,7 +731,7 @@ export async function installSystemNamespace(
   // Admins read the advisor's baseline; every write verb is refused for
   // everyone, so evidence behind a `remove` cannot be backdated by a caller.
   installAutoCrud(opts.registry, ADVISOR_STATE_TYPE, opts.dataset, opts.edges, {
-    fields: mergeIdField(ADVISOR_STATE_FIELDS),
+    fields: ADVISOR_STATE_DEF.fields,
     policy: and(
       adminGate,
       denyVerbs(['create', 'update', 'delete'], 'AdvisorState is written by the index advisor only')
@@ -768,6 +771,34 @@ function mergeIdField(fields: Record<string, FieldDef>): Record<string, FieldDef
   // Object-spread order: a caller-declared `id` overrides this one.
   return { id: idDef, ...fields };
 }
+
+/** Each `_system` type's def, which `installAutoCrud` registers and `SYSTEM_TYPE_DEFS` lists. */
+const KEY_DEF = { fields: mergeIdField(KEY_FIELDS), indexes: KEY_INDEXES };
+const INVITE_DEF = { fields: mergeIdField(INVITE_FIELDS) };
+const AUDIT_EVENT_DEF = { fields: mergeIdField(AUDIT_EVENT_FIELDS) };
+const ENUM_VERDICT_DEF = { fields: mergeIdField(ENUM_VERDICT_FIELDS) };
+const STORE_PROFILE_DEF = { fields: mergeIdField(STORE_PROFILE_FIELDS) };
+const INDEX_RECOMMENDATION_DEF = { fields: mergeIdField(INDEX_RECOMMENDATION_FIELDS) };
+const ADVISOR_STATE_DEF = { fields: mergeIdField(ADVISOR_STATE_FIELDS) };
+
+/**
+ * Each `_system` type's fields and declared indexes, as `installSystemNamespace`
+ * registers them. A dataset that writes `_system` outside the engine (the admin
+ * CLI) takes its type defs from here, so it creates each type's table as a boot
+ * would: typed columns, and `Key`'s live-kid unique index. A test pins it to
+ * the registry's entries both ways.
+ */
+export const SYSTEM_TYPE_DEFS: Readonly<
+  Record<string, { fields: Record<string, FieldDef>; indexes?: IndexDecl[] }>
+> = {
+  [KEY_TYPE]: KEY_DEF,
+  [INVITE_TYPE]: INVITE_DEF,
+  [AUDIT_EVENT_TYPE]: AUDIT_EVENT_DEF,
+  [ENUM_VERDICT_TYPE]: ENUM_VERDICT_DEF,
+  [STORE_PROFILE_TYPE]: STORE_PROFILE_DEF,
+  [INDEX_RECOMMENDATION_TYPE]: INDEX_RECOMMENDATION_DEF,
+  [ADVISOR_STATE_TYPE]: ADVISOR_STATE_DEF
+};
 
 // Re-export Row so downstream modules that consume the install result but
 // want row-shape typing don't need to cross-import from substrate-types.

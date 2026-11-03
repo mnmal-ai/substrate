@@ -82,7 +82,7 @@ The pieces are exported for use outside the CLI: `createClientFromEnv()` builds 
 
 ### `substrate-admin`
 
-A separate binary for key management: `bootstrap` (seed the genesis admin key), `doctor` (check a deployment end to end), `onboard`, `list`, `register`, `update`, `rotate`, `revoke`, and `migrate-store` (copy a store into a fresh, empty, partitioned PostgreSQL 18 store and verify it; see [Upgrading](https://github.com/mnmal-ai/substrate/blob/main/packages/substrate-dataset-pg/README.md#upgrading)). `substrate-admin --help` documents each.
+A separate binary for key management: `bootstrap` (seed the genesis admin key), `doctor` (check a deployment end to end), `onboard`, `list`, `register`, `update`, `rotate`, `revoke`, and `migrate-store` (copy a store into a fresh, empty PostgreSQL 18 store on per-type tables and verify it; see [Upgrading](https://github.com/mnmal-ai/substrate/blob/main/packages/substrate-dataset-pg/README.md#upgrading)). `substrate-admin --help` documents each.
 
 ## Install
 
@@ -130,7 +130,7 @@ The main ones; `substrate --help` and the header of `apps/substrate/src/main.ts`
 
 | Var | Purpose |
 |---|---|
-| `SUBSTRATE_DATABASE_URL` | `memory` (default, ephemeral) or `postgres://...` |
+| `SUBSTRATE_DATABASE_URL` | `memory` (default, ephemeral) or `postgres://...`. A Postgres store keeps each type in a table of its own; a store in an old layout (`legacy` or `partitioned`) is refused at boot, naming `substrate-admin migrate-store`, which copies it into a fresh one. `SUBSTRATE_STORAGE_LAYOUT` is no longer read: setting it logs one warning. |
 | `SUBSTRATE_PLUGIN_DIR` | Plugin install root. The loader scans `<dir>/node_modules/{*,@*/*}/package.json` for packages with a `substrate` manifest and merges each plugin's `default-config.json` with `<dir>/<basename>.config.json`. |
 | `PORT` / `HOST` | Listen address (default `3100` / `0.0.0.0`) |
 | `SUBSTRATE_SYSTEM_ACTOR` | Who the deployment writes as while auth is off. Required in that case: the server refuses to boot rather than write unattributed rows. |

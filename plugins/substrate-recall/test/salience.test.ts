@@ -43,8 +43,11 @@ function makeFakeSql(handler: (text: string, values: unknown[]) => unknown): {
   const calls: Captured[] = [];
   const fn = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.join('?');
-    // The stores' layout probe, answered as a `legacy` store; not recorded, as it is not recall SQL.
-    if (text.includes('pg_class')) return [{ relname: 'rows', relkind: 'r' }];
+    // The stores' catalog lookups, answered as a type table with no field columns;
+    // not recorded, as they are not recall SQL.
+    if (text.includes('pg_class')) return [{ relname: 'substrate_type_tables', relkind: 'r' }];
+    if (text.includes('FROM substrate_type_tables')) return [{ table_name: 't__ns__type' }];
+    if (text.includes('FROM substrate_type_fields')) return [];
     calls.push({ text, values });
     return handler(text, values);
   }) as FakeSql;
@@ -311,7 +314,7 @@ describe('PgEmbeddingsStore.knnSearch', () => {
       vector: vec(0, 1),
       k: 10
     });
-    const select = calls.find((c) => c.text.includes('SELECT'));
+    const select = calls.find((c) => c.text.includes('FROM embeddings'));
     expect(select?.text).toContain('e.salience');
     expect(select?.text).toContain('AS salience');
   });

@@ -1,8 +1,7 @@
 /**
  * Barrel for the pure SQL-fragment builders in `./pg-sql/`:
  *
- *   `./pg-sql/primitives.js` — Fragment, idToText, metadata/promoted-column
- *     maps, BodyOrderByCast, fieldExpr, scalar helpers
+ *   `./pg-sql/primitives.js` — Fragment, idToText, metadata column maps, BodyOrderByCast, fieldExpr, scalar helpers
  *   `./pg-sql/projection.js` — buildRowProjection, assembleRowMetadata
  *   `./pg-sql/where.js` — buildWhere, combineAnd, conditionalMatchFragment,
  *     whereReferencesField
@@ -26,13 +25,9 @@ export {
   idToText,
   isMetadataField,
   type MetadataFieldName,
-  type PromotedBodyColumn,
-  type PromotedBodyColumnMap,
-  type PromotedColumnLookup,
-  resolvePromotedColumns,
   type SqlJsonValue
 } from './pg-sql/primitives.js';
-export { assembleRowMetadata, buildRowProjection, isAbsentMarker } from './pg-sql/projection.js';
+export { assembleRowMetadata, buildRowProjection } from './pg-sql/projection.js';
 export {
   buildCursorCompare,
   buildCursorNullTail,

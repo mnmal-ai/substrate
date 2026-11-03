@@ -4,11 +4,16 @@
  * `substrate federate enroll`.
  *
  * It never migrates: only `bootstrap` and the server change the schema. A
- * store missing a migration this CLI knows is refused.
+ * store in an old layout, or missing a migration this CLI knows, is refused.
  */
 
-import { SYSTEM_NAMESPACE } from '@mnmal-ai/substrate-compose';
-import { PgDataset, pendingMigrations } from '@mnmal-ai/substrate-dataset-pg';
+import { SYSTEM_NAMESPACE, SYSTEM_TYPE_DEFS } from '@mnmal-ai/substrate-compose';
+import {
+  assertTablesLayout,
+  PgDataset,
+  pendingMigrations,
+  type TypeDefLookup
+} from '@mnmal-ai/substrate-dataset-pg';
 import type { Dataset } from '@mnmal-ai/substrate-types';
 import type { Sql } from 'postgres';
 import { openSql as defaultOpenSql } from '../pg-client.js';
@@ -27,6 +32,15 @@ export interface OpenedDataset {
 
 export type OpenDatasetFn = (env: StoreEnv) => Promise<OpenedDataset>;
 
+/**
+ * `_system`'s type defs, as serve's boot reconciles them, so a type the CLI
+ * writes first gets its table typed, with `Key`'s live-kid unique index.
+ */
+export const systemTypeDefLookup: TypeDefLookup = (type, namespace) =>
+  namespace === SYSTEM_NAMESPACE && Object.hasOwn(SYSTEM_TYPE_DEFS, type)
+    ? SYSTEM_TYPE_DEFS[type]
+    : undefined;
+
 export async function openPgDataset(
   env: StoreEnv,
   openSql: (url: string) => Sql = defaultOpenSql
@@ -43,6 +57,8 @@ export async function openPgDataset(
   const sql = openSql(storeSpec);
   let pending: string[];
   try {
+    // Before the ledger check, so an old store names migrate-store, not a missing migration.
+    await assertTablesLayout(sql);
     pending = await pendingMigrations(sql);
   } catch (err) {
     await closeQuietly(sql);
@@ -57,7 +73,11 @@ export async function openPgDataset(
         'or use a substrate-admin matching the server version.'
     );
   }
-  const dataset = new PgDataset({ namespace: SYSTEM_NAMESPACE, sql });
+  const dataset = new PgDataset({
+    namespace: SYSTEM_NAMESPACE,
+    sql,
+    typeDefLookup: systemTypeDefLookup
+  });
   return { dataset, close: () => closeQuietly(sql) };
 }
 

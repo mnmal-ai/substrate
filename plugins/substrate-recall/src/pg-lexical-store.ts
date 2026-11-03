@@ -2,12 +2,12 @@
  * Postgres-backed `LexicalStore` — `lexical` + `ts_rank` over its GIN
  * index. Counterpart to `PgEmbeddingsStore`.
  *
- * Search joins `rows` the same way the KNN path does, with the same
+ * Search joins the type's rows the same way the KNN path does, with the same
  * `deleted_at IS NULL` predicate, so a deleted row cannot surface through this
  * arm after it has stopped surfacing through the dense one.
  */
 
-import { cachedLayout, type TypeTableRef, typeTableRef } from '@mnmal-ai/substrate-dataset-pg';
+import { type TypeTableRef, typeTableRef } from '@mnmal-ai/substrate-dataset-pg';
 import type postgres from 'postgres';
 import type {
   LexicalStore,
@@ -71,25 +71,12 @@ export class PgLexicalStore implements LexicalStore {
   /**
    * Deletes every lexical row whose backing row is missing or soft-deleted,
    * as `PgEmbeddingsStore.purgeOrphans` does for vectors: `lexical` has no FK
-   * to `rows`, so a drop, purge or tombstone would otherwise leave the text.
+   * to the type tables, so a drop, purge or tombstone would otherwise leave the text.
    *
    * @returns number of orphaned lexical rows deleted.
    */
   async purgeOrphans(): Promise<number> {
-    if ((await cachedLayout(this.#sql)) === 'tables') {
-      return purgeTypeTableOrphans(this.#sql, 'lexical');
-    }
-    const result = await this.#sql`
-      DELETE FROM lexical l
-      WHERE NOT EXISTS (
-        SELECT 1 FROM rows r
-        WHERE r.namespace = l.row_namespace
-          AND r.type      = l.row_type
-          AND r.id        = l.row_id
-          AND r.deleted_at IS NULL
-      )
-    `;
-    return result.count;
+    return purgeTypeTableOrphans(this.#sql, 'lexical');
   }
 
   async countIndexed(namespace: string, type: string): Promise<number> {

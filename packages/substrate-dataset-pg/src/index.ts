@@ -6,11 +6,6 @@ export type { IndexDecl } from '@mnmal-ai/substrate-types';
 export { tryWithPgAdvisoryLock } from './advisory-lock.js';
 export { copyRows, type Misfit, parseSourceBody, type SourceRow } from './copy-rows.js';
 export { type DiskGuard, makeDiskGuard } from './disk-guard.js';
-export {
-  type EnumCheckInput,
-  type EnumCheckStatements,
-  enumCheckStatements
-} from './enum-check.js';
 export { NamespaceMismatch, ReservedField } from './errors.js';
 export {
   desiredIndexKeys,
@@ -26,14 +21,15 @@ export {
 export {
   cachedLayout,
   columnName,
+  type DetectedLayout,
   detectLayout,
-  partitionName,
   type StorageLayout,
   typeTableName
 } from './layout.js';
 export {
   assertNotMigrating,
   assertStoreSchema,
+  assertTablesLayout,
   deriveListIndexMigration,
   getMigrationList,
   type IndexedListField,
@@ -47,9 +43,9 @@ export {
   type RunMigrationsOptions,
   runDerivedMigrations,
   runMigrations,
-  StorageLayoutMismatchError,
   StoreMigrationInProgressError,
-  UnsupportedSchemaNameError
+  UnsupportedSchemaNameError,
+  UnsupportedStoreLayoutError
 } from './migrate.js';
 export {
   type FieldDefLookup,
@@ -63,11 +59,6 @@ export {
   type PgIdempotencyStoreOptions
 } from './pg-idempotency-store.js';
 export { PgShortIdStore, seqName } from './pg-short-id-store.js';
-export type {
-  PromotedBodyColumn,
-  PromotedBodyColumnMap,
-  PromotedColumnLookup
-} from './pg-sql.js';
 export {
   PROMOTION_FAILED_AFTER,
   type PromotePendingFieldsOptions,
@@ -79,14 +70,12 @@ export {
   UnsupportedServerVersionError
 } from './server-version.js';
 export { type PgHandle, txScopeIdFor } from './tx-scope.js';
-export { TypeStorageLockTimeoutError } from './type-storage.js';
 export {
   type ColumnKind,
   columnKindOf,
   ensureTypeTable,
   FieldKindChangedError,
   loadTypeTable,
-  rowsTypeTable,
   type TableCache,
   type TypedColumn,
   type TypeTable,

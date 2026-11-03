@@ -15,8 +15,8 @@ import { encodeCursor } from '@mnmal-ai/substrate-filter';
 import type { FieldDef, IndexDecl, ReadParams } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { detectLayout, PgDataset } from '../src/index.js';
-import { clearNamespace, TABLES } from './_layout.js';
+import { PgDataset } from '../src/index.js';
+import { clearNamespace, relationOf } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const TYPE = 'Paged';
@@ -53,12 +53,10 @@ let sql: Sql;
 let traced: Sql;
 let sent: Array<{ query: string; parameters: unknown[]; types: number[] }> = [];
 let ds: PgDataset;
-let partitioned = false;
 
 beforeAll(async () => {
-  if (!POSTGRES_URL || TABLES) return;
+  if (!POSTGRES_URL) return;
   sql = postgres(POSTGRES_URL, { onnotice: () => {} });
-  partitioned = (await detectLayout(sql)) === 'partitioned';
   traced = postgres(POSTGRES_URL, {
     onnotice: () => {},
     debug: (_conn, query, parameters, types) => {
@@ -101,12 +99,12 @@ beforeAll(async () => {
     SELECT ${ns}, ${TYPE}, i + 1, 'r' || lpad(i::text, 5, '0')
     FROM generate_series(0, ${ROWS - 1}) i
     WHERE i % 7 <> 0`;
-  await sql`ANALYZE rows`;
+  for (const type of [TYPE, FULL]) await sql.unsafe(`ANALYZE ${await relationOf(sql, ns, type)}`);
   await sql`ANALYZE short_ids`;
 }, 120_000);
 
 afterAll(async () => {
-  if (!POSTGRES_URL || TABLES) return;
+  if (!POSTGRES_URL) return;
   await clearNamespace(sql, ns);
   await traced.end({ timeout: 5 });
   await sql.end({ timeout: 5 });
@@ -138,7 +136,7 @@ function nodes(node: PlanNode, out: PlanNode[] = []): PlanNode[] {
 async function selectsOf(params: ReadParams, type = TYPE): Promise<typeof sent> {
   sent = [];
   await ds.read(type, params);
-  return sent.filter((s) => /FROM rows r/.test(s.query));
+  return sent.filter((s) => /FROM "t__[^"]+" r\b/.test(s.query));
 }
 
 /** The plan of the first statement `read()` sends for `params`, executed after `settings`. */
@@ -180,8 +178,7 @@ const genericPlan = (): Promise<PlanNode> =>
     true
   );
 
-// Plans over the type's declared indexes, which Task 12 builds on type tables.
-describe.skipIf(!POSTGRES_URL || TABLES)('read: short id lookup for the returned page only', () => {
+describe.skipIf(!POSTGRES_URL)('read: short id lookup for the returned page only', () => {
   it('a deep id-ordered page never reads short_ids beyond the page (generic plan)', async () => {
     const all = nodes(await genericPlan());
     const joins = all.filter(
@@ -265,22 +262,10 @@ describe.skipIf(!POSTGRES_URL || TABLES)('read: short id lookup for the returned
         };
         const all = nodes(await planOf(params, [`plan_cache_mode = ${mode}`], true));
         const listing = all.map((n) => `${n['Node Type']} ${n['Index Name'] ?? ''}`).join(', ');
-        if (partitioned) {
-          // The type has a heap of its own: an ordered scan of this direction's index.
-          const scan = all.find((n) => n['Index Name'] === index());
-          expect(scan, listing).toBeDefined();
-          expect(scan?.['Index Cond']).toMatch(bound);
-        } else {
-          // On the shared legacy heap, a bitmap scan plus a sort is a plan the
-          // planner legitimately picks. What must hold is a sargable bound, on
-          // either date index, as an Index Scan's or a Bitmap Index Scan's cond.
-          const scan = all.find(
-            (n) =>
-              (n['Index Name'] === D_IDX || n['Index Name'] === D_ASC_IDX) &&
-              bound.test(n['Index Cond'] ?? '')
-          );
-          expect(scan, listing).toBeDefined();
-        }
+        // The type has a heap of its own: an ordered scan of this direction's index.
+        const scan = all.find((n) => n['Index Name'] === index());
+        expect(scan, listing).toBeDefined();
+        expect(scan?.['Index Cond']).toMatch(bound);
         const removed = all.reduce(
           (sum, n) =>
             sum + (n['Rows Removed by Filter'] ?? 0) + (n['Rows Removed by Index Recheck'] ?? 0),
@@ -446,7 +431,7 @@ describe.skipIf(!POSTGRES_URL || TABLES)('read: short id lookup for the returned
       sent = [];
       const page = await ds.read(TYPE, { ...params, limit, cursor });
       expect([page.rows.length, page.hasMore]).toEqual([ids, hasMore]);
-      const selects = sent.filter((q) => /FROM rows r/.test(q.query));
+      const selects = sent.filter((q) => /FROM "t__[^"]+" r\b/.test(q.query));
       expect(selects).toHaveLength(2);
       tails.push((selects[1] as (typeof sent)[number]).query);
     }
@@ -468,11 +453,9 @@ describe.skipIf(!POSTGRES_URL || TABLES)('read: short id lookup for the returned
         const strings = args[0];
         const isPage = Array.isArray(strings) && String(strings[0]).includes('SELECT p.*');
         if (isPage && ++pageQueries === 2) {
-          return sql`
-            UPDATE rows SET body = body - 'd'
-            WHERE namespace = ${ns} AND type = ${RACE} AND id = ${rid(1)}`.then(() =>
-            Reflect.apply(target, thisArg, args)
-          );
+          return relationOf(sql, ns, RACE)
+            .then((rel) => sql.unsafe(`UPDATE ${rel} SET f_d = NULL WHERE id = $1`, [rid(1)]))
+            .then(() => Reflect.apply(target, thisArg, args));
         }
         return Reflect.apply(target, thisArg, args);
       }
@@ -520,8 +503,6 @@ describe.skipIf(!POSTGRES_URL || TABLES)('read: short id lookup for the returned
       [rid(1), 2],
       [rid(4), 5]
     ]);
-    expect(
-      sent.some((s) => /LEFT JOIN short_ids s\s+ON s\.namespace = r\.namespace/.test(s.query))
-    ).toBe(true);
+    expect(sent.some((s) => /LEFT JOIN short_ids s\s+ON s\.namespace = /.test(s.query))).toBe(true);
   });
 });

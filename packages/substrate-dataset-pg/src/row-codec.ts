@@ -74,9 +74,11 @@ export function encodeRow(table: TypeTable, row: Record<string, unknown>): Encod
     if (typeof value === 'number' && !Number.isFinite(value)) {
       throw new RangeError(`field '${field}' is ${value}, which a row cannot store`);
     }
-    const v = toColumn(held, value);
+    // A JS Date is written as the JSON text it serialises to, as a jsonb body stored it.
+    const written = value instanceof Date ? value.toJSON() : value;
+    const v = toColumn(held, written);
     out.columns[held.column] = v;
-    if (v === null || readBack(held.kind, v) !== value) out.raw[field] = value;
+    if (v === null || readBack(held.kind, v) !== written) out.raw[field] = written;
   }
   return out;
 }

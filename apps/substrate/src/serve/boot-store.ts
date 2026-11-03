@@ -7,7 +7,7 @@
 
 import { type ComposeResult, compose, DEFAULT_NAMESPACE } from '@mnmal-ai/substrate-compose';
 import type { Engine } from '@mnmal-ai/substrate-core';
-import { assertNotMigrating, type StorageLayout } from '@mnmal-ai/substrate-dataset-pg';
+import { assertNotMigrating } from '@mnmal-ai/substrate-dataset-pg';
 import { listExtensionOperators, unregisterExtensionOperator } from '@mnmal-ai/substrate-filter';
 import { FastifySubstrateServer } from '@mnmal-ai/substrate-server-fastify';
 import type { NamespaceDefinition } from '@mnmal-ai/substrate-types';
@@ -30,8 +30,6 @@ export interface BootStoreOptions {
   config: ParsedConfig;
   /** `SUBSTRATE_PLUGIN_DIR`, as `resolvePluginDir()` reads it. */
   pluginDir: string | null;
-  /** The layout a store with no `rows` yet is created with; see `runMigrations`. */
-  layout?: StorageLayout;
   /** Boot a store that carries the migrate-store marker. Only migrate-store passes it. */
   allowMigrating?: boolean;
   /**
@@ -102,7 +100,6 @@ export async function bootStore(opts: BootStoreOptions): Promise<BootedStore> {
     fieldDefLookupFor,
     typeDefLookupFor,
     diskGuard,
-    opts.layout,
     config.statementTimeoutMs
   );
 

@@ -47,7 +47,7 @@ import {
 import { bootStore } from '../src/serve/boot-store.js';
 import { parseEnv } from '../src/serve/config.js';
 import { makeTypeDefLookupFactory, reconcileDeclaredStorage } from '../src/serve/wiring.js';
-import { deleteNamespaces, relationOf, TABLES } from './_layout.js';
+import { deleteNamespaces, relationOf } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const SECRET = 'pending-field-secret';
@@ -195,73 +195,60 @@ describe.skipIf(!POSTGRES_URL)('pending runtime fields, seen and promoted', () =
     };
   }
 
-  it.skipIf(!TABLES)(
-    "propose_field on a live type → schema storage:'pending', a /health warning, a field_pending event; the sweep promotes it",
-    async () => {
-      const { ns, post, get, audit, proposeRankOnLiveNote, rankDef, health, reportLines } =
-        await boot();
-      await proposeRankOnLiveNote();
-      expect(await rankDef()).toMatchObject({ storage: 'pending' });
-      // Unauthenticated: a count, store-wide, naming no namespace, type or field.
-      const pendingHealth = await health();
-      expect(pendingHealth.status).toBe('ok');
-      expect(pendingHealth.warnings).toContainEqual(
-        expect.stringMatching(/^\d+ fields? pending promotion(; .*)? — see the storage report$/)
-      );
-      expect(JSON.stringify(pendingHealth)).not.toContain(ns);
-      expect(JSON.stringify(pendingHealth)).not.toContain('rank');
-      // The names are on the admin-gated storage report.
-      expect(await reportLines()).toEqual([
-        `${ns}/Note.rank is pending: held in jsonb until promoted (attempt 0)`
-      ]);
-      await until(() => audit.length >= 1);
-      expect(audit).toEqual([
-        {
-          kind: 'field_pending',
-          details: { namespace: ns, type: 'Note', field: 'rank', attempts: 0 }
-        }
-      ]);
-      const filtered = json(
-        await post('/substrate/v1/query', {
-          [`${ns}/Note`]: { params: { where: { rank: { eq: 3 } } }, fields: { title: true } }
-        })
-      ).data as Record<string, Array<Record<string, unknown>>>;
-      expect(filtered[`${ns}/Note`]?.map((r) => r.title)).toEqual(['b']);
-
-      const swept = json(await post('/substrate/v1/_system/promote-fields', {}));
-      expect(swept.events).toContainEqual({
-        kind: 'promoted',
-        namespace: ns,
-        type: 'Note',
-        field: 'rank',
-        attempts: 1
-      });
-      await until(() => audit.length >= 2);
-      expect(audit[1]).toEqual({
-        kind: 'field_promoted',
-        details: { namespace: ns, type: 'Note', field: 'rank', attempts: 1 }
-      });
-      expect(await rankDef()).not.toHaveProperty('storage');
-      expect(await reportLines()).toEqual([]);
-      expect(JSON.stringify(await health())).not.toContain(ns);
-      const after = json(
-        await post('/substrate/v1/query', {
-          [`${ns}/Note`]: { params: { where: { rank: { eq: 3 } } }, fields: { title: true } }
-        })
-      ).data as Record<string, Array<Record<string, unknown>>>;
-      expect(after[`${ns}/Note`]?.map((r) => r.title)).toEqual(['b']);
-      expect((await get('/health')).status).toBe(200);
-    }
-  );
-
-  it.skipIf(TABLES)('propose_field on an old layout emits no field_pending event', async () => {
-    const { audit, proposeRankOnLiveNote, rankDef, health } = await boot();
+  it("propose_field on a live type → schema storage:'pending', a /health warning, a field_pending event; the sweep promotes it", async () => {
+    const { ns, post, get, audit, proposeRankOnLiveNote, rankDef, health, reportLines } =
+      await boot();
     await proposeRankOnLiveNote();
-    // Give a stray event the time a real one takes to arrive.
-    await new Promise((r) => setTimeout(r, 300));
-    expect(audit).toEqual([]);
+    expect(await rankDef()).toMatchObject({ storage: 'pending' });
+    // Unauthenticated: a count, store-wide, naming no namespace, type or field.
+    const pendingHealth = await health();
+    expect(pendingHealth.status).toBe('ok');
+    expect(pendingHealth.warnings).toContainEqual(
+      expect.stringMatching(/^\d+ fields? pending promotion(; .*)? — see the storage report$/)
+    );
+    expect(JSON.stringify(pendingHealth)).not.toContain(ns);
+    expect(JSON.stringify(pendingHealth)).not.toContain('rank');
+    // The names are on the admin-gated storage report.
+    expect(await reportLines()).toEqual([
+      `${ns}/Note.rank is pending: held in jsonb until promoted (attempt 0)`
+    ]);
+    await until(() => audit.length >= 1);
+    expect(audit).toEqual([
+      {
+        kind: 'field_pending',
+        details: { namespace: ns, type: 'Note', field: 'rank', attempts: 0 }
+      }
+    ]);
+    const filtered = json(
+      await post('/substrate/v1/query', {
+        [`${ns}/Note`]: { params: { where: { rank: { eq: 3 } } }, fields: { title: true } }
+      })
+    ).data as Record<string, Array<Record<string, unknown>>>;
+    expect(filtered[`${ns}/Note`]?.map((r) => r.title)).toEqual(['b']);
+
+    const swept = json(await post('/substrate/v1/_system/promote-fields', {}));
+    expect(swept.events).toContainEqual({
+      kind: 'promoted',
+      namespace: ns,
+      type: 'Note',
+      field: 'rank',
+      attempts: 1
+    });
+    await until(() => audit.length >= 2);
+    expect(audit[1]).toEqual({
+      kind: 'field_promoted',
+      details: { namespace: ns, type: 'Note', field: 'rank', attempts: 1 }
+    });
     expect(await rankDef()).not.toHaveProperty('storage');
-    expect((await health()).warnings.filter((w) => w.includes('pending promotion'))).toEqual([]);
+    expect(await reportLines()).toEqual([]);
+    expect(JSON.stringify(await health())).not.toContain(ns);
+    const after = json(
+      await post('/substrate/v1/query', {
+        [`${ns}/Note`]: { params: { where: { rank: { eq: 3 } } }, fields: { title: true } }
+      })
+    ).data as Record<string, Array<Record<string, unknown>>>;
+    expect(after[`${ns}/Note`]?.map((r) => r.title)).toEqual(['b']);
+    expect((await get('/health')).status).toBe(200);
   });
 
   it('substrate-admin promote-fields reaches the route', async () => {
@@ -295,7 +282,7 @@ describe.skipIf(!POSTGRES_URL)('pending runtime fields, seen and promoted', () =
     );
   });
 
-  describe.skipIf(!TABLES)('at boot', () => {
+  describe('at boot', () => {
     /** Declares `Item` in code with `fields`, as the binary's boot reconcile sees it. */
     async function bootWith(ns: string, fields: Record<string, FieldDef>) {
       const nsDefs = new Map<string, NamespaceDefinition>([[ns, itemDef(fields)]]);
@@ -348,9 +335,7 @@ describe.skipIf(!POSTGRES_URL)('pending runtime fields, seen and promoted', () =
       });
       try {
         // Migrate the fresh schema, starting nothing in the background.
-        await (
-          await bootStore({ config, pluginDir: null, layout: 'tables', background: false })
-        ).close();
+        await (await bootStore({ config, pluginDir: null, background: false })).close();
         const ns = 'kbootsweep';
         const nsDefs = new Map<string, NamespaceDefinition>([
           [ns, itemDef({ title: field.string() })]
@@ -371,7 +356,7 @@ describe.skipIf(!POSTGRES_URL)('pending runtime fields, seen and promoted', () =
           )[0]?.state;
         expect(await state()).toBe('promoting');
         // SUBSTRATE_PROMOTE_INTERVAL_MS is its 6 h default: only the boot sweep can do this.
-        const booted = await bootStore({ config, pluginDir: null, layout: 'tables' });
+        const booted = await bootStore({ config, pluginDir: null });
         try {
           const deadline = Date.now() + 10_000;
           while ((await state()) !== 'column' && Date.now() < deadline) {

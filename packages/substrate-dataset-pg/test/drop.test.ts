@@ -10,7 +10,7 @@ import { randomBytes } from 'node:crypto';
 import type { FieldDef } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { PgDataset, runMigrations, type StorageLayout, typeIndexesOf } from '../src/index.js';
+import { PgDataset, runMigrations, typeIndexesOf } from '../src/index.js';
 import { generatedIdentifier } from '../src/migrate.js';
 import type { TypeDefLookup } from '../src/pg-dataset.js';
 import { clearNamespace, dropNamespace, rowsWhere } from './_layout.js';
@@ -184,7 +184,6 @@ describe.skipIf(!POSTGRES_URL)('PgDataset drop primitives', () => {
 });
 
 describe.skipIf(!POSTGRES_URL)('engine indexes of a dropped namespace', () => {
-  const LAYOUT = (process.env.SUBSTRATE_STORAGE_LAYOUT ?? 'legacy') as StorageLayout;
   const ref: FieldDef = { kind: 'crossRef', ns: 'other', type: 'X', onDelete: 'set_null' };
   let sql: Sql;
 
@@ -219,7 +218,7 @@ describe.skipIf(!POSTGRES_URL)('engine indexes of a dropped namespace', () => {
     }
     const ds = new PgDataset({ namespace: ns, sql, typeDefLookup: lookup(known) });
     const engineIndexes = async (type: string) =>
-      (await typeIndexesOf(sql, ns, type, LAYOUT)).filter((i) => i.engineOwned).map((i) => i.name);
+      (await typeIndexesOf(sql, ns, type)).filter((i) => i.engineOwned).map((i) => i.name);
     return { ns, ds, unique, engineIndexes };
   }
 
@@ -241,12 +240,11 @@ describe.skipIf(!POSTGRES_URL)('engine indexes of a dropped namespace', () => {
     expect(await a.ds.dropNamespaceIndexes({ unique: true })).toEqual([a.unique]);
     expect(await a.engineIndexes('T')).toEqual([]);
     expect(await b.engineIndexes('T')).toEqual(kept);
-    // Four types' concurrent builds on the shared legacy rows, then the drops.
   }, 120_000);
 
   it('gives up with index_drop_timeout when the index-build lock stays held past the bound', async () => {
     const { ns, ds, engineIndexes } = await namespaceWithIndexes();
-    const table = (await typeIndexesOf(sql, ns, 'U', LAYOUT))[0]?.table as string;
+    const table = (await typeIndexesOf(sql, ns, 'U'))[0]?.table as string;
     const holder = await sql.reserve();
     try {
       await holder`SELECT pg_advisory_lock(hashtext('substrate-index-build:' || current_schema() || '.' || ${table}::text))`;

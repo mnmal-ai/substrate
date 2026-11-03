@@ -1,7 +1,6 @@
 /**
  * The `tables` layout's skeleton: its baseline, the type catalog, and the DDL
- * `ensureTypeTable` runs. The pg suite runs on the `tables` layout only; the
- * name and kind checks run everywhere.
+ * `ensureTypeTable` runs. The name and kind checks need no database.
  */
 
 import { randomBytes } from 'node:crypto';
@@ -15,12 +14,10 @@ import {
   columnKindOf,
   ensureTypeTable,
   FieldKindChangedError,
-  loadTypeTable,
-  rowsTypeTable
+  loadTypeTable
 } from '../src/type-table.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
-const TABLES = process.env.SUBSTRATE_TEST_LAYOUT === 'tables';
 const NS = `tt_${randomBytes(4).toString('hex')}`;
 
 const EVERY_KIND: Record<string, FieldDef> = {
@@ -80,18 +77,6 @@ describe('type table names', () => {
     expect(UUID_REGEX).toBe('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$');
     expect(UUID_CHECK_MIGRATION).toBe('0002_uuid_format_check');
   });
-
-  it('rowsTypeTable describes rows as today', () => {
-    const promoted = () => undefined;
-    const t = rowsTypeTable('cortext', "o'neil", promoted);
-    expect(t.from).toBe('rows');
-    expect(t.jsonb).toBe('body');
-    expect(t.scope('r')).toBe("r.namespace = 'cortext' AND r.type = 'o''neil'");
-    expect(t.scope()).toBe("namespace = 'cortext' AND type = 'o''neil'");
-    expect(t.column('anything')).toBeUndefined();
-    expect(t.columns()).toEqual([]);
-    expect(t.promoted).toBe(promoted);
-  });
 });
 
 /** A throwaway schema on one connection, so a `SET search_path` reaches every query. */
@@ -108,7 +93,7 @@ async function withFreshSchema(fn: (sql: Sql) => Promise<void>): Promise<void> {
   }
 }
 
-describe.skipIf(!POSTGRES_URL || !TABLES)('tables layout', () => {
+describe.skipIf(!POSTGRES_URL)('tables layout', () => {
   let sql: Sql;
   let seq = 0;
   /** A type name no other test uses. */
@@ -164,7 +149,7 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('tables layout', () => {
 
   it('fresh store gets the tables baseline and no rows', async () => {
     await withFreshSchema(async (s) => {
-      await runMigrations(s, { layout: 'tables' });
+      await runMigrations(s);
       expect(await detectLayout(s)).toBe('tables');
       const versions = await s<Array<{ version: string }>>`SELECT version FROM migrations`;
       expect(versions.map((v) => v.version)).toEqual(['0001t_tables_baseline']);
@@ -228,7 +213,7 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('tables layout', () => {
 
   it('enforceUuidCheck: the tables layout rejects a non-UUID id in row_ids, short_ids and edges', async () => {
     await withFreshSchema(async (s) => {
-      await runMigrations(s, { layout: 'tables', enforceUuidCheck: true });
+      await runMigrations(s, { enforceUuidCheck: true });
       expect(await ledger(s)).toEqual(['0001t_tables_baseline', UUID_CHECK_MIGRATION]);
       await expectUuidChecks(s);
     });
@@ -236,7 +221,7 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('tables layout', () => {
 
   it('enforceUuidCheck turned on later: the CHECKs reach row_ids, short_ids, edges and existing type tables, and reboots rehash nothing', async () => {
     await withFreshSchema(async (s) => {
-      await runMigrations(s, { layout: 'tables', enforceUuidCheck: false });
+      await runMigrations(s, { enforceUuidCheck: false });
       const args = {
         namespace: 'n',
         fields: { title: field.string() },
@@ -245,7 +230,7 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('tables layout', () => {
       await ensureTypeTable(s, { ...args, type: 'Before', enforceUuidCheck: false });
       expect(await ledger(s)).toEqual(['0001t_tables_baseline']);
 
-      await runMigrations(s, { layout: 'tables', enforceUuidCheck: true });
+      await runMigrations(s, { enforceUuidCheck: true });
       expect(await ledger(s)).toEqual(['0001t_tables_baseline', UUID_CHECK_MIGRATION]);
       await expectUuidChecks(s);
       const [before] = await s<Array<{ table_name: string }>>`
@@ -255,8 +240,8 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('tables layout', () => {
       ).rejects.toMatchObject({ code: '23514' });
 
       // As on the old layouts, the gate going off again keeps the CHECKs and rehashes nothing.
-      await runMigrations(s, { layout: 'tables', enforceUuidCheck: true });
-      await runMigrations(s, { layout: 'tables', enforceUuidCheck: false });
+      await runMigrations(s, { enforceUuidCheck: true });
+      await runMigrations(s, { enforceUuidCheck: false });
       expect(await s`SELECT 1 FROM migrations_audit`).toHaveLength(0);
     });
   });
@@ -322,7 +307,6 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('tables layout', () => {
     const loaded = await loadTypeTable(sql, NS, type);
     expect(loaded?.from).toBe(`"${table}"`);
     expect(loaded?.jsonb).toBe('extra');
-    expect(loaded?.scope('r')).toBeNull();
     expect(loaded?.column('status')).toEqual({
       field: 'status',
       column: columnName('status'),

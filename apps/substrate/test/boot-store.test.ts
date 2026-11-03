@@ -11,7 +11,6 @@ import { join } from 'node:path';
 import {
   detectLayout,
   MIGRATE_STORE_MARKER_TABLE,
-  type StorageLayout,
   StoreMigrationInProgressError,
   UnsupportedSchemaNameError
 } from '@mnmal-ai/substrate-dataset-pg';
@@ -41,7 +40,6 @@ function withOptions(url: string, options: string): string {
 const ACTOR = { SUBSTRATE_SYSTEM_ACTOR: 'boot-store-test' };
 
 describe.skipIf(!POSTGRES_URL)('bootStore (pg)', () => {
-  const layout = (process.env.SUBSTRATE_STORAGE_LAYOUT ?? 'partitioned') as StorageLayout;
   let schema: string;
   let url: string;
   let sql: Sql;
@@ -64,36 +62,15 @@ describe.skipIf(!POSTGRES_URL)('bootStore (pg)', () => {
     const start = vi.spyOn(FastifySubstrateServer.prototype, 'start');
     const booted = await bootStore({
       config: parseEnv({ SUBSTRATE_DATABASE_URL: url, SUBSTRATE_SYSTEM_ACTOR: 'boot-store-test' }),
-      pluginDir: null,
-      layout
+      pluginDir: null
     });
     try {
-      expect(await detectLayout(sql)).toBe(layout);
+      expect(await detectLayout(sql)).toBe('tables');
       expect(booted.engine.registryFor('_system')?.has('Key')).toBe(true);
       expect(booted.server).toBeInstanceOf(FastifySubstrateServer);
       expect(start).not.toHaveBeenCalled();
     } finally {
       await booted.close();
-    }
-  });
-
-  it('an explicit layout beats SUBSTRATE_STORAGE_LAYOUT on a fresh store', async () => {
-    const previous = process.env.SUBSTRATE_STORAGE_LAYOUT;
-    process.env.SUBSTRATE_STORAGE_LAYOUT = 'legacy';
-    try {
-      const booted = await bootStore({
-        config: parseEnv({
-          SUBSTRATE_DATABASE_URL: url,
-          SUBSTRATE_SYSTEM_ACTOR: 'boot-store-test'
-        }),
-        pluginDir: null,
-        layout: 'partitioned'
-      });
-      await booted.close();
-      expect(await detectLayout(sql)).toBe('partitioned');
-    } finally {
-      if (previous === undefined) delete process.env.SUBSTRATE_STORAGE_LAYOUT;
-      else process.env.SUBSTRATE_STORAGE_LAYOUT = previous;
     }
   });
 
@@ -115,7 +92,7 @@ describe.skipIf(!POSTGRES_URL)('bootStore (pg)', () => {
       );
       const config = parseEnv({ SUBSTRATE_DATABASE_URL: url, ...ACTOR });
       for (let i = 0; i < 2; i++) {
-        const booted = await bootStore({ config, pluginDir, layout, background: false });
+        const booted = await bootStore({ config, pluginDir, background: false });
         expect(listExtensionOperators()).toContain('embeddingSimilar');
         await booted.close();
         expect(listExtensionOperators()).not.toContain('embeddingSimilar');
@@ -131,11 +108,11 @@ describe.skipIf(!POSTGRES_URL)('bootStore (pg)', () => {
       SUBSTRATE_DATABASE_URL: url,
       SUBSTRATE_SYSTEM_ACTOR: 'boot-store-test'
     });
-    await expect(bootStore({ config, pluginDir: null, layout })).rejects.toBeInstanceOf(
+    await expect(bootStore({ config, pluginDir: null })).rejects.toBeInstanceOf(
       StoreMigrationInProgressError
     );
     // migrate-store itself boots past the marker.
-    const booted = await bootStore({ config, pluginDir: null, layout, allowMigrating: true });
+    const booted = await bootStore({ config, pluginDir: null, allowMigrating: true });
     await booted.close();
   });
   it('a marker in a sibling schema does not block boot', async () => {
@@ -145,8 +122,7 @@ describe.skipIf(!POSTGRES_URL)('bootStore (pg)', () => {
       await sql.unsafe(`CREATE TABLE ${sibling}.${MIGRATE_STORE_MARKER_TABLE} (id int)`);
       const booted = await bootStore({
         config: parseEnv({ SUBSTRATE_DATABASE_URL: url, ...ACTOR }),
-        pluginDir: null,
-        layout
+        pluginDir: null
       });
       await booted.close();
     } finally {
@@ -163,8 +139,7 @@ describe.skipIf(!POSTGRES_URL)('bootStore (pg)', () => {
       await expect(
         bootStore({
           config: parseEnv({ SUBSTRATE_DATABASE_URL: quotedUrl, ...ACTOR }),
-          pluginDir: null,
-          layout
+          pluginDir: null
         })
       ).rejects.toBeInstanceOf(UnsupportedSchemaNameError);
     } finally {

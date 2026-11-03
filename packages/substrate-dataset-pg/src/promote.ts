@@ -32,8 +32,8 @@
 import type { PromotionEvent } from '@mnmal-ai/substrate-types';
 import type { Sql } from 'postgres';
 import { UniqueIndexDuplicatesError } from './index-reconciler.js';
+import { ident } from './layout.js';
 import { encodeRow, RAW_KEY } from './row-codec.js';
-import { ident } from './type-storage.js';
 import {
   addPendingColumn,
   loadTypeTable,

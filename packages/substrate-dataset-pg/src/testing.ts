@@ -393,30 +393,8 @@ export async function preparePgTestSchema(
 }
 
 /**
- * The storage layout this run's pg suites build, from `SUBSTRATE_TEST_LAYOUT`
- * (default `legacy`). Copies it into `SUBSTRATE_STORAGE_LAYOUT`, which
- * `runMigrations` reads on a fresh database, and returns the package name to
- * isolate under, so each layout gets a schema of its own.
- *
- * Call from `globalSetup`, before `preparePgTestSchema`.
- */
-export function selectPgTestLayout(packageName: string): {
-  layout: 'legacy' | 'partitioned' | 'tables';
-  packageName: string;
-} {
-  const layout = process.env.SUBSTRATE_TEST_LAYOUT ?? 'legacy';
-  if (layout !== 'legacy' && layout !== 'partitioned' && layout !== 'tables') {
-    throw new Error(
-      `SUBSTRATE_TEST_LAYOUT must be 'legacy', 'partitioned' or 'tables', got '${layout}'`
-    );
-  }
-  process.env.SUBSTRATE_STORAGE_LAYOUT = layout;
-  return { layout, packageName: `${packageName}-${layout}` };
-}
-
-/**
  * A `createSchema` for `preparePgTestSchema` that drops and recreates the
- * schema, so every run builds its layout from an empty database.
+ * schema, so every run builds its store from an empty database.
  */
 export async function recreatePgTestSchema(url: string, schema: string): Promise<void> {
   const sql = postgres(url, { max: 1, onnotice: () => {} });

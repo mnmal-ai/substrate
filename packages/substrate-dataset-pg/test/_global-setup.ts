@@ -16,16 +16,12 @@ import {
   assertCannotWriteOutsideTestDatabases,
   assertTestDatabase,
   preparePgTestSchema,
-  recreatePgTestSchema,
-  selectPgTestLayout
+  recreatePgTestSchema
 } from '../src/testing.js';
 
-/**
- * The suite runs once per storage layout, each in a schema of its own that is
- * rebuilt every run, so a layout is always built from a fresh database.
- */
+/** The suite runs in a schema of its own, rebuilt every run, so the store is always fresh. */
 export default async function setup(): Promise<void> {
-  const { layout, packageName } = selectPgTestLayout('substrate-dataset-pg');
+  const packageName = 'substrate-dataset-pg';
 
   // Before preparePgTestSchema, which writes. Here rather than in setupFiles
   // because the reach probe opens a connection per database.
@@ -40,7 +36,7 @@ export default async function setup(): Promise<void> {
 
   const sql = postgres(isolated, { max: 1, onnotice: () => {} });
   try {
-    await runMigrations(sql, { layout });
+    await runMigrations(sql);
   } finally {
     await sql.end({ timeout: 5 });
   }

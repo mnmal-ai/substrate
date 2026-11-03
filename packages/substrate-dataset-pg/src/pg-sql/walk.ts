@@ -217,10 +217,7 @@ export function hop(
   const table = scope.tableFor(type);
   // A walk never leaves the frame's namespace (the validator refuses it), so
   // the far row is pinned to the dataset's, as the memory reference reads it.
-  const scoped = table.scope(alias);
-  const pin: Fragment = sql`${sql.unsafe(
-    `${scoped === null ? '' : `${scoped} AND `}${qualifier(alias)}deleted_at IS NULL`
-  )}`;
+  const pin: Fragment = sql`${sql.unsafe(`${qualifier(alias)}deleted_at IS NULL`)}`;
   return {
     type,
     from: table.from,

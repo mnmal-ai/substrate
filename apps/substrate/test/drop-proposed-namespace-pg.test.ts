@@ -11,14 +11,13 @@ import {
   PgDataset,
   PgEdgesStore,
   runMigrations,
-  type StorageLayout,
   typeIndexesOf
 } from '@mnmal-ai/substrate-dataset-pg';
 import { createNoopPubSub, createProposalsPlugin } from '@mnmal-ai/substrate-proposals';
 import { MemorySubstrateServer } from '@mnmal-ai/substrate-server-memory';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { deleteNamespaces, TABLES } from './_layout.js';
+import { deleteNamespaces } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const SECRET = 'drop-proposed-secret';
@@ -29,7 +28,6 @@ const OWNED = 'kdropowned';
 
 /** Builds a type `Doc` in `ns` with engine indexes, one unique; returns a reader of them. */
 async function buildDocIndexesWith(sql: Sql, ns: string) {
-  const layout = (process.env.SUBSTRATE_STORAGE_LAYOUT ?? 'legacy') as StorageLayout;
   const typed = new PgDataset({
     namespace: ns,
     sql,
@@ -46,7 +44,7 @@ async function buildDocIndexesWith(sql: Sql, ns: string) {
   });
   await typed.write('Doc', [{ ref: 'x', kid: 'k' }]);
   await typed.ensureTypeStorage('Doc');
-  return async () => (await typeIndexesOf(sql, ns, 'Doc', layout)).filter((i) => i.engineOwned);
+  return async () => (await typeIndexesOf(sql, ns, 'Doc')).filter((i) => i.engineOwned);
 }
 
 describe.skipIf(!POSTGRES_URL)('dropping a proposed namespace (pg)', () => {
@@ -121,16 +119,12 @@ describe.skipIf(!POSTGRES_URL)('dropping a proposed namespace (pg)', () => {
     };
     const drop = () => post('/substrate/v1/_system/drop-namespace', { namespace: NS, confirm: NS });
     const archivedFlags = async (): Promise<unknown[]> =>
-      TABLES
-        ? (
-            await new PgDataset({ namespace: CONTROL, sql }).read('NamespaceProposal', {
-              where: { ns: { eq: NS } },
-              includeDeleted: true
-            })
-          ).rows.map((r) => String(r.archived))
-        : (
-            await sql`SELECT body->>'archived' AS a FROM rows WHERE namespace = ${CONTROL} AND body->>'ns' = ${NS}`
-          ).map((r) => r.a);
+      (
+        await new PgDataset({ namespace: CONTROL, sql }).read('NamespaceProposal', {
+          where: { ns: { eq: NS } },
+          includeDeleted: true
+        })
+      ).rows.map((r) => String(r.archived));
     return { engine: composed.engine, propose, drop, archivedFlags, post };
   }
 
