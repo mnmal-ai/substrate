@@ -54,7 +54,7 @@ import {
   sqlStringLiteral
 } from './pg-sql/primitives.js';
 import { ident, typePartition } from './type-storage.js';
-import { columnKindOf, typeTableOf } from './type-table.js';
+import { columnKindOf, loadTypeTable, type TypeTable, typeTableOf } from './type-table.js';
 
 export interface IndexState {
   name: string;
@@ -128,6 +128,13 @@ export interface ReconcileTypeIndexesArgs {
   ordering?: 'visible';
   /** The namespace's promoted columns: a promoted field indexes on its column, as the compiler filters on it. */
   promotedColumns?: PromotedBodyColumnMap;
+  /**
+   * `tables` only: the type's table as the catalog records it. An index that
+   * reads a field not in `column` state is then reported `pending`, and is not
+   * among `desiredIndexKeys`: reads of such a field go through `extra` (or are
+   * all in it), which the index cannot see.
+   */
+  table?: TypeTable;
 }
 
 interface Spec {
@@ -209,6 +216,10 @@ export async function reconcileTypeIndexes(
   opts: ReconcileOptions = {}
 ): Promise<IndexState[]> {
   const only = opts.only ?? 'all';
+  if (args.layout === 'tables' && args.table === undefined) {
+    const table = await loadTypeTable(sql, args.namespace, args.type);
+    if (table !== undefined) args = { ...args, table };
+  }
   const all = desiredSpecs(args);
   const out: IndexState[] = [];
   const unique = all.filter((s) => s.unique);
@@ -238,13 +249,17 @@ export async function reconcileTypeIndexes(
         const d = desired[i] as Described;
         const held = await heldAsDeclared(conn, target, spec, d);
         states.push(
-          held !== undefined
-            ? held
-            : spec.unique
-              ? await withTableIndexLock(sql, conn, target, undefined, () =>
-                  reconcileOne(conn, args, target, spec, d, {})
-                )
-              : indexState(spec, 'pending', 'unchanged')
+          settled(
+            args,
+            spec,
+            held !== undefined
+              ? held
+              : spec.unique
+                ? await withTableIndexLock(sql, conn, target, undefined, () =>
+                    reconcileOne(conn, args, target, spec, d, {})
+                  )
+                : indexState(spec, 'pending', 'unchanged')
+          )
         );
       }
       return states;
@@ -310,6 +325,7 @@ async function reconcileNonUnique(
         await abortableSleep(YIELD_MS, opts.signal);
       }
       if (state.state === 'valid') lastLogged.delete(spec.name);
+      state = settled(args, spec, state);
       opts.onState?.(state);
       out.push(state);
       if (opts.signal?.aborted === true) return out;
@@ -564,9 +580,35 @@ export function describeTypeIndexes(
   held: HeldIndex[]
 ): IndexState[] {
   const byName = new Map(held.map((i) => [i.name, i]));
-  return desiredSpecs(args).map((spec) =>
-    indexState(spec, stateFrom(byName.get(spec.name)), 'unchanged')
-  );
+  return desiredSpecs(args).map((spec) => {
+    const held = byName.get(spec.name);
+    // Not built while its field is unsettled is waiting, not a failed build.
+    const state = held === undefined && unsettled(args, spec) ? 'pending' : stateFrom(held);
+    return settled(args, spec, indexState(spec, state, 'unchanged'));
+  });
+}
+
+/**
+ * Whether `spec` reads a field `args.table` records in a state other than
+ * `column` (`pending`, `promoting`, `orphaned`): its index, built or not,
+ * serves none of that field's reads, and a unique one does not see the
+ * field's values still in `extra`. A column the catalog does not record is
+ * taken as settled. False off `tables`.
+ */
+function unsettled(args: ReconcileTypeIndexesArgs, spec: Spec): boolean {
+  const table = args.table;
+  if (table === undefined || spec.columns === undefined) return false;
+  const pending = new Set(table.pending.map((f) => columnName(f)));
+  const states = new Map(table.columns().map((c) => [c.column, c.state]));
+  return spec.columns.some((c) => pending.has(c) || (states.get(c) ?? 'column') !== 'column');
+}
+
+/**
+ * A `valid` `state` reported `pending` while `spec` is `unsettled`: built, but
+ * its field still reads through `extra` (Task 13's sweep settles it).
+ */
+function settled(args: ReconcileTypeIndexesArgs, spec: Spec, state: IndexState): IndexState {
+  return state.state === 'valid' && unsettled(args, spec) ? { ...state, state: 'pending' } : state;
 }
 
 /** A catalog index's state; one that is not there is `failed`, as a build that has not succeeded is. */
@@ -606,12 +648,15 @@ export function desiredIndexKeys(args: ReconcileTypeIndexesArgs): Array<{
   unique: boolean;
   only?: Record<string, boolean | null>;
 }> {
-  const own = desiredSpecs(args).map((s) => ({
-    name: s.name,
-    keys: s.order,
-    unique: s.unique,
-    ...(s.only !== undefined ? { only: s.only } : {})
-  }));
+  // An index over an unsettled field serves none of its reads (`args.table`).
+  const own = desiredSpecs(args)
+    .filter((s) => !unsettled(args, s))
+    .map((s) => ({
+      name: s.name,
+      keys: s.order,
+      unique: s.unique,
+      ...(s.only !== undefined ? { only: s.only } : {})
+    }));
   if (args.layout !== 'legacy') return own;
   return [...own, ...LEGACY_SHARED_KEYS.map((k) => ({ ...k, unique: false }))];
 }

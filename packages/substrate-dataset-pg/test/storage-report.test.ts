@@ -4,7 +4,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import type { FieldDef, StorageReport } from '@mnmal-ai/substrate-types';
+import type { FieldDef, IndexDecl, StorageReport } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset } from '../src/index.js';
@@ -99,6 +99,69 @@ describe.skipIf(!POSTGRES_URL)('describeStorage', () => {
     expect(report).toMatchObject({ layout: 'tables', pending: ['c'], orphaned: ['b'] });
     expect(report.table).toMatch(/^t__sr_/);
   });
+
+  it.skipIf(!TABLES)(
+    'an index over a field not yet `column` is pending, not valid or failed, and serves no read',
+    async () => {
+      const ns = freshNs();
+      const uniq = `rows_sr_u_${randomBytes(4).toString('hex')}`;
+      const plain = `rows_sr_p_${randomBytes(4).toString('hex')}`;
+      const late = `rows_sr_l_${randomBytes(4).toString('hex')}`;
+      const defs: { current: Record<string, FieldDef> } = {
+        current: { a: { kind: 'scalar', type: 'string' } }
+      };
+      let indexes: IndexDecl[] = [];
+      const ds = new PgDataset({
+        namespace: ns,
+        sql,
+        typeDefLookup: (type, namespace) =>
+          type === TYPE && namespace === ns ? { fields: defs.current, indexes } : undefined
+      });
+      await ds.ensureTypeStorage(TYPE);
+      // Added to an existing table, `b` gets its column `promoting`; `c` is recorded `pending`.
+      defs.current = { ...defs.current, b: { kind: 'scalar', type: 'string' } };
+      indexes = [
+        { fields: ['b'], unique: true, name: uniq },
+        { fields: ['b'], name: plain }
+      ];
+      await ds.ensureTypeStorage(TYPE);
+      defs.current = { ...defs.current, c: { kind: 'scalar', type: 'string' } };
+      indexes = [...indexes, { fields: ['c'], name: late }];
+      await ds.ensureTypeStorage(TYPE, { newFields: 'pending' });
+      // As another process sees it: no deferred-build record of its own.
+      const other = postgres(POSTGRES_URL as string, { onnotice: () => {} });
+      try {
+        const fresh = new PgDataset({
+          namespace: ns,
+          sql: other,
+          typeDefLookup: () => ({ fields: defs.current, indexes })
+        });
+        const states = async (d: PgDataset) =>
+          Object.fromEntries((await d.describeStorage(TYPE)).indexes.map((i) => [i.name, i.state]));
+        for (const d of [ds, fresh]) {
+          expect(await states(d)).toMatchObject({
+            [uniq]: 'pending',
+            [plain]: 'pending',
+            [late]: 'pending'
+          });
+        }
+        const planned = async () =>
+          ((await fresh.indexPlan(TYPE, ns))?.indexes ?? []).map((i) => i.name);
+        expect(await planned()).not.toContain(plain);
+        expect(await planned()).not.toContain(uniq);
+        // The sweep settles `b` (Task 13): then its indexes are valid and serve reads.
+        await sql`UPDATE substrate_type_fields SET state = 'column' WHERE namespace = ${ns} AND field = 'b'`;
+        expect(await states(fresh)).toMatchObject({
+          [uniq]: 'valid',
+          [plain]: 'valid',
+          [late]: 'pending'
+        });
+        expect(await planned()).toEqual(expect.arrayContaining([uniq, plain]));
+      } finally {
+        await other.end({ timeout: 5 });
+      }
+    }
+  );
 });
 
 describe.skipIf(!POSTGRES_URL)('storageReport', () => {

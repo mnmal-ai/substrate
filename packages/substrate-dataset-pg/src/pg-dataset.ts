@@ -541,7 +541,7 @@ export class PgDataset implements Dataset {
   async #writeTable(type: string): Promise<TypeTable> {
     const found = await this.#tableFor(type);
     if (found !== undefined) return found;
-    const gen = this.#tableCache.gen;
+    let gen = this.#tableCache.gen;
     const def = this.#typeDefLookup?.(type, this.namespace);
     const args = {
       namespace: this.namespace,
@@ -562,8 +562,11 @@ export class PgDataset implements Dataset {
       await (this.#sql as TransactionSql).savepoint((sp) => ensureTypeTable(sp, args));
     } else {
       await ensureTypeTable(this.#sql, args);
-      // Committed: a cached miss must not outlive it until the notification lands.
+      // Committed: a cached miss must not outlive it until the notification
+      // lands, nor be cached again by a read whose catalog lookup began before
+      // the commit, which the new generation refuses.
       this.#tableCache.tables.delete(key);
+      gen = ++this.#tableCache.gen;
     }
     const table = await loadTypeTable(this.#sql, this.namespace, type);
     if (table === undefined) throw new Error(`internal: ${this.namespace}/${type} has no table`);
@@ -2415,7 +2418,9 @@ export class PgDataset implements Dataset {
       return {
         layout,
         table: name,
-        indexes: this.#withBuilds(describeTypeIndexes(args, await heldIndexes(sql, [name]))),
+        indexes: this.#withBuilds(
+          describeTypeIndexes({ ...args, table }, await heldIndexes(sql, [name]))
+        ),
         pending: [...table.pending],
         orphaned: [...table.orphaned]
       };
@@ -2466,8 +2471,10 @@ export class PgDataset implements Dataset {
         sql,
         tables.map((t) => t.table)
       );
+      const heldBy = Map.groupBy(held, (i) => i.table);
       for (const t of tables) {
-        this.#undeclared(warnings, info, t.namespace, t.type, 'tables', t.table, held);
+        const own = heldBy.get(t.table) ?? [];
+        this.#undeclared(warnings, info, t.namespace, t.type, 'tables', t.table, own);
       }
       if (tables.length > opts.partitionBudget) {
         warnings.push(
@@ -2589,8 +2596,13 @@ export class PgDataset implements Dataset {
     const def = this.#typeDefLookup?.(type, namespace);
     const layout = await this.#layout();
     if (def === undefined || layout === 'absent') return undefined;
+    // On `tables`, an index over a field not yet `column` serves no read.
+    const table = layout === 'tables' ? await loadTypeTable(this.#sql, namespace, type) : undefined;
     return {
-      indexes: desiredIndexKeys(this.#indexArgs(type, namespace, layout)),
+      indexes: desiredIndexKeys({
+        ...this.#indexArgs(type, namespace, layout),
+        ...(table !== undefined ? { table } : {})
+      }),
       ...(def.expectedSize !== undefined ? { expectedSize: def.expectedSize } : {})
     };
   }
