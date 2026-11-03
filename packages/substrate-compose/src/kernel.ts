@@ -122,10 +122,13 @@ export class KernelMigrationLayoutError extends Error {
   }
 }
 
-/** pg's undefined_table on `rows`, as postgres.js reports it. */
+/** pg's undefined_table on `rows`, schema-qualified or not, as postgres.js reports it. */
 const isRowsMissing = (err: unknown): boolean => {
   const e = err as { code?: unknown; message?: unknown } | null;
-  return e?.code === '42P01' && typeof e.message === 'string' && /"rows"/.test(e.message);
+  // Bare or schema-qualified: `relation "rows"` or `relation "public.rows"`.
+  return (
+    e?.code === '42P01' && typeof e.message === 'string' && /"(?:[^".]+\.)?rows"/.test(e.message)
+  );
 };
 
 export async function composeKernelPlugins(

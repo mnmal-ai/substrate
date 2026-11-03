@@ -159,7 +159,10 @@ export interface DefineNamespaceOptions {
    * consumer (`nl` for substrate-nl's rulings). Must be JSON-serialisable.
    */
   annotations?: Record<string, unknown>;
-  /** See `NamespaceDefinition.promotedColumns`. */
+  /**
+   * @deprecated Ignored: every declared scalar is a column of its type's
+   * table already. See `NamespaceDefinition.promotedColumns`.
+   */
   promotedColumns?: NamespaceDefinition['promotedColumns'];
 }
 

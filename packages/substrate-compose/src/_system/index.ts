@@ -31,7 +31,8 @@ export {
   INDEX_CAPABILITY,
   type InstalledSystemNamespace,
   type InstallSystemNamespaceOptions,
-  installSystemNamespace
+  installSystemNamespace,
+  SYSTEM_TYPE_DEFS
 } from './install.js';
 export {
   type InviteSweepResult,

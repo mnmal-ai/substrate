@@ -166,14 +166,14 @@ export class EnvConfigError extends Error {
   override readonly name = 'EnvConfigError';
 }
 
+/** Set once the retired `SUBSTRATE_STORAGE_LAYOUT` has been warned about. */
+let warnedStorageLayout = false;
+
 /**
  * Parses the serve env into a fully resolved `ParsedConfig`. The only I/O is
  * reading the auth and TLS PEM / JSON files. Throws `EnvConfigError` on any
  * malformed input.
  */
-/** Set once the retired `SUBSTRATE_STORAGE_LAYOUT` has been warned about. */
-let warnedStorageLayout = false;
-
 export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
   if (env.SUBSTRATE_STORAGE_LAYOUT !== undefined && !warnedStorageLayout) {
     warnedStorageLayout = true;

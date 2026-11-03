@@ -44,8 +44,20 @@ describe('KernelMigrationLayoutError', () => {
     expect(layoutErr.cause).toBe(cause);
   });
 
+  it('also names the plugin for a schema-qualified rows', async () => {
+    const cause = undefinedTable('public.rows');
+    const err = await composeKernelPlugins([failing(cause)], ctx).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(KernelMigrationLayoutError);
+    expect((err as KernelMigrationLayoutError).plugin).toBe('old-plugin');
+  });
+
   it('rethrows any other failure unchanged', async () => {
-    for (const cause of [undefinedTable('my_plugin_table'), new Error('boom')]) {
+    for (const cause of [
+      undefinedTable('my_plugin_table'),
+      undefinedTable('public.my_rows'),
+      undefinedTable('rows_archive'),
+      new Error('boom')
+    ]) {
       await expect(composeKernelPlugins([failing(cause)], ctx)).rejects.toBe(cause);
     }
   });

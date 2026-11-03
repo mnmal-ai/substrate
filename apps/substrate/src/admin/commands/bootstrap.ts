@@ -15,6 +15,7 @@ import { ADMIN_CAPABILITIES } from '@mnmal-ai/substrate-policy';
 import type { Sql } from 'postgres';
 import postgres from 'postgres';
 import { validateArgv } from '../argv.js';
+import { systemTypeDefLookup } from '../dataset.js';
 import { type AdminCliEnv, bootstrapKidPath, resolveDefaultKeyPath } from '../env.js';
 import { AdminCliError } from '../errors.js';
 import {
@@ -105,9 +106,10 @@ export async function runBootstrap(
     await runMigrations(sql);
     dataset = new PgDataset({
       namespace: SYSTEM_NAMESPACE,
-      sql
+      sql,
+      typeDefLookup: systemTypeDefLookup
     });
-    // So the admin Key lands in its own partition rather than the DEFAULT one.
+    // Typed columns and `substrate_key_live_kid_uniq` before the first Key is written.
     await dataset.ensureTypeStorage(KEY_TYPE);
     // Held across the check and the write, so two concurrent bootstraps
     // cannot both find no admin and both create one.

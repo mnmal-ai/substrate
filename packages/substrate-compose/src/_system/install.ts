@@ -45,6 +45,7 @@ import type {
   Dataset,
   EdgesStore,
   FieldDef,
+  IndexDecl,
   Policy,
   Registry,
   RequestContext,
@@ -770,6 +771,25 @@ function mergeIdField(fields: Record<string, FieldDef>): Record<string, FieldDef
   // Object-spread order: a caller-declared `id` overrides this one.
   return { id: idDef, ...fields };
 }
+
+/**
+ * Each `_system` type's fields and declared indexes, as `installSystemNamespace`
+ * registers them. A dataset that writes `_system` outside the engine (the admin
+ * CLI) takes its type defs from here, so it creates each type's table as a boot
+ * would: typed columns, and `Key`'s live-kid unique index. A test pins it to
+ * the registry's entries.
+ */
+export const SYSTEM_TYPE_DEFS: Readonly<
+  Record<string, { fields: Record<string, FieldDef>; indexes?: IndexDecl[] }>
+> = {
+  [KEY_TYPE]: { fields: mergeIdField(KEY_FIELDS), indexes: KEY_INDEXES },
+  [INVITE_TYPE]: { fields: mergeIdField(INVITE_FIELDS) },
+  [AUDIT_EVENT_TYPE]: { fields: mergeIdField(AUDIT_EVENT_FIELDS) },
+  [ENUM_VERDICT_TYPE]: { fields: mergeIdField(ENUM_VERDICT_FIELDS) },
+  [STORE_PROFILE_TYPE]: { fields: mergeIdField(STORE_PROFILE_FIELDS) },
+  [INDEX_RECOMMENDATION_TYPE]: { fields: mergeIdField(INDEX_RECOMMENDATION_FIELDS) },
+  [ADVISOR_STATE_TYPE]: { fields: mergeIdField(ADVISOR_STATE_FIELDS) }
+};
 
 // Re-export Row so downstream modules that consume the install result but
 // want row-shape typing don't need to cross-import from substrate-types.

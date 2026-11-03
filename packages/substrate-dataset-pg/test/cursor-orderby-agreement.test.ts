@@ -1,17 +1,148 @@
 /**
  * Keyset pagination must return the same rows as an unpaginated read: the
- * cursor carries a sort key at full precision, and a derived key sorts,
- * projects into the cursor and compares through one expression.
+ * ORDER BY and the cursor compare read one source (a column, or an `extra`
+ * key) whether or not the sort key is projected, the cursor honours the
+ * `NULLS LAST` ORDER BY emits, it carries a sort key at full precision, and a
+ * derived key sorts, projects into the cursor and compares through one
+ * expression.
  */
 
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
 import type { FieldDef, Row } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PgDataset, runMigrations } from '../src/index.js';
-import { relationOf, truncateRows } from './_layout.js';
+import { clearNamespace, relationOf, truncateRows } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
+
+// `status` is a declared field, so a column; `label` is undeclared, so an `extra` key.
+describe.skipIf(!POSTGRES_URL)('keyset pagination agrees with the unpaginated read', () => {
+  const NS = 'cursor_agree';
+  const fields: Record<string, FieldDef> = { status: { kind: 'scalar', type: 'string' } };
+  let sql: Sql;
+  let ds: PgDataset;
+
+  beforeAll(async () => {
+    sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
+    await runMigrations(sql);
+  });
+  afterAll(async () => {
+    await clearNamespace(sql, NS);
+    await sql.end();
+  });
+  beforeEach(async () => {
+    await clearNamespace(sql, NS);
+    ds = new PgDataset({
+      namespace: NS,
+      sql,
+      fieldDefLookup: (_t, f) => fields[f],
+      typeDefLookup: (type) => (type === 'Memo' ? { fields } : undefined)
+    });
+  });
+
+  /** Walk every page, returning the ids in order. */
+  async function paginate(
+    dataset: { read: PgDataset['read'] },
+    field: string,
+    dir: 'asc' | 'desc',
+    projection?: Record<string, boolean>
+  ): Promise<string[]> {
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    // Bounded so a cursor that fails to advance cannot spin forever.
+    for (let page = 0; page < 20; page++) {
+      const res = await dataset.read('Memo', {
+        orderBy: [{ [field]: dir }],
+        limit: 2,
+        ...(projection === undefined ? {} : { fields: projection }),
+        ...(cursor === undefined ? {} : { cursor })
+      });
+      seen.push(...res.rows.map((r) => String(r.id)));
+      const next = (res as { nextCursor?: string | null }).nextCursor;
+      if (next === undefined || next === null || res.rows.length === 0) break;
+      cursor = next;
+    }
+    return seen;
+  }
+
+  async function fullRead(
+    field: string,
+    dir: 'asc' | 'desc',
+    projection?: Record<string, boolean>
+  ): Promise<string[]> {
+    const res = await ds.read('Memo', {
+      orderBy: [{ [field]: dir }],
+      ...(projection === undefined ? {} : { fields: projection })
+    });
+    return res.rows.map((r) => String(r.id));
+  }
+
+  const withNulls = (field: string, prefix: string): Row[] => [
+    { id: `${prefix}1`, [field]: 'aaa' },
+    { id: `${prefix}2`, [field]: null },
+    { id: `${prefix}3`, [field]: 'ccc' },
+    { id: `${prefix}4`, [field]: null },
+    { id: `${prefix}5`, [field]: 'eee' }
+  ];
+  const projection = { id: true };
+
+  for (const dir of ['asc', 'desc'] as const) {
+    for (const [field, where] of [
+      ['label', 'an extra key'],
+      ['status', 'a column']
+    ] as const) {
+      it(`${where} with null values: pages match the full read (${dir})`, async () => {
+        await ds.write('Memo', withNulls(field, 'n'));
+        const paged = await paginate(ds, field, dir);
+        expect(paged).toEqual(await fullRead(field, dir));
+        expect(paged).toHaveLength(5);
+      });
+
+      it(`${where} NOT in the projection: pages match the full read (${dir})`, async () => {
+        await ds.write(
+          'Memo',
+          ['aaa', 'bbb', 'ccc', 'ddd', 'eee'].map((v, i) => ({ id: `p${i}`, [field]: v }))
+        );
+        const paged = await paginate(ds, field, dir, projection);
+        expect(paged).toEqual(await fullRead(field, dir, projection));
+        // The discriminating assertion: a lost cursor value stops after page one.
+        expect(paged).toHaveLength(5);
+      });
+
+      it(`${where} NOT projected, with nulls: pages match the full read (${dir})`, async () => {
+        await ds.write('Memo', withNulls(field, 'q'));
+        const paged = await paginate(ds, field, dir, projection);
+        expect(paged).toEqual(await fullRead(field, dir, projection));
+        expect(paged).toHaveLength(5);
+      });
+    }
+
+    it(`metadata field with no _metadata projected stays correct (${dir})`, async () => {
+      await ds.write('Memo', [{ id: 's1' }, { id: 's2' }, { id: 's3' }, { id: 's4' }]);
+      const paged = await paginate(ds, 'createdAt', dir, projection);
+      expect(paged).toEqual(await fullRead('createdAt', dir, projection));
+      expect(paged).toHaveLength(4);
+    });
+  }
+
+  it('paginates a null-bearing sort key identically to the memory backend', async () => {
+    // Null handling lives in each dataset's own cursor compiler, so only a
+    // dataset-vs-dataset comparison can pin it.
+    for (const field of ['label', 'status']) {
+      const mem = new MemoryDataset({ namespace: NS, fieldDefLookup: (_t, f) => fields[f] });
+      await clearNamespace(sql, NS);
+      const rows = withNulls(field, `m${field}`);
+      await ds.write('Memo', rows);
+      await mem.write('Memo', rows);
+      const pg = await paginate(ds, field, 'asc');
+      expect(pg).toEqual(
+        await paginate(mem as unknown as { read: PgDataset['read'] }, field, 'asc')
+      );
+      expect(pg).toHaveLength(5);
+    }
+  });
+});
 
 describe.skipIf(!POSTGRES_URL)('keyset pagination over sub-millisecond timestamps', () => {
   let sql: Sql;
