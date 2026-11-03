@@ -551,6 +551,33 @@ describe.skipIf(!POSTGRES_URL)('PgDataset on type tables vs memory', () => {
     ]);
   });
 
+  it('a warm walk read and its index plan issue no catalog statement', async () => {
+    await seed();
+    const catalog = () =>
+      statements.filter((q) => /substrate_type_tables|substrate_type_fields/.test(q));
+    const walk = { where: { _walk: { out: 'owner', where: { name: { eq: 'Ann' } } } } };
+    await pg.read('Item', walk);
+    await pg.indexPlan('Item', NS);
+    statements = [];
+    await pg.read('Item', walk);
+    expect(await pg.indexPlan('Person', NS)).toBeDefined();
+    await pg.indexPlan('Item', NS);
+    expect(catalog()).toEqual([]);
+  });
+
+  it('a projection returns its keys in request order, not column order (#1861)', async () => {
+    await seed();
+    // Columns sort by name (meta, n, status, title); `meta` and `tags` sit in `extra`'s place.
+    const fields = { title: true, status: true, _metadata: true, n: true, meta: true, id: true };
+    const [row] = (await pg.read('Item', { where: { id: { eq: 'i1' } }, fields })).rows;
+    expect(Object.keys(row ?? {})).toEqual(['title', 'status', '_metadata', 'n', 'meta', 'id']);
+    // Without `id` requested it still leads; unrequested extras (`_metadata`) trail.
+    const [bare] = (
+      await pg.read('Item', { where: { id: { eq: 'i1' } }, fields: { title: true, n: true } })
+    ).rows;
+    expect(Object.keys(bare ?? {})).toEqual(['id', 'title', 'n', '_metadata']);
+  });
+
   it('a UUID-check migration applied while running reaches the tables created after it', async () => {
     // A pool of its own, so the check it caches never reaches this suite's tables.
     const own = postgres(POSTGRES_URL as string, { onnotice: () => {} });

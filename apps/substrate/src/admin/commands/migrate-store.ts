@@ -313,6 +313,9 @@ export async function runMigrateStore(
     ...vars,
     SUBSTRATE_DATABASE_URL: toUrl,
     HOST: '127.0.0.1',
+    // compose requires an actor when auth is off; the prepare boot serves no request,
+    // so nothing is attributed to it.
+    SUBSTRATE_SYSTEM_ACTOR: vars.SUBSTRATE_SYSTEM_ACTOR?.trim() || 'migrate-store',
     SUBSTRATE_STREAM_TICKET_SECRET:
       vars.SUBSTRATE_STREAM_TICKET_SECRET?.trim() || randomBytes(32).toString('hex')
   };
