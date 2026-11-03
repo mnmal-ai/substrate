@@ -46,7 +46,7 @@ export function columnKindOf(def: FieldDef): ColumnKind | undefined {
  * walk joins `far.id = near.f_x` (and `far.f_x = near.id`) bare, and an index
  * on either side serves it; it is ordered under `"C"` where it sorts.
  */
-const PG_TYPE: Readonly<Record<ColumnKind, string>> = {
+export const PG_TYPE: Readonly<Record<ColumnKind, string>> = {
   text: 'text COLLATE "C"',
   enum: 'text COLLATE "C"',
   crossRef: 'text',
@@ -245,8 +245,7 @@ export async function ensureTypeTable(
 
 async function ensureIn(tx: TransactionSql, args: EnsureTypeTableArgs): Promise<TypeTableChange> {
   const { namespace, type, fields, newFields } = args;
-  await tx`SELECT pg_advisory_xact_lock(hashtext(
-    current_schema() || ':substrate-type-table:' || ${namespace} || '/' || ${type}))`;
+  await lockTypeTable(tx, namespace, type);
   const declared = new Map<string, { kind: ColumnKind; vocab: readonly string[] | undefined }>();
   for (const [field, def] of Object.entries(fields)) {
     const kind = columnKindOf(def);
@@ -282,11 +281,7 @@ async function ensureIn(tx: TransactionSql, args: EnsureTypeTableArgs): Promise<
     for (const [field, { kind, vocab }] of declared) {
       const row = catalog.get(field);
       if (row === undefined) {
-        const column = columnName(field);
-        const clauses = [
-          `ADD COLUMN IF NOT EXISTS ${ident(column)} ${PG_TYPE[kind]}`,
-          ...(kind === 'enum' ? enumCheckClauses(column, vocab) : [])
-        ];
+        const clauses = addColumnClauses(columnName(field), kind, vocab);
         const added =
           newFields === 'column' && (await ddl(tx, `ALTER TABLE ${table} ${clauses.join(', ')}`));
         await record(field, kind, added ? 'promoting' : 'pending', vocab);
@@ -431,16 +426,102 @@ function enumCheckClauses(column: string, vocab: readonly string[] | undefined):
 }
 
 /**
+ * Gives `namespace`/`type`'s `pending` field `field` its column (step 1 of a
+ * promotion) and records it `promoting`, under the type's advisory lock.
+ * `busy` when the table's lock stayed held past `lockTimeoutMs`; `skipped`
+ * when the field is no longer `pending` (another sweep, or a boot, got there).
+ */
+export async function addPendingColumn(
+  sql: Sql,
+  namespace: string,
+  type: string,
+  field: string,
+  lockTimeoutMs: number
+): Promise<'added' | 'busy' | 'skipped'> {
+  const timeout = `${Math.max(1, Math.floor(lockTimeoutMs))}ms`;
+  try {
+    return (await sql.begin(async (tx) => {
+      // The type lock's wait is bounded too: an in-transaction first write (F18) holds it to its commit.
+      await tx.unsafe(`SET LOCAL lock_timeout = '${timeout}'`);
+      await lockTypeTable(tx, namespace, type);
+      const [table] = await tx<Array<{ table_name: string }>>`
+        SELECT table_name FROM substrate_type_tables WHERE namespace = ${namespace} AND type = ${type}`;
+      const row = (await catalogOf(tx, namespace, type)).find((r) => r.field === field);
+      if (table === undefined || row?.state !== 'pending') return 'skipped';
+      const clauses = addColumnClauses(row.column_name, row.kind, row.vocab ?? undefined);
+      if (
+        !(await ddl(tx, `ALTER TABLE ${ident(table.table_name)} ${clauses.join(', ')}`, timeout))
+      ) {
+        return 'busy';
+      }
+      await tx`UPDATE substrate_type_fields SET state = 'promoting'
+               WHERE namespace = ${namespace} AND type = ${type} AND field = ${field}`;
+      await tx`SELECT pg_notify('substrate_catalog', ${`${namespace}/${type}`})`;
+      return 'added';
+    })) as 'added' | 'busy' | 'skipped';
+  } catch (err) {
+    if ((err as { code?: unknown }).code === '55P03') return 'busy';
+    throw err;
+  }
+}
+
+/**
+ * Moves `field` from state `from` to `to`, under the type's advisory lock, and
+ * notifies. False, changing nothing, when the field is no longer in `from`: a
+ * boot orphaned or redeclared it meanwhile, and that boot's state stands.
+ */
+export async function moveFieldState(
+  sql: Sql,
+  namespace: string,
+  type: string,
+  field: string,
+  from: FieldState,
+  to: FieldState
+): Promise<boolean> {
+  return (await sql.begin(async (tx) => {
+    await lockTypeTable(tx, namespace, type);
+    const moved = await tx`UPDATE substrate_type_fields SET state = ${to}
+      WHERE namespace = ${namespace} AND type = ${type} AND field = ${field} AND state = ${from}
+      RETURNING 1`;
+    if (moved.length === 0) return false;
+    await tx`SELECT pg_notify('substrate_catalog', ${`${namespace}/${type}`})`;
+    return true;
+  })) as boolean;
+}
+
+/** The type's advisory lock, which every change to its table and catalog rows takes. */
+async function lockTypeTable(tx: TransactionSql, namespace: string, type: string): Promise<void> {
+  await tx`SELECT pg_advisory_xact_lock(hashtext(
+    current_schema() || ':substrate-type-table:' || ${namespace} || '/' || ${type}))`;
+}
+
+/** The ALTER TABLE clauses giving `column` its type, and its CHECK when it is an enum. */
+function addColumnClauses(
+  column: string,
+  kind: ColumnKind,
+  vocab: readonly string[] | undefined
+): string[] {
+  return [
+    `ADD COLUMN IF NOT EXISTS ${ident(column)} ${PG_TYPE[kind]}`,
+    ...(kind === 'enum' ? enumCheckClauses(column, vocab) : [])
+  ];
+}
+
+/**
  * Runs one DDL statement in a savepoint under a short lock_timeout. False when
  * the lock was busy (55P03): the savepoint is rolled back, so an enclosing
  * transaction survives. lock_timeout is then put back as it was, because a
  * SET LOCAL outlives RELEASE SAVEPOINT.
  */
-async function ddl(tx: TransactionSql, statement: string): Promise<boolean> {
+async function ddl(
+  tx: TransactionSql,
+  statement: string,
+  lockTimeout = LOCK_TIMEOUT
+): Promise<boolean> {
   const [prior] = await tx<Array<{ v: string }>>`SELECT current_setting('lock_timeout') AS v`;
   try {
     await tx.savepoint(async (sp) => {
-      await sp.unsafe(`SET LOCAL lock_timeout = '${LOCK_TIMEOUT}'`);
+      await sp.unsafe(`SET LOCAL lock_timeout = '${lockTimeout}'`);
       await sp.unsafe(statement);
     });
     return true;

@@ -32,6 +32,7 @@ const DEFAULT_PARTITION_BUDGET = 500;
 const DEFAULT_INDEX_DISK_MARGIN_MB = 2048;
 const DEFAULT_INDEX_RETRY_INTERVAL_MS = 600_000;
 const DEFAULT_ADVISOR_INTERVAL_MS = 600_000;
+const DEFAULT_PROMOTE_INTERVAL_MS = 21_600_000;
 export const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DEFAULT_PORT = 3100;
 
@@ -92,6 +93,12 @@ export interface ParsedConfig {
   indexRetryIntervalMs: number;
   /** `SUBSTRATE_ADVISOR_INTERVAL_MS` — how often the index advisor runs. Default 10 minutes; 0 turns it off. */
   advisorIntervalMs: number;
+  /**
+   * `SUBSTRATE_PROMOTE_INTERVAL_MS` — how often the promotion sweep gives
+   * pending fields their columns. Default 6 hours; 0 stops the timer, and
+   * `substrate-admin promote-fields` still runs it.
+   */
+  promoteIntervalMs: number;
   /** `SUBSTRATE_STORE_PROFILE` — seeds `_system/StoreProfile` once; unset seeds `personal`. */
   storeProfile: StoreProfileName | null;
   /** `SUBSTRATE_STORE_WRITE_HEAVY=1` — the advisor halves its write-rate threshold for removing unused indexes. */
@@ -272,6 +279,14 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
     DEFAULT_ADVISOR_INTERVAL_MS,
     'milliseconds, 0 to disable'
   );
+  const promoteIntervalMs = parseNonNegativeIntEnv(
+    env,
+    knobs,
+    'promoteIntervalMs',
+    'SUBSTRATE_PROMOTE_INTERVAL_MS',
+    DEFAULT_PROMOTE_INTERVAL_MS,
+    'milliseconds, 0 to disable'
+  );
   const profileRaw = nonEmpty(env.SUBSTRATE_STORE_PROFILE?.trim());
   if (profileRaw !== undefined && !isStoreProfileName(profileRaw)) {
     throw new EnvConfigError(
@@ -385,6 +400,7 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
     indexDiskMarginMb,
     indexRetryIntervalMs,
     advisorIntervalMs,
+    promoteIntervalMs,
     storeProfile,
     storeWriteHeavy,
     idempotency,

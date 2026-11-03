@@ -184,16 +184,6 @@ export function schemaForTypeRoute(engine: Engine): HttpHandler {
     for (const [name, def] of Object.entries(schema.mutations)) {
       if (mutationTargetsType(name, def, type, typeSchema.fields)) mutations[name] = def;
     }
-    const base = {
-      schemaVersion: schema.schemaVersion,
-      namespace: ns,
-      type,
-      fields: typeSchema.fields,
-      // Each field carries its `kind`; `operators` is keyed by kind. The join
-      // is the caller's, which keeps the map one copy per response rather than
-      // one per field.
-      ...operatorContract(engine, ns)
-    };
     // Absent when the dataset keeps no per-type storage. Not part of
     // `schemaVersion`: it changes as indexes build, with no schema change.
     // Introspection never fails the schema route: a catalog error omits it.
@@ -201,6 +191,26 @@ export function schemaForTypeRoute(engine: Engine): HttpHandler {
       .datasetFor(ns)
       ?.describeStorage?.(type)
       .catch(() => undefined);
+    // A field held in jsonb until the sweep gives it a column says so on its def.
+    const pending = new Set(storage?.pending ?? []);
+    const base = {
+      schemaVersion: schema.schemaVersion,
+      namespace: ns,
+      type,
+      fields:
+        pending.size === 0
+          ? typeSchema.fields
+          : Object.fromEntries(
+              Object.entries(typeSchema.fields).map(([f, def]) => [
+                f,
+                pending.has(f) ? { ...def, storage: 'pending' as const } : def
+              ])
+            ),
+      // Each field carries its `kind`; `operators` is keyed by kind. The join
+      // is the caller's, which keeps the map one copy per response rather than
+      // one per field.
+      ...operatorContract(engine, ns)
+    };
     const withStorage = storage === undefined ? base : { ...base, storage };
     // Annotation only: for each crossRef of this type, the fields an index
     // serves once a walk has hopped through it. Omitted where no plan exists.

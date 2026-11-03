@@ -83,6 +83,14 @@ export const ARGV_SPEC: Record<string, ArgvSpec> = {
     boolFlags: ['--direct', '--allow-unknown-ns', '--widen', '--allow-admin'],
     maxPositionals: 1
   },
+  'promote-fields': {
+    valueFlags: ['--url'],
+    boolFlags: [],
+    maxPositionals: 0,
+    hint: ' (promote-fields accepts only --url <base>)',
+    excess: (tok) =>
+      `promote-fields: unexpected argument '${tok}' (promote-fields accepts only --url <base>)`
+  },
   'migrate-store': {
     valueFlags: [
       '--from-env',

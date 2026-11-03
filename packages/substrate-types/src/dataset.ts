@@ -502,6 +502,30 @@ export interface Dataset {
    */
   describeStorage?(type: string): Promise<TypeStorageReport>;
   /**
+   * Gives each `pending` field of every namespace its column and moves its
+   * values out of jsonb, and finishes each `promoting` one, a field at a time.
+   * DDL waits at most `lockTimeoutMs` for its table's lock, then that field is
+   * `busy` and retried by the next call; `batchRows` rows move per statement.
+   * `signal` stops the sweep between steps. Resolves with one event per field
+   * it touched.
+   *
+   * OPTIONAL. Backends with no per-type tables omit it.
+   */
+  promotePendingFields?(opts: {
+    lockTimeoutMs: number;
+    batchRows: number;
+    signal?: AbortSignal;
+  }): Promise<PromotionEvent[]>;
+  /**
+   * Store-wide counts of the fields an operator should know about: held in
+   * jsonb until promoted, whose promotion failed, and no longer declared with
+   * their column kept. Counts only, with no namespace, type, field or error
+   * text, since `/health` shows it unauthenticated; `storageReport` names them.
+   *
+   * OPTIONAL. Backends with no per-type tables omit it.
+   */
+  fieldWarnings?(): Promise<string[]>;
+  /**
    * The database-wide storage layout and what an operator should look at:
    * rows parked in DEFAULT partitions, indexes and CHECK constraints on the
    * `rows` parent, indexes this process has yet to build or failed to build,
@@ -819,6 +843,21 @@ export interface TypeStorageReport {
   pending?: string[];
   /** Tables layout: fields no longer declared whose columns are kept. */
   orphaned?: string[];
+}
+
+/**
+ * One field's outcome in a promotion sweep (`Dataset.promotePendingFields`):
+ * `promoted` (it has its column and every value moved), `busy` (its table's
+ * lock was held past the timeout; retried next sweep) or `failed` (an error,
+ * or the third busy attempt in a row). `attempts` counts this one.
+ */
+export interface PromotionEvent {
+  kind: 'promoted' | 'busy' | 'failed';
+  namespace: string;
+  type: string;
+  field: string;
+  attempts: number;
+  error?: string;
 }
 
 export interface StorageReport {

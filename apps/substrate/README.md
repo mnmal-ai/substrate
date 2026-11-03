@@ -145,6 +145,7 @@ The main ones; `substrate --help` and the header of `apps/substrate/src/main.ts`
 | `SUBSTRATE_INDEX_DISK_MARGIN_MB` | Free space a build must leave (default 2048; `0` requires only the estimate). |
 | `SUBSTRATE_INDEX_RETRY_INTERVAL_MS` | How often pending or failed index builds are retried (default 600000; `0` leaves them to the next boot). |
 | `SUBSTRATE_ADVISOR_INTERVAL_MS` | How often the index advisor writes `_system/IndexRecommendation` rows (default 600000; `0` turns it off). |
+| `SUBSTRATE_PROMOTE_INTERVAL_MS` | How often the promotion sweep gives fields added at runtime (`propose_field`) their own column (default 21600000, 6 hours; `0` stops the timer, and `substrate-admin promote-fields` still runs it). |
 | `SUBSTRATE_STORE_PROFILE` | `personal`, `growth` or `scale`: seeds `_system/StoreProfile` once, so changing it later does not change an existing store. |
 | `SUBSTRATE_STORE_WRITE_HEAVY` | `1` or `true`, read on every boot: halves the write rate at which the advisor recommends removing an unused index. |
 | `SUBSTRATE_CORS_ORIGINS` | Comma-separated allowed origins, or `*`. Unset registers no CORS handling. |

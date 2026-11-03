@@ -46,6 +46,7 @@ import type {
   IndexDecl,
   IndexPlan,
   OrderedBy,
+  PromotionEvent,
   ReadParams,
   ReadResult,
   Row,
@@ -135,6 +136,7 @@ import {
   resolvePromotedColumns,
   whereReferencesField
 } from './pg-sql.js';
+import { PROMOTION_FAILED_AFTER, promotePendingFields } from './promote.js';
 import { decodeRow, encodeRow, RAW_KEY } from './row-codec.js';
 import { type PgHandle, txScopeIdFor } from './tx-scope.js';
 import {
@@ -2273,6 +2275,17 @@ export class PgDataset implements Dataset {
       pending = change.pending;
     }
     if (layout === 'partitioned') await ensureTypeStorage(sql, this.namespace, type);
+    await this.#reconcileIndexes(type, layout, opts);
+    return { pending };
+  }
+
+  /** `ensureTypeStorage`'s index pass: reconciles, then records each state for the reports. */
+  async #reconcileIndexes(
+    type: string,
+    layout: StorageLayout,
+    opts: { indexes?: 'all' | 'unique' | 'nonUnique'; signal?: AbortSignal }
+  ): Promise<void> {
+    const sql = this.#sql as Sql;
     const builds = this.#deferredBuilds();
     const qualified = `${this.namespace}/${type}`;
     const record = (s: IndexState): void => {
@@ -2318,7 +2331,90 @@ export class PgDataset implements Dataset {
         `[substrate] index ${s.name} on ${this.namespace}/${type}: ${s.outcome} (${s.state})\n`
       );
     }
-    return { pending };
+  }
+
+  /**
+   * See `Dataset.promotePendingFields`. Store-wide, on the `tables` layout;
+   * the old layouts have no pending fields and resolve `[]`. Each field's
+   * indexes are reconciled through its namespace's view of this dataset, so a
+   * declared index waiting on the new column is built.
+   */
+  async promotePendingFields(opts: {
+    lockTimeoutMs: number;
+    batchRows: number;
+    signal?: AbortSignal;
+    /** Only this namespace's fields. */
+    namespace?: string;
+  }): Promise<PromotionEvent[]> {
+    if ((await this.#layout()) !== 'tables') return [];
+    if (this.#inTx) {
+      throw new Error('PgDataset.promotePendingFields cannot be called on a tx-bound instance');
+    }
+    const signal = opts.signal;
+    return promotePendingFields(this.#sql as Sql, {
+      ...opts,
+      reconcile: async (namespace, type) => {
+        const view =
+          namespace === this.namespace ? this : (this.forNamespace(namespace) as PgDataset);
+        await view.#reconcileIndexes(type, 'tables', signal !== undefined ? { signal } : {});
+      }
+    });
+  }
+
+  /**
+   * See `Dataset.fieldWarnings`. Store-wide; none on the old layouts. Counts
+   * only, since `/health` shows it unauthenticated: the named lines are in
+   * `storageReport`, which is admin-gated.
+   */
+  async fieldWarnings(): Promise<string[]> {
+    if ((await this.#layout()) !== 'tables') return [];
+    const lines = await this.#fieldLines();
+    const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+    const pending = lines.filter((l) => l.state === 'pending').length;
+    const failed = lines.filter((l) => l.failed).length;
+    const orphaned = lines.filter((l) => l.state === 'orphaned').length;
+    const parts = [
+      ...(pending > 0
+        ? [plural(pending, 'field pending promotion', 'fields pending promotion')]
+        : []),
+      ...(failed > 0 ? [plural(failed, 'promotion failed', 'promotions failed')] : []),
+      ...(orphaned > 0 ? [plural(orphaned, 'field orphaned', 'fields orphaned')] : [])
+    ];
+    return parts.length === 0 ? [] : [`${parts.join('; ')} — see the storage report`];
+  }
+
+  /**
+   * Each field an operator should know about, by name: a pending one, one
+   * whose promotion failed (a `promoting` or `column` field with an error, or a
+   * `pending` one busy {@link PROMOTION_FAILED_AFTER} sweeps in a row), and an
+   * orphaned one.
+   */
+  async #fieldLines(): Promise<Array<{ state: string; failed: boolean; line: string }>> {
+    const rows = await this.#sql<
+      Array<{
+        namespace: string;
+        type: string;
+        field: string;
+        state: string;
+        attempts: number;
+        last_error: string | null;
+      }>
+    >`
+      SELECT namespace, type, field, state, attempts, last_error FROM substrate_type_fields
+      WHERE state IN ('pending', 'orphaned')
+         OR (state IN ('promoting', 'column') AND last_error IS NOT NULL)
+      ORDER BY namespace COLLATE "C", type COLLATE "C", field COLLATE "C"`;
+    return rows.map((r) => {
+      const name = `${r.namespace}/${r.type}.${r.field}`;
+      const failed =
+        r.last_error !== null && (r.state !== 'pending' || r.attempts >= PROMOTION_FAILED_AFTER);
+      const line = failed
+        ? `${name} promotion failed (attempt ${r.attempts}): ${r.last_error}`
+        : r.state === 'orphaned'
+          ? `${name} is orphaned: no longer declared; values readable as extras`
+          : `${name} is pending: held in jsonb until promoted (attempt ${r.attempts})`;
+      return { state: r.state, failed, line };
+    });
   }
 
   #deferredBuilds(): Map<string, DeferredBuild> {
@@ -2476,6 +2572,8 @@ export class PgDataset implements Dataset {
         const own = heldBy.get(t.table) ?? [];
         this.#undeclared(warnings, info, t.namespace, t.type, 'tables', t.table, own);
       }
+      // A failed promotion is a fault; a pending or orphaned field is a state worth showing.
+      for (const f of await this.#fieldLines()) (f.failed ? warnings : info).push(f.line);
       if (tables.length > opts.partitionBudget) {
         warnings.push(
           `${tables.length} type tables exceed the budget of ${opts.partitionBudget}: move a namespace to its own instance behind a bridge`

@@ -35,8 +35,9 @@ export interface BootStoreOptions {
   /** Boot a store that carries the migrate-store marker. Only migrate-store passes it. */
   allowMigrating?: boolean;
   /**
-   * False starts no background writers: the index advisor is off and kernel
-   * plugins see `background: false`, so recall starts no embed backfill.
+   * False starts no background writers: the index advisor and the promotion
+   * sweep are off (no boot sweep, no timer) and kernel plugins see
+   * `background: false`, so recall starts no embed backfill.
    * migrate-store passes false. Default true.
    */
   background?: boolean;
@@ -73,7 +74,9 @@ export async function bootStore(opts: BootStoreOptions): Promise<BootedStore> {
   const { pluginDir } = opts;
   const background = opts.background ?? true;
   // advisorIntervalMs 0 composes no advisor: no shape recorder, no timer.
-  const config = background ? opts.config : { ...opts.config, advisorIntervalMs: 0 };
+  const config = background
+    ? opts.config
+    : { ...opts.config, advisorIntervalMs: 0, promoteIntervalMs: 0 };
 
   // Namespace-def registry backing the per-namespace FieldDefLookup, populated
   // once plugins load. Without it, pg orderBy/range/cursor on numeric/date
@@ -205,6 +208,7 @@ export async function bootStore(opts: BootStoreOptions): Promise<BootedStore> {
       sweepDeps,
       scheduler,
       datasets: composedDatasets,
+      runPromoteFieldsNow,
       stop
     } = await compose(composeOpts);
     opened.push(() => stop());
@@ -215,6 +219,16 @@ export async function bootStore(opts: BootStoreOptions): Promise<BootedStore> {
     // Types compose registered (`_system`, install-time, replayed proposals),
     // after the engine ref is set so their fields resolve from its registry.
     await reconcileRegisteredStorage(engine, composedDatasets, nsDefs);
+    // Storage is settled: one sweep now, in the background, so a field declared
+    // in code since the last boot gets its column without waiting an interval.
+    // compose's stop() aborts it and waits for it, as for the interval's.
+    if (background) {
+      void runPromoteFieldsNow().catch((err: unknown) => {
+        process.stderr.write(
+          `[substrate] boot promotion sweep failed and will run again: ${err instanceof Error ? err.message : String(err)}\n`
+        );
+      });
+    }
 
     return {
       engine,

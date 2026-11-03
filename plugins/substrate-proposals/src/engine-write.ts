@@ -2,8 +2,10 @@
  * Shared helpers used by the propose_* resolvers.
  */
 
+import { emitFieldEvents } from '@mnmal-ai/substrate-compose';
 import {
   type Dataset,
+  type EngineHandle,
   type Registry,
   type RegistryEntry,
   type RequestContext,
@@ -120,11 +122,40 @@ export interface StorageScope {
   readonly pending: Set<Promise<void>>;
 }
 
-function prepareStorage(dataset: Dataset, type: string, scope?: StorageScope): void {
+function prepareStorage(
+  dataset: Dataset,
+  type: string,
+  handle: EngineHandle | undefined,
+  scope?: StorageScope
+): void {
   if (scope?.signal.aborted === true) return;
   const work = (async (): Promise<void> => {
     try {
-      await dataset.ensureTypeStorage?.(type, scope ? { signal: scope.signal } : undefined);
+      // A field added to a live type is held in jsonb until the promotion sweep
+      // gives it a column, so no ADD COLUMN waits on a busy table here.
+      const prepared = await dataset.ensureTypeStorage?.(type, {
+        newFields: 'pending',
+        ...(scope ? { signal: scope.signal } : {})
+      });
+      const pending = prepared?.pending ?? [];
+      // Only what went pending: none on a store without per-type tables (F12).
+      if (handle !== undefined && pending.length > 0) {
+        await emitFieldEvents(
+          handle,
+          pending.map((field) => ({
+            kind: 'field_pending' as const,
+            namespace: dataset.namespace,
+            type,
+            field,
+            attempts: 0
+          }))
+        ).catch((err: unknown) => {
+          process.stderr.write(
+            `[substrate-proposals] field_pending for ${dataset.namespace}/${type} not audited: ` +
+              `${err instanceof Error ? err.message : String(err)}\n`
+          );
+        });
+      }
     } catch (err) {
       process.stderr.write(
         `[substrate-proposals] storage for ${dataset.namespace}/${type} not prepared: ` +
@@ -148,19 +179,23 @@ function prepareStorage(dataset: Dataset, type: string, scope?: StorageScope): v
  * bound and must not hold the caller's response; rows written meanwhile land
  * in the DEFAULT partition and are moved. A failure is logged and never
  * undoes the committed proposal; the next boot or proposal retries.
- * {@link storageSettled} awaits it; `scope`'s signal aborts it.
+ * A field added to a type that already has a table is recorded `pending`, and
+ * one `field_pending` `_system/AuditEvent` per such field is written and
+ * announced through `handle` (F11, F12). {@link storageSettled} awaits it;
+ * `scope`'s signal aborts it.
  */
 export function ensureStorageAfterCommit(
   afterTx: ResolverArgs['afterTx'],
   dataset: Dataset,
   type: string,
+  handle: EngineHandle | undefined,
   scope?: StorageScope
 ): void {
   if (afterTx === undefined) {
-    prepareStorage(dataset, type, scope);
+    prepareStorage(dataset, type, handle, scope);
     return;
   }
   afterTx(async ({ committed }) => {
-    if (committed) prepareStorage(dataset, type, scope);
+    if (committed) prepareStorage(dataset, type, handle, scope);
   });
 }

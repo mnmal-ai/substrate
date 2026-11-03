@@ -39,6 +39,7 @@ import {
   type PubSub,
   storageSettled
 } from '../src/index.js';
+import { relationOf, TABLES } from './_layout.js';
 
 const T0 = new Date('2026-10-25T00:00:00Z');
 
@@ -722,13 +723,13 @@ describe.skipIf(!POSTGRES_URL)('propose_index (pg)', () => {
       (i) => i.unique && i.engineOwned
     )?.name;
     expect(unique).toBeDefined();
-    const table = layout === 'partitioned' ? partitionName(CODE, type) : 'rows';
+    const table =
+      layout === 'partitioned' ? partitionName(CODE, type) : await relationOf(sql, CODE, type);
     const scope =
-      layout === 'partitioned'
-        ? 'deleted_at IS NULL'
-        : `namespace = '${CODE}' AND type = '${type}'`;
+      layout === 'legacy' ? `namespace = '${CODE}' AND type = '${type}'` : 'deleted_at IS NULL';
+    const key = layout === 'tables' ? 'id' : "(body->>'brand')";
     const hand = `hand_${randomUUID().slice(0, 8)}`;
-    await sql.unsafe(`CREATE INDEX ${hand} ON ${table} ((body->>'brand')) WHERE ${scope}`);
+    await sql.unsafe(`CREATE INDEX ${hand} ON ${table} (${key}) WHERE ${scope}`);
 
     const remove = (indexName: string) =>
       proposeIndex(engine, { namespace: CODE, type, action: 'remove', indexName });
@@ -800,7 +801,7 @@ describe.skipIf(!POSTGRES_URL)('propose_index (pg)', () => {
         await proposeIndex(engine, { namespace: CODE, type, action: 'remove', indexName: wanted })
       )
     ).toBe('still_desired');
-    // The partitioned layout's engine timestamp and tombstone indexes, never removable.
+    // The partitioned and tables layouts' engine timestamp and tombstone indexes, never removable.
     for (const base of desired.filter((n) => n.endsWith('_base'))) {
       expect(
         code(
@@ -808,7 +809,7 @@ describe.skipIf(!POSTGRES_URL)('propose_index (pg)', () => {
         )
       ).toBe('still_desired');
     }
-    expect(desired.some((n) => n.endsWith('_base'))).toBe(layout === 'partitioned');
+    expect(desired.some((n) => n.endsWith('_base'))).toBe(layout !== 'legacy');
     const rec = recommendation({ namespace: CODE, type, action: 'remove', indexName: wanted });
     await system.write('IndexRecommendation', [rec]);
     const env = await proposeIndex(engine, {
@@ -887,14 +888,24 @@ describe.skipIf(!POSTGRES_URL)('propose_index (pg)', () => {
     expect(removed.errors ?? []).toEqual([]);
     expect(await indexNames(typeName, APP)).not.toContain(name);
     expect(engine.registryFor(APP)?.get(typeName)?.indexes).toBeUndefined();
-    const [row] = await sql<Array<{ indexes: string | null }>>`
+    const [row] = TABLES
+      ? (
+          await (engine.datasetFor(APP) as Dataset).read('TypeProposal', {
+            where: { typeName: { eq: typeName } }
+          })
+        ).rows.map((r) => ({ indexes: r.indexesJson ?? null }))
+      : await sql<Array<{ indexes: string | null }>>`
         SELECT body->>'indexesJson' AS indexes FROM rows
         WHERE namespace = ${APP} AND type = 'TypeProposal' AND body->>'typeName' = ${typeName}`;
     expect(row?.indexes).toBeNull();
     // A reconcile does not bring it back.
     await (engine.datasetFor(APP) as PgDataset).ensureTypeStorage(typeName);
     expect(await indexNames(typeName, APP)).not.toContain(name);
-    const [audit] = await sql<Array<{ details: Record<string, unknown> }>>`
+    const [audit] = TABLES
+      ? (await system.read('AuditEvent', {})).rows
+          .map((r) => ({ details: r.details as Record<string, unknown> }))
+          .filter((r) => r.details?.indexName === name)
+      : await sql<Array<{ details: Record<string, unknown> }>>`
       SELECT body->'details' AS details FROM rows
       WHERE namespace = '_system' AND type = 'AuditEvent'
         AND body->'details'->>'indexName' = ${name}`;
@@ -950,7 +961,9 @@ describe.skipIf(!POSTGRES_URL)('propose_index (pg)', () => {
       ctx: REVIEWER
     });
     expect(env.errors?.map((e) => e.code)).toContain('propose_index_not_alone');
-    const [count] = await sql<Array<{ n: number }>>`
+    const [count] = TABLES
+      ? [{ n: (await (engine.datasetFor(APP) as Dataset).read(noteType, {})).rows.length }]
+      : await sql<Array<{ n: number }>>`
       SELECT count(*)::int AS n FROM rows WHERE namespace = ${APP} AND type = ${noteType}`;
     expect(count?.n).toBe(0);
     expect(await indexNames(type)).toContain(name);
@@ -959,7 +972,8 @@ describe.skipIf(!POSTGRES_URL)('propose_index (pg)', () => {
   it('gives up a drop that waits on another transaction, and reopens its recommendation', async () => {
     const { type, leftovers } = await codeType([{ fields: ['brand', 'size'] }]);
     const name = leftovers[0] as string;
-    const table = layout === 'partitioned' ? partitionName(CODE, type) : 'rows';
+    const table =
+      layout === 'partitioned' ? partitionName(CODE, type) : await relationOf(sql, CODE, type);
     const rec = recommendation({ namespace: CODE, type, action: 'remove', indexName: name });
     await system.write('IndexRecommendation', [rec]);
     const LOCK_TIMEOUT_MS = 500;

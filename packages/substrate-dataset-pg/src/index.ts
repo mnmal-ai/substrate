@@ -67,6 +67,11 @@ export type {
   PromotedColumnLookup
 } from './pg-sql.js';
 export {
+  PROMOTION_FAILED_AFTER,
+  type PromotePendingFieldsOptions,
+  promotePendingFields
+} from './promote.js';
+export {
   assertServerVersion,
   MIN_SERVER_VERSION_NUM,
   UnsupportedServerVersionError

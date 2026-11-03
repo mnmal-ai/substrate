@@ -298,7 +298,13 @@ async function proposeFieldLocked(
   await notifyAfterCommit(args, () =>
     deps.pubsub.notify(deps.channelFor(deps.namespace), String(newId))
   );
-  ensureStorageAfterCommit(args.afterTx, deps.dataset, targetType, deps.registryStore.storage);
+  ensureStorageAfterCommit(
+    args.afterTx,
+    deps.dataset,
+    targetType,
+    engine,
+    deps.registryStore.storage
+  );
 
   // Step 8 — return the applied row, carrying the migration summary when
   // the destructive path ran so its counts need no re-scan to read.

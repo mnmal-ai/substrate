@@ -30,6 +30,7 @@ import { createNoopPubSub } from '../src/config.js';
 import { createProposalsPlugin, storageSettled } from '../src/index.js';
 import { makeProposeTypeResolver } from '../src/propose-type-resolver.js';
 import { RegistryStore } from '../src/registry-store.js';
+import { deleteNamespaces, TABLES } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const NS = 'kapplystorage';
@@ -154,7 +155,7 @@ describe.skipIf(!POSTGRES_URL)('propose_type storage (pg)', () => {
   });
 
   beforeEach(async () => {
-    await sql`DELETE FROM rows WHERE namespace IN (${NS}, '_system_proposals')`;
+    await deleteNamespaces(sql, NS, '_system_proposals');
     // Partitions cannot be dropped under the short_ids FK, so each test proposes a type of its own.
     typeName = `Dress${randomUUID().slice(0, 8)}`;
   });
@@ -167,6 +168,7 @@ describe.skipIf(!POSTGRES_URL)('propose_type storage (pg)', () => {
   }
 
   async function liveCount(): Promise<number> {
+    if (TABLES) return (await new PgDataset({ namespace: NS, sql }).read(typeName, {})).rows.length;
     const [row] = await sql<Array<{ n: number }>>`
       SELECT count(*)::int AS n FROM rows WHERE namespace = ${NS} AND type = ${typeName}`;
     return row?.n ?? 0;
