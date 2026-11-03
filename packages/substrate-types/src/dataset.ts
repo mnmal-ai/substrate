@@ -806,11 +806,19 @@ export interface TypeIndexState {
   reason?: 'insufficient_disk';
 }
 
-/** Where a type's rows live: `partition` is set on the partitioned layout once the type has one. */
+/**
+ * Where a type's rows live: `partition` is set on the partitioned layout once
+ * the type has one, and `table` on the tables layout once it has its table.
+ */
 export interface TypeStorageReport {
   layout: 'legacy' | 'partitioned' | 'tables';
   partition?: string;
+  table?: string;
   indexes: TypeIndexState[];
+  /** Tables layout: declared fields whose values live in `extra` until they get a column. */
+  pending?: string[];
+  /** Tables layout: fields no longer declared whose columns are kept. */
+  orphaned?: string[];
 }
 
 export interface StorageReport {

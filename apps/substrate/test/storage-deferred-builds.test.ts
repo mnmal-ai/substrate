@@ -31,6 +31,7 @@ import {
   reportUnguardedIndexBuilds,
   runDeferredIndexBuilds
 } from '../src/serve/wiring.js';
+import { deleteNamespaces, relationOf, TABLES } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 
@@ -44,7 +45,7 @@ describe.skipIf(!POSTGRES_URL)('deferred index builds at boot (pg)', () => {
   });
 
   afterAll(async () => {
-    await sql`DELETE FROM rows WHERE namespace = ${ns}`;
+    await deleteNamespaces(sql, ns);
     await sql.end();
   });
 
@@ -102,8 +103,14 @@ describe.skipIf(!POSTGRES_URL)('deferred index builds at boot (pg)', () => {
 
       const hold = await sql.reserve();
       await hold`BEGIN`;
-      await hold`INSERT INTO rows (namespace, type, id, body)
-        VALUES (${ns}, 'Member', ${randomUUID()}, ${sql.json({ kid: randomUUID() })})`;
+      if (TABLES) {
+        await hold.unsafe(`INSERT INTO ${await relationOf(sql, ns, 'Member')} (id) VALUES ($1)`, [
+          randomUUID()
+        ]);
+      } else {
+        await hold`INSERT INTO rows (namespace, type, id, body)
+          VALUES (${ns}, 'Member', ${randomUUID()}, ${sql.json({ kid: randomUUID() })})`;
+      }
       let settled = false;
       const builds = buildDeferredIndexes(composed.engine, composed.datasets).then(() => {
         settled = true;
@@ -180,7 +187,7 @@ describe.skipIf(!POSTGRES_URL)('deferred index builds at boot (pg)', () => {
       expect(lines).toEqual([]);
     } finally {
       await composed.stop();
-      await sql`DELETE FROM rows WHERE namespace = ${def.namespace}`;
+      await deleteNamespaces(sql, def.namespace);
     }
   }, 60_000);
 
@@ -248,7 +255,7 @@ describe.skipIf(!POSTGRES_URL)('deferred index builds at boot (pg)', () => {
         ensure.mockRestore();
       }
     } finally {
-      await sql`DELETE FROM rows WHERE namespace = ${rns}`;
+      await deleteNamespaces(sql, rns);
       await composed.stop();
     }
   }, 60_000);

@@ -37,6 +37,7 @@ import {
   reconcileDeclaredStorage,
   reconcileRegisteredStorage
 } from '../src/serve/wiring.js';
+import { deleteNamespaces } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const CONTROL = '_system_proposals';
@@ -225,7 +226,7 @@ describe.skipIf(!POSTGRES_URL)('storage for registered types (pg)', () => {
   afterAll(async () => {
     await storageSettled();
     await stop?.();
-    await sql`DELETE FROM rows WHERE namespace IN (${ns}, ${CONTROL})`;
+    await deleteNamespaces(sql, ns, CONTROL);
     await sql.end();
   });
 
@@ -276,7 +277,7 @@ describe.skipIf(!POSTGRES_URL)('storage for registered types (pg)', () => {
       expect(states.find((i) => i.fields.join() === 'sku')?.state).toBe('valid');
       expect(states.some((i) => i.fields.join() === 'title')).toBe(false);
     } finally {
-      await sql`DELETE FROM rows WHERE namespace = ${kns}`;
+      await deleteNamespaces(sql, kns);
     }
   }, 20_000);
 

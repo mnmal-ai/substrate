@@ -88,6 +88,7 @@ import {
   type ReconcileTypeIndexesArgs,
   reconcileTypeIndexes,
   typeIndexesOf,
+  typeRelation,
   undeclaredIndexes
 } from './index-reconciler.js';
 import { detectLayout, type StorageLayout } from './layout.js';
@@ -101,7 +102,7 @@ import {
   buildWalkProjection,
   prepareWindows
 } from './pg-sql/aggregate.js';
-import { sqlStringLiteral } from './pg-sql/primitives.js';
+import { fieldExprSql, sqlStringLiteral } from './pg-sql/primitives.js';
 import {
   buildDerive,
   prepareSharedPicks,
@@ -287,12 +288,14 @@ interface InternalPgSubstrateDatasetOptions {
 interface TableCache {
   /** The pool, which LISTENs on a connection of its own. */
   sql: PgHandle;
-  tables: Map<string, TypeTable>;
+  /** `null` is a cached miss: the type has no table yet. */
+  tables: Map<string, TypeTable | null>;
   /** Bumped on each drop, so a load that raced a notification is not cached. */
   gen: number;
   /** True once listening; false when LISTEN failed, and then nothing is cached. */
   listening?: Promise<boolean>;
-  uuidCheck?: boolean;
+  /** Only `true` is kept: the migration can be applied while this process runs, never unapplied. */
+  uuidCheck?: true;
 }
 
 /** One cache per pool. */
@@ -334,14 +337,26 @@ const ENGINE_CHECKS = [
 
 /**
  * `N open index recommendation(s)` while the index advisor has any, else
- * nothing. Reads `_system/IndexRecommendation` from this schema's rows, so a
- * `_system` held elsewhere (memory) reports none.
+ * nothing. Reads `_system/IndexRecommendation` from this schema's rows, or its
+ * type table, so a `_system` held elsewhere (memory) reports none.
  */
-async function openRecommendations(sql: Sql): Promise<string[]> {
-  const [row] = await sql<Array<{ n: number }>>`
-    SELECT count(*)::int AS n FROM rows
-    WHERE namespace = '_system' AND type = 'IndexRecommendation'
-      AND deleted_at IS NULL AND body->>'state' = 'open'`;
+async function openRecommendations(sql: Sql, layout: StorageLayout): Promise<string[]> {
+  let row: { n: number } | undefined;
+  if (layout === 'tables') {
+    const table = await loadTypeTable(sql, '_system', 'IndexRecommendation');
+    [row] =
+      table === undefined
+        ? []
+        : await sql.unsafe<Array<{ n: number }>>(
+            `SELECT count(*)::int AS n FROM ${table.from}
+             WHERE deleted_at IS NULL AND ${fieldExprSql(table, 'state', 'text')} = 'open'`
+          );
+  } else {
+    [row] = await sql<Array<{ n: number }>>`
+      SELECT count(*)::int AS n FROM rows
+      WHERE namespace = '_system' AND type = 'IndexRecommendation'
+        AND deleted_at IS NULL AND body->>'state' = 'open'`;
+  }
   const n = row?.n ?? 0;
   return n === 0
     ? []
@@ -510,10 +525,15 @@ export class PgDataset implements Dataset {
     const cache = this.#tableCache;
     const listening = await this.#listen();
     const hit = cache.tables.get(key);
-    if (hit !== undefined) return hit;
+    // A cached miss is not trusted inside a transaction: a check-then-write
+    // there must see a table another transaction has just committed, before
+    // its notification lands.
+    if (hit !== undefined && (hit !== null || !this.#inTx)) return hit ?? undefined;
     const gen = cache.gen;
     const table = await loadTypeTable(this.#sql, this.namespace, type);
-    if (table !== undefined) this.#remember(key, table, gen, listening);
+    // A miss is cached too, so a never-written type reads without a catalog
+    // query; its creation's notification drops it, as it drops a table.
+    this.#remember(key, table ?? null, gen, listening);
     return table;
   }
 
@@ -521,7 +541,7 @@ export class PgDataset implements Dataset {
   async #writeTable(type: string): Promise<TypeTable> {
     const found = await this.#tableFor(type);
     if (found !== undefined) return found;
-    const gen = this.#tableCache.gen;
+    let gen = this.#tableCache.gen;
     const def = this.#typeDefLookup?.(type, this.namespace);
     const args = {
       namespace: this.namespace,
@@ -537,21 +557,28 @@ export class PgDataset implements Dataset {
     // advisory lock is then held until that transaction ends, so two
     // transactions making first writes of two new types in opposite orders can
     // deadlock; pg detects it (40P01) and aborts one. By F18's design.
+    const key = `${this.namespace}/${type}`;
     if (this.#inTx) {
       await (this.#sql as TransactionSql).savepoint((sp) => ensureTypeTable(sp, args));
     } else {
       await ensureTypeTable(this.#sql, args);
+      // Committed: a cached miss must not outlive it until the notification
+      // lands, nor be cached again by a read whose catalog lookup began before
+      // the commit, which the new generation refuses.
+      this.#tableCache.tables.delete(key);
+      gen = ++this.#tableCache.gen;
     }
     const table = await loadTypeTable(this.#sql, this.namespace, type);
     if (table === undefined) throw new Error(`internal: ${this.namespace}/${type} has no table`);
-    this.#remember(`${this.namespace}/${type}`, table, gen, await this.#listen());
+    this.#remember(key, table, gen, await this.#listen());
     return table;
   }
 
-  #remember(key: string, table: TypeTable, gen: number, listening: boolean): void {
+  /** Caches `table` (`null`: none yet); inside a transaction a table only, until it commits. */
+  #remember(key: string, table: TypeTable | null, gen: number, listening: boolean): void {
     if (this.#inTx) {
       // -1 never matches, so a table loaded without a listener never enters the cache.
-      this.#txTables?.set(key, { table, gen: listening ? gen : -1 });
+      if (table !== null) this.#txTables?.set(key, { table, gen: listening ? gen : -1 });
     } else if (listening && this.#tableCache.gen === gen) {
       this.#tableCache.tables.set(key, table);
     }
@@ -589,16 +616,21 @@ export class PgDataset implements Dataset {
     if (cache.uuidCheck === undefined) {
       const [row] = await this.#sql<Array<{ on: boolean }>>`
         SELECT EXISTS (SELECT 1 FROM migrations WHERE version = ${UUID_CHECK_MIGRATION}) AS on`;
-      cache.uuidCheck = row?.on === true;
+      if (row?.on === true) cache.uuidCheck = true;
     }
-    return cache.uuidCheck;
+    return cache.uuidCheck === true;
   }
 
-  /** Moves a committed transaction's tables into the pool's cache, unless a notification intervened. */
+  /**
+   * Moves a committed transaction's tables into the pool's cache, unless a
+   * notification intervened; then drops the entry, which may be a miss the
+   * transaction's own create made stale.
+   */
   #commitTables(txTables: TxTables): void {
     const cache = this.#tableCache;
     for (const [key, { table, gen }] of txTables) {
       if (cache.gen === gen) cache.tables.set(key, table);
+      else cache.tables.delete(key);
     }
   }
 
@@ -891,7 +923,7 @@ export class PgDataset implements Dataset {
       if (tail !== null) tailSql = combineAnd(sql, [...base, tail]);
       if (cursorFragment !== null) whereSql = combineAnd(sql, [...base, cursorFragment]);
     }
-    const orderBySql = buildOrderBy(sql, orderBy, orderByCastFor, table, derivedFor);
+    const orderBySql = buildOrderBy(sql, orderBy, orderByCastFor, table, derivedFor, 'r');
 
     // Fetch one extra row to determine hasMore without a count query.
     const fetchLimit = limit !== undefined ? limit + 1 : undefined;
@@ -2200,10 +2232,12 @@ export class PgDataset implements Dataset {
    * Logs each index it created, adopted or swapped, and records each one
    * left pending, building or failed for `describeStorage` and `storageReport`.
    *
-   * On `tables`, brings the type's table in line with its declared fields
-   * (`ensureTypeTable`; a new field gets its column, or `pending` under
-   * `newFields: 'pending'`) and returns the fields that went `pending` in this
-   * call (F12). Its indexes are not built yet. The old layouts return none.
+   * On `tables`, first brings the type's table in line with its declared
+   * fields (`ensureTypeTable`; a new field gets its column, or `pending` under
+   * `newFields: 'pending'`), then reconciles its indexes on it, and returns the
+   * fields that went `pending` in this call (F12). An index reading a pending
+   * field's column waits, `pending`, until the column exists. The old layouts
+   * return none.
    */
   async ensureTypeStorage(
     type: string,
@@ -2219,6 +2253,7 @@ export class PgDataset implements Dataset {
       throw new Error('PgDataset.ensureTypeStorage cannot be called on a tx-bound instance');
     }
     const sql = this.#sql as Sql;
+    let pending: string[] = [];
     if (layout === 'tables') {
       const def = this.#typeDefLookup?.(type, this.namespace);
       const change = await ensureTypeTable(sql, {
@@ -2235,8 +2270,7 @@ export class PgDataset implements Dataset {
       // Committed: drop the cached table now rather than when the notification lands.
       this.#tableCache.tables.delete(`${this.namespace}/${type}`);
       this.#tableCache.gen++;
-      // shortcut: a type table's indexes are built by Task 12 (Todo #1858); none are reconciled yet.
-      return { pending: change.pending };
+      pending = change.pending;
     }
     if (layout === 'partitioned') await ensureTypeStorage(sql, this.namespace, type);
     const builds = this.#deferredBuilds();
@@ -2284,7 +2318,7 @@ export class PgDataset implements Dataset {
         `[substrate] index ${s.name} on ${this.namespace}/${type}: ${s.outcome} (${s.state})\n`
       );
     }
-    return { pending: [] };
+    return { pending };
   }
 
   #deferredBuilds(): Map<string, DeferredBuild> {
@@ -2357,24 +2391,40 @@ export class PgDataset implements Dataset {
   async pendingIndexBuilds(type: string): Promise<Array<{ name: string; estimateBytes: number }>> {
     const layout = await this.#layout();
     if (layout === 'absent') return [];
-    if (layout === 'tables') throw notOnTables('pendingIndexBuilds');
     const args = this.#indexArgs(type, this.namespace, layout);
-    if (
-      layout === 'partitioned' &&
-      (await typePartition(this.#sql as Sql, this.namespace, type)) === undefined
-    ) {
+    if ((await typeRelation(this.#sql as Sql, this.namespace, type, layout)) === undefined) {
       return [];
     }
     return pendingIndexBuilds(this.#sql as Sql, args);
   }
 
-  /** See `Dataset.describeStorage`. Reads the catalog only, in a fixed number of queries. */
+  /**
+   * See `Dataset.describeStorage`. Reads the catalog only, in a fixed number of
+   * queries. On `tables`, also the type's table and its `pending` and
+   * `orphaned` fields, as the catalog records them.
+   */
   async describeStorage(type: string): Promise<TypeStorageReport> {
     const detected = await this.#layout();
-    if (detected === 'tables') throw notOnTables('describeStorage');
-    const layout = detected === 'partitioned' ? 'partitioned' : 'legacy';
+    const layout =
+      detected === 'partitioned' || detected === 'tables' ? detected : ('legacy' as const);
     const sql = this.#sql as Sql;
     const args = this.#indexArgs(type, this.namespace, layout);
+    if (layout === 'tables') {
+      const name = await typeRelation(sql, this.namespace, type, layout);
+      const table = name === undefined ? undefined : await loadTypeTable(sql, this.namespace, type);
+      if (name === undefined || table === undefined) {
+        return { layout, indexes: [], pending: [], orphaned: [] };
+      }
+      return {
+        layout,
+        table: name,
+        indexes: this.#withBuilds(
+          describeTypeIndexes({ ...args, table }, await heldIndexes(sql, [name]))
+        ),
+        pending: [...table.pending],
+        orphaned: [...table.orphaned]
+      };
+    }
     if (layout === 'legacy') {
       return {
         layout,
@@ -2397,7 +2447,6 @@ export class PgDataset implements Dataset {
    */
   async storageReport(opts: { partitionBudget: number }): Promise<StorageReport> {
     const layout = await this.#layout();
-    if (layout === 'tables') throw notOnTables('storageReport');
     const building = [...this.#deferredBuilds()]
       .sort(([a], [b]) => a.localeCompare(b))
       .map(
@@ -2413,7 +2462,27 @@ export class PgDataset implements Dataset {
     }
     if (layout === 'absent') return { layout: 'legacy', warnings: building };
     const sql = this.#sql as Sql;
-    const info = await openRecommendations(sql);
+    const info = await openRecommendations(sql, layout);
+    if (layout === 'tables') {
+      const warnings = [...building];
+      const tables = await sql<Array<{ namespace: string; type: string; table: string }>>`
+        SELECT namespace, type, table_name AS "table" FROM substrate_type_tables`;
+      const held = await heldIndexes(
+        sql,
+        tables.map((t) => t.table)
+      );
+      const heldBy = Map.groupBy(held, (i) => i.table);
+      for (const t of tables) {
+        const own = heldBy.get(t.table) ?? [];
+        this.#undeclared(warnings, info, t.namespace, t.type, 'tables', t.table, own);
+      }
+      if (tables.length > opts.partitionBudget) {
+        warnings.push(
+          `${tables.length} type tables exceed the budget of ${opts.partitionBudget}: move a namespace to its own instance behind a bridge`
+        );
+      }
+      return { layout: 'tables', warnings, info };
+    }
     if (layout !== 'partitioned') {
       const warnings = [...building];
       const held = await heldIndexes(sql, ['rows']);
@@ -2527,8 +2596,13 @@ export class PgDataset implements Dataset {
     const def = this.#typeDefLookup?.(type, namespace);
     const layout = await this.#layout();
     if (def === undefined || layout === 'absent') return undefined;
+    // On `tables`, an index over a field not yet `column` serves no read.
+    const table = layout === 'tables' ? await loadTypeTable(this.#sql, namespace, type) : undefined;
     return {
-      indexes: desiredIndexKeys(this.#indexArgs(type, namespace, layout)),
+      indexes: desiredIndexKeys({
+        ...this.#indexArgs(type, namespace, layout),
+        ...(table !== undefined ? { table } : {})
+      }),
       ...(def.expectedSize !== undefined ? { expectedSize: def.expectedSize } : {})
     };
   }
@@ -2613,11 +2687,11 @@ export class PgDataset implements Dataset {
 
   /**
    * See `Dataset.dropNamespaceIndexes`. On legacy, the engine-owned partial
-   * indexes on `rows` scoped to this namespace; on partitioned, the
-   * engine-owned indexes on its type partitions, which a namespace drop
-   * empties but keeps. Unique ones only when `opts.unique`. Each table's under
-   * its index-build lock, CONCURRENTLY; the wait for that lock and each lock
-   * wait of a drop are bounded by `lockTimeoutMs` (default
+   * indexes on `rows` scoped to this namespace; on partitioned (tables), the
+   * engine-owned indexes on its type partitions (type tables), which a
+   * namespace drop empties but keeps. Unique ones only when `opts.unique`.
+   * Each table's under its index-build lock, CONCURRENTLY; the wait for that
+   * lock and each lock wait of a drop are bounded by `lockTimeoutMs` (default
    * `DROP_LOCK_TIMEOUT_MS`), past which it throws `index_drop_timeout`.
    */
   async dropNamespaceIndexes(
@@ -2630,7 +2704,15 @@ export class PgDataset implements Dataset {
     }
     const sql = this.#sql as Sql;
     const ns = this.namespace;
-    const tables = layout === 'legacy' ? ['rows'] : await typePartitions(sql, ns);
+    const tables =
+      layout === 'legacy'
+        ? ['rows']
+        : layout === 'partitioned'
+          ? await typePartitions(sql, ns)
+          : (
+              await sql<Array<{ table_name: string }>>`
+                SELECT table_name FROM substrate_type_tables WHERE namespace = ${ns}`
+            ).map((t) => t.table_name);
     const timeout = opts.lockTimeoutMs ?? DROP_LOCK_TIMEOUT_MS;
     const dropped: string[] = [];
     const conn = await sql.reserve();
@@ -2674,9 +2756,10 @@ export class PgDataset implements Dataset {
 
   /**
    * See `Dataset.typeStats`. Spans every namespace of the database, in a fixed
-   * number of queries. Partitioned: each type partition's own statistics;
-   * `liveRows` is `reltuples` (or `n_live_tup` before the first ANALYZE) and
-   * counts tombstoned rows too. Legacy: see the shortcut below.
+   * number of queries. Partitioned and tables: each type partition's (type
+   * table's) own statistics; `liveRows` is `reltuples` (or `n_live_tup` before
+   * the first ANALYZE) and counts tombstoned rows too. Legacy: see the
+   * shortcut below.
    */
   async typeStats(): Promise<TypeStats[]> {
     const layout = await this.#layout();
@@ -2711,6 +2794,33 @@ export class PgDataset implements Dataset {
           engineOwned: isEngineOwned(i)
         }))
     });
+    if (layout === 'tables') {
+      const tables = await sql<
+        Array<{
+          namespace: string;
+          type: string;
+          table: string;
+          liveRows: number;
+          insertsTotal: number;
+          updatesTotal: number;
+          deletesTotal: number;
+        }>
+      >`
+        SELECT t.namespace, t.type, t.table_name AS "table",
+               (CASE WHEN c.reltuples >= 0 THEN c.reltuples ELSE COALESCE(s.n_live_tup, 0) END)::float8
+                 AS "liveRows",
+               COALESCE(s.n_tup_ins, 0)::float8 AS "insertsTotal",
+               COALESCE(s.n_tup_upd, 0)::float8 AS "updatesTotal",
+               COALESCE(s.n_tup_del, 0)::float8 AS "deletesTotal"
+        FROM substrate_type_tables t
+        JOIN pg_class c ON c.relname = t.table_name AND c.relnamespace = current_schema()::regnamespace
+        LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid`;
+      const held = await heldIndexes(
+        sql,
+        tables.map((t) => t.table)
+      );
+      return tables.map((t) => toStats(t, held));
+    }
     if (layout === 'partitioned') {
       const parts = await sql<
         Array<{
@@ -2887,17 +2997,6 @@ export class PgDataset implements Dataset {
     if (typeof bodyId === 'number' || typeof bodyId === 'string') return bodyId;
     return textId;
   }
-}
-
-/**
- * A storage report the `tables` layout cannot give yet: it reads `rows` and its
- * partitions, and Task 12 builds and reports a type table's indexes. Thrown
- * rather than reporting the store as legacy.
- */
-function notOnTables(method: string): Error {
-  return new Error(
-    `PgDataset.${method} is not available on the tables layout until type-table indexes are built and reported (typed-tables Task 12)`
-  );
 }
 
 /** The statement timeout a walk read runs under, in milliseconds, unless a shorter one is set. */

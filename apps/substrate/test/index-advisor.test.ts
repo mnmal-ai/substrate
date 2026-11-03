@@ -15,7 +15,7 @@ import {
   STORE_PROFILE_ID
 } from '@mnmal-ai/substrate-compose';
 import { ShapeRecorder } from '@mnmal-ai/substrate-core';
-import { PgDataset, PgEdgesStore, runMigrations } from '@mnmal-ai/substrate-dataset-pg';
+import { columnName, PgDataset, PgEdgesStore, runMigrations } from '@mnmal-ai/substrate-dataset-pg';
 import {
   createNoopPubSub,
   createProposalsPlugin,
@@ -24,7 +24,7 @@ import {
 import { defineNamespace } from '@mnmal-ai/substrate-sdk';
 import { MemorySubstrateServer } from '@mnmal-ai/substrate-server-memory';
 import type { FieldDef, RequestContext } from '@mnmal-ai/substrate-types';
-import postgres, { type Sql } from 'postgres';
+import postgres, { type ReservedSql, type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   buildPluginDatasetMap,
@@ -33,9 +33,46 @@ import {
   reconcileDeclaredStorage,
   reconcileRegisteredStorage
 } from '../src/serve/wiring.js';
+import { deleteNamespaces, purgeWhere, relationOf, TABLES } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const ROWS = 3_000;
+
+/**
+ * `n` live rows of `namespace`/`type` with `status: 'open'`, by one INSERT: into
+ * `rows`, or on `tables` into the type table's `status` column (and `row_ids`).
+ */
+async function insertOpen(
+  db: Sql | ReservedSql,
+  namespace: string,
+  type: string,
+  n: number
+): Promise<void> {
+  if (!TABLES) {
+    await db`INSERT INTO rows (namespace, type, id, body)
+      SELECT ${namespace}, ${type}, gen_random_uuid()::text, jsonb_build_object('status', 'open')
+      FROM generate_series(1, ${n})`;
+    return;
+  }
+  const rel = await relationOf(db as Sql, namespace, type);
+  await db.unsafe(
+    `WITH ins AS (
+       INSERT INTO ${rel} (id, ${columnName('status')})
+       SELECT gen_random_uuid()::text, 'open' FROM generate_series(1, $1::int) RETURNING id)
+     INSERT INTO row_ids (namespace, type, id) SELECT $2, $3, id FROM ins`,
+    [n, namespace, type]
+  );
+}
+
+/** The advisor's `_system/IndexRecommendation` rows for `namespace`. */
+async function deleteRecommendations(sql: Sql, namespace: string): Promise<void> {
+  if (TABLES) {
+    await purgeWhere(sql, '_system', 'IndexRecommendation', { namespace: { eq: namespace } });
+    return;
+  }
+  await sql`DELETE FROM rows WHERE namespace = '_system' AND type = 'IndexRecommendation'
+    AND body->>'namespace' = ${namespace}`;
+}
 const ctx: Partial<RequestContext> = {
   identity: { kind: 'system', id: 'test', grants: { '*': ['read', 'mutate'] } }
 };
@@ -50,10 +87,14 @@ describe.skipIf(!POSTGRES_URL)('index advisor (pg)', () => {
   });
 
   afterAll(async () => {
-    await sql`DELETE FROM rows WHERE namespace = ${ns}`;
-    await sql`DELETE FROM rows WHERE namespace = '_system' AND type = 'IndexRecommendation'
-      AND body->>'namespace' = ${ns}`;
-    await sql`DELETE FROM rows WHERE namespace = '_system' AND type IN ('StoreProfile', 'AdvisorState')`;
+    await deleteNamespaces(sql, ns);
+    await deleteRecommendations(sql, ns);
+    if (TABLES) {
+      await purgeWhere(sql, '_system', 'StoreProfile');
+      await purgeWhere(sql, '_system', 'AdvisorState');
+    } else {
+      await sql`DELETE FROM rows WHERE namespace = '_system' AND type IN ('StoreProfile', 'AdvisorState')`;
+    }
     await sql.end();
   });
 
@@ -114,10 +155,8 @@ describe.skipIf(!POSTGRES_URL)('index advisor (pg)', () => {
       await (datasets._system as PgDataset).write('StoreProfile', [
         { id: STORE_PROFILE_ID, profile: 'scale', updatedReason: 'test' }
       ]);
-      await sql`INSERT INTO rows (namespace, type, id, body)
-        SELECT ${ns}, 'Task', gen_random_uuid()::text, jsonb_build_object('status', 'open')
-        FROM generate_series(1, ${ROWS})`;
-      await sql`VACUUM (ANALYZE) rows`;
+      await insertOpen(sql, ns, 'Task', ROWS);
+      await sql.unsafe(`VACUUM (ANALYZE) ${await relationOf(sql, ns, 'Task')}`);
 
       const count = (info: string[] | undefined): number =>
         Number(/^(\d+) open index recommendation/.exec(info?.[0] ?? '')?.[1] ?? 0);
@@ -238,12 +277,14 @@ describe.skipIf(!POSTGRES_URL)('index advisor (pg)', () => {
           ctx: proposer
         });
         expect(env.errors ?? []).toEqual([]);
-        await sql`INSERT INTO rows (namespace, type, id, body)
-          SELECT ${pns}, ${typeName}, gen_random_uuid()::text, jsonb_build_object('status', 'open')
-          FROM generate_series(1, ${ROWS})`;
+        // On `tables` the rows go into the type table, which the background storage work creates.
+        if (TABLES) await storageSettled();
+        await insertOpen(sql, pns, typeName, ROWS);
       }
       await storageSettled();
-      await sql`VACUUM (ANALYZE) rows`;
+      for (const t of ['Big', 'Plain']) {
+        await sql.unsafe(`VACUUM (ANALYZE) ${await relationOf(sql, pns, t)}`);
+      }
 
       // The same slow, unserved read on each, the scale profile's minReads times.
       const recorder = new ShapeRecorder();
@@ -277,9 +318,8 @@ describe.skipIf(!POSTGRES_URL)('index advisor (pg)', () => {
     } finally {
       await storageSettled();
       await composed.stop();
-      await sql`DELETE FROM rows WHERE namespace IN (${pns}, '_system_proposals')`;
-      await sql`DELETE FROM rows WHERE namespace = '_system' AND type = 'IndexRecommendation'
-        AND body->>'namespace' = ${pns}`;
+      await deleteNamespaces(sql, pns, '_system_proposals');
+      await deleteRecommendations(sql, pns);
     }
   }, 60_000);
 
@@ -299,14 +339,15 @@ describe.skipIf(!POSTGRES_URL)('index advisor (pg)', () => {
       'Task',
       Array.from({ length: 10 }, () => ({ id: randomUUID(), status: 'open' }))
     );
-    await sql`ANALYZE rows`;
+    await sql.unsafe(`ANALYZE ${await relationOf(sql, rns, 'Task')}`);
     // Retracted: no longer declared, so outside the desired set, and never scanned.
     fields.current = { status: { kind: 'scalar', type: 'string' } };
     // Scale, and no baseline left by an earlier suite.
     await system.write('StoreProfile', [
       { id: STORE_PROFILE_ID, profile: 'scale', updatedReason: 'test' }
     ]);
-    await sql`DELETE FROM rows WHERE namespace = '_system' AND type = 'AdvisorState'`;
+    if (TABLES) await purgeWhere(sql, '_system', 'AdvisorState');
+    else await sql`DELETE FROM rows WHERE namespace = '_system' AND type = 'AdvisorState'`;
     // Meant for a database whose statistics were never reset, as the test database's.
     const [db] = await sql<Array<{ reset: Date | null }>>`
       SELECT stats_reset AS reset FROM pg_stat_database WHERE datname = current_database()`;
@@ -331,14 +372,12 @@ describe.skipIf(!POSTGRES_URL)('index advisor (pg)', () => {
     // 30,000 writes, flushed to the statistics; then half a window, then a whole one, by the injected clock.
     const conn = await sql.reserve();
     try {
-      await conn`INSERT INTO rows (namespace, type, id, body)
-        SELECT ${rns}, 'Task', gen_random_uuid()::text, jsonb_build_object('status', 'open')
-        FROM generate_series(1, 30000)`;
+      await insertOpen(conn, rns, 'Task', 30000);
       await conn`SELECT pg_stat_force_next_flush()`;
     } finally {
       conn.release();
     }
-    await sql`ANALYZE rows`;
+    await sql.unsafe(`ANALYZE ${await relationOf(sql, rns, 'Task')}`);
     now += DAY / 2;
     expect(await runAdvisorPass(deps)).toEqual({ upserted: 0 });
     expect(await removes()).toEqual([]);
@@ -347,8 +386,7 @@ describe.skipIf(!POSTGRES_URL)('index advisor (pg)', () => {
     const [rec] = await removes();
     expect(rec).toMatchObject({ state: 'open', type: 'Task' });
     expect(String(rec?.indexName)).toMatch(/_status_[0-9a-f]{8}_idx$/);
-    await sql`DELETE FROM rows WHERE namespace = ${rns}`;
-    await sql`DELETE FROM rows WHERE namespace = '_system' AND type = 'IndexRecommendation'
-      AND body->>'namespace' = ${rns}`;
+    await deleteNamespaces(sql, rns);
+    await deleteRecommendations(sql, rns);
   }, 60_000);
 });

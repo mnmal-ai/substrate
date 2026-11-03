@@ -18,6 +18,7 @@ import type { CoordinatorPlugin, NamespaceDefinition } from '@mnmal-ai/substrate
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildPluginDatasetMap, makeFieldDefLookupFactory } from '../src/main.js';
+import { truncateRows } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 
@@ -56,7 +57,7 @@ describe.skipIf(!POSTGRES_URL)('fieldDefLookup wired into buildPluginDatasetMap'
   });
 
   beforeEach(async () => {
-    await sql`TRUNCATE TABLE rows, short_ids`;
+    await truncateRows(sql);
   });
 
   it('orders a numeric body field numerically, not lexicographically', async () => {

@@ -17,7 +17,7 @@ import type {
 } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { PgDataset } from '../src/index.js';
+import { PgDataset, UUID_CHECK_MIGRATION } from '../src/index.js';
 import { applyPatch, encodeRow } from '../src/row-codec.js';
 import { loadTypeTable, type TypeTable } from '../src/type-table.js';
 import { inputCte, mergeAssignments, setList, writeRowsStatement } from '../src/write-rows.js';
@@ -338,15 +338,8 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('PgDataset on type tables vs memory', 
       fields: { code: field.string() },
       indexes: [{ fields: ['code'], unique: true }]
     } as never;
+    await pg.ensureTypeStorage('Uniq');
     await pg.write('Uniq', [{ id: 'u1', code: 'A' }]);
-    const plan = await pg.indexPlan('Uniq', NS);
-    const decl = plan?.indexes.find((i) => i.unique === true);
-    if (decl === undefined) throw new Error('no unique index planned');
-    // Task 12 builds a type table's indexes; this one stands in for it.
-    const t = await table('Uniq');
-    await sql.unsafe(
-      `CREATE UNIQUE INDEX "${decl.name}" ON ${t.from} (${t.column('code')?.column}) WHERE deleted_at IS NULL`
-    );
     const err = await pg.write('Uniq', [{ id: 'u2', code: 'A' }]).catch((e: unknown) => e);
     expect(err).toMatchObject({ code: 'unique_violation', details: { fields: ['code'] } });
   });
@@ -510,12 +503,75 @@ describe.skipIf(!POSTGRES_URL || !TABLES)('PgDataset on type tables vs memory', 
     );
   });
 
-  it('storage reports refuse on tables rather than report the store as legacy', async () => {
+  it('storage reports describe type tables', async () => {
     await seed();
-    const refused = /not available on the tables layout/;
-    await expect(pg.describeStorage('Item')).rejects.toThrow(refused);
-    await expect(pg.pendingIndexBuilds('Item')).rejects.toThrow(refused);
-    await expect(pg.storageReport({ partitionBudget: 100 })).rejects.toThrow(refused);
+    await pg.ensureTypeStorage('Item');
+    expect(await pg.describeStorage('Item')).toMatchObject({
+      layout: 'tables',
+      table: (await table('Item')).from.slice(1, -1),
+      pending: [],
+      orphaned: []
+    });
+    expect(await pg.pendingIndexBuilds('Item')).toEqual([]);
+    expect((await pg.storageReport({ partitionBudget: 100_000 })).layout).toBe('tables');
+  });
+
+  it('a type with no table is looked up once, and its creation in this process is seen at once', async () => {
+    const lookups = () =>
+      statements.filter((q) => /FROM substrate_type_tables WHERE namespace/.test(q)).length;
+    defs.Ghost = { fields: { a: field.string() } };
+    await pg.read('Ghost', {});
+    statements = [];
+    expect((await pg.read('Ghost', {})).rows).toEqual([]);
+    expect(lookups()).toBe(0);
+    // Another dataset on the pool creates it: the cached miss must not hide it.
+    await new PgDataset({ namespace: NS, sql, typeDefLookup }).write('Ghost', [
+      { id: 'g1', a: 'x' }
+    ]);
+    expect((await pg.read('Ghost', {})).rows.map(strip)).toEqual([{ id: 'g1', a: 'x' }]);
+    // Created inside a transaction (F18): seen once it commits.
+    defs.Ghost2 = { fields: { a: field.string() } };
+    expect((await pg.read('Ghost2', {})).rows).toEqual([]);
+    await pg.withTransaction((tx) => tx.write('Ghost2', [{ id: 'h1', a: 'y' }]));
+    expect((await pg.read('Ghost2', {})).rows.map(strip)).toEqual([{ id: 'h1', a: 'y' }]);
+    // Created by another process: a transaction does not trust the cached miss,
+    // so its check-then-write sees the table before the notification lands.
+    defs.Ghost3 = { fields: { a: field.string() } };
+    expect((await pg.read('Ghost3', {})).rows).toEqual([]);
+    const other = postgres(POSTGRES_URL as string, { onnotice: () => {} });
+    try {
+      await new PgDataset({ namespace: NS, sql: other, typeDefLookup }).write('Ghost3', [
+        { id: 'j1', a: 'z' }
+      ]);
+    } finally {
+      await other.end({ timeout: 5 });
+    }
+    expect((await pg.withTransaction((tx) => tx.read('Ghost3', {}))).rows.map(strip)).toEqual([
+      { id: 'j1', a: 'z' }
+    ]);
+  });
+
+  it('a UUID-check migration applied while running reaches the tables created after it', async () => {
+    // A pool of its own, so the check it caches never reaches this suite's tables.
+    const own = postgres(POSTGRES_URL as string, { onnotice: () => {} });
+    const ds = new PgDataset({ namespace: NS, sql: own, typeDefLookup });
+    defs.Before = { fields: { a: field.string() } };
+    defs.After = { fields: { a: field.string() } };
+    const checked = async (type: string) =>
+      (
+        await sql`SELECT 1 FROM pg_constraint
+                  WHERE conname = 'id_uuid_format' AND conrelid = to_regclass(${(await table(type)).from})`
+      ).length === 1;
+    try {
+      await ds.ensureTypeStorage('Before');
+      expect(await checked('Before')).toBe(false);
+      await sql`INSERT INTO migrations (version, checksum) VALUES (${UUID_CHECK_MIGRATION}, 'test')`;
+      await ds.ensureTypeStorage('After');
+      expect(await checked('After')).toBe(true);
+    } finally {
+      await sql`DELETE FROM migrations WHERE version = ${UUID_CHECK_MIGRATION} AND checksum = 'test'`;
+      await own.end({ timeout: 5 });
+    }
   });
 
   it('ensureTypeStorage returns the fields that went pending; [] when none did (F12)', async () => {

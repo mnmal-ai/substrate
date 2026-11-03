@@ -8,10 +8,15 @@
 import { Engine, loadPlugins, type NamespaceConfig } from '@mnmal-ai/substrate-core';
 import { MemoryDatasetRegistry } from '@mnmal-ai/substrate-dataset-memory';
 import { PgDataset, PgEdgesStore, runMigrations } from '@mnmal-ai/substrate-dataset-pg';
-import { createNoopPubSub, createProposalsPlugin } from '@mnmal-ai/substrate-proposals';
+import {
+  createNoopPubSub,
+  createProposalsPlugin,
+  storageSettled
+} from '@mnmal-ai/substrate-proposals';
 import type { Dataset } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { deleteNamespaces } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const NS = 'kproposalpool';
@@ -22,11 +27,13 @@ describe.skipIf(!POSTGRES_URL)('concurrent proposals on a small pool (pg)', () =
   beforeAll(async () => {
     sql = postgres(POSTGRES_URL as string, { onnotice: () => {}, max: 3 });
     await runMigrations(sql);
-    await sql`DELETE FROM rows WHERE namespace IN (${NS}, '_system_proposals')`;
+    await deleteNamespaces(sql, NS, '_system_proposals');
   });
 
   afterAll(async () => {
-    await sql`DELETE FROM rows WHERE namespace IN (${NS}, '_system_proposals')`;
+    // The proposals' background storage work (its index builds) first.
+    await storageSettled();
+    await deleteNamespaces(sql, NS, '_system_proposals');
     await sql.end();
   });
 

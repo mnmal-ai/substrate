@@ -34,7 +34,7 @@ const REAL_CONSTRAINT = 'rows_created_by_kind_check';
 const REAL_INDEX = PARTITIONED ? 'substrate_key_live_kid_uniq' : 'rows_ns_type_created_at_idx';
 const INDEX_TABLE = PARTITIONED ? SYSTEM_KEY_PARTITION : 'rows';
 
-// Its decoys are planted against `rows` and its indexes, which `tables` lacks (Task 12).
+// Its decoys stand in for `rows` and the old baselines' indexes; `tables` has neither.
 describe.skipIf(!POSTGRES_URL || TABLES)('catalog lookups are scoped, proven by decoys', () => {
   let sql: Sql;
   /**

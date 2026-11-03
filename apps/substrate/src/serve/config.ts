@@ -68,7 +68,10 @@ export interface ParsedConfig {
    * the backstop, not the primary stop mechanism. Default 5s.
    */
   shutdownGraceMs: number;
-  /** `SUBSTRATE_PARTITION_BUDGET` — partitions under `rows` beyond which the config report warns. */
+  /**
+   * `SUBSTRATE_PARTITION_BUDGET` — partitions under `rows` (on the tables
+   * layout, type tables) beyond which the config report warns.
+   */
   partitionBudget: number;
   /** `SUBSTRATE_STATEMENT_TIMEOUT_MS` — the statement timeout a walk read runs under; a read it cancels is refused `query_timeout`. */
   statementTimeoutMs: number;

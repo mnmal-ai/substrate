@@ -51,8 +51,7 @@ async function typeWithStorage(
   return ds;
 }
 
-// typeStats reads `rows` or its partitions; a type table's is Task 12's.
-describe.skipIf(!POSTGRES_URL || TABLES)('typeStats', () => {
+describe.skipIf(!POSTGRES_URL)('typeStats', () => {
   it('reports live rows and the type indexes, flagging the engine-owned ones', async () => {
     const ns = `ts_${hex()}`;
     // Rows first, so the partial index is built over them and counts them
@@ -73,7 +72,8 @@ describe.skipIf(!POSTGRES_URL || TABLES)('typeStats', () => {
     const [own] = await typeIndexesOf(sql, ns, 'T', LAYOUT);
     const table = own?.table ?? 'rows';
     const scope = LAYOUT === 'legacy' ? `WHERE namespace = '${ns}' AND type = 'T'` : '';
-    await sql.unsafe(`CREATE INDEX ${lookalike} ON ${table} ((body->>'label')) ${scope}`);
+    const key = TABLES ? 'f_label' : `(body->>'label')`;
+    await sql.unsafe(`CREATE INDEX ${lookalike} ON ${table} (${key}) ${scope}`);
     // The index was built over the rows above, so VACUUM sees them; ANALYZE
     // alone only samples a large shared `rows`, which can miss a 2-row type.
     await sql.unsafe(`VACUUM (ANALYZE) ${table}`);
@@ -83,8 +83,8 @@ describe.skipIf(!POSTGRES_URL || TABLES)('typeStats', () => {
     expect((await engineIndexes(sql, ns, 'T', LAYOUT)).map((i) => i.name)).not.toContain(lookalike);
     // Documented contract: a type is absent (unknown) or has liveRows >= 1, never 0.
     // A legacy share can be sampled past this 2-row type when `rows` is large;
-    // partitioned counts exactly, so there the type must be present.
-    if (stats || LAYOUT === 'partitioned') expect(stats?.liveRows).toBeGreaterThanOrEqual(1);
+    // partitioned and tables count exactly, so there the type must be present.
+    if (stats || LAYOUT !== 'legacy') expect(stats?.liveRows).toBeGreaterThanOrEqual(1);
     if (!stats) return void (await sql.unsafe(`DROP INDEX ${lookalike}`));
     expect(stats?.insertsTotal).toBeGreaterThanOrEqual(0);
     expect(stats?.updatesTotal).toBeGreaterThanOrEqual(0);
@@ -126,8 +126,32 @@ describe.skipIf(!POSTGRES_URL || TABLES)('typeStats', () => {
     expect(derived).not.toContain(type.toLowerCase());
     const names = (await engineIndexes(sql, ns, type, LAYOUT)).map((i) => i.name);
     expect(names).toContain(derived);
-    // Partitioned adds the created/updated/deleted base indexes, truncated alike.
-    expect(names).toHaveLength(LAYOUT === 'partitioned' ? 4 : 1);
+    // Partitioned and tables add the created/updated/deleted base indexes, truncated alike.
+    expect(names).toHaveLength(LAYOUT === 'legacy' ? 1 : 4);
+  });
+
+  it.skipIf(!TABLES)('typeStats reports each type table', async () => {
+    const ns = `ts_${hex()}`;
+    const one = await typeWithStorage(ns, 'One');
+    const two = await typeWithStorage(ns, 'Two');
+    await one.write('One', [{ id: 'a', ref: 'x' }]);
+    await two.write('Two', [
+      { id: 'b', ref: 'y' },
+      { id: 'c', ref: 'z' }
+    ]);
+    for (const t of ['One', 'Two']) {
+      const [row] = await sql<Array<{ table_name: string }>>`
+        SELECT table_name FROM substrate_type_tables WHERE namespace = ${ns} AND type = ${t}`;
+      await sql.unsafe(`VACUUM (ANALYZE) "${row?.table_name}"`);
+    }
+    const stats = (await one.typeStats()).filter((s) => s.namespace === ns);
+    expect(stats.map((s) => [s.type, s.liveRows]).sort()).toEqual([
+      ['One', 1],
+      ['Two', 2]
+    ]);
+    for (const s of stats) {
+      expect(s.indexes.map((i) => i.name)).toContain(generatedIdentifier(ns, s.type, 'ref', 'idx'));
+    }
   });
 
   it.skipIf(LAYOUT !== 'legacy')(

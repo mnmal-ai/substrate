@@ -13,7 +13,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PgDataset, runMigrations, type StorageLayout, typeIndexesOf } from '../src/index.js';
 import { generatedIdentifier } from '../src/migrate.js';
 import type { TypeDefLookup } from '../src/pg-dataset.js';
-import { clearNamespace, dropNamespace, rowsWhere, TABLES } from './_layout.js';
+import { clearNamespace, dropNamespace, rowsWhere } from './_layout.js';
 
 type TypeDef = NonNullable<ReturnType<TypeDefLookup>>;
 
@@ -183,8 +183,7 @@ describe.skipIf(!POSTGRES_URL)('PgDataset drop primitives', () => {
   });
 });
 
-// Engine indexes on type tables are Task 12's.
-describe.skipIf(!POSTGRES_URL || TABLES)('engine indexes of a dropped namespace', () => {
+describe.skipIf(!POSTGRES_URL)('engine indexes of a dropped namespace', () => {
   const LAYOUT = (process.env.SUBSTRATE_STORAGE_LAYOUT ?? 'legacy') as StorageLayout;
   const ref: FieldDef = { kind: 'crossRef', ns: 'other', type: 'X', onDelete: 'set_null' };
   let sql: Sql;

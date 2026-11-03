@@ -4,7 +4,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import type { FieldDef, StorageReport } from '@mnmal-ai/substrate-types';
+import type { FieldDef, IndexDecl, StorageReport } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset } from '../src/index.js';
@@ -58,8 +58,7 @@ const indexed: Record<string, FieldDef> = {
   kid: { kind: 'scalar', type: 'string', indexed: true }
 };
 
-// Indexes on type tables are Task 12's; the `rows` they reconcile does not exist on `tables`.
-describe.skipIf(!POSTGRES_URL || TABLES)('describeStorage', () => {
+describe.skipIf(!POSTGRES_URL)('describeStorage', () => {
   it('reports the layout, the partition and a valid declared index', async () => {
     const ns = freshNs();
     const ds = dataset(ns, { current: indexed });
@@ -67,6 +66,7 @@ describe.skipIf(!POSTGRES_URL || TABLES)('describeStorage', () => {
     const report = await ds.describeStorage(TYPE);
     expect(report.layout).toBe(LAYOUT);
     expect(report.partition !== undefined).toBe(LAYOUT === 'partitioned');
+    expect(report.table !== undefined).toBe(TABLES);
     // Spec rule (derived indexes, both layouts): legacy builds the derived
     // index too, as a partial index on `rows`, so both layouts report it.
     const name = generatedIdentifier(ns, TYPE, 'kid', 'idx');
@@ -77,16 +77,94 @@ describe.skipIf(!POSTGRES_URL || TABLES)('describeStorage', () => {
   });
 
   it('builds nothing: a type never ensured has no partition and no indexes', async () => {
-    if (LAYOUT !== 'partitioned') return;
+    if (LAYOUT === 'legacy') return;
     const ns = freshNs();
     const report = await dataset(ns, { current: indexed }).describeStorage(TYPE);
     expect(report.partition).toBeUndefined();
+    expect(report.table).toBeUndefined();
     expect(report.indexes).toEqual([]);
   });
+
+  it.skipIf(!TABLES)('describeStorage lists pending and orphaned fields', async () => {
+    const ns = freshNs();
+    const defs: { current: Record<string, FieldDef> } = {
+      current: { a: { kind: 'scalar', type: 'string' }, b: { kind: 'scalar', type: 'number' } }
+    };
+    const ds = dataset(ns, defs);
+    await ds.ensureTypeStorage(TYPE);
+    expect(await ds.describeStorage(TYPE)).toMatchObject({ pending: [], orphaned: [] });
+    defs.current = { a: { kind: 'scalar', type: 'string' }, c: { kind: 'scalar', type: 'date' } };
+    await ds.ensureTypeStorage(TYPE, { newFields: 'pending' });
+    const report = await ds.describeStorage(TYPE);
+    expect(report).toMatchObject({ layout: 'tables', pending: ['c'], orphaned: ['b'] });
+    expect(report.table).toMatch(/^t__sr_/);
+  });
+
+  it.skipIf(!TABLES)(
+    'an index over a field not yet `column` is pending, not valid or failed, and serves no read',
+    async () => {
+      const ns = freshNs();
+      const uniq = `rows_sr_u_${randomBytes(4).toString('hex')}`;
+      const plain = `rows_sr_p_${randomBytes(4).toString('hex')}`;
+      const late = `rows_sr_l_${randomBytes(4).toString('hex')}`;
+      const defs: { current: Record<string, FieldDef> } = {
+        current: { a: { kind: 'scalar', type: 'string' } }
+      };
+      let indexes: IndexDecl[] = [];
+      const ds = new PgDataset({
+        namespace: ns,
+        sql,
+        typeDefLookup: (type, namespace) =>
+          type === TYPE && namespace === ns ? { fields: defs.current, indexes } : undefined
+      });
+      await ds.ensureTypeStorage(TYPE);
+      // Added to an existing table, `b` gets its column `promoting`; `c` is recorded `pending`.
+      defs.current = { ...defs.current, b: { kind: 'scalar', type: 'string' } };
+      indexes = [
+        { fields: ['b'], unique: true, name: uniq },
+        { fields: ['b'], name: plain }
+      ];
+      await ds.ensureTypeStorage(TYPE);
+      defs.current = { ...defs.current, c: { kind: 'scalar', type: 'string' } };
+      indexes = [...indexes, { fields: ['c'], name: late }];
+      await ds.ensureTypeStorage(TYPE, { newFields: 'pending' });
+      // As another process sees it: no deferred-build record of its own.
+      const other = postgres(POSTGRES_URL as string, { onnotice: () => {} });
+      try {
+        const fresh = new PgDataset({
+          namespace: ns,
+          sql: other,
+          typeDefLookup: () => ({ fields: defs.current, indexes })
+        });
+        const states = async (d: PgDataset) =>
+          Object.fromEntries((await d.describeStorage(TYPE)).indexes.map((i) => [i.name, i.state]));
+        for (const d of [ds, fresh]) {
+          expect(await states(d)).toMatchObject({
+            [uniq]: 'pending',
+            [plain]: 'pending',
+            [late]: 'pending'
+          });
+        }
+        const planned = async () =>
+          ((await fresh.indexPlan(TYPE, ns))?.indexes ?? []).map((i) => i.name);
+        expect(await planned()).not.toContain(plain);
+        expect(await planned()).not.toContain(uniq);
+        // The sweep settles `b` (Task 13): then its indexes are valid and serve reads.
+        await sql`UPDATE substrate_type_fields SET state = 'column' WHERE namespace = ${ns} AND field = 'b'`;
+        expect(await states(fresh)).toMatchObject({
+          [uniq]: 'valid',
+          [plain]: 'valid',
+          [late]: 'pending'
+        });
+        expect(await planned()).toEqual(expect.arrayContaining([uniq, plain]));
+      } finally {
+        await other.end({ timeout: 5 });
+      }
+    }
+  );
 });
 
-// Indexes on type tables are Task 12's; the `rows` they reconcile does not exist on `tables`.
-describe.skipIf(!POSTGRES_URL || TABLES)('storageReport', () => {
+describe.skipIf(!POSTGRES_URL)('storageReport', () => {
   it('notes an engine index that is no longer declared as info, and keeps it', async () => {
     const ns = freshNs();
     const defs = { current: indexed };
@@ -228,6 +306,23 @@ describe.skipIf(!POSTGRES_URL || LAYOUT !== 'partitioned')('storageReport (parti
     const over = await ds.storageReport({ partitionBudget: n - 1 });
     expect(over.warnings).toContain(
       `${n} partitions exceed the budget of ${n - 1}: move a namespace to its own instance behind a bridge`
+    );
+  });
+});
+
+describe.skipIf(!POSTGRES_URL || !TABLES)('storageReport (tables)', () => {
+  it('counts type tables against the partition budget', async () => {
+    const ds = dataset(freshNs(), { current: {} });
+    await ds.ensureTypeStorage(TYPE);
+    const [count] = await sql<Array<{ n: number }>>`
+      SELECT count(*)::int AS n FROM substrate_type_tables`;
+    const n = count?.n as number;
+    const at = await ds.storageReport({ partitionBudget: n });
+    expect(at.layout).toBe('tables');
+    expect(at.warnings.some((w) => w.includes('exceed the budget'))).toBe(false);
+    const over = await ds.storageReport({ partitionBudget: n - 1 });
+    expect(over.warnings).toContain(
+      `${n} type tables exceed the budget of ${n - 1}: move a namespace to its own instance behind a bridge`
     );
   });
 });

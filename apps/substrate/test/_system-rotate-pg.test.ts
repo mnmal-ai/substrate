@@ -17,10 +17,11 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { KEY_TYPE, SYSTEM_NAMESPACE } from '@mnmal-ai/substrate-compose';
-import { runMigrations } from '@mnmal-ai/substrate-dataset-pg';
+import { PgDataset, runMigrations } from '@mnmal-ai/substrate-dataset-pg';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { main } from '../src/admin/index.js';
+import { purgeWhere, TABLES } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const KID = 'rotate-pg-fixture@TestHost';
@@ -48,12 +49,16 @@ describe.skipIf(!POSTGRES_URL)('substrate-admin rotate against pg', () => {
     tmp = mkdtempSync(join(tmpdir(), 'substrate-rotate-pg-'));
     out = [];
     err = [];
-    await sql`DELETE FROM rows WHERE namespace = ${SYSTEM_NAMESPACE} AND type = ${KEY_TYPE} AND body->>'kid' = ${KID}`;
+    if (TABLES) await purgeWhere(sql, SYSTEM_NAMESPACE, KEY_TYPE, { kid: { eq: KID } });
+    else
+      await sql`DELETE FROM rows WHERE namespace = ${SYSTEM_NAMESPACE} AND type = ${KEY_TYPE} AND body->>'kid' = ${KID}`;
   });
 
   afterEach(async () => {
     rmSync(tmp, { recursive: true, force: true });
-    await sql`DELETE FROM rows WHERE namespace = ${SYSTEM_NAMESPACE} AND type = ${KEY_TYPE} AND body->>'kid' = ${KID}`;
+    if (TABLES) await purgeWhere(sql, SYSTEM_NAMESPACE, KEY_TYPE, { kid: { eq: KID } });
+    else
+      await sql`DELETE FROM rows WHERE namespace = ${SYSTEM_NAMESPACE} AND type = ${KEY_TYPE} AND body->>'kid' = ${KID}`;
   });
 
   /** Register KID for real, through the CLI, so the row is shaped as prod's. */
@@ -83,6 +88,17 @@ describe.skipIf(!POSTGRES_URL)('substrate-admin rotate against pg', () => {
   }
 
   async function liveRows(): Promise<Array<{ pk: string; name: string; ns: string }>> {
+    if (TABLES) {
+      // As the SELECT below reads them: through the dataset, wherever each field lives.
+      const { rows } = await new PgDataset({ namespace: SYSTEM_NAMESPACE, sql }).read(KEY_TYPE, {
+        where: { kid: { eq: KID }, revokedAt: { eq: null } }
+      });
+      return rows.map((r) => ({
+        pk: r.publicKey as string,
+        name: r.name as string,
+        ns: r.namespaces as string
+      }));
+    }
     const rows = await sql<Array<{ pk: string; name: string; ns: string }>>`
       SELECT body->>'publicKey' AS pk, body->>'name' AS name, body->>'namespaces' AS ns
         FROM rows

@@ -23,6 +23,12 @@ import { type BootedStore, bootStore } from '../../src/serve/boot-store.js';
 import { parseEnv } from '../../src/serve/config.js';
 
 export const POSTGRES_URL = process.env.POSTGRES_URL;
+/**
+ * Whether the pg suites run: not on the `tables` pass (`test:tables`), since
+ * migrate-store copies into an old layout until Task 15 converts into `tables`.
+ */
+export const MIGRATE_PG =
+  POSTGRES_URL !== undefined && process.env.SUBSTRATE_TEST_LAYOUT !== 'tables';
 export const RECALL_TABLES = ['embeddings', 'lexical', 'recall_clusters', 'recall_cluster_members'];
 export const STORE_PROFILE_ID = '5703e000-0000-4000-8000-000000000001';
 /** Recall's default, which the target's recall (no embedder configured) keeps. */
