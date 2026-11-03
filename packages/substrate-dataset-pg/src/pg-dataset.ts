@@ -2203,7 +2203,12 @@ export class PgDataset implements Dataset {
     const meta = assembleRowMetadata(record);
     if (meta !== undefined) out._metadata = meta;
 
-    return out;
+    if (requested === undefined) return out;
+    // The decoded row is in column order; a projection answers in its own (#1861),
+    // as memory and the transports do. `id` leads unless the request places it.
+    const ordered: Row = Object.hasOwn(requested, 'id') ? ({} as Row) : { id: out.id };
+    for (const k of Object.keys(requested)) if (Object.hasOwn(out, k)) ordered[k] = out[k];
+    return Object.assign(ordered, out);
   }
 
   private extractOriginalId(textId: string, body: Record<string, unknown>): Id {
