@@ -166,6 +166,18 @@ describe.skipIf(!MIGRATE_PG)('migrate-store (pg)', () => {
     }
   }, 300_000);
 
+  it('runs with auth disabled and no SUBSTRATE_SYSTEM_ACTOR set (#1868)', async () => {
+    const s = await openSchemas('legacy');
+    try {
+      // Empty reads as unset, as parseEnv trims it.
+      const r = await run(s, [], {}, { SUBSTRATE_SYSTEM_ACTOR: '' });
+      expect(r.code, r.out + r.err).toBe(0);
+      expect(r.out).toContain('copied and verified');
+    } finally {
+      await s.close();
+    }
+  }, 300_000);
+
   it('exits 3 and keeps the marker when verification fails', async () => {
     const s = await openSchemas('partitioned');
     // Whatever reaches the real stderr mid-run passes the redactor too: capture it under the command's shim.

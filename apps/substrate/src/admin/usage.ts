@@ -64,6 +64,7 @@ export const USAGE = [
   '    only read. The target must be empty and on PostgreSQL 18; it is prepared with the same',
   '    migrations and plugins (SUBSTRATE_PLUGIN_DIR) serve uses, copied, indexed and verified.',
   '    SUBSTRATE_INDEX_DISK_PATH must be set (the target volume mount, or off).',
+  '    The prepare boot writes as SUBSTRATE_SYSTEM_ACTOR, or migrate-store when it is unset.',
   '    --from-schema / --to-schema <s>  pin a side to schema <s>',
   '    --dry-run          preflight only: the plan, every refusal, nothing written',
   '    --verify-only      build indexes, then verify a finished copy against its source',
