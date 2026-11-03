@@ -16,6 +16,7 @@ import type {
   HttpHandler,
   Identity,
   PluginRouter,
+  PromotionEvent,
   StorageReport,
   SubstrateServer
 } from '@mnmal-ai/substrate-types';
@@ -24,6 +25,7 @@ import { backfillFieldRoute } from '../_system/backfill-field.js';
 import { dropNamespaceRoute, dropTypeRoute } from '../_system/drop.js';
 import type { KeyRegistry } from '../_system/index.js';
 import { normaliseVocabRoute } from '../_system/normalise-vocab.js';
+import { promoteFieldsRoute } from '../_system/promote-fields.js';
 import { createRateLimiter, type RateLimiter } from '../_system/rate-limit.js';
 import {
   invitesRoute,
@@ -85,6 +87,10 @@ export interface CoreRoutesArgs {
   configReport?: ConfigReport;
   /** Adds the storage layout and its warnings to the config report. */
   storageReport?: () => Promise<StorageReport>;
+  /** One promotion sweep, for `POST /substrate/v1/_system/promote-fields`. */
+  promoteFields: () => Promise<PromotionEvent[]>;
+  /** Pending, failed and orphaned fields, for `/health`'s warnings. */
+  fieldWarnings?: () => Promise<string[]>;
 }
 
 export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
@@ -114,7 +120,9 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
     identityDirectory,
     adminCapability,
     configReport,
-    storageReport
+    storageReport,
+    promoteFields,
+    fieldWarnings
   } = args;
 
   server.route(
@@ -123,7 +131,11 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
     healthRoute({
       version: version ?? '0.0.0',
       startedAt: Date.now(),
-      warnings: async () => engine.postWriteWarnings()
+      warnings: async () => [
+        ...engine.postWriteWarnings(),
+        // A catalog error never fails the probe; the field lines are left out.
+        ...((await fieldWarnings?.().catch(() => [])) ?? [])
+      ]
     })
   );
   // Schema discovery and onboarding sit behind `read`, like /substrate/v1/query: the
@@ -399,6 +411,12 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
       ),
       'admin'
     )
+  );
+  // Store-wide, so gated on admin itself rather than admin in a named namespace.
+  server.route(
+    'POST',
+    '/substrate/v1/_system/promote-fields',
+    gate(promoteFieldsRoute(promoteFields), 'admin')
   );
   server.route(
     'POST',

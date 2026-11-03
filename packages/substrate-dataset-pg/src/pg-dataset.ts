@@ -46,6 +46,7 @@ import type {
   IndexDecl,
   IndexPlan,
   OrderedBy,
+  PromotionEvent,
   ReadParams,
   ReadResult,
   Row,
@@ -135,6 +136,7 @@ import {
   resolvePromotedColumns,
   whereReferencesField
 } from './pg-sql.js';
+import { promotePendingFields } from './promote.js';
 import { decodeRow, encodeRow, RAW_KEY } from './row-codec.js';
 import { type PgHandle, txScopeIdFor } from './tx-scope.js';
 import {
@@ -2273,6 +2275,17 @@ export class PgDataset implements Dataset {
       pending = change.pending;
     }
     if (layout === 'partitioned') await ensureTypeStorage(sql, this.namespace, type);
+    await this.#reconcileIndexes(type, layout, opts);
+    return { pending };
+  }
+
+  /** `ensureTypeStorage`'s index pass: reconciles, then records each state for the reports. */
+  async #reconcileIndexes(
+    type: string,
+    layout: StorageLayout,
+    opts: { indexes?: 'all' | 'unique' | 'nonUnique'; signal?: AbortSignal }
+  ): Promise<void> {
+    const sql = this.#sql as Sql;
     const builds = this.#deferredBuilds();
     const qualified = `${this.namespace}/${type}`;
     const record = (s: IndexState): void => {
@@ -2318,7 +2331,55 @@ export class PgDataset implements Dataset {
         `[substrate] index ${s.name} on ${this.namespace}/${type}: ${s.outcome} (${s.state})\n`
       );
     }
-    return { pending };
+  }
+
+  /**
+   * See `Dataset.promotePendingFields`. Store-wide, on the `tables` layout;
+   * the old layouts have no pending fields and resolve `[]`. Each field's
+   * indexes are reconciled through its namespace's view of this dataset, so a
+   * declared index waiting on the new column is built.
+   */
+  async promotePendingFields(opts: {
+    lockTimeoutMs: number;
+    batchRows: number;
+    signal?: AbortSignal;
+    /** Only this namespace's fields. */
+    namespace?: string;
+  }): Promise<PromotionEvent[]> {
+    if ((await this.#layout()) !== 'tables') return [];
+    if (this.#inTx) {
+      throw new Error('PgDataset.promotePendingFields cannot be called on a tx-bound instance');
+    }
+    const signal = opts.signal;
+    return promotePendingFields(this.#sql as Sql, {
+      ...opts,
+      reconcile: async (namespace, type) => {
+        const view =
+          namespace === this.namespace ? this : (this.forNamespace(namespace) as PgDataset);
+        await view.#reconcileIndexes(type, 'tables', signal !== undefined ? { signal } : {});
+      }
+    });
+  }
+
+  /** See `Dataset.fieldWarnings`. Store-wide; none on the old layouts. */
+  async fieldWarnings(): Promise<string[]> {
+    if ((await this.#layout()) !== 'tables') return [];
+    const rows = await this.#sql<
+      Array<{ namespace: string; type: string; field: string; state: string; attempts: number }>
+    >`
+      SELECT namespace, type, field, state, attempts FROM substrate_type_fields
+      WHERE state IN ('pending', 'orphaned') OR (state = 'promoting' AND last_error IS NOT NULL)
+      ORDER BY namespace COLLATE "C", type COLLATE "C", field COLLATE "C"`;
+    return rows.map((r) => {
+      const name = `${r.namespace}/${r.type}.${r.field}`;
+      if (r.state === 'pending') {
+        return `${name} is pending: held in jsonb until promoted (attempt ${r.attempts})`;
+      }
+      if (r.state === 'orphaned') {
+        return `${name} is orphaned: no longer declared; values readable as extras`;
+      }
+      return `${name} is promoting: its promotion failed (attempt ${r.attempts}); see _system/AuditEvent`;
+    });
   }
 
   #deferredBuilds(): Map<string, DeferredBuild> {

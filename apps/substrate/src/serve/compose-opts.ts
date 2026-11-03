@@ -113,7 +113,8 @@ export async function buildComposeOpts(args: {
       intervalMs: config.advisorIntervalMs,
       ...(config.storeProfile !== null ? { storeProfile: config.storeProfile } : {}),
       writeHeavy: config.storeWriteHeavy
-    }
+    },
+    promoteFields: { intervalMs: config.promoteIntervalMs }
   };
   if (dataset.storageReport !== undefined) {
     const report = dataset.storageReport.bind(dataset);

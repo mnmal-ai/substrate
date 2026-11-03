@@ -40,6 +40,15 @@ export {
 } from './invite-sweep.js';
 export { type NormaliseVocabRouteDeps, normaliseVocabRoute } from './normalise-vocab.js';
 export {
+  createPromoteFieldsRunner,
+  emitFieldEvents,
+  type FieldEvent,
+  PROMOTE_BATCH_ROWS,
+  PROMOTE_LOCK_TIMEOUT_MS,
+  type PromoteFieldsRunner,
+  promoteFieldsRoute
+} from './promote-fields.js';
+export {
   type CreateRateLimiterOptions,
   createRateLimiter,
   type RateLimiter,

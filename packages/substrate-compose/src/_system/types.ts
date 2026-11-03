@@ -81,6 +81,13 @@ export const INVITE_FIELDS: Record<string, FieldDef> = {
  *   - `destructive_op_refused` : kill switch refused a hard-destructive operation
  *   - `index_proposed`         : `propose_index` added, removed or reordered an index, or
  *                                dismissed a recommendation; `details` names the action
+ *   - `field_pending`          : a field added at runtime (propose_field) is held in jsonb
+ *                                until the promotion sweep gives it a column
+ *   - `field_promoted`         : the promotion sweep gave a field its column and moved its values
+ *   - `field_promotion_failed` : a field's promotion failed, or its table's lock stayed busy
+ *                                three sweeps in a row; `details.error` says why
+ *   The three `field_*` kinds carry `details` `{ namespace, type, field, attempts, error? }`
+ *   and actorKid `'system'`.
  *
  * `details` is an opaque JSON body — `field.json()` round-trips the value
  * unchanged through encoder/decoder, no JSON.stringify boundary needed.
@@ -261,7 +268,10 @@ export type AuditEventKind =
   | 'vocab_normalised'
   | 'field_backfilled'
   | 'destructive_op_refused'
-  | 'index_proposed';
+  | 'index_proposed'
+  | 'field_pending'
+  | 'field_promoted'
+  | 'field_promotion_failed';
 
 export const AUDIT_EVENT_KINDS: ReadonlySet<AuditEventKind> = new Set<AuditEventKind>([
   'bootstrap',
@@ -277,7 +287,10 @@ export const AUDIT_EVENT_KINDS: ReadonlySet<AuditEventKind> = new Set<AuditEvent
   'vocab_normalised',
   'field_backfilled',
   'destructive_op_refused',
-  'index_proposed'
+  'index_proposed',
+  'field_pending',
+  'field_promoted',
+  'field_promotion_failed'
 ]);
 
 /** Subset of `JwtAlg` the dataset accepts. HS256 is rejected at write-time. */

@@ -86,7 +86,13 @@ export async function applyProposalFromNotification(
     // A propose_index on a peer changes an applied row's indexes or order.
     changed = replayTypeIndexOptions(args.registryStore, args.namespace, row) || changed;
     if (changed)
-      ensureStorageAfterCommit(undefined, binding.dataset, typeName, args.registryStore.storage);
+      ensureStorageAfterCommit(
+        undefined,
+        binding.dataset,
+        typeName,
+        binding.engine,
+        args.registryStore.storage
+      );
     return;
   }
 
@@ -110,6 +116,7 @@ export async function applyProposalFromNotification(
           undefined,
           binding.dataset,
           row.targetType as string,
+          binding.engine,
           args.registryStore.storage
         );
       }
@@ -240,7 +247,13 @@ export async function reconcileNamespace(args: ReconcileArgs): Promise<void> {
     }
   }
   for (const type of prepare) {
-    ensureStorageAfterCommit(undefined, binding.dataset, type, args.registryStore.storage);
+    ensureStorageAfterCommit(
+      undefined,
+      binding.dataset,
+      type,
+      binding.engine,
+      args.registryStore.storage
+    );
   }
 }
 

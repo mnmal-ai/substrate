@@ -506,5 +506,11 @@ async function changeProposedType(call: Call): Promise<void> {
   await call.claim('accepted');
   await call.audit(detail);
   await storeTypeIndexOptions(call, binding, proposal, next);
-  ensureStorageAfterCommit(args.afterTx, binding.dataset, type, deps.registryStore.storage);
+  ensureStorageAfterCommit(
+    args.afterTx,
+    binding.dataset,
+    type,
+    binding.engine,
+    deps.registryStore.storage
+  );
 }

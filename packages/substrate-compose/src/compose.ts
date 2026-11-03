@@ -36,6 +36,7 @@ import type {
   HttpHandler,
   IdempotencyStore,
   KernelPlugin,
+  PromotionEvent,
   Registry as RegistryInterface,
   StorageReport,
   SubstrateServer,
@@ -43,6 +44,7 @@ import type {
   SweepState
 } from '@mnmal-ai/substrate-types';
 import { installSystemNamespace, type KeyRegistry, SYSTEM_NAMESPACE } from './_system/index.js';
+import { createPromoteFieldsRunner } from './_system/promote-fields.js';
 import type { RateLimiter } from './_system/rate-limit.js';
 import { runAdvisorPass } from './advisor/advisor.js';
 import type { StoreProfileName } from './advisor/profiles.js';
@@ -218,6 +220,12 @@ export interface ComposeOpts {
    * has no row yet.
    */
   advisor?: { intervalMs: number; storeProfile?: StoreProfileName; writeHeavy?: boolean };
+  /**
+   * The promotion sweep, every `intervalMs` (`SUBSTRATE_PROMOTE_INTERVAL_MS`),
+   * over `dataset`'s pending fields. Omitted or `intervalMs: 0`: no timer;
+   * `POST /substrate/v1/_system/promote-fields` runs it either way.
+   */
+  promoteFields?: { intervalMs: number };
 }
 
 export interface ComposeResult {
@@ -243,6 +251,8 @@ export interface ComposeResult {
   runSweepNow: () => Promise<SweepState>;
   /** Run one index-advisor pass now, for tests; null while the advisor is off. */
   runAdvisorNow: (() => Promise<{ upserted: number }>) | null;
+  /** Run one promotion sweep now, as the admin route does. */
+  runPromoteFieldsNow: () => Promise<PromotionEvent[]>;
   /**
    * Non-null when any coordinator plugin contributed a `schedule`. The
    * composition root constructs the scheduler, registers every plugin's
@@ -544,6 +554,12 @@ async function composeInner(
   // into proxy-awareness.
   const trustedProxies = opts.trustedProxies ?? new Set<string>();
 
+  const promoteRunner = createPromoteFieldsRunner({
+    dataset: opts.dataset,
+    engine,
+    intervalMs: opts.promoteFields?.intervalMs ?? 0
+  });
+
   // Spec §5.11 fire order: core /substrate/v1/* routes → plugin routes.
   const { rateLimiter, ownsRateLimiter } = await registerCoreRoutes({
     server: opts.server,
@@ -575,7 +591,11 @@ async function composeInner(
       ? { adminCapability: opts.auth.adminCapability }
       : {}),
     ...(opts.configReport !== undefined ? { configReport: opts.configReport } : {}),
-    ...(opts.storageReport !== undefined ? { storageReport: opts.storageReport } : {})
+    ...(opts.storageReport !== undefined ? { storageReport: opts.storageReport } : {}),
+    promoteFields: promoteRunner.run,
+    ...(opts.dataset.fieldWarnings !== undefined
+      ? { fieldWarnings: opts.dataset.fieldWarnings.bind(opts.dataset) }
+      : {})
   });
 
   let scheduler: TaskScheduler | null = null;
@@ -636,12 +656,15 @@ async function composeInner(
     sweepDeps,
     runSweepNow: (): Promise<SweepState> => runSweep(sweepDeps, { lastSweptCursor: null }),
     runAdvisorNow,
+    runPromoteFieldsNow: promoteRunner.run,
     scheduler,
     stats,
     stop: async (stopOpts?: { grace?: number; abortInFlight?: boolean }): Promise<void> => {
       sampler.stop();
       clearInterval(advisorTimer);
       await advisorPass;
+      // Before the caller ends the pool: a sweep still holding a connection would stall `sql.end()`.
+      await promoteRunner.stop();
       if (scheduler !== null) await scheduler.stop();
       // Plugin onStop hooks run BEFORE server.stop() — the engine is still
       // alive so plugins can do final writes (e.g. an audit row recording

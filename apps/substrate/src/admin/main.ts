@@ -18,6 +18,7 @@ import {
 } from './commands/list.js';
 import { migrateStoreCommand } from './commands/migrate-store.js';
 import { type OnboardIO, onboardCommand } from './commands/onboard.js';
+import { formatPromoteFieldsOutput, promoteFieldsCommand } from './commands/promote-fields.js';
 import {
   formatRegisterOutput,
   parseRegisterArgs,
@@ -234,6 +235,11 @@ export async function main(
       }
       case 'migrate-store':
         return migrateStoreCommand(argv.slice(1), env, out, errOut);
+      case 'promote-fields': {
+        const result = await promoteFieldsCommand(argv.slice(1), env);
+        out(formatPromoteFieldsOutput(result));
+        return result.events.some((e) => e.kind === 'failed') ? 1 : 0;
+      }
       default:
         errOut(`unknown command: ${command}\n${USAGE}\n`);
         return 1;

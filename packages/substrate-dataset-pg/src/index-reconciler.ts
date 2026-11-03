@@ -75,7 +75,9 @@ export class UniqueIndexDuplicatesError extends Error {
     readonly namespace: string,
     readonly type: string,
     readonly fields: string[],
-    readonly count: number
+    readonly count: number,
+    /** The declared index's name. */
+    readonly index?: string
   ) {
     super(
       `unique index on ${namespace}/${type} (${fields.join(', ')}) was not built: ` +
@@ -1445,5 +1447,5 @@ async function assertNoDuplicates(
   );
   const count = row?.n ?? 0;
   if (count > 0)
-    throw new UniqueIndexDuplicatesError(args.namespace, args.type, spec.fields, count);
+    throw new UniqueIndexDuplicatesError(args.namespace, args.type, spec.fields, count, spec.name);
 }

@@ -17,6 +17,7 @@ export const USAGE = [
   '  register <kid> --pubkey <path> --ns <csv>   register an existing ed25519 pubkey as an agent Key',
   "  update <kid> [--ns <csv>] ...           change a live key's namespaces/caps/name in place",
   '  migrate-store [options]                 copy a store into a fresh, empty, partitioned PG 18 store',
+  '  promote-fields [--url <base>]           run the promotion sweep now on a running server',
   '',
   '  register transport: drives POST /substrate/v1/_system/keys (credential + directory row,',
   '    one transaction, no restart) using --url or SUBSTRATE_URL and an admin identity',
@@ -50,6 +51,10 @@ export const USAGE = [
   '    credentials at all, whether YOUR admin credential resolves, whether the grant it',
   '    resolves to confers admin, and how many admin keys the deployment has left.',
   '    A check it could not run prints as `skip`, never as a pass.',
+  '  promote-fields: gives each field added at runtime (propose_field) its own column now,',
+  '    instead of at the next SUBSTRATE_PROMOTE_INTERVAL_MS sweep. Goes through the server',
+  '    (--url or SUBSTRATE_URL) with an admin identity; prints one line per field touched,',
+  '    and exits 1 when any failed.',
   '  --encrypt produces a PKCS#8+PBES2 (aes-256-cbc) encrypted private-key PEM.',
   '  Passphrase is read from SUBSTRATE_ADMIN_KEY_PASSPHRASE (required when --encrypt is set).',
   '  An encrypted admin key is read with SUBSTRATE_ADMIN_KEY_PASSPHRASE for every command that signs.',
@@ -82,6 +87,7 @@ export const SYNOPSIS: Record<string, string> = {
     'substrate-admin register <kid> --pubkey <path> --ns <csv> [--name <n>] [--caps <csv>] [--allow-admin]',
   update:
     'substrate-admin update <kid> [--name <n>] [--ns <csv>] [--caps <csv>] [--widen] [--allow-admin]',
+  'promote-fields': 'substrate-admin promote-fields [--url <base>]',
   'migrate-store':
     'substrate-admin migrate-store [--from-env <VAR>] [--to-env <VAR>] [--from-schema <s>] [--to-schema <s>] [--dry-run | --verify-only] [--skip-index-build] [--full-checksum] [--batch-rows <n>] [--skip-table <t>]... [--json]'
 };

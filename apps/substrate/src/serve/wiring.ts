@@ -295,7 +295,8 @@ export async function reconcileDeclaredStorage(
       );
     }
     for (const type of Object.keys(def.types ?? {})) {
-      await dataset.ensureTypeStorage?.(type, { indexes: 'unique' });
+      // A field newly declared in code gets its column now, under a short lock timeout.
+      await dataset.ensureTypeStorage?.(type, { indexes: 'unique', newFields: 'column' });
     }
   }
 }
