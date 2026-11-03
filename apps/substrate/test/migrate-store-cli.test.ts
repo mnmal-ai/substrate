@@ -64,7 +64,6 @@ describe('migrate-store argv', () => {
   });
 });
 
-// migrate-store targets an old layout until Task 15 converts into `tables` (F15).
 describe.skipIf(!MIGRATE_PG)('migrate-store (pg)', () => {
   const password = POSTGRES_URL ? new URL(POSTGRES_URL).password : '';
 
@@ -182,7 +181,9 @@ describe.skipIf(!MIGRATE_PG)('migrate-store (pg)', () => {
         r = await run(s, ['--skip-index-build', '--json'], {
           beforeVerify: async (t: import('postgres').Sql) => {
             process.stderr.write(`a writer that leaks ${POSTGRES_URL}\n`);
-            await t`UPDATE rows SET body = '{"x":2}' WHERE namespace = 'retired'`;
+            const [old] = await t<{ table_name: string }[]>`
+              SELECT table_name FROM substrate_type_tables WHERE namespace = 'retired'`;
+            await t.unsafe(`UPDATE "${old?.table_name}" SET extra = '{"x":2}'`);
           }
         });
       } finally {

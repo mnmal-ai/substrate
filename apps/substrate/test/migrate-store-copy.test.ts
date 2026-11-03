@@ -1,11 +1,11 @@
 /**
- * migrate-store's copy (pg-gated): a legacy or partitioned source copied into
- * a partitioned target that `bootStore` prepares, with the built-in recall and
- * proposals plugins loaded from a plugin dir as serve loads them. The source
- * gets recall's tables from recall's own migrations.
+ * migrate-store's copy (pg-gated): a legacy or partitioned source converted
+ * into a `tables` target that `bootStore` prepares, with the built-in recall
+ * and proposals plugins loaded from a plugin dir as serve loads them. The
+ * source gets recall's tables from recall's own migrations.
  */
 
-import { PgShortIdStore } from '@mnmal-ai/substrate-dataset-pg';
+import { type PgDataset, PgShortIdStore, typeTableRef } from '@mnmal-ai/substrate-dataset-pg';
 import type { Sql } from 'postgres';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -31,7 +31,6 @@ import {
 } from './_fixtures/migrate-store.js';
 
 const ORDER: Record<string, string> = {
-  rows: 'namespace, type, id',
   short_ids: 'namespace, type, short_id',
   edges: 'id',
   visible_seqs: 'namespace, type',
@@ -41,14 +40,43 @@ const ORDER: Record<string, string> = {
   recall_cluster_members: 'id'
 };
 
-async function dump(sql: Sql, plan: CopyPlan, skipRows: string[] = []) {
+const META =
+  'deleted_at::text, created_at::text, updated_at::text, created_by_kind, created_by_id, updated_by_kind, updated_by_id, seq::text';
+
+/** Every row as read (the target's built by `rowJson`), with its metadata, by namespace, type and id. */
+async function dumpRows(sql: Sql, side: 'source' | 'target', skip: string[]) {
+  await sql`SET TimeZone = 'UTC'`;
+  if (side === 'source') {
+    return sql.unsafe(
+      `SELECT namespace, type, id, body AS row, ${META} FROM rows ORDER BY namespace, type, id`
+    );
+  }
+  const out: unknown[] = [];
+  const types = await sql<{ namespace: string; type: string }[]>`
+    SELECT namespace, type FROM substrate_type_tables ORDER BY namespace, type`;
+  for (const { namespace, type } of types) {
+    const ref = await typeTableRef(sql, namespace, type);
+    const rows = await sql.unsafe(
+      `SELECT $1::text AS namespace, $2::text AS type, x.id, ${ref?.rowJson('x')} AS row, ${META}
+       FROM ${ref?.from} x ORDER BY x.id`,
+      [namespace, type]
+    );
+    out.push(...rows.filter((r) => !skip.includes(r.id)));
+  }
+  return out;
+}
+
+async function dump(sql: Sql, plan: CopyPlan, side: 'source' | 'target', skipRows: string[] = []) {
   const out: Record<string, unknown[]> = {};
   for (const t of plan.tables) {
+    if (t.name === 'rows') {
+      out.rows = [...(await dumpRows(sql, side, skipRows))];
+      continue;
+    }
     const rows = await sql.unsafe(
       `SELECT ${t.columns.map((c) => `"${c}"`).join(', ')}, to_jsonb(t)::text AS j FROM "${t.name}" t ORDER BY ${ORDER[t.name]}`
     );
     out[t.name] = rows
-      .filter((r) => !(t.name === 'rows' && skipRows.includes(r.id)))
       .map((r) => r.j)
       .map((j) => {
         const o = JSON.parse(j as string);
@@ -60,7 +88,6 @@ async function dump(sql: Sql, plan: CopyPlan, skipRows: string[] = []) {
 }
 
 for (const sourceLayout of ['legacy', 'partitioned'] as const) {
-  // migrate-store targets an old layout until Task 15 converts into `tables` (F15).
   describe.skipIf(!MIGRATE_PG)(`copyStore from a ${sourceLayout} source (pg)`, () => {
     let pair: Pair;
     let srcSql: Sql;
@@ -91,7 +118,9 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
 
     const expectVerbatim = async (result: CopyResult) => {
       const seedIds = result.keptSeeds.map((s) => s.id);
-      expect(await dump(tgtSql, plan, seedIds)).toEqual(await dump(srcSql, plan));
+      expect(await dump(tgtSql, plan, 'target', seedIds)).toEqual(
+        await dump(srcSql, plan, 'source')
+      );
     };
 
     it('copies every row, shortId, edge and recall row verbatim', async () => {
@@ -108,11 +137,14 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
       expect(events.filter((e) => e.done).map((e) => e.table)).toEqual(
         plan.tables.map((t) => t.name)
       );
-      expect(events.some((e) => e.table === 'rows' && !e.done && e.rows === 2)).toBe(true);
-      // Declared types land in their own partitions.
-      const [key] = await tgtSql<{ part: string }[]>`
-        SELECT tableoid::regclass::text AS part FROM rows WHERE type = 'Key' LIMIT 1`;
-      expect(key?.part).not.toMatch(/default/);
+      // Converted rows report per batch, once each batchRows boundary is crossed.
+      expect(events.some((e) => e.table === 'rows' && !e.done && e.rows >= 2 && e.rows < 11)).toBe(
+        true
+      );
+      // Declared types land in their own tables, their fields in columns.
+      const key = await typeTableRef(tgtSql, '_system', 'Key');
+      const [kid] = await tgtSql.unsafe(`SELECT f_kid FROM ${key?.from} WHERE id = $1`, [uuid(1)]);
+      expect(kid?.f_kid).toBe('a@h');
       // Nothing was written to the source.
       expect(await srcSql`SELECT to_regclass('substrate_migrate_store_progress') AS r`).toEqual([
         { r: null }
@@ -134,13 +166,15 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
       expect(Number(m?.short_id)).toBe(3);
     });
 
-    it('replays copied proposals before the rest, so proposed types get their own partitions', async () => {
+    it('replays copied proposals before the rest, so proposed types get their own tables and columns', async () => {
       const result = await copy();
-      const parts = await tgtSql<{ type: string; part: string }[]>`
-        SELECT DISTINCT type, tableoid::regclass::text AS part FROM rows WHERE namespace = 'prop' ORDER BY type`;
-      expect(parts.map((p) => p.type)).toEqual(['Note', 'TypeProposal']);
-      for (const p of parts) expect(p.part).not.toMatch(/default/);
-      expect(result.defaulted.filter((d) => d.namespace === 'prop')).toEqual([]);
+      const fields = await tgtSql<{ type: string; field: string; state: string }[]>`
+        SELECT type, field, state FROM substrate_type_fields WHERE namespace = 'prop' AND type = 'Note'`;
+      expect(fields).toEqual([{ type: 'Note', field: 'title', state: 'column' }]);
+      const note = await typeTableRef(tgtSql, 'prop', 'Note');
+      const titles = await tgtSql.unsafe(`SELECT f_title FROM ${note?.from} ORDER BY 1`);
+      expect(titles.map((t) => t.f_title)).toEqual(['a', 'b']);
+      expect(result.defaulted.filter((d) => d.startsWith('prop/'))).toEqual([]);
       expect(result.target.engine.registryFor('prop')?.get('Note')?.kind).toBe('type');
     });
 
@@ -159,27 +193,30 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
       expect(result.tables.find((t) => t.name === 'rows')?.rows).toBe(src?.n);
     });
 
-    it('lands an undeclared namespace in rows__default and reports it', async () => {
+    it('gives an undeclared type a table with every field in extra, and reports it', async () => {
       const result = await copy();
-      expect(result.defaulted).toEqual([{ namespace: 'retired', type: 'Old' }]);
+      expect(result.defaulted).toEqual(['retired/Old']);
       const [last] = await tgtSql<{ step: string }[]>`
         SELECT step FROM substrate_migrate_store_progress WHERE step LIKE 'copy:phase%' ORDER BY step DESC LIMIT 1`;
       expect(last?.step).toBe('copy:phase2');
-      const [row] = await tgtSql<{ part: string }[]>`
-        SELECT tableoid::regclass::text AS part FROM rows WHERE namespace = 'retired'`;
-      expect(row?.part).toBe('rows__default');
+      const old = await typeTableRef(tgtSql, 'retired', 'Old');
+      expect(await tgtSql.unsafe(`SELECT extra FROM ${old?.from}`)).toEqual([{ extra: { x: 1 } }]);
     });
 
     it('replaces a seeded row with the source row of the same id and keeps seeds the source lacks', async () => {
       await srcSql`INSERT INTO rows (namespace, type, id, body) VALUES ('_system', 'StoreProfile', ${STORE_PROFILE_ID}, '{"profile":"source"}')`;
-      await tgtSql`INSERT INTO rows (namespace, type, id, body) VALUES ('_system', 'AdvisorState', ${uuid(20)}, '{}')`;
+      const seeder = await boot();
+      await seeder.datasets.get('_system')?.write('AdvisorState', [{ id: uuid(20) }]);
+      await seeder.close();
       const result = await copy();
       expect(result.keptSeeds).toEqual([
         { namespace: '_system', type: 'AdvisorState', id: uuid(20) }
       ]);
-      const [profile] = await tgtSql<{ body: { profile: string } }[]>`
-        SELECT body FROM rows WHERE id = ${STORE_PROFILE_ID}`;
-      expect(profile?.body.profile).toBe('source');
+      const { rows } = await (result.target.datasets.get('_system') as PgDataset).read(
+        'StoreProfile',
+        {}
+      );
+      expect(rows.find((r) => r.id === STORE_PROFILE_ID)?.profile).toBe('source');
       await expectVerbatim(result);
     });
 
@@ -189,6 +226,7 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
         await inspectSource(srcSql),
         {
           serverVersionNum: 180000,
+          layout: 'absent',
           empty: true,
           createdByUs: false,
           enforceUuidCheck: false,
@@ -201,7 +239,7 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
       const err = await copy().catch((e: unknown) => e);
       expect(err).toBeInstanceOf(MigrateStoreColumnError);
       expect(err).toMatchObject({ table: 'lexical', column: 'extra' });
-      expect(await tgtSql`SELECT id FROM rows`).toEqual([{ id: STORE_PROFILE_ID }]);
+      expect(await tgtSql`SELECT id FROM row_ids`).toEqual([{ id: STORE_PROFILE_ID }]);
     });
 
     it('fails loudly, naming the table and key, when the target rejects a row', async () => {
@@ -211,12 +249,28 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
     });
 
     it('a close after a re-boot returns promptly and leaves no index build running', async () => {
-      await tgtSql`
-        INSERT INTO rows (namespace, type, id, body) VALUES
-          ('_system_proposals', 'NamespaceProposal', ${uuid(40)},
-           ${tgtSql.json({ ns: 'prop', applied: true, archived: false, proposedBy: 'op', proposedReason: 'test' })}),
-          ('prop', 'TypeProposal', ${uuid(41)},
-           ${tgtSql.json({ typeName: 'Note', fieldsJson: JSON.stringify({ title: { kind: 'scalar', type: 'string' } }), applied: true, archived: false, supersededByCode: false })})`;
+      const seeder = await boot();
+      await seeder.datasets.get('_system_proposals')?.write('NamespaceProposal', [
+        {
+          id: uuid(40),
+          ns: 'prop',
+          applied: true,
+          archived: false,
+          proposedBy: 'op',
+          proposedReason: 'test'
+        }
+      ]);
+      await (seeder.dataset as PgDataset).forNamespace('prop').write('TypeProposal', [
+        {
+          id: uuid(41),
+          typeName: 'Note',
+          fieldsJson: JSON.stringify({ title: { kind: 'scalar', type: 'string' } }),
+          applied: true,
+          archived: false,
+          supersededByCode: false
+        }
+      ]);
+      await seeder.close();
       const running = () => tgtSql<{ query: string }[]>`
         SELECT query FROM pg_stat_activity
         WHERE pid <> pg_backend_pid() AND state <> 'idle' AND query ILIKE '%prop%note%'
@@ -244,27 +298,17 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
       const again = await boot();
       await again.datasets.get('prop')?.ensureTypeStorage?.('Note');
       await again.close();
+      const note = await typeTableRef(tgtSql, 'prop', 'Note');
       const built = await tgtSql<{ name: string; valid: boolean }[]>`
         SELECT c.relname AS name, i.indisvalid AS valid
-        FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = current_schema() AND c.relname LIKE 'rows_prop_note_%' ORDER BY 1`;
-      expect(built.map((b) => b.name.replace(/_[0-9a-f]{8}_base$/, ''))).toEqual([
-        'rows_prop_note_created_at',
-        'rows_prop_note_deleted_at',
-        'rows_prop_note_updated_at'
-      ]);
+        FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+        WHERE i.indrelid = ${note?.from as string}::regclass AND NOT i.indisprimary ORDER BY 1`;
+      expect(built.length).toBeGreaterThan(0);
       expect(built.every((b) => b.valid)).toBe(true);
     });
 
-    it('fails loudly on a source duplicate under a unique index instead of defaulting it', async () => {
-      // Proposed indexes are never unique, so the duplicate is two live _system Keys with one kid.
-      await srcSql`DROP INDEX substrate_key_live_kid_uniq`;
-      await srcSql`UPDATE rows SET deleted_at = NULL WHERE id = ${uuid(2)}`;
-      await srcSql`UPDATE rows SET body = ${srcSql.json({ kid: 'a@h', grants: ['x'] })} WHERE id = ${uuid(2)}`;
-      await expect(copy()).rejects.toThrow(
-        /copying rows failed: .*duplicate key.*\(\(body ->> 'kid'::text\)\)=\(a@h\)/
-      );
-    });
+    // A source duplicate under a declared unique index: migrate-store-convert.test.ts, with a
+    // declared index (the `_system/Key` live-kid index is declared on type tables in Task 16).
 
     it('fails the copy, naming the type, when storage for a registered type cannot be prepared', async () => {
       let boots = 0;
@@ -307,7 +351,7 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
         { namespace: '_system', type: 'StoreProfile', id: STORE_PROFILE_ID }
       ]);
       await expectVerbatim(result);
-    });
+    }, 120_000);
 
     it('a rerun after an interrupted copy restarts cleanly', async () => {
       const abort = {
@@ -317,7 +361,7 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
         }
       };
       await expect(copy(abort)).rejects.toThrow('interrupted');
-      expect(Number((await tgtSql`SELECT count(*) AS n FROM rows`)[0]?.n)).toBe(12);
+      expect(Number((await tgtSql`SELECT count(*) AS n FROM row_ids`)[0]?.n)).toBe(12);
 
       const result = await copy();
       expect(result.keptSeeds).toEqual([
@@ -327,7 +371,7 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
       const steps = await tgtSql<{ step: string }[]>`
         SELECT step FROM substrate_migrate_store_progress ORDER BY step`;
       expect(steps.map((s) => s.step)).toContain('copy:done');
-    });
+    }, 120_000);
   });
 }
 

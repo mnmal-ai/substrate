@@ -3,12 +3,13 @@
  * layouts, then tampering on either side.
  */
 
-import type { PgDataset } from '@mnmal-ai/substrate-dataset-pg';
+import { type PgDataset, typeTableRef } from '@mnmal-ai/substrate-dataset-pg';
 import type { Sql } from 'postgres';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type CopyResult, copyStore } from '../src/admin/migrate-store/copy.js';
 import {
   fingerprint,
+  missingIndexes,
   readCopyState,
   type VerifyOptions,
   verifyStore
@@ -17,7 +18,6 @@ import { buildDeferredIndexes } from '../src/serve/wiring.js';
 import { MIGRATE_PG, openPair, type Pair, uuid } from './_fixtures/migrate-store.js';
 
 for (const sourceLayout of ['legacy', 'partitioned'] as const) {
-  // migrate-store targets an old layout until Task 15 converts into `tables` (F15).
   describe.skipIf(!MIGRATE_PG)(`verifyStore from a ${sourceLayout} source (pg)`, () => {
     let pair: Pair;
     let srcSql: Sql;
@@ -44,22 +44,25 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
 
     const opts = (o: Partial<VerifyOptions> = {}): VerifyOptions => ({
       keptSeeds: result.keptSeeds,
-      defaulted: result.defaulted,
       tables: pair.plan.tables.map((t) => t.name),
       fullChecksum: false,
       sampleRows: 1000,
       partitionBudget: 500,
       storageReport: (r) => (result.target.dataset as PgDataset).storageReport(r),
+      missingIndexes: () => missingIndexes(result.target, false),
       ...o
     });
     const markerPresent = async () =>
       (await tgtSql`SELECT to_regclass('substrate_migrate_store_progress') AS r`)[0]?.r !== null;
     const verify = (o?: Partial<VerifyOptions>) => verifyStore(srcSql, tgtSql, opts(o));
+    const relation = async (ns: string, type: string) =>
+      (await typeTableRef(tgtSql, ns, type))?.from as string;
+    const PASS = { ok: true, mismatches: [], missingIndexes: [] };
 
     it('passes on a faithful copy and clears the in-progress marker', async () => {
       expect(await markerPresent()).toBe(true);
-      expect(result.defaulted).toEqual([{ namespace: 'retired', type: 'Old' }]);
-      expect(await verify({ fullChecksum: true })).toEqual({ ok: true, mismatches: [] });
+      expect(result.defaulted).toEqual(['retired/Old']);
+      expect(await verify({ fullChecksum: true })).toEqual(PASS);
       expect(await markerPresent()).toBe(false);
     });
 
@@ -70,11 +73,13 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
         defaulted: result.defaulted,
         tables: pair.plan.tables.map((t) => t.name).sort()
       });
-      expect(await verify(state)).toEqual({ ok: true, mismatches: [] });
+      expect(await verify(state)).toEqual(PASS);
     });
 
     it('catches a dropped row', async () => {
-      await tgtSql`DELETE FROM rows WHERE id = ${uuid(3)}`;
+      await tgtSql.unsafe(`DELETE FROM ${await relation('_system', 'Invite')} WHERE id = $1`, [
+        uuid(3)
+      ]);
       const r = await verify();
       expect(r.ok).toBe(false);
       expect(r.mismatches.map((m) => [m.check, m.type])).toContainEqual(['count', 'Invite']);
@@ -82,7 +87,10 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
     });
 
     it('catches an altered column in the sample', async () => {
-      await tgtSql`UPDATE rows SET body = '{"code":"changed"}' WHERE id = ${uuid(3)}`;
+      await tgtSql.unsafe(
+        `UPDATE ${await relation('_system', 'Invite')} SET extra = extra || '{"changed":1}' WHERE id = $1`,
+        [uuid(3)]
+      );
       const r = await verify();
       expect(r.ok).toBe(false);
       expect(r.mismatches).toEqual([
@@ -129,12 +137,14 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
       );
     });
 
-    it('fails when a declared type has rows in the DEFAULT partition', async () => {
-      const r = await verify({ defaulted: [] });
+    it('fails when a declared field is not settled in its column', async () => {
+      await tgtSql`UPDATE substrate_type_fields SET state = 'promoting'
+        WHERE namespace = '_system' AND type = 'Invite' AND field = 'expiresAt'`;
+      const r = await verify();
       expect(r.ok).toBe(false);
-      expect(r.mismatches).toEqual([
-        expect.objectContaining({ check: 'storage', namespace: 'retired', type: 'Old' })
-      ]);
+      expect(r.mismatches).toContainEqual(
+        expect.objectContaining({ check: 'fields', namespace: '_system', type: 'Invite' })
+      );
       expect(await markerPresent()).toBe(true);
     });
   });
