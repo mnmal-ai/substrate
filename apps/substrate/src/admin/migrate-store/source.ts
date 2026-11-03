@@ -8,7 +8,6 @@
 import {
   assertStoreSchema,
   detectLayout,
-  type StorageLayout,
   UUID_CHECK_MIGRATION,
   UUID_REGEX
 } from '@mnmal-ai/substrate-dataset-pg';
@@ -26,7 +25,7 @@ export interface SourceType {
 
 export interface SourceInventory {
   serverVersionNum: number;
-  layout: StorageLayout;
+  layout: 'legacy' | 'partitioned';
   appliedMigrations: string[];
   hasSeq: boolean;
   hasVisibleSeqs: boolean;
@@ -54,6 +53,11 @@ export async function inspectSource(sql: Sql): Promise<SourceInventory> {
     await assertStoreSchema(tx as unknown as Sql);
     const layout = await detectLayout(tx as unknown as Sql);
     if (layout === 'absent') throw new Error('the source schema holds no rows table');
+    if (layout === 'tables') {
+      throw new Error(
+        'the source is already in the tables layout; migrate-store copies a legacy or partitioned store'
+      );
+    }
     const [version] = await tx<
       { v: number }[]
     >`SELECT current_setting('server_version_num')::int AS v`;

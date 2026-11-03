@@ -1,13 +1,14 @@
 /**
- * `substrate-admin migrate-store`: copies a store into a fresh, empty,
- * partitioned PostgreSQL 18 store. Preflight, prepare and copy, index builds,
- * verification, report. Connection strings come from named environment
+ * `substrate-admin migrate-store`: converts a legacy or partitioned store into
+ * a fresh, empty PostgreSQL 18 store in the `tables` layout. Preflight,
+ * prepare and copy, index builds, verification, report. Connection strings come from named environment
  * variables only, and nothing this command prints carries one.
  */
 
 import { randomBytes } from 'node:crypto';
 import { statfs } from 'node:fs/promises';
 import {
+  detectLayout,
   MIGRATE_STORE_MARKER_TABLE,
   type PgDataset,
   PLAIN_SCHEMA_NAME
@@ -25,7 +26,12 @@ import { AdminCliError } from '../errors.js';
 import { type CopyResult, copyStore } from '../migrate-store/copy.js';
 import { type CopyPlan, preflight, type TargetFacts } from '../migrate-store/preflight.js';
 import { inspectSource, type SourceType } from '../migrate-store/source.js';
-import { readCopyState, type VerifyResult, verifyStore } from '../migrate-store/verify.js';
+import {
+  missingIndexes,
+  readCopyState,
+  type VerifyResult,
+  verifyStore
+} from '../migrate-store/verify.js';
 import { argvError } from '../usage.js';
 
 export const DEFAULT_FROM_ENV = 'SUBSTRATE_MIGRATE_FROM_URL';
@@ -72,7 +78,12 @@ export interface MigrateStoreReport {
   phases: Record<string, number>;
   totalMs: number;
   keptSeeds: string[];
+  /** `<ns>/<Type>` of source types no target definition declares: their fields all sit in `extra`. */
   defaulted: string[];
+  /** Per `<ns>/<Type>`: values their declared column cannot hold, read back unchanged from `$raw`. Copy runs only. */
+  misfits: CopyResult['misfits'];
+  /** Declared indexes not valid on the target; any fails verification. */
+  missingIndexes: VerifyResult['missingIndexes'];
   /** Pending-index warnings let through because of `--skip-index-build`. */
   pendingIndexes: string[];
   mismatches: VerifyResult['mismatches'];
@@ -263,6 +274,8 @@ export async function runMigrateStore(
     totalMs: 0,
     keptSeeds: [],
     defaulted: [],
+    misfits: {},
+    missingIndexes: [],
     pendingIndexes: [],
     mismatches: [],
     switchOver: null
@@ -308,7 +321,7 @@ export async function runMigrateStore(
     bootStore({
       config: parseEnv(targetEnv),
       pluginDir,
-      layout: 'partitioned',
+      layout: 'tables',
       allowMigrating: true,
       // A prepare boot starts no advisor and no plugin backfill, so nothing writes beside the copy.
       background: false
@@ -391,6 +404,7 @@ export async function runMigrateStore(
       );
       target = copied.target;
       report.tables = copied.tables;
+      report.misfits = copied.misfits;
       ({ keptSeeds, defaulted } = copied);
       tables = pre.plan.tables.map((t) => t.name);
     }
@@ -405,14 +419,15 @@ export async function runMigrateStore(
         );
 
     report.keptSeeds = keptSeeds.map((k) => `${k.namespace}/${k.type}/${k.id}`);
-    report.defaulted = defaulted.map((d) => `${d.namespace}/${d.type}`);
+    report.defaulted = defaulted;
     const tsql = booted.sql as Sql;
     await deps.beforeVerify?.(tsql);
     const verified = await phase('verify', () =>
       verifyStore(src, tsql, {
         keptSeeds,
-        defaulted,
         tables,
+        // `--skip-index-build` leaves the non-unique builds to serve; the unique ones are built at boot.
+        missingIndexes: () => missingIndexes(booted, args.skipIndexBuild),
         fullChecksum: args.fullChecksum,
         sampleRows: 1000,
         partitionBudget: parseEnv(targetEnv).partitionBudget,
@@ -428,6 +443,7 @@ export async function runMigrateStore(
       })
     );
     report.mismatches = verified.mismatches;
+    report.missingIndexes = verified.missingIndexes;
     if (!verified.ok) return finish(3);
     report.switchOver =
       `stop serve, set SUBSTRATE_DATABASE_URL to the value of ${args.toEnv}` +
@@ -541,21 +557,31 @@ export async function targetFacts(
 ): Promise<TargetFacts> {
   // Qualified with the target's schema, so a same-named table in public (also on search_path) never answers.
   const [r] = await sql<
-    { v: number; schema: string; rows: boolean; marker: boolean; embeddings: boolean }[]
+    {
+      v: number;
+      schema: string;
+      rows: boolean;
+      ids: boolean;
+      marker: boolean;
+      embeddings: boolean;
+    }[]
   >`
     SELECT current_setting('server_version_num')::int AS v, current_schema() AS schema,
            to_regclass(quote_ident(current_schema()) || '.rows') IS NOT NULL AS rows,
+           to_regclass(quote_ident(current_schema()) || '.row_ids') IS NOT NULL AS ids,
            to_regclass(quote_ident(current_schema()) || '.' || quote_ident(${MIGRATE_STORE_MARKER_TABLE})) IS NOT NULL AS marker,
            to_regclass(quote_ident(current_schema()) || '.embeddings') IS NOT NULL AS embeddings`;
   const facts = r as {
     v: number;
     schema: string;
     rows: boolean;
+    ids: boolean;
     marker: boolean;
     embeddings: boolean;
   };
-  const empty =
-    !facts.rows || (await sql`SELECT 1 FROM ${sql(facts.schema)}.rows LIMIT 1`).length === 0;
+  const holds = async (table: 'rows' | 'row_ids') =>
+    (await sql`SELECT 1 FROM ${sql(facts.schema)}.${sql(table)} LIMIT 1`).length > 0;
+  const empty = !(facts.rows && (await holds('rows'))) && !(facts.ids && (await holds('row_ids')));
   // shortcut: the dimension is known only once a run created the table; on a fresh target a mismatch fails the copy instead.
   const [dims] = facts.embeddings
     ? await sql<{ d: number }[]>`
@@ -581,6 +607,7 @@ export async function targetFacts(
   }
   return {
     serverVersionNum: facts.v,
+    layout: await detectLayout(sql),
     empty,
     createdByUs: facts.marker,
     enforceUuidCheck:
@@ -637,7 +664,19 @@ export function formatMigrateStoreOutput(r: MigrateStoreReport, json: boolean): 
     for (const t of r.tables) lines.push(`  ${t.name}: ${t.rows} / ${t.bytes} / ${t.ms}`);
   }
   if (r.keptSeeds.length > 0) lines.push(`kept seeds: ${r.keptSeeds.join(', ')}`);
-  if (r.defaulted.length > 0) lines.push(`in the DEFAULT partition: ${r.defaulted.join(', ')}`);
+  if (r.defaulted.length > 0) {
+    lines.push(`declared by no definition, every field in extra: ${r.defaulted.join(', ')}`);
+  }
+  for (const [type, m] of Object.entries(r.misfits)) {
+    const more = m.count > 10 ? ` (first 10 shown; --json lists ${m.first.length})` : '';
+    lines.push(
+      `misfits in ${type}: ${m.count}, kept unchanged under $raw${more}: ${m.first
+        .slice(0, 10)
+        .map((x) => `${x.id}.${x.field}`)
+        .join(', ')}`
+    );
+  }
+  for (const m of r.missingIndexes) lines.push(`  missing index [${m.type}]: ${m.index}`);
   if (r.pendingIndexes.length > 0) {
     lines.push(
       `${r.pendingIndexes.length} index build(s) left pending for serve (--skip-index-build; --json lists them all):`

@@ -24,6 +24,9 @@ import type { ColumnKind, TypedColumn, TypeTable } from './type-table.js';
 export interface RowToWrite extends EncodedRow {
   id: string | null;
   metadata?: RowMetadata | null;
+  /** `'passthrough'` only: the stored `deleted_at` (timestamptz text) and `seq` (bigint text) of an inserted row. */
+  deletedAt?: string | null;
+  seq?: string | null;
 }
 
 export interface WriteRowsOptions {
@@ -34,7 +37,8 @@ export interface WriteRowsOptions {
   /**
    * `'stamp'`: a row without metadata gets `now` and `actor`, and a merge keeps
    * `created_*` and a null `updated_*`, as `write` always has. `'passthrough'`:
-   * each row's metadata columns are stored as given (F37).
+   * each row's metadata columns are stored as given (F37), and an inserted
+   * row's `deleted_at` and `seq` too, so `visibleOrder` must be off.
    */
   metadata: 'stamp' | 'passthrough';
   actor?: ActorIdentity | null;
@@ -74,7 +78,9 @@ export function inputCte(
   sql: Sql | TransactionSql,
   table: TypeTable,
   rows: ReadonlyArray<EncodedRow & { id: string | null }>,
-  metadata?: ReadonlyArray<RowMetadata | null>
+  metadata?: ReadonlyArray<RowMetadata | null>,
+  /** `da` (deleted_at) and `ps` (seq) columns, from `RowToWrite`'s passthrough fields. */
+  stored?: ReadonlyArray<Pick<RowToWrite, 'deletedAt' | 'seq'>>
 ): Fragment {
   const cols = writableColumns(table);
   const arrays: unknown[][] = [
@@ -116,6 +122,14 @@ export function inputCte(
       'x.ubk',
       'x.ubi'
     );
+  }
+  if (stored !== undefined) {
+    arrays.push(
+      stored.map((r) => r.deletedAt ?? null),
+      stored.map((r) => r.seq ?? null)
+    );
+    names.push('da', 'ps');
+    selects.push('x.da::timestamptz AS da', 'x.ps::bigint AS ps');
   }
   // Text, cast in SQL: postgres.js's bulk path does not round-trip jsonb, and a
   // Date parameter keeps milliseconds only.
@@ -242,6 +256,12 @@ export function writeRowsStatement(
   rows: readonly RowToWrite[],
   opts: WriteRowsOptions
 ): Fragment {
+  const passthrough = opts.metadata === 'passthrough';
+  if (passthrough && opts.visibleOrder) {
+    throw new Error(
+      "writeRowsStatement: 'passthrough' writes each row's seq, so visibleOrder must be off"
+    );
+  }
   const now = (opts.now ?? new Date()).toISOString();
   const actor = opts.actor ?? null;
   const metadata = rows.map((r) =>
@@ -300,14 +320,16 @@ export function writeRowsStatement(
     'created_by_id',
     'updated_by_kind',
     'updated_by_id',
-    ...(opts.visibleOrder ? ['seq'] : [])
+    ...(opts.visibleOrder ? ['seq'] : []),
+    ...(passthrough ? ['deleted_at', 'seq'] : [])
   ];
   const insertValues = [
     'i.rid',
     mergedExtraSql(null, 'i'),
     ...cols.map((_, k) => `i.c${k}`),
     ...META.map((m) => `i.${m}`),
-    ...(opts.visibleOrder ? ['i.sq'] : [])
+    ...(opts.visibleOrder ? ['i.sq'] : []),
+    ...(passthrough ? ['i.da', 'i.ps'] : [])
   ];
   // A repeated id's later occurrences are skipped under insertOnly anyway;
   // leaving them out makes the first one the one that lands, with its seq.
@@ -322,7 +344,7 @@ export function writeRowsStatement(
         .join(', ')} FROM input i WHERE i.rid = EXCLUDED.id)`;
 
   return sql`
-    WITH ${inputCte(sql, table, rows, metadata)}${seqCtes}${upd},
+    WITH ${inputCte(sql, table, rows, metadata, passthrough ? rows : undefined)}${seqCtes}${upd},
     ins AS (
       INSERT INTO ${target} AS t (${sql.unsafe(insertCols.join(', '))})
       SELECT ${sql.unsafe(insertValues.join(', '))}

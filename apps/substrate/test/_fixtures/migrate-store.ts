@@ -1,14 +1,16 @@
 /**
  * Shared fixture for the migrate-store pg suites: a source schema in either
- * layout seeded with rows, edges and recall data, and a target schema that
- * `bootStore` has already prepared, with the plan preflight derives.
+ * old layout (built from the frozen DDL in `old-layouts.ts`) seeded with rows,
+ * edges and recall data, and a target schema that `bootStore` has already
+ * prepared in the `tables` layout, with the plan preflight derives. The
+ * plugin dir loads recall, proposals, and a fixture coordinator whose `conv`
+ * namespace declares typed fields and a unique partial index.
  */
 
 import { randomBytes } from 'node:crypto';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { runMigrations, type StorageLayout } from '@mnmal-ai/substrate-dataset-pg';
 import { pgTestSchemaName, pgTestSchemaUrl } from '@mnmal-ai/substrate-dataset-pg/testing';
 import {
   embeddingsMigration,
@@ -21,14 +23,13 @@ import { type CopyPlan, preflight } from '../../src/admin/migrate-store/prefligh
 import { inspectSource } from '../../src/admin/migrate-store/source.js';
 import { type BootedStore, bootStore } from '../../src/serve/boot-store.js';
 import { parseEnv } from '../../src/serve/config.js';
+import { buildOldLayout } from './old-layouts.js';
+
+type OldLayout = 'legacy' | 'partitioned';
 
 export const POSTGRES_URL = process.env.POSTGRES_URL;
-/**
- * Whether the pg suites run: not on the `tables` pass (`test:tables`), since
- * migrate-store copies into an old layout until Task 15 converts into `tables`.
- */
-export const MIGRATE_PG =
-  POSTGRES_URL !== undefined && process.env.SUBSTRATE_TEST_LAYOUT !== 'tables';
+/** Whether the pg suites run. The target is always `tables` and the source built here, so in every pass. */
+export const MIGRATE_PG = POSTGRES_URL !== undefined;
 export const RECALL_TABLES = ['embeddings', 'lexical', 'recall_clusters', 'recall_cluster_members'];
 export const STORE_PROFILE_ID = '5703e000-0000-4000-8000-000000000001';
 /** Recall's default, which the target's recall (no embedder configured) keeps. */
@@ -39,22 +40,78 @@ export const uuid = (n: number) => `${String(n).padStart(8, '0')}-0000-4000-8000
 export const vec = (i: number) =>
   `[${Array.from({ length: DIM }, (_, j) => (j === i ? 1 : 0)).join(',')}]`;
 
-export async function applyRecall(sql: Sql, layout: StorageLayout): Promise<void> {
+export async function applyRecall(sql: Sql, layout: OldLayout): Promise<void> {
   const ctx = { sql, layout, metric: () => undefined } as KernelMigrationContext;
   for (const m of [embeddingsMigration(), recallClustersMigration(), lexicalMigration()]) {
     await m.apply(ctx);
   }
 }
 
-/** A plugin dir that loads this package's built-in plugins, recall and proposals. */
+/** The fixture coordinator's namespace. */
+export const CONV = 'conv';
+/** `conv/ExecutionCheckpoint`'s unique index over live rows, shaped as cortext's. */
+export const CHECKPOINT_INDEX = 'rows_execution_checkpoint_task_revision_unique';
+
+/** The fixture coordinator: `conv/Typed` has a column of every kind, `conv/ExecutionCheckpoint` a unique live index. */
+const CONV_PLUGIN = (sdk: string) => `
+import { defineNamespace } from ${JSON.stringify(sdk)};
+export default () => ({
+  name: 'migrate-fixture',
+  contractVersion: '>=1.0.0-alpha.0 <2.0.0',
+  namespaces: [
+    defineNamespace('${CONV}', {
+      Typed: {
+        fields: {
+          title: { kind: 'scalar', type: 'string' },
+          count: { kind: 'scalar', type: 'number' },
+          when: { kind: 'scalar', type: 'date' },
+          flag: { kind: 'scalar', type: 'boolean' },
+          status: { kind: 'scalar', type: 'string', enum: ['open', 'done'] },
+          ref: { kind: 'crossRef', ns: '${CONV}', type: 'Typed', onDelete: 'set_null' },
+          meta: { kind: 'scalar', type: 'json' }
+        }
+      },
+      ExecutionCheckpoint: {
+        fields: {
+          task: { kind: 'crossRef', ns: '${CONV}', type: 'Typed', onDelete: 'set_null' },
+          revision: { kind: 'scalar', type: 'number' }
+        },
+        indexes: [
+          {
+            name: '${CHECKPOINT_INDEX}',
+            fields: ['task', { field: 'revision', dir: 'desc' }],
+            unique: true,
+            where: 'live'
+          }
+        ]
+      }
+    })
+  ]
+});
+`;
+
+/** A plugin dir that loads this package's built-in plugins, recall and proposals, and the `conv` fixture. */
 export async function makePluginDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'substrate-migrate-plugins-'));
   await writeFile(
     join(dir, 'package.json'),
-    JSON.stringify({ dependencies: { '@mnmal-ai/substrate': '*' } })
+    JSON.stringify({ dependencies: { '@mnmal-ai/substrate': '*', 'migrate-fixture': '*' } })
   );
   await mkdir(join(dir, 'node_modules', '@mnmal-ai'), { recursive: true });
   await symlink(resolve('.'), join(dir, 'node_modules', '@mnmal-ai', 'substrate'));
+  const conv = join(dir, 'node_modules', 'migrate-fixture');
+  await mkdir(conv);
+  await writeFile(
+    join(conv, 'package.json'),
+    JSON.stringify({
+      name: 'migrate-fixture',
+      type: 'module',
+      substrate: { tier: 'coordinator', entry: './index.js' }
+    })
+  );
+  // The built sdk, which the fixture plugin imports as serve would load it.
+  const sdk = new URL('../../../../packages/substrate-sdk/dist/index.js', import.meta.url).href;
+  await writeFile(join(conv, 'index.js'), CONV_PLUGIN(sdk));
   return dir;
 }
 
@@ -123,7 +180,7 @@ export interface Schemas {
 
 /** A seeded source schema in `sourceLayout` beside an empty target schema, nothing prepared. */
 export async function openSchemas(
-  sourceLayout: StorageLayout,
+  sourceLayout: OldLayout,
   /** Session TimeZone per side, to prove a comparison does not depend on it. */
   zones: { src?: string; tgt?: string } = {}
 ): Promise<Schemas> {
@@ -145,7 +202,7 @@ export async function openSchemas(
   });
   await srcSql.unsafe(`CREATE SCHEMA ${srcSchema}`);
   await tgtSql.unsafe(`CREATE SCHEMA ${tgtSchema}`);
-  await runMigrations(srcSql, { layout: sourceLayout });
+  await buildOldLayout(srcSql, sourceLayout);
   await applyRecall(srcSql, sourceLayout);
   await seedSource(srcSql);
   const pluginDir = await makePluginDir();
@@ -166,9 +223,9 @@ export async function openSchemas(
   };
 }
 
-/** A seeded source in `sourceLayout` beside a prepared, empty partitioned target. */
+/** A seeded source in `sourceLayout` beside a prepared, empty `tables` target. */
 export async function openPair(
-  sourceLayout: StorageLayout,
+  sourceLayout: OldLayout,
   /** Session TimeZone per side, to prove a comparison does not depend on it. */
   zones: { src?: string; tgt?: string } = {}
 ): Promise<Pair> {
@@ -181,8 +238,9 @@ export async function openPair(
         SUBSTRATE_INDEX_DISK_PATH: 'off'
       }),
       pluginDir,
-      layout: 'partitioned',
-      allowMigrating: true
+      layout: 'tables',
+      allowMigrating: true,
+      background: false
     });
   // Prepare once, so a test can write into the target before the copy boots it again.
   await (await boot()).close();
@@ -191,6 +249,7 @@ export async function openPair(
     await inspectSource(srcSql),
     {
       serverVersionNum: 180000,
+      layout: 'absent',
       empty: true,
       createdByUs: false,
       enforceUuidCheck: false,

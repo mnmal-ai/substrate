@@ -4,7 +4,6 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { runMigrations } from '@mnmal-ai/substrate-dataset-pg';
 import { pgTestSchemaName, pgTestSchemaUrl } from '@mnmal-ai/substrate-dataset-pg/testing';
 import postgres, { type Sql } from 'postgres';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -15,13 +14,10 @@ import {
   type TargetFacts
 } from '../src/admin/migrate-store/preflight.js';
 import { inspectSource, type SourceInventory } from '../src/admin/migrate-store/source.js';
+import { buildOldLayout } from './_fixtures/old-layouts.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
-/** The `tables` pass (`test:tables`). */
-const TABLES_RUN = process.env.SUBSTRATE_TEST_LAYOUT === 'tables';
-
-// migrate-store targets an old layout until Task 15 converts into `tables` (F15).
-describe.skipIf(!POSTGRES_URL || TABLES_RUN)('inspectSource (pg)', () => {
+describe.skipIf(!POSTGRES_URL)('inspectSource (pg)', () => {
   let schema: string;
   let sql: Sql;
 
@@ -30,7 +26,7 @@ describe.skipIf(!POSTGRES_URL || TABLES_RUN)('inspectSource (pg)', () => {
     schema = pgTestSchemaName(name);
     sql = postgres(pgTestSchemaUrl(POSTGRES_URL as string, name), { max: 1, onnotice: () => {} });
     await sql.unsafe(`CREATE SCHEMA ${schema}`);
-    await runMigrations(sql, { layout: 'legacy' });
+    await buildOldLayout(sql, 'legacy');
     await sql.unsafe(`
       INSERT INTO rows (namespace, type, id, body, deleted_at) VALUES
         ('a', 'T1', '11111111-1111-4111-8111-111111111111', '{}', NULL),
@@ -131,6 +127,7 @@ const opts: PreflightOptions = { skipTables: [], pluginTables: [], dryRun: false
 function target(over: Partial<TargetFacts> = {}): TargetFacts {
   return {
     serverVersionNum: 180000,
+    layout: 'absent',
     empty: true,
     createdByUs: false,
     enforceUuidCheck: false,
@@ -160,8 +157,7 @@ function source(over: Partial<SourceInventory> = {}): SourceInventory {
   };
 }
 
-// migrate-store targets an old layout until Task 15 converts into `tables` (F15).
-describe.skipIf(!POSTGRES_URL || TABLES_RUN)('inspectSource, partitioned source (pg)', () => {
+describe.skipIf(!POSTGRES_URL)('inspectSource, partitioned source (pg)', () => {
   let schema: string;
   let sql: Sql;
 
@@ -170,7 +166,7 @@ describe.skipIf(!POSTGRES_URL || TABLES_RUN)('inspectSource, partitioned source 
     schema = pgTestSchemaName(name);
     sql = postgres(pgTestSchemaUrl(POSTGRES_URL as string, name), { max: 1, onnotice: () => {} });
     await sql.unsafe(`CREATE SCHEMA ${schema}`);
-    await runMigrations(sql, { layout: 'partitioned' });
+    await buildOldLayout(sql, 'partitioned');
     await sql.unsafe(`
       INSERT INTO rows (namespace, type, id, body, deleted_at) VALUES
         ('a', 'T1', '11111111-1111-4111-8111-111111111111', '{}', NULL),
@@ -218,6 +214,15 @@ describe('preflight', () => {
     expect(res.refusals).toEqual([]);
     expect(res.plan.tables.map((t) => t.name)).toEqual(['rows', 'short_ids', 'edges']);
     expect(res.plan.tables[0]?.columns).toEqual(['namespace', 'type', 'id', 'body']);
+  });
+
+  it('refuses a target in an old layout: the copy is into tables', () => {
+    for (const layout of ['legacy', 'partitioned'] as const) {
+      expect(preflight(source(), target({ layout }), opts).refusals).toEqual([
+        `target is a ${layout} store; migrate-store copies into the tables layout, so point it at an empty database or schema`
+      ]);
+    }
+    expect(preflight(source(), target({ layout: 'tables' }), opts).refusals).toEqual([]);
   });
 
   it('refuses a non-empty target not created by us, but allows our own', () => {

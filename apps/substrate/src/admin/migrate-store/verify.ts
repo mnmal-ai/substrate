@@ -1,26 +1,35 @@
 /**
- * The migrate-store verification: compares the source and the copy per
- * (namespace, type) and, only when everything agrees, drops the in-progress
- * marker so `serve` will boot the target. Both sides are read in their own
- * REPEATABLE READ, READ ONLY transaction; nothing here writes to the source.
+ * The migrate-store verification: compares the source with its conversion
+ * per (namespace, type) and, only when everything agrees and the target holds
+ * every declared index, drops the in-progress marker so `serve` will boot the
+ * target. Both sides are read in their own REPEATABLE READ, READ ONLY
+ * transaction; nothing here writes to the source.
  *
  * Target rows the prepare step seeded and the source lacks (`keptSeeds`) are
  * subtracted from the target side before every comparison.
  *
  * Every set is fingerprinted as `count(*)` plus the sum of a 64-bit prefix of
  * each row's md5. That is independent of row order, of either cluster's
- * collation, and of any join separator, and it builds no string.
+ * collation, and of any join separator, and it builds no string. Row content
+ * is compared as the dataset reads it: the target's row as `decodeRow` builds
+ * it, the source's body under the same read rule (an explicit null on a
+ * declared column field reads absent), both as jsonb text, so a number's
+ * stored text counts, plus every metadata column.
  */
 
-import { MIGRATE_STORE_MARKER_TABLE } from '@mnmal-ai/substrate-dataset-pg';
+import {
+  loadTypeTable,
+  MIGRATE_STORE_MARKER_TABLE,
+  type TypeTable,
+  typeTableRef
+} from '@mnmal-ai/substrate-dataset-pg';
 import type { Sql } from 'postgres';
 import type { BootedStore } from '../../serve/boot-store.js';
+import { registeredTypes } from '../../serve/wiring.js';
 import { type CopyResult, type RowKey, registeredDataset, SEED } from './copy.js';
 
 export interface VerifyOptions {
   keptSeeds: RowKey[];
-  /** Types whose rows are expected in a DEFAULT partition (`CopyResult.defaulted`). */
-  defaulted: CopyResult['defaulted'];
   /** The copied tables (the plan's, or `readCopyState().tables`); `rows`, `short_ids` and `edges` have their own checks. */
   tables: string[];
   /** Hash every row instead of a sample. */
@@ -30,11 +39,15 @@ export interface VerifyOptions {
   partitionBudget: number;
   /** The target dataset's `storageReport`. */
   storageReport(opts: { partitionBudget: number }): Promise<{ warnings: string[] }>;
+  /** The declared indexes the target lacks or holds unusable ({@link missingIndexes}). */
+  missingIndexes(): Promise<VerifyResult['missingIndexes']>;
 }
 
 export interface VerifyResult {
   ok: boolean;
   mismatches: { check: string; namespace?: string; type?: string; detail: string }[];
+  /** Declared indexes (`<ns>/<Type>`, index name) not valid on the target; any fails verification. */
+  missingIndexes: Array<{ type: string; index: string }>;
 }
 
 interface Entry {
@@ -59,15 +72,40 @@ export async function fingerprint(sql: Sql, ids: string[]): Promise<string> {
   return (r as { f: string }).f;
 }
 
+/**
+ * The declared indexes of every registered type that are not valid on the
+ * target: missing, invalid, building, failed, or built over a field that is
+ * not yet in its column. `uniqueOnly` leaves out the non-unique ones, which
+ * `--skip-index-build` defers to serve.
+ */
+export async function missingIndexes(
+  target: BootedStore,
+  uniqueOnly: boolean
+): Promise<VerifyResult['missingIndexes']> {
+  const out: VerifyResult['missingIndexes'] = [];
+  for (const { ns, type, dataset } of registeredTypes(target.engine, target.datasets)) {
+    const report = await dataset?.describeStorage?.(type);
+    for (const i of report?.indexes ?? []) {
+      if (i.state !== 'valid' && (i.unique || !uniqueOnly))
+        out.push({ type: `${ns}/${type}`, index: i.name });
+    }
+  }
+  return out;
+}
+
 export async function verifyStore(
   source: Sql,
   target: Sql,
   opts: VerifyOptions
 ): Promise<VerifyResult> {
   const readOnly = 'isolation level repeatable read read only';
-  const src = await source.begin(readOnly, (tx) => snapshot(tx as unknown as Sql, [], null, opts));
+  // The target's type tables first: they give the source its read rule.
+  const types = await target.begin(readOnly, (tx) => typeTables(tx as unknown as Sql));
+  const src = await source.begin(readOnly, (tx) =>
+    snapshot(tx as unknown as Sql, 'source', [], null, opts, types)
+  );
   const tgt = await target.begin(readOnly, (tx) =>
-    snapshot(tx as unknown as Sql, opts.keptSeeds, src, opts)
+    snapshot(tx as unknown as Sql, 'target', opts.keptSeeds, src, opts, types)
   );
 
   const mismatches: VerifyResult['mismatches'] = [];
@@ -84,31 +122,41 @@ export async function verifyStore(
       detail: `${e.what}: source ${a?.value ?? 'absent'}, target ${b?.value ?? 'absent'}`
     });
   }
-
-  const expected = new Set(opts.defaulted.map((d) => JSON.stringify([d.namespace, d.type])));
-  for (const w of (await opts.storageReport({ partitionBudget: opts.partitionBudget })).warnings) {
-    const m = /^\S+ holds \d+ rows of (.+)\/([^/]+)$/.exec(w);
-    if (m !== null && expected.has(JSON.stringify([m[1], m[2]]))) continue;
-    mismatches.push({
-      check: 'storage',
-      ...(m !== null ? { namespace: m[1] as string, type: m[2] as string } : {}),
-      detail: w
-    });
+  // Every declared field holds its values in its column.
+  for (const [key, table] of types) {
+    const [namespace, type] = [table.namespace, table.type];
+    const unsettled = [
+      ...table.pending.map((field) => ({ field, state: 'pending' })),
+      ...table.columns().filter((c) => c.state === 'promoting')
+    ];
+    for (const f of unsettled) {
+      mismatches.push({
+        check: 'fields',
+        namespace,
+        type,
+        detail: `field ${f.field} of ${key} is ${f.state}, so its values are not all in its column`
+      });
+    }
   }
 
-  const ok = mismatches.length === 0;
+  for (const w of (await opts.storageReport({ partitionBudget: opts.partitionBudget })).warnings) {
+    mismatches.push({ check: 'storage', detail: w });
+  }
+  const missing = await opts.missingIndexes();
+
+  const ok = mismatches.length === 0 && missing.length === 0;
   // Its own statement, last: only a target that passed every check boots under `serve`.
   if (ok) await target`DROP TABLE IF EXISTS ${target(MIGRATE_STORE_MARKER_TABLE)}`;
-  return { ok, mismatches };
+  return { ok, mismatches, missingIndexes: missing };
 }
 
 const COPY_MILESTONES = new Set(['copy:started', 'copy:phase1', 'copy:phase2', 'copy:done']);
 
 /**
  * What a finished copy left behind, for a verification that has no
- * `CopyResult`: the kept seeds from the marker table, and the types the target
- * does not register (their rows sit in a DEFAULT partition), and the copied
- * tables, which are the marker's `copy:<table>` steps.
+ * `CopyResult`: the kept seeds from the marker table, the types the target
+ * does not register (their fields all sit in `extra`), and the copied tables,
+ * which are the marker's `copy:<table>` steps.
  */
 export async function readCopyState(
   target: BootedStore
@@ -133,12 +181,12 @@ export async function readCopyState(
       return { namespace, type, id } as RowKey;
     })
     .sort((a, b) => (a.namespace + a.type + a.id).localeCompare(b.namespace + b.type + b.id));
-  const pairs = await sql<
-    { namespace: string; type: string }[]
-  >`SELECT DISTINCT namespace, type FROM rows ORDER BY namespace, type`;
-  const defaulted = pairs.filter(
-    (p) => registeredDataset(target, p.namespace, p.type)?.ensureTypeStorage === undefined
-  );
+  // Types with rows that nothing registers.
+  const pairs = await sql<{ namespace: string; type: string }[]>`
+    SELECT DISTINCT namespace, type FROM row_ids ORDER BY namespace, type`;
+  const defaulted = pairs
+    .filter((p) => registeredDataset(target, p.namespace, p.type) === undefined)
+    .map((p) => `${p.namespace}/${p.type}`);
   const tables = steps
     .map((s) => s.step)
     .filter((s) => s.startsWith('copy:') && !COPY_MILESTONES.has(s))
@@ -153,12 +201,32 @@ interface Snapshot {
   columns: Map<string, string[]>;
 }
 
-/** Every comparable fact about one side, keyed so the two sides diff by key. `other` is the source's snapshot when this is the target. */
+/** The target's type tables, by `<ns>/<Type>`. */
+async function typeTables(tx: Sql): Promise<Map<string, TypeTable>> {
+  const types = new Map<string, TypeTable>();
+  const listed = await tx<{ namespace: string; type: string }[]>`
+    SELECT namespace, type FROM substrate_type_tables ORDER BY namespace, type`;
+  for (const { namespace, type } of listed) {
+    const table = await loadTypeTable(tx, namespace, type);
+    if (table !== undefined) types.set(`${namespace}/${type}`, table);
+  }
+  return types;
+}
+
+const META = `deleted_at::text, created_at::text, updated_at::text, created_by_kind, created_by_id, updated_by_kind, updated_by_id`;
+
+/**
+ * Every comparable fact about one side, keyed so the two sides diff by key.
+ * `other` is the source's snapshot when this is the target; `types` are the
+ * target's type tables, which give the source its read rule.
+ */
 async function snapshot(
   tx: Sql,
+  side: 'source' | 'target',
   seeds: RowKey[],
   other: Snapshot | null,
-  opts: VerifyOptions
+  opts: VerifyOptions,
+  types: Map<string, TypeTable>
 ): Promise<Snapshot> {
   // Two clusters may differ in these defaults, and they change how a row renders as text.
   await tx`SET LOCAL TimeZone = 'UTC'`;
@@ -172,8 +240,10 @@ async function snapshot(
   const notSeed = (ns: string, ty: string, id: string) =>
     tx`(${tx(ns)}, ${tx(ty)}, ${tx(id)}) NOT IN (SELECT * FROM unnest(
       ${seeds.map((k) => k.namespace)}::text[], ${seeds.map((k) => k.type)}::text[], ${seeds.map((k) => k.id)}::text[]))`;
-  // The table's columns both sides have, or null when this side lacks the table. A source lacking one
-  // (seq) must not read as a mismatch, so the target hashes only the source's set.
+  const seedIds = (ns: string, ty: string) =>
+    seeds.filter((k) => k.namespace === ns && k.type === ty).map((k) => k.id);
+  // The table's columns both sides have, or null when this side lacks the table. A table the
+  // source lacks a column of must not read as a mismatch, so each side hashes only the shared set.
   const colsOf = async (table: string): Promise<string[] | null> => {
     const have = await tx<{ col: string }[]>`
       SELECT a.attname AS col FROM pg_attribute a
@@ -186,19 +256,57 @@ async function snapshot(
     return cols;
   };
 
-  const counts = await tx<
-    { namespace: string; type: string; live: string; deleted: string; ids: string }[]
-  >`
-    SELECT namespace, type,
-           count(*) FILTER (WHERE deleted_at IS NULL)::text AS live,
-           count(*) FILTER (WHERE deleted_at IS NOT NULL)::text AS deleted,
-           ${tx.unsafe(fp('id'))} AS ids
-    FROM rows WHERE ${notSeed('namespace', 'type', 'id')} GROUP BY namespace, type`;
-  for (const r of counts) {
-    const at = { namespace: r.namespace, type: r.type };
-    add({ check: 'count', ...at, what: 'live rows', value: r.live });
-    add({ check: 'count', ...at, what: 'deleted rows', value: r.deleted });
-    add({ check: 'ids', ...at, what: 'id set', value: r.ids });
+  // Per type: counts, the id set, and (target) the same id set as `row_ids` registers it.
+  const limit = opts.fullChecksum ? Number.MAX_SAFE_INTEGER : opts.sampleRows;
+  const counted: Array<{ namespace: string; type: string }> = [];
+  if (side === 'source') {
+    const counts = await tx<
+      { namespace: string; type: string; live: string; deleted: string; ids: string }[]
+    >`
+      SELECT namespace, type,
+             count(*) FILTER (WHERE deleted_at IS NULL)::text AS live,
+             count(*) FILTER (WHERE deleted_at IS NOT NULL)::text AS deleted,
+             ${tx.unsafe(fp('id'))} AS ids
+      FROM rows GROUP BY namespace, type`;
+    for (const r of counts) {
+      const at = { namespace: r.namespace, type: r.type };
+      add({ check: 'count', ...at, what: 'live rows', value: r.live });
+      add({ check: 'count', ...at, what: 'deleted rows', value: r.deleted });
+      add({ check: 'ids', ...at, what: 'id set', value: r.ids });
+      add({ check: 'ids', ...at, what: 'registered ids (row_ids)', value: r.ids });
+      counted.push(at);
+    }
+  } else {
+    for (const table of types.values()) {
+      const { namespace, type } = table;
+      const skip = seedIds(namespace, type);
+      const [r] = await tx.unsafe<{ live: string; deleted: string; ids: string }[]>(
+        `SELECT count(*) FILTER (WHERE deleted_at IS NULL)::text AS live,
+                count(*) FILTER (WHERE deleted_at IS NOT NULL)::text AS deleted,
+                ${fp('id')} AS ids
+         FROM ${table.from} WHERE NOT (id = ANY($1::text[]))`,
+        [skip]
+      );
+      const at = { namespace, type };
+      if (r !== undefined && Number(r.live) + Number(r.deleted) > 0) {
+        add({ check: 'count', ...at, what: 'live rows', value: r.live });
+        add({ check: 'count', ...at, what: 'deleted rows', value: r.deleted });
+        add({ check: 'ids', ...at, what: 'id set', value: r.ids });
+        counted.push(at);
+      }
+    }
+    const registered = await tx<{ namespace: string; type: string; ids: string }[]>`
+      SELECT namespace, type, ${tx.unsafe(fp('id'))} AS ids
+      FROM row_ids WHERE ${notSeed('namespace', 'type', 'id')} GROUP BY namespace, type`;
+    for (const r of registered) {
+      add({
+        check: 'ids',
+        namespace: r.namespace,
+        type: r.type,
+        what: 'registered ids (row_ids)',
+        value: r.ids
+      });
+    }
   }
 
   const shorts = await tx<{ namespace: string; type: string; f: string }[]>`
@@ -225,16 +333,40 @@ async function snapshot(
     }
   }
 
-  const rowCols = (await colsOf('rows')) as string[];
-  const limit = opts.fullChecksum ? 2147483647 : opts.sampleRows;
-  // One bounded query per type, each on its own scope, so a partitioned store reads only that type's partition.
-  // COLLATE "C" so both clusters pick the same rows whatever their locale.
-  for (const { namespace, type } of counts) {
-    const [r] = await tx<{ f: string }[]>`
-      SELECT ${tx.unsafe(fp('h'))} AS f FROM (
-        SELECT row(${tx.unsafe(quote(rowCols))})::text AS h FROM rows
-        WHERE namespace = ${namespace} AND type = ${type} AND ${notSeed('namespace', 'type', 'id')}
-        ORDER BY md5(id) COLLATE "C" LIMIT ${limit}) s`;
+  // Row content (id first, so a swap between rows counts) as stored jsonb text, one bounded pass per type in md5(id) order: COLLATE "C" so
+  // both clusters pick the same rows whatever their locale. jsonb text is canonical (sorted keys) and
+  // keeps each number's text, so a number stored differently fails. The source hashes `seq` only
+  // when it has one.
+  const hasSeq =
+    side === 'source'
+      ? (await colsOf('rows'))?.includes('seq') === true
+      : other?.columns.get('rows')?.includes('seq') !== false;
+  const meta = `row(${META}, ${hasSeq ? 'seq::text' : 'NULL::text'})::text`;
+  for (const { namespace, type } of counted) {
+    let rows: string;
+    let params: unknown[];
+    if (side === 'source') {
+      // The read rule: an explicit null on a declared column field reads absent.
+      const table = types.get(`${namespace}/${type}`);
+      const declared = [
+        ...(table?.columns().filter((c) => c.state !== 'orphaned') ?? []).map((c) => c.field),
+        ...(table?.pending ?? [])
+      ];
+      rows = `SELECT id || E'\n' || (SELECT coalesce(jsonb_object_agg(k, v), '{}'::jsonb) FROM jsonb_each(body) e(k, v)
+                      WHERE NOT (v = 'null'::jsonb AND k = ANY($3::text[])))::text || E'\n' || ${meta} AS h
+              FROM rows WHERE namespace = $1 AND type = $2 ORDER BY md5(id) COLLATE "C" LIMIT ${limit}`;
+      params = [namespace, type, declared];
+    } else {
+      const ref = await typeTableRef(tx, namespace, type);
+      if (ref === undefined) continue;
+      rows = `SELECT x.id || E'\n' || ${ref.rowJson('x')}::text || E'\n' || ${meta} AS h FROM ${ref.from} x
+              WHERE NOT (x.id = ANY($1::text[])) ORDER BY md5(x.id) COLLATE "C" LIMIT ${limit}`;
+      params = [seedIds(namespace, type)];
+    }
+    const [r] = await tx.unsafe<{ f: string }[]>(
+      `SELECT ${fp('h')} AS f FROM (${rows}) s`,
+      params as never[]
+    );
     add({ check: 'sample', namespace, type, what: 'content', value: String(r?.f) });
   }
 

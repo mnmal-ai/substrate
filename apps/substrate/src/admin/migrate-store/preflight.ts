@@ -3,13 +3,16 @@
 import {
   getMigrationList,
   isDerivedMigration,
-  MIGRATE_STORE_MARKER_TABLE
+  MIGRATE_STORE_MARKER_TABLE,
+  type StorageLayout
 } from '@mnmal-ai/substrate-dataset-pg';
 import { type SourceInventory, UUID_CHECK_MIGRATION } from './source.js';
 
 export interface TargetFacts {
   serverVersionNum: number;
-  /** No substrate data: no tables, or `rows` empty. */
+  /** The target schema's layout; migrate-store copies into `tables` (or a schema with none yet). */
+  layout: StorageLayout | 'absent';
+  /** No substrate data: no tables, or no row in `rows` or `row_ids`. */
   empty: boolean;
   /** Carries the migrate-store marker, so a rerun may reuse it. */
   createdByUs: boolean;
@@ -53,6 +56,7 @@ export interface PreflightResult {
   plan: CopyPlan;
 }
 
+/** `rows` is converted into type tables, which writes `row_ids` too; the rest are copied as they are. */
 const ENGINE_COPIED = ['rows', 'short_ids', 'edges', 'visible_seqs'];
 const NOT_COPIED = [
   'idempotency',
@@ -106,6 +110,12 @@ export function preflight(
   if (!source.appliedMigrations.some((v) => baselines.includes(v))) {
     refusals.push(
       `source ledger lacks ${baselines.join(' / ')}; found: ${source.appliedMigrations.join(', ') || 'no migrations'}`
+    );
+  }
+
+  if (target.layout === 'legacy' || target.layout === 'partitioned') {
+    refusals.push(
+      `target is a ${target.layout} store; migrate-store copies into the tables layout, so point it at an empty database or schema`
     );
   }
 

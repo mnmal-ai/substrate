@@ -301,10 +301,10 @@ export async function reconcileDeclaredStorage(
   }
 }
 
-type ComposedDatasets = { has(ns: string): boolean; get(ns: string): Dataset | undefined };
+export type ComposedDatasets = { has(ns: string): boolean; get(ns: string): Dataset | undefined };
 
 /** Every type registered in a namespace with a local dataset, with that dataset. */
-function* registeredTypes(
+export function* registeredTypes(
   engine: Pick<Engine, 'federatedSchema' | 'registryFor'>,
   datasets: ComposedDatasets
 ): Generator<{ ns: string; type: string; dataset: Dataset | undefined }> {
