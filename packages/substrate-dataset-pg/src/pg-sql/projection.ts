@@ -5,7 +5,7 @@
 
 import type { ActorIdentity, ReadParams, RowMetadata } from '@mnmal-ai/substrate-types';
 import type { Sql, TransactionSql } from 'postgres';
-import { extraWins, RAW_KEY } from '../row-codec.js';
+import { RAW_KEY } from '../row-codec.js';
 import type { TypeTable } from '../type-table.js';
 import {
   columnSql,
@@ -22,8 +22,7 @@ import {
  * For `decodeRow`: each column (of a requested field, when
  * `fields` is given), `orphaned` ones included (F35), a date column as UTC
  * text; then `extra AS extra`, whole, or its requested keys with `id` and
- * `$raw` kept (less those only a `column` can hold). `walk` rides in `extra`,
- * which `decodeRow` copies to the row.
+ * `$raw` kept. `walk` rides in `extra`, which `decodeRow` copies to the row.
  *
  * Keys are bound as parameters, never concatenated.
  */
@@ -50,25 +49,11 @@ export function buildRowProjection(
       // `decodeRow` reads a date column's text the same in any session TimeZone.
       return c.kind === 'date' ? `${utcTextSql(col, 'US')} AS ${c.column}` : col;
     });
-  // Plain operators, not a jsonb_each subquery: a per-row SubPlan cost every
-  // read and kept the statement out of parallel plans (#1863, #1864). A
-  // `column`-state field's `extra` value is never read (`extraWins`), so it is
-  // not extracted; `?` keeps an absent key absent and a JSON null a null.
-  const extraOf: Fragment = sql`${sql.unsafe(`${q}extra`)}`;
-  const wanted = [...keys, RAW_KEY].filter((k) => {
-    const c = table.column(k);
-    return c === undefined || extraWins(c);
-  });
+  // One pass over `extra` (it may be TOASTed), not one extraction per key.
   const extra: Fragment =
     fields === undefined
-      ? extraOf
-      : buildConcat(
-          sql,
-          wanted.map(
-            (k) =>
-              sql`CASE WHEN ${extraOf} ? ${k}::text THEN jsonb_build_object(${k}::text, ${extraOf} -> ${k}::text) ELSE '{}'::jsonb END`
-          )
-        );
+      ? sql.unsafe(`${q}extra`)
+      : sql`COALESCE((SELECT jsonb_object_agg(e.key, e.value) FROM jsonb_each(${sql.unsafe(`${q}extra`)}) e WHERE e.key = ANY(${[...keys, RAW_KEY]}::text[])), '{}'::jsonb)`;
   const head = columns.length === 0 ? '' : `${columns.join(', ')}, `;
   return sql`${sql.unsafe(head)}${merged(extra)} AS extra`;
 }
@@ -89,11 +74,6 @@ export function buildObject(sql: Sql | TransactionSql, pairs: Fragment[]): Fragm
 }
 
 const MAX_KEYS_PER_CALL = 50;
-
-/** `parts` (jsonb objects) joined by `||`; `'{}'` when there are none. */
-function buildConcat(sql: Sql | TransactionSql, parts: Fragment[]): Fragment {
-  return parts.length === 0 ? sql`'{}'::jsonb` : sql`(${join(parts, sql` || `)})`;
-}
 
 function join(parts: Fragment[], sep: Fragment): Fragment[] {
   const out: Fragment[] = [];
