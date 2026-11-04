@@ -199,10 +199,13 @@ export async function promotePendingFields(
         }
         if (!moved) return false;
       }
-      // `column` from here on, and never back: a straggler that cannot move fails the field, and
-      // its error makes a later sweep run this pass again.
-      at = await catalogVersion(sql, f);
-      if (!(await backfill(sql, table, f.field, opts))) {
+      // `column` from here on (only a later widening sends it back): a straggler that cannot
+      // move fails the field, and its error makes a later sweep run this pass again. Through the
+      // current descriptor, so a vocabulary widened since the load moves the values it admits.
+      const current = await loadTypeTable(sql, f.namespace, f.type);
+      if (current?.column(f.field)?.state !== 'column') return false;
+      at = current.version;
+      if (!(await backfill(sql, current, f.field, opts))) {
         await recordAttempt(sql, f, f.attempts, 'stopped: its straggler pass did not finish');
         return true;
       }
@@ -266,12 +269,6 @@ const due = (sql: Sql) => sql`(f.state IN ('pending', 'promoting')
   OR (f.state = 'column' AND f.last_error IS NOT NULL))
   AND f.error_version IS DISTINCT FROM (
     SELECT v.version FROM substrate_type_tables v WHERE v.namespace = f.namespace AND v.type = f.type)`;
-
-async function catalogVersion(sql: Sql, f: FieldRow): Promise<string | undefined> {
-  const [row] = await sql<Array<{ version: string }>>`
-    SELECT version::text FROM substrate_type_tables WHERE namespace = ${f.namespace} AND type = ${f.type}`;
-  return row?.version;
-}
 
 const isUniqueConflict = (err: unknown): boolean =>
   err instanceof UniqueIndexDuplicatesError || (err as { code?: unknown })?.code === '23505';

@@ -481,6 +481,35 @@ describe.skipIf(!POSTGRES_URL)('pending fields and the promotion sweep', () => {
     await same('Note', {});
   });
 
+  it('a vocabulary widened mid-sweep: the straggler pass moves the values it admits into the column', async () => {
+    await write('Note', [
+      { id: 'n1', title: 'a', status: 'zzz' },
+      { id: 'n2', title: 'b', status: 'a' }
+    ]);
+    defs.Note = { fields: { title: field.string(), status: field.enum(['a']) } };
+    await pg.ensureTypeStorage('Note');
+    expect(await state('Note', 'status')).toMatchObject({ state: 'promoting' });
+    let widened = false;
+    // Step 4 runs after the backfill put 'zzz' in `$raw` under the old vocabulary.
+    const events = await sweepWith(async () => {
+      if (widened) return;
+      widened = true;
+      defs.Note = { fields: { title: field.string(), status: field.enum(['a', 'zzz']) } };
+      await pg.ensureTypeStorage('Note');
+    });
+    expect(widened).toBe(true);
+    expect(events.map((e) => e.kind)).toEqual(['promoted']);
+    expect(await state('Note', 'status')).toMatchObject({ state: 'column' });
+    const t = await loadTypeTable(sql, ns, 'Note');
+    const col = t?.column('status')?.column as string;
+    const stored = await sql.unsafe(`SELECT id, ${col} AS c, extra FROM ${t?.from} ORDER BY id`);
+    expect(stored.map((r) => [r.id, r.c, extraOf(r)])).toEqual([
+      ['n1', 'zzz', {}],
+      ['n2', 'a', {}]
+    ]);
+    await same('Note', { where: { status: { eq: 'zzz' } } });
+  });
+
   it('a unique duplicate first seen in the straggler pass: failed, the field stays column, no row lost', async () => {
     const index = `pf_code_${hex()}`;
     await promotingCode(index, [
@@ -567,18 +596,20 @@ describe.skipIf(!POSTGRES_URL)('pending fields and the promotion sweep', () => {
       }
     });
     const blocker = await sql.reserve();
+    let first: ReturnType<typeof run> | undefined;
+    const ds = new PgDataset({ namespace: ns, sql: watched, ...lookup });
+    function run() {
+      return ds.promotePendingFields({ lockTimeoutMs: 2000, batchRows: 100, namespace: ns });
+    }
     try {
       await write('Note', [{ id: 'n1', title: 'a', rank: 1 }]);
       defs.Note = { fields: { title: field.string(), rank: field.number() } };
       await pg.ensureTypeStorage('Note');
       expect(await state('Note', 'rank')).toMatchObject({ state: 'promoting' });
-      const ds = new PgDataset({ namespace: ns, sql: watched, ...lookup });
-      const run = () =>
-        ds.promotePendingFields({ lockTimeoutMs: 2000, batchRows: 100, namespace: ns });
       // The first sweep takes the field's lock, then waits on n1's row lock until released.
       await blocker`BEGIN`;
       await blocker.unsafe(`SELECT 1 FROM ${await tableOf('Note')} WHERE id = 'n1' FOR UPDATE`);
-      const first = run();
+      first = run();
       await waitFor(async () => (await rowLockWaiters(ns)) > 0);
       const second = await run();
       await blocker`ROLLBACK`;
@@ -594,7 +625,10 @@ describe.skipIf(!POSTGRES_URL)('pending fields and the promotion sweep', () => {
         }
       ]);
     } finally {
+      // Never back to the shared pool holding n1's row lock, even when an assertion failed.
+      await blocker`ROLLBACK`.catch(() => {});
       blocker.release();
+      await first?.catch(() => {});
       await watched.end({ timeout: 5 });
     }
     // One backfill and one straggler pass, one page each: the second sweep scanned nothing.
