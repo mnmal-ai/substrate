@@ -8,7 +8,7 @@
  */
 
 import { randomBytes, randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { KEY_TYPE, SYSTEM_NAMESPACE } from '@mnmal-ai/substrate-compose';
@@ -158,4 +158,23 @@ describe.skipIf(!POSTGRES_URL)('substrate-admin before serve has booted (pg)', (
     await sql.unsafe(`DROP TRIGGER fail_write ON ${schema}.${table}`);
     expect((await bootstrap()).code).toBe(0);
   });
+
+  it.skipIf(process.getuid?.() === 0)(
+    'bootstrap whose key file cannot be written leaves no Key row, so a retry is not refused',
+    async () => {
+      const ro = join(tmp, 'ro');
+      mkdirSync(ro, { mode: 0o500 });
+      try {
+        const failed = await bootstrap({ SUBSTRATE_ADMIN_KEY_PATH: join(ro, 'admin.key') });
+        expect(failed.code).not.toBe(0);
+        const table = typeTableName(SYSTEM_NAMESPACE, KEY_TYPE);
+        const [row] = await sql.unsafe(`SELECT count(*)::int AS n FROM ${schema}.${table}`);
+        expect(row?.n).toBe(0);
+        expect(readdirSync(ro)).toEqual([]);
+      } finally {
+        chmodSync(ro, 0o700);
+      }
+      expect((await bootstrap()).code).toBe(0);
+    }
+  );
 });

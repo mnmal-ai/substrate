@@ -7,7 +7,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { encodeList, KEY_TYPE, SYSTEM_NAMESPACE } from '@mnmal-ai/substrate-compose';
 import { assertNotMigrating, PgDataset, runMigrations } from '@mnmal-ai/substrate-dataset-pg';
@@ -131,37 +131,55 @@ export async function runBootstrap(
       const shaFull = createHash('sha256').update(publicKeyPem).digest();
       const fingerprint = `sha256:${base64Url(shaFull).slice(0, 8)}`;
 
-      const now = new Date();
-      await dataset.write(
-        KEY_TYPE,
-        [
-          {
-            id: kid,
-            kid, // bootstrap's principal id IS its UUID (no token change)
-            name: 'bootstrap-admin',
-            algorithm: 'EdDSA',
-            publicKey: publicKeyPem,
-            namespaces: '*',
-            capabilities: encodeList(seededCapabilities),
-            revokedAt: null
-          }
-        ],
-        { identity: { kind: 'system', id: 'bootstrap' }, now }
-      );
-
-      // Only after the Key row is written, so a failed write leaves no files
-      // to refuse a retry.
+      // The files are written first, under temporary names beside their
+      // final ones, so a file-system failure leaves no Key row. A failed Key
+      // write removes them, so nothing is left to refuse a retry.
       const parentDir = dirname(privateKeyPath);
       // mkdirSync with `recursive: true` is a no-op for existing dirs; the mode
       // only applies to freshly-created segments. Key-file is 0600 regardless.
       mkdirSync(parentDir, { recursive: true, mode: 0o700 });
-      // `wx`: never overwrite a key file that appeared after the check above.
-      writeFileSync(privateKeyPath, privateKeyPem, { mode: 0o600, flag: 'wx' });
       // Persist the kid beside the key, where `resolveAdminAuth` looks for it.
       // Next to the key rather than a fixed path so a box administering two
       // deployments keeps them separate. `kidPath` is resolved with the guards
       // above so the path checked and the path written cannot diverge.
-      writeFileSync(kidPath, `${kid}\n`, { mode: 0o600, flag: 'wx' });
+      const files: Array<[final: string, temp: string, content: string]> = [
+        [privateKeyPath, `${privateKeyPath}.tmp-${randomUUID()}`, privateKeyPem],
+        [kidPath, `${kidPath}.tmp-${randomUUID()}`, `${kid}\n`]
+      ];
+      const removeTemps = () => {
+        for (const [, temp] of files) rmSync(temp, { force: true });
+      };
+      try {
+        for (const [, temp, content] of files) {
+          writeFileSync(temp, content, { mode: 0o600, flag: 'wx' });
+        }
+        const now = new Date();
+        await dataset.write(
+          KEY_TYPE,
+          [
+            {
+              id: kid,
+              kid, // bootstrap's principal id IS its UUID (no token change)
+              name: 'bootstrap-admin',
+              algorithm: 'EdDSA',
+              publicKey: publicKeyPem,
+              namespaces: '*',
+              capabilities: encodeList(seededCapabilities),
+              revokedAt: null
+            }
+          ],
+          { identity: { kind: 'system', id: 'bootstrap' }, now }
+        );
+      } catch (err) {
+        removeTemps();
+        throw err;
+      }
+      // A hard link never replaces a key file that appeared after the check above.
+      try {
+        for (const [final, temp] of files) linkSync(temp, final);
+      } finally {
+        removeTemps();
+      }
 
       return {
         kid,
