@@ -1,0 +1,71 @@
+/**
+ * A batched upsert locks the stored rows it merges in id order, whatever the
+ * batch's order, as patches, tombstones and the promotion backfill do. So two
+ * batches over the same rows in opposite orders queue rather than deadlock.
+ */
+
+import { randomBytes } from 'node:crypto';
+import { field } from '@mnmal-ai/substrate-sdk';
+import type { FieldDef } from '@mnmal-ai/substrate-types';
+import postgres, { type Sql } from 'postgres';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { PgDataset } from '../src/index.js';
+import { loadTypeTable } from '../src/type-table.js';
+import { dropNamespace } from './_layout.js';
+
+const POSTGRES_URL = process.env.POSTGRES_URL;
+
+describe.skipIf(!POSTGRES_URL)('batched upsert lock order', () => {
+  let sql: Sql;
+  const ns = `wlo_${randomBytes(4).toString('hex')}`;
+  const fields: Record<string, FieldDef> = { title: field.string() };
+
+  beforeAll(() => {
+    sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
+  });
+  afterAll(async () => {
+    await dropNamespace(sql, ns);
+    await sql.end({ timeout: 5 });
+  });
+
+  it('a batch [k2, k1] against a holder of k1 that then wants k2: both finish, no 40P01', async () => {
+    const pg = new PgDataset({
+      namespace: ns,
+      sql,
+      typeDefLookup: () => ({ fields }),
+      fieldDefLookup: (_t, f) => fields[f]
+    });
+    // k2 first, so the heap order is k2, k1 as well as the batch's: input order
+    // and a sequential scan would both lock k2 first.
+    await pg.write('Note', [{ id: 'k2', title: 'b' }]);
+    await pg.write('Note', [{ id: 'k1', title: 'a' }]);
+    const table = (await loadTypeTable(sql, ns, 'Note'))?.from as string;
+    const other = await sql.reserve();
+    try {
+      await other`BEGIN`;
+      await other.unsafe(`SELECT 1 FROM ${table} WHERE id = 'k1' FOR NO KEY UPDATE`);
+      const batch = pg.write('Note', [
+        { id: 'k2', title: 'b2' },
+        { id: 'k1', title: 'a2' }
+      ]);
+      batch.catch(() => undefined); // awaited below; a 40P01 would otherwise go unhandled first
+      // Until the batch waits on k1: by then it holds k2 when it locks in input order.
+      for (let i = 0; ; i++) {
+        const [w] = await sql<Array<{ n: number }>>`
+          SELECT count(*)::int AS n FROM pg_stat_activity
+          WHERE wait_event_type = 'Lock' AND query LIKE '%guard AS MATERIALIZED%' AND pid <> pg_backend_pid()`;
+        if ((w?.n ?? 0) > 0) break;
+        if (i > 100) throw new Error('the batch never waited on k1');
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      // Locked in input order, the batch holds k2 and this deadlocks.
+      await other.unsafe(`SELECT 1 FROM ${table} WHERE id = 'k2' FOR NO KEY UPDATE`);
+      await other`COMMIT`;
+      const done = await batch;
+      expect(done.rows.map((r) => r.title)).toEqual(['b2', 'a2']);
+    } finally {
+      await other`ROLLBACK`.catch(() => undefined);
+      other.release();
+    }
+  });
+});
