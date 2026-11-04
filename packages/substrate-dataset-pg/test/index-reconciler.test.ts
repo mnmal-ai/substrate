@@ -18,7 +18,7 @@ import {
 } from '../src/index.js';
 import { desiredIndexKeys } from '../src/index-reconciler.js';
 import { columnName } from '../src/layout.js';
-import { generatedIdentifier, withMigrationLock } from '../src/migrate.js';
+import { generatedIdentifier, withMigrationLock, withTableIndexLock } from '../src/migrate.js';
 import { ensureTypeTable, typeTableOf } from '../src/type-table.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
@@ -35,6 +35,15 @@ const kidIndexed: Record<string, FieldDef> = {
 };
 
 const hex = () => randomBytes(4).toString('hex');
+
+/** `p`, or a rejection once `ms` pass: a wait on a held lock fails rather than hangs. */
+const within = <T>(ms: number, p: Promise<T>): Promise<T> =>
+  Promise.race([
+    p,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`still waiting after ${ms} ms`)), ms).unref()
+    )
+  ]);
 
 /**
  * Every field this file declares gets its column at the type table's CREATE,
@@ -140,6 +149,50 @@ describe.skipIf(!POSTGRES_URL)('reconcileTypeIndexes', () => {
     );
     const kid = generatedIdentifier(ns, TYPE, 'kid', 'idx');
     expect(states.find((s) => s.name === kid)).toMatchObject({ state: 'pending', unique: false });
+  });
+
+  it('reconciles a unique index already as declared without taking the migration lock', async () => {
+    const { ns } = await fixture();
+    const name = `rows_u_${hex()}`;
+    const decl = [{ fields: ['kid'], unique: true, where: 'live' as const, name }];
+    await reconcile(ns, decl);
+    // Held here, so a pass that waited for it would never return.
+    const states = await withMigrationLock(sql, () => within(5000, reconcile(ns, decl)));
+    expect(states.find((s) => s.name === name)).toMatchObject({
+      state: 'valid',
+      outcome: 'unchanged'
+    });
+  });
+
+  it('a unique build waiting on its table holds no migration lock: an unrelated type reconciles meanwhile', async () => {
+    const a = await fixture();
+    const b = await fixture();
+    const nameA = `rows_ua_${hex()}`;
+    const nameB = `rows_ub_${hex()}`;
+    const conn = await sql.reserve();
+    let first: Promise<unknown> | undefined;
+    try {
+      // Stands in for a long build on A's table.
+      await withTableIndexLock(sql, conn, a.target, undefined, async () => {
+        first = reconcile(a.ns, [{ fields: ['kid'], unique: true, where: 'live', name: nameA }]);
+        first.catch(() => undefined);
+        // A takes the migration lock (polled every 250 ms), decides, and waits on its table.
+        await new Promise((r) => setTimeout(r, 1000));
+        const states = await within(
+          5000,
+          reconcile(b.ns, [{ fields: ['kid'], unique: true, where: 'live', name: nameB }])
+        );
+        expect(states.find((s) => s.name === nameB)).toMatchObject({ state: 'valid' });
+        expect(await indexState(nameA)).toBeUndefined();
+      });
+    } finally {
+      conn.release();
+    }
+    const states = (await first) as Awaited<ReturnType<typeof reconcile>>;
+    expect(states.find((s) => s.name === nameA)).toMatchObject({
+      state: 'valid',
+      outcome: 'created'
+    });
   });
 
   it('reports an unbuilt non-unique index on a column the table lacks yet as pending in the unique pass', async () => {
