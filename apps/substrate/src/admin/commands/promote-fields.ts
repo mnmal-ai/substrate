@@ -86,10 +86,12 @@ export function formatPromoteFieldsOutput(result: PromoteFieldsResult): string {
   const lines = [result.target];
   if (result.events.length === 0) lines.push('no pending fields');
   for (const e of result.events) {
-    lines.push(
-      `${e.namespace}/${e.type}.${e.field}: ${e.kind} (attempt ${e.attempts})` +
-        (e.error !== undefined ? ` — ${e.error}` : '')
-    );
+    // A busy event's error is why it was skipped, not an attempt's failure.
+    const outcome =
+      e.kind === 'busy' && e.error !== undefined
+        ? `busy (${e.error})`
+        : `${e.kind} (attempt ${e.attempts})${e.error !== undefined ? ` — ${e.error}` : ''}`;
+    lines.push(`${e.namespace}/${e.type}.${e.field}: ${outcome}`);
   }
   return `${lines.join('\n')}\n`;
 }

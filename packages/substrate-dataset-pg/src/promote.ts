@@ -37,8 +37,9 @@
  *
  * Every server process sweeps, so each field is swept under a session
  * advisory lock taken with a try ({@link promotionLockKey}): a field another
- * sweep holds is skipped, not swept twice. The lock never waits, so it is in
- * no wait cycle; it is session-level, not transaction-level, because the
+ * sweep holds is skipped, not swept twice, and reported `busy` with
+ * {@link HELD_ELSEWHERE}. The lock never waits, so it is in no wait cycle;
+ * it is session-level, not transaction-level, because the
  * field's own index builds (CONCURRENTLY) would wait forever on an open
  * transaction of the sweep's.
  */
@@ -56,6 +57,12 @@ import {
   PG_TYPE,
   type TypeTable
 } from './type-table.js';
+
+/**
+ * The error of a `busy` event for a field whose sweep lock another sweep holds:
+ * not an attempt, and never recorded, only reported.
+ */
+export const HELD_ELSEWHERE = 'held by another process';
 
 /** Busy or failed attempts in a row after which a field's promotion is reported `failed`. */
 export const PROMOTION_FAILED_AFTER = 3;
@@ -231,7 +238,8 @@ export async function promotePendingFields(
       promotionLockKey(f.namespace, f.type, f.field),
       () => sweepOne(f)
     );
-    if (held.acquired && held.value) break;
+    if (!held.acquired) emit(f, 'busy', f.attempts, HELD_ELSEWHERE);
+    else if (held.value) break;
   }
   return events;
 }

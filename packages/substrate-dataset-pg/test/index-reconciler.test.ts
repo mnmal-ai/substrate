@@ -171,13 +171,30 @@ describe.skipIf(!POSTGRES_URL)('reconcileTypeIndexes', () => {
     const nameB = `rows_ub_${hex()}`;
     const conn = await sql.reserve();
     let first: Promise<unknown> | undefined;
+    // Resolves when A first polls its table's index-build lock.
+    let polling!: () => void;
+    const pollsTable = new Promise<void>((r) => {
+      polling = r;
+    });
+    const watched = postgres(POSTGRES_URL as string, {
+      onnotice: () => {},
+      debug: (_c, query) => {
+        if (query.includes('substrate-index-build')) polling();
+      }
+    });
     try {
       // Stands in for a long build on A's table.
       await withTableIndexLock(sql, conn, a.target, undefined, async () => {
-        first = reconcile(a.ns, [{ fields: ['kid'], unique: true, where: 'live', name: nameA }]);
+        first = reconcileTypeIndexes(watched, {
+          namespace: a.ns,
+          type: TYPE,
+          fields,
+          indexes: [{ fields: ['kid'], unique: true, where: 'live', name: nameA }],
+          orderedBy: DEFAULT_ORDERED_BY
+        });
         first.catch(() => undefined);
-        // A takes the migration lock (polled every 250 ms), decides, and waits on its table.
-        await new Promise((r) => setTimeout(r, 1000));
+        // A takes the migration lock, decides, and waits on its table.
+        await within(10_000, pollsTable);
         const states = await within(
           5000,
           reconcile(b.ns, [{ fields: ['kid'], unique: true, where: 'live', name: nameB }])
@@ -189,6 +206,7 @@ describe.skipIf(!POSTGRES_URL)('reconcileTypeIndexes', () => {
       conn.release();
     }
     const states = (await first) as Awaited<ReturnType<typeof reconcile>>;
+    await watched.end({ timeout: 5 });
     expect(states.find((s) => s.name === nameA)).toMatchObject({
       state: 'valid',
       outcome: 'created'

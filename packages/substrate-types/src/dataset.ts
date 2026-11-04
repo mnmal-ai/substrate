@@ -853,7 +853,9 @@ export interface TypeStorageReport {
  * One field's outcome in a promotion sweep (`Dataset.promotePendingFields`):
  * `promoted` (it has its column and every value moved), `busy` (its table's
  * lock was held past the timeout; retried next sweep) or `failed` (an error,
- * or the third busy attempt in a row). `attempts` counts this one.
+ * or the third busy attempt in a row). `attempts` counts this one. A field
+ * another process is sweeping is `busy` with the error `held by another
+ * process`, and its `attempts` is the recorded count, unchanged.
  */
 export interface PromotionEvent {
   kind: 'promoted' | 'busy' | 'failed';
