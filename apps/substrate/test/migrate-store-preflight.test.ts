@@ -79,7 +79,11 @@ describe.skipIf(!POSTGRES_URL)('inspectSource (pg)', () => {
     const inv = await inspectSource(sql);
     expect(inv.hasSeq).toBe(false);
     expect(inv.hasVisibleSeqs).toBe(false);
-    const res = preflight(inv, target(), { ...opts, skipTables: ['foo'] });
+    // Sessions on the shared test DB are another test's concern (the session cases below).
+    const res = preflight({ ...inv, otherSessions: 0, sessions: [] }, target(), {
+      ...opts,
+      skipTables: ['foo']
+    });
     expect(res.refusals).toEqual([]);
   });
 
@@ -195,7 +199,9 @@ describe.skipIf(!POSTGRES_URL)('inspectSource, partitioned source (pg)', () => {
       ['a', 'T2', 1, 0],
       ['retired', 'Old', 1, 0]
     ]);
-    expect(preflight(inv, target(), opts).refusals).toEqual([]);
+    expect(preflight({ ...inv, otherSessions: 0, sessions: [] }, target(), opts).refusals).toEqual(
+      []
+    );
   });
 });
 
