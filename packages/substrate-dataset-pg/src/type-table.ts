@@ -157,8 +157,12 @@ export interface TableCache {
   sql: PgHandle;
   /** `null` is a cached miss: the type has no table yet. */
   tables: Map<string, TypeTable | null>;
-  /** Bumped on each drop, so a load that raced a notification is not cached. */
+  /** Bumped on each drop; a load notes it at its start (see {@link mayCache}). */
   gen: number;
+  /** Each key's last drop's `gen`, so a load is refused only for a drop of its own key. */
+  dropped: Map<string, number>;
+  /** The last full clear's `gen`. */
+  cleared: number;
   /** True once listening; false when LISTEN failed, and then nothing is cached. */
   listening?: Promise<boolean>;
   /** Only `true` is kept: the migration can be applied while this process runs, never unapplied. */
@@ -172,18 +176,37 @@ const tableCaches = new WeakMap<object, TableCache>();
 export function tableCacheFor(sql: PgHandle): TableCache {
   let cache = tableCaches.get(sql);
   if (cache === undefined) {
-    cache = { sql, tables: new Map(), gen: 0 };
+    cache = { sql, tables: new Map(), gen: 0, dropped: new Map(), cleared: 0 };
     tableCaches.set(sql, cache);
   }
   return cache;
 }
 
+/** Drops `key`'s entry, or every entry; returns the new `gen`. */
+export function dropTableCache(cache: TableCache, key?: string): number {
+  const gen = ++cache.gen;
+  if (key === undefined) {
+    cache.tables.clear();
+    cache.cleared = gen;
+  } else {
+    cache.tables.delete(key);
+    cache.dropped.set(key, gen);
+  }
+  return gen;
+}
+
+/**
+ * Whether a load of `key` begun at `gen` may be cached: neither `key` nor the
+ * whole cache was dropped since. A negative `gen` never may.
+ */
+export function mayCache(cache: TableCache, key: string, gen: number): boolean {
+  return gen >= 0 && cache.cleared <= gen && (cache.dropped.get(key) ?? 0) <= gen;
+}
+
 /** Starts the pool's catalog LISTEN once; resolves false when it cannot. */
 export function listenTableCache(cache: TableCache): Promise<boolean> {
   const drop = (key?: string) => {
-    if (key === undefined) cache.tables.clear();
-    else cache.tables.delete(key);
-    cache.gen++;
+    dropTableCache(cache, key);
   };
   // Only a pool can LISTEN (on a connection of its own); on any other handle nothing is cached.
   const pool = cache.sql as Partial<Sql>;
@@ -220,7 +243,7 @@ async function cachedTypeTable(
   if (hit !== undefined) return hit ?? undefined;
   const gen = cache.gen;
   const table = await loadTypeTable(sql, namespace, type);
-  if (listening && cache.gen === gen) cache.tables.set(key, table ?? null);
+  if (listening && mayCache(cache, key, gen)) cache.tables.set(key, table ?? null);
   return table;
 }
 

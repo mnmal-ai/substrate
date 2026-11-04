@@ -131,9 +131,11 @@ import { decodeRow, encodeRow, RAW_KEY } from './row-codec.js';
 import { type PgHandle, txScopeIdFor } from './tx-scope.js';
 import {
   absentTypeTable,
+  dropTableCache,
   ensureTypeTable,
   listenTableCache,
   loadTypeTable,
+  mayCache,
   type TableCache,
   type TypeTable,
   tableCacheFor,
@@ -465,8 +467,7 @@ export class PgDataset implements Dataset {
       // Committed: a cached miss must not outlive it until the notification
       // lands, nor be cached again by a read whose catalog lookup began before
       // the commit, which the new generation refuses.
-      this.#tableCache.tables.delete(key);
-      gen = ++this.#tableCache.gen;
+      gen = dropTableCache(this.#tableCache, key);
     }
     const table = await loadTypeTable(this.#sql, this.namespace, type);
     if (table === undefined) throw new Error(`internal: ${this.namespace}/${type} has no table`);
@@ -479,7 +480,7 @@ export class PgDataset implements Dataset {
     if (this.#inTx) {
       // -1 never matches, so a table loaded without a listener never enters the cache.
       if (table !== null) this.#txTables?.set(key, { table, gen: listening ? gen : -1 });
-    } else if (listening && this.#tableCache.gen === gen) {
+    } else if (listening && mayCache(this.#tableCache, key, gen)) {
       this.#tableCache.tables.set(key, table);
     }
   }
@@ -512,8 +513,7 @@ export class PgDataset implements Dataset {
       }
       const key = `${this.namespace}/${type}`;
       this.#txTables?.delete(key);
-      this.#tableCache.tables.delete(key);
-      this.#tableCache.gen++;
+      dropTableCache(this.#tableCache, key);
       const fresh = await this.#tableFor(type);
       if (fresh === undefined) throw new Error(`internal: ${key} has no table`);
       current = fresh;
@@ -544,7 +544,7 @@ export class PgDataset implements Dataset {
   #commitTables(txTables: TxTables): void {
     const cache = this.#tableCache;
     for (const [key, { table, gen }] of txTables) {
-      if (cache.gen === gen) cache.tables.set(key, table);
+      if (mayCache(cache, key, gen)) cache.tables.set(key, table);
       else cache.tables.delete(key);
     }
   }
@@ -1711,8 +1711,7 @@ export class PgDataset implements Dataset {
       createOnly: def === undefined
     });
     // Committed: drop the cached table now rather than when the notification lands.
-    this.#tableCache.tables.delete(`${this.namespace}/${type}`);
-    this.#tableCache.gen++;
+    dropTableCache(this.#tableCache, `${this.namespace}/${type}`);
     await this.#reconcileIndexes(type, opts);
     return { pending: change.pending };
   }
