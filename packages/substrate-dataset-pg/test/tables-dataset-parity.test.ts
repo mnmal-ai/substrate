@@ -1062,6 +1062,24 @@ describe.skipIf(!POSTGRES_URL)('PgDataset on type tables vs memory', () => {
     }
     defs.Vocab = { fields: { status: field.enum(['a', 'zzz']), note: field.string() } };
     await pg.ensureTypeStorage('Vocab');
+    expect((await table('Vocab')).column('status')?.state).toBe('promoting');
+    // Before the sweep: 'zzz' now fits, and still sits in `$raw`.
+    const before: Array<[WhereClause, string[]]> = [
+      [{ status: { eq: 'zzz' } }, ['v1']],
+      [{ status: { in: ['zzz'] } }, ['v1']],
+      [{ status: { in: ['zzz', 'a'] } }, ['v1', 'v2']],
+      [{ status: { neq: 'zzz' } }, ['v2', 'v3']],
+      [{ status: { nin: ['zzz'] } }, ['v2', 'v3']],
+      [{ status: { nin: ['zzz', 'qqq'] } }, ['v2']],
+      [{ NOT: { status: { eq: 'zzz' } } }, ['v2', 'v3']]
+    ];
+    for (const [where, want] of before) {
+      const rows = await same('Vocab', { where }, true);
+      expect(
+        rows.map((r) => r.id),
+        JSON.stringify(where)
+      ).toEqual(want);
+    }
     await sweep();
     const t = await table('Vocab');
     expect(t.column('status')?.state).toBe('column');

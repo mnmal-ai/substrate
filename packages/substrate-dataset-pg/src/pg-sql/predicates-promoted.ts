@@ -38,7 +38,18 @@ export function buildColumnPredicate(
   alias?: string
 ): Fragment | null {
   const as = columnAs(column.kind);
-  const expr = fieldExpr(sql, table, field, as, alias);
+  const read = fieldExpr(sql, table, field, as, alias);
+  /**
+   * A promoting enum field reads its `$raw` string over the rest, as `decodeRow`
+   * does: a widened vocabulary sends the field back to `promoting` with values it
+   * now admits still in `$raw` until the sweep moves them. A non-string there
+   * reads NULL, which equals no operand.
+   */
+  const rawValue = `${qualifier(alias)}extra -> ${sqlStringLiteral(RAW_KEY)} -> ${sqlStringLiteral(field)}`;
+  const expr =
+    column.kind === 'enum' && extraWins(column)
+      ? sql`(CASE WHEN jsonb_typeof(${sql.unsafe(rawValue)}) = 'string' THEN ${sql.unsafe(rawValue)} #>> '{}' WHEN ${sql.unsafe(rawValue)} IS NOT NULL THEN NULL ELSE ${read} END)`
+      : read;
   // Ranges compare in byte order, as memory does (a crossRef column is not "C").
   const byOrder = columnOrderExpr(sql, table, column, alias);
   /** `v` bound as the column's type, or undefined when it is of another type. */
