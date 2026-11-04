@@ -12,7 +12,7 @@ import { makeFieldDefLookupFactory } from '../src/serve/wiring.js';
 const noopResolver = async (): Promise<null> => null;
 
 describe('makeFieldDefLookupFactory', () => {
-  const owner = { kind: 'crossRef', target: 'Person' } as const;
+  const owner = { kind: 'crossRef', ns: 'app', type: 'Person', onDelete: 'set_null' } as const;
   const rank = { kind: 'scalar', type: 'number' } as const;
   const registry = new Registry();
   registry.register('Task', { resolver: noopResolver, kind: 'type', fields: { owner, rank } });
