@@ -262,9 +262,11 @@ function failure(err: unknown, field: string): string {
   if (err instanceof UniqueIndexDuplicatesError) {
     return `unique index ${err.index ?? '(unnamed)'} refuses ${err.count} duplicated value(s) of ${field}`;
   }
-  const pg = err as { code?: unknown; constraint_name?: unknown };
+  const pg = err as { code?: unknown; constraint_name?: unknown; detail?: unknown };
   if (pg?.code === '23505' && typeof pg.constraint_name === 'string') {
-    return `unique index ${pg.constraint_name} refuses a duplicate value of ${field}`;
+    // pg's detail names the duplicated key: `Key (f_x)=(v) already exists.`
+    const detail = typeof pg.detail === 'string' ? `: ${pg.detail}` : '';
+    return `unique index ${pg.constraint_name} refuses a duplicate value of ${field}${detail}`;
   }
   return (err instanceof Error ? err.message : String(err)).split('\n')[0] as string;
 }

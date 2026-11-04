@@ -82,8 +82,8 @@ export interface MigrateStoreReport {
   keptSeeds: string[];
   /** `<ns>/<Type>` of source types no target definition declares: their fields all sit in `extra`. */
   defaulted: string[];
-  /** Per `<ns>/<Type>`: values their declared column cannot hold, read back unchanged from `$raw`. Copy runs only. */
-  misfits: CopyResult['misfits'];
+  /** Per `<ns>/<Type>`: values their declared column cannot hold, read back unchanged from `$raw`. Null when no copy ran, so nothing was counted. */
+  misfits: CopyResult['misfits'] | null;
   /** Declared indexes not valid on the target; any fails verification. */
   missingIndexes: VerifyResult['missingIndexes'];
   /** Pending-index warnings let through because of `--skip-index-build`. */
@@ -276,7 +276,7 @@ export async function runMigrateStore(
     totalMs: 0,
     keptSeeds: [],
     defaulted: [],
-    misfits: {},
+    misfits: null,
     missingIndexes: [],
     pendingIndexes: [],
     mismatches: [],
@@ -667,7 +667,8 @@ export function formatMigrateStoreOutput(r: MigrateStoreReport, json: boolean): 
   if (r.defaulted.length > 0) {
     lines.push(`declared by no definition, every field in extra: ${r.defaulted.join(', ')}`);
   }
-  for (const [type, m] of Object.entries(r.misfits)) {
+  if (r.misfits === null) lines.push('misfits: not counted (only a copy run counts them)');
+  for (const [type, m] of Object.entries(r.misfits ?? {})) {
     const more = m.count > 10 ? ` (first 10 shown; --json lists ${m.first.length})` : '';
     lines.push(
       `misfits in ${type}: ${m.count}, kept unchanged under $raw${more}: ${m.first
