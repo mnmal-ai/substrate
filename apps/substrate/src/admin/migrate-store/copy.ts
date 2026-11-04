@@ -550,7 +550,12 @@ function rowsError(key: string, err: unknown): Error {
  */
 async function settleFields(target: BootedStore, batchRows: number): Promise<void> {
   const events =
-    (await target.dataset.promotePendingFields?.({ lockTimeoutMs: 60_000, batchRows })) ?? [];
+    (await target.dataset.promotePendingFields?.({
+      lockTimeoutMs: 60_000,
+      batchRows,
+      // The target has no writers: wait for the move's lock, which cancels an autovacuum in the way.
+      noWriters: true
+    })) ?? [];
   const stuck = events.filter((e) => e.kind !== 'promoted');
   if (stuck.length > 0) {
     throw new Error(

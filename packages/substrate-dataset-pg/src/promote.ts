@@ -18,9 +18,9 @@
  * 5. Record it `column` (only from `promoting`, under the type lock, so never
  *    over a boot that orphaned or redeclared it), bump the catalog version,
  *    notify, and run one straggler pass (step 3 again), for values a writer
- *    put in `extra` before the move. The move locks the table SHARE NOWAIT
- *    (while a transaction that wrote it is open, the field is `busy` at once,
- *    so writes never queue behind the move), so every such write has
+ *    put in `extra` before the move. The move locks the table SHARE, retried
+ *    NOWAIT until `lock_timeout` so writes never queue behind it (held past
+ *    it, the field is `busy`; `noWriters` queues instead), so every such write has
  *    committed before it, and any later one fails its version check and is
  *    rebuilt against the new table (`guardCte`).
  *
@@ -69,6 +69,12 @@ export interface PromotePendingFieldsOptions {
   signal?: AbortSignal;
   /** Clears `error_version` first, so fields a unique conflict holds back are swept again. */
   retryConflicts?: boolean;
+  /**
+   * The store has no other writers (migrate-store's target): a move to `column`
+   * waits in the lock queue, which has a blocking autovacuum cancelled, rather
+   * than retrying without queueing in front of writers.
+   */
+  noWriters?: boolean;
   onEvent?: (e: PromotionEvent) => void;
   /** Only this namespace's fields; every namespace's when omitted. */
   namespace?: string;
@@ -152,19 +158,28 @@ export async function promotePendingFields(
         await opts.reconcile?.(f.namespace, f.type);
         if (stopped()) return true;
         // Never over a boot that orphaned or redeclared the field meanwhile.
-        if (
-          !(await moveFieldState(
+        let moved: boolean;
+        try {
+          moved = await moveFieldState(
             sql,
             f.namespace,
             f.type,
             f.field,
             'promoting',
             'column',
-            opts.lockTimeoutMs
-          ))
-        ) {
+            opts.lockTimeoutMs,
+            opts.noWriters === true
+          );
+        } catch (err) {
+          if ((err as { code?: unknown }).code !== '55P03') throw err;
+          await busy(
+            f,
+            attempts,
+            `its move to column could not lock its table within ${opts.lockTimeoutMs} ms (an open write transaction, an autovacuum or an index build held it)`
+          );
           return false;
         }
+        if (!moved) return false;
       }
       // `column` from here on, and never back: a straggler that cannot move fails the field, and
       // its error makes a later sweep run this pass again.

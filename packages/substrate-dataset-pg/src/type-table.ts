@@ -678,10 +678,12 @@ export async function addPendingColumn(
  * The table is locked SHARE first, which holds off new writes until this
  * commits. So a write that passed its version check before the move commits
  * before it (and the straggler pass after the move sees it), and one after
- * sees the new version. The lock is taken NOWAIT: while any transaction that
- * has written the table is open it throws 55P03 at once (the field stays
- * `from`, `busy` until a later sweep), rather than queue, since every write to
- * the type would queue behind it. `lockTimeoutMs` bounds the advisory wait.
+ * sees the new version. The lock is never queued for: every write to the
+ * type would queue behind it. It is tried NOWAIT under a savepoint, with a
+ * short backoff, until `lockTimeoutMs` runs out; then 55P03 is thrown and the
+ * field stays `from`. With `queue` (a store with no writers, as migrate-store's
+ * target) it is waited for under `lock_timeout` instead, which also has a
+ * blocking autovacuum cancelled, which a NOWAIT never does.
  */
 export async function moveFieldState(
   sql: Sql,
@@ -690,7 +692,8 @@ export async function moveFieldState(
   field: string,
   from: FieldState,
   to: FieldState,
-  lockTimeoutMs = 2000
+  lockTimeoutMs = 2000,
+  queue = false
 ): Promise<boolean> {
   return (await sql.begin(async (tx) => {
     await tx.unsafe(`SET LOCAL lock_timeout = '${Math.max(1, Math.floor(lockTimeoutMs))}ms'`);
@@ -698,7 +701,9 @@ export async function moveFieldState(
     const [table] = await tx<Array<{ table_name: string }>>`
       SELECT table_name FROM substrate_type_tables WHERE namespace = ${namespace} AND type = ${type}`;
     if (table === undefined) return false;
-    await tx.unsafe(`LOCK TABLE ${ident(table.table_name)} IN SHARE MODE NOWAIT`);
+    const lock = `LOCK TABLE ${ident(table.table_name)} IN SHARE MODE`;
+    if (queue) await tx.unsafe(lock);
+    else await pollLock(tx, `${lock} NOWAIT`, lockTimeoutMs);
     const moved = await tx`UPDATE substrate_type_fields SET state = ${to}
       WHERE namespace = ${namespace} AND type = ${type} AND field = ${field} AND state = ${from}
       RETURNING 1`;
@@ -706,6 +711,21 @@ export async function moveFieldState(
     await catalogChanged(tx, namespace, type);
     return true;
   })) as boolean;
+}
+
+/** Runs `nowait`, a NOWAIT lock, under a savepoint until it is granted or `ms` runs out (55P03). */
+async function pollLock(tx: TransactionSql, nowait: string, ms: number): Promise<void> {
+  const deadline = Date.now() + ms;
+  for (let backoff = 10; ; backoff = Math.min(backoff * 2, 200)) {
+    try {
+      await tx.savepoint((sp) => sp.unsafe(nowait));
+      return;
+    } catch (err) {
+      const left = deadline - Date.now();
+      if ((err as { code?: unknown }).code !== '55P03' || left <= 0) throw err;
+      await new Promise((r) => setTimeout(r, Math.min(backoff, left)));
+    }
+  }
 }
 
 /**
