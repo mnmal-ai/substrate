@@ -9,6 +9,7 @@
 
 import { SYSTEM_NAMESPACE, SYSTEM_TYPE_DEFS } from '@mnmal-ai/substrate-compose';
 import {
+  assertNotMigrating,
   assertTablesLayout,
   PgDataset,
   pendingMigrations,
@@ -59,6 +60,8 @@ export async function openPgDataset(
   try {
     // Before the ledger check, so an old store names migrate-store, not a missing migration.
     await assertTablesLayout(sql);
+    // A half-populated migrate-store target takes no direct writes.
+    await assertNotMigrating(sql);
     pending = await pendingMigrations(sql);
   } catch (err) {
     await closeQuietly(sql);

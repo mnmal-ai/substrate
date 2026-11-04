@@ -8,15 +8,22 @@
  */
 
 import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { KEY_TYPE, SYSTEM_NAMESPACE } from '@mnmal-ai/substrate-compose';
-import { UnsupportedStoreLayoutError } from '@mnmal-ai/substrate-dataset-pg';
+import {
+  MIGRATE_STORE_MARKER_TABLE,
+  PgDataset,
+  runMigrations,
+  StoreMigrationInProgressError,
+  typeTableName,
+  UnsupportedStoreLayoutError
+} from '@mnmal-ai/substrate-dataset-pg';
 import { pgTestSchemaName, pgTestSchemaUrl } from '@mnmal-ai/substrate-dataset-pg/testing';
 import postgres, { type Sql } from 'postgres';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { openPgDataset } from '../src/admin/dataset.js';
+import { openPgDataset, systemTypeDefLookup } from '../src/admin/dataset.js';
 import { main } from '../src/admin/index.js';
 import { buildOldLayout } from './_fixtures/old-layouts.js';
 
@@ -100,4 +107,55 @@ describe.skipIf(!POSTGRES_URL)('substrate-admin before serve has booted (pg)', (
       expect((err as Error).message).toContain('`substrate-admin migrate-store`');
     });
   }
+
+  const bootstrap = (env: Record<string, string> = {}) => {
+    const err: string[] = [];
+    return main(
+      ['bootstrap'],
+      { SUBSTRATE_DATABASE_URL: url, SUBSTRATE_ADMIN_KEY_PATH: join(tmp, 'admin.key'), ...env },
+      () => {},
+      (s) => err.push(s)
+    ).then((code) => ({ code, err: err.join('') }));
+  };
+
+  it('bootstrap refuses a store migrate-store has not finished, and writes no key file', async () => {
+    await sql.unsafe(`CREATE TABLE ${MIGRATE_STORE_MARKER_TABLE} (step text PRIMARY KEY)`);
+    const { code, err } = await bootstrap();
+    expect(code).not.toBe(0);
+    expect(err).toContain('migrate-store');
+    expect(existsSync(join(tmp, 'admin.key'))).toBe(false);
+    const [row] = await sql<Array<{ n: number }>>`
+      SELECT count(*)::int AS n FROM pg_tables WHERE schemaname = ${schema}`;
+    expect(row?.n).toBe(1);
+  });
+
+  it('a direct admin write refuses a store migrate-store has not finished', async () => {
+    expect((await bootstrap()).code).toBe(0);
+    await sql.unsafe(`CREATE TABLE ${MIGRATE_STORE_MARKER_TABLE} (step text PRIMARY KEY)`);
+    const err = await openPgDataset({ SUBSTRATE_DATABASE_URL: url }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StoreMigrationInProgressError);
+  });
+
+  it('bootstrap whose Key write fails leaves no key files, so a retry is not refused', async () => {
+    await runMigrations(sql);
+    await new PgDataset({
+      namespace: SYSTEM_NAMESPACE,
+      sql,
+      typeDefLookup: systemTypeDefLookup
+    }).ensureTypeStorage(KEY_TYPE);
+    const table = typeTableName(SYSTEM_NAMESPACE, KEY_TYPE);
+    await sql.unsafe(`
+      CREATE FUNCTION ${schema}.fail_write() RETURNS trigger LANGUAGE plpgsql AS
+        $$ BEGIN RAISE EXCEPTION 'injected write failure'; END $$;
+      CREATE TRIGGER fail_write BEFORE INSERT ON ${schema}.${table}
+        FOR EACH ROW EXECUTE FUNCTION ${schema}.fail_write();`);
+    const failed = await bootstrap();
+    expect(failed.code).not.toBe(0);
+    expect(existsSync(join(tmp, 'admin.key'))).toBe(false);
+    expect(existsSync(join(tmp, 'admin.kid'))).toBe(false);
+    expect(readdirSync(tmp)).toEqual([]);
+
+    await sql.unsafe(`DROP TRIGGER fail_write ON ${schema}.${table}`);
+    expect((await bootstrap()).code).toBe(0);
+  });
 });
