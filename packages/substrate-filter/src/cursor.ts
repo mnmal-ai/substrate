@@ -12,7 +12,7 @@
  * strictly after the cursor row).
  */
 
-import type { Id } from '@mnmal-ai/substrate-types';
+import type { Id, OrderByClause } from '@mnmal-ai/substrate-types';
 import { ResolverFrameError } from '@mnmal-ai/substrate-types';
 
 /**
@@ -111,4 +111,22 @@ export function decodeCursor(cursor: string, expected: CursorOrder): CursorPaylo
     );
   }
   return { orderByValues: values, id, order: issued };
+}
+
+/**
+ * `orderBy` as `[field, dir]` pairs, with `['id', 'asc']` appended unless a
+ * clause already orders by id (in either direction). Appended even when
+ * `orderBy` is absent: the id tail is what a cursor resumes on.
+ */
+export function normalizeOrderBy(
+  orderBy: OrderByClause[] | undefined
+): Array<[string, 'asc' | 'desc']> {
+  const out: Array<[string, 'asc' | 'desc']> = [];
+  for (const clause of orderBy ?? []) {
+    for (const [field, dir] of Object.entries(clause) as Array<[string, 'asc' | 'desc']>) {
+      out.push([field, dir]);
+    }
+  }
+  if (!out.some(([f]) => f === 'id')) out.push(['id', 'asc']);
+  return out;
 }

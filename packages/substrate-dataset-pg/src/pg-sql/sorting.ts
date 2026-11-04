@@ -6,7 +6,7 @@
  */
 
 import { CursorDecodeError } from '@mnmal-ai/substrate-filter';
-import type { FieldDef, Id, OrderByClause } from '@mnmal-ai/substrate-types';
+import type { FieldDef, Id } from '@mnmal-ai/substrate-types';
 import type { Sql, TransactionSql } from 'postgres';
 import type { TypeTable } from '../type-table.js';
 import {
@@ -35,21 +35,7 @@ export type DerivedLookup = (field: string) => Fragment | undefined;
 
 const noDerived: DerivedLookup = () => undefined;
 
-export function normalizeOrderBy(
-  orderBy: OrderByClause[] | undefined
-): Array<[string, 'asc' | 'desc']> {
-  const out: Array<[string, 'asc' | 'desc']> = [];
-  if (orderBy !== undefined) {
-    for (const clause of orderBy) {
-      for (const [field, dir] of Object.entries(clause) as Array<[string, 'asc' | 'desc']>) {
-        out.push([field, dir]);
-      }
-    }
-  }
-  const hasId = out.some(([f]) => f === 'id');
-  if (!hasId) out.push(['id', 'asc']);
-  return out;
-}
+export { normalizeOrderBy } from '@mnmal-ai/substrate-filter';
 
 /**
  * Maps a FieldDef to the pg cast applied to its `body ->> field` text

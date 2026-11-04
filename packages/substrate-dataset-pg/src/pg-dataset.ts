@@ -126,7 +126,11 @@ import {
   resolveBodyOrderByCast,
   whereReferencesField
 } from './pg-sql.js';
-import { PROMOTION_FAILED_AFTER, promotePendingFields } from './promote.js';
+import {
+  isTransientPromotionError,
+  PROMOTION_FAILED_AFTER,
+  promotePendingFields
+} from './promote.js';
 import { decodeRow, encodeRow, RAW_KEY } from './row-codec.js';
 import { type PgHandle, txScopeIdFor } from './tx-scope.js';
 import {
@@ -1917,9 +1921,9 @@ export class PgDataset implements Dataset {
 
   /**
    * Each field an operator should know about, by name: a pending one, one
-   * whose promotion failed (a `promoting` or `column` field with an error, or a
-   * `pending` one busy {@link PROMOTION_FAILED_AFTER} sweeps in a row), and an
-   * orphaned one.
+   * whose promotion failed (an error other than busy or stopped, or a busy or
+   * stopped one {@link PROMOTION_FAILED_AFTER} attempts in a row), one busy
+   * short of that, and an orphaned one.
    */
   async #fieldLines(): Promise<Array<{ state: string; failed: boolean; line: string }>> {
     const rows = await this.#sql<
@@ -1939,12 +1943,15 @@ export class PgDataset implements Dataset {
     return rows.map((r) => {
       const name = `${r.namespace}/${r.type}.${r.field}`;
       const failed =
-        r.last_error !== null && (r.state !== 'pending' || r.attempts >= PROMOTION_FAILED_AFTER);
+        r.last_error !== null &&
+        (!isTransientPromotionError(r.last_error) || r.attempts >= PROMOTION_FAILED_AFTER);
       const line = failed
         ? `${name} promotion failed (attempt ${r.attempts}): ${r.last_error}`
         : r.state === 'orphaned'
           ? `${name} is orphaned: no longer declared; values readable as extras`
-          : `${name} is pending: held in jsonb until promoted (attempt ${r.attempts})`;
+          : r.state === 'pending'
+            ? `${name} is pending: held in jsonb until promoted (attempt ${r.attempts})`
+            : `${name} is ${(r.last_error ?? '').replace(/^(busy|stopped): /, (_, kind) => `${kind} (attempt ${r.attempts}): `)}, retried next sweep`;
       return { state: r.state, failed, line };
     });
   }

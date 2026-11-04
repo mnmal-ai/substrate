@@ -247,6 +247,19 @@ describe('preflight', () => {
     expect(res.plan.skipped).toEqual(['foo']);
   });
 
+  it('refuses --skip-table on a table it copies, rather than report it skipped and copy it', () => {
+    const src = source({ tables: ['rows', 'edges', 'embeddings', 'recall_clusters'] });
+    for (const t of ['edges', 'embeddings', 'recall_clusters']) {
+      const res = preflight(src, target(), {
+        ...opts,
+        pluginTables: ['embeddings', 'recall_clusters'],
+        skipTables: [t]
+      });
+      expect(res.refusals.join()).toContain(`--skip-table ${t}`);
+      expect(res.plan.skipped).toEqual([]);
+    }
+  });
+
   it('accepts a plugin-declared table and copies it after the engine tables', () => {
     const res = preflight(source({ tables: ['rows', 'embeddings'] }), target(), {
       ...opts,

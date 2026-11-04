@@ -242,7 +242,7 @@ describe.skipIf(!POSTGRES_URL)('pending fields and the promotion sweep', () => {
     }
     expect(kinds).toEqual(['busy:1', 'busy:2', 'failed:3']);
     expect(await warnings()).toEqual([
-      `${ns}/Note.rank promotion failed (attempt 3): its table's lock was held past 50 ms`
+      `${ns}/Note.rank promotion failed (attempt 3): busy: its table's lock was held past 50 ms`
     ]);
     // Once the lock is free it promotes, and the count starts again.
     expect((await sweep()).map((e) => e.kind)).toEqual(['promoted']);
@@ -335,14 +335,14 @@ describe.skipIf(!POSTGRES_URL)('pending fields and the promotion sweep', () => {
         type: 'Note',
         field: 'code',
         attempts: 1,
-        error: `unique index ${index} refuses a duplicate value of code`
+        error: `unique index ${index} refuses a duplicate value of code: Key (f_code)=(X) already exists.`
       }
     ]);
     expect(await state('Note', 'code')).toEqual({ state: 'promoting', attempts: 1 });
     const report = await pg.describeStorage('Note');
     expect(report.indexes.find((i) => i.name === index)?.state).toBe('pending');
     expect(await warnings()).toEqual([
-      `${ns}/Note.code promotion failed (attempt 1): unique index ${index} refuses a duplicate value of code`
+      `${ns}/Note.code promotion failed (attempt 1): unique index ${index} refuses a duplicate value of code: Key (f_code)=(X) already exists.`
     ]);
     await same('Note', {});
     await same('Note', { where: { code: { eq: 'X' } } });
@@ -502,7 +502,7 @@ describe.skipIf(!POSTGRES_URL)('pending fields and the promotion sweep', () => {
         type: 'Note',
         field: 'code',
         attempts: 1,
-        error: `unique index ${index} refuses a duplicate value of code`
+        error: `unique index ${index} refuses a duplicate value of code: Key (f_code)=(X) already exists.`
       }
     ]);
     expect(await state('Note', 'code')).toEqual({ state: 'column', attempts: 1 });
@@ -510,7 +510,7 @@ describe.skipIf(!POSTGRES_URL)('pending fields and the promotion sweep', () => {
     const [held] = await sql.unsafe(`SELECT extra FROM ${t?.from} WHERE id = 'n2'`);
     expect(extraOf(held as Record<string, unknown>)).toEqual({ code: 'X' });
     expect(await warnings()).toEqual([
-      `${ns}/Note.code promotion failed (attempt 1): unique index ${index} refuses a duplicate value of code`
+      `${ns}/Note.code promotion failed (attempt 1): unique index ${index} refuses a duplicate value of code: Key (f_code)=(X) already exists.`
     ]);
     // A unique conflict is not rescanned by the next sweep, resolved or not: only a catalog change
     // to the type brings the straggler pass back.
@@ -584,7 +584,7 @@ describe.skipIf(!POSTGRES_URL)('pending fields and the promotion sweep', () => {
     const [event] = await sweep();
     expect(event).toMatchObject({
       kind: 'failed',
-      error: `unique index ${index} refuses a duplicate value of code`
+      error: `unique index ${index} refuses a duplicate value of code: Key (f_code)=(X) already exists.`
     });
     expect(await state('Note', 'code')).toMatchObject({ state: 'promoting' });
     await same('Note', {});

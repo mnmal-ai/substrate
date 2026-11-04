@@ -107,8 +107,11 @@ describe.skipIf(!MIGRATE_PG)('migrate-store (pg)', () => {
         ok: boolean;
         plan: { tables: { name: string; bytes: number }[]; estimatedBytes: number };
         types: { namespace: string; type: string }[];
+        misfits: unknown;
       };
       expect(report.ok).toBe(true);
+      // Not counted, as distinct from `{}`: none found.
+      expect(report.misfits).toBeNull();
       expect(report.plan.tables.map((t) => t.name)).toContain('embeddings');
       // A legacy rows is an ordinary table, which still has a size.
       expect(report.plan.tables.find((t) => t.name === 'rows')?.bytes).toBeGreaterThan(0);
@@ -157,6 +160,7 @@ describe.skipIf(!MIGRATE_PG)('migrate-store (pg)', () => {
       const dry = await runRaw(s, ['--dry-run']);
       expect(dry.code, dry.out + dry.err).toBe(0);
       expect(dry.out + dry.err).toMatch(/other active session\(s\)/);
+      expect(dry.out).toContain('misfits: not counted');
     } finally {
       await s.close();
     }
@@ -168,6 +172,7 @@ describe.skipIf(!MIGRATE_PG)('migrate-store (pg)', () => {
       const r = await run(s, []);
       expect(r.code, r.out + r.err).toBe(0);
       expect(r.out).toContain('copied and verified');
+      expect(r.out).not.toContain('misfits: not counted');
       expect(r.out).toMatch(/switch over: .*SUBSTRATE_DATABASE_URL.*SUBSTRATE_MIGRATE_TO_URL/);
       expect(r.out).toMatch(
         /ms: preflight \d+, prepare-and-copy \d+, indexes \d+, verify \d+, total \d+/

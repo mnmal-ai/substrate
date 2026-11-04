@@ -77,9 +77,10 @@ export function validateSelector(value: unknown): CandidateSelector {
     return { namespace: s.namespace, type: s.type };
   });
 
-  // Dedupe here, once: pg joins scopes via `unnest(...)`, so a duplicate
-  // scope would emit every matching embedding twice and disagree with the
-  // in-memory store's count. First-seen order is preserved.
+  // Dedupe here, once, and keep it: pg's selectCandidates builds one arm per
+  // scope and limits over their union, so a duplicate scope would return its
+  // rows twice, past `limit`, and disagree with the in-memory store. First-seen
+  // order is preserved.
   const seenScopes = new Set<string>();
   const scopes: SelectorScope[] = [];
   for (const s of parsedScopes) {

@@ -32,6 +32,7 @@ import {
   getFieldValue,
   hop,
   isDateField,
+  normalizeOrderBy,
   preResolveExtensionOperatorsDetailed,
   storedMicros,
   WALK_EVALUATION_BUDGET,
@@ -49,7 +50,6 @@ import type {
   FilterWriteResult,
   Id,
   NestedSelection,
-  OrderByClause,
   ReadParams,
   ReadResult,
   Row,
@@ -1009,25 +1009,6 @@ function walkProjection(
   }
   if (truncated.length > 0) out.push(['_truncated', Object.fromEntries(truncated)]);
   return Object.fromEntries(out);
-}
-
-function normalizeOrderBy(orderBy: OrderByClause[] | undefined): Array<[string, 'asc' | 'desc']> {
-  // No early return for an absent orderBy: the id tail is what a cursor
-  // resumes on, and without it every row compares equal to the cursor. pg
-  // always appends the tail; this matches it.
-  const out: Array<[string, 'asc' | 'desc']> = [];
-  let hasIdTail = false;
-  for (const clause of orderBy ?? []) {
-    const entries = Object.entries(clause) as Array<[string, 'asc' | 'desc']>;
-    for (const [field, dir] of entries) {
-      out.push([field, dir]);
-      if (field === 'id') hasIdTail = true;
-    }
-  }
-  // Append implicit `{ id: 'asc' }` as final tie-breaker unless the caller
-  // already pinned one (in either direction).
-  if (!hasIdTail) out.push(['id', 'asc']);
-  return out;
 }
 
 function compareByClauses(

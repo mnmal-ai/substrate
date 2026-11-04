@@ -25,7 +25,8 @@ export {
   type CursorOrder,
   type CursorPayload,
   decodeCursor,
-  encodeCursor
+  encodeCursor,
+  normalizeOrderBy
 } from './cursor.js';
 export {
   clearExtensionOperators,

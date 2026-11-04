@@ -11,7 +11,6 @@ export {
   desiredIndexKeys,
   type HeldIndex,
   IndexDefinitionConflictError,
-  IndexDropRefusedError,
   type IndexState,
   type ReconcileTypeIndexesArgs,
   reconcileTypeIndexes,
@@ -19,7 +18,6 @@ export {
   UniqueIndexDuplicatesError
 } from './index-reconciler.js';
 export {
-  cachedLayout,
   columnName,
   type DetectedLayout,
   detectLayout,
@@ -60,13 +58,11 @@ export {
 } from './pg-idempotency-store.js';
 export { PgShortIdStore, seqName } from './pg-short-id-store.js';
 export {
-  PROMOTION_FAILED_AFTER,
   type PromotePendingFieldsOptions,
   promotePendingFields
 } from './promote.js';
 export {
   assertServerVersion,
-  MIN_SERVER_VERSION_NUM,
   UnsupportedServerVersionError
 } from './server-version.js';
 export { type PgHandle, txScopeIdFor } from './tx-scope.js';
@@ -81,7 +77,6 @@ export {
   type TypeTable,
   type TypeTableChange,
   type TypeTableRef,
-  tableCacheFor,
   typeTableRef,
   whileNoTypeTable
 } from './type-table.js';
