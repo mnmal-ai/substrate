@@ -10,13 +10,13 @@ This release stores each type in a Postgres table of its own and boots no other 
 
 A `legacy` (one `rows` table) or `partitioned` store is refused with `UnsupportedStoreLayoutError`, which names `substrate-admin migrate-store`. The command copies the store (source on PostgreSQL 17 or 18) into a fresh, empty PostgreSQL 18 store on per-type tables, builds the indexes and verifies the copy. A value that its declared column cannot hold is kept under `$raw` and reported as a misfit, never dropped.
 
-1. Stop every substrate instance. Writes made after the copy's snapshot are not copied.
-2. Rehearse with `substrate-admin migrate-store --dry-run`: plan, sizes, disk estimate and every refusal, writing nothing.
-3. Run `substrate-admin migrate-store`. The source and target connection strings come from `SUBSTRATE_MIGRATE_FROM_URL` and `SUBSTRATE_MIGRATE_TO_URL`, never argv. Set `SUBSTRATE_INDEX_DISK_PATH`, and load the service's environment so plugins match what `serve` will use.
-4. If an index build or the verification fails, `--verify-only` builds indexes and verifies the finished copy. `--full-checksum` hashes every row instead of a sample.
-5. Point the service at the new store.
+1. Rehearse with `substrate-admin migrate-store --dry-run`: plan, sizes, disk estimate and every refusal, writing nothing. Do this while the service is still running; it sizes your downtime.
+2. Stop every substrate instance. Writes made after the copy's snapshot are not copied.
+3. Run `substrate-admin migrate-store`. The source and target connection strings come from `SUBSTRATE_MIGRATE_FROM_URL` and `SUBSTRATE_MIGRATE_TO_URL`, never argv. Set `SUBSTRATE_INDEX_DISK_PATH`, and load the service's environment so plugins match what `serve` will use. The run verifies itself: exit 0 means it copied and verified.
+4. If an index build or the verification fails, `--verify-only` builds indexes and verifies the finished copy again. `--full-checksum` hashes every row instead of a sample.
+5. Point the new binary at the target store and boot it.
 
-Downtime is the whole run: copy, then index builds, then verification. On a ~40 GB real-world-shaped benchmark store it took about 36.5 minutes (preflight 2 min, copy 33 min, index builds 8 s, verify 1.5 min), with no misfits. Time a rehearsal against a copy of your own store, and keep free disk at least the size of the source: free space on the benchmark target dipped by about 25 GiB during the run. The full procedure is in the [dataset-pg README](../packages/substrate-dataset-pg/README.md#upgrading).
+Downtime is the whole run: copy, then index builds, then verification. On a ~40 GB real-world-shaped benchmark store, in the first measured run, it took about 36.5 minutes (preflight 2 min, copy 33 min, index builds 8 s, verify 1.5 min), with no misfits. Time a rehearsal against a copy of your own store, and keep free disk at least the size of the source: free space on the benchmark target dipped by about 25 GiB during the run. The full procedure is in the [dataset-pg README](../packages/substrate-dataset-pg/README.md#upgrading).
 
 `migrate-store` no longer needs `SUBSTRATE_SYSTEM_ACTOR`. It used to fail after preflight with ``compose: `systemActor` is required when auth is disabled``; it now supplies its own actor to a boot that serves no request, and copied rows keep their source metadata.
 
@@ -82,6 +82,7 @@ Added: `UnsupportedStoreLayoutError`, `assertTablesLayout` and `DetectedLayout` 
 Measured against the previous layout on a ~40 GB real-world-shaped benchmark store, on a desktop Mac with PostgreSQL 18. Timings are medians of three runs.
 
 - **Correct:** every benchmark card answer matches its SQLite reference (45 of 45 hashes), and the fuzz parity run found 0 mismatches.
-- **Faster:** every card shape is faster than on the old layout. The dashboard shape, which timed out before, now completes with no errors. A 5,000-row writer batch went from about 7.2 s to about 1.5 s at p50.
-- **Targets not met.** The targets set for the two full-scan aggregate shapes (3 and 6) and for the writer batch were **not** met. Those two shapes scan the whole table, which storage layout alone cannot fix; they need an aggregate strategy of their own.
+- **Faster:** on the card workload, every card shape is faster than on the old layout. The dashboard shape, which timed out before, now completes with no errors. A large writer batch went from about 7.2 s to about 1.5 s at p50.
+- **Targets not met.** The targets set for the two full-scan aggregate shapes (3 and 6) and for the writer batch were **not** met. Those two shapes scan the whole table, which storage layout alone cannot fix, and this release does not address them.
+- **Reads on runtime-proposed types are slower.** In the first run, reads on types added with `propose_field` (the fuzz workload: filtered reads, counts, walks and aggregates) measured roughly 2 to 4 times slower than the old layout, because they paid extra catalog lookups. The fix round improved them by only 1 to 16%, and one catalog read in 47 warm reads remained, so a slowdown likely remains. There is no direct old-layout comparison for that workload after the fix round.
 - **Known small regressions:** some point reads on the cortext workload went from about 0.7 ms to about 1.8 ms; one walk shape is about 18% slower, because the planner picks a serial plan by cost; lookups made while a heavy writer is running are slower than before. These were judged imperceptible and shipped. The new numbers are the yardstick for later work.
