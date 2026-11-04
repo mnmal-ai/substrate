@@ -451,8 +451,9 @@ export class PgDataset implements Dataset {
       fields: def?.fields ?? {},
       newFields: 'column' as const,
       enforceUuidCheck: await this.#uuidCheck(),
-      // Without a def the fields are unknown: create the table, never redeclare one.
-      createOnly: def === undefined
+      // Create a missing table, never reconcile one: this miss may be stale,
+      // and this process's def older than the one the table was made from.
+      createOnly: true
     };
     // In a caller's transaction the DDL joins it under a savepoint (F18), so a
     // failure there leaves the caller's transaction usable. Its type-table
