@@ -258,6 +258,12 @@ describe.skipIf(!POSTGRES_URL)('a write through a stale table descriptor (pg)', 
     const [row] = await sqlA<Array<{ last_error: string }>>`
       SELECT last_error FROM substrate_type_fields WHERE namespace = ${ns} AND field = 'rank'`;
     expect(row?.last_error).toMatch(/move to column could not lock its table within 800 ms/);
+    // One busy attempt is not a failure: /health and the storage report wait for PROMOTION_FAILED_AFTER.
+    const report = await a.storageReport({ partitionBudget: 1_000_000 });
+    expect(report.warnings.filter((w) => w.startsWith(`${ns}/`))).toEqual([]);
+    expect((report.info ?? []).filter((w) => w.startsWith(`${ns}/`))).toEqual([
+      expect.stringMatching(/^\S+\/Note\.rank is busy \(attempt 1\): .*could not lock its table/)
+    ]);
     expect((await sweep()).map((e) => e.kind)).toEqual(['promoted']);
   });
 

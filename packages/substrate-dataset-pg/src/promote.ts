@@ -60,6 +60,14 @@ import {
 /** Busy or failed attempts in a row after which a field's promotion is reported `failed`. */
 export const PROMOTION_FAILED_AFTER = 3;
 
+/**
+ * The `last_error` prefix of an attempt that met a held lock (`busy:`) or a
+ * stopping sweep (`stopped:`): reported failed only from
+ * {@link PROMOTION_FAILED_AFTER} attempts, where any other error fails at once.
+ */
+export const isTransientPromotionError = (error: string): boolean =>
+  error.startsWith('busy: ') || error.startsWith('stopped: ');
+
 export interface PromotePendingFieldsOptions {
   /** The longest an ADD COLUMN waits for its table's lock, in ms. */
   lockTimeoutMs: number;
@@ -123,7 +131,7 @@ export async function promotePendingFields(
   };
   /** A lock that stayed held: `busy`, retried by the next sweep, and `failed` from the third in a row. */
   const busy = async (f: FieldRow, attempts: number, error: string) => {
-    await recordAttempt(sql, f, attempts, error);
+    await recordAttempt(sql, f, attempts, `busy: ${error}`);
     if (attempts >= PROMOTION_FAILED_AFTER) emit(f, 'failed', attempts, error);
     else emit(f, 'busy', attempts);
   };
@@ -185,7 +193,7 @@ export async function promotePendingFields(
       // its error makes a later sweep run this pass again.
       at = await catalogVersion(sql, f);
       if (!(await backfill(sql, table, f.field, opts))) {
-        await recordAttempt(sql, f, f.attempts, 'its straggler pass was stopped');
+        await recordAttempt(sql, f, f.attempts, 'stopped: its straggler pass was stopped');
         return true;
       }
       await recordAttempt(sql, f, 0, null);

@@ -242,7 +242,7 @@ describe.skipIf(!POSTGRES_URL)('pending fields and the promotion sweep', () => {
     }
     expect(kinds).toEqual(['busy:1', 'busy:2', 'failed:3']);
     expect(await warnings()).toEqual([
-      `${ns}/Note.rank promotion failed (attempt 3): its table's lock was held past 50 ms`
+      `${ns}/Note.rank promotion failed (attempt 3): busy: its table's lock was held past 50 ms`
     ]);
     // Once the lock is free it promotes, and the count starts again.
     expect((await sweep()).map((e) => e.kind)).toEqual(['promoted']);
