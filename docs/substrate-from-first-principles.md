@@ -1135,7 +1135,7 @@ interface PackEnvelope {
 type EnvelopeShape = 'single' | 'list' | Array<'single' | 'list'>;
 ```
 
-Query results are positionally encoded from the client's field selection and the type's fields. Mutation results are encoded from the mutation's declared `returns` (§4.2); mutations have no field selection.
+Query results are positionally encoded from the client's field selection and the type's fields. Over HTTP, WS and MCP, the JSON key order of a returned row follows the request; for in-process dataset reads (`dataset.read`), key order is not part of the contract. Mutation results are encoded from the mutation's declared `returns` (§4.2); mutations have no field selection.
 
 **Non-fatal sidecars.** `_completeness` and `_diagnostics` report things that went wrong without the read failing. Both are keyed by frame key, and for both **absence means nothing to report**, so older clients stay correct. They are deliberately NOT `errors`: a client doing `if (env.errors) throw` would start failing successful reads.
 
