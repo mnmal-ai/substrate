@@ -209,8 +209,18 @@ export function preflight(
   }
 
   if (source.otherSessions > 0) {
-    warnings.push(
-      `source has ${source.otherSessions} other active session(s) on its database; writes after the snapshot are not copied, so stop the service first`
+    // A real run refuses: a write after the snapshot would be lost from the copy.
+    const named = source.sessions
+      .slice(0, 10)
+      .map(
+        (s) =>
+          `usename=${s.usename ?? 'hidden'} application_name=${s.applicationName ?? 'hidden'} client_addr=${s.clientAddr ?? 'local'} backend_type=${s.backendType ?? 'hidden'} state=${s.state ?? 'hidden'}`
+      );
+    const more = source.sessions.length - named.length;
+    const list =
+      named.length > 0 ? `: ${named.join('; ')}${more > 0 ? `; +${more} more` : ''}` : '';
+    (opts.dryRun ? warnings : refusals).push(
+      `source has ${source.otherSessions} other active session(s) on its database; writes after the snapshot are not copied, so stop the service first${list}`
     );
   }
 

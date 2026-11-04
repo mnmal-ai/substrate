@@ -44,11 +44,24 @@ export interface SourceInventory {
   extensions: Record<string, string>;
   /** Other client backends on this database; pg_stat_activity hides other roles' rows from a non-monitoring role. */
   otherSessions: number;
+  /** Those sessions, to name in the refusal. Never their query text. */
+  sessions: SourceSession[];
+}
+
+export interface SourceSession {
+  pid: number;
+  /** backend_start as epoch text, which no session TimeZone changes. */
+  start: string;
+  usename: string | null;
+  applicationName: string | null;
+  clientAddr: string | null;
+  backendType: string | null;
+  state: string | null;
 }
 
 export async function inspectSource(sql: Sql): Promise<SourceInventory> {
   // Reads only. Every other connection the caller holds on this database, a target in the same database included,
-  // counts toward `otherSessions`: pass a pool of one and subtract your own.
+  // counts toward `otherSessions` and `sessions`: pass a pool of one and drop your own.
   const result = await sql.begin('isolation level repeatable read read only', async (tx) => {
     await assertStoreSchema(tx as unknown as Sql);
     const layout = await detectLayout(tx as unknown as Sql);
@@ -122,9 +135,15 @@ export async function inspectSource(sql: Sql): Promise<SourceInventory> {
     const extensions = await tx<
       { extname: string; extversion: string }[]
     >`SELECT extname, extversion FROM pg_extension ORDER BY extname`;
-    const [others] = await tx<{ n: string }[]>`
-      SELECT count(*)::text AS n FROM pg_stat_activity
-      WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_type = 'client backend'`;
+    const sessions = await tx<SourceSession[]>`
+      SELECT pid, extract(epoch FROM backend_start)::text AS start, usename,
+             application_name AS "applicationName", client_addr::text AS "clientAddr",
+             backend_type AS "backendType", state
+      FROM pg_stat_activity
+      WHERE datname = current_database() AND pid <> pg_backend_pid()
+        -- Another role's session shows a NULL backend_type to a non-monitoring role.
+        AND (backend_type = 'client backend' OR (backend_type IS NULL AND usesysid IS NOT NULL))
+      ORDER BY pid`;
     return {
       serverVersionNum: version?.v ?? 0,
       layout,
@@ -144,7 +163,8 @@ export async function inspectSource(sql: Sql): Promise<SourceInventory> {
       // pgvector stores the dimension in atttypmod; -1 means unconstrained.
       vectorDims: dims !== undefined && dims.dims > 0 ? dims.dims : null,
       extensions: Object.fromEntries(extensions.map((e) => [e.extname, e.extversion])),
-      otherSessions: Number(others?.n ?? 0)
+      otherSessions: sessions.length,
+      sessions
     } satisfies SourceInventory;
   });
   return result;

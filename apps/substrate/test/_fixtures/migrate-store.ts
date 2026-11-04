@@ -246,7 +246,8 @@ export async function openPair(
   await (await boot()).close();
 
   const pre = preflight(
-    await inspectSource(srcSql),
+    // Other suites' pools share this database; the refusal they would cause has its own tests.
+    { ...(await inspectSource(srcSql)), otherSessions: 0 },
     {
       serverVersionNum: 180000,
       layout: 'absent',

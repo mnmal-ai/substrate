@@ -213,6 +213,9 @@ async function typeTables(tx: Sql): Promise<Map<string, TypeTable>> {
   return types;
 }
 
+/** Each row's id with its versions: a row updated or deleted after the copy's snapshot changes it, wherever the sample falls. */
+const VERSIONS = `id || E'\n' || coalesce(updated_at::text, '') || E'\n' || coalesce(deleted_at::text, '')`;
+
 const META = `deleted_at::text, created_at::text, updated_at::text, created_by_kind, created_by_id, updated_by_kind, updated_by_id`;
 
 /**
@@ -261,12 +264,20 @@ async function snapshot(
   const counted: Array<{ namespace: string; type: string }> = [];
   if (side === 'source') {
     const counts = await tx<
-      { namespace: string; type: string; live: string; deleted: string; ids: string }[]
+      {
+        namespace: string;
+        type: string;
+        live: string;
+        deleted: string;
+        ids: string;
+        versions: string;
+      }[]
     >`
       SELECT namespace, type,
              count(*) FILTER (WHERE deleted_at IS NULL)::text AS live,
              count(*) FILTER (WHERE deleted_at IS NOT NULL)::text AS deleted,
-             ${tx.unsafe(fp('id'))} AS ids
+             ${tx.unsafe(fp('id'))} AS ids,
+             ${tx.unsafe(fp(VERSIONS))} AS versions
       FROM rows GROUP BY namespace, type`;
     for (const r of counts) {
       const at = { namespace: r.namespace, type: r.type };
@@ -274,16 +285,24 @@ async function snapshot(
       add({ check: 'count', ...at, what: 'deleted rows', value: r.deleted });
       add({ check: 'ids', ...at, what: 'id set', value: r.ids });
       add({ check: 'ids', ...at, what: 'registered ids (row_ids)', value: r.ids });
+      add({
+        check: 'versions',
+        ...at,
+        what: 'row versions (updated_at, deleted_at)',
+        value: r.versions
+      });
       counted.push(at);
     }
   } else {
     for (const table of types.values()) {
       const { namespace, type } = table;
       const skip = seedIds(namespace, type);
-      const [r] = await tx.unsafe<{ live: string; deleted: string; ids: string }[]>(
+      const [r] = await tx.unsafe<
+        { live: string; deleted: string; ids: string; versions: string }[]
+      >(
         `SELECT count(*) FILTER (WHERE deleted_at IS NULL)::text AS live,
                 count(*) FILTER (WHERE deleted_at IS NOT NULL)::text AS deleted,
-                ${fp('id')} AS ids
+                ${fp('id')} AS ids, ${fp(VERSIONS)} AS versions
          FROM ${table.from} WHERE NOT (id = ANY($1::text[]))`,
         [skip]
       );
@@ -292,6 +311,12 @@ async function snapshot(
         add({ check: 'count', ...at, what: 'live rows', value: r.live });
         add({ check: 'count', ...at, what: 'deleted rows', value: r.deleted });
         add({ check: 'ids', ...at, what: 'id set', value: r.ids });
+        add({
+          check: 'versions',
+          ...at,
+          what: 'row versions (updated_at, deleted_at)',
+          value: r.versions
+        });
         counted.push(at);
       }
     }

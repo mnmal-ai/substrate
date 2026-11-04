@@ -60,6 +60,8 @@ export interface MigrateStoreDeps {
   beforeVerify?: (target: Sql) => Promise<void>;
   /** Test hook: the index build pass, {@link buildDeferredIndexes} when unset. */
   buildIndexes?: typeof buildDeferredIndexes;
+  /** Test hook: the other sessions on the source, in place of the measured count (a shared test database has other suites' pools). */
+  otherSessions?: number;
 }
 
 export interface MigrateStoreReport {
@@ -336,7 +338,8 @@ export async function runMigrateStore(
   const src = postgres(fromUrl, {
     ...notices,
     max: 1,
-    // The snapshot transaction is held open, idle between reads, for the whole copy and verification.
+    // The copy's snapshot transaction is held open, idle between reads, for the whole copy; verification
+    // reads a fresh snapshot after it commits, which is why a live source is refused rather than copied.
     // transaction_timeout exists from PG 17, the oldest source accepted.
     connection: {
       default_transaction_read_only: true,
@@ -373,7 +376,11 @@ export async function runMigrateStore(
           await assertSchema(facts, args.toSchema, 'target');
           await assertDistinct(src, facts);
           const source = await inspectSource(src);
-          source.otherSessions -= await sessionsOn(src, own);
+          // Our own target connection, when both share one database.
+          source.sessions = source.sessions.filter(
+            (s) => !(s.pid === own.pid && s.start === own.start)
+          );
+          source.otherSessions = deps.otherSessions ?? source.sessions.length;
           const target = await targetFacts(facts, env, diskPath);
           const pluginTables = await storeTables(pluginDir);
           return {
@@ -543,15 +550,6 @@ async function ownSession(sql: Sql): Promise<Session> {
   return r as Session;
 }
 
-/** 1 when `s` is a backend on `sql`'s database, else 0: our own target connection when both share one. */
-async function sessionsOn(sql: Sql, s: Session): Promise<number> {
-  const [r] = await sql<{ n: number }[]>`
-    SELECT count(*)::int AS n FROM pg_stat_activity
-    WHERE datname = current_database() AND pid = ${s.pid}
-      AND extract(epoch FROM backend_start)::text = ${s.start}`;
-  return r?.n ?? 0;
-}
-
 export async function targetFacts(
   sql: Sql,
   env: AdminCliEnv,
@@ -704,7 +702,7 @@ export async function migrateStoreCommand(
   env: AdminCliEnv,
   out: (s: string) => void,
   errOut: (s: string) => void,
-  hooks: Pick<MigrateStoreDeps, 'beforeVerify' | 'buildIndexes'> = {}
+  hooks: Pick<MigrateStoreDeps, 'beforeVerify' | 'buildIndexes' | 'otherSessions'> = {}
 ): Promise<number> {
   const vars = env as Record<string, string | undefined>;
   const names = new Set([DEFAULT_FROM_ENV, DEFAULT_TO_ENV, 'SUBSTRATE_DATABASE_URL']);
