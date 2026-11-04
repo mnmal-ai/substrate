@@ -28,7 +28,7 @@ CREATE TABLE t__cortext__todo (
 
 `0001t_tables_baseline` creates the shared tables: `row_ids` (every row's `(namespace, type, id)`, which `short_ids` reference), `edges` (cross-ref edges), `idempotency`, `visible_seqs`, and the type catalog `substrate_type_tables` and `substrate_type_fields`. `0002t_uuid_format_check` adds UUID-format CHECKs on row and edge ids, and runs only when `SUBSTRATE_ENFORCE_UUID_CHECK=true`. Kernel plugins add their own tables; `substrate-recall` owns `embeddings`.
 
-A declared field is in one of four states in `substrate_type_fields`: `column`; `pending`, its values in `extra` until the promotion sweep gives it a column; `promoting`, the column exists and values are still moving out of `extra`; `orphaned`, no longer declared, its column kept and its values readable as extras. A kind change in code refuses boot with `FieldKindChangedError`.
+A declared field is in one of four states in `substrate_type_fields`: `column`; `pending`, its values in `extra` until the promotion sweep gives it a column; `promoting`, the column exists and values are still moving out of `extra`; `orphaned`, no longer declared, its column kept and its values readable as extras. A kind change in code refuses boot with `FieldKindChangedError`. Every server process runs the sweep, but each field is swept by one at a time (an advisory try-lock; a held field is skipped). A `column` field whose straggler pass failed on a unique conflict is not swept again until its type's catalog changes.
 
 ## Layouts
 

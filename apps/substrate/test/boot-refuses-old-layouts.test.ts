@@ -83,7 +83,8 @@ describe.skipIf(!POSTGRES_URL)('boot refuses the old layouts (pg)', () => {
       const ledger = await sql<{ version: string }[]>`SELECT version FROM migrations ORDER BY 1`;
       expect(ledger.map((r) => r.version)).toEqual([
         '0001t_tables_baseline',
-        '0003t_type_table_version'
+        '0003t_type_table_version',
+        '0004t_field_error_version'
       ]);
       expect(await sql`SELECT to_regclass('rows') AS r`).toEqual([{ r: null }]);
     } finally {

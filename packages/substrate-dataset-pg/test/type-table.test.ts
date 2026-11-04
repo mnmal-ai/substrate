@@ -154,7 +154,8 @@ describe.skipIf(!POSTGRES_URL)('tables layout', () => {
       const versions = await s<Array<{ version: string }>>`SELECT version FROM migrations`;
       expect(versions.map((v) => v.version)).toEqual([
         '0001t_tables_baseline',
-        '0003t_type_table_version'
+        '0003t_type_table_version',
+        '0004t_field_error_version'
       ]);
       const [present] = await s<Array<Record<string, boolean>>>`
         SELECT to_regclass('rows') IS NOT NULL AS rows,
@@ -220,7 +221,8 @@ describe.skipIf(!POSTGRES_URL)('tables layout', () => {
       expect(await ledger(s)).toEqual([
         '0001t_tables_baseline',
         UUID_CHECK_MIGRATION,
-        '0003t_type_table_version'
+        '0003t_type_table_version',
+        '0004t_field_error_version'
       ]);
       await expectUuidChecks(s);
     });
@@ -235,13 +237,18 @@ describe.skipIf(!POSTGRES_URL)('tables layout', () => {
         newFields: 'column' as const
       };
       await ensureTypeTable(s, { ...args, type: 'Before', enforceUuidCheck: false });
-      expect(await ledger(s)).toEqual(['0001t_tables_baseline', '0003t_type_table_version']);
+      expect(await ledger(s)).toEqual([
+        '0001t_tables_baseline',
+        '0003t_type_table_version',
+        '0004t_field_error_version'
+      ]);
 
       await runMigrations(s, { enforceUuidCheck: true });
       expect(await ledger(s)).toEqual([
         '0001t_tables_baseline',
         UUID_CHECK_MIGRATION,
-        '0003t_type_table_version'
+        '0003t_type_table_version',
+        '0004t_field_error_version'
       ]);
       await expectUuidChecks(s);
       const [before] = await s<Array<{ table_name: string }>>`
