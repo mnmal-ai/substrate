@@ -13,6 +13,7 @@ import { composeKernelPlugins, type KernelComposeContext } from '../src/_kernel.
 
 const baseCtx = (over: Partial<KernelComposeContext> = {}): KernelComposeContext => ({
   sql: null,
+  layout: null,
   metric: () => undefined,
   registerKernelRoute: () => undefined,
   registerMcpTool: () => undefined,

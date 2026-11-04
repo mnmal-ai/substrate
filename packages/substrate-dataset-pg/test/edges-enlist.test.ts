@@ -14,6 +14,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { runMigrations } from '../src/migrate.js';
 import { PgDataset } from '../src/pg-dataset.js';
 import { PgEdgesStore } from '../src/pg-edges-store.js';
+import { clearNamespace } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const NS = 'test_edges_enlist';
@@ -45,7 +46,7 @@ describe.skipIf(!POSTGRES_URL)('edges enlisted in pg tx scope tx', () => {
   });
 
   beforeEach(async () => {
-    await sql`DELETE FROM rows WHERE namespace = ${NS}`;
+    await clearNamespace(sql, NS);
     await sql`DELETE FROM edges WHERE from_ns = ${NS} OR to_ns = ${NS}`;
   });
 

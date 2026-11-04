@@ -14,7 +14,7 @@
  * the concrete `Registry` class in `@mnmal-ai/substrate-core` implements it.
  */
 
-import type { Row } from './core.js';
+import type { ActorIdentity, Id, Row } from './core.js';
 import type { Dataset, ReadResult } from './dataset.js';
 import type { EdgesStore } from './edge.js';
 import type {
@@ -24,9 +24,10 @@ import type {
   PolicyDecision,
   PolicyProbeContext,
   RequestContext,
-  ResolverArgs
+  ResolverArgs,
+  WriteEvent
 } from './policy.js';
-import type { FieldDef, PackEnvelope, Schema } from './schema.js';
+import type { FieldDef, OrderedBy, PackEnvelope, Schema } from './schema.js';
 import type { HttpHandler, HttpMethod, PluginRouter } from './server.js';
 
 /** Whether a registry entry is a top-level addressable type or a mutation. */
@@ -50,14 +51,32 @@ export type RegistryEntryResolver = (
   args: ResolverArgs
 ) => Promise<Row | Row[] | ReadResult | AsyncIterable<Row> | null> | AsyncIterable<Row>;
 
+/**
+ * Set-wise resolver for a mutate array: one call for every uncached element,
+ * in order, returning one entry per element. Throw `BatchElementError(i, cause)`
+ * to refuse element `i`; any throw rolls back the whole array.
+ */
+export type BatchResolver = (
+  ctx: RequestContext,
+  args: readonly ResolverArgs[]
+) => Promise<Array<Row | null>>;
+
 /** Input shape for `Registry.register` / `Registry.replace`. */
 export interface RegistryEntryInput {
   resolver: RegistryEntryResolver;
+  /** When present, a mutate array calls this once instead of `resolver` per element. */
+  batch?: BatchResolver;
   policy?: Policy;
   fields?: Record<string, FieldDef>;
   kind?: RegistryEntryKind;
   params?: Record<string, FieldDef>;
   returns?: FieldDef;
+  /** Natural order of a `kind: 'type'` entry; published on its `TypeSchema`. */
+  orderedBy?: OrderedBy;
+  /** Declared indexes of a `kind: 'type'` entry installed at runtime (a proposed type). */
+  indexes?: IndexDecl[];
+  /** A proposed type's size hint; `large` lowers the index advisor's row minimum. */
+  expectedSize?: 'small' | 'large';
   /**
    * Semantic verb for autoCRUD-registered mutations. The engine
    * threads this into `RequestContext.verb` at dispatch so type-/plugin-level
@@ -65,6 +84,11 @@ export interface RegistryEntryInput {
    * string matching. Omit for type entries and custom mutations.
    */
   verb?: AutoCrudVerb;
+  /**
+   * The type a by-filter mutation (`updateMany<T>` / `deleteMany<T>`) writes.
+   * The engine validates `params.where` against it as a query's `where`.
+   */
+  filterTarget?: string;
 }
 
 /**
@@ -75,6 +99,8 @@ export interface RegistryEntryInput {
  */
 export interface RegistryEntry {
   resolver: RegistryEntryResolver;
+  /** Mirrors `RegistryEntryInput.batch`. */
+  batch?: BatchResolver;
   policy: Policy;
   fields: Record<string, FieldDef>;
   kind: RegistryEntryKind;
@@ -82,8 +108,16 @@ export interface RegistryEntry {
   params: Record<string, FieldDef>;
   /** Present only for `kind: 'mutation'` entries that declared a return shape. */
   returns?: FieldDef;
+  /** Mirrors `RegistryEntryInput.orderedBy`. */
+  orderedBy?: OrderedBy;
+  /** Mirrors `RegistryEntryInput.indexes`. */
+  indexes?: IndexDecl[];
+  /** Mirrors `RegistryEntryInput.expectedSize`. */
+  expectedSize?: 'small' | 'large';
   /** Mirrors `RegistryEntryInput.verb` — present when the registrant stamped one. */
   verb?: AutoCrudVerb;
+  /** Mirrors `RegistryEntryInput.filterTarget`. */
+  filterTarget?: string;
 }
 
 /**
@@ -226,6 +260,27 @@ export interface EmbedSourceContext {
 }
 
 /**
+ * A declared index over a type's scalar or crossRef fields, built by the
+ * engine with the same expressions the filter compiler emits.
+ *
+ * - `fields`: key columns in order; `dir` defaults to `asc`. Both directions
+ *   sort NULLs last, as `orderBy` does.
+ * - `unique`: refused at build time while duplicate live values exist.
+ * - `where`: always ANDed with "not deleted". `'live'` adds nothing more; a
+ *   record adds equality to a boolean (or IS NULL for `null`) on the type's
+ *   own fields. Only those operands compile to literals, which a generic plan
+ *   needs to match the index predicate.
+ * - `name`: the pg index name to own or adopt; generated when omitted. It may
+ *   not end in `__swap`, the reconciler's temporary suffix.
+ */
+export interface IndexDecl {
+  fields: Array<string | { field: string; dir: 'asc' | 'desc' }>;
+  unique?: boolean;
+  where?: 'live' | Record<string, boolean | null>;
+  name?: string;
+}
+
+/**
  * Structural shape of a type definition, mirroring `TypeInput` from
  * @mnmal-ai/substrate-sdk (redeclared to avoid a substrate-types → substrate-sdk import
  * cycle). Substrate plugins read it structurally; slots not named here pass
@@ -276,6 +331,14 @@ export interface NamespaceTypeDef {
   lexical?: {
     source: (row: Row) => string | null | undefined | Promise<string | null | undefined>;
   };
+  /** Composite and unique indexes the engine builds for this type. See {@link IndexDecl}. */
+  indexes?: IndexDecl[];
+  /** The type's natural order, the default read order. See {@link OrderedBy}. */
+  orderedBy?: OrderedBy;
+  /** See the SDK's `TypeInput.ordering`. */
+  ordering?: 'visible';
+  /** Size hint: `large` lowers the index advisor's row minimum for this type. */
+  expectedSize?: 'small' | 'large';
   // [key: string]: unknown absorbs slots NamespaceTypeDef doesn't name
   // (policy, autoCrud, purgeable, adminCapability, etc.).
   [key: string]: unknown;
@@ -298,10 +361,10 @@ export interface NamespaceDefinition {
    */
   annotations?: Readonly<Record<string, unknown>>;
   /**
-   * Body keys a SQL dataset mirrors into dedicated `rows` columns, so filters
-   * and sorts on them hit an index. The declaring plugin creates the columns in
-   * its kernel migrations; the engine creates none. `column` is a bare
-   * identifier.
+   * @deprecated Ignored. Every declared scalar is a column of its type's
+   * table, so there is nothing left to promote. It was the old layouts' body
+   * keys mirrored into dedicated `rows` columns; it still type-checks, so a
+   * plugin that sets it boots unchanged.
    */
   promotedColumns?: Readonly<Record<string, { column: string; kind: 'boolean' | 'text' }>>;
   /**
@@ -408,6 +471,27 @@ export interface NamespaceConfig {
 }
 
 /**
+ * What a coordinator's `onCommittedWrites` hook is told: one `(namespace, type,
+ * operation)` group of one committed transaction. `ids` keep the order the
+ * writes were emitted in. `actor` is who the request was attributed to, or
+ * null for a request with no recognisable identity.
+ */
+export interface CommittedWriteBatch {
+  namespace: string;
+  type: string;
+  operation: 'create' | 'update' | 'delete';
+  actor: ActorIdentity | null;
+  ids: readonly Id[];
+}
+
+/**
+ * Never awaited by the mutate, so keep its synchronous part cheap. A throw or a
+ * rejection is recorded as a `/health` warning (plugin name and time, not the
+ * message) and does not touch the write.
+ */
+export type CommittedWritesHook = (batch: CommittedWriteBatch) => void | Promise<void>;
+
+/**
  * Narrow engine handle threaded into scheduled-task / plugin-route contexts.
  * The concrete `Engine` class in `@mnmal-ai/substrate-core` satisfies this
  * structurally; plugin code binds against this handle without importing the
@@ -416,6 +500,14 @@ export interface NamespaceConfig {
 export interface EngineHandle {
   query(input: EngineInput): Promise<PackEnvelope>;
   mutate(input: EngineInput): Promise<PackEnvelope>;
+  /**
+   * Announce writes that were committed outside `mutate`: they reach
+   * subscribers, then every coordinator's `onCommittedWrites`, as a commit
+   * through `mutate` would. This is not a transaction and checks nothing: the
+   * caller guarantees `events` are already committed, since an announced write
+   * that rolls back cannot be taken back.
+   */
+  announceWrites(events: readonly WriteEvent[], actor: ActorIdentity | null): Promise<void>;
   /**
    * Evaluate the read policy for a type entry without dispatching it.
    * Out-of-band read surfaces (kernel routes returning row data
@@ -588,6 +680,12 @@ export interface CoordinatorPlugin {
    */
   policies?: Policy[];
   /**
+   * Told what each committed transaction wrote, once per `(namespace, type,
+   * operation)` rather than once per row. Never awaited by the mutate, run in
+   * commit order per plugin; a slow hook delays only this plugin's later calls.
+   */
+  onCommittedWrites?: CommittedWritesHook;
+  /**
    * Post-register lifecycle hook. Fires after every plugin's `install()`
    * resolves — use this for resource priming that needs the full namespace
    * map (e.g. cross-plugin edge warmup).
@@ -677,6 +775,13 @@ export interface KernelPlugin {
   migrations?: KernelMigration[];
 
   /**
+   * Names of the tables (in the store's schema) this plugin keeps data in.
+   * `substrate-admin migrate-store` copies them alongside the engine's own
+   * tables and refuses a source table that nothing declares.
+   */
+  storeTables?: readonly string[];
+
+  /**
    * Filter operators contributed to the where-clause grammar. Each entry
    * registers a custom operator (e.g. `embeddingSimilar`) the engine's
    * query validator + substrate executor can dispatch to.
@@ -712,6 +817,12 @@ export interface KernelPlugin {
   onKernelReady?(ctx: KernelLifecycleContext): void | Promise<void>;
 
   /**
+   * Stops whatever `onKernelReady` started (timers, workers). The host calls
+   * it before it closes the store, and may call it more than once.
+   */
+  onKernelStop?(): void | Promise<void>;
+
+  /**
    * Contribute postWrite hooks for a coordinator namespace at install time.
    * Called by the engine ONCE per registered coordinator namespace, AFTER
    * substrate composition completes. Returned hooks are merged into the
@@ -744,6 +855,13 @@ export interface KernelMigrationContext {
    * binary is running against the in-memory dataset.
    */
   sql: unknown | null;
+  /**
+   * How rows are stored: `'tables'`, one table per type and no `rows` table,
+   * the only layout a store boots. `null` on the in-memory dataset. A
+   * migration that still runs DDL on `rows` fails, and the host names its
+   * plugin (`KernelMigrationLayoutError`).
+   */
+  layout: 'tables' | null;
   metric(name: string, payload?: unknown): void;
 }
 
@@ -868,5 +986,12 @@ export interface KernelLifecycleContext {
    * it with a test, or a rename makes the filter silently match nothing.
    */
   coordinatorNamespacesByPlugin?: readonly { plugin: string; namespace: string }[];
+  /**
+   * Whether this boot may start background work (timers, backfills). False
+   * when the host boots the store only to prepare or copy into it, as
+   * `substrate-admin migrate-store` does: do convergent reconciliation, start
+   * nothing that writes later.
+   */
+  background: boolean;
   metric(name: string, payload?: unknown): void;
 }

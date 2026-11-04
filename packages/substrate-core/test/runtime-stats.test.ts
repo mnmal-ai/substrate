@@ -276,3 +276,41 @@ describe('runtime stats: hygiene and slowest', () => {
     expect(errs[1]).toMatchObject({ caller: 'a@h', count: 2 });
   });
 });
+
+describe('runtime stats: batched observations', () => {
+  it('a batch of 20 counts 20 calls but one latency sample and one slowest entry', () => {
+    const s = createRuntimeStats({ activeSubscriptions: () => 0 });
+    const obs = (key: string, durationMs: number, batch?: { size: number; index: number }) =>
+      s.recordResolve({
+        key,
+        kind: 'mutate',
+        durationMs,
+        ok: true,
+        ...(batch !== undefined ? { batchSize: batch.size, batchIndex: batch.index } : {})
+      });
+    // 98 per-element calls: the global histogram sits two short of the
+    // 100-observation warm-up, during which every observation enters slowest.
+    for (let i = 0; i < 98; i++) obs('ns/createFast', 1);
+    // One batch of 20, slower than every per-element call.
+    for (let i = 0; i < 20; i++) obs('ns/createMany', 500, { size: 20, index: i });
+
+    const snap = s.snapshot();
+    expect(snap.resolvers?.['ns/createMany']?.calls).toBe(20);
+    expect((snap.slowest ?? []).filter((x) => x.key === 'ns/createMany')).toHaveLength(1);
+
+    // One global sample: the warm-up has seen 99, so the next 1 ms call still
+    // enters slowest. Twenty samples would have ended the warm-up and set the
+    // p99 at the batch's 500 ms bucket, keeping it out.
+    obs('ns/after', 1);
+    expect((s.snapshot().slowest ?? [])[0]?.key).toBe('ns/after');
+
+    // One key sample: two fast calls make the key's median fast. Twenty 500 ms
+    // samples would have held it at 500.
+    obs('ns/createMany', 1);
+    obs('ns/createMany', 1);
+    const many = s.snapshot().resolvers?.['ns/createMany'];
+    expect(many?.calls).toBe(22);
+    expect(many?.p50Ms).toBeLessThan(10);
+    expect(many?.maxMs).toBeGreaterThanOrEqual(500);
+  });
+});

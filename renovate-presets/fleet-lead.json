@@ -2,6 +2,8 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "description": "substrate only: the repo that DECIDES the fleet toolchain. Its catalog, pnpm, Node floor and Actions pins generate substrate-config's toolchain.json, which every other repo is checked against.",
   "extends": ["github>mnmal-ai/substrate//renovate-presets/fleet"],
+  "gitIgnoredAuthors": ["mnmal-ai-agent@users.noreply.github.com"],
+  "rebaseWhen": "conflicted",
   "packageRules": [
     {
       "description": "One PR for the fleet toolchain. Keep this list equal to TRACKED in scripts/emit-toolchain.mjs (plus pnpm and node); emit-toolchain --check enforces it.",
@@ -17,6 +19,11 @@
         "pnpm",
         "node"
       ]
+    },
+    {
+      "description": "Hold tsdown at 0.23.1: 0.23.2 depends on rolldown-plugin-dts 0.29.0-beta, whose tsc generator refuses TypeScript 7.0 and whose tsgo generator needs typescript 7.1 beta. Lift once a tsdown release supports TypeScript 7.0 stable.",
+      "matchPackageNames": ["tsdown"],
+      "allowedVersions": "<0.23.2"
     }
   ]
 }

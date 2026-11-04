@@ -15,7 +15,7 @@
  * reason.
  */
 
-import { type PgHandle, txScopeIdFor } from '@mnmal-ai/substrate-dataset-pg';
+import { type PgHandle, txScopeIdFor, typeTableRef } from '@mnmal-ai/substrate-dataset-pg';
 import type { Sql } from 'postgres';
 import type { Candidate, CandidateSelector } from './candidate-selection.js';
 import type {
@@ -27,7 +27,13 @@ import type {
   EmbeddingsStoreUpsertInput,
   SalienceTarget
 } from './embeddings-store.js';
-import { ROW_BODY_SQL, rowFilterSql } from './pg-row-filter.js';
+import {
+  purgeTypeTableOrphans,
+  ROW_BODY_SQL,
+  rowFilterSql,
+  rowsFrom,
+  scopedRefs
+} from './pg-row-filter.js';
 import { parseVectorText, vectorLiteral } from './pg-vector-text.js';
 
 export interface PgEmbeddingsStoreOptions {
@@ -109,6 +115,9 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
     // SET LOCAL + SELECT in one transaction so the hnsw GUCs apply only here.
     const wantVector = input.returnVector === true;
     const halfLife = input.salienceHalfLifeHours;
+    const ref = await typeTableRef(sql, input.namespace, input.type);
+    if (ref === undefined) return [];
+    const scoped = [{ namespace: input.namespace, type: input.type, ref }];
     type KnnRow = {
       row: Record<string, unknown>;
       score: number;
@@ -139,7 +148,7 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
           } AS salience
           ${wantVector ? tx`, e.embedding::text AS embedding` : tx``}
         FROM embeddings e
-        JOIN rows r
+        JOIN ${rowsFrom(tx as unknown as Sql, scoped, true)} r
           ON r.namespace = e.row_namespace
          AND r.type      = e.row_type
          AND r.id        = e.row_id
@@ -148,7 +157,7 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
           AND e.model         = ${input.model}
           AND r.deleted_at IS NULL
           AND 1 - (e.embedding <=> ${literal}::vector) >= ${threshold}
-          ${rowFilterSql(tx as unknown as Sql, input.rowFilter)}
+          ${rowFilterSql(tx as unknown as Sql, ref, input.rowFilter)}
         ORDER BY e.embedding <=> ${literal}::vector
         LIMIT ${k}
       `;
@@ -199,6 +208,15 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
   ): Promise<ReadonlyArray<EmbeddingsStoreFetchResult>> {
     if (ids.length === 0) return [];
     const sql = this.#sql as Sql;
+    const byType = new Map<string, Array<{ namespace: string; type: string; id: string }>>();
+    for (const id of ids) {
+      const key = `${id.namespace}/${id.type}`;
+      byType.set(key, [...(byType.get(key) ?? []), id]);
+    }
+    const scoped = await scopedRefs(
+      sql,
+      [...byType.values()].map(([first]) => first as { namespace: string; type: string })
+    );
 
     type EmbeddingRow = {
       row_namespace: string;
@@ -212,17 +230,25 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
     // Drive the join from the small VALUES list so each tuple is a primary-key
     // lookup on embeddings; model is a residual filter. The PK covers
     // the tuple, so no extra index is needed.
-    const rows = await sql<EmbeddingRow[]>`
+    const fetch = (part: typeof ids, from: ReturnType<typeof rowsFrom>) => sql<EmbeddingRow[]>`
       SELECT e.row_namespace, e.row_type, e.row_id, e.embedding::text AS embedding,
              ${sql.unsafe(ROW_BODY_SQL)} AS body, e.salience
-      FROM (VALUES ${sql(ids.map((id) => [id.namespace, id.type, id.id]))}) AS t(ns, ty, id)
+      FROM (VALUES ${sql(part.map((id) => [id.namespace, id.type, id.id]))}) AS t(ns, ty, id)
       JOIN embeddings e
         ON e.row_namespace = t.ns AND e.row_type = t.ty AND e.row_id = t.id
-      JOIN rows r
+      JOIN ${from} r
         ON r.namespace = e.row_namespace AND r.type = e.row_type AND r.id = e.row_id
       WHERE e.model = ${model}
         AND r.deleted_at IS NULL
     `;
+    // One statement per type, so each id is looked up in its own type's table only.
+    const rows = (
+      await Promise.all(
+        scoped
+          .filter((s) => s.ref !== undefined)
+          .map((s) => fetch(byType.get(`${s.namespace}/${s.type}`) ?? [], rowsFrom(sql, [s])))
+      )
+    ).flat();
 
     return rows.map((r) => ({
       namespace: r.row_namespace,
@@ -240,6 +266,7 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
     const types = selector.scopes.map((s) => s.type);
     const exclusionFields = selector.excludeTextPrefixes.map((e) => e.field);
     const exclusionPrefixes = selector.excludeTextPrefixes.map((e) => e.prefix);
+    const scoped = await scopedRefs(sql, selector.scopes);
 
     // No HNSW GUCs: this is an exhaustive scoped scan, not a kNN, so `model`
     // can sit in the WHERE.
@@ -259,7 +286,7 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
       SELECT e.row_namespace, e.row_type, e.row_id, e.embedding::text AS embedding,
              ${sql.unsafe(ROW_BODY_SQL)} AS body
       FROM embeddings e
-      JOIN rows r
+      JOIN ${rowsFrom(sql, scoped)} r
         ON r.namespace = e.row_namespace
        AND r.type      = e.row_type
        AND r.id        = e.row_id
@@ -298,24 +325,42 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
 
   /**
    * Deletes every embedding whose backing row is missing or soft-deleted.
-   * Needed because `embeddings` has no FK to `rows` and no
+   * Needed because `embeddings` has no FK to the type tables and no
    * dataset delete path touches it; tombstones are terminal, so soft-deleted
    * rows are safe to collect immediately. Run as a sweep stage by the binary.
    *
    * @returns number of orphaned embeddings deleted.
    */
-  async purgeOrphans(): Promise<number> {
+  async staleRowIds(input: {
+    namespace: string;
+    type: string;
+    afterId: string;
+    limit: number;
+  }): Promise<string[]> {
     const sql = this.#sql as Sql;
-    const result = await sql`
-      DELETE FROM embeddings e
-      WHERE NOT EXISTS (
-        SELECT 1 FROM rows r
-        WHERE r.namespace = e.row_namespace
-          AND r.type      = e.row_type
-          AND r.id        = e.row_id
-          AND r.deleted_at IS NULL
-      )
+    const ref = await typeTableRef(sql, input.namespace, input.type);
+    if (ref === undefined) return [];
+    const rows = rowsFrom(sql, [{ namespace: input.namespace, type: input.type, ref }]);
+    const found = await sql<Array<{ id: string }>>`
+      SELECT r.id FROM ${rows} r
+      WHERE r.namespace = ${input.namespace}
+        AND r.type      = ${input.type}
+        AND r.deleted_at IS NULL
+        AND r.id > ${input.afterId}
+        AND NOT EXISTS (
+          SELECT 1 FROM embeddings e
+          WHERE e.row_namespace = r.namespace
+            AND e.row_type      = r.type
+            AND e.row_id        = r.id
+            AND (r.updated_at IS NULL OR e.updated_at >= r.updated_at)
+        )
+      ORDER BY r.id
+      LIMIT ${input.limit}
     `;
-    return result.count;
+    return found.map((r) => r.id);
+  }
+
+  async purgeOrphans(): Promise<number> {
+    return purgeTypeTableOrphans(this.#sql as Sql, 'embeddings');
   }
 }

@@ -13,19 +13,18 @@
  */
 
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
-import type { Row, RowMetadata, WhereClause } from '@mnmal-ai/substrate-types';
+import type { FieldDef, Row, RowMetadata, WhereClause } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PgDataset, runMigrations } from '../src/index.js';
-import { addTestPromotedColumns, dropTestPromotedColumns, TEST_PROMOTED } from './_promoted.js';
+import { truncateRows } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 
 /**
- * `project`, `status` and `priority` are body-PROMOTED columns on pg (they get
- * real columns, not JSONB body extraction) and plain body fields in memory.
- * That asymmetry is exactly where the operator support drifted apart, so the
- * fixtures exercise promoted and non-promoted string fields side by side.
+ * `project`, `status` and `priority` were the old layouts' body-promoted
+ * columns, where the operator support drifted apart; the fixtures keep
+ * exercising them beside the other string fields.
  */
 const md = (id: string): RowMetadata => ({
   createdAt: '2026-01-01T00:00:00.000Z',
@@ -77,17 +76,15 @@ describe.skipIf(!POSTGRES_URL)('backend filter parity', () => {
   beforeAll(async () => {
     sql = postgres(POSTGRES_URL as string);
     await runMigrations(sql);
-    await addTestPromotedColumns(sql);
   });
 
   afterAll(async () => {
-    await dropTestPromotedColumns(sql);
     await sql.end();
   });
 
   beforeEach(async () => {
-    await sql`TRUNCATE TABLE rows, short_ids`;
-    pg = new PgDataset({ namespace: 'parity_ns', sql, promotedColumns: TEST_PROMOTED });
+    await truncateRows(sql);
+    pg = new PgDataset({ namespace: 'parity_ns', sql });
     mem = new MemoryDataset({ namespace: 'parity_ns' });
     await pg.write('P', ROWS);
     await mem.write('P', ROWS);
@@ -237,8 +234,8 @@ describe.skipIf(!POSTGRES_URL)('backend filter parity', () => {
    * silently could not be applied leaves nothing at all to notice.
    */
   it('both backends refuse an unhonourable filter even when there is nothing to filter', async () => {
-    await sql`TRUNCATE TABLE rows, short_ids`;
-    const emptyPg = new PgDataset({ namespace: 'parity_ns', sql, promotedColumns: TEST_PROMOTED });
+    await truncateRows(sql);
+    const emptyPg = new PgDataset({ namespace: 'parity_ns', sql });
     const emptyMem = new MemoryDataset({ namespace: 'parity_ns' });
 
     for (const where of [
@@ -256,50 +253,6 @@ describe.skipIf(!POSTGRES_URL)('backend filter parity', () => {
     }
   });
 
-  /**
-   * The exact boundary of substrate-level refusal, pinned so it stays a
-   * decision rather than becoming a surprise.
-   *
-   * `{ project: { bogusOp: { eq: 'x' } } }` is structurally identical to the
-   * legitimate nested-struct filter `{ address: { city: { eq: 'x' } } }`.
-   * Two things can still resolve it, and memory uses whichever it has:
-   *
-   *   a ROW    — 'substrate' is a string, so no nested struct can apply, so those
-   *              keys were operators and none is recognised. Refused.
-   *   NOTHING  — an empty collection offers no value to contradict the struct
-   *              reading, so memory declines to guess rather than break every
-   *              struct filter.
-   *
-   * pg refuses either way: `project` is a promoted column, which cannot be
-   * struct-nested, so its keys are read as operators.
-   *
-   * The empty-collection asymmetry is acceptable ONLY because the filter
-   * validator, which holds the schema and so can always decide, rejects unknown
-   * operators upstream on every path it runs.
-   */
-  it('resolves an operator-shaped typo from the row, and defers to the validator without one', async () => {
-    const where = { project: { bogusOp: { eq: 'x' } } } as WhereClause;
-
-    // With rows present, both substrates decide it.
-    expect(await run(pg, where)).toEqual({ kind: 'refused' });
-    expect(await run(mem, where)).toEqual({ kind: 'refused' });
-
-    // With nothing to decide against, memory defers.
-    await sql`TRUNCATE TABLE rows, short_ids`;
-    expect(
-      await run(
-        new PgDataset({ namespace: 'parity_ns', sql, promotedColumns: TEST_PROMOTED }),
-        where
-      )
-    ).toEqual({
-      kind: 'refused'
-    });
-    expect(await run(new MemoryDataset({ namespace: 'parity_ns' }), where)).toEqual({
-      kind: 'rows',
-      ids: []
-    });
-  });
-
   it('pg refuses a non-number shortId operand rather than dropping it', async () => {
     for (const op of ['eq', 'neq', 'gt', 'gte', 'lt', 'lte']) {
       expect(await run(pg, { shortId: { [op]: '5' } } as WhereClause), op).toEqual({
@@ -309,6 +262,81 @@ describe.skipIf(!POSTGRES_URL)('backend filter parity', () => {
     expect(await run(pg, { shortId: { between: [1, '9'] } } as WhereClause)).toEqual({
       kind: 'refused'
     });
+  });
+
+  /**
+   * Wrong-shaped stored values under declared kinds: `n` is a number field and
+   * `at` a date field, and `e1` holds a string in `n` and an impossible day in `at`. Such a value reads as
+   * NULL on pg (substrate_num / substrate_ts) and never matches on either
+   * substrate, inside a NOT included.
+   */
+  describe('wrong-shaped values under declared kinds', () => {
+    const lookup = (_type: string, field: string): FieldDef | undefined =>
+      field === 'n'
+        ? { kind: 'scalar', type: 'number' }
+        : field === 'at'
+          ? { kind: 'scalar', type: 'date' }
+          : undefined;
+    const EDGE_ROWS: Row[] = [
+      { id: 'e1', n: 'abc', at: '2026-02-30 10:00', "o'neil": 'x' },
+      { id: 'e2', n: 5, at: '2026-10-24T10:00:00Z' },
+      { id: 'e3', n: 0.5, at: '2026-10-23T10:00:00Z' }
+    ];
+    let epg: PgDataset;
+    let emem: MemoryDataset;
+
+    beforeEach(async () => {
+      epg = new PgDataset({ namespace: 'parity_edge', sql, fieldDefLookup: lookup });
+      emem = new MemoryDataset({ namespace: 'parity_edge', fieldDefLookup: lookup });
+      await epg.write('E', EDGE_ROWS);
+      await emem.write('E', EDGE_ROWS);
+    });
+
+    const edgeCases: Array<[string, WhereClause, string[]]> = [
+      ['number gt over a string value', { n: { gt: 1 } }, ['e2']],
+      ['NOT number gt over a string value', { NOT: { n: { gt: 1 } } }, ['e1', 'e3']],
+      ['impossible date under gte', { at: { gte: '2026-10-24T00:00:00Z' } }, ['e2']],
+      [
+        'NOT impossible date under gte',
+        { NOT: { at: { gte: '2026-10-24T00:00:00Z' } } },
+        ['e1', 'e3']
+      ],
+      ['impossible date under eq', { at: { eq: '2026-10-24T10:00:00Z' } }, ['e2']],
+      ['quoted field name', { "o'neil": { eq: 'x' } }, ['e1']],
+      // Operands read as stored values do: no offset is UTC.
+      ['date-only operand', { at: { gt: '2026-10-24' } }, ['e2']],
+      ['offset-less operand', { at: { lt: '2026-10-23 22:00' } }, ['e3']]
+    ];
+
+    for (const [name, where, expected] of edgeCases) {
+      it(`both backends apply: ${name}`, async () => {
+        for (const ds of [epg, emem]) {
+          const { rows } = await ds.read('E', { where });
+          expect(rows.map((r) => String(r.id)).sort(), ds === epg ? 'pg' : 'memory').toEqual(
+            expected
+          );
+        }
+      });
+    }
+
+    // A wrong-shaped value sorts as NULL: last, in both directions.
+    const sorts: Array<[string, 'asc' | 'desc', string[]]> = [
+      ['n', 'asc', ['e3', 'e2', 'e1']],
+      ['n', 'desc', ['e2', 'e3', 'e1']],
+      ['at', 'asc', ['e3', 'e2', 'e1']],
+      ['at', 'desc', ['e2', 'e3', 'e1']]
+    ];
+    for (const [field, dir, expected] of sorts) {
+      it(`both backends sort ${field} ${dir} with a wrong-shaped value last`, async () => {
+        for (const ds of [epg, emem]) {
+          const { rows } = await ds.read('E', { orderBy: [{ [field]: dir }] });
+          expect(
+            rows.map((r) => r.id),
+            ds === epg ? 'pg' : 'memory'
+          ).toEqual(expected);
+        }
+      });
+    }
   });
 
   it('both backends sort body strings in byte order', async () => {
@@ -367,15 +395,13 @@ describe.skipIf(!POSTGRES_URL)('backend filter parity over NULL values', () => {
   beforeAll(async () => {
     sql = postgres(POSTGRES_URL as string);
     await runMigrations(sql);
-    await addTestPromotedColumns(sql);
   });
   afterAll(async () => {
-    await dropTestPromotedColumns(sql);
     await sql.end();
   });
   beforeEach(async () => {
-    await sql`TRUNCATE TABLE rows, short_ids`;
-    pg = new PgDataset({ namespace: 'parity_null_ns', sql, promotedColumns: TEST_PROMOTED });
+    await truncateRows(sql);
+    pg = new PgDataset({ namespace: 'parity_null_ns', sql });
     mem = new MemoryDataset({ namespace: 'parity_null_ns' });
     await pg.write('P', NULL_ROWS);
     await mem.write('P', NULL_ROWS);
@@ -389,9 +415,8 @@ describe.skipIf(!POSTGRES_URL)('backend filter parity over NULL values', () => {
     return rows.map((r) => String(r.id)).sort();
   };
 
-  // `project` is a body-PROMOTED column on pg and a plain body key in memory;
-  // `owner` is a plain body key on both. Both are exercised because the two pg
-  // storage paths handle nulls by different routes.
+  // `project` and `owner` are both plain jsonb keys here (no declared fields);
+  // both are kept, as the old layouts routed them differently.
   const cases: Array<[string, WhereClause, string[]]> = [
     ['project neq admits null', { project: { neq: 'substrate' } }, ['n2', 'n3']],
     ['project nin admits null', { project: { nin: ['substrate'] } }, ['n2', 'n3']],

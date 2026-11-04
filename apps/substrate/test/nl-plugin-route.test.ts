@@ -144,7 +144,6 @@ describe('the NL routes', () => {
   it('POST /substrate/v1/nl answers a question as JSON with a rows outcome', async () => {
     ctx = await mkServer({});
     await seedTodo(ctx.server);
-    // `status` is unindexed in the fixture, so ask for plain todos: the engine would reject a status filter.
     const res = await ctx.server.inject(ask({ namespace: 'default', question: 'todos' }));
     expect(res.status).toBe(200);
     const parsed = jsonBody<{
@@ -164,6 +163,19 @@ describe('the NL routes', () => {
     const text = await streamToString(res);
     const names = [...text.matchAll(/^event: (\w+)$/gm)].map((m) => m[1]);
     expect(names).toEqual(['parsed', 'rows', 'done']);
+  });
+
+  it('a count on the memory store, which refuses count: true, falls back to paging', async () => {
+    ctx = await mkServer({});
+    await seedTodo(ctx.server);
+    await seedTodo(ctx.server);
+    const res = await ctx.server.inject(
+      ask({ namespace: 'default', question: 'how many open todos' })
+    );
+    expect(res.status).toBe(200);
+    const { outcome } = jsonBody<{ outcome: Record<string, unknown> }>(res);
+    expect(outcome).toMatchObject({ kind: 'rows', answer: 'count', count: 2 });
+    expect(outcome).not.toHaveProperty('errors');
   });
 
   it('GET /substrate/v1/nl/pack/:ns serves the pack, then 304 on a matching etag', async () => {

@@ -4,37 +4,77 @@
  * operator-fragment compiler, and the `conditionalUpdate` match fragment.
  */
 
-import { isJsonPathPredicate } from '@mnmal-ai/substrate-filter';
-import { type Id, UnsupportedFilterError, type WhereClause } from '@mnmal-ai/substrate-types';
+import { bindingWalks, isJsonPathPredicate, isRefOperand } from '@mnmal-ai/substrate-filter';
+import {
+  type Id,
+  type RefOperand,
+  ResolverFrameError,
+  UnsupportedFilterError,
+  WALK_UNSUPPORTED_REF,
+  type WalkAggPredicate,
+  type WalkNode,
+  type WhereClause
+} from '@mnmal-ai/substrate-types';
 import type { Sql, TransactionSql } from 'postgres';
+import type { TypeTable } from '../type-table.js';
+import { buildAggPredicate } from './aggregate.js';
 import { buildJsonPathPredicate } from './predicates-json-path.js';
 import { buildMetadataColumnPredicate } from './predicates-metadata.js';
-import { buildPromotedBodyColumnPredicate } from './predicates-promoted.js';
+import { buildColumnPredicate } from './predicates-promoted.js';
 import {
   asJsonValue,
   type BodyOrderByCast,
+  bodyJson,
+  bodyNum,
+  bodyRawText,
+  bodyText,
+  bodyTs,
   combineAnd,
   combineOr,
   escapeLike,
   type Fragment,
+  fieldExpr,
   idToText,
   isMetadataField,
+  type JsonbColumn,
   metaStr,
-  type PromotedColumnLookup,
+  notNullAnd,
+  qualifier,
   scalarParam,
+  sqlStringLiteral,
   tsArrayParam,
   tsParam
 } from './primitives.js';
+import { buildGroup, buildRefCompare, buildWalk, type WalkScope } from './walk.js';
 
+/**
+ * The WHERE fragment for `where`, or null when it constrains nothing. With a
+ * `scope`, expressions are qualified by `scope.alias` and the walk grammar
+ * (`_walk`, `$ref`) compiles; an AND group's `any` walks with `as` become one
+ * jointly quantified `EXISTS` (see `buildGroup`). Without one the text is
+ * exactly what it was before walks, and `_walk` / `$ref` are refused.
+ * `table` describes the filtered row; a walk's far rows are `scope.tableFor`'s.
+ */
 export function buildWhere(
   sql: Sql | TransactionSql,
   where: WhereClause,
   castFor: (field: string) => BodyOrderByCast | null,
-  promotedFor: PromotedColumnLookup
+  table: TypeTable,
+  scope?: WalkScope
 ): Fragment | null {
   if (where === null || typeof where !== 'object' || Array.isArray(where)) return null;
   const keys = Object.keys(where);
   if (keys.length === 0) return null;
+  // As memory's evaluateMembers: an object holding `_agg` is one aggregate comparison.
+  if (Object.hasOwn(where, '_agg')) {
+    if (scope === undefined) {
+      throw new ResolverFrameError(WALK_UNSUPPORTED_REF, `'_agg' is not supported here`);
+    }
+    return buildAggPredicate(sql, where as WalkAggPredicate, table, scope);
+  }
+  if (scope !== undefined && bindingWalks(where).length > 0) {
+    return buildGroup(sql, where, castFor, table, scope);
+  }
 
   // AND/OR/NOT and field keys at one level all AND together, as in memory's
   // evaluateWhere; dropping the field keys beside a combinator widens the read.
@@ -45,16 +85,21 @@ export function buildWhere(
       if (!Array.isArray(child)) continue;
       const subs: Fragment[] = [];
       for (const sub of child) {
-        const frag = buildWhere(sql, sub as WhereClause, castFor, promotedFor);
+        const frag = buildWhere(sql, sub as WhereClause, castFor, table, scope);
         if (frag !== null) subs.push(frag);
       }
       if (subs.length > 0)
         fragments.push(k === 'AND' ? combineAnd(sql, subs) : combineOr(sql, subs));
     } else if (k === 'NOT') {
-      const inner = buildWhere(sql, child as WhereClause, castFor, promotedFor);
+      const inner = buildWhere(sql, child as WhereClause, castFor, table, scope);
       if (inner !== null) fragments.push(sql`NOT (${inner})`);
+    } else if (k === '_walk') {
+      if (scope === undefined) {
+        throw new ResolverFrameError(WALK_UNSUPPORTED_REF, `'_walk' is not supported here`);
+      }
+      fragments.push(buildWalk(sql, child as WalkNode, table, scope));
     } else {
-      const frag = buildFieldPredicate(sql, k, child, castFor, promotedFor);
+      const frag = buildFieldPredicate(sql, k, child, castFor, table, scope);
       if (frag !== null) fragments.push(frag);
     }
   }
@@ -62,12 +107,25 @@ export function buildWhere(
   return combineAnd(sql, fragments);
 }
 
+/** True when `field` is a predicate key anywhere in the tree, under AND/OR/NOT included. */
+export function whereReferencesField(where: unknown, field: string): boolean {
+  if (where === null || typeof where !== 'object' || Array.isArray(where)) return false;
+  for (const [k, child] of Object.entries(where)) {
+    if (k === field) return true;
+    if ((k === 'AND' || k === 'OR') && Array.isArray(child)) {
+      if (child.some((sub) => whereReferencesField(sub, field))) return true;
+    } else if (k === 'NOT' && whereReferencesField(child, field)) return true;
+  }
+  return false;
+}
+
 function buildFieldPredicate(
   sql: Sql | TransactionSql,
   field: string,
   predicate: unknown,
   castFor: (field: string) => BodyOrderByCast | null,
-  promotedFor: PromotedColumnLookup
+  table: TypeTable,
+  scope?: WalkScope
 ): Fragment | null {
   if (predicate === null || typeof predicate !== 'object' || Array.isArray(predicate)) {
     // A bare value where an operator object belongs (`where: { project: 'x' }`).
@@ -78,47 +136,74 @@ function buildFieldPredicate(
       `expected a predicate object such as { eq: ... }, got ${Array.isArray(predicate) ? 'an array' : typeof predicate}`
     );
   }
+  // `$ref` operands compare against another row's field; the rest compile as usual.
+  const entries = Object.entries(predicate as Record<string, unknown>);
+  if (entries.some(([, v]) => isRefOperand(v))) {
+    if (scope === undefined) throw new UnsupportedFilterError(field, '$ref', 'needs a walk scope');
+    const frags = entries
+      .filter(([, v]) => isRefOperand(v))
+      .map(([op, v]) => buildRefCompare(sql, field, op, v as RefOperand, castFor, scope));
+    const rest = entries.filter(([, v]) => !isRefOperand(v));
+    const restFrag =
+      rest.length === 0
+        ? null
+        : buildFieldPredicate(sql, field, Object.fromEntries(rest), castFor, table, scope);
+    return combineAnd(sql, restFrag === null ? frags : [...frags, restFrag]);
+  }
+  const alias = scope?.alias;
   // The PK column, not the body: many types don't declare id in body.
   if (field === 'id') {
-    return buildIdPredicate(sql, predicate as Record<string, unknown>);
+    return buildIdPredicate(sql, predicate as Record<string, unknown>, alias);
   }
   // shortId is a sidecar-joined field (s.short_id), not a JSONB body field.
-  // Route it through the specialised short-id predicate builder.
+  // Route it through the specialised short-id predicate builder. A walk's far
+  // row has no join, so it looks its short id up; a type table's row carries no
+  // namespace or type, so the lookup names its table's.
   if (field === 'shortId') {
-    return buildShortIdPredicate(sql, predicate as Record<string, unknown>);
+    const owner = `ws.namespace = ${sqlStringLiteral(table.namespace)} AND ws.type = ${sqlStringLiteral(table.type)}`;
+    const col =
+      scope === undefined || scope.alias === scope.seedAlias
+        ? sql`s.short_id`
+        : sql`${sql.unsafe(
+            `(SELECT ws.short_id FROM short_ids ws WHERE ${owner} AND ws.row_id = ${alias}.id LIMIT 1)`
+          )}`;
+    return buildShortIdPredicate(sql, predicate as Record<string, unknown>, col);
   }
   // Row-metadata fields route to dedicated columns — not body->> extraction.
   if (isMetadataField(field)) {
-    return buildMetadataColumnPredicate(sql, field, predicate as Record<string, unknown>);
-  }
-  // Body-promoted fields route to their dedicated column only (no body
-  // fallback). See `PgDatasetOptions.promotedColumns`.
-  const promotedField = promotedFor(field);
-  if (promotedField !== undefined) {
-    return buildPromotedBodyColumnPredicate(
-      sql,
-      field,
-      promotedField,
-      predicate as Record<string, unknown>
-    );
+    return buildMetadataColumnPredicate(sql, field, predicate as Record<string, unknown>, alias);
   }
   // Json path predicate. Only an ARRAY-valued `path` — a struct
   // sub-field that happens to be named `path` carries an object and falls
   // through to the struct walk below.
   if (isJsonPathPredicate(predicate)) {
-    return buildJsonPathPredicate(sql, field, predicate);
+    return buildJsonPathPredicate(sql, field, predicate, alias, table.jsonb);
   }
-  // Everything else lives in the JSONB body and is addressed by PATH, so that
-  // struct sub-clauses can extend it. The dedicated columns above cannot be
-  // struct-nested, which is why the split happens here.
-  return buildFieldPredicateForPath(sql, [field], predicate, castFor);
+  // A type table's column field: its column, or its `extra` key while that wins.
+  const column = table.column(field);
+  if (column !== undefined) {
+    return buildColumnPredicate(
+      sql,
+      field,
+      table,
+      column,
+      predicate as Record<string, unknown>,
+      alias
+    );
+  }
+  // Everything else lives in the JSONB body (`extra` on a type table) and is
+  // addressed by PATH, so that struct sub-clauses can extend it. The dedicated
+  // columns above cannot be struct-nested, which is why the split happens here.
+  return buildFieldPredicateForPath(sql, [field], predicate, castFor, alias, table.jsonb);
 }
 
 function buildFieldPredicateForPath(
   sql: Sql | TransactionSql,
   path: string[],
   predicate: unknown,
-  castFor: (field: string) => BodyOrderByCast | null
+  castFor: (field: string) => BodyOrderByCast | null,
+  alias?: string,
+  jsonb?: JsonbColumn
 ): Fragment | null {
   const field = path.join('.');
   const entries = Object.entries(predicate as Record<string, unknown>);
@@ -135,7 +220,14 @@ function buildFieldPredicateForPath(
   ) {
     const subs: Fragment[] = [];
     for (const [subField, subPredicate] of entries) {
-      const frag = buildBodyPathPredicate(sql, [...path, subField], subPredicate, castFor);
+      const frag = buildBodyPathPredicate(
+        sql,
+        [...path, subField],
+        subPredicate,
+        castFor,
+        alias,
+        jsonb
+      );
       if (frag !== null) subs.push(frag);
     }
     if (subs.length === 0) return null;
@@ -147,7 +239,7 @@ function buildFieldPredicateForPath(
   const declaredCast = path.length === 1 ? castFor(field) : null;
   const fragments: Fragment[] = [];
   for (const [op, operand] of entries) {
-    const frag = buildOpFragment(sql, path, op, operand, declaredCast);
+    const frag = buildOpFragment(sql, path, op, operand, declaredCast, alias, jsonb);
     if (frag !== null) fragments.push(frag);
   }
   if (fragments.length === 0) return null;
@@ -180,7 +272,9 @@ function buildBodyPathPredicate(
   sql: Sql | TransactionSql,
   path: string[],
   predicate: unknown,
-  castFor: (field: string) => BodyOrderByCast | null
+  castFor: (field: string) => BodyOrderByCast | null,
+  alias?: string,
+  jsonb?: JsonbColumn
 ): Fragment | null {
   if (predicate === null || typeof predicate !== 'object' || Array.isArray(predicate)) {
     throw new UnsupportedFilterError(
@@ -189,7 +283,7 @@ function buildBodyPathPredicate(
       `expected a predicate object such as { eq: ... }, got ${Array.isArray(predicate) ? 'an array' : typeof predicate}`
     );
   }
-  return buildFieldPredicateForPath(sql, path, predicate, castFor);
+  return buildFieldPredicateForPath(sql, path, predicate, castFor, alias, jsonb);
 }
 
 /**
@@ -200,30 +294,32 @@ function buildBodyPathPredicate(
  */
 function buildIdPredicate(
   sql: Sql | TransactionSql,
-  predicate: Record<string, unknown>
+  predicate: Record<string, unknown>,
+  alias?: string
 ): Fragment | null {
+  const id = sql.unsafe(`${qualifier(alias)}id`);
   const fragments: Fragment[] = [];
   for (const [op, operand] of Object.entries(predicate)) {
     let frag: Fragment | null = null;
     switch (op) {
       case 'eq':
         if (operand === null || operand === undefined) {
-          frag = sql`id IS NULL`;
+          frag = sql`${id} IS NULL`;
         } else {
-          frag = sql`id = ${idToText(operand as Id)}`;
+          frag = sql`${id} = ${idToText(operand as Id)}`;
         }
         break;
       case 'neq':
         if (operand === null || operand === undefined) {
-          frag = sql`id IS NOT NULL`;
+          frag = sql`${id} IS NOT NULL`;
         } else {
-          frag = sql`id IS DISTINCT FROM ${idToText(operand as Id)}`;
+          frag = sql`${id} IS DISTINCT FROM ${idToText(operand as Id)}`;
         }
         break;
       case 'in':
         if (Array.isArray(operand) && operand.length > 0) {
           const vals = operand.map((v) => idToText(v as Id));
-          frag = sql`id IN ${sql(vals)}`;
+          frag = sql`${id} IN ${sql(vals)}`;
         } else if (Array.isArray(operand) && operand.length === 0) {
           // Empty IN — match nothing.
           frag = sql`FALSE`;
@@ -232,42 +328,42 @@ function buildIdPredicate(
       case 'nin':
         if (Array.isArray(operand) && operand.length > 0) {
           const vals = operand.map((v) => idToText(v as Id));
-          frag = sql`id NOT IN ${sql(vals)}`;
+          frag = sql`${id} NOT IN ${sql(vals)}`;
         }
         break;
       case 'contains':
         if (typeof operand === 'string') {
-          frag = sql`id ILIKE ${`%${escapeLike(operand)}%`}`;
+          frag = sql`${id} ILIKE ${`%${escapeLike(operand)}%`}`;
         }
         break;
       case 'startsWith':
         if (typeof operand === 'string') {
-          frag = sql`id ILIKE ${`${escapeLike(operand)}%`}`;
+          frag = sql`${id} ILIKE ${`${escapeLike(operand)}%`}`;
         }
         break;
       case 'endsWith':
         if (typeof operand === 'string') {
-          frag = sql`id ILIKE ${`%${escapeLike(operand)}`}`;
+          frag = sql`${id} ILIKE ${`%${escapeLike(operand)}`}`;
         }
         break;
       // Lexicographic string comparisons.
       case 'gt':
-        frag = sql`id > ${metaStr('id', op, operand)}`;
+        frag = sql`${id} > ${metaStr('id', op, operand)}`;
         break;
       case 'gte':
-        frag = sql`id >= ${metaStr('id', op, operand)}`;
+        frag = sql`${id} >= ${metaStr('id', op, operand)}`;
         break;
       case 'lt':
-        frag = sql`id < ${metaStr('id', op, operand)}`;
+        frag = sql`${id} < ${metaStr('id', op, operand)}`;
         break;
       case 'lte':
-        frag = sql`id <= ${metaStr('id', op, operand)}`;
+        frag = sql`${id} <= ${metaStr('id', op, operand)}`;
         break;
       case 'between': {
         if (!Array.isArray(operand) || operand.length !== 2) {
           throw new UnsupportedFilterError('id', op, 'requires a two-element [low, high] array');
         }
-        frag = sql`id BETWEEN ${metaStr('id', op, operand[0])} AND ${metaStr('id', op, operand[1])}`;
+        frag = sql`${id} BETWEEN ${metaStr('id', op, operand[0])} AND ${metaStr('id', op, operand[1])}`;
         break;
       }
       default:
@@ -295,9 +391,9 @@ function numArray(field: string, op: string, v: unknown): number[] {
 /** Build WHERE predicates against `s.short_id` (the LEFT-joined sidecar column). */
 function buildShortIdPredicate(
   sql: Sql | TransactionSql,
-  predicate: Record<string, unknown>
+  predicate: Record<string, unknown>,
+  col: Fragment
 ): Fragment | null {
-  const col = sql`s.short_id`;
   const fragments: Fragment[] = [];
   for (const [op, operand] of Object.entries(predicate)) {
     let frag: Fragment | null = null;
@@ -355,49 +451,33 @@ function buildShortIdPredicate(
 }
 
 /**
- * Build a single SQL comparison for (field, op, operand). Values come from
- * callers (attacker-controlled in principle) so every operand MUST be passed
- * through a parameterised slot. `sql.unsafe()` is deliberately avoided.
+ * Build a single SQL comparison for (field, op, operand). Operands come from
+ * callers (attacker-controlled in principle), so every one goes through a
+ * parameterised slot. Field names are inlined as escaped literals, so that
+ * expression indexes match the compiled text.
  *
  * Case-sensitivity note (design call): `contains` / `startsWith` / `endsWith`
  * use ILIKE for case-INSENSITIVE matching. Memory dataset mirrors this.
  */
-/**
- * `body ->> 'a'` for one segment, `body -> 'a' -> 'b' ->> 'c'` for a path.
- * Segments are parameterised, never concatenated.
- */
-function buildBodyTextExpr(sql: Sql | TransactionSql, path: string[]): Fragment {
-  let expr = sql`body`;
-  for (let i = 0; i < path.length - 1; i++) expr = sql`${expr} -> ${path[i] as string}`;
-  return sql`(${expr} ->> ${path[path.length - 1] as string})`;
-}
-
-/** Same walk, but landing on `->` so the leaf stays jsonb (for `@>` containment). */
-function buildBodyJsonExpr(sql: Sql | TransactionSql, path: string[]): Fragment {
-  let expr = sql`body`;
-  for (const seg of path) expr = sql`${expr} -> ${seg}`;
-  return sql`(${expr})`;
-}
-
 function buildOpFragment(
   sql: Sql | TransactionSql,
   path: string[],
   op: string,
   operand: unknown,
-  declaredCast: BodyOrderByCast | null
+  declaredCast: BodyOrderByCast | null,
+  alias?: string,
+  jsonb?: JsonbColumn
 ): Fragment | null {
-  // Dotted path for error messages only — never interpolated into SQL.
+  // Dotted path for error messages only.
   const field = path.join('.');
-  // JSONB text extraction. A single segment is `body ->> field`; a struct path
-  // walks with `->` and lands with `->>` (`body -> 'address' ->> 'city'`), which
-  // keeps intermediate hops as jsonb and yields text at the leaf. Every segment
-  // goes through a parameter slot, so a field name can never smuggle SQL.
-  const textExpr = buildBodyTextExpr(sql, path);
-  const jsonExpr = buildBodyJsonExpr(sql, path);
-  const num = sql`(${textExpr})::numeric`;
+  // A struct path walks with `->` and lands with `->>`
+  // (`body -> 'address' ->> 'city'`), keeping intermediate hops jsonb.
+  const textExpr = bodyText(sql, path, alias, jsonb);
+  const num = bodyNum(sql, path, alias, jsonb);
+  const ts = bodyTs(sql, path, alias, jsonb);
 
   // A `date`-declared field also accepts an ISO-string operand, which operand
-  // inference alone would text-compare; cast it to timestamptz.
+  // inference alone would text-compare; compare it as an instant.
   const isTs = (v: unknown): boolean =>
     v instanceof Date || (declaredCast === 'timestamptz' && typeof v === 'string');
   // `<expr> = ANY(values)`: numbers against numeric values, the rest typed by
@@ -406,12 +486,12 @@ function buildOpFragment(
     const nums = values.filter((v): v is number => typeof v === 'number');
     const rest = values.filter((v) => typeof v !== 'number');
     const parts: Fragment[] = [];
-    if (nums.length > 0) parts.push(ifJsonNumber(sql, jsonExpr, sql`${num} = ANY(${nums})`));
+    if (nums.length > 0) parts.push(notNullAnd(sql, num, sql`${num} = ANY(${nums})`));
     if (rest.length > 0) {
       parts.push(
         isTs(rest[0])
-          ? sql`COALESCE((${textExpr})::timestamptz = ANY(${tsArrayParam(sql, rest)}), FALSE)`
-          : sql`COALESCE(${textExpr} = ANY(${rest.map(scalarParam)}), FALSE)`
+          ? notNullAnd(sql, ts, sql`${ts} = ANY(${tsArrayParam(sql, rest)})`)
+          : notNullAnd(sql, textExpr, sql`${textExpr} = ANY(${rest.map(scalarParam)})`)
       );
     }
     return combineOr(sql, parts);
@@ -422,37 +502,32 @@ function buildOpFragment(
       if (operand === null) return sql`${textExpr} IS NULL`;
       if (typeof operand === 'boolean') {
         // body ->> returns text; compare the text form so booleans work without a cast dance.
-        return sql`${textExpr} = ${operand ? 'true' : 'false'}`;
+        // Inlined, so a generic plan can still match a partial index's predicate.
+        return sql`${textExpr} = ${sql.unsafe(operand ? "'true'" : "'false'")}`;
       }
-      if (typeof operand === 'number') {
-        return ifJsonNumber(sql, jsonExpr, sql`${num} = ${operand}`);
-      }
-      if (isTs(operand)) {
-        return sql`(${textExpr})::timestamptz = ${tsParam(sql, operand)}`;
-      }
+      if (typeof operand === 'number') return notNullAnd(sql, num, sql`${num} = ${operand}`);
+      if (isTs(operand)) return notNullAnd(sql, ts, sql`${ts} = ${tsParam(sql, operand)}`);
       return sql`${textExpr} = ${scalarParam(operand)}`;
     }
     case 'neq': {
       if (operand === null) return sql`${textExpr} IS NOT NULL`;
       if (typeof operand === 'boolean') {
-        return sql`${textExpr} IS DISTINCT FROM ${operand ? 'true' : 'false'}`;
+        return sql`${textExpr} IS DISTINCT FROM ${sql.unsafe(operand ? "'true'" : "'false'")}`;
       }
       if (typeof operand === 'number') {
-        return sql`NOT ${ifJsonNumber(sql, jsonExpr, sql`${num} = ${operand}`)}`;
+        return sql`NOT ${notNullAnd(sql, num, sql`${num} = ${operand}`)}`;
       }
-      if (isTs(operand)) {
-        return sql`(${textExpr})::timestamptz IS DISTINCT FROM ${tsParam(sql, operand)}`;
-      }
+      if (isTs(operand)) return sql`${ts} IS DISTINCT FROM ${tsParam(sql, operand)}`;
       return sql`${textExpr} IS DISTINCT FROM ${scalarParam(operand)}`;
     }
     case 'gt':
-      return numericCmp(sql, field, textExpr, jsonExpr, operand, '>', declaredCast);
+      return rangeCmp(sql, path, operand, '>', declaredCast, alias, jsonb);
     case 'gte':
-      return numericCmp(sql, field, textExpr, jsonExpr, operand, '>=', declaredCast);
+      return rangeCmp(sql, path, operand, '>=', declaredCast, alias, jsonb);
     case 'lt':
-      return numericCmp(sql, field, textExpr, jsonExpr, operand, '<', declaredCast);
+      return rangeCmp(sql, path, operand, '<', declaredCast, alias, jsonb);
     case 'lte':
-      return numericCmp(sql, field, textExpr, jsonExpr, operand, '<=', declaredCast);
+      return rangeCmp(sql, path, operand, '<=', declaredCast, alias, jsonb);
     case 'between': {
       if (!Array.isArray(operand) || operand.length !== 2) {
         throw new UnsupportedFilterError(field, op, 'requires a two-element [low, high] array');
@@ -460,12 +535,16 @@ function buildOpFragment(
       const low = operand[0];
       const high = operand[1];
       if (typeof low === 'number' && typeof high === 'number') {
-        return ifJsonNumber(sql, jsonExpr, sql`${num} BETWEEN ${low} AND ${high}`);
+        return notNullAnd(sql, num, sql`${num} BETWEEN ${low} AND ${high}`);
       }
       if (isTs(low) || isTs(high)) {
-        return sql`(${textExpr})::timestamptz BETWEEN ${tsParam(sql, low)} AND ${tsParam(sql, high)}`;
+        return notNullAnd(
+          sql,
+          ts,
+          sql`${ts} BETWEEN ${tsParam(sql, low)} AND ${tsParam(sql, high)}`
+        );
       }
-      return sql`${textExpr} COLLATE "C" BETWEEN ${scalarParam(low)} AND ${scalarParam(high)}`;
+      return sql`${textExpr} BETWEEN ${scalarParam(low)} AND ${scalarParam(high)}`;
     }
     case 'in': {
       if (!Array.isArray(operand)) {
@@ -493,27 +572,16 @@ function buildOpFragment(
       // the memory evaluator do.
       return sql`(${textExpr} IS NULL OR NOT ${anyOf(values)})`;
     }
-    case 'contains': {
-      if (typeof operand !== 'string') {
-        throw new UnsupportedFilterError(field, op, 'requires a string value');
-      }
-      // Pattern operators on the body are unindexed; seq-scan accepted.
-      const pattern = `%${escapeLike(operand)}%`;
-      return sql`${textExpr} ILIKE ${pattern}`;
-    }
-    case 'startsWith': {
-      if (typeof operand !== 'string') {
-        throw new UnsupportedFilterError(field, op, 'requires a string value');
-      }
-      const pattern = `${escapeLike(operand)}%`;
-      return sql`${textExpr} ILIKE ${pattern}`;
-    }
+    case 'contains':
+    case 'startsWith':
     case 'endsWith': {
       if (typeof operand !== 'string') {
         throw new UnsupportedFilterError(field, op, 'requires a string value');
       }
-      const pattern = `%${escapeLike(operand)}`;
-      return sql`${textExpr} ILIKE ${pattern}`;
+      // Pattern operators on the body are unindexed; seq-scan accepted.
+      const e = escapeLike(operand);
+      const pattern = op === 'contains' ? `%${e}%` : op === 'startsWith' ? `${e}%` : `%${e}`;
+      return sql`${bodyRawText(sql, path, alias, jsonb)} ILIKE ${pattern}`;
     }
     case 'has': {
       // List membership: `@>` with a one-element array, preserving native types
@@ -521,7 +589,7 @@ function buildOpFragment(
       // `sql.json([..])` sends a real jsonb array — a plain stringified value
       // with `::jsonb` would double-encode into a jsonb *string*, not an array.
       const elem = operand instanceof Date ? operand.toISOString() : operand;
-      return sql`${buildBodyJsonExpr(sql, path)} @> ${sql.json(asJsonValue([elem]))}`;
+      return sql`${bodyJson(sql, path, alias, jsonb)} @> ${sql.json(asJsonValue([elem]))}`;
     }
     default:
       throw new UnsupportedFilterError(field, op, 'is not a recognised filter operator');
@@ -529,77 +597,48 @@ function buildOpFragment(
 }
 
 /**
- * `cond` only where the jsonb value is a number, else FALSE. CASE because SQL
- * does not promise AND short-circuits, so one non-numeric value could still
- * reach `::numeric` and abort the whole query; COALESCE so a mismatch is
- * FALSE, never NULL under a caller's NOT.
+ * An ordered compare, typed by the operand: numbers through `substrate_num`,
+ * Dates (or ISO-string operands on a `date`-declared field) through
+ * `substrate_ts`, plain strings as collated text. A stored value of another
+ * shape reads as NULL and never matches.
  */
-function ifJsonNumber(sql: Sql | TransactionSql, jsonExpr: Fragment, cond: Fragment): Fragment {
-  return sql`COALESCE(CASE WHEN jsonb_typeof(${jsonExpr}) = 'number' THEN ${cond} END, FALSE)`;
-}
-
-/**
- * Compare `(body ->> field)` with a cast appropriate to the value. Numbers use
- * `::numeric`, Dates (or ISO-string operands on a `date`-declared field) use
- * `::timestamptz`, plain strings use text.
- */
-function numericCmp(
+function rangeCmp(
   sql: Sql | TransactionSql,
-  field: string,
-  textExpr: Fragment,
-  jsonExpr: Fragment,
+  path: string[],
   operand: unknown,
   cmp: '>' | '>=' | '<' | '<=',
-  declaredCast: BodyOrderByCast | null
+  declaredCast: BodyOrderByCast | null,
+  alias?: string,
+  jsonb?: JsonbColumn
 ): Fragment {
-  if (typeof operand === 'number') {
-    // Can't interpolate the operator — template tag slots are value slots, not
-    // arbitrary SQL. Spread a fixed set of operator fragments instead.
-    const n = sql`(${textExpr})::numeric`;
+  // Template slots are value slots, so the operator comes from a fixed set.
+  const compare = (expr: Fragment, param: number | string | Fragment): Fragment => {
     switch (cmp) {
       case '>':
-        return ifJsonNumber(sql, jsonExpr, sql`${n} > ${operand}`);
+        return sql`${expr} > ${param}`;
       case '>=':
-        return ifJsonNumber(sql, jsonExpr, sql`${n} >= ${operand}`);
+        return sql`${expr} >= ${param}`;
       case '<':
-        return ifJsonNumber(sql, jsonExpr, sql`${n} < ${operand}`);
+        return sql`${expr} < ${param}`;
       case '<=':
-        return ifJsonNumber(sql, jsonExpr, sql`${n} <= ${operand}`);
+        return sql`${expr} <= ${param}`;
     }
+  };
+  if (typeof operand === 'number') {
+    const num = bodyNum(sql, path, alias, jsonb);
+    return notNullAnd(sql, num, compare(num, operand));
   }
   if (operand instanceof Date || (declaredCast === 'timestamptz' && typeof operand === 'string')) {
-    const ts = tsParam(sql, operand);
-    switch (cmp) {
-      case '>':
-        return sql`(${textExpr})::timestamptz > ${ts}`;
-      case '>=':
-        return sql`(${textExpr})::timestamptz >= ${ts}`;
-      case '<':
-        return sql`(${textExpr})::timestamptz < ${ts}`;
-      case '<=':
-        return sql`(${textExpr})::timestamptz <= ${ts}`;
-    }
+    const ts = bodyTs(sql, path, alias, jsonb);
+    return notNullAnd(sql, ts, compare(ts, tsParam(sql, operand)));
   }
-  if (typeof operand === 'string') {
-    // Byte order, as memory and the json-path builder compare, not the
-    // database collation.
-    const s = sql`${textExpr} COLLATE "C"`;
-    switch (cmp) {
-      case '>':
-        return sql`${s} > ${operand}`;
-      case '>=':
-        return sql`${s} >= ${operand}`;
-      case '<':
-        return sql`${s} < ${operand}`;
-      case '<=':
-        return sql`${s} <= ${operand}`;
-    }
-  }
+  // Byte order, as memory and the json-path builder compare.
+  if (typeof operand === 'string') return compare(bodyText(sql, path, alias, jsonb), operand);
   // Ordered comparison against something that is neither number, date nor
   // string — booleans, objects, null. Nothing sensible to emit, and emitting
   // nothing silently widened the result set.
   throw new UnsupportedFilterError(
-    field,
+    path.join('.'),
     cmp,
     `cannot compare against a ${operand === null ? 'null' : typeof operand} value`
   );
@@ -609,25 +648,36 @@ function numericCmp(
  * Predicate fragment used by `conditionalUpdate`. Mirrors the equality rules
  * of `read()`'s `eq` operator so a `conditionalUpdate({ consumedAt: null })`
  * matches the same rows a subsequent `read({ where: { consumedAt: { eq: null } } })`
- * would. `null` maps to `IS NULL`; `Date` is compared on the `::timestamptz`
- * cast of the extracted text; scalars compare via the textual representation
- * pg's JSONB `->>` operator returns.
+ * would. `null` maps to `IS NULL`; a `Date` compares through `substrate_ts`;
+ * other scalars compare via the textual representation `->>` returns.
  */
 export function conditionalMatchFragment(
   sql: Sql | TransactionSql,
   field: string,
-  expected: unknown
+  expected: unknown,
+  table?: TypeTable
 ): Fragment {
-  const textExpr = sql`(body ->> ${field})`;
+  if (table !== undefined && table.jsonb === 'extra') {
+    // A type table's row as `decodeRow` reads it, compared as memory compares:
+    // by JSON value, so `5` never matches `'5'`; a stored null matches null.
+    const v = fieldExpr(sql, table, field, 'json');
+    if (expected === null || expected === undefined) {
+      return sql`(${v} IS NULL OR ${v} = 'null'::jsonb)`;
+    }
+    if (expected instanceof Date) {
+      return sql`${fieldExpr(sql, table, field, 'date')} = ${tsParam(sql, expected)}`;
+    }
+    return sql`${v} = ${JSON.stringify(expected)}::text::jsonb`;
+  }
+  const textExpr = bodyText(sql, [field]);
   if (expected === null || expected === undefined) return sql`${textExpr} IS NULL`;
   if (typeof expected === 'boolean') {
     return sql`${textExpr} = ${expected ? 'true' : 'false'}`;
   }
   if (typeof expected === 'number') {
-    return ifJsonNumber(sql, sql`(body -> ${field})`, sql`(${textExpr})::numeric = ${expected}`);
+    const num = bodyNum(sql, [field]);
+    return notNullAnd(sql, num, sql`${num} = ${expected}`);
   }
-  if (expected instanceof Date) {
-    return sql`(${textExpr})::timestamptz = ${tsParam(sql, expected)}`;
-  }
+  if (expected instanceof Date) return sql`${bodyTs(sql, [field])} = ${tsParam(sql, expected)}`;
   return sql`${textExpr} = ${String(expected)}`;
 }

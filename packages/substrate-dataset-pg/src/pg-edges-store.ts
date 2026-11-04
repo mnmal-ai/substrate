@@ -146,6 +146,66 @@ export class PgEdgesStore implements EdgesStore {
     };
   }
 
+  async writeMany(inputs: readonly EdgeWriteInput[]): Promise<Edge[]> {
+    if (inputs.length === 0) return [];
+    const edges = inputs.map((input): Edge => {
+      return {
+        id: randomUUID(),
+        from: buildRef(
+          input.from.ns,
+          input.from.type,
+          refToId(input.from.id),
+          input.from.bridged === true
+        ),
+        to: buildRef(input.to.ns, input.to.type, refToId(input.to.id), input.to.bridged === true),
+        fieldName: input.fieldName,
+        policy: input.policy,
+        createdAt: this.#now()
+      };
+    });
+    // One INSERT whatever the count: a column per array, zipped by `unnest`,
+    // so the statement text never grows with the batch. Booleans and
+    // timestamps travel as text and are cast here, because postgres.js
+    // serialises a bare ::boolean[] parameter unreliably.
+    await this.#sql`
+      INSERT INTO edges (
+        id, from_ns, from_type, from_id, from_bridged,
+        to_ns, to_type, to_id, to_bridged,
+        field_name, policy, created_at, deleted_at, last_swept_at, blocked
+      )
+      SELECT t.id, t.from_ns, t.from_type, t.from_id, t.from_bridged::boolean,
+             t.to_ns, t.to_type, t.to_id, t.to_bridged::boolean,
+             t.field_name, t.policy, t.created_at::timestamptz, NULL, NULL, false
+      FROM unnest(
+        ${edges.map((e) => e.id)}::uuid[],
+        ${edges.map((e) => e.from.ns)}::text[],
+        ${edges.map((e) => e.from.type)}::text[],
+        ${edges.map((e) => String(e.from.id))}::text[],
+        ${edges.map((e) => String(e.from.bridged === true))}::text[],
+        ${edges.map((e) => e.to.ns)}::text[],
+        ${edges.map((e) => e.to.type)}::text[],
+        ${edges.map((e) => String(e.to.id))}::text[],
+        ${edges.map((e) => String(e.to.bridged === true))}::text[],
+        ${edges.map((e) => e.fieldName)}::text[],
+        ${edges.map((e) => e.policy)}::text[],
+        ${edges.map((e) => e.createdAt.toISOString())}::text[]
+      ) AS t(id, from_ns, from_type, from_id, from_bridged,
+             to_ns, to_type, to_id, to_bridged, field_name, policy, created_at)
+    `;
+    return edges;
+  }
+
+  async tombstoneMany(ids: readonly string[], at?: Date): Promise<void> {
+    if (ids.length === 0) return;
+    // Same `deleted_at IS NULL` guard as `tombstone`: the first stamp stays.
+    await this.#sql`
+      UPDATE edges
+      SET deleted_at = ${at ?? this.#now()}
+      WHERE id = ANY(${ids as string[]}::uuid[])
+        AND deleted_at IS NULL
+    `;
+  }
+
   async tombstone(id: string, at?: Date): Promise<void> {
     const stamp = at ?? this.#now();
     // `deleted_at IS NULL` guard keeps tombstone terminal — a second call
@@ -249,31 +309,44 @@ export class PgEdgesStore implements EdgesStore {
   }
 
   async findEdgesToMany(refs: readonly EdgeRef[]): Promise<Edge[]> {
+    return this.#findMany('to', refs);
+  }
+
+  async findEdgesFromMany(refs: readonly EdgeRef[]): Promise<Edge[]> {
+    return this.#findMany('from', refs);
+  }
+
+  async #findMany(side: 'to' | 'from', refs: readonly EdgeRef[]): Promise<Edge[]> {
     if (refs.length === 0) return [];
     const sql = this.#sql;
     // Dedup so a repeated ref doesn't multiply matched edges through the join.
     const seenRef = new Set<string>();
-    const toNs: string[] = [];
-    const toType: string[] = [];
-    const toId: string[] = [];
+    const seekNs: string[] = [];
+    const seekType: string[] = [];
+    const seekId: string[] = [];
     for (const r of refs) {
       const id = refToId(r.id);
       const k = `${r.ns}\u0000${r.type}\u0000${id}`;
       if (seenRef.has(k)) continue;
       seenRef.add(k);
-      toNs.push(r.ns);
-      toType.push(r.type);
-      toId.push(id);
+      seekNs.push(r.ns);
+      seekType.push(r.type);
+      seekId.push(id);
     }
     // One round-trip via a zipped `unnest` of typed text arrays: postgres.js
     // cannot parameterise tuple `IN`/`VALUES` lists. Join columns are prefixed
-    // so they don't collide with the edges columns in #edgeCols.
+    // so they don't collide with the edges columns in #edgeCols. The side picks
+    // between two fixed identifier sets, never caller text.
+    const [colNs, colType, colId] =
+      side === 'to'
+        ? [sql('to_ns'), sql('to_type'), sql('to_id')]
+        : [sql('from_ns'), sql('from_type'), sql('from_id')];
     const rows = await sql<EdgeRowRecord[]>`
       SELECT ${this.#edgeCols}
       FROM edges
-      JOIN unnest(${toNs}::text[], ${toType}::text[], ${toId}::text[])
+      JOIN unnest(${seekNs}::text[], ${seekType}::text[], ${seekId}::text[])
         AS seek(seek_ns, seek_type, seek_id)
-        ON to_ns = seek.seek_ns AND to_type = seek.seek_type AND to_id = seek.seek_id
+        ON ${colNs} = seek.seek_ns AND ${colType} = seek.seek_type AND ${colId} = seek.seek_id
       WHERE deleted_at IS NULL
     `;
     return rows.map(rowToEdge);

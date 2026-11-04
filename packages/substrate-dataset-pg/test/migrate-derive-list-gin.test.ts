@@ -43,11 +43,13 @@ describe('deriveListIndexMigration (pure)', () => {
   });
 });
 
+// List/json GIN indexes are each type table's own, built by the index
+// reconciler, so a derived GIN migration is skipped.
 describe.skipIf(!POSTGRES_URL)('runDerivedMigrations', () => {
   let sql: Sql;
 
   beforeAll(async () => {
-    sql = postgres(POSTGRES_URL as string);
+    sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
     await runMigrations(sql);
   });
 
@@ -55,33 +57,14 @@ describe.skipIf(!POSTGRES_URL)('runDerivedMigrations', () => {
     await sql.end();
   });
 
-  it('creates the GIN, tracks it in migrations, and is idempotent', async () => {
+  it('skips a derived list GIN: nothing is built and the ledger records nothing', async () => {
     const m = deriveListIndexMigration({ namespace: 'kmeta', type: 'Metric', field: 'labels' });
-    const indexName = /IF NOT EXISTS (\S+)/.exec(m.concurrentStatements?.[0] ?? '')?.[1] ?? '';
-    // Clean slate for re-runnability.
-    await sql`DROP INDEX IF EXISTS ${sql(indexName)}`;
-    await sql`DELETE FROM migrations WHERE version = ${m.version}`;
-
     await runDerivedMigrations(sql, [m]);
-
-    const idx = await sql<{ indexdef: string }[]>`
-      SELECT indexdef FROM pg_indexes
-      WHERE schemaname = current_schema() AND tablename = 'rows' AND indexname = ${indexName}`;
-    expect(idx).toHaveLength(1);
-    expect(idx[0]?.indexdef).toMatch(/USING gin/i);
-
-    const tracked = await sql<{ version: string }[]>`
-      SELECT version FROM migrations WHERE version = ${m.version}`;
-    expect(tracked).toHaveLength(1);
-
-    // Re-run is a no-op (version already applied) — still exactly one index.
     await runDerivedMigrations(sql, [m]);
-    const count = await sql<{ c: number }[]>`
-      SELECT count(*)::int AS c FROM pg_indexes
-      WHERE schemaname = current_schema() AND tablename = 'rows' AND indexname = ${indexName}`;
-    expect(count[0]?.c).toBe(1);
-
-    await sql`DROP INDEX IF EXISTS ${sql(indexName)}`;
-    await sql`DELETE FROM migrations WHERE version = ${m.version}`;
+    expect(await sql`SELECT 1 FROM migrations WHERE version = ${m.version}`).toHaveLength(0);
+    const gins = await sql`
+      SELECT 1 FROM pg_indexes
+      WHERE schemaname = current_schema() AND indexdef ILIKE ${`%'labels'%`}`;
+    expect(gins).toHaveLength(0);
   });
 });

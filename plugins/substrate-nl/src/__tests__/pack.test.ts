@@ -1,8 +1,11 @@
 import type { Schema } from '@mnmal-ai/substrate/sdk';
 import { describe, expect, it } from 'vitest';
+import { buildJudgePrompt } from '../judge/judge.js';
 import { buildNamespacePack } from '../pack/build.js';
 import { profileNamespace } from '../pack/profile.js';
 import type { NamespaceProfile } from '../pack/types.js';
+import { parseQuestion } from '../parse/parse.js';
+import { ctx } from './_fixture.js';
 
 const OPERATORS = {
   'scalar.string': ['contains', 'eq', 'in', 'startsWith'],
@@ -70,8 +73,8 @@ const profile: NamespaceProfile = {
   }
 };
 
-const build = () =>
-  buildNamespacePack({ namespace: 'journal', schema, operators: OPERATORS, profile });
+const build = (s: Schema = schema) =>
+  buildNamespacePack({ namespace: 'journal', schema: s, operators: OPERATORS, profile });
 
 describe('buildNamespacePack', () => {
   it('names each type by singular, plural and head noun', () => {
@@ -98,10 +101,32 @@ describe('buildNamespacePack', () => {
     expect(f?.targetDate?.operators).toEqual(OPERATORS['scalar.date']);
     expect(f?.owner).toMatchObject({
       kind: 'crossRef',
-      target: 'AgentIdentity',
+      target: { namespace: 'journal', type: 'AgentIdentity' },
+      indexed: true,
       operators: ['eq', 'in']
     });
     expect(f?.tags).toMatchObject({ kind: 'list', operators: ['has'] });
+  });
+
+  it('marks a crossRef indexed unless it declares indexed: false', () => {
+    const owner = schema.types.Todo?.fields.owner;
+    if (owner?.kind !== 'crossRef') throw new Error('fixture');
+    const off: Schema = {
+      ...schema,
+      types: {
+        ...schema.types,
+        Todo: {
+          fields: { ...schema.types.Todo?.fields, owner: { ...owner, indexed: false } }
+        }
+      }
+    };
+    expect(build(off).types.Todo?.fields.owner?.indexed).toBe(false);
+    const { indexed: _drop, ...unset } = owner;
+    const dflt: Schema = {
+      ...schema,
+      types: { ...schema.types, Todo: { fields: { ...schema.types.Todo?.fields, owner: unset } } }
+    };
+    expect(build(dflt).types.Todo?.fields.owner?.indexed).toBe(true);
   });
 
   it('adds the filterable metadata virtuals to every type', () => {
@@ -283,5 +308,53 @@ describe('vocabulary aliases from the schema', () => {
 
   it('records the alias table on the field', () => {
     expect(pack.types.Todo?.fields.status?.aliases).toEqual({ done: 'closed', 'in force': 'open' });
+  });
+});
+
+describe('search handles: unset indexed counts, explicit false does not', () => {
+  const sneakers: Schema = {
+    schemaVersion: 'sneakers01',
+    mutations: {},
+    types: {
+      Sneaker: {
+        fields: {
+          brand: { kind: 'scalar', type: 'string' },
+          blurb: { kind: 'scalar', type: 'string', indexed: false }
+        }
+      }
+    }
+  };
+  const read = async (_type: string, fields: string[]) => ({
+    rows: [Object.fromEntries(fields.map((f) => [f, f === 'brand' ? 'nike' : 'so comfy']))],
+    nextCursor: undefined
+  });
+
+  it('a plain field.string() field is profiled, packed and offered to the judge; indexed: false is not', async () => {
+    const asked: string[][] = [];
+    const profile = await profileNamespace({
+      schema: sneakers,
+      read: async (type, fields) => {
+        asked.push(fields);
+        return read(type, fields);
+      }
+    });
+    expect(asked[0]).toEqual(['brand']);
+    const pack = buildNamespacePack({
+      namespace: 'shop',
+      schema: sneakers,
+      operators: OPERATORS,
+      profile
+    });
+    expect(pack.types.Sneaker?.fields.brand?.indexed).toBe(true);
+    expect(pack.types.Sneaker?.fields.blurb?.indexed).toBe(false);
+    expect(pack.values.nike).toBeDefined();
+
+    const result = parseQuestion('what about adidas', pack, ctx);
+    const prompt = buildJudgePrompt('what about adidas', result, pack);
+    type Branch = { properties: Record<string, { const?: string; enum?: unknown[] }> };
+    const bind = (prompt.schema.anyOf as Branch[]).find(
+      (b) => b.properties.action?.const === 'bind'
+    );
+    expect(bind?.properties.field?.enum).toEqual(['Sneaker.brand']);
   });
 });

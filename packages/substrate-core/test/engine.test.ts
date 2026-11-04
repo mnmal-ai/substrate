@@ -443,7 +443,7 @@ describe('Engine.mutate — G1 frame atomicity', () => {
     expect((seen as { namespace: string }).namespace).toBe('default');
   });
 
-  it('policy deny does not abort the frame (no rollback on policy_denied)', async () => {
+  it('a policy deny rolls back the other single-frame entries', async () => {
     const dataset = new MemoryDataset({ namespace: 'default' });
     const registry = new Registry();
     registry.register('createTodoA', { resolver: writeTodoResolver('a') });
@@ -458,9 +458,9 @@ describe('Engine.mutate — G1 frame atomicity', () => {
       ctx: makeCtx()
     });
 
-    expect(envelope.errors?.[0]?.code).toBe('policy_denied');
+    expect(envelope.errors?.map((e) => e.code)).toEqual(['policy_denied', 'frame_rolled_back']);
     const { rows } = await dataset.read('Todo', {});
-    expect(rows.map((r) => r.id)).toEqual(['a']);
+    expect(rows).toEqual([]);
   });
 
   // Cross-store atomicity (§6.2). The engine nests edges.withTransaction
@@ -649,6 +649,10 @@ describe('Engine — multi-namespace dispatch', () => {
       allocateShortId: (type) => inner.allocateShortId(type),
       bindShortId: (type, shortId, rowId) => inner.bindShortId(type, shortId, rowId),
       resolveShortId: (type, shortId) => inner.resolveShortId(type, shortId),
+      allocateShortIds: (type, count) => inner.allocateShortIds(type, count),
+      bindShortIds: (type, pairs) => inner.bindShortIds(type, pairs),
+      resolveShortIds: (type, shortIds) => inner.resolveShortIds(type, shortIds),
+      patchRows: (type, patches, actor, now) => inner.patchRows(type, patches, actor, now),
       getShortIdForRow: (type, rowId) => inner.getShortIdForRow(type, rowId),
       forNamespace: (ns) => inner.forNamespace(ns)
     });
@@ -835,8 +839,10 @@ describe('Engine — multi-namespace dispatch', () => {
       ctx: makeCtx({ identity: { kind: 'agent', id: 'k', grants: { ns1: ['read', 'mutate'] } } })
     });
 
-    expect(envelope.data['ns1/createA']).toEqual({ id: 'a' });
-    expect(envelope.errors?.map((e) => e.code)).toEqual(['unauthorized_namespace']);
+    expect(envelope.errors?.map((e) => e.code)).toEqual([
+      'unauthorized_namespace',
+      'frame_rolled_back'
+    ]);
     expect(JSON.stringify(envelope.errors)).not.toContain(dsB.txScopeId);
   });
 
@@ -1023,7 +1029,7 @@ describe('Engine — §5.2 filter validation + pagination envelope', () => {
     expect(env.data['default/Todo']).toBeUndefined();
   });
 
-  it('unindexed field filter surfaces unindexed_field (and _allowTableScan overrides)', async () => {
+  it('an unindexed field filter is accepted, with or without the ignored _allowTableScan', async () => {
     const registry = new Registry();
     registry.register('Todo', {
       resolver: async () => [],
@@ -1032,11 +1038,11 @@ describe('Engine — §5.2 filter validation + pagination envelope', () => {
       }
     });
     const { engine } = singleNs(registry);
-    const denied = await engine.query({
+    const plain = await engine.query({
       frame: { 'default/Todo': { params: { where: { priority: { eq: 5 } } } } },
       ctx: makeCtx()
     });
-    expect(denied.errors?.[0]?.code).toBe('unindexed_field');
+    expect(plain.errors).toBeUndefined();
 
     const allowed = await engine.query({
       frame: {

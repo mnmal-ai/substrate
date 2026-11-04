@@ -15,6 +15,7 @@
 
 import {
   assertNever,
+  type EnvelopeShape,
   type FieldDef,
   type FieldDefCrossRef,
   type FieldDefList,
@@ -31,8 +32,10 @@ import {
   type RowPlanCache,
   getFieldDefPlan as sharedGetFieldDefPlan,
   getRowPlan as sharedGetRowPlan,
-  resolveFieldMap as sharedResolveFieldMap
+  resolveFieldMap as sharedResolveFieldMap,
+  type WalkSlot
 } from './_plan-cache.js';
+import { isAggShape } from './encoder.js';
 
 export interface DecodeContext {
   schemas?: Record<string, Schema>;
@@ -138,6 +141,11 @@ export function decodeEnvelope(bytes: Buffer | Uint8Array, ctx: DecodeEnvelopeCt
   }
   const rewritten: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(raw.data)) {
+    // `{ count }` / `{ groups }` ride as named maps (see the encoder).
+    if (isAggShape(raw.shapes[key])) {
+      rewritten[key] = value;
+      continue;
+    }
     const returns = ctx.returnsByKey?.[key];
     if (returns !== undefined) {
       const currentNs = ctx.currentNsByKey[key];
@@ -169,7 +177,7 @@ export function decodeEnvelope(bytes: Buffer | Uint8Array, ctx: DecodeEnvelopeCt
     // mutate-only (§5.13) and flow through the `returnsByKey` branch above.
     // Narrow defensively so the type holds; the array arm is unreachable
     // under the documented transport contract.
-    const shape: 'single' | 'list' | undefined = Array.isArray(rawShape) ? undefined : rawShape;
+    const shape = Array.isArray(rawShape) || isAggShape(rawShape) ? undefined : rawShape;
     rewritten[key] = decodeByShape(value, fields, schema, typeName, shape, {
       schemas: ctx.schemas,
       currentNs
@@ -215,7 +223,7 @@ function decodeByShapeFromDef(
   value: unknown,
   def: FieldDef,
   schema: Schema,
-  shape: 'single' | 'list' | Array<'single' | 'list'> | undefined,
+  shape: EnvelopeShape | undefined,
   ctx: DecodeContext
 ): unknown {
   if (value === null || value === undefined) return null;
@@ -303,16 +311,54 @@ function decodeRowWithPlan(
   // Mutable path stack — push before recursion, pop after. Allocates only on
   // throw (the error class snapshots the path).
   for (let i = 0; i < len; i++) {
-    const entry = plan[i] as readonly [string, true | FieldInput, FieldDef | undefined];
+    const entry = plan[i] as RowPlan[number];
     const field = entry[0];
     const selection = entry[1];
     const def = entry[2];
     const cell = tuple[i] ?? null;
+    const slot = entry[3];
+    // `_truncated` is absent, not null, on a row whose lists were not cut.
+    if (slot?.kind === 'truncated' && cell === null) continue;
     path.push(field);
-    out[field] = decodeField(cell, selection, def, schema, path, ctx);
+    out[field] =
+      slot === undefined
+        ? decodeField(cell, selection, def, schema, path, ctx)
+        : decodeWalkSlot(cell, slot, schema, path, ctx);
     path.pop();
   }
   return out;
+}
+
+function decodeWalkSlot(
+  cell: unknown,
+  slot: WalkSlot,
+  schema: Schema,
+  path: string[],
+  ctx: DecodeContext
+): unknown {
+  if (cell === null || cell === undefined) return null;
+  switch (slot.kind) {
+    case 'truncated':
+      return cell;
+    case 'agg': {
+      if (!Array.isArray(cell)) throw new PackDecodeError('expected array for _agg', path);
+      return Object.fromEntries(slot.names.map((n, i) => [n, cell[i] ?? null]));
+    }
+    case 'nested': {
+      if (!Array.isArray(cell)) {
+        throw new PackDecodeError('expected array for nested selection', path);
+      }
+      const plan = getRowPlan(slot.fields, resolveFieldMap(schema, slot.type, path));
+      return cell.map((tuple, idx) => {
+        path.push(`[${idx}]`);
+        const out = decodeRowWithPlan(tuple, plan, schema, path, ctx);
+        path.pop();
+        return out;
+      });
+    }
+    default:
+      return assertNever(slot);
+  }
 }
 
 function decodeField(

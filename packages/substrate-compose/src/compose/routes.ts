@@ -16,6 +16,8 @@ import type {
   HttpHandler,
   Identity,
   PluginRouter,
+  PromotionEvent,
+  StorageReport,
   SubstrateServer
 } from '@mnmal-ai/substrate-types';
 import { grantedIn, grantOf } from '@mnmal-ai/substrate-types';
@@ -23,6 +25,7 @@ import { backfillFieldRoute } from '../_system/backfill-field.js';
 import { dropNamespaceRoute, dropTypeRoute } from '../_system/drop.js';
 import type { KeyRegistry } from '../_system/index.js';
 import { normaliseVocabRoute } from '../_system/normalise-vocab.js';
+import { promoteFieldsRoute } from '../_system/promote-fields.js';
 import { createRateLimiter, type RateLimiter } from '../_system/rate-limit.js';
 import {
   invitesRoute,
@@ -82,6 +85,12 @@ export interface CoreRoutesArgs {
    * echo would read as "nothing is configured" rather than "nothing reported".
    */
   configReport?: ConfigReport;
+  /** Adds the storage layout and its warnings to the config report. */
+  storageReport?: () => Promise<StorageReport>;
+  /** One promotion sweep, for `POST /substrate/v1/_system/promote-fields`. */
+  promoteFields: (opts: { retryConflicts: boolean }) => Promise<PromotionEvent[]>;
+  /** Pending, failed and orphaned fields, for `/health`'s warnings. */
+  fieldWarnings?: () => Promise<string[]>;
 }
 
 export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
@@ -110,13 +119,24 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
     registerRateLimiter,
     identityDirectory,
     adminCapability,
-    configReport
+    configReport,
+    storageReport,
+    promoteFields,
+    fieldWarnings
   } = args;
 
   server.route(
     'GET',
     '/health',
-    healthRoute({ version: version ?? '0.0.0', startedAt: Date.now() })
+    healthRoute({
+      version: version ?? '0.0.0',
+      startedAt: Date.now(),
+      warnings: async () => [
+        ...engine.postWriteWarnings(),
+        // A catalog error never fails the probe; the field lines are left out.
+        ...((await fieldWarnings?.().catch(() => [])) ?? [])
+      ]
+    })
   );
   // Schema discovery and onboarding sit behind `read`, like /substrate/v1/query: the
   // schema is the whole type map of every namespace. Open without a key:
@@ -206,7 +226,11 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
   // Admin-gated, unlike /substrate/v1/metrics: this says how the deployment is built
   // — store kind, auth mode, proxy allowlist.
   if (configReport !== undefined) {
-    server.route('GET', '/substrate/v1/config', gate(configRouteHandler(configReport), 'admin'));
+    server.route(
+      'GET',
+      '/substrate/v1/config',
+      gate(configRouteHandler(configReport, storageReport), 'admin')
+    );
   }
 
   // §5.12: admin-gated invite mint + public rate-limited register.
@@ -297,6 +321,18 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
         )
       };
     };
+  // A store-wide action needs admin held store-wide: the `'*'` entry itself, not admin in some namespace.
+  const adminStoreWide =
+    (handler: HttpHandler): HttpHandler =>
+    async (req) => {
+      if (auth === undefined) return handler(req);
+      if (grantedIn(grantOf(req.identity ?? null), '*').includes(adminCap)) return handler(req);
+      return {
+        status: 403,
+        headers: { 'content-type': 'application/json' },
+        body: Buffer.from(JSON.stringify({ code: 'forbidden', required: `*:${adminCap}` }), 'utf8')
+      };
+    };
   // A drop's edges can reach other namespaces; the routes ask about those here.
   const dropGrants =
     auth === undefined
@@ -320,6 +356,8 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
           now: () => new Date(),
           trustedProxies,
           engine,
+          declaredInCode: (ns) =>
+            coordinatorPlugins.some((p) => p.namespaces.some((n) => n.namespace === ns)),
           ...dropGrants
         })
       ),
@@ -385,6 +423,12 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
       ),
       'admin'
     )
+  );
+  // Store-wide: it locks and reports every namespace's tables, so admin must be held for `'*'`.
+  server.route(
+    'POST',
+    '/substrate/v1/_system/promote-fields',
+    gate(adminStoreWide(promoteFieldsRoute(promoteFields)), 'admin')
   );
   server.route(
     'POST',

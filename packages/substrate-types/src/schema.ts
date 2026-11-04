@@ -10,6 +10,39 @@
  */
 
 import type { OnDelete, OnMissing } from './edge.js';
+import type { IndexDecl } from './plugin.js';
+
+/**
+ * One clause of a walk-grammar read, marked index-served or not (typed edge
+ * walks, goal 7). `path` is inside the frame entry, e.g. `['where', '_walk']`.
+ * An unserved clause names the index that would serve it in `recommend`, when
+ * one can be declared.
+ */
+export interface PlanClause {
+  path: string[];
+  kind: 'hop' | 'filter' | 'order' | 'ref' | 'derive' | 'bucket' | 'agg';
+  served: boolean;
+  recommend?: IndexDecl;
+  /**
+   * On the hop of a pick or a frame `_agg`: how the store evaluates it.
+   * `per-seed` probes once per seed row; `per-hub` computes a pick once per
+   * hub many seeds share; `group-by` aggregates a window in one pass.
+   */
+  form?: 'per-seed' | 'per-hub' | 'group-by';
+}
+
+/** Words of a natural-language question the parse did not use, and why. */
+export interface Dropped {
+  span: string;
+  reason: string;
+  /**
+   * What the loss changes. `filter`: which rows match (a filter, comparison,
+   * walk, time window or connective), so a count, aggregate, `$ref` or pick
+   * reading that lost it is `unknown`. `order`: an ordering, limit or
+   * projection; the matched rows are the same and the answer stands.
+   */
+  kind: 'filter' | 'order';
+}
 
 export interface FieldDefScalar {
   kind: 'scalar';
@@ -20,8 +53,19 @@ export interface FieldDefScalar {
    * inner keys, use `field.struct` instead.
    */
   type: 'string' | 'number' | 'boolean' | 'date' | 'json';
+  /**
+   * Tri-state. `true` builds an index (a btree; a GIN for json). Unset means
+   * no index. `false` means no index AND not a search handle: long-form
+   * prose that NL and similar consumers leave out. The field filters either
+   * way. Physical consumers test `=== true`, so never normalise unset to
+   * `false`.
+   */
   indexed?: boolean;
-  /** Metadata: when true, consumers SHOULD expect `null` as a legitimate value. */
+  /**
+   * Metadata: when true, the value may be unset. A string, number, boolean or
+   * date reads back as an absent key then, never `null` (`isColumnField`); a
+   * `json` field keeps an explicit `null`.
+   */
   nullable?: boolean;
   /**
    * Metadata: when true, this field is populated by the engine (not the caller)
@@ -104,7 +148,10 @@ export interface FieldDefCrossRef {
    * presence of the crossRef itself.
    */
   indexed?: boolean;
-  /** Metadata: when true, consumers SHOULD expect `null` as a legitimate value. */
+  /**
+   * Metadata: when true, the value may be unset. An unset field reads back as an
+   * absent key, never `null` (`isColumnField`).
+   */
   nullable?: boolean;
   /**
    * Activation-spreading opt-in. When `spread: true`,
@@ -137,7 +184,7 @@ export interface FieldDefCrossRef {
 export interface FieldDefStruct {
   kind: 'struct';
   fields: Record<string, FieldDef>;
-  /** Metadata: when true, consumers SHOULD expect `null` as a legitimate value. */
+  /** Metadata: when true, the value may be `null` or absent. */
   nullable?: boolean;
 }
 
@@ -145,20 +192,30 @@ export interface FieldDefList {
   kind: 'list';
   of: FieldDef;
   /**
-   * When true, the field is server-side filterable via the `has` (element
-   * membership) operator without `_allowTableScan`, and is backed by a GIN
+   * When true, the `has` (element membership) operator is backed by a GIN
    * index on `(body -> '<field>')`. List fields are stored as native JSONB
-   * arrays. Default false — an unindexed list field rejects `has` unless the
-   * caller opts into a table scan. The substrate binary derives the matching GIN
+   * arrays. Default false — `has` on an unindexed list still works, by
+   * scanning the type's rows. The substrate binary derives the matching GIN
    * as an idempotent migration at boot from this flag; no hand-authored
    * migration is needed per field.
    */
   indexed?: boolean;
-  /** Metadata: when true, consumers SHOULD expect `null` as a legitimate value. */
+  /** Metadata: when true, the value may be `null` or absent. */
   nullable?: boolean;
 }
 
 export type FieldDef = FieldDefScalar | FieldDefCrossRef | FieldDefStruct | FieldDefList;
+
+/**
+ * True when the field's value is a typed column: a scalar other than `json` that
+ * the server does not own, or a crossRef. An explicit `null` on such a field
+ * reads back as absent. A json, struct or list field keeps its `null`, and a
+ * readonly scalar such as `shortId` is the server's.
+ */
+export function isColumnField(def: FieldDef): boolean {
+  if (def.kind === 'crossRef') return true;
+  return def.kind === 'scalar' && def.type !== 'json' && def.readonly !== true;
+}
 
 /**
  * Per-type schema entry. Fields may be declared at registration time; MVP emits
@@ -167,6 +224,27 @@ export type FieldDef = FieldDefScalar | FieldDefCrossRef | FieldDefStruct | Fiel
  */
 export interface TypeSchema {
   fields: Record<string, FieldDef>;
+  /** The type's natural order; absent means {@link DEFAULT_ORDERED_BY}. */
+  orderedBy?: OrderedBy;
+  /**
+   * Same-namespace crossRefs that point at this type: `field` on `type`.
+   * Where a walk can come from. Absent when none.
+   */
+  inboundRefs?: Array<{ type: string; field: string }>;
+}
+
+/**
+ * A type's natural order: exactly one `{ field: direction }` key, the order a
+ * read with no `orderBy` returns. The datasets still append `id` as the tie-break.
+ */
+export type OrderedBy = Record<string, 'asc' | 'desc'>;
+
+/** Natural order of a type that declares none: newest first. */
+export const DEFAULT_ORDERED_BY: OrderedBy = Object.freeze<OrderedBy>({ createdAt: 'desc' });
+
+/** The declared natural order, or {@link DEFAULT_ORDERED_BY}. */
+export function naturalOrderOf(schema: Pick<TypeSchema, 'orderedBy'>): OrderedBy {
+  return schema.orderedBy ?? DEFAULT_ORDERED_BY;
 }
 
 /**
@@ -209,12 +287,14 @@ export interface Schema {
 }
 
 /**
- * Per-key shape. A single frame resolves to `'single' | 'list'`. A batched
- * mutate op-key (array of frames) resolves to `Array<'single' | 'list'>` —
- * one shape per frame, in frame-array order. The decoder keys off the
- * discriminator: string → single frame; array → batched.
+ * Per-key shape. A single frame resolves to `'single' | 'list'`, or for a
+ * walk read to `'count'` (`data[key]` is `{ count }`) or `'groups'`
+ * (`data[key]` is `{ groups, truncated? }`). A batched mutate op-key (array
+ * of frames) resolves to `Array<'single' | 'list'>` — one shape per frame, in
+ * frame-array order. The decoder keys off the discriminator: string → single
+ * frame; array → batched.
  */
-export type EnvelopeShape = 'single' | 'list' | Array<'single' | 'list'>;
+export type EnvelopeShape = 'single' | 'list' | 'count' | 'groups' | Array<'single' | 'list'>;
 
 /**
  * The response envelope. Spec: §7.0.
@@ -266,10 +346,16 @@ export interface PackEnvelope {
        * The where-clause reached the substrate without being schema-validated,
        * because the type is registered but absent from its namespace's
        * published schema (e.g. runtime-created types). The result is still
-       * correct — substrates refuse a predicate they cannot honour — but an
-       * unindexed filter scans instead of rejecting.
+       * correct — substrates refuse a predicate they cannot honour — but the
+       * engine's operator and operand check did not run.
        */
       filterValidationSkipped?: string;
+      /**
+       * A walk-grammar read's clauses, each marked index-served or not
+       * (typed edge walks, goal 7). Annotation only: nothing is refused on
+       * it. Absent on ordinary reads, and when the store has no index plan.
+       */
+      plan?: PlanClause[];
     }
   >;
   errors?: Array<{

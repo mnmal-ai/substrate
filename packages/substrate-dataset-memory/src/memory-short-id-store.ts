@@ -51,6 +51,17 @@ export class MemoryShortIdStore {
     return b.next++;
   }
 
+  /** `count` consecutive `allocateUnbound` ids, ascending. */
+  async allocateUnboundMany(ns: string, type: string, count: number): Promise<number[]> {
+    if (!Number.isSafeInteger(count) || count < 0) {
+      throw new Error(`MemoryShortIdStore: count must be a non-negative integer, got ${count}`);
+    }
+    const b = this.bucket(ns, type);
+    const first = b.next;
+    b.next += count;
+    return Array.from({ length: count }, (_, i) => first + i);
+  }
+
   /**
    * Record the (shortId → rowId) pairing. Safe to call without a prior
    * `allocateUnbound` (the mapping is stored unconditionally).

@@ -2,11 +2,12 @@
  * Postgres-backed `LexicalStore` — `lexical` + `ts_rank` over its GIN
  * index. Counterpart to `PgEmbeddingsStore`.
  *
- * Search joins `rows` the same way the KNN path does, with the same
+ * Search joins the type's rows the same way the KNN path does, with the same
  * `deleted_at IS NULL` predicate, so a deleted row cannot surface through this
  * arm after it has stopped surfacing through the dense one.
  */
 
+import { type TypeTableRef, typeTableRef } from '@mnmal-ai/substrate-dataset-pg';
 import type postgres from 'postgres';
 import type {
   LexicalStore,
@@ -15,7 +16,7 @@ import type {
   LexicalStoreSearchResult,
   LexicalStoreUpsertInput
 } from './lexical-store.js';
-import { ROW_BODY_SQL, rowFilterSql } from './pg-row-filter.js';
+import { purgeTypeTableOrphans, ROW_BODY_SQL, rowFilterSql, rowsFrom } from './pg-row-filter.js';
 
 /** Hard ceiling on `k`, mirroring the embeddings store's cap. */
 const MAX_K = 100;
@@ -70,31 +71,23 @@ export class PgLexicalStore implements LexicalStore {
   /**
    * Deletes every lexical row whose backing row is missing or soft-deleted,
    * as `PgEmbeddingsStore.purgeOrphans` does for vectors: `lexical` has no FK
-   * to `rows`, so a drop, purge or tombstone would otherwise leave the text.
+   * to the type tables, so a drop, purge or tombstone would otherwise leave the text.
    *
    * @returns number of orphaned lexical rows deleted.
    */
   async purgeOrphans(): Promise<number> {
-    const result = await this.#sql`
-      DELETE FROM lexical l
-      WHERE NOT EXISTS (
-        SELECT 1 FROM rows r
-        WHERE r.namespace = l.row_namespace
-          AND r.type      = l.row_type
-          AND r.id        = l.row_id
-          AND r.deleted_at IS NULL
-      )
-    `;
-    return result.count;
+    return purgeTypeTableOrphans(this.#sql, 'lexical');
   }
 
   async countIndexed(namespace: string, type: string): Promise<number> {
     // Same join + liveness predicate as search, so the count names rows
     // recall could return rather than orphaned index entries.
+    const ref = await typeTableRef(this.#sql, namespace, type);
+    if (ref === undefined) return 0;
     const rows = (await this.#sql<Array<{ n: string }>>`
       SELECT COUNT(*) AS n
       FROM lexical l
-      JOIN rows r
+      JOIN ${rowsFrom(this.#sql, [{ namespace, type, ref }])} r
         ON r.namespace = l.row_namespace
        AND r.type      = l.row_type
        AND r.id        = l.row_id
@@ -119,13 +112,16 @@ export class PgLexicalStore implements LexicalStore {
     const k = Math.min(Math.max(1, Math.trunc(input.k)), MAX_K);
     // `websearch_to_tsquery`, unlike `to_tsquery`, cannot raise a syntax
     // error on free text.
-    const strict = await this.#run(input, k, false);
+    const ref = await typeTableRef(this.#sql, input.namespace, input.type);
+    if (ref === undefined) return [];
+    const strict = await this.#run(input, ref, k, false);
     if (strict.length > 0) return strict;
-    return this.#run(input, k, true);
+    return this.#run(input, ref, k, true);
   }
 
   async #run(
     input: LexicalStoreSearchInput,
+    ref: TypeTableRef,
     k: number,
     degrade: boolean
   ): Promise<LexicalStoreSearchResult[]> {
@@ -153,7 +149,7 @@ export class PgLexicalStore implements LexicalStore {
         ts_rank(l.tsv, q.query)      AS score
       FROM lexical l
       CROSS JOIN ${query} AS q(query)
-      JOIN rows r
+      JOIN ${rowsFrom(this.#sql, [{ namespace: input.namespace, type: input.type, ref }], true)} r
         ON r.namespace = l.row_namespace
        AND r.type      = l.row_type
        AND r.id        = l.row_id
@@ -162,7 +158,7 @@ export class PgLexicalStore implements LexicalStore {
         AND r.deleted_at IS NULL
         AND q.query IS NOT NULL
         AND l.tsv @@ q.query
-        ${rowFilterSql(this.#sql, input.rowFilter)}
+        ${rowFilterSql(this.#sql, ref, input.rowFilter)}
       ORDER BY score DESC, l.row_id ASC
       LIMIT ${k}
     `) as unknown as SearchRow[];

@@ -17,8 +17,11 @@ import {
 import postgres, { type Sql } from 'postgres';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { PgDataset, runMigrations } from '../src/index.js';
+import { dropNamespace, rowsWhere } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
+/** The row's jsonb column. */
+const BODY = 'extra';
 
 function metadata(at: string, by: ActorIdentity): RowMetadata {
   return { createdAt: at, updatedAt: at, createdBy: by, updatedBy: by };
@@ -30,7 +33,8 @@ describe.skipIf(!POSTGRES_URL)('PG dataset row metadata', () => {
 
   beforeEach(async () => {
     sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
-    await sql`DROP TABLE IF EXISTS rows CASCADE`;
+    // A fresh store: this namespace's tables dropped.
+    await dropNamespace(sql, 'test');
     await runMigrations(sql, { force: true });
     ds = new PgDataset({ namespace: 'test', sql });
   });
@@ -51,7 +55,7 @@ describe.skipIf(!POSTGRES_URL)('PG dataset row metadata', () => {
           _metadata: metadata('2026-04-25T00:00:00.000Z', { kind: 'agent', id: 'a1' })
         }
       ]);
-      const cols = await sql<
+      const cols = await sql.unsafe<
         {
           created_at: Date | null;
           updated_at: Date | null;
@@ -61,10 +65,10 @@ describe.skipIf(!POSTGRES_URL)('PG dataset row metadata', () => {
           updated_by_id: string | null;
           body: Record<string, unknown>;
         }[]
-      >`
-        SELECT created_at, updated_at, created_by_kind, created_by_id, updated_by_kind, updated_by_id, body
-        FROM rows WHERE namespace = 'test' AND type = 'Thing' AND id = 't1'
-      `;
+      >(
+        `SELECT created_at, updated_at, created_by_kind, created_by_id, updated_by_kind, updated_by_id, ${BODY} AS body
+         FROM ${await rowsWhere(sql, 'test', 'Thing')} id = 't1'`
+      );
       expect(cols[0]?.created_at?.toISOString()).toBe('2026-04-25T00:00:00.000Z');
       expect(cols[0]?.updated_at?.toISOString()).toBe('2026-04-25T00:00:00.000Z');
       expect(cols[0]?.created_by_kind).toBe('agent');
@@ -80,9 +84,9 @@ describe.skipIf(!POSTGRES_URL)('PG dataset row metadata', () => {
       const before = new Date();
       await ds.write('Thing', [{ id: 't2', name: 'legacy' }]);
       const after = new Date();
-      const cols = await sql<{ created_at: Date | null; created_by_kind: string | null }[]>`
-        SELECT created_at, created_by_kind FROM rows WHERE id = 't2'
-      `;
+      const cols = await sql.unsafe<{ created_at: Date | null; created_by_kind: string | null }[]>(
+        `SELECT created_at, created_by_kind FROM ${await rowsWhere(sql, 'test', 'Thing')} id = 't2'`
+      );
       expect(cols[0]?.created_at).not.toBeNull();
       expect(cols[0]?.created_at?.getTime()).toBeGreaterThanOrEqual(before.getTime());
       expect(cols[0]?.created_at?.getTime()).toBeLessThanOrEqual(after.getTime());
@@ -100,9 +104,9 @@ describe.skipIf(!POSTGRES_URL)('PG dataset row metadata', () => {
         updatedBy: { kind: 'agent', id: 'a2' }
       };
       await ds.write('Thing', [{ id: 't3', name: 'second', _metadata: meta2 }]);
-      const cols = await sql<{ updated_at: Date | null; updated_by_id: string | null }[]>`
-        SELECT updated_at, updated_by_id FROM rows WHERE id = 't3'
-      `;
+      const cols = await sql.unsafe<{ updated_at: Date | null; updated_by_id: string | null }[]>(
+        `SELECT updated_at, updated_by_id FROM ${await rowsWhere(sql, 'test', 'Thing')} id = 't3'`
+      );
       expect(cols[0]?.updated_at?.toISOString()).toBe('2026-04-25T01:00:00.000Z');
       expect(cols[0]?.updated_by_id).toBe('a2');
     });
@@ -183,9 +187,9 @@ describe.skipIf(!POSTGRES_URL)('PG dataset row metadata', () => {
       const meta = metadata('2026-04-25T00:00:00.000Z', { kind: 'agent', id: 'a1' });
       await ds.write('Thing', [{ id: 't7', name: 'y', _metadata: meta }]);
       // Read via raw SQL to inspect body directly
-      const raw = await sql<{ body: Record<string, unknown> }[]>`
-        SELECT body FROM rows WHERE id = 't7'
-      `;
+      const raw = await sql.unsafe<{ body: Record<string, unknown> }[]>(
+        `SELECT ${BODY} AS body FROM ${await rowsWhere(sql, 'test', 'Thing')} id = 't7'`
+      );
       expect(raw[0]?.body._metadata).toBeUndefined();
     });
   });

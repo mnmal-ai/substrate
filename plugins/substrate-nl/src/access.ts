@@ -1,9 +1,11 @@
-import type { Query, Schema, SubstrateRequest } from '@mnmal-ai/substrate/sdk';
+import type { PlanClause, Query, Schema, SubstrateRequest } from '@mnmal-ai/substrate/sdk';
 
 export interface NlEnvelope {
   data?: Record<string, unknown>;
   errors?: unknown[];
   _pagination?: Record<string, { nextCursor?: string; hasMore: boolean }>;
+  /** Per frame key; `plan` marks a walk read's clauses index-served or not. */
+  _diagnostics?: Record<string, { plan?: PlanClause[] }>;
 }
 
 export interface NlEngineAccess {

@@ -43,13 +43,13 @@ describe('composeKernel: the binary’s kernel tier, for any host', () => {
   it('creates tracking, applies each migration once, and runs onKernelReady after ALL plugins', async () => {
     const sql = fakeSql();
     const calls: string[] = [];
-    await composeKernel([plugin('a', calls), plugin('b', calls)], { sql });
+    await composeKernel([plugin('a', calls), plugin('b', calls)], { sql, layout: null });
     expect(sql.created).toBe(true);
     expect(calls).toEqual(['a:0001', 'a:0002', 'b:0001', 'b:0002', 'a:ready', 'b:ready']);
 
     // Second boot: migrations are recorded, so only the readiness hooks run.
     calls.length = 0;
-    await composeKernel([plugin('a', calls), plugin('b', calls)], { sql });
+    await composeKernel([plugin('a', calls), plugin('b', calls)], { sql, layout: null });
     expect(calls).toEqual(['a:ready', 'b:ready']);
   });
 
@@ -60,7 +60,8 @@ describe('composeKernel: the binary’s kernel tier, for any host', () => {
       resolve: async () => ({ hits: [] })
     };
     await composeKernel([plugin('f', [], { filterOperators: { [name]: op as never } })], {
-      sql: null
+      sql: null,
+      layout: null
     });
     expect(getExtensionOperator(name)).toBeDefined();
   });
@@ -68,7 +69,10 @@ describe('composeKernel: the binary’s kernel tier, for any host', () => {
   it('refuses a kernel route it has nowhere to mount, rather than dropping it', async () => {
     const claim = { path: 'recall', method: 'POST', capability: 'read', handler: async () => ({}) };
     await expect(
-      composeKernel([plugin('k', [], { kernelRoutes: [claim as never] })], { sql: null })
+      composeKernel([plugin('k', [], { kernelRoutes: [claim as never] })], {
+        sql: null,
+        layout: null
+      })
     ).rejects.toThrow(/no registerKernelRoute/);
   });
 
@@ -86,7 +90,12 @@ describe('composeKernel: the binary’s kernel tier, for any host', () => {
           }
         } as KernelPlugin
       ],
-      { sql: null, coordinatorNamespaces: ['journal'], metric: (n) => void metrics.push(n) }
+      {
+        sql: null,
+        layout: null,
+        coordinatorNamespaces: ['journal'],
+        metric: (n) => void metrics.push(n)
+      }
     );
     expect(seen).toEqual([['journal']]);
     expect(metrics).toEqual(['hello']);

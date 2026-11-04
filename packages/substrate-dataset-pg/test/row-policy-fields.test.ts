@@ -17,6 +17,7 @@ import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { runMigrations } from '../src/migrate.js';
 import { PgDataset } from '../src/pg-dataset.js';
+import { clearNamespace } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const NS = 'test_row_policy_fields';
@@ -35,12 +36,12 @@ describe.skipIf(!POSTGRES_URL)('row policy under a narrowed field selection (pg)
     if (!POSTGRES_URL) return;
     sql = postgres(POSTGRES_URL, { onnotice: () => {} });
     await runMigrations(sql);
-    await sql`DELETE FROM rows WHERE namespace = ${NS}`;
+    await clearNamespace(sql, NS);
   });
 
   afterAll(async () => {
     if (!POSTGRES_URL) return;
-    await sql`DELETE FROM rows WHERE namespace = ${NS}`;
+    await clearNamespace(sql, NS);
     await sql.end();
   });
 
@@ -77,7 +78,7 @@ describe.skipIf(!POSTGRES_URL)('row policy under a narrowed field selection (pg)
   /** An engine over pg with list, stream and create entries all under `hideSecret`. */
   async function engineFor(): Promise<Engine> {
     const ds = new PgDataset({ namespace: NS, sql });
-    await sql`DELETE FROM rows WHERE namespace = ${NS}`;
+    await clearNamespace(sql, NS);
     await ds.write('Doc', [
       { id: 'open-1', secret: false },
       { id: 'hidden-1', secret: true }

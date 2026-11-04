@@ -16,6 +16,7 @@ import type { AuthConfig, ContractCheck } from '@mnmal-ai/substrate-compose';
 import { deriveListIndexMigration, runDerivedMigrations } from '@mnmal-ai/substrate-dataset-pg';
 import type {
   CoordinatorPlugin,
+  Dataset,
   KernelPlugin,
   NamespaceDefinition,
   SubstrateServer
@@ -28,6 +29,7 @@ import {
   filterRegistry,
   getAppliedMigrationIds,
   pendingMcpTools,
+  reconcileDeclaredStorage,
   recordMigrationApplied
 } from './wiring.js';
 
@@ -36,8 +38,10 @@ export interface ServePlugins {
   coordinators: CoordinatorPlugin[];
 }
 
-export function resolvePluginDir(): string | null {
-  const pluginDirRaw = process.env.SUBSTRATE_PLUGIN_DIR?.trim();
+export function resolvePluginDir(
+  env: { SUBSTRATE_PLUGIN_DIR?: string } = process.env
+): string | null {
+  const pluginDirRaw = env.SUBSTRATE_PLUGIN_DIR?.trim();
   return pluginDirRaw !== undefined && pluginDirRaw.length > 0 ? pluginDirRaw : null;
 }
 
@@ -87,7 +91,8 @@ export async function loadServePlugins(opts: {
 /**
  * Compose substrate-tier plugins BEFORE coordinator compose, wiring each
  * KernelPlugin slot (filterOperators, kernelRoutes, mcpTools, migrations,
- * onKernelReady) into the host's registries.
+ * onKernelReady) into the host's registries. Declared storage is reconciled
+ * first, so kernel migrations run against it.
  */
 export async function composeKernelPhase(args: {
   kernel: KernelPlugin[];
@@ -96,10 +101,18 @@ export async function composeKernelPhase(args: {
   coordinators: CoordinatorPlugin[];
   kernelAuth: AuthConfig | null;
   trustedProxies: Set<string>;
+  datasetFor: (ns: string) => Dataset | undefined;
+  nsDefs: Map<string, NamespaceDefinition>;
+  /** `KernelLifecycleContext.background`; true when absent. */
+  background?: boolean;
 }): Promise<void> {
   const { kernel, server, storeSql, coordinators, kernelAuth, trustedProxies } = args;
+  await reconcileDeclaredStorage(args.datasetFor, args.nsDefs);
   await composeKernelPlugins(kernel, {
     sql: storeSql,
+    // runMigrations, when the store opened, refused any other layout.
+    layout: storeSql === null ? null : 'tables',
+    background: args.background ?? true,
     // Coordinators are LOADED above but compose below, so their declared
     // namespaces are known here while the engine has not yet registered them.
     // That is what a substrate reconciler wants: the configured intent, before

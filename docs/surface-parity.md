@@ -19,7 +19,8 @@ than its behaviour.
 | health | `GET /health` | — | — | — |
 | **whoami** | `GET /substrate/v1/whoami` | `whoami` | `{op:"whoami"}` | — |
 | onboarding doc | `GET /substrate/v1/onboard` | — | — | — |
-| schema: all namespaces | `GET /substrate/v1/federated-schema` | `schema` (no args) | — | — |
+| schema: overview of all types | — | `schema` (no args): one line of `field: type` per type, and the same overview in the MCP `instructions` at session start | — | — |
+| schema: all namespaces | `GET /substrate/v1/federated-schema` | `schema {full: true}` | — | — |
 | schema: one namespace | `GET /substrate/v1/schema/<ns>` | `schema {namespace}` | — | — |
 | schema: one type | `GET /substrate/v1/schema/<ns>/<Type>[?shape=]` | `schema {namespace,type,shape}` | — | — |
 | schema: default namespace | `GET /substrate/v1/schema` | — | — | — |
@@ -32,7 +33,7 @@ than its behaviour.
 | cancel | — | — | `{op:"cancel"}` | disconnect (no op) |
 | recall | `POST /substrate/v1/recall` **and** `recall/Hit` through `POST /substrate/v1/query` | `recall` | refused (`subscription_unsupported_frame`) | refused, same code — in-band as `event: error` under HTTP 200 |
 | metrics | `GET /substrate/v1/metrics` (needs `read`): request counts, per-key `resolvers` (latency histogram, errors), `process` (rss, heap, cpu, event-loop lag, `inFlight`), `slowest`; no error text; per-key fields filtered by the caller's namespace grant (read in that namespace; anonymous callers get none) | — | — | — |
-| errors | `GET /substrate/v1/errors` (needs `admin`): last 50 failed resolves with truncated messages, each naming its caller (kid, or `anonymous`) | — | — | — |
+| errors | `GET /substrate/v1/errors` (needs `admin`): last 50 failed resolves with truncated messages, each naming its caller (its kid, the key id it signed with, or `anonymous`) | — | — | — |
 | config knobs | `GET /substrate/v1/config` (needs **`admin`**, not `read`) | — | — | — |
 | embed stats | `GET /substrate/v1/embed-stats` — answers about **both** retrieval arms despite the name | — | — | — |
 | admin: invites, drop-namespace, drop-type | `POST /substrate/v1/_system/*` | `drop_namespace`, `drop_type` | — | — |
@@ -307,6 +308,11 @@ subscribe('<ns>/<Type>'): unknown param 'limit'. Allowed: _allowTableScan, order
 
 The allowlist is engine-wide (`KNOWN_SUBSCRIBE_PARAMS`), not a namespace quirk.
 A consumer that reuses its query params for a subscription gets `unknown_param`.
+
+Typed edge walks (`_walk`, `_agg`, `count`, `aggregate`, `bucket`, `derive`) are
+query-only on every surface. `query` answers them; `subscribe` and `stream` refuse a
+frame that uses one with `walks_in_subscription`, and `mutate` refuses them with
+`walks_in_mutation`.
 
 ### 5. `stream` is single-key; `subscribe` is not
 

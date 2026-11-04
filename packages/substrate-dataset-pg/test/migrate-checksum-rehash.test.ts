@@ -50,6 +50,12 @@ function makeFakeSqlForRehash(appliedRows: ReadonlyArray<AppliedRow>): {
 
   const tag = ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.join('?').trim();
+    if (/current_setting\('server_version_num'\)/.test(text)) {
+      return Promise.resolve([{ num: 180000 }]);
+    }
+    if (/^SELECT current_schema\(\) AS schema$/.test(text)) {
+      return Promise.resolve([{ schema: 'public' }]);
+    }
     ranStatements.push(text);
 
     if (/^SELECT version, checksum FROM migrations/i.test(text)) {
@@ -78,6 +84,11 @@ function makeFakeSqlForRehash(appliedRows: ReadonlyArray<AppliedRow>): {
   }) as unknown as Sql;
   // biome-ignore lint/suspicious/noExplicitAny: stubbing the postgres-js shape
   (tag as any).unsafe = (text: string) => {
+    // The migration lock is polled and released through unsafe, as the tag ran it before.
+    if (/pg_(try_)?advisory_(un)?lock\(/.test(text)) {
+      ranStatements.push(text.trim());
+      return Promise.resolve(/pg_try_advisory_lock\(/.test(text) ? [{ acquired: true }] : []);
+    }
     ranStatements.push(`UNSAFE: ${text}`);
     return Promise.resolve([]);
   };
@@ -114,7 +125,7 @@ describe('runMigrations — one-shot checksum rehash', () => {
   it('rewrites a stale recorded checksum in-place + boot succeeds', async () => {
     // Seed every migration with the CURRENT checksum, then make one stale.
     // The rehash must rewrite it before the verify loop sees it.
-    const staleVersion = '0001_baseline';
+    const staleVersion = '0001t_tables_baseline';
     const staleValue = 'legacy_format_checksum_94ae4a84';
     const appliedRows = MIGRATIONS.map((m) => ({
       version: m.version,
@@ -142,7 +153,7 @@ describe('runMigrations — one-shot checksum rehash', () => {
   });
 
   it('emits a WARN-level stderr log per rewrite naming version + both checksums', async () => {
-    const staleVersion = '0001_baseline';
+    const staleVersion = '0001t_tables_baseline';
     const staleValue = 'legacy_format_checksum_94ae4a84';
     const appliedRows = MIGRATIONS.map((m) => ({
       version: m.version,
@@ -213,7 +224,7 @@ describe('runMigrations — one-shot checksum rehash', () => {
   it('rewrites multiple stale rows in one boot', async () => {
     // Two stale rows — rehash should fix both before the verify loop runs.
     // The full list (with the gated 0002) supplies the second migration.
-    const stale1 = '0001_baseline';
+    const stale1 = '0001t_tables_baseline';
     const stale2 = '0002_uuid_format_check';
     const appliedRows = getMigrationList(true).map((m) => ({
       version: m.version,

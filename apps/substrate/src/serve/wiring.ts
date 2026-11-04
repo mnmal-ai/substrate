@@ -7,12 +7,14 @@
  * registry, pending MCP tools).
  */
 
+import { setTimeout as sleep } from 'node:timers/promises';
 import {
   DEFAULT_NAMESPACE,
   kernelMigrationTracking,
   SYSTEM_NAMESPACE
 } from '@mnmal-ai/substrate-compose';
 import {
+  type Engine,
   HttpBridgeClient,
   type MemoryBridgeCredentialStore,
   MemoryBridgeRegistry,
@@ -20,21 +22,25 @@ import {
 } from '@mnmal-ai/substrate-core';
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
 import {
+  type DiskGuard,
   type FieldDefLookup,
   type IndexedListField,
   PgDataset,
   PgEdgesStore,
-  runMigrations
+  runMigrations,
+  type TypeDefLookup
 } from '@mnmal-ai/substrate-dataset-pg';
 import { getExtensionOperator, registerExtensionOperator } from '@mnmal-ai/substrate-filter';
 import { makeAuthorizationProvider } from '@mnmal-ai/substrate-policy';
+import { isReservedAutoCrudField } from '@mnmal-ai/substrate-sdk';
 import type {
   CoordinatorPlugin,
   Dataset,
   EdgesStore,
   FilterOperatorDef,
   McpToolRegistration,
-  NamespaceDefinition
+  NamespaceDefinition,
+  Registry as RegistryInterface
 } from '@mnmal-ai/substrate-types';
 import type { Sql } from 'postgres';
 import { openSql } from '../pg-client.js';
@@ -57,6 +63,9 @@ export const filterRegistry = {
 // separate `substrate mcp`), so there is deliberately no "never exposed" warning.
 export const pendingMcpTools: McpToolRegistration[] = [];
 
+/** Seconds `close` waits for in-flight queries before it drops their connections. */
+export const STORE_END_TIMEOUT_S = 2;
+
 export interface StoreWiring {
   dataset: Dataset;
   edges: EdgesStore;
@@ -78,13 +87,17 @@ export interface StoreWiring {
 
 export async function wireStore(
   storeSpec: string,
-  fieldDefLookupFor: (namespace: string) => FieldDefLookup
+  fieldDefLookupFor: (namespace: string) => FieldDefLookup,
+  typeDefLookupFor?: (namespace: string) => TypeDefLookup,
+  diskGuard?: DiskGuard,
+  statementTimeoutMs?: number
 ): Promise<StoreWiring> {
   if (storeSpec === 'memory') {
     return {
       dataset: new MemoryDataset({
         namespace: DEFAULT_NAMESPACE,
-        fieldDefLookup: fieldDefLookupFor(DEFAULT_NAMESPACE)
+        fieldDefLookup: fieldDefLookupFor(DEFAULT_NAMESPACE),
+        ...(typeDefLookupFor ? { typeDefLookup: typeDefLookupFor(DEFAULT_NAMESPACE) } : {})
       }),
       edges: new MemoryEdgesStore({ now: () => new Date() }),
       substrateNamespaceDataset: null,
@@ -94,7 +107,12 @@ export async function wireStore(
   }
   if (storeSpec.startsWith('postgres://') || storeSpec.startsWith('postgresql://')) {
     const sql: Sql = openSql(storeSpec);
-    await runMigrations(sql);
+    try {
+      await runMigrations(sql);
+    } catch (err) {
+      await sql.end({ timeout: STORE_END_TIMEOUT_S }).catch(() => undefined);
+      throw err;
+    }
     // Edges store linked in via `edgesStore` so the dataset's
     // `withScopedTransaction` can enlist edge mutations into the same pg
     // transaction.
@@ -104,17 +122,23 @@ export async function wireStore(
         namespace: DEFAULT_NAMESPACE,
         sql,
         edgesStore: edges,
-        fieldDefLookup: fieldDefLookupFor(DEFAULT_NAMESPACE)
+        fieldDefLookup: fieldDefLookupFor(DEFAULT_NAMESPACE),
+        ...(typeDefLookupFor ? { typeDefLookup: typeDefLookupFor(DEFAULT_NAMESPACE) } : {}),
+        ...(diskGuard !== undefined ? { diskGuard } : {}),
+        ...(statementTimeoutMs !== undefined ? { statementTimeoutMs } : {})
       }),
       edges,
       substrateNamespaceDataset: new PgDataset({
         namespace: SYSTEM_NAMESPACE,
         sql,
         edgesStore: edges,
-        fieldDefLookup: fieldDefLookupFor(SYSTEM_NAMESPACE)
+        fieldDefLookup: fieldDefLookupFor(SYSTEM_NAMESPACE),
+        ...(typeDefLookupFor ? { typeDefLookup: typeDefLookupFor(SYSTEM_NAMESPACE) } : {}),
+        ...(diskGuard !== undefined ? { diskGuard } : {}),
+        ...(statementTimeoutMs !== undefined ? { statementTimeoutMs } : {})
       }),
       sql,
-      close: (): Promise<void> => sql.end()
+      close: (): Promise<void> => sql.end({ timeout: STORE_END_TIMEOUT_S })
     };
   }
   throw new EnvConfigError(
@@ -156,7 +180,7 @@ export function buildBridgeRegistry(
     // Throws here on a SET-but-unreadable keyPath rather than inside the bridge
     // client's try-block, where a LOCAL misconfiguration would be reported as a
     // REMOTE outage (`BridgeUnreachableError`).
-    const auth = makeAuthorizationProvider(cred);
+    const auth = makeAuthorizationProvider(cred, { audience: cred.origin });
     const client = new HttpBridgeClient({
       name: spec.name,
       baseUrl: spec.url,
@@ -181,20 +205,256 @@ export function buildBridgeRegistry(
  * `engineRef`. `runServe` populates `nsDefs` once plugins are loaded and well
  * before the server listens, so every query resolves against a populated map.
  *
+ * A field no definition declares (a type or field proposed at runtime) resolves
+ * from the live registry once `registryFor` does, as in
+ * {@link makeTypeDefLookupFactory}; without it a walk over a proposed crossRef
+ * throws and a pending number field sorts as text.
+ *
  * A miss (namespace absent, or a hand-crafted `NamespaceDefinition` whose
  * `types` is undefined because it bypassed `defineNamespace`) returns
  * `undefined`, and the dataset falls back to lexicographic text compare.
  */
-export function makeFieldDefLookupFactory(nsDefs: {
-  get(namespace: string): NamespaceDefinition | undefined;
-}): (namespace: string) => FieldDefLookup {
-  return (namespace) => (type, field) => nsDefs.get(namespace)?.types?.[type]?.fields?.[field];
+export function makeFieldDefLookupFactory(
+  nsDefs: { get(namespace: string): NamespaceDefinition | undefined },
+  registryFor: (namespace: string) => RegistryInterface | undefined = () => undefined
+): (namespace: string) => FieldDefLookup {
+  return (namespace) => (type, field) => {
+    const declared = nsDefs.get(namespace)?.types?.[type]?.fields?.[field];
+    if (declared !== undefined) return declared;
+    const entry = registryFor(namespace)?.get(type);
+    const def =
+      entry?.kind === 'type' && Object.hasOwn(entry.fields, field)
+        ? entry.fields[field]
+        : undefined;
+    return def === undefined || isReservedAutoCrudField(def) ? undefined : def;
+  };
+}
+
+/**
+ * Build a {@link TypeDefLookup} factory over the same late-bound `nsDefs`
+ * registry as {@link makeFieldDefLookupFactory}: a type's fields and declared
+ * indexes, which `PgDataset.ensureTypeStorage` builds indexes from. Once
+ * `registryFor` resolves, the live registry's fields, which include proposed
+ * ones, are merged over the declared fields, and the declared `indexes` are
+ * kept; a type no definition declares (proposed at runtime, or registered at
+ * install) has the registry's fields alone. The engine's reserved fields are
+ * left out where autoCRUD registered them, since they are not body fields.
+ * The lookup answers for the namespace it is asked about, so clones made by
+ * `forNamespace` resolve their own types.
+ */
+export function makeTypeDefLookupFactory(
+  nsDefs: { get(namespace: string): NamespaceDefinition | undefined },
+  registryFor: (namespace: string) => RegistryInterface | undefined = () => undefined
+): (namespace: string) => TypeDefLookup {
+  const lookup: TypeDefLookup = (type, namespace) => {
+    const declared = nsDefs.get(namespace)?.types?.[type];
+    const entry = registryFor(namespace)?.get(type);
+    const registered = entry?.kind === 'type' ? entry : undefined;
+    // Indexes take the natural order reads use: the registry entry's. Before the
+    // entry exists, the declared one, which autoCRUD installs on the entry; an
+    // `autoCrud: false` type registers its own entry, so its declared
+    // `orderedBy` never reaches reads and is not used here either.
+    const orderedBy =
+      registered !== undefined
+        ? registered.orderedBy
+        : declared?.autoCrud === false
+          ? undefined
+          : declared?.orderedBy;
+    if (registered === undefined && (declared === undefined || orderedBy === declared.orderedBy)) {
+      return declared;
+    }
+    const { orderedBy: _ignored, ...rest } = declared ?? { fields: {} };
+    // autoCRUD registers the reserved descriptor itself; a type without
+    // autoCRUD may declare a body field of the same name.
+    const live =
+      registered === undefined
+        ? {}
+        : Object.fromEntries(
+            Object.entries(registered.fields).filter(([, def]) => !isReservedAutoCrudField(def))
+          );
+    // A proposed type's indexes live on its registry entry; a declared type's in code.
+    const indexes = rest.indexes ?? registered?.indexes;
+    const expectedSize = rest.expectedSize ?? registered?.expectedSize;
+    return {
+      ...rest,
+      fields: { ...rest.fields, ...live },
+      ...(orderedBy !== undefined ? { orderedBy } : {}),
+      ...(indexes !== undefined ? { indexes } : {}),
+      ...(expectedSize !== undefined ? { expectedSize } : {})
+    };
+  };
+  return () => lookup;
+}
+
+/**
+ * Prepares storage for every type the namespace definitions declare: its
+ * table and its unique indexes, through `Dataset.ensureTypeStorage`. Runs
+ * before any kernel migration, so a migration can rely on a declared unique
+ * index. Non-unique indexes are left to {@link buildDeferredIndexes}. Errors
+ * propagate and fail the boot, among them `UniqueIndexDuplicatesError` and
+ * `IndexDefinitionConflictError`, which name the index, and a declared
+ * namespace with no dataset. Index builds run CONCURRENTLY, so the process
+ * must hold no open transaction meanwhile.
+ */
+export async function reconcileDeclaredStorage(
+  datasetFor: (ns: string) => Dataset | undefined,
+  nsDefs: Map<string, NamespaceDefinition>
+): Promise<void> {
+  for (const [ns, def] of nsDefs) {
+    const dataset = datasetFor(ns);
+    if (dataset === undefined) {
+      throw new Error(
+        `namespace '${ns}' is declared but has no dataset; its storage cannot be prepared`
+      );
+    }
+    for (const type of Object.keys(def.types ?? {})) {
+      // A field newly declared in code gets its column now, under a short lock timeout.
+      await dataset.ensureTypeStorage?.(type, { indexes: 'unique', newFields: 'column' });
+    }
+  }
+}
+
+export type ComposedDatasets = { has(ns: string): boolean; get(ns: string): Dataset | undefined };
+
+/** Every type registered in a namespace with a local dataset, with that dataset. */
+export function* registeredTypes(
+  engine: Pick<Engine, 'federatedSchema' | 'registryFor'>,
+  datasets: ComposedDatasets
+): Generator<{ ns: string; type: string; dataset: Dataset | undefined }> {
+  for (const ns of Object.keys(engine.federatedSchema())) {
+    // `has`, not `get`: `get` would allocate a dataset for a virtual namespace.
+    if (!datasets.has(ns)) continue;
+    const dataset = datasets.get(ns);
+    for (const [type, entry] of engine.registryFor(ns)?.all() ?? []) {
+      if (entry.kind === 'type') yield { ns, type, dataset };
+    }
+  }
+}
+
+const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+/**
+ * Prepares storage, table and unique indexes, for every type registered in
+ * every local namespace once compose has run: `_system`, install-time types
+ * such as the proposals plugin's, and proposed types replayed at start.
+ * Namespaces without a local dataset (bridged, virtual) are skipped. A type the
+ * operator's `nsDefs` declares fails the boot on error, since its unique
+ * indexes must exist. A type only the registry knows (proposed by a principal
+ * who can merely propose) logs the error naming it and the boot continues.
+ */
+export async function reconcileRegisteredStorage(
+  engine: Pick<Engine, 'federatedSchema' | 'registryFor'>,
+  datasets: ComposedDatasets,
+  nsDefs: { get(ns: string): NamespaceDefinition | undefined }
+): Promise<void> {
+  for (const { ns, type, dataset } of registeredTypes(engine, datasets)) {
+    try {
+      await dataset?.ensureTypeStorage?.(type, { indexes: 'unique' });
+    } catch (err) {
+      if (nsDefs.get(ns)?.types?.[type] !== undefined) throw err;
+      process.stderr.write(
+        `storage for registered type ${ns}/${type} was not prepared: ${message(err)}\n`
+      );
+    }
+  }
+}
+
+/**
+ * When `SUBSTRATE_INDEX_DISK_PATH` is unset, logs how many non-unique index
+ * builds the boot pass faces and their estimated size, since none of them
+ * will be checked against free disk. Logs nothing when none is pending.
+ */
+export async function reportUnguardedIndexBuilds(
+  engine: Pick<Engine, 'federatedSchema' | 'registryFor'>,
+  datasets: ComposedDatasets,
+  write: (line: string) => void = (line) => void process.stderr.write(line)
+): Promise<void> {
+  let count = 0;
+  let bytes = 0;
+  for (const { type, dataset } of registeredTypes(engine, datasets)) {
+    if (!(dataset instanceof PgDataset)) continue;
+    for (const p of await dataset.pendingIndexBuilds(type)) {
+      count++;
+      bytes += p.estimateBytes;
+    }
+  }
+  if (count === 0) return;
+  write(
+    `${count} index build${count === 1 ? '' : 's'} pending, estimated ${(bytes / 2 ** 30).toFixed(1)} GiB in total, ` +
+      'and SUBSTRATE_INDEX_DISK_PATH is unset, so free disk is not checked before them; ' +
+      "set it to the database volume's mount (or 'off')\n"
+  );
+}
+
+/**
+ * Builds the non-unique indexes of every registered type, one type at a time.
+ * Started after the server listens: until an index is valid, filters it would
+ * serve scan. Never rejects: a type whose build fails is logged, and reported
+ * `failed`, until the next build pass (periodic, or the next boot) retries it. `signal` cancels the build in
+ * flight, whose INVALID leftover the next reconcile drops, and skips the rest.
+ * Resolves to the logged failures, one line per type, for a caller that must
+ * not pass over them.
+ */
+export async function buildDeferredIndexes(
+  engine: Pick<Engine, 'federatedSchema' | 'registryFor'>,
+  datasets: ComposedDatasets,
+  signal?: AbortSignal,
+  opts: { onlyUnsettled?: boolean } = {}
+): Promise<string[]> {
+  const failures: string[] = [];
+  for (const { ns, type, dataset } of registeredTypes(engine, datasets)) {
+    if (signal?.aborted === true) break;
+    try {
+      if (opts.onlyUnsettled === true && !(await unsettled(dataset, type))) continue;
+      await dataset?.ensureTypeStorage?.(type, {
+        indexes: 'nonUnique',
+        ...(signal !== undefined ? { signal } : {})
+      });
+    } catch (err) {
+      const line = `indexes of ${ns}/${type} were not built and will be retried by the next build pass: ${message(err)}`;
+      failures.push(line);
+      process.stderr.write(`${line}\n`);
+    }
+  }
+  return failures;
+}
+
+/** Whether `type` has a non-unique index still pending, failed or invalid. */
+async function unsettled(dataset: Dataset | undefined, type: string): Promise<boolean> {
+  const report = await dataset?.describeStorage?.(type);
+  return (report?.indexes ?? []).some(
+    (i) => !i.unique && (i.state === 'pending' || i.state === 'failed' || i.state === 'invalid')
+  );
+}
+
+/**
+ * The boot pass of {@link buildDeferredIndexes}, then every `intervalMs` a
+ * pass over only the types with a non-unique index still pending, failed or invalid,
+ * such as one the disk guard refused. 0 runs the boot pass alone. Passes run
+ * one after another, so never overlap. Resolves once `signal` aborts.
+ */
+export async function runDeferredIndexBuilds(
+  engine: Pick<Engine, 'federatedSchema' | 'registryFor'>,
+  datasets: ComposedDatasets,
+  intervalMs: number,
+  signal: AbortSignal
+): Promise<void> {
+  await buildDeferredIndexes(engine, datasets, signal);
+  while (intervalMs > 0 && !signal.aborted) {
+    try {
+      // Unref'd, so a pending wait never holds the process open.
+      await sleep(intervalMs, undefined, { signal, ref: false });
+    } catch {
+      return;
+    }
+    await buildDeferredIndexes(engine, datasets, signal, { onlyUnsettled: true });
+  }
 }
 
 /**
  * Walk loaded namespace definitions for `field.list({ indexed: true })` and
  * `field.json({ indexed: true })` fields. Each becomes an auto-derived GIN
- * migration so the `indexed` flag — the validator's queryability contract —
+ * migration so the `indexed` flag — the physical-index contract —
  * can't drift from the physical index.
  */
 export function extractIndexedListFields(
@@ -223,8 +483,8 @@ export function extractIndexedListFields(
  * Pick per-namespace datasets for plugin-contributed namespaces.
  *
  * When the store is pg (`sharedSql` is non-null) every plugin namespace is
- * backed by a `PgDataset` pointing at the same connection pool — they
- * coexist in one `rows` table keyed by the `namespace` column, which
+ * backed by a `PgDataset` pointing at the same connection pool — each
+ * type in a table of its own, listed by namespace in the type catalog, which
  * is the core multi-namespace model. Multi-pg (namespace → distinct DB)
  * deployments should override `datasets` on the `compose()` call site
  * directly; this helper only covers the common single-pg-many-namespaces
@@ -243,7 +503,10 @@ export function buildPluginDatasetMap(
   defaultDataset: Dataset,
   sharedSql: Sql | null,
   sharedEdges: PgEdgesStore | null,
-  fieldDefLookupFor: (namespace: string) => FieldDefLookup
+  fieldDefLookupFor: (namespace: string) => FieldDefLookup,
+  typeDefLookup?: TypeDefLookup,
+  diskGuard?: DiskGuard,
+  statementTimeoutMs?: number
 ): Record<string, Dataset> {
   const datasets: Record<string, Dataset> = {};
   for (const plugin of plugins) {
@@ -260,15 +523,20 @@ export function buildPluginDatasetMap(
               namespace: ns,
               sql: sharedSql,
               fieldDefLookup: fieldDefLookupFor(ns),
-              ...(nsDef.promotedColumns !== undefined
-                ? { promotedColumns: nsDef.promotedColumns }
-                : {}),
+              typeDefLookup: typeDefLookup ?? ((type) => nsDef.types?.[type]),
+              // `nsDef.promotedColumns` is deprecated and ignored: every declared scalar is a column.
               // Thread the shared edges store so every plugin-contributed
               // namespace on the same pg pool can enlist edge ops into the
               // substrate tx.
-              ...(sharedEdges !== null ? { edgesStore: sharedEdges } : {})
+              ...(sharedEdges !== null ? { edgesStore: sharedEdges } : {}),
+              ...(diskGuard !== undefined ? { diskGuard } : {}),
+              ...(statementTimeoutMs !== undefined ? { statementTimeoutMs } : {})
             })
-          : new MemoryDataset({ namespace: ns, fieldDefLookup: fieldDefLookupFor(ns) });
+          : new MemoryDataset({
+              namespace: ns,
+              fieldDefLookup: fieldDefLookupFor(ns),
+              typeDefLookup: typeDefLookup ?? ((type) => nsDef.types?.[type])
+            });
     }
   }
   return datasets;

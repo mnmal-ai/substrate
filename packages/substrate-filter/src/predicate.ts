@@ -16,8 +16,12 @@ import {
   type FieldDef,
   type FieldPredicate,
   METADATA_FILTER_FIELDS,
+  normalizeIsoTimestamp,
+  type RefOperand,
   type Row,
   UnsupportedFilterError,
+  type WalkAggPredicate,
+  type WalkNode,
   type WhereClause
 } from '@mnmal-ai/substrate-types';
 import { getExtensionOperator } from './extension-operators.js';
@@ -27,6 +31,15 @@ import {
   evaluateJsonPathPredicate,
   isJsonPathPredicate
 } from './json-path.js';
+import {
+  bindingWalks,
+  computeAggTyped,
+  evaluateGroup,
+  evaluateWalk,
+  isRefOperand,
+  resolveRef,
+  type WalkContext
+} from './walk.js';
 
 /**
  * Tier-1 row-metadata column projections.
@@ -46,7 +59,8 @@ const METADATA_COLUMN_PROJECTIONS: Record<string, (row: Row) => unknown> = {
   createdById: (row: Row) => row._metadata?.createdBy?.id ?? null,
   createdByKind: (row: Row) => row._metadata?.createdBy?.kind ?? null,
   updatedById: (row: Row) => row._metadata?.updatedBy?.id ?? null,
-  updatedByKind: (row: Row) => row._metadata?.updatedBy?.kind ?? null
+  updatedByKind: (row: Row) => row._metadata?.updatedBy?.kind ?? null,
+  seq: (row: Row) => row._metadata?.seq ?? null
 } as const;
 
 /**
@@ -57,9 +71,11 @@ const METADATA_COLUMN_PROJECTIONS: Record<string, (row: Row) => unknown> = {
  * (`row[name]`), preserving the existing filter semantics.
  */
 export function getFieldValue(row: Row, name: string): unknown {
-  const projector = METADATA_COLUMN_PROJECTIONS[name];
-  if (projector !== undefined) return projector(row);
-  return row[name];
+  // Own properties only: a name like `constructor` must not read the prototype.
+  if (Object.hasOwn(METADATA_COLUMN_PROJECTIONS, name)) {
+    return (METADATA_COLUMN_PROJECTIONS[name] as (row: Row) => unknown)(row);
+  }
+  return Object.hasOwn(row, name) ? row[name] : undefined;
 }
 
 /** A type's field declarations, by top-level field name. */
@@ -108,6 +124,8 @@ const KNOWN_OPS = new Set<string>([
  */
 export function assertWhereHonourable(where: WhereClause): void {
   if (where === null || typeof where !== 'object' || Array.isArray(where)) return;
+  // `{ _agg, gte: 3 }`: the comparison beside `_agg` is not a field.
+  if (Object.hasOwn(where, '_agg')) return;
   for (const [key, child] of Object.entries(where as Record<string, unknown>)) {
     if (key === 'AND' || key === 'OR') {
       if (Array.isArray(child)) for (const sub of child) assertWhereHonourable(sub as WhereClause);
@@ -117,6 +135,14 @@ export function assertWhereHonourable(where: WhereClause): void {
       assertWhereHonourable(child as WhereClause);
       continue;
     }
+    // Walk nodes and walk aggregates are shaped by the walk validator; only a
+    // walk's far-side where is checked here.
+    if (key === '_walk') {
+      const far = (child as WalkNode | null)?.where;
+      if (far !== undefined) assertWhereHonourable(far);
+      continue;
+    }
+    if (key === '_agg') continue;
     if (getExtensionOperator(key) !== undefined) continue;
     assertFieldPredicateHonourable(key, child);
   }
@@ -182,21 +208,56 @@ function assertFieldPredicateHonourable(field: string, predicate: unknown): void
  * `fieldDefOf` names the row type's declared fields, so `date` fields compare
  * as instants (as pg's timestamptz does). Without it, only `createdAt` and
  * `updatedAt` do; nested struct fields always compare as written.
+ *
+ * `walk` lets `_walk` nodes and `$ref` operands reach other rows; without it
+ * either one throws. The `any` walks with `as` in one AND group are jointly
+ * quantified (see `evaluateGroup`).
  */
-export function evaluateWhere(row: Row, where: WhereClause, fieldDefOf?: FieldDefOf): boolean {
+export function evaluateWhere(
+  row: Row,
+  where: WhereClause,
+  fieldDefOf?: FieldDefOf,
+  walk?: WalkContext
+): boolean {
+  if (walk !== undefined) {
+    const group = bindingWalks(where);
+    if (group.length > 0) return evaluateGroup(row, where, fieldDefOf, walk, group);
+  }
+  return evaluateMembers(row, where, fieldDefOf, walk, NO_WALKS);
+}
+
+const NO_WALKS: ReadonlySet<WalkNode> = new Set();
+
+/**
+ * {@link evaluateWhere} for one AND group under its current assignment: the
+ * `bound` walks hold already, so they are skipped. Conjuncts stay in the
+ * group; OR and NOT branches start their own.
+ */
+export function evaluateMembers(
+  row: Row,
+  where: WhereClause,
+  fieldDefOf: FieldDefOf | undefined,
+  walk: WalkContext | undefined,
+  bound: ReadonlySet<WalkNode>
+): boolean {
   if (where === null || typeof where !== 'object' || Array.isArray(where)) return true;
+  if (Object.hasOwn(where, '_agg')) {
+    if (walk === undefined)
+      throw new UnsupportedFilterError('_agg', '<none>', 'walk aggregates need a walk context');
+    return evaluateAggPredicate(row, where as WalkAggPredicate, walk);
+  }
   for (const [k, child] of Object.entries(where as Record<string, unknown>)) {
     if (k === 'AND') {
       if (Array.isArray(child)) {
         for (const sub of child) {
-          if (!evaluateWhere(row, sub as WhereClause, fieldDefOf)) return false;
+          if (!evaluateMembers(row, sub as WhereClause, fieldDefOf, walk, bound)) return false;
         }
       }
     } else if (k === 'OR') {
       if (Array.isArray(child)) {
         let any = false;
         for (const sub of child) {
-          if (evaluateWhere(row, sub as WhereClause, fieldDefOf)) {
+          if (evaluateWhere(row, sub as WhereClause, fieldDefOf, walk)) {
             any = true;
             break;
           }
@@ -204,11 +265,34 @@ export function evaluateWhere(row: Row, where: WhereClause, fieldDefOf?: FieldDe
         if (!any) return false;
       }
     } else if (k === 'NOT') {
-      if (evaluateWhere(row, child as WhereClause, fieldDefOf)) return false;
+      if (evaluateWhere(row, child as WhereClause, fieldDefOf, walk)) return false;
+    } else if (k === '_walk') {
+      if (walk === undefined)
+        throw new UnsupportedFilterError(k, '<none>', 'walks need a walk context');
+      const node = child as WalkNode;
+      if (!bound.has(node) && !evaluateWalk(row, node, walk)) return false;
     } else {
       const asDate = isDateField(k, fieldDefOf);
-      if (!evaluateFieldPredicate(k, getFieldValue(row, k), child, asDate)) return false;
+      const ref = walk === undefined ? undefined : (r: RefOperand) => resolveRef(r, asDate, walk);
+      if (!evaluateFieldPredicate(k, getFieldValue(row, k), child, asDate, ref)) return false;
     }
+  }
+  return true;
+}
+
+/**
+ * `{ _agg, <cmp>: v }` on this row, compared by the aggregate's kind (dates as
+ * instants). A null aggregate, or a `$ref` operand that resolves to null,
+ * matches nothing, as SQL NULL.
+ */
+function evaluateAggPredicate(row: Row, where: WalkAggPredicate, walk: WalkContext): boolean {
+  const { value, asDate } = computeAggTyped(row, where._agg, walk);
+  if (value == null) return false;
+  for (const [op, raw] of Object.entries(where)) {
+    if (op === '_agg') continue;
+    const operand = isRefOperand(raw) ? resolveRef(raw, asDate, walk) : raw;
+    if (operand == null) return false;
+    if (!applyOp('_agg', op, value, operand, asDate)) return false;
   }
   return true;
 }
@@ -217,7 +301,8 @@ function evaluateFieldPredicate(
   field: string,
   value: unknown,
   predicate: unknown,
-  asDate = false
+  asDate = false,
+  ref?: (operand: RefOperand) => unknown
 ): boolean {
   if (predicate === null || typeof predicate !== 'object' || Array.isArray(predicate)) {
     // `where: { kind: 'depends_on' }` — a bare value where an operator object
@@ -256,7 +341,15 @@ function evaluateFieldPredicate(
   }
 
   for (const op of keys) {
-    const operand = p[op as keyof FieldPredicate] as unknown;
+    let operand = p[op as keyof FieldPredicate] as unknown;
+    if (isRefOperand(operand)) {
+      if (ref === undefined)
+        throw new UnsupportedFilterError(field, op, '$ref needs a walk context');
+      operand = ref(operand);
+      // A null `$ref` is never true, eq and neq included: they keep their
+      // is-null meaning only for a literal null.
+      if (operand == null) return false;
+    }
     if (!applyOp(field, op, value, operand, asDate)) return false;
   }
   return true;
@@ -275,30 +368,18 @@ function applyOp(
     case 'neq':
       return !equals(value, operand, asDate);
     case 'gt':
-      // null value cannot satisfy an ordered comparison — null sorts last in
-      // orderBy (matches pg NULLS LAST) but is excluded from range filters.
-      if (value == null) return false;
-      return compareFilterValues(value, operand, asDate) > 0;
+      return rangeCmp(value, operand, asDate) > 0;
     case 'gte':
-      if (value == null) return false;
-      return compareFilterValues(value, operand, asDate) >= 0;
+      return rangeCmp(value, operand, asDate) >= 0;
     case 'lt':
-      if (value == null) return false;
-      return compareFilterValues(value, operand, asDate) < 0;
+      return rangeCmp(value, operand, asDate) < 0;
     case 'lte':
-      if (value == null) return false;
-      return compareFilterValues(value, operand, asDate) <= 0;
+      return rangeCmp(value, operand, asDate) <= 0;
     case 'between': {
       if (!Array.isArray(operand) || operand.length !== 2) {
         throw new UnsupportedFilterError(field, op, 'requires a two-element [low, high] array');
       }
-      // A null row value cannot satisfy an ordered comparison — a data fact,
-      // not a caller error, so it stays a plain non-match.
-      if (value == null) return false;
-      return (
-        compareFilterValues(value, operand[0], asDate) >= 0 &&
-        compareFilterValues(value, operand[1], asDate) <= 0
-      );
+      return rangeCmp(value, operand[0], asDate) >= 0 && rangeCmp(value, operand[1], asDate) <= 0;
     }
     case 'in':
     case 'nin': {
@@ -344,11 +425,30 @@ function equals(a: unknown, b: unknown, asDate = false): boolean {
   // rows whose field is absent (value === undefined), diverging from pg.
   if (a == null && b == null) return true;
   if (asDate || a instanceof Date || b instanceof Date) {
-    const at = toMicros(a);
+    // A stored value pg's substrate_ts reads as NULL never matches.
+    const at = storedMicros(a);
     const bt = toMicros(b);
-    if (at !== undefined && bt !== undefined) return at === bt;
+    return at !== undefined && bt !== undefined && at === bt;
   }
   return a === b;
+}
+
+/**
+ * {@link compareFilterValues} for a range operator, or NaN, which fails every
+ * ordered test, where pg's compare is NULL: a null value, a non-number value
+ * against a number operand (substrate_num), or either side not an instant in
+ * date mode (substrate_ts).
+ */
+function rangeCmp(value: unknown, operand: unknown, asDate: boolean): number {
+  if (value == null) return Number.NaN;
+  if (typeof operand === 'number' && typeof value !== 'number') return Number.NaN;
+  if (
+    (asDate || value instanceof Date || operand instanceof Date) &&
+    (storedMicros(value) === undefined || toMicros(operand) === undefined)
+  ) {
+    return Number.NaN;
+  }
+  return compareFilterValues(value, operand, asDate);
 }
 
 /**
@@ -372,16 +472,50 @@ export function compareFilterValues(a: unknown, b: unknown, asDate = false): num
 }
 
 /**
- * Microseconds since the epoch, pg's timestamptz precision. `Date.parse` keeps
- * only milliseconds, so the 4th–6th fraction digits are added back. A number
- * is read as epoch milliseconds; anything unparseable is `undefined`.
+ * {@link toMicros} for a stored value: `undefined` wherever `substrate_ts` is
+ * NULL, a number included. Only the shared ISO grammar is read; operands are
+ * cast leniently, as pg's `tsParam` casts them.
  */
-function toMicros(v: unknown): number | undefined {
-  if (v instanceof Date) return v.getTime() * 1000;
-  if (typeof v === 'number') return Number.isFinite(v) ? v * 1000 : undefined;
+export function storedMicros(v: unknown): bigint | undefined {
+  if (v instanceof Date) return toMicros(v);
+  if (typeof v !== 'string' || normalizeIsoTimestamp(v) === undefined) return undefined;
+  return toMicros(v);
+}
+
+/**
+ * A row value as pg sorts it: a date-field value `substrate_ts` cannot read, or
+ * a number-field value that is not a number, becomes null and sorts last.
+ */
+export function asSortValue(field: string, value: unknown, fieldDefOf?: FieldDefOf): unknown {
+  if (value == null) return value;
+  if (isDateField(field, fieldDefOf)) return storedMicros(value) === undefined ? null : value;
+  const def = METADATA_FILTER_FIELDS[field] ?? fieldDefOf?.(field);
+  if (def?.kind === 'scalar' && def.type === 'number' && typeof value !== 'number') return null;
+  return value;
+}
+
+/**
+ * Microseconds since the epoch, pg's timestamptz precision, as a bigint: a
+ * double is exact only to 2^53 µs (about 1685-2255), and the grammar spans
+ * years 0001-9999. `Date.parse` keeps only milliseconds, so the 4th-6th
+ * fraction digits are added back. A number is read as epoch milliseconds;
+ * anything unparseable is `undefined`.
+ */
+function toMicros(v: unknown): bigint | undefined {
+  if (v instanceof Date) return msToMicros(v.getTime());
+  if (typeof v === 'number') return msToMicros(v);
   if (typeof v !== 'string') return undefined;
-  const ms = Date.parse(v);
-  if (Number.isNaN(ms)) return undefined;
-  const frac = /T[\d:]+\.(\d+)/.exec(v)?.[1] ?? '';
-  return ms * 1000 + Number(frac.padEnd(6, '0').slice(3, 6));
+  // The grammar's own form (no offset is UTC); anything else as Date.parse reads it.
+  const iso = normalizeIsoTimestamp(v) ?? v;
+  const micros = msToMicros(Date.parse(iso));
+  if (micros === undefined) return undefined;
+  const frac = /[T ][\d:]+\.(\d+)/.exec(iso)?.[1] ?? '';
+  return micros + BigInt(frac.padEnd(6, '0').slice(3, 6));
+}
+
+/** Epoch milliseconds as microseconds, exact: `ms * 1000` as a double is not, past 2^53. */
+function msToMicros(ms: number): bigint | undefined {
+  if (!Number.isFinite(ms)) return undefined;
+  const whole = Math.floor(ms);
+  return BigInt(whole) * 1000n + BigInt(Math.round((ms - whole) * 1000));
 }

@@ -32,10 +32,10 @@ describe.skipIf(POSTGRES_URL === undefined)('withMigrationLock', () => {
     // Concurrent migrators in sibling packages may hold it briefly; poll.
     for (let i = 0; i < 40; i++) {
       const [row] = await other<Array<{ acquired: boolean }>>`
-        SELECT pg_try_advisory_lock(hashtext('substrate-migrations')) AS acquired
+        SELECT pg_try_advisory_lock(hashtext('substrate-migrations:' || current_schema())) AS acquired
       `;
       if (row?.acquired === true) {
-        await other`SELECT pg_advisory_unlock(hashtext('substrate-migrations'))`;
+        await other`SELECT pg_advisory_unlock(hashtext('substrate-migrations:' || current_schema()))`;
         return true;
       }
       await new Promise((r) => setTimeout(r, 250));
@@ -76,4 +76,55 @@ describe.skipIf(POSTGRES_URL === undefined)('withMigrationLock', () => {
       await single.end({ timeout: 5 });
     }
   }, 20_000);
+
+  /** A pool of one whose session's current schema is `schema`. */
+  async function poolIn(schema: string): Promise<ReturnType<typeof postgres>> {
+    const pool = postgres(POSTGRES_URL as string, { max: 1, onnotice: () => {} });
+    await pool.unsafe(`SET search_path TO "${schema}"`);
+    return pool;
+  }
+
+  /** Whether `pool` takes the migration lock while `sql` holds it. */
+  async function takenWhileHeld(pool: ReturnType<typeof postgres>): Promise<boolean> {
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let entered!: () => void;
+    const holding = new Promise<void>((r) => (entered = r));
+    const first = withMigrationLock(sql, async () => {
+      entered();
+      await held;
+    });
+    await holding;
+    let ran = false;
+    const second = withMigrationLock(pool, async () => {
+      ran = true;
+    });
+    await new Promise((r) => setTimeout(r, 1_000));
+    const taken = ran;
+    release();
+    await Promise.all([first, second]);
+    return taken;
+  }
+
+  it('does not exclude a session in another schema', async () => {
+    const schema = `lock_scope_${Date.now()}`;
+    await sql.unsafe(`CREATE SCHEMA "${schema}"`);
+    const pool = await poolIn(schema);
+    try {
+      expect(await takenWhileHeld(pool)).toBe(true);
+    } finally {
+      await pool.end({ timeout: 5 });
+      await sql.unsafe(`DROP SCHEMA "${schema}"`);
+    }
+  });
+
+  it('excludes a session in the same schema', async () => {
+    const [{ schema }] = await sql<[{ schema: string }]>`SELECT current_schema()::text AS schema`;
+    const pool = await poolIn(schema);
+    try {
+      expect(await takenWhileHeld(pool)).toBe(false);
+    } finally {
+      await pool.end({ timeout: 5 });
+    }
+  });
 });

@@ -33,12 +33,28 @@ export function projectValue(value: unknown, selection: true | FieldInput): unkn
   // projecting it would strip it to `{}`, so pass it through whole.
   if (obj.__orphan === true) return value;
   const out: Record<string, unknown> = {};
+  let walked = false;
   for (const [field, sub] of Object.entries(selection)) {
-    if (field in obj) {
-      out[field] = projectValue(obj[field], sub);
-    }
+    if (!(field in obj)) continue;
+    const nested = nestedFields(sub);
+    if (nested !== undefined) walked = true;
+    // `_agg` maps names to aggregate specs, not to sub-selections: the
+    // values pass through. A nested `{ _walk }` list projects each row
+    // against its own `fields`, keeping the `id` every nested row carries.
+    out[field] =
+      field === '_agg'
+        ? obj[field]
+        : projectValue(obj[field], nested === undefined ? sub : { id: true, ...nested });
   }
+  if (walked && obj._truncated !== undefined) out._truncated = obj._truncated;
   return out;
+}
+
+/** A nested `{ _walk }` selection's own `fields`, or undefined for any other selection. */
+function nestedFields(sel: true | FieldInput): FieldInput | undefined {
+  if (typeof sel !== 'object' || !Object.hasOwn(sel, '_walk')) return undefined;
+  const fields = sel.fields;
+  return typeof fields === 'object' && fields !== null ? (fields as FieldInput) : {};
 }
 
 /**
@@ -58,7 +74,9 @@ export function projectEnvelope(envelope: PackEnvelope, frame: Frame): PackEnvel
       continue;
     }
     const fields = entry.fields as FieldInput | undefined;
-    if (fields === undefined) {
+    // `{ count }` and `{ groups }` are not rows; there is nothing to project.
+    const shape = envelope.shapes[key];
+    if (fields === undefined || shape === 'count' || shape === 'groups') {
       data[key] = value;
       continue;
     }

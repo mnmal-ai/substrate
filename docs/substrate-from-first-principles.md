@@ -77,6 +77,8 @@ HTTP, WebSocket, SSE, JSON, substrate-pack: one resolution pipeline underneath, 
 
 Every operation an agent needs is reachable from the primary agent surface. Today that is the MCP server (`substrate mcp`, §5.7), with HTTP and natural-language query as alternate surfaces. The invariant is **coverage**, not a fixed tool count.
 
+An agent with a shell has a second way in: code mode. `substrate run` imports a TypeScript script and calls it with a signed client that has `query`, `queryAll`, `recall` and `mutate`. A count over many rows, a join across types, or a batch of writes chosen by what a read found then costs one call and returns one small result. Through MCP, the same work is a chain of tool calls passing ids from one to the next, and every intermediate result lands in the agent's context. Code mode adds composition, not capability: each operation inside a script is the same HTTP surface with the same grants and policy, so the coverage invariant holds for both. A run is guarded by default. It refuses to run unsigned and is read-only unless given `--dry-run` or `--write`, with a cap on frames written. A rejected frame fails the run rather than reading as empty, and truncated reads are reported. The [`substrate run` reference](../apps/substrate/README.md#substrate-run) has the details.
+
 **Why fixed:** agents are the primary users. A gap in their surface is a gap in the product.
 
 ---
@@ -155,7 +157,7 @@ Or proposed at runtime through the proposals plugin (§5.15):
     "proposedReason": "need prices" } } }
 ```
 
-The field DSL (`field.*`) covers scalars (`string`, `number`, `boolean`, `date`, `json`, plus `enum` and `vocab` string variants), `crossRef`, `struct` and `list`. Every `FieldDef` may carry `nullable` — metadata only: the engine does not enforce it, but schema consumers use it to document shapes that legitimately produce `null`. Scalars may carry `indexed` (whether a field is filterable without a table scan, §5.2), `readonly`, and `serverSet` (a server-managed timestamp the caller cannot supply).
+The field DSL (`field.*`) covers scalars (`string`, `number`, `boolean`, `date`, `json`, plus `enum` and `vocab` string variants), `crossRef`, `struct` and `list`. Every `FieldDef` may carry `nullable` — metadata only: the engine does not enforce it, but schema consumers use it to document shapes that legitimately produce `null`. Scalars may carry `indexed` (`true` builds an index; unset, the SDK default, builds none; `false` builds none and marks the field as not a search handle; the field filters either way, §5.2), `readonly`, and `serverSet` (a server-managed timestamp the caller cannot supply).
 
 A type input to `defineNamespace` carries its fields plus optional `policy` (§4.4), `autoCrud: false` (opt out), `purgeable`, `adminCapability`, a `postWrite` hook and `embed` metadata (consumed by the recall plugin, §5.10).
 
@@ -243,7 +245,8 @@ Obligations are an extension channel. Composition MUST preserve them (`and`/`or`
 import { and, requireCapability, requireIdentity, row } from '@mnmal-ai/substrate/sdk';
 
 const canMutate   = requireCapability('mutate');
-const ownRowsOnly = row<Price>((ctx, price) => price.ownerId === ctx.identity?.id);
+// A null field reads back absent, so guard it: an unset owner must never equal an anonymous caller.
+const ownRowsOnly = row<Price>((ctx, price) => price.ownerId != null && price.ownerId === ctx.identity?.id);
 
 defineNamespace('prices', {
   Price: {
@@ -301,7 +304,6 @@ interface ReadParams {
   orderBy?: OrderByClause[];          // §5.2; id appended as final tie-breaker
   limit?: number;                     // MUST be pushed down to storage
   cursor?: string;                    // from a prior ReadResult.nextCursor
-  _allowTableScan?: boolean;          // permit filtering on unindexed fields
 }
 
 interface ReadResult { rows: Row[]; nextCursor?: string; hasMore: boolean; }
@@ -579,7 +581,7 @@ Hard-destructive operations (purge, the admin drop routes) can be switched off p
 | boolean | `eq` |
 | crossRef | `eq`, `neq`, `in`, `nin` on the target id (`neq: null` finds rows that point at something) |
 | list | `has` (element membership) |
-| json | through a path predicate only: `{ values: { path: ['year'], gt: 1990 } }`. Supports the string set plus `has`. Type-strict: `1995` does not match `"1995"`. Equality-style predicates are index-served when the field is declared `field.json({ indexed: true })`; anything else needs `_allowTableScan`. |
+| json | through a path predicate only: `{ values: { path: ['year'], gt: 1990 } }`. Supports the string set plus `has`. Type-strict: `1995` does not match `"1995"`. Equality-style predicates are index-served when the field is declared `field.json({ indexed: true })`; anything else scans the type's rows. |
 
 `eq: null` is the is-null test and works on every kind.
 
@@ -591,7 +593,7 @@ Plugins can contribute extra operators (the recall plugin adds `embeddingSimilar
 
 - **Validate against the schema before dispatch.** Unknown fields (`unknown_field`), unknown operators and type-mismatched values are rejected with a `FilterValidationError` and never reach the dataset. An unknown name in a filter is rejected because a filter the server cannot evaluate would silently widen the result.
 - **Negotiate with the dataset.** Each dataset declares `capabilities.operators` per field kind; the engine rejects anything the dataset cannot evaluate, rather than returning silently empty results.
-- **Enforce indexing.** Filters on unindexed fields are rejected (`unindexed_field`) unless the request passes `_allowTableScan: true`, which a policy can restrict.
+- **Never refuse for want of an index.** A filter on an unindexed field, or a sort on an unindexed non-json scalar, is accepted and scans. Sorting on a crossRef, list, struct or json field is still refused (`orderby_nonscalar`). `_allowTableScan` is accepted and ignored, and `unindexed_field` is no longer produced.
 
 **Pagination is cursor-based.** The cursor is opaque: base64url(JSON) of the last row's `orderBy` values plus its id. The next page re-runs the query with `(orderBy tuple) > (last seen tuple)` — exclusive, so it starts after the cursor row. With `id` as the final tie-breaker this survives data changes between pages without duplicates or gaps. If `orderBy` omits `id`, the engine appends `{ id: 'asc' }`. The `where` clause re-applies on every page. The envelope carries `_pagination[key] = { nextCursor?, hasMore }`. Under a row-filter policy the cursor is sealed (encrypted with a key derived from `SUBSTRATE_STREAM_TICKET_SECRET`, or held only by the process when that is unset), because the row it names may be one the caller cannot see; without the secret a sealed cursor stops opening when the server restarts or on another replica. An unsealed cursor is refused there.
 
@@ -612,7 +614,7 @@ Plugins can contribute extra operators (the recall plugin adds `embeddingSimilar
 
 ### 5.3 Transactions and batched mutations
 
-A `mutate` call runs its single-frame entries in one transaction on the addressed store, via `withTransaction` (§4.5). They commit together or not at all: a resolver that throws or refuses (a `ResolverFrameError`) rolls back every single-frame entry in the call, so a retry repeats nothing.
+A `mutate` call runs its single-frame entries in one transaction on the addressed store, via `withTransaction` (§4.5). They commit together or not at all. If any entry is refused (outside the caller's grant, denied by policy, invalid, or a resolver's `ResolverFrameError`) or its resolver throws, every single-frame entry in the call rolls back, and each of the others comes back with `frame_rolled_back`. So a retry repeats nothing. Virtual mutations run outside the transaction, so their results stand.
 
 Work that must outlive a rollback, such as an audit row recording a refusal, goes through `args.afterTx(fn)`: `fn` runs once the transaction has settled, committed or rolled back, and receives `{ committed }` saying which; autoCRUD's `postWrite` uses it to run only after a commit. A failure there is reported as the `engine_after_tx_failed` metric and does not change the envelope.
 
@@ -631,7 +633,7 @@ A subscribe frame has the same shape as a query frame and returns an initial sna
 - **The snapshot** honours `where`, `orderBy` and `limit` exactly like a query, and row-filter obligations apply.
 - **Pushes are filtered server-side** against the subscription's `where` and the row-filter obligations captured at subscribe time. A row that stops matching yields `remove`; a row that starts matching yields `add`; a row that still matches yields `update`.
 - **`orderBy` is advisory for pushes.** The client places updates in its own ordered view.
-- **Subscribe params are a subset of query params:** `where`, `orderBy`, `_allowTableScan`. `limit` is refused (`unknown_param`) because a capped live view would need server-side state to stay meaningful.
+- **Subscribe params are a subset of query params:** `where`, `orderBy`, and the ignored `_allowTableScan`. `limit` is refused (`unknown_param`) because a capped live view would need server-side state to stay meaningful.
 - **`remove` carries only the id** (`removedId`). The client already has the row.
 - **Write events.** Write-path resolvers announce committed writes via `args.onWrite({ ns, type, id, operation, row? })`. The engine collects them inside the transaction and fans out only after commit, so a rolled-back mutation pushes nothing.
 
@@ -856,10 +858,11 @@ SUBSTRATE_DATABASE_URL=postgres://… SUBSTRATE_PLUGIN_DIR=/srv/substrate /srv/s
 | `SUBSTRATE_STREAM_TICKET_SECRET` | HMAC key for SSE stream tickets; required when auth is on |
 | `SUBSTRATE_JWT_LEEWAY_SECONDS` | Clock-skew tolerance on `exp` / `nbf` |
 | `SUBSTRATE_JWT_MAX_TTL_SECONDS` | Longest a token may still have to run; a later `exp` is refused (default 7200, `0` disables) |
-| `SUBSTRATE_PUBLIC_ORIGIN` | The origins callers reach this server by, comma-separated (e.g. `https://host:3100,https://alias`); list every URL operators point the admin CLI or MCP at, since those mint `aud` from it. A token carrying `aud` (a string or an array) must name one of them or is refused with `wrong_audience`; a token with no `aud` is still accepted for now, and a later release makes `aud` mandatory. **Required when auth is on and `HOST` is not loopback**: the server refuses to boot without it, since otherwise a token minted for any other origin would replay here. On a loopback `HOST` it defaults to `http(s)://127.0.0.1:<port>`, `localhost` and `[::1]` (https when TLS is on) |
+| `SUBSTRATE_PUBLIC_ORIGIN` | The origins callers reach this server by, comma-separated (e.g. `https://host:3100,https://alias`); list every URL operators point the admin CLI or MCP at, since those mint `aud` from it. A token carrying `aud` (a string or an array) must name one of them or is refused with `wrong_audience`, and a token with no `aud` is refused with `missing_audience`. **Required when auth is on and `HOST` is not loopback**: the server refuses to boot without it, since otherwise a token minted for any other origin would replay here. On a loopback `HOST` it defaults to `http(s)://127.0.0.1:<port>`, `localhost` and `[::1]` (https when TLS is on) |
 | `SUBSTRATE_BRIDGES`, `SUBSTRATE_BRIDGE_CREDENTIALS` | Static bridges and their credentials (§5.8) |
 | `SUBSTRATE_SENTINEL_URL` | Enable dynamic bridge discovery (§5.8) |
 | `SUBSTRATE_TLS_KEY_PATH`, `SUBSTRATE_TLS_CERT_PATH`, `SUBSTRATE_TLS_CA_PATH` | TLS (key and cert together; CA optional) |
+| `SUBSTRATE_STATEMENT_TIMEOUT_MS` | Statement timeout for walk reads, in ms (default 30000). A read it cancels is refused `query_timeout` with `details.timeoutMs` |
 | `SUBSTRATE_SWEEP_INTERVAL_MS` | Edge sweep cadence (default 5 min) |
 | `SUBSTRATE_TOMBSTONE_RETENTION_DAYS` | Days before tombstoned rows and edges are hard-deleted (default 30) |
 | `SUBSTRATE_IDEMPOTENCY_DISABLED`, `SUBSTRATE_IDEMPOTENCY_TTL_MS` | Disable mutate dedup; override its 24 h window |

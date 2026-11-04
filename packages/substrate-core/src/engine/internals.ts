@@ -4,30 +4,38 @@
  */
 
 import { createHash } from 'node:crypto';
+import { listExtensionOperators, whereContainsOperator } from '@mnmal-ai/substrate-filter';
 import {
   type AfterTxWork,
   type BridgeFrame,
   type BridgeRegistry,
+  type CommittedWritesHook,
   coversNamespace,
   type Dataset,
   type DatasetRegistry,
   type EdgesStore,
   type FieldDef,
   type FieldInput,
+  type FilterWriteLimits,
   type FrameEntry,
   grantedIn,
   grantOf,
   type IdempotencyStore,
   isResolverFrameError,
+  type MetadataHop,
   type NamespaceConfig,
+  naturalOrderOf,
   normaliseMetadataOrderBy,
   normaliseMetadataWhere,
+  normaliseWalkNode,
   type OrderByClause,
+  type OrderedBy,
   type PackEnvelope,
   type ParsedKey,
   parseQualifiedKey,
   type QualifiedFrame,
   type ReadResult,
+  type RegistryEntry,
   type RequestContext,
   type ResolveObservation,
   type ResolverArgs,
@@ -37,6 +45,8 @@ import {
   type WriteEvent,
   type WsResponseFrame
 } from '@mnmal-ai/substrate-types';
+import type { ShapeRecorder } from '../advisor/shape-recorder.js';
+import type { HopResolver } from '../walk-types.js';
 
 // Re-exported from substrate-types for this package's internal import sites.
 export type { NamespaceConfig };
@@ -126,6 +136,21 @@ export interface EngineOptions {
    * does no timing at all.
    */
   onResolve?: (o: ResolveObservation) => void;
+  /**
+   * Observes each successful local read of a type: its shape (filtered fields
+   * and operators, the effective order including the natural one) and how long
+   * the resolver took. For the index advisor; absent means no recording.
+   */
+  shapeRecorder?: Pick<ShapeRecorder, 'observe'>;
+  /**
+   * Coordinators' `onCommittedWrites` hooks, in registration order. Called
+   * once per `(namespace, type, operation)` per committed transaction, as
+   * that transaction commits and never awaited by the mutate; a failure is a
+   * `/health` warning.
+   */
+  committedWritesHooks?: ReadonlyArray<{ plugin: string; hook: CommittedWritesHook }>;
+  /** Caps on `updateMany<T>` / `deleteMany<T>`; `DEFAULT_FILTER_WRITE_LIMITS` when absent. */
+  filterWriteLimits?: FilterWriteLimits;
   /**
    * Idempotency dedup (§5.13). Absent → no dedup; `FrameEntry.idempotencyKey`
    * is ignored on mutate (queries ignore it unconditionally). Present → the
@@ -374,7 +399,8 @@ export function toResolverArgs(
   onWrite?: (event: WriteEvent) => void,
   signal?: AbortSignal,
   resolveDataset?: (ns: string) => Dataset | undefined,
-  afterTx?: (fn: AfterTxWork) => void
+  afterTx?: (fn: AfterTxWork) => void,
+  txEntries?: number
 ): ResolverArgs {
   // Virtual namespaces own no dataset — omit the key (NOT
   // `dataset: undefined`, which exactOptionalPropertyTypes rejects).
@@ -386,36 +412,143 @@ export function toResolverArgs(
   if (signal !== undefined) args.signal = signal;
   if (resolveDataset !== undefined) args.resolveDataset = resolveDataset;
   if (afterTx !== undefined) args.afterTx = afterTx;
+  if (txEntries !== undefined) args.txEntries = txEntries;
   return args;
 }
 
 /**
+ * `params` with the type's natural order as `orderBy` when it names none: the
+ * default read order of a query, a subscription's snapshot and a stream. A
+ * single-row `id` read has no order, and get-shaped resolvers refuse one. An
+ * extension operator (semantic, …) in `where` keeps its relevance order.
+ * Returns `params` itself when nothing is added.
+ */
+export function withNaturalOrder(
+  params: Record<string, unknown> | undefined,
+  entry: Pick<RegistryEntry, 'kind' | 'orderedBy'>,
+  dataset: Dataset | undefined
+): Record<string, unknown> | undefined {
+  if (
+    entry.kind !== 'type' ||
+    dataset?.capabilities.orderBy !== true ||
+    params?.id !== undefined ||
+    // A count or whole-result aggregate returns no rows, so it has no order.
+    params?.count === true ||
+    params?.aggregate !== undefined ||
+    listExtensionOperators().some((op) => whereContainsOperator(params?.where, op))
+  ) {
+    return params;
+  }
+  const orderBy = params?.orderBy;
+  if (Array.isArray(orderBy) && orderBy.length > 0) return params;
+  // A copy, so nothing downstream can mutate the schema's (or the default's) object.
+  return { ...params, orderBy: [{ ...naturalOrderOf(entry) }] };
+}
+
+/**
+ * `fields` with each nested `{ _walk }` selection that names no `orderBy`
+ * given its far type's natural order, at any depth: a nested list reads as a
+ * top-level read of its type does, served by the eager `(crossRef, natural
+ * order, id)` index; the datasets append `id` as the tie-break. Returns
+ * `fields` itself when nothing is added.
+ */
+export function withNestedNaturalOrder<T>(
+  fields: T,
+  from: string,
+  resolve: HopResolver,
+  orderOf: (type: string) => OrderedBy
+): T {
+  if (typeof fields !== 'object' || fields === null || Array.isArray(fields)) return fields;
+  let changed = false;
+  const out = Object.entries(fields).map(([name, sel]) => {
+    const s = sel as Record<string, unknown>;
+    // `_agg` specs are not selections: their `where` may hold a `_walk`.
+    if (name === '_agg' || typeof sel !== 'object' || sel === null || !Object.hasOwn(s, '_walk')) {
+      return [name, sel];
+    }
+    const far = resolve(s._walk as Record<string, unknown>, from, [name]);
+    const sub = withNestedNaturalOrder(s.fields, far, resolve, orderOf);
+    const ordered = Array.isArray(s.orderBy) && s.orderBy.length > 0;
+    if (ordered && sub === s.fields) return [name, sel];
+    changed = true;
+    return [name, { ...s, fields: sub, ...(ordered ? {} : { orderBy: [{ ...orderOf(far) }] }) }];
+  });
+  return changed ? (Object.fromEntries(out) as T) : fields;
+}
+
+/**
  * The frame with its `where` / `orderBy` metadata spellings rewritten onto the
- * canonical columns (`createdBy` -> `createdById`, …). Returns the same frame
- * when it carries neither.
+ * canonical columns (`createdBy` -> `createdById`, …). Given `hop`, every walk
+ * subtree is rewritten against its far type too: a `_walk` / `_agg` where, a
+ * field `_agg`, and a nested `{ _walk }` selection's `where`, `orderBy` and
+ * `fields`. Returns the same frame when there is nothing to rewrite.
  */
 export function withCanonicalMetadataFilters(
   entry: FrameEntry,
-  fields: Record<string, FieldDef>
+  fields: Record<string, FieldDef>,
+  hop?: MetadataHop
 ): FrameEntry {
-  const params = entry.params;
-  if (params === undefined || (params.where === undefined && params.orderBy === undefined)) {
-    return entry;
-  }
+  const params = canonicalParams(entry.params, fields, hop);
+  const selection = hop !== undefined ? canonicalFields(entry.fields, hop) : entry.fields;
+  if (params === entry.params && selection === entry.fields) return entry;
   return {
     ...entry,
-    params: {
-      ...params,
-      ...(params.where !== undefined
-        ? { where: normaliseMetadataWhere(params.where, fields) }
-        : {}),
-      ...(params.orderBy !== undefined
-        ? { orderBy: normaliseMetadataOrderBy(params.orderBy, fields) }
-        : {})
-    }
+    ...(params !== undefined ? { params } : {}),
+    ...(selection !== undefined ? { fields: selection } : {})
   };
 }
 
+function canonicalParams(
+  params: Record<string, unknown> | undefined,
+  fields: Record<string, FieldDef>,
+  hop: MetadataHop | undefined
+): Record<string, unknown> | undefined {
+  if (params === undefined || (params.where === undefined && params.orderBy === undefined)) {
+    return params;
+  }
+  return {
+    ...params,
+    ...(params.where !== undefined
+      ? { where: normaliseMetadataWhere(params.where, fields, hop) }
+      : {}),
+    ...(params.orderBy !== undefined
+      ? { orderBy: normaliseMetadataOrderBy(params.orderBy, fields) }
+      : {})
+  };
+}
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/** A field selection with its `_agg` wheres and nested `{ _walk }` selections rewritten. */
+function canonicalFields(
+  selection: Record<string, unknown> | undefined,
+  hop: MetadataHop
+): Record<string, unknown> | undefined {
+  if (selection === undefined) return selection;
+  let out: Record<string, unknown> | undefined;
+  const set = (name: string, v: unknown) => {
+    out ??= { ...selection };
+    out[name] = v;
+  };
+  for (const [name, sel] of Object.entries(selection)) {
+    if (name === '_agg' && isPlainObject(sel)) {
+      set(
+        name,
+        Object.fromEntries(Object.entries(sel).map(([n, a]) => [n, normaliseWalkNode(a, hop)]))
+      );
+    } else if (isPlainObject(sel) && isPlainObject(sel._walk)) {
+      const far = hop(sel._walk);
+      if (far === undefined) continue;
+      set(name, {
+        ...canonicalParams(sel, far.fields, far.hop),
+        _walk: normaliseWalkNode(sel._walk, hop),
+        ...(isPlainObject(sel.fields) ? { fields: canonicalFields(sel.fields, far.hop) } : {})
+      });
+    }
+  }
+  return out ?? selection;
+}
 export function addError(
   envelope: PackEnvelope,
   path: string[],

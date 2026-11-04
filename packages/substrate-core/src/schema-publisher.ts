@@ -52,7 +52,11 @@ export function publishSchema(registry: Registry): Schema {
         returns: entry.returns ?? UNKNOWN_RETURNS
       };
     } else {
-      types[name] = { fields: entry.fields };
+      // Only when declared, so a type without one keeps its schemaVersion.
+      types[name] =
+        entry.orderedBy !== undefined
+          ? { fields: entry.fields, orderedBy: entry.orderedBy }
+          : { fields: entry.fields };
     }
   }
 
@@ -61,4 +65,26 @@ export function publishSchema(registry: Registry): Schema {
     types,
     mutations
   };
+}
+
+/**
+ * `schema` with each type's same-namespace inbound crossRefs added. Rides
+ * beside the hash like annotations: `publishSchema` knows no namespace, and
+ * an inbound ref is derived from fields the hash already covers.
+ */
+export function withInboundRefs(schema: Schema, ns: string): Schema {
+  const inbound = new Map<string, Array<{ type: string; field: string }>>();
+  for (const [type, t] of Object.entries(schema.types)) {
+    for (const [field, def] of Object.entries(t.fields)) {
+      if (def.kind !== 'crossRef' || def.ns !== ns) continue;
+      inbound.set(def.type, [...(inbound.get(def.type) ?? []), { type, field }]);
+    }
+  }
+  if (inbound.size === 0) return schema;
+  const types: Record<string, TypeSchema> = {};
+  for (const [name, t] of Object.entries(schema.types)) {
+    const refs = inbound.get(name);
+    types[name] = refs === undefined ? t : { ...t, inboundRefs: refs };
+  }
+  return { ...schema, types };
 }

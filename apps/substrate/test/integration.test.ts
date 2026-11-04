@@ -740,7 +740,7 @@ describe('apps/substrate integration', () => {
     expect(env.errors?.[0]?.code).toBe('unknown_field');
   });
 
-  it('unindexed field in where without _allowTableScan is rejected', async () => {
+  it('unindexed field in where without _allowTableScan is accepted', async () => {
     const res = await server.inject({
       method: 'POST',
       path: '/substrate/v1/query',
@@ -755,10 +755,10 @@ describe('apps/substrate integration', () => {
       )
     });
     const env = jsonBody<PackEnvelope>(res);
-    expect(env.errors?.[0]?.code).toBe('unindexed_field');
+    expect(env.errors).toBeUndefined();
   });
 
-  it('unindexed field in where is allowed when _allowTableScan: true', async () => {
+  it('unindexed field in where is allowed when _allowTableScan: true (ignored)', async () => {
     await server.inject({
       method: 'POST',
       path: '/substrate/v1/mutate',

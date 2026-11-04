@@ -25,7 +25,9 @@ const baseConfig = {
   pgPassword: 'TESTPASS',
   dbName: 'substrate_prod',
   composeName: 'substrate-test',
-  substrateVersion: '2.8.6'
+  substrateVersion: '2.8.6',
+  storeProfile: 'personal' as const,
+  writeHeavy: false
 };
 
 describe('envBinaryTemplate', () => {
@@ -33,6 +35,16 @@ describe('envBinaryTemplate', () => {
     const out = envBinaryTemplate(baseConfig);
     expect(out).toContain(
       'SUBSTRATE_DATABASE_URL=postgres://substrate:TESTPASS@127.0.0.1:5433/substrate_prod'
+    );
+  });
+
+  it('turns the index disk check off explicitly on postgres, with a note on when to set it', () => {
+    const out = envBinaryTemplate(baseConfig);
+    expect(out).toMatch(
+      /# Set to the database volume mount path .*\nSUBSTRATE_INDEX_DISK_PATH=off\n/
+    );
+    expect(envBinaryTemplate({ ...baseConfig, store: 'memory' })).not.toContain(
+      'SUBSTRATE_INDEX_DISK_PATH'
     );
   });
 
@@ -123,7 +135,12 @@ describe('dockerComposeTemplate', () => {
   });
 
   it('includes pgvector image when store=postgres', () => {
-    expect(dockerComposeTemplate(baseConfig)).toContain('pgvector/pgvector:pg17');
+    expect(dockerComposeTemplate(baseConfig)).toContain('pgvector/pgvector:pg18');
+  });
+
+  it('mounts the data volume where PostgreSQL 18+ images expect it', () => {
+    // The pg18 image refuses to start with a mount at /var/lib/postgresql/data.
+    expect(dockerComposeTemplate(baseConfig)).toContain('./data/pg:/var/lib/postgresql\n');
   });
 
   it('binds postgres to 127.0.0.1:<pgPort>', () => {

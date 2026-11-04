@@ -77,7 +77,8 @@ export async function profileNamespace(input: ProfileInput): Promise<NamespacePr
 }
 
 function profiled(def: FieldDef): boolean {
-  if (def.kind === 'scalar') return def.type === 'string' && def.indexed === true;
+  // Only an explicit `indexed: false` opts a scalar out (long-form prose); unset is a handle.
+  if (def.kind === 'scalar') return def.type === 'string' && def.indexed !== false;
   return (
     def.kind === 'list' &&
     def.indexed === true &&

@@ -13,8 +13,10 @@
  * envelope's `_pagination` block.
  */
 
-import type { ActorIdentity, Id, Row } from './core.js';
+import type { ActorIdentity, Id, Row, WriteRow } from './core.js';
 import type { EdgesStore } from './edge.js';
+import type { IndexDecl } from './plugin.js';
+import type { TypeStats } from './runtime-metrics.js';
 
 /**
  * Handles yielded by `Dataset.withScopedTransaction`. Contains the
@@ -46,12 +48,13 @@ export interface TxScopeHandles {
  */
 export interface FieldPredicate {
   // number / date operators (also reused as string `eq`/`neq`/`in`/`nin`)
-  eq?: number | string | boolean | Date | null;
-  neq?: number | string | boolean | Date | null;
-  gt?: number | string | Date;
-  gte?: number | string | Date;
-  lt?: number | string | Date;
-  lte?: number | string | Date;
+  // Comparison operands may be a walk reference (`{ $ref: 'L.price' }`).
+  eq?: number | string | boolean | Date | null | RefOperand;
+  neq?: number | string | boolean | Date | null | RefOperand;
+  gt?: number | string | Date | RefOperand;
+  gte?: number | string | Date | RefOperand;
+  lt?: number | string | Date | RefOperand;
+  lte?: number | string | Date | RefOperand;
   between?: [number | string | Date, number | string | Date];
   in?: Array<number | string | boolean | Date>;
   nin?: Array<number | string | boolean | Date>;
@@ -80,7 +83,76 @@ export type WhereClause =
   | { AND: WhereClause[] }
   | { OR: WhereClause[] }
   | { NOT: WhereClause }
-  | { [field: string]: FieldPredicate | WhereClause | unknown };
+  | { _walk: WalkNode }
+  | WalkAggPredicate
+  // `_walk`/`_agg?: never` keep a malformed walk from matching this catch-all.
+  | { _walk?: never; _agg?: never; [field: string]: FieldPredicate | WhereClause | unknown };
+
+// ---------------------------------------------------------------------------
+// Typed edge walks (spec 2026-10-24-typed-edge-walks §1)
+// ---------------------------------------------------------------------------
+
+export type WalkPick = { latest: string } | { max: string } | { min: string };
+
+export interface WalkNode {
+  as?: string;
+  /** `'<ns>/<Type>.<field>'`: inbound edge. */
+  in?: string;
+  /** `'<field>'`: outbound edge. */
+  out?: string;
+  where?: WhereClause;
+  quantifier?: 'any' | 'none' | 'all';
+  pick?: WalkPick;
+}
+
+/** `'$.f'` | `'<as>.f'` | `'_agg.<name>'` */
+export interface RefOperand {
+  $ref: string;
+  times?: number;
+  plus?: number;
+}
+
+export type AggFn =
+  | { count: true }
+  | { avg: string }
+  | { sum: string }
+  | { min: string }
+  | { max: string }
+  | { latest: { by: string; value: string } };
+
+export type WalkAgg = { in?: string; out?: string; where?: WhereClause } & AggFn;
+
+export type FrameAgg = Exclude<AggFn, { latest: unknown }>;
+
+export interface BucketSpec {
+  field: string;
+  by: 'day' | 'hour';
+}
+
+export type DeriveSpec = { diff: [string, string] } | { ratio: [string, string] };
+
+export interface NestedSelection {
+  _walk: { in?: string; out?: string; where?: WhereClause };
+  fields: Record<string, unknown>;
+  where?: WhereClause;
+  orderBy?: OrderByClause[];
+  limit?: number;
+}
+
+/** An `_agg` comparison operand: a number, a date or string (by the aggregate's kind), or a `$ref`. */
+export type WalkAggOperand = number | string | RefOperand;
+
+/** `{ _agg: <walk aggregate>, <cmp>: <operand> }` */
+export type WalkAggPredicate = {
+  _agg: WalkAgg;
+} & (
+  | { eq: WalkAggOperand }
+  | { neq: WalkAggOperand }
+  | { gt: WalkAggOperand }
+  | { gte: WalkAggOperand }
+  | { lt: WalkAggOperand }
+  | { lte: WalkAggOperand }
+);
 
 /**
  * OrderBy clause. One entry per field, direction per field. Engine appends an
@@ -88,27 +160,33 @@ export type WhereClause =
  * deterministic tie-break is what makes cursor pagination stable across pages.
  */
 export interface OrderByClause {
+  /** A `$`-prefixed key orders by a `params.derive` entry. */
   [field: string]: 'asc' | 'desc';
 }
 
 export interface ReadParams {
+  /** Aborts the read. Substrates that can (PgDataset) cancel the in-flight statement; others MAY ignore it. */
+  signal?: AbortSignal;
   id?: Id;
   ids?: Id[];
   includeDeleted?: boolean;
   where?: WhereClause;
   orderBy?: OrderByClause[];
   limit?: number;
+  /** Return a match count (`ReadResult.count`). */
+  count?: boolean;
+  aggregate?: Record<string, FrameAgg>;
+  bucket?: BucketSpec;
+  derive?: Record<string, DeriveSpec>;
+  /** Per-row walk aggregates, lifted out of `fields` by the list resolver. */
+  agg?: Record<string, WalkAgg>;
+  /** Per-row nested selections, lifted out of `fields` by the list resolver. */
+  nested?: Record<string, NestedSelection>;
   /**
    * Opaque cursor produced by a prior `read()` call. Base64url-encoded JSON
    * (server-built, server-consumed). Callers should treat it as a black box.
    */
   cursor?: string;
-  /**
-   * Admin-gated escape hatch for filtering on unindexed fields. Absent → the
-   * validator rejects filters on any `indexed: false` field. Policies can pin
-   * this to admin identities.
-   */
-  _allowTableScan?: boolean;
   /**
    * Optional caller-supplied projection hint. Substrates MAY use this to
    * narrow the body keys they materialise from storage — e.g. PgDataset
@@ -140,10 +218,17 @@ export interface ReadResult {
   rows: Row[];
   nextCursor?: string;
   hasMore: boolean;
+  count?: number;
+  groups?: Array<Record<string, unknown>>;
+  truncated?: boolean;
 }
 
 export interface WriteResult {
   written: number;
+  /**
+   * One per written row, in input order: a supplied id verbatim, otherwise
+   * the id the dataset assigned. Under `insertOnly`, skipped rows are absent.
+   */
   ids: Id[];
   /**
    * Merged rows after upsert — substrates populate this with the post-merge
@@ -182,6 +267,40 @@ export interface DeleteResult {
   ids: Id[];
 }
 
+/** Options of `Dataset.updateWhere` / `deleteWhere`. */
+export interface FilterWriteOptions {
+  /** Most rows the filter may match; one more refuses the write with `filter_too_broad`. */
+  maxMatch: number;
+  /** Stamped as `updatedBy` (update only); the anonymous system actor when absent. */
+  actor?: ActorIdentity;
+  /** Stamped as `updatedAt` (update only); the clock when absent. */
+  now?: Date;
+}
+
+/**
+ * What a by-filter write changed: every changed id, and the changed rows
+ * (post-images for an update, pre-images for a delete). Both are bounded by
+ * `maxMatch`.
+ */
+export interface FilterWriteResult {
+  count: number;
+  ids: Id[];
+  rows: Row[];
+}
+
+/** The caps on `updateMany<T>` / `deleteMany<T>`. */
+export interface FilterWriteLimits {
+  /** Most rows one filter may match (`SUBSTRATE_FILTER_WRITE_MAX_MATCH`). */
+  maxMatch: number;
+  /** Most ids one result returns (`SUBSTRATE_FILTER_WRITE_IDS_CAP`). */
+  idsCap: number;
+}
+
+export const DEFAULT_FILTER_WRITE_LIMITS: Readonly<FilterWriteLimits> = Object.freeze({
+  maxMatch: 10_000,
+  idsCap: 1_000
+});
+
 export interface DropResult {
   /** Number of rows physically removed. */
   rowsDeleted: number;
@@ -209,6 +328,11 @@ export interface FilterCapabilities {
   orderBy: boolean;
   /** Does the dataset honour cursor-based pagination? */
   cursor: boolean;
+  /**
+   * Does the dataset answer the typed-edge-walk grammar? The engine refuses a
+   * walk frame on a dataset without it (`walks_unsupported_store`).
+   */
+  walks?: boolean;
 }
 
 export interface UpdateFieldRef {
@@ -254,7 +378,7 @@ export interface Dataset {
    */
   readonly txScopeId: string;
   read(type: string, params: ReadParams): Promise<ReadResult>;
-  write(type: string, rows: Row[], options?: WriteOptions): Promise<WriteResult>;
+  write(type: string, rows: WriteRow[], options?: WriteOptions): Promise<WriteResult>;
   tombstone(type: string, ids: Id[]): Promise<DeleteResult>;
   purge(type: string, ids: Id[]): Promise<DeleteResult>;
   /**
@@ -279,7 +403,7 @@ export interface Dataset {
    * Physically delete every row AND short-id for `this.namespace`, across
    * every type. Equivalent to calling `dropType` for each distinct type
    * seen in storage, but substrate impls SHOULD use a single bulk DELETE
-   * where available (pg: `DELETE FROM rows WHERE namespace = $1`).
+   * where available (pg: one DELETE per type table).
    *
    * Same atomicity rules as `dropType`. Same "ignores archived state".
    */
@@ -293,8 +417,9 @@ export interface Dataset {
    *
    * Semantics:
    *   - Equality is strict (`===`) for scalars; `Date` compares by
-   *     `.getTime()`; `null` matches only a stored `null` (including
-   *     intentionally-null fields set via `updateField`), never an absent field.
+   *     `.getTime()`; `null` matches a stored `null` or an absent field, on both
+   *     datasets. A declared scalar or crossRef set to `null` reads back absent
+   *     (`isColumnField`), so it matches `null` all the same.
    *   - A missing row fails the match even when `match` is empty — the
    *     operation is "update this existing row if predicate holds".
    *   - `updates` is merged onto the stored row the same way `write()` upserts
@@ -329,7 +454,7 @@ export interface Dataset {
    * Run `fn` while holding a mutual-exclusion lock named `key`, waiting until
    * it is free. Excludes every other holder of the same key on this substrate:
    * pg holds a session advisory lock, so the exclusion spans processes sharing
-   * the database; memory excludes holders on this dataset instance only.
+   * the store's database schema; memory excludes holders on this dataset instance only.
    * Released when `fn` settles, whether it resolves or throws, except on a
    * pg tx-bound dataset, where it is held until the transaction ends so the
    * next holder sees what this one committed. Not re-entrant:
@@ -341,6 +466,140 @@ export interface Dataset {
    * @throws whatever `fn` throws, after the lock is released
    */
   withAdvisoryLock?<T>(key: string, fn: () => Promise<T>): Promise<T>;
+  /**
+   * Prepare dedicated storage for `type` in this namespace, moving any rows
+   * already written for it there. Idempotent, and safe beside concurrent
+   * reads and writes: no row is lost, duplicated or seen twice. That holds for
+   * READ COMMITTED readers; a REPEATABLE READ snapshot taken before the move
+   * can miss the moved rows. Also builds the type's indexes, including its
+   * declared `indexes`, and throws when a unique one cannot be built.
+   *
+   * `indexes` picks which: `unique` builds only the unique ones and leaves the
+   * rest `pending`, for a later `nonUnique` call to build. `signal` cancels an
+   * in-flight non-unique build, which the next call retries. Default `all`.
+   *
+   * On a store keeping each type in a table of its own, also brings that
+   * table in line with the type's declared fields: a newly declared field gets
+   * its column, or, with `newFields: 'pending'`, is recorded `pending` for a
+   * background sweep to add. Resolves with the fields that went `pending` in
+   * this call; a store without such tables resolves `{ pending: [] }`.
+   *
+   * OPTIONAL. Backends without per-type storage omit it.
+   */
+  ensureTypeStorage?(
+    type: string,
+    opts?: {
+      indexes?: 'all' | 'unique' | 'nonUnique';
+      signal?: AbortSignal;
+      newFields?: 'column' | 'pending';
+    }
+  ): Promise<{ pending: string[] }>;
+  /**
+   * Where `type`'s rows live and how its declared indexes stand, read from the
+   * catalog without building anything.
+   *
+   * OPTIONAL. Backends without per-type storage omit it.
+   */
+  describeStorage?(type: string): Promise<TypeStorageReport>;
+  /**
+   * Gives each `pending` field of every namespace its column and moves its
+   * values out of jsonb, and finishes each `promoting` one, a field at a time.
+   * DDL waits at most `lockTimeoutMs` for its table's lock, then that field is
+   * `busy` and retried by the next call; `batchRows` rows move per statement.
+   * `signal` stops the sweep between steps. Resolves with one event per field
+   * it touched. A field that failed on a unique conflict waits for its type's
+   * catalog to change, unless `retryConflicts` is set.
+   *
+   * OPTIONAL. Backends with no per-type tables omit it.
+   */
+  promotePendingFields?(opts: {
+    lockTimeoutMs: number;
+    batchRows: number;
+    signal?: AbortSignal;
+    /** Retries fields a unique conflict holds back until their type's catalog changes: an operator's run after fixing the data. */
+    retryConflicts?: boolean;
+  }): Promise<PromotionEvent[]>;
+  /**
+   * Store-wide counts of the fields an operator should know about: held in
+   * jsonb until promoted, whose promotion failed, and no longer declared with
+   * their column kept. Counts only, with no namespace, type, field or error
+   * text, since `/health` shows it unauthenticated; `storageReport` names them.
+   *
+   * OPTIONAL. Backends with no per-type tables omit it.
+   */
+  fieldWarnings?(): Promise<string[]>;
+  /**
+   * The database-wide storage layout and what an operator should look at:
+   * indexes this process has yet to build or failed to build, fields whose
+   * promotion failed, and a type-table count over `partitionBudget`; and, as
+   * `info`, engine indexes no longer declared, pending and orphaned fields,
+   * and open index recommendations. Never changes anything.
+   *
+   * OPTIONAL. Backends without per-type storage omit it.
+   */
+  storageReport?(opts: { partitionBudget: number }): Promise<StorageReport>;
+  /**
+   * Table and index statistics for every type the store holds, every
+   * namespace, read from the database's own statistics. Estimates, never a
+   * count. Never changes anything.
+   *
+   * OPTIONAL. Backends without such statistics omit it.
+   */
+  typeStats?(): Promise<TypeStats[]>;
+  /**
+   * The indexes the engine wants for `namespace`/`type` (any namespace, not
+   * only this one), with each one's leading keys, and the type's size hint.
+   * Undefined when the type is unknown. Never changes anything.
+   *
+   * OPTIONAL. Backends that build no indexes omit it.
+   */
+  indexPlan?(type: string, namespace: string): Promise<IndexPlan | undefined>;
+  /**
+   * Drop index `name` of this namespace's `type`, a signed `propose_index`
+   * remove. Only an engine-owned, non-unique index the engine no longer wants
+   * (a leftover or a retracted declaration) is dropped; anything else is
+   * refused with an error whose `code` is `unknown_index`, `not_engine_owned`,
+   * `unique_index` or `still_desired`, and nothing is dropped. A drop that
+   * waits longer than `lockTimeoutMs` on another transaction is abandoned with
+   * `index_drop_timeout`; the index may then be left invalid, and a retry drops it.
+   *
+   * OPTIONAL. Backends that build no indexes omit it (the memory dataset):
+   * there, `propose_index remove` has no index to find, so it is refused
+   * `unknown_index`, and a remove recommendation it names is superseded.
+   */
+  dropEngineIndex?(
+    type: string,
+    name: string,
+    opts?: {
+      /** Runs once every check has passed, just before the drop; a throw drops nothing. */
+      beforeDrop?: () => Promise<void>;
+      /** The drop's bound on each lock wait, in ms. Defaults to the backend's own. */
+      lockTimeoutMs?: number;
+    }
+  ): Promise<void>;
+  /**
+   * Drop the engine-owned indexes of this namespace, after a namespace drop
+   * has committed: its types leave the engine, so nothing would remove them.
+   * Non-unique ones only, unless `unique`, which the caller passes only when
+   * the namespace is declared nowhere (in no code and no live proposal): a
+   * declared namespace's types come back, and until the reconciler rebuilds a
+   * unique index, writes would not be held to it. Returns the names dropped.
+   * Never inside a transaction; a tx-bound instance throws. A lock wait that
+   * times out throws `index_drop_timeout`, leaving the rest for
+   * `storageReport` to list as orphaned.
+   *
+   * OPTIONAL. Backends that build no indexes omit it.
+   */
+  dropNamespaceIndexes?(opts?: { unique?: boolean }): Promise<string[]>;
+  /**
+   * The entry of this namespace's `type`'s declared `indexes` whose index is
+   * named `name`, or undefined when no declaration builds it (a derived or
+   * engine index, or none). `propose_index remove` retracts it when it is a
+   * proposed type's. Never changes anything.
+   *
+   * OPTIONAL. Backends that build no indexes omit it.
+   */
+  indexDeclarationOf?(type: string, name: string): Promise<IndexDecl | undefined>;
   /**
    * Execute `fn` atomically. All ops performed on the `tx` argument run inside
    * one substrate transaction. If `fn` throws or returns a rejected promise,
@@ -427,6 +686,79 @@ export interface Dataset {
   resolveShortId(type: string, shortId: number): Promise<string | null>;
 
   /**
+   * `count` fresh short ids for `type`, ascending, in one call (pg: one
+   * statement whatever `count`). Like `allocateShortId`, binds nothing.
+   * `count` of 0 returns `[]` and sends nothing.
+   */
+  allocateShortIds(type: string, count: number): Promise<number[]>;
+
+  /**
+   * `bindShortId` for many pairs at once (pg: one statement). Idempotent per
+   * pair, as `bindShortId` is. An empty `pairs` does nothing and sends nothing.
+   */
+  bindShortIds(
+    type: string,
+    pairs: ReadonlyArray<{ shortId: number; rowId: string }>
+  ): Promise<void>;
+
+  /**
+   * Set-wise `resolveShortId` for the LIVE rows among `shortIds` (pg: one
+   * statement). A short id with no binding, or whose row is tombstoned or
+   * purged, is absent from the map: the answer `resolveShortId` then a live
+   * `read` gives, which is how callers resolve today. Repeats in `shortIds`
+   * are deduped. An empty `shortIds` returns an empty map and sends nothing.
+   */
+  resolveShortIds(type: string, shortIds: readonly number[]): Promise<ReadonlyMap<number, string>>;
+
+  /**
+   * Multi-row `update`: merges each patch into its LIVE row with today's
+   * semantics (a key absent from the patch keeps its value, `null` clears it;
+   * `id` and `_deletedAt` keys are ignored), stamps `updatedAt` = `now` and
+   * `updatedBy` = `actor` (the anonymous system actor when `null`), as
+   * `conditionalUpdate` does. pg runs one statement whatever the batch size.
+   *
+   * The result has one entry per patch, in order: the merged row, or `null`
+   * when `id` is not live. It never revives a tombstoned row or re-creates a
+   * purged one.
+   *
+   * A repeated `id` is allowed: its patches apply in input order (later keys
+   * win, as sequential patches would) and every slot for that id holds the
+   * final merged row. An empty `patches` returns `[]` and sends nothing.
+   */
+  patchRows(
+    type: string,
+    patches: ReadonlyArray<{ id: Id; patch: Record<string, unknown> }>,
+    actor: ActorIdentity | null,
+    now: Date
+  ): Promise<Array<Row | null>>;
+
+  /**
+   * Update every live row of `type` matching `where`: merges `set` into each,
+   * as `patchRows` does, and stamps `updatedAt` / `updatedBy`. When more than
+   * `opts.maxMatch` rows match it throws `ResolverFrameError('filter_too_broad')`
+   * and changes nothing; zero matches is `{ count: 0 }`. pg runs one
+   * statement, which locks the matched rows and re-tests `where` on each, so
+   * a row a concurrent writer moved out of the filter is not updated.
+   */
+  updateWhere?(
+    type: string,
+    where: WhereClause,
+    set: Record<string, unknown>,
+    opts: FilterWriteOptions
+  ): Promise<FilterWriteResult>;
+
+  /**
+   * Tombstone every live row of `type` matching `where`, under the same cap
+   * and lock as `updateWhere`. `rows` are the pre-images. Checks no edges:
+   * the caller gates `restrict` and rolls back.
+   */
+  deleteWhere?(
+    type: string,
+    where: WhereClause,
+    opts: FilterWriteOptions
+  ): Promise<FilterWriteResult>;
+
+  /**
    * Inverse of `resolveShortId` — look up the short id assigned to a
    * given row id. Returns null if no sidecar entry exists (e.g. rows written
    * before short ids were allocated).
@@ -481,4 +813,68 @@ export interface DatasetRegistry {
    * Optional: same rationale as `onNamespaceLost`.
    */
   dispose?(ns: string): void;
+}
+
+/**
+ * One declared index of a type and its state: as the catalog holds it, or,
+ * while this process defers or runs its build, `pending`, `building` or
+ * `failed`. Filters on an index that is not `valid` scan.
+ */
+export interface TypeIndexState {
+  name: string;
+  fields: string[];
+  unique: boolean;
+  state: 'valid' | 'building' | 'pending' | 'invalid' | 'failed';
+  outcome: 'created' | 'adopted' | 'swapped' | 'unchanged';
+  /** Why a `failed` index failed: an error code, then a short reason. */
+  error?: string;
+  /** Why a `pending` index was not built: the free-disk check refused it. */
+  reason?: 'insufficient_disk';
+}
+
+/** Where a type's rows live: `table` is set once the type has its table. */
+export interface TypeStorageReport {
+  layout: 'tables';
+  table?: string;
+  indexes: TypeIndexState[];
+  /** Declared fields whose values live in `extra` until they get a column. */
+  pending?: string[];
+  /** Fields no longer declared whose columns are kept. */
+  orphaned?: string[];
+}
+
+/**
+ * One field's outcome in a promotion sweep (`Dataset.promotePendingFields`):
+ * `promoted` (it has its column and every value moved), `busy` (its table's
+ * lock was held past the timeout; retried next sweep) or `failed` (an error,
+ * or the third busy attempt in a row). `attempts` counts this one.
+ */
+export interface PromotionEvent {
+  kind: 'promoted' | 'busy' | 'failed';
+  namespace: string;
+  type: string;
+  field: string;
+  attempts: number;
+  error?: string;
+}
+
+export interface StorageReport {
+  /** `unknown` when the report itself failed. */
+  layout: 'tables' | 'unknown';
+  warnings: string[];
+  /** Worth showing, not a fault: the doctor prints these without failing. */
+  info?: string[];
+}
+
+/** See `Dataset.indexPlan`. */
+export interface IndexPlan {
+  /** Each desired index, its keys in order: a derived index ends with the type's natural order. */
+  indexes: Array<{
+    name: string;
+    keys: Array<[string, 'asc' | 'desc']>;
+    unique: boolean;
+    /** A partial index's predicate beyond `live`: it serves only reads that `eq` each field to its value. */
+    only?: Record<string, boolean | null>;
+  }>;
+  expectedSize?: 'small' | 'large';
 }

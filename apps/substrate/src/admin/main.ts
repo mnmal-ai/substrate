@@ -16,7 +16,9 @@ import {
   parseListArgs,
   runList
 } from './commands/list.js';
+import { migrateStoreCommand } from './commands/migrate-store.js';
 import { type OnboardIO, onboardCommand } from './commands/onboard.js';
+import { formatPromoteFieldsOutput, promoteFieldsCommand } from './commands/promote-fields.js';
 import {
   formatRegisterOutput,
   parseRegisterArgs,
@@ -83,7 +85,8 @@ export async function main(
       errOut(`unknown command: ${command}\n${USAGE}\n`);
       return 1;
     }
-    validateArgv(command, argv.slice(1));
+    // migrate-store validates its own argv, so a refusal echoing a pasted connection string is redacted.
+    if (command !== 'migrate-store') validateArgv(command, argv.slice(1));
     switch (command) {
       case 'bootstrap': {
         const parsed = parseBootstrapArgs(argv);
@@ -229,6 +232,13 @@ export async function main(
         const result = await runUpdate(parsed, env, openDataset);
         out(formatUpdateOutput(result));
         return 0;
+      }
+      case 'migrate-store':
+        return migrateStoreCommand(argv.slice(1), env, out, errOut);
+      case 'promote-fields': {
+        const result = await promoteFieldsCommand(argv.slice(1), env);
+        out(formatPromoteFieldsOutput(result));
+        return result.events.some((e) => e.kind === 'failed') ? 1 : 0;
       }
       default:
         errOut(`unknown command: ${command}\n${USAGE}\n`);

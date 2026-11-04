@@ -7,11 +7,17 @@
  * substrate plugin migration.
  */
 
+import { statfs as fsStatfs } from 'node:fs/promises';
 import { type ComposeOpts, SYSTEM_NAMESPACE } from '@mnmal-ai/substrate-compose';
 import type { MemoryBridgeRegistry } from '@mnmal-ai/substrate-core';
 import { MemoryIdempotencyStore } from '@mnmal-ai/substrate-core';
-import type { FieldDefLookup, PgEdgesStore } from '@mnmal-ai/substrate-dataset-pg';
-import { PgIdempotencyStore } from '@mnmal-ai/substrate-dataset-pg';
+import type {
+  DiskGuard,
+  FieldDefLookup,
+  PgEdgesStore,
+  TypeDefLookup
+} from '@mnmal-ai/substrate-dataset-pg';
+import { makeDiskGuard, PgIdempotencyStore } from '@mnmal-ai/substrate-dataset-pg';
 import {
   loadConfig as loadSentinelClientConfig,
   type SentinelClientConfig
@@ -25,8 +31,7 @@ import type {
   SubstrateServer
 } from '@mnmal-ai/substrate-types';
 import type { Sql } from 'postgres';
-import type { ParsedConfig } from './config.js';
-import { readPackageVersion } from './config.js';
+import { EnvConfigError, type ParsedConfig, readPackageVersion } from './config.js';
 import { buildBridgeRegistry, buildPluginDatasetMap, ensureMigrationsTable } from './wiring.js';
 
 export interface ComposedOpts {
@@ -41,6 +46,32 @@ export interface ComposedOpts {
   disposeBridges: () => void;
 }
 
+/**
+ * The free-disk check every pg dataset runs before a background index build,
+ * or none when `SUBSTRATE_INDEX_DISK_PATH=off`. A configured path is statted
+ * once here, so a typo fails the boot rather than every build.
+ */
+export async function indexDiskGuard(
+  config: Pick<ParsedConfig, 'indexDiskPath' | 'indexDiskMarginMb'>,
+  statfs: (p: string) => Promise<unknown> = (p) => fsStatfs(p)
+): Promise<DiskGuard | undefined> {
+  const path = config.indexDiskPath;
+  if (path === 'off') return undefined;
+  if (path !== null) {
+    try {
+      await statfs(path);
+    } catch (err) {
+      throw new EnvConfigError(
+        `SUBSTRATE_INDEX_DISK_PATH: ${path} is not readable: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+  return makeDiskGuard({
+    ...(path !== null ? { path } : {}),
+    marginBytes: config.indexDiskMarginMb * 1024 * 1024
+  });
+}
+
 export async function buildComposeOpts(args: {
   config: ParsedConfig;
   server: SubstrateServer;
@@ -50,7 +81,9 @@ export async function buildComposeOpts(args: {
   storeSql: Sql | null;
   substrateNamespaceDataset: Dataset | null;
   fieldDefLookupFor: (namespace: string) => FieldDefLookup;
+  typeDefLookup: TypeDefLookup;
   kernel: KernelPlugin[];
+  diskGuard?: DiskGuard | undefined;
 }): Promise<ComposedOpts> {
   const {
     config,
@@ -61,7 +94,9 @@ export async function buildComposeOpts(args: {
     storeSql,
     substrateNamespaceDataset,
     fieldDefLookupFor,
-    kernel
+    typeDefLookup,
+    kernel,
+    diskGuard
   } = args;
 
   const composeOpts: ComposeOpts = {
@@ -71,9 +106,20 @@ export async function buildComposeOpts(args: {
     trustedProxies: config.trustedProxies,
     pageLimits: config.pageLimits,
     subscriptions: { snapshotLimit: config.snapshotLimit },
+    filterWriteLimits: config.filterWriteLimits,
     // Mounts the admin-gated `GET /substrate/v1/config`.
-    configReport: config.knobs
+    configReport: config.knobs,
+    advisor: {
+      intervalMs: config.advisorIntervalMs,
+      ...(config.storeProfile !== null ? { storeProfile: config.storeProfile } : {}),
+      writeHeavy: config.storeWriteHeavy
+    },
+    promoteFields: { intervalMs: config.promoteIntervalMs }
   };
+  if (dataset.storageReport !== undefined) {
+    const report = dataset.storageReport.bind(dataset);
+    composeOpts.storageReport = () => report({ partitionBudget: config.partitionBudget });
+  }
   if (coordinators.length > 0) {
     composeOpts.coordinators = coordinators;
     composeOpts.datasets = buildPluginDatasetMap(
@@ -81,7 +127,10 @@ export async function buildComposeOpts(args: {
       dataset,
       storeSql,
       storeSql !== null ? (edges as PgEdgesStore) : null,
-      fieldDefLookupFor
+      fieldDefLookupFor,
+      typeDefLookup,
+      diskGuard,
+      config.statementTimeoutMs
     );
   }
   // When pg-backed, thread the `_system` namespace dataset into compose so
@@ -105,50 +154,58 @@ export async function buildComposeOpts(args: {
     config.bridges,
     config.bridgeCreds
   );
-  const sentinelClientConfig = loadSentinelClientConfig(process.env);
-  if (config.bridges.length > 0 || sentinelClientConfig !== null) {
-    composeOpts.bridges = bridgeRegistry;
-  }
-  if (config.auth !== null) {
-    composeOpts.auth = config.auth;
-  }
-  // Public-key-cache re-prime. compose() gates this on auth being enabled, so
-  // passing it through unconditionally is safe.
-  if (config.keyReprimeIntervalMs !== null) {
-    composeOpts.keyReprimeIntervalMs = config.keyReprimeIntervalMs;
-  }
-  // compose() refuses to boot an auth-enabled instance without this — the
-  // ungated browser stream routes authenticate on the ticket signature alone.
-  if (config.systemActor !== null) {
-    composeOpts.systemActor = config.systemActor;
-  }
-  if (config.streamTicketSecret !== null) {
-    composeOpts.streamTicketSecret = config.streamTicketSecret;
-  }
-  // §5.13 mutation idempotency, dedup on unless SUBSTRATE_IDEMPOTENCY_DISABLED.
-  // Pg-backed when storeSql is present, memory otherwise.
-  let idempotencyStore: IdempotencyStore | null = null;
-  if (!config.idempotency.disabled) {
-    idempotencyStore =
-      storeSql !== null ? new PgIdempotencyStore({ sql: storeSql }) : new MemoryIdempotencyStore();
-    const idempotencyOpt: { store: IdempotencyStore; defaultTtlMs?: number } = {
-      store: idempotencyStore
-    };
-    if (config.idempotency.defaultTtlMs !== null) {
-      idempotencyOpt.defaultTtlMs = config.idempotency.defaultTtlMs;
+  // The bridge clients are live from here; a later failure must not leak them.
+  try {
+    const sentinelClientConfig = loadSentinelClientConfig(process.env);
+    if (config.bridges.length > 0 || sentinelClientConfig !== null) {
+      composeOpts.bridges = bridgeRegistry;
     }
-    composeOpts.idempotency = idempotencyOpt;
+    if (config.auth !== null) {
+      composeOpts.auth = config.auth;
+    }
+    // Public-key-cache re-prime. compose() gates this on auth being enabled, so
+    // passing it through unconditionally is safe.
+    if (config.keyReprimeIntervalMs !== null) {
+      composeOpts.keyReprimeIntervalMs = config.keyReprimeIntervalMs;
+    }
+    // compose() refuses to boot an auth-enabled instance without this — the
+    // ungated browser stream routes authenticate on the ticket signature alone.
+    if (config.systemActor !== null) {
+      composeOpts.systemActor = config.systemActor;
+    }
+    if (config.streamTicketSecret !== null) {
+      composeOpts.streamTicketSecret = config.streamTicketSecret;
+    }
+    // §5.13 mutation idempotency, dedup on unless SUBSTRATE_IDEMPOTENCY_DISABLED.
+    // Pg-backed when storeSql is present, memory otherwise.
+    let idempotencyStore: IdempotencyStore | null = null;
+    if (!config.idempotency.disabled) {
+      idempotencyStore =
+        storeSql !== null
+          ? new PgIdempotencyStore({ sql: storeSql })
+          : new MemoryIdempotencyStore();
+      const idempotencyOpt: { store: IdempotencyStore; defaultTtlMs?: number } = {
+        store: idempotencyStore
+      };
+      if (config.idempotency.defaultTtlMs !== null) {
+        idempotencyOpt.defaultTtlMs = config.idempotency.defaultTtlMs;
+      }
+      composeOpts.idempotency = idempotencyOpt;
+    }
+
+    composeOpts.version = readPackageVersion();
+    if (kernel.length > 0) {
+      composeOpts.kernelPlugins = kernel;
+    }
+
+    // Ensure kernel_migrations tracking table exists before any substrate
+    // plugin migration runs. Idempotent (CREATE TABLE IF NOT EXISTS); no-op on memory.
+    // Distinct from migrations (dataset-pg framework's own table).
+    await ensureMigrationsTable(storeSql);
+
+    return { composeOpts, idempotencyStore, sentinelClientConfig, bridgeRegistry, disposeBridges };
+  } catch (err) {
+    disposeBridges();
+    throw err;
   }
-
-  composeOpts.version = readPackageVersion();
-  if (kernel.length > 0) {
-    composeOpts.kernelPlugins = kernel;
-  }
-
-  // Ensure kernel_migrations tracking table exists before any substrate
-  // plugin migration runs. Idempotent (CREATE TABLE IF NOT EXISTS); no-op on memory.
-  // Distinct from migrations (dataset-pg framework's own table).
-  await ensureMigrationsTable(storeSql);
-
-  return { composeOpts, idempotencyStore, sentinelClientConfig, bridgeRegistry, disposeBridges };
 }

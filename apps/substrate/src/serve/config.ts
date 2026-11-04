@@ -8,18 +8,31 @@ import {
   type AuthConfig,
   type ConfigReport,
   type ContractViolation,
-  parseAuthConfig
+  isStoreProfileName,
+  parseAuthConfig,
+  type StoreProfileName
 } from '@mnmal-ai/substrate-compose';
 import { MemoryBridgeCredentialStore } from '@mnmal-ai/substrate-core';
-import { parsePositiveInt, type TlsConfig } from '@mnmal-ai/substrate-types';
+import {
+  DEFAULT_FILTER_WRITE_LIMITS,
+  type FilterWriteLimits,
+  parsePositiveInt,
+  type TlsConfig
+} from '@mnmal-ai/substrate-types';
 import pkg from '../../package.json' with { type: 'json' };
 import { createKnobRecorder, type KnobRecorder, nonEmpty } from './knobs.js';
 import { redactStoreSpec } from './wiring.js';
 
 const DEFAULT_SWEEP_INTERVAL_MS = 300_000;
+const DEFAULT_STATEMENT_TIMEOUT_MS = 30_000;
 const DEFAULT_INVITE_SWEEP_INTERVAL_MS = 3_600_000;
 const DEFAULT_TOMBSTONE_RETENTION_DAYS = 30;
 const DEFAULT_SHUTDOWN_GRACE_MS = 5_000;
+const DEFAULT_PARTITION_BUDGET = 500;
+const DEFAULT_INDEX_DISK_MARGIN_MB = 2048;
+const DEFAULT_INDEX_RETRY_INTERVAL_MS = 600_000;
+const DEFAULT_ADVISOR_INTERVAL_MS = 600_000;
+const DEFAULT_PROMOTE_INTERVAL_MS = 21_600_000;
 export const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DEFAULT_PORT = 3100;
 
@@ -57,6 +70,40 @@ export interface ParsedConfig {
    */
   shutdownGraceMs: number;
   /**
+   * `SUBSTRATE_PARTITION_BUDGET` — partitions under `rows` (on the tables
+   * layout, type tables) beyond which the config report warns.
+   */
+  partitionBudget: number;
+  /** `SUBSTRATE_STATEMENT_TIMEOUT_MS` — the statement timeout a walk read runs under; a read it cancels is refused `query_timeout`. */
+  statementTimeoutMs: number;
+  /**
+   * `SUBSTRATE_INDEX_DISK_PATH` — the database volume's mount, when the
+   * database is local, whose free space is checked before each background
+   * index build. `'off'` turns the check off, for a database with no local
+   * volume. `null` (unset) leaves it off too, and the storage report says so.
+   */
+  indexDiskPath: string | 'off' | null;
+  /** `SUBSTRATE_INDEX_DISK_MARGIN_MB` — free space a build must leave. Default 2048; 0 requires only the estimate. */
+  indexDiskMarginMb: number;
+  /**
+   * `SUBSTRATE_INDEX_RETRY_INTERVAL_MS` — how often the background pass
+   * retries types with a non-unique index still pending or failed. Default
+   * 10 minutes; 0 leaves them to the next boot.
+   */
+  indexRetryIntervalMs: number;
+  /** `SUBSTRATE_ADVISOR_INTERVAL_MS` — how often the index advisor runs. Default 10 minutes; 0 turns it off. */
+  advisorIntervalMs: number;
+  /**
+   * `SUBSTRATE_PROMOTE_INTERVAL_MS` — how often the promotion sweep gives
+   * pending fields their columns. Default 6 hours; 0 stops the timer, and
+   * `substrate-admin promote-fields` still runs it.
+   */
+  promoteIntervalMs: number;
+  /** `SUBSTRATE_STORE_PROFILE` — seeds `_system/StoreProfile` once; unset seeds `personal`. */
+  storeProfile: StoreProfileName | null;
+  /** `SUBSTRATE_STORE_WRITE_HEAVY=1` — the advisor halves its write-rate threshold for removing unused indexes. */
+  storeWriteHeavy: boolean;
+  /**
    * §5.13 mutation idempotency config. `disabled` kills dedup entirely (the
    * engine never sees a store); `defaultTtlMs === null` leaves the engine's
    * 24h default in place, any positive integer overrides it.
@@ -86,6 +133,8 @@ export interface ParsedConfig {
   pageLimits: { defaultLimit: number; maxLimit: number };
   /** Most rows a subscription snapshot may return (`SUBSTRATE_SNAPSHOT_LIMIT`, default the max page). */
   snapshotLimit: number;
+  /** Caps on `updateMany<T>` / `deleteMany<T>` (`SUBSTRATE_FILTER_WRITE_MAX_MATCH` / `_IDS_CAP`). */
+  filterWriteLimits: FilterWriteLimits;
   /**
    * Periodic re-prime interval (ms) for the `KeyRegistry` public-key
    * cache; bounds revocation staleness. Defaults to
@@ -117,12 +166,21 @@ export class EnvConfigError extends Error {
   override readonly name = 'EnvConfigError';
 }
 
+/** Set once the retired `SUBSTRATE_STORAGE_LAYOUT` has been warned about. */
+let warnedStorageLayout = false;
+
 /**
  * Parses the serve env into a fully resolved `ParsedConfig`. The only I/O is
  * reading the auth and TLS PEM / JSON files. Throws `EnvConfigError` on any
  * malformed input.
  */
 export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
+  if (env.SUBSTRATE_STORAGE_LAYOUT !== undefined && !warnedStorageLayout) {
+    warnedStorageLayout = true;
+    process.stderr.write(
+      'warning: SUBSTRATE_STORAGE_LAYOUT is no longer read; every store uses per-type tables\n'
+    );
+  }
   const knobs = createKnobRecorder();
   const storeSpec = env.SUBSTRATE_DATABASE_URL ?? 'memory';
   // The RECORDED value is redacted; `storeSpec` itself stays intact because it
@@ -178,6 +236,91 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
   const inviteSweepIntervalMs = parseInviteSweepIntervalMs(env, knobs);
   const tombstoneRetentionDays = parseTombstoneRetentionDays(env, knobs);
   const shutdownGraceMs = parseShutdownGraceMs(env, knobs);
+  const partitionBudget = parsePositiveIntEnv(
+    env,
+    knobs,
+    'partitionBudget',
+    'SUBSTRATE_PARTITION_BUDGET',
+    DEFAULT_PARTITION_BUDGET,
+    'partitions'
+  );
+  const statementTimeoutMs = parsePositiveIntEnv(
+    env,
+    knobs,
+    'statementTimeoutMs',
+    'SUBSTRATE_STATEMENT_TIMEOUT_MS',
+    DEFAULT_STATEMENT_TIMEOUT_MS,
+    'milliseconds'
+  );
+  // Postgres takes statement_timeout as an int4 of milliseconds.
+  if (statementTimeoutMs > 2_147_483_647) {
+    throw new EnvConfigError(
+      `SUBSTRATE_STATEMENT_TIMEOUT_MS must be at most 2147483647 (got '${statementTimeoutMs}')`
+    );
+  }
+  const indexDiskPath = knobs.record(
+    'indexDiskPath',
+    'SUBSTRATE_INDEX_DISK_PATH',
+    env.SUBSTRATE_INDEX_DISK_PATH,
+    diskPathOf(nonEmpty(env.SUBSTRATE_INDEX_DISK_PATH?.trim()))
+  );
+  const indexDiskMarginMb = parseNonNegativeIntEnv(
+    env,
+    knobs,
+    'indexDiskMarginMb',
+    'SUBSTRATE_INDEX_DISK_MARGIN_MB',
+    DEFAULT_INDEX_DISK_MARGIN_MB,
+    'megabytes'
+  );
+  const indexRetryIntervalMs = parseNonNegativeIntEnv(
+    env,
+    knobs,
+    'indexRetryIntervalMs',
+    'SUBSTRATE_INDEX_RETRY_INTERVAL_MS',
+    DEFAULT_INDEX_RETRY_INTERVAL_MS,
+    'milliseconds, 0 to disable'
+  );
+  const advisorIntervalMs = parseNonNegativeIntEnv(
+    env,
+    knobs,
+    'advisorIntervalMs',
+    'SUBSTRATE_ADVISOR_INTERVAL_MS',
+    DEFAULT_ADVISOR_INTERVAL_MS,
+    'milliseconds, 0 to disable'
+  );
+  const promoteIntervalMs = parseNonNegativeIntEnv(
+    env,
+    knobs,
+    'promoteIntervalMs',
+    'SUBSTRATE_PROMOTE_INTERVAL_MS',
+    DEFAULT_PROMOTE_INTERVAL_MS,
+    'milliseconds, 0 to disable'
+  );
+  const profileRaw = nonEmpty(env.SUBSTRATE_STORE_PROFILE?.trim());
+  if (profileRaw !== undefined && !isStoreProfileName(profileRaw)) {
+    throw new EnvConfigError(
+      `SUBSTRATE_STORE_PROFILE must be personal, growth or scale, got '${profileRaw}'`
+    );
+  }
+  const storeProfile = knobs.record(
+    'storeProfile',
+    'SUBSTRATE_STORE_PROFILE',
+    env.SUBSTRATE_STORE_PROFILE,
+    profileRaw ?? null
+  );
+  const writeHeavyRaw = env.SUBSTRATE_STORE_WRITE_HEAVY;
+  const writeHeavyWord = (writeHeavyRaw ?? '').trim().toLowerCase();
+  if (!['', '0', 'false', '1', 'true'].includes(writeHeavyWord)) {
+    throw new EnvConfigError(
+      `SUBSTRATE_STORE_WRITE_HEAVY must be 1, true, 0 or false, got '${writeHeavyRaw}'`
+    );
+  }
+  const storeWriteHeavy = knobs.record(
+    'storeWriteHeavy',
+    'SUBSTRATE_STORE_WRITE_HEAVY',
+    writeHeavyRaw,
+    writeHeavyWord === '1' || writeHeavyWord === 'true'
+  );
   const idempotency = parseIdempotencyConfig(env, knobs);
   const trustedProxies = parseTrustedProxies(env, knobs);
   const port = parsePort(env, knobs);
@@ -231,6 +374,7 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
   const bodyLimit = parseBodyLimit(env, knobs);
   const pageLimits = parsePageLimits(env, knobs);
   const snapshotLimit = parseSnapshotLimit(env, knobs, pageLimits.maxLimit);
+  const filterWriteLimits = parseFilterWriteLimits(env, knobs);
   const keyReprimeIntervalMs = parseKeyReprimeIntervalMs(env, knobs);
   knobs.recordSecret(
     'streamTicketSecret',
@@ -259,6 +403,15 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
     inviteSweepIntervalMs,
     tombstoneRetentionDays,
     shutdownGraceMs,
+    partitionBudget,
+    statementTimeoutMs,
+    indexDiskPath,
+    indexDiskMarginMb,
+    indexRetryIntervalMs,
+    advisorIntervalMs,
+    promoteIntervalMs,
+    storeProfile,
+    storeWriteHeavy,
     idempotency,
     trustedProxies,
     port,
@@ -267,6 +420,7 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
     bodyLimit,
     pageLimits,
     snapshotLimit,
+    filterWriteLimits,
     keyReprimeIntervalMs,
     knobs: knobs.report(),
     streamTicketSecret,
@@ -366,6 +520,30 @@ function parseSnapshotLimit(env: NodeJS.ProcessEnv, knobs: KnobRecorder, fallbac
   return knobs.record('snapshotLimit', 'SUBSTRATE_SNAPSHOT_LIMIT', env.SUBSTRATE_SNAPSHOT_LIMIT, v);
 }
 
+/** Parse `SUBSTRATE_FILTER_WRITE_MAX_MATCH` (10000) and `SUBSTRATE_FILTER_WRITE_IDS_CAP` (1000). */
+function parseFilterWriteLimits(env: NodeJS.ProcessEnv, knobs: KnobRecorder): FilterWriteLimits {
+  const read = (key: string, name: string, fallback: number): number => {
+    const raw = nonEmpty(env[name]);
+    const v = raw === undefined ? fallback : Number(raw);
+    if (!Number.isSafeInteger(v) || v <= 0) {
+      throw new EnvConfigError(`${name}: invalid value '${raw}' — expected a positive integer`);
+    }
+    return knobs.record(key, name, env[name], v);
+  };
+  return {
+    maxMatch: read(
+      'filterWriteMaxMatch',
+      'SUBSTRATE_FILTER_WRITE_MAX_MATCH',
+      DEFAULT_FILTER_WRITE_LIMITS.maxMatch
+    ),
+    idsCap: read(
+      'filterWriteIdsCap',
+      'SUBSTRATE_FILTER_WRITE_IDS_CAP',
+      DEFAULT_FILTER_WRITE_LIMITS.idsCap
+    )
+  };
+}
+
 /**
  * Parse `SUBSTRATE_TRUSTED_PROXIES` — CSV of exact peer-IP strings. Entries are
  * trimmed; empty entries are dropped. A non-empty value that devolves to an
@@ -429,6 +607,28 @@ function parseCorsConfig(
     );
   }
   return note({ origins, credentials: true });
+}
+
+const diskPathOf = (raw: string | undefined): string | 'off' | null =>
+  raw === undefined ? null : raw.toLowerCase() === 'off' ? 'off' : raw;
+
+/** As {@link parsePositiveIntEnv}, but 0 is allowed. */
+function parseNonNegativeIntEnv(
+  env: NodeJS.ProcessEnv,
+  knobs: KnobRecorder,
+  key: string,
+  varName: string,
+  defaultValue: number,
+  units: string
+): number {
+  const raw = nonEmpty(env[varName]);
+  const n = raw === undefined ? defaultValue : Number(raw);
+  if (!Number.isInteger(n) || n < 0) {
+    throw new EnvConfigError(
+      `${varName}: got '${raw}' — expected a non-negative integer (${units})`
+    );
+  }
+  return knobs.record(key, varName, env[varName], n);
 }
 
 /**

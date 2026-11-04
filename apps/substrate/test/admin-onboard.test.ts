@@ -27,7 +27,7 @@ import {
 } from '../src/admin/commands/onboard.js';
 import { bootstrapBlockers, writeKeypair } from '../src/admin/commands/onboard-keys.js';
 import { AdminCliError } from '../src/admin/errors.js';
-import { main, onboardCommand } from '../src/bin/admin.js';
+import { main, onboardCommand } from '../src/admin/index.js';
 
 describe('writeKeypair', () => {
   const dir = () => mkdtempSync(join(tmpdir(), 'onboard-keys-'));

@@ -38,6 +38,24 @@ describe('renderers', () => {
     expect(f).toMatch(/forbidden/);
     expect(f).not.toMatch(/0 rows/);
   });
+  it('unknown renders with its dropped list', () => {
+    const f = show(KIND.unknown, {
+      kind: 'unknown',
+      question: 'how many cards with island size in the past 2 days',
+      dropped: [{ span: 'past 2 days', reason: 'it windows Island', kind: 'filter' }],
+      plan: []
+    });
+    expect(f).toMatch(/unknown/);
+    expect(f).toMatch(/dropped "past 2 days": it windows Island/);
+  });
+  it('rows show what was dropped; a server count shows the number', () => {
+    const lost = [{ span: 'latest', reason: 'conflicts', kind: 'order' as const }];
+    expect(show(KIND.rows, rows({ dropped: lost }))).toMatch(/dropped "latest": conflicts/);
+    const n = rows({ answer: 'count', data: { count: 42 }, count: 42 });
+    expect(show(KIND.rows, n)).toMatch(/42/);
+    expect(show(KIND.rows, n)).not.toMatch(/rejected/);
+    expect(outcomeChips(n).map((c) => c.label)).toContain('42 rows');
+  });
   it('recall lists hits; rejected recall says rejected', () => {
     expect(
       show(KIND.recall, {

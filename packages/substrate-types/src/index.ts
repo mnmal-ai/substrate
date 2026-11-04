@@ -19,6 +19,7 @@ export * from './errors.js';
 export * from './hard-delete-gate.js';
 export * from './idempotency.js';
 export * from './identity-grant.js';
+export * from './iso-timestamp.js';
 export * from './keyed-mutex.js';
 export * from './metadata-filter.js';
 export * from './nl.js';

@@ -131,9 +131,10 @@ describe('audience (SUBSTRATE_PUBLIC_ORIGIN)', () => {
 
   it('explains wrong_audience by naming the setting that decides it', () => {
     expect(rejectionDetail('wrong_audience')).toMatch(/SUBSTRATE_PUBLIC_ORIGIN/);
+    expect(rejectionDetail('missing_audience')).toMatch(/aud set to this server's origin/);
   });
 
-  it('when set, refuses an aud naming another origin and admits a match or no aud', () => {
+  it('when set, admits only an aud naming one of its origins', () => {
     const { privatePem, publicPem } = keypair();
     const cfg = { ...cfgFor(publicPem), audiences: ['https://other:3100', ORIGIN] };
     const check = (aud?: unknown) =>
@@ -142,7 +143,7 @@ describe('audience (SUBSTRATE_PUBLIC_ORIGIN)', () => {
     expect(check(['https://elsewhere:3100'])).toBe('wrong_audience');
     expect(check(ORIGIN)).toBeNull();
     expect(check(['https://elsewhere:3100', ORIGIN])).toBeNull();
-    expect(check()).toBeNull();
+    expect(check()).toBe('missing_audience');
   });
 
   it('when unset, does not check aud', () => {

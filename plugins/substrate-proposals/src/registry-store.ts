@@ -1,5 +1,6 @@
 import type { Dataset, EdgesStore, EngineHandle, Registry } from '@mnmal-ai/substrate-types';
 import { CONTROL_NAMESPACE } from './control-plane.js';
+import type { StorageScope } from './engine-write.js';
 
 export interface NamespaceBinding {
   registry: Registry;
@@ -37,6 +38,15 @@ export interface NamespaceBinding {
  */
 export class RegistryStore {
   private readonly bindings = new Map<string, NamespaceBinding>();
+  readonly #storageAbort = new AbortController();
+  /** This plugin instance's background storage work. */
+  readonly storage: StorageScope = { signal: this.#storageAbort.signal, pending: new Set() };
+
+  /** Aborts the background storage work (an interrupted build is left INVALID for the next reconcile) and awaits it. */
+  async stopStorage(): Promise<void> {
+    this.#storageAbort.abort();
+    await Promise.all([...this.storage.pending]);
+  }
 
   /**
    * Register a full NamespaceBinding for the given namespace.

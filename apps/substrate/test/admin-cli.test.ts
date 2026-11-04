@@ -55,7 +55,7 @@ import {
   resolveDefaultKeyPath,
   runBootstrap,
   runRegister
-} from '../src/bin/admin.js';
+} from '../src/admin/index.js';
 
 const LOCAL = 'http://localhost:3100';
 

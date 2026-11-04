@@ -15,7 +15,7 @@ import {
   formatDoctorReport,
   reconcileIdentities,
   runDoctor
-} from '../src/bin/admin.js';
+} from '../src/admin/index.js';
 
 const ROUTE: AdminTarget = { kind: 'route', baseUrl: 'https://h.test', source: 'flag' };
 const ENV: AdminCliEnv = { SUBSTRATE_ADMIN_TOKEN: 'Bearer t' };
@@ -75,6 +75,9 @@ function stubFetch(opts: StubOpts): typeof fetch {
         }
       };
       return json(w.status, w.body);
+    }
+    if (url.endsWith('/substrate/v1/config')) {
+      return json(200, { knobs: {}, storage: { layout: 'partitioned', warnings: [] } });
     }
     if (url.endsWith('/substrate/v1/query')) {
       expect(init?.method).toBe('POST');

@@ -1,7 +1,7 @@
 /**
  * Opaque cursor encoding. Spec: §5.2.
  *
- * Cursors are base64url-encoded JSON of `{ orderByValues, id }` — they may
+ * Cursors are base64url-encoded JSON of `{ orderByValues, id, order }` — they may
  * travel in URLs (query strings, Location headers, copy-pasted from logs) and
  * '+' / '/' / '=' would need percent-escaping. base64url avoids that round-
  * trip hazard entirely.
@@ -13,14 +13,23 @@
  */
 
 import type { Id } from '@mnmal-ai/substrate-types';
+import { ResolverFrameError } from '@mnmal-ai/substrate-types';
 
 /**
- * @internal — thrown by `decodeCursor` on malformed input. Re-exported so
- * consumers can catch it by class, but treated as package-private.
+ * Thrown by `decodeCursor` on a malformed, unsigned (pre-order-signing) or
+ * mismatched cursor. A `ResolverFrameError` coded `invalid_cursor`, so the
+ * engine reports it as a per-frame refusal rather than failing the request.
  */
-export class CursorDecodeError extends Error {
+export class CursorDecodeError extends ResolverFrameError {
   override readonly name = 'CursorDecodeError';
+
+  constructor(message: string, details: Record<string, unknown> = {}) {
+    super('invalid_cursor', message, { field: 'cursor', ...details });
+  }
 }
+
+/** The normalized orderBy a cursor pages, id tail included: `[[field, dir], …]`. */
+export type CursorOrder = ReadonlyArray<readonly [string, 'asc' | 'desc']>;
 
 export interface CursorPayload {
   /**
@@ -31,6 +40,12 @@ export interface CursorPayload {
   orderByValues: unknown[];
   /** The final tie-breaker. Always present even when orderBy didn't ask for id. */
   id: Id;
+  /**
+   * The effective order the cursor was issued under. `decodeCursor` refuses a
+   * cursor replayed under any other: its values would pair with the wrong
+   * fields and give a silently wrong page.
+   */
+  order: CursorOrder;
 }
 
 export function encodeCursor(input: CursorPayload): string {
@@ -38,7 +53,10 @@ export function encodeCursor(input: CursorPayload): string {
   return Buffer.from(json, 'utf8').toString('base64url');
 }
 
-export function decodeCursor(cursor: string): CursorPayload {
+const orderText = (order: CursorOrder): string => order.map(([f, d]) => `${f} ${d}`).join(', ');
+
+/** Decodes a cursor and checks it was issued for `expected`, the read's normalized order. */
+export function decodeCursor(cursor: string, expected: CursorOrder): CursorPayload {
   let json: string;
   try {
     json = Buffer.from(cursor, 'base64url').toString('utf8');
@@ -70,5 +88,27 @@ export function decodeCursor(cursor: string): CursorPayload {
   if (!values.every((v) => v === null || ['string', 'number', 'boolean'].includes(typeof v))) {
     throw new CursorDecodeError("cursor 'orderByValues' must hold only scalar values");
   }
-  return { orderByValues: values, id };
+  const order = obj.order;
+  if (
+    !Array.isArray(order) ||
+    !order.every(
+      (p) =>
+        Array.isArray(p) &&
+        p.length === 2 &&
+        typeof p[0] === 'string' &&
+        (p[1] === 'asc' || p[1] === 'desc')
+    )
+  ) {
+    throw new CursorDecodeError(
+      "cursor carries no 'order' (issued before cursors recorded their order); restart paging without a cursor"
+    );
+  }
+  const issued = order as CursorOrder;
+  if (orderText(issued) !== orderText(expected)) {
+    throw new CursorDecodeError(
+      `cursor was issued for orderBy '${orderText(issued)}' but this read orders by '${orderText(expected)}'; restart paging without a cursor`,
+      { issuedFor: orderText(issued), readOrder: orderText(expected) }
+    );
+  }
+  return { orderByValues: values, id, order: issued };
 }

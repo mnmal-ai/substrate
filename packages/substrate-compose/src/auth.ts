@@ -94,8 +94,8 @@ export interface AuthConfig {
   maxTokenLifetimeSeconds?: number;
   /**
    * The origins this server answers as (`SUBSTRATE_PUBLIC_ORIGIN`). When set, a
-   * token carrying `aud` must name one of them; a token with no `aud` is still
-   * accepted. Absent → `aud` is not checked.
+   * token must carry `aud` naming one of them, or it is refused. Absent → `aud`
+   * is not checked.
    */
   audiences?: ReadonlyArray<string>;
   /**
@@ -518,6 +518,7 @@ export type BearerRejectionReason =
   | 'not_yet_valid'
   | 'lifetime_exceeds_max'
   | 'wrong_audience'
+  | 'missing_audience'
   | 'malformed_claim:exp'
   | 'malformed_claim:ns';
 
@@ -581,8 +582,9 @@ export function authenticateBearer(token: string, cfg: AuthConfig): BearerVerdic
   if (typeof payload.nbf === 'number' && payload.nbf > nowSeconds + leeway) {
     return reject('not_yet_valid');
   }
-  // A token without `aud` still passes, so minters that predate it keep working.
-  if (cfg.audiences !== undefined && payload.aud !== undefined) {
+  // Without `aud`, a token for another server that trusts the same key would replay here.
+  if (cfg.audiences !== undefined) {
+    if (payload.aud === undefined) return reject('missing_audience');
     const aud: unknown[] = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
     if (!aud.some((a) => cfg.audiences?.includes(a as string))) return reject('wrong_audience');
   }
@@ -685,6 +687,9 @@ export function diagnoseBearerToken(token: string, cfg: AuthConfig): BearerRejec
 export function rejectionDetail(reason: BearerRejectionReason | null): string | undefined {
   if (reason === 'lifetime_exceeds_max') {
     return 'the token expires further ahead than this server accepts; mint a shorter-lived token or raise SUBSTRATE_JWT_MAX_TTL_SECONDS';
+  }
+  if (reason === 'missing_audience') {
+    return "the token has no aud; mint it with aud set to this server's origin (e.g. https://host:3100)";
   }
   if (reason === 'wrong_audience') {
     return "the token's aud is not one of this server's origins; connect through an origin listed in SUBSTRATE_PUBLIC_ORIGIN, or add this one there";

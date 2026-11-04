@@ -1,0 +1,55 @@
+/** /health carries post-write hook failures as warnings and stays `ok`. */
+
+import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
+import { defineNamespace, field } from '@mnmal-ai/substrate-sdk';
+import { FastifySubstrateServer } from '@mnmal-ai/substrate-server-fastify';
+import type { CoordinatorPlugin } from '@mnmal-ai/substrate-types';
+import { afterEach, describe, expect, it } from 'vitest';
+import { compose } from '../src/compose.js';
+
+const NS = 'shop';
+let server: FastifySubstrateServer;
+afterEach(async () => {
+  await server.stop({ grace: 0 });
+});
+
+describe('/health warnings', () => {
+  it('a throwing onCommittedWrites hook names the plugin; status stays ok', async () => {
+    const plugin: CoordinatorPlugin = {
+      name: 'indexer',
+      contractVersion: '*',
+      namespaces: [defineNamespace(NS, { Order: { fields: { note: field.string() } } })],
+      onCommittedWrites: () => {
+        throw new Error('index down');
+      }
+    };
+    server = new FastifySubstrateServer();
+    const app = await compose({
+      systemActor: 'test',
+      server,
+      dataset: new MemoryDataset({ namespace: 'default' }),
+      datasets: { [NS]: new MemoryDataset({ namespace: NS }) },
+      coordinators: [plugin]
+    });
+    const { address, port } = await server.start({ host: '127.0.0.1', port: 0 });
+    const url = `http://${address}:${port}`;
+    expect((await (await fetch(`${url}/health`)).json()).warnings).toEqual([]);
+
+    const env = await app.engine.mutate({
+      frame: { [`${NS}/createOrder`]: { params: { note: 'x' }, fields: { id: true } } },
+      ctx: {
+        namespace: NS,
+        identity: { id: 'sys', kind: 'system', grants: { '*': ['read', 'mutate'] } }
+      } as never
+    });
+    expect(env.errors ?? []).toEqual([]);
+    await app.engine.hooksSettled();
+
+    const body = await (await fetch(`${url}/health`)).json();
+    expect(body.status).toBe('ok');
+    expect(body.warnings).toHaveLength(1);
+    // /health needs no key, so the hook's own message must not appear.
+    expect(body.warnings[0]).toMatch(/^post-write hook indexer failed at \S+$/);
+    expect(JSON.stringify(body)).not.toContain('index down');
+  });
+});

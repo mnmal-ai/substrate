@@ -22,10 +22,12 @@ import type {
 } from '@mnmal-ai/substrate-types';
 import {
   isResolverFrameError,
+  WALKS_IN_SUBSCRIPTION,
   WS_CODE_SUBSCRIPTION_UNSUPPORTED_FRAME
 } from '@mnmal-ai/substrate-types';
 import { FilterValidationError, validateFilter } from '../filter/validator.js';
 import { evaluatePolicy } from '../policy-evaluator.js';
+import { walkGrammarPath } from '../walk-gate.js';
 import {
   checkIdentityGrant,
   clientErrorMessage,
@@ -37,7 +39,8 @@ import {
   parseQualifiedKey,
   type StreamHandle,
   type StreamInput,
-  withCanonicalMetadataFilters
+  withCanonicalMetadataFilters,
+  withNaturalOrder
 } from './internals.js';
 
 export interface StreamSubsystemDeps {
@@ -307,10 +310,18 @@ export class StreamSubsystem {
     if ((decision.obligations?.length ?? 0) > 0) delete args.fields;
 
     if (registryEntry.kind === 'type') {
+      // A stream is a live read like a subscription, so walks are refused the same way (walks spec, Non-goals).
+      const walkPath = walkGrammarPath(frame as Record<string, unknown>);
+      if (walkPath !== null) {
+        await emitError('walks are not available in streams', WALKS_IN_SUBSCRIPTION, [
+          key,
+          ...walkPath
+        ]);
+        return;
+      }
       const params = frame.params;
       const where = params?.where as WhereClause | undefined;
       const orderBy = params?.orderBy as OrderByClause[] | undefined;
-      const allowTableScan = params?._allowTableScan === true;
       if (where !== undefined || orderBy !== undefined) {
         const schema = this.#schemaFor(ns);
         const typeSchema = schema.types[name];
@@ -319,7 +330,6 @@ export class StreamSubsystem {
             validateFilter({
               ...(where !== undefined ? { where } : {}),
               ...(orderBy !== undefined ? { orderBy } : {}),
-              allowTableScan,
               typeSchema,
               capabilities: dataset.capabilities
             });
@@ -338,6 +348,10 @@ export class StreamSubsystem {
         }
       }
     }
+
+    // A stream reads in the type's natural order unless it names one, as a query does.
+    const ordered = withNaturalOrder(args.params, registryEntry, dataset);
+    if (ordered !== undefined) args.params = ordered;
 
     let result: Row | Row[] | ReadResult | AsyncIterable<Row> | null;
     try {

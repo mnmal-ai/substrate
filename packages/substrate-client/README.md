@@ -24,7 +24,7 @@ Needs a server with `@mnmal-ai/substrate-nl` installed. The types are the shared
 ```ts
 import { complete } from '@mnmal-ai/substrate-nl/complete';
 
-// SSE: parsed, judging?, judged?, then rows | recall | clarify | refuse, then done.
+// SSE: parsed, judging?, judged?, then rows | recall | clarify | refuse | unknown, then done.
 for await (const ev of client.nl.ask({ namespace: 'tasks', question: 'open tasks' })) {
   if (ev.event === 'clarify') console.log(ev.data.options); // each option carries a `type`
 }

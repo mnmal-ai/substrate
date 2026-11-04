@@ -6,21 +6,23 @@ import { installAutoCrud } from '../src/autocrud/index.js';
 import { field } from '../src/field.js';
 
 describe('field DSL', () => {
-  it('field.string defaults to indexed: true and omits nullable', () => {
-    expect(field.string()).toEqual({ kind: 'scalar', type: 'string', indexed: true });
+  it('field.string() leaves indexed unset; field.crossRef() defaults indexed true', () => {
+    expect(field.string()).toEqual({ kind: 'scalar', type: 'string' });
+    expect(field.crossRef('users', 'User').indexed).toBe(true);
   });
 
   it('field.number / boolean / date share the scalar shape', () => {
-    expect(field.number()).toEqual({ kind: 'scalar', type: 'number', indexed: true });
-    expect(field.boolean()).toEqual({ kind: 'scalar', type: 'boolean', indexed: true });
-    expect(field.date()).toEqual({ kind: 'scalar', type: 'date', indexed: true });
+    expect(field.number()).toEqual({ kind: 'scalar', type: 'number' });
+    expect(field.boolean()).toEqual({ kind: 'scalar', type: 'boolean' });
+    expect(field.date()).toEqual({ kind: 'scalar', type: 'date' });
   });
 
   it('indexed override flows through on every scalar builder', () => {
     expect(field.string({ indexed: false }).indexed).toBe(false);
-    expect(field.number({ indexed: false }).indexed).toBe(false);
-    expect(field.boolean({ indexed: false }).indexed).toBe(false);
-    expect(field.date({ indexed: false }).indexed).toBe(false);
+    expect(field.string({ indexed: true }).indexed).toBe(true);
+    expect(field.number({ indexed: true }).indexed).toBe(true);
+    expect(field.boolean({ indexed: true }).indexed).toBe(true);
+    expect(field.date({ indexed: true }).indexed).toBe(true);
   });
 
   it('nullable override flows through and is only present when set', () => {
@@ -114,7 +116,7 @@ describe('field.crossRef onMissing', () => {
 
   it('field.list wraps an inner FieldDef', () => {
     const list = field.list(field.string());
-    expect(list).toEqual({ kind: 'list', of: { kind: 'scalar', type: 'string', indexed: true } });
+    expect(list).toEqual({ kind: 'list', of: { kind: 'scalar', type: 'string' } });
   });
 
   it('field.json defaults to indexed: false', () => {
@@ -138,16 +140,15 @@ describe('field.crossRef onMissing', () => {
     expect(field.enum(['low', 'medium', 'high'])).toEqual({
       kind: 'scalar',
       type: 'string',
-      indexed: true,
       enum: ['low', 'medium', 'high']
     });
   });
 
   it('field.enum threads scalar options through (nullable, indexed)', () => {
-    expect(field.enum(['a', 'b'], { nullable: true, indexed: false })).toEqual({
+    expect(field.enum(['a', 'b'], { nullable: true, indexed: true })).toEqual({
       kind: 'scalar',
       type: 'string',
-      indexed: false,
+      indexed: true,
       nullable: true,
       enum: ['a', 'b']
     });

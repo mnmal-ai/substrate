@@ -21,6 +21,12 @@ function makeFakeSqlWithApplied(
   const ranStatements: string[] = [];
   const tag = ((strings: TemplateStringsArray, ..._values: unknown[]) => {
     const text = strings.join('?').trim();
+    if (/current_setting\('server_version_num'\)/.test(text)) {
+      return Promise.resolve([{ num: 180000 }]);
+    }
+    if (/^SELECT current_schema\(\) AS schema$/.test(text)) {
+      return Promise.resolve([{ schema: 'public' }]);
+    }
     ranStatements.push(text);
     if (/^SELECT version, checksum FROM migrations/i.test(text)) {
       return Promise.resolve(appliedRows.map((r) => ({ ...r })));
@@ -32,6 +38,11 @@ function makeFakeSqlWithApplied(
   }) as unknown as Sql;
   // biome-ignore lint/suspicious/noExplicitAny: stubbing the postgres-js shape
   (tag as any).unsafe = (text: string) => {
+    // The migration lock is polled and released through unsafe, as the tag ran it before.
+    if (/pg_(try_)?advisory_(un)?lock\(/.test(text)) {
+      ranStatements.push(text.trim());
+      return Promise.resolve(/pg_try_advisory_lock\(/.test(text) ? [{ acquired: true }] : []);
+    }
     ranStatements.push(`UNSAFE: ${text}`);
     return Promise.resolve([]);
   };

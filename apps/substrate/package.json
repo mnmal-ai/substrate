@@ -1,6 +1,6 @@
 {
   "name": "@mnmal-ai/substrate",
-  "version": "1.0.0-alpha.5",
+  "version": "1.0.0-alpha.11",
   "description": "Substrate — an agent-first typed-data server: the substrate and substrate-admin binaries, the built-in plugins and the SDK subpaths.",
   "license": "Apache-2.0",
   "repository": {
@@ -62,6 +62,7 @@
     "@mnmal-ai/substrate-server-fastify": "workspace:*",
     "@mnmal-ai/substrate-server-memory": "workspace:*",
     "@mnmal-ai/substrate-types": "workspace:*",
+    "@mnmal-ai/surface-core": "catalog:",
     "@types/node": "catalog:",
     "@types/semver": "catalog:",
     "@types/ws": "catalog:",
@@ -72,7 +73,7 @@
     "vitest": "catalog:"
   },
   "engines": {
-    "node": ">=26.2.0"
+    "node": ">=26.12.1"
   },
   "exports": {
     "./sdk": {

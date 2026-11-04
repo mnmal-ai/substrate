@@ -18,7 +18,7 @@ import { MemoryBridgeCredentialStore } from '@mnmal-ai/substrate-core';
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
 import { MemorySubstrateServer } from '@mnmal-ai/substrate-server-memory';
 import type { PackEnvelope, Schema } from '@mnmal-ai/substrate-types';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   buildBridgeRegistry,
   DEFAULT_KEY_REPRIME_INTERVAL_MS,
@@ -517,6 +517,51 @@ describe('parseEnv', () => {
     expect(() => parseEnv({ SUBSTRATE_SHUTDOWN_GRACE_MS: '-1' })).toThrow(EnvConfigError);
   });
 
+  it('partition budget: defaults to 500, honours an override, refuses anything else', () => {
+    expect(parseEnv({}).partitionBudget).toBe(500);
+    expect(parseEnv({ SUBSTRATE_PARTITION_BUDGET: '3' }).partitionBudget).toBe(3);
+    for (const bad of ['0', '-1', '1.5', 'abc']) {
+      expect(() => parseEnv({ SUBSTRATE_PARTITION_BUDGET: bad })).toThrow(EnvConfigError);
+    }
+  });
+
+  it('statement timeout: defaults to 30000, honours an override, refuses anything else', () => {
+    expect(parseEnv({}).statementTimeoutMs).toBe(30_000);
+    expect(parseEnv({ SUBSTRATE_STATEMENT_TIMEOUT_MS: '5000' }).statementTimeoutMs).toBe(5000);
+    expect(parseEnv({ SUBSTRATE_STATEMENT_TIMEOUT_MS: '2147483647' }).statementTimeoutMs).toBe(
+      2_147_483_647
+    );
+    for (const bad of ['0', '-1', '1.5', 'abc', '2147483648']) {
+      expect(() => parseEnv({ SUBSTRATE_STATEMENT_TIMEOUT_MS: bad })).toThrow(EnvConfigError);
+    }
+  });
+
+  it('index disk check: off without a path, margin defaults to 2048 MB', () => {
+    expect(parseEnv({}).indexDiskPath).toBeNull();
+    expect(parseEnv({ SUBSTRATE_INDEX_DISK_PATH: 'off' }).indexDiskPath).toBe('off');
+    expect(parseEnv({ SUBSTRATE_INDEX_DISK_PATH: 'OFF' }).indexDiskPath).toBe('off');
+    expect(parseEnv({}).indexDiskMarginMb).toBe(2048);
+    const cfg = parseEnv({
+      SUBSTRATE_INDEX_DISK_PATH: '/var/lib/postgresql',
+      SUBSTRATE_INDEX_DISK_MARGIN_MB: '512'
+    });
+    expect(cfg.indexDiskPath).toBe('/var/lib/postgresql');
+    expect(cfg.indexDiskMarginMb).toBe(512);
+    expect(parseEnv({ SUBSTRATE_INDEX_DISK_MARGIN_MB: '0' }).indexDiskMarginMb).toBe(0);
+    for (const bad of ['-1', '1.5', 'abc']) {
+      expect(() => parseEnv({ SUBSTRATE_INDEX_DISK_MARGIN_MB: bad })).toThrow(EnvConfigError);
+    }
+  });
+
+  it('index retry interval: defaults to 10 minutes, 0 disables, refuses anything else', () => {
+    expect(parseEnv({}).indexRetryIntervalMs).toBe(600_000);
+    expect(parseEnv({ SUBSTRATE_INDEX_RETRY_INTERVAL_MS: '0' }).indexRetryIntervalMs).toBe(0);
+    expect(parseEnv({ SUBSTRATE_INDEX_RETRY_INTERVAL_MS: '5000' }).indexRetryIntervalMs).toBe(5000);
+    for (const bad of ['-1', '1.5', 'abc']) {
+      expect(() => parseEnv({ SUBSTRATE_INDEX_RETRY_INTERVAL_MS: bad })).toThrow(EnvConfigError);
+    }
+  });
+
   // Regression: docker-compose `${VAR:-}` substitution passes `""` when an
   // operator leaves the .env line blank. parseInt('') is NaN, and NaN in
   // setInterval fires continuously, so empty must mean "not set".
@@ -610,7 +655,8 @@ describe('auth integration', () => {
       {
         sub: 'home',
         exp: Math.floor(Date.now() / 1000) + 60,
-        capabilities: ['read', 'mutate']
+        capabilities: ['read', 'mutate'],
+        aud: 'https://h:3100'
       },
       SECRET,
       { kid: 'k1' }
@@ -920,6 +966,39 @@ describe('buildBridgeRegistry credential validation (fail-closed)', () => {
     );
     expect(registry.has('cal')).toBe(true);
     dispose();
+  });
+
+  it("mints the bridge's token for the credential's origin", async () => {
+    const creds = parseBridgeCreds(
+      JSON.stringify({
+        'peripheral-a': {
+          keyPath: writeEd25519Key(),
+          kid: 'labs-prime@host',
+          origin: 'https://a.test'
+        }
+      })
+    );
+    const auths: Array<string | null> = [];
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_u, init) => {
+      auths.push(new Headers(init?.headers).get('authorization'));
+      return new Response('{}', { headers: { 'content-type': 'application/json' } });
+    });
+    try {
+      const { registry, dispose } = buildBridgeRegistry(
+        [{ ns: 'cal', name: 'peripheral-a', url: 'https://a.test' }],
+        creds
+      );
+      await registry
+        .get('cal')
+        ?.federatedSchema()
+        .catch(() => {});
+      dispose();
+      const jwt = (auths.find((a) => a !== null) ?? '').replace(/^Bearer /, '');
+      const claims = JSON.parse(Buffer.from(jwt.split('.')[1] ?? '', 'base64url').toString('utf8'));
+      expect(claims.aud).toBe('https://a.test');
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 });
 

@@ -30,7 +30,7 @@ async function listedTools(tools?: string): Promise<string[]> {
 
 describe('SUBSTRATE_MCP_TOOLS', () => {
   it('registers every tool when unset', async () => {
-    expect(await listedTools()).toHaveLength(10);
+    expect(await listedTools()).toHaveLength(11);
   });
 
   it('registers only the named tools', async () => {
@@ -38,7 +38,7 @@ describe('SUBSTRATE_MCP_TOOLS', () => {
   });
 
   it('treats an empty value as unset rather than as "no tools"', async () => {
-    expect(await listedTools('  ')).toHaveLength(10);
+    expect(await listedTools('  ')).toHaveLength(11);
   });
 
   it('refuses an unknown tool name, naming the valid ones', () => {

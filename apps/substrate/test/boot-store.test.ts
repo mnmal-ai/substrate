@@ -1,0 +1,161 @@
+/**
+ * `bootStore` runs serve's boot path against a fresh schema without listening,
+ * and refuses a store that carries the migrate-store marker.
+ *
+ * Skipped unless POSTGRES_URL is set.
+ */
+
+import { randomBytes } from 'node:crypto';
+import { rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import {
+  detectLayout,
+  MIGRATE_STORE_MARKER_TABLE,
+  StoreMigrationInProgressError,
+  UnsupportedSchemaNameError
+} from '@mnmal-ai/substrate-dataset-pg';
+import { pgTestSchemaName, pgTestSchemaUrl } from '@mnmal-ai/substrate-dataset-pg/testing';
+import { listExtensionOperators } from '@mnmal-ai/substrate-filter';
+import { FastifySubstrateServer } from '@mnmal-ai/substrate-server-fastify';
+import postgres, { type Sql } from 'postgres';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { bootStore } from '../src/serve/boot-store.js';
+import { parseEnv } from '../src/serve/config.js';
+import { wireStore } from '../src/serve/wiring.js';
+import { makePluginDir } from './_fixtures/migrate-store.js';
+
+const POSTGRES_URL = process.env.POSTGRES_URL;
+
+/** `url` with its startup `options` replaced by `options`, encoded the way postgres.js needs. */
+function withOptions(url: string, options: string): string {
+  const parsed = new URL(url);
+  const params = [...parsed.searchParams.entries()].filter(([key]) => key !== 'options');
+  params.push(['options', options]);
+  parsed.search = params
+    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+    .join('&');
+  return parsed.toString();
+}
+
+const ACTOR = { SUBSTRATE_SYSTEM_ACTOR: 'boot-store-test' };
+
+describe.skipIf(!POSTGRES_URL)('bootStore (pg)', () => {
+  let schema: string;
+  let url: string;
+  let sql: Sql;
+
+  beforeEach(async () => {
+    const name = `apps/substrate-boot-store-${randomBytes(4).toString('hex')}`;
+    schema = pgTestSchemaName(name);
+    url = pgTestSchemaUrl(POSTGRES_URL as string, name);
+    sql = postgres(url, { max: 1, onnotice: () => {} });
+    await sql.unsafe(`CREATE SCHEMA ${schema}`);
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await sql.unsafe(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+    await sql.end({ timeout: 5 });
+  });
+
+  it('boots a store without listening', async () => {
+    const start = vi.spyOn(FastifySubstrateServer.prototype, 'start');
+    const booted = await bootStore({
+      config: parseEnv({ SUBSTRATE_DATABASE_URL: url, SUBSTRATE_SYSTEM_ACTOR: 'boot-store-test' }),
+      pluginDir: null
+    });
+    try {
+      expect(await detectLayout(sql)).toBe('tables');
+      expect(booted.engine.registryFor('_system')?.has('Key')).toBe(true);
+      expect(booted.server).toBeInstanceOf(FastifySubstrateServer);
+      expect(start).not.toHaveBeenCalled();
+    } finally {
+      await booted.close();
+    }
+  });
+
+  it('boots twice in one process when a kernel plugin registers a filter operator', async () => {
+    const pluginDir = await makePluginDir();
+    try {
+      // An embedder makes recall register embeddingSimilar; the boot never calls it.
+      await writeFile(
+        join(pluginDir, 'substrate-recall.config.json'),
+        JSON.stringify({
+          embedder: {
+            kind: 'ollama',
+            baseUrl: 'http://127.0.0.1:9',
+            model: 'm',
+            dimension: 768,
+            timeoutMs: 100
+          }
+        })
+      );
+      const config = parseEnv({ SUBSTRATE_DATABASE_URL: url, ...ACTOR });
+      for (let i = 0; i < 2; i++) {
+        const booted = await bootStore({ config, pluginDir, background: false });
+        expect(listExtensionOperators()).toContain('embeddingSimilar');
+        await booted.close();
+        expect(listExtensionOperators()).not.toContain('embeddingSimilar');
+      }
+    } finally {
+      await rm(pluginDir, { recursive: true, force: true });
+    }
+  });
+
+  it('serve refuses a target that migrate-store has not finished', async () => {
+    await sql.unsafe(`CREATE TABLE ${schema}.${MIGRATE_STORE_MARKER_TABLE} (id int)`);
+    const config = parseEnv({
+      SUBSTRATE_DATABASE_URL: url,
+      SUBSTRATE_SYSTEM_ACTOR: 'boot-store-test'
+    });
+    await expect(bootStore({ config, pluginDir: null })).rejects.toBeInstanceOf(
+      StoreMigrationInProgressError
+    );
+    // migrate-store itself boots past the marker.
+    const booted = await bootStore({ config, pluginDir: null, allowMigrating: true });
+    await booted.close();
+  });
+  it('a marker in a sibling schema does not block boot', async () => {
+    const sibling = `${schema}_sib`;
+    await sql.unsafe(`CREATE SCHEMA ${sibling}`);
+    try {
+      await sql.unsafe(`CREATE TABLE ${sibling}.${MIGRATE_STORE_MARKER_TABLE} (id int)`);
+      const booted = await bootStore({
+        config: parseEnv({ SUBSTRATE_DATABASE_URL: url, ...ACTOR }),
+        pluginDir: null
+      });
+      await booted.close();
+    } finally {
+      await sql.unsafe(`DROP SCHEMA IF EXISTS ${sibling} CASCADE`);
+    }
+  });
+
+  it('refuses a marked store whose schema name needs quoting, by its name', async () => {
+    const quoted = `${schema}_Mixed`;
+    const quotedUrl = withOptions(POSTGRES_URL as string, `-c search_path="${quoted}",public`);
+    await sql.unsafe(`CREATE SCHEMA "${quoted}"`);
+    try {
+      await sql.unsafe(`CREATE TABLE "${quoted}".${MIGRATE_STORE_MARKER_TABLE} (id int)`);
+      await expect(
+        bootStore({
+          config: parseEnv({ SUBSTRATE_DATABASE_URL: quotedUrl, ...ACTOR }),
+          pluginDir: null
+        })
+      ).rejects.toBeInstanceOf(UnsupportedSchemaNameError);
+    } finally {
+      await sql.unsafe(`DROP SCHEMA IF EXISTS "${quoted}" CASCADE`);
+    }
+  });
+
+  it('wireStore ends its pool when migrations throw', async () => {
+    // Only pg_catalog on the path: a non-superuser cannot create there, so the first CREATE fails.
+    const app = `boot-store-leak-${randomBytes(4).toString('hex')}`;
+    const failing = withOptions(POSTGRES_URL as string, '-c search_path=pg_catalog');
+    const parsed = new URL(failing);
+    parsed.searchParams.set('application_name', app);
+    await expect(wireStore(parsed.toString(), () => () => undefined)).rejects.toThrow();
+    const [open] = await sql<Array<{ n: number }>>`
+      SELECT count(*)::int AS n FROM pg_stat_activity WHERE application_name = ${app}`;
+    expect(open?.n).toBe(0);
+  });
+});

@@ -1,6 +1,6 @@
 {
   "name": "@mnmal-ai/substrate-filter",
-  "version": "1.0.0-alpha.5",
+  "version": "1.0.0-alpha.11",
   "private": true,
   "description": "Query filter DSL for Substrate: eq, gt, between, in, contains across all datasets.",
   "license": "Apache-2.0",
@@ -36,6 +36,6 @@
     "vitest": "catalog:"
   },
   "engines": {
-    "node": ">=26.2.0"
+    "node": ">=26.12.1"
   }
 }

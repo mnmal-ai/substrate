@@ -28,9 +28,11 @@ export {
 export {
   type AuditEmitInput,
   buildAuditRow,
+  INDEX_CAPABILITY,
   type InstalledSystemNamespace,
   type InstallSystemNamespaceOptions,
-  installSystemNamespace
+  installSystemNamespace,
+  SYSTEM_TYPE_DEFS
 } from './install.js';
 export {
   type InviteSweepResult,
@@ -38,6 +40,15 @@ export {
   runInviteSweep
 } from './invite-sweep.js';
 export { type NormaliseVocabRouteDeps, normaliseVocabRoute } from './normalise-vocab.js';
+export {
+  createPromoteFieldsRunner,
+  emitFieldEvents,
+  type FieldEvent,
+  PROMOTE_BATCH_ROWS,
+  PROMOTE_LOCK_TIMEOUT_MS,
+  type PromoteFieldsRunner,
+  promoteFieldsRoute
+} from './promote-fields.js';
 export {
   type CreateRateLimiterOptions,
   createRateLimiter,
@@ -59,6 +70,9 @@ export {
   registerRoute
 } from './routes.js';
 export {
+  ADVISOR_STATE_FIELDS,
+  ADVISOR_STATE_ID,
+  ADVISOR_STATE_TYPE,
   AUDIT_EVENT_FIELDS,
   AUDIT_EVENT_KINDS,
   AUDIT_EVENT_TYPE,
@@ -66,13 +80,19 @@ export {
   ENUM_VERDICT_FIELDS,
   ENUM_VERDICT_TYPE,
   type IdentityDirectoryConfig,
+  INDEX_RECOMMENDATION_FIELDS,
+  INDEX_RECOMMENDATION_TYPE,
   INVITE_FIELDS,
   INVITE_TYPE,
   isKeyAlgorithm,
   KEY_ALGORITHMS,
   KEY_FIELDS,
+  KEY_INDEXES,
   KEY_TYPE,
   type KeyAlgorithm,
+  STORE_PROFILE_FIELDS,
+  STORE_PROFILE_ID,
+  STORE_PROFILE_TYPE,
   SYSTEM_NAMESPACE
 } from './types.js';
 export {

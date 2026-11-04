@@ -165,7 +165,8 @@ export function askModule(deps: TuiDeps): TuiModule<AskPanels> {
                 case 'rows':
                 case 'recall':
                 case 'clarify':
-                case 'refuse': {
+                case 'refuse':
+                case 'unknown': {
                   last = { lines };
                   if (ev.event === 'clarify' && ev.data.options.length > 0)
                     ctx.open('clarify', ev.data);

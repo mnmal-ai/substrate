@@ -141,7 +141,8 @@ function makeImportResolver(handlers: Record<string, unknown>): ImportResolver {
 }
 
 describe('listPluginManifests + loadPluginsFromDir — happy paths', () => {
-  it('returns empty result for a dir with no node_modules', async () => {
+  it('loads nothing, quietly, when package.json lists no dependencies', async () => {
+    await writeFile(resolvePath(tmpRoot, 'package.json'), JSON.stringify({ name: 'rt' }));
     const result = await loadPluginsFromDir({
       pluginDir: tmpRoot,
       kernelHostDeps: {},
@@ -351,6 +352,19 @@ describe('listPluginManifests + loadPluginsFromDir — happy paths', () => {
 });
 
 describe('loadPluginsFromDir — failure modes', () => {
+  it('refuses a plugin dir with no package.json, naming the fix', async () => {
+    await expect(loadPluginsFromDir({ pluginDir: tmpRoot, kernelHostDeps: {} })).rejects.toThrow(
+      /has no package\.json.*dependencies/s
+    );
+  });
+
+  it('refuses a plugin dir whose listed plugins were never installed', async () => {
+    await declare('@scope/listed');
+    await expect(loadPluginsFromDir({ pluginDir: tmpRoot, kernelHostDeps: {} })).rejects.toThrow(
+      /no node_modules.*pnpm install/s
+    );
+  });
+
   it('rejects malformed manifest tier', async () => {
     await writePackage({
       name: 'bad-tier',

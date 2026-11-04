@@ -8,7 +8,7 @@
  * Flat and sorted so two hosts' reports can be compared with `diff`.
  */
 
-import type { HttpHandler, SubstrateRequest } from '@mnmal-ai/substrate-types';
+import type { HttpHandler, StorageReport, SubstrateRequest } from '@mnmal-ai/substrate-types';
 import { jsonResponse } from './helpers.js';
 
 /**
@@ -57,6 +57,19 @@ export function handleConfigRequest(report: ConfigReport): { knobs: ConfigReport
  * Route handler factory. Pass to `gate(configRouteHandler(report), 'admin')`
  * in compose so it inherits the same treatment as `/substrate/v1/_system/invites`.
  */
-export function configRouteHandler(report: ConfigReport): HttpHandler {
-  return (_req: SubstrateRequest) => jsonResponse(200, handleConfigRequest(report));
+export function configRouteHandler(
+  report: ConfigReport,
+  storage?: () => Promise<StorageReport>
+): HttpHandler {
+  return async (_req: SubstrateRequest) =>
+    jsonResponse(200, {
+      ...handleConfigRequest(report),
+      ...(storage !== undefined ? { storage: await storage().catch(failed) } : {})
+    });
 }
+
+/** A catalog error costs the storage section, never the knobs beside it. */
+const failed = (err: unknown): StorageReport => ({
+  layout: 'unknown',
+  warnings: [`storage report failed: ${err instanceof Error ? err.message : String(err)}`]
+});

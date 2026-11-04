@@ -12,7 +12,9 @@
  * `hits` key. Test for presence (`Array.isArray`, `'data' in o`); do not rely on
  * `=== undefined` of a field the type marks required.
  */
+import type { DeriveSpec, WhereClause } from './dataset.js';
 import type { Query } from './nl.js';
+import type { Dropped, PlanClause } from './schema.js';
 
 export interface NlAskRequest {
   namespace: string;
@@ -63,19 +65,42 @@ export interface NlJudgeStep {
   choice?: NlJudgeChoice;
   /** Why the reply was not applied. */
   rejected?: string;
+  /** Keys of an applied reply outside the offered options (a walk, a comparison), ignored. */
+  ignored?: string[];
 }
 
-/** What an ask answered. The four kinds are exhaustive. */
+/** What an ask answered. The five kinds are exhaustive. */
 export type NlOutcome =
   | {
       kind: 'rows';
       frame: Query;
       answer: string;
-      /** Absent on the wire when the engine rejected the frame; `errors` then says why. */
+      /**
+       * Absent on the wire when the engine rejected the frame; `errors` then says why.
+       * On a `count` answer it is the engine's `{ count }`, or the first page of rows
+       * when the server could not count and the rows were paged instead.
+       */
       data: unknown;
+      /** On a `count` answer: every row the frame matches. Absent when counting stopped short, with `errors` saying why. */
+      count?: number;
       errors?: unknown[];
       source: 'parser' | 'judge' | 'handoff';
       handoff?: string;
+      /** Parts of the question this answer does not reflect. Empty when nothing was lost. */
+      dropped: Dropped[];
+      /** The plan the frame ran, clause by clause, with the engine's served flags where it gave them. */
+      plan: PlanClause[];
+    }
+  | {
+      /**
+       * The question cannot be answered without fabricating: something that
+       * changes which rows count was dropped from a count, aggregate, `$ref`
+       * or pick reading. Nothing ran; `dropped` says what, `plan` what was understood.
+       */
+      kind: 'unknown';
+      question: string;
+      dropped: Dropped[];
+      plan: PlanClause[];
     }
   | {
       kind: 'recall';
@@ -104,7 +129,7 @@ export type NlJudgedStatus = 'resolved' | 'recall' | 'clarify' | 'refuse' | 'esc
 
 /**
  * One SSE event, discriminated by the SSE event name. The terminal answer is
- * named by its outcome kind (`rows` | `recall` | `clarify` | `refuse`) and
+ * named by its outcome kind (`rows` | `recall` | `clarify` | `refuse` | `unknown`) and
  * carries the whole outcome; `done` always follows. An in-band `error` event
  * is not in this union: the client throws on it.
  */
@@ -116,6 +141,7 @@ export type NlWireEvent =
   | { event: 'recall'; data: Extract<NlOutcome, { kind: 'recall' }> }
   | { event: 'clarify'; data: Extract<NlOutcome, { kind: 'clarify' }> }
   | { event: 'refuse'; data: Extract<NlOutcome, { kind: 'refuse' }> }
+  | { event: 'unknown'; data: Extract<NlOutcome, { kind: 'unknown' }> }
   | { event: 'done'; data: Record<string, never> };
 
 /**
@@ -140,8 +166,8 @@ export interface NlPackField {
   /** `metadata` marks a server-managed virtual (createdAt, createdById, ...). */
   kind: 'scalar' | 'crossRef' | 'list' | 'struct' | 'metadata';
   valueType?: string;
-  /** crossRef target type. */
-  target?: string;
+  /** crossRef target. */
+  target?: { namespace: string; type: string };
   indexed: boolean;
   operators: string[];
   phrases: string[];
@@ -184,7 +210,22 @@ export interface NlValueAlias {
   contains?: string;
 }
 
+/** One `fieldPhrases` ruling: what a phrase binds to. Field refs are `'<Type>.<field>'` in the ruling's namespace. */
+export interface NlFieldPhrase {
+  field?: string;
+  /** Needs `field`: an equality binding ("valued PSA 9" -> Cert.grade = 9). */
+  value?: unknown;
+  /** Needs `field`: the implicit filter on that field's type. Never silent: it shows in `plan`. */
+  exclude?: WhereClause;
+  /** Operands are `'<Type>.<field>'`, both on one type. */
+  derive?: DeriveSpec;
+  /** A namespace default pick for this phrase. */
+  pick?: 'latest' | 'max' | 'min';
+}
+
 export interface NlNamespaceRulings {
+  /** Phrases bound to fields, values, implicit filters, derived orderings and pick defaults. Keys are normalised (trimmed, single-spaced, lower-cased). */
+  fieldPhrases?: Record<string, NlFieldPhrase>;
   /** Types never scoped to the asking project (their `project` means "belongs to", not "applies to"). */
   unscopedTypes?: string[];
   /** Extra phrases naming a type, e.g. `backlog` -> Task. Win over the generated phrases. */
@@ -208,6 +249,12 @@ export interface NlNamespaceRulings {
   typeNotes?: Record<string, string>;
   /** A phrase that means a predicate, e.g. `accepted` -> Decision.status in [active, accepted]. */
   valueAliases?: Record<string, NlValueAlias[]>;
+  /**
+   * Rows of a type that never count unless asked for, e.g. `Run` -> `{ status: { in: ['skipped'] } }`.
+   * Applied as `NOT <clause>` whenever NL reads the type, as the seed or through a walk,
+   * and shown in `plan` as `ruling:<Type> default exclude`.
+   */
+  typeExcludes?: Record<string, WhereClause>;
 }
 
 /** The body of `GET /substrate/v1/nl/pack/:ns`. */

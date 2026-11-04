@@ -33,10 +33,18 @@ export interface ShapeResultInput {
   decision: PolicyDecision;
   result: Row | Row[] | ReadResult | AsyncIterable<Row> | null;
   metric(name: string, payload?: unknown): void;
+  /**
+   * The resolver applied the row filter to the rows it wrote and returns no
+   * rows (a by-filter mutation's `{ count, ids, idsTruncated }`): obligations
+   * are not run on the result.
+   */
+  resolverFiltered?: boolean;
 }
 
 export function shapeResult(input: ShapeResultInput): void {
-  const { envelope, key, entry, ctx, decision, result, metric } = input;
+  const { envelope, key, entry, ctx, result, metric } = input;
+  const decision: PolicyDecision =
+    input.resolverFiltered === true ? { ...input.decision, obligations: [] } : input.decision;
 
   if (isAsyncIterable<Row>(result)) {
     addError(
@@ -50,6 +58,22 @@ export function shapeResult(input: ShapeResultInput): void {
   }
 
   if (isReadResult(result)) {
+    // A count or whole-result aggregate carries no rows and no page. A seed
+    // under a row-filter obligation is refused before it is counted, so
+    // there is nothing to filter here.
+    if (result.count !== undefined) {
+      envelope.data[key] = { count: result.count };
+      envelope.shapes[key] = 'count';
+      return;
+    }
+    if (result.groups !== undefined) {
+      envelope.data[key] = {
+        groups: result.groups,
+        ...(result.truncated === true ? { truncated: true } : {})
+      };
+      envelope.shapes[key] = 'groups';
+      return;
+    }
     // Paged list. Pull pagination metadata into envelope._pagination; apply
     // row-filter obligations to the rows only.
     const filtered = applyObligations(decision, result.rows, ctx);

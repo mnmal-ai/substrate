@@ -51,6 +51,43 @@ export interface ResolveObservation {
   message?: string;
   /** The verified identity's id; absent for an anonymous caller. */
   caller?: string;
+  /**
+   * Set when the element ran in a batch resolver call: the number of elements
+   * in that call. `durationMs` is then the whole call's time, shared by all of
+   * them. Absent for a per-element resolve.
+   */
+  batchSize?: number;
+  /**
+   * The element's position (0..batchSize-1) in its batch call; set with
+   * `batchSize`. Latency aggregates take a batch once, from index 0, so one
+   * call's time is not counted batchSize times. Call counts take every element.
+   */
+  batchIndex?: number;
+}
+
+/**
+ * One type's table and index statistics, for the index advisor. Counters are
+ * cumulative since the server's statistics were last reset. Row counts are
+ * estimates. A type ABSENT from a `typeStats()` result is unknown, not empty:
+ * never read its absence as 0 rows (a sampled store can miss a small type).
+ */
+export interface TypeStats {
+  namespace: string;
+  type: string;
+  liveRows: number;
+  insertsTotal: number;
+  updatesTotal: number;
+  deletesTotal: number;
+  indexes: Array<{
+    name: string;
+    scans: number;
+    /** The last scan (ISO), or null when none since the statistics were last reset. */
+    lastScanAt: string | null;
+    sizeBytes: number;
+    unique: boolean;
+    /** Built or adopted by the engine's index reconciler for this type. */
+    engineOwned: boolean;
+  }>;
 }
 
 /** What GET /substrate/v1/metrics returns. The new fields are optional so an older server still type-checks. */

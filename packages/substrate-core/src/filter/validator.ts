@@ -22,7 +22,6 @@ import {
   getExtensionOperator,
   isJsonPathPredicate,
   JSON_PATH_OPS as JSON_PATH_OP_LIST,
-  jsonPathNeedsScan,
   jsonPathOperandProblem,
   jsonPathProblem,
   LIST_OPS as LIST_OP_LIST,
@@ -38,11 +37,22 @@ import {
   type FieldDefStruct,
   type FieldKind,
   type FilterCapabilities,
+  isImpossibleIsoTimestamp,
   METADATA_FILTER_FIELDS,
   type OrderByClause,
   type TypeSchema,
   type WhereClause
 } from '@mnmal-ai/substrate-types';
+import {
+  bindGroup,
+  type FrameHelpers,
+  validateFrameParams,
+  validateRef,
+  validateSelection,
+  validateWalk,
+  validateWalkAgg,
+  type WalkScope
+} from './walk-validator.js';
 
 export { clearExtensionOperators, getExtensionOperator, registerExtensionOperator };
 
@@ -50,11 +60,22 @@ export type FilterErrorCode =
   | 'unknown_field'
   | 'unknown_operator'
   | 'type_mismatch'
-  | 'unindexed_field'
   | 'orderby_nonscalar'
   | 'capability_unsupported'
   | 'invalid_between'
-  | 'invalid_logical';
+  | 'invalid_logical'
+  | 'walk_unknown_ref'
+  | 'walk_unsupported_ref'
+  | 'walk_cross_namespace'
+  | 'walk_too_deep'
+  | 'walk_binding'
+  | 'walk_quantifier'
+  | 'ref_unresolved'
+  | 'ref_kind_mismatch'
+  | 'agg_invalid'
+  | 'derive_invalid'
+  | 'bucket_invalid'
+  | 'count_conflict';
 
 export class FilterValidationError extends Error {
   override readonly name = 'FilterValidationError';
@@ -100,7 +121,7 @@ function lookupField(fields: Record<string, FieldDef>, name: string): FieldDef |
  */
 function metadataHint(fieldName: string): string {
   if (!/^(_metadata|createdBy|updatedBy)(\.|$)/.test(fieldName)) return '';
-  return ' — row metadata is filterable as createdAt, updatedAt, createdBy / updatedBy (an identity id, or { kind, id }), or createdById, createdByKind, updatedById, updatedByKind';
+  return ' — row metadata is filterable as createdAt, updatedAt, createdBy / updatedBy (an identity id, or { kind, id }), or createdById, createdByKind, updatedById, updatedByKind, and seq on a visible-order type';
 }
 
 const LOGICAL_KEYS = new Set(['AND', 'OR', 'NOT']);
@@ -109,9 +130,10 @@ const LOGICAL_KEYS = new Set(['AND', 'OR', 'NOT']);
  * Walk context. `insideStruct` is set once the walk descends into a struct's
  * sub-schema, where json path predicates are not supported.
  */
-interface IndexedCheck {
-  allowTableScan: boolean;
+interface WalkContext {
   insideStruct?: boolean;
+  /** Edge-walk scope: bindings, depth, and the lookup walks resolve through. */
+  walk: WalkScope;
 }
 
 /**
@@ -311,7 +333,7 @@ function validatePrimitiveKind(
         );
       }
       return;
-    case 'scalar.date':
+    case 'scalar.date': {
       // Dates may be supplied as Date instances or ISO strings — the substrate
       // coerces at evaluation. Reject bare numbers / booleans explicitly.
       if (!(value instanceof Date) && typeof value !== 'string') {
@@ -321,7 +343,21 @@ function validatePrimitiveKind(
           path
         );
       }
+      // Refused here, once for every dataset: memory would roll Feb 30 over to
+      // March, and pg's cast would raise.
+      const field = path.slice(path[0] === 'where' ? 1 : 0, -1).join('.');
+      if (
+        (value instanceof Date && Number.isNaN(value.getTime())) ||
+        (typeof value === 'string' && isImpossibleIsoTimestamp(value))
+      ) {
+        throw new FilterValidationError(
+          'type_mismatch',
+          `operator '${op}' on '${field}': ${String(value)} is not a real date`,
+          path
+        );
+      }
       return;
+    }
     case 'crossRef':
       // crossRef.eq takes an id — string or number (mirrors `Id` in types/core).
       if (typeof value !== 'string' && typeof value !== 'number') {
@@ -341,7 +377,7 @@ function validateLeaf(
   leaf: unknown,
   path: string[],
   capabilities: FilterCapabilities,
-  indexedCheck: IndexedCheck
+  ctx: WalkContext
 ): void {
   // Struct fields take nested WhereClause — recurse into the sub-schema.
   if (fieldDef.kind === 'struct') {
@@ -357,7 +393,7 @@ function validateLeaf(
       (fieldDef as FieldDefStruct).fields,
       path,
       capabilities,
-      { ...indexedCheck, insideStruct: true }
+      { ...ctx, insideStruct: true }
     );
     return;
   }
@@ -365,8 +401,7 @@ function validateLeaf(
   // list fields: element-membership via `has`. The operand is a
   // single element validated against the list's declared element type. Lists of
   // structs / nested lists / opaque json have no primitive element to match —
-  // reject those. Indexed gate defaults to false (a list field is filterable
-  // only when explicitly flagged or under _allowTableScan).
+  // reject those.
   if (fieldDef.kind === 'list') {
     const listDef = fieldDef as FieldDefList;
     const elementKind = fieldKindOf(listDef.of);
@@ -374,14 +409,6 @@ function validateLeaf(
       throw new FilterValidationError(
         'unknown_operator',
         `field '${fieldName}' is a list of ${elementKind} — only lists of scalars / refs support 'has'`,
-        path
-      );
-    }
-
-    if (listDef.indexed !== true && !indexedCheck.allowTableScan) {
-      throw new FilterValidationError(
-        'unindexed_field',
-        `field '${fieldName}' is an unindexed list — set { indexed: true } on the field or params._allowTableScan to override`,
         path
       );
     }
@@ -435,28 +462,15 @@ function validateLeaf(
   if (kind === 'scalar.json') {
     // pg's struct walk has no json-path branch and no GIN is derived for a
     // nested field, so accepting this would let memory answer what pg refuses.
-    if (indexedCheck.insideStruct === true && isJsonPathPredicate(leaf)) {
+    if (ctx.insideStruct === true && isJsonPathPredicate(leaf)) {
       throw new FilterValidationError(
         'unknown_operator',
         `json path filters apply to top-level json fields only — '${fieldName}' is inside a struct (kind=scalar.json)`,
         [...path, 'path']
       );
     }
-    validateJsonPathLeaf(fieldName, isIndexed(fieldDef), leaf, path, capabilities, indexedCheck);
+    validateJsonPathLeaf(fieldName, leaf, path, capabilities);
     return;
-  }
-
-  // Indexed-field enforcement is load-bearing for the filter contract. Without
-  // an index, the substrate scans — which is fine for dev, terrible in prod.
-  // We read `indexed` off scalar fields and crossRefs both; the crossRef case
-  // is a naked index question too (the column the id lives in).
-  const indexed = isIndexed(fieldDef);
-  if (!indexed && !indexedCheck.allowTableScan) {
-    throw new FilterValidationError(
-      'unindexed_field',
-      `field '${fieldName}' is not indexed — set params._allowTableScan to override`,
-      path
-    );
   }
 
   if (leaf === null || typeof leaf !== 'object' || Array.isArray(leaf)) {
@@ -504,6 +518,25 @@ function validateLeaf(
         [...path, op]
       );
     }
+    if (value !== null && typeof value === 'object' && '$ref' in value) {
+      if (ctx.insideStruct === true) {
+        throw new FilterValidationError(
+          'walk_unsupported_ref',
+          `$ref is not valid inside a struct ('${fieldName}')`,
+          [...path, op]
+        );
+      }
+      validateRef(
+        kind,
+        op,
+        value as Record<string, unknown>,
+        [...path, op],
+        ctx.walk,
+        lookupField,
+        fieldKindOf
+      );
+      continue;
+    }
     const nullable = fieldDef.kind === 'scalar' && (fieldDef as FieldDefScalar).nullable === true;
     validateValueShape(kind, op, value, [...path, op], nullable);
   }
@@ -512,19 +545,16 @@ function validateLeaf(
 const JSON_PATH_HINT = 'address inside it with { path: [...], <op>: ... }';
 
 /**
- * A json field is filterable only through a path predicate. The
- * index gate is per operator AND per field: `eq`/`in`/`has` compile to
- * containment, which the GIN derived for `field.json({ indexed: true })`
- * serves; every other operator, and every operator on an unindexed json
- * field, scans the (namespace, type) partition.
+ * A json field is filterable only through a path predicate. `eq`/`in`/`has`
+ * compile to containment, which the GIN derived for
+ * `field.json({ indexed: true })` serves; anything else scans the
+ * (namespace, type) partition. Either way it is accepted.
  */
 function validateJsonPathLeaf(
   fieldName: string,
-  fieldIndexed: boolean,
   leaf: unknown,
   path: string[],
-  capabilities: FilterCapabilities,
-  indexedCheck: IndexedCheck
+  capabilities: FilterCapabilities
 ): void {
   const obj =
     leaf !== null && typeof leaf === 'object' && !Array.isArray(leaf)
@@ -595,24 +625,7 @@ function validateJsonPathLeaf(
         [...path, op]
       );
     }
-    if ((!fieldIndexed || jsonPathNeedsScan(op, operand)) && !indexedCheck.allowTableScan) {
-      throw new FilterValidationError(
-        'unindexed_field',
-        `operator '${op}' on json field '${fieldName}' scans the type's rows — set params._allowTableScan to override (eq, in and has are index-served on a field declared field.json({ indexed: true }))`,
-        [...path, op]
-      );
-    }
   }
-}
-
-function isIndexed(def: FieldDef): boolean {
-  if (def.kind === 'scalar') return (def as FieldDefScalar).indexed === true;
-  if (def.kind === 'crossRef') {
-    // CrossRef fields are indexed by default — the edge store demands fast
-    // lookup by id (§4.6). Treat them as indexed for filter purposes.
-    return true;
-  }
-  return false;
 }
 
 function validateWhereAgainstFields(
@@ -620,11 +633,13 @@ function validateWhereAgainstFields(
   fields: Record<string, FieldDef>,
   path: string[],
   capabilities: FilterCapabilities,
-  indexedCheck: IndexedCheck
+  ctx: WalkContext
 ): void {
   if (where === null || typeof where !== 'object' || Array.isArray(where)) {
     throw new FilterValidationError('type_mismatch', 'where must be an object', path);
   }
+  // This object is an AND group unless an enclosing AND already bound it.
+  if (!ctx.walk.groupBound) ctx = { ...ctx, walk: bindGroup(where, path, ctx.walk) };
 
   // Detect logical combinators. The rule: if ANY key is a combinator, every
   // key must be a combinator — mixing fields with AND/OR/NOT is ambiguous
@@ -659,7 +674,7 @@ function validateWhereAgainstFields(
             fields,
             [...path, k, String(i)],
             capabilities,
-            indexedCheck
+            k === 'AND' ? ctx : orNot(ctx)
           );
         });
       } else if (k === 'NOT') {
@@ -674,7 +689,7 @@ function validateWhereAgainstFields(
           fields,
           [...path, k],
           capabilities,
-          indexedCheck
+          orNot(ctx)
         );
       }
     }
@@ -682,8 +697,37 @@ function validateWhereAgainstFields(
   }
 
   // Flat field map — each key is a field name; each value is a leaf predicate
-  // (or nested WhereClause for struct fields).
+  // (or nested WhereClause for struct fields). `_walk` and `_agg` are reserved
+  // here and AND with their siblings: a type field literally named `_walk` or
+  // `_agg` is not addressable in a where. Beside `_agg`, the comparison keys
+  // are its operator, not fields.
+  const record = where as Record<string, unknown>;
+  const hasAgg = Object.hasOwn(record, '_agg');
   for (const fieldName of keys) {
+    if (fieldName === '_walk' || fieldName === '_agg') {
+      if (ctx.insideStruct === true) {
+        throw new FilterValidationError(
+          'walk_unsupported_ref',
+          `${fieldName} is not valid inside a struct`,
+          [...path, fieldName]
+        );
+      }
+      const h = frameHelpers(capabilities);
+      if (fieldName === '_walk') {
+        validateWalk(
+          record._walk,
+          [...path, '_walk'],
+          ctx.walk,
+          lookupField,
+          fieldKindOf,
+          h.validateWhere
+        );
+      } else {
+        validateAggPredicate(record, path, ctx.walk, h);
+      }
+      continue;
+    }
+    if (hasAgg && AGG_COMPARATORS.has(fieldName)) continue;
     // Check the type's declared fields first, then fall back to the
     // metadata virtual field definitions (createdAt, updatedAt, createdById,
     // createdByKind, updatedById, updatedByKind) — these map onto row._metadata
@@ -720,20 +764,106 @@ function validateWhereAgainstFields(
       (where as Record<string, unknown>)[fieldName],
       [...path, fieldName],
       capabilities,
-      indexedCheck
+      ctx
     );
+    if (def === METADATA_VIRTUAL_FIELDS.seq) {
+      assertSeqIntegers((where as Record<string, unknown>)[fieldName], [...path, fieldName]);
+    }
+  }
+}
+
+const AGG_COMPARATORS = new Set(['eq', 'neq', 'gt', 'gte', 'lt', 'lte']);
+
+/** Inside OR / NOT: a fresh group, and no binding is referenceable. */
+function orNot(ctx: WalkContext): WalkContext {
+  return { ...ctx, walk: { ...ctx.walk, underOrNot: true, groupBound: false } };
+}
+
+function frameHelpers(capabilities: FilterCapabilities): FrameHelpers {
+  return {
+    lookup: lookupField,
+    kindOf: fieldKindOf,
+    validateWhere: (w, p, scope) =>
+      validateWhereAgainstFields(w as WhereClause, scope.fields, p, capabilities, { walk: scope }),
+    validateOrderBy: (o, f, p) => validateOrderBy(o, f, capabilities, p)
+  };
+}
+
+/**
+ * A where-side `{ _agg, <cmp>: operand }`: the aggregate, then each
+ * comparison against the aggregate's value kind.
+ */
+function validateAggPredicate(
+  record: Record<string, unknown>,
+  path: string[],
+  scope: WalkScope,
+  h: FrameHelpers
+): void {
+  const kind = validateWalkAgg(record._agg, [...path, '_agg'], scope, h);
+  // The object is one comparison: a field or walk beside `_agg` is refused, not ANDed.
+  for (const k of Object.keys(record)) {
+    if (k !== '_agg' && !AGG_COMPARATORS.has(k)) {
+      throw new FilterValidationError(
+        'agg_invalid',
+        `'${k}' cannot sit beside _agg; only eq, neq, gt, gte, lt and lte can. Put it in its own clause under AND`,
+        [...path, k]
+      );
+    }
+  }
+  const ops = Object.keys(record).filter((k) => AGG_COMPARATORS.has(k));
+  if (ops.length === 0) {
+    throw new FilterValidationError(
+      'agg_invalid',
+      '_agg in a where needs a comparison beside it: eq, neq, gt, gte, lt or lte',
+      [...path, '_agg']
+    );
+  }
+  for (const op of ops) {
+    const value = record[op];
+    if (value !== null && typeof value === 'object' && '$ref' in value) {
+      validateRef(
+        kind,
+        op,
+        value as Record<string, unknown>,
+        [...path, op],
+        scope,
+        lookupField,
+        fieldKindOf
+      );
+    } else {
+      validateValueShape(kind as FieldKind, op, value, [...path, op]);
+    }
+  }
+}
+
+/** `seq` is a bigint column: every numeric operand must be a safe integer. */
+function assertSeqIntegers(leaf: unknown, path: string[]): void {
+  for (const [op, operand] of Object.entries(leaf as Record<string, unknown>)) {
+    for (const v of Array.isArray(operand) ? operand : [operand]) {
+      if (typeof v === 'number' && !Number.isSafeInteger(v)) {
+        throw new FilterValidationError(
+          'type_mismatch',
+          `operator '${op}' expected an integer for 'seq', got ${v}`,
+          [...path, op]
+        );
+      }
+    }
   }
 }
 
 function validateOrderBy(
   orderBy: unknown,
   fields: Record<string, FieldDef>,
-  capabilities: FilterCapabilities
+  capabilities: FilterCapabilities,
+  path: string[] = ['orderBy'],
+  derived: ReadonlySet<string> = new Set()
 ): void {
   if (!capabilities.orderBy) {
-    throw new FilterValidationError('capability_unsupported', 'dataset does not support orderBy', [
-      'orderBy'
-    ]);
+    throw new FilterValidationError(
+      'capability_unsupported',
+      'dataset does not support orderBy',
+      path
+    );
   }
 
   // Reject non-array shapes (e.g. a bare `{ field: dir }`) here; the engine
@@ -742,7 +872,7 @@ function validateOrderBy(
     throw new FilterValidationError(
       'type_mismatch',
       'orderBy must be an array of { field: "asc" | "desc" } entries',
-      ['orderBy']
+      path
     );
   }
 
@@ -751,7 +881,7 @@ function validateOrderBy(
       throw new FilterValidationError(
         'type_mismatch',
         'each orderBy entry must be a { field: "asc" | "desc" } object',
-        ['orderBy', String(i)]
+        [...path, String(i)]
       );
     }
     const entries = Object.entries(clause);
@@ -759,7 +889,7 @@ function validateOrderBy(
       throw new FilterValidationError(
         'type_mismatch',
         'each orderBy entry must have exactly one field',
-        ['orderBy', String(i)]
+        [...path, String(i)]
       );
     }
     const [fieldName, dir] = entries[0] as [string, unknown];
@@ -767,11 +897,20 @@ function validateOrderBy(
       throw new FilterValidationError(
         'type_mismatch',
         `orderBy direction must be 'asc' or 'desc', got ${String(dir)}`,
-        ['orderBy', String(i), fieldName]
+        [...path, String(i), fieldName]
       );
     }
     // `id` is always orderable — it's the implicit tie-breaker.
     if (fieldName === 'id') return;
+    // `$<name>` orders by a `derive` entry (walks spec, goal 8).
+    if (fieldName.startsWith('$')) {
+      if (derived.has(fieldName.slice(1))) return;
+      throw new FilterValidationError(
+        'derive_invalid',
+        `orderBy '${fieldName}' needs derive.${fieldName.slice(1)} in params`,
+        [...path, String(i), fieldName]
+      );
+    }
 
     // Row-metadata projection fields (createdAt/updatedAt/createdBy*/updatedBy*)
     // are virtual filter fields — not declared in type schemas — but the dataset
@@ -782,14 +921,14 @@ function validateOrderBy(
       throw new FilterValidationError(
         'unknown_field',
         `unknown field '${fieldName}' in orderBy${metadataHint(fieldName)}`,
-        ['orderBy', String(i), fieldName]
+        [...path, String(i), fieldName]
       );
     }
     if (def.kind !== 'scalar') {
       throw new FilterValidationError(
         'orderby_nonscalar',
         `orderBy on non-scalar field '${fieldName}' is not supported (kind=${def.kind})`,
-        ['orderBy', String(i), fieldName]
+        [...path, String(i), fieldName]
       );
     }
     // scalar.json is an opaque body — no per-key ordering. Reject with the
@@ -798,7 +937,7 @@ function validateOrderBy(
       throw new FilterValidationError(
         'orderby_nonscalar',
         `orderBy on json field '${fieldName}' is not supported (opaque body)`,
-        ['orderBy', String(i), fieldName]
+        [...path, String(i), fieldName]
       );
     }
   });
@@ -807,23 +946,46 @@ function validateOrderBy(
 export interface ValidateFilterInput {
   where?: WhereClause;
   orderBy?: OrderByClause[];
-  allowTableScan?: boolean;
   typeSchema: TypeSchema;
   capabilities: FilterCapabilities;
+  /** Resolves a type in `namespace`; walks are refused without it. */
+  schemaOf?: (type: string) => TypeSchema | undefined;
+  /** The frame's namespace, and the seed type's name in it. */
+  namespace?: string;
+  typeName?: string;
+  /** Frame params beside where/orderBy, and the field selection (its `_agg` and `{ _walk }` entries). */
+  count?: unknown;
+  aggregate?: unknown;
+  bucket?: unknown;
+  derive?: unknown;
+  cursor?: unknown;
+  fields?: Record<string, unknown>;
 }
 
 export function validateFilter(input: ValidateFilterInput): void {
-  const allowTableScan = input.allowTableScan === true;
+  const fields = input.typeSchema.fields;
+  const seed: WalkScope = {
+    ...(input.namespace !== undefined ? { namespace: input.namespace } : {}),
+    ...(input.schemaOf !== undefined ? { schemaOf: input.schemaOf } : {}),
+    ...(input.typeName !== undefined ? { typeName: input.typeName } : {}),
+    fields,
+    depth: 0,
+    bindings: new Map([['$', fields]]),
+    hidden: new Set(),
+    underOrNot: false,
+    groupBound: false,
+    frameBindings: { count: 0 }
+  };
+  const h = frameHelpers(input.capabilities);
+  const aggs = validateSelection(input.fields, ['fields'], seed, h);
+  const scope = aggs.size > 0 ? { ...seed, aggs } : seed;
   if (input.where !== undefined) {
-    validateWhereAgainstFields(
-      input.where,
-      input.typeSchema.fields,
-      ['where'],
-      input.capabilities,
-      { allowTableScan }
-    );
+    validateWhereAgainstFields(input.where, fields, ['where'], input.capabilities, {
+      walk: scope
+    });
   }
+  const derived = validateFrameParams(input, scope, h);
   if (input.orderBy !== undefined) {
-    validateOrderBy(input.orderBy, input.typeSchema.fields, input.capabilities);
+    validateOrderBy(input.orderBy, fields, input.capabilities, ['orderBy'], derived);
   }
 }

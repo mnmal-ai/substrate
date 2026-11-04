@@ -46,8 +46,9 @@ Subcommands:
   run <script.mts> [--args <json>] [--dry-run | --write] [--max-writes <n>] [--out <file>]
                             Run a script's default export (s) => result against a client
                             signed from SUBSTRATE_URL + SUBSTRATE_AGENT_KEY_ID/_PATH, and
-                            print one JSON report. --args is a JSON object, read as s.args. Read-only unless --dry-run (records
-                            mutations) or --write (sends up to --max-writes frames, 50).
+                            print one JSON report. --args is a JSON object, read as
+                            s.args. Read-only unless --dry-run (records mutations) or
+                            --write (sends up to --max-writes frames, 50).
   check-enums [--json] [--record]
                             Report stored values outside a field's declared enum.
                             Read-only over HTTP (--record writes verdict rows); reads
@@ -81,9 +82,9 @@ Environment for \`serve\` (the load-bearing ones; the full reference is in the d
                                   outstanding ticket, which is the only revocation
                                   mechanism.
   SUBSTRATE_PUBLIC_ORIGIN         This server's origins, comma-separated (e.g.
-                                  https://host:3100,https://alias). A token carrying
-                                  'aud' must name one; a token with no 'aud' is still
-                                  accepted for now. Required with auth on a non-loopback
+                                  https://host:3100,https://alias). A token must carry
+                                  'aud' naming one; a token with no 'aud' is refused.
+                                  Required with auth on a non-loopback
                                   HOST; on loopback it defaults to the loopback origins.
   SUBSTRATE_TLS_KEY_PATH          Serve HTTPS. Both are required together — setting one
   SUBSTRATE_TLS_CERT_PATH         without the other refuses to boot.

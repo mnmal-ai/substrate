@@ -29,12 +29,19 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { Sql } from 'postgres';
+import type { ReservedSql, Sql } from 'postgres';
+import { retireSession, SESSION_COLUMNS, type Session } from './advisory-lock.js';
+import { detectLayout } from './layout.js';
 import {
-  CONCURRENT_STATEMENTS as BASELINE_CONCURRENT,
-  TX_STATEMENTS as BASELINE_TX
-} from './migrations/0001_baseline.js';
-import { TX_STATEMENTS as UUID_CHECK_TX } from './migrations/0002_uuid_format_check.js';
+  CONCURRENT_STATEMENTS as TABLES_BASELINE_CONCURRENT,
+  TX_STATEMENTS as TABLES_BASELINE_TX
+} from './migrations/0001t_tables_baseline.js';
+import { TX_STATEMENTS as TABLES_UUID_CHECK_TX } from './migrations/0002t_uuid_format_check.js';
+import { TX_STATEMENTS as TYPE_TABLE_VERSION_TX } from './migrations/0003t_type_table_version.js';
+import { TX_STATEMENTS as FIELD_ERROR_VERSION_TX } from './migrations/0004t_field_error_version.js';
+import { sqlStringLiteral } from './pg-sql/primitives.js';
+import { assertServerVersion } from './server-version.js';
+import { UUID_CHECK_MIGRATION } from './uuid-check.js';
 
 /**
  * Internal canonical migration shape after normalisation. The framework
@@ -70,13 +77,21 @@ export type MigrationInput =
       readonly concurrentStatements?: never;
     };
 
-const MIGRATION_INPUTS: ReadonlyArray<MigrationInput> = [
-  {
-    version: '0001_baseline',
-    txStatements: BASELINE_TX,
-    concurrentStatements: BASELINE_CONCURRENT
-  }
-];
+const TABLES_BASELINE: MigrationInput = {
+  version: '0001t_tables_baseline',
+  txStatements: TABLES_BASELINE_TX,
+  concurrentStatements: TABLES_BASELINE_CONCURRENT
+};
+
+const TYPE_TABLE_VERSION: MigrationInput = {
+  version: '0003t_type_table_version',
+  txStatements: TYPE_TABLE_VERSION_TX
+};
+
+const FIELD_ERROR_VERSION: MigrationInput = {
+  version: '0004t_field_error_version',
+  txStatements: FIELD_ERROR_VERSION_TX
+};
 
 function normalise(input: MigrationInput): Migration {
   if ('statements' in input && input.statements !== undefined) {
@@ -99,27 +114,83 @@ function normalise(input: MigrationInput): Migration {
  * corpus uses synthetic non-UUID ids.
  */
 const UUID_CHECK_INPUT: MigrationInput = {
-  version: '0002_uuid_format_check',
-  txStatements: UUID_CHECK_TX
+  version: UUID_CHECK_MIGRATION,
+  txStatements: TABLES_UUID_CHECK_TX
 };
 
 /**
- * @internal — the always-on migration list, exported for unit tests. The
- * gated 0002 is appended by `getMigrationList`.
- */
-export const MIGRATIONS: ReadonlyArray<Migration> = MIGRATION_INPUTS.map(normalise);
-
-/**
- * @internal — returns the migration list including the gated 0002 when
- * `SUBSTRATE_ENFORCE_UUID_CHECK=true` (or the explicit override is true). Used by
- * `runMigrations` and exported for the focused test that exercises the
- * CHECK constraint.
+ * The tables baseline, then the gated UUID CHECKs when
+ * `SUBSTRATE_ENFORCE_UUID_CHECK=true` (or the explicit override is true), then
+ * the type tables' catalog version, then the field error version. Used
+ * by `runMigrations` and exported for unit tests.
  */
 export function getMigrationList(
   enforceUuidCheck: boolean | undefined = process.env.SUBSTRATE_ENFORCE_UUID_CHECK === 'true'
 ): ReadonlyArray<Migration> {
-  if (enforceUuidCheck !== true) return MIGRATIONS;
-  return [...MIGRATIONS, normalise(UUID_CHECK_INPUT)];
+  return [
+    TABLES_BASELINE,
+    ...(enforceUuidCheck === true ? [UUID_CHECK_INPUT] : []),
+    TYPE_TABLE_VERSION,
+    FIELD_ERROR_VERSION
+  ].map(normalise);
+}
+
+/** @internal — the always-on list, exported for unit tests. */
+export const MIGRATIONS: ReadonlyArray<Migration> = getMigrationList(false);
+
+/**
+ * A store in an old layout (`rows`, legacy or partitioned), which this release
+ * no longer boots. Nothing was changed: `migrate-store` copies it into a fresh
+ * store and only reads it.
+ */
+export class UnsupportedStoreLayoutError extends Error {
+  override readonly name = 'UnsupportedStoreLayoutError';
+
+  constructor(readonly layout: 'legacy' | 'partitioned') {
+    super(
+      `this store uses the ${layout} layout, which this release no longer boots. ` +
+        'Copy it into a fresh store with `substrate-admin migrate-store`; the source is only read, ' +
+        'so it stays your rollback.'
+    );
+  }
+}
+
+/** Throws {@link UnsupportedStoreLayoutError} when the current schema holds an old layout's `rows`. */
+export async function assertTablesLayout(sql: Sql): Promise<void> {
+  const layout = await detectLayout(sql);
+  if (layout === 'legacy' || layout === 'partitioned') {
+    throw new UnsupportedStoreLayoutError(layout);
+  }
+}
+
+/** The table `substrate-admin migrate-store` keeps its progress in, on the target. */
+export const MIGRATE_STORE_MARKER_TABLE = 'substrate_migrate_store_progress';
+
+export class StoreMigrationInProgressError extends Error {
+  override readonly name = 'StoreMigrationInProgressError';
+
+  constructor() {
+    super(
+      `${MIGRATE_STORE_MARKER_TABLE} exists: substrate-admin migrate-store has not finished ` +
+        'populating this store. Rerun substrate-admin migrate-store to finish or restart it, ' +
+        'then boot.'
+    );
+  }
+}
+
+/**
+ * Throws `StoreMigrationInProgressError` when the current schema carries the
+ * migrate-store marker. Compares `nspname` rather than casting, so a schema
+ * name that needs quoting still matches.
+ */
+export async function assertNotMigrating(sql: Sql): Promise<void> {
+  const [row] = await sql<Array<{ present: boolean }>>`
+    SELECT EXISTS (
+      SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE c.relname = ${MIGRATE_STORE_MARKER_TABLE} AND n.nspname = current_schema()
+    ) AS present
+  `;
+  if (row?.present === true) throw new StoreMigrationInProgressError();
 }
 
 /**
@@ -192,23 +263,43 @@ export interface RunMigrationsOptions {
   enforceUuidCheck?: boolean;
 }
 
+export class NoCurrentSchemaError extends Error {
+  override readonly name = 'NoCurrentSchemaError';
+
+  constructor() {
+    super(
+      'the search_path resolves to no existing schema, so there is nowhere to migrate. ' +
+        'Create the schema, or correct search_path in the connection options.'
+    );
+  }
+}
+
+/** The schema names substrate supports: plain lowercase identifiers that never need quoting. */
+export const PLAIN_SCHEMA_NAME = /^[a-z_][a-z0-9_]*$/;
+
+export class UnsupportedSchemaNameError extends Error {
+  override readonly name = 'UnsupportedSchemaNameError';
+
+  constructor(readonly schema: string) {
+    super(
+      `schema ${JSON.stringify(schema)} is not supported: substrate needs a plain lowercase ` +
+        'schema name (lowercase letters, digits and underscores, not starting with a digit).'
+    );
+  }
+}
+
 export async function runMigrations(sql: Sql, opts: RunMigrationsOptions = {}): Promise<void> {
+  // First, so an old store is refused before anything touches it.
+  await assertTablesLayout(sql);
+  await assertServerVersion(sql);
   // Serialises concurrent boots, which otherwise race on every DDL step.
   //
   // The lock is polled with pg_try_advisory_lock, not blocking
   // pg_advisory_lock: a blocked waiter holds a transaction open, and the
   // holder's CREATE INDEX CONCURRENTLY waits on it, which deadlocks.
-  await withMigrationLock(sql, (conn) => runMigrationsLocked(conn, opts));
+  await withMigrationLock(sql, (conn) => runMigrationsLocked(sql, conn, opts));
 }
 
-/**
- * Runs `fn` while holding the migration advisory lock on one reserved connection.
- *
- * The lock and unlock must share a session: through the pool, the unlock can
- * land on another connection and leave the lock held. `fn` is handed that same
- * connection, so a pool of one cannot deadlock waiting for a second. It has no
- * `begin()`; open transactions with `BEGIN`/`COMMIT` statements.
- */
 /**
  * Versions of the core migration list not yet applied to `sql`'s database,
  * read without applying or creating anything. All of them when the
@@ -227,38 +318,158 @@ export async function pendingMigrations(sql: Sql): Promise<string[]> {
     .filter((v) => !applied.has(v));
 }
 
-export async function withMigrationLock<T>(sql: Sql, fn: (conn: Sql) => Promise<T>): Promise<T> {
+const MIGRATION_LOCK_KEY = `hashtext('substrate-migrations:' || current_schema())`;
+
+/** Refuses a search_path that resolves to no schema, or a schema name that is not plain lowercase. */
+export async function assertStoreSchema(sql: Sql): Promise<void> {
+  const [current] = await sql<Array<{ schema: string | null }>>`SELECT current_schema() AS schema`;
+  // A NULL current_schema() makes the lock key NULL, which no poll ever acquires.
+  if (current?.schema == null) throw new NoCurrentSchemaError();
+  if (!PLAIN_SCHEMA_NAME.test(current.schema)) {
+    throw new UnsupportedSchemaNameError(current.schema);
+  }
+}
+
+/**
+ * Runs `fn` while holding the migration advisory lock of the current schema on
+ * one reserved connection.
+ *
+ * The lock and unlock must share a session: through the pool, the unlock can
+ * land on another connection and leave the lock held. `fn` is handed that same
+ * connection, so a pool of one cannot deadlock waiting for a second. It has no
+ * `begin()`; open transactions with `BEGIN`/`COMMIT` statements.
+ */
+export async function withMigrationLock<T>(
+  sql: Sql,
+  fn: (conn: ReservedSql) => Promise<T>
+): Promise<T> {
+  await assertStoreSchema(sql);
   const lockConn = await sql.reserve();
   try {
-    await acquireMigrationLock(lockConn);
-    try {
-      return await fn(lockConn);
-    } finally {
-      const [row] = await lockConn<Array<{ released: boolean }>>`
-        SELECT pg_advisory_unlock(hashtext('substrate-migrations')) AS released
-      `;
-      if (row?.released === false) {
-        process.stderr.write(
-          'substrate migrations: advisory unlock reported the lock was not held by this session\n'
-        );
-      }
-    }
+    return await withPolledLock(sql, lockConn, 'migration', MIGRATION_LOCK_KEY, [], undefined, () =>
+      fn(lockConn)
+    );
   } finally {
     lockConn.release();
   }
 }
 
-async function acquireMigrationLock(sql: Sql): Promise<void> {
-  while (true) {
-    const result = await sql<Array<{ acquired: boolean }>>`
-      SELECT pg_try_advisory_lock(hashtext('substrate-migrations')) AS acquired
-    `;
-    if (result[0]?.acquired === true) return;
-    await new Promise((resolve) => setTimeout(resolve, 250));
+/** Per schema and table; `$1` is the table name. */
+const INDEX_LOCK_KEY = `hashtext('substrate-index-build:' || current_schema() || '.' || $1::text)`;
+
+/** `withTableIndexLock` gave up waiting because its signal aborted. */
+export class IndexLockAborted extends Error {
+  constructor() {
+    super('index build lock wait aborted');
+    this.name = 'IndexLockAborted';
   }
 }
 
-async function runMigrationsLocked(sql: Sql, opts: RunMigrationsOptions): Promise<void> {
+/**
+ * Runs `fn` while `conn` holds the index-build advisory lock of `table` (in the
+ * current schema). Every engine CREATE or DROP INDEX CONCURRENTLY, swap and
+ * statistics step on a table runs under it: two concurrent builds on one table
+ * deadlock in Postgres (measured on pg17 and pg18: one is aborted with 40P01), while
+ * builds on different tables do not. It is taken after the migration lock,
+ * never before it, so a holder of this lock never waits for the migration lock.
+ *
+ * `conn` must be a connection reserved from `sql` with no open transaction,
+ * and so with no snapshot a holder's concurrent build would wait for. The lock
+ * is polled, as the migration lock is, and the poll gives up with
+ * {@link IndexLockAborted} once `signal` aborts. If the lock cannot be
+ * released, `conn`'s session is retired from `sql`, and the caller's
+ * `release()` of `conn` becomes a no-op, so it never returns to the pool.
+ */
+export function withTableIndexLock<T>(
+  sql: Sql,
+  conn: ReservedSql,
+  table: string,
+  signal: AbortSignal | undefined,
+  fn: () => Promise<T>
+): Promise<T> {
+  return withPolledLock(sql, conn, `index-build ${table}`, INDEX_LOCK_KEY, [table], signal, fn);
+}
+
+/**
+ * Runs `fn` while `conn` holds the session advisory lock `key` (SQL over
+ * `params`; `name` says which in logs), polled every 250 ms with pg_try_advisory_lock until it is free or
+ * `signal` aborts ({@link IndexLockAborted}). If the lock cannot be released,
+ * `conn`'s session is retired from `sql`, since it may still hold the lock,
+ * and `conn.release()` becomes a no-op so it never returns to the pool. When
+ * `fn` threw, its error is the one rethrown.
+ */
+async function withPolledLock<T>(
+  sql: Sql,
+  conn: ReservedSql,
+  name: string,
+  key: string,
+  params: string[],
+  signal: AbortSignal | undefined,
+  fn: () => Promise<T>
+): Promise<T> {
+  let session: Session;
+  for (;;) {
+    if (signal?.aborted === true) throw new IndexLockAborted();
+    const [row] = await conn.unsafe<Array<Session & { acquired: boolean }>>(
+      `SELECT pg_try_advisory_lock(${key}) AS acquired, ${SESSION_COLUMNS}`,
+      params
+    );
+    if (row?.acquired === true) {
+      session = row;
+      break;
+    }
+    await abortableSleep(250, signal);
+  }
+  const release = async (): Promise<void> => {
+    const unlock = () =>
+      conn.unsafe<Array<{ released: boolean }>>(
+        `SELECT pg_advisory_unlock(${key}) AS released`,
+        params
+      );
+    try {
+      // A cancel sent for fn's last statement can land on the unlock instead.
+      // It is one-shot, so a second unlock normally holds.
+      const [row] = await unlock().catch(unlock);
+      if (row?.released === false) {
+        process.stderr.write(
+          `substrate: advisory unlock of the ${name} lock reported it was not held by this session\n`
+        );
+      }
+    } catch (err) {
+      if (!(await retireSession(sql, session))) conn.release = () => {};
+      throw err;
+    }
+  };
+  let result: T;
+  try {
+    result = await fn();
+  } catch (err) {
+    await release().catch(() => {});
+    throw err;
+  }
+  await release();
+  return result;
+}
+
+/** Resolves after `ms`, or as soon as `signal` aborts. */
+export function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const done = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener('abort', done, { once: true });
+  });
+}
+
+/** `sql` is the pool; `conn` holds the migration lock and runs every statement. */
+async function runMigrationsLocked(
+  pool: Sql,
+  sql: ReservedSql,
+  opts: RunMigrationsOptions
+): Promise<void> {
   if (opts.force === true) {
     await sql`DROP TABLE IF EXISTS migrations`;
   }
@@ -294,8 +505,8 @@ async function runMigrationsLocked(sql: Sql, opts: RunMigrationsOptions): Promis
   // genuine post-ship file edit; a WARN that recurs across deploys for the
   // same version is that signal.
   //
-  // Iterates the FULL list including gated 0002, even when the gate is off:
-  // a previously applied gated migration must still be rehashed.
+  // Iterates the FULL list including the gated UUID CHECKs, even when the
+  // gate is off: a previously applied gated migration must still be rehashed.
   const REHASH_LIST = getMigrationList(true);
   const buildSha = process.env.SUBSTRATE_BUILD_SHA ?? 'unknown';
   for (const migration of REHASH_LIST) {
@@ -325,7 +536,7 @@ async function runMigrationsLocked(sql: Sql, opts: RunMigrationsOptions): Promis
       // The rehash pass above guarantees the recorded checksum is current.
       continue;
     }
-    await applyOneMigration(sql, migration);
+    await applyOneMigration(pool, sql, migration);
   }
 }
 
@@ -337,7 +548,7 @@ async function runMigrationsLocked(sql: Sql, opts: RunMigrationsOptions): Promis
  * succeeds, so a partial concurrent failure leaves the migration "in progress"
  * and a re-run (statements are IF [NOT] EXISTS guarded) resumes it.
  */
-async function applyOneMigration(sql: Sql, migration: Migration): Promise<void> {
+async function applyOneMigration(pool: Sql, sql: ReservedSql, migration: Migration): Promise<void> {
   if (migration.txStatements.length > 0) {
     // Explicit statements: `sql` is the reserved lock connection, which has no begin().
     await sql.unsafe('BEGIN');
@@ -351,18 +562,25 @@ async function applyOneMigration(sql: Sql, migration: Migration): Promise<void> 
       throw err;
     }
   }
-  for (const stmt of migration.concurrentStatements) {
-    try {
-      await dropInvalidIndexFor(sql, stmt);
-      await sql.unsafe(stmt);
-    } catch (err) {
-      process.stderr.write(
-        `migration ${migration.version}: concurrent-phase failure on statement; ` +
-          `tx-phase changes are durable, re-run to resume concurrent phase: ` +
-          `${err instanceof Error ? err.message : String(err)}\n`
-      );
-      throw err;
+  const concurrentPhase = async (): Promise<void> => {
+    for (const stmt of migration.concurrentStatements) {
+      try {
+        await dropInvalidIndexFor(sql, stmt);
+        await sql.unsafe(stmt);
+      } catch (err) {
+        process.stderr.write(
+          `migration ${migration.version}: concurrent-phase failure on statement; ` +
+            `tx-phase changes are durable, re-run to resume concurrent phase: ` +
+            `${err instanceof Error ? err.message : String(err)}\n`
+        );
+        throw err;
+      }
     }
+  };
+  // The old layouts' key (they built on `rows`), kept so an older binary booting
+  // the same store takes the same lock.
+  if (migration.concurrentStatements.length > 0) {
+    await withTableIndexLock(pool, sql, 'rows', undefined, concurrentPhase);
   }
   await sql`
     INSERT INTO migrations (version, checksum)
@@ -380,12 +598,22 @@ const CONCURRENT_INDEX_RE =
  */
 async function dropInvalidIndexFor(sql: Sql, stmt: string): Promise<void> {
   const name = CONCURRENT_INDEX_RE.exec(stmt)?.[1];
-  if (name === undefined) return;
+  if (name !== undefined) await dropIndexIfInvalid(sql, name);
+}
+
+/**
+ * Drops index `name` (a bare lower-snake identifier) when it exists and is
+ * INVALID, as a failed concurrent build leaves it. True when it dropped one.
+ */
+export async function dropIndexIfInvalid(sql: Sql, name: string): Promise<boolean> {
+  if (!/^[a-z_][a-z0-9_]*$/.test(name)) throw new Error(`not a bare index name: '${name}'`);
   const [row] = await sql<Array<{ invalid: boolean }>>`
     SELECT NOT indisvalid AS invalid FROM pg_index WHERE indexrelid = to_regclass(${name})
   `;
+  if (row?.invalid !== true) return false;
   // The name matched an identifier pattern, which licenses `unsafe`.
-  if (row?.invalid === true) await sql.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS ${name}`);
+  await sql.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS ${name}`);
+  return true;
 }
 
 /**
@@ -419,14 +647,18 @@ export function generatedIdentifier(
   return `rows_${fold(namespace)}_${fold(type)}_${fold(field)}`.slice(0, 63 - tail.length) + tail;
 }
 
-/** Escape a value embedded in a single-quoted SQL string literal (defense-in-depth). */
-function sqlStringLiteral(s: string): string {
-  return s.replace(/'/g, "''");
+const LIST_GIN_PREFIX = 'list-gin:';
+
+/** True for a ledger version written by `runDerivedMigrations`, which a store re-derives at boot. */
+export function isDerivedMigration(version: string): boolean {
+  return version.startsWith(LIST_GIN_PREFIX);
 }
 
 /**
  * Derives the tracked, idempotent CONCURRENTLY GIN migration for one indexed
- * field. The version key uses the raw ns/type/field.
+ * field, as the legacy layout built it on `rows`. The version key uses the raw
+ * ns/type/field. `runDerivedMigrations` skips these: each type table's GIN
+ * indexes are its own, built by `reconcileTypeIndexes`.
  */
 export function deriveListIndexMigration(f: IndexedListField): MigrationInput {
   const name = generatedIdentifier(f.namespace, f.type, f.field, 'gin');
@@ -434,12 +666,12 @@ export function deriveListIndexMigration(f: IndexedListField): MigrationInput {
   const type = sqlStringLiteral(f.type);
   const field = sqlStringLiteral(f.field);
   return {
-    version: `list-gin:${f.namespace}:${f.type}:${f.field}`,
+    version: `${LIST_GIN_PREFIX}${f.namespace}:${f.type}:${f.field}`,
     txStatements: [],
     concurrentStatements: [
       `CREATE INDEX CONCURRENTLY IF NOT EXISTS ${name}\n` +
-        `  ON rows USING GIN ((body -> '${field}') jsonb_path_ops)\n` +
-        `  WHERE namespace = '${ns}' AND type = '${type}' AND deleted_at IS NULL`
+        `  ON rows USING GIN ((body -> ${field}) jsonb_path_ops)\n` +
+        `  WHERE namespace = ${ns} AND type = ${type} AND deleted_at IS NULL`
     ]
   };
 }
@@ -449,11 +681,15 @@ export function deriveListIndexMigration(f: IndexedListField): MigrationInput {
  * advisory-locked machinery as the static list. Called after plugins load,
  * since `runMigrations` has no field-def knowledge. Idempotent: applied
  * versions are skipped.
+ *
+ * The list/json GIN migrations are skipped: there is no `rows` to aim them
+ * at, and each type table's indexes are its own (`reconcileTypeIndexes`).
  */
 export async function runDerivedMigrations(
   sql: Sql,
-  derived: ReadonlyArray<MigrationInput>
+  all: ReadonlyArray<MigrationInput>
 ): Promise<void> {
+  const derived = all.filter((m) => !m.version.startsWith(LIST_GIN_PREFIX));
   if (derived.length === 0) return;
   await withMigrationLock(sql, async (conn) => {
     await conn`
@@ -465,10 +701,7 @@ export async function runDerivedMigrations(
     `;
     const applied = await conn<Array<{ version: string }>>`SELECT version FROM migrations`;
     const appliedVersions = new Set(applied.map((r) => r.version));
-    for (const input of derived) {
-      const migration = normalise(input);
-      if (appliedVersions.has(migration.version)) continue;
-      await applyOneMigration(conn, migration);
-    }
+    const pending = derived.map(normalise).filter((m) => !appliedVersions.has(m.version));
+    for (const migration of pending) await applyOneMigration(sql, conn, migration);
   });
 }

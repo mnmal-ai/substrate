@@ -20,7 +20,13 @@ export {
   NUMBER_OPS,
   STRING_OPS
 } from './builtin-operators.js';
-export { CursorDecodeError, type CursorPayload, decodeCursor, encodeCursor } from './cursor.js';
+export {
+  CursorDecodeError,
+  type CursorOrder,
+  type CursorPayload,
+  decodeCursor,
+  encodeCursor
+} from './cursor.js';
 export {
   clearExtensionOperators,
   computedFieldOwner,
@@ -28,6 +34,7 @@ export {
   hasComputedFields,
   listExtensionOperators,
   registerExtensionOperator,
+  unregisterExtensionOperator,
   whereContainsExtensionOperator,
   whereContainsOperator
 } from './extension-operators.js';
@@ -51,10 +58,32 @@ export {
   preResolveExtensionOperatorsDetailed
 } from './pre-resolve-extension-operators.js';
 export {
+  asSortValue,
   assertWhereHonourable,
   compareFilterValues,
   evaluateWhere,
   type FieldDefOf,
   getFieldValue,
-  isDateField
+  isDateField,
+  storedMicros
 } from './predicate.js';
+export {
+  applyAgg,
+  bindingWalks,
+  computeAgg,
+  groupConjuncts,
+  hop,
+  isRefOperand,
+  refNames,
+  WALK_EVALUATION_BUDGET,
+  type WalkContext
+} from './walk.js';
+export {
+  EVERY_SEED_LIMIT,
+  isPickAgg,
+  readsEverySeed,
+  sharedPicks,
+  type WalkForm,
+  windowGroupBy
+} from './walk-forms.js';
+export { forEachWalkHop, type WalkHop } from './walk-hops.js';

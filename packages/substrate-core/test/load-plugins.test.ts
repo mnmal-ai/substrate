@@ -32,6 +32,7 @@ function stubEngine(): EngineHandle {
   return {
     query: empty,
     mutate: empty,
+    announceWrites: async (): Promise<void> => {},
     invalidateSchemaCaches: (): void => {},
     addNamespace: (_ns: string, _config: NamespaceConfig): void => {
       throw new Error('test fake: addNamespace not supported');

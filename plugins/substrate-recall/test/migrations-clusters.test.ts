@@ -24,7 +24,7 @@ describe.skipIf(!isPgGated)('recallClustersMigration', () => {
   });
 
   it('apply creates both tables and their indexes', async () => {
-    await recallClustersMigration({ dimension: 8 }).apply({ sql, metric: () => {} });
+    await recallClustersMigration({ dimension: 8 }).apply({ sql, metric: () => {}, layout: null });
 
     const tables = await sql<Array<{ table_name: string }>>`
       SELECT table_name FROM information_schema.tables
@@ -45,8 +45,8 @@ describe.skipIf(!isPgGated)('recallClustersMigration', () => {
   });
 
   it('apply is idempotent', async () => {
-    await recallClustersMigration({ dimension: 8 }).apply({ sql, metric: () => {} });
-    await recallClustersMigration({ dimension: 8 }).apply({ sql, metric: () => {} });
+    await recallClustersMigration({ dimension: 8 }).apply({ sql, metric: () => {}, layout: null });
+    await recallClustersMigration({ dimension: 8 }).apply({ sql, metric: () => {}, layout: null });
     const tables = await sql`
       SELECT table_name FROM information_schema.tables
       WHERE table_schema = current_schema() AND table_name = 'recall_clusters'
@@ -55,7 +55,7 @@ describe.skipIf(!isPgGated)('recallClustersMigration', () => {
   });
 
   it('deleting a cluster cascades to its members', async () => {
-    await recallClustersMigration({ dimension: 8 }).apply({ sql, metric: () => {} });
+    await recallClustersMigration({ dimension: 8 }).apply({ sql, metric: () => {}, layout: null });
     await sql`
       INSERT INTO recall_clusters (id, centroid, cohesion, label, labelled_by, provenance)
       VALUES ('c1', ${'[1,0,0,0,0,0,0,0]'}::vector, 0.9, 'l', 'medoid', ${sql.json({})})
@@ -71,7 +71,7 @@ describe.skipIf(!isPgGated)('recallClustersMigration', () => {
   });
 
   it('refuses a duplicate (cluster, member) pair', async () => {
-    await recallClustersMigration({ dimension: 8 }).apply({ sql, metric: () => {} });
+    await recallClustersMigration({ dimension: 8 }).apply({ sql, metric: () => {}, layout: null });
     await sql`
       INSERT INTO recall_clusters (id, centroid, cohesion, label, labelled_by, provenance)
       VALUES ('c2', ${'[1,0,0,0,0,0,0,0]'}::vector, 0.9, 'l', 'medoid', ${sql.json({})})
@@ -87,8 +87,12 @@ describe.skipIf(!isPgGated)('recallClustersMigration', () => {
   });
 
   it('rollback drops both tables', async () => {
-    await recallClustersMigration({ dimension: 8 }).apply({ sql, metric: () => {} });
-    await recallClustersMigration({ dimension: 8 }).rollback?.({ sql, metric: () => {} });
+    await recallClustersMigration({ dimension: 8 }).apply({ sql, metric: () => {}, layout: null });
+    await recallClustersMigration({ dimension: 8 }).rollback?.({
+      sql,
+      metric: () => {},
+      layout: null
+    });
     const tables = await sql`
       SELECT table_name FROM information_schema.tables
       WHERE table_schema = current_schema() AND table_name IN ('recall_clusters', 'recall_cluster_members')
@@ -98,7 +102,7 @@ describe.skipIf(!isPgGated)('recallClustersMigration', () => {
 
   it('is a no-op in memory mode (sql === null)', async () => {
     await expect(
-      recallClustersMigration().apply({ sql: null, metric: () => {} })
+      recallClustersMigration().apply({ sql: null, metric: () => {}, layout: null })
     ).resolves.toBeUndefined();
   });
 });

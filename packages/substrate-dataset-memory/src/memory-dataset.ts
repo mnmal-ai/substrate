@@ -11,15 +11,17 @@
  *
  * Filter contract (§5.2): `read()` honours `where` + `orderBy` + `cursor` in
  * addition to the id/ids/includeDeleted/limit short-circuit. Filter evaluation
- * is in-memory; there's no indexing, so the validator (upstream, in the
- * engine) is what gates unindexed-field scans.
+ * is in-memory; there's no indexing, so every filter is a scan.
  */
 
 import { randomUUID } from 'node:crypto';
 import {
+  applyAgg,
   applyExtensionResultMeta,
+  asSortValue,
   assertWhereHonourable,
   compareFilterValues,
+  computeAgg,
   decodeCursor,
   type ExtensionOpResultMeta,
   encodeCursor,
@@ -28,8 +30,12 @@ import {
   fieldRequested,
   fullBuiltinOperators,
   getFieldValue,
+  hop,
   isDateField,
-  preResolveExtensionOperatorsDetailed
+  preResolveExtensionOperatorsDetailed,
+  storedMicros,
+  WALK_EVALUATION_BUDGET,
+  type WalkContext
 } from '@mnmal-ai/substrate-filter';
 import type {
   ActorIdentity,
@@ -39,20 +45,31 @@ import type {
   DropResult,
   FieldDef,
   FilterCapabilities,
+  FilterWriteOptions,
+  FilterWriteResult,
   Id,
+  NestedSelection,
   OrderByClause,
   ReadParams,
   ReadResult,
   Row,
   RowMetadata,
   UpdateFieldRef,
+  WalkAgg,
   WhereClause,
   WriteOptions,
-  WriteResult
+  WriteResult,
+  WriteRow
 } from '@mnmal-ai/substrate-types';
-import { createKeyedMutex } from '@mnmal-ai/substrate-types';
+import {
+  assertNoRepeatedIds,
+  createKeyedMutex,
+  filterTooBroad,
+  isColumnField
+} from '@mnmal-ai/substrate-types';
 import { NamespaceMismatch, ReservedField } from './errors.js';
 import { MemoryShortIdStore, type ShortIdBucketSnapshot } from './memory-short-id-store.js';
+import { uuidv7 } from './uuidv7.js';
 
 export interface MemoryDatasetOptions {
   namespace: string;
@@ -73,6 +90,26 @@ export interface MemoryDatasetOptions {
    * instants, as the pg dataset's lookup does; without it they compare as text.
    */
   fieldDefLookup?: (type: string, field: string) => FieldDef | undefined;
+  /**
+   * The namespace's type definitions; a type declared `ordering: 'visible'`
+   * gets `_metadata.seq` on insert, as the pg dataset's lookup does. Its
+   * `fields` say which keys read back absent when null (`isColumnField`).
+   */
+  typeDefLookup?: (
+    type: string,
+    namespace: string
+  ) => { ordering?: 'visible'; fields?: Record<string, FieldDef> } | undefined;
+  /**
+   * Internal: binding assignments one read's walks may try before refusing
+   * `walk_budget_exceeded`. Defaults to `WALK_EVALUATION_BUDGET`; tests lower it.
+   */
+  walkBudget?: number;
+  /**
+   * Test-only: declare and answer the typed-edge-walk grammar. The memory
+   * dataset is the parity reference for the pg walk compiler, not a walk
+   * store; without this the engine refuses walks on it (`walks_unsupported_store`).
+   */
+  walkReference?: boolean;
 }
 
 const RESERVED_DELETED_AT = '_deletedAt';
@@ -84,27 +121,37 @@ const RESERVED_DELETED_AT = '_deletedAt';
  * existing when incoming is null.
  */
 function mergeRowMetadata(existing: RowMetadata | undefined, incoming: RowMetadata): RowMetadata {
-  if (existing === undefined) return incoming;
+  if (existing === undefined) return withoutSeq(incoming);
   return {
     createdAt: existing.createdAt ?? incoming.createdAt,
     updatedAt: incoming.updatedAt ?? existing.updatedAt,
     createdBy: existing.createdBy ?? incoming.createdBy,
-    updatedBy: incoming.updatedBy ?? existing.updatedBy
+    updatedBy: incoming.updatedBy ?? existing.updatedBy,
+    // seq is assigned on insert only; a caller never sets or changes it.
+    ...(existing.seq !== undefined ? { seq: existing.seq } : {})
   };
+}
+
+function withoutSeq(meta: RowMetadata): RowMetadata {
+  if (meta.seq === undefined) return meta;
+  const { seq: _seq, ...rest } = meta;
+  return rest;
 }
 
 export class MemoryDataset implements Dataset {
   readonly namespace: string;
   readonly txScopeId: string;
   readonly #fieldDefLookup: MemoryDatasetOptions['fieldDefLookup'];
+  // TS-private, not `#`: write() must work through a Proxy, as `store` does.
+  private readonly typeDefLookup: MemoryDatasetOptions['typeDefLookup'];
+  private readonly walkBudget: number;
+  private readonly walkReference: boolean;
+  /** Last seq assigned per visible-order type; never decreases, as pg's `visible_seqs`. */
+  private seqs = new Map<string, number>();
   // Full builtin operator set — everything the validator recognises. A
   // deliberate narrowing would override per kind here and fail the
   // allowlist-parity test loudly.
-  readonly capabilities: FilterCapabilities = {
-    operators: fullBuiltinOperators(),
-    orderBy: true,
-    cursor: true
-  };
+  readonly capabilities: FilterCapabilities;
 
   readonly #advisoryLocks = createKeyedMutex();
 
@@ -141,6 +188,15 @@ export class MemoryDataset implements Dataset {
     this.namespace = options.namespace;
     this.txScopeId = options.txScopeId ?? `mem:${randomUUID()}`;
     this.#fieldDefLookup = options.fieldDefLookup;
+    this.typeDefLookup = options.typeDefLookup;
+    this.walkBudget = options.walkBudget ?? WALK_EVALUATION_BUDGET;
+    this.walkReference = options.walkReference === true;
+    this.capabilities = {
+      operators: fullBuiltinOperators(),
+      orderBy: true,
+      cursor: true,
+      walks: this.walkReference
+    };
   }
 
   private bucket(type: string): Map<Id, Row> {
@@ -160,8 +216,12 @@ export class MemoryDataset implements Dataset {
     // sits ahead of the unknown-type return.
     if (params.where !== undefined) assertWhereHonourable(params.where);
 
-    const b = this.store.get(type);
-    if (!b) return { rows: [], hasMore: false };
+    const stored = this.store.get(type);
+    // A count or aggregate over a type with no rows still answers its shape.
+    if (!stored && params.count !== true && params.aggregate === undefined) {
+      return { rows: [], hasMore: false };
+    }
+    const b = stored ?? new Map<Id, Row>();
 
     const includeDeleted = params.includeDeleted === true;
     const lookup = this.#fieldDefLookup;
@@ -204,7 +264,31 @@ export class MemoryDataset implements Dataset {
     // Collect the candidate pool (tombstone filter + id filter + where).
     // shortId is stored directly on each row at bindShortId time, so reads
     // return rows without any per-row spread allocation.
-    const pool: Row[] = [];
+    let pool: Row[] = [];
+    const walk = this.walkContext(type);
+    // A seed's frame `_agg` values, computed on first use (a where or derive
+    // operand may read them) and kept for its projection.
+    const frameAggs = params.agg;
+    const aggCache = new Map<Row, Map<string, unknown>>();
+    const ctxFor = (row: Row): WalkContext => {
+      const ctx: WalkContext = {
+        ...walk,
+        seed: row,
+        aggValue: (name) => {
+          const spec =
+            frameAggs !== undefined && Object.hasOwn(frameAggs, name) ? frameAggs[name] : undefined;
+          if (spec === undefined) throw new Error(`internal: '_agg.${name}' names no frame _agg`);
+          let memo = aggCache.get(row);
+          if (memo === undefined) {
+            memo = new Map();
+            aggCache.set(row, memo);
+          }
+          if (!memo.has(name)) memo.set(name, computeAgg(row, spec, ctx));
+          return memo.get(name);
+        }
+      };
+      return ctx;
+    };
 
     // Short-circuit on id-filter: iterate only the requested ids via Map.get
     // rather than scanning the full bucket.
@@ -218,8 +302,53 @@ export class MemoryDataset implements Dataset {
       : b.values();
     for (const row of candidates) {
       if (!includeDeleted && row._deletedAt != null) continue;
-      if (resolvedWhere !== undefined && !evaluateWhere(row, resolvedWhere, fieldDefOf)) continue;
+      if (
+        resolvedWhere !== undefined &&
+        !evaluateWhere(row, resolvedWhere, fieldDefOf, ctxFor(row))
+      ) {
+        continue;
+      }
       pool.push(row);
+    }
+
+    // A count or whole-result aggregate returns no rows.
+    if (params.count === true) return { rows: [], hasMore: false, count: pool.length };
+    if (params.aggregate !== undefined) {
+      return aggregateGroups(pool, params.aggregate, params.bucket, limit, fieldDefOf);
+    }
+
+    // Derived values ride on row copies as `$<name>`, so ordering and the
+    // cursor read them as fields; the page returns the originals.
+    const original = new Map<Row, Row>();
+    const derive = params.derive;
+    if (derive !== undefined) {
+      pool = pool.map((row) => {
+        const ctx = ctxFor(row);
+        const operand = (ref: string): number | null => {
+          const v = ref.startsWith('_agg.')
+            ? ctx.aggValue?.(ref.slice(5))
+            : getFieldValue(row, ref.slice(2));
+          return typeof v === 'number' ? v : null;
+        };
+        const values = Object.entries(derive).map(([name, spec]) => {
+          const [op, [a, b]] = Object.entries(spec)[0] as ['diff' | 'ratio', [string, string]];
+          const x = operand(a);
+          const y = operand(b);
+          if (x === null || y === null || (op === 'ratio' && y === 0)) {
+            return [`$${name}`, null] as const;
+          }
+          const v = op === 'diff' ? x - y : x / y;
+          // Shared with pg's buildDerive: a magnitude outside [1e-300, 1e300] is
+          // NULL, so overflow and underflow never reach a sort; 0 stays only when
+          // exact (equal diff operands, or a zero numerator).
+          const exactZero = op === 'diff' ? x === y : x === 0;
+          const m = Math.abs(v);
+          return [`$${name}`, m <= 1e300 && (m >= 1e-300 || exactZero) ? v : null] as const;
+        });
+        const copy: Row = { ...row, ...Object.fromEntries(values) };
+        original.set(copy, row);
+        return copy;
+      });
     }
 
     // OrderBy — always append implicit `{ id: 'asc' }` as final tie-breaker so
@@ -231,7 +360,7 @@ export class MemoryDataset implements Dataset {
     // Cursor: drop rows up to and including the cursor tuple.
     let startIdx = 0;
     if (params.cursor !== undefined && params.cursor !== '') {
-      const cursor = decodeCursor(params.cursor);
+      const cursor = decodeCursor(params.cursor, orderBy);
       startIdx = findCursorStart(pool, orderBy, cursor.orderByValues, cursor.id, fieldDefOf);
     }
 
@@ -251,6 +380,21 @@ export class MemoryDataset implements Dataset {
     }
 
     const out: ReadResult = { rows: slice, hasMore };
+    // Derived copies back to the originals once the cursor is encoded, below.
+    const columns = this.columnFieldNames(type);
+    const page = (rows: Row[]): Row[] => {
+      const base = original.size === 0 ? rows : rows.map((r) => original.get(r) ?? r);
+      // Last, so the walk memo (keyed by the stored row) still hits.
+      if (params.agg === undefined && params.nested === undefined) {
+        return base.map((r) => withoutNullColumns(columns, r));
+      }
+      return base.map((r) =>
+        withoutNullColumns(columns, {
+          ...r,
+          ...walkProjection(r, params.agg, params.nested ?? {}, ctxFor(r), true)
+        })
+      );
+    };
     // nextCursor is derived from the DATASET-ordered slice (the sorted pool),
     // before any relevance reorder — cursor pagination must keep dataset
     // order between pages.
@@ -258,9 +402,11 @@ export class MemoryDataset implements Dataset {
     if (hasMore && last !== undefined) {
       out.nextCursor = encodeCursor({
         orderByValues: orderBy.map(([field]) => getFieldValue(last, field)),
-        id: last.id
+        id: last.id,
+        order: orderBy
       });
     }
+    out.rows = page(slice);
 
     // Apply the extension-operator side-channel to the final page —
     // relevance reorder (only when the CALLER supplied no orderBy; the
@@ -275,17 +421,54 @@ export class MemoryDataset implements Dataset {
     return out;
   }
 
-  async write(type: string, rows: Row[], options?: WriteOptions): Promise<WriteResult> {
+  /**
+   * Walks over this namespace's live rows, for one read. Neighbours follow the
+   * row body's crossRef value (spec 2026-10-24-typed-edge-walks §1), indexed
+   * per (type, field) on first use.
+   */
+  private walkContext(type: string): Omit<WalkContext, 'seed'> {
+    const lookup = this.#fieldDefLookup;
+    const index = new Map<string, Map<unknown, Row[]>>();
+    const live = (r: Row | undefined) => (r === undefined || r._deletedAt != null ? undefined : r);
+    return {
+      type,
+      bindings: new Map(),
+      budget: { left: this.walkBudget },
+      fieldDefOf: (t) => (field) => lookup?.(t, field),
+      get: (t, id) => live(this.store.get(t)?.get(id)),
+      neighbours: (t, field, id) => {
+        const key = `${t}\0${field}`;
+        let byValue = index.get(key);
+        if (byValue === undefined) {
+          byValue = new Map();
+          for (const r of this.store.get(t)?.values() ?? []) {
+            if (r._deletedAt != null || !Object.hasOwn(r, field)) continue;
+            const list = byValue.get(r[field]);
+            if (list === undefined) byValue.set(r[field], [r]);
+            else list.push(r);
+          }
+          index.set(key, byValue);
+        }
+        return byValue.get(id) ?? [];
+      }
+    };
+  }
+
+  async write(type: string, rows: WriteRow[], options?: WriteOptions): Promise<WriteResult> {
+    if (options?.insertOnly !== true) assertNoRepeatedIds(type, rows);
     const b = this.bucket(type);
     const ids: Id[] = [];
     const merged: Row[] = [];
     const fallbackNow = (options?.now ?? new Date()).toISOString();
     const fallbackActor = options?.identity ?? null;
+    // Writes here are serial, so assignment order is commit order.
+    const def = this.typeDefLookup?.(type, this.namespace);
+    const visible = def?.ordering === 'visible';
+    const columns = columnFieldNames(def?.fields);
 
-    for (const row of rows) {
-      if (row.id === undefined || row.id === null) {
-        throw new Error(`write: row.id is required (type='${type}')`);
-      }
+    for (const input of rows) {
+      // An id-less row gets a v7 UUID (see uuidv7.ts for its limits).
+      const row: Row = { ...input, id: input.id ?? uuidv7() };
 
       // Auto-fill _metadata when the caller didn't supply one. Engine path
       // (autocrud-create/update) always supplies _metadata itself; this branch
@@ -331,6 +514,13 @@ export class MemoryDataset implements Dataset {
         b.set(rowToWrite.id, landed);
       } else {
         landed = sanitised;
+        const meta = landed._metadata as RowMetadata | undefined;
+        if (meta !== undefined) landed._metadata = withoutSeq(meta);
+        if (visible) {
+          const seq = (this.seqs.get(type) ?? 0) + 1;
+          this.seqs.set(type, seq);
+          landed._metadata = { ...(landed._metadata as RowMetadata), seq };
+        }
         b.set(rowToWrite.id, landed);
       }
       ids.push(row.id);
@@ -340,10 +530,15 @@ export class MemoryDataset implements Dataset {
       // above preserves it via `{ ...existing, ...sanitised }`). For create
       // paths shortId is bound after write, so it is absent here — the
       // autoCRUD create resolver merges it into its own returned shape.
-      merged.push({ ...landed });
+      merged.push(withoutNullColumns(columns, { ...landed }));
     }
 
     return { written: ids.length, ids, rows: merged };
+  }
+
+  /** The type's column fields, looked up once per call rather than per row. */
+  private columnFieldNames(type: string): string[] {
+    return columnFieldNames(this.typeDefLookup?.(type, this.namespace)?.fields);
   }
 
   async tombstone(type: string, ids: Id[]): Promise<DeleteResult> {
@@ -447,10 +642,14 @@ export class MemoryDataset implements Dataset {
       createdAt: prior?.createdAt ?? null,
       createdBy: prior?.createdBy ?? null,
       updatedAt: (now ?? new Date()).toISOString(),
-      updatedBy
+      updatedBy,
+      ...(prior?.seq !== undefined ? { seq: prior.seq } : {})
     };
     row._metadata = meta;
-    return { matched: true, row: { ...row } };
+    return {
+      matched: true,
+      row: withoutNullColumns(this.columnFieldNames(type), { ...row })
+    };
   }
 
   async updateField(ref: UpdateFieldRef, fieldName: string, value: unknown): Promise<void> {
@@ -467,7 +666,21 @@ export class MemoryDataset implements Dataset {
     const row = b.get(ref.id);
     if (!row) return; // silent no-op
 
+    // seq is the dataset's, never the caller's, as on pg where it has its own column.
+    const seq = (row._metadata as RowMetadata | undefined)?.seq;
     row[fieldName] = value;
+    if (fieldName === '_metadata' && (value != null || seq !== undefined)) {
+      // A null clears the columns, as pg's UPDATE does, but not seq.
+      const meta = withoutSeq(
+        (value ?? {
+          createdAt: null,
+          updatedAt: null,
+          createdBy: null,
+          updatedBy: null
+        }) as RowMetadata
+      );
+      row._metadata = seq !== undefined ? { ...meta, seq } : meta;
+    }
   }
 
   /**
@@ -497,6 +710,7 @@ export class MemoryDataset implements Dataset {
       snapshot.set(type, cloned);
     }
 
+    const seqSnapshot = new Map(this.seqs);
     const undoLog: Array<{ type: string; shortId: number; rowId: string }> = [];
     const dropUndoLog: Array<{ type: string; snapshot: ShortIdBucketSnapshot }> = [];
     this.#inTx = true;
@@ -506,6 +720,7 @@ export class MemoryDataset implements Dataset {
       return await fn(this);
     } catch (err) {
       this.store = snapshot;
+      this.seqs = seqSnapshot;
       // Replay the drop-undo log in reverse order. Each entry restores an
       // entire bucket that was deleted by dropType/dropNamespace during the tx.
       for (let i = dropUndoLog.length - 1; i >= 0; i--) {
@@ -557,6 +772,89 @@ export class MemoryDataset implements Dataset {
     return this.shortIds.resolveShortId(this.namespace, type, shortId);
   }
 
+  async allocateShortIds(type: string, count: number): Promise<number[]> {
+    return this.shortIds.allocateUnboundMany(this.namespace, type, count);
+  }
+
+  async bindShortIds(
+    type: string,
+    pairs: ReadonlyArray<{ shortId: number; rowId: string }>
+  ): Promise<void> {
+    // Through bindShortId, which also stamps the row and records the tx undo.
+    for (const p of pairs) await this.bindShortId(type, p.shortId, p.rowId);
+  }
+
+  async resolveShortIds(
+    type: string,
+    shortIds: readonly number[]
+  ): Promise<ReadonlyMap<number, string>> {
+    const out = new Map<number, string>();
+    const b = this.store.get(type);
+    for (const shortId of new Set(shortIds)) {
+      const rowId = await this.shortIds.resolveShortId(this.namespace, type, shortId);
+      if (rowId !== null && b?.get(rowId) !== undefined && b.get(rowId)?._deletedAt == null) {
+        out.set(shortId, rowId);
+      }
+    }
+    return out;
+  }
+
+  async patchRows(
+    type: string,
+    patches: ReadonlyArray<{ id: Id; patch: Record<string, unknown> }>,
+    actor: ActorIdentity | null,
+    now: Date
+  ): Promise<Array<Row | null>> {
+    // A repeated id folds into one patch, later keys winning, as pg's single
+    // UPDATE needs; every slot for it then holds the final row.
+    const folded = new Map<Id, Record<string, unknown>>();
+    for (const p of patches) folded.set(p.id, { ...folded.get(p.id), ...p.patch });
+    const done = new Map<Id, Row | null>();
+    for (const [id, patch] of folded) {
+      const r = await this.conditionalUpdate(type, id, {}, patch, actor ?? undefined, now);
+      done.set(id, r.matched ? r.row : null);
+    }
+    return patches.map((p) => done.get(p.id) ?? null);
+  }
+
+  async updateWhere(
+    type: string,
+    where: WhereClause,
+    set: Record<string, unknown>,
+    opts: FilterWriteOptions
+  ): Promise<FilterWriteResult> {
+    const matched = await this.#matchForWrite(type, where, opts.maxMatch);
+    const patched = await this.patchRows(
+      type,
+      matched.map((r) => ({ id: r.id, patch: set })),
+      opts.actor ?? null,
+      opts.now ?? new Date()
+    );
+    const rows = patched.filter((r): r is Row => r !== null);
+    return { count: rows.length, ids: rows.map((r) => r.id), rows };
+  }
+
+  async deleteWhere(
+    type: string,
+    where: WhereClause,
+    opts: FilterWriteOptions
+  ): Promise<FilterWriteResult> {
+    // Copies: the tombstone stamps the stored rows in place.
+    const rows = (await this.#matchForWrite(type, where, opts.maxMatch)).map((r) => ({ ...r }));
+    await this.tombstone(
+      type,
+      rows.map((r) => r.id)
+    );
+    return { count: rows.length, ids: rows.map((r) => r.id), rows };
+  }
+
+  /** The live rows `where` matches, refused past `maxMatch` before anything changes. */
+  async #matchForWrite(type: string, where: WhereClause, maxMatch: number): Promise<Row[]> {
+    const { rows } = await this.read(type, { where, limit: maxMatch + 1 });
+    if (rows.length > maxMatch) throw filterTooBroad(this.namespace, type, maxMatch);
+    return rows;
+  }
+
   async getShortIdForRow(type: string, rowId: string): Promise<number | null> {
     return this.shortIds.getShortIdForRow(this.namespace, type, rowId);
   }
@@ -564,7 +862,10 @@ export class MemoryDataset implements Dataset {
   forNamespace(namespace: string): Dataset {
     return new MemoryDataset({
       namespace,
-      ...(this.#fieldDefLookup !== undefined ? { fieldDefLookup: this.#fieldDefLookup } : {})
+      walkBudget: this.walkBudget,
+      walkReference: this.walkReference,
+      ...(this.#fieldDefLookup !== undefined ? { fieldDefLookup: this.#fieldDefLookup } : {}),
+      ...(this.typeDefLookup !== undefined ? { typeDefLookup: this.typeDefLookup } : {})
     });
   }
 }
@@ -572,6 +873,25 @@ export class MemoryDataset implements Dataset {
 // ---------------------------------------------------------------------------
 // Filter evaluation helpers
 // ---------------------------------------------------------------------------
+
+/** The names of the declared fields that read back absent when null (`isColumnField`). */
+function columnFieldNames(fields: Record<string, FieldDef> | undefined): string[] {
+  return Object.entries(fields ?? {}).flatMap(([k, def]) => (isColumnField(def) ? [k] : []));
+}
+
+/**
+ * The row as it reads back: a column field holding `null` is absent, as on pg.
+ * The stored row keeps its null; the same row comes back when it has none.
+ */
+function withoutNullColumns(columns: string[], row: Row): Row {
+  let out = row;
+  for (const k of columns) {
+    if (row[k] !== null) continue;
+    if (out === row) out = { ...row };
+    delete out[k];
+  }
+  return out;
+}
 
 /**
  * Equality predicate used by `conditionalUpdate`. Handles the three shapes
@@ -587,6 +907,108 @@ function conditionalMatchEq(actual: unknown, expected: unknown): boolean {
     return false;
   }
   return actual === expected;
+}
+
+/**
+ * A whole-result aggregate: one group, or one per UTC day/hour bucket in
+ * ascending order. A row whose bucket field is null or not a date is in no
+ * bucket. Groups beyond `limit` are cut and say `truncated`.
+ */
+function aggregateGroups(
+  pool: Row[],
+  aggregate: NonNullable<ReadParams['aggregate']>,
+  bucket: ReadParams['bucket'],
+  limit: number | undefined,
+  fieldDefOf: FieldDefOf
+): ReadResult {
+  const values = (rows: Row[]) =>
+    Object.fromEntries(
+      Object.entries(aggregate).map(([name, fn]) => [name, applyAgg(rows, fn, fieldDefOf)])
+    );
+  if (bucket === undefined) return { rows: [], hasMore: false, groups: [values(pool)] };
+  const byKey = new Map<string, Row[]>();
+  for (const row of pool) {
+    const micros = storedMicros(getFieldValue(row, bucket.field));
+    if (micros === undefined) continue;
+    const ms = Number((micros - (((micros % 1000n) + 1000n) % 1000n)) / 1000n);
+    const key = new Date(ms).toISOString().slice(0, bucket.by === 'day' ? 10 : 13);
+    const list = byKey.get(key);
+    if (list === undefined) byKey.set(key, [row]);
+    else list.push(row);
+  }
+  const keys = [...byKey.keys()].sort();
+  const truncated = limit !== undefined && keys.length > limit;
+  const groups = (truncated ? keys.slice(0, limit) : keys).map((key) => ({
+    bucket: key,
+    ...values(byKey.get(key) ?? [])
+  }));
+  return { rows: [], hasMore: false, groups, ...(truncated ? { truncated: true } : {}) };
+}
+
+/**
+ * A row's walk selections: `_agg` values and nested lists, each list
+ * filtered, ordered (id ascending last) and cut to its limit, with
+ * `_truncated` naming the lists that were cut. Nested rows carry `id`, their
+ * selected fields (null when absent) and their own walk selections.
+ */
+function walkProjection(
+  row: Row,
+  aggs: Record<string, WalkAgg> | undefined,
+  nested: Record<string, NestedSelection>,
+  ctx: WalkContext,
+  /** The frame's own row, whose `_agg` values `ctx.aggValue` memoises. */
+  top = false
+): Record<string, unknown> {
+  const out: Array<[string, unknown]> = [];
+  if (aggs !== undefined) {
+    out.push([
+      '_agg',
+      Object.fromEntries(
+        Object.entries(aggs).map(([name, spec]) => [
+          name,
+          top && ctx.aggValue !== undefined ? ctx.aggValue(name) : computeAgg(row, spec, ctx)
+        ])
+      )
+    ]);
+  }
+  const truncated: Array<[string, true]> = [];
+  for (const [name, sel] of Object.entries(nested)) {
+    const { type, rows } = hop(row, sel._walk, ctx);
+    const fieldDefOf = ctx.fieldDefOf(type);
+    const far: WalkContext = { ...ctx, type };
+    const keep = (n: Row) =>
+      [sel._walk.where, sel.where].every(
+        (w) => w === undefined || evaluateWhere(n, w, fieldDefOf, far)
+      );
+    // The engine gives a list with no orderBy its far type's natural order (#1821); bare, it is id.
+    const order = normalizeOrderBy(sel.orderBy);
+    let list = rows.filter(keep).sort((a, b) => compareByClauses(a, b, order, fieldDefOf));
+    if (sel.limit !== undefined && list.length > sel.limit) {
+      list = list.slice(0, sel.limit);
+      truncated.push([name, true]);
+    }
+    const fields = sel.fields;
+    const isNested = (v: unknown) =>
+      typeof v === 'object' && v !== null && Object.hasOwn(v, '_walk');
+    const subAggs = Object.hasOwn(fields, '_agg')
+      ? (fields._agg as Record<string, WalkAgg>)
+      : undefined;
+    const subNested = Object.fromEntries(
+      Object.entries(fields).filter(([, v]) => isNested(v))
+    ) as Record<string, NestedSelection>;
+    const plain = Object.keys(fields).filter((k) => k !== '_agg' && !isNested(fields[k]));
+    out.push([
+      name,
+      list.map((n) => ({
+        id: n.id,
+        // An absent field is null, as pg's jsonb_build_object gives it.
+        ...Object.fromEntries(plain.map((k) => [k, Object.hasOwn(n, k) ? n[k] : null])),
+        ...walkProjection(n, subAggs, subNested, far, false)
+      }))
+    ]);
+  }
+  if (truncated.length > 0) out.push(['_truncated', Object.fromEntries(truncated)]);
+  return Object.fromEntries(out);
 }
 
 function normalizeOrderBy(orderBy: OrderByClause[] | undefined): Array<[string, 'asc' | 'desc']> {
@@ -615,8 +1037,8 @@ function compareByClauses(
   fieldDefOf: FieldDefOf
 ): number {
   for (const [field, dir] of orderBy) {
-    const av = getFieldValue(a, field);
-    const bv = getFieldValue(b, field);
+    const av = asSortValue(field, getFieldValue(a, field), fieldDefOf);
+    const bv = asSortValue(field, getFieldValue(b, field), fieldDefOf);
     // Nulls sort last independently of direction (matches SQL's NULLS LAST).
     // Direction flip applies only when both sides are non-null.
     if (av == null && bv == null) continue;
@@ -648,7 +1070,7 @@ function findCursorStart(
   orderBy.forEach(([field], i) => {
     const v = cursorValues[i];
     if (field === 'id') return;
-    if (field === 'createdAt' || field === 'updatedAt') meta[field] = v;
+    if (field === 'createdAt' || field === 'updatedAt' || field === 'seq') meta[field] = v;
     else if (field === 'createdById') createdBy.id = v;
     else if (field === 'createdByKind') createdBy.kind = v;
     else if (field === 'updatedById') updatedBy.id = v;

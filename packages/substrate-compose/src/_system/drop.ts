@@ -20,7 +20,10 @@
  *
  * Scope is data-only: substrate rows, short-ids and (optionally) edges.
  * Schema declarations are not affected — a type still declared in
- * code/proposals reappears on next compose boot.
+ * code/proposals reappears on next compose boot. A committed namespace drop
+ * also drops the namespace's non-unique engine indexes, and its unique ones
+ * when the namespace is declared nowhere (`Dataset.dropNamespaceIndexes`); a
+ * type drop keeps its type's, since the type stays registered.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -32,9 +35,9 @@ import type {
   EdgesStore,
   EngineHandle,
   HttpHandler,
-  Row,
   SubstrateResponse,
-  WriteOptions
+  WriteOptions,
+  WriteRow
 } from '@mnmal-ai/substrate-types';
 import { extractClientIp, jsonResponse } from '../routes/helpers.js';
 import { buildAuditRow } from './install.js';
@@ -90,6 +93,11 @@ export interface DropNamespaceRouteDeps extends DropRouteDeps {
    * row delete and schema visibility are otherwise decoupled.
    */
   engine: EngineHandle;
+  /**
+   * Whether a plugin declares `namespace` in code, so its types come back on
+   * the next boot. Absent means unknown, treated as declared.
+   */
+  declaredInCode?: (namespace: string) => boolean;
 }
 
 function parseCascade(value: unknown): Cascade | null {
@@ -182,7 +190,7 @@ interface DropPlan {
   dropRows: (tx: Dataset) => Promise<DropResult>;
   /** Edge cleanup for cascade=delete; null leaves edges untouched. */
   dropEdges: ((edges: EdgesStore) => Promise<number>) | null;
-  auditRow: (counts: DropCounts) => Row;
+  auditRow: (counts: DropCounts) => WriteRow;
   writeOptions: WriteOptions;
   /** Plugins that act inside a namespace drop's transaction; none for a type drop. */
   participants: readonly DropParticipant[];
@@ -467,6 +475,17 @@ export function dropNamespaceRoute(deps: DropNamespaceRouteDeps): HttpHandler {
     // on dry-run (the tx rolled back so nothing was deleted).
     if (!dryRun) {
       deps.engine.tombstoneNamespace(namespace);
+      // Its types are gone from the engine, so nothing else would drop their
+      // indexes. A unique one goes only when the namespace is declared nowhere:
+      // not in code, and its proposal archived by the participants above.
+      const declared = deps.declaredInCode?.(namespace) !== false || warnings.length > 0;
+      try {
+        await dataset.dropNamespaceIndexes?.({ unique: !declared });
+      } catch (err) {
+        warnings.push(
+          `indexes of '${namespace}' were not all dropped after the drop committed: ${err instanceof Error ? err.message : String(err)}; storage doctor lists the rest as orphaned`
+        );
+      }
     }
 
     return jsonResponse(200, {

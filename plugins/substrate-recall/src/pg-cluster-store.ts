@@ -128,7 +128,7 @@ async function recountClusters(
   `;
 }
 
-/** Distinct from the migrator's `substrate-migrations` key; hashed the same way. */
+/** Distinct from the migrator's `substrate-migrations` key; scoped by schema the same way. */
 const FORMATION_LOCK_KEY = 'substrate-recall-crystallise';
 
 export class PgClusterStore implements ClusterStore {
@@ -142,7 +142,7 @@ export class PgClusterStore implements ClusterStore {
 
   /**
    * Runs `fn` holding a session advisory lock that excludes formation in every
-   * process on this database; throws `crystallise_in_flight` if it is held.
+   * process on this schema; throws `crystallise_in_flight` if it is held.
    *
    * Lock and unlock share one reserved connection, since through the pool the
    * unlock can land on another session and fail to release.
@@ -151,13 +151,13 @@ export class PgClusterStore implements ClusterStore {
     const conn = await (this.#sql as Sql).reserve();
     try {
       const [row] = await conn<Array<{ acquired: boolean }>>`
-        SELECT pg_try_advisory_lock(hashtext(${FORMATION_LOCK_KEY})) AS acquired
+        SELECT pg_try_advisory_lock(hashtext(${FORMATION_LOCK_KEY} || ':' || current_schema())) AS acquired
       `;
       if (row?.acquired !== true) throw inFlightError();
       try {
         return await fn();
       } finally {
-        await conn`SELECT pg_advisory_unlock(hashtext(${FORMATION_LOCK_KEY}))`;
+        await conn`SELECT pg_advisory_unlock(hashtext(${FORMATION_LOCK_KEY} || ':' || current_schema()))`;
       }
     } finally {
       conn.release();

@@ -190,7 +190,7 @@ export function startSentinelClient(opts: StartSentinelClientOpts): SentinelClie
     }
     // `lazyKey`: this runs inside the socket message handler, where an
     // unreadable key would surface as an unhandled rejection.
-    const auth = makeAuthorizationProvider(cred, { lazyKey: true });
+    const auth = makeAuthorizationProvider(cred, { lazyKey: true, audience: cred.origin });
 
     for (const nsValue of namespaces) {
       if (stopped) return;

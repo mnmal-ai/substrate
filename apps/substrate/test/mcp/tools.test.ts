@@ -13,6 +13,7 @@ import {
   createMutateHandler,
   createNlHandler,
   createProposeFieldHandler,
+  createProposeIndexHandler,
   createProposeTypeHandler,
   createQueryHandler,
   createSchemaHandler,
@@ -123,12 +124,20 @@ describe('substrate-mcp tool handlers', () => {
     await composed.stop();
   });
 
-  it('schema handler returns federated schema as stringified JSON', async () => {
-    const handler = createSchemaHandler(TEST_ENDPOINT);
-    const result = await handler();
+  it('schema handler with no args returns the compact overview', async () => {
+    const result = await createSchemaHandler(TEST_ENDPOINT)();
     expect(result.isError).toBeUndefined();
+    const parsed = parseToolText(result) as {
+      legend: string;
+      overview: Record<string, { types: Record<string, string> }>;
+    };
+    expect(parsed.legend).toContain('field: type');
+    expect(typeof parsed.overview.default?.types.Todo).toBe('string');
+  });
+
+  it('schema handler with full: true returns the federated schema', async () => {
+    const result = await createSchemaHandler(TEST_ENDPOINT)({ full: true });
     const parsed = parseToolText(result) as Record<string, { types: Record<string, unknown> }>;
-    expect(parsed.default).toBeDefined();
     expect(parsed.default?.types.Todo).toBeDefined();
   });
 
@@ -370,6 +379,29 @@ describe('propose_type / propose_field handlers', () => {
     expect(frame.params.fieldName).toBe('color');
     expect(frame.params.fieldSpec).toEqual({ kind: 'scalar', type: 'string' });
     expect(frame.params).not.toHaveProperty('proposedBy');
+  });
+
+  it('propose_index builds a _system_proposals/propose_index frame naming the target', async () => {
+    const { captured } = captureMutateFetch({ data: {} });
+    const result = await createProposeIndexHandler(TEST_ENDPOINT)({
+      namespace: 'home',
+      type: 'Dress',
+      action: 'remove',
+      indexName: 'home_dress_x_0123abcd_idx',
+      reason: 'unused',
+      recommendationId: undefined
+    });
+    expect(result.isError).toBeUndefined();
+    const frame = captured.frame?.['_system_proposals/propose_index'] as {
+      params: Record<string, unknown>;
+    };
+    expect(frame.params).toEqual({
+      namespace: 'home',
+      type: 'Dress',
+      action: 'remove',
+      indexName: 'home_dress_x_0123abcd_idx',
+      reason: 'unused'
+    });
   });
 
   it('propose_type surfaces transport errors as isError', async () => {

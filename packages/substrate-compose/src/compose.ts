@@ -21,6 +21,7 @@ import {
   Registry,
   type RuntimeStats,
   runSweep,
+  ShapeRecorder,
   setCursorSealSecret,
   TaskScheduler
 } from '@mnmal-ai/substrate-core';
@@ -31,16 +32,22 @@ import type {
   CoordinatorPlugin,
   Dataset,
   EdgesStore,
+  FilterWriteLimits,
   HttpHandler,
   IdempotencyStore,
   KernelPlugin,
+  PromotionEvent,
   Registry as RegistryInterface,
+  StorageReport,
   SubstrateServer,
   SweepDeps,
   SweepState
 } from '@mnmal-ai/substrate-types';
 import { installSystemNamespace, type KeyRegistry, SYSTEM_NAMESPACE } from './_system/index.js';
+import { createPromoteFieldsRunner } from './_system/promote-fields.js';
 import type { RateLimiter } from './_system/rate-limit.js';
+import { runAdvisorPass } from './advisor/advisor.js';
+import type { StoreProfileName } from './advisor/profiles.js';
 import type { AuthConfig } from './auth.js';
 import { type Capability, withAuth, withSystemActor } from './compose/auth-middleware.js';
 import { resolveBootGuards } from './compose/guards.js';
@@ -168,6 +175,12 @@ export interface ComposeOpts {
    */
   pageLimits?: { defaultLimit: number; maxLimit: number };
   /**
+   * Caps on `updateMany<T>` / `deleteMany<T>`: the most rows one filter may
+   * match (more is refused `filter_too_broad`), and the most ids a result
+   * returns. Defaults to 10000 and 1000.
+   */
+  filterWriteLimits?: FilterWriteLimits;
+  /**
    * Opt-in periodic re-prime interval (ms) for the
    * `KeyRegistry` public-key cache. Bounds cross-instance revocation
    * staleness: when multiple binaries share one store, a key revoked by one
@@ -197,6 +210,22 @@ export interface ComposeOpts {
    * second reading of the environment. Omitted by programmatic embedders.
    */
   configReport?: ConfigReport;
+  /** Reported beside `configReport`; ignored without it. */
+  storageReport?: () => Promise<StorageReport>;
+  /**
+   * The index advisor. Every `intervalMs` (`SUBSTRATE_ADVISOR_INTERVAL_MS`)
+   * it turns the reads the engine recorded and the store's statistics into
+   * `_system/IndexRecommendation` rows. Omitted or `intervalMs: 0`: off, and
+   * no read is recorded. `storeProfile` seeds `_system/StoreProfile` when it
+   * has no row yet.
+   */
+  advisor?: { intervalMs: number; storeProfile?: StoreProfileName; writeHeavy?: boolean };
+  /**
+   * The promotion sweep, every `intervalMs` (`SUBSTRATE_PROMOTE_INTERVAL_MS`),
+   * over `dataset`'s pending fields. Omitted or `intervalMs: 0`: no timer;
+   * `POST /substrate/v1/_system/promote-fields` runs it either way.
+   */
+  promoteFields?: { intervalMs: number };
 }
 
 export interface ComposeResult {
@@ -220,6 +249,10 @@ export interface ComposeResult {
    * loop in `main.ts`.
    */
   runSweepNow: () => Promise<SweepState>;
+  /** Run one index-advisor pass now, for tests; null while the advisor is off. */
+  runAdvisorNow: (() => Promise<{ upserted: number }>) | null;
+  /** Run one promotion sweep now, as the admin route does. */
+  runPromoteFieldsNow: () => Promise<PromotionEvent[]>;
   /**
    * Non-null when any coordinator plugin contributed a `schedule`. The
    * composition root constructs the scheduler, registers every plugin's
@@ -386,6 +419,9 @@ async function composeInner(
   if (opts.auth !== undefined && opts.keyReprimeIntervalMs !== undefined) {
     installSubstrateOpts.reprimeIntervalMs = opts.keyReprimeIntervalMs;
   }
+  if (opts.advisor?.storeProfile !== undefined) {
+    installSubstrateOpts.storeProfile = opts.advisor.storeProfile;
+  }
   const { keyRegistry: substrateKeyRegistry } = await installSystemNamespace(installSubstrateOpts);
   datasets.set(SYSTEM_NAMESPACE, substrateDataset);
   namespaces.set(SYSTEM_NAMESPACE, { registry: substrateRegistry });
@@ -469,6 +505,13 @@ async function composeInner(
     snapshotLimit:
       opts.subscriptions?.snapshotLimit ?? (opts.pageLimits ?? DEFAULT_PAGE_LIMITS).maxLimit
   };
+  const advisorIntervalMs = opts.advisor?.intervalMs ?? 0;
+  const shapeRecorder = advisorIntervalMs > 0 ? new ShapeRecorder() : undefined;
+  if (shapeRecorder !== undefined) engineOpts.shapeRecorder = shapeRecorder;
+  if (opts.filterWriteLimits !== undefined) engineOpts.filterWriteLimits = opts.filterWriteLimits;
+  engineOpts.committedWritesHooks = coordinatorPlugins.flatMap((p) =>
+    p.onCommittedWrites !== undefined ? [{ plugin: p.name, hook: p.onCommittedWrites }] : []
+  );
   const engine = new Engine(engineOpts);
   engineForStats = engine;
 
@@ -511,6 +554,12 @@ async function composeInner(
   // into proxy-awareness.
   const trustedProxies = opts.trustedProxies ?? new Set<string>();
 
+  const promoteRunner = createPromoteFieldsRunner({
+    dataset: opts.dataset,
+    engine,
+    intervalMs: opts.promoteFields?.intervalMs ?? 0
+  });
+
   // Spec §5.11 fire order: core /substrate/v1/* routes → plugin routes.
   const { rateLimiter, ownsRateLimiter } = await registerCoreRoutes({
     server: opts.server,
@@ -541,7 +590,12 @@ async function composeInner(
     ...(opts.auth?.adminCapability !== undefined
       ? { adminCapability: opts.auth.adminCapability }
       : {}),
-    ...(opts.configReport !== undefined ? { configReport: opts.configReport } : {})
+    ...(opts.configReport !== undefined ? { configReport: opts.configReport } : {}),
+    ...(opts.storageReport !== undefined ? { storageReport: opts.storageReport } : {}),
+    promoteFields: promoteRunner.run,
+    ...(opts.dataset.fieldWarnings !== undefined
+      ? { fieldWarnings: opts.dataset.fieldWarnings.bind(opts.dataset) }
+      : {})
   });
 
   let scheduler: TaskScheduler | null = null;
@@ -560,6 +614,37 @@ async function composeInner(
     await runCoordinatorOnStart(engine);
   }
 
+  // One pass at a time; a pass still running when the next is due is skipped.
+  let advisorPass: Promise<void> | null = null;
+  let advisorTimer: ReturnType<typeof setInterval> | undefined;
+  let runAdvisorNow: ComposeResult['runAdvisorNow'] = null;
+  if (shapeRecorder !== undefined) {
+    const deps = {
+      dataset: opts.dataset,
+      system: substrateDataset,
+      recorder: shapeRecorder,
+      registry: (ns: string) => namespaces.get(ns)?.registry,
+      now: Date.now,
+      writeHeavy: opts.advisor?.writeHeavy === true
+    };
+    const pass = (): Promise<{ upserted: number }> => runAdvisorPass(deps);
+    runAdvisorNow = pass;
+    advisorTimer = setInterval(() => {
+      if (advisorPass !== null) return;
+      advisorPass = pass()
+        .then(() => undefined)
+        .catch((err: unknown) => {
+          process.stderr.write(
+            `[substrate] index advisor pass failed and will run again: ${err instanceof Error ? err.message : String(err)}\n`
+          );
+        })
+        .finally(() => {
+          advisorPass = null;
+        });
+    }, advisorIntervalMs);
+    advisorTimer.unref?.();
+  }
+
   return {
     engine,
     // null when auth is off — the caller must not be able to tell "no registry
@@ -570,10 +655,16 @@ async function composeInner(
     edges,
     sweepDeps,
     runSweepNow: (): Promise<SweepState> => runSweep(sweepDeps, { lastSweptCursor: null }),
+    runAdvisorNow,
+    runPromoteFieldsNow: promoteRunner.run,
     scheduler,
     stats,
     stop: async (stopOpts?: { grace?: number; abortInFlight?: boolean }): Promise<void> => {
       sampler.stop();
+      clearInterval(advisorTimer);
+      await advisorPass;
+      // Before the caller ends the pool: a sweep still holding a connection would stall `sql.end()`.
+      await promoteRunner.stop();
       if (scheduler !== null) await scheduler.stop();
       // Plugin onStop hooks run BEFORE server.stop() — the engine is still
       // alive so plugins can do final writes (e.g. an audit row recording

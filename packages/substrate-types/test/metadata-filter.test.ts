@@ -161,6 +161,7 @@ describe('published tables', () => {
       'createdById',
       'createdByKind',
       'id',
+      'seq',
       'updatedAt',
       'updatedById',
       'updatedByKind'

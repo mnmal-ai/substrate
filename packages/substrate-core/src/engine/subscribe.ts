@@ -1,6 +1,6 @@
 /**
  * SubscribeSubsystem — owns the live subscription bus and WriteEvent fanout
- * (§5.4, §5.13). Mutate feeds it through `dispatchWrite(event)`.
+ * (§5.4, §5.13). Mutate feeds it through `dispatchWrites(events)`.
  */
 
 import { evaluateWhere, whereContainsExtensionOperator } from '@mnmal-ai/substrate-filter';
@@ -22,11 +22,13 @@ import type {
 import {
   isResolverFrameError,
   normaliseVocabWhere,
+  WALKS_IN_SUBSCRIPTION,
   WS_CODE_SUBSCRIPTION_UNSUPPORTED_FRAME,
   WS_REASON_SUBSCRIPTION_OVERLOADED
 } from '@mnmal-ai/substrate-types';
 import { FilterValidationError, validateFilter } from '../filter/validator.js';
 import { applyObligations, evaluatePolicy } from '../policy-evaluator.js';
+import { walkGrammarPath } from '../walk-gate.js';
 import {
   checkIdentityGrant,
   clientErrorMessage,
@@ -44,7 +46,8 @@ import {
   type SubscriptionHandle,
   type SubscriptionStatsSnapshot,
   toResolverArgs,
-  withCanonicalMetadataFilters
+  withCanonicalMetadataFilters,
+  withNaturalOrder
 } from './internals.js';
 
 /**
@@ -342,6 +345,16 @@ export class SubscribeSubsystem {
     }
   }
 
+  /**
+   * `dispatchWrite` for every event of one committed mutate, in emit order.
+   * Not grouped by type: one subscription can span several types under one
+   * id and `onFrame`, and an idle entry's first frame is delivered
+   * synchronously, so grouping would reorder that subscription's wire.
+   */
+  dispatchWrites(events: readonly WriteEvent[]): void {
+    for (const event of events) this.dispatchWrite(event);
+  }
+
   #buildSubscribeContext(caller: Partial<RequestContext>): Omit<RequestContext, 'namespace'> {
     const base: Omit<RequestContext, 'namespace'> = {
       identity: caller.identity ?? null,
@@ -573,6 +586,26 @@ export class SubscribeSubsystem {
     // the caller's selection; the transport projects the response.
     if ((decision.obligations?.length ?? 0) > 0) delete args.fields;
 
+    // Walks are not pushed in v1 (walks spec, Non-goals): refused before the param allowlist.
+    const walkPath = walkGrammarPath(frame as Record<string, unknown>);
+    if (walkPath !== null) {
+      deliverFrame(
+        input.onFrame,
+        {
+          id: input.id,
+          kind: 'error',
+          errors: [
+            {
+              message: `subscribe('${ns}/${name}'): walks are not available in subscriptions`,
+              code: WALKS_IN_SUBSCRIPTION,
+              path: [key, ...walkPath]
+            }
+          ]
+        },
+        this.#metric
+      );
+      return null;
+    }
     const params = frame.params;
     if (params) {
       for (const paramKey of Object.keys(params)) {
@@ -605,7 +638,6 @@ export class SubscribeSubsystem {
         ? (normaliseVocabWhere(rawWhere, typeFields) as WhereClause)
         : rawWhere;
     const orderBy = params?.orderBy as OrderByClause[] | undefined;
-    const allowTableScan = params?._allowTableScan === true;
     if (where !== undefined || orderBy !== undefined) {
       const schema = this.#schemaFor(ns);
       const typeSchema = schema.types[name];
@@ -614,7 +646,6 @@ export class SubscribeSubsystem {
           validateFilter({
             ...(where !== undefined ? { where } : {}),
             ...(orderBy !== undefined ? { orderBy } : {}),
-            allowTableScan,
             typeSchema,
             capabilities: dataset.capabilities
           });
@@ -666,6 +697,9 @@ export class SubscribeSubsystem {
     };
     this.#registerEntry(subscriptionEntry);
 
+    // The snapshot reads in the type's natural order unless it names one, as a query does.
+    const ordered = withNaturalOrder(args.params, registryEntry, dataset);
+    if (ordered !== undefined) args.params = ordered;
     // One row past the cap is enough to tell the snapshot is too large.
     const snapshotLimit = registryEntry.kind === 'type' ? this.#snapshotLimit : undefined;
     if (snapshotLimit !== undefined) args.params = { ...args.params, limit: snapshotLimit + 1 };

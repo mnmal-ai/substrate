@@ -271,3 +271,48 @@ describe('degradation markers survive projection', () => {
     expect(out).toEqual([{ id: '1' }]);
   });
 });
+
+describe('walk results', () => {
+  it('JSON projection keeps nested selections and _truncated', () => {
+    const fields = {
+      title: true,
+      _agg: { n: { in: 'default/Note.todo', count: true } },
+      notes: {
+        _walk: { in: 'default/Note.todo' },
+        fields: { body: true, replies: { _walk: { in: 'default/Reply.note' }, fields: {} } },
+        limit: 1
+      }
+    } as unknown as FieldInput;
+    const row = {
+      id: 't1',
+      title: 'alpha',
+      body: 'hidden',
+      _metadata: { createdAt: 'now' },
+      _agg: { n: 2 },
+      notes: [{ id: 'n1', body: 'first', replies: [{ id: 'r1' }] }],
+      _truncated: { notes: true }
+    };
+    expect(projectValue(row, fields)).toEqual({
+      title: 'alpha',
+      _agg: { n: 2 },
+      notes: [{ id: 'n1', body: 'first', replies: [{ id: 'r1' }] }],
+      _truncated: { notes: true }
+    });
+  });
+
+  it('count and groups pass through unprojected', () => {
+    const env: PackEnvelope = {
+      schemaVersion: 'sv',
+      data: {
+        'default/Todo': { count: 3 },
+        'default/Note': { groups: [{ n: 3 }], truncated: true }
+      },
+      shapes: { 'default/Todo': 'count', 'default/Note': 'groups' }
+    };
+    const frame: Frame = {
+      'default/Todo': { params: { count: true }, fields: { id: true } },
+      'default/Note': { params: {}, fields: { id: true } }
+    };
+    expect(projectEnvelope(env, frame).data).toEqual(env.data);
+  });
+});

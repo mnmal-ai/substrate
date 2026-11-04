@@ -31,6 +31,11 @@ function makeFakeSql(handler: (text: string, values: unknown[]) => unknown): {
   const calls: Captured[] = [];
   const fn = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.join('?');
+    // The stores' catalog lookups, answered as a type table with no field columns;
+    // not recorded, as they are not recall SQL.
+    if (text.includes('pg_class')) return [{ relname: 'substrate_type_tables', relkind: 'r' }];
+    if (text.includes('FROM substrate_type_tables')) return [{ table_name: 't__ns__type' }];
+    if (text.includes('FROM substrate_type_fields')) return [];
     calls.push({ text, values });
     return handler(text, values);
   }) as FakeSql;
@@ -202,7 +207,7 @@ describe('PgEmbeddingsStore.knnSearch', () => {
       vector: vec(0, 1),
       k: 10
     });
-    const select = calls.find((c) => c.text.includes('SELECT'));
+    const select = calls.find((c) => c.text.includes('FROM embeddings'));
     expect(select?.text).toMatch(/e\.model\s*=/);
     expect(select?.values).toContain('model-a:768');
     expect(select?.text).toMatch(/e\.row_namespace\s*=/);
@@ -221,7 +226,7 @@ describe('PgEmbeddingsStore.knnSearch', () => {
         vector: vec(0, 1),
         k: 5000
       });
-      const select = calls.find((c) => c.text.includes('SELECT'));
+      const select = calls.find((c) => c.text.includes('FROM embeddings'));
       expect(select?.values?.at(-1)).toBe(100);
     }
     {
@@ -234,7 +239,7 @@ describe('PgEmbeddingsStore.knnSearch', () => {
         vector: vec(0, 1),
         k: -5
       });
-      const select = calls.find((c) => c.text.includes('SELECT'));
+      const select = calls.find((c) => c.text.includes('FROM embeddings'));
       expect(select?.values?.at(-1)).toBe(1);
     }
   });
@@ -250,7 +255,7 @@ describe('PgEmbeddingsStore.knnSearch', () => {
       k: 10,
       threshold: 0.7
     });
-    const select = calls.find((c) => c.text.includes('SELECT'));
+    const select = calls.find((c) => c.text.includes('FROM embeddings'));
     expect(select?.values).toContain(0.7);
   });
 
@@ -258,6 +263,11 @@ describe('PgEmbeddingsStore.knnSearch', () => {
     let beginCalls = 0;
     const innerCalls: Captured[] = [];
     const fn = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      // The catalog lookups, as in `makeFakeSql`.
+      const text = strings.join('?');
+      if (text.includes('pg_class')) return [{ relname: 'substrate_type_tables', relkind: 'r' }];
+      if (text.includes('FROM substrate_type_tables')) return [{ table_name: 't__ns__type' }];
+      if (text.includes('FROM substrate_type_fields')) return [];
       innerCalls.push({ text: strings.join('?'), values });
       return [];
     }) as FakeSql;

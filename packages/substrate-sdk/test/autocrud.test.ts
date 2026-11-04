@@ -1,6 +1,12 @@
 import { Engine, MemoryEdgesStore, type NamespaceConfig, Registry } from '@mnmal-ai/substrate-core';
 import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-dataset-memory';
-import type { FieldDef, Policy, RequestContext, WriteEvent } from '@mnmal-ai/substrate-types';
+import type {
+  FieldDef,
+  Policy,
+  ReadParams,
+  RequestContext,
+  WriteEvent
+} from '@mnmal-ai/substrate-types';
 import { ResolverFrameError } from '@mnmal-ai/substrate-types';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
@@ -53,6 +59,19 @@ describe('autocrud.listResolver', () => {
     expect(res.hasMore).toBe(true);
   });
 
+  it('forwards args.signal into ReadParams', async () => {
+    const dataset = new MemoryDataset({ namespace: 'default' });
+    let seen: ReadParams | undefined;
+    const spy = Object.create(dataset) as MemoryDataset;
+    spy.read = (type, params) => {
+      seen = params;
+      return dataset.read(type, params);
+    };
+    const controller = new AbortController();
+    await listResolver('Todo', spy)(makeCtx(), { signal: controller.signal });
+    expect(seen?.signal).toBe(controller.signal);
+  });
+
   it('returns [] for unknown type', async () => {
     const dataset = new MemoryDataset({ namespace: 'default' });
     const res = await listResolver('Missing', dataset)(makeCtx(), {});
@@ -71,6 +90,34 @@ describe('autocrud.listResolver', () => {
       params: { where: { done: { eq: true } }, orderBy: [{ n: 'desc' }] }
     });
     expect(res.rows.map((r) => r.id)).toEqual([3, 1]);
+  });
+
+  it('listResolver lifts _agg and nested selections into ReadParams and passes count/aggregate/bucket/derive through', async () => {
+    const dataset = new MemoryDataset({ namespace: 'default' });
+    const seen: ReadParams[] = [];
+    const read = dataset.read.bind(dataset);
+    dataset.read = (type, params) => {
+      seen.push(params ?? {});
+      return read(type, params);
+    };
+    const agg = { n: { in: 'default/Note.todo', count: true } };
+    const notes = { _walk: { in: 'default/Note.todo' }, fields: { body: true }, limit: 3 };
+    const walkParams = {
+      count: true,
+      aggregate: { n: { count: true } },
+      bucket: { field: 'createdAt', by: 'day' },
+      derive: { m: { diff: ['$.a', '$.b'] } }
+    };
+    await listResolver('Todo', dataset)(makeCtx(), {
+      params: walkParams,
+      fields: { id: true, title: true, _agg: agg, notes }
+    });
+    expect(seen[0]).toEqual({
+      ...walkParams,
+      agg,
+      nested: { notes },
+      fields: { id: true, title: true }
+    });
   });
 
   it('threads params.includeDeleted through to dataset.read', async () => {

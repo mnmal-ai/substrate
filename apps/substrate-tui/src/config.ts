@@ -1,5 +1,5 @@
 import { basename } from 'node:path';
-import { DEFAULT_CAPABILITIES, makeTokenProvider } from '@mnmal-ai/substrate/client';
+import { DEFAULT_CAPABILITIES, makeTokenProvider, tokenAudience } from '@mnmal-ai/substrate/client';
 import { trimTrailingSlashes } from '@mnmal-ai/substrate/sdk';
 
 export interface TuiConfig {
@@ -29,7 +29,10 @@ export function readConfig(env: NodeJS.ProcessEnv, cwd: string): TuiConfig | { e
     try {
       token = makeTokenProvider(
         { keyPath, kid },
-        { capabilities: raw !== undefined && raw.length > 0 ? raw : DEFAULT_CAPABILITIES }
+        {
+          capabilities: raw !== undefined && raw.length > 0 ? raw : DEFAULT_CAPABILITIES,
+          audience: tokenAudience(endpoint)
+        }
       );
     } catch (err) {
       return { error: `agent identity: ${message(err)}` };

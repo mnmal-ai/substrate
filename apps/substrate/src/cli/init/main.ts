@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'no
 import { basename, join, resolve } from 'node:path';
 import pkg from '../../../package.json' with { type: 'json' };
 import { type InitConfig, parseArgs } from './config.js';
+import { DEFAULT_SIZING, profileFromAnswers } from './sizing.js';
 import {
   dockerComposeTemplate,
   envBinaryTemplate,
@@ -80,7 +81,7 @@ export async function runInit(argv: string[]): Promise<number> {
     port: config.port ?? 3100,
     pgPort: config.pgPort ?? 5433,
     plugins: [...(config.plugins ?? [])],
-    embedder: config.embedder ?? 'minilm',
+    embedder: config.embedder ?? 'bge-base',
     substrateUrl:
       config.substrateUrl ?? `${config.tls ? 'https' : 'http'}://localhost:${config.port ?? 3100}`,
     tls: config.tls,
@@ -89,7 +90,16 @@ export async function runInit(argv: string[]): Promise<number> {
     pgPassword: randomBytes(32).toString('hex'),
     dbName: 'substrate_prod',
     composeName: normalizeComposeName(target),
-    substrateVersion
+    substrateVersion,
+    storeProfile:
+      config.profile ??
+      profileFromAnswers({
+        rowsPerDay: config.rowsPerDay ?? DEFAULT_SIZING.rowsPerDay,
+        retentionDays: config.retentionDays ?? DEFAULT_SIZING.retentionDays,
+        readTargetMs: config.readTargetMs ?? DEFAULT_SIZING.readTargetMs,
+        writeHeavy: config.writeHeavy
+      }),
+    writeHeavy: config.writeHeavy
   };
 
   writeSecret(join(target, '.env'), envBinaryTemplate(ctx));

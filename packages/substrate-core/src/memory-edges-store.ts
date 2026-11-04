@@ -128,6 +128,17 @@ export class MemoryEdgesStore implements EdgesStore {
     return this.#copy(edge);
   }
 
+  async writeMany(inputs: readonly EdgeWriteInput[]): Promise<Edge[]> {
+    const out: Edge[] = [];
+    for (const input of inputs) out.push(await this.write(input));
+    return out;
+  }
+
+  async tombstoneMany(ids: readonly string[], at?: Date): Promise<void> {
+    const stamp = at ?? this.now();
+    for (const id of ids) await this.tombstone(id, stamp);
+  }
+
   async tombstone(id: string, at?: Date): Promise<void> {
     const existing = this.edges.get(id);
     if (!existing) return;
@@ -171,11 +182,15 @@ export class MemoryEdgesStore implements EdgesStore {
   }
 
   async findEdgesToMany(refs: readonly EdgeRef[]): Promise<Edge[]> {
-    if (refs.length === 0) return [];
+    return this.#liveByManyIndex(this.#toIndex, refs);
+  }
+
+  /** Live edges whose indexed ref matches ANY of `refs`, each edge once. */
+  #liveByManyIndex(index: Map<string, Set<string>>, refs: readonly EdgeRef[]): Edge[] {
     const seen = new Set<string>();
     const out: Edge[] = [];
     for (const ref of refs) {
-      const ids = this.#toIndex.get(refKey(ref));
+      const ids = index.get(refKey(ref));
       if (ids === undefined) continue;
       for (const id of ids) {
         if (seen.has(id)) continue;
@@ -191,6 +206,10 @@ export class MemoryEdgesStore implements EdgesStore {
 
   async findEdgesFrom(ref: EdgeRef): Promise<Edge[]> {
     return this.#liveByIndex(this.#fromIndex, refKey(ref));
+  }
+
+  async findEdgesFromMany(refs: readonly EdgeRef[]): Promise<Edge[]> {
+    return this.#liveByManyIndex(this.#fromIndex, refs);
   }
 
   async canDelete(ref: EdgeRef): Promise<CanDeleteResult> {

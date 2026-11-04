@@ -2,7 +2,7 @@
  * `substrate-admin rotate` against POSTGRES.
  *
  * The other rotate tests use a `MemoryDataset`, which has no unique index,
- * so migration 0023's `substrate_key_live_kid_uniq` cannot fail there.
+ * so `_system/Key`'s declared `substrate_key_live_kid_uniq` cannot fail there.
  *
  * Pins that `rotate` can rotate a kid that is currently LIVE. A plain unique
  * index is enforced per statement rather than deferred to commit, so writing
@@ -17,10 +17,13 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { KEY_TYPE, SYSTEM_NAMESPACE } from '@mnmal-ai/substrate-compose';
-import { runMigrations } from '@mnmal-ai/substrate-dataset-pg';
+import { PgDataset, runMigrations } from '@mnmal-ai/substrate-dataset-pg';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { main } from '../src/bin/admin.js';
+import { main } from '../src/admin/index.js';
+import { bootStore } from '../src/serve/boot-store.js';
+import { parseEnv } from '../src/serve/config.js';
+import { purgeWhere } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const KID = 'rotate-pg-fixture@TestHost';
@@ -35,9 +38,23 @@ describe.skipIf(!POSTGRES_URL)('substrate-admin rotate against pg', () => {
 
   beforeAll(async () => {
     sql = postgres(POSTGRES_URL as string);
-    // Applies 0023, which is the whole point — the index must be present or
-    // this file asserts nothing the memory suite did not already cover.
+    // `_system/Key` declares the live-kid unique index; without it this file
+    // asserts nothing the memory suite did not already cover. A boot builds it,
+    // as serve does before any admin command runs.
     await runMigrations(sql);
+    const booted = await bootStore({
+      config: parseEnv({
+        SUBSTRATE_DATABASE_URL: POSTGRES_URL as string,
+        SUBSTRATE_SYSTEM_ACTOR: 'rotate-pg-test'
+      }),
+      pluginDir: null,
+      background: false
+    });
+    await booted.close();
+    const [index] = await sql`
+      SELECT 1 FROM pg_indexes
+      WHERE schemaname = current_schema() AND indexname = 'substrate_key_live_kid_uniq'`;
+    expect(index).toBeDefined();
   });
 
   afterAll(async () => {
@@ -48,12 +65,12 @@ describe.skipIf(!POSTGRES_URL)('substrate-admin rotate against pg', () => {
     tmp = mkdtempSync(join(tmpdir(), 'substrate-rotate-pg-'));
     out = [];
     err = [];
-    await sql`DELETE FROM rows WHERE namespace = ${SYSTEM_NAMESPACE} AND type = ${KEY_TYPE} AND body->>'kid' = ${KID}`;
+    await purgeWhere(sql, SYSTEM_NAMESPACE, KEY_TYPE, { kid: { eq: KID } });
   });
 
   afterEach(async () => {
     rmSync(tmp, { recursive: true, force: true });
-    await sql`DELETE FROM rows WHERE namespace = ${SYSTEM_NAMESPACE} AND type = ${KEY_TYPE} AND body->>'kid' = ${KID}`;
+    await purgeWhere(sql, SYSTEM_NAMESPACE, KEY_TYPE, { kid: { eq: KID } });
   });
 
   /** Register KID for real, through the CLI, so the row is shaped as prod's. */
@@ -83,18 +100,18 @@ describe.skipIf(!POSTGRES_URL)('substrate-admin rotate against pg', () => {
   }
 
   async function liveRows(): Promise<Array<{ pk: string; name: string; ns: string }>> {
-    const rows = await sql<Array<{ pk: string; name: string; ns: string }>>`
-      SELECT body->>'publicKey' AS pk, body->>'name' AS name, body->>'namespaces' AS ns
-        FROM rows
-       WHERE namespace = ${SYSTEM_NAMESPACE}
-         AND type = ${KEY_TYPE}
-         AND deleted_at IS NULL
-         AND body->>'kid' = ${KID}
-         AND body->>'revokedAt' IS NULL`;
-    return [...rows];
+    // Through the dataset, wherever each field lives.
+    const { rows } = await new PgDataset({ namespace: SYSTEM_NAMESPACE, sql }).read(KEY_TYPE, {
+      where: { kid: { eq: KID }, revokedAt: { eq: null } }
+    });
+    return rows.map((r) => ({
+      pk: r.publicKey as string,
+      name: r.name as string,
+      ns: r.namespaces as string
+    }));
   }
 
-  it('rotates a LIVE kid — the case migration 0023 made impossible', async () => {
+  it('rotates a LIVE kid — the case the live-kid unique index made impossible', async () => {
     await registerLiveKid();
     const before = await liveRows();
     expect(before).toHaveLength(1);

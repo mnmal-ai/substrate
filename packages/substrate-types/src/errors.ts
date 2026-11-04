@@ -8,6 +8,25 @@
 
 import type { Edge, EdgeRef } from './edge.js';
 
+/** A by-filter write matched more rows than `SUBSTRATE_FILTER_WRITE_MAX_MATCH`; nothing changed. */
+export const FILTER_TOO_BROAD = 'filter_too_broad';
+
+/** Refusal codes for the typed-edge-walk grammar. */
+export const WALKS_NEED_PARTITIONED = 'walks_need_partitioned';
+export const WALKS_IN_SUBSCRIPTION = 'walks_in_subscription';
+export const WALKS_IN_MUTATION = 'walks_in_mutation';
+export const ROW_POLICY_BLOCKS_WALK = 'row_policy_blocks_walk';
+export const WALK_BUDGET_EXCEEDED = 'walk_budget_exceeded';
+export const WALKS_UNSUPPORTED_STORE = 'walks_unsupported_store';
+/** A read cancelled by the store's statement timeout; `details: { timeoutMs }`. */
+export const QUERY_TIMEOUT = 'query_timeout';
+/**
+ * A walk construct refused where it cannot be answered: inside a struct, over
+ * a list or struct-nested crossRef, under a reused field name, on a virtual
+ * type, or on a read path that does not evaluate walks.
+ */
+export const WALK_UNSUPPORTED_REF = 'walk_unsupported_ref';
+
 /**
  * Throwable by a resolver to surface a structured per-frame error with a
  * caller-chosen `code` instead of the generic `resolver_error`. The engine's
@@ -41,6 +60,19 @@ export class ResolverFrameError extends Error {
     this.code = code;
     if (details !== undefined) this.details = details;
   }
+}
+
+/** `filter_too_broad`: a by-filter write on `<namespace>/<type>` matched more than `maxMatch` rows. */
+export function filterTooBroad(
+  namespace: string,
+  type: string,
+  maxMatch: number
+): ResolverFrameError {
+  return new ResolverFrameError(
+    FILTER_TOO_BROAD,
+    `${namespace}/${type}: the filter matches more than ${maxMatch} rows; nothing changed. Narrow the where, or raise SUBSTRATE_FILTER_WRITE_MAX_MATCH`,
+    { maxMatch }
+  );
 }
 
 /**
@@ -115,13 +147,14 @@ export class NamespaceMismatch extends Error {
 
 /**
  * Thrown by `Dataset.updateField` when the caller targets a reserved
- * field name (e.g. `_deletedAt`). Spec §4.5.
+ * field name (e.g. `_deletedAt`), and by any other write path that refuses
+ * one; `how` names that path in the message. Spec §4.5.
  */
 export class ReservedField extends Error {
   override readonly name = 'ReservedField';
 
-  constructor(field: string) {
-    super(`field '${field}' is reserved and cannot be written via updateField`);
+  constructor(field: string, how = 'via updateField') {
+    super(`field '${field}' is reserved and cannot be written ${how}`);
   }
 }
 
@@ -165,6 +198,36 @@ export class BridgeUnreachableError extends Error {
     this.baseUrl = baseUrl;
     this.cause = cause;
   }
+}
+
+/**
+ * Thrown by a `BatchResolver` to refuse element `index` of its args list. The
+ * engine rolls back the whole array and reports `cause` as the per-element
+ * resolver would have: a `ResolverFrameError` or `RestrictViolation` keeps
+ * its code at `[key]`, and `batched_frame_rolled_back` names the element.
+ */
+export class BatchElementError extends Error {
+  override readonly name = 'BatchElementError';
+
+  constructor(
+    readonly index: number,
+    override readonly cause: unknown
+  ) {
+    super(
+      `batch element ${index} refused: ${cause instanceof Error ? cause.message : String(cause)}`
+    );
+  }
+}
+
+/** Recognise a {@link BatchElementError} across module-realm boundaries. */
+export function isBatchElementError(err: unknown): err is BatchElementError {
+  if (err instanceof BatchElementError) return true;
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as { name?: unknown }).name === 'BatchElementError' &&
+    typeof (err as { index?: unknown }).index === 'number'
+  );
 }
 
 /**

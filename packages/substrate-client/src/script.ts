@@ -19,7 +19,8 @@ export interface ScriptRecallInput {
   query: string;
   /** Required, as on every recall surface. */
   namespace: string;
-  type?: string;
+  /** Required, as on every recall surface: there is no default type. */
+  type: string;
   k?: number;
   threshold?: number;
   where?: Record<string, unknown>;

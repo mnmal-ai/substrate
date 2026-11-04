@@ -34,7 +34,7 @@ describe('diagnose', () => {
     });
     expect(r.identity).toBe('substrate-claude@Box');
     expect(status(r, 'identity')).toBe('ok');
-    for (const n of ['admin-capability', 'admin-floor', 'key-directory'])
+    for (const n of ['admin-capability', 'admin-floor', 'key-directory', 'storage'])
       expect(status(r, n)).toBe('skip');
     expect(r.exitCode).toBe(0);
   });
@@ -310,7 +310,8 @@ describe('diagnose', () => {
       'admin-capability',
       'admin-floor',
       'namespaces',
-      'key-directory'
+      'key-directory',
+      'storage'
     ]);
   });
 });

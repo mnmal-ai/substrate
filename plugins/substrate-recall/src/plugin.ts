@@ -31,6 +31,7 @@ import { type CrystalliseConfig, DEFAULT_CRYSTALLISE_CONFIG } from './crystallis
 import { createCrystalliseGuard } from './crystallise-guard.js';
 import { crystalliseRouteHandler } from './crystallise-route.js';
 import { makeEmbedPostWrite, makeReembed } from './embed-and-store.js';
+import { runEmbedBackfill } from './embed-backfill.js';
 import { EmbedSourceRegistry } from './embed-source-registry.js';
 import { createEmbedStats, type EmbedStats } from './embed-stats.js';
 import { embedStatsRouteHandler } from './embed-stats-route.js';
@@ -65,6 +66,9 @@ import { makeSpreadResolver, SpreadEdgeRegistry } from './spread-resolver.js';
 // `cfg.migration.dimension` drives both (see embeddingsMigration below).
 const DEFAULT_CLUSTER_DIMENSION = 768;
 
+const DEFAULT_EMBED_BACKFILL_INTERVAL_MS = 60_000;
+/** Rows per embedded type per pass, so one pass stays a few seconds of embed work. */
+const EMBED_BACKFILL_PER_TYPE = 50;
 export const DEFAULT_QUERY_EMBED_TIMEOUT_MS = 30_000;
 export const DEFAULT_WRITE_EMBED_TIMEOUT_MS = 30_000;
 
@@ -92,6 +96,11 @@ export interface RecallPluginConfig {
    * the row's previous vector until its next write or a reindex. Default 30000.
    */
   writeEmbedTimeoutMs?: number;
+  /**
+   * How often to re-embed rows whose write-path embed failed or timed out (their
+   * vector is missing or older than the row). 0 disables. Default 60000.
+   */
+  embedBackfillIntervalMs?: number;
   store: EmbeddingsStore;
   /**
    * Store for the lexical arm. Absent → types declaring `lexical.source`
@@ -285,9 +294,12 @@ export function createRecallPlugin(cfg: RecallPluginConfig): KernelPlugin {
           ...(cfg.runClusterer !== undefined ? { runClusterer: cfg.runClusterer } : {})
         };
 
+  let backfillTimer: ReturnType<typeof setInterval> | undefined;
+
   return {
     name: 'substrate-recall',
     contractVersion: '>=1.0.0-alpha.0 <2.0.0',
+    storeTables: ['embeddings', 'lexical', 'recall_clusters', 'recall_cluster_members'],
 
     // Every boot, not once: migrations are recorded by id, so a store
     // whose first boot had no embedder kept the 768 default forever. Only
@@ -295,6 +307,7 @@ export function createRecallPlugin(cfg: RecallPluginConfig): KernelPlugin {
     // an empty column back to the default.
     async onKernelReady(ctx) {
       if (cfg.embedder === undefined || ctx.sql === null) return;
+      let dimensionMismatch = false;
       const report = await alignVectorDimensions(
         ctx.sql as Parameters<typeof alignVectorDimensions>[0],
         {
@@ -310,6 +323,7 @@ export function createRecallPlugin(cfg: RecallPluginConfig): KernelPlugin {
         ['recall_clusters.centroid', report.centroids]
       ] as const) {
         if (state !== 'populated') continue;
+        dimensionMismatch = true;
         const found = column.startsWith('embeddings')
           ? report.found.embeddings
           : report.found.centroids;
@@ -325,6 +339,48 @@ export function createRecallPlugin(cfg: RecallPluginConfig): KernelPlugin {
           { code: 'RECALL_DIMENSION_MISMATCH' }
         );
       }
+      // Every re-embed would fail against a mismatched column, so there is nothing to retry.
+      const intervalMs = cfg.embedBackfillIntervalMs ?? DEFAULT_EMBED_BACKFILL_INTERVAL_MS;
+      const resolveDataset = cfg.resolveDataset;
+      if (dimensionMismatch || intervalMs === 0 || resolveDataset === undefined) return;
+      // A boot that only prepares or copies the store (migrate-store) must not write embeddings into it.
+      if (!ctx.background) return;
+      // shortcut: every process sharing the store runs this pass; the work is
+      // idempotent, so duplicates cost embed calls only. Take a pg advisory lock
+      // if a multi-process deployment makes that matter.
+      const cursors = new Map<string, string>();
+      let running = false;
+      clearInterval(backfillTimer);
+      backfillTimer = setInterval(() => {
+        if (running) return;
+        running = true;
+        runEmbedBackfill({
+          registry: embedSourceRegistry,
+          store: cfg.store,
+          resolveDataset,
+          cursors,
+          perTypeLimit: EMBED_BACKFILL_PER_TYPE
+        })
+          .then((r) => {
+            if (r.embedded + r.failed === 0 && r.stopped === undefined) return;
+            ctx.metric('recall_embed_backfill', r);
+            process.stdout.write(`recall.embed_backfill ${JSON.stringify(r)}\n`);
+          })
+          .catch((err: unknown) => {
+            process.stderr.write(
+              `recall.embed_backfill failed: ${err instanceof Error ? err.message : String(err)}\n`
+            );
+          })
+          .finally(() => {
+            running = false;
+          });
+      }, intervalMs);
+      backfillTimer.unref();
+    },
+
+    onKernelStop() {
+      clearInterval(backfillTimer);
+      backfillTimer = undefined;
     },
 
     migrations: [

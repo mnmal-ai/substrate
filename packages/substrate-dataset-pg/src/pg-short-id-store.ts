@@ -21,7 +21,7 @@ type PgHandle = Sql | TransactionSql;
  * renaming would restart existing sequences at 1. Underscore-led namespaces
  * such as `_system_proposals` are therefore fine.
  *
- * @internal Exported for unit testing. Not part of the public package API.
+ * Exported for migrate-store, which advances every sequence after a copy.
  */
 export function seqName(ns: string, type: string): string {
   const sanitize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '_');
@@ -59,7 +59,7 @@ export class PgShortIdStore {
     // so a concurrent creator waits and then finds the sequence, rather than
     // failing on pg_class's unique index. `name` is `[a-z0-9_]` only.
     await this.sql.unsafe(
-      `DO $$ BEGIN PERFORM pg_advisory_xact_lock(hashtext('${name}')); CREATE SEQUENCE IF NOT EXISTS "${name}"; END $$`
+      `DO $$ BEGIN PERFORM pg_advisory_xact_lock(hashtext(current_schema() || '.' || '${name}')); CREATE SEQUENCE IF NOT EXISTS "${name}"; END $$`
     );
     this.#ensuredSequences.add(cacheKey);
     return name;
@@ -80,6 +80,25 @@ export class PgShortIdStore {
   }
 
   /**
+   * `count` consecutive-or-interleaved sequence values, ascending, in one
+   * statement whatever `count`. Under concurrent allocators the values need
+   * not be contiguous, but are distinct and above any earlier allocation.
+   */
+  async allocateUnboundMany(ns: string, type: string, count: number): Promise<number[]> {
+    if (!Number.isSafeInteger(count) || count < 0) {
+      throw new Error(`PgShortIdStore: count must be a non-negative integer, got ${count}`);
+    }
+    if (count === 0) return [];
+    const name = await this.ensureSequence(ns, type);
+    // ORDER BY: nextval is evaluated per row in no promised order.
+    const rows = await this.sql.unsafe<Array<{ n: string }>>(
+      `SELECT n FROM (SELECT nextval('"${name}"') AS n FROM generate_series(1, $1::int)) s ORDER BY n`,
+      [count]
+    );
+    return rows.map((r) => parseShortId(r.n));
+  }
+
+  /**
    * Bind a previously-allocated short-id to a row. `ON CONFLICT DO NOTHING`
    * covers both the PK `(namespace, type, short_id)` and the UNIQUE index
    * `(namespace, type, row_id)` — idempotent for backfill re-runs.
@@ -88,6 +107,22 @@ export class PgShortIdStore {
     await this.sql`
       INSERT INTO short_ids (namespace, type, short_id, row_id)
       VALUES (${ns}, ${type}, ${shortId}, ${rowId})
+      ON CONFLICT DO NOTHING
+    `;
+  }
+
+  /** `bind` for many pairs in one statement (arrays through `unnest`). */
+  async bindMany(
+    ns: string,
+    type: string,
+    pairs: ReadonlyArray<{ shortId: number; rowId: string }>
+  ): Promise<void> {
+    if (pairs.length === 0) return;
+    await this.sql`
+      INSERT INTO short_ids (namespace, type, short_id, row_id)
+      SELECT ${ns}::text, ${type}::text, t.short_id, t.row_id
+      FROM unnest(${pairs.map((p) => String(p.shortId))}::bigint[], ${pairs.map((p) => p.rowId)}::text[])
+        AS t(short_id, row_id)
       ON CONFLICT DO NOTHING
     `;
   }
@@ -172,7 +207,7 @@ export class PgShortIdStore {
       ON CONFLICT (namespace, type, short_id) DO NOTHING
     `;
 
-    const max = entries.reduce((m, e) => (e.shortId > m ? e.shortId : m), 0);
+    const max = entries.reduce((m, e) => Math.max(m, e.shortId), 0);
     const name = await this.ensureSequence(ns, type);
     // Advance the sequence to max so that the next nextval returns max+1.
     // GREATEST guards against regressing the sequence when preloading partial data.

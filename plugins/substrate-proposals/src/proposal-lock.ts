@@ -5,7 +5,7 @@
 
 import type { Dataset } from '@mnmal-ai/substrate-types';
 
-export type ProposalKind = 'type' | 'field' | 'namespace';
+export type ProposalKind = 'type' | 'field' | 'namespace' | 'index';
 
 const localTails = new Map<string, Promise<void>>();
 

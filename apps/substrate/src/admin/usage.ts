@@ -16,6 +16,8 @@ export const USAGE = [
   '  rotate <kid> --out <path> [--encrypt]   rotate a Key (new key to <path>)',
   '  register <kid> --pubkey <path> --ns <csv>   register an existing ed25519 pubkey as an agent Key',
   "  update <kid> [--ns <csv>] ...           change a live key's namespaces/caps/name in place",
+  '  migrate-store [options]                 copy a store into a fresh, empty, partitioned PG 18 store',
+  '  promote-fields [--url <base>]           run the promotion sweep now on a running server',
   '',
   '  register transport: drives POST /substrate/v1/_system/keys (credential + directory row,',
   '    one transaction, no restart) using --url or SUBSTRATE_URL and an admin identity',
@@ -49,9 +51,30 @@ export const USAGE = [
   '    credentials at all, whether YOUR admin credential resolves, whether the grant it',
   '    resolves to confers admin, and how many admin keys the deployment has left.',
   '    A check it could not run prints as `skip`, never as a pass.',
+  '  promote-fields: gives each field added at runtime (propose_field) its own column now,',
+  '    instead of at the next SUBSTRATE_PROMOTE_INTERVAL_MS sweep. Goes through the server',
+  '    (--url or SUBSTRATE_URL) with an admin identity; prints one line per field touched,',
+  '    and exits 1 when any failed. Also retries a field held back by a unique conflict,',
+  '    which the timed sweep leaves until its type changes: run it after fixing the data.',
   '  --encrypt produces a PKCS#8+PBES2 (aes-256-cbc) encrypted private-key PEM.',
   '  Passphrase is read from SUBSTRATE_ADMIN_KEY_PASSPHRASE (required when --encrypt is set).',
-  '  An encrypted admin key is read with SUBSTRATE_ADMIN_KEY_PASSPHRASE for every command that signs.'
+  '  An encrypted admin key is read with SUBSTRATE_ADMIN_KEY_PASSPHRASE for every command that signs.',
+  '  migrate-store: reads the source and target connection strings from environment variables,',
+  '    SUBSTRATE_MIGRATE_FROM_URL and SUBSTRATE_MIGRATE_TO_URL unless --from-env / --to-env name',
+  '    others; a connection string on argv is refused. Stop the service first. The source is',
+  '    only read. The target must be empty and on PostgreSQL 18; it is prepared with the same',
+  '    migrations and plugins (SUBSTRATE_PLUGIN_DIR) serve uses, copied, indexed and verified.',
+  '    SUBSTRATE_INDEX_DISK_PATH must be set (the target volume mount, or off).',
+  '    SUBSTRATE_SYSTEM_ACTOR is not needed: the prepare boot serves no request, so nothing is attributed to it.',
+  '    --from-schema / --to-schema <s>  pin a side to schema <s>',
+  '    --dry-run          preflight only: the plan, every refusal, nothing written',
+  '    --verify-only      build indexes, then verify a finished copy against its source',
+  '    --skip-index-build leave non-unique index builds to the first serve boot',
+  '    --full-checksum    hash every row rather than a sample per type',
+  '    --batch-rows <n>   rows between progress lines (default 10000)',
+  '    --skip-table <t>   waive a source table nothing declares (repeatable)',
+  '    --json             the final report as one JSON object on stdout; progress is on stderr',
+  '    Exit: 0 copied and verified; 2 refused or a usage error; 3 verification failed; 1 otherwise.'
 ].join('\n');
 
 /** One-line synopsis per subcommand — the shape the operator typed wrong. */
@@ -65,7 +88,10 @@ export const SYNOPSIS: Record<string, string> = {
   register:
     'substrate-admin register <kid> --pubkey <path> --ns <csv> [--name <n>] [--caps <csv>] [--allow-admin]',
   update:
-    'substrate-admin update <kid> [--name <n>] [--ns <csv>] [--caps <csv>] [--widen] [--allow-admin]'
+    'substrate-admin update <kid> [--name <n>] [--ns <csv>] [--caps <csv>] [--widen] [--allow-admin]',
+  'promote-fields': 'substrate-admin promote-fields [--url <base>]',
+  'migrate-store':
+    'substrate-admin migrate-store [--from-env <VAR>] [--to-env <VAR>] [--from-schema <s>] [--to-schema <s>] [--dry-run | --verify-only] [--skip-index-build] [--full-checksum] [--batch-rows <n>] [--skip-table <t>]... [--json]'
 };
 
 /**

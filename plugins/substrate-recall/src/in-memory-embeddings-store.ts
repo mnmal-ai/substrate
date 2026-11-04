@@ -3,7 +3,7 @@
  * memory-backed deployments. `knnSearch` computes cosine similarity in JS,
  * O(N · D) per search, so it is not for production-scale recall. Row bodies
  * are materialized through the optional `datasetFor` resolver, mirroring
- * pg's join against `rows`.
+ * pg's join against the type's table.
  */
 
 import type { Dataset, Row } from '@mnmal-ai/substrate-types';
@@ -88,7 +88,7 @@ export class InMemoryEmbeddingsStore implements EmbeddingsStore {
 
   /**
    * Materialize a row body via `datasetFor`, mirroring pg's join against
-   * `rows`. Returns UNRESOLVED when no dataset is wired, and `null`
+   * the type's table. Returns UNRESOLVED when no dataset is wired, and `null`
    * when the row is missing or deleted so the caller can exclude it.
    */
   async #readRow(

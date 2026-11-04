@@ -103,7 +103,7 @@ export function startBackground(args: {
     // Third stage: hard-delete tombstoned rows + edges
     // past their retention horizon. Pg-backed only; the dataset's
     // `purgeTombstonedRows` is substrate-wide so one call covers every
-    // namespace's tombstones in the shared `rows` table.
+    // namespace's tombstones, type table by type table.
     const purgeFn =
       pgDatasetForPurge !== null && pgEdgesForPurge !== null
         ? async (): Promise<{ rows: number; edges: number }> => {
@@ -207,7 +207,10 @@ export function startBackground(args: {
       // Sentinel's watch/register are privileged, so the client must present a
       // credential of its own — distinct from the per-bridge ones, since the
       // sentinel is a peer we talk TO rather than a namespace we bridge FROM.
-      auth: makeAuthorizationProvider(sentinelClientConfig.cred),
+      auth: makeAuthorizationProvider(sentinelClientConfig.cred, {
+        // The sentinel checks `aud` against its http(s) public origins.
+        audience: new URL(sentinelClientConfig.url.replace(/^ws/, 'http')).origin
+      }),
       metric: (name, payload) => {
         process.stdout.write(`sentinel-client.${name} ${JSON.stringify(payload ?? null)}\n`);
       },

@@ -20,6 +20,7 @@ import { z } from 'zod';
 // binary carries the literal value.
 import pkg from '../../package.json' with { type: 'json' };
 import { makeAgentJwtProvider, resolveAgentCapabilities } from './agent-jwt.js';
+import { buildInstructions, overviewLegend, schemaOverview } from './schema-overview.js';
 
 /** The version the MCP server reports in its initialize serverInfo. */
 export const MCP_SERVER_VERSION: string =
@@ -228,14 +229,31 @@ export async function recall(endpoint: string, body: RecallInput): Promise<Recal
 
 export function createSchemaHandler(
   endpoint: string
-): (args?: { namespace?: string; type?: string; shape?: string }) => Promise<ToolResult> {
+): (args?: {
+  namespace?: string;
+  type?: string;
+  shape?: string;
+  full?: boolean;
+}) => Promise<ToolResult> {
   return async (args) => {
     // Scoped, cheap lookups when a namespace (and optionally a type) is given —
     // the right call before a create/update so you read the exact write contract
-    // instead of pulling the whole federated schema. No args → federated.
+    // instead of pulling the whole federated schema. No args → the compact
+    // overview; `full: true` → the whole federated schema.
     const ns = args?.namespace;
     const type = args?.type;
     const shape = args?.shape;
+    if ((ns === undefined || ns === '') && args?.full !== true) {
+      try {
+        const federated = await getSubstrate<Parameters<typeof schemaOverview>[0]>(
+          endpoint,
+          '/substrate/v1/federated-schema'
+        );
+        return okResult({ legend: overviewLegend, overview: schemaOverview(federated) });
+      } catch (err) {
+        return errorResult(toMessage(err));
+      }
+    }
     let path = '/substrate/v1/federated-schema';
     if (ns !== undefined && ns !== '') {
       if (type !== undefined && type !== '') {
@@ -299,16 +317,19 @@ export interface ProposeTypeArgs {
   typeName: string;
   fields: Record<string, unknown>;
   proposedReason: string;
+  orderedBy?: Record<string, 'asc' | 'desc'>;
+  indexes?: Record<string, unknown>[];
+  expectedSize?: 'small' | 'large';
 }
 
 export function createProposeTypeHandler(
   endpoint: string
 ): (args: ProposeTypeArgs) => Promise<ToolResult> {
-  return async ({ namespace, typeName, fields, proposedReason }) => {
+  return async ({ namespace, ...params }) => {
     try {
       const payload = {
         [`${namespace}/propose_type`]: {
-          params: { typeName, fields, proposedReason },
+          params,
           fields: { id: true, typeName: true, applied: true, appliedAt: true }
         }
       };
@@ -341,6 +362,37 @@ export function createProposeFieldHandler(
       };
       const envelope = await postSubstrate(endpoint, '/substrate/v1/mutate', payload);
       return okResult(envelope);
+    } catch (err) {
+      return errorResult(toMessage(err));
+    }
+  };
+}
+
+export interface ProposeIndexArgs {
+  namespace: string;
+  type: string;
+  action: 'add' | 'remove' | 'dismiss' | 'orderedBy';
+  reason: string;
+  recommendationId?: string | undefined;
+  declaration?: Record<string, unknown> | undefined;
+  orderedBy?: Record<string, 'asc' | 'desc'> | undefined;
+  indexName?: string | undefined;
+}
+
+/** `propose_index` lives on the proposals control plane; `namespace` names the target. */
+export function createProposeIndexHandler(
+  endpoint: string
+): (args: ProposeIndexArgs) => Promise<ToolResult> {
+  return async (args) => {
+    try {
+      const params = Object.fromEntries(Object.entries(args).filter(([, v]) => v !== undefined));
+      const payload = {
+        '_system_proposals/propose_index': {
+          params,
+          fields: { id: true, action: true, namespace: true, type: true, indexName: true }
+        }
+      };
+      return okResult(await postSubstrate(endpoint, '/substrate/v1/mutate', payload));
     } catch (err) {
       return errorResult(toMessage(err));
     }
@@ -404,10 +456,33 @@ export interface McpServerOptions {
    * all ten.
    */
   tools?: string;
+  /** Sent to the client at initialize; clients put it in the agent's context. */
+  instructions?: string;
 }
 
+const WALK_DESCRIPTION =
+  ' WALKS: a reference field is followed backwards with `_walk`, which names the inbound field as ' +
+  '"ns/Type.field" (the schema overview marks it `←Type.field`). It filters in `where`, ' +
+  'aggregates in `fields._agg`, or nests rows in `fields`. Example: orders with an item ' +
+  'priced over 50, and their item count: { "shop/Order": { "params": { "where": { "_walk": ' +
+  '{ "in": "shop/Item.order", "where": { "price": { "gt": 50 } } } } }, "fields": { "id": true, ' +
+  '"_agg": { "items": { "in": "shop/Item.order", "count": true } } } } }. ' +
+  '`out: "field"` follows a reference forwards. A `_walk` takes `quantifier` "any" (default), ' +
+  '"none" or "all", or `pick` one neighbour by { "latest": <date> }, { "max": <f> } or { "min": <f> }; ' +
+  'an "any" walk binds `as: "L"`, and a later comparison reads it as { "$ref": "L.price", "times": 1.25 } ' +
+  '(`$.f` is the seed row, `_agg.<name>` an aggregate; `times`/`plus` scale numbers, `plus` shifts a ' +
+  'date in ms). `_agg` also takes avg/sum/min/max: <field> or latest: { by, value }, and in `where` ' +
+  'compares beside a comparison: { "_agg": { "in": ..., "count": true }, "gte": 3 }. Frame params: ' +
+  '`count: true` answers { count }; `aggregate: { name: { sum: "price" } }` with optional `bucket: ' +
+  '{ field, by: "day"|"hour" }` answers groups; `derive: { m: { diff|ratio: ["_agg.x", "$.f"] } }` ' +
+  'is ordered by `orderBy: [{ "$m": "desc" }]`. Walks are query-only: subscribe, stream and mutate ' +
+  'refuse them, as does a store without walks (walks_unsupported_store).';
+
 export function createMcpServer(endpoint: string, options: McpServerOptions = {}): McpServer {
-  const server = new McpServer({ name: 'substrate', version: MCP_SERVER_VERSION });
+  const server = new McpServer(
+    { name: 'substrate', version: MCP_SERVER_VERSION },
+    options.instructions !== undefined ? { instructions: options.instructions } : undefined
+  );
 
   // TOOLS table: each entry maps directly to a server.registerTool call.
   // Every handler is a thin JSON-over-HTTP closure over `endpoint` (no client
@@ -423,8 +498,9 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
       name: 'schema',
       config: {
         description:
-          'Fetch the Substrate schema. No args → the full federated schema for every ' +
-          'namespace (use sparingly; it is large). SCOPED + CHEAP: pass `namespace` ' +
+          "Fetch the Substrate schema. No args → a compact overview: every namespace's " +
+          'types, one line of `field: type` each, enough to write a query. `full: true` → ' +
+          'the whole federated schema (large; rarely needed). SCOPED + CHEAP: pass `namespace` ' +
           "for one namespace, or `namespace` + `type` for a single type's write " +
           'contract ({ fields, mutations }). Mine the scoped shape BEFORE a ' +
           'create/update so you send only declared fields — autoCRUD rejects ' +
@@ -450,6 +526,12 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
             .optional()
             .describe(
               'Projection of the type contract; requires `namespace` + `type`. "full" (default) inlines every mutation\'s params and returns. "fields" returns the field defs plus `mutationNames`, about a sixth the size — use it to answer "what fields does this type have".'
+            ),
+          full: z
+            .boolean()
+            .optional()
+            .describe(
+              'With no `namespace`: true returns the whole federated schema instead of the overview.'
             )
         }
       },
@@ -461,7 +543,8 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
         description:
           'Query Substrate. payload is a single frame object mapping qualified keys ' +
           '(<ns>/<Type>) to { params, fields }. ONE call can span multiple ' +
-          'namespaces — e.g. { "prices/Price": {...}, "products/Product": {...} }.',
+          'namespaces — e.g. { "prices/Price": {...}, "products/Product": {...} }.' +
+          WALK_DESCRIPTION,
         inputSchema: {
           payload: payloadSchema(
             'Query frame. Example: { "default/Todo": { "params": { "limit": 20 }, ' +
@@ -492,7 +575,10 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
             'Mutation frame. Single: { "default/createTodo": { "params": { "title": "..." }, ' +
               '"fields": { "id": true } } }. Batched atomic: ' +
               '{ "default/updateTodo": [ { "params": { "id": "1", "done": true }, "fields": { "id": true } }, ' +
-              '{ "params": { "id": "2", "done": true }, "fields": { "id": true } } ] }.'
+              '{ "params": { "id": "2", "done": true }, "fields": { "id": true } } ] }. ' +
+              'By filter: { "default/updateManyTodo": { "params": { "where": { "done": { "eq": false } }, ' +
+              '"set": { "done": true } }, "fields": { "count": true, "ids": true, "idsTruncated": true } } }; ' +
+              'deleteMany<Type> takes only "where".'
           )
         }
       },
@@ -502,7 +588,7 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
       name: 'ask',
       config: {
         description:
-          'Ask a natural-language question of one namespace. The parser answers first; a constrained judge handles what it escalates; a judge outage hands off honestly. Returns { outcome, trail }, where outcome.kind is rows | recall | clarify | refuse. Read-only. Requires the @mnmal-ai/substrate-nl plugin (404 otherwise).',
+          'Ask a natural-language question of one namespace. The parser answers first; a constrained judge handles what it escalates; a judge outage hands off honestly. Returns { outcome, trail }, where outcome.kind is rows | recall | clarify | refuse | unknown. unknown means part of the question was dropped and the answer would change which rows count; it carries dropped and the plan, and nothing ran. rows also carries dropped (what it does not reflect) and plan. Read-only. Requires the @mnmal-ai/substrate-nl plugin (404 otherwise).',
         inputSchema: {
           namespace: z.string().min(1).describe('Namespace to ask, e.g. "notes".'),
           question: z.string().min(1).describe('The question, e.g. "open todos in billing".'),
@@ -548,7 +634,24 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
           proposedReason: z
             .string()
             .min(1)
-            .describe('Short human-readable justification. Why is this type being added?')
+            .describe('Short human-readable justification. Why is this type being added?'),
+          orderedBy: z
+            .record(z.string(), z.enum(['asc', 'desc']))
+            .optional()
+            .describe(
+              'What order do you usually read this in? { "<field>": "asc" | "desc" } over a ' +
+                'date or number field, or createdAt / updatedAt. Omit for newest first.'
+            ),
+          indexes: z
+            .array(z.record(z.string(), z.unknown()))
+            .optional()
+            .describe(
+              'Indexes the reads will need: [{ "fields": ["brand"] }]. Never unique or named.'
+            ),
+          expectedSize: z
+            .enum(['small', 'large'])
+            .optional()
+            .describe('"large" if the type will hold many rows, so indexes are advised sooner.')
         }
       },
       handler: createProposeTypeHandler(endpoint)
@@ -583,6 +686,48 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
         }
       },
       handler: createProposeFieldHandler(endpoint)
+    },
+    {
+      name: 'propose_index',
+      config: {
+        description:
+          'Apply or dismiss an index recommendation (query `_system/IndexRecommendation`), ' +
+          'or change indexes directly. `add` / `orderedBy` work on proposed types only ' +
+          '(`index_on_code_defined_type` otherwise); `remove` drops an engine-owned, ' +
+          'non-unique index the engine no longer wants, on any type (`not_engine_owned`, ' +
+          '`unique_index`, `still_desired`, `unknown_index`). A referenced recommendation ' +
+          'moves to accepted or dismissed; a closed one is refused (`recommendation_closed`), ' +
+          'one whose evidence no longer holds is superseded (`recommendation_stale`). ' +
+          'Requires the `substrate.index` capability in the target namespace.',
+        inputSchema: {
+          namespace: z.string().min(1).describe('Namespace of the type whose indexes change.'),
+          type: z.string().min(1).describe('Type name, e.g. "Sneaker".'),
+          action: z.enum(['add', 'remove', 'dismiss', 'orderedBy']),
+          reason: z.string().min(1).describe('Short human-readable justification.'),
+          recommendationId: z
+            .string()
+            .min(1)
+            .optional()
+            .describe('The IndexRecommendation row id; required for dismiss.'),
+          declaration: z
+            .record(z.string(), z.unknown())
+            .optional()
+            .describe(
+              'add: an index declaration, e.g. { "fields": ["brand", { "field": "size", "dir": "desc" }] }. ' +
+                "Defaults to the recommendation's."
+            ),
+          orderedBy: z
+            .record(z.string(), z.enum(['asc', 'desc']))
+            .optional()
+            .describe('orderedBy: the natural order, one key, e.g. { "releasedAt": "desc" }.'),
+          indexName: z
+            .string()
+            .min(1)
+            .optional()
+            .describe("remove: the index to drop. Defaults to the recommendation's.")
+        }
+      },
+      handler: createProposeIndexHandler(endpoint)
     },
     {
       name: 'drop_namespace',
@@ -781,6 +926,16 @@ function resolveToolAllowlist(raw: string | undefined, known: string[]): Set<str
   return new Set(names);
 }
 
+/** The overview for the session's instructions, or null when the server is slow or down. */
+async function fetchOverview(endpoint: string): Promise<ReturnType<typeof schemaOverview> | null> {
+  const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000).unref());
+  const fetched = getSubstrate<Parameters<typeof schemaOverview>[0]>(
+    endpoint,
+    '/substrate/v1/federated-schema'
+  ).then(schemaOverview, () => null);
+  return Promise.race([fetched, timeout]);
+}
+
 /**
  * Boot the stdio MCP server. Resolves once the transport is connected; the
  * process keeps running until the host (Claude Code, etc.) closes stdio.
@@ -788,10 +943,12 @@ function resolveToolAllowlist(raw: string | undefined, known: string[]): Set<str
 export async function runMcp(): Promise<void> {
   const endpoint = process.env.SUBSTRATE_URL ?? 'http://localhost:3100';
   configureAgentAuth(process.env, endpoint);
-  const server = createMcpServer(
-    endpoint,
-    process.env.SUBSTRATE_MCP_TOOLS === undefined ? {} : { tools: process.env.SUBSTRATE_MCP_TOOLS }
-  );
+  const server = createMcpServer(endpoint, {
+    ...(process.env.SUBSTRATE_MCP_TOOLS === undefined
+      ? {}
+      : { tools: process.env.SUBSTRATE_MCP_TOOLS }),
+    instructions: buildInstructions(await fetchOverview(endpoint))
+  });
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

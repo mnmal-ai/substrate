@@ -23,8 +23,8 @@ const SCHEMA: TypeSchema = {
 };
 const CAPS: FilterCapabilities = { operators: fullBuiltinOperators(), orderBy: true, cursor: true };
 
-const validate = (where: WhereClause, allowTableScan = false): void =>
-  validateFilter({ where, typeSchema: SCHEMA, capabilities: CAPS, allowTableScan });
+const validate = (where: WhereClause): void =>
+  validateFilter({ where, typeSchema: SCHEMA, capabilities: CAPS });
 
 function refusal(fn: () => void): FilterValidationError {
   try {
@@ -42,7 +42,7 @@ describe('validateFilter — json path: accepted', () => {
     expect(() => validate({ values: { path: ['year'], in: [1995, 2001] } })).not.toThrow();
     expect(() => validate({ values: { path: ['tags'], has: 'jazz' } })).not.toThrow();
   });
-  it('scanning operators pass under _allowTableScan', () => {
+  it('scanning operators pass', () => {
     for (const where of [
       { values: { path: ['year'], gt: 1990 } },
       { values: { path: ['year'], between: [1990, 2000] } },
@@ -51,28 +51,15 @@ describe('validateFilter — json path: accepted', () => {
       { values: { path: ['year'], eq: null } },
       { values: { path: ['year'], in: [1995, null] } }
     ] as WhereClause[]) {
-      expect(() => validate(where, true)).not.toThrow();
+      expect(() => validate(where)).not.toThrow();
     }
+  });
+  it('accepts a json path eq on a non-indexed json field', () => {
+    expect(() => validate({ blob: { path: ['year'], eq: 1995 } })).not.toThrow();
   });
 });
 
 describe('validateFilter — json path: refused', () => {
-  it('scanning operators without the flag → unindexed_field, naming the operator', () => {
-    const e = refusal(() => validate({ values: { path: ['year'], gt: 1990 } }));
-    expect(e.code).toBe('unindexed_field');
-    expect(e.message).toContain("'gt'");
-    expect(e.message).toContain("'values'");
-    expect(e.path).toEqual(['where', 'values', 'gt']);
-    expect(refusal(() => validate({ values: { path: ['year'], eq: null } })).code).toBe(
-      'unindexed_field'
-    );
-  });
-  it('an UNindexed json field gets no index-served operators — every op needs the flag', () => {
-    const e = refusal(() => validate({ blob: { path: ['year'], eq: 1995 } }));
-    expect(e.code).toBe('unindexed_field');
-    expect(e.message).toContain('field.json({ indexed: true })');
-    expect(() => validate({ blob: { path: ['year'], eq: 1995 } }, true)).not.toThrow();
-  });
   it('no path keeps the old wording (field + kind) and adds the hint', () => {
     const e = refusal(() => validate({ values: { eq: 'x' } }));
     expect(e.code).toBe('unknown_operator');
@@ -104,17 +91,17 @@ describe('validateFilter — json path: refused', () => {
     expect(refusal(() => validate({ values: { path: ['y'], eq: { a: 1 } } })).code).toBe(
       'type_mismatch'
     );
-    expect(
-      refusal(() => validate({ values: { path: ['y'], gt: new Date() } }, true)).message
-    ).toMatch(/ISO string/);
-    expect(refusal(() => validate({ values: { path: ['y'], between: [1, 'b'] } }, true)).code).toBe(
+    expect(refusal(() => validate({ values: { path: ['y'], gt: new Date() } })).message).toMatch(
+      /ISO string/
+    );
+    expect(refusal(() => validate({ values: { path: ['y'], between: [1, 'b'] } })).code).toBe(
       'invalid_between'
     );
   });
   it('a json field inside a struct is refused — v1 addresses top-level json fields only', () => {
     // pg's struct walk has no json-path branch and no index is derived for a
     // nested field, so accepting it would let memory answer what pg refuses.
-    const e = refusal(() => validate({ address: { data: { path: ['x'], eq: 1 } } }, true));
+    const e = refusal(() => validate({ address: { data: { path: ['x'], eq: 1 } } }));
     expect(e.code).toBe('unknown_operator');
     expect(e.message).toContain('top-level');
     expect(e.message).toContain("'data'");

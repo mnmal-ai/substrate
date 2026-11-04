@@ -17,7 +17,14 @@ import { PgDataset, runMigrations } from '@mnmal-ai/substrate-dataset-pg';
 import { ADMIN_CAPABILITIES } from '@mnmal-ai/substrate-policy';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { main, runBootstrap } from '../src/bin/admin.js';
+import { deleteNonUuidTypeTableRows, dropTypeTableUuidChecks, purgeWhere } from './_layout.js';
+
+/** Every `_system/Key` row, purged from its type table. */
+async function deleteKeys(sql: Sql): Promise<void> {
+  await purgeWhere(sql, SYSTEM_NAMESPACE, KEY_TYPE);
+}
+
+import { main, runBootstrap } from '../src/admin/index.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 
@@ -44,14 +51,14 @@ describe.skipIf(!POSTGRES_URL)('substrate-admin bootstrap', () => {
     err = [];
     // Purge Key rows left by other test files sharing this database or by
     // a prior crashed run. afterEach also purges, but only THIS test's writes.
-    await sql`DELETE FROM rows WHERE namespace = ${SYSTEM_NAMESPACE} AND type = ${KEY_TYPE}`;
+    await deleteKeys(sql);
   });
 
   afterEach(async () => {
     rmSync(tmp, { recursive: true, force: true });
     // Purge only the _system/Key rows we just wrote. `TRUNCATE` is
     // tempting but would also wipe rows the other pg-integration tests seed.
-    await sql`DELETE FROM rows WHERE namespace = ${SYSTEM_NAMESPACE} AND type = ${KEY_TYPE}`;
+    await deleteKeys(sql);
   });
 
   it('two concurrent bootstraps create exactly one genesis admin', async () => {
@@ -61,7 +68,7 @@ describe.skipIf(!POSTGRES_URL)('substrate-admin bootstrap', () => {
       new Proxy(postgres(url), {
         apply(target, self, args: unknown[]) {
           const text = Array.isArray(args[0]) ? (args[0] as string[]).join('') : '';
-          if (!text.includes('INSERT INTO rows')) return Reflect.apply(target, self, args);
+          if (!/INSERT INTO (rows|"t__)/.test(text)) return Reflect.apply(target, self, args);
           return new Promise((resolve) => setTimeout(resolve, 300)).then(() =>
             Reflect.apply(target, self, args)
           );
@@ -335,10 +342,7 @@ describe.skipIf(!POSTGRES_URL)('substrate-admin bootstrap (SUBSTRATE_ENFORCE_UUI
        WHERE from_id !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
           OR to_id   !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
     `;
-    await sql`
-      DELETE FROM rows
-       WHERE id !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-    `;
+    await deleteNonUuidTypeTableRows(sql);
     // Re-run migrations with the gate flipped on. `force: true` clears the
     // tracking table so 0002 actually applies on a DB that was already
     // migrated under the default (unconstrained) gate.
@@ -348,7 +352,7 @@ describe.skipIf(!POSTGRES_URL)('substrate-admin bootstrap (SUBSTRATE_ENFORCE_UUI
   afterAll(async () => {
     // Strip the constraints + 0002's tracking row so unrelated pg-gated tests
     // sharing this DB don't inherit constrained schema between runs.
-    await sql`ALTER TABLE rows DROP CONSTRAINT IF EXISTS rows_id_uuid_format`;
+    await dropTypeTableUuidChecks(sql);
     await sql`ALTER TABLE short_ids DROP CONSTRAINT IF EXISTS short_ids_row_id_uuid_format`;
     await sql`ALTER TABLE edges DROP CONSTRAINT IF EXISTS edges_from_id_uuid_format`;
     await sql`ALTER TABLE edges DROP CONSTRAINT IF EXISTS edges_to_id_uuid_format`;
@@ -361,12 +365,12 @@ describe.skipIf(!POSTGRES_URL)('substrate-admin bootstrap (SUBSTRATE_ENFORCE_UUI
     keyPath = join(tmp, 'admin.key');
     out = [];
     err = [];
-    await sql`DELETE FROM rows WHERE namespace = ${SYSTEM_NAMESPACE} AND type = ${KEY_TYPE}`;
+    await deleteKeys(sql);
   });
 
   afterEach(async () => {
     rmSync(tmp, { recursive: true, force: true });
-    await sql`DELETE FROM rows WHERE namespace = ${SYSTEM_NAMESPACE} AND type = ${KEY_TYPE}`;
+    await deleteKeys(sql);
   });
 
   it('bootstrap writes a UUID-shape kid that satisfies rows_id_uuid_format', async () => {

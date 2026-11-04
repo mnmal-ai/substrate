@@ -6,7 +6,7 @@
  *
  *  - `eq` / `in` / `has` are containment, `(body -> field) @> doc`. Type-strict
  *    by construction (1995 does not contain "1995"). Written against the
- *    FIELD, not the body, so it matches the scoped GIN that
+ *    FIELD, not the body (or a type table's `extra`), so it matches the scoped GIN that
  *    `field.json({ indexed: true })` derives.
  *  - Everything typed is `COALESCE(CASE WHEN jsonb_typeof(x) = … THEN … END,
  *    FALSE)`. CASE because SQL does not promise AND short-circuits, so a
@@ -20,7 +20,15 @@
 
 import { assertJsonPathPredicate, type JsonPathPredicate } from '@mnmal-ai/substrate-filter';
 import type { Sql, TransactionSql } from 'postgres';
-import { asJsonValue, combineAnd, combineOr, escapeLike, type Fragment } from './primitives.js';
+import {
+  asJsonValue,
+  bodyJson,
+  combineAnd,
+  combineOr,
+  escapeLike,
+  type Fragment,
+  type JsonbColumn
+} from './primitives.js';
 
 type Cmp = '>' | '>=' | '<' | '<=';
 
@@ -34,21 +42,21 @@ function nestPath(path: readonly string[], leaf: unknown): unknown {
 export function buildJsonPathPredicate(
   sql: Sql | TransactionSql,
   field: string,
-  predicate: JsonPathPredicate
+  predicate: JsonPathPredicate,
+  alias?: string,
+  jsonb?: JsonbColumn
 ): Fragment {
   assertJsonPathPredicate(field, predicate);
   const path = predicate.path;
 
-  let x = sql`body -> ${field}`;
-  for (const seg of path) x = sql`${x} -> ${seg}`;
-  x = sql`(${x})`;
+  const x = bodyJson(sql, [field, ...path], alias, jsonb);
   const text = sql`(${x} #>> '{}')`;
 
   // `IS NOT NULL AND`, not COALESCE: a row with no such field makes the left
   // side SQL NULL, and `FALSE AND NULL` is FALSE, so this is never NULL under a
   // caller's NOT. COALESCE would say the same but hide `@>` from the planner —
   // the index only matches a bare `expr @> const` conjunct.
-  const fieldExpr = sql`(body -> ${field})`;
+  const fieldExpr = bodyJson(sql, [field], alias, jsonb);
   const containsDoc = (leaf: unknown): Fragment =>
     sql`${fieldExpr} @> ${sql.json(asJsonValue(nestPath(path, leaf)))}`;
   const contains = (leaf: unknown): Fragment =>

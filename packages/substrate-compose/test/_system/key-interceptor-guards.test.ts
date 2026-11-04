@@ -52,6 +52,19 @@ async function setup() {
 const LATER = new Date(Date.now() - 1000).toISOString();
 
 describe('_system key interceptors — lockout guard', () => {
+  it('refuses updateManyKey and deleteManyKey: by filter would skip every guard here', async () => {
+    const { call, create, keyRegistry } = await setup();
+    await create('root@test');
+    const where = { kid: { eq: 'root@test' } };
+    await expect(call('updateManyKey', { where, set: { revokedAt: LATER } })).rejects.toMatchObject(
+      { code: 'capability_unsupported' }
+    );
+    await expect(call('deleteManyKey', { where })).rejects.toMatchObject({
+      code: 'capability_unsupported'
+    });
+    expect(keyRegistry.lookup('root@test')).not.toBeNull();
+  });
+
   it('refuses revoking the last active admin key through updateKey', async () => {
     const { call, create, keyRegistry } = await setup();
     const admin = await create('root@test');

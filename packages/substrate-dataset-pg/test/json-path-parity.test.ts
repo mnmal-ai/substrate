@@ -9,14 +9,11 @@ import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
 import type { Row, WhereClause } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import {
-  deriveListIndexMigration,
-  PgDataset,
-  runDerivedMigrations,
-  runMigrations
-} from '../src/index.js';
+import { PgDataset, runMigrations } from '../src/index.js';
 import { generatedIdentifier } from '../src/migrate.js';
 import { buildWhere } from '../src/pg-sql.js';
+import { loadTypeTable, type TypeTable } from '../src/type-table.js';
+import { relationOf, truncateRows } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const NS = 'jpath_ns';
@@ -52,7 +49,7 @@ describe.skipIf(!POSTGRES_URL)('json path parity', () => {
     await sql.end();
   });
   beforeEach(async () => {
-    await sql`TRUNCATE TABLE rows, short_ids`;
+    await truncateRows(sql);
     pg = new PgDataset({ namespace: NS, sql });
     mem = new MemoryDataset({ namespace: NS });
     await pg.write('J', ROWS);
@@ -155,11 +152,17 @@ describe.skipIf(!POSTGRES_URL)('json path parity', () => {
 
   // `field.json({ indexed: true })` derives the same per-field GIN a list
   // field gets (there is no whole-body GIN), so the containment must be
-  // written against `(body -> field)` to match it.
+  // written against `(body -> field)` to match it. On the partitioned layout
+  // the reconciler builds it on the type's partition, under the same name, and
+  // on `tables` on the type table, over `(extra -> field)`.
   it('eq and has are served by the derived per-field GIN', async () => {
-    await runDerivedMigrations(sql, [
-      deriveListIndexMigration({ namespace: NS, type: 'J', field: 'values' })
-    ]);
+    await new PgDataset({
+      namespace: NS,
+      sql,
+      typeDefLookup: () => ({
+        fields: { values: { kind: 'scalar', type: 'json', indexed: true } }
+      })
+    }).ensureTypeStorage('J');
     await pg.write(
       'J',
       Array.from({ length: 2000 }, (_, i) => ({
@@ -167,21 +170,17 @@ describe.skipIf(!POSTGRES_URL)('json path parity', () => {
         values: { year: i, tags: [`t${i}`] }
       }))
     );
-    await sql`ANALYZE rows`;
+    await sql.unsafe(`ANALYZE ${await relationOf(sql, NS, 'J')}`);
+    const table = (await loadTypeTable(sql, NS, 'J')) as TypeTable;
     for (const where of [
       y({ eq: 7 }),
       { values: { path: ['tags'], has: 't7' } }
     ] as WhereClause[]) {
       const plan = await sql.begin(async (tx) => {
         await tx`SET LOCAL enable_seqscan = off`;
-        const frag = buildWhere(
-          tx,
-          where,
-          () => null,
-          () => undefined
-        );
-        return tx`EXPLAIN SELECT id FROM rows
-                  WHERE namespace = ${NS} AND type = 'J' AND deleted_at IS NULL AND ${frag!}`;
+        const frag = buildWhere(tx, where, () => null, table);
+        return tx`EXPLAIN SELECT id FROM ${tx.unsafe(table.from)}
+                  WHERE deleted_at IS NULL AND ${frag!}`;
       });
       const text = plan.map((r) => String(r['QUERY PLAN'])).join('\n');
       expect(text, text).toContain(generatedIdentifier(NS, 'J', 'values', 'gin'));

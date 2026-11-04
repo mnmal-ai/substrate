@@ -118,6 +118,28 @@ describe('validateFilter — where clause', () => {
     );
   });
 
+  it('refuses a date operand of the ISO shape on a day that does not exist, naming the field', () => {
+    for (const operand of [
+      { gt: '2026-02-30' },
+      { eq: '2026-13-01T00:00:00Z' },
+      { in: ['2026-10-24', '0000-01-01'] },
+      { between: ['2026-10-24', '2026-02-30T10:00:00Z'] },
+      { lt: new Date(Number.NaN) }
+    ]) {
+      const run = () =>
+        validateFilter({ where: { createdAt: operand }, typeSchema: SCHEMA, capabilities: CAPS });
+      expectCode(run, 'type_mismatch');
+      expect(run).toThrow(/on 'createdAt': .* is not a real date/);
+    }
+    expectOk(() =>
+      validateFilter({
+        where: { createdAt: { gt: '2026-10-24', lt: '2026-10-25T10:00:00' } },
+        typeSchema: SCHEMA,
+        capabilities: CAPS
+      })
+    );
+  });
+
   it('rejects unknown fields', () => {
     expectCode(
       () =>
@@ -159,7 +181,6 @@ describe('validateFilter — where clause', () => {
       () =>
         validateFilter({
           where: { priority: { between: [1] as unknown as [number, number] } },
-          allowTableScan: true,
           typeSchema: SCHEMA,
           capabilities: CAPS
         }),
@@ -167,23 +188,10 @@ describe('validateFilter — where clause', () => {
     );
   });
 
-  it('rejects filters on unindexed fields by default', () => {
-    expectCode(
-      () =>
-        validateFilter({
-          where: { priority: { eq: 5 } },
-          typeSchema: SCHEMA,
-          capabilities: CAPS
-        }),
-      'unindexed_field'
-    );
-  });
-
-  it('allows filters on unindexed fields when _allowTableScan is set', () => {
+  it('accepts eq on an unindexed scalar', () => {
     expectOk(() =>
       validateFilter({
         where: { priority: { eq: 5 } },
-        allowTableScan: true,
         typeSchema: SCHEMA,
         capabilities: CAPS
       })
@@ -249,14 +257,12 @@ describe('validateFilter — where clause', () => {
         capabilities: CAPS
       })
     );
-    expectCode(
-      () =>
-        validateFilter({
-          where: { address: { zip: { eq: '12345' } } },
-          typeSchema: SCHEMA,
-          capabilities: CAPS
-        }),
-      'unindexed_field'
+    expectOk(() =>
+      validateFilter({
+        where: { address: { zip: { eq: '12345' } } },
+        typeSchema: SCHEMA,
+        capabilities: CAPS
+      })
     );
   });
 
@@ -700,22 +706,9 @@ describe('validateFilter — list fields (has)', () => {
     );
   });
 
-  it('rejects `has` on an unindexed list without _allowTableScan', () => {
-    expectCode(
-      () =>
-        validateFilter({ where: { labels: { has: 'x' } }, typeSchema: SCHEMA, capabilities: CAPS }),
-      'unindexed_field'
-    );
-  });
-
-  it('allows `has` on an unindexed list with _allowTableScan', () => {
+  it('accepts `has` on an unindexed list', () => {
     expectOk(() =>
-      validateFilter({
-        where: { labels: { has: 'x' } },
-        allowTableScan: true,
-        typeSchema: SCHEMA,
-        capabilities: CAPS
-      })
+      validateFilter({ where: { labels: { has: 'x' } }, typeSchema: SCHEMA, capabilities: CAPS })
     );
   });
 

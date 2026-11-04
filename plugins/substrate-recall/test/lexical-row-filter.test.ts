@@ -11,7 +11,7 @@ import { InMemoryLexicalStore } from '../src/in-memory-lexical-store.js';
 import type { LexicalStore } from '../src/lexical-store.js';
 import { lexicalMigration } from '../src/migrations/0003_lexical.js';
 import { PgLexicalStore } from '../src/pg-lexical-store.js';
-import { ensureRows } from './_pg-rows.js';
+import { deleteRows, putRows } from './_pg-rows.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const NS = 'lexfilter';
@@ -104,21 +104,19 @@ describe.skipIf(POSTGRES_URL === undefined)('pg', () => {
   let sql: ReturnType<typeof postgres>;
   afterAll(async () => {
     await sql`DELETE FROM lexical WHERE row_namespace = ${NS}`;
-    await sql`DELETE FROM rows WHERE namespace = ${NS}`;
+    await deleteRows(sql, NS);
     await sql.end();
   });
   suite('pg lexical store', async () => {
     sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
-    await ensureRows(sql);
     const lex = lexicalMigration();
     await lex.apply({ sql } as unknown as Parameters<typeof lex.apply>[0]);
     await sql`DELETE FROM lexical WHERE row_namespace = ${NS}`;
-    await sql`DELETE FROM rows WHERE namespace = ${NS}`;
+    await deleteRows(sql, NS);
     const store = new PgLexicalStore(sql);
     for (const r of ROWS) {
       const body = r.project === null ? { id: r.id } : { id: r.id, project: r.project };
-      await sql`INSERT INTO rows (namespace, type, id, body)
-        VALUES (${NS}, 'Doc', ${r.id}, ${sql.json(body)})`;
+      await putRows(sql, [{ namespace: NS, type: 'Doc', id: r.id, body }]);
       await store.upsert({ rowNamespace: NS, rowType: 'Doc', rowId: r.id, text: r.text });
     }
     return store;

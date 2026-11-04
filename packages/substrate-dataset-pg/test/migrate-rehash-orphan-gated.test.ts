@@ -39,6 +39,12 @@ function makeFakeSqlForRehash(appliedRows: ReadonlyArray<AppliedRow>): {
 
   const tag = ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.join('?').trim();
+    if (/current_setting\('server_version_num'\)/.test(text)) {
+      return Promise.resolve([{ num: 180000 }]);
+    }
+    if (/^SELECT current_schema\(\) AS schema$/.test(text)) {
+      return Promise.resolve([{ schema: 'public' }]);
+    }
     ranStatements.push(text);
 
     if (/^SELECT version, checksum FROM migrations/i.test(text)) {
@@ -62,6 +68,11 @@ function makeFakeSqlForRehash(appliedRows: ReadonlyArray<AppliedRow>): {
   }) as unknown as Sql;
   // biome-ignore lint/suspicious/noExplicitAny: stubbing the postgres-js shape
   (tag as any).unsafe = (text: string) => {
+    // The migration lock is polled and released through unsafe, as the tag ran it before.
+    if (/pg_(try_)?advisory_(un)?lock\(/.test(text)) {
+      ranStatements.push(text.trim());
+      return Promise.resolve(/pg_try_advisory_lock\(/.test(text) ? [{ acquired: true }] : []);
+    }
     ranStatements.push(`UNSAFE: ${text}`);
     return Promise.resolve([]);
   };
@@ -183,7 +194,7 @@ describe('runMigrations — rehash loop iterates full migration list', () => {
     const gated = full.find((m) => m.version === '0002_uuid_format_check');
     expect(gated).toBeDefined();
 
-    const staleBase = '0001_baseline';
+    const staleBase = '0001t_tables_baseline';
     const appliedRows: AppliedRow[] = [
       ...MIGRATIONS.map((m) => ({
         version: m.version,

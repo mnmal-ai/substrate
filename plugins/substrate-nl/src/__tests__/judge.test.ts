@@ -104,6 +104,27 @@ describe('applying a choice', () => {
     expect(r.trail[0]?.rejected).toMatch(/not offered/);
   });
 
+  it('a pick of a strict reading with unexplained words escalates; a rows reading resolves', async () => {
+    const strict = await parseWithJudge(
+      'how many zorblax todos',
+      pack,
+      ctx,
+      scripted({ action: 'pick', candidate: 0 })
+    );
+    expect(strict.status).toBe('escalated');
+    if (strict.status !== 'escalated') return;
+    expect(strict.result.reason).toBe('unexplained under a strict reading: zorblax');
+    expect(strict.result.candidates[0]?.residual).toEqual(['zorblax']);
+
+    const rows = await parseWithJudge(
+      'zorblax todos',
+      pack,
+      ctx,
+      scripted({ action: 'pick', candidate: 0 })
+    );
+    expect(rows.status).toBe('resolved');
+  });
+
   it('escalate hands the question on unchanged', async () => {
     const r = await parseWithJudge(
       'what about zebras',

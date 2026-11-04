@@ -50,6 +50,14 @@ export interface ProposalsPluginConfig {
   proposeCapability?: string;
 
   /**
+   * Capability name required to invoke `propose_index`, in the namespace whose
+   * indexes it changes. Defaults to `'substrate.index'`: separate from the
+   * propose capability, so only the operator or a designated reviewer changes
+   * indexes.
+   */
+  indexCapability?: string;
+
+  /**
    * Lookup function the `propose_namespace` resolver uses to find the dataset
    * for a hot-added namespace. The host (typically the substrate binary) wires
    * this to its dataset registry. Returning `undefined` causes the resolver

@@ -39,17 +39,15 @@ async function installFixtureNamespace(ctx: NamespaceInstallContext): Promise<vo
     // orderBy/where resolution, so a body field of the same name is a footgun
     // (writes go to body, reads route to metadata). Use _metadata.createdAt or
     // pick a different name (e.g. `dueAt`) for body-level dates.
-    // Deliberately unindexed so integration tests can exercise
-    // _allowTableScan + the unindexed_field rejection path.
+    // Deliberately unindexed so integration tests can show an unindexed
+    // filter is accepted, with or without the ignored _allowTableScan.
     priority: { kind: 'scalar', type: 'number', default: 0 },
     // Engine-allocated sequence number per (ns, type). Indexed so
-    // cross-server parity tests can filter by shortId.eq without
-    // triggering the unindexed_field rejection path.
+    // cross-server parity tests filter by shortId.eq through an index.
     shortId: { kind: 'scalar', type: 'number', indexed: true, readonly: true },
     // Body-promoted to native columns on pg-dataset. Body remains the
     // source of truth on memory-dataset; the read-path on pg routes filters
-    // and orderBy on these fields to dedicated indexed columns. Indexed so
-    // cross-server parity scenarios can filter without unindexed_field.
+    // and orderBy on these fields to dedicated indexed columns.
     archived: { kind: 'scalar', type: 'boolean', indexed: true, default: false },
     // `nullable: true` so the cold-start hot-path filter shape
     // `where { project: { in: ['substrate', null] } }` passes the engine validator.

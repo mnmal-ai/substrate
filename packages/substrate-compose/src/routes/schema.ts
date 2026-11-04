@@ -23,7 +23,7 @@
  */
 
 import { isDeepStrictEqual } from 'node:util';
-import { type Engine, effectiveFilterOperators } from '@mnmal-ai/substrate-core';
+import { type Engine, effectiveFilterOperators, nextKeys } from '@mnmal-ai/substrate-core';
 import {
   type FieldDef,
   type FieldKind,
@@ -184,31 +184,64 @@ export function schemaForTypeRoute(engine: Engine): HttpHandler {
     for (const [name, def] of Object.entries(schema.mutations)) {
       if (mutationTargetsType(name, def, type, typeSchema.fields)) mutations[name] = def;
     }
+    // Absent when the dataset keeps no per-type storage. Not part of
+    // `schemaVersion`: it changes as indexes build, with no schema change.
+    // Introspection never fails the schema route: a catalog error omits it.
+    const storage = await engine
+      .datasetFor(ns)
+      ?.describeStorage?.(type)
+      .catch(() => undefined);
+    // A field held in jsonb until the sweep gives it a column says so on its def.
+    const pending = new Set(storage?.pending ?? []);
     const base = {
       schemaVersion: schema.schemaVersion,
       namespace: ns,
       type,
-      fields: typeSchema.fields,
+      fields:
+        pending.size === 0
+          ? typeSchema.fields
+          : Object.fromEntries(
+              Object.entries(typeSchema.fields).map(([f, def]) => [
+                f,
+                pending.has(f) ? { ...def, storage: 'pending' as const } : def
+              ])
+            ),
       // Each field carries its `kind`; `operators` is keyed by kind. The join
       // is the caller's, which keeps the map one copy per response rather than
       // one per field.
       ...operatorContract(engine, ns)
     };
+    const withStorage = storage === undefined ? base : { ...base, storage };
+    // Annotation only: for each crossRef of this type, the fields an index
+    // serves once a walk has hopped through it. Omitted where no plan exists.
+    const dataset = engine.datasetFor(ns);
+    const plan = await dataset?.indexPlan?.(type, ns).catch(() => undefined);
+    const crossRefs = Object.entries(typeSchema.fields).filter(([, d]) => d.kind === 'crossRef');
+    const withHops =
+      plan === undefined || crossRefs.length === 0
+        ? withStorage
+        : {
+            ...withStorage,
+            servedAfterHop: Object.fromEntries(
+              crossRefs.map(([f]) => [f, nextKeys(plan.indexes, f)])
+            )
+          };
     // `mutationNames` rather than nothing: a caller that asked for fields still
     // has to know which mutations exist to write at all, and the names cost a
     // line where the inlined contracts cost five copies of the field block.
     return jsonResponse(
       200,
       shape === 'fields'
-        ? { ...base, mutationNames: Object.keys(mutations).sort() }
-        : { ...base, mutations }
+        ? { ...withHops, mutationNames: Object.keys(mutations).sort() }
+        : { ...withHops, mutations }
     );
   };
 }
 
 /**
- * A mutation targets a type when its name is a lowercase verb followed by
- * exactly the type name (`createTodo`, `purgeTodo`), or when it returns the
+ * A mutation targets a type when its name is a lowercase verb, optionally
+ * followed by `Many`, then exactly the type name (`createTodo`, `purgeTodo`,
+ * `updateManyTodo`), or when it returns the
  * type's row — a struct, or a list of structs, carrying exactly the type's
  * fields (`markAgentMessageRead`).
  */
@@ -218,7 +251,7 @@ function mutationTargetsType(
   type: string,
   fields: Record<string, FieldDef>
 ): boolean {
-  if (name.endsWith(type) && /^[a-z]+$/.test(name.slice(0, -type.length))) return true;
+  if (name.endsWith(type) && /^[a-z]+(Many)?$/.test(name.slice(0, -type.length))) return true;
   const row = def.returns.kind === 'list' ? def.returns.of : def.returns;
   return row.kind === 'struct' && isDeepStrictEqual(row.fields, fields);
 }

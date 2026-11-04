@@ -84,8 +84,8 @@ describe('runInit (--yes)', () => {
       embedder: {
         kind: 'ollama',
         baseUrl: 'http://localhost:11434',
-        model: 'bge-m3',
-        dimension: 1024
+        model: 'hf.co/CompendiumLabs/bge-base-en-v1.5-gguf:F16',
+        dimension: 768
       }
     });
     expect(readFileSync(join(target, '.env'), 'utf8')).not.toMatch(
@@ -93,7 +93,7 @@ describe('runInit (--yes)', () => {
     );
   });
 
-  it('defaults to minilm in-process: onnx config with an absolute cache dir, and fastembed installed', async () => {
+  it('defaults to bge-base in-process: onnx config with an absolute cache dir, and fastembed installed', async () => {
     const dir = makeTempDir();
     const target = join(dir, 'rt');
     const code = await runInit([target, '--yes', '--store=memory', '--plugins=cortext']);
@@ -103,8 +103,8 @@ describe('runInit (--yes)', () => {
     expect(recall).toEqual({
       embedder: {
         kind: 'onnx',
-        model: 'all-MiniLM-L6-v2',
-        dimension: 384,
+        model: 'bge-base-en-v1.5',
+        dimension: 768,
         cacheDir: join(target, 'models')
       }
     });
@@ -112,16 +112,16 @@ describe('runInit (--yes)', () => {
     expect(deps.fastembed).toBe('^2.1.1');
   });
 
-  it('--embedder=bge-base writes the 768-dim step-up', async () => {
+  it('--embedder=minilm writes the smaller 384-dim model', async () => {
     const dir = makeTempDir();
     const target = join(dir, 'rt');
-    const code = await runInit([target, '--yes', '--store=memory', '--embedder=bge-base']);
+    const code = await runInit([target, '--yes', '--store=memory', '--embedder=minilm']);
     expect(code).toBe(0);
     const recall = JSON.parse(readFileSync(join(target, 'substrate-recall.config.json'), 'utf8'));
     expect(recall.embedder).toMatchObject({
       kind: 'onnx',
-      model: 'bge-base-en-v1.5',
-      dimension: 768
+      model: 'all-MiniLM-L6-v2',
+      dimension: 384
     });
   });
 

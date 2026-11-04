@@ -15,6 +15,7 @@ import type { FilterOperatorDef } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PgDataset, runMigrations } from '../src/index.js';
+import { truncateRows } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 
@@ -32,7 +33,7 @@ describe.skipIf(!POSTGRES_URL)('PgDataset extension operator pre-resolution', ()
   });
 
   beforeEach(async () => {
-    await sql`TRUNCATE TABLE rows, short_ids`;
+    await truncateRows(sql);
     ds = new PgDataset({ namespace: 'ext_ns', sql });
     await ds.write('Note', [
       { id: 'r1', title: 'one', archived: false },

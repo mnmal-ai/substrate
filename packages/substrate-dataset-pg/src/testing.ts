@@ -391,3 +391,17 @@ export async function preparePgTestSchema(
 
   return pgTestSchemaUrl(url, opts.packageName);
 }
+
+/**
+ * A `createSchema` for `preparePgTestSchema` that drops and recreates the
+ * schema, so every run builds its store from an empty database.
+ */
+export async function recreatePgTestSchema(url: string, schema: string): Promise<void> {
+  const sql = postgres(url, { max: 1, onnotice: () => {} });
+  try {
+    await sql.unsafe(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+    await sql.unsafe(`CREATE SCHEMA "${schema}"`);
+  } finally {
+    await sql.end({ timeout: 5 });
+  }
+}

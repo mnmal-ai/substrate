@@ -10,21 +10,34 @@
  * has the un-rewritten value.
  */
 
+import postgres from 'postgres';
+import { runMigrations } from '../src/migrate.js';
 import {
   assertCannotWriteOutsideTestDatabases,
   assertTestDatabase,
-  preparePgTestSchema
+  preparePgTestSchema,
+  recreatePgTestSchema
 } from '../src/testing.js';
 
+/** The suite runs in a schema of its own, rebuilt every run, so the store is always fresh. */
 export default async function setup(): Promise<void> {
+  const packageName = 'substrate-dataset-pg';
+
   // Before preparePgTestSchema, which writes. Here rather than in setupFiles
   // because the reach probe opens a connection per database.
-  assertTestDatabase(process.env.POSTGRES_URL, { packageName: 'substrate-dataset-pg' });
-  await assertCannotWriteOutsideTestDatabases(process.env.POSTGRES_URL, {
-    packageName: 'substrate-dataset-pg'
-  });
+  assertTestDatabase(process.env.POSTGRES_URL, { packageName });
+  await assertCannotWriteOutsideTestDatabases(process.env.POSTGRES_URL, { packageName });
   const isolated = await preparePgTestSchema(process.env.POSTGRES_URL, {
-    packageName: 'substrate-dataset-pg'
+    packageName,
+    createSchema: recreatePgTestSchema
   });
-  if (isolated !== undefined) process.env.POSTGRES_URL = isolated;
+  if (isolated === undefined) return;
+  process.env.POSTGRES_URL = isolated;
+
+  const sql = postgres(isolated, { max: 1, onnotice: () => {} });
+  try {
+    await runMigrations(sql);
+  } finally {
+    await sql.end({ timeout: 5 });
+  }
 }

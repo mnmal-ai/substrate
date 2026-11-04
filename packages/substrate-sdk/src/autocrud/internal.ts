@@ -1,4 +1,4 @@
-import { canonicalVocabValue } from '@mnmal-ai/substrate-types';
+import { canonicalVocabValue, isIsoTimestamp } from '@mnmal-ai/substrate-types';
 
 /**
  * Internal autoCRUD utilities. Not exported from the package.
@@ -6,7 +6,7 @@ import { canonicalVocabValue } from '@mnmal-ai/substrate-types';
 
 export { resolveIdentity } from './resolve-identity.js';
 
-import type { FieldDef, Id } from '@mnmal-ai/substrate-types';
+import type { FieldDef, FieldDefCrossRef, Id } from '@mnmal-ai/substrate-types';
 import {
   CLIENT_SUPPLIED_SERVER_FIELD,
   ResolverFrameError,
@@ -195,7 +195,37 @@ export function dropUndefinedParams(params: Record<string, unknown>): Record<str
 }
 
 /**
- * Refuse an explicit `null` on a non-nullable scalar, on create and update
+ * Whether a crossRef may be absent or null: as it says, or, when it says
+ * nothing, only when its `onDelete` is `set_null` (deleting the target nulls it).
+ */
+export function isNullableCrossRef(def: FieldDefCrossRef): boolean {
+  return def.nullable ?? def.onDelete === 'set_null';
+}
+
+/**
+ * Refuse a crossRef that is non-nullable but `onDelete: 'set_null'`: deleting
+ * its target would null a field the type says cannot be null. Install-time.
+ *
+ * Throws a plain `Error` naming the type and every offending field.
+ */
+export function assertCrossRefDeletePolicies(
+  typeName: string,
+  fieldDefs: Record<string, FieldDef>
+): void {
+  const bad = Object.entries(fieldDefs)
+    .filter(
+      ([, def]) => def.kind === 'crossRef' && def.onDelete === 'set_null' && def.nullable === false
+    )
+    .map(([name]) => `'${name}'`);
+  if (bad.length === 0) return;
+  throw new Error(
+    `type '${typeName}': crossRef field(s) ${bad.join(', ')} are nullable: false but onDelete: 'set_null', ` +
+      "which would null them when the target is deleted. Use onDelete 'cascade' or 'restrict', or make them nullable."
+  );
+}
+
+/**
+ * Refuse an explicit `null` on a non-nullable scalar or crossRef, on create and update
  * alike. Presence is not completeness: a null passes `assertRequiredFields`'
  * key check and would store a row the type says cannot exist. A
  * `default` does not excuse it — the default fills an OMITTED key, and a
@@ -208,7 +238,13 @@ export function assertNoNullOnNonNullable(
 ): void {
   const offending: string[] = [];
   for (const [name, def] of Object.entries(fieldDefs)) {
-    if (name === 'id' || def.kind !== 'scalar' || def.nullable === true) continue;
+    if (name === 'id') continue;
+    if (
+      def.kind === 'crossRef'
+        ? isNullableCrossRef(def)
+        : def.kind !== 'scalar' || def.nullable === true
+    )
+      continue;
     if (Object.hasOwn(params, name) && params[name] === null) offending.push(name);
   }
   if (offending.length === 0) return;
@@ -219,29 +255,6 @@ export function assertNoNullOnNonNullable(
     `Cannot ${phase} with null for non-nullable field${offending.length === 1 ? '' : 's'} ${names} — omit ${offending.length === 1 ? 'it' : 'them'} or send a value.`,
     { field: first, fields: offending, phase }
   );
-}
-
-// ISO 8601 date or date-time, the subset pg's timestamptz input also accepts.
-// Anchored and free of nested quantifiers, so no backtracking blow-up. pg
-// caps a zone offset at ±15:59 ("time zone displacement out of range").
-const ISO_TIMESTAMP =
-  /^(\d{4})-(\d{2})-(\d{2})(?:[T ]([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,9})?)?)?(?:Z|[+-](?:0\d|1[0-5])(?::?[0-5]\d)?)?$/;
-
-/**
- * Is this a timestamp pg will cast? `Date.parse` alone is not the test: it
- * accepts `"1"` (2001), `"Oct 21 2026"`, and rolls `"2026-02-30"` to March,
- * all of which pg's `::timestamptz` rejects, which is the failure this guards.
- */
-function isIsoTimestamp(v: string): boolean {
-  const m = ISO_TIMESTAMP.exec(v);
-  if (m === null) return false;
-  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
-  if (y < 1 || mo < 1 || mo > 12 || d < 1) return false; // pg has no year 0000
-  // A day that exists in that month. setUTCFullYear, not Date.UTC, which maps
-  // years 0-99 onto 1900-1999 and so would judge 0004-02-29 by 1904.
-  const probe = new Date(0);
-  probe.setUTCFullYear(y, mo - 1, d);
-  return probe.getUTCDate() === d;
 }
 
 /**
@@ -307,10 +320,11 @@ export function applyScalarDefaults(
  * `{id}`-only rows this guard exists to prevent).
  *
  * Run AFTER applyScalarDefaults so a defaulted field counts as supplied.
- * Scoped to scalars: struct / list / crossRef required-ness is a separate
- * concern (crossRefs are nullable-by-policy via onDelete). readonly fields
- * (engine-allocated, e.g. shortId) and create-gated serverSet date fields
- * (which clients may not supply) are exempt. Create-only.
+ * Covers scalars and crossRefs (a crossRef is required when
+ * `isNullableCrossRef` says it is not nullable); struct and list fields are
+ * not checked. readonly fields (engine-allocated, e.g. shortId) and
+ * create-gated serverSet date fields (which clients may not supply) are
+ * exempt. Create-only.
  *
  * Throws `ResolverFrameError('missing_required_field', ...)` naming EVERY
  * missing field, not just the first, so one malformed create costs one
@@ -323,8 +337,12 @@ export function assertRequiredFields(
 ): void {
   const missing: string[] = [];
   for (const [name, def] of Object.entries(fieldDefs)) {
-    // `id` is engine-generated (randomUUID) when omitted — never required.
+    // `id` is assigned by the dataset when omitted — never required.
     if (name === 'id') continue;
+    if (def.kind === 'crossRef') {
+      if (!isNullableCrossRef(def) && !Object.hasOwn(params, name)) missing.push(name);
+      continue;
+    }
     if (def.kind !== 'scalar') continue;
     if (def.nullable === true || def.default !== undefined || def.readonly === true) continue;
     // Clients may not supply a create-gated serverSet field, so it cannot be

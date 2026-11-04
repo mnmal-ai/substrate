@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { describeGrant, formatRegisterOutput, formatUpdateOutput } from '../src/bin/admin.js';
+import { describeGrant, formatRegisterOutput, formatUpdateOutput } from '../src/admin/index.js';
 
 describe('describeGrant', () => {
   it('does NOT apply the bare-entry default to an entry that carries its own caps', () => {

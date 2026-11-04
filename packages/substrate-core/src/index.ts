@@ -16,6 +16,13 @@ export { RestrictViolation } from '@mnmal-ai/substrate-types';
  * change.
  */
 
+export {
+  type ReadShape,
+  readShapeOf,
+  ShapeRecorder,
+  shapeKey
+} from './advisor/shape-recorder.js';
+export { nextKeys, walkSites } from './advisor/walk-service.js';
 export { BridgeUnreachableError } from './bridge-unreachable-error.js';
 export { setCursorSealSecret } from './engine/cursor-seal.js';
 export {
@@ -60,3 +67,5 @@ export {
 export { publishSchema } from './schema-publisher.js';
 export { applyPolicy, loadSweepState, runSweep, saveSweepState } from './sweep.js';
 export { TaskScheduler } from './task-scheduler.js';
+export { usesWalkGrammar, walkGrammarPath } from './walk-gate.js';
+export { hopResolver } from './walk-types.js';
