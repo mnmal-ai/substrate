@@ -80,10 +80,12 @@ export async function bootStore(opts: BootStoreOptions): Promise<BootedStore> {
   // once plugins load. Without it, pg orderBy/range/cursor on numeric/date
   // body fields compares lexicographically ('10' < '2').
   const nsDefs = new Map<string, NamespaceDefinition>();
-  const fieldDefLookupFor = makeFieldDefLookupFactory(nsDefs);
-
   const diskGuard = await indexDiskGuard(config);
   const refs = createLateRefs(config.auth);
+  // Fields no definition declares resolve from the engine's registry once it exists.
+  const fieldDefLookupFor = makeFieldDefLookupFactory(nsDefs, (ns) =>
+    refs.engineRef.current?.registryFor(ns)
+  );
   // Types no definition declares resolve from the engine's registry once it exists.
   const typeDefLookupFor = makeTypeDefLookupFactory(nsDefs, (ns) =>
     refs.engineRef.current?.registryFor(ns)
