@@ -799,11 +799,50 @@ describe.skipIf(!POSTGRES_URL)('PgDataset on type tables vs memory', () => {
       return { memory: await ids(mem), pg: await ids(pg) };
     };
 
-    // Operator ruling A: an operand its column cannot hold is not looked up in
-    // `$raw`, so it matches nothing on pg. Memory matches it; accepted.
-    it.fails('an out-of-vocab enum value: eq on it', async () => {
-      const r = await misfit([{ id: 'm1', status: 'zzz' }], { status: { eq: 'zzz' } });
-      expect(r.pg).toEqual(r.memory);
+    it('an out-of-vocab enum value: eq, neq, in and nin on it', async () => {
+      for (const [, ds] of both()) {
+        await ds.write('Item', [
+          { id: 'm1', status: 'zzz' },
+          { id: 'm2', status: 'open' },
+          { id: 'm3' }
+        ]);
+      }
+      const cases: Array<[WhereClause, string[]]> = [
+        [{ status: { eq: 'zzz' } }, ['m1']],
+        [{ status: { in: ['zzz'] } }, ['m1']],
+        [{ status: { in: ['zzz', 'open'] } }, ['m1', 'm2']],
+        [{ status: { neq: 'zzz' } }, ['m2', 'm3']],
+        [{ status: { nin: ['zzz'] } }, ['m2', 'm3']],
+        [{ status: { nin: ['zzz', 'open'] } }, ['m3']],
+        [{ status: { nin: ['zzz', null] } }, ['m2']],
+        [{ NOT: { status: { eq: 'zzz' } } }, ['m2', 'm3']]
+      ];
+      for (const [where, want] of cases) {
+        const rows = await same('Item', { where }, true);
+        expect(
+          rows.map((r) => r.id),
+          JSON.stringify(where)
+        ).toEqual(want);
+      }
+    });
+
+    it("a misfit kind ('5' in a number field): eq, neq, in and nin on it", async () => {
+      for (const [, ds] of both()) {
+        await ds.write('Item', [{ id: 'm1', n: '5' as never }, { id: 'm2', n: 5 }, { id: 'm3' }]);
+      }
+      const cases: Array<[WhereClause, string[]]> = [
+        [{ n: { eq: '5' } }, ['m1']],
+        [{ n: { in: ['5', 5] } }, ['m1', 'm2']],
+        [{ n: { neq: '5' } }, ['m2', 'm3']],
+        [{ n: { nin: ['5'] } }, ['m2', 'm3']]
+      ];
+      for (const [where, want] of cases) {
+        const rows = await same('Item', { where }, true);
+        expect(
+          rows.map((r) => r.id),
+          JSON.stringify(where)
+        ).toEqual(want);
+      }
     });
 
     it('an out-of-vocab enum value: eq null', async () => {
@@ -859,6 +898,13 @@ describe.skipIf(!POSTGRES_URL)('PgDataset on type tables vs memory', () => {
     it('a promoting field whose extra holds another type: eq and gt on the column kind', async () => {
       await promotingMisfit();
       for (const where of [{ drop: { eq: 5 } }, { drop: { gt: 1 } }] as WhereClause[]) {
+        await same('Gone', { where }, true);
+      }
+    });
+
+    it('a promoting field whose extra holds another type: eq and neq on that value', async () => {
+      await promotingMisfit();
+      for (const where of [{ drop: { eq: 'five' } }, { drop: { neq: 'five' } }] as WhereClause[]) {
         await same('Gone', { where }, true);
       }
     });

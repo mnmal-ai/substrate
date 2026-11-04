@@ -145,9 +145,11 @@ describe('a type table compiles against its columns', () => {
     expect(where({ note: { eq: 'n' } })).toContain(`((extra ->> 'note') COLLATE "C") = $`);
   });
 
-  it('an operand of another type never matches, and neq admits it', () => {
-    expect(where({ price: { eq: 'five' } })).toBe('((FALSE))');
-    expect(where({ price: { neq: 'five' } })).toBe('((TRUE))');
+  it('an operand of another type compares the $raw-overlaid value; one that fits keeps the column', () => {
+    const raw = `COALESCE(COALESCE(extra -> '$raw' -> 'price', to_jsonb(f_price)) = ANY($::text[]::jsonb[]), FALSE)`;
+    expect(where({ price: { eq: 'five' } })).toBe(`((${raw}))`);
+    expect(where({ price: { neq: 'five' } })).toBe(`((NOT ${raw}))`);
+    expect(where({ price: { eq: 5 } })).toBe('(((f_price IS NOT NULL AND f_price = $)))');
     expect(where({ title: { contains: 'a' } })).toContain(`(f_title COLLATE "default") ILIKE $`);
   });
 
