@@ -157,8 +157,17 @@ export function preflight(
       `source table "${t}" is not known to migrate-store; load the plugin that owns it, or pass --skip-table ${t}`
     );
   }
+  // A copied table is never skipped: another copied table may reference it
+  // (recall_cluster_members -> recall_clusters), and the engine needs its own.
+  const copied = new Set([...ENGINE_COPIED, ...opts.pluginTables]);
   for (const t of skip) {
-    if (!source.tables.includes(t)) warnings.push(`--skip-table ${t} matches no source table`);
+    if (copied.has(t)) {
+      refusals.push(
+        `--skip-table ${t} names a table migrate-store copies; it cannot be skipped. --skip-table is for tables migrate-store does not know`
+      );
+    } else if (!source.tables.includes(t)) {
+      warnings.push(`--skip-table ${t} matches no source table`);
+    }
   }
 
   if (
@@ -182,7 +191,7 @@ export function preflight(
       bytes: source.tableBytes[name] ?? 0
     })),
     estimatedBytes: 0,
-    skipped: [...skip].filter((t) => present.has(t))
+    skipped: [...skip].filter((t) => present.has(t) && !copied.has(t))
   };
   plan.estimatedBytes = 2 * plan.tables.reduce((n, t) => n + t.bytes, 0);
 
