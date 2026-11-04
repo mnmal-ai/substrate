@@ -8,7 +8,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { registerExtensionOperator } from '@mnmal-ai/substrate-core';
+import { clearExtensionOperators, registerExtensionOperator } from '@mnmal-ai/substrate-core';
 import { PgDataset, typeTableRef } from '@mnmal-ai/substrate-dataset-pg';
 import type { Embedder } from '@mnmal-ai/substrate-embedder';
 import type { FieldDef, Row } from '@mnmal-ai/substrate-types';
@@ -52,6 +52,7 @@ describe.skipIf(!POSTGRES_URL)('recall through a stale table descriptor (pg)', (
   });
 
   afterAll(async () => {
+    clearExtensionOperators();
     for (const n of namespaces) {
       await sqlA`DELETE FROM embeddings WHERE row_namespace = ${n}`;
       await sqlA`DELETE FROM lexical WHERE row_namespace = ${n}`;
