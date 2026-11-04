@@ -165,6 +165,8 @@ export interface TableCache {
   cleared: number;
   /** True once listening; false when LISTEN failed, and then nothing is cached. */
   listening?: Promise<boolean>;
+  /** After a failed LISTEN, when the next call may try again. */
+  listenRetryAt?: number;
   /** Only `true` is kept: the migration can be applied while this process runs, never unapplied. */
   uuidCheck?: true;
 }
@@ -203,13 +205,20 @@ export function mayCache(cache: TableCache, key: string, gen: number): boolean {
   return gen >= 0 && cache.cleared <= gen && (cache.dropped.get(key) ?? 0) <= gen;
 }
 
-/** Starts the pool's catalog LISTEN once; resolves false when it cannot. */
+/** How long after a failed LISTEN the next call tries again. */
+export const LISTEN_RETRY_MS = 30_000;
+
+/** Starts the pool's catalog LISTEN once; resolves false when it cannot, retried after {@link LISTEN_RETRY_MS}. */
 export function listenTableCache(cache: TableCache): Promise<boolean> {
   const drop = (key?: string) => {
     dropTableCache(cache, key);
   };
   // Only a pool can LISTEN (on a connection of its own); on any other handle nothing is cached.
   const pool = cache.sql as Partial<Sql>;
+  if (cache.listenRetryAt !== undefined && Date.now() >= cache.listenRetryAt) {
+    delete cache.listenRetryAt;
+    delete cache.listening;
+  }
   cache.listening ??=
     typeof pool.listen !== 'function'
       ? Promise.resolve(false)
@@ -221,7 +230,14 @@ export function listenTableCache(cache: TableCache): Promise<boolean> {
           )
           .then(
             () => true,
-            () => false
+            (err: unknown) => {
+              // Uncached until a retry succeeds: every read pays a catalog query.
+              console.warn(
+                `substrate-dataset-pg: LISTEN substrate_catalog failed, type tables uncached; retrying in ${LISTEN_RETRY_MS / 1000}s: ${err instanceof Error ? err.message : String(err)}`
+              );
+              cache.listenRetryAt = Date.now() + LISTEN_RETRY_MS;
+              return false;
+            }
           );
   return cache.listening;
 }

@@ -520,7 +520,7 @@ export class PgDataset implements Dataset {
     }
   }
 
-  /** Starts the pool's catalog LISTEN once; resolves false when it cannot. */
+  /** Starts the pool's catalog LISTEN; resolves false when it cannot (see `listenTableCache`). */
   #listen(): Promise<boolean> {
     return listenTableCache(this.#tableCache);
   }
