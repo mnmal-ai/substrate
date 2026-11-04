@@ -205,14 +205,29 @@ export function buildBridgeRegistry(
  * `engineRef`. `runServe` populates `nsDefs` once plugins are loaded and well
  * before the server listens, so every query resolves against a populated map.
  *
+ * A field no definition declares (a type or field proposed at runtime) resolves
+ * from the live registry once `registryFor` does, as in
+ * {@link makeTypeDefLookupFactory}; without it a walk over a proposed crossRef
+ * throws and a pending number field sorts as text.
+ *
  * A miss (namespace absent, or a hand-crafted `NamespaceDefinition` whose
  * `types` is undefined because it bypassed `defineNamespace`) returns
  * `undefined`, and the dataset falls back to lexicographic text compare.
  */
-export function makeFieldDefLookupFactory(nsDefs: {
-  get(namespace: string): NamespaceDefinition | undefined;
-}): (namespace: string) => FieldDefLookup {
-  return (namespace) => (type, field) => nsDefs.get(namespace)?.types?.[type]?.fields?.[field];
+export function makeFieldDefLookupFactory(
+  nsDefs: { get(namespace: string): NamespaceDefinition | undefined },
+  registryFor: (namespace: string) => RegistryInterface | undefined = () => undefined
+): (namespace: string) => FieldDefLookup {
+  return (namespace) => (type, field) => {
+    const declared = nsDefs.get(namespace)?.types?.[type]?.fields?.[field];
+    if (declared !== undefined) return declared;
+    const entry = registryFor(namespace)?.get(type);
+    const def =
+      entry?.kind === 'type' && Object.hasOwn(entry.fields, field)
+        ? entry.fields[field]
+        : undefined;
+    return def === undefined || isReservedAutoCrudField(def) ? undefined : def;
+  };
 }
 
 /**
