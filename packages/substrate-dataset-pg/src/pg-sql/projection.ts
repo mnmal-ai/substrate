@@ -49,22 +49,11 @@ export function buildRowProjection(
       // `decodeRow` reads a date column's text the same in any session TimeZone.
       return c.kind === 'date' ? `${utcTextSql(col, 'US')} AS ${c.column}` : col;
     });
-  // A `column`-state field reads `extra` only for its `$raw` entry, so when every
-  // requested field is one, `extra` can add only `id` (a client-supplied id lives there
-  // too) and `$raw`: two fixed keys, read without a per-row SubPlan (#1864).
-  // A missing key reads as null, which `decodeRow` and `materialize` skip.
-  const columnsOnly =
-    fields !== undefined &&
-    [...keys].every((k) => k === 'id' || table.column(k)?.state === 'column');
-  // Otherwise one pass over `extra` (it may be TOASTed), not one extraction per key.
+  // One pass over `extra` (it may be TOASTed), not one extraction per key.
   const extra: Fragment =
     fields === undefined
       ? sql.unsafe(`${q}extra`)
-      : columnsOnly
-        ? sql.unsafe(
-            `jsonb_build_object('id', ${q}extra -> 'id', '${RAW_KEY}', ${q}extra -> '${RAW_KEY}')`
-          )
-        : sql`COALESCE((SELECT jsonb_object_agg(e.key, e.value) FROM jsonb_each(${sql.unsafe(`${q}extra`)}) e WHERE e.key = ANY(${[...keys, RAW_KEY]}::text[])), '{}'::jsonb)`;
+      : sql`COALESCE((SELECT jsonb_object_agg(e.key, e.value) FROM jsonb_each(${sql.unsafe(`${q}extra`)}) e WHERE e.key = ANY(${[...keys, RAW_KEY]}::text[])), '{}'::jsonb)`;
   const head = columns.length === 0 ? '' : `${columns.join(', ')}, `;
   return sql`${sql.unsafe(head)}${merged(extra)} AS extra`;
 }
