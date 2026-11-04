@@ -675,11 +675,13 @@ export async function addPendingColumn(
  * notifies. False, changing nothing, when the field is no longer in `from`: a
  * boot orphaned or redeclared it meanwhile, and that boot's state stands.
  *
- * The table is locked SHARE first, which waits for every transaction that has
- * written it to end and holds off new writes until this commits. So a write
- * that passed its version check before the move commits before it (and the
- * straggler pass after the move sees it), and one after sees the new version.
- * A lock held past `lockTimeoutMs` throws 55P03, and the field stays `from`.
+ * The table is locked SHARE first, which holds off new writes until this
+ * commits. So a write that passed its version check before the move commits
+ * before it (and the straggler pass after the move sees it), and one after
+ * sees the new version. The lock is taken NOWAIT: while any transaction that
+ * has written the table is open it throws 55P03 at once (the field stays
+ * `from`, `busy` until a later sweep), rather than queue, since every write to
+ * the type would queue behind it. `lockTimeoutMs` bounds the advisory wait.
  */
 export async function moveFieldState(
   sql: Sql,
@@ -696,7 +698,7 @@ export async function moveFieldState(
     const [table] = await tx<Array<{ table_name: string }>>`
       SELECT table_name FROM substrate_type_tables WHERE namespace = ${namespace} AND type = ${type}`;
     if (table === undefined) return false;
-    await tx.unsafe(`LOCK TABLE ${ident(table.table_name)} IN SHARE MODE`);
+    await tx.unsafe(`LOCK TABLE ${ident(table.table_name)} IN SHARE MODE NOWAIT`);
     const moved = await tx`UPDATE substrate_type_fields SET state = ${to}
       WHERE namespace = ${namespace} AND type = ${type} AND field = ${field} AND state = ${from}
       RETURNING 1`;

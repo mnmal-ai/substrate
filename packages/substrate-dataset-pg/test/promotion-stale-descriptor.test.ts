@@ -173,4 +173,37 @@ describe.skipIf(!POSTGRES_URL)('a write through a stale table descriptor (pg)', 
     expect(await rankOf(a)).toBe(7);
     expect(await stored()).toEqual({ column: 7, extra: undefined });
   });
+
+  it('a move behind a long transaction is busy at once, and writes never queue behind it (M4)', async () => {
+    await a.write('Note', [
+      { id: 'n1', title: 'a', rank: 1 },
+      { id: 'n2', title: 'b' }
+    ]);
+    defs.Note = { fields: { title: field.string(), rank: field.number() } };
+    await a.ensureTypeStorage('Note'); // `rank` promoting; only n1 has a value to move
+    const t = await loadTypeTable(sqlA, ns, 'Note');
+    // A long transaction holding ROW EXCLUSIVE on the table, on a row the backfill never touches.
+    const holder = await sqlB.reserve();
+    try {
+      await holder`BEGIN`;
+      await holder.unsafe(`UPDATE ${t?.from} SET extra = extra WHERE id = 'n2'`);
+      const started = performance.now();
+      const sweeping = sweep(3000).then((events) => ({ events, ms: performance.now() - started }));
+      // Time for the backfill to finish and the move to reach its table lock.
+      await new Promise((r) => setTimeout(r, 300));
+      const before = performance.now();
+      await a.write('Note', [{ id: 'n1', title: 'c' }]);
+      const writeMs = performance.now() - before;
+      const { events, ms } = await sweeping;
+      expect(events.map((e) => e.kind)).toEqual(['busy']);
+      expect(ms).toBeLessThan(1500);
+      expect(writeMs).toBeLessThan(1000);
+      await holder`COMMIT`;
+    } finally {
+      await holder`ROLLBACK`;
+      holder.release();
+    }
+    expect((await sweep()).map((e) => e.kind)).toEqual(['promoted']);
+    expect(await rankOf(a)).toBe(1);
+  });
 });

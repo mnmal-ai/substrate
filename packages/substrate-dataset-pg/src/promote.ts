@@ -18,10 +18,11 @@
  * 5. Record it `column` (only from `promoting`, under the type lock, so never
  *    over a boot that orphaned or redeclared it), bump the catalog version,
  *    notify, and run one straggler pass (step 3 again), for values a writer
- *    put in `extra` before the move. The move locks the table SHARE (under
- *    `lock_timeout`; held past it, the field is `busy`), so every such write
- *    has committed before it, and any later one fails its version check and
- *    is rebuilt against the new table (`guardCte`).
+ *    put in `extra` before the move. The move locks the table SHARE NOWAIT
+ *    (while a transaction that wrote it is open, the field is `busy` at once,
+ *    so writes never queue behind the move), so every such write has
+ *    committed before it, and any later one fails its version check and is
+ *    rebuilt against the new table (`guardCte`).
  *
  * A unique index refusing a backfilled value (23505), or one that cannot be
  * built over the moved values, fails the field and is never weakened to let
