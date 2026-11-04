@@ -222,7 +222,10 @@ export function makeFieldDefLookupFactory(
     const declared = nsDefs.get(namespace)?.types?.[type]?.fields?.[field];
     if (declared !== undefined) return declared;
     const entry = registryFor(namespace)?.get(type);
-    const def = entry?.kind === 'type' ? entry.fields[field] : undefined;
+    const def =
+      entry?.kind === 'type' && Object.hasOwn(entry.fields, field)
+        ? entry.fields[field]
+        : undefined;
     return def === undefined || isReservedAutoCrudField(def) ? undefined : def;
   };
 }
