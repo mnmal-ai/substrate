@@ -131,9 +131,11 @@ import { decodeRow, encodeRow, RAW_KEY } from './row-codec.js';
 import { type PgHandle, txScopeIdFor } from './tx-scope.js';
 import {
   absentTypeTable,
+  dropTableCache,
   ensureTypeTable,
   listenTableCache,
   loadTypeTable,
+  mayCache,
   type TableCache,
   type TypeTable,
   tableCacheFor,
@@ -334,6 +336,9 @@ type TableRowRecord = {
  */
 const DROP_LOCK_TIMEOUT_MS = 10_000;
 
+/** Rows per `purgeTombstonedRows` statement. A test seam, not exported from the package. */
+export const purgeBatch = { size: 10_000 };
+
 /**
  * DROP INDEX CONCURRENTLY `name` (of `where`, for messages) on `conn`, each
  * lock wait bounded by `timeoutMs`; a wait over it throws `index_drop_timeout`.
@@ -449,8 +454,9 @@ export class PgDataset implements Dataset {
       fields: def?.fields ?? {},
       newFields: 'column' as const,
       enforceUuidCheck: await this.#uuidCheck(),
-      // Without a def the fields are unknown: create the table, never redeclare one.
-      createOnly: def === undefined
+      // Create a missing table, never reconcile one: this miss may be stale,
+      // and this process's def older than the one the table was made from.
+      createOnly: true
     };
     // In a caller's transaction the DDL joins it under a savepoint (F18), so a
     // failure there leaves the caller's transaction usable. Its type-table
@@ -465,8 +471,7 @@ export class PgDataset implements Dataset {
       // Committed: a cached miss must not outlive it until the notification
       // lands, nor be cached again by a read whose catalog lookup began before
       // the commit, which the new generation refuses.
-      this.#tableCache.tables.delete(key);
-      gen = ++this.#tableCache.gen;
+      gen = dropTableCache(this.#tableCache, key);
     }
     const table = await loadTypeTable(this.#sql, this.namespace, type);
     if (table === undefined) throw new Error(`internal: ${this.namespace}/${type} has no table`);
@@ -479,7 +484,7 @@ export class PgDataset implements Dataset {
     if (this.#inTx) {
       // -1 never matches, so a table loaded without a listener never enters the cache.
       if (table !== null) this.#txTables?.set(key, { table, gen: listening ? gen : -1 });
-    } else if (listening && this.#tableCache.gen === gen) {
+    } else if (listening && mayCache(this.#tableCache, key, gen)) {
       this.#tableCache.tables.set(key, table);
     }
   }
@@ -512,15 +517,14 @@ export class PgDataset implements Dataset {
       }
       const key = `${this.namespace}/${type}`;
       this.#txTables?.delete(key);
-      this.#tableCache.tables.delete(key);
-      this.#tableCache.gen++;
+      dropTableCache(this.#tableCache, key);
       const fresh = await this.#tableFor(type);
       if (fresh === undefined) throw new Error(`internal: ${key} has no table`);
       current = fresh;
     }
   }
 
-  /** Starts the pool's catalog LISTEN once; resolves false when it cannot. */
+  /** Starts the pool's catalog LISTEN; resolves false when it cannot (see `listenTableCache`). */
   #listen(): Promise<boolean> {
     return listenTableCache(this.#tableCache);
   }
@@ -544,7 +548,7 @@ export class PgDataset implements Dataset {
   #commitTables(txTables: TxTables): void {
     const cache = this.#tableCache;
     for (const [key, { table, gen }] of txTables) {
-      if (cache.gen === gen) cache.tables.set(key, table);
+      if (mayCache(cache, key, gen)) cache.tables.set(key, table);
       else cache.tables.delete(key);
     }
   }
@@ -1094,8 +1098,9 @@ export class PgDataset implements Dataset {
    * across ALL namespaces (the table is substrate-shared). Called by the sweep
    * loop. Returns the number of rows deleted.
    *
-   * Each type table is swept in turn, and a swept row leaves `row_ids`, its
-   * short id cascading.
+   * Each type table is swept in one pass, a window of {@link purgeBatch} ids
+   * per statement in id order, and a swept row leaves `row_ids` in the same
+   * statement, its short id cascading.
    */
   async purgeTombstonedRows(opts: { olderThan: Date }): Promise<{ deleted: number }> {
     const sql = this.#sql;
@@ -1103,17 +1108,31 @@ export class PgDataset implements Dataset {
     const tables = await sql<Array<{ namespace: string; type: string; table_name: string }>>`
       SELECT namespace, type, table_name FROM substrate_type_tables`;
     for (const t of tables) {
-      const [row] = await sql<Array<{ n: number }>>`
-        WITH d AS (
-          DELETE FROM ${sql.unsafe(ident(t.table_name))}
-          WHERE deleted_at IS NOT NULL AND deleted_at < ${opts.olderThan}
-          RETURNING id
-        ), reg AS (
-          DELETE FROM row_ids
-          WHERE namespace = ${t.namespace} AND type = ${t.type} AND id IN (SELECT id FROM d)
-        )
-        SELECT count(*)::int AS n FROM d`;
-      deleted += row?.n ?? 0;
+      const table = sql.unsafe(ident(t.table_name));
+      // Walk the primary key a window at a time: deleted_at has no index, so a
+      // filtered LIMIT would rescan the table from its start on every batch.
+      let last = '';
+      for (;;) {
+        // The predicate is on the DELETE itself, so a row restored meanwhile stays.
+        const [row] = await sql<Array<{ n: number; scanned: number; last: string | null }>>`
+          WITH w AS (
+            SELECT id FROM ${table} WHERE id > ${last} ORDER BY id LIMIT ${purgeBatch.size}
+          ), d AS (
+            DELETE FROM ${table}
+            WHERE id IN (SELECT id FROM w)
+              AND deleted_at IS NOT NULL AND deleted_at < ${opts.olderThan}
+            RETURNING id
+          ), reg AS (
+            DELETE FROM row_ids
+            WHERE namespace = ${t.namespace} AND type = ${t.type} AND id IN (SELECT id FROM d)
+          )
+          SELECT (SELECT count(*)::int FROM d) AS n,
+                 (SELECT count(*)::int FROM w) AS scanned,
+                 (SELECT max(id) FROM w) AS last`;
+        deleted += row?.n ?? 0;
+        if (row === undefined || row.scanned < purgeBatch.size || row.last === null) break;
+        last = row.last;
+      }
     }
     return { deleted };
   }
@@ -1711,8 +1730,7 @@ export class PgDataset implements Dataset {
       createOnly: def === undefined
     });
     // Committed: drop the cached table now rather than when the notification lands.
-    this.#tableCache.tables.delete(`${this.namespace}/${type}`);
-    this.#tableCache.gen++;
+    dropTableCache(this.#tableCache, `${this.namespace}/${type}`);
     await this.#reconcileIndexes(type, opts);
     return { pending: change.pending };
   }
