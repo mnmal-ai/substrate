@@ -108,6 +108,32 @@ describe('validateFilter — where clause', () => {
     }
   });
 
+  it('refuses a date operand that is not an ISO 8601 date, on every operator, naming the field', () => {
+    for (const operand of [
+      { eq: 'yesterday' },
+      { neq: 'abc' },
+      { gt: 'yesterday' },
+      { gte: 'now' },
+      { lt: '01/02/2026' },
+      { lte: '2026-1-2' },
+      { in: ['2026-10-24', 'abc'] },
+      { nin: ['tomorrow'] },
+      { between: ['2026-10-24', 'next week'] }
+    ]) {
+      const run = () =>
+        validateFilter({ where: { createdAt: operand }, typeSchema: SCHEMA, capabilities: CAPS });
+      expectCode(run, 'type_mismatch');
+      expect(run).toThrow(/on 'createdAt': .* is not an ISO 8601 date/);
+    }
+    expectOk(() =>
+      validateFilter({
+        where: { createdAt: { gt: '2026-01-02', lt: '2026-01-02T03:04:05Z' } },
+        typeSchema: SCHEMA,
+        capabilities: CAPS
+      })
+    );
+  });
+
   it('accepts a known scalar field + valid operator + matching value', () => {
     expectOk(() =>
       validateFilter({

@@ -38,6 +38,7 @@ import {
   type FieldKind,
   type FilterCapabilities,
   isImpossibleIsoTimestamp,
+  isIsoTimestamp,
   METADATA_FILTER_FIELDS,
   type OrderByClause,
   type TypeSchema,
@@ -344,7 +345,8 @@ function validatePrimitiveKind(
         );
       }
       // Refused here, once for every dataset: memory would roll Feb 30 over to
-      // March, and pg's cast would raise.
+      // March or match nothing on "yesterday", and pg's cast would raise or read
+      // it in the server's time zone.
       const field = path.slice(path[0] === 'where' ? 1 : 0, -1).join('.');
       if (
         (value instanceof Date && Number.isNaN(value.getTime())) ||
@@ -353,6 +355,13 @@ function validatePrimitiveKind(
         throw new FilterValidationError(
           'type_mismatch',
           `operator '${op}' on '${field}': ${String(value)} is not a real date`,
+          path
+        );
+      }
+      if (typeof value === 'string' && !isIsoTimestamp(value)) {
+        throw new FilterValidationError(
+          'type_mismatch',
+          `operator '${op}' on '${field}': ${JSON.stringify(value)} is not an ISO 8601 date or date-time`,
           path
         );
       }
