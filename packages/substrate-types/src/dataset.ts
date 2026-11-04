@@ -518,6 +518,12 @@ export interface Dataset {
     signal?: AbortSignal;
     /** Retries fields a unique conflict holds back until their type's catalog changes: an operator's run after fixing the data. */
     retryConflicts?: boolean;
+    /**
+     * The store has no other writers (migrate-store's target): a field's move
+     * to its column waits for its table lock, so a blocking autovacuum is
+     * cancelled, rather than retrying without queueing in front of writers.
+     */
+    noWriters?: boolean;
   }): Promise<PromotionEvent[]>;
   /**
    * Store-wide counts of the fields an operator should know about: held in

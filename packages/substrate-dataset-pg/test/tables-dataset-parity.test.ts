@@ -22,6 +22,7 @@ import { applyPatch, encodeRow } from '../src/row-codec.js';
 import { loadTypeTable, type TypeTable } from '../src/type-table.js';
 import { inputCte, mergeAssignments, setList, writeRowsStatement } from '../src/write-rows.js';
 import { clearNamespace, dropNamespace } from './_layout.js';
+import { probes } from './_read-guard.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const NS = `tdp_${randomBytes(4).toString('hex')}`;
@@ -528,6 +529,8 @@ describe.skipIf(!POSTGRES_URL)('PgDataset on type tables vs memory', () => {
     statements = [];
     expect((await pg.read('Ghost', {})).rows).toEqual([]);
     expect(lookups()).toBe(0);
+    // Its read still probes the catalog: a cached miss is checked like a table (M3, M6).
+    expect(statements.map(probes)).toEqual([1]);
     // Another dataset on the pool creates it: the cached miss must not hide it.
     await new PgDataset({ namespace: NS, sql, typeDefLookup }).write('Ghost', [
       { id: 'g1', a: 'x' }
@@ -555,15 +558,26 @@ describe.skipIf(!POSTGRES_URL)('PgDataset on type tables vs memory', () => {
     ]);
   });
 
+  it('a warm read that matches nothing returns [] in one guarded statement, never retried', async () => {
+    await seed();
+    await pg.read('Item', {});
+    statements = [];
+    expect((await pg.read('Item', { where: { title: { eq: 'no such' } } })).rows).toEqual([]);
+    expect(statements.map(probes)).toEqual([1]);
+  });
+
   it('a warm walk read and its index plan issue no catalog statement', async () => {
     await seed();
     const catalog = () =>
-      statements.filter((q) => /substrate_type_tables|substrate_type_fields/.test(q));
+      // A catalog-version probe (`substrate_type_tables g`) is the read's guard, not a lookup.
+      statements.filter((q) => /substrate_type_(tables|fields)(?! g\b)/.test(q));
     const walk = { where: { _walk: { out: 'owner', where: { name: { eq: 'Ann' } } } } };
     await pg.read('Item', walk);
     await pg.indexPlan('Item', NS);
     statements = [];
     await pg.read('Item', walk);
+    // Its one statement probes both types' catalog versions (M3, M6).
+    expect(statements.map(probes).filter((n) => n > 0)).toEqual([2]);
     expect(await pg.indexPlan('Person', NS)).toBeDefined();
     await pg.indexPlan('Item', NS);
     expect(catalog()).toEqual([]);

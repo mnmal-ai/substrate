@@ -18,6 +18,7 @@ import { resolveBodyOrderByCast } from '../src/pg-sql/sorting.js';
 import { prepareSharedPicks, type WalkScope, walkScope, withCtes } from '../src/pg-sql/walk.js';
 import { buildWhere } from '../src/pg-sql/where.js';
 import { bareTypeTable } from './_layout.js';
+import { probes } from './_read-guard.js';
 
 const sql = postgres('postgres://nobody@127.0.0.1:1/none');
 afterAll(() => sql.end());
@@ -218,8 +219,13 @@ function capturing(): { ds: PgDataset; sent: string[] } {
       const q = Reflect.apply(target, thisArg, args) as Promise<unknown>;
       Object.defineProperty(q, 'then', {
         value: (ok: (v: unknown) => unknown, ko: (e: unknown) => unknown) => {
-          sent.push(render(q));
-          return Promise.resolve([]).then(ok, ko);
+          const text = render(q);
+          sent.push(text);
+          // A guarded read (M3) passes its guard, with no row beside it.
+          const rows = text.startsWith('WITH guard AS')
+            ? [{ guard_ok: true, id: null, n: null, g: null }]
+            : [];
+          return Promise.resolve(rows).then(ok, ko);
         }
       });
       return q;
@@ -238,13 +244,25 @@ function capturing(): { ds: PgDataset; sent: string[] } {
   } as never);
   return { ds, sent };
 }
-/** The statements a read sends that read its rows (`FROM <its table> r`); a type with no table reads an empty one. */
+/**
+ * The statements a read sends that read its rows (`FROM <its table> r`); a type with no table reads
+ * an empty one. Each is guarded once (M3), one probe per type it reads, and returned without it.
+ */
 async function statements(params: ReadParams): Promise<string[]> {
   const { ds, sent } = capturing();
   await ds.read('Cert', params);
-  return sent.filter((q) =>
-    / FROM (\(SELECT NULL::text AS id\b.*?WHERE false\)|"t__[^"]+") r\b/.test(q)
-  );
+  return sent
+    .filter((q) => / FROM (\(SELECT NULL::text AS id\b.*?WHERE false\)|"t__[^"]+") r\b/.test(q))
+    .map((q) => {
+      const m =
+        /^WITH guard AS MATERIALIZED \((.*?)\)\s+SELECT g\.ok AS guard_ok, g\.iso AS guard_iso, q\.\* FROM guard g LEFT JOIN \((.*)\) q ON true$/s.exec(
+          q
+        );
+      expect(m, q).not.toBeNull();
+      expect(probes(m?.[1] ?? ''), q).toBe(3); // Cert, Spec and Sale
+      expect(probes(m?.[2] ?? ''), q).toBe(0);
+      return m?.[2] ?? q;
+    });
 }
 /** Every column a CTE exports is `__`-named, so none can collide with a row column. */
 function expectPrivateColumns(text: string): void {

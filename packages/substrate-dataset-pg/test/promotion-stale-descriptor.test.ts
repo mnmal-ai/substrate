@@ -149,6 +149,27 @@ describe.skipIf(!POSTGRES_URL)('a write through a stale table descriptor (pg)', 
     expect((await a.read('Note', { ids: ['n1'] })).rows.map((r) => r.title)).toEqual(['a']);
   });
 
+  it('a patch takes no row lock unless its guard passes (M7)', async () => {
+    await a.write('Note', [{ id: 'n1', title: 'a' }]);
+    const seen: string[] = [];
+    const cap = postgres(POSTGRES_URL as string, {
+      onnotice: () => {},
+      debug: (_c, q) => {
+        seen.push(q);
+      }
+    });
+    try {
+      const c = new PgDataset({ namespace: ns, sql: cap, ...lookup });
+      await c.patchRows('Note', [{ id: 'n1', patch: { title: 'b' } }], null, new Date());
+    } finally {
+      await cap.end({ timeout: 5 });
+    }
+    const patch = seen.find((q) => q.includes('FOR NO KEY UPDATE'));
+    const locked = patch?.slice(patch.indexOf('locked AS'), patch.indexOf('FOR NO KEY UPDATE'));
+    expect(locked).toContain('(SELECT ok FROM guard)');
+    expect((await a.read('Note', { ids: ['n1'] })).rows.map((r: Row) => r.title)).toEqual(['b']);
+  });
+
   it('the move to column waits for a write in flight, so the straggler pass sees it', async () => {
     // `rank` declared in code: its column is added, `promoting`.
     await a.write('Note', [{ id: 'n1', title: 'a', rank: 1 }]);
@@ -172,5 +193,87 @@ describe.skipIf(!POSTGRES_URL)('a write through a stale table descriptor (pg)', 
     expect((await sweep()).map((e) => e.kind)).toEqual(['promoted']);
     expect(await rankOf(a)).toBe(7);
     expect(await stored()).toEqual({ column: 7, extra: undefined });
+  });
+
+  /**
+   * `rank` promoting (only n1 has a value to move) and a reserved connection
+   * whose open transaction holds `lock` on Note's table (on n2, which the
+   * backfill never touches); `run` runs while it is held.
+   */
+  async function behindHolder<T>(
+    lock: 'row' | 'share update exclusive',
+    run: (release: () => Promise<void>) => Promise<T>
+  ): Promise<T> {
+    await a.write('Note', [
+      { id: 'n1', title: 'a', rank: 1 },
+      { id: 'n2', title: 'b' }
+    ]);
+    defs.Note = { fields: { title: field.string(), rank: field.number() } };
+    await a.ensureTypeStorage('Note');
+    const t = await loadTypeTable(sqlA, ns, 'Note');
+    const holder = await sqlB.reserve();
+    try {
+      await holder`BEGIN`;
+      await holder.unsafe(
+        lock === 'row'
+          ? `UPDATE ${t?.from} SET extra = extra WHERE id = 'n2'`
+          : `LOCK TABLE ${t?.from} IN SHARE UPDATE EXCLUSIVE MODE` // autovacuum's lock
+      );
+      return await run(async () => {
+        await holder`COMMIT`;
+      });
+    } finally {
+      await holder`ROLLBACK`; // a no-op after the COMMIT
+      holder.release();
+    }
+  }
+  const timed = async <T>(p: Promise<T>) => {
+    const t = performance.now();
+    const value = await p;
+    return { value, ms: performance.now() - t };
+  };
+  const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  it('the move retries its lock without queueing, and lands once a short holder lets go (M4)', async () => {
+    await behindHolder('row', async (release) => {
+      const sweeping = timed(sweep(3000));
+      await pause(300); // the backfill is done; the move is retrying its lock
+      // A write is never queued behind the move.
+      expect((await timed(a.write('Note', [{ id: 'n1', title: 'c' }]))).ms).toBeLessThan(1000);
+      await release();
+      expect((await sweeping).value.map((e) => e.kind)).toEqual(['promoted']);
+    });
+    expect(await rankOf(a)).toBe(1);
+  });
+
+  it('a move whose table lock stays held past the timeout is busy, naming the table lock (m1)', async () => {
+    await behindHolder('row', async () => {
+      const sweeping = timed(sweep(800));
+      await pause(300);
+      expect((await timed(a.write('Note', [{ id: 'n1', title: 'c' }]))).ms).toBeLessThan(700);
+      const { value, ms } = await sweeping;
+      expect(value.map((e) => e.kind)).toEqual(['busy']);
+      expect(ms).toBeGreaterThanOrEqual(800);
+    });
+    const [row] = await sqlA<Array<{ last_error: string }>>`
+      SELECT last_error FROM substrate_type_fields WHERE namespace = ${ns} AND field = 'rank'`;
+    expect(row?.last_error).toMatch(/move to column could not lock its table within 800 ms/);
+    expect((await sweep()).map((e) => e.kind)).toEqual(['promoted']);
+  });
+
+  it('a store with no writers (migrate-store) waits for its move, past an autovacuum-like holder (I1)', async () => {
+    const events = await behindHolder('share update exclusive', async (release) => {
+      const settling = a.promotePendingFields({
+        lockTimeoutMs: 10_000,
+        batchRows: 100,
+        namespace: ns,
+        noWriters: true
+      });
+      await pause(1500);
+      await release();
+      return settling;
+    });
+    expect(events.map((e) => e.kind)).toEqual(['promoted']);
+    expect(await rankOf(a)).toBe(1);
   });
 });

@@ -17,6 +17,7 @@ import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset } from '../src/index.js';
 import { dropNamespace, relationOf } from './_layout.js';
+import { unguardPlan } from './_read-guard.js';
 import { walkComparers } from './_walk-helpers.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
@@ -195,7 +196,7 @@ async function analyzed(): Promise<PlanNode[]> {
     );
     const plan = (row as Record<string, Array<{ Plan: PlanNode }>>)['QUERY PLAN']?.[0]?.Plan;
     if (plan === undefined) throw new Error('no plan');
-    return nodes(plan);
+    return nodes(unguardPlan(plan));
   } finally {
     await conn.unsafe('DEALLOCATE ALL');
     await conn.unsafe('RESET plan_cache_mode');

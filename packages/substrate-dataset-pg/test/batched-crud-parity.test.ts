@@ -25,6 +25,7 @@ import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset, PgEdgesStore } from '../src/index.js';
 import { dropNamespacesLike } from './_layout.js';
+import { probes } from './_read-guard.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const NOW = new Date('2026-11-01T12:00:00.000Z');
@@ -570,8 +571,11 @@ describe('autoCRUD batch resolvers: memory vs pg through Engine', () => {
   });
 
   describe.skipIf(!POSTGRES_URL)('statements a batch sends (pg)', () => {
-    /** A `tables` type-table catalog lookup (`loadTypeTable`). */
-    const CATALOG = /FROM substrate_type_(tables|fields)\b/;
+    /**
+     * A `tables` type-table catalog lookup (`loadTypeTable`), not a guarded
+     * statement's version probe (`substrate_type_tables g`), which stays in.
+     */
+    const CATALOG = /FROM substrate_type_(tables|fields)\s+WHERE/;
     /** Per call of `sent`: the catalog lookups it dropped. */
     let lookups: number[] = [];
     /**
@@ -584,11 +588,14 @@ describe('autoCRUD batch resolvers: memory vs pg through Engine', () => {
       statements = [];
       await fn();
       lookups.push(statements.filter((q) => CATALOG.test(q)).length);
+      // A guarded statement probes its one type's catalog version once (M6).
+      for (const q of statements) expect(probes(q), q).toBeLessThanOrEqual(1);
       return statements.filter((q) => !CATALOG.test(q));
     }
 
     it('create, update and delete send the same statements for 5 elements as for 50', async () => {
       const counts: Record<string, number[]> = {};
+      const guarded: Record<string, number[]> = {};
       lookups = [];
       for (const n of [5, 50]) {
         const s = await stack('pg', fresh());
@@ -615,11 +622,19 @@ describe('autoCRUD batch resolvers: memory vs pg through Engine', () => {
         );
         for (const [k, v] of Object.entries({ created, updated, byShort, deleted })) {
           counts[k] = [...(counts[k] ?? []), v.length];
+          guarded[k] = [...(guarded[k] ?? []), v.filter((q) => probes(q) === 1).length];
         }
       }
       for (const [k, [five, fifty]] of Object.entries(counts)) {
         expect({ k, fifty }).toEqual({ k, fifty: five });
       }
+      // The guarded statements (version probes) each op sends, for 5 and for 50.
+      expect(guarded).toEqual({
+        created: [3, 3],
+        updated: [3, 3],
+        byShort: [3, 3],
+        deleted: [1, 1]
+      });
       // Catalog lookups are per type, never per element: measured [7, 2, 0, 0]
       // (create, update, byShort, delete) for 5 and for 50 alike, the create
       // making Item's table. A late notification can add one reload (two).

@@ -23,7 +23,8 @@ const ctx = {
     grants: { '*': ['substrate.propose', 'read', 'mutate'] }
   }
 };
-const CATALOG = /substrate_type_tables|substrate_type_fields/;
+/** A catalog lookup; a read's version probe (`substrate_type_tables g`) is its guard, not one. */
+const CATALOG = /substrate_type_(tables|fields)(?! g\b)/;
 
 describe.skipIf(!POSTGRES_URL)('proposed types read through the TableCache (pg)', () => {
   let sql: Sql;
@@ -42,11 +43,17 @@ describe.skipIf(!POSTGRES_URL)('proposed types read through the TableCache (pg)'
     await storageSettled();
     return env.data;
   }
-  /** Catalog statements a warm `frame` issues: run once to warm, then count the second. */
-  async function warmCatalog(frame: QualifiedFrame): Promise<string[]> {
+  /** A read's catalog-version probe (M3), one per type its statement decodes. */
+  const probes = (q: string) => q.match(/\bsubstrate_type_tables g\b/g)?.length ?? 0;
+  /**
+   * Catalog statements a warm `frame` issues: run once to warm, then count the
+   * second. Its statements' probes are asserted apart: `probed`, per statement.
+   */
+  async function warmCatalog(frame: QualifiedFrame, probed: number[]): Promise<string[]> {
     await query(frame);
     statements = [];
     await query(frame);
+    expect(statements.map(probes).filter((n) => n > 0)).toEqual(probed);
     return catalog();
   }
 
@@ -134,28 +141,37 @@ describe.skipIf(!POSTGRES_URL)('proposed types read through the TableCache (pg)'
 
   it('a warm plain read issues no catalog statement', async () => {
     expect(
-      await warmCatalog({
-        [`${NS}/Item`]: { params: { where: { title: { eq: 'alpha' } } }, fields: { id: true } }
-      })
+      await warmCatalog(
+        {
+          [`${NS}/Item`]: { params: { where: { title: { eq: 'alpha' } } }, fields: { id: true } }
+        },
+        [1]
+      )
     ).toEqual([]);
   });
 
   it('a warm walk read issues no catalog statement', async () => {
     expect(
-      await warmCatalog({
-        [`${NS}/Item`]: {
-          params: { where: { _walk: { out: 'owner', where: { name: { eq: 'Ann' } } } } },
-          fields: { id: true }
-        }
-      })
+      await warmCatalog(
+        {
+          [`${NS}/Item`]: {
+            params: { where: { _walk: { out: 'owner', where: { name: { eq: 'Ann' } } } } },
+            fields: { id: true }
+          }
+        },
+        [2]
+      )
     ).toEqual([]);
   });
 
   it('a warm nested read issues no catalog statement', async () => {
     expect(
-      await warmCatalog({
-        [`${NS}/Item`]: { params: {}, fields: { id: true, owner: { id: true, name: true } } }
-      })
+      await warmCatalog(
+        {
+          [`${NS}/Item`]: { params: {}, fields: { id: true, owner: { id: true, name: true } } }
+        },
+        [1]
+      )
     ).toEqual([]);
   });
 

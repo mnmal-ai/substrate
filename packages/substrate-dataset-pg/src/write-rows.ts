@@ -100,6 +100,40 @@ export function guardedRows(sql: Sql | TransactionSql, rows: Fragment, orderBy =
   return sql`SELECT g.ok, g.iso, w.* FROM guard g LEFT JOIN (${rows}) w ON true${sql.unsafe(orderBy)}`;
 }
 
+/** A table a read decodes through, at the version it was loaded at; `null`: it had none. */
+export interface ReadGuardEntry {
+  namespace: string;
+  type: string;
+  version: string | null;
+}
+
+/**
+ * A read's `statement` as `(guard_ok, guard_iso, its rows…)`: always one row at least,
+ * `guard_ok` false when any of `tables` is no longer at its loaded version (or
+ * a cached miss now has a table). One primary-key probe per table, in the
+ * read's own snapshot, so the check and the rows agree under any isolation
+ * level; the caller rebuilds a stale read and runs it again. The subquery
+ * keeps its ORDER BY: it is not flattened, and the one-row guard is the outer
+ * side of the only plan a keyless LEFT JOIN has, a nested loop.
+ */
+export function guardedRead(
+  sql: Sql | TransactionSql,
+  tables: readonly ReadGuardEntry[],
+  statement: Fragment
+): Fragment {
+  const ok = tables
+    .map(
+      (t) => sql`(SELECT g.version FROM substrate_type_tables g
+        WHERE g.namespace = ${t.namespace}::text AND g.type = ${t.type}::text)
+        IS NOT DISTINCT FROM ${t.version}::bigint`
+    )
+    .reduce((acc, c) => sql`${acc} AND ${c}`);
+  return sql`WITH guard AS MATERIALIZED (
+      SELECT ${ok} AS ok, current_setting('transaction_isolation') AS iso
+    )
+    SELECT g.ok AS guard_ok, g.iso AS guard_iso, q.* FROM guard g LEFT JOIN (${statement}) q ON true`;
+}
+
 /**
  * Throws when a guarded statement ran outside READ COMMITTED, where its
  * version check cannot see a concurrent catalog change; it wrote nothing.
