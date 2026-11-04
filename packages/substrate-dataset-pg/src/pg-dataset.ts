@@ -436,20 +436,28 @@ export class PgDataset implements Dataset {
   /**
    * `type`'s table, or undefined when it has none yet (or the store is not
    * migrated). Cached per pool (see `TableCache`); inside a transaction, in
-   * the transaction's own map until it commits.
+   * the transaction's own map until it commits. `read` marks a read path, which
+   * trusts a cached miss inside a transaction too.
    */
-  async #tableFor(type: string, namespace = this.namespace): Promise<TypeTable | undefined> {
+  async #tableFor(
+    type: string,
+    namespace = this.namespace,
+    read = false
+  ): Promise<TypeTable | undefined> {
     if ((await this.#layout()) === 'absent') return undefined;
     const key = `${namespace}/${type}`;
     const local = this.#txTables?.get(key);
-    if (local !== undefined) return local.table ?? undefined;
+    // A miss this transaction recorded binds its writes only when read through its snapshot.
+    if (local !== undefined && (local.table !== null || read || local.snapshot === true)) {
+      return local.table ?? undefined;
+    }
     const cache = this.#tableCache;
     const listening = await this.#listen();
     const hit = cache.tables.get(key);
-    // A cached miss is not trusted inside a transaction: a check-then-write
-    // there must see a table another transaction has just committed, before
-    // its notification lands.
-    if (hit !== undefined && (hit !== null || !this.#inTx)) return hit ?? undefined;
+    // A write does not trust a cached miss inside a transaction: a
+    // check-then-write there must see a table another transaction has just
+    // committed, before its notification lands. A read trusts it, as outside one.
+    if (hit !== undefined && (hit !== null || read || !this.#inTx)) return hit ?? undefined;
     const gen = cache.gen;
     const table = await loadTypeTable(this.#sql, namespace, type);
     // A miss is cached too, so a never-written type reads without a catalog
@@ -495,11 +503,11 @@ export class PgDataset implements Dataset {
     return table;
   }
 
-  /** Caches `table` (`null`: none yet); inside a transaction a table only, until it commits. */
+  /** Caches `table` (`null`: none yet); inside a transaction in its own map, until it commits. */
   #remember(key: string, table: TypeTable | null, gen: number, listening: boolean): void {
     if (this.#inTx) {
       // -1 never matches, so a table loaded without a listener never enters the cache.
-      if (table !== null) this.#txTables?.set(key, { table, gen: listening ? gen : -1 });
+      this.#txTables?.set(key, { table, gen: listening ? gen : -1 });
     } else if (listening && mayCache(this.#tableCache, key, gen)) {
       this.#tableCache.tables.set(key, table);
     }
@@ -708,7 +716,7 @@ export class PgDataset implements Dataset {
     const lookup = this.#fieldDefLookup;
     const fieldDef = (t: string, f: string) => lookup?.(t, f);
     const types = [...(walks ? walkTypes(params, type, fieldDef) : [type])];
-    const loaded = await Promise.all(types.map((t) => this.#tableFor(t)));
+    const loaded = await Promise.all(types.map((t) => this.#tableFor(t, this.namespace, true)));
     const tableFor = tableLookup(
       loaded.map((t, i) => t ?? absentTypeTable(this.namespace, types[i] as string))
     );
@@ -1460,7 +1468,7 @@ export class PgDataset implements Dataset {
     // it must not reach the bigint cast, which would throw.
     const valid = [...new Set(shortIds)].filter(Number.isSafeInteger);
     if (valid.length === 0) return out;
-    const table = await this.#tableFor(type);
+    const table = await this.#tableFor(type, this.namespace, true);
     if (table === undefined) return out;
     // One statement: the ids go in as one array, and the join to the type's
     // table keeps live rows only, so a tombstoned or purged row's id never resolves.
@@ -2123,7 +2131,7 @@ export class PgDataset implements Dataset {
     if (def === undefined || (await this.#layout()) === 'absent') return undefined;
     // An index over a field not yet `column` serves no read. Every walk read asks (its
     // plan diagnostics), so through the TableCache like the read itself.
-    const table = await this.#tableFor(type, namespace);
+    const table = await this.#tableFor(type, namespace, true);
     return {
       indexes: desiredIndexKeys({
         ...this.#indexArgs(type, namespace),

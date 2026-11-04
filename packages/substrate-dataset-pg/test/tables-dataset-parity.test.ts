@@ -541,8 +541,8 @@ describe.skipIf(!POSTGRES_URL)('PgDataset on type tables vs memory', () => {
     expect((await pg.read('Ghost2', {})).rows).toEqual([]);
     await pg.withTransaction((tx) => tx.write('Ghost2', [{ id: 'h1', a: 'y' }]));
     expect((await pg.read('Ghost2', {})).rows.map(strip)).toEqual([{ id: 'h1', a: 'y' }]);
-    // Created by another process: a transaction does not trust the cached miss,
-    // so its check-then-write sees the table before the notification lands.
+    // Created by another process: a transaction's write does not trust the cached
+    // miss, so its check-then-write sees the table before the notification lands.
     defs.Ghost3 = { fields: { a: field.string() } };
     expect((await pg.read('Ghost3', {})).rows).toEqual([]);
     const other = postgres(POSTGRES_URL as string, { onnotice: () => {} });
@@ -553,9 +553,45 @@ describe.skipIf(!POSTGRES_URL)('PgDataset on type tables vs memory', () => {
     } finally {
       await other.end({ timeout: 5 });
     }
-    expect((await pg.withTransaction((tx) => tx.read('Ghost3', {}))).rows.map(strip)).toEqual([
-      { id: 'j1', a: 'z' }
+    const inTx = await pg.withTransaction(async (tx) => {
+      await tx.write('Ghost3', [{ id: 'j2', a: 'w' }]);
+      return tx.read('Ghost3', {});
+    });
+    expect(inTx.rows.map(strip).sort(byId)).toEqual([
+      { id: 'j1', a: 'z' },
+      { id: 'j2', a: 'w' }
     ]);
+  });
+
+  it('a warm count inside a transaction on a type with no table issues no catalog statement (#1862)', async () => {
+    const catalog = () =>
+      // A catalog-version probe (`substrate_type_tables g`) is the read's guard, not a lookup.
+      statements.filter((q) => /substrate_type_(tables|fields)(?! g\b)/.test(q));
+    defs.Ghost4 = { fields: { a: field.string() } };
+    await pg.read('Ghost4', { count: true });
+    statements = [];
+    // `count` reads in a transaction of its own; its miss is cached when it commits.
+    await pg.read('Ghost4', { count: true });
+    expect(catalog()).toEqual([]);
+    statements = [];
+    const r = await pg.withTransaction((tx) => tx.read('Ghost4', { count: true, limit: 0 }));
+    expect(r).toMatchObject({ rows: [], count: 0 });
+    expect(catalog()).toEqual([]);
+    // A write in the transaction still re-checks a miss its own read recorded.
+    const other = postgres(POSTGRES_URL as string, { onnotice: () => {} });
+    try {
+      const rows = await pg.withTransaction(async (tx) => {
+        expect((await tx.read('Ghost4', { count: true })).count).toBe(0);
+        await new PgDataset({ namespace: NS, sql: other, typeDefLookup }).write('Ghost4', [
+          { id: 'k1', a: 'x' }
+        ]);
+        await tx.tombstone('Ghost4', ['k1']);
+        return (await tx.read('Ghost4', { includeDeleted: true })).rows;
+      });
+      expect(rows.map((x) => [x.id, x._deletedAt !== undefined])).toEqual([['k1', true]]);
+    } finally {
+      await other.end({ timeout: 5 });
+    }
   });
 
   it('a warm read that matches nothing returns [] in one guarded statement, never retried', async () => {
