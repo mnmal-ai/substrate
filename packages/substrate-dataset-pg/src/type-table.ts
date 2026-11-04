@@ -122,6 +122,8 @@ export interface TypeTableRef {
   rowJson(alias: string): string;
   /** A top-level field as the text `rowJson(alias) ->> field` gives, which a row filter compares. */
   text(alias: string, field: string): string;
+  /** A top-level field as the jsonb `rowJson(alias) -> field` gives. */
+  json(alias: string, field: string): string;
 }
 
 /**
@@ -142,7 +144,8 @@ export async function typeTableRef(
   return {
     from: table.from,
     rowJson: (alias) => rowJsonSql(table, alias),
-    text: (alias, field) => `(${fieldExprSql(table, field, 'json', alias)} #>> '{}')`
+    text: (alias, field) => `(${fieldExprSql(table, field, 'json', alias)} #>> '{}')`,
+    json: (alias, field) => fieldExprSql(table, field, 'json', alias)
   };
 }
 

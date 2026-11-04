@@ -179,6 +179,46 @@ describe.skipIf(!POSTGRES_URL)('recall rows on type tables equal dataset.read', 
     expect(Object.fromEntries(candidates.map((c) => [c.id, c.row]))).toEqual(want);
   });
 
+  it('selectCandidates excludes by text prefix as the dataset.read row reads (columns, $raw, booleans)', async () => {
+    await ds.write('Doc', DOCS);
+    await index(
+      'Doc',
+      DOCS.map((d) => d.id)
+    );
+    const want = await datasetRows(
+      'Doc',
+      DOCS.map((d) => d.id)
+    );
+    for (const [field, prefix] of [
+      ['title', 'al'],
+      ['due', '2026-01-02'],
+      ['due', '2026-01-02T03:04:05.123456'],
+      ['done', 'fal'],
+      ['status', 'op'],
+      ['meta', '{']
+    ] as const) {
+      const kept = Object.entries(want)
+        .filter(([, row]) => {
+          const v = row[field];
+          const scalar = ['string', 'number', 'boolean'].includes(typeof v);
+          return !(scalar && String(v).startsWith(prefix));
+        })
+        .map(([id]) => id);
+      const candidates = await emb.selectCandidates(
+        {
+          scopes: [{ namespace: NS, type: 'Doc' }],
+          excludeTextPrefixes: [{ field, prefix }],
+          limit: 10
+        },
+        MODEL
+      );
+      expect(
+        candidates.map((c) => c.id),
+        `${field} ${prefix}`
+      ).toEqual(kept);
+    }
+  });
+
   it('lexical search equals dataset.read row', async () => {
     await ds.write('Doc', DOCS);
     await index(

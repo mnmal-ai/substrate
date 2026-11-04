@@ -851,6 +851,38 @@ describe.skipIf(!isPgGated)('selectCandidates parity (memory vs pg)', () => {
     }
   });
 
+  it('selectCandidates with a limit below the row count: the same first rows, bodies and order', async () => {
+    await seed('cortext', 'Memory', 'm2', { synopsis: 'kept' });
+    await seed('cortext', 'Memory', 'm1', { synopsis: 'Seed session 1' });
+    await seed('cortext', 'Decision', 'd3', { synopsis: 'kept too', n: 3 });
+    await seed('cortext', 'Decision', 'd1');
+    await seed('cortext', 'Decision', 'd2', { synopsis: 'Seed session 2' });
+    await seed('cortext', 'Decision', 'd4', { synopsis: 'last' });
+
+    const seen: unknown[] = [];
+    for (const { name, store } of stores()) {
+      const candidates = await store.selectCandidates(
+        {
+          scopes: [
+            { namespace: 'cortext', type: 'Memory' },
+            { namespace: 'cortext', type: 'Decision' }
+          ],
+          excludeTextPrefixes: [{ field: 'synopsis', prefix: 'Seed session ' }],
+          limit: 3
+        },
+        MODEL
+      );
+      // d1 has no synopsis, so the exclusion does not drop it.
+      expect(
+        candidates.map((c) => `${c.type}/${c.id}`),
+        name
+      ).toEqual(['Decision/d1', 'Decision/d3', 'Decision/d4']);
+      expect(candidates[1]?.row, name).toMatchObject({ synopsis: 'kept too', n: 3 });
+      seen.push(candidates.map((c) => ({ ...c, vector: Array.from(c.vector) })));
+    }
+    expect(seen[1]).toEqual(seen[0]);
+  });
+
   // A locale collation such as en_US.utf8 does NOT sort in byte order: it
   // interleaves case and punctuation differently. These ids differ in case
   // and punctuation so they discriminate; both sides must agree on byte

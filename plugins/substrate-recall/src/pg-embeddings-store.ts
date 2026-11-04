@@ -262,14 +262,32 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
 
   async selectCandidates(selector: CandidateSelector, model: string): Promise<Candidate[]> {
     const sql = this.#sql as Sql;
-    const namespaces = selector.scopes.map((s) => s.namespace);
-    const types = selector.scopes.map((s) => s.type);
-    const exclusionFields = selector.excludeTextPrefixes.map((e) => e.field);
-    const exclusionPrefixes = selector.excludeTextPrefixes.map((e) => e.prefix);
     const scoped = await scopedRefs(sql, selector.scopes);
+    const arms = scoped.flatMap((s) => (s.ref === undefined ? [] : [{ ...s, ref: s.ref }]));
+    if (arms.length === 0) return [];
+
+    // Per scope, the live ids its exclusions keep, without building the row.
+    // starts_with(), not LIKE: a caller-supplied prefix is matched literally.
+    // Only a scalar value (jsonb_typeof) is excluded, as the in-memory side
+    // coerces only string/number/boolean via String(value). COALESCE keeps a
+    // row whose field is absent (NULL), which an exclusion never matches.
+    let kept = sql``;
+    for (const [i, { namespace, type, ref }] of arms.entries()) {
+      let keep = sql`x.deleted_at IS NULL`;
+      for (const { field, prefix } of selector.excludeTextPrefixes) {
+        keep = sql`${keep} AND NOT COALESCE(
+          jsonb_typeof(${sql.unsafe(ref.json('x', field))}) IN ('string', 'number', 'boolean')
+          AND starts_with(${sql.unsafe(ref.text('x', field))}, ${prefix}::text), false)`;
+      }
+      kept = sql`${kept}${sql.unsafe(i === 0 ? '' : ' UNION ALL ')}SELECT ${namespace}::text AS namespace, ${type}::text AS type, x.id FROM ${sql.unsafe(ref.from)} x WHERE ${keep}`;
+    }
 
     // No HNSW GUCs: this is an exhaustive scoped scan, not a kNN, so `model`
     // can sit in the WHERE.
+    //
+    // The ORDER BY and LIMIT run over ids alone; only the picked rows have
+    // their vector text and row built, through a LATERAL that OFFSET 0 keeps
+    // from being flattened into a join over every row.
     //
     // ORDER BY pins COLLATE "C" (byte order) to match the in-memory store's
     // comparator; the database collation would order case and punctuation
@@ -283,35 +301,25 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
         body: Record<string, unknown>;
       }>
     >`
-      SELECT e.row_namespace, e.row_type, e.row_id, e.embedding::text AS embedding,
-             ${sql.unsafe(ROW_BODY_SQL)} AS body
-      FROM embeddings e
-      JOIN ${rowsFrom(sql, scoped)} r
-        ON r.namespace = e.row_namespace
-       AND r.type      = e.row_type
-       AND r.id        = e.row_id
-      JOIN unnest(${namespaces}::text[], ${types}::text[]) AS scope(ns, type)
-        ON scope.ns = e.row_namespace AND scope.type = e.row_type
-      WHERE e.model = ${model}
-        AND r.deleted_at IS NULL
-        AND NOT EXISTS (
-          SELECT 1
-          FROM unnest(${exclusionFields}::text[], ${exclusionPrefixes}::text[]) AS ex(field, prefix)
-          -- starts_with(), not LIKE: a caller-supplied prefix must be matched
-          -- literally. LIKE treats '_' and '%' in the prefix as wildcards, so
-          -- a prefix like 'perf_seed' would also exclude 'perfXseed…' — the
-          -- in-memory side (String(value).startsWith(...)) never had that
-          -- hazard, so the two implementations silently disagreed. Restricted
-          -- to scalar JSON values (jsonb_typeof) to match the in-memory side,
-          -- which coerces only string/number/boolean via String(value) — a
-          -- composite (object/array) has no agreed-on text rendering between
-          -- pg's jsonb ->> and JS's String(), so both sides now treat a
-          -- composite as never-excluded rather than risk disagreeing.
-          WHERE jsonb_typeof(${sql.unsafe(ROW_BODY_SQL)} -> ex.field) IN ('string', 'number', 'boolean')
-            AND starts_with(${sql.unsafe(ROW_BODY_SQL)} ->> ex.field, ex.prefix)
-        )
-      ORDER BY e.row_namespace COLLATE "C" ASC, e.row_type COLLATE "C" ASC, e.row_id COLLATE "C" ASC
-      LIMIT ${selector.limit}
+      WITH picked AS (
+        SELECT e.row_namespace, e.row_type, e.row_id
+        FROM embeddings e
+        JOIN (${kept}) k
+          ON k.namespace = e.row_namespace AND k.type = e.row_type AND k.id = e.row_id
+        WHERE e.model = ${model}
+        ORDER BY e.row_namespace COLLATE "C" ASC, e.row_type COLLATE "C" ASC, e.row_id COLLATE "C" ASC
+        LIMIT ${selector.limit}
+      )
+      SELECT p.row_namespace, p.row_type, p.row_id, e.embedding::text AS embedding, b.body
+      FROM picked p
+      JOIN embeddings e
+        ON e.row_namespace = p.row_namespace AND e.row_type = p.row_type AND e.row_id = p.row_id
+      CROSS JOIN LATERAL (
+        SELECT ${sql.unsafe(ROW_BODY_SQL)} AS body FROM ${rowsFrom(sql, arms)} r
+        WHERE r.namespace = p.row_namespace AND r.type = p.row_type AND r.id = p.row_id
+        OFFSET 0
+      ) b
+      ORDER BY p.row_namespace COLLATE "C" ASC, p.row_type COLLATE "C" ASC, p.row_id COLLATE "C" ASC
     `;
 
     return rows.map((r) => ({
