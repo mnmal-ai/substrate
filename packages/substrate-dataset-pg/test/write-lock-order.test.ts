@@ -28,6 +28,18 @@ describe.skipIf(!POSTGRES_URL)('batched upsert lock order', () => {
     await sql.end({ timeout: 5 });
   });
 
+  /** Resolves once a write statement is waiting on a lock. */
+  async function batchWaits(): Promise<void> {
+    for (let i = 0; ; i++) {
+      const [w] = await sql<Array<{ n: number }>>`
+        SELECT count(*)::int AS n FROM pg_stat_activity
+        WHERE wait_event_type = 'Lock' AND query LIKE '%guard AS MATERIALIZED%' AND pid <> pg_backend_pid()`;
+      if ((w?.n ?? 0) > 0) return;
+      if (i > 100) throw new Error('the batch never waited');
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  }
+
   it('a batch [k2, k1] against a holder of k1 that then wants k2: both finish, no 40P01', async () => {
     const pg = new PgDataset({
       namespace: ns,
@@ -50,14 +62,7 @@ describe.skipIf(!POSTGRES_URL)('batched upsert lock order', () => {
       ]);
       batch.catch(() => undefined); // awaited below; a 40P01 would otherwise go unhandled first
       // Until the batch waits on k1: by then it holds k2 when it locks in input order.
-      for (let i = 0; ; i++) {
-        const [w] = await sql<Array<{ n: number }>>`
-          SELECT count(*)::int AS n FROM pg_stat_activity
-          WHERE wait_event_type = 'Lock' AND query LIKE '%guard AS MATERIALIZED%' AND pid <> pg_backend_pid()`;
-        if ((w?.n ?? 0) > 0) break;
-        if (i > 100) throw new Error('the batch never waited on k1');
-        await new Promise((r) => setTimeout(r, 20));
-      }
+      await batchWaits();
       // Locked in input order, the batch holds k2 and this deadlocks.
       await other.unsafe(`SELECT 1 FROM ${table} WHERE id = 'k2' FOR NO KEY UPDATE`);
       await other`COMMIT`;
@@ -67,5 +72,33 @@ describe.skipIf(!POSTGRES_URL)('batched upsert lock order', () => {
       await other`ROLLBACK`.catch(() => undefined);
       other.release();
     }
+  });
+
+  it('two batches inserting the same new ids in opposite orders: both finish, no 40P01', async () => {
+    const pg = new PgDataset({
+      namespace: ns,
+      sql,
+      typeDefLookup: () => ({ fields }),
+      fieldDefLookup: (_t, f) => fields[f]
+    });
+    let batch: Promise<unknown> | undefined;
+    // A transaction's batches [n1] then [n2]; between them, the batch [n2, n1] starts.
+    await pg.withTransaction(async (tx) => {
+      await tx.write('Note', [{ id: 'n1', title: 'first' }]);
+      batch = pg.write('Note', [
+        { id: 'n2', title: 'b' },
+        { id: 'n1', title: 'a' }
+      ]);
+      batch.catch(() => undefined); // awaited below; a 40P01 would otherwise go unhandled first
+      // Inserting in input order, the batch has inserted n2 and waits on n1.
+      await batchWaits();
+      await tx.write('Note', [{ id: 'n2', title: 'second' }]);
+    });
+    await batch;
+    const rows = await pg.read('Note', { ids: ['n1', 'n2'] });
+    expect(rows.rows.map((r) => [r.id, r.title]).sort()).toEqual([
+      ['n1', 'a'],
+      ['n2', 'b']
+    ]);
   });
 });
