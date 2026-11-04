@@ -66,6 +66,7 @@ With `SUBSTRATE_PLUGIN_DIR` unset the server loads no plugins and serves only `/
 - [Getting started](docs/getting-started.md): from nothing to a running server with a plugin loaded
 - [Plugin author guide](docs/plugin-author-guide.md): `defineNamespace`, the field DSL, autoCRUD, custom resolvers, onboarding, testing
 - [Plugin tiers](docs/plugin-tier-decision.md): kernel vs coordinator plugins
+- [Upgrading to per-type tables](docs/upgrading-to-type-tables.md): what changes, and the required `migrate-store` step for an existing store
 - [Surface parity](docs/surface-parity.md): what HTTP, MCP, WS and SSE each offer, and where their shapes differ (edge walks are query-only; subscriptions refuse them)
 - [WebSocket subscription teardown](docs/ws-subscription-contract.md): how subscriptions end and what a client should do
 - [Design spec](docs/substrate-from-first-principles.md): the design source of truth
