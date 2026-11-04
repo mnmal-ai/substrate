@@ -269,6 +269,23 @@ interface InternalPgSubstrateDatasetOptions {
  */
 type TxTables = Map<string, { table: TypeTable | null; gen: number; snapshot?: true }>;
 
+/**
+ * Marks every descriptor a transaction loaded `snapshot` unless it ran READ
+ * COMMITTED: under REPEATABLE READ or SERIALIZABLE a load (a miss included)
+ * shows the transaction's snapshot, which can predate a catalog change whose
+ * notification has already landed, so it must not reach the pool's cache.
+ * Asks only when something would be cached.
+ */
+async function snapshotUnlessReadCommitted(tx: TransactionSql, txTables: TxTables): Promise<void> {
+  const entries = [...txTables.values()].filter((e) => e.snapshot !== true && e.gen >= 0);
+  if (entries.length === 0) return;
+  const [row] = await tx<
+    Array<{ iso: string }>
+  >`SELECT current_setting('transaction_isolation') AS iso`;
+  if (row?.iso === 'read committed') return;
+  for (const e of entries) e.snapshot = true;
+}
+
 /** An index whose build this process deferred, is running, or saw fail. */
 interface DeferredBuild {
   state: 'pending' | 'building' | 'failed';
@@ -1369,7 +1386,9 @@ export class PgDataset implements Dataset {
         tableCache: this.#tableCache,
         txTables
       });
-      return fn(txDataset);
+      const result = await fn(txDataset);
+      await snapshotUnlessReadCommitted(txSql, txTables);
+      return result;
       // postgres.js's begin<T> wraps the return in UnwrapPromiseArray; for
       // our `Promise<T>`-returning fn it collapses to `T`.
     })) as T;
@@ -1421,7 +1440,9 @@ export class PgDataset implements Dataset {
 
     const rootSql = this.#sql as Sql;
     const out = (await rootSql.begin<T>(async (txSql) => {
-      return fn(buildHandles(txSql));
+      const result = await fn(buildHandles(txSql));
+      await snapshotUnlessReadCommitted(txSql, txTables);
+      return result;
     })) as T;
     this.#commitTables(txTables);
     return out;

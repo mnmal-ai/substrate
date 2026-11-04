@@ -15,7 +15,7 @@ import type { FieldDef, Row } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PgDataset } from '../src/index.js';
-import { tableCacheFor } from '../src/type-table.js';
+import { ensureTypeTable, tableCacheFor } from '../src/type-table.js';
 import { dropNamespace } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
@@ -140,6 +140,43 @@ describe.skipIf(!POSTGRES_URL)('a read through a stale table descriptor (pg)', (
       expect(rank).toBe(1);
       // Nor replaced at commit by the snapshot's older descriptor.
       expect(tableCacheFor(rr).tables.get(key)?.column('rank')?.state).toBe('column');
+    } finally {
+      await rr.end({ timeout: 5 });
+    }
+  });
+
+  it('a REPEATABLE READ load after a catalog change it cannot see does not seed the pool cache', async () => {
+    const rr = postgres(POSTGRES_URL as string, {
+      onnotice: () => {},
+      connection: { default_transaction_isolation: 'repeatable read' }
+    });
+    const r = new PgDataset({ namespace: ns, sql: rr, ...lookup });
+    const key = `${ns}/Note`;
+    const cache = tableCacheFor(rr);
+    try {
+      await a.write('Note', [{ id: 'n1', title: 'a' }]);
+      await a.write('Tag', [{ id: 't1', name: 'x', note: 'n1' }]);
+      await r.withTransaction(async (tx) => {
+        await tx.read('Tag', {}); // the snapshot, and the pool's LISTEN
+        defs.Note = { fields: { title: field.string(), rank: field.number() } };
+        // The catalog change alone (pending: no DDL, no index build to wait on the snapshot).
+        await ensureTypeTable(sqlA, {
+          namespace: ns,
+          type: 'Note',
+          fields: defs.Note.fields,
+          newFields: 'pending',
+          enforceUuidCheck: false
+        });
+        const deadline = Date.now() + 10_000;
+        while (!cache.dropped.has(key)) {
+          if (Date.now() > deadline) throw new Error('the catalog notification never landed');
+          await new Promise((res) => setTimeout(res, 20));
+        }
+        // Loaded through the snapshot, after the notification: no `rank` there.
+        await tx.read('Note', {});
+      });
+      const cached = cache.tables.get(key);
+      expect(cached === undefined || cached?.pending.includes('rank')).toBe(true);
     } finally {
       await rr.end({ timeout: 5 });
     }

@@ -239,10 +239,30 @@ export function listenTableCache(cache: TableCache): Promise<boolean> {
                 `substrate-dataset-pg: LISTEN substrate_catalog failed, type tables uncached; retrying in ${LISTEN_RETRY_MS / 1000}s: ${err instanceof Error ? err.message : String(err)}`
               );
               cache.listenRetryAt = Date.now() + LISTEN_RETRY_MS;
+              dropListener(pool);
               return false;
             }
           );
   return cache.listening;
+}
+
+/**
+ * Closes the pool's LISTEN connection after a refused LISTEN, so the retry
+ * opens a fresh one: postgres.js keeps a rejected LISTEN's promise for the
+ * channel until that connection closes, and a later `listen` only joins it.
+ * The channel is forgotten first, so the close does not re-listen the failed
+ * listeners; other channels are re-listened on the new connection.
+ *
+ * shortcut: reaches into postgres.js 3.x's `listen.sql` / `listen.channels`;
+ * re-check on a postgres.js upgrade (the listen-retry test fails if they move).
+ */
+function dropListener(pool: Partial<Sql>): void {
+  const listen = pool.listen as { sql?: Sql; channels?: Record<string, unknown> } | undefined;
+  if (listen === undefined) return;
+  delete listen.channels?.substrate_catalog;
+  const conn = listen.sql;
+  delete listen.sql;
+  conn?.end({ timeout: 0 }).catch(() => {});
 }
 
 /**
