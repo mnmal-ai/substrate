@@ -7,7 +7,7 @@
  * arm after it has stopped surfacing through the dense one.
  */
 
-import { type TypeTableRef, typeTableRef } from '@mnmal-ai/substrate-dataset-pg';
+import { guardedRefRead, typeTableRef } from '@mnmal-ai/substrate-dataset-pg';
 import type postgres from 'postgres';
 import type {
   LexicalStore,
@@ -112,16 +112,14 @@ export class PgLexicalStore implements LexicalStore {
     const k = Math.min(Math.max(1, Math.trunc(input.k)), MAX_K);
     // `websearch_to_tsquery`, unlike `to_tsquery`, cannot raise a syntax
     // error on free text.
-    const ref = await typeTableRef(this.#sql, input.namespace, input.type);
-    if (ref === undefined) return [];
-    const strict = await this.#run(input, ref, k, false);
+    const strict = await this.#run(input, k, false);
     if (strict.length > 0) return strict;
-    return this.#run(input, ref, k, true);
+    return this.#run(input, k, true);
   }
 
+  /** One pass, under the type table's read guard, so a promotion meanwhile cannot drop a field or a hit. */
   async #run(
     input: LexicalStoreSearchInput,
-    ref: TypeTableRef,
     k: number,
     degrade: boolean
   ): Promise<LexicalStoreSearchResult[]> {
@@ -140,7 +138,14 @@ export class PgLexicalStore implements LexicalStore {
         )`
       : this.#sql`websearch_to_tsquery(${this.#tsConfig}, ${input.query})`;
 
-    const rows = (await this.#sql<SearchRow[]>`
+    const rows = await guardedRefRead<SearchRow>(
+      this.#sql,
+      input.namespace,
+      input.type,
+      (ref, guard) =>
+        guard(
+          this.#sql,
+          this.#sql`
       SELECT
         l.row_namespace,
         l.row_type,
@@ -161,7 +166,10 @@ export class PgLexicalStore implements LexicalStore {
         ${rowFilterSql(this.#sql, ref, input.rowFilter)}
       ORDER BY score DESC, l.row_id ASC
       LIMIT ${k}
-    `) as unknown as SearchRow[];
+    `
+        ) as unknown as Promise<SearchRow[]>,
+      'row_id'
+    );
 
     return rows.map((r) => ({
       rowNamespace: r.row_namespace,

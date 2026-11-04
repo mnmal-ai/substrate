@@ -21,7 +21,7 @@
  * A unique one is chosen under the migration lock, which serialises the choice
  * with migrations and other boots, but released before its duplicate check and
  * build; no build holds the migration lock, so a long build never holds up a
- * booting process. What still meets a non-unique build is DDL on
+ * booting process. What still meets a build, unique or not, is DDL on
  * its table outside these locks: a kernel migration's ALTER or non-concurrent
  * CREATE INDEX on a type table waits for the build, and can deadlock with it, in
  * which case Postgres aborts one with 40P01 (a failed build is retried by the

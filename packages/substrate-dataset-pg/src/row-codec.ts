@@ -52,8 +52,8 @@ export function extraWins(column: TypedColumn): boolean {
 
 /**
  * Splits `row` into columns, `extra`, `$raw`, cleared fields and the keys to
- * unset. An `orphaned` column is never written: its field is undeclared, so the
- * value goes to `extra`. A non-finite number on a column field is refused with
+ * unset. An `orphaned` column is only ever cleared: its field is undeclared, so
+ * the value goes to `extra`. A non-finite number on a column field is refused with
  * a RangeError, because jsonb would turn its `$raw` copy into `null`.
  */
 export function encodeRow(table: TypeTable, row: Record<string, unknown>): EncodedRow {
@@ -61,6 +61,9 @@ export function encodeRow(table: TypeTable, row: Record<string, unknown>): Encod
   const out: EncodedRow = { columns: {}, extra: {}, raw: {}, clear: [], unset: Object.keys(row) };
   for (const [field, value] of Object.entries(row)) {
     const c = table.column(field);
+    // Its column is cleared, so a value left there always predates the orphaning and every
+    // write of the field since; declared again, the field never reads a stale one back.
+    if (c?.state === 'orphaned') out.columns[c.column] = null;
     const held = c !== undefined && c.state !== 'orphaned' ? c : undefined;
     if (value === null && (held !== undefined || table.pending.includes(field))) {
       out.clear.push(field);

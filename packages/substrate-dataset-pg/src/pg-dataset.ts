@@ -148,6 +148,7 @@ import {
 import { UUID_CHECK_MIGRATION } from './uuid-check.js';
 import {
   assertReadCommitted,
+  GUARDED_ATTEMPTS,
   guardCte,
   guardedRead,
   guardedRows,
@@ -269,6 +270,26 @@ interface InternalPgSubstrateDatasetOptions {
  */
 type TxTables = Map<string, { table: TypeTable | null; gen: number; snapshot?: true }>;
 
+/**
+ * Marks every descriptor a transaction loaded `snapshot` unless it ran READ
+ * COMMITTED: under REPEATABLE READ or SERIALIZABLE a load (a miss included)
+ * shows the transaction's snapshot, which can predate a catalog change whose
+ * notification has already landed, so it must not reach the pool's cache.
+ * Asks only when something would be cached.
+ */
+async function snapshotUnlessReadCommitted(tx: TransactionSql, txTables: TxTables): Promise<void> {
+  const entries = [...txTables.values()].filter((e) => e.snapshot !== true && e.gen >= 0);
+  if (entries.length === 0) return;
+  const [row] = await tx<
+    Array<{ iso: string }>
+  >`SELECT current_setting('transaction_isolation') AS iso`;
+  if (row?.iso === 'read committed') return;
+  for (const e of entries) e.snapshot = true;
+}
+
+/** {@link preResolveExtensionOperatorsDetailed}, as a read's attempts share it. */
+type ResolveWhere = typeof preResolveExtensionOperatorsDetailed;
+
 /** An index whose build this process deferred, is running, or saw fail. */
 interface DeferredBuild {
   state: 'pending' | 'building' | 'failed';
@@ -317,9 +338,6 @@ const ANONYMOUS: ActorIdentity = { kind: 'system', id: 'anonymous' };
 
 /** A written row as {@link guardedRows} returns it: `id` null on the row carrying `ok` alone. */
 type GuardedRecord = TableRowRecord & { ok: boolean; iso: string };
-
-/** Attempts a guarded write or read gets, so one queued behind a sweep moving several fields still lands. */
-const GUARDED_ATTEMPTS = 3;
 
 /** A read whose statement found one of its tables past the version it was built for. */
 class StaleRead {
@@ -659,11 +677,18 @@ export class PgDataset implements Dataset {
    * {@link #readOnce}, run again with fresh descriptors while its statement
    * finds a table it decodes past the version it was built for (a field moved
    * out of `extra` since), up to {@link GUARDED_ATTEMPTS} in all; then throws.
+   * The where's extension operators resolve once, on the first attempt that
+   * needs them, so a retry repeats no kNN lookup or embedding.
    */
   async #read(type: string, params: ReadParams, walks: boolean): Promise<ReadResult> {
+    let resolved: ReturnType<typeof preResolveExtensionOperatorsDetailed> | undefined;
+    const resolveOnce: ResolveWhere = (where, ctx) => {
+      resolved ??= preResolveExtensionOperatorsDetailed(where, ctx);
+      return resolved;
+    };
     for (let attempt = 1; ; attempt++) {
       try {
-        return await this.#readOnce(type, params, walks);
+        return await this.#readOnce(type, params, walks, resolveOnce);
       } catch (err) {
         if (!(err instanceof StaleRead)) throw err;
         if (attempt >= GUARDED_ATTEMPTS) {
@@ -689,7 +714,12 @@ export class PgDataset implements Dataset {
     }
   }
 
-  async #readOnce(type: string, params: ReadParams, walks: boolean): Promise<ReadResult> {
+  async #readOnce(
+    type: string,
+    params: ReadParams,
+    walks: boolean,
+    resolveWhere: ResolveWhere
+  ): Promise<ReadResult> {
     const sql = this.#sql;
     const includeDeleted = params.includeDeleted === true;
 
@@ -783,7 +813,7 @@ export class PgDataset implements Dataset {
     if (params.where !== undefined) {
       // Resolves extension operators (e.g. embeddingSimilar) to `id IN [...]`
       // clauses before the synchronous SQL builder runs.
-      const detailed = await preResolveExtensionOperatorsDetailed(params.where, {
+      const detailed = await resolveWhere(params.where, {
         namespace: this.namespace,
         type,
         k: limit,
@@ -1369,7 +1399,9 @@ export class PgDataset implements Dataset {
         tableCache: this.#tableCache,
         txTables
       });
-      return fn(txDataset);
+      const result = await fn(txDataset);
+      await snapshotUnlessReadCommitted(txSql, txTables);
+      return result;
       // postgres.js's begin<T> wraps the return in UnwrapPromiseArray; for
       // our `Promise<T>`-returning fn it collapses to `T`.
     })) as T;
@@ -1421,7 +1453,9 @@ export class PgDataset implements Dataset {
 
     const rootSql = this.#sql as Sql;
     const out = (await rootSql.begin<T>(async (txSql) => {
-      return fn(buildHandles(txSql));
+      const result = await fn(buildHandles(txSql));
+      await snapshotUnlessReadCommitted(txSql, txTables);
+      return result;
     })) as T;
     this.#commitTables(txTables);
     return out;
@@ -1472,7 +1506,9 @@ export class PgDataset implements Dataset {
     // it must not reach the bigint cast, which would throw.
     const valid = [...new Set(shortIds)].filter(Number.isSafeInteger);
     if (valid.length === 0) return out;
-    const table = await this.#tableFor(type, this.namespace, true);
+    // Not a read path: a crossRef check resolves through it before its write,
+    // so inside a transaction it re-checks a cached miss, as a write does.
+    const table = await this.#tableFor(type);
     if (table === undefined) return out;
     // One statement: the ids go in as one array, and the join to the type's
     // table keeps live rows only, so a tombstoned or purged row's id never resolves.
@@ -1576,7 +1612,7 @@ export class PgDataset implements Dataset {
       WITH ${inputCte(sql, table, encoded)}${locked},
       updated AS (
         UPDATE ${rel} t
-        SET ${sql.unsafe(setList(mergeAssignments(table, 't', 'i')))}${stamp === null ? sql`` : sql`, ${stamp}`}
+        SET ${sql.unsafe(setList(mergeAssignments(table, 't', 'i', encoded)))}${stamp === null ? sql`` : sql`, ${stamp}`}
         FROM input i${live ? sql`, locked` : sql``}
         WHERE t.id = i.rid${live ? sql` AND t.deleted_at IS NULL` : sql``}${match === null ? sql`` : sql` AND ${match}`}
         RETURNING t.*
@@ -1605,10 +1641,13 @@ export class PgDataset implements Dataset {
             updated_by_kind = ${updatedBy.kind}::text,
             updated_by_id = ${updatedBy.id}::text`;
     // One input row, which every matched row merges.
-    const build = (t: TypeTable) => ({
-      input: inputCte(sql, t, [{ ...encodeRow(t, patch), id: '' }]),
-      assign: sql`${sql.unsafe(setList(mergeAssignments(t, 'r', 'i')))}, ${stamp}`
-    });
+    const build = (t: TypeTable) => {
+      const rows = [{ ...encodeRow(t, patch), id: '' }];
+      return {
+        input: inputCte(sql, t, rows),
+        assign: sql`${sql.unsafe(setList(mergeAssignments(t, 'r', 'i', rows)))}, ${stamp}`
+      };
+    };
     return this.#filterWrite(type, where, opts.maxMatch, build, false, table).catch(
       (err: unknown) => {
         // A set onto a declared unique index's values: refused as `patchRows` refuses it.

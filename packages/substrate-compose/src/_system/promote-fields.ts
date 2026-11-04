@@ -102,10 +102,12 @@ export function createPromoteFieldsRunner(deps: {
       ...(retryConflicts ? { retryConflicts } : {})
     });
     for (const e of events) {
-      process.stdout.write(
-        `[substrate] field ${e.namespace}/${e.type}.${e.field}: ${e.kind} (attempt ${e.attempts})` +
-          `${e.error !== undefined ? `: ${e.error}` : ''}\n`
-      );
+      // A busy event's error says why it was skipped (another process holds it), not an attempt.
+      const outcome =
+        e.kind === 'busy' && e.error !== undefined
+          ? `busy (${e.error})`
+          : `${e.kind} (attempt ${e.attempts})${e.error !== undefined ? `: ${e.error}` : ''}`;
+      process.stdout.write(`[substrate] field ${e.namespace}/${e.type}.${e.field}: ${outcome}\n`);
     }
     await emitFieldEvents(deps.engine, events.flatMap(auditOf));
     return events;

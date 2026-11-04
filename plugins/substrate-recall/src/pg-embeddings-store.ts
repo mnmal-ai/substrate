@@ -15,7 +15,12 @@
  * reason.
  */
 
-import { type PgHandle, txScopeIdFor, typeTableRef } from '@mnmal-ai/substrate-dataset-pg';
+import {
+  guardedRefRead,
+  type PgHandle,
+  txScopeIdFor,
+  typeTableRef
+} from '@mnmal-ai/substrate-dataset-pg';
 import type { Sql } from 'postgres';
 import type { Candidate, CandidateSelector } from './candidate-selection.js';
 import type {
@@ -115,9 +120,6 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
     // SET LOCAL + SELECT in one transaction so the hnsw GUCs apply only here.
     const wantVector = input.returnVector === true;
     const halfLife = input.salienceHalfLifeHours;
-    const ref = await typeTableRef(sql, input.namespace, input.type);
-    if (ref === undefined) return [];
-    const scoped = [{ namespace: input.namespace, type: input.type, ref }];
     type KnnRow = {
       row: Record<string, unknown>;
       score: number;
@@ -125,19 +127,28 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
       /** pgvector text form, selected only when returnVector is requested. */
       embedding?: string;
     };
-    const rows = await (sql.begin<Array<KnnRow>>(async (tx) => {
-      await tx`SET LOCAL hnsw.iterative_scan = 'strict_order'`;
-      // SET LOCAL refuses bound parameters, so the value is inlined via
-      // tx.unsafe. Safe: it is a module constant, not user input.
-      await tx.unsafe(`SET LOCAL hnsw.ef_search = ${DEFAULT_HNSW_EF_SEARCH}`);
-      // The model and row filters are applied inside the iterative scan, so
-      // vectors from another model of the same dimension (mid-reindex) do not
-      // crowd out the top k. The scan stops after hnsw.max_scan_tuples: a very selective filter behind more nearer
-      // non-matching tuples than that can still return fewer than k rows.
-      //
-      // The embedding is selected only when requested: serializing it to text
-      // on every recall would tax the default path.
-      return tx<Array<KnnRow>>`
+    // Under the type table's read guard, so a promotion meanwhile cannot drop a field or a hit.
+    const rows = await guardedRefRead<KnnRow>(
+      sql,
+      input.namespace,
+      input.type,
+      (ref, guard) =>
+        sql.begin<Array<KnnRow>>(async (tx) => {
+          const scoped = [{ namespace: input.namespace, type: input.type, ref }];
+          await tx`SET LOCAL hnsw.iterative_scan = 'strict_order'`;
+          // SET LOCAL refuses bound parameters, so the value is inlined via
+          // tx.unsafe. Safe: it is a module constant, not user input.
+          await tx.unsafe(`SET LOCAL hnsw.ef_search = ${DEFAULT_HNSW_EF_SEARCH}`);
+          // The model and row filters are applied inside the iterative scan, so
+          // vectors from another model of the same dimension (mid-reindex) do not
+          // crowd out the top k. The scan stops after hnsw.max_scan_tuples: a very selective filter behind more nearer
+          // non-matching tuples than that can still return fewer than k rows.
+          //
+          // The embedding is selected only when requested: serializing it to text
+          // on every recall would tax the default path.
+          return guard(
+            tx,
+            tx`
         SELECT
           ${tx.unsafe(ROW_BODY_SQL)}              AS row,
           1 - (e.embedding <=> ${literal}::vector) AS score,
@@ -160,8 +171,11 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
           ${rowFilterSql(tx as unknown as Sql, ref, input.rowFilter)}
         ORDER BY e.embedding <=> ${literal}::vector
         LIMIT ${k}
-      `;
-    }) as unknown as Promise<Array<KnnRow>>);
+      `
+          ) as unknown as Promise<Array<KnnRow>>;
+        }) as unknown as Promise<Array<KnnRow>>,
+      'row'
+    );
 
     return rows.map((r) => ({
       row: r.row,

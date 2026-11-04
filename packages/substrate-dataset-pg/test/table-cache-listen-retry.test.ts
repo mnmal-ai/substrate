@@ -45,4 +45,39 @@ describe.skipIf(!POSTGRES_URL)('a failed catalog LISTEN (pg)', () => {
     expect(listen).toHaveBeenCalledTimes(2);
     expect(tableCacheFor(sql).tables.has(key)).toBe(true);
   });
+
+  it('a LISTEN refused on a live listener connection: the retry reaches the server again', async () => {
+    // Throwing from `debug` rejects the LISTEN on its (inherited) listener
+    // connection, which stays open, as a server-side refusal leaves it.
+    let refuse = true;
+    const pool = postgres(POSTGRES_URL as string, {
+      onnotice: () => {},
+      debug: (_c, query) => {
+        if (refuse && /^listen /i.test(query)) {
+          refuse = false;
+          throw new Error('listen refused');
+        }
+      }
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const ds = new PgDataset({ namespace: ns, sql: pool });
+      const key = `${ns}/T`;
+      await ds.write('T', [{ id: 'b' }]);
+      await ds.read('T', {});
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('listen refused'));
+      expect(tableCacheFor(pool).tables.has(key)).toBe(false);
+
+      const now = Date.now();
+      vi.spyOn(Date, 'now').mockReturnValue(now + LISTEN_RETRY_MS + 1);
+      await ds.read('T', {});
+      expect(tableCacheFor(pool).tables.has(key)).toBe(true);
+      const channels = (
+        pool.listen as unknown as { channels: Record<string, { listeners: unknown[] }> }
+      ).channels;
+      expect(channels.substrate_catalog?.listeners).toHaveLength(1);
+    } finally {
+      await pool.end({ timeout: 5 });
+    }
+  });
 });

@@ -10,7 +10,8 @@
  * 2. `pending` only: record it `promoting`, and notify.
  * 3. Backfill, keyset-paginated by `id` (F14): each page moves the values of
  *    its rows that carry the key, through the row codec, so a misfit lands in
- *    `$raw` exactly as a write would put it. Those rows are locked in id order
+ *    `$raw` exactly as a write would put it; and a `$raw` value the column
+ *    now admits (its enum vocabulary widened) into the column. Those rows are locked in id order
  *    first, as batch writers lock them; a deadlock or lock timeout is `busy`.
  *    A row a writer changed between the page's read and its update is left
  *    for the straggler pass.
@@ -27,7 +28,9 @@
  * A unique index refusing a backfilled value (23505), or one that cannot be
  * built over the moved values, fails the field and is never weakened to let
  * the move through. Before step 5 the field stays `promoting`, so reads still
- * see its `extra` values. A field never goes back from `column`: a straggler
+ * see its `extra` values. A field goes back from `column` only when its enum
+ * vocabulary widens (`ensureTypeTable`), so step 3 moves the `$raw` values the
+ * vocabulary now admits; otherwise never: a straggler
  * that fails (or a straggler pass that is stopped) leaves the field `column`
  * with its error recorded, which brings it back to a later sweep's straggler
  * pass until that pass finishes. A field that failed on a unique conflict,
@@ -37,8 +40,9 @@
  *
  * Every server process sweeps, so each field is swept under a session
  * advisory lock taken with a try ({@link promotionLockKey}): a field another
- * sweep holds is skipped, not swept twice. The lock never waits, so it is in
- * no wait cycle; it is session-level, not transaction-level, because the
+ * sweep holds is skipped, not swept twice, and reported `busy` with
+ * {@link HELD_ELSEWHERE}. The lock never waits, so it is in no wait cycle;
+ * it is session-level, not transaction-level, because the
  * field's own index builds (CONCURRENTLY) would wait forever on an open
  * transaction of the sweep's.
  */
@@ -56,6 +60,12 @@ import {
   PG_TYPE,
   type TypeTable
 } from './type-table.js';
+
+/**
+ * The error of a `busy` event for a field whose sweep lock another sweep holds:
+ * not an attempt, and never recorded, only reported.
+ */
+export const HELD_ELSEWHERE = 'held by another process';
 
 /** Busy or failed attempts in a row after which a field's promotion is reported `failed`. */
 export const PROMOTION_FAILED_AFTER = 3;
@@ -189,10 +199,13 @@ export async function promotePendingFields(
         }
         if (!moved) return false;
       }
-      // `column` from here on, and never back: a straggler that cannot move fails the field, and
-      // its error makes a later sweep run this pass again.
-      at = await catalogVersion(sql, f);
-      if (!(await backfill(sql, table, f.field, opts))) {
+      // `column` from here on (only a later widening sends it back): a straggler that cannot
+      // move fails the field, and its error makes a later sweep run this pass again. Through the
+      // current descriptor, so a vocabulary widened since the load moves the values it admits.
+      const current = await loadTypeTable(sql, f.namespace, f.type);
+      if (current?.column(f.field)?.state !== 'column') return false;
+      at = current.version;
+      if (!(await backfill(sql, current, f.field, opts))) {
         await recordAttempt(sql, f, f.attempts, 'stopped: its straggler pass did not finish');
         return true;
       }
@@ -231,7 +244,8 @@ export async function promotePendingFields(
       promotionLockKey(f.namespace, f.type, f.field),
       () => sweepOne(f)
     );
-    if (held.acquired && held.value) break;
+    if (!held.acquired) emit(f, 'busy', f.attempts, HELD_ELSEWHERE);
+    else if (held.value) break;
   }
   return events;
 }
@@ -255,12 +269,6 @@ const due = (sql: Sql) => sql`(f.state IN ('pending', 'promoting')
   OR (f.state = 'column' AND f.last_error IS NOT NULL))
   AND f.error_version IS DISTINCT FROM (
     SELECT v.version FROM substrate_type_tables v WHERE v.namespace = f.namespace AND v.type = f.type)`;
-
-async function catalogVersion(sql: Sql, f: FieldRow): Promise<string | undefined> {
-  const [row] = await sql<Array<{ version: string }>>`
-    SELECT version::text FROM substrate_type_tables WHERE namespace = ${f.namespace} AND type = ${f.type}`;
-  return row?.version;
-}
 
 const isUniqueConflict = (err: unknown): boolean =>
   err instanceof UniqueIndexDuplicatesError || (err as { code?: unknown })?.code === '23505';
@@ -311,30 +319,58 @@ async function backfill(
   let last = '';
   for (;;) {
     if (opts.signal?.aborted === true) return false;
-    // `v` is the stored JSON text, so the update's guard compares it exactly.
-    const page = await sql<Array<{ id: string; v: string | null }>>`
-      SELECT id, CASE WHEN extra ? ${field} THEN (extra -> ${field})::text END AS v
+    // `v` (`extra`) and `rv` (`$raw`) are the stored JSON text, so the updates' guards compare them exactly.
+    const page = await sql<Array<{ id: string; v: string | null; rv: string | null }>>`
+      SELECT id, CASE WHEN extra ? ${field} THEN (extra -> ${field})::text END AS v,
+        CASE WHEN extra -> ${RAW_KEY}::text ? ${field} THEN (extra -> ${RAW_KEY}::text -> ${field})::text END AS rv
       FROM ${from} WHERE id > ${last} ORDER BY id LIMIT ${opts.batchRows}`;
     const ids: string[] = [];
     const values: string[] = [];
     const columns: Array<string | null> = [];
     const raws: Array<string | null> = [];
+    // A `$raw` value the column now admits (a widened vocabulary): moved out of `$raw`.
+    const fitIds: string[] = [];
+    const fitValues: string[] = [];
+    const fitColumns: string[] = [];
     for (const r of page) {
-      if (r.v === null) continue;
-      const encoded = encodeRow(table, { [field]: JSON.parse(r.v) as unknown });
+      const stored = r.v ?? r.rv;
+      if (stored === null) continue;
+      const encoded = encodeRow(table, { [field]: JSON.parse(stored) as unknown });
       const c = encoded.columns[column.column];
+      const misfit = Object.hasOwn(encoded.raw, field);
+      if (r.v === null) {
+        if (misfit || c === null || c === undefined) continue;
+        fitIds.push(r.id);
+        fitValues.push(stored);
+        fitColumns.push(String(c));
+        continue;
+      }
       ids.push(r.id);
       values.push(r.v);
       columns.push(c === null || c === undefined ? null : String(c));
-      raws.push(Object.hasOwn(encoded.raw, field) ? JSON.stringify(encoded.raw[field]) : null);
+      raws.push(misfit ? JSON.stringify(encoded.raw[field]) : null);
     }
-    if (ids.length > 0) {
+    if (ids.length + fitIds.length > 0) {
       // Rows are locked in id order first, as every batch writer locks them,
       // so the update cannot deadlock against one. Only a row still holding the
       // value read is moved: a current writer has meanwhile set the column and
       // stripped the key, and a stale one put a newer value.
+      const locked = [...ids, ...fitIds];
       await sql.begin(async (tx) => {
-        await tx`SELECT 1 FROM ${from} WHERE id = ANY(${ids}::text[]) ORDER BY id FOR UPDATE`;
+        await tx`SELECT 1 FROM ${from} WHERE id = ANY(${locked}::text[]) ORDER BY id FOR UPDATE`;
+        if (fitIds.length > 0) {
+          await tx`
+          UPDATE ${from} AS t SET
+            ${col} = u.c::${cast},
+            extra = CASE
+              WHEN (t.extra -> ${RAW_KEY}) - ${field}::text = '{}'::jsonb THEN t.extra - ${RAW_KEY}::text
+              ELSE t.extra #- ARRAY[${RAW_KEY}::text, ${field}::text]
+            END
+          FROM unnest(${fitIds}::text[], ${fitValues}::text[], ${fitColumns}::text[]) AS u(id, rv, c)
+          WHERE t.id = u.id AND NOT t.extra ? ${field}::text
+            AND t.extra -> ${RAW_KEY}::text -> ${field}::text = u.rv::jsonb`;
+        }
+        if (ids.length === 0) return;
         await tx`
         UPDATE ${from} AS t SET
           ${col} = u.c::${cast},

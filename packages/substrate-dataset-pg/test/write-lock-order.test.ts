@@ -30,12 +30,15 @@ describe.skipIf(!POSTGRES_URL)('batched upsert lock order', () => {
 
   /** Resolves once a write statement is waiting on a lock. */
   async function batchWaits(): Promise<void> {
-    for (let i = 0; ; i++) {
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      // Scoped to this file's namespace, which the statement's literals carry.
       const [w] = await sql<Array<{ n: number }>>`
         SELECT count(*)::int AS n FROM pg_stat_activity
-        WHERE wait_event_type = 'Lock' AND query LIKE '%guard AS MATERIALIZED%' AND pid <> pg_backend_pid()`;
+        WHERE wait_event_type = 'Lock' AND query LIKE '%guard AS MATERIALIZED%'
+          AND query LIKE ${`%${ns}%`} AND pid <> pg_backend_pid()`;
       if ((w?.n ?? 0) > 0) return;
-      if (i > 100) throw new Error('the batch never waited');
+      if (Date.now() > deadline) throw new Error('the batch never waited');
       await new Promise((r) => setTimeout(r, 20));
     }
   }
