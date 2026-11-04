@@ -11,14 +11,8 @@
  * by the next pass while over-reporting is corrected by nothing.
  */
 
+import { type MemberRef, memberKey } from '@mnmal-ai/substrate-recall';
 import type { Dataset } from '@mnmal-ai/substrate-types';
-
-/** Structurally compatible with substrate-recall's `MemberRef`. */
-export interface RowRef {
-  namespace: string;
-  type: string;
-  id: string;
-}
 
 export interface RowsMissingProbeOptions {
   /**
@@ -29,15 +23,10 @@ export interface RowsMissingProbeOptions {
   resolveDataset: (namespace: string) => Dataset | null;
 }
 
-/** `substrate-recall`'s `memberKey` — kept in step with it by the shared string form. */
-function memberKey(ref: RowRef): string {
-  return `${ref.namespace}/${ref.type}/${ref.id}`;
-}
-
 export function createRowsMissingProbe(
   opts: RowsMissingProbeOptions
-): (refs: readonly RowRef[]) => Promise<Set<string>> {
-  return async (refs: readonly RowRef[]): Promise<Set<string>> => {
+): (refs: readonly MemberRef[]) => Promise<Set<string>> {
+  return async (refs: readonly MemberRef[]): Promise<Set<string>> => {
     const groups = new Map<string, { namespace: string; type: string; ids: Set<string> }>();
     for (const ref of refs) {
       const key = `${ref.namespace}/${ref.type}`;

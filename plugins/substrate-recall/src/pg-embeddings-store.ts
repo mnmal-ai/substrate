@@ -331,14 +331,6 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
     }));
   }
 
-  /**
-   * Deletes every embedding whose backing row is missing or soft-deleted.
-   * Needed because `embeddings` has no FK to the type tables and no
-   * dataset delete path touches it; tombstones are terminal, so soft-deleted
-   * rows are safe to collect immediately. Run as a sweep stage by the binary.
-   *
-   * @returns number of orphaned embeddings deleted.
-   */
   async staleRowIds(input: {
     namespace: string;
     type: string;
@@ -368,6 +360,14 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
     return found.map((r) => r.id);
   }
 
+  /**
+   * Deletes every embedding whose backing row is missing or soft-deleted.
+   * Needed because `embeddings` has no FK to the type tables and no
+   * dataset delete path touches it; tombstones are terminal, so soft-deleted
+   * rows are safe to collect immediately. Run as a sweep stage by the binary.
+   *
+   * @returns number of orphaned embeddings deleted.
+   */
   async purgeOrphans(): Promise<number> {
     return purgeTypeTableOrphans(this.#sql as Sql, 'embeddings');
   }
