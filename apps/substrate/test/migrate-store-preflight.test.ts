@@ -79,7 +79,11 @@ describe.skipIf(!POSTGRES_URL)('inspectSource (pg)', () => {
     const inv = await inspectSource(sql);
     expect(inv.hasSeq).toBe(false);
     expect(inv.hasVisibleSeqs).toBe(false);
-    const res = preflight(inv, target(), { ...opts, skipTables: ['foo'] });
+    // Sessions on the shared test DB are another test's concern (the session cases below).
+    const res = preflight({ ...inv, otherSessions: 0, sessions: [] }, target(), {
+      ...opts,
+      skipTables: ['foo']
+    });
     expect(res.refusals).toEqual([]);
   });
 
@@ -153,6 +157,7 @@ function source(over: Partial<SourceInventory> = {}): SourceInventory {
     vectorDims: null,
     extensions: {},
     otherSessions: 0,
+    sessions: [],
     ...over
   };
 }
@@ -194,7 +199,9 @@ describe.skipIf(!POSTGRES_URL)('inspectSource, partitioned source (pg)', () => {
       ['a', 'T2', 1, 0],
       ['retired', 'Old', 1, 0]
     ]);
-    expect(preflight(inv, target(), opts).refusals).toEqual([]);
+    expect(preflight({ ...inv, otherSessions: 0, sessions: [] }, target(), opts).refusals).toEqual(
+      []
+    );
   });
 });
 
@@ -336,9 +343,36 @@ describe('preflight', () => {
     expect(dry.warnings.join()).toContain('free disk');
   });
 
-  it('warns about other sessions', () => {
-    expect(preflight(source({ otherSessions: 2 }), target(), opts).warnings.join()).toContain(
-      '2 other'
+  it('refuses other sessions on the source in a real run and warns in a dry run', () => {
+    const live = source({ otherSessions: 2 });
+    expect(preflight(live, target(), opts).refusals.join()).toContain('2 other');
+    const dry = preflight(live, target(), { ...opts, dryRun: true });
+    expect(dry.refusals).toEqual([]);
+    expect(dry.warnings.join()).toContain('2 other');
+  });
+
+  it('names up to 10 other sessions, then counts the rest', () => {
+    const one = (i: number) => ({
+      pid: i,
+      start: '0',
+      usename: 'svc',
+      applicationName: `app${i}`,
+      clientAddr: i === 0 ? null : '10.0.0.1',
+      backendType: 'client backend',
+      state: 'idle'
+    });
+    const sessions = Array.from({ length: 12 }, (_, i) => one(i));
+    const msg = preflight(source({ otherSessions: 12, sessions }), target(), opts).refusals.join();
+    expect(msg).toContain(
+      'usename=svc application_name=app0 client_addr=local backend_type=client backend state=idle'
     );
+    expect(msg).toContain('application_name=app9 client_addr=10.0.0.1');
+    expect(msg).not.toContain('app10');
+    expect(msg).toContain('+2 more');
+    const dry = preflight(source({ otherSessions: 12, sessions }), target(), {
+      ...opts,
+      dryRun: true
+    });
+    expect(dry.warnings.join()).toContain('application_name=app0');
   });
 });

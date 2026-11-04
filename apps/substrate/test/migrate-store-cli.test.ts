@@ -3,6 +3,7 @@
  * command against a seeded source schema and an empty target schema (pg).
  */
 
+import postgres from 'postgres';
 import { describe, expect, it } from 'vitest';
 import { migrateStoreCommand } from '../src/admin/commands/migrate-store.js';
 import { main } from '../src/admin/main.js';
@@ -76,7 +77,10 @@ describe.skipIf(!MIGRATE_PG)('migrate-store (pg)', () => {
     ...over
   });
   const schemaArgs = (s: Schemas) => ['--from-schema', s.srcSchema, '--to-schema', s.tgtSchema];
-  const run = async (s: Schemas, argv: string[], hooks = {}, over = {}) => {
+  // Other suites share this database, so their pools would read as a live source.
+  const run = async (s: Schemas, argv: string[], hooks = {}, over = {}) =>
+    runRaw(s, argv, { otherSessions: 0, ...hooks }, over);
+  const runRaw = async (s: Schemas, argv: string[], hooks = {}, over = {}) => {
     const out: string[] = [];
     const err: string[] = [];
     const code = await migrateStoreCommand(
@@ -124,6 +128,35 @@ describe.skipIf(!MIGRATE_PG)('migrate-store (pg)', () => {
       );
       expect(absent).toBe(2);
       expect(said.join('')).toContain(`the target has no schema ${s.tgtSchema}_absent`);
+    } finally {
+      await s.close();
+    }
+  }, 120_000);
+
+  it('refuses a copy while another session is connected to the source, and only warns in a dry run', async () => {
+    const s = await openSchemas('legacy');
+    try {
+      // A second session on the source database, as a live service would hold.
+      const live = postgres(POSTGRES_URL as string, {
+        max: 1,
+        connection: { application_name: 'audit2-live' }
+      });
+      await live`SELECT 1`;
+      let r: Awaited<ReturnType<typeof runRaw>>;
+      try {
+        r = await runRaw(s, []);
+      } finally {
+        await live.end();
+      }
+      expect(r.code, r.out + r.err).toBe(2);
+      expect(r.out + r.err).toMatch(/other active session\(s\)/);
+      expect(r.out + r.err).toContain('application_name=audit2-live');
+      const [n] = await s.tgtSql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM pg_class WHERE relnamespace = ${s.tgtSchema}::regnamespace`;
+      expect(n?.n).toBe(0);
+      const dry = await runRaw(s, ['--dry-run']);
+      expect(dry.code, dry.out + dry.err).toBe(0);
+      expect(dry.out + dry.err).toMatch(/other active session\(s\)/);
     } finally {
       await s.close();
     }

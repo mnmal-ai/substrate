@@ -162,6 +162,22 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
       expect(await markerPresent()).toBe(true);
     });
 
+    it('catches a source row updated after the copy, outside the content sample', async () => {
+      // A live service updating a row (a Key's revokedAt, say) keeps counts and ids, and the
+      // sample of one leaves this row out: only the per-row versions over every row see it.
+      await srcSql.unsafe(
+        `UPDATE rows SET body = body || '{"changed":1}', updated_at = updated_at + interval '1 second'
+         WHERE id = (SELECT id FROM rows WHERE namespace = '_system' AND type = 'AuditEvent'
+                     ORDER BY md5(id) COLLATE "C" DESC LIMIT 1)`
+      );
+      const r = await verify({ sampleRows: 1 });
+      expect(r.ok).toBe(false);
+      expect(r.mismatches).toEqual([
+        expect.objectContaining({ check: 'versions', namespace: '_system', type: 'AuditEvent' })
+      ]);
+      expect(await markerPresent()).toBe(true);
+    });
+
     it('catches a changed shortId', async () => {
       await tgtSql`UPDATE short_ids SET short_id = 99 WHERE row_id = ${uuid(1)}`;
       const r = await verify();
