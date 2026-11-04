@@ -66,6 +66,8 @@ export interface PromotePendingFieldsOptions {
   batchRows: number;
   /** Stops the sweep between pages and fields; an interrupted field is not counted an attempt. */
   signal?: AbortSignal;
+  /** Clears `error_version` first, so fields a unique conflict holds back are swept again. */
+  retryConflicts?: boolean;
   onEvent?: (e: PromotionEvent) => void;
   /** Only this namespace's fields; every namespace's when omitted. */
   namespace?: string;
@@ -90,10 +92,14 @@ export async function promotePendingFields(
   sql: Sql,
   opts: PromotePendingFieldsOptions
 ): Promise<PromotionEvent[]> {
+  const scope = opts.namespace === undefined ? sql`` : sql`AND namespace = ${opts.namespace}`;
+  if (opts.retryConflicts === true) {
+    await sql`UPDATE substrate_type_fields SET error_version = NULL
+              WHERE error_version IS NOT NULL ${scope}`;
+  }
   const rows = await sql<FieldRow[]>`
     SELECT namespace, type, field, state, attempts FROM substrate_type_fields f
-    WHERE ${due(sql)}
-      ${opts.namespace === undefined ? sql`` : sql`AND namespace = ${opts.namespace}`}
+    WHERE ${due(sql)} ${scope}
     ORDER BY namespace COLLATE "C", type COLLATE "C", field COLLATE "C"`;
   const events: PromotionEvent[] = [];
   const emit = (f: FieldRow, kind: PromotionEvent['kind'], attempts: number, error?: string) => {

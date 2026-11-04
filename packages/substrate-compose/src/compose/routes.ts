@@ -88,7 +88,7 @@ export interface CoreRoutesArgs {
   /** Adds the storage layout and its warnings to the config report. */
   storageReport?: () => Promise<StorageReport>;
   /** One promotion sweep, for `POST /substrate/v1/_system/promote-fields`. */
-  promoteFields: () => Promise<PromotionEvent[]>;
+  promoteFields: (opts: { retryConflicts: boolean }) => Promise<PromotionEvent[]>;
   /** Pending, failed and orphaned fields, for `/health`'s warnings. */
   fieldWarnings?: () => Promise<string[]>;
 }

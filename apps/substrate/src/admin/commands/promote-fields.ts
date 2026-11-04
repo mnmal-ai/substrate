@@ -4,6 +4,8 @@
  * `POST /substrate/v1/_system/promote-fields`, rather than waiting for
  * `SUBSTRATE_PROMOTE_INTERVAL_MS`. It goes through the server because the
  * sweep's audit events must reach its subscribers; there is no `--direct`.
+ * Unlike the timed sweep, it retries a field a unique conflict holds back,
+ * so an operator who has fixed the data can finish its promotion.
  */
 
 import type { PromotionEvent } from '@mnmal-ai/substrate-types';

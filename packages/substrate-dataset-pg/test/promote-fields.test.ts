@@ -53,11 +53,14 @@ describe.skipIf(!POSTGRES_URL)('pending fields and the promotion sweep', () => {
     typeDefLookup: (type: string) => defs[type],
     fieldDefLookup: (type: string, f: string) => defs[type]?.fields[f]
   };
-  const sweep = (o: { lockTimeoutMs?: number; batchRows?: number } = {}) =>
+  const sweep = (
+    o: { lockTimeoutMs?: number; batchRows?: number; retryConflicts?: boolean } = {}
+  ) =>
     pg.promotePendingFields({
       lockTimeoutMs: o.lockTimeoutMs ?? 2000,
       batchRows: o.batchRows ?? 100,
-      namespace: ns
+      namespace: ns,
+      ...(o.retryConflicts !== undefined ? { retryConflicts: o.retryConflicts } : {})
     });
   const state = async (type: string, f: string) =>
     (
@@ -599,6 +602,21 @@ describe.skipIf(!POSTGRES_URL)('pending fields and the promotion sweep', () => {
       'code:promoted',
       'rank:promoted'
     ]);
+  });
+
+  it('retryConflicts sweeps a field a unique conflict holds back, without a catalog change', async () => {
+    const index = `pf_code_${hex()}`;
+    await promotingCode(index, [
+      { id: 'n1', title: 'a', code: 'X' },
+      { id: 'n2', title: 'b', code: 'X' }
+    ]);
+    await write('Note', [{ id: 'n1', code: 'X' }]);
+    expect((await sweep()).map((e) => e.kind)).toEqual(['failed']);
+    const t = await tableOf('Note');
+    await sql.unsafe(`UPDATE ${t} SET extra = extra || '{"code": "Y"}' WHERE id = 'n2'`);
+    expect(await sweep()).toEqual([]);
+    expect((await sweep({ retryConflicts: true })).map((e) => e.kind)).toEqual(['promoted']);
+    expect((await pg.read('Note', { ids: ['n2'] })).rows.map((r) => r.code)).toEqual(['Y']);
   });
 
   it('a deadlock with a writer is busy, not failed, and the next sweep promotes', async () => {

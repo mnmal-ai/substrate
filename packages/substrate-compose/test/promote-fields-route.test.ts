@@ -47,7 +47,12 @@ const EVENTS: PromotionEvent[] = [
 
 /** A dataset whose sweep answers `EVENTS`, or waits for its signal when `hold` is set. */
 class SweepingDataset extends MemoryDataset {
-  calls: Array<{ lockTimeoutMs: number; batchRows: number; signal?: AbortSignal }> = [];
+  calls: Array<{
+    lockTimeoutMs: number;
+    batchRows: number;
+    signal?: AbortSignal;
+    retryConflicts?: boolean;
+  }> = [];
   hold = false;
   warnings: () => Promise<string[]> = async () => [
     '1 field pending promotion — see the storage report'
@@ -57,6 +62,7 @@ class SweepingDataset extends MemoryDataset {
     lockTimeoutMs: number;
     batchRows: number;
     signal?: AbortSignal;
+    retryConflicts?: boolean;
   }): Promise<PromotionEvent[]> {
     this.calls.push(opts);
     if (!this.hold) return EVENTS;
@@ -171,7 +177,12 @@ describe('POST /substrate/v1/_system/promote-fields', () => {
     const res = await post(['admin']);
     expect(res.status).toBe(200);
     expect(json(res)).toEqual({ events: EVENTS });
-    expect(dataset.calls[0]).toMatchObject({ lockTimeoutMs: 2000, batchRows: 1000 });
+    // The operator's run also retries fields a unique conflict holds back.
+    expect(dataset.calls[0]).toMatchObject({
+      lockTimeoutMs: 2000,
+      batchRows: 1000,
+      retryConflicts: true
+    });
     expect(dataset.calls[0]?.signal).toBeInstanceOf(AbortSignal);
 
     await until(() => seen.length >= 2);
@@ -200,6 +211,8 @@ describe('POST /substrate/v1/_system/promote-fields', () => {
     await boot(dataset, 20);
     await until(() => dataset.calls.length >= 2);
     expect(dataset.calls.length).toBeGreaterThanOrEqual(2);
+    // The timed sweep leaves a unique conflict for its type's catalog to change.
+    expect(dataset.calls.every((c) => c.retryConflicts === undefined)).toBe(true);
   });
 
   it('stop() aborts a running sweep and waits for it', async () => {
