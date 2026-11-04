@@ -91,7 +91,7 @@ describe.skipIf(!POSTGRES_URL)('purgeTombstonedRows in batches', () => {
     sql = postgres(POSTGRES_URL as string, {
       onnotice: () => {},
       debug: (_conn, query) => {
-        if (/^\s*WITH d AS \(\s*DELETE/.test(query)) deletes.push(query);
+        if (query.includes('DELETE FROM row_ids')) deletes.push(query);
       }
     });
     await runMigrations(sql);
@@ -104,29 +104,30 @@ describe.skipIf(!POSTGRES_URL)('purgeTombstonedRows in batches', () => {
     await truncateRows(sql);
   });
 
-  it('deletes more than a batch in several statements, and counts them all', async () => {
+  it('walks the ids a window at a time, purging every expired row and only those', async () => {
     purgeBatch.size = 2;
     const ds = new PgDataset({ namespace: 'ns_batch', sql });
-    await ds.write('T', [
-      { id: 'a' },
-      { id: 'b' },
-      { id: 'c' },
-      { id: 'd' },
-      { id: 'e' },
-      { id: 'live' }
-    ]);
-    await ds.tombstone('T', ['a', 'b', 'c', 'd', 'e']);
+    const ids = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+    await ds.write(
+      'T',
+      ids.map((id) => ({ id }))
+    );
+    // Windows (a,b) (c,d) (e,f) (g,h): expired rows in three of them, live c and e between.
+    await ds.tombstone('T', ['a', 'b', 'd', 'f', 'g']);
     deletes.length = 0;
 
     expect(await ds.purgeTombstonedRows({ olderThan: new Date(Date.now() + DAY_MS) })).toEqual({
       deleted: 5
     });
     const table = await relationOf(sql, 'ns_batch', 'T');
-    expect(deletes.filter((q) => q.includes(`DELETE FROM ${table}`))).toHaveLength(3);
-    const left = await sql.unsafe(`SELECT id FROM ${await rowsWhere(sql, 'ns_batch', 'T')} true`);
-    expect(left.map((r) => r.id)).toEqual(['live']);
+    // Four full windows, then an empty one ends the pass.
+    expect(deletes.filter((q) => q.includes(`DELETE FROM ${table}`))).toHaveLength(5);
+    const left = await sql.unsafe(
+      `SELECT id FROM ${await rowsWhere(sql, 'ns_batch', 'T')} true ORDER BY id`
+    );
+    expect(left.map((r) => r.id)).toEqual(['c', 'e', 'h']);
     const [reg] = await sql`
       SELECT count(*)::int AS n FROM row_ids WHERE namespace = 'ns_batch' AND type = 'T'`;
-    expect(reg?.n).toBe(1);
+    expect(reg?.n).toBe(3);
   });
 });

@@ -1098,9 +1098,9 @@ export class PgDataset implements Dataset {
    * across ALL namespaces (the table is substrate-shared). Called by the sweep
    * loop. Returns the number of rows deleted.
    *
-   * Each type table is swept in turn, {@link purgeBatch} rows per statement,
-   * and a swept row leaves `row_ids` in the same statement, its short id
-   * cascading.
+   * Each type table is swept in one pass, a window of {@link purgeBatch} ids
+   * per statement in id order, and a swept row leaves `row_ids` in the same
+   * statement, its short id cascading.
    */
   async purgeTombstonedRows(opts: { olderThan: Date }): Promise<{ deleted: number }> {
     const sql = this.#sql;
@@ -1109,25 +1109,29 @@ export class PgDataset implements Dataset {
       SELECT namespace, type, table_name FROM substrate_type_tables`;
     for (const t of tables) {
       const table = sql.unsafe(ident(t.table_name));
+      // Walk the primary key a window at a time: deleted_at has no index, so a
+      // filtered LIMIT would rescan the table from its start on every batch.
+      let last = '';
       for (;;) {
-        // The outer predicate again: a row restored after the subquery chose it stays.
-        const [row] = await sql<Array<{ n: number }>>`
-          WITH d AS (
+        // The predicate is on the DELETE itself, so a row restored meanwhile stays.
+        const [row] = await sql<Array<{ n: number; scanned: number; last: string | null }>>`
+          WITH w AS (
+            SELECT id FROM ${table} WHERE id > ${last} ORDER BY id LIMIT ${purgeBatch.size}
+          ), d AS (
             DELETE FROM ${table}
-            WHERE deleted_at IS NOT NULL AND deleted_at < ${opts.olderThan}
-              AND id IN (
-                SELECT id FROM ${table}
-                WHERE deleted_at IS NOT NULL AND deleted_at < ${opts.olderThan}
-                LIMIT ${purgeBatch.size})
+            WHERE id IN (SELECT id FROM w)
+              AND deleted_at IS NOT NULL AND deleted_at < ${opts.olderThan}
             RETURNING id
           ), reg AS (
             DELETE FROM row_ids
             WHERE namespace = ${t.namespace} AND type = ${t.type} AND id IN (SELECT id FROM d)
           )
-          SELECT count(*)::int AS n FROM d`;
-        const n = row?.n ?? 0;
-        deleted += n;
-        if (n < purgeBatch.size) break;
+          SELECT (SELECT count(*)::int FROM d) AS n,
+                 (SELECT count(*)::int FROM w) AS scanned,
+                 (SELECT max(id) FROM w) AS last`;
+        deleted += row?.n ?? 0;
+        if (row === undefined || row.scanned < purgeBatch.size || row.last === null) break;
+        last = row.last;
       }
     }
     return { deleted };
