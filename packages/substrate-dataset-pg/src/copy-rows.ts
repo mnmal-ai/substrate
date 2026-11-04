@@ -9,7 +9,7 @@ import type { ActorIdentity, RowMetadata } from '@mnmal-ai/substrate-types';
 import type { Sql } from 'postgres';
 import { encodeRow, RAW_KEY } from './row-codec.js';
 import type { TypeTable } from './type-table.js';
-import { type RowToWrite, writeRowsStatement } from './write-rows.js';
+import { assertReadCommitted, type RowToWrite, writeRowsStatement } from './write-rows.js';
 
 /**
  * One old-layout `rows` row. Timestamps are timestamptz text, so microseconds
@@ -158,12 +158,14 @@ export async function copyRows(
     return { ...encoded, id: r.id, metadata, deletedAt: r.deleted_at, seq: r.seq };
   });
   if (rows.length === 0) return { inserted: 0, misfits };
-  const landed = await target<Array<{ ok: boolean; id: string | null }>>`${writeRowsStatement(
-    target,
-    table,
-    rows,
-    { insertOnly: true, visibleOrder: false, metadata: 'passthrough' }
-  )}`;
+  const landed = await target<
+    Array<{ ok: boolean; iso: string; id: string | null }>
+  >`${writeRowsStatement(target, table, rows, {
+    insertOnly: true,
+    visibleOrder: false,
+    metadata: 'passthrough'
+  })}`;
+  assertReadCommitted(landed[0], `${table.namespace}/${table.type}`);
   if (landed[0]?.ok !== true) {
     throw new Error(
       `${table.namespace}/${table.type}: its catalog changed after its table was loaded; nothing was copied`

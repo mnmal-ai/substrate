@@ -129,6 +129,26 @@ describe.skipIf(!POSTGRES_URL)('a write through a stale table descriptor (pg)', 
     expect(res.ids).toEqual(['n1']);
   });
 
+  it('outside READ COMMITTED a write is refused, naming the setting, and writes nothing', async () => {
+    await a.write('Note', [{ id: 'n1', title: 'a' }]);
+    const rr = postgres(POSTGRES_URL as string, {
+      onnotice: () => {},
+      connection: { default_transaction_isolation: 'repeatable read' }
+    });
+    try {
+      const c = new PgDataset({ namespace: ns, sql: rr, ...lookup });
+      await expect(c.write('Note', [{ id: 'n1', title: 'b' }])).rejects.toThrow(
+        /transaction_isolation 'repeatable read'.*default_transaction_isolation/
+      );
+      await expect(
+        c.patchRows('Note', [{ id: 'n1', patch: { title: 'b' } }], null, new Date())
+      ).rejects.toThrow(/repeatable read/);
+    } finally {
+      await rr.end({ timeout: 5 });
+    }
+    expect((await a.read('Note', { ids: ['n1'] })).rows.map((r) => r.title)).toEqual(['a']);
+  });
+
   it('the move to column waits for a write in flight, so the straggler pass sees it', async () => {
     // `rank` declared in code: its column is added, `promoting`.
     await a.write('Note', [{ id: 'n1', title: 'a', rank: 1 }]);

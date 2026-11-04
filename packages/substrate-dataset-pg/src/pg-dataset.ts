@@ -141,6 +141,7 @@ import {
 } from './type-table.js';
 import { UUID_CHECK_MIGRATION } from './uuid-check.js';
 import {
+  assertReadCommitted,
   guardCte,
   guardedRows,
   inputCte,
@@ -302,7 +303,10 @@ const RESERVED_DELETED_AT = '_deletedAt';
 const ANONYMOUS: ActorIdentity = { kind: 'system', id: 'anonymous' };
 
 /** A written row as {@link guardedRows} returns it: `id` null on the row carrying `ok` alone. */
-type GuardedRecord = TableRowRecord & { ok: boolean };
+type GuardedRecord = TableRowRecord & { ok: boolean; iso: string };
+
+/** Attempts a guarded write gets, so one queued behind a sweep moving several fields still lands. */
+const GUARDED_ATTEMPTS = 3;
 
 /** A type-table row as returned for `decodeRow`: `extra` and its columns. */
 type TableRowRecord = {
@@ -484,23 +488,26 @@ export class PgDataset implements Dataset {
    * Runs `write`, a statement built for `table` that answers
    * {@link guardedRows}, and returns its rows with the table they were
    * written through. Built from a stale descriptor it writes nothing: the
-   * descriptor is dropped, reloaded and the write built and run once more. A
-   * second refusal throws, so a write is never silently misplaced.
+   * descriptor is dropped, reloaded and the write rebuilt and run again, up to
+   * {@link GUARDED_ATTEMPTS} in all (a sweep promoting several fields bumps the
+   * version once per step). Then it throws, so a write is never silently
+   * misplaced; outside READ COMMITTED it throws at once.
    */
-  async #guarded<R extends { ok: boolean; id: string | null }>(
+  async #guarded<R extends { ok: boolean; iso: string; id: string | null }>(
     type: string,
     table: TypeTable,
     write: (table: TypeTable) => Promise<R[]>
   ): Promise<{ table: TypeTable; records: R[] }> {
     let current = table;
-    for (let attempt = 0; ; attempt++) {
+    for (let attempt = 1; ; attempt++) {
       const records = await write(current);
       if (records[0]?.ok === true) {
         return { table: current, records: records.filter((r) => r.id !== null) };
       }
-      if (attempt > 0) {
+      assertReadCommitted(records[0], `${this.namespace}/${type}`);
+      if (attempt >= GUARDED_ATTEMPTS) {
         throw new Error(
-          `${this.namespace}/${type}: its catalog changed again while a write was retried; nothing was written`
+          `${this.namespace}/${type}: its catalog changed on each of ${GUARDED_ATTEMPTS} attempts at a write; nothing was written`
         );
       }
       const key = `${this.namespace}/${type}`;

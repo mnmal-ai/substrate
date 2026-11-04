@@ -73,6 +73,13 @@ const META = ['ca', 'ua', 'cbk', 'cbi', 'ubk', 'ubi'] as const;
  * after the type table's lock (which a move to `column` takes SHARE, and an
  * ADD COLUMN takes ACCESS EXCLUSIVE): it sees every catalog change committed
  * before it could write, and none can commit while it may.
+ *
+ * That holds under READ COMMITTED only, where each statement takes a fresh
+ * snapshot; under REPEATABLE READ or SERIALIZABLE the version is read from the
+ * transaction's first snapshot. So `ok` is false there too, and `iso` names
+ * the level, which {@link assertReadCommitted} refuses. Read in the statement,
+ * it costs nothing extra and also catches a `SET TRANSACTION` in a caller's
+ * transaction, which a per-connection check at first use would miss.
  */
 export function guardCte(sql: Sql | TransactionSql, table: TypeTable): Fragment {
   return sql`guard AS MATERIALIZED (
@@ -80,16 +87,30 @@ export function guardCte(sql: Sql | TransactionSql, table: TypeTable): Fragment 
       SELECT 1 FROM substrate_type_tables g
       WHERE g.namespace = ${table.namespace}::text AND g.type = ${table.type}::text
         AND g.version = ${table.version}::bigint
-    ) AS ok
+    ) AND i.iso = 'read committed' AS ok, i.iso
+    FROM (SELECT current_setting('transaction_isolation') AS iso) i
   )`;
 }
 
 /**
- * The SELECT of a written statement's rows as `(ok, rows…)`: always one row
- * at least, `ok` false (and no row) when the guard refused the write.
+ * The SELECT of a written statement's rows as `(ok, iso, rows…)`: always one
+ * row at least, `ok` false (and no row) when the guard refused the write.
  */
 export function guardedRows(sql: Sql | TransactionSql, rows: Fragment, orderBy = ''): Fragment {
-  return sql`SELECT g.ok, w.* FROM guard g LEFT JOIN (${rows}) w ON true${sql.unsafe(orderBy)}`;
+  return sql`SELECT g.ok, g.iso, w.* FROM guard g LEFT JOIN (${rows}) w ON true${sql.unsafe(orderBy)}`;
+}
+
+/**
+ * Throws when a guarded statement ran outside READ COMMITTED, where its
+ * version check cannot see a concurrent catalog change; it wrote nothing.
+ */
+export function assertReadCommitted(head: { iso?: string } | undefined, what: string): void {
+  if (head?.iso === undefined || head.iso === 'read committed') return;
+  throw new Error(
+    `${what}: refused under transaction_isolation '${head.iso}'. Writes to type tables need ` +
+      "READ COMMITTED; set default_transaction_isolation = 'read committed' for the store's role " +
+      'or database. Nothing was written.'
+  );
 }
 
 /**
