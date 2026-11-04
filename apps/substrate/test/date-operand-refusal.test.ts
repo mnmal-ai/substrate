@@ -1,8 +1,9 @@
 /**
- * A date filter operand in the ISO shape that names a day that does not exist
- * (Feb 30, month 13) is refused by the engine's filter validation, naming the
- * field, on both datasets: memory would otherwise roll it over to March, and
- * pg's cast would raise.
+ * A date filter operand that names a day that does not exist (Feb 30, month
+ * 13), or is not an ISO 8601 date or date-time at all ("yesterday"), is refused
+ * by the engine's filter validation, naming the field, on both datasets: memory
+ * would otherwise roll it over or match nothing, and pg's cast would raise or
+ * read it in the server's time zone.
  *
  * The pg half is skipped unless POSTGRES_URL is set.
  */
@@ -86,6 +87,17 @@ for (const kind of ['memory', 'pg'] as const) {
         const ok = await read('2026-03-01');
         expect(ok.errors).toBeUndefined();
         expect(ok.data[`${ns}/Ev`]).toHaveLength(1);
+        for (const gt of ['yesterday', 'abc']) {
+          const env = await read(gt);
+          expect(env.data[`${ns}/Ev`], gt).toBeUndefined();
+          expect(env.errors?.[0], gt).toMatchObject({ code: 'type_mismatch' });
+          expect(env.errors?.[0]?.message, gt).toMatch(/on 'at': .* is not an ISO 8601 date/);
+        }
+        for (const gt of ['2026-01-02', '2026-01-02T03:04:05Z']) {
+          const env = await read(gt);
+          expect(env.errors, gt).toBeUndefined();
+          expect(env.data[`${ns}/Ev`], gt).toHaveLength(1);
+        }
       } finally {
         await composed.stop();
       }

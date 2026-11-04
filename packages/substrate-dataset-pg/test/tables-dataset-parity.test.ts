@@ -541,8 +541,8 @@ describe.skipIf(!POSTGRES_URL)('PgDataset on type tables vs memory', () => {
     expect((await pg.read('Ghost2', {})).rows).toEqual([]);
     await pg.withTransaction((tx) => tx.write('Ghost2', [{ id: 'h1', a: 'y' }]));
     expect((await pg.read('Ghost2', {})).rows.map(strip)).toEqual([{ id: 'h1', a: 'y' }]);
-    // Created by another process: a transaction does not trust the cached miss,
-    // so its check-then-write sees the table before the notification lands.
+    // Created by another process: a transaction's write does not trust the cached
+    // miss, so its check-then-write sees the table before the notification lands.
     defs.Ghost3 = { fields: { a: field.string() } };
     expect((await pg.read('Ghost3', {})).rows).toEqual([]);
     const other = postgres(POSTGRES_URL as string, { onnotice: () => {} });
@@ -553,9 +553,45 @@ describe.skipIf(!POSTGRES_URL)('PgDataset on type tables vs memory', () => {
     } finally {
       await other.end({ timeout: 5 });
     }
-    expect((await pg.withTransaction((tx) => tx.read('Ghost3', {}))).rows.map(strip)).toEqual([
-      { id: 'j1', a: 'z' }
+    const inTx = await pg.withTransaction(async (tx) => {
+      await tx.write('Ghost3', [{ id: 'j2', a: 'w' }]);
+      return tx.read('Ghost3', {});
+    });
+    expect(inTx.rows.map(strip).sort(byId)).toEqual([
+      { id: 'j1', a: 'z' },
+      { id: 'j2', a: 'w' }
     ]);
+  });
+
+  it('a warm count inside a transaction on a type with no table issues no catalog statement (#1862)', async () => {
+    const catalog = () =>
+      // A catalog-version probe (`substrate_type_tables g`) is the read's guard, not a lookup.
+      statements.filter((q) => /substrate_type_(tables|fields)(?! g\b)/.test(q));
+    defs.Ghost4 = { fields: { a: field.string() } };
+    await pg.read('Ghost4', { count: true });
+    statements = [];
+    // `count` reads in a transaction of its own; its miss is cached when it commits.
+    await pg.read('Ghost4', { count: true });
+    expect(catalog()).toEqual([]);
+    statements = [];
+    const r = await pg.withTransaction((tx) => tx.read('Ghost4', { count: true, limit: 0 }));
+    expect(r).toMatchObject({ rows: [], count: 0 });
+    expect(catalog()).toEqual([]);
+    // A write in the transaction still re-checks a miss its own read recorded.
+    const other = postgres(POSTGRES_URL as string, { onnotice: () => {} });
+    try {
+      const rows = await pg.withTransaction(async (tx) => {
+        expect((await tx.read('Ghost4', { count: true })).count).toBe(0);
+        await new PgDataset({ namespace: NS, sql: other, typeDefLookup }).write('Ghost4', [
+          { id: 'k1', a: 'x' }
+        ]);
+        await tx.tombstone('Ghost4', ['k1']);
+        return (await tx.read('Ghost4', { includeDeleted: true })).rows;
+      });
+      expect(rows.map((x) => [x.id, x._deletedAt !== undefined])).toEqual([['k1', true]]);
+    } finally {
+      await other.end({ timeout: 5 });
+    }
   });
 
   it('a warm read that matches nothing returns [] in one guarded statement, never retried', async () => {
@@ -799,11 +835,50 @@ describe.skipIf(!POSTGRES_URL)('PgDataset on type tables vs memory', () => {
       return { memory: await ids(mem), pg: await ids(pg) };
     };
 
-    // Operator ruling A: an operand its column cannot hold is not looked up in
-    // `$raw`, so it matches nothing on pg. Memory matches it; accepted.
-    it.fails('an out-of-vocab enum value: eq on it', async () => {
-      const r = await misfit([{ id: 'm1', status: 'zzz' }], { status: { eq: 'zzz' } });
-      expect(r.pg).toEqual(r.memory);
+    it('an out-of-vocab enum value: eq, neq, in and nin on it', async () => {
+      for (const [, ds] of both()) {
+        await ds.write('Item', [
+          { id: 'm1', status: 'zzz' },
+          { id: 'm2', status: 'open' },
+          { id: 'm3' }
+        ]);
+      }
+      const cases: Array<[WhereClause, string[]]> = [
+        [{ status: { eq: 'zzz' } }, ['m1']],
+        [{ status: { in: ['zzz'] } }, ['m1']],
+        [{ status: { in: ['zzz', 'open'] } }, ['m1', 'm2']],
+        [{ status: { neq: 'zzz' } }, ['m2', 'm3']],
+        [{ status: { nin: ['zzz'] } }, ['m2', 'm3']],
+        [{ status: { nin: ['zzz', 'open'] } }, ['m3']],
+        [{ status: { nin: ['zzz', null] } }, ['m2']],
+        [{ NOT: { status: { eq: 'zzz' } } }, ['m2', 'm3']]
+      ];
+      for (const [where, want] of cases) {
+        const rows = await same('Item', { where }, true);
+        expect(
+          rows.map((r) => r.id),
+          JSON.stringify(where)
+        ).toEqual(want);
+      }
+    });
+
+    it("a misfit kind ('5' in a number field): eq, neq, in and nin on it", async () => {
+      for (const [, ds] of both()) {
+        await ds.write('Item', [{ id: 'm1', n: '5' as never }, { id: 'm2', n: 5 }, { id: 'm3' }]);
+      }
+      const cases: Array<[WhereClause, string[]]> = [
+        [{ n: { eq: '5' } }, ['m1']],
+        [{ n: { in: ['5', 5] } }, ['m1', 'm2']],
+        [{ n: { neq: '5' } }, ['m2', 'm3']],
+        [{ n: { nin: ['5'] } }, ['m2', 'm3']]
+      ];
+      for (const [where, want] of cases) {
+        const rows = await same('Item', { where }, true);
+        expect(
+          rows.map((r) => r.id),
+          JSON.stringify(where)
+        ).toEqual(want);
+      }
     });
 
     it('an out-of-vocab enum value: eq null', async () => {
@@ -859,6 +934,13 @@ describe.skipIf(!POSTGRES_URL)('PgDataset on type tables vs memory', () => {
     it('a promoting field whose extra holds another type: eq and gt on the column kind', async () => {
       await promotingMisfit();
       for (const where of [{ drop: { eq: 5 } }, { drop: { gt: 1 } }] as WhereClause[]) {
+        await same('Gone', { where }, true);
+      }
+    });
+
+    it('a promoting field whose extra holds another type: eq and neq on that value', async () => {
+      await promotingMisfit();
+      for (const where of [{ drop: { eq: 'five' } }, { drop: { neq: 'five' } }] as WhereClause[]) {
         await same('Gone', { where }, true);
       }
     });

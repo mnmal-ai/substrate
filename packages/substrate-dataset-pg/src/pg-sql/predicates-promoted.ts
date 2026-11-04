@@ -24,7 +24,8 @@ import {
  * Builds the WHERE predicate for `field`, a typed column of `table`, read
  * through `fieldExpr` (so a `promoting` or `orphaned` field's `extra` key wins
  * when present). As memory's evaluator: an operand of another type than the
- * column's never equals or orders (so `neq`/`nin` admit it), a null is the
+ * column's never orders, and equals only the value read through `$raw` or
+ * `extra` (so `eq`/`in` find it and `neq`/`nin` exclude it), a null is the
  * is-null filter, and a compare on an absent value is FALSE, never NULL, so a
  * caller's NOT stays sound. Throws `UnsupportedFilterError` as the body path does.
  */
@@ -58,16 +59,19 @@ export function buildColumnPredicate(
         return typeof v === 'boolean' ? sql.unsafe(v ? 'TRUE' : 'FALSE') : undefined;
     }
   };
-  const fits = (v: unknown): boolean => param(v) !== undefined;
+  /** {@link param} for an equality operand: undefined also for an enum value outside the vocabulary. */
+  const eqParam = (v: unknown): Fragment | undefined =>
+    column.kind === 'enum' && typeof v === 'string' && !(column.vocab ?? []).includes(v)
+      ? undefined
+      : param(v);
+  const fits = (v: unknown): boolean => eqParam(v) !== undefined;
   /**
    * Null as `decodeRow` reads it (amendment 4, operator ruling A): a value the
    * column cannot hold sits in `$raw` with the column NULL, so it is not null.
    * A `column`-state field keeps the bare `col IS NULL` its index serves, with
    * the `$raw` test as a filter on the rows it returns; a promoting or orphaned
    * field reads its JSON value, `$raw` overlaid. Never NULL itself, so a NOT
-   * around it stays sound. An operand the column cannot hold (an enum value
-   * outside the recorded vocabulary) is not looked up in `$raw`: it matches
-   * nothing (ruling A, option 3).
+   * around it stays sound.
    */
   const json = fieldExpr(sql, table, field, 'json', alias);
   const raw = sql.unsafe(
@@ -80,10 +84,18 @@ export function buildColumnPredicate(
     ? sql`${json} IS NOT NULL`
     : sql`(${expr} IS NOT NULL OR ${raw} IS TRUE)`;
   const guarded = (cond: Fragment): Fragment => notNullAnd(sql, expr, cond);
-  /** `expr = ANY(...)` over the non-null members that fit; FALSE when none does. */
+  /**
+   * The row's value as `decodeRow` reads it (`$raw` overlaid) equals a member of
+   * `values`, operands the column cannot hold; jsonb equality is type-strict as
+   * memory's is. Never NULL, so a NOT around it stays sound.
+   */
+  const jsonAnyOf = (values: unknown[]): Fragment =>
+    sql`COALESCE(${json} = ANY(${values.map((v) => JSON.stringify(v))}::text[]::jsonb[]), FALSE)`;
+  /** `expr = ANY(...)` over the non-null members that fit, OR {@link jsonAnyOf} the rest; FALSE when empty. */
   const anyOf = (values: unknown[]): Fragment => {
     const fit = values.filter(fits);
-    if (fit.length === 0) return sql`FALSE`;
+    const misfit = values.filter((v) => !fits(v));
+    if (fit.length === 0) return misfit.length === 0 ? sql`FALSE` : jsonAnyOf(misfit);
     const list =
       as === 'date'
         ? tsArrayParam(sql, fit)
@@ -92,7 +104,8 @@ export function buildColumnPredicate(
           : as === 'boolean'
             ? sql`${fit as boolean[]}::boolean[]`
             : sql`${fit.map(String)}::text[]`;
-    return guarded(sql`${expr} = ANY(${list})`);
+    const any = guarded(sql`${expr} = ANY(${list})`);
+    return misfit.length === 0 ? any : sql`(${any} OR ${jsonAnyOf(misfit)})`;
   };
   const ordered = (op: string, v: unknown): Fragment | undefined => {
     if (typeof v !== 'number' && typeof v !== 'string' && !(v instanceof Date)) {
@@ -109,19 +122,23 @@ export function buildColumnPredicate(
   for (const [op, operand] of Object.entries(predicate)) {
     switch (op) {
       case 'eq': {
-        const p = param(operand);
+        const p = eqParam(operand);
         fragments.push(
-          operand === null ? isNull : p === undefined ? sql`FALSE` : guarded(sql`${expr} = ${p}`)
+          operand === null
+            ? isNull
+            : p === undefined
+              ? jsonAnyOf([operand])
+              : guarded(sql`${expr} = ${p}`)
         );
         break;
       }
       case 'neq': {
-        const p = param(operand);
+        const p = eqParam(operand);
         fragments.push(
           operand === null
             ? isNotNull
             : p === undefined
-              ? sql`TRUE`
+              ? sql`NOT ${jsonAnyOf([operand])}`
               : sql`${expr} IS DISTINCT FROM ${p}`
         );
         break;
@@ -171,7 +188,10 @@ export function buildColumnPredicate(
               ? values.length === 0
                 ? isNotNull
                 : sql`(${isNotNull} AND NOT ${anyOf(values)})`
-              : sql`(${expr} IS NULL OR NOT ${anyOf(values)})`
+              : values.every(fits)
+                ? sql`(${expr} IS NULL OR NOT ${anyOf(values)})`
+                : // A NULL column may hold a misfit value in `$raw`, which must not pass.
+                  sql`NOT ${anyOf(values)}`
         );
         break;
       }
