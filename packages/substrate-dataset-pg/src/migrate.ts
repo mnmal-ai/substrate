@@ -37,6 +37,7 @@ import {
   TX_STATEMENTS as TABLES_BASELINE_TX
 } from './migrations/0001t_tables_baseline.js';
 import { TX_STATEMENTS as TABLES_UUID_CHECK_TX } from './migrations/0002t_uuid_format_check.js';
+import { TX_STATEMENTS as TYPE_TABLE_VERSION_TX } from './migrations/0003t_type_table_version.js';
 import { sqlStringLiteral } from './pg-sql/primitives.js';
 import { assertServerVersion } from './server-version.js';
 import { UUID_CHECK_MIGRATION } from './uuid-check.js';
@@ -81,6 +82,11 @@ const TABLES_BASELINE: MigrationInput = {
   concurrentStatements: TABLES_BASELINE_CONCURRENT
 };
 
+const TYPE_TABLE_VERSION: MigrationInput = {
+  version: '0003t_type_table_version',
+  txStatements: TYPE_TABLE_VERSION_TX
+};
+
 function normalise(input: MigrationInput): Migration {
   if ('statements' in input && input.statements !== undefined) {
     return {
@@ -108,13 +114,18 @@ const UUID_CHECK_INPUT: MigrationInput = {
 
 /**
  * The tables baseline, then the gated UUID CHECKs when
- * `SUBSTRATE_ENFORCE_UUID_CHECK=true` (or the explicit override is true). Used
+ * `SUBSTRATE_ENFORCE_UUID_CHECK=true` (or the explicit override is true), then
+ * the type tables' catalog version. Used
  * by `runMigrations` and exported for unit tests.
  */
 export function getMigrationList(
   enforceUuidCheck: boolean | undefined = process.env.SUBSTRATE_ENFORCE_UUID_CHECK === 'true'
 ): ReadonlyArray<Migration> {
-  return [TABLES_BASELINE, ...(enforceUuidCheck === true ? [UUID_CHECK_INPUT] : [])].map(normalise);
+  return [
+    TABLES_BASELINE,
+    ...(enforceUuidCheck === true ? [UUID_CHECK_INPUT] : []),
+    TYPE_TABLE_VERSION
+  ].map(normalise);
 }
 
 /** @internal — the always-on list, exported for unit tests. */

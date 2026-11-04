@@ -158,10 +158,16 @@ export async function copyRows(
     return { ...encoded, id: r.id, metadata, deletedAt: r.deleted_at, seq: r.seq };
   });
   if (rows.length === 0) return { inserted: 0, misfits };
-  const landed = await target`${writeRowsStatement(target, table, rows, {
-    insertOnly: true,
-    visibleOrder: false,
-    metadata: 'passthrough'
-  })}`;
-  return { inserted: landed.length, misfits };
+  const landed = await target<Array<{ ok: boolean; id: string | null }>>`${writeRowsStatement(
+    target,
+    table,
+    rows,
+    { insertOnly: true, visibleOrder: false, metadata: 'passthrough' }
+  )}`;
+  if (landed[0]?.ok !== true) {
+    throw new Error(
+      `${table.namespace}/${table.type}: its catalog changed after its table was loaded; nothing was copied`
+    );
+  }
+  return { inserted: landed.filter((r) => r.id !== null).length, misfits };
 }

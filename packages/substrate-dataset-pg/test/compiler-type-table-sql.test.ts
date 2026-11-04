@@ -73,7 +73,8 @@ function typed(
     column: (f) => byField.get(f),
     columns: () => columns,
     pending,
-    orphaned: columns.filter((c) => c.state === 'orphaned').map((c) => c.field)
+    orphaned: columns.filter((c) => c.state === 'orphaned').map((c) => c.field),
+    version: '0'
   };
 }
 

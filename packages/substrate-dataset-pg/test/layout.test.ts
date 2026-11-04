@@ -74,7 +74,10 @@ describe.skipIf(!POSTGRES_URL)('storage layout', () => {
     expect(await detectLayout(sql)).toBe('tables');
     expect(await sql`SELECT to_regclass('rows') AS r`).toEqual([{ r: null }]);
     const ledger = await sql<{ version: string }[]>`SELECT version FROM migrations`;
-    expect(ledger.map((r) => r.version)).toEqual(['0001t_tables_baseline']);
+    expect(ledger.map((r) => r.version)).toEqual([
+      '0001t_tables_baseline',
+      '0003t_type_table_version'
+    ]);
   });
 
   for (const [layout, ddl] of [

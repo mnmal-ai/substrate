@@ -481,22 +481,26 @@ describe.skipIf(!POSTGRES_URL)('PgDataset on type tables vs memory', () => {
     ]);
   });
 
-  it('a writer whose cached table predates a column declared on the empty table still lands a readable value', async () => {
+  it('a writer whose cached table predates a column declared on the empty table writes nothing, and its rebuilt write lands a readable value', async () => {
     // Writer W cached Late's table before `late` was declared. Another process
     // declares it on the still-empty table; before W's notification lands, W
     // writes `late` through its stale table, as its write path does: encoded
-    // against that table (so `late` goes to `extra`) by the shared statement.
+    // against that table (so `late` would go to `extra`) by the shared statement.
+    // The catalog version refuses it; W's write path rebuilds it on the current table.
     defs.Late = { fields: { a: field.string() } };
     await pg.ensureTypeStorage('Late');
     const stale = await table('Late');
     defs.Late = { fields: { a: field.string(), late: field.string() } };
     await pg.ensureTypeStorage('Late');
-    await sql`${writeRowsStatement(
-      sql,
-      stale,
-      [{ ...encodeRow(stale, { id: 'w1', late: 'x' }), id: 'w1' }],
-      { insertOnly: false, visibleOrder: false, metadata: 'stamp' }
-    )}`;
+    const write = (t: TypeTable) =>
+      sql`${writeRowsStatement(sql, t, [{ ...encodeRow(t, { id: 'w1', late: 'x' }), id: 'w1' }], {
+        insertOnly: false,
+        visibleOrder: false,
+        metadata: 'stamp'
+      })}`;
+    expect((await write(stale)).map((r) => [r.ok, r.id])).toEqual([[false, null]]);
+    expect((await pg.read('Late', {})).rows).toEqual([]);
+    expect((await write(await table('Late'))).map((r) => [r.ok, r.id])).toEqual([[true, 'w1']]);
     expect((await pg.read('Late', {})).rows.map(strip)).toEqual([{ id: 'w1', late: 'x' }]);
     expect((await pg.read('Late', { where: { late: { eq: 'x' } } })).rows.map((r) => r.id)).toEqual(
       ['w1']
