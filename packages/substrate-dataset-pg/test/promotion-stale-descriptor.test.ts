@@ -262,7 +262,9 @@ describe.skipIf(!POSTGRES_URL)('a write through a stale table descriptor (pg)', 
     const report = await a.storageReport({ partitionBudget: 1_000_000 });
     expect(report.warnings.filter((w) => w.startsWith(`${ns}/`))).toEqual([]);
     expect((report.info ?? []).filter((w) => w.startsWith(`${ns}/`))).toEqual([
-      expect.stringMatching(/^\S+\/Note\.rank is busy \(attempt 1\): .*could not lock its table/)
+      expect.stringMatching(
+        /^\S+\/Note\.rank is busy \(attempt 1\): its move to column could not lock its table/
+      )
     ]);
     expect((await sweep()).map((e) => e.kind)).toEqual(['promoted']);
   });

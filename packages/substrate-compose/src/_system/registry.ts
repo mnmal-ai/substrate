@@ -154,8 +154,9 @@ export function createKeyRegistry(opts: CreateKeyRegistryOptions): KeyRegistry {
    * old revoked one — and the read is unordered, so liveness, via the same
    * `isLive` predicate `lookup` and `refresh` use, picks the winner.
    *
-   * Not expressible as `where: { revokedAt: { eq: null } }`: a FUTURE
-   * `revokedAt` is a scheduled revocation that must still resolve.
+   * Not expressible as `where: { revokedAt: { eq: null } }`: a row written
+   * before future `revokedAt` values were refused may still hold one, and
+   * `isLive` reads it as live until then.
    */
   async function loadAll(): Promise<Map<string, KeyRecord>> {
     const { rows } = await dataset.read(KEY_TYPE, {});

@@ -1951,7 +1951,7 @@ export class PgDataset implements Dataset {
           ? `${name} is orphaned: no longer declared; values readable as extras`
           : r.state === 'pending'
             ? `${name} is pending: held in jsonb until promoted (attempt ${r.attempts})`
-            : `${name} is busy (attempt ${r.attempts}): ${r.last_error}, retried next sweep`;
+            : `${name} is ${(r.last_error ?? '').replace(/^(busy|stopped): /, (_, kind) => `${kind} (attempt ${r.attempts}): `)}, retried next sweep`;
       return { state: r.state, failed, line };
     });
   }

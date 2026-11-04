@@ -193,7 +193,7 @@ export async function promotePendingFields(
       // its error makes a later sweep run this pass again.
       at = await catalogVersion(sql, f);
       if (!(await backfill(sql, table, f.field, opts))) {
-        await recordAttempt(sql, f, f.attempts, 'stopped: its straggler pass was stopped');
+        await recordAttempt(sql, f, f.attempts, 'stopped: its straggler pass did not finish');
         return true;
       }
       await recordAttempt(sql, f, 0, null);

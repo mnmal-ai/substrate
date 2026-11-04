@@ -371,13 +371,6 @@ export async function backfillBootstrapAuditIfNeeded(dataset: Dataset): Promise<
 }
 
 /**
- * Throws a `ResolverFrameError` with
- * `code: 'hmac_not_allowed'` on HS256 / missing algorithm / unknown algorithm
- * so the engine surfaces a structured envelope error instead of persisting an
- * unverifiable key row. Runs inside the autoCRUD resolver's tx, so the throw
- * rolls back any partial writes for the enclosing frame.
- */
-/**
  * Refuses a future `revokedAt`. The registry reads such a key as live until
  * then, but the live-kid unique index (partial on `revokedAt IS NULL`) reads
  * it as revoked, so a second live key for the kid would slip past the index.
@@ -396,6 +389,13 @@ function assertRevokedAtNotFuture(params: ResolverArgs['params']): void {
   }
 }
 
+/**
+ * Throws a `ResolverFrameError` with
+ * `code: 'hmac_not_allowed'` on HS256 / missing algorithm / unknown algorithm
+ * so the engine surfaces a structured envelope error instead of persisting an
+ * unverifiable key row. Runs inside the autoCRUD resolver's tx, so the throw
+ * rolls back any partial writes for the enclosing frame.
+ */
 function assertAllowedAlgorithm(params: ResolverArgs['params']): void {
   const algorithm = params?.algorithm;
   if (typeof algorithm !== 'string') {
