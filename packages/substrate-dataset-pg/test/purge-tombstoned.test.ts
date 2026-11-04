@@ -5,6 +5,7 @@
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PgDataset, PgEdgesStore, runMigrations } from '../src/index.js';
+import { purgeBatch } from '../src/pg-dataset.js';
 import { relationOf, rowsWhere, truncateRows } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
@@ -79,5 +80,53 @@ describe.skipIf(!POSTGRES_URL)('purgeTombstonedRows / purgeTombstonedEdges', () 
       'ns_b/fresh',
       'ns_b/live'
     ]);
+  });
+});
+
+describe.skipIf(!POSTGRES_URL)('purgeTombstonedRows in batches', () => {
+  let sql: Sql;
+  const deletes: string[] = [];
+
+  beforeAll(async () => {
+    sql = postgres(POSTGRES_URL as string, {
+      onnotice: () => {},
+      debug: (_conn, query) => {
+        if (/^\s*WITH d AS \(\s*DELETE/.test(query)) deletes.push(query);
+      }
+    });
+    await runMigrations(sql);
+  });
+  afterAll(async () => {
+    purgeBatch.size = 10_000;
+    await sql.end();
+  });
+  beforeEach(async () => {
+    await truncateRows(sql);
+  });
+
+  it('deletes more than a batch in several statements, and counts them all', async () => {
+    purgeBatch.size = 2;
+    const ds = new PgDataset({ namespace: 'ns_batch', sql });
+    await ds.write('T', [
+      { id: 'a' },
+      { id: 'b' },
+      { id: 'c' },
+      { id: 'd' },
+      { id: 'e' },
+      { id: 'live' }
+    ]);
+    await ds.tombstone('T', ['a', 'b', 'c', 'd', 'e']);
+    deletes.length = 0;
+
+    expect(await ds.purgeTombstonedRows({ olderThan: new Date(Date.now() + DAY_MS) })).toEqual({
+      deleted: 5
+    });
+    const table = await relationOf(sql, 'ns_batch', 'T');
+    expect(deletes.filter((q) => q.includes(`DELETE FROM ${table}`))).toHaveLength(3);
+    const left = await sql.unsafe(`SELECT id FROM ${await rowsWhere(sql, 'ns_batch', 'T')} true`);
+    expect(left.map((r) => r.id)).toEqual(['live']);
+    const [reg] = await sql`
+      SELECT count(*)::int AS n FROM row_ids WHERE namespace = 'ns_batch' AND type = 'T'`;
+    expect(reg?.n).toBe(1);
   });
 });

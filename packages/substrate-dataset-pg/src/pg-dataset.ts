@@ -336,6 +336,9 @@ type TableRowRecord = {
  */
 const DROP_LOCK_TIMEOUT_MS = 10_000;
 
+/** Rows per `purgeTombstonedRows` statement. A test seam, not exported from the package. */
+export const purgeBatch = { size: 10_000 };
+
 /**
  * DROP INDEX CONCURRENTLY `name` (of `where`, for messages) on `conn`, each
  * lock wait bounded by `timeoutMs`; a wait over it throws `index_drop_timeout`.
@@ -1095,8 +1098,9 @@ export class PgDataset implements Dataset {
    * across ALL namespaces (the table is substrate-shared). Called by the sweep
    * loop. Returns the number of rows deleted.
    *
-   * Each type table is swept in turn, and a swept row leaves `row_ids`, its
-   * short id cascading.
+   * Each type table is swept in turn, {@link purgeBatch} rows per statement,
+   * and a swept row leaves `row_ids` in the same statement, its short id
+   * cascading.
    */
   async purgeTombstonedRows(opts: { olderThan: Date }): Promise<{ deleted: number }> {
     const sql = this.#sql;
@@ -1104,17 +1108,27 @@ export class PgDataset implements Dataset {
     const tables = await sql<Array<{ namespace: string; type: string; table_name: string }>>`
       SELECT namespace, type, table_name FROM substrate_type_tables`;
     for (const t of tables) {
-      const [row] = await sql<Array<{ n: number }>>`
-        WITH d AS (
-          DELETE FROM ${sql.unsafe(ident(t.table_name))}
-          WHERE deleted_at IS NOT NULL AND deleted_at < ${opts.olderThan}
-          RETURNING id
-        ), reg AS (
-          DELETE FROM row_ids
-          WHERE namespace = ${t.namespace} AND type = ${t.type} AND id IN (SELECT id FROM d)
-        )
-        SELECT count(*)::int AS n FROM d`;
-      deleted += row?.n ?? 0;
+      const table = sql.unsafe(ident(t.table_name));
+      for (;;) {
+        // The outer predicate again: a row restored after the subquery chose it stays.
+        const [row] = await sql<Array<{ n: number }>>`
+          WITH d AS (
+            DELETE FROM ${table}
+            WHERE deleted_at IS NOT NULL AND deleted_at < ${opts.olderThan}
+              AND id IN (
+                SELECT id FROM ${table}
+                WHERE deleted_at IS NOT NULL AND deleted_at < ${opts.olderThan}
+                LIMIT ${purgeBatch.size})
+            RETURNING id
+          ), reg AS (
+            DELETE FROM row_ids
+            WHERE namespace = ${t.namespace} AND type = ${t.type} AND id IN (SELECT id FROM d)
+          )
+          SELECT count(*)::int AS n FROM d`;
+        const n = row?.n ?? 0;
+        deleted += n;
+        if (n < purgeBatch.size) break;
+      }
     }
     return { deleted };
   }
