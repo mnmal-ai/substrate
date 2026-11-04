@@ -970,18 +970,24 @@ export class Engine {
     }
 
     // §5.4 write-event batch. Resolvers emit into this collector via
-    // `args.onWrite`; the fanout to the subscription bus runs AFTER all
-    // transactions resolve so rolled-back txs produce no pushes.
+    // `args.onWrite`; a rolled-back tx's events never reach it.
     const writeBatch: WriteEvent[] = [];
     const onWrite = (event: WriteEvent): void => {
       writeBatch.push(event);
     };
 
-    // Hooks are told at each commit (the single-frame bucket, then each array
-    // key), so a later throw cannot lose an earlier commit. With none, no work.
+    // Subscribers and hooks hear each commit (the single-frame bucket, then each
+    // array key) as it lands: in commit order, and a later throw cannot lose an
+    // earlier commit. Dispatch is enqueue-only, so a slow consumer cannot stall it.
     const hooked = this.#committed.active;
     const actor = hooked ? actorOf(identity) : null;
     let announced = 0;
+    const commit = (): void => {
+      const events = writeBatch.slice(announced);
+      this.#subscribe.dispatchWrites(events);
+      if (hooked) this.#committed.queue(events, actor);
+      announced = writeBatch.length;
+    };
 
     await this.#dispatchSingleFrameLocal(
       envelope,
@@ -993,7 +999,7 @@ export class Engine {
       onWrite,
       signal
     );
-    if (hooked) announced = this.#announceCommit(writeBatch, announced, actor);
+    commit();
 
     // Batched op-keys: one isolated tx per array (§5.13). Each array commits
     // or rolls back independently of every other op-key and of the single-
@@ -1011,29 +1017,12 @@ export class Engine {
         onWrite,
         signal
       );
-      if (hooked) announced = this.#announceCommit(writeBatch, announced, actor);
+      commit();
     }
 
     await Promise.all(bridgePromises);
 
-    // Post-commit fanout. A throw inside `withTransaction` propagates out of
-    // this function before we get here, which is the point — no pushes for
-    // rolled-back writes. Dispatch is synchronous (enqueue-only); each
-    // subscription's per-entry drain task serialises the async `onFrame`
-    // calls so a slow consumer cannot stall this call.
-    this.#subscribe.dispatchWrites(writeBatch);
-
     return this.#finaliseMutateEnvelope(envelope, keys, idempotencyResolution, callerKey);
-  }
-
-  /** Queue the hooks for the events a commit added past `from`; returns the new `from`. */
-  #announceCommit(
-    writeBatch: readonly WriteEvent[],
-    from: number,
-    actor: ActorIdentity | null
-  ): number {
-    this.#committed.queue(writeBatch.slice(from), actor);
-    return writeBatch.length;
   }
 
   /**
@@ -2258,9 +2247,8 @@ export class Engine {
 
     // Post-commit: cache per-frame slots whose frame carried an
     // idempotencyKey + succeeded cleanly. Errors in that slot skip the cache
-    // (mirrors the frame-level "errors → no cache" rule). Merge array's
-    // writeBatch into the parent batch so the outer fanout still fires
-    // post-commit. The puts run in parallel; the store is per-key isolated.
+    // (mirrors the frame-level "errors → no cache" rule). The array's
+    // events reach the parent batch below. The puts run in parallel; the store is per-key isolated.
     if (this.#idempotency !== undefined) {
       const puts: Array<Promise<void>> = [];
       for (let i = 0; i < frames.length; i++) {
@@ -2294,10 +2282,8 @@ export class Engine {
       await Promise.all(puts);
     }
 
-    // Publish writeEvents through the top-level dispatcher. The outer
-    // writeBatch mechanism fires after the parent `mutate` returns; the
-    // per-array tx already committed so firing pushes now matches the
-    // non-batched semantics (pushes fire post-commit).
+    // Hand the committed array's events to the parent batch; the mutate pushes
+    // them as soon as this array returns.
     for (const event of arrayWriteBatch) {
       onWrite(event);
     }
