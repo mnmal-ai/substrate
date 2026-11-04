@@ -71,6 +71,7 @@ export {
   columnKindOf,
   ensureTypeTable,
   FieldKindChangedError,
+  guardedRefRead,
   loadTypeTable,
   type TableCache,
   type TypedColumn,

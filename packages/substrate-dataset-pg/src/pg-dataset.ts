@@ -148,6 +148,7 @@ import {
 import { UUID_CHECK_MIGRATION } from './uuid-check.js';
 import {
   assertReadCommitted,
+  GUARDED_ATTEMPTS,
   guardCte,
   guardedRead,
   guardedRows,
@@ -286,6 +287,9 @@ async function snapshotUnlessReadCommitted(tx: TransactionSql, txTables: TxTable
   for (const e of entries) e.snapshot = true;
 }
 
+/** {@link preResolveExtensionOperatorsDetailed}, as a read's attempts share it. */
+type ResolveWhere = typeof preResolveExtensionOperatorsDetailed;
+
 /** An index whose build this process deferred, is running, or saw fail. */
 interface DeferredBuild {
   state: 'pending' | 'building' | 'failed';
@@ -334,9 +338,6 @@ const ANONYMOUS: ActorIdentity = { kind: 'system', id: 'anonymous' };
 
 /** A written row as {@link guardedRows} returns it: `id` null on the row carrying `ok` alone. */
 type GuardedRecord = TableRowRecord & { ok: boolean; iso: string };
-
-/** Attempts a guarded write or read gets, so one queued behind a sweep moving several fields still lands. */
-const GUARDED_ATTEMPTS = 3;
 
 /** A read whose statement found one of its tables past the version it was built for. */
 class StaleRead {
@@ -676,11 +677,18 @@ export class PgDataset implements Dataset {
    * {@link #readOnce}, run again with fresh descriptors while its statement
    * finds a table it decodes past the version it was built for (a field moved
    * out of `extra` since), up to {@link GUARDED_ATTEMPTS} in all; then throws.
+   * The where's extension operators resolve once, on the first attempt that
+   * needs them, so a retry repeats no kNN lookup or embedding.
    */
   async #read(type: string, params: ReadParams, walks: boolean): Promise<ReadResult> {
+    let resolved: ReturnType<typeof preResolveExtensionOperatorsDetailed> | undefined;
+    const resolveOnce: ResolveWhere = (where, ctx) => {
+      resolved ??= preResolveExtensionOperatorsDetailed(where, ctx);
+      return resolved;
+    };
     for (let attempt = 1; ; attempt++) {
       try {
-        return await this.#readOnce(type, params, walks);
+        return await this.#readOnce(type, params, walks, resolveOnce);
       } catch (err) {
         if (!(err instanceof StaleRead)) throw err;
         if (attempt >= GUARDED_ATTEMPTS) {
@@ -706,7 +714,12 @@ export class PgDataset implements Dataset {
     }
   }
 
-  async #readOnce(type: string, params: ReadParams, walks: boolean): Promise<ReadResult> {
+  async #readOnce(
+    type: string,
+    params: ReadParams,
+    walks: boolean,
+    resolveWhere: ResolveWhere
+  ): Promise<ReadResult> {
     const sql = this.#sql;
     const includeDeleted = params.includeDeleted === true;
 
@@ -800,7 +813,7 @@ export class PgDataset implements Dataset {
     if (params.where !== undefined) {
       // Resolves extension operators (e.g. embeddingSimilar) to `id IN [...]`
       // clauses before the synchronous SQL builder runs.
-      const detailed = await preResolveExtensionOperatorsDetailed(params.where, {
+      const detailed = await resolveWhere(params.where, {
         namespace: this.namespace,
         type,
         k: limit,

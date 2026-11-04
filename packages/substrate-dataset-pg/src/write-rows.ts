@@ -101,6 +101,9 @@ export function guardedRows(sql: Sql | TransactionSql, rows: Fragment, orderBy =
 }
 
 /** A table a read decodes through, at the version it was loaded at; `null`: it had none. */
+/** Attempts a guarded write or read gets, so one queued behind a sweep moving several fields still lands. */
+export const GUARDED_ATTEMPTS = 3;
+
 export interface ReadGuardEntry {
   namespace: string;
   type: string;

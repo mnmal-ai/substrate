@@ -10,6 +10,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
+import { clearExtensionOperators, registerExtensionOperator } from '@mnmal-ai/substrate-filter';
 import { field } from '@mnmal-ai/substrate-sdk';
 import type { FieldDef, Row } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
@@ -89,6 +90,25 @@ describe.skipIf(!POSTGRES_URL)('a read through a stale table descriptor (pg)', (
     await promotedBehindB();
     const res = await b.read('Note', { where: { rank: { eq: 1 } }, limit: 100 });
     expect(res.rows.map((r: Row) => r.id)).toEqual(['n1']);
+  });
+
+  it("a retried read resolves its extension operator once (an embedding isn't recomputed)", async () => {
+    await promotedBehindB();
+    let calls = 0;
+    registerExtensionOperator('countedSimilar', {
+      validate: (v) => ({ ok: true, value: v }),
+      execute: async () => {
+        calls++;
+        return { hits: [{ id: 'n1', score: 1 }] };
+      }
+    });
+    try {
+      const res = await b.read('Note', { where: { countedSimilar: { to: 'x' } } });
+      expect(res.rows.map((r: Row) => [r.id, r.rank])).toEqual([['n1', 1]]);
+      expect(calls).toBe(1);
+    } finally {
+      clearExtensionOperators();
+    }
   });
 
   it('a count and an aggregate see the promoted value', async () => {

@@ -24,6 +24,7 @@ import {
 } from './layout.js';
 import {
   columnSql,
+  type Fragment,
   fieldExprSql,
   qualifier,
   sqlStringLiteral,
@@ -32,6 +33,7 @@ import {
 import { extraWins, RAW_KEY } from './row-codec.js';
 import type { PgHandle } from './tx-scope.js';
 import { UUID_REGEX } from './uuid-check.js';
+import { GUARDED_ATTEMPTS, guardedRead } from './write-rows.js';
 
 export type ColumnKind = 'text' | 'enum' | 'number' | 'date' | 'boolean' | 'crossRef';
 
@@ -138,15 +140,60 @@ export async function typeTableRef(
   type: string
 ): Promise<TypeTableRef | undefined> {
   // Boot refuses an old layout, so anything but `tables` has no type tables to read.
+  const table = await refTable(sql, namespace, type);
+  return table === undefined ? undefined : refOf(table);
+}
+
+async function refTable(
+  sql: PgHandle,
+  namespace: string,
+  type: string
+): Promise<TypeTable | undefined> {
   if ((await cachedLayout(sql as Sql)) !== 'tables') return undefined;
-  const table = await cachedTypeTable(sql, namespace, type);
-  if (table === undefined) return undefined;
-  return {
-    from: table.from,
-    rowJson: (alias) => rowJsonSql(table, alias),
-    text: (alias, field) => `(${fieldExprSql(table, field, 'json', alias)} #>> '{}')`,
-    json: (alias, field) => fieldExprSql(table, field, 'json', alias)
-  };
+  return cachedTypeTable(sql, namespace, type);
+}
+
+const refOf = (table: TypeTable): TypeTableRef => ({
+  from: table.from,
+  rowJson: (alias) => rowJsonSql(table, alias),
+  text: (alias, field) => `(${fieldExprSql(table, field, 'json', alias)} #>> '{}')`,
+  json: (alias, field) => fieldExprSql(table, field, 'json', alias)
+});
+
+/**
+ * Reads through `namespace`/`type`'s {@link TypeTableRef} under the read
+ * guard, as `PgDataset.read` does: `run` builds its statement from `ref` and
+ * runs it wrapped by `guard` (on `sql`, or a transaction of it). A statement
+ * built from a descriptor the catalog has moved past (a field promoted
+ * meanwhile) is dropped from the cache, rebuilt and run again, up to
+ * {@link GUARDED_ATTEMPTS} in all; then it throws. `[]` when the type has no
+ * table. The guard's own row is dropped: `key` is a column null only there.
+ */
+export async function guardedRefRead<R extends object>(
+  sql: PgHandle,
+  namespace: string,
+  type: string,
+  run: (
+    ref: TypeTableRef,
+    guard: (q: Sql | TransactionSql, statement: Fragment) => Fragment
+  ) => Promise<readonly R[]>,
+  key: keyof R
+): Promise<R[]> {
+  for (let attempt = 1; ; attempt++) {
+    const table = await refTable(sql, namespace, type);
+    if (table === undefined) return [];
+    const entry = { namespace, type, version: table.version };
+    const rows = (await run(refOf(table), (q, statement) =>
+      guardedRead(q, [entry], statement)
+    )) as ReadonlyArray<R & { guard_ok?: boolean }>;
+    if (rows[0]?.guard_ok === true) return rows.filter((r) => r[key] != null);
+    if (attempt >= GUARDED_ATTEMPTS) {
+      throw new Error(
+        `${namespace}/${type}: its catalog changed on each of ${GUARDED_ATTEMPTS} attempts at a read`
+      );
+    }
+    dropTableCache(tableCacheFor(sql), `${namespace}/${type}`);
+  }
 }
 
 /**
