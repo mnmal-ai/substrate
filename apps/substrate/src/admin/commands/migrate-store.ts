@@ -376,8 +376,11 @@ export async function runMigrateStore(
           await assertSchema(facts, args.toSchema, 'target');
           await assertDistinct(src, facts);
           const source = await inspectSource(src);
-          source.otherSessions =
-            deps.otherSessions ?? source.otherSessions - (await sessionsOn(src, own));
+          // Our own target connection, when both share one database.
+          source.sessions = source.sessions.filter(
+            (s) => !(s.pid === own.pid && s.start === own.start)
+          );
+          source.otherSessions = deps.otherSessions ?? source.sessions.length;
           const target = await targetFacts(facts, env, diskPath);
           const pluginTables = await storeTables(pluginDir);
           return {
@@ -545,15 +548,6 @@ async function ownSession(sql: Sql): Promise<Session> {
     SELECT pid, extract(epoch FROM backend_start)::text AS start
     FROM pg_stat_activity WHERE pid = pg_backend_pid()`;
   return r as Session;
-}
-
-/** 1 when `s` is a backend on `sql`'s database, else 0: our own target connection when both share one. */
-async function sessionsOn(sql: Sql, s: Session): Promise<number> {
-  const [r] = await sql<{ n: number }[]>`
-    SELECT count(*)::int AS n FROM pg_stat_activity
-    WHERE datname = current_database() AND pid = ${s.pid}
-      AND extract(epoch FROM backend_start)::text = ${s.start}`;
-  return r?.n ?? 0;
 }
 
 export async function targetFacts(

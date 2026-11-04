@@ -153,6 +153,7 @@ function source(over: Partial<SourceInventory> = {}): SourceInventory {
     vectorDims: null,
     extensions: {},
     otherSessions: 0,
+    sessions: [],
     ...over
   };
 }
@@ -342,5 +343,30 @@ describe('preflight', () => {
     const dry = preflight(live, target(), { ...opts, dryRun: true });
     expect(dry.refusals).toEqual([]);
     expect(dry.warnings.join()).toContain('2 other');
+  });
+
+  it('names up to 10 other sessions, then counts the rest', () => {
+    const one = (i: number) => ({
+      pid: i,
+      start: '0',
+      usename: 'svc',
+      applicationName: `app${i}`,
+      clientAddr: i === 0 ? null : '10.0.0.1',
+      backendType: 'client backend',
+      state: 'idle'
+    });
+    const sessions = Array.from({ length: 12 }, (_, i) => one(i));
+    const msg = preflight(source({ otherSessions: 12, sessions }), target(), opts).refusals.join();
+    expect(msg).toContain(
+      'usename=svc application_name=app0 client_addr=local backend_type=client backend state=idle'
+    );
+    expect(msg).toContain('application_name=app9 client_addr=10.0.0.1');
+    expect(msg).not.toContain('app10');
+    expect(msg).toContain('+2 more');
+    const dry = preflight(source({ otherSessions: 12, sessions }), target(), {
+      ...opts,
+      dryRun: true
+    });
+    expect(dry.warnings.join()).toContain('application_name=app0');
   });
 });

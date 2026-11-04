@@ -3,6 +3,7 @@
  * command against a seeded source schema and an empty target schema (pg).
  */
 
+import postgres from 'postgres';
 import { describe, expect, it } from 'vitest';
 import { migrateStoreCommand } from '../src/admin/commands/migrate-store.js';
 import { main } from '../src/admin/main.js';
@@ -135,11 +136,21 @@ describe.skipIf(!MIGRATE_PG)('migrate-store (pg)', () => {
   it('refuses a copy while another session is connected to the source, and only warns in a dry run', async () => {
     const s = await openSchemas('legacy');
     try {
-      // The fixture's own source pool is a second session on the source database.
-      await s.srcSql`SELECT 1`;
-      const r = await runRaw(s, []);
+      // A second session on the source database, as a live service would hold.
+      const live = postgres(POSTGRES_URL as string, {
+        max: 1,
+        connection: { application_name: 'audit2-live' }
+      });
+      await live`SELECT 1`;
+      let r: Awaited<ReturnType<typeof runRaw>>;
+      try {
+        r = await runRaw(s, []);
+      } finally {
+        await live.end();
+      }
       expect(r.code, r.out + r.err).toBe(2);
       expect(r.out + r.err).toMatch(/other active session\(s\)/);
+      expect(r.out + r.err).toContain('application_name=audit2-live');
       const [n] = await s.tgtSql<{ n: number }[]>`
         SELECT count(*)::int AS n FROM pg_class WHERE relnamespace = ${s.tgtSchema}::regnamespace`;
       expect(n?.n).toBe(0);
