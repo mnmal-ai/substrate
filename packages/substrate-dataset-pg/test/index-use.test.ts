@@ -20,6 +20,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset } from '../src/index.js';
 import { generatedIdentifier } from '../src/migrate.js';
 import { dropNamespace, relationOf } from './_layout.js';
+import { unguardPlan } from './_read-guard.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const TYPE = 'Obs';
@@ -311,7 +312,9 @@ async function customPlan(
     const declared = types.includes(0) ? '' : `(${names.map((n) => n.t).join(', ')})`;
     await conn.unsafe(`PREPARE iu_custom${declared} AS ${query}`);
     await conn.unsafe(`SET plan_cache_mode = ${mode}`);
-    return planOf(await conn.unsafe(`EXPLAIN (FORMAT JSON) EXECUTE iu_custom(${literals})`));
+    return unguardPlan(
+      planOf(await conn.unsafe(`EXPLAIN (FORMAT JSON) EXECUTE iu_custom(${literals})`))
+    );
   } finally {
     await conn.unsafe('DEALLOCATE ALL');
     await conn.unsafe('RESET plan_cache_mode');

@@ -23,7 +23,8 @@ const ctx = {
     grants: { '*': ['substrate.propose', 'read', 'mutate'] }
   }
 };
-const CATALOG = /substrate_type_tables|substrate_type_fields/;
+/** A catalog lookup; a read's version probe (`substrate_type_tables g`) is its guard, not one. */
+const CATALOG = /substrate_type_(tables|fields)(?! g\b)/;
 
 describe.skipIf(!POSTGRES_URL)('proposed types read through the TableCache (pg)', () => {
   let sql: Sql;

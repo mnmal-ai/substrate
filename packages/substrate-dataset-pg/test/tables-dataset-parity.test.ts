@@ -558,7 +558,8 @@ describe.skipIf(!POSTGRES_URL)('PgDataset on type tables vs memory', () => {
   it('a warm walk read and its index plan issue no catalog statement', async () => {
     await seed();
     const catalog = () =>
-      statements.filter((q) => /substrate_type_tables|substrate_type_fields/.test(q));
+      // A catalog-version probe (`substrate_type_tables g`) is the read's guard, not a lookup.
+      statements.filter((q) => /substrate_type_(tables|fields)(?! g\b)/.test(q));
     const walk = { where: { _walk: { out: 'owner', where: { name: { eq: 'Ann' } } } } };
     await pg.read('Item', walk);
     await pg.indexPlan('Item', NS);

@@ -145,9 +145,11 @@ import { UUID_CHECK_MIGRATION } from './uuid-check.js';
 import {
   assertReadCommitted,
   guardCte,
+  guardedRead,
   guardedRows,
   inputCte,
   mergeAssignments,
+  type ReadGuardEntry,
   type RowToWrite,
   returnedRowSql,
   setList,
@@ -307,8 +309,13 @@ const ANONYMOUS: ActorIdentity = { kind: 'system', id: 'anonymous' };
 /** A written row as {@link guardedRows} returns it: `id` null on the row carrying `ok` alone. */
 type GuardedRecord = TableRowRecord & { ok: boolean; iso: string };
 
-/** Attempts a guarded write gets, so one queued behind a sweep moving several fields still lands. */
+/** Attempts a guarded write or read gets, so one queued behind a sweep moving several fields still lands. */
 const GUARDED_ATTEMPTS = 3;
+
+/** A read whose statement found one of its tables past the version it was built for. */
+class StaleRead {
+  constructor(readonly types: readonly string[]) {}
+}
 
 /** A type-table row as returned for `decodeRow`: `extra` and its columns. */
 type TableRowRecord = {
@@ -515,13 +522,18 @@ export class PgDataset implements Dataset {
           `${this.namespace}/${type}: its catalog changed on each of ${GUARDED_ATTEMPTS} attempts at a write; nothing was written`
         );
       }
-      const key = `${this.namespace}/${type}`;
-      this.#txTables?.delete(key);
-      dropTableCache(this.#tableCache, key);
+      this.#forget(type);
       const fresh = await this.#tableFor(type);
-      if (fresh === undefined) throw new Error(`internal: ${key} has no table`);
+      if (fresh === undefined) throw new Error(`internal: ${this.namespace}/${type} has no table`);
       current = fresh;
     }
+  }
+
+  /** Drops `type`'s descriptor from the transaction's map and the pool's cache. */
+  #forget(type: string): void {
+    const key = `${this.namespace}/${type}`;
+    this.#txTables?.delete(key);
+    dropTableCache(this.#tableCache, key);
   }
 
   /** Starts the pool's catalog LISTEN; resolves false when it cannot (see `listenTableCache`). */
@@ -621,7 +633,28 @@ export class PgDataset implements Dataset {
     );
   }
 
+  /**
+   * {@link #readOnce}, run again with fresh descriptors while its statement
+   * finds a table it decodes past the version it was built for (a field moved
+   * out of `extra` since), up to {@link GUARDED_ATTEMPTS} in all; then throws.
+   */
   async #read(type: string, params: ReadParams, walks: boolean): Promise<ReadResult> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.#readOnce(type, params, walks);
+      } catch (err) {
+        if (!(err instanceof StaleRead)) throw err;
+        if (attempt >= GUARDED_ATTEMPTS) {
+          throw new Error(
+            `${this.namespace}/${type}: its catalog changed on each of ${GUARDED_ATTEMPTS} attempts at a read`
+          );
+        }
+        for (const t of err.types) this.#forget(t);
+      }
+    }
+  }
+
+  async #readOnce(type: string, params: ReadParams, walks: boolean): Promise<ReadResult> {
     const sql = this.#sql;
     const includeDeleted = params.includeDeleted === true;
 
@@ -651,14 +684,29 @@ export class PgDataset implements Dataset {
     // loaded first (F19). A type with no table yet reads as an empty one.
     const lookup = this.#fieldDefLookup;
     const fieldDef = (t: string, f: string) => lookup?.(t, f);
+    const types = [...(walks ? walkTypes(params, type, fieldDef) : [type])];
+    const loaded = await Promise.all(types.map((t) => this.#tableFor(t)));
     const tableFor = tableLookup(
-      await Promise.all(
-        [...(walks ? walkTypes(params, type, fieldDef) : [type])].map(
-          async (t) => (await this.#tableFor(t)) ?? absentTypeTable(this.namespace, t)
-        )
-      )
+      loaded.map((t, i) => t ?? absentTypeTable(this.namespace, types[i] as string))
     );
     const table = tableFor(type);
+    // Each statement checks every descriptor it decodes through (M3); an
+    // unmigrated store has no catalog to check, and no table to read.
+    const guard: ReadGuardEntry[] | null =
+      (await this.#layout()) === 'absent'
+        ? null
+        : types.map((t, i) => ({
+            namespace: this.namespace,
+            type: t,
+            version: loaded[i]?.version ?? null
+          }));
+    /** `statement`'s rows, but those of a stale read, which throw {@link StaleRead}; `key` is non-null on a real row. */
+    const run = async <R extends object>(statement: Fragment, key: keyof R): Promise<R[]> => {
+      if (guard === null) return (await cancellable(statement, params.signal)) as unknown as R[];
+      const out = await cancellable(guardedRead(sql, guard, statement), params.signal);
+      if (out[0]?.guard_ok !== true) throw new StaleRead(types);
+      return out.filter((r) => r[key as string] !== null) as unknown as R[];
+    };
 
     // Build WHERE fragment incrementally. Use table alias `r` to avoid
     // ambiguity with the short_ids alias `s`.
@@ -727,21 +775,16 @@ export class PgDataset implements Dataset {
     if (wholeResult && scope !== undefined) {
       const matched = combineAnd(sql, clauses);
       if (params.count === true) {
-        const [row] = await cancellable(
-          sql<
-            Array<{ n: number }>
-          >`${withCtes(sql, scope)}${buildFrameCount(sql, matched, scope, pickJoins)}`,
-          params.signal
+        const [row] = await run<{ n: number }>(
+          sql`${withCtes(sql, scope)}${buildFrameCount(sql, matched, scope, pickJoins)}`,
+          'n'
         );
         return { rows: [], hasMore: false, count: row?.n ?? 0 };
       }
       const aggregate = params.aggregate ?? {};
       const statement = buildFrameAggregate(sql, aggregate, params.bucket, matched, limit, scope);
       const groups = (
-        await cancellable(
-          sql<Array<{ g: Record<string, unknown> }>>`${withCtes(sql, scope)}${statement}`,
-          params.signal
-        )
+        await run<{ g: Record<string, unknown> }>(sql`${withCtes(sql, scope)}${statement}`, 'g')
       ).map((x) => x.g);
       // Only buckets are cut: memory's single group ignores limit.
       const truncated = params.bucket !== undefined && limit !== undefined && groups.length > limit;
@@ -865,7 +908,7 @@ export class PgDataset implements Dataset {
     // One page query: phase 1 with the cursor compare, or the null tail.
     const statement = (where: Fragment, n: number | undefined) =>
       joinShortIds
-        ? sql<TableRowRecord[]>`
+        ? sql`
           SELECT r.id, ${rowProjection}, r.deleted_at, s.short_id,
                  r.created_at, r.updated_at,
                  r.created_by_kind, r.created_by_id,
@@ -878,7 +921,7 @@ export class PgDataset implements Dataset {
           ${orderBySql}
           ${n !== undefined ? sql`LIMIT ${n}` : sql``}
         `
-        : sql<TableRowRecord[]>`
+        : sql`
           SELECT p.*, s.short_id
           FROM (
             SELECT r.id, ${rowProjection}, r.deleted_at,
@@ -903,11 +946,11 @@ export class PgDataset implements Dataset {
     const page = (where: Fragment, n: number | undefined) =>
       scope?.ctes === undefined || scope.ctes.length === 0
         ? statement(where, n)
-        : sql<TableRowRecord[]>`${ctes}${statement(where, n)}`;
+        : sql`${ctes}${statement(where, n)}`;
 
     // Both queries read the same snapshot only inside a REPEATABLE READ or
     // SERIALIZABLE transaction; elsewhere each sees its own.
-    let rows: TableRowRecord[] = await cancellable(page(whereSql, fetchLimit), params.signal);
+    let rows = await run<TableRowRecord>(page(whereSql, fetchLimit), 'id');
     if (tailSql !== null && (fetchLimit === undefined || rows.length < fetchLimit)) {
       // A row whose lead turned null after the first query would come back
       // twice; excluding it in SQL keeps the look-ahead row, and so `hasMore`.
@@ -917,9 +960,9 @@ export class PgDataset implements Dataset {
       // per shape rather than one per remaining count.
       // It recomputes the read's CTEs (#1815): a CTE lives for one statement,
       // and the tail runs only when a cursor reaches the null-keyed rows.
-      const tail = await cancellable(
+      const tail = await run<TableRowRecord>(
         page(combineAnd(sql, [tailSql, unseen]), fetchLimit),
-        params.signal
+        'id'
       );
       // concat, not push(...): an unlimited tail can exceed the argument limit.
       rows = rows.concat(fetchLimit === undefined ? tail : tail.slice(0, fetchLimit - rows.length));

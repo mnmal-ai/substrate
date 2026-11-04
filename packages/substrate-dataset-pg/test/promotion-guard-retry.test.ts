@@ -3,7 +3,7 @@
  * is bumped between each reload and its retry, through a wrapped
  * `loadTypeTable`, as a sweep promoting several fields bumps it once per step:
  * one bump more than the first refusal still lands; refused on every attempt,
- * the write throws and writes nothing. B's pool is deaf, as in
+ * the write throws and writes nothing. A read is bounded alike (M3). B's pool is deaf, as in
  * promotion-stale-descriptor.test.ts.
  */
 
@@ -89,6 +89,18 @@ describe.skipIf(!POSTGRES_URL)(
         /changed on each of 3 attempts at a write; nothing was written/
       );
       expect((await a.read('Note', { ids: ['n1'] })).rows.map((r) => r.title)).toEqual(['a']);
+    });
+
+    it('a read refused twice runs a third time and returns its rows', async () => {
+      bumpAfterReloads(1);
+      expect((await b.read('Note', { ids: ['n1'] })).rows.map((r) => r.title)).toEqual(['a']);
+    });
+
+    it('a read refused on all three attempts throws', async () => {
+      bumpAfterReloads(2);
+      await expect(b.read('Note', { ids: ['n1'] })).rejects.toThrow(
+        /changed on each of 3 attempts at a read/
+      );
     });
   }
 );

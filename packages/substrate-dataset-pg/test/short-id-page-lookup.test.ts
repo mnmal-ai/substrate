@@ -17,6 +17,7 @@ import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset } from '../src/index.js';
 import { clearNamespace, relationOf } from './_layout.js';
+import { unguardPlan } from './_read-guard.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const TYPE = 'Paged';
@@ -159,7 +160,9 @@ async function planOf(params: ReadParams, settings: string[], analyze: boolean):
     const rows = await conn.unsafe(
       `EXPLAIN (${analyze ? 'ANALYZE, ' : ''}FORMAT JSON) EXECUTE spl_stmt(${literals})`
     );
-    return ((rows[0]?.['QUERY PLAN'] ?? []) as Array<{ Plan: PlanNode }>)[0]?.Plan as PlanNode;
+    return unguardPlan(
+      ((rows[0]?.['QUERY PLAN'] ?? []) as Array<{ Plan: PlanNode }>)[0]?.Plan as PlanNode
+    );
   } finally {
     await conn.unsafe('DEALLOCATE ALL');
     await conn.unsafe('RESET ALL');
@@ -451,7 +454,8 @@ describe.skipIf(!POSTGRES_URL)('read: short id lookup for the returned page only
     const racing = new Proxy(traced, {
       apply(target, thisArg, args: unknown[]) {
         const strings = args[0];
-        const isPage = Array.isArray(strings) && String(strings[0]).includes('SELECT p.*');
+        // The guarded page statement (M3), which wraps the page as a fragment.
+        const isPage = Array.isArray(strings) && String(strings[0]).startsWith('WITH guard AS');
         if (isPage && ++pageQueries === 2) {
           return relationOf(sql, ns, RACE)
             .then((rel) => sql.unsafe(`UPDATE ${rel} SET f_d = NULL WHERE id = $1`, [rid(1)]))

@@ -570,8 +570,11 @@ describe('autoCRUD batch resolvers: memory vs pg through Engine', () => {
   });
 
   describe.skipIf(!POSTGRES_URL)('statements a batch sends (pg)', () => {
-    /** A `tables` type-table catalog lookup (`loadTypeTable`). */
-    const CATALOG = /FROM substrate_type_(tables|fields)\b/;
+    /**
+     * A `tables` type-table catalog lookup (`loadTypeTable`), not a guarded
+     * statement's version probe (`substrate_type_tables g`), which stays in.
+     */
+    const CATALOG = /FROM substrate_type_(tables|fields)\s+WHERE/;
     /** Per call of `sent`: the catalog lookups it dropped. */
     let lookups: number[] = [];
     /**
