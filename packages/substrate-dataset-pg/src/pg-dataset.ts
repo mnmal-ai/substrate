@@ -1612,7 +1612,7 @@ export class PgDataset implements Dataset {
       WITH ${inputCte(sql, table, encoded)}${locked},
       updated AS (
         UPDATE ${rel} t
-        SET ${sql.unsafe(setList(mergeAssignments(table, 't', 'i')))}${stamp === null ? sql`` : sql`, ${stamp}`}
+        SET ${sql.unsafe(setList(mergeAssignments(table, 't', 'i', encoded)))}${stamp === null ? sql`` : sql`, ${stamp}`}
         FROM input i${live ? sql`, locked` : sql``}
         WHERE t.id = i.rid${live ? sql` AND t.deleted_at IS NULL` : sql``}${match === null ? sql`` : sql` AND ${match}`}
         RETURNING t.*
@@ -1641,10 +1641,13 @@ export class PgDataset implements Dataset {
             updated_by_kind = ${updatedBy.kind}::text,
             updated_by_id = ${updatedBy.id}::text`;
     // One input row, which every matched row merges.
-    const build = (t: TypeTable) => ({
-      input: inputCte(sql, t, [{ ...encodeRow(t, patch), id: '' }]),
-      assign: sql`${sql.unsafe(setList(mergeAssignments(t, 'r', 'i')))}, ${stamp}`
-    });
+    const build = (t: TypeTable) => {
+      const rows = [{ ...encodeRow(t, patch), id: '' }];
+      return {
+        input: inputCte(sql, t, rows),
+        assign: sql`${sql.unsafe(setList(mergeAssignments(t, 'r', 'i', rows)))}, ${stamp}`
+      };
+    };
     return this.#filterWrite(type, where, opts.maxMatch, build, false, table).catch(
       (err: unknown) => {
         // A set onto a declared unique index's values: refused as `patchRows` refuses it.

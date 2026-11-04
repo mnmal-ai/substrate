@@ -865,7 +865,7 @@ describe.skipIf(!POSTGRES_URL)('PgDataset on type tables vs memory', () => {
       const want = applyPatch(before, encoded);
       await sql`
         WITH ${inputCte(sql, t, [{ ...encoded, id: 'seed' }])}
-        UPDATE ${sql.unsafe(t.from)} t SET ${sql.unsafe(setList(mergeAssignments(t, 't', 'i')))}
+        UPDATE ${sql.unsafe(t.from)} t SET ${sql.unsafe(setList(mergeAssignments(t, 't', 'i', [encoded])))}
         FROM input i WHERE t.id = i.rid`;
       expect(norm(await stored('seed')), JSON.stringify(patch)).toEqual(norm(want));
     }
@@ -1076,6 +1076,34 @@ describe.skipIf(!POSTGRES_URL)('PgDataset on type tables vs memory', () => {
       ['v2', 'a', undefined],
       ['v3', null, { status: 'qqq' }]
     ]);
+  });
+
+  it('a write that never names an orphaned field builds the statement it built before the orphaning', async () => {
+    await pg.write('Gone', [{ id: 'g1', keep: 'k', drop: 1 }]);
+    const writeOf = async (row: WriteRow, type = 'Gone') => {
+      statements = [];
+      await pg.write(type, [row]);
+      const from = (await table(type)).from;
+      // The write, up to the returned rows (which read an orphaned column, F35).
+      return statements
+        .filter((q) => q.includes('INSERT INTO'))
+        .map((q) => q.slice(0, q.indexOf('SELECT g.ok')))
+        .map((q) => q.split(from).join('<table>').split(`'${type}'`).join('<type>'));
+    };
+    // The base: a type that never had `drop`.
+    defs.Base = { fields: { keep: field.string() } };
+    await pg.write('Base', [{ id: 'g1', keep: 'k' }]);
+    const base = await writeOf({ id: 'g1', keep: 'k2' }, 'Base');
+    // Before: `drop` is a column, so the write names it; the shape without `drop` is the base.
+    defs.Gone = { fields: { keep: field.string() } };
+    const col = (await table('Gone')).column('drop')?.column as string;
+    await pg.ensureTypeStorage('Gone');
+    expect((await table('Gone')).column('drop')?.state).toBe('orphaned');
+    const untouched = await writeOf({ id: 'g1', keep: 'k2' });
+    expect(untouched).toEqual(base);
+    expect(untouched[0]).not.toContain(col);
+    const touched = await writeOf({ id: 'g1', drop: 2 });
+    expect(touched[0]).toContain(col);
   });
 
   it('a field declared again after being orphaned reads what was written meanwhile (#1860)', async () => {

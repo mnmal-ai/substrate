@@ -56,11 +56,18 @@ const CAST: Readonly<Record<ColumnKind, string>> = {
 };
 
 /**
- * The columns a write sets: every column, though an orphaned one is only ever
- * cleared (`encodeRow`), since its field is undeclared and goes to `extra`.
+ * The columns a write of `rows` sets: every non-orphaned column, and an
+ * orphaned one only when a row writes its field, which clears it
+ * (`encodeRow`): its field is undeclared and goes to `extra`. So a write that
+ * never names an orphaned field builds the same statement as before it.
  */
-export function writableColumns(table: TypeTable): readonly TypedColumn[] {
-  return table.columns();
+export function writableColumns(
+  table: TypeTable,
+  rows: ReadonlyArray<Pick<EncodedRow, 'columns'>>
+): TypedColumn[] {
+  return table
+    .columns()
+    .filter((c) => c.state !== 'orphaned' || rows.some((r) => Object.hasOwn(r.columns, c.column)));
 }
 
 /** `[a, ',', b, ',', c]`, which postgres.js joins into one flat template. */
@@ -103,10 +110,10 @@ export function guardedRows(sql: Sql | TransactionSql, rows: Fragment, orderBy =
   return sql`SELECT g.ok, g.iso, w.* FROM guard g LEFT JOIN (${rows}) w ON true${sql.unsafe(orderBy)}`;
 }
 
-/** A table a read decodes through, at the version it was loaded at; `null`: it had none. */
 /** Attempts a guarded write or read gets, so one queued behind a sweep moving several fields still lands. */
 export const GUARDED_ATTEMPTS = 3;
 
+/** A table a read decodes through, at the version it was loaded at; `null`: it had none. */
 export interface ReadGuardEntry {
   namespace: string;
   type: string;
@@ -169,7 +176,7 @@ export function inputCte(
   /** `da` (deleted_at) and `ps` (seq) columns, from `RowToWrite`'s passthrough fields. */
   stored?: ReadonlyArray<Pick<RowToWrite, 'deletedAt' | 'seq'>>
 ): Fragment {
-  const cols = writableColumns(table);
+  const cols = writableColumns(table, rows);
   const arrays: unknown[][] = [
     rows.map((r) => r.id),
     rows.map((r) => JSON.stringify(r.extra)),
@@ -250,8 +257,14 @@ function mergedExtraSql(t: string | null, i: string): string {
  * writable column takes `i`'s value when the row writes its field, else keeps
  * `t`'s; then `extra`. Text only (names are validated or inlined as literals).
  */
-export function mergeAssignments(table: TypeTable, t: string, i: string): Array<[string, string]> {
-  const out: Array<[string, string]> = writableColumns(table).map((c, k) => {
+export function mergeAssignments(
+  table: TypeTable,
+  t: string,
+  i: string,
+  /** The rows `i` is built from (`inputCte`'s), which pick its columns. */
+  rows: ReadonlyArray<Pick<EncodedRow, 'columns'>>
+): Array<[string, string]> {
+  const out: Array<[string, string]> = writableColumns(table, rows).map((c, k) => {
     const col = columnSql(c);
     return [
       col,
@@ -374,9 +387,9 @@ export function writeRowsStatement(
   const ns = sqlStringLiteral(table.namespace);
   const ty = sqlStringLiteral(table.type);
   const target = sql.unsafe(table.from);
-  const cols = writableColumns(table);
+  const cols = writableColumns(table, rows);
   const merge = [
-    ...mergeAssignments(table, 't', 'i'),
+    ...mergeAssignments(table, 't', 'i', rows),
     ...metadataAssignments(opts.metadata, 't', 'i')
   ];
 
