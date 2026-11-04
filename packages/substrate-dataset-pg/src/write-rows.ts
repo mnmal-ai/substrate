@@ -108,7 +108,7 @@ export interface ReadGuardEntry {
 }
 
 /**
- * A read's `statement` as `(guard_ok, its rows…)`: always one row at least,
+ * A read's `statement` as `(guard_ok, guard_iso, its rows…)`: always one row at least,
  * `guard_ok` false when any of `tables` is no longer at its loaded version (or
  * a cached miss now has a table). One primary-key probe per table, in the
  * read's own snapshot, so the check and the rows agree under any isolation
@@ -128,8 +128,10 @@ export function guardedRead(
         IS NOT DISTINCT FROM ${t.version}::bigint`
     )
     .reduce((acc, c) => sql`${acc} AND ${c}`);
-  return sql`WITH guard AS MATERIALIZED (SELECT ${ok} AS ok)
-    SELECT g.ok AS guard_ok, q.* FROM guard g LEFT JOIN (${statement}) q ON true`;
+  return sql`WITH guard AS MATERIALIZED (
+      SELECT ${ok} AS ok, current_setting('transaction_isolation') AS iso
+    )
+    SELECT g.ok AS guard_ok, g.iso AS guard_iso, q.* FROM guard g LEFT JOIN (${statement}) q ON true`;
 }
 
 /**

@@ -255,7 +255,7 @@ async function statements(params: ReadParams): Promise<string[]> {
     .filter((q) => / FROM (\(SELECT NULL::text AS id\b.*?WHERE false\)|"t__[^"]+") r\b/.test(q))
     .map((q) => {
       const m =
-        /^WITH guard AS MATERIALIZED \((.*?)\)\s+SELECT g\.ok AS guard_ok, q\.\* FROM guard g LEFT JOIN \((.*)\) q ON true$/s.exec(
+        /^WITH guard AS MATERIALIZED \((.*?)\)\s+SELECT g\.ok AS guard_ok, g\.iso AS guard_iso, q\.\* FROM guard g LEFT JOIN \((.*)\) q ON true$/s.exec(
           q
         );
       expect(m, q).not.toBeNull();

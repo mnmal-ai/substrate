@@ -106,6 +106,45 @@ describe.skipIf(!POSTGRES_URL)('a read through a stale table descriptor (pg)', (
     expect(res.rows.map((r: Row) => r.id)).toEqual(['t1']);
   });
 
+  it('a REPEATABLE READ transaction older than the promotion reads its own snapshot, and keeps the pool entry', async () => {
+    const rr = postgres(POSTGRES_URL as string, {
+      onnotice: () => {},
+      connection: { default_transaction_isolation: 'repeatable read' }
+    });
+    tableCacheFor(rr).listening = Promise.resolve(true); // deaf, as B
+    const r = new PgDataset({ namespace: ns, sql: rr, ...lookup });
+    const key = `${ns}/Note`;
+    try {
+      await a.write('Note', [{ id: 'n1', title: 'a' }]);
+      await a.write('Tag', [{ id: 't1', name: 'x', note: 'n1' }]);
+      defs.Note = { fields: { title: field.string(), rank: field.number() } };
+      await a.ensureTypeStorage('Note', { newFields: 'pending' });
+      await a.write('Note', [{ id: 'n1', rank: 1 }]);
+      const rank = await r.withTransaction(async (tx) => {
+        await tx.read('Tag', {}); // the snapshot: `rank` pending, its value in `extra`
+        const events = await a.promotePendingFields({
+          lockTimeoutMs: 2000,
+          batchRows: 100,
+          namespace: ns
+        });
+        expect(events.map((e) => e.kind)).toEqual(['promoted']);
+        // Another reader on the pool caches the promoted descriptor, newer than the snapshot.
+        expect((await r.read('Note', { ids: ['n1'] })).rows.map((x: Row) => x.rank)).toEqual([1]);
+        const current = tableCacheFor(rr).tables.get(key);
+        expect(current?.column('rank')?.state).toBe('column');
+        const inTx = (await tx.read('Note', { ids: ['n1'] })).rows[0]?.rank;
+        // The pool's entry is not evicted on the snapshot's account.
+        expect(tableCacheFor(rr).tables.get(key)).toBe(current);
+        return inTx;
+      });
+      expect(rank).toBe(1);
+      // Nor replaced at commit by the snapshot's older descriptor.
+      expect(tableCacheFor(rr).tables.get(key)?.column('rank')?.state).toBe('column');
+    } finally {
+      await rr.end({ timeout: 5 });
+    }
+  });
+
   it('inside a transaction the stale copy is reloaded too', async () => {
     await promotedBehindB();
     const rank = await b.withTransaction(

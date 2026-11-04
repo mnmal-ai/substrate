@@ -558,6 +558,14 @@ describe.skipIf(!POSTGRES_URL)('PgDataset on type tables vs memory', () => {
     ]);
   });
 
+  it('a warm read that matches nothing returns [] in one guarded statement, never retried', async () => {
+    await seed();
+    await pg.read('Item', {});
+    statements = [];
+    expect((await pg.read('Item', { where: { title: { eq: 'no such' } } })).rows).toEqual([]);
+    expect(statements.map(probes)).toEqual([1]);
+  });
+
   it('a warm walk read and its index plan issue no catalog statement', async () => {
     await seed();
     const catalog = () =>

@@ -258,7 +258,12 @@ interface InternalPgSubstrateDatasetOptions {
  * it was loaded at. They enter the pool's cache when the transaction commits,
  * so a rolled-back CREATE or ALTER is never cached (F18).
  */
-type TxTables = Map<string, { table: TypeTable; gen: number }>;
+/**
+ * A transaction's descriptors. `snapshot`: loaded for a non-READ COMMITTED
+ * transaction's own snapshot (`null`: no table there), which never reaches
+ * the pool's cache.
+ */
+type TxTables = Map<string, { table: TypeTable | null; gen: number; snapshot?: true }>;
 
 /** An index whose build this process deferred, is running, or saw fail. */
 interface DeferredBuild {
@@ -314,7 +319,11 @@ const GUARDED_ATTEMPTS = 3;
 
 /** A read whose statement found one of its tables past the version it was built for. */
 class StaleRead {
-  constructor(readonly types: readonly string[]) {}
+  constructor(
+    readonly types: readonly string[],
+    /** The transaction's isolation level, as the statement saw it. */
+    readonly iso: string
+  ) {}
 }
 
 /** A type-table row as returned for `decodeRow`: `extra` and its columns. */
@@ -433,7 +442,7 @@ export class PgDataset implements Dataset {
     if ((await this.#layout()) === 'absent') return undefined;
     const key = `${namespace}/${type}`;
     const local = this.#txTables?.get(key);
-    if (local !== undefined) return local.table;
+    if (local !== undefined) return local.table ?? undefined;
     const cache = this.#tableCache;
     const listening = await this.#listen();
     const hit = cache.tables.get(key);
@@ -559,7 +568,8 @@ export class PgDataset implements Dataset {
    */
   #commitTables(txTables: TxTables): void {
     const cache = this.#tableCache;
-    for (const [key, { table, gen }] of txTables) {
+    for (const [key, { table, gen, snapshot }] of txTables) {
+      if (snapshot === true) continue;
       if (mayCache(cache, key, gen)) cache.tables.set(key, table);
       else cache.tables.delete(key);
     }
@@ -649,7 +659,20 @@ export class PgDataset implements Dataset {
             `${this.namespace}/${type}: its catalog changed on each of ${GUARDED_ATTEMPTS} attempts at a read`
           );
         }
-        for (const t of err.types) this.#forget(t);
+        if (this.#inTx && err.iso !== 'read committed') {
+          // The pool's descriptor is newer than this transaction's snapshot, and
+          // right for every other reader: read through the snapshot's own instead.
+          for (const t of err.types) {
+            const table = await loadTypeTable(this.#sql, this.namespace, t);
+            this.#txTables?.set(`${this.namespace}/${t}`, {
+              table: table ?? null,
+              gen: -1,
+              snapshot: true
+            });
+          }
+        } else {
+          for (const t of err.types) this.#forget(t);
+        }
       }
     }
   }
@@ -704,7 +727,7 @@ export class PgDataset implements Dataset {
     const run = async <R extends object>(statement: Fragment, key: keyof R): Promise<R[]> => {
       if (guard === null) return (await cancellable(statement, params.signal)) as unknown as R[];
       const out = await cancellable(guardedRead(sql, guard, statement), params.signal);
-      if (out[0]?.guard_ok !== true) throw new StaleRead(types);
+      if (out[0]?.guard_ok !== true) throw new StaleRead(types, String(out[0]?.guard_iso));
       return out.filter((r) => r[key as string] !== null) as unknown as R[];
     };
 
