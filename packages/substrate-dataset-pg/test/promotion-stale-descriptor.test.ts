@@ -149,6 +149,27 @@ describe.skipIf(!POSTGRES_URL)('a write through a stale table descriptor (pg)', 
     expect((await a.read('Note', { ids: ['n1'] })).rows.map((r) => r.title)).toEqual(['a']);
   });
 
+  it('a patch takes no row lock unless its guard passes (M7)', async () => {
+    await a.write('Note', [{ id: 'n1', title: 'a' }]);
+    const seen: string[] = [];
+    const cap = postgres(POSTGRES_URL as string, {
+      onnotice: () => {},
+      debug: (_c, q) => {
+        seen.push(q);
+      }
+    });
+    try {
+      const c = new PgDataset({ namespace: ns, sql: cap, ...lookup });
+      await c.patchRows('Note', [{ id: 'n1', patch: { title: 'b' } }], null, new Date());
+    } finally {
+      await cap.end({ timeout: 5 });
+    }
+    const patch = seen.find((q) => q.includes('FOR NO KEY UPDATE'));
+    const locked = patch?.slice(patch.indexOf('locked AS'), patch.indexOf('FOR NO KEY UPDATE'));
+    expect(locked).toContain('(SELECT ok FROM guard)');
+    expect((await a.read('Note', { ids: ['n1'] })).rows.map((r: Row) => r.title)).toEqual(['b']);
+  });
+
   it('the move to column waits for a write in flight, so the straggler pass sees it', async () => {
     // `rank` declared in code: its column is added, `promoting`.
     await a.write('Note', [{ id: 'n1', title: 'a', rank: 1 }]);

@@ -1525,12 +1525,13 @@ export class PgDataset implements Dataset {
     const sql = this.#sql;
     const rel = sql.unsafe(table.from);
     const encoded = patches.map((p) => ({ ...encodeRow(table, p.patch), id: p.id }));
+    // Gated on the guard, so a refused (stale) patch locks no row (M7).
     const locked = live
       ? sql`,
       locked AS MATERIALIZED (
         SELECT count(*) AS n FROM (
           SELECT t.id FROM ${rel} t
-          WHERE t.id = ANY(${ids}::text[]) AND t.deleted_at IS NULL
+          WHERE t.id = ANY(${ids}::text[]) AND t.deleted_at IS NULL AND (SELECT ok FROM guard)
           ORDER BY t.id
           FOR NO KEY UPDATE OF t
         ) x
