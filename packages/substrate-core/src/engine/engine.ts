@@ -2247,9 +2247,8 @@ export class Engine {
 
     // Post-commit: cache per-frame slots whose frame carried an
     // idempotencyKey + succeeded cleanly. Errors in that slot skip the cache
-    // (mirrors the frame-level "errors → no cache" rule). Merge array's
-    // writeBatch into the parent batch so the outer fanout still fires
-    // post-commit. The puts run in parallel; the store is per-key isolated.
+    // (mirrors the frame-level "errors → no cache" rule). The array's
+    // events reach the parent batch below. The puts run in parallel; the store is per-key isolated.
     if (this.#idempotency !== undefined) {
       const puts: Array<Promise<void>> = [];
       for (let i = 0; i < frames.length; i++) {
@@ -2283,10 +2282,8 @@ export class Engine {
       await Promise.all(puts);
     }
 
-    // Publish writeEvents through the top-level dispatcher. The outer
-    // writeBatch mechanism fires after the parent `mutate` returns; the
-    // per-array tx already committed so firing pushes now matches the
-    // non-batched semantics (pushes fire post-commit).
+    // Hand the committed array's events to the parent batch; the mutate pushes
+    // them as soon as this array returns.
     for (const event of arrayWriteBatch) {
       onWrite(event);
     }
