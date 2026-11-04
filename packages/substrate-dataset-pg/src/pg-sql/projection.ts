@@ -50,8 +50,8 @@ export function buildRowProjection(
       return c.kind === 'date' ? `${utcTextSql(col, 'US')} AS ${c.column}` : col;
     });
   // A `column`-state field reads `extra` only for its `$raw` entry, so when every
-  // requested field is one, `extra` can add only `id` (a number id lives there
-  // alone) and `$raw`: two fixed keys, read without a per-row SubPlan (#1864).
+  // requested field is one, `extra` can add only `id` (a client-supplied id lives there
+  // too) and `$raw`: two fixed keys, read without a per-row SubPlan (#1864).
   // A missing key reads as null, which `decodeRow` and `materialize` skip.
   const columnsOnly =
     fields !== undefined &&
