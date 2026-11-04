@@ -583,6 +583,9 @@ async function ensureIn(tx: TransactionSql, args: EnsureTypeTableArgs): Promise<
         if (applied) {
           await tx`UPDATE substrate_type_fields SET vocab = ${tx.array(widened)}
                    WHERE namespace = ${namespace} AND type = ${type} AND field = ${field}`;
+          // Values held in `$raw` that the new vocabulary admits belong in the
+          // column: back through `promoting`, so the sweep's backfill moves them.
+          if (row.state === 'column') await setState(field, 'promoting');
           changed = true;
         }
       }

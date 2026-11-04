@@ -19,7 +19,7 @@ import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PgDataset, UUID_CHECK_MIGRATION } from '../src/index.js';
 import { applyPatch, encodeRow } from '../src/row-codec.js';
-import { loadTypeTable, type TypeTable } from '../src/type-table.js';
+import { loadTypeTable, type TypeTable, tableCacheFor } from '../src/type-table.js';
 import { inputCte, mergeAssignments, setList, writeRowsStatement } from '../src/write-rows.js';
 import { clearNamespace, dropNamespace } from './_layout.js';
 import { probes } from './_read-guard.js';
@@ -594,6 +594,50 @@ describe.skipIf(!POSTGRES_URL)('PgDataset on type tables vs memory', () => {
     }
   });
 
+  it("a write in a transaction re-checks a miss the transaction's own read recorded (#1862)", async () => {
+    defs.Ghost6 = { fields: { a: field.string() } };
+    expect(tableCacheFor(sql).tables.has(`${NS}/Ghost6`)).toBe(false);
+    const other = postgres(POSTGRES_URL as string, { onnotice: () => {} });
+    try {
+      const rows = await pg.withTransaction(async (tx) => {
+        // Cold pool: the miss is the transaction's own.
+        expect((await tx.read('Ghost6', { count: true })).count).toBe(0);
+        await new PgDataset({ namespace: NS, sql: other, typeDefLookup }).write('Ghost6', [
+          { id: 'k1', a: 'x' }
+        ]);
+        await tx.tombstone('Ghost6', ['k1']);
+        return (await tx.read('Ghost6', { includeDeleted: true })).rows;
+      });
+      expect(rows.map((x) => [x.id, x._deletedAt !== undefined])).toEqual([['k1', true]]);
+    } finally {
+      await other.end({ timeout: 5 });
+    }
+  });
+
+  it('resolveShortIds in a transaction re-checks a cached miss, since a write may follow', async () => {
+    defs.Ghost7 = { fields: { a: field.string() } };
+    // Deaf, so the other pool's create leaves its cached miss stale, as a late notification does.
+    const deaf = postgres(POSTGRES_URL as string, { onnotice: () => {} });
+    tableCacheFor(deaf).listening = Promise.resolve(true);
+    const d = new PgDataset({ namespace: NS, sql: deaf, typeDefLookup });
+    await d.read('Ghost7', { count: true });
+    expect(tableCacheFor(deaf).tables.get(`${NS}/Ghost7`)).toBeNull();
+    const other = postgres(POSTGRES_URL as string, { onnotice: () => {} });
+    try {
+      const o = new PgDataset({ namespace: NS, sql: other, typeDefLookup });
+      await o.write('Ghost7', [{ id: 'k1', a: 'x' }]);
+      const [shortId] = await o.allocateShortIds('Ghost7', 1);
+      await o.bindShortId('Ghost7', shortId as number, 'k1');
+      const bound = await d.withTransaction((tx) =>
+        tx.resolveShortIds('Ghost7', [shortId as number])
+      );
+      expect([...bound.values()]).toEqual(['k1']);
+    } finally {
+      await other.end({ timeout: 5 });
+      await deaf.end({ timeout: 5 });
+    }
+  });
+
   it('a warm read that matches nothing returns [] in one guarded statement, never retried', async () => {
     await seed();
     await pg.read('Item', {});
@@ -949,6 +993,43 @@ describe.skipIf(!POSTGRES_URL)('PgDataset on type tables vs memory', () => {
       await promotingMisfit();
       await same('Gone', { where: { drop: { eq: null } } }, true);
     });
+
+    it('a promoting field whose extra holds another type: in and nin on that value', async () => {
+      await promotingMisfit();
+      for (const where of [
+        { drop: { in: ['five'] } },
+        { drop: { in: ['five', 5] } },
+        { drop: { nin: ['five'] } },
+        { drop: { nin: ['five', 5] } },
+        { NOT: { drop: { in: ['five'] } } }
+      ] as WhereClause[]) {
+        await same('Gone', { where }, true);
+      }
+    });
+
+    it('an orphaned field holding a value of another type: eq, neq, in and nin', async () => {
+      for (const [, ds] of both()) {
+        await ds.write('Gone', [
+          { id: 'g1', drop: 5 },
+          { id: 'g2', drop: 6 },
+          { id: 'g3', keep: 'k' }
+        ]);
+      }
+      defs.Gone = { fields: { keep: field.string() } };
+      await pg.ensureTypeStorage('Gone');
+      for (const [, ds] of both()) await ds.write('Gone', [{ id: 'g2', drop: 'six' as never }]);
+      expect((await table('Gone')).column('drop')?.state).toBe('orphaned');
+      for (const where of [
+        { drop: { eq: 'six' } },
+        { drop: { eq: 5 } },
+        { drop: { neq: 'six' } },
+        { drop: { in: ['six', 5] } },
+        { drop: { nin: ['six'] } },
+        { drop: { nin: ['six', 5] } }
+      ] as WhereClause[]) {
+        await same('Gone', { where }, true);
+      }
+    });
   });
 
   it('a narrowed enum vocabulary still lets a row holding a dropped value update (amendment 5)', async () => {
@@ -967,4 +1048,34 @@ describe.skipIf(!POSTGRES_URL)('PgDataset on type tables vs memory', () => {
     for (const [, ds] of both()) await ds.write('Vocab', [{ id: 'v1', note: 'z' }]);
     await same('Vocab', {}, true);
   });
+
+  const sweep = () => pg.promotePendingFields({ lockTimeoutMs: 2000, batchRows: 100 });
+
+  it('a widened enum vocabulary moves the $raw values it now admits into the column (#1895)', async () => {
+    defs.Vocab = { fields: { status: field.enum(['a']), note: field.string() } };
+    for (const [, ds] of both()) {
+      await ds.write('Vocab', [
+        { id: 'v1', status: 'zzz' },
+        { id: 'v2', status: 'a' },
+        { id: 'v3', status: 'qqq' }
+      ]);
+    }
+    defs.Vocab = { fields: { status: field.enum(['a', 'zzz']), note: field.string() } };
+    await pg.ensureTypeStorage('Vocab');
+    await sweep();
+    const t = await table('Vocab');
+    expect(t.column('status')?.state).toBe('column');
+    const rows = await same('Vocab', { where: { status: { eq: 'zzz' } } }, true);
+    expect(rows.map((r) => r.id)).toEqual(['v1']);
+    await same('Vocab', { where: { status: { in: ['zzz', 'qqq'] } } }, true);
+    await same('Vocab', {}, true);
+    const col = t.column('status')?.column as string;
+    const stored = await sql.unsafe(`SELECT id, ${col} AS c, extra FROM ${t.from} ORDER BY id`);
+    expect(stored.map((r) => [r.id, r.c, (r.extra as Record<string, unknown>).$raw])).toEqual([
+      ['v1', 'zzz', undefined],
+      ['v2', 'a', undefined],
+      ['v3', null, { status: 'qqq' }]
+    ]);
+  });
+
 });

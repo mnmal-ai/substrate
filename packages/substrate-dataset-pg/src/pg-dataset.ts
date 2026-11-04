@@ -1506,7 +1506,9 @@ export class PgDataset implements Dataset {
     // it must not reach the bigint cast, which would throw.
     const valid = [...new Set(shortIds)].filter(Number.isSafeInteger);
     if (valid.length === 0) return out;
-    const table = await this.#tableFor(type, this.namespace, true);
+    // Not a read path: a crossRef check resolves through it before its write,
+    // so inside a transaction it re-checks a cached miss, as a write does.
+    const table = await this.#tableFor(type);
     if (table === undefined) return out;
     // One statement: the ids go in as one array, and the join to the type's
     // table keeps live rows only, so a tombstoned or purged row's id never resolves.
