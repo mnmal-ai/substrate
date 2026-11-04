@@ -18,6 +18,7 @@ import type {
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PgDataset, UUID_CHECK_MIGRATION } from '../src/index.js';
+import { buildRowProjection } from '../src/pg-sql/projection.js';
 import { applyPatch, encodeRow } from '../src/row-codec.js';
 import { loadTypeTable, type TypeTable } from '../src/type-table.js';
 import { inputCte, mergeAssignments, setList, writeRowsStatement } from '../src/write-rows.js';
@@ -576,6 +577,58 @@ describe.skipIf(!POSTGRES_URL)('PgDataset on type tables vs memory', () => {
       await pg.read('Item', { where: { id: { eq: 'i1' } }, fields: { title: true, n: true } })
     ).rows;
     expect(Object.keys(bare ?? {})).toEqual(['id', 'title', 'n', '_metadata']);
+  });
+
+  describe('a projection of column fields only reads no more of `extra` than id and `$raw` (#1864)', () => {
+    type Node = { 'Node Type': string; 'Parent Relationship'?: string; Plans?: Node[] };
+    const nodes = (n: Node): Node[] => [n, ...(n.Plans ?? []).flatMap(nodes)];
+    /** The plan of a SELECT over Item's table with `fields`' row projection. */
+    async function plan(fields: ReadParams['fields']): Promise<Node[]> {
+      const t = await table('Item');
+      const proj = buildRowProjection(sql, t, fields);
+      const [row] =
+        await sql`EXPLAIN (FORMAT JSON) SELECT r.id, ${proj} FROM ${sql.unsafe(t.from)} r`;
+      const top = (row?.['QUERY PLAN'] as Array<{ Plan: Node }> | undefined)?.[0]?.Plan;
+      if (top === undefined) throw new Error('no plan');
+      return nodes(top);
+    }
+    const perRow = (ns: Node[]) =>
+      ns.filter(
+        (n) => n['Node Type'] === 'Function Scan' || n['Parent Relationship'] === 'SubPlan'
+      );
+
+    it('has no per-row SubPlan when every field is a column; keeps it when one is not', async () => {
+      await seed();
+      expect(perRow(await plan({ title: true, n: true, due: true, owner: true }))).toEqual([]);
+      expect(perRow(await plan({ title: true, meta: true })).length).toBeGreaterThan(0);
+    });
+
+    it('answers as the whole row picked to the projection: `$raw`, a numeric id and key order kept', async () => {
+      await seed();
+      // A numeric id lives in `extra` only; `due: '2026-01-02'` and the misfits live in `$raw`.
+      await pg.write('Item', [
+        { id: 7, title: 'num', due: '2026-01-02', n: 2 },
+        { id: 'i7', title: 'misfit', n: '5' as never, status: 'zzz' as never }
+      ]);
+      const whole = (await pg.read('Item', {})).rows;
+      const projections = [
+        { due: true, title: true, n: true, status: true },
+        { n: true, id: true, due: true },
+        { due: true, meta: true, title: true }
+      ] as Array<NonNullable<ReadParams['fields']>>;
+      for (const fields of projections) {
+        const got = (await pg.read('Item', { fields })).rows.map(strip).sort(byId);
+        const want = whole
+          .map((r) => {
+            const out: Row = Object.hasOwn(fields, 'id') ? ({} as Row) : { id: r.id };
+            for (const k of Object.keys(fields)) if (Object.hasOwn(r, k)) out[k] = r[k];
+            return out;
+          })
+          .sort(byId);
+        expect(JSON.stringify(got), JSON.stringify(fields)).toBe(JSON.stringify(want));
+        expect(got.map((r) => r.id)).toContain(7);
+      }
+    });
   });
 
   it('a UUID-check migration applied while running reaches the tables created after it', async () => {
