@@ -29,9 +29,10 @@
  * see its `extra` values. A field never goes back from `column`: a straggler
  * that fails (or a straggler pass that is stopped) leaves the field `column`
  * with its error recorded, which brings it back to a later sweep's straggler
- * pass until that pass finishes. A unique conflict there brings it back only
- * once the type's catalog version has moved on (`error_version`), since a
- * rescan of the whole table at the same version only meets it again.
+ * pass until that pass finishes. A field that failed on a unique conflict,
+ * `promoting` or `column`, comes back only once the type's catalog version has
+ * moved on (`error_version`), since a rescan of the whole table at the same
+ * version only meets it again.
  *
  * Every server process sweeps, so each field is swept under a session
  * advisory lock taken with a try ({@link promotionLockKey}): a field another
@@ -124,8 +125,8 @@ export async function promotePendingFields(
         AND field = ${selected.field} AND ${due(sql)}`;
     if (f === undefined) return false;
     const attempts = f.attempts + 1;
-    // The catalog version the straggler pass starts at, once it has.
-    let straggler: string | undefined;
+    // The catalog version the current pass started at: a unique conflict there is recorded at it.
+    let at: string | undefined;
     try {
       if (f.state === 'pending') {
         const added = await addPendingColumn(sql, f.namespace, f.type, f.field, opts.lockTimeoutMs);
@@ -138,6 +139,7 @@ export async function promotePendingFields(
       const table = await loadTypeTable(sql, f.namespace, f.type);
       const state = table?.column(f.field)?.state;
       if (table === undefined || (state !== 'promoting' && state !== 'column')) return false;
+      at = table.version;
       if (state === 'promoting') {
         if (!(await backfill(sql, table, f.field, opts))) return true;
         await opts.reconcile?.(f.namespace, f.type);
@@ -158,9 +160,8 @@ export async function promotePendingFields(
         }
       }
       // `column` from here on, and never back: a straggler that cannot move fails the field, and
-      // its error makes a later sweep run this pass again (a unique conflict's only once the
-      // type's catalog changes).
-      straggler = await catalogVersion(sql, f);
+      // its error makes a later sweep run this pass again.
+      at = await catalogVersion(sql, f);
       if (!(await backfill(sql, table, f.field, opts))) {
         await recordAttempt(sql, f, f.attempts, 'its straggler pass was stopped');
         return true;
@@ -182,13 +183,7 @@ export async function promotePendingFields(
         return false;
       }
       const error = failure(err, f.field);
-      await recordAttempt(
-        sql,
-        f,
-        attempts,
-        error,
-        isUniqueConflict(err) ? (straggler ?? null) : null
-      );
+      await recordAttempt(sql, f, attempts, error, isUniqueConflict(err) ? (at ?? null) : null);
       emit(f, 'failed', attempts, error);
     }
     return false;
@@ -222,12 +217,14 @@ export const promotionLockKey = (namespace: string, type: string, field: string)
 /**
  * The fields a sweep takes (`f` is `substrate_type_fields`): `pending` and
  * `promoting` ones, and a `column` one whose straggler pass failed or was
- * stopped, except one that failed on a unique conflict at the type's current
- * catalog version, which another full scan would only meet again.
+ * stopped, except one that failed on a unique conflict (`error_version`) at
+ * the type's current catalog version, which another full scan would only meet
+ * again.
  */
-const due = (sql: Sql) => sql`(f.state IN ('pending', 'promoting') OR (f.state = 'column'
-  AND f.last_error IS NOT NULL AND f.error_version IS DISTINCT FROM (
-    SELECT v.version FROM substrate_type_tables v WHERE v.namespace = f.namespace AND v.type = f.type)))`;
+const due = (sql: Sql) => sql`(f.state IN ('pending', 'promoting')
+  OR (f.state = 'column' AND f.last_error IS NOT NULL))
+  AND f.error_version IS DISTINCT FROM (
+    SELECT v.version FROM substrate_type_tables v WHERE v.namespace = f.namespace AND v.type = f.type)`;
 
 async function catalogVersion(sql: Sql, f: FieldRow): Promise<string | undefined> {
   const [row] = await sql<Array<{ version: string }>>`
@@ -255,7 +252,7 @@ async function recordAttempt(
   f: FieldRow,
   attempts: number,
   error: string | null,
-  /** The catalog version a straggler's unique conflict was met at; see {@link due}. */
+  /** The catalog version a unique conflict was met at; see {@link due}. */
   errorVersion: string | null = null
 ): Promise<void> {
   await sql`UPDATE substrate_type_fields

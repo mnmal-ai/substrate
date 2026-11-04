@@ -585,6 +585,20 @@ describe.skipIf(!POSTGRES_URL)('pending fields and the promotion sweep', () => {
     });
     expect(await state('Note', 'code')).toMatchObject({ state: 'promoting' });
     await same('Note', {});
+    // Not rescanned at the same catalog version, resolved or not; a catalog change retries it.
+    expect(await sweep()).toEqual([]);
+    const t = await tableOf('Note');
+    await sql.unsafe(`UPDATE ${t} SET extra = extra || '{"code": "Y"}' WHERE id = 'n2'`);
+    expect(await sweep()).toEqual([]);
+    defs.Note = {
+      ...defs.Note,
+      fields: { ...defs.Note?.fields, rank: field.number() }
+    } as Def;
+    await pg.ensureTypeStorage('Note', { newFields: 'pending' });
+    expect((await sweep()).map((e) => `${e.field}:${e.kind}`).sort()).toEqual([
+      'code:promoted',
+      'rank:promoted'
+    ]);
   });
 
   it('a deadlock with a writer is busy, not failed, and the next sweep promotes', async () => {
