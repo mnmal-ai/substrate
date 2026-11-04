@@ -377,6 +377,25 @@ export async function backfillBootstrapAuditIfNeeded(dataset: Dataset): Promise<
  * unverifiable key row. Runs inside the autoCRUD resolver's tx, so the throw
  * rolls back any partial writes for the enclosing frame.
  */
+/**
+ * Refuses a future `revokedAt`. The registry reads such a key as live until
+ * then, but the live-kid unique index (partial on `revokedAt IS NULL`) reads
+ * it as revoked, so a second live key for the kid would slip past the index.
+ * Checked against the clock, not `ctx.now`, which predates a route's own stamp.
+ */
+function assertRevokedAtNotFuture(params: ResolverArgs['params']): void {
+  const value = params?.revokedAt;
+  if (value === undefined || value === null || value === '') return;
+  const at = new Date(value as string | Date).getTime();
+  if (at > Date.now()) {
+    throw new ResolverFrameError(
+      'invalid_params',
+      'Key: revokedAt may not be in the future; revoke at the moment it should take effect',
+      { field: 'revokedAt', supplied: value }
+    );
+  }
+}
+
 function assertAllowedAlgorithm(params: ResolverArgs['params']): void {
   const algorithm = params?.algorithm;
   if (typeof algorithm !== 'string') {
@@ -473,6 +492,7 @@ export async function installSystemNamespace(
       lockedKeyWrite(async (ctx: RequestContext, args: ResolverArgs) => {
         assertAllowedAlgorithm(args.params);
         assertGrantParses(args.params ?? {});
+        assertRevokedAtNotFuture(args.params);
         // Checked under the lock, so of two concurrent registrations of one kid
         // the second sees the first (the pg unique index would refuse it as 500).
         const newKid = args.params?.kid;
@@ -515,6 +535,7 @@ export async function installSystemNamespace(
         if (args.params?.algorithm !== undefined) {
           assertAllowedAlgorithm(args.params);
         }
+        assertRevokedAtNotFuture(args.params);
         const params = args.params ?? {};
         const rows = await keysFor(args);
         const target = rows.find((r) => r.id === params.id);

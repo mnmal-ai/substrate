@@ -149,3 +149,31 @@ describe('_system key interceptors — rotated kid', () => {
     expect(keyRegistry.lookup('agent@test')?.publicKey).toBe('pk-new');
   });
 });
+
+describe('_system key interceptors — revokedAt', () => {
+  const FUTURE = new Date(Date.now() + 60 * 60_000).toISOString();
+
+  it('refuses a future revokedAt on create and update: the live-kid index would read it as revoked', async () => {
+    const { call, create, store } = await setup();
+    await create('root@test');
+    await expect(create('later@test', { revokedAt: FUTURE })).rejects.toMatchObject({
+      code: 'invalid_params'
+    });
+    const other = await create('other@test');
+    await expect(call('updateKey', { id: other.id, revokedAt: FUTURE })).rejects.toMatchObject({
+      code: 'invalid_params'
+    });
+    const { rows } = await store.read('Key', { id: other.id as string });
+    expect(rows[0]?.revokedAt ?? null).toBeNull();
+  });
+
+  it('accepts a revokedAt of now or in the past', async () => {
+    const { call, create } = await setup();
+    await create('root@test');
+    const a = await create('a@test');
+    await expect(
+      call('updateKey', { id: a.id, revokedAt: new Date().toISOString() })
+    ).resolves.toBeTruthy();
+    await expect(create('b@test', { revokedAt: LATER })).resolves.toBeTruthy();
+  });
+});
