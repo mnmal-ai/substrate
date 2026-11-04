@@ -68,7 +68,54 @@ function commaList(sql: Sql | TransactionSql, parts: Fragment[]): Fragment[] {
 const META = ['ca', 'ua', 'cbk', 'cbi', 'ubk', 'ubi'] as const;
 
 /**
- * `input AS (…)`: one row per encoded row, in order (`ord`), from one typed
+ * `guard AS (…)`: one row whose `ok` says `table` is still at the catalog
+ * version it was loaded at. A write reads it in the statement that writes, so
+ * after the type table's lock (which a move to `column` takes SHARE, and an
+ * ADD COLUMN takes ACCESS EXCLUSIVE): it sees every catalog change committed
+ * before it could write, and none can commit while it may.
+ *
+ * That holds under READ COMMITTED only, where each statement takes a fresh
+ * snapshot; under REPEATABLE READ or SERIALIZABLE the version is read from the
+ * transaction's first snapshot. So `ok` is false there too, and `iso` names
+ * the level, which {@link assertReadCommitted} refuses. Read in the statement,
+ * it costs nothing extra and also catches a `SET TRANSACTION` in a caller's
+ * transaction, which a per-connection check at first use would miss.
+ */
+export function guardCte(sql: Sql | TransactionSql, table: TypeTable): Fragment {
+  return sql`guard AS MATERIALIZED (
+    SELECT EXISTS (
+      SELECT 1 FROM substrate_type_tables g
+      WHERE g.namespace = ${table.namespace}::text AND g.type = ${table.type}::text
+        AND g.version = ${table.version}::bigint
+    ) AND i.iso = 'read committed' AS ok, i.iso
+    FROM (SELECT current_setting('transaction_isolation') AS iso) i
+  )`;
+}
+
+/**
+ * The SELECT of a written statement's rows as `(ok, iso, rows…)`: always one
+ * row at least, `ok` false (and no row) when the guard refused the write.
+ */
+export function guardedRows(sql: Sql | TransactionSql, rows: Fragment, orderBy = ''): Fragment {
+  return sql`SELECT g.ok, g.iso, w.* FROM guard g LEFT JOIN (${rows}) w ON true${sql.unsafe(orderBy)}`;
+}
+
+/**
+ * Throws when a guarded statement ran outside READ COMMITTED, where its
+ * version check cannot see a concurrent catalog change; it wrote nothing.
+ */
+export function assertReadCommitted(head: { iso?: string } | undefined, what: string): void {
+  if (head?.iso === undefined || head.iso === 'read committed') return;
+  throw new Error(
+    `${what}: refused under transaction_isolation '${head.iso}'. Writes to type tables need ` +
+      "READ COMMITTED; set default_transaction_isolation = 'read committed' for the store's role " +
+      'or database. Nothing was written.'
+  );
+}
+
+/**
+ * {@link guardCte}, then `input AS (…)`, which is empty when the guard
+ * refuses: one row per encoded row, in order (`ord`), from one typed
  * array per column (F21: `unset` travels as a JSON array per row, since a
  * `text[][]` must be rectangular). Columns: `rid` (a null id takes
  * `uuidv7()`), `ex` and `rw` jsonb, `un` text[], `c<k>` per writable column,
@@ -137,9 +184,11 @@ export function inputCte(
     sql,
     arrays.map((a) => sql`${a as string[]}::text[]`)
   );
-  return sql`input AS (
+  return sql`${guardCte(sql, table)},
+  input AS (
     SELECT ${sql.unsafe(selects.join(', '))}
     FROM unnest(${unnest}) WITH ORDINALITY AS x(${sql.unsafe(names.join(', '))}, ord)
+    WHERE (SELECT ok FROM guard)
   )`;
 }
 
@@ -239,7 +288,9 @@ export function shortIdJoinSql(table: TypeTable, id: string): string {
 /**
  * One statement upserting `rows` into `table`, registering each inserted id in
  * `row_ids`, and returning the stored rows in input order (a repeated id at
- * its first place) in {@link returnedRowSql}'s shape.
+ * its first place) in {@link returnedRowSql}'s shape, as {@link guardedRows}:
+ * a row with a null `id` carries `ok` alone, and `ok` false means `table` is
+ * stale and nothing was written.
  *
  * A stored row is merged by an UPDATE that reads the input row whole; the rest
  * are INSERTed. A row another transaction inserts meanwhile conflicts, and the
@@ -357,10 +408,13 @@ export function writeRowsStatement(
       SELECT ${sql.unsafe(ns)}, ${sql.unsafe(ty)}, id FROM ins
       ON CONFLICT DO NOTHING
     )
-    SELECT ${returnedRowSql(sql, table, 'u')}
+    ${guardedRows(
+      sql,
+      sql`SELECT ${returnedRowSql(sql, table, 'u')}, o.ord AS w_ord
     FROM (${opts.insertOnly ? sql`` : sql`SELECT * FROM upd UNION ALL `}SELECT * FROM ins) u
     JOIN (SELECT rid, min(ord) AS ord FROM input GROUP BY rid) o ON o.rid = u.id
-    ${sql.unsafe(shortIdJoinSql(table, 'u.id'))}
-    ORDER BY o.ord
+    ${sql.unsafe(shortIdJoinSql(table, 'u.id'))}`,
+      ' ORDER BY w.w_ord'
+    )}
   `;
 }

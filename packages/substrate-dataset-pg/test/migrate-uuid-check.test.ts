@@ -10,12 +10,19 @@ import { UUID_CHECK_MIGRATION } from '../src/uuid-check.js';
 
 describe('the gated UUID-format CHECK migration', () => {
   it('default getMigrationList() (gate off) does not include it', () => {
-    expect(getMigrationList(false).map((m) => m.version)).toEqual(['0001t_tables_baseline']);
+    expect(getMigrationList(false).map((m) => m.version)).toEqual([
+      '0001t_tables_baseline',
+      '0003t_type_table_version'
+    ]);
   });
 
-  it('getMigrationList(true) adds it after the baseline, checking row_ids, short_ids and edges', () => {
+  it('getMigrationList(true) adds it after the baseline, before the catalog version, checking row_ids, short_ids and edges', () => {
     const list = getMigrationList(true);
-    expect(list.map((m) => m.version)).toEqual(['0001t_tables_baseline', UUID_CHECK_MIGRATION]);
+    expect(list.map((m) => m.version)).toEqual([
+      '0001t_tables_baseline',
+      UUID_CHECK_MIGRATION,
+      '0003t_type_table_version'
+    ]);
     const text = list[1]?.txStatements.join('\n') ?? '';
     for (const table of ['row_ids', 'short_ids', 'edges']) expect(text).toContain(table);
   });

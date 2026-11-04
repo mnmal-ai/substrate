@@ -85,6 +85,12 @@ export interface TypeTable {
   /** Declared fields whose values live in `extra` until they get a column. */
   pending: readonly string[];
   orphaned: readonly string[];
+  /**
+   * The catalog version this descriptor was loaded at (bigint text). Every
+   * write checks it in its own statement (`guardCte`), so one built from a
+   * stale descriptor writes nothing and is rebuilt.
+   */
+  version: string;
 }
 
 /**
@@ -100,7 +106,8 @@ export function absentTypeTable(namespace: string, type: string): TypeTable {
     column: () => undefined,
     columns: () => [],
     pending: [],
-    orphaned: []
+    orphaned: [],
+    version: '0'
   };
 }
 
@@ -303,8 +310,12 @@ export async function loadTypeTable(
   namespace: string,
   type: string
 ): Promise<TypeTable | undefined> {
-  const tableName = await typeTableOf(sql, namespace, type);
-  if (tableName === undefined) return undefined;
+  // The version is read before the fields, so a descriptor is never labelled
+  // newer than its fields: a move committing in between only costs a retry.
+  const [table] = await sql<Array<{ table_name: string; version: string }>>`
+    SELECT table_name, version FROM substrate_type_tables WHERE namespace = ${namespace} AND type = ${type}`;
+  if (table === undefined) return undefined;
+  const tableName = table.table_name;
   const rows = await catalogOf(sql, namespace, type);
   const columns: TypedColumn[] = [];
   for (const r of rows) {
@@ -326,7 +337,8 @@ export async function loadTypeTable(
     column: (field) => byField.get(field),
     columns: () => columns,
     pending: rows.filter((r) => r.state === 'pending').map((r) => r.field),
-    orphaned: columns.filter((c) => c.state === 'orphaned').map((c) => c.field)
+    orphaned: columns.filter((c) => c.state === 'orphaned').map((c) => c.field),
+    version: table.version
   };
 }
 
@@ -485,7 +497,7 @@ async function ensureIn(tx: TransactionSql, args: EnsureTypeTableArgs): Promise<
     change.created ||
     change.added.length + change.pending.length + change.orphaned.length > 0
   ) {
-    await tx`SELECT pg_notify('substrate_catalog', ${`${namespace}/${type}`})`;
+    await catalogChanged(tx, namespace, type);
   }
   return change;
 }
@@ -610,7 +622,7 @@ export async function addPendingColumn(
       }
       await tx`UPDATE substrate_type_fields SET state = 'promoting'
                WHERE namespace = ${namespace} AND type = ${type} AND field = ${field}`;
-      await tx`SELECT pg_notify('substrate_catalog', ${`${namespace}/${type}`})`;
+      await catalogChanged(tx, namespace, type);
       return 'added';
     })) as 'added' | 'busy' | 'skipped';
   } catch (err) {
@@ -623,6 +635,12 @@ export async function addPendingColumn(
  * Moves `field` from state `from` to `to`, under the type's advisory lock, and
  * notifies. False, changing nothing, when the field is no longer in `from`: a
  * boot orphaned or redeclared it meanwhile, and that boot's state stands.
+ *
+ * The table is locked SHARE first, which waits for every transaction that has
+ * written it to end and holds off new writes until this commits. So a write
+ * that passed its version check before the move commits before it (and the
+ * straggler pass after the move sees it), and one after sees the new version.
+ * A lock held past `lockTimeoutMs` throws 55P03, and the field stays `from`.
  */
 export async function moveFieldState(
   sql: Sql,
@@ -630,17 +648,35 @@ export async function moveFieldState(
   type: string,
   field: string,
   from: FieldState,
-  to: FieldState
+  to: FieldState,
+  lockTimeoutMs = 2000
 ): Promise<boolean> {
   return (await sql.begin(async (tx) => {
+    await tx.unsafe(`SET LOCAL lock_timeout = '${Math.max(1, Math.floor(lockTimeoutMs))}ms'`);
     await lockTypeTable(tx, namespace, type);
+    const [table] = await tx<Array<{ table_name: string }>>`
+      SELECT table_name FROM substrate_type_tables WHERE namespace = ${namespace} AND type = ${type}`;
+    if (table === undefined) return false;
+    await tx.unsafe(`LOCK TABLE ${ident(table.table_name)} IN SHARE MODE`);
     const moved = await tx`UPDATE substrate_type_fields SET state = ${to}
       WHERE namespace = ${namespace} AND type = ${type} AND field = ${field} AND state = ${from}
       RETURNING 1`;
     if (moved.length === 0) return false;
-    await tx`SELECT pg_notify('substrate_catalog', ${`${namespace}/${type}`})`;
+    await catalogChanged(tx, namespace, type);
     return true;
   })) as boolean;
+}
+
+/**
+ * Bumps the type's catalog version and notifies `substrate_catalog`, in the
+ * transaction that changed its catalog rows: the version makes a write through
+ * a descriptor loaded before the change refuse itself, the notification drops
+ * that descriptor from every listening pool's cache.
+ */
+async function catalogChanged(tx: TransactionSql, namespace: string, type: string): Promise<void> {
+  await tx`UPDATE substrate_type_tables SET version = version + 1
+           WHERE namespace = ${namespace} AND type = ${type}`;
+  await tx`SELECT pg_notify('substrate_catalog', ${`${namespace}/${type}`})`;
 }
 
 /** The type's advisory lock, which every change to its table and catalog rows takes. */

@@ -152,7 +152,10 @@ describe.skipIf(!POSTGRES_URL)('tables layout', () => {
       await runMigrations(s);
       expect(await detectLayout(s)).toBe('tables');
       const versions = await s<Array<{ version: string }>>`SELECT version FROM migrations`;
-      expect(versions.map((v) => v.version)).toEqual(['0001t_tables_baseline']);
+      expect(versions.map((v) => v.version)).toEqual([
+        '0001t_tables_baseline',
+        '0003t_type_table_version'
+      ]);
       const [present] = await s<Array<Record<string, boolean>>>`
         SELECT to_regclass('rows') IS NOT NULL AS rows,
           to_regclass('row_ids') IS NOT NULL AS row_ids,
@@ -214,7 +217,11 @@ describe.skipIf(!POSTGRES_URL)('tables layout', () => {
   it('enforceUuidCheck: the tables layout rejects a non-UUID id in row_ids, short_ids and edges', async () => {
     await withFreshSchema(async (s) => {
       await runMigrations(s, { enforceUuidCheck: true });
-      expect(await ledger(s)).toEqual(['0001t_tables_baseline', UUID_CHECK_MIGRATION]);
+      expect(await ledger(s)).toEqual([
+        '0001t_tables_baseline',
+        UUID_CHECK_MIGRATION,
+        '0003t_type_table_version'
+      ]);
       await expectUuidChecks(s);
     });
   });
@@ -228,10 +235,14 @@ describe.skipIf(!POSTGRES_URL)('tables layout', () => {
         newFields: 'column' as const
       };
       await ensureTypeTable(s, { ...args, type: 'Before', enforceUuidCheck: false });
-      expect(await ledger(s)).toEqual(['0001t_tables_baseline']);
+      expect(await ledger(s)).toEqual(['0001t_tables_baseline', '0003t_type_table_version']);
 
       await runMigrations(s, { enforceUuidCheck: true });
-      expect(await ledger(s)).toEqual(['0001t_tables_baseline', UUID_CHECK_MIGRATION]);
+      expect(await ledger(s)).toEqual([
+        '0001t_tables_baseline',
+        UUID_CHECK_MIGRATION,
+        '0003t_type_table_version'
+      ]);
       await expectUuidChecks(s);
       const [before] = await s<Array<{ table_name: string }>>`
         SELECT table_name FROM substrate_type_tables WHERE type = 'Before'`;

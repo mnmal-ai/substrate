@@ -85,6 +85,7 @@ export function bareTypeTable(namespace: string, type: string): TypeTable {
     column: () => undefined,
     columns: () => [],
     pending: [],
-    orphaned: []
+    orphaned: [],
+    version: '0'
   };
 }

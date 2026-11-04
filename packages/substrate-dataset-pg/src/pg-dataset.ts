@@ -141,6 +141,9 @@ import {
 } from './type-table.js';
 import { UUID_CHECK_MIGRATION } from './uuid-check.js';
 import {
+  assertReadCommitted,
+  guardCte,
+  guardedRows,
   inputCte,
   mergeAssignments,
   type RowToWrite,
@@ -298,6 +301,12 @@ const RESERVED_DELETED_AT = '_deletedAt';
 
 /** The `updatedBy` a write without an actor stamps. */
 const ANONYMOUS: ActorIdentity = { kind: 'system', id: 'anonymous' };
+
+/** A written row as {@link guardedRows} returns it: `id` null on the row carrying `ok` alone. */
+type GuardedRecord = TableRowRecord & { ok: boolean; iso: string };
+
+/** Attempts a guarded write gets, so one queued behind a sweep moving several fields still lands. */
+const GUARDED_ATTEMPTS = 3;
 
 /** A type-table row as returned for `decodeRow`: `extra` and its columns. */
 type TableRowRecord = {
@@ -472,6 +481,42 @@ export class PgDataset implements Dataset {
       if (table !== null) this.#txTables?.set(key, { table, gen: listening ? gen : -1 });
     } else if (listening && this.#tableCache.gen === gen) {
       this.#tableCache.tables.set(key, table);
+    }
+  }
+
+  /**
+   * Runs `write`, a statement built for `table` that answers
+   * {@link guardedRows}, and returns its rows with the table they were
+   * written through. Built from a stale descriptor it writes nothing: the
+   * descriptor is dropped, reloaded and the write rebuilt and run again, up to
+   * {@link GUARDED_ATTEMPTS} in all (a sweep promoting several fields bumps the
+   * version once per step). Then it throws, so a write is never silently
+   * misplaced; outside READ COMMITTED it throws at once.
+   */
+  async #guarded<R extends { ok: boolean; iso: string; id: string | null }>(
+    type: string,
+    table: TypeTable,
+    write: (table: TypeTable) => Promise<R[]>
+  ): Promise<{ table: TypeTable; records: R[] }> {
+    let current = table;
+    for (let attempt = 1; ; attempt++) {
+      const records = await write(current);
+      if (records[0]?.ok === true) {
+        return { table: current, records: records.filter((r) => r.id !== null) };
+      }
+      assertReadCommitted(records[0], `${this.namespace}/${type}`);
+      if (attempt >= GUARDED_ATTEMPTS) {
+        throw new Error(
+          `${this.namespace}/${type}: its catalog changed on each of ${GUARDED_ATTEMPTS} attempts at a write; nothing was written`
+        );
+      }
+      const key = `${this.namespace}/${type}`;
+      this.#txTables?.delete(key);
+      this.#tableCache.tables.delete(key);
+      this.#tableCache.gen++;
+      const fresh = await this.#tableFor(type);
+      if (fresh === undefined) throw new Error(`internal: ${key} has no table`);
+      current = fresh;
     }
   }
 
@@ -959,30 +1004,33 @@ export class PgDataset implements Dataset {
     visible: boolean,
     options: WriteOptions | undefined
   ): Promise<WriteResult> {
-    const encoded: RowToWrite[] = rows.map((row) => {
-      const sanitised: Record<string, unknown> = {};
+    const sanitised = rows.map((row) => {
+      const out: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(row)) {
         if (k === RESERVED_DELETED_AT || k === '_metadata') continue;
         if (k === 'id' && v == null) continue;
-        sanitised[k] = v;
+        out[k] = v;
       }
-      return {
-        ...encodeRow(table, sanitised),
+      return out;
+    });
+    const written = await this.#guarded(type, table, async (t) => {
+      const encoded: RowToWrite[] = rows.map((row, k) => ({
+        ...encodeRow(t, sanitised[k] as Record<string, unknown>),
         id: row.id == null ? null : idToText(row.id),
         ...(row._metadata != null ? { metadata: row._metadata as RowMetadata } : {})
-      };
+      }));
+      return (await this.#sql`${writeRowsStatement(this.#sql, t, encoded, {
+        insertOnly: options?.insertOnly === true,
+        visibleOrder: visible,
+        metadata: 'stamp',
+        actor: options?.identity ?? null,
+        ...(options?.now !== undefined ? { now: options.now } : {})
+      })}`.catch((err: unknown) => {
+        throw this.#uniqueViolation(type, err);
+      })) as unknown as GuardedRecord[];
     });
-    const records = (await this.#sql`${writeRowsStatement(this.#sql, table, encoded, {
-      insertOnly: options?.insertOnly === true,
-      visibleOrder: visible,
-      metadata: 'stamp',
-      actor: options?.identity ?? null,
-      ...(options?.now !== undefined ? { now: options.now } : {})
-    })}`.catch((err: unknown) => {
-      throw this.#uniqueViolation(type, err);
-    })) as unknown as TableRowRecord[];
     const fields = this.#typeDefLookup?.(type, this.namespace)?.fields;
-    const merged = records.map((r) => this.materialize(r, fields, table));
+    const merged = written.records.map((r) => this.materialize(r, fields, written.table));
     return { written: merged.length, ids: merged.map((r) => r.id), rows: merged };
   }
 
@@ -1135,11 +1183,12 @@ export class PgDataset implements Dataset {
     const table = await this.#tableFor(type);
     if (table === undefined) return { matched: false, row: null };
 
-    const matchClauses: Fragment[] = [];
-    for (const [field, expected] of Object.entries(match)) {
-      matchClauses.push(conditionalMatchFragment(sql, field, expected, table));
-    }
-    const matchSql = matchClauses.length === 0 ? sql`TRUE` : combineAnd(sql, matchClauses);
+    const matchSql = (t: TypeTable) => {
+      const clauses = Object.entries(match).map(([field, expected]) =>
+        conditionalMatchFragment(sql, field, expected, t)
+      );
+      return clauses.length === 0 ? sql`TRUE` : combineAnd(sql, clauses);
+    };
     const stamp = sql`updated_at = ${now === undefined ? sql`now()` : sql`${now}`},
       updated_by_kind = ${(actor ?? ANONYMOUS).kind}, updated_by_id = ${(actor ?? ANONYMOUS).id}`;
     const [row] = await this.#patchTable(
@@ -1390,12 +1439,29 @@ export class PgDataset implements Dataset {
     table: TypeTable,
     patches: ReadonlyArray<{ id: string; patch: Record<string, unknown> }>,
     stamp: Fragment | null,
-    match: Fragment | null,
+    match: ((table: TypeTable) => Fragment) | null,
     live: boolean
   ): Promise<Row[]> {
+    const ids = patches.map((p) => p.id);
+    const written = await this.#guarded(type, table, (t) =>
+      this.#patchStatement(type, t, patches, ids, stamp, match?.(t) ?? null, live)
+    );
+    const fields = this.#typeDefLookup?.(type, this.namespace)?.fields;
+    return written.records.map((r) => this.materialize(r, fields, written.table));
+  }
+
+  /** {@link #patchTable}'s one statement, built for `table`. */
+  async #patchStatement(
+    type: string,
+    table: TypeTable,
+    patches: ReadonlyArray<{ id: string; patch: Record<string, unknown> }>,
+    ids: string[],
+    stamp: Fragment | null,
+    match: Fragment | null,
+    live: boolean
+  ): Promise<GuardedRecord[]> {
     const sql = this.#sql;
     const rel = sql.unsafe(table.from);
-    const ids = patches.map((p) => p.id);
     const encoded = patches.map((p) => ({ ...encodeRow(table, p.patch), id: p.id }));
     const locked = live
       ? sql`,
@@ -1408,7 +1474,7 @@ export class PgDataset implements Dataset {
         ) x
       )`
       : sql``;
-    const records = (await sql`
+    return (await sql`
       WITH ${inputCte(sql, table, encoded)}${locked},
       updated AS (
         UPDATE ${rel} t
@@ -1417,12 +1483,10 @@ export class PgDataset implements Dataset {
         WHERE t.id = i.rid${live ? sql` AND t.deleted_at IS NULL` : sql``}${match === null ? sql`` : sql` AND ${match}`}
         RETURNING t.*
       )
-      SELECT ${returnedRowSql(sql, table, 'u')} FROM updated u ${sql.unsafe(shortIdJoinSql(table, 'u.id'))}
+      ${guardedRows(sql, sql`SELECT ${returnedRowSql(sql, table, 'u')} FROM updated u ${sql.unsafe(shortIdJoinSql(table, 'u.id'))}`)}
     `.catch((err: unknown) => {
       throw this.#uniqueViolation(type, err);
-    })) as unknown as TableRowRecord[];
-    const fields = this.#typeDefLookup?.(type, this.namespace)?.fields;
-    return records.map((r) => this.materialize(r, fields, table));
+    })) as unknown as GuardedRecord[];
   }
 
   async updateWhere(
@@ -1443,9 +1507,11 @@ export class PgDataset implements Dataset {
             updated_by_kind = ${updatedBy.kind}::text,
             updated_by_id = ${updatedBy.id}::text`;
     // One input row, which every matched row merges.
-    const input = inputCte(sql, table, [{ ...encodeRow(table, patch), id: '' }]);
-    const assign = sql`${sql.unsafe(setList(mergeAssignments(table, 'r', 'i')))}, ${stamp}`;
-    return this.#filterWrite(type, where, opts.maxMatch, assign, false, table, input).catch(
+    const build = (t: TypeTable) => ({
+      input: inputCte(sql, t, [{ ...encodeRow(t, patch), id: '' }]),
+      assign: sql`${sql.unsafe(setList(mergeAssignments(t, 'r', 'i')))}, ${stamp}`
+    });
+    return this.#filterWrite(type, where, opts.maxMatch, build, false, table).catch(
       (err: unknown) => {
         // A set onto a declared unique index's values: refused as `patchRows` refuses it.
         throw this.#uniqueViolation(type, err);
@@ -1460,14 +1526,14 @@ export class PgDataset implements Dataset {
   ): Promise<FilterWriteResult> {
     const table = await this.#tableFor(type);
     if (table === undefined) return { count: 0, ids: [], rows: [] };
+    const assign = this.#sql`deleted_at = now()`;
     return this.#filterWrite(
       type,
       where,
       opts.maxMatch,
-      this.#sql`deleted_at = now()`,
+      () => ({ input: null, assign }),
       true,
-      table,
-      null
+      table
     );
   }
 
@@ -1480,36 +1546,70 @@ export class PgDataset implements Dataset {
    * (`FOR UPDATE`), so one moved out of the filter is neither locked nor
    * written. Locks are taken in id order, so overlapping filter writes queue
    * rather than deadlock. `preImage` returns the rows without the write's
-   * `deleted_at`. `input` is the CTE `assign` reads as `i`, when it reads one.
+   * `deleted_at`. `build` gives, for the table the write is built for, the
+   * SET list and the CTE `assign` reads as `i` (when it reads one). A stale
+   * table's guard matches nothing, and the write is rebuilt (`#guarded`).
    */
   async #filterWrite(
     type: string,
     where: WhereClause,
     maxMatch: number,
-    assign: Fragment,
+    build: (table: TypeTable) => { input: Fragment | null; assign: Fragment },
     preImage: boolean,
-    table: TypeTable,
-    input: Fragment | null
+    table: TypeTable
   ): Promise<FilterWriteResult> {
-    const sql = this.#sql;
     // k as memory's read passes it: the match limit.
     const { where: resolved } = await preResolveExtensionOperatorsDetailed(where, {
       namespace: this.namespace,
       type,
       k: maxMatch + 1
     });
-    const filter = buildWhere(sql, resolved, this.#castFor(type), table) ?? sql`true`;
     // shortId lives on the sidecar, so a where that reads it joins short_ids, as `read` does.
     const joinShortIds = whereReferencesField(resolved, 'shortId');
     const fields = this.#typeDefLookup?.(type, this.namespace)?.fields;
+    const written = await this.#guarded(type, table, async (t) => {
+      const { input, assign } = build(t);
+      const records = await this.#filterStatement(
+        t,
+        resolved,
+        joinShortIds,
+        maxMatch,
+        input,
+        assign
+      );
+      const head = records[0];
+      if (head?.ok === true && head.matched > maxMatch) {
+        throw filterTooBroad(this.namespace, type, maxMatch);
+      }
+      return records;
+    });
+    const rows = written.records.map((r) => {
+      const row = this.materialize(r, fields, written.table);
+      if (preImage) delete row._deletedAt;
+      return row;
+    });
+    return { count: rows.length, ids: rows.map((r) => r.id), rows };
+  }
+
+  /** {@link #filterWrite}'s one statement, built for `table`. */
+  async #filterStatement(
+    table: TypeTable,
+    resolved: WhereClause,
+    joinShortIds: boolean,
+    maxMatch: number,
+    input: Fragment | null,
+    assign: Fragment
+  ): Promise<Array<GuardedRecord & { matched: number }>> {
+    const sql = this.#sql;
+    const filter = buildWhere(sql, resolved, this.#castFor(table.type), table) ?? sql`true`;
     const rel = sql.unsafe(table.from);
     // The UPDATE target cannot appear in a FROM join's ON, so the sidecar joins on m.
     const sidecar = (id: string) => (joinShortIds ? sql.unsafe(shortIdJoinSql(table, id)) : sql``);
-    const records = (await sql`
-      WITH ${input === null ? sql`` : sql`${input},`}
+    return (await sql`
+      WITH ${input ?? guardCte(sql, table)},
       m AS (
         SELECT r.id AS mid FROM ${rel} r ${sidecar('r.id')}
-        WHERE ${filter} AND r.deleted_at IS NULL
+        WHERE (SELECT ok FROM guard) AND ${filter} AND r.deleted_at IS NULL
         ORDER BY r.id
         LIMIT ${maxMatch + 1}
         FOR UPDATE OF r
@@ -1522,20 +1622,11 @@ export class PgDataset implements Dataset {
           AND ${filter} AND r.deleted_at IS NULL
         RETURNING r.*
       )
-      SELECT (SELECT count(*) FROM m)::int AS matched, ${returnedRowSql(sql, table, 'u')}
-      FROM (SELECT 1) one
+      SELECT g.ok, (SELECT count(*) FROM m)::int AS matched, ${returnedRowSql(sql, table, 'u')}
+      FROM guard g
       LEFT JOIN u ON true
       ${sql.unsafe(shortIdJoinSql(table, 'u.id'))}
-    `) as unknown as Array<TableRowRecord & { matched: number }>;
-    if ((records[0]?.matched ?? 0) > maxMatch) throw filterTooBroad(this.namespace, type, maxMatch);
-    const rows = records
-      .filter((r) => r.id !== null)
-      .map((r) => {
-        const row = this.materialize(r, fields, table);
-        if (preImage) delete row._deletedAt;
-        return row;
-      });
-    return { count: rows.length, ids: rows.map((r) => r.id), rows };
+    `) as unknown as Array<GuardedRecord & { matched: number }>;
   }
 
   /** A body field's declared kind as the cast its extraction takes; null when undeclared. */
