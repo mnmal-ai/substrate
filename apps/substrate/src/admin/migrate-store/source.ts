@@ -124,7 +124,9 @@ export async function inspectSource(sql: Sql): Promise<SourceInventory> {
     >`SELECT extname, extversion FROM pg_extension ORDER BY extname`;
     const [others] = await tx<{ n: string }[]>`
       SELECT count(*)::text AS n FROM pg_stat_activity
-      WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_type = 'client backend'`;
+      WHERE datname = current_database() AND pid <> pg_backend_pid()
+        -- Another role's session shows a NULL backend_type to a non-monitoring role.
+        AND (backend_type = 'client backend' OR (backend_type IS NULL AND usesysid IS NOT NULL))`;
     return {
       serverVersionNum: version?.v ?? 0,
       layout,

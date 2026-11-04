@@ -336,9 +336,11 @@ describe('preflight', () => {
     expect(dry.warnings.join()).toContain('free disk');
   });
 
-  it('warns about other sessions', () => {
-    expect(preflight(source({ otherSessions: 2 }), target(), opts).warnings.join()).toContain(
-      '2 other'
-    );
+  it('refuses other sessions on the source in a real run and warns in a dry run', () => {
+    const live = source({ otherSessions: 2 });
+    expect(preflight(live, target(), opts).refusals.join()).toContain('2 other');
+    const dry = preflight(live, target(), { ...opts, dryRun: true });
+    expect(dry.refusals).toEqual([]);
+    expect(dry.warnings.join()).toContain('2 other');
   });
 });

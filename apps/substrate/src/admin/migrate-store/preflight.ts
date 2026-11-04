@@ -209,7 +209,8 @@ export function preflight(
   }
 
   if (source.otherSessions > 0) {
-    warnings.push(
+    // A real run refuses: a write after the snapshot would be lost from the copy.
+    (opts.dryRun ? warnings : refusals).push(
       `source has ${source.otherSessions} other active session(s) on its database; writes after the snapshot are not copied, so stop the service first`
     );
   }
