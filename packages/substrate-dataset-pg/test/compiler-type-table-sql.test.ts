@@ -361,8 +361,12 @@ describe('a date column reads the same whatever the session TimeZone', () => {
       `to_char(r.${AT} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS ${AT}`
     );
     expect(text).toContain('r.extra AS extra');
-    // A projected subset keeps `$raw`, which overlays any column it shields.
-    expect(render(buildRowProjection(sql, OBS, { observedAt: true }))).toMatch(
+    // A projected subset keeps `$raw`, which overlays any column it shields:
+    // read by key when every field is a `column` one, else in the one-pass trim.
+    expect(render(buildRowProjection(sql, OBS, { observedAt: true }))).toContain(
+      `jsonb_build_object('id', r.extra -> 'id', '$raw', r.extra -> '$raw') AS extra`
+    );
+    expect(render(buildRowProjection(sql, OBS, { observedAt: true, seenAt: true }))).toMatch(
       /jsonb_each\(r\.extra\) e WHERE e\.key = ANY\(\$::text\[\]\)/
     );
   });
