@@ -55,9 +55,12 @@ const CAST: Readonly<Record<ColumnKind, string>> = {
   boolean: 'boolean'
 };
 
-/** The columns a write sets: an orphaned column's field is undeclared, so it goes to `extra`. */
-export function writableColumns(table: TypeTable): TypedColumn[] {
-  return table.columns().filter((c) => c.state !== 'orphaned');
+/**
+ * The columns a write sets: every column, though an orphaned one is only ever
+ * cleared (`encodeRow`), since its field is undeclared and goes to `extra`.
+ */
+export function writableColumns(table: TypeTable): readonly TypedColumn[] {
+  return table.columns();
 }
 
 /** `[a, ',', b, ',', c]`, which postgres.js joins into one flat template. */

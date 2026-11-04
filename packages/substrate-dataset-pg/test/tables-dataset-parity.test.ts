@@ -1078,4 +1078,43 @@ describe.skipIf(!POSTGRES_URL)('PgDataset on type tables vs memory', () => {
     ]);
   });
 
+  it('a field declared again after being orphaned reads what was written meanwhile (#1860)', async () => {
+    for (const [, ds] of both()) {
+      await ds.write('Gone', [
+        { id: 'g1', keep: 'k', drop: 1 },
+        { id: 'g2', keep: 'k', drop: 1 },
+        { id: 'g3', keep: 'k', drop: 1 },
+        { id: 'g4', keep: 'k', drop: 1 }
+      ]);
+    }
+    defs.Gone = { fields: { keep: field.string() } };
+    await pg.ensureTypeStorage('Gone');
+    for (const [, ds] of both()) {
+      await ds.write('Gone', [
+        { id: 'g1', drop: 2 },
+        { id: 'g2', drop: null },
+        // In-process only: the key is written, with no value to keep in `extra`.
+        { id: 'g4', drop: undefined as never }
+      ]);
+    }
+    // A write of an orphaned field clears its column, so no stale value is left there.
+    await same('Gone', {}, true);
+    defs.Gone = { fields: { keep: field.string(), drop: field.number() } };
+    await pg.ensureTypeStorage('Gone');
+    expect((await table('Gone')).column('drop')?.state).toBe('promoting');
+    const want = [
+      { id: 'g1', keep: 'k', drop: 2 },
+      { id: 'g2', keep: 'k' },
+      { id: 'g3', keep: 'k', drop: 1 },
+      { id: 'g4', keep: 'k' }
+    ];
+    expect((await pg.read('Gone', {})).rows.map(strip).sort(byId)).toEqual(want);
+    await same('Gone', { where: { drop: { eq: 1 } } }, true);
+    await sweep();
+    expect((await table('Gone')).column('drop')?.state).toBe('column');
+    expect((await pg.read('Gone', {})).rows.map(strip).sort(byId)).toEqual(want);
+    await same('Gone', {}, true);
+    await same('Gone', { where: { drop: { eq: 1 } } }, true);
+    await same('Gone', { where: { drop: { eq: null } } }, true);
+  });
 });

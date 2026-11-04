@@ -222,8 +222,15 @@ describe('row codec', () => {
   });
 
   it('orphaned column value decodes as an extra; an extra key of the same name wins', () => {
+    // A write goes to `extra` and clears the column, so no stale value outlives it.
     const e = encodeRow(TABLE, { gone: 'x' });
-    expect(e).toEqual({ columns: {}, extra: { gone: 'x' }, raw: {}, clear: [], unset: ['gone'] });
+    expect(e).toEqual({
+      columns: { f_gone: null },
+      extra: { gone: 'x' },
+      raw: {},
+      clear: [],
+      unset: ['gone']
+    });
     const base = { ...EMPTY, f_gone: 'kept' };
     expect(decodeRow(TABLE, base)).toEqual({ gone: 'kept' });
     expect(decodeRow(TABLE, { ...base, extra: { gone: 'newer' } })).toEqual({ gone: 'newer' });
