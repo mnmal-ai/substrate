@@ -18,9 +18,10 @@
  *
  * Builds run CONCURRENTLY, so never inside a transaction, and each under its
  * table's index-build lock, since two concurrent builds on one table deadlock.
- * Unique ones also hold the migration lock, which serialises them with
- * migrations and other boots; non-unique ones do not, so a long build never
- * holds up a booting process. What still meets a non-unique build is DDL on
+ * A unique one is chosen under the migration lock, which serialises the choice
+ * with migrations and other boots, but released before its duplicate check and
+ * build; no build holds the migration lock, so a long build never holds up a
+ * booting process. What still meets a non-unique build is DDL on
  * its table outside these locks: a kernel migration's ALTER or non-concurrent
  * CREATE INDEX on a type table waits for the build, and can deadlock with it, in
  * which case Postgres aborts one with 40P01 (a failed build is retried by the
@@ -188,8 +189,10 @@ const BARE_NAME = /^[a-z_][a-z0-9_]*$/;
  * while this session's pool already holds the migration lock on another
  * connection, since it waits for that lock.
  *
- * Unique indexes reconcile under the migration lock, which serialises them
- * with migrations and other boots; a type with none takes no migration lock. Non-unique indexes take
+ * A unique index that needs work is chosen under the migration lock, which
+ * serialises the choice with migrations and other boots, then checked for
+ * duplicates and built under its table's index-build lock alone; a type whose
+ * unique indexes are all as declared takes no migration lock. Non-unique indexes take
  * only the table's index-build lock (`withTableIndexLock`), one index at a
  * time, so a long build never holds up another process's migrations, nor its
  * unique builds on other tables. An index the catalog already holds as
@@ -213,9 +216,10 @@ export async function reconcileTypeIndexes(
   if (first.length > 0) {
     const target = await targetTable(sql, args);
     const waiting = await waitingForColumns(sql, target, first);
-    const pass = async (conn: ReservedSql): Promise<IndexState[]> => {
-      // A non-unique index not yet built is pending without being deparsed: its
-      // columns may come from a kernel migration, which runs after this pass.
+    // A non-unique index not yet built is pending without being deparsed: its
+    // columns may come from a kernel migration, which runs after this pass.
+    // The pass reads states only, so it takes no lock.
+    const { states, todo } = await reserved(sql, async (conn) => {
       const probed: Spec[] = [];
       for (const spec of first) {
         if (waiting.has(spec.name)) continue;
@@ -224,7 +228,8 @@ export async function reconcileTypeIndexes(
         }
       }
       const desired = await deparse(conn, probed, ident(target));
-      const states: IndexState[] = [];
+      const states: Array<IndexState | undefined> = [];
+      const todo: Array<{ at: number; spec: Spec; d: Described }> = [];
       for (const spec of first) {
         const i = probed.indexOf(spec);
         if (i < 0) {
@@ -233,26 +238,37 @@ export async function reconcileTypeIndexes(
         }
         const d = desired[i] as Described;
         const held = await heldAsDeclared(conn, target, spec, d);
-        states.push(
-          settled(
-            args,
-            spec,
-            held !== undefined
-              ? held
-              : spec.unique
-                ? await withTableIndexLock(sql, conn, target, undefined, () =>
-                    reconcileOne(conn, args, target, spec, d, {})
-                  )
-                : indexState(spec, 'pending', 'unchanged')
-          )
-        );
+        if (held === undefined && spec.unique) todo.push({ at: states.length, spec, d });
+        states.push(held ?? (spec.unique ? undefined : indexState(spec, 'pending', 'unchanged')));
       }
-      return states;
-    };
-    // With nothing unique to build, the pass only reads states, so it takes no lock.
-    out.push(
-      ...(unique.length > 0 ? await withMigrationLock(sql, pass) : await reserved(sql, pass))
-    );
+      return { states, todo };
+    });
+    // The migration lock only decides what to build, so a build never holds up
+    // another process's boot or migrations, nor unique builds on other tables.
+    // The duplicate check and the build run under the table's index-build lock,
+    // which keeps a second process off the same index: a duplicate a writer
+    // adds between them fails the build, and the INVALID index it leaves is
+    // dropped by the next reconcile (`reconcileOne`).
+    const build =
+      todo.length === 0
+        ? []
+        : await withMigrationLock(sql, async (conn) => {
+            const left: typeof todo = [];
+            for (const t of todo) {
+              const held = await heldAsDeclared(conn, target, t.spec, t.d);
+              if (held === undefined) left.push(t);
+              else states[t.at] = held;
+            }
+            return left;
+          });
+    for (const t of build) {
+      states[t.at] = await reserved(sql, (conn) =>
+        withTableIndexLock(sql, conn, target, undefined, () =>
+          reconcileOne(conn, args, target, t.spec, t.d, {})
+        )
+      );
+    }
+    out.push(...first.map((spec, i) => settled(args, spec, states[i] as IndexState)));
   }
   if (only !== 'unique') out.push(...(await reconcileNonUnique(sql, args, all, opts)));
   return out;

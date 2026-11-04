@@ -9,6 +9,9 @@
  * coordinator's `onCommittedWrites` see it as they would a mutate's commit.
  * A `busy` field (its table's lock stayed held) is retried by the next sweep
  * and has no event of its own; its third busy sweep in a row is `failed`.
+ * The route's sweep also retries fields a unique conflict holds back
+ * (`retryConflicts`): an operator runs it after fixing the data; the timer's
+ * waits for their type's catalog to change.
  */
 
 import type {
@@ -75,7 +78,7 @@ function auditOf(e: PromotionEvent): FieldEvent[] {
 
 export interface PromoteFieldsRunner {
   /** One sweep, after any already running; its events, each also audited. */
-  run(): Promise<PromotionEvent[]>;
+  run(opts?: { retryConflicts?: boolean }): Promise<PromotionEvent[]>;
   /** Stops the timer, aborts the running sweep and waits for it; later runs do nothing. */
   stop(): Promise<void>;
 }
@@ -90,12 +93,13 @@ export function createPromoteFieldsRunner(deps: {
   intervalMs: number;
 }): PromoteFieldsRunner {
   const abort = new AbortController();
-  const pass = async (): Promise<PromotionEvent[]> => {
+  const pass = async (retryConflicts: boolean): Promise<PromotionEvent[]> => {
     if (deps.dataset.promotePendingFields === undefined || abort.signal.aborted) return [];
     const events = await deps.dataset.promotePendingFields({
       lockTimeoutMs: PROMOTE_LOCK_TIMEOUT_MS,
       batchRows: PROMOTE_BATCH_ROWS,
-      signal: abort.signal
+      signal: abort.signal,
+      ...(retryConflicts ? { retryConflicts } : {})
     });
     for (const e of events) {
       process.stdout.write(
@@ -107,8 +111,8 @@ export function createPromoteFieldsRunner(deps: {
     return events;
   };
   let tail: Promise<unknown> = Promise.resolve();
-  const run = (): Promise<PromotionEvent[]> => {
-    const next = tail.then(pass);
+  const run = (opts: { retryConflicts?: boolean } = {}): Promise<PromotionEvent[]> => {
+    const next = tail.then(() => pass(opts.retryConflicts === true));
     tail = next.catch(() => undefined);
     return next;
   };
@@ -141,10 +145,12 @@ export function createPromoteFieldsRunner(deps: {
 }
 
 /** `POST /substrate/v1/_system/promote-fields`: runs one sweep and answers its events. Admin-gated by the caller. */
-export function promoteFieldsRoute(run: () => Promise<PromotionEvent[]>): HttpHandler {
+export function promoteFieldsRoute(
+  run: (opts: { retryConflicts: boolean }) => Promise<PromotionEvent[]>
+): HttpHandler {
   return async () => {
     try {
-      return jsonResponse(200, { events: await run() });
+      return jsonResponse(200, { events: await run({ retryConflicts: true }) });
     } catch (err) {
       return jsonResponse(500, {
         code: 'promotion_failed',

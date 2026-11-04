@@ -76,7 +76,8 @@ describe.skipIf(!POSTGRES_URL)('storage layout', () => {
     const ledger = await sql<{ version: string }[]>`SELECT version FROM migrations`;
     expect(ledger.map((r) => r.version)).toEqual([
       '0001t_tables_baseline',
-      '0003t_type_table_version'
+      '0003t_type_table_version',
+      '0004t_field_error_version'
     ]);
   });
 

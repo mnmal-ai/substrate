@@ -28,12 +28,23 @@
  * the move through. Before step 5 the field stays `promoting`, so reads still
  * see its `extra` values. A field never goes back from `column`: a straggler
  * that fails (or a straggler pass that is stopped) leaves the field `column`
- * with its error recorded, which brings it back to the next sweep's straggler
- * pass until that pass finishes.
+ * with its error recorded, which brings it back to a later sweep's straggler
+ * pass until that pass finishes. A field that failed on a unique conflict,
+ * `promoting` or `column`, comes back only once the type's catalog version has
+ * moved on (`error_version`), since a rescan of the whole table at the same
+ * version only meets it again.
+ *
+ * Every server process sweeps, so each field is swept under a session
+ * advisory lock taken with a try ({@link promotionLockKey}): a field another
+ * sweep holds is skipped, not swept twice. The lock never waits, so it is in
+ * no wait cycle; it is session-level, not transaction-level, because the
+ * field's own index builds (CONCURRENTLY) would wait forever on an open
+ * transaction of the sweep's.
  */
 
 import type { PromotionEvent } from '@mnmal-ai/substrate-types';
 import type { Sql } from 'postgres';
+import { tryWithPgAdvisoryLock } from './advisory-lock.js';
 import { UniqueIndexDuplicatesError } from './index-reconciler.js';
 import { ident } from './layout.js';
 import { encodeRow, RAW_KEY } from './row-codec.js';
@@ -55,6 +66,8 @@ export interface PromotePendingFieldsOptions {
   batchRows: number;
   /** Stops the sweep between pages and fields; an interrupted field is not counted an attempt. */
   signal?: AbortSignal;
+  /** Clears `error_version` first, so fields a unique conflict holds back are swept again. */
+  retryConflicts?: boolean;
   onEvent?: (e: PromotionEvent) => void;
   /** Only this namespace's fields; every namespace's when omitted. */
   namespace?: string;
@@ -79,11 +92,14 @@ export async function promotePendingFields(
   sql: Sql,
   opts: PromotePendingFieldsOptions
 ): Promise<PromotionEvent[]> {
-  // A `column` field with an error is one whose straggler pass failed or was stopped: it runs again.
+  const scope = opts.namespace === undefined ? sql`` : sql`AND namespace = ${opts.namespace}`;
+  if (opts.retryConflicts === true) {
+    await sql`UPDATE substrate_type_fields SET error_version = NULL
+              WHERE error_version IS NOT NULL ${scope}`;
+  }
   const rows = await sql<FieldRow[]>`
-    SELECT namespace, type, field, state, attempts FROM substrate_type_fields
-    WHERE (state IN ('pending', 'promoting') OR (state = 'column' AND last_error IS NOT NULL))
-      ${opts.namespace === undefined ? sql`` : sql`AND namespace = ${opts.namespace}`}
+    SELECT namespace, type, field, state, attempts FROM substrate_type_fields f
+    WHERE ${due(sql)} ${scope}
     ORDER BY namespace COLLATE "C", type COLLATE "C", field COLLATE "C"`;
   const events: PromotionEvent[] = [];
   const emit = (f: FieldRow, kind: PromotionEvent['kind'], attempts: number, error?: string) => {
@@ -106,25 +122,34 @@ export async function promotePendingFields(
   };
   // A function, so each check reads the signal anew rather than a narrowed value.
   const stopped = (): boolean => opts.signal?.aborted === true;
-  for (const f of rows) {
-    if (stopped()) break;
+  /** One field, under its sweep lock; true when the sweep stops. */
+  const sweepOne = async (selected: FieldRow): Promise<boolean> => {
+    // Re-read under the lock: another sweep may have settled it since the selection.
+    const [f] = await sql<FieldRow[]>`
+      SELECT namespace, type, field, state, attempts FROM substrate_type_fields f
+      WHERE namespace = ${selected.namespace} AND type = ${selected.type}
+        AND field = ${selected.field} AND ${due(sql)}`;
+    if (f === undefined) return false;
     const attempts = f.attempts + 1;
+    // The catalog version the current pass started at: a unique conflict there is recorded at it.
+    let at: string | undefined;
     try {
       if (f.state === 'pending') {
         const added = await addPendingColumn(sql, f.namespace, f.type, f.field, opts.lockTimeoutMs);
-        if (added === 'skipped') continue;
+        if (added === 'skipped') return false;
         if (added === 'busy') {
           await busy(f, attempts, `its table's lock was held past ${opts.lockTimeoutMs} ms`);
-          continue;
+          return false;
         }
       }
       const table = await loadTypeTable(sql, f.namespace, f.type);
       const state = table?.column(f.field)?.state;
-      if (table === undefined || (state !== 'promoting' && state !== 'column')) continue;
+      if (table === undefined || (state !== 'promoting' && state !== 'column')) return false;
+      at = table.version;
       if (state === 'promoting') {
-        if (!(await backfill(sql, table, f.field, opts))) break;
+        if (!(await backfill(sql, table, f.field, opts))) return true;
         await opts.reconcile?.(f.namespace, f.type);
-        if (stopped()) break;
+        if (stopped()) return true;
         // Never over a boot that orphaned or redeclared the field meanwhile.
         if (
           !(await moveFieldState(
@@ -137,14 +162,15 @@ export async function promotePendingFields(
             opts.lockTimeoutMs
           ))
         ) {
-          continue;
+          return false;
         }
       }
       // `column` from here on, and never back: a straggler that cannot move fails the field, and
-      // its error makes the next sweep run this pass again.
+      // its error makes a later sweep run this pass again.
+      at = await catalogVersion(sql, f);
       if (!(await backfill(sql, table, f.field, opts))) {
         await recordAttempt(sql, f, f.attempts, 'its straggler pass was stopped');
-        break;
+        return true;
       }
       await recordAttempt(sql, f, 0, null);
       emit(f, 'promoted', attempts);
@@ -157,17 +183,59 @@ export async function promotePendingFields(
     } catch (err) {
       const code = (err as { code?: unknown }).code;
       // A conflict is recorded even when the sweep is stopping; anything else then is the stop.
-      if (stopped() && !isUniqueConflict(err)) break;
+      if (stopped() && !isUniqueConflict(err)) return true;
       if (code === '40P01' || code === '55P03') {
         await busy(f, attempts, `a lock on its rows was contended (${code})`);
-        continue;
+        return false;
       }
       const error = failure(err, f.field);
-      await recordAttempt(sql, f, attempts, error);
+      await recordAttempt(sql, f, attempts, error, isUniqueConflict(err) ? (at ?? null) : null);
       emit(f, 'failed', attempts, error);
     }
+    return false;
+  };
+  for (const f of rows) {
+    if (stopped()) break;
+    // shortcut: a pool of one cannot hold the lock's connection and sweep beside it, so it sweeps
+    // unlocked; give the sweeping pool two connections or more to keep sweeps exclusive.
+    if (sql.options.max <= 1) {
+      if (await sweepOne(f)) break;
+      continue;
+    }
+    const held = await tryWithPgAdvisoryLock(
+      sql,
+      promotionLockKey(f.namespace, f.type, f.field),
+      () => sweepOne(f)
+    );
+    if (held.acquired && held.value) break;
   }
   return events;
+}
+
+/**
+ * The advisory key of one field's sweep: a sweep that cannot take it at once
+ * skips the field, which another process (or a concurrent sweep in this one)
+ * is sweeping.
+ */
+export const promotionLockKey = (namespace: string, type: string, field: string): string =>
+  `substrate-promote:${namespace}/${type}.${field}`;
+
+/**
+ * The fields a sweep takes (`f` is `substrate_type_fields`): `pending` and
+ * `promoting` ones, and a `column` one whose straggler pass failed or was
+ * stopped, except one that failed on a unique conflict (`error_version`) at
+ * the type's current catalog version, which another full scan would only meet
+ * again.
+ */
+const due = (sql: Sql) => sql`(f.state IN ('pending', 'promoting')
+  OR (f.state = 'column' AND f.last_error IS NOT NULL))
+  AND f.error_version IS DISTINCT FROM (
+    SELECT v.version FROM substrate_type_tables v WHERE v.namespace = f.namespace AND v.type = f.type)`;
+
+async function catalogVersion(sql: Sql, f: FieldRow): Promise<string | undefined> {
+  const [row] = await sql<Array<{ version: string }>>`
+    SELECT version::text FROM substrate_type_tables WHERE namespace = ${f.namespace} AND type = ${f.type}`;
+  return row?.version;
 }
 
 const isUniqueConflict = (err: unknown): boolean =>
@@ -189,9 +257,12 @@ async function recordAttempt(
   sql: Sql,
   f: FieldRow,
   attempts: number,
-  error: string | null
+  error: string | null,
+  /** The catalog version a unique conflict was met at; see {@link due}. */
+  errorVersion: string | null = null
 ): Promise<void> {
-  await sql`UPDATE substrate_type_fields SET attempts = ${attempts}, last_error = ${error}
+  await sql`UPDATE substrate_type_fields
+            SET attempts = ${attempts}, last_error = ${error}, error_version = ${errorVersion}::bigint
             WHERE namespace = ${f.namespace} AND type = ${f.type} AND field = ${f.field}`;
 }
 

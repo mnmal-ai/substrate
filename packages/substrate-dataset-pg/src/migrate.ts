@@ -38,6 +38,7 @@ import {
 } from './migrations/0001t_tables_baseline.js';
 import { TX_STATEMENTS as TABLES_UUID_CHECK_TX } from './migrations/0002t_uuid_format_check.js';
 import { TX_STATEMENTS as TYPE_TABLE_VERSION_TX } from './migrations/0003t_type_table_version.js';
+import { TX_STATEMENTS as FIELD_ERROR_VERSION_TX } from './migrations/0004t_field_error_version.js';
 import { sqlStringLiteral } from './pg-sql/primitives.js';
 import { assertServerVersion } from './server-version.js';
 import { UUID_CHECK_MIGRATION } from './uuid-check.js';
@@ -87,6 +88,11 @@ const TYPE_TABLE_VERSION: MigrationInput = {
   txStatements: TYPE_TABLE_VERSION_TX
 };
 
+const FIELD_ERROR_VERSION: MigrationInput = {
+  version: '0004t_field_error_version',
+  txStatements: FIELD_ERROR_VERSION_TX
+};
+
 function normalise(input: MigrationInput): Migration {
   if ('statements' in input && input.statements !== undefined) {
     return {
@@ -115,7 +121,7 @@ const UUID_CHECK_INPUT: MigrationInput = {
 /**
  * The tables baseline, then the gated UUID CHECKs when
  * `SUBSTRATE_ENFORCE_UUID_CHECK=true` (or the explicit override is true), then
- * the type tables' catalog version. Used
+ * the type tables' catalog version, then the field error version. Used
  * by `runMigrations` and exported for unit tests.
  */
 export function getMigrationList(
@@ -124,7 +130,8 @@ export function getMigrationList(
   return [
     TABLES_BASELINE,
     ...(enforceUuidCheck === true ? [UUID_CHECK_INPUT] : []),
-    TYPE_TABLE_VERSION
+    TYPE_TABLE_VERSION,
+    FIELD_ERROR_VERSION
   ].map(normalise);
 }
 

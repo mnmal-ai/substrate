@@ -507,7 +507,8 @@ export interface Dataset {
    * DDL waits at most `lockTimeoutMs` for its table's lock, then that field is
    * `busy` and retried by the next call; `batchRows` rows move per statement.
    * `signal` stops the sweep between steps. Resolves with one event per field
-   * it touched.
+   * it touched. A field that failed on a unique conflict waits for its type's
+   * catalog to change, unless `retryConflicts` is set.
    *
    * OPTIONAL. Backends with no per-type tables omit it.
    */
@@ -515,6 +516,8 @@ export interface Dataset {
     lockTimeoutMs: number;
     batchRows: number;
     signal?: AbortSignal;
+    /** Retries fields a unique conflict holds back until their type's catalog changes: an operator's run after fixing the data. */
+    retryConflicts?: boolean;
   }): Promise<PromotionEvent[]>;
   /**
    * Store-wide counts of the fields an operator should know about: held in

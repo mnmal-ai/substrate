@@ -1782,6 +1782,7 @@ export class PgDataset implements Dataset {
     signal?: AbortSignal;
     /** Only this namespace's fields. */
     namespace?: string;
+    retryConflicts?: boolean;
   }): Promise<PromotionEvent[]> {
     if ((await this.#layout()) === 'absent') return [];
     if (this.#inTx) {

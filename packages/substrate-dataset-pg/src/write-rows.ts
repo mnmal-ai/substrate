@@ -292,8 +292,12 @@ export function shortIdJoinSql(table: TypeTable, id: string): string {
  * a row with a null `id` carries `ok` alone, and `ok` false means `table` is
  * stale and nothing was written.
  *
- * A stored row is merged by an UPDATE that reads the input row whole; the rest
- * are INSERTed. A row another transaction inserts meanwhile conflicts, and the
+ * A stored row is merged by an UPDATE that reads the input row whole, after
+ * every stored row of the batch is locked in id order (`locked`), as patches,
+ * tombstones and the promotion backfill lock them, so two batches over the
+ * same rows in opposite orders queue rather than deadlock; the rest
+ * are INSERTed, in id order for the same reason (a conflict waits on the
+ * other inserter). A row another transaction inserts meanwhile conflicts, and the
  * conflict arm merges the same way, looking its input row up by id: the only
  * path that searches the input, and only for those rows. `insertOnly` skips
  * the UPDATE and every conflict. A merge never touches `deleted_at`.
@@ -355,9 +359,16 @@ export function writeRowsStatement(
   const upd = opts.insertOnly
     ? sql``
     : sql`,
+      locked AS MATERIALIZED (
+        SELECT count(*) AS n FROM (
+          SELECT t.id FROM ${target} t WHERE t.id IN (SELECT rid FROM input)
+          ORDER BY t.id
+          FOR NO KEY UPDATE OF t
+        ) x
+      ),
       upd AS (
         UPDATE ${target} t SET ${sql.unsafe(setList(merge))}
-        FROM input i WHERE t.id = i.rid
+        FROM input i, locked WHERE t.id = i.rid
         RETURNING t.*
       )`;
 
@@ -400,6 +411,7 @@ export function writeRowsStatement(
       INSERT INTO ${target} AS t (${sql.unsafe(insertCols.join(', '))})
       SELECT ${sql.unsafe(insertValues.join(', '))}
       FROM ${sql.unsafe(source + notUpdated)}
+      ORDER BY i.rid
       ${sql.unsafe(onConflict)}
       RETURNING t.*
     ),
