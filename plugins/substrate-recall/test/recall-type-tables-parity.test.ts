@@ -400,7 +400,10 @@ describe.skipIf(!POSTGRES_URL)('recall rows on type tables equal dataset.read', 
       expect(await knn()).toEqual(await fresh());
       statements.length = 0;
       expect(await knn()).toEqual(await fresh());
-      expect(statements.filter((s) => /pg_class|substrate_type_/.test(s))).toEqual([]);
+      // The read guard's catalog-version probe (`substrate_type_tables g`) is not a lookup.
+      expect(
+        statements.filter((s) => /pg_class|substrate_type_(tables|fields)(?! g\b)/.test(s))
+      ).toEqual([]);
 
       // Orphaned: a new write lands in `extra`, which a stale `column` descriptor would drop.
       defs.Gone = { fields: { keep: str } };

@@ -45,6 +45,12 @@ function makeFakeSql(handler: (text: string, values: unknown[]) => unknown): {
     const text = strings.join('?');
     // The stores' catalog lookups, answered as a type table with no field columns;
     // not recorded, as they are not recall SQL.
+    // A guarded read: the statement (its last value) answers, every row with the guard passed.
+    if (text.includes('guard AS MATERIALIZED')) {
+      const rows = (await values[values.length - 1]) as Array<Record<string, unknown>>;
+      return (rows.length > 0 ? rows : [{}]).map((r) => ({ guard_ok: true, ...r }));
+    }
+    if (text.includes('substrate_type_tables g')) return [];
     if (text.includes('pg_class')) return [{ relname: 'substrate_type_tables', relkind: 'r' }];
     if (text.includes('FROM substrate_type_tables')) return [{ table_name: 't__ns__type' }];
     if (text.includes('FROM substrate_type_fields')) return [];

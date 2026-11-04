@@ -146,7 +146,7 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
           //
           // The embedding is selected only when requested: serializing it to text
           // on every recall would tax the default path.
-          return tx<Array<KnnRow>>`${guard(
+          return guard(
             tx,
             tx`
         SELECT
@@ -172,7 +172,7 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
         ORDER BY e.embedding <=> ${literal}::vector
         LIMIT ${k}
       `
-          )}`;
+          ) as unknown as Promise<Array<KnnRow>>;
         }) as unknown as Promise<Array<KnnRow>>,
       'row'
     );

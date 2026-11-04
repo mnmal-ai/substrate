@@ -143,7 +143,7 @@ export class PgLexicalStore implements LexicalStore {
       input.namespace,
       input.type,
       (ref, guard) =>
-        this.#sql<SearchRow[]>`${guard(
+        guard(
           this.#sql,
           this.#sql`
       SELECT
@@ -167,7 +167,7 @@ export class PgLexicalStore implements LexicalStore {
       ORDER BY score DESC, l.row_id ASC
       LIMIT ${k}
     `
-        )}`,
+        ) as unknown as Promise<SearchRow[]>,
       'row_id'
     );
 
