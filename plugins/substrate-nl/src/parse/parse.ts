@@ -196,7 +196,9 @@ export function parseQuestion(
     prose
       .toLowerCase()
       .replace(/[‘’]/g, "'")
-      .match(/\$\d+(?:\.\d+)?|\d+(?:\.\d+)?[%×]|#\d+|[a-z0-9@[][a-z0-9@._'\]-]*/g) ?? []
+      .match(
+        /\d{4}-\d{2}-\d{2}t\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:z|[+-]\d{2}:\d{2})?|\$\d+(?:\.\d+)?|\d+(?:\.\d+)?[%×]|#\d+|[a-z0-9@[][a-z0-9@._'\]-]*/g
+      ) ?? []
   )
     .map((t) => t.replace(/[.'-]+$/, '').replace(/'s$/, ''))
     .filter((t) => t.length > 0)
@@ -251,7 +253,7 @@ export function parseQuestion(
     evidence.push({
       span: time.span,
       role: 'time',
-      detail: `${time.range.gte} .. ${time.range.lt}`
+      detail: `${time.range.gte ?? ''} .. ${time.range.lt ?? ''}`.trim()
     });
   }
 
@@ -685,7 +687,7 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
     const dateField =
       named?.[0] ??
       (a.closeVerb || a.updateVerb ? 'updatedAt' : (own(rulings.timeField, type) ?? 'createdAt'));
-    const clause = { [dateField]: { gte: a.time.range.gte, lt: a.time.range.lt } };
+    const clause = { [dateField]: { ...a.time.range } };
     where.push(clause);
     // In a composed reading the seed's window is a plan clause like a walk's, default named.
     if (a.composed !== undefined) {
@@ -992,7 +994,8 @@ function claimTime(
   asOf: string
 ): { span: string; range: DateRange; at: [number, number] } | null {
   let found: { span: string; range: DateRange; at: [number, number] } | null = null;
-  claimNgrams(tokens, 3, (key, at) => {
+  // "between 1st sep 2026 and 15th sep 2026" is the longest phrase: eight words.
+  claimNgrams(tokens, 8, (key, at) => {
     if (found !== null) return false;
     const range = rangeFor(key, asOf);
     if (range === null) return false;

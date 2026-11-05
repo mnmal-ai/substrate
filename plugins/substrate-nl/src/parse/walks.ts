@@ -610,7 +610,7 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
         const ruled = own(rulings.timeField, type) !== undefined;
         w.window.push(
           filter(
-            { [field]: { gte: input.time.range.gte, lt: input.time.range.lt } },
+            { [field]: { ...input.time.range } },
             [field],
             `window:${input.time.span}${ruled ? '' : ` on ${field} (default)`}`
           )
