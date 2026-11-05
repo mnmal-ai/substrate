@@ -95,7 +95,7 @@ What to know before a real run:
 - Rerunning after an interruption restarts the copy cleanly: it empties the planned tables and copies again. Until a run has verified, the target keeps an in-progress marker, and `serve` and the key-management commands refuse it. After a failed verification (exit `3`) the marker stays.
 - A source table that neither the engine nor a loaded kernel plugin declares is refused. Load the plugin that owns it, or pass `--skip-table`.
 - Rows of a type that the target does not declare land in a table with no field columns, every field in `extra`. The report lists them under `defaulted`.
-- If the target's own preparation seeds rows that the source lacks, they are kept and the report lists them. The one that matters is the `_system` `AuditEvent` of kind `bootstrap`, which `serve` records on a store's first boot with keys. A source without it is refused; boot the source once with `serve`, stop it, and rerun.
+- If the target's own preparation seeds rows that the source lacks, they are kept and the report lists them. The one that matters is the `_system` `AuditEvent` of kind `bootstrap`, which `serve` records on a store's first boot with keys. A source without it fails the copy (exit 1, after the target has been written); boot the source once with `serve`, stop it, and rerun.
 - Recall's embedding dimensions must match when the target already has the table.
 - The report gives the time of each phase (preflight, prepare-and-copy, indexes, verify) and each table's copy time. The total of a rehearsal against a copy of the store is the downtime to plan for.
 

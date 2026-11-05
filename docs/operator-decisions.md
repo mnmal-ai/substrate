@@ -12,7 +12,7 @@ The step-by-step upgrade is in [Upgrading to per-type tables](upgrading-to-type-
 
 **The default:** none. There is only one safe answer: stop every instance, then start the new release. No rolling deploy across this release.
 
-**What it costs:** a window with no instance running. Rolling instead risks lost writes: an instance on an earlier build neither checks nor bumps the catalog version that protects writes while a field is promoted, so a write can be lost until every instance runs the new build. Earlier builds also take advisory locks under different keys, so the two releases do not exclude each other.
+**What it costs:** a window with no instance running. Rolling instead risks lost writes: an instance on an earlier build neither checks nor bumps the catalog version that protects writes while a field is promoted, so a write can be lost until every instance runs the new build. Earlier builds also do not take this release's per-field promotion locks, so their sweeps and this release's do not exclude each other.
 
 **Later:** within this release, rolling restarts are fine. The rule applies again whenever release notes say so.
 
@@ -25,7 +25,7 @@ The step-by-step upgrade is in [Upgrading to per-type tables](upgrading-to-type-
 **What it costs:**
 
 - **Downtime for the whole run.** A live source is refused: the command names the sessions it sees. On a ~40 GB real-world-shaped benchmark store the first measured run took about 36.5 minutes. Rehearse against a copy of your own store to know yours.
-- **Disk.** Keep free disk on the target of at least the source's size.
+- **Disk.** Keep free disk on the target of at least twice the size of the source's copied tables (table data without indexes); the dry run prints it as `estimated target need`. With `SUBSTRATE_INDEX_DISK_PATH` set to a path, a real run is refused below it; with `off`, nothing is checked, so check by hand.
 - **Rehearsal first.** Run `--dry-run` against the live source (it writes nothing and only warns about other sessions), then a full run from a restored copy of the source into a scratch target. The rehearsal's report times each phase; that total is your window.
 - **Verification depth.** By default the run checks per-type row counts, the id set, and every row's `updated_at` and `deleted_at`, and hashes the content of a sample of 1000 rows per type. `--full-checksum` hashes every row: stronger, and slower on a large store.
 - **Undeclared tables.** A source table that neither the engine nor a loaded plugin declares is refused. Load the plugin that owns it. `--skip-table` waives only such undeclared tables; naming a table the run copies is refused.
@@ -90,7 +90,7 @@ The step-by-step upgrade is in [Upgrading to per-type tables](upgrading-to-type-
 
 **What it costs:**
 
-- **Declared in code.** Every declared scalar or crossRef field is a typed column. A field new to an existing table gets its column at boot; values already in the row's jsonb move into it on the promotion sweep that runs after boot.
+- **Declared in code.** Every declared scalar or crossRef field is a typed column. A field new to an existing table gets its column at boot (or, if its table's lock is held, stays pending until the sweep adds it); values already in the row's jsonb move into it on the promotion sweep that runs after boot.
 - **Added at runtime.** No column is added on the request path. The field is **pending**: its values live in the row's jsonb, and reads, filters and sorts give the answers they will give once it is promoted. An index over a pending field is reported `pending` and serves no read, so filters and sorts on it scan the type's rows. `schema` marks the field `storage: "pending"`; `/health` `warnings` carries counts.
 - **Removed from code.** The field keeps its column and reads back as an extra (`orphaned`). Declaring it again moves values back.
 - **Kind changed in code.** The boot is refused with `FieldKindChangedError`.
@@ -103,7 +103,7 @@ The step-by-step upgrade is in [Upgrading to per-type tables](upgrading-to-type-
 
 **What it costs:** a shorter interval gives a proposed field its index sooner. Each promotion adds a column under a short lock timeout and moves values in batches; it never queues in front of writers, and a field it cannot lock is reported `busy` and retried. With the timer off, a field proposed after the boot sweep stays pending until you run the sweep.
 
-**Later:** `substrate-admin promote-fields` runs the sweep now on a running server. It needs the store-wide admin grant and prints one line per field. Each outcome is also an `_system/AuditEvent` (`field_pending`, `field_promoted`, `field_promotion_failed`).
+**Later:** `substrate-admin promote-fields --url <base>` (or `SUBSTRATE_URL`) runs the sweep now on a running server. It needs an admin credential with the store-wide admin grant and prints one line per field. Each outcome is also an `_system/AuditEvent` (`field_pending`, `field_promoted`, `field_promotion_failed`).
 
 ### Unique conflicts block promotion
 
@@ -153,10 +153,10 @@ A filter operand on a date field must be an ISO 8601 date (`2026-01-02`) or date
 
 **What it costs:**
 
-- **Off.** Every caller acts as `SUBSTRATE_SYSTEM_ACTOR`, admin routes included. The server refuses to boot without that actor, and binds `127.0.0.1` unless `HOST` says otherwise. A non-loopback `HOST` with auth off needs `SUBSTRATE_ALLOW_UNAUTHENTICATED_HOST=1`.
+- **Off.** Every caller acts as `SUBSTRATE_SYSTEM_ACTOR`, admin routes included. The server refuses to boot without that actor, and binds `127.0.0.1` unless `HOST` says otherwise. A non-loopback `HOST` with auth off needs `SUBSTRATE_ALLOW_UNAUTHENTICATED_HOST=1` (or `true`).
 - **`required`.** Every request but `/health`, `whoami` and invite registration needs a credential. The server binds `0.0.0.0` by default.
 - **`attribute`.** Anonymous callers may read; writes and admin routes still need a token.
-- With auth on, `SUBSTRATE_STREAM_TICKET_SECRET` (at least 16 characters) is required. Rotating it ends every outstanding SSE ticket.
+- With auth on, `SUBSTRATE_STREAM_TICKET_SECRET` (at least 16 characters) is required. Rotating it ends every outstanding SSE ticket and every outstanding pagination cursor (callers restart paging from the first page).
 
 **Later:** restart with the new values. Run `substrate-admin doctor` to check the result.
 
@@ -176,7 +176,7 @@ A filter operand on a date field must be an ISO 8601 date (`2026-01-02`) or date
 
 **The default:** plain HTTP.
 
-**What it costs:** the files are read at boot, so renewing a certificate needs a restart. Behind a proxy, list it in `SUBSTRATE_TRUSTED_PROXIES` so client addresses are bucketed correctly.
+**What it costs:** the files are read at boot, so renewing a certificate needs a restart. Behind a proxy, list its exact IP (no CIDR) in `SUBSTRATE_TRUSTED_PROXIES` so `X-Forwarded-For` is honoured for client addresses (request context, the `/register` rate limit and WebSocket clients).
 
 **Later:** restart.
 
@@ -223,7 +223,7 @@ A filter operand on a date field must be an ISO 8601 date (`2026-01-02`) or date
 **What it costs:**
 
 - There is no `rows` table. A kernel migration that targets it fails the boot with `KernelMigrationLayoutError`, naming the plugin and migration. `KernelMigrationContext.layout` is `'tables'` on Postgres and `null` on the memory dataset.
-- An index written by hand in raw DDL must match the form the engine's filters compare, or it serves nothing and nothing reports it. Move it into `indexes` with its existing `name` and the engine adopts it.
+- An index written by hand in raw DDL must match the form the engine's filters compare, or it serves nothing and nothing reports it. Move it into `indexes` with its existing `name`: the engine adopts it when the definitions match, and otherwise rebuilds it under that name.
 - `promotedColumns` is deprecated and ignored; `enumCheckStatements` is removed. An enum column carries its own CHECK.
 
 **Later:** a plugin migration that touched `rows` must be updated before a store running that plugin upgrades. See the [plugin author guide](plugin-author-guide.md#defining-a-namespace).

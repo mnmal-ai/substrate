@@ -22,15 +22,15 @@ The procedure has five stages. The flags, exit codes and what the command copies
    - If recall is used, run `CREATE EXTENSION vector;` in the target database, in `public` or the target schema, where the target's `search_path` finds it. A target where a copied table needs an extension that is not on that path is refused. Install the same pgvector version as the source's: a different version is only a warning, but verification of `embeddings` may then fail.
    - Make the target role the owner of the database, or of the schema it will use. Since PostgreSQL 15, `public` no longer grants `CREATE` to every role.
    - Never boot `serve` against the target before migrating. A target that already holds data is refused.
-2. Keep free disk on the target of at least the source's size. On the benchmark below, free space on the target dipped by about 25 GiB during the run.
+2. Keep free disk on the target of at least twice the size of the source's copied tables (table data without indexes); the dry run prints it as `estimated target need`. With `SUBSTRATE_INDEX_DISK_PATH` set to a path, a real run is refused below it; with `off`, nothing is checked, so check by hand. On the benchmark below, free space on the target dipped by about 25 GiB during the run.
 3. Load the service's environment into the shell that runs the command, so the plugin directory (`SUBSTRATE_PLUGIN_DIR` and the plugins' own settings), `SUBSTRATE_ENFORCE_UUID_CHECK` and `SUBSTRATE_PARTITION_BUDGET` match what `serve` will use. The target is prepared with the same migrations and plugins, and a source with the UUID check is refused when the target would not enforce it.
 4. Set `SUBSTRATE_INDEX_DISK_PATH` to the mount of the **target's** data volume, or to `off` when the database has no local volume. A real run refuses without it (a dry run only warns).
 5. Put the connection strings in `SUBSTRATE_MIGRATE_FROM_URL` and `SUBSTRATE_MIGRATE_TO_URL`, or name other variables with `--from-env` / `--to-env`. A connection string on the command line is refused, and none is printed. A read-only role is enough for the source. `SUBSTRATE_SYSTEM_ACTOR` is not needed.
 
 #### Rehearse on a copy
 
-1. Run `substrate-admin migrate-store --dry-run` against the live source. It reports per-type row counts, table sizes, the estimated disk need on the target, every warning and every refusal, and writes nothing. Fix every refusal: a source table nothing declares needs its plugin loaded (or `--skip-table`, for a table nothing declares), and a source without the `_system` `AuditEvent` of kind `bootstrap` needs one boot of the old release with `serve`.
-2. Restore a recent backup of the source to a scratch database and run the full command from it into a scratch target. A copy can be checked while the service keeps running, and its report gives the time of each phase (preflight, prepare-and-copy, indexes, verify). That total is your downtime.
+1. Run `substrate-admin migrate-store --dry-run` against the live source. It reports per-type row counts, table sizes, the estimated disk need on the target, every warning and every refusal, and writes nothing. Fix every refusal: a source table nothing declares needs its plugin loaded (or `--skip-table`, for a table nothing declares). The dry run does not detect a source that never recorded the `_system` `AuditEvent` of kind `bootstrap`: a copy fails with exit 1 in prepare-and-copy and names it. Boot the source once with the old release's `serve`, stop it, and rerun. This is one reason to always do step 2.
+2. Restore a recent backup of the source to a scratch database and run the full command from it into a scratch target. Stage the scratch target as in Stage step 1 (and step 4's disk path for its volume). A copy can be checked while the service keeps running, and its report gives the time of each phase (preflight, prepare-and-copy, indexes, verify). That total is your downtime.
 3. Check the report's misfits. See [Misfits](operator-decisions.md#misfits-values-kept-under-raw).
 
 On a ~40 GB real-world-shaped benchmark store, in the first measured run, the whole run took about 36.5 minutes (preflight 2 min, copy 33 min, index builds 8 s, verify 1.5 min), with no misfits. Time your own.
@@ -66,7 +66,7 @@ A field added at runtime with `propose_field` is not given a column on the reque
 
 - `schema` marks the field `storage: "pending"`, and `/health` `warnings` carries counts only (for example `3 fields pending promotion`).
 - `_system/AuditEvent` gains the kinds `field_pending`, `field_promoted` and `field_promotion_failed`.
-- The sweep runs once after boot, then every `SUBSTRATE_PROMOTE_INTERVAL_MS` (default 21600000, 6 hours; `0` stops the timer). `substrate-admin promote-fields` runs it now and needs the store-wide admin grant.
+- The sweep runs once after boot, then every `SUBSTRATE_PROMOTE_INTERVAL_MS` (default 21600000, 6 hours; `0` stops the timer). `substrate-admin promote-fields --url <base>` (or `SUBSTRATE_URL`) runs it now on a running server and needs an admin credential with the store-wide admin grant.
 - A unique index is never weakened to let a promotion through: a duplicate fails that field, which stays readable, and `/health` counts it. The timed sweep does not retry it until its type's catalog changes, so after fixing the data run `substrate-admin promote-fields`.
 - Widening an enum's vocabulary moves stored values it now admits from `$raw` into the column, through the sweep.
 - A field removed from code keeps its column and reads back as an extra (orphaned). **A kind change in code refuses boot** with `FieldKindChangedError`.
@@ -78,7 +78,7 @@ What pending means for filters, sorts and indexes, and how to find values kept u
 - **Guarded writes need READ COMMITTED.** A write to a type table under REPEATABLE READ or SERIALIZABLE is refused, and nothing is written. Check `default_transaction_isolation` for the store's role and database.
 - **A transaction that swallowed a database error now fails at commit** when it loaded a table descriptor itself.
 - **Keys.** `_system/Key` declares a live-kid unique index, so a second live key for one kid is refused `unique_violation`. `createKey` / `updateKey` refuse a `revokedAt` in the future with `invalid_params`.
-- **Admin commands refuse an unfinished `migrate-store`.** `bootstrap`, `register --direct`, `list`, `revoke`, `rotate`, `update` and `federate enroll` refuse a store carrying the migrate-store marker, as `serve` does.
+- **Admin commands refuse an unfinished `migrate-store`.** `bootstrap`, `register --direct`, `list`, `revoke`, `rotate` and `update`, and `substrate federate enroll`, refuse a store carrying the migrate-store marker, as `serve` does.
 - **`migrate-store --dry-run` and `--verify-only` report `misfits: null`** in `--json` (not counted). A copy run still reports an object.
 
 ## Clients
