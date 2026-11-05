@@ -18,7 +18,7 @@ curl -s -X POST http://localhost:3100/substrate/v1/query \
 
 ## Install and run
 
-Substrate needs Node `>=26.12.1`. A durable deployment needs PostgreSQL 18 or newer with the [pgvector](https://github.com/pgvector/pgvector) extension; an in-memory store is available for trying it out. A store on an older PostgreSQL moves up with `pg_upgrade` or dump and restore; see [Upgrading](packages/substrate-dataset-pg/README.md#upgrading).
+Substrate needs Node `>=26.12.1`. A durable deployment needs PostgreSQL 18 or newer with the [pgvector](https://github.com/pgvector/pgvector) extension; an in-memory store is available for trying it out. An existing store on the old `legacy` or `partitioned` layout must be copied with `substrate-admin migrate-store` before this release boots it; see [Upgrading to per-type tables](docs/upgrading-to-type-tables.md). [Operator decisions](docs/operator-decisions.md) lists every choice a deployment makes and what each costs.
 
 ### Docker
 
@@ -66,7 +66,8 @@ With `SUBSTRATE_PLUGIN_DIR` unset the server loads no plugins and serves only `/
 - [Getting started](docs/getting-started.md): from nothing to a running server with a plugin loaded
 - [Plugin author guide](docs/plugin-author-guide.md): `defineNamespace`, the field DSL, autoCRUD, custom resolvers, onboarding, testing
 - [Plugin tiers](docs/plugin-tier-decision.md): kernel vs coordinator plugins
-- [Upgrading to per-type tables](docs/upgrading-to-type-tables.md): what changes, and the required `migrate-store` step for an existing store
+- [Operator decisions](docs/operator-decisions.md): every choice you make when you deploy or upgrade, its default, and what it costs
+- [Upgrading to per-type tables](docs/upgrading-to-type-tables.md): what changes, and the upgrade procedure for an existing store
 - [Surface parity](docs/surface-parity.md): what HTTP, MCP, WS and SSE each offer, and where their shapes differ (edge walks are query-only; subscriptions refuse them)
 - [WebSocket subscription teardown](docs/ws-subscription-contract.md): how subscriptions end and what a client should do
 - [Design spec](docs/substrate-from-first-principles.md): the design source of truth

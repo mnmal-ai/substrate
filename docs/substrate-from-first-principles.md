@@ -344,7 +344,7 @@ interface Dataset {
 
 **`txScopeId`** identifies the underlying store. Two datasets with equal `txScopeId` (for example, two pg namespaces on the same connection pool) can join one transaction; datasets with different ids cannot (§5.3).
 
-**Reference implementations:** `MemoryDataset` (`@mnmal-ai/substrate/testing`; tests and ephemeral use) and `PgDataset` (production, inside the binary). A native production install requires Postgres with the pgvector extension. Other stores can implement the same interface.
+**Reference implementations:** `MemoryDataset` (`@mnmal-ai/substrate/testing`; tests and ephemeral use) and `PgDataset` (production, inside the binary). A native production install requires PostgreSQL 18 or newer with the pgvector extension; each type is stored in a table of its own, and writes need READ COMMITTED isolation. The memory dataset refuses typed edge walks (`walks_unsupported_store`). Other stores can implement the same interface. [`operator-decisions.md`](operator-decisions.md) covers the choices a deployment makes.
 
 **Invariant:** a query composed across memory and pg datasets returns the same results as the same query run entirely on either.
 
@@ -544,10 +544,14 @@ Default resolvers for every type registered through `defineNamespace` (opt out p
 | `updateTodo` | mutation | `{ id, ...fields }` — id-based multi-field update, one `write()` inside the engine transaction; an id miss returns `null` | struct of the fields, nullable |
 | `deleteTodo` | mutation | `{ id }` — two-phase delete (§6.2) | `{ id, deleted }` |
 | `purgeTodo` | mutation | `{ id }` — hard delete; installed only when `purgeable: true`, gated on the admin capability | — |
+| `updateManyTodo` | mutation | `{ where, set }` — writes `set` to every row the filter matches; policies apply per matched row | `{ count, ids, idsTruncated }` |
+| `deleteManyTodo` | mutation | `{ where }` — tombstones every row the filter matches | `{ count, ids, idsTruncated }` |
 
 A `restrict` edge pointing at the row makes `delete` return a `restrict_violation` error without tombstoning. Other entries in the same `mutate` call keep their writes: restrict is a clean refusal, not a storage failure, and does not roll the transaction back.
 
-Filter-based update (`update` with a `where`) is not implemented.
+A by-filter write that matches more than `SUBSTRATE_FILTER_WRITE_MAX_MATCH` rows (default 10000) is refused with `filter_too_broad` and changes nothing; `ids` lists at most `SUBSTRATE_FILTER_WRITE_IDS_CAP` of them (default 1000), and `idsTruncated` says whether more changed. A namespace declaring both `X` and `ManyX` is refused at install (`AutoCrudNameCollisionError`).
+
+**An explicit `null` reads back absent.** A `null` written to a declared scalar (other than `json`) or crossRef field comes back as an absent key, on every dataset; `json` and list fields keep an explicit `null`. Filters are unaffected: `{ field: { eq: null } }` matches both.
 
 Hard-destructive operations (purge, the admin drop routes) can be switched off per instance with `SUBSTRATE_HARD_DELETE=refuse`, which makes them fail with `destructive_ops_disabled` regardless of caller capability.
 
@@ -610,7 +614,7 @@ Plugins can contribute extra operators (the recall plugin adds `embeddingSimilar
 
 - **Full-text or semantic search** as a filter operator over prose. Search has its own index and ranking concerns; it lives in the recall plugin (§5.10).
 - **Predicates through an edge** (`{ priceId: { value: { gte: 20 } } }`). Only the target id is filterable.
-- **Aggregations** (`count`, `sum`, `avg`).
+- **Aggregations as filter operators.** Counts and aggregates belong to the typed edge walk grammar (`_agg`, `count`, `aggregate`, `bucket`), which is query-only and runs on Postgres; see [`surface-parity.md`](surface-parity.md).
 
 ### 5.3 Transactions and batched mutations
 
@@ -871,6 +875,8 @@ SUBSTRATE_DATABASE_URL=postgres://… SUBSTRATE_PLUGIN_DIR=/srv/substrate /srv/s
 | `SUBSTRATE_HARD_DELETE` | `refuse` disables hard-destructive operations |
 | `SUBSTRATE_CORS_ORIGINS`, `SUBSTRATE_TRUSTED_PROXIES`, `SUBSTRATE_BODY_LIMIT_BYTES` | Browser origins, proxy IPs trusted for client IP, request size cap. The client IP also keys the cap of 64 open WS sockets plus SSE streams per anonymous or auth-off client (authenticated clients are capped per identity), so behind a proxy missing from `SUBSTRATE_TRUSTED_PROXIES` every such client shares one bucket. The same holds for anonymous callers behind one NAT: they share one address, so they share its caps (IPv6 clients are keyed by /64) |
 | `SUBSTRATE_SHUTDOWN_GRACE_MS` | Graceful drain deadline (default 5 s) |
+| `SUBSTRATE_FILTER_WRITE_MAX_MATCH`, `SUBSTRATE_FILTER_WRITE_IDS_CAP` | Caps on `updateMany<T>` / `deleteMany<T>` (default 10000 matched rows; 1000 listed ids) (§5.1) |
+| `SUBSTRATE_PROMOTE_INTERVAL_MS` | How often the promotion sweep gives runtime-proposed fields their columns (default 6 h; `0` stops the timer) (§5.15) |
 | `PORT`, `HOST` | Listen address (default `0.0.0.0:3100`, or `127.0.0.1:3100` when auth is off) |
 | `SUBSTRATE_ALLOW_UNAUTHENTICATED_HOST` | `1` / `true` permits a non-loopback `HOST` with auth off; without it that combination fails boot, because every caller would act as the system actor. In a container the server binds a non-loopback interface even when the port is published only on the host's `127.0.0.1`, so that setup needs the opt-in too |
 
@@ -888,7 +894,7 @@ Natural-language query and the recall embedder are configured by their plugins' 
 
 **Admin drops.** `POST /substrate/v1/_system/drop-namespace` and `POST /substrate/v1/_system/drop-type` physically delete every row and short id in a namespace, or in one type. Both are admin-gated. The body is `{ namespace, [type,] confirm, dryRun?, cascade?: 'refuse' | 'delete' }`; `confirm` must equal `namespace` (or `"<namespace>/<type>"`). `cascade` defaults to `refuse`, which answers `409 dangling_edges` (with `edgeCount` and `sampleEdges`) if edges touch the target; `delete` hard-deletes those edges too. `dryRun: true` reports the counts without changing anything. Other responses: `400` (bad body or confirm mismatch), `403 forbidden_namespace` (`_system` cannot be dropped), `404 unknown_namespace`. Drops are data-only: a type still declared in code or by an applied proposal is back on the next boot.
 
-**`substrate-admin`** is the operator CLI for keys: `bootstrap [--encrypt]` (seed the first admin key; refuses if one exists or if the store is memory), `list`, `register <kid> --pubkey <path> --ns <csv>`, `update <kid>`, `revoke <kid>` (refuses to revoke the last admin key), `rotate <kid> --out <path>` (new key and revocation in one transaction, one `key_rotated` audit event), `doctor` (checks a running deployment's auth end to end) and `onboard` (walks a deployment to ready). Commands that change credentials go through a running server (`--url` / `SUBSTRATE_URL`) or directly to the database (`--direct`); if both are configured and neither is named, the command refuses rather than guess. `--encrypt` writes a PKCS#8 + PBES2 (aes-256-cbc) encrypted private key, with the passphrase from `SUBSTRATE_ADMIN_KEY_PASSPHRASE`; the server never reads private keys.
+**`substrate-admin`** is the operator CLI for keys: `bootstrap [--encrypt]` (seed the first admin key; refuses if one exists or if the store is memory), `list`, `register <kid> --pubkey <path> --ns <csv>`, `update <kid>`, `revoke <kid>` (refuses to revoke the last admin key), `rotate <kid> --out <path>` (new key and revocation in one transaction, one `key_rotated` audit event), `doctor` (checks a running deployment's auth end to end), `onboard` (walks a deployment to ready), `promote-fields` (runs the promotion sweep now) and `migrate-store` (copies a store from an old layout into a fresh PostgreSQL 18 store; see [`upgrading-to-type-tables.md`](upgrading-to-type-tables.md)). Commands that change credentials go through a running server (`--url` / `SUBSTRATE_URL`) or directly to the database (`--direct`); if both are configured and neither is named, the command refuses rather than guess. `--encrypt` writes a PKCS#8 + PBES2 (aes-256-cbc) encrypted private key, with the passphrase from `SUBSTRATE_ADMIN_KEY_PASSPHRASE`; the server never reads private keys.
 
 ### 5.13 Async and cancellation semantics
 
@@ -918,6 +924,7 @@ Every async operation follows the same contract.
     { "params": { "title": "b" }, "fields": { "id": true } } ] }
 ```
 
+- **One statement per type.** An array under a generated `create`, `update` or `delete` key is written as one statement per type, so the statements sent do not grow with the batch; the envelope is unchanged.
 - **Within-key atomicity.** If frame *i* throws, every frame under that key rolls back, the remaining frames do not run, and the error carries `code: 'batched_frame_rolled_back'`.
 - **No cross-key atomicity.** Each array-valued key commits independently of every other key, including the single-frame entries in the same call, which share their own transaction (§5.3). A single frame beside a failing array still commits.
 - **Envelope shape.** `data[key]` is an array with one element per frame; `shapes[key]` is `Array<'single' | 'list'>`; per-frame errors have `path = [key, String(index), …]`.
@@ -956,13 +963,13 @@ agent → "<ns>/propose_type" → TypeProposal row → Registry.register + autoC
 **Mutations per owned namespace:**
 
 - `<ns>/propose_type` — `{ typeName, fields, proposedReason }`. Registers the type and records a `<ns>/TypeProposal` row.
-- `<ns>/propose_field` — `{ targetType, fieldName, fieldSpec, proposedReason }`. Adds a field to an existing type (declared in code or proposed). Idempotent on an exact match; refuses `destructive_change_required` if the field exists with a different spec.
+- `<ns>/propose_field` — `{ targetType, fieldName, fieldSpec, proposedReason, valueMap? }`. Adds a field to an existing type (declared in code or proposed). Idempotent on an exact match; refuses `destructive_change_required` if the field exists with a different spec, except an enum narrowing that carries a `valueMap`, which rewrites the stored values first. On Postgres a proposed field gets no column on the request path: it is `pending` (`schema` marks it `storage: "pending"`), its values live in the row's jsonb, and reads, filters and sorts answer as they will once the promotion sweep gives it a column (`SUBSTRATE_PROMOTE_INTERVAL_MS`, or `substrate-admin promote-fields`).
 
 There is no separate edge proposal: a cross-namespace edge is a `propose_field` whose spec has `kind: 'crossRef'`. Both namespaces must be owned by the plugin.
 
 **Runtime namespaces.** A reserved control-plane namespace, `_system_proposals`, carries `propose_namespace`, which hot-adds a new namespace (with its own propose mutations) to the running engine. The host must already have provisioned a dataset for it (`dataset_not_provisioned` otherwise).
 
-**`FieldSpecJson`** is the wire format: a narrow JSON mirror of `FieldDef` covering only what autoCRUD can serve — `scalar` (string / number / boolean / date), `crossRef`, `struct`, `list`. Anything richer (custom validators, computed fields, custom resolvers) is unrepresentable by construction and must ship as code. One parser is the single enforcement point.
+**`FieldSpecJson`** is the wire format: a narrow JSON mirror of `FieldDef` covering only what autoCRUD can serve — `scalar` (string / number / boolean / date, with an optional `enum` vocabulary), `crossRef`, `struct`, `list`. Anything richer (custom validators, computed fields, custom resolvers) is unrepresentable by construction and must ship as code. One parser is the single enforcement point.
 
 **Proposals are ordinary data.** `TypeProposal` and `FieldProposal` live in each owned namespace beside the types they describe:
 
@@ -980,7 +987,7 @@ Proposed types get the reserved `shortId` field like code-declared types, so the
 
 **Out of scope by design:**
 
-- Destructive evolution (removing or narrowing fields or types). Refused with `destructive_change_required`, carrying both specs.
+- Destructive evolution (removing or narrowing fields or types). Refused with `destructive_change_required`, carrying both specs. The one exception is the enum narrowing with a `valueMap` above.
 - Per-type policies for proposed types; they inherit the plugin's default.
 - Un-proposing. Archive the `TypeProposal` row to hide it from audit queries; the type stays live until code replaces it or an operator purges it.
 
@@ -1140,9 +1147,9 @@ Query results are positionally encoded from the client's field selection and the
 **Non-fatal sidecars.** `_completeness` and `_diagnostics` report things that went wrong without the read failing. Both are keyed by frame key, and for both **absence means nothing to report**, so older clients stay correct. They are deliberately NOT `errors`: a client doing `if (env.errors) throw` would start failing successful reads.
 
 - **`_completeness`** — a bridged key could not be fully resolved. Per-row `__orphan` markers say a *row* is missing; this says the *result set* is partial. Without it a truncated result looks like an empty one.
-- **`_diagnostics.<key>.unknownProjectionFields`** — projected field names the type does not declare. The read still returns every row, with each unknown field `null` — indistinguishable from a real field that happens to be null. Unlike `where` (where an unknown name is rejected, because an unevaluable filter would widen the result), an unknown projection cannot corrupt the rows returned, so it is reported rather than rejected; a rolling deploy can legitimately project a field a not-yet-restarted server lacks. The names are listed so the reader need not diff the projection by hand. The server also counts these in `engine_unknown_projection_field`.
+- **`_diagnostics.<key>.unknownProjectionFields`** — projected field names the type does not declare. The read still returns every row, with each unknown field absent from a JSON row (a `null` slot in positional substrate-pack rows) — indistinguishable from a real field that is unset. Unlike `where` (where an unknown name is rejected, because an unevaluable filter would widen the result), an unknown projection cannot corrupt the rows returned, so it is reported rather than rejected; a rolling deploy can legitimately project a field a not-yet-restarted server lacks. The names are listed so the reader need not diff the projection by hand. The server also counts these in `engine_unknown_projection_field`.
 
-**Clients must surface `_diagnostics`.** A client that maps rows into typed objects turns the unknown field's `null` into a plausible value, every downstream null-check takes the "absent" branch, and nothing looks wrong. Log it, attach it to the result, or throw in development.
+**Clients must surface `_diagnostics`.** A client that maps rows into typed objects turns the unknown field's absence into a plausible value, every downstream null-check takes the "absent" branch, and nothing looks wrong. Log it, attach it to the result, or throw in development.
 
 **Published schema** (`GET /substrate/v1/schema`, and what `schemaVersion` hashes):
 

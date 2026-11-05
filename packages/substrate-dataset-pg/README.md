@@ -30,6 +30,8 @@ CREATE TABLE t__cortext__todo (
 
 A declared field is in one of four states in `substrate_type_fields`: `column`; `pending`, its values in `extra` until the promotion sweep gives it a column; `promoting`, the column exists and values are still moving out of `extra`; `orphaned`, no longer declared, its column kept and its values readable as extras. A kind change in code refuses boot with `FieldKindChangedError`. Every server process runs the sweep, but each field is swept by one at a time (an advisory try-lock; a held field is skipped). A `promoting` or `column` field that failed on a unique conflict is not swept again until its type's catalog changes, or until an operator runs `substrate-admin promote-fields` (`retryConflicts`) after fixing the data.
 
+Every write checks its type table's catalog version in the same statement and is retried (up to 3 times) when a promotion moved the table on; every read checks the version of each table it decodes and reruns when stale. The write check is only sound under READ COMMITTED, so a write in a REPEATABLE READ or SERIALIZABLE transaction is refused and writes nothing.
+
 ## Layouts
 
 `tables` is the only layout this release boots. A store in an old layout, `legacy` (one `rows` table) or `partitioned` (`rows` partitioned by namespace and type), is refused before anything changes, with `UnsupportedStoreLayoutError` naming `substrate-admin migrate-store`, which copies it into a fresh store and only reads it. `SUBSTRATE_STORAGE_LAYOUT` is no longer read.
@@ -44,7 +46,7 @@ The reconciler (`reconcileTypeIndexes`) builds each type's indexes at boot and k
 - Every non-unique btree ends in `id` ascending, so a filter plus the default page order is one range scan. Unique indexes do not.
 - Natural order on a date or number field uses its column, `NULLS LAST` in either direction, as it does on a metadata column. Other date sorts the type's order does not match need a declared index. Text and enum columns compare and index under `COLLATE "C"`.
 - Builds are `CONCURRENTLY`, each under its table's index-build lock (two concurrent builds on one table deadlock); a unique one is chosen under the migration lock, which is released before its duplicate check and build, so no build holds up another process's boot or migrations. An index already as declared takes no lock. The server builds unique indexes before it starts, and fails the boot if one cannot be built. It builds non-unique ones after it starts, in the background, one type at a time (`ensureTypeStorage(type, { indexes: 'unique' | 'nonUnique' })`). Until one is valid, filters it would serve scan, and `describeStorage` and `storageReport` report it `pending`, `building` or `failed`; a failed build is retried by the next reconcile, which first drops the INVALID index it left.
-- The first boot after a release that changes an index's shape (this one moves every derived index from `(field, id)` to `(field, natural order, id)`) rebuilds each affected non-unique index that way, one at a time, needing twice that index's disk while it runs (about 6.4 minutes for 25M rows across 19 indexes, measured on a test host).
+- The first boot after a release that changes an index's shape rebuilds each affected non-unique index that way, one at a time, needing twice that index's disk while it runs. When an earlier release moved every derived index from `(field, id)` to `(field, natural order, id)`, that took about 6.4 minutes for 25M rows across 19 indexes, measured on a test host. A store copied by `migrate-store` gets its indexes in their current shape.
 - **Disk guard.** Before each non-unique build the dataset checks free space on the database volume against the build's estimate plus a margin. The estimate is the size of the index being replaced (a leftover `__swap` index counts as the old one), else 30% of the table; it excludes the temporary space the sort uses. When there is not room the build waits and is reported `pending` with `insufficient_disk`. The volume is `SUBSTRATE_INDEX_DISK_PATH` (`off` for a database with no local volume; unset also checks nothing and `storageReport` warns), the margin `SUBSTRATE_INDEX_DISK_MARGIN_MB` (default 2048; `0` requires only the estimate), and the binary retries pending and failed builds every `SUBSTRATE_INDEX_RETRY_INTERVAL_MS` (default 600000; `0` leaves them to the next boot).
 - Keyset paging is index-served for `id` and for a nullable leading sort key (range bound, then the null tail). A cursor carries its order and is refused with `invalid_cursor` under any other.
 - A range on one field sorted by another has no single serving btree; the planner scans one side. See the plugin author guide's Indexes section.
@@ -62,29 +64,13 @@ A type declared `ordering: 'visible'` gets its table's `seq` from `visible_seqs`
 
 ## Upgrading
 
-**PostgreSQL 18 is the minimum.** `runMigrations` refuses an older server. **A store in an old layout must be copied.** This release boots only per-type tables, so a `legacy` or `partitioned` store, on any PostgreSQL version, moves with `migrate-store`. Stop every substrate instance first.
+**PostgreSQL 18 is the minimum.** `runMigrations` refuses an older server. **A store in an old layout must be copied.** This release boots only per-type tables, so a `legacy` or `partitioned` store, on any PostgreSQL version, moves with `substrate-admin migrate-store`. Every instance that shares a store upgrades together.
 
-### Recommended: `substrate-admin migrate-store`
+The step-by-step procedure (stage, rehearse on a copy, window, verify, rollback) is in [Upgrading to per-type tables](../../docs/upgrading-to-type-tables.md), and the choices it involves are in [Operator decisions](../../docs/operator-decisions.md#upgrading). This section is the command's reference.
 
-`migrate-store` copies a store into a fresh, empty PostgreSQL 18 store on per-type tables, builds its indexes and verifies the copy against the source. It is the way to PG 18 and to the tables layout in one step, and the source is never written, so rolling back is pointing it at an older release again. The source may be PG 17 or later, on either old layout. A value its declared column cannot hold is kept under `$raw` and reported as a misfit, never dropped.
+### `substrate-admin migrate-store`
 
-1. Provision an empty PG 18 database and prepare it as a superuser. The command never runs these steps itself:
-   - If recall is used, run `CREATE EXTENSION vector;` in the target database. Install it in `public` or the target schema, where the target's search_path finds it. A target where a copied table needs an extension that is not installed on that path is refused. Install the same pgvector version as the source's: a different version is only a warning, but verification of `embeddings` may then fail.
-   - Make the target role the owner of the database, or of the schema it will use. Since PostgreSQL 15, `public` no longer grants `CREATE` to every role.
-   - Never boot `serve` against the target before migrating. A target that already holds data is refused.
-2. Load the service's environment into the shell that runs the command, so the plugin directory (`SUBSTRATE_PLUGIN_DIR` and the plugins' own settings), `SUBSTRATE_ENFORCE_UUID_CHECK` and `SUBSTRATE_PARTITION_BUDGET` match what `serve` will use. The target is prepared with the same migrations and plugins, and a source with the UUID check is refused when the target would not enforce it.
-3. Then set `SUBSTRATE_INDEX_DISK_PATH` to the mount of the **target's** data volume, or to `off` when the database has no local volume. A real run refuses without it (a dry run only warns).
-4. Stop every instance of the source service, and pause other jobs that read the source, such as backups and dumps, for the duration of the run. The command refuses to copy while it sees other sessions on the source database (a dry run only warns), because writes after its snapshot are not copied.
-5. Put the connection strings in `SUBSTRATE_MIGRATE_FROM_URL` and `SUBSTRATE_MIGRATE_TO_URL`, or name other variables with `--from-env` / `--to-env`. A connection string on the command line is refused, and none is printed.
-6. Run `substrate-admin migrate-store --dry-run`, which reports per-type row counts, table sizes, the estimated disk need on the target, every warning and every refusal, and writes nothing. Then run it without `--dry-run`.
-7. On exit `0`, run `VACUUM (ANALYZE)` on the target, then set `SUBSTRATE_DATABASE_URL` to the target and start `serve`. The report prints the switch as `switch over`.
-8. To roll back, run the previous release with `SUBSTRATE_DATABASE_URL` pointing at the source again. Nothing on it changed.
-
-Recovering a run that failed:
-
-- If the index builds or the verification failed (exit `3`), run the command again with `--verify-only`. It builds the indexes first, dropping and rebuilding any that a failed build left INVALID, then verifies. Each failed or INVALID index is named in the report as a `storage` mismatch until it builds. Only engine indexes are rebuilt: drop or `REINDEX` any other INVALID index in the target schema by hand.
-- A full rerun, without `--verify-only`, restarts the copy from the beginning.
-- After a late crash on a large store, dropping and recreating the target database (then preparing it again as in step 1) is faster than a full rerun, which first empties every copied table.
+`migrate-store` copies a store into a fresh, empty PostgreSQL 18 store on per-type tables, builds its indexes and verifies the copy against the source. It is the way to PG 18 and to the tables layout in one step, and the source is never written, so rolling back is pointing an older release at it again. The source may be PG 17 or later, on either old layout. A value its declared column cannot hold is kept under `$raw` and reported as a misfit, never dropped.
 
 | Flag | Effect |
 |---|---|
@@ -93,9 +79,9 @@ Recovering a run that failed:
 | `--dry-run` | Preflight only. Writes nothing. |
 | `--verify-only` | Build the indexes (unless `--skip-index-build`), then verify an existing finished copy against its source. This finishes a run whose index builds or verification failed. Refused on a target with no completed copy. |
 | `--skip-index-build` | Leave non-unique index builds to the first `serve` boot, which runs them under the disk guard. The pending builds are listed in the report. |
-| `--full-checksum` | Hash every row. The default samples 1000 rows per type. |
+| `--full-checksum` | Hash every row's content. By default the content of 1000 rows per type is hashed; row counts, the id set and every row's `updated_at` and `deleted_at` are checked either way. |
 | `--batch-rows <n>` | Rows between progress lines (default 10000). It does not change how the copy is chunked: a rerun restarts the copy from the beginning. |
-| `--skip-table <t>` | Waive a source table that nothing declares. Repeatable. |
+| `--skip-table <t>` | Waive a source table that nothing declares. Repeatable. Naming a table the run copies (an engine table or one a loaded plugin declares) is refused at preflight. |
 | `--json` | The final report as one JSON object on stdout; progress goes to stderr. |
 
 Exit codes: `0` copied and verified, `2` refused or a usage error (nothing was written to the target), `3` verification failed, `1` any other failure.
@@ -103,11 +89,13 @@ Exit codes: `0` copied and verified, `2` refused or a usage error (nothing was w
 What to know before a real run:
 
 - A read-only role is enough for the source, and the command opens it read-only.
+- A live source is refused: while the command sees other sessions on the source database it names them and stops (a dry run only warns), because writes after its snapshot are not copied.
+- `SUBSTRATE_SYSTEM_ACTOR` is not needed; copied rows keep their source metadata.
 - The `idempotency` table is not copied; neither are the migration ledgers, which the target builds for itself.
-- Rerunning after an interruption restarts the copy cleanly: it empties the planned tables and copies again. Until a run has verified, the target keeps an in-progress marker and `serve` refuses to boot it. After a failed verification (exit `3`) the marker stays.
+- Rerunning after an interruption restarts the copy cleanly: it empties the planned tables and copies again. Until a run has verified, the target keeps an in-progress marker, and `serve` and the key-management commands refuse it. After a failed verification (exit `3`) the marker stays.
 - A source table that neither the engine nor a loaded kernel plugin declares is refused. Load the plugin that owns it, or pass `--skip-table`.
 - Rows of a type that the target does not declare land in a table with no field columns, every field in `extra`. The report lists them under `defaulted`.
-- If the target's own preparation seeds rows that the source lacks, they are kept and the report lists them. The one that matters is the `_system` `AuditEvent` of kind `bootstrap`, which `serve` records on a store's first boot with keys. A source without it is refused; boot the source once with `serve`, stop it, and rerun.
+- If the target's own preparation seeds rows that the source lacks, they are kept and the report lists them. The one that matters is the `_system` `AuditEvent` of kind `bootstrap`, which `serve` records on a store's first boot with keys. A source without it fails the copy (exit 1, after the target has been written); boot the source once with `serve`, stop it, and rerun.
 - Recall's embedding dimensions must match when the target already has the table.
 - The report gives the time of each phase (preflight, prepare-and-copy, indexes, verify) and each table's copy time. The total of a rehearsal against a copy of the store is the downtime to plan for.
 
@@ -115,9 +103,7 @@ What to know before a real run:
 
 `pg_upgrade` moves a store to PG 18 but keeps its layout, so this release still refuses an old-layout store afterwards: use it only for a store already on per-type tables. Take a rollback copy (`pg_dumpall` or a volume snapshot) first, run `pg_upgrade --check`, then `--link` (or `--copy`/`--clone` to keep the old cluster usable), and run `vacuumdb --all --analyze-in-stages` afterwards. For a docker volume, the PG 18 images keep data in a major-version subdirectory (`/var/lib/postgresql/18/…`), so mount the volume at `/var/lib/postgresql`.
 
-Before the first boot of a new release, set `SUBSTRATE_INDEX_DISK_PATH` to the mount of the PostgreSQL data directory, so the background index builds run under the disk guard above. Unset, the guard checks nothing, and the boot logs how many builds are pending and their estimated total.
-
-See the plugin author guide.
+Before the first boot of a new release, set `SUBSTRATE_INDEX_DISK_PATH` to the mount of the PostgreSQL data directory, so the background index builds run under the disk guard above. Unset, the guard checks nothing, and the boot logs how many builds are pending and their estimated total. The [plugin author guide](../../docs/plugin-author-guide.md#upgrading-an-existing-store) covers the index side.
 
 ### Advisory locks
 

@@ -173,7 +173,7 @@ set -a && source .env && set +a
 `set -a && source .env && set +a` exports every line of `.env`; Substrate reads its configuration from the environment, not from a config file. The binary scans `SUBSTRATE_PLUGIN_DIR`, composes the plugins it finds, and starts serving. You should see something like:
 
 ```
-@mnmal-ai/substrate listening at http://0.0.0.0:3100
+@mnmal-ai/substrate listening at http://127.0.0.1:3100
 store: memory
 
 ┌─ memory mode ─────────────────────────────────────────────────────┐
@@ -187,7 +187,7 @@ kernel: substrate-recall
 plugin-dir: /home/you/my-substrate
 ```
 
-The `coordinators:` and `kernel:` lines list the plugins that loaded; here, only the two built-ins.
+The `coordinators:` and `kernel:` lines list the plugins that loaded; here, only the two built-ins. With auth off the server listens on `127.0.0.1` unless `HOST` says otherwise; the Docker image sets `HOST=0.0.0.0` and opts in with `SUBSTRATE_ALLOW_UNAUTHENTICATED_HOST=1`.
 
 Then run the checks in [Verify](#verify) above.
 
@@ -277,12 +277,13 @@ On Postgres the vectors live in the `embeddings` table; in memory mode they vani
 
 ### Running it for real
 
-This guide stops at "Substrate is up locally". A production install also wants:
+This guide stops at "Substrate is up locally". A production install also wants the following; [Operator decisions](operator-decisions.md) covers each choice, its default and what it costs:
 
 - **Auth.** Set `SUBSTRATE_AUTH_MODE=required` (or `attribute`, which lets anonymous callers through on non-admin routes), set `SUBSTRATE_STREAM_TICKET_SECRET`, set `SUBSTRATE_PUBLIC_ORIGIN` to the origins callers reach the server by (e.g. `https://substrate.example.com:3100`; required with auth on a non-loopback `HOST`, which includes the default `0.0.0.0`), and register keys with `substrate-admin bootstrap` / `substrate-admin register`. Every token must carry `aud`, naming one of those origins, or it is refused. A token signed by an RS256/ES256 key must also carry `exp` and `ns` (the namespaces it may touch); one without `ns` is refused rather than read as `*`, so a third-party issuer must emit both. `substrate-admin doctor` checks the result.
 - **TLS.** `SUBSTRATE_TLS_CERT_PATH` and `SUBSTRATE_TLS_KEY_PATH`, or a reverse proxy in front.
 - **Supervision.** systemd or a container orchestrator, restarting on failure. The Docker image (`apps/substrate-image/Dockerfile`) has a `/health` healthcheck.
 - **Index builds.** After an upgrade the server rebuilds indexes in the background and waits when the database volume is short of space. Set `SUBSTRATE_INDEX_DISK_PATH` to the volume's mount (the scaffold writes `off`, which skips the check) and see the [plugin author guide](plugin-author-guide.md#upgrading-an-existing-store).
+- **Upgrades.** Upgrade every instance that shares a store together. A store from before per-type tables must be copied with `substrate-admin migrate-store` first: see [Upgrading to per-type tables](upgrading-to-type-tables.md).
 - **Backups.** Scheduled `pg_dump`. The scaffold's compose file includes a commented-out backup sidecar to start from.
 - **Secrets out of your shell history.** An environment file readable only by the service user.
 

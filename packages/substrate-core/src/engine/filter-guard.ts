@@ -93,7 +93,7 @@ export function runFilterGuard(deps: FilterGuardDeps, input: FilterGuardInput): 
     }
   }
 
-  // An undeclared projection key materialises as `null` on every row, so it
+  // An undeclared projection key is absent from every row, so it
   // is reported (diagnostic + metric) rather than silent. Deliberately not
   // rejected: during a rolling deploy a newer client legitimately projects a
   // field a not-yet-restarted server does not know.

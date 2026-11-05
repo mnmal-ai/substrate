@@ -10,6 +10,8 @@ An authorised agent extends the live schema without a code deploy:
 
 Each proposal is stored as a record (`NamespaceProposal`, `TypeProposal`, `FieldProposal`), so the change history is auditable and proposals are replayed on boot. The proposer is recorded from the caller's signed identity, never from a param.
 
+On Postgres a proposed field gets no column on the request path. It is `pending`: its values live in the row's jsonb, reads, filters and sorts answer as they will once it has a column, and an index over it serves no read until the promotion sweep gives it one (every `SUBSTRATE_PROMOTE_INTERVAL_MS`, default 6 hours, or now with `substrate-admin promote-fields`). See [Operator decisions](../../docs/operator-decisions.md#fields).
+
 Changes are additive, with one exception: `propose_field` with a `valueMap` narrows an existing enum and first rewrites every stored value the map names. That path changes data as well as schema and cannot be undone by the plugin, so grant `substrate.propose` only to callers you would trust with a bulk update of the owned namespaces.
 
 ## Where it fits

@@ -94,7 +94,7 @@ const client = new SubstrateClient({
 
 The server reports non-fatal observations about **successful** reads on an `_diagnostics` envelope sidecar, chiefly projection keys the type does not declare.
 
-That matters more than "non-fatal" suggests. An undeclared key in `fields` is not rejected: it comes back as `null` on **every** row, which is indistinguishable from a declared field that happens to be null everywhere. Once rows are cast to your interface, the `null` satisfies the type and the read looks correct indefinitely. (An undeclared key in `where` is rejected loudly with `unknown_field`.)
+That matters more than "non-fatal" suggests. An undeclared key in `fields` is not rejected: it is missing from **every** row, which is indistinguishable from a declared field that is unset everywhere (an explicit `null` on a declared scalar or crossRef field also reads back absent). Once rows are cast to your interface, `undefined` satisfies an optional field and the read looks correct indefinitely. (An undeclared key in `where` is rejected loudly with `unknown_field`.)
 
 So the client sends each diagnostic to a sink, by default a deduped `console.warn`:
 
