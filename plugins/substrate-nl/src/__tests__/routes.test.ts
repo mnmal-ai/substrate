@@ -80,6 +80,37 @@ describe('POST /substrate/v1/nl', () => {
     expect(String(res.body)).toContain('8192');
   });
 
+  it('takes an optional asOf with an offset, refusing anything else as invalid_params', async () => {
+    const asOf = '2026-10-02T12:00:00-05:00';
+    const res = await askHandler(deps())(
+      post({ namespace: 'ns', question: 'todos yesterday', asOf })
+    );
+    expect(res.status).toBe(200);
+    const parsed = JSON.parse(String(res.body)).trail[0];
+    expect(parsed).toMatchObject({ event: 'parsed', asOf });
+    expect(JSON.stringify(parsed.frame)).toContain('"gte":"2026-10-01T00:00:00-05:00"');
+    for (const bad of [
+      '2026-10-02',
+      '2026-10-02T12:00:00',
+      'yesterday',
+      '',
+      42,
+      '2026-02-30T00:00:00Z'
+    ]) {
+      const r = await askHandler(deps())(post({ namespace: 'ns', question: 'todos', asOf: bad }));
+      expect(r.status, String(bad)).toBe(400);
+      const body = JSON.parse(String(r.body));
+      expect(body.code).toBe('invalid_params');
+      expect(body.error).toContain('asOf');
+    }
+  });
+
+  it('without asOf, the parsed event carries the server clock', async () => {
+    const now = () => new Date('2026-10-02T17:00:00Z');
+    const res = await askHandler({ ...deps(), now })(post({ namespace: 'ns', question: 'todos' }));
+    expect(JSON.parse(String(res.body)).trail[0].asOf).toBe('2026-10-02T17:00:00.000Z');
+  });
+
   it('prototype-named questions answer 200, never 502', async () => {
     for (const question of ['constructor', '__proto__', 'todos where constructor is open']) {
       const res = await askHandler(deps())(post({ namespace: 'ns', question }));

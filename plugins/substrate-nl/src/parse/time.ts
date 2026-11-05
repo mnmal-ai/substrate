@@ -12,8 +12,20 @@ const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'frida
  * rolling "past <unit>" and "last N <units>", "since <weekday>"; and explicit
  * dates (see `explicitRange`). Null when the phrase is not a time phrase.
  */
+/** An ISO-8601 date-time with an offset: the only accepted `asOf`. */
+const AS_OF = /^(\d{4})-(\d{2})-(\d{2})T[\d:.]+(Z|[+-]\d{2}:\d{2})$/;
+
+/** True when `asOf` is an ISO-8601 date-time with an offset naming a real instant. */
+export function validAsOf(asOf: unknown): asOf is string {
+  if (typeof asOf !== 'string') return false;
+  const m = AS_OF.exec(asOf);
+  if (m === null || !Number.isFinite(Date.parse(asOf))) return false;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  return new Date(Date.UTC(y, mo - 1, d)).getUTCDate() === d;
+}
+
 export function rangeFor(phrase: string, asOf: string): DateRange | null {
-  const m = /^(\d{4})-(\d{2})-(\d{2})T[\d:.]+(Z|[+-]\d{2}:\d{2})$/.exec(asOf);
+  const m = AS_OF.exec(asOf);
   if (m === null) throw new Error(`asOf must be ISO-8601 with an offset: ${asOf}`);
   const [, y, mo, d, offset] = m as unknown as [string, string, string, string, string];
   const today = Date.UTC(Number(y), Number(mo) - 1, Number(d));

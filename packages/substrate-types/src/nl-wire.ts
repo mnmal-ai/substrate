@@ -22,6 +22,11 @@ export interface NlAskRequest {
   project?: string;
   /** Force the reading to this type; resubmit a clarify option's `type`. Must name a type of the namespace. */
   type?: string;
+  /**
+   * "Now" for relative dates and month-day year inference: ISO-8601 date-time with an
+   * offset (`2026-10-02T12:00:00-05:00`). Ranges are in its offset. Defaults to the server clock.
+   */
+  asOf?: string;
 }
 
 export type NlParseStatus =
@@ -123,6 +128,8 @@ export interface NlParsedData {
   evidence: NlEvidence[];
   residual: string[];
   reason?: string;
+  /** The clock the question was read against: the request's `asOf`, else the server's. */
+  asOf?: string;
 }
 
 export type NlJudgedStatus = 'resolved' | 'recall' | 'clarify' | 'refuse' | 'escalated';

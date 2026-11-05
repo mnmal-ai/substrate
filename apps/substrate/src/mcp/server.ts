@@ -588,7 +588,7 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
       name: 'ask',
       config: {
         description:
-          'Ask a natural-language question of one namespace. The parser answers first; a constrained judge handles what it escalates; a judge outage hands off honestly. Returns { outcome, trail }, where outcome.kind is rows | recall | clarify | refuse | unknown. unknown means part of the question was dropped and the answer would change which rows count; it carries dropped and the plan, and nothing ran. rows also carries dropped (what it does not reflect) and plan. Read-only. Requires the @mnmal-ai/substrate-nl plugin (404 otherwise).',
+          'Ask a natural-language question of one namespace. The parser answers first; a constrained judge handles what it escalates; a judge outage hands off honestly. Returns { outcome, trail }, where outcome.kind is rows | recall | clarify | refuse | unknown. unknown means part of the question was dropped and the answer would change which rows count; it carries dropped and the plan, and nothing ran. rows also carries dropped (what it does not reflect) and plan. Relative dates are read against asOf when given, else the server clock; the parsed trail event says which. Read-only. Requires the @mnmal-ai/substrate-nl plugin (404 otherwise).',
         inputSchema: {
           namespace: z.string().min(1).describe('Namespace to ask, e.g. "notes".'),
           question: z.string().min(1).describe('The question, e.g. "open todos in billing".'),
@@ -601,7 +601,14 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
             .string()
             .min(1)
             .optional()
-            .describe('force the reading to this type (resubmit a clarify option)')
+            .describe('force the reading to this type (resubmit a clarify option)'),
+          asOf: z
+            .string()
+            .min(1)
+            .optional()
+            .describe(
+              '"now" for relative dates ("yesterday", "last week") and month-day year inference: ISO-8601 date-time with an offset, e.g. 2026-10-02T12:00:00-05:00. Default: the server clock.'
+            )
         }
       },
       handler: createNlHandler(endpoint)
