@@ -50,6 +50,55 @@ export function outcomeChips(o: NlOutcome): Chip[] {
   ];
 }
 
+/** The first label-like field a row has: the usual handles, then any `…Name` / `…Title` string. */
+const LABELS = ['title', 'synopsis', 'name', 'topic', 'subject'];
+function labelField(r: Record<string, unknown>): string | undefined {
+  const own = LABELS.find((k) => typeof r[k] === 'string' && r[k] !== '');
+  if (own !== undefined) return own;
+  return Object.keys(r).find(
+    (k) => /(Name|Title)$/.test(k) && typeof r[k] === 'string' && r[k] !== ''
+  );
+}
+
+/** Fields the question filtered or ordered on, in the order they appear in the frame. */
+function askedFields(frame: Rows['frame']): string[] {
+  const params =
+    (Object.values(frame)[0] as { params?: Record<string, unknown> } | undefined)?.params ?? {};
+  const out: string[] = [];
+  const add = (k: string) => {
+    if (!out.includes(k)) out.push(k);
+  };
+  const walk = (w: unknown) => {
+    if (w === null || typeof w !== 'object') return;
+    for (const [k, v] of Object.entries(w as Record<string, unknown>)) {
+      if (k === 'AND' || k === 'OR' || k === 'NOT') {
+        for (const c of Array.isArray(v) ? v : [v]) walk(c);
+      } else if (!k.startsWith('_')) add(k);
+    }
+  };
+  for (const o of (params.orderBy as Array<Record<string, unknown>> | undefined) ?? [])
+    Object.keys(o).forEach(add);
+  walk(params.where);
+  return out;
+}
+
+const SKIP = new Set(['id', 'shortId']);
+/** `field=value` for a row's scalar fields: the asked-about ones first, then the rest. */
+function details(r: Record<string, unknown>, asked: string[], label: string | undefined): string {
+  const scalar = (k: string) => {
+    const v = r[k];
+    return v !== null && v !== undefined && v !== '' && typeof v !== 'object';
+  };
+  const keys = [
+    ...asked.filter((k) => k in r),
+    ...Object.keys(r).filter((k) => !asked.includes(k))
+  ];
+  return keys
+    .filter((k) => !SKIP.has(k) && k !== label && scalar(k))
+    .map((k) => `${sanitise(k)}=${str(r[k])}`)
+    .join('  ');
+}
+
 // id + status + project + the three two-cell gaps; the title takes what is left of the width.
 const COLS = { id: 6, status: 10, project: 14, gaps: 6, minTitle: 12 };
 const titleWidth = (columns: number) =>
@@ -81,6 +130,33 @@ const rows: Renderer = ({ data, theme, size }) => {
   }
   const list = o.data as Record<string, unknown>[];
   if (list.length === 0 && lost.length === 0) return <Text color={theme.color.dim}>no rows</Text>;
+  // Rows without the context-store columns (status, project) get a label and field=value details.
+  if (!list.some((r) => 'status' in r || 'project' in r)) {
+    const asked = askedFields(o.frame);
+    const labelCols = Math.min(40, Math.max(COLS.minTitle, Math.floor(size.columns / 3)));
+    const detailCols = Math.max(COLS.minTitle, size.columns - (COLS.id + labelCols + 4));
+    return (
+      <Box flexDirection="column">
+        {list.map((r, i) => {
+          const label = labelField(r);
+          return (
+            <Text key={i}>
+              <Text color={theme.color.dim}>{padCells(str(r.shortId ?? r.id), COLS.id, true)}</Text>
+              {'  '}
+              <Text color={theme.color.text}>
+                {padCells(label !== undefined ? str(r[label]) : '', labelCols)}
+              </Text>
+              {'  '}
+              <Text color={theme.color.dimMid}>
+                {padCells(details(r, asked, label), detailCols)}
+              </Text>
+            </Text>
+          );
+        })}
+        {lost}
+      </Box>
+    );
+  }
   return (
     <Box flexDirection="column">
       {list.length === 0 ? <Text color={theme.color.dim}>no rows</Text> : null}
