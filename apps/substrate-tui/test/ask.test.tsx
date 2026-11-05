@@ -342,6 +342,13 @@ describe('substrate.ask', () => {
       }),
       out(KIND.rows, {
         kind: 'rows',
+        frame: { 'shop/Product': { params: { orderBy: [{ [evil]: 'desc' }] }, fields: {} } },
+        answer: '',
+        source: 'parser',
+        data: [{ id: 'a', productName: evil, [evil]: evil }]
+      }),
+      out(KIND.rows, {
+        kind: 'rows',
         frame,
         answer: '',
         source: 'parser',

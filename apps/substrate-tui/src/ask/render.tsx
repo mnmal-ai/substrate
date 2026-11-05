@@ -95,7 +95,7 @@ function details(r: Record<string, unknown>, asked: string[], label: string | un
   ];
   return keys
     .filter((k) => !SKIP.has(k) && k !== label && scalar(k))
-    .map((k) => `${k}=${str(r[k])}`)
+    .map((k) => `${sanitise(k)}=${str(r[k])}`)
     .join('  ');
 }
 
