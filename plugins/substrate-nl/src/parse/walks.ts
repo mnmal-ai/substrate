@@ -345,6 +345,8 @@ export interface Composed {
   strict: boolean;
   /** The recency word ("latest") claimed by a seed phrase: the seed is ordered by it. */
   seedLatest?: string;
+  /** "highest"/"lowest" on a seed field phrase: the seed is ordered by that field. */
+  seedOrder?: { span: string; dir: 'desc' | 'asc'; phrase: PhraseClaim };
 }
 
 const filter = (clause: Record<string, unknown>, path: string[], label: string): Part => ({
@@ -475,8 +477,19 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
   }
   // "the latest pg-gated test": a recency word on a seed phrase is the seed's own "latest".
   let seedLatest: string | undefined;
+  let seedOrder: Composed['seedOrder'];
   for (const k of claims.picks) {
     if (k.phrase.type === seed && k.kind === 'latest') seedLatest = k.span;
+    else if (
+      k.phrase.type === seed &&
+      (k.span === 'highest' || k.span === 'lowest') &&
+      k.phrase.entry.value === undefined
+    )
+      seedOrder = {
+        span: `${k.span} ${k.phrase.span}`,
+        dir: k.kind === 'max' ? 'desc' : 'asc',
+        phrase: k.phrase
+      };
     else if (k.phrase.type === seed)
       dropped.push({
         span: `${k.span} ${k.phrase.span}`,
@@ -610,7 +623,7 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
         const ruled = own(rulings.timeField, type) !== undefined;
         w.window.push(
           filter(
-            { [field]: { gte: input.time.range.gte, lt: input.time.range.lt } },
+            { [field]: { ...input.time.range } },
             [field],
             `window:${input.time.span}${ruled ? '' : ` on ${field} (default)`}`
           )
@@ -713,6 +726,7 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
     dropped,
     timeOnSeed,
     ...(seedLatest !== undefined ? { seedLatest } : {}),
+    ...(seedOrder !== undefined ? { seedOrder } : {}),
     walked:
       walks.size > 0 ||
       seedParts.some((p) => p.plan.some((c) => c.kind === 'ref')) ||

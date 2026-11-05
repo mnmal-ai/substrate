@@ -4,7 +4,8 @@ Natural-language ask surface. A deterministic parser reads a question against a 
 
 ## Contract
 
-- `POST /substrate/v1/nl` with `{ namespace, question, project?, type? }` returns one of `rows`, `recall`, `clarify` or `refuse`, plus a `trail` of how it got there. Send `accept: text/event-stream` for the same as SSE events (`parsed`, `judging`, `judged`, then the outcome, then `done`), otherwise it is one JSON body.
+- `POST /substrate/v1/nl` with `{ namespace, question, project?, type?, asOf? }` returns one of `rows`, `recall`, `clarify` or `refuse`, plus a `trail` of how it got there. Send `accept: text/event-stream` for the same as SSE events (`parsed`, `judging`, `judged`, then the outcome, then `done`), otherwise it is one JSON body.
+- `asOf` is "now" for relative dates ("yesterday", "last week") and for the year of a month-day ("on Oct 23"): an ISO-8601 date-time with an offset, such as `2026-10-02T12:00:00-05:00`. Day boundaries are in its offset. Anything else is `400 invalid_params`. Without it the server clock is used. The `parsed` event's `asOf` says which clock the question was read against.
 - `GET /substrate/v1/nl/pack/<ns>` returns the namespace pack (types, fields, values, rulings) with an `etag`; send `if-none-match` for a `304`.
 - NL is read-only: a mutation-shaped question is `refuse`, never executed.
 

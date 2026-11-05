@@ -229,7 +229,7 @@ export async function* runAsk(
   deps: AskDeps
 ): AsyncGenerator<NlEvent> {
   const ctx: ParseContext = {
-    asOf: (deps.now ?? (() => new Date()))().toISOString(),
+    asOf: req.asOf ?? (deps.now ?? (() => new Date()))().toISOString(),
     rulings: deps.pack.rulings,
     ...(req.project !== undefined ? { project: req.project } : {}),
     ...(req.type !== undefined ? { forceType: req.type } : {})
@@ -242,7 +242,8 @@ export async function* runAsk(
     ...(best !== undefined ? { frame: executable(best, deps.pack) } : {}),
     evidence: best?.evidence ?? first.evidence ?? [],
     residual: first.residual,
-    ...(first.reason !== undefined ? { reason: first.reason } : {})
+    ...(first.reason !== undefined ? { reason: first.reason } : {}),
+    asOf: ctx.asOf
   };
   if (isAborted(http)) return yield { event: 'done' };
 

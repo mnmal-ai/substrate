@@ -6,6 +6,7 @@ import type { AskRequest } from './ask/events.js';
 import { runAsk } from './ask/run.js';
 import type { Judge } from './judge/judge.js';
 import type { PackService } from './pack/service.js';
+import { validAsOf } from './parse/time.js';
 
 export interface NlRouteDeps {
   engine: NlEngineAccess;
@@ -40,7 +41,9 @@ export function askHandler(deps: NlRouteDeps): HttpHandler {
     if (!parsed.ok) return parsed.response;
     const body = parsed.value as Record<string, unknown> | null;
     if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-      return error400('body must be a JSON object: { namespace, question, project?, type? }');
+      return error400(
+        'body must be a JSON object: { namespace, question, project?, type?, asOf? }'
+      );
     }
     if (!str(body.namespace)) return error400('body.namespace must be a non-empty string');
     if (!str(body.question)) return error400('body.question must be a non-empty string');
@@ -50,11 +53,18 @@ export function askHandler(deps: NlRouteDeps): HttpHandler {
       if (body[k] !== undefined && !str(body[k]))
         return error400(`body.${k} must be a non-empty string when given`);
     }
+    if (body.asOf !== undefined && !validAsOf(body.asOf))
+      return jsonResponse(400, {
+        error:
+          'body.asOf must be an ISO-8601 date-time with an offset, e.g. 2026-10-02T12:00:00-05:00',
+        code: 'invalid_params'
+      });
     const ask: AskRequest = {
       namespace: body.namespace,
       question: body.question,
       ...(str(body.project) ? { project: body.project } : {}),
-      ...(str(body.type) ? { type: body.type } : {})
+      ...(str(body.type) ? { type: body.type } : {}),
+      ...(validAsOf(body.asOf) ? { asOf: body.asOf } : {})
     };
     let served: Awaited<ReturnType<PackService['get']>>;
     try {

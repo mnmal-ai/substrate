@@ -23,7 +23,9 @@ import {
   compose,
   defaultYield,
   dropComparatives,
-  type Part
+  type Part,
+  type PhraseClaim,
+  type WalkClaims
 } from './walks.js';
 
 export interface ParseContext {
@@ -196,7 +198,9 @@ export function parseQuestion(
     prose
       .toLowerCase()
       .replace(/[‘’]/g, "'")
-      .match(/\$\d+(?:\.\d+)?|\d+(?:\.\d+)?[%×]|#\d+|[a-z0-9@[][a-z0-9@._'\]-]*/g) ?? []
+      .match(
+        /\d{4}-\d{2}-\d{2}t\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:z|[+-]\d{2}:\d{2})?|\$\d+(?:\.\d+)?|\d+(?:\.\d+)?[%×]|#\d+|[a-z0-9@[][a-z0-9@._'\]-]*/g
+      ) ?? []
   )
     .map((t) => t.replace(/[.'-]+$/, '').replace(/'s$/, ''))
     .filter((t) => t.length > 0)
@@ -251,9 +255,12 @@ export function parseQuestion(
     evidence.push({
       span: time.span,
       role: 'time',
-      detail: `${time.range.gte} .. ${time.range.lt}`
+      detail: `${time.range.gte ?? ''} .. ${time.range.lt ?? ''}`.trim()
     });
   }
+
+  // --- ordering by a field, before ids, so the N in "top N" is not read as an id ---
+  const fieldOrder = claimFieldOrder(tokens, walkClaims, pack, rulings);
 
   // --- ids: #N anywhere, or a number right after a type word ---
   const ids: number[] = [];
@@ -490,6 +497,8 @@ export function parseQuestion(
       clauses,
       time: composed === undefined || composed.timeOnSeed ? time : null,
       order,
+      fieldOrder: fieldOrder ?? composed?.seedOrder ?? null,
+      plural: mentioned.get(type)?.plural ?? false,
       count,
       allProjects,
       historyWord,
@@ -548,6 +557,10 @@ interface AssemblyInput {
   clauses: FieldClause[];
   time: { span: string; range: DateRange; at: [number, number] } | null;
   order: 'desc' | 'asc' | null;
+  /** An ordering by a field, resolved against this type. */
+  fieldOrder: FieldOrder | null;
+  /** The type was named in the plural: an ordering's default limit is 10, else 1. */
+  plural: boolean;
   count: boolean;
   allProjects: boolean;
   historyWord: boolean;
@@ -572,17 +585,52 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
       ? [...a.evidence, { span: seedLatest, role: 'order' as const, detail: 'desc, limit 1' }]
       : a.evidence;
   const recency = a.order ?? (seedLatest !== undefined ? 'desc' : null);
-  const conflict = a.composed?.params.orderBy !== undefined && recency !== null;
+  const derived = a.composed?.params.orderBy !== undefined;
+  // A field ordering is ignored in a count, and gives way to a derived ordering.
+  const fieldOrder: Dropped[] = [];
+  let sortBy: { field: string; dir: 'desc' | 'asc'; limit: number } | null = null;
+  // A count over "the top 5" or "the highest" would count every row: the ordering is a
+  // dropped filter, so a strict count is unknown rather than a wrong number.
+  if (a.fieldOrder !== null && a.count)
+    fieldOrder.push({
+      span: a.fieldOrder.span,
+      reason: 'ordering does not apply to a count',
+      kind: 'filter'
+    });
+  if (a.fieldOrder !== null && !a.count) {
+    const r = orderField(a.fieldOrder, type, pack, rulings);
+    const reason =
+      'reason' in r
+        ? r.reason
+        : derived
+          ? 'it conflicts with the derived ordering, which is kept'
+          : null;
+    if (reason !== null) fieldOrder.push({ span: a.fieldOrder.span, reason, kind: 'order' });
+    else if ('field' in r)
+      sortBy = {
+        field: r.field,
+        dir: a.fieldOrder.dir,
+        limit: a.fieldOrder.limit ?? (a.plural ? 10 : 1)
+      };
+  }
+  const conflict = (derived || sortBy !== null) && recency !== null;
   const order = conflict ? null : recency;
   const orderSpan = evidence.find((e) => e.role === 'order')?.span ?? '';
   const ev = conflict ? evidence.filter((e) => e.role !== 'order') : [...evidence];
+  if (sortBy !== null)
+    ev.push({
+      span: a.fieldOrder?.span ?? '',
+      role: 'order',
+      detail: `${sortBy.field} ${sortBy.dir}, limit ${sortBy.limit}`
+    });
   const dropped = [
     ...(a.composed?.dropped ?? []),
+    ...fieldOrder,
     ...(conflict
       ? [
           {
             span: orderSpan,
-            reason: 'it conflicts with the derived ordering, which is kept',
+            reason: `it conflicts with the ${derived ? 'derived' : 'field'} ordering, which is kept`,
             kind: 'order' as const
           }
         ]
@@ -659,6 +707,9 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
   for (const field of usedFields) creditFieldWords(tokens, fields[field]);
 
   if (a.author !== null) where.push({ createdById: { startsWith: a.author } });
+  // An ordering phrase's ruled exclusion still holds ("asking price" without placeholders).
+  const orderExclude = a.fieldOrder?.phrase?.entry.exclude;
+  if (sortBy !== null && orderExclude !== undefined) where.push({ NOT: orderExclude });
 
   // Yes/no fields named on their own: "pinned rules", "active agents".
   for (const flag of a.flags) {
@@ -685,7 +736,7 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
     const dateField =
       named?.[0] ??
       (a.closeVerb || a.updateVerb ? 'updatedAt' : (own(rulings.timeField, type) ?? 'createdAt'));
-    const clause = { [dateField]: { gte: a.time.range.gte, lt: a.time.range.lt } };
+    const clause = { [dateField]: { ...a.time.range } };
     where.push(clause);
     // In a composed reading the seed's window is a plan clause like a walk's, default named.
     if (a.composed !== undefined) {
@@ -778,6 +829,10 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
     params.orderBy = [{ [own(rulings.timeField, type) ?? 'createdAt']: order }];
     params.limit = 1;
   }
+  if (sortBy !== null) {
+    params.orderBy = [{ [sortBy.field]: sortBy.dir }];
+    params.limit = sortBy.limit;
+  }
   Object.assign(params, a.composed?.params ?? {});
   // A composed reading needs the walk grammar anyway, so its count is the server's.
   if (a.count && a.composed?.walked === true) params.count = true;
@@ -788,7 +843,7 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
         : `field:${a.askField.field}`
       : a.count
         ? 'count'
-        : order !== null || a.ids.length === 1
+        : order !== null || a.ids.length === 1 || sortBy?.limit === 1
           ? 'single'
           : 'rows';
   return {
@@ -800,8 +855,154 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
     plan,
     dropped,
     // From the pick-one itself, not the answer label: "which grade" over "latest" still picks one.
-    strict: a.count || order !== null || a.ids.length === 1 || a.composed?.strict === true
+    strict:
+      a.count ||
+      order !== null ||
+      sortBy !== null ||
+      a.ids.length === 1 ||
+      a.composed?.strict === true
   };
+}
+
+/** An ordering by a field: "top N <type> by <field>", "highest|lowest <field>", "most <field>". */
+interface FieldOrder {
+  span: string;
+  dir: 'desc' | 'asc';
+  /** "top N": the N. */
+  limit?: number;
+  /** Words naming the field, resolved per reading. */
+  words?: string;
+  /** Or a `fieldPhrases` claim naming it. */
+  phrase?: PhraseClaim;
+  /** "most <field>": a number field only. */
+  numeric?: boolean;
+}
+
+/** A field named by words on one type: one of its field phrases, else its name or an alias. */
+function fieldByWords(
+  words: string,
+  fields: Record<string, PackField>,
+  rulings: NamespaceRulings
+): string | null {
+  const phrased = Object.entries(fields).find(([, f]) => f.phrases.includes(words))?.[0];
+  return phrased ?? (words.includes(' ') ? null : resolveField(words, fields, rulings));
+}
+
+/**
+ * Claims one field ordering. Field words are a field phrase claim, else the
+ * longest run of up to three free words naming a field on some type; after
+ * "by", "highest" or "lowest" an unknown single word is claimed too, so the
+ * reading can drop it with a reason.
+ */
+function claimFieldOrder(
+  tokens: Token[],
+  walkClaims: WalkClaims,
+  pack: NamespacePack,
+  rulings: NamespaceRulings
+): FieldOrder | null {
+  const somewhere = (w: string, numeric: boolean) =>
+    Object.values(pack.types).some((t) => {
+      const name = fieldByWords(w, t.fields, rulings);
+      return name !== null && (!numeric || t.fields[name]?.valueType === 'number');
+    });
+  const fieldAt = (
+    i: number,
+    numeric: boolean
+  ): { words?: string; phrase?: PhraseClaim; span: string; end: number } | null => {
+    const p = walkClaims.phrases.find(
+      (x) => x.at[0] === i && x.field !== undefined && x.entry.value === undefined
+    );
+    if (p !== undefined) return { phrase: p, span: p.span, end: p.at[1] };
+    for (let n = 3; n >= 1; n--) {
+      const slice = tokens.slice(i, i + n);
+      if (slice.length < n || slice.some((t) => t.used)) continue;
+      const w = slice.map((t) => t.text).join(' ');
+      if (somewhere(w, numeric)) return { words: w, span: w, end: i + n - 1 };
+    }
+    const t = tokens[i];
+    return !numeric && t !== undefined && !t.used && !GLUE.has(t.text) && !/^\d/.test(t.text)
+      ? { words: t.text, span: t.text, end: i }
+      : null;
+  };
+  const take = (from: number, f: { phrase?: PhraseClaim; end: number }) => {
+    for (let k = from; k <= f.end; k++) (tokens[k] as Token).used = true;
+    // An ordering phrase is not walked to: it names the field to sort by.
+    if (f.phrase !== undefined) walkClaims.phrases.splice(walkClaims.phrases.indexOf(f.phrase), 1);
+  };
+  const field = (f: { words?: string; phrase?: PhraseClaim }) =>
+    f.phrase !== undefined ? { phrase: f.phrase } : { words: f.words as string };
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i] as Token;
+    if (t.used) continue;
+    if (t.text === 'top' || t.text === 'bottom') {
+      const n = tokens[i + 1];
+      const limit = n !== undefined && !n.used && /^[1-9]\d*$/.test(n.text) ? n : undefined;
+      const by = tokens.findIndex(
+        (x, j) =>
+          j > i && x.text === 'by' && !x.used && !AUTHOR_VERBS.has(tokens[j - 1]?.text ?? '')
+      );
+      const f = by < 0 ? null : fieldAt(by + 1, false);
+      if (f === null) continue;
+      t.used = true;
+      if (limit !== undefined) limit.used = true;
+      take(by, f);
+      return {
+        span: [t.text, limit?.text, 'by', f.span].filter((x) => x !== undefined).join(' '),
+        dir: t.text === 'top' ? 'desc' : 'asc',
+        ...(limit !== undefined ? { limit: Number(limit.text) } : {}),
+        ...field(f)
+      };
+    }
+    if (t.text === 'highest' || t.text === 'lowest' || t.text === 'most') {
+      const numeric = t.text === 'most';
+      const f = fieldAt(i + 1, numeric);
+      if (f === null) continue;
+      take(i, f);
+      return {
+        span: `${t.text} ${f.span}`,
+        dir: t.text === 'lowest' ? 'asc' : 'desc',
+        ...(numeric ? { numeric } : {}),
+        ...field(f)
+      };
+    }
+  }
+  return null;
+}
+
+/** The seed field an ordering sorts by on `type`, or why it cannot. */
+function orderField(
+  o: FieldOrder,
+  type: string,
+  pack: NamespacePack,
+  rulings: NamespaceRulings
+): { field: string } | { reason: string } {
+  const fields = own(pack.types, type)?.fields ?? {};
+  const walked = { reason: 'ordering across a walk is not supported' };
+  let name: string | null;
+  if (o.phrase !== undefined) {
+    if (o.phrase.type !== type) return walked;
+    name = o.phrase.field ?? null;
+  } else {
+    const words = o.words ?? '';
+    name = fieldByWords(words, fields, rulings);
+    if (name === null)
+      return Object.values(pack.types).some((t) => fieldByWords(words, t.fields, rulings) !== null)
+        ? walked
+        : { reason: `${type} has no field "${words}"` };
+  }
+  const f = name === null ? undefined : fields[name];
+  if (name === null || f === undefined) return { reason: `${type} has no field "${o.span}"` };
+  const sortable =
+    (f.kind === 'scalar' || f.kind === 'metadata') &&
+    (f.valueType === 'number' || (f.valueType === 'date' && o.numeric !== true));
+  if (!sortable)
+    return {
+      reason:
+        o.numeric === true
+          ? `"most" needs a number field; ${name} is a ${f.valueType ?? f.kind} field`
+          : `${name} is a ${f.valueType ?? f.kind} field; only number and date fields order`
+    };
+  return { field: name };
 }
 
 /** A clause's field name: the field itself, case-insensitively, then the rulings' and built-in aliases. */
@@ -992,7 +1193,8 @@ function claimTime(
   asOf: string
 ): { span: string; range: DateRange; at: [number, number] } | null {
   let found: { span: string; range: DateRange; at: [number, number] } | null = null;
-  claimNgrams(tokens, 3, (key, at) => {
+  // "between 1st sep 2026 and 15th sep 2026" is the longest phrase: eight words.
+  claimNgrams(tokens, 8, (key, at) => {
     if (found !== null) return false;
     const range = rangeFor(key, asOf);
     if (range === null) return false;

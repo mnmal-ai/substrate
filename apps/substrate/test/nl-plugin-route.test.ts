@@ -316,3 +316,71 @@ describe('GET /substrate/v1/nl/pack/:ns under row policy', () => {
     expect(full.etag).not.toBe(restricted.etag);
   });
 });
+
+/** Items with a nullable number field, to read an ordering's rows back in order. */
+const shopPlugin: CoordinatorPlugin = {
+  name: 'shop',
+  contractVersion: '*',
+  namespaces: [
+    {
+      namespace: 'shop',
+      install: async ({ registry, dataset, edges }) => {
+        installAutoCrud(registry, 'Item', dataset, edges, {
+          fields: {
+            id: { kind: 'scalar', type: 'string', indexed: true },
+            name: { kind: 'scalar', type: 'string', indexed: true },
+            price: { kind: 'scalar', type: 'number', indexed: true, nullable: true }
+          }
+        });
+      }
+    }
+  ]
+};
+
+describe('ordering by a field over the memory store', () => {
+  let ctx: NlRouteCtx | null = null;
+  afterEach(async () => {
+    if (ctx !== null) {
+      await ctx.composed.stop();
+      ctx = null;
+    }
+  });
+
+  it('returns the top and bottom rows in order, never a null-priced row first', async () => {
+    ctx = await mkServer({ extra: [shopPlugin] });
+    for (const [name, price] of [
+      ['a', 5],
+      ['b', null],
+      ['c', 20],
+      ['d', 10]
+    ] as const) {
+      const res = await ctx.server.inject({
+        method: 'POST',
+        path: '/substrate/v1/mutate',
+        headers: JSON_HEADERS,
+        body: Buffer.from(
+          JSON.stringify({
+            'shop/createItem': {
+              params: { name, ...(price !== null ? { price } : {}) },
+              fields: { id: true }
+            }
+          })
+        )
+      });
+      expect(res.status).toBe(200);
+    }
+    const names = async (question: string) => {
+      const res = await ctx?.server.inject(ask({ namespace: 'shop', question }));
+      expect(res?.status).toBe(200);
+      const { outcome } = jsonBody<{
+        outcome: { kind: string; data?: Array<{ name: string }> };
+      }>(res as SubstrateResponse);
+      expect(outcome.kind).toBe('rows');
+      return outcome.data?.map((r) => r.name);
+    };
+    expect(await names('top 3 items by price')).toEqual(['c', 'd', 'a']);
+    expect(await names('bottom 3 items by price')).toEqual(['a', 'd', 'c']);
+    expect(await names('the item with the highest price')).toEqual(['c']);
+    expect(await names('top items by price')).toEqual(['c', 'd', 'a', 'b']);
+  });
+});

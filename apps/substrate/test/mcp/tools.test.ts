@@ -534,6 +534,41 @@ describe('ask handler', () => {
     }
   });
 
+  it('the registered input schema accepts an optional asOf and forwards it', async () => {
+    await boot(false); // only so afterEach has a composed server to stop
+    const origFetch = globalThis.fetch;
+    const posted: unknown[] = [];
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      posted.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({ outcome: null, trail: [] }), {
+        headers: { 'content-type': 'application/json' }
+      });
+    }) as unknown as typeof fetch;
+    const mcp = createMcpServer('http://127.0.0.1:1', { tools: 'ask' });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await mcp.connect(serverSide);
+    const client = new Client({ name: 'nl-asof-test', version: '0.0.0' });
+    await client.connect(clientSide);
+    try {
+      const listed = await client.listTools();
+      const props = (listed.tools[0]?.inputSchema.properties ?? {}) as Record<
+        string,
+        { description?: string }
+      >;
+      expect(props.asOf?.description).toContain('ISO-8601');
+      const asOf = '2026-10-02T12:00:00-05:00';
+      await client.callTool({
+        name: 'ask',
+        arguments: { namespace: 'default', question: 'todos yesterday', asOf }
+      });
+      expect(posted).toEqual([{ namespace: 'default', question: 'todos yesterday', asOf }]);
+    } finally {
+      globalThis.fetch = origFetch;
+      await client.close();
+      await mcp.close();
+    }
+  });
+
   it('the registered input schema rejects a { prompt }-only call', async () => {
     await boot(false); // only so afterEach has a composed server to stop
     const mcp = createMcpServer('http://127.0.0.1:1', { tools: 'ask' });

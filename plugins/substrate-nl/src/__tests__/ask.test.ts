@@ -53,6 +53,22 @@ describe('runAsk', () => {
     expect(sent['ns/Todo']?.fields).toMatchObject({ id: true, title: true, status: true });
   });
 
+  it('anchors relative phrases to a given asOf, and says which clock it used', async () => {
+    const { e, query } = engine();
+    const asOf = '2026-01-05T09:00:00+02:00';
+    const evs = await collect(
+      runAsk({ namespace: 'ns', question: 'todos yesterday', asOf }, http, {
+        pack,
+        engine: e,
+        now: () => new Date('2030-01-01T00:00:00Z')
+      })
+    );
+    expect(evs[0]).toMatchObject({ event: 'parsed', asOf });
+    expect(JSON.stringify(query.mock.calls[0]?.[0])).toContain(
+      '{"createdAt":{"gte":"2026-01-04T00:00:00+02:00","lt":"2026-01-05T00:00:00+02:00"}}'
+    );
+  });
+
   it('count answers use count: true (no paging calls)', async () => {
     const { e, query } = engine((f) => ({
       data: { [Object.keys(f)[0] as string]: { count: 4321 } }

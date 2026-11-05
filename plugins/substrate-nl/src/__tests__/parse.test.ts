@@ -468,6 +468,15 @@ describe('outcome verbs close the question', () => {
   );
 });
 
+describe('a count with an ordering', () => {
+  it('drops the ordering, so the count is not resolved', () => {
+    const r = parse('how many todos have the highest shortId');
+    expect(r.candidates[0]?.answer).toBe('count');
+    expect(r.status).toBe('partial');
+    expect(r.candidates[0]?.dropped[0]?.reason).toBe('ordering does not apply to a count');
+  });
+});
+
 describe('time field ruling', () => {
   it('dates a type by its ruled field, and createdAt otherwise', () => {
     const p = (q: string, timeField?: Record<string, string>) =>
