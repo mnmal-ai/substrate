@@ -59,7 +59,7 @@ export interface ParsedConfig {
   /** Invite reaper cadence (§5.12). Only engaged when auth is enabled. */
   inviteSweepIntervalMs: number;
   /**
-   * Retention window (in days) for tombstoned `rows` and `edges`
+   * Retention window (in days) for tombstoned type-table rows and `edges`
    * rows before the sweep loop hard-deletes them. Pg-backed only. Default 30.
    */
   tombstoneRetentionDays: number;
@@ -70,8 +70,7 @@ export interface ParsedConfig {
    */
   shutdownGraceMs: number;
   /**
-   * `SUBSTRATE_PARTITION_BUDGET` — partitions under `rows` (on the tables
-   * layout, type tables) beyond which the config report warns.
+   * `SUBSTRATE_PARTITION_BUDGET` — type tables beyond which the config report warns.
    */
   partitionBudget: number;
   /** `SUBSTRATE_STATEMENT_TIMEOUT_MS` — the statement timeout a walk read runs under; a read it cancels is refused `query_timeout`. */
@@ -683,7 +682,7 @@ function parseInviteSweepIntervalMs(env: NodeJS.ProcessEnv, knobs: KnobRecorder)
 
 /**
  * Parse `SUBSTRATE_TOMBSTONE_RETENTION_DAYS` — retention window before tombstoned
- * `rows` / `edges` are hard-deleted by the sweep loop. Default 30.
+ * type-table rows / `edges` are hard-deleted by the sweep loop. Default 30.
  */
 function parseTombstoneRetentionDays(env: NodeJS.ProcessEnv, knobs: KnobRecorder): number {
   return parsePositiveIntEnv(

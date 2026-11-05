@@ -16,7 +16,7 @@ export const USAGE = [
   '  rotate <kid> --out <path> [--encrypt]   rotate a Key (new key to <path>)',
   '  register <kid> --pubkey <path> --ns <csv>   register an existing ed25519 pubkey as an agent Key',
   "  update <kid> [--ns <csv>] ...           change a live key's namespaces/caps/name in place",
-  '  migrate-store [options]                 copy a store into a fresh, empty, partitioned PG 18 store',
+  '  migrate-store [options]                 copy a store into a fresh, empty PG 18 store on per-type tables',
   '  promote-fields [--url <base>]           run the promotion sweep now on a running server',
   '',
   '  register transport: drives POST /substrate/v1/_system/keys (credential + directory row,',
