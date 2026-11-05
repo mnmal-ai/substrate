@@ -501,12 +501,20 @@ describe('the confidence rule', () => {
     });
   });
 
-  it('a dropped ordering under a count is still answered', async () => {
-    const { e } = engine((f) => ({ data: { [Object.keys(f)[0] as string]: { count: 3 } } }));
+  it('a recency word under a count is unknown, never a count of every row', async () => {
+    const { e, query } = engine((f) => ({ data: { [Object.keys(f)[0] as string]: { count: 3 } } }));
     const o = outcome(await ask('how many latest cards by margin', e));
-    expect(o).toMatchObject({ kind: 'rows', answer: 'count', count: 3 });
-    const sent = (o as { frame: Record<string, { params: Record<string, unknown> }> }).frame;
-    expect(sent['cards/Cert']?.params).not.toHaveProperty('orderBy');
+    expect(o).toMatchObject({
+      kind: 'unknown',
+      dropped: [
+        {
+          span: 'latest',
+          reason: 'counting over the latest N rows is not supported',
+          kind: 'filter'
+        }
+      ]
+    });
+    expect(query).not.toHaveBeenCalled();
   });
 
   it('no judge + count + leftover content words → unknown, never a handoff number', async () => {

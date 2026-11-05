@@ -51,9 +51,11 @@ async function mkServer(opts: {
   registerNl?: boolean;
   auth?: AuthConfig;
   extra?: CoordinatorPlugin[];
+  /** The memory store's walk reference, which answers aggregates. */
+  walks?: boolean;
 }): Promise<NlRouteCtx> {
   const server = new MemorySubstrateServer();
-  const dataset = new MemoryDataset({ namespace: 'default' });
+  const dataset = new MemoryDataset({ namespace: 'default', walkReference: opts.walks === true });
   const composeOpts: Parameters<typeof compose>[0] = {
     // Without auth, the deployment must declare who it writes as.
     systemActor: 'test',
@@ -329,7 +331,14 @@ const shopPlugin: CoordinatorPlugin = {
           fields: {
             id: { kind: 'scalar', type: 'string', indexed: true },
             name: { kind: 'scalar', type: 'string', indexed: true },
-            price: { kind: 'scalar', type: 'number', indexed: true, nullable: true }
+            price: { kind: 'scalar', type: 'number', indexed: true, nullable: true },
+            condition: {
+              kind: 'scalar',
+              type: 'string',
+              indexed: true,
+              nullable: true,
+              enum: ['new', 'used']
+            }
           }
         });
       }
@@ -382,5 +391,71 @@ describe('ordering by a field over the memory store', () => {
     expect(await names('bottom 3 items by price')).toEqual(['a', 'd', 'c']);
     expect(await names('the item with the highest price')).toEqual(['c']);
     expect(await names('top items by price')).toEqual(['c', 'd', 'a', 'b']);
+  });
+});
+
+describe('aggregates over the memory store', () => {
+  let ctx: NlRouteCtx | null = null;
+  afterEach(async () => {
+    if (ctx !== null) {
+      await ctx.composed.stop();
+      ctx = null;
+    }
+  });
+
+  it('answers a whole, a grouped and a day-bucketed aggregate', async () => {
+    ctx = await mkServer({ extra: [shopPlugin], walks: true });
+    for (const [name, price, condition] of [
+      ['a', 5, 'new'],
+      ['b', 15, 'used'],
+      ['c', 10, 'new'],
+      ['d', 2, null]
+    ] as const) {
+      const res = await ctx.server.inject({
+        method: 'POST',
+        path: '/substrate/v1/mutate',
+        headers: JSON_HEADERS,
+        body: Buffer.from(
+          JSON.stringify({
+            'shop/createItem': {
+              params: { name, price, ...(condition !== null ? { condition } : {}) },
+              fields: { id: true }
+            }
+          })
+        )
+      });
+      expect(res.status).toBe(200);
+    }
+    const answer = async (question: string) => {
+      const res = await ctx?.server.inject(ask({ namespace: 'shop', question }));
+      expect(res?.status).toBe(200);
+      const { outcome } = jsonBody<{ outcome: Record<string, unknown> }>(res as SubstrateResponse);
+      expect(outcome).toMatchObject({ kind: 'rows', answer: 'aggregate' });
+      expect(outcome).not.toHaveProperty('errors');
+      return outcome.aggregate;
+    };
+    expect(await answer('average price of items')).toEqual({
+      fn: 'avg',
+      field: 'price',
+      value: 8
+    });
+    expect(await answer('what is the highest price of items')).toMatchObject({ value: 15 });
+    expect(await answer('total price of items by condition')).toEqual({
+      fn: 'sum',
+      field: 'price',
+      by: 'condition',
+      groups: [
+        { key: 'new', value: 15 },
+        { key: 'used', value: 15 },
+        { key: null, value: 2 }
+      ]
+    });
+    // Inserted moments apart, so one day bucket; which day depends on the clock.
+    expect(await answer('total price of items per day')).toMatchObject({
+      fn: 'sum',
+      field: 'price',
+      by: 'day',
+      groups: [{ value: 32 }]
+    });
   });
 });

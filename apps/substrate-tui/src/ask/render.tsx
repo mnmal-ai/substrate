@@ -44,7 +44,9 @@ export function outcomeChips(o: NlOutcome): Chip[] {
     {
       label: rejected
         ? 'rejected'
-        : `${o.count ?? (Array.isArray(o.data) ? o.data.length : 0)} rows`,
+        : o.aggregate !== undefined
+          ? 'aggregate'
+          : `${o.count ?? (Array.isArray(o.data) ? o.data.length : 0)} rows`,
       tone: rejected ? 'error' : 'dim'
     }
   ];
@@ -104,12 +106,56 @@ const COLS = { id: 6, status: 10, project: 14, gaps: 6, minTitle: 12 };
 const titleWidth = (columns: number) =>
   Math.max(COLS.minTitle, columns - (COLS.id + COLS.status + COLS.project + COLS.gaps));
 
+const FN_LABEL = { avg: 'average', sum: 'total', min: 'min', max: 'max' } as const;
+// Two decimals for a float; a tiny one keeps three significant digits rather than reading 0.
+const aggValue = (v: unknown) =>
+  v === null || v === undefined
+    ? '—'
+    : typeof v === 'number' && !Number.isInteger(v)
+      ? String(Math.abs(v) >= 0.01 ? Math.round(v * 100) / 100 : Number(v.toPrecision(3)))
+      : str(v);
+
 const rows: Renderer = ({ data, theme, size }) => {
   const titleCols = titleWidth(size.columns);
   const o = data as Rows;
   const lost = droppedLines(o.dropped).map((l, i) => (
     <Text key={`d${i}`} color={theme.color.warn}>{`  ${l}`}</Text>
   ));
+  const agg = o.aggregate;
+  if (agg !== undefined) {
+    const head = `${Object.hasOwn(FN_LABEL, agg.fn) ? FN_LABEL[agg.fn] : str(agg.fn)} ${str(agg.field)}`;
+    const errs = errorLines(o.errors).map((l, i) => (
+      <Text key={`e${i}`} color={theme.color.error}>{`  ${l}`}</Text>
+    ));
+    if (agg.groups === undefined) {
+      return (
+        <Box flexDirection="column">
+          <Text color={theme.color.text}>{`${head} = ${aggValue(agg.value)}`}</Text>
+          {errs}
+          {lost}
+        </Box>
+      );
+    }
+    const keyCols = Math.min(30, Math.max(COLS.minTitle, Math.floor(size.columns / 3)));
+    return (
+      <Box flexDirection="column">
+        <Text color={theme.color.dim}>{`${head} by ${str(agg.by)}`}</Text>
+        {agg.groups.map((g, i) => (
+          <Text key={i}>
+            {'  '}
+            <Text color={theme.color.dimMid}>
+              {padCells(g.key === null ? '(none)' : str(g.key), keyCols)}
+            </Text>
+            {'  '}
+            <Text color={theme.color.text}>{aggValue(g.value)}</Text>
+          </Text>
+        ))}
+        {agg.truncated === true ? <Text color={theme.color.dim}>{'  …more groups'}</Text> : null}
+        {errs}
+        {lost}
+      </Box>
+    );
+  }
   if (!Array.isArray(o.data) && typeof o.count === 'number') {
     return (
       <Box flexDirection="column">

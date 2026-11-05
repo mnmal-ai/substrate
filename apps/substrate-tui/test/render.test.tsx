@@ -56,6 +56,68 @@ describe('renderers', () => {
     expect(show(KIND.rows, n)).not.toMatch(/rejected/);
     expect(outcomeChips(n).map((c) => c.label)).toContain('42 rows');
   });
+  it('an aggregate shows "fn field = value", and groups as a two-column list, sanitised', () => {
+    const one = rows({
+      answer: 'aggregate',
+      data: { groups: [{ value: 123.45 }] },
+      aggregate: { fn: 'avg', field: 'price', value: 123.45 }
+    });
+    expect(show(KIND.rows, one)).toMatch(/average price = 123\.45/);
+    expect(outcomeChips(one).map((c) => c.label)[2]).toBe('aggregate');
+    const grouped = show(
+      KIND.rows,
+      rows({
+        answer: 'aggregate',
+        data: { groups: [] },
+        aggregate: {
+          fn: 'sum',
+          field: 'price',
+          by: 'condition',
+          groups: [
+            { key: 'new\u001b[31m', value: 15 },
+            { key: false, value: null }
+          ]
+        }
+      })
+    );
+    expect(grouped).toMatch(/total price by condition/);
+    expect(grouped).toMatch(/new\s+15/);
+    expect(grouped).toMatch(/false\s+—/);
+    expect(grouped).not.toContain('\u001b[31m');
+  });
+  it('an aggregate shows the no-value group as (none), rounds floats, and shows errors', () => {
+    const f = show(
+      KIND.rows,
+      rows({
+        answer: 'aggregate',
+        data: { groups: [] },
+        aggregate: {
+          fn: 'avg',
+          field: 'price',
+          by: 'condition',
+          groups: [
+            { key: 'new', value: 12.333333333333334 },
+            { key: null, value: 4 }
+          ]
+        }
+      })
+    );
+    expect(f).toMatch(/new\s+12\.33\b/);
+    expect(f).not.toMatch(/12\.333/);
+    expect(f).toMatch(/\(none\)\s+4/);
+    const odd = show(
+      KIND.rows,
+      rows({
+        answer: 'aggregate',
+        data: { groups: [] },
+        errors: [{ code: 'partial', message: 'one group failed' }],
+        aggregate: { fn: 'constructor' as 'avg', field: 'price', value: 1 }
+      })
+    );
+    expect(odd).toMatch(/constructor price = 1/);
+    expect(odd).not.toMatch(/function/);
+    expect(odd).toMatch(/partial: one group failed/);
+  });
   it('recall lists hits; rejected recall says rejected', () => {
     expect(
       show(KIND.recall, {

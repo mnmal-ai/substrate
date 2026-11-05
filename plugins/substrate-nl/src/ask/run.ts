@@ -26,16 +26,22 @@ const RECALL_K = 10;
 
 /**
  * The frame a candidate needs to run. A count is the server's `count: true`
- * over the reading's where; `paged` is the rows frame with every projectable
- * field, which a count falls back to when the server cannot count.
+ * over the reading's where, an aggregate its `aggregate`; `paged` is the rows
+ * frame with every projectable field, which a count falls back to when the
+ * server cannot count.
  */
-function executable(c: Candidate, pack: ServedPack, paged = c.answer !== 'count'): Query {
+function executable(
+  c: Candidate,
+  pack: ServedPack,
+  paged = c.answer !== 'count' && c.answer !== 'aggregate'
+): Query {
   const [key, value] = Object.entries(c.frame)[0] as [string, { params: Record<string, unknown> }];
   const { count: _count, ...params } = value.params;
   if (!paged) {
-    // Ordering never changes a count, and the engine refuses one beside `count`.
+    // Ordering never changes a count or an aggregate, and the engine refuses one beside either.
     const { orderBy: _o, limit: _l, derive: _d, ...counted } = params;
-    return { [key]: { params: { ...counted, count: true }, fields: { id: true } } } as Query;
+    const shaped = c.answer === 'aggregate' ? counted : { ...counted, count: true };
+    return { [key]: { params: shaped, fields: { id: true } } } as Query;
   }
   const fields: Record<string, true> = { id: true };
   for (const [name, f] of Object.entries(own(pack.types, c.type)?.fields ?? {})) {
@@ -104,6 +110,8 @@ async function rows(
     return { kind: 'unknown', question, dropped, plan: c.plan };
   let frame = executable(c, deps.pack);
   const key = Object.keys(frame)[0] as string;
+  if (c.aggregate !== undefined)
+    return aggregate(c, frame, key, source, http, deps, dropped, handoff);
   let env = await deps.engine.query(frame, http);
   const refused = (env.errors ?? []).some((e) =>
     COUNT_REFUSED.has((e as { code?: string }).code ?? '')
@@ -135,6 +143,91 @@ async function rows(
     ...(handoff !== undefined ? { handoff } : {}),
     dropped,
     plan: mergePlan(c.plan, env._diagnostics?.[key]?.plan)
+  };
+}
+
+type Groups = { groups?: Record<string, unknown>[]; truncated?: true } | undefined;
+
+/**
+ * An aggregate answer: the engine's one frame, or, grouped by a field the
+ * engine cannot group, one frame per value of it.
+ */
+async function aggregate(
+  c: Candidate,
+  frame: Query,
+  key: string,
+  source: 'parser' | 'judge' | 'handoff',
+  http: SubstrateRequest,
+  deps: AskDeps,
+  dropped: Dropped[],
+  handoff: string | undefined
+): Promise<NlOutcome> {
+  const { fn, field, group } = c.aggregate as NonNullable<Candidate['aggregate']>;
+  const params = (frame as Record<string, { params: Record<string, unknown> }>)[key]
+    ?.params as Record<string, unknown>;
+  const errors: unknown[] = [];
+  let data: Groups;
+  let plan: PlanClause[] | undefined;
+  if (group === undefined) {
+    const env = await deps.engine.query(frame, http);
+    errors.push(...(env.errors ?? []));
+    data = env.data !== undefined && key in env.data ? (env.data[key] as Groups) : undefined;
+    plan = env._diagnostics?.[key]?.plan;
+  } else {
+    // One frame per value, and one for rows with no value, so the groups add up to the whole.
+    const keys = [...group.values, null];
+    const values = await Promise.all(
+      keys.map(async (v) => {
+        if (isAborted(http)) return undefined;
+        const one = { [group.field]: { eq: v } };
+        const where = params.where === undefined ? one : { AND: [params.where, one] };
+        const env = await deps.engine.query(
+          { [key]: { params: { ...params, where }, fields: { id: true } } } as Query,
+          http
+        );
+        errors.push(...(env.errors ?? []));
+        return (env.data?.[key] as Groups)?.groups?.[0]?.value;
+      })
+    );
+    data = values.some((v) => v === undefined)
+      ? undefined
+      : {
+          groups: keys
+            .map((k, i) => ({ key: k, value: values[i] }))
+            .filter((g) => g.key !== null || g.value !== null)
+        };
+  }
+  const bucket = params.bucket as { by: string } | undefined;
+  const by = group?.field ?? bucket?.by;
+  const rows = data?.groups;
+  const result =
+    rows === undefined
+      ? undefined
+      : {
+          fn,
+          field,
+          ...(by !== undefined
+            ? {
+                by,
+                groups: rows.map((g) => ({
+                  key: (g.bucket ?? g.key) as string | boolean | null,
+                  value: g.value as number | string | null
+                }))
+              }
+            : { value: (rows[0]?.value ?? null) as number | string | null }),
+          ...(data?.truncated === true ? { truncated: true as const } : {})
+        };
+  return {
+    kind: 'rows',
+    frame,
+    answer: c.answer,
+    data,
+    ...(result !== undefined ? { aggregate: result } : {}),
+    ...(errors.length > 0 ? { errors } : {}),
+    source,
+    ...(handoff !== undefined ? { handoff } : {}),
+    dropped,
+    plan: mergePlan(c.plan, plan)
   };
 }
 

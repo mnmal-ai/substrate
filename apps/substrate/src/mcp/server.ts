@@ -588,7 +588,7 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
       name: 'ask',
       config: {
         description:
-          'Ask a natural-language question of one namespace. The parser answers first; a constrained judge handles what it escalates; a judge outage hands off honestly. Returns { outcome, trail }, where outcome.kind is rows | recall | clarify | refuse | unknown. unknown means part of the question was dropped and the answer would change which rows count; it carries dropped and the plan, and nothing ran. rows also carries dropped (what it does not reflect) and plan. Relative dates are read against asOf when given, else the server clock; the parsed trail event says which. Read-only. Requires the @mnmal-ai/substrate-nl plugin (404 otherwise).',
+          'Ask a natural-language question of one namespace. The parser answers first; a constrained judge handles what it escalates; a judge outage hands off honestly. Returns { outcome, trail }, where outcome.kind is rows | recall | clarify | refuse | unknown. unknown means part of the question was dropped and the answer would change which rows count; it carries dropped and the plan, and nothing ran. rows also carries dropped (what it does not reflect) and plan; an answer of count carries count, and one of aggregate carries aggregate (fn, field, and a value or groups keyed by `by`). Relative dates are read against asOf when given, else the server clock; the parsed trail event says which. Read-only. Requires the @mnmal-ai/substrate-nl plugin (404 otherwise).',
         inputSchema: {
           namespace: z.string().min(1).describe('Namespace to ask, e.g. "notes".'),
           question: z.string().min(1).describe('The question, e.g. "open todos in billing".'),
