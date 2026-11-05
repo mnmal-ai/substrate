@@ -6,12 +6,6 @@ export type DateRange =
 
 const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 
-/**
- * The range a time phrase names, relative to `asOf` and in its offset:
- * today, yesterday, this/last week (weeks start Monday), this/last month,
- * rolling "past <unit>" and "last N <units>", "since <weekday>"; and explicit
- * dates (see `explicitRange`). Null when the phrase is not a time phrase.
- */
 /** An ISO-8601 date-time with an offset: the only accepted `asOf`. */
 const AS_OF = /^(\d{4})-(\d{2})-(\d{2})T[\d:.]+(Z|[+-]\d{2}:\d{2})$/;
 
@@ -24,6 +18,12 @@ export function validAsOf(asOf: unknown): asOf is string {
   return new Date(Date.UTC(y, mo - 1, d)).getUTCDate() === d;
 }
 
+/**
+ * The range a time phrase names, relative to `asOf` and in its offset:
+ * today, yesterday, this/last week (weeks start Monday), this/last month,
+ * rolling "past <unit>" and "last N <units>", "since <weekday>"; and explicit
+ * dates (see `explicitRange`). Null when the phrase is not a time phrase.
+ */
 export function rangeFor(phrase: string, asOf: string): DateRange | null {
   const m = AS_OF.exec(asOf);
   if (m === null) throw new Error(`asOf must be ISO-8601 with an offset: ${asOf}`);
@@ -97,11 +97,11 @@ interface Operand {
 }
 
 /**
- * Explicit dates: "on D" or a bare ISO date (that day), "from D to D" and
+ * Explicit dates, always after a lead word: "on D" (that day), "from D to D" and
  * "between D and D" (inclusive of the last day), "since D" / "after D" (from
  * D / the day after), "before D" / "until D" (before D / through D). A date
  * is ISO `YYYY-MM-DD`, an ISO date-time (an exact instant), or a month name
- * (full or three-letter) with a day, optional ordinal and optional year, in
+ * (full, three-letter, or "sept") with a day, optional ordinal and optional year, in
  * either order. A month-day without a year is the most recent one not after
  * `today`. An invalid date is not a date.
  */
@@ -117,7 +117,9 @@ function explicitRange(
       const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(w);
       if (iso !== null) return dayOf(Number(iso[1]), Number(iso[2]), Number(iso[3]));
       const dt =
-        /^(\d{4})-(\d{2})-(\d{2})t(\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)(z|[+-]\d{2}:\d{2})?$/.exec(w);
+        /^(\d{4})-(\d{2})-(\d{2})t((?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?)(z|[+-](?:[01]\d|2[0-3]):[0-5]\d)?$/.exec(
+          w
+        );
       if (dt === null || dayOf(Number(dt[1]), Number(dt[2]), Number(dt[3])) === null) return null;
       const instant = `${dt[1]}-${dt[2]}-${dt[3]}T${dt[4]}${dt[5] === undefined ? offset : dt[5].toUpperCase()}`;
       return { start: instant, end: instant };
@@ -125,7 +127,8 @@ function explicitRange(
     if (words.length !== 2 && words.length !== 3) return null;
     const [a = '', b = '', year] = words;
     const month = (w: string) =>
-      MONTHS.findIndex((m) => w === m || (w.length === 3 && m.startsWith(w))) + 1;
+      MONTHS.findIndex((m) => w === m || (w.length === 3 && m.startsWith(w))) + 1 ||
+      (w === 'sept' ? 9 : 0);
     const dom = (w: string) => /^(\d{1,2})(?:st|nd|rd|th)?$/.exec(w)?.[1];
     const [mo, d] = month(a) > 0 ? [month(a), dom(b)] : [month(b), dom(a)];
     if (mo === 0 || d === undefined) return null;
@@ -149,11 +152,6 @@ function explicitRange(
 
   const words = phrase.split(' ');
   const [head = '', ...rest] = words;
-  if (words.length === 1) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(head)) return null;
-    const o = operand(words);
-    return o === null ? null : { gte: o.start, lt: o.end };
-  }
   if (head === 'from' || head === 'between') {
     const sep = head === 'from' ? 'to' : 'and';
     const i = rest.indexOf(sep);

@@ -9,11 +9,10 @@ const params = (q: string) =>
   Object.values(parseQuestion(q, pack, ctx).candidates[0]?.frame ?? {})[0]?.params;
 
 describe('explicit dates', () => {
-  it('reads "on <date>" and a bare ISO date as that whole day', () => {
+  it('reads "on <date>" as that whole day', () => {
     const whole = { gte: day('2026-09-15'), lt: day('2026-09-16') };
     for (const p of [
       'on 2026-09-15',
-      '2026-09-15',
       'on sep 15',
       'on september 15th',
       'on sep 15 2026',
@@ -55,6 +54,32 @@ describe('explicit dates', () => {
       lt: day('2026-09-03')
     });
     expect(rangeFor('before 2026-09-01t08:30', asOf)).toEqual({ lt: '2026-09-01T08:30-05:00' });
+  });
+
+  it('needs a lead word before an ISO date, as before a month-day', () => {
+    expect(rangeFor('2026-09-15', asOf)).toBeNull();
+    const r = parseQuestion('todos with title 2026-09-01', pack, ctx);
+    expect(JSON.stringify(r.candidates[0]?.frame)).not.toContain('createdAt');
+    expect(r.candidates[0]?.evidence.some((e) => e.role === 'time')).toBe(false);
+  });
+
+  it('reads "sept" as September', () => {
+    expect(rangeFor('on sept 15', asOf)).toEqual({ gte: day('2026-09-15'), lt: day('2026-09-16') });
+  });
+
+  it('does not parse an invalid time of day', () => {
+    for (const p of [
+      'before 2026-09-01t99:99',
+      'since 2026-09-01t25:00z',
+      'since 2026-09-01t10:60',
+      'since 2026-09-01t10:00:60',
+      'since 2026-09-01t10:00+25:00',
+      'from 2026-09-01t99:99 to 2026-09-02'
+    ])
+      expect(rangeFor(p, asOf), p).toBeNull();
+    expect(rangeFor('since 2026-09-01t23:59:59.5+05:30', asOf)).toEqual({
+      gte: '2026-09-01T23:59:59.5+05:30'
+    });
   });
 
   it('does not parse an invalid date', () => {
