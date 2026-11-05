@@ -46,6 +46,7 @@ export interface NlEvidence {
     | 'time'
     | 'order'
     | 'count'
+    | 'aggregate'
     | 'scope'
     | 'field'
     | 'author'
@@ -88,6 +89,12 @@ export type NlOutcome =
       data: unknown;
       /** On a `count` answer: every row the frame matches. Absent when counting stopped short, with `errors` saying why. */
       count?: number;
+      /**
+       * On an `aggregate` answer: `fn` of `field` over the rows the frame matches,
+       * as one `value`, or per group keyed by `by` (a field, or the `day`/`hour`
+       * bucket). Absent when the engine refused the frame, with `errors` saying why.
+       */
+      aggregate?: NlAggregate;
       errors?: unknown[];
       source: 'parser' | 'judge' | 'handoff';
       handoff?: string;
@@ -121,6 +128,17 @@ export type NlOutcome =
       options: { label: string; question: string; type: string }[];
     }
   | { kind: 'refuse'; reason: string };
+
+export interface NlAggregate {
+  fn: 'avg' | 'sum' | 'min' | 'max';
+  field: string;
+  by?: string;
+  /** Null when no row has a value (an empty set, or every value null). */
+  value?: number | string | null;
+  groups?: { key: string | boolean; value: number | string | null }[];
+  /** More groups exist than were returned. */
+  truncated?: true;
+}
 
 export interface NlParsedData {
   status: NlParseStatus;
