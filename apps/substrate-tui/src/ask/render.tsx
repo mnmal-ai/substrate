@@ -107,7 +107,13 @@ const titleWidth = (columns: number) =>
   Math.max(COLS.minTitle, columns - (COLS.id + COLS.status + COLS.project + COLS.gaps));
 
 const FN_LABEL = { avg: 'average', sum: 'total', min: 'min', max: 'max' } as const;
-const aggValue = (v: unknown) => (v === null || v === undefined ? '—' : str(v));
+// Two decimals for a float; a tiny one keeps three significant digits rather than reading 0.
+const aggValue = (v: unknown) =>
+  v === null || v === undefined
+    ? '—'
+    : typeof v === 'number' && !Number.isInteger(v)
+      ? String(Math.abs(v) >= 0.01 ? Math.round(v * 100) / 100 : Number(v.toPrecision(3)))
+      : str(v);
 
 const rows: Renderer = ({ data, theme, size }) => {
   const titleCols = titleWidth(size.columns);
@@ -117,11 +123,15 @@ const rows: Renderer = ({ data, theme, size }) => {
   ));
   const agg = o.aggregate;
   if (agg !== undefined) {
-    const head = `${FN_LABEL[agg.fn] ?? str(agg.fn)} ${str(agg.field)}`;
+    const head = `${Object.hasOwn(FN_LABEL, agg.fn) ? FN_LABEL[agg.fn] : str(agg.fn)} ${str(agg.field)}`;
+    const errs = errorLines(o.errors).map((l, i) => (
+      <Text key={`e${i}`} color={theme.color.error}>{`  ${l}`}</Text>
+    ));
     if (agg.groups === undefined) {
       return (
         <Box flexDirection="column">
           <Text color={theme.color.text}>{`${head} = ${aggValue(agg.value)}`}</Text>
+          {errs}
           {lost}
         </Box>
       );
@@ -133,12 +143,15 @@ const rows: Renderer = ({ data, theme, size }) => {
         {agg.groups.map((g, i) => (
           <Text key={i}>
             {'  '}
-            <Text color={theme.color.dimMid}>{padCells(str(g.key), keyCols)}</Text>
+            <Text color={theme.color.dimMid}>
+              {padCells(g.key === null ? '(none)' : str(g.key), keyCols)}
+            </Text>
             {'  '}
             <Text color={theme.color.text}>{aggValue(g.value)}</Text>
           </Text>
         ))}
         {agg.truncated === true ? <Text color={theme.color.dim}>{'  …more groups'}</Text> : null}
+        {errs}
         {lost}
       </Box>
     );
