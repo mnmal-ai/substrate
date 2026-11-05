@@ -9,6 +9,7 @@ Without an admin identity it is read-only.
 - Free text is a natural-language question, answered by `substrate-nl` (streamed). Tab completes types, fields and values.
 - `/ns <namespace>` switches the namespace that questions, completion and the status row use. The schema browser always lists every namespace.
 - `/frame` shows the Substrate frame behind the last answer.
+- `/asof <date-time>` reads relative phrases ("yesterday", "past 2 days") as of that moment, for the questions that follow. It must be ISO-8601 with an offset, e.g. `2026-10-24T23:59:59-05:00`. `/asof off` returns to the server clock, and `/asof` alone shows which is in use. `/frame` shows the clock the server read the last question against.
 - `/schema [namespace] [type]` opens the schema browser: namespaces, then types, then fields.
 - `/dash` shows service, traffic and engine metrics, live while open.
 - `/doctor` runs live checks against this deployment.
