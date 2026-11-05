@@ -135,7 +135,8 @@ export interface NlAggregate {
   by?: string;
   /** Null when no row has a value (an empty set, or every value null). */
   value?: number | string | null;
-  groups?: { key: string | boolean; value: number | string | null }[];
+  /** `key: null` is the rows with no value in the group field. */
+  groups?: { key: string | boolean | null; value: number | string | null }[];
   /** More groups exist than were returned. */
   truncated?: true;
 }

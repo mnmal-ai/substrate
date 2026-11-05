@@ -408,7 +408,8 @@ describe('aggregates over the memory store', () => {
     for (const [name, price, condition] of [
       ['a', 5, 'new'],
       ['b', 15, 'used'],
-      ['c', 10, 'new']
+      ['c', 10, 'new'],
+      ['d', 2, null]
     ] as const) {
       const res = await ctx.server.inject({
         method: 'POST',
@@ -416,7 +417,10 @@ describe('aggregates over the memory store', () => {
         headers: JSON_HEADERS,
         body: Buffer.from(
           JSON.stringify({
-            'shop/createItem': { params: { name, price, condition }, fields: { id: true } }
+            'shop/createItem': {
+              params: { name, price, ...(condition !== null ? { condition } : {}) },
+              fields: { id: true }
+            }
           })
         )
       });
@@ -433,7 +437,7 @@ describe('aggregates over the memory store', () => {
     expect(await answer('average price of items')).toEqual({
       fn: 'avg',
       field: 'price',
-      value: 10
+      value: 8
     });
     expect(await answer('what is the highest price of items')).toMatchObject({ value: 15 });
     expect(await answer('total price of items by condition')).toEqual({
@@ -442,15 +446,16 @@ describe('aggregates over the memory store', () => {
       by: 'condition',
       groups: [
         { key: 'new', value: 15 },
-        { key: 'used', value: 15 }
+        { key: 'used', value: 15 },
+        { key: null, value: 2 }
       ]
     });
-    const today = new Date().toISOString().slice(0, 10);
-    expect(await answer('total price of items per day')).toEqual({
+    // Inserted moments apart, so one day bucket; which day depends on the clock.
+    expect(await answer('total price of items per day')).toMatchObject({
       fn: 'sum',
       field: 'price',
       by: 'day',
-      groups: [{ key: today, value: 30 }]
+      groups: [{ value: 32 }]
     });
   });
 });

@@ -30,8 +30,13 @@ const types: Schema['types'] = {
       category: ref('Category')
     }
   },
-  Category: { fields: { name: str, rank: num } },
-  Sale: { fields: { item: ref('Item'), price: num, soldAt: date } }
+  Category: {
+    fields: { name: str, rank: num, archived: { kind: 'scalar', type: 'boolean', indexed: true } }
+  },
+  Sale: { fields: { item: ref('Item'), price: num, soldAt: date } },
+  Bin: {
+    fields: { size: num, code: { ...str, enum: Array.from({ length: 21 }, (_, i) => `c${i}`) } }
+  }
 };
 const pack = buildNamespacePack({
   namespace: 'shop',
@@ -91,6 +96,87 @@ describe('aggregates: parsing', () => {
       limit: 10
     });
     expect(parse('the item with the highest price').candidates[0]?.answer).toBe('single');
+  });
+
+  it('keeps the #1903 orderings when the type comes before the superlative', () => {
+    for (const [q, orderBy] of [
+      ['items with the highest price for last week', [{ price: 'desc' }]],
+      ['sales with the lowest price for the last 3 days', [{ price: 'asc' }]],
+      ['items with the highest price for featured', [{ price: 'desc' }]]
+    ] as const) {
+      const r = parse(q);
+      expect(r.candidates[0]?.answer, q).toBe('rows');
+      expect(params(q)?.orderBy, q).toEqual(orderBy);
+      expect(params(q), q).not.toHaveProperty('aggregate');
+    }
+  });
+
+  it('a recency pick inside an aggregate or a count is dropped as a filter', () => {
+    for (const [q, reason] of [
+      ['average price of the last sale', 'aggregating over the latest N rows is not supported'],
+      ['total price of the last 5 sales', 'aggregating over the latest N rows is not supported'],
+      ['max price of the newest items', 'aggregating over the latest N rows is not supported'],
+      ['average price of the first 3 items', 'aggregating over the latest N rows is not supported'],
+      ['how many of the latest sales', 'counting over the latest N rows is not supported'],
+      ['how many of the first 3 items', 'counting over the latest N rows is not supported']
+    ] as const) {
+      const r = parse(q);
+      expect(r.status, q).toBe('partial');
+      expect(r.candidates[0]?.strict, q).toBe(true);
+      expect(r.candidates[0]?.dropped, q).toContainEqual(
+        expect.objectContaining({ reason, kind: 'filter' })
+      );
+      expect(params(q), q).not.toHaveProperty('orderBy');
+      expect(params(q), q).not.toHaveProperty('limit');
+    }
+  });
+
+  it('a count beside an aggregate keeps the count and drops the aggregate as a filter', () => {
+    const r = parse('how many items with max price');
+    expect(r.status).toBe('partial');
+    expect(r.candidates[0]?.answer).toBe('count');
+    expect(r.candidates[0]?.dropped).toEqual([
+      { span: 'max price', reason: 'an aggregate does not apply to a count', kind: 'filter' }
+    ]);
+    expect(params('how many items with max price')).not.toHaveProperty('aggregate');
+  });
+
+  it('drops a grouping by a derived value beside an aggregate', () => {
+    const rulings: NamespaceRulings = {
+      ...base,
+      fieldPhrases: { spread: { derive: { diff: ['Item.price', 'Item.views'] } } }
+    };
+    const r = parse('average price of items by spread', rulings);
+    expect(r.candidates[0]?.dropped).toContainEqual(
+      expect.objectContaining({
+        reason: 'grouping by a derived value is not supported',
+        kind: 'order'
+      })
+    );
+    expect(r.candidates[0]?.plan.some((c) => c.kind === 'derive')).toBe(false);
+    expect(params('average price of items by spread', rulings)).toEqual({
+      aggregate: { value: { avg: 'price' } }
+    });
+  });
+
+  it('drops a grouping over more than 20 values', () => {
+    expect(parse('total size of bins by code').candidates[0]?.dropped).toEqual([
+      {
+        span: 'by code',
+        reason: 'code has 21 values; grouping runs one frame per value, at most 20',
+        kind: 'order'
+      }
+    ]);
+  });
+
+  it('grouping by archived drops the default live filter', () => {
+    expect(params('total rank of categories by archived')).toEqual({
+      aggregate: { value: { sum: 'rank' } }
+    });
+    expect(params('total rank of categories')).toEqual({
+      where: { archived: { eq: false } },
+      aggregate: { value: { sum: 'rank' } }
+    });
   });
 
   it('takes a date field for min and max only', () => {
@@ -162,6 +248,11 @@ describe('aggregates: parsing', () => {
     });
     expect(params('average price of items by condition')).toEqual({
       aggregate: { value: { avg: 'price' } }
+    });
+    expect(r.candidates[0]?.plan).toContainEqual({
+      path: ['aggregate', 'group:condition (one frame per value, and one for no value)'],
+      kind: 'agg',
+      served: false
     });
     expect(r.candidates[0]?.evidence).toContainEqual({
       span: 'by condition',
@@ -277,10 +368,14 @@ describe('aggregates: answering', () => {
   it('groups by an enum field with one aggregate per value', async () => {
     const { e, query } = engine((f) => {
       const where = JSON.stringify((f as Sent)['shop/Item']?.params.where);
-      return { data: { 'shop/Item': { groups: [{ value: where.includes('"new"') ? 20 : 8 }] } } };
+      const value = where.includes('"new"') ? 20 : where.includes('"used"') ? 8 : 4;
+      return { data: { 'shop/Item': { groups: [{ value }] } } };
     });
     const o = await ask('average price of lamp items by condition', e);
-    expect(query).toHaveBeenCalledTimes(2);
+    expect(query).toHaveBeenCalledTimes(3);
+    expect((query.mock.calls[2]?.[0] as Sent | undefined)?.['shop/Item']?.params.where).toEqual({
+      AND: [{ name: { eq: 'lamp' } }, { condition: { eq: null } }]
+    });
     expect((query.mock.calls[0]?.[0] as Sent | undefined)?.['shop/Item']?.params.where).toEqual({
       AND: [{ name: { eq: 'lamp' } }, { condition: { eq: 'new' } }]
     });
@@ -290,7 +385,8 @@ describe('aggregates: answering', () => {
       data: {
         groups: [
           { key: 'new', value: 20 },
-          { key: 'used', value: 8 }
+          { key: 'used', value: 8 },
+          { key: null, value: 4 }
         ]
       },
       aggregate: {
@@ -299,7 +395,24 @@ describe('aggregates: answering', () => {
         by: 'condition',
         groups: [
           { key: 'new', value: 20 },
-          { key: 'used', value: 8 }
+          { key: 'used', value: 8 },
+          { key: null, value: 4 }
+        ]
+      }
+    });
+  });
+
+  it('leaves out the no-value group when it has no value', async () => {
+    const { e } = engine((f) => {
+      const where = JSON.stringify((f as Sent)['shop/Item']?.params.where);
+      return { data: { 'shop/Item': { groups: [{ value: where.includes('null') ? null : 1 }] } } };
+    });
+    const o = await ask('average price of items by featured', e);
+    expect(o).toMatchObject({
+      aggregate: {
+        groups: [
+          { key: true, value: 1 },
+          { key: false, value: 1 }
         ]
       }
     });

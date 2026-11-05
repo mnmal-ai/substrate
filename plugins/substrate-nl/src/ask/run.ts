@@ -174,21 +174,28 @@ async function aggregate(
     data = env.data !== undefined && key in env.data ? (env.data[key] as Groups) : undefined;
     plan = env._diagnostics?.[key]?.plan;
   } else {
-    const groups: Record<string, unknown>[] = [];
-    for (const v of group.values) {
-      if (isAborted(http)) break;
-      const one = { [group.field]: { eq: v } };
-      const where = params.where === undefined ? one : { AND: [params.where, one] };
-      const env = await deps.engine.query(
-        { [key]: { params: { ...params, where }, fields: { id: true } } } as Query,
-        http
-      );
-      errors.push(...(env.errors ?? []));
-      const value = (env.data?.[key] as Groups)?.groups?.[0]?.value;
-      if (value === undefined) break;
-      groups.push({ key: v, value });
-    }
-    data = groups.length === group.values.length ? { groups } : undefined;
+    // One frame per value, and one for rows with no value, so the groups add up to the whole.
+    const keys = [...group.values, null];
+    const values = await Promise.all(
+      keys.map(async (v) => {
+        if (isAborted(http)) return undefined;
+        const one = { [group.field]: { eq: v } };
+        const where = params.where === undefined ? one : { AND: [params.where, one] };
+        const env = await deps.engine.query(
+          { [key]: { params: { ...params, where }, fields: { id: true } } } as Query,
+          http
+        );
+        errors.push(...(env.errors ?? []));
+        return (env.data?.[key] as Groups)?.groups?.[0]?.value;
+      })
+    );
+    data = values.some((v) => v === undefined)
+      ? undefined
+      : {
+          groups: keys
+            .map((k, i) => ({ key: k, value: values[i] }))
+            .filter((g) => g.key !== null || g.value !== null)
+        };
   }
   const bucket = params.bucket as { by: string } | undefined;
   const by = group?.field ?? bucket?.by;
@@ -203,7 +210,7 @@ async function aggregate(
             ? {
                 by,
                 groups: rows.map((g) => ({
-                  key: (g.key ?? g.bucket) as string | boolean,
+                  key: (g.bucket ?? g.key) as string | boolean | null,
                   value: g.value as number | string | null
                 }))
               }

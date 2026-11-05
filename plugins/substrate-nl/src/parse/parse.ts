@@ -269,7 +269,13 @@ export function parseQuestion(
   }
 
   // --- an aggregate, before field orderings, which take "highest <field>" otherwise ---
-  const aggregate = claimAggregate(tokens, walkClaims, pack, rulings);
+  const aggregate = claimAggregate(
+    tokens,
+    walkClaims,
+    pack,
+    rulings,
+    [...mentioned.values()].map((m) => m.at[0])
+  );
 
   // --- ordering by a field, before ids, so the N in "top N" is not read as an id ---
   const fieldOrder = claimFieldOrder(tokens, walkClaims, pack, rulings);
@@ -600,18 +606,20 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
       : a.evidence;
   const recency = a.order ?? (seedLatest !== undefined ? 'desc' : null);
   const derived = a.composed?.params.orderBy !== undefined;
+  // "how many … max price": the count is what was asked; the aggregate is dropped below.
+  const aggClaim = a.count ? null : a.aggregate;
   // A field ordering is ignored in a count, and gives way to a derived ordering.
   const fieldOrder: Dropped[] = [];
   let sortBy: { field: string; dir: 'desc' | 'asc'; limit: number } | null = null;
   // A count over "the top 5" or "the highest" would count every row: the ordering is a
   // dropped filter, so a strict count is unknown rather than a wrong number.
-  if (a.fieldOrder !== null && (a.count || a.aggregate !== null))
+  if (a.fieldOrder !== null && (a.count || aggClaim !== null))
     fieldOrder.push({
       span: a.fieldOrder.span,
       reason: `ordering does not apply to ${a.count ? 'a count' : 'an aggregate'}`,
       kind: 'filter'
     });
-  if (a.fieldOrder !== null && !a.count && a.aggregate === null) {
+  if (a.fieldOrder !== null && !a.count && aggClaim === null) {
     const r = orderField(a.fieldOrder, type, pack, rulings);
     const reason =
       'reason' in r
@@ -627,10 +635,12 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
         limit: a.fieldOrder.limit ?? (a.plural ? 10 : 1)
       };
   }
-  const conflict = (derived || sortBy !== null) && recency !== null;
-  const order = conflict ? null : recency;
+  // "the last sale", "the first 3 items": a count or aggregate over them would cover every row.
+  const pickOver = (a.count || aggClaim !== null) && recency !== null;
+  const conflict = !pickOver && (derived || sortBy !== null) && recency !== null;
+  const order = conflict || pickOver ? null : recency;
   const orderSpan = evidence.find((e) => e.role === 'order')?.span ?? '';
-  const ev = conflict ? evidence.filter((e) => e.role !== 'order') : [...evidence];
+  const ev = conflict || pickOver ? evidence.filter((e) => e.role !== 'order') : [...evidence];
   if (sortBy !== null)
     ev.push({
       span: a.fieldOrder?.span ?? '',
@@ -645,6 +655,33 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
           {
             span: orderSpan,
             reason: `it conflicts with the ${derived ? 'derived' : 'field'} ordering, which is kept`,
+            kind: 'order' as const
+          }
+        ]
+      : []),
+    ...(pickOver
+      ? [
+          {
+            span: orderSpan,
+            reason: `${a.count ? 'counting' : 'aggregating'} over the latest N rows is not supported`,
+            kind: 'filter' as const
+          }
+        ]
+      : []),
+    ...(a.count && a.aggregate !== null
+      ? [
+          {
+            span: a.aggregate.span,
+            reason: 'an aggregate does not apply to a count',
+            kind: 'filter' as const
+          }
+        ]
+      : []),
+    ...(aggClaim !== null && derived
+      ? [
+          {
+            span: `by ${Object.keys(a.composed?.params.derive ?? {}).join(', ')}`,
+            reason: 'grouping by a derived value is not supported',
             kind: 'order' as const
           }
         ]
@@ -725,7 +762,7 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
   const orderExclude = a.fieldOrder?.phrase?.entry.exclude;
   if (sortBy !== null && orderExclude !== undefined) where.push({ NOT: orderExclude });
 
-  const agg = a.aggregate === null ? null : aggregateOn(a.aggregate, type, pack, rulings);
+  const agg = aggClaim === null ? null : aggregateOn(aggClaim, type, pack, rulings);
   if (agg !== null) {
     dropped.push(...agg.dropped);
     ev.push(...agg.evidence);
@@ -809,7 +846,8 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
       where.push({ status: { eq: live } });
     }
     // Live rows by default; a question about the past searches the whole record.
-    if (!historical && fields.archived !== undefined) where.push({ archived: { eq: false } });
+    if (!historical && fields.archived !== undefined && !usedFields.has('archived'))
+      where.push({ archived: { eq: false } });
     else if (historical)
       ev.push({ span: '(history)', role: 'history', detail: 'archived rows included' });
     if (
@@ -844,7 +882,20 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
   const plan = [
     ...(all?.plan ?? []).map((c) => ({ ...c, path: ['where', ...c.path] })),
     ...yields,
-    ...(a.composed?.plan ?? [])
+    // A derive beside an aggregate was dropped, so its clauses do not run.
+    ...(a.composed?.plan ?? []).filter((c) => aggClaim === null || c.kind !== 'derive'),
+    ...(agg?.group !== undefined
+      ? [
+          {
+            path: [
+              'aggregate',
+              `group:${agg.group.field} (one frame per value, and one for no value)`
+            ],
+            kind: 'agg' as const,
+            served: false
+          }
+        ]
+      : [])
   ];
   if (order !== null) {
     // "latest" is by the type's ruled date, as a window and a walk's pick are.
@@ -858,12 +909,16 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
   Object.assign(params, a.composed?.params ?? {});
   // A composed reading needs the walk grammar anyway, so its count is the server's.
   if (a.count && a.composed?.walked === true) params.count = true;
+  if (aggClaim !== null) {
+    delete params.derive;
+    delete params.orderBy;
+  }
   if (agg?.fn !== undefined && agg.field !== undefined) {
     params.aggregate = { value: { [agg.fn]: agg.field } };
     if (agg.bucket !== undefined) params.bucket = agg.bucket;
   }
   const answer =
-    a.aggregate !== null
+    aggClaim !== null
       ? 'aggregate'
       : a.askField !== null
         ? a.askField.group
@@ -894,7 +949,7 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
       : {}),
     strict:
       a.count ||
-      a.aggregate !== null ||
+      aggClaim !== null ||
       order !== null ||
       sortBy !== null ||
       a.ids.length === 1 ||
@@ -1056,20 +1111,27 @@ const AGGREGATE_WORDS: Record<string, AggregateFn> = {
 /** Superlatives that are an ordering (#1903) unless the field is followed by one of these. */
 const VALUE_SUPERLATIVES = new Set(['highest', 'lowest']);
 const VALUE_OF = new Set(['of', 'for']);
+/** A field grouping runs one frame per value: more than this is dropped. */
+const MAX_GROUPS = 20;
 const BUCKET_WORDS = new Set(['hour', 'day', 'week', 'month', 'year']);
 
 /**
  * Claims one aggregate. "highest|lowest <field>" is a value only when "of" or
- * "for" follows the field ("the highest price of items"); otherwise it stays
- * an ordering ("items with the highest price").
+ * "for" follows the field and a type is named after it, none before the
+ * superlative ("the highest price of items"); otherwise it stays an ordering
+ * ("items with the highest price", "… highest price for last week").
  */
 function claimAggregate(
   tokens: Token[],
   walkClaims: WalkClaims,
   pack: NamespacePack,
-  rulings: NamespaceRulings
+  rulings: NamespaceRulings,
+  /** First token index of each type mention. */
+  mentions: number[]
 ): AggregateClaim | null {
   const ofFollows = (end: number) => VALUE_OF.has(tokens[end + 1]?.text ?? '');
+  const valueAt = (start: number, end: number) =>
+    ofFollows(end) && mentions.some((m) => m > end) && !mentions.some((m) => m < start);
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i] as Token;
     const fn = own(AGGREGATE_WORDS, t.text);
@@ -1078,7 +1140,7 @@ function claimAggregate(
     if (t.used) {
       // "highest <field phrase>" was claimed as a walk pick: a value question takes it back.
       const pick = walkClaims.picks.find((k) => k.at[0] === i && k.at[1] === i);
-      if (pick === undefined || pick.phrase.field === undefined || !ofFollows(pick.phrase.at[1]))
+      if (pick === undefined || pick.phrase.field === undefined || !valueAt(i, pick.phrase.at[1]))
         continue;
       walkClaims.picks.splice(walkClaims.picks.indexOf(pick), 1);
       f = { phrase: pick.phrase, span: pick.phrase.span, end: pick.phrase.at[1] };
@@ -1087,7 +1149,7 @@ function claimAggregate(
       while (!(tokens[j]?.used ?? true) && (tokens[j]?.text === 'of' || tokens[j]?.text === 'the'))
         j++;
       f = fieldAt(tokens, walkClaims, pack, rulings, j, false);
-      if (f === null || (VALUE_SUPERLATIVES.has(t.text) && !ofFollows(f.end))) continue;
+      if (f === null || (VALUE_SUPERLATIVES.has(t.text) && !valueAt(i, f.end))) continue;
     }
     takeField(tokens, walkClaims, i, f);
     const claim: AggregateClaim = {
@@ -1206,6 +1268,10 @@ function aggregateOn(
   if (values === undefined)
     return drop(
       `only enum and yes/no fields group; ${gr.name} is a ${gr.f.valueType ?? gr.f.kind} field`
+    );
+  if (values.length > MAX_GROUPS)
+    return drop(
+      `${gr.name} has ${values.length} values; grouping runs one frame per value, at most ${MAX_GROUPS}`
     );
   out.group = { field: gr.name, values };
   out.evidence.push({ span: g.span, role: 'field', detail: `group by ${gr.name}` });
