@@ -61,7 +61,13 @@ function fake(
   const held = new Promise<void>((r) => {
     release = r;
   });
-  const calls: { question: string; namespace: string; type?: string; signal?: AbortSignal }[] = [];
+  const calls: {
+    question: string;
+    namespace: string;
+    type?: string;
+    asOf?: string;
+    signal?: AbortSignal;
+  }[] = [];
   const nl: NlApi = {
     async *ask(req, opts) {
       calls.push({ ...req, ...(opts?.signal !== undefined ? { signal: opts.signal } : {}) });
@@ -184,6 +190,29 @@ describe('substrate.ask', () => {
     app.stdin.write(ENTER);
     await until(() => expect(app.frame()).toContain('"status"'));
     expect(app.frame()).toContain('open → value');
+  });
+  it('/asof sets the clock for the next questions, refuses a malformed one, and off clears it', async () => {
+    const { deps, calls } = fake(() => [rowsEv(0), { event: 'done', data: {} }]);
+    const app = start(deps);
+    app.stdin.write('/asof 2026-10-24');
+    app.stdin.write(ENTER);
+    await until(() =>
+      expect(app.frame()).toContain('asOf needs an ISO-8601 date-time with an offset')
+    );
+    app.stdin.write('/asof 2026-10-24T23:59:59-05:00');
+    app.stdin.write(ENTER);
+    await until(() => expect(app.frame()).toContain('asOf → 2026-10-24T23:59:59-05:00'));
+    app.stdin.write('things sold yesterday');
+    app.stdin.write(ENTER);
+    await until(() => expect(calls.length).toBe(1));
+    expect(calls[0]?.asOf).toBe('2026-10-24T23:59:59-05:00');
+    app.stdin.write('/asof off');
+    app.stdin.write(ENTER);
+    await until(() => expect(app.frame()).toContain('asOf → server clock'));
+    app.stdin.write('things');
+    app.stdin.write(ENTER);
+    await until(() => expect(calls.length).toBe(2));
+    expect(calls[1]).not.toHaveProperty('asOf');
   });
   it('/ns switches the namespace for the next question', async () => {
     const { deps, calls } = fake(() => [rowsEv(0), { event: 'done', data: {} }]);

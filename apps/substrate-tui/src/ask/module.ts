@@ -36,10 +36,15 @@ function explain(err: unknown, endpoint: string): string {
   return e.message ?? String(err);
 }
 
+/** What the server accepts for `asOf`: a date-time with an explicit offset. */
+const ISO_WITH_OFFSET = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
+
 export function askModule(deps: TuiDeps): TuiModule<AskPanels> {
   let namespace = deps.namespace;
   let pack: NlServedPack | null = null;
   let forceType: string | undefined;
+  /** The clock relative phrases are read against; undefined = the server's. */
+  let asOf: string | undefined;
   let last: FrameState = { lines: ['no question asked yet'] };
   let lastPackNote = '';
 
@@ -90,6 +95,25 @@ export function askModule(deps: TuiDeps): TuiModule<AskPanels> {
         }
       },
       {
+        name: 'asof',
+        summary:
+          'read "yesterday", "past 2 days" … as of a date-time (ISO-8601 with an offset); off for the server clock',
+        args: [{ name: 'datetime|off' }],
+        run([v], ctx) {
+          if (v === undefined || v === '') return ctx.print(`asOf: ${asOf ?? 'server clock'}`);
+          if (v === 'off') {
+            asOf = undefined;
+            return ctx.print('asOf → server clock');
+          }
+          if (!ISO_WITH_OFFSET.test(v) || Number.isNaN(Date.parse(v)))
+            return ctx.print(
+              'asOf needs an ISO-8601 date-time with an offset, e.g. 2026-10-24T23:59:59-05:00'
+            );
+          asOf = v;
+          ctx.print(`asOf → ${asOf}`);
+        }
+      },
+      {
         name: 'frame',
         summary: "show the last answer's query frame, evidence and judge trail",
         args: [],
@@ -133,6 +157,7 @@ export function askModule(deps: TuiDeps): TuiModule<AskPanels> {
                 namespace,
                 question: text,
                 project: deps.project,
+                ...(asOf !== undefined ? { asOf } : {}),
                 ...(type !== undefined ? { type } : {})
               },
               { signal }
@@ -144,6 +169,7 @@ export function askModule(deps: TuiDeps): TuiModule<AskPanels> {
                   lines.push(
                     `parse: ${ev.data.status}${ev.data.reason !== undefined ? ` — ${ev.data.reason}` : ''}`
                   );
+                  if (ev.data.asOf !== undefined) lines.push(`asOf: ${ev.data.asOf}`);
                   if (ev.data.frame !== undefined)
                     lines.push(JSON.stringify(ev.data.frame, null, 2));
                   for (const e of ev.data.evidence)
