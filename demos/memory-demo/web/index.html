@@ -1,0 +1,634 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Agent Memory, Side by Side</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='8' cy='12' r='6' fill='%238a94a6'/%3E%3Ccircle cx='16' cy='12' r='6' fill='%2300aeef' fill-opacity='.85'/%3E%3C/svg%3E">
+<!-- Axon, vendored from mnmal-ai/axon: tokens (dark by default, fonts embedded), the light theme, the component layer. -->
+<!-- Page resets sit in a layer below Axon's components, so Axon's own colours and type win. -->
+<style>@layer base, components;</style>
+<link rel="stylesheet" href="/axon/tokens.css">
+<link rel="stylesheet" href="/axon/theme-light.css" media="(prefers-color-scheme: light)">
+<link rel="stylesheet" href="/axon/axon.css">
+<style>
+  /* Two systems on one material. Substrate wears Axon's accent; obsidian-mind a neutral ink.
+     The CMYK tones stay reserved for state: green is Correct, magenta is Wrong. */
+  :root { --sys-o: var(--text-dim); --sys-h: var(--accent); --sys-k: #a998ff; }
+  @media (prefers-color-scheme: light) { :root { --sys-k: #6247d1; } }
+  @layer base {
+    *, *::before, *::after { box-sizing: border-box; }
+    h1, h2, h3, p, ul, pre { margin: 0; }
+    body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--sans); -webkit-font-smoothing: antialiased; line-height: 1.5; }
+    button, select, input { font: inherit; color: inherit; border: 0; }
+    button { background: none; padding: 0; cursor: pointer; }
+  }
+
+  /* The header is the fixed anchor of every page morph (axon.css: site-header). */
+  .site-header { position: sticky; top: 0; z-index: 10; background: var(--bg); view-transition-name: site-header; padding: 18px 28px 16px; }
+  .site-header .inner { max-width: 1440px; margin: 0 auto; display: grid; grid-template-columns: 1fr minmax(420px, 620px); gap: 24px; align-items: center; }
+  .brand .ax-label { display: block; margin-bottom: 4px; }
+  .brand h1 { font-size: 1.15rem; font-weight: 650; letter-spacing: -0.01em; }
+  .brand h1 .sub { color: var(--text-muted); font-weight: 450; }
+  .ax-tabbar { --n: 5; }
+  .ax-tabbar-item { border: 0; background: none; cursor: pointer; }
+  /* Keep the header live through a morph: show the new state only, so the well slides in place. */
+  ::view-transition-old(site-header) { display: none; }
+  ::view-transition-new(site-header) { mix-blend-mode: normal; }
+
+  /* ⓘ tooltips, as Axon's <Tooltip>: one bubble, kept inside the viewport, above its trigger when there is room. */
+  :root { --tooltip-max-width: 20rem; }
+  .tip { margin-left: 6px; vertical-align: middle; cursor: help; }
+  .label-row { display: flex; align-items: center; margin-bottom: 10px; }
+  .label-row .tip { margin-left: 4px; }
+
+  main { max-width: 1440px; margin: 0 auto; padding: 8px 28px 64px; }
+  .page-title { view-transition-name: page-title; view-transition-class: morph; margin: 12px 0 20px; }
+  .page-title h2 { font-size: 1.65rem; font-weight: 650; letter-spacing: -0.02em; line-height: 1.2; }
+  .page-title p { color: var(--text-muted); max-width: 820px; margin-top: 6px; }
+  #content { view-transition-name: page-content; }
+  section { display: none; }
+  section.on { display: block; }
+
+  .ax-card { padding: 20px 22px; }
+  .ax-panel { padding: 18px 20px; }
+  .stack { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  #qpick { flex: 0 1 420px; min-width: 0; width: auto; }
+  #qtext { flex: 1 1 260px; min-width: 0; width: auto; }
+  select.ax-input { width: auto; max-width: 100%; appearance: none; cursor: pointer; padding-right: 2.4rem; text-overflow: ellipsis;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238a94a6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 0.85rem center; background-size: 16px; }
+  .muted { color: var(--text-muted); }
+  .dim { color: var(--text-dim); }
+  .small { font-size: 0.85rem; }
+  .mono { font-family: var(--mono); }
+  h3 { font-size: 1rem; font-weight: 650; margin-bottom: 12px; }
+
+  .who-o { color: var(--sys-o); font-weight: 650; }
+  .who-h { color: var(--sys-h); font-weight: 650; }
+  .who-k { color: var(--sys-k); font-weight: 650; }
+  .grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+  .grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+  .grid3 .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .grid5 { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px; }
+
+  /* Ask: one pane per system, its ink along the top edge and in its numbers. */
+  .pane { position: relative; overflow: hidden; }
+  .pane::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 4px; background: var(--c); }
+  .pane.o { --c: var(--sys-o); }
+  .pane.h { --c: var(--sys-h); }
+  .pane.k { --c: var(--sys-k); }
+  .pane > h3 { color: var(--c); font-size: 1.1rem; margin-bottom: 2px; }
+  .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 16px 0; }
+  .metric { padding: 10px 12px; }
+  .metric b { display: block; font-family: var(--mono); font-size: 1.35rem; font-weight: 500; line-height: 1.25; color: var(--c); }
+  .metric span { font-size: 0.75rem; color: var(--text-dim); }
+  .calls { list-style: none; padding: 0; font: 0.8rem/1.5 var(--mono); max-height: 420px; overflow: auto; margin-bottom: 14px; }
+  .calls:empty { display: none; }
+  .calls li { border-bottom: 1px dashed var(--border); }
+  /* Each call opens to show what the agent asked and what came back. */
+  .calls summary { display: flex; gap: 10px; align-items: baseline; padding: 5px 0; cursor: pointer; list-style: none; }
+  .calls summary::-webkit-details-marker { display: none; }
+  .calls summary::before { content: ""; flex: none; align-self: center; border-left: 5px solid var(--text-dim); border-top: 4px solid transparent; border-bottom: 4px solid transparent; transition: transform var(--duration-fast) var(--easing-standard); }
+  .calls details[open] > summary::before { transform: rotate(90deg); }
+  .calls summary:hover .n { color: var(--accent); }
+  .calls .n { white-space: nowrap; color: var(--text); }
+  .calls .in { min-width: 0; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+  .calls .ms { white-space: nowrap; color: var(--text-muted); }
+  .calls li.run .ms::after { content: "…"; }
+  .call-body { display: grid; gap: 6px; padding: 2px 0 12px 15px; }
+  .call-body pre { margin: 0; padding: 10px 12px; max-height: 240px; overflow: auto; white-space: pre-wrap; word-break: break-word; font: 0.75rem/1.5 var(--mono); color: var(--text-muted); }
+  .call-body .err { color: var(--purple); }
+  .sysllm:empty { display: none; }
+  .sysllm { margin: -6px 0 12px; }
+  .answer { white-space: pre-wrap; min-height: 56px; padding: 12px 14px; font-size: 0.95rem; }
+  .verdict { margin-top: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+  /* Bars sit in wells; each system fills with its own ink. */
+  .bars { display: grid; gap: 8px; }
+  .group { font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-dim); margin-top: 10px; }
+  .bar { display: grid; grid-template-columns: 112px 1fr 76px; gap: 10px; align-items: center; font-size: 0.85rem; }
+  .track { height: 18px; border-radius: 9px; background: var(--bg); box-shadow: var(--neu-shadow-inset); overflow: hidden; }
+  .fill { height: 100%; border-radius: 9px; transition: width var(--duration-slow) var(--easing-spring); }
+  .fill.o { background: var(--sys-o); }
+  .fill.h { background: var(--sys-h); }
+  .fill.k { background: var(--sys-k); }
+  .bar .val { font-family: var(--mono); text-align: right; }
+  .legend { display: flex; gap: 16px; font-size: 0.8rem; color: var(--text-muted); }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+
+  .stat { padding: 14px 16px; }
+  .stat .ax-label { display: block; margin-bottom: 8px; }
+  .stat .vals { display: flex; gap: 18px; }
+  .stat .v { font-family: var(--mono); font-size: 1.5rem; line-height: 1.2; }
+  .stat .v small { display: block; font-family: var(--sans); font-size: 0.72rem; color: var(--text-dim); font-weight: 450; }
+
+  .log { font: 0.8rem/1.55 var(--mono); white-space: pre-wrap; min-height: 140px; padding: 12px 14px; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-dim); font-weight: 500; }
+  td.num, th.num { text-align: right; white-space: nowrap; }
+  .step { display: grid; gap: 8px; padding: 12px 14px; }
+  .step + .step { margin-top: 12px; }
+  pre.md { white-space: pre-wrap; font: 0.78rem/1.55 var(--mono); max-height: 64vh; overflow: auto; color: var(--text-muted); padding: 14px; }
+
+  @media (max-width: 1000px) {
+    .site-header .inner, .grid2, .grid3, .grid5 { grid-template-columns: minmax(0, 1fr); }
+    table { display: block; overflow-x: auto; }
+    .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    main, .site-header { padding-left: 16px; padding-right: 16px; }
+    #qpick, #qtext { flex-basis: 100%; }
+  }
+</style>
+</head>
+<body>
+<header class="site-header">
+  <div class="inner">
+    <div class="brand">
+      <span class="ax-label">mnmal-ai · agent memory</span>
+      <h1>Side by side <span class="sub">· <span class="who-o">obsidian-mind</span>, <span class="who-h">Substrate</span> and <span class="who-k">Hindsight</span></span><i data-tip="about"></i></h1>
+    </div>
+    <nav class="ax-tabbar" id="tabbar" style="--i:0" aria-label="Pages">
+      <span class="ax-tabbar-indicator" aria-hidden="true"></span>
+      <button class="ax-tabbar-item" data-tab="ask" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1.1-4.6A8 8 0 1 1 21 12Z"/></svg><span>Ask</span></button>
+      <button class="ax-tabbar-item" data-tab="ingest"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg><span>Ingest</span></button>
+      <button class="ax-tabbar-item" data-tab="score"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V10m6 10V4m6 16v-7m4 7H2"/></svg><span>Scoreboard</span></button>
+      <button class="ax-tabbar-item" data-tab="shared"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="m8.2 10.8 7.6-3.6m-7.6 2.4 7.6 3.6"/></svg><span>Shared</span></button>
+      <button class="ax-tabbar-item" data-tab="setup"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4 2.6-2.6Z"/></svg><span>Setup</span></button>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="page-title" id="pageTitle"><h2><span id="pageTitleText"></span><i data-tip="page.ask" id="pageTip"></i></h2><p></p></div>
+  <div id="content">
+    <section id="ask" class="on">
+      <div class="stack">
+        <div class="ax-panel">
+          <div class="label-row"><span class="ax-label">Question</span><i data-tip="ask.question"></i></div>
+          <div class="row">
+            <select class="ax-input" id="qpick"><option value="">Pick a prepared question…</option></select>
+            <input class="ax-input" type="text" id="qtext" placeholder="…or type your own question">
+            <button class="ax-btn ax-btn-primary" id="go">Ask all three</button>
+          </div>
+          <p class="small muted" id="why" style="margin-top:10px;min-height:1.4em"></p>
+          <p class="small dim" id="loadedNote"></p>
+        </div>
+        <div class="grid3">
+          <div class="ax-card pane o ax-materialize" id="pane-obsidian"></div>
+          <div class="ax-card pane h ax-materialize" style="--i:1" id="pane-substrate"></div>
+          <div class="ax-card pane k ax-materialize" style="--i:2" id="pane-hindsight"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="ingest">
+      <div class="stack">
+        <div class="ax-panel">
+          <div class="label-row"><span class="ax-label">Memory set</span><i data-tip="ingest.set"></i></div>
+          <div class="row">
+            <select class="ax-input" id="dataset"></select>
+            <button class="ax-btn ax-btn-primary" id="ingestGo">Ingest into all three</button>
+          </div>
+        </div>
+        <div class="grid2">
+          <div class="ax-card"><div class="label-row"><span class="ax-label">Progress</span><i data-tip="ingest.progress"></i></div><div class="ax-well log" id="ingestLog">Ready.</div></div>
+          <div class="ax-card"><div class="label-row"><span class="ax-label">Time until searchable</span><i data-tip="ingest.timing"></i></div><div class="bars" id="ingestBars"><span class="muted">Run an ingest, or see the last recorded run.</span></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="score">
+      <div class="stack">
+        <div class="row"><select class="ax-input" id="runPick"></select><i data-tip="score.runs"></i><span class="small dim" id="runNote"></span></div>
+        <div class="ax-panel" id="scoreTop"><span class="muted">No recorded eval yet. Run <span class="mono">node eval/run.ts</span>.</span></div>
+        <div class="grid2">
+          <div class="ax-card"><h3>Accuracy by question type<i data-tip="score.byType"></i></h3><div class="bars" id="catBars"></div></div>
+          <div class="ax-card"><h3>Memory lookups per answer<i data-tip="score.lookupsByType"></i></h3><div class="bars" id="callBars"></div></div>
+        </div>
+        <div class="ax-card"><h3>Every question<i data-tip="score.perQ"></i></h3><div id="perQ"></div></div>
+      </div>
+    </section>
+
+    <section id="shared">
+      <div class="stack">
+      <div class="ax-panel">
+        <div class="label-row"><span class="ax-label">Change a memory, live, on this Mac</span><i data-tip="shared.live"></i></div>
+        <p class="small muted" style="margin-bottom:12px">Records that Atlas now moves to Apache Kafka in all three systems, through each one's normal write path. Then press 1 and ask "[changed] What is the current target queue for Atlas queue migration?"</p>
+        <div class="row">
+          <button class="ax-btn ax-btn-primary" id="changeGo">Make the change</button>
+          <button class="ax-btn ax-btn-secondary" id="changeUndo">Put it back</button>
+          <span class="small dim" id="changeStatus"></span>
+        </div>
+        <div class="grid3" style="margin-top:14px">
+          <div class="ax-well metric" style="--c:var(--sys-o)"><b id="chg-o">–</b><span>obsidian-mind: note written, vault re-indexed, committed</span></div>
+          <div class="ax-well metric" style="--c:var(--sys-h)"><b id="chg-h">–</b><span>Substrate: two writes</span></div>
+          <div class="ax-well metric" style="--c:var(--sys-k)"><b id="chg-k">–</b><span>Hindsight: both memories retained again, facts re-extracted</span></div>
+        </div>
+        <div class="ax-well log" id="changeLog" style="margin-top:12px;min-height:0" hidden></div>
+      </div>
+      <div class="label-row" style="margin:6px 0 0"><span class="ax-label">Recorded: the same change, across two machines</span><i data-tip="page.shared"></i></div>
+      <div class="grid3">
+        <div class="ax-card pane o"><h3>obsidian-mind<i data-tip="shared.obsidian"></i></h3><p class="small dim">Machine B is a git clone of the vault</p><div id="sharedObsidian" style="margin-top:14px"></div></div>
+        <div class="ax-card pane h"><h3>Substrate<i data-tip="shared.substrate"></i></h3><p class="small dim">Machine B is another client of the same server</p><div id="sharedSubstrate" style="margin-top:14px"></div></div>
+        <div class="ax-card pane k"><h3>Hindsight<i data-tip="shared.hindsight"></i></h3><p class="small dim">Machine B is another client of the same server</p><div id="sharedHindsight" style="margin-top:14px"></div></div>
+      </div>
+      </div>
+    </section>
+
+    <section id="setup">
+      <div class="grid3">
+        <div class="ax-card pane o"><h3>obsidian-mind setup<i data-tip="setup.obsidian"></i></h3><pre class="ax-well md" id="setupObsidian" style="margin-top:12px"></pre></div>
+        <div class="ax-card pane h"><h3>Substrate setup<i data-tip="setup.substrate"></i></h3><pre class="ax-well md" id="setupSubstrate" style="margin-top:12px"></pre></div>
+        <div class="ax-card pane k"><h3>Hindsight setup<i data-tip="setup.hindsight"></i></h3><pre class="ax-well md" id="setupHindsight" style="margin-top:12px"></pre></div>
+      </div>
+    </section>
+  </div>
+</main>
+<span class="ax-tooltip" role="tooltip" id="tipBubble" hidden></span>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const SYSTEMS = ["obsidian", "substrate", "hindsight"];
+const NAMES = { obsidian: "obsidian-mind", substrate: "Substrate", hindsight: "Hindsight" };
+const SUBS = { obsidian: "Obsidian vault · QMD hybrid search · hooks", substrate: "Typed store · hybrid recall · one server", hindsight: "LLM-extracted facts · recall and reflect · one server" };
+const KEY = { obsidian: "o", substrate: "h", hindsight: "k" };
+const TABS = ["ask", "ingest", "score", "shared", "setup"];
+const TITLES = {
+  ask: ["Ask all three", "One question to three agents, each with only its own memory. Watch the lookups stream in."],
+  ingest: ["The same memories into all three", "Each system stores the identical set through its own normal write path. Timed from the first write until a search finds the last memory."],
+  score: ["Scoreboard", "Every prepared question, run several times against each system, graded against an answer key derived from the data."],
+  shared: ["Many agents, one memory", "A teammate's agent on machine A records that Atlas now moves to Apache Kafka. A different agent on machine B is then asked what Atlas is moving to. obsidian-mind shares a vault across machines through git; Substrate is a server every agent talks to."],
+  setup: ["Setup", "What it took to stand each system up on this Mac. obsidian-mind was easier to install."],
+};
+let STATE = null, current = null;
+
+// Tooltips: [what it explains, the explanation].
+const TIPS = {
+  about: ["this demo", "Two ways to give AI agents memory, compared on this Mac. Both systems hold the same memories about a made-up company, and the same Claude model answers the same questions. The only difference is the memory system."],
+  "page.ask": ["Ask", "Each pane starts a fresh Claude Code session (Sonnet 5.5) that can use only its own system's memory tools: no web, no shell, no file edits. All three get the identical question at the same moment."],
+  "page.ingest": ["Ingest", "Every system takes the identical memory set through its own normal write path. obsidian-mind writes one markdown note per memory and re-indexes its search; Substrate creates typed records through its write API; Hindsight retains each memory and its LLM extracts the facts. Loading a set replaces what they hold."],
+  "page.score": ["Scoreboard", "Recorded runs, not live: every prepared question, sent to every system with the same model, question text and limits, then graded against the answer key."],
+  "page.shared": ["Many agents, one memory", "Recorded by eval/shared.ts, after which both systems were put back exactly as they were. Each ask on machine B is a separate agent process, as a teammate's agent would be."],
+  "page.setup": ["Setup", "Notes written while installing each system on this Mac, every step timed. obsidian-mind took about 10 minutes of machine time, mostly model downloads. Substrate builds from source in about a minute and a half, entirely from public npm, plus a short plugin declaring the types. Hindsight installs with one pip package (about 2 GB) and runs its LLM on the Claude subscription."],
+  "ask.question": ["the question types", "Lookup: one fact. Changed: a decision that was later replaced, with the old one still on record. Filter: a list picked by exact fields. Count: a total. Join: an answer that combines several memories. Prepared questions have an answer key and are graded; your own are answered but not graded."],
+  "pane.obsidian": ["obsidian-mind", "An Obsidian vault: one markdown note per memory, with its fields in the frontmatter and links between notes. Its agent searches with QMD (keyword, vector and reranker models running locally) and can also Read, Grep and Glob the vault's files. obsidian-mind's own hooks and rules run too."],
+  "about": ["this demo", "Three ways to give AI agents memory, compared on this Mac. All three hold the same memories about a made-up company, and the same Claude model answers the same questions. The only difference is the memory system."],
+  "pane.hindsight": ["Hindsight", "Hindsight (vectorize-io/hindsight): an agent memory server. On retain, its own LLM (Sonnet 5.5 here, on the Claude subscription) extracts facts, entities and relationships from each memory; it embeds them locally and consolidates observations in the background. Its agent gets the read tools of the bank's MCP endpoint: recall, reflect (an answer written by Hindsight's LLM), and listing and reading memories and documents. No file access, no write tools."],
+  "setup.hindsight": ["Hindsight setup", "One package (pip install hindsight-api, about 2 GB with its local embedding and reranking models) and an embedded Postgres; no plugin or schema to write. Its LLM provider is claude-code here, so it runs natively on the Mac on the Claude subscription. Storing memories costs LLM tokens: about 19,000 per memory in this demo, including consolidation."],
+  "pane.substrate": ["Substrate", "A typed store on Postgres: each memory is a record of a declared type (Person, Project, Decision, Task, Incident) with fields and links to other records. Its agent has three tools: schema to see the types, query for exact typed queries, and recall for hybrid search (vector plus keyword). No file access."],
+  "metric.calls": ["memory lookups", "How many times the agent called its memory. For obsidian-mind: QMD searches and reads, plus Read, Grep and Glob on the vault. For Substrate and Hindsight: any of their tools. In the list below, ◆ marks a memory lookup and · any other tool; click a row to see what the agent asked and what came back."],
+  "metric.mms": ["lookup time", "Time spent inside those memory calls, added up: from when the agent made each call until its result came back."],
+  "metric.wall": ["time to answer", "Wall-clock time from starting the agent's session to its final answer. It includes session start-up and the model's own thinking, not just the lookups."],
+  "metric.tok": ["tokens in", "Everything the agent's model read to produce this answer, summed across its turns: instructions, hook output, tool definitions and every lookup result, cached or not. When Hindsight's own LLM works during an answer (its reflect tool), those tokens are shown separately under the numbers."],
+  "ask.grading": ["grading", "Graded mechanically against the answer key. Case and punctuation are ignored, counts are graded on the last number in the answer, and naming a value under \"must not say\" fails. A run that reads the answer key or the demo's code counts as wrong."],
+  "ingest.set": ["the memory sets", "Base set: 253 memories about Lumen Labs, a made-up company with 24 people and 10 projects, plus their decisions, tasks and incidents. 5× set: 1,176 memories, the same company grown fivefold, used for the scale run. Sample: 10 memories, for a quick check."],
+  "ingest.progress": ["progress", "The live log from each system's ingest as it runs. Each system is reset first, then loaded."],
+  "ingest.timing": ["the timings", "Writing: storing every memory. Until searchable: from the last write until a search finds the last memory. For obsidian-mind that is QMD's index update, its embedding pass and a keyword hit; for Substrate, its hybrid recall returning the record; for Hindsight, recall returning a fact from the last memory. Substrate embeds each record as it writes it; Hindsight's writing time includes its LLM extracting the facts of every memory."],
+  "score.runs": ["the recorded runs", "Both runs ask every prepared question three times of each system, one system at a time, in a rotating order. Claude Code defaults: Claude Code as it ships, so MCP tools are found through its tool search, and each agent starts with only its system's own orientation (Substrate's onboarding document, obsidian-mind's session-start hooks, a sentence naming Hindsight's bank). Tools loaded up front: every agent gets its tools at the start, and Substrate's agent also gets a short overview of its types."],
+  "stat.correct": ["answers correct", "Share of all runs whose answer matched the answer key."],
+  "stat.wall": ["time to answer", "Average wall-clock time per answer, from session start to the final answer."],
+  "stat.calls": ["lookups per answer", "Average memory calls per answer. Fewer means the memory gave the agent what it needed in fewer round trips."],
+  "stat.mms": ["time in lookups", "Average time per answer spent inside memory calls."],
+  "stat.tok": ["tokens in per answer", "Average tokens the model read per answer, cached or not: the context, and the cost, that memory adds to every answer."],
+  "stat.rewording": ["rewording-only misses", "A miss is rewording only when the answer names the right items but not in their exact words: every word of each expected title (small words such as the, is and for aside) appears in one line of the answer, in any order. Hindsight stores facts its LLM rewrote, so it can lose exact titles. These still count as wrong: an agent acting on a record needs its real name."],
+  "score.byType": ["accuracy by question type", "Share of runs answered correctly, by question type: lookup (one fact), changed (a replaced decision), filter (a list by exact fields), count (a total) and join (several memories combined)."],
+  "score.lookupsByType": ["lookups by question type", "Average memory calls per answer, by question type. Join, filter and count show the widest gap: one typed query can follow links, or pick and count records by field, where a text search has to find and read each matching note."],
+  "score.perQ": ["the question table", "One row per prepared question. Correct is out of the run's repeats; Lookups and Time are averages. Each cell shows obsidian-mind first, then Substrate."],
+  "shared.obsidian": ["sharing in obsidian-mind", "obsidian-mind keeps memory as files on each machine. A team shares the vault through git, and every machine keeps its own QMD index, so machine B sees a change only after someone pulls and re-indexes. Until then its agent answers from the old note, with no sign it is out of date."],
+  "shared.live": ["the live change", "All three systems record the same change through their normal write path. obsidian-mind writes the new note, marks the old one replaced, re-indexes QMD and commits; Substrate makes two writes; Hindsight retains the new decision and the updated old one, and its LLM re-extracts their facts. On one machine all three agents then see it. The stale answer needs a second machine, as in the recorded scene below. While the change is made, the Atlas question is graded against Apache Kafka. Put it back restores all three; for Hindsight that includes rebuilding its observations from the restored facts, which takes a few minutes."],
+  "shared.hindsight": ["sharing in Hindsight", "Hindsight is also one server that every agent talks to. Recording the change means retaining the new decision and the replaced one again, and its LLM re-extracts their facts, which takes seconds. The next agent to ask gets the new answer, with nothing to sync."],
+  "shared.substrate": ["sharing in Substrate", "Substrate is one server that every agent talks to. Recording the change is two writes: the new decision, and the old one marked as replaced by it. The next agent to ask gets the new answer, with nothing to sync."],
+  "setup.obsidian": ["obsidian-mind setup", "Four steps a person does: clone the template, fill in its North Star note, install QMD, build the index. The first search then downloads about 2.6 GB of local models without asking."],
+  "setup.substrate": ["Substrate setup", "Postgres with pgvector in Docker, Ollama for embeddings, and the Substrate server built from source. It also needs a plugin of about 120 lines declaring the memory types: that schema is what makes the typed queries possible."],
+};
+const TIP_GLYPH = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>`;
+const tip = (key) => `<button type="button" class="ax-icon-btn ax-icon-btn-sm tip" data-tip="${key}" aria-label="About ${esc(TIPS[key][0])}" aria-expanded="false">${TIP_GLYPH}</button>`;
+const mountTips = (root = document) => root.querySelectorAll("i[data-tip]").forEach((el) => {
+  const id = el.id;
+  el.outerHTML = tip(el.dataset.tip);
+  if (id) document.querySelector(`button[data-tip="${el.dataset.tip}"]:not([id])`).id = id;
+});
+let tipOpen = null;
+function openTip(btn) {
+  if (tipOpen === btn) return;
+  closeTip();
+  const bubble = $("#tipBubble");
+  bubble.textContent = TIPS[btn.dataset.tip][1];
+  bubble.style.visibility = "hidden";
+  bubble.hidden = false;
+  const b = btn.getBoundingClientRect(), w = bubble.offsetWidth, h = bubble.offsetHeight;
+  const vw = document.documentElement.clientWidth;
+  const above = b.top - 8 - h;
+  bubble.style.left = `${Math.min(Math.max(b.left + b.width / 2 - w / 2, 12), vw - 12 - w)}px`;
+  bubble.style.top = `${above >= 12 ? above : b.bottom + 8}px`;
+  bubble.style.visibility = "";
+  btn.setAttribute("aria-expanded", "true");
+  btn.setAttribute("aria-describedby", "tipBubble");
+  tipOpen = btn;
+}
+function closeTip() {
+  if (!tipOpen) return;
+  $("#tipBubble").hidden = true;
+  tipOpen.setAttribute("aria-expanded", "false");
+  tipOpen.removeAttribute("aria-describedby");
+  tipOpen = null;
+}
+// Opens on hover, focus or tap; closes on leave, blur, Escape, scroll, resize or a tap elsewhere.
+document.addEventListener("mouseover", (e) => { const b = e.target.closest("button[data-tip]"); if (b) openTip(b); });
+document.addEventListener("mouseout", (e) => { const b = e.target.closest("button[data-tip]"); if (b && !b.contains(e.relatedTarget) && document.activeElement !== b) closeTip(); });
+document.addEventListener("focusin", (e) => { const b = e.target.closest("button[data-tip]"); b ? openTip(b) : closeTip(); });
+document.addEventListener("focusout", (e) => { if (e.target === tipOpen) closeTip(); });
+document.addEventListener("click", (e) => { const b = e.target.closest("button[data-tip]"); if (b) openTip(b); });
+document.addEventListener("pointerdown", (e) => { if (tipOpen && !tipOpen.contains(e.target)) closeTip(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeTip(); });
+addEventListener("scroll", closeTip, { passive: true, capture: true });
+addEventListener("resize", closeTip);
+mountTips();
+
+// Page morphs: the header stays put, the title block morphs
+// into the next page's, and the content sinks out and rises in following tab order.
+function setPage(tab) {
+  current = tab;
+  document.querySelectorAll(".ax-tabbar-item").forEach((b) => b.dataset.tab === tab ? b.setAttribute("aria-current", "page") : b.removeAttribute("aria-current"));
+  $("#tabbar").style.setProperty("--i", TABS.indexOf(tab));
+  document.querySelectorAll("section").forEach((s) => s.classList.toggle("on", s.id === tab));
+  $("#pageTitleText").textContent = TITLES[tab][0];
+  $("#pageTip").dataset.tip = `page.${tab}`;
+  $("#pageTip").setAttribute("aria-label", `About ${TIPS[`page.${tab}`][0]}`);
+  $("#pageTitle p").textContent = TITLES[tab][1];
+  try { sessionStorage.setItem("tab", tab); } catch {}
+}
+function go(tab) {
+  if (tab === current) return;
+  closeTip();
+  $("#content").style.setProperty("view-transition-class", TABS.indexOf(tab) > TABS.indexOf(current) ? "nav-forward" : "nav-back");
+  if (!document.startViewTransition) return setPage(tab);
+  document.startViewTransition(() => { setPage(tab); window.scrollTo(0, 0); });
+}
+document.querySelectorAll(".ax-tabbar-item").forEach((b) => b.onclick = () => go(b.dataset.tab));
+addEventListener("keydown", (e) => {
+  if (e.target.closest?.("input, select, textarea") || e.metaKey || e.ctrlKey || e.altKey) return;
+  const n = Number(e.key);
+  if (n >= 1 && n <= TABS.length) go(TABS[n - 1]);
+});
+setPage((() => { try { return TABS.includes(sessionStorage.getItem("tab")) ? sessionStorage.getItem("tab") : "ask"; } catch { return "ask"; } })());
+
+function paneShell(sys) {
+  const k = KEY[sys];
+  $(`#pane-${sys}`).innerHTML = `
+    <h3>${NAMES[sys]}${tip(`pane.${sys}`)}</h3><p class="small dim">${SUBS[sys]}</p>
+    <div class="metrics">
+      <div class="ax-well metric"><b id="${k}-calls">0</b><span>memory lookups${tip("metric.calls")}</span></div>
+      <div class="ax-well metric"><b id="${k}-mms">–</b><span>lookup time${tip("metric.mms")}</span></div>
+      <div class="ax-well metric"><b id="${k}-wall">–</b><span>time to answer${tip("metric.wall")}</span></div>
+      <div class="ax-well metric"><b id="${k}-tok">–</b><span>tokens in${tip("metric.tok")}</span></div>
+    </div>
+    <p class="small dim sysllm" id="${k}-sysllm"></p>
+    <ul class="calls" id="${k}-list"></ul>
+    <div class="ax-well answer" id="${k}-answer"><span class="dim">Waiting for a question.</span></div>
+    <div id="${k}-verdict"></div>`;
+}
+SYSTEMS.forEach(paneShell);
+// Tool inputs and results, shown readably: JSON indented, the demo's own path prefix dropped.
+const shortPaths = (s) => String(s).replace(/\/Users\/[^"\s]*?\/memory-demo\//g, "");
+const pretty = (v) => {
+  let x = v;
+  if (typeof v === "string") { try { x = JSON.parse(v); } catch { return String(shortPaths(v)); } }
+  return String(shortPaths(JSON.stringify(x, null, 2)));
+};
+const sec = (ms) => ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${ms} ms`;
+const kfmt = (n) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+
+let pending = 0;
+function run(sys, params, q) {
+  paneShell(sys);
+  pending++;
+  const k = KEY[sys], list = $(`#${k}-list`), started = performance.now();
+  let calls = 0, finished = false;
+  const running = {};
+  const finish = () => { if (finished) return; finished = true; clearInterval(tick); es.close(); if (--pending === 0) $("#go").disabled = false; };
+  $(`#${k}-answer`).innerHTML = `<span class="dim">Thinking…</span>`;
+  $(`#${k}-verdict`).innerHTML = `<div class="verdict"><span class="ax-badge ax-badge-active">Answering</span></div>`;
+  const tick = setInterval(() => $(`#${k}-wall`).textContent = sec(Math.round(performance.now() - started)), 200);
+  const es = new EventSource(`/api/ask?system=${sys}&${params}`);
+  es.onmessage = (m) => {
+    const e = JSON.parse(m.data);
+    if (e.type === "tool") {
+      const li = document.createElement("li");
+      li.className = "run";
+      li.innerHTML = `<details><summary><span class="n">${e.isMemory ? "◆" : "·"} ${esc(String(e.name.replace(/^mcp__/, "")))}</span><span class="in">${esc(String(shortPaths(JSON.stringify(e.input))))}</span><span class="ms"></span></summary>
+        <div class="call-body"><span class="ax-label">Asked</span><pre class="ax-well">${esc(pretty(e.input))}</pre><span class="ax-label">Returned</span><pre class="ax-well out dim">Waiting…</pre></div></details>`;
+      const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 8;
+      list.appendChild(li);
+      if (atBottom) list.scrollTop = list.scrollHeight;
+      running[e.id] = li;
+      if (e.isMemory) $(`#${k}-calls`).textContent = ++calls;
+    } else if (e.type === "toolDone") {
+      const li = running[e.id];
+      if (li) {
+        li.classList.remove("run");
+        li.querySelector(".ms").textContent = sec(e.durationMs);
+        const out = li.querySelector(".out");
+        out.classList.remove("dim");
+        out.classList.toggle("err", e.isError);
+        out.textContent = e.output ? pretty(e.output) : "(nothing)";
+      }
+    } else if (e.type === "done") {
+      const r = e.result;
+      $(`#${k}-calls`).textContent = r.memoryCalls;
+      $(`#${k}-mms`).textContent = sec(r.memoryMs);
+      $(`#${k}-wall`).textContent = sec(r.wallMs);
+      $(`#${k}-tok`).textContent = kfmt(r.tokens.input + r.tokens.cacheRead + r.tokens.cacheWrite);
+      $(`#${k}-sysllm`).textContent = r.memoryLlmTokens?.input ? `Plus ${NAMES[sys]}'s own model: ${kfmt(r.memoryLlmTokens.input)} tokens in, ${kfmt(r.memoryLlmTokens.output)} out.` : "";
+      $(`#${k}-answer`).textContent = String(r.error ? `Error: ${r.error}` : r.answer);
+      $(`#${k}-verdict`).innerHTML = q
+        ? `<div class="verdict"><span class="ax-badge ${r.passed ? "ax-badge-success" : "ax-badge-failure"}">${r.passed ? "Correct" : "Wrong"}</span>
+           <span class="small dim">Expected: ${esc(q.gold.exactNumber ?? q.gold.mustInclude.join(" · "))}${q.gold.altNumbers?.length ? ` (or ${q.gold.altNumbers.join(", ")})` : ""}${q.gold.mustNotInclude?.length ? ` · must not say: ${esc(q.gold.mustNotInclude.join(", "))}` : ""}${tip("ask.grading")}</span></div>`
+        : "";
+      finish();
+    }
+  };
+  es.onerror = () => { $(`#${k}-verdict`).innerHTML = ""; finish(); };
+}
+
+$("#qpick").onchange = () => {
+  const q = STATE.questions.find((x) => x.id === $("#qpick").value);
+  $("#why").textContent = q ? `${q.category} · ${q.why}` : "";
+  if (q) $("#qtext").value = q.question;
+};
+$("#qtext").oninput = () => {
+  const q = STATE.questions.find((x) => x.id === $("#qpick").value);
+  if (q && q.question !== $("#qtext").value) { $("#qpick").value = ""; $("#why").textContent = ""; }
+};
+$("#qtext").onkeydown = (e) => { if (e.key === "Enter") $("#go").click(); };
+$("#go").onclick = () => {
+  const id = $("#qpick").value, text = $("#qtext").value.trim();
+  if ((!id && !text) || $("#go").disabled) return;
+  $("#go").disabled = true;
+  const q = id ? STATE.questions.find((x) => x.id === id) : null;
+  const params = id ? `id=${encodeURIComponent(id)}` : `q=${encodeURIComponent(text)}`;
+  for (const sys of SYSTEMS) run(sys, params, q);
+};
+
+function bars(el, sys, rows, max, fmt) {
+  el.innerHTML = `<div class="legend">${sys.map((s) => `<span><i style="background:var(--sys-${KEY[s]})"></i>${NAMES[s]}</span>`).join("")}</div>` +
+    rows.map(([label, vals]) => `<div class="group">${esc(label)}</div>` + sys.map((s, i) =>
+      `<div class="bar"><span class="who-${KEY[s]}">${NAMES[s]}</span><div class="track"><div class="fill ${KEY[s]}" style="width:${max ? (100 * vals[i]) / max : 0}%"></div></div><span class="val">${fmt(vals[i])}</span></div>`).join("")).join("");
+}
+
+function renderIngest(set) {
+  const doc = STATE.ingest[set];
+  if (!doc) { $("#ingestBars").innerHTML = `<span class="muted">No recorded ingest for this set yet.</span>`; return; }
+  const by = Object.fromEntries(doc.reports.map((r) => [r.system, r]));
+  const sys = SYSTEMS.filter((s) => by[s]);
+  const rows = [
+    ["writing", sys.map((s) => by[s].writeMs)],
+    ["until searchable", sys.map((s) => Math.max(by[s].searchableMs, 0))],
+    ["total", sys.map((s) => by[s].writeMs + Math.max(by[s].searchableMs, 0))],
+  ];
+  bars($("#ingestBars"), sys, rows, Math.max(...rows.flatMap((r) => r[1])), sec);
+  const consolidation = by.hindsight?.phases?.consolidation;
+  $("#ingestBars").insertAdjacentHTML("beforeend", `<p class="small dim" style="margin-top:8px">${doc.count} memories · recorded ${new Date(doc.at).toLocaleString()} · Substrate embeds inside each write; obsidian-mind writes notes, then indexes and embeds${by.hindsight ? `; Hindsight's LLM extracts facts from every memory as it retains it, then consolidates observations in the background (${consolidation != null ? sec(consolidation) : "not timed"}, not in the bars)` : ""}.</p>`);
+}
+$("#dataset").onchange = () => renderIngest($("#dataset").value);
+$("#ingestGo").onclick = () => {
+  const set = $("#dataset").value;
+  $("#ingestGo").disabled = true;
+  $("#ingestLog").textContent = "";
+  const es = new EventSource(`/api/ingest?set=${set}`);
+  es.onmessage = (m) => {
+    const e = JSON.parse(m.data);
+    if (e.type === "log") $("#ingestLog").textContent += String(e.text) + "\n";
+    if (e.type === "done") {
+      es.close();
+      $("#ingestGo").disabled = false;
+      STATE.ingest[set] = { at: new Date().toISOString(), count: e.reports[0]?.count, reports: e.reports };
+      renderIngest(set);
+      refreshLoaded();
+    }
+  };
+  es.onerror = () => { es.close(); $("#ingestGo").disabled = false; };
+};
+
+const RUN_LABELS = { defaults: "253 memories · Claude Code defaults", three: "253 memories · tools loaded up front, Substrate type overview" };
+function renderScore(key) {
+  const d = (STATE.runs && STATE.runs[key]) || STATE.results;
+  if (!d) return;
+  $("#runNote").textContent = d.grader ? `Grader: ${d.grader}.` : "";
+  const R = d.results, sys = SYSTEMS.filter((s) => R.some((r) => r.system === s));
+  const of = (s, f = () => true) => R.filter((r) => r.system === s && f(r));
+  const avg = (rs, f) => rs.length ? rs.reduce((a, r) => a + f(r), 0) / rs.length : 0;
+  const pct = (rs) => rs.length ? Math.round((100 * rs.filter((r) => r.passed).length) / rs.length) : 0;
+  const stat = (label, key, f, fmt) => `<div class="ax-well stat"><div class="label-row" style="margin-bottom:8px"><span class="ax-label" style="margin:0">${label}</span>${tip(key)}</div><div class="vals">${sys.map((s) => `<div class="v who-${KEY[s]}">${fmt(f(of(s)))}<small>${NAMES[s]}</small></div>`).join("")}</div></div>`;
+  $("#scoreTop").innerHTML = `<h3>${d.questions.length} questions × ${d.trials} run${d.trials > 1 ? "s" : ""} each · <span class="mono small dim">${esc(d.model)}</span> · <span class="dim small">${new Date(d.at).toLocaleString()}</span></h3>
+    <div class="grid5">
+      ${stat("Answers correct", "stat.correct", pct, (v) => `${v}%`)}
+      ${stat("Time to answer", "stat.wall", (rs) => avg(rs, (r) => r.wallMs), (v) => sec(Math.round(v)))}
+      ${stat("Lookups per answer", "stat.calls", (rs) => avg(rs, (r) => r.memoryCalls), (v) => v.toFixed(1))}
+      ${stat("Time in lookups", "stat.mms", (rs) => avg(rs, (r) => r.memoryMs), (v) => sec(Math.round(v)))}
+      ${stat("Tokens in per answer", "stat.tok", (rs) => avg(rs, (r) => r.tokens.input + r.tokens.cacheRead + r.tokens.cacheWrite), (v) => kfmt(Math.round(v)))}
+    </div>${(() => {
+      const rw = sys.map((s) => [s, of(s, (r) => !r.passed).length, of(s, (r) => !r.passed && r.passedIgnoringWording).length]).filter(([, , n]) => n > 0);
+      return rw.length ? `<p class="small dim" style="margin-top:10px">Rewording only: ${rw.map(([s, miss, n]) => `<span class="who-${KEY[s]}">${NAMES[s]}</span> ${n} of its ${miss} misses`).join(", ")} named the right items with reworded titles. Exact titles are the rule, so these count as wrong.${tip("stat.rewording")}</p>` : "";
+    })()}${sys.includes("hindsight") ? `<p class="small dim" style="margin-top:10px">Hindsight's own model also read <span class="mono who-k">${kfmt(Math.round(avg(of("hindsight"), (r) => r.memoryLlmTokens?.input ?? 0)))}</span> tokens per answer on average (its reflect tool answers with an LLM), not counted in Tokens in.</p>` : ""}`;
+  const cats = ["lookup", "changed", "filter", "count", "join"];
+  bars($("#catBars"), sys, cats.map((c) => [c, sys.map((s) => pct(of(s, (r) => r.category === c)))]), 100, (v) => `${v}%`);
+  const callRows = cats.map((c) => [c, sys.map((s) => avg(of(s, (r) => r.category === c), (r) => r.memoryCalls))]);
+  bars($("#callBars"), sys, callRows, Math.max(...callRows.flatMap((r) => r[1]), 1), (v) => v.toFixed(1));
+  const cell = (f) => sys.map((s) => `<span class="mono who-${KEY[s]}">${f(s)}</span>`).join(` <span class="dim">·</span> `);
+  const TYPE_HELP = { lookup: "one fact", changed: "a replaced decision", filter: "a list by exact fields", count: "a total", join: "combines several memories" };
+  $("#perQ").innerHTML = `<p class="small muted" style="margin-bottom:10px">Each cell shows ${sys.map((s) => `<span class="who-${KEY[s]}">${NAMES[s]}</span>`).join(" · ")}. <b>Correct</b>: right answers out of ${d.trials}. <b>Lookups</b>: memory lookups per answer (searches, reads and queries against the memory), averaged. <b>Time</b>: seconds to answer, averaged.</p>
+    <table><tr><th>Question</th><th>Correct</th><th class="num">Lookups</th><th class="num">Time</th></tr>` +
+    d.questions.map((q) => {
+      const rs = (s) => of(s, (r) => r.questionId === q.id);
+      return `<tr><td>${esc(q.question)}<div class="small dim">${q.category} · ${TYPE_HELP[q.category] || ""}</div></td>
+        <td style="white-space:nowrap">${cell((s) => `${rs(s).filter((r) => r.passed).length}/${rs(s).length}`)}</td>
+        <td class="num">${cell((s) => avg(rs(s), (r) => r.memoryCalls).toFixed(1))}</td>
+        <td class="num">${cell((s) => (avg(rs(s), (r) => r.wallMs) / 1000).toFixed(1) + " s")}</td></tr>`;
+    }).join("") + `</table>`;
+}
+
+function renderShared() {
+  const d = STATE.shared;
+  if (!d) { $("#sharedObsidian").innerHTML = $("#sharedSubstrate").innerHTML = $("#sharedHindsight").innerHTML = `<span class="muted">Not recorded yet. Run <span class="mono">node eval/shared.ts</span>.</span>`; return; }
+  const step = (x) => `<div class="ax-well step"><span class="ax-label">${esc(x.step)}${x.detail ? ` · ${esc(x.detail)}` : ""}</span>
+    <div class="row" style="justify-content:space-between">${x.answer !== undefined ? `<span><span class="ax-badge ${x.current ? "ax-badge-success" : "ax-badge-failure"}">${x.current ? "Current" : "Stale"}</span> “${esc(x.answer)}”</span>` : "<span></span>"}
+    <span class="mono small dim">${sec(x.ms)}</span></div></div>`;
+  $("#sharedObsidian").innerHTML = d.steps.filter((x) => x.system === "obsidian" && !/setup/.test(x.detail ?? "")).map(step).join("");
+  $("#sharedSubstrate").innerHTML = d.steps.filter((x) => x.system === "substrate").map(step).join("");
+  $("#sharedHindsight").innerHTML = d.steps.filter((x) => x.system === "hindsight").map(step).join("") || `<span class="muted">Not in this recording.</span>`;
+}
+
+function refreshLoaded() {
+  fetch("/api/state").then((r) => r.json()).then((s) => { STATE.loaded = s.loaded; STATE.questions = s.questions; STATE.change = s.change; renderLoaded(); fillQuestions(); renderChange(); });
+}
+function renderLoaded() {
+  const L = STATE.loaded || {};
+  $("#loadedNote").textContent = `Each system holds ${L.count ?? "?"} memories (${L.set === "x5" ? "the 5× set" : L.set === "sample" ? "the 10-memory sample; prepared questions are off" : "the base set"}). Prepared questions are graded against that set's answer key.${STATE.change?.applied ? " Live change made: Atlas now moves to Apache Kafka (Shared page)." : ""}`;
+}
+
+// The live change (Shared page): make it, or put it back, in both systems.
+let changeBusy = false;
+function renderChange() {
+  const c = STATE.change || { applied: false };
+  $("#changeGo").disabled = c.applied || changeBusy;
+  $("#changeUndo").disabled = !c.applied || changeBusy;
+  if (!changeBusy) {
+    $("#chg-o").textContent = c.timings?.obsidianMs != null ? sec(c.timings.obsidianMs) : "–";
+    $("#chg-h").textContent = c.timings?.substrateMs != null ? sec(c.timings.substrateMs) : "–";
+    $("#chg-k").textContent = c.timings?.hindsightMs != null ? sec(c.timings.hindsightMs) : "–";
+  }
+  $("#changeStatus").textContent = changeBusy ? "Working…"
+    : c.applied ? `Made at ${new Date(c.at).toLocaleTimeString()}. The Atlas question is now graded against Apache Kafka.`
+    : "Both systems hold the original: Atlas moves to NATS JetStream.";
+}
+function runChange(action) {
+  changeBusy = true;
+  renderChange();
+  const logEl = $("#changeLog"), started = performance.now();
+  logEl.hidden = false;
+  logEl.textContent = "";
+  const pending = action === "apply" ? { o: $("#chg-o"), h: $("#chg-h"), k: $("#chg-k") } : {};
+  for (const el of Object.values(pending)) el.textContent = "…";
+  const tick = setInterval(() => { for (const el of Object.values(pending)) el.textContent = sec(Math.round(performance.now() - started)); }, 100);
+  const es = new EventSource(`/api/change?action=${action}`);
+  const finish = () => { clearInterval(tick); es.close(); changeBusy = false; refreshLoaded(); };
+  es.onmessage = (m) => {
+    const e = JSON.parse(m.data);
+    if (e.type === "log") logEl.textContent += String(e.text) + "\n";
+    if (e.type === "timing") { const k = KEY[e.system]; delete pending[k]; $(`#chg-${k}`).textContent = sec(e.ms); }
+    if (e.type === "done") { STATE.change = e.change; finish(); }
+  };
+  es.onerror = finish;
+}
+$("#changeGo").onclick = () => runChange("apply");
+$("#changeUndo").onclick = () => runChange("undo");
+function fillQuestions() {
+  $("#qpick").innerHTML = `<option value="">Pick a prepared question…</option>` + STATE.questions.map((q) => `<option value="${q.id}">[${q.category}] ${esc(q.question)}</option>`).join("");
+}
+
+fetch("/api/state").then((r) => r.json()).then((s) => {
+  STATE = s;
+  renderLoaded();
+  fillQuestions();
+  for (const [k, n] of Object.entries(s.datasets)) if (n) $("#dataset").insertAdjacentHTML("beforeend", `<option value="${k}">${k === "sample" ? "Sample" : k === "full" ? "Base set" : "5× set"} (${n} memories)</option>`);
+  $("#dataset").value = s.datasets.full ? "full" : "sample";
+  renderIngest($("#dataset").value);
+  const runKeys = Object.keys(s.runs || {});
+  $("#runPick").innerHTML = runKeys.map((k) => `<option value="${k}">${esc(RUN_LABELS[k] || k)}</option>`).join("");
+  if (!runKeys.length) $("#runPick").style.display = "none";
+  $("#runPick").onchange = () => renderScore($("#runPick").value);
+  renderScore(runKeys[0]);
+  renderShared();
+  renderChange();
+  $("#setupObsidian").textContent = s.setup.obsidian || "Setup notes not written yet.";
+  $("#setupSubstrate").textContent = s.setup.substrate || "Setup notes not written yet.";
+  $("#setupHindsight").textContent = s.setup.hindsight || "Setup notes not written yet.";
+});
+</script>
+</body>
+</html>

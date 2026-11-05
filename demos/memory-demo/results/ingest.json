@@ -1,0 +1,45 @@
+{
+ "at": "2026-10-23T04:28:40.669Z",
+ "file": "data/memories.json",
+ "count": 253,
+ "reports": [
+  {
+   "system": "obsidian",
+   "count": 253,
+   "writeMs": 29,
+   "searchableMs": 34532,
+   "phases": {
+    "write": 29,
+    "update": 254,
+    "embed": 33886,
+    "firstHit": 392,
+    "coldQuery": 13147
+   },
+   "notes": "searchableMs = qmd update + qmd embed + first qmd search (BM25) hit, on probe 1; coldQuery is not in searchableMs: one CLI qmd query, which loads the expansion, embedding and rerank models (found the note); 253 notes + 2 index notes written to vault"
+  },
+  {
+   "system": "hindsight",
+   "count": 253,
+   "writeMs": 305574,
+   "searchableMs": 1082,
+   "phases": {
+    "retain": 305574,
+    "firstHit": 1082,
+    "consolidation": 216807
+   },
+   "notes": "retain: 11 async batches of up to 25; writeMs runs until every retain operation completed (fact extraction is one LLM call per memory, via the claude-code provider on the Claude subscription). Background consolidation afterwards: 216807 ms. Hindsight's own LLM for this ingest: 4294452 input and 93150 output tokens."
+  },
+  {
+   "system": "substrate",
+   "count": 253,
+   "writeMs": 29626,
+   "searchableMs": 146,
+   "phases": {
+    "create": 25921,
+    "edges": 3705,
+    "firstHit": 146
+   },
+   "notes": "8 batched mutate requests, up to 4 in parallel (20 rows updated in a second pass for same-type edges); each write embeds the row with Ollama bge-m3 and keyword-indexes it inside the request. Recall found the last memory on poll 1 (query = its title)."
+  }
+ ]
+}

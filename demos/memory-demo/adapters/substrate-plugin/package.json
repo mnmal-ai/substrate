@@ -1,0 +1,11 @@
+{
+  "name": "lumen-substrate-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Substrate coordinator plugin declaring the `lumen` namespace for the memory demo.",
+  "type": "module",
+  "substrate": {
+    "tier": "coordinator",
+    "entry": "./bootstrap.js"
+  }
+}

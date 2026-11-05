@@ -1,0 +1,12 @@
+{
+  "name": "memory-demo",
+  "private": true,
+  "type": "module",
+  "description": "Substrate, obsidian-mind and Hindsight: the same memories, the same questions, side by side.",
+  "scripts": {
+    "generate": "node data/generate.ts",
+    "ingest": "node eval/ingest.ts",
+    "eval": "node eval/run.ts",
+    "web": "node web/server.ts"
+  }
+}

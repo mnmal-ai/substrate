@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How Substrate Works</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='8' cy='12' r='6' fill='%238a94a6'/%3E%3Ccircle cx='16' cy='12' r='6' fill='%2300aeef' fill-opacity='.85'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/axon/tokens.css">
+<style>
+  /* A white sheet, for reading on screen and for capturing as an image. */
+  body { margin: 0; background: #ffffff; color: #0f172a; font-family: var(--sans); }
+  main { padding: 28px 32px 40px; }
+  h1 { font-size: 1.35rem; font-weight: 650; letter-spacing: -0.01em; margin: 0 0 4px; }
+  p { margin: 0 0 18px; color: #475569; }
+  #figure { display: inline-block; background: #ffffff; padding: 8px; }
+  #error { color: #b4235a; font-family: var(--mono); white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<main>
+  <div id="figure">
+    <h1>How Substrate stores and answers, in the demo</h1>
+    <p>Every arrow is a real call, numbered in order. Shaded: Substrate's own pieces, all running on this Mac.</p>
+    <div id="diagram"></div>
+  </div>
+  <div id="error"></div>
+</main>
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  const accent = "#005f9e", ink = "#0f172a", dim = "#475569";
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: "base",
+    themeVariables: {
+      fontFamily: "'DM Sans', system-ui, sans-serif",
+      fontSize: "17px",
+      actorBkg: "#ffffff", actorBorder: accent, actorTextColor: ink, actorLineColor: "#cbd5e1",
+      signalColor: dim, signalTextColor: ink,
+      noteBkgColor: "#f1f5f9", noteBorderColor: "#cbd5e1", noteTextColor: ink,
+      sequenceNumberColor: "#ffffff", activationBkgColor: "#e0eef8", activationBorderColor: accent,
+      primaryColor: "#ffffff", primaryBorderColor: accent, primaryTextColor: ink, lineColor: dim,
+    },
+    sequence: { useMaxWidth: false, mirrorActors: false, wrap: true, width: 150, actorMargin: 30, messageMargin: 32, noteMargin: 12, boxMargin: 8, boxTextMargin: 6 },
+  });
+  try {
+    await document.fonts.load("17px 'DM Sans'");
+    const src = await (await fetch("/docs/substrate-sequence.mmd")).text();
+    const { svg } = await mermaid.render("seq", src);
+    document.getElementById("diagram").innerHTML = svg;
+    document.body.dataset.ready = "1";
+  } catch (e) {
+    document.getElementById("error").textContent = String(e?.message ?? e);
+    document.body.dataset.ready = "error";
+  }
+</script>
+</body>
+</html>

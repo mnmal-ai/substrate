@@ -1,0 +1,5 @@
+.state/
+node_modules/
+run/
+vault/
+vault/.obsidian/workspace*.json

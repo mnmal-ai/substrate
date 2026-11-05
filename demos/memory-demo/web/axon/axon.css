@@ -1,0 +1,679 @@
+/**
+ * Axon web components — the shared component layer for React/Next.js apps.
+ *
+ * Import after the tokens:
+ *   @import "@mnmal-ai/axon-tokens/tokens.css";
+ *   @import "@mnmal-ai/axon-tokens/theme-light.css" (inside a light media query);
+ *   @import "@mnmal-ai/axon-react/axon.css";
+ *
+ * Everything reads token custom properties (no hardcoded values beyond layout
+ * metrics) and lives in @layer components, so utility classes (e.g. Tailwind)
+ * still win.
+ */
+
+/* One focus ring everywhere (keyboard only): 2px accent, offset from the control. */
+:where(
+    a,
+    button,
+    summary,
+    select,
+    [role="button"],
+    input[type="checkbox"],
+    input[type="radio"]
+  ):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@layer components {
+  /* Surfaces: one material; panels and cards rise from it. */
+  .ax-card {
+    background: var(--surface);
+    border-radius: 18px;
+    box-shadow: var(--neu-shadow-card);
+  }
+  .ax-panel {
+    background: var(--surface);
+    border-radius: 22px;
+    box-shadow: var(--neu-shadow-panel);
+  }
+  .ax-well {
+    background: var(--bg);
+    border-radius: 14px;
+    box-shadow: var(--neu-shadow-inset);
+  }
+
+  .ax-input {
+    width: 100%;
+    background: var(--bg);
+    border-radius: 14px;
+    box-shadow: var(--neu-shadow-inset);
+    padding: 0.7rem 0.9rem;
+    color: var(--text);
+    outline: none;
+    transition: box-shadow var(--duration-fast) var(--easing-standard);
+  }
+  .ax-input::placeholder {
+    color: var(--text-dim);
+  }
+  /* Native date fields: tone the picker icon to the theme; fit 320px phones. */
+  .ax-input[type="date"] {
+    min-width: 0;
+  }
+  .ax-input::-webkit-calendar-picker-indicator {
+    opacity: 0.6;
+    cursor: pointer;
+  }
+  @media (prefers-color-scheme: dark) {
+    .ax-input::-webkit-calendar-picker-indicator {
+      filter: invert(0.8);
+    }
+  }
+  @media (max-width: 379px) {
+    .ax-input[type="date"] {
+      padding-inline: 0.55rem;
+      font-size: 0.8rem;
+    }
+  }
+  .ax-input:focus {
+    box-shadow:
+      var(--neu-shadow-inset),
+      0 0 0 2px var(--accent);
+  }
+
+  /* Buttons: raised neutral, primary (filled), secondary (raised, accent stripe), text. */
+  .ax-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    border-radius: 14px;
+    padding: 0.6rem 1.05rem;
+    font-weight: 600;
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: var(--neu-shadow-btn);
+    cursor: pointer;
+    white-space: nowrap;
+    user-select: none;
+    transition:
+      transform var(--duration-sink) var(--easing-sink),
+      box-shadow var(--duration-sink) var(--easing-sink),
+      opacity var(--duration-fast) var(--easing-standard);
+  }
+  .ax-btn:hover:not(:disabled) {
+    box-shadow: var(--neu-shadow-hover);
+  }
+  .ax-btn:active:not(:disabled) {
+    transform: scale(0.96);
+    box-shadow: var(--neu-shadow-inset);
+  }
+  .ax-btn:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+  .ax-btn {
+    min-height: var(--hit-target);
+  }
+  .ax-btn-primary {
+    background: var(--accent);
+    color: var(--bg);
+  }
+  .ax-btn-secondary {
+    color: var(--accent);
+    border-left: 3px solid var(--accent);
+  }
+  .ax-btn-text {
+    position: relative;
+    min-height: 0;
+    background: transparent;
+    box-shadow: none;
+    color: var(--accent);
+    padding: 0.25rem 0.35rem;
+    text-decoration: underline;
+    text-decoration-color: transparent;
+    text-underline-offset: 3px;
+  }
+  .ax-btn-text:hover:not(:disabled) {
+    box-shadow: none;
+    text-decoration-color: currentColor;
+  }
+  /* Small controls keep their look but get a 44×44 hit area (touch target). */
+  .ax-btn-text::after,
+  .ax-icon-btn-sm::after,
+  .ax-seg > *::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: max(100%, var(--hit-target));
+    height: max(100%, var(--hit-target));
+    transform: translate(-50%, -50%);
+  }
+
+  /* Icon button: a 44×44 target around a 20px glyph. */
+  .ax-icon-btn {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--icon-btn-size);
+    height: var(--icon-btn-size);
+    border-radius: 14px;
+    color: var(--accent);
+    transition: background var(--duration-fast) var(--easing-standard);
+  }
+  .ax-icon-btn:hover:not(:disabled) {
+    background: var(--surface-hover);
+  }
+  /* Inline variant (e.g. ⓘ beside a label): 20px visually, 44px to touch. */
+  .ax-icon-btn-sm {
+    width: 1.25rem;
+    height: 1.25rem;
+    border-radius: 999px;
+  }
+  .ax-icon-btn-sm:hover:not(:disabled) {
+    background: transparent;
+  }
+
+  /* Tooltip bubble; <Tooltip> positions it (fixed) inside the viewport. */
+  .ax-tooltip {
+    position: fixed;
+    z-index: 60;
+    width: min(var(--tooltip-max-width), calc(100vw - 24px));
+    border-radius: 14px;
+    background: var(--accent);
+    color: var(--bg);
+    padding: 0.7rem 0.8rem;
+    font-family: var(--sans);
+    font-size: 0.8rem;
+    font-weight: 400;
+    line-height: 1.5;
+    letter-spacing: normal;
+    text-transform: none;
+    text-align: left;
+    box-shadow: var(--neu-shadow-panel);
+    pointer-events: none;
+  }
+
+  .ax-label {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+  }
+
+  /* Status badge: Axon tones carry one meaning each; label + dot, never colour alone. */
+  .ax-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    border-radius: 999px;
+    padding: 0.15rem 0.55rem;
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.04em;
+    background: var(--bg);
+    box-shadow: var(--neu-shadow-inset);
+    color: var(--text-muted);
+  }
+  .ax-badge::before {
+    content: "";
+    width: 0.45rem;
+    height: 0.45rem;
+    border-radius: 999px;
+    background: currentColor;
+  }
+  .ax-badge-active {
+    color: var(--accent);
+  }
+  .ax-badge-progress {
+    color: var(--amber);
+  }
+  .ax-badge-success {
+    color: var(--green);
+  }
+  .ax-badge-failure {
+    color: var(--purple);
+  }
+
+  /* Segmented control. */
+  .ax-seg {
+    display: inline-flex;
+    gap: 0.25rem;
+    padding: 0.25rem;
+    border-radius: 14px;
+    background: var(--bg);
+    box-shadow: var(--neu-shadow-inset);
+  }
+  .ax-seg > * {
+    position: relative;
+    border-radius: 10px;
+    padding: 0.35rem 0.75rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition:
+      background var(--duration-fast) var(--easing-standard),
+      box-shadow var(--duration-fast) var(--easing-standard);
+  }
+  .ax-seg > [aria-pressed="true"],
+  .ax-seg > [aria-current="page"],
+  .ax-seg > [aria-current="true"] {
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: var(--neu-shadow-btn);
+  }
+
+  /* On phones a segmented control spans its row with equal segments (one
+     line, never wrapped). More than ~4 options belong in a <select> there. */
+  @media (max-width: 639px) {
+    .ax-seg {
+      display: flex;
+      width: 100%;
+    }
+    .ax-seg > * {
+      flex: 1 1 0;
+      min-width: 0;
+      padding: 0.45rem 0.4rem;
+      text-align: center;
+    }
+  }
+
+  /* Top-bar tabs (wide screens). */
+  .ax-tab {
+    display: inline-flex;
+    align-items: center;
+    min-height: var(--hit-target);
+    border-radius: 12px;
+    padding: 0.45rem 0.85rem;
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    transition:
+      color var(--duration-fast) var(--easing-standard),
+      box-shadow var(--duration-fast) var(--easing-standard);
+  }
+  .ax-tab:hover {
+    color: var(--text);
+  }
+  .ax-tab[aria-current="page"] {
+    color: var(--accent);
+    background: var(--surface);
+    box-shadow: var(--neu-shadow-btn);
+  }
+
+  /* Tab bar (phones and tablets): icon over label, a sliding well marks the
+     current tab. Set --n (tab count) and --i (current index) on the bar. */
+  .ax-tabbar {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(var(--n), minmax(0, 1fr));
+    padding: 5px;
+    background: var(--surface);
+    border-radius: 18px;
+    box-shadow: var(--neu-shadow-card);
+  }
+  .ax-tabbar-indicator {
+    position: absolute;
+    top: 5px;
+    bottom: 5px;
+    left: 5px;
+    width: calc((100% - 10px) / var(--n));
+    border-radius: 13px;
+    background: var(--bg);
+    box-shadow: var(--neu-shadow-inset);
+    transform: translateX(calc(var(--i) * 100%));
+    transition: transform var(--duration-normal) var(--easing-spring);
+  }
+  .ax-tabbar-item {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    min-height: var(--tabbar-item-height);
+    min-width: 0;
+    border-radius: 13px;
+    padding: 6px 2px;
+    color: var(--text-muted);
+    font-size: 0.66rem;
+    font-weight: 600;
+    line-height: 1.1;
+    text-align: center;
+    transition: color var(--duration-fast) var(--easing-standard);
+  }
+  .ax-tabbar-item svg {
+    width: 20px;
+    height: 20px;
+  }
+  .ax-tabbar-item[aria-current="page"] {
+    color: var(--accent);
+  }
+  .ax-tabbar-item:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  /* <TabBar> labels: short on phones, full from 640px. */
+  .ax-tabbar-long {
+    display: none;
+  }
+  @media (min-width: 640px) {
+    .ax-tabbar-short {
+      display: none;
+    }
+    .ax-tabbar-long {
+      display: inline;
+    }
+  }
+  .ax-tabbar-badge {
+    position: absolute;
+    top: 3px;
+    left: calc(50% + 6px);
+    min-width: 1.05rem;
+    height: 1.05rem;
+    padding: 0 4px;
+    border-radius: 999px;
+    background: var(--amber);
+    color: var(--bg);
+    font-family: var(--mono);
+    font-size: 0.62rem;
+    font-weight: 600;
+    line-height: 1.05rem;
+  }
+  @media (min-width: 640px) {
+    .ax-tabbar-item {
+      font-size: 0.72rem;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .ax-tabbar-indicator {
+      transition: none;
+    }
+  }
+
+  /* Callout structure. */
+  .ax-callout-wrap {
+    position: relative;
+    max-width: 42rem;
+  }
+  .ax-callout {
+    position: relative;
+    display: grid;
+    gap: 0.75rem;
+    border-radius: 18px;
+    padding: 1.25rem;
+    box-shadow: var(--neu-shadow-panel);
+  }
+  .ax-callout-caret {
+    position: absolute;
+    top: -8px;
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    transform: rotate(45deg);
+  }
+  .ax-callout-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+  .ax-callout-title {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 700;
+  }
+  .ax-callout .ax-icon-btn {
+    color: inherit;
+    margin: -10px -10px 0 0;
+  }
+  .ax-callout .ax-icon-btn:hover:not(:disabled) {
+    background: transparent;
+  }
+
+  /* Callout (e.g. first-visit page tips): accent-filled in dark; in light a pale accent wash so
+     it doesn't land as a heavy navy block. */
+  .ax-callout,
+  .ax-callout-caret {
+    background: var(--accent);
+    color: var(--bg);
+  }
+  .ax-callout-btn {
+    background: var(--bg);
+    color: var(--accent);
+  }
+  @media (prefers-color-scheme: light) {
+    .ax-callout,
+    .ax-callout-caret {
+      background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+      color: var(--text);
+    }
+    .ax-callout {
+      box-shadow:
+        inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent),
+        var(--neu-shadow-panel);
+    }
+    .ax-callout svg {
+      color: var(--accent);
+    }
+    .ax-callout-btn {
+      background: var(--accent);
+      color: var(--surface);
+    }
+  }
+
+  /* Entry: rise through the surface, overshoot, settle. Staggered via --i. */
+  .ax-materialize {
+    animation: ax-materialize var(--duration-normal) var(--easing-spring) both;
+    animation-delay: calc(min(var(--i, 0), 12) * var(--stagger-card));
+  }
+}
+
+@keyframes ax-materialize {
+  0% {
+    opacity: 0;
+    transform: translateY(var(--translate-rise)) scale(var(--scale-below));
+    filter: blur(var(--blur-materialize));
+  }
+  65% {
+    opacity: 1;
+    transform: translateY(var(--translate-overshoot))
+      scale(var(--scale-overshoot));
+    filter: blur(0);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}
+
+/* No motion when the viewer asks for less: surfaces appear at rest, presses do not move. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    /* reduced motion must override every component animation */
+    animation: none !important;
+    /* reduced motion must override every component transition */
+    transition: none !important;
+  }
+  .ax-btn:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+
+/* ---- Page morphs (React <ViewTransition>) ----
+   Only transform and opacity animate: they run on the compositor, so the morph
+   stays smooth while the next page renders. */
+
+/* The header is the fixed anchor; page content moves beneath it. */
+::view-transition-group(site-header) {
+  z-index: 30;
+}
+::view-transition-old(site-header),
+::view-transition-new(site-header) {
+  animation: none;
+}
+
+/* Each page's title block morphs into the next page's title block. */
+::view-transition-group(.morph) {
+  animation-duration: var(--duration-normal);
+  animation-timing-function: var(--easing-spring);
+  z-index: 40;
+}
+::view-transition-old(.morph),
+::view-transition-new(.morph) {
+  height: 100%;
+  object-fit: none;
+  overflow: clip;
+}
+
+/* Page content sinks out one way and rises in from the other, following tab order. */
+::view-transition-old(.nav-forward) {
+  animation: var(--duration-sink) var(--easing-sink) both ax-out-left;
+}
+::view-transition-new(.nav-forward) {
+  animation: var(--duration-normal) var(--easing-spring) both ax-in-right;
+}
+::view-transition-old(.nav-back) {
+  animation: var(--duration-sink) var(--easing-sink) both ax-out-right;
+}
+::view-transition-new(.nav-back) {
+  animation: var(--duration-normal) var(--easing-spring) both ax-in-left;
+}
+
+@keyframes ax-out-left {
+  to {
+    opacity: 0;
+    transform: translateX(-24px);
+  }
+}
+@keyframes ax-out-right {
+  to {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+}
+@keyframes ax-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+}
+@keyframes ax-in-left {
+  from {
+    opacity: 0;
+    transform: translateX(-24px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*),
+  ::view-transition-image-pair(*) {
+    /* reduced motion must cancel page morphs */
+    animation: none !important;
+  }
+}
+
+
+@layer components {
+/* Tags: additive labels. Neutral ink; they are not a status. */
+.ax-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  background: var(--surface);
+  box-shadow: var(--neu-shadow-btn);
+}
+.ax-tag-add {
+  color: var(--text-dim);
+  box-shadow: none;
+  border: 1px dashed var(--border-light);
+  cursor: pointer;
+}
+.ax-tag-add:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.ax-tag-x {
+  position: relative;
+  color: var(--text-dim);
+  cursor: pointer;
+  line-height: 1;
+}
+/* Tags sit in tight rows, so their controls get a 32px (not 44px) hit area. */
+.ax-tag-x::after,
+.ax-tag-add::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: max(100%, var(--hit-target-compact));
+  height: max(100%, var(--hit-target-compact));
+  transform: translate(-50%, -50%);
+}
+.ax-tag-add {
+  position: relative;
+}
+.ax-tag-x:hover {
+  color: var(--purple);
+}
+.ax-tag[aria-pressed="true"] {
+  color: var(--accent);
+  box-shadow: var(--neu-shadow-inset);
+}
+
+}
+
+/* ---- Responsive lists (instead of tables) ----
+   One row per item. On phones a row is a small card: what it is and its
+   amount on top, the other columns' content on the lines below. From 640px
+   the same row lines up as columns under an .ax-row-head header. Each list
+   sets its own grid areas; children place themselves with style={{gridArea}}. */
+@layer components {
+  .ax-rows > * + * {
+    border-top: 1px solid var(--border);
+  }
+  .ax-row {
+    display: grid;
+    column-gap: 1rem;
+    row-gap: 0.35rem;
+    padding-block: 0.75rem;
+    align-items: start;
+  }
+  .ax-row-head {
+    display: none;
+    padding-block: 0.5rem;
+    border-bottom: 1px solid var(--text);
+  }
+  @media (min-width: 640px) {
+    .ax-row-head {
+      display: grid;
+    }
+    .ax-row {
+      align-items: center;
+    }
+  }
+}
+
+::view-transition-old(.tip-fade),
+::view-transition-new(.tip-fade) {
+  animation-duration: var(--duration-fast);
+}

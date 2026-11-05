@@ -1,0 +1,322 @@
+[
+ {
+  "id": "lookup-1",
+  "category": "lookup",
+  "question": "Who owns the Harbor container platform project? Answer with only the person's full name.",
+  "gold": {
+   "mustInclude": [
+    "Ana Reyes"
+   ]
+  },
+  "why": "A single fact in one memory."
+ },
+ {
+  "id": "lookup-2",
+  "category": "lookup",
+  "question": "Which team is Priya Iyer on? Answer with only the team name.",
+  "gold": {
+   "mustInclude": [
+    "Data"
+   ]
+  },
+  "why": "A single fact in one memory."
+ },
+ {
+  "id": "lookup-3",
+  "category": "lookup",
+  "question": "What is the deadline for the Prism analytics warehouse project? Answer with only the date as YYYY-MM-DD.",
+  "gold": {
+   "mustInclude": [
+    "2025-10-31"
+   ]
+  },
+  "why": "A single fact in one memory."
+ },
+ {
+  "id": "lookup-4",
+  "category": "lookup",
+  "question": "What was the root cause of the \"Atlas queue migration outage on 2025-03-31\" incident? Answer in one short sentence.",
+  "gold": {
+   "mustInclude": [
+    "timezone"
+   ]
+  },
+  "why": "A single fact in one memory."
+ },
+ {
+  "id": "changed-1",
+  "category": "changed",
+  "question": "What is the current target queue for Atlas queue migration? Answer with only the target queue, nothing else.",
+  "gold": {
+   "mustInclude": [
+    "NATS JetStream"
+   ],
+   "mustNotInclude": [
+    "Amazon SQS"
+   ]
+  },
+  "why": "The target queue changed 1 time; the older decision still exists and reads almost the same."
+ },
+ {
+  "id": "changed-2",
+  "category": "changed",
+  "question": "What is the current storage engine for Ledger billing pipeline? Answer with only the storage engine, nothing else.",
+  "gold": {
+   "mustInclude": [
+    "ClickHouse"
+   ],
+   "mustNotInclude": [
+    "Amazon Redshift",
+    "Google BigQuery"
+   ]
+  },
+  "why": "The storage engine changed 2 times; the older decision still exists and reads almost the same."
+ },
+ {
+  "id": "changed-3",
+  "category": "changed",
+  "question": "What is the current rotation interval for Vault key rotation? Answer with only the rotation interval, nothing else.",
+  "gold": {
+   "mustInclude": [
+    "30 days"
+   ],
+   "mustNotInclude": [
+    "180 days",
+    "90 days"
+   ]
+  },
+  "why": "The rotation interval changed 2 times; the older decision still exists and reads almost the same."
+ },
+ {
+  "id": "changed-4",
+  "category": "changed",
+  "question": "What is the current push provider for Beacon mobile push? Answer with only the push provider, nothing else.",
+  "gold": {
+   "mustInclude": [
+    "Firebase Cloud Messaging"
+   ],
+   "mustNotInclude": [
+    "OneSignal"
+   ]
+  },
+  "why": "The push provider changed 1 time; the older decision still exists and reads almost the same."
+ },
+ {
+  "id": "changed-5",
+  "category": "changed",
+  "question": "What is the current dashboard tool for Prism analytics warehouse? Answer with only the dashboard tool, nothing else.",
+  "gold": {
+   "mustInclude": [
+    "Metabase"
+   ],
+   "mustNotInclude": [
+    "Looker"
+   ]
+  },
+  "why": "The dashboard tool changed 1 time; the older decision still exists and reads almost the same."
+ },
+ {
+  "id": "filter-1",
+  "category": "filter",
+  "question": "List the titles of the open, high-priority tasks owned by Ben Okafor. Answer with only the task titles, one per line.",
+  "gold": {
+   "mustInclude": [
+    "Migrate the cutover runbook for Ledger billing pipeline",
+    "Refactor the staging environment for Prism analytics warehouse"
+   ],
+   "mustNotInclude": [
+    "Migrate the canary release for Ledger billing pipeline",
+    "Load test the schema migration for Prism analytics warehouse",
+    "Document the access policy for Quill offline notes"
+   ]
+  },
+  "why": "2 of 6 tasks by this person match two exact fields."
+ },
+ {
+  "id": "filter-2",
+  "category": "filter",
+  "question": "List the titles of the blocked tasks on the Atlas queue migration project. Answer with only the task titles, one per line.",
+  "gold": {
+   "mustInclude": [
+    "Write the cutover runbook for Atlas queue migration",
+    "Document the cost report for Atlas queue migration",
+    "Audit the capacity plan for Atlas queue migration",
+    "Migrate the backfill job for Atlas queue migration"
+   ]
+  },
+  "why": "Status lives in a field, not in the words of the task."
+ },
+ {
+  "id": "filter-3",
+  "category": "filter",
+  "question": "Which projects are paused right now? Answer with only the project names, one per line.",
+  "gold": {
+   "mustInclude": [
+    "Ledger billing pipeline",
+    "Sentinel access reviews",
+    "Relay webhook service"
+   ],
+   "mustNotInclude": [
+    "Atlas queue migration",
+    "Beacon mobile push",
+    "Cobalt payment retries",
+    "Harbor container platform",
+    "Prism analytics warehouse",
+    "Quill offline notes",
+    "Vault key rotation"
+   ]
+  },
+  "why": "Every project memory has to be checked."
+ },
+ {
+  "id": "filter-4",
+  "category": "filter",
+  "question": "List the unresolved sev1 incidents. Answer with only the incident titles, one per line, or \"none\" if there are none.",
+  "gold": {
+   "mustInclude": [
+    "Atlas queue migration outage on 2025-03-31",
+    "Beacon mobile push outage on 2025-08-05",
+    "Cobalt payment retries outage on 2025-05-28",
+    "Sentinel access reviews outage on 2025-03-08"
+   ]
+  },
+  "why": "Two exact fields across every incident."
+ },
+ {
+  "id": "filter-5",
+  "category": "filter",
+  "question": "List the decisions owned by Ana Reyes that are still in force. Answer with only the decision titles, one per line.",
+  "gold": {
+   "mustInclude": [
+    "Atlas queue migration: target queue is NATS JetStream",
+    "Harbor container platform: orchestrator is Kubernetes on EKS",
+    "Harbor container platform: Write an architecture decision record for every new service"
+   ],
+   "mustNotInclude": [
+    "Atlas queue migration: target queue is Amazon SQS",
+    "Harbor container platform: orchestrator is HashiCorp Nomad"
+   ]
+  },
+  "why": "Replaced decisions must be left out."
+ },
+ {
+  "id": "count-1",
+  "category": "count",
+  "question": "How many tasks are blocked across all projects? Answer with only the number.",
+  "gold": {
+   "mustInclude": [],
+   "exactNumber": 16
+  },
+  "why": "Counting means seeing every task."
+ },
+ {
+  "id": "count-2",
+  "category": "count",
+  "question": "How many incidents have the Payments team's projects had? Answer with only the number.",
+  "gold": {
+   "mustInclude": [],
+   "exactNumber": 6
+  },
+  "why": "Needs a join from incident to project to team."
+ },
+ {
+  "id": "count-3",
+  "category": "count",
+  "question": "How many decisions have been replaced by a later decision? Answer with only the number.",
+  "gold": {
+   "mustInclude": [],
+   "exactNumber": 11
+  },
+  "why": "Counting replaced decisions across every project."
+ },
+ {
+  "id": "count-4",
+  "category": "count",
+  "question": "How many open tasks does Ben Okafor own? Answer with only the number.",
+  "gold": {
+   "mustInclude": [],
+   "exactNumber": 3,
+   "altNumbers": [
+    5
+   ]
+  },
+  "why": "One person and a status. \"Open\" can mean status open or not done yet; both readings count."
+ },
+ {
+  "id": "count-5",
+  "category": "count",
+  "question": "How many people are on the Security team? Answer with only the number.",
+  "gold": {
+   "mustInclude": [],
+   "exactNumber": 4
+  },
+  "why": "Counting people by team."
+ },
+ {
+  "id": "join-1",
+  "category": "join",
+  "question": "Who owns the decision that replaced the original Atlas queue choice, and which team are they on? Answer as: full name, team.",
+  "gold": {
+   "mustInclude": [
+    "Ana Reyes",
+    "Platform"
+   ]
+  },
+  "why": "Decision, then its replacement, then the owner, then the owner's team."
+ },
+ {
+  "id": "join-2",
+  "category": "join",
+  "question": "Which people own blocked tasks on paused projects? Answer with only full names, one per line.",
+  "gold": {
+   "mustInclude": [
+    "Lena Novak",
+    "Farah Haddad",
+    "Wen Li",
+    "Uma Desai",
+    "Jade Wong",
+    "Zane Ortiz"
+   ]
+  },
+  "why": "Task status, task owner and project status together."
+ },
+ {
+  "id": "join-3",
+  "category": "join",
+  "question": "Which Data team members own an unfinished task on a project that belongs to a different team? Answer with only full names, one per line.",
+  "gold": {
+   "mustInclude": [
+    "Ben Okafor",
+    "Farah Haddad"
+   ],
+   "mustNotInclude": [
+    "Lena Novak",
+    "Priya Iyer",
+    "Wen Li"
+   ]
+  },
+  "why": "Person's team against the task's project's team."
+ },
+ {
+  "id": "join-4",
+  "category": "join",
+  "question": "Which projects have an unresolved incident and also an open high-priority task? Answer with only the project names, one per line.",
+  "gold": {
+   "mustInclude": [
+    "Atlas queue migration",
+    "Beacon mobile push",
+    "Cobalt payment retries",
+    "Sentinel access reviews",
+    "Prism analytics warehouse",
+    "Quill offline notes"
+   ],
+   "mustNotInclude": [
+    "Ledger billing pipeline",
+    "Harbor container platform",
+    "Vault key rotation",
+    "Relay webhook service"
+   ]
+  },
+  "why": "Two kinds of memory, both filtered, joined on project."
+ }
+]

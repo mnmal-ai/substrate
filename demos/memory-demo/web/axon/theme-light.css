@@ -1,0 +1,32 @@
+/**
+ * Do not edit directly, this file was auto-generated.
+ */
+
+:root {
+  --border: #e2e8f0;
+  --bg: #f0f4f8;
+  --surface: #f8fafc;
+  --surface-hover: #f1f5f9;
+  --border-light: #cbd5e1;
+  --text: #0f172a;
+  --text-muted: #475569;
+  --text-dim: #5c6b7f;
+  --accent: #005f9e;
+  --accent-dim: #e0f5ff;
+  --green: #047857;
+  --green-dim: #d1fae5;
+  --amber: #8b5e00;
+  --amber-dim: #fffbe0;
+  --red: #b91c1c;
+  --red-dim: #fee2e2;
+  --purple: #b8006a;
+  --purple-dim: #ffe0f0;
+  --cyan: #005f9e;
+  --neu-shadow-card: -3px -3px 7px #ffffff, 4px 4px 10px #c2cedd;
+  --neu-shadow-panel: -5px -5px 12px #ffffff, 6px 6px 18px #bacad9;
+  --neu-shadow-hover: -4px -4px 9px #ffffff, 5px 5px 13px #b8c8d6;
+  --neu-shadow-btn: -2px -2px 5px #ffffff, 3px 3px 7px #c8d4e0;
+  --neu-shadow-subtask: -1px -1px 4px #ffffff, 2px 2px 5px #c8d4e0;
+  --neu-shadow-subtask-hover: -2px -2px 5px #ffffff, 3px 3px 7px #c2cedd;
+  --neu-shadow-inset: inset 2px 2px 5px #c2cedd, inset -2px -2px 5px #ffffff;
+}
