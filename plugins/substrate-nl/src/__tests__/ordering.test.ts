@@ -151,10 +151,24 @@ describe('ordering by a field', () => {
     });
   });
 
-  it('ignores the ordering in a count', () => {
-    const r = parse('how many items have the highest price');
-    expect(r.candidates[0]?.answer).toBe('count');
-    expect(params('how many items have the highest price')).toEqual({});
+  it('never counts past an ordering: it is dropped, and the count is not resolved', () => {
+    for (const q of [
+      'how many items have the highest price',
+      'how many of the top 5 items by price'
+    ]) {
+      const r = parse(q);
+      expect(r.candidates[0]?.answer, q).toBe('count');
+      expect(r.status, q).toBe('partial');
+      expect(r.candidates[0]?.strict, q).toBe(true);
+      expect(r.candidates[0]?.dropped, q).toEqual([
+        expect.objectContaining({ reason: 'ordering does not apply to a count', kind: 'filter' })
+      ]);
+      expect(params(q), q).toEqual({});
+    }
+  });
+
+  it('does not read a number after highest as a field', () => {
+    expect(parse('highest 5 items').candidates[0]?.dropped ?? []).toEqual([]);
   });
 
   it('keeps the field ordering over a recency word, dropping the recency', () => {

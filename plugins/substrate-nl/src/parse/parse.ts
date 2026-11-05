@@ -589,6 +589,14 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
   // A field ordering is ignored in a count, and gives way to a derived ordering.
   const fieldOrder: Dropped[] = [];
   let sortBy: { field: string; dir: 'desc' | 'asc'; limit: number } | null = null;
+  // A count over "the top 5" or "the highest" would count every row: the ordering is a
+  // dropped filter, so a strict count is unknown rather than a wrong number.
+  if (a.fieldOrder !== null && a.count)
+    fieldOrder.push({
+      span: a.fieldOrder.span,
+      reason: 'ordering does not apply to a count',
+      kind: 'filter'
+    });
   if (a.fieldOrder !== null && !a.count) {
     const r = orderField(a.fieldOrder, type, pack, rulings);
     const reason =
@@ -912,7 +920,7 @@ function claimFieldOrder(
       if (somewhere(w, numeric)) return { words: w, span: w, end: i + n - 1 };
     }
     const t = tokens[i];
-    return !numeric && t !== undefined && !t.used && !GLUE.has(t.text)
+    return !numeric && t !== undefined && !t.used && !GLUE.has(t.text) && !/^\d/.test(t.text)
       ? { words: t.text, span: t.text, end: i }
       : null;
   };
