@@ -290,6 +290,43 @@ describe('substrate.ask', () => {
     await until(() => expect(app.frame()).toContain('label'));
     expect(app.frame()).not.toContain('[2J');
   });
+  it('rows of a type with no title/status/project show a name field and the asked-about fields', () => {
+    const out = (data: unknown) =>
+      JSON.stringify(renderers[KIND.rows]?.({ data, theme: marathon, size: { columns: 120 } }));
+    const rendered = out({
+      kind: 'rows',
+      frame: {
+        'shop/Product': {
+          params: { where: { inStock: { eq: true } }, orderBy: [{ price: 'desc' }], limit: 2 },
+          fields: {}
+        }
+      },
+      answer: 'rows',
+      source: 'parser',
+      dropped: [],
+      plan: [],
+      data: [
+        {
+          id: 'p1',
+          shortId: 7,
+          productName: 'Desk lamp',
+          price: 129.5,
+          inStock: true,
+          colour: 'red',
+          tags: ['a']
+        },
+        { id: 'p2', shortId: 8, productName: 'Kettle', price: null, inStock: true }
+      ]
+    });
+    expect(rendered).toContain('Desk lamp');
+    expect(rendered).toContain('price=129.5');
+    expect(rendered).toContain('inStock=true');
+    expect(rendered).toContain('colour=red');
+    expect(rendered).toContain('Kettle');
+    expect(rendered).not.toContain('tags=');
+    // The asked-about fields come before the rest.
+    expect(rendered.indexOf('price=129.5')).toBeLessThan(rendered.indexOf('colour=red'));
+  });
   it('renderers hand Ink no escape bytes from server-supplied text', () => {
     const evil = '\x1b]0;pwned\x07Ship\x1b[31mit';
     const out = (kind: string, data: unknown) =>
