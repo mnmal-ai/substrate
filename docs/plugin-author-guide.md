@@ -958,7 +958,9 @@ carry `id` across export and import, never `shortId`.
 
 A store in an old layout (`legacy` or `partitioned`) is refused at boot:
 copy it into a fresh store with `substrate-admin migrate-store`, which only
-reads the source. The copy builds every type's indexes on its table.
+reads the source. The copy builds every type's indexes on its table. The
+procedure is in [Upgrading to per-type tables](upgrading-to-type-tables.md),
+and the choices it involves in [Operator decisions](operator-decisions.md).
 
 Before each background build the dataset compares free space on the database
 volume against an estimate (the size of the index it replaces, a leftover
@@ -978,10 +980,9 @@ Configure the guard with:
 - `SUBSTRATE_INDEX_DISK_MARGIN_MB`: free space a build must leave. Default
   2048; `0` requires only the estimate.
 
-Indexes that were `indexed: true` only by the old SDK default stay in place
+Indexes that were `indexed: true` only by an older SDK default stay in place
 until the advisor recommends their removal and a `propose_index remove`
-drops them. Also new in this release: PostgreSQL 18 is the minimum (boot
-refuses older servers; see the dataset-pg README's upgrading section) and
+drops them. PostgreSQL 18 is the minimum (boot refuses older servers), and
 Node `26.12.1`.
 
 The engine injects `id`, `shortId` and the `_metadata` fields (`createdAt`,
@@ -999,7 +1000,7 @@ Every `field.*` builder in `@mnmal-ai/substrate/sdk` returns a plain
 | `field.string(opts?)` | `{kind:'scalar',type:'string'}` | unset | Names, identifiers, short text. |
 | `field.number(opts?)` | `{kind:'scalar',type:'number'}` | unset | Counts, scores, money in minor units. |
 | `field.boolean(opts?)` | `{kind:'scalar',type:'boolean'}` | unset | Flags. |
-| `field.date(opts?)` | `{kind:'scalar',type:'date'}` | unset | Timestamps. `serverSet: 'create' \| 'update' \| 'both'` marks one your server code sets; autoCRUD rejects client values for it. A date with no offset is read as UTC, so writers should send an offset or `Z`. |
+| `field.date(opts?)` | `{kind:'scalar',type:'date'}` | unset | Timestamps. `serverSet: 'create' \| 'update' \| 'both'` marks one your server code sets; autoCRUD rejects client values for it. A date with no offset is read as UTC, so writers should send an offset or `Z`. Filter operands must be ISO 8601; a loose string is refused `type_mismatch`. |
 | `field.enum(values, opts?)` | string scalar with `enum` | unset | A closed set of values. |
 | `field.vocab(values, opts?)` | string scalar with `enum` + `aliases` | unset | A governed vocabulary: aliases are normalised to canonical values on write and in filters. `strict: false` admits unknown values. |
 | `field.json(opts?)` | `{kind:'scalar',type:'json'}` | `false` | Opaque bodies. See below. |
@@ -1009,7 +1010,10 @@ Every `field.*` builder in `@mnmal-ai/substrate/sdk` returns a plain
 
 Common options:
 
-- `nullable: true`: the value may be `null`.
+- `nullable: true`: the value may be `null`. An explicit `null` on a scalar
+  (other than `json`) or crossRef field reads back as an absent key, on every
+  dataset: read `row.field ?? null`, and write row policies with `== null` /
+  `!= null`. `json` and list fields keep an explicit `null`.
 - `default` (scalars): the value autoCRUD fills on create when the caller
   omits the field. **A non-nullable scalar without a `default` is required on
   create**; omitting it fails with `missing_required_field`.
@@ -1066,6 +1070,12 @@ For every type that does not opt out:
 - `purge<Type>({ id })`: admin-only hard delete, installed only with
   `purgeable: true`.
 - `get<Type>({ id })`: one row by id (or short id), or `null`.
+- `updateMany<Type>({ where, set })` / `deleteMany<Type>({ where })`: write
+  every row the filter matches, in one transaction, and return
+  `{ count, ids, idsTruncated }`. Policies apply per matched row, and a
+  filter matching more than `SUBSTRATE_FILTER_WRITE_MAX_MATCH` rows (default
+  10000) is refused `filter_too_broad`. Declaring both `X` and `ManyX` in one
+  namespace is refused at install (`AutoCrudNameCollisionError`).
 - `<Type>({ where?, orderBy?, limit?, cursor?, id?, ids?, includeDeleted?, _allowTableScan? })`:
   the list query, addressed by the bare `<ns>/<Type>` key. Unknown params are
   rejected with `unknown_param`. `_allowTableScan` is deprecated and ignored.

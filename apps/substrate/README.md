@@ -82,7 +82,7 @@ The pieces are exported for use outside the CLI: `createClientFromEnv()` builds 
 
 ### `substrate-admin`
 
-A separate binary for key management: `bootstrap` (seed the genesis admin key), `doctor` (check a deployment end to end), `onboard`, `list`, `register`, `update`, `rotate`, `revoke`, and `migrate-store` (copy a store into a fresh, empty PostgreSQL 18 store on per-type tables and verify it; see [Upgrading](https://github.com/mnmal-ai/substrate/blob/main/packages/substrate-dataset-pg/README.md#upgrading)). `substrate-admin --help` documents each.
+A separate binary for key management and store operations: `bootstrap` (seed the genesis admin key), `doctor` (check a deployment end to end), `onboard`, `list`, `register`, `update`, `rotate`, `revoke`, `promote-fields` (run the promotion sweep now on a running server, giving fields added at runtime their columns), and `migrate-store` (copy a store into a fresh, empty PostgreSQL 18 store on per-type tables and verify it; see [Upgrading to per-type tables](https://github.com/mnmal-ai/substrate/blob/main/docs/upgrading-to-type-tables.md)). `substrate-admin --help` documents each.
 
 ## Install
 
@@ -126,20 +126,24 @@ The repository's `docker-compose.yml` runs this binary with `substrate-nl` and `
 
 ## Environment variables
 
-The main ones; `substrate --help` and the header of `apps/substrate/src/main.ts` list the rest.
+The main ones; `substrate --help` and the header of `apps/substrate/src/main.ts` list the rest. [Operator decisions](https://github.com/mnmal-ai/substrate/blob/main/docs/operator-decisions.md) explains what each choice costs.
 
 | Var | Purpose |
 |---|---|
 | `SUBSTRATE_DATABASE_URL` | `memory` (default, ephemeral) or `postgres://...`. A Postgres store keeps each type in a table of its own; a store in an old layout (`legacy` or `partitioned`) is refused at boot, naming `substrate-admin migrate-store`, which copies it into a fresh one. `SUBSTRATE_STORAGE_LAYOUT` is no longer read: setting it logs one warning. |
 | `SUBSTRATE_PLUGIN_DIR` | Plugin install root. The loader scans `<dir>/node_modules/{*,@*/*}/package.json` for packages with a `substrate` manifest and merges each plugin's `default-config.json` with `<dir>/<basename>.config.json`. |
-| `PORT` / `HOST` | Listen address (default `3100` / `0.0.0.0`) |
+| `PORT` / `HOST` | Listen address (default `3100`; `HOST` defaults to `0.0.0.0` with auth on and `127.0.0.1` with auth off) |
+| `SUBSTRATE_ALLOW_UNAUTHENTICATED_HOST` | `1` or `true` permits a non-loopback `HOST` with auth off; without it that combination refuses boot. |
 | `SUBSTRATE_SYSTEM_ACTOR` | Who the deployment writes as while auth is off. Required in that case: the server refuses to boot rather than write unattributed rows. |
 | `SUBSTRATE_AUTH_MODE` | `required` or `attribute` (anonymous callers allowed on non-admin routes). Setting it, or `SUBSTRATE_AUTH_KEY_REGISTRY`, enables auth. |
 | `SUBSTRATE_AUTH_KEY_REGISTRY` | Path to a JSON key registry file. Without it, auth reads keys registered in Postgres with `substrate-admin`. |
 | `SUBSTRATE_PUBLIC_ORIGIN` | The origins callers reach this server by, comma-separated (`https://host:3100,https://alias`). A token whose `aud` names none of them is refused. **Required when auth is enabled and `HOST` is not loopback**; on loopback it defaults to the loopback origins. |
 | `SUBSTRATE_STREAM_TICKET_SECRET` | HMAC key signing SSE stream tickets. **Required when auth is enabled**; at least 16 characters. The ticket signature is the only authentication on `GET /substrate/v1/stream` and `GET /substrate/v1/subscribe`, because `EventSource` can send no header or body. Rotating it invalidates every outstanding ticket. |
 | `SUBSTRATE_TLS_KEY_PATH` / `SUBSTRATE_TLS_CERT_PATH` / `SUBSTRATE_TLS_CA_PATH` | Serve HTTPS. Key and cert are required together. |
-| `SUBSTRATE_NAMESPACE` | Default namespace for recall requests that omit one. |
+| `SUBSTRATE_NAMESPACE` | Default namespace for recall requests that omit one; with neither, recall refuses with `missing_namespace`. |
+| `SUBSTRATE_STATEMENT_TIMEOUT_MS` | Statement timeout for typed edge walk reads (default 30000). A read it cancels is refused `query_timeout`. |
+| `SUBSTRATE_PAGE_LIMIT_DEFAULT` / `SUBSTRATE_PAGE_LIMIT_MAX` | Page size for a remote query that names no `limit` (default 100), and the largest `limit` accepted (default 1000). |
+| `SUBSTRATE_FILTER_WRITE_MAX_MATCH` / `SUBSTRATE_FILTER_WRITE_IDS_CAP` | `updateMany<Type>` / `deleteMany<Type>`: a filter matching more rows than the max is refused `filter_too_broad` (default 10000); the result lists at most the cap of ids (default 1000). |
 | `SUBSTRATE_SWEEP_INTERVAL_MS` | Edge-sweep cadence (default 300000) |
 | `SUBSTRATE_INDEX_DISK_PATH` | The database volume's mount, when the database is on this host: free space there is checked before each background index build. `off` skips the check. |
 | `SUBSTRATE_INDEX_DISK_MARGIN_MB` | Free space a build must leave (default 2048; `0` requires only the estimate). |
@@ -156,6 +160,7 @@ Natural-language query and the recall embedder are not configured by environment
 
 - [Getting started](https://github.com/mnmal-ai/substrate/blob/main/docs/getting-started.md)
 - [Design spec](https://github.com/mnmal-ai/substrate/blob/main/docs/substrate-from-first-principles.md)
+- [Operator decisions](https://github.com/mnmal-ai/substrate/blob/main/docs/operator-decisions.md)
 - [Upgrading to per-type tables](https://github.com/mnmal-ai/substrate/blob/main/docs/upgrading-to-type-tables.md)
 - [Plugin author guide](https://github.com/mnmal-ai/substrate/blob/main/docs/plugin-author-guide.md)
 
