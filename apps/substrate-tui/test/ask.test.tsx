@@ -565,7 +565,7 @@ describe('substrate.ask', () => {
         mutations: {},
         annotations: {
           tui: {
-            formats: { 'Todo.cost': 'money', 'Other.n': 7 },
+            formats: { 'Todo.cost': 'money', 'Todo.x.y': 'int', 'Other.n': 7 },
             rows: { Todo: { title: 'title', value: 'cost' } }
           }
         }
@@ -578,7 +578,25 @@ describe('substrate.ask', () => {
     await until(() => expect(app.frame()).toMatch(/ 1 {2}Ship it +\$1,234\.50/));
     app.stdin.write('/frame');
     app.stdin.write(ENTER);
-    await until(() => expect(app.frame()).toContain('tui: Other ignored'));
+    await until(() => expect(app.frame()).toMatch(/tui: .*x\.y/));
+    expect(app.frame()).toMatch(/tui: .*x\.y/);
+    expect(app.frame()).not.toContain('Other ignored');
+  });
+  it('a schema whose annotations cannot be read falls back, noted in /frame, without crashing', async () => {
+    const { deps } = fake(() => [rowsEv(1), { event: 'done', data: {} }]);
+    deps.getJson = async () => ({
+      get annotations() {
+        throw new Error('bad getter');
+      }
+    });
+    const app = start(deps);
+    await tick(40);
+    app.stdin.write('todos');
+    app.stdin.write(ENTER);
+    await until(() => expect(app.frame()).toContain('todo 0'));
+    app.stdin.write('/frame');
+    app.stdin.write(ENTER);
+    await until(() => expect(app.frame()).toContain('tui ignored: unreadable'));
   });
   it('a schema that cannot be read leaves rows generic', async () => {
     const { deps } = fake(() => [rowsEv(1), { event: 'done', data: {} }]);

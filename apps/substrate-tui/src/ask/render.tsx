@@ -6,6 +6,7 @@ import {
   type Entry,
   formatValue,
   isNumericFormat,
+  own,
   type RowView,
   type TypeView
 } from './present.js';
@@ -95,19 +96,26 @@ function askedFields(frame: Rows['frame']): string[] {
   return out;
 }
 
-const empty = (v: unknown) => v === null || v === undefined || v === '';
-/** A row's field as the view formats it, sanitised; '' when empty. */
-const shown = (r: Record<string, unknown>, field: string, view: TypeView | undefined) =>
-  empty(r[field])
+// A list or json value has no one-cell form, so it shows as empty.
+const empty = (v: unknown) => v === null || v === undefined || v === '' || typeof v === 'object';
+/** A row's own field as the view formats it, sanitised; '' when empty. */
+const shown = (r: Record<string, unknown>, field: string, view: TypeView | undefined) => {
+  const v = own(r, field);
+  return empty(v)
     ? ''
     : view === undefined
-      ? str(r[field])
-      : sanitise(formatValue(r[field], view.formats[field], view.currency));
+      ? str(v)
+      : sanitise(formatValue(v, own(view.formats, field), view.currency));
+};
 /** An entry's cell: its template around the formatted value; '' when the value is empty. */
 const cell = (r: Record<string, unknown>, e: Entry, view: TypeView) => {
   const v = shown(r, e.field, view);
-  return v === '' || e.template === undefined ? v : sanitise(e.template.replaceAll('{}', v));
+  // A function replacer, so `$&` and `$$` in a value stay literal.
+  return v === '' || e.template === undefined ? v : sanitise(e.template.replaceAll('{}', () => v));
 };
+/** Width of a right-aligned value column: the widest value, capped at a third of the line. */
+const valueWidth = (values: string[], columns: number) =>
+  Math.min(Math.max(0, ...values.map(cellWidth)), Math.max(8, Math.floor(columns / 3)));
 
 const SKIP = new Set(['id', 'shortId']);
 /** `field=value` for a row's scalar fields: the asked-about ones first, then the rest. */
@@ -141,8 +149,8 @@ const FN_LABEL = { avg: 'average', sum: 'total', min: 'min', max: 'max' } as con
 const aggValue = (v: unknown, view?: TypeView, field?: string) =>
   v === null || v === undefined
     ? '—'
-    : view !== undefined && field !== undefined && view.formats[field] !== undefined
-      ? sanitise(formatValue(v, view.formats[field], view.currency))
+    : view !== undefined && field !== undefined && own(view.formats, field) !== undefined
+      ? sanitise(formatValue(v, own(view.formats, field), view.currency))
       : typeof v === 'number' && !Number.isInteger(v)
         ? String(Math.abs(v) >= 0.01 ? Math.round(v * 100) / 100 : Number(v.toPrecision(3)))
         : str(v);
@@ -164,7 +172,7 @@ function declaredRows(
   const ordW = String(list.length).length;
   const indent = ' '.repeat(1 + ordW + 2 + 2);
   const values = list.map((r) => (row.value === undefined ? '' : cell(r, row.value, view) || '—'));
-  const valW = row.value === undefined ? 0 : Math.max(...values.map(cellWidth));
+  const valW = row.value === undefined ? 0 : valueWidth(values, columns);
   const leftW = Math.max(1, columns - (1 + ordW + 2) - (valW > 0 ? valW + 2 : 0));
   const titleOf = (r: Record<string, unknown>) => {
     const f = row.title?.field ?? labelField(r);
@@ -185,7 +193,7 @@ function declaredRows(
         if (v === '') return '';
         const label =
           e.label ??
-          (typeof r[e.field] === 'number' || isNumericFormat(view.formats[e.field])
+          (typeof own(r, e.field) === 'number' || isNumericFormat(own(view.formats, e.field))
             ? e.field
             : undefined);
         return label === undefined ? v : `${sanitise(label)} ${v}`;
@@ -200,7 +208,9 @@ function declaredRows(
           </Text>
           <Text color={theme.color.dim}>{restCell}</Text>
           {pad ? (
-            <Text color={theme.color.text}>{`  ${padCells(values[i] ?? '', valW, true)}`}</Text>
+            <Text
+              color={theme.color.text}
+            >{`  ${padCells(truncateCells(values[i] ?? '', valW), valW, true)}`}</Text>
           ) : null}
         </Text>
         {det.length > 0 ? (
@@ -238,21 +248,25 @@ const rows: Renderer = ({ data, theme, size }) => {
       );
     }
     const keyCols = Math.min(30, Math.max(COLS.minTitle, Math.floor(size.columns / 3)));
+    const groups = agg.groups.filter((g) => g.key === null || g.value !== null);
+    const values = groups.map((g) => aggValue(g.value, view, agg.field));
+    const valW = valueWidth(values, size.columns);
     return (
       <Box flexDirection="column">
         <Text color={theme.color.dim}>{`${head} by ${str(agg.by)}`}</Text>
-        {agg.groups
-          .filter((g) => g.key === null || g.value !== null)
-          .map((g, i) => (
-            <Text key={i}>
-              {'  '}
-              <Text color={theme.color.dimMid}>
-                {padCells(g.key === null ? '(none)' : str(g.key), keyCols)}
-              </Text>
-              {'  '}
-              <Text color={theme.color.text}>{aggValue(g.value, view, agg.field)}</Text>
+        {groups.length === 0 ? <Text color={theme.color.dim}>{'  no groups'}</Text> : null}
+        {groups.map((g, i) => (
+          <Text key={i} wrap="truncate">
+            {'  '}
+            <Text color={theme.color.dimMid}>
+              {padCells(g.key === null ? '(none)' : str(g.key), keyCols)}
             </Text>
-          ))}
+            {'  '}
+            <Text color={theme.color.text}>
+              {padCells(truncateCells(values[i] ?? '', valW), valW, true)}
+            </Text>
+          </Text>
+        ))}
         {agg.truncated === true ? <Text color={theme.color.dim}>{'  …more groups'}</Text> : null}
         {errs}
         {lost}

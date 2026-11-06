@@ -1,4 +1,5 @@
 import type { NlOutcome } from '@mnmal-ai/substrate/sdk';
+import { cellWidth } from '@mnmal-ai/surface-kit';
 import { marathon } from '@mnmal-ai/surface-theme';
 import { Box } from 'ink';
 import { render } from 'ink-testing-library';
@@ -285,5 +286,82 @@ describe('declared rows (annotations.tui)', () => {
     expect(g).toMatch(/Acme\s+\$1,500\.00/);
     expect(g).toMatch(/\(none\)\s+\$2\.00/);
     expect(g).not.toMatch(/Other/);
+  });
+  it('one long value is capped at a third of the width, so titles survive', () => {
+    const f = show(
+      KIND.rows,
+      items([
+        {
+          id: 'a',
+          name: 'Teapot',
+          price: 'call for price — ask the supplier about bulk discounts please'
+        },
+        { id: 'b', name: 'Red Mug', price: 3 }
+      ]),
+      60
+    );
+    const lines = f.split('\n');
+    expect(lines.every((l) => cellWidth(l) <= 60)).toBe(true);
+    expect(lines[0]).toMatch(/^ 1 {2}Teapot +call for price.*…$/);
+    expect(lines.find((l) => l.startsWith(' 2'))).toMatch(/^ 2 {2}Red Mug +\$3\.00$/);
+  });
+  it('a $ pattern in a value is not a replacement pattern in the template', () => {
+    const view: TypeView = {
+      currency: 'USD',
+      formats: {},
+      row: { title: { field: 'name' }, tags: [{ field: 'g', template: '{}!' }], details: [] }
+    };
+    expect(show(KIND.rows, items([{ id: 'a', name: 'x', g: 'a$&b$$c' }], view))).toContain(
+      'a$&b$$c!'
+    );
+  });
+  it('an entry naming a list or object field is treated as empty', () => {
+    const view: TypeView = {
+      currency: 'USD',
+      formats: {},
+      row: { title: { field: 'name' }, tags: [], value: { field: 'v' }, details: [{ field: 'l' }] }
+    };
+    const f = show(
+      KIND.rows,
+      items([{ id: 'a', name: 'x', v: { a: 1 }, l: ['p', 'q'] }], view),
+      40
+    );
+    expect(f).not.toMatch(/object|p,q/);
+    expect(f.split('\n')).toEqual([expect.stringMatching(/^ 1 {2}x +—$/)]);
+  });
+  it('a non-numeric value under a numeric format shows raw in the declared view', () => {
+    expect(show(KIND.rows, items([{ id: 'a', name: 'x', price: 'n/a' }]), 40)).toMatch(/x +n\/a$/);
+  });
+  it('a wide-character title at 40 columns keeps every line within the width', () => {
+    const f = show(
+      KIND.rows,
+      items([{ id: 'a', name: '青い急須'.repeat(8), grade: 1, price: 84, ask: 1 }]),
+      40
+    );
+    expect(f.split('\n').every((l) => cellWidth(l) <= 40)).toBe(true);
+    expect(f).toMatch(/\$84\.00/);
+  });
+  it('grouped values are right-aligned; all-null groups say no groups', () => {
+    const agg = (groups: { key: string | null; value: number | null }[]) => ({
+      ...rows({
+        answer: 'aggregate',
+        data: { groups: [] },
+        aggregate: { fn: 'sum', field: 'ask', by: 'seller', groups }
+      }),
+      tui: { currency: 'USD', formats: { ask: 'money' } }
+    });
+    const lines = show(
+      KIND.rows,
+      agg([
+        { key: 'Acme', value: 1500 },
+        { key: 'Globex', value: 2 }
+      ])
+    )
+      .split('\n')
+      .slice(1);
+    expect((lines[0]?.indexOf('$1,500.00') ?? 0) + '$1,500.00'.length).toBe(
+      (lines[1]?.indexOf('$2.00') ?? 0) + '$2.00'.length
+    );
+    expect(show(KIND.rows, agg([{ key: 'Acme', value: null }]))).toMatch(/no groups/);
   });
 });

@@ -10,7 +10,7 @@ import {
 import type { TuiDeps } from '../deps.js';
 import '../events.js';
 import { adapt } from './adapt.js';
-import { type Presentation, parseTui } from './present.js';
+import { own, type Presentation, parseTui } from './present.js';
 import { KIND, outcomeChips, type RowsReply, renderers } from './render.js';
 
 export interface ClarifyState {
@@ -58,7 +58,12 @@ export function askModule(deps: TuiDeps): TuiModule<AskPanels> {
     deps.getJson(`/substrate/v1/schema/${encodeURIComponent(ns)}`, ctx.signal).then(
       (s) => {
         if (ns !== namespace) return;
-        present = parseTui((s as { annotations?: { tui?: unknown } } | null)?.annotations?.tui);
+        // A schema the parser cannot read must fall back, never reject this promise unhandled.
+        try {
+          present = parseTui((s as { annotations?: { tui?: unknown } } | null)?.annotations?.tui);
+        } catch {
+          present = { types: {}, problems: [{ text: 'tui ignored: unreadable' }] };
+        }
       },
       // Without the schema, rows render generically; nothing to tell.
       () => {}
@@ -81,7 +86,7 @@ export function askModule(deps: TuiDeps): TuiModule<AskPanels> {
   /** A rows outcome with its frame type's declared view, when the namespace declares one. */
   const withView = (o: Extract<NlWireEvent, { event: 'rows' }>['data']): RowsReply => {
     const [ns, type] = (Object.keys(o.frame)[0] ?? '').split('/');
-    const view = ns === namespace && type !== undefined ? present.types[type] : undefined;
+    const view = ns === namespace && type !== undefined ? own(present.types, type) : undefined;
     return view !== undefined ? { ...o, tui: view } : o;
   };
 
@@ -212,7 +217,11 @@ export function askModule(deps: TuiDeps): TuiModule<AskPanels> {
                 case 'clarify':
                 case 'refuse':
                 case 'unknown': {
-                  for (const p of present.problems) lines.push(`tui: ${p}`);
+                  // Only what bears on this answer: whole-block problems and the answered type's.
+                  const answered =
+                    ev.event === 'rows' ? Object.keys(ev.data.frame)[0]?.split('/')[1] : undefined;
+                  for (const p of present.problems)
+                    if (p.type === undefined || p.type === answered) lines.push(`tui: ${p.text}`);
                   last = { lines };
                   if (ev.event === 'clarify' && ev.data.options.length > 0)
                     ctx.open('clarify', ev.data);
