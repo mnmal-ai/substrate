@@ -23,8 +23,14 @@ import {
   compose,
   defaultYield,
   dropComparatives,
+  findPaths,
+  type Hop,
   type Part,
+  type Path,
   type PhraseClaim,
+  PICK_WORDS,
+  type PickClaim,
+  pathLabel,
   type WalkClaims
 } from './walks.js';
 
@@ -44,7 +50,8 @@ export type Evidence = NlEvidence;
 
 export interface Candidate {
   type: string;
-  frame: Record<string, { params: Record<string, unknown> }>;
+  /** `fields` carries only what the reading adds to the projection: a hop ordering's `_agg`. */
+  frame: Record<string, { params: Record<string, unknown>; fields?: Record<string, unknown> }>;
   answer: string;
   evidence: Evidence[];
   /** Content words this reading leaves unexplained. */
@@ -278,7 +285,7 @@ export function parseQuestion(
   );
 
   // --- ordering by a field, before ids, so the N in "top N" is not read as an id ---
-  const fieldOrder = claimFieldOrder(tokens, walkClaims, pack, rulings);
+  const fieldOrder = claimFieldOrder(tokens, walkClaims, pack, rulings, mentioned, evidence);
 
   // --- ids: #N anywhere, or a number right after a type word ---
   const ids: number[] = [];
@@ -610,7 +617,7 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
   const aggClaim = a.count ? null : a.aggregate;
   // A field ordering is ignored in a count, and gives way to a derived ordering.
   const fieldOrder: Dropped[] = [];
-  let sortBy: { field: string; dir: 'desc' | 'asc'; limit: number } | null = null;
+  let sortBy: { field: string; hop?: HopOrder; dir: 'desc' | 'asc'; limit: number } | null = null;
   // A count over "the top 5" or "the highest" would count every row: the ordering is a
   // dropped filter, so a strict count is unknown rather than a wrong number.
   if (a.fieldOrder !== null && (a.count || aggClaim !== null))
@@ -627,13 +634,11 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
         : derived
           ? 'it conflicts with the derived ordering, which is kept'
           : null;
+    const limit = a.fieldOrder.limit ?? (a.plural ? 10 : 1);
     if (reason !== null) fieldOrder.push({ span: a.fieldOrder.span, reason, kind: 'order' });
-    else if ('field' in r)
-      sortBy = {
-        field: r.field,
-        dir: a.fieldOrder.dir,
-        limit: a.fieldOrder.limit ?? (a.plural ? 10 : 1)
-      };
+    else if ('field' in r) sortBy = { field: r.field, dir: a.fieldOrder.dir, limit };
+    else if ('hop' in r)
+      sortBy = { field: `$${r.hop.name}`, hop: r.hop, dir: a.fieldOrder.dir, limit };
   }
   // "the last sale", "the first 3 items": a count or aggregate over them would cover every row.
   const pickOver = (a.count || aggClaim !== null) && recency !== null;
@@ -645,7 +650,7 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
     ev.push({
       span: a.fieldOrder?.span ?? '',
       role: 'order',
-      detail: `${sortBy.field} ${sortBy.dir}, limit ${sortBy.limit}`
+      detail: `${sortBy.hop?.label ?? sortBy.field} ${sortBy.dir}, limit ${sortBy.limit}`
     });
   const dropped = [
     ...(a.composed?.dropped ?? []),
@@ -760,7 +765,8 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
   if (a.author !== null) where.push({ createdById: { startsWith: a.author } });
   // An ordering phrase's ruled exclusion still holds ("asking price" without placeholders).
   const orderExclude = a.fieldOrder?.phrase?.entry.exclude;
-  if (sortBy !== null && orderExclude !== undefined) where.push({ NOT: orderExclude });
+  if (sortBy !== null && sortBy.hop === undefined && orderExclude !== undefined)
+    where.push({ NOT: orderExclude });
 
   const agg = aggClaim === null ? null : aggregateOn(aggClaim, type, pack, rulings);
   if (agg !== null) {
@@ -884,6 +890,20 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
     ...yields,
     // A derive beside an aggregate was dropped, so its clauses do not run.
     ...(a.composed?.plan ?? []).filter((c) => aggClaim === null || c.kind !== 'derive'),
+    ...(sortBy?.hop !== undefined
+      ? [
+          {
+            path: ['fields', '_agg', sortBy.hop.name, sortBy.hop.label],
+            kind: 'hop' as const,
+            served: true
+          },
+          {
+            path: ['orderBy', '0', sortBy.field, sortBy.dir],
+            kind: 'order' as const,
+            served: false
+          }
+        ]
+      : []),
     ...(agg?.group !== undefined
       ? [
           {
@@ -903,6 +923,8 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
     params.limit = 1;
   }
   if (sortBy !== null) {
+    if (sortBy.hop !== undefined)
+      params.derive = { [sortBy.hop.name]: { value: `_agg.${sortBy.hop.name}` } };
     params.orderBy = [{ [sortBy.field]: sortBy.dir }];
     params.limit = sortBy.limit;
   }
@@ -931,7 +953,15 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
             : 'rows';
   return {
     type,
-    frame: { [`${pack.namespace}/${type}`]: { params } },
+    frame: {
+      [`${pack.namespace}/${type}`]: {
+        params,
+        // The hop ordering's value comes back on each row as `_agg.<name>`.
+        ...(sortBy?.hop !== undefined
+          ? { fields: { _agg: { [sortBy.hop.name]: sortBy.hop.agg } } }
+          : {})
+      }
+    },
     answer,
     evidence: ev,
     residual: contentWords(tokens),
@@ -969,6 +999,10 @@ interface FieldOrder {
   phrase?: PhraseClaim;
   /** "most <field>": a number field only. */
   numeric?: boolean;
+  /** "<type> <field>": the type the words name a field of. */
+  type?: string;
+  /** "by latest <field>": how a hop to many rows picks one value. */
+  pick?: { span: string; kind: PickClaim['kind'] };
 }
 
 /** A field named by words on one type: one of its field phrases, else its name or an alias. */
@@ -985,6 +1019,8 @@ function fieldByWords(
 interface FieldWords {
   words?: string;
   phrase?: PhraseClaim;
+  /** The type a "<type> <field>" mention named. */
+  type?: string;
   span: string;
   end: number;
 }
@@ -1029,25 +1065,88 @@ function takeField(tokens: Token[], walkClaims: WalkClaims, from: number, f: Fie
 }
 
 const fieldRef = (f: FieldWords) =>
-  f.phrase !== undefined ? { phrase: f.phrase } : { words: f.words as string };
+  f.phrase !== undefined
+    ? { phrase: f.phrase }
+    : { words: f.words as string, ...(f.type !== undefined ? { type: f.type } : {}) };
 
 /**
- * Claims one field ordering: "top|bottom [N] … by <field>", "highest|lowest
- * <field>", "most <number field>".
+ * Claims one field ordering: "top|bottom [N] … by [pick] <field>",
+ * "highest|lowest <field>", "most <number field>". The field may be a
+ * "<type> <field>" pair, whose type mention is then part of the field, not a
+ * seed; or a field phrase on another type that a walk pick claimed.
  */
 function claimFieldOrder(
   tokens: Token[],
   walkClaims: WalkClaims,
   pack: NamespacePack,
-  rulings: NamespaceRulings
+  rulings: NamespaceRulings,
+  mentioned: Map<string, { span: string; at: [number, number] }>,
+  evidence: Evidence[]
 ): FieldOrder | null {
+  /** "<type> <field>": a type mention at `i`, then a field of that type or one free word. */
+  const typed = (i: number): FieldWords | null => {
+    const m = [...mentioned].find(([, x]) => x.at[0] === i);
+    if (m === undefined) return null;
+    const [type, { span, at }] = m;
+    const fields = own(pack.types, type)?.fields ?? {};
+    for (let n = 3; n >= 1; n--) {
+      const slice = tokens.slice(at[1] + 1, at[1] + 1 + n);
+      if (slice.length < n || slice.some((t) => t.used)) continue;
+      const w = slice.map((t) => t.text).join(' ');
+      const known = fieldByWords(w, fields, rulings) !== null;
+      if (known || (n === 1 && !GLUE.has(w) && !/^\d/.test(w)))
+        return { words: w, type, span: `${span} ${w}`, end: at[1] + n };
+    }
+    return null;
+  };
   const at = (i: number, numeric: boolean) =>
-    fieldAt(tokens, walkClaims, pack, rulings, i, numeric);
-  const take = (from: number, f: FieldWords) => takeField(tokens, walkClaims, from, f);
+    typed(i) ?? fieldAt(tokens, walkClaims, pack, rulings, i, numeric);
+  const take = (from: number, f: FieldWords) => {
+    takeField(tokens, walkClaims, from, f);
+    if (f.type === undefined) return;
+    // The mention names the field's type, so it is not a type the question is about.
+    mentioned.delete(f.type);
+    const e = evidence.findIndex((x) => x.role === 'type' && x.detail === f.type);
+    if (e >= 0) evidence.splice(e, 1);
+  };
+  /** "latest", "lowest" …: a pick word at `i`, free or claimed by a walk pick. */
+  const pickAt = (i: number) => {
+    const claimed = walkClaims.picks.find((k) => k.at[0] === i);
+    if (claimed !== undefined)
+      return { span: claimed.span, kind: claimed.kind, next: claimed.at[1] + 1, claimed };
+    for (const [word, kind] of Object.entries(PICK_WORDS)) {
+      const n = word.split(' ').length;
+      const slice = tokens.slice(i, i + n);
+      if (
+        slice.length === n &&
+        slice.every((t) => !t.used) &&
+        slice.map((t) => t.text).join(' ') === word
+      )
+        return { span: word, kind, next: i + n };
+    }
+    return null;
+  };
   const field = fieldRef;
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i] as Token;
-    if (t.used) continue;
+    if (t.used) {
+      // "the item with the highest vendor score": a walk pick on a phrase that nothing compares.
+      const k = walkClaims.picks.find(
+        (x) => x.at[0] === i && x.at[1] === i && (x.span === 'highest' || x.span === 'lowest')
+      );
+      const p = k?.phrase;
+      if (
+        k === undefined ||
+        p === undefined ||
+        p.field === undefined ||
+        p.entry.value !== undefined ||
+        walkClaims.compares.some((c) => c.subject === p || c.object === p)
+      )
+        continue;
+      walkClaims.picks.splice(walkClaims.picks.indexOf(k), 1);
+      take(i, { phrase: p, span: p.span, end: p.at[1] });
+      return { span: `${k.span} ${p.span}`, dir: k.kind === 'max' ? 'desc' : 'asc', phrase: p };
+    }
     if (t.text === 'top' || t.text === 'bottom') {
       const n = tokens[i + 1];
       const limit = n !== undefined && !n.used && /^[1-9]\d*$/.test(n.text) ? n : undefined;
@@ -1055,15 +1154,25 @@ function claimFieldOrder(
         (x, j) =>
           j > i && x.text === 'by' && !x.used && !AUTHOR_VERBS.has(tokens[j - 1]?.text ?? '')
       );
-      const f = by < 0 ? null : at(by + 1, false);
+      if (by < 0) continue;
+      const pick = pickAt(by + 1);
+      const picked = pick === null ? null : at(pick.next, false);
+      const f = picked ?? at(by + 1, false);
       if (f === null) continue;
       t.used = true;
       if (limit !== undefined) limit.used = true;
+      const withPick = picked !== null && pick !== null;
+      if (withPick && pick.claimed !== undefined)
+        walkClaims.picks.splice(walkClaims.picks.indexOf(pick.claimed), 1);
+      // Marks "by", the pick word and the field used.
       take(by, f);
       return {
-        span: [t.text, limit?.text, 'by', f.span].filter((x) => x !== undefined).join(' '),
+        span: [t.text, limit?.text, 'by', withPick ? pick.span : undefined, f.span]
+          .filter((x) => x !== undefined)
+          .join(' '),
         dir: t.text === 'top' ? 'desc' : 'asc',
         ...(limit !== undefined ? { limit: Number(limit.text) } : {}),
+        ...(withPick ? { pick: { span: pick.span, kind: pick.kind } } : {}),
         ...field(f)
       };
     }
@@ -1278,13 +1387,24 @@ function aggregateOn(
   return out;
 }
 
-/** The seed field an ordering sorts by on `type`, or why it cannot. */
+/** An ordering by one value a crossRef hop away: the frame `_agg` it sorts by. */
+interface HopOrder {
+  /** The `_agg` and derive name. */
+  name: string;
+  agg: Record<string, unknown>;
+  /** "max(Item.price) per supplier", "Supplier.rating via supplier". */
+  label: string;
+}
+
+/** The seed field an ordering sorts by on `type`, the value one hop away, or why neither. */
 function orderField(
   o: FieldOrder,
   type: string,
   pack: NamespacePack,
   rulings: NamespaceRulings
-): { field: string } | { reason: string } {
+): { field: string } | { hop: HopOrder } | { reason: string } {
+  const away = fieldAway(o, type, pack, rulings);
+  if (away !== null) return 'reason' in away ? away : hopOrder(o, type, away, pack, rulings);
   const r = seedField(o, type, pack, rulings, 'ordering');
   if ('reason' in r) return r;
   const { name, f } = r;
@@ -1299,6 +1419,100 @@ function orderField(
           : `${name} is a ${f.valueType ?? f.kind} field; only number and date fields order`
     };
   return { field: name };
+}
+
+/** The field an ordering names on a type other than `seed`, null when it is the seed's (or none). */
+function fieldAway(
+  o: FieldOrder,
+  seed: string,
+  pack: NamespacePack,
+  rulings: NamespaceRulings
+): { type: string; field: string } | { reason: string } | null {
+  if (o.phrase !== undefined) {
+    const { type, field } = o.phrase;
+    return type === undefined || field === undefined || type === seed ? null : { type, field };
+  }
+  const words = o.words ?? '';
+  if (o.type !== undefined) {
+    if (o.type === seed) return null;
+    const field = fieldByWords(words, own(pack.types, o.type)?.fields ?? {}, rulings);
+    return field === null
+      ? { reason: `${o.type} has no field "${words}"` }
+      : { type: o.type, field };
+  }
+  if (fieldByWords(words, own(pack.types, seed)?.fields ?? {}, rulings) !== null) return null;
+  const on = Object.entries(pack.types)
+    .filter(([t, def]) => t !== seed && fieldByWords(words, def.fields, rulings) !== null)
+    .map(([t]) => t)
+    .sort();
+  if (on.length === 0) return null;
+  if (on.length > 1)
+    return { reason: `"${words}" names a field on several types: ${on.join(', ')}` };
+  const type = on[0] as string;
+  return {
+    type,
+    field: fieldByWords(words, own(pack.types, type)?.fields ?? {}, rulings) as string
+  };
+}
+
+/**
+ * The `_agg` an ordering by `<type>.<field>` sorts the seed by, over the one
+ * crossRef hop between them. Out to one row, its value; in from many, a pick:
+ * the asked one ("latest", "lowest" …), else max for a descending order and
+ * min for an ascending one.
+ */
+function hopOrder(
+  o: FieldOrder,
+  seed: string,
+  to: { type: string; field: string },
+  pack: NamespacePack,
+  rulings: NamespaceRulings
+): { hop: HopOrder } | { reason: string } {
+  const paths = findPaths(pack, seed, to.type);
+  if (paths.length === 0)
+    return { reason: `no crossRef path from ${seed} to ${to.type} within 3 hops` };
+  if (paths.length > 1)
+    return {
+      reason: `several equally short paths from ${seed} to ${to.type}: ${paths
+        .map((p) => pathLabel(pack.namespace, p))
+        .join('; ')}`
+    };
+  const path = paths[0] as Path;
+  if (path.length > 1)
+    return { reason: `ordering across ${path.length} hops is not supported; one hop only` };
+  const f = own(pack.types, to.type)?.fields[to.field];
+  const qualified = `${to.type}.${to.field}`;
+  if (f === undefined || (f.kind !== 'scalar' && f.kind !== 'metadata') || f.valueType !== 'number')
+    return {
+      reason: `ordering across a hop needs a number field; ${qualified} is a ${f?.valueType ?? f?.kind} field`
+    };
+  const h = path[0] as Hop;
+  const cap = to.field.charAt(0).toUpperCase() + to.field.slice(1);
+  const exclude = o.phrase?.entry.exclude;
+  const where = exclude !== undefined ? { where: { NOT: exclude } } : {};
+  if (h.dir === 'out') {
+    const name = `${to.type.charAt(0).toLowerCase()}${to.type.slice(1)}${cap}`;
+    return {
+      hop: {
+        name,
+        agg: { out: h.field, ...where, max: to.field },
+        label: `${qualified} via ${h.field}`
+      }
+    };
+  }
+  const kind = o.pick?.kind ?? (o.dir === 'desc' ? 'max' : 'min');
+  const by = own(rulings.timeField, to.type) ?? 'createdAt';
+  return {
+    hop: {
+      name: `${kind}${to.type}${cap}`,
+      agg: {
+        in: `${pack.namespace}/${h.owner}.${h.field}`,
+        ...where,
+        ...(kind === 'latest' ? { latest: { by, value: to.field } } : { [kind]: to.field })
+      },
+      label: `${kind}(${qualified}) per ${seed.toLowerCase()}`
+    }
+  };
 }
 
 /** A clause's field name: the field itself, case-insensitively, then the rulings' and built-in aliases. */

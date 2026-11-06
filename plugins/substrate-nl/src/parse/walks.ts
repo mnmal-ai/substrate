@@ -129,7 +129,7 @@ const PICKED: Record<PickClaim['kind'], string> = {
   min: 'lowest'
 };
 
-const PICK_WORDS: Record<string, PickClaim['kind']> = {
+export const PICK_WORDS: Record<string, PickClaim['kind']> = {
   latest: 'latest',
   current: 'latest',
   'most recent': 'latest',

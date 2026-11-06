@@ -24,7 +24,7 @@ import { createNlPlugin } from '@mnmal-ai/substrate-nl';
 import { row } from '@mnmal-ai/substrate-policy';
 import { installAutoCrud } from '@mnmal-ai/substrate-sdk';
 import { MemorySubstrateServer } from '@mnmal-ai/substrate-server-memory';
-import type { CoordinatorPlugin, SubstrateResponse } from '@mnmal-ai/substrate-types';
+import type { CoordinatorPlugin, FieldDef, SubstrateResponse } from '@mnmal-ai/substrate-types';
 import { afterEach, describe, expect, it } from 'vitest';
 import { mountKernelRoute } from '../src/_kernel.js';
 import { fixturePlugin } from './_fixtures/fixture-plugin.js';
@@ -53,9 +53,15 @@ async function mkServer(opts: {
   extra?: CoordinatorPlugin[];
   /** The memory store's walk reference, which answers aggregates. */
   walks?: boolean;
+  /** Field defs for the walk reference's hops. */
+  fieldDefLookup?: (type: string, field: string) => FieldDef | undefined;
 }): Promise<NlRouteCtx> {
   const server = new MemorySubstrateServer();
-  const dataset = new MemoryDataset({ namespace: 'default', walkReference: opts.walks === true });
+  const dataset = new MemoryDataset({
+    namespace: 'default',
+    walkReference: opts.walks === true,
+    ...(opts.fieldDefLookup !== undefined ? { fieldDefLookup: opts.fieldDefLookup } : {})
+  });
   const composeOpts: Parameters<typeof compose>[0] = {
     // Without auth, the deployment must declare who it writes as.
     systemActor: 'test',
@@ -391,6 +397,98 @@ describe('ordering by a field over the memory store', () => {
     expect(await names('bottom 3 items by price')).toEqual(['a', 'd', 'c']);
     expect(await names('the item with the highest price')).toEqual(['c']);
     expect(await names('top items by price')).toEqual(['c', 'd', 'a', 'b']);
+  });
+});
+
+/** Parts and their makers, one crossRef hop apart. */
+const makerPlugin: CoordinatorPlugin = {
+  name: 'works',
+  contractVersion: '*',
+  namespaces: [
+    {
+      namespace: 'works',
+      install: async ({ registry, dataset, edges }) => {
+        installAutoCrud(registry, 'Maker', dataset, edges, {
+          fields: {
+            id: { kind: 'scalar', type: 'string', indexed: true },
+            name: { kind: 'scalar', type: 'string', indexed: true },
+            rating: { kind: 'scalar', type: 'number', indexed: true, nullable: true }
+          }
+        });
+        installAutoCrud(registry, 'Part', dataset, edges, {
+          fields: {
+            id: { kind: 'scalar', type: 'string', indexed: true },
+            name: { kind: 'scalar', type: 'string', indexed: true },
+            cost: { kind: 'scalar', type: 'number', indexed: true },
+            maker: {
+              kind: 'crossRef',
+              ns: 'works',
+              type: 'Maker',
+              onDelete: 'set_null',
+              nullable: true
+            }
+          }
+        });
+      }
+    }
+  ]
+};
+
+describe('ordering across one hop over the memory store', () => {
+  let ctx: NlRouteCtx | null = null;
+  afterEach(async () => {
+    if (ctx !== null) {
+      await ctx.composed.stop();
+      ctx = null;
+    }
+  });
+
+  it('orders the seed by a neighbour value, out and in, nulls last', async () => {
+    const maker: FieldDef = { kind: 'crossRef', ns: 'works', type: 'Maker', onDelete: 'set_null' };
+    ctx = await mkServer({
+      extra: [makerPlugin],
+      walks: true,
+      fieldDefLookup: (type, field) => (type === 'Part' && field === 'maker' ? maker : undefined)
+    });
+    const create = async (op: string, params: Record<string, unknown>): Promise<string> => {
+      const res = await ctx?.server.inject({
+        method: 'POST',
+        path: '/substrate/v1/mutate',
+        headers: JSON_HEADERS,
+        body: Buffer.from(JSON.stringify({ [`works/${op}`]: { params, fields: { id: true } } }))
+      });
+      expect(res?.status).toBe(200);
+      const { data } = jsonBody<{ data: Record<string, { id: string }> }>(res as SubstrateResponse);
+      return data[`works/${op}`]?.id as string;
+    };
+    const m1 = await create('createMaker', { name: 'm1', rating: 2 });
+    const m2 = await create('createMaker', { name: 'm2', rating: 5 });
+    await create('createMaker', { name: 'm3' });
+    await create('createPart', { name: 'p1', cost: 10, maker: m1 });
+    await create('createPart', { name: 'p2', cost: 40, maker: m1 });
+    await create('createPart', { name: 'p3', cost: 25, maker: m2 });
+    await create('createPart', { name: 'p4', cost: 5 });
+    const rows = async (question: string) => {
+      const res = await ctx?.server.inject(ask({ namespace: 'works', question }));
+      expect(res?.status).toBe(200);
+      const { outcome } = jsonBody<{
+        outcome: { kind: string; data?: Array<{ name: string; _agg?: Record<string, unknown> }> };
+      }>(res as SubstrateResponse);
+      expect(outcome.kind, question).toBe('rows');
+      return outcome.data?.map((r) => [r.name, ...Object.values(r._agg ?? {})]);
+    };
+    expect(await rows('top parts by maker rating')).toEqual([
+      ['p3', 5],
+      ['p1', 2],
+      ['p2', 2],
+      ['p4', null]
+    ]);
+    expect(await rows('top makers by part cost')).toEqual([
+      ['m1', 40],
+      ['m2', 25],
+      ['m3', null]
+    ]);
+    expect(await rows('the maker with the lowest part cost')).toEqual([['m1', 10]]);
   });
 });
 

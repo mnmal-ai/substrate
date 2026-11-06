@@ -124,17 +124,21 @@ describe('ordering by a field', () => {
     ]);
   });
 
-  it('drops an ordering across a walk', () => {
-    const reason = 'ordering across a walk is not supported';
+  it('orders across one crossRef hop (walk-ordering.test.ts covers the forms)', () => {
     for (const [q, rulings] of [
       ['top 5 items by category rank', phrased],
+      ['top 5 items by category rank', base],
       ['top 5 items by rank', base]
     ] as const) {
-      const r = parse(q, rulings);
-      expect(r.status, q).toBe('partial');
-      expect(r.candidates[0]?.dropped[0]?.reason, q).toBe(reason);
-      expect(JSON.stringify(r.candidates[0]?.frame), q).not.toContain('_walk');
-      expect(JSON.stringify(r.candidates[0]?.frame), q).not.toContain('orderBy');
+      expect(parse(q, rulings).status, q).toBe('resolved');
+      expect(Object.values(parse(q, rulings).candidates[0]?.frame ?? {})[0], q).toEqual({
+        params: {
+          derive: { categoryRank: { value: '_agg.categoryRank' } },
+          orderBy: [{ $categoryRank: 'desc' }],
+          limit: 5
+        },
+        fields: { _agg: { categoryRank: { out: 'category', max: 'rank' } } }
+      });
     }
   });
 

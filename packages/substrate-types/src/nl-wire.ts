@@ -243,8 +243,8 @@ export interface NlFieldPhrase {
   value?: unknown;
   /** Needs `field`: the implicit filter on that field's type. Never silent: it shows in `plan`. */
   exclude?: WhereClause;
-  /** Operands are `'<Type>.<field>'`, both on one type. */
-  derive?: DeriveSpec;
+  /** A diff or ratio; operands are `'<Type>.<field>'`, both on one type. */
+  derive?: Exclude<DeriveSpec, { value: string }>;
   /** A namespace default pick for this phrase. */
   pick?: 'latest' | 'max' | 'min';
 }
