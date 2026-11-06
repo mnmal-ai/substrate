@@ -158,9 +158,10 @@ const aggValue = (v: unknown, view?: TypeView, field?: string) =>
 type Theme = Parameters<Renderer>[0]['theme'];
 
 /**
- * A declared type's list: per row a dim ordinal, the bold title, dim tag chips and the value
+ * A declared type's list. Wide: per row a dim ordinal, the bold title, dim tag chips and the value
  * right-aligned in one column down the list, then an optional dim `·`-joined details line.
- * Rows truncate rather than wrap.
+ * Stacked, when the title would get less than max(20, 40%) of line 1: the title alone, then
+ * `tags · value`, then details. One layout for the whole list, so it stays aligned. Rows truncate.
  */
 function declaredRows(
   list: Record<string, unknown>[],
@@ -170,23 +171,22 @@ function declaredRows(
   columns: number
 ) {
   const ordW = String(list.length).length;
-  const indent = ' '.repeat(1 + ordW + 2 + 2);
-  const values = list.map((r) => (row.value === undefined ? '' : cell(r, row.value, view) || '—'));
-  const valW = row.value === undefined ? 0 : valueWidth(values, columns);
-  const leftW = Math.max(1, columns - (1 + ordW + 2) - (valW > 0 ? valW + 2 : 0));
-  const titleOf = (r: Record<string, unknown>) => {
+  const prefixW = 1 + ordW + 2;
+  const indent = ' '.repeat(prefixW + 2);
+  const detailW = Math.max(1, columns - indent.length);
+  const values = list.map((r) => (row.value === undefined ? '' : cell(r, row.value, view)));
+  const valW =
+    row.value === undefined
+      ? 0
+      : valueWidth(
+          values.map((v) => v || '—'),
+          columns
+        );
+  const leftW = Math.max(1, columns - prefixW - (valW > 0 ? valW + 2 : 0));
+  const items = list.map((r) => {
     const f = row.title?.field ?? labelField(r);
-    return (f === undefined ? '' : cell(r, row.title ?? { field: f }, view)) || '—';
-  };
-  return list.map((r, i) => {
-    const title = titleOf(r);
+    const title = (f === undefined ? '' : cell(r, row.title ?? { field: f }, view)) || '—';
     const tags = row.tags.map((e) => cell(r, e, view)).filter((t) => t !== '');
-    const titleCell = truncateCells(title, leftW);
-    const room = leftW - cellWidth(titleCell);
-    const rest = tags.length > 0 && room > 0 ? `  ${tags.join('  ')}` : '';
-    const pad = valW > 0;
-    // With a value column, the left part is padded so values line up down the list.
-    const restCell = pad ? padCells(rest, room) : truncateCells(rest, room);
     const det = row.details
       .map((e) => {
         const v = cell(r, e, view);
@@ -199,29 +199,72 @@ function declaredRows(
         return label === undefined ? v : `${sanitise(label)} ${v}`;
       })
       .filter((d) => d !== '');
+    return { title, tags, det };
+  });
+  const tagsW = Math.max(
+    0,
+    ...items.map((x) => (x.tags.length > 0 ? cellWidth(`  ${x.tags.join('  ')}`) : 0))
+  );
+  const wide = leftW - tagsW >= Math.max(20, Math.ceil(columns * 0.4));
+  const ordinal = (i: number) => (
+    <Text color={theme.color.dim}>{` ${padCells(String(i + 1), ordW, true)}  `}</Text>
+  );
+  const details = (det: string[]) =>
+    det.length > 0 ? (
+      <Text wrap="truncate" color={theme.color.dim}>
+        {indent + truncateCells(det.join(' · '), detailW)}
+      </Text>
+    ) : null;
+
+  return items.map(({ title, tags, det }, i) => {
+    const value = values[i] ?? '';
+    if (!wide) {
+      const second = [...tags, value].filter((x) => x !== '');
+      return (
+        <Box key={i} flexDirection="column">
+          <Text wrap="truncate">
+            {ordinal(i)}
+            <Text bold color={theme.color.text}>
+              {truncateCells(title, Math.max(1, columns - prefixW))}
+            </Text>
+          </Text>
+          {second.length > 0 ? (
+            <Text wrap="truncate" color={theme.color.dim}>
+              {indent + truncateCells(second.join(' · '), detailW)}
+            </Text>
+          ) : null}
+          {details(det)}
+        </Box>
+      );
+    }
+    const titleCell = truncateCells(title, leftW);
+    const room = leftW - cellWidth(titleCell);
+    const rest = tags.length > 0 && room > 0 ? `  ${tags.join('  ')}` : '';
+    const pad = valW > 0;
+    // With a value column, the left part is padded so values line up down the list.
+    const restCell = pad ? padCells(rest, room) : truncateCells(rest, room);
     return (
       <Box key={i} flexDirection="column">
         <Text wrap="truncate">
-          <Text color={theme.color.dim}>{` ${padCells(String(i + 1), ordW, true)}  `}</Text>
+          {ordinal(i)}
           <Text bold color={theme.color.text}>
             {titleCell}
           </Text>
           <Text color={theme.color.dim}>{restCell}</Text>
           {pad ? (
-            <Text
-              color={theme.color.text}
-            >{`  ${padCells(truncateCells(values[i] ?? '', valW), valW, true)}`}</Text>
+            <Text color={theme.color.text}>
+              {`  ${padCells(truncateCells(value || '—', valW), valW, true)}`}
+            </Text>
           ) : null}
         </Text>
-        {det.length > 0 ? (
-          <Text wrap="truncate" color={theme.color.dim}>
-            {indent + truncateCells(det.join(' · '), Math.max(1, columns - indent.length))}
-          </Text>
-        ) : null}
+        {details(det)}
       </Box>
     );
   });
 }
+
+/** Below this width a grouped aggregate puts each value on the line under its key. */
+const STACK_GROUPS_AT = 40;
 
 const rows: Renderer = ({ data, theme, size }) => {
   const titleCols = titleWidth(size.columns);
@@ -255,18 +298,29 @@ const rows: Renderer = ({ data, theme, size }) => {
       <Box flexDirection="column">
         <Text color={theme.color.dim}>{`${head} by ${str(agg.by)}`}</Text>
         {groups.length === 0 ? <Text color={theme.color.dim}>{'  no groups'}</Text> : null}
-        {groups.map((g, i) => (
-          <Text key={i} wrap="truncate">
-            {'  '}
-            <Text color={theme.color.dimMid}>
-              {padCells(g.key === null ? '(none)' : str(g.key), keyCols)}
+        {groups.map((g, i) =>
+          size.columns <= STACK_GROUPS_AT ? (
+            <Box key={i} flexDirection="column">
+              <Text wrap="truncate" color={theme.color.dimMid}>
+                {`  ${truncateCells(g.key === null ? '(none)' : str(g.key), Math.max(1, size.columns - 2))}`}
+              </Text>
+              <Text wrap="truncate" color={theme.color.text}>
+                {`    ${truncateCells(values[i] ?? '', Math.max(1, size.columns - 4))}`}
+              </Text>
+            </Box>
+          ) : (
+            <Text key={i} wrap="truncate">
+              {'  '}
+              <Text color={theme.color.dimMid}>
+                {padCells(g.key === null ? '(none)' : str(g.key), keyCols)}
+              </Text>
+              {'  '}
+              <Text color={theme.color.text}>
+                {padCells(truncateCells(values[i] ?? '', valW), valW, true)}
+              </Text>
             </Text>
-            {'  '}
-            <Text color={theme.color.text}>
-              {padCells(truncateCells(values[i] ?? '', valW), valW, true)}
-            </Text>
-          </Text>
-        ))}
+          )
+        )}
         {agg.truncated === true ? <Text color={theme.color.dim}>{'  …more groups'}</Text> : null}
         {errs}
         {lost}

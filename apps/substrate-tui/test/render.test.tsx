@@ -1,8 +1,10 @@
+import { EventEmitter } from 'node:events';
 import type { NlOutcome } from '@mnmal-ai/substrate/sdk';
 import { cellWidth } from '@mnmal-ai/surface-kit';
 import { marathon } from '@mnmal-ai/surface-theme';
-import { Box } from 'ink';
+import { Box, render as inkRender } from 'ink';
 import { render } from 'ink-testing-library';
+import type { ReactElement } from 'react';
 import { describe, expect, it } from 'vitest';
 import type { TypeView } from '../src/ask/present.js';
 import { KIND, outcomeChips, renderers } from '../src/ask/render.js';
@@ -363,5 +365,117 @@ describe('declared rows (annotations.tui)', () => {
       (lines[1]?.indexOf('$2.00') ?? 0) + '$2.00'.length
     );
     expect(show(KIND.rows, agg([{ key: 'Acme', value: null }]))).toMatch(/no groups/);
+  });
+});
+
+/** ink-testing-library's stdout is fixed at 100 columns; this one is `columns` wide and can be resized. */
+function renderAt(columns: number, node: (columns: number) => ReactElement) {
+  let last = '';
+  const stdout = Object.assign(new EventEmitter(), {
+    columns,
+    write: (f: string) => {
+      last = f;
+    }
+  });
+  const ink = inkRender(node(columns), {
+    stdout: stdout as unknown as NodeJS.WriteStream,
+    debug: true,
+    exitOnCtrlC: false,
+    patchConsole: false
+  });
+  return {
+    unmount: () => ink.unmount(),
+    lastFrame: () => last,
+    resize(c: number) {
+      stdout.columns = c;
+      ink.rerender(node(c));
+    }
+  };
+}
+
+describe('responsive declared rows', () => {
+  const view: TypeView = {
+    currency: 'USD',
+    formats: { price: 'money', ask: 'money' },
+    row: {
+      title: { field: 'name' },
+      tags: [{ field: 'grade', template: 'G{}' }, { field: 'cond' }],
+      value: { field: 'price' },
+      details: [{ field: 'ask', label: 'ask' }]
+    }
+  };
+  const data = [
+    {
+      id: 'a',
+      name: 'Blue Kettle with a Long Name',
+      grade: 10,
+      cond: 'Near Mint',
+      price: 1234.5,
+      ask: 412
+    },
+    { id: 'b', name: 'Red Mug', grade: 9, cond: 'Used', price: 84, ask: null }
+  ];
+  const frame = (columns: number) => (
+    <Box>
+      {renderers[KIND.rows]?.({ data: items(data, view), theme: marathon, size: { columns } })}
+    </Box>
+  );
+  const WIDE = [
+    /^ 1 {2}Blue Kettle with a Long Name {2}G10 {2}Near Mint +\$1,234\.50$/,
+    /^ {6}ask \$412\.00$/,
+    /^ 2 {2}Red Mug {2}G9 {2}Used +\$84\.00$/
+  ];
+  const STACKED = [
+    ' 1  Blue Kettle with a Long Name',
+    '      G10 · Near Mint · $1,234.50',
+    '      ask $412.00',
+    ' 2  Red Mug',
+    '      G9 · Used · $84.00'
+  ];
+  it('lays the list out wide at 120 columns', () => {
+    const r = renderAt(120, frame);
+    const lines = r.lastFrame().split('\n');
+    r.unmount();
+    expect(lines).toHaveLength(3);
+    for (const [i, re] of WIDE.entries()) expect(lines[i]).toMatch(re);
+  });
+  it('stacks every row at 50 columns: title, then tags · value, then details', () => {
+    expect(show(KIND.rows, items(data, view), 50).split('\n')).toEqual(STACKED);
+  });
+  it('re-lays out when the terminal narrows', () => {
+    const r = renderAt(120, frame);
+    expect(r.lastFrame()?.split('\n')[0]).toMatch(WIDE[0] as RegExp);
+    r.resize(50);
+    expect(r.lastFrame()?.split('\n')).toEqual(STACKED);
+    r.unmount();
+  });
+  it('a grouped aggregate at 40 columns puts each value under its key', () => {
+    const f = show(
+      KIND.rows,
+      {
+        ...rows({
+          answer: 'aggregate',
+          data: { groups: [] },
+          aggregate: {
+            fn: 'sum',
+            field: 'ask',
+            by: 'seller',
+            groups: [
+              { key: 'Acme', value: 1500 },
+              { key: null, value: 2 }
+            ]
+          }
+        }),
+        tui: { currency: 'USD', formats: { ask: 'money' } }
+      },
+      40
+    );
+    expect(f.split('\n')).toEqual([
+      'total ask by seller',
+      '  Acme',
+      '    $1,500.00',
+      '  (none)',
+      '    $2.00'
+    ]);
   });
 });

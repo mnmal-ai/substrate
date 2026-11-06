@@ -29,7 +29,7 @@ annotations: { tui: {
 } }
 ```
 
-Each `Item` row then renders as a numbered line with the bold `title`, dim `tags` and the `value` right-aligned, followed by a dim `·`-joined `details` line (`ask $412.00 · Acme`). Empty values show as `—` or are left out.
+Each `Item` row then renders as a numbered line with the bold `title`, dim `tags` and the `value` right-aligned, followed by a dim `·`-joined `details` line (`ask $412.00 · Acme`). Empty values show as `—` or are left out. When the terminal is too narrow for the title to keep at least 20 columns (or 40% of the width) on that first line, the whole list stacks instead: the title alone, then `tags · value`, then the details.
 
 - An entry is a field name or `{ field, template?, label? }`. `template` puts the formatted value where `{}` is. `label` comes before a detail, and a numeric detail is labelled with its field name by default.
 - `formats` maps `'<Type>.<field>'` to `money` (in `currency`, default `USD`, with its usual decimal places), `int`, `number`, `pct` (the value is already a percent), `date` or `datetime` (local time). They apply wherever the value appears, including the generic `field=value` view and aggregates.
