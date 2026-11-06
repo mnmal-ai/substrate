@@ -475,7 +475,7 @@ const WALK_DESCRIPTION =
   'compares beside a comparison: { "_agg": { "in": ..., "count": true }, "gte": 3 }. Frame params: ' +
   '`count: true` answers { count }; `aggregate: { name: { sum: "price" } }` with optional `bucket: ' +
   '{ field, by: "day"|"hour" }` answers groups; `derive: { m: { diff|ratio: ["_agg.x", "$.f"] } }` ' +
-  'is ordered by `orderBy: [{ "$m": "desc" }]`. Walks are query-only: subscribe, stream and mutate ' +
+  '(or one operand as it is, `{ value: "_agg.x" }`) is ordered by `orderBy: [{ "$m": "desc" }]`. Walks are query-only: subscribe, stream and mutate ' +
   'refuse them, as does a store without walks (walks_unsupported_store).';
 
 export function createMcpServer(endpoint: string, options: McpServerOptions = {}): McpServer {

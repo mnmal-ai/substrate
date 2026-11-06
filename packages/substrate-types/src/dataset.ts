@@ -129,7 +129,11 @@ export interface BucketSpec {
   by: 'day' | 'hour';
 }
 
-export type DeriveSpec = { diff: [string, string] } | { ratio: [string, string] };
+/** `diff` is a − b, `ratio` a / b, and `value` one operand as it is (to order by a walked value). */
+export type DeriveSpec =
+  | { diff: [string, string] }
+  | { ratio: [string, string] }
+  | { value: string };
 
 export interface NestedSelection {
   _walk: { in?: string; out?: string; where?: WhereClause };
