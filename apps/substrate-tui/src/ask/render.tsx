@@ -1,6 +1,7 @@
 import type { NlOutcome } from '@mnmal-ai/substrate/sdk';
 import { type Chip, type Renderer, sanitise } from '@mnmal-ai/surface-core';
 import { cellWidth, padCells, truncateCells } from '@mnmal-ai/surface-kit';
+import type { ListRow, ListSpec } from '@mnmal-ai/surface-kit/list';
 import { Box, Text } from 'ink';
 import {
   type Entry,
@@ -66,7 +67,7 @@ export function outcomeChips(o: NlOutcome): Chip[] {
 
 /** The first label-like field a row has: the usual handles, then any `…Name` / `…Title` string. */
 const LABELS = ['title', 'synopsis', 'name', 'topic', 'subject'];
-function labelField(r: Record<string, unknown>): string | undefined {
+export function labelField(r: Record<string, unknown>): string | undefined {
   const own = LABELS.find((k) => typeof r[k] === 'string' && r[k] !== '');
   if (own !== undefined) return own;
   return Object.keys(r).find(
@@ -135,12 +136,12 @@ const valueWidth = (values: string[], columns: number) =>
 
 const SKIP = new Set(['id', 'shortId']);
 /** `field=value` for a row's scalar fields: the asked-about ones first, then the rest. */
-function details(
+function detailList(
   r: Record<string, unknown>,
   asked: string[],
   label: string | undefined,
   view: TypeView | undefined
-): string {
+): string[] {
   const scalar = (k: string) => {
     const v = r[k];
     return v !== null && v !== undefined && v !== '' && typeof v !== 'object';
@@ -151,8 +152,7 @@ function details(
   ];
   return keys
     .filter((k) => !SKIP.has(k) && k !== label && scalar(k))
-    .map((k) => `${sanitise(k)}=${shown(r, k, view)}`)
-    .join('  ');
+    .map((k) => `${sanitise(k)}=${shown(r, k, view)}`);
 }
 
 // id + status + project + the three two-cell gaps; the title takes what is left of the width.
@@ -203,19 +203,7 @@ function declaredRows(
     const f = row.title?.field ?? labelField(r);
     const title = (f === undefined ? '' : cell(r, row.title ?? { field: f }, view)) || '—';
     const tags = row.tags.map((e) => cell(r, e, view)).filter((t) => t !== '');
-    const det = [
-      ...walkedDetails(r),
-      ...row.details.map((e) => {
-        const v = cell(r, e, view);
-        if (v === '') return '';
-        const label =
-          e.label ??
-          (typeof own(r, e.field) === 'number' || isNumericFormat(own(view.formats, e.field))
-            ? e.field
-            : undefined);
-        return label === undefined ? v : `${sanitise(label)} ${v}`;
-      })
-    ].filter((d) => d !== '');
+    const det = declaredDetails(r, row, view);
     return { title, tags, det };
   });
   const tagsW = Math.max(
@@ -391,7 +379,7 @@ const rows: Renderer = ({ data, theme, size }) => {
               </Text>
               {'  '}
               <Text color={theme.color.dimMid}>
-                {padCells(details(r, asked, label, view), detailCols)}
+                {padCells(detailList(r, asked, label, view).join('  '), detailCols)}
               </Text>
             </Text>
           );
@@ -501,3 +489,58 @@ export const renderers: Record<string, Renderer> = {
   [KIND.unknown]: unknown,
   [KIND.error]: error
 };
+
+/** A declared row's details: its walked values, then each declared detail, labelled when numeric. */
+function declaredDetails(r: Record<string, unknown>, row: RowView, view: TypeView): string[] {
+  return [
+    ...walkedDetails(r),
+    ...row.details.map((e) => {
+      const v = cell(r, e, view);
+      if (v === '') return '';
+      const label =
+        e.label ??
+        (typeof own(r, e.field) === 'number' || isNumericFormat(own(view.formats, e.field))
+          ? e.field
+          : undefined);
+      return label === undefined ? v : `${sanitise(label)} ${v}`;
+    })
+  ].filter((d) => d !== '');
+}
+
+/**
+ * A rows answer as a list for the pager, or undefined when it is not a plain list of rows (an
+ * aggregate, a count, a rejected frame). Declared rows keep their title, tags, details and value;
+ * the rest get a label and the asked-about fields, then the others, as `field=value`.
+ */
+export function rowsList(o: RowsReply): ListSpec | undefined {
+  if (!Array.isArray(o.data) || o.aggregate !== undefined || o.count !== undefined)
+    return undefined;
+  const view = o.tui;
+  const asked = askedFields(o.frame);
+  const rows: ListRow[] = (o.data as Record<string, unknown>[]).map((raw, i) => {
+    const r = withWalked(raw);
+    const key = typeof raw.id === 'string' ? raw.id : String(i);
+    const decl = view?.row;
+    if (view !== undefined && decl !== undefined) {
+      const f = decl.title?.field ?? labelField(r);
+      const value = decl.value === undefined ? '' : cell(r, decl.value, view);
+      return {
+        key,
+        name: (f === undefined ? '' : cell(r, decl.title ?? { field: f }, view)) || '—',
+        details: [
+          ...decl.tags.map((e) => cell(r, e, view)).filter((t) => t !== ''),
+          ...declaredDetails(r, decl, view)
+        ],
+        ...(value !== '' ? { value } : {})
+      };
+    }
+    const label = labelField(r);
+    return {
+      key,
+      name: (label !== undefined ? shown(r, label, view) : '') || str(r.shortId ?? r.id) || '—',
+      details: detailList(r, asked, label, view)
+    };
+  });
+  const notes = [...errorLines(o.errors), ...droppedLines(o.dropped)];
+  return { heading: frameKey(o), rows, ...(notes.length > 0 ? { notes } : {}) };
+}

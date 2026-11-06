@@ -1,4 +1,4 @@
-import { type AppOptions, createApp } from '@mnmal-ai/surface-core';
+import { type AppOptions, createApp, listPager } from '@mnmal-ai/surface-core';
 import { marathon } from '@mnmal-ai/surface-theme';
 import { Box, Text } from 'ink';
 import { createElement } from 'react';
@@ -20,6 +20,7 @@ export function buildModules(
   deps: TuiDeps,
   opts: { intervalMs?: number; dashIntervalMs?: number; doctorIntervalMs?: number } = {}
 ): AppOptions['modules'] {
+  const pager = listPager();
   return [
     statusModule(deps, opts),
     adminModule(deps),
@@ -29,7 +30,8 @@ export function buildModules(
     ),
     keysModule(deps),
     surgeryModule(deps),
-    askModule(deps),
+    askModule(deps, pager),
+    pager.module,
     schemaModule(deps),
     dashModule(deps, opts.dashIntervalMs !== undefined ? { intervalMs: opts.dashIntervalMs } : {})
   ];

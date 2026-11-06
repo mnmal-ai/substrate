@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type DashState, initialDash, type Sample, step } from '../src/dash/derive.js';
 import { DashView, dashModule, trafficLines } from '../src/dash/module.js';
 import type { TuiDeps } from '../src/deps.js';
-import { noAdmin } from './_fakes.js';
+import { noAdmin, noDash } from './_fakes.js';
 
 const tick = (ms = 40) => new Promise((r) => setTimeout(r, ms));
 // Positive assertions poll rather than sleep: a fixed sleep flakes under full-workspace load.
@@ -72,6 +72,7 @@ function fakeDeps(script: Script = {}) {
     project: 'substrate',
     namespace: 'journal',
     nl: {} as TuiDeps['nl'],
+    query: noDash.query,
     ...noAdmin(),
     federatedSchema: async () => ({}),
     async getJson(path) {

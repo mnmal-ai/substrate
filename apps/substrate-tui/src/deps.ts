@@ -1,4 +1,4 @@
-import type { AdminEnv } from '@mnmal-ai/substrate/client';
+import type { AdminEnv, QualifiedFrame } from '@mnmal-ai/substrate/client';
 import {
   type AdminKeyRow,
   type NlApi,
@@ -6,7 +6,7 @@ import {
   SubstrateClient,
   tokenAudience
 } from '@mnmal-ai/substrate/client';
-import type { RuntimeErrors, RuntimeMetrics, Schema } from '@mnmal-ai/substrate/sdk';
+import type { PackEnvelope, RuntimeErrors, RuntimeMetrics, Schema } from '@mnmal-ai/substrate/sdk';
 import { type AdminSession, adminIdleMs, createAdminSession } from './admin/session.js';
 import type { TuiConfig } from './config.js';
 
@@ -19,6 +19,8 @@ export interface TuiDeps {
   federatedSchema(): Promise<Record<string, Schema>>;
   /** GET a public-or-authed substrate path with the client's identity; resolves the parsed JSON or throws. */
   getJson(path: string, signal?: AbortSignal): Promise<unknown>;
+  /** One query frame as the configured identity: the envelope, rejected frames in `errors`. */
+  query(frame: QualifiedFrame, signal?: AbortSignal): Promise<PackEnvelope>;
   /** GET /substrate/v1/metrics. A failure carries the HTTP `status` when there was one. */
   metrics(signal?: AbortSignal): Promise<RuntimeMetrics>;
   /** GET /substrate/v1/errors (admin). A failure carries the HTTP `status` when there was one. */
@@ -80,6 +82,7 @@ export function makeDeps(
     namespace: config.namespace,
     nl: client.nl,
     federatedSchema: () => client.federatedSchema(),
+    query: (frame, signal) => client.query(frame, sig(signal)),
     metrics: (signal) => client.metrics(sig(signal)),
     // While unlocked, /dash reads the error log as the admin identity, without resetting the idle clock; locked, as the configured identity.
     errors: (signal) =>
