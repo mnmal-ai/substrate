@@ -1,5 +1,7 @@
 import { type AppOptions, createApp } from '@mnmal-ai/surface-core';
 import { marathon } from '@mnmal-ai/surface-theme';
+import { Box, Text } from 'ink';
+import { createElement } from 'react';
 import { adminModule } from './admin/module.js';
 import { askModule } from './ask/module.js';
 import { dashModule } from './dash/module.js';
@@ -44,6 +46,18 @@ export function substrateAppOptions(
     band: true,
     // Inset: two columns each side of the transcript, band and status row.
     gutter: 2,
+    // An answer is the surface default (its ↩ mark, then body and chips) plus a blank row beneath.
+    entries: {
+      answer: ({ entry, body, theme }) =>
+        createElement(
+          Box,
+          { flexDirection: 'column', marginBottom: 1 },
+          entry.mark !== null
+            ? createElement(Text, { color: theme.color.accent }, `↩ ⟨${entry.mark}⟩`)
+            : null,
+          body
+        )
+    },
     // Keep the input on the last row when the live region shrinks, a panel closes or the terminal resizes.
     anchored: true,
     // The bin prepares the terminal (ground, clear) from SUBSTRATE_TUI_* before run() and restores it.
