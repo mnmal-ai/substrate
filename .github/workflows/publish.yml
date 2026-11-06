@@ -66,8 +66,9 @@ jobs:
     if: github.ref == 'refs/heads/main' && needs.detect-release.outputs.is_release == 'true'
     permissions:
       contents: read
-    # Same throwaway postgres as CI's pg job: a release can arrive here with CI
-    # red or never run, so publish cannot trust CI ran on this commit.
+      checks: read
+    # Same throwaway postgres as CI's pg job. The tests run here unless CI
+    # already passed them on this exact tree (see "CI already passed").
     services:
       postgres:
         image: pgvector/pgvector:pg18
@@ -88,6 +89,31 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 2
+
+      # A release PR's merge commit has the PR head as its second parent. When
+      # the merge adds nothing to that head, CI's PR run tested this exact tree,
+      # so its passing checks stand in for the test steps below. Anything else
+      # (workflow_dispatch, a branch behind main, any check not green) runs them.
+      - name: CI already passed on this tree
+        id: ci
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          passed=false
+          if head=$(git rev-parse -q --verify 'HEAD^2') \
+            && [ "$(git rev-parse 'HEAD^{tree}')" = "$(git rev-parse "$head^{tree}")" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/commits/$head/check-runs?per_page=100" --jq '.check_runs' > "$RUNNER_TEMP/checks.json"
+            if jq -e '
+                (map(select(.status != "completed" or ((.conclusion | IN("success", "skipped", "neutral")) | not))) | length == 0)
+                and ((["Build, type-check, lint & test", "Postgres-gated tests"]
+                      - [.[] | select(.conclusion == "success") | .name]) | length == 0)
+              ' "$RUNNER_TEMP/checks.json" > /dev/null; then
+              passed=true
+            fi
+          fi
+          echo "passed=$passed" >> "$GITHUB_OUTPUT"
+          echo "CI on the PR head covers this tree: $passed"
 
       - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d  # v5.2.4
         with:
@@ -126,9 +152,11 @@ jobs:
         run: pnpm lint
 
       - name: Test
+        if: steps.ci.outputs.passed != 'true'
         run: pnpm test
 
       - name: Provision the least-privilege test role
+        if: steps.ci.outputs.passed != 'true'
         run: |
           psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 <<'SQL'
           CREATE ROLE substrate_test LOGIN PASSWORD 'ci-substrate-test'
@@ -141,6 +169,7 @@ jobs:
           SQL
 
       - name: Test (pg-gated suites run, none skipped)
+        if: steps.ci.outputs.passed != 'true'
         env:
           POSTGRES_URL: postgres://substrate_test:ci-substrate-test@127.0.0.1:5432/substrate_test
         run: .github/scripts/test-pg-gated.sh
