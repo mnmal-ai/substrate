@@ -1,13 +1,17 @@
-import type { PrepareTerminalOptions } from '@mnmal-ai/surface-core/pure';
+import { type PrepareTerminalOptions, resolveFullscreen } from '@mnmal-ai/surface-core/pure';
 
 /**
- * How substrate-tui prepares the terminal: a black ground and a fresh, bottom-anchored pane.
- * `SUBSTRATE_TUI_BACKGROUND` takes `#rrggbb` or `none`; `SUBSTRATE_TUI_CLEAR=0` keeps what was on screen.
+ * How substrate-tui prepares the terminal: a black ground, and full-screen unless
+ * `SURFACE_FULLSCREEN=off`, which gives a fresh, bottom-anchored pane instead.
+ * `SUBSTRATE_TUI_BACKGROUND` takes `#rrggbb` or `none`; `SUBSTRATE_TUI_CLEAR=0` keeps what was on
+ * screen (full-screen never clears: it draws on the alternate screen).
  */
 export function terminalOptions(env: Record<string, string | undefined>): PrepareTerminalOptions {
   return {
     ...(env.SUBSTRATE_TUI_BACKGROUND !== undefined ? { ground: env.SUBSTRATE_TUI_BACKGROUND } : {}),
-    clear: (env.SUBSTRATE_TUI_CLEAR ?? '').trim() !== '0'
+    clear: (env.SUBSTRATE_TUI_CLEAR ?? '').trim() !== '0',
+    // The same switch the app resolves in run(): this app sets no `fullscreen` option.
+    fullscreen: resolveFullscreen(undefined, env.SURFACE_FULLSCREEN).on
   };
 }
 

@@ -41,6 +41,7 @@ Each `Item` row then renders as a numbered line with the bold `title`, dim `tags
 - Tab completes the token under the cursor.
 - `1`-`9` answer a clarify question.
 - Esc cancels the newest in-flight question, or closes the open panel.
+- PgUp / PgDn scroll the conversation; the input stays where it is. End jumps back to the bottom while scrolled up, and otherwise moves to the end of the line.
 - ctrl+c twice exits.
 
 ## Status row
@@ -58,5 +59,6 @@ Each `Item` row then renders as a numbered line with the bold `title`, dim `tags
 | `SUBSTRATE_ADMIN_KEY_PATH`, `SUBSTRATE_ADMIN_KEY_ID`, `SUBSTRATE_ADMIN_TOKEN` | Admin identity used by `/admin unlock`. |
 | `SUBSTRATE_TUI_ADMIN_IDLE_MINUTES` | Minutes of idle before admin relocks (default 15). |
 | `SUBSTRATE_TUI_BACKGROUND` | Background colour, `#rrggbb` or `none`. |
-| `SUBSTRATE_TUI_CLEAR` | `0` keeps what was on screen at start. |
+| `SUBSTRATE_TUI_CLEAR` | `0` keeps what was on screen at start (inline layout only). |
 | `SUBSTRATE_TUI_COLOR` | `256` for terminals without 24-bit colour. |
+| `SURFACE_FULLSCREEN` | `off` keeps the inline layout, with the conversation in the terminal's own scrollback. Default `on`. |
