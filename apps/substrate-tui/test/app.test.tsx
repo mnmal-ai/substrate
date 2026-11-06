@@ -1,6 +1,7 @@
 import type { NlApi } from '@mnmal-ai/substrate/client';
 import { assertComposes } from '@mnmal-ai/surface-core';
 import { marathon } from '@mnmal-ai/surface-theme';
+import { Text } from 'ink';
 import { render } from 'ink-testing-library';
 import { describe, expect, it, vi } from 'vitest';
 import { buildModules, createTui, substrateAppOptions } from '../src/app.js';
@@ -47,6 +48,25 @@ describe('app', () => {
     const { theme } = substrateAppOptions(fake().deps);
     expect(theme?.color.raised).toBe('');
     expect(theme?.color.accent).toBe(marathon.color.accent);
+  });
+  it('leaves a blank row under each answer, so its chips do not touch the input', () => {
+    const answer = substrateAppOptions(fake().deps).entries?.answer;
+    expect(answer).toBeDefined();
+    const entry = { key: 'a', kind: 'answer', mark: 3 } as unknown as Parameters<
+      NonNullable<typeof answer>
+    >[0]['entry'];
+    const { lastFrame } = render(
+      <>
+        {answer?.({
+          entry,
+          body: <Text>body ▸ ns/Type</Text>,
+          theme: marathon,
+          size: { columns: 80 }
+        })}
+        <Text>input</Text>
+      </>
+    );
+    expect(lastFrame()).toBe('↩ ⟨3⟩\nbody ▸ ns/Type\n\ninput');
   });
   it('composes', () => {
     expect(() => assertComposes(buildModules(fake().deps))).not.toThrow();
