@@ -10,7 +10,8 @@ import {
 import type { TuiDeps } from '../deps.js';
 import '../events.js';
 import { adapt } from './adapt.js';
-import { KIND, outcomeChips, renderers } from './render.js';
+import { type Presentation, parseTui } from './present.js';
+import { KIND, outcomeChips, type RowsReply, renderers } from './render.js';
 
 export interface ClarifyState {
   question: string;
@@ -47,10 +48,21 @@ export function askModule(deps: TuiDeps): TuiModule<AskPanels> {
   let asOf: string | undefined;
   let last: FrameState = { lines: ['no question asked yet'] };
   let lastPackNote = '';
+  /** The namespace's `annotations.tui`; empty until read, and when it cannot be. */
+  let present: Presentation = { types: {}, problems: [] };
 
   const loadPack = (ctx: ModuleCtx<AskPanels>) => {
     pack = null;
     const ns = namespace;
+    present = { types: {}, problems: [] };
+    deps.getJson(`/substrate/v1/schema/${encodeURIComponent(ns)}`, ctx.signal).then(
+      (s) => {
+        if (ns !== namespace) return;
+        present = parseTui((s as { annotations?: { tui?: unknown } } | null)?.annotations?.tui);
+      },
+      // Without the schema, rows render generically; nothing to tell.
+      () => {}
+    );
     deps.nl.pack(ns, { signal: ctx.signal }).then(
       (p) => {
         if (ns === namespace) pack = p;
@@ -64,6 +76,13 @@ export function askModule(deps: TuiDeps): TuiModule<AskPanels> {
         ctx.print(note, 'dim');
       }
     );
+  };
+
+  /** A rows outcome with its frame type's declared view, when the namespace declares one. */
+  const withView = (o: Extract<NlWireEvent, { event: 'rows' }>['data']): RowsReply => {
+    const [ns, type] = (Object.keys(o.frame)[0] ?? '').split('/');
+    const view = ns === namespace && type !== undefined ? present.types[type] : undefined;
+    return view !== undefined ? { ...o, tui: view } : o;
   };
 
   const pick = (i: number) => (s: ClarifyState, ctx: ModuleCtx<AskPanels>) => {
@@ -193,6 +212,7 @@ export function askModule(deps: TuiDeps): TuiModule<AskPanels> {
                 case 'clarify':
                 case 'refuse':
                 case 'unknown': {
+                  for (const p of present.problems) lines.push(`tui: ${p}`);
                   last = { lines };
                   if (ev.event === 'clarify' && ev.data.options.length > 0)
                     ctx.open('clarify', ev.data);
@@ -203,7 +223,7 @@ export function askModule(deps: TuiDeps): TuiModule<AskPanels> {
                     phase: 'final',
                     reply: {
                       kind: `substrate.${ev.event}`,
-                      data: ev.data,
+                      data: ev.event === 'rows' ? withView(ev.data) : ev.data,
                       chips: outcomeChips(ev.data)
                     }
                   };

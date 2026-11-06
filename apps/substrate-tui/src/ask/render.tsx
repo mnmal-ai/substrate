@@ -1,7 +1,14 @@
 import type { NlOutcome } from '@mnmal-ai/substrate/sdk';
 import { type Chip, type Renderer, sanitise } from '@mnmal-ai/surface-core';
-import { padCells } from '@mnmal-ai/surface-kit';
+import { cellWidth, padCells, truncateCells } from '@mnmal-ai/surface-kit';
 import { Box, Text } from 'ink';
+import {
+  type Entry,
+  formatValue,
+  isNumericFormat,
+  type RowView,
+  type TypeView
+} from './present.js';
 
 export const KIND = {
   line: 'substrate.line',
@@ -14,6 +21,8 @@ export const KIND = {
 } as const;
 
 type Rows = Extract<NlOutcome, { kind: 'rows' }>;
+/** A rows outcome as the ask module replies it: with the frame type's `annotations.tui` view, when declared. */
+export type RowsReply = Rows & { tui?: TypeView };
 type Recall = Extract<NlOutcome, { kind: 'recall' }>;
 type Clarify = Extract<NlOutcome, { kind: 'clarify' }>;
 type Refuse = Extract<NlOutcome, { kind: 'refuse' }>;
@@ -46,7 +55,9 @@ export function outcomeChips(o: NlOutcome): Chip[] {
         ? 'rejected'
         : o.aggregate !== undefined
           ? 'aggregate'
-          : `${o.count ?? (Array.isArray(o.data) ? o.data.length : 0)} rows`,
+          : typeof o.count === 'number'
+            ? `count ${o.count}`
+            : `${Array.isArray(o.data) ? o.data.length : 0} rows`,
       tone: rejected ? 'error' : 'dim'
     }
   ];
@@ -84,9 +95,28 @@ function askedFields(frame: Rows['frame']): string[] {
   return out;
 }
 
+const empty = (v: unknown) => v === null || v === undefined || v === '';
+/** A row's field as the view formats it, sanitised; '' when empty. */
+const shown = (r: Record<string, unknown>, field: string, view: TypeView | undefined) =>
+  empty(r[field])
+    ? ''
+    : view === undefined
+      ? str(r[field])
+      : sanitise(formatValue(r[field], view.formats[field], view.currency));
+/** An entry's cell: its template around the formatted value; '' when the value is empty. */
+const cell = (r: Record<string, unknown>, e: Entry, view: TypeView) => {
+  const v = shown(r, e.field, view);
+  return v === '' || e.template === undefined ? v : sanitise(e.template.replaceAll('{}', v));
+};
+
 const SKIP = new Set(['id', 'shortId']);
 /** `field=value` for a row's scalar fields: the asked-about ones first, then the rest. */
-function details(r: Record<string, unknown>, asked: string[], label: string | undefined): string {
+function details(
+  r: Record<string, unknown>,
+  asked: string[],
+  label: string | undefined,
+  view: TypeView | undefined
+): string {
   const scalar = (k: string) => {
     const v = r[k];
     return v !== null && v !== undefined && v !== '' && typeof v !== 'object';
@@ -97,7 +127,7 @@ function details(r: Record<string, unknown>, asked: string[], label: string | un
   ];
   return keys
     .filter((k) => !SKIP.has(k) && k !== label && scalar(k))
-    .map((k) => `${sanitise(k)}=${str(r[k])}`)
+    .map((k) => `${sanitise(k)}=${shown(r, k, view)}`)
     .join('  ');
 }
 
@@ -108,16 +138,85 @@ const titleWidth = (columns: number) =>
 
 const FN_LABEL = { avg: 'average', sum: 'total', min: 'min', max: 'max' } as const;
 // Two decimals for a float; a tiny one keeps three significant digits rather than reading 0.
-const aggValue = (v: unknown) =>
+const aggValue = (v: unknown, view?: TypeView, field?: string) =>
   v === null || v === undefined
     ? '—'
-    : typeof v === 'number' && !Number.isInteger(v)
-      ? String(Math.abs(v) >= 0.01 ? Math.round(v * 100) / 100 : Number(v.toPrecision(3)))
-      : str(v);
+    : view !== undefined && field !== undefined && view.formats[field] !== undefined
+      ? sanitise(formatValue(v, view.formats[field], view.currency))
+      : typeof v === 'number' && !Number.isInteger(v)
+        ? String(Math.abs(v) >= 0.01 ? Math.round(v * 100) / 100 : Number(v.toPrecision(3)))
+        : str(v);
+
+type Theme = Parameters<Renderer>[0]['theme'];
+
+/**
+ * A declared type's list: per row a dim ordinal, the bold title, dim tag chips and the value
+ * right-aligned in one column down the list, then an optional dim `·`-joined details line.
+ * Rows truncate rather than wrap.
+ */
+function declaredRows(
+  list: Record<string, unknown>[],
+  row: RowView,
+  view: TypeView,
+  theme: Theme,
+  columns: number
+) {
+  const ordW = String(list.length).length;
+  const indent = ' '.repeat(1 + ordW + 2 + 2);
+  const values = list.map((r) => (row.value === undefined ? '' : cell(r, row.value, view) || '—'));
+  const valW = row.value === undefined ? 0 : Math.max(...values.map(cellWidth));
+  const leftW = Math.max(1, columns - (1 + ordW + 2) - (valW > 0 ? valW + 2 : 0));
+  const titleOf = (r: Record<string, unknown>) => {
+    const f = row.title?.field ?? labelField(r);
+    return (f === undefined ? '' : cell(r, row.title ?? { field: f }, view)) || '—';
+  };
+  return list.map((r, i) => {
+    const title = titleOf(r);
+    const tags = row.tags.map((e) => cell(r, e, view)).filter((t) => t !== '');
+    const titleCell = truncateCells(title, leftW);
+    const room = leftW - cellWidth(titleCell);
+    const rest = tags.length > 0 && room > 0 ? `  ${tags.join('  ')}` : '';
+    const pad = valW > 0;
+    // With a value column, the left part is padded so values line up down the list.
+    const restCell = pad ? padCells(rest, room) : truncateCells(rest, room);
+    const det = row.details
+      .map((e) => {
+        const v = cell(r, e, view);
+        if (v === '') return '';
+        const label =
+          e.label ??
+          (typeof r[e.field] === 'number' || isNumericFormat(view.formats[e.field])
+            ? e.field
+            : undefined);
+        return label === undefined ? v : `${sanitise(label)} ${v}`;
+      })
+      .filter((d) => d !== '');
+    return (
+      <Box key={i} flexDirection="column">
+        <Text wrap="truncate">
+          <Text color={theme.color.dim}>{` ${padCells(String(i + 1), ordW, true)}  `}</Text>
+          <Text bold color={theme.color.text}>
+            {titleCell}
+          </Text>
+          <Text color={theme.color.dim}>{restCell}</Text>
+          {pad ? (
+            <Text color={theme.color.text}>{`  ${padCells(values[i] ?? '', valW, true)}`}</Text>
+          ) : null}
+        </Text>
+        {det.length > 0 ? (
+          <Text wrap="truncate" color={theme.color.dim}>
+            {indent + truncateCells(det.join(' · '), Math.max(1, columns - indent.length))}
+          </Text>
+        ) : null}
+      </Box>
+    );
+  });
+}
 
 const rows: Renderer = ({ data, theme, size }) => {
   const titleCols = titleWidth(size.columns);
-  const o = data as Rows;
+  const o = data as RowsReply;
+  const view = o.tui;
   const lost = droppedLines(o.dropped).map((l, i) => (
     <Text key={`d${i}`} color={theme.color.warn}>{`  ${l}`}</Text>
   ));
@@ -130,7 +229,9 @@ const rows: Renderer = ({ data, theme, size }) => {
     if (agg.groups === undefined) {
       return (
         <Box flexDirection="column">
-          <Text color={theme.color.text}>{`${head} = ${aggValue(agg.value)}`}</Text>
+          <Text
+            color={theme.color.text}
+          >{`${head} = ${aggValue(agg.value, view, agg.field)}`}</Text>
           {errs}
           {lost}
         </Box>
@@ -140,16 +241,18 @@ const rows: Renderer = ({ data, theme, size }) => {
     return (
       <Box flexDirection="column">
         <Text color={theme.color.dim}>{`${head} by ${str(agg.by)}`}</Text>
-        {agg.groups.map((g, i) => (
-          <Text key={i}>
-            {'  '}
-            <Text color={theme.color.dimMid}>
-              {padCells(g.key === null ? '(none)' : str(g.key), keyCols)}
+        {agg.groups
+          .filter((g) => g.key === null || g.value !== null)
+          .map((g, i) => (
+            <Text key={i}>
+              {'  '}
+              <Text color={theme.color.dimMid}>
+                {padCells(g.key === null ? '(none)' : str(g.key), keyCols)}
+              </Text>
+              {'  '}
+              <Text color={theme.color.text}>{aggValue(g.value, view, agg.field)}</Text>
             </Text>
-            {'  '}
-            <Text color={theme.color.text}>{aggValue(g.value)}</Text>
-          </Text>
-        ))}
+          ))}
         {agg.truncated === true ? <Text color={theme.color.dim}>{'  …more groups'}</Text> : null}
         {errs}
         {lost}
@@ -176,6 +279,14 @@ const rows: Renderer = ({ data, theme, size }) => {
   }
   const list = o.data as Record<string, unknown>[];
   if (list.length === 0 && lost.length === 0) return <Text color={theme.color.dim}>no rows</Text>;
+  if (view?.row !== undefined) {
+    return (
+      <Box flexDirection="column">
+        {declaredRows(list, view.row, view, theme, size.columns)}
+        {lost}
+      </Box>
+    );
+  }
   // Rows without the context-store columns (status, project) get a label and field=value details.
   if (!list.some((r) => 'status' in r || 'project' in r)) {
     const asked = askedFields(o.frame);
@@ -190,11 +301,11 @@ const rows: Renderer = ({ data, theme, size }) => {
               <Text color={theme.color.dim}>{padCells(str(r.shortId ?? r.id), COLS.id, true)}</Text>
               {'  '}
               <Text color={theme.color.text}>
-                {padCells(label !== undefined ? str(r[label]) : '', labelCols)}
+                {padCells(label !== undefined ? shown(r, label, view) : '', labelCols)}
               </Text>
               {'  '}
               <Text color={theme.color.dimMid}>
-                {padCells(details(r, asked, label), detailCols)}
+                {padCells(details(r, asked, label, view), detailCols)}
               </Text>
             </Text>
           );

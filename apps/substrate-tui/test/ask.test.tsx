@@ -99,13 +99,14 @@ function fake(
   };
   return { deps, calls, release };
 }
-function start(deps: TuiDeps) {
+// ink-testing-library's stdout is 100 columns; a wider App is cut there.
+function start(deps: TuiDeps, columns = 120) {
   const { App } = createApp({
     theme: marathon,
     modules: [askModule(deps)],
     defaultTurn: 'substrate.ask:ask'
   });
-  const r = render(<App columns={120} />);
+  const r = render(<App columns={columns} />);
   return { ...r, frame: () => r.lastFrame() ?? '' };
 }
 
@@ -538,5 +539,55 @@ describe('substrate.ask', () => {
     app.stdin.write('widg');
     app.stdin.write(TAB);
     await until(() => expect(app.frame()).toContain('widget'));
+  });
+  it('rows of a type the namespace declares in annotations.tui render shaped; /frame names what was ignored', async () => {
+    const { deps } = fake(() => [
+      {
+        event: 'rows',
+        data: {
+          kind: 'rows',
+          frame: { 'journal/Todo': { params: {}, fields: {} } },
+          answer: 'rows',
+          source: 'parser',
+          dropped: [],
+          plan: [],
+          data: [{ id: 't', title: 'Ship it', cost: 1234.5 }]
+        }
+      },
+      { event: 'done', data: {} }
+    ]);
+    const paths: string[] = [];
+    deps.getJson = async (path) => {
+      paths.push(path);
+      return {
+        schemaVersion: 'v',
+        types: {},
+        mutations: {},
+        annotations: {
+          tui: {
+            formats: { 'Todo.cost': 'money', 'Other.n': 7 },
+            rows: { Todo: { title: 'title', value: 'cost' } }
+          }
+        }
+      };
+    };
+    const app = start(deps, 100);
+    await until(() => expect(paths).toContain('/substrate/v1/schema/journal'));
+    app.stdin.write('todos');
+    app.stdin.write(ENTER);
+    await until(() => expect(app.frame()).toMatch(/ 1 {2}Ship it +\$1,234\.50/));
+    app.stdin.write('/frame');
+    app.stdin.write(ENTER);
+    await until(() => expect(app.frame()).toContain('tui: Other ignored'));
+  });
+  it('a schema that cannot be read leaves rows generic', async () => {
+    const { deps } = fake(() => [rowsEv(1), { event: 'done', data: {} }]);
+    deps.getJson = async () => {
+      throw new Error('boom');
+    };
+    const app = start(deps);
+    app.stdin.write('todos');
+    app.stdin.write(ENTER);
+    await until(() => expect(app.frame()).toContain('todo 0'));
   });
 });
