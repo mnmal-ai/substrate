@@ -859,6 +859,66 @@ describe('memory walk aggregates, count, buckets and derive', () => {
   });
 });
 
+describe('memory derive { value }: ordering by one walked value', () => {
+  const rows: Rows = {
+    Cert: [{ id: 'c1' }, { id: 'c2' }, { id: 'c3' }, { id: 'c4' }],
+    Seller: [
+      { id: 's1', rating: 3 },
+      { id: 's2', rating: 5 }
+    ],
+    Listing: [
+      { id: 'l1', cert: 'c1', seller: 's1', price: 10 },
+      { id: 'l2', cert: 'c1', seller: 's2', price: 40 },
+      { id: 'l3', cert: 'c2', seller: 's2', price: 25 },
+      { id: 'l4', cert: 'c3', price: 5 }
+    ]
+  };
+  const byMaxPrice = (dir: 'asc' | 'desc'): ReadParams => ({
+    agg: { top: { in: 'cards/Listing.cert', max: 'price' } },
+    derive: { v: { value: '_agg.top' } },
+    orderBy: [{ $v: dir }]
+  });
+
+  it('orders an in-hop max, nulls last both ways, and returns the value in _agg', async () => {
+    const ds = await dataset(rows);
+    const desc = await ds.read('Cert', byMaxPrice('desc'));
+    expect(desc.rows.map((r) => [r.id, r._agg])).toEqual([
+      ['c1', { top: 40 }],
+      ['c2', { top: 25 }],
+      ['c3', { top: 5 }],
+      ['c4', { top: null }]
+    ]);
+    const asc = await ds.read('Cert', byMaxPrice('asc'));
+    expect(asc.rows.map((r) => r.id)).toEqual(['c3', 'c2', 'c1', 'c4']);
+  });
+
+  it('orders an out-hop value', async () => {
+    const ds = await dataset(rows);
+    const res = await ds.read('Listing', {
+      agg: { r: { out: 'seller', max: 'rating' } },
+      derive: { v: { value: '_agg.r' } },
+      orderBy: [{ $v: 'desc' }]
+    });
+    expect(res.rows.map((r) => r.id)).toEqual(['l2', 'l3', 'l1', 'l4']);
+  });
+
+  it('pages with a stable cursor', async () => {
+    const ds = await dataset(rows);
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const res = await ds.read('Cert', {
+        ...byMaxPrice('desc'),
+        limit: 1,
+        ...(cursor ? { cursor } : {})
+      });
+      seen.push(...res.rows.map((r) => String(r.id)));
+      cursor = res.nextCursor;
+    } while (cursor !== undefined);
+    expect(seen).toEqual(['c1', 'c2', 'c3', 'c4']);
+  });
+});
+
 describe('walk budget covers all walk work', () => {
   const many = (n: number, f: (i: number) => Record<string, unknown>) =>
     Array.from({ length: n }, (_, i) => f(i));

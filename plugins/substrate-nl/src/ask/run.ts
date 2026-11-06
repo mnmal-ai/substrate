@@ -35,7 +35,7 @@ function executable(
   pack: ServedPack,
   paged = c.answer !== 'count' && c.answer !== 'aggregate'
 ): Query {
-  const [key, value] = Object.entries(c.frame)[0] as [string, { params: Record<string, unknown> }];
+  const [key, value] = Object.entries(c.frame)[0] as [string, Candidate['frame'][string]];
   const { count: _count, ...params } = value.params;
   if (!paged) {
     // Ordering never changes a count or an aggregate, and the engine refuses one beside either.
@@ -43,11 +43,11 @@ function executable(
     const shaped = c.answer === 'aggregate' ? counted : { ...counted, count: true };
     return { [key]: { params: shaped, fields: { id: true } } } as Query;
   }
-  const fields: Record<string, true> = { id: true };
+  const fields: Record<string, unknown> = { id: true };
   for (const [name, f] of Object.entries(own(pack.types, c.type)?.fields ?? {})) {
     if (f.kind !== 'metadata') fields[name] = true;
   }
-  return { [key]: { params, fields } } as Query;
+  return { [key]: { params, fields: { ...fields, ...value.fields } } } as Query;
 }
 
 /**

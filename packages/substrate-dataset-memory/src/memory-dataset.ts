@@ -331,6 +331,7 @@ export class MemoryDataset implements Dataset {
           return typeof v === 'number' ? v : null;
         };
         const values = Object.entries(derive).map(([name, spec]) => {
+          if ('value' in spec) return [`$${name}`, operand(spec.value)] as const;
           const [op, [a, b]] = Object.entries(spec)[0] as ['diff' | 'ratio', [string, string]];
           const x = operand(a);
           const y = operand(b);

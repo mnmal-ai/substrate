@@ -8,7 +8,7 @@
  */
 
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
-import type { FieldDef, Row } from '@mnmal-ai/substrate-types';
+import type { FieldDef, ReadParams, Row } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PgDataset, runMigrations } from '../src/index.js';
@@ -250,12 +250,15 @@ describe.skipIf(!POSTGRES_URL)('keyset pagination over a derived key', () => {
       await ds.write('Memo', rows);
       await mem.write('Memo', rows);
 
-      async function pageAll(dataset: { read: PgDataset['read'] }): Promise<string[]> {
+      async function pageAll(
+        dataset: { read: PgDataset['read'] },
+        derive: NonNullable<ReadParams['derive']>[string] = { ratio: ['$.a', '$.b'] }
+      ): Promise<string[]> {
         const seen: string[] = [];
         let cursor: string | undefined;
         for (let page = 0; page < 20; page++) {
           const res = await dataset.read('Memo', {
-            derive: { r: { ratio: ['$.a', '$.b'] } },
+            derive: { r: derive },
             orderBy: [{ $r: dir }],
             limit: 2,
             ...(cursor === undefined ? {} : { cursor })
@@ -274,6 +277,15 @@ describe.skipIf(!POSTGRES_URL)('keyset pagination over a derived key', () => {
         dir === 'asc'
           ? ['k6', 'k1', 'k3', 'k7', 'k5', 'k2', 'k4']
           : ['k5', 'k1', 'k3', 'k7', 'k6', 'k2', 'k4']
+      );
+      // A single-operand derive: k4 has no a, so it is the null tail.
+      const memo = mem as unknown as { read: PgDataset['read'] };
+      const pgValue = await pageAll(ds, { value: '$.a' });
+      expect(pgValue).toEqual(await pageAll(memo, { value: '$.a' }));
+      expect(pgValue).toEqual(
+        dir === 'asc'
+          ? ['k6', 'k2', 'k7', 'k3', 'k1', 'k5', 'k4']
+          : ['k5', 'k1', 'k3', 'k7', 'k2', 'k6', 'k4']
       );
     });
   }

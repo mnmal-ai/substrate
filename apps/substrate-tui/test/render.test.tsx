@@ -187,6 +187,44 @@ const ITEM_VIEW: TypeView = {
 const items = (data: unknown[], view: TypeView = ITEM_VIEW) =>
   ({ ...rows({ frame: { 'shop/Item': { params: {}, fields: {} } }, data }), tui: view }) as unknown;
 
+describe('a walked ordering value (_agg)', () => {
+  const ordered = {
+    params: {
+      derive: { maxItemPrice: { value: '_agg.maxItemPrice' } },
+      orderBy: [{ $maxItemPrice: 'desc' }]
+    },
+    fields: {}
+  };
+  const data = [
+    { id: 's1', name: 'Acme', rating: 4, _agg: { maxItemPrice: 40 } },
+    { id: 's2', name: 'Bolt\u001b[2J', rating: 2, _agg: { maxItemPrice: null } }
+  ];
+  it('the generic view shows it first, as name=value, sanitised', () => {
+    const f = show(KIND.rows, rows({ frame: { 'shop/Supplier': ordered }, data }));
+    expect(f).toMatch(/Acme\s+maxItemPrice=40 {2}rating=4/);
+    expect(f).toMatch(/Bolt\s+rating=2/);
+    expect(f).not.toContain('\u001b');
+  });
+  it('the declared view adds it to the details line', () => {
+    const view: TypeView = {
+      currency: 'USD',
+      formats: {},
+      row: { title: { field: 'name' }, tags: [], details: [{ field: 'rating', label: 'rating' }] }
+    };
+    const f = show(
+      KIND.rows,
+      { ...(rows({ frame: { 'shop/Supplier': ordered }, data }) as object), tui: view },
+      80
+    );
+    expect(f.split('\n')).toEqual([
+      expect.stringMatching(/^ 1 {2}Acme/),
+      '      maxItemPrice 40 · rating 4',
+      expect.stringMatching(/^ 2 {2}Bolt/),
+      '      rating 2'
+    ]);
+  });
+});
+
 describe('declared rows (annotations.tui)', () => {
   it('line 1: dim ordinal, title, tag chips, value right-aligned; line 2: details', () => {
     const f = show(

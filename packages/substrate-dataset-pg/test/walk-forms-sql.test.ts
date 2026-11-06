@@ -304,6 +304,13 @@ describe('the per-hub form in the statements pg-dataset sends', () => {
         agg: { n: { out: 'spec', count: true } } as Record<string, WalkAgg>,
         derive: { m: { diff: ['_agg.n', '$.ask'] } },
         orderBy: [{ $m: 'desc' }]
+      },
+      // One walked value as the order.
+      {
+        where: yardstick,
+        agg: { n: { out: 'spec', count: true } } as Record<string, WalkAgg>,
+        derive: { v: { value: '_agg.n' } },
+        orderBy: [{ $v: 'desc' }]
       }
     ];
     for (const params of reads) {

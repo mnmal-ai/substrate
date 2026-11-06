@@ -688,19 +688,31 @@ export function validateFrameParams(
   const derived = new Set<string>();
   if (p.derive !== undefined) {
     if (!isObj(p.derive))
-      fail('derive_invalid', 'derive maps names to { diff } or { ratio }', ['derive']);
+      fail('derive_invalid', 'derive maps names to { diff }, { ratio } or { value }', ['derive']);
     for (const [n, spec] of Object.entries(p.derive)) {
       const at = ['derive', n];
       if (!IDENT.test(n)) fail('derive_invalid', `derive name '${n}' must be an identifier`, at);
       const entries = isObj(spec) ? Object.entries(spec) : [];
       const [op, operands] = entries[0] ?? [];
+      if (entries.length === 1 && op === 'value') {
+        if (typeof operands !== 'string') {
+          fail('derive_invalid', "a derive { value } takes one operand such as '_agg.x'", at);
+        }
+        deriveOperand(operands, [...at, op], scope, h);
+        derived.add(n);
+        continue;
+      }
       if (
         entries.length !== 1 ||
         (op !== 'diff' && op !== 'ratio') ||
         !Array.isArray(operands) ||
         operands.length !== 2
       ) {
-        fail('derive_invalid', 'a derive is { diff: [a, b] } or { ratio: [a, b] }', at);
+        fail(
+          'derive_invalid',
+          'a derive is { diff: [a, b] }, { ratio: [a, b] } or { value: a }',
+          at
+        );
       }
       operands.forEach((o: unknown, i) => {
         deriveOperand(o, [...at, op, String(i)], scope, h);

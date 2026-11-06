@@ -778,7 +778,7 @@ export function refOperand(
 /**
  * A `params.derive` value for the seed row, as float8: `diff` is a − b and
  * `ratio` a / b, NULL for a null or non-numeric operand or a zero divisor, as
- * memory's. Operands are `$.<field>` or `_agg.<name>`, read as `$ref`s are.
+ * memory's; `value` is its one operand as it is. Operands are `$.<field>` or `_agg.<name>`, read as `$ref`s are.
  *
  * As memory's: a magnitude outside [1e-300, 1e300] is NULL, and 0 stays only
  * when exact (x = y, or a zero numerator). float8 raises on overflow and on a
@@ -793,6 +793,9 @@ export function buildDerive(
   spec: DeriveSpec,
   scope: WalkScope
 ): Fragment {
+  if ('value' in spec) {
+    return refOperand(sql, `$${name}`, 'value', { $ref: spec.value }, 'number', scope);
+  }
   const [op, [a, b]] = Object.entries(spec)[0] as ['diff' | 'ratio', [string, string]];
   const operand = (r: string) => refOperand(sql, `$${name}`, op, { $ref: r }, 'number', scope);
   const value =

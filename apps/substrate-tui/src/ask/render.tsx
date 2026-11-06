@@ -90,12 +90,28 @@ function askedFields(frame: Rows['frame']): string[] {
       } else if (!k.startsWith('_')) add(k);
     }
   };
+  // A `$name` key orders by a derive, which shows as its `_agg` value.
   for (const o of (params.orderBy as Array<Record<string, unknown>> | undefined) ?? [])
-    Object.keys(o).forEach(add);
+    for (const k of Object.keys(o)) add(k.replace(/^\$/, ''));
   walk(params.where);
   return out;
 }
 
+/** A row's walked values (`_agg.<name>`, such as a hop ordering's) as fields beside its own. */
+const withWalked = (r: Record<string, unknown>): Record<string, unknown> => {
+  const a = own(r, '_agg');
+  return a !== null && typeof a === 'object' && !Array.isArray(a)
+    ? { ...(a as Record<string, unknown>), ...r }
+    : r;
+};
+/** `name value` for each walked value a row carries. */
+const walkedDetails = (r: Record<string, unknown>): string[] => {
+  const a = own(r, '_agg');
+  if (a === null || typeof a !== 'object' || Array.isArray(a)) return [];
+  return Object.entries(a)
+    .filter(([, v]) => !empty(v))
+    .map(([k, v]) => `${sanitise(k)} ${str(v)}`);
+};
 // A list or json value has no one-cell form, so it shows as empty.
 const empty = (v: unknown) => v === null || v === undefined || v === '' || typeof v === 'object';
 /** A row's own field as the view formats it, sanitised; '' when empty. */
@@ -187,8 +203,9 @@ function declaredRows(
     const f = row.title?.field ?? labelField(r);
     const title = (f === undefined ? '' : cell(r, row.title ?? { field: f }, view)) || '—';
     const tags = row.tags.map((e) => cell(r, e, view)).filter((t) => t !== '');
-    const det = row.details
-      .map((e) => {
+    const det = [
+      ...walkedDetails(r),
+      ...row.details.map((e) => {
         const v = cell(r, e, view);
         if (v === '') return '';
         const label =
@@ -198,7 +215,7 @@ function declaredRows(
             : undefined);
         return label === undefined ? v : `${sanitise(label)} ${v}`;
       })
-      .filter((d) => d !== '');
+    ].filter((d) => d !== '');
     return { title, tags, det };
   });
   const tagsW = Math.max(
@@ -362,7 +379,8 @@ const rows: Renderer = ({ data, theme, size }) => {
     const detailCols = Math.max(COLS.minTitle, size.columns - (COLS.id + labelCols + 4));
     return (
       <Box flexDirection="column">
-        {list.map((r, i) => {
+        {list.map((row, i) => {
+          const r = withWalked(row);
           const label = labelField(r);
           return (
             <Text key={i}>

@@ -515,6 +515,29 @@ describe('aggregate, derive, bucket, count and nested validation', () => {
     });
   });
 
+  it('derive { value } takes one number operand', () => {
+    expect(() =>
+      checkFrame({
+        fields: { id: true, _agg: SPEC_AGG },
+        derive: { v: { value: '_agg.latestOffer' } },
+        orderBy: [{ $v: 'desc' }]
+      })
+    ).not.toThrow();
+    expect(() => checkFrame({ derive: { v: { value: '$.ask' } } })).not.toThrow();
+    expect(frameRefusal({ derive: { v: { value: '$.label' } } })).toEqual({
+      code: 'derive_invalid',
+      path: ['derive', 'v', 'value']
+    });
+    expect(frameRefusal({ derive: { v: { value: '_agg.nope' } } })).toEqual({
+      code: 'derive_invalid',
+      path: ['derive', 'v', 'value']
+    });
+    expect(frameRefusal({ derive: { v: { value: ['$.ask'] } } })).toEqual({
+      code: 'derive_invalid',
+      path: ['derive', 'v']
+    });
+  });
+
   it('derive operand _agg.x must name a frame _agg', () => {
     expect(frameRefusal({ derive: { r: { ratio: ['_agg.latestOffer', '$.ask'] } } })).toEqual({
       code: 'derive_invalid',
