@@ -183,14 +183,14 @@ catalogs:
       specifier: 0.2.1
       version: 0.2.1
     '@mnmal-ai/surface-core':
-      specifier: 0.17.0
-      version: 0.17.0
+      specifier: 0.17.1
+      version: 0.17.1
     '@mnmal-ai/surface-kit':
-      specifier: 0.17.0
-      version: 0.17.0
+      specifier: 0.17.1
+      version: 0.17.1
     '@mnmal-ai/surface-theme':
-      specifier: 0.17.0
-      version: 0.17.0
+      specifier: 0.17.1
+      version: 0.17.1
     '@modelcontextprotocol/sdk':
       specifier: ^1.32.0
       version: 1.32.2
@@ -392,7 +392,7 @@ importers:
         version: link:../../packages/substrate-types
       '@mnmal-ai/surface-core':
         specifier: 'catalog:'
-        version: 0.17.0(ink@8.0.0(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)
+        version: 0.17.1(ink@8.0.0(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)
       '@types/node':
         specifier: 'catalog:'
         version: 26.6.6
@@ -440,13 +440,13 @@ importers:
         version: link:../../plugins/substrate-nl
       '@mnmal-ai/surface-core':
         specifier: 'catalog:'
-        version: 0.17.0(ink@8.0.0(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)
+        version: 0.17.1(ink@8.0.0(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)
       '@mnmal-ai/surface-kit':
         specifier: 'catalog:'
-        version: 0.17.0(ink@8.0.0(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)
+        version: 0.17.1(ink@8.0.0(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)
       '@mnmal-ai/surface-theme':
         specifier: 'catalog:'
-        version: 0.17.0
+        version: 0.17.1
       ink:
         specifier: 'catalog:'
         version: 8.0.0(@types/react@19.3.0)(react@19.3.1)
@@ -1731,22 +1731,22 @@ packages:
   '@mnmal-ai/holomap-clusterer@0.2.1':
     resolution: {integrity: sha512-X3d4Zj0IQoliinQ6ajjZOMYJ5AyfXZZoaZxyTJWJWmxCNNN2ZbP/nnt8WLS/Ddbrs3WxdfreAyzGX9pDCAKxRQ==}
 
-  '@mnmal-ai/surface-core@0.17.0':
-    resolution: {integrity: sha512-eK9vKi0dzxgrXxL6s8AzWRT/KQbbn48TQ0bvHIym2254tPKMaTFVMOF8lqoJcgb6eV59I20hsxaWvhA68UHLUg==}
+  '@mnmal-ai/surface-core@0.17.1':
+    resolution: {integrity: sha512-re5ks4h9+Cv4s3aUIDeLtv9evmEhpNuYf+0XtldyEJCS+8NM1MU1TqKMSdqzV935LuqKxI03Eu8WhAzTqyFiPg==}
     engines: {node: '>=26.2.0'}
     peerDependencies:
       ink: ^8.0.0
       react: ^19.3.0
 
-  '@mnmal-ai/surface-kit@0.17.0':
-    resolution: {integrity: sha512-tFAzMblSVl9oVq6IxQv5y6HDVRr3LLeEs/pk1/5t+vpE6jDJSMk2QfKFj+bVJw9Vsg3D9nPXHG2H35JohzQ61g==}
+  '@mnmal-ai/surface-kit@0.17.1':
+    resolution: {integrity: sha512-gpImcE8uszHZBgCIMSGC5bwUDIVCfHYE8hctqo4pJ5K6Cxjc1rlaZnPOdoAji0DkpZskLZJju8mk696P7jK1UQ==}
     engines: {node: '>=26.2.0'}
     peerDependencies:
       ink: ^8.0.0
       react: ^19.3.0
 
-  '@mnmal-ai/surface-theme@0.17.0':
-    resolution: {integrity: sha512-lw23DOkjVLag1DX35Zlvt61Hde6QfRnnvczkKqUQKhrLMYYE2ebM+08hZX3MWqU3FYdryS0JBPvJLx7ngkYAfw==}
+  '@mnmal-ai/surface-theme@0.17.1':
+    resolution: {integrity: sha512-r7GUrxboNN7vgGYf2RPbUuQNTjRtV6KXu7CMJTKuekEa8PlVOkO9DWssN4fxzhWbkAG8jkNtwlm7mLb7HjioHw==}
     engines: {node: '>=26.2.0'}
 
   '@modelcontextprotocol/sdk@1.32.2':
@@ -4105,21 +4105,21 @@ snapshots:
 
   '@mnmal-ai/holomap-clusterer@0.2.1': {}
 
-  '@mnmal-ai/surface-core@0.17.0(ink@8.0.0(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)':
+  '@mnmal-ai/surface-core@0.17.1(ink@8.0.0(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)':
     dependencies:
-      '@mnmal-ai/surface-kit': 0.17.0(ink@8.0.0(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)
-      '@mnmal-ai/surface-theme': 0.17.0
+      '@mnmal-ai/surface-kit': 0.17.1(ink@8.0.0(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)
+      '@mnmal-ai/surface-theme': 0.17.1
       ink: 8.0.0(@types/react@19.3.0)(react@19.3.1)
       react: 19.3.1
 
-  '@mnmal-ai/surface-kit@0.17.0(ink@8.0.0(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)':
+  '@mnmal-ai/surface-kit@0.17.1(ink@8.0.0(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)':
     dependencies:
-      '@mnmal-ai/surface-theme': 0.17.0
+      '@mnmal-ai/surface-theme': 0.17.1
       ink: 8.0.0(@types/react@19.3.0)(react@19.3.1)
       react: 19.3.1
       string-width: 8.3.0
 
-  '@mnmal-ai/surface-theme@0.17.0': {}
+  '@mnmal-ai/surface-theme@0.17.1': {}
 
   '@modelcontextprotocol/sdk@1.32.2(zod@4.6.7)':
     dependencies:
