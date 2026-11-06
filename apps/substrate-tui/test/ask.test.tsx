@@ -1,6 +1,6 @@
 import type { NlApi } from '@mnmal-ai/substrate/client';
 import type { NlServedPack, NlWireEvent } from '@mnmal-ai/substrate/sdk';
-import { applySuggestion, assertComposes, createApp } from '@mnmal-ai/surface-core';
+import { applySuggestion, assertComposes, createApp, listPager } from '@mnmal-ai/surface-core';
 import { marathon } from '@mnmal-ai/surface-theme';
 import { render } from 'ink-testing-library';
 import { describe, expect, it, vi } from 'vitest';
@@ -101,9 +101,10 @@ function fake(
 }
 // ink-testing-library's stdout is 100 columns; a wider App is cut there.
 function start(deps: TuiDeps, columns = 120) {
+  const pager = listPager();
   const { App } = createApp({
     theme: marathon,
-    modules: [askModule(deps)],
+    modules: [askModule(deps, pager), pager.module],
     defaultTurn: 'substrate.ask:ask'
   });
   const r = render(<App columns={columns} />);
@@ -398,7 +399,8 @@ describe('substrate.ask', () => {
         : [rowsEv(1), { event: 'done', data: {} }]
     );
     let submit: ((t: string) => void) | undefined;
-    const mod = askModule(deps);
+    const pager = listPager();
+    const mod = askModule(deps, pager);
     const { App } = createApp({
       theme: marathon,
       modules: [
@@ -408,7 +410,8 @@ describe('substrate.ask', () => {
             submit = ctx.submit;
             return mod.init?.(ctx);
           }
-        }
+        },
+        pager.module
       ],
       defaultTurn: 'substrate.ask:ask'
     });
@@ -597,6 +600,25 @@ describe('substrate.ask', () => {
     app.stdin.write('/frame');
     app.stdin.write(ENTER);
     await until(() => expect(app.frame()).toContain('tui ignored: unreadable'));
+  });
+  it('a long rows answer opens in the pager; Enter reads the row whole', async () => {
+    const { deps } = fake(() => [rowsEv(12), { event: 'done', data: {} }]);
+    deps.query = async () => ({
+      schemaVersion: 'v',
+      shapes: {},
+      data: {
+        'journal/Todo': [{ id: 't3', title: 'todo 3', status: 'open', body: 'the whole of it' }]
+      }
+    });
+    const app = start(deps);
+    app.stdin.write('todos');
+    app.stdin.write(ENTER);
+    await until(() => expect(app.frame()).toContain('12 rows — in the list (/list)'));
+    for (let i = 0; i < 3; i++) app.stdin.write('\u001B[B');
+    await tick();
+    app.stdin.write(ENTER);
+    await until(() => expect(app.frame()).toContain('the whole of it'));
+    expect(app.frame()).toContain('open');
   });
   it('a schema that cannot be read leaves rows generic', async () => {
     const { deps } = fake(() => [rowsEv(1), { event: 'done', data: {} }]);
