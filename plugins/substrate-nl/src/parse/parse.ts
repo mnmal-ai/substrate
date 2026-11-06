@@ -285,7 +285,15 @@ export function parseQuestion(
   );
 
   // --- ordering by a field, before ids, so the N in "top N" is not read as an id ---
-  const fieldOrder = claimFieldOrder(tokens, walkClaims, pack, rulings, mentioned, evidence);
+  const fieldOrder = claimFieldOrder(tokens, walkClaims, pack, rulings, mentioned);
+  // "<type> <field>": that type names the field, not a reading, unless it is the only type
+  // named or a time range could window it (then both readings stay, as without the pair).
+  const fieldType = fieldOrder?.type;
+  if (fieldType !== undefined && time === null && mentioned.size > 1) {
+    mentioned.delete(fieldType);
+    const e = evidence.findIndex((x) => x.role === 'type' && x.detail === fieldType);
+    if (e >= 0) evidence.splice(e, 1);
+  }
 
   // --- ids: #N anywhere, or a number right after a type word ---
   const ids: number[] = [];
@@ -1001,7 +1009,7 @@ interface FieldOrder {
   numeric?: boolean;
   /** "<type> <field>": the type the words name a field of. */
   type?: string;
-  /** "by latest <field>": how a hop to many rows picks one value. */
+  /** "by latest <field>": how a hop to many rows picks one value. A direction word sets `dir` instead. */
   pick?: { span: string; kind: PickClaim['kind'] };
 }
 
@@ -1080,41 +1088,51 @@ function claimFieldOrder(
   walkClaims: WalkClaims,
   pack: NamespacePack,
   rulings: NamespaceRulings,
-  mentioned: Map<string, { span: string; at: [number, number] }>,
-  evidence: Evidence[]
+  mentioned: Map<string, { span: string; at: [number, number] }>
 ): FieldOrder | null {
-  /** "<type> <field>": a type mention at `i`, then a field of that type or one free word. */
+  const index = buildTypeIndex(pack, rulings);
+  /** "<type> <field>": a named type's phrase at `i`, then a field of that type or one free word. */
   const typed = (i: number): FieldWords | null => {
-    const m = [...mentioned].find(([, x]) => x.at[0] === i);
-    if (m === undefined) return null;
-    const [type, { span, at }] = m;
-    const fields = own(pack.types, type)?.fields ?? {};
-    for (let n = 3; n >= 1; n--) {
-      const slice = tokens.slice(at[1] + 1, at[1] + 1 + n);
-      if (slice.length < n || slice.some((t) => t.used)) continue;
-      const w = slice.map((t) => t.text).join(' ');
-      const known = fieldByWords(w, fields, rulings) !== null;
-      if (known || (n === 1 && !GLUE.has(w) && !/^\d/.test(w)))
-        return { words: w, type, span: `${span} ${w}`, end: at[1] + n };
+    for (const e of index) {
+      const n = e.phrase.split(' ').length;
+      const words = tokens.slice(i, i + n);
+      const type = e.types[0] as string;
+      if (e.types.length !== 1 || !mentioned.has(type) || words.length < n) continue;
+      if (words.map((t) => t.text).join(' ') !== e.phrase || words.some((t) => !t.used)) continue;
+      const fields = own(pack.types, type)?.fields ?? {};
+      const end = i + n - 1;
+      for (let m = 3; m >= 1; m--) {
+        const slice = tokens.slice(end + 1, end + 1 + m);
+        if (slice.length < m || slice.some((t) => t.used)) continue;
+        const w = slice.map((t) => t.text).join(' ');
+        const known = fieldByWords(w, fields, rulings) !== null;
+        if (known || (m === 1 && !GLUE.has(w) && !/^\d/.test(w)))
+          return { words: w, type, span: `${e.phrase} ${w}`, end: end + m };
+      }
+      return null;
     }
     return null;
   };
   const at = (i: number, numeric: boolean) =>
     typed(i) ?? fieldAt(tokens, walkClaims, pack, rulings, i, numeric);
-  const take = (from: number, f: FieldWords) => {
-    takeField(tokens, walkClaims, from, f);
-    if (f.type === undefined) return;
-    // The mention names the field's type, so it is not a type the question is about.
-    mentioned.delete(f.type);
-    const e = evidence.findIndex((x) => x.role === 'type' && x.detail === f.type);
-    if (e >= 0) evidence.splice(e, 1);
-  };
-  /** "latest", "lowest" …: a pick word at `i`, free or claimed by a walk pick. */
+  const take = (from: number, f: FieldWords) => takeField(tokens, walkClaims, from, f);
+  /** A pick word at `i` ("latest", "lowest" …), free or claimed by a walk pick; a direction word sets `dir`. */
   const pickAt = (i: number) => {
     const claimed = walkClaims.picks.find((k) => k.at[0] === i);
     if (claimed !== undefined)
-      return { span: claimed.span, kind: claimed.kind, next: claimed.at[1] + 1, claimed };
-    for (const [word, kind] of Object.entries(PICK_WORDS)) {
+      return {
+        span: claimed.span,
+        kind: claimed.kind,
+        dir: own(DIRECTION_WORDS, claimed.span),
+        next: claimed.at[1] + 1,
+        claimed
+      };
+    const words = [
+      ...Object.keys(PICK_WORDS).filter((w) => w.includes(' ')),
+      ...Object.keys(DIRECTION_WORDS),
+      ...Object.keys(PICK_WORDS)
+    ];
+    for (const word of words) {
       const n = word.split(' ').length;
       const slice = tokens.slice(i, i + n);
       if (
@@ -1122,7 +1140,12 @@ function claimFieldOrder(
         slice.every((t) => !t.used) &&
         slice.map((t) => t.text).join(' ') === word
       )
-        return { span: word, kind, next: i + n };
+        return {
+          span: word,
+          kind: own(PICK_WORDS, word) ?? ('max' as const),
+          dir: own(DIRECTION_WORDS, word),
+          next: i + n
+        };
     }
     return null;
   };
@@ -1170,9 +1193,11 @@ function claimFieldOrder(
         span: [t.text, limit?.text, 'by', withPick ? pick.span : undefined, f.span]
           .filter((x) => x !== undefined)
           .join(' '),
-        dir: t.text === 'top' ? 'desc' : 'asc',
+        dir: withPick && pick.dir !== undefined ? pick.dir : t.text === 'top' ? 'desc' : 'asc',
         ...(limit !== undefined ? { limit: Number(limit.text) } : {}),
-        ...(withPick ? { pick: { span: pick.span, kind: pick.kind } } : {}),
+        ...(withPick && pick.dir === undefined
+          ? { pick: { span: pick.span, kind: pick.kind } }
+          : {}),
         ...field(f)
       };
     }
@@ -1220,6 +1245,15 @@ const AGGREGATE_WORDS: Record<string, AggregateFn> = {
 /** Superlatives that are an ordering (#1903) unless the field is followed by one of these. */
 const VALUE_SUPERLATIVES = new Set(['highest', 'lowest']);
 const VALUE_OF = new Set(['of', 'for']);
+/** A word right after "by" that sets an ordering's direction ("top 10 items by lowest price"). */
+const DIRECTION_WORDS: Record<string, 'asc' | 'desc'> = {
+  lowest: 'asc',
+  smallest: 'asc',
+  least: 'asc',
+  highest: 'desc',
+  largest: 'desc',
+  most: 'desc'
+};
 /** A field grouping runs one frame per value: more than this is dropped. */
 const MAX_GROUPS = 20;
 const BUCKET_WORDS = new Set(['hour', 'day', 'week', 'month', 'year']);
@@ -1408,6 +1442,7 @@ function orderField(
   const r = seedField(o, type, pack, rulings, 'ordering');
   if ('reason' in r) return r;
   const { name, f } = r;
+  if (o.pick !== undefined) return { reason: pickReason(o.pick, `${type}.${name}`, type) };
   const sortable =
     (f.kind === 'scalar' || f.kind === 'metadata') &&
     (f.valueType === 'number' || (f.valueType === 'date' && o.numeric !== true));
@@ -1419,6 +1454,13 @@ function orderField(
           : `${name} is a ${f.valueType ?? f.kind} field; only number and date fields order`
     };
   return { field: name };
+}
+
+/** Why a pick word cannot order: it is not a direction, or there is one value per seed row. */
+function pickReason(pick: { span: string; kind: string }, field: string, seed: string): string {
+  return pick.kind === 'latest'
+    ? `"${pick.span}" picks one of many rows; ${field} is one value per ${seed.toLowerCase()}`
+    : `"${pick.span}" is not an ordering direction; say lowest or highest`;
 }
 
 /** The field an ordering names on a type other than `seed`, null when it is the seed's (or none). */
@@ -1487,6 +1529,8 @@ function hopOrder(
       reason: `ordering across a hop needs a number field; ${qualified} is a ${f?.valueType ?? f?.kind} field`
     };
   const h = path[0] as Hop;
+  if (o.pick !== undefined && (h.dir === 'out' || o.pick.kind !== 'latest'))
+    return { reason: pickReason(o.pick, qualified, seed) };
   const cap = to.field.charAt(0).toUpperCase() + to.field.slice(1);
   const exclude = o.phrase?.entry.exclude;
   const where = exclude !== undefined ? { where: { NOT: exclude } } : {};
@@ -1500,7 +1544,7 @@ function hopOrder(
       }
     };
   }
-  const kind = o.pick?.kind ?? (o.dir === 'desc' ? 'max' : 'min');
+  const kind = o.pick?.kind ?? o.phrase?.entry.pick ?? (o.dir === 'desc' ? 'max' : 'min');
   const by = own(rulings.timeField, to.type) ?? 'createdAt';
   return {
     hop: {

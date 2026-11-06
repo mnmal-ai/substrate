@@ -113,14 +113,95 @@ describe('ordering by a field one crossRef hop away', () => {
     expect(frameOf('top suppliers by latest item price')).toEqual(
       inHop('latestItemPrice', { latest: { by: 'listedAt', value: 'price' } }, 'desc', 10)
     );
+    // A direction word after "by" sets the pick and the direction together.
     expect(frameOf('top suppliers by lowest item price')).toEqual(
-      inHop('minItemPrice', { min: 'price' }, 'desc', 10)
+      inHop('minItemPrice', { min: 'price' }, 'asc', 10)
     );
     expect(parse('top suppliers by lowest item price').candidates[0]?.evidence).toContainEqual({
       span: 'top by lowest item price',
       role: 'order',
-      detail: 'min(Item.price) per supplier desc, limit 10'
+      detail: 'min(Item.price) per supplier asc, limit 10'
     });
+    expect(frameOf('bottom 3 suppliers by highest item price')).toEqual(
+      inHop('maxItemPrice', { max: 'price' }, 'desc', 3)
+    );
+  });
+
+  it('a direction word after "by" orders a seed or out-hop field that way (review I1)', () => {
+    expect(parse('top 10 items by lowest price').status).toBe('resolved');
+    expect(frameOf('top 10 items by lowest price')).toEqual({
+      params: { orderBy: [{ price: 'asc' }], limit: 10 }
+    });
+    expect(frameOf('bottom 3 items by highest price')).toEqual({
+      params: { orderBy: [{ price: 'desc' }], limit: 3 }
+    });
+    expect(frameOf('top 3 items by smallest price')?.params.orderBy).toEqual([{ price: 'asc' }]);
+    const out = parse('top 10 items by lowest supplier rating');
+    expect(out.status).toBe('resolved');
+    expect(frameOf('top 10 items by lowest supplier rating')).toEqual({
+      ...outHop(10),
+      params: { ...outHop(10).params, orderBy: [{ $supplierRating: 'asc' }] }
+    });
+  });
+
+  it('any other pick word after "by" drops the ordering with a reason (review I1)', () => {
+    for (const [q, reason] of [
+      [
+        'top 10 items by cheapest price',
+        '"cheapest" is not an ordering direction; say lowest or highest'
+      ],
+      [
+        'top 5 items by latest price',
+        '"latest" picks one of many rows; Item.price is one value per item'
+      ],
+      [
+        'top 5 items by latest supplier rating',
+        '"latest" picks one of many rows; Supplier.rating is one value per item'
+      ],
+      [
+        'top suppliers by cheapest item price',
+        '"cheapest" is not an ordering direction; say lowest or highest'
+      ]
+    ] as const) {
+      const r = parse(q);
+      expect(r.status, q).toBe('partial');
+      expect(r.candidates[0]?.dropped, q).toEqual([
+        expect.objectContaining({ reason, kind: 'order' })
+      ]);
+      expect(JSON.stringify(r.candidates[0]?.frame), q).not.toContain('orderBy');
+    }
+  });
+
+  it("honours a ruling's default pick on an in-hop (review I2)", () => {
+    const current: NamespaceRulings = {
+      ...base,
+      fieldPhrases: { 'current cost': { field: 'Item.price', pick: 'latest' } }
+    };
+    expect(parse('top 5 suppliers by current cost', current).status).toBe('resolved');
+    expect(frameOf('top 5 suppliers by current cost', current)).toEqual(
+      inHop('latestItemPrice', { latest: { by: 'listedAt', value: 'price' } }, 'desc', 5)
+    );
+  });
+
+  it('a time range keeps the hop type as a competing reading (review I3)', () => {
+    const r = parse('top 5 suppliers by item price last week');
+    expect(r.status).not.toBe('resolved');
+    expect(r.candidates.map((c) => c.type).sort()).toEqual(['Item', 'Supplier']);
+  });
+
+  it("a <seed type> <field> pair keeps the seed's mention (review I4)", () => {
+    expect(parse('items with the highest item price').status).not.toBe('unparsed');
+    for (const [q, type, field] of [
+      ['top 5 items by item price', 'shop/Item', 'price'],
+      ['top 5 suppliers by supplier rating', 'shop/Supplier', 'rating']
+    ] as const) {
+      const r = parse(q);
+      expect(r.status, q).toBe('resolved');
+      expect(r.candidates[0]?.frame[type]?.params, q).toEqual({
+        orderBy: [{ [field]: 'desc' }],
+        limit: 5
+      });
+    }
   });
 
   it('resolves the field through a fieldPhrases ruling, and a bare field name on one type', () => {
@@ -170,7 +251,7 @@ describe('ordering by a field one crossRef hop away', () => {
   });
 
   it('combines with a value filter and a time range', () => {
-    expect(frameOf('top 5 lamp items by supplier rating last week')).toEqual({
+    expect(frameOf('top 5 lamp items by vendor score last week', phrased)).toEqual({
       params: {
         where: {
           AND: [
