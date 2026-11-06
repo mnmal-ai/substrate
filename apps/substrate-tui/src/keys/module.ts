@@ -11,7 +11,7 @@ import { truncateCells } from '@mnmal-ai/surface-kit';
 import { adminCapabilityOf } from '../admin/session.js';
 import type { TuiDeps } from '../deps.js';
 // A runtime cycle once editor imports loadKeys back (Tasks 6/7), safe because each side uses the other only inside functions.
-import { type EditorPanels, editorPanels, openEditor, switchTo } from './editor.js';
+import { type EditorPanels, editorPanels, KEYS_CHROME, openEditor, switchTo } from './editor.js';
 import { compactGrant, GRANT_LEGEND } from './grant.js';
 import { revokeVerdict } from './verdict.js';
 
@@ -72,6 +72,7 @@ export function keysModule(deps: TuiDeps): TuiModule<Panels> {
     ],
     panels: {
       keys: {
+        ...KEYS_CHROME,
         view: ({ state, theme, size }) => {
           const w = Math.max(1, size.columns - 2);
           const count = state.rows === null ? '' : ` · ${state.rows.length} active`;

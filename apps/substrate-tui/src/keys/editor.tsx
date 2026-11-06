@@ -8,6 +8,7 @@ import { readFile } from 'node:fs/promises';
 import type { AdminKeyAlgorithm, AdminKeyRow, Grant } from '@mnmal-ai/substrate/client';
 import { type ModuleCtx, type PanelDef, sanitise } from '@mnmal-ai/surface-core';
 import { truncateCells } from '@mnmal-ai/surface-kit';
+import { marathon } from '@mnmal-ai/surface-theme';
 import { refusalOf } from '../admin/refusal.js';
 import { adminCapabilityOf } from '../admin/session.js';
 import type { TuiDeps } from '../deps.js';
@@ -437,6 +438,9 @@ function editView(
   ];
 }
 
+/** Every keys panel: a one-column inset on a raised ground, set apart from the input band. */
+export const KEYS_CHROME = { inset: { x: 1, y: 0 }, ground: marathon.color.raised } as const;
+
 export function editorPanels(deps: TuiDeps): {
   [K in keyof EditorPanels]: PanelDef<EditorPanels[K], KeysPanels>;
 } {
@@ -451,6 +455,7 @@ export function editorPanels(deps: TuiDeps): {
 
   return {
     edit: {
+      ...KEYS_CHROME,
       view: ({ state, theme, size }) => linesView(toned(editView(state, theme.glyph, size)), theme),
       keymap: [
         { key: 'up', act: 'up' },
@@ -503,6 +508,7 @@ export function editorPanels(deps: TuiDeps): {
         changed(s.matrix) && !s.discardArmed ? { ...s, discardArmed: true } : undefined
     },
     prompt: {
+      ...KEYS_CHROME,
       view: ({ state, theme }) => linesView(toned(promptView(state, theme.glyph)), theme),
       submit: (s, line, ctx) => {
         const text = line.trim();
@@ -616,6 +622,7 @@ export function editorPanels(deps: TuiDeps): {
       }
     },
     review: {
+      ...KEYS_CHROME,
       view: ({ state, theme, armed, size }) =>
         linesView(toned(reviewView(state, theme.glyph, armed, size)), theme),
       confirm: [{ key: 'y', act: 'apply', label: 'applies this change' }],
