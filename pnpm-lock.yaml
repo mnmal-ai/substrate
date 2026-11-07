@@ -228,8 +228,8 @@ catalogs:
       specifier: ^0.155.0
       version: 0.155.0
     postgres:
-      specifier: 3.4.9
-      version: 3.4.9
+      specifier: 4.1.0
+      version: 4.1.0
     react:
       specifier: ^19.3.0
       version: 19.3.1
@@ -286,7 +286,7 @@ importers:
         version: 0.155.0
       postgres:
         specifier: 'catalog:'
-        version: 3.4.9
+        version: 4.1.0
       turbo:
         specifier: 'catalog:'
         version: 2.11.10
@@ -322,7 +322,7 @@ importers:
         version: 2.1.2
       postgres:
         specifier: 'catalog:'
-        version: 3.4.9
+        version: 4.1.0
       semver:
         specifier: 'catalog:'
         version: 7.8.5
@@ -735,7 +735,7 @@ importers:
         version: link:../substrate-types
       postgres:
         specifier: 'catalog:'
-        version: 3.4.9
+        version: 4.1.0
     devDependencies:
       '@mnmal-ai/substrate-config':
         specifier: workspace:*
@@ -1087,7 +1087,7 @@ importers:
         version: 26.6.6
       postgres:
         specifier: 'catalog:'
-        version: 3.4.9
+        version: 4.1.0
       tsdown:
         specifier: 'catalog:'
         version: 0.23.1(tsx@4.23.15)(typescript@7.0.2)
@@ -1105,7 +1105,7 @@ importers:
         version: 0.2.1
       postgres:
         specifier: 'catalog:'
-        version: 3.4.9
+        version: 4.1.0
       zod:
         specifier: 'catalog:'
         version: 4.6.7
@@ -3105,9 +3105,9 @@ packages:
     resolution: {integrity: sha512-zkd+e9S1AQHhmaBKye9zlFHWjOwVgqXl1q3ECYy8561K7qxR2cREf/STLskulBFd78k6AOFeA+ff1TtEzk9bAA==}
     engines: {node: ^10 || ^12 || >=14}
 
-  postgres@3.4.9:
-    resolution: {integrity: sha512-GD3qdB0x1z9xgFI6cdRD6xu2Sp2WCOEoe3mtnyB5Ee0XrrL5Pe+e4CCnJrRMnL1zYtRDZmQQVbvOttLnKDLnaw==}
-    engines: {node: '>=12'}
+  postgres@4.1.0:
+    resolution: {integrity: sha512-s+0WH67YAyLdBQUb6XczbziBhY+C9uiQsg9S8R5RHdZhk6sdyK6202E+T2tXpiInSEEjDLRSJ3OpYBe3PN6MsQ==}
+    engines: {node: '>=18'}
 
   process-warning@5.1.1:
     resolution: {integrity: sha512-oCkNVj4OKnKEcocVBcDfiIugN1/cE6rgfT3nCtzeqZPA8+rIxMaQ0xXzIkGP8Gj2qUaP1UR7uhJ1VD8lUCpzCg==}
@@ -5282,7 +5282,7 @@ snapshots:
       picocolors: 1.1.1
       source-map-js: 1.2.2
 
-  postgres@3.4.9: {}
+  postgres@4.1.0: {}
 
   process-warning@5.1.1: {}
 

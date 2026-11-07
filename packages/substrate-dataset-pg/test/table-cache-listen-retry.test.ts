@@ -72,10 +72,9 @@ describe.skipIf(!POSTGRES_URL)('a failed catalog LISTEN (pg)', () => {
       vi.spyOn(Date, 'now').mockReturnValue(now + LISTEN_RETRY_MS + 1);
       await ds.read('T', {});
       expect(tableCacheFor(pool).tables.has(key)).toBe(true);
-      const channels = (
-        pool.listen as unknown as { channels: Record<string, { listeners: unknown[] }> }
-      ).channels;
-      expect(channels.substrate_catalog?.listeners).toHaveLength(1);
+      // The retried LISTEN is live: a catalog notification drops the cached table.
+      await pool`SELECT pg_notify('substrate_catalog', ${key})`;
+      await vi.waitFor(() => expect(tableCacheFor(pool).tables.has(key)).toBe(false));
     } finally {
       await pool.end({ timeout: 5 });
     }

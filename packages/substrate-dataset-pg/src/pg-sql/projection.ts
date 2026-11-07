@@ -4,7 +4,7 @@
  */
 
 import type { ActorIdentity, ReadParams, RowMetadata } from '@mnmal-ai/substrate-types';
-import type { Sql, TransactionSql } from 'postgres';
+import type { ISql, Sql, TransactionSql } from 'postgres';
 import { RAW_KEY } from '../row-codec.js';
 import type { TypeTable } from '../type-table.js';
 import {
@@ -27,7 +27,7 @@ import {
  * Keys are bound as parameters, never concatenated.
  */
 export function buildRowProjection(
-  sql: Sql | TransactionSql,
+  sql: ISql,
   table: TypeTable,
   fields: ReadParams['fields'],
   alias = 'r',
