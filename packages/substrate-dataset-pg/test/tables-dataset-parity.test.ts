@@ -669,11 +669,11 @@ describe.skipIf(!POSTGRES_URL)('PgDataset on type tables vs memory', () => {
     const fields = { title: true, status: true, _metadata: true, n: true, meta: true, id: true };
     const [row] = (await pg.read('Item', { where: { id: { eq: 'i1' } }, fields })).rows;
     expect(Object.keys(row ?? {})).toEqual(['title', 'status', '_metadata', 'n', 'meta', 'id']);
-    // Without `id` requested it still leads; unrequested extras (`_metadata`) trail.
+    // Without `id` requested it still leads; unrequested metadata is not fetched.
     const [bare] = (
       await pg.read('Item', { where: { id: { eq: 'i1' } }, fields: { title: true, n: true } })
     ).rows;
-    expect(Object.keys(bare ?? {})).toEqual(['id', 'title', 'n', '_metadata']);
+    expect(Object.keys(bare ?? {})).toEqual(['id', 'title', 'n']);
   });
 
   it('a UUID-check migration applied while running reaches the tables created after it', async () => {
