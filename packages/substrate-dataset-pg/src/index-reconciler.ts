@@ -30,7 +30,7 @@
 
 import { createHash } from 'node:crypto';
 import type { FieldDef, IndexDecl, OrderedBy } from '@mnmal-ai/substrate-types';
-import type { ReservedSql, Sql } from 'postgres';
+import type { ISql, ReservedSql, Sql } from 'postgres';
 import type { DiskGuard } from './disk-guard.js';
 import { columnName, hashedName, ident, MAX_IDENTIFIER } from './layout.js';
 import {
@@ -360,7 +360,7 @@ const conflictReason = (err: IndexDefinitionConflictError): string =>
  * Otherwise undefined.
  */
 async function heldAsDeclared(
-  conn: Sql,
+  conn: ISql,
   target: string,
   spec: Spec,
   desired: Described
@@ -477,7 +477,7 @@ export interface HeldIndex {
 }
 
 /** Every index on `tables` (current schema), with its scan count and size. */
-export async function heldIndexes(sql: Sql, tables: string[]): Promise<HeldIndex[]> {
+export async function heldIndexes(sql: ISql, tables: string[]): Promise<HeldIndex[]> {
   return sql<HeldIndex[]>`
     SELECT t.relname AS "table", c.relname AS name, i.indisunique AS "unique",
            obj_description(i.indexrelid, 'pg_class') IS NOT DISTINCT FROM ${MARK} AS marked,
@@ -823,7 +823,7 @@ function described(row: CatalogRow): Described {
 }
 
 async function describeIndex(
-  sql: Sql,
+  sql: ISql,
   name: string,
   schema: 'current' | 'temp'
 ): Promise<Described | undefined> {
@@ -843,7 +843,7 @@ async function describeIndex(
 }
 
 /** Each spec as pg deparses it, built on an empty temp copy of `like` and rolled back. */
-async function deparse(conn: Sql, specs: Spec[], like: string): Promise<Described[]> {
+async function deparse(conn: ISql, specs: Spec[], like: string): Promise<Described[]> {
   await conn.unsafe('BEGIN');
   try {
     await conn.unsafe(`CREATE TEMP TABLE substrate_index_probe (LIKE ${like})`);
@@ -866,12 +866,12 @@ function swapNameFor(name: string): string {
   return `${hashedName(name, name, MAX_IDENTIFIER - '__swap'.length)}__swap`;
 }
 
-async function stateOf(conn: Sql, name: string): Promise<IndexState['state']> {
+async function stateOf(conn: ISql, name: string): Promise<IndexState['state']> {
   return stateFrom(await describeIndex(conn, name, 'current'));
 }
 
 async function reconcileOne(
-  conn: Sql,
+  conn: ISql,
   args: ReconcileTypeIndexesArgs,
   target: string,
   spec: Spec,
@@ -984,7 +984,7 @@ async function reconcileOne(
  * guard refuses it; a unique one throws.
  */
 async function build(
-  conn: Sql,
+  conn: ISql,
   args: ReconcileTypeIndexesArgs,
   target: string,
   spec: Spec,
@@ -1067,7 +1067,7 @@ export async function pendingIndexBuilds(
  * Bytes a build of index `name` on `target` may take: the index it replaces (under
  * its name or as a `__swap` leftover), else 30% of the table.
  */
-async function buildEstimate(conn: Sql, target: string, name: string): Promise<number> {
+async function buildEstimate(conn: ISql, target: string, name: string): Promise<number> {
   const [row] = await conn<Array<{ n: string }>>`
     SELECT COALESCE(
       pg_relation_size(to_regclass(${name})),
@@ -1079,7 +1079,7 @@ async function buildEstimate(conn: Sql, target: string, name: string): Promise<n
 
 /** Runs `text` on `conn`, cancelling it in flight when `signal` aborts. */
 async function cancellable(
-  conn: Sql,
+  conn: ISql,
   text: string,
   signal: AbortSignal | undefined
 ): Promise<void> {
@@ -1097,16 +1097,16 @@ async function cancellable(
   }
 }
 
-async function dropConcurrently(conn: Sql, name: string, signal?: AbortSignal): Promise<void> {
+async function dropConcurrently(conn: ISql, name: string, signal?: AbortSignal): Promise<void> {
   await cancellable(conn, `DROP INDEX CONCURRENTLY IF EXISTS ${name}`, signal);
 }
 
-async function mark(conn: Sql, name: string): Promise<void> {
+async function mark(conn: ISql, name: string): Promise<void> {
   await conn.unsafe(`COMMENT ON INDEX ${name} IS '${MARK}'`);
 }
 
 async function assertNoDuplicates(
-  conn: Sql,
+  conn: ISql,
   args: ReconcileTypeIndexesArgs,
   target: string,
   spec: Spec

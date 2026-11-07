@@ -29,7 +29,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { ReservedSql, Sql } from 'postgres';
+import type { ISql, ReservedSql, Sql } from 'postgres';
 import { retireSession, SESSION_COLUMNS, type Session } from './advisory-lock.js';
 import { detectLayout } from './layout.js';
 import {
@@ -596,7 +596,7 @@ const CONCURRENT_INDEX_RE =
  * `IF NOT EXISTS` would accept forever. Drops the statement's index first when
  * it exists and is invalid, so the re-run builds it again.
  */
-async function dropInvalidIndexFor(sql: Sql, stmt: string): Promise<void> {
+async function dropInvalidIndexFor(sql: ISql, stmt: string): Promise<void> {
   const name = CONCURRENT_INDEX_RE.exec(stmt)?.[1];
   if (name !== undefined) await dropIndexIfInvalid(sql, name);
 }
@@ -605,7 +605,7 @@ async function dropInvalidIndexFor(sql: Sql, stmt: string): Promise<void> {
  * Drops index `name` (a bare lower-snake identifier) when it exists and is
  * INVALID, as a failed concurrent build leaves it. True when it dropped one.
  */
-export async function dropIndexIfInvalid(sql: Sql, name: string): Promise<boolean> {
+export async function dropIndexIfInvalid(sql: ISql, name: string): Promise<boolean> {
   if (!/^[a-z_][a-z0-9_]*$/.test(name)) throw new Error(`not a bare index name: '${name}'`);
   const [row] = await sql<Array<{ invalid: boolean }>>`
     SELECT NOT indisvalid AS invalid FROM pg_index WHERE indexrelid = to_regclass(${name})
