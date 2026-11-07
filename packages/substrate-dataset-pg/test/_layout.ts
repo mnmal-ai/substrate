@@ -3,7 +3,7 @@
  * the catalog (`substrate_type_tables`), and its ids in `row_ids`.
  */
 
-import type { Sql, TransactionSql } from 'postgres';
+import type { ISql, Sql } from 'postgres';
 import { ident, typeTableName } from '../src/layout.js';
 import type { TypeTable } from '../src/type-table.js';
 
@@ -40,11 +40,7 @@ export async function truncateRows(sql: Sql): Promise<void> {
 }
 
 /** The type table holding `type`'s rows, quoted. */
-export async function relationOf(
-  sql: Sql | TransactionSql,
-  namespace: string,
-  type: string
-): Promise<string> {
+export async function relationOf(sql: ISql, namespace: string, type: string): Promise<string> {
   const [t] = await sql<Array<{ table_name: string }>>`
     SELECT table_name FROM substrate_type_tables WHERE namespace = ${namespace} AND type = ${type}`;
   if (t === undefined) throw new Error(`${namespace}/${type} has no type table`);

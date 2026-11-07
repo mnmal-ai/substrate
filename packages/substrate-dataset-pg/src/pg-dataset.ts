@@ -69,7 +69,7 @@ import {
   QUERY_TIMEOUT,
   ResolverFrameError
 } from '@mnmal-ai/substrate-types';
-import type { MaybeRow, PendingQuery, ReservedSql, Sql, TransactionSql } from 'postgres';
+import type { PendingQuery, Row as PgRow, ReservedSql, Sql, TransactionSql } from 'postgres';
 import { withPgAdvisoryLock } from './advisory-lock.js';
 import type { DiskGuard } from './disk-guard.js';
 import { NamespaceMismatch, ReservedField } from './errors.js';
@@ -2468,7 +2468,7 @@ function usesWalkGrammar(params: ReadParams): boolean {
 }
 
 /** Awaits `query`, cancelling the statement in flight when `signal` aborts. */
-async function cancellable<T extends readonly MaybeRow[]>(
+async function cancellable<T extends readonly (PgRow | undefined)[]>(
   query: PendingQuery<T>,
   signal: AbortSignal | undefined
 ): Promise<T> {

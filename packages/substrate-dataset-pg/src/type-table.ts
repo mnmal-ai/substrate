@@ -285,31 +285,12 @@ export function listenTableCache(cache: TableCache): Promise<boolean> {
               console.warn(
                 `substrate-dataset-pg: LISTEN substrate_catalog failed, type tables uncached; retrying in ${LISTEN_RETRY_MS / 1000}s: ${err instanceof Error ? err.message : String(err)}`
               );
+              // postgres.js forgets a refused channel with no other listeners, so the retry LISTENs afresh.
               cache.listenRetryAt = Date.now() + LISTEN_RETRY_MS;
-              dropListener(pool);
               return false;
             }
           );
   return cache.listening;
-}
-
-/**
- * Closes the pool's LISTEN connection after a refused LISTEN, so the retry
- * opens a fresh one: postgres.js keeps a rejected LISTEN's promise for the
- * channel until that connection closes, and a later `listen` only joins it.
- * The channel is forgotten first, so the close does not re-listen the failed
- * listeners; other channels are re-listened on the new connection.
- *
- * shortcut: reaches into postgres.js 3.x's `listen.sql` / `listen.channels`;
- * re-check on a postgres.js upgrade (the listen-retry test fails if they move).
- */
-function dropListener(pool: Partial<Sql>): void {
-  const listen = pool.listen as { sql?: Sql; channels?: Record<string, unknown> } | undefined;
-  if (listen === undefined) return;
-  delete listen.channels?.substrate_catalog;
-  const conn = listen.sql;
-  delete listen.sql;
-  conn?.end({ timeout: 0 }).catch(() => {});
 }
 
 /**
@@ -532,7 +513,7 @@ async function ensureIn(tx: TransactionSql, args: EnsureTypeTableArgs): Promise<
   const record = (field: string, kind: ColumnKind, state: FieldState, vocab?: readonly string[]) =>
     tx`INSERT INTO substrate_type_fields (namespace, type, field, column_name, kind, state, vocab)
        VALUES (${namespace}, ${type}, ${field}, ${columnName(field)}, ${kind}, ${state},
-               ${vocab === undefined ? null : tx.array([...vocab])})`;
+               ${vocab === undefined ? null : [...vocab]})`;
   const setState = (field: string, state: FieldState) =>
     tx`UPDATE substrate_type_fields SET state = ${state}
        WHERE namespace = ${namespace} AND type = ${type} AND field = ${field}`;
@@ -581,7 +562,7 @@ async function ensureIn(tx: TransactionSql, args: EnsureTypeTableArgs): Promise<
             `ALTER TABLE ${table} ${enumCheckClauses(row.column_name, widened).join(', ')}`
           ));
         if (applied) {
-          await tx`UPDATE substrate_type_fields SET vocab = ${tx.array(widened)}
+          await tx`UPDATE substrate_type_fields SET vocab = ${[...widened]}
                    WHERE namespace = ${namespace} AND type = ${type} AND field = ${field}`;
           // Values held in `$raw` that the new vocabulary admits belong in the
           // column: back through `promoting`, so the sweep's backfill moves them.
