@@ -49,6 +49,20 @@ describe('mergeWalkColumns', () => {
     });
     expect(Object.keys(out.extra)).toEqual(['all', 'few', '_agg', 'title', 'latest', '_truncated']);
   });
+  it('one order cache across rows of different key sets answers as fresh calls do', () => {
+    const rows = () => [
+      { extra: { title: 'x' }, __walk_agg: 1, __walk_0: [1, 2], __walk_1: [], __walk_2: [] },
+      { extra: { title: 'y', id: 'r2' }, __walk_agg: 2, __walk_0: [], __walk_1: [], __walk_2: [] },
+      { extra: { title: 'z' }, __walk_agg: 3, __walk_0: [], __walk_1: [], __walk_2: [] },
+      { extra: null, __walk_agg: 4, __walk_0: [], __walk_1: [], __walk_2: [1, 2, 3] }
+    ];
+    const orders = new Map<string, string[]>();
+    const shared = rows().map((r) => mergeWalkColumns(r, columns, orders).extra);
+    const fresh = rows().map((r) => mergeWalkColumns(r, columns).extra);
+    expect(shared.map((e) => Object.keys(e ?? {}))).toEqual(fresh.map((e) => Object.keys(e ?? {})));
+    expect(shared).toEqual(fresh);
+    expect(orders.size).toBe(4);
+  });
   it('adds no _truncated when nothing was cut, and reads a null extra as empty', () => {
     const out = mergeWalkColumns(
       { extra: null, __walk_agg: null, __walk_0: [], __walk_1: [], __walk_2: [{ id: 'd' }] },
