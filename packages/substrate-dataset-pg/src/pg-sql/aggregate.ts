@@ -595,26 +595,28 @@ export function mergeWalkColumns<R extends { extra: Record<string, unknown> | nu
   columns: readonly WalkColumn[]
 ): R {
   const merged: Record<string, unknown> = { ...(record.extra ?? {}) };
-  let cut: Record<string, true> | undefined;
+  const cut: Record<string, true> = {};
+  let anyCut = false;
   for (const c of columns) {
     const v = (record as Record<string, unknown>)[c.column];
     if (c.limit !== undefined && Array.isArray(v) && v.length > c.limit) {
       merged[c.name] = v.slice(0, c.limit);
-      (cut ??= {})[c.name] = true;
+      cut[c.name] = true;
+      anyCut = true;
     } else {
       merged[c.name] = v;
     }
   }
-  if (cut !== undefined) merged._truncated = jsonbOrdered(cut);
+  if (anyCut) merged._truncated = jsonbOrdered(cut);
   record.extra = jsonbOrdered(merged);
   return record;
 }
 
-const ASCII = /^[\x00-\x7f]*$/;
-
 /** jsonb's object key order: shorter (in UTF-8 bytes) first, then bytewise. */
 export function jsonbKeyOrder(a: string, b: string): number {
-  if (ASCII.test(a) && ASCII.test(b)) return a.length - b.length || (a < b ? -1 : a > b ? 1 : 0);
+  // An ASCII key is one byte per UTF-16 unit, so string comparison is bytewise.
+  if (Buffer.byteLength(a) === a.length && Buffer.byteLength(b) === b.length)
+    return a.length - b.length || (a < b ? -1 : a > b ? 1 : 0);
   const x = Buffer.from(a);
   const y = Buffer.from(b);
   return x.length - y.length || Buffer.compare(x, y);
