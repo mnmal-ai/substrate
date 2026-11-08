@@ -21,6 +21,7 @@ import {
   type SubstrateRequest,
   type SubstrateResponse
 } from '@mnmal-ai/substrate-types';
+import { jsonEnvelopeStream, streamsJson } from './json-stream.js';
 import { projectEnvelope } from './project-json.js';
 
 // Frozen because response builders return this shared reference directly
@@ -258,6 +259,9 @@ export function serializeEnvelope(
   opts: SerializeOpts = {}
 ): SubstrateResponse {
   if (!acceptsPack(readAcceptHeader(req))) {
+    if (streamsJson(envelope)) {
+      return { status: 200, headers: JSON_HEADERS, body: jsonEnvelopeStream(envelope, frame) };
+    }
     // Project envelope.data through each frame entry's `fields` selection to
     // match the pack path's strict projection. A frame entry with
     // `fields: undefined` opts out of projection — full row passes through.
