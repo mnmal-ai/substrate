@@ -2413,44 +2413,67 @@ export class PgDataset implements Dataset {
   ): Row {
     const body = decodeRow(table, record);
     const raw = (record.extra as Record<string, unknown> | null)?.[RAW_KEY];
-    if (requested !== undefined && raw !== null && typeof raw === 'object') {
-      for (const k of Object.keys(raw)) if (!Object.hasOwn(requested, k)) delete body[k];
-    }
+    // A `$raw` entry the projection did not ask for is dropped (the projection keeps `$raw` whole).
+    const trimRaw =
+      requested !== undefined && raw !== null && typeof raw === 'object'
+        ? (raw as Record<string, unknown>)
+        : undefined;
     // Prefer the body.id (preserves number vs string at write time) over the
     // text PK column when present.
-    const originalId = this.extractOriginalId(record.id, body);
-
-    const out: Row = { id: originalId };
-    for (const [k, v] of Object.entries(body)) {
-      if (k === 'id') continue;
-      if (k === RESERVED_DELETED_AT) continue; // defensive — should never appear in body
-      if (k === '_metadata') continue; // defensive — stripped on write, but guard on read too
+    const id = this.extractOriginalId(record.id, body);
+    const kept = (k: string): boolean => {
+      if (k === 'id' || k === RESERVED_DELETED_AT || k === '_metadata') return false; // the latter two never stored
+      if (
+        trimRaw !== undefined &&
+        Object.hasOwn(trimRaw, k) &&
+        !Object.hasOwn(requested as object, k)
+      )
+        return false;
       // A null on a declared scalar or crossRef reads back absent, as on memory.
-      if (v === null && fields !== undefined && Object.hasOwn(fields, k)) {
+      if (body[k] === null && fields !== undefined && Object.hasOwn(fields, k)) {
         const def = fields[k];
-        if (def !== undefined && isColumnField(def)) continue;
+        if (def !== undefined && isColumnField(def)) return false;
       }
-      out[k] = v;
-    }
-    if (record.deleted_at !== null) {
-      out._deletedAt = record.deleted_at;
-    }
-    if (record.short_id !== null && record.short_id !== undefined) {
-      // postgres.js returns bigint columns as strings; coerce to JS number.
-      // shortId values fit safely in Number (52-bit integer range).
-      out.shortId = Number(record.short_id);
-    }
-
+      return true;
+    };
+    // Set from the record, over any body key of the same name.
+    const deletedAt = record.deleted_at !== null ? record.deleted_at : undefined;
+    // postgres.js returns bigint columns as strings; shortId values fit safely in Number.
+    const shortId =
+      record.short_id !== null && record.short_id !== undefined
+        ? Number(record.short_id)
+        : undefined;
     // The read selected the metadata columns only if the projection asks for them.
     const meta = readsRowMetadata(requested) ? assembleRowMetadata(record) : undefined;
-    if (meta !== undefined) out._metadata = meta;
+    const special = (k: string): unknown =>
+      k === RESERVED_DELETED_AT
+        ? deletedAt
+        : k === 'shortId'
+          ? shortId
+          : k === '_metadata'
+            ? meta
+            : undefined;
 
-    if (requested === undefined) return out;
-    // The decoded row is in column order; a projection answers in its own (#1861),
-    // as memory and the transports do. `id` leads unless the request places it.
-    const ordered: Row = Object.hasOwn(requested, 'id') ? ({} as Row) : { id: out.id };
-    for (const k of Object.keys(requested)) if (Object.hasOwn(out, k)) ordered[k] = out[k];
-    return Object.assign(ordered, out);
+    // One object, built in its final key order: a projection answers in its own order (#1861), as
+    // memory and the transports do, with `id` leading unless the request places it; then the rest
+    // of the row in column order; then the record's own keys.
+    const out: Row =
+      requested === undefined || !Object.hasOwn(requested, 'id') ? { id } : ({} as Row);
+    if (requested !== undefined) {
+      for (const k of Object.keys(requested)) {
+        if (k === 'id') out.id = id;
+        else if (special(k) !== undefined) out[k] = special(k);
+        else if (Object.hasOwn(body, k) && kept(k)) out[k] = body[k];
+      }
+    }
+    for (const k in body) {
+      if (!Object.hasOwn(out, k) && kept(k)) out[k] = special(k) ?? body[k];
+    }
+    if (deletedAt !== undefined && !Object.hasOwn(out, RESERVED_DELETED_AT))
+      out[RESERVED_DELETED_AT] = deletedAt;
+    if (shortId !== undefined && !Object.hasOwn(out, 'shortId')) out.shortId = shortId;
+    if (meta !== undefined && !Object.hasOwn(out, '_metadata')) out._metadata = meta;
+    return out;
   }
 
   private extractOriginalId(textId: string, body: Record<string, unknown>): Id {
