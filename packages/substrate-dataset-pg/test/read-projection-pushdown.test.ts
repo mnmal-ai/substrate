@@ -101,6 +101,17 @@ describe.skipIf(!POSTGRES_URL)('read projection pushdown (pg)', () => {
     expect(page()[0]).not.toMatch(/created_at/);
   });
 
+  it('a field list reads the same keys from an extra too large to store inline', async () => {
+    const big = randomBytes(4000).toString('hex');
+    await ds.write('Wide', [{ id: 'w1', name: 'y', big, other: 1, _metadata: meta }]);
+    expect((await ds.read('Wide', { fields: { name: true } })).rows).toEqual([
+      { id: 'w1', name: 'y' }
+    ]);
+    expect((await ds.read('Wide', { fields: { name: true, big: true } })).rows).toEqual([
+      { id: 'w1', name: 'y', big }
+    ]);
+  });
+
   it('a read without fields keeps the whole row', async () => {
     const { rows } = await ds.read(TYPE, {});
     expect(rows[0]).toMatchObject({ id: 't1', name: 'x', shortId: 7, _metadata: meta });
