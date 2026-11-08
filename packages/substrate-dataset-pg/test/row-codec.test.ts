@@ -401,3 +401,22 @@ function mulberry32(seed: number): () => number {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
+
+describe('decodeRow: a date column read as utcTextSql text', () => {
+  const record = (due: unknown) => ({ id: 'r', f_due: due, extra: {} });
+  it.each([
+    '2026-01-01T00:00:00.123999Z',
+    '0001-01-01T00:00:00.000000Z',
+    '9999-12-31T23:59:59.999999Z',
+    '1970-01-01T00:00:00.000500Z',
+    '2024-02-29T12:34:56.789012Z'
+  ])('%s reads as its Date round trip', (text) => {
+    expect(decodeRow(TABLE, record(text)).due).toBe(new Date(text).toISOString());
+  });
+  it('other text and Date values still take the Date round trip', () => {
+    expect(decodeRow(TABLE, record('2026-01-01 00:00:00+00')).due).toBe('2026-01-01T00:00:00.000Z');
+    expect(decodeRow(TABLE, record(new Date(Date.UTC(2026, 0, 2)))).due).toBe(
+      '2026-01-02T00:00:00.000Z'
+    );
+  });
+});

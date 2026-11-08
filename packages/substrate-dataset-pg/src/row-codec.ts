@@ -171,9 +171,15 @@ function readBack(kind: ColumnKind, v: string | number | boolean): unknown {
   return d.getUTCFullYear() <= 100 ? undefined : d.toISOString();
 }
 
+/** `utcTextSql(col, 'US')` output for a year 1 to 9999 instant. */
+const UTC_US_TEXT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
+
 /** A column value as pg returns it, in the JSON form a row carries: dates as `toISOString()`. */
 function canonical(kind: ColumnKind, value: unknown): unknown {
   if (kind !== 'date') return value;
+  // `utcTextSql`'s microsecond text: its first 23 characters plus `Z` are what the Date round trip
+  // prints (both truncate to the millisecond), at a fraction of the cost on a large read.
+  if (typeof value === 'string' && UTC_US_TEXT.test(value)) return `${value.slice(0, 23)}Z`;
   // `buildRowProjection` gives UTC text (`utcTextSql`), which reads the same in any session TimeZone;
   // a Date from a plain SELECT is TZ-dependent, as pg prints an old instant with an LMT offset.
   return (value instanceof Date ? value : new Date(String(value))).toISOString();
