@@ -21,13 +21,13 @@ import {
 } from './primitives.js';
 
 /**
- * The SELECT items carrying a read's row, `walk` (its walk selections, a jsonb
- * object) merged in. The caller selects the metadata columns.
+ * The SELECT items carrying a read's row, then `walk` (its walk selections'
+ * columns, from `buildWalkColumns`). The caller selects the metadata columns.
  *
  * For `decodeRow`: each column (of a requested field, when
  * `fields` is given), `orphaned` ones included (F35), a date column as UTC
  * text; then `extra AS extra`, whole, or its requested keys with `id` and
- * `$raw` kept. `walk` rides in `extra`, which `decodeRow` copies to the row.
+ * `$raw` kept.
  *
  * Keys are bound as parameters, never concatenated.
  */
@@ -45,7 +45,6 @@ export function buildRowProjection(
   for (const key of Object.keys(fields ?? {})) {
     if (!NON_BODY_FIELD_KEYS.has(key)) keys.add(key);
   }
-  const merged = (doc: Fragment): Fragment => (walk === null ? doc : sql`(${doc} || ${walk})`);
   const columns = table
     .columns()
     .filter((c) => fields === undefined || Object.hasOwn(fields, c.field))
@@ -60,7 +59,7 @@ export function buildRowProjection(
       ? sql.unsafe(`${q}extra`)
       : sql`COALESCE((SELECT jsonb_object_agg(e.key, e.value) FROM jsonb_each(${sql.unsafe(`${q}extra`)}) e WHERE e.key = ANY(${[...keys, RAW_KEY]}::text[])), '{}'::jsonb)`;
   const head = columns.length === 0 ? '' : `${columns.join(', ')}, `;
-  return sql`${sql.unsafe(head)}${merged(extra)} AS extra`;
+  return sql`${sql.unsafe(head)}${extra} AS extra${walk === null ? sql`` : sql`, ${walk}`}`;
 }
 
 /**

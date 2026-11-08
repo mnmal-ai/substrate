@@ -547,16 +547,96 @@ export function buildWalkProjection(
   return sql`(SELECT ${buildObject(sql, pairs)}${truncated} FROM (SELECT ${list} OFFSET 0) ${sql.unsafe(x)})`;
 }
 
+/** A top-level walk selection read as its own column: the `_agg` object, or one nested list. */
+export interface WalkColumn {
+  name: string;
+  column: string;
+  /** A nested list's limit: the column holds up to one row more. */
+  limit?: number;
+}
+
 /**
- * One nested selection for `scope`'s row: a jsonb array of up to `limit + 1`
- * far rows, each `id`, its selected fields (null when absent) and its own
- * walk selections; no `_metadata`.
+ * A row's top-level walk selections as their own SELECT items, beside `extra`:
+ * `_agg` as one jsonb object, each nested list as a json array of up to
+ * `limit + 1` rows. {@link mergeWalkColumns} cuts the lists and merges them
+ * into `extra` as {@link buildWalkProjection} does in SQL, which costs pg far
+ * more per row on a large read. Null when there are none.
+ */
+export function buildWalkColumns(
+  sql: Sql | TransactionSql,
+  aggs: Record<string, WalkAgg> | undefined,
+  nested: Record<string, NestedSelection>,
+  table: TypeTable,
+  scope: WalkScope
+): { select: Fragment; columns: WalkColumn[] } | null {
+  const columns: WalkColumn[] = [];
+  const items: Fragment[] = [];
+  if (aggs !== undefined) {
+    columns.push({ name: '_agg', column: '__walk_agg' });
+    items.push(sql`${buildWalkAggs(sql, aggs, table, scope)} AS __walk_agg`);
+  }
+  for (const [i, [name, sel]] of Object.entries(nested).entries()) {
+    const column = `__walk_${i}`;
+    columns.push(sel.limit === undefined ? { name, column } : { name, column, limit: sel.limit });
+    items.push(sql`${buildNested(sql, sel, table, scope, 'json')} AS ${sql.unsafe(column)}`);
+  }
+  if (items.length === 0) return null;
+  return { select: sql`${items.flatMap((f, i) => (i === 0 ? [f] : [sql`,`, f]))}`, columns };
+}
+
+/**
+ * `record` with its walk columns merged into `extra` as SQL's `extra || walk`
+ * would: each list cut to its limit, `_truncated` naming the lists that had
+ * more, the walk's keys winning, and every key in jsonb's order (shorter
+ * first, then bytewise), so `decodeRow` reads the row it did before.
+ */
+export function mergeWalkColumns<R extends { extra: Record<string, unknown> | null }>(
+  record: R,
+  columns: readonly WalkColumn[]
+): R {
+  const merged: Record<string, unknown> = { ...(record.extra ?? {}) };
+  let cut: Record<string, true> | undefined;
+  for (const c of columns) {
+    const v = (record as Record<string, unknown>)[c.column];
+    if (c.limit !== undefined && Array.isArray(v) && v.length > c.limit) {
+      merged[c.name] = v.slice(0, c.limit);
+      (cut ??= {})[c.name] = true;
+    } else {
+      merged[c.name] = v;
+    }
+  }
+  if (cut !== undefined) merged._truncated = jsonbOrdered(cut);
+  record.extra = jsonbOrdered(merged);
+  return record;
+}
+
+const ASCII = /^[\x00-\x7f]*$/;
+
+/** jsonb's object key order: shorter (in UTF-8 bytes) first, then bytewise. */
+export function jsonbKeyOrder(a: string, b: string): number {
+  if (ASCII.test(a) && ASCII.test(b)) return a.length - b.length || (a < b ? -1 : a > b ? 1 : 0);
+  const x = Buffer.from(a);
+  const y = Buffer.from(b);
+  return x.length - y.length || Buffer.compare(x, y);
+}
+
+function jsonbOrdered<T>(o: Record<string, T>): Record<string, T> {
+  const out: Record<string, T> = {};
+  for (const k of Object.keys(o).sort(jsonbKeyOrder)) out[k] = o[k] as T;
+  return out;
+}
+
+/**
+ * One nested selection for `scope`'s row: a jsonb array (or, with `as` json, a
+ * json array of jsonb objects) of up to `limit + 1` far rows, each `id`, its
+ * selected fields (null when absent) and its own walk selections; no `_metadata`.
  */
 export function buildNested(
   sql: Sql | TransactionSql,
   sel: NestedSelection,
   table: TypeTable,
-  scope: WalkScope
+  scope: WalkScope,
+  as: 'json' | 'jsonb' = 'jsonb'
 ): Fragment {
   const alias = scope.nextAlias();
   const a = sql.unsafe(alias);
@@ -603,5 +683,6 @@ export function buildNested(
   const sub = buildWalkProjection(sql, subAggs, subNested, farTable, farScope);
   const row = sub === null ? obj : sql`${obj} || ${sub}`;
   // The LIMIT is on the order itself, so an index in that order stops after it.
-  return sql`(SELECT COALESCE(jsonb_agg(${row} ORDER BY ${orderBy}), '[]'::jsonb) FROM (SELECT ${a}.* FROM ${sql.unsafe(from)} ${a} WHERE ${combineAnd(sql, [cond, ...filters])} ORDER BY ${orderBy} ${limit}) ${a})`;
+  const agg = sql.unsafe(as === 'json' ? 'json_agg' : 'jsonb_agg');
+  return sql`(SELECT COALESCE(${agg}(${row} ORDER BY ${orderBy}), ${sql.unsafe(`'[]'::${as}`)}) FROM (SELECT ${a}.* FROM ${sql.unsafe(from)} ${a} WHERE ${combineAnd(sql, [cond, ...filters])} ORDER BY ${orderBy} ${limit}) ${a})`;
 }
