@@ -1,6 +1,6 @@
 # substrate
 
-An agent-first typed-data server. Plugins declare namespaces and types; the engine resolves qualified frames (`<namespace>/<Type>`) over Postgres or memory. The README's *Layout* section maps every package, and CONTRIBUTING.md covers PRs and labels.
+An agent-first typed-data server. Plugins declare namespaces and types; the engine resolves qualified frames (`<namespace>/<Type>`) over Postgres or memory. The README's *Layout* section maps every package.
 
 ## Layout
 

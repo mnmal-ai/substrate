@@ -1,0 +1,48 @@
+name: Bug
+description: Something substrate does wrong. Write it so an agent can reproduce it without asking.
+labels: [fix]
+body:
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+      description: What you saw, including the `errors` array of the response, not just its status.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce it
+      description: The smallest frame, request or script that shows it, with the types it needs. Use example data, never real records.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `substrate --version`, or the `@mnmal-ai/substrate` version you depend on.
+    validations:
+      required: true
+  - type: dropdown
+    id: store
+    attributes:
+      label: Store
+      options:
+        - Postgres
+        - Memory
+        - Not relevant
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Server log lines around the failure, if you have them.
+      render: text
