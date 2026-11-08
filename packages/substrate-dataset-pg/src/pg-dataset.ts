@@ -123,6 +123,8 @@ import {
   type Fragment,
   idToText,
   normalizeOrderBy,
+  readsRowMetadata,
+  readsShortId,
   resolveBodyOrderByCast,
   whereReferencesField
 } from './pg-sql.js';
@@ -971,13 +973,19 @@ export class PgDataset implements Dataset {
     const inlineLimit = (n: number | undefined): Fragment =>
       n !== undefined ? sql.unsafe(`LIMIT ${BigInt(n)}`) : sql``;
     // One page query: phase 1 with the cursor compare, or the null tail.
+    // A read that names its fields gets the metadata columns and short_ids
+    // lookup only when it asks for them; the transport would drop them anyway.
+    const withMeta = readsRowMetadata(params.fields);
+    const withShortId = readsShortId(params.fields);
+    const metaColumns = withMeta
+      ? sql`, r.created_at, r.updated_at,
+                 r.created_by_kind, r.created_by_id,
+                 r.updated_by_kind, r.updated_by_id, r.seq`
+      : sql``;
     const statement = (where: Fragment, n: number | undefined) =>
       joinShortIds
         ? sql`
-          SELECT r.id, ${rowProjection}, r.deleted_at, s.short_id,
-                 r.created_at, r.updated_at,
-                 r.created_by_kind, r.created_by_id,
-                 r.updated_by_kind, r.updated_by_id, r.seq${sortKeyProjection}
+          SELECT r.id, ${rowProjection}, r.deleted_at, s.short_id${metaColumns}${sortKeyProjection}
           FROM ${from}
           LEFT JOIN short_ids s
             ON ${ownerOn}
@@ -987,23 +995,24 @@ export class PgDataset implements Dataset {
           ${n !== undefined ? sql`LIMIT ${n}` : sql``}
         `
         : sql`
-          SELECT p.*, s.short_id
+          SELECT p.*${withShortId ? sql`, s.short_id` : sql``}
           FROM (
-            SELECT r.id, ${rowProjection}, r.deleted_at,
-                   r.created_at, r.updated_at,
-                   r.created_by_kind, r.created_by_id,
-                   r.updated_by_kind, r.updated_by_id, r.seq,
+            SELECT r.id, ${rowProjection}, r.deleted_at${metaColumns},
                    ${owner}${sortKeyProjection}
             FROM ${from}
             WHERE ${where}
             ${orderBySql}
             ${inlineLimit(n)}
           ) p
-          LEFT JOIN LATERAL (
+          ${
+            withShortId
+              ? sql`LEFT JOIN LATERAL (
             SELECT s.short_id FROM short_ids s
             WHERE s.namespace = p.namespace AND s.type = p.type AND s.row_id = p.id
             LIMIT 1
-          ) s ON true
+          ) s ON true`
+              : sql``
+          }
           ${buildProjectedOrderBy(sql, orderBy, sortKeyAliases, orderByCastFor, table, 'p')}
         `;
     // The CTEs ride in front only when there are any, so a plain read's text
@@ -2432,7 +2441,8 @@ export class PgDataset implements Dataset {
       out.shortId = Number(record.short_id);
     }
 
-    const meta = assembleRowMetadata(record);
+    // The read selected the metadata columns only if the projection asks for them.
+    const meta = readsRowMetadata(requested) ? assembleRowMetadata(record) : undefined;
     if (meta !== undefined) out._metadata = meta;
 
     if (requested === undefined) return out;

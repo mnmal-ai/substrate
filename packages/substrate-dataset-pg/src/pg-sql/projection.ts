@@ -3,7 +3,12 @@
  * metadata columns fold back into the `RowMetadata` shape callers see.
  */
 
-import type { ActorIdentity, ReadParams, RowMetadata } from '@mnmal-ai/substrate-types';
+import {
+  type ActorIdentity,
+  METADATA_FILTER_FIELDS,
+  type ReadParams,
+  type RowMetadata
+} from '@mnmal-ai/substrate-types';
 import type { ISql, Sql, TransactionSql } from 'postgres';
 import { RAW_KEY } from '../row-codec.js';
 import type { TypeTable } from '../type-table.js';
@@ -82,6 +87,24 @@ function join(parts: Fragment[], sep: Fragment): Fragment[] {
     out.push(p);
   }
   return out;
+}
+
+/** Projection keys that read row metadata: `_metadata`, the author names, and the metadata columns. */
+const METADATA_KEYS = new Set([
+  '_metadata',
+  'createdBy',
+  'updatedBy',
+  ...Object.keys(METADATA_FILTER_FIELDS).filter((k) => k !== 'id')
+]);
+
+/** True unless `fields` lists its keys and none of them reads row metadata. */
+export function readsRowMetadata(fields: ReadParams['fields']): boolean {
+  return fields === undefined || Object.keys(fields).some((k) => METADATA_KEYS.has(k));
+}
+
+/** True unless `fields` lists its keys without `shortId`. */
+export function readsShortId(fields: ReadParams['fields']): boolean {
+  return fields === undefined || Object.hasOwn(fields, 'shortId');
 }
 
 export function assembleRowMetadata(record: {
