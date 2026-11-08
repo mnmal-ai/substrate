@@ -21,13 +21,13 @@ import {
 } from './primitives.js';
 
 /**
- * The SELECT items carrying a read's row, `walk` (its walk selections, a jsonb
- * object) merged in. The caller selects the metadata columns.
+ * The SELECT items carrying a read's row, then `walk` (its walk selections'
+ * columns, from `buildWalkColumns`). The caller selects the metadata columns.
  *
  * For `decodeRow`: each column (of a requested field, when
  * `fields` is given), `orphaned` ones included (F35), a date column as UTC
  * text; then `extra AS extra`, whole, or its requested keys with `id` and
- * `$raw` kept. `walk` rides in `extra`, which `decodeRow` copies to the row.
+ * `$raw` kept.
  *
  * Keys are bound as parameters, never concatenated.
  */
@@ -45,7 +45,6 @@ export function buildRowProjection(
   for (const key of Object.keys(fields ?? {})) {
     if (!NON_BODY_FIELD_KEYS.has(key)) keys.add(key);
   }
-  const merged = (doc: Fragment): Fragment => (walk === null ? doc : sql`(${doc} || ${walk})`);
   const columns = table
     .columns()
     .filter((c) => fields === undefined || Object.hasOwn(fields, c.field))
@@ -54,14 +53,20 @@ export function buildRowProjection(
       // `decodeRow` reads a date column's text the same in any session TimeZone.
       return c.kind === 'date' ? `${utcTextSql(col, 'US')} AS ${c.column}` : col;
     });
-  // One pass over `extra` (it may be TOASTed), not one extraction per key.
+  // A small (inline, uncompressed) `extra` is probed per requested key; a larger one is
+  // TOASTed or compressed, so it gets one pass instead of one detoast per key.
+  const ex: Fragment = sql.unsafe(`${q}extra`);
+  const wanted = [...keys, RAW_KEY];
   const extra: Fragment =
     fields === undefined
-      ? sql.unsafe(`${q}extra`)
-      : sql`COALESCE((SELECT jsonb_object_agg(e.key, e.value) FROM jsonb_each(${sql.unsafe(`${q}extra`)}) e WHERE e.key = ANY(${[...keys, RAW_KEY]}::text[])), '{}'::jsonb)`;
+      ? ex
+      : sql`COALESCE(CASE WHEN pg_column_size(${ex}) < ${sql.unsafe(String(INLINE_EXTRA_BYTES))} THEN (SELECT jsonb_object_agg(k, ${ex} -> k) FROM unnest(${wanted}::text[]) k WHERE ${ex} ? k) ELSE (SELECT jsonb_object_agg(e.key, e.value) FROM jsonb_each(${ex}) e WHERE e.key = ANY(${wanted}::text[])) END, '{}'::jsonb)`;
   const head = columns.length === 0 ? '' : `${columns.join(', ')}, `;
-  return sql`${sql.unsafe(head)}${merged(extra)} AS extra`;
+  return sql`${sql.unsafe(head)}${extra} AS extra${walk === null ? sql`` : sql`, ${walk}`}`;
 }
+
+/** Below pg's TOAST threshold (~2 kB), a jsonb value is stored inline and uncompressed. */
+const INLINE_EXTRA_BYTES = 2000;
 
 /**
  * A jsonb object from `'k'::text, <value>` pairs (the output key needs

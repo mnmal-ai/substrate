@@ -95,7 +95,8 @@ import {
   buildFrameAggregate,
   buildFrameCount,
   buildWalkAgg,
-  buildWalkProjection,
+  buildWalkColumns,
+  mergeWalkColumns,
   prepareWindows
 } from './pg-sql/aggregate.js';
 import { fieldExprSql, sqlStringLiteral } from './pg-sql/primitives.js';
@@ -933,12 +934,12 @@ export class PgDataset implements Dataset {
 
     // Ships only the requested top-level body keys when `fields` is given,
     // else the full body.
-    // Walk selections ride in the body, so `materialize` lifts them to the row.
-    const walkProjection =
+    // Walk selections come back as their own columns, merged into the body before `materialize`.
+    const walk =
       scope === undefined
         ? null
-        : buildWalkProjection(sql, frameAggs, params.nested ?? {}, table, scope);
-    const rowProjection = buildRowProjection(sql, table, params.fields, 'r', walkProjection);
+        : buildWalkColumns(sql, frameAggs, params.nested ?? {}, table, scope);
+    const rowProjection = buildRowProjection(sql, table, params.fields, 'r', walk?.select ?? null);
 
     // Projects each sort key so the cursor value comes from the same
     // expression that sorted. A promoted field sorts on its column but
@@ -1043,7 +1044,14 @@ export class PgDataset implements Dataset {
     }
 
     const fields = this.#typeDefLookup?.(type, this.namespace)?.fields;
-    const materialised = rows.map((r) => this.materialize(r, fields, table, params.fields));
+    const materialised = rows.map((r) =>
+      this.materialize(
+        walk === null ? r : mergeWalkColumns(r, walk.columns),
+        fields,
+        table,
+        params.fields
+      )
+    );
     let hasMore = false;
     let sliced = materialised;
     if (limit !== undefined && materialised.length > limit) {
