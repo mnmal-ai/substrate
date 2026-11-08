@@ -1,8 +1,7 @@
 name: PR hygiene
 
 # Every PR carries at least one Area label, exactly one Type label, exactly one
-# Priority label, and an assignee. CONTRIBUTING.md describes the labels.
-# Contributors without triage access cannot set these; a maintainer does.
+# Priority label, and an assignee.
 
 on:
   pull_request:

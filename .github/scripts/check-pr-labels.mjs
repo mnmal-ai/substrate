@@ -2,10 +2,10 @@
  * PR-hygiene gate: every PR carries at least one Area label, exactly one Type
  * label, exactly one Priority label, and at least one assignee.
  *
- * Backs the `PR hygiene` GitHub Actions workflow; CONTRIBUTING.md describes the
- * labels. Type, Priority and Status are closed sets. Area is intentionally open: any
- * label that is not a Type, Priority, or Status label counts as an Area, so new
- * subsystem labels work without editing this file.
+ * Backs the `PR hygiene` GitHub Actions workflow. Type, Priority and Status are
+ * closed sets. Area is intentionally open: any label that is not a Type, Priority,
+ * or Status label counts as an Area, so new subsystem labels work without editing
+ * this file.
  *
  * CLI usage (in CI): reads `PR_LABELS` + `PR_ASSIGNEES` as JSON arrays from the
  * environment, prints a report, and exits non-zero on any violation.
@@ -30,7 +30,7 @@ export function evaluatePrHygiene({ labels, assignees }) {
   const errors = [];
   if (areas.length < 1) {
     errors.push(
-      `Missing an Area label (need ≥1, the package the PR touches, named without the @mnmal-ai/ scope, or repo). See CONTRIBUTING.md.`
+      `Missing an Area label (need ≥1, the package the PR touches, named without the @mnmal-ai/ scope, or repo).`
     );
   }
   if (types.length !== 1) {
