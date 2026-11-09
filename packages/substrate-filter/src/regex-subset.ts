@@ -17,15 +17,22 @@
  * (Postgres by default, JavaScript under the `s` flag), so JavaScript compiles
  * it with flags `us`; every accepted pattern constructs under `new RegExp(p, 'us')`.
  *
+ * Bounded for linear-ish matching: a pattern is at most 256 code points, and a
+ * quantifier may not apply to a group that itself contains a quantifier or an
+ * alternation (star height at most 1), so `(a+)+`, `(a|aa)*` and `(?:a*)*` are refused.
+ *
  * Refused: classes such as `\d`, backreferences, lookaround, inline flags,
  * lazy quantifiers, POSIX bracket classes, quantified anchors, newlines.
  */
 const MAX_REPEAT = 255;
+const MAX_PATTERN = 256;
 
 export function checkRegexSubset(pattern: string): string | null {
   if (/[\r\n]/.test(pattern)) return 'a newline is not allowed in a pattern';
   const cps = Array.from(pattern);
+  if (cps.length > MAX_PATTERN) return `a pattern longer than ${MAX_PATTERN} code points`;
   let i = 0;
+  let marks = 0; // quantifiers and alternations seen so far
   const fail = (why: string): never => {
     throw new RegexRefusal(`${why} at position ${i}`);
   };
@@ -37,6 +44,7 @@ export function checkRegexSubset(pattern: string): string | null {
     seq(depth);
     while (cps[i] === '|') {
       i++;
+      marks++;
       seq(depth);
     }
   };
@@ -45,6 +53,8 @@ export function checkRegexSubset(pattern: string): string | null {
       const c = cps[i];
       if (c === undefined || c === '|' || (c === ')' && depth > 0)) return;
       let quantifiable = true;
+      let before = marks;
+      let group = false;
       if (c === '(') {
         i++;
         if (cps[i] === '?') {
@@ -52,6 +62,8 @@ export function checkRegexSubset(pattern: string): string | null {
             fail('only the non-capturing group (?: is allowed after (?');
           i += 2;
         }
+        before = marks;
+        group = true;
         alt(depth + 1);
         if (cps[i] !== ')') fail('unclosed group');
         i++;
@@ -71,10 +83,12 @@ export function checkRegexSubset(pattern: string): string | null {
       } else {
         i++;
       }
-      quant(quantifiable);
+      const risky = group && marks > before;
+      if (quant(quantifiable) && risky)
+        fail('a quantifier on a group that contains a quantifier or alternation');
     }
   };
-  const quant = (quantifiable: boolean): void => {
+  const quant = (quantifiable: boolean): boolean => {
     const c = cps[i];
     if (c === '*' || c === '+' || c === '?') i++;
     else if (c === '{') {
@@ -86,11 +100,13 @@ export function checkRegexSubset(pattern: string): string | null {
         if (m[3] && Number(m[3]) < Number(m[1])) fail('{n,m} with m below n');
         i += m[0].length;
       }
-    } else return;
+    } else return false;
+    marks++;
     if (!quantifiable) fail('an anchor cannot be quantified');
     const n = cps[i];
     if (n === '?') fail('lazy quantifiers are not allowed');
     if (n === '*' || n === '+' || n === '{') fail('a quantifier cannot follow a quantifier');
+    return true;
   };
   const cls = (): void => {
     i++;

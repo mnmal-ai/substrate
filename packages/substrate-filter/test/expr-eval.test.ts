@@ -15,6 +15,23 @@ describe('evalExpr', () => {
     expect(() => evalExpr({ mul: ['a', 2] }, { a: 9223372036854775807n })).toThrow(RangeError);
     expect(() => evalExpr({ neg: ['a'] }, { a: -(2n ** 63n) })).toThrow(RangeError);
   });
+  it('throws RangeError on int64 sub overflow', () => {
+    expect(() => evalExpr({ sub: ['a', 1] }, { a: -(2n ** 63n) })).toThrow(RangeError);
+  });
+  it('refuses a LIKE pattern ending in an escape', () => {
+    expect(() => evalExpr({ like: [{ lit: 'a' }, { lit: 'a\\' }] }, {})).toThrow(
+      'LIKE pattern must not end with escape character'
+    );
+  });
+  it('matches LIKE with many wildcards without blowing up', () => {
+    const pattern = `${'%a'.repeat(30)}b`;
+    expect(evalExpr({ like: [{ lit: 'a'.repeat(5000) }, { lit: pattern }] }, {})).toBe(false);
+  });
+  it('does not resolve bare strings through the prototype chain', () => {
+    expect(evalExpr('constructor', {})).toBeNull();
+    expect(evalExpr('constructor', {}, { output: {} })).toBeNull();
+    expect(evalExpr({ eq: ['constructor', 1] }, {})).toBeNull();
+  });
   it('reads bare strings from the output first, then the row', () => {
     expect(evalExpr('a', { a: 1 }, { output: { a: 2 } })).toBe(2);
     expect(evalExpr('a', { a: 1 }, { output: { b: 2 } })).toBe(1);

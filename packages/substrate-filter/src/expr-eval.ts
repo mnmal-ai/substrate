@@ -19,40 +19,83 @@ const int64 = (n: bigint): bigint => {
   return n;
 };
 
-const regexCache = new Map<string, RegExp>();
-function compile(pattern: string): RegExp {
-  let re = regexCache.get(pattern);
-  if (!re) {
-    const bad = checkRegexSubset(pattern);
-    if (bad) throw new Error(`invalid regex: ${bad}`);
-    re = new RegExp(pattern, 'us');
-    regexCache.set(pattern, re);
-  }
-  return re;
-}
-
-const likeCache = new Map<string, RegExp>();
-function likeRegex(pattern: string): RegExp {
-  let re = likeCache.get(pattern);
-  if (!re) {
-    let src = '';
-    const cps = Array.from(pattern);
-    for (let i = 0; i < cps.length; i++) {
-      const c = cps[i] as string;
-      if (c === '\\' && i + 1 < cps.length) src += escapeRe(cps[++i] as string);
-      else if (c === '%') src += '.*';
-      else if (c === '_') src += '.';
-      else src += escapeRe(c);
+/** A small Map-based LRU: bounded so caller-supplied patterns cannot grow memory. */
+function lru<V>(max: number, make: (k: string) => V): (k: string) => V {
+  const m = new Map<string, V>();
+  return (k) => {
+    let v = m.get(k);
+    if (v !== undefined) m.delete(k);
+    else {
+      v = make(k);
+      if (m.size >= max) m.delete(m.keys().next().value as string);
     }
-    re = new RegExp(`^${src}$`, 'us');
-    likeCache.set(pattern, re);
-  }
-  return re;
+    m.set(k, v);
+    return v;
+  };
 }
-const escapeRe = (c: string): string => c.replace(/[\\^$.*+?()[\]{}|/]/g, '\\$&');
 
-/** The replacement's `\1`-`\9` as group references; `\\` is a backslash; everything else is literal. */
-function expandReplacement(rep: string, groups: (string | undefined)[]): string {
+const compile = lru(256, (pattern) => {
+  const bad = checkRegexSubset(pattern);
+  if (bad) throw new Error(`invalid regex: ${bad}`);
+  return new RegExp(pattern, 'us');
+});
+
+type LikeToken = '%' | '_' | { lit: string };
+
+function likeTokens(pattern: string): LikeToken[] {
+  const cps = Array.from(pattern);
+  const out: LikeToken[] = [];
+  for (let i = 0; i < cps.length; i++) {
+    const c = cps[i] as string;
+    if (c === '\\') {
+      if (i + 1 >= cps.length) throw new Error('LIKE pattern must not end with escape character');
+      out.push({ lit: cps[++i] as string });
+    } else if (c === '%' || c === '_') out.push(c);
+    else out.push({ lit: c });
+  }
+  return out;
+}
+
+/** Linear-time-ish wildcard match (backtracks only to the last `%`), over code points. */
+function likeMatch(text: string, pattern: string): boolean {
+  const toks = likeTokens(pattern);
+  const t = Array.from(text);
+  let ti = 0;
+  let pi = 0;
+  let star = -1;
+  let mark = 0;
+  while (ti < t.length) {
+    const tok = toks[pi];
+    if (tok === '%') {
+      star = pi++;
+      mark = ti;
+    } else if (tok !== undefined && (tok === '_' || tok.lit === t[ti])) {
+      pi++;
+      ti++;
+    } else if (star >= 0) {
+      pi = star + 1;
+      ti = ++mark;
+    } else return false;
+  }
+  while (toks[pi] === '%') pi++;
+  return pi === toks.length;
+}
+
+/** Case-map per code point, leaving a character whose mapping changes the code point count (as Postgres does). */
+const mapCase = (s: string, f: (c: string) => string): string =>
+  Array.from(s, (c) => {
+    const m = f(c);
+    return Array.from(m).length === 1 ? m : c;
+  }).join('');
+
+/** The derive guard: a non-finite or out-of-range (beyond 1e300 or below 1e-300) number is null. */
+const guard = (v: number, underflowed = false): number | null => {
+  const m = Math.abs(v);
+  return Number.isFinite(v) && m <= 1e300 && (m >= 1e-300 || (v === 0 && !underflowed)) ? v : null;
+};
+
+/** The replacement's `\1`-`\9` as group references, `\&` as the whole match; `\\` is a backslash; everything else is literal. */
+function expandReplacement(rep: string, whole: string, groups: (string | undefined)[]): string {
   let out = '';
   const cps = Array.from(rep);
   for (let i = 0; i < cps.length; i++) {
@@ -60,6 +103,9 @@ function expandReplacement(rep: string, groups: (string | undefined)[]): string 
     const next = cps[i + 1];
     if (c === '\\' && next !== undefined && /[1-9]/.test(next)) {
       out += groups[Number(next) - 1] ?? '';
+      i++;
+    } else if (c === '\\' && next === '&') {
+      out += whole;
       i++;
     } else if (c === '\\' && next === '\\') {
       out += '\\';
@@ -123,7 +169,7 @@ function extract(unit: string, d: Date): number {
     case 'minute':
       return d.getUTCMinutes();
     default:
-      return d.getUTCSeconds();
+      return d.getUTCSeconds() + d.getUTCMilliseconds() / 1000;
   }
 }
 
@@ -139,7 +185,12 @@ const ARITH: Record<string, [Arith, (a: number, b: number) => number]> = {
 export function evalExpr(expr: Expr, row: Record<string, unknown>, env: EvalEnv = {}): unknown {
   if (expr === null) return null;
   if (typeof expr === 'string') {
-    const v = env.output && expr in env.output ? env.output[expr] : row[expr];
+    const v =
+      env.output && Object.hasOwn(env.output, expr)
+        ? env.output[expr]
+        : Object.hasOwn(row, expr)
+          ? row[expr]
+          : null;
     if (v === undefined || v === null) return null;
     return v instanceof Date ? v.toISOString() : v;
   }
@@ -206,10 +257,10 @@ export function evalExpr(expr: Expr, row: Record<string, unknown>, env: EvalEnv 
     case 'sub':
     case 'mul': {
       const [big, num] = ARITH[key] as NonNullable<(typeof ARITH)[string]>;
-      return arith(args, vals, big, num);
+      return arith(args, vals, big, num, key === 'mul');
     }
     case 'div':
-      return Number(b) === 0 ? null : Number(a) / Number(b);
+      return Number(b) === 0 ? null : guard(Number(a) / Number(b), Number(a) !== 0);
     case 'mod':
       if (Number(b) === 0) return null;
       return arith(
@@ -219,7 +270,7 @@ export function evalExpr(expr: Expr, row: Record<string, unknown>, env: EvalEnv 
         (x, y) => x % y
       );
     case 'neg':
-      return typeof a === 'bigint' ? int64(-a) : -a;
+      return typeof a === 'bigint' ? int64(-a) : guard(-a);
     case 'eq':
       return !(a < b) && !(a > b);
     case 'neq':
@@ -237,13 +288,13 @@ export function evalExpr(expr: Expr, row: Record<string, unknown>, env: EvalEnv 
     case 'length':
       return Array.from(a as string).length;
     case 'lower':
-      return (a as string).toLowerCase();
+      return mapCase(a as string, (x) => x.toLowerCase());
     case 'upper':
-      return (a as string).toUpperCase();
+      return mapCase(a as string, (x) => x.toUpperCase());
     case 'substring': {
       // Positions p with start <= p < start + len, p >= 1, as in Postgres.
-      const start = Math.round(b);
-      const end = start + Math.round(c);
+      const start = Math.round(Number(b));
+      const end = start + Math.round(Number(c));
       return Array.from(a as string)
         .slice(Math.max(start, 1) - 1, Math.max(end - 1, 0))
         .join('');
@@ -251,9 +302,9 @@ export function evalExpr(expr: Expr, row: Record<string, unknown>, env: EvalEnv 
     case 'concat':
       return vals.join('');
     case 'like':
-      return likeRegex(b).test(a);
+      return likeMatch(a, b);
     case 'notLike':
-      return !likeRegex(b).test(a);
+      return !likeMatch(a, b);
     case 'regexpMatch':
       return compile(b).test(a);
     case 'regexpReplace':
@@ -262,7 +313,7 @@ export function evalExpr(expr: Expr, row: Record<string, unknown>, env: EvalEnv 
           1,
           m.findIndex((x) => typeof x === 'number')
         ) as (string | undefined)[];
-        return expandReplacement(c, groups);
+        return expandReplacement(c, m[0] as string, groups);
       });
     default:
       throw new Error(`unknown function '${key}'`);
@@ -274,13 +325,14 @@ function arith(
   args: Expr[],
   vals: unknown[],
   big: Arith,
-  num: (a: number, b: number) => number
-): bigint | number {
+  num: (a: number, b: number) => number,
+  mulUnderflow = false
+): bigint | number | null {
   const [a, b] = vals as [bigint | number, bigint | number];
   const lift = (v: bigint | number, e: Expr, other: unknown): bigint | number =>
     typeof v === 'number' && typeof other === 'bigint' && isSafeIntLiteral(e) ? BigInt(v) : v;
   const x = lift(a, args[0] as Expr, b);
   const y = lift(b, args[1] as Expr, a);
   if (typeof x === 'bigint' && typeof y === 'bigint') return int64(big(x, y));
-  return num(Number(x), Number(y));
+  return guard(num(Number(x), Number(y)), mulUnderflow && Number(x) !== 0 && Number(y) !== 0);
 }

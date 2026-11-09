@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { checkRegexSubset } from '../src/regex-subset.js';
 
 const ACCEPTED = [
+  '(?:ab)+',
+  '(a|b)',
+  '(a+)b',
+  'a'.repeat(256),
   '^https?://(?:www\\.)?([^/]+)/.*$',
   'a|b',
   '[a-z]+',
@@ -16,6 +20,11 @@ const ACCEPTED = [
   '[\u{1F600}-\u{1F602}]'
 ];
 const REFUSED = [
+  '(a+)+',
+  '(a|aa)*',
+  '(?:a*)*',
+  '((a)b?)*',
+  'a'.repeat(257),
   '\\d',
   '(?=x)',
   '(?<=x)',

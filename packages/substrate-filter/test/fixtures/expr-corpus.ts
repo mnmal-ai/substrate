@@ -202,6 +202,50 @@ export const EXPR_CORPUS: ExprCase[] = [
   { name: 'coalesce', expr: { coalesce: [null, 2] }, row, expected: 2 },
   { name: 'coalesce of all null', expr: { coalesce: [null, 'n'] }, row, expected: null },
   {
+    name: 'substring with an int64 start',
+    expr: { substring: [lit('abc'), 'i', 1] },
+    row: { i: 2n },
+    expected: 'b'
+  },
+  {
+    name: 'substring with a negative length',
+    expr: { substring: [lit('abc'), 1, -1] },
+    row,
+    expected: ''
+  },
+  {
+    name: 'extract second keeps fractions',
+    expr: { extract: [lit('second'), 'd'] },
+    row: { d: '2013-07-17T10:11:12.500Z' },
+    expected: 12.5
+  },
+  {
+    name: 'regexpReplace \\& is the whole match',
+    expr: { regexpReplace: [lit('ab'), lit('a'), lit('x\\&y')] },
+    row,
+    expected: 'xayb'
+  },
+  {
+    name: 'upper leaves a character whose mapping changes length',
+    expr: { upper: [lit('ß')] },
+    row,
+    expected: 'ß'
+  },
+  {
+    name: 'a field named like a prototype member is null',
+    expr: { isNull: ['constructor'] },
+    row,
+    expected: true
+  },
+  {
+    name: 'mul overflowing to infinity is null',
+    expr: { mul: [1e200, 1e200] },
+    row,
+    expected: null
+  },
+  { name: 'div underflowing is null', expr: { div: [1e-200, 1e200] }, row, expected: null },
+  { name: 'mod by zero is null', expr: { mod: ['x', 0] }, row, expected: null },
+  {
     name: 'int64 literal',
     expr: { add: [{ int64: '435090932899640449' }, 1] },
     row,
