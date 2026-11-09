@@ -13,6 +13,7 @@ import {
   escapeLike,
   type Fragment,
   fieldExpr,
+  likeFragment,
   notNullAnd,
   qualifier,
   sqlStringLiteral,
@@ -232,6 +233,15 @@ export function buildColumnPredicate(
         fragments.push(sql`${fieldExpr(sql, table, field, 'rawText', alias)} ILIKE ${pattern}`);
         break;
       }
+      case 'like':
+      case 'notLike':
+        // As contains: only a string value can match.
+        fragments.push(
+          as !== 'text' && as !== 'date'
+            ? sql`FALSE`
+            : likeFragment(sql, fieldExpr(sql, table, field, 'rawText', alias), field, op, operand)
+        );
+        break;
       case 'has':
         // List membership: a scalar column is never a list.
         fragments.push(sql`FALSE`);

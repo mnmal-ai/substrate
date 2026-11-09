@@ -15,6 +15,7 @@
 
 import type { ActorIdentity, Id, Row, WriteRow } from './core.js';
 import type { EdgesStore } from './edge.js';
+import type { Expr } from './expression.js';
 import type { IndexDecl } from './plugin.js';
 import type { TypeStats } from './runtime-metrics.js';
 
@@ -182,6 +183,8 @@ export interface ReadParams {
   aggregate?: Record<string, FrameAgg>;
   bucket?: BucketSpec;
   derive?: Record<string, DeriveSpec>;
+  /** Computed per-row values by output name: each row gains one key per entry, which `orderBy` may use. */
+  select?: Record<string, Expr>;
   /** Per-row walk aggregates, lifted out of `fields` by the list resolver. */
   agg?: Record<string, WalkAgg>;
   /** Per-row nested selections, lifted out of `fields` by the list resolver. */

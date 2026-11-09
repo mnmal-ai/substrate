@@ -40,6 +40,8 @@ export const STRING_OPS: readonly string[] = [
   'contains',
   'startsWith',
   'endsWith',
+  'like',
+  'notLike',
   'in',
   'nin'
 ];

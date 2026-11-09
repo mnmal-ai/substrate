@@ -25,9 +25,11 @@ import {
   decodeCursor,
   type ExtensionOpResultMeta,
   encodeCursor,
+  evalExpr,
   evaluateWhere,
   type FieldDefOf,
   fieldRequested,
+  fieldTypeLookup,
   fullBuiltinOperators,
   getFieldValue,
   hop,
@@ -36,7 +38,8 @@ import {
   preResolveExtensionOperatorsDetailed,
   storedMicros,
   WALK_EVALUATION_BUDGET,
-  type WalkContext
+  type WalkContext,
+  walkAggExprType
 } from '@mnmal-ai/substrate-filter';
 import type {
   ActorIdentity,
@@ -352,6 +355,39 @@ export class MemoryDataset implements Dataset {
       });
     }
 
+    // `select` values ride on row copies under their names, so ordering and the
+    // cursor read them as fields; the page returns the originals plus the values.
+    const selected = new Map<Row, Record<string, unknown>>();
+    const select = params.select;
+    if (select !== undefined) {
+      const entries = Object.entries(select);
+      const fieldType = fieldTypeLookup(fieldDefOf);
+      // One lookup for the whole read: the evaluator caches each node's type against it.
+      const typeOf = (name: string) => {
+        if (!name.startsWith('_agg.')) return fieldType(name);
+        const spec = frameAggs?.[name.slice(5)];
+        return spec === undefined
+          ? undefined
+          : walkAggExprType(spec, type, (t, f) => lookup?.(t, f));
+      };
+      const text = JSON.stringify(select);
+      const aggRefs = Object.keys(frameAggs ?? {}).filter((n) => text.includes(`"_agg.${n}"`));
+      pool = pool.map((row) => {
+        const ctx = ctxFor(row);
+        // A bare `_agg.<name>` reads the row's frame aggregate.
+        const output: Record<string, unknown> = {};
+        for (const name of aggRefs) output[`_agg.${name}`] = ctx.aggValue?.(name);
+        const values: Record<string, unknown> = {};
+        for (const [name, expr] of entries) {
+          values[name] = evalExpr(expr, row, { output, fieldType: typeOf }) ?? null;
+        }
+        const copy: Row = { ...row, ...values };
+        original.set(copy, original.get(row) ?? row);
+        selected.set(copy, values);
+        return copy;
+      });
+    }
+
     // OrderBy — always append implicit `{ id: 'asc' }` as final tie-breaker so
     // the cursor tuple is deterministic. If the caller supplied orderBy on id
     // explicitly we honour it and skip the append.
@@ -386,15 +422,19 @@ export class MemoryDataset implements Dataset {
     const page = (rows: Row[]): Row[] => {
       const base = original.size === 0 ? rows : rows.map((r) => original.get(r) ?? r);
       // Last, so the walk memo (keyed by the stored row) still hits.
-      if (params.agg === undefined && params.nested === undefined) {
-        return base.map((r) => withoutNullColumns(columns, r));
-      }
-      return base.map((r) =>
-        withoutNullColumns(columns, {
-          ...r,
-          ...walkProjection(r, params.agg, params.nested ?? {}, ctxFor(r), true)
-        })
-      );
+      const out =
+        params.agg === undefined && params.nested === undefined
+          ? base.map((r) => withoutNullColumns(columns, r))
+          : base.map((r) =>
+              withoutNullColumns(columns, {
+                ...r,
+                ...walkProjection(r, params.agg, params.nested ?? {}, ctxFor(r), true)
+              })
+            );
+      // A select value is a computed key, never a stored column.
+      return selected.size === 0
+        ? out
+        : out.map((r, i) => ({ ...r, ...selected.get(rows[i] as Row) }));
     };
     // nextCursor is derived from the DATASET-ordered slice (the sorted pool),
     // before any relevance reorder — cursor pagination must keep dataset

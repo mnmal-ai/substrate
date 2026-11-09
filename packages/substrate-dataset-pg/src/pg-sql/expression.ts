@@ -13,7 +13,7 @@ import { type FieldAs, type Fragment, fieldExprSql } from './primitives.js';
 
 export interface CompileCtx {
   table: TypeTable;
-  alias: string;
+  alias?: string;
   /** Group and aggregate names, which a bare string resolves to before a row field. */
   outputs?: Map<string, Fragment>;
   /** The type of a bare string a column does not declare (a pending field, an output). */

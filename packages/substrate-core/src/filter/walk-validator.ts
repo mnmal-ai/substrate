@@ -8,7 +8,16 @@
  * as a top-level read of that type would be.
  */
 
-import type { FieldDef, FieldKind, TypeSchema, WalkNode } from '@mnmal-ai/substrate-types';
+import { checkExpr, type ExprScope, exprTypeOfField } from '@mnmal-ai/substrate-filter';
+import {
+  EXPR_LIMITS,
+  type Expr,
+  type ExprType,
+  type FieldDef,
+  type FieldKind,
+  type TypeSchema,
+  type WalkNode
+} from '@mnmal-ai/substrate-types';
 import { walkGrammarPath } from '../walk-gate.js';
 import { FilterValidationError } from './validator.js';
 
@@ -44,6 +53,8 @@ export interface WalkScope {
   aggs?: ReadonlyMap<string, string>;
   /** `as` bindings made so far in this frame, shared by every scope derived from the seed. */
   frameBindings?: { count: number };
+  /** Expression nodes checked so far in this frame, shared by every scope derived from the seed. */
+  exprNodes?: { count: number };
 }
 
 export type FieldLookup = (fields: Record<string, FieldDef>, name: string) => FieldDef | undefined;
@@ -600,7 +611,48 @@ export function validateSelection(
   return aggs;
 }
 
+/** The expression type of a walk aggregate's value kind; a boolean or int64 value is not usable. */
+const AGG_EXPR_TYPE: Partial<Record<string, ExprType>> = {
+  'scalar.number': 'number',
+  'scalar.date': 'date',
+  'scalar.string': 'string'
+};
+
+function exprScopeOf(scope: WalkScope, withAgg: boolean): ExprScope {
+  return {
+    field(name) {
+      if (name.startsWith('_agg.')) {
+        const kind = withAgg ? scope.aggs?.get(name.slice(5)) : undefined;
+        return kind === undefined ? undefined : AGG_EXPR_TYPE[kind];
+      }
+      return Object.hasOwn(scope.fields, name) ? exprTypeOfField(scope.fields[name]) : undefined;
+    }
+  };
+}
+
+/** Checks one expression of the frame, charging its nodes to the frame's budget; returns its type. */
+export function checkFrameExpr(
+  expr: unknown,
+  scope: WalkScope,
+  withAgg: boolean,
+  path: string[]
+): ExprType {
+  const r = checkExpr(expr as Expr, exprScopeOf(scope, withAgg), path);
+  if (!r.ok) fail('expr_invalid', r.message, r.path);
+  const used = scope.exprNodes ?? { count: 0 };
+  used.count += r.nodes;
+  if (used.count > EXPR_LIMITS.maxNodesPerFrame) {
+    fail(
+      'expr_invalid',
+      `the frame's expressions have more than maxNodesPerFrame (${EXPR_LIMITS.maxNodesPerFrame}) nodes`,
+      path
+    );
+  }
+  return r.type;
+}
+
 export interface FrameParams {
+  select?: unknown;
   count?: unknown;
   aggregate?: unknown;
   bucket?: unknown;
@@ -618,12 +670,12 @@ export function validateFrameParams(
   p: FrameParams,
   scope: WalkScope,
   h: FrameHelpers
-): ReadonlySet<string> {
+): { derived: ReadonlySet<string>; selected: ReadonlySet<string> } {
   if (p.count !== undefined && typeof p.count !== 'boolean') {
     fail('type_mismatch', 'count takes true or false', ['count']);
   }
   if (p.count === true) {
-    for (const k of ['aggregate', 'bucket', 'derive', 'orderBy', 'cursor'] as const) {
+    for (const k of ['aggregate', 'bucket', 'derive', 'select', 'orderBy', 'cursor'] as const) {
       if (p[k] !== undefined)
         fail('count_conflict', `count returns a count; it takes no '${k}'`, [k]);
     }
@@ -639,7 +691,7 @@ export function validateFrameParams(
   const seed: Hop = { typeName: scope.typeName ?? '', fields: scope.fields };
   if (p.aggregate !== undefined) {
     // `limit` stays: it caps the bucket rows.
-    for (const k of ['derive', 'orderBy', 'cursor'] as const) {
+    for (const k of ['derive', 'select', 'orderBy', 'cursor'] as const) {
       if (p[k] !== undefined) {
         fail('agg_invalid', `aggregate returns aggregate rows; it takes no '${k}'`, [k]);
       }
@@ -720,7 +772,20 @@ export function validateFrameParams(
       derived.add(n);
     }
   }
-  return derived;
+  const selected = new Set<string>();
+  if (p.select !== undefined) {
+    if (!isObj(p.select)) fail('select_invalid', 'select maps names to expressions', ['select']);
+    for (const [n, expr] of Object.entries(p.select)) {
+      const at = ['select', n];
+      if (!IDENT.test(n)) fail('select_invalid', `select name '${n}' must be an identifier`, at);
+      if (h.lookup(scope.fields, n) !== undefined) {
+        fail('select_invalid', `select name '${n}' collides with a field of the type`, at);
+      }
+      checkFrameExpr(expr, scope, true, at);
+      selected.add(n);
+    }
+  }
+  return { derived, selected };
 }
 
 /** `$.<number field>` of the seed row, or `_agg.<name>` of a number-valued frame aggregate. */

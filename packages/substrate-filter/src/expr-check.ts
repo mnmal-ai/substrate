@@ -46,6 +46,11 @@ interface Typed {
   bigLiteral?: boolean;
 }
 
+export const LIKE_TRAILING_ESCAPE = 'LIKE pattern must not end with escape character';
+
+/** Whether a LIKE pattern ends in an unescaped backslash. */
+export const endsWithEscape = (text: string): boolean => /(^|[^\\])(\\\\)*\\$/.test(text);
+
 export function checkExpr(expr: Expr, scope: ExprScope, path: string[]): ExprCheck {
   let nodes = 0;
   const refuse = (msg: string, at: string[]): never => {
@@ -220,8 +225,8 @@ export function checkExpr(expr: Expr, scope: ExprScope, path: string[]): ExprChe
         if (kind === 'unit' && !(DATE_UNITS as readonly string[]).includes(text)) {
           refuse(`'${key}' unit '${text}' is not one of ${DATE_UNITS.join(', ')}`, where(i));
         }
-        if (kind === 'likePattern' && /(^|[^\\])(\\\\)*\\$/.test(text)) {
-          refuse('LIKE pattern must not end with escape character', where(i));
+        if (kind === 'likePattern' && endsWithEscape(text)) {
+          refuse(LIKE_TRAILING_ESCAPE, where(i));
         }
         if (kind === 'pattern') {
           const why = checkRegexSubset(text);

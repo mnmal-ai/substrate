@@ -10,6 +10,7 @@
  * literals by `sqlStringLiteral`.
  */
 
+import { endsWithEscape, LIKE_TRAILING_ESCAPE } from '@mnmal-ai/substrate-filter';
 import type { Id } from '@mnmal-ai/substrate-types';
 import { normalizeIsoTimestamp, UnsupportedFilterError } from '@mnmal-ai/substrate-types';
 import type { PendingQuery, Row as PgRow, Sql, TransactionSql } from 'postgres';
@@ -360,6 +361,26 @@ export function indexExpressionSql(
   jsonb?: JsonbColumn
 ): string {
   return pathSql([field], kind, alias, jsonb);
+}
+
+/**
+ * `like` / `notLike` on a text expression: case-sensitive, `\` escapes, and never
+ * NULL (a NULL value matches neither), as the memory evaluator's.
+ */
+export function likeFragment(
+  sql: Sql | TransactionSql,
+  expr: Fragment | ReturnType<Sql['unsafe']>,
+  field: string,
+  op: string,
+  operand: unknown
+): Fragment {
+  if (typeof operand !== 'string') {
+    throw new UnsupportedFilterError(field, op, 'requires a string value');
+  }
+  if (endsWithEscape(operand)) throw new UnsupportedFilterError(field, op, LIKE_TRAILING_ESCAPE);
+  return op === 'like'
+    ? sql`COALESCE((${expr} LIKE ${operand} ESCAPE '\\'), FALSE)`
+    : sql`COALESCE((${expr} NOT LIKE ${operand} ESCAPE '\\'), FALSE)`;
 }
 
 /**

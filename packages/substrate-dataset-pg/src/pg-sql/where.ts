@@ -6,6 +6,8 @@
 
 import { bindingWalks, isJsonPathPredicate, isRefOperand } from '@mnmal-ai/substrate-filter';
 import {
+  type Expr,
+  type ExprType,
   type Id,
   type RefOperand,
   ResolverFrameError,
@@ -18,6 +20,7 @@ import {
 import type { Sql, TransactionSql } from 'postgres';
 import type { TypeTable } from '../type-table.js';
 import { buildAggPredicate } from './aggregate.js';
+import { compileExpr } from './expression.js';
 import { buildJsonPathPredicate } from './predicates-json-path.js';
 import { buildMetadataColumnPredicate } from './predicates-metadata.js';
 import { buildColumnPredicate, int64Operands } from './predicates-promoted.js';
@@ -38,6 +41,7 @@ import {
   idToText,
   isMetadataField,
   type JsonbColumn,
+  likeFragment,
   metaStr,
   notNullAnd,
   qualifier,
@@ -47,6 +51,14 @@ import {
   tsParam
 } from './primitives.js';
 import { buildGroup, buildRefCompare, buildWalk, type WalkScope } from './walk.js';
+
+const CAST_TYPE: Record<BodyOrderByCast | 'text', ExprType> = {
+  numeric: 'number',
+  bigint: 'int64',
+  timestamptz: 'date',
+  boolean: 'boolean',
+  text: 'string'
+};
 
 /**
  * The WHERE fragment for `where`, or null when it constrains nothing. With a
@@ -94,6 +106,16 @@ export function buildWhere(
     } else if (k === 'NOT') {
       const inner = buildWhere(sql, child as WhereClause, castFor, table, scope);
       if (inner !== null) fragments.push(sql`NOT (${inner})`);
+    } else if (k === '$expr') {
+      // A columnless field falls back to its declared cast; never NULL, so NOT stays sound.
+      const fieldType = (name: string): ExprType | undefined =>
+        table.column(name) === undefined ? CAST_TYPE[castFor(name) ?? 'text'] : undefined;
+      const expr = compileExpr(sql, child as Expr, {
+        table,
+        ...(scope === undefined ? {} : { alias: scope.alias }),
+        fieldType
+      });
+      fragments.push(sql`COALESCE(${expr}, FALSE)`);
     } else if (k === '_walk') {
       if (scope === undefined) {
         throw new ResolverFrameError(WALK_UNSUPPORTED_REF, `'_walk' is not supported here`);
@@ -267,6 +289,8 @@ const KNOWN_BODY_OPS: ReadonlySet<string> = new Set([
   'contains',
   'startsWith',
   'endsWith',
+  'like',
+  'notLike',
   'has'
 ]);
 
@@ -348,6 +372,10 @@ function buildIdPredicate(
         if (typeof operand === 'string') {
           frag = sql`${id} ILIKE ${`%${escapeLike(operand)}`}`;
         }
+        break;
+      case 'like':
+      case 'notLike':
+        frag = likeFragment(sql, id, 'id', op, operand);
         break;
       // Lexicographic string comparisons.
       case 'gt':
@@ -604,6 +632,9 @@ function buildOpFragment(
       const pattern = op === 'contains' ? `%${e}%` : op === 'startsWith' ? `${e}%` : `%${e}`;
       return sql`${bodyRawText(sql, path, alias, jsonb)} ILIKE ${pattern}`;
     }
+    case 'like':
+    case 'notLike':
+      return likeFragment(sql, bodyRawText(sql, path, alias, jsonb), field, op, operand);
     case 'has': {
       // List membership: `@>` with a one-element array, preserving native types
       // (10 ≠ "10"); a GIN on `(body -> 'field')` serves it.

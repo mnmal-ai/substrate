@@ -29,8 +29,15 @@ export {
   encodeCursor,
   normalizeOrderBy
 } from './cursor.js';
-export { checkExpr, type ExprCheck, type ExprScope } from './expr-check.js';
-export { type EvalEnv, evalExpr } from './expr-eval.js';
+export {
+  checkExpr,
+  type ExprCheck,
+  type ExprScope,
+  endsWithEscape,
+  LIKE_TRAILING_ESCAPE
+} from './expr-check.js';
+export { type EvalEnv, evalExpr, likeMatch } from './expr-eval.js';
+export { exprTypeOfField, fieldTypeLookup, hasExprKey, walkAggExprType } from './expr-scope.js';
 export {
   clearExtensionOperators,
   computedFieldOwner,

@@ -6,7 +6,7 @@
  */
 
 import { CursorDecodeError } from '@mnmal-ai/substrate-filter';
-import type { FieldDef, Id } from '@mnmal-ai/substrate-types';
+import type { ExprType, FieldDef, Id } from '@mnmal-ai/substrate-types';
 import type { Sql, TransactionSql } from 'postgres';
 import type { TypeTable } from '../type-table.js';
 import {
@@ -32,7 +32,10 @@ import {
  * The float8 expression a `$<name>` orderBy key sorts by (a `params.derive`
  * entry), or undefined for any other key.
  */
-export type DerivedLookup = (field: string) => Fragment | undefined;
+export type DerivedLookup = ((field: string) => Fragment | undefined) & {
+  /** The type of a `select` key's value; absent for a `$<name>` key, which is float8. */
+  typeOf?: (field: string) => ExprType | undefined;
+};
 
 const noDerived: DerivedLookup = () => undefined;
 
@@ -169,7 +172,7 @@ export function buildSortKeyProjection(
     // or skip (desc) the cursor row. Text keeps every digit; `sortParam` casts
     // it back to timestamptz.
     fragments.push(
-      sortKeyIsTimestamp(field, cast, table)
+      sortKeyIsTimestamp(field, cast, table, derivedFor)
         ? sql`, (${expr})::text AS ${sql(alias)}`
         : sql`, ${expr} AS ${sql(alias)}`
     );
@@ -182,8 +185,10 @@ export function buildSortKeyProjection(
 function sortKeyIsTimestamp(
   field: string,
   cast: BodyOrderByCast | null,
-  table: TypeTable
+  table: TypeTable,
+  derivedFor: DerivedLookup = noDerived
 ): boolean {
+  if (derivedFor(field) !== undefined) return derivedFor.typeOf?.(field) === 'date';
   if (field === 'createdAt' || field === 'updatedAt') return true;
   if (isMetadataField(field)) return false;
   const column = table.column(field);
@@ -202,7 +207,8 @@ export function buildProjectedOrderBy(
   aliases: Map<string, string>,
   castFor: (field: string) => BodyOrderByCast | null,
   table: TypeTable,
-  rel: string
+  rel: string,
+  derivedFor: DerivedLookup = noDerived
 ): Fragment {
   const parts: string[] = [];
   for (const [field, dir] of orderBy) {
@@ -212,7 +218,7 @@ export function buildProjectedOrderBy(
     } else {
       const alias = aliases.get(field);
       if (alias === undefined) throw new Error(`orderBy key '${field}' has no projected alias`);
-      expr = sortKeyIsTimestamp(field, castFor(field), table)
+      expr = sortKeyIsTimestamp(field, castFor(field), table, derivedFor)
         ? `${rel}.${alias}::timestamptz`
         : `${rel}.${alias}`;
     }
@@ -237,7 +243,13 @@ function sortParam(
 ): Fragment {
   if (field === 'id') return sql`${idToText(value as Id)}`;
   if (derivedFor(field) !== undefined) {
-    // A derived key is float8; a cursor value that is not a finite number was not issued here.
+    const type = derivedFor.typeOf?.(field) ?? 'number';
+    // A cursor carries an int64 as decimal text and a date as text.
+    if (type === 'int64') return sql`${String(value)}::bigint`;
+    if (type === 'date') return tsParam(sql, value);
+    if (type === 'string') return sql`${String(value)}::text`;
+    if (type === 'boolean') return sql`${Boolean(value)}::boolean`;
+    // A number key is float8; a cursor value that is not a finite number was not issued here.
     if (typeof value !== 'number' || !Number.isFinite(value)) {
       throw new CursorDecodeError(`cursor value for '${field}' is not a finite number`);
     }

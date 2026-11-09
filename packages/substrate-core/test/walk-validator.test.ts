@@ -662,3 +662,67 @@ describe('aggregate, derive, bucket, count and nested validation', () => {
     ).toEqual({ code: 'walk_unsupported_ref', path: ['fields', 'listings', 'fields', 'cert'] });
   });
 });
+
+describe('select and $expr validation', () => {
+  it('accepts a select over fields and a frame _agg, ordered by its names', () => {
+    expect(() =>
+      checkFrame({
+        fields: { id: true, _agg: SPEC_AGG },
+        select: { gap: { sub: ['psaOffer', 'ask'] }, n: '_agg.obsCount', up: { upper: ['label'] } },
+        orderBy: [{ gap: 'desc' }, { n: 'asc' }]
+      })
+    ).not.toThrow();
+  });
+
+  it('refuses a select name that is a field, an unknown field and a bad expression', () => {
+    expect(frameRefusal({ select: { label: { upper: ['label'] } } })).toEqual({
+      code: 'select_invalid',
+      path: ['select', 'label']
+    });
+    expect(frameRefusal({ select: { x: { add: ['nope', 1] } } }).code).toBe('expr_invalid');
+    expect(frameRefusal({ select: { x: { add: ['label', 1] } } }).code).toBe('expr_invalid');
+    expect(frameRefusal({ select: { x: '_agg.obsCount' } }).code).toBe('expr_invalid');
+  });
+
+  it('refuses a select beside count or aggregate', () => {
+    expect(frameRefusal({ count: true, select: { x: 'ask' } }).code).toBe('count_conflict');
+    expect(frameRefusal({ aggregate: { n: { count: true } }, select: { x: 'ask' } }).code).toBe(
+      'agg_invalid'
+    );
+  });
+
+  it('refuses a frame past maxNodesPerFrame, naming it', () => {
+    // 17 expressions of 63 nodes: each is within maxNodesPerExpr (64), together past 1,024.
+    const e = { coalesce: Array.from({ length: 62 }, () => 'ask') };
+    const select = Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`s${i}`, e]));
+    try {
+      checkFrame({ select });
+      throw new Error('expected a refusal');
+    } catch (err) {
+      expect(err).toBeInstanceOf(FilterValidationError);
+      expect((err as FilterValidationError).code).toBe('expr_invalid');
+      expect((err as Error).message).toContain('maxNodesPerFrame');
+    }
+  });
+
+  it('where.$expr must be boolean, and sits beside field filters and combinators', () => {
+    expect(() =>
+      checkFrame({ where: { grade: { eq: 9 }, $expr: { gt: ['psaOffer', 'ask'] } } })
+    ).not.toThrow();
+    expect(() =>
+      checkFrame({ where: { OR: [{ $expr: { gt: ['psaOffer', 'ask'] } }, { grade: { eq: 1 } }] } })
+    ).not.toThrow();
+    expect(frameRefusal({ where: { $expr: { add: ['ask', 1] } } })).toEqual({
+      code: 'expr_invalid',
+      path: ['where', '$expr']
+    });
+  });
+
+  it('refuses $expr inside a walk', () => {
+    expect(
+      frameRefusal({
+        where: { _walk: { in: 'cards/Listing.cert', where: { $expr: { gt: ['price', 1] } } } }
+      }).code
+    ).toBe('expr_invalid');
+  });
+});

@@ -100,12 +100,15 @@ export function runFilterGuard(deps: FilterGuardDeps, input: FilterGuardInput): 
   if (entry.fields !== undefined) {
     const typeSchema = deps.schemaFor(ns).types[name];
     if (typeSchema) {
+      // A `select` name is a computed key the dataset adds to each row.
+      const selectNames = (entry.params?.select ?? {}) as object;
       const unknown = Object.keys(entry.fields).filter(
         (f) =>
           !(f in typeSchema.fields) &&
           !PROJECTION_VIRTUAL_KEYS.has(f) &&
           computedFieldOwner(f) === undefined &&
-          !isWalkSelection(f, (entry.fields as Record<string, unknown>)[f])
+          !isWalkSelection(f, (entry.fields as Record<string, unknown>)[f]) &&
+          !Object.hasOwn(selectNames, f)
       );
       if (unknown.length > 0) {
         envelope._diagnostics ??= {};
@@ -116,11 +119,12 @@ export function runFilterGuard(deps: FilterGuardDeps, input: FilterGuardInput): 
   }
 
   const walks = usesWalkGrammar(entry as Record<string, unknown>);
-  if (where === undefined && orderBy === undefined && !walks) return true;
+  const selects = entry.params?.select !== undefined;
+  if (where === undefined && orderBy === undefined && !walks && !selects) return true;
   return validateAgainst(deps, envelope, key, ns, name, dataset, {
     ...(where !== undefined ? { where } : {}),
     ...(orderBy !== undefined ? { orderBy } : {}),
-    ...(walks ? walkInput(entry) : {})
+    ...(walks || selects ? walkInput(entry) : {})
   });
 }
 
@@ -191,12 +195,13 @@ function isWalkSelection(name: string, sel: unknown): boolean {
 
 /** The walk-grammar params and field selection `validateFilter` checks. */
 function walkInput(entry: FrameEntry): Partial<ValidateFilterInput> {
-  const { count, aggregate, bucket, derive, cursor } = entry.params ?? {};
+  const { count, aggregate, bucket, derive, select, cursor } = entry.params ?? {};
   return {
     count,
     aggregate,
     bucket,
     derive,
+    select,
     cursor,
     ...(entry.fields !== undefined ? { fields: entry.fields as Record<string, unknown> } : {})
   };

@@ -10,6 +10,7 @@ import {
   combineOr,
   escapeLike,
   type Fragment,
+  likeFragment,
   METADATA_COLUMNS,
   type MetadataFieldName,
   metaStr,
@@ -94,6 +95,10 @@ export function buildMetadataColumnPredicate(
         break;
       case 'endsWith':
         if (typeof operand === 'string') frag = sql`${col} ILIKE ${`%${escapeLike(operand)}`}`;
+        break;
+      case 'like':
+      case 'notLike':
+        frag = likeFragment(sql, col, field, op, operand);
         break;
       // Lexicographic range on an actor id / kind, by byte order as body text is.
       case 'gt':
