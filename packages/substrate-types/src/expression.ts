@@ -47,17 +47,32 @@ export const EXPR_FUNCTIONS: readonly FunctionSig[] = [
     'add',
     ['number', 'number'],
     'any',
-    'Sum; int64 when both are int64 (or a safe-integer literal), else number.'
+    'Sum; int64 when both are int64 (or a safe-integer literal), else number. Errors on overflow.'
   ),
-  sig('sub', ['number', 'number'], 'any', 'Difference; int64 when both are int64, else number.'),
-  sig('mul', ['number', 'number'], 'any', 'Product; int64 when both are int64, else number.'),
+  sig(
+    'sub',
+    ['number', 'number'],
+    'any',
+    'Difference; int64 when both are int64, else number. Errors on overflow.'
+  ),
+  sig(
+    'mul',
+    ['number', 'number'],
+    'any',
+    'Product; int64 when both are int64, else number. Errors on overflow, and on a nonzero product that underflows to zero.'
+  ),
   sig(
     'div',
     ['number', 'number'],
     'number',
-    'Quotient as a number; null when the divisor is zero.'
+    'Quotient as a number; null when the divisor is zero. Errors on overflow, and on a nonzero quotient that underflows to zero.'
   ),
-  sig('mod', ['number', 'number'], 'any', 'Remainder; int64 when both are int64, else number.'),
+  sig(
+    'mod',
+    ['int64', 'int64'],
+    'int64',
+    'Remainder of int64 arguments (a safe-integer literal counts); null when the divisor is zero.'
+  ),
   sig('neg', ['number'], 'any', 'Arithmetic negation; keeps int64.'),
   sig('eq', ['any', 'any'], 'boolean', `Equal; ${CMP}`),
   sig('neq', ['any', 'any'], 'boolean', `Not equal; ${CMP}`),
@@ -76,8 +91,18 @@ export const EXPR_FUNCTIONS: readonly FunctionSig[] = [
     'True when the first argument equals any later one (two or more arguments share a type).'
   ),
   sig('length', ['string'], 'number', 'Length in characters.'),
-  sig('lower', ['string'], 'string', 'Lower-cased text.'),
-  sig('upper', ['string'], 'string', 'Upper-cased text.'),
+  sig(
+    'lower',
+    ['string'],
+    'string',
+    'Lower-cased text; ASCII letters only, every other character is unchanged.'
+  ),
+  sig(
+    'upper',
+    ['string'],
+    'string',
+    'Upper-cased text; ASCII letters only, every other character is unchanged.'
+  ),
   sig(
     'substring',
     ['string', 'number', 'number'],

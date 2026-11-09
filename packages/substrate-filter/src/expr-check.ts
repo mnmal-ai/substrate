@@ -228,7 +228,9 @@ export function checkExpr(expr: Expr, scope: ExprScope, path: string[]): ExprChe
         continue;
       }
       const t = arg(a, i);
-      if (kind !== 'any') need(t, kind, `'${key}' argument ${i}`, where(i));
+      // A safe-integer literal fills an int64 slot.
+      if (kind !== 'any' && !(kind === 'int64' && t.intLiteral))
+        need(t, kind, `'${key}' argument ${i}`, where(i));
       if (kind === 'any' || (kind === 'number' && sig.returns === 'any')) group.push(t);
     }
     if (sig.returns === 'any') return result(unify(group, `'${key}'`, fnAt));

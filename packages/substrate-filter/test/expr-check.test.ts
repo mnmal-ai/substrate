@@ -55,6 +55,12 @@ describe('checkExpr types', () => {
 });
 
 describe('checkExpr refusals', () => {
+  it('takes int64 only for mod', () => {
+    expect(type({ mod: ['big', 3] })).toBe('int64');
+    expect(refusal({ mod: ['c', 3] }).message).toContain('expected int64');
+    expect(refusal({ mod: ['big', 1.5] }).message).toContain('expected int64');
+  });
+
   it('refuses an unsafe integer in an int64 position', () => {
     // the JSON number 9007199254740993, as a client would send it
     const unsafe = JSON.parse('9007199254740993') as number;

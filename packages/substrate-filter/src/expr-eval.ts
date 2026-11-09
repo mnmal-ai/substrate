@@ -3,12 +3,15 @@
  * `checkExpr`; SQL null never throws and propagates as `null`. Values are
  * `number`, `string`, `boolean`, `bigint` (int64) and ISO-8601 UTC strings (dates).
  */
-import type { Expr } from '@mnmal-ai/substrate-types';
+import type { Expr, ExprType } from '@mnmal-ai/substrate-types';
+import { checkExpr } from './expr-check.js';
 import { compileRegex, execRegex } from './regex-vm.js';
 
 export interface EvalEnv {
   /** Named outputs, which a bare string resolves to before the row (for `having`). */
   output?: Record<string, unknown>;
+  /** The type of a bare string, where its value alone (a null) does not say. */
+  fieldType?: (name: string) => ExprType | undefined;
 }
 
 const MIN_INT64 = -(2n ** 63n);
@@ -77,18 +80,17 @@ function likeMatch(text: string, pattern: string): boolean {
   return pi === toks.length;
 }
 
-/** Case-map per code point, leaving a character whose mapping changes the code point count (as Postgres does). */
-const mapCase = (s: string, f: (c: string) => string): string =>
-  Array.from(s, (c) => {
-    const m = f(c);
-    return Array.from(m).length === 1 ? m : c;
-  }).join('');
+/** Maps ASCII letters only, as pg does under the "C" collation; every other code point is unchanged. */
+const asciiCase = (s: string, from: RegExp, f: (c: string) => string): string => s.replace(from, f);
 
-/** The derive guard: a non-finite or out-of-range (beyond 1e300 or below 1e-300) number is null. */
-const guard = (v: number, underflowed = false): number | null => {
-  const m = Math.abs(v);
-  return Number.isFinite(v) && m <= 1e300 && (m >= 1e-300 || (v === 0 && !underflowed)) ? v : null;
-};
+/** float8 arithmetic as Postgres does it: a non-finite result from finite operands, or a nonzero product or quotient that underflows to 0, raises. */
+function float8(v: number, a: number, b: number, underflows: boolean): number {
+  if (!Number.isFinite(v) && Number.isFinite(a) && Number.isFinite(b)) {
+    throw new Error('value out of range: overflow');
+  }
+  if (underflows && v === 0 && a !== 0 && b !== 0) throw new Error('value out of range: underflow');
+  return v;
+}
 
 /** The replacement's `\1`-`\9` as group references, `\&` as the whole match; `\\` is a backslash; everything else is literal. */
 function expandReplacement(rep: string, whole: string, groups: (string | undefined)[]): string {
@@ -203,14 +205,14 @@ export function evalExpr(expr: Expr, row: Record<string, unknown>, env: EvalEnv 
     case 'case': {
       for (let i = 0; i < args.length - 1; i++) {
         const [cond, then] = args[i] as unknown as [Expr, Expr];
-        if (ev(cond) === true) return ev(then);
+        if (ev(cond) === true) return unified(expr, ev(then), row, env);
       }
-      return ev(args[args.length - 1] as Expr);
+      return unified(expr, ev(args[args.length - 1] as Expr), row, env);
     }
     case 'coalesce':
       for (const a of args) {
         const v = ev(a);
-        if (v !== null) return v;
+        if (v !== null) return unified(expr, v, row, env);
       }
       return null;
     case 'isNull':
@@ -256,17 +258,12 @@ export function evalExpr(expr: Expr, row: Record<string, unknown>, env: EvalEnv 
       return arith(args, vals, big, num, key === 'mul');
     }
     case 'div':
-      return Number(b) === 0 ? null : guard(Number(a) / Number(b), Number(a) !== 0);
+      return Number(b) === 0 ? null : float8(Number(a) / Number(b), Number(a), Number(b), true);
     case 'mod':
-      if (Number(b) === 0) return null;
-      return arith(
-        args,
-        vals,
-        (x, y) => x % y,
-        (x, y) => x % y
-      );
+      // int64 only; a safe-integer literal counts as one.
+      return BigInt(b) === 0n ? null : int64(BigInt(a) % BigInt(b));
     case 'neg':
-      return typeof a === 'bigint' ? int64(-a) : guard(-a);
+      return typeof a === 'bigint' ? int64(-a) : -a;
     case 'eq':
       return !(a < b) && !(a > b);
     case 'neq':
@@ -284,9 +281,9 @@ export function evalExpr(expr: Expr, row: Record<string, unknown>, env: EvalEnv 
     case 'length':
       return Array.from(a as string).length;
     case 'lower':
-      return mapCase(a as string, (x) => x.toLowerCase());
+      return asciiCase(a as string, /[A-Z]/g, (x) => x.toLowerCase());
     case 'upper':
-      return mapCase(a as string, (x) => x.toUpperCase());
+      return asciiCase(a as string, /[a-z]/g, (x) => x.toUpperCase());
     case 'substring': {
       // Positions p with start <= p < start + len, p >= 1, as in Postgres.
       const start = Math.round(Number(b));
@@ -331,5 +328,31 @@ function arith(
   const x = lift(a, args[0] as Expr, b);
   const y = lift(b, args[1] as Expr, a);
   if (typeof x === 'bigint' && typeof y === 'bigint') return int64(big(x, y));
-  return guard(num(Number(x), Number(y)), mulUnderflow && Number(x) !== 0 && Number(y) !== 0);
+  return float8(num(Number(x), Number(y)), Number(x), Number(y), mulUnderflow);
+}
+
+/** A case or coalesce value in the type the checker gives the whole call: int64 widens to number, a number literal adopts int64. */
+function unified(expr: Expr, v: unknown, row: Record<string, unknown>, env: EvalEnv): unknown {
+  if (typeof v !== 'bigint' && typeof v !== 'number') return v;
+  const scope = {
+    field(name: string): ExprType | undefined {
+      const t = env.fieldType?.(name);
+      if (t !== undefined) return t;
+      const x = env.output && Object.hasOwn(env.output, name) ? env.output[name] : row[name];
+      return typeof x === 'bigint'
+        ? 'int64'
+        : typeof x === 'number'
+          ? 'number'
+          : typeof x === 'string'
+            ? 'string'
+            : typeof x === 'boolean'
+              ? 'boolean'
+              : undefined;
+    }
+  };
+  const c = checkExpr(expr, scope, []);
+  if (!c.ok) return v;
+  if (c.type === 'number' && typeof v === 'bigint') return Number(v);
+  if (c.type === 'int64' && typeof v === 'number') return BigInt(v);
+  return v;
 }

@@ -18,6 +18,12 @@ describe('evalExpr', () => {
   it('throws RangeError on int64 sub overflow', () => {
     expect(() => evalExpr({ sub: ['a', 1] }, { a: -(2n ** 63n) })).toThrow(RangeError);
   });
+  it('raises on float8 overflow and underflow, as Postgres does', () => {
+    expect(() => evalExpr({ mul: [1e200, 1e200] }, {})).toThrow('value out of range: overflow');
+    expect(() => evalExpr({ mul: [1e-200, 1e-200] }, {})).toThrow('value out of range: underflow');
+    expect(() => evalExpr({ add: [1.7e308, 1.7e308] }, {})).toThrow('value out of range: overflow');
+    expect(() => evalExpr({ div: [1e-200, 1e200] }, {})).toThrow('value out of range: underflow');
+  });
   it('refuses a LIKE pattern ending in an escape', () => {
     expect(() => evalExpr({ like: [{ lit: 'a' }, { lit: 'a\\' }] }, {})).toThrow(
       'LIKE pattern must not end with escape character'

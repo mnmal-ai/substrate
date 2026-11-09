@@ -27,7 +27,7 @@ export const EXPR_CORPUS: ExprCase[] = [
   { name: 'mul numbers', expr: { mul: ['x', 2] }, row, expected: 5 },
   { name: 'div returns a number', expr: { div: [1, 2] }, row, expected: 0.5 },
   { name: 'div by zero is null', expr: { div: [1, 0] }, row, expected: null },
-  { name: 'mod takes the dividend sign', expr: { mod: [-7, 3] }, row, expected: -1 },
+  { name: 'mod takes the dividend sign', expr: { mod: [-7, 3] }, row, expected: -1n },
   { name: 'mod int64', expr: { mod: ['i', 3] }, row, expected: 2n },
   { name: 'neg number', expr: { neg: ['x'] }, row, expected: -2.5 },
   { name: 'neg int64', expr: { neg: ['i'] }, row, expected: -5n },
@@ -59,8 +59,8 @@ export const EXPR_CORPUS: ExprCase[] = [
     expected: null
   },
   { name: 'length counts characters', expr: { length: ['s'] }, row, expected: 2 },
-  { name: 'lower', expr: { lower: [lit('ÀB')] }, row, expected: 'àb' },
-  { name: 'upper', expr: { upper: [lit('àb')] }, row, expected: 'ÀB' },
+  { name: 'lower', expr: { lower: [lit('ÀB')] }, row, expected: 'Àb' },
+  { name: 'upper', expr: { upper: [lit('àb')] }, row, expected: 'àB' },
   { name: 'substring by characters', expr: { substring: ['s', 2, 1] }, row, expected: 'é' },
   { name: 'substring start below 1', expr: { substring: [lit('abc'), 0, 2] }, row, expected: 'a' },
   { name: 'substring past the end', expr: { substring: [lit('abc'), 2, 10] }, row, expected: 'bc' },
@@ -226,7 +226,7 @@ export const EXPR_CORPUS: ExprCase[] = [
     expected: 'xayb'
   },
   {
-    name: 'upper leaves a character whose mapping changes length',
+    name: 'upper maps ASCII letters only',
     expr: { upper: [lit('ß')] },
     row,
     expected: 'ß'
@@ -237,14 +237,15 @@ export const EXPR_CORPUS: ExprCase[] = [
     row,
     expected: true
   },
+  { name: 'lower leaves a non-ASCII character', expr: { lower: [lit('İ')] }, row, expected: 'İ' },
   {
-    name: 'mul overflowing to infinity is null',
-    expr: { mul: [1e200, 1e200] },
+    name: 'coalesce widens int64 beside a number',
+    expr: { coalesce: ['i', 'x'] },
     row,
-    expected: null
+    expected: 5
   },
-  { name: 'div underflowing is null', expr: { div: [1e-200, 1e200] }, row, expected: null },
-  { name: 'mod by zero is null', expr: { mod: ['x', 0] }, row, expected: null },
+  { name: 'case adopts int64 for a literal', expr: kase([false, 'i'], 0), row, expected: 0n },
+  { name: 'mod by zero is null', expr: { mod: ['i', 0] }, row, expected: null },
   {
     name: 'int64 literal',
     expr: { add: [{ int64: '435090932899640449' }, 1] },

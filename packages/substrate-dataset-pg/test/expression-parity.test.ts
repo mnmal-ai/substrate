@@ -98,12 +98,7 @@ describe.skipIf(!POSTGRES_URL)('expression compiler parity', () => {
       { i: 5n }
     ],
     ['large mul within range', { mul: [1e150, 1e150] }, {}],
-    ['sub to a tiny remainder is null', { sub: [1e-300, 9.99e-301] }, {}],
-    ['mod number', { mod: [7.5, 2] }, {}],
-    ['mod of inexact decimals follows the doubles', { mod: [0.3, 0.1] }, {}],
-    ['mod tiny by large', { mod: [5e-310, 3] }, {}],
-    ['mod negative dividend', { mod: [-5.5, 2] }, {}],
-    ['mod huge by small', { mod: [1.7e308, 0.7] }, {}],
+
     ['int64 below a tie-rounded double', { lt: ['big', 2 ** 63] }, { big: 9223372036854775807n }],
     [
       'double beside an int64 above 2^53',
@@ -113,7 +108,7 @@ describe.skipIf(!POSTGRES_URL)('expression compiler parity', () => {
     ['div int64 operands', { div: ['big', 'i'] }, { big: 9223372036854775800n, i: 3n }],
     ['string compare is byte order', { lt: [{ lit: 'Z' }, { lit: 'a' }] }, {}],
     ['upper of a C-collated column', { upper: ['s'] }, { s: 'àb' }],
-    ['like null text with trailing escape is null', { like: ['s', { lit: 'a\\' }] }, {}],
+
     [
       'regexpReplace without a match',
       { regexpReplace: [{ lit: 'abc' }, { lit: 'z' }, { lit: 'y' }] },
@@ -127,7 +122,7 @@ describe.skipIf(!POSTGRES_URL)('expression compiler parity', () => {
     });
   }
 
-  it('random doubles: add, sub, mul, div and mod agree bit for bit', async () => {
+  it('random doubles: add, sub, mul and div agree bit for bit', async () => {
     let seed = 7;
     const rnd = () => {
       seed = (seed * 1103515245 + 12345) % 2147483648;
@@ -136,11 +131,51 @@ describe.skipIf(!POSTGRES_URL)('expression compiler parity', () => {
     const pick = () => (rnd() < 0.5 ? -1 : 1) * rnd() * 10 ** Math.floor(rnd() * 40 - 20);
     for (let k = 0; k < 150; k++) {
       const [p, q] = [pick(), pick()];
-      for (const fn of ['add', 'sub', 'mul', 'div', 'mod']) {
+      for (const fn of ['add', 'sub', 'mul', 'div']) {
         const expr: Expr = { [fn]: [p, q] };
         expect(await onPg(expr, {}), `${fn} ${p} ${q}`).toEqual(evalExpr(expr, {}));
       }
     }
+  });
+
+  it('float8 overflow and underflow raise on both engines', async () => {
+    for (const [expr, msg] of [
+      [{ mul: [1e200, 1e200] }, 'value out of range: overflow'],
+      [{ mul: [1e-200, 1e-200] }, 'value out of range: underflow']
+    ] as Array<[Expr, string]>) {
+      expect(() => evalExpr(expr, {})).toThrow(msg);
+      await expect(onPg(expr, {})).rejects.toThrow(msg);
+    }
+  });
+
+  it('mod is int64 only, with a zero divisor null', async () => {
+    expect(await onPg({ mod: ['big', 7] }, { big: 9223372036854775800n })).toBe(
+      evalExpr({ mod: ['big', 7] }, { big: 9223372036854775800n })
+    );
+    expect(await onPg({ mod: ['i', 'i'] }, { i: 0n })).toBeNull();
+  });
+
+  it('an aggregate output keeps its own aggregate: div(sum, count) over groups', async () => {
+    await sql.unsafe('DELETE FROM expr_scratch');
+    await sql.unsafe('INSERT INTO expr_scratch (id, x) SELECT 1, g FROM generate_series(1, 10) g');
+    const outputs = new Map([
+      ['s', sql`sum(r.x)`],
+      ['c', sql`count(*)`]
+    ]);
+    const { fragment } = compileExprTyped(
+      sql,
+      { div: ['s', 'c'] },
+      { ...ctx, outputs, fieldType: (f) => (f === 's' || f === 'c' ? 'number' : undefined) }
+    );
+    const rows = await sql`SELECT ${fragment} AS v FROM expr_scratch r GROUP BY r.id`;
+    expect(rows.map((r) => r.v)).toEqual([5.5]);
+  });
+
+  it('a trailing LIKE escape in a non-literal pattern raises too', async () => {
+    const expr: Expr = { like: [{ lit: 'a' }, 's'] };
+    expect(() => evalExpr(expr, { s: 'a\\' })).toThrow('must not end with escape');
+    await expect(onPg(expr, { s: 'a\\' })).rejects.toThrow('must not end with escape');
+    expect(await onPg(expr, { s: 'a%' })).toBe(true);
   });
 
   it('int64 overflow raises', async () => {
