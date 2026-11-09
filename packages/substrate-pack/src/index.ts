@@ -33,7 +33,10 @@ export {
   encodeEnvelope,
   encodePositional,
   encodePositionalFromFieldDef,
-  PackEncodeError
+  PackEncodeError,
+  packEnvelopeParts,
+  positionValue,
+  withData
 } from './encoder.js';
 export {
   type DecodeStreamChunkInput,

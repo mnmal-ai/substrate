@@ -122,54 +122,55 @@ export function encodePositionalFromFieldDef(
 }
 
 export function encodeEnvelope(envelope: PackEnvelope, ctx: EncodeEnvelopeCtx): Buffer {
-  const rewritten: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(envelope.data)) {
-    // `{ count }` and `{ groups, truncated? }` carry no rows to position:
-    // they ride as named maps, and `shapes[key]` says which.
-    if (isAggShape(envelope.shapes[key])) {
-      rewritten[key] = value;
-      continue;
-    }
-    const returns = ctx.returnsByKey?.[key];
-    if (returns !== undefined) {
-      const currentNs = ctx.currentNsByKey[key];
-      const schema = currentNs !== undefined ? ctx.schemas[currentNs] : undefined;
-      if (currentNs === undefined || schema === undefined) {
-        // No namespace/schema resolved — mutation data stays as-is under the
-        // outer msgpack wrapper. Matches the "error-only envelope" fallback.
-        rewritten[key] = value;
-        continue;
-      }
-      rewritten[key] = encodePositionalForShape(value, returns, schema, envelope.shapes[key], {
-        schemas: ctx.schemas,
-        currentNs
-      });
-      continue;
-    }
-    const fields = ctx.fieldsByKey[key];
-    const typeName = ctx.typeByKey[key];
+  const data: Record<string, unknown> = {};
+  for (const key of Object.keys(envelope.data)) data[key] = positionValue(envelope, ctx, key);
+  return Buffer.from(pack(withData(envelope, data)));
+}
+
+/**
+ * The wire form of `envelope.data[key]`, or of `value` in its place: rows as
+ * positional tuples, or the value as-is when nothing positions it. A `list`
+ * value's rows encode one by one, so a slice of its rows gives that slice of
+ * the whole value's wire form.
+ */
+export function positionValue(
+  envelope: PackEnvelope,
+  ctx: EncodeEnvelopeCtx,
+  key: string,
+  value: unknown = envelope.data[key]
+): unknown {
+  // `{ count }` and `{ groups, truncated? }` carry no rows to position:
+  // they ride as named maps, and `shapes[key]` says which.
+  if (isAggShape(envelope.shapes[key])) return value;
+  const returns = ctx.returnsByKey?.[key];
+  if (returns !== undefined) {
     const currentNs = ctx.currentNsByKey[key];
-    if (fields === undefined || typeName === undefined || currentNs === undefined) {
-      rewritten[key] = value;
-      continue;
-    }
-    const schema = ctx.schemas[currentNs];
-    if (schema === undefined) {
-      rewritten[key] = value;
-      continue;
-    }
-    rewritten[key] = encodePositional(value, fields, schema, typeName, {
+    const schema = currentNs !== undefined ? ctx.schemas[currentNs] : undefined;
+    // No namespace/schema resolved — mutation data stays as-is under the
+    // outer msgpack wrapper. Matches the "error-only envelope" fallback.
+    if (currentNs === undefined || schema === undefined) return value;
+    return encodePositionalForShape(value, returns, schema, envelope.shapes[key], {
       schemas: ctx.schemas,
       currentNs
     });
   }
+  const fields = ctx.fieldsByKey[key];
+  const typeName = ctx.typeByKey[key];
+  const currentNs = ctx.currentNsByKey[key];
+  if (fields === undefined || typeName === undefined || currentNs === undefined) return value;
+  const schema = ctx.schemas[currentNs];
+  if (schema === undefined) return value;
+  return encodePositional(value, fields, schema, typeName, { schemas: ctx.schemas, currentNs });
+}
 
+/** `envelope` with `data` replaced by its wire form; `pack` of it is the response body. */
+export function withData(envelope: PackEnvelope, data: Record<string, unknown>): PackEnvelope {
   // Everything but `data` passes through. Every sidecar needs an explicit
   // line: an omitted one is dropped silently, and a missing `_completeness`
   // reads as "complete".
   const out: PackEnvelope = {
     schemaVersion: envelope.schemaVersion,
-    data: rewritten,
+    data,
     shapes: envelope.shapes
   };
   if (envelope._meta !== undefined) out._meta = envelope._meta;
@@ -177,7 +178,52 @@ export function encodeEnvelope(envelope: PackEnvelope, ctx: EncodeEnvelopeCtx): 
   if (envelope._completeness !== undefined) out._completeness = envelope._completeness;
   if (envelope._diagnostics !== undefined) out._diagnostics = envelope._diagnostics;
   if (envelope.errors !== undefined) out.errors = envelope.errors;
-  return Buffer.from(pack(out));
+  return out;
+}
+
+/**
+ * `pack(wire)` in pieces, a long row list `rowsPerPart` rows per piece, for a
+ * `wire` envelope from `withData`. msgpackr's default `pack` writes every
+ * object as a map16 (`de`) and records no shared state between values, so
+ * the pieces concatenate to the same bytes.
+ */
+export function* packEnvelopeParts(wire: PackEnvelope, rowsPerPart: number): Generator<Uint8Array> {
+  // `Buffer.from` copies: msgpackr's result is a view on a buffer it reuses.
+  const packed = (v: unknown): Uint8Array => Buffer.from(pack(v));
+  const keys = Object.keys(wire) as Array<keyof PackEnvelope>;
+  yield mapHeader(keys.length);
+  for (const key of keys) {
+    yield packed(key);
+    if (key !== 'data') {
+      yield packed(wire[key]);
+      continue;
+    }
+    const entries = Object.entries(wire.data);
+    yield mapHeader(entries.length);
+    for (const [k, v] of entries) {
+      yield packed(k);
+      if (!Array.isArray(v) || v.length <= rowsPerPart) {
+        yield packed(v);
+        continue;
+      }
+      yield arrayHeader(v.length);
+      for (let i = 0; i < v.length; i += rowsPerPart) {
+        const rows = v.slice(i, i + rowsPerPart);
+        yield packed(rows).subarray(arrayHeader(rows.length).length);
+      }
+    }
+  }
+}
+
+function mapHeader(n: number): Uint8Array {
+  if (n > 0xffff) throw new PackEncodeError(`map of ${n} keys`, []);
+  return Uint8Array.of(0xde, n >> 8, n & 0xff);
+}
+
+function arrayHeader(n: number): Uint8Array {
+  if (n < 16) return Uint8Array.of(0x90 | n);
+  if (n <= 0xffff) return Uint8Array.of(0xdc, n >> 8, n & 0xff);
+  return Uint8Array.of(0xdd, n >>> 24, (n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff);
 }
 
 /** A shape whose value is a `{ count }` or `{ groups }` map, not rows. */
