@@ -82,4 +82,45 @@ describe.skipIf(!POSTGRES_URL)('int64 in a pending field', () => {
     const read = (await pg.read('Note', { orderBy: [{ big: 'asc' }] })).rows;
     expect(read.slice(0, 2).map((r) => r.big)).toEqual([BEYOND_SAFE, MAX]);
   });
+
+  it('the sweep keeps an out-of-range integer and a fraction under $raw and promotes the rest', async () => {
+    const ns2 = `i64q_${randomBytes(4).toString('hex')}`;
+    const d: Record<string, { fields: Record<string, FieldDef> }> = {
+      Note: { fields: { title: field.string() } }
+    };
+    const ds = new PgDataset({
+      namespace: ns2,
+      sql,
+      typeDefLookup: (t) => d[t],
+      fieldDefLookup: (t, f) => d[t]?.fields[f]
+    });
+    try {
+      // Written before the field is declared int64, so they sit in extra as written.
+      await ds.write('Note', [
+        { id: 'big', title: 'a', score: 99999999999999999999n },
+        { id: 'frac', title: 'b', score: 1.5 },
+        { id: 'ok', title: 'c', score: 42 }
+      ]);
+      d.Note = { fields: { title: field.string(), score: field.int64() } };
+      await ds.ensureTypeStorage('Note', { newFields: 'pending' });
+      const events = await ds.promotePendingFields({
+        lockTimeoutMs: 2000,
+        batchRows: 100,
+        namespace: ns2
+      });
+      expect(events.map((e) => e.kind)).toEqual(['promoted']);
+      const t = await loadTypeTable(sql, ns2, 'Note');
+      const col = t?.column('score')?.column as string;
+      const rows = await sql.unsafe(
+        `SELECT id, ${col}::text AS c, extra -> '$raw' ->> 'score' AS raw FROM ${t?.from} ORDER BY id`
+      );
+      expect(rows.map((r) => [r.id, r.c, r.raw])).toEqual([
+        ['big', null, '99999999999999999999'],
+        ['frac', null, '1.5'],
+        ['ok', '42', null]
+      ]);
+    } finally {
+      await dropNamespace(sql, ns2);
+    }
+  });
 });
