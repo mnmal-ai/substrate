@@ -115,7 +115,7 @@ jobs:
           echo "passed=$passed" >> "$GITHUB_OUTPUT"
           echo "CI on the PR head covers this tree: $passed"
 
-      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d  # v5.2.4
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b  # v5.2.7
         with:
           cache: true
 
@@ -220,7 +220,7 @@ jobs:
       # workspace engines floor.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
-          node-version: 26.12.1
+          node-version: 26.13.0
           package-manager-cache: false
 
       # Idempotent: a version already on npmjs is skipped, so a re-run after a
