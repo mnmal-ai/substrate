@@ -96,7 +96,14 @@ describe('int64 field kind', () => {
       sql = postgres(POSTGRES_URL, { onnotice: () => {} });
       await runMigrations(sql);
       await dropNamespace(sql, NS);
-      const pg = engineOver(new PgDataset({ namespace: NS, sql, fieldDefLookup: lookup }));
+      const pg = engineOver(
+        new PgDataset({
+          namespace: NS,
+          sql,
+          fieldDefLookup: lookup,
+          typeDefLookup: () => ({ fields })
+        })
+      );
       await seed(pg);
       engines.push(pg);
     });
