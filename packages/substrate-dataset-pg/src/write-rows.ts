@@ -13,7 +13,11 @@
  * So no declared column key is ever left in `extra` by a write (F13).
  */
 
-import type { ActorIdentity, RowMetadata } from '@mnmal-ai/substrate-types';
+import {
+  type ActorIdentity,
+  type RowMetadata,
+  stringifyJsonExact
+} from '@mnmal-ai/substrate-types';
 import type { Sql, TransactionSql } from 'postgres';
 import { columnSql, type Fragment, sqlStringLiteral } from './pg-sql/primitives.js';
 import { buildRowProjection } from './pg-sql/projection.js';
@@ -180,8 +184,8 @@ export function inputCte(
   const cols = writableColumns(table, rows);
   const arrays: unknown[][] = [
     rows.map((r) => r.id),
-    rows.map((r) => JSON.stringify(r.extra)),
-    rows.map((r) => JSON.stringify(r.raw)),
+    rows.map((r) => stringifyJsonExact(r.extra)),
+    rows.map((r) => stringifyJsonExact(r.raw)),
     rows.map((r) => JSON.stringify(r.unset)),
     ...cols.map((c) =>
       rows.map((r) => {

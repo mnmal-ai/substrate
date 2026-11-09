@@ -12,7 +12,7 @@
  *     re-run the mutate.
  */
 
-import type { IdempotencyStore, PackEnvelope } from '@mnmal-ai/substrate-types';
+import { type IdempotencyStore, type PackEnvelope, stringifyJson } from '@mnmal-ai/substrate-types';
 import type { Sql } from 'postgres';
 
 export interface PgIdempotencyStoreOptions {
@@ -49,7 +49,7 @@ export class PgIdempotencyStore implements IdempotencyStore {
       INSERT INTO idempotency (key, envelope, expires_at)
       VALUES (
         ${key},
-        ${sql.json(envelope as unknown as Parameters<typeof sql.json>[0])},
+        ${stringifyJson(envelope)}::text::jsonb,
         now() + (${ttlMs}::bigint || ' milliseconds')::interval
       )
       ON CONFLICT (key) DO UPDATE SET

@@ -1,6 +1,7 @@
-import type { PackEnvelope } from '@mnmal-ai/substrate-types';
+import type { PackEnvelope, SubstrateRequest } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
 import type { Frame } from '../src/routes/helpers.js';
+import { jsonResponse, serializeEnvelope } from '../src/routes/helpers.js';
 import {
   jsonEnvelopeStream,
   jsonParts,
@@ -88,5 +89,23 @@ describe('an int64 on the JSON wire', () => {
       jsonEnvelopeStream(bigEnvelope(STREAM_JSON_ROWS + 1), bigFrame)
     ).text();
     expect(JSON.parse(text).data['ns/Big'][0].n).toBe('9223372036854775807');
+  });
+
+  it('is a decimal string, unstreamed (query response)', () => {
+    const req: SubstrateRequest = {
+      method: 'POST',
+      path: '/q',
+      headers: {},
+      query: {},
+      params: {},
+      body: null
+    };
+    const res = serializeEnvelope(req, bigEnvelope(2), {} as never, bigFrame);
+    expect(Buffer.from(res.body as Buffer).toString()).toContain('"n":"9223372036854775807"');
+  });
+
+  it('is a decimal string in a mutate response (jsonResponse)', () => {
+    const res = jsonResponse(200, bigEnvelope(1));
+    expect(Buffer.from(res.body as Buffer).toString()).toContain('"n":"9223372036854775807"');
   });
 });

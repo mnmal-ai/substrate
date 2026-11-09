@@ -335,7 +335,10 @@ async function backfill(
     for (const r of page) {
       const stored = r.v ?? r.rv;
       if (stored === null) continue;
-      const encoded = encodeRow(table, { [field]: JSON.parse(stored) as unknown });
+      // A JSON number past 2^53 would lose digits in JSON.parse; an int64 column reads its text.
+      const parsed =
+        column.kind === 'int64' && /^-?\d+$/.test(stored) ? BigInt(stored) : JSON.parse(stored);
+      const encoded = encodeRow(table, { [field]: parsed as unknown });
       const c = encoded.columns[column.column];
       const misfit = Object.hasOwn(encoded.raw, field);
       if (r.v === null) {

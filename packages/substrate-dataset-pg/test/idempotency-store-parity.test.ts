@@ -145,3 +145,29 @@ describe.skipIf(!POSTGRES_URL)('IdempotencyStore conformance (memory vs pg)', ()
     }
   });
 });
+
+describe.skipIf(!POSTGRES_URL)('an envelope carrying an int64', () => {
+  it('is cached by both stores and replayed (pg as the JSON form, a decimal string)', async () => {
+    const sql = postgres(POSTGRES_URL as string);
+    try {
+      await runMigrations(sql);
+      await sql`TRUNCATE TABLE idempotency`;
+      const env = {
+        schemaVersion: 'test',
+        data: { 'parity/Thing': { id: 'a', n: 2n ** 63n - 1n } },
+        shapes: { 'parity/Thing': 'single' }
+      } as unknown as PackEnvelope;
+      const mem = new MemoryIdempotencyStore();
+      const pg = new PgIdempotencyStore({ sql });
+      await mem.put('k', env, 60_000);
+      await pg.put('k', env, 60_000);
+      expect((await mem.get('k'))?.data['parity/Thing']).toEqual({ id: 'a', n: 2n ** 63n - 1n });
+      expect((await pg.get('k'))?.data['parity/Thing']).toEqual({
+        id: 'a',
+        n: '9223372036854775807'
+      });
+    } finally {
+      await sql.end();
+    }
+  });
+});

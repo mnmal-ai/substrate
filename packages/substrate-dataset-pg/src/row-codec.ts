@@ -8,7 +8,7 @@
  * apart from that `$raw` copy.
  */
 
-import { normalizeIsoTimestamp, ReservedField } from '@mnmal-ai/substrate-types';
+import { normalizeIsoTimestamp, parseInt64, ReservedField } from '@mnmal-ai/substrate-types';
 import type { ColumnKind, TypedColumn, TypeTable } from './type-table.js';
 
 /** The reserved `extra` key holding each column field's written value when its column differs. */
@@ -81,7 +81,11 @@ export function encodeRow(table: TypeTable, row: Record<string, unknown>): Encod
     const written = value instanceof Date ? value.toJSON() : value;
     const v = toColumn(held, written);
     out.columns[held.column] = v;
-    if (v === null || readBack(held.kind, v) !== written) out.raw[field] = written;
+    // An int64 held in the column reads back as a bigint whatever form was written.
+    const back = v === null ? undefined : readBack(held.kind, v);
+    if (v === null || (held.kind === 'int64' ? back !== parseInt64(written) : back !== written)) {
+      out.raw[field] = written;
+    }
   }
   return out;
 }
@@ -149,8 +153,10 @@ function toColumn(column: TypedColumn, value: unknown): string | number | boolea
       return typeof value === 'string' ? value : null;
     case 'number':
       return typeof value === 'number' ? value : null;
-    case 'int64':
-      return typeof value === 'bigint' ? String(value) : null;
+    case 'int64': {
+      const n = parseInt64(value);
+      return n === undefined ? null : String(n);
+    }
     case 'boolean':
       return typeof value === 'boolean' ? value : null;
     case 'date': {

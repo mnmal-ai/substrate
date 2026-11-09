@@ -32,3 +32,18 @@ export function stringifyJson(value: unknown): string {
     return JSON.stringify(value, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
   }
 }
+
+/**
+ * Like {@link stringifyJson}, but a bigint is written as an exact JSON number
+ * (`9223372036854775807`, not a string), for a jsonb body that `substrate_num`
+ * reads back as the number it is.
+ */
+export function stringifyJsonExact(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch (e) {
+    if (!(e instanceof TypeError) || !/BigInt/.test(e.message)) throw e;
+    const raw = (JSON as unknown as { rawJSON(text: string): unknown }).rawJSON;
+    return JSON.stringify(value, (_k, v) => (typeof v === 'bigint' ? raw(v.toString()) : v));
+  }
+}
