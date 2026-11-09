@@ -4,7 +4,7 @@
  * `number`, `string`, `boolean`, `bigint` (int64) and ISO-8601 UTC strings (dates).
  */
 import type { Expr } from '@mnmal-ai/substrate-types';
-import { checkRegexSubset } from './regex-subset.js';
+import { compileRegex, execRegex } from './regex-vm.js';
 
 export interface EvalEnv {
   /** Named outputs, which a bare string resolves to before the row (for `having`). */
@@ -20,7 +20,7 @@ const int64 = (n: bigint): bigint => {
 };
 
 /** A small Map-based LRU: bounded so caller-supplied patterns cannot grow memory. */
-function lru<V>(max: number, make: (k: string) => V): (k: string) => V {
+export function lru<V>(max: number, make: (k: string) => V): (k: string) => V {
   const m = new Map<string, V>();
   return (k) => {
     let v = m.get(k);
@@ -34,11 +34,7 @@ function lru<V>(max: number, make: (k: string) => V): (k: string) => V {
   };
 }
 
-const compile = lru(256, (pattern) => {
-  const bad = checkRegexSubset(pattern);
-  if (bad) throw new Error(`invalid regex: ${bad}`);
-  return new RegExp(pattern, 'us');
-});
+const compile = lru(256, compileRegex);
 
 type LikeToken = '%' | '_' | { lit: string };
 
@@ -306,15 +302,16 @@ export function evalExpr(expr: Expr, row: Record<string, unknown>, env: EvalEnv 
     case 'notLike':
       return !likeMatch(a, b);
     case 'regexpMatch':
-      return compile(b).test(a);
-    case 'regexpReplace':
-      return (a as string).replace(compile(b), (...m: unknown[]) => {
-        const groups = m.slice(
-          1,
-          m.findIndex((x) => typeof x === 'number')
-        ) as (string | undefined)[];
-        return expandReplacement(c, m[0] as string, groups);
-      });
+      return execRegex(compile(b), a) !== null;
+    case 'regexpReplace': {
+      const m = execRegex(compile(b), a);
+      if (!m) return a;
+      return (
+        a.slice(0, m.index) +
+        expandReplacement(c, a.slice(m.index, m.end), m.groups) +
+        a.slice(m.end)
+      );
+    }
     default:
       throw new Error(`unknown function '${key}'`);
   }

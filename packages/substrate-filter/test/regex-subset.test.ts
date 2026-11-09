@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { checkRegexSubset } from '../src/regex-subset.js';
 
-const ACCEPTED = [
+export const ACCEPTED = [
   '(?:ab)+',
   '(a|b)',
   '(a+)b',
