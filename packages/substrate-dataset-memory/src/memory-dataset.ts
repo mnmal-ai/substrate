@@ -33,8 +33,10 @@ import {
   fieldTypeLookup,
   fullBuiltinOperators,
   getFieldValue,
+  groupRows,
   hop,
   isDateField,
+  isGroupedRead,
   normalizeOrderBy,
   preResolveExtensionOperatorsDetailed,
   storedMicros,
@@ -44,6 +46,7 @@ import {
 } from '@mnmal-ai/substrate-filter';
 import type {
   ActorIdentity,
+  AggFn,
   ConditionalUpdateResult,
   Dataset,
   DeleteResult,
@@ -318,6 +321,16 @@ export class MemoryDataset implements Dataset {
     // A count or whole-result aggregate returns no rows.
     if (params.count === true) return { rows: [], hasMore: false, count: pool.length };
     if (params.aggregate !== undefined) {
+      const fieldType = fieldTypeLookup(fieldDefOf);
+      if (isGroupedRead(params, fieldType)) {
+        const { groups, truncated } = groupRows(
+          pool,
+          { ...params, aggregate: params.aggregate },
+          fieldType,
+          limit
+        );
+        return { rows: [], hasMore: false, groups, ...(truncated ? { truncated: true } : {}) };
+      }
       return aggregateGroups(pool, params.aggregate, params.bucket, limit, fieldDefOf);
     }
 
@@ -976,7 +989,7 @@ function aggregateGroups(
 ): ReadResult {
   const values = (rows: Row[]) =>
     Object.fromEntries(
-      Object.entries(aggregate).map(([name, fn]) => [name, applyAgg(rows, fn, fieldDefOf)])
+      Object.entries(aggregate).map(([name, fn]) => [name, applyAgg(rows, fn as AggFn, fieldDefOf)])
     );
   if (bucket === undefined) return { rows: [], hasMore: false, groups: [values(pool)] };
   const byKey = new Map<string, Row[]>();

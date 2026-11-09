@@ -31,6 +31,7 @@ import {
   exprTypeOfField,
   fieldRequested,
   fullBuiltinOperators,
+  isGroupedRead,
   preResolveExtensionOperatorsDetailed,
   walkAggExprType
 } from '@mnmal-ai/substrate-filter';
@@ -70,7 +71,8 @@ import {
   isColumnField,
   naturalOrderOf,
   QUERY_TIMEOUT,
-  ResolverFrameError
+  ResolverFrameError,
+  VALUE_OUT_OF_RANGE
 } from '@mnmal-ai/substrate-types';
 import type { PendingQuery, Row as PgRow, ReservedSql, Sql, TransactionSql } from 'postgres';
 import { withPgAdvisoryLock } from './advisory-lock.js';
@@ -103,6 +105,7 @@ import {
   prepareWindows
 } from './pg-sql/aggregate.js';
 import { compileExprTyped } from './pg-sql/expression.js';
+import { buildGroupedRead } from './pg-sql/grouped.js';
 import { fieldExprSql, sqlStringLiteral } from './pg-sql/primitives.js';
 import type { DerivedLookup } from './pg-sql/sorting.js';
 import {
@@ -855,6 +858,34 @@ export class PgDataset implements Dataset {
         return { rows: [], hasMore: false, count: row?.n ?? 0 };
       }
       const aggregate = params.aggregate ?? {};
+      if (isGroupedRead(params, (name) => exprTypeOfField(fieldDef(type, name)))) {
+        const grouped = buildGroupedRead(
+          sql,
+          { ...params, aggregate, limit },
+          matched,
+          pickJoins,
+          table,
+          (f) => fieldDef(type, f)
+        );
+        let rows: Array<{ g: number } & Record<string, unknown>>;
+        try {
+          rows = await run(sql`${withCtes(sql, scope)}${grouped.statement}`, 'g');
+        } catch (err) {
+          // 22003: an int64 sum or an expression left its type's range, as memory's RangeError.
+          if ((err as { code?: unknown } | null)?.code === '22003') {
+            throw new ResolverFrameError(VALUE_OUT_OF_RANGE, (err as Error).message);
+          }
+          throw err;
+        }
+        const truncated = limit !== undefined && rows.length > limit;
+        const page = truncated ? rows.slice(0, limit) : rows;
+        return {
+          rows: [],
+          hasMore: false,
+          groups: page.map(grouped.decode),
+          ...(truncated ? { truncated: true } : {})
+        };
+      }
       const statement = buildFrameAggregate(sql, aggregate, params.bucket, matched, limit, scope);
       const groups = (
         await run<{ g: Record<string, unknown> }>(sql`${withCtes(sql, scope)}${statement}`, 'g')

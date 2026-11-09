@@ -693,6 +693,9 @@ export interface FrameParams {
   count?: unknown;
   aggregate?: unknown;
   bucket?: unknown;
+  groupBy?: unknown;
+  having?: unknown;
+  offset?: unknown;
   derive?: unknown;
   cursor?: unknown;
   orderBy?: unknown;
@@ -726,9 +729,24 @@ export function validateFrameParams(
     }
   }
   const seed: Hop = { typeName: scope.typeName ?? '', fields: scope.fields };
+  const outputs = new Map<string, ExprType>();
+  const grouped = p.aggregate !== undefined && p.bucket === undefined;
+  for (const k of ['groupBy', 'having', 'offset'] as const) {
+    if (p[k] !== undefined && !grouped) {
+      fail(
+        'agg_invalid',
+        `${k} shapes an aggregate's groups; it needs aggregate, and takes no bucket`,
+        [k]
+      );
+    }
+  }
   if (p.aggregate !== undefined) {
-    // `limit` stays: it caps the bucket rows.
-    for (const k of ['derive', 'select', 'orderBy', 'cursor'] as const) {
+    // `limit` stays: it caps the groups. orderBy takes the group outputs.
+    const refused =
+      p.groupBy !== undefined
+        ? ['derive', 'select', 'cursor']
+        : ['derive', 'select', 'orderBy', 'cursor'];
+    for (const k of refused as Array<'derive' | 'select' | 'orderBy' | 'cursor'>) {
       if (p[k] !== undefined) {
         fail('agg_invalid', `aggregate returns aggregate rows; it takes no '${k}'`, [k]);
       }
@@ -752,8 +770,49 @@ export function validateFrameParams(
         fail('agg_invalid', `aggregate name '${n}' must be an identifier other than bucket`, at);
       }
       if (!isObj(agg)) fail('agg_invalid', 'an aggregate is an object such as { count: true }', at);
-      aggKind(agg, NO_KEYS, seed, at, h, false);
+      if (p.bucket !== undefined) aggKind(agg, NO_KEYS, seed, at, h, false);
+      else outputs.set(n, frameAggType(agg, scope, at));
     }
+  }
+  if (p.groupBy !== undefined) {
+    if (!isObj(p.groupBy) || Object.keys(p.groupBy).length === 0) {
+      fail('group_invalid', 'groupBy maps names to expressions, and needs at least one', [
+        'groupBy'
+      ]);
+    }
+    for (const [n, expr] of Object.entries(p.groupBy)) {
+      const at = ['groupBy', n];
+      if (!IDENT.test(n)) fail('group_invalid', `groupBy name '${n}' must be an identifier`, at);
+      if (outputs.has(n)) {
+        fail('group_invalid', `groupBy name '${n}' is also an aggregate name`, at);
+      }
+      outputs.set(n, checkFrameExpr(expr, scope, false, at));
+    }
+  }
+  if (p.having !== undefined) {
+    const named: WalkScope = {
+      ...scope,
+      fields: Object.fromEntries(
+        [...outputs].map(([n, t]) => [n, { kind: 'scalar', type: t } as FieldDef])
+      )
+    };
+    const t = checkFrameExpr(p.having, named, false, ['having']);
+    if (t !== 'boolean') fail('expr_invalid', `having must be boolean, got ${t}`, ['having']);
+  }
+  if (p.offset !== undefined && (!Number.isSafeInteger(p.offset) || (p.offset as number) < 0)) {
+    fail('type_mismatch', 'offset takes a non-negative integer', ['offset']);
+  }
+  if (p.groupBy !== undefined && Array.isArray(p.orderBy)) {
+    p.orderBy.forEach((c, i) => {
+      const k = isObj(c) ? Object.keys(c)[0] : undefined;
+      if (k !== undefined && !outputs.has(k)) {
+        fail('agg_invalid', `orderBy '${k}' names no groupBy or aggregate output`, [
+          'orderBy',
+          String(i),
+          k
+        ]);
+      }
+    });
   }
   if (p.bucket !== undefined) {
     const b = p.bucket;
@@ -831,7 +890,45 @@ export function validateFrameParams(
       selected.add(n);
     }
   }
-  return { derived, selected };
+  return { derived, selected: new Set([...selected, ...outputs.keys()]) };
+}
+
+const FRAME_AGG_FNS = ['count', 'countDistinct', 'avg', 'sum', 'min', 'max'];
+
+/** A frame aggregate: one function over an expression (`count: true` counts rows). Returns its value type. */
+function frameAggType(agg: Record<string, unknown>, scope: WalkScope, path: string[]): ExprType {
+  for (const k of Object.keys(agg)) {
+    if (k === 'latest') {
+      fail(
+        'agg_invalid',
+        'latest picks one row per seed row; a frame aggregate takes count, countDistinct, avg, sum, min or max',
+        [...path, k]
+      );
+    }
+    if (!FRAME_AGG_FNS.includes(k))
+      fail('agg_invalid', `unknown aggregate key '${k}'`, [...path, k]);
+  }
+  if (Object.keys(agg).length !== 1) {
+    fail(
+      'agg_invalid',
+      'an aggregate names exactly one of count, countDistinct, avg, sum, min or max',
+      path
+    );
+  }
+  const [fn] = Object.keys(agg) as [string];
+  const at = [...path, fn];
+  if (fn === 'count' && agg.count === true) return 'number';
+  const t = checkFrameExpr(agg[fn], scope, false, at);
+  const ok: Record<string, ExprType[]> = {
+    avg: ['number', 'int64'],
+    sum: ['number', 'int64'],
+    min: ['number', 'int64', 'string', 'date'],
+    max: ['number', 'int64', 'string', 'date']
+  };
+  if (ok[fn] !== undefined && !ok[fn].includes(t)) {
+    fail('agg_invalid', `${fn} needs ${ok[fn].join(', ')}; the argument is ${t}`, at);
+  }
+  return fn === 'count' || fn === 'countDistinct' || fn === 'avg' ? 'number' : t;
 }
 
 /** `$.<number field>` of the seed row, or `_agg.<name>` of a number-valued frame aggregate. */
