@@ -84,7 +84,8 @@ describe.skipIf(!POSTGRES_URL)('boot refuses the old layouts (pg)', () => {
       expect(ledger.map((r) => r.version)).toEqual([
         '0001t_tables_baseline',
         '0003t_type_table_version',
-        '0004t_field_error_version'
+        '0004t_field_error_version',
+        '0005t_int64_field_kind'
       ]);
       expect(await sql`SELECT to_regclass('rows') AS r`).toEqual([{ r: null }]);
     } finally {

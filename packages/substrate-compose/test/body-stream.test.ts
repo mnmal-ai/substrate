@@ -1,13 +1,14 @@
-import type { PackEnvelope, SubstrateRequest } from '@mnmal-ai/substrate-types';
+import { type EncodeEnvelopeCtx, encodeEnvelope } from '@mnmal-ai/substrate-pack';
+import type { PackEnvelope, Schema, SubstrateRequest } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
-import type { Frame } from '../src/routes/helpers.js';
-import { jsonResponse, serializeEnvelope } from '../src/routes/helpers.js';
 import {
   jsonEnvelopeStream,
   jsonParts,
-  STREAM_JSON_ROWS,
-  streamsJson
-} from '../src/routes/json-stream.js';
+  packEnvelopeStream,
+  STREAM_ROWS,
+  streamsRows
+} from '../src/routes/body-stream.js';
+import { type Frame, jsonResponse, serializeEnvelope } from '../src/routes/helpers.js';
 import { projectEnvelope } from '../src/routes/project-json.js';
 
 const row = (i: number) => ({
@@ -50,9 +51,9 @@ const envelope = (n: number): PackEnvelope => ({
 });
 
 describe('streamed JSON envelope', () => {
-  it('streams only past STREAM_JSON_ROWS rows in one key', () => {
-    expect(streamsJson(envelope(STREAM_JSON_ROWS))).toBe(false);
-    expect(streamsJson(envelope(STREAM_JSON_ROWS + 1))).toBe(true);
+  it('streams only past STREAM_ROWS rows in one key', () => {
+    expect(streamsRows(envelope(STREAM_ROWS))).toBe(false);
+    expect(streamsRows(envelope(STREAM_ROWS + 1))).toBe(true);
   });
 
   it.each([0, 1, 1999, 2000, 2001, 4500])(
@@ -64,7 +65,7 @@ describe('streamed JSON envelope', () => {
   );
 
   it('the stream carries the same bytes', async () => {
-    const env = envelope(STREAM_JSON_ROWS + 5);
+    const env = envelope(STREAM_ROWS + 5);
     const text = await new Response(jsonEnvelopeStream(env, frame)).text();
     expect(text).toBe(JSON.stringify(projectEnvelope(env, frame)));
   });
@@ -86,12 +87,12 @@ describe('an int64 on the JSON wire', () => {
 
   it('is a decimal string, streamed', async () => {
     const text = await new Response(
-      jsonEnvelopeStream(bigEnvelope(STREAM_JSON_ROWS + 1), bigFrame)
+      jsonEnvelopeStream(bigEnvelope(STREAM_ROWS + 1), bigFrame)
     ).text();
     expect(JSON.parse(text).data['ns/Big'][0].n).toBe('9223372036854775807');
   });
 
-  it('is a decimal string, unstreamed (query response)', () => {
+  it('is a decimal string, unstreamed (query response)', async () => {
     const req: SubstrateRequest = {
       method: 'POST',
       path: '/q',
@@ -100,12 +101,46 @@ describe('an int64 on the JSON wire', () => {
       params: {},
       body: null
     };
-    const res = serializeEnvelope(req, bigEnvelope(2), {} as never, bigFrame);
+    const res = await serializeEnvelope(req, bigEnvelope(2), {} as never, bigFrame);
     expect(Buffer.from(res.body as Buffer).toString()).toContain('"n":"9223372036854775807"');
   });
 
   it('is a decimal string in a mutate response (jsonResponse)', () => {
     const res = jsonResponse(200, bigEnvelope(1));
     expect(Buffer.from(res.body as Buffer).toString()).toContain('"n":"9223372036854775807"');
+  });
+});
+
+const schema: Schema = {
+  schemaVersion: 'test000000aa',
+  types: {
+    Big: {
+      fields: {
+        id: { kind: 'scalar', type: 'string' },
+        name: { kind: 'scalar', type: 'string' },
+        meta: { kind: 'scalar', type: 'json' }
+      }
+    }
+  },
+  mutations: {}
+};
+const packCtx: EncodeEnvelopeCtx = {
+  fieldsByKey: { 'ns/Big': { id: true, name: true, meta: true } },
+  typeByKey: { 'ns/Big': 'Big' },
+  schemas: { ns: schema },
+  currentNsByKey: { 'ns/Big': 'ns' }
+};
+
+describe('streamed substrate-pack envelope', () => {
+  it.each([1, 2000, 4500])("the stream carries encodeEnvelope's bytes at %i rows", async (n) => {
+    const env = envelope(n);
+    const body = await new Response(await packEnvelopeStream(env, packCtx)).arrayBuffer();
+    expect(Buffer.from(body).equals(encodeEnvelope(env, packCtx))).toBe(true);
+  });
+
+  it('an encode error in a late batch rejects before a stream exists', async () => {
+    const env = envelope(4500);
+    (env.data['ns/Big'] as unknown[])[4400] = 'not a row';
+    await expect(packEnvelopeStream(env, packCtx)).rejects.toThrow(/expected object row/);
   });
 });
