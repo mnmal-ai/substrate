@@ -21,7 +21,7 @@ import {
   type SubstrateRequest,
   type SubstrateResponse
 } from '@mnmal-ai/substrate-types';
-import { jsonEnvelopeStream, streamsJson } from './json-stream.js';
+import { jsonEnvelopeStream, packEnvelopeStream, streamsRows } from './body-stream.js';
 import { projectEnvelope } from './project-json.js';
 
 // Frozen because response builders return this shared reference directly
@@ -251,15 +251,15 @@ interface SerializeOpts {
  * msgpack wrapper. This handles error-only envelopes (unqualified/unknown_name)
  * without a schema lookup.
  */
-export function serializeEnvelope(
+export async function serializeEnvelope(
   req: SubstrateRequest,
   envelope: PackEnvelope,
   engine: EncodeContext,
   frame: Frame,
   opts: SerializeOpts = {}
-): SubstrateResponse {
+): Promise<SubstrateResponse> {
   if (!acceptsPack(readAcceptHeader(req))) {
-    if (streamsJson(envelope)) {
+    if (streamsRows(envelope)) {
       return { status: 200, headers: JSON_HEADERS, body: jsonEnvelopeStream(envelope, frame) };
     }
     // Project envelope.data through each frame entry's `fields` selection to
@@ -277,7 +277,9 @@ export function serializeEnvelope(
   return {
     status: 200,
     headers: PACK_HEADERS,
-    body: encodeEnvelope(envelope, ctx)
+    body: streamsRows(envelope)
+      ? await packEnvelopeStream(envelope, ctx)
+      : encodeEnvelope(envelope, ctx)
   };
 }
 
