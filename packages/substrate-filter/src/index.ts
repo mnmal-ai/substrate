@@ -30,6 +30,7 @@ export {
   normalizeOrderBy
 } from './cursor.js';
 export { checkExpr, type ExprCheck, type ExprScope } from './expr-check.js';
+export { type EvalEnv, evalExpr } from './expr-eval.js';
 export {
   clearExtensionOperators,
   computedFieldOwner,
