@@ -1,4 +1,4 @@
-import type { Expr, ExprType } from '@mnmal-ai/substrate-types';
+import { type ArgType, EXPR_FUNCTIONS, type Expr, type ExprType } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
 import { checkExpr, type ExprScope } from '../src/expr-check.js';
 
@@ -56,7 +56,9 @@ describe('checkExpr types', () => {
 
 describe('checkExpr refusals', () => {
   it('refuses an unsafe integer in an int64 position', () => {
-    expect(refusal({ add: [{ int64: '1' }, 2 ** 53] }).message).toMatch(/int64/);
+    // the JSON number 9007199254740993, as a client would send it
+    const unsafe = JSON.parse('9007199254740993') as number;
+    expect(refusal({ add: [{ int64: '1' }, unsafe] }).message).toMatch(/int64/);
   });
   it('refuses a malformed int64 constant', () => {
     expect(refusal({ int64: '1.5' }).code).toBe('expr_invalid');
@@ -82,12 +84,37 @@ describe('checkExpr refusals', () => {
     expect(refusal({ regexpMatch: ['URL', { lit: '\\d' }] }).message).toMatch(/regex/i);
     expect(refusal({ regexpMatch: ['URL', 'URL'] }).code).toBe('expr_invalid');
   });
-  it('refuses depth and node overruns, naming the limit', () => {
-    let deep: Expr = 'c';
-    for (let i = 0; i < 17; i++) deep = { neg: [deep] };
-    expect(refusal(deep).message).toContain('maxDepth');
-    const wide: Expr = { concat: Array.from({ length: 64 }, () => ({ lit: 'x' })) };
-    expect(refusal(wide).message).toContain('maxNodesPerExpr');
+  it('limits depth to 16 levels', () => {
+    const nest = (levels: number): Expr => {
+      let e: Expr = 'c';
+      for (let i = 1; i < levels; i++) e = { neg: [e] };
+      return e;
+    };
+    expect(run(nest(16)).ok).toBe(true);
+    expect(refusal(nest(17)).message).toContain('maxDepth');
+  });
+  it('limits nodes to 64 per expression, counting every kind', () => {
+    const wide = (n: number): Expr => ({
+      concat: Array.from({ length: n - 1 }, () => ({ lit: 'x' }))
+    });
+    expect(run(wide(64)).ok).toBe(true);
+    expect(refusal(wide(65)).message).toContain('maxNodesPerExpr');
+    // unit and pattern literals are counted too
+    const flags = (n: number) => Array.from({ length: n }, () => 'flag' as Expr);
+    const withPattern = (n: number): Expr => ({
+      and: [...flags(n), { regexpMatch: ['URL', { lit: 'a' }] }]
+    });
+    expect(run(withPattern(60)).ok).toBe(true);
+    expect(refusal(withPattern(61)).message).toContain('maxNodesPerExpr');
+    const withUnit = (n: number): Expr => ({
+      and: [...flags(n), { gt: [{ extract: [{ lit: 'day' }, 'EventTime'] }, 1] }]
+    });
+    expect(run(withUnit(58)).ok).toBe(true);
+    expect(refusal(withUnit(59)).message).toContain('maxNodesPerExpr');
+  });
+  it('does not count a case pair as a node', () => {
+    const r = run({ case: [[{ gt: ['c', 1] }, { lit: 'a' }], { lit: 'b' }] } as unknown as Expr);
+    expect(r).toMatchObject({ ok: true, nodes: 6 });
   });
   it('refuses an unknown bare field, naming it', () => {
     expect(refusal('Nope').message).toContain('Nope');
@@ -95,5 +122,64 @@ describe('checkExpr refusals', () => {
   it('reports nodes and depth on success', () => {
     const r = run({ add: ['ResolutionWidth', 1] });
     expect(r).toMatchObject({ ok: true, nodes: 3, depth: 2 });
+  });
+});
+
+describe('catalogue agrees with the checker', () => {
+  const sample = (k: ArgType): Expr =>
+    ({
+      any: 'c',
+      int64: 'big',
+      number: 'c',
+      string: 'URL',
+      boolean: 'flag',
+      date: 'EventTime',
+      unit: { lit: 'day' },
+      pattern: { lit: 'a' }
+    })[k] as Expr;
+  const wrong = (k: ArgType): Expr | undefined =>
+    k === 'unit' || k === 'pattern'
+      ? 'URL'
+      : k === 'any'
+        ? undefined
+        : k === 'boolean'
+          ? 'URL'
+          : 'flag';
+  const variadic: Record<string, { ok: Expr[]; bad: Expr[] }> = {
+    and: { ok: ['flag'], bad: [] },
+    or: { ok: ['flag', 'flag'], bad: [] },
+    concat: { ok: ['URL'], bad: [] },
+    in: { ok: ['c', 1, 2], bad: ['c'] },
+    case: { ok: [['flag', 'c'], 'c'] as unknown as Expr[], bad: ['c'] },
+    coalesce: { ok: ['c', 1], bad: [] }
+  };
+  for (const f of EXPR_FUNCTIONS) {
+    it(`${f.name}: ${f.description}`, () => {
+      if (f.args === 'variadic') {
+        const v = variadic[f.name];
+        if (!v) throw new Error(`no representative call for ${f.name}`);
+        const ok = run({ [f.name]: v.ok });
+        expect(ok.ok).toBe(true);
+        if (ok.ok && f.returns !== 'any') expect(ok.type).toBe(f.returns);
+        expect(run({ [f.name]: [] }).ok).toBe(false);
+        if (v.bad.length) expect(run({ [f.name]: v.bad }).ok).toBe(false);
+        return;
+      }
+      const args = f.args.map(sample);
+      const ok = run({ [f.name]: args });
+      expect(ok.ok).toBe(true);
+      if (ok.ok && f.returns !== 'any') expect(ok.type).toBe(f.returns);
+      expect(run({ [f.name]: [...args, 'c'] }).ok).toBe(false);
+      expect(run({ [f.name]: args.slice(0, -1) }).ok).toBe(false);
+      f.args.forEach((k, i) => {
+        const w = wrong(k);
+        if (w === undefined) return;
+        expect(run({ [f.name]: args.map((a, j) => (j === i ? w : a)) }).ok).toBe(false);
+      });
+    });
+  }
+  it('has an entry for exactly the names the checker knows', () => {
+    expect(run({ nope: [] }).ok).toBe(false);
+    expect(new Set(EXPR_FUNCTIONS.map((f) => f.name)).size).toBe(EXPR_FUNCTIONS.length);
   });
 });

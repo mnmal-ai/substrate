@@ -5,6 +5,7 @@
  * `number`; a safe-integer literal beside an int64 stays int64.
  */
 import {
+  type ArgType,
   DATE_UNITS,
   EXPR_FUNCTIONS,
   EXPR_LIMITS,
@@ -51,6 +52,16 @@ export function checkExpr(expr: Expr, scope: ExprScope, path: string[]): ExprChe
     throw new Refusal(`${at.join('.')}: ${msg}`, at);
   };
 
+  const checkDepth = (depth: number, at: string[]): void => {
+    if (depth > EXPR_LIMITS.maxDepth)
+      refuse(`expression is deeper than maxDepth (${EXPR_LIMITS.maxDepth})`, at);
+  };
+  const count = (at: string[]): void => {
+    if (++nodes > EXPR_LIMITS.maxNodesPerExpr) {
+      refuse(`expression has more than maxNodesPerExpr (${EXPR_LIMITS.maxNodesPerExpr}) nodes`, at);
+    }
+  };
+
   const unify = (items: Typed[], what: string, at: string[]): ExprType => {
     const types = items.map((x) => x.type).filter((t): t is ExprType => t !== null);
     if (types.length === 0) return refuse(`${what}: cannot infer a type from null alone`, at);
@@ -89,9 +100,7 @@ export function checkExpr(expr: Expr, scope: ExprScope, path: string[]): ExprChe
   const walk = (e: unknown, at: string[], depth: number): { t: Typed; depth: number } => {
     if (depth > EXPR_LIMITS.maxDepth)
       refuse(`expression is deeper than maxDepth (${EXPR_LIMITS.maxDepth})`, at);
-    if (++nodes > EXPR_LIMITS.maxNodesPerExpr) {
-      refuse(`expression has more than maxNodesPerExpr (${EXPR_LIMITS.maxNodesPerExpr}) nodes`, at);
-    }
+    count(at);
     if (e === null) return { t: { type: null }, depth };
     if (typeof e === 'boolean') return { t: { type: 'boolean' }, depth };
     if (typeof e === 'number') {
@@ -162,7 +171,6 @@ export function checkExpr(expr: Expr, scope: ExprScope, path: string[]): ExprChe
         const pair: unknown = val[i];
         if (!Array.isArray(pair) || pair.length !== 2)
           return refuse(`'case' branch ${i} must be [cond, then]`, where(i));
-        nodes++;
         need(arg(pair[0], `${i}.0`), 'boolean', `'case' condition ${i}`, where(i));
         branches.push(arg(pair[1], `${i}.1`));
       }
@@ -193,11 +201,6 @@ export function checkExpr(expr: Expr, scope: ExprScope, path: string[]): ExprChe
       for (const [i, a] of val.entries()) need(arg(a, i), 'boolean', `'${key}'`, where(i));
       return result('boolean');
     }
-    if (key === 'isNull') {
-      arity(1);
-      arg(val[0], 0);
-      return result('boolean');
-    }
     if (key === 'concat') {
       arity([1]);
       for (const [i, a] of val.entries()) need(arg(a, i), 'string', "'concat'", where(i));
@@ -205,42 +208,31 @@ export function checkExpr(expr: Expr, scope: ExprScope, path: string[]): ExprChe
     }
 
     // Fixed signatures. Units and regex patterns must be literals.
-    const fixed = sig.args as ExprType[];
-    arity(fixed.length);
-    const typed: Typed[] = [];
-    const isUnit = key === 'dateTrunc' || key === 'extract';
-    const isPattern = (i: number) => i === 1 && (key === 'regexpMatch' || key === 'regexpReplace');
-    val.forEach((a, i) => {
-      if (isUnit && i === 0) {
-        const unit = lit(a as Expr, `'${key}' unit`, where(0));
-        nodes++;
-        if (!(DATE_UNITS as readonly string[]).includes(unit)) {
-          refuse(`'${key}' unit '${unit}' is not one of ${DATE_UNITS.join(', ')}`, where(0));
+    const kinds = sig.args as ArgType[];
+    arity(kinds.length);
+    const group: Typed[] = [];
+    for (const [i, a] of val.entries()) {
+      const kind = kinds[i] as ArgType;
+      if (kind === 'unit' || kind === 'pattern') {
+        const text = lit(a as Expr, `'${key}' ${kind}`, where(i));
+        checkDepth(depth + 1, where(i));
+        count(where(i));
+        if (kind === 'unit' && !(DATE_UNITS as readonly string[]).includes(text)) {
+          refuse(`'${key}' unit '${text}' is not one of ${DATE_UNITS.join(', ')}`, where(i));
         }
-        typed.push({ type: 'string' });
+        if (kind === 'pattern') {
+          const why = checkRegexSubset(text);
+          if (why) refuse(`'${key}' regex is outside the portable subset: ${why}`, where(i));
+        }
         maxDepth = Math.max(maxDepth, depth + 1);
-      } else if (isPattern(i)) {
-        const pattern = lit(a as Expr, `'${key}' pattern`, where(i));
-        nodes++;
-        const why = checkRegexSubset(pattern);
-        if (why) refuse(`'${key}' regex is outside the portable subset: ${why}`, where(i));
-        typed.push({ type: 'string' });
-        maxDepth = Math.max(maxDepth, depth + 1);
-      } else typed.push(arg(a, i));
-    });
-
-    const cmp = ['eq', 'neq', 'gt', 'gte', 'lt', 'lte'].includes(key);
-    if (cmp) {
-      unify(typed, `'${key}'`, fnAt);
-      return result('boolean');
+        continue;
+      }
+      const t = arg(a, i);
+      if (kind !== 'any') need(t, kind, `'${key}' argument ${i}`, where(i));
+      if (kind === 'any' || (kind === 'number' && sig.returns === 'any')) group.push(t);
     }
-    for (const [i, t] of typed.entries())
-      need(t, fixed[i] as ExprType, `'${key}' argument ${i}`, where(i));
-    if (sig.returns === 'arg0') {
-      return result(
-        key === 'neg' ? ((typed[0] as Typed).type ?? 'number') : unify(typed, `'${key}'`, fnAt)
-      );
-    }
+    if (sig.returns === 'any') return result(unify(group, `'${key}'`, fnAt));
+    if (group.length > 1) unify(group, `'${key}'`, fnAt);
     return result(sig.returns);
   };
 
