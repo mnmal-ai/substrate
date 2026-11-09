@@ -1029,7 +1029,7 @@ export class PgDataset implements Dataset {
     // One page query: phase 1 with the cursor compare, or the null tail.
     // A read that names its fields gets the metadata columns and short_ids
     // lookup only when it asks for them; the transport would drop them anyway.
-    // Each `select` value is one column of the page, shipped as the text the evaluator's value reads from.
+    // Each `select` value is one column of the page, shipped as the text the evaluator's value reads from (a date as `utcTextSql(.., 'US')` prints it).
     const selectColumns = selectEntries.map(([name], i) => {
       const fragment =
         fenced !== undefined && name === lead
@@ -1038,7 +1038,7 @@ export class PgDataset implements Dataset {
       const alias = sql(`__sel_${i}`);
       switch (selectTypes.get(name)) {
         case 'date':
-          return sql`, to_char((${fragment}) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS ${alias}`;
+          return sql`, to_char((${fragment}) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS ${alias}`;
         case 'int64':
           return sql`, (${fragment})::text AS ${alias}`;
         default:

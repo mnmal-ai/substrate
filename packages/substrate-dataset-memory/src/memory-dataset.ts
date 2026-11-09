@@ -69,8 +69,7 @@ import {
   assertNoRepeatedIds,
   createKeyedMutex,
   filterTooBroad,
-  isColumnField,
-  normalizeIsoTimestamp
+  isColumnField
 } from '@mnmal-ai/substrate-types';
 import { NamespaceMismatch, ReservedField } from './errors.js';
 import { MemoryShortIdStore, type ShortIdBucketSnapshot } from './memory-short-id-store.js';
@@ -392,9 +391,9 @@ export class MemoryDataset implements Dataset {
           values[name] = evalExpr(expr, row, { output, fieldType: typeOf }) ?? null;
         }
         const copy: Row = { ...row, ...values };
-        // A date reads out as a plain read of a date field does: UTC, to the millisecond.
+        // A date reads out as pg's plain read prints it: UTC, to the microsecond.
         const out = { ...values };
-        for (const name of dateNames) out[name] = isoMillis(values[name]);
+        for (const name of dateNames) out[name] = isoMicros(values[name]);
         original.set(copy, original.get(row) ?? row);
         selected.set(copy, out);
         return copy;
@@ -1065,10 +1064,13 @@ function walkProjection(
   return Object.fromEntries(out);
 }
 
-/** A date value as `toISOString()` prints it (what pg's plain read returns), or null when it is not a date. */
-function isoMillis(v: unknown): string | null {
-  const n = typeof v === 'string' ? normalizeIsoTimestamp(v) : undefined;
-  return n === undefined ? null : new Date(n).toISOString();
+/** A date value as UTC text to the microsecond, the form pg's row projection prints; null when it is not a date. */
+function isoMicros(v: unknown): string | null {
+  const micros = storedMicros(v);
+  if (micros === undefined) return null;
+  const sub = ((micros % 1000n) + 1000n) % 1000n;
+  const ms = Number((micros - sub) / 1000n);
+  return new Date(ms).toISOString().replace('Z', `${sub.toString().padStart(3, '0')}Z`);
 }
 
 function compareByClauses(

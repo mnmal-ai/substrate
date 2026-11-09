@@ -889,10 +889,6 @@ export class SubscribeSubsystem {
     idSet.add(entry);
   }
 
-  /**
-   * Remove an entry from the bus + per-call index (mirrors the drain teardown).
-   * Used when a post-registration step bails before the snapshot ships.
-   */
   #fieldDefOf(fields: Record<string, FieldDef> | undefined): FieldDefOf {
     if (fields === undefined) return NO_FIELDS;
     let f = this.#fieldDefs.get(fields);
@@ -903,6 +899,10 @@ export class SubscribeSubsystem {
     return f;
   }
 
+  /**
+   * Remove an entry from the bus + per-call index (mirrors the drain teardown).
+   * Used when a post-registration step bails before the snapshot ships.
+   */
   #unregisterEntry(entry: SubscriptionEntry): void {
     const busKey = `${entry.ns}/${entry.type}`;
     const bucket = this.#subscriptions.get(busKey);

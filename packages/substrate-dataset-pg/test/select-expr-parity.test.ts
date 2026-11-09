@@ -55,7 +55,7 @@ const PAGES: Array<Record<string, unknown>> = [
     url: 'https://www.Google.com/a',
     width: 100,
     big: '9007199254740993',
-    seen: '2024-03-05T10:20:30.123Z'
+    seen: '2024-03-05T10:20:30.123456Z'
   },
   { url: 'https://google.com/b', width: 5, big: 7, seen: '2024-03-05T10:20:30.123999Z' },
   { url: 'a%b', width: 1, big: null, seen: null },
@@ -105,7 +105,7 @@ async function read(
   });
   // Memory ignores the field hint, so compare only the keys asked for (ids differ per store).
   const keys = Object.keys(fields).filter((k) => k !== 'id' && k !== '_agg');
-  const asked = (r: Row) => Object.fromEntries(keys.map((k) => [k, r[k]]));
+  const asked = (r: Row) => Object.fromEntries(keys.map((k) => [k, r[k] ?? null]));
   return {
     rows: ((env.data[`${NS}/Page`] ?? []) as Row[]).map(asked) as Row[],
     ...(env.errors ? { errors: env.errors as never } : {}),
@@ -186,7 +186,7 @@ describe('select, $expr and like on memory and pg', () => {
     );
     expect(out.rows[3]).toMatchObject({
       b2: 8n,
-      day: '2024-03-05T00:00:00.000Z',
+      day: '2024-03-05T00:00:00.000000Z',
       up: 'HTTPS://GOOGLE.COM/B',
       wide: true
     });
@@ -324,17 +324,24 @@ describe('select, $expr and like on memory and pg', () => {
     ]);
   });
 
-  it('a date select reads out to the millisecond on both engines, however precise the stored date', async () => {
+  it('a date select equals the plain read of that field on each engine, microseconds kept', async () => {
     const out = await same(
       { select: { s: 'seen' }, orderBy: [{ url: 'asc' }] },
-      { url: true, s: true }
+      { url: true, seen: true, s: true }
     );
+    // A plain read gives the stored text, which may omit trailing zeros ('.000Z'); the select is
+    // always the microsecond form. Same instant on both, and the same text where all six digits are stored.
+    const instant = (v: unknown) => (v == null ? null : new Date(String(v)).getTime());
+    for (const r of out.rows) {
+      expect(instant(r.s)).toEqual(instant(r.seen));
+      if (/\.\d{6}Z$/.test(String(r.seen))) expect(r.s).toEqual(r.seen);
+    }
     expect(out.rows.map((r) => r.s)).toEqual([
       null,
-      '2023-01-01T00:00:00.000Z',
+      '2023-01-01T00:00:00.000000Z',
       null,
-      '2024-03-05T10:20:30.123Z',
-      '2024-03-05T10:20:30.123Z'
+      '2024-03-05T10:20:30.123999Z',
+      '2024-03-05T10:20:30.123456Z'
     ]);
   });
 
@@ -365,14 +372,14 @@ describe('select, $expr and like on memory and pg', () => {
     }
   });
 
-  it('a date _agg select is read out to the millisecond and orders by instant', async () => {
+  it('a date _agg select keeps microseconds and orders by instant', async () => {
     const out = await same(
       { select: { t: '_agg.t' }, orderBy: [{ t: 'desc' }, { url: 'asc' }] },
       { url: true, t: true, _agg: { t: { in: `${NS}/Hit.page`, max: 'at' } } }
     );
     expect(out.rows.slice(0, 2).map((r) => [r.url, r.t])).toEqual([
-      ['https://www.Google.com/a', '2024-01-03T00:00:00.223Z'],
-      ['https://google.com/b', '2024-01-01T00:00:00.023Z']
+      ['https://www.Google.com/a', '2024-01-03T00:00:00.223456Z'],
+      ['https://google.com/b', '2024-01-01T00:00:00.023456Z']
     ]);
     expect(out.rows[2]?.t).toBeNull();
   });
