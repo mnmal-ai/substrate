@@ -213,12 +213,15 @@ export function checkExpr(expr: Expr, scope: ExprScope, path: string[]): ExprChe
     const group: Typed[] = [];
     for (const [i, a] of val.entries()) {
       const kind = kinds[i] as ArgType;
-      if (kind === 'unit' || kind === 'pattern') {
+      if (kind === 'unit' || kind === 'pattern' || kind === 'likePattern') {
         const text = lit(a as Expr, `'${key}' ${kind}`, where(i));
         checkDepth(depth + 1, where(i));
         count(where(i));
         if (kind === 'unit' && !(DATE_UNITS as readonly string[]).includes(text)) {
           refuse(`'${key}' unit '${text}' is not one of ${DATE_UNITS.join(', ')}`, where(i));
+        }
+        if (kind === 'likePattern' && /(^|[^\\])(\\\\)*\\$/.test(text)) {
+          refuse('LIKE pattern must not end with escape character', where(i));
         }
         if (kind === 'pattern') {
           const why = checkRegexSubset(text);

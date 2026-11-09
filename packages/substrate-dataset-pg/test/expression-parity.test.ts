@@ -171,23 +171,20 @@ describe.skipIf(!POSTGRES_URL)('expression compiler parity', () => {
     expect(rows.map((r) => r.v)).toEqual([5.5]);
   });
 
-  it('a trailing LIKE escape in a non-literal pattern raises too', async () => {
-    const expr: Expr = { like: [{ lit: 'a' }, 's'] };
-    expect(() => evalExpr(expr, { s: 'a\\' })).toThrow('must not end with escape');
-    await expect(onPg(expr, { s: 'a\\' })).rejects.toThrow('must not end with escape');
-    expect(await onPg(expr, { s: 'a%' })).toBe(true);
+  it('null text is null for like and notLike on both engines', async () => {
+    for (const expr of [
+      { like: ['s', { lit: 'a%' }] },
+      { notLike: ['s', { lit: 'a%' }] }
+    ] as Expr[]) {
+      expect(evalExpr(expr, { s: null })).toBeNull();
+      expect(await onPg(expr, { s: null })).toBeNull();
+    }
   });
 
   it('int64 overflow raises', async () => {
     await expect(onPg({ add: [{ int64: '9223372036854775807' }, 1] }, {})).rejects.toThrow(
       /out of range/
     );
-  });
-
-  it('a trailing LIKE escape raises the same message on both engines', async () => {
-    const expr: Expr = { like: [{ lit: 'a' }, { lit: 'a\\' }] };
-    expect(() => evalExpr(expr, {})).toThrow('LIKE pattern must not end with escape character');
-    await expect(onPg(expr, {})).rejects.toThrow('LIKE pattern must not end with escape character');
   });
 
   const SUBJECTS = [
@@ -214,5 +211,54 @@ describe.skipIf(!POSTGRES_URL)('expression compiler parity', () => {
         ).toBe(evalExpr(expr, {}));
       }
     }
+  });
+});
+
+/** The text length of a compiled fragment: its template strings and every nested fragment. */
+function textLength(q: unknown): number {
+  const f = q as { strings?: readonly string[]; args?: unknown[] };
+  if (!f || typeof f !== 'object') return 0;
+  if (Array.isArray(q)) return q.reduce((n: number, x) => n + textLength(x), 0);
+  if (f.strings === undefined) return 0;
+  return (
+    f.strings.reduce((n, x) => n + x.length, 0) +
+    (f.args ?? []).reduce((n: number, x) => n + textLength(x), 0)
+  );
+}
+
+describe('compiled SQL size', () => {
+  const sql = postgres('postgres://nobody@127.0.0.1:1/none');
+  afterAll(() => sql.end());
+  const size = (e: Expr) => textLength(compileExprTyped(sql, e, ctx).fragment);
+
+  /** Each level holds the previous one exactly once, under like, concat, case and upper. */
+  const wrap = (depth: number): Expr => {
+    let e: Expr = { concat: ['s', 's'] };
+    for (let i = 0; i < depth; i++) {
+      e = {
+        upper: [
+          {
+            case: [[{ like: [{ concat: [e, 's'] }, { lit: 'a%' }] }, { lit: 'x' }], { lit: 'z' }]
+          }
+        ]
+      } as Expr;
+      e = { concat: [e, 's'] };
+    }
+    return e;
+  };
+
+  it('grows linearly with nesting', () => {
+    const sizes = [1, 2, 3, 4, 5].map((d) => size(wrap(d)));
+    const steps = sizes.slice(1).map((x, i) => x - (sizes[i] as number));
+    expect(new Set(steps).size).toBe(1);
+  });
+
+  it('compiles each operand of a function once', () => {
+    const one = size({ like: [{ concat: ['s', 's'] }, { lit: 'a%' }] });
+    const two = size({ like: [{ concat: [{ concat: ['s', 's'] }, 's'] }, { lit: 'a%' }] });
+    const three = size({
+      like: [{ concat: [{ concat: [{ concat: ['s', 's'] }, 's'] }, 's'] }, { lit: 'a%' }]
+    });
+    expect(three - two).toBe(two - one);
   });
 });

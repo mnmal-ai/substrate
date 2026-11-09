@@ -135,24 +135,6 @@ export function compileExprTyped(
         return sql`((${as(x, 'string')}) COLLATE "C" ${u(op)} (${as(y, 'string')}) COLLATE "C")`;
       }
       if (isInt(x, y)) return sql`(${big(x)} ${u(op)} ${big(y)})`;
-      if (
-        x.t !== null &&
-        y.t !== null &&
-        (x.t === 'int64') !== (y.t === 'int64') &&
-        x.t !== 'date' &&
-        y.t !== 'date' &&
-        x.t !== 'boolean' &&
-        y.t !== 'boolean'
-      ) {
-        // An int64 against a number compares exactly: float8 rounding is monotonic, so only a tie
-        // (the bigint rounds to the double) needs the double read back as a bigint.
-        const [i, d] = x.t === 'int64' ? [x, y] : [y, x];
-        const flip = x.t === 'int64' ? '' : '-';
-        return sql`(SELECT ${u(flip)}c ${u(op)} 0 FROM (SELECT CASE WHEN b IS NULL OR d IS NULL THEN NULL
-          WHEN b::float8 < d THEN -1 WHEN b::float8 > d THEN 1 WHEN d >= 9223372036854775808 THEN -1
-          WHEN b < d::bigint THEN -1 WHEN b > d::bigint THEN 1 ELSE 0 END AS c
-          FROM (SELECT ${i.f} AS b, ${d.f} AS d OFFSET 0) j) k)`;
-      }
       return sql`(${x.f} ${u(op)} ${y.f})`;
     };
     const cmp = (op: string): Node => bool(compare(a, b, op));
@@ -207,13 +189,9 @@ export function compileExprTyped(
       case 'isNull':
         return bool(sql`((${a.f}) IS NULL)`);
       case 'in': {
-        const rest = n.slice(1);
-        return bool(
-          interleave(
-            rest.map((r) => compare(a, r, '=')),
-            ' OR '
-          )
-        );
+        // int64 beside number widens to float8 in the list, as the evaluator compares them.
+        const rest = n.slice(1).map((r) => (a.t === 'int64' && r.bigint ? r.bigint : r.f));
+        return bool(sql`(${a.f} IN (${join(rest, ',')}))`);
       }
       case 'length':
         return { f: sql`char_length(${text(a)})::float8`, t: 'number' };
@@ -233,24 +211,11 @@ export function compileExprTyped(
       case 'concat':
         return str(interleave(n.map(text), ' || '));
       case 'like':
-      case 'notLike': {
-        const neg = u(key === 'like' ? '' : 'NOT ');
-        const pat = args[1] as { lit?: string };
-        if (typeof pat === 'object' && pat !== null && typeof pat.lit === 'string') {
-          // A literal pattern is decided here, with pg's own message; the SQL stays a plain LIKE.
-          if (/(^|[^\\])(\\\\)*\\$/.test(pat.lit)) {
-            throw new Error('LIKE pattern must not end with escape character');
-          }
-          return bool(sql`(${neg}(${text(a)} LIKE ${text(b)} ESCAPE '\\'))`);
-        }
-        // Postgres raises on a trailing escape only when matching reaches it, the evaluator whenever
-        // both operands exist: probing `'x' LIKE right(p, 1)` (not constant, so not folded at plan time) makes it always.
+      case 'notLike':
+        // The checker holds the pattern to a literal that does not end in an escape; it binds as a parameter.
         return bool(
-          sql`(CASE WHEN (${text(a)}) IS NOT NULL AND (${text(b)}) ~ '(^|[^\\\\])(\\\\\\\\)*\\\\$'
-              THEN ${neg}('x' LIKE right(${text(b)}, 1) ESCAPE '\\')
-              ELSE ${neg}(${text(a)} LIKE ${text(b)} ESCAPE '\\') END)`
+          sql`(${u(key === 'like' ? '' : 'NOT ')}(${text(a)} LIKE ${text(b)} ESCAPE '\\'))`
         );
-      }
       // Default collation: the regex classes follow the database ctype, as Postgres users expect.
       case 'regexpMatch':
         return bool(sql`((${text(a)}) COLLATE "default" ~ ${text(b)})`);

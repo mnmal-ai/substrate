@@ -19,10 +19,10 @@ export type ExprType = 'number' | 'int64' | 'string' | 'boolean' | 'date';
 
 /**
  * An argument slot. `'any'` slots unify to one type (int64 and number compare
- * as number); `'unit'` is a `{ lit }` date unit and `'pattern'` a `{ lit }`
- * regex, both literal-only.
+ * as number); `'unit'` is a `{ lit }` date unit, `'pattern'` a `{ lit }`
+ * regex and `'likePattern'` a `{ lit }` LIKE pattern, all literal-only.
  */
-export type ArgType = ExprType | 'any' | 'unit' | 'pattern';
+export type ArgType = ExprType | 'any' | 'unit' | 'pattern' | 'likePattern';
 
 export interface FunctionSig {
   name: string;
@@ -112,11 +112,11 @@ export const EXPR_FUNCTIONS: readonly FunctionSig[] = [
   sig('concat', 'variadic', 'string', 'Concatenation of one or more string arguments.'),
   sig(
     'like',
-    ['string', 'string'],
+    ['string', 'likePattern'],
     'boolean',
-    'SQL LIKE, case-sensitive: % and _ wildcards, backslash escape.'
+    'SQL LIKE, case-sensitive: % and _ wildcards, backslash escape. The pattern is a lit that does not end in an unescaped backslash.'
   ),
-  sig('notLike', ['string', 'string'], 'boolean', 'Negated SQL LIKE, case-sensitive.'),
+  sig('notLike', ['string', 'likePattern'], 'boolean', 'Negated SQL LIKE, case-sensitive.'),
   sig(
     'regexpMatch',
     ['string', 'pattern'],

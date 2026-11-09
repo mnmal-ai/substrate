@@ -47,8 +47,8 @@ function likeTokens(pattern: string): LikeToken[] {
   for (let i = 0; i < cps.length; i++) {
     const c = cps[i] as string;
     if (c === '\\') {
-      if (i + 1 >= cps.length) throw new Error('LIKE pattern must not end with escape character');
-      out.push({ lit: cps[++i] as string });
+      // The checker refuses a trailing escape; an unchecked one is a literal backslash.
+      out.push({ lit: i + 1 < cps.length ? (cps[++i] as string) : c });
     } else if (c === '%' || c === '_') out.push(c);
     else out.push({ lit: c });
   }
@@ -171,6 +171,13 @@ function extract(unit: string, d: Date): number {
   }
 }
 
+const widen = (x: unknown, y: unknown): [unknown, unknown] =>
+  typeof x === 'bigint' && typeof y === 'number'
+    ? [Number(x), y]
+    : typeof x === 'number' && typeof y === 'bigint'
+      ? [x, Number(y)]
+      : [x, y];
+
 const isSafeIntLiteral = (e: Expr): boolean => typeof e === 'number' && Number.isSafeInteger(e);
 
 type Arith = (a: bigint, b: bigint) => bigint;
@@ -234,9 +241,12 @@ export function evalExpr(expr: Expr, row: Record<string, unknown>, env: EvalEnv 
   if (key === 'in') {
     const [needle, ...rest] = vals as [unknown, ...unknown[]];
     if (needle === null) return null;
-    // biome-ignore lint/suspicious/noExplicitAny: comparisons span bigint, number and string.
-    if (rest.some((v: any) => v !== null && !((needle as any) < v) && !((needle as any) > v)))
-      return true;
+    const hit = (v: unknown): boolean => {
+      const [n, m] = widen(needle, v);
+      // biome-ignore lint/suspicious/noExplicitAny: comparisons span number and string.
+      return v !== null && !((n as any) < (m as any)) && !((n as any) > (m as any));
+    };
+    if (rest.some(hit)) return true;
     return rest.includes(null) ? null : false;
   }
   if (key === 'dateTrunc' || key === 'extract') {
@@ -250,6 +260,9 @@ export function evalExpr(expr: Expr, row: Record<string, unknown>, env: EvalEnv 
 
   // biome-ignore lint/suspicious/noExplicitAny: operands are checked upstream; comparisons span bigint, number and string.
   const [a, b, c] = vals as [any, any, any];
+  // int64 beside number compares as number, as in SQL.
+  // biome-ignore lint/suspicious/noExplicitAny: as above.
+  const [ca, cb] = widen(a, b) as [any, any];
   switch (key) {
     case 'add':
     case 'sub':
@@ -265,17 +278,17 @@ export function evalExpr(expr: Expr, row: Record<string, unknown>, env: EvalEnv 
     case 'neg':
       return typeof a === 'bigint' ? int64(-a) : -a;
     case 'eq':
-      return !(a < b) && !(a > b);
+      return !(ca < cb) && !(ca > cb);
     case 'neq':
-      return a < b || a > b;
+      return ca < cb || ca > cb;
     case 'gt':
-      return a > b;
+      return ca > cb;
     case 'gte':
-      return !(a < b);
+      return !(ca < cb);
     case 'lt':
-      return a < b;
+      return ca < cb;
     case 'lte':
-      return !(a > b);
+      return !(ca > cb);
     case 'not':
       return !a;
     case 'length':

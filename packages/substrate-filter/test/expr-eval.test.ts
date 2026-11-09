@@ -24,10 +24,9 @@ describe('evalExpr', () => {
     expect(() => evalExpr({ add: [1.7e308, 1.7e308] }, {})).toThrow('value out of range: overflow');
     expect(() => evalExpr({ div: [1e-200, 1e200] }, {})).toThrow('value out of range: underflow');
   });
-  it('refuses a LIKE pattern ending in an escape', () => {
-    expect(() => evalExpr({ like: [{ lit: 'a' }, { lit: 'a\\' }] }, {})).toThrow(
-      'LIKE pattern must not end with escape character'
-    );
+  it('compares an int64 beside a number as a number', () => {
+    expect(evalExpr({ lt: [9007199254740992, 'big'] }, { big: 9007199254740993n })).toBe(false);
+    expect(evalExpr({ in: ['big', 9007199254740992] }, { big: 9007199254740993n })).toBe(true);
   });
   it('matches LIKE with many wildcards without blowing up', () => {
     const pattern = `${'%a'.repeat(30)}b`;

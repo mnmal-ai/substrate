@@ -55,6 +55,21 @@ describe('checkExpr types', () => {
 });
 
 describe('checkExpr refusals', () => {
+  it('refuses a non-literal LIKE pattern and a literal ending in an unescaped backslash', () => {
+    const r = refusal({ like: ['URL', { lit: 'a\\' }] });
+    expect(r.message).toContain('LIKE pattern must not end with escape character');
+    expect(r.path).toEqual(['select', 'x', 'like', '1']);
+    expect(refusal({ notLike: ['URL', { lit: '%\\' }] }).code).toBe('expr_invalid');
+    expect(type({ like: ['URL', { lit: 'a\\\\' }] })).toBe('boolean');
+    expect(refusal({ like: ['URL', 'URL'] }).message).toContain('{ lit }');
+    expect(refusal({ notLike: ['URL', { concat: [{ lit: 'a' }] }] }).path).toEqual([
+      'select',
+      'x',
+      'notLike',
+      '1'
+    ]);
+  });
+
   it('takes int64 only for mod', () => {
     expect(type({ mod: ['big', 3] })).toBe('int64');
     expect(refusal({ mod: ['c', 3] }).message).toContain('expected int64');
@@ -141,10 +156,11 @@ describe('catalogue agrees with the checker', () => {
       boolean: 'flag',
       date: 'EventTime',
       unit: { lit: 'day' },
-      pattern: { lit: 'a' }
+      pattern: { lit: 'a' },
+      likePattern: { lit: 'a%' }
     })[k] as Expr;
   const wrong = (k: ArgType): Expr | undefined =>
-    k === 'unit' || k === 'pattern'
+    k === 'unit' || k === 'pattern' || k === 'likePattern'
       ? 'URL'
       : k === 'any'
         ? undefined
