@@ -10,15 +10,15 @@ import { compileRegex, execRegex } from './regex-vm.js';
 export interface EvalEnv {
   /** Named outputs, which a bare string resolves to before the row (for `having`). */
   output?: Record<string, unknown>;
-  /** The type of a bare string, where its value alone (a null) does not say. */
-  fieldType?: (name: string) => ExprType | undefined;
+  /** The declared type of a bare string (a field, or an output name): never inferred from a value, which a null does not carry. */
+  fieldType: (name: string) => ExprType | undefined;
 }
 
 const MIN_INT64 = -(2n ** 63n);
 const MAX_INT64 = 2n ** 63n - 1n;
 
 const int64 = (n: bigint): bigint => {
-  if (n < MIN_INT64 || n > MAX_INT64) throw new RangeError('int64 overflow');
+  if (n < MIN_INT64 || n > MAX_INT64) throw new RangeError('bigint out of range');
   return n;
 };
 
@@ -187,7 +187,7 @@ const ARITH: Record<string, [Arith, (a: number, b: number) => number]> = {
   mul: [(a, b) => a * b, (a, b) => a * b]
 };
 
-export function evalExpr(expr: Expr, row: Record<string, unknown>, env: EvalEnv = {}): unknown {
+export function evalExpr(expr: Expr, row: Record<string, unknown>, env: EvalEnv): unknown {
   if (expr === null) return null;
   if (typeof expr === 'string') {
     const v =
@@ -212,14 +212,14 @@ export function evalExpr(expr: Expr, row: Record<string, unknown>, env: EvalEnv 
     case 'case': {
       for (let i = 0; i < args.length - 1; i++) {
         const [cond, then] = args[i] as unknown as [Expr, Expr];
-        if (ev(cond) === true) return unified(expr, ev(then), row, env);
+        if (ev(cond) === true) return unified(expr, ev(then), env);
       }
-      return unified(expr, ev(args[args.length - 1] as Expr), row, env);
+      return unified(expr, ev(args[args.length - 1] as Expr), env);
     }
     case 'coalesce':
       for (const a of args) {
         const v = ev(a);
-        if (v !== null) return unified(expr, v, row, env);
+        if (v !== null) return unified(expr, v, env);
       }
       return null;
     case 'isNull':
@@ -345,27 +345,23 @@ function arith(
 }
 
 /** A case or coalesce value in the type the checker gives the whole call: int64 widens to number, a number literal adopts int64. */
-function unified(expr: Expr, v: unknown, row: Record<string, unknown>, env: EvalEnv): unknown {
+function unified(expr: Expr, v: unknown, env: EvalEnv): unknown {
   if (typeof v !== 'bigint' && typeof v !== 'number') return v;
-  const scope = {
-    field(name: string): ExprType | undefined {
-      const t = env.fieldType?.(name);
-      if (t !== undefined) return t;
-      const x = env.output && Object.hasOwn(env.output, name) ? env.output[name] : row[name];
-      return typeof x === 'bigint'
-        ? 'int64'
-        : typeof x === 'number'
-          ? 'number'
-          : typeof x === 'string'
-            ? 'string'
-            : typeof x === 'boolean'
-              ? 'boolean'
-              : undefined;
-    }
-  };
-  const c = checkExpr(expr, scope, []);
-  if (!c.ok) return v;
-  if (c.type === 'number' && typeof v === 'bigint') return Number(v);
-  if (c.type === 'int64' && typeof v === 'number') return BigInt(v);
+  const t = callType(expr, env);
+  if (t === 'number' && typeof v === 'bigint') return Number(v);
+  if (t === 'int64' && typeof v === 'number') return BigInt(v);
   return v;
+}
+
+/** Each call node's checked type, computed once per node and field-type lookup, never per row. */
+const callTypes = new WeakMap<object, WeakMap<object, ExprType | null>>();
+function callType(expr: Expr, env: EvalEnv): ExprType | null {
+  const byNode = callTypes.get(env.fieldType) ?? new WeakMap<object, ExprType | null>();
+  callTypes.set(env.fieldType, byNode);
+  const hit = byNode.get(expr as object);
+  if (hit !== undefined) return hit;
+  const c = checkExpr(expr, { field: env.fieldType }, []);
+  const t = c.ok ? c.type : null;
+  byNode.set(expr as object, t);
+  return t;
 }

@@ -3,7 +3,7 @@
  * dataset row must produce `expected`. Rows carry what a dataset row carries
  * (numbers, strings, booleans, `bigint` for int64, ISO-8601 UTC strings for dates).
  */
-import type { Expr } from '@mnmal-ai/substrate-types';
+import type { Expr, ExprType } from '@mnmal-ai/substrate-types';
 
 export interface ExprCase {
   name: string;
@@ -17,6 +17,17 @@ const kase = (...args: unknown[]): Expr => ({ case: args as Expr[] });
 const lit = (s: string): Expr => ({ lit: s });
 const D = '2013-07-17T10:11:12.000Z';
 const row = { s: '😀é', n: null, d: D, big: 9223372036854775800n, i: 5n, x: 2.5 };
+
+/** The declared type of each field the corpus rows carry, which an engine takes from its schema. */
+export const CORPUS_FIELD_TYPES: Record<string, ExprType> = {
+  s: 'string',
+  n: 'number',
+  d: 'date',
+  big: 'int64',
+  i: 'int64',
+  x: 'number',
+  constructor: 'string' as ExprType
+};
 
 export const EXPR_CORPUS: ExprCase[] = [
   { name: 'add numbers', expr: { add: ['x', 1] }, row, expected: 3.5 },
@@ -245,6 +256,30 @@ export const EXPR_CORPUS: ExprCase[] = [
     expected: 5
   },
   { name: 'case adopts int64 for a literal', expr: kase([false, 'i'], 0), row, expected: 0n },
+  {
+    name: 'coalesce(i, x) is a number even when x is null',
+    expr: { coalesce: ['i', 'x'] },
+    row: { i: 5n, x: null },
+    expected: 5
+  },
+  {
+    name: 'coalesce(x, i) takes the number first',
+    expr: { coalesce: ['x', 'i'] },
+    row: { i: 5n, x: 2.5 },
+    expected: 2.5
+  },
+  {
+    name: 'coalesce(x, i) widens i when x is null',
+    expr: { coalesce: ['x', 'i'] },
+    row: { i: 5n, x: null },
+    expected: 5
+  },
+  {
+    name: 'case widens an int64 branch beside a number branch',
+    expr: kase([true, 'i'], 'x'),
+    row: { i: 5n, x: null },
+    expected: 5
+  },
   { name: 'mod by zero is null', expr: { mod: ['i', 0] }, row, expected: null },
   {
     name: 'int64 literal',

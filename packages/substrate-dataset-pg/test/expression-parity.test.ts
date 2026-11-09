@@ -8,11 +8,17 @@ import { evalExpr } from '@mnmal-ai/substrate-filter';
 import type { Expr, ExprType } from '@mnmal-ai/substrate-types';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { EXPR_CORPUS } from '../../substrate-filter/test/fixtures/expr-corpus.js';
+import {
+  CORPUS_FIELD_TYPES,
+  EXPR_CORPUS
+} from '../../substrate-filter/test/fixtures/expr-corpus.js';
 import { ACCEPTED } from '../../substrate-filter/test/fixtures/regex-corpus.js';
 import { compileExprTyped } from '../src/pg-sql/expression.js';
 import { utcTextSql } from '../src/pg-sql/primitives.js';
 import type { ColumnKind, TypeTable } from '../src/type-table.js';
+
+const ev = (e: Expr, row: Record<string, unknown>) =>
+  evalExpr(e, row, { fieldType: (n) => CORPUS_FIELD_TYPES[n] });
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const KINDS: Record<string, ColumnKind> = {
@@ -80,7 +86,7 @@ describe.skipIf(!POSTGRES_URL)('expression compiler parity', () => {
 
   for (const c of EXPR_CORPUS) {
     it(c.name, async () => {
-      expect(evalExpr(c.expr, c.row)).toEqual(c.expected);
+      expect(ev(c.expr, c.row)).toEqual(c.expected);
       expect(await onPg(c.expr, c.row)).toEqual(c.expected);
     });
   }
@@ -118,7 +124,7 @@ describe.skipIf(!POSTGRES_URL)('expression compiler parity', () => {
   ];
   for (const [name, expr, row] of EXTRA) {
     it(`extra: ${name}`, async () => {
-      expect(await onPg(expr, row)).toEqual(evalExpr(expr, row));
+      expect(await onPg(expr, row)).toEqual(ev(expr, row));
     });
   }
 
@@ -133,7 +139,7 @@ describe.skipIf(!POSTGRES_URL)('expression compiler parity', () => {
       const [p, q] = [pick(), pick()];
       for (const fn of ['add', 'sub', 'mul', 'div']) {
         const expr: Expr = { [fn]: [p, q] };
-        expect(await onPg(expr, {}), `${fn} ${p} ${q}`).toEqual(evalExpr(expr, {}));
+        expect(await onPg(expr, {}), `${fn} ${p} ${q}`).toEqual(ev(expr, {}));
       }
     }
   });
@@ -143,14 +149,14 @@ describe.skipIf(!POSTGRES_URL)('expression compiler parity', () => {
       [{ mul: [1e200, 1e200] }, 'value out of range: overflow'],
       [{ mul: [1e-200, 1e-200] }, 'value out of range: underflow']
     ] as Array<[Expr, string]>) {
-      expect(() => evalExpr(expr, {})).toThrow(msg);
+      expect(() => ev(expr, {})).toThrow(msg);
       await expect(onPg(expr, {})).rejects.toThrow(msg);
     }
   });
 
   it('mod is int64 only, with a zero divisor null', async () => {
     expect(await onPg({ mod: ['big', 7] }, { big: 9223372036854775800n })).toBe(
-      evalExpr({ mod: ['big', 7] }, { big: 9223372036854775800n })
+      ev({ mod: ['big', 7] }, { big: 9223372036854775800n })
     );
     expect(await onPg({ mod: ['i', 'i'] }, { i: 0n })).toBeNull();
   });
@@ -176,14 +182,14 @@ describe.skipIf(!POSTGRES_URL)('expression compiler parity', () => {
       { like: ['s', { lit: 'a%' }] },
       { notLike: ['s', { lit: 'a%' }] }
     ] as Expr[]) {
-      expect(evalExpr(expr, { s: null })).toBeNull();
+      expect(ev(expr, { s: null })).toBeNull();
       expect(await onPg(expr, { s: null })).toBeNull();
     }
   });
 
   it('int64 overflow raises', async () => {
     await expect(onPg({ add: [{ int64: '9223372036854775807' }, 1] }, {})).rejects.toThrow(
-      /out of range/
+      'bigint out of range'
     );
   });
 
@@ -208,7 +214,7 @@ describe.skipIf(!POSTGRES_URL)('expression compiler parity', () => {
         expect(
           await onPg(expr, {}),
           `${JSON.stringify(pattern)} on ${JSON.stringify(subject)}`
-        ).toBe(evalExpr(expr, {}));
+        ).toBe(ev(expr, {}));
       }
     }
   });
