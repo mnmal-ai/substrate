@@ -16,6 +16,7 @@ export * from './dataset.js';
 export * from './edge.js';
 export * from './env-utils.js';
 export * from './errors.js';
+export * from './expression.js';
 export * from './hard-delete-gate.js';
 export * from './idempotency.js';
 export * from './identity-grant.js';

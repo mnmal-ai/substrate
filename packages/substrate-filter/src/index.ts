@@ -29,6 +29,7 @@ export {
   encodeCursor,
   normalizeOrderBy
 } from './cursor.js';
+export { checkExpr, type ExprCheck, type ExprScope } from './expr-check.js';
 export {
   clearExtensionOperators,
   computedFieldOwner,
@@ -69,6 +70,7 @@ export {
   isDateField,
   storedMicros
 } from './predicate.js';
+export { checkRegexSubset } from './regex-subset.js';
 export {
   applyAgg,
   bindingWalks,
