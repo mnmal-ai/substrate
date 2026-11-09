@@ -1,3 +1,5 @@
+import { parse, programSize } from './regex-ast.js';
+
 /**
  * The portable regex subset: the syntax on which Postgres (POSIX ARE) and
  * JavaScript agree.
@@ -21,11 +23,16 @@
  * quantifier may not apply to a group that itself contains a quantifier or an
  * alternation (star height at most 1), so `(a+)+`, `(a|aa)*` and `(?:a*)*` are refused.
  *
+ * Its compiled program is bounded too: counted repeats are unrolled, and a pattern
+ * whose program would exceed 2,000 instructions is refused ('program too large').
+ *
  * Refused: classes such as `\d`, backreferences, lookaround, inline flags,
  * lazy quantifiers, POSIX bracket classes, quantified anchors, newlines.
  */
 const MAX_REPEAT = 255;
 const MAX_PATTERN = 256;
+/** The most instructions a pattern may compile to once counted repeats are unrolled. */
+export const MAX_PROGRAM = 2000;
 
 export function checkRegexSubset(pattern: string): string | null {
   if (/[\r\n]/.test(pattern)) return 'a newline is not allowed in a pattern';
@@ -145,6 +152,7 @@ export function checkRegexSubset(pattern: string): string | null {
   try {
     alt(0);
     if (i < cps.length) fail('unbalanced )');
+    if (programSize(parse(pattern).node) > MAX_PROGRAM) fail('program too large');
     return null;
   } catch (e) {
     if (e instanceof RegexRefusal) return e.message;

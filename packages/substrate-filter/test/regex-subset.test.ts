@@ -1,25 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { checkRegexSubset } from '../src/regex-subset.js';
+import { ACCEPTED } from './fixtures/regex-corpus.js';
 
-export const ACCEPTED = [
-  '(?:ab)+',
-  '(a|b)',
-  '(a+)b',
-  'a'.repeat(256),
-  '^https?://(?:www\\.)?([^/]+)/.*$',
-  'a|b',
-  '[a-z]+',
-  'x{2,3}',
-  '',
-  'a||b',
-  '[^a-c.]',
-  '\\/\\.\\{',
-  '[\\-a]',
-  '[a-]',
-  'x{255}',
-  '[\u{1F600}-\u{1F602}]'
-];
 const REFUSED = [
+  `${'a{0,255}'.repeat(31)}b`,
+  `(?:${'a'.repeat(240)}){0,255}b`,
   '(a+)+',
   '(a|aa)*',
   '(?:a*)*',

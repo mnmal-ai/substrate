@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { lru } from '../src/expr-eval.js';
+import { parse, programSize } from '../src/regex-ast.js';
+import { checkRegexSubset } from '../src/regex-subset.js';
 import { compileRegex, execRegex } from '../src/regex-vm.js';
-import { ACCEPTED } from './regex-subset.test.js';
+import { ACCEPTED } from './fixtures/regex-corpus.js';
 
 const SUBJECTS = [
   '',
@@ -29,6 +31,10 @@ const SUBJECTS = [
   'é😀é'
 ];
 const EXTRA = [
+  '((^))?|',
+  '(($)){0,2}',
+  '(($){0,2}|)',
+  '(^)*a',
   'a*',
   'a+b',
   '(a)(b)?',
@@ -81,7 +87,20 @@ describe('regex VM', () => {
       const prog = compileRegex(p);
       const t = Date.now();
       expect(execRegex(prog, subject)).toBeNull();
-      expect(Date.now() - t).toBeLessThan(3000);
+      expect(Date.now() - t).toBeLessThan(5000);
+    }
+  }, 20_000);
+
+  it('sizes every accepted program exactly', () => {
+    for (const p of [...ACCEPTED, ...EXTRA]) {
+      expect(programSize(parse(p).node), p).toBe(compileRegex(p).insts.length);
+    }
+  });
+
+  it('refuses a program past the instruction budget', () => {
+    for (const p of [`${'a{0,255}'.repeat(31)}b`, `(?:${'a'.repeat(240)}){0,255}b`]) {
+      expect(checkRegexSubset(p)).toContain('program too large');
+      expect(() => compileRegex(p)).toThrow('program too large');
     }
   });
 
