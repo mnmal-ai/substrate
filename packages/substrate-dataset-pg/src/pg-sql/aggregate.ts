@@ -588,27 +588,40 @@ export function buildWalkColumns(
  * `record` with its walk columns merged into `extra` as SQL's `extra || walk`
  * would: each list cut to its limit, `_truncated` naming the lists that had
  * more, the walk's keys winning, and every key in jsonb's order (shorter
- * first, then bytewise), so `decodeRow` reads the row it did before.
+ * first, then bytewise), so `decodeRow` reads the row it did before. Pass one
+ * `orders` map per read: it caches the sorted order of each key set seen.
  */
 export function mergeWalkColumns<R extends { extra: Record<string, unknown> | null }>(
   record: R,
-  columns: readonly WalkColumn[]
+  columns: readonly WalkColumn[],
+  orders: Map<string, string[]> = new Map()
 ): R {
-  const merged: Record<string, unknown> = { ...(record.extra ?? {}) };
+  const extra = record.extra ?? {};
+  const walk: Record<string, unknown> = {};
   const cut: Record<string, true> = {};
   let anyCut = false;
   for (const c of columns) {
     const v = (record as Record<string, unknown>)[c.column];
     if (c.limit !== undefined && Array.isArray(v) && v.length > c.limit) {
-      merged[c.name] = v.slice(0, c.limit);
+      walk[c.name] = v.slice(0, c.limit);
       cut[c.name] = true;
       anyCut = true;
     } else {
-      merged[c.name] = v;
+      walk[c.name] = v;
     }
   }
-  if (anyCut) merged._truncated = jsonbOrdered(cut);
-  record.extra = jsonbOrdered(merged);
+  if (anyCut) walk._truncated = jsonbOrdered(cut);
+  // Rows of one read share a few key sets, so each set is sorted once (`orders` is per read).
+  const extraKeys = Object.keys(extra);
+  const sig = `${anyCut ? 1 : 0}${extraKeys.join('\0')}`;
+  let order = orders.get(sig);
+  if (order === undefined) {
+    order = [...new Set([...extraKeys, ...Object.keys(walk)])].sort(jsonbKeyOrder);
+    orders.set(sig, order);
+  }
+  const merged: Record<string, unknown> = {};
+  for (const k of order) merged[k] = Object.hasOwn(walk, k) ? walk[k] : extra[k];
+  record.extra = merged;
   return record;
 }
 

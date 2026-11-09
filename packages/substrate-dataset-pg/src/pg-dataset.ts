@@ -1044,14 +1044,20 @@ export class PgDataset implements Dataset {
     }
 
     const fields = this.#typeDefLookup?.(type, this.namespace)?.fields;
-    const materialised = rows.map((r) =>
-      this.materialize(
-        walk === null ? r : mergeWalkColumns(r, walk.columns),
+    const orders = new Map<string, string[]>();
+    const materialised: Row[] = new Array(rows.length);
+    for (let i = 0; i < rows.length; i++) {
+      // A large read yields between batches, so other requests are not held behind it.
+      if (i > 0 && i % MATERIALIZE_BATCH_ROWS === 0)
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      const r = rows[i] as TableRowRecord;
+      materialised[i] = this.materialize(
+        walk === null ? r : mergeWalkColumns(r, walk.columns, orders),
         fields,
         table,
         params.fields
-      )
-    );
+      );
+    }
     let hasMore = false;
     let sliced = materialised;
     if (limit !== undefined && materialised.length > limit) {
@@ -2490,6 +2496,9 @@ export class PgDataset implements Dataset {
     return textId;
   }
 }
+
+/** Rows materialised between event-loop yields on a read (a few ms of work). */
+const MATERIALIZE_BATCH_ROWS = 5000;
 
 /** The statement timeout a walk read runs under, in milliseconds, unless a shorter one is set. */
 export const WALK_STATEMENT_TIMEOUT_MS = 30_000;

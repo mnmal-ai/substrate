@@ -65,24 +65,27 @@ function nestedFields(sel: true | FieldInput): FieldInput | undefined {
 export function projectEnvelope(envelope: PackEnvelope, frame: Frame): PackEnvelope {
   const data: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(envelope.data)) {
-    const entry = frame[key];
-    // Batched mutate (array op-keys) have no single `fields` selection — the
-    // engine has already shaped the per-frame results that ride here.
-    // Likewise an unknown key (engine-injected error) passes through.
-    if (entry === undefined || Array.isArray(entry)) {
-      data[key] = value;
-      continue;
-    }
-    const fields = entry.fields as FieldInput | undefined;
-    // `{ count }` and `{ groups }` are not rows; there is nothing to project.
-    const shape = envelope.shapes[key];
-    if (fields === undefined || shape === 'count' || shape === 'groups') {
-      data[key] = value;
-      continue;
-    }
-    data[key] = projectValue(value, fields);
+    const fields = projectionFields(envelope, frame, key);
+    data[key] = fields === undefined ? value : projectValue(value, fields);
   }
   return { ...envelope, data };
+}
+
+/** The selection `envelope.data[key]` is projected through, or undefined when it passes through whole. */
+export function projectionFields(
+  envelope: PackEnvelope,
+  frame: Frame,
+  key: string
+): FieldInput | undefined {
+  const entry = frame[key];
+  // Batched mutate (array op-keys) have no single `fields` selection — the
+  // engine has already shaped the per-frame results that ride here.
+  // Likewise an unknown key (engine-injected error) passes through.
+  if (entry === undefined || Array.isArray(entry)) return undefined;
+  // `{ count }` and `{ groups }` are not rows; there is nothing to project.
+  const shape = envelope.shapes[key];
+  if (shape === 'count' || shape === 'groups') return undefined;
+  return entry.fields as FieldInput | undefined;
 }
 
 /**
