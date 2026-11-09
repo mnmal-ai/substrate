@@ -23,7 +23,11 @@ const types: Record<string, Record<string, FieldDef>> = {
     big: field.int64({ nullable: true }),
     seen: field.date({ nullable: true })
   },
-  Hit: { page: field.crossRef(NS, 'Page'), n: field.number({ nullable: true }) }
+  Hit: {
+    page: field.crossRef(NS, 'Page'),
+    n: field.number({ nullable: true }),
+    at: field.date({ nullable: true })
+  }
 };
 const lookup = (type: string, f: string): FieldDef | undefined =>
   Object.hasOwn(types, type) ? types[type]?.[f] : undefined;
@@ -53,7 +57,7 @@ const PAGES: Array<Record<string, unknown>> = [
     big: '9007199254740993',
     seen: '2024-03-05T10:20:30.123Z'
   },
-  { url: 'https://google.com/b', width: 5, big: 7, seen: '2024-03-05T23:59:59.999Z' },
+  { url: 'https://google.com/b', width: 5, big: 7, seen: '2024-03-05T10:20:30.123999Z' },
   { url: 'a%b', width: 1, big: null, seen: null },
   { url: 'axb', width: 2, big: -3, seen: '2023-01-01T00:00:00.000Z' },
   { url: 'https://example.org/a/long/path', width: null, big: null, seen: null }
@@ -77,7 +81,10 @@ async function seed(engine: Engine): Promise<void> {
     for (let i = 0; i < count; i++) {
       const env = await engine.mutate({
         frame: {
-          [`${NS}/createHit`]: { params: { page: ids.get(url), n: i }, fields: { id: true } }
+          [`${NS}/createHit`]: {
+            params: { page: ids.get(url), n: i, at: `2024-01-0${i + 1}T00:00:00.${i}23456Z` },
+            fields: { id: true }
+          }
         },
         ctx: { identity: WRITER }
       });
@@ -315,5 +322,58 @@ describe('select, $expr and like on memory and pg', () => {
       ['axb', 0],
       ['https://example.org/a/long/path', 0]
     ]);
+  });
+
+  it('a date select reads out to the millisecond on both engines, however precise the stored date', async () => {
+    const out = await same(
+      { select: { s: 'seen' }, orderBy: [{ url: 'asc' }] },
+      { url: true, s: true }
+    );
+    expect(out.rows.map((r) => r.s)).toEqual([
+      null,
+      '2023-01-01T00:00:00.000Z',
+      null,
+      '2024-03-05T10:20:30.123Z',
+      '2024-03-05T10:20:30.123Z'
+    ]);
+  });
+
+  it('orders a date select by instant across mixed precisions, with a cursor', async () => {
+    const params = { select: { s: 'seen' }, orderBy: [{ s: 'desc' }] };
+    const full = await same(params, { url: true, s: true });
+    // .123999 is after .123456 though both print as .123.
+    expect(urls(full).slice(0, 3)).toEqual([
+      'https://google.com/b',
+      'https://www.Google.com/a',
+      'axb'
+    ]);
+    for (const [, e] of engines) {
+      const walked: string[] = [];
+      let cursor: string | undefined;
+      for (let i = 0; i < 6; i++) {
+        const o = await read(
+          e,
+          { ...params, limit: 1, ...(cursor ? { cursor } : {}) },
+          { url: true }
+        );
+        walked.push(...urls(o));
+        const p = o.page as { hasMore?: boolean; nextCursor?: string } | undefined;
+        if (p?.hasMore !== true) break;
+        cursor = p.nextCursor;
+      }
+      expect(walked).toEqual(urls(full));
+    }
+  });
+
+  it('a date _agg select is read out to the millisecond and orders by instant', async () => {
+    const out = await same(
+      { select: { t: '_agg.t' }, orderBy: [{ t: 'desc' }, { url: 'asc' }] },
+      { url: true, t: true, _agg: { t: { in: `${NS}/Hit.page`, max: 'at' } } }
+    );
+    expect(out.rows.slice(0, 2).map((r) => [r.url, r.t])).toEqual([
+      ['https://www.Google.com/a', '2024-01-03T00:00:00.223Z'],
+      ['https://google.com/b', '2024-01-01T00:00:00.023Z']
+    ]);
+    expect(out.rows[2]?.t).toBeNull();
   });
 });

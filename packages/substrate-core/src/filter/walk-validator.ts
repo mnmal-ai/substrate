@@ -611,6 +611,23 @@ export function validateSelection(
   return aggs;
 }
 
+/** Row keys a read projects besides the type's fields, which a select value must not overwrite. */
+const RESERVED_ROW_KEYS = new Set([
+  'id',
+  'shortId',
+  '_metadata',
+  '_deletedAt',
+  'createdAt',
+  'updatedAt',
+  'createdBy',
+  'updatedBy',
+  'createdById',
+  'createdByKind',
+  'updatedById',
+  'updatedByKind',
+  'seq'
+]);
+
 /** The expression type of a walk aggregate's value kind; a boolean or int64 value is not usable. */
 const AGG_EXPR_TYPE: Partial<Record<string, ExprType>> = {
   'scalar.number': 'number',
@@ -630,6 +647,25 @@ function exprScopeOf(scope: WalkScope, withAgg: boolean): ExprScope {
   };
 }
 
+/** Refuses a bare `_agg.<name>` whose value type (boolean, int64, ...) no expression can use. */
+function refuseUnusableAgg(expr: unknown, scope: WalkScope, path: string[]): void {
+  if (typeof expr === 'string') {
+    const kind = expr.startsWith('_agg.') ? scope.aggs?.get(expr.slice(5)) : undefined;
+    if (kind !== undefined && AGG_EXPR_TYPE[kind] === undefined) {
+      fail(
+        'expr_invalid',
+        `'${expr}' has a ${kind.replace('scalar.', '')} value, which an expression cannot use (only number, date and string aggregates)`,
+        path
+      );
+    }
+  } else if (Array.isArray(expr)) {
+    for (const e of expr) refuseUnusableAgg(e, scope, path);
+  } else if (isObj(expr)) {
+    for (const [k, v] of Object.entries(expr))
+      if (k !== 'lit' && k !== 'int64') refuseUnusableAgg(v, scope, path);
+  }
+}
+
 /** Checks one expression of the frame, charging its nodes to the frame's budget; returns its type. */
 export function checkFrameExpr(
   expr: unknown,
@@ -637,6 +673,7 @@ export function checkFrameExpr(
   withAgg: boolean,
   path: string[]
 ): ExprType {
+  if (withAgg) refuseUnusableAgg(expr, scope, path);
   const r = checkExpr(expr as Expr, exprScopeOf(scope, withAgg), path);
   if (!r.ok) fail('expr_invalid', r.message, r.path);
   const used = scope.exprNodes ?? { count: 0 };
@@ -778,8 +815,17 @@ export function validateFrameParams(
     for (const [n, expr] of Object.entries(p.select)) {
       const at = ['select', n];
       if (!IDENT.test(n)) fail('select_invalid', `select name '${n}' must be an identifier`, at);
-      if (h.lookup(scope.fields, n) !== undefined) {
-        fail('select_invalid', `select name '${n}' collides with a field of the type`, at);
+      const nested = p.fields?.[n];
+      if (
+        h.lookup(scope.fields, n) !== undefined ||
+        RESERVED_ROW_KEYS.has(n) ||
+        (isObj(nested) && '_walk' in nested)
+      ) {
+        fail(
+          'select_invalid',
+          `select name '${n}' collides with a field, a row key or a nested selection of the type`,
+          at
+        );
       }
       checkFrameExpr(expr, scope, true, at);
       selected.add(n);

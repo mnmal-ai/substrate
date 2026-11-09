@@ -20,6 +20,7 @@ import {
   applyExtensionResultMeta,
   asSortValue,
   assertWhereHonourable,
+  checkExpr,
   compareFilterValues,
   computeAgg,
   decodeCursor,
@@ -68,7 +69,8 @@ import {
   assertNoRepeatedIds,
   createKeyedMutex,
   filterTooBroad,
-  isColumnField
+  isColumnField,
+  normalizeIsoTimestamp
 } from '@mnmal-ai/substrate-types';
 import { NamespaceMismatch, ReservedField } from './errors.js';
 import { MemoryShortIdStore, type ShortIdBucketSnapshot } from './memory-short-id-store.js';
@@ -358,6 +360,10 @@ export class MemoryDataset implements Dataset {
     // `select` values ride on row copies under their names, so ordering and the
     // cursor read them as fields; the page returns the originals plus the values.
     const selected = new Map<Row, Record<string, unknown>>();
+    // Date-valued select names sort as instants, whatever precision each value carries.
+    const dateNames = new Set<string>();
+    const sortDefOf: FieldDefOf = (f) =>
+      dateNames.has(f) ? { kind: 'scalar', type: 'date' } : fieldDefOf(f);
     const select = params.select;
     if (select !== undefined) {
       const entries = Object.entries(select);
@@ -370,6 +376,10 @@ export class MemoryDataset implements Dataset {
           ? undefined
           : walkAggExprType(spec, type, (t, f) => lookup?.(t, f));
       };
+      for (const [name, expr] of entries) {
+        const checked = checkExpr(expr, { field: typeOf }, []);
+        if (checked.ok && checked.type === 'date') dateNames.add(name);
+      }
       const text = JSON.stringify(select);
       const aggRefs = Object.keys(frameAggs ?? {}).filter((n) => text.includes(`"_agg.${n}"`));
       pool = pool.map((row) => {
@@ -382,8 +392,11 @@ export class MemoryDataset implements Dataset {
           values[name] = evalExpr(expr, row, { output, fieldType: typeOf }) ?? null;
         }
         const copy: Row = { ...row, ...values };
+        // A date reads out as a plain read of a date field does: UTC, to the millisecond.
+        const out = { ...values };
+        for (const name of dateNames) out[name] = isoMillis(values[name]);
         original.set(copy, original.get(row) ?? row);
-        selected.set(copy, values);
+        selected.set(copy, out);
         return copy;
       });
     }
@@ -392,13 +405,13 @@ export class MemoryDataset implements Dataset {
     // the cursor tuple is deterministic. If the caller supplied orderBy on id
     // explicitly we honour it and skip the append.
     const orderBy = normalizeOrderBy(params.orderBy);
-    pool.sort((a, b2) => compareByClauses(a, b2, orderBy, fieldDefOf));
+    pool.sort((a, b2) => compareByClauses(a, b2, orderBy, sortDefOf));
 
     // Cursor: drop rows up to and including the cursor tuple.
     let startIdx = 0;
     if (params.cursor !== undefined && params.cursor !== '') {
       const cursor = decodeCursor(params.cursor, orderBy);
-      startIdx = findCursorStart(pool, orderBy, cursor.orderByValues, cursor.id, fieldDefOf);
+      startIdx = findCursorStart(pool, orderBy, cursor.orderByValues, cursor.id, sortDefOf);
     }
 
     // Apply limit. We fetch one extra row to detect `hasMore` without an extra
@@ -1050,6 +1063,12 @@ function walkProjection(
   }
   if (truncated.length > 0) out.push(['_truncated', Object.fromEntries(truncated)]);
   return Object.fromEntries(out);
+}
+
+/** A date value as `toISOString()` prints it (what pg's plain read returns), or null when it is not a date. */
+function isoMillis(v: unknown): string | null {
+  const n = typeof v === 'string' ? normalizeIsoTimestamp(v) : undefined;
+  return n === undefined ? null : new Date(n).toISOString();
 }
 
 function compareByClauses(

@@ -39,6 +39,8 @@ const SCHEMAS: Record<string, TypeSchema> = {
       cert: ref('Cert'),
       price: { kind: 'scalar', type: 'number' },
       observedAt: { kind: 'scalar', type: 'date' },
+      flag: { kind: 'scalar', type: 'boolean' },
+      qty: { kind: 'scalar', type: 'int64' },
       elsewhere: ref('Cert', 'other'),
       dims: { kind: 'struct', fields: { w: { kind: 'scalar', type: 'number' } } }
     }
@@ -691,10 +693,14 @@ describe('select and $expr validation', () => {
     );
   });
 
-  it('refuses a frame past maxNodesPerFrame, naming it', () => {
-    // 17 expressions of 63 nodes: each is within maxNodesPerExpr (64), together past 1,024.
-    const e = { coalesce: Array.from({ length: 62 }, () => 'ask') };
-    const select = Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`s${i}`, e]));
+  it('accepts exactly maxNodesPerFrame nodes and refuses one more, naming the limit', () => {
+    // 64 nodes is the per-expression cap: 16 of them are exactly 1,024.
+    const e = { coalesce: Array.from({ length: 63 }, () => 'ask') };
+    const select: Record<string, unknown> = Object.fromEntries(
+      Array.from({ length: 16 }, (_, i) => [`s${i}`, e])
+    );
+    expect(() => checkFrame({ select })).not.toThrow();
+    select.extra = 'ask';
     try {
       checkFrame({ select });
       throw new Error('expected a refusal');
@@ -702,6 +708,47 @@ describe('select and $expr validation', () => {
       expect(err).toBeInstanceOf(FilterValidationError);
       expect((err as FilterValidationError).code).toBe('expr_invalid');
       expect((err as Error).message).toContain('maxNodesPerFrame');
+    }
+  });
+
+  it('refuses a select name that is a row key, a metadata key or a nested selection', () => {
+    for (const name of ['id', 'createdBy', 'updatedBy', '_metadata', 'shortId', 'createdAt']) {
+      expect(frameRefusal({ select: { [name]: 'ask' } }), name).toEqual({
+        code: 'select_invalid',
+        path: ['select', name]
+      });
+    }
+    expect(
+      frameRefusal({
+        fields: {
+          id: true,
+          obs: { _walk: { in: 'cards/Observation.cert' }, fields: { id: true } }
+        },
+        select: { obs: 'ask' }
+      })
+    ).toEqual({ code: 'select_invalid', path: ['select', 'obs'] });
+    // Projecting a select name in `fields` is how it is read, so it is allowed.
+    expect(() =>
+      checkFrame({ fields: { id: true, gap: true }, select: { gap: 'ask' } })
+    ).not.toThrow();
+  });
+
+  it('says a boolean or int64 _agg cannot be used in an expression', () => {
+    const aggs = {
+      b: { in: 'cards/Observation.cert', latest: { by: 'observedAt', value: 'flag' } },
+      i: { in: 'cards/Observation.cert', latest: { by: 'observedAt', value: 'qty' } }
+    };
+    for (const n of ['b', 'i']) {
+      const r = (() => {
+        try {
+          checkFrame({ fields: { id: true, _agg: aggs }, select: { x: `_agg.${n}` } });
+        } catch (err) {
+          return err as FilterValidationError;
+        }
+        throw new Error('expected a refusal');
+      })();
+      expect(r.code).toBe('expr_invalid');
+      expect(r.message).toContain('cannot use');
     }
   });
 
