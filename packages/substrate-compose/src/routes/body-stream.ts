@@ -10,7 +10,7 @@ import {
   positionValue,
   withData
 } from '@mnmal-ai/substrate-pack';
-import type { PackEnvelope } from '@mnmal-ai/substrate-types';
+import { type PackEnvelope, stringifyJson } from '@mnmal-ai/substrate-types';
 import type { Frame } from './helpers.js';
 import { projectionFields, projectValue } from './project-json.js';
 
@@ -84,7 +84,7 @@ export function* jsonParts(envelope: PackEnvelope, frame: Frame): Generator<stri
   let sep = '';
   for (const [k, v] of Object.entries(envelope)) {
     if (k !== 'data') {
-      const s = JSON.stringify(v);
+      const s = stringifyJson(v);
       if (s === undefined) continue;
       yield `${sep}${JSON.stringify(k)}:${s}`;
       sep = ',';
@@ -97,7 +97,7 @@ export function* jsonParts(envelope: PackEnvelope, frame: Frame): Generator<stri
       const fields = projectionFields(envelope, frame, key);
       const project = (x: unknown): unknown => (fields === undefined ? x : projectValue(x, fields));
       if (!Array.isArray(value) || value.length <= ROWS_PER_CHUNK) {
-        const s = JSON.stringify(project(value));
+        const s = stringifyJson(project(value));
         if (s === undefined) continue;
         yield `${dsep}${JSON.stringify(key)}:${s}`;
         dsep = ',';
@@ -108,7 +108,7 @@ export function* jsonParts(envelope: PackEnvelope, frame: Frame): Generator<stri
       for (let i = 0; i < value.length; i += ROWS_PER_CHUNK) {
         const rows = value
           .slice(i, i + ROWS_PER_CHUNK)
-          .map((r) => JSON.stringify(project(r)) ?? 'null');
+          .map((r) => stringifyJson(project(r)) ?? 'null');
         yield `${i === 0 ? '' : ','}${rows.join(',')}`;
       }
       yield ']';

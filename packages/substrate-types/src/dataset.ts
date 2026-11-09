@@ -319,6 +319,7 @@ export interface DropResult {
  */
 export type FieldKind =
   | 'scalar.number'
+  | 'scalar.int64'
   | 'scalar.string'
   | 'scalar.boolean'
   | 'scalar.date'

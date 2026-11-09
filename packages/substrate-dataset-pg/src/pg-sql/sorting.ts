@@ -11,6 +11,7 @@ import type { Sql, TransactionSql } from 'postgres';
 import type { TypeTable } from '../type-table.js';
 import {
   type BodyOrderByCast,
+  bodyInt64,
   bodyNum,
   bodyRawText,
   bodyText,
@@ -44,6 +45,7 @@ export { normalizeOrderBy } from '@mnmal-ai/substrate-filter';
  *
  * Type → cast table:
  *   field.number()  / 'number'  → 'numeric'
+ *   field.int64()   / 'int64'   → 'bigint'
  *   field.date()    / 'date'    → 'timestamptz'
  *   field.boolean() / 'boolean' → 'boolean'
  *   field.string()  / 'string'  → null   (text compare is correct)
@@ -59,6 +61,8 @@ export function resolveBodyOrderByCast(def: FieldDef | undefined): BodyOrderByCa
   switch (def.type) {
     case 'number':
       return 'numeric';
+    case 'int64':
+      return 'bigint';
     case 'date':
       return 'timestamptz';
     case 'boolean':
@@ -256,6 +260,9 @@ function sortParam(
       case 'number':
         // numeric, as a promoting field's key is; a float8 column takes it as float8.
         return sql`${value as number}::numeric`;
+      case 'int64':
+        // A cursor carries an int64 as its decimal text.
+        return sql`${String(value)}::bigint`;
       case 'boolean':
         return sql`${Boolean(value)}::boolean`;
       default:
@@ -297,6 +304,8 @@ function bodyOrderByExpr(
       return bodyText(sql, [field], undefined, table.jsonb);
     case 'numeric':
       return bodyNum(sql, [field], undefined, table.jsonb);
+    case 'bigint':
+      return bodyInt64(sql, [field], undefined, table.jsonb);
     case 'timestamptz':
       return bodyTs(sql, [field], undefined, table.jsonb);
     case 'boolean':

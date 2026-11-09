@@ -47,7 +47,7 @@
  * transaction of the sweep's.
  */
 
-import type { PromotionEvent } from '@mnmal-ai/substrate-types';
+import { type PromotionEvent, parseInt64 } from '@mnmal-ai/substrate-types';
 import type { Sql } from 'postgres';
 import { tryWithPgAdvisoryLock } from './advisory-lock.js';
 import { UniqueIndexDuplicatesError } from './index-reconciler.js';
@@ -335,7 +335,14 @@ async function backfill(
     for (const r of page) {
       const stored = r.v ?? r.rv;
       if (stored === null) continue;
-      const encoded = encodeRow(table, { [field]: JSON.parse(stored) as unknown });
+      // A JSON number past 2^53 would lose digits in JSON.parse; an int64 column reads its text.
+      const parsed =
+        column.kind === 'int64' &&
+        /^-?\d+$/.test(stored) &&
+        parseInt64(BigInt(stored)) !== undefined
+          ? BigInt(stored)
+          : JSON.parse(stored);
+      const encoded = encodeRow(table, { [field]: parsed as unknown });
       const c = encoded.columns[column.column];
       const misfit = Object.hasOwn(encoded.raw, field);
       if (r.v === null) {
@@ -348,7 +355,8 @@ async function backfill(
       ids.push(r.id);
       values.push(r.v);
       columns.push(c === null || c === undefined ? null : String(c));
-      raws.push(misfit ? JSON.stringify(encoded.raw[field]) : null);
+      // A misfit keeps the stored JSON text, so no digit is lost and nothing needs re-serialising.
+      raws.push(misfit ? stored : null);
     }
     if (ids.length + fitIds.length > 0) {
       // Rows are locked in id order first, as every batch writer locks them,

@@ -65,7 +65,7 @@ export const NON_BODY_FIELD_KEYS = new Set(['_metadata', '_deletedAt', 'shortId'
  * declared kind, so `count` sorts 2 before 10. `ORDER BY` and the cursor
  * compare must apply the same cast.
  */
-export type BodyOrderByCast = 'numeric' | 'timestamptz' | 'boolean';
+export type BodyOrderByCast = 'numeric' | 'bigint' | 'timestamptz' | 'boolean';
 
 /** An operand's text: the shared ISO grammar in its explicit-offset form (no offset is UTC), as `substrate_ts` reads a stored value. */
 const isoOf = (v: unknown): string =>
@@ -129,11 +129,16 @@ const textSql = (path: readonly string[], alias?: string, jsonb?: JsonbColumn): 
   `(${rawTextSql(path, alias, jsonb)} COLLATE "C")`;
 const numSql = (path: readonly string[], alias?: string, jsonb?: JsonbColumn): string =>
   `substrate_num(${jsonSql(path, alias, jsonb)})`;
+/** The stored number as a bigint, or NULL for anything that is not an int64 (never raises). */
+const int64Sql = (path: readonly string[], alias?: string, jsonb?: JsonbColumn): string => {
+  const n = numSql(path, alias, jsonb);
+  return `(CASE WHEN ${n} = trunc(${n}) AND ${n} BETWEEN -9223372036854775808 AND 9223372036854775807 THEN ${n}::bigint END)`;
+};
 const tsSql = (path: readonly string[], alias?: string, jsonb?: JsonbColumn): string =>
   `substrate_ts(${jsonSql(path, alias, jsonb)})`;
 
 /** What a field expression yields: compare and sort forms, uncollated text (ILIKE), or the jsonb value. */
-export type FieldAs = 'text' | 'rawText' | 'number' | 'date' | 'boolean' | 'json';
+export type FieldAs = 'text' | 'rawText' | 'number' | 'int64' | 'date' | 'boolean' | 'json';
 
 /** The jsonb-path expression for `as`: the one every body/extra builder below emits. */
 function pathSql(
@@ -149,6 +154,8 @@ function pathSql(
       return rawTextSql(path, alias, jsonb);
     case 'number':
       return numSql(path, alias, jsonb);
+    case 'int64':
+      return int64Sql(path, alias, jsonb);
     case 'date':
       return tsSql(path, alias, jsonb);
     case 'boolean':
@@ -160,7 +167,9 @@ function pathSql(
 
 /** The `as` a column of `kind` compares and sorts as. */
 export function columnAs(kind: ColumnKind): Exclude<FieldAs, 'rawText' | 'json'> {
-  return kind === 'number' || kind === 'date' || kind === 'boolean' ? kind : 'text';
+  return kind === 'number' || kind === 'int64' || kind === 'date' || kind === 'boolean'
+    ? kind
+    : 'text';
 }
 
 /**
@@ -323,6 +332,16 @@ export function bodyNum(
   return sql.unsafe(pathSql(path, 'number', alias, jsonb));
 }
 
+/** The stored number as a bigint, NULL unless it is an int64. */
+export function bodyInt64(
+  sql: Sql | TransactionSql,
+  path: readonly string[],
+  alias?: string,
+  jsonb?: JsonbColumn
+): Fragment {
+  return sql.unsafe(pathSql(path, 'int64', alias, jsonb));
+}
+
 /** `substrate_ts(body -> …)`: the instant, or NULL for anything but an ISO date or date-time string. */
 export function bodyTs(
   sql: Sql | TransactionSql,
@@ -335,7 +354,7 @@ export function bodyTs(
 
 /** The DDL text of the expression the compiler emits for a top-level field (qualified by `alias`, if given). */
 export function indexExpressionSql(
-  kind: 'text' | 'number' | 'date',
+  kind: 'text' | 'number' | 'int64' | 'date',
   field: string,
   alias?: string,
   jsonb?: JsonbColumn
@@ -357,6 +376,7 @@ export const asJsonValue = (v: unknown): SqlJsonValue => v as SqlJsonValue;
 
 export function scalarParam(value: unknown): string | number | boolean | null {
   if (value instanceof Date) return value.toISOString();
+  if (typeof value === 'bigint') return value.toString();
   if (
     value === null ||
     typeof value === 'string' ||

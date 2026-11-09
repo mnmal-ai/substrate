@@ -5,6 +5,7 @@
  * without depending on the engine.
  */
 
+export { parseInt64 } from '@mnmal-ai/substrate-types';
 export {
   type ApplyExtensionMetaOpts,
   applyExtensionResultMeta,

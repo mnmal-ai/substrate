@@ -8,7 +8,12 @@
  * measure the same codepath.
  */
 
-import { type FieldInput, parseQualifiedKey, type Schema } from '@mnmal-ai/substrate-types';
+import {
+  type FieldInput,
+  parseQualifiedKey,
+  type Schema,
+  stringifyJson
+} from '@mnmal-ai/substrate-types';
 import { pack, Unpackr } from 'msgpackr';
 
 import { decodePositional } from './decoder.js';
@@ -22,7 +27,7 @@ export type WireMode = 'json' | 'pack';
  * a typed `typeof wire === 'string'` branch.
  */
 export function encodeWsFrame(value: unknown, mode: WireMode): string | Uint8Array {
-  return mode === 'pack' ? pack(value) : JSON.stringify(value);
+  return mode === 'pack' ? pack(value) : stringifyJson(value);
 }
 
 /**

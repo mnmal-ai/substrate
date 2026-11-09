@@ -41,6 +41,7 @@ import {
   isIsoTimestamp,
   METADATA_FILTER_FIELDS,
   type OrderByClause,
+  parseInt64,
   type TypeSchema,
   type WhereClause
 } from '@mnmal-ai/substrate-types';
@@ -151,6 +152,8 @@ function fieldKindOf(def: FieldDef): ValidatorKind {
       switch (def.type) {
         case 'number':
           return 'scalar.number';
+        case 'int64':
+          return 'scalar.int64';
         case 'string':
           return 'scalar.string';
         case 'boolean':
@@ -178,6 +181,7 @@ function fieldKindOf(def: FieldDef): ValidatorKind {
 function opsAllowedFor(kind: ValidatorKind): Set<string> {
   switch (kind) {
     case 'scalar.number':
+    case 'scalar.int64':
     case 'scalar.date':
       return NUMBER_OPS;
     case 'scalar.string':
@@ -202,6 +206,7 @@ function opsAllowedFor(kind: ValidatorKind): Set<string> {
  */
 const FIELD_KINDS: readonly FieldKind[] = [
   'scalar.number',
+  'scalar.int64',
   'scalar.string',
   'scalar.boolean',
   'scalar.date',
@@ -235,6 +240,7 @@ function isPrimitive(v: unknown): boolean {
     v === null ||
     typeof v === 'string' ||
     typeof v === 'number' ||
+    typeof v === 'bigint' ||
     typeof v === 'boolean' ||
     v instanceof Date
   );
@@ -312,6 +318,15 @@ function validatePrimitiveKind(
         throw new FilterValidationError(
           'type_mismatch',
           `operator '${op}' expected number, got ${typeof value}`,
+          path
+        );
+      }
+      return;
+    case 'scalar.int64':
+      if (parseInt64(value) === undefined) {
+        throw new FilterValidationError(
+          'type_mismatch',
+          `operator '${op}' expected an int64 (a safe integer, a decimal string or a bigint), got ${JSON.stringify(String(value))}`,
           path
         );
       }

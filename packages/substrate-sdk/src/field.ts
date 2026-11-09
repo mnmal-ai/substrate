@@ -152,6 +152,9 @@ export const field = {
   number(opts?: ScalarFieldOptions): FieldDefScalar {
     return makeScalar('number', opts);
   },
+  int64(opts?: ScalarFieldOptions): FieldDefScalar {
+    return makeScalar('int64', opts);
+  },
   boolean(opts?: ScalarFieldOptions): FieldDefScalar {
     return makeScalar('boolean', opts);
   },

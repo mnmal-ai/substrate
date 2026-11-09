@@ -1,5 +1,5 @@
 import { type EncodeEnvelopeCtx, encodeEnvelope } from '@mnmal-ai/substrate-pack';
-import type { PackEnvelope, Schema } from '@mnmal-ai/substrate-types';
+import type { PackEnvelope, Schema, SubstrateRequest } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
 import {
   jsonEnvelopeStream,
@@ -8,7 +8,7 @@ import {
   STREAM_ROWS,
   streamsRows
 } from '../src/routes/body-stream.js';
-import type { Frame } from '../src/routes/helpers.js';
+import { type Frame, jsonResponse, serializeEnvelope } from '../src/routes/helpers.js';
 import { projectEnvelope } from '../src/routes/project-json.js';
 
 const row = (i: number) => ({
@@ -68,6 +68,46 @@ describe('streamed JSON envelope', () => {
     const env = envelope(STREAM_ROWS + 5);
     const text = await new Response(jsonEnvelopeStream(env, frame)).text();
     expect(text).toBe(JSON.stringify(projectEnvelope(env, frame)));
+  });
+});
+
+describe('an int64 on the JSON wire', () => {
+  const big = { id: 'b', n: 2n ** 63n - 1n };
+  const bigFrame: Frame = { 'ns/Big': { fields: { id: true, n: true } } };
+  const bigEnvelope = (n: number): PackEnvelope => ({
+    schemaVersion: 'v1',
+    data: { 'ns/Big': Array.from({ length: n }, () => big) },
+    shapes: { 'ns/Big': 'list' }
+  });
+
+  it('is a decimal string, in pieces', () => {
+    const text = [...jsonParts(bigEnvelope(2001), bigFrame)].join('');
+    expect(JSON.parse(text).data['ns/Big'][2000]).toEqual({ id: 'b', n: '9223372036854775807' });
+  });
+
+  it('is a decimal string, streamed', async () => {
+    const text = await new Response(
+      jsonEnvelopeStream(bigEnvelope(STREAM_ROWS + 1), bigFrame)
+    ).text();
+    expect(JSON.parse(text).data['ns/Big'][0].n).toBe('9223372036854775807');
+  });
+
+  it('is a decimal string, unstreamed (query response)', async () => {
+    const req: SubstrateRequest = {
+      method: 'POST',
+      path: '/q',
+      headers: {},
+      query: {},
+      params: {},
+      body: null
+    };
+    const res = await serializeEnvelope(req, bigEnvelope(2), {} as never, bigFrame);
+    expect(Buffer.from(res.body as Buffer).toString()).toContain('"n":"9223372036854775807"');
+  });
+
+  it('is a decimal string in a mutate response (jsonResponse)', () => {
+    const res = jsonResponse(200, bigEnvelope(1));
+    expect(Buffer.from(res.body as Buffer).toString()).toContain('"n":"9223372036854775807"');
   });
 });
 
