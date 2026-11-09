@@ -51,6 +51,7 @@ const CAPS: FilterCapabilities = {
     'scalar.string': ['eq', 'neq', 'contains', 'in', 'nin'],
     'scalar.boolean': ['eq'],
     'scalar.date': ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'between', 'in', 'nin'],
+    'scalar.int64': ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'between', 'in', 'nin'],
     'scalar.json': [],
     crossRef: ['eq', 'neq', 'in', 'nin'],
     list: ['has']

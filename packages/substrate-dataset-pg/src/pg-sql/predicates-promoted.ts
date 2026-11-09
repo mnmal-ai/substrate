@@ -2,7 +2,7 @@
  * WHERE predicates against a type table's typed columns.
  */
 
-import { UnsupportedFilterError } from '@mnmal-ai/substrate-types';
+import { parseInt64, UnsupportedFilterError } from '@mnmal-ai/substrate-types';
 import type { Sql, TransactionSql } from 'postgres';
 import { extraWins, RAW_KEY } from '../row-codec.js';
 import type { TypedColumn, TypeTable } from '../type-table.js';
@@ -34,10 +34,11 @@ export function buildColumnPredicate(
   field: string,
   table: TypeTable,
   column: TypedColumn,
-  predicate: Record<string, unknown>,
+  rawPredicate: Record<string, unknown>,
   alias?: string
 ): Fragment | null {
   const as = columnAs(column.kind);
+  const predicate = column.kind === 'int64' ? int64Operands(field, rawPredicate) : rawPredicate;
   const read = fieldExpr(sql, table, field, as, alias);
   /**
    * A promoting enum field reads its `$raw` string over the rest, as `decodeRow`
@@ -63,6 +64,8 @@ export function buildColumnPredicate(
           : undefined;
       case 'number':
         return typeof v === 'number' ? sql`${v}` : undefined;
+      case 'int64':
+        return typeof v === 'bigint' ? sql`${v.toString()}::bigint` : undefined;
       case 'date':
         return typeof v === 'string' || v instanceof Date ? tsParam(sql, v) : undefined;
       case 'boolean':
@@ -112,14 +115,21 @@ export function buildColumnPredicate(
         ? tsArrayParam(sql, fit)
         : as === 'number'
           ? sql`${fit as number[]}::numeric[]`
-          : as === 'boolean'
-            ? sql`${fit as boolean[]}::boolean[]`
-            : sql`${fit.map(String)}::text[]`;
+          : as === 'int64'
+            ? sql`${fit.map(String)}::text[]::bigint[]`
+            : as === 'boolean'
+              ? sql`${fit as boolean[]}::boolean[]`
+              : sql`${fit.map(String)}::text[]`;
     const any = guarded(sql`${expr} = ANY(${list})`);
     return misfit.length === 0 ? any : sql`(${any} OR ${jsonAnyOf(misfit)})`;
   };
   const ordered = (op: string, v: unknown): Fragment | undefined => {
-    if (typeof v !== 'number' && typeof v !== 'string' && !(v instanceof Date)) {
+    if (
+      typeof v !== 'number' &&
+      typeof v !== 'bigint' &&
+      typeof v !== 'string' &&
+      !(v instanceof Date)
+    ) {
       throw new UnsupportedFilterError(
         field,
         op,
@@ -232,4 +242,30 @@ export function buildColumnPredicate(
   }
   if (fragments.length === 0) return null;
   return combineAnd(sql, fragments);
+}
+
+/**
+ * An int64 column's predicate with every operand read as a bigint, as the
+ * memory evaluator reads them. An operand that is not an int64 is refused.
+ */
+export function int64Operands(
+  field: string,
+  predicate: Record<string, unknown>
+): Record<string, unknown> {
+  const one = (op: string, v: unknown): unknown => {
+    if (v === null) return v;
+    const n = parseInt64(v);
+    if (n === undefined) throw new UnsupportedFilterError(field, op, 'requires an int64 operand');
+    return n;
+  };
+  return Object.fromEntries(
+    Object.entries(predicate).map(([op, v]) => [
+      op,
+      Array.isArray(v) && (op === 'in' || op === 'nin' || op === 'between')
+        ? v.map((e) => one(op, e))
+        : ['eq', 'neq', 'gt', 'gte', 'lt', 'lte'].includes(op)
+          ? one(op, v)
+          : v
+    ])
+  );
 }

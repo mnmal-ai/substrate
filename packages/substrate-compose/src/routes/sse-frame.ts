@@ -7,7 +7,7 @@
  * The §7.4 pack codec stays reserved for a future binary transport.
  */
 
-import type { FieldInput } from '@mnmal-ai/substrate-types';
+import { type FieldInput, stringifyJson } from '@mnmal-ai/substrate-types';
 import { projectWsFrame } from './project-json.js';
 import type { SessionFrame } from './stream-session.js';
 
@@ -37,7 +37,7 @@ export function sseEvent(
   frame: SessionFrame,
   fieldsByKey: ReadonlyMap<string, FieldInput> | undefined
 ): string {
-  return `event: ${frame.kind}\ndata: ${JSON.stringify(payloadFor(frame, fieldsByKey))}\n\n`;
+  return `event: ${frame.kind}\ndata: ${stringifyJson(payloadFor(frame, fieldsByKey))}\n\n`;
 }
 
 function payloadFor(

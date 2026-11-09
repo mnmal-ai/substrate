@@ -68,3 +68,25 @@ describe('streamed JSON envelope', () => {
     expect(text).toBe(JSON.stringify(projectEnvelope(env, frame)));
   });
 });
+
+describe('an int64 on the JSON wire', () => {
+  const big = { id: 'b', n: 2n ** 63n - 1n };
+  const bigFrame: Frame = { 'ns/Big': { fields: { id: true, n: true } } };
+  const bigEnvelope = (n: number): PackEnvelope => ({
+    schemaVersion: 'v1',
+    data: { 'ns/Big': Array.from({ length: n }, () => big) },
+    shapes: { 'ns/Big': 'list' }
+  });
+
+  it('is a decimal string, in pieces', () => {
+    const text = [...jsonParts(bigEnvelope(2001), bigFrame)].join('');
+    expect(JSON.parse(text).data['ns/Big'][2000]).toEqual({ id: 'b', n: '9223372036854775807' });
+  });
+
+  it('is a decimal string, streamed', async () => {
+    const text = await new Response(
+      jsonEnvelopeStream(bigEnvelope(STREAM_JSON_ROWS + 1), bigFrame)
+    ).text();
+    expect(JSON.parse(text).data['ns/Big'][0].n).toBe('9223372036854775807');
+  });
+});

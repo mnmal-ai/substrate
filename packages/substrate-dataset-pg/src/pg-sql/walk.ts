@@ -33,6 +33,7 @@ import type { TypeTable } from '../type-table.js';
 import { metadataColumnSql } from './predicates-metadata.js';
 import {
   type BodyOrderByCast,
+  bodyInt64,
   bodyNum,
   bodyText,
   bodyTs,
@@ -581,6 +582,7 @@ export function sortKey(
   const column = table.column(field);
   if (column !== undefined) return columnOrderExpr(sql, table, column, alias);
   if (cast === 'numeric') return bodyNum(sql, [field], alias, table.jsonb);
+  if (cast === 'bigint') return bodyInt64(sql, [field], alias, table.jsonb);
   if (cast === 'timestamptz') return bodyTs(sql, [field], alias, table.jsonb);
   return bodyText(sql, [field], alias, table.jsonb);
 }

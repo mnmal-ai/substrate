@@ -13,7 +13,7 @@
  */
 
 import type { Id, OrderByClause } from '@mnmal-ai/substrate-types';
-import { ResolverFrameError } from '@mnmal-ai/substrate-types';
+import { ResolverFrameError, stringifyJson } from '@mnmal-ai/substrate-types';
 
 /**
  * Thrown by `decodeCursor` on a malformed, unsigned (pre-order-signing) or
@@ -49,7 +49,7 @@ export interface CursorPayload {
 }
 
 export function encodeCursor(input: CursorPayload): string {
-  const json = JSON.stringify(input);
+  const json = stringifyJson(input);
   return Buffer.from(json, 'utf8').toString('base64url');
 }
 

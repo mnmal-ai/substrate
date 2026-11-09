@@ -1,4 +1,4 @@
-import { canonicalVocabValue, isIsoTimestamp } from '@mnmal-ai/substrate-types';
+import { canonicalVocabValue, isIsoTimestamp, parseInt64 } from '@mnmal-ai/substrate-types';
 
 /**
  * Internal autoCRUD utilities. Not exported from the package.
@@ -274,6 +274,13 @@ export function assertScalarTypes(
     if (def.kind !== 'scalar' || !Object.hasOwn(params, name)) continue;
     const v = params[name];
     if (v === null) continue;
+    // An int64 is stored as a bigint whatever form it arrived in.
+    if (def.type === 'int64') {
+      const n = parseInt64(v);
+      if (n !== undefined) params[name] = n;
+      else throwInvalidScalar(name, v, def.type, phase);
+      continue;
+    }
     const ok =
       def.type === 'number'
         ? typeof v === 'number' && Number.isFinite(v)
@@ -284,13 +291,7 @@ export function assertScalarTypes(
               ? isIsoTimestamp(v)
               : v instanceof Date && Number.isFinite(v.getTime())
             : true;
-    if (!ok) {
-      throw new ResolverFrameError(
-        'invalid_field_type',
-        `Cannot ${phase} '${name}' with ${JSON.stringify(v)}: expected a ${def.type === 'date' ? 'date (ISO 8601 string)' : def.type}.`,
-        { field: name, expected: def.type, phase }
-      );
-    }
+    if (!ok) throwInvalidScalar(name, v, def.type, phase);
   }
 }
 
@@ -422,5 +423,13 @@ export function assertServerSetFieldsFillable(
       'but clients may not supply them on create and autoCRUD does not stamp serverSet fields, ' +
       'so autoCRUD create could never fill them. Declare them `nullable: true` and stamp them ' +
       'from server-side code, or give them a `default`.'
+  );
+}
+
+function throwInvalidScalar(name: string, v: unknown, type: string, phase: string): never {
+  throw new ResolverFrameError(
+    'invalid_field_type',
+    `Cannot ${phase} '${name}' with ${JSON.stringify(typeof v === 'bigint' ? String(v) : v)}: expected a ${type === 'date' ? 'date (ISO 8601 string)' : type}.`,
+    { field: name, expected: type, phase }
   );
 }

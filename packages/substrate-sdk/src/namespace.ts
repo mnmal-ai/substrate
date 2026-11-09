@@ -378,10 +378,15 @@ export function assertOrderedBy(
   }
   const field = def.fields[name];
   if (field === undefined) throw new Error(`${where}: unknown field '${name}'`);
-  if (!(field.kind === 'scalar' && (field.type === 'date' || field.type === 'number'))) {
+  if (
+    !(
+      field.kind === 'scalar' &&
+      (field.type === 'date' || field.type === 'number' || field.type === 'int64')
+    )
+  ) {
     const kind = field.kind === 'scalar' ? field.type : field.kind;
     throw new Error(
-      `${where}: field '${name}' is ${kind}; only date and number fields, ` +
+      `${where}: field '${name}' is ${kind}; only date, number and int64 fields, ` +
         `or ${[...ORDERED_BY_METADATA_COLUMNS].join(', ')}, can be a natural order`
     );
   }

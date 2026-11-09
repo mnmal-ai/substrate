@@ -54,6 +54,7 @@ import {
   type Schema,
   type SubstrateRequest,
   type SubstrateServer,
+  stringifyJson,
   type WsRequestFrame,
   type WsResponseFrame
 } from '@mnmal-ai/substrate-types';
@@ -109,7 +110,7 @@ function serializeFrame(
   fieldsByKey: ReadonlyMap<string, FieldInput> | undefined,
   engine: Engine
 ): Buffer | string {
-  if (mode === 'json') return JSON.stringify(projectWsFrame(frame, fieldsByKey));
+  if (mode === 'json') return stringifyJson(projectWsFrame(frame, fieldsByKey));
   const encoded = encodeDataForPack(frame, fieldsByKey, engine);
   const wire = encodeWsFrame(encoded, mode);
   return typeof wire === 'string' ? wire : Buffer.from(wire);

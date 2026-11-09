@@ -43,6 +43,7 @@ const notesPlugin: CoordinatorPlugin = {
         fields: {
           text: field.string(),
           count: field.number(),
+          big: field.int64(),
           flag: field.boolean(),
           when: field.date(),
           blob: field.json(),
@@ -89,13 +90,14 @@ function kindOf(def: ServedField): string {
  * wrong-type probe would make the accept direction pass for the wrong reason.
  */
 function operandFor(kind: string, op: string): unknown {
-  const sample: unknown = kind.startsWith('scalar.number')
-    ? 1
-    : kind === 'scalar.boolean'
-      ? true
-      : kind === 'scalar.date'
-        ? new Date().toISOString()
-        : 'x';
+  const sample: unknown =
+    kind.startsWith('scalar.number') || kind === 'scalar.int64'
+      ? 1
+      : kind === 'scalar.boolean'
+        ? true
+        : kind === 'scalar.date'
+          ? new Date().toISOString()
+          : 'x';
   if (op === 'between') return [sample, sample];
   if (op === 'in' || op === 'nin') return [sample];
   return sample;
@@ -171,6 +173,7 @@ describe('the namespace-scoped schema carries the operator contract', () => {
       'list',
       'scalar.boolean',
       'scalar.date',
+      'scalar.int64',
       'scalar.json',
       'scalar.number',
       'scalar.string'

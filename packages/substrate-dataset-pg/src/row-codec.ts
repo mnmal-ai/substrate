@@ -149,6 +149,8 @@ function toColumn(column: TypedColumn, value: unknown): string | number | boolea
       return typeof value === 'string' ? value : null;
     case 'number':
       return typeof value === 'number' ? value : null;
+    case 'int64':
+      return typeof value === 'bigint' ? String(value) : null;
     case 'boolean':
       return typeof value === 'boolean' ? value : null;
     case 'date': {
@@ -164,6 +166,7 @@ function toColumn(column: TypedColumn, value: unknown): string | number | boolea
 
 /** What reading column value `v` back gives, or `undefined` when that read is lossy. */
 function readBack(kind: ColumnKind, v: string | number | boolean): unknown {
+  if (kind === 'int64') return BigInt(v as string);
   if (kind !== 'date') return v;
   const d = new Date(v as string);
   // postgres.js parses pg's output with `new Date`, which maps years 0-99 onto
@@ -176,6 +179,8 @@ const UTC_US_TEXT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
 
 /** A column value as pg returns it, in the JSON form a row carries: dates as `toISOString()`. */
 function canonical(kind: ColumnKind, value: unknown): unknown {
+  // pg returns a bigint column as text, which keeps every digit.
+  if (kind === 'int64') return BigInt(value as string);
   if (kind !== 'date') return value;
   // `utcTextSql`'s microsecond text: its first 23 characters plus `Z` are what the Date round trip
   // prints (both truncate to the millisecond), at a fraction of the cost on a large read.

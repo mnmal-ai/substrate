@@ -17,6 +17,7 @@ import {
   type FieldPredicate,
   METADATA_FILTER_FIELDS,
   normalizeIsoTimestamp,
+  parseInt64,
   type RefOperand,
   type Row,
   UnsupportedFilterError,
@@ -88,6 +89,38 @@ export type FieldDefOf = (field: string) => FieldDef | undefined;
 export function isDateField(field: string, fieldDefOf?: FieldDefOf): boolean {
   const def = METADATA_FILTER_FIELDS[field] ?? fieldDefOf?.(field);
   return def?.kind === 'scalar' && def.type === 'date';
+}
+
+function isInt64Field(field: string, fieldDefOf?: FieldDefOf): boolean {
+  const def = fieldDefOf?.(field);
+  return def?.kind === 'scalar' && def.type === 'int64';
+}
+
+/**
+ * A predicate on an int64 field with its operands read as bigints, the way pg
+ * casts them. An operand that is not an int64 is a caller error; `null` and
+ * `$ref` operands pass through.
+ */
+function int64Predicate(field: string, predicate: unknown): unknown {
+  if (predicate === null || typeof predicate !== 'object' || Array.isArray(predicate)) {
+    return predicate;
+  }
+  const one = (op: string, v: unknown): unknown => {
+    if (v === null || isRefOperand(v)) return v;
+    const n = parseInt64(v);
+    if (n === undefined) throw new UnsupportedFilterError(field, op, 'requires an int64 operand');
+    return n;
+  };
+  const out: Record<string, unknown> = {};
+  for (const [op, v] of Object.entries(predicate)) {
+    out[op] =
+      Array.isArray(v) && (op === 'in' || op === 'nin' || op === 'between')
+        ? v.map((e) => one(op, e))
+        : KNOWN_OPS.has(op)
+          ? one(op, v)
+          : v;
+  }
+  return out;
 }
 
 const KNOWN_OPS = new Set<string>([
@@ -274,7 +307,8 @@ export function evaluateMembers(
     } else {
       const asDate = isDateField(k, fieldDefOf);
       const ref = walk === undefined ? undefined : (r: RefOperand) => resolveRef(r, asDate, walk);
-      if (!evaluateFieldPredicate(k, getFieldValue(row, k), child, asDate, ref)) return false;
+      const pred = isInt64Field(k, fieldDefOf) ? int64Predicate(k, child) : child;
+      if (!evaluateFieldPredicate(k, getFieldValue(row, k), pred, asDate, ref)) return false;
     }
   }
   return true;
@@ -466,6 +500,12 @@ export function compareFilterValues(a: unknown, b: unknown, asDate = false): num
     const bt = toMicros(b);
     if (at !== undefined && bt !== undefined) return at < bt ? -1 : at > bt ? 1 : 0;
   }
+  if (typeof a === 'bigint' || typeof b === 'bigint') {
+    // A cursor carries an int64 as decimal text.
+    const x = parseInt64(a);
+    const y = parseInt64(b);
+    if (x !== undefined && y !== undefined) return x < y ? -1 : x > y ? 1 : 0;
+  }
   if (typeof a === 'number' && typeof b === 'number') return a < b ? -1 : a > b ? 1 : 0;
   // By code point, as pg's COLLATE "C" orders UTF-8; JS `<` orders UTF-16 units.
   return compareCodePoints(String(a), String(b));
@@ -491,6 +531,10 @@ export function asSortValue(field: string, value: unknown, fieldDefOf?: FieldDef
   if (isDateField(field, fieldDefOf)) return storedMicros(value) === undefined ? null : value;
   const def = METADATA_FILTER_FIELDS[field] ?? fieldDefOf?.(field);
   if (def?.kind === 'scalar' && def.type === 'number' && typeof value !== 'number') return null;
+  // A cursor carries an int64 as decimal text, so a string that reads as one is kept.
+  if (def?.kind === 'scalar' && def.type === 'int64' && parseInt64(value) === undefined) {
+    return null;
+  }
   return value;
 }
 

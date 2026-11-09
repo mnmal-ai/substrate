@@ -20,10 +20,11 @@ import type { TypeTable } from '../type-table.js';
 import { buildAggPredicate } from './aggregate.js';
 import { buildJsonPathPredicate } from './predicates-json-path.js';
 import { buildMetadataColumnPredicate } from './predicates-metadata.js';
-import { buildColumnPredicate } from './predicates-promoted.js';
+import { buildColumnPredicate, int64Operands } from './predicates-promoted.js';
 import {
   asJsonValue,
   type BodyOrderByCast,
+  bodyInt64,
   bodyJson,
   bodyNum,
   bodyRawText,
@@ -238,7 +239,9 @@ function buildFieldPredicateForPath(
   // inference, which is what the memory substrate does too.
   const declaredCast = path.length === 1 ? castFor(field) : null;
   const fragments: Fragment[] = [];
-  for (const [op, operand] of entries) {
+  for (const [op, operand] of declaredCast === 'bigint'
+    ? Object.entries(int64Operands(field, predicate as Record<string, unknown>))
+    : entries) {
     const frag = buildOpFragment(sql, path, op, operand, declaredCast, alias, jsonb);
     if (frag !== null) fragments.push(frag);
   }
@@ -474,6 +477,7 @@ function buildOpFragment(
   // (`body -> 'address' ->> 'city'`), keeping intermediate hops jsonb.
   const textExpr = bodyText(sql, path, alias, jsonb);
   const num = bodyNum(sql, path, alias, jsonb);
+  const i64 = bodyInt64(sql, path, alias, jsonb);
   const ts = bodyTs(sql, path, alias, jsonb);
 
   // A `date`-declared field also accepts an ISO-string operand, which operand
@@ -484,8 +488,12 @@ function buildOpFragment(
   // their first member. Never NULL, so `NOT anyOf(...)` is safe.
   const anyOf = (values: unknown[]): Fragment => {
     const nums = values.filter((v): v is number => typeof v === 'number');
-    const rest = values.filter((v) => typeof v !== 'number');
+    const bigs = values.filter((v): v is bigint => typeof v === 'bigint');
+    const rest = values.filter((v) => typeof v !== 'number' && typeof v !== 'bigint');
     const parts: Fragment[] = [];
+    if (bigs.length > 0) {
+      parts.push(notNullAnd(sql, i64, sql`${i64} = ANY(${bigs.map(String)}::text[]::bigint[])`));
+    }
     if (nums.length > 0) parts.push(notNullAnd(sql, num, sql`${num} = ANY(${nums})`));
     if (rest.length > 0) {
       parts.push(
@@ -506,6 +514,9 @@ function buildOpFragment(
         return sql`${textExpr} = ${sql.unsafe(operand ? "'true'" : "'false'")}`;
       }
       if (typeof operand === 'number') return notNullAnd(sql, num, sql`${num} = ${operand}`);
+      if (typeof operand === 'bigint') {
+        return notNullAnd(sql, i64, sql`${i64} = ${operand.toString()}::bigint`);
+      }
       if (isTs(operand)) return notNullAnd(sql, ts, sql`${ts} = ${tsParam(sql, operand)}`);
       return sql`${textExpr} = ${scalarParam(operand)}`;
     }
@@ -516,6 +527,9 @@ function buildOpFragment(
       }
       if (typeof operand === 'number') {
         return sql`NOT ${notNullAnd(sql, num, sql`${num} = ${operand}`)}`;
+      }
+      if (typeof operand === 'bigint') {
+        return sql`NOT ${notNullAnd(sql, i64, sql`${i64} = ${operand.toString()}::bigint`)}`;
       }
       if (isTs(operand)) return sql`${ts} IS DISTINCT FROM ${tsParam(sql, operand)}`;
       return sql`${textExpr} IS DISTINCT FROM ${scalarParam(operand)}`;
@@ -536,6 +550,13 @@ function buildOpFragment(
       const high = operand[1];
       if (typeof low === 'number' && typeof high === 'number') {
         return notNullAnd(sql, num, sql`${num} BETWEEN ${low} AND ${high}`);
+      }
+      if (typeof low === 'bigint' && typeof high === 'bigint') {
+        return notNullAnd(
+          sql,
+          i64,
+          sql`${i64} BETWEEN ${low.toString()}::bigint AND ${high.toString()}::bigint`
+        );
       }
       if (isTs(low) || isTs(high)) {
         return notNullAnd(
@@ -628,6 +649,10 @@ function rangeCmp(
     const num = bodyNum(sql, path, alias, jsonb);
     return notNullAnd(sql, num, compare(num, operand));
   }
+  if (typeof operand === 'bigint') {
+    const i64 = bodyInt64(sql, path, alias, jsonb);
+    return notNullAnd(sql, i64, compare(i64, sql`${operand.toString()}::bigint`));
+  }
   if (operand instanceof Date || (declaredCast === 'timestamptz' && typeof operand === 'string')) {
     const ts = bodyTs(sql, path, alias, jsonb);
     return notNullAnd(sql, ts, compare(ts, tsParam(sql, operand)));
@@ -667,7 +692,7 @@ export function conditionalMatchFragment(
     if (expected instanceof Date) {
       return sql`${fieldExpr(sql, table, field, 'date')} = ${tsParam(sql, expected)}`;
     }
-    return sql`${v} = ${JSON.stringify(expected)}::text::jsonb`;
+    return sql`${v} = ${typeof expected === 'bigint' ? expected.toString() : JSON.stringify(expected)}::text::jsonb`;
   }
   const textExpr = bodyText(sql, [field]);
   if (expected === null || expected === undefined) return sql`${textExpr} IS NULL`;

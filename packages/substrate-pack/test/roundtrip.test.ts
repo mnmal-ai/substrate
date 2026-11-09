@@ -492,3 +492,39 @@ describe('walk results roundtrip', () => {
     expect(out.shapes).toEqual(env.shapes);
   });
 });
+
+describe('int64 roundtrip', () => {
+  it('a bigint field comes back as a bigint', () => {
+    const schema: Schema = {
+      schemaVersion: 'int64',
+      types: {
+        Big: {
+          fields: {
+            id: { kind: 'scalar', type: 'string' },
+            n: { kind: 'scalar', type: 'int64' }
+          }
+        }
+      },
+      mutations: {}
+    };
+    const ctx = {
+      fieldsByKey: { 'default/Big': { id: true, n: true } } as Record<string, FieldInput>,
+      typeByKey: { 'default/Big': 'Big' },
+      schemas: { default: schema },
+      currentNsByKey: { 'default/Big': 'default' }
+    };
+    const env: PackEnvelope = {
+      schemaVersion: 'int64',
+      data: {
+        'default/Big': [
+          { id: 'a', n: 2n ** 63n - 1n },
+          { id: 'b', n: -(2n ** 63n) },
+          { id: 'c', n: 7n }
+        ]
+      },
+      shapes: { 'default/Big': 'list' }
+    };
+    const out = decodeEnvelope(encodeEnvelope(env, ctx), ctx);
+    expect(out.data).toEqual(env.data);
+  });
+});

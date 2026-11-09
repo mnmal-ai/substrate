@@ -19,7 +19,8 @@ import {
   parseQualifiedKey,
   type RequestContext,
   type SubstrateRequest,
-  type SubstrateResponse
+  type SubstrateResponse,
+  stringifyJson
 } from '@mnmal-ai/substrate-types';
 import { jsonEnvelopeStream, streamsJson } from './json-stream.js';
 import { projectEnvelope } from './project-json.js';
@@ -41,7 +42,7 @@ export function jsonResponse(
   return {
     status,
     headers: extraHeaders === undefined ? JSON_HEADERS : { ...JSON_HEADERS, ...extraHeaders },
-    body: Buffer.from(JSON.stringify(value), 'utf8')
+    body: Buffer.from(stringifyJson(value), 'utf8')
   };
 }
 
@@ -269,7 +270,7 @@ export function serializeEnvelope(
     return {
       status: 200,
       headers: JSON_HEADERS,
-      body: Buffer.from(JSON.stringify(projected), 'utf8')
+      body: Buffer.from(stringifyJson(projected), 'utf8')
     };
   }
 

@@ -23,6 +23,7 @@ function caps(operators: Partial<FilterCapabilities['operators']>): FilterCapabi
       'scalar.string': [],
       'scalar.boolean': [],
       'scalar.date': [],
+      'scalar.int64': [],
       'scalar.json': [],
       crossRef: [],
       list: [],
@@ -75,6 +76,7 @@ describe('effectiveFilterOperators', () => {
       'list',
       'scalar.boolean',
       'scalar.date',
+      'scalar.int64',
       'scalar.json',
       'scalar.number',
       'scalar.string'
