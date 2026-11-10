@@ -144,7 +144,7 @@ describe('aggregates: parsing', () => {
   it('drops a grouping by a derived value beside an aggregate', () => {
     const rulings: NamespaceRulings = {
       ...base,
-      fieldPhrases: { spread: { derive: { diff: ['Item.price', 'Item.views'] } } }
+      fieldPhrases: { spread: { select: { sub: ['Item.price', 'Item.views'] } } }
     };
     const r = parse('average price of items by spread', rulings);
     expect(r.candidates[0]?.dropped).toContainEqual(
@@ -153,7 +153,7 @@ describe('aggregates: parsing', () => {
         kind: 'order'
       })
     );
-    expect(r.candidates[0]?.plan.some((c) => c.kind === 'derive')).toBe(false);
+    expect(r.candidates[0]?.plan.some((c) => c.kind === 'select')).toBe(false);
     expect(params('average price of items by spread', rulings)).toEqual({
       aggregate: { value: { avg: 'price' } }
     });
@@ -265,17 +265,17 @@ describe('aggregates: parsing', () => {
     });
     expect(params('total price of sales per day')).toEqual({
       aggregate: { value: { sum: 'price' } },
-      bucket: { field: 'soldAt', by: 'day' }
+      groupBy: { bucket: { dateTrunc: [{ lit: 'day' }, 'soldAt'] } }
     });
     expect(params('max price of items by hour')).toEqual({
       aggregate: { value: { max: 'price' } },
-      bucket: { field: 'listedAt', by: 'hour' }
+      groupBy: { bucket: { dateTrunc: [{ lit: 'hour' }, 'listedAt'] } }
     });
   });
 
   it('drops a grouping it cannot express, keeping the whole aggregate', () => {
     for (const [q, span, reason] of [
-      ['total price of sales per month', 'per month', 'the engine buckets by day or hour only'],
+      ['total price of sales per month', 'per month', 'only day and hour groupings are supported'],
       [
         'average price of items by name',
         'by name',
@@ -286,7 +286,7 @@ describe('aggregates: parsing', () => {
       const r = parse(q);
       expect(r.status, q).toBe('partial');
       expect(r.candidates[0]?.dropped, q).toEqual([{ span, reason, kind: 'order' }]);
-      expect(r.candidates[0]?.frame, q).not.toHaveProperty('shop/Item.params.bucket');
+      expect(r.candidates[0]?.frame, q).not.toHaveProperty('shop/Item.params.groupBy');
       expect(r.candidates[0]?.aggregate?.group, q).toBeUndefined();
     }
   });
@@ -343,8 +343,8 @@ describe('aggregates: answering', () => {
       data: {
         'shop/Sale': {
           groups: [
-            { bucket: '2026-10-20', value: 30 },
-            { bucket: '2026-10-21', value: 5 }
+            { bucket: '2026-10-20T00:00:00.000000Z', value: 30 },
+            { bucket: '2026-10-21T00:00:00.000000Z', value: 5 }
           ],
           truncated: true
         }
@@ -363,6 +363,35 @@ describe('aggregates: answering', () => {
         truncated: true
       }
     });
+  });
+
+  it('drops the null-key group of a day grouping, a row with no time field', async () => {
+    const { e } = engine(() => ({
+      data: {
+        'shop/Sale': {
+          groups: [
+            { bucket: '2026-10-20T00:00:00.000000Z', value: 30 },
+            { bucket: null, value: 9 }
+          ]
+        }
+      }
+    }));
+    const o = await ask('total price of sales per day', e);
+    expect(o).toMatchObject({
+      aggregate: { by: 'day', groups: [{ key: '2026-10-20', value: 30 }] }
+    });
+  });
+
+  it('drops a computed ordering whose name is a field of the type', () => {
+    const rulings: NamespaceRulings = {
+      ...base,
+      fieldPhrases: { views: { select: { sub: ['Item.price', 'Item.views'] } } }
+    };
+    const r = parse('items by views', rulings);
+    expect(r.candidates[0]?.dropped).toContainEqual(
+      expect.objectContaining({ reason: 'its name "views" is also a field of Item' })
+    );
+    expect(params('items by views', rulings)).not.toHaveProperty('select');
   });
 
   it('groups by an enum field with one aggregate per value', async () => {

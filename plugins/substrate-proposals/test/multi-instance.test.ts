@@ -14,6 +14,7 @@ import type { PubSub } from '../src/config.js';
 import {
   applyProposalFromNotification,
   reconcileNamespace,
+  reservedSkipLine,
   setupNamespaceListener
 } from '../src/multi-instance.js';
 import { RegistryStore } from '../src/registry-store.js';
@@ -135,6 +136,94 @@ describe('reconcileNamespace', () => {
 
     expect(registry.has('Jacket')).toBe(true);
     expect(registry.has('createJacket')).toBe(true);
+  });
+
+  it('skips a stored type that carries a reserved metadata name, and says why', async () => {
+    await dataset.write('TypeProposal', [
+      {
+        id: randomUUID(),
+        typeName: 'Ledger',
+        fieldsJson: JSON.stringify({ seq: { kind: 'scalar', type: 'number' } }),
+        proposedBy: 'designer',
+        proposedAt: new Date(),
+        proposedReason: 'stored before the name was reserved',
+        applied: true,
+        appliedAt: new Date(),
+        supersededByCode: false,
+        archived: false
+      }
+    ]);
+    const { store, registry } = makeStore(dataset, edges);
+    const skipped: Array<{ typeName: unknown; message: string }> = [];
+    await reconcileNamespace({
+      namespace: NS,
+      registryStore: store,
+      onSkip: (row, err) =>
+        skipped.push({ typeName: row.typeName, message: err instanceof Error ? err.message : '' })
+    });
+    // Boot goes on without the type; the skip names it and the reserved field.
+    expect(registry.has('Ledger')).toBe(false);
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]?.typeName).toBe('Ledger');
+    expect(skipped[0]?.message).toContain('`seq` is a reserved field name');
+  });
+
+  it('words one warning line for a reserved-name skip: namespace, type, field, the effect', async () => {
+    const id = randomUUID();
+    const row = {
+      id,
+      typeName: 'Ledger',
+      fieldsJson: JSON.stringify({ seq: { kind: 'scalar', type: 'number' } }),
+      proposedBy: 'designer',
+      proposedAt: new Date(),
+      proposedReason: 'stored before the name was reserved',
+      applied: true,
+      appliedAt: new Date(),
+      supersededByCode: false,
+      archived: false
+    };
+    await dataset.write('TypeProposal', [row]);
+    const { store } = makeStore(dataset, edges);
+    const lines: Array<string | undefined> = [];
+    await reconcileNamespace({
+      namespace: NS,
+      registryStore: store,
+      onSkip: (r, err) => lines.push(reservedSkipLine(NS, r, err))
+    });
+    expect(lines).toEqual([
+      `substrate-proposals: ${NS}/Ledger: field 'seq' is reserved for server metadata; the type is not registered`
+    ]);
+    // Any other failure is not worded as a reserved name.
+    expect(reservedSkipLine(NS, row, new Error('boom'))).toBeUndefined();
+  });
+
+  it('a peer notification for a reserved-name row skips it and does not throw', async () => {
+    const id = randomUUID();
+    await dataset.write('TypeProposal', [
+      {
+        id,
+        typeName: 'Ledger',
+        fieldsJson: JSON.stringify({ seq: { kind: 'scalar', type: 'number' } }),
+        proposedBy: 'designer',
+        proposedAt: new Date(),
+        proposedReason: 'stored before the name was reserved',
+        applied: true,
+        appliedAt: new Date(),
+        supersededByCode: false,
+        archived: false
+      }
+    ]);
+    const { store, registry } = makeStore(dataset, edges);
+    const lines: Array<string | undefined> = [];
+    await applyProposalFromNotification({
+      namespace: NS,
+      proposalId: id,
+      registryStore: store,
+      onSkip: (r, err) => lines.push(reservedSkipLine(NS, r, err))
+    });
+    expect(registry.has('Ledger')).toBe(false);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain(`${NS}/Ledger: field 'seq' is reserved for server metadata`);
   });
 
   it('replays FieldProposals after their parent TypeProposals', async () => {

@@ -25,7 +25,8 @@ import type {
   NamespaceDefinition,
   NamespaceInstallContext,
   PluginLifecycleContext,
-  Registry
+  Registry,
+  Row
 } from '@mnmal-ai/substrate-types';
 import {
   DEFAULT_INDEX_CAPABILITY,
@@ -39,6 +40,7 @@ import {
   namespaceDropParticipant,
   reconcileClusterNamespaces,
   reconcileNamespace,
+  reservedSkipLine,
   retireDroppedNamespace,
   setupClusterDropListener,
   setupClusterNamespaceListener,
@@ -224,6 +226,20 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
       // per-ns reconcile loop below iterates the union of static
       // ownedNamespaces + hot-added ones, so TypeProposals in hot-added
       // namespaces are replayed too.
+      // A stored row that cannot be applied is skipped: a metric always, and one warning
+      // line when its name is reserved for server metadata.
+      const log = config.log ?? ((line: string) => console.warn(line));
+      const skipped = (ns: string, row: Row, err: unknown): void => {
+        ctx.metric('_system_proposals.replay_skipped', {
+          namespace: ns,
+          id: row.id,
+          type: row.typeName ?? row.targetType,
+          field: row.fieldName ?? null,
+          error: err instanceof Error ? err.message : String(err)
+        });
+        const line = reservedSkipLine(ns, row, err);
+        if (line !== undefined) log(line);
+      };
       const controlBinding = registryStore.getBinding(CONTROL_NAMESPACE);
       const hotAddedNamespaces = await reconcileClusterNamespaces({
         controlNamespace: CONTROL_NAMESPACE,
@@ -256,18 +272,14 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
         await reconcileNamespace({
           namespace: ns,
           registryStore,
-          onSkip: (row, err) =>
-            ctx.metric('_system_proposals.replay_skipped', {
-              namespace: ns,
-              id: row.id,
-              error: err instanceof Error ? err.message : String(err)
-            })
+          onSkip: (row, err) => skipped(ns, row, err)
         });
         await setupNamespaceListener({
           namespace: ns,
           channel: `_substrate_proposals_${ns}`,
           pubsub: config.pubsub,
-          registryStore
+          registryStore,
+          onSkip: (row, err) => skipped(ns, row, err)
         });
         ctx.metric('_system_proposals.namespace_ready', { namespace: ns });
       }

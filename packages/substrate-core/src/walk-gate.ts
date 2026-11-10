@@ -1,6 +1,6 @@
 /** Structural detector for the typed-edge-walk query grammar. Subscriptions and streams use it to refuse walks (query-only). */
 
-const WALK_PARAM_KEYS = ['aggregate', 'bucket', 'groupBy', 'having', 'offset', 'derive'];
+const WALK_PARAM_KEYS = ['aggregate', 'groupBy', 'having', 'offset'];
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);

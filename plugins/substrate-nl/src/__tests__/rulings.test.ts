@@ -36,7 +36,7 @@ describe('fieldPhrases', () => {
   const entries = {
     'asking price': { field: 'Listing.price', exclude: { status: { eq: 'draft' } } },
     'valued psa 9': { field: 'Cert.grade', value: 9 },
-    margin: { derive: { diff: ['Listing.price', 'Listing.cost'] } },
+    margin: { select: { sub: ['Listing.price', 'Listing.cost'] } },
     slower: { field: 'Listing.price', pick: 'max' }
   };
   const fields = (...n: string[]) => Object.fromEntries(n.map((k) => [k, { kind: 'string' }]));
@@ -49,7 +49,7 @@ describe('fieldPhrases', () => {
       }
     }) as unknown as Schema;
 
-  it('accepts field, value, exclude, derive and pick entries', () => {
+  it('accepts field, value, exclude, select and pick entries', () => {
     const r = readRulings(typed({ fieldPhrases: entries }));
     expect(r.warnings).toEqual([]);
     expect(r.rulings.fieldPhrases).toEqual(entries);
@@ -107,7 +107,7 @@ describe('fieldPhrases', () => {
           a: { field: 'Nope.x' },
           b: { field: 'Listing.nope' },
           c: { field: 'Listing.price', exclude: { ghost: { eq: 1 } } },
-          d: { derive: { ratio: ['Listing.price', 'Cert.grade'] } },
+          d: { select: { div: ['Listing.price', 'Cert.grade'] } },
           ok: { field: 'Listing.price' }
         }
       })

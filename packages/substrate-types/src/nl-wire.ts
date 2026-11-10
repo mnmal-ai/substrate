@@ -12,7 +12,7 @@
  * `hits` key. Test for presence (`Array.isArray`, `'data' in o`); do not rely on
  * `=== undefined` of a field the type marks required.
  */
-import type { DeriveSpec, WhereClause } from './dataset.js';
+import type { WhereClause } from './dataset.js';
 import type { Query } from './nl.js';
 import type { Dropped, PlanClause } from './schema.js';
 
@@ -92,7 +92,7 @@ export type NlOutcome =
       /**
        * On an `aggregate` answer: `fn` of `field` over the rows the frame matches,
        * as one `value`, or per group keyed by `by` (a field, or the `day`/`hour`
-       * bucket). Absent when the engine refused the frame, with `errors` saying why.
+       * date group). Absent when the engine refused the frame, with `errors` saying why.
        */
       aggregate?: NlAggregate;
       errors?: unknown[];
@@ -243,14 +243,14 @@ export interface NlFieldPhrase {
   value?: unknown;
   /** Needs `field`: the implicit filter on that field's type. Never silent: it shows in `plan`. */
   exclude?: WhereClause;
-  /** A diff or ratio; operands are `'<Type>.<field>'`, both on one type. */
-  derive?: Exclude<DeriveSpec, { value: string }>;
+  /** A difference (`sub`) or quotient (`div`) that orders; operands are `'<Type>.<field>'`, both on one type. */
+  select?: { sub: [string, string] } | { div: [string, string] };
   /** A namespace default pick for this phrase. */
   pick?: 'latest' | 'max' | 'min';
 }
 
 export interface NlNamespaceRulings {
-  /** Phrases bound to fields, values, implicit filters, derived orderings and pick defaults. Keys are normalised (trimmed, single-spaced, lower-cased). */
+  /** Phrases bound to fields, values, implicit filters, computed orderings and pick defaults. Keys are normalised (trimmed, single-spaced, lower-cased). */
   fieldPhrases?: Record<string, NlFieldPhrase>;
   /** Types never scoped to the asking project (their `project` means "belongs to", not "applies to"). */
   unscopedTypes?: string[];

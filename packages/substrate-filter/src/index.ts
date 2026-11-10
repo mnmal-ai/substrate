@@ -37,7 +37,13 @@ export {
   LIKE_TRAILING_ESCAPE
 } from './expr-check.js';
 export { type EvalEnv, evalExpr, likeMatch } from './expr-eval.js';
-export { exprTypeOfField, fieldTypeLookup, hasExprKey, walkAggExprType } from './expr-scope.js';
+export {
+  exprTypeOfField,
+  fieldTypeLookup,
+  hasExprKey,
+  metadataExprType,
+  walkAggExprType
+} from './expr-scope.js';
 export {
   clearExtensionOperators,
   computedFieldOwner,
@@ -56,7 +62,7 @@ export {
   type Grouped,
   type GroupedParams,
   groupRows,
-  metadataArgType
+  outOfRange
 } from './grouped.js';
 export {
   assertJsonPathPredicate,

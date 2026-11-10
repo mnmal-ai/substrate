@@ -20,7 +20,13 @@ import { z } from 'zod';
 // binary carries the literal value.
 import pkg from '../../package.json' with { type: 'json' };
 import { makeAgentJwtProvider, resolveAgentCapabilities } from './agent-jwt.js';
-import { buildInstructions, overviewLegend, schemaOverview } from './schema-overview.js';
+import {
+  buildInstructions,
+  expressionLines,
+  fullExpressions,
+  overviewLegend,
+  schemaOverview
+} from './schema-overview.js';
 
 /** The version the MCP server reports in its initialize serverInfo. */
 export const MCP_SERVER_VERSION: string =
@@ -249,12 +255,24 @@ export function createSchemaHandler(
           endpoint,
           '/substrate/v1/federated-schema'
         );
-        return okResult({ legend: overviewLegend, overview: schemaOverview(federated) });
+        return okResult({
+          legend: overviewLegend,
+          overview: schemaOverview(federated),
+          expressions: expressionLines()
+        });
       } catch (err) {
         return errorResult(toMessage(err));
       }
     }
     let path = '/substrate/v1/federated-schema';
+    if ((ns === undefined || ns === '') && args?.full === true) {
+      try {
+        const federated = await getSubstrate<Record<string, unknown>>(endpoint, path);
+        return okResult({ ...federated, $expressions: fullExpressions });
+      } catch (err) {
+        return errorResult(toMessage(err));
+      }
+    }
     if (ns !== undefined && ns !== '') {
       if (type !== undefined && type !== '') {
         // `shape` is only meaningful on the type route; the namespace route
@@ -473,9 +491,12 @@ const WALK_DESCRIPTION =
   '(`$.f` is the seed row, `_agg.<name>` an aggregate; `times`/`plus` scale numbers, `plus` shifts a ' +
   'date in ms). `_agg` also takes avg/sum/min/max: <field> or latest: { by, value }, and in `where` ' +
   'compares beside a comparison: { "_agg": { "in": ..., "count": true }, "gte": 3 }. Frame params: ' +
-  '`count: true` answers { count }; `aggregate: { name: { sum: "price" } }` with optional `bucket: ' +
-  '{ field, by: "day"|"hour" }` answers groups; `derive: { m: { diff|ratio: ["_agg.x", "$.f"] } }` ' +
-  '(or one operand as it is, `{ value: "_agg.x" }`) is ordered by `orderBy: [{ "$m": "desc" }]`. Walks are query-only: subscribe, stream and mutate ' +
+  '`count: true` answers { count }; `aggregate: { name: { sum: "price" } }` answers one group, or one per ' +
+  'key of `groupBy: { day: { dateTrunc: [{ "lit": "day" }, "seenAt"] } }` (a map of names to expressions; ' +
+  '`having` filters the groups, `offset` skips them, `orderBy` names their outputs). ' +
+  '`select: { m: { sub: ["_agg.x", "price"] } }` adds a computed value to each row, ordered by `orderBy: [{ "m": "desc" }]`. ' +
+  'An expression is a field name, a literal, `{ "lit": "text" }` or `{ "fn": [args] }`. ' +
+  'Walks are query-only: subscribe, stream and mutate ' +
   'refuse them, as does a store without walks (walks_unsupported_store).';
 
 export function createMcpServer(endpoint: string, options: McpServerOptions = {}): McpServer {
@@ -500,7 +521,8 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
         description:
           "Fetch the Substrate schema. No args → a compact overview: every namespace's " +
           'types, one line of `field: type` each, enough to write a query. `full: true` → ' +
-          'the whole federated schema (large; rarely needed). SCOPED + CHEAP: pass `namespace` ' +
+          'the whole federated schema plus the full expression catalogue under `$expressions` ' +
+          '(large; rarely needed). SCOPED + CHEAP: pass `namespace` ' +
           "for one namespace, or `namespace` + `type` for a single type's write " +
           'contract ({ fields, mutations }). Mine the scoped shape BEFORE a ' +
           'create/update so you send only declared fields — autoCRUD rejects ' +
@@ -543,7 +565,8 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
         description:
           'Query Substrate. payload is a single frame object mapping qualified keys ' +
           '(<ns>/<Type>) to { params, fields }. ONE call can span multiple ' +
-          'namespaces — e.g. { "prices/Price": {...}, "products/Product": {...} }.' +
+          'namespaces — e.g. { "prices/Price": {...}, "products/Product": {...} }. ' +
+          'The expression functions for select, where.$expr, groupBy and having are listed by the `schema` tool.' +
           WALK_DESCRIPTION,
         inputSchema: {
           payload: payloadSchema(

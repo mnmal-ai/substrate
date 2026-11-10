@@ -36,10 +36,10 @@ const FieldPhraseSchema = z
     field: z.string().min(1).optional(),
     value: z.unknown().optional(),
     exclude: z.record(z.string(), z.unknown()).optional(),
-    derive: z
+    select: z
       .union([
-        z.object({ diff: z.tuple([z.string(), z.string()]) }).strict(),
-        z.object({ ratio: z.tuple([z.string(), z.string()]) }).strict()
+        z.object({ sub: z.tuple([z.string(), z.string()]) }).strict(),
+        z.object({ div: z.tuple([z.string(), z.string()]) }).strict()
       ])
       .optional(),
     pick: z.enum(['latest', 'max', 'min']).optional()
@@ -48,8 +48,8 @@ const FieldPhraseSchema = z
   .refine((v) => v.field !== undefined || (v.value === undefined && v.exclude === undefined), {
     message: 'value and exclude require field'
   })
-  .refine((v) => v.field !== undefined || v.derive !== undefined || v.pick !== undefined, {
-    message: 'an entry needs at least one of field, derive, pick'
+  .refine((v) => v.field !== undefined || v.select !== undefined || v.pick !== undefined, {
+    message: 'an entry needs at least one of field, select, pick'
   });
 
 const FieldPhrasesSchema = z.record(z.string(), FieldPhraseSchema).transform((rec, ctx) => {
@@ -114,7 +114,7 @@ function phraseProblem(schema: Schema, e: z.infer<typeof FieldPhraseSchema>): st
   const types = new Set<string>();
   const refs = [
     ...(e.field !== undefined ? [e.field] : []),
-    ...(e.derive ? (Object.values(e.derive)[0] ?? []) : [])
+    ...(e.select ? (Object.values(e.select)[0] ?? []) : [])
   ];
   for (const r of refs) {
     const dot = r.indexOf('.');

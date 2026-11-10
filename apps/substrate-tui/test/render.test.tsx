@@ -190,8 +190,8 @@ const items = (data: unknown[], view: TypeView = ITEM_VIEW) =>
 describe('a walked ordering value (_agg)', () => {
   const ordered = {
     params: {
-      derive: { maxItemPrice: { value: '_agg.maxItemPrice' } },
-      orderBy: [{ $maxItemPrice: 'desc' }]
+      select: { maxItemPrice: '_agg.maxItemPrice' },
+      orderBy: [{ maxItemPrice: 'desc' }]
     },
     fields: {}
   };

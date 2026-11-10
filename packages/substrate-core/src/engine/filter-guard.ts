@@ -195,16 +195,13 @@ function isWalkSelection(name: string, sel: unknown): boolean {
 
 /** The walk-grammar params and field selection `validateFilter` checks. */
 function walkInput(entry: FrameEntry): Partial<ValidateFilterInput> {
-  const { count, aggregate, bucket, groupBy, having, offset, derive, select, cursor } =
-    entry.params ?? {};
+  const { count, aggregate, groupBy, having, offset, select, cursor } = entry.params ?? {};
   return {
     count,
     aggregate,
-    bucket,
     groupBy,
     having,
     offset,
-    derive,
     select,
     cursor,
     ...(entry.fields !== undefined ? { fields: entry.fields as Record<string, unknown> } : {})

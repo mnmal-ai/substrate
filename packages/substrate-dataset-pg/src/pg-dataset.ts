@@ -96,7 +96,6 @@ import { IndexLockAborted, UnsupportedStoreLayoutError, withTableIndexLock } fro
 import type { PgEdgesStore } from './pg-edges-store.js';
 import { PgShortIdStore, parseShortId } from './pg-short-id-store.js';
 import {
-  buildFrameAggregate,
   buildFrameCount,
   buildWalkAgg,
   buildWalkColumns,
@@ -106,9 +105,8 @@ import {
 import { compileExprTyped } from './pg-sql/expression.js';
 import { buildGroupedRead } from './pg-sql/grouped.js';
 import { fieldExprSql, sqlStringLiteral } from './pg-sql/primitives.js';
-import type { DerivedLookup } from './pg-sql/sorting.js';
+import type { ComputedLookup } from './pg-sql/sorting.js';
 import {
-  buildDerive,
   prepareSharedPicks,
   tableLookup,
   walkScope,
@@ -777,10 +775,18 @@ export class PgDataset implements Dataset {
           }));
     /** `statement`'s rows, but those of a stale read, which throw {@link StaleRead}; `key` is non-null on a real row. */
     const run = async <R extends object>(statement: Fragment, key: keyof R): Promise<R[]> => {
-      if (guard === null) return (await cancellable(statement, params.signal)) as unknown as R[];
-      const out = await cancellable(guardedRead(sql, guard, statement), params.signal);
-      if (out[0]?.guard_ok !== true) throw new StaleRead(types, String(out[0]?.guard_iso));
-      return out.filter((r) => r[key as string] !== null) as unknown as R[];
+      try {
+        if (guard === null) return (await cancellable(statement, params.signal)) as unknown as R[];
+        const out = await cancellable(guardedRead(sql, guard, statement), params.signal);
+        if (out[0]?.guard_ok !== true) throw new StaleRead(types, String(out[0]?.guard_iso));
+        return out.filter((r) => r[key as string] !== null) as unknown as R[];
+      } catch (err) {
+        // 22003: an int64 sum or an expression left its type's range, as memory's RangeError.
+        if ((err as { code?: unknown } | null)?.code === '22003') {
+          throw new ResolverFrameError(VALUE_OUT_OF_RANGE, (err as Error).message);
+        }
+        throw err;
+      }
     };
 
     // Build WHERE fragment incrementally. Use table alias `r` to avoid
@@ -857,43 +863,24 @@ export class PgDataset implements Dataset {
         return { rows: [], hasMore: false, count: row?.n ?? 0 };
       }
       const aggregate = params.aggregate ?? {};
-      if (params.bucket === undefined) {
-        const grouped = buildGroupedRead(
-          sql,
-          { ...params, aggregate, limit },
-          matched,
-          pickJoins,
-          table,
-          (f) => fieldDef(type, f)
-        );
-        let rows: Array<{ g: number } & Record<string, unknown>>;
-        try {
-          rows = await run(sql`${withCtes(sql, scope)}${grouped.statement}`, 'g');
-        } catch (err) {
-          // 22003: an int64 sum or an expression left its type's range, as memory's RangeError.
-          if ((err as { code?: unknown } | null)?.code === '22003') {
-            throw new ResolverFrameError(VALUE_OUT_OF_RANGE, (err as Error).message);
-          }
-          throw err;
-        }
-        const truncated = limit !== undefined && rows.length > limit;
-        const page = truncated ? rows.slice(0, limit) : rows;
-        return {
-          rows: [],
-          hasMore: false,
-          groups: page.map(grouped.decode),
-          ...(truncated ? { truncated: true } : {})
-        };
-      }
-      const statement = buildFrameAggregate(sql, aggregate, params.bucket, matched, limit, scope);
-      const groups = (
-        await run<{ g: Record<string, unknown> }>(sql`${withCtes(sql, scope)}${statement}`, 'g')
-      ).map((x) => x.g);
-      const truncated = limit !== undefined && groups.length > limit;
+      const grouped = buildGroupedRead(
+        sql,
+        { ...params, aggregate, limit },
+        matched,
+        pickJoins,
+        table,
+        (f) => fieldDef(type, f)
+      );
+      const rows = await run<{ g: number } & Record<string, unknown>>(
+        sql`${withCtes(sql, scope)}${grouped.statement}`,
+        'g'
+      );
+      const truncated = limit !== undefined && rows.length > limit;
+      const page = truncated ? rows.slice(0, limit) : rows;
       return {
         rows: [],
         hasMore: false,
-        groups: truncated ? groups.slice(0, limit) : groups,
+        groups: page.map(grouped.decode),
         ...(truncated ? { truncated: true } : {})
       };
     }
@@ -906,14 +893,12 @@ export class PgDataset implements Dataset {
     const joinShortIds =
       whereReferencesField(params.where, 'shortId') || orderBy.some(([f]) => f === 'shortId');
 
-    // A `$<name>` key sorts by its `params.derive` entry. A leading one, which
-    // every matched row needs, is computed once per row as a column of a fenced
-    // subquery the page reads as `r`, so ORDER BY, the cursor compare and the
-    // projected sort key share it. A later one is inlined: an index on the lead
-    // then computes it only for the rows it reads.
+    // A leading select key, which every matched row needs, is computed once per
+    // row as a column of a fenced subquery the page reads as `r`, so ORDER BY, the
+    // cursor compare and the projected sort key share it. A later one is inlined:
+    // an index on the lead then computes it only for the rows it reads.
     // shortcut: with the shortId join the where reads `s`, so there the
     // expression is inlined at each use; fence that join too if it ever costs.
-    const derive = params.derive;
     // `select` expressions, compiled once: each is a column of the page, and an
     // orderBy key by its name. A string sorts by byte order, as memory's.
     const selectEntries = Object.entries(params.select ?? {});
@@ -953,23 +938,20 @@ export class PgDataset implements Dataset {
         selectTypes.set(name, t ?? 'string');
       }
     }
-    const derivedExpr = (field: string): Fragment | undefined => {
+    const computedExpr = (field: string): Fragment | undefined => {
       const chosen = Object.hasOwn(params.select ?? {}, field)
         ? selectFragments.get(field)
         : undefined;
       if (chosen !== undefined) {
         return selectTypes.get(field) === 'string' ? sql`((${chosen}) COLLATE "C")` : chosen;
       }
-      const name = field.slice(1);
-      if (scope === undefined || derive === undefined || !field.startsWith('$')) return undefined;
-      const spec = Object.hasOwn(derive, name) ? derive[name] : undefined;
-      return spec === undefined ? undefined : buildDerive(sql, name, spec, scope);
+      return undefined;
     };
     const lead = orderBy[0]?.[0] ?? 'id';
-    const fenced = joinShortIds ? undefined : derivedExpr(lead);
-    const derivedFor: DerivedLookup = Object.assign(
+    const fenced = joinShortIds ? undefined : computedExpr(lead);
+    const computedFor: ComputedLookup = Object.assign(
       (field: string): Fragment | undefined =>
-        fenced !== undefined && field === lead ? sql`r.__derive_0` : derivedExpr(field),
+        fenced !== undefined && field === lead ? sql`r.__computed_0` : computedExpr(field),
       { typeOf: (field: string) => selectTypes.get(field) }
     );
     // OFFSET 0 keeps the subquery from being flattened back into one evaluation per use.
@@ -977,7 +959,7 @@ export class PgDataset implements Dataset {
     const from =
       fenced === undefined
         ? sql`${rel} r${pickJoins}${windowJoins}`
-        : sql`(SELECT r.*, ${fenced} AS __derive_0 FROM ${rel} r${pickJoins} WHERE ${combineAnd(sql, clauses)} OFFSET 0) r${windowJoins}`;
+        : sql`(SELECT r.*, ${fenced} AS __computed_0 FROM ${rel} r${pickJoins} WHERE ${combineAnd(sql, clauses)} OFFSET 0) r${windowJoins}`;
     const ctes = withCtes(sql, scope);
     const base = fenced === undefined ? clauses : [];
 
@@ -996,7 +978,7 @@ export class PgDataset implements Dataset {
         cursor.id,
         orderByCastFor,
         table,
-        derivedFor
+        computedFor
       );
       const tail = buildCursorNullTail(
         sql,
@@ -1004,12 +986,12 @@ export class PgDataset implements Dataset {
         cursor.orderByValues,
         orderByCastFor,
         table,
-        derivedFor
+        computedFor
       );
       if (tail !== null) tailSql = combineAnd(sql, [...base, tail]);
       if (cursorFragment !== null) whereSql = combineAnd(sql, [...base, cursorFragment]);
     }
-    const orderBySql = buildOrderBy(sql, orderBy, orderByCastFor, table, derivedFor, 'r');
+    const orderBySql = buildOrderBy(sql, orderBy, orderByCastFor, table, computedFor, 'r');
 
     // Fetch one extra row to determine hasMore without a count query.
     const fetchLimit = limit !== undefined ? limit + 1 : undefined;
@@ -1032,7 +1014,7 @@ export class PgDataset implements Dataset {
       orderBy,
       bodyCastFor,
       table,
-      derivedFor
+      computedFor
     );
 
     // With `joinShortIds`, short_ids joins before LIMIT. Otherwise the page
@@ -1062,7 +1044,7 @@ export class PgDataset implements Dataset {
     const selectColumns = selectEntries.map(([name], i) => {
       const fragment =
         fenced !== undefined && name === lead
-          ? sql`r.__derive_0`
+          ? sql`r.__computed_0`
           : (selectFragments.get(name) as Fragment);
       const alias = sql(`__sel_${i}`);
       switch (selectTypes.get(name)) {
@@ -1114,7 +1096,7 @@ export class PgDataset implements Dataset {
           ) s ON true`
               : sql``
           }
-          ${buildProjectedOrderBy(sql, orderBy, sortKeyAliases, orderByCastFor, table, 'p', derivedFor)}
+          ${buildProjectedOrderBy(sql, orderBy, sortKeyAliases, orderByCastFor, table, 'p', computedFor)}
         `;
     // The CTEs ride in front only when there are any, so a plain read's text
     // is exactly what it was (callers and tests key on its leading SELECT).
@@ -2615,7 +2597,7 @@ export const WALK_STATEMENT_TIMEOUT_MS = 30_000;
 
 /** The walk-only params a read actually uses: `count: true`, and each non-empty object. */
 function walkParams(params: ReadParams): string[] {
-  const used = (['aggregate', 'bucket', 'derive', 'agg', 'nested'] as const).filter((k) => {
+  const used = (['aggregate', 'agg', 'nested'] as const).filter((k) => {
     const v = params[k];
     return typeof v === 'object' && v !== null && Object.keys(v).length > 0;
   });

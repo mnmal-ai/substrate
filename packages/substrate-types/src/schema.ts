@@ -20,7 +20,7 @@ import type { IndexDecl } from './plugin.js';
  */
 export interface PlanClause {
   path: string[];
-  kind: 'hop' | 'filter' | 'order' | 'ref' | 'derive' | 'bucket' | 'agg';
+  kind: 'hop' | 'filter' | 'order' | 'ref' | 'select' | 'group' | 'agg';
   served: boolean;
   recommend?: IndexDecl;
   /**

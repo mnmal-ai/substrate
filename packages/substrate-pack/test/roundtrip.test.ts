@@ -478,7 +478,10 @@ describe('walk results roundtrip', () => {
       schemaVersion: 'walks001',
       data: {
         'cards/Cert': { count: 42 },
-        'cards/Listing': { groups: [{ bucket: '2026-10-24', n: 2, avg: 1.5 }], truncated: true }
+        'cards/Listing': {
+          groups: [{ bucket: '2026-10-24T00:00:00.000000Z', n: 2, avg: 1.5 }],
+          truncated: true
+        }
       },
       shapes: { 'cards/Cert': 'count', 'cards/Listing': 'groups' }
     };

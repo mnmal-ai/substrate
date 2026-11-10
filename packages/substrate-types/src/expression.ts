@@ -137,4 +137,7 @@ export const EXPR_FUNCTIONS: readonly FunctionSig[] = [
 
 export const EXPR_LIMITS = { maxDepth: 16, maxNodesPerExpr: 64, maxNodesPerFrame: 1024 };
 
+/** The aggregate names `_agg`, `having` and grouped reads accept. */
+export const EXPR_AGGREGATES = ['count', 'countDistinct', 'sum', 'avg', 'min', 'max'] as const;
+
 export const DATE_UNITS = ['second', 'minute', 'hour', 'day', 'week', 'month', 'year'] as const;

@@ -30,5 +30,25 @@ export function isReservedAutoCrudField(def: FieldDef): boolean {
   return (def as unknown as Record<symbol, unknown>)[RESERVED] === true;
 }
 
+/** The server metadata names a body field may not take: expressions, where and orderBy read them as metadata. */
+export const RESERVED_METADATA_FIELD_NAMES: readonly string[] = [
+  'createdAt',
+  'updatedAt',
+  'seq',
+  'createdBy',
+  'updatedBy',
+  'createdById',
+  'createdByKind',
+  'updatedById',
+  'updatedByKind'
+];
+
+/** Why a field of this name cannot be declared, or undefined when it can. */
+export function reservedMetadataFieldMessage(name: string): string | undefined {
+  return RESERVED_METADATA_FIELD_NAMES.includes(name)
+    ? `\`${name}\` is a reserved field name: it is reserved for server metadata`
+    : undefined;
+}
+
 /** Reserved field names — useful for validation loops. */
 export const RESERVED_AUTOCRUD_FIELD_NAMES = Object.keys(RESERVED_AUTOCRUD_FIELDS);

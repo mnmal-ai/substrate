@@ -3,7 +3,7 @@
  * date min/max is `ORDER BY key, id LIMIT 1` in the (crossRef, key) index's
  * own direction, one probe per hub, never a max(key) subquery, which pg reads
  * as a full Aggregate over the hub wherever its min/max rewrite does not fire.
- * Projected, in `_agg` where predicates and inside `derive` alike.
+ * Projected, in `_agg` where predicates and inside a `select` alike.
  *
  * Pure: nothing connects to a database.
  */
@@ -12,7 +12,8 @@ import type { FieldDef, WalkAgg, WalkAggPredicate } from '@mnmal-ai/substrate-ty
 import postgres from 'postgres';
 import { afterAll, describe, expect, it } from 'vitest';
 import { buildAggPredicate, buildWalkAgg, buildWalkProjection } from '../src/pg-sql/aggregate.js';
-import { buildDerive, type WalkScope, walkScope } from '../src/pg-sql/walk.js';
+import { compileExprTyped } from '../src/pg-sql/expression.js';
+import { type WalkScope, walkScope } from '../src/pg-sql/walk.js';
 import { bareTypeTable } from './_layout.js';
 
 const sql = postgres('postgres://nobody@127.0.0.1:1/none');
@@ -109,14 +110,26 @@ describe('walk _agg picks compile to an index-order top-1', () => {
     expect(text.split(price)).toHaveLength(3);
   });
 
-  it('inside derive and an _agg predicate', () => {
+  it('inside a select and an _agg predicate', () => {
     const s = scope({ at: 'desc' });
     // As the pg dataset wires it.
     s.aggValue = (name) => {
       if (name !== 'lp') throw new Error(name);
       return buildWalkAgg(sql, latestAt, HUB, s).value;
     };
-    const derive = render(buildDerive(sql, 'm', { diff: ['_agg.lp', '$.ask'] }, s));
+    const outputs = new Map([['_agg.lp', sql`substrate_num(${s.aggValue('lp')})::float8`]]);
+    const select = render(
+      compileExprTyped(
+        sql,
+        { sub: ['_agg.lp', 'ask'] },
+        {
+          table: HUB,
+          alias: 'r',
+          outputs,
+          fieldType: (n) => (n === '_agg.lp' || n === 'ask' ? 'number' : undefined)
+        }
+      ).fragment
+    );
     const pred = render(
       buildAggPredicate(
         sql,
@@ -125,7 +138,7 @@ describe('walk _agg picks compile to an index-order top-1', () => {
         scope({ at: 'desc' })
       )
     );
-    for (const text of [derive, pred]) {
+    for (const text of [select, pred]) {
       expect(text).toMatch(/ORDER BY substrate_ts\(w\d+\.extra -> 'at'\) DESC NULLS LAST/);
       expect(text).not.toMatch(/\bmax\(/);
     }

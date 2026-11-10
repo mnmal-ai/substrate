@@ -326,33 +326,33 @@ const mustAgree: Array<[string, string, ReadParams, Expected]> = [
     { groups: [{ n: 6, avg: 350, hi: 1000 }] }
   ],
   [
-    'bucket by day, with a walk in where',
+    'a day group, with a walk in where',
     'Observation',
     {
       where: { _walk: { out: 'cert', where: { grade: { eq: 9 } } } } as WhereClause,
       aggregate: aggregate({ n: { count: true } }),
-      bucket: { field: 'observedAt', by: 'day' }
+      groupBy: { bucket: { dateTrunc: [{ lit: 'day' }, 'observedAt'] } }
     },
     {
       groups: [
-        { bucket: '2026-10-25', n: 1 },
-        { bucket: '2026-10-27', n: 1 },
-        { bucket: '2026-10-29', n: 5 }
+        { bucket: '2026-10-25T00:00:00.000000Z', n: 1 },
+        { bucket: '2026-10-27T00:00:00.000000Z', n: 1 },
+        { bucket: '2026-10-29T00:00:00.000000Z', n: 5 }
       ]
     }
   ],
   [
-    'bucket local runs by hour',
+    'local runs grouped by hour',
     'LocalRun',
     {
       where: { status: { neq: 'skipped' } },
       aggregate: aggregate({ n: { count: true }, avg: { avg: 'durationMs' } }),
-      bucket: { field: 'at', by: 'hour' }
+      groupBy: { bucket: { dateTrunc: [{ lit: 'hour' }, 'at'] } }
     },
     {
       groups: [
-        { bucket: '2026-10-20T02', n: 1, avg: 300 },
-        { bucket: '2026-10-29T02', n: 5, avg: 306 }
+        { bucket: '2026-10-20T02:00:00.000000Z', n: 1, avg: 300 },
+        { bucket: '2026-10-29T02:00:00.000000Z', n: 5, avg: 306 }
       ]
     }
   ]
@@ -417,11 +417,11 @@ describe.skipIf(!POSTGRES_URL)('walk parity across memory and pg', () => {
     await same(type, params);
   });
 
-  it('derive pages agree, value and cursor, across both datasets', async () => {
-    const derives = [
-      { m: { diff: ['_agg.last', '$.ask'] } },
-      { m: { ratio: ['_agg.last', '$.ask'] } }
-    ] as Array<NonNullable<ReadParams['derive']>>;
+  it('select pages agree, value and cursor, across both datasets', async () => {
+    const selects: Array<NonNullable<ReadParams['select']>> = [
+      { m: { sub: ['_agg.last', 'ask'] } },
+      { m: { div: ['_agg.last', 'ask'] } }
+    ];
     const pages = async (ds: PgDataset | MemoryDataset, params: ReadParams) => {
       const out: string[][] = [];
       let cursor: string | undefined;
@@ -432,12 +432,12 @@ describe.skipIf(!POSTGRES_URL)('walk parity across memory and pg', () => {
       } while (cursor !== undefined && out.length < 20);
       return out;
     };
-    for (const derive of derives) {
+    for (const select of selects) {
       for (const dir of ['asc', 'desc'] as const) {
         const base: ReadParams = {
           agg: agg({ last: { in: OBS, latest: { by: 'observedAt', value: 'price' } } }),
-          derive,
-          orderBy: [{ $m: dir }]
+          select,
+          orderBy: [{ m: dir }]
         };
         const full = (await same('Cert', base)).map(name);
         // c1 130-100, c2 70-80, c3 100-20, c5 450-300, c6 1000-10; c4 and c7 have no latest price.

@@ -23,6 +23,7 @@ const types: Record<string, Record<string, FieldDef>> = {
     big: field.int64({ nullable: true }),
     seen: field.date({ nullable: true })
   },
+  Stamp: { label: field.string() },
   Hit: {
     page: field.crossRef(NS, 'Page'),
     n: field.number({ nullable: true }),
@@ -32,6 +33,14 @@ const types: Record<string, Record<string, FieldDef>> = {
 const lookup = (type: string, f: string): FieldDef | undefined =>
   Object.hasOwn(types, type) ? types[type]?.[f] : undefined;
 
+const typeDefLookup = (type: string) =>
+  Object.hasOwn(types, type)
+    ? {
+        fields: types[type] as Record<string, FieldDef>,
+        ...(type === 'Stamp' ? { ordering: 'visible' as const } : {})
+      }
+    : undefined;
+
 const WRITER: Identity = { kind: 'system', id: 'test', grants: { '*': ['read', 'mutate'] } };
 
 function engineOver(ds: Dataset): Engine {
@@ -39,7 +48,8 @@ function engineOver(ds: Dataset): Engine {
   const edges = new MemoryEdgesStore({ now: () => new Date() });
   defineNamespace(NS, {
     Page: { fields: types.Page as Record<string, FieldDef> },
-    Hit: { fields: types.Hit as Record<string, FieldDef> }
+    Hit: { fields: types.Hit as Record<string, FieldDef> },
+    Stamp: { fields: types.Stamp as Record<string, FieldDef>, ordering: 'visible' }
   }).install({ registry, dataset: ds, edges });
   const datasets = new MemoryDatasetRegistry();
   datasets.set(NS, ds);
@@ -93,6 +103,27 @@ async function seed(engine: Engine): Promise<void> {
   }
 }
 
+/** Two Stamp rows, the second updated after a pause, so its updatedAt trails createdAt. */
+async function seedStamps(engine: Engine): Promise<void> {
+  const ids: string[] = [];
+  for (const label of ['s1', 's2']) {
+    const env = await engine.mutate({
+      frame: { [`${NS}/createStamp`]: { params: { label }, fields: { id: true } } },
+      ctx: { identity: WRITER }
+    });
+    expect(env.errors).toBeUndefined();
+    ids.push(String((env.data[`${NS}/createStamp`] as Row).id));
+  }
+  await new Promise((r) => setTimeout(r, 2100));
+  const upd = await engine.mutate({
+    frame: {
+      [`${NS}/updateStamp`]: { params: { id: ids[1], label: 's2b' }, fields: { id: true } }
+    },
+    ctx: { identity: WRITER }
+  });
+  expect(upd.errors).toBeUndefined();
+}
+
 type Out = { rows: Row[]; errors?: Array<{ code?: string; message: string }>; page?: unknown };
 async function read(
   engine: Engine,
@@ -119,24 +150,25 @@ describe('select, $expr and like on memory and pg', () => {
   const engines: Array<[string, Engine]> = [];
 
   beforeAll(async () => {
-    const memory = engineOver(
-      new MemoryDataset({ namespace: NS, fieldDefLookup: lookup, walkReference: true })
-    );
+    const memoryDs = new MemoryDataset({
+      namespace: NS,
+      fieldDefLookup: lookup,
+      typeDefLookup,
+      walkReference: true
+    });
+    const memory = engineOver(memoryDs);
     await seed(memory);
+    await seedStamps(memory);
     engines.push(['memory', memory]);
+    // Both stores sleep through the same wait, so updatedAt trails createdAt by seconds.
     if (!POSTGRES_URL) return;
     sql = postgres(POSTGRES_URL, { onnotice: () => {} });
     await runMigrations(sql);
     await dropNamespace(sql, NS);
-    const pg = engineOver(
-      new PgDataset({
-        namespace: NS,
-        sql,
-        fieldDefLookup: lookup,
-        typeDefLookup: (type) => ({ fields: types[type] as Record<string, FieldDef> })
-      })
-    );
+    const pgDs = new PgDataset({ namespace: NS, sql, fieldDefLookup: lookup, typeDefLookup });
+    const pg = engineOver(pgDs);
     await seed(pg);
+    await seedStamps(pg);
     engines.push(['pg', pg]);
   });
 
@@ -276,6 +308,109 @@ describe('select, $expr and like on memory and pg', () => {
         }
         expect(walked, JSON.stringify(select)).toEqual(urls(full));
       }
+    }
+  });
+
+  // Each engine stamps its own createdAt, so these compare what does not depend on the instant.
+  it('createdAt and seq read in expressions: select, $expr and a day group', async () => {
+    const year = new Date().getUTCFullYear();
+    const sel = await same(
+      { select: { y: { extract: [{ lit: 'year' }, 'createdAt'] } }, orderBy: [{ url: 'asc' }] },
+      { id: true, url: true, y: true }
+    );
+    expect(sel.rows.map((r) => r.y)).toEqual(Array(5).fill(year));
+    const after = await same({
+      where: { $expr: { gt: ['createdAt', 'seen'] } },
+      orderBy: [{ url: 'asc' }]
+    });
+    expect(urls(after)).toEqual(['axb', 'https://google.com/b', 'https://www.Google.com/a']);
+    const none = await same({
+      where: { $expr: { lt: [{ extract: [{ lit: 'year' }, 'updatedAt'] }, 2000] } }
+    });
+    expect(none.rows).toEqual([]);
+    for (const [name, e] of engines) {
+      const env = await e.query({
+        frame: {
+          [`${NS}/Page`]: {
+            params: {
+              aggregate: { n: { count: true } },
+              groupBy: { day: { dateTrunc: [{ lit: 'day' }, 'createdAt'] } }
+            },
+            fields: { id: true }
+          }
+        },
+        ctx: { identity: null }
+      });
+      expect(env.errors, name).toBeUndefined();
+      const groups = (env.data[`${NS}/Page`] as { groups: Array<Record<string, unknown>> }).groups;
+      // All five rows were written moments apart: one day, barring a midnight in between.
+      expect(
+        groups.reduce((n, g) => n + Number(g.n), 0),
+        name
+      ).toBe(5);
+      for (const g of groups) expect(g.day, name).toMatch(/^\d{4}-\d\d-\d\dT00:00:00\.000000Z$/);
+    }
+  });
+
+  it('createdAt and updatedAt in an expression are their own columns, as the plain read shows', async () => {
+    for (const [name, e] of engines) {
+      const env = await e.query({
+        frame: {
+          [`${NS}/Stamp`]: {
+            params: {
+              select: {
+                c: { dateTrunc: [{ lit: 'second' }, 'createdAt'] },
+                u: { dateTrunc: [{ lit: 'second' }, 'updatedAt'] },
+                later: { gt: ['updatedAt', 'createdAt'] },
+                yc: { extract: [{ lit: 'year' }, 'createdAt'] },
+                sq: 'seq'
+              },
+              orderBy: [{ label: 'asc' }]
+            },
+            fields: { id: true, label: true, _metadata: true }
+          }
+        },
+        ctx: { identity: null }
+      });
+      expect(env.errors, name).toBeUndefined();
+      const rows = env.data[`${NS}/Stamp`] as Array<Row & { _metadata: Record<string, unknown> }>;
+      expect(
+        rows.map((r) => r.label),
+        name
+      ).toEqual(['s1', 's2b']);
+      const sec = (v: unknown) => new Date(Math.floor(new Date(String(v)).getTime() / 1000) * 1000);
+      for (const r of rows) {
+        const m = r._metadata;
+        expect(new Date(String(r.c)), name).toEqual(sec(m.createdAt));
+        expect(new Date(String(r.u)), name).toEqual(sec(m.updatedAt));
+        expect(r.yc, name).toBe(new Date(String(m.createdAt)).getUTCFullYear());
+        // seq is the plain read's own, and Stamp is a visible-order type.
+        expect(m.seq, name).toEqual(expect.any(Number));
+        expect(Number(r.sq), name).toBe(Number(m.seq));
+      }
+      // Only the updated row's updatedAt moved on, by seconds, so the columns are not swapped.
+      expect(
+        rows.map((r) => r.later),
+        name
+      ).toEqual([false, true]);
+      expect(rows[1]?.u, name).not.toEqual(rows[1]?.c);
+    }
+  });
+
+  it('a select that overflows raises on the page and as the order key, not for a filtered-out row', async () => {
+    // Postgres computes a non-order select only for the page, so the row must sit on it.
+    const big = { select: { d: { mul: ['width', 1e307] } } };
+    for (const [name, e] of engines) {
+      const page = await read(e, { ...big, where: { width: { eq: 100 } } }, { id: true, d: true });
+      expect(page.errors?.[0]?.code, `${name} page`).toBe('value_out_of_range');
+      const lead = await read(e, { ...big, orderBy: [{ d: 'asc' }] }, { id: true, d: true });
+      expect(lead.errors?.[0]?.code, `${name} order key`).toBe('value_out_of_range');
+      const filtered = await read(
+        e,
+        { ...big, where: { width: { lt: 10 } }, orderBy: [{ url: 'asc' }] },
+        { id: true, d: true }
+      );
+      expect(filtered.errors, `${name} filtered out`).toBeUndefined();
     }
   });
 

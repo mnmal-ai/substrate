@@ -133,12 +133,46 @@ describe('substrate-mcp tool handlers', () => {
     };
     expect(parsed.legend).toContain('field: type');
     expect(typeof parsed.overview.default?.types.Todo).toBe('string');
+    const lines = (parsed as unknown as { expressions: string[] }).expressions;
+    expect(lines).toContain(
+      'dateTrunc(unit, date) → date: Truncate a date (UTC) to a unit given as a lit.'
+    );
+    expect(lines.some((l) => l.startsWith('aggregates: count, countDistinct'))).toBe(true);
+    expect(lines.some((l) => l.includes('maxDepth 16'))).toBe(true);
+    expect(lines.some((l) => l.startsWith('dateUnits: second'))).toBe(true);
   });
 
   it('schema handler with full: true returns the federated schema', async () => {
     const result = await createSchemaHandler(TEST_ENDPOINT)({ full: true });
     const parsed = parseToolText(result) as Record<string, { types: Record<string, unknown> }>;
     expect(parsed.default?.types.Todo).toBeDefined();
+    const full = parsed as unknown as { $expressions: { functions: unknown[] } };
+    expect(full.$expressions.functions.length).toBeGreaterThan(0);
+  });
+
+  it('full: true keeps a namespace literally named `expressions`, and scoped calls omit the catalogue', async () => {
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) =>
+      String(url).endsWith('/federated-schema')
+        ? new Response(JSON.stringify({ expressions: { types: { T: {} } } }), { status: 200 })
+        : real(url, init)) as typeof fetch;
+    const full = parseToolText(await createSchemaHandler(TEST_ENDPOINT)({ full: true })) as Record<
+      string,
+      { types?: unknown; functions?: unknown }
+    >;
+    expect(full.expressions?.types).toBeDefined();
+    expect(full.$expressions?.functions).toBeDefined();
+    globalThis.fetch = real;
+    const scopedNs = parseToolText(
+      await createSchemaHandler(TEST_ENDPOINT)({ namespace: 'default' })
+    );
+    const scopedType = parseToolText(
+      await createSchemaHandler(TEST_ENDPOINT)({ namespace: 'default', type: 'Todo' })
+    );
+    for (const r of [scopedNs, scopedType]) {
+      expect(r).not.toHaveProperty('expressions');
+      expect(r).not.toHaveProperty('$expressions');
+    }
   });
 
   it('tool results are compact JSON, not pretty-printed', async () => {

@@ -72,9 +72,9 @@ describe('walk discoverability', () => {
     for (const term of [
       '`count: true`',
       '`aggregate:',
-      '`bucket:',
-      '`derive:',
-      '"$m"',
+      '`groupBy:',
+      '`select:',
+      '`having`',
       '"$ref"',
       '`times`/`plus`',
       '`pick`',

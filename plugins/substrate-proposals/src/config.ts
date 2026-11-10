@@ -29,6 +29,9 @@ export interface PubSub {
 }
 
 export interface ProposalsPluginConfig {
+  /** Where a one-line warning goes, such as a stored proposal skipped at replay. Defaults to `console.warn`. */
+  log?: (line: string) => void;
+
   /**
    * Namespaces this plugin owns. Propose mutations outside this list are
    * rejected at resolver entry. A proposed crossRef must target a type in an

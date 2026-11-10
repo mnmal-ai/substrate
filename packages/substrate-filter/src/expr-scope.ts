@@ -3,6 +3,7 @@
  * declaration to an expression type, shared by the validator and both datasets.
  */
 import type { Expr, ExprType, FieldDef, WalkAgg } from '@mnmal-ai/substrate-types';
+import { METADATA_FILTER_FIELDS } from '@mnmal-ai/substrate-types';
 import type { FieldDefOf } from './predicate.js';
 
 /** `number`, `int64`, `string`, `boolean` and `date` fields, and a crossRef's id (a string); json, list and struct fields are not usable. */
@@ -13,7 +14,17 @@ export function exprTypeOfField(def: FieldDef | undefined): ExprType | undefined
   return def.type === 'json' ? undefined : (def.type as ExprType);
 }
 
-const none = (): undefined => undefined;
+/**
+ * The type of a date or number metadata name (`createdAt`, `updatedAt`, `seq`), which an
+ * expression reads as metadata; the names are reserved, so no declared field shares them. The
+ * string metadata names are not expression fields.
+ */
+export function metadataExprType(name: unknown): ExprType | undefined {
+  if (typeof name !== 'string' || !Object.hasOwn(METADATA_FILTER_FIELDS, name)) return undefined;
+  const t = exprTypeOfField(METADATA_FILTER_FIELDS[name]);
+  return t === 'date' || t === 'number' ? t : undefined;
+}
+
 const lookups = new WeakMap<FieldDefOf, (name: string) => ExprType | undefined>();
 
 /**
@@ -23,10 +34,10 @@ const lookups = new WeakMap<FieldDefOf, (name: string) => ExprType | undefined>(
 export function fieldTypeLookup(
   fieldDefOf: FieldDefOf | undefined
 ): (name: string) => ExprType | undefined {
-  if (fieldDefOf === undefined) return none;
+  if (fieldDefOf === undefined) return metadataExprType;
   let f = lookups.get(fieldDefOf);
   if (f === undefined) {
-    f = (name) => exprTypeOfField(fieldDefOf(name));
+    f = (name) => metadataExprType(name) ?? exprTypeOfField(fieldDefOf(name));
     lookups.set(fieldDefOf, f);
   }
   return f;

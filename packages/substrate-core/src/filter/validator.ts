@@ -76,11 +76,9 @@ export type FilterErrorCode =
   | 'ref_unresolved'
   | 'ref_kind_mismatch'
   | 'agg_invalid'
-  | 'derive_invalid'
   | 'expr_invalid'
   | 'select_invalid'
   | 'group_invalid'
-  | 'bucket_invalid'
   | 'count_conflict';
 
 export class FilterValidationError extends Error {
@@ -902,7 +900,6 @@ function validateOrderBy(
   fields: Record<string, FieldDef>,
   capabilities: FilterCapabilities,
   path: string[] = ['orderBy'],
-  derived: ReadonlySet<string> = new Set(),
   selected: ReadonlySet<string> = new Set()
 ): void {
   if (!capabilities.orderBy) {
@@ -949,16 +946,6 @@ function validateOrderBy(
     }
     // `id` is always orderable — it's the implicit tie-breaker.
     if (fieldName === 'id') return;
-    // `$<name>` orders by a `derive` entry (walks spec, goal 8).
-    if (fieldName.startsWith('$')) {
-      if (derived.has(fieldName.slice(1))) return;
-      throw new FilterValidationError(
-        'derive_invalid',
-        `orderBy '${fieldName}' needs derive.${fieldName.slice(1)} in params`,
-        [...path, String(i), fieldName]
-      );
-    }
-
     // A `select` name orders by its computed value.
     if (selected.has(fieldName)) return;
 
@@ -1006,8 +993,6 @@ export interface ValidateFilterInput {
   /** Frame params beside where/orderBy, and the field selection (its `_agg` and `{ _walk }` entries). */
   count?: unknown;
   aggregate?: unknown;
-  bucket?: unknown;
-  derive?: unknown;
   select?: unknown;
   groupBy?: unknown;
   having?: unknown;
@@ -1039,8 +1024,8 @@ export function validateFilter(input: ValidateFilterInput): void {
       walk: scope
     });
   }
-  const { derived, selected } = validateFrameParams(input, scope, h);
+  const { selected } = validateFrameParams(input, scope, h);
   if (input.orderBy !== undefined) {
-    validateOrderBy(input.orderBy, fields, input.capabilities, ['orderBy'], derived, selected);
+    validateOrderBy(input.orderBy, fields, input.capabilities, ['orderBy'], selected);
   }
 }

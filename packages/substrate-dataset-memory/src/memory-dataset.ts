@@ -16,7 +16,6 @@
 
 import { randomUUID } from 'node:crypto';
 import {
-  applyAgg,
   applyExtensionResultMeta,
   asSortValue,
   assertWhereHonourable,
@@ -37,6 +36,7 @@ import {
   hop,
   isDateField,
   normalizeOrderBy,
+  outOfRange,
   preResolveExtensionOperatorsDetailed,
   storedMicros,
   WALK_EVALUATION_BUDGET,
@@ -45,11 +45,11 @@ import {
 } from '@mnmal-ai/substrate-filter';
 import type {
   ActorIdentity,
-  AggFn,
   ConditionalUpdateResult,
   Dataset,
   DeleteResult,
   DropResult,
+  Expr,
   FieldDef,
   FilterCapabilities,
   FilterWriteOptions,
@@ -272,7 +272,7 @@ export class MemoryDataset implements Dataset {
     // return rows without any per-row spread allocation.
     let pool: Row[] = [];
     const walk = this.walkContext(type);
-    // A seed's frame `_agg` values, computed on first use (a where or derive
+    // A seed's frame `_agg` values, computed on first use (a where or select
     // operand may read them) and kept for its projection.
     const frameAggs = params.agg;
     const aggCache = new Map<Row, Map<string, unknown>>();
@@ -320,9 +320,6 @@ export class MemoryDataset implements Dataset {
     // A count or whole-result aggregate returns no rows.
     if (params.count === true) return { rows: [], hasMore: false, count: pool.length };
     if (params.aggregate !== undefined) {
-      if (params.bucket !== undefined) {
-        return aggregateGroups(pool, params.aggregate, params.bucket, limit, fieldDefOf);
-      }
       const { groups, truncated } = groupRows(
         pool,
         { ...params, aggregate: params.aggregate },
@@ -332,48 +329,16 @@ export class MemoryDataset implements Dataset {
       return { rows: [], hasMore: false, groups, ...(truncated ? { truncated: true } : {}) };
     }
 
-    // Derived values ride on row copies as `$<name>`, so ordering and the
-    // cursor read them as fields; the page returns the originals.
-    const original = new Map<Row, Row>();
-    const derive = params.derive;
-    if (derive !== undefined) {
-      pool = pool.map((row) => {
-        const ctx = ctxFor(row);
-        const operand = (ref: string): number | null => {
-          const v = ref.startsWith('_agg.')
-            ? ctx.aggValue?.(ref.slice(5))
-            : getFieldValue(row, ref.slice(2));
-          return typeof v === 'number' ? v : null;
-        };
-        const values = Object.entries(derive).map(([name, spec]) => {
-          if ('value' in spec) return [`$${name}`, operand(spec.value)] as const;
-          const [op, [a, b]] = Object.entries(spec)[0] as ['diff' | 'ratio', [string, string]];
-          const x = operand(a);
-          const y = operand(b);
-          if (x === null || y === null || (op === 'ratio' && y === 0)) {
-            return [`$${name}`, null] as const;
-          }
-          const v = op === 'diff' ? x - y : x / y;
-          // Shared with pg's buildDerive: a magnitude outside [1e-300, 1e300] is
-          // NULL, so overflow and underflow never reach a sort; 0 stays only when
-          // exact (equal diff operands, or a zero numerator).
-          const exactZero = op === 'diff' ? x === y : x === 0;
-          const m = Math.abs(v);
-          return [`$${name}`, m <= 1e300 && (m >= 1e-300 || exactZero) ? v : null] as const;
-        });
-        const copy: Row = { ...row, ...Object.fromEntries(values) };
-        original.set(copy, row);
-        return copy;
-      });
-    }
-
     // `select` values ride on row copies under their names, so ordering and the
     // cursor read them as fields; the page returns the originals plus the values.
+    const original = new Map<Row, Row>();
     const selected = new Map<Row, Record<string, unknown>>();
     // Date-valued select names sort as instants, whatever precision each value carries.
     const dateNames = new Set<string>();
     const sortDefOf: FieldDefOf = (f) =>
       dateNames.has(f) ? { kind: 'scalar', type: 'date' } : fieldDefOf(f);
+    // Computes the select names that do not order, for a returned row.
+    let restSelect: ((row: Row) => Record<string, unknown>) | undefined;
     const select = params.select;
     if (select !== undefined) {
       const entries = Object.entries(select);
@@ -392,23 +357,52 @@ export class MemoryDataset implements Dataset {
       }
       const text = JSON.stringify(select);
       const aggRefs = Object.keys(frameAggs ?? {}).filter((n) => text.includes(`"_agg.${n}"`));
-      pool = pool.map((row) => {
+      // A value is computed for the rows a read returns or orders by: an order key over the
+      // whole pool, any other select name only on the returned page.
+      const orderKeys = new Set(
+        (params.orderBy ?? [])
+          .flatMap((c) => Object.keys(c))
+          .filter((k) => Object.hasOwn(select, k))
+      );
+      const valuesOf = (row: Row, names: Array<[string, Expr]>) => {
         const ctx = ctxFor(row);
         // A bare `_agg.<name>` reads the row's frame aggregate.
         const output: Record<string, unknown> = {};
         for (const name of aggRefs) output[`_agg.${name}`] = ctx.aggValue?.(name);
         const values: Record<string, unknown> = {};
-        for (const [name, expr] of entries) {
+        for (const [name, expr] of names) {
           values[name] = evalExpr(expr, row, { output, fieldType: typeOf }) ?? null;
         }
-        const copy: Row = { ...row, ...values };
-        // A date reads out as pg's plain read prints it: UTC, to the microsecond.
-        const out = { ...values };
-        for (const name of dateNames) out[name] = isoMicros(values[name]);
-        original.set(copy, original.get(row) ?? row);
-        selected.set(copy, out);
-        return copy;
-      });
+        return values;
+      };
+      // A date reads out as pg's plain read prints it: UTC, to the microsecond.
+      const printed = (values: Record<string, unknown>) => {
+        for (const name of dateNames) if (name in values) values[name] = isoMicros(values[name]);
+        return values;
+      };
+      const ordering = entries.filter(([n]) => orderKeys.has(n));
+      const rest = entries.filter(([n]) => !orderKeys.has(n));
+      try {
+        if (ordering.length > 0) {
+          pool = pool.map((row) => {
+            const values = valuesOf(row, ordering);
+            const copy: Row = { ...row, ...values };
+            original.set(copy, row);
+            selected.set(copy, printed({ ...values }));
+            return copy;
+          });
+        }
+      } catch (err) {
+        outOfRange(err);
+      }
+      restSelect = (row) => {
+        try {
+          return printed(valuesOf(original.get(row) ?? row, rest));
+        } catch (err) {
+          return outOfRange(err);
+        }
+      };
+      if (rest.length === 0) restSelect = undefined;
     }
 
     // OrderBy — always append implicit `{ id: 'asc' }` as final tie-breaker so
@@ -440,7 +434,7 @@ export class MemoryDataset implements Dataset {
     }
 
     const out: ReadResult = { rows: slice, hasMore };
-    // Derived copies back to the originals once the cursor is encoded, below.
+    // Select copies back to the originals once the cursor is encoded, below.
     const columns = this.columnFieldNames(type);
     const page = (rows: Row[]): Row[] => {
       const base = original.size === 0 ? rows : rows.map((r) => original.get(r) ?? r);
@@ -455,9 +449,13 @@ export class MemoryDataset implements Dataset {
               })
             );
       // A select value is a computed key, never a stored column.
-      return selected.size === 0
+      return selected.size === 0 && restSelect === undefined
         ? out
-        : out.map((r, i) => ({ ...r, ...selected.get(rows[i] as Row) }));
+        : out.map((r, i) => ({
+            ...r,
+            ...selected.get(rows[i] as Row),
+            ...restSelect?.(rows[i] as Row)
+          }));
     };
     // nextCursor is derived from the DATASET-ordered slice (the sorted pool),
     // before any relevance reorder — cursor pagination must keep dataset
@@ -971,41 +969,6 @@ function conditionalMatchEq(actual: unknown, expected: unknown): boolean {
     return false;
   }
   return actual === expected;
-}
-
-/**
- * A bucketed whole-result aggregate: one group per UTC day/hour bucket in
- * ascending order. A row whose bucket field is null or not a date is in no
- * bucket. Groups beyond `limit` are cut and say `truncated`.
- */
-function aggregateGroups(
-  pool: Row[],
-  aggregate: NonNullable<ReadParams['aggregate']>,
-  bucket: NonNullable<ReadParams['bucket']>,
-  limit: number | undefined,
-  fieldDefOf: FieldDefOf
-): ReadResult {
-  const values = (rows: Row[]) =>
-    Object.fromEntries(
-      Object.entries(aggregate).map(([name, fn]) => [name, applyAgg(rows, fn as AggFn, fieldDefOf)])
-    );
-  const byKey = new Map<string, Row[]>();
-  for (const row of pool) {
-    const micros = storedMicros(getFieldValue(row, bucket.field));
-    if (micros === undefined) continue;
-    const ms = Number((micros - (((micros % 1000n) + 1000n) % 1000n)) / 1000n);
-    const key = new Date(ms).toISOString().slice(0, bucket.by === 'day' ? 10 : 13);
-    const list = byKey.get(key);
-    if (list === undefined) byKey.set(key, [row]);
-    else list.push(row);
-  }
-  const keys = [...byKey.keys()].sort();
-  const truncated = limit !== undefined && keys.length > limit;
-  const groups = (truncated ? keys.slice(0, limit) : keys).map((key) => ({
-    bucket: key,
-    ...values(byKey.get(key) ?? [])
-  }));
-  return { rows: [], hasMore: false, groups, ...(truncated ? { truncated: true } : {}) };
 }
 
 /**

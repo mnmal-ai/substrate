@@ -5,7 +5,7 @@
  * and must land through code.
  */
 
-import { field } from '@mnmal-ai/substrate-sdk';
+import { field, reservedMetadataFieldMessage } from '@mnmal-ai/substrate-sdk';
 import type {
   FieldDef,
   FieldDefCrossRef,
@@ -231,6 +231,10 @@ export function stringifyFieldDef(def: FieldDef): FieldSpecJson {
  */
 export function assertValidFieldSpec(fieldName: string, spec: FieldSpecJson): void {
   assertProposableName('fieldName', fieldName);
+  const reserved = reservedMetadataFieldMessage(fieldName);
+  if (reserved !== undefined) {
+    throw new ProposalError('invalid_params', reserved, { param: 'fieldName', fieldName });
+  }
   if (typeof spec !== 'object' || spec === null) {
     throw new ProposalError(
       'invalid_field_spec',

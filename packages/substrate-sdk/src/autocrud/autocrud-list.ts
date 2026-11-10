@@ -14,9 +14,7 @@
  */
 
 import type {
-  BucketSpec,
   Dataset,
-  DeriveSpec,
   Expr,
   FieldDef,
   FrameAgg,
@@ -44,11 +42,9 @@ const KNOWN_LIST_PARAMS: ReadonlySet<string> = new Set([
   '_allowTableScan',
   'count',
   'aggregate',
-  'bucket',
   'groupBy',
   'having',
   'offset',
-  'derive',
   'select'
 ]);
 
@@ -100,11 +96,9 @@ export function listResolver<_T extends Row = Row>(
     const p = args.params ?? {};
     if (p.count !== undefined) readParams.count = p.count as boolean;
     if (p.aggregate !== undefined) readParams.aggregate = p.aggregate as Record<string, FrameAgg>;
-    if (p.bucket !== undefined) readParams.bucket = p.bucket as BucketSpec;
     if (p.groupBy !== undefined) readParams.groupBy = p.groupBy as Record<string, Expr>;
     if (p.having !== undefined) readParams.having = p.having as Expr;
     if (typeof p.offset === 'number') readParams.offset = p.offset;
-    if (p.derive !== undefined) readParams.derive = p.derive as Record<string, DeriveSpec>;
     if (p.select !== undefined) readParams.select = p.select as Record<string, Expr>;
     // Forward the caller's field selection so substrates (PgDataset) can
     // narrow the body keys they materialise from storage. Substrates MAY

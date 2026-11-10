@@ -39,7 +39,7 @@ function executable(
   const { count: _count, ...params } = value.params;
   if (!paged) {
     // Ordering never changes a count or an aggregate, and the engine refuses one beside either.
-    const { orderBy: _o, limit: _l, derive: _d, ...counted } = params;
+    const { orderBy: _o, limit: _l, select: _s, ...counted } = params;
     const shaped = c.answer === 'aggregate' ? counted : { ...counted, count: true };
     return { [key]: { params: shaped, fields: { id: true } } } as Query;
   }
@@ -70,7 +70,7 @@ const COUNT_REFUSED = new Set([
 export function mergePlan(parsed: PlanClause[], engine: PlanClause[] | undefined): PlanClause[] {
   if (engine === undefined) return parsed;
   const kindOf = (c: PlanClause) =>
-    c.kind === 'derive' && c.path[0] === 'orderBy' ? 'order' : c.kind;
+    c.kind === 'select' && c.path[0] === 'orderBy' ? 'order' : c.kind;
   const prefix = (a: string[], b: string[]) =>
     a.length <= b.length && a.every((x, i) => x === b[i]);
   const used = new Set<PlanClause>();
@@ -197,8 +197,13 @@ async function aggregate(
             .filter((g) => g.key !== null || g.value !== null)
         };
   }
-  const bucket = params.bucket as { by: string } | undefined;
-  const by = group?.field ?? bucket?.by;
+  const trunc = (
+    params.groupBy as { bucket?: { dateTrunc?: [{ lit: string }, string] } } | undefined
+  )?.bucket?.dateTrunc;
+  const by = group?.field ?? trunc?.[0].lit;
+  // The engine keys a date group by its instant; a day or hour reads as it always did.
+  const short = (k: unknown) =>
+    typeof k === 'string' && trunc !== undefined ? k.slice(0, trunc[0].lit === 'day' ? 10 : 13) : k;
   const rows = data?.groups;
   const result =
     rows === undefined
@@ -209,10 +214,13 @@ async function aggregate(
           ...(by !== undefined
             ? {
                 by,
-                groups: rows.map((g) => ({
-                  key: (g.bucket ?? g.key) as string | boolean | null,
-                  value: g.value as number | string | null
-                }))
+                // A row with no time field is in no day, as the old bucket had it.
+                groups: rows
+                  .filter((g) => trunc === undefined || g.bucket !== null)
+                  .map((g) => ({
+                    key: short(g.bucket ?? g.key) as string | boolean | null,
+                    value: g.value as number | string | null
+                  }))
               }
             : { value: (rows[0]?.value ?? null) as number | string | null }),
           ...(data?.truncated === true ? { truncated: true as const } : {})

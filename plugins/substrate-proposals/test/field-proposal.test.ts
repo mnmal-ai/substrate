@@ -184,6 +184,26 @@ describe('propose_field resolver', () => {
     });
   });
 
+  it('refuses a field named like server metadata, naming it', async () => {
+    seedDress(harness);
+    const { resolver, dataset } = harness;
+    const args = makeArgs({
+      targetType: 'Dress',
+      fieldName: 'updatedById',
+      fieldSpec: { kind: 'scalar', type: 'string' },
+      proposedBy: 'test',
+      proposedReason: 'metadata name'
+    });
+    await expect(resolver(makeCtx(), args)).rejects.toSatisfy(
+      (err: unknown) =>
+        err instanceof ProposalError &&
+        err.code === 'invalid_params' &&
+        err.message.includes('`updatedById` is a reserved field name') &&
+        err.message.includes('reserved for server metadata')
+    );
+    expect((await dataset.read('FieldProposal', {})).rows).toHaveLength(0);
+  });
+
   it('rejects an invalid field spec without writing a proposal row', async () => {
     seedDress(harness);
     const { resolver, dataset } = harness;
