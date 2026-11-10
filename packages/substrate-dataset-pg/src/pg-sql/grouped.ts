@@ -133,7 +133,10 @@ export function buildGroupedRead(
 
   // OFFSET 0 fences the subquery: having, order and limit read its columns, so no qual
   // reaches the Agg node ahead of the int64 range checks.
-  const raises = aggs.some((a) => a.raises) || Object.values(spec.groupBy ?? {}).some(canRaise);
+  const raises =
+    aggs.some((a) => a.raises) ||
+    Object.values(spec.groupBy ?? {}).some(canRaise) ||
+    canRaise(spec.having);
   const grouped = sql`SELECT ${list([
     ...keys.map((k) => sql`${k.frag} AS ${u(`k${k.i}`)}`),
     ...aggs.map((a) => sql`${a.raw} AS ${u(`a${a.j}`)}`)

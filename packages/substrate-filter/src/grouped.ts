@@ -96,12 +96,13 @@ function compare(a: unknown, b: unknown, t: ExprType | null): number {
   return (a as number) < (b as number) ? -1 : (a as number) > (b as number) ? 1 : 0;
 }
 
-/** The evaluator's int64 and float range errors, as pg's 22003. */
-const RANGE_MESSAGE = /^(bigint|value) out of range/;
+/** The evaluator's int64 range error and its float overflow/underflow error: pg's 22003. */
+const isRangeError = (err: unknown): err is Error =>
+  (err instanceof RangeError && err.message === 'bigint out of range') ||
+  (err instanceof Error && err.message.startsWith('value out of range: '));
 
 function outOfRange(err: unknown): never {
-  if (err instanceof RangeError && RANGE_MESSAGE.test(err.message))
-    throw new ResolverFrameError(VALUE_OUT_OF_RANGE, err.message);
+  if (isRangeError(err)) throw new ResolverFrameError(VALUE_OUT_OF_RANGE, err.message);
   throw err;
 }
 

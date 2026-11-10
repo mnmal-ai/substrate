@@ -426,6 +426,41 @@ describe('grouped reads on memory and pg', () => {
     for (const o of arith) expect(o.errors?.[0]?.code).toBe('value_out_of_range');
   });
 
+  it('a float overflow in a group key raises the same code and message on both', async () => {
+    const outs = await Promise.all(
+      engines.map(([, e]) =>
+        read(e, {
+          where: { w: { gt: 20 } },
+          groupBy: { k: { mul: ['w', 1e307] } },
+          aggregate: cnt,
+          limit: 1
+        })
+      )
+    );
+    for (const o of outs) {
+      expect(o.errors?.[0]?.code).toBe('value_out_of_range');
+      expect(o.errors?.[0]?.message).toBe('value out of range: overflow');
+    }
+  });
+
+  it('having arithmetic raises for every group, even past a LIMIT', async () => {
+    // Groups 0, 1 and 98 ascending; 98's max is 2^63-1, so m + 1 overflows and sorts last.
+    const params = {
+      where: { region: { in: [0, 1, 98] } },
+      groupBy: { region: 'region' },
+      aggregate: { m: { max: 'user' } },
+      having: { gt: [{ add: ['m', 1] }, 0] },
+      limit: 1
+    };
+    const outs = await Promise.all(
+      [...engines.map(([, e]) => e), ...(streaming ? [streaming] : [])].map((e) => read(e, params))
+    );
+    for (const o of outs) {
+      expect(o.errors?.[0]?.code).toBe('value_out_of_range');
+      expect(o.errors?.[0]?.message).toBe('bigint out of range');
+    }
+  });
+
   it('min and max of a metadata date work with and without groupBy', async () => {
     // Each engine stamps its own createdAt, so the values differ; the shape and form must not.
     for (const params of [
