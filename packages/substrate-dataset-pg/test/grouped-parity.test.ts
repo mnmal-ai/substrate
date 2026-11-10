@@ -472,7 +472,7 @@ describe('grouped reads on memory and pg', () => {
         expect(o.errors).toBeUndefined();
         expect(o.groups?.[0]?.lo).toMatch(/^\d{4}-\d\d-\d\dT[\d:]+\.\d{6}Z$/);
       }
-      expect(outs[0]?.groups?.length).toBe(outs[1]?.groups?.length);
+      for (const o of outs) expect(o.groups?.length).toBe(outs[0]?.groups?.length);
     }
   });
 
