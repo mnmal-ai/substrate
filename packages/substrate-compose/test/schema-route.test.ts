@@ -280,6 +280,7 @@ describe('GET /substrate/v1/schema/:namespace/:type — shape projection', () =>
     expect(res.status).toBe(200);
     expect(Object.keys(body.mutations).sort()).toEqual(['createTodo', 'getTodo', 'updateTodo']);
     expect(body.mutationNames).toBeUndefined();
+    expect(body).not.toHaveProperty('expressions');
   });
 
   it('shape=fields drops the mutations and keeps the field defs intact', async () => {

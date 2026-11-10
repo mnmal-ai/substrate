@@ -268,7 +268,7 @@ export function createSchemaHandler(
     if ((ns === undefined || ns === '') && args?.full === true) {
       try {
         const federated = await getSubstrate<Record<string, unknown>>(endpoint, path);
-        return okResult({ ...federated, expressions: fullExpressions });
+        return okResult({ ...federated, $expressions: fullExpressions });
       } catch (err) {
         return errorResult(toMessage(err));
       }
@@ -521,7 +521,8 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
         description:
           "Fetch the Substrate schema. No args → a compact overview: every namespace's " +
           'types, one line of `field: type` each, enough to write a query. `full: true` → ' +
-          'the whole federated schema plus the full expression catalogue (large; rarely needed). SCOPED + CHEAP: pass `namespace` ' +
+          'the whole federated schema plus the full expression catalogue under `$expressions` ' +
+          '(large; rarely needed). SCOPED + CHEAP: pass `namespace` ' +
           "for one namespace, or `namespace` + `type` for a single type's write " +
           'contract ({ fields, mutations }). Mine the scoped shape BEFORE a ' +
           'create/update so you send only declared fields — autoCRUD rejects ' +
