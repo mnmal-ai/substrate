@@ -100,13 +100,17 @@ An expression is a field name, a number, a boolean, `null`, `{ "lit": "text" }`,
 - **`upper` and `lower` map ASCII letters only.** Every other character is unchanged, on both engines.
 - **Arithmetic overflow raises.** A result outside its type raises `value_out_of_range`, in a `select` as in a group key, an aggregate argument or `having`. A `select` value is computed for the rows a read returns or orders by, so an overflow raises when the value is computed for such a row; an overflow on a row outside the page may or may not raise. A float product or quotient that underflows to zero from nonzero operands raises too.
 - **An int64 `sum` that leaves the int64 range raises on every group**, including a group that `having` or `limit` would have dropped.
-- **Date and number metadata work in expressions.** `createdAt`, `updatedAt` and `seq` read in `select`, `groupBy`, `where.$expr` and aggregate arguments on both engines. In an expression these three names always mean the metadata column, so a declared field of the same name is shadowed, as it is in `where` and `orderBy`. Every other name, the string metadata names (`createdById` and the like) included, reads the declared field, and an undeclared one is refused `expr_invalid`.
+- **Date and number metadata work in expressions.** `createdAt`, `updatedAt` and `seq` read in `select`, `groupBy`, `where.$expr` and aggregate arguments on both engines. The string metadata names (`createdById` and the like) are not expression fields and are refused `expr_invalid`.
 - **A number field that holds something else reads as null** in an expression, on memory as on Postgres.
 - **Names.** A group name may not also be an aggregate name (`group_invalid`). With `groupBy`, `orderBy` names group and aggregate outputs only. An aggregate takes no `select` or `cursor`, and no `orderBy` unless it has `groupBy`.
 
 ### 7. The `int64` field kind
 
 `field.int64()` declares a 64-bit integer, stored as a Postgres `bigint` and held as a `bigint` in memory. On the JSON wire it is a **decimal string**, such as `"9007199254740993"`, so no digit is lost to a double. A write accepts a bigint, a safe-integer number or a canonical decimal string within the int64 range, and a filter operand takes the same. A cursor carries an int64 as decimal text. In an expression, `{ "int64": "<decimal>" }` is the literal. `sum` of an int64 is exact, `avg` is the exact sum over the count as a float, and `add`, `sub`, `mul` and `neg` stay int64 when both sides are.
+
+### Reserved field names
+
+These nine names are reserved for server metadata and can no longer be declared as body fields: `createdAt`, `updatedAt`, `seq`, `createdBy`, `updatedBy`, `createdById`, `createdByKind`, `updatedById` and `updatedByKind`. `defineNamespace` (on every type, autoCRUD or not), `propose_type` and `propose_field` refuse a field with one of these names, and the message names the field and says it is reserved for server metadata. Expressions, `where` and `orderBy` all read these names as metadata, so none can collide with a body field. Pre-1.0, so a type that declares one must rename it before upgrading.
 
 ## Plugin authors
 

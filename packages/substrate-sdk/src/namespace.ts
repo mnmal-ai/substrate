@@ -45,7 +45,11 @@ import {
   assertCrossRefDeletePolicies,
   assertServerSetFieldsFillable
 } from './autocrud/internal.js';
-import { RESERVED_AUTOCRUD_FIELD_NAMES, RESERVED_AUTOCRUD_FIELDS } from './autocrud/reserved.js';
+import {
+  RESERVED_AUTOCRUD_FIELD_NAMES,
+  RESERVED_AUTOCRUD_FIELDS,
+  reservedMetadataFieldMessage
+} from './autocrud/reserved.js';
 
 export type { PostWriteHook };
 
@@ -212,6 +216,11 @@ export function defineNamespace(
   // would be injected); autoCrud:false types may declare any field name
   // they like because no injection touches them.
   for (const [typeName, typeInput] of Object.entries(types)) {
+    // Server metadata names are reserved on every type, autoCRUD or not.
+    for (const name of Object.keys(typeInput.fields)) {
+      const why = reservedMetadataFieldMessage(name);
+      if (why !== undefined) throw new Error(`${why} (type: ${typeName})`);
+    }
     if (typeInput.autoCrud === false) continue;
     for (const reserved of RESERVED_AUTOCRUD_FIELD_NAMES) {
       if (Object.hasOwn(typeInput.fields, reserved)) {

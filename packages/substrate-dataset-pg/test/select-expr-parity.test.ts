@@ -24,13 +24,6 @@ const types: Record<string, Record<string, FieldDef>> = {
     seen: field.date({ nullable: true })
   },
   Stamp: { label: field.string() },
-  // Declares names metadata also has: in an expression createdAt and seq are the metadata.
-  Shadow: {
-    label: field.string(),
-    createdAt: field.date({ nullable: true }),
-    seq: field.number({ nullable: true }),
-    createdById: field.string({ nullable: true })
-  },
   Hit: {
     page: field.crossRef(NS, 'Page'),
     n: field.number({ nullable: true }),
@@ -56,8 +49,7 @@ function engineOver(ds: Dataset): Engine {
   defineNamespace(NS, {
     Page: { fields: types.Page as Record<string, FieldDef> },
     Hit: { fields: types.Hit as Record<string, FieldDef> },
-    Stamp: { fields: types.Stamp as Record<string, FieldDef>, ordering: 'visible' },
-    Shadow: { fields: types.Shadow as Record<string, FieldDef> }
+    Stamp: { fields: types.Stamp as Record<string, FieldDef>, ordering: 'visible' }
   }).install({ registry, dataset: ds, edges });
   const datasets = new MemoryDatasetRegistry();
   datasets.set(NS, ds);
@@ -111,8 +103,8 @@ async function seed(engine: Engine): Promise<void> {
   }
 }
 
-/** Two Stamp rows, the second updated after a pause; and a Shadow row whose body carries metadata names. */
-async function seedStamps(engine: Engine, ds: Dataset): Promise<void> {
+/** Two Stamp rows, the second updated after a pause, so its updatedAt trails createdAt. */
+async function seedStamps(engine: Engine): Promise<void> {
   const ids: string[] = [];
   for (const label of ['s1', 's2']) {
     const env = await engine.mutate({
@@ -130,16 +122,6 @@ async function seedStamps(engine: Engine, ds: Dataset): Promise<void> {
     ctx: { identity: WRITER }
   });
   expect(upd.errors).toBeUndefined();
-  // The engine refuses a client-supplied createdAt, so the body values go in through the dataset.
-  await ds.write('Shadow', [
-    {
-      id: '00000000-0000-4000-8000-000000000001',
-      label: 'x',
-      createdAt: '2000-01-01T00:00:00Z',
-      seq: 7777,
-      createdById: 'body-author'
-    }
-  ] as never);
 }
 
 type Out = { rows: Row[]; errors?: Array<{ code?: string; message: string }>; page?: unknown };
@@ -176,7 +158,7 @@ describe('select, $expr and like on memory and pg', () => {
     });
     const memory = engineOver(memoryDs);
     await seed(memory);
-    await seedStamps(memory, memoryDs);
+    await seedStamps(memory);
     engines.push(['memory', memory]);
     // Both stores sleep through the same wait, so updatedAt trails createdAt by seconds.
     if (!POSTGRES_URL) return;
@@ -186,7 +168,7 @@ describe('select, $expr and like on memory and pg', () => {
     const pgDs = new PgDataset({ namespace: NS, sql, fieldDefLookup: lookup, typeDefLookup });
     const pg = engineOver(pgDs);
     await seed(pg);
-    await seedStamps(pg, pgDs);
+    await seedStamps(pg);
     engines.push(['pg', pg]);
   });
 
@@ -412,32 +394,6 @@ describe('select, $expr and like on memory and pg', () => {
         name
       ).toEqual([false, true]);
       expect(rows[1]?.u, name).not.toEqual(rows[1]?.c);
-    }
-  });
-
-  it('a declared field named like metadata: createdAt and seq are the metadata, createdById the body', async () => {
-    for (const [name, e] of engines) {
-      const env = await e.query({
-        frame: {
-          [`${NS}/Shadow`]: {
-            params: {
-              select: {
-                y: { extract: [{ lit: 'year' }, 'createdAt'] },
-                sq: 'seq',
-                by: 'createdById'
-              }
-            },
-            fields: { id: true, y: true }
-          }
-        },
-        ctx: { identity: null }
-      });
-      expect(env.errors, name).toBeUndefined();
-      const [row] = env.data[`${NS}/Shadow`] as Row[];
-      expect(row?.y, name).toBe(new Date().getUTCFullYear());
-      // seq is null on a type that is not visible-ordered, whatever the body holds.
-      expect(row?.sq ?? null, name).toBeNull();
-      expect(row?.by, name).toBe('body-author');
     }
   });
 

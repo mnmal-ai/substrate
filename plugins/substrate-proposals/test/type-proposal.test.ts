@@ -119,6 +119,28 @@ describe('propose_type resolver', () => {
     expect(registry.has('deleteDress')).toBe(true);
   });
 
+  it('refuses a field named like server metadata, naming it', async () => {
+    const { resolver, registry } = harness;
+    await expect(
+      resolver(
+        makeCtx(),
+        makeArgs({
+          typeName: 'Dress',
+          fields: { seq: { kind: 'scalar', type: 'number' } },
+          proposedBy: 'designer-agent',
+          proposedReason: 'metadata name'
+        })
+      )
+    ).rejects.toSatisfy(
+      (err: unknown) =>
+        err instanceof ProposalError &&
+        err.code === 'invalid_params' &&
+        err.message.includes('`seq` is a reserved field name') &&
+        err.message.includes('reserved for server metadata')
+    );
+    expect(registry.has('Dress')).toBe(false);
+  });
+
   it('rejects an exact re-propose for the same typeName', async () => {
     const { resolver } = harness;
     const ctx = makeCtx();

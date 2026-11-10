@@ -10,7 +10,9 @@ export * from './autocrud/index.js';
 export {
   isReservedAutoCrudField,
   RESERVED_AUTOCRUD_FIELD_NAMES,
-  RESERVED_AUTOCRUD_FIELDS
+  RESERVED_AUTOCRUD_FIELDS,
+  RESERVED_METADATA_FIELD_NAMES,
+  reservedMetadataFieldMessage
 } from './autocrud/reserved.js';
 export { resolveIdentity, UnattributedWriteError } from './autocrud/resolve-identity.js';
 export {

@@ -95,6 +95,15 @@ describe('shortId auto-injection', () => {
     ).toThrow(/shortId.*reserved/i);
   });
 
+  it('refuses a field named like server metadata, on any type', () => {
+    expect(() => defineNamespace('alt', { Foo: { fields: { createdAt: field.date() } } })).toThrow(
+      '`createdAt` is a reserved field name: it is reserved for server metadata (type: Foo)'
+    );
+    expect(() =>
+      defineNamespace('alt', { Foo: { fields: { seq: field.number() }, autoCrud: false } })
+    ).toThrow(/`seq` is a reserved field name.*server metadata/);
+  });
+
   it('does NOT reserve shortId for autoCrud:false types (engine does not inject into them)', () => {
     // A plugin using autoCrud:false manages its own resolvers and field
     // lists; shortId injection never touches that type, so the reserved
