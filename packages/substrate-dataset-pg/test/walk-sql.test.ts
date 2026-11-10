@@ -1031,7 +1031,8 @@ describe.skipIf(!POSTGRES_URL)('count, aggregate and bucket (pg)', () => {
     lo: { min: 'price' },
     hi: { max: 'price' },
     first: { min: 'observedAt' },
-    last: { max: 'observedAt' }
+    last: { max: 'observedAt' },
+    firstMade: { min: 'createdAt' }
   } as unknown as NonNullable<ReadParams['aggregate']>;
   // Supplied, so pg and memory hold the same createdAt.
   const made = (i: number) => ({
@@ -1101,7 +1102,7 @@ describe.skipIf(!POSTGRES_URL)('count, aggregate and bucket (pg)', () => {
       where: { price: { gt: 1000 } }
     });
     expect(none.groups).toEqual([
-      { n: 0, avg: null, sum: null, lo: null, hi: null, first: null, last: null }
+      { n: 0, avg: null, sum: null, lo: null, hi: null, first: null, last: null, firstMade: null }
     ]);
   });
 

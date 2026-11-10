@@ -102,6 +102,8 @@ const cnt = { c: { count: true } };
 describe('grouped reads on memory and pg', () => {
   let sql: ReturnType<typeof postgres> | undefined;
   const engines: Array<[string, Engine]> = [];
+  let sorted: ReturnType<typeof postgres> | undefined;
+  let streaming: Engine | undefined;
 
   beforeAll(async () => {
     const memory = engineOver(
@@ -123,11 +125,26 @@ describe('grouped reads on memory and pg', () => {
     );
     await seed(pg);
     engines.push(['pg', pg]);
+    // The same store through a connection that cannot hash-aggregate: groups then
+    // stream out of a GroupAggregate, and a LIMIT stops pulling them early.
+    sorted = postgres(POSTGRES_URL, {
+      onnotice: () => {},
+      connection: { enable_hashagg: 'off' } as Record<string, string>
+    });
+    streaming = engineOver(
+      new PgDataset({
+        namespace: NS,
+        sql: sorted,
+        fieldDefLookup: lookup,
+        typeDefLookup: () => ({ fields: hit })
+      })
+    );
   });
 
   afterAll(async () => {
     if (sql === undefined) return;
     await dropNamespace(sql, NS);
+    await sorted?.end({ timeout: 5 });
     await sql.end();
   });
 
@@ -379,6 +396,71 @@ describe('grouped reads on memory and pg', () => {
       for (const [, e] of engines) {
         const o = await read(e, params);
         expect(o.errors, JSON.stringify(params)).toBeDefined();
+      }
+    }
+  });
+
+  it('an int64 overflow in the last group raises even when LIMIT is reached first', async () => {
+    // Groups 0, 1 and 98 ascending: 98 overflows and sorts last, so limit 1 (LIMIT 2) never pulls it.
+    const params = {
+      where: { region: { in: [0, 1, 98] } },
+      groupBy: { region: 'region' },
+      aggregate: { s: { sum: 'user' } },
+      limit: 1
+    };
+    const outs = await Promise.all(
+      [...engines.map(([, e]) => e), ...(streaming ? [streaming] : [])].map((e) => read(e, params))
+    );
+    for (const o of outs) expect(o.errors?.[0]?.code).toBe('value_out_of_range');
+    // The same through int64 arithmetic in an aggregate argument.
+    const arith = await Promise.all(
+      [...engines.map(([, e]) => e), ...(streaming ? [streaming] : [])].map((e) =>
+        read(e, {
+          where: { region: { in: [0, 1, 98] } },
+          groupBy: { region: 'region' },
+          aggregate: { m: { max: { add: ['user', 1] } } },
+          limit: 1
+        })
+      )
+    );
+    for (const o of arith) expect(o.errors?.[0]?.code).toBe('value_out_of_range');
+  });
+
+  it('min and max of a metadata date work with and without groupBy', async () => {
+    // Each engine stamps its own createdAt, so the values differ; the shape and form must not.
+    for (const params of [
+      { aggregate: { lo: { min: 'createdAt' }, hi: { max: 'updatedAt' } } },
+      { groupBy: { region: 'region' }, aggregate: { lo: { min: 'createdAt' } }, limit: 3 }
+    ]) {
+      const outs = await Promise.all(engines.map(([, e]) => read(e, params)));
+      for (const o of outs) {
+        expect(o.errors).toBeUndefined();
+        expect(o.groups?.[0]?.lo).toMatch(/^\d{4}-\d\d-\d\dT[\d:]+\.\d{6}Z$/);
+      }
+      expect(outs[0]?.groups?.length).toBe(outs[1]?.groups?.length);
+    }
+  });
+
+  it('a metadata date is a usable aggregate argument with groupBy; count of a lit/int64 is refused', async () => {
+    const rows = await Promise.all(
+      engines.map(([, e]) =>
+        read(e, {
+          groupBy: { region: 'region' },
+          aggregate: { lo: { min: 'createdAt' }, n: { count: true } },
+          limit: 3
+        })
+      )
+    );
+    for (const o of rows) {
+      expect(o.errors).toBeUndefined();
+      expect(o.groups).toHaveLength(3);
+    }
+    for (const params of [
+      { aggregate: { c: { count: { lit: 'x' } } } },
+      { aggregate: { c: { count: { int64: '1' } } } }
+    ]) {
+      for (const [, e] of engines) {
+        expect((await read(e, params)).errors, JSON.stringify(params)).toBeDefined();
       }
     }
   });

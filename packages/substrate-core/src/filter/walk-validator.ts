@@ -8,7 +8,12 @@
  * as a top-level read of that type would be.
  */
 
-import { checkExpr, type ExprScope, exprTypeOfField } from '@mnmal-ai/substrate-filter';
+import {
+  checkExpr,
+  type ExprScope,
+  exprTypeOfField,
+  metadataArgType
+} from '@mnmal-ai/substrate-filter';
 import {
   EXPR_LIMITS,
   type Expr,
@@ -928,7 +933,10 @@ function frameAggType(agg: Record<string, unknown>, scope: WalkScope, path: stri
   ) {
     fail('agg_invalid', 'count takes true (rows) or an expression, not another literal', at);
   }
-  const t = checkFrameExpr(agg[fn], scope, false, at);
+  // A bare metadata column (createdAt, updatedAt, seq) reads as it does in where and orderBy.
+  const meta =
+    typeof arg === 'string' && !Object.hasOwn(scope.fields, arg) ? metadataArgType(arg) : undefined;
+  const t = meta ?? checkFrameExpr(arg, scope, false, at);
   const ok: Record<string, ExprType[]> = {
     avg: ['number', 'int64'],
     sum: ['number', 'int64'],

@@ -13,7 +13,6 @@ import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildGroupedRead } from '../src/pg-sql/grouped.js';
 import { buildOrderBy } from '../src/pg-sql/sorting.js';
-import { tableLookup, walkScope } from '../src/pg-sql/walk.js';
 import { buildWhere } from '../src/pg-sql/where.js';
 import { ensureTypeTable, loadTypeTable, type TypeTable } from '../src/type-table.js';
 

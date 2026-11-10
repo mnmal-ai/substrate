@@ -52,9 +52,11 @@ export {
 export {
   aggParts,
   aggType,
+  canRaise,
   type Grouped,
   type GroupedParams,
-  groupRows
+  groupRows,
+  metadataArgType
 } from './grouped.js';
 export {
   assertJsonPathPredicate,

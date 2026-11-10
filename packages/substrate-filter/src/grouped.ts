@@ -7,6 +7,7 @@ import {
   type Expr,
   type ExprType,
   type FrameAgg,
+  METADATA_FILTER_FIELDS,
   type OrderByClause,
   ResolverFrameError,
   type Row,
@@ -14,8 +15,29 @@ import {
 } from '@mnmal-ai/substrate-types';
 import { checkExpr } from './expr-check.js';
 import { evalExpr } from './expr-eval.js';
-import { storedMicros } from './predicate.js';
+import { exprTypeOfField } from './expr-scope.js';
+import { getFieldValue, storedMicros } from './predicate.js';
 import { isoFromMicros, numericAgg } from './walk.js';
+
+/**
+ * The type of a bare-string aggregate argument that names a metadata column
+ * (`createdAt`, `updatedAt`, `seq`) rather than a declared field: a date or a
+ * number. Metadata inside a general expression is not supported.
+ */
+export function metadataArgType(arg: unknown): ExprType | undefined {
+  if (typeof arg !== 'string' || !Object.hasOwn(METADATA_FILTER_FIELDS, arg)) return undefined;
+  const t = exprTypeOfField(METADATA_FILTER_FIELDS[arg]);
+  return t === 'date' || t === 'number' ? t : undefined;
+}
+
+const ARITHMETIC = new Set(['add', 'sub', 'mul', 'div', 'mod', 'neg']);
+
+/** Whether evaluating `e` can raise a range error (arithmetic anywhere in it). */
+export function canRaise(e: unknown): boolean {
+  if (Array.isArray(e)) return e.some(canRaise);
+  if (typeof e !== 'object' || e === null || 'lit' in e || 'int64' in e) return false;
+  return Object.entries(e).some(([k, v]) => ARITHMETIC.has(k) || canRaise(v));
+}
 
 const MIN_INT64 = -(2n ** 63n);
 const MAX_INT64 = 2n ** 63n - 1n;
@@ -125,6 +147,8 @@ export function groupRows(
   const keys = Object.entries(p.groupBy ?? {});
   const aggs = Object.entries(p.aggregate).map(([name, spec]) => ({ name, ...aggParts(spec) }));
   const typeOf = (e: Expr): ExprType | null => {
+    const m = typeof e === 'string' && fieldType(e) === undefined ? metadataArgType(e) : undefined;
+    if (m !== undefined) return m;
     const r = checkExpr(e, { field: fieldType }, []);
     return r.ok ? r.type : null;
   };
@@ -163,7 +187,11 @@ export function groupRows(
       });
       aggs.forEach((a, i) => {
         const at = argTypes[i] as ExprType | null;
-        const values = rows.map((r) => readable(evalExpr(a.arg, r, env) ?? null, at));
+        const meta =
+          typeof a.arg === 'string' && fieldType(a.arg) === undefined && metadataArgType(a.arg);
+        const values = rows.map((r) =>
+          readable((meta ? getFieldValue(r, a.arg as string) : evalExpr(a.arg, r, env)) ?? null, at)
+        );
         g[a.name] = aggregateOf(a.op, a.arg, argTypes[i] as ExprType | null, values, rows.length);
       });
       groups.push(g);

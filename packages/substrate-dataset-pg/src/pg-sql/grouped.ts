@@ -10,13 +10,20 @@
  * would then not see them as one expression. The memory reference is
  * `@mnmal-ai/substrate-filter`'s `groupRows`.
  */
-import { aggParts, aggType, exprTypeOfField } from '@mnmal-ai/substrate-filter';
+import {
+  aggParts,
+  aggType,
+  canRaise,
+  exprTypeOfField,
+  metadataArgType
+} from '@mnmal-ai/substrate-filter';
 import type { Expr, ExprType, FieldDef, FrameAgg, OrderByClause } from '@mnmal-ai/substrate-types';
 import type { Sql, TransactionSql } from 'postgres';
 import type { TypeTable } from '../type-table.js';
 import { exactNumeric } from './aggregate.js';
 import { compileExprTyped } from './expression.js';
-import type { Fragment } from './primitives.js';
+import { metadataColumnSql } from './predicates-metadata.js';
+import { type Fragment, isMetadataField } from './primitives.js';
 
 /** 2^1024 − 2^970, the least value float8 rounds to Infinity, as an exact numeric. */
 const OVERFLOW = `${2n ** 1024n - 2n ** 970n}::numeric`;
@@ -67,7 +74,20 @@ export function buildGroupedRead(
   });
   const aggs = Object.entries(spec.aggregate).map(([name, a], j) => {
     const { op, arg } = aggParts(a);
-    const c = arg === true && op === 'count' ? undefined : compile(arg);
+    const meta =
+      typeof arg === 'string' && fieldType(arg) === undefined && isMetadataField(arg)
+        ? metadataArgType(arg)
+        : undefined;
+    const c =
+      arg === true && op === 'count'
+        ? undefined
+        : meta !== undefined
+          ? {
+              // seq is a bigint column; a number is float8.
+              fragment: sql`${u(metadataColumnSql(arg as 'seq', 'r'))}${u(meta === 'number' ? '::float8' : '')}`,
+              type: meta
+            }
+          : compile(arg);
     const t = c?.type ?? null;
     const f = c?.fragment as Fragment;
     // A bare number field keeps its stored decimal exactly; any other float8 goes through its shortest text.
@@ -105,7 +125,7 @@ export function buildGroupedRead(
     if (op === 'count' || op === 'countDistinct') typed = sql`${a_}::float8`;
     else if (op === 'avg' || op === 'sum') typed = t === 'int64' ? a_ : floatOf(a_);
     else typed = a_;
-    return { name, j, raw, typed, type };
+    return { name, j, raw, typed, type, raises: (op === 'sum' && t === 'int64') || canRaise(arg) };
   });
   function floatOf(s: Fragment): Fragment {
     return sql`(CASE WHEN abs(${s}) >= ${u(OVERFLOW)} THEN NULL WHEN abs(${s}) <= ${u(UNDERFLOW)} THEN 0::float8 ELSE ${s}::float8 END)`;
@@ -113,12 +133,21 @@ export function buildGroupedRead(
 
   // OFFSET 0 fences the subquery: having, order and limit read its columns, so no qual
   // reaches the Agg node ahead of the int64 range checks.
-  const inner = sql`SELECT ${list([
+  const raises = aggs.some((a) => a.raises) || Object.values(spec.groupBy ?? {}).some(canRaise);
+  const grouped = sql`SELECT ${list([
     ...keys.map((k) => sql`${k.frag} AS ${u(`k${k.i}`)}`),
     ...aggs.map((a) => sql`${a.raw} AS ${u(`a${a.j}`)}`)
   ])} FROM ${u(table.from)} r${joins} WHERE ${matched}${
     keys.length === 0 ? sql`` : sql` GROUP BY ${u(keys.map((_, i) => i + 1).join(', '))}`
   } OFFSET 0`;
+  // Anything that can raise (an int64 sum, arithmetic in an argument) must raise for every group.
+  // A GroupAggregate under LIMIT stops pulling groups early, so a window over them all, in its own
+  // select above the grouping (the planner would otherwise evaluate the range check above the
+  // window), makes every group be produced first. The outer select names `w` too, since the
+  // planner drops a subquery column nothing reads; decode ignores it.
+  const inner = raises
+    ? sql`SELECT y.*, count(*) OVER () AS w FROM (${grouped}) y OFFSET 0`
+    : grouped;
 
   const outputs = new Map<string, Fragment>([
     ...keys.map((k) => [k.name, u(`x.k${k.i}`)] as const),
@@ -168,9 +197,10 @@ export function buildGroupedRead(
   const limit = spec.limit === undefined ? sql`` : sql` LIMIT ${spec.limit + 1}`;
   const offset =
     spec.offset === undefined || spec.offset === 0 ? sql`` : sql` OFFSET ${spec.offset}`;
-  const statement = sql`SELECT 1 AS g, ${list(
-    outs.map((o, n) => sql`${project(o.frag, o.type)} AS ${u(`o${n}`)}`)
-  )} FROM (${inner}) x${having}${
+  const statement = sql`SELECT 1 AS g, ${list([
+    ...outs.map((o, n) => sql`${project(o.frag, o.type)} AS ${u(`o${n}`)}`),
+    ...(raises ? [sql`x.w`] : [])
+  ])} FROM (${inner}) x${having}${
     order.length === 0 ? sql`` : sql` ORDER BY ${list(order)}`
   }${limit}${offset}`;
 
