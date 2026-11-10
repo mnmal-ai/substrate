@@ -3,8 +3,9 @@
  * `checkExpr`; SQL null never throws and propagates as `null`. Values are
  * `number`, `string`, `boolean`, `bigint` (int64) and ISO-8601 UTC strings (dates).
  */
-import { checkExpr } from './expr-check.js';
+
 import type { Expr, ExprType, Row } from '@mnmal-ai/substrate-types';
+import { checkExpr } from './expr-check.js';
 import { getFieldValue } from './predicate.js';
 import { compileRegex, execRegex } from './regex-vm.js';
 
