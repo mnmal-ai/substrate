@@ -260,6 +260,8 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
             ctx.metric('_system_proposals.replay_skipped', {
               namespace: ns,
               id: row.id,
+              type: row.typeName ?? row.targetType,
+              field: row.fieldName ?? null,
               error: err instanceof Error ? err.message : String(err)
             })
         });
