@@ -30,16 +30,34 @@ import {
 import type { PubSub } from './config.js';
 import { isProposableNamespace } from './control-plane.js';
 import { ensureStorageAfterCommit } from './engine-write.js';
+import { ProposalError } from './errors.js';
 import type { FieldSpecJson } from './field-spec-json.js';
 import { defineProposalTypes } from './namespace.js';
 import { CLUSTER_CHANNEL } from './propose-namespace-resolver.js';
 import type { RegistryStore } from './registry-store.js';
+
+/**
+ * The warning line for a stored proposal skipped because it names a field reserved for
+ * server metadata, or undefined for any other reason.
+ */
+export function reservedSkipLine(namespace: string, row: Row, err: unknown): string | undefined {
+  if (!(err instanceof ProposalError) || !err.message.includes('reserved for server metadata')) {
+    return undefined;
+  }
+  const type = String(row.typeName ?? row.targetType);
+  const field = String(err.details.fieldName ?? row.fieldName);
+  const effect =
+    row.typeName !== undefined ? 'the type is not registered' : 'the field is not added';
+  return `substrate-proposals: ${namespace}/${type}: field '${field}' is reserved for server metadata; ${effect}`;
+}
 
 export interface SetupListenerArgs {
   namespace: string;
   channel: string;
   pubsub: PubSub;
   registryStore: RegistryStore;
+  /** Told about each row that could not be applied; the row is skipped. */
+  onSkip?: (row: Row, err: unknown) => void;
 }
 
 export async function setupNamespaceListener(args: SetupListenerArgs): Promise<void> {
@@ -48,7 +66,8 @@ export async function setupNamespaceListener(args: SetupListenerArgs): Promise<v
     await applyProposalFromNotification({
       namespace: args.namespace,
       proposalId: payload,
-      registryStore: args.registryStore
+      registryStore: args.registryStore,
+      ...(args.onSkip !== undefined ? { onSkip: args.onSkip } : {})
     }).catch(() => {});
   });
 }
@@ -57,6 +76,8 @@ export interface ApplyFromNotificationArgs {
   namespace: string;
   proposalId: string;
   registryStore: RegistryStore;
+  /** Told about a row that could not be applied; the row is skipped, never thrown. */
+  onSkip?: (row: Row, err: unknown) => void;
 }
 
 export async function applyProposalFromNotification(
@@ -69,30 +90,34 @@ export async function applyProposalFromNotification(
   if (typeHit.rows.length > 0) {
     const row = typeHit.rows[0] as Row;
     if (row.applied !== true) return;
-    const typeName = row.typeName as string;
-    let changed = false;
-    if (!binding.registry.get(typeName)) {
-      const fields = JSON.parse(row.fieldsJson as string) as Record<string, FieldSpecJson>;
-      applyTypeProposal({
-        namespace: args.namespace,
-        typeName,
-        fields,
-        registryStore: args.registryStore,
-        dataset: binding.dataset,
-        edges: binding.edges
-      });
-      changed = true;
+    try {
+      const typeName = row.typeName as string;
+      let changed = false;
+      if (!binding.registry.get(typeName)) {
+        const fields = JSON.parse(row.fieldsJson as string) as Record<string, FieldSpecJson>;
+        applyTypeProposal({
+          namespace: args.namespace,
+          typeName,
+          fields,
+          registryStore: args.registryStore,
+          dataset: binding.dataset,
+          edges: binding.edges
+        });
+        changed = true;
+      }
+      // A propose_index on a peer changes an applied row's indexes or order.
+      changed = replayTypeIndexOptions(args.registryStore, args.namespace, row) || changed;
+      if (changed)
+        ensureStorageAfterCommit(
+          undefined,
+          binding.dataset,
+          typeName,
+          binding.engine,
+          args.registryStore.storage
+        );
+    } catch (err) {
+      args.onSkip?.(row, err);
     }
-    // A propose_index on a peer changes an applied row's indexes or order.
-    changed = replayTypeIndexOptions(args.registryStore, args.namespace, row) || changed;
-    if (changed)
-      ensureStorageAfterCommit(
-        undefined,
-        binding.dataset,
-        typeName,
-        binding.engine,
-        args.registryStore.storage
-      );
     return;
   }
 
@@ -100,25 +125,29 @@ export async function applyProposalFromNotification(
   if (fieldHit.rows.length > 0) {
     const row = fieldHit.rows[0] as Row;
     if (row.applied === true) {
-      const entry = binding.registry.get(row.targetType as string);
-      if (entry && fieldNeedsReplay(entry, row)) {
-        const fieldSpec = JSON.parse(row.fieldSpecJson as string) as FieldSpecJson;
-        applyFieldProposal({
-          namespace: args.namespace,
-          targetType: row.targetType as string,
-          fieldName: row.fieldName as string,
-          fieldSpec,
-          registryStore: args.registryStore,
-          dataset: binding.dataset,
-          edges: binding.edges
-        });
-        ensureStorageAfterCommit(
-          undefined,
-          binding.dataset,
-          row.targetType as string,
-          binding.engine,
-          args.registryStore.storage
-        );
+      try {
+        const entry = binding.registry.get(row.targetType as string);
+        if (entry && fieldNeedsReplay(entry, row)) {
+          const fieldSpec = JSON.parse(row.fieldSpecJson as string) as FieldSpecJson;
+          applyFieldProposal({
+            namespace: args.namespace,
+            targetType: row.targetType as string,
+            fieldName: row.fieldName as string,
+            fieldSpec,
+            registryStore: args.registryStore,
+            dataset: binding.dataset,
+            edges: binding.edges
+          });
+          ensureStorageAfterCommit(
+            undefined,
+            binding.dataset,
+            row.targetType as string,
+            binding.engine,
+            args.registryStore.storage
+          );
+        }
+      } catch (err) {
+        args.onSkip?.(row, err);
       }
     }
   }

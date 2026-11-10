@@ -15,9 +15,9 @@ export function exprTypeOfField(def: FieldDef | undefined): ExprType | undefined
 }
 
 /**
- * The type of a date or number metadata name (`createdAt`, `updatedAt`, `seq`). In an expression
- * these names always mean the metadata column, shadowing a declared field, as in where and
- * orderBy. Every other name, string metadata included, is a declared field.
+ * The type of a date or number metadata name (`createdAt`, `updatedAt`, `seq`), which an
+ * expression reads as metadata; the names are reserved, so no declared field shares them. The
+ * string metadata names are not expression fields.
  */
 export function metadataExprType(name: unknown): ExprType | undefined {
   if (typeof name !== 'string' || !Object.hasOwn(METADATA_FILTER_FIELDS, name)) return undefined;

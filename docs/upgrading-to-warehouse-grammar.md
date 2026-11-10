@@ -110,7 +110,11 @@ An expression is a field name, a number, a boolean, `null`, `{ "lit": "text" }`,
 
 ### Reserved field names
 
-These nine names are reserved for server metadata and can no longer be declared as body fields: `createdAt`, `updatedAt`, `seq`, `createdBy`, `updatedBy`, `createdById`, `createdByKind`, `updatedById` and `updatedByKind`. `defineNamespace` (on every type, autoCRUD or not), `propose_type` and `propose_field` refuse a field with one of these names, and the message names the field and says it is reserved for server metadata. Expressions, `where` and `orderBy` all read these names as metadata, so none can collide with a body field. Pre-1.0, so a type that declares one must rename it before upgrading.
+These nine names are reserved for server metadata and can no longer be declared as body fields: `createdAt`, `updatedAt`, `seq`, `createdBy`, `updatedBy`, `createdById`, `createdByKind`, `updatedById` and `updatedByKind`. `defineNamespace` (on every type, autoCRUD or not), `propose_type` and `propose_field` refuse a field with one of these names, and the message names the field and says it is reserved for server metadata. `createdAt`, `updatedAt` and `seq` read as metadata in expressions, and `where` and `orderBy` read all nine as metadata, so none can collide with a body field. The six string names are refused in expressions (`expr_invalid`). Pre-1.0, so a type that declares one must rename it before upgrading.
+
+- **A code-defined type declaring one fails at boot.** Rename it: a rename does not move values already stored under the old key, so existing rows need a backfill, which for a code-defined type means a new field plus a backfill.
+- **The proposals plugin has no rename path.** For a proposed type, rename means proposing a new field and backfilling it.
+- **A stored proposed type or field that uses a reserved name is skipped at boot**, with one warning line naming the namespace, type and field and a `_system_proposals.replay_skipped` metric. Boot goes on. The rows stay in the store, but the type is not registered, so it is unreachable until it is fixed. A peer instance's notification for such a row is skipped the same way.
 
 ## Plugin authors
 
