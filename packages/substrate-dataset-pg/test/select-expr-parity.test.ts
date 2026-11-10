@@ -279,6 +279,64 @@ describe('select, $expr and like on memory and pg', () => {
     }
   });
 
+  // Each engine stamps its own createdAt, so these compare what does not depend on the instant.
+  it('createdAt and seq read in expressions: select, $expr and a day group', async () => {
+    const year = new Date().getUTCFullYear();
+    const sel = await same(
+      { select: { y: { extract: [{ lit: 'year' }, 'createdAt'] } }, orderBy: [{ url: 'asc' }] },
+      { id: true, url: true, y: true }
+    );
+    expect(sel.rows.map((r) => r.y)).toEqual(Array(5).fill(year));
+    const after = await same({
+      where: { $expr: { gt: ['createdAt', 'seen'] } },
+      orderBy: [{ url: 'asc' }]
+    });
+    expect(urls(after)).toEqual(['axb', 'https://google.com/b', 'https://www.Google.com/a']);
+    const none = await same({
+      where: { $expr: { lt: [{ extract: [{ lit: 'year' }, 'updatedAt'] }, 2000] } }
+    });
+    expect(none.rows).toEqual([]);
+    for (const [name, e] of engines) {
+      const env = await e.query({
+        frame: {
+          [`${NS}/Page`]: {
+            params: {
+              aggregate: { n: { count: true } },
+              groupBy: { day: { dateTrunc: [{ lit: 'day' }, 'createdAt'] } }
+            },
+            fields: { id: true }
+          }
+        },
+        ctx: { identity: null }
+      });
+      expect(env.errors, name).toBeUndefined();
+      const groups = (env.data[`${NS}/Page`] as { groups: Array<Record<string, unknown>> }).groups;
+      // All five rows were written moments apart: one day, barring a midnight in between.
+      expect(
+        groups.reduce((n, g) => n + Number(g.n), 0),
+        name
+      ).toBe(5);
+      for (const g of groups) expect(g.day, name).toMatch(/^\d{4}-\d\d-\d\dT00:00:00\.000000Z$/);
+    }
+  });
+
+  it('a select that overflows raises on the page and as the order key, not for a filtered-out row', async () => {
+    // Postgres computes a non-order select only for the page, so the row must sit on it.
+    const big = { select: { d: { mul: ['width', 1e307] } } };
+    for (const [name, e] of engines) {
+      const page = await read(e, { ...big, where: { width: { eq: 100 } } }, { id: true, d: true });
+      expect(page.errors?.[0]?.code, `${name} page`).toBe('value_out_of_range');
+      const lead = await read(e, { ...big, orderBy: [{ d: 'asc' }] }, { id: true, d: true });
+      expect(lead.errors?.[0]?.code, `${name} order key`).toBe('value_out_of_range');
+      const filtered = await read(
+        e,
+        { ...big, where: { width: { lt: 10 } }, orderBy: [{ url: 'asc' }] },
+        { id: true, d: true }
+      );
+      expect(filtered.errors, `${name} filtered out`).toBeUndefined();
+    }
+  });
+
   it('like is case-sensitive and differs from contains', async () => {
     const like = await same({ where: { url: { like: '%Google%' } } });
     expect(urls(like)).toEqual(['https://www.Google.com/a']);

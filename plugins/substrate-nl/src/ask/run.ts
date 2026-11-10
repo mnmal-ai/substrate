@@ -214,10 +214,13 @@ async function aggregate(
           ...(by !== undefined
             ? {
                 by,
-                groups: rows.map((g) => ({
-                  key: short(g.bucket ?? g.key) as string | boolean | null,
-                  value: g.value as number | string | null
-                }))
+                // A row with no time field is in no day, as the old bucket had it.
+                groups: rows
+                  .filter((g) => trunc === undefined || g.bucket !== null)
+                  .map((g) => ({
+                    key: short(g.bucket ?? g.key) as string | boolean | null,
+                    value: g.value as number | string | null
+                  }))
               }
             : { value: (rows[0]?.value ?? null) as number | string | null }),
           ...(data?.truncated === true ? { truncated: true as const } : {})

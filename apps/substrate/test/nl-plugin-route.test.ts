@@ -20,7 +20,7 @@ import {
   signHs256
 } from '@mnmal-ai/substrate-compose';
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
-import { createNlPlugin, type NamespaceRulings } from '@mnmal-ai/substrate-nl';
+import { createNlPlugin } from '@mnmal-ai/substrate-nl';
 import { row } from '@mnmal-ai/substrate-policy';
 import { installAutoCrud } from '@mnmal-ai/substrate-sdk';
 import { MemorySubstrateServer } from '@mnmal-ai/substrate-server-memory';
@@ -55,8 +55,6 @@ async function mkServer(opts: {
   walks?: boolean;
   /** Field defs for the walk reference's hops. */
   fieldDefLookup?: (type: string, field: string) => FieldDef | undefined;
-  /** NL rulings by namespace. */
-  rulings?: Record<string, NamespaceRulings>;
 }): Promise<NlRouteCtx> {
   const server = new MemorySubstrateServer();
   const dataset = new MemoryDataset({
@@ -82,7 +80,6 @@ async function mkServer(opts: {
   // the plugin's engine access is late-bound for exactly this reason.
   if (opts.registerNl !== false) {
     const plugin = createNlPlugin({
-      ...(opts.rulings !== undefined ? { rulings: opts.rulings } : {}),
       engine: {
         federatedSchema: () => composed.engine.federatedSchema(),
         operators: () => undefined,
@@ -347,8 +344,7 @@ const shopPlugin: CoordinatorPlugin = {
               indexed: true,
               nullable: true,
               enum: ['new', 'used']
-            },
-            listedAt: { kind: 'scalar', type: 'date', indexed: true, nullable: true }
+            }
           }
         });
       }
@@ -506,14 +502,7 @@ describe('aggregates over the memory store', () => {
   });
 
   it('answers a whole, a grouped and a day-bucketed aggregate', async () => {
-    ctx = await mkServer({
-      extra: [shopPlugin],
-      walks: true,
-      // A day group needs a declared date field; createdAt is metadata, which no expression reads.
-      rulings: { shop: { timeField: { Item: 'listedAt' } } },
-      fieldDefLookup: (type, field) =>
-        type === 'Item' && field === 'listedAt' ? { kind: 'scalar', type: 'date' } : undefined
-    });
+    ctx = await mkServer({ extra: [shopPlugin], walks: true });
     for (const [name, price, condition] of [
       ['a', 5, 'new'],
       ['b', 15, 'used'],
@@ -527,12 +516,7 @@ describe('aggregates over the memory store', () => {
         body: Buffer.from(
           JSON.stringify({
             'shop/createItem': {
-              params: {
-                name,
-                price,
-                listedAt: '2026-10-20T10:00:00Z',
-                ...(condition !== null ? { condition } : {})
-              },
+              params: { name, price, ...(condition !== null ? { condition } : {}) },
               fields: { id: true }
             }
           })
@@ -564,7 +548,7 @@ describe('aggregates over the memory store', () => {
         { key: null, value: 2 }
       ]
     });
-    // All listed on one day.
+    // Inserted moments apart, so one day bucket; which day depends on the clock.
     expect(await answer('total price of items per day')).toMatchObject({
       fn: 'sum',
       field: 'price',

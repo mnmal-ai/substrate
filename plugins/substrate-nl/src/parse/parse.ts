@@ -645,6 +645,12 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
     const limit = a.fieldOrder.limit ?? (a.plural ? 10 : 1);
     if (reason !== null) fieldOrder.push({ span: a.fieldOrder.span, reason, kind: 'order' });
     else if ('field' in r) sortBy = { field: r.field, dir: a.fieldOrder.dir, limit };
+    else if ('hop' in r && Object.hasOwn(fields, r.hop.name))
+      fieldOrder.push({
+        span: a.fieldOrder.span,
+        reason: `its name "${r.hop.name}" is also a field of ${type}`,
+        kind: 'order'
+      });
     else if ('hop' in r) sortBy = { field: r.hop.name, hop: r.hop, dir: a.fieldOrder.dir, limit };
   }
   // "the last sale", "the first 3 items": a count or aggregate over them would cover every row.
@@ -1399,10 +1405,8 @@ function aggregateOn(
   };
   if (g.unit !== undefined) {
     if (g.unit !== 'day' && g.unit !== 'hour')
-      return drop('the engine buckets by day or hour only');
-    // A group key is an expression, and row metadata such as createdAt reads only as a bare aggregate argument.
-    const field = own(rulings.timeField, type);
-    if (field === undefined) return drop(`${type} declares no timeField ruling to group by`);
+      return drop('only day and hour groupings are supported');
+    const field = own(rulings.timeField, type) ?? 'createdAt';
     out.dateGroup = { field, by: g.unit };
     out.evidence.push({ span: g.span, role: 'field', detail: `bucket ${field} by ${g.unit}` });
     return out;

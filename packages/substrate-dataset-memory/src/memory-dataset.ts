@@ -48,6 +48,7 @@ import type {
   ConditionalUpdateResult,
   Dataset,
   DeleteResult,
+  Expr,
   DropResult,
   FieldDef,
   FilterCapabilities,
@@ -336,6 +337,8 @@ export class MemoryDataset implements Dataset {
     const dateNames = new Set<string>();
     const sortDefOf: FieldDefOf = (f) =>
       dateNames.has(f) ? { kind: 'scalar', type: 'date' } : fieldDefOf(f);
+    // Computes the select names that do not order, for a returned row.
+    let restSelect: ((row: Row) => Record<string, unknown>) | undefined;
     const select = params.select;
     if (select !== undefined) {
       const entries = Object.entries(select);
@@ -354,27 +357,52 @@ export class MemoryDataset implements Dataset {
       }
       const text = JSON.stringify(select);
       const aggRefs = Object.keys(frameAggs ?? {}).filter((n) => text.includes(`"_agg.${n}"`));
+      // A value is computed for the rows a read returns or orders by: an order key over the
+      // whole pool, any other select name only on the returned page.
+      const orderKeys = new Set(
+        (params.orderBy ?? [])
+          .flatMap((c) => Object.keys(c))
+          .filter((k) => Object.hasOwn(select, k))
+      );
+      const valuesOf = (row: Row, names: Array<[string, Expr]>) => {
+        const ctx = ctxFor(row);
+        // A bare `_agg.<name>` reads the row's frame aggregate.
+        const output: Record<string, unknown> = {};
+        for (const name of aggRefs) output[`_agg.${name}`] = ctx.aggValue?.(name);
+        const values: Record<string, unknown> = {};
+        for (const [name, expr] of names) {
+          values[name] = evalExpr(expr, row, { output, fieldType: typeOf }) ?? null;
+        }
+        return values;
+      };
+      // A date reads out as pg's plain read prints it: UTC, to the microsecond.
+      const printed = (values: Record<string, unknown>) => {
+        for (const name of dateNames) if (name in values) values[name] = isoMicros(values[name]);
+        return values;
+      };
+      const ordering = entries.filter(([n]) => orderKeys.has(n));
+      const rest = entries.filter(([n]) => !orderKeys.has(n));
       try {
-        pool = pool.map((row) => {
-          const ctx = ctxFor(row);
-          // A bare `_agg.<name>` reads the row's frame aggregate.
-          const output: Record<string, unknown> = {};
-          for (const name of aggRefs) output[`_agg.${name}`] = ctx.aggValue?.(name);
-          const values: Record<string, unknown> = {};
-          for (const [name, expr] of entries) {
-            values[name] = evalExpr(expr, row, { output, fieldType: typeOf }) ?? null;
-          }
-          const copy: Row = { ...row, ...values };
-          // A date reads out as pg's plain read prints it: UTC, to the microsecond.
-          const out = { ...values };
-          for (const name of dateNames) out[name] = isoMicros(values[name]);
-          original.set(copy, row);
-          selected.set(copy, out);
-          return copy;
-        });
+        if (ordering.length > 0) {
+          pool = pool.map((row) => {
+            const values = valuesOf(row, ordering);
+            const copy: Row = { ...row, ...values };
+            original.set(copy, row);
+            selected.set(copy, printed({ ...values }));
+            return copy;
+          });
+        }
       } catch (err) {
         outOfRange(err);
       }
+      restSelect = (row) => {
+        try {
+          return printed(valuesOf(original.get(row) ?? row, rest));
+        } catch (err) {
+          return outOfRange(err);
+        }
+      };
+      if (rest.length === 0) restSelect = undefined;
     }
 
     // OrderBy — always append implicit `{ id: 'asc' }` as final tie-breaker so
@@ -421,9 +449,13 @@ export class MemoryDataset implements Dataset {
               })
             );
       // A select value is a computed key, never a stored column.
-      return selected.size === 0
+      return selected.size === 0 && restSelect === undefined
         ? out
-        : out.map((r, i) => ({ ...r, ...selected.get(rows[i] as Row) }));
+        : out.map((r, i) => ({
+            ...r,
+            ...selected.get(rows[i] as Row),
+            ...restSelect?.(rows[i] as Row)
+          }));
     };
     // nextCursor is derived from the DATASET-ordered slice (the sorted pool),
     // before any relevance reorder — cursor pagination must keep dataset

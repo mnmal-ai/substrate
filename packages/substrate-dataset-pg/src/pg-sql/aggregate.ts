@@ -17,7 +17,6 @@
 import { isDateField, isRefOperand, windowGroupBy } from '@mnmal-ai/substrate-filter';
 import {
   type FieldDef,
-  type FrameAgg,
   type NestedSelection,
   UnsupportedFilterError,
   type WalkAgg,
@@ -99,14 +98,14 @@ interface Pick {
  */
 function aggOver(
   sql: Sql | TransactionSql,
-  spec: WalkAgg | FrameAgg,
+  spec: WalkAgg,
   table: TypeTable,
   alias: string,
   fieldDef: (field: string) => FieldDef | undefined
 ): { kind: AggKind } & ({ agg: Fragment; pick?: undefined } | { pick: Pick; agg?: undefined }) {
   const isDate = (f: string) => isDateField(f, fieldDef);
   if (Object.hasOwn(spec, 'count')) return { agg: sql`to_jsonb(count(*))`, kind: 'number' };
-  if ('latest' in spec && Object.hasOwn(spec, 'latest')) {
+  if ('latest' in spec) {
     const { by, value } = spec.latest;
     const key = sortKey(sql, table, by, resolveBodyOrderByCast(fieldDef(by)), alias);
     const numeric = value === 'seq' || resolveBodyOrderByCast(fieldDef(value)) === 'numeric';

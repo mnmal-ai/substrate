@@ -162,6 +162,7 @@ Natural-language query and the recall embedder are not configured by environment
 - [Design spec](https://github.com/mnmal-ai/substrate/blob/main/docs/substrate-from-first-principles.md)
 - [Operator decisions](https://github.com/mnmal-ai/substrate/blob/main/docs/operator-decisions.md)
 - [Upgrading to per-type tables](https://github.com/mnmal-ai/substrate/blob/main/docs/upgrading-to-type-tables.md)
+- [Upgrading to the warehouse grammar](https://github.com/mnmal-ai/substrate/blob/main/docs/upgrading-to-warehouse-grammar.md)
 - [Plugin author guide](https://github.com/mnmal-ai/substrate/blob/main/docs/plugin-author-guide.md)
 
 ## License

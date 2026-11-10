@@ -28,7 +28,7 @@ After:
 
 The group name is yours: `bucket` keeps the output key the old param wrote, so a client that reads `group.bucket` needs no other change. Three things about the output differ, in section 5.
 
-A metadata date such as `createdAt` can no longer be bucketed. Metadata fields work only as a bare aggregate argument (`{ "min": "createdAt" }`), not inside an expression, and `dateTrunc` over one is refused `expr_invalid`. Bucket by a declared date field, or by a date you store yourself.
+`createdAt`, `updatedAt` and `seq` work in expressions, so `dateTrunc` over `createdAt` is a day group as `bucket: { field: "createdAt", ... }` was.
 
 ### 2. `derive` becomes `select`
 
@@ -98,9 +98,9 @@ An expression is a field name, a number, a boolean, `null`, `{ "lit": "text" }`,
 - **`like` is case-sensitive.** `contains`, `startsWith` and `endsWith` are unchanged and case-insensitive. Use `like` when case matters.
 - **`mod` takes int64 only.** A safe-integer literal counts as one. A zero divisor gives null.
 - **`upper` and `lower` map ASCII letters only.** Every other character is unchanged, on both engines.
-- **Arithmetic overflow raises.** A result outside its type, in a `select`, a group key, an aggregate argument or `having`, raises `value_out_of_range`. A float product or quotient that underflows to zero from nonzero operands raises too.
+- **Arithmetic overflow raises.** A result outside its type raises `value_out_of_range`, in a `select` as in a group key, an aggregate argument or `having`. A `select` value is computed for the rows a read returns or orders by, so an overflow raises when the value is computed for such a row; an overflow on a row outside the page may or may not raise. A float product or quotient that underflows to zero from nonzero operands raises too.
 - **An int64 `sum` that leaves the int64 range raises on every group**, including a group that `having` or `limit` would have dropped.
-- **Metadata fields work only as bare aggregate arguments.** `{ "min": "createdAt" }` reads, with or without `groupBy`; inside a function, as in `dateTrunc` over `createdAt`, the field is refused `expr_invalid`.
+- **Date and number metadata work in expressions.** `createdAt`, `updatedAt` and `seq` read in `select`, `groupBy`, `where.$expr` and aggregate arguments on both engines, and a declared field of the same name wins. String metadata (`createdById` and the like) is not an expression field and is refused `expr_invalid`.
 - **A number field that holds something else reads as null** in an expression, on memory as on Postgres.
 - **Names.** A group name may not also be an aggregate name (`group_invalid`). With `groupBy`, `orderBy` names group and aggregate outputs only. An aggregate takes no `select` or `cursor`, and no `orderBy` unless it has `groupBy`.
 
@@ -120,7 +120,7 @@ A dataset implementation that read `params.bucket` or `params.derive` must read 
 
 ## The NL plugin and the MCP tool
 
-- A question such as "total price of sales per day" now sends `groupBy: { bucket: { dateTrunc: [{ lit: "day" }, "<timeField>"] } }`. The outcome's `aggregate.groups[].key` is still the day (`2026-10-20`) or the hour (`2026-10-20T09`), cut from the instant the engine returns, so a consumer of the outcome sees no change. Week, month and year are still dropped with a reason. A type with no `timeField` ruling used to be grouped by `createdAt`; `createdAt` is metadata and cannot sit inside `dateTrunc`, so that grouping is now dropped with a reason and the ungrouped value answers.
+- A question such as "total price of sales per day" now sends `groupBy: { bucket: { dateTrunc: [{ lit: "day" }, "<timeField>"] } }`, over `createdAt` when the type has no `timeField` ruling, as before. The outcome's `aggregate.groups[].key` is still the day (`2026-10-20`) or the hour (`2026-10-20T09`), cut from the instant the engine returns, and a null-key group (a row with no time field) is left out as the old bucket left those rows out, so a consumer of the outcome sees no change. Week, month and year are still dropped with a reason. A computed-ordering ruling whose name is also a field of the type is dropped with a reason, since a `select` name may not collide with a field.
 - A `fieldPhrases` ruling that declared `derive: { diff: [...] }` or `derive: { ratio: [...] }` is now `select: { sub: [...] }` or `select: { div: [...] }`, with the same `'<Type>.<field>'` operands. A ruling file that still says `derive` is refused as an unknown key.
 - Ordering across one hop sends `select: { <name>: "_agg.<name>" }` and `orderBy: [{ "<name>": dir }]`.
 - The `query` tool's description names `groupBy`, `having`, `offset`, `select` and expressions in place of `bucket` and `derive`.

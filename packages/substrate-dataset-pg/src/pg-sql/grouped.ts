@@ -15,7 +15,7 @@ import {
   aggType,
   canRaise,
   exprTypeOfField,
-  metadataArgType
+  metadataExprType
 } from '@mnmal-ai/substrate-filter';
 import type { Expr, ExprType, FieldDef, FrameAgg, OrderByClause } from '@mnmal-ai/substrate-types';
 import type { Sql, TransactionSql } from 'postgres';
@@ -76,7 +76,7 @@ export function buildGroupedRead(
     const { op, arg } = aggParts(a);
     const meta =
       typeof arg === 'string' && fieldType(arg) === undefined && isMetadataField(arg)
-        ? metadataArgType(arg)
+        ? metadataExprType(arg)
         : undefined;
     const c =
       arg === true && op === 'count'

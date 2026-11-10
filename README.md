@@ -68,6 +68,7 @@ With `SUBSTRATE_PLUGIN_DIR` unset the server loads no plugins and serves only `/
 - [Plugin tiers](docs/plugin-tier-decision.md): kernel vs coordinator plugins
 - [Operator decisions](docs/operator-decisions.md): every choice you make when you deploy or upgrade, its default, and what it costs
 - [Upgrading to per-type tables](docs/upgrading-to-type-tables.md): what changes, and the upgrade procedure for an existing store
+- [Upgrading to the warehouse grammar](docs/upgrading-to-warehouse-grammar.md): `bucket` and `derive` become `groupBy` and `select`, plus the new expression params
 - [Surface parity](docs/surface-parity.md): what HTTP, MCP, WS and SSE each offer, and where their shapes differ (edge walks are query-only; subscriptions refuse them)
 - [WebSocket subscription teardown](docs/ws-subscription-contract.md): how subscriptions end and what a client should do
 - [Design spec](docs/substrate-from-first-principles.md): the design source of truth

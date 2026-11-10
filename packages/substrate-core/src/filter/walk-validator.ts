@@ -12,7 +12,7 @@ import {
   checkExpr,
   type ExprScope,
   exprTypeOfField,
-  metadataArgType
+  metadataExprType
 } from '@mnmal-ai/substrate-filter';
 import {
   EXPR_LIMITS,
@@ -432,13 +432,12 @@ const WALK_AGG_KEYS = new Set(['in', 'out', 'where']);
  */
 function aggKind(
   agg: Record<string, unknown>,
-  extra: ReadonlySet<string>,
   owner: Hop,
   path: string[],
   h: FrameHelpers
 ): string {
   for (const k of Object.keys(agg)) {
-    if (!extra.has(k) && !AGG_FNS.has(k)) {
+    if (!WALK_AGG_KEYS.has(k) && !AGG_FNS.has(k)) {
       fail('agg_invalid', `unknown aggregate key '${k}'`, [...path, k]);
     }
   }
@@ -497,7 +496,7 @@ export function validateWalkAgg(
 ): string {
   if (!isObj(agg)) fail('agg_invalid', '_agg expects an aggregate object', path);
   const hop = resolveHop(agg, path, scope);
-  const kind = aggKind(agg, WALK_AGG_KEYS, hop, path, h);
+  const kind = aggKind(agg, hop, path, h);
   if (agg.where !== undefined) h.validateWhere(agg.where, [...path, 'where'], farScope(scope, hop));
   return kind;
 }
@@ -638,7 +637,9 @@ function exprScopeOf(scope: WalkScope, withAgg: boolean): ExprScope {
         const kind = withAgg ? scope.aggs?.get(name.slice(5)) : undefined;
         return kind === undefined ? undefined : AGG_EXPR_TYPE[kind];
       }
-      return Object.hasOwn(scope.fields, name) ? exprTypeOfField(scope.fields[name]) : undefined;
+      return Object.hasOwn(scope.fields, name)
+        ? exprTypeOfField(scope.fields[name])
+        : metadataExprType(name);
     }
   };
 }
@@ -858,10 +859,7 @@ function frameAggType(agg: Record<string, unknown>, scope: WalkScope, path: stri
   ) {
     fail('agg_invalid', 'count takes true (rows) or an expression, not another literal', at);
   }
-  // A bare metadata column (createdAt, updatedAt, seq) reads as it does in where and orderBy.
-  const meta =
-    typeof arg === 'string' && !Object.hasOwn(scope.fields, arg) ? metadataArgType(arg) : undefined;
-  const t = meta ?? checkFrameExpr(arg, scope, false, at);
+  const t = checkFrameExpr(arg, scope, false, at);
   const ok: Record<string, ExprType[]> = {
     avg: ['number', 'int64'],
     sum: ['number', 'int64'],

@@ -6,10 +6,12 @@
  * boolean, date timestamptz.
  */
 
+import { metadataExprType } from '@mnmal-ai/substrate-filter';
 import { DATE_UNITS, type Expr, type ExprType } from '@mnmal-ai/substrate-types';
 import type { Sql, TransactionSql } from 'postgres';
 import type { ColumnKind, TypeTable } from '../type-table.js';
-import { type FieldAs, type Fragment, fieldExprSql } from './primitives.js';
+import { metadataColumnSql } from './predicates-metadata.js';
+import { type FieldAs, type Fragment, fieldExprSql, type MetadataFieldName } from './primitives.js';
 
 export interface CompileCtx {
   table: TypeTable;
@@ -114,6 +116,12 @@ export function compileExprTyped(
   const field = (name: string): Node => {
     const out = ctx.outputs?.get(name);
     const col = ctx.table.column(name);
+    // createdAt, updatedAt and seq are columns every type has, whatever it declares.
+    const meta = out === undefined && col === undefined ? metadataExprType(name) : undefined;
+    if (meta !== undefined) {
+      const c = u(metadataColumnSql(name as MetadataFieldName, ctx.alias));
+      return meta === 'number' ? { f: sql`(${c})::float8`, t: meta } : { f: c, t: meta };
+    }
     const t = ctx.fieldType?.(name) ?? (col ? KIND_TYPE[col.kind] : undefined);
     if (t === undefined) throw new Error(`internal: no type for expression field '${name}'`);
     // An aggregate such as count(*) is bigint; a number-typed output is float8, so division is not integer division.

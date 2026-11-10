@@ -449,15 +449,20 @@ describe('aggregate, select, groupBy, count and nested validation', () => {
     ).not.toThrow();
   });
 
-  it('refuses a metadata field inside an expression, as a bucket on createdAt once worked', () => {
-    expect(
-      frameRefusal({
+  it('date and number metadata read in expressions; string metadata does not', () => {
+    expect(() =>
+      checkFrame({
         aggregate: { n: { count: true } },
         groupBy: { bucket: { dateTrunc: [{ lit: 'day' }, 'createdAt'] } }
-      }).code
-    ).toBe('expr_invalid');
-    // As a bare aggregate argument it still reads.
-    expect(() => checkFrame({ aggregate: { first: { min: 'createdAt' } } })).not.toThrow();
+      })
+    ).not.toThrow();
+    expect(() =>
+      checkFrame({
+        select: { y: { extract: [{ lit: 'year' }, 'updatedAt'] }, s: { add: ['seq', 1] } }
+      })
+    ).not.toThrow();
+    expect(() => checkFrame({ where: { $expr: { gt: ['createdAt', 'gradedAt'] } } })).not.toThrow();
+    expect(frameRefusal({ select: { x: { length: ['createdById'] } } }).code).toBe('expr_invalid');
   });
 
   it('refuses an empty aggregate', () => {
@@ -473,14 +478,14 @@ describe('aggregate, select, groupBy, count and nested validation', () => {
       frameRefusal({
         aggregate: { n: { count: true } },
         groupBy: { bucket: { dateTrunc: [{ lit: 'day' }, 'grade'] } }
-      }).code
-    ).toBe('expr_invalid');
+      })
+    ).toEqual({ code: 'expr_invalid', path: ['groupBy', 'bucket', 'dateTrunc', '1'] });
     expect(
       frameRefusal({
         aggregate: { n: { count: true } },
         groupBy: { bucket: { dateTrunc: [{ lit: 'fortnight' }, 'gradedAt'] } }
-      }).code
-    ).toBe('expr_invalid');
+      })
+    ).toEqual({ code: 'expr_invalid', path: ['groupBy', 'bucket', 'dateTrunc', '0'] });
   });
 
   it('refuses count with aggregate', () => {
@@ -530,9 +535,10 @@ describe('aggregate, select, groupBy, count and nested validation', () => {
         orderBy: [{ margin: 'desc' }]
       })
     ).not.toThrow();
-    expect(frameRefusal({ select: { margin: { sub: ['label', 'ask'] } } }).code).toBe(
-      'expr_invalid'
-    );
+    expect(frameRefusal({ select: { margin: { sub: ['label', 'ask'] } } })).toEqual({
+      code: 'expr_invalid',
+      path: ['select', 'margin', 'sub', '0']
+    });
   });
 
   it('a select of one walked value orders by it', () => {
@@ -544,13 +550,17 @@ describe('aggregate, select, groupBy, count and nested validation', () => {
       })
     ).not.toThrow();
     expect(() => checkFrame({ select: { v: 'ask' } })).not.toThrow();
-    expect(frameRefusal({ select: { v: '_agg.nope' } }).code).toBe('expr_invalid');
+    expect(frameRefusal({ select: { v: '_agg.nope' } })).toEqual({
+      code: 'expr_invalid',
+      path: ['select', 'v']
+    });
   });
 
   it('a select over _agg.x needs a frame _agg', () => {
-    expect(frameRefusal({ select: { r: { div: ['_agg.latestOffer', 'ask'] } } }).code).toBe(
-      'expr_invalid'
-    );
+    expect(frameRefusal({ select: { r: { div: ['_agg.latestOffer', 'ask'] } } })).toEqual({
+      code: 'expr_invalid',
+      path: ['select', 'r', 'div', '0']
+    });
     expect(() =>
       checkFrame({
         fields: { id: true, _agg: SPEC_AGG },

@@ -273,19 +273,9 @@ describe('aggregates: parsing', () => {
     });
   });
 
-  it('drops a day grouping when the type declares no timeField ruling', () => {
-    const r = parse('total price of sales per day', {});
-    expect(r.candidates[0]?.dropped).toEqual([
-      { span: 'per day', reason: 'Sale declares no timeField ruling to group by', kind: 'order' }
-    ]);
-    expect(params('total price of sales per day', {})).toEqual({
-      aggregate: { value: { sum: 'price' } }
-    });
-  });
-
   it('drops a grouping it cannot express, keeping the whole aggregate', () => {
     for (const [q, span, reason] of [
-      ['total price of sales per month', 'per month', 'the engine buckets by day or hour only'],
+      ['total price of sales per month', 'per month', 'only day and hour groupings are supported'],
       [
         'average price of items by name',
         'by name',
@@ -373,6 +363,35 @@ describe('aggregates: answering', () => {
         truncated: true
       }
     });
+  });
+
+  it('drops the null-key group of a day grouping, a row with no time field', async () => {
+    const { e } = engine(() => ({
+      data: {
+        'shop/Sale': {
+          groups: [
+            { bucket: '2026-10-20T00:00:00.000000Z', value: 30 },
+            { bucket: null, value: 9 }
+          ]
+        }
+      }
+    }));
+    const o = await ask('total price of sales per day', e);
+    expect(o).toMatchObject({
+      aggregate: { by: 'day', groups: [{ key: '2026-10-20', value: 30 }] }
+    });
+  });
+
+  it('drops a computed ordering whose name is a field of the type', () => {
+    const rulings: NamespaceRulings = {
+      ...base,
+      fieldPhrases: { views: { select: { sub: ['Item.price', 'Item.views'] } } }
+    };
+    const r = parse('items by views', rulings);
+    expect(r.candidates[0]?.dropped).toContainEqual(
+      expect.objectContaining({ reason: 'its name "views" is also a field of Item' })
+    );
+    expect(params('items by views', rulings)).not.toHaveProperty('select');
   });
 
   it('groups by an enum field with one aggregate per value', async () => {

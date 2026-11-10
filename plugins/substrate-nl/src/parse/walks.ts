@@ -651,6 +651,17 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
     const name = d.span.replace(/[^a-z0-9]+(.)?/g, (_, ch: string | undefined) =>
       (ch ?? '').toUpperCase()
     );
+    if (
+      own(pack.types, seed)?.fields !== undefined &&
+      Object.hasOwn(own(pack.types, seed)?.fields ?? {}, name)
+    ) {
+      dropped.push({
+        span: `by ${d.span}`,
+        reason: `its name "${name}" is also a field of ${seed}`,
+        kind: 'order'
+      });
+      continue;
+    }
     params.select = {
       ...((params.select as object | undefined) ?? {}),
       [name]: { [op]: operands.map((o) => o.slice(seed.length + 1)) }
