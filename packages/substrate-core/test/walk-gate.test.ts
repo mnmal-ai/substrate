@@ -6,14 +6,14 @@ import { usesWalkGrammar, walkGrammarPath } from '../src/walk-gate.js';
 describe('usesWalkGrammar', () => {
   const where = (w: unknown) => usesWalkGrammar({ params: { where: w }, fields: { id: true } });
 
-  it('finds _walk under AND/OR/NOT, $ref in a predicate, _agg in fields, and count/aggregate/bucket/derive params', () => {
+  it('finds _walk under AND/OR/NOT, $ref in a predicate, _agg in fields, and count/aggregate/groupBy params', () => {
     expect(where({ _walk: { edge: 'x' } })).toBe(true);
     expect(where({ AND: [{ a: { eq: 1 } }, { OR: [{ NOT: [{ _walk: {} }] }] }] })).toBe(true);
     expect(where({ a: { gt: { $ref: 'b' } } })).toBe(true);
     expect(where({ _walk: { where: { _agg: {} } } })).toBe(true);
     expect(usesWalkGrammar({ params: {}, fields: { _agg: { n: 1 } } })).toBe(true);
     expect(usesWalkGrammar({ params: {}, fields: { kids: { _walk: {} } } })).toBe(true);
-    for (const k of ['count', 'aggregate', 'bucket', 'derive'])
+    for (const k of ['count', 'aggregate', 'groupBy', 'having', 'offset'])
       expect(usesWalkGrammar({ params: { [k]: true }, fields: { id: true } })).toBe(true);
   });
 
@@ -287,15 +287,20 @@ describe('engine page limits on walk results', () => {
     expect(t1?.parts).toEqual([{ id: 'p1', _agg: { m: 1 } }]);
   });
 
-  it('bucket groups without a limit are cut at the default page and say truncated', async () => {
-    const ds = new MemoryDataset({ namespace: 'ns', walkReference: true });
+  it('date groups without a limit are cut at the default page and say truncated', async () => {
+    const ds = new MemoryDataset({
+      namespace: 'ns',
+      walkReference: true,
+      fieldDefLookup: (type, field) =>
+        type === 'Thing' && field === 'at' ? { kind: 'scalar', type: 'date' } : undefined
+    });
     await ds.write(
       'Thing',
       ['01', '02', '03'].map((d) => ({ id: `t${d}`, at: `2026-10-${d}T00:00:00Z` }))
     );
     const params = {
       aggregate: { n: { count: true } },
-      bucket: { field: 'at', by: 'day' }
+      groupBy: { bucket: { dateTrunc: [{ lit: 'day' }, 'at'] } }
     };
     const engine = engineWith(ds);
     const res = await engine.query({ frame: { 'ns/Thing': { params } }, ctx, pageLimits });
@@ -306,8 +311,8 @@ describe('engine page limits on walk results', () => {
         rows: [],
         hasMore: false,
         groups: [
-          { bucket: '2026-10-01', n: 1 },
-          { bucket: '2026-10-02', n: 1 }
+          { bucket: '2026-10-01T00:00:00.000000Z', n: 1 },
+          { bucket: '2026-10-02T00:00:00.000000Z', n: 1 }
         ],
         truncated: true
       }

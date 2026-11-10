@@ -92,7 +92,7 @@ describe('autocrud.listResolver', () => {
     expect(res.rows.map((r) => r.id)).toEqual([3, 1]);
   });
 
-  it('listResolver lifts _agg and nested selections into ReadParams and passes count/aggregate/bucket/derive through', async () => {
+  it('listResolver lifts _agg and nested selections into ReadParams and passes count/aggregate/groupBy/select through', async () => {
     const dataset = new MemoryDataset({ namespace: 'default' });
     const seen: ReadParams[] = [];
     const read = dataset.read.bind(dataset);
@@ -105,8 +105,8 @@ describe('autocrud.listResolver', () => {
     const walkParams = {
       count: true,
       aggregate: { n: { count: true } },
-      bucket: { field: 'createdAt', by: 'day' },
-      derive: { m: { diff: ['$.a', '$.b'] } }
+      groupBy: { bucket: { dateTrunc: [{ lit: 'day' }, 'createdAt'] } },
+      select: { m: { sub: ['a', 'b'] } }
     };
     await listResolver('Todo', dataset)(makeCtx(), {
       params: walkParams,
@@ -118,6 +118,18 @@ describe('autocrud.listResolver', () => {
       nested: { notes },
       fields: { id: true, title: true }
     });
+  });
+
+  it('refuses the removed bucket and derive params', async () => {
+    const dataset = new MemoryDataset({ namespace: 'default' });
+    for (const params of [
+      { aggregate: { n: { count: true } }, bucket: { field: 'createdAt', by: 'day' } },
+      { derive: { m: { diff: ['$.a', '$.b'] } } }
+    ]) {
+      await expect(listResolver('Todo', dataset)(makeCtx(), { params })).rejects.toMatchObject({
+        code: 'unknown_param'
+      });
+    }
   });
 
   it('threads params.includeDeleted through to dataset.read', async () => {

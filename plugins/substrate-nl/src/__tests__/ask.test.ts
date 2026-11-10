@@ -437,7 +437,7 @@ const cards: ServedPack = {
       'asking price': { field: 'Listing.price', exclude: { placeholderPrice: { eq: true } } },
       'selling for': { field: 'Observation.price' },
       'island size': { field: 'Island.size' },
-      margin: { derive: { diff: ['Cert.psaOffer', 'Cert.ask'] } }
+      margin: { select: { sub: ['Cert.psaOffer', 'Cert.ask'] } }
     }
   },
   warnings: []
@@ -614,13 +614,13 @@ describe('mergePlan', () => {
         kind: 'filter',
         served: false
       },
-      { path: ['derive', 'margin', 'ruling:margin'], kind: 'derive', served: false },
-      { path: ['orderBy', '0', '$margin', 'desc (default)'], kind: 'order', served: false }
+      { path: ['select', 'margin', 'ruling:margin'], kind: 'select', served: false },
+      { path: ['orderBy', '0', 'margin', 'desc (default)'], kind: 'order', served: false }
     ];
     const merged = mergePlan(parsed, [
       { path: ['where', '_walk'], kind: 'hop', served: true },
       { path: ['where', '_walk', 'where', 'price'], kind: 'filter', served: true },
-      { path: ['orderBy', '0'], kind: 'derive', served: true }
+      { path: ['orderBy', '0'], kind: 'select', served: true }
     ]);
     expect(merged).toEqual([
       { ...parsed[0], served: true },

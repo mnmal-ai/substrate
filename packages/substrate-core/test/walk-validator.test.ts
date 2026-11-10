@@ -372,7 +372,7 @@ const SPEC_AGG = {
   latestOffer: { in: 'cards/Observation.cert', latest: { by: 'observedAt', value: 'price' } }
 };
 
-describe('aggregate, derive, bucket, count and nested validation', () => {
+describe('aggregate, select, groupBy, count and nested validation', () => {
   it("accepts the spec's _agg feature row", () => {
     expect(() => checkFrame({ fields: { id: true, grade: true, _agg: SPEC_AGG } })).not.toThrow();
   });
@@ -430,20 +430,34 @@ describe('aggregate, derive, bucket, count and nested validation', () => {
     ).toEqual({ code: 'agg_invalid', path: ['aggregate', 'last', 'latest'] });
   });
 
-  it('accepts a whole-result aggregate bucketed by day', () => {
+  it('accepts a whole-result aggregate grouped by a day', () => {
     expect(() =>
       checkFrame(
         {
           where: { observedAt: { gte: '2026-10-23T00:00:00Z' } },
           aggregate: { n: { count: true }, avgOffer: { avg: 'price' } },
-          bucket: { field: 'observedAt', by: 'day' }
+          groupBy: { bucket: { dateTrunc: [{ lit: 'day' }, 'observedAt'] } }
         },
         'Observation'
       )
     ).not.toThrow();
     expect(() =>
-      checkFrame({ aggregate: { n: { count: true } }, bucket: { field: 'createdAt', by: 'hour' } })
+      checkFrame({
+        aggregate: { n: { count: true } },
+        groupBy: { bucket: { dateTrunc: [{ lit: 'hour' }, 'gradedAt'] } }
+      })
     ).not.toThrow();
+  });
+
+  it('refuses a metadata field inside an expression, as a bucket on createdAt once worked', () => {
+    expect(
+      frameRefusal({
+        aggregate: { n: { count: true } },
+        groupBy: { bucket: { dateTrunc: [{ lit: 'day' }, 'createdAt'] } }
+      }).code
+    ).toBe('expr_invalid');
+    // As a bare aggregate argument it still reads.
+    expect(() => checkFrame({ aggregate: { first: { min: 'createdAt' } } })).not.toThrow();
   });
 
   it('refuses an empty aggregate', () => {
@@ -451,20 +465,22 @@ describe('aggregate, derive, bucket, count and nested validation', () => {
     expect(() => checkFrame({ aggregate: {} })).toThrow('aggregate needs at least one entry');
   });
 
-  it('refuses bucket without aggregate', () => {
-    expect(frameRefusal({ bucket: { field: 'gradedAt', by: 'day' } })).toEqual({
-      code: 'bucket_invalid',
-      path: ['bucket']
-    });
-  });
-
-  it('refuses bucket on a non-date field', () => {
+  it('refuses groupBy without aggregate, and dateTrunc on a non-date field', () => {
     expect(
-      frameRefusal({ aggregate: { n: { count: true } }, bucket: { field: 'grade', by: 'day' } })
-    ).toEqual({ code: 'bucket_invalid', path: ['bucket', 'field'] });
+      frameRefusal({ groupBy: { bucket: { dateTrunc: [{ lit: 'day' }, 'gradedAt'] } } })
+    ).toEqual({ code: 'agg_invalid', path: ['groupBy'] });
     expect(
-      frameRefusal({ aggregate: { n: { count: true } }, bucket: { field: 'gradedAt', by: 'week' } })
-    ).toEqual({ code: 'bucket_invalid', path: ['bucket', 'by'] });
+      frameRefusal({
+        aggregate: { n: { count: true } },
+        groupBy: { bucket: { dateTrunc: [{ lit: 'day' }, 'grade'] } }
+      }).code
+    ).toBe('expr_invalid');
+    expect(
+      frameRefusal({
+        aggregate: { n: { count: true } },
+        groupBy: { bucket: { dateTrunc: [{ lit: 'fortnight' }, 'gradedAt'] } }
+      }).code
+    ).toBe('expr_invalid');
   });
 
   it('refuses count with aggregate', () => {
@@ -501,56 +517,45 @@ describe('aggregate, derive, bucket, count and nested validation', () => {
     ).toEqual({ code: 'agg_invalid', path: ['fields', 'grade'] });
   });
 
-  it('orderBy $margin requires derive.margin', () => {
-    expect(frameRefusal({ orderBy: [{ $margin: 'desc' }] })).toEqual({
-      code: 'derive_invalid',
-      path: ['orderBy', '0', '$margin']
+  it('orderBy margin requires select.margin', () => {
+    expect(frameRefusal({ orderBy: [{ margin: 'desc' }] })).toEqual({
+      code: 'unknown_field',
+      path: ['orderBy', '0', 'margin']
     });
+    // The `$<name>` form went with derive: it is an unknown field now.
+    expect(frameRefusal({ orderBy: [{ $margin: 'desc' }] }).code).toBe('unknown_field');
     expect(() =>
       checkFrame({
-        derive: { margin: { diff: ['$.psaOffer', '$.ask'] } },
-        orderBy: [{ $margin: 'desc' }]
+        select: { margin: { sub: ['psaOffer', 'ask'] } },
+        orderBy: [{ margin: 'desc' }]
       })
     ).not.toThrow();
-    expect(frameRefusal({ derive: { margin: { diff: ['$.label', '$.ask'] } } })).toEqual({
-      code: 'derive_invalid',
-      path: ['derive', 'margin', 'diff', '0']
-    });
+    expect(frameRefusal({ select: { margin: { sub: ['label', 'ask'] } } }).code).toBe(
+      'expr_invalid'
+    );
   });
 
-  it('derive { value } takes one number operand', () => {
+  it('a select of one walked value orders by it', () => {
     expect(() =>
       checkFrame({
         fields: { id: true, _agg: SPEC_AGG },
-        derive: { v: { value: '_agg.latestOffer' } },
-        orderBy: [{ $v: 'desc' }]
+        select: { v: '_agg.latestOffer' },
+        orderBy: [{ v: 'desc' }]
       })
     ).not.toThrow();
-    expect(() => checkFrame({ derive: { v: { value: '$.ask' } } })).not.toThrow();
-    expect(frameRefusal({ derive: { v: { value: '$.label' } } })).toEqual({
-      code: 'derive_invalid',
-      path: ['derive', 'v', 'value']
-    });
-    expect(frameRefusal({ derive: { v: { value: '_agg.nope' } } })).toEqual({
-      code: 'derive_invalid',
-      path: ['derive', 'v', 'value']
-    });
-    expect(frameRefusal({ derive: { v: { value: ['$.ask'] } } })).toEqual({
-      code: 'derive_invalid',
-      path: ['derive', 'v']
-    });
+    expect(() => checkFrame({ select: { v: 'ask' } })).not.toThrow();
+    expect(frameRefusal({ select: { v: '_agg.nope' } }).code).toBe('expr_invalid');
   });
 
-  it('derive operand _agg.x must name a frame _agg', () => {
-    expect(frameRefusal({ derive: { r: { ratio: ['_agg.latestOffer', '$.ask'] } } })).toEqual({
-      code: 'derive_invalid',
-      path: ['derive', 'r', 'ratio', '0']
-    });
+  it('a select over _agg.x needs a frame _agg', () => {
+    expect(frameRefusal({ select: { r: { div: ['_agg.latestOffer', 'ask'] } } }).code).toBe(
+      'expr_invalid'
+    );
     expect(() =>
       checkFrame({
         fields: { id: true, _agg: SPEC_AGG },
-        derive: { r: { ratio: ['_agg.latestOffer', '$.ask'] } },
-        orderBy: [{ $r: 'asc' }]
+        select: { r: { div: ['_agg.latestOffer', 'ask'] } },
+        orderBy: [{ r: 'asc' }]
       })
     ).not.toThrow();
   });

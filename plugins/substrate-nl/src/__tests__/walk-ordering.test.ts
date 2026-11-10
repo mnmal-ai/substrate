@@ -37,16 +37,16 @@ const frameOf = (q: string, rulings = base) =>
 
 const outHop = (limit: number) => ({
   params: {
-    derive: { supplierRating: { value: '_agg.supplierRating' } },
-    orderBy: [{ $supplierRating: 'desc' }],
+    select: { supplierRating: '_agg.supplierRating' },
+    orderBy: [{ supplierRating: 'desc' }],
     limit
   },
   fields: { _agg: { supplierRating: { out: 'supplier', max: 'rating' } } }
 });
 const inHop = (name: string, agg: Record<string, unknown>, dir: 'asc' | 'desc', limit: number) => ({
   params: {
-    derive: { [name]: { value: `_agg.${name}` } },
-    orderBy: [{ [`$${name}`]: dir }],
+    select: { [name]: `_agg.${name}` },
+    orderBy: [{ [name]: dir }],
     limit
   },
   fields: { _agg: { [name]: { in: 'shop/Item.supplier', ...agg } } }
@@ -72,7 +72,7 @@ describe('ordering by a field one crossRef hop away', () => {
         kind: 'hop',
         served: true
       },
-      { path: ['orderBy', '0', '$supplierRating', 'desc'], kind: 'order', served: false }
+      { path: ['orderBy', '0', 'supplierRating', 'desc'], kind: 'order', served: false }
     ]);
   });
 
@@ -140,7 +140,7 @@ describe('ordering by a field one crossRef hop away', () => {
     expect(out.status).toBe('resolved');
     expect(frameOf('top 10 items by lowest supplier rating')).toEqual({
       ...outHop(10),
-      params: { ...outHop(10).params, orderBy: [{ $supplierRating: 'asc' }] }
+      params: { ...outHop(10).params, orderBy: [{ supplierRating: 'asc' }] }
     });
   });
 

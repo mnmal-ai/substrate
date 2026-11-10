@@ -244,22 +244,22 @@ describe.skipIf(!POSTGRES_URL)('keyset pagination over a derived key', () => {
   for (const dir of ['asc', 'desc'] as const) {
     it(`pages a ratio like the memory backend, nulls last (${dir})`, async () => {
       await truncateRows(sql);
-      const ds = new PgDataset({ namespace: 'cursor_derive', sql, fieldDefLookup });
+      const ds = new PgDataset({ namespace: 'cursor_select', sql, fieldDefLookup });
       await ds.ensureTypeStorage('Memo');
-      const mem = new MemoryDataset({ namespace: 'cursor_derive', fieldDefLookup });
+      const mem = new MemoryDataset({ namespace: 'cursor_select', fieldDefLookup });
       await ds.write('Memo', rows);
       await mem.write('Memo', rows);
 
       async function pageAll(
         dataset: { read: PgDataset['read'] },
-        derive: NonNullable<ReadParams['derive']>[string] = { ratio: ['$.a', '$.b'] }
+        select: NonNullable<ReadParams['select']>[string] = { div: ['a', 'b'] }
       ): Promise<string[]> {
         const seen: string[] = [];
         let cursor: string | undefined;
         for (let page = 0; page < 20; page++) {
           const res = await dataset.read('Memo', {
-            derive: { r: derive },
-            orderBy: [{ $r: dir }],
+            select: { r: select },
+            orderBy: [{ r: dir }],
             limit: 2,
             ...(cursor === undefined ? {} : { cursor })
           });
@@ -278,10 +278,10 @@ describe.skipIf(!POSTGRES_URL)('keyset pagination over a derived key', () => {
           ? ['k6', 'k1', 'k3', 'k7', 'k5', 'k2', 'k4']
           : ['k5', 'k1', 'k3', 'k7', 'k6', 'k2', 'k4']
       );
-      // A single-operand derive: k4 has no a, so it is the null tail.
+      // A single-operand select: k4 has no a, so it is the null tail.
       const memo = mem as unknown as { read: PgDataset['read'] };
-      const pgValue = await pageAll(ds, { value: '$.a' });
-      expect(pgValue).toEqual(await pageAll(memo, { value: '$.a' }));
+      const pgValue = await pageAll(ds, 'a');
+      expect(pgValue).toEqual(await pageAll(memo, 'a'));
       expect(pgValue).toEqual(
         dir === 'asc'
           ? ['k6', 'k2', 'k7', 'k3', 'k1', 'k5', 'k4']

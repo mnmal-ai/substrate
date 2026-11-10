@@ -199,18 +199,18 @@ describe('classifyWalkService', () => {
     });
   });
 
-  it('derive is unserved unless a served clause bounds the result', () => {
+  it('a select ordering is unserved unless a served clause bounds the result', () => {
     const frame = (w?: unknown) => ({
       params: {
         ...(w !== undefined ? { where: w } : {}),
-        derive: { m: { diff: ['$.grade', '_agg.n'] } },
-        orderBy: [{ $m: 'desc' }]
+        select: { m: { sub: ['grade', '_agg.n'] } },
+        orderBy: [{ m: 'desc' }]
       },
       fields: { id: true, _agg: { n: { in: 'cards/Listing.cert', count: true } } }
     });
     expect(at(classify(frame()), 'orderBy', '0')).toEqual({
       path: ['orderBy', '0'],
-      kind: 'derive',
+      kind: 'select',
       served: false
     });
     expect(at(classify(frame({ grade: { eq: 9 } })), 'orderBy', '0')?.served).toBe(true);
@@ -235,13 +235,20 @@ describe('classifyWalkService', () => {
     );
   });
 
-  it("a bucket is served by its field's index, and recommends one otherwise", () => {
+  it("a date-truncating group key is served by its field's index, and recommends one otherwise", () => {
     const b = (field: string) =>
-      at(classify({ params: { bucket: { field, by: 'day' } } }, 'Observation'), 'bucket');
+      at(
+        classify(
+          { params: { groupBy: { bucket: { dateTrunc: [{ lit: 'day' }, field] } } } },
+          'Observation'
+        ),
+        'groupBy',
+        'bucket'
+      );
     expect(b('cert')?.served).toBe(true);
     expect(b('observedAt')).toEqual({
-      path: ['bucket'],
-      kind: 'bucket',
+      path: ['groupBy', 'bucket'],
+      kind: 'group',
       served: false,
       recommend: { fields: ['observedAt'] }
     });

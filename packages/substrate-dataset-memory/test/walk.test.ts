@@ -495,7 +495,7 @@ describe('memory edge walks', () => {
 
 const OBS = 'cards/Observation.cert';
 
-describe('memory walk aggregates, count, buckets and derive', () => {
+describe('memory walk aggregates, count, date groups and select', () => {
   it('declares walks only as the test reference', () => {
     expect(new MemoryDataset({ namespace: 'cards' }).capabilities.walks).toBe(false);
     const ref = new MemoryDataset({ namespace: 'cards', walkReference: true });
@@ -700,31 +700,32 @@ describe('memory walk aggregates, count, buckets and derive', () => {
     expect(none.groups).toEqual([{ n: 0, s: null }]);
   });
 
-  it('bucket by day in UTC across a midnight boundary', async () => {
+  it('a day group in UTC across a midnight boundary', async () => {
     const ds = await dataset({
       Observation: [
         // 23:30 at -02:00 is 01:30 the next day in UTC.
         { id: 'o1', price: 10, observedAt: '2026-10-24T23:30:00-02:00' },
         { id: 'o2', price: 20, observedAt: '2026-10-24T23:59:59.999Z' },
         { id: 'o3', price: 30, observedAt: '2026-10-25T00:00:00Z' },
-        // Null and non-date bucket values fall in no bucket.
+        // Null and non-date values form one null group, last.
         { id: 'o4', price: 40, observedAt: null },
         { id: 'o5', price: 50, observedAt: 'yesterday' }
       ]
     });
     const res = await ds.read('Observation', {
       aggregate: { n: { count: true }, avgOffer: { avg: 'price' } },
-      bucket: { field: 'observedAt', by: 'day' }
+      groupBy: { bucket: { dateTrunc: [{ lit: 'day' }, 'observedAt'] } }
     });
     expect(res.groups).toEqual([
-      { bucket: '2026-10-24', n: 1, avgOffer: 20 },
-      { bucket: '2026-10-25', n: 2, avgOffer: 20 }
+      { bucket: '2026-10-24T00:00:00.000000Z', n: 1, avgOffer: 20 },
+      { bucket: '2026-10-25T00:00:00.000000Z', n: 2, avgOffer: 20 },
+      { bucket: null, n: 2, avgOffer: 45 }
     ]);
     expect(res.rows).toEqual([]);
     expect(res.truncated).toBeUndefined();
   });
 
-  it('bucket by hour', async () => {
+  it('an hour group', async () => {
     const ds = await dataset({
       Observation: [
         { id: 'o1', observedAt: '2026-10-24T10:59:59Z' },
@@ -734,11 +735,11 @@ describe('memory walk aggregates, count, buckets and derive', () => {
     });
     const res = await ds.read('Observation', {
       aggregate: { n: { count: true } },
-      bucket: { field: 'observedAt', by: 'hour' }
+      groupBy: { bucket: { dateTrunc: [{ lit: 'hour' }, 'observedAt'] } }
     });
     expect(res.groups).toEqual([
-      { bucket: '2026-10-24T09', n: 1 },
-      { bucket: '2026-10-24T10', n: 2 }
+      { bucket: '2026-10-24T09:00:00.000000Z', n: 1 },
+      { bucket: '2026-10-24T10:00:00.000000Z', n: 2 }
     ]);
   });
 
@@ -751,21 +752,21 @@ describe('memory walk aggregates, count, buckets and derive', () => {
     });
     const res = await ds.read('Observation', {
       aggregate: { n: { count: true } },
-      bucket: { field: 'observedAt', by: 'day' },
+      groupBy: { bucket: { dateTrunc: [{ lit: 'day' }, 'observedAt'] } },
       limit: 2
     });
     expect(res).toEqual({
       rows: [],
       hasMore: false,
       groups: [
-        { bucket: '2026-10-01', n: 1 },
-        { bucket: '2026-10-02', n: 1 }
+        { bucket: '2026-10-01T00:00:00.000000Z', n: 1 },
+        { bucket: '2026-10-02T00:00:00.000000Z', n: 1 }
       ],
       truncated: true
     });
   });
 
-  it('derive diff orders desc and pages with a stable cursor', async () => {
+  it('a select difference orders desc and pages with a stable cursor', async () => {
     const ds = await dataset({
       Cert: [
         { id: 'c1', grade: 10, ask: 4 }, // 6
@@ -776,8 +777,8 @@ describe('memory walk aggregates, count, buckets and derive', () => {
       ]
     });
     const params: ReadParams = {
-      derive: { margin: { diff: ['$.grade', '$.ask'] } },
-      orderBy: [{ $margin: 'desc' }],
+      select: { margin: { sub: ['grade', 'ask'] } },
+      orderBy: [{ margin: 'desc' }],
       limit: 2
     };
     const pages: string[][] = [];
@@ -785,44 +786,26 @@ describe('memory walk aggregates, count, buckets and derive', () => {
     do {
       const res = await ds.read('Cert', { ...params, ...(cursor ? { cursor } : {}) });
       pages.push(res.rows.map((r) => String(r.id)));
-      // Derived values order the page; they are not added to the rows.
-      for (const r of res.rows) expect(Object.hasOwn(r, '$margin')).toBe(false);
+      // A select value orders the page and rides on each row under its name.
+      for (const r of res.rows) expect(typeof r.margin).toBe('number');
       cursor = res.nextCursor;
     } while (cursor !== undefined);
     expect(pages).toEqual([['c2', 'c5'], ['c1', 'c4'], ['c3']]);
-    // The cursor is issued for the `$margin` order and refused under another.
+    // The cursor is issued for the `margin` order and refused under another.
     const first = await ds.read('Cert', params);
     await expect(
-      ds.read('Cert', { ...params, orderBy: [{ $margin: 'asc' }], cursor: first.nextCursor ?? '' })
+      ds.read('Cert', { ...params, orderBy: [{ margin: 'asc' }], cursor: first.nextCursor ?? '' })
     ).rejects.toMatchObject({ code: 'invalid_cursor' });
   });
 
-  it('a derive outside [1e-300, 1e300] is null; an exact 0 stays', async () => {
-    const ds = await dataset({
-      Cert: [
-        { id: 'c1', grade: 1e308, ask: -1e308 }, // diff overflows; ratio -1
-        { id: 'c2', grade: 1e-300, ask: 1e300 }, // diff -1e300; ratio underflows to 0
-        { id: 'c3', grade: 1e301, ask: 1 }, // both above 1e300
-        { id: 'c4', grade: 0, ask: 5 }, // diff -5; ratio exactly 0
-        { id: 'c5', grade: 5, ask: 5 }, // diff exactly 0; ratio 1
-        { id: 'c6', grade: 5e-324, ask: 0 } // diff below 1e-300; zero divisor
-      ]
-    });
-    const order = async (op: 'diff' | 'ratio') =>
-      (
-        await ds.read('Cert', {
-          derive: { v: { [op]: ['$.grade', '$.ask'] } } as unknown as NonNullable<
-            ReadParams['derive']
-          >,
-          orderBy: [{ $v: 'asc' }]
-        })
-      ).rows.map((r) => r.id);
-    // Valued rows by value, then the null tail by id.
-    expect(await order('diff')).toEqual(['c2', 'c4', 'c5', 'c1', 'c3', 'c6']);
-    expect(await order('ratio')).toEqual(['c1', 'c4', 'c5', 'c2', 'c3', 'c6']);
+  it('a select that overflows float raises value_out_of_range', async () => {
+    const ds = await dataset({ Cert: [{ id: 'c1', grade: 1e308, ask: -1e308 }] });
+    await expect(
+      ds.read('Cert', { select: { v: { sub: ['grade', 'ask'] } }, orderBy: [{ v: 'asc' }] })
+    ).rejects.toMatchObject({ code: 'value_out_of_range' });
   });
 
-  it('derive null and zero divisor sort last', async () => {
+  it('a select null and zero divisor sort last', async () => {
     const ds = await dataset({
       Cert: [
         { id: 'c1', grade: 10, ask: 0 }, // zero divisor
@@ -838,8 +821,8 @@ describe('memory walk aggregates, count, buckets and derive', () => {
     const read = async (dir: 'asc' | 'desc') =>
       (
         await ds.read('Cert', {
-          derive: { r: { ratio: ['$.grade', '$.ask'] } },
-          orderBy: [{ $r: dir }]
+          select: { r: { div: ['grade', 'ask'] } },
+          orderBy: [{ r: dir }]
         })
       ).rows.map((r) => r.id);
     expect(await read('desc')).toEqual(['c4', 'c2', 'c1', 'c3']);
@@ -847,8 +830,8 @@ describe('memory walk aggregates, count, buckets and derive', () => {
     // An `_agg` operand: c1 and c3 have no observations, so a null latest.
     const byAgg = await ds.read('Cert', {
       agg: { last: { in: OBS, latest: { by: 'observedAt', value: 'price' } } },
-      derive: { d: { diff: ['_agg.last', '$.ask'] } },
-      orderBy: [{ $d: 'asc' }]
+      select: { d: { sub: ['_agg.last', 'ask'] } },
+      orderBy: [{ d: 'asc' }]
     });
     expect(byAgg.rows.map((r) => [r.id, r._agg])).toEqual([
       ['c4', { last: 1 }],
@@ -859,7 +842,7 @@ describe('memory walk aggregates, count, buckets and derive', () => {
   });
 });
 
-describe('memory derive { value }: ordering by one walked value', () => {
+describe('memory select of one walked value: ordering by it', () => {
   const rows: Rows = {
     Cert: [{ id: 'c1' }, { id: 'c2' }, { id: 'c3' }, { id: 'c4' }],
     Seller: [
@@ -875,8 +858,8 @@ describe('memory derive { value }: ordering by one walked value', () => {
   };
   const byMaxPrice = (dir: 'asc' | 'desc'): ReadParams => ({
     agg: { top: { in: 'cards/Listing.cert', max: 'price' } },
-    derive: { v: { value: '_agg.top' } },
-    orderBy: [{ $v: dir }]
+    select: { v: '_agg.top' },
+    orderBy: [{ v: dir }]
   });
 
   it('orders an in-hop max, nulls last both ways, and returns the value in _agg', async () => {
@@ -896,8 +879,8 @@ describe('memory derive { value }: ordering by one walked value', () => {
     const ds = await dataset(rows);
     const res = await ds.read('Listing', {
       agg: { r: { out: 'seller', max: 'rating' } },
-      derive: { v: { value: '_agg.r' } },
-      orderBy: [{ $v: 'desc' }]
+      select: { v: '_agg.r' },
+      orderBy: [{ v: 'desc' }]
     });
     expect(res.rows.map((r) => r.id)).toEqual(['l2', 'l3', 'l1', 'l4']);
   });

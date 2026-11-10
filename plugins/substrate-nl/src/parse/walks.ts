@@ -1,7 +1,7 @@
 /**
  * Walk composition (typed edge walks spec §6). A question that names fields
  * of other types through `fieldPhrases` rulings, compares them, windows them
- * in time, picks one neighbour or orders by a declared derive, is read as
+ * in time, picks one neighbour or orders by a declared computed value, is read as
  * walks from the seed type over the pack's declared crossRefs.
  *
  * Nothing here guesses. A part with no unique shortest crossRef path, or
@@ -119,7 +119,7 @@ export interface WalkClaims {
   phrases: PhraseClaim[];
   compares: CompareClaim[];
   picks: PickClaim[];
-  derives: PhraseClaim[];
+  computed: PhraseClaim[];
   dropped: Dropped[];
 }
 
@@ -138,7 +138,7 @@ export const PICK_WORDS: Record<string, PickClaim['kind']> = {
   lowest: 'min',
   cheapest: 'min'
 };
-const DERIVE_WORDS = new Set(['margin', 'spread', 'gap']);
+const COMPUTED_WORDS = new Set(['margin', 'spread', 'gap']);
 /** A comparative the lexicon does not cover. */
 const COMPARATIVE = /%$|^\d+(?:\.\d+)?(?:x|×)$|^(?:than|twice|double|half|triple)$/;
 
@@ -153,7 +153,7 @@ const take = (tokens: WalkToken[], [s, e]: Span) => {
 };
 
 /**
- * Claims field phrases, pick words, "by <derive>" and comparisons. Only a
+ * Claims field phrases, pick words, "by <computed>" and comparisons. Only a
  * namespace that declares `fieldPhrases` composes walks, so nothing changes
  * for one that does not.
  */
@@ -162,7 +162,7 @@ export function claimWalkParts(
   rulings: NamespaceRulings,
   glue: Set<string>
 ): WalkClaims {
-  const claims: WalkClaims = { phrases: [], compares: [], picks: [], derives: [], dropped: [] };
+  const claims: WalkClaims = { phrases: [], compares: [], picks: [], computed: [], dropped: [] };
   const table = rulings.fieldPhrases;
   if (table === undefined || Object.keys(table).length === 0) return claims;
 
@@ -201,13 +201,13 @@ export function claimWalkParts(
     }
   }
 
-  // "by margin": a declared derive orders; an undeclared one is dropped.
+  // "by margin": a declared computed value orders; an undeclared one is dropped.
   for (const p of claims.phrases) {
-    if (p.entry.derive === undefined) continue;
+    if (p.entry.select === undefined) continue;
     const by = tokens[p.at[0] - 1];
     if (by?.text === 'by' && !by.used) {
       by.used = true;
-      claims.derives.push(p);
+      claims.computed.push(p);
     } else {
       claims.dropped.push({
         span: p.span,
@@ -219,7 +219,7 @@ export function claimWalkParts(
   tokens.forEach((t, i) => {
     const next = tokens[i + 1];
     if (t.text !== 'by' || t.used || next === undefined || next.used) return;
-    if (!DERIVE_WORDS.has(next.text)) return;
+    if (!COMPUTED_WORDS.has(next.text)) return;
     t.used = true;
     next.used = true;
     claims.dropped.push({
@@ -334,7 +334,7 @@ export interface Composed {
   /** Clauses for the seed's where, after its own. */
   parts: Part[];
   params: Record<string, unknown>;
-  /** Plan clauses outside `where` (derive, orderBy). */
+  /** Plan clauses outside `where` (select, orderBy). */
   plan: PlanClause[];
   dropped: Dropped[];
   /** The time window was not bound to a walk: the seed takes it as before. */
@@ -632,13 +632,13 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
     }
   }
 
-  // Derived orderings over the seed row.
+  // Computed orderings over the seed row.
   const params: Record<string, unknown> = {};
   const plan: PlanClause[] = [];
-  for (const d of claims.derives) {
-    const spec = d.entry.derive;
+  for (const d of claims.computed) {
+    const spec = d.entry.select;
     if (spec === undefined) continue;
-    const [op, operands] = Object.entries(spec)[0] as ['diff' | 'ratio', [string, string]];
+    const [op, operands] = Object.entries(spec)[0] as ['sub' | 'div', [string, string]];
     const onSeed = operands.every((o) => o.startsWith(`${seed}.`));
     if (!onSeed) {
       dropped.push({
@@ -651,14 +651,14 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
     const name = d.span.replace(/[^a-z0-9]+(.)?/g, (_, ch: string | undefined) =>
       (ch ?? '').toUpperCase()
     );
-    params.derive = {
-      ...((params.derive as object | undefined) ?? {}),
-      [name]: { [op]: operands.map((o) => `$.${o.slice(seed.length + 1)}`) }
+    params.select = {
+      ...((params.select as object | undefined) ?? {}),
+      [name]: { [op]: operands.map((o) => o.slice(seed.length + 1)) }
     };
-    params.orderBy = [{ [`$${name}`]: 'desc' }];
+    params.orderBy = [{ [name]: 'desc' }];
     plan.push(
-      { path: ['derive', name, `ruling:${d.span}`], kind: 'derive', served: false },
-      { path: ['orderBy', '0', `$${name}`, 'desc (default)'], kind: 'order', served: false }
+      { path: ['select', name, `ruling:${d.span}`], kind: 'select', served: false },
+      { path: ['orderBy', '0', name, 'desc (default)'], kind: 'order', served: false }
     );
   }
 

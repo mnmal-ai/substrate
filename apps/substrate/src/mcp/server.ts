@@ -473,9 +473,12 @@ const WALK_DESCRIPTION =
   '(`$.f` is the seed row, `_agg.<name>` an aggregate; `times`/`plus` scale numbers, `plus` shifts a ' +
   'date in ms). `_agg` also takes avg/sum/min/max: <field> or latest: { by, value }, and in `where` ' +
   'compares beside a comparison: { "_agg": { "in": ..., "count": true }, "gte": 3 }. Frame params: ' +
-  '`count: true` answers { count }; `aggregate: { name: { sum: "price" } }` with optional `bucket: ' +
-  '{ field, by: "day"|"hour" }` answers groups; `derive: { m: { diff|ratio: ["_agg.x", "$.f"] } }` ' +
-  '(or one operand as it is, `{ value: "_agg.x" }`) is ordered by `orderBy: [{ "$m": "desc" }]`. Walks are query-only: subscribe, stream and mutate ' +
+  '`count: true` answers { count }; `aggregate: { name: { sum: "price" } }` answers one group, or one per ' +
+  'key of `groupBy: { day: { dateTrunc: [{ "lit": "day" }, "seenAt"] } }` (a map of names to expressions; ' +
+  '`having` filters the groups, `offset` skips them, `orderBy` names their outputs). ' +
+  '`select: { m: { sub: ["_agg.x", "price"] } }` adds a computed value to each row, ordered by `orderBy: [{ "m": "desc" }]`. ' +
+  'An expression is a field name, a literal, `{ "lit": "text" }` or `{ "fn": [args] }`. ' +
+  'Walks are query-only: subscribe, stream and mutate ' +
   'refuse them, as does a store without walks (walks_unsupported_store).';
 
 export function createMcpServer(endpoint: string, options: McpServerOptions = {}): McpServer {

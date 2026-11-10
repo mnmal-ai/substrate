@@ -243,7 +243,7 @@ export function parseQuestion(
     return true;
   });
 
-  // --- walk material: field phrases, pick words, "by <derive>", comparisons ---
+  // --- walk material: field phrases, pick words, "by <computed>", comparisons ---
   const walkClaims = claimWalkParts(tokens, rulings, GLUE);
 
   // --- type phrases: rulings first, then the pack's, longest first ---
@@ -613,7 +613,7 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
   const rulings = ctx.rulings ?? {};
   const fields = own(pack.types, type)?.fields ?? {};
   const words = tokens.map((t) => t.text);
-  // A declared derive is the explicit ordering; a recency word beside it conflicts and is dropped.
+  // A declared computed value is the explicit ordering; a recency word beside it conflicts and is dropped.
   const seedLatest = a.composed?.seedLatest;
   const evidence =
     a.order === null && seedLatest !== undefined
@@ -645,8 +645,7 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
     const limit = a.fieldOrder.limit ?? (a.plural ? 10 : 1);
     if (reason !== null) fieldOrder.push({ span: a.fieldOrder.span, reason, kind: 'order' });
     else if ('field' in r) sortBy = { field: r.field, dir: a.fieldOrder.dir, limit };
-    else if ('hop' in r)
-      sortBy = { field: `$${r.hop.name}`, hop: r.hop, dir: a.fieldOrder.dir, limit };
+    else if ('hop' in r) sortBy = { field: r.hop.name, hop: r.hop, dir: a.fieldOrder.dir, limit };
   }
   // "the last sale", "the first 3 items": a count or aggregate over them would cover every row.
   const pickOver = (a.count || aggClaim !== null) && recency !== null;
@@ -693,7 +692,7 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
     ...(aggClaim !== null && derived
       ? [
           {
-            span: `by ${Object.keys(a.composed?.params.derive ?? {}).join(', ')}`,
+            span: `by ${Object.keys(a.composed?.params.select ?? {}).join(', ')}`,
             reason: 'grouping by a derived value is not supported',
             kind: 'order' as const
           }
@@ -896,8 +895,8 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
   const plan = [
     ...(all?.plan ?? []).map((c) => ({ ...c, path: ['where', ...c.path] })),
     ...yields,
-    // A derive beside an aggregate was dropped, so its clauses do not run.
-    ...(a.composed?.plan ?? []).filter((c) => aggClaim === null || c.kind !== 'derive'),
+    // A computed ordering beside an aggregate was dropped, so its clauses do not run.
+    ...(a.composed?.plan ?? []).filter((c) => aggClaim === null || c.kind !== 'select'),
     ...(sortBy?.hop !== undefined
       ? [
           {
@@ -931,8 +930,7 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
     params.limit = 1;
   }
   if (sortBy !== null) {
-    if (sortBy.hop !== undefined)
-      params.derive = { [sortBy.hop.name]: { value: `_agg.${sortBy.hop.name}` } };
+    if (sortBy.hop !== undefined) params.select = { [sortBy.hop.name]: `_agg.${sortBy.hop.name}` };
     params.orderBy = [{ [sortBy.field]: sortBy.dir }];
     params.limit = sortBy.limit;
   }
@@ -940,12 +938,15 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
   // A composed reading needs the walk grammar anyway, so its count is the server's.
   if (a.count && a.composed?.walked === true) params.count = true;
   if (aggClaim !== null) {
-    delete params.derive;
+    delete params.select;
     delete params.orderBy;
   }
   if (agg?.fn !== undefined && agg.field !== undefined) {
     params.aggregate = { value: { [agg.fn]: agg.field } };
-    if (agg.bucket !== undefined) params.bucket = agg.bucket;
+    if (agg.dateGroup !== undefined)
+      params.groupBy = {
+        bucket: { dateTrunc: [{ lit: agg.dateGroup.by }, agg.dateGroup.field] }
+      };
   }
   const answer =
     aggClaim !== null
@@ -1224,8 +1225,8 @@ interface AggregateClaim {
   word: string;
   fn: AggregateFn;
   field: { words?: string; phrase?: PhraseClaim };
-  /** "by|per <field>", or "per day|hour|…" (`bucket`). */
-  group?: { span: string; bucket?: string; field?: { words?: string; phrase?: PhraseClaim } };
+  /** "by|per <field>", or "per day|hour|…" (`unit`). */
+  group?: { span: string; unit?: string; field?: { words?: string; phrase?: PhraseClaim } };
 }
 
 type AggregateFn = 'avg' | 'sum' | 'min' | 'max';
@@ -1311,7 +1312,7 @@ function claimAggregate(
       const next = tokens[k + 1];
       if (next !== undefined && !next.used && BUCKET_WORDS.has(next.text)) {
         by.used = next.used = true;
-        claim.group = { span: `${by.text} ${next.text}`, bucket: next.text };
+        claim.group = { span: `${by.text} ${next.text}`, unit: next.text };
         break;
       }
       const g = fieldAt(tokens, walkClaims, pack, rulings, k + 1, false);
@@ -1366,7 +1367,7 @@ function aggregateOn(
   field?: string;
   exclude?: Record<string, unknown>;
   group?: { field: string; values: (string | boolean)[] };
-  bucket?: { field: string; by: 'day' | 'hour' };
+  dateGroup?: { field: string; by: 'day' | 'hour' };
   dropped: Dropped[];
   evidence: Evidence[];
 } {
@@ -1396,12 +1397,14 @@ function aggregateOn(
     out.dropped.push({ span: g.span, reason: why, kind: 'order' });
     return out;
   };
-  if (g.bucket !== undefined) {
-    if (g.bucket !== 'day' && g.bucket !== 'hour')
+  if (g.unit !== undefined) {
+    if (g.unit !== 'day' && g.unit !== 'hour')
       return drop('the engine buckets by day or hour only');
-    const field = own(rulings.timeField, type) ?? 'createdAt';
-    out.bucket = { field, by: g.bucket };
-    out.evidence.push({ span: g.span, role: 'field', detail: `bucket ${field} by ${g.bucket}` });
+    // A group key is an expression, and row metadata such as createdAt reads only as a bare aggregate argument.
+    const field = own(rulings.timeField, type);
+    if (field === undefined) return drop(`${type} declares no timeField ruling to group by`);
+    out.dateGroup = { field, by: g.unit };
+    out.evidence.push({ span: g.span, role: 'field', detail: `bucket ${field} by ${g.unit}` });
     return out;
   }
   const gr = seedField({ span: g.span, ...g.field }, type, pack, rulings, 'grouping');
@@ -1423,7 +1426,7 @@ function aggregateOn(
 
 /** An ordering by one value a crossRef hop away: the frame `_agg` it sorts by. */
 interface HopOrder {
-  /** The `_agg` and derive name. */
+  /** The `_agg` and select name. */
   name: string;
   agg: Record<string, unknown>;
   /** "max(Item.price) per supplier", "Supplier.rating via supplier". */

@@ -49,7 +49,7 @@ const cardRulings: NamespaceRulings = {
     offer: { field: 'Observation.price' },
     'psa offer': { field: 'Observation.price', pick: 'latest' },
     'valued psa 9': { field: 'Cert.grade', value: 9 },
-    margin: { derive: { diff: ['Cert.psaOffer', 'Cert.ask'] } }
+    margin: { select: { sub: ['Cert.psaOffer', 'Cert.ask'] } }
   }
 };
 const card = (q: string) => parseQuestion(q, cards, { asOf, rulings: cardRulings });
@@ -357,12 +357,12 @@ describe('pick one', () => {
 });
 
 describe('derived ordering', () => {
-  it('"by margin" binds a declared derive, undeclared → dropped', () => {
+  it('"by margin" binds a declared select, undeclared → dropped', () => {
     const r = card('list cards by margin');
     expect(r.status).toBe('resolved');
     expect(r.candidates[0]?.frame['cards/Cert']?.params).toEqual({
-      derive: { margin: { diff: ['$.psaOffer', '$.ask'] } },
-      orderBy: [{ $margin: 'desc' }]
+      select: { margin: { sub: ['psaOffer', 'ask'] } },
+      orderBy: [{ margin: 'desc' }]
     });
     const u = card('list cards by spread');
     expect(u.status).toBe('partial');
@@ -466,12 +466,12 @@ describe('never resolved on a silent assumption', () => {
     expect(r.reason).toBe('"latest" and "highest" pick different Observation rows');
   });
 
-  it('a derive ordering drops a conflicting "latest", and its limit', () => {
+  it('a select ordering drops a conflicting "latest", and its limit', () => {
     const r = card('latest cards by margin');
     expect(r.status).toBe('partial');
     expect(r.candidates[0]?.frame['cards/Cert']?.params).toEqual({
-      derive: { margin: { diff: ['$.psaOffer', '$.ask'] } },
-      orderBy: [{ $margin: 'desc' }]
+      select: { margin: { sub: ['psaOffer', 'ask'] } },
+      orderBy: [{ margin: 'desc' }]
     });
     expect(r.candidates[0]?.answer).toBe('rows');
     expect(r.candidates[0]?.dropped).toEqual([

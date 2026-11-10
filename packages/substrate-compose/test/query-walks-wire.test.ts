@@ -15,14 +15,22 @@ import { compose } from '../src/compose.js';
 const FRAME = {
   'shop/Item': { params: { count: true } },
   'shop/Note': {
-    params: { aggregate: { n: { count: true } }, bucket: { field: 'at', by: 'day' } }
+    params: {
+      aggregate: { n: { count: true } },
+      groupBy: { bucket: { dateTrunc: [{ lit: 'day' }, 'at'] } }
+    }
   }
 };
 
 describe('/substrate/v1/query walk results', () => {
   it('count, groups and a truncated nested list match on JSON and pack', async () => {
     const server = new MemorySubstrateServer();
-    const dataset = new MemoryDataset({ namespace: 'shop', walkReference: true });
+    const dataset = new MemoryDataset({
+      namespace: 'shop',
+      walkReference: true,
+      fieldDefLookup: (type, field) =>
+        type === 'Note' && field === 'at' ? { kind: 'scalar', type: 'date' } : undefined
+    });
     await dataset.write('Item', [
       { id: 'i1', label: 'a' },
       { id: 'i2', label: 'b' }
@@ -91,8 +99,8 @@ describe('/substrate/v1/query walk results', () => {
       expect(aggJson?.shapes['shop/Item']).toBe('count');
       expect(aggJson?.data['shop/Note']).toEqual({
         groups: [
-          { bucket: '2026-10-24', n: 2 },
-          { bucket: '2026-10-25', n: 1 }
+          { bucket: '2026-10-24T00:00:00.000000Z', n: 2 },
+          { bucket: '2026-10-25T00:00:00.000000Z', n: 1 }
         ]
       });
       expect(aggJson?.shapes['shop/Note']).toBe('groups');

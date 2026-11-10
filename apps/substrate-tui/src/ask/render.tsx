@@ -91,9 +91,9 @@ function askedFields(frame: Rows['frame']): string[] {
       } else if (!k.startsWith('_')) add(k);
     }
   };
-  // A `$name` key orders by a derive, which shows as its `_agg` value.
+  // An orderBy key may be a select name, which shows as its `_agg` value.
   for (const o of (params.orderBy as Array<Record<string, unknown>> | undefined) ?? [])
-    for (const k of Object.keys(o)) add(k.replace(/^\$/, ''));
+    for (const k of Object.keys(o)) add(k);
   walk(params.where);
   return out;
 }

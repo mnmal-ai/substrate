@@ -190,13 +190,15 @@ const ARITH: Record<string, [Arith, (a: number, b: number) => number]> = {
 export function evalExpr(expr: Expr, row: Record<string, unknown>, env: EvalEnv): unknown {
   if (expr === null) return null;
   if (typeof expr === 'string') {
-    const v =
-      env.output && Object.hasOwn(env.output, expr)
-        ? env.output[expr]
-        : Object.hasOwn(row, expr)
-          ? row[expr]
-          : null;
+    const fromOutput = env.output !== undefined && Object.hasOwn(env.output, expr);
+    const v = fromOutput
+      ? (env.output as Record<string, unknown>)[expr]
+      : Object.hasOwn(row, expr)
+        ? row[expr]
+        : null;
     if (v === undefined || v === null) return null;
+    // A number field (or number-valued `_agg`) holding anything else reads as null, as pg's substrate_num does.
+    if (typeof v !== 'number' && env.fieldType(expr) === 'number') return null;
     return v instanceof Date ? v.toISOString() : v;
   }
   if (typeof expr !== 'object') return expr;

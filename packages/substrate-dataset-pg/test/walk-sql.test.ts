@@ -1023,7 +1023,7 @@ describe.skipIf(!POSTGRES_URL)('walk aggregates and nested projection (pg)', () 
   });
 });
 
-describe.skipIf(!POSTGRES_URL)('count, aggregate and bucket (pg)', () => {
+describe.skipIf(!POSTGRES_URL)('count, aggregate and date groups (pg)', () => {
   const FRAME = {
     n: { count: true },
     avg: { avg: 'price' },
@@ -1148,34 +1148,36 @@ describe.skipIf(!POSTGRES_URL)('count, aggregate and bucket (pg)', () => {
     }
   });
 
-  it('bucket by day crosses UTC midnight as memory does', async () => {
+  it('a day group crosses UTC midnight as memory does', async () => {
     await fixture();
+    const trunc = (unit: string) => ({
+      bucket: { dateTrunc: [{ lit: unit }, 'observedAt'] }
+    });
     const day = await sameResult('Observation', {
       aggregate: FRAME,
-      bucket: { field: 'observedAt', by: 'day' }
+      groupBy: trunc('day')
     });
+    // A row with no readable date forms the null group, last.
     expect(day.groups?.map((g) => [g.bucket, g.n])).toEqual([
-      ['2026-10-01', 2],
-      ['2026-10-02', 3]
+      ['2026-10-01T00:00:00.000000Z', 2],
+      ['2026-10-02T00:00:00.000000Z', 3],
+      [null, 2]
     ]);
     const hour = await sameResult('Observation', {
       aggregate: { n: { count: true }, avg: { avg: 'price' } } as unknown as NonNullable<
         ReadParams['aggregate']
       >,
-      bucket: { field: 'observedAt', by: 'hour' }
+      groupBy: trunc('hour')
     });
     expect(hour.groups?.map((g) => g.bucket)).toEqual([
-      '2026-10-01T23',
-      '2026-10-02T00',
-      '2026-10-02T01'
+      '2026-10-01T23:00:00.000000Z',
+      '2026-10-02T00:00:00.000000Z',
+      '2026-10-02T01:00:00.000000Z',
+      null
     ]);
-    await sameResult('Observation', {
-      aggregate: { n: { count: true } } as unknown as NonNullable<ReadParams['aggregate']>,
-      bucket: { field: 'createdAt', by: 'hour' }
-    });
     const none = await sameResult('Observation', {
       aggregate: { n: { count: true } } as unknown as NonNullable<ReadParams['aggregate']>,
-      bucket: { field: 'observedAt', by: 'day' },
+      groupBy: trunc('day'),
       where: { price: { gt: 1000 } }
     });
     expect(none.groups).toEqual([]);
@@ -1202,26 +1204,22 @@ describe.skipIf(!POSTGRES_URL)('count, aggregate and bucket (pg)', () => {
     expect(mixed.groups).toHaveLength(1);
   });
 
-  it("a bucketed pick stays inside its bucket's rows", async () => {
-    const at = (createdAt: string) => ({
-      _metadata: { createdAt, updatedAt: createdAt, createdBy: null, updatedBy: null }
-    });
-    // The same instant stored two ways; pa (the lower id) sits in the other bucket.
+  it('the same instant stored two ways reads as one canonical text in each group', async () => {
     await load({
       Observation: [
-        { id: 'pa', observedAt: '2026-10-02T00:00:00Z', ...at('2026-10-01T05:00:00.000Z') },
-        { id: 'pb', observedAt: '2026-10-02T02:00:00+02:00', ...at('2026-10-02T05:00:00.000Z') }
+        { id: 'pa', price: 1, observedAt: '2026-10-02T00:00:00Z' },
+        { id: 'pb', price: 2, observedAt: '2026-10-02T02:00:00+02:00' }
       ]
     });
-    const day = await sameResult('Observation', {
+    const groups = await sameResult('Observation', {
       aggregate: { first: { min: 'observedAt' } } as unknown as NonNullable<
         ReadParams['aggregate']
       >,
-      bucket: { field: 'createdAt', by: 'day' }
+      groupBy: { price: 'price' }
     });
-    expect(day.groups).toEqual([
-      { bucket: '2026-10-01', first: '2026-10-02T00:00:00Z' },
-      { bucket: '2026-10-02', first: '2026-10-02T02:00:00+02:00' }
+    expect(groups.groups).toEqual([
+      { price: 1, first: '2026-10-02T00:00:00.000000Z' },
+      { price: 2, first: '2026-10-02T00:00:00.000000Z' }
     ]);
   });
 
@@ -1248,19 +1246,20 @@ describe.skipIf(!POSTGRES_URL)('count, aggregate and bucket (pg)', () => {
     await fixture();
     const params = {
       aggregate: { n: { count: true } } as unknown as NonNullable<ReadParams['aggregate']>,
-      bucket: { field: 'observedAt', by: 'hour' as const }
+      groupBy: { bucket: { dateTrunc: [{ lit: 'hour' }, 'observedAt'] } }
     };
     const cut = await sameResult('Observation', { ...params, limit: 2 });
     expect(cut).toMatchObject({ truncated: true });
     expect(cut.groups).toHaveLength(2);
-    expect(await sameResult('Observation', { ...params, limit: 3 })).not.toHaveProperty(
+    // Three hours and the null group.
+    expect(await sameResult('Observation', { ...params, limit: 4 })).not.toHaveProperty(
       'truncated',
       true
     );
     await sameResult('Observation', { ...params, limit: 0 });
   });
 
-  it('a windowed bucket query is served by the date index', async () => {
+  it('a windowed day-group query is served by the date index', async () => {
     const at = (i: number) => new Date(Date.UTC(2026, 0, 1) + i * 3_600_000).toISOString();
     await load({
       Observation: Array.from({ length: 5000 }, (_, i) => ({
@@ -1275,7 +1274,7 @@ describe.skipIf(!POSTGRES_URL)('count, aggregate and bucket (pg)', () => {
       aggregate: { n: { count: true }, avg: { avg: 'price' } } as unknown as NonNullable<
         ReadParams['aggregate']
       >,
-      bucket: { field: 'observedAt', by: 'day' },
+      groupBy: { bucket: { dateTrunc: [{ lit: 'day' }, 'observedAt'] } },
       limit: 100
     };
     expect((await sameResult('Observation', params)).groups).toHaveLength(2);
@@ -1285,9 +1284,9 @@ describe.skipIf(!POSTGRES_URL)('count, aggregate and bucket (pg)', () => {
   }, 60_000);
 });
 
-describe.skipIf(!POSTGRES_URL)('derived ordering (pg)', () => {
-  const DIFF = { d: { diff: ['$.ask', '$.grade'] } } as NonNullable<ReadParams['derive']>;
-  const RATIO = { q: { ratio: ['$.ask', '$.grade'] } } as NonNullable<ReadParams['derive']>;
+describe.skipIf(!POSTGRES_URL)('select ordering (pg)', () => {
+  const DIFF: NonNullable<ReadParams['select']> = { d: { sub: ['ask', 'grade'] } };
+  const RATIO: NonNullable<ReadParams['select']> = { q: { div: ['ask', 'grade'] } };
   // minObs 1 marks the result's rows; 0 marks the unrelated ones.
   const certs = () => [
     { id: 'd1', grade: 9, ask: 10, minObs: 1 },
@@ -1308,7 +1307,7 @@ describe.skipIf(!POSTGRES_URL)('derived ordering (pg)', () => {
   const ours = { minObs: { eq: 1 } } as WhereClause;
 
   /**
-   * Every page of `params` from `ds`, with the (derived value, id) each page's
+   * Every page of `params` from `ds`, with the (select value, id) each page's
    * cursor carries; `between` runs after each page. Memory's cursor also lists
    * the id among its values and pg's does not, so the payloads are compared by key.
    */
@@ -1334,21 +1333,21 @@ describe.skipIf(!POSTGRES_URL)('derived ordering (pg)', () => {
     return { ids, cursors };
   }
 
-  it('derive orders like memory, nulls and zero divisor last', async () => {
+  it('select orders like memory, nulls and zero divisor last', async () => {
     await load({ Cert: certs() });
     for (const dir of ['asc', 'desc'] as const) {
-      for (const derive of [DIFF, RATIO]) {
-        const key = `$${Object.keys(derive)[0]}`;
-        const order = (await same('Cert', { where: ours, derive, orderBy: [{ [key]: dir }] })).map(
+      for (const select of [DIFF, RATIO]) {
+        const key = Object.keys(select)[0] as string;
+        const order = (await same('Cert', { where: ours, select, orderBy: [{ [key]: dir }] })).map(
           name
         );
         // d5 (no ask), d6 (non-numeric grade) and d11 (no grade) have no value, nor
         // d4 under ratio (zero divisor): they come last in both directions.
-        const tail = derive === RATIO ? ['d11', 'd4', 'd5', 'd6'] : ['d11', 'd5', 'd6'];
+        const tail = select === RATIO ? ['d11', 'd4', 'd5', 'd6'] : ['d11', 'd5', 'd6'];
         expect([...order.slice(-tail.length)].sort(), `${key} ${dir}`).toEqual(tail);
         await same('Cert', {
           where: ours,
-          derive,
+          select,
           orderBy: [{ minObs: 'asc' }, { [key]: dir }],
           limit: 5
         });
@@ -1374,27 +1373,27 @@ describe.skipIf(!POSTGRES_URL)('derived ordering (pg)', () => {
     const agg = {
       lp: { in: IN('Observation'), latest: { by: 'observedAt', value: 'price' } }
     } as unknown as NonNullable<ReadParams['agg']>;
-    const derive = { m: { ratio: ['$.ask', '_agg.lp'] } } as NonNullable<ReadParams['derive']>;
+    const select: NonNullable<ReadParams['select']> = { m: { div: ['ask', '_agg.lp'] } };
     for (const dir of ['asc', 'desc'] as const) {
-      const rows = await same('Cert', { where: ours, agg, derive, orderBy: [{ $m: dir }] });
+      const rows = await same('Cert', { where: ours, agg, select, orderBy: [{ m: dir }] });
       // d1 10/5, d7 3/3, d8 9/0.7, d9 0.3/3, d10 -6/-2; the rest have no value.
       const valued =
         dir === 'desc' ? ['d8', 'd10', 'd1', 'd7', 'd9'] : ['d9', 'd7', 'd1', 'd10', 'd8'];
       expect(rows.map(name).slice(0, 5)).toEqual(valued);
-      const paged = await pages(pg, { where: ours, agg, derive, orderBy: [{ $m: dir }], limit: 2 });
+      const paged = await pages(pg, { where: ours, agg, select, orderBy: [{ m: dir }], limit: 2 });
       expect(paged).toEqual(
-        await pages(mem, { where: ours, agg, derive, orderBy: [{ $m: dir }], limit: 2 })
+        await pages(mem, { where: ours, agg, select, orderBy: [{ m: dir }], limit: 2 })
       );
       expect(paged.ids.flat()).toEqual(rows.map(name));
     }
   });
 
-  it('derive keyset pages agree with the unpaged read, null tail included', async () => {
+  it('select keyset pages agree with the unpaged read, null tail included', async () => {
     await load({ Cert: certs() });
     for (const dir of ['asc', 'desc'] as const) {
-      for (const derive of [DIFF, RATIO]) {
-        const key = `$${Object.keys(derive)[0]}`;
-        const base = { where: ours, derive, orderBy: [{ [key]: dir }] };
+      for (const select of [DIFF, RATIO]) {
+        const key = Object.keys(select)[0] as string;
+        const base = { where: ours, select, orderBy: [{ [key]: dir }] };
         const full = (await pg.read('Cert', base)).rows.map(name);
         for (const limit of [1, 2, 3, 5]) {
           const paged = await pages(pg, { ...base, limit });
@@ -1406,43 +1405,46 @@ describe.skipIf(!POSTGRES_URL)('derived ordering (pg)', () => {
     }
   });
 
-  it('a derive outside [1e-300, 1e300] is null and pages, never a float8 error', async () => {
+  it('extreme select values order and page as memory does; an overflow raises on both', async () => {
     // DIFF is ask - grade, RATIO ask / grade.
     const edge = [
-      { id: 'f1', grade: -1e308, ask: 1e308 }, // diff overflows; ratio -1
-      { id: 'f2', grade: 1e300, ask: 1e-300 }, // diff -1e300; ratio underflows
-      { id: 'f3', grade: 0, ask: 1e301 }, // diff above 1e300; zero divisor
+      { id: 'f3', grade: 0, ask: 1e301 }, // diff 1e301; zero divisor
       { id: 'f4', grade: 5, ask: 0 }, // diff -5; ratio exactly 0
       { id: 'f5', grade: 5, ask: 5 }, // diff exactly 0; ratio 1
-      { id: 'f6', grade: 1e-10, ask: 1e300 }, // diff 1e300; ratio overflows the log guard
-      { id: 'f7', grade: 1, ask: 3e-301 }, // diff -1; ratio just below 1e-300
-      { id: 'f8', grade: -1.5e307, ask: 1.5e307 }, // diff past the operand guard; ratio -1
-      { id: 'f9', grade: 0, ask: 5e-324 }, // diff below 1e-300; zero divisor
+      { id: 'f7', grade: 1, ask: 3e-301 }, // diff -1; ratio 3e-301
+      { id: 'f8', grade: -1.5e307, ask: 1.5e307 }, // diff 3e307; ratio -1
+      { id: 'f9', grade: 0, ask: 5e-324 }, // diff 5e-324; zero divisor
       { id: 'f10', grade: 4, ask: -2 }, // diff -6; ratio -0.5
-      { id: 'f11', grade: 2e307, ask: 1e307 } // one sign: diff -1e307 is null; ratio 0.5
+      { id: 'f11', grade: 2e307, ask: 1e307 } // diff -1e307; ratio 0.5
     ];
     await load({ Cert: edge.map((c) => ({ ...c, minObs: 1 })) });
     for (const dir of ['asc', 'desc'] as const) {
-      for (const derive of [DIFF, RATIO]) {
-        const key = `$${Object.keys(derive)[0]}`;
-        const base = { where: ours, derive, orderBy: [{ [key]: dir }] };
+      for (const select of [DIFF, RATIO]) {
+        const key = Object.keys(select)[0] as string;
+        const base = { where: ours, select, orderBy: [{ [key]: dir }] };
         const full = (await same('Cert', base)).map(name);
         const paged = await pages(pg, { ...base, limit: 2 });
         expect(paged, `${key} ${dir}`).toEqual(await pages(mem, { ...base, limit: 2 }));
         expect(paged.ids.flat()).toEqual(full);
       }
     }
-    const head = async (derive: NonNullable<ReadParams['derive']>, key: string) =>
-      (await same('Cert', { where: ours, derive, orderBy: [{ [key]: 'asc' }], limit: 6 })).map(
+    const head = async (select: NonNullable<ReadParams['select']>, key: string) =>
+      (await same('Cert', { where: ours, select, orderBy: [{ [key]: 'asc' }], limit: 6 })).map(
         name
       );
-    expect(await head(DIFF, '$d')).toEqual(['f2', 'f10', 'f4', 'f7', 'f5', 'f6']);
-    expect((await head(RATIO, '$q')).sort()).toEqual(['f1', 'f10', 'f11', 'f4', 'f5', 'f8']);
+    expect(await head(DIFF, 'd')).toEqual(['f11', 'f10', 'f4', 'f7', 'f5', 'f9']);
+    expect(await head(RATIO, 'q')).toEqual(['f8', 'f10', 'f4', 'f7', 'f11', 'f5']);
+    // Past float8 the result is an error, not a null.
+    await load({ Cert: [{ id: 'o1', grade: -1e308, ask: 1e308, minObs: 1 }] });
+    const params = { where: ours, select: DIFF, orderBy: [{ d: 'asc' as const }] };
+    for (const ds of [pg, mem]) {
+      await expect(ds.read('Cert', params)).rejects.toMatchObject({ code: 'value_out_of_range' });
+    }
   });
 
-  it('derive keyset pages agree with the unpaged read while unrelated rows change', async () => {
+  it('select keyset pages agree with the unpaged read while unrelated rows change', async () => {
     await load({ Cert: certs() });
-    const unpaged = { where: ours, derive: DIFF, orderBy: [{ $d: 'desc' as const }] };
+    const unpaged = { where: ours, select: DIFF, orderBy: [{ d: 'desc' as const }] };
     const base = { ...unpaged, limit: 2 };
     const full = (await pg.read('Cert', unpaged)).rows.map(name);
     // Unrelated rows whose values land among the result's, rewritten and added between pages.
@@ -1467,12 +1469,12 @@ describe.skipIf(!POSTGRES_URL)('derived ordering (pg)', () => {
 
   it('a cursor replayed in the other direction, or forged, is invalid_cursor', async () => {
     await load({ Cert: certs() });
-    const base = { where: ours, derive: DIFF, limit: 2 };
-    const first = await pg.read('Cert', { ...base, orderBy: [{ $d: 'desc' }] });
+    const base = { where: ours, select: DIFF, limit: 2 };
+    const first = await pg.read('Cert', { ...base, orderBy: [{ d: 'desc' }] });
     expect(first.nextCursor).toBeDefined();
     const flipped = {
       ...base,
-      orderBy: [{ $d: 'asc' as const }],
+      orderBy: [{ d: 'asc' as const }],
       cursor: String(first.nextCursor)
     };
     await expect(pg.read('Cert', flipped)).rejects.toMatchObject({ code: 'invalid_cursor' });
@@ -1481,12 +1483,12 @@ describe.skipIf(!POSTGRES_URL)('derived ordering (pg)', () => {
       orderByValues: ['1; DROP TABLE rows'],
       id: u('d1'),
       order: [
-        ['$d', 'desc'],
+        ['d', 'desc'],
         ['id', 'asc']
       ]
     });
     await expect(
-      pg.read('Cert', { ...base, orderBy: [{ $d: 'desc' }], cursor: forged })
+      pg.read('Cert', { ...base, orderBy: [{ d: 'desc' }], cursor: forged })
     ).rejects.toMatchObject({ code: 'invalid_cursor' });
   });
 });

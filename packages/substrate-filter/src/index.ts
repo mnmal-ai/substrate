@@ -56,7 +56,8 @@ export {
   type Grouped,
   type GroupedParams,
   groupRows,
-  metadataArgType
+  metadataArgType,
+  outOfRange
 } from './grouped.js';
 export {
   assertJsonPathPredicate,

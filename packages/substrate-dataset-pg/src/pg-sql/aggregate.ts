@@ -16,7 +16,6 @@
 
 import { isDateField, isRefOperand, windowGroupBy } from '@mnmal-ai/substrate-filter';
 import {
-  type BucketSpec,
   type FieldDef,
   type FrameAgg,
   type NestedSelection,
@@ -403,57 +402,6 @@ export function buildFrameCount(
 ): Fragment {
   const from = scope.tableFor(scope.type).from;
   return sql`SELECT count(*)::float8 AS n FROM ${sql.unsafe(from)} ${sql.unsafe(scope.alias)}${joins} WHERE ${where}`;
-}
-
-/**
- * A whole-result aggregate over `scope`'s rows matching `where`, one row
- * `{ g }` per group: one group, or one per UTC day/hour of `bucket.field`
- * ascending, rows with no readable date in none, at most `limit` groups.
- * A pick reads the whole result through `pickRow`, shadowing the outer
- * alias; in a bucket it runs in two phases: GROUP BY finds the winning key,
- * then a top-1 on `key = it` (the indexed expression; the bucket key only
- * pins the lookup, never the frame's WHERE) fetches that row's stored value.
- */
-export function buildFrameAggregate(
-  sql: Sql | TransactionSql,
-  aggregate: Record<string, FrameAgg>,
-  bucket: BucketSpec,
-  where: Fragment,
-  limit: number | undefined,
-  scope: WalkScope
-): Fragment {
-  const r = scope.alias;
-  const R = sql.unsafe(r);
-  const table = scope.tableFor(scope.type);
-  const T = sql.unsafe(table.from);
-  const fieldDef = (f: string) => scope.fieldDef(scope.type, f);
-  const aggs: Fragment[] = [];
-  const picks: Array<[string, Pick]> = [];
-  for (const [name, spec] of Object.entries(aggregate)) {
-    const { agg, pick } = aggOver(sql, spec, table, r, fieldDef);
-    if (pick === undefined) aggs.push(sql`${name}::text, ${agg}`);
-    else picks.push([name, pick]);
-  }
-  const [by, fmt] = bucket.by === 'day' ? ['day', 'YYYY-MM-DD'] : ['hour', 'YYYY-MM-DD"T"HH24'];
-  // Outside WHERE, so the date index still serves the where's window.
-  const key = sql`to_char(date_trunc(${sql.unsafe(`'${by}'`)}, ${refValue(sql, table, bucket.field, 'date', r)} AT TIME ZONE 'UTC'), ${sql.unsafe(`'${fmt}'`)})`;
-  // Phase one: each pick's winning key per bucket (FrameAgg has no latest, so a key is a date).
-  const winners = picks.reduce(
-    (acc, [, p], i) =>
-      sql`${acc}, ${sql.unsafe(p.dir === 'ASC' ? 'min' : 'max')}(${p.key}) AS ${sql.unsafe(`m${i}`)}`,
-    sql``
-  );
-  const picked = picks.map(([name, p], i) => {
-    // Pinned to the bucket: another bucket's row can share the winning instant.
-    const at = combineAnd(sql, [
-      where,
-      sql`${p.key} = ${sql.unsafe(`x.m${i}`)}`,
-      sql`${key} = x.b`
-    ]);
-    return sql`${name}::text, ${pickRow(sql, p, table, r, at)}`;
-  });
-  const cut = limit === undefined ? sql`` : sql`LIMIT ${limit + 1}`;
-  return sql`SELECT jsonb_build_object('bucket', x.b) || x.g || ${buildObject(sql, picked)} AS g FROM (SELECT ${key} AS b, ${buildObject(sql, aggs)} AS g${winners} FROM ${T} ${R} WHERE ${where} GROUP BY 1) x WHERE x.b IS NOT NULL ORDER BY x.b COLLATE "C" ${cut}`;
 }
 
 /**

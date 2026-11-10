@@ -144,7 +144,7 @@ describe('aggregates: parsing', () => {
   it('drops a grouping by a derived value beside an aggregate', () => {
     const rulings: NamespaceRulings = {
       ...base,
-      fieldPhrases: { spread: { derive: { diff: ['Item.price', 'Item.views'] } } }
+      fieldPhrases: { spread: { select: { sub: ['Item.price', 'Item.views'] } } }
     };
     const r = parse('average price of items by spread', rulings);
     expect(r.candidates[0]?.dropped).toContainEqual(
@@ -153,7 +153,7 @@ describe('aggregates: parsing', () => {
         kind: 'order'
       })
     );
-    expect(r.candidates[0]?.plan.some((c) => c.kind === 'derive')).toBe(false);
+    expect(r.candidates[0]?.plan.some((c) => c.kind === 'select')).toBe(false);
     expect(params('average price of items by spread', rulings)).toEqual({
       aggregate: { value: { avg: 'price' } }
     });
@@ -265,11 +265,21 @@ describe('aggregates: parsing', () => {
     });
     expect(params('total price of sales per day')).toEqual({
       aggregate: { value: { sum: 'price' } },
-      bucket: { field: 'soldAt', by: 'day' }
+      groupBy: { bucket: { dateTrunc: [{ lit: 'day' }, 'soldAt'] } }
     });
     expect(params('max price of items by hour')).toEqual({
       aggregate: { value: { max: 'price' } },
-      bucket: { field: 'listedAt', by: 'hour' }
+      groupBy: { bucket: { dateTrunc: [{ lit: 'hour' }, 'listedAt'] } }
+    });
+  });
+
+  it('drops a day grouping when the type declares no timeField ruling', () => {
+    const r = parse('total price of sales per day', {});
+    expect(r.candidates[0]?.dropped).toEqual([
+      { span: 'per day', reason: 'Sale declares no timeField ruling to group by', kind: 'order' }
+    ]);
+    expect(params('total price of sales per day', {})).toEqual({
+      aggregate: { value: { sum: 'price' } }
     });
   });
 
@@ -286,7 +296,7 @@ describe('aggregates: parsing', () => {
       const r = parse(q);
       expect(r.status, q).toBe('partial');
       expect(r.candidates[0]?.dropped, q).toEqual([{ span, reason, kind: 'order' }]);
-      expect(r.candidates[0]?.frame, q).not.toHaveProperty('shop/Item.params.bucket');
+      expect(r.candidates[0]?.frame, q).not.toHaveProperty('shop/Item.params.groupBy');
       expect(r.candidates[0]?.aggregate?.group, q).toBeUndefined();
     }
   });
@@ -343,8 +353,8 @@ describe('aggregates: answering', () => {
       data: {
         'shop/Sale': {
           groups: [
-            { bucket: '2026-10-20', value: 30 },
-            { bucket: '2026-10-21', value: 5 }
+            { bucket: '2026-10-20T00:00:00.000000Z', value: 30 },
+            { bucket: '2026-10-21T00:00:00.000000Z', value: 5 }
           ],
           truncated: true
         }

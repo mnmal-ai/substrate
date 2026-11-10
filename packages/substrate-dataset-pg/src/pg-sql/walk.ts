@@ -21,7 +21,6 @@
 
 import { forEachWalkHop, groupConjuncts, refNames, sharedPicks } from '@mnmal-ai/substrate-filter';
 import {
-  type DeriveSpec,
   type FieldDef,
   type RefOperand,
   UnsupportedFilterError,
@@ -775,40 +774,6 @@ export function refOperand(
   return micros === 0
     ? right
     : sql`(${right} + ${sql.unsafe(`(${micros})`)} * interval '1 microsecond')`;
-}
-
-/**
- * A `params.derive` value for the seed row, as float8: `diff` is a − b and
- * `ratio` a / b, NULL for a null or non-numeric operand or a zero divisor, as
- * memory's; `value` is its one operand as it is. Operands are `$.<field>` or `_agg.<name>`, read as `$ref`s are.
- *
- * As memory's: a magnitude outside [1e-300, 1e300] is NULL, and 0 stays only
- * when exact (x = y, or a zero numerator). float8 raises on overflow and on a
- * division that underflows to 0, so the guard computes only where neither can
- * happen (operands within 1e307 or of one sign; a log ratio within ±692, which
- * is ±(ln 1e300 + 1.2)), and anything it skips lies outside the range anyway.
- * One expression, so ORDER BY, the cursor compare and the null tail share it.
- */
-export function buildDerive(
-  sql: Sql | TransactionSql,
-  name: string,
-  spec: DeriveSpec,
-  scope: WalkScope
-): Fragment {
-  if ('value' in spec) {
-    return refOperand(sql, `$${name}`, 'value', { $ref: spec.value }, 'number', scope);
-  }
-  const [op, [a, b]] = Object.entries(spec)[0] as ['diff' | 'ratio', [string, string]];
-  const operand = (r: string) => refOperand(sql, `$${name}`, op, { $ref: r }, 'number', scope);
-  const value =
-    op === 'diff'
-      ? sql.unsafe(`CASE WHEN sign(x) * sign(y) >= 0 OR greatest(abs(x), abs(y)) <= 1e307
-          THEN CASE WHEN x = y OR abs(x - y) BETWEEN 1e-300 AND 1e300 THEN x - y END END`)
-      : sql.unsafe(`CASE WHEN y = 0 THEN NULL WHEN x = 0 THEN x / y
-          WHEN abs(ln(abs(x)) - ln(abs(y))) <= 692
-          THEN CASE WHEN abs(x / y) BETWEEN 1e-300 AND 1e300 THEN x / y END END`);
-  // OFFSET 0 reads each operand once; flattened, every x and y above would recompute it.
-  return sql`(SELECT ${value} FROM (SELECT ${operand(a)} AS x, ${operand(b)} AS y OFFSET 0) d)`;
 }
 
 const f64 = new Float64Array(1);

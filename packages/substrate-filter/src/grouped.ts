@@ -59,7 +59,6 @@ export function aggType(op: Op, arg: ExprType | null): ExprType {
 
 export interface GroupedParams {
   aggregate?: Record<string, FrameAgg>;
-  bucket?: unknown;
   groupBy?: Record<string, Expr>;
   having?: Expr;
   offset?: number;
@@ -101,7 +100,7 @@ const isRangeError = (err: unknown): err is Error =>
   (err instanceof RangeError && err.message === 'bigint out of range') ||
   (err instanceof Error && err.message.startsWith('value out of range: '));
 
-function outOfRange(err: unknown): never {
+export function outOfRange(err: unknown): never {
   if (isRangeError(err)) throw new ResolverFrameError(VALUE_OUT_OF_RANGE, err.message);
   throw err;
 }

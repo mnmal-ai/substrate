@@ -309,7 +309,7 @@ subscribe('<ns>/<Type>'): unknown param 'limit'. Allowed: _allowTableScan, order
 The allowlist is engine-wide (`KNOWN_SUBSCRIBE_PARAMS`), not a namespace quirk.
 A consumer that reuses its query params for a subscription gets `unknown_param`.
 
-Typed edge walks (`_walk`, `_agg`, `count`, `aggregate`, `bucket`, `derive`) are
+Typed edge walks (`_walk`, `_agg`, `count`, `aggregate`, `groupBy`, `having`, `offset`) are
 query-only on every surface. `query` answers them; `subscribe` and `stream` refuse a
 frame that uses one with `walks_in_subscription`, and `mutate` refuses them with
 `walks_in_mutation`.

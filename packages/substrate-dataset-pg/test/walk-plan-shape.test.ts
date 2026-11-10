@@ -65,7 +65,7 @@ function u(name: string): string {
 /** Hubs h0–h7 hold 400 neighbours each, h8 6 with no `at` or price, h9 none. */
 const PER_HUB = 400;
 function fixture() {
-  // Asks tie in threes and h9 has none, so a derived key ties and goes null.
+  // Asks tie in threes and h9 has none, so a computed key ties and goes null.
   const hubs = Array.from({ length: 10 }, (_, h) => ({
     id: u(`h${h}`),
     ...(h === 9 ? {} : { ask: (h % 3) * 10 })
@@ -297,13 +297,13 @@ describe.skipIf(!POSTGRES_URL)('walk plan shapes (pg)', () => {
       // A max(key) and then the rows at it is two per hub.
       expect(lookups(plan)).toBeLessThanOrEqual(HUBS + 2);
     }
-    // Inside derive: ordering every hub, then projecting the page's.
+    // Inside a select: ordering every hub, then projecting the page's.
     for (const by of ['at', 'price']) {
       const plan = await probes(
         {
           agg: { lp: { in: IN, latest: { by, value: 'price' } } },
-          derive: { m: { diff: ['_agg.lp', '$.ask'] } },
-          orderBy: [{ $m: 'desc' }],
+          select: { m: { sub: ['_agg.lp', 'ask'] } },
+          orderBy: [{ m: 'desc' }],
           limit: 3
         } as unknown as ReadParams,
         8
@@ -323,13 +323,13 @@ describe.skipIf(!POSTGRES_URL)('walk plan shapes (pg)', () => {
       await same('Hub', {
         agg: { lp: { ...lp, where: { [by]: { eq: null } } } }
       } as unknown as ReadParams);
-      // In derive, as an order: a numeric value, so the order is real.
+      // In a select, as an order: a numeric value, so the order is real.
       const num = { in: IN, latest: { by, value: 'price' } };
       for (const dir of ['asc', 'desc'] as const) {
         const rows = await same('Hub', {
           agg: { lp: num },
-          derive: { m: { diff: ['_agg.lp', '$.ask'] } },
-          orderBy: [{ $m: dir }]
+          select: { m: { sub: ['_agg.lp', 'ask'] } },
+          orderBy: [{ m: dir }]
         } as unknown as ReadParams);
         const m = rows.flatMap((r) => {
           const lp = (r._agg as Record<string, unknown> | undefined)?.lp;
@@ -445,14 +445,14 @@ describe.skipIf(!POSTGRES_URL)('walk plan shapes (pg)', () => {
     expect(lookups(plan)).toBeLessThanOrEqual(2 * HUBS);
   }, 60_000);
 
-  it('a derived order evaluates its operands once per matched row', async () => {
+  it('a select order evaluates its operands once per matched row', async () => {
     const agg = { lp: { in: IN, latest: { by: 'at', value: 'price' } } };
     for (const dir of ['asc', 'desc'] as const) {
       const plan = await probes(
         {
           agg,
-          derive: { m: { diff: ['_agg.lp', '$.ask'] } },
-          orderBy: [{ $m: dir }],
+          select: { m: { sub: ['_agg.lp', 'ask'] } },
+          orderBy: [{ m: dir }],
           limit: 3
         } as unknown as ReadParams,
         8
@@ -479,17 +479,17 @@ describe.skipIf(!POSTGRES_URL)('walk plan shapes (pg)', () => {
     } as unknown as ReadParams);
   }, 60_000);
 
-  it('derive pages agree with memory as a later key and beside a shortId join', async () => {
+  it('select pages agree with memory as a later key and beside a shortId join', async () => {
     const base = {
       agg: { lp: { in: IN, latest: { by: 'at', value: 'price' } } },
-      derive: { m: { diff: ['_agg.lp', '$.ask'] } }
+      select: { m: { sub: ['_agg.lp', 'ask'] } }
     };
     const variants = [
-      { orderBy: [{ ask: 'desc' }, { $m: 'asc' }] },
-      { orderBy: [{ $m: 'desc' }] },
-      // A shortId key forces the short_ids join, where derive is inlined. Rows written
+      { orderBy: [{ ask: 'desc' }, { m: 'asc' }] },
+      { orderBy: [{ m: 'desc' }] },
+      // A shortId key forces the short_ids join, where a select is inlined. Rows written
       // straight to a dataset have no shortId on either side, so it orders as a tie.
-      { orderBy: [{ $m: 'asc' }, { shortId: 'asc' }] }
+      { orderBy: [{ m: 'asc' }, { shortId: 'asc' }] }
     ];
     for (const v of variants) {
       const params = { ...base, ...v } as unknown as ReadParams;

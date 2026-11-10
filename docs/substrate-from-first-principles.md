@@ -614,7 +614,7 @@ Plugins can contribute extra operators (the recall plugin adds `embeddingSimilar
 
 - **Full-text or semantic search** as a filter operator over prose. Search has its own index and ranking concerns; it lives in the recall plugin (§5.10).
 - **Predicates through an edge** (`{ priceId: { value: { gte: 20 } } }`). Only the target id is filterable.
-- **Aggregations as filter operators.** Counts and aggregates belong to the typed edge walk grammar (`_agg`, `count`, `aggregate`, `bucket`), which is query-only and runs on Postgres; see [`surface-parity.md`](surface-parity.md).
+- **Aggregations as filter operators.** Counts and aggregates belong to the typed edge walk grammar (`_agg`, `count`, `aggregate`, `groupBy`), which is query-only and runs on Postgres; see [`surface-parity.md`](surface-parity.md).
 
 ### 5.3 Transactions and batched mutations
 

@@ -36,15 +36,18 @@ describe('walk grammar types', () => {
     void bad2;
   });
 
-  it('types aggregates, derive ordering and results', () => {
+  it('types aggregates, select ordering and results', () => {
     const agg: WalkAgg = { in: 'x/T.f', latest: { by: 'at', value: 'p' } };
     const ok: Where = { _agg: agg, gt: 3 };
     const p: ReadParams = {
-      derive: { margin: { diff: ['a', 'b'] } },
-      orderBy: [{ $margin: 'desc' }],
+      select: { margin: { sub: ['a', 'b'] } },
+      orderBy: [{ margin: 'desc' }],
       aggregate: { n: { count: true } },
-      bucket: { field: 'at', by: 'day' }
+      groupBy: { bucket: { dateTrunc: [{ lit: 'day' }, 'at'] } }
     };
+    // @ts-expect-error bucket was replaced by groupBy
+    const gone: ReadParams = { bucket: { field: 'at', by: 'day' } };
+    void gone;
     // @ts-expect-error latest is walk-only
     const q: ReadParams = { aggregate: { x: { latest: { by: 'a', value: 'b' } } } };
     void ok;

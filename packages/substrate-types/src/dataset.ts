@@ -132,17 +132,6 @@ export type FrameAgg =
   | { min: Expr }
   | { max: Expr };
 
-export interface BucketSpec {
-  field: string;
-  by: 'day' | 'hour';
-}
-
-/** `diff` is a − b, `ratio` a / b, and `value` one operand as it is (to order by a walked value). */
-export type DeriveSpec =
-  | { diff: [string, string] }
-  | { ratio: [string, string] }
-  | { value: string };
-
 export interface NestedSelection {
   _walk: { in?: string; out?: string; where?: WhereClause };
   fields: Record<string, unknown>;
@@ -172,7 +161,6 @@ export type WalkAggPredicate = {
  * deterministic tie-break is what makes cursor pagination stable across pages.
  */
 export interface OrderByClause {
-  /** A `$`-prefixed key orders by a `params.derive` entry. */
   [field: string]: 'asc' | 'desc';
 }
 
@@ -188,14 +176,12 @@ export interface ReadParams {
   /** Return a match count (`ReadResult.count`). */
   count?: boolean;
   aggregate?: Record<string, FrameAgg>;
-  bucket?: BucketSpec;
   /** Group keys by output name; with `aggregate`, the read returns one group per distinct key tuple. */
   groupBy?: Record<string, Expr>;
   /** A boolean expression over group keys and aggregate names, applied before order and limit. */
   having?: Expr;
   /** Groups to skip, on a grouped read. */
   offset?: number;
-  derive?: Record<string, DeriveSpec>;
   /** Computed per-row values by output name: each row gains one key per entry, which `orderBy` may use. */
   select?: Record<string, Expr>;
   /** Per-row walk aggregates, lifted out of `fields` by the list resolver. */

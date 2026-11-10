@@ -133,8 +133,8 @@ describe('ordering by a field', () => {
       expect(parse(q, rulings).status, q).toBe('resolved');
       expect(Object.values(parse(q, rulings).candidates[0]?.frame ?? {})[0], q).toEqual({
         params: {
-          derive: { categoryRank: { value: '_agg.categoryRank' } },
-          orderBy: [{ $categoryRank: 'desc' }],
+          select: { categoryRank: '_agg.categoryRank' },
+          orderBy: [{ categoryRank: 'desc' }],
           limit: 5
         },
         fields: { _agg: { categoryRank: { out: 'category', max: 'rank' } } }

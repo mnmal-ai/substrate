@@ -28,16 +28,13 @@ import {
   tsParam
 } from './primitives.js';
 
-/**
- * The float8 expression a `$<name>` orderBy key sorts by (a `params.derive`
- * entry), or undefined for any other key.
- */
-export type DerivedLookup = ((field: string) => Fragment | undefined) & {
-  /** The type of a `select` key's value; absent for a `$<name>` key, which is float8. */
+/** The expression an orderBy key sorts by when it names a `select` entry, or undefined for any other key. */
+export type ComputedLookup = ((field: string) => Fragment | undefined) & {
+  /** The type of a `select` key's value. */
   typeOf?: (field: string) => ExprType | undefined;
 };
 
-const noDerived: DerivedLookup = () => undefined;
+const noComputed: ComputedLookup = () => undefined;
 
 export { normalizeOrderBy } from '@mnmal-ai/substrate-filter';
 
@@ -85,13 +82,13 @@ export function buildOrderBy(
   orderBy: Array<[string, 'asc' | 'desc']>,
   castFor: (field: string) => BodyOrderByCast | null,
   table: TypeTable,
-  derivedFor: DerivedLookup = noDerived,
+  computedFor: ComputedLookup = noComputed,
   alias?: string
 ): Fragment {
   if (orderBy.length === 0) return sql``;
   const parts: Fragment[] = [];
   for (const [field, dir] of orderBy) {
-    parts.push(orderByFragment(sql, field, dir, castFor(field), table, derivedFor, alias));
+    parts.push(orderByFragment(sql, field, dir, castFor(field), table, computedFor, alias));
   }
   if (parts.length === 1) return sql`ORDER BY ${parts[0] as Fragment}`;
   // Flat composition, as in combineAnd.
@@ -115,12 +112,12 @@ function sortExpr(
   field: string,
   bodyCast: BodyOrderByCast | null,
   table: TypeTable,
-  derivedFor: DerivedLookup,
+  computedFor: ComputedLookup,
   alias?: string
 ): Fragment {
   if (field === 'id') return sql`id`;
-  const derived = derivedFor(field);
-  if (derived !== undefined) return derived;
+  const computed = computedFor(field);
+  if (computed !== undefined) return computed;
   // shortId lives on the LEFT-joined sidecar. Without this branch it falls
   // through to `body ->> 'shortId'`, which is always NULL — every row collapses
   // to insertion order regardless of direction.
@@ -156,7 +153,7 @@ export function buildSortKeyProjection(
   orderBy: Array<[string, 'asc' | 'desc']>,
   castFor: (field: string) => BodyOrderByCast | null,
   table: TypeTable,
-  derivedFor: DerivedLookup = noDerived
+  computedFor: ComputedLookup = noComputed
 ): { fragment: Fragment; aliases: Map<string, string> } {
   const aliases = new Map<string, string>();
   const fragments: Fragment[] = [];
@@ -166,13 +163,13 @@ export function buildSortKeyProjection(
     const alias = `__sort_${aliases.size}`;
     aliases.set(field, alias);
     const cast = castFor(field);
-    const expr = sortExpr(sql, field, cast, table, derivedFor);
+    const expr = sortExpr(sql, field, cast, table, computedFor);
     // A timestamptz key comes back as a JS Date, which keeps milliseconds only:
     // `.123456` would round-trip as `.123` and the next page would re-serve (asc)
     // or skip (desc) the cursor row. Text keeps every digit; `sortParam` casts
     // it back to timestamptz.
     fragments.push(
-      sortKeyIsTimestamp(field, cast, table, derivedFor)
+      sortKeyIsTimestamp(field, cast, table, computedFor)
         ? sql`, (${expr})::text AS ${sql(alias)}`
         : sql`, ${expr} AS ${sql(alias)}`
     );
@@ -186,9 +183,9 @@ function sortKeyIsTimestamp(
   field: string,
   cast: BodyOrderByCast | null,
   table: TypeTable,
-  derivedFor: DerivedLookup = noDerived
+  computedFor: ComputedLookup = noComputed
 ): boolean {
-  if (derivedFor(field) !== undefined) return derivedFor.typeOf?.(field) === 'date';
+  if (computedFor(field) !== undefined) return computedFor.typeOf?.(field) === 'date';
   if (field === 'createdAt' || field === 'updatedAt') return true;
   if (isMetadataField(field)) return false;
   const column = table.column(field);
@@ -208,7 +205,7 @@ export function buildProjectedOrderBy(
   castFor: (field: string) => BodyOrderByCast | null,
   table: TypeTable,
   rel: string,
-  derivedFor: DerivedLookup = noDerived
+  computedFor: ComputedLookup = noComputed
 ): Fragment {
   const parts: string[] = [];
   for (const [field, dir] of orderBy) {
@@ -218,7 +215,7 @@ export function buildProjectedOrderBy(
     } else {
       const alias = aliases.get(field);
       if (alias === undefined) throw new Error(`orderBy key '${field}' has no projected alias`);
-      expr = sortKeyIsTimestamp(field, castFor(field), table, derivedFor)
+      expr = sortKeyIsTimestamp(field, castFor(field), table, computedFor)
         ? `${rel}.${alias}::timestamptz`
         : `${rel}.${alias}`;
     }
@@ -239,11 +236,11 @@ function sortParam(
   value: unknown,
   bodyCast: BodyOrderByCast | null,
   table: TypeTable,
-  derivedFor: DerivedLookup
+  computedFor: ComputedLookup
 ): Fragment {
   if (field === 'id') return sql`${idToText(value as Id)}`;
-  if (derivedFor(field) !== undefined) {
-    const type = derivedFor.typeOf?.(field) ?? 'number';
+  if (computedFor(field) !== undefined) {
+    const type = computedFor.typeOf?.(field) ?? 'number';
     // A cursor carries an int64 as decimal text and a date as text.
     if (type === 'int64') return sql`${String(value)}::bigint`;
     if (type === 'date') return tsParam(sql, value);
@@ -290,10 +287,10 @@ function orderByFragment(
   dir: 'asc' | 'desc',
   bodyCast: BodyOrderByCast | null,
   table: TypeTable,
-  derivedFor: DerivedLookup,
+  computedFor: ComputedLookup,
   alias?: string
 ): Fragment {
-  const expr = sortExpr(sql, field, bodyCast, table, derivedFor, alias);
+  const expr = sortExpr(sql, field, bodyCast, table, computedFor, alias);
   // NULLS LAST in both directions, matching the memory dataset.
   // `cursorCmpFragment` must agree or pagination drops the null rows.
   return dir === 'asc' ? sql`${expr} ASC NULLS LAST` : sql`${expr} DESC NULLS LAST`;
@@ -351,19 +348,19 @@ export function buildCursorCompare(
   cursorId: Id,
   castFor: (field: string) => BodyOrderByCast | null,
   table: TypeTable,
-  derivedFor: DerivedLookup = noDerived
+  computedFor: ComputedLookup = noComputed
 ): Fragment | null {
   const resolved = resolveCursorKeys(orderBy, values, cursorId);
   const [lead, ...rest] = resolved;
   if (lead === undefined) return null;
-  if (lead.field === 'id') return cursorDisjunction(sql, resolved, castFor, table, derivedFor);
-  const restCmp = cursorDisjunction(sql, rest, castFor, table, derivedFor);
+  if (lead.field === 'id') return cursorDisjunction(sql, resolved, castFor, table, computedFor);
+  const restCmp = cursorDisjunction(sql, rest, castFor, table, computedFor);
   const cast = castFor(lead.field);
-  const eq = cursorEqFragment(sql, lead.field, lead.value, cast, table, derivedFor);
+  const eq = cursorEqFragment(sql, lead.field, lead.value, cast, table, computedFor);
   if (lead.value === null || lead.value === undefined) return combineAnd(sql, [eq, restCmp]);
   // `op` is one of four constants, never caller input.
   const cmp = (op: '<' | '<=' | '>' | '>='): Fragment =>
-    sql`${sortExpr(sql, lead.field, cast, table, derivedFor)} ${sql.unsafe(op)} ${sortParam(sql, lead.field, lead.value, cast, table, derivedFor)}`;
+    sql`${sortExpr(sql, lead.field, cast, table, computedFor)} ${sql.unsafe(op)} ${sortParam(sql, lead.field, lead.value, cast, table, computedFor)}`;
   const asc = lead.dir === 'asc';
   return combineAnd(sql, [
     cmp(asc ? '>=' : '<='),
@@ -384,12 +381,12 @@ export function buildCursorNullTail(
   values: unknown[],
   castFor: (field: string) => BodyOrderByCast | null,
   table: TypeTable,
-  derivedFor: DerivedLookup = noDerived
+  computedFor: ComputedLookup = noComputed
 ): Fragment | null {
   const lead = orderBy[0];
   if (lead === undefined || lead[0] === 'id') return null;
   if (values[0] === null || values[0] === undefined) return null;
-  return sql`${sortExpr(sql, lead[0], castFor(lead[0]), table, derivedFor)} IS NULL`;
+  return sql`${sortExpr(sql, lead[0], castFor(lead[0]), table, computedFor)} IS NULL`;
 }
 
 type CursorKey = { field: string; dir: 'asc' | 'desc'; value: unknown };
@@ -419,7 +416,7 @@ function cursorDisjunction(
   resolved: CursorKey[],
   castFor: (field: string) => BodyOrderByCast | null,
   table: TypeTable,
-  derivedFor: DerivedLookup
+  computedFor: ComputedLookup
 ): Fragment {
   const orParts: Fragment[] = [];
   for (let i = 0; i < resolved.length; i++) {
@@ -427,12 +424,12 @@ function cursorDisjunction(
     for (let j = 0; j < i; j++) {
       const prior = resolved[j] as CursorKey;
       parts.push(
-        cursorEqFragment(sql, prior.field, prior.value, castFor(prior.field), table, derivedFor)
+        cursorEqFragment(sql, prior.field, prior.value, castFor(prior.field), table, computedFor)
       );
     }
     const cur = resolved[i] as CursorKey;
     parts.push(
-      cursorCmpFragment(sql, cur.field, cur.dir, cur.value, castFor(cur.field), table, derivedFor)
+      cursorCmpFragment(sql, cur.field, cur.dir, cur.value, castFor(cur.field), table, computedFor)
     );
     orParts.push(combineAnd(sql, parts));
   }
@@ -449,11 +446,11 @@ function cursorEqFragment(
   value: unknown,
   bodyCast: BodyOrderByCast | null,
   table: TypeTable,
-  derivedFor: DerivedLookup
+  computedFor: ComputedLookup
 ): Fragment {
-  const expr = sortExpr(sql, field, bodyCast, table, derivedFor);
+  const expr = sortExpr(sql, field, bodyCast, table, computedFor);
   if (value === null || value === undefined) return sql`${expr} IS NULL`;
-  return sql`${expr} = ${sortParam(sql, field, value, bodyCast, table, derivedFor)}`;
+  return sql`${expr} = ${sortParam(sql, field, value, bodyCast, table, computedFor)}`;
 }
 
 /**
@@ -477,11 +474,11 @@ function cursorCmpFragment(
   value: unknown,
   bodyCast: BodyOrderByCast | null,
   table: TypeTable,
-  derivedFor: DerivedLookup
+  computedFor: ComputedLookup
 ): Fragment {
-  const expr = sortExpr(sql, field, bodyCast, table, derivedFor);
+  const expr = sortExpr(sql, field, bodyCast, table, computedFor);
   if (value === null || value === undefined) return sql`false`;
-  const param = sortParam(sql, field, value, bodyCast, table, derivedFor);
+  const param = sortParam(sql, field, value, bodyCast, table, computedFor);
   // `id` is NOT NULL in both baselines: no null tail, and a bare compare is
   // sargable. Every other sort key's column or expression can be null.
   if (field === 'id') return dir === 'asc' ? sql`${expr} > ${param}` : sql`${expr} < ${param}`;

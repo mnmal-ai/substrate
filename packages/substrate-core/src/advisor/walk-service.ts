@@ -223,8 +223,8 @@ export interface ClassifyInput {
  *   list's order when its keys follow in its directions too (after an
  *   outbound hop the far row is one primary-key read, so all of it is served);
  * - a `$ref` predicate is a residual on rows already narrowed: always served;
- * - a seed filter, or a bucket's field, is served by an index leading with it;
- * - a derived ordering is served only when a served seed filter bounds the
+ * - a seed filter, or the field a group key truncates, is served by an index leading with it;
+ * - an ordering by a select name is served only when a served seed filter bounds the
  *   result (AND-ed, not under OR or NOT, and not only `neq`); no index ever
  *   serves it, so it recommends none;
  * - anything else is unserved, recommending the index that would serve it
@@ -314,14 +314,22 @@ export function classifyWalkService(
     if (s.agg !== undefined) out.push({ path: s.agg, kind: 'agg', served: true });
   }
 
-  if (isObj(params.bucket) && typeof params.bucket.field === 'string') {
-    const field = params.bucket.field;
-    clause(['bucket'], 'bucket', leads(seedIndexes, [field], []), seed, [field]);
+  // A group key that truncates a date field, as a bucket did: served by an index leading with it.
+  if (isObj(params.groupBy)) {
+    for (const [name, e] of Object.entries(params.groupBy)) {
+      const args = isObj(e) && Array.isArray(e.dateTrunc) ? e.dateTrunc : undefined;
+      const field = args?.[1];
+      if (typeof field === 'string') {
+        clause(['groupBy', name], 'group', leads(seedIndexes, [field], []), seed, [field]);
+      }
+    }
   }
 
+  // An ordering by a select name is computed per row; only a bounded result keeps it cheap.
+  const selected = isObj(params.select) ? params.select : {};
   orderOf(params.orderBy).forEach(([f], i) => {
-    if (f.startsWith('$'))
-      out.push({ path: ['orderBy', String(i)], kind: 'derive', served: bounded });
+    if (Object.hasOwn(selected, f))
+      out.push({ path: ['orderBy', String(i)], kind: 'select', served: bounded });
   });
   return out;
 }

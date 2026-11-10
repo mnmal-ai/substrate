@@ -3,7 +3,7 @@
  *
  * Checks `_walk` nodes, `_agg` aggregates (where-side and in `fields`),
  * nested `{ _walk }` selections, `$ref` operands, and the frame params
- * `count`, `aggregate`, `bucket` and `derive`. The recursion into a walk's far-side `where` is handed back to the
+ * `count`, `aggregate`, `groupBy` and `select`. The recursion into a walk's far-side `where` is handed back to the
  * filter validator, so the far type's fields and operators are checked exactly
  * as a top-level read of that type would be.
  */
@@ -424,20 +424,18 @@ export interface FrameHelpers {
 
 const AGG_FNS = new Set(['count', 'avg', 'sum', 'min', 'max', 'latest']);
 const WALK_AGG_KEYS = new Set(['in', 'out', 'where']);
-const NO_KEYS = new Set<string>();
 
 /**
  * One aggregate function over `owner`'s fields, returning its value kind:
  * `count`, `avg` and `sum` are numbers; `min`, `max` and `latest` take their
- * field's kind. `latest` picks a row, so only a per-row walk aggregate has it.
+ * field's kind. `latest` picks a row: it belongs to a per-row walk aggregate.
  */
 function aggKind(
   agg: Record<string, unknown>,
   extra: ReadonlySet<string>,
   owner: Hop,
   path: string[],
-  h: FrameHelpers,
-  allowLatest: boolean
+  h: FrameHelpers
 ): string {
   for (const k of Object.keys(agg)) {
     if (!extra.has(k) && !AGG_FNS.has(k)) {
@@ -476,13 +474,6 @@ function aggKind(
     case 'max':
       return field(v, at, (k) => DATE_OR_NUMBER.has(k as FieldKind), 'a number or date field');
     default: {
-      if (!allowLatest) {
-        fail(
-          'agg_invalid',
-          'latest picks one row per seed row; a frame aggregate takes count, avg, sum, min or max',
-          at
-        );
-      }
       if (!isObj(v) || Object.keys(v).some((k) => k !== 'by' && k !== 'value')) {
         fail('agg_invalid', 'latest takes { by: <dateField>, value: <field> }', at);
       }
@@ -506,7 +497,7 @@ export function validateWalkAgg(
 ): string {
   if (!isObj(agg)) fail('agg_invalid', '_agg expects an aggregate object', path);
   const hop = resolveHop(agg, path, scope);
-  const kind = aggKind(agg, WALK_AGG_KEYS, hop, path, h, true);
+  const kind = aggKind(agg, WALK_AGG_KEYS, hop, path, h);
   if (agg.where !== undefined) h.validateWhere(agg.where, [...path, 'where'], farScope(scope, hop));
   return kind;
 }
@@ -697,30 +688,28 @@ export interface FrameParams {
   select?: unknown;
   count?: unknown;
   aggregate?: unknown;
-  bucket?: unknown;
   groupBy?: unknown;
   having?: unknown;
   offset?: unknown;
-  derive?: unknown;
   cursor?: unknown;
   orderBy?: unknown;
   fields?: Record<string, unknown>;
 }
 
 /**
- * `count`, `aggregate`, `bucket` and `derive`, and what each excludes.
- * Returns the derive names `orderBy` may use as `$<name>`.
+ * `count`, `aggregate`, `groupBy` and `select`, and what each excludes.
+ * Returns the names `orderBy` may use: select names and group outputs.
  */
 export function validateFrameParams(
   p: FrameParams,
   scope: WalkScope,
   h: FrameHelpers
-): { derived: ReadonlySet<string>; selected: ReadonlySet<string> } {
+): { selected: ReadonlySet<string> } {
   if (p.count !== undefined && typeof p.count !== 'boolean') {
     fail('type_mismatch', 'count takes true or false', ['count']);
   }
   if (p.count === true) {
-    for (const k of ['aggregate', 'bucket', 'derive', 'select', 'orderBy', 'cursor'] as const) {
+    for (const k of ['aggregate', 'select', 'orderBy', 'cursor'] as const) {
       if (p[k] !== undefined)
         fail('count_conflict', `count returns a count; it takes no '${k}'`, [k]);
     }
@@ -733,25 +722,18 @@ export function validateFrameParams(
       }
     }
   }
-  const seed: Hop = { typeName: scope.typeName ?? '', fields: scope.fields };
   const outputs = new Map<string, ExprType>();
-  const grouped = p.aggregate !== undefined && p.bucket === undefined;
+  const grouped = p.aggregate !== undefined;
   for (const k of ['groupBy', 'having', 'offset'] as const) {
     if (p[k] !== undefined && !grouped) {
-      fail(
-        'agg_invalid',
-        `${k} shapes an aggregate's groups; it needs aggregate, and takes no bucket`,
-        [k]
-      );
+      fail('agg_invalid', `${k} shapes an aggregate's groups; it needs aggregate`, [k]);
     }
   }
   if (p.aggregate !== undefined) {
     // `limit` stays: it caps the groups. orderBy takes the group outputs.
     const refused =
-      p.groupBy !== undefined
-        ? ['derive', 'select', 'cursor']
-        : ['derive', 'select', 'orderBy', 'cursor'];
-    for (const k of refused as Array<'derive' | 'select' | 'orderBy' | 'cursor'>) {
+      p.groupBy !== undefined ? ['select', 'cursor'] : ['select', 'orderBy', 'cursor'];
+    for (const k of refused as Array<'select' | 'orderBy' | 'cursor'>) {
       if (p[k] !== undefined) {
         fail('agg_invalid', `aggregate returns aggregate rows; it takes no '${k}'`, [k]);
       }
@@ -771,12 +753,9 @@ export function validateFrameParams(
     }
     for (const [n, agg] of Object.entries(p.aggregate)) {
       const at = ['aggregate', n];
-      if (!IDENT.test(n) || (n === 'bucket' && p.bucket !== undefined)) {
-        fail('agg_invalid', `aggregate name '${n}' must be an identifier other than bucket`, at);
-      }
+      if (!IDENT.test(n)) fail('agg_invalid', `aggregate name '${n}' must be an identifier`, at);
       if (!isObj(agg)) fail('agg_invalid', 'an aggregate is an object such as { count: true }', at);
-      if (p.bucket !== undefined) aggKind(agg, NO_KEYS, seed, at, h, false);
-      else outputs.set(n, frameAggType(agg, scope, at));
+      outputs.set(n, frameAggType(agg, scope, at));
     }
   }
   if (p.groupBy !== undefined) {
@@ -819,60 +798,6 @@ export function validateFrameParams(
       }
     });
   }
-  if (p.bucket !== undefined) {
-    const b = p.bucket;
-    if (p.aggregate === undefined) {
-      fail('bucket_invalid', 'bucket groups an aggregate; it needs aggregate', ['bucket']);
-    }
-    if (!isObj(b) || Object.keys(b).some((k) => k !== 'field' && k !== 'by')) {
-      fail('bucket_invalid', 'bucket takes { field, by }', ['bucket']);
-    }
-    if (b.by !== 'day' && b.by !== 'hour') {
-      fail('bucket_invalid', "bucket by is 'day' or 'hour'", ['bucket', 'by']);
-    }
-    const def = typeof b.field === 'string' ? h.lookup(scope.fields, b.field) : undefined;
-    if (def === undefined || h.kindOf(def) !== 'scalar.date') {
-      fail('bucket_invalid', `bucket field '${String(b.field)}' is not a date field`, [
-        'bucket',
-        'field'
-      ]);
-    }
-  }
-  const derived = new Set<string>();
-  if (p.derive !== undefined) {
-    if (!isObj(p.derive))
-      fail('derive_invalid', 'derive maps names to { diff }, { ratio } or { value }', ['derive']);
-    for (const [n, spec] of Object.entries(p.derive)) {
-      const at = ['derive', n];
-      if (!IDENT.test(n)) fail('derive_invalid', `derive name '${n}' must be an identifier`, at);
-      const entries = isObj(spec) ? Object.entries(spec) : [];
-      const [op, operands] = entries[0] ?? [];
-      if (entries.length === 1 && op === 'value') {
-        if (typeof operands !== 'string') {
-          fail('derive_invalid', "a derive { value } takes one operand such as '_agg.x'", at);
-        }
-        deriveOperand(operands, [...at, op], scope, h);
-        derived.add(n);
-        continue;
-      }
-      if (
-        entries.length !== 1 ||
-        (op !== 'diff' && op !== 'ratio') ||
-        !Array.isArray(operands) ||
-        operands.length !== 2
-      ) {
-        fail(
-          'derive_invalid',
-          'a derive is { diff: [a, b] }, { ratio: [a, b] } or { value: a }',
-          at
-        );
-      }
-      operands.forEach((o: unknown, i) => {
-        deriveOperand(o, [...at, op, String(i)], scope, h);
-      });
-      derived.add(n);
-    }
-  }
   const selected = new Set<string>();
   if (p.select !== undefined) {
     if (!isObj(p.select)) fail('select_invalid', 'select maps names to expressions', ['select']);
@@ -895,7 +820,7 @@ export function validateFrameParams(
       selected.add(n);
     }
   }
-  return { derived, selected: new Set([...selected, ...outputs.keys()]) };
+  return { selected: new Set([...selected, ...outputs.keys()]) };
 }
 
 const FRAME_AGG_FNS = ['count', 'countDistinct', 'avg', 'sum', 'min', 'max'];
@@ -947,25 +872,4 @@ function frameAggType(agg: Record<string, unknown>, scope: WalkScope, path: stri
     fail('agg_invalid', `${fn} needs ${ok[fn].join(', ')}; the argument is ${t}`, at);
   }
   return fn === 'count' || fn === 'countDistinct' || fn === 'avg' ? 'number' : t;
-}
-
-/** `$.<number field>` of the seed row, or `_agg.<name>` of a number-valued frame aggregate. */
-function deriveOperand(o: unknown, path: string[], scope: WalkScope, h: FrameHelpers): void {
-  const m = typeof o === 'string' ? /^(\$|_agg)\.(.+)$/.exec(o) : null;
-  let kind: string | undefined;
-  if (m !== null) {
-    const [, src, name] = m as unknown as [string, string, string];
-    if (src === '_agg') kind = scope.aggs?.get(name);
-    else {
-      const def = h.lookup(scope.fields, name);
-      kind = def === undefined ? undefined : h.kindOf(def);
-    }
-  }
-  if (kind !== 'scalar.number') {
-    fail(
-      'derive_invalid',
-      `derive operand '${String(o)}' must be a number field '$.<field>' or a number-valued '_agg.<name>' in this frame's fields`,
-      path
-    );
-  }
 }
