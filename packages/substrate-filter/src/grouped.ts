@@ -135,8 +135,6 @@ export function groupRows(
   const keys = Object.entries(p.groupBy ?? {});
   const aggs = Object.entries(p.aggregate).map(([name, spec]) => ({ name, ...aggParts(spec) }));
   const typeOf = (e: Expr): ExprType | null => {
-    const m = typeof e === 'string' && fieldType(e) === undefined ? metadataExprType(e) : undefined;
-    if (m !== undefined) return m;
     const r = checkExpr(e, { field: fieldType }, []);
     return r.ok ? r.type : null;
   };
@@ -175,11 +173,7 @@ export function groupRows(
       });
       aggs.forEach((a, i) => {
         const at = argTypes[i] as ExprType | null;
-        const meta =
-          typeof a.arg === 'string' && fieldType(a.arg) === undefined && metadataExprType(a.arg);
-        const values = rows.map((r) =>
-          readable((meta ? getFieldValue(r, a.arg as string) : evalExpr(a.arg, r, env)) ?? null, at)
-        );
+        const values = rows.map((r) => readable(evalExpr(a.arg, r, env) ?? null, at));
         g[a.name] = aggregateOf(a.op, a.arg, argTypes[i] as ExprType | null, values, rows.length);
       });
       groups.push(g);

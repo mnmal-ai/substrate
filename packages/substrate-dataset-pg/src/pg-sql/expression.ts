@@ -116,8 +116,8 @@ export function compileExprTyped(
   const field = (name: string): Node => {
     const out = ctx.outputs?.get(name);
     const col = ctx.table.column(name);
-    // createdAt, updatedAt and seq are columns every type has, whatever it declares.
-    const meta = out === undefined && col === undefined ? metadataExprType(name) : undefined;
+    // createdAt, updatedAt and seq always mean the metadata column, as in where and orderBy.
+    const meta = out === undefined ? metadataExprType(name) : undefined;
     if (meta !== undefined) {
       const c = u(metadataColumnSql(name as MetadataFieldName, ctx.alias));
       return meta === 'number' ? { f: sql`(${c})::float8`, t: meta } : { f: c, t: meta };

@@ -637,9 +637,10 @@ function exprScopeOf(scope: WalkScope, withAgg: boolean): ExprScope {
         const kind = withAgg ? scope.aggs?.get(name.slice(5)) : undefined;
         return kind === undefined ? undefined : AGG_EXPR_TYPE[kind];
       }
-      return Object.hasOwn(scope.fields, name)
-        ? exprTypeOfField(scope.fields[name])
-        : metadataExprType(name);
+      return (
+        metadataExprType(name) ??
+        (Object.hasOwn(scope.fields, name) ? exprTypeOfField(scope.fields[name]) : undefined)
+      );
     }
   };
 }

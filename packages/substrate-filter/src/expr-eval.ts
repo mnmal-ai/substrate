@@ -6,6 +6,7 @@
 
 import type { Expr, ExprType, Row } from '@mnmal-ai/substrate-types';
 import { checkExpr } from './expr-check.js';
+import { metadataExprType } from './expr-scope.js';
 import { getFieldValue } from './predicate.js';
 import { compileRegex, execRegex } from './regex-vm.js';
 
@@ -195,7 +196,11 @@ export function evalExpr(expr: Expr, row: Record<string, unknown>, env: EvalEnv)
     const fromOutput = env.output !== undefined && Object.hasOwn(env.output, expr);
     const v = fromOutput
       ? (env.output as Record<string, unknown>)[expr]
-      : (getFieldValue(row as Row, expr) ?? null);
+      : ((metadataExprType(expr) !== undefined
+          ? getFieldValue(row as Row, expr)
+          : Object.hasOwn(row, expr)
+            ? row[expr]
+            : null) ?? null);
     if (v === undefined || v === null) return null;
     // A number field (or number-valued `_agg`) holding anything else reads as null, as pg's substrate_num does.
     if (typeof v !== 'number' && env.fieldType(expr) === 'number') return null;

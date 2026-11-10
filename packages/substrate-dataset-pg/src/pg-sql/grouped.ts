@@ -22,8 +22,7 @@ import type { Sql, TransactionSql } from 'postgres';
 import type { TypeTable } from '../type-table.js';
 import { exactNumeric } from './aggregate.js';
 import { compileExprTyped } from './expression.js';
-import { metadataColumnSql } from './predicates-metadata.js';
-import { type Fragment, isMetadataField } from './primitives.js';
+import type { Fragment } from './primitives.js';
 
 /** 2^1024 − 2^970, the least value float8 rounds to Infinity, as an exact numeric. */
 const OVERFLOW = `${2n ** 1024n - 2n ** 970n}::numeric`;
@@ -74,25 +73,12 @@ export function buildGroupedRead(
   });
   const aggs = Object.entries(spec.aggregate).map(([name, a], j) => {
     const { op, arg } = aggParts(a);
-    const meta =
-      typeof arg === 'string' && fieldType(arg) === undefined && isMetadataField(arg)
-        ? metadataExprType(arg)
-        : undefined;
-    const c =
-      arg === true && op === 'count'
-        ? undefined
-        : meta !== undefined
-          ? {
-              // seq is a bigint column; a number is float8.
-              fragment: sql`${u(metadataColumnSql(arg as 'seq', 'r'))}${u(meta === 'number' ? '::float8' : '')}`,
-              type: meta
-            }
-          : compile(arg);
+    const c = arg === true && op === 'count' ? undefined : compile(arg);
     const t = c?.type ?? null;
     const f = c?.fragment as Fragment;
     // A bare number field keeps its stored decimal exactly; any other float8 goes through its shortest text.
     const text =
-      typeof arg === 'string' && t === 'number'
+      typeof arg === 'string' && t === 'number' && metadataExprType(arg) === undefined
         ? exactNumeric(sql, table, arg, 'r')
         : sql`(${f})::text::numeric`;
     let raw: Fragment;
