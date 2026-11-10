@@ -28,9 +28,11 @@ import {
   decodeCursor,
   type ExtensionOpResultMeta,
   encodeCursor,
+  exprTypeOfField,
   fieldRequested,
   fullBuiltinOperators,
-  preResolveExtensionOperatorsDetailed
+  preResolveExtensionOperatorsDetailed,
+  walkAggExprType
 } from '@mnmal-ai/substrate-filter';
 import type {
   ActorIdentity,
@@ -38,6 +40,7 @@ import type {
   Dataset,
   DeleteResult,
   DropResult,
+  ExprType,
   FieldDef,
   FilterCapabilities,
   FilterWriteOptions,
@@ -99,7 +102,9 @@ import {
   mergeWalkColumns,
   prepareWindows
 } from './pg-sql/aggregate.js';
+import { compileExprTyped } from './pg-sql/expression.js';
 import { fieldExprSql, sqlStringLiteral } from './pg-sql/primitives.js';
+import type { DerivedLookup } from './pg-sql/sorting.js';
 import {
   buildDerive,
   prepareSharedPicks,
@@ -880,7 +885,52 @@ export class PgDataset implements Dataset {
     // shortcut: with the shortId join the where reads `s`, so there the
     // expression is inlined at each use; fence that join too if it ever costs.
     const derive = params.derive;
+    // `select` expressions, compiled once: each is a column of the page, and an
+    // orderBy key by its name. A string sorts by byte order, as memory's.
+    const selectEntries = Object.entries(params.select ?? {});
+    const selectFragments = new Map<string, Fragment>();
+    const selectTypes = new Map<string, ExprType>();
+    if (selectEntries.length > 0) {
+      const used = JSON.stringify(params.select);
+      const outputs = new Map<string, Fragment>();
+      const aggTypes = new Map<string, ExprType>();
+      for (const [name, spec] of Object.entries(frameAggs ?? {})) {
+        const t = walkAggExprType(spec, type, fieldDef);
+        if (!used.includes(`"_agg.${name}"`) || t === undefined || scope?.aggValue === undefined) {
+          continue;
+        }
+        // The aggregate is a jsonb value; read it as the type the evaluator reads it as.
+        const v = scope.aggValue(name);
+        outputs.set(
+          `_agg.${name}`,
+          t === 'number'
+            ? sql`substrate_num(${v})::float8`
+            : t === 'date'
+              ? sql`substrate_ts(${v})`
+              : sql`(${v}) #>> '{}'`
+        );
+        aggTypes.set(`_agg.${name}`, t);
+      }
+      const fieldType = (name: string) =>
+        aggTypes.get(name) ?? exprTypeOfField(fieldDef(type, name));
+      for (const [name, expr] of selectEntries) {
+        const { fragment, type: t } = compileExprTyped(sql, expr, {
+          table,
+          alias: 'r',
+          outputs,
+          fieldType
+        });
+        selectFragments.set(name, fragment);
+        selectTypes.set(name, t ?? 'string');
+      }
+    }
     const derivedExpr = (field: string): Fragment | undefined => {
+      const chosen = Object.hasOwn(params.select ?? {}, field)
+        ? selectFragments.get(field)
+        : undefined;
+      if (chosen !== undefined) {
+        return selectTypes.get(field) === 'string' ? sql`((${chosen}) COLLATE "C")` : chosen;
+      }
       const name = field.slice(1);
       if (scope === undefined || derive === undefined || !field.startsWith('$')) return undefined;
       const spec = Object.hasOwn(derive, name) ? derive[name] : undefined;
@@ -888,8 +938,11 @@ export class PgDataset implements Dataset {
     };
     const lead = orderBy[0]?.[0] ?? 'id';
     const fenced = joinShortIds ? undefined : derivedExpr(lead);
-    const derivedFor = (field: string): Fragment | undefined =>
-      fenced !== undefined && field === lead ? sql`r.__derive_0` : derivedExpr(field);
+    const derivedFor: DerivedLookup = Object.assign(
+      (field: string): Fragment | undefined =>
+        fenced !== undefined && field === lead ? sql`r.__derive_0` : derivedExpr(field),
+      { typeOf: (field: string) => selectTypes.get(field) }
+    );
     // OFFSET 0 keeps the subquery from being flattened back into one evaluation per use.
     const rel = sql.unsafe(table.from);
     const from =
@@ -976,6 +1029,24 @@ export class PgDataset implements Dataset {
     // One page query: phase 1 with the cursor compare, or the null tail.
     // A read that names its fields gets the metadata columns and short_ids
     // lookup only when it asks for them; the transport would drop them anyway.
+    // Each `select` value is one column of the page, shipped as the text the evaluator's value reads from (a date as `utcTextSql(.., 'US')` prints it).
+    const selectColumns = selectEntries.map(([name], i) => {
+      const fragment =
+        fenced !== undefined && name === lead
+          ? sql`r.__derive_0`
+          : (selectFragments.get(name) as Fragment);
+      const alias = sql(`__sel_${i}`);
+      switch (selectTypes.get(name)) {
+        case 'date':
+          return sql`, to_char((${fragment}) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS ${alias}`;
+        case 'int64':
+          return sql`, (${fragment})::text AS ${alias}`;
+        default:
+          return sql`, ${fragment} AS ${alias}`;
+      }
+    });
+    const selectProjection =
+      selectColumns.length === 0 ? sql`` : (selectColumns as unknown as Fragment);
     const withMeta = readsRowMetadata(params.fields);
     const withShortId = readsShortId(params.fields);
     const metaColumns = withMeta
@@ -986,7 +1057,7 @@ export class PgDataset implements Dataset {
     const statement = (where: Fragment, n: number | undefined) =>
       joinShortIds
         ? sql`
-          SELECT r.id, ${rowProjection}, r.deleted_at, s.short_id${metaColumns}${sortKeyProjection}
+          SELECT r.id, ${rowProjection}, r.deleted_at, s.short_id${metaColumns}${selectProjection}${sortKeyProjection}
           FROM ${from}
           LEFT JOIN short_ids s
             ON ${ownerOn}
@@ -999,7 +1070,7 @@ export class PgDataset implements Dataset {
           SELECT p.*${withShortId ? sql`, s.short_id` : sql``}
           FROM (
             SELECT r.id, ${rowProjection}, r.deleted_at${metaColumns},
-                   ${owner}${sortKeyProjection}
+                   ${owner}${selectProjection}${sortKeyProjection}
             FROM ${from}
             WHERE ${where}
             ${orderBySql}
@@ -1014,7 +1085,7 @@ export class PgDataset implements Dataset {
           ) s ON true`
               : sql``
           }
-          ${buildProjectedOrderBy(sql, orderBy, sortKeyAliases, orderByCastFor, table, 'p')}
+          ${buildProjectedOrderBy(sql, orderBy, sortKeyAliases, orderByCastFor, table, 'p', derivedFor)}
         `;
     // The CTEs ride in front only when there are any, so a plain read's text
     // is exactly what it was (callers and tests key on its leading SELECT).
@@ -1051,12 +1122,22 @@ export class PgDataset implements Dataset {
       if (i > 0 && i % MATERIALIZE_BATCH_ROWS === 0)
         await new Promise<void>((resolve) => setImmediate(resolve));
       const r = rows[i] as TableRowRecord;
-      materialised[i] = this.materialize(
+      const row = this.materialize(
         walk === null ? r : mergeWalkColumns(r, walk.columns, orders),
         fields,
         table,
         params.fields
       );
+      for (const [k, [name]] of selectEntries.entries()) {
+        const v = (r as unknown as Record<string, unknown>)[`__sel_${k}`];
+        row[name] =
+          v === null || v === undefined
+            ? null
+            : selectTypes.get(name) === 'int64'
+              ? BigInt(v as string)
+              : v;
+      }
+      materialised[i] = row;
     }
     let hasMore = false;
     let sliced = materialised;

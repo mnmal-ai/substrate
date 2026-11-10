@@ -39,6 +39,8 @@ const SCHEMAS: Record<string, TypeSchema> = {
       cert: ref('Cert'),
       price: { kind: 'scalar', type: 'number' },
       observedAt: { kind: 'scalar', type: 'date' },
+      flag: { kind: 'scalar', type: 'boolean' },
+      qty: { kind: 'scalar', type: 'int64' },
       elsewhere: ref('Cert', 'other'),
       dims: { kind: 'struct', fields: { w: { kind: 'scalar', type: 'number' } } }
     }
@@ -660,5 +662,114 @@ describe('aggregate, derive, bucket, count and nested validation', () => {
         }
       })
     ).toEqual({ code: 'walk_unsupported_ref', path: ['fields', 'listings', 'fields', 'cert'] });
+  });
+});
+
+describe('select and $expr validation', () => {
+  it('accepts a select over fields and a frame _agg, ordered by its names', () => {
+    expect(() =>
+      checkFrame({
+        fields: { id: true, _agg: SPEC_AGG },
+        select: { gap: { sub: ['psaOffer', 'ask'] }, n: '_agg.obsCount', up: { upper: ['label'] } },
+        orderBy: [{ gap: 'desc' }, { n: 'asc' }]
+      })
+    ).not.toThrow();
+  });
+
+  it('refuses a select name that is a field, an unknown field and a bad expression', () => {
+    expect(frameRefusal({ select: { label: { upper: ['label'] } } })).toEqual({
+      code: 'select_invalid',
+      path: ['select', 'label']
+    });
+    expect(frameRefusal({ select: { x: { add: ['nope', 1] } } }).code).toBe('expr_invalid');
+    expect(frameRefusal({ select: { x: { add: ['label', 1] } } }).code).toBe('expr_invalid');
+    expect(frameRefusal({ select: { x: '_agg.obsCount' } }).code).toBe('expr_invalid');
+  });
+
+  it('refuses a select beside count or aggregate', () => {
+    expect(frameRefusal({ count: true, select: { x: 'ask' } }).code).toBe('count_conflict');
+    expect(frameRefusal({ aggregate: { n: { count: true } }, select: { x: 'ask' } }).code).toBe(
+      'agg_invalid'
+    );
+  });
+
+  it('accepts exactly maxNodesPerFrame nodes and refuses one more, naming the limit', () => {
+    // 64 nodes is the per-expression cap: 16 of them are exactly 1,024.
+    const e = { coalesce: Array.from({ length: 63 }, () => 'ask') };
+    const select: Record<string, unknown> = Object.fromEntries(
+      Array.from({ length: 16 }, (_, i) => [`s${i}`, e])
+    );
+    expect(() => checkFrame({ select })).not.toThrow();
+    select.extra = 'ask';
+    try {
+      checkFrame({ select });
+      throw new Error('expected a refusal');
+    } catch (err) {
+      expect(err).toBeInstanceOf(FilterValidationError);
+      expect((err as FilterValidationError).code).toBe('expr_invalid');
+      expect((err as Error).message).toContain('maxNodesPerFrame');
+    }
+  });
+
+  it('refuses a select name that is a row key, a metadata key or a nested selection', () => {
+    for (const name of ['id', 'createdBy', 'updatedBy', '_metadata', 'shortId', 'createdAt']) {
+      expect(frameRefusal({ select: { [name]: 'ask' } }), name).toEqual({
+        code: 'select_invalid',
+        path: ['select', name]
+      });
+    }
+    expect(
+      frameRefusal({
+        fields: {
+          id: true,
+          obs: { _walk: { in: 'cards/Observation.cert' }, fields: { id: true } }
+        },
+        select: { obs: 'ask' }
+      })
+    ).toEqual({ code: 'select_invalid', path: ['select', 'obs'] });
+    // Projecting a select name in `fields` is how it is read, so it is allowed.
+    expect(() =>
+      checkFrame({ fields: { id: true, gap: true }, select: { gap: 'ask' } })
+    ).not.toThrow();
+  });
+
+  it('says a boolean or int64 _agg cannot be used in an expression', () => {
+    const aggs = {
+      b: { in: 'cards/Observation.cert', latest: { by: 'observedAt', value: 'flag' } },
+      i: { in: 'cards/Observation.cert', latest: { by: 'observedAt', value: 'qty' } }
+    };
+    for (const n of ['b', 'i']) {
+      const r = (() => {
+        try {
+          checkFrame({ fields: { id: true, _agg: aggs }, select: { x: `_agg.${n}` } });
+        } catch (err) {
+          return err as FilterValidationError;
+        }
+        throw new Error('expected a refusal');
+      })();
+      expect(r.code).toBe('expr_invalid');
+      expect(r.message).toContain('cannot use');
+    }
+  });
+
+  it('where.$expr must be boolean, and sits beside field filters and combinators', () => {
+    expect(() =>
+      checkFrame({ where: { grade: { eq: 9 }, $expr: { gt: ['psaOffer', 'ask'] } } })
+    ).not.toThrow();
+    expect(() =>
+      checkFrame({ where: { OR: [{ $expr: { gt: ['psaOffer', 'ask'] } }, { grade: { eq: 1 } }] } })
+    ).not.toThrow();
+    expect(frameRefusal({ where: { $expr: { add: ['ask', 1] } } })).toEqual({
+      code: 'expr_invalid',
+      path: ['where', '$expr']
+    });
+  });
+
+  it('refuses $expr inside a walk', () => {
+    expect(
+      frameRefusal({
+        where: { _walk: { in: 'cards/Listing.cert', where: { $expr: { gt: ['price', 1] } } } }
+      }).code
+    ).toBe('expr_invalid');
   });
 });

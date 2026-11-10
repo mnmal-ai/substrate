@@ -17,6 +17,7 @@ import type {
   BucketSpec,
   Dataset,
   DeriveSpec,
+  Expr,
   FieldDef,
   FrameAgg,
   Id,
@@ -44,7 +45,8 @@ const KNOWN_LIST_PARAMS: ReadonlySet<string> = new Set([
   'count',
   'aggregate',
   'bucket',
-  'derive'
+  'derive',
+  'select'
 ]);
 
 function extractLimit(params: Record<string, unknown> | undefined): number | undefined {
@@ -97,6 +99,7 @@ export function listResolver<_T extends Row = Row>(
     if (p.aggregate !== undefined) readParams.aggregate = p.aggregate as Record<string, FrameAgg>;
     if (p.bucket !== undefined) readParams.bucket = p.bucket as BucketSpec;
     if (p.derive !== undefined) readParams.derive = p.derive as Record<string, DeriveSpec>;
+    if (p.select !== undefined) readParams.select = p.select as Record<string, Expr>;
     // Forward the caller's field selection so substrates (PgDataset) can
     // narrow the body keys they materialise from storage. Substrates MAY
     // ignore the hint. `_agg` and nested `{ _walk }` selections are lifted out

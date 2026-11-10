@@ -13,6 +13,7 @@
  */
 
 import {
+  type Expr,
   type FieldDef,
   type FieldPredicate,
   METADATA_FILTER_FIELDS,
@@ -25,6 +26,9 @@ import {
   type WalkNode,
   type WhereClause
 } from '@mnmal-ai/substrate-types';
+import { endsWithEscape, LIKE_TRAILING_ESCAPE } from './expr-check.js';
+import { evalExpr, likeMatch } from './expr-eval.js';
+import { fieldTypeLookup } from './expr-scope.js';
 import { getExtensionOperator } from './extension-operators.js';
 import {
   assertJsonPathPredicate,
@@ -136,6 +140,8 @@ const KNOWN_OPS = new Set<string>([
   'contains',
   'startsWith',
   'endsWith',
+  'like',
+  'notLike',
   'has'
 ]);
 
@@ -160,6 +166,7 @@ export function assertWhereHonourable(where: WhereClause): void {
   // `{ _agg, gte: 3 }`: the comparison beside `_agg` is not a field.
   if (Object.hasOwn(where, '_agg')) return;
   for (const [key, child] of Object.entries(where as Record<string, unknown>)) {
+    if (key === '$expr') continue;
     if (key === 'AND' || key === 'OR') {
       if (Array.isArray(child)) for (const sub of child) assertWhereHonourable(sub as WhereClause);
       continue;
@@ -227,8 +234,13 @@ function assertFieldPredicateHonourable(field: string, predicate: unknown): void
       case 'contains':
       case 'startsWith':
       case 'endsWith':
+      case 'like':
+      case 'notLike':
         if (typeof operand !== 'string') {
           throw new UnsupportedFilterError(field, op, 'requires a string value');
+        }
+        if ((op === 'like' || op === 'notLike') && endsWithEscape(operand)) {
+          throw new UnsupportedFilterError(field, op, LIKE_TRAILING_ESCAPE);
         }
         break;
       default:
@@ -299,6 +311,10 @@ export function evaluateMembers(
       }
     } else if (k === 'NOT') {
       if (evaluateWhere(row, child as WhereClause, fieldDefOf, walk)) return false;
+    } else if (k === '$expr') {
+      // Checked by the validator; a null result (SQL NULL) is not a match.
+      if (evalExpr(child as Expr, row, { fieldType: fieldTypeLookup(fieldDefOf) }) !== true)
+        return false;
     } else if (k === '_walk') {
       if (walk === undefined)
         throw new UnsupportedFilterError(k, '<none>', 'walks need a walk context');
@@ -438,6 +454,17 @@ function applyOp(
       if (op === 'contains') return v.includes(o);
       if (op === 'startsWith') return v.startsWith(o);
       return v.endsWith(o);
+    }
+    // Case-sensitive, over code points; a non-string value never matches, as SQL NULL.
+    case 'like':
+    case 'notLike': {
+      if (typeof operand !== 'string') {
+        throw new UnsupportedFilterError(field, op, 'requires a string value');
+      }
+      if (endsWithEscape(operand))
+        throw new UnsupportedFilterError(field, op, LIKE_TRAILING_ESCAPE);
+      if (typeof value !== 'string') return false;
+      return likeMatch(value, operand) === (op === 'like');
     }
     case 'has':
       // List-element membership: `value` is the row's list, `operand` the

@@ -47,6 +47,7 @@ import {
 } from '@mnmal-ai/substrate-types';
 import {
   bindGroup,
+  checkFrameExpr,
   type FrameHelpers,
   validateFrameParams,
   validateRef,
@@ -76,6 +77,8 @@ export type FilterErrorCode =
   | 'ref_kind_mismatch'
   | 'agg_invalid'
   | 'derive_invalid'
+  | 'expr_invalid'
+  | 'select_invalid'
   | 'bucket_invalid'
   | 'count_conflict';
 
@@ -669,7 +672,9 @@ function validateWhereAgainstFields(
   // key must be a combinator — mixing fields with AND/OR/NOT is ambiguous
   // (intended implicit AND? intended OR sibling? spec says implicit-AND only
   // on a flat field map). Reject the mixed form.
-  const keys = Object.keys(where);
+  // `$expr` ANDs with its siblings and is neither a field nor a combinator.
+  if (Object.hasOwn(where, '$expr')) validateWhereExpr(where, path, ctx);
+  const keys = Object.keys(where).filter((k) => k !== '$expr');
   const hasLogical = keys.some((k) => LOGICAL_KEYS.has(k));
   const hasField = keys.some((k) => !LOGICAL_KEYS.has(k));
 
@@ -796,6 +801,22 @@ function validateWhereAgainstFields(
   }
 }
 
+/** `where.$expr`: a boolean expression over the seed row's fields, outside walks and structs. */
+function validateWhereExpr(where: object, path: string[], ctx: WalkContext): void {
+  const at = [...path, '$expr'];
+  if (ctx.walk.depth > 0 || ctx.insideStruct === true) {
+    throw new FilterValidationError(
+      'expr_invalid',
+      "$expr is valid only in the frame's own where, not inside a walk or struct",
+      at
+    );
+  }
+  const type = checkFrameExpr((where as { $expr: unknown }).$expr, ctx.walk, false, at);
+  if (type !== 'boolean') {
+    throw new FilterValidationError('expr_invalid', `$expr must be boolean, got ${type}`, at);
+  }
+}
+
 const AGG_COMPARATORS = new Set(['eq', 'neq', 'gt', 'gte', 'lt', 'lte']);
 
 /** Inside OR / NOT: a fresh group, and no binding is referenceable. */
@@ -880,7 +901,8 @@ function validateOrderBy(
   fields: Record<string, FieldDef>,
   capabilities: FilterCapabilities,
   path: string[] = ['orderBy'],
-  derived: ReadonlySet<string> = new Set()
+  derived: ReadonlySet<string> = new Set(),
+  selected: ReadonlySet<string> = new Set()
 ): void {
   if (!capabilities.orderBy) {
     throw new FilterValidationError(
@@ -936,6 +958,9 @@ function validateOrderBy(
       );
     }
 
+    // A `select` name orders by its computed value.
+    if (selected.has(fieldName)) return;
+
     // Row-metadata projection fields (createdAt/updatedAt/createdBy*/updatedBy*)
     // are virtual filter fields — not declared in type schemas — but the dataset
     // layer routes them to indexed native columns. Same fallback as
@@ -982,6 +1007,7 @@ export interface ValidateFilterInput {
   aggregate?: unknown;
   bucket?: unknown;
   derive?: unknown;
+  select?: unknown;
   cursor?: unknown;
   fields?: Record<string, unknown>;
 }
@@ -998,7 +1024,8 @@ export function validateFilter(input: ValidateFilterInput): void {
     hidden: new Set(),
     underOrNot: false,
     groupBound: false,
-    frameBindings: { count: 0 }
+    frameBindings: { count: 0 },
+    exprNodes: { count: 0 }
   };
   const h = frameHelpers(input.capabilities);
   const aggs = validateSelection(input.fields, ['fields'], seed, h);
@@ -1008,8 +1035,8 @@ export function validateFilter(input: ValidateFilterInput): void {
       walk: scope
     });
   }
-  const derived = validateFrameParams(input, scope, h);
+  const { derived, selected } = validateFrameParams(input, scope, h);
   if (input.orderBy !== undefined) {
-    validateOrderBy(input.orderBy, fields, input.capabilities, ['orderBy'], derived);
+    validateOrderBy(input.orderBy, fields, input.capabilities, ['orderBy'], derived, selected);
   }
 }

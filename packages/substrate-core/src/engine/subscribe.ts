@@ -3,10 +3,15 @@
  * (§5.4, §5.13). Mutate feeds it through `dispatchWrites(events)`.
  */
 
-import { evaluateWhere, whereContainsExtensionOperator } from '@mnmal-ai/substrate-filter';
+import {
+  evaluateWhere,
+  type FieldDefOf,
+  whereContainsExtensionOperator
+} from '@mnmal-ai/substrate-filter';
 import type {
   DatasetRegistry,
   EdgesStore,
+  FieldDef,
   FieldInput,
   FrameEntry,
   OrderByClause,
@@ -92,6 +97,8 @@ export interface SubscribeSubsystemDeps {
   isTombstoned: (ns: string) => boolean;
 }
 
+const NO_FIELDS: FieldDefOf = () => undefined;
+
 export class SubscribeSubsystem {
   readonly #namespaces: Map<string, NamespaceConfig>;
   readonly #datasets: DatasetRegistry;
@@ -100,6 +107,8 @@ export class SubscribeSubsystem {
   readonly #subscriptionQueueLimit: number;
   readonly #snapshotLimit: number | undefined;
   readonly #schemaFor: (ns: string) => Schema;
+  /** One field lookup per type's field map, so the evaluator's per-node type cache holds across events. */
+  readonly #fieldDefs = new WeakMap<object, FieldDefOf>();
   readonly #isTombstoned: (ns: string) => boolean;
   /**
    * Live subscription bus (§5.4). Keyed by `"<ns>/<type>"` so the mutate
@@ -880,6 +889,16 @@ export class SubscribeSubsystem {
     idSet.add(entry);
   }
 
+  #fieldDefOf(fields: Record<string, FieldDef> | undefined): FieldDefOf {
+    if (fields === undefined) return NO_FIELDS;
+    let f = this.#fieldDefs.get(fields);
+    if (f === undefined) {
+      f = (name) => (Object.hasOwn(fields, name) ? fields[name] : undefined);
+      this.#fieldDefs.set(fields, f);
+    }
+    return f;
+  }
+
   /**
    * Remove an entry from the bus + per-call index (mirrors the drain teardown).
    * Used when a post-registration step bails before the snapshot ships.
@@ -953,7 +972,9 @@ export class SubscribeSubsystem {
     try {
       const fields = this.#schemaFor(entry.ns).types[entry.type]?.fields;
       whereMatches =
-        entry.where === undefined ? true : evaluateWhere(row, entry.where, (f) => fields?.[f]);
+        entry.where === undefined
+          ? true
+          : evaluateWhere(row, entry.where, this.#fieldDefOf(fields));
     } catch (err) {
       const code = isResolverFrameError(err) ? err.code : 'resolver_error';
       this.#enqueueFrame(entry, {
