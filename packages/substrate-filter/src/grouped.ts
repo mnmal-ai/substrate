@@ -14,8 +14,7 @@ import {
 } from '@mnmal-ai/substrate-types';
 import { checkExpr } from './expr-check.js';
 import { evalExpr } from './expr-eval.js';
-import { metadataExprType } from './expr-scope.js';
-import { getFieldValue, storedMicros } from './predicate.js';
+import { storedMicros } from './predicate.js';
 import { isoFromMicros, numericAgg } from './walk.js';
 
 const ARITHMETIC = new Set(['add', 'sub', 'mul', 'div', 'mod', 'neg']);
