@@ -1085,7 +1085,7 @@ describe.skipIf(!POSTGRES_URL)('count, aggregate and bucket (pg)', () => {
   it('aggregate over the whole result', async () => {
     await fixture();
     const all = await sameResult('Observation', { aggregate: FRAME });
-    expect(all.groups?.[0]).toMatchObject({ n: 7, hi: 9, first: '2026-10-02T01:30:00+02:00' });
+    expect(all.groups?.[0]).toMatchObject({ n: 7, hi: 9, first: '2026-10-01T23:30:00.000000Z' });
     const one = await sameResult('Observation', {
       aggregate: FRAME,
       where: obs() as WhereClause,

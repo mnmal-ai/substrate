@@ -267,7 +267,7 @@ export function resolveRef(ref: RefOperand, asDate: boolean, walk: WalkContext):
 }
 
 /** An instant in microseconds as an ISO string with six fraction digits. */
-function isoFromMicros(micros: bigint): string {
+export function isoFromMicros(micros: bigint): string {
   const sub = ((micros % 1000n) + 1000n) % 1000n;
   const ms = Number((micros - sub) / 1000n);
   return new Date(ms).toISOString().replace('Z', `${sub.toString().padStart(3, '0')}Z`);
@@ -297,25 +297,28 @@ export function applyAgg(rows: Row[], fn: AggFn, fieldDefOf: FieldDefOf): unknow
     const v = one === undefined ? undefined : getFieldValue(one, field);
     return v == null || storedMicros(v) === undefined ? null : v;
   }
-  let n = 0;
-  let acc = 0;
-  for (const r of rows) {
-    const v = getFieldValue(r, field);
-    if (typeof v !== 'number') continue;
-    acc = n === 0 ? v : op === 'min' ? Math.min(acc, v) : op === 'max' ? Math.max(acc, v) : acc + v;
-    n++;
-  }
+  return numericAgg(
+    rows.map((r) => getFieldValue(r, field)),
+    op
+  );
+}
+
+/** avg/sum/min/max over the numbers among `values` (the rest drop out), null over none; float64, a sum past its range is null. */
+export function numericAgg(values: unknown[], op: 'avg' | 'sum' | 'min' | 'max'): number | null {
+  const nums = values.filter((v): v is number => typeof v === 'number');
+  const n = nums.length;
   if (n === 0) return null;
+  let acc = 0;
+  nums.forEach((v, i) => {
+    acc = i === 0 ? v : op === 'min' ? Math.min(acc, v) : op === 'max' ? Math.max(acc, v) : acc + v;
+  });
   if (!Number.isFinite(acc) && (op === 'sum' || op === 'avg')) {
     // Todo #1809: pg sums exactly and is null only when the exact sum is past
     // float8's range. Near enough, cheaply: re-sum scaled by 2^-64, so no
     // partial sum overflows. Order and cancellation drift between this and
     // the exact sum is accepted, as for the last bit of avg/sum.
     let scaled = 0;
-    for (const r of rows) {
-      const v = getFieldValue(r, field);
-      if (typeof v === 'number') scaled += v * 2 ** -64;
-    }
+    for (const v of nums) scaled += v * 2 ** -64;
     const out = (op === 'avg' ? scaled / n : scaled) * 2 ** 64;
     return Number.isFinite(out) ? out : null;
   }

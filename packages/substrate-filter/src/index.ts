@@ -50,6 +50,15 @@ export {
   whereContainsOperator
 } from './extension-operators.js';
 export {
+  aggParts,
+  aggType,
+  canRaise,
+  type Grouped,
+  type GroupedParams,
+  groupRows,
+  metadataArgType
+} from './grouped.js';
+export {
   assertJsonPathPredicate,
   evaluateJsonPathPredicate,
   isJsonPathPredicate,
@@ -85,7 +94,9 @@ export {
   computeAgg,
   groupConjuncts,
   hop,
+  isoFromMicros,
   isRefOperand,
+  numericAgg,
   refNames,
   WALK_EVALUATION_BUDGET,
   type WalkContext

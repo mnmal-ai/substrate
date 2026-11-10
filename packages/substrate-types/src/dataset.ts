@@ -123,7 +123,14 @@ export type AggFn =
 
 export type WalkAgg = { in?: string; out?: string; where?: WhereClause } & AggFn;
 
-export type FrameAgg = Exclude<AggFn, { latest: unknown }>;
+/** A frame aggregate: `count: true` counts rows; every other argument is an expression. */
+export type FrameAgg =
+  | { count: Expr }
+  | { countDistinct: Expr }
+  | { avg: Expr }
+  | { sum: Expr }
+  | { min: Expr }
+  | { max: Expr };
 
 export interface BucketSpec {
   field: string;
@@ -182,6 +189,12 @@ export interface ReadParams {
   count?: boolean;
   aggregate?: Record<string, FrameAgg>;
   bucket?: BucketSpec;
+  /** Group keys by output name; with `aggregate`, the read returns one group per distinct key tuple. */
+  groupBy?: Record<string, Expr>;
+  /** A boolean expression over group keys and aggregate names, applied before order and limit. */
+  having?: Expr;
+  /** Groups to skip, on a grouped read. */
+  offset?: number;
   derive?: Record<string, DeriveSpec>;
   /** Computed per-row values by output name: each row gains one key per entry, which `orderBy` may use. */
   select?: Record<string, Expr>;

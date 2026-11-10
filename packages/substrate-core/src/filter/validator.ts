@@ -79,6 +79,7 @@ export type FilterErrorCode =
   | 'derive_invalid'
   | 'expr_invalid'
   | 'select_invalid'
+  | 'group_invalid'
   | 'bucket_invalid'
   | 'count_conflict';
 
@@ -1008,6 +1009,9 @@ export interface ValidateFilterInput {
   bucket?: unknown;
   derive?: unknown;
   select?: unknown;
+  groupBy?: unknown;
+  having?: unknown;
+  offset?: unknown;
   cursor?: unknown;
   fields?: Record<string, unknown>;
 }
