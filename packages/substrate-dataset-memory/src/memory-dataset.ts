@@ -36,7 +36,6 @@ import {
   groupRows,
   hop,
   isDateField,
-  isGroupedRead,
   normalizeOrderBy,
   preResolveExtensionOperatorsDetailed,
   storedMicros,
@@ -321,17 +320,16 @@ export class MemoryDataset implements Dataset {
     // A count or whole-result aggregate returns no rows.
     if (params.count === true) return { rows: [], hasMore: false, count: pool.length };
     if (params.aggregate !== undefined) {
-      const fieldType = fieldTypeLookup(fieldDefOf);
-      if (isGroupedRead(params, fieldType)) {
-        const { groups, truncated } = groupRows(
-          pool,
-          { ...params, aggregate: params.aggregate },
-          fieldType,
-          limit
-        );
-        return { rows: [], hasMore: false, groups, ...(truncated ? { truncated: true } : {}) };
+      if (params.bucket !== undefined) {
+        return aggregateGroups(pool, params.aggregate, params.bucket, limit, fieldDefOf);
       }
-      return aggregateGroups(pool, params.aggregate, params.bucket, limit, fieldDefOf);
+      const { groups, truncated } = groupRows(
+        pool,
+        { ...params, aggregate: params.aggregate },
+        fieldTypeLookup(fieldDefOf),
+        limit
+      );
+      return { rows: [], hasMore: false, groups, ...(truncated ? { truncated: true } : {}) };
     }
 
     // Derived values ride on row copies as `$<name>`, so ordering and the
@@ -976,14 +974,14 @@ function conditionalMatchEq(actual: unknown, expected: unknown): boolean {
 }
 
 /**
- * A whole-result aggregate: one group, or one per UTC day/hour bucket in
+ * A bucketed whole-result aggregate: one group per UTC day/hour bucket in
  * ascending order. A row whose bucket field is null or not a date is in no
  * bucket. Groups beyond `limit` are cut and say `truncated`.
  */
 function aggregateGroups(
   pool: Row[],
   aggregate: NonNullable<ReadParams['aggregate']>,
-  bucket: ReadParams['bucket'],
+  bucket: NonNullable<ReadParams['bucket']>,
   limit: number | undefined,
   fieldDefOf: FieldDefOf
 ): ReadResult {
@@ -991,7 +989,6 @@ function aggregateGroups(
     Object.fromEntries(
       Object.entries(aggregate).map(([name, fn]) => [name, applyAgg(rows, fn as AggFn, fieldDefOf)])
     );
-  if (bucket === undefined) return { rows: [], hasMore: false, groups: [values(pool)] };
   const byKey = new Map<string, Row[]>();
   for (const row of pool) {
     const micros = storedMicros(getFieldValue(row, bucket.field));

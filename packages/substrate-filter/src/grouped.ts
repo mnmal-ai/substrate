@@ -44,25 +44,6 @@ export interface GroupedParams {
   orderBy?: OrderByClause[];
 }
 
-/**
- * Whether a read takes the grouped path rather than the one-group/bucket one:
- * it names a grouped param, or an aggregate the field-only form cannot say.
- */
-export function isGroupedRead(
-  p: GroupedParams,
-  fieldType: (name: string) => ExprType | undefined
-): boolean {
-  if (p.aggregate === undefined || p.bucket !== undefined) return false;
-  if (p.groupBy !== undefined || p.having !== undefined || p.offset !== undefined) return true;
-  return Object.values(p.aggregate).some((spec) => {
-    const { op, arg } = aggParts(spec);
-    if (op === 'count') return arg !== true;
-    if (op === 'countDistinct' || typeof arg !== 'string') return true;
-    const t = fieldType(arg);
-    return t !== undefined && t !== 'number' && !(t === 'date' && (op === 'min' || op === 'max'));
-  });
-}
-
 const isoMicros = (v: unknown): string | null => {
   const m = storedMicros(v);
   return m === undefined ? null : isoFromMicros(m);
@@ -77,6 +58,10 @@ function encode(v: unknown, t: ExprType | null): string {
   return `${typeof v === 'string' ? 's' : 'b'}${JSON.stringify(v)}`;
 }
 
+/** A date value `substrate_ts` cannot read is NULL on pg; so here. */
+const readable = (v: unknown, t: ExprType | null): unknown =>
+  t === 'date' && v !== null && storedMicros(v) === undefined ? null : v;
+
 const bytes = (a: string, b: string): number => Buffer.compare(Buffer.from(a), Buffer.from(b));
 
 /** Nulls compare after everything; otherwise by type, as pg sorts it (text in byte order). */
@@ -89,8 +74,12 @@ function compare(a: unknown, b: unknown, t: ExprType | null): number {
   return (a as number) < (b as number) ? -1 : (a as number) > (b as number) ? 1 : 0;
 }
 
+/** The evaluator's int64 and float range errors, as pg's 22003. */
+const RANGE_MESSAGE = /^(bigint|value) out of range/;
+
 function outOfRange(err: unknown): never {
-  if (err instanceof RangeError) throw new ResolverFrameError(VALUE_OUT_OF_RANGE, err.message);
+  if (err instanceof RangeError && RANGE_MESSAGE.test(err.message))
+    throw new ResolverFrameError(VALUE_OUT_OF_RANGE, err.message);
   throw err;
 }
 
@@ -151,7 +140,9 @@ export function groupRows(
   const buckets = new Map<string, { key: unknown[]; rows: Row[] }>();
   try {
     for (const row of pool) {
-      const key = keys.map(([, e]) => evalExpr(e, row, env) ?? null);
+      const key = keys.map(([, e], i) =>
+        readable(evalExpr(e, row, env) ?? null, keyTypes[i] as ExprType | null)
+      );
       const id = key.map((v, i) => encode(v, keyTypes[i] as ExprType | null)).join('\u0000');
       const b = buckets.get(id);
       if (b === undefined) buckets.set(id, { key, rows: [row] });
@@ -171,7 +162,8 @@ export function groupRows(
         g[n] = keyTypes[i] === 'date' ? isoMicros(key[i]) : key[i];
       });
       aggs.forEach((a, i) => {
-        const values = rows.map((r) => evalExpr(a.arg, r, env) ?? null);
+        const at = argTypes[i] as ExprType | null;
+        const values = rows.map((r) => readable(evalExpr(a.arg, r, env) ?? null, at));
         g[a.name] = aggregateOf(a.op, a.arg, argTypes[i] as ExprType | null, values, rows.length);
       });
       groups.push(g);
@@ -182,7 +174,13 @@ export function groupRows(
 
   if (p.having !== undefined) {
     const having = p.having;
-    groups = groups.filter((g) => evalExpr(having, {}, { output: g, fieldType: outType }) === true);
+    try {
+      groups = groups.filter(
+        (g) => evalExpr(having, {}, { output: g, fieldType: outType }) === true
+      );
+    } catch (err) {
+      outOfRange(err);
+    }
   }
 
   const order = [

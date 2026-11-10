@@ -142,18 +142,27 @@ function aggOver(
   // A `column`-state number is float8, so it is cast to numeric too, through
   // its shortest exact text: float8::numeric keeps 15 digits. Any other number
   // field reads as numeric already.
-  const c = table.column(field);
-  const v = isMetadataField(field)
-    ? sql.unsafe(`${metadataColumnSql(field, alias)}::numeric`)
-    : c === undefined || extraWins(c)
-      ? fieldExpr(sql, table, field, 'number', alias)
-      : sql`${fieldExpr(sql, table, field, 'number', alias)}::text::numeric`;
-  const s = sql`${sql.unsafe(op)}(${v})`;
+  const s = sql`${sql.unsafe(op)}(${exactNumeric(sql, table, field, alias)})`;
   return {
     agg: sql`to_jsonb(CASE WHEN abs(${s}) >= ${sql.unsafe(OVERFLOW)} THEN NULL
       WHEN abs(${s}) <= ${sql.unsafe(UNDERFLOW)} THEN 0::float8 ELSE ${s}::float8 END)`,
     kind: 'number'
   };
+}
+
+/** A number field read as an exact numeric: a stored decimal is never narrowed through float8. */
+export function exactNumeric(
+  sql: Sql | TransactionSql,
+  table: TypeTable,
+  field: string,
+  alias: string
+): Fragment {
+  const c = table.column(field);
+  return isMetadataField(field)
+    ? sql.unsafe(`${metadataColumnSql(field, alias)}::numeric`)
+    : c === undefined || extraWins(c)
+      ? fieldExpr(sql, table, field, 'number', alias)
+      : sql`${fieldExpr(sql, table, field, 'number', alias)}::text::numeric`;
 }
 
 /** 2^1024 − 2^970, the least value float8 rounds to Infinity, as an exact numeric. */
@@ -408,7 +417,7 @@ export function buildFrameCount(
 export function buildFrameAggregate(
   sql: Sql | TransactionSql,
   aggregate: Record<string, FrameAgg>,
-  bucket: BucketSpec | undefined,
+  bucket: BucketSpec,
   where: Fragment,
   limit: number | undefined,
   scope: WalkScope
@@ -424,17 +433,6 @@ export function buildFrameAggregate(
     const { agg, pick } = aggOver(sql, spec, table, r, fieldDef);
     if (pick === undefined) aggs.push(sql`${name}::text, ${agg}`);
     else picks.push([name, pick]);
-  }
-  if (bucket === undefined) {
-    // Scalar subqueries only, so the statement is one row even when nothing matches.
-    const picked = picks.map(
-      ([name, p]) => sql`${name}::text, ${pickRow(sql, p, table, r, where)}`
-    );
-    const whole =
-      aggs.length === 0
-        ? sql`'{}'::jsonb`
-        : sql`(SELECT ${buildObject(sql, aggs)} FROM ${T} ${R} WHERE ${where})`;
-    return sql`SELECT ${whole} || ${buildObject(sql, picked)} AS g`;
   }
   const [by, fmt] = bucket.by === 'day' ? ['day', 'YYYY-MM-DD'] : ['hour', 'YYYY-MM-DD"T"HH24'];
   // Outside WHERE, so the date index still serves the where's window.

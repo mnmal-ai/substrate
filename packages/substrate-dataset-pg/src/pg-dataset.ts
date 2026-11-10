@@ -31,7 +31,6 @@ import {
   exprTypeOfField,
   fieldRequested,
   fullBuiltinOperators,
-  isGroupedRead,
   preResolveExtensionOperatorsDetailed,
   walkAggExprType
 } from '@mnmal-ai/substrate-filter';
@@ -858,7 +857,7 @@ export class PgDataset implements Dataset {
         return { rows: [], hasMore: false, count: row?.n ?? 0 };
       }
       const aggregate = params.aggregate ?? {};
-      if (isGroupedRead(params, (name) => exprTypeOfField(fieldDef(type, name)))) {
+      if (params.bucket === undefined) {
         const grouped = buildGroupedRead(
           sql,
           { ...params, aggregate, limit },
@@ -890,8 +889,7 @@ export class PgDataset implements Dataset {
       const groups = (
         await run<{ g: Record<string, unknown> }>(sql`${withCtes(sql, scope)}${statement}`, 'g')
       ).map((x) => x.g);
-      // Only buckets are cut: memory's single group ignores limit.
-      const truncated = params.bucket !== undefined && limit !== undefined && groups.length > limit;
+      const truncated = limit !== undefined && groups.length > limit;
       return {
         rows: [],
         hasMore: false,

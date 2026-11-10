@@ -14,6 +14,7 @@ import { aggParts, aggType, exprTypeOfField } from '@mnmal-ai/substrate-filter';
 import type { Expr, ExprType, FieldDef, FrameAgg, OrderByClause } from '@mnmal-ai/substrate-types';
 import type { Sql, TransactionSql } from 'postgres';
 import type { TypeTable } from '../type-table.js';
+import { exactNumeric } from './aggregate.js';
 import { compileExprTyped } from './expression.js';
 import type { Fragment } from './primitives.js';
 
@@ -60,14 +61,20 @@ export function buildGroupedRead(
 
   const keys = Object.entries(spec.groupBy ?? {}).map(([name, e], i) => {
     const c = compile(e);
-    return { name, i, frag: c.fragment, type: c.type ?? ('string' as ExprType) };
+    // The validator refuses a key with no type.
+    if (c.type === null) throw new Error(`internal: group key '${name}' has no type`);
+    return { name, i, frag: c.fragment, type: c.type };
   });
   const aggs = Object.entries(spec.aggregate).map(([name, a], j) => {
     const { op, arg } = aggParts(a);
     const c = arg === true && op === 'count' ? undefined : compile(arg);
     const t = c?.type ?? null;
     const f = c?.fragment as Fragment;
-    const text = sql`(${f})::text::numeric`;
+    // A bare number field keeps its stored decimal exactly; any other float8 goes through its shortest text.
+    const text =
+      typeof arg === 'string' && t === 'number'
+        ? exactNumeric(sql, table, arg, 'r')
+        : sql`(${f})::text::numeric`;
     let raw: Fragment;
     switch (op) {
       case 'count':
@@ -77,9 +84,16 @@ export function buildGroupedRead(
         raw = sql`count(DISTINCT ${f})`;
         break;
       case 'sum':
+        // Todo #1809: float sums are exact in numeric, cast once to float8 below. An
+        // int64 sum is range-checked here, in the fenced inner select, for every group.
+        raw = t === 'int64' ? sql`sum(${f})::bigint` : sql`sum(${text})`;
+        break;
       case 'avg':
-        // Todo #1809: float sums are exact in numeric, cast once to float8 below.
-        raw = sql`${u(op)}(${t === 'int64' ? f : text})`;
+        // float8(exact sum) / count: one correctly rounded conversion and one division, as memory.
+        raw =
+          t === 'int64'
+            ? sql`sum(${f})::float8 / NULLIF(count(${f}), 0)::float8`
+            : sql`avg(${text})`;
         break;
       default:
         raw = sql`${u(op)}(${t === 'string' ? sql`(${f}) COLLATE "C"` : f})`;
@@ -89,21 +103,22 @@ export function buildGroupedRead(
     // The value as an expression of `type`, for having.
     let typed: Fragment;
     if (op === 'count' || op === 'countDistinct') typed = sql`${a_}::float8`;
-    else if (op === 'avg') typed = t === 'int64' ? sql`${a_}::float8` : floatOf(a_);
-    else if (op === 'sum') typed = t === 'int64' ? sql`${a_}::bigint` : floatOf(a_);
+    else if (op === 'avg' || op === 'sum') typed = t === 'int64' ? a_ : floatOf(a_);
     else typed = a_;
-    return { name, j, raw, typed, type, ordered: a_ };
+    return { name, j, raw, typed, type };
   });
   function floatOf(s: Fragment): Fragment {
     return sql`(CASE WHEN abs(${s}) >= ${u(OVERFLOW)} THEN NULL WHEN abs(${s}) <= ${u(UNDERFLOW)} THEN 0::float8 ELSE ${s}::float8 END)`;
   }
 
+  // OFFSET 0 fences the subquery: having, order and limit read its columns, so no qual
+  // reaches the Agg node ahead of the int64 range checks.
   const inner = sql`SELECT ${list([
     ...keys.map((k) => sql`${k.frag} AS ${u(`k${k.i}`)}`),
     ...aggs.map((a) => sql`${a.raw} AS ${u(`a${a.j}`)}`)
   ])} FROM ${u(table.from)} r${joins} WHERE ${matched}${
     keys.length === 0 ? sql`` : sql` GROUP BY ${u(keys.map((_, i) => i + 1).join(', '))}`
-  }`;
+  } OFFSET 0`;
 
   const outputs = new Map<string, Fragment>([
     ...keys.map((k) => [k.name, u(`x.k${k.i}`)] as const),
@@ -125,15 +140,17 @@ export function buildGroupedRead(
           }).fragment
         }`;
 
-  const col = (name: string): Fragment =>
-    keys.find((k) => k.name === name) !== undefined
-      ? u(`x.k${(keys.find((k) => k.name === name) as { i: number }).i}`)
-      : (aggs.find((a) => a.name === name) as { ordered: Fragment }).ordered;
+  // An ordered name is a key or an aggregate: the value it returns, so a NULL sorts last.
+  const col = new Map<string, Fragment>([
+    ...keys.map((k) => [k.name, u(`x.k${k.i}`)] as const),
+    ...aggs.map((a) => [a.name, a.typed] as const)
+  ]);
   const order = [
     ...(spec.orderBy ?? []).map((c) => Object.entries(c)[0] as [string, 'asc' | 'desc']),
     ...keys.map((k) => [k.name, 'asc'] as [string, 'asc' | 'desc'])
   ].map(([name, dir]) => {
-    const c = col(name);
+    const c = col.get(name);
+    if (c === undefined) throw new Error(`internal: orderBy '${name}' names no output`);
     const text = types.get(name) === 'string' ? sql`${c} COLLATE "C"` : c;
     return sql`${text} ${u(dir === 'asc' ? 'ASC' : 'DESC')} NULLS LAST`;
   });

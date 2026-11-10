@@ -11,7 +11,8 @@ import type { FieldDef, WhereClause } from '@mnmal-ai/substrate-types';
 import postgres from 'postgres';
 import { afterAll, describe, expect, it } from 'vitest';
 import { columnName, ident, typeTableName } from '../src/layout.js';
-import { buildFrameAggregate, buildNested, prepareWindows } from '../src/pg-sql/aggregate.js';
+import { buildNested, prepareWindows } from '../src/pg-sql/aggregate.js';
+import { buildGroupedRead } from '../src/pg-sql/grouped.js';
 import { buildRowProjection } from '../src/pg-sql/projection.js';
 import { buildOrderBy, buildSortKeyProjection } from '../src/pg-sql/sorting.js';
 import {
@@ -227,16 +228,15 @@ describe('every column kind and state', () => {
   });
 
   it('sum is exact: numeric over a number column and over a promoting one', () => {
-    const s = walkScope(NS, 'Obs', 'r', fieldDef, tableLookup([OBS]));
     const text = render(
-      buildFrameAggregate(
+      buildGroupedRead(
         sql,
-        { p: { sum: 'price' }, q: { sum: 'qty' } },
-        undefined,
+        { aggregate: { p: { sum: 'price' }, q: { sum: 'qty' } } },
         sql`TRUE`,
-        undefined,
-        s
-      )
+        sql``,
+        OBS,
+        (f) => fieldDef('Obs', f)
+      ).statement
     );
     expect(text).toContain('sum(r.f_price::text::numeric)');
     expect(text).toContain(

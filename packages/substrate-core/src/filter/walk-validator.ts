@@ -918,6 +918,16 @@ function frameAggType(agg: Record<string, unknown>, scope: WalkScope, path: stri
   const [fn] = Object.keys(agg) as [string];
   const at = [...path, fn];
   if (fn === 'count' && agg.count === true) return 'number';
+  const arg = agg[fn];
+  if (
+    fn === 'count' &&
+    (arg === null ||
+      typeof arg === 'number' ||
+      typeof arg === 'boolean' ||
+      (isObj(arg) && ('lit' in arg || 'int64' in arg)))
+  ) {
+    fail('agg_invalid', 'count takes true (rows) or an expression, not another literal', at);
+  }
   const t = checkFrameExpr(agg[fn], scope, false, at);
   const ok: Record<string, ExprType[]> = {
     avg: ['number', 'int64'],

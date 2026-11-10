@@ -1038,9 +1038,9 @@ describe('task 8 review fixes', () => {
       { last: '2026-10-09T23:30:00Z', first: '2026-09-30T00:00:00Z' },
       { last: null, first: null }
     ]);
-    // The frame aggregate reads dates the same way.
+    // The frame aggregate reads dates the same way, as canonical microsecond text.
     const whole = await ds.read('Observation', { aggregate: { last: { max: 'observedAt' } } });
-    expect(whole.groups).toEqual([{ last: '2026-10-09T23:30:00Z' }]);
+    expect(whole.groups).toEqual([{ last: '2026-10-09T23:30:00.000000Z' }]);
     // Instants: 2026-10-10T01:00+02:00 is 2026-10-09T23:00Z, after 2026-10-09T00:00Z.
     const ds2 = await dataset({
       Cert: [{ id: 'c1' }],

@@ -54,8 +54,7 @@ export {
   aggType,
   type Grouped,
   type GroupedParams,
-  groupRows,
-  isGroupedRead
+  groupRows
 } from './grouped.js';
 export {
   assertJsonPathPredicate,

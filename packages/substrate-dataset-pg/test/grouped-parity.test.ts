@@ -56,6 +56,8 @@ function rows(): Array<Record<string, unknown>> {
   }
   // A group whose aggregated columns are all null.
   for (let i = 0; i < 3; i++) out.push({ region: 99, phrase: 'x' });
+  // Three identical int64 values past 2^53: their avg must round the same on both.
+  for (let i = 0; i < 3; i++) out.push({ region: 97, user: '15011998757901659' });
   // Two int64 values at the top of the range, in a group of their own.
   for (let i = 0; i < 2; i++) out.push({ region: 98, user: MAX });
   return out;
@@ -151,7 +153,7 @@ describe('grouped reads on memory and pg', () => {
 
   it('query 7: a filtered count', async () => {
     const out = await same({ where: { region: { neq: 0 } }, aggregate: cnt });
-    expect(out.groups).toEqual([{ c: 176 }]);
+    expect(out.groups).toEqual([{ c: 179 }]);
   });
 
   it('query 8: group by a field, ordered by an aggregate', async () => {
@@ -319,13 +321,10 @@ describe('grouped reads on memory and pg', () => {
   });
 
   it('int64 sum is exact; past the range it raises the same code on both', async () => {
-    const exact = await same(
-      {
-        where: { region: { eq: 0 } },
-        aggregate: { s: { sum: 'user' }, a: { avg: 'user' } }
-      },
-      ['a']
-    );
+    const exact = await same({
+      where: { region: { eq: 0 } },
+      aggregate: { s: { sum: 'user' }, a: { avg: 'user' } }
+    });
     expect(typeof exact.groups?.[0]?.s).toBe('bigint');
     const outs = await Promise.all(
       engines.map(([, e]) =>
@@ -337,6 +336,51 @@ describe('grouped reads on memory and pg', () => {
       expect(o.errors?.[0]?.message).toContain('bigint out of range');
     }
     expect(new Set(outs.map((o) => o.errors?.[0]?.code)).size).toBe(1);
+  });
+
+  it('int64 avg is float8(exact sum) / count: identical on both engines', async () => {
+    const out = await same({
+      where: { region: { eq: 97 } },
+      aggregate: { a: { avg: 'user' } }
+    });
+    expect(out.groups).toEqual([{ a: Number(3n * 15011998757901659n) / 3 }]);
+  });
+
+  it('an int64 overflow raises even when having drops that group', async () => {
+    const outs = await Promise.all(
+      engines.map(([, e]) =>
+        read(e, {
+          where: { region: { in: [0, 98] } },
+          groupBy: { region: 'region' },
+          aggregate: { s: { sum: 'user' } },
+          having: { neq: ['region', 98] },
+          limit: 1
+        })
+      )
+    );
+    for (const o of outs) {
+      expect(o.errors?.[0]?.code).toBe('value_out_of_range');
+      expect(o.errors?.[0]?.message).toBe('bigint out of range');
+    }
+  });
+
+  it('an ungrouped date min/max is the canonical microsecond text on both', async () => {
+    const out = await same({ aggregate: { mn: { min: 'at' }, mx: { max: 'at' } } });
+    expect(out.groups?.[0]?.mn).toMatch(/\.\d{6}Z$/);
+    expect(out.groups?.[0]?.mx).toMatch(/\.\d{6}Z$/);
+  });
+
+  it('refuses count of a non-true literal, and a group key that is only null', async () => {
+    for (const params of [
+      { aggregate: { c: { count: 1 } } },
+      { aggregate: { c: { count: false } } },
+      { groupBy: { k: null }, aggregate: cnt }
+    ]) {
+      for (const [, e] of engines) {
+        const o = await read(e, params);
+        expect(o.errors, JSON.stringify(params)).toBeDefined();
+      }
+    }
   });
 
   it('refuses a group name that is also an aggregate name, and orderBy off the outputs', async () => {

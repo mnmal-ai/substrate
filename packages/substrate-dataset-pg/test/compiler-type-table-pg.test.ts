@@ -11,7 +11,7 @@ import { field } from '@mnmal-ai/substrate-sdk';
 import type { FieldDef, WhereClause } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { buildFrameAggregate } from '../src/pg-sql/aggregate.js';
+import { buildGroupedRead } from '../src/pg-sql/grouped.js';
 import { buildOrderBy } from '../src/pg-sql/sorting.js';
 import { tableLookup, walkScope } from '../src/pg-sql/walk.js';
 import { buildWhere } from '../src/pg-sql/where.js';
@@ -146,16 +146,16 @@ describe.skipIf(!POSTGRES_URL)('type-table SQL against a type table', () => {
   }
 
   it('sum over a promoting number is exact, in numeric (Todo #1809)', async () => {
-    const scope = walkScope(NS, 'T', 'r', () => undefined, tableLookup([table]));
-    const [row] = await sql<Array<{ g: Record<string, unknown> }>>`${buildFrameAggregate(
+    const g = buildGroupedRead(
       sql,
-      { s: { sum: 'qty' } },
-      undefined,
+      { aggregate: { s: { sum: 'qty' } } },
       sql`r.id IN ('s1', 's2')`,
-      undefined,
-      scope
-    )}`;
+      sql``,
+      table,
+      () => ({ kind: 'scalar', type: 'number' }) as FieldDef
+    );
+    const [row] = await sql<Array<Record<string, unknown>>>`${g.statement}`;
     // 1.00000000000000000001 is 1 as a float8, which would sum to 0.
-    expect(row?.g).toEqual({ s: 1e-20 });
+    expect(row === undefined ? undefined : g.decode(row)).toEqual({ s: 1e-20 });
   });
 });
