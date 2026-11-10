@@ -133,12 +133,21 @@ describe('substrate-mcp tool handlers', () => {
     };
     expect(parsed.legend).toContain('field: type');
     expect(typeof parsed.overview.default?.types.Todo).toBe('string');
+    const lines = (parsed as unknown as { expressions: string[] }).expressions;
+    expect(lines).toContain(
+      'dateTrunc(unit, date) → date: Truncate a date (UTC) to a unit given as a lit.'
+    );
+    expect(lines.some((l) => l.startsWith('aggregates: count, countDistinct'))).toBe(true);
+    expect(lines.some((l) => l.includes('maxDepth 16'))).toBe(true);
+    expect(lines.some((l) => l.startsWith('dateUnits: second'))).toBe(true);
   });
 
   it('schema handler with full: true returns the federated schema', async () => {
     const result = await createSchemaHandler(TEST_ENDPOINT)({ full: true });
     const parsed = parseToolText(result) as Record<string, { types: Record<string, unknown> }>;
     expect(parsed.default?.types.Todo).toBeDefined();
+    const full = parsed as unknown as { expressions: { functions: unknown[] } };
+    expect(full.expressions.functions.length).toBeGreaterThan(0);
   });
 
   it('tool results are compact JSON, not pretty-printed', async () => {

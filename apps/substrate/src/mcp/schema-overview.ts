@@ -5,6 +5,13 @@
  * still one scoped `schema { namespace, type }` away.
  */
 
+import {
+  DATE_UNITS,
+  EXPR_AGGREGATES,
+  EXPR_FUNCTIONS,
+  EXPR_LIMITS
+} from '@mnmal-ai/substrate-types';
+
 interface FieldShape {
   kind?: string;
   type?: string;
@@ -141,3 +148,24 @@ export function buildInstructions(overview: Record<string, NamespaceOverview> | 
         )}`;
   return `${CONVENTIONS}\n\nTypes on this server at session start:\n${body}`;
 }
+
+/** The expression catalogue as compact lines for the no-args overview: one per function, then aggregates, limits and date units. */
+export function expressionLines(): string[] {
+  return [
+    ...EXPR_FUNCTIONS.map((f) => {
+      const args = f.args === 'variadic' ? '...' : f.args.join(', ');
+      return `${f.name}(${args}) → ${f.returns}: ${f.description}`;
+    }),
+    `aggregates: ${EXPR_AGGREGATES.join(', ')}`,
+    `limits: maxDepth ${EXPR_LIMITS.maxDepth}, maxNodesPerExpr ${EXPR_LIMITS.maxNodesPerExpr}, maxNodesPerFrame ${EXPR_LIMITS.maxNodesPerFrame}`,
+    `dateUnits: ${DATE_UNITS.join(', ')}`
+  ];
+}
+
+/** The `full: true` form: the whole FunctionSig catalogue, same shape as the HTTP `expressions`. */
+export const fullExpressions = {
+  functions: EXPR_FUNCTIONS,
+  aggregates: EXPR_AGGREGATES,
+  limits: EXPR_LIMITS,
+  dateUnits: DATE_UNITS
+};

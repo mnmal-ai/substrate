@@ -25,6 +25,10 @@
 import { isDeepStrictEqual } from 'node:util';
 import { type Engine, effectiveFilterOperators, nextKeys } from '@mnmal-ai/substrate-core';
 import {
+  DATE_UNITS,
+  EXPR_AGGREGATES,
+  EXPR_FUNCTIONS,
+  EXPR_LIMITS,
   type FieldDef,
   type FieldKind,
   type HttpHandler,
@@ -72,6 +76,14 @@ function operatorContract(
   };
 }
 
+/** The expression catalogue: what `select`, `where.$expr`, `groupBy`, `having` and aggregates accept. */
+const EXPRESSIONS = {
+  functions: EXPR_FUNCTIONS,
+  aggregates: EXPR_AGGREGATES,
+  limits: EXPR_LIMITS,
+  dateUnits: DATE_UNITS
+};
+
 /**
  * GET /substrate/v1/schema — the `defaultNamespace`'s schema, a pre-federation
  * compatibility surface.
@@ -103,7 +115,9 @@ export function schemaRoute(engine: Engine, defaultNamespace: string): HttpHandl
     try {
       return jsonResponse(200, {
         ...engine.schemaFor(defaultNamespace),
-        ...operatorContract(engine, defaultNamespace)
+        ...operatorContract(engine, defaultNamespace),
+        // Unscoped only: the scoped routes stay cheap.
+        expressions: EXPRESSIONS
       });
     } catch {
       return jsonResponse(404, {

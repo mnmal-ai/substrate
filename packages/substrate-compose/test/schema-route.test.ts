@@ -2,7 +2,12 @@ import type { Engine } from '@mnmal-ai/substrate-core';
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
 import { defineNamespace, field } from '@mnmal-ai/substrate-sdk';
 import { MemorySubstrateServer } from '@mnmal-ai/substrate-server-memory';
-import type { FilterCapabilities, Schema } from '@mnmal-ai/substrate-types';
+import {
+  DATE_UNITS,
+  EXPR_FUNCTIONS,
+  type FilterCapabilities,
+  type Schema
+} from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
 import { compose } from '../src/compose.js';
 import { schemaForNamespaceRoute, schemaForTypeRoute, schemaRoute } from '../src/routes/schema.js';
@@ -85,6 +90,40 @@ describe('GET /substrate/v1/schema', () => {
 
     expect(res.status).toBe(200);
     expect(JSON.parse(String(res.body))).toMatchObject({ schemaVersion: 'v-default' });
+  });
+
+  it('publishes the expression catalogue, and the scoped routes omit it', async () => {
+    const engine = engineWith(['default']);
+    const body = JSON.parse(String((await schemaRoute(engine, 'default')({ ...REQ })).body)) as {
+      expressions: {
+        functions: Array<{ name: string }>;
+        aggregates: string[];
+        limits: unknown;
+        dateUnits: string[];
+      };
+    };
+    expect(body.expressions.functions.map((f) => f.name)).toEqual(
+      EXPR_FUNCTIONS.map((f) => f.name)
+    );
+    expect(body.expressions.aggregates).toEqual([
+      'count',
+      'countDistinct',
+      'sum',
+      'avg',
+      'min',
+      'max'
+    ]);
+    expect(body.expressions.limits).toEqual({
+      maxDepth: 16,
+      maxNodesPerExpr: 64,
+      maxNodesPerFrame: 1024
+    });
+    expect(body.expressions.dateUnits).toEqual([...DATE_UNITS]);
+    const scoped = await schemaForNamespaceRoute(engine)({
+      ...REQ,
+      params: { namespace: 'default' }
+    });
+    expect(JSON.parse(String(scoped.body))).not.toHaveProperty('expressions');
   });
 
   it('404s rather than 500s when the default namespace is not hosted', async () => {
