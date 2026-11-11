@@ -14,7 +14,8 @@ describe('the gated UUID-format CHECK migration', () => {
       '0001t_tables_baseline',
       '0003t_type_table_version',
       '0004t_field_error_version',
-      '0005t_int64_field_kind'
+      '0005t_int64_field_kind',
+      '0006t_int32_field_kind'
     ]);
   });
 
@@ -25,7 +26,8 @@ describe('the gated UUID-format CHECK migration', () => {
       UUID_CHECK_MIGRATION,
       '0003t_type_table_version',
       '0004t_field_error_version',
-      '0005t_int64_field_kind'
+      '0005t_int64_field_kind',
+      '0006t_int32_field_kind'
     ]);
     const text = list[1]?.txStatements.join('\n') ?? '';
     for (const table of ['row_ids', 'short_ids', 'edges']) expect(text).toContain(table);

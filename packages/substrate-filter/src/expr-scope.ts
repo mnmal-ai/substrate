@@ -6,12 +6,14 @@ import type { Expr, ExprType, FieldDef, WalkAgg } from '@mnmal-ai/substrate-type
 import { METADATA_FILTER_FIELDS } from '@mnmal-ai/substrate-types';
 import type { FieldDefOf } from './predicate.js';
 
-/** `number`, `int64`, `string`, `boolean` and `date` fields, and a crossRef's id (a string); json, list and struct fields are not usable. */
+/** `number`, `int32` (as `int64`), `int64`, `string`, `boolean` and `date` fields, and a crossRef's id (a string); json, list and struct fields are not usable. */
 export function exprTypeOfField(def: FieldDef | undefined): ExprType | undefined {
   if (def === undefined) return undefined;
   if (def.kind === 'crossRef') return 'string';
   if (def.kind !== 'scalar') return undefined;
-  return def.type === 'json' ? undefined : (def.type as ExprType);
+  if (def.type === 'json') return undefined;
+  // An int32 reads as an int64, so its arithmetic and sums stay exact integers.
+  return def.type === 'int32' ? 'int64' : (def.type as ExprType);
 }
 
 /**
