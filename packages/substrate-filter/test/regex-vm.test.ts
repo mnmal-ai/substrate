@@ -61,7 +61,7 @@ const EXTRA = [
 ];
 
 describe('regex VM', () => {
-  it('agrees with RegExp on match, index and groups', () => {
+  it('starts where RegExp starts and never ends before it', () => {
     for (const p of [...ACCEPTED, ...EXTRA]) {
       const prog = compileRegex(p);
       const re = new RegExp(p, 'us');
@@ -73,16 +73,30 @@ describe('regex VM', () => {
           expect(vm, label).toBeNull();
           continue;
         }
-        expect(vm, label).not.toBeNull();
         expect(vm?.index, label).toBe(js.index);
-        expect(vm?.end, label).toBe(js.index + js[0].length);
-        expect(vm?.groups, label).toEqual(js.slice(1));
+        expect(vm?.end, label).toBeGreaterThanOrEqual(js.index + js[0].length);
       }
     }
   });
 
+  // Read from Postgres 18 regexp_instr / regexp_match: leftmost-longest, unlike RegExp.
+  it.each([
+    ['(a?)(ab)?', 'ab', 0, 2, ['', 'ab']],
+    ['x*(xy)?', 'xxy', 0, 3, ['xy']],
+    ['(ab)?(abc)?', 'abcd', 0, 3, [undefined, 'abc']],
+    ['(a*)(ab)*b', 'abb', 0, 3, ['', 'ab']],
+    ['a|ab|abc', 'xxabcxx', 2, 5, []],
+    ['(a|ab)(c|bcd)', 'abcd', 0, 4, ['a', 'bcd']],
+    ['^https?://(?:www\\.)?([^/]+)/.*$', 'https://www.example.com/a', 0, 25, ['example.com']]
+  ] as const)('matches %s on %s as Postgres does', (p, subject, index, end, groups) => {
+    const m = execRegex(compileRegex(p), subject);
+    expect(m?.index).toBe(index);
+    expect(m?.end).toBe(end);
+    expect(m?.groups.map((g) => g || undefined)).toEqual(groups.map((g) => g || undefined));
+  });
+
   it('runs polynomial-looking patterns in linear time', () => {
-    const subject = 'a'.repeat(50_000);
+    const subject = 'a'.repeat(10_000);
     for (const p of ['a*a*a*a*a*a*b', '(a*)(a*)(a*)(a*)b', '(?:a|aa)b', 'a{0,20}a{0,20}b']) {
       const prog = compileRegex(p);
       const t = Date.now();
@@ -90,6 +104,17 @@ describe('regex VM', () => {
       expect(Date.now() - t).toBeLessThan(5000);
     }
   }, 20_000);
+
+  it('refuses a call past the step budget and allows a long cheap one', () => {
+    const big = compileRegex('a{0,255}a{0,255}a{0,255}b');
+    expect(() => execRegex(big, 'a'.repeat(10_000))).toThrow(
+      expect.objectContaining({ code: 'regex_budget_exceeded' })
+    );
+    const url = compileRegex('^https?://(?:www\\.)?([^/]+)/.*$');
+    expect(execRegex(url, `https://example.com/${'x'.repeat(100_000)}`)?.groups).toEqual([
+      'example.com'
+    ]);
+  });
 
   it('sizes every accepted program exactly', () => {
     for (const p of [...ACCEPTED, ...EXTRA]) {

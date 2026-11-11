@@ -105,6 +105,14 @@ describe('checkExpr refusals', () => {
     expect(refusal({ regexpMatch: ['URL', { lit: '\\d' }] }).message).toMatch(/regex/i);
     expect(refusal({ regexpMatch: ['URL', 'URL'] }).code).toBe('expr_invalid');
   });
+  it('refuses capturing groups with alternation in regexpReplace only', () => {
+    const rep = (p: string): Expr => ({ regexpReplace: ['URL', { lit: p }, { lit: 'x' }] });
+    expect(refusal(rep('(a|aa)(a*)')).message).toMatch(/capturing groups or '\|'/);
+    expect(refusal(rep('(?:a|aa)(a*)')).code).toBe('expr_invalid');
+    expect(type(rep('a|ab'))).toBe('string');
+    expect(type(rep('^https?://(?:www\\.)?([^/]+)/.*$'))).toBe('string');
+    expect(type({ regexpMatch: ['URL', { lit: '(a|b)' }] })).toBe('boolean');
+  });
   it('limits depth to 16 levels', () => {
     const nest = (levels: number): Expr => {
       let e: Expr = 'c';

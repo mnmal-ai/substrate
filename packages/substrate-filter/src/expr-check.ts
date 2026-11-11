@@ -14,6 +14,7 @@ import {
   type FunctionSig,
   parseInt64
 } from '@mnmal-ai/substrate-types';
+import { capturesWithAlternation } from './regex-ast.js';
 import { checkRegexSubset } from './regex-subset.js';
 
 export interface ExprScope {
@@ -231,6 +232,11 @@ export function checkExpr(expr: Expr, scope: ExprScope, path: string[]): ExprChe
         if (kind === 'pattern') {
           const why = checkRegexSubset(text);
           if (why) refuse(`'${key}' regex is outside the portable subset: ${why}`, where(i));
+          if (key === 'regexpReplace' && capturesWithAlternation(text))
+            refuse(
+              `'regexpReplace' regex may use capturing groups or '|', not both: the engines pick different captures`,
+              where(i)
+            );
         }
         maxDepth = Math.max(maxDepth, depth + 1);
         continue;
