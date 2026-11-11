@@ -455,6 +455,8 @@ describe('grouped reads on memory and pg', () => {
     const outs = await Promise.all(
       [...engines.map(([, e]) => e), ...(streaming ? [streaming] : [])].map((e) => read(e, params))
     );
+    // memory, plus pg and pg without hash aggregation (groups stream out under the LIMIT) when pg runs.
+    expect(outs).toHaveLength(streaming ? 3 : 1);
     for (const o of outs) {
       expect(o.errors?.[0]?.code).toBe('value_out_of_range');
       expect(o.errors?.[0]?.message).toBe('bigint out of range');

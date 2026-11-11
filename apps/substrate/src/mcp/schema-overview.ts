@@ -149,23 +149,51 @@ export function buildInstructions(overview: Record<string, NamespaceOverview> | 
   return `${CONVENTIONS}\n\nTypes on this server at session start:\n${body}`;
 }
 
-/** The expression catalogue as compact lines for the no-args overview: one per function, then aggregates, limits and date units. */
-export function expressionLines(): string[] {
-  return [
-    ...EXPR_FUNCTIONS.map((f) => {
-      const args = f.args === 'variadic' ? '...' : f.args.join(', ');
-      return `${f.name}(${args}) → ${f.returns}: ${f.description}`;
-    }),
-    `aggregates: ${EXPR_AGGREGATES.join(', ')}`,
-    `limits: maxDepth ${EXPR_LIMITS.maxDepth}, maxNodesPerExpr ${EXPR_LIMITS.maxNodesPerExpr}, maxNodesPerFrame ${EXPR_LIMITS.maxNodesPerFrame}`,
-    `dateUnits: ${DATE_UNITS.join(', ')}`
-  ];
+/** An expression catalogue, as the server's unscoped `GET /substrate/v1/schema` publishes it. */
+export interface ExpressionCatalogue {
+  functions: readonly {
+    name: string;
+    args: readonly string[] | 'variadic';
+    returns: string;
+    description: string;
+  }[];
+  aggregates: readonly string[];
+  limits: { maxDepth: number; maxNodesPerExpr: number; maxNodesPerFrame: number };
+  dateUnits: readonly string[];
 }
 
-/** The `full: true` form: the whole FunctionSig catalogue, same shape as the HTTP `expressions`. */
-export const fullExpressions = {
+/** This binary's own catalogue: the fallback when the server publishes none. */
+export const localExpressions: ExpressionCatalogue = {
   functions: EXPR_FUNCTIONS,
   aggregates: EXPR_AGGREGATES,
   limits: EXPR_LIMITS,
   dateUnits: DATE_UNITS
 };
+
+/** The `expressions` section of an unscoped schema reply, or undefined when it has none. */
+export function serverExpressions(schema: unknown): ExpressionCatalogue | undefined {
+  const e = (schema as { expressions?: Partial<ExpressionCatalogue> } | null)?.expressions;
+  return Array.isArray(e?.functions) &&
+    Array.isArray(e?.aggregates) &&
+    Array.isArray(e?.dateUnits) &&
+    e?.limits
+    ? (e as ExpressionCatalogue)
+    : undefined;
+}
+
+/** The expression catalogue as compact lines for the no-args overview: one per function, then aggregates, limits and date units. */
+export function expressionLines(c: ExpressionCatalogue): string[] {
+  return [
+    ...c.functions.map((f) => {
+      const args = f.args === 'variadic' ? '...' : f.args.join(', ');
+      return `${f.name}(${args}) → ${f.returns}: ${f.description}`;
+    }),
+    `aggregates: ${c.aggregates.join(', ')}`,
+    `limits: maxDepth ${c.limits.maxDepth}, maxNodesPerExpr ${c.limits.maxNodesPerExpr}, maxNodesPerFrame ${c.limits.maxNodesPerFrame}`,
+    `dateUnits: ${c.dateUnits.join(', ')}`
+  ];
+}
+
+/** Said beside a catalogue that is this binary's own, which may differ from what the server accepts. */
+export const LOCAL_EXPRESSIONS_NOTE =
+  "The server published no expression catalogue (GET /substrate/v1/schema), so this is the local binary's; the server may accept a different set.";

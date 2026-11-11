@@ -648,7 +648,9 @@ function exprScopeOf(scope: WalkScope, withAgg: boolean): ExprScope {
 }
 
 /** Refuses a bare `_agg.<name>` whose value type (boolean, int64, ...) no expression can use. */
-function refuseUnusableAgg(expr: unknown, scope: WalkScope, path: string[]): void {
+function refuseUnusableAgg(expr: unknown, scope: WalkScope, path: string[], depth = 0): void {
+  // Each expression level is an object and its argument array; checkExpr refuses anything deeper.
+  if (depth > 2 * EXPR_LIMITS.maxDepth + 2) return;
   if (typeof expr === 'string') {
     const kind = expr.startsWith('_agg.') ? scope.aggs?.get(expr.slice(5)) : undefined;
     if (kind !== undefined && AGG_EXPR_TYPE[kind] === undefined) {
@@ -659,10 +661,10 @@ function refuseUnusableAgg(expr: unknown, scope: WalkScope, path: string[]): voi
       );
     }
   } else if (Array.isArray(expr)) {
-    for (const e of expr) refuseUnusableAgg(e, scope, path);
+    for (const e of expr) refuseUnusableAgg(e, scope, path, depth + 1);
   } else if (isObj(expr)) {
     for (const [k, v] of Object.entries(expr))
-      if (k !== 'lit' && k !== 'int64') refuseUnusableAgg(v, scope, path);
+      if (k !== 'lit' && k !== 'int64') refuseUnusableAgg(v, scope, path, depth + 1);
   }
 }
 
