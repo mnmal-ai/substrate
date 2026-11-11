@@ -23,9 +23,11 @@ import { makeAgentJwtProvider, resolveAgentCapabilities } from './agent-jwt.js';
 import {
   buildInstructions,
   expressionLines,
-  fullExpressions,
+  LOCAL_EXPRESSIONS_NOTE,
+  localExpressions,
   overviewLegend,
-  schemaOverview
+  schemaOverview,
+  serverExpressions
 } from './schema-overview.js';
 
 /** The version the MCP server reports in its initialize serverInfo. */
@@ -233,6 +235,15 @@ export async function recall(endpoint: string, body: RecallInput): Promise<Recal
   return postSubstrate<RecallOutput>(endpoint, '/substrate/v1/recall', body, 'parsedError');
 }
 
+/** The server's expression catalogue, or undefined when it publishes none (an older server, or no default namespace). */
+async function expressionsOf(endpoint: string) {
+  try {
+    return serverExpressions(await getSubstrate<unknown>(endpoint, '/substrate/v1/schema'));
+  } catch {
+    return undefined;
+  }
+}
+
 export function createSchemaHandler(
   endpoint: string
 ): (args?: {
@@ -251,14 +262,18 @@ export function createSchemaHandler(
     const shape = args?.shape;
     if ((ns === undefined || ns === '') && args?.full !== true) {
       try {
-        const federated = await getSubstrate<Parameters<typeof schemaOverview>[0]>(
-          endpoint,
-          '/substrate/v1/federated-schema'
-        );
+        const [federated, catalogue] = await Promise.all([
+          getSubstrate<Parameters<typeof schemaOverview>[0]>(
+            endpoint,
+            '/substrate/v1/federated-schema'
+          ),
+          expressionsOf(endpoint)
+        ]);
         return okResult({
           legend: overviewLegend,
           overview: schemaOverview(federated),
-          expressions: expressionLines()
+          expressions: expressionLines(catalogue ?? localExpressions),
+          ...(catalogue === undefined ? { expressionsNote: LOCAL_EXPRESSIONS_NOTE } : {})
         });
       } catch (err) {
         return errorResult(toMessage(err));
@@ -267,8 +282,14 @@ export function createSchemaHandler(
     let path = '/substrate/v1/federated-schema';
     if ((ns === undefined || ns === '') && args?.full === true) {
       try {
-        const federated = await getSubstrate<Record<string, unknown>>(endpoint, path);
-        return okResult({ ...federated, $expressions: fullExpressions });
+        const [federated, catalogue] = await Promise.all([
+          getSubstrate<Record<string, unknown>>(endpoint, path),
+          expressionsOf(endpoint)
+        ]);
+        return okResult({
+          ...federated,
+          $expressions: catalogue ?? { ...localExpressions, note: LOCAL_EXPRESSIONS_NOTE }
+        });
       } catch (err) {
         return errorResult(toMessage(err));
       }

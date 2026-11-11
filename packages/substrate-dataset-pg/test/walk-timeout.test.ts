@@ -91,6 +91,15 @@ describe.skipIf(!POSTGRES_URL)('read timeout (pg)', () => {
     expect((await ds.read('Cert', {})).rows).toEqual([]);
   });
 
+  it('runs a select read under the statement timeout too', async () => {
+    await underLock(async () => {
+      const err = await ds
+        .read('Cert', { select: { two: { add: [1, 1] } } })
+        .catch((e: unknown) => e);
+      expect(err).toMatchObject({ code: QUERY_TIMEOUT, details: { timeoutMs: TIMEOUT_MS } });
+    });
+  });
+
   it('keeps a caller abort an AbortError, not query_timeout', async () => {
     await underLock(async () => {
       const controller = new AbortController();

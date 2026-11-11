@@ -36,11 +36,25 @@ import { defineProposalTypes } from './namespace.js';
 import { CLUSTER_CHANNEL } from './propose-namespace-resolver.js';
 import type { RegistryStore } from './registry-store.js';
 
+/** Why a stored field proposal is skipped when replay skipped its type. */
+function typeSkipped(row: Row): ProposalError {
+  const type = String(row.targetType);
+  const field = String(row.fieldName);
+  return new ProposalError(
+    'unknown_type',
+    `type '${type}' was skipped at replay, so its field '${field}' is not added`,
+    { typeName: type, fieldName: field, typeSkipped: true }
+  );
+}
+
 /**
  * The warning line for a stored proposal skipped because it names a field reserved for
- * server metadata, or undefined for any other reason.
+ * server metadata, or because its type was skipped; undefined for any other reason.
  */
 export function reservedSkipLine(namespace: string, row: Row, err: unknown): string | undefined {
+  if (err instanceof ProposalError && err.details.typeSkipped === true) {
+    return `substrate-proposals: ${namespace}/${String(row.targetType)}: field '${String(row.fieldName)}' is not added, because its type was skipped`;
+  }
   if (!(err instanceof ProposalError) || !err.message.includes('reserved for server metadata')) {
     return undefined;
   }
@@ -212,6 +226,7 @@ export async function reconcileNamespace(args: ReconcileArgs): Promise<void> {
   });
   // Prepared once each, after every replay pass, so storage sees the final indexes.
   const prepare = new Set<string>();
+  const skippedTypes = new Set<string>();
   for (const row of typeRows.rows) {
     if (binding.registry.get(row.typeName as string)) continue;
     try {
@@ -226,6 +241,7 @@ export async function reconcileNamespace(args: ReconcileArgs): Promise<void> {
       });
     } catch (err) {
       args.onSkip?.(row, err);
+      skippedTypes.add(row.typeName as string);
       continue;
     }
     prepare.add(row.typeName as string);
@@ -245,6 +261,10 @@ export async function reconcileNamespace(args: ReconcileArgs): Promise<void> {
   });
   for (const row of fieldRows.rows) {
     const entry = binding.registry.get(row.targetType as string);
+    if (!entry && skippedTypes.has(row.targetType as string)) {
+      args.onSkip?.(row, typeSkipped(row));
+      continue;
+    }
     if (!entry || !fieldNeedsReplay(entry, row)) continue;
     try {
       const fieldSpec = JSON.parse(row.fieldSpecJson as string) as FieldSpecJson;

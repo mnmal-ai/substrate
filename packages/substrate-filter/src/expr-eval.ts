@@ -6,8 +6,10 @@
 
 import type { Expr, ExprType, Row } from '@mnmal-ai/substrate-types';
 import { checkExpr } from './expr-check.js';
-import { getFieldValue } from './predicate.js';
+import { compareCodePoints } from './json-path.js';
+import { getFieldValue, storedMicros } from './predicate.js';
 import { compileRegex, execRegex } from './regex-vm.js';
+import { isoFromMicros } from './walk.js';
 
 export interface EvalEnv {
   /** Named outputs, which a bare string resolves to before the row (for `having`). */
@@ -115,10 +117,19 @@ function expandReplacement(rep: string, whole: string, groups: (string | undefin
   return out;
 }
 
-const toDate = (v: unknown): Date | null => {
-  const d = new Date(v as string);
-  return Number.isNaN(d.getTime()) ? null : d;
-};
+/** A date value as microseconds, read by the shared ISO grammar (no offset is UTC); null when unreadable, as pg's substrate_ts. */
+const microsOf = (v: unknown): bigint | null => storedMicros(v) ?? null;
+
+/** The millisecond Date of an instant in microseconds, floored. */
+const dateOf = (m: bigint): Date => new Date(Number((m - (((m % 1000n) + 1000n) % 1000n)) / 1000n));
+
+/** A UTC Date; unlike Date.UTC, years 0-99 stay as given. */
+function utc(y: number, mo: number, da: number, h = 0, mi = 0, s = 0): Date {
+  const d = new Date(0);
+  d.setUTCFullYear(y, mo, da);
+  d.setUTCHours(h, mi, s, 0);
+  return d;
+}
 
 function trunc(unit: string, d: Date): Date {
   const [y, mo, da, h, mi, s] = [
@@ -131,30 +142,31 @@ function trunc(unit: string, d: Date): Date {
   ];
   switch (unit) {
     case 'year':
-      return new Date(Date.UTC(y, 0, 1));
+      return utc(y, 0, 1);
     case 'month':
-      return new Date(Date.UTC(y, mo, 1));
+      return utc(y, mo, 1);
     case 'week':
-      return new Date(Date.UTC(y, mo, da - ((d.getUTCDay() + 6) % 7)));
+      return utc(y, mo, da - ((d.getUTCDay() + 6) % 7));
     case 'day':
-      return new Date(Date.UTC(y, mo, da));
+      return utc(y, mo, da);
     case 'hour':
-      return new Date(Date.UTC(y, mo, da, h));
+      return utc(y, mo, da, h);
     case 'minute':
-      return new Date(Date.UTC(y, mo, da, h, mi));
+      return utc(y, mo, da, h, mi);
     default:
-      return new Date(Date.UTC(y, mo, da, h, mi, s));
+      return utc(y, mo, da, h, mi, s);
   }
 }
 
 function isoWeek(d: Date): number {
   const day = (d.getUTCDay() + 6) % 7;
-  const thursday = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - day + 3);
-  const jan1 = Date.UTC(new Date(thursday).getUTCFullYear(), 0, 1);
-  return Math.floor((thursday - jan1) / 604_800_000) + 1;
+  const thursday = utc(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - day + 3);
+  const jan1 = utc(thursday.getUTCFullYear(), 0, 1);
+  return Math.floor((thursday.getTime() - jan1.getTime()) / 604_800_000) + 1;
 }
 
-function extract(unit: string, d: Date): number {
+function extract(unit: string, m: bigint): number {
+  const d = dateOf(m);
   switch (unit) {
     case 'year':
       return d.getUTCFullYear();
@@ -168,8 +180,11 @@ function extract(unit: string, d: Date): number {
       return d.getUTCHours();
     case 'minute':
       return d.getUTCMinutes();
-    default:
-      return d.getUTCSeconds() + d.getUTCMilliseconds() / 1000;
+    default: {
+      // Seconds with the microsecond fraction, read as pg's numeric prints it.
+      const frac = ((m % 1_000_000n) + 1_000_000n) % 1_000_000n;
+      return Number(`${d.getUTCSeconds()}.${frac.toString().padStart(6, '0')}`);
+    }
   }
 }
 
@@ -179,6 +194,14 @@ const widen = (x: unknown, y: unknown): [unknown, unknown] =>
     : typeof x === 'number' && typeof y === 'bigint'
       ? [x, Number(y)]
       : [x, y];
+
+/** SQL order of two non-null operands: int64 beside number as number, text by code point (pg's "C" collation). */
+function compare(x: unknown, y: unknown): number {
+  const [a, b] = widen(x, y);
+  if (typeof a === 'string' && typeof b === 'string') return compareCodePoints(a, b);
+  // biome-ignore lint/suspicious/noExplicitAny: comparisons span bigint, number and boolean.
+  return (a as any) < (b as any) ? -1 : (a as any) > (b as any) ? 1 : 0;
+}
 
 const isSafeIntLiteral = (e: Expr): boolean => typeof e === 'number' && Number.isSafeInteger(e);
 
@@ -199,7 +222,12 @@ export function evalExpr(expr: Expr, row: Record<string, unknown>, env: EvalEnv)
     if (v === undefined || v === null) return null;
     // A number field (or number-valued `_agg`) holding anything else reads as null, as pg's substrate_num does.
     if (typeof v !== 'number' && env.fieldType(expr) === 'number') return null;
-    return v instanceof Date ? v.toISOString() : v;
+    // A date reads as one canonical UTC microsecond text, so equal instants compare equal as text.
+    if (env.fieldType(expr) === 'date' || v instanceof Date) {
+      const m = microsOf(v);
+      return m === null ? null : isoFromMicros(m);
+    }
+    return v;
   }
   if (typeof expr !== 'object') return expr;
   if ('lit' in expr) return (expr as { lit: string }).lit;
@@ -243,28 +271,21 @@ export function evalExpr(expr: Expr, row: Record<string, unknown>, env: EvalEnv)
   if (key === 'in') {
     const [needle, ...rest] = vals as [unknown, ...unknown[]];
     if (needle === null) return null;
-    const hit = (v: unknown): boolean => {
-      const [n, m] = widen(needle, v);
-      // biome-ignore lint/suspicious/noExplicitAny: comparisons span number and string.
-      return v !== null && !((n as any) < (m as any)) && !((n as any) > (m as any));
-    };
+    const hit = (v: unknown): boolean => v !== null && compare(needle, v) === 0;
     if (rest.some(hit)) return true;
     return rest.includes(null) ? null : false;
   }
   if (key === 'dateTrunc' || key === 'extract') {
-    const d = vals[1] === null ? null : toDate(vals[1]);
-    if (!d) return null;
+    const m = microsOf(vals[1]);
+    if (m === null) return null;
     return key === 'extract'
-      ? extract(vals[0] as string, d)
-      : trunc(vals[0] as string, d).toISOString();
+      ? extract(vals[0] as string, m)
+      : isoFromMicros(BigInt(trunc(vals[0] as string, dateOf(m)).getTime()) * 1000n);
   }
   if (vals.some((v) => v === null)) return null;
 
   // biome-ignore lint/suspicious/noExplicitAny: operands are checked upstream; comparisons span bigint, number and string.
   const [a, b, c] = vals as [any, any, any];
-  // int64 beside number compares as number, as in SQL.
-  // biome-ignore lint/suspicious/noExplicitAny: as above.
-  const [ca, cb] = widen(a, b) as [any, any];
   switch (key) {
     case 'add':
     case 'sub':
@@ -280,17 +301,17 @@ export function evalExpr(expr: Expr, row: Record<string, unknown>, env: EvalEnv)
     case 'neg':
       return typeof a === 'bigint' ? int64(-a) : -a;
     case 'eq':
-      return !(ca < cb) && !(ca > cb);
+      return compare(a, b) === 0;
     case 'neq':
-      return ca < cb || ca > cb;
+      return compare(a, b) !== 0;
     case 'gt':
-      return ca > cb;
+      return compare(a, b) > 0;
     case 'gte':
-      return !(ca < cb);
+      return compare(a, b) >= 0;
     case 'lt':
-      return ca < cb;
+      return compare(a, b) < 0;
     case 'lte':
-      return !(ca > cb);
+      return compare(a, b) <= 0;
     case 'not':
       return !a;
     case 'length':
@@ -301,8 +322,11 @@ export function evalExpr(expr: Expr, row: Record<string, unknown>, env: EvalEnv)
       return asciiCase(a as string, /[a-z]/g, (x) => x.toUpperCase());
     case 'substring': {
       // Positions p with start <= p < start + len, p >= 1, as in Postgres.
-      const start = Math.round(Number(b));
-      const end = start + Math.round(Number(c));
+      // Clamped into int4, as the SQL is.
+      const int4 = (x: unknown, lo: number) =>
+        Math.min(Math.max(Math.round(Number(x)), lo), 2 ** 31 - 1);
+      const start = int4(b, -(2 ** 31));
+      const end = start + int4(c, 0);
       return Array.from(a as string)
         .slice(Math.max(start, 1) - 1, Math.max(end - 1, 0))
         .join('');
