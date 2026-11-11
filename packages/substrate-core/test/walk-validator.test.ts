@@ -465,6 +465,18 @@ describe('aggregate, select, groupBy, count and nested validation', () => {
     expect(frameRefusal({ select: { x: { length: ['createdById'] } } }).code).toBe('expr_invalid');
   });
 
+  it('having sees only the outputs, not row metadata', () => {
+    const grouped = (having: unknown) => ({
+      aggregate: { n: { count: true } },
+      groupBy: { g: 'grade' },
+      having
+    });
+    expect(() => checkFrame(grouped({ gt: ['n', 1] }))).not.toThrow();
+    for (const name of ['seq', 'createdAt', 'updatedAt']) {
+      expect(frameRefusal(grouped({ eq: [name, name] })).code, name).toBe('expr_invalid');
+    }
+  });
+
   it('refuses an empty aggregate', () => {
     expect(frameRefusal({ aggregate: {} })).toEqual({ code: 'agg_invalid', path: ['aggregate'] });
     expect(() => checkFrame({ aggregate: {} })).toThrow('aggregate needs at least one entry');

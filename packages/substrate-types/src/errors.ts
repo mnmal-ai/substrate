@@ -22,6 +22,8 @@ export const WALKS_UNSUPPORTED_STORE = 'walks_unsupported_store';
 export const QUERY_TIMEOUT = 'query_timeout';
 /** An aggregate or expression whose value leaves its type's range (an int64 sum past 2^63-1); the same code on every engine. */
 export const VALUE_OUT_OF_RANGE = 'value_out_of_range';
+/** A regex call on the memory evaluator that would take more steps than its budget; `details: { budget }`. */
+export const REGEX_BUDGET_EXCEEDED = 'regex_budget_exceeded';
 /**
  * A walk construct refused where it cannot be answered: inside a struct, over
  * a list or struct-nested crossRef, under a reused field name, on a virtual

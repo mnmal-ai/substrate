@@ -127,7 +127,7 @@ export const EXPR_FUNCTIONS: readonly FunctionSig[] = [
     'regexpReplace',
     ['string', 'pattern', 'string'],
     'string',
-    'Replace the first regex (a lit) match; the replacement may use \\1 to \\9.'
+    'Replace the leftmost-longest regex (a lit) match; the replacement may use \\1 to \\9. The pattern may use capturing groups or |, not both.'
   ),
   sig('dateTrunc', ['unit', 'date'], 'date', 'Truncate a date (UTC) to a unit given as a lit.'),
   sig('extract', ['unit', 'date'], 'number', 'A date part (UTC) as a number; the unit is a lit.'),

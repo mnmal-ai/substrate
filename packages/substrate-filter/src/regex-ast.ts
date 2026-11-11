@@ -144,4 +144,18 @@ export function nodeSize(n: Node): number {
 }
 
 /** Instructions in a whole program: the node plus the two capture saves and the match. */
+/**
+ * True when the pattern has both a capturing group and an alternation. Postgres
+ * then assigns captures by POSIX subexpression rules the VM does not follow, so
+ * `regexpReplace` refuses it.
+ */
+export function capturesWithAlternation(pattern: string): boolean {
+  const { node, groups } = parse(pattern);
+  const alt = (n: Node): boolean =>
+    n.t === 'alt' ||
+    ((n.t === 'group' || n.t === 'rep') && alt(n.body)) ||
+    (n.t === 'cat' && n.items.some(alt));
+  return groups > 0 && alt(node);
+}
+
 export const programSize = (n: Node): number => nodeSize(n) + 3;

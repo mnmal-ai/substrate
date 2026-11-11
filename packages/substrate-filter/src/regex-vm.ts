@@ -1,12 +1,14 @@
 /**
  * A Pike VM (Thompson NFA simulation with thread priorities and capture slots)
  * for exactly the portable subset `checkRegexSubset` accepts. Matching is
- * O(subject length x program length) with no recursion over the subject, so a
- * caller's pattern cannot block the event loop. It works over code points; `.`
+ * O(subject length x program length) with no recursion over the subject, and a
+ * call past MAX_STEPS throws, so a caller's pattern cannot block the event loop. It works over code points; `.`
  * matches any code point including a newline, `^` and `$` match only at the
- * subject's start and end, and priorities give the leftmost-first match a
- * backtracking engine (JavaScript under flags `us`) would report.
+ * subject's start and end. The match is the leftmost-longest one Postgres (POSIX
+ * ARE) reports; among equally long matches, thread priority picks the captures.
  */
+
+import { REGEX_BUDGET_EXCEEDED, ResolverFrameError } from '@mnmal-ai/substrate-types';
 import { type Node, nullable, parse, programSize } from './regex-ast.js';
 import { checkRegexSubset, MAX_PROGRAM } from './regex-subset.js';
 
@@ -118,12 +120,15 @@ export function compileRegex(pattern: string): RegexProgram {
   return { insts, groups: groups, slots: 2 * groups + 2 + reps };
 }
 
+/** Steps one call may take, about 200 ms: a 10 KB value against the largest program takes ~15M. */
+export const MAX_STEPS = 4_000_000;
+
 interface Thread {
   pc: number;
   caps: number[];
 }
 
-/** The leftmost-first match of `prog` in `subject`, or null. */
+/** The leftmost-longest match of `prog` in `subject`, as Postgres reports it, or null. */
 export function execRegex(prog: RegexProgram, subject: string): RegexMatch | null {
   const { insts } = prog;
   const cps: number[] = [];
@@ -143,9 +148,19 @@ export function execRegex(prog: RegexProgram, subject: string): RegexMatch | nul
   let found: number[] | null = null;
 
   // Follows empty transitions from pc at subject position `pos`, in priority order.
+  let steps = 0;
+  const step = (): void => {
+    if (++steps > MAX_STEPS)
+      throw new ResolverFrameError(
+        REGEX_BUDGET_EXCEEDED,
+        `regex needs more than ${MAX_STEPS} steps on this value; use a shorter pattern or value`,
+        { budget: MAX_STEPS }
+      );
+  };
   const add = (list: Thread[], startPc: number, startCaps: number[], pos: number, gen: number) => {
     const stack: Thread[] = [{ pc: startPc, caps: startCaps }];
     while (stack.length > 0) {
+      step();
       const { pc, caps } = stack.pop() as Thread;
       const inst = insts[pc] as Inst;
       // A refused empty iteration must not mark the pc seen: a later thread may pass it.
@@ -189,10 +204,19 @@ export function execRegex(prog: RegexProgram, subject: string): RegexMatch | nul
     if (clist.length === 0 && found !== null) break;
     const cp = pos < n ? (cps[pos] as number) : -1;
     for (const t of clist) {
+      step();
       const inst = insts[t.pc] as Inst;
+      // A thread that started right of the found match can only lose to it.
+      if (found !== null && (t.caps[0] as number) > (found[0] as number)) continue;
       if (inst.op === 'match') {
-        found = t.caps;
-        break; // lower-priority threads lose
+        // Leftmost wins; at the same start, the longest wins, then the higher priority.
+        if (
+          found === null ||
+          (t.caps[0] as number) < (found[0] as number) ||
+          pos > (found[1] as number)
+        )
+          found = t.caps;
+        continue;
       }
       if (cp < 0) continue;
       const ok =

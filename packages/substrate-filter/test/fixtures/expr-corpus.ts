@@ -230,6 +230,37 @@ export const EXPR_CORPUS: ExprCase[] = [
     row: { d: '2013-07-17T10:11:12.500Z' },
     expected: 12.5
   },
+  // Expected values below were read from Postgres 18: the match is leftmost-longest.
+  {
+    name: 'regexpReplace takes the longest match, not the first',
+    expr: { regexpReplace: [lit('ab'), lit('(a?)(ab)?'), lit('[\\1|\\2]')] },
+    row,
+    expected: '[|ab]'
+  },
+  {
+    name: 'regexpReplace longest match through an optional group',
+    expr: { regexpReplace: [lit('xxy'), lit('x*(xy)?'), lit('<\\&>')] },
+    row,
+    expected: '<xxy>'
+  },
+  {
+    name: 'regexpReplace longest match moves the capture',
+    expr: { regexpReplace: [lit('abc'), lit('(ab)?(abc)?'), lit('[\\1|\\2]')] },
+    row,
+    expected: '[|abc]'
+  },
+  {
+    name: 'regexpReplace alternation without groups takes the longest',
+    expr: { regexpReplace: [lit('ab'), lit('a|ab'), lit('X')] },
+    row,
+    expected: 'X'
+  },
+  {
+    name: 'regexpReplace alternation after a star takes the longest',
+    expr: { regexpReplace: [lit('xyz'), lit('x*|xyz'), lit('Q')] },
+    row,
+    expected: 'Q'
+  },
   {
     name: 'regexpReplace \\& is the whole match',
     expr: { regexpReplace: [lit('ab'), lit('a'), lit('x\\&y')] },

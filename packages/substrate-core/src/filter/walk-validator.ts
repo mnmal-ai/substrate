@@ -60,6 +60,8 @@ export interface WalkScope {
   frameBindings?: { count: number };
   /** Expression nodes checked so far in this frame, shared by every scope derived from the seed. */
   exprNodes?: { count: number };
+  /** Expressions see only `fields`, not the row metadata names (a `having` sees the frame's outputs only). */
+  outputsOnly?: boolean;
 }
 
 export type FieldLookup = (fields: Record<string, FieldDef>, name: string) => FieldDef | undefined;
@@ -638,7 +640,7 @@ function exprScopeOf(scope: WalkScope, withAgg: boolean): ExprScope {
         return kind === undefined ? undefined : AGG_EXPR_TYPE[kind];
       }
       return (
-        metadataExprType(name) ??
+        (scope.outputsOnly ? undefined : metadataExprType(name)) ??
         (Object.hasOwn(scope.fields, name) ? exprTypeOfField(scope.fields[name]) : undefined)
       );
     }
@@ -778,6 +780,7 @@ export function validateFrameParams(
   if (p.having !== undefined) {
     const named: WalkScope = {
       ...scope,
+      outputsOnly: true,
       fields: Object.fromEntries(
         [...outputs].map(([n, t]) => [n, { kind: 'scalar', type: t } as FieldDef])
       )
