@@ -49,9 +49,9 @@ describe('evalExpr', () => {
     expect(ev('a', { a: 1 }, { output: { a: 2 } })).toBe(2);
     expect(ev('a', { a: 1 }, { output: { b: 2 } })).toBe(1);
   });
-  it('reads a missing field as null and a Date as an ISO string', () => {
+  it('reads a missing field as null and a Date as canonical microsecond text', () => {
     expect(ev('zz', {})).toBeNull();
-    expect(ev('d', { d: new Date('2013-07-17T10:11:12Z') })).toBe('2013-07-17T10:11:12.000Z');
+    expect(ev('d', { d: new Date('2013-07-17T10:11:12Z') })).toBe('2013-07-17T10:11:12.000000Z');
   });
   it('never throws on null input', () => {
     for (const fn of ['length', 'lower', 'upper', 'neg', 'not']) {
