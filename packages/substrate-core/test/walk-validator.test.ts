@@ -465,6 +465,12 @@ describe('aggregate, select, groupBy, count and nested validation', () => {
     expect(frameRefusal({ select: { x: { length: ['createdById'] } } }).code).toBe('expr_invalid');
   });
 
+  it('refuses a select nested far past the depth limit as expr_invalid', () => {
+    let e: unknown = 'grade';
+    for (let i = 0; i < 20_000; i++) e = { not: [e] };
+    expect(frameRefusal({ select: { deep: e } }).code).toBe('expr_invalid');
+  });
+
   it('having sees only the outputs, not row metadata', () => {
     const grouped = (having: unknown) => ({
       aggregate: { n: { count: true } },
