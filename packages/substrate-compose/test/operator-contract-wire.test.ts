@@ -43,6 +43,7 @@ const notesPlugin: CoordinatorPlugin = {
         fields: {
           text: field.string(),
           count: field.number(),
+          tiny: field.int16(),
           small: field.int32(),
           big: field.int64(),
           flag: field.boolean(),
@@ -92,7 +93,10 @@ function kindOf(def: ServedField): string {
  */
 function operandFor(kind: string, op: string): unknown {
   const sample: unknown =
-    kind.startsWith('scalar.number') || kind === 'scalar.int32' || kind === 'scalar.int64'
+    kind.startsWith('scalar.number') ||
+    kind === 'scalar.int16' ||
+    kind === 'scalar.int32' ||
+    kind === 'scalar.int64'
       ? 1
       : kind === 'scalar.boolean'
         ? true
@@ -174,6 +178,7 @@ describe('the namespace-scoped schema carries the operator contract', () => {
       'list',
       'scalar.boolean',
       'scalar.date',
+      'scalar.int16',
       'scalar.int32',
       'scalar.int64',
       'scalar.json',

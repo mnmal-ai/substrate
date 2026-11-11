@@ -39,6 +39,7 @@ export type ColumnKind =
   | 'text'
   | 'enum'
   | 'number'
+  | 'int16'
   | 'int32'
   | 'int64'
   | 'date'
@@ -71,6 +72,7 @@ export const PG_TYPE: Readonly<Record<ColumnKind, string>> = {
   enum: 'text COLLATE "C"',
   crossRef: 'text',
   number: 'double precision',
+  int16: 'smallint',
   int32: 'integer',
   int64: 'bigint',
   date: 'timestamptz',
