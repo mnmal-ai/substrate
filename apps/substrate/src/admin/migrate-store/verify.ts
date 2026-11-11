@@ -27,6 +27,7 @@ import type { Sql } from 'postgres';
 import type { BootedStore } from '../../serve/boot-store.js';
 import { registeredTypes } from '../../serve/wiring.js';
 import { type CopyResult, type RowKey, registeredDataset, SEED } from './copy.js';
+import { declaredFields, sourceBodySql } from './source.js';
 
 export interface VerifyOptions {
   keptSeeds: RowKey[];
@@ -367,17 +368,22 @@ async function snapshot(
       ? (await colsOf('rows'))?.includes('seq') === true
       : other?.columns.get('rows')?.includes('seq') !== false;
   const meta = `row(${META}, ${hasSeq ? 'seq::text' : 'NULL::text'})::text`;
+  // The source's own `rows` columns, mirror columns included (`sourceBodySql`).
+  const rowsColumns =
+    side === 'source'
+      ? (
+          await tx<{ col: string }[]>`
+          SELECT attname AS col FROM pg_attribute
+          WHERE attrelid = to_regclass('rows') AND attnum > 0 AND NOT attisdropped AND attgenerated = ''`
+        ).map((r) => r.col)
+      : [];
   for (const { namespace, type } of counted) {
     let rows: string;
     let params: unknown[];
     if (side === 'source') {
       // The read rule: an explicit null on a declared column field reads absent.
-      const table = types.get(`${namespace}/${type}`);
-      const declared = [
-        ...(table?.columns().filter((c) => c.state !== 'orphaned') ?? []).map((c) => c.field),
-        ...(table?.pending ?? [])
-      ];
-      rows = `SELECT id || E'\n' || (SELECT coalesce(jsonb_object_agg(k, v), '{}'::jsonb) FROM jsonb_each(body) e(k, v)
+      const declared = declaredFields(types.get(`${namespace}/${type}`));
+      rows = `SELECT id || E'\n' || (SELECT coalesce(jsonb_object_agg(k, v), '{}'::jsonb) FROM jsonb_each(${sourceBodySql(rowsColumns, declared)}) e(k, v)
                       WHERE NOT (v = 'null'::jsonb AND k = ANY($3::text[])))::text || E'\n' || ${meta} AS h
               FROM rows WHERE namespace = $1 AND type = $2 ORDER BY md5(id) COLLATE "C" LIMIT ${limit}`;
       params = [namespace, type, declared];

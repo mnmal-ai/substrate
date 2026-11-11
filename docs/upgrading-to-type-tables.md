@@ -80,6 +80,7 @@ What pending means for filters, sorts and indexes, and how to find values kept u
 - **Keys.** `_system/Key` declares a live-kid unique index, so a second live key for one kid is refused `unique_violation`. `createKey` / `updateKey` refuse a `revokedAt` in the future with `invalid_params`.
 - **Admin commands refuse an unfinished `migrate-store`.** `bootstrap`, `register --direct`, `list`, `revoke`, `rotate` and `update`, and `substrate federate enroll`, refuse a store carrying the migrate-store marker, as `serve` does.
 - **`migrate-store --dry-run` and `--verify-only` report `misfits: null`** in `--json` (not counted). A copy run still reports an object.
+- **Plugin mirror columns are read into the body.** A plugin migration on the old layouts could add a `rows` column that mirrors a body field (cortext's `archived boolean NOT NULL DEFAULT false`), and old filters read that column, so a row whose body lacked the key still matched `archived eq false`. `migrate-store` now fills a declared field the body lacks from its non-null mirror column, and verifies against the same reading; where the body has the key, the body wins. A store converted by an earlier release lost those values: the field reads absent, and a filter such as `archived eq false` skips the row. Fix such a store by setting the field where it is null on each affected type table, for cortext `UPDATE <table> SET f_archived = false WHERE f_archived IS NULL` on every cortext type table, in one transaction.
 
 ## Clients
 
