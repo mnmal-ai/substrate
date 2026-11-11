@@ -56,7 +56,19 @@ describe('page limits', () => {
     const { engine: e, seen } = engine();
     const env = await e.query({ frame: read('app/Note', { limit: 6 }), ctx, pageLimits: limits });
     expect(env.errors?.[0]?.code).toBe('limit_exceeds_max');
+    expect(env.errors?.[0]?.message).toContain('cursor');
     expect(seen).toEqual([]);
+  });
+
+  it('tells an over-limit grouped read to page with offset', async () => {
+    const { engine: e } = engine();
+    const env = await e.query({
+      frame: read('app/Note', { limit: 6, aggregate: { n: { count: true } } }),
+      ctx,
+      pageLimits: limits
+    });
+    expect(env.errors?.[0]?.code).toBe('limit_exceeds_max');
+    expect(env.errors?.[0]?.message).toContain('page with offset');
   });
 
   it('default a null limit and refuse one that is not a non-negative integer', async () => {
