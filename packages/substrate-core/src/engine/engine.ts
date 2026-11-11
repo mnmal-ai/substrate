@@ -1221,7 +1221,11 @@ export class Engine {
       addError(
         envelope,
         [key, 'limit'],
-        `limit ${limit} exceeds the maximum page of ${limits.maxLimit}; page with the returned cursor`,
+        `limit ${limit} exceeds the maximum page of ${limits.maxLimit}; ${
+          entry.params?.aggregate !== undefined
+            ? 'page with offset'
+            : 'page with the returned cursor'
+        }`,
         'limit_exceeds_max',
         { max: limits.maxLimit }
       );

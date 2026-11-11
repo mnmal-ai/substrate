@@ -197,6 +197,49 @@ describe('reconcileNamespace', () => {
     expect(reservedSkipLine(NS, row, new Error('boom'))).toBeUndefined();
   });
 
+  it('reports a field proposal whose type was skipped, with its own line', async () => {
+    await dataset.write('TypeProposal', [
+      {
+        id: randomUUID(),
+        typeName: 'Ledger',
+        fieldsJson: JSON.stringify({ seq: { kind: 'scalar', type: 'number' } }),
+        proposedBy: 'designer',
+        proposedAt: new Date(),
+        proposedReason: 'stored before the name was reserved',
+        applied: true,
+        appliedAt: new Date(),
+        supersededByCode: false,
+        archived: false
+      }
+    ]);
+    await dataset.write('FieldProposal', [
+      {
+        id: randomUUID(),
+        targetType: 'Ledger',
+        fieldName: 'memo',
+        fieldSpecJson: JSON.stringify({ kind: 'scalar', type: 'string' }),
+        proposedBy: 'designer',
+        proposedAt: new Date(),
+        proposedReason: 'a later field',
+        applied: true,
+        appliedAt: new Date(),
+        supersededByCode: false,
+        archived: false
+      }
+    ]);
+    const { store } = makeStore(dataset, edges);
+    const lines: Array<string | undefined> = [];
+    await reconcileNamespace({
+      namespace: NS,
+      registryStore: store,
+      onSkip: (r, err) => lines.push(reservedSkipLine(NS, r, err))
+    });
+    expect(lines).toEqual([
+      `substrate-proposals: ${NS}/Ledger: field 'seq' is reserved for server metadata; the type is not registered`,
+      `substrate-proposals: ${NS}/Ledger: field 'memo' is not added, because its type was skipped`
+    ]);
+  });
+
   it('a peer notification for a reserved-name row skips it and does not throw', async () => {
     const id = randomUUID();
     await dataset.write('TypeProposal', [
