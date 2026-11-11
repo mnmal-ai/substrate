@@ -61,6 +61,7 @@ const UNIVERSE: FilterCapabilities = {
     'scalar.string': SCRAPED.operators,
     'scalar.boolean': SCRAPED.operators,
     'scalar.date': SCRAPED.operators,
+    'scalar.int32': SCRAPED.operators,
     'scalar.int64': SCRAPED.operators,
     'scalar.json': SCRAPED.operators,
     crossRef: SCRAPED.operators,

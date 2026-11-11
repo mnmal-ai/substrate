@@ -1,4 +1,9 @@
-import { canonicalVocabValue, isIsoTimestamp, parseInt64 } from '@mnmal-ai/substrate-types';
+import {
+  canonicalVocabValue,
+  isInt32,
+  isIsoTimestamp,
+  parseInt64
+} from '@mnmal-ai/substrate-types';
 
 /**
  * Internal autoCRUD utilities. Not exported from the package.
@@ -284,13 +289,15 @@ export function assertScalarTypes(
     const ok =
       def.type === 'number'
         ? typeof v === 'number' && Number.isFinite(v)
-        : def.type === 'boolean'
-          ? typeof v === 'boolean'
-          : def.type === 'date'
-            ? typeof v === 'string'
-              ? isIsoTimestamp(v)
-              : v instanceof Date && Number.isFinite(v.getTime())
-            : true;
+        : def.type === 'int32'
+          ? isInt32(v)
+          : def.type === 'boolean'
+            ? typeof v === 'boolean'
+            : def.type === 'date'
+              ? typeof v === 'string'
+                ? isIsoTimestamp(v)
+                : v instanceof Date && Number.isFinite(v.getTime())
+              : true;
     if (!ok) throwInvalidScalar(name, v, def.type, phase);
   }
 }

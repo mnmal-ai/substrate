@@ -1,5 +1,7 @@
 const MIN_INT64 = -(2n ** 63n);
 const MAX_INT64 = 2n ** 63n - 1n;
+const MIN_INT32 = -(2 ** 31);
+const MAX_INT32 = 2 ** 31 - 1;
 const CANONICAL_INT = /^-?(0|[1-9]\d*)$/;
 
 /**
@@ -17,6 +19,11 @@ export function parseInt64(v: unknown): bigint | undefined {
   } else if (typeof v === 'string' && CANONICAL_INT.test(v)) n = BigInt(v);
   else return undefined;
   return n >= MIN_INT64 && n <= MAX_INT64 ? n : undefined;
+}
+
+/** Whether `v` is an `int32` value: an integer number within the int32 range. */
+export function isInt32(v: unknown): v is number {
+  return Number.isInteger(v) && (v as number) >= MIN_INT32 && (v as number) <= MAX_INT32;
 }
 
 /**

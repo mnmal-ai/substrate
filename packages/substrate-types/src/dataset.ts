@@ -321,6 +321,7 @@ export interface DropResult {
  */
 export type FieldKind =
   | 'scalar.number'
+  | 'scalar.int32'
   | 'scalar.int64'
   | 'scalar.string'
   | 'scalar.boolean'

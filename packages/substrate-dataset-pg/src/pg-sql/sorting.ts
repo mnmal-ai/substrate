@@ -45,6 +45,7 @@ export { normalizeOrderBy } from '@mnmal-ai/substrate-filter';
  *
  * Type → cast table:
  *   field.number()  / 'number'  → 'numeric'
+ *   field.int32()   / 'int32'   → 'bigint'
  *   field.int64()   / 'int64'   → 'bigint'
  *   field.date()    / 'date'    → 'timestamptz'
  *   field.boolean() / 'boolean' → 'boolean'
@@ -61,6 +62,7 @@ export function resolveBodyOrderByCast(def: FieldDef | undefined): BodyOrderByCa
   switch (def.type) {
     case 'number':
       return 'numeric';
+    case 'int32':
     case 'int64':
       return 'bigint';
     case 'date':
