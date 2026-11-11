@@ -983,7 +983,7 @@ Configure the guard with:
 Indexes that were `indexed: true` only by an older SDK default stay in place
 until the advisor recommends their removal and a `propose_index remove`
 drops them. PostgreSQL 18 is the minimum (boot refuses older servers), and
-Node `26.12.1`.
+Node `26.13.1`.
 
 The engine injects `id`, `shortId` and the `_metadata` fields (`createdAt`,
 `updatedAt`, `createdBy`, `updatedBy`). Declaring `shortId` yourself is
