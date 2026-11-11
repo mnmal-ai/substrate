@@ -52,7 +52,7 @@ export interface FieldDefScalar {
    * freeform payloads (audit details, debug bags). When you need filterable
    * inner keys, use `field.struct` instead.
    */
-  type: 'string' | 'number' | 'int64' | 'boolean' | 'date' | 'json';
+  type: 'string' | 'number' | 'int32' | 'int64' | 'boolean' | 'date' | 'json';
   /**
    * Tri-state. `true` builds an index (a btree; a GIN for json). Unset means
    * no index. `false` means no index AND not a search handle: long-form

@@ -571,7 +571,11 @@ function keyExpr(field: string, def: FieldDef | undefined): string {
   if (def?.kind === 'crossRef') return indexExpressionSql('text', field, undefined, 'extra');
   if (def?.kind === 'scalar' && def.type !== 'json') {
     return indexExpressionSql(
-      def.type === 'number' || def.type === 'int64' || def.type === 'date' ? def.type : 'text',
+      def.type === 'int32'
+        ? 'int64'
+        : def.type === 'number' || def.type === 'int64' || def.type === 'date'
+          ? def.type
+          : 'text',
       field,
       undefined,
       'extra'
