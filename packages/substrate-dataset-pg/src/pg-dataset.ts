@@ -2595,9 +2595,9 @@ const MATERIALIZE_BATCH_ROWS = 5000;
 /** The statement timeout a walk read runs under, in milliseconds, unless a shorter one is set. */
 export const WALK_STATEMENT_TIMEOUT_MS = 30_000;
 
-/** The walk-only params a read actually uses: `count: true`, and each non-empty object. */
+/** The params that run under the statement timeout: `count: true`, and each non-empty object. */
 function walkParams(params: ReadParams): string[] {
-  const used = (['aggregate', 'agg', 'nested'] as const).filter((k) => {
+  const used = (['aggregate', 'agg', 'nested', 'select'] as const).filter((k) => {
     const v = params[k];
     return typeof v === 'object' && v !== null && Object.keys(v).length > 0;
   });
