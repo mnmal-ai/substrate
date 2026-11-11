@@ -26,6 +26,7 @@ export const CORPUS_FIELD_TYPES: Record<string, ExprType> = {
   big: 'int64',
   i: 'int64',
   x: 'number',
+  e: 'date',
   constructor: 'string' as ExprType
 };
 
@@ -150,39 +151,44 @@ export const EXPR_CORPUS: ExprCase[] = [
     name: 'dateTrunc week is Monday',
     expr: { dateTrunc: [lit('week'), 'd'] },
     row,
-    expected: '2013-07-15T00:00:00.000Z'
+    expected: '2013-07-15T00:00:00.000000Z'
   },
   {
     name: 'dateTrunc day',
     expr: { dateTrunc: [lit('day'), 'd'] },
     row,
-    expected: '2013-07-17T00:00:00.000Z'
+    expected: '2013-07-17T00:00:00.000000Z'
   },
   {
     name: 'dateTrunc hour',
     expr: { dateTrunc: [lit('hour'), 'd'] },
     row,
-    expected: '2013-07-17T10:00:00.000Z'
+    expected: '2013-07-17T10:00:00.000000Z'
   },
   {
     name: 'dateTrunc minute',
     expr: { dateTrunc: [lit('minute'), 'd'] },
     row,
-    expected: '2013-07-17T10:11:00.000Z'
+    expected: '2013-07-17T10:11:00.000000Z'
   },
   {
     name: 'dateTrunc month',
     expr: { dateTrunc: [lit('month'), 'd'] },
     row,
-    expected: '2013-07-01T00:00:00.000Z'
+    expected: '2013-07-01T00:00:00.000000Z'
   },
   {
     name: 'dateTrunc year',
     expr: { dateTrunc: [lit('year'), 'd'] },
     row,
-    expected: '2013-01-01T00:00:00.000Z'
+    expected: '2013-01-01T00:00:00.000000Z'
   },
-  { name: 'dateTrunc second', expr: { dateTrunc: [lit('second'), 'd'] }, row, expected: D },
+  {
+    name: 'dateTrunc second',
+    expr: { dateTrunc: [lit('second'), 'd'] },
+    row,
+    expected: '2013-07-17T10:11:12.000000Z'
+  },
   { name: 'extract minute', expr: { extract: [lit('minute'), 'd'] }, row, expected: 11 },
   { name: 'extract second', expr: { extract: [lit('second'), 'd'] }, row, expected: 12 },
   { name: 'extract hour', expr: { extract: [lit('hour'), 'd'] }, row, expected: 10 },
@@ -229,6 +235,73 @@ export const EXPR_CORPUS: ExprCase[] = [
     expr: { extract: [lit('second'), 'd'] },
     row: { d: '2013-07-17T10:11:12.500Z' },
     expected: 12.5
+  },
+  // Dates compare as instants, whatever text form the writer sent.
+  {
+    name: 'eq dates in different text forms',
+    expr: { eq: ['d', 'e'] },
+    row: { d: '2024-01-01T00:00:00Z', e: '2024-01-01T00:00:00.000Z' },
+    expected: true
+  },
+  {
+    name: 'gt dates in different text forms',
+    expr: { gt: ['d', 'e'] },
+    row: { d: '2024-01-01T00:00:00Z', e: '2024-01-01T00:00:00.000Z' },
+    expected: false
+  },
+  {
+    name: 'a date equals its own day truncation',
+    expr: { eq: ['d', { dateTrunc: [lit('day'), 'd'] }] },
+    row: { d: '2024-01-01T02:00:00+02:00' },
+    expected: true
+  },
+  {
+    name: 'dates compare to the microsecond',
+    expr: { gt: ['d', 'e'] },
+    row: { d: '2024-01-01T00:00:00.000001Z', e: '2024-01-01T00:00:00.000Z' },
+    expected: true
+  },
+  {
+    name: 'a date without offset is UTC',
+    expr: { extract: [lit('hour'), 'd'] },
+    row: { d: '2024-01-01T00:00:00' },
+    expected: 0
+  },
+  {
+    name: 'extract second keeps microseconds',
+    expr: { extract: [lit('second'), 'd'] },
+    row: { d: '2024-01-01T00:00:12.500001Z' },
+    expected: 12.500001
+  },
+  {
+    name: 'a date field reads as canonical text',
+    expr: { coalesce: ['d'] },
+    row: { d: '2024-01-01T02:00:00+02:00' },
+    expected: '2024-01-01T00:00:00.000000Z'
+  },
+  {
+    name: 'dateTrunc keeps years before 100',
+    expr: { dateTrunc: [lit('year'), 'd'] },
+    row: { d: '0050-06-15T00:00:00.000Z' },
+    expected: '0050-01-01T00:00:00.000000Z'
+  },
+  {
+    name: 'string order is by code point',
+    expr: { lt: [lit('\uFF5E'), lit('\u{1F600}')] },
+    row,
+    expected: true
+  },
+  {
+    name: 'in compares strings exactly',
+    expr: { in: [lit('\u{1F600}'), lit('\uFF5E'), lit('\u{1F600}')] },
+    row,
+    expected: true
+  },
+  {
+    name: 'substring clamps start and length into int4',
+    expr: { substring: [lit('abcdef'), -3000000000, 3000000005] },
+    row,
+    expected: ''
   },
   // Expected values below were read from Postgres 18: the match is leftmost-longest.
   {
