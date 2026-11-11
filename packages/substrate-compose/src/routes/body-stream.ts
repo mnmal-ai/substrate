@@ -106,10 +106,9 @@ export function* jsonParts(envelope: PackEnvelope, frame: Frame): Generator<stri
       yield `${dsep}${JSON.stringify(key)}:[`;
       dsep = ',';
       for (let i = 0; i < value.length; i += ROWS_PER_CHUNK) {
-        const rows = value
-          .slice(i, i + ROWS_PER_CHUNK)
-          .map((r) => stringifyJson(project(r)) ?? 'null');
-        yield `${i === 0 ? '' : ','}${rows.join(',')}`;
+        // One stringify per chunk, so a bigint costs one retry per chunk, not one per row.
+        const chunk = stringifyJson(value.slice(i, i + ROWS_PER_CHUNK).map(project));
+        yield `${i === 0 ? '' : ','}${chunk.slice(1, -1)}`;
       }
       yield ']';
     }
