@@ -8,6 +8,7 @@
 import {
   assertStoreSchema,
   detectLayout,
+  type TypeTable,
   UUID_CHECK_MIGRATION,
   UUID_REGEX
 } from '@mnmal-ai/substrate-dataset-pg';
@@ -168,4 +169,50 @@ export async function inspectSource(sql: Sql): Promise<SourceInventory> {
     } satisfies SourceInventory;
   });
   return result;
+}
+
+/** The `rows` columns the engine itself defined in the legacy and partitioned layouts. */
+const ENGINE_ROWS_COLUMNS = new Set([
+  'namespace',
+  'type',
+  'id',
+  'body',
+  'deleted_at',
+  'created_at',
+  'updated_at',
+  'created_by_kind',
+  'created_by_id',
+  'updated_by_kind',
+  'updated_by_id',
+  'seq'
+]);
+
+/** The fields a target type table declares, orphaned columns excluded. */
+export function declaredFields(table: TypeTable | undefined): string[] {
+  if (table === undefined) return [];
+  return [
+    ...table
+      .columns()
+      .filter((c) => c.state !== 'orphaned')
+      .map((c) => c.field),
+    ...table.pending
+  ];
+}
+
+/**
+ * SQL for a source row's body as the old engine read it. A plugin migration could add a `rows`
+ * column mirroring a body field (cortext's `archived boolean NOT NULL DEFAULT false`), and old
+ * filters read that column, so a body lacking the key still matched `archived eq false`. A
+ * non-null mirror column named after a declared field fills that field when the body lacks it;
+ * where the body has the key, the body wins.
+ * shortcut: matches a mirror column to its field by name only (every known plugin uses the field
+ * name); a plugin that renamed its column would need its promotedColumns map read here.
+ */
+export function sourceBodySql(rowsColumns: readonly string[], declared: readonly string[]): string {
+  const mirrored = rowsColumns.filter((c) => !ENGINE_ROWS_COLUMNS.has(c) && declared.includes(c));
+  if (mirrored.length === 0) return 'body';
+  const pairs = mirrored
+    .map((c) => `'${c.replace(/'/g, "''")}', "${c.replace(/"/g, '""')}"`)
+    .join(', ');
+  return `(jsonb_strip_nulls(jsonb_build_object(${pairs})) || body)`;
 }
