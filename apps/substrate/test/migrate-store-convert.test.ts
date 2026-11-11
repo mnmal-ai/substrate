@@ -503,3 +503,73 @@ for (const sourceLayout of ['legacy', 'partitioned'] as const) {
     }, 60_000);
   });
 }
+
+for (const sourceLayout of ['legacy', 'partitioned'] as const) {
+  describe.skipIf(!MIGRATE_PG)(
+    `a plugin column mirroring a body field, ${sourceLayout} source (pg)`,
+    () => {
+      let pair: Pair;
+      let result: CopyResult;
+      const M = (n: number) => uuid(190 + n);
+
+      beforeAll(async () => {
+        pair = await openPair(sourceLayout);
+        // As cortext's 0001 did: a mirror column whose default old filters read for a body lacking the key.
+        await pair.srcSql`ALTER TABLE rows ADD COLUMN flag boolean NOT NULL DEFAULT false, ADD COLUMN title text NULL`;
+        await pair.srcSql`INSERT INTO rows (namespace, type, id, body, flag, title) VALUES
+        (${CONV}, 'Typed', ${M(1)}, '{}'::jsonb, false, NULL),
+        (${CONV}, 'Typed', ${M(2)}, '{"flag": true}'::jsonb, true, NULL),
+        (${CONV}, 'Typed', ${M(3)}, '{"title": "body wins"}'::jsonb, true, 'column'),
+        (${CONV}, 'ExecutionCheckpoint', ${M(4)}, '{"revision": 1}'::jsonb, false, NULL)`;
+        pair.plan = preflight(
+          { ...(await inspectSource(pair.srcSql)), otherSessions: 0 },
+          {
+            serverVersionNum: 180000,
+            layout: 'absent',
+            empty: true,
+            createdByUs: false,
+            enforceUuidCheck: false,
+            recallDims: 768,
+            extensions: { vector: '0.8.0' },
+            freeBytes: null
+          },
+          { skipTables: [], pluginTables: RECALL_TABLES, dryRun: false }
+        ).plan;
+        result = await copyStore(pair.srcSql, pair.boot, pair.plan, opts);
+        await buildDeferredIndexes(result.target.engine, result.target.datasets);
+      }, 240_000);
+
+      afterAll(async () => {
+        await result?.target.close();
+        await pair?.close();
+      });
+
+      it('fills a declared field the body lacks from its non-null mirror column; the body wins where it has the key', async () => {
+        const ds = result.target.datasets.get(CONV) as PgDataset;
+        const { rows: typed } = await ds.read('Typed', { limit: 100 });
+        expect(bodies(typed)).toEqual({
+          [M(1)]: { flag: false },
+          [M(2)]: { flag: true },
+          [M(3)]: { title: 'body wins', flag: true }
+        });
+        // A type that does not declare the field gets nothing from the column.
+        const { rows: checkpoints } = await ds.read('ExecutionCheckpoint', { limit: 100 });
+        expect(bodies(checkpoints)).toEqual({ [M(4)]: { revision: 1 } });
+        // The filter a cold start runs finds the row whose body lacked the key.
+        const { rows: unflagged } = await ds.read('Typed', {
+          where: { flag: { eq: false } },
+          limit: 100
+        });
+        expect(unflagged.map((r) => r.id)).toEqual([M(1)]);
+      });
+
+      it('verify reads the source the same way and passes', async () => {
+        expect(await verifyStore(pair.srcSql, pair.tgtSql, verifyOpts(pair, result))).toEqual({
+          ok: true,
+          mismatches: [],
+          missingIndexes: []
+        });
+      });
+    }
+  );
+}

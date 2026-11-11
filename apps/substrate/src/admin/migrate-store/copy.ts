@@ -41,6 +41,7 @@ import type { PendingQuery, ReservedSql, Row, Sql } from 'postgres';
 import type { BootedStore } from '../../serve/boot-store.js';
 import type { CopyPlan, CopyPlanTable } from './preflight.js';
 import { type ProgressEvent, RowCounter } from './progress.js';
+import { declaredFields, sourceBodySql } from './source.js';
 
 export interface RowKey {
   namespace: string;
@@ -487,7 +488,7 @@ async function convertRows(
     if (table === undefined) throw new Error(`internal: no table prepared for ${key}`);
     // The body as text, parsed so no number changes its text (`parseSourceBody`).
     const cursor = src<Array<Omit<SourceRow, 'body'> & { body: string }>>`
-      SELECT id, body::text AS body, deleted_at::text, created_at::text, updated_at::text,
+      SELECT id, ${src.unsafe(sourceBodySql(t.columns, declaredFields(table)))}::text AS body, deleted_at::text, created_at::text, updated_at::text,
              created_by_kind, created_by_id, updated_by_kind, updated_by_id,
              ${seq} AS seq
       FROM rows WHERE namespace = ${namespace} AND type = ${type} ${where}
