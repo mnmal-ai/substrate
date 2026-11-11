@@ -414,6 +414,24 @@ describe('select, $expr and like on memory and pg', () => {
     }
   });
 
+  it('a select that overflows only on the look-ahead row: pg raises, memory returns the page', async () => {
+    // Widths 1, 2, 5 fill the page; width 100 (it overflows) is the row read to set hasMore.
+    // The upgrade note says such an overflow may or may not raise; this pins what each engine does.
+    const params = {
+      select: { d: { mul: ['width', 1e307] } },
+      where: { width: { gt: 0 } },
+      orderBy: [{ width: 'asc' }],
+      limit: 3
+    };
+    const got: Record<string, unknown> = {};
+    for (const [name, e] of engines) {
+      const out = await read(e, params, { id: true, d: true });
+      got[name] = out.errors?.[0]?.code ?? (out.rows ?? []).length;
+    }
+    const want: Record<string, unknown> = { memory: 3, pg: 'value_out_of_range' };
+    expect(got).toEqual(Object.fromEntries(engines.map(([name]) => [name, want[name]])));
+  });
+
   it('like is case-sensitive and differs from contains', async () => {
     const like = await same({ where: { url: { like: '%Google%' } } });
     expect(urls(like)).toEqual(['https://www.Google.com/a']);

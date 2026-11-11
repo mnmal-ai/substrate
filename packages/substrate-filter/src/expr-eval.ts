@@ -60,8 +60,11 @@ function likeTokens(pattern: string): LikeToken[] {
 }
 
 /** Linear-time-ish wildcard match (backtracks only to the last `%`), over code points. */
+/** Parsed once per pattern, not per row. */
+const likeTokensOf = lru(256, likeTokens);
+
 export function likeMatch(text: string, pattern: string): boolean {
-  const toks = likeTokens(pattern);
+  const toks = likeTokensOf(pattern);
   const t = Array.from(text);
   let ti = 0;
   let pi = 0;

@@ -142,6 +142,46 @@ describe('substrate-mcp tool handlers', () => {
     expect(lines.some((l) => l.startsWith('dateUnits: second'))).toBe(true);
   });
 
+  it("lists the server's expression catalogue, and labels the local one when the server has none", async () => {
+    const real = globalThis.fetch;
+    const served = {
+      functions: [{ name: 'onlyOnServer', args: ['string'], returns: 'string', description: 'x' }],
+      aggregates: ['count'],
+      limits: { maxDepth: 1, maxNodesPerExpr: 2, maxNodesPerFrame: 3 },
+      dateUnits: ['day']
+    };
+    let schemaReply: Response | null = null;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) =>
+      String(url).endsWith('/substrate/v1/schema') && schemaReply !== null
+        ? schemaReply.clone()
+        : real(url, init)) as typeof fetch;
+    try {
+      schemaReply = new Response(JSON.stringify({ types: {}, expressions: served }), {
+        status: 200
+      });
+      const fromServer = parseToolText(await createSchemaHandler(TEST_ENDPOINT)()) as {
+        expressions: string[];
+        expressionsNote?: string;
+      };
+      expect(fromServer.expressions[0]).toBe('onlyOnServer(string) → string: x');
+      expect(fromServer.expressionsNote).toBeUndefined();
+      const full = parseToolText(await createSchemaHandler(TEST_ENDPOINT)({ full: true })) as {
+        $expressions: { functions: { name: string }[] };
+      };
+      expect(full.$expressions.functions[0]?.name).toBe('onlyOnServer');
+
+      schemaReply = new Response(JSON.stringify({ error: 'unknown namespace' }), { status: 404 });
+      const local = parseToolText(await createSchemaHandler(TEST_ENDPOINT)()) as {
+        expressions: string[];
+        expressionsNote?: string;
+      };
+      expect(local.expressions.some((l) => l.startsWith('dateTrunc('))).toBe(true);
+      expect(local.expressionsNote).toContain("local binary's");
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+
   it('schema handler with full: true returns the federated schema', async () => {
     const result = await createSchemaHandler(TEST_ENDPOINT)({ full: true });
     const parsed = parseToolText(result) as Record<string, { types: Record<string, unknown> }>;
