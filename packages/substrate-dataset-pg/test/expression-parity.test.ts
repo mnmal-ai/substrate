@@ -25,6 +25,7 @@ const KINDS: Record<string, ColumnKind> = {
   s: 'text',
   n: 'number',
   d: 'date',
+  e: 'date',
   big: 'int64',
   i: 'int64',
   x: 'number'
@@ -78,7 +79,7 @@ describe.skipIf(!POSTGRES_URL)('expression compiler parity', () => {
       vals as string[]
     );
     const { fragment, type } = compileExprTyped(sql, expr, ctx);
-    const out = type === 'date' ? sql.unsafe(utcTextSql('v', 'MS')) : sql.unsafe('v');
+    const out = type === 'date' ? sql.unsafe(utcTextSql('v', 'US')) : sql.unsafe('v');
     const [r] = await sql`SELECT ${out} AS v FROM (SELECT ${fragment} AS v FROM expr_scratch r) q`;
     const v = (r as { v: unknown }).v;
     return type === 'int64' && v !== null ? BigInt(v as string) : v;
