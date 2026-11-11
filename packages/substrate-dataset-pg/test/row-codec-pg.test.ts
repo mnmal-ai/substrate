@@ -159,6 +159,29 @@ describe.skipIf(!POSTGRES_URL)('row codec through a type table', () => {
     }
   });
 
+  it('a projection of column fields only reads the same as the general subset, $raw misfits included', async () => {
+    // title, count, status, owner and done are column-state; the misfits row holds four of them under $raw.
+    const cols = { title: true, count: true, status: true, owner: true, done: true } as const;
+    const read = (fields: Record<string, true>) =>
+      sql<Array<Record<string, unknown>>>`
+        SELECT r.id, ${buildRowProjection(sql, table, fields)}
+        FROM ${sql(tableName)} r WHERE r.id LIKE 'r%' ORDER BY r.id`;
+    const fast = (await read(cols)).map((r) => decodeRow(table, r));
+    // A pending field in the request takes the general subset path; drop it to compare.
+    const general = (await read({ ...cols, later: true })).map((r) => {
+      const { later: _later, ...rest } = decodeRow(table, r);
+      return rest;
+    });
+    expect(fast).toEqual(general);
+    expect(fast).toContainEqual({
+      title: 'misfits',
+      count: '5',
+      status: 'archived',
+      owner: 42,
+      done: 'yes'
+    });
+  });
+
   it('dates keep the shared grammar instant at microseconds, whatever the process TZ', async () => {
     const DATES = [
       '2026-10-26T10:00:00.123456Z',

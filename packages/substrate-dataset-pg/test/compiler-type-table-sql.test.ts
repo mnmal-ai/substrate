@@ -368,6 +368,11 @@ describe('a date column reads the same whatever the session TimeZone', () => {
     expect(render(buildRowProjection(sql, OBS, { observedAt: true }))).toMatch(
       /jsonb_each\(r\.extra\) e WHERE e\.key = ANY\(\$::text\[\]\)/
     );
+    // Column fields only: the subset runs only for a row holding `id` or `$raw` in extra.
+    expect(render(buildRowProjection(sql, OBS, { observedAt: true }))).toContain(
+      'CASE WHEN r.extra ?| $::text[] THEN'
+    );
+    expect(render(buildRowProjection(sql, OBS, { gone: true }))).not.toContain('?|');
   });
 
   it('decodeRow reads that text as the canonical form a Date gives', () => {
