@@ -39,7 +39,7 @@ export function buildColumnPredicate(
   alias?: string
 ): Fragment | null {
   const as = columnAs(column.kind);
-  const predicate = column.kind === 'int64' ? int64Operands(field, rawPredicate) : rawPredicate;
+  const predicate = as === 'int64' ? int64Operands(field, rawPredicate) : rawPredicate;
   const read = fieldExpr(sql, table, field, as, alias);
   /**
    * A promoting enum field reads its `$raw` string over the rest, as `decodeRow`

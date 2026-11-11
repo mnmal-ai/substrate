@@ -225,6 +225,10 @@ export function evalExpr(expr: Expr, row: Record<string, unknown>, env: EvalEnv)
     if (v === undefined || v === null) return null;
     // A number field (or number-valued `_agg`) holding anything else reads as null, as pg's substrate_num does.
     if (typeof v !== 'number' && env.fieldType(expr) === 'number') return null;
+    // An int32 field holds a number; it reads as the int64 its type says.
+    if (typeof v === 'number' && env.fieldType(expr) === 'int64') {
+      return Number.isSafeInteger(v) ? BigInt(v) : null;
+    }
     // A date reads as one canonical UTC microsecond text, so equal instants compare equal as text.
     if (env.fieldType(expr) === 'date' || v instanceof Date) {
       const m = microsOf(v);

@@ -35,7 +35,15 @@ import type { PgHandle } from './tx-scope.js';
 import { UUID_REGEX } from './uuid-check.js';
 import { GUARDED_ATTEMPTS, guardedRead } from './write-rows.js';
 
-export type ColumnKind = 'text' | 'enum' | 'number' | 'int64' | 'date' | 'boolean' | 'crossRef';
+export type ColumnKind =
+  | 'text'
+  | 'enum'
+  | 'number'
+  | 'int32'
+  | 'int64'
+  | 'date'
+  | 'boolean'
+  | 'crossRef';
 
 /**
  * The column kind of a field, or `undefined` when it has no column (json, list,
@@ -63,6 +71,7 @@ export const PG_TYPE: Readonly<Record<ColumnKind, string>> = {
   enum: 'text COLLATE "C"',
   crossRef: 'text',
   number: 'double precision',
+  int32: 'integer',
   int64: 'bigint',
   date: 'timestamptz',
   boolean: 'boolean'

@@ -8,7 +8,12 @@
  * apart from that `$raw` copy.
  */
 
-import { normalizeIsoTimestamp, parseInt64, ReservedField } from '@mnmal-ai/substrate-types';
+import {
+  isInt32,
+  normalizeIsoTimestamp,
+  parseInt64,
+  ReservedField
+} from '@mnmal-ai/substrate-types';
 import type { ColumnKind, TypedColumn, TypeTable } from './type-table.js';
 
 /** The reserved `extra` key holding each column field's written value when its column differs. */
@@ -153,6 +158,8 @@ function toColumn(column: TypedColumn, value: unknown): string | number | boolea
       return typeof value === 'string' ? value : null;
     case 'number':
       return typeof value === 'number' ? value : null;
+    case 'int32':
+      return isInt32(value) ? value : null;
     case 'int64': {
       const n = parseInt64(value);
       return n === undefined ? null : String(n);

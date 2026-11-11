@@ -46,8 +46,11 @@ describe('evalExpr', () => {
     expect(ev({ eq: ['constructor', 1] }, {})).toBeNull();
   });
   it('reads bare strings from the output first, then the row', () => {
-    expect(ev('a', { a: 1 }, { output: { a: 2 } })).toBe(2);
-    expect(ev('a', { a: 1 }, { output: { b: 2 } })).toBe(1);
+    expect(ev('b', { b: 1 }, { output: { b: 2 } })).toBe(2);
+    expect(ev('b', { b: 1 }, { output: { a: 2 } })).toBe(1);
+  });
+  it('reads a number in an int64 field (an int32) as a bigint', () => {
+    expect(ev('a', { a: 7 })).toBe(7n);
   });
   it('reads a missing field as null and a Date as canonical microsecond text', () => {
     expect(ev('zz', {})).toBeNull();

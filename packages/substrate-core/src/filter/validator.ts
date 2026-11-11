@@ -38,6 +38,7 @@ import {
   type FieldKind,
   type FilterCapabilities,
   isImpossibleIsoTimestamp,
+  isInt32,
   isIsoTimestamp,
   METADATA_FILTER_FIELDS,
   type OrderByClause,
@@ -154,6 +155,8 @@ function fieldKindOf(def: FieldDef): ValidatorKind {
       switch (def.type) {
         case 'number':
           return 'scalar.number';
+        case 'int32':
+          return 'scalar.int32';
         case 'int64':
           return 'scalar.int64';
         case 'string':
@@ -183,6 +186,7 @@ function fieldKindOf(def: FieldDef): ValidatorKind {
 function opsAllowedFor(kind: ValidatorKind): Set<string> {
   switch (kind) {
     case 'scalar.number':
+    case 'scalar.int32':
     case 'scalar.int64':
     case 'scalar.date':
       return NUMBER_OPS;
@@ -208,6 +212,7 @@ function opsAllowedFor(kind: ValidatorKind): Set<string> {
  */
 const FIELD_KINDS: readonly FieldKind[] = [
   'scalar.number',
+  'scalar.int32',
   'scalar.int64',
   'scalar.string',
   'scalar.boolean',
@@ -320,6 +325,15 @@ function validatePrimitiveKind(
         throw new FilterValidationError(
           'type_mismatch',
           `operator '${op}' expected number, got ${typeof value}`,
+          path
+        );
+      }
+      return;
+    case 'scalar.int32':
+      if (!isInt32(value)) {
+        throw new FilterValidationError(
+          'type_mismatch',
+          `operator '${op}' expected an int32 (an integer from -2147483648 to 2147483647), got ${JSON.stringify(String(value))}`,
           path
         );
       }

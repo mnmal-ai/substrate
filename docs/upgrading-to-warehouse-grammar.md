@@ -110,6 +110,10 @@ An expression is a field name, a number, a boolean, `null`, `{ "lit": "text" }`,
 
 `field.int64()` declares a 64-bit integer, stored as a Postgres `bigint` and held as a `bigint` in memory. On the JSON wire it is a **decimal string**, such as `"9007199254740993"`, so no digit is lost to a double. A write accepts a bigint, a safe-integer number or a canonical decimal string within the int64 range, and a filter operand takes the same. A cursor carries an int64 as decimal text. In an expression, `{ "int64": "<decimal>" }` is the literal. `sum` of an int64 is exact, `avg` is the exact sum over the count as a float, and `add`, `sub`, `mul` and `neg` stay int64 when both sides are.
 
+### The `int32` field kind
+
+`field.int32()` declares a 32-bit integer, stored as a Postgres `integer` and held as a plain number in memory and on the JSON wire. A write and a filter operand must be an integer from -2147483648 to 2147483647; anything else is refused (`invalid_field_type` on a write, `type_mismatch` on a filter). In an expression an int32 field reads as an int64, so `add`, `sub`, `mul`, `neg` and `mod` over it stay exact integers and raise only past the int64 range, and `sum` is an exact int64 (a decimal string on the JSON wire). Use it for integer columns that fit, instead of `number`: sums are native and exact, and the column is half the width. A field cannot change kind in place, so moving a `number` field to `int32` means a new field and a backfill.
+
 ### Reserved field names
 
 These nine names are reserved for server metadata and can no longer be declared as body fields: `createdAt`, `updatedAt`, `seq`, `createdBy`, `updatedBy`, `createdById`, `createdByKind`, `updatedById` and `updatedByKind`. `defineNamespace` (on every type, autoCRUD or not), `propose_type` and `propose_field` refuse a field with one of these names, and the message names the field and says it is reserved for server metadata. `createdAt`, `updatedAt` and `seq` read as metadata in expressions, and `where` and `orderBy` read all nine as metadata, so none can collide with a body field. The six string names are refused in expressions (`expr_invalid`). Pre-1.0, so a type that declares one must rename it before upgrading.
@@ -126,6 +130,8 @@ These nine names are reserved for server metadata and can no longer be declared 
 - `ReadParams.bucket`, `ReadParams.derive`, `BucketSpec` and `DeriveSpec` are removed from `@mnmal-ai/substrate-types`. Use `groupBy`, `select` and `Expr`.
 - The generated list query refuses `bucket` and `derive` with `unknown_param`, like any other unknown param.
 - `PlanClause.kind` is `'hop' | 'filter' | 'order' | 'ref' | 'select' | 'group' | 'agg'`.
+
+`FieldKind` gains `'scalar.int32'`, so a dataset's `capabilities.operators` must list operators for it (`fullBuiltinOperators()` already does).
 
 A dataset implementation that read `params.bucket` or `params.derive` must read `groupBy` and `select`. `groupRows` and `buildGroupedRead` are the shared grouped paths on memory and Postgres.
 

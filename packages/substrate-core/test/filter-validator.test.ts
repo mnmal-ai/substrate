@@ -53,6 +53,7 @@ const CAPS: FilterCapabilities = {
     ],
     'scalar.boolean': ['eq'],
     'scalar.date': ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'between', 'in', 'nin'],
+    'scalar.int32': ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'between', 'in', 'nin'],
     'scalar.int64': ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'between', 'in', 'nin'],
     'scalar.json': [],
     crossRef: ['eq'],

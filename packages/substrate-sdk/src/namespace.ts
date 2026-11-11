@@ -390,12 +390,15 @@ export function assertOrderedBy(
   if (
     !(
       field.kind === 'scalar' &&
-      (field.type === 'date' || field.type === 'number' || field.type === 'int64')
+      (field.type === 'date' ||
+        field.type === 'number' ||
+        field.type === 'int32' ||
+        field.type === 'int64')
     )
   ) {
     const kind = field.kind === 'scalar' ? field.type : field.kind;
     throw new Error(
-      `${where}: field '${name}' is ${kind}; only date, number and int64 fields, ` +
+      `${where}: field '${name}' is ${kind}; only date, number, int32 and int64 fields, ` +
         `or ${[...ORDERED_BY_METADATA_COLUMNS].join(', ')}, can be a natural order`
     );
   }
