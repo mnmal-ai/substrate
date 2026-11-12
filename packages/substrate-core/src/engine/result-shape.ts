@@ -15,6 +15,7 @@ import type {
   Row
 } from '@mnmal-ai/substrate-types';
 import { applyObligations } from '../policy-evaluator.js';
+import type { RegistryEntry } from '../registry.js';
 import { sealCursor } from './cursor-seal.js';
 import { addError, isAsyncIterable, isReadResult } from './internals.js';
 
@@ -39,6 +40,16 @@ export interface ShapeResultInput {
    * are not run on the result.
    */
   resolverFiltered?: boolean;
+}
+
+/**
+ * Whether row-filter obligations are already settled for `entry`'s result. A
+ * by-filter mutation's resolver filters the rows it writes, and a delete
+ * returns `{ id, deleted }`, which carries no row values to filter: running a
+ * row predicate on it drops a committed delete to null.
+ */
+export function resolverFiltered(entry: Pick<RegistryEntry, 'filterTarget' | 'verb'>): boolean {
+  return entry.filterTarget !== undefined || entry.verb === 'delete';
 }
 
 export function shapeResult(input: ShapeResultInput): void {

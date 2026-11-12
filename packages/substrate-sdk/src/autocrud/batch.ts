@@ -561,7 +561,8 @@ export function updateResolver<T extends Row = Row>(
 export function deleteResolver(
   typeName: string,
   dataset: Dataset,
-  edges: EdgesStore
+  edges: EdgesStore,
+  options: Pick<BatchResolverOptions, 'policy'> = {}
 ): TypedResolver<DeleteResolverResult> {
-  return singleFrame<DeleteResolverResult>(deleteBatchResolver(typeName, dataset, edges));
+  return singleFrame<DeleteResolverResult>(deleteBatchResolver(typeName, dataset, edges, options));
 }

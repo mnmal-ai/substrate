@@ -131,9 +131,10 @@ describe('by filter refuses what update<T> refuses, and what a plugin took over'
         return (err as { code?: string }).code;
       }
     };
-    // update<T> accepts a readonly field in a patch today; by filter matches it.
+    // A readonly field is refused on update as on create, by id and by filter.
+    expect(await codeOf('updateItem', { id: 'a', shortId: 7 })).toBe('readonly_field');
     expect(await codeOf('updateManyItem', { where: {}, set: { shortId: 7 } })).toBe(
-      await codeOf('updateItem', { id: 'a', shortId: 7 })
+      'readonly_field'
     );
     for (const patch of [
       { createdAt: '2026-01-01T00:00:00.000Z' },

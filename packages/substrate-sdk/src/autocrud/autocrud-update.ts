@@ -29,6 +29,7 @@ import {
   assertEnumValues,
   assertNoClientServerFields,
   assertNoNullOnNonNullable,
+  assertNoReadonlyFields,
   assertNoUnknownFields,
   assertScalarTypes,
   coerceId,
@@ -127,6 +128,7 @@ export function preparePatch(
   // Synonyms in a governed vocabulary are stored as their canonical value.
   // An undefined value is an unsent key in a partial patch, not a write.
   const sent = dropUndefinedParams(rawParams ?? {});
+  if (fields) assertNoReadonlyFields(sent, fields);
   const params = fields !== undefined ? normaliseVocabValues(sent, fields) : sent;
 
   // Reserved-field guard: `_deletedAt` must never flow through update —

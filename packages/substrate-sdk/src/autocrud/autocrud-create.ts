@@ -15,12 +15,13 @@
  */
 
 import type { FieldDef, WriteRow } from '@mnmal-ai/substrate-types';
-import { normaliseVocabValues, ResolverFrameError } from '@mnmal-ai/substrate-types';
+import { normaliseVocabValues } from '@mnmal-ai/substrate-types';
 import {
   applyScalarDefaults,
   assertEnumValues,
   assertNoClientServerFields,
   assertNoNullOnNonNullable,
+  assertNoReadonlyFields,
   assertNoUnknownFields,
   assertRequiredFields,
   assertScalarTypes,
@@ -48,19 +49,7 @@ export function prepareCreateRow(
     // the error code is unambiguous.
     assertNoClientServerFields(params, fields, 'create');
 
-    // Reject caller-supplied values for readonly fields. shortId is the main
-    // case: it is engine-allocated, not caller-controlled.
-    for (const [fieldName, def] of Object.entries(fields)) {
-      // `readonly` lives on FieldDefScalar only (see substrate-types/schema.ts).
-      // Guard on kind so the property access is type-safe rather than cast.
-      if (def.kind === 'scalar' && def.readonly === true && fieldName in params) {
-        throw new ResolverFrameError(
-          'readonly_field',
-          `Cannot set read-only field '${fieldName}' (engine-allocated)`,
-          { field: fieldName }
-        );
-      }
-    }
+    assertNoReadonlyFields(params, fields);
 
     // Controlled-vocabulary guard. Runs after readonly/server-field checks so
     // their codes take precedence; covers memory + pg uniformly.
