@@ -176,3 +176,34 @@ describe('runScript', () => {
     expect(r.stats.queries).toBe(2);
   });
 });
+
+describe('s.schema', () => {
+  const schemas = {
+    ns: {
+      schemaVersion: 'v',
+      types: { T: { fields: { title: { kind: 'scalar', type: 'string' } } } },
+      mutations: {}
+    }
+  };
+  const withSchema = (): SubstrateClient => {
+    const { client } = fakeClient(() => ({ data: {} }));
+    (client as unknown as { federatedSchema: () => Promise<unknown> }).federatedSchema = async () =>
+      schemas;
+    return client;
+  };
+
+  it('answers the federated schema, one namespace, or one type', async () => {
+    const r = await run(
+      async (s) => [await s.schema(), await s.schema('ns'), await s.schema('ns', 'T')],
+      withSchema()
+    );
+    expect(r.result).toEqual([schemas, schemas.ns, schemas.ns.types.T]);
+  });
+
+  it('throws naming an unknown namespace or type', async () => {
+    const r = await run(async (s) => s.schema('nope'), withSchema());
+    expect(r).toMatchObject({ ok: false, error: "schema: unknown namespace 'nope'" });
+    const t = await run(async (s) => s.schema('ns', 'Nope'), withSchema());
+    expect(t).toMatchObject({ ok: false, error: "schema: unknown type 'ns/Nope'" });
+  });
+});

@@ -10,7 +10,12 @@
  * Run by the `substrate mcp` subcommand via `runMcp`.
  */
 
-import { tokenAudience } from '@mnmal-ai/substrate-client';
+import {
+  type ClientFromEnv,
+  createClientFromEnv,
+  DEFAULT_MAX_WRITES,
+  tokenAudience
+} from '@mnmal-ai/substrate-client';
 import type { NlAskRequest } from '@mnmal-ai/substrate-types';
 import { trimTrailingSlashes } from '@mnmal-ai/substrate-types';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -20,6 +25,7 @@ import { z } from 'zod';
 // binary carries the literal value.
 import pkg from '../../package.json' with { type: 'json' };
 import { makeAgentJwtProvider, resolveAgentCapabilities } from './agent-jwt.js';
+import { runSandboxed } from './run-sandbox.js';
 import {
   buildInstructions,
   expressionLines,
@@ -487,6 +493,40 @@ export function createDropTypeHandler(
   };
 }
 
+/**
+ * `run`: one script, sandboxed (Decision #642), signed as this MCP server's
+ * agent. The client is made on first use and kept: building it reads the key.
+ */
+export function createRunHandler(env: NodeJS.ProcessEnv = process.env) {
+  let signed: ClientFromEnv | undefined;
+  return async (input: {
+    script: string;
+    args?: Record<string, unknown>;
+    mode?: 'read' | 'dry-run' | 'write';
+    maxWrites?: number;
+  }): Promise<ToolResult> => {
+    try {
+      signed ??= createClientFromEnv({ env });
+      if (signed.kid === null) {
+        return errorResult(
+          'run needs an agent identity: set SUBSTRATE_AGENT_KEY_ID and SUBSTRATE_AGENT_KEY_PATH'
+        );
+      }
+      const report = await runSandboxed(input.script, {
+        client: signed.client,
+        kid: signed.kid,
+        mode: input.mode ?? 'read',
+        args: input.args ?? {},
+        maxWrites: input.maxWrites ?? DEFAULT_MAX_WRITES,
+        log: () => {}
+      });
+      return report.ok ? okResult(report) : { ...okResult(report), isError: true };
+    } catch (err) {
+      return errorResult(toMessage(err));
+    }
+  };
+}
+
 export interface McpServerOptions {
   /**
    * Comma-separated tool names to register (SUBSTRATE_MCP_TOOLS). Unset or blank
@@ -627,6 +667,44 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
         }
       },
       handler: createMutateHandler(endpoint)
+    },
+    {
+      name: 'run',
+      config: {
+        description:
+          'Run a short script against Substrate in one call: many queries and writes, one small report back. ' +
+          'Use it when the work takes three or more dependent calls (ids passed from one call to the next, ' +
+          'a census that must page, a join, recall-then-hydrate, a batch of writes chosen by a read). ' +
+          '`script` is a JS/TS module whose default export is `async (s) => result`; type syntax is stripped. ' +
+          '`s` has: kid, mode, args; query(frame) (throws on a refused frame); queryAll(key, { params, fields }) ' +
+          '(pages to the end); recall({ query, namespace, type, k?, where?, row? }); schema(namespace?, type?); ' +
+          'mutate(frame); log(...). Return counts, ids and short handles, not whole rows. ' +
+          'Modes: "read" (default) refuses mutate; "dry-run" records each mutate payload in the report without ' +
+          'sending it; "write" sends up to maxWrites frames (default 50; an array element counts one). ' +
+          'Dry-run first, read report.mutations, then write. The script runs sandboxed: no files, network, ' +
+          'processes or environment; it reaches only the store, as this agent. Report: { ok, kid, mode, result, ' +
+          'error?, mutations[{ frame, applied, errors? }], warnings, stats }.',
+        inputSchema: {
+          script: z
+            .string()
+            .min(1)
+            .describe(
+              "Module text, e.g. \"export default async (s) => (await s.queryAll('cortext/Todo', { params: { where: { status: { eq: 'open' } } }, fields: { id: true } })).length\""
+            ),
+          args: z
+            .record(z.string(), z.unknown())
+            .optional()
+            .describe('Passed to the script as s.args.'),
+          mode: z.enum(['read', 'dry-run', 'write']).optional().describe('Default "read".'),
+          maxWrites: z
+            .number()
+            .int()
+            .nonnegative()
+            .optional()
+            .describe('Write mode: most mutate frames to send. Default 50.')
+        }
+      },
+      handler: createRunHandler()
     },
     {
       name: 'ask',

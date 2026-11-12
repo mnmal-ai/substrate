@@ -35,7 +35,7 @@ A plugin package declares `@mnmal-ai/substrate` as a peer dependency and as a de
 
 ### MCP tools
 
-`substrate mcp` serves `schema`, `query`, `mutate`, `recall`, `ask`, `whoami`, `propose_type`, `propose_field`, and the admin-gated `drop_namespace` / `drop_type`. It talks to a running server at `SUBSTRATE_URL` and signs requests when `SUBSTRATE_AGENT_KEY_ID` and `SUBSTRATE_AGENT_KEY_PATH` are set. [`docs/surface-parity.md`](https://github.com/mnmal-ai/substrate/blob/main/docs/surface-parity.md) maps what each surface (HTTP, MCP, WS, SSE) offers.
+`substrate mcp` serves `schema`, `query`, `mutate`, `run`, `recall`, `ask`, `whoami`, `propose_type`, `propose_field`, `propose_index`, and the admin-gated `drop_namespace` / `drop_type`. `run` executes a short script against the store in one call (the same context as `substrate run`), in a child process with no file, network, process or environment access. It talks to a running server at `SUBSTRATE_URL` and signs requests when `SUBSTRATE_AGENT_KEY_ID` and `SUBSTRATE_AGENT_KEY_PATH` are set. [`docs/surface-parity.md`](https://github.com/mnmal-ai/substrate/blob/main/docs/surface-parity.md) maps what each surface (HTTP, MCP, WS, SSE) offers.
 
 ### `substrate ask`
 
