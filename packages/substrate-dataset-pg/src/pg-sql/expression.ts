@@ -36,6 +36,7 @@ const KIND_TYPE: Record<ColumnKind, ExprType> = {
   enum: 'string',
   crossRef: 'string',
   number: 'number',
+  int16: 'int64',
   int32: 'int64',
   int64: 'int64',
   date: 'date',
@@ -129,8 +130,13 @@ export function compileExprTyped(
     if (out !== undefined) return { f: t === 'number' ? sql`(${out})::float8` : out, t };
     const f = fieldExprSql(ctx.table, name, AS[t], ctx.alias);
     // shortcut: a promoting or extra number is numeric; the float8 cast raises past float8's range, widen if such values can be stored.
-    // An int32 column widens to bigint, so its arithmetic is int64's.
-    const wide = t === 'number' ? `(${f})::float8` : col?.kind === 'int32' ? `(${f})::bigint` : f;
+    // An int16 or int32 column widens to bigint, so its arithmetic is int64's.
+    const wide =
+      t === 'number'
+        ? `(${f})::float8`
+        : col?.kind === 'int16' || col?.kind === 'int32'
+          ? `(${f})::bigint`
+          : f;
     return { f: u(wide), t };
   };
 

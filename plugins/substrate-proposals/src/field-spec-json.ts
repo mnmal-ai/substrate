@@ -16,7 +16,15 @@ import type {
 } from '@mnmal-ai/substrate-types';
 import { ProposalError } from './errors.js';
 
-export type ScalarType = 'string' | 'number' | 'int32' | 'int64' | 'boolean' | 'date' | 'json';
+export type ScalarType =
+  | 'string'
+  | 'number'
+  | 'int16'
+  | 'int32'
+  | 'int64'
+  | 'boolean'
+  | 'date'
+  | 'json';
 
 export interface ScalarSpec {
   kind: 'scalar';
@@ -108,6 +116,7 @@ function crossRefsIn(spec: FieldSpecJson): CrossRefSpec[] {
 const SCALAR_TYPES: ReadonlySet<ScalarType> = new Set([
   'string',
   'number',
+  'int16',
   'int32',
   'int64',
   'boolean',
