@@ -139,7 +139,7 @@ The main ones; `substrate --help` and the header of `apps/substrate/src/main.ts`
 | `SUBSTRATE_AUTH_KEY_REGISTRY` | Path to a JSON key registry file. Without it, auth reads keys registered in Postgres with `substrate-admin`. |
 | `SUBSTRATE_PUBLIC_ORIGIN` | The origins callers reach this server by, comma-separated (`https://host:3100,https://alias`). A token whose `aud` names none of them is refused. **Required when auth is enabled and `HOST` is not loopback**; on loopback it defaults to the loopback origins. |
 | `SUBSTRATE_STREAM_TICKET_SECRET` | HMAC key signing SSE stream tickets. **Required when auth is enabled**; at least 16 characters. The ticket signature is the only authentication on `GET /substrate/v1/stream` and `GET /substrate/v1/subscribe`, because `EventSource` can send no header or body. Rotating it invalidates every outstanding ticket. |
-| `SUBSTRATE_TLS_KEY_PATH` / `SUBSTRATE_TLS_CERT_PATH` / `SUBSTRATE_TLS_CA_PATH` | Serve HTTPS. Key and cert are required together. |
+| `SUBSTRATE_TLS_KEY_PATH` / `SUBSTRATE_TLS_CERT_PATH` / `SUBSTRATE_TLS_CA_PATH` | Serve HTTPS, over HTTP/2 with an HTTP/1.1 fallback. Key and cert are required together. |
 | `SUBSTRATE_NAMESPACE` | Default namespace for recall requests that omit one; with neither, recall refuses with `missing_namespace`. |
 | `SUBSTRATE_STATEMENT_TIMEOUT_MS` | Statement timeout for typed edge walk reads (default 30000). A read it cancels is refused `query_timeout`. It also bounds the wait for a free database connection; a request that waits longer is refused `store_busy`. |
 | `SUBSTRATE_PAGE_LIMIT_DEFAULT` / `SUBSTRATE_PAGE_LIMIT_MAX` | Page size for a remote query that names no `limit` (default 100), and the largest `limit` accepted (default 1000). |
