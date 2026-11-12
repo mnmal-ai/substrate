@@ -1,5 +1,5 @@
 /** The oldest Node the binaries run on; matches `engines.node` in package.json. */
-export const MIN_NODE_VERSION = '26.12.1';
+export const MIN_NODE_VERSION = '26.13.1';
 
 /** Returns a refusal message when `version` (e.g. `process.versions.node`) is below the minimum, else null. */
 export function nodeVersionRefusal(version: string): string | null {
