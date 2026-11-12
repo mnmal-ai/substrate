@@ -55,6 +55,7 @@ const CAST: Readonly<Record<ColumnKind, string>> = {
   enum: 'text',
   crossRef: 'text',
   number: 'float8',
+  int16: 'int2',
   int32: 'int4',
   int64: 'bigint',
   date: 'timestamptz',

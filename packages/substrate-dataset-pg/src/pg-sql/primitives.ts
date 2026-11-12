@@ -168,8 +168,8 @@ function pathSql(
 
 /** The `as` a column of `kind` compares and sorts as. */
 export function columnAs(kind: ColumnKind): Exclude<FieldAs, 'rawText' | 'json'> {
-  // An int32 compares as an int64: int4 and int8 share a btree operator family, so its index serves.
-  if (kind === 'int32') return 'int64';
+  // An int16 or int32 compares as an int64: int2, int4 and int8 share a btree operator family, so its index serves.
+  if (kind === 'int16' || kind === 'int32') return 'int64';
   return kind === 'number' || kind === 'int64' || kind === 'date' || kind === 'boolean'
     ? kind
     : 'text';

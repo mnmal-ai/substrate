@@ -1,7 +1,7 @@
 /**
- * `int32` on memory and pg: values read back as plain numbers, filters and
- * orders select the same ids, and an expression or sum over one is an exact
- * int64, as the expression checker types it.
+ * `int16` and `int32` on memory and pg: values read back as plain numbers,
+ * filters and orders select the same ids, and an expression or sum over one is
+ * an exact int64, as the expression checker types it.
  */
 
 import { Engine, MemoryEdgesStore, type NamespaceConfig, Registry } from '@mnmal-ai/substrate-core';
@@ -15,72 +15,76 @@ import { PgDataset } from '../src/pg-dataset.js';
 import { dropNamespace } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
-const NS = 'test_int32_parity';
-
-const fields = {
-  n: field.int32({ nullable: true, indexed: true }),
-  g: field.string(),
-  label: field.string()
-};
-const lookup = (_type: string, f: string): FieldDef | undefined =>
-  (fields as Record<string, FieldDef>)[f];
-
 const WRITER: Identity = { kind: 'system', id: 'test', grants: { '*': ['read', 'mutate'] } };
 
-const MAX = 2 ** 31 - 1;
-const MIN = -(2 ** 31);
+const KINDS = [
+  { kind: 'int16', bits: 15, pgType: 'smallint' },
+  { kind: 'int32', bits: 31, pgType: 'integer' }
+] as const;
 
-function engineOver(ds: Dataset): Engine {
-  const registry = new Registry();
-  const edges = new MemoryEdgesStore({ now: () => new Date() });
-  defineNamespace(NS, { Small: { fields } }).install({ registry, dataset: ds, edges });
-  const datasets = new MemoryDatasetRegistry();
-  datasets.set(NS, ds);
-  return new Engine({
-    namespaces: new Map<string, NamespaceConfig>([[NS, { registry }]]),
-    datasets,
-    edges
-  });
-}
+describe.each(KINDS)('$kind field kind', ({ kind, bits, pgType }) => {
+  const NS = `test_${kind}_parity`;
+  const fields = {
+    n: field[kind]({ nullable: true, indexed: true }),
+    g: field.string(),
+    label: field.string()
+  };
+  const lookup = (_type: string, f: string): FieldDef | undefined =>
+    (fields as Record<string, FieldDef>)[f];
 
-async function seed(engine: Engine): Promise<void> {
-  const values: Array<[string, string, number | null]> = [
-    ['max', 'a', MAX],
-    ['max2', 'a', MAX],
-    ['min', 'b', MIN],
-    ['seven', 'b', 7],
-    ['neg', 'b', -3],
-    ['none', 'c', null]
-  ];
-  const env = await engine.mutate({
-    frame: {
-      [`${NS}/createSmall`]: values.map(([label, g, n]) => ({
-        params: { label, g, n },
-        fields: { id: true }
-      }))
-    },
-    ctx: { identity: WRITER }
-  });
-  expect(env.errors).toBeUndefined();
-}
+  const MAX = 2 ** bits - 1;
+  const MIN = -(2 ** bits);
 
-async function query(engine: Engine, params: Record<string, unknown>) {
-  const env = await engine.query({
-    frame: { [`${NS}/Small`]: { params, fields: { id: true, n: true, label: true } } },
-    ctx: { identity: null }
-  });
-  return env;
-}
+  function engineOver(ds: Dataset): Engine {
+    const registry = new Registry();
+    const edges = new MemoryEdgesStore({ now: () => new Date() });
+    defineNamespace(NS, { Small: { fields } }).install({ registry, dataset: ds, edges });
+    const datasets = new MemoryDatasetRegistry();
+    datasets.set(NS, ds);
+    return new Engine({
+      namespaces: new Map<string, NamespaceConfig>([[NS, { registry }]]),
+      datasets,
+      edges
+    });
+  }
 
-async function read(engine: Engine, params: Record<string, unknown> = {}): Promise<Row[]> {
-  const env = await query(engine, params);
-  expect(env.errors).toBeUndefined();
-  return env.data[`${NS}/Small`] as Row[];
-}
+  async function seed(engine: Engine): Promise<void> {
+    const values: Array<[string, string, number | null]> = [
+      ['max', 'a', MAX],
+      ['max2', 'a', MAX],
+      ['min', 'b', MIN],
+      ['seven', 'b', 7],
+      ['neg', 'b', -3],
+      ['none', 'c', null]
+    ];
+    const env = await engine.mutate({
+      frame: {
+        [`${NS}/createSmall`]: values.map(([label, g, n]) => ({
+          params: { label, g, n },
+          fields: { id: true }
+        }))
+      },
+      ctx: { identity: WRITER }
+    });
+    expect(env.errors).toBeUndefined();
+  }
 
-const labels = (rows: Row[]) => rows.map((r) => String(r.label));
+  async function query(engine: Engine, params: Record<string, unknown>) {
+    const env = await engine.query({
+      frame: { [`${NS}/Small`]: { params, fields: { id: true, n: true, label: true } } },
+      ctx: { identity: null }
+    });
+    return env;
+  }
 
-describe('int32 field kind', () => {
+  async function read(engine: Engine, params: Record<string, unknown> = {}): Promise<Row[]> {
+    const env = await query(engine, params);
+    expect(env.errors).toBeUndefined();
+    return env.data[`${NS}/Small`] as Row[];
+  }
+
+  const labels = (rows: Row[]) => rows.map((r) => String(r.label));
+
   it('a write that is not an int32 is refused', async () => {
     const engine = engineOver(new MemoryDataset({ namespace: NS, fieldDefLookup: lookup }));
     for (const n of [1.5, MAX + 1, MIN - 1, '7', Number.NaN]) {
@@ -98,7 +102,7 @@ describe('int32 field kind', () => {
     const engine = engineOver(new MemoryDataset({ namespace: NS, fieldDefLookup: lookup }));
     for (const v of [1.5, MAX + 1, '7']) {
       const env = await query(engine, { where: { n: { gt: v } } });
-      expect(env.errors?.[0]?.message, String(v)).toMatch(/expected an int32/);
+      expect(env.errors?.[0]?.message, String(v)).toMatch(new RegExp(`expected an ${kind}`));
     }
   });
 
@@ -142,7 +146,7 @@ describe('int32 field kind', () => {
         FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid
         JOIN pg_namespace s ON s.oid = c.relnamespace
         WHERE s.nspname = current_schema() AND c.relname LIKE ${`%${NS}%`} AND a.attname = 'f_n'`;
-      expect(col?.t).toBe('integer');
+      expect(col?.t).toBe(pgType);
     });
 
     it('reads identical plain numbers', async () => {
@@ -168,7 +172,7 @@ describe('int32 field kind', () => {
       }
     });
 
-    it('sums exactly past the int32 range, as an int64', async () => {
+    it('sums exactly past its range, as an int64', async () => {
       const params = {
         groupBy: { g: 'g' },
         aggregate: { s: { sum: 'n' }, t: { sum: { add: ['n', 1] } }, m: { max: 'n' } },
@@ -189,9 +193,9 @@ describe('int32 field kind', () => {
       }
     });
 
-    it('an expression over int32 is integer arithmetic', async () => {
+    it('an expression over it is integer arithmetic', async () => {
       for (const e of engines) {
-        const rows = await read(e, { where: { $expr: { eq: [{ add: ['n', 1] }, 2 ** 31] } } });
+        const rows = await read(e, { where: { $expr: { eq: [{ add: ['n', 1] }, MAX + 1] } } });
         expect(labels(rows).sort()).toEqual(['max', 'max2']);
       }
     });

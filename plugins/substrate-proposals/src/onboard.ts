@@ -165,9 +165,10 @@ export function buildOnboardBody(ownedNamespaces: ReadonlyArray<string>): Onboar
       variants: {
         scalar: {
           shape:
-            '{ kind: "scalar", type: "string"|"number"|"boolean"|"date"|"json", indexed?: bool, nullable?: bool }',
+            '{ kind: "scalar", type: "string"|"number"|"int16"|"int32"|"int64"|"boolean"|"date"|"json", indexed?: bool, nullable?: bool }',
           notes:
             'indexed is unset by default (no index; crossRef defaults to indexed: true). No field needs an index to filter, and non-json scalars sort without one, so set indexed: true only where a read needs the speed. indexed: false also marks a field as not a search handle (long-form prose). json filters by path only and never sorts. readonly is reserved for engine-managed fields. ' +
+            "Integers: pick the narrowest of int16 (-32768..32767), int32 (about ±2.1e9) or int64 (about ±9.2e18; a decimal string on the wire past 2^53) that holds every value the field will ever take, since a field's type cannot change once it has rows; when unsure, go one wider. Use number for fractional values. " +
             'Use type:"json" for arbitrary nested blobs you do not need to filter on (audit details, free-form metadata). ' +
             'Use kind:"struct" instead when you have a known nested shape and want per-field where-clause support.'
         },

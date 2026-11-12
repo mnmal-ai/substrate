@@ -79,7 +79,8 @@ describe.skipIf(!POSTGRES_URL)('storage layout', () => {
       '0003t_type_table_version',
       '0004t_field_error_version',
       '0005t_int64_field_kind',
-      '0006t_int32_field_kind'
+      '0006t_int32_field_kind',
+      '0007t_int16_field_kind'
     ]);
   });
 
