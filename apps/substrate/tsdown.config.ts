@@ -39,7 +39,9 @@ const js = defineBinTsdown({
     'substrate-admin': 'src/bin/admin.ts',
     'recall-bootstrap': 'src/exports/recall-bootstrap.ts',
     'proposals-bootstrap': 'src/exports/proposals-bootstrap.ts',
-    'cluster-worker': 'src/exports/cluster-worker.ts'
+    'cluster-worker': 'src/exports/cluster-worker.ts',
+    // The MCP `run` sandbox forks `./script-runner.js` beside the chunk that holds it.
+    'script-runner': 'src/mcp/script-runner.ts'
   },
   banner: {
     js: "import { createRequire as __binCreateRequire } from 'node:module'; const require = __binCreateRequire(import.meta.url);"

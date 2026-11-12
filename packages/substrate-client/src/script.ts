@@ -57,6 +57,11 @@ export interface ScriptContext {
   /** Recall hits, best first, through the `recall/Hit` frame. */
   recall(input: ScriptRecallInput): Promise<ScriptRecallHit[]>;
   /**
+   * The federated schema, one namespace's schema, or one type's. Throws naming
+   * an unknown namespace or type.
+   */
+  schema(namespace?: string, type?: string): Promise<unknown>;
+  /**
    * One mutate payload (one transaction). Returns null in `dry-run`, and throws
    * in `read`, past `maxWrites`, or when the server refuses any frame.
    */
@@ -181,8 +186,19 @@ export async function runScript(
       } as QualifiedFrame);
       return env.data['recall/Hit'] as ScriptRecallHit[];
     },
+    async schema(namespace, type) {
+      const all = await client.federatedSchema();
+      if (namespace === undefined) return all;
+      const ns = all[namespace];
+      if (ns === undefined) throw new Error(`schema: unknown namespace '${namespace}'`);
+      if (type === undefined) return ns;
+      const t = ns.types[type];
+      if (t === undefined) throw new Error(`schema: unknown type '${namespace}/${type}'`);
+      return t;
+    },
     async mutate(frame) {
-      if (mode === 'read') throw new Error('mutate refused: read mode (pass --dry-run or --write)');
+      if (mode === 'read')
+        throw new Error('mutate refused: read mode (run in dry-run or write mode)');
       if (mode === 'dry-run') {
         mutations.push({ frame, applied: false });
         return null;
