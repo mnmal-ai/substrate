@@ -16,6 +16,7 @@ import type {
   HttpHandler,
   Identity,
   PluginRouter,
+  PoolStats,
   PromotionEvent,
   StorageReport,
   SubstrateServer
@@ -91,6 +92,7 @@ export interface CoreRoutesArgs {
   promoteFields: (opts: { retryConflicts: boolean }) => Promise<PromotionEvent[]>;
   /** Pending, failed and orphaned fields, for `/health`'s warnings. */
   fieldWarnings?: () => Promise<string[]>;
+  poolStats?: () => PoolStats;
 }
 
 export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
@@ -122,7 +124,8 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
     configReport,
     storageReport,
     promoteFields,
-    fieldWarnings
+    fieldWarnings,
+    poolStats
   } = args;
 
   server.route(
@@ -135,7 +138,8 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
         ...engine.postWriteWarnings(),
         // A catalog error never fails the probe; the field lines are left out.
         ...((await fieldWarnings?.().catch(() => [])) ?? [])
-      ]
+      ],
+      ...(poolStats !== undefined ? { pool: poolStats } : {})
     })
   );
   // Schema discovery and onboarding sit behind `read`, like /substrate/v1/query: the

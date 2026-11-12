@@ -37,7 +37,14 @@ export function pgNoticeOptions(write: (s: string) => void = (s) => void process
  * Open a pg client with substrate's standard options. Prefer this over calling
  * `postgres()` directly so NOTICE routing stays consistent across `serve`, the
  * admin CLI, `substrate federate`, and the migrate CLI.
+ *
+ * `queueTimeoutMs` bounds how long a query, transaction or reserve waits for a
+ * free connection before it rejects with the driver's `QUEUE_TIMEOUT`. Unset,
+ * it waits as long as it takes.
  */
-export function openSql(url: string): Sql {
-  return postgres(url, pgNoticeOptions());
+export function openSql(url: string, opts: { queueTimeoutMs?: number } = {}): Sql {
+  return postgres(url, {
+    ...pgNoticeOptions(),
+    ...(opts.queueTimeoutMs !== undefined ? { queue_timeout: opts.queueTimeoutMs / 1000 } : {})
+  });
 }

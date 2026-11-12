@@ -595,6 +595,9 @@ async function composeInner(
     promoteFields: promoteRunner.run,
     ...(opts.dataset.fieldWarnings !== undefined
       ? { fieldWarnings: opts.dataset.fieldWarnings.bind(opts.dataset) }
+      : {}),
+    ...(opts.dataset.poolStats !== undefined
+      ? { poolStats: opts.dataset.poolStats.bind(opts.dataset) }
       : {})
   });
 

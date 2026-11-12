@@ -1017,11 +1017,9 @@ async function build(
   // for ALTER INDEX RENAME and COMMENT ON INDEX, which take that lock on
   // the index alone.
   try {
-    await cancellable(
-      conn,
-      createSql(spec, target, name, true),
-      spec.unique ? undefined : opts.signal
-    );
+    await conn
+      .unsafe(createSql(spec, target, name, true))
+      .signal(spec.unique ? undefined : opts.signal);
     return undefined;
   } catch (err) {
     if (spec.unique) throw err;
@@ -1081,28 +1079,8 @@ async function buildEstimate(conn: ISql, target: string, name: string): Promise<
   return Number(row?.n ?? 0);
 }
 
-/** Runs `text` on `conn`, cancelling it in flight when `signal` aborts. */
-async function cancellable(
-  conn: ISql,
-  text: string,
-  signal: AbortSignal | undefined
-): Promise<void> {
-  const query = conn.unsafe(text);
-  // Typed void, but returns the cancel request's promise, which may reject.
-  const cancel = (): void => {
-    Promise.resolve(query.cancel() as unknown).catch(() => undefined);
-  };
-  signal?.addEventListener('abort', cancel, { once: true });
-  try {
-    if (signal?.aborted === true) cancel();
-    await query;
-  } finally {
-    signal?.removeEventListener('abort', cancel);
-  }
-}
-
 async function dropConcurrently(conn: ISql, name: string, signal?: AbortSignal): Promise<void> {
-  await cancellable(conn, `DROP INDEX CONCURRENTLY IF EXISTS ${name}`, signal);
+  await conn.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS ${name}`).signal(signal);
 }
 
 async function mark(conn: ISql, name: string): Promise<void> {

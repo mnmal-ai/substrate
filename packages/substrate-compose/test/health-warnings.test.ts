@@ -53,3 +53,30 @@ describe('/health warnings', () => {
     expect(JSON.stringify(body)).not.toContain('index down');
   });
 });
+
+describe('/health pool', () => {
+  it('reports the store pool counts when the dataset has a pool, and omits them otherwise', async () => {
+    const stats = { connections: 3, opening: 0, idle: 2, leased: 1, waiting: 0 };
+    const pooled = Object.assign(new MemoryDataset({ namespace: 'default' }), {
+      poolStats: () => stats
+    });
+    server = new FastifySubstrateServer();
+    await compose({ systemActor: 'test', server, dataset: pooled, datasets: {}, coordinators: [] });
+    const { address, port } = await server.start({ host: '127.0.0.1', port: 0 });
+    expect((await (await fetch(`http://${address}:${port}/health`)).json()).pool).toEqual(stats);
+    await server.stop({ grace: 0 });
+
+    server = new FastifySubstrateServer();
+    await compose({
+      systemActor: 'test',
+      server,
+      dataset: new MemoryDataset({ namespace: 'default' }),
+      datasets: {},
+      coordinators: []
+    });
+    const bare = await server.start({ host: '127.0.0.1', port: 0 });
+    const body = await (await fetch(`http://${bare.address}:${bare.port}/health`)).json();
+    expect(body.status).toBe('ok');
+    expect(body).not.toHaveProperty('pool');
+  });
+});
