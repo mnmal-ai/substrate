@@ -178,6 +178,8 @@ A filter operand on a date field must be an ISO 8601 date (`2026-01-02`) or date
 
 **The default:** plain HTTP.
 
+**What you get:** with TLS the server speaks HTTP/2, negotiated by ALPN, and keeps HTTP/1.1 for clients that do not offer it. WebSockets always use HTTP/1.1, because HTTP/2 cannot carry the upgrade. Each HTTP/2 connection may have at most 128 open streams. A request must arrive in full within 30 seconds on either protocol: an HTTP/2 stream that misses it is reset. Plain HTTP stays HTTP/1.1.
+
 **What it costs:** the files are read at boot, so renewing a certificate needs a restart. Behind a proxy, list its exact IP (no CIDR) in `SUBSTRATE_TRUSTED_PROXIES` so `X-Forwarded-For` is honoured for client addresses (request context, the `/register` rate limit and WebSocket clients).
 
 **Later:** restart.

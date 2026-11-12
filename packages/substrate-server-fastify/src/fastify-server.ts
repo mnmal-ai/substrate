@@ -25,6 +25,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { constants as h2constants, type ServerHttp2Stream } from 'node:http2';
 import compressPlugin from '@fastify/compress';
 import corsPlugin from '@fastify/cors';
 import websocketPlugin, { type WebsocketHandler } from '@fastify/websocket';
@@ -45,7 +46,6 @@ import type {
 import { WS_REASON_SERVER_RESTART } from '@mnmal-ai/substrate-types';
 import Fastify, {
   type FastifyError,
-  type FastifyHttpsOptions,
   type FastifyInstance,
   type FastifyReply,
   type FastifyRequest
@@ -104,6 +104,8 @@ export interface FastifySubstrateServerOptions {
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+/** Streams one HTTP/2 connection may have open at once. Node's default is unbounded. */
+const H2_MAX_CONCURRENT_STREAMS = 128;
 const DEFAULT_WS_MAX_PAYLOAD = 1 << 20;
 const DEFAULT_WS_MAX_BUFFERED = 16 << 20;
 /** How long a buffer-full socket gets to finish its close handshake before it is dropped. */
@@ -159,12 +161,22 @@ export class FastifySubstrateServer implements SubstrateServer {
       ...(bodyLimit !== undefined ? { bodyLimit } : {})
     };
     if (tls) {
-      const httpsOptions: FastifyHttpsOptions<never>['https'] = {
-        cert: tls.cert,
-        key: tls.key,
-        ...(tls.ca !== undefined ? { ca: tls.ca } : {})
-      };
-      this.fastify = Fastify({ ...common, https: httpsOptions });
+      // HTTP/2 negotiated by ALPN, with HTTP/1.1 kept for clients that do not
+      // offer h2 and for the WebSocket upgrade, which HTTP/2 cannot carry.
+      this.fastify = Fastify({
+        ...common,
+        http2: true,
+        https: {
+          allowHTTP1: true,
+          cert: tls.cert,
+          key: tls.key,
+          ...(tls.ca !== undefined ? { ca: tls.ca } : {}),
+          settings: { maxConcurrentStreams: H2_MAX_CONCURRENT_STREAMS }
+        }
+      }) as unknown as FastifyInstance;
+      // Node bounds the HTTP/1.1 fallback by this; Fastify sets it only on an http.Server.
+      (this.fastify.server as { requestTimeout: number }).requestTimeout = requestTimeout;
+      if (requestTimeout > 0) boundH2Requests(this.fastify, requestTimeout);
     } else {
       this.fastify = Fastify(common);
     }
@@ -724,5 +736,27 @@ function registerWsRoute(
       reply.status(426).send({ error: 'Upgrade Required' });
     },
     wsHandler
+  });
+}
+
+/**
+ * HTTP/2 has no `requestTimeout`: give each h2 request `ms` to arrive in full
+ * (headers and body), then reset its stream. The clock stops once the handler
+ * runs, so a streamed response is not bounded by it.
+ */
+function boundH2Requests(fastify: FastifyInstance, ms: number): void {
+  const timers = new WeakMap<object, NodeJS.Timeout>();
+  fastify.addHook('onRequest', async (req) => {
+    const stream = (req.raw as { stream?: ServerHttp2Stream }).stream;
+    if (stream === undefined) return;
+    const timer = setTimeout(() => stream.close(h2constants.NGHTTP2_CANCEL), ms);
+    timers.set(req.raw, timer);
+    stream.once('close', () => clearTimeout(timer));
+  });
+  fastify.addHook('preHandler', async (req, reply) => {
+    clearTimeout(timers.get(req.raw));
+    // A reset stream ends its body early; the cut-off request must not reach the handler.
+    const stream = (req.raw as { stream?: ServerHttp2Stream }).stream;
+    if (stream?.closed === true) return reply.code(408).send();
   });
 }
