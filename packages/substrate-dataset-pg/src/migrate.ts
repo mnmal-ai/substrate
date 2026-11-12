@@ -41,6 +41,7 @@ import { TX_STATEMENTS as TYPE_TABLE_VERSION_TX } from './migrations/0003t_type_
 import { TX_STATEMENTS as FIELD_ERROR_VERSION_TX } from './migrations/0004t_field_error_version.js';
 import { TX_STATEMENTS as INT64_FIELD_KIND_TX } from './migrations/0005t_int64_field_kind.js';
 import { TX_STATEMENTS as INT32_FIELD_KIND_TX } from './migrations/0006t_int32_field_kind.js';
+import { TX_STATEMENTS as INT16_FIELD_KIND_TX } from './migrations/0007t_int16_field_kind.js';
 import { sqlStringLiteral } from './pg-sql/primitives.js';
 import { assertServerVersion } from './server-version.js';
 import { UUID_CHECK_MIGRATION } from './uuid-check.js';
@@ -105,6 +106,11 @@ const INT32_FIELD_KIND: MigrationInput = {
   txStatements: INT32_FIELD_KIND_TX
 };
 
+const INT16_FIELD_KIND: MigrationInput = {
+  version: '0007t_int16_field_kind',
+  txStatements: INT16_FIELD_KIND_TX
+};
+
 function normalise(input: MigrationInput): Migration {
   if ('statements' in input && input.statements !== undefined) {
     return {
@@ -133,7 +139,7 @@ const UUID_CHECK_INPUT: MigrationInput = {
 /**
  * The tables baseline, then the gated UUID CHECKs when
  * `SUBSTRATE_ENFORCE_UUID_CHECK=true` (or the explicit override is true), then
- * the type tables' catalog version, then the field error version, then the int64 and int32 field kinds. Used
+ * the type tables' catalog version, then the field error version, then the int64, int32 and int16 field kinds. Used
  * by `runMigrations` and exported for unit tests.
  */
 export function getMigrationList(
@@ -145,7 +151,8 @@ export function getMigrationList(
     TYPE_TABLE_VERSION,
     FIELD_ERROR_VERSION,
     INT64_FIELD_KIND,
-    INT32_FIELD_KIND
+    INT32_FIELD_KIND,
+    INT16_FIELD_KIND
   ].map(normalise);
 }
 

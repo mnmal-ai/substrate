@@ -85,6 +85,7 @@ export const JSON_PATH_OPS: readonly string[] = [
  */
 export const BUILTIN_OPERATORS: Record<FieldKind, readonly string[]> = {
   'scalar.number': NUMBER_OPS,
+  'scalar.int16': NUMBER_OPS,
   'scalar.int32': NUMBER_OPS,
   'scalar.int64': NUMBER_OPS,
   'scalar.string': STRING_OPS,
@@ -103,6 +104,7 @@ export const BUILTIN_OPERATORS: Record<FieldKind, readonly string[]> = {
 export function fullBuiltinOperators(): Record<FieldKind, string[]> {
   return {
     'scalar.number': [...NUMBER_OPS],
+    'scalar.int16': [...NUMBER_OPS],
     'scalar.int32': [...NUMBER_OPS],
     'scalar.int64': [...NUMBER_OPS],
     'scalar.string': [...STRING_OPS],

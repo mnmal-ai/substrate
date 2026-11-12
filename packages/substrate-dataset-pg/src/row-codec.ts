@@ -9,6 +9,7 @@
  */
 
 import {
+  isInt16,
   isInt32,
   normalizeIsoTimestamp,
   parseInt64,
@@ -158,6 +159,8 @@ function toColumn(column: TypedColumn, value: unknown): string | number | boolea
       return typeof value === 'string' ? value : null;
     case 'number':
       return typeof value === 'number' ? value : null;
+    case 'int16':
+      return isInt16(value) ? value : null;
     case 'int32':
       return isInt32(value) ? value : null;
     case 'int64': {

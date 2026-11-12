@@ -220,7 +220,7 @@ jobs:
       # workspace engines floor.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           package-manager-cache: false
 
       # Idempotent: a version already on npmjs is skipped, so a re-run after a

@@ -152,6 +152,19 @@ export const field = {
   number(opts?: ScalarFieldOptions): FieldDefScalar {
     return makeScalar('number', opts);
   },
+  /**
+   * Integers: pick the narrowest kind whose range holds every value the field
+   * will EVER take, because a kind cannot change once rows exist (moving means
+   * a new field and a backfill). All three filter, sort and sum as exact
+   * integers; they differ in storage width.
+   *   int16  -32768 to 32767, 2 bytes: small codes, flags, ages, percentages.
+   *   int32  about ±2.1 billion, 4 bytes: counts, durations, ids within one source.
+   *   int64  about ±9.2e18, 8 bytes, a decimal string on the wire past 2^53: totals, epoch-ms, external ids.
+   * Use `number` for fractional values. When unsure, take the next width up.
+   */
+  int16(opts?: ScalarFieldOptions): FieldDefScalar {
+    return makeScalar('int16', opts);
+  },
   int32(opts?: ScalarFieldOptions): FieldDefScalar {
     return makeScalar('int32', opts);
   },
