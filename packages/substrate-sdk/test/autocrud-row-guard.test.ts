@@ -8,13 +8,15 @@ import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-datase
 import { row } from '@mnmal-ai/substrate-policy';
 import type { FieldDef, RequestContext } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
-import { installAutoCrud } from '../src/autocrud/index.js';
+import { deleteResolver, installAutoCrud } from '../src/autocrud/index.js';
 
 const FIELDS: Record<string, FieldDef> = {
   id: { kind: 'scalar', type: 'string' },
   owner: { kind: 'scalar', type: 'string' },
   title: { kind: 'scalar', type: 'string' }
 };
+
+const OWNER_ONLY = row((ctx, r) => (r as { owner?: string }).owner === ctx.identity?.id);
 
 async function setup() {
   const dataset = new MemoryDataset({ namespace: 'app' });
@@ -23,7 +25,8 @@ async function setup() {
   const registry = new Registry();
   installAutoCrud(registry, 'Note', dataset, edges, {
     fields: FIELDS,
-    policy: row((ctx, r) => (r as { owner?: string }).owner === ctx.identity?.id)
+    policy: OWNER_ONLY,
+    purgeable: true
   });
   const datasets = new MemoryDatasetRegistry();
   datasets.set('app', dataset);
@@ -35,9 +38,9 @@ async function setup() {
   return { engine, dataset };
 }
 
-function as(id: string): RequestContext {
+function as(id: string, caps: string[] = ['read', 'mutate']): RequestContext {
   return {
-    identity: { kind: 'agent', id, agentKeyId: id, grants: { '*': ['read', 'mutate'] } },
+    identity: { kind: 'agent', id, agentKeyId: id, grants: { '*': caps } },
     namespace: 'app',
     operation: 'mutate',
     now: new Date('2026-04-20T00:00:00Z'),
@@ -86,6 +89,33 @@ describe('autoCRUD row guard', () => {
       ctx: as('bob')
     });
     expect(theirs.data['app/deleteNote']).toEqual({ id: 'n1', deleted: false });
+  });
+
+  it('does not purge a row the caller cannot read, and still lets the owner purge', async () => {
+    const admin = ['read', 'mutate', 'admin'];
+    const { engine, dataset } = await setup();
+    const theirs = await engine.mutate({
+      frame: { 'app/purgeNote': { params: { id: 'n1' }, fields: { id: true, purged: true } } },
+      ctx: as('bob', admin)
+    });
+    expect(theirs.data['app/purgeNote']).toEqual({ id: 'n1', purged: false });
+    expect(await title(dataset)).toBe('secret');
+
+    const mine = await engine.mutate({
+      frame: { 'app/purgeNote': { params: { id: 'n1' }, fields: { id: true, purged: true } } },
+      ctx: as('alice', admin)
+    });
+    expect(mine.data['app/purgeNote']).toEqual({ id: 'n1', purged: true });
+    expect(await title(dataset)).toBeUndefined();
+  });
+
+  it('deleteResolver with a policy leaves a row the caller cannot read', async () => {
+    const { dataset } = await setup();
+    const edges = new MemoryEdgesStore({ now: () => new Date('2026-04-20T00:00:00Z') });
+    const del = deleteResolver('Note', dataset, edges, { policy: OWNER_ONLY });
+    expect(await del(as('bob'), { params: { id: 'n1' } })).toEqual({ id: 'n1', deleted: false });
+    expect(await title(dataset)).toBe('secret');
+    expect(await del(as('alice'), { params: { id: 'n1' } })).toEqual({ id: 'n1', deleted: true });
   });
 
   it('still lets the owner update', async () => {

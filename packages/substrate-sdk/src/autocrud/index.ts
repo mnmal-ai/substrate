@@ -305,7 +305,7 @@ export function installAutoCrud(
   const create: AutoCrudResolver = singleFrame<Row>(createBatch);
   const update: AutoCrudResolver = singleFrame<Row | null>(updateBatch);
   const del: AutoCrudResolver = singleFrame<Row>(deleteBatch);
-  const purge: AutoCrudResolver = purgeResolver(typeName, dataset);
+  const purge: AutoCrudResolver = purgeResolver(typeName, dataset, policy);
   // updateMany<T> is served only while update<T> is this very entry, and
   // deleteMany<T> only while delete<T> is: a plugin that replaced one (an
   // interceptor, custom logic) would be bypassed. Checked per call, so a later

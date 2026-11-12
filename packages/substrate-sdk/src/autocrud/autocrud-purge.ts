@@ -21,10 +21,12 @@ import {
   assertHardDeleteAllowed,
   type Dataset,
   type Id,
+  type Policy,
   ResolverFrameError,
   type TypedResolver,
   type WriteEvent
 } from '@mnmal-ai/substrate-types';
+import { guardRowWrites } from './batch.js';
 import { coerceId, rejectUnknownParams } from './internal.js';
 
 const KNOWN_PURGE_PARAMS: ReadonlySet<string> = new Set(['id']);
@@ -35,11 +37,13 @@ export interface PurgeResolverResult {
   [field: string]: unknown;
 }
 
+/** With `policy`, a row its row filters hide is left in place and answers `purged: false`. */
 export function purgeResolver(
   typeName: string,
-  dataset: Dataset
+  dataset: Dataset,
+  policy?: Policy
 ): TypedResolver<PurgeResolverResult> {
-  return async (_ctx, args) => {
+  return async (ctx, args) => {
     rejectUnknownParams('purge', typeName, args.params, KNOWN_PURGE_PARAMS);
     assertHardDeleteAllowed();
     const ds = args.dataset ?? dataset;
@@ -57,6 +61,7 @@ export function purgeResolver(
     // against the row's final body, not an empty shape.
     const { rows: existing } = await ds.read(typeName, { id, includeDeleted: true });
     const preRow = existing[0];
+    if (guardRowWrites(ctx, policy, [args], [preRow ?? null])[0]) return { id, purged: false };
 
     const { deleted } = await ds.purge(typeName, [id]);
     const purged = deleted > 0;
