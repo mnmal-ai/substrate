@@ -262,7 +262,7 @@ import {
   partitionMutateByShape,
   partitionMutateByTxScope
 } from './mutate.js';
-import { shapeResult } from './result-shape.js';
+import { resolverFiltered, shapeResult } from './result-shape.js';
 import { SchemaSubsystem } from './schema.js';
 import { StreamSubsystem } from './stream.js';
 import { SubscribeSubsystem } from './subscribe.js';
@@ -1925,7 +1925,7 @@ export class Engine {
       decision,
       result,
       metric: this.#metric,
-      resolverFiltered: registryEntry.filterTarget !== undefined
+      resolverFiltered: resolverFiltered(registryEntry)
     });
     return false;
   }
@@ -2452,7 +2452,7 @@ export class Engine {
         decision: p.decision,
         result: rows[j] ?? null,
         metric: this.#metric,
-        resolverFiltered: p.registryEntry.filterTarget !== undefined
+        resolverFiltered: resolverFiltered(p.registryEntry)
       });
       const shaped = slotResultOf(scratch, key);
       results[i] = shaped;

@@ -58,6 +58,28 @@ export function rejectUnknownParams(
 }
 
 /**
+ * Refuse a caller-supplied value for a `readonly` field, on create and update
+ * alike. shortId is the main case: the engine allocates it.
+ *
+ * @throws ResolverFrameError `readonly_field` naming the first such field
+ */
+export function assertNoReadonlyFields(
+  params: Record<string, unknown>,
+  fieldDefs: Record<string, FieldDef>
+): void {
+  for (const [name, def] of Object.entries(fieldDefs)) {
+    // `readonly` lives on FieldDefScalar only.
+    if (def.kind === 'scalar' && def.readonly === true && name in params) {
+      throw new ResolverFrameError(
+        'readonly_field',
+        `Cannot set read-only field '${name}' (engine-allocated)`,
+        { field: name }
+      );
+    }
+  }
+}
+
+/**
  * Assert that the caller has not supplied any server-controlled fields.
  *
  * Tier-0: `_metadata` is rejected explicitly — the resolver's spread ordering

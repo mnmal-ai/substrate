@@ -71,6 +71,23 @@ describe('autoCRUD row guard', () => {
     expect(await title(dataset)).toBe('secret');
   });
 
+  it('reports a delete under a row policy as the delete result, not null', async () => {
+    const owner = await setup();
+    const mine = await owner.engine.mutate({
+      frame: { 'app/deleteNote': { params: { id: 'n1' }, fields: { id: true, deleted: true } } },
+      ctx: as('alice')
+    });
+    expect(mine.errors ?? []).toEqual([]);
+    expect(mine.data['app/deleteNote']).toEqual({ id: 'n1', deleted: true });
+
+    const other = await setup();
+    const theirs = await other.engine.mutate({
+      frame: { 'app/deleteNote': { params: { id: 'n1' }, fields: { id: true, deleted: true } } },
+      ctx: as('bob')
+    });
+    expect(theirs.data['app/deleteNote']).toEqual({ id: 'n1', deleted: false });
+  });
+
   it('still lets the owner update', async () => {
     const { engine, dataset } = await setup();
     await engine.mutate({
