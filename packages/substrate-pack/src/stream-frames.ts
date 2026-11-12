@@ -29,7 +29,10 @@ export class FrameStreamError extends Error {
 export function framesEncodingFromAccept(accept: string | undefined): WireMode | undefined {
   if (accept === undefined) return undefined;
   for (const clause of accept.split(',')) {
-    const mime = (clause.split(';')[0] ?? '').trim();
+    const [type = '', ...params] = clause.split(';');
+    // q=0 means "not acceptable".
+    if (params.some((p) => /^\s*q\s*=\s*0(\.0*)?\s*$/i.test(p))) continue;
+    const mime = type.trim().toLowerCase();
     if (mime === FRAMES_PACK_MIME) return 'pack';
     if (mime === FRAMES_JSON_MIME) return 'json';
   }
@@ -38,10 +41,25 @@ export function framesEncodingFromAccept(accept: string | undefined): WireMode |
 
 const utf8 = new TextEncoder();
 
-/** One frame: u32 BE length, then `value` as JSON or msgpack. */
-export function encodeStreamFrame(value: unknown, mode: WireMode): Uint8Array {
+/**
+ * One frame: u32 BE length, then `value` as JSON or msgpack.
+ *
+ * @throws FrameStreamError `frame_too_large` when the payload is over `maxFrameBytes`,
+ *   which a decoder with the same limit would refuse
+ */
+export function encodeStreamFrame(
+  value: unknown,
+  mode: WireMode,
+  maxFrameBytes: number = DEFAULT_MAX_FRAME_BYTES
+): Uint8Array {
   const raw = encodeWsFrame(value, mode);
   const payload = typeof raw === 'string' ? utf8.encode(raw) : raw;
+  if (payload.length > maxFrameBytes) {
+    throw new FrameStreamError(
+      'frame_too_large',
+      `frame of ${payload.length} bytes exceeds the ${maxFrameBytes}-byte limit`
+    );
+  }
   const out = new Uint8Array(4 + payload.length);
   new DataView(out.buffer).setUint32(0, payload.length, false);
   out.set(payload, 4);
@@ -58,6 +76,8 @@ export async function* decodeStreamFrames(
   opts: { maxFrameBytes?: number } = {}
 ): AsyncGenerator<Uint8Array> {
   const max = opts.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES;
+  if (!Number.isInteger(max) || max < 0)
+    throw new RangeError(`maxFrameBytes must be a non-negative integer, got ${max}`);
   // One growable buffer holding [start, end) unread bytes.
   let buf = new Uint8Array(4096);
   let start = 0;
@@ -80,7 +100,9 @@ export async function* decodeStreamFrames(
     end += chunk.length;
   };
   const source: AsyncIterable<Uint8Array> =
-    Symbol.asyncIterator in body ? (body as AsyncIterable<Uint8Array>) : readableToIterable(body);
+    typeof (body as Partial<AsyncIterable<Uint8Array>>)[Symbol.asyncIterator] === 'function'
+      ? (body as AsyncIterable<Uint8Array>)
+      : readableToIterable(body as ReadableStream<Uint8Array>);
   for await (const chunk of source) {
     append(chunk);
     while (end - start >= 4) {
@@ -104,15 +126,22 @@ export async function* decodeStreamFrames(
   }
 }
 
+/** A ReadableStream without async iteration (Safari), cancelled when the consumer stops early. */
 async function* readableToIterable(stream: ReadableStream<Uint8Array>): AsyncGenerator<Uint8Array> {
   const reader = stream.getReader();
+  let finished = false;
   try {
     for (;;) {
       const { done, value } = await reader.read();
-      if (done) return;
+      if (done) {
+        finished = true;
+        return;
+      }
       yield value;
     }
   } finally {
+    // An early stop or a decode error must close the source, e.g. the HTTP/2 stream behind a fetch body.
+    if (!finished) await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
 }

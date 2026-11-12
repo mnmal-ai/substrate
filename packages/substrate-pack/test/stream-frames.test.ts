@@ -110,7 +110,42 @@ describe('stream frames', () => {
     expect(JSON.parse(new TextDecoder().decode(out[0]))).toEqual({ n: 1 });
   });
 
+  it('cancels a ReadableStream without async iteration when the consumer stops early', async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(encodeStreamFrame({ n: 1 }, 'json'));
+        c.enqueue(encodeStreamFrame({ n: 2 }, 'json'));
+      },
+      cancel() {
+        cancelled = true;
+      }
+    });
+    // As in engines whose ReadableStream has no Symbol.asyncIterator (Safari).
+    Object.defineProperty(body, Symbol.asyncIterator, { value: undefined });
+    for await (const _ of decodeStreamFrames(body)) break;
+    expect(cancelled).toBe(true);
+  });
+
+  it('accepts a frame exactly at maxFrameBytes, and refuses a too-large prefix sent one byte per chunk', async () => {
+    const f = encodeStreamFrame('x'.repeat(98), 'json'); // payload is 100 bytes with the quotes
+    expect(await collect(chunks(f), 100)).toHaveLength(1);
+    const prefix = new Uint8Array(4);
+    new DataView(prefix.buffer).setUint32(0, 101, false);
+    const err = await collect(chunks(...Array.from(prefix, (b) => Uint8Array.of(b))), 100).catch(
+      (e: unknown) => e
+    );
+    expect((err as FrameStreamError).code).toBe('frame_too_large');
+  });
+
+  it('encoder refuses a payload over the limit, and the decoder refuses a non-integer limit', async () => {
+    expect(() => encodeStreamFrame('x'.repeat(200), 'json', 100)).toThrow(FrameStreamError);
+    await expect(collect(chunks(), Number.NaN)).rejects.toThrow(RangeError);
+  });
+
   it('framesEncodingFromAccept', () => {
+    expect(framesEncodingFromAccept(FRAMES_PACK_MIME.toUpperCase())).toBe('pack');
+    expect(framesEncodingFromAccept(`${FRAMES_PACK_MIME};q=0, ${FRAMES_JSON_MIME}`)).toBe('json');
     expect(framesEncodingFromAccept(`${FRAMES_PACK_MIME}; q=1`)).toBe('pack');
     expect(framesEncodingFromAccept(FRAMES_JSON_MIME)).toBe('json');
     expect(framesEncodingFromAccept(`application/json, ${FRAMES_JSON_MIME}`)).toBe('json');
