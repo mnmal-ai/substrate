@@ -68,6 +68,8 @@ The step-by-step upgrade is in [Upgrading to per-type tables](upgrading-to-type-
 
 **What it costs:** a walk read that runs longer is cancelled and refused with `query_timeout`, carrying `details.timeoutMs`. Raise it and a heavy walk can hold a connection longer. A role- or database-level `statement_timeout` you set yourself also turns into `query_timeout` on any read, without `timeoutMs`.
 
+The same value bounds how long a request waits for a free database connection. A read or write that waits longer never starts and is refused with `store_busy`, which is safe to retry. `/health` reports the pool as `pool: { connections, opening, idle, leased, waiting }`; a `waiting` count that stays above zero means the pool is too small for the load.
+
 **Later:** at most 2147483647; restart.
 
 ### Type-table budget

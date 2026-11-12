@@ -457,9 +457,11 @@ describe.skipIf(!POSTGRES_URL)('read: short id lookup for the returned page only
         // The guarded page statement (M3), which wraps the page as a fragment.
         const isPage = Array.isArray(strings) && String(strings[0]).startsWith('WITH guard AS');
         if (isPage && ++pageQueries === 2) {
-          return relationOf(sql, ns, RACE)
+          const delayed = relationOf(sql, ns, RACE)
             .then((rel) => sql.unsafe(`UPDATE ${rel} SET f_d = NULL WHERE id = $1`, [rid(1)]))
             .then(() => Reflect.apply(target, thisArg, args));
+          // The dataset calls .signal() on every query; a plain promise has none.
+          return Object.assign(delayed, { signal: () => delayed });
         }
         return Reflect.apply(target, thisArg, args);
       }

@@ -1,7 +1,7 @@
 /**
  * GET /health — unauthenticated liveness probe.
  *
- * Returns 200 + `{ status: 'ok', warnings, version, uptimeSeconds }` unconditionally
+ * Returns 200 + `{ status: 'ok', warnings, version, uptimeSeconds, pool? }` unconditionally
  * when the server is up. Probes and load balancers just need a 200 — the body
  * is a small diagnostic for humans running `curl /health` from the terminal.
  *
@@ -14,7 +14,7 @@
  * public.
  */
 
-import type { HttpHandler } from '@mnmal-ai/substrate-types';
+import type { HttpHandler, PoolStats } from '@mnmal-ai/substrate-types';
 import { jsonResponse } from './helpers.js';
 
 export interface HealthDeps {
@@ -26,6 +26,8 @@ export interface HealthDeps {
    * post-write hook failing. They never change `status`.
    */
   warnings: () => Promise<string[]>;
+  /** The store's connection pool counts, when the store has a pool. */
+  pool?: () => PoolStats;
 }
 
 export function healthRoute(deps: HealthDeps): HttpHandler {
@@ -36,6 +38,7 @@ export function healthRoute(deps: HealthDeps): HttpHandler {
       version: deps.version,
       // Kept for older MCP bridges, which read it to decide whether to teach walks.
       walks: true,
-      uptimeSeconds: Math.floor((Date.now() - deps.startedAt) / 1000)
+      uptimeSeconds: Math.floor((Date.now() - deps.startedAt) / 1000),
+      ...(deps.pool !== undefined ? { pool: deps.pool() } : {})
     });
 }

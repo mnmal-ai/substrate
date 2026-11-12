@@ -49,6 +49,7 @@ import type {
   IndexDecl,
   IndexPlan,
   OrderedBy,
+  PoolStats,
   PromotionEvent,
   ReadParams,
   ReadResult,
@@ -71,6 +72,7 @@ import {
   naturalOrderOf,
   QUERY_TIMEOUT,
   ResolverFrameError,
+  STORE_BUSY,
   VALUE_OUT_OF_RANGE
 } from '@mnmal-ai/substrate-types';
 import type { PendingQuery, Row as PgRow, ReservedSql, Sql, TransactionSql } from 'postgres';
@@ -627,7 +629,7 @@ export class PgDataset implements Dataset {
         return await this.#read(type, params, false);
       } catch (err) {
         // A role- or database-level statement_timeout: its value is not known here.
-        throw this.#queryTimeout(type, err, params.signal) ?? err;
+        throw this.#queryTimeout(type, err, params.signal) ?? storeBusy(err) ?? err;
       }
     }
     if (!this.#inTx) return this.withTransaction((tx) => tx.read(type, params));
@@ -652,7 +654,9 @@ export class PgDataset implements Dataset {
           err,
           params.signal,
           lowered ? this.#statementTimeoutMs : undefined
-        ) ?? err
+        ) ??
+        storeBusy(err) ??
+        err
       );
     }
   }
@@ -1501,25 +1505,27 @@ export class PgDataset implements Dataset {
     // holds a `TransactionSql`, and that path enters the `#inTx` branch.
     const rootSql = this.#sql as Sql;
     const txTables: TxTables = new Map();
-    const out = (await rootSql.begin<T>(async (txSql) => {
-      const txDataset = new PgDataset({
-        namespace: this.namespace,
-        sql: txSql,
-        inTx: true,
-        txScopeId: this.txScopeId,
-        ...(this.#fieldDefLookup !== null ? { fieldDefLookup: this.#fieldDefLookup } : {}),
-        layoutCache: this.#layoutCache,
-        statementTimeoutMs: this.#statementTimeoutMs,
-        ...(this.#typeDefLookup !== null ? { typeDefLookup: this.#typeDefLookup } : {}),
-        tableCache: this.#tableCache,
-        txTables
-      });
-      const result = await fn(txDataset);
-      await snapshotUnlessReadCommitted(txSql, txTables);
-      return result;
-      // postgres.js's begin<T> wraps the return in UnwrapPromiseArray; for
-      // our `Promise<T>`-returning fn it collapses to `T`.
-    })) as T;
+    const out = (await busyAware(
+      rootSql.begin<T>(async (txSql) => {
+        const txDataset = new PgDataset({
+          namespace: this.namespace,
+          sql: txSql,
+          inTx: true,
+          txScopeId: this.txScopeId,
+          ...(this.#fieldDefLookup !== null ? { fieldDefLookup: this.#fieldDefLookup } : {}),
+          layoutCache: this.#layoutCache,
+          statementTimeoutMs: this.#statementTimeoutMs,
+          ...(this.#typeDefLookup !== null ? { typeDefLookup: this.#typeDefLookup } : {}),
+          tableCache: this.#tableCache,
+          txTables
+        });
+        const result = await fn(txDataset);
+        await snapshotUnlessReadCommitted(txSql, txTables);
+        return result;
+        // postgres.js's begin<T> wraps the return in UnwrapPromiseArray; for
+        // our `Promise<T>`-returning fn it collapses to `T`.
+      })
+    )) as T;
     this.#commitTables(txTables);
     return out;
   }
@@ -1567,11 +1573,13 @@ export class PgDataset implements Dataset {
     if (this.#inTx) return fn(buildHandles(this.#sql));
 
     const rootSql = this.#sql as Sql;
-    const out = (await rootSql.begin<T>(async (txSql) => {
-      const result = await fn(buildHandles(txSql));
-      await snapshotUnlessReadCommitted(txSql, txTables);
-      return result;
-    })) as T;
+    const out = (await busyAware(
+      rootSql.begin<T>(async (txSql) => {
+        const result = await fn(buildHandles(txSql));
+        await snapshotUnlessReadCommitted(txSql, txTables);
+        return result;
+      })
+    )) as T;
     this.#commitTables(txTables);
     return out;
   }
@@ -2049,6 +2057,12 @@ export class PgDataset implements Dataset {
         await view.#reconcileIndexes(type, signal !== undefined ? { signal } : {});
       }
     });
+  }
+
+  /** See `Dataset.poolStats`. Read on the root dataset; outside a transaction `#sql` is the pool. */
+  poolStats(): PoolStats {
+    const { connections, opening, idle, leased, waiting } = (this.#sql as Sql).stats;
+    return { connections, opening, idle, leased, waiting };
   }
 
   /**
@@ -2609,24 +2623,38 @@ function usesWalkGrammar(params: ReadParams): boolean {
   return whereUsesWalks(params.where) || walkParams(params).length > 0;
 }
 
+/**
+ * The driver's `QUEUE_TIMEOUT` (no pooled connection came free within
+ * `queue_timeout`) as `store_busy`, else null. The request never reached
+ * Postgres, so a retry is safe.
+ */
+function storeBusy(err: unknown): ResolverFrameError | null {
+  if ((err as { code?: unknown } | null)?.code !== 'QUEUE_TIMEOUT') return null;
+  return new ResolverFrameError(
+    STORE_BUSY,
+    'the store is busy: no database connection came free in time; retry shortly'
+  );
+}
+
+/** Awaits `p`, rethrowing a `QUEUE_TIMEOUT` as `store_busy`. */
+async function busyAware<T>(p: Promise<T>): Promise<T> {
+  try {
+    return await p;
+  } catch (err) {
+    throw storeBusy(err) ?? err;
+  }
+}
+
 /** Awaits `query`, cancelling the statement in flight when `signal` aborts. */
 async function cancellable<T extends readonly (PgRow | undefined)[]>(
   query: PendingQuery<T>,
   signal: AbortSignal | undefined
 ): Promise<T> {
-  // Typed void, but returns the cancel request's promise, which may reject.
-  const cancel = (): void => {
-    Promise.resolve(query.cancel() as unknown).catch(() => undefined);
-  };
-  signal?.addEventListener('abort', cancel, { once: true });
   try {
-    if (signal?.aborted === true) cancel();
-    return await query;
+    return await query.signal(signal);
   } catch (err) {
     // pg reports its own cancel as 57014; surface the caller's reason instead.
     if (signal?.aborted === true) signal.throwIfAborted();
     throw err;
-  } finally {
-    signal?.removeEventListener('abort', cancel);
   }
 }

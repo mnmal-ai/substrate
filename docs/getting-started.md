@@ -58,7 +58,7 @@ Rows are embedded only for types whose namespace declares an `embed.source`, so 
 
 ```bash
 curl http://localhost:3100/health
-# {"status":"ok","version":"<version>","uptimeSeconds":3}
+# {"status":"ok","warnings":[],"version":"<version>","walks":true,"uptimeSeconds":3,"pool":{"connections":2,"opening":0,"idle":2,"leased":0,"waiting":0}}
 ```
 
 **A plugin loaded.** `/health` only says the binary started. The plugin's onboard route describes its namespace:

@@ -544,6 +544,13 @@ export interface Dataset {
    */
   fieldWarnings?(): Promise<string[]>;
   /**
+   * The connection pool right now: connections open, opening, idle and leased,
+   * and requests waiting for one. Counts only; `/health` shows it unauthenticated.
+   *
+   * OPTIONAL. Backends with no connection pool omit it.
+   */
+  poolStats?(): PoolStats;
+  /**
    * The database-wide storage layout and what an operator should look at:
    * indexes this process has yet to build or failed to build, fields whose
    * promotion failed, and a type-table count over `partitionBudget`; and, as
@@ -894,4 +901,13 @@ export interface IndexPlan {
     only?: Record<string, boolean | null>;
   }>;
   expectedSize?: 'small' | 'large';
+}
+
+/** A connection pool's counts, as `Dataset.poolStats` reports them. */
+export interface PoolStats {
+  connections: number;
+  opening: number;
+  idle: number;
+  leased: number;
+  waiting: number;
 }

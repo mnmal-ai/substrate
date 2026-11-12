@@ -866,7 +866,7 @@ SUBSTRATE_DATABASE_URL=postgres://… SUBSTRATE_PLUGIN_DIR=/srv/substrate /srv/s
 | `SUBSTRATE_BRIDGES`, `SUBSTRATE_BRIDGE_CREDENTIALS` | Static bridges and their credentials (§5.8) |
 | `SUBSTRATE_SENTINEL_URL` | Enable dynamic bridge discovery (§5.8) |
 | `SUBSTRATE_TLS_KEY_PATH`, `SUBSTRATE_TLS_CERT_PATH`, `SUBSTRATE_TLS_CA_PATH` | TLS (key and cert together; CA optional) |
-| `SUBSTRATE_STATEMENT_TIMEOUT_MS` | Statement timeout for walk reads, in ms (default 30000). A read it cancels is refused `query_timeout` with `details.timeoutMs` |
+| `SUBSTRATE_STATEMENT_TIMEOUT_MS` | Statement timeout for walk reads, in ms (default 30000). A read it cancels is refused `query_timeout` with `details.timeoutMs`. It also bounds the wait for a free database connection; a request that waits longer is refused `store_busy` |
 | `SUBSTRATE_SWEEP_INTERVAL_MS` | Edge sweep cadence (default 5 min) |
 | `SUBSTRATE_TOMBSTONE_RETENTION_DAYS` | Days before tombstoned rows and edges are hard-deleted (default 30) |
 | `SUBSTRATE_IDEMPOTENCY_DISABLED`, `SUBSTRATE_IDEMPOTENCY_TTL_MS` | Disable mutate dedup; override its 24 h window |

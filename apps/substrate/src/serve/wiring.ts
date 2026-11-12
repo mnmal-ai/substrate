@@ -106,7 +106,11 @@ export async function wireStore(
     };
   }
   if (storeSpec.startsWith('postgres://') || storeSpec.startsWith('postgresql://')) {
-    const sql: Sql = openSql(storeSpec);
+    // A request that waits longer for a connection than a statement may run is past its budget.
+    const sql: Sql = openSql(
+      storeSpec,
+      statementTimeoutMs !== undefined ? { queueTimeoutMs: statementTimeoutMs } : {}
+    );
     try {
       await runMigrations(sql);
     } catch (err) {
