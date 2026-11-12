@@ -8,9 +8,8 @@
  *   - `selection === true` on any value → pass through as-is (matches pack's
  *      "whole-row" / "whole-list" / "whole-struct" leaf semantics)
  *
- * Batched mutate (§5.13) array op-keys carry no single `fields` selection, so
- * they pass through unmodified — the engine has already encoded the per-frame
- * results into the shape that ride on the wire.
+ * Batched mutate (§5.13) array op-keys are projected element by element, each
+ * result against its own frame's `fields`.
  */
 
 import type { FieldInput, PackEnvelope, WsResponseFrame } from '@mnmal-ai/substrate-types';
@@ -65,10 +64,30 @@ function nestedFields(sel: true | FieldInput): FieldInput | undefined {
 export function projectEnvelope(envelope: PackEnvelope, frame: Frame): PackEnvelope {
   const data: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(envelope.data)) {
-    const fields = projectionFields(envelope, frame, key);
-    data[key] = fields === undefined ? value : projectValue(value, fields);
+    const project = rowProjector(envelope, frame, key);
+    data[key] = Array.isArray(value) ? value.map(project) : project(value, 0);
   }
   return { ...envelope, data };
+}
+
+/**
+ * How to project row `i` of `envelope.data[key]`. A batched mutate's element
+ * `i` is frame `i`'s result, so it takes frame `i`'s own `fields`.
+ */
+export function rowProjector(
+  envelope: PackEnvelope,
+  frame: Frame,
+  key: string
+): (row: unknown, i: number) => unknown {
+  const entry = frame[key];
+  if (Array.isArray(entry)) {
+    return (row, i) => {
+      const fields = entry[i]?.fields as FieldInput | undefined;
+      return fields === undefined ? row : projectValue(row, fields);
+    };
+  }
+  const fields = projectionFields(envelope, frame, key);
+  return (row) => (fields === undefined ? row : projectValue(row, fields));
 }
 
 /** The selection `envelope.data[key]` is projected through, or undefined when it passes through whole. */
@@ -78,9 +97,9 @@ export function projectionFields(
   key: string
 ): FieldInput | undefined {
   const entry = frame[key];
-  // Batched mutate (array op-keys) have no single `fields` selection — the
-  // engine has already shaped the per-frame results that ride here.
-  // Likewise an unknown key (engine-injected error) passes through.
+  // Batched mutate (array op-keys) have no single `fields` selection: the
+  // caller projects them per element. An unknown key (engine-injected error)
+  // passes through.
   if (entry === undefined || Array.isArray(entry)) return undefined;
   // `{ count }` and `{ groups }` are not rows; there is nothing to project.
   const shape = envelope.shapes[key];

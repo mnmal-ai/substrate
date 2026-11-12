@@ -64,6 +64,27 @@ describe('streamed JSON envelope', () => {
     }
   );
 
+  it('projects a long batched mutate element by element, across chunks', () => {
+    const n = 4500;
+    const batch: Frame = {
+      'ns/createBig': Array.from({ length: n }, (_, i) => ({
+        params: {},
+        ...(i % 3 === 2 ? {} : { fields: i % 3 === 0 ? { id: true } : { name: true } })
+      }))
+    };
+    const env: PackEnvelope = {
+      schemaVersion: 'v1',
+      data: { 'ns/createBig': Array.from({ length: n }, (_, i) => row(i)) },
+      shapes: { 'ns/createBig': Array.from({ length: n }, () => 'single' as const) }
+    };
+    const joined = [...jsonParts(env, batch)].join('');
+    expect(joined).toBe(JSON.stringify(projectEnvelope(env, batch)));
+    const out = JSON.parse(joined).data['ns/createBig'];
+    expect(out[2002]).toEqual({ name: 'n2002' });
+    expect(out[3000]).toEqual({ id: 'r3000' });
+    expect(Object.keys(out[2003])).toContain('dropped');
+  });
+
   it('the stream carries the same bytes', async () => {
     const env = envelope(STREAM_ROWS + 5);
     const text = await new Response(jsonEnvelopeStream(env, frame)).text();
