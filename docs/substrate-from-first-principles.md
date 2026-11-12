@@ -628,6 +628,8 @@ Work that must outlive a rollback, such as an audit row recording a refusal, goe
 
 A `mutate` resolves when its transaction has committed and same-store edge propagation is complete.
 
+**What a mutation answers.** `fields` selects from each result, per frame; in a batched entry each element is projected by its own frame's `fields`. On the JSON wire, a create or update that writes rows of a declared type and names no `fields` answers with `{ id, shortId }`, not the whole written row. Ask for more with `fields`, or for everything with `fields: true`. A mutation whose result is its own struct, such as delete's `{ id, deleted }`, is returned whole. Under substrate-pack a mutation's result is encoded from its declared `returns` and carries the whole row.
+
 ### 5.4 Subscriptions
 
 A subscribe frame has the same shape as a query frame and returns an initial snapshot followed by pushed updates. Live updates are available over WebSocket (`/substrate/v1/ws`) and SSE (`/substrate/v1/subscribe`); there is no MCP subscription tool.

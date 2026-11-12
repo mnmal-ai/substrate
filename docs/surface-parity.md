@@ -345,6 +345,12 @@ Which surfaces carry it:
 | WebSocket | `Sec-WebSocket-Protocol: substrate-pack` at the handshake | `new SubstrateClient({ wsEncoding: 'pack' })` |
 | MCP, SSE | not available | — |
 
+**One known difference: mutation results.** On JSON, a create or update with no
+`fields` answers `{ id, shortId }`, and `fields` trims every mutation result.
+Under pack a mutation's result is encoded from its declared `returns`, so it is
+the whole row whatever `fields` says. The two converge in the HTTP/2 cutover,
+which moves clients and server together.
+
 Its purpose is decode speed on multi-thousand-row responses, not size. It does
 not make payloads much smaller. Over HTTP against a live `cortext` store:
 
