@@ -12,7 +12,7 @@ import {
 } from '@mnmal-ai/substrate-pack';
 import { type PackEnvelope, stringifyJson } from '@mnmal-ai/substrate-types';
 import type { Frame } from './helpers.js';
-import { projectionFields, projectValue } from './project-json.js';
+import { rowProjector } from './project-json.js';
 
 /** A body streams once one `data` key holds more rows than this. */
 export const STREAM_ROWS = 20_000;
@@ -94,10 +94,9 @@ export function* jsonParts(envelope: PackEnvelope, frame: Frame): Generator<stri
     sep = ',';
     let dsep = '';
     for (const [key, value] of Object.entries(envelope.data)) {
-      const fields = projectionFields(envelope, frame, key);
-      const project = (x: unknown): unknown => (fields === undefined ? x : projectValue(x, fields));
+      const project = rowProjector(envelope, frame, key);
       if (!Array.isArray(value) || value.length <= ROWS_PER_CHUNK) {
-        const s = stringifyJson(project(value));
+        const s = stringifyJson(Array.isArray(value) ? value.map(project) : project(value, 0));
         if (s === undefined) continue;
         yield `${dsep}${JSON.stringify(key)}:${s}`;
         dsep = ',';
@@ -107,7 +106,9 @@ export function* jsonParts(envelope: PackEnvelope, frame: Frame): Generator<stri
       dsep = ',';
       for (let i = 0; i < value.length; i += ROWS_PER_CHUNK) {
         // One stringify per chunk, so a bigint costs one retry per chunk, not one per row.
-        const chunk = stringifyJson(value.slice(i, i + ROWS_PER_CHUNK).map(project));
+        const chunk = stringifyJson(
+          value.slice(i, i + ROWS_PER_CHUNK).map((row, j) => project(row, i + j))
+        );
         yield `${i === 0 ? '' : ','}${chunk.slice(1, -1)}`;
       }
       yield ']';
