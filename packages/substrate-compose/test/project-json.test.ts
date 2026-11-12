@@ -93,16 +93,30 @@ describe('projectEnvelope', () => {
     expect(out.data['ns/Todo']).toEqual([{ id: '1', title: 'a', body: 'big' }]);
   });
 
-  it('passes through batched (array) op-keys without projection', () => {
-    const env = envelope({ 'ns/createTodo': [{ id: '1' }, { id: '2' }] });
+  it('projects each element of a batched (array) op-key against its own fields', () => {
+    const env = envelope({
+      'ns/createTodo': [
+        { id: '1', shortId: 7, title: 'a', body: 'big' },
+        { id: '2', shortId: 8, title: 'b', body: 'big' },
+        { id: '3', shortId: 9, title: 'c', body: 'big' },
+        undefined
+      ]
+    });
     const frame: Frame = {
       'ns/createTodo': [
-        { params: { title: 'a' }, fields: { id: true } },
-        { params: { title: 'b' }, fields: { id: true } }
+        { params: { title: 'a' }, fields: { shortId: true } },
+        { params: { title: 'b' }, fields: { id: true, title: true } },
+        { params: { title: 'c' } },
+        { params: { title: 'd' }, fields: { id: true } }
       ]
     };
     const out = projectEnvelope(env, frame);
-    expect(out.data['ns/createTodo']).toEqual([{ id: '1' }, { id: '2' }]);
+    expect(out.data['ns/createTodo']).toEqual([
+      { shortId: 7 },
+      { id: '2', title: 'b' },
+      { id: '3', shortId: 9, title: 'c', body: 'big' },
+      undefined
+    ]);
   });
 
   it('passes through unknown keys (engine-injected error rows)', () => {
