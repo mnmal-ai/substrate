@@ -161,8 +161,7 @@ describe('startSentinelClient — online handler', () => {
       coordinators: [
         createSentinelPlugin({
           namespace: 'sentinel',
-          pingIntervalMs: 1000,
-          staleThresholdMs: 3000
+          pingIntervalMs: 1000
         })
       ],
       datasets: { sentinel: new MemoryDataset({ namespace: 'sentinel' }) },
@@ -223,8 +222,7 @@ describe('startSentinelClient — offline + stop', () => {
       coordinators: [
         createSentinelPlugin({
           namespace: 'sentinel',
-          pingIntervalMs: 1000,
-          staleThresholdMs: 3000
+          pingIntervalMs: 1000
         })
       ],
       datasets: { sentinel: new MemoryDataset({ namespace: 'sentinel' }) },
@@ -271,8 +269,7 @@ describe('startSentinelClient — offline + stop', () => {
       coordinators: [
         createSentinelPlugin({
           namespace: 'sentinel',
-          pingIntervalMs: 1000,
-          staleThresholdMs: 3000
+          pingIntervalMs: 1000
         })
       ],
       datasets: { sentinel: new MemoryDataset({ namespace: 'sentinel' }) },
@@ -338,8 +335,7 @@ describe('startSentinelClient — end-to-end through compose', () => {
       coordinators: [
         createSentinelPlugin({
           namespace: 'sentinel',
-          pingIntervalMs: 1000,
-          staleThresholdMs: 3000
+          pingIntervalMs: 1000
         })
       ],
       datasets: { sentinel: new MemoryDataset({ namespace: 'sentinel' }) },
@@ -444,8 +440,7 @@ describe('startSentinelClient — reconnect', () => {
       coordinators: [
         createSentinelPlugin({
           namespace: 'sentinel',
-          pingIntervalMs: 1000,
-          staleThresholdMs: 3000
+          pingIntervalMs: 1000
         })
       ],
       datasets: { sentinel: new MemoryDataset({ namespace: 'sentinel' }) }

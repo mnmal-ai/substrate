@@ -396,7 +396,7 @@ describe('sentinel register attribution', () => {
       throw new Error('register touched the engine');
     };
     const engine = { query: touched, mutate: touched } as never;
-    const registry = createLivenessRegistry({ staleThresholdMs: 90_000 });
+    const registry = createLivenessRegistry();
     const sent: string[] = [];
     const peer = { send: (m: string) => sent.push(m), close: () => {} } as never;
     // No agentKeyId, no tokenId and not a system envelope: resolveIdentity cannot attribute it.
@@ -418,15 +418,11 @@ describe('sentinel register attribution', () => {
 });
 
 describe('frame-stream peers and liveness', () => {
-  it('a frame peer is never drained as stale; the tick sends it a heartbeat, not a ping', async () => {
-    let now = 0;
-    const registry = createLivenessRegistry({ staleThresholdMs: 10, now: () => now });
+  it('the tick writes a frame peer a zero-length heartbeat frame', async () => {
+    const registry = createLivenessRegistry();
     const { peer, body } = framePeer(() => {});
     registry.addWatcher(peer);
-    now = 1000;
-    const engine = { mutate: async () => ({ data: {} }) } as never;
-    const result = await runLivenessTick(registry, engine, NS);
-    expect(result).toEqual({ stalePinged: 1, markedOffline: 0 });
+    expect(runLivenessTick(registry)).toEqual({ heartbeats: 1 });
     expect(registry.watchers()).toEqual([peer]);
     const reader = body.getReader();
     expect(Array.from((await reader.read()).value ?? [])).toEqual([0, 0, 0, 0]);

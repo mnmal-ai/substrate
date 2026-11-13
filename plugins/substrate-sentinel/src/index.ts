@@ -30,7 +30,6 @@ export {
   type CoordinatorConnection,
   createLivenessRegistry,
   type LivenessRegistry,
-  type LivenessRegistryOptions,
   type LivenessTickResult,
   type PeerConnection,
   runLivenessTick
@@ -40,7 +39,7 @@ export { type CoordinatorRecord, registerSentinelStatusRoute } from './status-ro
 export { framePeer, registerSentinelStreamRoutes } from './stream-routes.js';
 
 export function createSentinelPlugin(cfg: SentinelPluginConfig): CoordinatorPlugin {
-  const registry = createLivenessRegistry({ staleThresholdMs: cfg.staleThresholdMs });
+  const registry = createLivenessRegistry();
   let endStreams = async (): Promise<void> => {};
 
   return {
@@ -53,8 +52,7 @@ export function createSentinelPlugin(cfg: SentinelPluginConfig): CoordinatorPlug
         intervalMs: cfg.pingIntervalMs,
         runOnStart: false,
         handler: async (taskCtx): Promise<void> => {
-          const result = await runLivenessTick(registry, taskCtx.engine, cfg.namespace);
-          taskCtx.metric('sentinel_liveness_tick', result);
+          taskCtx.metric('sentinel_liveness_tick', runLivenessTick(registry));
         }
       }
     ],

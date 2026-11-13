@@ -17,13 +17,10 @@ const NamespaceSchema = z
 export const SentinelBootstrapConfigSchema = z
   .object({
     namespace: NamespaceSchema.default('sentinel'),
-    /** Interval between liveness ticks in milliseconds. */
+    /** Interval between heartbeat frames to every open peer, in milliseconds. */
     pingIntervalMs: z.number().int().positive().default(30_000),
-    /**
-     * Max heartbeat age before a coordinator is marked offline. Checked once
-     * per `pingIntervalMs` tick, so eviction lands up to one interval later.
-     */
-    staleThresholdMs: z.number().int().positive().default(90_000)
+    /** Ignored: a peer is online while its stream is open. Accepted so older config files still load. */
+    staleThresholdMs: z.number().int().positive().optional()
   })
   .strict();
 
@@ -34,8 +31,7 @@ export const bootstrap = defineBootstrap.coordinator({
   build: (config) =>
     createSentinelPlugin({
       namespace: config.namespace,
-      pingIntervalMs: config.pingIntervalMs,
-      staleThresholdMs: config.staleThresholdMs
+      pingIntervalMs: config.pingIntervalMs
     })
 });
 

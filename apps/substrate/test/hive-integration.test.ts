@@ -324,8 +324,7 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — sentinel topology', () => {
     // because we don't start the scheduler; ticks don't fire.
     const sentinelPlugin = createSentinelPlugin({
       namespace: 'sentinel',
-      pingIntervalMs: 1_000,
-      staleThresholdMs: 3_000
+      pingIntervalMs: 1_000
     });
     // register/watch require an authenticated caller, so S composes a real
     // AuthConfig.
@@ -388,8 +387,7 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — sentinel liveness', () => {
   it('broadcasts offline event to watchers when a coordinator disconnects', async () => {
     const sentinelPlugin = createSentinelPlugin({
       namespace: 'sentinel',
-      pingIntervalMs: 1_000,
-      staleThresholdMs: 3_000
+      pingIntervalMs: 1_000
     });
     // register/watch require an authenticated caller.
     s = await startInstance({
@@ -464,8 +462,7 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — full-hive smoke', () => {
     // --- Instance S: sentinel ---
     const sentinelPlugin = createSentinelPlugin({
       namespace: 'sentinel',
-      pingIntervalMs: 1_000,
-      staleThresholdMs: 3_000
+      pingIntervalMs: 1_000
     });
     // register/watch require an authenticated caller. Only S (which hosts the
     // sentinel routes) needs auth; A and B compose without it.
@@ -737,8 +734,7 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — discovery allowlist', () =>
   it('an unprovisioned discovered coordinator produces no bridge and no outbound request', async () => {
     const sentinelPlugin = createSentinelPlugin({
       namespace: 'sentinel',
-      pingIntervalMs: 1_000,
-      staleThresholdMs: 3_000
+      pingIntervalMs: 1_000
     });
     s = await startInstance({
       coordinators: [sentinelPlugin],

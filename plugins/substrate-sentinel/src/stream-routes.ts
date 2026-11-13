@@ -11,8 +11,8 @@
  *     then every `{ event: 'online' | 'offline', … }` broadcast.
  *
  * A peer here is alive while its response is open: the liveness tick sends it
- * zero-length heartbeat frames instead of pings, and a dead socket surfaces as
- * the response closing.
+ * zero-length heartbeat frames, and a dead socket surfaces as the response
+ * closing.
  */
 
 import { FRAMES_JSON_MIME, HEARTBEAT_FRAME } from '@mnmal-ai/substrate/pack';
@@ -96,7 +96,6 @@ export function framePeer(onEnd: (peer: PeerConnection) => unknown): {
     new ByteLengthQueuingStrategy({ highWaterMark: 64 * 1024 })
   );
   const peer: PeerConnection = {
-    selfLive: true,
     send: (message) => enqueue(frameOf(message)),
     heartbeat: () => enqueue(HEARTBEAT_FRAME),
     // error, not close: a stalled reader's queue is dropped and the response aborts,
