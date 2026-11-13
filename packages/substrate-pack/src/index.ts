@@ -46,6 +46,16 @@ export {
   type PackStreamChunk
 } from './stream-chunk.js';
 export {
+  DEFAULT_MAX_FRAME_BYTES,
+  decodeStreamFrames,
+  encodeStreamFrame,
+  FRAMES_JSON_MIME,
+  FRAMES_PACK_MIME,
+  FrameStreamError,
+  framesEncodingFromAccept,
+  HEARTBEAT_FRAME
+} from './stream-frames.js';
+export {
   applyDecodePlanInPlace,
   buildDecodePlan,
   type DecodePlanEntry,
