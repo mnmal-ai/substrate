@@ -100,5 +100,12 @@ export {
 // still want the typed-row reduction instead of hand-decoding the data envelope.
 export { reduceSubscribeRows, watchRows } from './subscribe-rows.js';
 export { noRedirectFetch, tokenAudience } from './token-target.js';
+export { substrateFetch } from './transport/default-fetch.js';
+export {
+  createH2Fetch,
+  type FetchLike,
+  type H2Fetch,
+  type H2FetchOptions
+} from './transport/h2-fetch.js';
 export type { QualifiedFrame } from './transport/http.js';
 export type { SubscribeEvent, WebSocketImpl, WsOverloadResubscribeOpts } from './transport/ws.js';
