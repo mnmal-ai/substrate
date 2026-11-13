@@ -39,7 +39,7 @@ import { createNlApi, type NlApi } from './nl.js';
 import { watchRows } from './subscribe-rows.js';
 import { assertSingleKey, augmentFramesWithId } from './subscribe-util.js';
 import type { SubscribeEvent, WsOverloadResubscribeOpts } from './transport/frame-event.js';
-import { type FrameStreamPath, openFrameStream } from './transport/frames.js';
+import { anySignal, type FrameStreamPath, openFrameStream } from './transport/frames.js';
 import { HttpTransport, type QualifiedFrame } from './transport/http.js';
 import type { WebSocketImpl, WsEncoding } from './transport/ws.js';
 import { decodeJsonEnvelope, isPackMarker, type PackMarker } from './wire/json.js';
@@ -230,7 +230,7 @@ export class SubstrateClient {
     const signal =
       opts.signal === undefined
         ? this.#closing.signal
-        : AbortSignal.any([this.#closing.signal, opts.signal]);
+        : anySignal([this.#closing.signal, opts.signal]);
     const inner = openFrameStream(this.#http, path, body, {
       wire,
       canRefreshToken: this.#canRefreshToken,

@@ -43,6 +43,8 @@ export interface FrameStreamOpts {
 
 /** `NetworkError.code` when the server does not answer with frame streams. */
 export const FRAMES_UNSUPPORTED = 'frames_unsupported';
+/** `NetworkError.code` when a stream was cut short by a server restart. */
+export const STREAM_INTERRUPTED = 'stream_interrupted';
 const OVERLOADED = 'subscription_overloaded';
 const SERVER_RESTART = 'server_restart';
 const LAPSES = new Set(['credential_expired', 'credential_changed']);
@@ -59,17 +61,15 @@ export function openFrameStream(
   return {
     [Symbol.asyncIterator]: () => {
       const ctrl = new AbortController();
-      const onAbort = () => ctrl.abort();
-      opts.signal?.addEventListener('abort', onAbort, { once: true });
-      if (opts.signal?.aborted === true) ctrl.abort();
-      const gen = run(http, path, frame, opts, ctrl.signal);
+      const signal =
+        opts.signal === undefined ? ctrl.signal : anySignal([ctrl.signal, opts.signal]);
+      const gen = run(http, path, frame, opts, signal);
       // Hand-rolled: a generator queues return() behind a pending next(),
       // which on a quiet subscription never settles. Aborting settles it.
       return {
         next: () => gen.next(),
         return: async () => {
           ctrl.abort();
-          opts.signal?.removeEventListener('abort', onAbort);
           await gen.return(undefined);
           return { value: undefined, done: true };
         }
@@ -86,7 +86,8 @@ async function* run(
   signal: AbortSignal
 ): AsyncGenerator<SubscribeEvent, void, undefined> {
   const subscribe = path === '/substrate/v1/subscribe';
-  const backoff = new ReconnectScheduler({ ...DEFAULT_RECONNECT, ...opts.reconnect });
+  const reconnect = { ...DEFAULT_RECONNECT, ...opts.reconnect };
+  const backoff = new ReconnectScheduler(reconnect);
   const overload = { ...DEFAULT_OVERLOAD_RESUBSCRIBE, ...opts.overload };
   let overloadAttempts = 0;
   let lastOverloadAt: number | null = null;
@@ -112,19 +113,26 @@ async function* run(
     } catch (err) {
       if (signal.aborted) return;
       // Before any response a failure is most likely a wrong endpoint or token, so it surfaces.
-      const unsupported = err instanceof NetworkError && err.code === FRAMES_UNSUPPORTED;
-      if (err instanceof AuthError || unsupported || !opened || !subscribe) throw err;
+      if (err instanceof AuthError || !opened || !subscribe || refused(err)) throw err;
       if (!(await sleep(backoff.nextDelay(), signal))) return;
       continue;
     }
     opened = true;
+    const openedAt = Date.now();
 
     let next: Next | undefined;
     try {
       for await (const payload of decodeStreamFrames(body)) {
         const msg = decodeFrame(payload, opts.wire);
-        backoff.reset();
-        if (msg.kind === 'error' && msg.errors?.[0]?.code === OVERLOADED && overload.enabled) {
+        // Only a response that delivers and then lasts proves health: one that sends its
+        // snapshot and drops at once must keep growing the delay, or every retry re-queries.
+        if (Date.now() - openedAt >= reconnect.maxDelayMs) backoff.reset();
+        if (
+          subscribe &&
+          msg.kind === 'error' &&
+          msg.errors?.[0]?.code === OVERLOADED &&
+          overload.enabled
+        ) {
           const now = Date.now();
           if (lastOverloadAt !== null && now - lastOverloadAt > overload.healthyResetMs) {
             overloadAttempts = 0;
@@ -135,6 +143,12 @@ async function* run(
             next = { delayMs: jittered(overload, overloadAttempts) };
             break;
           }
+        }
+        // Its `end` would read as complete, so a stream cut short throws instead.
+        if (!subscribe && msg.kind === 'end' && msg.reason === SERVER_RESTART) {
+          throw new NetworkError(`POST ${path}: the server restarted mid-stream`, null, {
+            code: STREAM_INTERRUPTED
+          });
         }
         const event = msgToEvent(msg); // throws SubscribeError on `error`
         if (event === null) continue;
@@ -150,7 +164,11 @@ async function* run(
       }
     } catch (err) {
       if (signal.aborted) return;
-      if (err instanceof SubscribeError) throw err;
+      if (
+        err instanceof SubscribeError ||
+        (err instanceof NetworkError && err.code === STREAM_INTERRUPTED)
+      )
+        throw err;
       if (!subscribe) {
         throw err instanceof NetworkError
           ? err
@@ -167,6 +185,35 @@ async function* run(
     }
     if (!(await sleep(next.delayMs, signal))) return;
   }
+}
+
+/**
+ * A refusal that retrying will not change: a server without frame streams, or a
+ * 4xx other than 408 and 429 (the frame no longer validates, say).
+ */
+function refused(err: unknown): boolean {
+  if (!(err instanceof NetworkError)) return false;
+  if (err.code === FRAMES_UNSUPPORTED) return true;
+  const status = err.status;
+  return status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429;
+}
+
+/**
+ * Aborts when any of `signals` does. `AbortSignal.any` holds no listener on its
+ * sources, so finished subscriptions leave nothing behind on a shared signal; the
+ * fallback, for browsers before 2024, does.
+ */
+export function anySignal(signals: AbortSignal[]): AbortSignal {
+  if (typeof AbortSignal.any === 'function') return AbortSignal.any(signals);
+  const ctrl = new AbortController();
+  for (const s of signals) {
+    if (s.aborted) {
+      ctrl.abort(s.reason);
+      break;
+    }
+    s.addEventListener('abort', () => ctrl.abort(s.reason), { once: true });
+  }
+  return ctrl.signal;
 }
 
 function decodeFrame(payload: Uint8Array, wire: 'json' | 'pack'): FrameMessage {

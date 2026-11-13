@@ -328,4 +328,143 @@ describe('frames against a scripted server', () => {
     expect(outcome).toBe('returned');
     await expect.poll(() => closed).toBe(true);
   });
+
+  it('a server that sends its snapshot and drops at once is retried with a growing delay', async () => {
+    const at: number[] = [];
+    const { baseUrl } = await scripted((_n, res) => {
+      at.push(Date.now());
+      open(res);
+      send(res, snapshot('s'));
+      setTimeout(() => res.destroy(), 1);
+    });
+    const it = client(baseUrl, { reconnect: { baseDelayMs: 10, maxDelayMs: 1000, jitter: 0 } })
+      .subscribe(TODO)
+      [Symbol.asyncIterator]();
+    await take(it, 5);
+    await it.return?.();
+    const gaps = at.slice(1, 5).map((t, i) => t - (at[i] as number));
+    // 10, 20, 40, 80 ms: a reset on every snapshot would keep each near 10.
+    expect(gaps[3]).toBeGreaterThanOrEqual(70);
+  });
+
+  it('a 4xx on resubscribe surfaces instead of retrying forever', async () => {
+    const { baseUrl, requests } = await scripted((n, res) => {
+      if (n === 1) {
+        open(res);
+        send(res, snapshot('s1'));
+        res.end(
+          encodeStreamFrame({ id: 'x', kind: 'end', reason: 'server_restart', final: true }, 'json')
+        );
+        return;
+      }
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ errors: [{ code: 'invalid_frame', message: 'invalid_frame' }] }));
+    });
+    const it = client(baseUrl, { reconnect: FAST }).subscribe(TODO)[Symbol.asyncIterator]();
+    expect((await take(it, 2)).map((e) => e.kind)).toEqual(['snapshot', 'end']);
+    await expect(it.next()).rejects.toMatchObject({ name: 'NetworkError', status: 400 });
+    expect(requests).toHaveLength(2);
+  });
+
+  it('a stream cut by a server restart throws stream_interrupted rather than looking complete', async () => {
+    const { baseUrl } = await scripted((_n, res) => {
+      open(res);
+      res.write(encodeStreamFrame({ id: 'frames-stream', kind: 'chunk', data: {} }, 'json'));
+      res.end(
+        encodeStreamFrame(
+          { id: 'frames-stream', kind: 'end', reason: 'server_restart', final: true },
+          'json'
+        )
+      );
+    });
+    const it = client(baseUrl).stream(TODO)[Symbol.asyncIterator]();
+    expect((await it.next()).value?.kind).toBe('chunk');
+    await expect(it.next()).rejects.toMatchObject({ code: 'stream_interrupted' });
+  });
+
+  it('an overload past its budget surfaces as SubscribeError', async () => {
+    const { baseUrl, requests } = await scripted((n, res) => {
+      open(res);
+      send(res, snapshot(`s${n}`));
+      send(res, { kind: 'error', errors: [{ code: 'subscription_overloaded', message: 'full' }] });
+      res.end();
+    });
+    const it = client(baseUrl, {
+      overloadResubscribe: { maxAttempts: 2, baseDelayMs: 5, jitter: 0 }
+    })
+      .subscribe(TODO)
+      [Symbol.asyncIterator]();
+    expect((await take(it, 3)).map((e) => e.kind)).toEqual(['snapshot', 'snapshot', 'snapshot']);
+    await expect(it.next()).rejects.toBeInstanceOf(SubscribeError);
+    expect(requests).toHaveLength(3);
+  });
+
+  it.each([
+    ['resubscribes with a fresh token when getToken can mint one', { getToken: () => 'fresh' }, 2],
+    ['ends with a fixed token', { token: 'fixed' }, 1]
+  ] as const)('a lapsed credential %s', async (_label, auth, expected) => {
+    const { baseUrl, requests } = await scripted((n, res) => {
+      open(res);
+      send(res, snapshot(`s${n}`));
+      if (n === 1)
+        res.end(
+          encodeStreamFrame(
+            { id: 'x', kind: 'end', reason: 'credential_expired', final: true },
+            'json'
+          )
+        );
+    });
+    const it = client(baseUrl, auth).subscribe(TODO)[Symbol.asyncIterator]();
+    const got = await take(it, 3);
+    expect(got.map((e) => e.kind)).toEqual(
+      expected === 2 ? ['snapshot', 'end', 'snapshot'] : ['snapshot', 'end']
+    );
+    expect(requests).toHaveLength(expected);
+    await it.return?.();
+  });
+
+  it('CallOpts.signal ends the subscription', async () => {
+    const { baseUrl } = await scripted((_n, res) => {
+      open(res);
+      send(res, snapshot('s'));
+    });
+    const ctrl = new AbortController();
+    const it = client(baseUrl).subscribe(TODO, { signal: ctrl.signal })[Symbol.asyncIterator]();
+    await take(it, 1);
+    const pending = it.next();
+    ctrl.abort();
+    expect(await pending).toEqual({ value: undefined, done: true });
+  });
+
+  it('a failure before any response surfaces, with no retry', async () => {
+    const { baseUrl } = await scripted(() => {});
+    const port = new URL(baseUrl).port;
+    for (const c of cleanups.splice(0)) await c();
+    const it = client(`http://127.0.0.1:${port}`, { reconnect: FAST })
+      .subscribe(TODO)
+      [Symbol.asyncIterator]();
+    await expect(it.next()).rejects.toBeInstanceOf(NetworkError);
+  });
+
+  it('finished streams leave no listener on the client-wide signal', async () => {
+    const warnings: string[] = [];
+    const onWarning = (w: Error) => warnings.push(w.name);
+    process.on('warning', onWarning);
+    try {
+      const { baseUrl } = await scripted((_n, res) => {
+        open(res);
+        res.end(encodeStreamFrame({ id: 'frames-stream', kind: 'end', final: true }, 'json'));
+      });
+      const c = client(baseUrl);
+      for (let i = 0; i < 15; i++) {
+        for await (const _ of c.stream(TODO)) {
+          // drain to its natural end, so return() is never called
+        }
+      }
+      await new Promise((r) => setImmediate(r));
+      expect(warnings).not.toContain('MaxListenersExceededWarning');
+    } finally {
+      process.off('warning', onWarning);
+    }
+  });
 });
