@@ -350,3 +350,57 @@ describe('FastifySubstrateServer in cleartext: h2c only', () => {
     await new Promise<void>((r) => (session.closed ? r() : session.once('close', () => r())));
   });
 });
+
+describe('FastifySubstrateServer pings each HTTP/2 session', () => {
+  it('destroys a session whose peer stops answering pings', async () => {
+    const server = new FastifySubstrateServer({ pingIntervalMs: 100 });
+    servers.push(server);
+    server.route('GET', '/ping', async () => ({ status: 200, body: 'pong' }));
+    const serverSessionClosed = new Promise<void>((resolve) => {
+      (server as unknown as { fastify: { server: NodeJS.EventEmitter } }).fastify.server.on(
+        'session',
+        (s: http2.ServerHttp2Session) => s.once('close', () => resolve())
+      );
+    });
+    const { port } = await server.start({ host: '127.0.0.1', port: 0 });
+    // A proxy that can go silent both ways, as a host that dies without closing its sockets does.
+    let silent = false;
+    const proxy = net.createServer((inbound) => {
+      const upstream = net.connect(port, '127.0.0.1');
+      inbound.on('data', (d) => silent || upstream.write(d));
+      upstream.on('data', (d) => silent || inbound.write(d));
+      for (const s of [inbound, upstream]) s.on('error', () => {});
+      inbound.on('close', () => upstream.destroy());
+      upstream.on('close', () => inbound.destroy());
+    });
+    await new Promise<void>((r) => proxy.listen(0, '127.0.0.1', r));
+    const session = http2.connect(`http://127.0.0.1:${(proxy.address() as net.AddressInfo).port}`);
+    session.on('error', () => {});
+    await new Promise<void>((r) => session.once('remoteSettings', () => r()));
+    silent = true;
+    const t0 = performance.now();
+    await serverSessionClosed;
+    expect(performance.now() - t0).toBeLessThan(2000);
+    session.destroy();
+    proxy.close();
+  });
+
+  it('keeps a live idle session open', async () => {
+    const server = new FastifySubstrateServer({ pingIntervalMs: 50 });
+    servers.push(server);
+    let closed = false;
+    (server as unknown as { fastify: { server: NodeJS.EventEmitter } }).fastify.server.on(
+      'session',
+      (s: http2.ServerHttp2Session) =>
+        s.once('close', () => {
+          closed = true;
+        })
+    );
+    const { port } = await server.start({ host: '127.0.0.1', port: 0 });
+    const session = http2.connect(`http://127.0.0.1:${port}`);
+    await new Promise<void>((r) => session.once('remoteSettings', () => r()));
+    await new Promise((r) => setTimeout(r, 400));
+    expect(closed).toBe(false);
+    session.close();
+  });
+});

@@ -445,6 +445,46 @@ describe('frames against a scripted server', () => {
     expect(await pending).toEqual({ value: undefined, done: true });
   });
 
+  it('a stream silent past streamIdleMs (no frames, no heartbeats) is dropped and re-subscribed', async () => {
+    const { baseUrl, requests } = await scripted((n, res) => {
+      open(res);
+      send(res, snapshot(n === 1 ? 'went-silent' : 'fresh'));
+      // Then nothing: a dead connection the server can no longer write to looks like this.
+    });
+    const it = client(baseUrl, { reconnect: FAST, streamIdleMs: 150 })
+      .subscribe(TODO)
+      [Symbol.asyncIterator]();
+    expect((await it.next()).value).toMatchObject({
+      data: { 'default/Todo': [{ title: 'went-silent' }] }
+    });
+    expect((await it.next()).value).toMatchObject({
+      kind: 'snapshot',
+      data: { 'default/Todo': [{ title: 'fresh' }] }
+    });
+    expect(requests.length).toBeGreaterThanOrEqual(2);
+    await it.return?.();
+  });
+
+  it('heartbeats keep a quiet stream alive under streamIdleMs', async () => {
+    const { baseUrl, requests } = await scripted((_n, res) => {
+      open(res);
+      send(res, snapshot('quiet'));
+      const beat = setInterval(() => res.write(new Uint8Array(4)), 40);
+      setTimeout(() => {
+        clearInterval(beat);
+        send(res, { kind: 'add', data: { 'default/Todo': { id: '2', title: 'late' } } });
+      }, 400);
+      res.stream.once('close', () => clearInterval(beat));
+    });
+    const it = client(baseUrl, { reconnect: FAST, streamIdleMs: 150 })
+      .subscribe(TODO)
+      [Symbol.asyncIterator]();
+    await it.next();
+    expect((await it.next()).value).toMatchObject({ kind: 'add' });
+    expect(requests).toHaveLength(1);
+    await it.return?.();
+  });
+
   it('a failure before any response surfaces, with no retry', async () => {
     const { baseUrl } = await scripted(() => {});
     const port = new URL(baseUrl).port;

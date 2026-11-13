@@ -7,7 +7,7 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 
 /** Each frame as its JSON text, so a read shows which frame it was. */
-function make(opts: { heartbeatMs?: number; onCancel?: () => void } = {}) {
+function make(opts: { heartbeatMs?: number; stallMs?: number; onCancel?: () => void } = {}) {
   return createDemandTransport({
     encode: (frame) => enc.encode(JSON.stringify(frame)),
     heartbeat: enc.encode('HB'),
@@ -126,5 +126,44 @@ describe('demand transport backpressure', () => {
     const done = transport.emit(dataFrame('s1'), FIELDS);
     await body.cancel();
     await expect(done).resolves.toBeUndefined();
+  });
+});
+
+describe('demand transport stall deadline', () => {
+  it('a consumer that stops reading with data waiting is cut off at stallMs', async () => {
+    vi.useFakeTimers();
+    try {
+      const onCancel = vi.fn();
+      const { transport, body } = make({ stallMs: 1000, onCancel });
+      const reader = body.getReader();
+      const parked = transport.emit(dataFrame('s1'), FIELDS);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(onCancel).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await parked;
+      expect(onCancel).toHaveBeenCalledTimes(1);
+      // The body errors rather than ending cleanly, so the client sees a broken stream.
+      await expect(reader.read()).rejects.toThrow(/consumer_stalled/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a consumer that keeps reading is never cut off', async () => {
+    vi.useFakeTimers();
+    try {
+      const onCancel = vi.fn();
+      const { transport, body } = make({ stallMs: 1000, onCancel });
+      const reader = body.getReader();
+      for (let i = 0; i < 5; i++) {
+        const parked = transport.emit(dataFrame(`s${i}`), FIELDS);
+        await vi.advanceTimersByTimeAsync(800);
+        await reader.read();
+        await parked;
+      }
+      expect(onCancel).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

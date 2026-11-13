@@ -68,6 +68,12 @@ export interface SubstrateClientOptions {
    */
   streamWire?: 'json' | 'pack';
   /**
+   * Drop and re-subscribe a frame stream that sends nothing, heartbeats
+   * included, for this many milliseconds: a connection that died without
+   * closing. Default 65 000, a little over three server heartbeats. `0` disables.
+   */
+  streamIdleMs?: number;
+  /**
    * Auto-resubscribe policy for `subscription_overloaded` teardowns. Default:
    * enabled with 3 attempts. See the README "Terminal-aware resubscribe" section.
    */
@@ -99,6 +105,7 @@ export class SubstrateClient {
   /** Aborted by close(), ending every open subscription and stream. */
   readonly #closing = new AbortController();
   readonly #reconnectOpts: SubstrateClientOptions['reconnect'];
+  readonly #streamIdleMs: number | undefined;
   readonly #overloadResubscribeOpts: WsOverloadResubscribeOpts | undefined;
   #schemaCache: Record<string, Schema> | null = null;
   #schemaFetch: Promise<Record<string, Schema>> | null = null;
@@ -122,6 +129,7 @@ export class SubstrateClient {
     this.#streamWire = opts.streamWire ?? 'json';
     this.#canRefreshToken = opts.token === undefined && opts.getToken !== undefined;
     this.#reconnectOpts = opts.reconnect;
+    this.#streamIdleMs = opts.streamIdleMs;
     this.#overloadResubscribeOpts = opts.overloadResubscribe;
     this.#onDiagnostics = opts.onDiagnostics ?? createDefaultDiagnosticsSink();
 
@@ -216,6 +224,7 @@ export class SubstrateClient {
       canRefreshToken: this.#canRefreshToken,
       signal,
       ...(this.#reconnectOpts !== undefined ? { reconnect: this.#reconnectOpts } : {}),
+      ...(this.#streamIdleMs !== undefined ? { idleMs: this.#streamIdleMs } : {}),
       ...(this.#overloadResubscribeOpts !== undefined
         ? { overload: this.#overloadResubscribeOpts }
         : {})

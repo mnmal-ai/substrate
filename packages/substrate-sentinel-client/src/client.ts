@@ -14,7 +14,12 @@
 
 import { HttpBridgeClient } from '@mnmal-ai/substrate-bridge-http';
 import { type FetchLike, substrateFetch } from '@mnmal-ai/substrate-client';
-import { decodeStreamFrames, FRAMES_JSON_MIME } from '@mnmal-ai/substrate-pack';
+import {
+  DEFAULT_STREAM_IDLE_MS,
+  decodeStreamFrames,
+  FRAMES_JSON_MIME,
+  withIdleTimeout
+} from '@mnmal-ai/substrate-pack';
 import { makeAuthorizationProvider } from '@mnmal-ai/substrate-policy';
 import {
   type BridgeClient,
@@ -75,6 +80,8 @@ export interface StartSentinelClientOpts {
   auth?: () => string;
   /** The fetch the watch request goes through — test seam. Defaults to `substrateFetch`. */
   fetch?: FetchLike;
+  /** Reconnect when the watch stream sends nothing, heartbeats included, for this long. Default 65 000; `0` disables. */
+  idleMs?: number;
 }
 
 export interface SentinelClientHandle {
@@ -95,6 +102,7 @@ export function startSentinelClient(opts: StartSentinelClientOpts): SentinelClie
   const watchUrl = `${trimTrailingSlashes(opts.sentinelUrl)}${WATCH_PATH}`;
   const baseMs = opts.reconnectBaseMs ?? 500;
   const maxMs = opts.reconnectMaxMs ?? 30_000;
+  const idleMs = opts.idleMs ?? DEFAULT_STREAM_IDLE_MS;
 
   const ownedBridges = new Map<string, HttpBridgeClient>();
   const ctrl = new AbortController();
@@ -136,7 +144,10 @@ export function startSentinelClient(opts: StartSentinelClientOpts): SentinelClie
     metric('sentinel_client_connected');
     try {
       const utf8 = new TextDecoder();
-      for await (const payload of decodeStreamFrames(res.body)) {
+      // A sentinel that died without closing the stream sends no heartbeats; drop it and reconnect.
+      for await (const payload of decodeStreamFrames(
+        idleMs > 0 ? withIdleTimeout(res.body, idleMs) : res.body
+      )) {
         let frame: Record<string, unknown>;
         try {
           frame = JSON.parse(utf8.decode(payload)) as Record<string, unknown>;

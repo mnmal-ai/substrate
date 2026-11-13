@@ -11,6 +11,8 @@ import type { FieldInput } from '@mnmal-ai/substrate-types';
 import type { CloseReason, SessionFrame, StreamTransport } from './stream-session.js';
 
 const DEFAULT_HEARTBEAT_MS = 20_000;
+/** How long a data frame may wait for the consumer to read before the stream is cut off. */
+export const DEFAULT_STALL_MS = 60_000;
 
 export interface DemandTransportOptions {
   /** One frame as wire bytes; `fieldsByKey` is absent for route-owned frames. */
@@ -21,7 +23,13 @@ export interface DemandTransportOptions {
   /** Written every `heartbeatMs` while the body is open. */
   heartbeat: Uint8Array;
   heartbeatMs?: number;
-  /** Fired when the CONSUMER tears down — i.e. the client disconnected. */
+  /**
+   * Most milliseconds a data frame waits for the consumer to read it. Past it
+   * the body errors (`consumer_stalled`) and `onCancel` fires, so a client
+   * that stopped reading frees its slot and its engine subscription.
+   */
+  stallMs?: number;
+  /** Fired when the CONSUMER tears down — i.e. the client disconnected — or stalls. */
   onCancel?: () => void;
 }
 
@@ -45,6 +53,7 @@ export interface DemandTransport {
  */
 export function createDemandTransport(opts: DemandTransportOptions): DemandTransport {
   const heartbeatMs = opts.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
+  const stallMs = opts.stallMs ?? DEFAULT_STALL_MS;
 
   let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
   let heartbeat: ReturnType<typeof setInterval> | null = null;
@@ -95,6 +104,20 @@ export function createDemandTransport(opts: DemandTransportOptions): DemandTrans
     }
   };
 
+  /** The consumer stopped reading with data waiting: error the body and cancel the session. */
+  const stall = (): void => {
+    if (closed) return;
+    const c = controller;
+    teardown();
+    controller = null;
+    try {
+      c?.error(new Error('consumer_stalled'));
+    } catch {
+      // Already closed.
+    }
+    opts.onCancel?.();
+  };
+
   const body = new ReadableStream<Uint8Array>({
     start(c) {
       controller = c;
@@ -131,7 +154,12 @@ export function createDemandTransport(opts: DemandTransportOptions): DemandTrans
       // releases `demand`) is the backpressure signal.
       if (controller !== null && (controller.desiredSize ?? 1) <= 0) {
         await new Promise<void>((resolve) => {
-          demand.add(resolve);
+          const timer = setTimeout(stall, stallMs);
+          timer.unref?.();
+          demand.add(() => {
+            clearTimeout(timer);
+            resolve();
+          });
         });
       }
     },
