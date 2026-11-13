@@ -894,15 +894,18 @@ importers:
       '@mnmal-ai/substrate-bridge-http':
         specifier: workspace:*
         version: link:../substrate-bridge-http
+      '@mnmal-ai/substrate-client':
+        specifier: workspace:*
+        version: link:../substrate-client
+      '@mnmal-ai/substrate-pack':
+        specifier: workspace:*
+        version: link:../substrate-pack
       '@mnmal-ai/substrate-policy':
         specifier: workspace:*
         version: link:../substrate-policy
       '@mnmal-ai/substrate-types':
         specifier: workspace:*
         version: link:../substrate-types
-      ws:
-        specifier: 'catalog:'
-        version: 8.22.0
     devDependencies:
       '@mnmal-ai/substrate-compose':
         specifier: workspace:*

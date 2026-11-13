@@ -18,32 +18,32 @@ describe('loadConfig', () => {
     expect(loadConfig({ SUBSTRATE_SENTINEL_URL: '' })).toBeNull();
   });
 
-  it('reads a valid ws:// URL', () => {
+  it('reads a valid http:// base URL', () => {
     const cfg = loadConfig({
-      SUBSTRATE_SENTINEL_URL: 'ws://127.0.0.1:3300/plugins/substrate-sentinel/ws',
+      SUBSTRATE_SENTINEL_URL: 'http://127.0.0.1:3300',
       SUBSTRATE_SENTINEL_CREDENTIAL: TEST_CRED
     });
     expect(cfg).not.toBeNull();
-    expect(cfg?.url).toBe('ws://127.0.0.1:3300/plugins/substrate-sentinel/ws');
+    expect(cfg?.url).toBe('http://127.0.0.1:3300');
   });
 
-  it('accepts wss:// URLs', () => {
+  it('accepts https:// URLs', () => {
     const cfg = loadConfig({
-      SUBSTRATE_SENTINEL_URL: 'wss://sentinel.example.com/plugins/substrate-sentinel/ws',
+      SUBSTRATE_SENTINEL_URL: 'https://sentinel.example.com',
       SUBSTRATE_SENTINEL_CREDENTIAL: TEST_CRED
     });
-    expect(cfg?.url).toBe('wss://sentinel.example.com/plugins/substrate-sentinel/ws');
+    expect(cfg?.url).toBe('https://sentinel.example.com');
   });
 
-  it('throws on a non-ws URL scheme', () => {
-    expect(() => loadConfig({ SUBSTRATE_SENTINEL_URL: 'http://example.com' })).toThrow(
-      'SUBSTRATE_SENTINEL_URL must be a ws:// or wss:// URL'
+  it('refuses a ws:// URL, naming the http(s) base form that replaced it', () => {
+    expect(() => loadConfig({ SUBSTRATE_SENTINEL_URL: 'ws://example.com/ws' })).toThrow(
+      /http:\/\/ or https:\/\/ base URL.*ws:\/\/ endpoint is retired/
     );
   });
 
   it('reads optional reconnect knobs with defaults', () => {
     const cfg = loadConfig({
-      SUBSTRATE_SENTINEL_URL: 'ws://x/y',
+      SUBSTRATE_SENTINEL_URL: 'http://x',
       SUBSTRATE_SENTINEL_CREDENTIAL: TEST_CRED
     });
     expect(cfg?.reconnectBaseMs).toBe(500);
@@ -52,7 +52,7 @@ describe('loadConfig', () => {
 
   it('overrides reconnect knobs from env', () => {
     const cfg = loadConfig({
-      SUBSTRATE_SENTINEL_URL: 'ws://x/y',
+      SUBSTRATE_SENTINEL_URL: 'http://x',
       SUBSTRATE_SENTINEL_CREDENTIAL: TEST_CRED,
       SUBSTRATE_SENTINEL_RECONNECT_BASE_MS: '100',
       SUBSTRATE_SENTINEL_RECONNECT_MAX_MS: '5000'
@@ -64,7 +64,7 @@ describe('loadConfig', () => {
   it('rejects non-positive reconnect knobs', () => {
     expect(() =>
       loadConfig({
-        SUBSTRATE_SENTINEL_URL: 'ws://x/y',
+        SUBSTRATE_SENTINEL_URL: 'http://x',
         SUBSTRATE_SENTINEL_CREDENTIAL: TEST_CRED,
         SUBSTRATE_SENTINEL_RECONNECT_BASE_MS: '0'
       })
@@ -73,7 +73,7 @@ describe('loadConfig', () => {
 });
 
 describe('loadConfig — sentinel credential', () => {
-  const URL_OK = 'wss://sentinel.example.com/plugins/substrate-sentinel/ws';
+  const URL_OK = 'https://sentinel.example.com';
   const CRED = JSON.stringify({ keyPath: '/keys/labs.key', kid: 'labs-prime@host' });
 
   it('parses SUBSTRATE_SENTINEL_CREDENTIAL into a { keyPath, kid } credential', () => {

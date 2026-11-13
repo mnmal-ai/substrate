@@ -1,7 +1,7 @@
 /**
- * Liveness bookkeeping for the sentinel WS surface.
+ * Liveness bookkeeping for the sentinel's WS and frame-stream peers.
  *
- * `WsConnection` has no native ping surface, so this module maintains an
+ * A WS peer has no native ping surface, so this module maintains an
  * application-level liveness protocol over JSON frames:
  *
  *   - The registry tracks every live socket in one of two sets: `coordinators`
@@ -20,10 +20,23 @@
  * no timers; the clock is injectable for tests.
  */
 
-import type { EngineHandle, WsConnection } from '@mnmal-ai/substrate/sdk';
+import type { EngineHandle } from '@mnmal-ai/substrate/sdk';
 import { makeCtx } from '@mnmal-ai/substrate/sdk';
 
-/** Per-coordinator WS metadata captured on `register` frames. */
+/**
+ * A registered or watching peer: a WS connection, or a frame-stream response.
+ * A WS peer proves it is alive by answering pings. A frame-stream peer is alive
+ * while its response is open (`selfLive`), and gets zero-length `heartbeat()`
+ * frames instead of pings, which also surface a dead socket as a failed write.
+ */
+export interface PeerConnection {
+  send(message: string): void;
+  close(code?: number, reason?: string): void;
+  readonly selfLive?: boolean;
+  heartbeat?(): void;
+}
+
+/** Per-coordinator metadata captured on `register`. */
 export interface CoordinatorConnection {
   name: string;
   coordinatorId: string;
@@ -31,13 +44,13 @@ export interface CoordinatorConnection {
 }
 
 interface CoordinatorEntry {
-  conn: WsConnection;
+  conn: PeerConnection;
   meta: CoordinatorConnection;
   lastSeenMs: number;
 }
 
 interface WatcherEntry {
-  conn: WsConnection;
+  conn: PeerConnection;
   lastSeenMs: number;
 }
 
@@ -53,33 +66,33 @@ export interface LivenessRegistry {
    * Register a newly-online coordinator. Replaces any prior entry for the same
    * conn, and drops and closes any other conn registered for the same row.
    */
-  addCoordinator(conn: WsConnection, meta: CoordinatorConnection): void;
+  addCoordinator(conn: PeerConnection, meta: CoordinatorConnection): void;
   /** Remove a coordinator (on close or eviction). Returns its metadata if it was present. */
-  removeCoordinator(conn: WsConnection): CoordinatorConnection | undefined;
+  removeCoordinator(conn: PeerConnection): CoordinatorConnection | undefined;
   /** Register a conn as a topology watcher. Idempotent. */
-  addWatcher(conn: WsConnection): void;
+  addWatcher(conn: PeerConnection): void;
   /** Drop a watcher (on close). */
-  removeWatcher(conn: WsConnection): void;
+  removeWatcher(conn: PeerConnection): void;
   /** Record a heartbeat now for any tracked conn (coordinator or watcher). */
-  markAlive(conn: WsConnection): void;
+  markAlive(conn: PeerConnection): void;
   /** Fan out a JSON event to every watcher. Silently drops on send errors. */
   broadcastEvent(event: Record<string, unknown>): void;
   /**
    * Sweep-tick primitive: returns every tracked conn whose last heartbeat is
    * more than `staleThresholdMs` old. Does not remove them.
    */
-  drainStale(): Array<WsConnection>;
+  drainStale(): Array<PeerConnection>;
   /** Introspection for tests and the onClose handler. */
-  coordinators(): Array<{ conn: WsConnection; meta: CoordinatorConnection }>;
+  coordinators(): Array<{ conn: PeerConnection; meta: CoordinatorConnection }>;
   /** Introspection for tests. */
-  watchers(): Array<WsConnection>;
+  watchers(): Array<PeerConnection>;
 }
 
 export function createLivenessRegistry(opts: LivenessRegistryOptions): LivenessRegistry {
   const { staleThresholdMs } = opts;
   const now = opts.now ?? Date.now;
-  const coords = new Map<WsConnection, CoordinatorEntry>();
-  const watchers = new Map<WsConnection, WatcherEntry>();
+  const coords = new Map<PeerConnection, CoordinatorEntry>();
+  const watchers = new Map<PeerConnection, WatcherEntry>();
 
   return {
     addCoordinator(conn, meta): void {
@@ -126,18 +139,18 @@ export function createLivenessRegistry(opts: LivenessRegistryOptions): LivenessR
         }
       }
     },
-    drainStale(): Array<WsConnection> {
+    drainStale(): Array<PeerConnection> {
       const cutoff = now() - staleThresholdMs;
-      const stale: Array<WsConnection> = [];
+      const stale: Array<PeerConnection> = [];
       for (const entry of [...coords.values(), ...watchers.values()]) {
-        if (entry.lastSeenMs < cutoff) stale.push(entry.conn);
+        if (entry.conn.selfLive !== true && entry.lastSeenMs < cutoff) stale.push(entry.conn);
       }
       return stale;
     },
-    coordinators(): Array<{ conn: WsConnection; meta: CoordinatorConnection }> {
+    coordinators(): Array<{ conn: PeerConnection; meta: CoordinatorConnection }> {
       return [...coords.values()].map((e) => ({ conn: e.conn, meta: e.meta }));
     },
-    watchers(): Array<WsConnection> {
+    watchers(): Array<PeerConnection> {
       return [...watchers.values()].map((e) => e.conn);
     }
   };
@@ -222,13 +235,14 @@ export async function runLivenessTick(
 
   // Ping the survivors; a `pong` refreshes their heartbeat via `markAlive`.
   const pingMsg = JSON.stringify({ type: 'ping' });
-  const survivors: Array<WsConnection> = [];
+  const survivors: Array<PeerConnection> = [];
   for (const entry of registry.coordinators()) survivors.push(entry.conn);
   for (const w of registry.watchers()) survivors.push(w);
   let stalePinged = 0;
   for (const conn of survivors) {
     try {
-      conn.send(pingMsg);
+      if (conn.heartbeat !== undefined) conn.heartbeat();
+      else conn.send(pingMsg);
       stalePinged++;
     } catch {
       // Peer gone between drain and send; next tick will catch it.

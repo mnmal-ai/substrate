@@ -760,7 +760,7 @@ SUBSTRATE_BRIDGES='[{"ns":"cal","name":"calendar","url":"https://calendar.exampl
 - **Cascades across an unreachable bridge are blocked**, not silently retried (§6.5).
 - **Bridge only to peers you trust.** The token a bridge presents names no audience, so a peer that receives it could present it to any other server that accepts the same key. Give each bridge its own key, granted only what that peer needs.
 
-**Dynamic topology.** The `@mnmal-ai/substrate-sentinel` plugin hosts a topology registry; the binary's built-in sentinel client (not a plugin) runs when `SUBSTRATE_SENTINEL_URL` is set. It watches the sentinel's WS topology stream and registers or unregisters bridges as peers come and go, refreshing bridged schemas. Discovery is not authoritative: a peer still needs an entry in `SUBSTRATE_BRIDGE_CREDENTIALS`.
+**Dynamic topology.** The `@mnmal-ai/substrate-sentinel` plugin hosts a topology registry; the binary's built-in sentinel client (not a plugin) runs when `SUBSTRATE_SENTINEL_URL` is set. It watches the sentinel's topology stream (`GET /substrate/v1/plugins/substrate-sentinel/watch`) and registers or unregisters bridges as peers come and go, refreshing bridged schemas. Discovery is not authoritative: a peer still needs an entry in `SUBSTRATE_BRIDGE_CREDENTIALS`.
 
 **Wiring rule for embedders:** pass the live `BridgeRegistry` to `compose` whenever anything will mutate it. Passing the no-bridges stub while a client mutates a separate registry leaves the engine bound to the stub, and bridged queries fail schema lookup.
 

@@ -1,23 +1,28 @@
 /**
- * substrate-sentinel-client — watches a sentinel instance's WS topology stream and
+ * substrate-sentinel-client — watches a sentinel instance's topology feed and
  * mutates a caller-owned BridgeRegistry on online/offline events.
  *
- *   - connect to sentinel WS, send {type:'watch'}
+ *   - GET <sentinel>/substrate/v1/plugins/substrate-sentinel/watch, a stream of
+ *     length-prefixed JSON frames
  *   - on {event:'online'}: create HttpBridgeClient, register in bridges,
  *     call engine.refreshBridgeSchemas()
  *   - on {event:'offline'}: unregister bridge + dispose client
- *   - on error/close: reconnect with exponential backoff
- *   - stop(): closes WS + disposes all active bridges
+ *   - on a refusal or a dropped stream: reconnect with exponential backoff,
+ *     reset only after a stream that lasted `reconnectMaxMs`
+ *   - stop(): ends the stream + disposes all active bridges
  */
 
 import { HttpBridgeClient } from '@mnmal-ai/substrate-bridge-http';
+import { type FetchLike, substrateFetch } from '@mnmal-ai/substrate-client';
+import { decodeStreamFrames, FRAMES_JSON_MIME } from '@mnmal-ai/substrate-pack';
 import { makeAuthorizationProvider } from '@mnmal-ai/substrate-policy';
 import type {
   BridgeClient,
   BridgeCredentialStore,
   BridgeRegistry
 } from '@mnmal-ai/substrate-types';
-import WebSocket from 'ws';
+
+const WATCH_PATH = '/substrate/v1/plugins/substrate-sentinel/watch';
 
 /**
  * Extension of the read-only `BridgeRegistry` from substrate-types with the
@@ -42,7 +47,7 @@ export interface SentinelClientEngineHandle {
 export type MetricSink = (name: string, payload?: unknown) => void;
 
 export interface StartSentinelClientOpts {
-  /** Full ws:// or wss:// URL of the sentinel's `/substrate/v1/plugins/substrate-sentinel/ws`. */
+  /** The sentinel's http:// or https:// base URL, e.g. `https://sentinel.example:3100`. */
   sentinelUrl: string;
   /** Caller-owned bridge registry; the client mutates it in place. */
   bridges: WritableBridgeRegistry;
@@ -62,17 +67,13 @@ export interface StartSentinelClientOpts {
   reconnectMaxMs?: number;
   /**
    * Supplies the full `Authorization` header value (e.g. `Bearer <jwt>`) for
-   * the WS upgrade. Required in practice against any auth-enabled sentinel:
-   * `watch` and `register` are privileged frames, so an unauthenticated client
-   * connects and is then refused every frame. Omitted only for a sentinel with
-   * no auth configured.
+   * the watch request, called on each connect. Required against any
+   * auth-enabled sentinel, which answers an unsigned watch with 401. Omitted
+   * only for a sentinel with no auth configured.
    */
   auth?: () => string;
-  /**
-   * WebSocket factory — test seam. Defaults to a socket carrying {@link auth}.
-   * A caller supplying this owns the upgrade entirely, including headers.
-   */
-  wsFactory?: (url: string) => WebSocket;
+  /** The fetch the watch request goes through — test seam. Defaults to `substrateFetch`. */
+  fetch?: FetchLike;
 }
 
 export interface SentinelClientHandle {
@@ -84,80 +85,87 @@ const NO_OP_METRIC: MetricSink = () => {};
 
 export function startSentinelClient(opts: StartSentinelClientOpts): SentinelClientHandle {
   const metric = opts.metric ?? NO_OP_METRIC;
-  // `upgradeAuth`, not `auth`: this is the credential for OUR connection to
-  // the sentinel. `handleOnline` separately mints a per-bridge token for each
+  // `watchAuth`, not `auth`: this is the credential for OUR request to the
+  // sentinel. `handleOnline` separately mints a per-bridge token for each
   // discovered peer — two different principals, and shadowing one with the
   // other would be an easy way to send the wrong credential somewhere.
-  const upgradeAuth = opts.auth;
-  const wsFactory =
-    opts.wsFactory ??
-    ((url: string) =>
-      // exactOptionalPropertyTypes: pass no options object at all rather than
-      // `{ headers: undefined }` when unauthenticated.
-      upgradeAuth === undefined
-        ? new WebSocket(url)
-        : new WebSocket(url, { headers: { authorization: upgradeAuth() } }));
+  const watchAuth = opts.auth;
+  const fetchImpl = opts.fetch ?? substrateFetch;
+  const watchUrl = `${opts.sentinelUrl.replace(/\/+$/, '')}${WATCH_PATH}`;
   const baseMs = opts.reconnectBaseMs ?? 500;
   const maxMs = opts.reconnectMaxMs ?? 30_000;
 
   const ownedBridges = new Map<string, HttpBridgeClient>();
-  let ws: WebSocket | null = null;
+  const ctrl = new AbortController();
   let stopped = false;
   let connected = false;
   let currentBackoff = baseMs;
-  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-  function scheduleReconnect(): void {
-    if (stopped) return;
-    const delay = currentBackoff;
-    metric('sentinel_client_reconnecting', { delayMs: delay });
-    const timer = setTimeout(() => {
-      reconnectTimer = null;
-      if (stopped) return;
-      currentBackoff = Math.min(currentBackoff * 2, maxMs);
-      connect();
-    }, delay);
-    // Allow process exit while waiting — prevents hanging test harnesses.
-    timer.unref();
-    reconnectTimer = timer;
+  /** Resolves after `ms`, or at once when stopped. The timer never holds the process open. */
+  function pause(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(done, ms);
+      timer.unref();
+      function done(): void {
+        clearTimeout(timer);
+        ctrl.signal.removeEventListener('abort', done);
+        resolve();
+      }
+      ctrl.signal.addEventListener('abort', done, { once: true });
+    });
   }
 
-  function connect(): void {
-    if (stopped) return;
-    const socket = wsFactory(opts.sentinelUrl);
-    ws = socket;
-    socket.once('open', () => {
-      connected = true;
-      currentBackoff = baseMs;
-      metric('sentinel_client_connected');
-      socket.send(JSON.stringify({ type: 'watch' }));
-    });
-    socket.on('message', (buf: Buffer) => {
-      let frame: Record<string, unknown>;
-      try {
-        frame = JSON.parse(buf.toString('utf8')) as Record<string, unknown>;
-      } catch {
-        return;
+  /** One watch request, read to its end. */
+  async function watchOnce(): Promise<void> {
+    const headers: Record<string, string> = { accept: FRAMES_JSON_MIME };
+    if (watchAuth !== undefined) headers.authorization = watchAuth();
+    const res = await fetchImpl(watchUrl, { method: 'GET', headers, signal: ctrl.signal });
+    const type = res.headers.get('content-type') ?? '';
+    if (!res.ok || res.body === null || !type.startsWith(FRAMES_JSON_MIME)) {
+      await res.body?.cancel();
+      // A 401/403 is the only signal that topology is not being watched.
+      metric('sentinel_client_error', {
+        status: res.status,
+        error: `watch answered ${res.status} ${type}`
+      });
+      return;
+    }
+    const openedAt = Date.now();
+    connected = true;
+    metric('sentinel_client_connected');
+    try {
+      const utf8 = new TextDecoder();
+      for await (const payload of decodeStreamFrames(res.body)) {
+        let frame: Record<string, unknown>;
+        try {
+          frame = JSON.parse(utf8.decode(payload)) as Record<string, unknown>;
+        } catch {
+          continue;
+        }
+        if (frame.event === 'online') void handleOnline(frame);
+        else if (frame.event === 'offline') handleOffline(frame);
       }
-      if (frame.event === 'online') {
-        void handleOnline(frame);
-      } else if (frame.event === 'offline') {
-        handleOffline(frame);
-      } else if (typeof frame.error === 'string') {
-        // Sentinel refuses `watch` with `{error:'unauthorized'|'forbidden'}`
-        // and leaves the socket open, so `isConnected()` stays true; the
-        // metric is the only signal that topology is not being watched.
-        metric('sentinel_client_error', { error: frame.error });
-      }
-    });
-    socket.once('close', () => {
+    } finally {
       connected = false;
+      // A stream that dropped soon after opening proves nothing, so the delay keeps growing.
+      if (Date.now() - openedAt >= maxMs) currentBackoff = baseMs;
+    }
+  }
+
+  async function run(): Promise<void> {
+    while (!stopped) {
+      try {
+        await watchOnce();
+      } catch {
+        // A refused connect or a broken stream: both reconnect below.
+      }
+      if (stopped) return;
       metric('sentinel_client_disconnected');
-      scheduleReconnect();
-    });
-    socket.once('error', () => {
-      // Error always precedes close; handled there.
-    });
+      const delay = currentBackoff;
+      metric('sentinel_client_reconnecting', { delayMs: delay });
+      currentBackoff = Math.min(currentBackoff * 2, maxMs);
+      await pause(delay);
+    }
   }
 
   async function handleOnline(frame: Record<string, unknown>): Promise<void> {
@@ -252,17 +260,14 @@ export function startSentinelClient(opts: StartSentinelClientOpts): SentinelClie
     }
   }
 
-  connect();
+  const running = run();
 
   return {
     isConnected: (): boolean => connected,
     stop: async (): Promise<void> => {
       if (stopped) return;
       stopped = true;
-      if (reconnectTimer !== null) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
+      ctrl.abort();
       for (const [ns, client] of ownedBridges) {
         try {
           opts.bridges.unregister(ns);
@@ -272,12 +277,7 @@ export function startSentinelClient(opts: StartSentinelClientOpts): SentinelClie
         client.dispose();
       }
       ownedBridges.clear();
-      if (ws !== null && ws.readyState !== WebSocket.CLOSED) {
-        await new Promise<void>((resolve) => {
-          ws?.once('close', () => resolve());
-          ws?.close();
-        });
-      }
+      await running;
     }
   };
 }
