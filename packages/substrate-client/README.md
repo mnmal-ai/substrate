@@ -2,7 +2,7 @@
 
 Internal: bundled into `@mnmal-ai/substrate` and not published; its public surface is `@mnmal-ai/substrate/client`.
 
-TypeScript client for Substrate: HTTP and WebSocket transports, JSON and `substrate-pack` wire formats, schema-drift refetch, WebSocket reconnect.
+TypeScript client for Substrate: HTTP transport, JSON and `substrate-pack` wire formats, schema-drift refetch, and subscriptions over length-prefixed frame streams that resubscribe on their own.
 
 `@mnmal-ai/substrate/client` also exports the policy helpers, including `makeTokenProvider` for agent-JWT minting (see [Agent identity](#agent-identity)).
 
@@ -118,14 +118,19 @@ The default sink warns once per distinct (op-key, field-set) per client, so a di
 
 ## Terminal-aware resubscribe
 
-`WsTransport` classifies subscription terminals per the [WebSocket teardown contract](../../docs/ws-subscription-contract.md):
+`subscribe` and `stream` each hold one POST whose response body is a stream of frames, JSON by default or `substrate-pack` with `streamWire: 'pack'` (per call, `wire`). A subscription classifies its terminals per the [subscription teardown contract](../../docs/ws-subscription-contract.md):
 
 | Terminal | Behaviour |
 |---|---|
 | `error { code: 'subscription_overloaded' }` (+ trailing `end`) | Auto-resubscribe with exponential backoff, **on by default**, bounded (3 attempts). The terminal is suppressed; you see a fresh `snapshot` instead. After the budget is spent, the `SubscribeError` surfaces. A subscription healthy for 60s regains its full budget. |
-| `end { reason: 'server_restart' }` | The `end` event is still delivered, but the subscription is not terminated: it resubscribes automatically on the new socket. |
+| `end { reason: 'server_restart' }` | The `end` event is still delivered, but the subscription is not terminated: it resubscribes at once and yields a fresh `snapshot`. |
+| A dropped connection | Resubscribes after the `reconnect` backoff, then yields a fresh `snapshot`. |
+| `end { reason: 'credential_expired' \| 'credential_changed' }` | Resubscribes with a fresh token when `getToken` is set; terminal with a fixed `token`. |
+| `401` / `403` | Terminal `AuthError`. A server that does not answer with frames fails with `NetworkError` code `frames_unsupported`. |
 | `end` with no `reason` (cancel ack) | Terminal. |
 | `error` with any other code | Terminal, never auto-retried: retrying a rejected frame just rejects again. |
+
+A `stream` is never re-sent, since that would replay its chunks: a dropped stream fails with `NetworkError`.
 
 Tune or disable it with the `overloadResubscribe` option:
 

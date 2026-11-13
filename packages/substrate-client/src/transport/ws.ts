@@ -25,7 +25,17 @@
 
 import { WS_SUBPROTOCOL_SUBSTRATE_PACK } from '@mnmal-ai/substrate-pack';
 import { WebSocket as NodeWebSocket } from 'ws';
-import { NetworkError, SubscribeError } from '../errors.js';
+import { NetworkError } from '../errors.js';
+import {
+  DEFAULT_OVERLOAD_RESUBSCRIBE,
+  DEFAULT_RECONNECT,
+  msgToEvent,
+  type SubscribeEvent,
+  type WsOverloadResubscribeOpts
+} from './frame-event.js';
+
+export type { SubscribeEvent } from './frame-event.js';
+
 import { ReconnectScheduler, type ReconnectSchedulerOpts } from '../reconnect.js';
 import { type FrameId, type InboundMessage, MultiplexedSocket, type Pending } from './multiplex.js';
 
@@ -93,30 +103,14 @@ export function selectWebSocketImpl(opts: {
 }
 
 /** Bounded auto-resubscribe policy for overload teardowns (contract class 1). */
-export interface WsOverloadResubscribeOpts {
-  /** Master switch. Default true. `false` restores terminal-on-overload. */
-  enabled?: boolean;
-  /** Retry budget per overload streak. Default 3. */
-  maxAttempts?: number;
-  /** Exponential backoff between retries. Defaults mirror reconnect. */
-  baseDelayMs?: number;
-  maxDelayMs?: number;
-  /** Fraction 0..1 of symmetric noise on each delay. Default 0.1. */
-  jitter?: number;
-  /**
-   * A subscription that stays healthy this long after its last overload gets
-   * a fresh retry budget. Reset-on-recovery alone would let a thrashing
-   * consumer loop forever. Default 60_000.
-   */
-  healthyResetMs?: number;
-}
+export type { WsOverloadResubscribeOpts } from './frame-event.js';
 
 export interface WsTransportOpts {
   endpoint: string;
   /** Static bearer token. */
   token?: string;
   /** Dynamic token resolver — called each time a socket is opened. */
-  getToken?: () => string | Promise<string>;
+  getToken?: () => string | undefined | Promise<string | undefined>;
   /**
    * Explicit WebSocket implementation. Must be node-ws-compatible
    * (`new (url, protocols?, { headers })`) so the bearer can ride the
@@ -152,31 +146,6 @@ interface WsSubscribeFrame extends WsFrameRequest {
   op: 'subscribe' | 'stream';
 }
 
-/** Events emitted by the subscribe/stream AsyncIterable. */
-export type SubscribeEvent<T = unknown> =
-  | { kind: 'snapshot'; data: T; shapes?: Record<string, string> }
-  | { kind: 'add'; data: T; shapes?: Record<string, string> }
-  | { kind: 'update'; data: T; shapes?: Record<string, string> }
-  | { kind: 'remove'; removedId: string }
-  | { kind: 'chunk'; data: T; shapes?: Record<string, string>; sequence?: number }
-  | { kind: 'end'; final?: boolean; reason?: string }
-  | { kind: 'error'; errors: Array<{ message: string; code?: string }> };
-
-const DEFAULT_RECONNECT: ReconnectSchedulerOpts = {
-  baseDelayMs: 1000,
-  maxDelayMs: 30_000,
-  jitter: 0.1
-};
-
-const DEFAULT_OVERLOAD_RESUBSCRIBE: Required<WsOverloadResubscribeOpts> = {
-  enabled: true,
-  maxAttempts: 3,
-  baseDelayMs: 1000,
-  maxDelayMs: 30_000,
-  jitter: 0.1,
-  healthyResetMs: 60_000
-};
-
 /**
  * Discriminated payload carried through the waiter / queue.
  * Routing errors through here (rather than throwing in onMessage) prevents
@@ -208,7 +177,7 @@ interface ActiveSub {
 export class WsTransport {
   readonly #endpoint: string;
   readonly #token: string | undefined;
-  readonly #getToken: (() => string | Promise<string>) | undefined;
+  readonly #getToken: (() => string | undefined | Promise<string | undefined>) | undefined;
   readonly #webSocket: WebSocketImpl | undefined;
   readonly #reconnectOpts: ReconnectSchedulerOpts;
   readonly #encoding: WsEncoding;
@@ -762,42 +731,5 @@ export class WsTransport {
         return iterator;
       }
     };
-  }
-}
-
-/** Convert an InboundMessage to a SubscribeEvent, or null if unrecognised. */
-function msgToEvent(msg: InboundMessage): SubscribeEvent | null {
-  switch (msg.kind) {
-    case 'snapshot':
-    case 'add':
-    case 'update':
-      return {
-        kind: msg.kind,
-        data: msg.data,
-        ...(msg.shapes !== undefined ? { shapes: msg.shapes as Record<string, string> } : {})
-      } as SubscribeEvent;
-    case 'chunk':
-      return {
-        kind: 'chunk',
-        data: msg.data,
-        ...(msg.shapes !== undefined ? { shapes: msg.shapes as Record<string, string> } : {}),
-        ...(msg.sequence !== undefined ? { sequence: msg.sequence } : {})
-      };
-    case 'remove':
-      return { kind: 'remove', removedId: msg.removedId ?? '' };
-    case 'end':
-      return {
-        kind: 'end',
-        ...(msg.final !== undefined ? { final: msg.final } : {}),
-        ...(msg.reason !== undefined ? { reason: msg.reason } : {})
-      };
-    case 'error': {
-      const errors = msg.errors ?? [{ message: 'unknown error', code: 'unknown' }];
-      const first = errors[0] ?? { message: 'unknown error', code: 'unknown' };
-      // Throw SubscribeError — it will propagate from next()
-      throw new SubscribeError(first.message, first.code ?? 'unknown');
-    }
-    default:
-      return null;
   }
 }

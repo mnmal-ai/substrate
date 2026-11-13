@@ -13,7 +13,7 @@ export type { QualifiedFrame };
 export interface HttpTransportOpts {
   endpoint: string;
   token?: string;
-  getToken?: () => string | Promise<string>;
+  getToken?: () => string | undefined | Promise<string | undefined>;
   fetch?: typeof fetch;
 }
 
@@ -27,7 +27,7 @@ export class HttpTransport {
   readonly #endpoint: string;
   readonly #fetch: typeof fetch;
   readonly #token: string | undefined;
-  readonly #getToken: (() => string | Promise<string>) | undefined;
+  readonly #getToken: (() => string | undefined | Promise<string | undefined>) | undefined;
 
   constructor(opts: HttpTransportOpts) {
     if (opts.token !== undefined && opts.getToken !== undefined) {

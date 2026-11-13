@@ -12,7 +12,6 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WebSocketServer, type WebSocket as WsSocket } from 'ws';
-import { SubstrateClient } from '../src/index.js';
 import { WsTransport } from '../src/transport/ws.js';
 
 let wss: WebSocketServer;
@@ -334,43 +333,5 @@ describe('WsTransport — server_restart survival (contract class 2)', () => {
 
     // Loop exits on its own because the sub is marked done after the end.
     expect(kinds).toEqual(['snapshot', 'end']);
-  });
-});
-
-describe('SubstrateClient — overloadResubscribe thread-through', () => {
-  it('enabled: false surfaces SubscribeError on overload; subscribeCount stays 1', async () => {
-    let subscribeCount = 0;
-    wss.once('connection', (socket) => {
-      socket.on('message', (raw) => {
-        const msg = parseMsg(raw);
-        if (msg.op !== 'subscribe') return;
-        subscribeCount += 1;
-        send(socket, { id: msg.id, kind: 'snapshot', data: { 'default/Todo': [] } });
-        sendOverloadTeardown(socket, msg.id);
-      });
-    });
-
-    // SubstrateClient derives ws:// from the http:// endpoint automatically.
-    const client = new SubstrateClient({
-      endpoint: `http://127.0.0.1:${port}`,
-      overloadResubscribe: { enabled: false }
-    });
-
-    let thrown: unknown = null;
-    let subscribeCountAfterIterate = 0;
-    try {
-      for await (const _ev of client.subscribe({ 'default/Todo': {} })) {
-        // drain
-      }
-    } catch (err) {
-      thrown = err;
-    }
-    // Allow any (wrong) retry timer to fire before counting.
-    await new Promise((r) => setTimeout(r, 50));
-    subscribeCountAfterIterate = subscribeCount;
-    await client.close();
-
-    expect((thrown as { code?: string })?.code).toBe('subscription_overloaded');
-    expect(subscribeCountAfterIterate).toBe(1);
   });
 });
