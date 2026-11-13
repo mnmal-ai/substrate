@@ -86,7 +86,7 @@ describe('SubstrateClient <-> FastifySubstrateServer WS auth', () => {
         for await (const _ev of iterable) {
           // no frames expected
         }
-      }).rejects.toThrow(/unauthorized|4001/i);
+      }).rejects.toThrow(/unauthori[sz]ed|4001/i);
     } finally {
       await client.close();
     }

@@ -26,8 +26,7 @@ import {
   parseQualifiedKey,
   type RuntimeErrors,
   type RuntimeMetrics,
-  type Schema,
-  trimTrailingSlashes
+  type Schema
 } from '@mnmal-ai/substrate-types';
 import { type AdminApi, createAdminApi } from './admin/api.js';
 import { CacheStore } from './cache/store.js';
@@ -39,15 +38,10 @@ import {
 import { createNlApi, type NlApi } from './nl.js';
 import { watchRows } from './subscribe-rows.js';
 import { assertSingleKey, augmentFramesWithId } from './subscribe-util.js';
+import type { SubscribeEvent, WsOverloadResubscribeOpts } from './transport/frame-event.js';
+import { type FrameStreamPath, openFrameStream } from './transport/frames.js';
 import { HttpTransport, type QualifiedFrame } from './transport/http.js';
-import {
-  type SubscribeEvent,
-  type WebSocketImpl,
-  type WsEncoding,
-  type WsFrameRequest,
-  type WsOverloadResubscribeOpts,
-  WsTransport
-} from './transport/ws.js';
+import type { WebSocketImpl, WsEncoding } from './transport/ws.js';
 import { decodeJsonEnvelope, isPackMarker, type PackMarker } from './wire/json.js';
 
 export interface SubstrateClientOptions {
@@ -59,7 +53,7 @@ export interface SubstrateClientOptions {
    * Sync providers are accepted so `@mnmal-ai/substrate-policy`'s synchronous
    * `makeTokenProvider` is usable directly; the transports `await` either way.
    */
-  getToken?: () => string | Promise<string>;
+  getToken?: () => string | undefined | Promise<string | undefined>;
   fetch?: typeof fetch;
   reconnect?: {
     baseDelayMs?: number;
@@ -67,6 +61,14 @@ export interface SubstrateClientOptions {
     jitter?: number;
   };
   /**
+   * Wire encoding of subscribe and stream bodies: length-prefixed JSON frames,
+   * or substrate-pack frames decoded back to named rows with the cached
+   * federated schema. Default `json`; `CallOpts.wire` overrides it per call.
+   */
+  streamWire?: 'json' | 'pack';
+  /**
+   * @deprecated Use `streamWire`, which falls back to this. Removed with the WS transport.
+   *
    * Wire encoding for the WS surface (subscribe + stream). Default `json`.
    * `pack` advertises the `substrate-pack` subprotocol at handshake; the connection
    * then exclusively speaks msgpack frames with positionally-encoded `data`,
@@ -82,6 +84,8 @@ export interface SubstrateClientOptions {
    */
   overloadResubscribe?: WsOverloadResubscribeOpts;
   /**
+   * @deprecated Ignored: subscribe and stream no longer use WebSocket.
+   *
    * Explicit WebSocket implementation for the subscribe/stream surface. Must
    * be node-ws-compatible (`new (url, protocols?, { headers })`) so the
    * bearer can ride the upgrade. Defaults to node-ws under Node and the
@@ -108,21 +112,18 @@ export interface CallOpts {
 
 export class SubstrateClient {
   readonly #http: HttpTransport;
-  #ws: WsTransport | null = null;
   #nl: NlApi | undefined;
   #admin: AdminApi | undefined;
-  readonly #wsEndpoint: string;
-  readonly #wsToken: string | undefined;
-  readonly #wsGetToken: (() => string | Promise<string>) | undefined;
-  readonly #wsEncoding: WsEncoding;
+  readonly #streamWire: 'json' | 'pack';
+  readonly #canRefreshToken: boolean;
+  /** Aborted by close(), ending every open subscription and stream. */
+  readonly #closing = new AbortController();
   readonly #reconnectOpts: SubstrateClientOptions['reconnect'];
   readonly #overloadResubscribeOpts: WsOverloadResubscribeOpts | undefined;
-  readonly #webSocketImpl: WebSocketImpl | undefined;
   #schemaCache: Record<string, Schema> | null = null;
   #schemaFetch: Promise<Record<string, Schema>> | null = null;
   #driftCachedVersion: string | null = null;
   #closed = false;
-  #wsReqSeq = 0;
   readonly #cache: CacheStore;
   readonly #onDiagnostics: DiagnosticsSink;
 
@@ -138,15 +139,10 @@ export class SubstrateClient {
       ...(opts.fetch !== undefined ? { fetch: opts.fetch } : {})
     });
 
-    // Browser WebSocket can't set custom upgrade headers; node-ws can and is
-    // preferred under Node. Browser consumers need a header-capable `webSocket`.
-    this.#wsEndpoint = `${trimTrailingSlashes(opts.endpoint.replace(/^http/, 'ws'))}/substrate/v1/ws`;
-    this.#wsToken = opts.token;
-    this.#wsGetToken = opts.getToken;
-    this.#wsEncoding = opts.wsEncoding ?? 'json';
+    this.#streamWire = opts.streamWire ?? opts.wsEncoding ?? 'json';
+    this.#canRefreshToken = opts.token === undefined && opts.getToken !== undefined;
     this.#reconnectOpts = opts.reconnect;
     this.#overloadResubscribeOpts = opts.overloadResubscribe;
-    this.#webSocketImpl = opts.webSocket;
     this.#onDiagnostics = opts.onDiagnostics ?? createDefaultDiagnosticsSink();
 
     this.#cache = new CacheStore({ idleGcMs: 5000 });
@@ -213,20 +209,38 @@ export class SubstrateClient {
     return this.#decode(raw, frame, wire);
   }
 
-  subscribe(frame: QualifiedFrame, _opts: CallOpts = {}): AsyncIterable<SubscribeEvent> {
-    // _opts is reserved (abort signal, custom headers); not yet wired.
-    this.#ensureOpen();
-    const req = this.#frameToWsRequest(frame);
-    const inner = this.#getWs().subscribe(req);
-    return this.#wsEncoding === 'pack' ? this.#wrapPackDecode(inner, req.frame) : inner;
+  /** A live query: a snapshot, then deltas. `opts.wire` and `opts.signal` apply. */
+  subscribe(frame: QualifiedFrame, opts: CallOpts = {}): AsyncIterable<SubscribeEvent> {
+    return this.#frameStream('/substrate/v1/subscribe', frame, opts);
   }
 
-  stream(frame: QualifiedFrame, _opts: CallOpts = {}): AsyncIterable<SubscribeEvent> {
-    // _opts is reserved (abort signal, custom headers); not yet wired.
+  /** A one-shot streamed resolver: chunks, then `end`. `opts.wire` and `opts.signal` apply. */
+  stream(frame: QualifiedFrame, opts: CallOpts = {}): AsyncIterable<SubscribeEvent> {
+    return this.#frameStream('/substrate/v1/stream', frame, opts);
+  }
+
+  #frameStream(
+    path: FrameStreamPath,
+    frame: QualifiedFrame,
+    opts: CallOpts
+  ): AsyncIterable<SubscribeEvent> {
     this.#ensureOpen();
-    const req = this.#frameToWsRequest(frame);
-    const inner = this.#getWs().stream(req);
-    return this.#wsEncoding === 'pack' ? this.#wrapPackDecode(inner, req.frame) : inner;
+    const body = flatFrame(frame);
+    const wire = opts.wire ?? this.#streamWire;
+    const signal =
+      opts.signal === undefined
+        ? this.#closing.signal
+        : AbortSignal.any([this.#closing.signal, opts.signal]);
+    const inner = openFrameStream(this.#http, path, body, {
+      wire,
+      canRefreshToken: this.#canRefreshToken,
+      signal,
+      ...(this.#reconnectOpts !== undefined ? { reconnect: this.#reconnectOpts } : {}),
+      ...(this.#overloadResubscribeOpts !== undefined
+        ? { overload: this.#overloadResubscribeOpts }
+        : {})
+    });
+    return wire === 'pack' ? this.#wrapPackDecode(inner, body) : inner;
   }
 
   /**
@@ -285,32 +299,12 @@ export class SubstrateClient {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
-    if (this.#ws !== null) {
-      await this.#ws.close();
-      this.#ws = null;
-    }
+    this.#closing.abort();
   }
 
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
-
-  #getWs(): WsTransport {
-    if (this.#ws === null) {
-      this.#ws = new WsTransport({
-        endpoint: this.#wsEndpoint,
-        encoding: this.#wsEncoding,
-        ...(this.#wsToken !== undefined ? { token: this.#wsToken } : {}),
-        ...(this.#wsGetToken !== undefined ? { getToken: this.#wsGetToken } : {}),
-        ...(this.#reconnectOpts !== undefined ? { reconnect: this.#reconnectOpts } : {}),
-        ...(this.#overloadResubscribeOpts !== undefined
-          ? { overloadResubscribe: this.#overloadResubscribeOpts }
-          : {}),
-        ...(this.#webSocketImpl !== undefined ? { webSocket: this.#webSocketImpl } : {})
-      });
-    }
-    return this.#ws;
-  }
 
   async #refetchSchema(): Promise<void> {
     const schema = await this.#http.federatedSchema();
@@ -363,31 +357,6 @@ export class SubstrateClient {
   }
 
   /**
-   * Convert a `QualifiedFrame` into a `WsFrameRequest` for the WsTransport.
-   *
-   * The id MUST be unique per call: a key-derived id lets a re-subscribe race
-   * the old sub's terminal frame and silently kill the new one. The type-key
-   * prefix is only for readable logs. WsTransport reuses the id verbatim on
-   * reconnect, so it is stable for the subscription's lifetime.
-   */
-  #frameToWsRequest(frame: QualifiedFrame): WsFrameRequest {
-    this.#wsReqSeq += 1;
-    const id = `${Object.keys(frame).sort().join('|')}#${this.#wsReqSeq}`;
-    // WsFrameRequest.frame expects a flat (non-batched) frame map — strip arrays
-    // to the first entry so the type aligns. Batched WS subscriptions are not
-    // part of the v2 protocol.
-    const wsFrame: WsFrameRequest['frame'] = {};
-    for (const [key, entry] of Object.entries(frame)) {
-      const single = Array.isArray(entry) ? entry[0] : entry;
-      wsFrame[key] = {
-        params: (single?.params ?? {}) as Record<string, unknown>,
-        fields: (single?.fields ?? {}) as Record<string, unknown>
-      };
-    }
-    return { id, frame: wsFrame };
-  }
-
-  /**
    * Wrap a WS event stream so each `data`-bearing frame (snapshot/add/update/
    * chunk) gets its positional tuple values reconstructed into named-object
    * rows using the cached federated schema. Errors from the inner stream
@@ -402,7 +371,7 @@ export class SubstrateClient {
    */
   #wrapPackDecode(
     inner: AsyncIterable<SubscribeEvent>,
-    frameSpec: WsFrameRequest['frame']
+    frameSpec: FlatFrame
   ): AsyncIterable<SubscribeEvent> {
     const buildPlan = async (): Promise<DecodePlanEntry[]> => {
       const schemas = await this.federatedSchema();
@@ -464,4 +433,22 @@ export class SubstrateClient {
 
     return { fieldsByKey, returnsByKey, typeByKey, schemas, currentNsByKey };
   }
+}
+
+/** One `{ params, fields }` per key: a batched (array) entry keeps its first frame, as streams take no batches. */
+type FlatFrame = Record<
+  string,
+  { params: Record<string, unknown>; fields: Record<string, unknown> }
+>;
+
+function flatFrame(frame: QualifiedFrame): FlatFrame {
+  const flat: FlatFrame = {};
+  for (const [key, entry] of Object.entries(frame)) {
+    const single = Array.isArray(entry) ? entry[0] : entry;
+    flat[key] = {
+      params: (single?.params ?? {}) as Record<string, unknown>,
+      fields: (single?.fields ?? {}) as Record<string, unknown>
+    };
+  }
+  return flat;
 }

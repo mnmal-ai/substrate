@@ -15,7 +15,6 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket as NodeWebSocket, WebSocketServer } from 'ws';
-import { SubstrateClient } from '../src/client.js';
 import { selectWebSocketImpl, WsTransport } from '../src/transport/ws.js';
 
 let wss: WebSocketServer;
@@ -137,42 +136,6 @@ describe('WsTransport auth', () => {
       expect(connections).toBe(1);
     } finally {
       await t.close();
-    }
-  });
-});
-
-describe('SubstrateClient webSocket injection', () => {
-  it('forwards the webSocket option to the transport', async () => {
-    const calls: string[] = [];
-    function RecordingWs(
-      this: unknown,
-      url: string,
-      protocols?: string | string[],
-      opts?: { headers?: Record<string, string> }
-    ) {
-      calls.push(url);
-      return new NodeWebSocket(url, protocols, opts);
-    }
-
-    wss.once('connection', (socket) => {
-      socket.on('message', (raw) => {
-        const msg = JSON.parse(String(raw)) as { id: string };
-        socket.send(JSON.stringify({ id: msg.id, kind: 'end', final: true }));
-      });
-    });
-
-    const client = new SubstrateClient({
-      endpoint: `http://127.0.0.1:${port}`,
-      token: 'tok-789',
-      webSocket: RecordingWs as never
-    });
-    try {
-      for await (const ev of client.subscribe({ 'default/Todo': {} })) {
-        if (ev.kind === 'end') break;
-      }
-      expect(calls).toEqual([`ws://127.0.0.1:${port}/substrate/v1/ws`]);
-    } finally {
-      await client.close();
     }
   });
 });
