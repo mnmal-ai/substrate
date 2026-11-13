@@ -52,6 +52,12 @@ import Fastify, {
 } from 'fastify';
 import { applySubstrateResponse, toSubstrateRequest } from './translate.js';
 
+/** @fastify/compress's default filter. It already leaves `text/event-stream` alone. */
+const COMPRESSIBLE =
+  /^text\/(?!event-stream)|(?:\+|\/)json(?:;|$)|(?:\+|\/)text(?:;|$)|(?:\+|\/)xml(?:;|$)|octet-stream(?:;|$)/u;
+/** Frame streams are `+json`, but a gzip stream buffers, which would stop them streaming. */
+const FRAME_STREAM = /^application\/vnd\.substrate\.frames\+/u;
+
 /**
  * CORS configuration for browser-facing deployments.
  *
@@ -236,7 +242,10 @@ export class FastifySubstrateServer implements SubstrateServer {
     // types so application/octet-stream + application/vnd.substrate.pack pass through.
     // `void` — third-party plugin; failures surface at ready() time.
     if (compression) {
-      void this.fastify.register(compressPlugin, { threshold: 1024 });
+      void this.fastify.register(compressPlugin, {
+        threshold: 1024,
+        customTypes: (type: string) => COMPRESSIBLE.test(type) && !FRAME_STREAM.test(type)
+      });
     }
 
     // Register the CORS plugin before any routes so preflight OPTIONS requests

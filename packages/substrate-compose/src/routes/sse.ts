@@ -17,6 +17,7 @@
  */
 
 import type { Engine, MetricFn } from '@mnmal-ai/substrate-core';
+import { framesEncodingFromAccept } from '@mnmal-ai/substrate-pack';
 import type {
   FieldInput,
   HttpHandler,
@@ -27,15 +28,11 @@ import type {
 } from '@mnmal-ai/substrate-types';
 import { type AuthConfig, credentialLapse, watchCredential } from '../auth.js';
 import type { ConnectionLimiter } from './connection-limit.js';
+import { createDemandTransport, type DemandTransport } from './demand-transport.js';
+import { createFramesTransport, framesHeaders } from './frames-transport.js';
 import { extractClientIp, jsonResponse } from './helpers.js';
 import { SSE_HEADERS, SSE_HEARTBEAT, sseEvent, sseRetry } from './sse-frame.js';
-import {
-  type CloseReason,
-  erroredKey,
-  type SessionFrame,
-  StreamSession,
-  type StreamTransport
-} from './stream-session.js';
+import { erroredKey, StreamSession, type StreamTransport } from './stream-session.js';
 import { hashFrame, mintStreamTicket, TICKET_TTL_MS, verifyStreamTicket } from './stream-ticket.js';
 
 export interface SseTransportOptions {
@@ -47,134 +44,18 @@ export interface SseTransportOptions {
   onCancel?: () => void;
 }
 
-const DEFAULT_HEARTBEAT_MS = 20_000;
+const _DEFAULT_HEARTBEAT_MS = 20_000;
 const DEFAULT_RETRY_MS = 5_000;
 
-export function createSseTransport(opts: SseTransportOptions): {
-  transport: StreamTransport;
-  body: ReadableStream<Uint8Array>;
-  /**
-   * Write a frame the ROUTE owns rather than the session — today only the
-   * graceful-shutdown `end`. Synchronous, and deliberately NOT part of
-   * `StreamTransport`: that contract is the session's, and its async `emit`
-   * exists to pace the producer to consumer demand. A shutdown frame is the
-   * last write before the response closes, so parking it on demand could
-   * strand it behind a consumer that has already stopped reading.
-   */
-  writeFrame: (frame: SessionFrame) => void;
-} {
+export function createSseTransport(opts: SseTransportOptions): DemandTransport {
   const encoder = new TextEncoder();
-  const heartbeatMs = opts.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
-
-  let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
-  let heartbeat: ReturnType<typeof setInterval> | null = null;
-  let closed = false;
-  /**
-   * Resolvers of parked `emit` calls. Must be a Set, not a single slot: a
-   * multi-key subscribe drains each key on its own task sharing one `onFrame`,
-   * so two `emit`s can be in flight at once, and a single slot would strand
-   * the first one's drain task.
-   */
-  const demand = new Set<() => void>();
-
-  const stopHeartbeat = (): void => {
-    if (heartbeat !== null) {
-      clearInterval(heartbeat);
-      heartbeat = null;
-    }
-  };
-
-  /** Wake every parked `emit`, not just one — see the `demand` docblock. */
-  const releaseDemand = (): void => {
-    for (const resolve of demand) resolve();
-    demand.clear();
-  };
-
-  /**
-   * Shared by every teardown path (write failure, close, consumer cancel) so
-   * none of them can leave the heartbeat ticking or an `emit` parked forever;
-   * a parked `emit` strands the engine's producer loop.
-   */
-  const teardown = (): void => {
-    closed = true;
-    stopHeartbeat();
-    releaseDemand();
-  };
-
-  const write = (text: string): void => {
-    if (closed || controller === null) return;
-    try {
-      controller.enqueue(encoder.encode(text));
-    } catch {
-      // The consumer tore down between our `closed` check and the enqueue.
-      // Every path that sets `closed` must run the FULL teardown: `close()`
-      // short-circuits on the `closed` guard, so a bare flag flip here is the
-      // last chance to stop the heartbeat and release parked `emit`s.
-      teardown();
-      controller = null;
-    }
-  };
-
-  const body = new ReadableStream<Uint8Array>({
-    start(c) {
-      controller = c;
-      write(sseRetry(opts.retryMs ?? DEFAULT_RETRY_MS));
-      heartbeat = setInterval(() => write(SSE_HEARTBEAT), heartbeatMs);
-      // Node keeps the process alive for interval timers; a keepalive must not.
-      heartbeat.unref?.();
-    },
-    pull() {
-      // New demand exists — every parked `emit` gets a chance to re-check and
-      // proceed, not just the most recently parked one.
-      releaseDemand();
-    },
-    cancel() {
-      // Client disconnected. Release any parked `emit` (it would otherwise
-      // park forever — nothing will ever call `pull` again) and notify the
-      // route so it can cancel the underlying session.
-      teardown();
-      controller = null;
-      opts.onCancel?.();
-    }
+  return createDemandTransport({
+    encode: (frame, fieldsByKey) => encoder.encode(sseEvent(frame, fieldsByKey)),
+    heartbeat: encoder.encode(SSE_HEARTBEAT),
+    preamble: encoder.encode(sseRetry(opts.retryMs ?? DEFAULT_RETRY_MS)),
+    ...(opts.heartbeatMs !== undefined ? { heartbeatMs: opts.heartbeatMs } : {}),
+    ...(opts.onCancel !== undefined ? { onCancel: opts.onCancel } : {})
   });
-
-  const transport: StreamTransport = {
-    emit: async (frame: SessionFrame, fieldsByKey: ReadonlyMap<string, FieldInput>) => {
-      if (closed) return;
-      write(sseEvent(frame, fieldsByKey));
-      // `end`/`error` are terminal: the session awaits this call and then
-      // closes the transport. A terminal frame parked on demand would hold the
-      // response open forever once the consumer stops reading, so only
-      // data-bearing frames pace to consumer demand.
-      if (frame.kind === 'end' || frame.kind === 'error') return;
-      // Yield until the consumer asks for more. `desiredSize <= 0` means the
-      // queue is full; waiting on the next `pull` (or a teardown, which also
-      // releases `demand`) is the backpressure signal.
-      if (controller !== null && (controller.desiredSize ?? 1) <= 0) {
-        await new Promise<void>((resolve) => {
-          demand.add(resolve);
-        });
-      }
-    },
-    close: (_reason: CloseReason) => {
-      // `_reason` is intentionally unused: the terminal reason already ships
-      // in the `end` frame's own payload.
-      if (closed) return;
-      teardown();
-      try {
-        controller?.close();
-      } catch {
-        // Already closed by the consumer — nothing to do.
-      }
-      controller = null;
-    }
-  };
-
-  return {
-    transport,
-    body,
-    writeFrame: (frame: SessionFrame) => write(sseEvent(frame, undefined))
-  };
 }
 
 type FrameRecord = Record<string, { params?: Record<string, unknown>; fields?: FieldInput }>;
@@ -352,10 +233,20 @@ export function registerSseRoutes(
       // exists; the later spurious-cancel window is covered by `cancel` being
       // idempotent (it early-returns once the session is terminated).
       let session: StreamSession | undefined;
-      const sessionId = `sse-${mode}`;
-      const { transport, body, writeFrame } = createSseTransport({
-        onCancel: () => session?.cancel('client_disconnect')
-      });
+      // GET is the EventSource path, which only speaks SSE.
+      const frames =
+        req.method === 'POST' ? framesEncodingFromAccept(req.headers.accept) : undefined;
+      const sessionId = frames === undefined ? `sse-${mode}` : `frames-${mode}`;
+      const onCancel = () => session?.cancel('client_disconnect');
+      const { transport, body, writeFrame } =
+        frames === undefined
+          ? createSseTransport({ onCancel })
+          : createFramesTransport({
+              mode: frames,
+              engine,
+              onCancel,
+              onTooLarge: () => session?.cancel('cancelled')
+            });
 
       /**
        * This response's entry in the shutdown registry. Closures over
@@ -473,7 +364,11 @@ export function registerSseRoutes(
         // way, and the two transports must stay frame-for-frame identical.
         session.cancel('complete');
       }
-      return { status: 200, headers: SSE_HEADERS, body };
+      return {
+        status: 200,
+        headers: frames === undefined ? SSE_HEADERS : framesHeaders(frames),
+        body
+      };
     };
 
   for (const [path, mode] of [
