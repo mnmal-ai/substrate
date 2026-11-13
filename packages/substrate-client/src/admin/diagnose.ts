@@ -20,6 +20,8 @@ import {
 } from '@mnmal-ai/substrate-policy';
 import type { Row } from '@mnmal-ai/substrate-types';
 import { trimTrailingSlashes } from '@mnmal-ai/substrate-types';
+import { substrateFetch } from '../transport/default-fetch.js';
+import type { FetchLike } from '../transport/h2-fetch.js';
 
 /**
  * `ok` — asked and answered yes. `no` — asked and answered no. `skip` — NOT
@@ -129,7 +131,7 @@ function grantFromWhoami(grants: unknown): Grant | null {
 
 async function getJson(
   url: string,
-  fetchImpl: typeof fetch,
+  fetchImpl: FetchLike,
   headers: Record<string, string> = {}
 ): Promise<{ status: number; body: Record<string, unknown> } | { error: string }> {
   let res: Response;
@@ -153,7 +155,7 @@ async function getJson(
 async function listLiveKeys(
   baseUrl: string,
   authorization: string,
-  fetchImpl: typeof fetch
+  fetchImpl: FetchLike
 ): Promise<{ rows: Row[] } | { error: string }> {
   const frameKey = `${SYSTEM_NAMESPACE}/Key`;
   const rows: Row[] = [];
@@ -213,7 +215,7 @@ async function listLiveKeys(
 async function listDirectoryIdentities(
   baseUrl: string,
   authorization: string,
-  fetchImpl: typeof fetch
+  fetchImpl: FetchLike
 ): Promise<{ rows: Row[] } | { absent: string } | { error: string }> {
   const frameKey = 'cortext/AgentIdentity';
   const rows: Row[] = [];
@@ -345,7 +347,7 @@ export interface DiagnoseOpts {
   readonly adminCapability?: string;
   /** Default true. False: the admin-only checks are skipped as not asked, not failed. */
   readonly expectAdmin?: boolean;
-  readonly fetch?: typeof fetch;
+  readonly fetch?: FetchLike;
 }
 
 /** Every check `diagnose` can emit, in dependency order: what a caller marks NOT ASKED when it
@@ -368,7 +370,7 @@ export const DIAGNOSE_CHECKS: readonly string[] = [
  */
 export async function diagnose(opts: DiagnoseOpts): Promise<DiagnoseResult> {
   const checks = new Checks();
-  const fetchImpl = opts.fetch ?? fetch;
+  const fetchImpl = opts.fetch ?? substrateFetch;
   const adminCapability = opts.adminCapability ?? 'admin';
   const baseUrl = trimTrailingSlashes(opts.baseUrl);
   let identityId: string | null = null;

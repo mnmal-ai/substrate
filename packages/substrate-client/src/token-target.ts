@@ -3,6 +3,9 @@
  * http only to a loopback host, where nothing on the network can read it.
  */
 
+import { substrateFetch } from './transport/default-fetch.js';
+import type { FetchLike } from './transport/h2-fetch.js';
+
 const LOOPBACK = /^(localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|\[::1\])$/;
 
 /**
@@ -25,6 +28,6 @@ export function tokenAudience(baseUrl: string): string {
 }
 
 /** `fetchImpl` with redirects refused: a redirect would carry the credential to wherever it points. */
-export function noRedirectFetch(fetchImpl: typeof fetch = fetch): typeof fetch {
+export function noRedirectFetch(fetchImpl: FetchLike = substrateFetch): FetchLike {
   return (input, init) => fetchImpl(input, { ...init, redirect: 'error' });
 }

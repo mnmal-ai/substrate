@@ -1,9 +1,11 @@
 import type { AdminEnv, QualifiedFrame } from '@mnmal-ai/substrate/client';
 import {
   type AdminKeyRow,
+  type FetchLike,
   type NlApi,
   noRedirectFetch,
   SubstrateClient,
+  substrateFetch,
   tokenAudience
 } from '@mnmal-ai/substrate/client';
 import type { PackEnvelope, RuntimeErrors, RuntimeMetrics, Schema } from '@mnmal-ai/substrate/sdk';
@@ -47,7 +49,7 @@ const sig = (signal: AbortSignal | undefined) => (signal !== undefined ? { signa
 
 export function makeDeps(
   config: TuiConfig,
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl: FetchLike = substrateFetch,
   env: NodeJS.ProcessEnv = process.env
 ): TuiDeps {
   const token = config.token;
@@ -60,7 +62,7 @@ export function makeDeps(
     tokenAudience(config.endpoint);
   fetchImpl = noRedirectFetch(fetchImpl);
   // The admin key can also come from its default path at unlock, so its requests check the target themselves.
-  const adminFetch: typeof fetch = (input, init) => {
+  const adminFetch: FetchLike = (input, init) => {
     tokenAudience(config.endpoint);
     return fetchImpl(input, init);
   };

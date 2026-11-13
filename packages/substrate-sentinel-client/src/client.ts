@@ -213,7 +213,7 @@ export function startSentinelClient(opts: StartSentinelClientOpts): SentinelClie
       // Named for the COORDINATOR, not the namespace: the client's `name` is
       // what lands in `_completeness.unreachable[]`, and a static bridge puts
       // a coordinator name there. One field, one meaning.
-      const client = new HttpBridgeClient({ name, baseUrl: url, auth });
+      const client = new HttpBridgeClient({ name, baseUrl: url, auth, fetch: substrateFetch });
       opts.bridges.register(ns, client);
       ownedBridges.set(ns, client);
       metric('sentinel_client_online', { ns, url });

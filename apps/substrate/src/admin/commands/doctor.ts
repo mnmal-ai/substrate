@@ -16,7 +16,9 @@ import {
   type DiagnoseResult,
   type DoctorReport,
   type DoctorStatus,
-  diagnose
+  diagnose,
+  type FetchLike,
+  substrateFetch
 } from '@mnmal-ai/substrate-client';
 import { validateArgv } from '../argv.js';
 import type { AdminCliEnv } from '../env.js';
@@ -57,7 +59,7 @@ export const DIRECT_TARGET_REFUSAL = {
 export async function runDoctor(
   env: AdminCliEnv,
   target: AdminTarget,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: FetchLike = substrateFetch
 ): Promise<DoctorReport> {
   if (target.kind !== 'route') {
     return {
@@ -90,7 +92,7 @@ export async function runDoctor(
 export async function diagnoseTarget(
   env: AdminCliEnv,
   baseUrl: string,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: FetchLike = substrateFetch
 ): Promise<DiagnoseResult> {
   const auth = resolveAdminAuth(env, baseUrl);
   return diagnose({
@@ -148,7 +150,7 @@ export function formatDoctorReport(report: DoctorReport): string {
 export async function doctorCommand(
   argv: readonly string[],
   env: AdminCliEnv,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: FetchLike = substrateFetch
 ): Promise<DoctorReport> {
   // Doctor takes no required arguments, so without this a mistyped flag would
   // silently run against whatever `SUBSTRATE_URL` names.

@@ -5,7 +5,12 @@
  * operation already running finishes on the client it holds.
  */
 
-import { AdminBackfillError, AuthError, SubstrateClient } from '@mnmal-ai/substrate/client';
+import {
+  AdminBackfillError,
+  AuthError,
+  type FetchLike,
+  SubstrateClient
+} from '@mnmal-ai/substrate/client';
 
 export type AdminState =
   | { readonly kind: 'locked'; readonly reason: string | null }
@@ -39,7 +44,7 @@ export class AdminLockedError extends Error {
 export interface AdminSessionOpts {
   readonly endpoint: string;
   readonly idleMs: number;
-  readonly fetch?: typeof fetch;
+  readonly fetch?: FetchLike;
   readonly now?: () => number;
   /** Tests count constructions and closes through this. */
   readonly makeClient?: (getToken: () => string) => SubstrateClient;

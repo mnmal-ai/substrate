@@ -8,6 +8,7 @@
  */
 
 import { setTimeout as sleep } from 'node:timers/promises';
+import { substrateFetch } from '@mnmal-ai/substrate-client';
 import {
   DEFAULT_NAMESPACE,
   kernelMigrationTracking,
@@ -188,7 +189,8 @@ export function buildBridgeRegistry(
     const client = new HttpBridgeClient({
       name: spec.name,
       baseUrl: spec.url,
-      auth
+      auth,
+      fetch: substrateFetch
     });
     clients.push(client);
     registry.register(spec.ns, client);

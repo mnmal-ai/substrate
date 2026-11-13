@@ -8,6 +8,7 @@
  * so an operator who has fixed the data can finish its promotion.
  */
 
+import { type FetchLike, substrateFetch } from '@mnmal-ai/substrate-client';
 import type { PromotionEvent } from '@mnmal-ai/substrate-types';
 import { trimTrailingSlashes } from '@mnmal-ai/substrate-types';
 import { validateArgv } from '../argv.js';
@@ -25,7 +26,7 @@ export interface PromoteFieldsResult {
 export async function promoteFieldsCommand(
   argv: readonly string[],
   env: AdminCliEnv,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: FetchLike = substrateFetch
 ): Promise<PromoteFieldsResult> {
   validateArgv('promote-fields', argv);
   let url: string | undefined;

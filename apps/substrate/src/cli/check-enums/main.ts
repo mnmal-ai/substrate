@@ -12,7 +12,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { tokenAudience } from '@mnmal-ai/substrate-client';
+import { substrateFetch, tokenAudience } from '@mnmal-ai/substrate-client';
 import { trimTrailingSlashes } from '@mnmal-ai/substrate-types';
 
 /**
@@ -227,7 +227,7 @@ export async function runCheckEnums(
     return 2;
   }
 
-  const baseFetch = options.fetchImpl ?? fetch;
+  const baseFetch = options.fetchImpl ?? substrateFetch;
   // A redirect would carry the token to wherever it points.
   const fetchImpl: Fetcher = (url, init) => baseFetch(url, { ...init, redirect: 'error' });
   const pageSize = options.pageSize ?? 500;

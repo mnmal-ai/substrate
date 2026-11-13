@@ -7,6 +7,8 @@
 import type { PackEnvelope, QualifiedFrame, Schema } from '@mnmal-ai/substrate-types';
 import { trimTrailingSlashes } from '@mnmal-ai/substrate-types';
 import { AuthError, NetworkError, type NetworkErrorInfo } from '../errors.js';
+import { substrateFetch } from './default-fetch.js';
+import type { FetchLike } from './h2-fetch.js';
 
 export type { QualifiedFrame };
 
@@ -14,7 +16,7 @@ export interface HttpTransportOpts {
   endpoint: string;
   token?: string;
   getToken?: () => string | undefined | Promise<string | undefined>;
-  fetch?: typeof fetch;
+  fetch?: FetchLike;
 }
 
 export interface HttpCallOpts {
@@ -25,7 +27,7 @@ export interface HttpCallOpts {
 
 export class HttpTransport {
   readonly #endpoint: string;
-  readonly #fetch: typeof fetch;
+  readonly #fetch: FetchLike;
   readonly #token: string | undefined;
   readonly #getToken: (() => string | undefined | Promise<string | undefined>) | undefined;
 
@@ -34,7 +36,7 @@ export class HttpTransport {
       throw new Error('HttpTransport: provide `token` OR `getToken`, not both');
     }
     this.#endpoint = trimTrailingSlashes(opts.endpoint);
-    this.#fetch = (opts.fetch ?? globalThis.fetch).bind(globalThis);
+    this.#fetch = (opts.fetch ?? substrateFetch).bind(globalThis);
     this.#token = opts.token;
     this.#getToken = opts.getToken;
   }

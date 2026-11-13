@@ -8,12 +8,14 @@ import {
   CURRENT_MARK,
   currentStep,
   type DiagnoseResult,
+  type FetchLike,
   type OnboardAction,
   type OnboardStep,
   planOnboarding,
   requiredOutstanding,
   SKIPPABLE_STEPS,
-  STEP_MARKS
+  STEP_MARKS,
+  substrateFetch
 } from '@mnmal-ai/substrate-client';
 import { grantEntryError } from '@mnmal-ai/substrate-compose';
 import { validateArgv } from '../argv.js';
@@ -299,7 +301,7 @@ function registerArgs(kid: string, pubkeyPath: string, over: Partial<RegisterArg
 export function realOnboardActions(
   env: AdminCliEnv,
   baseUrl: string,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: FetchLike = substrateFetch
 ): OnboardActions {
   const cap =
     env.SUBSTRATE_ADMIN_CAPABILITY !== undefined && env.SUBSTRATE_ADMIN_CAPABILITY.length > 0
@@ -348,7 +350,7 @@ export async function onboardCommand(
   env: AdminCliEnv,
   io: OnboardIO,
   interactive: boolean,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: FetchLike = substrateFetch
 ): Promise<number> {
   validateArgv('onboard', argv);
   let url: string | undefined;
