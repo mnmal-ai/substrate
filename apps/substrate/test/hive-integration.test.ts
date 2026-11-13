@@ -752,6 +752,8 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — discovery allowlist', () =>
     // fired (e.g. for validation/logging before the credential check) —
     // spy on the real global fetch so a stray outbound call fails the test
     // even if it isn't the one that would have built the bridge.
+    // The client's own watch request must not count, so it gets the real fetch, captured first.
+    const realFetch = globalThis.fetch;
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
 
     let resolveConnected: () => void;
@@ -764,7 +766,7 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — discovery allowlist', () =>
     });
 
     clientHandle = startSentinelClient({
-      sentinelUrl: `ws://127.0.0.1:${s.port}/substrate/v1/plugins/substrate-sentinel/ws`,
+      sentinelUrl: `http://127.0.0.1:${s.port}`,
       bridges: aBridges,
       engine: a.composed.engine,
       creds: { get: () => undefined },
@@ -774,9 +776,9 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — discovery allowlist', () =>
       },
       reconnectBaseMs: 10,
       reconnectMaxMs: 100,
-      // S requires an authenticated caller for `watch`; `wsFactory` is the
-      // only way to attach credentials to the client's topology connection.
-      wsFactory: (url: string) => new WebSocket(url, { headers: authHeaders() })
+      // S requires an authenticated caller for `watch`.
+      auth: () => authHeaders().authorization as string,
+      fetch: (url, init) => realFetch(url, init)
     });
     await connected;
 

@@ -1,11 +1,13 @@
 import { generateKeyPairSync } from 'node:crypto';
-import { EventEmitter } from 'node:events';
 import { mkdtempSync, writeFileSync } from 'node:fs';
+import * as http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { FetchLike } from '@mnmal-ai/substrate-client';
 import { type AuthConfig, compose, signHs256 } from '@mnmal-ai/substrate-compose';
 import { MemoryBridgeRegistry } from '@mnmal-ai/substrate-core';
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
+import { encodeStreamFrame, FRAMES_JSON_MIME } from '@mnmal-ai/substrate-pack';
 import { defineNamespace, field } from '@mnmal-ai/substrate-sdk';
 import { createSentinelPlugin } from '@mnmal-ai/substrate-sentinel';
 import { FastifySubstrateServer } from '@mnmal-ai/substrate-server-fastify';
@@ -16,7 +18,6 @@ import type {
   NamespaceDefinition
 } from '@mnmal-ai/substrate-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import WebSocket, { WebSocketServer } from 'ws';
 import { startSentinelClient, type WritableBridgeRegistry } from '../src/client.js';
 
 function writeKey(): string {
@@ -34,7 +35,7 @@ const KEY_PATH = writeKey();
  * composed with no `auth` refuses both. Every test below that expects a real
  * register/watch round-trip must compose `auth` + `streamTicketSecret` in and
  * present a bearer on both the raw register socket and the sentinel-client's
- * own `wsFactory`-driven watch connection.
+ * own watch request, through the `fetch` seam.
  */
 const HS_SECRET = 'sentinel-client-test-secret';
 const HS_KID = 'sentinel-client-test';
@@ -148,20 +149,15 @@ describe('startSentinelClient — online handler', () => {
   let s: Instance | null = null;
   let b: Instance | null = null;
   let clientStop: (() => Promise<void>) | null = null;
-  let bRegisterSocket: WebSocket | null = null;
+  let bRegistration: { close(): Promise<void> } | null = null;
 
   afterEach(async () => {
     if (clientStop !== null) await clientStop();
-    if (bRegisterSocket !== null && bRegisterSocket.readyState !== WebSocket.CLOSED) {
-      await new Promise<void>((resolve) => {
-        bRegisterSocket?.once('close', () => resolve());
-        bRegisterSocket?.close();
-      });
-    }
+    if (bRegistration !== null) await bRegistration.close();
     if (b !== null) await b.stop();
     if (s !== null) await s.stop();
     clientStop = null;
-    bRegisterSocket = null;
+    bRegistration = null;
     b = null;
     s = null;
   });
@@ -188,35 +184,22 @@ describe('startSentinelClient — online handler', () => {
     const engine = makeSpyEngine();
 
     const handle = startSentinelClient({
-      sentinelUrl: `ws://127.0.0.1:${s.port}/substrate/v1/plugins/substrate-sentinel/ws`,
+      sentinelUrl: `http://127.0.0.1:${s.port}`,
       bridges,
       engine,
       creds: allowB(`http://127.0.0.1:${b.port}`),
       reconnectBaseMs: 10,
       reconnectMaxMs: 100,
-      wsFactory: (url: string) => new WebSocket(url, { headers: authHeaders() })
+      auth: () => `Bearer ${bearer()}`
     });
     clientStop = handle.stop;
     await waitUntil(() => handle.isConnected());
 
-    bRegisterSocket = new WebSocket(
-      `ws://127.0.0.1:${s.port}/substrate/v1/plugins/substrate-sentinel/ws`,
-      {
-        headers: authHeaders()
-      }
-    );
-    await new Promise<void>((resolve, reject) => {
-      bRegisterSocket?.once('open', () => resolve());
-      bRegisterSocket?.once('error', reject);
+    bRegistration = await registerWith(s.port, {
+      name: 'B',
+      url: `http://127.0.0.1:${b.port}`,
+      namespaces: ['demo']
     });
-    bRegisterSocket.send(
-      JSON.stringify({
-        type: 'register',
-        name: 'B',
-        url: `http://127.0.0.1:${b.port}`,
-        namespaces: ['demo']
-      })
-    );
 
     await waitUntil(() => bridges.has('demo'));
     expect(bridges.has('demo')).toBe(true);
@@ -229,20 +212,15 @@ describe('startSentinelClient — offline + stop', () => {
   let s: Instance | null = null;
   let b: Instance | null = null;
   let clientStop: (() => Promise<void>) | null = null;
-  let bRegisterSocket: WebSocket | null = null;
+  let bRegistration: { close(): Promise<void> } | null = null;
 
   afterEach(async () => {
     if (clientStop !== null) await clientStop();
-    if (bRegisterSocket !== null && bRegisterSocket.readyState !== WebSocket.CLOSED) {
-      await new Promise<void>((resolve) => {
-        bRegisterSocket?.once('close', () => resolve());
-        bRegisterSocket?.close();
-      });
-    }
+    if (bRegistration !== null) await bRegistration.close();
     if (b !== null) await b.stop();
     if (s !== null) await s.stop();
     clientStop = null;
-    bRegisterSocket = null;
+    bRegistration = null;
     b = null;
     s = null;
   });
@@ -269,44 +247,28 @@ describe('startSentinelClient — offline + stop', () => {
     const engine = makeSpyEngine();
 
     const handle = startSentinelClient({
-      sentinelUrl: `ws://127.0.0.1:${s.port}/substrate/v1/plugins/substrate-sentinel/ws`,
+      sentinelUrl: `http://127.0.0.1:${s.port}`,
       bridges,
       engine,
       creds: allowB(`http://127.0.0.1:${b.port}`),
       reconnectBaseMs: 10,
       reconnectMaxMs: 100,
-      wsFactory: (url: string) => new WebSocket(url, { headers: authHeaders() })
+      auth: () => `Bearer ${bearer()}`
     });
     clientStop = handle.stop;
     await waitUntil(() => handle.isConnected());
 
-    bRegisterSocket = new WebSocket(
-      `ws://127.0.0.1:${s.port}/substrate/v1/plugins/substrate-sentinel/ws`,
-      {
-        headers: authHeaders()
-      }
-    );
-    await new Promise<void>((resolve, reject) => {
-      bRegisterSocket?.once('open', () => resolve());
-      bRegisterSocket?.once('error', reject);
+    bRegistration = await registerWith(s.port, {
+      name: 'B',
+      url: `http://127.0.0.1:${b.port}`,
+      namespaces: ['demo']
     });
-    bRegisterSocket.send(
-      JSON.stringify({
-        type: 'register',
-        name: 'B',
-        url: `http://127.0.0.1:${b.port}`,
-        namespaces: ['demo']
-      })
-    );
 
     await waitUntil(() => bridges.has('demo'));
     expect(bridges.has('demo')).toBe(true);
 
-    await new Promise<void>((resolve) => {
-      bRegisterSocket?.once('close', () => resolve());
-      bRegisterSocket?.close();
-    });
-    bRegisterSocket = null;
+    await bRegistration?.close();
+    bRegistration = null;
 
     await waitUntil(() => !bridges.has('demo'));
     expect(bridges.has('demo')).toBe(false);
@@ -334,35 +296,22 @@ describe('startSentinelClient — offline + stop', () => {
     const engine = makeSpyEngine();
 
     const handle = startSentinelClient({
-      sentinelUrl: `ws://127.0.0.1:${s.port}/substrate/v1/plugins/substrate-sentinel/ws`,
+      sentinelUrl: `http://127.0.0.1:${s.port}`,
       bridges,
       engine,
       creds: allowB(`http://127.0.0.1:${b.port}`),
       reconnectBaseMs: 10,
       reconnectMaxMs: 100,
-      wsFactory: (url: string) => new WebSocket(url, { headers: authHeaders() })
+      auth: () => `Bearer ${bearer()}`
     });
     clientStop = null; // Call stop manually inside this test.
     await waitUntil(() => handle.isConnected());
 
-    bRegisterSocket = new WebSocket(
-      `ws://127.0.0.1:${s.port}/substrate/v1/plugins/substrate-sentinel/ws`,
-      {
-        headers: authHeaders()
-      }
-    );
-    await new Promise<void>((resolve, reject) => {
-      bRegisterSocket?.once('open', () => resolve());
-      bRegisterSocket?.once('error', reject);
+    bRegistration = await registerWith(s.port, {
+      name: 'B',
+      url: `http://127.0.0.1:${b.port}`,
+      namespaces: ['demo']
     });
-    bRegisterSocket.send(
-      JSON.stringify({
-        type: 'register',
-        name: 'B',
-        url: `http://127.0.0.1:${b.port}`,
-        namespaces: ['demo']
-      })
-    );
     await waitUntil(() => bridges.has('demo'));
 
     await handle.stop();
@@ -378,21 +327,16 @@ describe('startSentinelClient — end-to-end through compose', () => {
   let b: Instance | null = null;
   let a: Instance | null = null;
   let clientStop: (() => Promise<void>) | null = null;
-  let bRegisterSocket: WebSocket | null = null;
+  let bRegistration: { close(): Promise<void> } | null = null;
 
   afterEach(async () => {
     if (clientStop !== null) await clientStop();
-    if (bRegisterSocket !== null && bRegisterSocket.readyState !== WebSocket.CLOSED) {
-      await new Promise<void>((resolve) => {
-        bRegisterSocket?.once('close', () => resolve());
-        bRegisterSocket?.close();
-      });
-    }
+    if (bRegistration !== null) await bRegistration.close();
     if (a !== null) await a.stop();
     if (b !== null) await b.stop();
     if (s !== null) await s.stop();
     clientStop = null;
-    bRegisterSocket = null;
+    bRegistration = null;
     a = null;
     b = null;
     s = null;
@@ -451,36 +395,23 @@ describe('startSentinelClient — end-to-end through compose', () => {
 
     // Start the sentinel client pointed at S, mutating A's bridges + A's engine.
     const handle = startSentinelClient({
-      sentinelUrl: `ws://127.0.0.1:${s.port}/substrate/v1/plugins/substrate-sentinel/ws`,
+      sentinelUrl: `http://127.0.0.1:${s.port}`,
       bridges,
       engine: aComposed.engine,
       creds: allowB(`http://127.0.0.1:${b.port}`),
       reconnectBaseMs: 10,
       reconnectMaxMs: 100,
-      wsFactory: (url: string) => new WebSocket(url, { headers: authHeaders() })
+      auth: () => `Bearer ${bearer()}`
     });
     clientStop = handle.stop;
     await waitUntil(() => handle.isConnected());
 
     // B registers itself with S — triggers online broadcast → A learns about B.
-    bRegisterSocket = new WebSocket(
-      `ws://127.0.0.1:${s.port}/substrate/v1/plugins/substrate-sentinel/ws`,
-      {
-        headers: authHeaders()
-      }
-    );
-    await new Promise<void>((resolve, reject) => {
-      bRegisterSocket?.once('open', () => resolve());
-      bRegisterSocket?.once('error', reject);
+    bRegistration = await registerWith(s.port, {
+      name: 'B',
+      url: `http://127.0.0.1:${b.port}`,
+      namespaces: ['demo']
     });
-    bRegisterSocket.send(
-      JSON.stringify({
-        type: 'register',
-        name: 'B',
-        url: `http://127.0.0.1:${b.port}`,
-        namespaces: ['demo']
-      })
-    );
 
     await waitUntil(() => bridges.has('demo'));
 
@@ -534,7 +465,7 @@ describe('startSentinelClient — reconnect', () => {
     const engine = makeSpyEngine();
 
     const handle = startSentinelClient({
-      sentinelUrl: `ws://127.0.0.1:${s.port}/substrate/v1/plugins/substrate-sentinel/ws`,
+      sentinelUrl: `http://127.0.0.1:${s.port}`,
       bridges,
       engine,
       // No B in this test — nothing ever comes online, so the origin the
@@ -578,58 +509,80 @@ function makeMockBridges(registered: Array<string>): WritableBridgeRegistry {
 }
 
 /**
- * Minimal fake WebSocket for driving `handleOnline` directly with adversarial
+ * A fake sentinel feed for driving `handleOnline` directly with adversarial
  * frames (e.g. a coordinator name that never went through real sentinel
- * registration) that the real WS route would reject upstream before they
- * ever reached a watcher. `wsFactory` is the client's designated test seam
- * for exactly this.
+ * registration) that the real route would reject upstream before they ever
+ * reached a watcher. `fetch` is the client's designated test seam for exactly
+ * this: the watch request gets a frame stream the test writes into.
  */
-class FakeSentinelSocket extends EventEmitter {
-  readyState: number = WebSocket.OPEN;
+let activeFeed: ReadableStreamDefaultController<Uint8Array> | null = null;
 
-  send(_payload: string): void {
-    // No-op — these tests don't inspect outbound sentinel frames (watch/pong).
-  }
-
-  close(): void {
-    if (this.readyState === WebSocket.CLOSED) return;
-    this.readyState = WebSocket.CLOSED;
-    this.emit('close');
-  }
-}
-
-let activeFakeSocket: FakeSentinelSocket | null = null;
-
-/** `wsFactory` test seam — captures the created socket for `emitOnline` to drive. */
-function makeFakeSocket(): (url: string) => WebSocket {
-  return (_url: string): WebSocket => {
-    const socket = new FakeSentinelSocket();
-    activeFakeSocket = socket;
-    return socket as unknown as WebSocket;
+function makeFakeFeed(): FetchLike {
+  return async (_url, init) => {
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        activeFeed = c;
+      }
+    });
+    init?.signal?.addEventListener('abort', () => {
+      try {
+        activeFeed?.error(new DOMException('aborted', 'AbortError'));
+      } catch {
+        // Already closed.
+      }
+    });
+    return new Response(body, { headers: { 'content-type': FRAMES_JSON_MIME } });
   };
 }
 
-/**
- * Simulates the sentinel broadcasting an `online` event, then drains the
- * microtask queue via `setImmediate` so `handleOnline`'s awaited chain
- * (credential lookup, registration, `refreshBridgeSchemas()`) fully settles
- * before assertions run — Node drains all pending microtasks, however deeply
- * chained, before any macrotask (timer/immediate) callback fires.
- */
-async function emitOnline(payload: Record<string, unknown>): Promise<void> {
-  if (activeFakeSocket === null) {
-    throw new Error('emitOnline called before startSentinelClient created a socket');
+/** Drains enough turns for the client to read the frame and settle what it triggers. */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 10; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+/** Writes one frame into the fake feed, then lets the client act on it. */
+async function emitFrame(payload: Record<string, unknown>): Promise<void> {
+  if (activeFeed === null) {
+    throw new Error('emitFrame called before startSentinelClient made its watch request');
   }
-  activeFakeSocket.emit(
-    'message',
-    Buffer.from(JSON.stringify({ event: 'online', ...payload }), 'utf8')
+  activeFeed.enqueue(encodeStreamFrame(payload, 'json'));
+  await settle();
+}
+
+/** Simulates the sentinel broadcasting an `online` event. */
+async function emitOnline(payload: Record<string, unknown>): Promise<void> {
+  await emitFrame({ event: 'online', ...payload });
+}
+
+/** Registers a coordinator with a real sentinel; `close()` ends the registration's stream. */
+async function registerWith(
+  sentinelPort: number,
+  body: Record<string, unknown>
+): Promise<{ close(): Promise<void> }> {
+  const ctrl = new AbortController();
+  const res = await fetch(
+    `http://127.0.0.1:${sentinelPort}/substrate/v1/plugins/substrate-sentinel/register`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(body),
+      signal: ctrl.signal
+    }
   );
-  await new Promise<void>((resolve) => setImmediate(resolve));
+  if (res.status !== 200 || res.body === null) throw new Error(`register answered ${res.status}`);
+  const reader = res.body.getReader();
+  await reader.read(); // the register reply
+  return {
+    close: async () => {
+      await reader.cancel().catch(() => {});
+      ctrl.abort();
+    }
+  };
 }
 
 describe('discovery allowlist', () => {
   afterEach(() => {
-    activeFakeSocket = null;
+    activeFeed = null;
   });
 
   it('ignores an online frame for an unprovisioned coordinator and issues no request', async () => {
@@ -643,7 +596,7 @@ describe('discovery allowlist', () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
     try {
       const handle = startSentinelClient({
-        sentinelUrl: 'ws://sentinel.test',
+        sentinelUrl: 'http://sentinel.test',
         bridges: makeMockBridges(registered),
         engine: {
           refreshBridgeSchemas: async () => {
@@ -652,7 +605,7 @@ describe('discovery allowlist', () => {
           registryFor: () => undefined
         },
         creds: { get: () => undefined },
-        wsFactory: makeFakeSocket()
+        fetch: makeFakeFeed()
       });
 
       await emitOnline({ name: 'evil', url: 'https://evil.test', namespaces: ['cortext'] });
@@ -669,19 +622,14 @@ describe('discovery allowlist', () => {
   it('drops a bridge on offline when the coordinator advertised a trailing-slash url', async () => {
     const unregistered: Array<string> = [];
     const handle = startSentinelClient({
-      sentinelUrl: 'ws://sentinel.test',
+      sentinelUrl: 'http://sentinel.test',
       bridges: { ...makeMockBridges([]), unregister: (ns: string) => unregistered.push(ns) },
       engine: { refreshBridgeSchemas: async () => {}, registryFor: () => undefined },
       creds: { get: () => ({ keyPath: KEY_PATH, kid: 'k@h', origin: 'https://a.test' }) },
-      wsFactory: makeFakeSocket()
+      fetch: makeFakeFeed()
     });
     await emitOnline({ name: 'peripheral-a', url: 'https://a.test/', namespaces: ['alpha'] });
-    activeFakeSocket?.emit(
-      'message',
-      Buffer.from(
-        JSON.stringify({ event: 'offline', name: 'peripheral-a', url: 'https://a.test/' })
-      )
-    );
+    await emitFrame({ event: 'offline', name: 'peripheral-a', url: 'https://a.test/' });
     expect(unregistered).toEqual(['alpha']);
     await handle.stop();
   });
@@ -689,17 +637,14 @@ describe('discovery allowlist', () => {
   it('keeps a bridge when an offline names a different coordinator at the same url', async () => {
     const unregistered: Array<string> = [];
     const handle = startSentinelClient({
-      sentinelUrl: 'ws://sentinel.test',
+      sentinelUrl: 'http://sentinel.test',
       bridges: { ...makeMockBridges([]), unregister: (ns: string) => unregistered.push(ns) },
       engine: { refreshBridgeSchemas: async () => {}, registryFor: () => undefined },
       creds: { get: () => ({ keyPath: KEY_PATH, kid: 'k@h', origin: 'https://a.test' }) },
-      wsFactory: makeFakeSocket()
+      fetch: makeFakeFeed()
     });
     await emitOnline({ name: 'peripheral-a', url: 'https://a.test', namespaces: ['alpha'] });
-    activeFakeSocket?.emit(
-      'message',
-      Buffer.from(JSON.stringify({ event: 'offline', name: 'impostor', url: 'https://a.test' }))
-    );
+    await emitFrame({ event: 'offline', name: 'impostor', url: 'https://a.test' });
     expect(unregistered).toEqual([]);
     await handle.stop();
   });
@@ -707,7 +652,7 @@ describe('discovery allowlist', () => {
   it('registers every advertised namespace for a provisioned coordinator', async () => {
     const registered: Array<string> = [];
     const handle = startSentinelClient({
-      sentinelUrl: 'ws://sentinel.test',
+      sentinelUrl: 'http://sentinel.test',
       bridges: makeMockBridges(registered),
       engine: { refreshBridgeSchemas: async () => {}, registryFor: () => undefined },
       creds: {
@@ -716,7 +661,7 @@ describe('discovery allowlist', () => {
             ? { keyPath: KEY_PATH, kid: 'k@h', origin: 'https://a.test' }
             : undefined
       },
-      wsFactory: makeFakeSocket()
+      fetch: makeFakeFeed()
     });
 
     await emitOnline({
@@ -732,14 +677,14 @@ describe('discovery allowlist', () => {
   it('does not bridge a namespace this server hosts', async () => {
     const registered: Array<string> = [];
     const handle = startSentinelClient({
-      sentinelUrl: 'ws://sentinel.test',
+      sentinelUrl: 'http://sentinel.test',
       bridges: makeMockBridges(registered),
       engine: {
         refreshBridgeSchemas: async () => {},
         registryFor: (ns: string) => (ns === 'local' ? {} : undefined)
       },
       creds: { get: () => ({ keyPath: KEY_PATH, kid: 'k@h', origin: 'https://a.test' }) },
-      wsFactory: makeFakeSocket()
+      fetch: makeFakeFeed()
     });
 
     await emitOnline({
@@ -755,11 +700,11 @@ describe('discovery allowlist', () => {
   it('rejects an online frame with no name', async () => {
     const registered: Array<string> = [];
     const handle = startSentinelClient({
-      sentinelUrl: 'ws://sentinel.test',
+      sentinelUrl: 'http://sentinel.test',
       bridges: makeMockBridges(registered),
       engine: { refreshBridgeSchemas: async () => {}, registryFor: () => undefined },
       creds: { get: () => ({ keyPath: KEY_PATH, kid: 'k@h', origin: 'https://a.test' }) },
-      wsFactory: makeFakeSocket()
+      fetch: makeFakeFeed()
     });
 
     await emitOnline({ url: 'https://a.test', namespaces: ['alpha'] });
@@ -777,7 +722,7 @@ describe('discovery allowlist', () => {
  */
 describe('discovery origin binding', () => {
   afterEach(() => {
-    activeFakeSocket = null;
+    activeFeed = null;
   });
 
   it('rejects a provisioned coordinator advertising a foreign origin, and issues no request', async () => {
@@ -790,7 +735,7 @@ describe('discovery origin binding', () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
     try {
       const handle = startSentinelClient({
-        sentinelUrl: 'ws://sentinel.test',
+        sentinelUrl: 'http://sentinel.test',
         bridges: makeMockBridges(registered),
         engine: {
           refreshBridgeSchemas: async () => {
@@ -807,7 +752,7 @@ describe('discovery origin binding', () => {
         metric: (name, payload) => {
           metrics.push({ name, payload });
         },
-        wsFactory: makeFakeSocket()
+        fetch: makeFakeFeed()
       });
 
       await emitOnline({
@@ -833,14 +778,14 @@ describe('discovery origin binding', () => {
     const registered: Array<string> = [];
     const metrics: Array<string> = [];
     const handle = startSentinelClient({
-      sentinelUrl: 'ws://sentinel.test',
+      sentinelUrl: 'http://sentinel.test',
       bridges: makeMockBridges(registered),
       engine: { refreshBridgeSchemas: async () => {}, registryFor: () => undefined },
       creds: { get: () => ({ keyPath: KEY_PATH, kid: 'k@h', origin: 'https://a.test' }) },
       metric: (name) => {
         metrics.push(name);
       },
-      wsFactory: makeFakeSocket()
+      fetch: makeFakeFeed()
     });
 
     await emitOnline({ name: 'peripheral-a', url: 'not-a-url', namespaces: ['alpha'] });
@@ -853,11 +798,11 @@ describe('discovery origin binding', () => {
   it('accepts a matching origin, ignoring path and default-port differences', async () => {
     const registered: Array<string> = [];
     const handle = startSentinelClient({
-      sentinelUrl: 'ws://sentinel.test',
+      sentinelUrl: 'http://sentinel.test',
       bridges: makeMockBridges(registered),
       engine: { refreshBridgeSchemas: async () => {}, registryFor: () => undefined },
       creds: { get: () => ({ keyPath: KEY_PATH, kid: 'k@h', origin: 'https://a.test' }) },
-      wsFactory: makeFakeSocket()
+      fetch: makeFakeFeed()
     });
 
     await emitOnline({ name: 'peripheral-a', url: 'https://a.test:443/', namespaces: ['alpha'] });
@@ -879,11 +824,11 @@ describe('discovery origin binding', () => {
       unregister: () => {}
     };
     const handle = startSentinelClient({
-      sentinelUrl: 'ws://sentinel.test',
+      sentinelUrl: 'http://sentinel.test',
       bridges,
       engine: { refreshBridgeSchemas: async () => {}, registryFor: () => undefined },
       creds: { get: () => ({ keyPath: KEY_PATH, kid: 'k@h', origin: 'https://a.test' }) },
-      wsFactory: makeFakeSocket()
+      fetch: makeFakeFeed()
     });
 
     await emitOnline({ name: 'peripheral-a', url: 'https://a.test', namespaces: ['alpha'] });
@@ -913,11 +858,11 @@ describe('discovery origin binding', () => {
     });
     try {
       const handle = startSentinelClient({
-        sentinelUrl: 'ws://sentinel.test',
+        sentinelUrl: 'http://sentinel.test',
         bridges,
         engine: { refreshBridgeSchemas: async () => {}, registryFor: () => undefined },
         creds: { get: () => ({ keyPath: KEY_PATH, kid: 'k@h', origin: 'https://a.test' }) },
-        wsFactory: makeFakeSocket()
+        fetch: makeFakeFeed()
       });
       await emitOnline({ name: 'peripheral-a', url: 'https://a.test', namespaces: ['alpha'] });
       await clients[0]?.federatedSchema().catch(() => {});
@@ -931,84 +876,135 @@ describe('discovery origin binding', () => {
   });
 });
 
-describe('sentinel error frames', () => {
-  afterEach(() => {
-    activeFakeSocket = null;
-  });
-
-  // Sentinel replies `{error:'unauthorized'}` and, under attribute-mode auth,
-  // leaves the socket open. Without surfacing it the client reports
-  // isConnected() === true and believes it is watching topology forever.
-  it('surfaces an error frame as a metric rather than swallowing it', async () => {
+describe('sentinel refusals', () => {
+  // An auth-enabled sentinel answers an unsigned or under-granted watch with
+  // 401 or 403. The metric is the only signal that topology is not being watched.
+  it('surfaces a refused watch as a metric and retries', async () => {
     const metrics: Array<{ name: string; payload?: unknown }> = [];
+    let calls = 0;
     const handle = startSentinelClient({
-      sentinelUrl: 'ws://sentinel.test',
+      sentinelUrl: 'http://sentinel.test',
       bridges: makeMockBridges([]),
       engine: { refreshBridgeSchemas: async () => {}, registryFor: () => undefined },
       creds: { get: () => undefined },
       metric: (name, payload) => {
         metrics.push({ name, payload });
       },
-      wsFactory: makeFakeSocket()
+      reconnectBaseMs: 5,
+      fetch: async () => {
+        calls++;
+        return new Response('{"error":"unauthorized"}', {
+          status: 401,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
     });
-
-    if (activeFakeSocket === null) throw new Error('no socket');
-    activeFakeSocket.emit(
-      'message',
-      Buffer.from(JSON.stringify({ error: 'unauthorized' }), 'utf8')
-    );
-    await new Promise<void>((resolve) => setImmediate(resolve));
-
+    await waitUntil(() => calls >= 2);
+    expect(handle.isConnected()).toBe(false);
     expect(metrics).toContainEqual({
       name: 'sentinel_client_error',
-      payload: { error: 'unauthorized' }
+      payload: { status: 401, error: 'watch answered 401 application/json' }
     });
     await handle.stop();
   });
 });
 
+describe('startSentinelClient — backoff', () => {
+  it('reconnects with doubling backoff while the watch stream keeps dropping', async () => {
+    const at: number[] = [];
+    const handle = startSentinelClient({
+      sentinelUrl: 'http://sentinel.test',
+      bridges: makeMockBridges([]),
+      engine: { refreshBridgeSchemas: async () => {}, registryFor: () => undefined },
+      creds: { get: () => undefined },
+      reconnectBaseMs: 10,
+      reconnectMaxMs: 1000,
+      fetch: async () => {
+        at.push(Date.now());
+        // Opens, then drops at once: a stream that never lasted proves nothing.
+        return new Response(new ReadableStream({ start: (c) => c.close() }), {
+          headers: { 'content-type': FRAMES_JSON_MIME }
+        });
+      }
+    });
+    await waitUntil(() => at.length >= 5);
+    await handle.stop();
+    const gaps = at.slice(1, 5).map((t, i) => t - (at[i] as number));
+    // 10, 20, 40, 80 ms; a reset on every connect would keep each near 10.
+    expect(gaps[3]).toBeGreaterThanOrEqual(70);
+  });
+});
+
+describe('startSentinelClient — backoff reset', () => {
+  it('a stream that lasted reconnectMaxMs resets the delay to the base', async () => {
+    const at: number[] = [];
+    const handle = startSentinelClient({
+      sentinelUrl: 'http://sentinel.test',
+      bridges: makeMockBridges([]),
+      engine: { refreshBridgeSchemas: async () => {}, registryFor: () => undefined },
+      creds: { get: () => undefined },
+      reconnectBaseMs: 10,
+      reconnectMaxMs: 100,
+      fetch: async () => {
+        at.push(Date.now());
+        // Three quick drops grow the delay; the fourth stream lasts past reconnectMaxMs.
+        const lasts = at.length === 4 ? 150 : 0;
+        return new Response(
+          new ReadableStream({
+            start: (c) => {
+              setTimeout(() => c.close(), lasts);
+            }
+          }),
+          { headers: { 'content-type': FRAMES_JSON_MIME } }
+        );
+      }
+    });
+    await waitUntil(() => at.length >= 5);
+    await handle.stop();
+    const before = (at[3] as number) - (at[2] as number);
+    const after = (at[4] as number) - (at[3] as number) - 150;
+    expect(before).toBeGreaterThanOrEqual(35); // 10, 20, then 40
+    expect(after).toBeLessThan(30); // back to the 10 ms base
+  });
+});
+
 describe('sentinel-client authenticates its own connection', () => {
   /**
-   * Exercises the DEFAULT wsFactory deliberately — no `wsFactory` is passed.
-   * Injecting one would test the seam rather than the shipped path.
+   * Exercises the DEFAULT fetch deliberately — no `fetch` is passed. Injecting
+   * one would test the seam rather than the shipped path.
    */
-  async function captureUpgradeHeader(
-    auth: (() => string) | undefined
-  ): Promise<string | undefined> {
-    const server = new WebSocketServer({ port: 0 });
-    await new Promise<void>((resolve) => server.once('listening', () => resolve()));
+  async function captureWatchHeader(auth: (() => string) | undefined): Promise<string | undefined> {
+    let resolveSeen: (h: string | undefined) => void = () => {};
+    const seen = new Promise<string | undefined>((resolve) => {
+      resolveSeen = resolve;
+    });
+    const server = http.createServer((req, res) => {
+      resolveSeen(req.headers.authorization);
+      res.writeHead(200, { 'content-type': FRAMES_JSON_MIME });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const port = (server.address() as { port: number }).port;
 
-    const seen = new Promise<string | undefined>((resolve) => {
-      server.once('connection', (_sock, req) => resolve(req.headers.authorization));
-    });
-
     const handle = startSentinelClient({
-      sentinelUrl: `ws://127.0.0.1:${port}/substrate/v1/plugins/substrate-sentinel/ws`,
-      bridges: {
-        has: () => false,
-        get: () => undefined,
-        isUnreachable: () => false,
-        entries: () => [],
-        register: () => {},
-        unregister: () => {}
-      },
+      sentinelUrl: `http://127.0.0.1:${port}`,
+      bridges: makeMockBridges([]),
       engine: { refreshBridgeSchemas: async () => {}, registryFor: () => undefined },
       creds: { get: () => undefined },
       ...(auth === undefined ? {} : { auth })
     });
 
     const header = await seen;
-    handle.stop();
+    await handle.stop();
+    server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     return header;
   }
 
-  it('sends Authorization on the WS upgrade when auth is configured', async () => {
-    expect(await captureUpgradeHeader(() => 'Bearer TOKEN-650')).toBe('Bearer TOKEN-650');
+  it('sends Authorization on the watch request when auth is configured', async () => {
+    expect(await captureWatchHeader(() => 'Bearer TOKEN-650')).toBe('Bearer TOKEN-650');
   }, 15_000);
 
   it('sends no Authorization when auth is not configured', async () => {
-    expect(await captureUpgradeHeader(undefined)).toBeUndefined();
+    expect(await captureWatchHeader(undefined)).toBeUndefined();
   }, 15_000);
 });

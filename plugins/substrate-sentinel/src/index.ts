@@ -23,6 +23,7 @@ import type { SentinelPluginConfig } from './config.js';
 import { createLivenessRegistry, runLivenessTick } from './liveness.js';
 import { buildSentinelNamespace } from './namespace.js';
 import { registerSentinelStatusRoute } from './status-route.js';
+import { registerSentinelStreamRoutes } from './stream-routes.js';
 import { registerSentinelWsRoute } from './ws-route.js';
 
 export type { SentinelPluginConfig } from './config.js';
@@ -32,14 +33,17 @@ export {
   type LivenessRegistry,
   type LivenessRegistryOptions,
   type LivenessTickResult,
+  type PeerConnection,
   runLivenessTick
 } from './liveness.js';
 export { buildSentinelNamespace, SENTINEL_TYPE_NAMES } from './namespace.js';
 export { type CoordinatorRecord, registerSentinelStatusRoute } from './status-route.js';
+export { framePeer, registerSentinelStreamRoutes } from './stream-routes.js';
 export { registerSentinelWsRoute } from './ws-route.js';
 
 export function createSentinelPlugin(cfg: SentinelPluginConfig): CoordinatorPlugin {
   const registry = createLivenessRegistry({ staleThresholdMs: cfg.staleThresholdMs });
+  let endStreams = async (): Promise<void> => {};
 
   return {
     name: 'substrate-sentinel',
@@ -59,6 +63,8 @@ export function createSentinelPlugin(cfg: SentinelPluginConfig): CoordinatorPlug
     routes: (router, routeCtx): void => {
       registerSentinelStatusRoute(router, routeCtx, cfg.namespace);
       registerSentinelWsRoute(router, routeCtx, cfg.namespace, registry);
-    }
+      endStreams = registerSentinelStreamRoutes(router, routeCtx, cfg.namespace, registry);
+    },
+    onStop: (): Promise<void> => endStreams()
   };
 }

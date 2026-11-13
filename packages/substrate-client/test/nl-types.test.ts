@@ -1,6 +1,7 @@
 // nl is not a dependency (it depends on substrate, which bundles this package), so its
 // completer is read from source: the check is that the client's pack type fits it.
 
+import { encodeStreamFrame, FRAMES_JSON_MIME } from '@mnmal-ai/substrate-pack';
 import { HttpResponse, http } from 'msw';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import { complete } from '../../../plugins/substrate-nl/src/complete/complete.js';
@@ -41,11 +42,12 @@ const CLARIFY: NlOutcome = {
   reason: 'which did you mean?',
   options: [{ label: 'todo (Todo)', question: 'open', type: 'Todo' }]
 };
-const sseBody = [
-  `event: parsed\ndata: ${JSON.stringify({ status: 'clarify', evidence: [], residual: [] })}\n\n`,
-  `event: clarify\ndata: ${JSON.stringify(CLARIFY)}\n\n`,
-  'event: done\ndata: {}\n\n'
-].join('');
+const frame = (event: string, data: unknown) => encodeStreamFrame({ event, data }, 'json');
+const framesBody = Buffer.concat([
+  frame('parsed', { status: 'clarify', evidence: [], residual: [] }),
+  frame('clarify', CLARIFY),
+  frame('done', {})
+]);
 
 describe('client.nl is typed end to end, with no casts', () => {
   it('pack feeds complete(); ask() narrows on event; a clarify option resubmits via askJson', async () => {
@@ -53,8 +55,8 @@ describe('client.nl is typed end to end, with no casts', () => {
     mockHandlers(
       http.get(`${ENDPOINT}/substrate/v1/nl/pack/ns`, () => HttpResponse.json(PACK)),
       http.post(`${ENDPOINT}/substrate/v1/nl`, async ({ request }) => {
-        if ((request.headers.get('accept') ?? '').includes('text/event-stream'))
-          return new HttpResponse(sseBody, { headers: { 'content-type': 'text/event-stream' } });
+        if (request.headers.get('accept') === FRAMES_JSON_MIME)
+          return new HttpResponse(framesBody, { headers: { 'content-type': FRAMES_JSON_MIME } });
         posted.push(await request.json());
         const result: NlAskResult = {
           outcome: { kind: 'refuse', reason: 'x' },
@@ -101,10 +103,9 @@ describe('client.nl is typed end to end, with no casts', () => {
       http.post(
         `${ENDPOINT}/substrate/v1/nl`,
         () =>
-          new HttpResponse(
-            `event: unknown\ndata: ${JSON.stringify(UNKNOWN)}\n\nevent: done\ndata: {}\n\n`,
-            { headers: { 'content-type': 'text/event-stream' } }
-          )
+          new HttpResponse(Buffer.concat([frame('unknown', UNKNOWN), frame('done', {})]), {
+            headers: { 'content-type': FRAMES_JSON_MIME }
+          })
       )
     );
     const c = new SubstrateClient({ endpoint: ENDPOINT });

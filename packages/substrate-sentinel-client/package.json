@@ -27,9 +27,10 @@
   },
   "dependencies": {
     "@mnmal-ai/substrate-bridge-http": "workspace:*",
+    "@mnmal-ai/substrate-client": "workspace:*",
+    "@mnmal-ai/substrate-pack": "workspace:*",
     "@mnmal-ai/substrate-policy": "workspace:*",
-    "@mnmal-ai/substrate-types": "workspace:*",
-    "ws": "catalog:"
+    "@mnmal-ai/substrate-types": "workspace:*"
   },
   "devDependencies": {
     "@mnmal-ai/substrate-compose": "workspace:*",

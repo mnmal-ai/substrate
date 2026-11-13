@@ -1,3 +1,4 @@
+import { decodeStreamFrames, FRAMES_JSON_MIME } from '@mnmal-ai/substrate-pack';
 import type {
   NlAskRequest,
   NlAskResult,
@@ -7,8 +8,8 @@ import type {
   NlWireEvent
 } from '@mnmal-ai/substrate-types';
 import { NetworkError } from './errors.js';
+import { FRAMES_UNSUPPORTED } from './transport/frames.js';
 import type { HttpTransport } from './transport/http.js';
-import { readSse } from './transport/sse.js';
 
 export type { NlAskRequest, NlAskResult, NlOutcome, NlServedPack, NlTrailEvent, NlWireEvent };
 
@@ -25,11 +26,33 @@ export function createNlApi(t: HttpTransport): NlApi {
       const res = await t.raw('/substrate/v1/nl', {
         method: 'POST',
         body: req,
-        accept: 'text/event-stream',
+        accept: FRAMES_JSON_MIME,
         ...(opts.signal !== undefined ? { signal: opts.signal } : {})
       });
-      if (res.body === null) throw new NetworkError('empty SSE body', null);
-      yield* readSse(res.body);
+      const type = res.headers.get('content-type') ?? '';
+      if (!type.startsWith(FRAMES_JSON_MIME) || res.body === null) {
+        await res.body?.cancel();
+        throw new NetworkError(
+          `POST /substrate/v1/nl answered '${type}', not ${FRAMES_JSON_MIME}: the server predates frame streams`,
+          null,
+          { status: res.status, code: FRAMES_UNSUPPORTED }
+        );
+      }
+      const utf8 = new TextDecoder();
+      for await (const payload of decodeStreamFrames(res.body)) {
+        let ev: { event: string; data: unknown };
+        try {
+          ev = JSON.parse(utf8.decode(payload)) as { event: string; data: unknown };
+        } catch (err) {
+          throw new NetworkError('malformed frame in the NL stream', err);
+        }
+        if (ev.event === 'error') {
+          const e = ev.data as { code?: string; message?: string };
+          throw new NetworkError(`${e.code ?? 'error'}: ${e.message ?? ''}`, ev.data);
+        }
+        // An unknown event name is a server newer than this client, passed through.
+        yield ev as NlWireEvent;
+      }
     },
     async askJson(req, opts = {}) {
       const res = await t.raw('/substrate/v1/nl', {

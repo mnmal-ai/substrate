@@ -1,115 +1,25 @@
+import { encodeStreamFrame, FRAMES_JSON_MIME } from '@mnmal-ai/substrate-pack';
 import { HttpResponse, http } from 'msw';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { SubstrateClient } from '../src/client.js';
 import { AuthError, NetworkError } from '../src/errors.js';
-import { readSse } from '../src/transport/sse.js';
 import { mockHandlers } from './_setup.js';
 
 const ENDPOINT = 'http://substrate.test';
-const sse = (s: string) =>
-  new HttpResponse(s, { headers: { 'content-type': 'text/event-stream' } });
-
-function streamOf(parts: string[]): ReadableStream<Uint8Array> {
-  const enc = new TextEncoder();
-  return new ReadableStream<Uint8Array>({
-    start(c) {
-      for (const p of parts) c.enqueue(enc.encode(p));
-      c.close();
-    }
-  });
-}
-
-async function collect(body: ReadableStream<Uint8Array>) {
-  const out = [];
-  for await (const e of readSse(body)) out.push(e);
-  return out;
-}
-
-describe('readSse', () => {
-  it('parses events split across chunk boundaries and skips comments', async () => {
-    const out = await collect(
-      streamOf([': keepalive\n\nevent: par', 'sed\ndata: {"a":1}\n\nevent: done\ndata: {}\n\n'])
-    );
-    expect(out).toEqual([
-      { event: 'parsed', data: { a: 1 } },
-      { event: 'done', data: {} }
-    ]);
-  });
-
-  it('handles CRLF line endings, including a CR/LF pair split across chunks', async () => {
-    const out = await collect(
-      streamOf(['event: parsed\r\ndata: {"a":1}\r\n\r', '\nevent: done\r\ndata: {}\r\n\r\n'])
-    );
-    expect(out).toEqual([
-      { event: 'parsed', data: { a: 1 } },
-      { event: 'done', data: {} }
-    ]);
-  });
-
-  it('flushes a final event with no trailing blank line', async () => {
-    const out = await collect(streamOf(['event: done\ndata: {"ok":true}\n']));
-    expect(out).toEqual([{ event: 'done', data: { ok: true } }]);
-  });
-});
-
-describe('readSse hardening', () => {
-  it('cancels the source body when the consumer breaks early', async () => {
-    const cancel = vi.fn();
-    const enc = new TextEncoder();
-    const body = new ReadableStream<Uint8Array>({
-      pull(c) {
-        c.enqueue(enc.encode('event: a\ndata: {}\n\n'));
-      },
-      cancel
-    });
-    for await (const _ of readSse(body)) break;
-    expect(cancel).toHaveBeenCalled();
-  });
-
-  it('malformed data JSON throws a NetworkError naming the event and quoting the data', async () => {
-    const err = await collect(streamOf(['event: rows\ndata: {not json\n\n'])).catch((e) => e);
-    expect(err).toBeInstanceOf(NetworkError);
-    expect(err.message).toContain('rows');
-    expect(err.message).toContain('{not json');
-    expect(err.cause).toBeInstanceOf(SyntaxError);
-  });
-
-  it('joins multi-line data with newline', async () => {
-    const out = await collect(streamOf(['event: x\ndata: {"a":\ndata: 1}\n\n']));
-    expect(out).toEqual([{ event: 'x', data: { a: 1 } }]);
-  });
-
-  it('accepts data: with no space and strips only one leading space', async () => {
-    expect(await collect(streamOf(['event: x\ndata:{"a":1}\n\n']))).toEqual([
-      { event: 'x', data: { a: 1 } }
-    ]);
-    // two spaces: one is stripped, the other is JSON whitespace; parse still succeeds
-    expect(await collect(streamOf(['event: x\ndata:  {"a":1}\n\n']))).toEqual([
-      { event: 'x', data: { a: 1 } }
-    ]);
-    // a string payload keeps its second space, proving only one was stripped
-    expect(await collect(streamOf(['event: x\ndata:  "s"\n\n']))).toEqual([
-      { event: 'x', data: 's' }
-    ]);
-  });
-
-  it('skips an event with no data', async () => {
-    const out = await collect(streamOf(['event: ping\n\nevent: done\ndata: {}\n\n']));
-    expect(out).toEqual([{ event: 'done', data: {} }]);
-  });
-});
+const frame = (event: string, data: unknown) => encodeStreamFrame({ event, data }, 'json');
+const frames = (...parts: Uint8Array[]) =>
+  new HttpResponse(Buffer.concat(parts), { headers: { 'content-type': FRAMES_JSON_MIME } });
 
 describe('client.nl', () => {
   it('a mid-stream abort ends iteration with an AbortError', async () => {
-    const enc = new TextEncoder();
     mockHandlers(
       http.post(`${ENDPOINT}/substrate/v1/nl`, () => {
         const body = new ReadableStream<Uint8Array>({
           start(c) {
-            c.enqueue(enc.encode('event: parsed\ndata: {}\n\n'));
+            c.enqueue(frame('parsed', {}));
           }
         });
-        return new HttpResponse(body, { headers: { 'content-type': 'text/event-stream' } });
+        return new HttpResponse(body, { headers: { 'content-type': FRAMES_JSON_MIME } });
       })
     );
     const ac = new AbortController();
@@ -231,8 +141,12 @@ describe('client.nl', () => {
     expect(ct).toBeNull();
   });
 
-  it('an empty SSE body is an error', async () => {
-    const fetchImpl = (async () => new Response(null, { status: 200 })) as typeof fetch;
+  it('a server that does not answer with frames is refused with frames_unsupported', async () => {
+    const fetchImpl = (async () =>
+      new Response('event: done\ndata: {}\n\n', {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' }
+      })) as typeof fetch;
     const run = async () => {
       for await (const _ of new SubstrateClient({ endpoint: ENDPOINT, fetch: fetchImpl }).nl.ask({
         namespace: 'ns',
@@ -241,18 +155,20 @@ describe('client.nl', () => {
         /* drain */
       }
     };
-    await expect(run()).rejects.toThrow(/empty SSE body/);
+    await expect(run()).rejects.toMatchObject({ name: 'NetworkError', code: 'frames_unsupported' });
   });
 
-  it('ask streams named events with accept: text/event-stream and bearer auth', async () => {
+  it('ask streams named events with accept: frames+json and bearer auth', async () => {
     let accept: string | null = null;
     let auth: string | null = null;
     mockHandlers(
       http.post(`${ENDPOINT}/substrate/v1/nl`, ({ request }) => {
         accept = request.headers.get('accept');
         auth = request.headers.get('authorization');
-        return sse(
-          'event: parsed\ndata: {"status":"resolved"}\n\nevent: rows\ndata: {"kind":"rows"}\n\nevent: done\ndata: {}\n\n'
+        return frames(
+          frame('parsed', { status: 'resolved' }),
+          frame('rows', { kind: 'rows' }),
+          frame('done', {})
         );
       })
     );
@@ -260,14 +176,14 @@ describe('client.nl', () => {
     const names = [];
     for await (const e of c.nl.ask({ namespace: 'ns', question: 'q' })) names.push(e.event);
     expect(names).toEqual(['parsed', 'rows', 'done']);
-    expect(accept).toBe('text/event-stream');
+    expect(accept).toBe(FRAMES_JSON_MIME);
     expect(auth).toBe('Bearer t');
   });
 
   it('an in-band error event throws with its code', async () => {
     mockHandlers(
       http.post(`${ENDPOINT}/substrate/v1/nl`, () =>
-        sse('event: error\ndata: {"code":"nl_failed","message":"boom"}\n\n')
+        frames(frame('error', { code: 'nl_failed', message: 'boom' }))
       )
     );
     const c = new SubstrateClient({ endpoint: ENDPOINT });

@@ -10,7 +10,7 @@ Dynamic bridge discovery from a Sentinel instance.
 
 | Variable | Meaning |
 |---|---|
-| `SUBSTRATE_SENTINEL_URL` | `ws://` or `wss://` URL of the Sentinel |
+| `SUBSTRATE_SENTINEL_URL` | `http://` or `https://` base URL of the Sentinel, e.g. `https://sentinel.example:3100` |
 | `SUBSTRATE_SENTINEL_CREDENTIAL` | JSON `{ keyPath, kid }` the client signs with; required when the URL is set |
 | `SUBSTRATE_SENTINEL_RECONNECT_BASE_MS` | Initial reconnect delay (default 500) |
 | `SUBSTRATE_SENTINEL_RECONNECT_MAX_MS` | Backoff cap (default 30000) |

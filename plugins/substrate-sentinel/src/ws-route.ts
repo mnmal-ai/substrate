@@ -50,7 +50,7 @@ import {
   queryAll,
   resolveIdentity
 } from '@mnmal-ai/substrate/sdk';
-import type { CoordinatorConnection, LivenessRegistry } from './liveness.js';
+import type { CoordinatorConnection, LivenessRegistry, PeerConnection } from './liveness.js';
 
 interface BridgeInfo {
   name: string;
@@ -379,7 +379,7 @@ async function syncBridges(
  * Resolved through `grantOf` — the SAME function the server's own gates use —
  * so this verdict cannot drift from what the engine enforces.
  */
-function grantsCapability(
+export function grantsCapability(
   identity: Identity | undefined,
   namespace: string,
   capability: string
@@ -388,7 +388,7 @@ function grantsCapability(
   return grantedIn(grantOf(identity), namespace).includes(capability);
 }
 
-function sendJson(conn: WsConnection, payload: unknown): void {
+export function sendJson(conn: PeerConnection, payload: unknown): void {
   try {
     conn.send(JSON.stringify(payload));
   } catch {
@@ -396,7 +396,7 @@ function sendJson(conn: WsConnection, payload: unknown): void {
   }
 }
 
-function parseFrame(buf: Buffer): Record<string, unknown> | undefined {
+export function parseFrame(buf: Buffer): Record<string, unknown> | undefined {
   try {
     const parsed = JSON.parse(buf.toString('utf8')) as unknown;
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
@@ -439,19 +439,29 @@ function normaliseBridges(raw: unknown): Array<BridgeInfo> {
   return out;
 }
 
-async function handleRegister(
+/** Why a register was refused, with the HTTP status a frame-stream route answers. */
+export interface RegisterRefusal {
+  error: string;
+  status: 400 | 403 | 409 | 500;
+}
+
+/**
+ * Upsert the coordinator, track `conn` for it, send the register reply, then
+ * broadcast `online`. A refusal is returned for the caller to deliver: a WS
+ * frame, or an HTTP status before any stream opens.
+ */
+export async function handleRegister(
   engine: EngineHandle,
   namespace: string,
   identity: Identity | null,
   registry: LivenessRegistry,
-  conn: WsConnection,
+  conn: PeerConnection,
   frame: Record<string, unknown>
-): Promise<void> {
+): Promise<RegisterRefusal | undefined> {
   const name = typeof frame.name === 'string' ? frame.name : undefined;
   const url = typeof frame.url === 'string' ? frame.url : undefined;
   if (name === undefined || url === undefined) {
-    sendJson(conn, { error: 'register requires name and url' });
-    return;
+    return { error: 'register requires name and url', status: 400 };
   }
   const namespaces = normaliseNamespaces(frame.namespaces);
   const version = typeof frame.version === 'string' ? frame.version : undefined;
@@ -466,23 +476,22 @@ async function handleRegister(
   // Ownership is the recorded creator, so a caller that cannot be recorded as
   // one could never update its own row after the first register.
   if (actorOf(identity) === null) {
-    sendJson(conn, {
+    return {
       error:
-        "register requires an attributable identity (an agent key, a token, or a system actor); this one cannot be recorded as the coordinator row's creator"
-    });
-    return;
+        "register requires an attributable identity (an agent key, a token, or a system actor); this one cannot be recorded as the coordinator row's creator",
+      status: 403
+    };
   }
   const result = await upsertCoordinator(engine, namespace, identity, upsertArgs);
   if (result.foreign === true) {
-    sendJson(conn, {
-      error: `coordinator '${name}' or url '${url}' is registered by another identity`
-    });
-    return;
+    return {
+      error: `coordinator '${name}' or url '${url}' is registered by another identity`,
+      status: 409
+    };
   }
   const coordinator = result.coordinator;
   if (coordinator === undefined) {
-    sendJson(conn, { error: 'failed to upsert coordinator record' });
-    return;
+    return { error: 'failed to upsert coordinator record', status: 500 };
   }
 
   const meta: CoordinatorConnection = { name, coordinatorId: coordinator.id, url };
@@ -511,19 +520,20 @@ async function handleRegister(
       allowPropose: b.allowPropose
     }))
   });
+  return undefined;
 }
 
-function handleWatch(registry: LivenessRegistry, conn: WsConnection): void {
+export function handleWatch(registry: LivenessRegistry, conn: PeerConnection): void {
   registry.addWatcher(conn);
   sendJson(conn, { ok: true, watching: true });
 }
 
-async function handleClose(
+export async function handleClose(
   engine: EngineHandle,
   namespace: string,
   identity: Identity | null,
   registry: LivenessRegistry,
-  conn: WsConnection
+  conn: PeerConnection
 ): Promise<void> {
   const meta = registry.removeCoordinator(conn);
   registry.removeWatcher(conn);
@@ -587,9 +597,12 @@ export function registerSentinelWsRoute(
         }
       }
       if (type === 'register') {
-        handleRegister(ctx.engine, namespace, identity ?? null, registry, conn, frame).catch(() => {
-          sendJson(conn, { error: 'register failed' });
-        });
+        handleRegister(ctx.engine, namespace, identity ?? null, registry, conn, frame).then(
+          (refusal) => {
+            if (refusal !== undefined) sendJson(conn, { error: refusal.error });
+          },
+          () => sendJson(conn, { error: 'register failed' })
+        );
         return;
       }
       if (type === 'watch') {

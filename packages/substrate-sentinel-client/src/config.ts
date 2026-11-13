@@ -1,11 +1,11 @@
 /**
  * substrate-sentinel-client config. Env-driven, narrow surface.
  *
- *   - SUBSTRATE_SENTINEL_URL                — ws:// or wss:// URL of the sentinel
- *                                         instance's WS endpoint. Empty / unset
+ *   - SUBSTRATE_SENTINEL_URL                — http:// or https:// base URL of the
+ *                                         sentinel instance. Empty / unset
  *                                         returns null (opt-in).
  *   - SUBSTRATE_SENTINEL_CREDENTIAL               — JSON { keyPath, kid } the client signs
- *                                         its WS upgrade with. REQUIRED whenever
+ *                                         its watch request with. REQUIRED whenever
  *                                         the URL is set.
  *   - SUBSTRATE_SENTINEL_RECONNECT_BASE_MS  — initial reconnect delay (default 500)
  *   - SUBSTRATE_SENTINEL_RECONNECT_MAX_MS   — backoff cap (default 30_000)
@@ -65,8 +65,10 @@ const DEFAULT_RECONNECT_MAX_MS = 30_000;
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): SentinelClientConfig | null {
   const rawUrl = env.SUBSTRATE_SENTINEL_URL;
   if (rawUrl === undefined || rawUrl.length === 0) return null;
-  if (!rawUrl.startsWith('ws://') && !rawUrl.startsWith('wss://')) {
-    throw new Error('SUBSTRATE_SENTINEL_URL must be a ws:// or wss:// URL');
+  if (!rawUrl.startsWith('http://') && !rawUrl.startsWith('https://')) {
+    throw new Error(
+      "SUBSTRATE_SENTINEL_URL must be the sentinel's http:// or https:// base URL (e.g. https://sentinel.example:3100); the ws:// endpoint is retired"
+    );
   }
   return {
     url: rawUrl,
