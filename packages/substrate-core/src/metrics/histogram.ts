@@ -1,7 +1,10 @@
 /** Upper bounds in ms: powers of √2 from 0.1 ms; the last bucket catches everything larger. */
-const BOUNDS: number[] = [];
-for (let b = 0.1; b < 60_000; b *= Math.SQRT2) BOUNDS.push(b);
-BOUNDS.push(Number.POSITIVE_INFINITY);
+const BOUNDS: number[] = /* @__PURE__ */ (() => {
+  const bounds: number[] = [];
+  for (let b = 0.1; b < 60_000; b *= Math.SQRT2) bounds.push(b);
+  bounds.push(Number.POSITIVE_INFINITY);
+  return bounds;
+})();
 
 /** O(1) observe; percentiles read off bucket upper bounds (clamped to the observed max). */
 export class LogHistogram {

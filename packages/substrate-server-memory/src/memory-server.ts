@@ -55,7 +55,7 @@ interface RouteEntry {
 // pulls substrate-server-memory in as a devDep for its test fixtures — turbo's
 // build pipeline rejects the resulting cycle. Frozen at module level to skip
 // per-request allocation.
-const JSON_HEADERS: Readonly<Record<string, string>> = Object.freeze({
+const JSON_HEADERS: Readonly<Record<string, string>> = /* @__PURE__ */ Object.freeze({
   'content-type': 'application/json'
 });
 

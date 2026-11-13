@@ -22,7 +22,7 @@
 
 import { BootstrapConfigError } from '@mnmal-ai/substrate-bootstrap';
 import type { CoordinatorPlugin, KernelPlugin } from '@mnmal-ai/substrate-types';
-import semver from 'semver';
+import { satisfies, validRange } from './semver.js';
 
 /**
  * Bag of host-built deps any substrate plugin might consume. Each plugin's
@@ -215,11 +215,11 @@ function checkContract<M extends ComposableManifest>(
     declared,
     hostVersion: check.hostVersion
   };
-  if (semver.validRange(declared) === null) {
+  if (validRange(declared) === null) {
     check.onViolation({ ...base, reason: 'invalid-range' });
     return;
   }
-  if (!semver.satisfies(check.hostVersion, declared)) {
+  if (!satisfies(check.hostVersion, declared)) {
     check.onViolation({ ...base, reason: 'unsatisfied' });
   }
 }

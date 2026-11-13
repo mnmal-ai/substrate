@@ -794,13 +794,15 @@ function mergeIdField(fields: Record<string, FieldDef>): Record<string, FieldDef
 }
 
 /** Each `_system` type's def, which `installAutoCrud` registers and `SYSTEM_TYPE_DEFS` lists. */
-const KEY_DEF = { fields: mergeIdField(KEY_FIELDS), indexes: KEY_INDEXES };
-const INVITE_DEF = { fields: mergeIdField(INVITE_FIELDS) };
-const AUDIT_EVENT_DEF = { fields: mergeIdField(AUDIT_EVENT_FIELDS) };
-const ENUM_VERDICT_DEF = { fields: mergeIdField(ENUM_VERDICT_FIELDS) };
-const STORE_PROFILE_DEF = { fields: mergeIdField(STORE_PROFILE_FIELDS) };
-const INDEX_RECOMMENDATION_DEF = { fields: mergeIdField(INDEX_RECOMMENDATION_FIELDS) };
-const ADVISOR_STATE_DEF = { fields: mergeIdField(ADVISOR_STATE_FIELDS) };
+const KEY_DEF = { fields: /* @__PURE__ */ mergeIdField(KEY_FIELDS), indexes: KEY_INDEXES };
+const INVITE_DEF = { fields: /* @__PURE__ */ mergeIdField(INVITE_FIELDS) };
+const AUDIT_EVENT_DEF = { fields: /* @__PURE__ */ mergeIdField(AUDIT_EVENT_FIELDS) };
+const ENUM_VERDICT_DEF = { fields: /* @__PURE__ */ mergeIdField(ENUM_VERDICT_FIELDS) };
+const STORE_PROFILE_DEF = { fields: /* @__PURE__ */ mergeIdField(STORE_PROFILE_FIELDS) };
+const INDEX_RECOMMENDATION_DEF = {
+  fields: /* @__PURE__ */ mergeIdField(INDEX_RECOMMENDATION_FIELDS)
+};
+const ADVISOR_STATE_DEF = { fields: /* @__PURE__ */ mergeIdField(ADVISOR_STATE_FIELDS) };
 
 /**
  * Each `_system` type's fields and declared indexes, as `installSystemNamespace`

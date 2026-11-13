@@ -51,4 +51,4 @@ export function reservedMetadataFieldMessage(name: string): string | undefined {
 }
 
 /** Reserved field names — useful for validation loops. */
-export const RESERVED_AUTOCRUD_FIELD_NAMES = Object.keys(RESERVED_AUTOCRUD_FIELDS);
+export const RESERVED_AUTOCRUD_FIELD_NAMES = /* @__PURE__ */ Object.keys(RESERVED_AUTOCRUD_FIELDS);

@@ -24,7 +24,6 @@ import {
   type PackEnvelope,
   type Schema
 } from '@mnmal-ai/substrate-types';
-import { unpack } from 'msgpackr';
 import {
   type FieldDefPlan,
   type FieldDefPlanCache,
@@ -36,6 +35,7 @@ import {
   type WalkSlot
 } from './_plan-cache.js';
 import { frameDef, isAggShape } from './encoder.js';
+import { unpack } from './msgpackr.js';
 
 export interface DecodeContext {
   schemas?: Record<string, Schema>;

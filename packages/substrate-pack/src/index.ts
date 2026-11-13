@@ -12,11 +12,6 @@
  *     request's selection, and the decode plan for pack subscriptions.
  */
 
-// Re-export msgpackr's frame-level codec so frame-stream route layers can pack/unpack
-// substrate-pack-negotiated frames without taking a direct msgpackr dependency.
-// The wire format — including subscription/stream frames (§8.5) — flows
-// through the same codec the envelope uses.
-export { pack as packFrame, unpack as unpackFrame } from 'msgpackr';
 export { acceptsPack, PACK_MIME } from './content-type.js';
 export {
   type DecodeContext,
@@ -38,6 +33,11 @@ export {
   positionValue,
   withData
 } from './encoder.js';
+// Re-export msgpackr's frame-level codec so frame-stream route layers can pack/unpack
+// substrate-pack-negotiated frames without taking a direct msgpackr dependency.
+// The wire format — including subscription/stream frames (§8.5) — flows
+// through the same codec the envelope uses.
+export { pack as packFrame, unpack as unpackFrame } from './msgpackr.js';
 export { MUTATION_ACK_FIELDS, mutationReturns } from './mutation-returns.js';
 export {
   type DecodeStreamChunkInput,
