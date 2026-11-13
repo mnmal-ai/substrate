@@ -38,6 +38,7 @@ export {
   positionValue,
   withData
 } from './encoder.js';
+export { MUTATION_ACK_FIELDS, mutationReturns } from './mutation-returns.js';
 export {
   type DecodeStreamChunkInput,
   decodeStreamChunk,

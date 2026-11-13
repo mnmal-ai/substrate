@@ -265,6 +265,11 @@ export function naturalOrderOf(schema: Pick<TypeSchema, 'orderedBy'>): OrderedBy
 export interface MutationSchema {
   params: Record<string, FieldDef>;
   returns: FieldDef;
+  /**
+   * Present when the mutation writes rows of its namespace's type (an autoCRUD
+   * create or update): with no `fields`, its result is `{ id, shortId }`.
+   */
+  writesRows?: true;
 }
 
 /**

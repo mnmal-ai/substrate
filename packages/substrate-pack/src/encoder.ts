@@ -54,9 +54,10 @@ export interface EncodeEnvelopeCtx {
   /**
    * Mutation-path return-shape map — keyed by envelope key. Mutation responses
    * don't carry a client-sent FieldInput; their shape is declared at registry
-   * time as `MutationSchema.returns` and wired through here.
+   * time as `MutationSchema.returns` and wired through here. An array gives a
+   * batched key one shape per frame.
    */
-  returnsByKey?: Record<string, FieldDef>;
+  returnsByKey?: Record<string, FieldDef | readonly FieldDef[]>;
   /** Query-path type-name map — keyed by envelope key. */
   typeByKey: Record<string, string>;
   schemas: Record<string, Schema>;
@@ -242,7 +243,7 @@ export function isAggShape(shape: EnvelopeShape | undefined): shape is 'count' |
  */
 function encodePositionalForShape(
   value: unknown,
-  def: FieldDef,
+  def: FieldDef | readonly FieldDef[],
   schema: Schema,
   shape: EnvelopeShape | undefined,
   ctx: EncodeContext
@@ -254,18 +255,27 @@ function encodePositionalForShape(
     }
     return value.map((elem, idx) => {
       const perFrameShape = shape[idx];
-      return encodePositionalForShape(elem, def, schema, perFrameShape, ctx);
+      return encodePositionalForShape(elem, frameDef(def, idx), schema, perFrameShape, ctx);
     });
   }
+  const one = frameDef(def, 0);
   if (shape === 'list') {
     if (!Array.isArray(value)) {
       throw new PackEncodeError('expected array for list shape', []);
     }
     return value.map((elem, idx) =>
-      encodePositionalFromFieldDef(elem, def, schema, ctx, [`[${idx}]`])
+      encodePositionalFromFieldDef(elem, one, schema, ctx, [`[${idx}]`])
     );
   }
-  return encodePositionalFromFieldDef(value, def, schema, ctx);
+  return encodePositionalFromFieldDef(value, one, schema, ctx);
+}
+
+/** Frame `idx`'s return shape: its own entry for a batched key, else the key's one shape. */
+export function frameDef(def: FieldDef | readonly FieldDef[], idx: number): FieldDef {
+  if (!Array.isArray(def)) return def as FieldDef;
+  const one = def[idx];
+  if (one === undefined) throw new PackEncodeError(`no return shape for frame ${idx}`, []);
+  return one;
 }
 
 function resolveFieldMap(

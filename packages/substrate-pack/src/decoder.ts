@@ -35,7 +35,7 @@ import {
   resolveFieldMap as sharedResolveFieldMap,
   type WalkSlot
 } from './_plan-cache.js';
-import { isAggShape } from './encoder.js';
+import { frameDef, isAggShape } from './encoder.js';
 
 export interface DecodeContext {
   schemas?: Record<string, Schema>;
@@ -49,7 +49,7 @@ export interface DecodeEnvelopeCtx {
    * A key listed here is decoded using `decodePositionalFromFieldDef` instead
    * of the client-sent FieldInput.
    */
-  returnsByKey?: Record<string, FieldDef>;
+  returnsByKey?: Record<string, FieldDef | readonly FieldDef[]>;
   typeByKey: Record<string, string>;
   schemas: Record<string, Schema>;
   currentNsByKey: Record<string, string>;
@@ -221,7 +221,7 @@ function decodeByShape(
 
 function decodeByShapeFromDef(
   value: unknown,
-  def: FieldDef,
+  def: FieldDef | readonly FieldDef[],
   schema: Schema,
   shape: EnvelopeShape | undefined,
   ctx: DecodeContext
@@ -233,17 +233,20 @@ function decodeByShapeFromDef(
     if (!Array.isArray(value)) {
       throw new PackDecodeError('expected array for batched shape', []);
     }
-    return value.map((elem, idx) => decodeByShapeFromDef(elem, def, schema, shape[idx], ctx));
+    return value.map((elem, idx) =>
+      decodeByShapeFromDef(elem, frameDef(def, idx), schema, shape[idx], ctx)
+    );
   }
+  const one = frameDef(def, 0);
   if (shape === 'list') {
     if (!Array.isArray(value)) {
       throw new PackDecodeError('expected array for list shape', []);
     }
     return value.map((elem, idx) =>
-      decodePositionalFromFieldDef(elem, def, schema, ctx, [`[${idx}]`])
+      decodePositionalFromFieldDef(elem, one, schema, ctx, [`[${idx}]`])
     );
   }
-  return decodePositionalFromFieldDef(value, def, schema, ctx);
+  return decodePositionalFromFieldDef(value, one, schema, ctx);
 }
 
 function resolveFieldMap(

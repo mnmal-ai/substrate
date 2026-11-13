@@ -341,11 +341,10 @@ Which surfaces carry it:
 | frame streams | `Accept: application/vnd.substrate.frames+pack` | `new SubstrateClient({ streamWire: 'pack' })`, or `wire: 'pack'` per call |
 | MCP | not available | — |
 
-**One known difference: mutation results.** On JSON, a create or update with no
-`fields` answers `{ id, shortId }`, and `fields` trims every mutation result.
-Under pack a mutation's result is encoded from its declared `returns`, so it is
-the whole row whatever `fields` says. The two converge in the HTTP/2 cutover,
-which moves clients and server together.
+Mutation results follow `fields` on both wires, and a create or update that
+names none answers `{ id, shortId }`. Pack positions a result by the mutation's
+declared `returns`, so it does not carry `_metadata`, and a field the row does
+not have decodes as `null`.
 
 Its purpose is decode speed on multi-thousand-row responses, not size. It does
 not make payloads much smaller. Over HTTP against a live `cortext` store:

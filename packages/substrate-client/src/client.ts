@@ -17,6 +17,7 @@ import {
   type DecodeEnvelopeCtx,
   type DecodePlanEntry,
   decodeEnvelope,
+  mutationReturns,
   SchemaDriftError
 } from '@mnmal-ai/substrate-pack';
 import {
@@ -386,7 +387,7 @@ export class SubstrateClient {
     // left unset; the decoder checks returnsByKey first). Everything else
     // decodes via the request's `fields` selection.
     const fieldsByKey: Record<string, FieldInput> = {};
-    const returnsByKey: Record<string, FieldDef> = {};
+    const returnsByKey: Record<string, FieldDef | readonly FieldDef[]> = {};
     const typeByKey: Record<string, string> = {};
     const currentNsByKey: Record<string, string> = {};
 
@@ -403,8 +404,14 @@ export class SubstrateClient {
       typeByKey[key] = name;
 
       const nsSchema = schemas[ns];
-      if (nsSchema !== undefined && nsSchema.mutations[name] !== undefined) {
-        returnsByKey[key] = nsSchema.mutations[name].returns;
+      const mutation = nsSchema?.mutations[name];
+      if (mutation !== undefined) {
+        // Positioned by `returns` narrowed to `fields`, as the server encodes it.
+        const shapeOf = (fields: unknown): FieldDef =>
+          mutationReturns(mutation, fields as FieldInput | true | undefined);
+        returnsByKey[key] = Array.isArray(frameEntry)
+          ? frameEntry.map((f) => shapeOf(f.fields))
+          : shapeOf(entry?.fields);
       } else {
         fieldsByKey[key] = (entry?.fields ?? {}) as FieldInput;
       }

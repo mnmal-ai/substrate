@@ -41,6 +41,20 @@ function hashContent(
   return sha256Short(canonical);
 }
 
+/** A create or update over a declared type, not a struct of its own (updateMany's `{ count, ids }`). */
+function writesRows(entry: {
+  verb?: string;
+  returns?: FieldDef;
+  fields?: Record<string, FieldDef>;
+}): boolean {
+  return (
+    (entry.verb === 'create' || entry.verb === 'update') &&
+    entry.returns?.kind === 'struct' &&
+    entry.fields !== undefined &&
+    Object.keys(entry.fields).length > 0
+  );
+}
+
 export function publishSchema(registry: Registry): Schema {
   const types: Record<string, TypeSchema> = {};
   const mutations: Record<string, MutationSchema> = {};
@@ -49,7 +63,8 @@ export function publishSchema(registry: Registry): Schema {
     if (entry.kind === 'mutation') {
       mutations[name] = {
         params: entry.params,
-        returns: entry.returns ?? UNKNOWN_RETURNS
+        returns: entry.returns ?? UNKNOWN_RETURNS,
+        ...(writesRows(entry) ? { writesRows: true as const } : {})
       };
     } else {
       // Only when declared, so a type without one keeps its schemaVersion.
