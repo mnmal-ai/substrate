@@ -131,7 +131,7 @@ describe('StreamSession', () => {
 
     // The engine's own vocabulary, not the CloseReason — the token becomes the
     // `engine_subscription_closed_<reason>` metric suffix.
-    expect(cancelled).toEqual(['socket_close']);
+    expect(cancelled).toEqual(['client_disconnect']);
     expect(t.closes).toEqual(['client_disconnect']);
   });
 
