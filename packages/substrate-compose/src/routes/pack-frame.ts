@@ -1,13 +1,15 @@
-/** Positional substrate-pack encoding of a response frame's `data`, shared by WS and frame streams. */
+/** A response frame's wire payload per encoding, shared by WS and frame streams. */
 
 import type { Engine } from '@mnmal-ai/substrate-core';
-import { encodePositional } from '@mnmal-ai/substrate-pack';
+import { encodePositional, encodeWsFrame, type WireMode } from '@mnmal-ai/substrate-pack';
 import {
   type FieldInput,
   parseQualifiedKey,
   type Schema,
+  stringifyJson,
   type WsResponseFrame
 } from '@mnmal-ai/substrate-types';
+import { projectWsFrame } from './project-json.js';
 
 /**
  * Produce a wire-ready frame object — for substrate-pack, positionally encode
@@ -64,4 +66,17 @@ function encodeByShape(
     return value.map((row) => encodePositional(row, fields, schema, typeName, ctx));
   }
   return encodePositional(value, fields, schema, typeName, ctx);
+}
+
+/** The WS message for `frame`; a frame stream carries the same bytes behind a length prefix. */
+export function serializeFrame(
+  frame: WsResponseFrame,
+  mode: WireMode,
+  fieldsByKey: ReadonlyMap<string, FieldInput> | undefined,
+  engine: Engine
+): Buffer | string {
+  if (mode === 'json') return stringifyJson(projectWsFrame(frame, fieldsByKey));
+  const encoded = encodeDataForPack(frame, fieldsByKey, engine);
+  const wire = encodeWsFrame(encoded, mode);
+  return typeof wire === 'string' ? wire : Buffer.from(wire);
 }

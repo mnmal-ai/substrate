@@ -17,11 +17,14 @@ import {
 import { defineNamespace, field } from '@mnmal-ai/substrate-sdk';
 import { FastifySubstrateServer } from '@mnmal-ai/substrate-server-fastify';
 import { MemorySubstrateServer } from '@mnmal-ai/substrate-server-memory';
-import type { CoordinatorPlugin, WsResponseFrame } from '@mnmal-ai/substrate-types';
+import type { CoordinatorPlugin, FieldInput, WsResponseFrame } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
 import { type AuthConfig, signHs256 } from '../src/auth.js';
 import { compose } from '../src/compose.js';
+import { createConnectionLimiter } from '../src/routes/connection-limit.js';
 import { createFramesTransport } from '../src/routes/frames-transport.js';
+import { serializeFrame } from '../src/routes/pack-frame.js';
+import { registerSseRoutes } from '../src/routes/sse.js';
 
 const todoPlugin: CoordinatorPlugin = {
   name: 'frames-stream-fixture',
@@ -155,6 +158,84 @@ describe('frame streams through the route', () => {
     });
     await frames.return(undefined);
     await composed.stop();
+  });
+
+  it.each(['json', 'pack'] as const)(
+    'carries byte for byte what the WS route sends, in %s',
+    async (mode) => {
+      const { composed } = await setup();
+      const fieldsByKey = new Map<string, FieldInput>([
+        ['default/Todo', { id: true, title: true }]
+      ]);
+      const frame: WsResponseFrame = {
+        id: 'p',
+        kind: 'snapshot',
+        shapes: { 'default/Todo': 'list' },
+        // `extra` is not selected, so projection must drop it on both paths.
+        data: { 'default/Todo': [{ id: 'a', title: 'big 9007199254740993', extra: 1n }] }
+      };
+      const { body, transport } = createFramesTransport({
+        mode,
+        engine: composed.engine,
+        onTooLarge: () => {}
+      });
+      void transport.emit(frame, fieldsByKey);
+      transport.close('complete');
+      const payloads: Uint8Array[] = [];
+      for await (const p of decodeStreamFrames(body)) payloads.push(p);
+      expect(payloads).toHaveLength(1);
+      expect(Buffer.from(payloads[0] as Uint8Array)).toEqual(
+        Buffer.from(serializeFrame(frame, mode, fieldsByKey, composed.engine))
+      );
+      await composed.stop();
+    }
+  );
+
+  it('ends an oversized snapshot with error and end, freeing its session slot', async () => {
+    const cancels: string[] = [];
+    const engine = {
+      subscribe: async (input: { id: string; onFrame: (f: WsResponseFrame) => Promise<void> }) => {
+        await input.onFrame({
+          id: input.id,
+          kind: 'snapshot',
+          shapes: { 'default/Todo': 'list' },
+          data: { 'default/Todo': [{ id: 'a', title: 'a'.repeat(17 * 1024 * 1024) }] }
+        });
+        return { id: input.id, cancel: (r?: string) => cancels.push(r ?? 'cancel') };
+      }
+    };
+    const server = new MemorySubstrateServer();
+    registerSseRoutes(
+      server,
+      engine as never,
+      new Set<string>(),
+      'frames-test-secret',
+      (h) => h,
+      () => {},
+      undefined,
+      undefined,
+      createConnectionLimiter(1)
+    );
+    const open = () =>
+      server.inject({
+        method: 'POST',
+        path: '/substrate/v1/subscribe',
+        peerIp: '203.0.113.7',
+        headers: { accept: FRAMES_JSON_MIME },
+        body: Buffer.from(JSON.stringify(FRAME))
+      });
+
+    const first = await open();
+    expect(first.status).toBe(200);
+    const got: WsResponseFrame[] = [];
+    for await (const f of framesOf(first.body as ReadableStream<Uint8Array>, 'json')) got.push(f);
+    expect(got.map((f) => [f.kind, f.reason ?? f.errors?.[0]?.code])).toEqual([
+      ['error', 'frame_too_large'],
+      ['end', 'frame_too_large']
+    ]);
+    expect(cancels).toHaveLength(1);
+    // The slot came back, so a cap of one admits the next stream.
+    expect((await open()).status).toBe(200);
   });
 
   it('stream mode ends with end{final:true}', async () => {

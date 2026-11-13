@@ -41,25 +41,20 @@
 import type { Engine, MetricFn } from '@mnmal-ai/substrate-core';
 import {
   decodeWsEnvelope,
-  encodeWsFrame,
   isPlainRequestData,
   type WireMode,
   WS_SUBPROTOCOL_SUBSTRATE_PACK
 } from '@mnmal-ai/substrate-pack';
-import {
-  type FieldInput,
-  type Identity,
-  type SubstrateRequest,
-  type SubstrateServer,
-  stringifyJson,
-  type WsRequestFrame,
-  type WsResponseFrame
+import type {
+  Identity,
+  SubstrateRequest,
+  SubstrateServer,
+  WsRequestFrame
 } from '@mnmal-ai/substrate-types';
 import { type AuthConfig, authenticateBearer, extractBearer, watchCredential } from '../auth.js';
 import { type ConnectionLimiter, MAX_SESSIONS_PER_CLIENT } from './connection-limit.js';
 import { extractClientIp } from './helpers.js';
-import { encodeDataForPack } from './pack-frame.js';
-import { projectWsFrame } from './project-json.js';
+import { serializeFrame } from './pack-frame.js';
 import { isFrameRecord } from './sse.js';
 import {
   erroredKey,
@@ -100,18 +95,6 @@ function parseRequestFrame(buf: Buffer, mode: WireMode): WsRequestFrame | null {
   } catch {
     return null;
   }
-}
-
-function serializeFrame(
-  frame: WsResponseFrame,
-  mode: WireMode,
-  fieldsByKey: ReadonlyMap<string, FieldInput> | undefined,
-  engine: Engine
-): Buffer | string {
-  if (mode === 'json') return stringifyJson(projectWsFrame(frame, fieldsByKey));
-  const encoded = encodeDataForPack(frame, fieldsByKey, engine);
-  const wire = encodeWsFrame(encoded, mode);
-  return typeof wire === 'string' ? wire : Buffer.from(wire);
 }
 
 /**
