@@ -16,8 +16,12 @@ import { defineNamespace, field } from '@mnmal-ai/substrate-sdk';
 import { FastifySubstrateServer } from '@mnmal-ai/substrate-server-fastify';
 import type { CoordinatorPlugin } from '@mnmal-ai/substrate-types';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { createH2Fetch } from '../../substrate-client/src/transport/h2-fetch.js';
 import { type AuthConfig, signHs256 } from '../src/auth.js';
 import { compose } from '../src/compose.js';
+
+// The server speaks HTTP/2 only; the platform fetch speaks HTTP/1.1.
+const h2fetch = createH2Fetch();
 
 const NS = 'docs';
 const KEY = `${NS}/Note`;
@@ -73,7 +77,7 @@ function post(
   body: unknown,
   headers: Record<string, string> = {}
 ): Promise<Response> {
-  return fetch(`${baseUrl}${path}`, {
+  return h2fetch(`${baseUrl}${path}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', accept, ...headers },
     body: JSON.stringify(body)
@@ -138,7 +142,7 @@ describe('GET /substrate/v1/onboard describes the wire the routes actually speak
     });
     const { address, port } = await server.start({ host: '127.0.0.1', port: 0 });
     baseUrl = `http://${address}:${port}`;
-    const res = await fetch(`${baseUrl}/substrate/v1/onboard`);
+    const res = await h2fetch(`${baseUrl}/substrate/v1/onboard`);
     body = (await res.json()) as Record<string, unknown>;
     instructions = body.instructions as Record<string, Section | undefined>;
   });
@@ -280,7 +284,7 @@ describe('GET /substrate/v1/onboard describes the wire the routes actually speak
     const path = section('whoami').path as string;
     expect(path).toBe('/substrate/v1/whoami');
 
-    const res = await fetch(`${baseUrl}${path}`);
+    const res = await h2fetch(`${baseUrl}${path}`);
     expect(res.status).toBe(200);
 
     // No auth is configured on this fixture, so the document's claim that the
@@ -293,7 +297,7 @@ describe('GET /substrate/v1/onboard describes the wire the routes actually speak
     const notes = (section('schema').notes ?? []).join(' ');
     expect(notes).toMatch(/path segments/i);
 
-    const res = await fetch(`${baseUrl}/substrate/v1/schema?namespace=${NS}`);
+    const res = await h2fetch(`${baseUrl}/substrate/v1/schema?namespace=${NS}`);
     // 400, not a 404 about `default`: the caller named a namespace, so the
     // answer must be about the shape of the request rather than about a
     // namespace they never asked for.
@@ -328,7 +332,7 @@ describe('GET /substrate/v1/onboard describes the auth the stream routes actuall
     const { address, port } = await server.start({ host: '127.0.0.1', port: 0 });
     baseUrl = `http://${address}:${port}`;
     // Onboarding needs a key under `required`.
-    const res = await fetch(`${baseUrl}/substrate/v1/onboard`, {
+    const res = await h2fetch(`${baseUrl}/substrate/v1/onboard`, {
       headers: { authorization: `Bearer ${validBearer()}` }
     });
     subscribe = (await res.json()).instructions.subscribe as Section;
@@ -359,7 +363,7 @@ describe('GET /substrate/v1/onboard describes the auth the stream routes actuall
       frame,
       headers
     );
-    const query = await fetch(`${baseUrl}/substrate/v1/query`, {
+    const query = await h2fetch(`${baseUrl}/substrate/v1/query`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...headers },
       body: JSON.stringify(frame)
@@ -403,7 +407,7 @@ describe('GET /substrate/v1/onboard describes the auth the stream routes actuall
     expect((await readFrames(sub, 1))[0]).toMatchObject({ kind: 'snapshot' });
 
     // The same token, on the route that reports who it was read as.
-    const res = await fetch(`${baseUrl}/substrate/v1/whoami`, { headers: { authorization } });
+    const res = await h2fetch(`${baseUrl}/substrate/v1/whoami`, { headers: { authorization } });
     const whoami = (await res.json()) as {
       authEnabled: boolean;
       identity: { id: string } | null;

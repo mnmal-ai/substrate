@@ -47,7 +47,7 @@ The stack starts with keyword recall only. For dense recall, add `docker-compose
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.embed.yml up -d
-curl http://localhost:3100/substrate/v1/embed-stats   # "enabled": true
+curl --http2-prior-knowledge http://localhost:3100/substrate/v1/embed-stats   # "enabled": true
 ```
 
 Rows are embedded only for types whose namespace declares an `embed.source`, so `embeddedTypes` stays empty until you load such a plugin. Use the same `-f` pair for every later `docker compose` command, or the server restarts without the embedder.
@@ -57,20 +57,20 @@ Rows are embedded only for types whose namespace declares an `embed.source`, so 
 **The engine is up:**
 
 ```bash
-curl http://localhost:3100/health
+curl --http2-prior-knowledge http://localhost:3100/health
 # {"status":"ok","warnings":[],"version":"<version>","walks":true,"uptimeSeconds":3,"pool":{"connections":2,"opening":0,"idle":2,"leased":0,"waiting":0}}
 ```
 
 **A plugin loaded.** `/health` only says the binary started. The plugin's onboard route describes its namespace:
 
 ```bash
-curl http://localhost:3100/substrate/v1/plugins/substrate-proposals/onboard
+curl --http2-prior-knowledge http://localhost:3100/substrate/v1/plugins/substrate-proposals/onboard
 ```
 
 A `404` means the plugin did not load; check the `coordinators:` line. Then query it (an empty list is correct, nothing has been written yet):
 
 ```bash
-curl -s -X POST http://localhost:3100/substrate/v1/query \
+curl --http2-prior-knowledge -s -X POST http://localhost:3100/substrate/v1/query \
   -H 'content-type: application/json' \
   -d '{"_system_proposals/NamespaceProposal":{"params":{"limit":3},"fields":{"id":true,"ns":true}}}'
 ```
@@ -82,7 +82,7 @@ The response is an envelope with `data` keyed by the frame key. Check `errors` b
 **Everything the server offers** is described by one request, which a fresh agent can read to learn the frame grammar and every loaded plugin's surface:
 
 ```bash
-curl http://localhost:3100/substrate/v1/onboard
+curl --http2-prior-knowledge http://localhost:3100/substrate/v1/onboard
 ```
 
 ## 4. Run it from npm: `substrate init`
@@ -280,7 +280,7 @@ On Postgres the vectors live in the `embeddings` table; in memory mode they vani
 This guide stops at "Substrate is up locally". A production install also wants the following; [Operator decisions](operator-decisions.md) covers each choice, its default and what it costs:
 
 - **Auth.** Set `SUBSTRATE_AUTH_MODE=required` (or `attribute`, which lets anonymous callers through on non-admin routes), set `SUBSTRATE_PUBLIC_ORIGIN` to the origins callers reach the server by (e.g. `https://substrate.example.com:3100`; required with auth on a non-loopback `HOST`, which includes the default `0.0.0.0`), and register keys with `substrate-admin bootstrap` / `substrate-admin register`. Every token must carry `aud`, naming one of those origins, or it is refused. A token signed by an RS256/ES256 key must also carry `exp` and `ns` (the namespaces it may touch); one without `ns` is refused rather than read as `*`, so a third-party issuer must emit both. `substrate-admin doctor` checks the result.
-- **TLS.** `SUBSTRATE_TLS_CERT_PATH` and `SUBSTRATE_TLS_KEY_PATH`, or a reverse proxy in front. With TLS the server negotiates HTTP/2 and keeps HTTP/1.1 for older clients.
+- **TLS.** `SUBSTRATE_TLS_CERT_PATH` and `SUBSTRATE_TLS_KEY_PATH`, or a reverse proxy in front. The server speaks HTTP/2 only: over TLS by ALPN, and in plain HTTP with prior knowledge (h2c). A proxy must reach it over HTTP/2.
 - **Supervision.** systemd or a container orchestrator, restarting on failure. The Docker image (`apps/substrate-image/Dockerfile`) has a `/health` healthcheck.
 - **Index builds.** After an upgrade the server rebuilds indexes in the background and waits when the database volume is short of space. Set `SUBSTRATE_INDEX_DISK_PATH` to the volume's mount (the scaffold writes `off`, which skips the check) and see the [plugin author guide](plugin-author-guide.md#upgrading-an-existing-store).
 - **Upgrades.** Upgrade every instance that shares a store together. A store from before per-type tables must be copied with `substrate-admin migrate-store` first: see [Upgrading to per-type tables](upgrading-to-type-tables.md).

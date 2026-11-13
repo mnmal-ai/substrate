@@ -19,12 +19,16 @@ import { FastifySubstrateServer } from '@mnmal-ai/substrate-server-fastify';
 import { MemorySubstrateServer } from '@mnmal-ai/substrate-server-memory';
 import type { CoordinatorPlugin, FieldInput, WsResponseFrame } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
+import { createH2Fetch } from '../../substrate-client/src/transport/h2-fetch.js';
 import { type AuthConfig, signHs256 } from '../src/auth.js';
 import { compose } from '../src/compose.js';
 import { createConnectionLimiter } from '../src/routes/connection-limit.js';
 import { createFramesTransport } from '../src/routes/frames-transport.js';
 import { serializeFrame } from '../src/routes/pack-frame.js';
 import { registerStreamRoutes } from '../src/routes/stream-routes.js';
+
+// The server speaks HTTP/2 only; the platform fetch speaks HTTP/1.1.
+const h2fetch = createH2Fetch();
 
 const todoPlugin: CoordinatorPlugin = {
   name: 'frames-stream-fixture',
@@ -71,14 +75,14 @@ describe('frame streams over a real socket', () => {
     const { address, port } = await server.start({ host: '127.0.0.1', port: 0 });
     const base = `http://${address}:${port}`;
     const mutate = (body: unknown) =>
-      fetch(`${base}/substrate/v1/mutate`, {
+      h2fetch(`${base}/substrate/v1/mutate`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body)
       }).then((r) => r.json() as Promise<{ data: Record<string, { id: string }> }>);
     try {
       await mutate({ 'default/createTodo': { params: { title: 'seeded' } } });
-      const res = await fetch(`${base}/substrate/v1/subscribe`, {
+      const res = await h2fetch(`${base}/substrate/v1/subscribe`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',

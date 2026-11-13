@@ -178,9 +178,9 @@ A filter operand on a date field must be an ISO 8601 date (`2026-01-02`) or date
 
 **The default:** plain HTTP.
 
-**What you get:** with TLS the server speaks HTTP/2, negotiated by ALPN, and keeps HTTP/1.1 for clients that do not offer it. Each HTTP/2 connection may have at most 128 open streams. A request must arrive in full within 30 seconds on either protocol: an HTTP/2 stream that misses it is reset. Plain HTTP stays HTTP/1.1.
+**What you get:** the server speaks HTTP/2 only. With TLS it is negotiated by ALPN; in plain HTTP clients use prior knowledge (h2c). An HTTP/1.1 client is refused. Each connection may have at most 128 open streams. A request must arrive in full within 30 seconds; a stream that misses it is reset.
 
-**What it costs:** the files are read at boot, so renewing a certificate needs a restart. Behind a proxy, list its exact IP (no CIDR) in `SUBSTRATE_TRUSTED_PROXIES` so `X-Forwarded-For` is honoured for client addresses (request context, the `/register` rate limit and per-client stream limits).
+**What it costs:** the files are read at boot, so renewing a certificate needs a restart. Behind a proxy, the proxy must reach the server over HTTP/2 (h2c or h2 over TLS), and its exact IP (no CIDR) goes in `SUBSTRATE_TRUSTED_PROXIES` so `X-Forwarded-For` is honoured for client addresses (request context, the `/register` rate limit and per-client stream limits).
 
 **Later:** restart.
 

@@ -24,6 +24,7 @@
  * covered here.
  */
 
+import { createH2Fetch } from '@mnmal-ai/substrate-client';
 import { type ComposeResult, compose } from '@mnmal-ai/substrate-compose';
 import { MemoryEdgesStore } from '@mnmal-ai/substrate-core';
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
@@ -51,6 +52,9 @@ import type {
 } from '@mnmal-ai/substrate-types';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { fixturePlugin } from './_fixtures/fixture-plugin.js';
+
+// The server speaks HTTP/2 only; the platform fetch speaks HTTP/1.1.
+const h2fetch = createH2Fetch();
 
 // ---------------------------------------------------------------------------
 // Adapter layer. A HarnessHandle hides the transport so the per-server
@@ -257,7 +261,7 @@ async function fastifyHarness(): Promise<HarnessHandle> {
       // resolves only once the response ends, so a subscribe (which ends only on
       // disconnect) would deadlock and a stream would arrive as one flush —
       // neither of which is the behaviour under test.
-      const res = await fetch(`http://127.0.0.1:${port}${path}`, {
+      const res = await h2fetch(`http://127.0.0.1:${port}${path}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', accept: FRAMES_JSON_MIME },
         body: JSON.stringify(frame),

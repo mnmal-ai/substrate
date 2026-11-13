@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { createH2Fetch } from '../../substrate-client/src/transport/h2-fetch.js';
 import { FastifySubstrateServer } from '../src/index.js';
+
+// The server speaks HTTP/2 only; the platform fetch speaks HTTP/1.1.
+const h2fetch = createH2Fetch();
 
 describe('FastifySubstrateServer lifecycle', () => {
   it('start() returns a host and assigned port; stop() closes it', async () => {
@@ -8,11 +12,11 @@ describe('FastifySubstrateServer lifecycle', () => {
     const { address, port } = await server.start({ host: '127.0.0.1', port: 0 });
     expect(address).toBe('127.0.0.1');
     expect(port).toBeGreaterThan(0);
-    const res = await fetch(`http://127.0.0.1:${port}/ok`);
+    const res = await h2fetch(`http://127.0.0.1:${port}/ok`);
     expect(res.status).toBe(200);
     expect(await res.text()).toBe('ok');
     await server.stop();
-    await expect(fetch(`http://127.0.0.1:${port}/ok`)).rejects.toThrow();
+    await expect(h2fetch(`http://127.0.0.1:${port}/ok`)).rejects.toThrow();
   });
 
   it('throws when start() is called twice', async () => {

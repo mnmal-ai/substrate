@@ -5,15 +5,8 @@ import net, { type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { createH2Fetch, type H2Fetch } from '../src/transport/h2-fetch.js';
-import { mockServer } from './_setup.js';
-
-// msw's socket interception (test/_setup.ts) stalls node:http2 connects. These tests talk to
-// real local servers only, so this file switches it off; vitest isolates the file.
-beforeAll(() => mockServer.close());
-// The setup file closes it again after the suite; give it something to close.
-afterAll(() => mockServer.listen());
 
 function hasOpenssl(): boolean {
   try {

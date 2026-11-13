@@ -13,7 +13,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { substrateFetch } from '@mnmal-ai/substrate-client';
+import { createH2Fetch, substrateFetch } from '@mnmal-ai/substrate-client';
 import {
   type AuthConfig,
   type ComposeResult,
@@ -38,6 +38,9 @@ import type {
   NamespaceDefinition
 } from '@mnmal-ai/substrate-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
+// The server speaks HTTP/2 only; the platform fetch speaks HTTP/1.1.
+const h2fetch = createH2Fetch();
 
 const HIVE_ENABLED = process.env.SUBSTRATE_HIVE_TEST === '1';
 
@@ -115,7 +118,7 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — smoke', () => {
 
   it('starts a single Fastify instance on an ephemeral port and serves /substrate/v1/onboard', async () => {
     instance = await startInstance();
-    const res = await fetch(`http://127.0.0.1:${instance.port}/substrate/v1/onboard`);
+    const res = await h2fetch(`http://127.0.0.1:${instance.port}/substrate/v1/onboard`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as { substrate: string };
     expect(body.substrate).toBe('agent-onboard');
@@ -145,7 +148,7 @@ async function createWidget(
   params: { label: string; qty: number },
   headers: Record<string, string> = {}
 ): Promise<string> {
-  const res = await fetch(`http://127.0.0.1:${port}/substrate/v1/mutate`, {
+  const res = await h2fetch(`http://127.0.0.1:${port}/substrate/v1/mutate`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...headers },
     body: JSON.stringify({
@@ -203,7 +206,7 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — static-bridge leg', () => {
 
     try {
       // Querying A for demo/Widget should route through the bridge to B.
-      const res = await fetch(`http://127.0.0.1:${a.port}/substrate/v1/query`, {
+      const res = await h2fetch(`http://127.0.0.1:${a.port}/substrate/v1/query`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -520,7 +523,7 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — full-hive smoke', () => {
       await a.composed.engine.refreshBridgeSchemas();
 
       // A queries demo/Widget — must route through the newly-registered bridge.
-      const queryRes = await fetch(`http://127.0.0.1:${a.port}/substrate/v1/query`, {
+      const queryRes = await h2fetch(`http://127.0.0.1:${a.port}/substrate/v1/query`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -549,7 +552,7 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — full-hive smoke', () => {
 
       // Query after unregister — either an error envelope (e.g. unknown_name)
       // or an empty data array is acceptable. Assert one of the two happened.
-      const postUnregister = await fetch(`http://127.0.0.1:${a.port}/substrate/v1/query`, {
+      const postUnregister = await h2fetch(`http://127.0.0.1:${a.port}/substrate/v1/query`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -623,11 +626,11 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — bridge federation trust', (
     // Record every Authorization header the bridge actually sends over the
     // wire — forwarding to the real fetch, not stubbing the network away.
     const seen: Array<string | undefined> = [];
-    const recordingFetch = ((input: string | URL | Request, init?: RequestInit) => {
+    const recordingFetch = (input: string, init?: RequestInit) => {
       const headers = init?.headers as Record<string, string> | undefined;
       seen.push(headers?.authorization);
-      return fetch(input, init);
-    }) as typeof fetch;
+      return h2fetch(input, init);
+    };
 
     const bridges = new MemoryBridgeRegistry();
     bridgeClient = new HttpBridgeClient({
@@ -642,7 +645,7 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — bridge federation trust', (
     bridges.register('demo', bridgeClient);
     a = await startInstance({ bridges });
 
-    const res = await fetch(`http://127.0.0.1:${a.port}/substrate/v1/query`, {
+    const res = await h2fetch(`http://127.0.0.1:${a.port}/substrate/v1/query`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -696,7 +699,7 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — bridge federation trust', (
     bridges.register('demo', bridgeClient);
     a = await startInstance({ bridges });
 
-    const res = await fetch(`http://127.0.0.1:${a.port}/substrate/v1/query`, {
+    const res = await h2fetch(`http://127.0.0.1:${a.port}/substrate/v1/query`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({

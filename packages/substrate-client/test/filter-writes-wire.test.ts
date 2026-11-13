@@ -9,7 +9,11 @@ import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
 import { FastifySubstrateServer } from '@mnmal-ai/substrate-server-fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SubstrateClient } from '../src/index.js';
+import { createH2Fetch } from '../src/transport/h2-fetch.js';
 import { demoPlugin } from './fixtures/demo-plugin.js';
+
+// The server speaks HTTP/2 only; the platform fetch speaks HTTP/1.1.
+const h2fetch = createH2Fetch();
 
 let baseUrl: string;
 let composed: ComposeResult;
@@ -32,13 +36,13 @@ afterEach(async () => {
 
 describe('by-filter writes on the wire', () => {
   it("schema lists updateManyTodo under Todo's mutations", async () => {
-    const res = await fetch(`${baseUrl}/substrate/v1/schema/default/Todo`);
+    const res = await h2fetch(`${baseUrl}/substrate/v1/schema/default/Todo`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as { mutations: Record<string, unknown> };
     expect(Object.keys(body.mutations)).toEqual(
       expect.arrayContaining(['updateTodo', 'updateManyTodo', 'deleteManyTodo'])
     );
-    const other = (await (await fetch(`${baseUrl}/substrate/v1/schema/default/Tag`)).json()) as {
+    const other = (await (await h2fetch(`${baseUrl}/substrate/v1/schema/default/Tag`)).json()) as {
       mutations: Record<string, unknown>;
     };
     expect(Object.keys(other.mutations)).not.toContain('updateManyTodo');

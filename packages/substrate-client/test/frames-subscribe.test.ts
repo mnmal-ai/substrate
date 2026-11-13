@@ -5,7 +5,7 @@
  * frames are chosen by the test.
  */
 
-import * as http from 'node:http';
+import * as http2 from 'node:http2';
 import type { AddressInfo } from 'node:net';
 import { type ComposeResult, compose } from '@mnmal-ai/substrate-compose';
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
@@ -120,13 +120,13 @@ describe('frames against a real server', () => {
 });
 
 /** One scripted response per request, by request number (1-based). */
-type Script = (n: number, res: http.ServerResponse, req: http.IncomingMessage) => void;
+type Script = (n: number, res: http2.Http2ServerResponse, req: http2.Http2ServerRequest) => void;
 
 async function scripted(
   script: Script
-): Promise<{ baseUrl: string; requests: http.IncomingMessage[] }> {
-  const requests: http.IncomingMessage[] = [];
-  const server = http.createServer((req, res) => {
+): Promise<{ baseUrl: string; requests: http2.Http2ServerRequest[] }> {
+  const requests: http2.Http2ServerRequest[] = [];
+  const server = http2.createServer((req, res) => {
     if (req.url === '/substrate/v1/federated-schema') {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify(SCHEMA));
@@ -135,9 +135,14 @@ async function scripted(
     requests.push(req);
     script(requests.length, res, req);
   });
+  const sessions = new Set<http2.ServerHttp2Session>();
+  server.on('session', (s) => {
+    sessions.add(s);
+    s.once('close', () => sessions.delete(s));
+  });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   cleanups.push(async () => {
-    server.closeAllConnections();
+    for (const s of sessions) s.destroy();
     await new Promise<void>((r) => server.close(() => r()));
   });
   return { baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, requests };
@@ -160,11 +165,15 @@ const SCHEMA = {
   }
 };
 
-function open(res: http.ServerResponse, mime = FRAMES_JSON_MIME): void {
+/** Cut the response mid-body, as a network drop does. */
+function drop(res: http2.Http2ServerResponse): void {
+  res.stream.close(http2.constants.NGHTTP2_INTERNAL_ERROR);
+}
+function open(res: http2.Http2ServerResponse, mime = FRAMES_JSON_MIME): void {
   res.writeHead(200, { 'content-type': mime });
 }
 function send(
-  res: http.ServerResponse,
+  res: http2.Http2ServerResponse,
   frame: Record<string, unknown>,
   wire: 'json' | 'pack' = 'json'
 ): void {
@@ -199,7 +208,7 @@ describe('frames against a scripted server', () => {
     const { baseUrl, requests } = await scripted((n, res) => {
       open(res);
       send(res, snapshot(`s${n}`));
-      if (n === 1) setTimeout(() => res.destroy(), 10);
+      if (n === 1) setTimeout(() => drop(res), 10);
     });
     const it = client(baseUrl, { reconnect: FAST }).subscribe(TODO)[Symbol.asyncIterator]();
     const got = await take(it, 2);
@@ -282,7 +291,7 @@ describe('frames against a scripted server', () => {
       res.write(
         encodeStreamFrame({ id: 'frames-stream', kind: 'chunk', data: {}, sequence: 0 }, 'json')
       );
-      setTimeout(() => res.destroy(), 10);
+      setTimeout(() => drop(res), 10);
     });
     const it = client(baseUrl, { reconnect: FAST }).stream(TODO)[Symbol.asyncIterator]();
     expect((await it.next()).value?.kind).toBe('chunk');
@@ -335,7 +344,7 @@ describe('frames against a scripted server', () => {
       at.push(Date.now());
       open(res);
       send(res, snapshot('s'));
-      setTimeout(() => res.destroy(), 1);
+      setTimeout(() => drop(res), 1);
     });
     const it = client(baseUrl, { reconnect: { baseDelayMs: 10, maxDelayMs: 1000, jitter: 0 } })
       .subscribe(TODO)

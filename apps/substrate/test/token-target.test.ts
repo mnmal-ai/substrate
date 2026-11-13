@@ -5,8 +5,6 @@
 
 import { generateKeyPairSync } from 'node:crypto';
 import { mkdtempSync, writeFileSync } from 'node:fs';
-import http from 'node:http';
-import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { tokenAudience } from '@mnmal-ai/substrate-client';
@@ -15,19 +13,18 @@ import type { AdminCliEnv } from '../src/admin/env.js';
 import { resolveAdminAuth } from '../src/admin/identity.js';
 import { runKeyListViaRoute, runKeyPatchViaRoute } from '../src/admin/route.js';
 import { getSubstrateForTest } from '../src/mcp/server.js';
+import { h2Server, type StubServer } from './fixtures/h2-server.js';
 
 const env: AdminCliEnv = { SUBSTRATE_ADMIN_TOKEN: 'tok' };
-const servers: http.Server[] = [];
-afterEach(() => {
-  for (const s of servers.splice(0)) s.close();
+const servers: StubServer[] = [];
+afterEach(async () => {
+  await Promise.all(servers.splice(0).map((s) => s.close()));
 });
 
-function listen(handler: http.RequestListener): Promise<string> {
-  const s = http.createServer(handler);
+async function listen(handler: Parameters<typeof h2Server>[0]): Promise<string> {
+  const s = await h2Server(handler);
   servers.push(s);
-  return new Promise((resolve) =>
-    s.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${(s.address() as AddressInfo).port}`))
-  );
+  return s.url;
 }
 
 /** A server that redirects every request to a second one, which records what reached it. */

@@ -25,6 +25,7 @@
  */
 
 import { constants as h2constants, type ServerHttp2Stream } from 'node:http2';
+import type { Socket } from 'node:net';
 import compressPlugin from '@fastify/compress';
 import corsPlugin from '@fastify/cors';
 import type {
@@ -115,10 +116,9 @@ export class FastifySubstrateServer implements SubstrateServer {
   // registers once at compose time and owns whatever responses are open when
   // the notice fires.
   readonly #shutdownHooks = new Set<(reason: string) => void>();
-  // One entry per response still streaming a body, resolved when its socket
-  // finishes. `stop()` waits on these before `fastify.close()` — see
-  // `#drainThenClose` for why the ordering is load-bearing.
-  readonly #streamedResponses = new Set<Promise<void>>();
+  // Open connections, so `stop()` can destroy any still open at `grace`. Not
+  // sessions: a refused HTTP/1.1 socket never becomes one, and Node holds it open.
+  readonly #sockets = new Set<Socket>();
 
   constructor(options: FastifySubstrateServerOptions = {}) {
     const {
@@ -136,26 +136,29 @@ export class FastifySubstrateServer implements SubstrateServer {
       requestTimeout,
       ...(bodyLimit !== undefined ? { bodyLimit } : {})
     };
-    if (tls) {
-      // HTTP/2 negotiated by ALPN, with HTTP/1.1 kept for clients that do not
-      // offer h2.
-      this.fastify = Fastify({
-        ...common,
-        http2: true,
-        https: {
-          allowHTTP1: true,
-          cert: tls.cert,
-          key: tls.key,
-          ...(tls.ca !== undefined ? { ca: tls.ca } : {}),
-          settings: { maxConcurrentStreams: H2_MAX_CONCURRENT_STREAMS }
-        }
-      }) as unknown as FastifyInstance;
-      // Node bounds the HTTP/1.1 fallback by this; Fastify sets it only on an http.Server.
-      (this.fastify.server as { requestTimeout: number }).requestTimeout = requestTimeout;
-      if (requestTimeout > 0) boundH2Requests(this.fastify, requestTimeout);
-    } else {
-      this.fastify = Fastify(common);
-    }
+    // HTTP/2 only: over TLS by ALPN, otherwise cleartext with prior knowledge
+    // (h2c). An HTTP/1.1 client is refused at the connection.
+    const settings = { maxConcurrentStreams: H2_MAX_CONCURRENT_STREAMS };
+    this.fastify = Fastify({
+      ...common,
+      http2: true,
+      ...(tls
+        ? {
+            https: {
+              allowHTTP1: false,
+              cert: tls.cert,
+              key: tls.key,
+              ...(tls.ca !== undefined ? { ca: tls.ca } : {}),
+              settings
+            }
+          }
+        : { http: { settings } })
+    }) as unknown as FastifyInstance;
+    if (requestTimeout > 0) boundH2Requests(this.fastify, requestTimeout);
+    this.fastify.server.on('connection', (socket: Socket) => {
+      this.#sockets.add(socket);
+      socket.once('close', () => this.#sockets.delete(socket));
+    });
 
     // Raw-bytes parsers for binary payloads (substrate-pack). Everything else
     // falls back to Fastify's built-ins; translate.coerceBody re-encodes any
@@ -277,41 +280,22 @@ export class FastifySubstrateServer implements SubstrateServer {
     if (opts?.abortInFlight === true) {
       this.abortAllRequests('server_shutdown');
     }
+    // `fastify.close()` sends every session a GOAWAY: no new streams, and the
+    // open ones finish. At `grace`, any connection still open is destroyed.
+    const closed = this.fastify.close();
     const grace = opts?.grace;
-    if (grace === undefined) {
-      await this.#drainThenClose();
-      return;
+    if (grace !== undefined) {
+      let timer: NodeJS.Timeout | undefined;
+      const late = await Promise.race([
+        closed.then(() => false),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(true), grace);
+        })
+      ]);
+      clearTimeout(timer);
+      if (late) for (const socket of this.#sockets) socket.destroy();
     }
-    await Promise.race([
-      this.#drainThenClose(),
-      new Promise<void>((resolve) => {
-        setTimeout(resolve, grace).unref();
-      })
-    ]);
-  }
-
-  /**
-   * Let streamed responses finish before handing off to `fastify.close()`.
-   *
-   * `close()` takes exactly ONE pass at reaping idle keep-alive connections. A
-   * socket still flushing its final bytes at that instant survives the pass,
-   * and nothing revisits it — so `close()` waits on a connection that will
-   * never be reaped, and a bare `stop()` never returns.
-   *
-   * Unbounded on purpose: `fastify.close()` already waits on in-flight
-   * requests, so a route that ignores the shutdown notice blocks `stop()`
-   * anyway. Callers who need a ceiling pass `grace`, which races this whole
-   * sequence.
-   */
-  async #drainThenClose(): Promise<void> {
-    await Promise.all([...this.#streamedResponses]);
-    // One macrotask: the response's `close` fires around the socket's
-    // return to the idle pool, and `closeIdleConnections()` only sees sockets
-    // already parked there.
-    await new Promise<void>((resolve) => {
-      setImmediate(resolve);
-    });
-    await this.fastify.close();
+    await closed;
   }
 
   abortAllRequests(reason?: string): void {
@@ -359,7 +343,7 @@ export class FastifySubstrateServer implements SubstrateServer {
     inFlight: Set<AbortController> = this.inFlight
   ): void {
     this.fastify.register((scope, _opts, done) => {
-      registerRoute(scope, method, path, handler, inFlight, this.#streamedResponses);
+      registerRoute(scope, method, path, handler, inFlight);
       done();
     });
   }
@@ -495,32 +479,12 @@ function buildInjectUrl(path: string, query: Record<string, string>): string {
   return `${path}${sep}${qs.toString()}`;
 }
 
-/**
- * Register a response that streams its body, resolving when the underlying
- * socket finishes (`close` covers both a completed response and a torn-down
- * connection). `stop()` awaits these so it never calls `fastify.close()` while
- * a socket is mid-flush.
- */
-function trackStreamedResponse(reply: FastifyReply, streamed: Set<Promise<void>>): void {
-  let settle: (() => void) | undefined;
-  const finished = new Promise<void>((resolve) => {
-    settle = resolve;
-  });
-  streamed.add(finished);
-  reply.raw.once('close', () => {
-    streamed.delete(finished);
-    // The executor above ran synchronously, so `settle` is assigned.
-    settle!();
-  });
-}
-
 function registerRoute(
   fastify: FastifyInstance,
   method: HttpMethod,
   path: string,
   handler: HttpHandler,
-  inFlight: Set<AbortController>,
-  streamed: Set<Promise<void>>
+  inFlight: Set<AbortController>
 ): void {
   fastify.route({
     method,
@@ -528,12 +492,11 @@ function registerRoute(
     handler: async (req: FastifyRequest, reply: FastifyReply) => {
       const controller = new AbortController();
       inFlight.add(controller);
-      // Detect client disconnects via the RESPONSE stream, not the request
-      // stream: `req.raw` 'close' fires once the request body is consumed,
-      // before the handler finishes, and would cancel live requests. A
-      // `reply.raw` 'close' before the response is flushed is a real disconnect.
+      // Detect client disconnects via the RESPONSE: a `reply.raw` 'close'
+      // before the response was ended is a disconnect. Not `writableFinished`:
+      // an HTTP/2 response reports it true once a reset destroys the stream.
       const onResponseClose = (): void => {
-        if (!reply.raw.writableFinished && !controller.signal.aborted) {
+        if (!reply.raw.writableEnded && !controller.signal.aborted) {
           controller.abort('client_disconnect');
         }
       };
@@ -541,7 +504,6 @@ function registerRoute(
       try {
         const hReq = toSubstrateRequest(req, controller.signal);
         const hRes = await handler(hReq);
-        if (hRes.body instanceof ReadableStream) trackStreamedResponse(reply, streamed);
         await applySubstrateResponse(reply, hRes);
       } finally {
         reply.raw.off('close', onResponseClose);

@@ -1,6 +1,10 @@
-import { request as httpRequest } from 'node:http';
+import http2 from 'node:http2';
 import { describe, expect, it } from 'vitest';
+import { createH2Fetch } from '../../substrate-client/src/transport/h2-fetch.js';
 import { FastifySubstrateServer } from '../src/index.js';
+
+// The server speaks HTTP/2 only; the platform fetch speaks HTTP/1.1.
+const h2fetch = createH2Fetch();
 
 describe('FastifySubstrateServer abort fan-out', () => {
   it('attaches a per-request signal and aborts it on client disconnect', async () => {
@@ -21,18 +25,15 @@ describe('FastifySubstrateServer abort fan-out', () => {
 
     const { port } = await server.start({ host: '127.0.0.1', port: 0 });
     try {
-      // Use raw http.request so we can destroy() the socket and have the
-      // server observe a concrete connection close — fetch+AbortController is
-      // racier because undici may keep the connection in keep-alive state.
-      const clientReq = httpRequest({ host: '127.0.0.1', port, path: '/long', method: 'GET' });
-      // Swallow the post-destroy 'socket hang up' the client emits — it's
-      // load-bearing in real use (caller knows the socket died) but here we're
-      // intentionally tearing the connection down to exercise the server.
+      // A raw session, so the test can drop the connection itself.
+      const session = http2.connect(`http://127.0.0.1:${port}`);
+      session.on('error', () => {});
+      const clientReq = session.request({ ':path': '/long' });
       clientReq.on('error', () => {});
       clientReq.end();
       const observedSignal = await handlerEntered;
       expect(observedSignal).toBeDefined();
-      clientReq.destroy();
+      session.destroy();
       // Yield the loop a couple of times so the server's req.raw 'close'
       // event has a chance to fire and our abort listener runs.
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -80,7 +81,7 @@ describe('FastifySubstrateServer abort fan-out', () => {
     const { port } = await server.start({ host: '127.0.0.1', port: 0 });
     try {
       const requests = Array.from({ length: requestCount }, (_, i) =>
-        fetch(`http://127.0.0.1:${port}/wait/${i + 1}`).then((r) => r.text())
+        h2fetch(`http://127.0.0.1:${port}/wait/${i + 1}`).then((r) => r.text())
       );
       await Promise.all(enteredPromises);
       server.abortAllRequests('test_shutdown');
@@ -119,7 +120,7 @@ describe('FastifySubstrateServer abort fan-out', () => {
     });
 
     const { port } = await server.start({ host: '127.0.0.1', port: 0 });
-    const fetchPromise = fetch(`http://127.0.0.1:${port}/wait`).then((r) => r.text());
+    const fetchPromise = h2fetch(`http://127.0.0.1:${port}/wait`).then((r) => r.text());
     await entered;
 
     const start = Date.now();
@@ -156,7 +157,7 @@ describe('FastifySubstrateServer abort fan-out', () => {
     });
 
     const { port } = await server.start({ host: '127.0.0.1', port: 0 });
-    const fetchPromise = fetch(`http://127.0.0.1:${port}/quick`).then((r) => r.text());
+    const fetchPromise = h2fetch(`http://127.0.0.1:${port}/quick`).then((r) => r.text());
     await entered;
     await server.stop({ grace: 200 });
     await fetchPromise;
@@ -184,7 +185,7 @@ describe('FastifySubstrateServer abort fan-out', () => {
 
     const { port } = await server.start({ host: '127.0.0.1', port: 0 });
     try {
-      const res = await fetch(`http://127.0.0.1:${port}/deferred`, {
+      const res = await h2fetch(`http://127.0.0.1:${port}/deferred`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ hello: 'world' })
@@ -216,19 +217,18 @@ describe('FastifySubstrateServer abort fan-out', () => {
 
     const { port } = await server.start({ host: '127.0.0.1', port: 0 });
     try {
-      const clientReq = httpRequest({
-        host: '127.0.0.1',
-        port,
-        path: '/long-post',
-        method: 'POST',
-        headers: { 'content-type': 'application/json' }
+      const session = http2.connect(`http://127.0.0.1:${port}`);
+      session.on('error', () => {});
+      const clientReq = session.request({
+        ':method': 'POST',
+        ':path': '/long-post',
+        'content-type': 'application/json'
       });
       clientReq.on('error', () => {});
-      clientReq.write(JSON.stringify({ hello: 'world' }));
-      clientReq.end();
+      clientReq.end(JSON.stringify({ hello: 'world' }));
       const observedSignal = await handlerEntered;
       expect(observedSignal).toBeDefined();
-      clientReq.destroy();
+      session.destroy();
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(observedSignal?.aborted).toBe(true);
       expect(observedSignal?.reason).toBe('client_disconnect');

@@ -17,12 +17,12 @@ Against a running server, after a dry structural count:
 BASE=http://localhost:3100
 
 # 1. Which types are embedded, and how embedding writes have gone since restart.
-curl -s $BASE/substrate/v1/embed-stats
+curl --http2-prior-knowledge -s $BASE/substrate/v1/embed-stats
 
 # 2. Form, with an explicit selection. Exclude synthetic or near-duplicate
 #    rows (fixtures, seeded test data): they form the densest regions and
 #    distort the count.
-curl -s -X POST $BASE/substrate/v1/crystallise \
+curl --http2-prior-knowledge -s -X POST $BASE/substrate/v1/crystallise \
   -H 'content-type: application/json' \
   -d '{
         "mode": "form",

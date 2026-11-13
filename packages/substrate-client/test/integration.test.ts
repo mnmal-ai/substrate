@@ -2,8 +2,7 @@
  * Integration tests — SubstrateClient <-> FastifySubstrateServer in-process.
  *
  * These tests stand up a real Fastify server on an ephemeral port and drive it
- * through `SubstrateClient` over HTTP and frame streams. No MSW mocks; 127.0.0.1 requests are
- * exempted from MSW interception in _setup.ts.
+ * through `SubstrateClient` over HTTP and frame streams. No MSW mocks.
  *
  * The `default` namespace with Todo + Tag types is registered by the
  * `demoPlugin` fixture (./fixtures/demo-plugin.ts).

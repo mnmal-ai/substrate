@@ -22,7 +22,11 @@ import type {
   Row
 } from '@mnmal-ai/substrate-types';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { createH2Fetch } from '../../substrate-client/src/transport/h2-fetch.js';
 import { compose } from '../src/compose.js';
+
+// The server speaks HTTP/2 only; the platform fetch speaks HTTP/1.1.
+const h2fetch = createH2Fetch();
 
 /**
  * Gap between yields from the slow producer below. The assertion threshold is
@@ -93,7 +97,7 @@ describe('stream end-to-end: real route, real socket', () => {
   });
 
   it('delivers chunks incrementally from the real /substrate/v1/stream route', async () => {
-    const res = await fetch(`${baseUrl}/substrate/v1/stream`, {
+    const res = await h2fetch(`${baseUrl}/substrate/v1/stream`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', accept: FRAMES_JSON_MIME },
       body: JSON.stringify({ 'default/slowRows': { params: {}, fields: { id: true } } })

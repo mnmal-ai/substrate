@@ -59,4 +59,17 @@ const dts = {
   dts: { resolve: [/^@mnmal-ai\/substrate-/], emitDtsOnly: true }
 };
 
-export default [js, dts];
+// The `browser` condition of `./client`: platform-neutral, and without the bin
+// banner, whose `node:module` import a browser cannot load.
+const browser = {
+  ...defineLibTsdown({
+    entry: { 'client.browser': 'src/exports/client.browser.ts' },
+    external: EXTERNAL,
+    platform: 'neutral'
+  }),
+  clean: false,
+  tsconfig: '../../tsconfig.bundle.json',
+  deps: { neverBundle: EXTERNAL, alwaysBundle: [/^@mnmal-ai\/substrate-/] }
+};
+
+export default [js, dts, browser];

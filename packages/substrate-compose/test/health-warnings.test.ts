@@ -5,7 +5,11 @@ import { defineNamespace, field } from '@mnmal-ai/substrate-sdk';
 import { FastifySubstrateServer } from '@mnmal-ai/substrate-server-fastify';
 import type { CoordinatorPlugin } from '@mnmal-ai/substrate-types';
 import { afterEach, describe, expect, it } from 'vitest';
+import { createH2Fetch } from '../../substrate-client/src/transport/h2-fetch.js';
 import { compose } from '../src/compose.js';
+
+// The server speaks HTTP/2 only; the platform fetch speaks HTTP/1.1.
+const h2fetch = createH2Fetch();
 
 const NS = 'shop';
 let server: FastifySubstrateServer;
@@ -33,7 +37,7 @@ describe('/health warnings', () => {
     });
     const { address, port } = await server.start({ host: '127.0.0.1', port: 0 });
     const url = `http://${address}:${port}`;
-    expect((await (await fetch(`${url}/health`)).json()).warnings).toEqual([]);
+    expect((await (await h2fetch(`${url}/health`)).json()).warnings).toEqual([]);
 
     const env = await app.engine.mutate({
       frame: { [`${NS}/createOrder`]: { params: { note: 'x' }, fields: { id: true } } },
@@ -45,7 +49,7 @@ describe('/health warnings', () => {
     expect(env.errors ?? []).toEqual([]);
     await app.engine.hooksSettled();
 
-    const body = await (await fetch(`${url}/health`)).json();
+    const body = await (await h2fetch(`${url}/health`)).json();
     expect(body.status).toBe('ok');
     expect(body.warnings).toHaveLength(1);
     // /health needs no key, so the hook's own message must not appear.
@@ -63,7 +67,7 @@ describe('/health pool', () => {
     server = new FastifySubstrateServer();
     await compose({ systemActor: 'test', server, dataset: pooled, datasets: {}, coordinators: [] });
     const { address, port } = await server.start({ host: '127.0.0.1', port: 0 });
-    expect((await (await fetch(`http://${address}:${port}/health`)).json()).pool).toEqual(stats);
+    expect((await (await h2fetch(`http://${address}:${port}/health`)).json()).pool).toEqual(stats);
     await server.stop({ grace: 0 });
 
     server = new FastifySubstrateServer();
@@ -75,7 +79,7 @@ describe('/health pool', () => {
       coordinators: []
     });
     const bare = await server.start({ host: '127.0.0.1', port: 0 });
-    const body = await (await fetch(`http://${bare.address}:${bare.port}/health`)).json();
+    const body = await (await h2fetch(`http://${bare.address}:${bare.port}/health`)).json();
     expect(body.status).toBe('ok');
     expect(body).not.toHaveProperty('pool');
   });

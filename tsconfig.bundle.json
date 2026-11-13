@@ -5,6 +5,7 @@
       "@mnmal-ai/substrate-bootstrap": ["./packages/substrate-bootstrap/src/index.ts"],
       "@mnmal-ai/substrate-bridge-http": ["./packages/substrate-bridge-http/src/index.ts"],
       "@mnmal-ai/substrate-client": ["./packages/substrate-client/src/index.ts"],
+      "@mnmal-ai/substrate-client/browser": ["./packages/substrate-client/src/browser.ts"],
       "@mnmal-ai/substrate-compose": ["./packages/substrate-compose/src/index.ts"],
       "@mnmal-ai/substrate-config/tsdown": ["./packages/substrate-config/src/tsdown.ts"],
       "@mnmal-ai/substrate-core": ["./packages/substrate-core/src/index.ts"],

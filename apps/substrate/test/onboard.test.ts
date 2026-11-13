@@ -4,6 +4,7 @@
  * once an `AuthConfig` is present.
  */
 
+import { createH2Fetch } from '@mnmal-ai/substrate-client';
 import { type ComposeResult, compose, signHs256 } from '@mnmal-ai/substrate-compose';
 import { HttpBridgeClient, MemoryBridgeRegistry } from '@mnmal-ai/substrate-core';
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
@@ -17,6 +18,9 @@ import type {
 } from '@mnmal-ai/substrate-types';
 import { afterEach, describe, expect, it } from 'vitest';
 import { fixturePlugin } from './_fixtures/fixture-plugin.js';
+
+// The server speaks HTTP/2 only; the platform fetch speaks HTTP/1.1.
+const h2fetch = createH2Fetch();
 
 /**
  * A read token for the auth-configured harnesses below (secret 'test-secret').
@@ -713,7 +717,7 @@ describe('GET /substrate/v1/onboard — Fastify integration', () => {
     });
     const { port } = await fastifyServer.start({ host: '127.0.0.1', port: 0 });
     try {
-      const res = await fetch(`http://127.0.0.1:${port}/substrate/v1/onboard`);
+      const res = await h2fetch(`http://127.0.0.1:${port}/substrate/v1/onboard`);
       expect(res.status).toBe(200);
       expect(res.headers.get('content-type')).toContain('application/json');
       const body = (await res.json()) as Record<string, unknown>;

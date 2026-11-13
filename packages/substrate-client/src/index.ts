@@ -1,23 +1,11 @@
-export type {
-  ProcessStat,
-  ResolverStat,
-  RuntimeErrorEntry,
-  RuntimeErrors,
-  RuntimeMetrics,
-  SlowRequest
-} from '@mnmal-ai/substrate-types';
-export type {
-  AdminApi,
-  AdminGrantChange,
-  AdminInviteInput,
-  AdminInviteResult,
-  AdminKeyAlgorithm,
-  AdminKeyRow,
-  AdminRegisterInput,
-  AdminRegisterResult,
-  AdminRevokeResult,
-  AdminUpdateResult
-} from './admin/api.js';
+/**
+ * The Node and Bun client: the browser surface, plus env-driven signing,
+ * `diagnose`, and the `node:http2` fetch that `substrateFetch` uses from here on.
+ */
+
+import { setSubstrateFetch } from './transport/default-fetch.js';
+import { createH2Fetch } from './transport/h2-fetch.js';
+
 export {
   DIAGNOSE_CHECKS,
   type DiagnoseCredential,
@@ -31,81 +19,18 @@ export {
   diagnose,
   reconcileIdentities
 } from './admin/diagnose.js';
-export {
-  CURRENT_MARK,
-  currentStep,
-  ONBOARD_STEPS,
-  type OnboardAction,
-  type OnboardStep,
-  type OnboardStepStatus,
-  type PlanOnboardingOpts,
-  planOnboarding,
-  requiredOutstanding,
-  SKIPPABLE_STEPS,
-  STEP_MARKS
-} from './admin/onboard.js';
-export {
-  type AdminBackfillChunk,
-  AdminBackfillError,
-  type AdminBackfillInput,
-  type AdminBackfillSummary,
-  type AdminDropCascade,
-  type AdminDropNamespaceInput,
-  type AdminDropResult,
-  type AdminDropTypeInput,
-  type AdminEmbedStats,
-  type AdminNormaliseInput,
-  type AdminNormaliseResult,
-  type AdminReindexInput,
-  type AdminReindexPage,
-  BACKFILL_CHUNK,
-  type SurgeryApi
-} from './admin/surgery.js';
-export { type CallOpts, SubstrateClient, type SubstrateClientOptions } from './client.js';
-export {
-  collectDiagnostics,
-  createDefaultDiagnosticsSink,
-  type Diagnostic,
-  type DiagnosticsSink
-} from './diagnostics.js';
-export { AuthError, NetworkError, SchemaDriftError, SubscribeError } from './errors.js';
+export * from './browser.js';
 export {
   type ClientFromEnv,
   type ClientFromEnvOptions,
   createClientFromEnv,
   resolveAgentCapabilities
 } from './from-env.js';
-export type {
-  NlApi,
-  NlAskRequest,
-  NlAskResult,
-  NlOutcome,
-  NlServedPack,
-  NlTrailEvent,
-  NlWireEvent
-} from './nl.js';
-export {
-  DEFAULT_MAX_WRITES,
-  type RunScriptOptions,
-  runScript,
-  type ScriptContext,
-  type ScriptMode,
-  type ScriptMutation,
-  type ScriptRecallHit,
-  type ScriptRecallInput,
-  type ScriptReport
-} from './script.js';
-// Low-level fold primitives behind `SubstrateClient.watch`, exported for consumers
-// that own their own subscription loop (e.g. a bespoke resubscribe wrapper) but
-// still want the typed-row reduction instead of hand-decoding the data envelope.
-export { reduceSubscribeRows, watchRows } from './subscribe-rows.js';
-export { noRedirectFetch, tokenAudience } from './token-target.js';
-export { substrateFetch } from './transport/default-fetch.js';
-export type { SubscribeEvent, WsOverloadResubscribeOpts } from './transport/frame-event.js';
 export {
   createH2Fetch,
-  type FetchLike,
   type H2Fetch,
   type H2FetchOptions
 } from './transport/h2-fetch.js';
-export type { QualifiedFrame } from './transport/http.js';
+
+// One process-wide HTTP/2 session pool, shared by every client that does not pass its own `fetch`.
+setSubstrateFetch(createH2Fetch());
