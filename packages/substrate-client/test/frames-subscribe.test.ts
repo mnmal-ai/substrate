@@ -485,6 +485,32 @@ describe('frames against a scripted server', () => {
     await it.return?.();
   });
 
+  it('a 429 on the first attempt is retried: a slot freed by a just-closed stream', async () => {
+    const { baseUrl, requests } = await scripted((n, res) => {
+      if (n === 1) {
+        res.writeHead(429, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ errors: [{ code: 'too_many_connections', message: 'cap' }] }));
+        return;
+      }
+      open(res);
+      send(res, snapshot('after-429'));
+    });
+    const it = client(baseUrl, { reconnect: FAST }).subscribe(TODO)[Symbol.asyncIterator]();
+    expect((await it.next()).value).toMatchObject({ kind: 'snapshot' });
+    expect(requests).toHaveLength(2);
+    await it.return?.();
+  });
+
+  it('a 429 that persists on the first attempt surfaces after a bounded number of tries', async () => {
+    const { baseUrl, requests } = await scripted((_n, res) => {
+      res.writeHead(429, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ errors: [{ code: 'too_many_connections', message: 'cap' }] }));
+    });
+    const it = client(baseUrl, { reconnect: FAST }).subscribe(TODO)[Symbol.asyncIterator]();
+    await expect(it.next()).rejects.toMatchObject({ status: 429 });
+    expect(requests).toHaveLength(4);
+  });
+
   it('a failure before any response surfaces, with no retry', async () => {
     const { baseUrl } = await scripted(() => {});
     const port = new URL(baseUrl).port;
