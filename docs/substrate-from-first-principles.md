@@ -616,7 +616,7 @@ Work that must outlive a rollback, such as an audit row recording a refusal, goe
 
 A `mutate` resolves when its transaction has committed and same-store edge propagation is complete.
 
-**What a mutation answers.** `fields` selects from each result, per frame; in a batched entry each element is projected by its own frame's `fields`. On the JSON wire, a create or update that writes rows of a declared type and names no `fields` answers with `{ id, shortId }`, not the whole written row. Ask for more with `fields`, or for everything with `fields: true`. A mutation whose result is its own struct, such as delete's `{ id, deleted }`, is returned whole. Under substrate-pack a mutation's result is encoded from its declared `returns` and carries the whole row.
+**What a mutation answers.** `fields` selects from each result, per frame; in a batched entry each element is projected by its own frame's `fields`. A create or update that writes rows of a declared type and names no `fields` answers with `{ id, shortId }`, not the whole written row. Ask for more with `fields`, or for everything with `fields: true`. A mutation whose result is its own struct, such as delete's `{ id, deleted }`, is returned whole. Under substrate-pack the same selection applies to the mutation's declared `returns`, so the result carries no `_metadata`.
 
 ### 5.4 Subscriptions
 
@@ -1123,7 +1123,7 @@ interface PackEnvelope {
 type EnvelopeShape = 'single' | 'list' | Array<'single' | 'list'>;
 ```
 
-Query results are positionally encoded from the client's field selection and the type's fields. Over HTTP, frame streams and MCP, the JSON key order of a returned row follows the request; for in-process dataset reads (`dataset.read`), key order is not part of the contract. Mutation results are encoded from the mutation's declared `returns` (§4.2); mutations have no field selection.
+Query results are positionally encoded from the client's field selection and the type's fields. Over HTTP, frame streams and MCP, the JSON key order of a returned row follows the request; for in-process dataset reads (`dataset.read`), key order is not part of the contract. Mutation results are encoded from the mutation's declared `returns` (§4.2), narrowed to the frame's `fields`.
 
 **Non-fatal sidecars.** `_completeness` and `_diagnostics` report things that went wrong without the read failing. Both are keyed by frame key, and for both **absence means nothing to report**, so older clients stay correct. They are deliberately NOT `errors`: a client doing `if (env.errors) throw` would start failing successful reads.
 

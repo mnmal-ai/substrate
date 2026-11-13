@@ -234,7 +234,7 @@ interface SerializeOpts {
    * the engine's registry entries so substrate-pack can positionally encode
    * mutation responses against their declared `returns` FieldDef.
    */
-  returnsByKey?: Record<string, FieldDef>;
+  returnsByKey?: Record<string, FieldDef | readonly FieldDef[]>;
   /**
    * Per-key namespace map for entries in `returnsByKey`. Must be supplied
    * alongside `returnsByKey`; the encoder needs the namespace to locate the
