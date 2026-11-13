@@ -15,9 +15,17 @@ export function nodeVersionRefusal(version: string): string | null {
   return null;
 }
 
+/**
+ * The refusal for this runtime, or null. Bun is exempt: it reports a Node
+ * compatibility version (24.x) that says nothing about its own security fixes.
+ */
+export function runtimeRefusal(versions: { node: string; bun?: string }): string | null {
+  return versions.bun !== undefined ? null : nodeVersionRefusal(versions.node);
+}
+
 /** Exits the process with a refusal when the running Node is below the minimum. */
 export function assertNodeVersion(): void {
-  const refusal = nodeVersionRefusal(process.versions.node);
+  const refusal = runtimeRefusal(process.versions);
   if (refusal === null) return;
   process.stderr.write(`${refusal}\n`);
   process.exit(1);
