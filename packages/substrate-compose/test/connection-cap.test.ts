@@ -237,8 +237,8 @@ const openStream = (server: MemorySubstrateServer, peerIp: string) =>
     body: Buffer.from(JSON.stringify({ 'default/Memo': { fields: { id: true } } }))
   });
 
-describe('per-client session cap', () => {
-  it('counts sessions per client, refuses past the cap, and frees a slot on close', async () => {
+describe('refused requests hold no slot', () => {
+  it('a 406 or 400 before the stream opens leaves the cap untouched', async () => {
     const server = new MemorySubstrateServer();
     registerStreamRoutes(
       server,
@@ -247,18 +247,20 @@ describe('per-client session cap', () => {
       (h) => h,
       () => {},
       undefined,
-      undefined,
-      createConnectionLimiter(2)
+      createConnectionLimiter(1)
     );
-    const first = await openStream(server, '10.0.0.1');
-    expect(first.status).toBe(200);
-    expect((await openStream(server, '10.0.0.1')).status).toBe(200);
-    const refused = await openStream(server, '10.0.0.1');
-    expect(refused.status).toBe(429);
-    expect(errorCode(refused)).toBe('too_many_sessions');
-
-    await (first.body as ReadableStream<Uint8Array>).cancel();
-    await tick();
+    const send = (accept: string, body: string) =>
+      server.inject({
+        method: 'POST',
+        path: '/substrate/v1/subscribe',
+        peerIp: '10.0.0.1',
+        headers: { accept },
+        body: Buffer.from(body)
+      });
+    for (let i = 0; i < 3; i++) {
+      expect((await send('text/event-stream', '{}')).status).toBe(406);
+      expect((await send(FRAMES_JSON_MIME, 'not json')).status).toBe(400);
+    }
     expect((await openStream(server, '10.0.0.1')).status).toBe(200);
   });
 });

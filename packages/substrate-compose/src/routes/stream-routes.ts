@@ -100,10 +100,8 @@ export function registerStreamRoutes(
   metric: MetricFn,
   /** When set, a stream ends once the credential that opened it lapses. */
   auth?: AuthConfig,
-  /** Per-client connection cap; absent → uncapped. */
-  connections?: ConnectionLimiter,
-  /** Per-client session cap; absent → uncapped. */
-  sessionCap?: ConnectionLimiter
+  /** Per-client cap on open streams; absent → uncapped. */
+  connections?: ConnectionLimiter
 ): void {
   /**
    * Every stream response currently held open, for the graceful-shutdown walk.
@@ -149,14 +147,6 @@ export function registerStreamRoutes(
           ? () => {}
           : connections.acquire(auth === undefined ? null : parsed.identity, clientIp);
       if (release === null) return errorResponse(429, 'too_many_connections');
-      const releaseSlot =
-        sessionCap === undefined
-          ? () => {}
-          : sessionCap.acquire(auth === undefined ? null : parsed.identity, clientIp);
-      if (releaseSlot === null) {
-        release();
-        return errorResponse(429, 'too_many_sessions');
-      }
       // Declared BEFORE the transport so `onCancel` can close over it. The
       // `?.` covers the window where the client disconnects before the session
       // exists; the later spurious-cancel window is covered by `cancel` being
@@ -196,10 +186,6 @@ export function registerStreamRoutes(
       let stopWatch = (): void => {};
       /** Set while `start` is in flight. */
       let starting: Promise<void> | undefined;
-      const freeSlots = (): void => {
-        release();
-        releaseSlot();
-      };
       const watched: StreamTransport = {
         emit: async (frame, fieldsByKey) => {
           if (registering) {
@@ -214,9 +200,9 @@ export function registerStreamRoutes(
           // responses in it.
           live.delete(record);
           // An abort can land while the engine's snapshot read still runs; the
-          // slots stay held until `start` settles so aborts can't outrun the caps.
-          if (starting === undefined) freeSlots();
-          else void starting.then(freeSlots, freeSlots);
+          // slot stays held until `start` settles so aborts can't outrun the cap.
+          if (starting === undefined) release();
+          else void starting.then(release, release);
           stopWatch();
           transport.close(reason);
         }
@@ -235,7 +221,7 @@ export function registerStreamRoutes(
           watched
         );
       } catch (err) {
-        // No session will ever close `watched`, so close it here: it holds both slots.
+        // No session will ever close `watched`, so close it here: it holds a slot.
         watched.close('complete');
         metric('stream_start_failed', {
           mode,

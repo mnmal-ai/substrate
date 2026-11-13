@@ -114,7 +114,7 @@ export interface ComposeOpts {
   bridges?: BridgeRegistry;
   /**
    * JWT auth config (§5.12). When supplied, route handlers for
-   * `/substrate/v1/query`, `/substrate/v1/mutate`, and the `/substrate/v1/ws` upgrade require a
+   * `/substrate/v1/query`, `/substrate/v1/mutate`, `/substrate/v1/subscribe` and `/substrate/v1/stream` require a
    * valid `Authorization: Bearer <token>` header; missing / invalid tokens
    * return 401 with `{ code: 'unauthorized' }`. When absent, every request
    * passes through unauthenticated, attributed to `systemActor`.

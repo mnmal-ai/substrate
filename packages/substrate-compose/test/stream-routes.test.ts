@@ -257,7 +257,6 @@ describe('stream routes', () => {
       passThroughGate,
       (name) => metrics.push(name),
       undefined,
-      undefined,
       createConnectionLimiter(1)
     );
     const spy = vi.spyOn(StreamSession, 'create').mockImplementationOnce(() => {

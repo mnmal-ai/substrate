@@ -212,7 +212,6 @@ describe('frame streams through the route', () => {
       (h) => h,
       () => {},
       undefined,
-      undefined,
       createConnectionLimiter(1)
     );
     const open = () =>

@@ -19,12 +19,6 @@ import { ipCapKey } from './helpers.js';
 /** Most long-lived responses one client may hold open at once. */
 export const MAX_CONNECTIONS_PER_CLIENT = 64;
 
-/**
- * Most subscribe/stream sessions one client may hold open at once, across
- * every open response. Each one is engine work on every write.
- */
-export const MAX_SESSIONS_PER_CLIENT = 1024;
-
 export interface ConnectionLimiter {
   /**
    * A release function, or `null` when the client is at its cap. Release is

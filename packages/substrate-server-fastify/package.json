@@ -2,7 +2,7 @@
   "name": "@mnmal-ai/substrate-server-fastify",
   "version": "1.0.0-alpha.18",
   "private": true,
-  "description": "Fastify-backed SubstrateServer — the production HTTP/WS transport for Substrate.",
+  "description": "Fastify-backed SubstrateServer — the production HTTP transport for Substrate.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",

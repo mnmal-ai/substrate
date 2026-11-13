@@ -38,7 +38,7 @@ import {
 import type { IdentityDirectoryConfig } from '../_system/types.js';
 import type { AuthConfig } from '../auth.js';
 import { type ConfigReport, configRouteHandler } from '../routes/config-echo.js';
-import { createConnectionLimiter, MAX_SESSIONS_PER_CLIENT } from '../routes/connection-limit.js';
+import { createConnectionLimiter } from '../routes/connection-limit.js';
 import { federatedSchemaRoute } from '../routes/federated-schema.js';
 import { healthRoute } from '../routes/health.js';
 import { withRequestContext } from '../routes/helpers.js';
@@ -190,17 +190,7 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
     gate(mutateRoute(engine, trustedProxies, auth !== undefined), 'mutate')
   );
   const connections = createConnectionLimiter();
-  const sessionCap = createConnectionLimiter(MAX_SESSIONS_PER_CLIENT);
-  registerStreamRoutes(
-    server,
-    engine,
-    trustedProxies,
-    gate,
-    routeEventMetric,
-    auth,
-    connections,
-    sessionCap
-  );
+  registerStreamRoutes(server, engine, trustedProxies, gate, routeEventMetric, auth, connections);
 
   server.observeRequests?.((o) => stats.recordRequest(o.op, o.ok, o.durationMs));
   server.route('GET', '/substrate/v1/metrics', gate(metricsRouteHandler(stats), 'read'));

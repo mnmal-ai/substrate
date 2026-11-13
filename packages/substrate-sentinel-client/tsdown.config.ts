@@ -1,5 +1,5 @@
 import { defineLibTsdown } from '@mnmal-ai/substrate-config/tsdown';
 
 export default defineLibTsdown({
-  external: ['@mnmal-ai/substrate-core', '@mnmal-ai/substrate-types', 'ws', 'node:module']
+  external: ['@mnmal-ai/substrate-core', '@mnmal-ai/substrate-types', 'node:module']
 });
