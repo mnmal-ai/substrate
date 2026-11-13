@@ -49,7 +49,7 @@ function abortError(signal: AbortSignal): Error {
   return new DOMException('This operation was aborted', 'AbortError');
 }
 
-function toHeaderRecord(init: HeadersInit | undefined): Record<string, string> {
+function toHeaderRecord(init: RequestInit['headers']): Record<string, string> {
   const out: Record<string, string> = {};
   new Headers(init).forEach((value, name) => {
     if (!CONNECTION_HEADERS.has(name)) out[name] = value;
@@ -57,7 +57,7 @@ function toHeaderRecord(init: HeadersInit | undefined): Record<string, string> {
   return out;
 }
 
-function toBodyBytes(body: BodyInit | null | undefined): Uint8Array | string | undefined {
+function toBodyBytes(body: RequestInit['body']): Uint8Array | string | undefined {
   if (body === undefined || body === null) return undefined;
   if (typeof body === 'string' || body instanceof Uint8Array) return body;
   if (body instanceof ArrayBuffer) return new Uint8Array(body);
