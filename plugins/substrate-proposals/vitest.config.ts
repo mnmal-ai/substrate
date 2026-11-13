@@ -2,6 +2,8 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
+    // No other process waits on index-build locks here, so skip the fairness pause.
+    env: { SUBSTRATE_INDEX_BUILD_YIELD_MS: '0' },
     include: ['test/**/*.test.ts'],
     // Pins search_path to a per-package schema BEFORE any worker forks.
     globalSetup: ['./test/_global-setup.ts'],

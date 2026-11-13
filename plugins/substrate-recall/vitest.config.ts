@@ -9,6 +9,8 @@ announcePgGating(process.env.POSTGRES_URL, { packageName: 'substrate-recall' });
 
 export default defineConfig({
   test: {
+    // No other process waits on index-build locks here, so skip the fairness pause.
+    env: { SUBSTRATE_INDEX_BUILD_YIELD_MS: '0' },
     include: ['test/**/*.test.ts'],
     environment: 'node',
     passWithNoTests: true,

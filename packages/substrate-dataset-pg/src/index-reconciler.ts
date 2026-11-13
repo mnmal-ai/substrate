@@ -176,8 +176,11 @@ function logChanged(name: string, key: string, text: string): void {
   process.stderr.write(text);
 }
 
-/** Pause after a non-unique build releases its table lock, so a polling waiter gets it. */
-const YIELD_MS = 300;
+/**
+ * Pause after a non-unique build releases its table lock, so a polling waiter
+ * gets it. Test suites, where no other process waits, set it to 0.
+ */
+const YIELD_MS = Number(process.env.SUBSTRATE_INDEX_BUILD_YIELD_MS ?? 300);
 
 /** Marks an index this reconciler built or adopted. */
 const MARK = 'substrate: reconciled';
