@@ -92,6 +92,7 @@ async function* run(
   let overloadAttempts = 0;
   let lastOverloadAt: number | null = null;
   let opened = false;
+  let busyRetries = 0;
   const accept = opts.wire === 'pack' ? FRAMES_PACK_MIME : FRAMES_JSON_MIME;
 
   for (;;) {
@@ -112,6 +113,13 @@ async function* run(
       body = res.body;
     } catch (err) {
       if (signal.aborted) return;
+      // A 429 is the per-client stream cap, often a slot the server has not yet freed from a
+      // stream the caller just closed: retry it a few times before giving up.
+      if (!opened && isBusy(err) && busyRetries < BUSY_RETRIES) {
+        busyRetries++;
+        if (!(await sleep(backoff.nextDelay(), signal))) return;
+        continue;
+      }
       // Before any response a failure is most likely a wrong endpoint or token, so it surfaces.
       if (err instanceof AuthError || !opened || !subscribe || refused(err)) throw err;
       if (!(await sleep(backoff.nextDelay(), signal))) return;
@@ -185,6 +193,13 @@ async function* run(
     }
     if (!(await sleep(next.delayMs, signal))) return;
   }
+}
+
+/** Retries of a 429 before the first response, after which it surfaces. */
+const BUSY_RETRIES = 3;
+
+function isBusy(err: unknown): boolean {
+  return err instanceof NetworkError && err.status === 429;
 }
 
 /**

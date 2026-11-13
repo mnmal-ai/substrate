@@ -259,7 +259,9 @@ function encodePositionalForShape(
     });
   }
   const one = frameDef(def, 0);
-  if (shape === 'list') {
+  // A `list` shape over an element def; a def that is itself the list (a
+  // mutation declaring `returns: list`) positions the whole value instead.
+  if (shape === 'list' && one.kind !== 'list') {
     if (!Array.isArray(value)) {
       throw new PackEncodeError('expected array for list shape', []);
     }
