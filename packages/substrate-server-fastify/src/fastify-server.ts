@@ -26,6 +26,7 @@
 
 import { constants as h2constants, type ServerHttp2Stream } from 'node:http2';
 import type { Socket } from 'node:net';
+import type { TLSSocket } from 'node:tls';
 import compressPlugin from '@fastify/compress';
 import corsPlugin from '@fastify/cors';
 import type {
@@ -119,6 +120,8 @@ export class FastifySubstrateServer implements SubstrateServer {
   // Open connections, so `stop()` can destroy any still open at `grace`. Not
   // sessions: a refused HTTP/1.1 socket never becomes one, and Node holds it open.
   readonly #sockets = new Set<Socket>();
+  // TLS sockets refused for not offering h2; `stop()` destroys them at once.
+  readonly #refused = new Set<TLSSocket>();
 
   constructor(options: FastifySubstrateServerOptions = {}) {
     const {
@@ -158,6 +161,13 @@ export class FastifySubstrateServer implements SubstrateServer {
     this.fastify.server.on('connection', (socket: Socket) => {
       this.#sockets.add(socket);
       socket.once('close', () => this.#sockets.delete(socket));
+    });
+    // Node answers a TLS client that offered no h2 with a 403, then holds the
+    // socket for `unknownProtocolTimeout` (10 s), which would stall `stop()`.
+    this.fastify.server.on('secureConnection', (socket: TLSSocket) => {
+      if (socket.alpnProtocol === 'h2') return;
+      this.#refused.add(socket);
+      socket.once('close', () => this.#refused.delete(socket));
     });
 
     // Raw-bytes parsers for binary payloads (substrate-pack). Everything else
@@ -282,14 +292,19 @@ export class FastifySubstrateServer implements SubstrateServer {
     }
     // `fastify.close()` sends every session a GOAWAY: no new streams, and the
     // open ones finish. At `grace`, any connection still open is destroyed.
+    for (const socket of this.#refused) socket.destroy();
     const closed = this.fastify.close();
     const grace = opts?.grace;
     if (grace !== undefined) {
       let timer: NodeJS.Timeout | undefined;
       const late = await Promise.race([
-        closed.then(() => false),
+        closed.then(
+          () => false,
+          () => false
+        ),
         new Promise<boolean>((resolve) => {
           timer = setTimeout(() => resolve(true), grace);
+          timer.unref();
         })
       ]);
       clearTimeout(timer);

@@ -46,7 +46,7 @@ export function encodeWsFrame(value: unknown, mode: WireMode): string | Uint8Arr
 export function decodeWsEnvelope<T = unknown>(raw: unknown, mode: WireMode): T {
   if (mode === 'pack') return inbound.unpack(toBytes(raw)) as T;
   if (typeof raw === 'string') return JSON.parse(raw) as T;
-  return JSON.parse(Buffer.from(toBytes(raw)).toString('utf8')) as T;
+  return JSON.parse(new TextDecoder().decode(toBytes(raw))) as T;
 }
 
 /**
@@ -79,7 +79,7 @@ export function isPlainRequestData(value: unknown, depth = 0): boolean {
 function toBytes(raw: unknown): Uint8Array {
   if (raw instanceof Uint8Array) return raw;
   if (raw instanceof ArrayBuffer) return new Uint8Array(raw);
-  return Buffer.from(raw as ArrayBufferLike);
+  return new Uint8Array(raw as ArrayBufferLike);
 }
 
 // ---------------------------------------------------------------------------

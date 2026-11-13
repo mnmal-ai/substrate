@@ -148,7 +148,24 @@ describe.skipIf(!hasOpenssl())('FastifySubstrateServer over TLS: HTTP/2 only', (
     if (typeof outcome === 'object') {
       expect(outcome.status).toBe(403);
       expect(outcome.body).not.toContain('pong');
+    } else {
+      expect(outcome).not.toBe('');
     }
+  });
+
+  it('stop() without grace is not held open by a refused HTTP/1.1 socket', async () => {
+    const port = await start();
+    await new Promise<void>((resolve) => {
+      https
+        .get({ host: '127.0.0.1', port, path: '/ping', ca: tls.cert }, (r) => {
+          r.resume();
+          resolve();
+        })
+        .on('error', () => resolve());
+    });
+    const t0 = performance.now();
+    await (servers.pop() as FastifySubstrateServer).stop();
+    expect(performance.now() - t0).toBeLessThan(2000);
   });
 
   it('streams a ReadableStream body over h2', async () => {

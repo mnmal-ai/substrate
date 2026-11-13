@@ -21,7 +21,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsdown && node scripts/copy-plugin-configs.mjs",
+    "build": "tsdown && node scripts/copy-plugin-configs.mjs && node scripts/check-browser-bundle.mjs",
     "prepack": "TURBO_TELEMETRY_DISABLED=1 turbo run build --filter=@mnmal-ai/substrate",
     "dev": "tsx src/bin/substrate.ts serve",
     "test": "vitest run",

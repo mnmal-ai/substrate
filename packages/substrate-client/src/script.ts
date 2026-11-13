@@ -126,7 +126,7 @@ export async function runScript(
     maxWrites = DEFAULT_MAX_WRITES,
     maxPages = DEFAULT_MAX_PAGES
   } = opts;
-  const log = opts.log ?? ((line: string) => process.stderr.write(`${line}\n`));
+  const log = opts.log ?? ((line: string) => console.error(line));
   const mutations: ScriptMutation[] = [];
   const warnings: string[] = [];
   const stats = { queries: 0, writes: 0, ms: 0 };
