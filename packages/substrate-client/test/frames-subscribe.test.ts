@@ -127,6 +127,8 @@ async function scripted(
 ): Promise<{ baseUrl: string; requests: http2.Http2ServerRequest[] }> {
   const requests: http2.Http2ServerRequest[] = [];
   const server = http2.createServer((req, res) => {
+    // A client cancel resets the stream mid-write; that is the client's choice, not a fault here.
+    res.stream.on('error', () => {});
     if (req.url === '/substrate/v1/federated-schema') {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify(SCHEMA));
