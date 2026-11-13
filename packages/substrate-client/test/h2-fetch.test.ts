@@ -1,7 +1,7 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import http2 from 'node:http2';
-import type { AddressInfo } from 'node:net';
+import net, { type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -101,10 +101,13 @@ async function start(secure: boolean, handler: Handler = echo): Promise<TestServ
     ? http2.createSecureServer({ cert: tls.cert, key: tls.key, allowHTTP1: false })
     : http2.createServer();
   const t: TestServer = { url: '', sessions: 0, versions: [], server };
-  server.on('session', () => {
+  server.on('session', (session) => {
     t.sessions++;
+    // A client that exits or cancels mid-body resets the connection; that is expected here.
+    session.on('error', () => {});
   });
   server.on('stream', (stream, headers) => {
+    stream.on('error', () => {});
     t.versions.push('2.0');
     handler(stream as http2.ServerHttp2Stream, headers);
   });
@@ -213,15 +216,25 @@ describe.skipIf(!hasOpenssl())('createH2Fetch', () => {
     await expect(make()(`${s.url}/x`)).rejects.toThrow();
   });
 
-  it('lets a process exit without close()', async () => {
-    const s = await start(false);
+  it.each([
+    ['after reading the body', 'read'],
+    ['with the body never read', 'noread']
+  ])('lets a process exit without close(), %s', async (_what, mode) => {
+    const s = await start(false, (stream) => {
+      stream.respond({ ':status': 200 });
+      // A body larger than one read, so an unread one is still in flight.
+      stream.end(Buffer.alloc(256 * 1024, 120));
+    });
     const mod = fileURLToPath(new URL('../src/transport/h2-fetch.ts', import.meta.url));
     const child = spawn(
       process.execPath,
-      [fileURLToPath(new URL('./fixtures/h2-exit-child.mjs', import.meta.url)), mod, `${s.url}/x`],
-      {
-        stdio: ['ignore', 'pipe', 'pipe']
-      }
+      [
+        fileURLToPath(new URL('./fixtures/h2-exit-child.mjs', import.meta.url)),
+        mod,
+        `${s.url}/x`,
+        mode
+      ],
+      { stdio: ['ignore', 'pipe', 'pipe'] }
     );
     let out = '';
     child.stdout.on('data', (d: Buffer) => {
@@ -241,5 +254,72 @@ describe.skipIf(!hasOpenssl())('createH2Fetch', () => {
     expect(out.trim()).toBe('status 200');
     expect(code).toBe(0);
     expect(performance.now() - t0).toBeLessThan(2000);
+  });
+
+  it('rejects, not hangs, when the server drops the connection before responding', async () => {
+    const s = await start(false, (stream) => {
+      stream.session?.destroy();
+    });
+    await expect(make()(`${s.url}/drop`)).rejects.toThrow();
+  });
+
+  it('an abort during connect rejects at once with AbortError', async () => {
+    // Accepts TCP and never speaks TLS, so the connect hangs.
+    const sockets = new Set<net.Socket>();
+    const raw = net.createServer((socket) => {
+      sockets.add(socket);
+      socket.on('error', () => {});
+    });
+    await new Promise<void>((r) => raw.listen(0, '127.0.0.1', () => r()));
+    const port = (raw.address() as AddressInfo).port;
+    try {
+      const ac = new AbortController();
+      const pending = make({ connectTimeoutMs: 30_000 })(`https://127.0.0.1:${port}/x`, {
+        signal: ac.signal
+      });
+      setTimeout(() => ac.abort(), 50);
+      const t0 = performance.now();
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+      expect(performance.now() - t0).toBeLessThan(1000);
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      raw.close();
+    }
+  });
+
+  it('an abort after the response errors the body with AbortError', async () => {
+    const s = await start(false, (stream) => {
+      stream.respond({ ':status': 200 });
+      stream.write('first');
+    });
+    const ac = new AbortController();
+    const res = await make()(`${s.url}/slow`, { signal: ac.signal });
+    const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+    await reader.read();
+    ac.abort();
+    await expect(reader.read()).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('cancelling the body resets the server stream', async () => {
+    let closed = false;
+    const s = await start(false, (stream) => {
+      stream.respond({ ':status': 200 });
+      stream.write('first');
+      stream.on('close', () => {
+        closed = true;
+      });
+    });
+    const res = await make()(`${s.url}/c`);
+    await (res.body as ReadableStream<Uint8Array>).cancel();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(closed).toBe(true);
+  });
+
+  it('refuses a 3xx under the default redirect mode too', async () => {
+    const s = await start(false, (stream) => {
+      stream.respond({ ':status': 301, location: '/elsewhere' });
+      stream.end();
+    });
+    await expect(make()(`${s.url}/r`)).rejects.toThrow(/redirect/);
   });
 });
