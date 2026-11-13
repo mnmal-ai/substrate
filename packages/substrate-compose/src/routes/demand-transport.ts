@@ -11,8 +11,14 @@ import type { FieldInput } from '@mnmal-ai/substrate-types';
 import type { CloseReason, SessionFrame, StreamTransport } from './stream-session.js';
 
 const DEFAULT_HEARTBEAT_MS = 20_000;
-/** How long a data frame may wait for the consumer to read before the stream is cut off. */
-export const DEFAULT_STALL_MS = 60_000;
+/**
+ * How long a data frame may wait for the consumer to read before the stream is
+ * cut off. Generous on purpose: a park also waits on every buffer between here
+ * and a slow client (a 1 KB/s reader parks ~64 s), and dead peers are caught
+ * by the server's HTTP/2 pings, so this only has to catch a live peer that
+ * stopped reading.
+ */
+export const DEFAULT_STALL_MS = 300_000;
 
 export interface DemandTransportOptions {
   /** One frame as wire bytes; `fieldsByKey` is absent for route-owned frames. */
@@ -31,6 +37,8 @@ export interface DemandTransportOptions {
   stallMs?: number;
   /** Fired when the CONSUMER tears down — i.e. the client disconnected — or stalls. */
   onCancel?: () => void;
+  /** Fired, before `onCancel`, when the stream is cut off for `stallMs`. */
+  onStall?: () => void;
 }
 
 export interface DemandTransport {
@@ -115,6 +123,7 @@ export function createDemandTransport(opts: DemandTransportOptions): DemandTrans
     } catch {
       // Already closed.
     }
+    opts.onStall?.();
     opts.onCancel?.();
   };
 

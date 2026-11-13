@@ -17,8 +17,11 @@ const NamespaceSchema = z
 export const SentinelBootstrapConfigSchema = z
   .object({
     namespace: NamespaceSchema.default('sentinel'),
-    /** Interval between heartbeat frames to every open peer, in milliseconds. */
-    pingIntervalMs: z.number().int().positive().default(30_000),
+    /**
+     * Interval between heartbeat frames to every open peer, in milliseconds. At
+     * most 30 s: sentinel clients drop a watch stream silent for 95 s.
+     */
+    pingIntervalMs: z.number().int().positive().max(30_000).default(30_000),
     /** Ignored: a peer is online while its stream is open. Accepted so older config files still load. */
     staleThresholdMs: z.number().int().positive().optional()
   })

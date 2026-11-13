@@ -7,7 +7,9 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 
 /** Each frame as its JSON text, so a read shows which frame it was. */
-function make(opts: { heartbeatMs?: number; stallMs?: number; onCancel?: () => void } = {}) {
+function make(
+  opts: { heartbeatMs?: number; stallMs?: number; onCancel?: () => void; onStall?: () => void } = {}
+) {
   return createDemandTransport({
     encode: (frame) => enc.encode(JSON.stringify(frame)),
     heartbeat: enc.encode('HB'),
@@ -133,15 +135,17 @@ describe('demand transport stall deadline', () => {
   it('a consumer that stops reading with data waiting is cut off at stallMs', async () => {
     vi.useFakeTimers();
     try {
-      const onCancel = vi.fn();
-      const { transport, body } = make({ stallMs: 1000, onCancel });
+      const order: string[] = [];
+      const onCancel = vi.fn(() => order.push('cancel'));
+      const onStall = vi.fn(() => order.push('stall'));
+      const { transport, body } = make({ stallMs: 1000, onCancel, onStall });
       const reader = body.getReader();
       const parked = transport.emit(dataFrame('s1'), FIELDS);
       await vi.advanceTimersByTimeAsync(999);
       expect(onCancel).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
       await parked;
-      expect(onCancel).toHaveBeenCalledTimes(1);
+      expect(order).toEqual(['stall', 'cancel']);
       // The body errors rather than ending cleanly, so the client sees a broken stream.
       await expect(reader.read()).rejects.toThrow(/consumer_stalled/);
     } finally {

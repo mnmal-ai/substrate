@@ -15,7 +15,7 @@ cd <runtime-dir>        # the directory SUBSTRATE_PLUGIN_DIR points at
 pnpm add @mnmal-ai/substrate-sentinel@next
 ```
 
-Defaults in `default-config.json`: `namespace: "sentinel"`, `pingIntervalMs: 30000` (how often each open stream gets a heartbeat frame). `staleThresholdMs` is still accepted but ignored: a peer is online while its stream is open. Override them in `<SUBSTRATE_PLUGIN_DIR>/substrate-sentinel.config.json`.
+Defaults in `default-config.json`: `namespace: "sentinel"`, `pingIntervalMs: 30000` (how often each open stream gets a heartbeat frame; at most 30000, since sentinel clients drop a watch stream silent for 95 s). `staleThresholdMs` is still accepted but ignored: a peer is online while its stream is open. Override them in `<SUBSTRATE_PLUGIN_DIR>/substrate-sentinel.config.json`.
 
 Routes, under `/substrate/v1/plugins/substrate-sentinel`: `GET /status`; `POST /register` (needs `mutate`) and `GET /watch` (needs `read`), each a stream of length-prefixed JSON frames.
 

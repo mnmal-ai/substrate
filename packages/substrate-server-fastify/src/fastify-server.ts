@@ -101,8 +101,8 @@ export interface FastifySubstrateServerOptions {
    */
   requestTimeout?: number;
   /**
-   * Ping every HTTP/2 session this often, and destroy a session whose previous
-   * ping is still unanswered: a peer that died without closing its socket.
+   * Ping every HTTP/2 session this often, and destroy a session that has left
+   * two pings in a row unanswered: a peer that died without closing its socket.
    * Default 30 000. `0` disables.
    */
   pingIntervalMs?: number;
@@ -564,22 +564,24 @@ function boundH2Requests(fastify: FastifyInstance, ms: number): void {
 }
 
 /**
- * Ping each HTTP/2 session every `ms`; a session whose last ping is still
- * unanswered at the next tick is destroyed. That is how a peer that vanished
- * without closing its socket is noticed, and its streams' close paths run.
+ * Ping each HTTP/2 session every `ms`; a session with two pings in a row
+ * unanswered is destroyed. That is how a peer that vanished without closing
+ * its socket is noticed, and its streams' close paths run. Two, not one: a
+ * ping can queue behind a full write buffer on a slow link, or its ack behind
+ * a blocked event loop.
  */
 function pingSessions(fastify: FastifyInstance, ms: number): void {
   fastify.server.on('session', (session: ServerHttp2Session) => {
-    let waiting = false;
+    let unanswered = 0;
     const timer = setInterval(() => {
-      if (waiting) {
+      if (unanswered >= 2) {
         session.destroy();
         return;
       }
-      waiting = true;
+      unanswered++;
       try {
         session.ping((err) => {
-          if (err === null) waiting = false;
+          if (err === null) unanswered = 0;
         });
       } catch {
         // The session is closing.
