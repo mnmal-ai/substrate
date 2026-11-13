@@ -22,7 +22,11 @@ import { defineNamespace, field } from '@mnmal-ai/substrate-sdk';
 import { FastifySubstrateServer } from '@mnmal-ai/substrate-server-fastify';
 import type { CoordinatorPlugin } from '@mnmal-ai/substrate-types';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { createH2Fetch } from '../../substrate-client/src/transport/h2-fetch.js';
 import { compose } from '../src/compose.js';
+
+// The server speaks HTTP/2 only; the platform fetch speaks HTTP/1.1.
+const h2fetch = createH2Fetch();
 
 const NS = 'contract';
 const KEY = `${NS}/Note`;
@@ -138,7 +142,7 @@ describe('the namespace-scoped schema carries the operator contract', () => {
     operators: Record<string, string[]>;
     extensionOperators: string[];
   }> {
-    const res = await fetch(`${baseUrl}/substrate/v1/schema/${NS}/Note`);
+    const res = await h2fetch(`${baseUrl}/substrate/v1/schema/${NS}/Note`);
     return (await res.json()) as {
       fields: Record<string, ServedField>;
       operators: Record<string, string[]>;
@@ -155,7 +159,7 @@ describe('the namespace-scoped schema carries the operator contract', () => {
     // A json field's operators apply only inside a path predicate, so that is
     // the form its published list promises.
     const predicate = kind === 'scalar.json' ? { path: ['k'], [op]: operand } : { [op]: operand };
-    const res = await fetch(`${baseUrl}/substrate/v1/query`, {
+    const res = await h2fetch(`${baseUrl}/substrate/v1/query`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -192,7 +196,7 @@ describe('the namespace-scoped schema carries the operator contract', () => {
   });
 
   it('serves it on the namespace route too, so a caller need not fetch a type', async () => {
-    const res = await fetch(`${baseUrl}/substrate/v1/schema/${NS}`);
+    const res = await h2fetch(`${baseUrl}/substrate/v1/schema/${NS}`);
     const body = (await res.json()) as { operators?: Record<string, string[]>; types?: unknown };
 
     expect(body.types).toBeDefined();
@@ -203,7 +207,7 @@ describe('the namespace-scoped schema carries the operator contract', () => {
     // onboard publishes the same set as `filterOperators`. If they ever
     // disagree, one of them is lying about what the validator will accept.
     const contract = await typeContract();
-    const onboard = (await (await fetch(`${baseUrl}/substrate/v1/onboard`)).json()) as {
+    const onboard = (await (await h2fetch(`${baseUrl}/substrate/v1/onboard`)).json()) as {
       filterOperators?: string[];
       instructions?: { filterOperators?: string[] };
     };

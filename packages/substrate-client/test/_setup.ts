@@ -1,27 +1,21 @@
+/**
+ * msw for the test files that mock the network. Import it from such a file; it
+ * is not a global setup file, because msw's socket interception stalls the
+ * node:http2 connections the real-server tests make. msw intercepts the
+ * platform fetch, so these files route `substrateFetch` through it.
+ */
+
 import type { HttpHandler } from 'msw';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll } from 'vitest';
+import { setSubstrateFetch } from '../src/transport/default-fetch.js';
 
 export const mockServer = setupServer();
 
-beforeAll(() =>
-  mockServer.listen({
-    // Pass ws:// requests through unintercepted so WsTransport tests can use
-    // real WebSocketServer instances. HTTP unhandled requests still error.
-    onUnhandledFrame({ frame, defaults }) {
-      if (frame.protocol === 'ws') return;
-      const { request } = frame.data as { request: Request };
-      // Integration tests use real in-process servers on 127.0.0.1 — let them through.
-      try {
-        const { hostname } = new URL(request.url);
-        if (hostname === '127.0.0.1' || hostname === 'localhost') return;
-      } catch {
-        // Malformed URL — fall through to error.
-      }
-      defaults.error();
-    }
-  })
-);
+beforeAll(() => {
+  setSubstrateFetch((input, init) => globalThis.fetch(input, init));
+  mockServer.listen({ onUnhandledFrame: 'error' });
+});
 afterEach(() => mockServer.resetHandlers());
 afterAll(() => mockServer.close());
 

@@ -1,6 +1,10 @@
 import type { RuntimeOp } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
+import { createH2Fetch } from '../../substrate-client/src/transport/h2-fetch.js';
 import { FastifySubstrateServer } from '../src/index.js';
+
+// The server speaks HTTP/2 only; the platform fetch speaks HTTP/1.1.
+const h2fetch = createH2Fetch();
 
 function track(server: FastifySubstrateServer) {
   const events: Array<[RuntimeOp, 1 | -1]> = [];
@@ -24,7 +28,7 @@ describe('FastifySubstrateServer observeInFlight', () => {
     server.route('POST', '/substrate/v1/query', async () => ({ status: 200, body: '{}' }));
     const base = await boot(server);
     try {
-      await fetch(`${base}/substrate/v1/query`, { method: 'POST', body: '{}' });
+      await h2fetch(`${base}/substrate/v1/query`, { method: 'POST', body: '{}' });
       expect(t.events).toEqual([
         ['query', 1],
         ['query', -1]
@@ -42,7 +46,7 @@ describe('FastifySubstrateServer observeInFlight', () => {
     });
     const base = await boot(server);
     try {
-      const res = await fetch(`${base}/substrate/v1/mutate`, { method: 'POST', body: '{}' });
+      const res = await h2fetch(`${base}/substrate/v1/mutate`, { method: 'POST', body: '{}' });
       expect(res.status).toBe(500);
       expect(t.events).toEqual([
         ['mutate', 1],
@@ -60,7 +64,7 @@ describe('FastifySubstrateServer observeInFlight', () => {
     server.route('GET', '/health', async () => ({ status: 200, body: 'ok' }));
     const base = await boot(server);
     try {
-      await fetch(`${base}/health`);
+      await h2fetch(`${base}/health`);
       expect(t.events).toEqual([]);
     } finally {
       await server.stop();
@@ -80,8 +84,8 @@ describe('FastifySubstrateServer observeInFlight', () => {
     });
     const base = await boot(server);
     try {
-      const a = fetch(`${base}/substrate/v1/query`, { method: 'POST', body: '{}' });
-      const b = fetch(`${base}/substrate/v1/query`, { method: 'POST', body: '{}' });
+      const a = h2fetch(`${base}/substrate/v1/query`, { method: 'POST', body: '{}' });
+      const b = h2fetch(`${base}/substrate/v1/query`, { method: 'POST', body: '{}' });
       await new Promise((r) => setTimeout(r, 100));
       expect(t.level()).toBe(2);
       release();

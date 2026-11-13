@@ -2,15 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { FastifySubstrateServer } from '../src/index.js';
 
 describe('FastifySubstrateServer HTTP', () => {
-  it('bounds how long a client may take to send a request, 30s by default', () => {
-    // Node checks the bound on a 30s sweep, too slow to exercise end to end.
-    const timeoutOf = (s: FastifySubstrateServer): number =>
-      (s as unknown as { fastify: { server: { requestTimeout: number } } }).fastify.server
-        .requestTimeout;
-    expect(timeoutOf(new FastifySubstrateServer())).toBe(30_000);
-    expect(timeoutOf(new FastifySubstrateServer({ requestTimeout: 5000 }))).toBe(5000);
-  });
-
   it('routes GET and returns the handler response', async () => {
     const server = new FastifySubstrateServer();
     server.route('GET', '/ping', async () => ({

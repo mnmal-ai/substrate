@@ -10,12 +10,16 @@
  * structured terminal frame.
  */
 
+import { createH2Fetch } from '@mnmal-ai/substrate-client';
 import { type ComposeResult, compose } from '@mnmal-ai/substrate-compose';
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
 import { decodeStreamFrames, FRAMES_JSON_MIME } from '@mnmal-ai/substrate-pack';
 import { FastifySubstrateServer } from '@mnmal-ai/substrate-server-fastify';
 import { afterEach, describe, expect, it } from 'vitest';
 import { fixturePlugin } from './_fixtures/fixture-plugin.js';
+
+// The server speaks HTTP/2 only; the platform fetch speaks HTTP/1.1.
+const h2fetch = createH2Fetch();
 
 interface Frame {
   readonly kind: string;
@@ -96,7 +100,7 @@ describe('frame-stream graceful shutdown', () => {
     const { port } = await server.start({ host: '127.0.0.1', port: 0 });
 
     abort = new AbortController();
-    const res = await fetch(`http://127.0.0.1:${port}/substrate/v1/subscribe`, {
+    const res = await h2fetch(`http://127.0.0.1:${port}/substrate/v1/subscribe`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', accept: FRAMES_JSON_MIME },
       body: JSON.stringify({ 'default/Todo': { params: {}, fields: { id: true } } }),

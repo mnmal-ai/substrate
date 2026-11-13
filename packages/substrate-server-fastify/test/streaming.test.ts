@@ -30,7 +30,11 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { createH2Fetch } from '../../substrate-client/src/transport/h2-fetch.js';
 import { FastifySubstrateServer } from '../src/index.js';
+
+// The server speaks HTTP/2 only; the platform fetch speaks HTTP/1.1.
+const h2fetch = createH2Fetch();
 
 const encoder = new TextEncoder();
 
@@ -102,7 +106,7 @@ describe('FastifySubstrateServer streaming', () => {
   });
 
   it('streams ReadableStream response bodies chunk-by-chunk over the wire', async () => {
-    const res = await fetch(`${baseUrl}/stream`);
+    const res = await h2fetch(`${baseUrl}/stream`);
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('text/event-stream');
     const body = res.body;

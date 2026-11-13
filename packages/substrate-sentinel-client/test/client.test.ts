@@ -1,9 +1,10 @@
 import { generateKeyPairSync } from 'node:crypto';
 import { mkdtempSync, writeFileSync } from 'node:fs';
-import * as http from 'node:http';
+import * as http2 from 'node:http2';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { FetchLike } from '@mnmal-ai/substrate-client';
+import { createH2Fetch } from '@mnmal-ai/substrate-client';
 import { type AuthConfig, compose, signHs256 } from '@mnmal-ai/substrate-compose';
 import { MemoryBridgeRegistry } from '@mnmal-ai/substrate-core';
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
@@ -19,6 +20,22 @@ import type {
 } from '@mnmal-ai/substrate-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { startSentinelClient, type WritableBridgeRegistry } from '../src/client.js';
+
+// The server speaks HTTP/2 only; the platform fetch speaks HTTP/1.1.
+const h2fetch = createH2Fetch();
+
+// Discovered bridges call `substrateFetch`. Off loopback it goes through the
+// platform fetch, so a test can spy on what a bridge sends to a remote origin.
+vi.mock('@mnmal-ai/substrate-client', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@mnmal-ai/substrate-client')>();
+  return {
+    ...real,
+    substrateFetch: (input: string, init?: RequestInit) =>
+      new URL(input).hostname === '127.0.0.1'
+        ? real.substrateFetch(input, init)
+        : globalThis.fetch(input, init)
+  };
+});
 
 function writeKey(): string {
   const { privateKey } = generateKeyPairSync('ed25519');
@@ -347,7 +364,7 @@ describe('startSentinelClient — end-to-end through compose', () => {
     });
 
     // Seed B with a Widget so the query below has something to return.
-    const seedRes = await fetch(`http://127.0.0.1:${b.port}/substrate/v1/mutate`, {
+    const seedRes = await h2fetch(`http://127.0.0.1:${b.port}/substrate/v1/mutate`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -403,7 +420,7 @@ describe('startSentinelClient — end-to-end through compose', () => {
 
     // Now the real assertion: query A for demo/Widget. Should route through
     // the sentinel-discovered bridge to B and return the seeded Widget.
-    const queryRes = await fetch(`http://127.0.0.1:${a.port}/substrate/v1/query`, {
+    const queryRes = await h2fetch(`http://127.0.0.1:${a.port}/substrate/v1/query`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -545,7 +562,7 @@ async function registerWith(
   body: Record<string, unknown>
 ): Promise<{ close(): Promise<void> }> {
   const ctrl = new AbortController();
-  const res = await fetch(
+  const res = await h2fetch(
     `http://127.0.0.1:${sentinelPort}/substrate/v1/plugins/substrate-sentinel/register`,
     {
       method: 'POST',
@@ -963,10 +980,12 @@ describe('sentinel-client authenticates its own connection', () => {
     const seen = new Promise<string | undefined>((resolve) => {
       resolveSeen = resolve;
     });
-    const server = http.createServer((req, res) => {
+    const server = http2.createServer((req, res) => {
       resolveSeen(req.headers.authorization);
       res.writeHead(200, { 'content-type': FRAMES_JSON_MIME });
     });
+    const sessions = new Set<http2.ServerHttp2Session>();
+    server.on('session', (session) => sessions.add(session));
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const port = (server.address() as { port: number }).port;
 
@@ -980,7 +999,7 @@ describe('sentinel-client authenticates its own connection', () => {
 
     const header = await seen;
     await handle.stop();
-    server.closeAllConnections();
+    for (const session of sessions) session.destroy();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     return header;
   }

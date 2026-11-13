@@ -191,8 +191,8 @@ jobs:
 
       - name: Health and plugin routes answer
         run: |
-          curl -fsS http://127.0.0.1:3100/health
-          curl -fsS -o /dev/null http://127.0.0.1:3100/substrate/v1/plugins/substrate-proposals/onboard
+          curl -fsS --http2-prior-knowledge http://127.0.0.1:3100/health
+          curl -fsS --http2-prior-knowledge -o /dev/null http://127.0.0.1:3100/substrate/v1/plugins/substrate-proposals/onboard
 
       - name: Server logs
         if: failure()

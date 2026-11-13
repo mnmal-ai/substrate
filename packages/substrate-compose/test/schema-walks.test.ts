@@ -5,7 +5,11 @@ import { defineNamespace, field } from '@mnmal-ai/substrate-sdk';
 import { FastifySubstrateServer } from '@mnmal-ai/substrate-server-fastify';
 import type { CoordinatorPlugin, IndexPlan } from '@mnmal-ai/substrate-types';
 import { afterEach, describe, expect, it } from 'vitest';
+import { createH2Fetch } from '../../substrate-client/src/transport/h2-fetch.js';
 import { compose } from '../src/compose.js';
+
+// The server speaks HTTP/2 only; the platform fetch speaks HTTP/1.1.
+const h2fetch = createH2Fetch();
 
 const NS = 'shop';
 const plugin: CoordinatorPlugin = {
@@ -74,7 +78,7 @@ async function boot(dataset: MemoryDataset) {
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: schema JSON is read by deep path
-const get = async (url: string) => (await fetch(url)).json() as Promise<Record<string, any>>;
+const get = async (url: string) => (await h2fetch(url)).json() as Promise<Record<string, any>>;
 
 describe('walk discoverability in the schema', () => {
   it('schema lists inbound crossRefs', async () => {

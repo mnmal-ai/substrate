@@ -5,7 +5,7 @@ An agent-first typed data substrate. Plugins declare namespaces and types; Subst
 Every operation names its target with a qualified frame key, `<namespace>/<Type>` for queries and `<namespace>/<mutation>` for mutations:
 
 ```bash
-curl -s -X POST http://localhost:3100/substrate/v1/query \
+curl --http2-prior-knowledge -s -X POST http://localhost:3100/substrate/v1/query \
   -H 'content-type: application/json' \
   -d '{"notes/Note":{"params":{"where":{"title":{"eq":"hello"}},"limit":5},"fields":{"id":true,"body":true}}}'
 ```
@@ -26,8 +26,8 @@ The quickest way to a running server. `docker compose up` builds the server with
 
 ```bash
 docker compose up -d
-curl http://localhost:3100/health
-curl http://localhost:3100/substrate/v1/onboard
+curl --http2-prior-knowledge http://localhost:3100/health
+curl --http2-prior-knowledge http://localhost:3100/substrate/v1/onboard
 ```
 
 Add `-f docker-compose.yml -f docker-compose.embed.yml` for dense recall through a local Ollama. [`docs/getting-started.md`](docs/getting-started.md) goes on from there.

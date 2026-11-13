@@ -250,13 +250,15 @@ describe('readmeTemplate', () => {
       substrateUrl: 'https://peer.example.com:3110',
       tls: true
     });
-    expect(out).toContain('curl -sfk https://peer.example.com:3110/health');
+    expect(out).toContain('curl -sfk --http2-prior-knowledge https://peer.example.com:3110/health');
     expect(out).toContain('SUBSTRATE_URL=https://peer.example.com:3110');
     expect(out).toContain('**client** setting');
   });
 
   it('uses plain -sf (no -k) for an http URL', () => {
-    expect(readmeTemplate(baseConfig)).toContain('curl -sf http://localhost:3100/health');
+    expect(readmeTemplate(baseConfig)).toContain(
+      'curl -sf --http2-prior-knowledge http://localhost:3100/health'
+    );
   });
 
   it('skips docker compose for memory mode', () => {

@@ -17,6 +17,19 @@ import type { TuiDeps } from '../src/deps.js';
 import { doctorModule } from '../src/doctor/module.js';
 import { noAdmin, noDash } from './_fakes.js';
 
+// `substrateFetch` speaks HTTP/2; while a test stubs the platform fetch, route it there.
+vi.mock('@mnmal-ai/substrate/client', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@mnmal-ai/substrate/client')>();
+  const platform = globalThis.fetch;
+  return {
+    ...real,
+    substrateFetch: (input: string, init?: RequestInit) =>
+      globalThis.fetch === platform
+        ? real.substrateFetch(input, init)
+        : globalThis.fetch(input, init)
+  };
+});
+
 const ok = (name: string): DoctorCheck => ({ name, status: 'ok', detail: `${name} fine` });
 const no = (name: string, detail = `${name} broken`): DoctorCheck => ({
   name,

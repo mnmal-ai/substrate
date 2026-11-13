@@ -9,7 +9,11 @@ import { defineNamespace, field } from '@mnmal-ai/substrate-sdk';
 import { FastifySubstrateServer } from '@mnmal-ai/substrate-server-fastify';
 import type { CoordinatorPlugin, TypeStorageReport } from '@mnmal-ai/substrate-types';
 import { afterEach, describe, expect, it } from 'vitest';
+import { createH2Fetch } from '../../substrate-client/src/transport/h2-fetch.js';
 import { compose } from '../src/compose.js';
+
+// The server speaks HTTP/2 only; the platform fetch speaks HTTP/1.1.
+const h2fetch = createH2Fetch();
 
 const NS = 'stor';
 const plugin: CoordinatorPlugin = {
@@ -56,7 +60,7 @@ async function boot(dataset: MemoryDataset, storageReport?: () => Promise<never>
   return `http://${address}:${port}`;
 }
 
-const get = async (url: string) => (await fetch(url)).json() as Promise<Record<string, unknown>>;
+const get = async (url: string) => (await h2fetch(url)).json() as Promise<Record<string, unknown>>;
 
 describe('storage in the schema and config routes', () => {
   it('adds storage to the type schema without touching schemaVersion', async () => {
@@ -101,7 +105,7 @@ describe('storage in the schema and config routes', () => {
   });
 
   it('serves the type schema without storage when describing it throws', async () => {
-    const res = await fetch(
+    const res = await h2fetch(
       `${await boot(new BrokenDataset({ namespace: NS }))}/substrate/v1/schema/${NS}/Note`
     );
     expect(res.status).toBe(200);

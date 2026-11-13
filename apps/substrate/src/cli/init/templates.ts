@@ -277,7 +277,8 @@ export function readmeTemplate(ctx: TemplateContext): string {
   lines.push('');
   lines.push('## Reaching this instance');
   lines.push('');
-  const curlFlags = ctx.substrateUrl.startsWith('https') ? '-sfk' : '-sf';
+  // The server is HTTP/2 only; plain http needs prior knowledge.
+  const curlFlags = `${ctx.substrateUrl.startsWith('https') ? '-sfk' : '-sf'} --http2-prior-knowledge`;
   lines.push(`Health check: \`curl ${curlFlags} ${ctx.substrateUrl}/health\``);
   lines.push('');
   lines.push(

@@ -1,5 +1,3 @@
-import { createServer, type Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
 import { compose } from '@mnmal-ai/substrate-compose';
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
 import { MemorySubstrateServer } from '@mnmal-ai/substrate-server-memory';
@@ -7,6 +5,7 @@ import type { SubstrateResponse } from '@mnmal-ai/substrate-types';
 import { afterEach, describe, expect, it } from 'vitest';
 import { HttpJsonError, httpJson } from '../src/cli/federate/http.js';
 import { probeAuthPosture } from '../src/cli/federate/probe.js';
+import { h2Server, type StubServer } from './fixtures/h2-server.js';
 
 function bodyToString(res: SubstrateResponse): string {
   const b = res.body;
@@ -45,23 +44,21 @@ async function realWhoamiBody(authEnabled: boolean): Promise<string> {
   }
 }
 
-let server: Server | undefined;
+let server: StubServer | undefined;
 
 /** Start a one-route stub server and return its origin. */
 async function serve(handler: (path: string) => { status: number; body: string }): Promise<string> {
-  server = createServer((req, res) => {
+  server = await h2Server((req, res) => {
     const { status, body } = handler(req.url ?? '/');
     res.writeHead(status, { 'content-type': 'application/json' });
     res.end(body);
   });
-  await new Promise<void>((resolve) => server?.listen(0, '127.0.0.1', resolve));
-  const addr = server.address() as AddressInfo;
-  return `http://127.0.0.1:${addr.port}`;
+  return server.url;
 }
 
 afterEach(async () => {
   if (server !== undefined) {
-    await new Promise<void>((resolve) => server?.close(() => resolve()));
+    await server.close();
     server = undefined;
   }
 });
@@ -90,7 +87,7 @@ describe('httpJson', () => {
 
   it('POSTs a JSON body', async () => {
     let seen = '';
-    server = createServer((req, res) => {
+    server = await h2Server((req, res) => {
       const chunks: Buffer[] = [];
       req.on('data', (c: Buffer) => chunks.push(c));
       req.on('end', () => {
@@ -99,9 +96,7 @@ describe('httpJson', () => {
         res.end('{"kid":"k1"}');
       });
     });
-    await new Promise<void>((resolve) => server?.listen(0, '127.0.0.1', resolve));
-    const addr = server.address() as AddressInfo;
-    const res = await httpJson(`http://127.0.0.1:${addr.port}/r`, {
+    const res = await httpJson(`${server.url}/r`, {
       method: 'POST',
       body: { code: 'c' }
     });

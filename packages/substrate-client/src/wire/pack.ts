@@ -22,5 +22,5 @@ export function isPackMarker(v: unknown): v is PackMarker {
  */
 export function decodePackEnvelope(markerOrBytes: PackMarker | Uint8Array): PackEnvelope {
   const bytes = isPackMarker(markerOrBytes) ? markerOrBytes.__packBytes : markerOrBytes;
-  return unpackFrame(Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes)) as PackEnvelope;
+  return unpackFrame(bytes) as PackEnvelope;
 }

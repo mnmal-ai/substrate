@@ -96,7 +96,7 @@ export function decodeStreamChunk<T = unknown>(
   bytes: Buffer | Uint8Array,
   input: DecodeStreamChunkInput
 ): PackStreamChunk & { data: T } {
-  const raw = unpack(Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes)) as PackStreamChunk;
+  const raw = unpack(bytes) as PackStreamChunk;
   const decoded = decodePositional<T>(raw.data, input.fields, input.schema, input.typeName, {
     currentNs: input.currentNs,
     ...(input.schemas !== undefined ? { schemas: input.schemas } : {})

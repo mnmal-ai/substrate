@@ -23,8 +23,6 @@ import {
   symlinkSync,
   writeFileSync
 } from 'node:fs';
-import { createServer, type Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -56,6 +54,7 @@ import {
   runBootstrap,
   runRegister
 } from '../src/admin/index.js';
+import { h2Server, type StubServer } from './fixtures/h2-server.js';
 
 const LOCAL = 'http://localhost:3100';
 
@@ -2152,7 +2151,7 @@ describe('substrate-admin signs with an ENCRYPTED admin key end to end', () => {
   let dir: string;
   let keyPath: string;
   let publicPem: string;
-  let server: Server;
+  let server: StubServer;
   let baseUrl: string;
   let seen: Array<string>;
 
@@ -2171,7 +2170,7 @@ describe('substrate-admin signs with an ENCRYPTED admin key end to end', () => {
     writeFileSync(keyPath, pair.privateKey);
     publicPem = pair.publicKey;
     seen = [];
-    server = createServer((req, res) => {
+    server = await h2Server((req, res) => {
       seen.push(req.headers.authorization ?? '');
       res.setHeader('content-type', 'application/json');
       res.end(
@@ -2190,11 +2189,10 @@ describe('substrate-admin signs with an ENCRYPTED admin key end to end', () => {
         })
       );
     });
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    baseUrl = server.url;
   });
   afterEach(async () => {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await server.close();
     rmSync(dir, { recursive: true, force: true });
   });
 

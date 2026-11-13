@@ -51,6 +51,6 @@ ENV SUBSTRATE_SYSTEM_ACTOR=substrate-container
 EXPOSE 3100
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -fsS "http://localhost:${PORT:-3100}/health" || exit 1
+    CMD curl -fsS --http2-prior-knowledge "http://localhost:${PORT:-3100}/health" || exit 1
 
 CMD ["node", "node_modules/@mnmal-ai/substrate/dist/substrate.js", "serve"]

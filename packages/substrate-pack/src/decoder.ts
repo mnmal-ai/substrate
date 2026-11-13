@@ -132,7 +132,7 @@ export function decodePositionalFromFieldDef<T = unknown>(
 }
 
 export function decodeEnvelope(bytes: Buffer | Uint8Array, ctx: DecodeEnvelopeCtx): PackEnvelope {
-  const raw = unpack(Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes)) as PackEnvelope;
+  const raw = unpack(bytes) as PackEnvelope;
   // Drift guard runs BEFORE any data decoding: a mismatched schemaVersion
   // means every positional tuple could be shaped against a field order this
   // decoder doesn't know. §7.1 "loud error, not silent corruption".
