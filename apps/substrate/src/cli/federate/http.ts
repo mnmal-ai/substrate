@@ -12,7 +12,7 @@
  * honours natively and which still verifies the chain.
  */
 
-import { tokenAudience } from '@mnmal-ai/substrate-client';
+import { substrateFetch, tokenAudience } from '@mnmal-ai/substrate-client';
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 
@@ -58,7 +58,7 @@ export async function httpJson(url: string, opts: HttpJsonOptions = {}): Promise
 
   let res: Response;
   try {
-    res = await fetch(url, init);
+    res = await substrateFetch(url, init);
   } catch (err) {
     throw new HttpJsonError(`${url}: ${err instanceof Error ? err.message : String(err)}`);
   }

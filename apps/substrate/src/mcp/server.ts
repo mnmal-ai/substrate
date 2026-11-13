@@ -14,6 +14,7 @@ import {
   type ClientFromEnv,
   createClientFromEnv,
   DEFAULT_MAX_WRITES,
+  substrateFetch,
   tokenAudience
 } from '@mnmal-ai/substrate-client';
 import type { NlAskRequest } from '@mnmal-ai/substrate-types';
@@ -154,7 +155,7 @@ async function postSubstrate<T>(
   const url = `${trimTrailingSlashes(endpoint)}${path}`;
   let res: Response;
   try {
-    res = await fetch(url, {
+    res = await substrateFetch(url, {
       method: 'POST',
       headers: authHeaders(endpoint, {
         'content-type': 'application/json',
@@ -205,7 +206,7 @@ async function getSubstrate<T>(endpoint: string, path: string): Promise<T> {
   const url = `${trimTrailingSlashes(endpoint)}${path}`;
   let res: Response;
   try {
-    res = await fetch(url, {
+    res = await substrateFetch(url, {
       method: 'GET',
       headers: authHeaders(endpoint, { accept: 'application/json' }),
       redirect: 'error'

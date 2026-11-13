@@ -35,8 +35,8 @@ import { BridgeUnreachableError } from '@mnmal-ai/substrate-types';
 export interface HttpBridgeClientOptions {
   name: string;
   baseUrl: string;
-  /** Override the global `fetch`. Primarily a test seam. */
-  fetch?: typeof fetch;
+  /** The transport: `substrateFetch` from `@mnmal-ai/substrate-client`, or a test double. */
+  fetch: (input: string, init?: RequestInit) => Promise<Response>;
   /**
    * Health-check cadence in ms. Default 10000 (10s per §5.8 "Reads are
    * timeout-bound"). Tests pass a tiny value and dispose aggressively.
@@ -71,7 +71,7 @@ const DEFAULT_MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
 export class HttpBridgeClient implements BridgeClient {
   readonly name: string;
   readonly baseUrl: string;
-  readonly #fetch: typeof fetch;
+  readonly #fetch: HttpBridgeClientOptions['fetch'];
   readonly #intervalMs: number;
   readonly #auth: (() => string) | undefined;
   readonly #timeoutMs: number;
@@ -83,7 +83,7 @@ export class HttpBridgeClient implements BridgeClient {
   constructor(opts: HttpBridgeClientOptions) {
     this.name = opts.name;
     this.baseUrl = opts.baseUrl.endsWith('/') ? opts.baseUrl.slice(0, -1) : opts.baseUrl;
-    this.#fetch = opts.fetch ?? fetch;
+    this.#fetch = opts.fetch;
     this.#intervalMs = opts.healthCheckIntervalMs ?? DEFAULT_HEALTH_INTERVAL_MS;
     this.#auth = opts.auth;
     this.#timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;

@@ -13,6 +13,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { substrateFetch } from '@mnmal-ai/substrate-client';
 import {
   type AuthConfig,
   type ComposeResult,
@@ -200,7 +201,8 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — static-bridge leg', () => {
       name: 'demo',
       baseUrl: `http://127.0.0.1:${b.port}`,
       // Disable the health-probe timer — 1000s is "never" for the test window.
-      healthCheckIntervalMs: 1_000_000
+      healthCheckIntervalMs: 1_000_000,
+      fetch: substrateFetch
     });
     bridges.register('demo', bridgeClient);
     a = await startInstance({ bridges });
@@ -509,7 +511,8 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — full-hive smoke', () => {
     const bridgeClient = new HttpBridgeClient({
       name: 'demo',
       baseUrl: online.url,
-      healthCheckIntervalMs: 1_000_000
+      healthCheckIntervalMs: 1_000_000,
+      fetch: substrateFetch
     });
     try {
       aBridges.register('demo', bridgeClient);
@@ -690,6 +693,7 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — bridge federation trust', (
       name: 'demo',
       baseUrl: `http://127.0.0.1:${b.port}`,
       healthCheckIntervalMs: 1_000_000,
+      fetch: substrateFetch,
       auth
     });
     bridges.register('demo', bridgeClient);

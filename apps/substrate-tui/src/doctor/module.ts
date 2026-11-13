@@ -16,7 +16,8 @@ import {
   type OnboardStepStatus,
   planOnboarding,
   diagnose as realDiagnose,
-  STEP_MARKS
+  STEP_MARKS,
+  substrateFetch
 } from '@mnmal-ai/substrate/client';
 import { defineModule, type ModuleCtx, sanitise, type TuiModule } from '@mnmal-ai/surface-core';
 import { truncateCells } from '@mnmal-ai/surface-kit';
@@ -80,7 +81,7 @@ export function doctorModule(
     const timer = setTimeout(() => deadline.abort(), deadlineMs);
     const signal = AbortSignal.any([ctx.signal, deadline.signal]);
     const fetchWith = ((url: string | URL | Request, init?: RequestInit) =>
-      fetch(url, { ...init, signal })) as typeof fetch;
+      substrateFetch(String(url), { ...init, signal })) as typeof fetch;
     const timedOut = new Promise<null>((resolve) =>
       signal.addEventListener('abort', () => resolve(null), { once: true })
     );
