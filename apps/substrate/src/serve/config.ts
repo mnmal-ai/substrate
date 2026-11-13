@@ -147,12 +147,11 @@ export interface ParsedConfig {
    */
   knobs: ConfigReport;
   /**
-   * HMAC secret signing the SSE stream tickets (`SUBSTRATE_STREAM_TICKET_SECRET`).
-   * `null` when unset. Required by `compose` whenever auth is enabled: the
-   * browser stream routes (`GET /substrate/v1/stream|subscribe`) can't carry a bearer
-   * token, so the ticket signature is their only authentication.
+   * Seals pagination cursors under row-filter policies (`SUBSTRATE_CURSOR_SECRET`,
+   * or the retired `SUBSTRATE_STREAM_TICKET_SECRET`). `null` when unset, which
+   * keys the seal per process.
    */
-  streamTicketSecret: string | null;
+  cursorSealSecret: string | null;
   /**
    * `SUBSTRATE_SYSTEM_ACTOR` — who this deployment writes AS when auth is disabled
    * `null` when unset, which `compose` refuses at boot rather than
@@ -375,22 +374,21 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
   const snapshotLimit = parseSnapshotLimit(env, knobs, pageLimits.maxLimit);
   const filterWriteLimits = parseFilterWriteLimits(env, knobs);
   const keyReprimeIntervalMs = parseKeyReprimeIntervalMs(env, knobs);
-  knobs.recordSecret(
-    'streamTicketSecret',
-    'SUBSTRATE_STREAM_TICKET_SECRET',
-    env.SUBSTRATE_STREAM_TICKET_SECRET
-  );
+  // The retired ticket secret also keyed the cursor seal, so a deployment that set
+  // only it keeps opening the cursors it issued.
+  const cursorEnv =
+    nonEmpty(env.SUBSTRATE_CURSOR_SECRET?.trim()) === undefined &&
+    nonEmpty(env.SUBSTRATE_STREAM_TICKET_SECRET?.trim()) !== undefined
+      ? 'SUBSTRATE_STREAM_TICKET_SECRET'
+      : 'SUBSTRATE_CURSOR_SECRET';
+  knobs.recordSecret('cursorSealSecret', cursorEnv, env[cursorEnv]);
   knobs.record(
     'systemActor',
     'SUBSTRATE_SYSTEM_ACTOR',
     env.SUBSTRATE_SYSTEM_ACTOR,
     nonEmpty(env.SUBSTRATE_SYSTEM_ACTOR?.trim()) ?? null
   );
-  // Trimmed before the empty check: an env line with a trailing space, or a
-  // whitespace-only value, must read as ABSENT rather than as a valid-looking
-  // HMAC key. compose() rejects a whitespace secret too — this is the outer
-  // half of that pair, so the operator sees "missing", not "too short".
-  const streamTicketSecret = nonEmpty(env.SUBSTRATE_STREAM_TICKET_SECRET?.trim()) ?? null;
+  const cursorSealSecret = nonEmpty(env[cursorEnv]?.trim()) ?? null;
   return {
     storeSpec,
     memoryByDefault,
@@ -422,7 +420,7 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
     filterWriteLimits,
     keyReprimeIntervalMs,
     knobs: knobs.report(),
-    streamTicketSecret,
+    cursorSealSecret,
     systemActor: nonEmpty(env.SUBSTRATE_SYSTEM_ACTOR?.trim()) ?? null
   };
 }

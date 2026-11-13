@@ -16,7 +16,7 @@
  */
 
 import { SubscribeError } from './errors.js';
-import type { SubscribeEvent } from './transport/ws.js';
+import type { SubscribeEvent } from './transport/frame-event.js';
 
 function rowSlot(data: unknown, qualifiedKey: string): unknown {
   if (data === null || typeof data !== 'object') return undefined;
@@ -78,7 +78,7 @@ const SURVIVABLE_END_REASONS = new Set([
  * A delta that does not change the set (e.g. an `update` whose row has no id) is
  * not re-yielded. Cancellation: breaking the consuming `for await` (or calling
  * `.return()`) propagates to the source iterable's `return()` through the inner
- * `for await`, cancelling the underlying WS subscription.
+ * `for await`, cancelling the underlying subscription.
  */
 export async function* watchRows<T>(
   events: AsyncIterable<SubscribeEvent>,

@@ -5,7 +5,6 @@
  * variables only, and nothing this command prints carries one.
  */
 
-import { randomBytes } from 'node:crypto';
 import { statfs } from 'node:fs/promises';
 import {
   detectLayout,
@@ -309,17 +308,15 @@ export async function runMigrateStore(
   if (report.refusals.length > 0) return finish(2);
 
   // The target's serve env: everything the operator set, the store swapped for the target. A
-  // prepare boot never listens, so the listener's own requirements (a public origin off loopback,
-  // a stream-ticket secret under auth) are met with a loopback host and a throwaway secret.
+  // prepare boot never listens, so the listener's own requirements (a public origin off loopback)
+  // are met with a loopback host.
   const targetEnv: Record<string, string | undefined> = {
     ...vars,
     SUBSTRATE_DATABASE_URL: toUrl,
     HOST: '127.0.0.1',
     // compose requires an actor when auth is off; the prepare boot serves no request,
     // so nothing is attributed to it.
-    SUBSTRATE_SYSTEM_ACTOR: vars.SUBSTRATE_SYSTEM_ACTOR?.trim() || 'migrate-store',
-    SUBSTRATE_STREAM_TICKET_SECRET:
-      vars.SUBSTRATE_STREAM_TICKET_SECRET?.trim() || randomBytes(32).toString('hex')
+    SUBSTRATE_SYSTEM_ACTOR: vars.SUBSTRATE_SYSTEM_ACTOR?.trim() || 'migrate-store'
   };
   const pluginDir = resolvePluginDir(targetEnv);
   const boot = () =>

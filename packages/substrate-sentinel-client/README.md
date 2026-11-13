@@ -4,7 +4,7 @@ Internal: bundled into `@mnmal-ai/substrate` and not published; it is not part o
 
 Dynamic bridge discovery from a Sentinel instance.
 
-`startSentinelClient` connects to a Sentinel's WebSocket topology stream and keeps a caller-owned bridge registry in step with it: when a peer comes online it creates an `HttpBridgeClient` for that peer's namespace, registers it and refreshes bridge schemas; when a peer goes offline it unregisters and disposes the client. It reconnects with exponential backoff.
+`startSentinelClient` follows a Sentinel's `GET /watch` topology frame stream and keeps a caller-owned bridge registry in step with it: when a peer comes online it creates an `HttpBridgeClient` for that peer's namespace, registers it and refreshes bridge schemas; when a peer goes offline it unregisters and disposes the client. It reconnects with exponential backoff.
 
 `loadConfig` reads its settings from the environment:
 

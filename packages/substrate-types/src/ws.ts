@@ -1,5 +1,5 @@
 /**
- * Unified WebSocket frame grammar. Spec §8.5.
+ * Unified frame grammar for subscribe/stream sessions. Spec §8.5.
  *
  * One client→server shape, one server→client shape. §5.4 subscriptions use
  * `subscribe` and `cancel`; §5.5 streaming adds the `stream` op and the
@@ -73,13 +73,13 @@ export interface WsResponseFrame {
    * Known values: `WS_REASON_SUBSCRIPTION_OVERLOADED` (queue-limit teardown),
    * `WS_REASON_SERVER_RESTART` (graceful shutdown). Absent on a cancel ack.
    * Stays `string` on the wire for forward compatibility — clients must
-   * tolerate unknown tokens. Contract: docs/ws-subscription-contract.md.
+   * tolerate unknown tokens. Contract: docs/stream-contract.md.
    */
   reason?: string;
 }
 
 /**
- * Terminal-cause vocabulary (docs/ws-subscription-contract.md). The overload
+ * Terminal-cause vocabulary (docs/stream-contract.md). The overload
  * token is BOTH the `code` of the terminal `error` frame and the `reason` of
  * the following `end` frame — one token per condition, no second spelling.
  */

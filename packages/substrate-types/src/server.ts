@@ -8,12 +8,6 @@
  * `PluginRouter` is a scoped view handed to coordinator plugins via
  * `server.createPluginRouter({ name })`. The router inherits the server's
  * framework while presenting a stable shape to plugins.
- *
- * Transport symmetry (§4.8): a WS upgrade is an HTTP GET with
- * `Connection: Upgrade`, so upgrade-time metadata (path, headers, query,
- * params, identity) is carried on `SubstrateRequest`. `WsConnection` is
- * reduced to the live-socket primitive — `id` plus send/onMessage/onClose/
- * close. Upgrade concerns live on `req`, live-connection ops on `conn`.
  */
 
 import type { Identity } from './policy.js';
@@ -74,35 +68,6 @@ export interface RequestObservation {
 
 export type RequestObserver = (o: RequestObservation) => void;
 
-export interface WsConnection {
-  readonly id: string;
-  send(frame: Buffer | Uint8Array | string): void;
-  /**
-   * Transport-level back-pressure seam. Resolves once the
-   * socket's write buffer is below its high-water mark — immediately when it
-   * already is. The stream route awaits this between chunks so a fast producer
-   * paces to a slow consumer instead of growing the send buffer unbounded.
-   * Optional: transports without buffer introspection (memory tests) omit it,
-   * and the route treats a missing hook as "always drained".
-   */
-  drain?(): Promise<void>;
-  onMessage(cb: (frame: Buffer) => void): void;
-  onClose(cb: (code?: number) => void): void;
-  close(code?: number, reason?: string): void;
-  /**
-   * Register a callback invoked synchronously during graceful server shutdown,
-   * BEFORE the underlying socket is closed. Higher layers use this to flush
-   * structured frames (e.g. `{ kind: 'end', reason: 'server_restart' }` per
-   * active subscription) so clients can short-circuit reconnect backoff
-   * instead of seeing an abrupt 1006 drop. Optional — transports without a
-   * pre-close hook (memory tests) may omit it; the route layer should
-   * tolerate undefined.
-   */
-  onShutdown?(cb: (reason: string) => void): void;
-}
-
-export type WsHandler = (req: SubstrateRequest, conn: WsConnection) => void | Promise<void>;
-
 export interface TlsConfig {
   cert: string | Buffer;
   key: string | Buffer;
@@ -121,30 +86,27 @@ export interface PluginRouter {
   put(path: string, handler: HttpHandler): void;
   delete(path: string, handler: HttpHandler): void;
   patch(path: string, handler: HttpHandler): void;
-  websocket(path: string, handler: WsHandler): void;
 }
 
 export interface SubstrateServer {
   start(opts?: StartOpts): Promise<{ address: string; port: number }>;
   stop(opts?: { grace?: number; abortInFlight?: boolean }): Promise<void>;
   route(method: HttpMethod, path: string, handler: HttpHandler): void;
-  websocket(path: string, handler: WsHandler): void;
   onError?(hook: (err: Error, req?: SubstrateRequest) => void): void;
   createPluginRouter(plugin: { name: string }): PluginRouter;
   /**
    * Abort every in-flight HTTP request's `req.signal` so resolvers cooperatively
    * bail. Used during graceful shutdown to give the engine a chance to roll
-   * back mutations before fastify's drain timeout fires. WS connections are
-   * not affected by this call; their teardown rides on socket close.
+   * back mutations before fastify's drain timeout fires.
    */
   abortAllRequests(reason?: string): void;
   /**
    * Register a callback invoked synchronously at the START of `stop()` —
    * before in-flight requests are aborted and before the transport drains.
    *
-   * The HTTP analogue of `WsConnection.onShutdown`, for routes that hold
-   * a response open indefinitely (SSE): handlers flush a terminal frame and end
-   * their response, or the drain would wait forever.
+   * For routes that hold a response open indefinitely (streams): handlers
+   * flush a terminal frame and end their response, or the drain would wait
+   * forever.
    *
    * Additive, not last-one-wins (unlike `onError`): a dropped registration is
    * a leaked stream. Optional — transports with no graceful phase may omit it,

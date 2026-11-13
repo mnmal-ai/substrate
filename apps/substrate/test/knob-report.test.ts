@@ -30,7 +30,9 @@ const NO_DEFAULT: Record<string, string> = {
   SUBSTRATE_TLS_KEY_PATH: 'no default — TLS is on or off, and the boot report says which',
   SUBSTRATE_TLS_CERT_PATH: 'no default — see SUBSTRATE_TLS_KEY_PATH',
   SUBSTRATE_TLS_CA_PATH: 'no default — optional chain material, reported as part of tls: enabled',
-  SUBSTRATE_STORAGE_LAYOUT: 'not a knob — retired; read only to warn that it is ignored'
+  SUBSTRATE_STORAGE_LAYOUT: 'not a knob — retired; read only to warn that it is ignored',
+  SUBSTRATE_STREAM_TICKET_SECRET:
+    'retired; read as the fallback for SUBSTRATE_CURSOR_SECRET, and reported under that knob when set'
 };
 
 /** Every `env.FOO` / `env[FOO]` property access in the parser source. */
@@ -106,23 +108,23 @@ describe('knob report', () => {
   });
 
   it('never carries a secret value, but does answer whether one is set', () => {
-    const unset = parseEnv({}).knobs.streamTicketSecret;
+    const unset = parseEnv({}).knobs.cursorSealSecret;
     expect(unset).toEqual({
-      env: 'SUBSTRATE_STREAM_TICKET_SECRET',
+      env: 'SUBSTRATE_CURSOR_SECRET',
       value: null,
       source: 'default',
       redacted: true
     });
-    const set = parseEnv({ SUBSTRATE_STREAM_TICKET_SECRET: 'hunter2-hunter2-hunter2' }).knobs
-      .streamTicketSecret;
+    const set = parseEnv({ SUBSTRATE_CURSOR_SECRET: 'hunter2-hunter2-hunter2' }).knobs
+      .cursorSealSecret;
     expect(set).toEqual({
-      env: 'SUBSTRATE_STREAM_TICKET_SECRET',
+      env: 'SUBSTRATE_CURSOR_SECRET',
       value: '<set>',
       source: 'explicit',
       redacted: true
     });
     expect(
-      JSON.stringify(parseEnv({ SUBSTRATE_STREAM_TICKET_SECRET: 'hunter2-hunter2-hunter2' }).knobs)
+      JSON.stringify(parseEnv({ SUBSTRATE_CURSOR_SECRET: 'hunter2-hunter2-hunter2' }).knobs)
     ).not.toContain('hunter2');
   });
 

@@ -98,8 +98,7 @@ describe.skipIf(!POSTGRES_URL)('pending runtime fields, seen and promoted', () =
       edges,
       datasets: { [SYSTEM_NAMESPACE]: pg(SYSTEM_NAMESPACE), [ns]: pg(ns), [CONTROL]: pg(CONTROL) },
       coordinators: [createProposalsPlugin({ ownedNamespaces: [ns], pubsub: createNoopPubSub() })],
-      auth: { keys: [{ kid: 'file', alg: 'HS256', publicKey: SECRET }], adminCapability: 'admin' },
-      streamTicketSecret: 'pending-field-ticket'
+      auth: { keys: [{ kid: 'file', alg: 'HS256', publicKey: SECRET }], adminCapability: 'admin' }
     });
     engine = composed.engine;
     stops.push(() => composed.stop());

@@ -1,7 +1,7 @@
 /**
  * Substrate CLI dispatcher. The unified `substrate` binary dispatches on argv[2]:
  *
- *   substrate serve       — boot the HTTP/WS server (./main.ts)
+ *   substrate serve       — boot the HTTP server (./main.ts)
  *   substrate mcp         — boot the stdio MCP transport (./mcp/server.ts)
  *   substrate init        — scaffold a runtime directory (./cli/init)
  *   substrate check-enums — report stored values outside declared enums
@@ -34,7 +34,7 @@ Usage:
   substrate <subcommand> --help Print this help.
 
 Subcommands:
-  serve                     Boot the Substrate HTTP/WS server (default port 3100).
+  serve                     Boot the Substrate HTTP server (default port 3100).
   mcp                       Boot the stdio MCP server. Reads SUBSTRATE_URL, and
                             SUBSTRATE_MCP_TOOLS (csv) to register only those tools.
   init [dir] [flags]        Scaffold a new Substrate runtime directory. Interactive by
@@ -73,14 +73,11 @@ Environment for \`serve\` (the load-bearing ones; the full reference is in the d
   SUBSTRATE_AUTH_MODE             'attribute' or 'required'. Setting this or
                                   SUBSTRATE_AUTH_KEY_REGISTRY enables auth; with
                                   neither, every request is anonymous.
-  SUBSTRATE_STREAM_TICKET_SECRET  HMAC key signing the SSE stream tickets. REQUIRED when
-                                  auth is enabled — boot fails without it. Minimum 16
-                                  characters after trimming. The ticket signature is the
-                                  ONLY authentication on GET /substrate/v1/stream and
-                                  GET /substrate/v1/subscribe (EventSource can send no
-                                  header or body). Rotating it invalidates every
-                                  outstanding ticket, which is the only revocation
-                                  mechanism.
+  SUBSTRATE_CURSOR_SECRET         Seals pagination cursors under row-filter policies, so
+                                  every process sharing it opens the same cursors.
+                                  Unset, the key is per process and a sealed cursor stops
+                                  opening after a restart. SUBSTRATE_STREAM_TICKET_SECRET
+                                  is read when this is unset.
   SUBSTRATE_PUBLIC_ORIGIN         This server's origins, comma-separated (e.g.
                                   https://host:3100,https://alias). A token must carry
                                   'aud' naming one; a token with no 'aud' is refused.

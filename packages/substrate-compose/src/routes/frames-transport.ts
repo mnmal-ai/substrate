@@ -1,8 +1,8 @@
 /**
  * Length-prefixed frame streams: the body of POST `/substrate/v1/subscribe` and
  * `/substrate/v1/stream` when the client accepts `application/vnd.substrate.frames+json`
- * or `+pack`. Each frame's payload is exactly what the WS route sends for the same
- * session frame, so a client decodes both the same way, pack decode plan included.
+ * or `+pack`. Each frame's payload is a `WsResponseFrame` encoded by `serializeFrame`,
+ * so a client decodes it with the frame codec and the pack decode plan.
  */
 
 import type { Engine } from '@mnmal-ai/substrate-core';

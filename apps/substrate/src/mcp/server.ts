@@ -4,7 +4,7 @@
  *
  * Every tool is a thin JSON-over-HTTP proxy to a `/substrate/v1/*` route. Frame keys
  * are qualified (`<ns>/<Type>`, §4.7), so one call can fan across namespaces.
- * Subscribe / stream are WS-only and not exposed — stdio cannot host
+ * Subscribe / stream are long-lived frame streams and not exposed — stdio cannot host
  * long-lived push streams cleanly.
  *
  * Run by the `substrate mcp` subcommand via `runMcp`.
@@ -570,7 +570,7 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
   // TOOLS table: each entry maps directly to a server.registerTool call.
   // Every handler is a thin JSON-over-HTTP closure over `endpoint` (no client
   // package) — the MCP bridge only does request/response (schema/query/mutate),
-  // never the WS/subscribe path, so it speaks `/substrate/v1/*` JSON directly.
+  // never the subscribe/stream path, so it speaks `/substrate/v1/*` JSON directly.
   const TOOLS: Array<{
     name: string;
     config: { description?: string; inputSchema?: Record<string, unknown> };

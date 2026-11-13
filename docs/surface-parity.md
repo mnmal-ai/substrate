@@ -1,8 +1,8 @@
 # Access-surface parity: what each surface can do, and where the shapes differ
 
-Substrate is reachable four ways: **HTTP** routes, the **MCP** tools of `substrate mcp`,
-the **WebSocket** frame channel (JSON or `substrate-pack`), and **SSE**. They are not
-interchangeable. This is the map, so a consumer that knows one surface does not
+Substrate is reachable three ways: **HTTP** routes, the **MCP** tools of `substrate mcp`,
+and **frame streams** (`POST /substrate/v1/subscribe` and `/substrate/v1/stream`, JSON
+or `substrate-pack`). They are not interchangeable. This is the map, so a consumer that knows one surface does not
 have to guess at the next.
 
 Every row was measured by issuing the request against a running server
@@ -14,35 +14,35 @@ than its behaviour.
 
 `—` means the surface does not offer the operation at all.
 
-| capability | HTTP | MCP | WS (`/substrate/v1/ws`) | SSE |
-|---|---|---|---|---|
-| health | `GET /health` | — | — | — |
-| **whoami** | `GET /substrate/v1/whoami` | `whoami` | `{op:"whoami"}` | — |
-| onboarding doc | `GET /substrate/v1/onboard` | — | — | — |
-| schema: overview of all types | — | `schema` (no args): one line of `field: type` per type, and the same overview in the MCP `instructions` at session start | — | — |
-| schema: all namespaces | `GET /substrate/v1/federated-schema` | `schema {full: true}` | — | — |
-| schema: one namespace | `GET /substrate/v1/schema/<ns>` | `schema {namespace}` | — | — |
-| schema: one type | `GET /substrate/v1/schema/<ns>/<Type>[?shape=]` | `schema {namespace,type,shape}` | — | — |
-| schema: default namespace | `GET /substrate/v1/schema` | — | — | — |
-| operator contract | `operators` + `extensionOperators` + `metadataFields` + `metadataAuthorFields`, on each namespace-scoped schema response | same body — `schema` proxies it verbatim | — | — |
-| namespace annotations | `annotations` (opaque per-consumer namespace metadata, e.g. `nl` rulings) on `GET /substrate/v1/schema/<ns>` and `/substrate/v1/federated-schema`; not on the per-type route | same body via `schema` | — | — |
-| query | `POST /substrate/v1/query` | `query` | — (`op` allowlist is subscribe/stream/cancel/whoami) | — |
-| mutate | `POST /substrate/v1/mutate` | `mutate` | — | — |
-| subscribe | — | — | `{op:"subscribe"}` | `GET`/`POST /substrate/v1/subscribe` |
-| stream | — | — | `{op:"stream"}` | `GET`/`POST /substrate/v1/stream` |
-| cancel | — | — | `{op:"cancel"}` | disconnect (no op) |
-| recall | `POST /substrate/v1/recall` **and** `recall/Hit` through `POST /substrate/v1/query` | `recall` | refused (`subscription_unsupported_frame`) | refused, same code — in-band as `event: error` under HTTP 200 |
-| metrics | `GET /substrate/v1/metrics` (needs `read`): request counts, per-key `resolvers` (latency histogram, errors), `process` (rss, heap, cpu, event-loop lag, `inFlight`), `slowest`; no error text; per-key fields filtered by the caller's namespace grant (read in that namespace; anonymous callers get none) | — | — | — |
-| errors | `GET /substrate/v1/errors` (needs `admin`): last 50 failed resolves with truncated messages, each naming its caller (its kid, the key id it signed with, or `anonymous`) | — | — | — |
-| config knobs | `GET /substrate/v1/config` (needs **`admin`**, not `read`) | — | — | — |
-| embed stats | `GET /substrate/v1/embed-stats` — answers about **both** retrieval arms despite the name | — | — | — |
-| admin: invites, drop-namespace, drop-type | `POST /substrate/v1/_system/*` | `drop_namespace`, `drop_type` | — | — |
-| register a key | `POST /substrate/v1/_system/register` | — | — | — |
-| schema proposals | plugin routes | `propose_type`, `propose_field` | — | — |
-| NL query | `POST /substrate/v1/nl` `{ namespace, question, project?, type?, asOf? }` — JSON `{ outcome, trail }` by default; **`Accept: text/event-stream` selects an SSE encoding** (`parsed`, `judging`, `judged`, then the outcome named by its kind — `rows` \| `recall` \| `clarify` \| `refuse` — then `done`; a failure is an in-band `event: error` under HTTP 200). Plus **`GET /substrate/v1/nl/pack/<ns>`**: the namespace pack, built under the caller, `etag` / `304`, `vary: authorization`. Both need `read`. **404 when `@mnmal-ai/substrate-nl` is not installed** | `ask` — advertised regardless; **JSON only** (no SSE, no pack), accepts `type` to resubmit a clarify option and `asOf` to anchor relative dates | — | — |
+| capability | HTTP | MCP | frame streams |
+|---|---|---|---|
+| health | `GET /health` | — | — |
+| **whoami** | `GET /substrate/v1/whoami` | `whoami` | — |
+| onboarding doc | `GET /substrate/v1/onboard` | — | — |
+| schema: overview of all types | — | `schema` (no args): one line of `field: type` per type, and the same overview in the MCP `instructions` at session start | — |
+| schema: all namespaces | `GET /substrate/v1/federated-schema` | `schema {full: true}` | — |
+| schema: one namespace | `GET /substrate/v1/schema/<ns>` | `schema {namespace}` | — |
+| schema: one type | `GET /substrate/v1/schema/<ns>/<Type>[?shape=]` | `schema {namespace,type,shape}` | — |
+| schema: default namespace | `GET /substrate/v1/schema` | — | — |
+| operator contract | `operators` + `extensionOperators` + `metadataFields` + `metadataAuthorFields`, on each namespace-scoped schema response | same body — `schema` proxies it verbatim | — |
+| namespace annotations | `annotations` (opaque per-consumer namespace metadata, e.g. `nl` rulings) on `GET /substrate/v1/schema/<ns>` and `/substrate/v1/federated-schema`; not on the per-type route | same body via `schema` | — |
+| query | `POST /substrate/v1/query` | `query` | — |
+| mutate | `POST /substrate/v1/mutate` | `mutate` | — |
+| subscribe | — | — | `POST /substrate/v1/subscribe` |
+| stream | — | — | `POST /substrate/v1/stream` |
+| cancel | — | — | close the response (no op) |
+| recall | `POST /substrate/v1/recall` **and** `recall/Hit` through `POST /substrate/v1/query` | `recall` | refused (`subscription_unsupported_frame`), in-band as an `error` frame under HTTP 200 |
+| metrics | `GET /substrate/v1/metrics` (needs `read`): request counts, per-key `resolvers` (latency histogram, errors), `process` (rss, heap, cpu, event-loop lag, `inFlight`), `slowest`; no error text; per-key fields filtered by the caller's namespace grant (read in that namespace; anonymous callers get none) | — | — |
+| errors | `GET /substrate/v1/errors` (needs `admin`): last 50 failed resolves with truncated messages, each naming its caller (its kid, the key id it signed with, or `anonymous`) | — | — |
+| config knobs | `GET /substrate/v1/config` (needs **`admin`**, not `read`) | — | — |
+| embed stats | `GET /substrate/v1/embed-stats` — answers about **both** retrieval arms despite the name | — | — |
+| admin: invites, drop-namespace, drop-type | `POST /substrate/v1/_system/*` | `drop_namespace`, `drop_type` | — |
+| register a key | `POST /substrate/v1/_system/register` | — | — |
+| schema proposals | plugin routes | `propose_type`, `propose_field` | — |
+| NL query | `POST /substrate/v1/nl` `{ namespace, question, project?, type?, asOf? }` — JSON `{ outcome, trail }` by default; **`Accept: application/vnd.substrate.frames+json` selects length-prefixed frames**, each `{ event, data }` (`parsed`, `judging`, `judged`, then the outcome named by its kind — `rows` \| `recall` \| `clarify` \| `refuse` — then `done`; a failure is an in-band `error` event under HTTP 200; `+pack` is refused `406`). Plus **`GET /substrate/v1/nl/pack/<ns>`**: the namespace pack, built under the caller, `etag` / `304`, `vary: authorization`. Both need `read`. **404 when `@mnmal-ai/substrate-nl` is not installed** | `ask` — advertised regardless; **JSON only** (no frames, no pack), accepts `type` to resubmit a clarify option and `asOf` to anchor relative dates | — |
 
 **The subscribe/stream row is the one that surprises people.** Live updates are
-WS- and SSE-only; there is no MCP subscription tool, so an MCP-only agent polls
+frame streams only; there is no MCP subscription tool, so an MCP-only agent polls
 or does without.
 
 **About the operator contract.** Three things are worth knowing before you consume it:
@@ -87,7 +87,7 @@ store kind, auth mode, trusted-proxy list. Two further properties:
   "this process was not configured from the environment", which is a different
   fact from the route being unavailable to you — that is a `401` or `403`.
 - **Secret-valued knobs report presence, never value.** They carry
-  `redacted: true` with `value: '<set>' | null`, so "is a stream-ticket secret
+  `redacted: true` with `value: '<set>' | null`, so "is a cursor secret
   configured" is answerable and the secret does not travel. `redacted` is
   flagged rather than the key omitted, so a reader can tell a hidden value
   from a genuinely unset one.
@@ -115,17 +115,12 @@ the full shape grows several times faster than the fields themselves.
 
 An unrecognised `shape` is **refused**, not ignored.
 
-### 2. `whoami` is on three surfaces, and the WS one is not redundant
+### 2. `whoami` is on two surfaces
 
-`GET /substrate/v1/whoami`, the MCP tool `whoami`, and the WS frame
-`{ id, op: "whoami" }` all return the same `{ authEnabled, identity }`, built by
-one shared projection.
-
-The obvious objection to the WS op is that a client could just call the HTTP
-route. It can't, quite: **a socket's auth is a different code path from
-HTTP's** (see §8), so "am I authenticated over HTTP" is not guaranteed to be the
-same question as "am I authenticated on this socket". Ask on the connection you
-are asking about.
+`GET /substrate/v1/whoami` and the MCP tool `whoami` return the same
+`{ authEnabled, identity }`, built by one shared projection. A frame stream
+authenticates exactly as `POST /substrate/v1/query` does, so the HTTP answer
+holds for it too.
 
 Whichever surface you use:
 
@@ -321,16 +316,17 @@ subscription's `where`.
 Two keys under a `stream` op → `stream_multi_key`. The same two keys under
 `subscribe` return a snapshot for each. The asymmetry is deliberate and kept.
 
-### 6. WS and SSE carry the same frames in different envelopes
+### 6. Frame streams: an HTTP status first, then in-band frames
 
-| | snapshot |
-|---|---|
-| WS | `{ id, kind: "snapshot", data: { "<ns>/<Type>": rows }, shapes }` |
-| SSE | `event: snapshot` + `data: { key, rows }` |
+A stream answers only `Accept: application/vnd.substrate.frames+json` (the
+default) or `application/vnd.substrate.frames+pack`. Anything else, including
+`text/event-stream`, is refused `406 not_acceptable`.
 
-Per-kind on SSE: `remove` carries `{ removedId }`, `end` carries `{ reason }`,
-`error` carries `{ code, message }`. A client written against one does not read
-the other.
+A failure before the stream opens (a bad frame, a lapsed credential, too many
+open streams) is an ordinary HTTP status. Once bytes are on the wire the status
+is spent: a failure arrives as `{ id, kind: "error", errors }` under HTTP 200.
+Read the frames, not the status. The terminal sequences are in
+[the stream contract](stream-contract.md).
 
 ### 7. `substrate-pack`: where to opt in
 
@@ -342,8 +338,8 @@ Which surfaces carry it:
 | surface | opt in with | client option |
 |---|---|---|
 | HTTP `query`, `mutate` | `Accept: application/vnd.substrate.pack` | `client.query(frame, { wire: 'pack' })` |
-| WebSocket | `Sec-WebSocket-Protocol: substrate-pack` at the handshake | `new SubstrateClient({ wsEncoding: 'pack' })` |
-| MCP, SSE | not available | — |
+| frame streams | `Accept: application/vnd.substrate.frames+pack` | `new SubstrateClient({ streamWire: 'pack' })`, or `wire: 'pack'` per call |
+| MCP | not available | — |
 
 **One known difference: mutation results.** On JSON, a create or update with no
 `fields` answers `{ id, shortId }`, and `fields` trims every mutation result.
@@ -363,12 +359,11 @@ So turn it on for a client that decodes large result sets or a busy
 subscription, not to save bandwidth. For small reads JSON costs nothing extra
 and is easier to debug.
 
-#### Negotiation is symmetric
+#### The request body stays JSON
 
-On WebSocket, advertise `Sec-WebSocket-Protocol: substrate-pack` and the server sends MessagePack
-with positionally-encoded `data` — and then expects **your** frames in
-MessagePack too. Sending JSON text on a pack-negotiated socket is refused with
-`invalid_frame`, which looks like a grammar error and is an encoding one.
+On a frame stream, `+pack` changes only the response: the frames carry
+positionally-encoded `data`, decoded against the field selection you sent. The
+request body is still the JSON frame object.
 
 ### 8. Anonymous access differs by surface AND by layer
 
@@ -383,8 +378,7 @@ policy requires an authenticated identity for writes:
 | `POST /substrate/v1/query`, `strict/<Type>` | **200**, rows | 200, rows |
 | `POST /substrate/v1/mutate`, `open/create<Type> {}` | **200** `missing_required_field` | 200 `missing_required_field` |
 | `POST /substrate/v1/mutate`, `strict/create<Type> {}` | **200** `policy_denied` (writes require an authenticated identity; reads stay open) | 200 `missing_required_field` |
-| `POST /substrate/v1/subscribe` (SSE) | **200**, `event: snapshot` | 200 |
-| `/substrate/v1/ws` | **connects**, reads as anonymous — `whoami` answers, `subscribe` returns a snapshot | connects |
+| `POST /substrate/v1/subscribe` | **200**, `snapshot` frame | 200 |
 | `POST /substrate/v1/_system/invites` | 401 | 403 `{required:"admin", have:["read","mutate"]}` |
 
 Read the two mutate rows together: same route, same verb, same anonymous
@@ -395,17 +389,11 @@ refuses it at its write policy. **Two independent layers, and only the second
 is namespace-specific.** So there is no single answer to "can anonymous
 write?"; there is one answer per namespace.
 
-The WS row matches `withAuth`: `ws.ts` computes `anonymousAllowed =
-auth.mode === 'attribute' && token === null` and skips the close for that case,
-so a tokenless socket under `attribute` connects and reads as anonymous. A token
-that is PRESENT but invalid still gets the `unauthorized` frame and the 4001
-close, in either mode — the same distinction `/substrate/v1/whoami` draws. What
-this does not open: the socket carries `subscribe` / `stream` / `cancel` /
-`whoami` and there is no WS mutate, so the effect is anonymous SUBSCRIPTIONS,
-which SSE also permits — and they still meet the namespace read policy, which
-answers `policy_denied` on its own terms.
+The subscribe row goes through the same `withAuth` gate as query, needing
+`read`. So anonymous SUBSCRIPTIONS are allowed under `attribute`, and they still
+meet the namespace read policy, which answers `policy_denied` on its own terms.
 
-#### Two probes that answer a narrower question than they appear to
+#### A probe that answers a narrower question than it appears to
 
 **A mutation name that does not exist never reaches the gate.** A probe like
 `<ns>/createNothingXYZ` returns 200 with `unknown_name`, which can read as
@@ -414,20 +402,11 @@ at name resolution, which happens ahead of the write policy. A probe intended to
 test authorisation has to name an operation that exists, or it tests the name
 table instead.
 
-**The stream ticket's `capabilities` field is constant and describes nothing.**
-`POST /substrate/v1/stream/ticket` returns `capabilities: ["read"]` for an
-anonymous caller and for an authenticated one with `["read","mutate"]` alike:
-the mint route sets it to a constant (`STREAM_CAPABILITY`). It is the ticket's
-authority, not the principal's. The `identity` field beside it is the
-informative one — `null` versus the full principal, including its `namespaces`
-grant — which makes the ticket route a useful anonymity probe, just not through
-that field.
-
 ## Where this is published
 
 The same information reaches consumers through **`GET /substrate/v1/onboard`**,
-which carries the WS grammar, the `substrate-pack` negotiation rule, an SSE
-section, and the schema path-vs-query note.
+which carries the subscribe and stream grammar, the `substrate-pack` negotiation
+rule, and the schema path-vs-query note.
 `packages/substrate-compose/test/onboard-wire-shapes.test.ts` holds the onboard
 document to the routes by driving the claims it serves, so the document cannot
 silently describe a grammar the routes do not accept.

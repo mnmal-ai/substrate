@@ -2,7 +2,7 @@
   "name": "@mnmal-ai/substrate-server-fastify",
   "version": "1.0.0-alpha.18",
   "private": true,
-  "description": "Fastify-backed SubstrateServer — the production HTTP/WS transport for Substrate.",
+  "description": "Fastify-backed SubstrateServer — the production HTTP transport for Substrate.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -28,18 +28,15 @@
   "dependencies": {
     "@fastify/compress": "catalog:",
     "@fastify/cors": "catalog:",
-    "@fastify/websocket": "catalog:",
     "@mnmal-ai/substrate-types": "workspace:*",
     "fastify": "catalog:"
   },
   "devDependencies": {
     "@mnmal-ai/substrate-config": "workspace:*",
     "@types/node": "catalog:",
-    "@types/ws": "catalog:",
     "tsdown": "catalog:",
     "typescript": "catalog:",
-    "vitest": "catalog:",
-    "ws": "catalog:"
+    "vitest": "catalog:"
   },
   "engines": {
     "node": ">=26.13.1"

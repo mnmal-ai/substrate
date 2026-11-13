@@ -1,45 +1,18 @@
 /**
  * compose/guards.ts — fail-closed boot guards.
  *
- * Both checks run BEFORE anything is allocated so a misconfigured deployment
+ * The check runs BEFORE anything is allocated so a misconfigured deployment
  * refuses at boot rather than serving with a hole.
  */
 
 import type { Identity } from '@mnmal-ai/substrate-types';
 import type { AuthConfig } from '../auth.js';
 
-/**
- * Floor for the SSE stream-ticket HMAC key. 16 chars is the shortest length
- * that isn't trivially brute-forced offline — an attacker can test candidate
- * keys against any ticket they observe, with no server round-trip to rate-limit.
- */
-const MIN_STREAM_TICKET_SECRET_LEN = 16;
-
 export interface BootGuards {
-  streamTicketSecret: string | undefined;
   systemIdentity: Identity | null;
 }
 
-export function resolveBootGuards(opts: {
-  auth?: AuthConfig;
-  streamTicketSecret?: string;
-  systemActor?: string;
-}): BootGuards {
-  // `GET /substrate/v1/stream|subscribe` is deliberately ungated (EventSource can send
-  // no Authorization header), so the ticket's HMAC signature is that path's
-  // ONLY authentication; a weak key while auth is on is a total auth bypass.
-  //
-  // Node accepts `''` and `'   '` as HMAC keys, so validate the TRIMMED value,
-  // then sign with it so instances whose env differs only in whitespace agree.
-  const streamTicketSecret = opts.streamTicketSecret?.trim();
-  if (
-    opts.auth !== undefined &&
-    (streamTicketSecret === undefined || streamTicketSecret.length < MIN_STREAM_TICKET_SECRET_LEN)
-  ) {
-    throw new Error(
-      `compose: \`streamTicketSecret\` must be at least ${MIN_STREAM_TICKET_SECRET_LEN} characters when auth is enabled — it signs the SSE stream tickets that are the only authentication on GET /substrate/v1/stream and /substrate/v1/subscribe, so a short, empty, or whitespace-only key is a forgeable one (set SUBSTRATE_STREAM_TICKET_SECRET for the binary)`
-    );
-  }
+export function resolveBootGuards(opts: { auth?: AuthConfig; systemActor?: string }): BootGuards {
   // Without auth nothing identifies a caller, and `resolveIdentity` refuses to
   // invent an actor — so an unauthenticated deployment must say who it writes
   // as. Refusing at boot beats every write failing at runtime.
@@ -60,5 +33,5 @@ export function resolveBootGuards(opts: {
     systemActor !== undefined && systemActor.length > 0
       ? { kind: 'system', id: systemActor, grants: { '*': ['read', 'mutate'] } }
       : null;
-  return { streamTicketSecret, systemIdentity };
+  return { systemIdentity };
 }

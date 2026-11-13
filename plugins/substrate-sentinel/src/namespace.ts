@@ -2,7 +2,7 @@
  * substrate-sentinel namespace definition.
  *
  * Three autoCRUD types: Coordinator, CoordinatorNamespace, CoordinatorBridge.
- * The WS handler composes upsert on top of create/update.
+ * `handleRegister` composes upsert on top of create/update.
  *
  * `coordinatorId` fields are plain string scalars rather than `field.crossRef`;
  * the §6.1 edge wiring for this surface is deferred.

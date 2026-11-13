@@ -5,14 +5,5 @@
  * Integration tests call `server.inject(req)` and receive a `SubstrateResponse`.
  */
 
-export {
-  AlreadyStartedError,
-  MemorySubstrateServer,
-  UnknownWsPathError
-} from './memory-server.js';
-export {
-  createMemoryWsPair,
-  type MemoryWsClient,
-  WsClosedError
-} from './memory-ws-connection.js';
+export { AlreadyStartedError, MemorySubstrateServer } from './memory-server.js';
 export { matchRoute } from './route-matcher.js';

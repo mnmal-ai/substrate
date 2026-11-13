@@ -24,7 +24,7 @@ Needs a server with `@mnmal-ai/substrate-nl` installed. The types are the shared
 ```ts
 import { complete } from '@mnmal-ai/substrate-nl/complete';
 
-// SSE: parsed, judging?, judged?, then rows | recall | clarify | refuse | unknown, then done.
+// Frames: parsed, judging?, judged?, then rows | recall | clarify | refuse | unknown, then done.
 for await (const ev of client.nl.ask({ namespace: 'tasks', question: 'open tasks' })) {
   if (ev.event === 'clarify') console.log(ev.data.options); // each option carries a `type`
 }
@@ -118,7 +118,7 @@ The default sink warns once per distinct (op-key, field-set) per client, so a di
 
 ## Terminal-aware resubscribe
 
-`subscribe` and `stream` each hold one POST whose response body is a stream of frames, JSON by default or `substrate-pack` with `streamWire: 'pack'` (per call, `wire`). A subscription classifies its terminals per the [subscription teardown contract](../../docs/ws-subscription-contract.md):
+`subscribe` and `stream` each hold one POST whose response body is a stream of frames, JSON by default or `substrate-pack` with `streamWire: 'pack'` (per call, `wire`). A subscription classifies its terminals per the [subscription teardown contract](../../docs/stream-contract.md):
 
 | Terminal | Behaviour |
 |---|---|
@@ -127,7 +127,7 @@ The default sink warns once per distinct (op-key, field-set) per client, so a di
 | A dropped connection | Resubscribes after the `reconnect` backoff, then yields a fresh `snapshot`. |
 | `end { reason: 'credential_expired' \| 'credential_changed' }` | Resubscribes with a fresh token when `getToken` is set; terminal with a fixed `token`. |
 | `401` / `403` | Terminal `AuthError`. A server that does not answer with frames fails with `NetworkError` code `frames_unsupported`. |
-| `end` with no `reason` (cancel ack) | Terminal. |
+| `end` with no `reason` | Terminal. |
 | `error` with any other code | Terminal, never auto-retried: retrying a rejected frame just rejects again. |
 
 A `stream` is never re-sent, since that would replay its chunks: a dropped stream fails with `NetworkError`.

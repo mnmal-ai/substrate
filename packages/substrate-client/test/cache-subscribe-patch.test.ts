@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CacheStore } from '../src/cache/store.js';
-import type { SubscribeEvent } from '../src/transport/ws.js';
+import type { SubscribeEvent } from '../src/transport/frame-event.js';
 
 const KEY = 'claude/Todo:{}';
 const QKEY = 'claude/Todo';

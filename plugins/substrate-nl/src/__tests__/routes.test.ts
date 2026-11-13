@@ -32,7 +32,6 @@ const post = (
   body: Buffer.from(JSON.stringify(body)),
   ...(signal !== undefined ? { signal } : {})
 });
-const text = async (b: unknown) => new Response(b as ReadableStream).text();
 const frameEvents = async (b: unknown) => {
   const out: Array<{ event: string; data: unknown }> = [];
   for await (const p of decodeStreamFrames(b as ReadableStream<Uint8Array>)) {
@@ -54,25 +53,16 @@ describe('POST /substrate/v1/nl', () => {
     ]);
   });
 
-  it('SSE when accept is text/event-stream: parsed, rows, done in order', async () => {
-    const res = await askHandler(deps())(
-      post({ namespace: 'ns', question: 'open todos' }, { accept: 'text/event-stream' })
-    );
-    expect(res.headers?.['content-type']).toBe('text/event-stream');
-    const names = [...(await text(res.body)).matchAll(/^event: (\w+)$/gm)].map((m) => m[1]);
-    expect(names).toEqual(['parsed', 'rows', 'done']);
-  });
-
-  it('SSE with a scripted judge: parsed, judging, judged, rows, done in exactly that order', async () => {
+  it('frames with a scripted judge: parsed, judging, judged, rows, done in exactly that order', async () => {
     const replies: unknown[] = [
       { action: 'type', type: 'Todo' },
       { action: 'pick', candidate: 0 }
     ];
     const judge = { decide: async () => replies.shift() };
     const res = await askHandler({ ...deps(), judge })(
-      post({ namespace: 'ns', question: 'zorblax quux' }, { accept: 'text/event-stream' })
+      post({ namespace: 'ns', question: 'zorblax quux' }, { accept: FRAMES_JSON_MIME })
     );
-    const names = [...(await text(res.body)).matchAll(/^event: (\w+)$/gm)].map((m) => m[1]);
+    const names = (await frameEvents(res.body)).map((e) => e.event);
     expect(names).toEqual(['parsed', 'judging', 'judged', 'rows', 'done']);
   });
 
@@ -195,20 +185,6 @@ describe('POST /substrate/v1/nl', () => {
     expect(JSON.parse(String(res.body))).toMatchObject({ code: 'nl_engine_error' });
   });
 
-  it('SSE: a thrown engine error is an in-band error event', async () => {
-    const bad: NlEngineAccess = {
-      ...engine,
-      query: async () => {
-        throw new Error('engine not ready');
-      }
-    };
-    const res = await askHandler({ engine: bad, packs: new PackService({ engine }) })(
-      post({ namespace: 'ns', question: 'open todos' }, { accept: 'text/event-stream' })
-    );
-    const out = await text(res.body);
-    expect(out).toMatch(/event: error\ndata: .*nl_engine_error/);
-  });
-
   it('never echoes engine error text to the client, and logs it once', async () => {
     const bad: NlEngineAccess = {
       ...engine,
@@ -229,12 +205,12 @@ describe('POST /substrate/v1/nl', () => {
       error: 'NL query failed',
       code: 'nl_engine_error'
     });
-    const sse = await askHandler(d)(
-      post({ namespace: 'ns', question: 'open todos' }, { accept: 'text/event-stream' })
+    const framed = await askHandler(d)(
+      post({ namespace: 'ns', question: 'open todos' }, { accept: FRAMES_JSON_MIME })
     );
-    const out = await text(sse.body);
-    expect(out).not.toContain('SELECT');
-    expect(out).toMatch(/event: error\ndata: .*nl_engine_error/);
+    const events = await frameEvents(framed.body);
+    expect(JSON.stringify(events)).not.toContain('SELECT');
+    expect(events.at(-1)?.event).toBe('error');
     expect(logged.map((e) => (e as Error).message)).toEqual([
       'SELECT secret FROM x',
       'SELECT secret FROM x'
@@ -262,7 +238,7 @@ describe('POST /substrate/v1/nl', () => {
   it('a client disconnect mid-stream cancels the generator', async () => {
     const ac = new AbortController();
     const res = await askHandler(deps())(
-      post({ namespace: 'ns', question: 'open todos' }, { accept: 'text/event-stream' }, ac.signal)
+      post({ namespace: 'ns', question: 'open todos' }, { accept: FRAMES_JSON_MIME }, ac.signal)
     );
     const reader = (res.body as ReadableStream<Uint8Array>).getReader();
     await reader.read();

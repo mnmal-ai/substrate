@@ -3,11 +3,12 @@ import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
 import {
   decodeEnvelope,
   decodePositional,
+  decodeStreamFrames,
+  decodeWsEnvelope,
   encodePositional,
-  PACK_MIME,
-  packFrame,
-  unpackFrame,
-  WS_SUBPROTOCOL_SUBSTRATE_PACK
+  FRAMES_JSON_MIME,
+  FRAMES_PACK_MIME,
+  PACK_MIME
 } from '@mnmal-ai/substrate-pack';
 import { MemorySubstrateServer } from '@mnmal-ai/substrate-server-memory';
 import type {
@@ -968,39 +969,47 @@ describe('apps/substrate integration', () => {
   });
 
   // --------------------------------------------------------------------
-  // §5.4 subscriptions over the WS endpoint
+  // §5.4 subscriptions and §5.5 streams over the frame-stream routes
   // --------------------------------------------------------------------
 
-  describe('GET /substrate/v1/ws subscriptions', () => {
-    async function connectJson(): Promise<{
-      frames: Array<WsResponseFrame>;
-      send: (req: unknown) => void;
-      close: () => void;
-    }> {
-      const client = server.connectWebsocket('/substrate/v1/ws');
-      const frames: Array<WsResponseFrame> = [];
-      client.onMessage((buf) => {
-        frames.push(JSON.parse(buf.toString('utf8')) as WsResponseFrame);
+  describe('POST /substrate/v1/subscribe and /substrate/v1/stream', () => {
+    function open(
+      path: '/substrate/v1/subscribe' | '/substrate/v1/stream',
+      frame: unknown,
+      accept: string = FRAMES_JSON_MIME
+    ): Promise<SubstrateResponse> {
+      return server.inject({
+        method: 'POST',
+        path,
+        headers: { 'content-type': 'application/json', accept },
+        body: Buffer.from(JSON.stringify(frame))
       });
-      // MemorySubstrateServer dispatches the handler on a microtask so caller
-      // listeners register first. Flush a microtask so the handler's own
-      // listeners are live before we start sending.
-      await Promise.resolve();
-      return {
-        frames,
-        send: (req) => client.send(JSON.stringify(req)),
-        close: () => client.close()
-      };
     }
 
-    async function waitFor(predicate: () => boolean, timeoutMs = 500): Promise<void> {
-      const deadline = Date.now() + timeoutMs;
-      while (!predicate()) {
-        if (Date.now() > deadline) throw new Error('timed out waiting for condition');
-        await new Promise<void>((resolve) => {
-          setImmediate(resolve);
-        });
+    /** The frames of a 200 body, decoded as a client would, one at a time. */
+    async function* framesOf(
+      res: SubstrateResponse,
+      mode: 'json' | 'pack' = 'json'
+    ): AsyncGenerator<WsResponseFrame> {
+      expect(res.status).toBe(200);
+      for await (const payload of decodeStreamFrames(res.body as ReadableStream<Uint8Array>)) {
+        yield mode === 'json'
+          ? (JSON.parse(new TextDecoder().decode(payload)) as WsResponseFrame)
+          : decodeWsEnvelope<WsResponseFrame>(payload, 'pack');
       }
+    }
+
+    async function next(frames: AsyncGenerator<WsResponseFrame>): Promise<WsResponseFrame> {
+      const { value, done } = await frames.next();
+      if (done === true) throw new Error('stream ended early');
+      return value;
+    }
+
+    /** Every frame until the body closes (streams and failed subscribes self-end). */
+    async function drain(res: SubstrateResponse, mode: 'json' | 'pack' = 'json') {
+      const out: Array<WsResponseFrame> = [];
+      for await (const f of framesOf(res, mode)) out.push(f);
+      return out;
     }
 
     async function mutateHttp(frame: Record<string, unknown>): Promise<SubstrateResponse> {
@@ -1013,122 +1022,87 @@ describe('apps/substrate integration', () => {
     }
 
     it('subscribe → snapshot → add → update → remove on a Todo feed', async () => {
-      const { frames, send, close } = await connectJson();
-      send({
-        id: 'sub-1',
-        op: 'subscribe',
-        frame: {
+      const frames = framesOf(
+        await open('/substrate/v1/subscribe', {
           'default/Todo': { params: {}, fields: { id: true, title: true, done: true } }
-        }
-      });
-      await waitFor(() => frames.length >= 1);
-      expect(frames[0]?.kind).toBe('snapshot');
-      expect((frames[0]!.data as Record<string, unknown>)['default/Todo']).toEqual([]);
+        })
+      );
+      const snap = await next(frames);
+      expect(snap.kind).toBe('snapshot');
+      expect((snap.data as Record<string, unknown>)['default/Todo']).toEqual([]);
 
       await mutateHttp({
         'default/createTodo': { params: { id: 't1', title: 'one', done: false } }
       });
-      await waitFor(() => frames.length >= 2);
-      expect(frames[1]?.kind).toBe('add');
-      const added = (frames[1]!.data as Record<string, unknown>)['default/Todo'] as {
-        id: string;
-        title: string;
-      };
-      expect(added.id).toBe('t1');
+      expect(await next(frames)).toMatchObject({
+        kind: 'add',
+        data: { 'default/Todo': { id: 't1', title: 'one' } }
+      });
 
       await mutateHttp({
         'default/updateTodo': { params: { id: 't1', title: 'renamed' } }
       });
-      await waitFor(() => frames.length >= 3);
-      expect(frames[2]?.kind).toBe('update');
+      expect(await next(frames)).toMatchObject({
+        kind: 'update',
+        data: { 'default/Todo': { id: 't1', title: 'renamed' } }
+      });
 
       await mutateHttp({ 'default/deleteTodo': { params: { id: 't1' } } });
-      await waitFor(() => frames.length >= 4);
-      expect(frames[3]?.kind).toBe('remove');
-      expect(frames[3]?.removedId).toBe('t1');
-
-      send({ id: 'sub-1', op: 'cancel' });
-      await waitFor(() => frames.length >= 5);
-      expect(frames[4]?.kind).toBe('end');
-      expect(frames[4]?.final).toBe(true);
-
-      // After cancel, further mutations produce no frames.
-      await mutateHttp({
-        'default/createTodo': { params: { id: 't2', title: 'post-cancel' } }
-      });
-      await new Promise<void>((r) => setImmediate(r));
-      expect(frames).toHaveLength(5);
-
-      close();
+      expect(await next(frames)).toMatchObject({ kind: 'remove', removedId: 't1' });
+      await frames.return(undefined);
     });
 
     it('filtered subscription: where { done: { eq: false } } only fires on matching rows', async () => {
-      const { frames, send } = await connectJson();
-      send({
-        id: 'sub-open',
-        op: 'subscribe',
-        frame: {
+      const frames = framesOf(
+        await open('/substrate/v1/subscribe', {
           'default/Todo': {
             params: { where: { done: { eq: false } } },
             fields: { id: true, title: true, done: true }
           }
-        }
-      });
-      await waitFor(() => frames.length >= 1); // snapshot
+        })
+      );
+      expect((await next(frames)).kind).toBe('snapshot');
 
-      // A done:true Todo should produce nothing.
+      // A done:true Todo produces nothing, so the next frame is open1's add.
       await mutateHttp({
         'default/createTodo': { params: { id: 'done1', title: 'x', done: true } }
       });
-      await new Promise<void>((r) => setImmediate(r));
-      expect(frames).toHaveLength(1);
-
-      // A done:false Todo should produce an add.
       await mutateHttp({
         'default/createTodo': { params: { id: 'open1', title: 'y', done: false } }
       });
-      await waitFor(() => frames.length >= 2);
-      expect(frames[1]?.kind).toBe('add');
+      expect(await next(frames)).toMatchObject({
+        kind: 'add',
+        data: { 'default/Todo': { id: 'open1' } }
+      });
 
-      // Updating the open Todo to done:true should produce remove.
+      // Updating the open Todo to done:true leaves the filter: remove.
       await mutateHttp({
         'default/updateTodo': { params: { id: 'open1', done: true } }
       });
-      await waitFor(() => frames.length >= 3);
-      expect(frames[2]?.kind).toBe('remove');
-      expect(frames[2]?.removedId).toBe('open1');
+      expect(await next(frames)).toMatchObject({ kind: 'remove', removedId: 'open1' });
+      await frames.return(undefined);
     });
 
-    it('subscribing to an unknown name emits an error frame', async () => {
-      const { frames, send } = await connectJson();
-      send({
-        id: 'bad',
-        op: 'subscribe',
-        frame: { 'default/Nope': { params: {}, fields: {} } }
-      });
-      await waitFor(() => frames.length >= 1);
+    it('subscribing to an unknown name emits an error frame and closes the body', async () => {
+      const frames = await drain(
+        await open('/substrate/v1/subscribe', { 'default/Nope': { params: {}, fields: {} } })
+      );
+      expect(frames).toHaveLength(1);
       expect(frames[0]?.kind).toBe('error');
       expect(frames[0]?.errors?.[0]?.code).toBe('unknown_name');
     });
 
-    // §5.5 — streaming integration coverage.
-
     it('streamTodos yields one chunk per row then a final end frame', async () => {
-      // Seed 3 todos so the stream has content to yield.
       for (let i = 1; i <= 3; i++) {
         await mutateHttp({
           'default/createTodo': { params: { id: `s${i}`, title: `row-${i}`, done: false } }
         });
       }
-      const { frames, send } = await connectJson();
-      send({
-        id: 'str-happy',
-        op: 'stream',
-        frame: {
+      const frames = await drain(
+        await open('/substrate/v1/stream', {
           'default/streamTodos': { params: {}, fields: { id: true, title: true } }
-        }
-      });
-      await waitFor(() => frames.some((f) => f.kind === 'end'), 2000);
+        })
+      );
       const chunks = frames.filter((f) => f.kind === 'chunk');
       expect(chunks).toHaveLength(3);
       expect(chunks.map((c) => c.sequence)).toEqual([0, 1, 2]);
@@ -1140,109 +1114,49 @@ describe('apps/substrate integration', () => {
       expect(end?.final).toBe(true);
     });
 
-    it('cancel mid-stream produces end with cancelled meta; no further chunks', async () => {
-      for (let i = 1; i <= 5; i++) {
-        await mutateHttp({
-          'default/createTodo': { params: { id: `c${i}`, title: `cancel-${i}`, done: false } }
-        });
-      }
-      const { frames, send } = await connectJson();
-      send({
-        id: 'str-cancel',
-        op: 'stream',
-        frame: { 'default/streamTodos': { params: {}, fields: { id: true } } }
-      });
-      // Wait for at least one chunk to arrive — the 1ms inter-chunk delay in
-      // the demo resolver opens a deterministic window to cancel.
-      await waitFor(() => frames.some((f) => f.kind === 'chunk'), 2000);
-      send({ id: 'str-cancel', op: 'cancel' });
-      // Wait for the engine's terminal end frame (the one carrying
-      // _meta.cancelled). The route also emits a plain `end` on cancel, so
-      // we specifically wait for the engine-emitted frame rather than just
-      // "any end".
-      await waitFor(
-        () =>
-          frames.some(
-            (f) =>
-              f.kind === 'end' &&
-              (f as unknown as { _meta?: { cancelled?: boolean } })._meta?.cancelled === true
-          ),
-        2000
-      );
-      // Cancellation can race chunk emission; ensure we got fewer than the
-      // full set and saw the cancelled marker.
-      expect(frames.filter((f) => f.kind === 'chunk').length).toBeLessThan(5);
-      const cancelled = frames.find(
-        (f) =>
-          f.kind === 'end' &&
-          (f as unknown as { _meta?: { cancelled?: boolean } })._meta?.cancelled === true
-      );
-      expect(cancelled).toBeDefined();
-      expect(cancelled?.final).toBe(true);
-    });
-
     it('multi-key stream frame → stream_multi_key error + end', async () => {
-      const { frames, send } = await connectJson();
-      send({
-        id: 'str-multi',
-        op: 'stream',
-        frame: {
+      const frames = await drain(
+        await open('/substrate/v1/stream', {
           'default/streamTodos': { params: {}, fields: { id: true } },
           'default/Todo': { params: {}, fields: { id: true } }
-        }
-      });
-      await waitFor(() => frames.some((f) => f.kind === 'end'));
-      const err = frames.find((f) => f.kind === 'error');
-      expect(err?.errors?.[0]?.code).toBe('stream_multi_key');
+        })
+      );
+      expect(frames.find((f) => f.kind === 'error')?.errors?.[0]?.code).toBe('stream_multi_key');
+      expect(frames[frames.length - 1]?.kind).toBe('end');
     });
 
     it('stream against a non-iterable resolver → not_streamable error', async () => {
       // `default/Todo` is the autoCRUD list resolver — returns a ReadResult,
       // not an async iterable.
-      const { frames, send } = await connectJson();
-      send({
-        id: 'str-plain',
-        op: 'stream',
-        frame: { 'default/Todo': { params: {}, fields: { id: true } } }
-      });
-      await waitFor(() => frames.some((f) => f.kind === 'end'));
-      const err = frames.find((f) => f.kind === 'error');
-      expect(err?.errors?.[0]?.code).toBe('not_streamable');
+      const frames = await drain(
+        await open('/substrate/v1/stream', { 'default/Todo': { params: {}, fields: { id: true } } })
+      );
+      expect(frames.find((f) => f.kind === 'error')?.errors?.[0]?.code).toBe('not_streamable');
+      expect(frames[frames.length - 1]?.kind).toBe('end');
     });
 
-    it('streaming over substrate-pack subprotocol: chunk data is positionally encoded', async () => {
+    it('streaming as frames+pack: chunk data is positionally encoded', async () => {
       await mutateHttp({
         'default/createTodo': { params: { id: 'pk1', title: 'pack-stream', done: false } }
       });
-      const client = server.connectWebsocket('/substrate/v1/ws', {
-        'sec-websocket-protocol': WS_SUBPROTOCOL_SUBSTRATE_PACK
-      });
-      const frames: Array<WsResponseFrame> = [];
-      client.onMessage((buf) => {
-        frames.push(unpackFrame(buf) as WsResponseFrame);
-      });
-      await Promise.resolve();
-
       const fields: FieldInput = { id: true, title: true, done: true };
-      client.send(
-        packFrame({
-          id: 'pack-str',
-          op: 'stream',
-          frame: { 'default/streamTodos': { params: {}, fields } }
-        })
+      const frames = await drain(
+        await open(
+          '/substrate/v1/stream',
+          { 'default/streamTodos': { params: {}, fields } },
+          FRAMES_PACK_MIME
+        ),
+        'pack'
       );
-      const deadline = Date.now() + 2000;
-      while (!frames.some((f) => f.kind === 'end')) {
-        if (Date.now() > deadline) throw new Error('timed out waiting for pack stream end');
-        await new Promise<void>((r) => setImmediate(r));
-      }
+      expect(frames[frames.length - 1]?.kind).toBe('end');
       const chunk = frames.find((f) => f.kind === 'chunk');
       expect(chunk).toBeDefined();
       const rawData = (chunk!.data as Record<string, unknown>)['default/streamTodos'];
       expect(Array.isArray(rawData)).toBe(true); // positional tuple, not named object
 
-      const schemaRes = await server.inject({ method: 'GET', path: '/substrate/v1/schema' });
-      const schema = JSON.parse((schemaRes.body as Buffer).toString('utf8')) as Schema;
+      const schema = jsonBody<Schema>(
+        await server.inject({ method: 'GET', path: '/substrate/v1/schema' })
+      );
       const decoded = decodePositional<{ id: string; title: string; done: boolean }>(
         rawData,
         fields,
@@ -1251,62 +1165,45 @@ describe('apps/substrate integration', () => {
         { schemas: { default: schema }, currentNs: 'default' }
       );
       expect(decoded.title).toBe('pack-stream');
-      client.close();
     });
 
-    it('malformed JSON frame emits an invalid_frame error', async () => {
-      const client = server.connectWebsocket('/substrate/v1/ws');
-      const frames: Array<WsResponseFrame> = [];
-      client.onMessage((buf) => {
-        frames.push(JSON.parse(buf.toString('utf8')) as WsResponseFrame);
+    it('malformed JSON body is refused 400 invalid_frame before the stream opens', async () => {
+      const res = await server.inject({
+        method: 'POST',
+        path: '/substrate/v1/subscribe',
+        headers: { 'content-type': 'application/json', accept: FRAMES_JSON_MIME },
+        body: Buffer.from('{not json}')
       });
-      await Promise.resolve();
-      client.send('{not json}');
-      await new Promise<void>((r) => setImmediate(r));
-      expect(frames[0]?.kind).toBe('error');
-      expect(frames[0]?.errors?.[0]?.code).toBe('invalid_frame');
+      expect(res.status).toBe(400);
+      expect(jsonBody<{ errors: Array<{ code: string }> }>(res).errors[0]?.code).toBe(
+        'invalid_frame'
+      );
     });
 
-    it('subprotocol substrate-pack: snapshot `data` decodes positionally via substrate-pack', async () => {
-      const client = server.connectWebsocket('/substrate/v1/ws', {
-        'sec-websocket-protocol': WS_SUBPROTOCOL_SUBSTRATE_PACK
-      });
-      const frames: Array<WsResponseFrame> = [];
-      client.onMessage((buf) => {
-        frames.push(unpackFrame(buf) as WsResponseFrame);
-      });
-      await Promise.resolve();
-
+    it('frames+pack subscribe: snapshot `data` decodes positionally via substrate-pack', async () => {
       await mutateHttp({
         'default/createTodo': { params: { id: 'p1', title: 'pack', done: false } }
       });
-
       const fields: FieldInput = { id: true, title: true, done: true };
-      client.send(
-        packFrame({
-          id: 'pack-sub',
-          op: 'subscribe',
-          frame: { 'default/Todo': { params: {}, fields } }
-        })
+      const res = await open(
+        '/substrate/v1/subscribe',
+        { 'default/Todo': { params: {}, fields } },
+        FRAMES_PACK_MIME
       );
-      await new Promise<void>((r) => {
-        // Two setImmediates — the subscribe is async inside the route handler
-        // so we need to let the engine's snapshot path resolve before
-        // asserting.
-        setImmediate(() => setImmediate(r));
-      });
-      expect(frames.length).toBeGreaterThan(0);
-      const snap = frames[0];
-      expect(snap?.kind).toBe('snapshot');
+      expect(res.headers?.['content-type']).toBe(FRAMES_PACK_MIME);
+      const frames = framesOf(res, 'pack');
+      const snap = await next(frames);
+      await frames.return(undefined);
+      expect(snap.kind).toBe('snapshot');
 
-      // `data['default/Todo']` under substrate-pack is an array of positional
-      // tuples — decode against the schema to get named objects back.
-      const schemaRes = await server.inject({ method: 'GET', path: '/substrate/v1/schema' });
-      const schema = JSON.parse((schemaRes.body as Buffer).toString('utf8')) as Schema;
-      const rawList = (snap!.data as Record<string, unknown>)['default/Todo'];
+      // `data['default/Todo']` under pack is an array of positional tuples —
+      // decode against the schema to get named objects back.
+      const schema = jsonBody<Schema>(
+        await server.inject({ method: 'GET', path: '/substrate/v1/schema' })
+      );
+      const rawList = (snap.data as Record<string, unknown>)['default/Todo'];
       expect(Array.isArray(rawList)).toBe(true);
-      const first = (rawList as Array<unknown>)[0];
-      expect(Array.isArray(first)).toBe(true); // positional tuple
+      expect(Array.isArray((rawList as Array<unknown>)[0])).toBe(true); // positional tuple
 
       const decoded = decodePositional<Array<{ id: string; title: string; done: boolean }>>(
         rawList,

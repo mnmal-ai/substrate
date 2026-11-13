@@ -4,7 +4,7 @@ Internal: bundled into `@mnmal-ai/substrate` and not published; it is not part o
 
 Compose plugins, a dataset and a server into a runnable Substrate.
 
-The wiring layer between "I have plugins and a dataset" and "I have a server ready to take requests". `compose(...)` takes a plugin list, composes kernel plugins before coordinators, applies policy and sweep configuration, attaches post-write hooks contributed by kernel plugins (for example recall's embedding hook), mounts the kernel routes (`/health`, `/substrate/v1/query`, `/substrate/v1/mutate`, `/substrate/v1/onboard`, `/substrate/v1/ws`, the SSE routes, `_system` admin) and returns the loaded engine. `composeFromManifests(...)` does the same from discovered plugin manifests, checking each plugin's `contractVersion`.
+The wiring layer between "I have plugins and a dataset" and "I have a server ready to take requests". `compose(...)` takes a plugin list, composes kernel plugins before coordinators, applies policy and sweep configuration, attaches post-write hooks contributed by kernel plugins (for example recall's embedding hook), mounts the kernel routes (`/health`, `/substrate/v1/query`, `/substrate/v1/mutate`, `/substrate/v1/onboard`, the `/substrate/v1/subscribe` and `/substrate/v1/stream` frame streams, `_system` admin) and returns the loaded engine. `composeFromManifests(...)` does the same from discovered plugin manifests, checking each plugin's `contractVersion`.
 
 ## Where it fits
 

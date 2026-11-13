@@ -63,7 +63,7 @@ export async function runEnroll(
   if (posture === 'disabled') {
     throw new AdminCliError(
       `${args.origin} reports auth is DISABLED — a credential issued against it would verify nothing. ` +
-        'Set SUBSTRATE_AUTH_MODE and SUBSTRATE_STREAM_TICKET_SECRET on the callee, restart it, then retry.',
+        'Set SUBSTRATE_AUTH_MODE on the callee, restart it, then retry.',
       7
     );
   }

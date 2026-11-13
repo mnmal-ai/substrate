@@ -1,8 +1,8 @@
 /**
  * serve/compose-opts.ts — `compose()` options assembly.
  *
- * Pure assembly over already-built pieces: datasets, bridges, auth, ticket
- * secret, idempotency. No I/O except the sentinel-client env read; the
+ * Pure assembly over already-built pieces: datasets, bridges, auth, the
+ * cursor seal secret, idempotency. No I/O except the sentinel-client env read; the
  * substrate-migrations table ensure runs here too so it lands before any
  * substrate plugin migration.
  */
@@ -168,13 +168,12 @@ export async function buildComposeOpts(args: {
     if (config.keyReprimeIntervalMs !== null) {
       composeOpts.keyReprimeIntervalMs = config.keyReprimeIntervalMs;
     }
-    // compose() refuses to boot an auth-enabled instance without this — the
-    // ungated browser stream routes authenticate on the ticket signature alone.
+    // compose() refuses to boot an auth-disabled instance without this.
     if (config.systemActor !== null) {
       composeOpts.systemActor = config.systemActor;
     }
-    if (config.streamTicketSecret !== null) {
-      composeOpts.streamTicketSecret = config.streamTicketSecret;
+    if (config.cursorSealSecret !== null) {
+      composeOpts.cursorSealSecret = config.cursorSealSecret;
     }
     // §5.13 mutation idempotency, dedup on unless SUBSTRATE_IDEMPOTENCY_DISABLED.
     // Pg-backed when storeSql is present, memory otherwise.

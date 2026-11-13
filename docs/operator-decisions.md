@@ -158,7 +158,7 @@ A filter operand on a date field must be an ISO 8601 date (`2026-01-02`) or date
 - **Off.** Every caller acts as `SUBSTRATE_SYSTEM_ACTOR`, admin routes included. The server refuses to boot without that actor, and binds `127.0.0.1` unless `HOST` says otherwise. A non-loopback `HOST` with auth off needs `SUBSTRATE_ALLOW_UNAUTHENTICATED_HOST=1` (or `true`).
 - **`required`.** Every request but `/health`, `whoami` and invite registration needs a credential. The server binds `0.0.0.0` by default.
 - **`attribute`.** Anonymous callers may read; writes and admin routes still need a token.
-- With auth on, `SUBSTRATE_STREAM_TICKET_SECRET` (at least 16 characters) is required. Rotating it ends every outstanding SSE ticket and every outstanding pagination cursor (callers restart paging from the first page).
+- Set `SUBSTRATE_CURSOR_SECRET` when more than one process serves the store, or sealed cursors must survive a restart. Unset, each process keys its own seal. When it is unset, the retired `SUBSTRATE_STREAM_TICKET_SECRET` is read instead. Rotating `SUBSTRATE_CURSOR_SECRET` ends every outstanding sealed pagination cursor (callers restart paging from the first page).
 
 **Later:** restart with the new values. Run `substrate-admin doctor` to check the result.
 
@@ -178,9 +178,9 @@ A filter operand on a date field must be an ISO 8601 date (`2026-01-02`) or date
 
 **The default:** plain HTTP.
 
-**What you get:** with TLS the server speaks HTTP/2, negotiated by ALPN, and keeps HTTP/1.1 for clients that do not offer it. WebSockets always use HTTP/1.1, because HTTP/2 cannot carry the upgrade. Each HTTP/2 connection may have at most 128 open streams. A request must arrive in full within 30 seconds on either protocol: an HTTP/2 stream that misses it is reset. Plain HTTP stays HTTP/1.1.
+**What you get:** with TLS the server speaks HTTP/2, negotiated by ALPN, and keeps HTTP/1.1 for clients that do not offer it. Each HTTP/2 connection may have at most 128 open streams. A request must arrive in full within 30 seconds on either protocol: an HTTP/2 stream that misses it is reset. Plain HTTP stays HTTP/1.1.
 
-**What it costs:** the files are read at boot, so renewing a certificate needs a restart. Behind a proxy, list its exact IP (no CIDR) in `SUBSTRATE_TRUSTED_PROXIES` so `X-Forwarded-For` is honoured for client addresses (request context, the `/register` rate limit and WebSocket clients).
+**What it costs:** the files are read at boot, so renewing a certificate needs a restart. Behind a proxy, list its exact IP (no CIDR) in `SUBSTRATE_TRUSTED_PROXIES` so `X-Forwarded-For` is honoured for client addresses (request context, the `/register` rate limit and per-client stream limits).
 
 **Later:** restart.
 

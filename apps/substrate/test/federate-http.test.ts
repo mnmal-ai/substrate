@@ -34,7 +34,6 @@ async function realWhoamiBody(authEnabled: boolean): Promise<string> {
   };
   if (authEnabled) {
     composeOpts.auth = { keys: [{ kid: 'k1', alg: 'HS256', publicKey: 'onboard-fixture-secret' }] };
-    composeOpts.streamTicketSecret = 'onboard-fixture-stream-ticket-secret';
   }
   const composed = await compose(composeOpts);
   await memServer.start();

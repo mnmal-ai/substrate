@@ -22,6 +22,7 @@ import {
 } from '@mnmal-ai/substrate-compose';
 import { HttpBridgeClient, MemoryBridgeRegistry } from '@mnmal-ai/substrate-core';
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
+import { decodeStreamFrames, FRAMES_JSON_MIME } from '@mnmal-ai/substrate-pack';
 import { makeAuthorizationProvider } from '@mnmal-ai/substrate-policy';
 import { defineNamespace, field } from '@mnmal-ai/substrate-sdk';
 import { createSentinelPlugin } from '@mnmal-ai/substrate-sentinel';
@@ -37,19 +38,15 @@ import type {
   NamespaceDefinition
 } from '@mnmal-ai/substrate-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { WebSocket } from 'ws';
 
 const HIVE_ENABLED = process.env.SUBSTRATE_HIVE_TEST === '1';
 
 /**
- * Sentinel's `register`/`watch` frames require `req.identity`, which a plugin
- * WS route only gets when the composing instance wires `auth`. A throwaway
- * HS256 key, plus the `streamTicketSecret` compose() requires whenever `auth`
- * is set (this suite never touches SSE, but compose() throws without it).
+ * Sentinel's `register`/`watch` need an authenticated caller when the
+ * composing instance wires `auth`, so this suite uses a throwaway HS256 key.
  */
 const HS_SECRET = 'hive-integration-test-secret';
 const HS_KID = 'hive-integration';
-const STREAM_TICKET_SECRET = 'hive-integration-stream-ticket-secret';
 const authConfig: AuthConfig = {
   keys: [{ kid: HS_KID, alg: 'HS256', publicKey: HS_SECRET }]
 };
@@ -79,7 +76,6 @@ interface StartInstanceOpts {
   defaultNamespace?: string;
   /** Composed only by tests that exercise sentinel `register`/`watch` or a credentialled bridge. */
   auth?: AuthConfig;
-  streamTicketSecret?: string;
 }
 
 async function startInstance(opts: StartInstanceOpts = {}): Promise<InstanceHandle> {
@@ -96,8 +92,6 @@ async function startInstance(opts: StartInstanceOpts = {}): Promise<InstanceHand
   if (opts.datasets !== undefined) composeArgs.datasets = opts.datasets;
   if (opts.bridges !== undefined) composeArgs.bridges = opts.bridges;
   if (opts.auth !== undefined) composeArgs.auth = opts.auth;
-  if (opts.streamTicketSecret !== undefined)
-    composeArgs.streamTicketSecret = opts.streamTicketSecret;
   const composed = await compose(composeArgs);
   const { port } = await server.start({ host: '127.0.0.1', port: 0 });
   return {
@@ -230,71 +224,97 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — static-bridge leg', () => {
   });
 });
 
-// ── WS helpers ────────────────────────────────────────────────────────────────
+// ── Sentinel feed helpers ─────────────────────────────────────────────────────
 
 /**
- * Open a WS client to a sentinel instance; resolves when the socket is open.
- * `headers` (e.g. `authHeaders()`) is only needed by callers that go on to
- * send `register`/`watch` — connections that don't stay anonymous.
+ * Captured at load: the discovery-allowlist case spies on `globalThis.fetch`
+ * and asserts the CLIENT makes no outbound call, so the test's own feeds must
+ * not route through the spy.
  */
-async function openSentinelWs(port: number, headers?: Record<string, string>): Promise<WebSocket> {
-  const url = `ws://127.0.0.1:${port}/substrate/v1/plugins/substrate-sentinel/ws`;
-  const ws = headers === undefined ? new WebSocket(url) : new WebSocket(url, { headers });
-  await new Promise<void>((resolve, reject) => {
-    ws.once('open', () => resolve());
-    ws.once('error', reject);
-  });
-  return ws;
+const rawFetch = globalThis.fetch;
+
+/** One open sentinel response: frames arrive in order and are consumed by `waitForFrame`. */
+interface SentinelFeed {
+  frames: Array<Record<string, unknown>>;
+  /** Index of the first frame no `waitForFrame` has consumed yet. */
+  cursor: number;
+  abort: AbortController;
+  drained: Promise<void>;
 }
 
-function sendJson(ws: WebSocket, payload: unknown): void {
-  ws.send(JSON.stringify(payload));
+/**
+ * Open `POST /register` (body = the register JSON) or `GET /watch` on a
+ * sentinel instance. A refusal is an HTTP status, so anything but 200 throws.
+ * The registrant stays online while the feed is open; `closeFeed` ends it.
+ */
+async function openSentinelFeed(
+  port: number,
+  feed: 'register' | 'watch',
+  register?: { name: string; url: string; namespaces: string[] }
+): Promise<SentinelFeed> {
+  const abort = new AbortController();
+  const res = await rawFetch(
+    `http://127.0.0.1:${port}/substrate/v1/plugins/substrate-sentinel/${feed}`,
+    {
+      method: feed === 'register' ? 'POST' : 'GET',
+      headers: {
+        ...authHeaders(),
+        accept: FRAMES_JSON_MIME,
+        ...(register !== undefined ? { 'content-type': 'application/json' } : {})
+      },
+      ...(register !== undefined ? { body: JSON.stringify(register) } : {}),
+      signal: abort.signal
+    }
+  );
+  if (res.status !== 200 || res.body === null) {
+    throw new Error(`sentinel ${feed} refused: ${res.status} ${await res.text()}`);
+  }
+  const body = res.body;
+  const handle: SentinelFeed = { frames: [], cursor: 0, abort, drained: Promise.resolve() };
+  handle.drained = (async () => {
+    try {
+      for await (const payload of decodeStreamFrames(body)) {
+        if (payload.length === 0) continue; // heartbeat
+        handle.frames.push(JSON.parse(Buffer.from(payload).toString('utf8')));
+      }
+    } catch {
+      // Closing a feed aborts the pending read by design.
+    }
+  })();
+  return handle;
 }
 
-/** Wait for the next JSON frame matching the predicate. 5s default timeout. */
+/** Wait for the next unconsumed frame matching the predicate. 5s default timeout. */
 async function waitForFrame<T extends Record<string, unknown>>(
-  ws: WebSocket,
+  feed: SentinelFeed,
   predicate: (frame: Record<string, unknown>) => boolean,
   timeoutMs = 5_000
 ): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      ws.off('message', onMessage);
-      reject(new Error(`waitForFrame timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-    const onMessage = (buf: Buffer): void => {
-      try {
-        const parsed = JSON.parse(buf.toString('utf8')) as Record<string, unknown>;
-        if (predicate(parsed)) {
-          clearTimeout(timeout);
-          ws.off('message', onMessage);
-          resolve(parsed as T);
-        }
-      } catch {
-        // Non-JSON or parse failure — ignore, keep waiting.
-      }
-    };
-    ws.on('message', onMessage);
-  });
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    while (feed.cursor < feed.frames.length) {
+      const frame = feed.frames[feed.cursor++] as Record<string, unknown>;
+      if (predicate(frame)) return frame as T;
+    }
+    if (Date.now() > deadline) throw new Error(`waitForFrame timed out after ${timeoutMs}ms`);
+    await new Promise((r) => setTimeout(r, 5));
+  }
 }
 
-async function closeWs(ws: WebSocket): Promise<void> {
-  if (ws.readyState === WebSocket.CLOSED) return;
-  return new Promise<void>((resolve) => {
-    ws.once('close', () => resolve());
-    ws.close();
-  });
+async function closeFeed(feed: SentinelFeed): Promise<void> {
+  feed.abort.abort();
+  await feed.drained;
 }
 
 // ── Sentinel topology ─────────────────────────────────────────────────────────
 
 describe.skipIf(!HIVE_ENABLED)('hive integration — sentinel topology', () => {
   let s: InstanceHandle | null = null;
-  const openSockets: Array<WebSocket> = [];
+  const openFeeds: Array<SentinelFeed> = [];
 
   afterEach(async () => {
-    for (const ws of openSockets) await closeWs(ws);
-    openSockets.length = 0;
+    for (const feed of openFeeds) await closeFeed(feed);
+    openFeeds.length = 0;
     if (s !== null) await s.stop();
     s = null;
   });
@@ -304,27 +324,23 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — sentinel topology', () => {
     // because we don't start the scheduler; ticks don't fire.
     const sentinelPlugin = createSentinelPlugin({
       namespace: 'sentinel',
-      pingIntervalMs: 1_000,
-      staleThresholdMs: 3_000
+      pingIntervalMs: 1_000
     });
     // register/watch require an authenticated caller, so S composes a real
-    // AuthConfig + streamTicketSecret.
+    // AuthConfig.
     s = await startInstance({
       coordinators: [sentinelPlugin],
       datasets: { sentinel: new MemoryDataset({ namespace: 'sentinel' }) },
-      auth: authConfig,
-      streamTicketSecret: STREAM_TICKET_SECRET
+      auth: authConfig
     });
 
-    // Open a watcher and send { type: 'watch' }.
-    const watcher = await openSentinelWs(s.port, authHeaders());
-    openSockets.push(watcher);
-    const watchAckPromise = waitForFrame<{ ok: boolean; watching: boolean }>(
+    // Open a watcher on GET /watch.
+    const watcher = await openSentinelFeed(s.port, 'watch');
+    openFeeds.push(watcher);
+    const watchAck = await waitForFrame<{ ok: boolean; watching: boolean }>(
       watcher,
       (f) => f.ok === true && f.watching === true
     );
-    sendJson(watcher, { type: 'watch' });
-    const watchAck = await watchAckPromise;
     expect(watchAck.watching).toBe(true);
 
     // Arm the broadcast listener BEFORE the register frame arrives.
@@ -335,20 +351,17 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — sentinel topology', () => {
       namespaces: Array<string>;
     }>(watcher, (f) => f.event === 'online');
 
-    // Open a second socket and register as a fake coordinator.
-    const coordinator = await openSentinelWs(s.port, authHeaders());
-    openSockets.push(coordinator);
-    const registerAckPromise = waitForFrame<{ ok: boolean; registered: boolean }>(
-      coordinator,
-      (f) => f.ok === true && typeof f.registered === 'boolean'
-    );
-    sendJson(coordinator, {
-      type: 'register',
+    // Open a second feed and register as a fake coordinator.
+    const coordinator = await openSentinelFeed(s.port, 'register', {
       name: 'fake-B',
       url: 'http://127.0.0.1:65535',
       namespaces: ['demo']
     });
-    const registerAck = await registerAckPromise;
+    openFeeds.push(coordinator);
+    const registerAck = await waitForFrame<{ ok: boolean; registered: boolean }>(
+      coordinator,
+      (f) => f.ok === true && typeof f.registered === 'boolean'
+    );
     expect(registerAck.registered).toBe(true);
 
     // Watcher should have received the online broadcast.
@@ -362,11 +375,11 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — sentinel topology', () => {
 
 describe.skipIf(!HIVE_ENABLED)('hive integration — sentinel liveness', () => {
   let s: InstanceHandle | null = null;
-  const openSockets: Array<WebSocket> = [];
+  const openFeeds: Array<SentinelFeed> = [];
 
   afterEach(async () => {
-    for (const ws of openSockets) await closeWs(ws);
-    openSockets.length = 0;
+    for (const feed of openFeeds) await closeFeed(feed);
+    openFeeds.length = 0;
     if (s !== null) await s.stop();
     s = null;
   });
@@ -374,51 +387,44 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — sentinel liveness', () => {
   it('broadcasts offline event to watchers when a coordinator disconnects', async () => {
     const sentinelPlugin = createSentinelPlugin({
       namespace: 'sentinel',
-      pingIntervalMs: 1_000,
-      staleThresholdMs: 3_000
+      pingIntervalMs: 1_000
     });
     // register/watch require an authenticated caller.
     s = await startInstance({
       coordinators: [sentinelPlugin],
       datasets: { sentinel: new MemoryDataset({ namespace: 'sentinel' }) },
-      auth: authConfig,
-      streamTicketSecret: STREAM_TICKET_SECRET
+      auth: authConfig
     });
 
     // Watcher first.
-    const watcher = await openSentinelWs(s.port, authHeaders());
-    openSockets.push(watcher);
-    const watchAckPromise = waitForFrame<{ ok: boolean; watching: boolean }>(
+    const watcher = await openSentinelFeed(s.port, 'watch');
+    openFeeds.push(watcher);
+    await waitForFrame<{ ok: boolean; watching: boolean }>(
       watcher,
       (f) => f.ok === true && f.watching === true
     );
-    sendJson(watcher, { type: 'watch' });
-    await watchAckPromise;
 
-    // Coordinator register — NOT pushed to openSockets because we close it mid-test.
-    const coordinator = await openSentinelWs(s.port, authHeaders());
-    const registerAckPromise = waitForFrame<{ ok: boolean; registered: boolean }>(
-      coordinator,
-      (f) => f.ok === true && typeof f.registered === 'boolean'
-    );
-    sendJson(coordinator, {
-      type: 'register',
+    // Coordinator register — NOT pushed to openFeeds because we close it mid-test.
+    const coordinator = await openSentinelFeed(s.port, 'register', {
       name: 'fake-C',
       url: 'http://127.0.0.1:65534',
       namespaces: ['demo']
     });
-    await registerAckPromise;
+    await waitForFrame<{ ok: boolean; registered: boolean }>(
+      coordinator,
+      (f) => f.ok === true && typeof f.registered === 'boolean'
+    );
 
     // Drain the online broadcast so the next waitForFrame doesn't grab it
     // instead of the offline event.
     await waitForFrame(watcher, (f) => f.event === 'online');
 
-    // Arm the offline listener, then close the coordinator socket.
+    // Arm the offline listener, then close the coordinator feed.
     const offlinePromise = waitForFrame<{ event: string; name: string; url: string }>(
       watcher,
       (f) => f.event === 'offline'
     );
-    await closeWs(coordinator);
+    await closeFeed(coordinator);
 
     const offline = await offlinePromise;
     expect(offline.event).toBe('offline');
@@ -431,11 +437,11 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — full-hive smoke', () => {
   let a: InstanceHandle | null = null;
   let b: InstanceHandle | null = null;
   let s: InstanceHandle | null = null;
-  const openSockets: Array<WebSocket> = [];
+  const openFeeds: Array<SentinelFeed> = [];
 
   afterEach(async () => {
-    for (const ws of openSockets) await closeWs(ws);
-    openSockets.length = 0;
+    for (const feed of openFeeds) await closeFeed(feed);
+    openFeeds.length = 0;
     if (a !== null) await a.stop();
     if (b !== null) await b.stop();
     if (s !== null) await s.stop();
@@ -456,16 +462,14 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — full-hive smoke', () => {
     // --- Instance S: sentinel ---
     const sentinelPlugin = createSentinelPlugin({
       namespace: 'sentinel',
-      pingIntervalMs: 1_000,
-      staleThresholdMs: 3_000
+      pingIntervalMs: 1_000
     });
     // register/watch require an authenticated caller. Only S (which hosts the
-    // sentinel WS route) needs auth; A and B compose without it.
+    // sentinel routes) needs auth; A and B compose without it.
     s = await startInstance({
       coordinators: [sentinelPlugin],
       datasets: { sentinel: new MemoryDataset({ namespace: 'sentinel' }) },
-      auth: authConfig,
-      streamTicketSecret: STREAM_TICKET_SECRET
+      auth: authConfig
     });
 
     // --- Instance A: consumer with an empty, live BridgeRegistry ---
@@ -474,28 +478,23 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — full-hive smoke', () => {
 
     // Test acts as A's sentinel-client: open watcher, observe online events,
     // runtime-register the bridge on A by hand.
-    const watcher = await openSentinelWs(s.port, authHeaders());
-    openSockets.push(watcher);
-    const watchAckPromise = waitForFrame<{ ok: boolean; watching: boolean }>(
+    const watcher = await openSentinelFeed(s.port, 'watch');
+    openFeeds.push(watcher);
+    await waitForFrame<{ ok: boolean; watching: boolean }>(
       watcher,
       (f) => f.ok === true && f.watching === true
     );
-    sendJson(watcher, { type: 'watch' });
-    await watchAckPromise;
 
-    // B registers with S. NOT pushed to openSockets — we close it manually mid-test.
-    const bRegister = await openSentinelWs(s.port, authHeaders());
-    const registerAckPromise = waitForFrame<{ ok: boolean; registered: boolean }>(
-      bRegister,
-      (f) => f.ok === true && typeof f.registered === 'boolean'
-    );
-    sendJson(bRegister, {
-      type: 'register',
+    // B registers with S. NOT pushed to openFeeds — we close it manually mid-test.
+    const bRegister = await openSentinelFeed(s.port, 'register', {
       name: 'B',
       url: `http://127.0.0.1:${b.port}`,
       namespaces: ['demo']
     });
-    await registerAckPromise;
+    await waitForFrame<{ ok: boolean; registered: boolean }>(
+      bRegister,
+      (f) => f.ok === true && typeof f.registered === 'boolean'
+    );
 
     // Watcher receives online; test reacts by runtime-registering the bridge.
     const online = await waitForFrame<{
@@ -542,7 +541,7 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — full-hive smoke', () => {
         watcher,
         (f) => f.event === 'offline' && f.name === 'B'
       );
-      await closeWs(bRegister);
+      await closeFeed(bRegister);
       const offline = await offlinePromise;
       expect(offline.name).toBe('B');
 
@@ -612,8 +611,7 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — bridge federation trust', (
     b = await startInstance({
       coordinators: [buildDemoPlugin()],
       datasets: { demo: demoDataset },
-      auth: { keys: [{ kid, alg: 'EdDSA', publicKey: publicKeyPem }] },
-      streamTicketSecret: STREAM_TICKET_SECRET
+      auth: { keys: [{ kid, alg: 'EdDSA', publicKey: publicKeyPem }] }
     });
 
     // B now requires auth on every route, including the seeding mutate below —
@@ -675,8 +673,7 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — bridge federation trust', (
     b = await startInstance({
       coordinators: [buildDemoPlugin()],
       datasets: { demo: demoDataset },
-      auth: { keys: [{ kid: 'b-only@hive-test', alg: 'EdDSA', publicKey: publicKeyPem }] },
-      streamTicketSecret: STREAM_TICKET_SECRET
+      auth: { keys: [{ kid: 'b-only@hive-test', alg: 'EdDSA', publicKey: publicKeyPem }] }
     });
 
     // The bridge signs with an entirely unrelated keypair — B's auth
@@ -721,13 +718,13 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — discovery allowlist', () =>
   let a: InstanceHandle | null = null;
   let s: InstanceHandle | null = null;
   let clientHandle: SentinelClientHandle | null = null;
-  const openSockets: Array<WebSocket> = [];
+  const openFeeds: Array<SentinelFeed> = [];
 
   afterEach(async () => {
     if (clientHandle !== null) await clientHandle.stop();
     clientHandle = null;
-    for (const ws of openSockets) await closeWs(ws);
-    openSockets.length = 0;
+    for (const feed of openFeeds) await closeFeed(feed);
+    openFeeds.length = 0;
     if (a !== null) await a.stop();
     if (s !== null) await s.stop();
     a = null;
@@ -737,14 +734,12 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — discovery allowlist', () =>
   it('an unprovisioned discovered coordinator produces no bridge and no outbound request', async () => {
     const sentinelPlugin = createSentinelPlugin({
       namespace: 'sentinel',
-      pingIntervalMs: 1_000,
-      staleThresholdMs: 3_000
+      pingIntervalMs: 1_000
     });
     s = await startInstance({
       coordinators: [sentinelPlugin],
       datasets: { sentinel: new MemoryDataset({ namespace: 'sentinel' }) },
-      auth: authConfig,
-      streamTicketSecret: STREAM_TICKET_SECRET
+      auth: authConfig
     });
 
     // A's own BridgeRegistry + an EMPTY credential allowlist — 'evil' is
@@ -787,22 +782,19 @@ describe.skipIf(!HIVE_ENABLED)('hive integration — discovery allowlist', () =>
     await connected;
 
     // A rogue coordinator registers itself with S under the name 'evil'.
-    // The register frame itself only needs to pass sentinel's own WS auth
+    // The register request itself only needs to pass sentinel's own auth
     // gate (any bearer with `mutate`) — the credential-store gate below is
     // a separate trust boundary the sentinel-client applies on top.
-    const evilSocket = await openSentinelWs(s.port, authHeaders());
-    openSockets.push(evilSocket);
-    const registerAckPromise = waitForFrame<{ ok: boolean; registered: boolean }>(
-      evilSocket,
-      (f) => f.ok === true && typeof f.registered === 'boolean'
-    );
-    sendJson(evilSocket, {
-      type: 'register',
+    const evilFeed = await openSentinelFeed(s.port, 'register', {
       name: 'evil',
       url: 'https://evil.test',
       namespaces: ['pirate']
     });
-    await registerAckPromise;
+    openFeeds.push(evilFeed);
+    await waitForFrame<{ ok: boolean; registered: boolean }>(
+      evilFeed,
+      (f) => f.ok === true && typeof f.registered === 'boolean'
+    );
 
     // Deterministic instead of a fixed sleep: the client's own metric hook
     // fires exactly when handleOnline's credential-store miss is reached.

@@ -48,19 +48,4 @@ describe('MemorySubstrateServer.createPluginRouter', () => {
     expect(pingA.body).toBe('from-a');
     expect(pingB.body).toBe('from-b');
   });
-
-  it('registers websocket routes reachable via connectWebsocket()', async () => {
-    const server = new MemorySubstrateServer();
-    const router = server.createPluginRouter({ name: 'demo' });
-    router.websocket('/ws', (_req, conn) => {
-      conn.onMessage((buf) => conn.send(buf));
-    });
-    const client = server.connectWebsocket('/substrate/v1/plugins/demo/ws');
-    const got = new Promise<Buffer>((resolve) => {
-      client.onMessage((buf) => resolve(buf));
-    });
-    await new Promise((r) => setImmediate(r));
-    client.send(Buffer.from('ping'));
-    expect((await got).toString()).toBe('ping');
-  });
 });

@@ -84,8 +84,7 @@ async function mkServer(overrides: { adminCapability?: string } = {}): Promise<S
     server,
     dataset,
     datasets: { [SYSTEM_NAMESPACE]: substrateDataset },
-    auth: cfg,
-    streamTicketSecret: 'test-stream-ticket-secret'
+    auth: cfg
   });
   await server.start();
   return { server, composed, substrateDataset };
@@ -651,8 +650,7 @@ describe('apps/substrate § Ed25519 end-to-end via dataset key', () => {
       server,
       dataset,
       datasets: { [SYSTEM_NAMESPACE]: substrateDataset },
-      auth: authCfg,
-      streamTicketSecret: 'test-stream-ticket-secret'
+      auth: authCfg
     });
     await server.start();
     ctx = { server, composed, substrateDataset };
@@ -1103,8 +1101,7 @@ describe('apps/substrate § compose auth wiring', () => {
       server,
       dataset,
       datasets: { [SYSTEM_NAMESPACE]: substrateDataset },
-      auth: callerCfg,
-      streamTicketSecret: 'test-stream-ticket-secret'
+      auth: callerCfg
     });
     try {
       // The original AuthConfig must remain untouched — compose threads the

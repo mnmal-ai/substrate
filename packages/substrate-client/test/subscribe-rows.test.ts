@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { SubscribeError } from '../src/errors.js';
 import { reduceSubscribeRows, watchRows } from '../src/subscribe-rows.js';
-import type { SubscribeEvent } from '../src/transport/ws.js';
+import type { SubscribeEvent } from '../src/transport/frame-event.js';
 
 const QKEY = 'claude/Todo';
 

@@ -97,7 +97,6 @@ async function mkServer(
     dataset,
     datasets: { [SYSTEM_NAMESPACE]: substrateDataset },
     auth,
-    streamTicketSecret: 'test-stream-ticket-secret',
     coordinators: [fixturePlugin]
   });
   await server.start();

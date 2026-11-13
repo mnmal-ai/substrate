@@ -2,11 +2,8 @@
  * Transport-agnostic streaming session core. Spec §2.5 (protocol neutrality),
  * §5.5 (stream dispatch).
  *
- * A `StreamSession` is ONE logical stream or subscription. Multiplexing is a
- * TRANSPORT concern: the WS route holds a `Map<id, StreamSession>` because one
- * socket carries many; the SSE route holds exactly one because one HTTP
- * response carries one. Keeping the session ignorant of multiplexing lets
- * both transports share this core.
+ * A `StreamSession` is ONE logical stream or subscription, carried by one HTTP
+ * response.
  */
 
 import type {
@@ -40,7 +37,7 @@ export type CloseReason = 'complete' | 'client_disconnect' | 'shutdown' | 'cance
 export interface StreamTransport {
   /**
    * Write one frame. Awaiting the returned promise IS the backpressure signal:
-   * a transport that can block (WS socket drain, SSE ReadableStream demand)
+   * a transport that can block (ReadableStream demand)
    * resolves only once the consumer is ready. Transports with no buffer
    * (memory/test) resolve immediately and chunks flow unthrottled.
    */
@@ -48,7 +45,7 @@ export interface StreamTransport {
   /**
    * Terminal. Implementations MUST tolerate being called more than once.
    *
-   * A transport that owns a finite resource (an SSE response) cannot rely on
+   * A transport that owns a finite resource (a response) cannot rely on
    * this alone to release it: a subscribe that fails at registration emits a
    * lone `error` and no `end`, so the session never closes. The transport must
    * detect "an `error` arrived AND no entry was registered" itself — not merely

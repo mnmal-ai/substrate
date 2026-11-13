@@ -56,8 +56,7 @@ describe('401 diagnosis at the wire', () => {
       systemActor: 'test',
       server,
       dataset: new MemoryDataset({ namespace: 'default' }),
-      auth: authCfg,
-      streamTicketSecret: 'test-stream-ticket-secret'
+      auth: authCfg
     });
     await server.start();
     return server;

@@ -101,7 +101,6 @@ async function boot(dataset: SweepingDataset, intervalMs = 0) {
     datasets: { [NS]: dataset },
     coordinators: [plugin],
     auth: { keys: [{ kid: 'file', alg: 'HS256', publicKey: SECRET }], adminCapability: 'admin' },
-    streamTicketSecret: 'promote-fields-ticket',
     promoteFields: { intervalMs }
   });
   const token = (capabilities: string[], ns: string[] = ['*']) =>

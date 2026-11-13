@@ -701,7 +701,7 @@ export type CredentialLapse = 'credential_expired' | 'credential_revoked' | 'cre
 
 /**
  * The parts of a Key row a verification relied on. A string, so it survives
- * the SSE ticket's JSON round trip on the identity.
+ * a JSON round trip on the identity.
  */
 function keyRecordDigest(
   alg: string,

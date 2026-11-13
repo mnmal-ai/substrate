@@ -1,18 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import WebSocket from 'ws';
+import { describe, expect, it } from 'vitest';
 import { FastifySubstrateServer } from '../src/index.js';
-
-const servers: FastifySubstrateServer[] = [];
-function track(s: FastifySubstrateServer): FastifySubstrateServer {
-  servers.push(s);
-  return s;
-}
-afterEach(async () => {
-  while (servers.length) {
-    const s = servers.pop();
-    if (s) await s.stop();
-  }
-});
 
 describe('createPluginRouter', () => {
   it('mounts plugin routes under /plugins/<name>', async () => {
@@ -61,30 +48,5 @@ describe('createPluginRouter', () => {
     const pingB = await server.inject({ method: 'GET', path: '/substrate/v1/plugins/b/ping' });
     expect(pingA.body?.toString()).toBe('from-a');
     expect(pingB.body?.toString()).toBe('from-b');
-  });
-
-  it('registers websocket routes via the plugin router', async () => {
-    const server = track(new FastifySubstrateServer());
-    const router = server.createPluginRouter({ name: 'demo' });
-    router.websocket('/ws', (_req, conn) => {
-      conn.onMessage((buf) => conn.send(buf));
-    });
-    const { port } = await server.start({ host: '127.0.0.1', port: 0 });
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/substrate/v1/plugins/demo/ws`);
-    await new Promise<void>((resolve, reject) => {
-      ws.once('open', () => resolve());
-      ws.once('error', reject);
-    });
-    const got = new Promise<Buffer>((resolve) => {
-      ws.once('message', (data) => {
-        if (Buffer.isBuffer(data)) return resolve(data);
-        if (data instanceof ArrayBuffer) return resolve(Buffer.from(data));
-        if (Array.isArray(data)) return resolve(Buffer.concat(data as Buffer[]));
-        resolve(Buffer.from(String(data)));
-      });
-    });
-    ws.send('ping');
-    expect((await got).toString()).toBe('ping');
-    ws.close();
   });
 });

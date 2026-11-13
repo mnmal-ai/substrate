@@ -25,7 +25,6 @@ import { compose } from '../src/compose.js';
 
 const SECRET = 'tokenless-401-secret';
 const KID = 'tokenless401';
-const TICKET_SECRET = 'tokenless-401-ticket-secret';
 
 function authCfg(mode: 'required' | 'attribute'): AuthConfig {
   return { mode, keys: [{ kid: KID, alg: 'HS256', publicKey: SECRET }] };
@@ -44,8 +43,7 @@ async function start(mode: 'required' | 'attribute'): Promise<MemorySubstrateSer
   await compose({
     server,
     dataset: new MemoryDataset({ namespace: 'default' }),
-    auth: authCfg(mode),
-    streamTicketSecret: TICKET_SECRET
+    auth: authCfg(mode)
   });
   await server.start();
   return server;

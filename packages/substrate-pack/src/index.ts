@@ -9,10 +9,10 @@
  *   - Server: routes call `encodeEnvelope` when the request advertises
  *     `Accept: application/vnd.substrate.pack`; JSON otherwise.
  *   - Client: `@mnmal-ai/substrate-client` calls `decodeEnvelope` with the
- *     request's selection, and the WS decode plan for pack subscriptions.
+ *     request's selection, and the decode plan for pack subscriptions.
  */
 
-// Re-export msgpackr's frame-level codec so WS route layers can pack/unpack
+// Re-export msgpackr's frame-level codec so frame-stream route layers can pack/unpack
 // substrate-pack-negotiated frames without taking a direct msgpackr dependency.
 // The wire format — including subscription/stream frames (§8.5) — flows
 // through the same codec the envelope uses.
@@ -65,10 +65,3 @@ export {
   isPlainRequestData,
   type WireMode
 } from './wire.js';
-
-/**
- * WebSocket subprotocol advertised in `Sec-WebSocket-Protocol` at handshake
- * time. Connections negotiating this subprotocol receive msgpack frames with
- * positionally-encoded `data`; anything else falls back to JSON.
- */
-export const WS_SUBPROTOCOL_SUBSTRATE_PACK = 'substrate-pack';

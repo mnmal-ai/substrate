@@ -2,9 +2,9 @@
 
 Internal: bundled into `@mnmal-ai/substrate` and not published; it is not part of the public surface.
 
-Fastify-backed `SubstrateServer`: the production HTTP and WebSocket transport.
+Fastify-backed `SubstrateServer`: the production HTTP transport.
 
-What `apps/substrate` runs to serve the routes `compose` mounts, plus the WebSocket upgrade at `/substrate/v1/ws`. Wraps Fastify 5 with per-request `AbortController` fan-out (graceful shutdown drains in-flight requests), the `application/vnd.substrate.pack` content-type parser, `@fastify/websocket` for subscribe and stream, optional CORS, optional TLS, and a plugin router that mounts each coordinator's routes under `/substrate/v1/plugins/<name>/`.
+What `apps/substrate` runs to serve the routes `compose` mounts. Wraps Fastify 5 with per-request `AbortController` fan-out (graceful shutdown drains in-flight requests), the `application/vnd.substrate.pack` content-type parser, optional CORS, optional TLS, and a plugin router that mounts each coordinator's routes under `/substrate/v1/plugins/<name>/`.
 
 ## Where it fits
 

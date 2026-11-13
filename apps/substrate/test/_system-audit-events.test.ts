@@ -98,7 +98,6 @@ async function mkServer(opts: MkServerOptions = {}): Promise<ServerCtx> {
     dataset,
     datasets: { [SYSTEM_NAMESPACE]: substrateDataset },
     auth: { ...authCfg },
-    streamTicketSecret: 'test-stream-ticket-secret',
     registerRateLimiter: rateLimiter
   };
   if (opts.trustedProxies !== undefined) composeOpts.trustedProxies = opts.trustedProxies;

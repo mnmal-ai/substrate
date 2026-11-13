@@ -19,8 +19,7 @@ async function register(publicKey: string): Promise<{ status: number; code?: str
   const composed = await compose({
     server,
     dataset: new MemoryDataset({ namespace: 'default' }),
-    auth,
-    streamTicketSecret: 'weak-rsa-key-stream-secret'
+    auth
   });
   await server.start();
   const now = Math.floor(Date.now() / 1000);

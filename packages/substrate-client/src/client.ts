@@ -1,9 +1,9 @@
 /**
- * SubstrateClient — the public facade over the HTTP and WS transports, wire
+ * SubstrateClient — the public facade over the HTTP and frame-stream transports, wire
  * decoding and schema-drift handling.
  *
- * Routing is protocol-mandated: query and mutate go over HTTP only (WS does
- * not accept them); subscribe and stream go over WS only.
+ * Routing is protocol-mandated: query and mutate are plain HTTP requests;
+ * subscribe and stream are frame streams (one POST each, response held open).
  *
  * Drift detection is lazy-seeded: the client cannot replicate the server's
  * federated schema-version hash, so the first envelope's `schemaVersion` seeds
@@ -42,7 +42,6 @@ import type { SubscribeEvent, WsOverloadResubscribeOpts } from './transport/fram
 import { anySignal, type FrameStreamPath, openFrameStream } from './transport/frames.js';
 import type { FetchLike } from './transport/h2-fetch.js';
 import { HttpTransport, type QualifiedFrame } from './transport/http.js';
-import type { WebSocketImpl, WsEncoding } from './transport/ws.js';
 import { decodeJsonEnvelope, isPackMarker, type PackMarker } from './wire/json.js';
 
 export interface SubstrateClientOptions {
@@ -68,31 +67,10 @@ export interface SubstrateClientOptions {
    */
   streamWire?: 'json' | 'pack';
   /**
-   * @deprecated Use `streamWire`, which falls back to this. Removed with the WS transport.
-   *
-   * Wire encoding for the WS surface (subscribe + stream). Default `json`.
-   * `pack` advertises the `substrate-pack` subprotocol at handshake; the connection
-   * then exclusively speaks msgpack frames with positionally-encoded `data`,
-   * which the client decodes back to named-object rows using the cached
-   * federated schema. Negotiated once per WS connection — distinct from the
-   * per-call HTTP `wire` opt because the WS subprotocol is a handshake-time
-   * choice.
-   */
-  wsEncoding?: WsEncoding;
-  /**
    * Auto-resubscribe policy for `subscription_overloaded` teardowns. Default:
    * enabled with 3 attempts. See the README "Terminal-aware resubscribe" section.
    */
   overloadResubscribe?: WsOverloadResubscribeOpts;
-  /**
-   * @deprecated Ignored: subscribe and stream no longer use WebSocket.
-   *
-   * Explicit WebSocket implementation for the subscribe/stream surface. Must
-   * be node-ws-compatible (`new (url, protocols?, { headers })`) so the
-   * bearer can ride the upgrade. Defaults to node-ws under Node and the
-   * global WebSocket elsewhere — see WsTransportOpts.webSocket.
-   */
-  webSocket?: WebSocketImpl;
   /**
    * Sink for non-fatal envelope diagnostics (`_diagnostics`) on query/mutate
    * responses: projection keys the type does not declare, a where-clause that
@@ -140,7 +118,7 @@ export class SubstrateClient {
       ...(opts.fetch !== undefined ? { fetch: opts.fetch } : {})
     });
 
-    this.#streamWire = opts.streamWire ?? opts.wsEncoding ?? 'json';
+    this.#streamWire = opts.streamWire ?? 'json';
     this.#canRefreshToken = opts.token === undefined && opts.getToken !== undefined;
     this.#reconnectOpts = opts.reconnect;
     this.#overloadResubscribeOpts = opts.overloadResubscribe;
@@ -149,7 +127,7 @@ export class SubstrateClient {
     this.#cache = new CacheStore({ idleGcMs: 5000 });
   }
 
-  /** Natural-language ask (SSE or JSON) and the served namespace pack. Requires the substrate-nl plugin. */
+  /** Natural-language ask (frame stream or JSON) and the served namespace pack. Requires the substrate-nl plugin. */
   get nl(): NlApi {
     this.#nl ??= createNlApi(this.#http);
     return this.#nl;
@@ -253,7 +231,7 @@ export class SubstrateClient {
    *
    * Completes when the subscription ends; throws on an error frame — the same
    * contract as `subscribe`. Breaking the consuming `for await` cancels the
-   * underlying WS subscription. Reconnect / overload-resubscribe are handled by
+   * underlying subscription. Reconnect / overload-resubscribe are handled by
    * `subscribe`; each fresh snapshot atomically replaces the row-set.
    *
    * Single-qualified-key only: multi-key frames throw; use `subscribe` for
@@ -358,7 +336,7 @@ export class SubstrateClient {
   }
 
   /**
-   * Wrap a WS event stream so each `data`-bearing frame (snapshot/add/update/
+   * Wrap a frame event stream so each `data`-bearing frame (snapshot/add/update/
    * chunk) gets its positional tuple values reconstructed into named-object
    * rows using the cached federated schema. Errors from the inner stream
    * (transport drop, server error frame) propagate untouched.

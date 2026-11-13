@@ -1,5 +1,5 @@
 /**
- * `GET /substrate/v1/whoami` and the WS `whoami` op.
+ * `GET /substrate/v1/whoami`.
  *
  * Each distinction is exercised as a THREE-WAY comparison rather than a
  * single case:
@@ -11,25 +11,13 @@
  * The first two rows tell "auth off" from "anonymous", which look identical
  * from the client side; the third keeps a BROKEN credential from being
  * reported as an absent one.
- *
- * A socket's auth is a different code path from HTTP's, so the WS op is tested
- * through a real registered route rather than trusted to agree with the HTTP
- * handler.
  */
 
-import { Engine, MemoryEdgesStore, Registry } from '@mnmal-ai/substrate-core';
-import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-dataset-memory';
 import { capabilitiesFor, flattenGrant, parseGrantEntries } from '@mnmal-ai/substrate-policy';
-import type {
-  SubstrateRequest,
-  SubstrateServer,
-  WsConnection,
-  WsHandler
-} from '@mnmal-ai/substrate-types';
+import type { SubstrateRequest } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
 import { type AuthConfig, signHs256 } from '../src/auth.js';
 import { describeIdentity, whoamiRoute } from '../src/routes/whoami.js';
-import { registerWsRoute } from '../src/routes/ws.js';
 
 const SECRET = 'whoami-test-secret';
 const KID = 'whoami-test';
@@ -140,102 +128,6 @@ describe('GET /substrate/v1/whoami', () => {
     const res = await call(AUTH, { authorization: `Bearer ${jwt}` });
 
     expect(JSON.stringify(res.body)).not.toContain(jwt);
-  });
-});
-
-/** Drive the real WS route and collect what it sends back. */
-async function wsExchange(
-  auth: AuthConfig | undefined,
-  headers: Record<string, string>,
-  frames: unknown[]
-): Promise<Array<Record<string, unknown>>> {
-  let handler: WsHandler | undefined;
-  const server = {
-    route: () => {},
-    websocket: (_p: string, h: WsHandler) => {
-      handler = h;
-    }
-  } as unknown as SubstrateServer;
-
-  const registry = new Registry();
-  registry.register('Memo', { resolver: async () => [] });
-  const datasets = new MemoryDatasetRegistry();
-  datasets.set('default', new MemoryDataset({ namespace: 'default' }));
-  const engine = new Engine({
-    namespaces: new Map([['default', { registry }]]),
-    datasets,
-    edges: new MemoryEdgesStore({ now: () => new Date('2026-08-25T00:00:00Z') })
-  });
-
-  registerWsRoute(server, engine, new Set<string>(), () => {}, auth);
-
-  const sent: Array<Record<string, unknown>> = [];
-  let onMsg: ((b: Buffer) => void) | undefined;
-  const conn = {
-    id: 'c1',
-    send: (d: string | Buffer) => {
-      sent.push(JSON.parse(String(d)) as Record<string, unknown>);
-    },
-    onMessage: (cb: (b: Buffer) => void) => {
-      onMsg = cb;
-    },
-    onClose: () => {},
-    close: () => {}
-  } as unknown as WsConnection;
-
-  await handler?.({ ...request(headers), path: '/substrate/v1/ws' } as SubstrateRequest, conn);
-  for (const f of frames) onMsg?.(Buffer.from(JSON.stringify(f), 'utf8'));
-  return sent;
-}
-
-describe('WS whoami op', () => {
-  it('answers on the socket, without opening a session', async () => {
-    // Asked and answered on the connection whose auth is in question — a
-    // client that has to leave the socket to find out is answering a
-    // different question.
-    const frames = await wsExchange(AUTH, { authorization: `Bearer ${token()}` }, [
-      { id: '1', op: 'whoami' }
-    ]);
-
-    expect(frames).toHaveLength(1);
-    expect(frames[0]).toMatchObject({
-      id: '1',
-      kind: 'whoami',
-      data: {
-        authEnabled: true,
-        identity: { id: 'caller@host', grants: { journal: ['read'] } }
-      }
-    });
-  });
-
-  it('reports an anonymous socket as anonymous rather than refusing', async () => {
-    // Reachable because `attribute` mode admits a tokenless upgrade.
-    const frames = await wsExchange(AUTH, {}, [{ id: '1', op: 'whoami' }]);
-
-    expect(frames[0]).toMatchObject({
-      kind: 'whoami',
-      data: { authEnabled: true, identity: null }
-    });
-  });
-
-  it('reports auth-off distinctly on the socket too', async () => {
-    const frames = await wsExchange(undefined, {}, [{ id: '1', op: 'whoami' }]);
-
-    expect(frames[0]).toMatchObject({
-      kind: 'whoami',
-      data: { authEnabled: false, identity: null }
-    });
-  });
-
-  it('leaves the other ops working — whoami is additive', async () => {
-    // The op allowlist is deliberately tiny: an unknown op is still
-    // `invalid_frame`.
-    const frames = await wsExchange(AUTH, { authorization: `Bearer ${token()}` }, [
-      { id: '1', op: 'nonsense' }
-    ]);
-
-    expect(frames[0]).toMatchObject({ kind: 'error' });
-    expect((frames[0]!.errors as Array<{ code: string }>)[0]?.code).toBe('invalid_frame');
   });
 });
 

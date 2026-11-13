@@ -24,16 +24,12 @@ const RAW: Array<[string, RegExp]> = [
   ['text/event-stream', /text\/event-stream/]
 ];
 
-/** Files allowed a match, and why. Task 8 entries go when WS and SSE are retired. */
+/** Files allowed a match, and why. */
 const ALLOWED: Record<string, string> = {
   'packages/substrate-embedder/src/ollama.ts': 'calls Ollama, not Substrate',
   'plugins/substrate-nl/src/judge/ollama.ts': 'calls Ollama, not Substrate',
   'plugins/substrate-recall/src/row-visibility.ts': 'a parameter named fetch',
-  'plugins/substrate-recall/src/pg-embeddings-store.ts': 'a local function named fetch',
-  'packages/substrate-compose/src/routes/sse-frame.ts': 'Task 8',
-  'packages/substrate-server-fastify/src/fastify-server.ts': 'Task 8',
-  'plugins/substrate-nl/src/ask/encode.ts': 'Task 8',
-  'plugins/substrate-nl/src/routes.ts': 'Task 8'
+  'plugins/substrate-recall/src/pg-embeddings-store.ts': 'a local function named fetch'
 };
 
 function sources(): string[] {

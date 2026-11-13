@@ -37,8 +37,7 @@ describe('registry ES256 key', () => {
       server,
       dataset: new MemoryDataset({ namespace: 'default' }),
       datasets: { [SYSTEM_NAMESPACE]: sys },
-      auth: { keys: [], mode: 'required' },
-      streamTicketSecret: 'registry-token-claims-stream'
+      auth: { keys: [], mode: 'required' }
     });
     await server.start();
     stop = () => composed.stop();

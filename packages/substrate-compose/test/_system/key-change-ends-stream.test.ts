@@ -1,6 +1,9 @@
 import { generateKeyPairSync, type KeyObject } from 'node:crypto';
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
+import { decodeStreamFrames, FRAMES_JSON_MIME } from '@mnmal-ai/substrate-pack';
+import { defineNamespace, field } from '@mnmal-ai/substrate-sdk';
 import { MemorySubstrateServer } from '@mnmal-ai/substrate-server-memory';
+import type { CoordinatorPlugin } from '@mnmal-ai/substrate-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { KEY_TYPE, SYSTEM_NAMESPACE } from '../../src/_system/types.js';
 import { CREDENTIAL_RECHECK_MS, signEdDSA, signHs256 } from '../../src/auth.js';
@@ -8,6 +11,16 @@ import { compose } from '../../src/compose.js';
 
 const SECRET = 'key-change-ends-stream-secret-0123456789';
 const KID = 'agent@host';
+
+const todoPlugin: CoordinatorPlugin = {
+  name: 'key-change-fixture',
+  contractVersion: '*',
+  namespaces: [
+    defineNamespace('default', {
+      Todo: { fields: { id: field.string(), title: field.string() }, autoCrud: true }
+    })
+  ]
+};
 
 function keyPair(): { pem: string; privateKey: KeyObject } {
   const kp = generateKeyPairSync('ed25519');
@@ -24,7 +37,7 @@ afterEach(async () => {
   stop = undefined;
 });
 
-/** A live Key row, and a socket open under it. */
+/** A live Key row, and a subscription stream open under it. */
 async function openStream() {
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
   const server = new MemorySubstrateServer();
@@ -48,8 +61,8 @@ async function openStream() {
     server,
     dataset: new MemoryDataset({ namespace: 'default' }),
     datasets: { [SYSTEM_NAMESPACE]: sys },
-    auth: { keys: [{ kid: 'file', alg: 'HS256', publicKey: SECRET }], adminCapability: 'admin' },
-    streamTicketSecret: 'key-change-ends-stream-ticket'
+    coordinators: [todoPlugin],
+    auth: { keys: [{ kid: 'file', alg: 'HS256', publicKey: SECRET }], adminCapability: 'admin' }
   });
   await server.start();
   stop = () => composed.stop();
@@ -73,10 +86,24 @@ async function openStream() {
     });
     expect(res.status, String(res.body)).toBeLessThan(300);
   };
-  const ws = server.connectWebsocket('/substrate/v1/ws', { authorization: `Bearer ${agent}` });
-  const closed: Array<number | undefined> = [];
-  ws.onClose((code) => closed.push(code));
-  await new Promise((r) => setImmediate(r));
+  const res = await server.inject({
+    method: 'POST',
+    path: '/substrate/v1/subscribe',
+    headers: { accept: FRAMES_JSON_MIME, authorization: `Bearer ${agent}` },
+    body: Buffer.from(JSON.stringify({ 'default/Todo': { fields: { id: true } } }))
+  });
+  expect(res.status).toBe(200);
+  /** Every frame's `kind:reason`, in order, as the body delivers them. */
+  const closed: string[] = [];
+  const frames = decodeStreamFrames(res.body as ReadableStream<Uint8Array>)[Symbol.asyncIterator]();
+  const snapshot = await frames.next();
+  expect(JSON.parse(new TextDecoder().decode(snapshot.value)).kind).toBe('snapshot');
+  const drained = (async () => {
+    for (let r = await frames.next(); r.done !== true; r = await frames.next()) {
+      const f = JSON.parse(new TextDecoder().decode(r.value)) as { kind: string; reason?: string };
+      closed.push(`${f.kind}:${f.reason}`);
+    }
+  })();
   const reRegister = () =>
     call('POST', {
       kid: KID,
@@ -85,24 +112,26 @@ async function openStream() {
       namespaces: ['*'],
       capabilities: ['read', 'mutate']
     });
-  return { call, closed, reRegister };
+  return { call, closed, drained, reRegister };
 }
 
 describe('an open stream ends when its Key row changes', () => {
   it('after the kid is revoked and re-registered with a new key', async () => {
-    const { call, closed, reRegister } = await openStream();
+    const { call, closed, drained, reRegister } = await openStream();
     await call('PATCH', { kid: KID, revoke: true });
     await reRegister();
     expect(closed).toEqual([]);
     vi.advanceTimersByTime(CREDENTIAL_RECHECK_MS);
-    expect(closed).toEqual([4001]);
+    await drained;
+    expect(closed).toEqual(['end:credential_changed']);
   });
 
   it('after its grant is narrowed', async () => {
-    const { call, closed } = await openStream();
+    const { call, closed, drained } = await openStream();
     await call('PATCH', { kid: KID, capabilities: ['read'] });
     expect(closed).toEqual([]);
     vi.advanceTimersByTime(CREDENTIAL_RECHECK_MS);
-    expect(closed).toEqual([4001]);
+    await drained;
+    expect(closed).toEqual(['end:credential_changed']);
   });
 });

@@ -51,8 +51,8 @@ describe('bootstrap — config validation', () => {
     expect(() => bootstrap({ pingIntervalMs: 1500.5 })).toThrow(BootstrapConfigError);
   });
 
-  it('rejects non-positive staleThresholdMs', () => {
-    expect(() => bootstrap({ staleThresholdMs: 0 })).toThrow(BootstrapConfigError);
+  it('still loads a config that sets the ignored staleThresholdMs', () => {
+    expect(() => bootstrap({ staleThresholdMs: 90_000 })).not.toThrow();
   });
 
   it('rejects unknown top-level keys (typo guard via .strict())', () => {

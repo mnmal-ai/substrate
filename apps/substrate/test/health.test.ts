@@ -59,8 +59,7 @@ describe('GET /health', () => {
       auth: {
         keys: [{ kid: 'k1', alg: 'HS256', publicKey: 'secret-test' }],
         adminCapability: 'admin'
-      },
-      streamTicketSecret: 'test-stream-ticket-secret'
+      }
     });
     const res = await server.inject({ method: 'GET', path: '/health' });
     expect(res.status).toBe(200);

@@ -114,7 +114,7 @@ export interface ComposeOpts {
   bridges?: BridgeRegistry;
   /**
    * JWT auth config (§5.12). When supplied, route handlers for
-   * `/substrate/v1/query`, `/substrate/v1/mutate`, and the `/substrate/v1/ws` upgrade require a
+   * `/substrate/v1/query`, `/substrate/v1/mutate`, `/substrate/v1/subscribe` and `/substrate/v1/stream` require a
    * valid `Authorization: Bearer <token>` header; missing / invalid tokens
    * return 401 with `{ code: 'unauthorized' }`. When absent, every request
    * passes through unauthenticated, attributed to `systemActor`.
@@ -151,7 +151,7 @@ export interface ComposeOpts {
    * §5.13 subscription back-pressure override. Threads straight into
    * `EngineOptions.subscriptions`. Default (absent): engine default
    * queueLimit of 256. Conformance tests set a tiny limit to trigger the
-   * teardown contract deterministically (docs/ws-subscription-contract.md).
+   * teardown contract deterministically (docs/stream-contract.md).
    */
   subscriptions?: {
     queueLimit?: number;
@@ -191,15 +191,11 @@ export interface ComposeOpts {
    */
   keyReprimeIntervalMs?: number;
   /**
-   * HMAC secret for browser SSE stream tickets. REQUIRED when `auth` is set,
-   * and at least `MIN_STREAM_TICKET_SECRET_LEN` characters after trimming —
-   * `compose` throws otherwise, because the ungated `GET` stream routes
-   * authenticate on this signature alone, the dev default is a published
-   * constant, and `''` / `'   '` are HMAC keys Node accepts. Omit it only with
-   * auth disabled, where `gate` is the identity function and there is nothing
-   * to bypass. Trimmed before use.
+   * Seals pagination cursors under a row-filter policy. Every process sharing
+   * it opens the same cursors; without it the key is per process, so a sealed
+   * cursor stops opening after a restart or on another replica. Trimmed.
    */
-  streamTicketSecret?: string;
+  cursorSealSecret?: string;
   /**
    * Effective value + provenance for every defaulted knob, as the caller's
    * env parser resolved them. When present, compose mounts
@@ -291,9 +287,10 @@ async function composeInner(
   cleanup: { stopSampler: () => void }
 ): Promise<ComposeResult> {
   // Fail-closed: throw before anything is allocated on a misconfigured deployment.
-  const { streamTicketSecret, systemIdentity } = resolveBootGuards(opts);
-  if (streamTicketSecret !== undefined && streamTicketSecret.length > 0) {
-    setCursorSealSecret(streamTicketSecret);
+  const { systemIdentity } = resolveBootGuards(opts);
+  const cursorSealSecret = opts.cursorSealSecret?.trim();
+  if (cursorSealSecret !== undefined && cursorSealSecret.length > 0) {
+    setCursorSealSecret(cursorSealSecret);
   }
 
   const edges: EdgesStore = opts.edges ?? new MemoryEdgesStore({ now: () => new Date() });
@@ -549,7 +546,7 @@ async function composeInner(
 
   // §5.12 trust model: one `trustedProxies` set threads through every route
   // factory that consults peerIp — `buildContext` + `/register`'s rate-limiter
-  // bucket + the WS upgrade's clientIp snapshot all read from this set. An
+  // bucket + the frame streams' clientIp snapshot all read from this set. An
   // empty set means XFF is never honoured; the default when callers don't opt
   // into proxy-awareness.
   const trustedProxies = opts.trustedProxies ?? new Set<string>();
@@ -568,7 +565,6 @@ async function composeInner(
     trustedProxies,
     pageLimits: opts.pageLimits ?? DEFAULT_PAGE_LIMITS,
     auth,
-    streamTicketSecret,
     version: opts.version,
     stats,
     routeEventMetric,
@@ -687,9 +683,4 @@ async function composeInner(
 /**
  * Auth middleware, shared by in-compose routes and substrate kernel routes.
  */
-export {
-  type Capability,
-  withAuth,
-  withSystemActor,
-  wrapWsHandler
-} from './compose/auth-middleware.js';
+export { type Capability, withAuth, withSystemActor } from './compose/auth-middleware.js';

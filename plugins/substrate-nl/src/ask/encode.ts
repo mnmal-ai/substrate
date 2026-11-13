@@ -1,18 +1,6 @@
 import { encodeStreamFrame, FRAMES_JSON_MIME } from '@mnmal-ai/substrate/pack';
 import type { NlEvent, NlOutcome } from './events.js';
 
-/** Same headers as substrate-compose's SSE routes (not exported from its entry). */
-export const SSE_HEADERS: Record<string, string> = {
-  'content-type': 'text/event-stream',
-  'cache-control': 'no-store',
-  'x-accel-buffering': 'no'
-};
-
-/** One named SSE event. JSON.stringify emits no raw newline, so one data line is safe. */
-export function sseEvent(name: string, data: unknown): string {
-  return `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
-}
-
 function wireName(ev: NlEvent): [string, unknown] {
   if (ev.event === 'outcome') return [ev.outcome.kind, ev.outcome];
   const { event, ...rest } = ev;
@@ -22,8 +10,6 @@ function wireName(ev: NlEvent): [string, unknown] {
 /** One NL event as wire bytes. */
 export type EncodeEvent = (name: string, data: unknown) => Uint8Array;
 
-const utf8 = new TextEncoder();
-export const sseBytes: EncodeEvent = (name, data) => utf8.encode(sseEvent(name, data));
 /** A length-prefixed JSON frame carrying `{ event, data }`, the client's `NlWireEvent`. */
 export const frameBytes: EncodeEvent = (event, data) => encodeStreamFrame({ event, data }, 'json');
 

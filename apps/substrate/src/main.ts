@@ -22,7 +22,7 @@
  *                            bridge without one refuses to boot rather than
  *                            connecting unauthenticated.
  *   SUBSTRATE_SENTINEL_CREDENTIAL      JSON { keyPath, kid } the sentinel-client signs its
- *                            WS upgrade with. REQUIRED whenever
+ *                            frame-stream requests with. REQUIRED whenever
  *                            SUBSTRATE_SENTINEL_URL is set.
  *   SUBSTRATE_AUTH_KEY_REGISTRY  path to JSON key file (optional — auth opt-in)
  *   SUBSTRATE_ADMIN_CAPABILITY   JWT claim value granting admin (optional)
@@ -112,7 +112,7 @@ export {
 };
 
 /**
- * Boot the Substrate HTTP/WS server. Reads env, wires substrate + coordinators,
+ * Boot the Substrate HTTP server. Reads env, wires substrate + coordinators,
  * starts Fastify, registers signal handlers for graceful shutdown. Invoked
  * through the `substrate serve` subcommand.
  */

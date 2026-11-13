@@ -1,5 +1,5 @@
 /**
- * Exponential-backoff scheduler for WS reconnect attempts. Doubles the delay
+ * Exponential-backoff scheduler for stream reconnect attempts. Doubles the delay
  * each call up to `maxDelayMs`; `jitter` (0..1) adds symmetric noise so a fleet
  * of clients doesn't reconnect in lockstep after an outage.
  */
@@ -38,7 +38,7 @@ export class ReconnectScheduler {
   /**
    * Resolve after `nextDelay()` ms. Callers must use this serially — the
    * `#attempt` counter is shared across calls, so overlapping `schedule()`
-   * invocations will produce incorrect delays. The WS reconnect loop awaits
+   * invocations will produce incorrect delays. The stream reconnect loop awaits
    * each `schedule()` before firing the next attempt.
    */
   async schedule(): Promise<void> {

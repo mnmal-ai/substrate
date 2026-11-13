@@ -115,7 +115,7 @@ export const AUDIT_EVENT_FIELDS: Record<string, FieldDef> = {
   // Optional post-trust-gated client IP (see `extractClientIp`). Populated on
   // every emission path — route handlers, interceptor wrappers, bootstrap
   // backfill — and null only when the transport exposed no peer IP and no
-  // trusted XFF (e.g. direct-engine test paths or WS upgrades without a
+  // trusted XFF (e.g. direct-engine test paths or requests without a
   // trusted proxy).
   clientIp: field.string({ nullable: true }),
   // Opaque freeform body. Round-trips as `unknown`; consumers cast on read.

@@ -411,7 +411,7 @@ export class SubscribeSubsystem {
     const { ns, name } = parsed;
 
     // §5.12 Phase 1: subscription-time namespace gate. Mirrors the query /
-    // mutate path so a WS subscribe frame can't reach a resolver in a
+    // mutate path so a subscribe frame can't reach a resolver in a
     // namespace the token wasn't scoped to.
     const nsGate = checkIdentityGrant(ctxBase.identity, ns, 'subscribe');
     if (!nsGate.ok) {

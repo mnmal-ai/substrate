@@ -24,7 +24,7 @@ import { compose } from '../src/compose.js';
 import { createConnectionLimiter } from '../src/routes/connection-limit.js';
 import { createFramesTransport } from '../src/routes/frames-transport.js';
 import { serializeFrame } from '../src/routes/pack-frame.js';
-import { registerSseRoutes } from '../src/routes/sse.js';
+import { registerStreamRoutes } from '../src/routes/stream-routes.js';
 
 const todoPlugin: CoordinatorPlugin = {
   name: 'frames-stream-fixture',
@@ -121,14 +121,14 @@ describe('frame streams over a real socket', () => {
 });
 
 describe('frame streams through the route', () => {
-  async function setup(auth?: { config: AuthConfig; secret: string }) {
+  async function setup(auth?: AuthConfig) {
     const server = new MemorySubstrateServer();
     const composed = await compose({
       systemActor: 'test',
       server,
       dataset: new MemoryDataset({ namespace: 'default' }),
       coordinators: [todoPlugin],
-      ...(auth !== undefined ? { auth: auth.config, streamTicketSecret: auth.secret } : {})
+      ...(auth !== undefined ? { auth } : {})
     });
     const open = (path: string, accept: string, headers: Record<string, string> = {}) =>
       server.inject({
@@ -205,14 +205,12 @@ describe('frame streams through the route', () => {
       }
     };
     const server = new MemorySubstrateServer();
-    registerSseRoutes(
+    registerStreamRoutes(
       server,
       engine as never,
       new Set<string>(),
-      'frames-test-secret',
       (h) => h,
       () => {},
-      undefined,
       undefined,
       createConnectionLimiter(1)
     );
@@ -247,14 +245,11 @@ describe('frame streams through the route', () => {
     await composed.stop();
   });
 
-  it('answers an auth failure with 401 JSON before any frame, as SSE does', async () => {
+  it('answers an auth failure with 401 JSON before any frame', async () => {
     const config: AuthConfig = {
       keys: [{ kid: 'k', alg: 'HS256', publicKey: 'frames-test-secret' }]
     };
-    const { composed, open } = await setup({
-      config,
-      secret: 'frames-stream-ticket-secret-0123456789'
-    });
+    const { composed, open } = await setup(config);
     const anonymous = await open('/substrate/v1/subscribe', FRAMES_JSON_MIME);
     expect(anonymous.status).toBe(401);
     expect(anonymous.headers?.['content-type']).toContain('application/json');
@@ -269,14 +264,6 @@ describe('frame streams through the route', () => {
     });
     expect(authed.status).toBe(200);
     await (authed.body as ReadableStream<Uint8Array>).cancel();
-    await composed.stop();
-  });
-
-  it('keeps SSE for any other Accept', async () => {
-    const { composed, open } = await setup();
-    const res = await open('/substrate/v1/stream', 'text/event-stream');
-    expect(res.headers?.['content-type']).toBe('text/event-stream');
-    await (res.body as ReadableStream<Uint8Array>).cancel();
     await composed.stop();
   });
 

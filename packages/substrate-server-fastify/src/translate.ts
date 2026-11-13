@@ -146,7 +146,7 @@ export async function applySubstrateResponse(
     return;
   }
   // ReadableStream: Fastify only auto-detects Node streams, so convert and let
-  // it pipe chunked. Do not buffer the stream first — SSE needs each chunk on
+  // it pipe chunked. Do not buffer the stream first — a frame stream needs each chunk on
   // the wire as it is produced.
   await reply.send(Readable.fromWeb(body as Parameters<typeof Readable.fromWeb>[0]));
 }

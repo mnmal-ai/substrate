@@ -1,26 +1,25 @@
 /**
- * Wire-level conformance test for SSE graceful shutdown.
+ * Wire-level conformance test for frame-stream graceful shutdown.
  *
- * A subscribe never self-ends, so `stop()` must end live SSE sessions itself
- * (as the WS route does with `end { reason: 'server_restart' }`) or
- * `fastify.close()` waits forever. The binary's `abortInFlight: true` masks a
- * hang, so these tests call bare `ComposeResult.stop()` as a library embedder
- * would.
+ * A subscribe never self-ends, so `stop()` must end live streams itself with
+ * `end { reason: 'server_restart' }`, or `fastify.close()` waits forever. The
+ * binary's `abortInFlight: true` masks a hang, so these tests call bare
+ * `ComposeResult.stop()` as a library embedder would.
  *
- * Two properties, one per test: the call returns, and the client sees the same
- * structured terminal WS clients get (pinned against
- * apps/substrate/test/ws-teardown-contract.test.ts).
+ * Two properties, one per test: the call returns, and the client sees the
+ * structured terminal frame.
  */
 
 import { type ComposeResult, compose } from '@mnmal-ai/substrate-compose';
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
+import { decodeStreamFrames, FRAMES_JSON_MIME } from '@mnmal-ai/substrate-pack';
 import { FastifySubstrateServer } from '@mnmal-ai/substrate-server-fastify';
 import { afterEach, describe, expect, it } from 'vitest';
 import { fixturePlugin } from './_fixtures/fixture-plugin.js';
 
-interface SseEvent {
-  readonly event: string;
-  readonly data: Record<string, unknown>;
+interface Frame {
+  readonly kind: string;
+  readonly reason?: string;
 }
 
 const TIMED_OUT = Symbol('timed out');
@@ -52,33 +51,21 @@ async function waitFor(cond: () => boolean, timeoutMs = 2000): Promise<void> {
 }
 
 /**
- * Read `event:`/`data:` blocks off a live body until the response ends. A read
- * error resolves rather than rejects: the cleanup path aborts the request to
- * unstick a failing assertion, and that abort is not itself a test failure.
+ * Read frames off a live body until the response ends. A read error resolves
+ * rather than rejects: the cleanup path aborts the request to unstick a failing
+ * assertion, and that abort is not itself a test failure.
  */
-async function drain(body: ReadableStream<Uint8Array>, sink: SseEvent[]): Promise<void> {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buffered = '';
-  for (;;) {
-    const chunk = await reader.read().catch(() => null);
-    if (chunk === null || chunk.done) return;
-    buffered += decoder.decode(chunk.value, { stream: true });
-    let at = buffered.indexOf('\n\n');
-    while (at !== -1) {
-      const block = buffered.slice(0, at);
-      buffered = buffered.slice(at + 2);
-      const event = /^event: (.+)$/m.exec(block)?.[1];
-      const data = /^data: (.+)$/m.exec(block)?.[1];
-      if (event !== undefined && data !== undefined) {
-        sink.push({ event, data: JSON.parse(data) as Record<string, unknown> });
-      }
-      at = buffered.indexOf('\n\n');
+async function drain(body: ReadableStream<Uint8Array>, sink: Frame[]): Promise<void> {
+  try {
+    for await (const p of decodeStreamFrames(body)) {
+      sink.push(JSON.parse(new TextDecoder().decode(p)) as Frame);
     }
+  } catch {
+    // Aborted by cleanup.
   }
 }
 
-describe('SSE graceful shutdown', () => {
+describe('frame-stream graceful shutdown', () => {
   let composed: ComposeResult | undefined;
   let abort: AbortController | undefined;
 
@@ -91,9 +78,9 @@ describe('SSE graceful shutdown', () => {
     composed = undefined;
   });
 
-  /** Boot a server and open a live SSE subscribe against it. */
+  /** Boot a server and open a live subscribe against it. */
   async function bootWithLiveSubscribe(): Promise<{
-    events: SseEvent[];
+    events: Frame[];
     drained: Promise<void>;
     running: ComposeResult;
   }> {
@@ -109,24 +96,22 @@ describe('SSE graceful shutdown', () => {
     const { port } = await server.start({ host: '127.0.0.1', port: 0 });
 
     abort = new AbortController();
-    // POST, not GET: the harness composes without auth so the gate is the
-    // identity function, and a POST needs no stream ticket.
     const res = await fetch(`http://127.0.0.1:${port}/substrate/v1/subscribe`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', accept: FRAMES_JSON_MIME },
       body: JSON.stringify({ 'default/Todo': { params: {}, fields: { id: true } } }),
       signal: abort.signal
     });
     expect(res.status).toBe(200);
-    if (res.body === null) throw new Error('SSE route returned no stream body');
+    if (res.body === null) throw new Error('subscribe returned no stream body');
 
-    const events: SseEvent[] = [];
+    const events: Frame[] = [];
     const drained = drain(res.body, events);
-    await waitFor(() => events.some((e) => e.event === 'snapshot'));
+    await waitFor(() => events.some((e) => e.kind === 'snapshot'));
     return { events, drained, running };
   }
 
-  it('bare stop() returns while an SSE subscribe is open', async () => {
+  it('bare stop() returns while a subscribe is open', async () => {
     const { drained, running } = await bootWithLiveSubscribe();
 
     const outcome = await withTimeout(running.stop(), 3000);
@@ -141,13 +126,10 @@ describe('SSE graceful shutdown', () => {
     await withTimeout(running.stop(), 3000);
     await withTimeout(drained, 3000);
 
-    const end = events.find((e) => e.event === 'end');
-    expect(end).toBeDefined();
-    // Same terminal-cause token the WS route emits — one vocabulary, both
-    // transports (docs/ws-subscription-contract.md).
-    expect(end?.data).toEqual({ reason: 'server_restart' });
+    const end = events.find((e) => e.kind === 'end');
+    expect(end?.reason).toBe('server_restart');
     // Nothing after the terminal.
-    expect(events.at(-1)?.event).toBe('end');
+    expect(events.at(-1)?.kind).toBe('end');
 
     expect(running.stats.snapshot().events.engine_subscription_closed_shutdown ?? 0).toBe(1);
     expect(running.engine.activeSubscriptionCount()).toBe(0);

@@ -108,8 +108,7 @@ describe('GET /substrate/v1/onboard', () => {
       server,
       dataset,
       version: '1.0.0',
-      auth: { keys: [{ alg: 'HS256', publicKey: 'test-secret' }] },
-      streamTicketSecret: 'test-stream-ticket-secret'
+      auth: { keys: [{ alg: 'HS256', publicKey: 'test-secret' }] }
     });
     const anon = await server.inject({ method: 'GET', path: '/substrate/v1/onboard' });
     expect(anon.status).toBe(401);
@@ -239,8 +238,7 @@ describe('GET /substrate/v1/onboard — binary metadata', () => {
       server,
       dataset,
       version: '1.0.0',
-      auth: { keys: [{ alg: 'HS256', publicKey: 'test-secret' }] },
-      streamTicketSecret: 'test-stream-ticket-secret'
+      auth: { keys: [{ alg: 'HS256', publicKey: 'test-secret' }] }
     });
     const res = await server.inject({
       method: 'GET',
@@ -485,7 +483,7 @@ describe('GET /substrate/v1/onboard — instructions (HTTP core)', () => {
   });
 });
 
-describe('GET /substrate/v1/onboard — instructions (WS)', () => {
+describe('GET /substrate/v1/onboard — instructions (streams)', () => {
   let server: MemorySubstrateServer | null = null;
   let composed: ComposeResult | null = null;
 
@@ -503,7 +501,7 @@ describe('GET /substrate/v1/onboard — instructions (WS)', () => {
    * `substrate-compose/test/onboard-wire-shapes.test.ts`; do not add string
    * matches on frame shapes here.
    */
-  it('routes subscribe and stream to the WS transport', async () => {
+  it('routes subscribe and stream to their frame-stream paths', async () => {
     server = new MemorySubstrateServer();
     const dataset = new MemoryDataset({ namespace: 'default' });
     composed = await compose({
@@ -520,42 +518,10 @@ describe('GET /substrate/v1/onboard — instructions (WS)', () => {
     });
     const body = JSON.parse(bodyToString(res));
 
-    expect(body.instructions.subscribe.transport).toBe('ws');
-    expect(body.instructions.subscribe.path).toBe('/substrate/v1/ws');
-
-    expect(body.instructions.stream.transport).toBe('ws');
-    expect(body.instructions.stream.path).toBe('/substrate/v1/ws');
-  });
-
-  it('names the SSE transport alongside the WS one', async () => {
-    // Without the SSE paths, a consumer would conclude the transport does not exist.
-    server = new MemorySubstrateServer();
-    const dataset = new MemoryDataset({ namespace: 'default' });
-    composed = await compose({
-      // Auth is off, so the deployment must declare who it writes as.
-      systemActor: 'test',
-      server,
-      dataset,
-      version: '1.0.0'
-    });
-    const res = await server.inject({
-      method: 'GET',
-      path: '/substrate/v1/onboard',
-      headers: readAuth()
-    });
-    const body = JSON.parse(bodyToString(res));
-
-    expect(body.instructions.sse.transport).toBe('sse');
-    expect(body.instructions.sse.paths).toEqual(
-      expect.arrayContaining([
-        '/substrate/v1/subscribe',
-        '/substrate/v1/stream',
-        '/substrate/v1/stream/ticket'
-      ])
-    );
-    expect(body.instructions.substratePack.notes).toEqual(
-      expect.arrayContaining([expect.stringContaining('Sec-WebSocket-Protocol')])
-    );
+    expect(body.instructions.subscribe.path).toBe('/substrate/v1/subscribe');
+    expect(body.instructions.stream.path).toBe('/substrate/v1/stream');
+    expect(body.instructions.substratePack.accept).toBe('application/vnd.substrate.frames+pack');
+    expect(body.instructions.sse).toBeUndefined();
   });
 });
 
@@ -598,8 +564,7 @@ describe('GET /substrate/v1/onboard — auth instructions (conditional)', () => 
       server,
       dataset,
       version: '1.0.0',
-      auth: { keys: [{ alg: 'HS256', publicKey: 'test-secret' }] },
-      streamTicketSecret: 'test-stream-ticket-secret'
+      auth: { keys: [{ alg: 'HS256', publicKey: 'test-secret' }] }
     });
     const res = await server.inject({
       method: 'GET',
@@ -627,8 +592,7 @@ describe('GET /substrate/v1/onboard — auth instructions (conditional)', () => 
       server,
       dataset,
       version: '1.0.0',
-      auth: { keys: [{ alg: 'HS256', publicKey: 'test-secret' }] },
-      streamTicketSecret: 'test-stream-ticket-secret'
+      auth: { keys: [{ alg: 'HS256', publicKey: 'test-secret' }] }
     });
     const res = await server.inject({
       method: 'GET',

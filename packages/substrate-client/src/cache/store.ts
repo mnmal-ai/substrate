@@ -15,7 +15,7 @@
 import { type Signal, signal } from '@preact/signals-core';
 import type { Diagnostic } from '../diagnostics.js';
 import { reduceSubscribeRows } from '../subscribe-rows.js';
-import type { SubscribeEvent } from '../transport/ws.js';
+import type { SubscribeEvent } from '../transport/frame-event.js';
 
 export interface CacheEntry<T = unknown> {
   readonly data: Signal<T | undefined>;

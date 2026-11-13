@@ -1,9 +1,9 @@
 /**
  * §5.12 Phase 1 auth integration — route→capability map, per-frame namespace
- * gate, WS per-frame gating, and the `requireNamespace` policy primitive's
- * composition with `requireCapability`.
+ * gate (including on the frame-stream subscribe route), and the
+ * `requireNamespace` policy primitive's composition with `requireCapability`.
  *
- * Uses `MemorySubstrateServer.inject()` for HTTP and `connectWebsocket` for WS so
+ * Uses `MemorySubstrateServer.inject()` for every route, streams included, so
  * the full compose path is exercised (no direct-engine shortcuts).
  */
 
@@ -16,6 +16,7 @@ import {
   signHs256
 } from '@mnmal-ai/substrate-compose';
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
+import { decodeStreamFrames, FRAMES_JSON_MIME } from '@mnmal-ai/substrate-pack';
 import { and, requireCapability, requireNamespace } from '@mnmal-ai/substrate-policy';
 import { installAutoCrud } from '@mnmal-ai/substrate-sdk';
 import { FastifySubstrateServer } from '@mnmal-ai/substrate-server-fastify';
@@ -68,8 +69,7 @@ async function mkAuthServer(
   const composeOpts: Parameters<typeof compose>[0] = {
     server,
     dataset,
-    auth: authCfg,
-    streamTicketSecret: 'test-stream-ticket-secret'
+    auth: authCfg
   };
   if (opts.coordinators !== undefined) composeOpts.coordinators = opts.coordinators;
   const composed = await compose(composeOpts);
@@ -356,8 +356,7 @@ describe('apps/substrate § per-frame namespace gate', () => {
       dataset,
       datasets: { claude: claudeDs, sentinel: sentinelDs },
       coordinators: [makeDefaultPlugin(), makeClaudePlugin(), makeSentinelPlugin()],
-      auth: authCfg,
-      streamTicketSecret: 'test-stream-ticket-secret'
+      auth: authCfg
     });
     await server.start();
     return { server, composed };
@@ -441,7 +440,7 @@ describe('apps/substrate § per-frame namespace gate', () => {
   });
 });
 
-describe('apps/substrate § WS per-frame namespace gate', () => {
+describe('apps/substrate § subscribe-route per-frame namespace gate', () => {
   let ctx: AuthServerCtx | null = null;
 
   afterEach(async () => {
@@ -451,7 +450,7 @@ describe('apps/substrate § WS per-frame namespace gate', () => {
     }
   });
 
-  it('rejects a subscribe frame targeting a namespace the token is not scoped to; connection stays open', async () => {
+  it('refuses a subscribe naming a namespace the token is not scoped to; allows one it covers', async () => {
     const claude: CoordinatorPlugin = {
       name: 'claude',
       contractVersion: '*',
@@ -501,59 +500,45 @@ describe('apps/substrate § WS per-frame namespace gate', () => {
       dataset,
       datasets: { claude: claudeDs, sentinel: sentinelDs },
       coordinators: [claude, sentinel],
-      auth: authCfg,
-      streamTicketSecret: 'test-stream-ticket-secret'
+      auth: authCfg
     });
     await server.start();
     ctx = { server, composed };
 
     const token = mkToken({ capabilities: ['read'], ns: ['claude'] });
-    const client = server.connectWebsocket('/substrate/v1/ws', {
-      authorization: `Bearer ${token}`
+    const subscribe = (frame: unknown): Promise<SubstrateResponse> =>
+      server.inject({
+        method: 'POST',
+        path: '/substrate/v1/subscribe',
+        headers: { accept: FRAMES_JSON_MIME, authorization: `Bearer ${token}` },
+        body: Buffer.from(JSON.stringify(frame))
+      });
+    const framesOf = async (res: SubstrateResponse, max: number) => {
+      const out: Array<WsResponseFrame> = [];
+      for await (const p of decodeStreamFrames(res.body as ReadableStream<Uint8Array>)) {
+        out.push(JSON.parse(new TextDecoder().decode(p)) as WsResponseFrame);
+        if (out.length >= max) break; // a live subscribe never self-ends
+      }
+      return out;
+    };
+
+    // sentinel is outside the grant. The gate runs at registration, after the
+    // response opened, so the refusal is in-band: a lone error, then the body closes.
+    const denied = await subscribe({
+      'sentinel/Coordinator': { params: {}, fields: { id: true } }
     });
-    const frames: Array<WsResponseFrame> = [];
-    client.onMessage((buf) => {
-      frames.push(JSON.parse(buf.toString('utf8')) as WsResponseFrame);
-    });
-    await new Promise((r) => setImmediate(r));
+    expect(denied.status).toBe(200);
+    const deniedFrames = await framesOf(denied, 10);
+    expect(deniedFrames).toHaveLength(1);
+    expect(deniedFrames[0]?.kind).toBe('error');
+    expect(deniedFrames[0]?.errors?.[0]?.code).toBe('unauthorized_namespace');
 
-    // Frame 1: target sentinel — should get an unauthorized_namespace error.
-    client.send(
-      Buffer.from(
-        JSON.stringify({
-          id: 'sub-1',
-          op: 'subscribe',
-          frame: {
-            'sentinel/Coordinator': { params: {}, fields: { id: true } }
-          }
-        })
-      )
-    );
-    await new Promise((r) => setTimeout(r, 20));
-    const errFrame = frames.find((f) => f.id === 'sub-1' && f.kind === 'error');
-    expect(errFrame).toBeDefined();
-    expect(errFrame?.errors?.[0]?.code).toBe('unauthorized_namespace');
-
-    // Frame 2: target claude — should succeed (snapshot with empty data).
-    frames.length = 0;
-    client.send(
-      Buffer.from(
-        JSON.stringify({
-          id: 'sub-2',
-          op: 'subscribe',
-          frame: {
-            'claude/Todo': { params: {}, fields: { id: true } }
-          }
-        })
-      )
-    );
-    await new Promise((r) => setTimeout(r, 20));
-    const snapshot = frames.find((f) => f.id === 'sub-2' && f.kind === 'snapshot');
-    expect(snapshot).toBeDefined();
-    const snapshotData = snapshot?.data as Record<string, unknown> | undefined;
-    expect(snapshotData?.['claude/Todo']).toEqual([]);
-
-    client.close(1000);
+    // claude is inside the grant: a snapshot with empty data.
+    const allowed = await subscribe({ 'claude/Todo': { params: {}, fields: { id: true } } });
+    expect(allowed.status).toBe(200);
+    const [snapshot] = await framesOf(allowed, 1);
+    expect(snapshot?.kind).toBe('snapshot');
+    expect((snapshot?.data as Record<string, unknown> | undefined)?.['claude/Todo']).toEqual([]);
   });
 });
 
@@ -650,8 +635,7 @@ describe('apps/substrate § withAuth attribute mode', () => {
       server,
       dataset,
       coordinators: [fixturePlugin],
-      auth: attrCfg,
-      streamTicketSecret: 'test-stream-ticket-secret'
+      auth: attrCfg
     });
     await server.start();
     const now = Math.floor(Date.now() / 1000);
@@ -794,8 +778,7 @@ async function mkAttributeHarness(
     server,
     dataset,
     coordinators: [fixturePlugin],
-    auth: attrCfg,
-    streamTicketSecret: 'test-stream-ticket-secret'
+    auth: attrCfg
   });
   if (startOpts !== undefined) {
     await (server as FastifySubstrateServer).start(startOpts);

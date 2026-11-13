@@ -12,7 +12,6 @@ export function buildSentinelForTest(
   return createSentinelPlugin({
     namespace: 'sentinel',
     pingIntervalMs: 30_000,
-    staleThresholdMs: 90_000,
     ...overrides
   });
 }

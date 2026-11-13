@@ -2,7 +2,7 @@
  * Length-prefixed stream frames: the body of an HTTP/2 subscription or stream.
  *
  * Each frame is a big-endian u32 payload length, then the payload: UTF-8 JSON
- * or msgpack, exactly what `encodeWsFrame` writes for a WebSocket message, so
+ * or msgpack, exactly what `encodeWsFrame` produces, so
  * the positional pack decode plan applies unchanged. A zero-length frame is a
  * heartbeat and carries nothing.
  */
