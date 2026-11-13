@@ -16,10 +16,11 @@ import { HttpBridgeClient } from '@mnmal-ai/substrate-bridge-http';
 import { type FetchLike, substrateFetch } from '@mnmal-ai/substrate-client';
 import { decodeStreamFrames, FRAMES_JSON_MIME } from '@mnmal-ai/substrate-pack';
 import { makeAuthorizationProvider } from '@mnmal-ai/substrate-policy';
-import type {
-  BridgeClient,
-  BridgeCredentialStore,
-  BridgeRegistry
+import {
+  type BridgeClient,
+  type BridgeCredentialStore,
+  type BridgeRegistry,
+  trimTrailingSlashes
 } from '@mnmal-ai/substrate-types';
 
 const WATCH_PATH = '/substrate/v1/plugins/substrate-sentinel/watch';
@@ -91,7 +92,7 @@ export function startSentinelClient(opts: StartSentinelClientOpts): SentinelClie
   // other would be an easy way to send the wrong credential somewhere.
   const watchAuth = opts.auth;
   const fetchImpl = opts.fetch ?? substrateFetch;
-  const watchUrl = `${opts.sentinelUrl.replace(/\/+$/, '')}${WATCH_PATH}`;
+  const watchUrl = `${trimTrailingSlashes(opts.sentinelUrl)}${WATCH_PATH}`;
   const baseMs = opts.reconnectBaseMs ?? 500;
   const maxMs = opts.reconnectMaxMs ?? 30_000;
 

@@ -109,29 +109,6 @@ async function listCoordinators(
   return (env.data[`${NS}/Coordinator`] ?? []) as Array<{ name: string; status: string }>;
 }
 
-async function listCoordinatorNamespaces(
-  server: MemorySubstrateServer
-): Promise<Array<{ coordinatorId: string; name: string }>> {
-  const res = await server.inject({
-    method: 'POST',
-    path: '/substrate/v1/query',
-    headers: { 'content-type': 'application/json' },
-    body: Buffer.from(
-      JSON.stringify({
-        [`${NS}/CoordinatorNamespace`]: {
-          params: {},
-          fields: { id: true, coordinatorId: true, name: true }
-        }
-      })
-    )
-  });
-  const env = jsonBody<PackEnvelope>(res);
-  return (env.data[`${NS}/CoordinatorNamespace`] ?? []) as Array<{
-    coordinatorId: string;
-    name: string;
-  }>;
-}
-
 type Frames = AsyncIterator<Record<string, unknown>>;
 
 function framesOf(res: SubstrateResponse): Frames {
