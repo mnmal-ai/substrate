@@ -58,9 +58,11 @@ function frameOf(message: string): Uint8Array {
  * ends it: the client disconnecting, the request aborting, or `close()` from
  * the registry (a superseding registration, an eviction, shutdown).
  */
-export function framePeer(onEnd: (peer: PeerConnection) => void): {
+export function framePeer(onEnd: (peer: PeerConnection) => unknown): {
   peer: PeerConnection;
   body: ReadableStream<Uint8Array>;
+  /** True once the response has ended, whichever side ended it. */
+  ended: () => boolean;
 } {
   let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
   let ended = false;
@@ -97,10 +99,12 @@ export function framePeer(onEnd: (peer: PeerConnection) => void): {
     selfLive: true,
     send: (message) => enqueue(frameOf(message)),
     heartbeat: () => enqueue(HEARTBEAT_FRAME),
+    // error, not close: a stalled reader's queue is dropped and the response aborts,
+    // rather than holding the socket (and server.stop) until it reads.
     close: () => {
       if (!ended) {
         try {
-          controller?.close();
+          controller?.error(new Error('sentinel feed closed'));
         } catch {
           // Already closed by the reader.
         }
@@ -108,7 +112,7 @@ export function framePeer(onEnd: (peer: PeerConnection) => void): {
       end();
     }
   };
-  return { peer, body };
+  return { peer, body, ended: () => ended };
 }
 
 function refuse(status: number, error: string): SubstrateResponse {
@@ -132,20 +136,30 @@ export function registerSentinelStreamRoutes(
   ctx: PluginRouteContext,
   namespace: string,
   registry: LivenessRegistry
-): () => void {
+): () => Promise<void> {
   /** One peer per open response, so the route ends them all at shutdown. */
   const open = new Set<PeerConnection>();
+  /** Offline writes in flight, which shutdown waits for while the engine is still up. */
+  const closing = new Set<Promise<unknown>>();
 
   const track = (req: SubstrateRequest, identity: Identity | null) => {
-    const { peer, body } = framePeer((p) => {
+    const close = (p: PeerConnection): Promise<void> => {
+      const done = handleClose(ctx.engine, namespace, identity, registry, p)
+        .catch(() => {
+          // Close-path faults cannot be surfaced to the peer.
+        })
+        .finally(() => closing.delete(done));
+      closing.add(done);
+      return done;
+    };
+    const fp = framePeer((p) => {
       open.delete(p);
-      handleClose(ctx.engine, namespace, identity, registry, p).catch(() => {
-        // Close-path faults cannot be surfaced to the peer.
-      });
+      void close(p);
     });
-    open.add(peer);
-    req.signal?.addEventListener('abort', () => peer.close(), { once: true });
-    return { peer, body };
+    open.add(fp.peer);
+    if (req.signal?.aborted === true) fp.peer.close();
+    else req.signal?.addEventListener('abort', () => fp.peer.close(), { once: true });
+    return { ...fp, close };
   };
 
   router.post('/register', async (req): Promise<SubstrateResponse> => {
@@ -154,7 +168,9 @@ export function registerSentinelStreamRoutes(
     const frame = parseFrame(req.body ?? Buffer.alloc(0));
     if (frame === undefined) return refuse(400, 'invalid JSON');
     const identity = req.identity ?? null;
-    const { peer, body } = track(req, identity);
+    const { peer, body, ended, close } = track(req, identity);
+    // Already gone: registering now would supersede a live stream for nothing.
+    if (ended()) return { status: 499 };
     try {
       const refusal = await handleRegister(ctx.engine, namespace, identity, registry, peer, frame);
       if (refusal !== undefined) {
@@ -165,19 +181,24 @@ export function registerSentinelStreamRoutes(
       peer.close();
       return refuse(500, 'register failed');
     }
+    // The client left while the register was in flight: its close ran before the
+    // peer was tracked, so close again or the coordinator stays online with no stream.
+    if (ended()) await close(peer);
     return { status: 200, headers: HEADERS, body };
   });
 
   router.get('/watch', async (req): Promise<SubstrateResponse> => {
     const refused = gate(req.identity, namespace, 'read');
     if (refused !== undefined) return refused;
-    const { peer, body } = track(req, req.identity ?? null);
-    handleWatch(registry, peer);
+    const { peer, body, ended } = track(req, req.identity ?? null);
+    if (!ended()) handleWatch(registry, peer);
     return { status: 200, headers: HEADERS, body };
   });
 
-  // The plugin's onStop calls this: an open response would otherwise hold server.stop().
-  return () => {
+  // The plugin's onStop awaits this: an open response would otherwise hold server.stop(),
+  // and the offline writes must land before the engine stops.
+  return async () => {
     for (const peer of [...open]) peer.close();
+    await Promise.all([...closing]);
   };
 }

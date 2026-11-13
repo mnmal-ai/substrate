@@ -935,6 +935,39 @@ describe('startSentinelClient — backoff', () => {
   });
 });
 
+describe('startSentinelClient — backoff reset', () => {
+  it('a stream that lasted reconnectMaxMs resets the delay to the base', async () => {
+    const at: number[] = [];
+    const handle = startSentinelClient({
+      sentinelUrl: 'http://sentinel.test',
+      bridges: makeMockBridges([]),
+      engine: { refreshBridgeSchemas: async () => {}, registryFor: () => undefined },
+      creds: { get: () => undefined },
+      reconnectBaseMs: 10,
+      reconnectMaxMs: 100,
+      fetch: async () => {
+        at.push(Date.now());
+        // Three quick drops grow the delay; the fourth stream lasts past reconnectMaxMs.
+        const lasts = at.length === 4 ? 150 : 0;
+        return new Response(
+          new ReadableStream({
+            start: (c) => {
+              setTimeout(() => c.close(), lasts);
+            }
+          }),
+          { headers: { 'content-type': FRAMES_JSON_MIME } }
+        );
+      }
+    });
+    await waitUntil(() => at.length >= 5);
+    await handle.stop();
+    const before = (at[3] as number) - (at[2] as number);
+    const after = (at[4] as number) - (at[3] as number) - 150;
+    expect(before).toBeGreaterThanOrEqual(35); // 10, 20, then 40
+    expect(after).toBeLessThan(30); // back to the 10 ms base
+  });
+});
+
 describe('sentinel-client authenticates its own connection', () => {
   /**
    * Exercises the DEFAULT fetch deliberately — no `fetch` is passed. Injecting

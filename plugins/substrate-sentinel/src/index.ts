@@ -43,7 +43,7 @@ export { registerSentinelWsRoute } from './ws-route.js';
 
 export function createSentinelPlugin(cfg: SentinelPluginConfig): CoordinatorPlugin {
   const registry = createLivenessRegistry({ staleThresholdMs: cfg.staleThresholdMs });
-  let endStreams = (): void => {};
+  let endStreams = async (): Promise<void> => {};
 
   return {
     name: 'substrate-sentinel',
@@ -65,6 +65,6 @@ export function createSentinelPlugin(cfg: SentinelPluginConfig): CoordinatorPlug
       registerSentinelWsRoute(router, routeCtx, cfg.namespace, registry);
       endStreams = registerSentinelStreamRoutes(router, routeCtx, cfg.namespace, registry);
     },
-    onStop: (): void => endStreams()
+    onStop: (): Promise<void> => endStreams()
   };
 }

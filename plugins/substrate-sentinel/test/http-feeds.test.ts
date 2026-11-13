@@ -143,7 +143,7 @@ function framesOf(res: SubstrateResponse): Frames {
       return { done: false, value: JSON.parse(Buffer.from(r.value).toString('utf8')) };
     },
     return: async () => {
-      await it.return?.();
+      await it.return?.(undefined);
       return { done: true, value: undefined };
     }
   };
@@ -190,6 +190,27 @@ describe('sentinel frame-stream feeds', () => {
       .toEqual([expect.objectContaining({ name: 'hds-a', status: 'offline' })]);
   });
 
+  it.each([
+    ['before the register starts', false],
+    ['while the register is in flight', true]
+  ])('a client that leaves %s leaves no coordinator online', async (_label, midFlight) => {
+    h = await setup();
+    const ac = new AbortController();
+    if (!midFlight) ac.abort();
+    const pending = h.server.inject({
+      method: 'POST',
+      path: `${BASE}/register`,
+      headers: { 'content-type': 'application/json', ...authHeaders() },
+      body: Buffer.from(JSON.stringify(PEER)),
+      signal: ac.signal
+    });
+    if (midFlight) setImmediate(() => ac.abort());
+    await pending;
+    await flush();
+    const rows = await listCoordinators(h.server);
+    expect(rows.filter((r) => r.status === 'online')).toEqual([]);
+  });
+
   it('watch receives online then offline', async () => {
     h = await setup();
     const w = framesOf(await watch(h.server));
@@ -219,7 +240,13 @@ describe('sentinel frame-stream feeds', () => {
     await w.next();
     const stopped = h.stop();
     h = undefined;
-    expect(await w.next()).toEqual({ done: true, value: undefined });
+    // Shutdown aborts the feed (dropping anything queued), so the read settles rather than hangs.
+    expect(
+      await w.next().then(
+        () => 'ended',
+        () => 'ended'
+      )
+    ).toBe('ended');
     await stopped;
   });
 });

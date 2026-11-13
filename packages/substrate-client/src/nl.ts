@@ -40,7 +40,12 @@ export function createNlApi(t: HttpTransport): NlApi {
       }
       const utf8 = new TextDecoder();
       for await (const payload of decodeStreamFrames(res.body)) {
-        const ev = JSON.parse(utf8.decode(payload)) as { event: string; data: unknown };
+        let ev: { event: string; data: unknown };
+        try {
+          ev = JSON.parse(utf8.decode(payload)) as { event: string; data: unknown };
+        } catch (err) {
+          throw new NetworkError('malformed frame in the NL stream', err);
+        }
         if (ev.event === 'error') {
           const e = ev.data as { code?: string; message?: string };
           throw new NetworkError(`${e.code ?? 'error'}: ${e.message ?? ''}`, ev.data);
