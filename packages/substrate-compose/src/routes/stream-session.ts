@@ -59,12 +59,12 @@ export interface StreamTransport {
  * Close reason → the token the engine records as
  * `engine_subscription_closed_<reason>`. Mapped here rather than per transport
  * so metric names are identical whichever transport opens the session.
- * Pinned by apps/substrate/test/ws-teardown-contract.test.ts.
+ * Pinned by apps/substrate/test/stream-teardown-contract.test.ts.
  */
 const ENGINE_CANCEL_REASON: Record<CloseReason, SubscriptionCancelReason> = {
   complete: 'cancel',
   cancelled: 'cancel',
-  client_disconnect: 'socket_close',
+  client_disconnect: 'client_disconnect',
   shutdown: 'shutdown'
 };
 

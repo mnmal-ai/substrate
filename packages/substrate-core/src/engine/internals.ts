@@ -222,10 +222,10 @@ export const DEFAULT_IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
  * without the call site knowing which metric string to use.
  *
  *  - `'cancel'`      — explicit client-driven cancel (op: 'cancel') or direct handle use
- *  - `'socket_close'` — client disconnected (response closed)
+ *  - `'client_disconnect'` — client disconnected (response closed)
  *  - `'shutdown'`     — server-initiated graceful shutdown (conn.onShutdown)
  */
-export type SubscriptionCancelReason = 'cancel' | 'socket_close' | 'shutdown';
+export type SubscriptionCancelReason = 'cancel' | 'client_disconnect' | 'shutdown';
 
 export interface SubscriptionHandle {
   readonly __brand?: 'SubscriptionHandle';

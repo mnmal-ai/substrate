@@ -192,7 +192,7 @@ describe('stream routes', () => {
     if (!(res.body instanceof ReadableStream)) throw new Error('expected a stream');
     await res.body.cancel();
 
-    expect(cancels).toEqual(['socket_close']);
+    expect(cancels).toEqual(['client_disconnect']);
   });
 
   it('tolerates a spurious cancel arriving after the session already ended', async () => {
@@ -423,7 +423,7 @@ describe('stream graceful shutdown', () => {
     // re-attributed — and, had the registry leaked, the walk would have
     // written a frame into a response that was already gone.
     const events = composed.stats.snapshot().events;
-    expect(events.engine_subscription_closed_socket_close ?? 0).toBe(1);
+    expect(events.engine_subscription_closed_client_disconnect ?? 0).toBe(1);
     expect(events.engine_subscription_closed_shutdown ?? 0).toBe(0);
   });
 });
