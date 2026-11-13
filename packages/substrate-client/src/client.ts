@@ -40,6 +40,7 @@ import { watchRows } from './subscribe-rows.js';
 import { assertSingleKey, augmentFramesWithId } from './subscribe-util.js';
 import type { SubscribeEvent, WsOverloadResubscribeOpts } from './transport/frame-event.js';
 import { anySignal, type FrameStreamPath, openFrameStream } from './transport/frames.js';
+import type { FetchLike } from './transport/h2-fetch.js';
 import { HttpTransport, type QualifiedFrame } from './transport/http.js';
 import type { WebSocketImpl, WsEncoding } from './transport/ws.js';
 import { decodeJsonEnvelope, isPackMarker, type PackMarker } from './wire/json.js';
@@ -54,7 +55,7 @@ export interface SubstrateClientOptions {
    * `makeTokenProvider` is usable directly; the transports `await` either way.
    */
   getToken?: () => string | undefined | Promise<string | undefined>;
-  fetch?: typeof fetch;
+  fetch?: FetchLike;
   reconnect?: {
     baseDelayMs?: number;
     maxDelayMs?: number;

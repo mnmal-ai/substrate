@@ -8,6 +8,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { type FetchLike, substrateFetch } from '@mnmal-ai/substrate-client';
 import {
   AUDIT_EVENT_TYPE,
   buildAuditRow,
@@ -351,7 +352,7 @@ export async function runRegisterViaRoute(
   args: RegisterArgs,
   baseUrl: string,
   env: AdminCliEnv,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: FetchLike = substrateFetch
 ): Promise<RegisterResult> {
   if (grantEntriesConfer(args.namespaces, args.capabilities, 'admin') && !args.allowAdmin) {
     throw new AdminCliError(

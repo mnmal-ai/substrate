@@ -13,9 +13,10 @@ import { describe, expect, it } from 'vitest';
 const REPO_ROOT = new URL('../../..', import.meta.url).pathname;
 
 const RAW: Array<[string, RegExp]> = [
-  ['bare fetch(', /(?<![\w.#$])fetch\(/],
+  ['bare fetch(', /(?<![\w.#$])fetch\s*\(/],
+  ['window/self.fetch', /\b(?:window|self)\.fetch\b/],
   ['globalThis.fetch', /globalThis\.fetch\b/],
-  ['fetch as a default', /\?\?\s*fetch\b/],
+  ['fetch as a default', /(?:\?\?|[^=!<>]=)\s*fetch\b/],
   ["from 'ws'", /from ['"]ws['"]/],
   ['new WebSocket', /new WebSocket\(/],
   ['EventSource', /new EventSource\(/],
@@ -53,9 +54,13 @@ function sources(): string[] {
     );
 }
 
-/** The source with block and line comments blanked, so prose naming an API is not a call. */
+/**
+ * The source with block comments and whole-line `//` comments blanked, so prose
+ * naming an API is not a call. Trailing comments stay: stripping them needs a
+ * tokenizer, and a false alarm is safer than a hidden call.
+ */
 function code(text: string): string {
-  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`])\/\/.*$/gm, '$1');
+  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 }
 
 describe('no raw transport outside substrate-client', () => {

@@ -7,6 +7,7 @@
  * registry stale — for `revoke` that means the credential keeps authenticating.
  */
 
+import { type FetchLike, substrateFetch } from '@mnmal-ai/substrate-client';
 import type { KeyMutationRefusal, KeyUpdateRefusal } from '@mnmal-ai/substrate-compose';
 import { trimTrailingSlashes } from '@mnmal-ai/substrate-types';
 import type { AdminCliEnv } from './env.js';
@@ -26,7 +27,7 @@ export async function runKeyPatchViaRoute(
   baseUrl: string,
   env: AdminCliEnv,
   exitCodes: Record<string, number>,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: FetchLike = substrateFetch
 ): Promise<Record<string, unknown>> {
   const auth = resolveAdminAuth(env, baseUrl);
   if ('error' in auth)
@@ -102,7 +103,7 @@ export const UPDATE_EXIT_CODES: Record<KeyUpdateRefusal['code'], number> = {
 export async function runKeyListViaRoute(
   baseUrl: string,
   env: AdminCliEnv,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: FetchLike = substrateFetch
 ): Promise<Array<Record<string, unknown>>> {
   const auth = resolveAdminAuth(env, baseUrl);
   if ('error' in auth) throw new AdminCliError(`list: ${auth.error}`, 1);
