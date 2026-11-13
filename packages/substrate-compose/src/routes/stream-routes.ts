@@ -157,6 +157,8 @@ export function registerStreamRoutes(
         mode: frames,
         engine,
         onCancel: () => session?.cancel('client_disconnect'),
+        // A stall ends the session as a disconnect does; the metric tells the two apart.
+        onStall: () => metric('stream_consumer_stalled', { mode, wire: frames }),
         onTooLarge: () => session?.cancel('cancelled')
       });
 

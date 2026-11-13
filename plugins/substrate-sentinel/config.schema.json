@@ -11,7 +11,7 @@
       "default": 30000,
       "type": "integer",
       "exclusiveMinimum": 0,
-      "maximum": 9007199254740991
+      "maximum": 30000
     },
     "staleThresholdMs": {
       "type": "integer",

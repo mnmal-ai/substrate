@@ -12,10 +12,12 @@
  */
 
 import {
+  DEFAULT_STREAM_IDLE_MS,
   decodeStreamFrames,
   decodeWsEnvelope,
   FRAMES_JSON_MIME,
-  FRAMES_PACK_MIME
+  FRAMES_PACK_MIME,
+  withIdleTimeout
 } from '@mnmal-ai/substrate-pack';
 import { AuthError, NetworkError, SubscribeError } from '../errors.js';
 import { ReconnectScheduler, type ReconnectSchedulerOpts } from '../reconnect.js';
@@ -39,6 +41,8 @@ export interface FrameStreamOpts {
   canRefreshToken: boolean;
   /** Aborting ends the iterable cleanly, as `return()` does. */
   signal?: AbortSignal;
+  /** Drop a response that sends no bytes, heartbeats included, for this long. `0` disables. */
+  idleMs?: number;
 }
 
 /** `NetworkError.code` when the server does not answer with frame streams. */
@@ -130,7 +134,10 @@ async function* run(
 
     let next: Next | undefined;
     try {
-      for await (const payload of decodeStreamFrames(body)) {
+      const idleMs = opts.idleMs ?? DEFAULT_STREAM_IDLE_MS;
+      for await (const payload of decodeStreamFrames(
+        idleMs > 0 ? withIdleTimeout(body, idleMs) : body
+      )) {
         const msg = decodeFrame(payload, opts.wire);
         // Only a response that delivers and then lasts proves health: one that sends its
         // snapshot and drops at once must keep growing the delay, or every retry re-queries.

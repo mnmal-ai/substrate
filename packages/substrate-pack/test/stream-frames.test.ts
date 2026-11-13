@@ -7,7 +7,8 @@ import {
   FRAMES_PACK_MIME,
   FrameStreamError,
   framesEncodingFromAccept,
-  HEARTBEAT_FRAME
+  HEARTBEAT_FRAME,
+  withIdleTimeout
 } from '../src/stream-frames.js';
 
 async function* chunks(...parts: Uint8Array[]): AsyncGenerator<Uint8Array> {
@@ -151,5 +152,38 @@ describe('stream frames', () => {
     expect(framesEncodingFromAccept(`application/json, ${FRAMES_JSON_MIME}`)).toBe('json');
     expect(framesEncodingFromAccept('text/event-stream')).toBeUndefined();
     expect(framesEncodingFromAccept(undefined)).toBeUndefined();
+  });
+});
+
+describe('withIdleTimeout', () => {
+  it('a slow consumer of a live source never trips it', async () => {
+    let n = 0;
+    const source = new ReadableStream<Uint8Array>({
+      pull(c) {
+        if (n++ < 3) c.enqueue(new Uint8Array([n]));
+        else c.close();
+      }
+    });
+    const reader = withIdleTimeout(source, 50).getReader();
+    const got: number[] = [];
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 120)); // the consumer is slower than the timeout
+      const r = await reader.read();
+      if (r.done) break;
+      got.push(r.value[0] ?? -1);
+    }
+    expect(got).toEqual([1, 2, 3]);
+  });
+
+  it('a silent source fails with stream_idle and is cancelled', async () => {
+    let cancelled = false;
+    const source = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      }
+    });
+    const reader = withIdleTimeout(source, 50).getReader();
+    await expect(reader.read()).rejects.toMatchObject({ code: 'stream_idle' });
+    expect(cancelled).toBe(true);
   });
 });

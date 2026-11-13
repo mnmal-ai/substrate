@@ -48,13 +48,16 @@ export {
 } from './stream-chunk.js';
 export {
   DEFAULT_MAX_FRAME_BYTES,
+  DEFAULT_STREAM_IDLE_MS,
   decodeStreamFrames,
   encodeStreamFrame,
   FRAMES_JSON_MIME,
   FRAMES_PACK_MIME,
   FrameStreamError,
+  type FrameStreamErrorCode,
   framesEncodingFromAccept,
-  HEARTBEAT_FRAME
+  HEARTBEAT_FRAME,
+  withIdleTimeout
 } from './stream-frames.js';
 export {
   applyDecodePlanInPlace,

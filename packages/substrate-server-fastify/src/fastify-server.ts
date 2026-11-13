@@ -24,7 +24,11 @@
  * caller's intent is ambiguous, fail loudly.
  */
 
-import { constants as h2constants, type ServerHttp2Stream } from 'node:http2';
+import {
+  constants as h2constants,
+  type ServerHttp2Session,
+  type ServerHttp2Stream
+} from 'node:http2';
 import type { Socket } from 'node:net';
 import type { TLSSocket } from 'node:tls';
 import compressPlugin from '@fastify/compress';
@@ -96,9 +100,16 @@ export interface FastifySubstrateServerOptions {
    * bounded by it. `0` disables.
    */
   requestTimeout?: number;
+  /**
+   * Ping every HTTP/2 session this often, and destroy a session that has left
+   * two pings in a row unanswered: a peer that died without closing its socket.
+   * Default 30 000. `0` disables.
+   */
+  pingIntervalMs?: number;
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const DEFAULT_PING_INTERVAL_MS = 30_000;
 /** Streams one HTTP/2 connection may have open at once. Node's default is unbounded. */
 const H2_MAX_CONCURRENT_STREAMS = 128;
 
@@ -130,7 +141,8 @@ export class FastifySubstrateServer implements SubstrateServer {
       tls,
       cors,
       compression = true,
-      requestTimeout = DEFAULT_REQUEST_TIMEOUT_MS
+      requestTimeout = DEFAULT_REQUEST_TIMEOUT_MS,
+      pingIntervalMs = DEFAULT_PING_INTERVAL_MS
     } = options;
     this.hasTls = tls !== undefined;
 
@@ -158,6 +170,7 @@ export class FastifySubstrateServer implements SubstrateServer {
         : { http: { settings } })
     }) as unknown as FastifyInstance;
     if (requestTimeout > 0) boundH2Requests(this.fastify, requestTimeout);
+    if (pingIntervalMs > 0) pingSessions(this.fastify, pingIntervalMs);
     this.fastify.server.on('connection', (socket: Socket) => {
       this.#sockets.add(socket);
       socket.once('close', () => this.#sockets.delete(socket));
@@ -547,5 +560,34 @@ function boundH2Requests(fastify: FastifyInstance, ms: number): void {
     // A reset stream ends its body early; the cut-off request must not reach the handler.
     const stream = (req.raw as { stream?: ServerHttp2Stream }).stream;
     if (stream?.closed === true) return reply.code(408).send();
+  });
+}
+
+/**
+ * Ping each HTTP/2 session every `ms`; a session with two pings in a row
+ * unanswered is destroyed. That is how a peer that vanished without closing
+ * its socket is noticed, and its streams' close paths run. Two, not one: a
+ * ping can queue behind a full write buffer on a slow link, or its ack behind
+ * a blocked event loop.
+ */
+function pingSessions(fastify: FastifyInstance, ms: number): void {
+  fastify.server.on('session', (session: ServerHttp2Session) => {
+    let unanswered = 0;
+    const timer = setInterval(() => {
+      if (unanswered >= 2) {
+        session.destroy();
+        return;
+      }
+      unanswered++;
+      try {
+        session.ping((err) => {
+          if (err === null) unanswered = 0;
+        });
+      } catch {
+        // The session is closing.
+      }
+    }, ms);
+    timer.unref();
+    session.once('close', () => clearInterval(timer));
   });
 }

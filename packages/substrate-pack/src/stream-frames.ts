@@ -16,13 +16,59 @@ export const DEFAULT_MAX_FRAME_BYTES = 16 * 1024 * 1024;
 /** A frame of length 0: keeps an idle stream alive, and decoders skip it. */
 export const HEARTBEAT_FRAME: Uint8Array = new Uint8Array(4);
 
+export type FrameStreamErrorCode = 'frame_too_large' | 'truncated_frame' | 'stream_idle';
+
 export class FrameStreamError extends Error {
-  readonly code: 'frame_too_large' | 'truncated_frame';
-  constructor(code: 'frame_too_large' | 'truncated_frame', message: string) {
+  readonly code: FrameStreamErrorCode;
+  constructor(code: FrameStreamErrorCode, message: string) {
     super(message);
     this.name = 'FrameStreamError';
     this.code = code;
   }
+}
+
+/** A little over three of the server's 20 s heartbeats. */
+export const DEFAULT_STREAM_IDLE_MS = 65_000;
+
+/**
+ * `body`, failing with `stream_idle` when a read waits `ms` for bytes,
+ * heartbeats included. It times only reads the consumer is waiting on, so a
+ * slow consumer never trips it; a connection that died without closing does.
+ * The underlying reader is cancelled on timeout, which settles its pending read.
+ */
+export function withIdleTimeout(
+  body: ReadableStream<Uint8Array>,
+  ms: number
+): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  return new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const idle = new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () =>
+              reject(new FrameStreamError('stream_idle', `the stream sent nothing for ${ms} ms`)),
+            ms
+          );
+        });
+        try {
+          const r = await Promise.race([reader.read(), idle]);
+          if (r.done) controller.close();
+          else controller.enqueue(r.value);
+        } catch (err) {
+          reader.cancel().catch(() => {});
+          controller.error(err);
+        } finally {
+          clearTimeout(timer);
+        }
+      },
+      cancel(reason) {
+        return reader.cancel(reason);
+      }
+    },
+    { highWaterMark: 0 }
+  );
 }
 
 /** The frames encoding an `Accept` header asks for, or undefined when it asks for none. */

@@ -33,8 +33,10 @@ export interface FramesTransportOptions {
   mode: WireMode;
   engine: Engine;
   heartbeatMs?: number;
-  /** Fired when the client disconnects. */
+  /** Fired when the client disconnects, or stops reading for the stall deadline. */
   onCancel?: () => void;
+  /** Fired, before `onCancel`, when the consumer stopped reading for the stall deadline. */
+  onStall?: () => void;
   /**
    * Fired after a frame too large to send was replaced by an `error` and an
    * `end`, so the route ends the session: a subscriber that missed a frame
@@ -83,7 +85,8 @@ export function createFramesTransport(opts: FramesTransportOptions): DemandTrans
     encode,
     heartbeat: HEARTBEAT_FRAME,
     ...(opts.heartbeatMs !== undefined ? { heartbeatMs: opts.heartbeatMs } : {}),
-    ...(opts.onCancel !== undefined ? { onCancel: opts.onCancel } : {})
+    ...(opts.onCancel !== undefined ? { onCancel: opts.onCancel } : {}),
+    ...(opts.onStall !== undefined ? { onStall: opts.onStall } : {})
   });
 
   return {

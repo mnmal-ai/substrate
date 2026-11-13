@@ -1012,3 +1012,32 @@ describe('sentinel-client authenticates its own connection', () => {
     expect(await captureWatchHeader(undefined)).toBeUndefined();
   }, 15_000);
 });
+
+describe('sentinel-client notices a silent sentinel', () => {
+  it('reconnects when the watch stream sends nothing for idleMs', async () => {
+    let requests = 0;
+    const server = http2.createServer((_req, res) => {
+      requests++;
+      res.stream.on('error', () => {});
+      res.writeHead(200, { 'content-type': FRAMES_JSON_MIME });
+      // Headers, then nothing: a sentinel that died without closing the stream.
+      res.write(new Uint8Array(4));
+    });
+    const sessions = new Set<http2.ServerHttp2Session>();
+    server.on('session', (s) => sessions.add(s));
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as { port: number }).port;
+    const handle = startSentinelClient({
+      sentinelUrl: `http://127.0.0.1:${port}`,
+      bridges: makeMockBridges([]),
+      engine: { refreshBridgeSchemas: async () => {}, registryFor: () => undefined },
+      creds: { get: () => undefined },
+      reconnectBaseMs: 10,
+      idleMs: 100
+    });
+    await vi.waitFor(() => expect(requests).toBeGreaterThanOrEqual(2), { timeout: 3000 });
+    await handle.stop();
+    for (const s of sessions) s.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+});
