@@ -1,6 +1,6 @@
 /**
  * End-to-end regression for the REAL `/substrate/v1/stream` route over a REAL TCP
- * socket. Every other SSE test drives the route through `server.inject()` (no
+ * socket. Every other stream test drives the route through `server.inject()` (no
  * socket) or exercises pure framing/session units, so none can catch a
  * regression that buffers the route (e.g. an interceptor that materializes the
  * body to compute `content-length`).
@@ -13,6 +13,7 @@
  */
 
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
+import { decodeStreamFrames, FRAMES_JSON_MIME } from '@mnmal-ai/substrate-pack';
 import { FastifySubstrateServer } from '@mnmal-ai/substrate-server-fastify';
 import type {
   CoordinatorPlugin,
@@ -70,7 +71,7 @@ const slowStreamPlugin: CoordinatorPlugin = {
   ]
 };
 
-describe('SSE end-to-end: real route, real socket', () => {
+describe('stream end-to-end: real route, real socket', () => {
   let server: FastifySubstrateServer;
   let baseUrl: string;
 
@@ -94,40 +95,37 @@ describe('SSE end-to-end: real route, real socket', () => {
   it('delivers chunks incrementally from the real /substrate/v1/stream route', async () => {
     const res = await fetch(`${baseUrl}/substrate/v1/stream`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', accept: FRAMES_JSON_MIME },
       body: JSON.stringify({ 'default/slowRows': { params: {}, fields: { id: true } } })
     });
     expect(res.status).toBe(200);
-    expect(res.headers.get('content-type')).toContain('text/event-stream');
+    expect(res.headers.get('content-type')).toBe(FRAMES_JSON_MIME);
 
-    const reader = res.body!.getReader();
-    const dec = new TextDecoder();
+    const reader = (res.body as ReadableStream<Uint8Array>).getReader();
     const arrivals: number[] = [];
-    let text = '';
+    const chunks: Uint8Array[] = [];
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
       arrivals.push(Date.now());
-      text += dec.decode(value, { stream: true });
+      chunks.push(value);
     }
 
-    expect(text).toContain('event: chunk');
-    expect(text).toContain('event: end');
-    // Never advertise a `Last-Event-ID` resume capability Substrate doesn't implement.
-    expect(text).not.toMatch(/^id:/m);
+    const kinds: string[] = [];
+    for await (const payload of decodeStreamFrames(
+      (async function* () {
+        yield* chunks;
+      })()
+    )) {
+      kinds.push((JSON.parse(new TextDecoder().decode(payload)) as { kind: string }).kind);
+    }
+    expect(kinds).toContain('chunk');
+    expect(kinds.at(-1)).toBe('end');
 
     // A buffered implementation delivers everything in one flush (gaps ~0).
     // Half the producer gap absorbs scheduler jitter on noisy CI without
     // being loose enough for a buffered impl to pass.
     const gaps = arrivals.slice(1).map((t, i) => t - (arrivals[i] as number));
     expect(Math.max(...gaps)).toBeGreaterThan(GAP_MS / 2);
-  });
-
-  it('rejects a GET with no ticket before opening a stream', async () => {
-    const frame = encodeURIComponent(JSON.stringify({ 'default/slowRows': { params: {} } }));
-    const res = await fetch(`${baseUrl}/substrate/v1/stream?frame=${frame}`);
-    expect(res.status).toBe(401);
-    // Pre-stream failures are ordinary HTTP, NOT an SSE error frame.
-    expect(res.headers.get('content-type')).toContain('application/json');
   });
 });

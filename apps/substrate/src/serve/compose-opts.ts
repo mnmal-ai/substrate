@@ -173,8 +173,8 @@ export async function buildComposeOpts(args: {
     if (config.systemActor !== null) {
       composeOpts.systemActor = config.systemActor;
     }
-    if (config.streamTicketSecret !== null) {
-      composeOpts.streamTicketSecret = config.streamTicketSecret;
+    if (config.cursorSealSecret !== null) {
+      composeOpts.cursorSealSecret = config.cursorSealSecret;
     }
     // §5.13 mutation idempotency, dedup on unless SUBSTRATE_IDEMPOTENCY_DISABLED.
     // Pg-backed when storeSql is present, memory otherwise.

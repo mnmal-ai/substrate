@@ -4,8 +4,7 @@
  * A self-contained sub-envelope for one row in a stream. Each chunk carries:
  *   - `schemaVersion` — for drift detection against the caller's cached schema
  *   - `streamId`      — correlates chunks to the originating request (same id
- *                       the unified WS frame family uses, for symmetry across
- *                       transports)
+ *                       the `WsResponseFrame` family uses)
  *   - `sequence`      — monotonic from 0, per-stream
  *   - `shape: 'single'` — chunks are always single rows (§7.4)
  *   - `data`          — positional encoding of the row via the client's sent
@@ -15,9 +14,9 @@
  *                       is a dedicated terminal frame on the transport)
  *   - `_meta?`        — reserved envelope channel (§7.3)
  *
- * The §5.5 WebSocket route does NOT emit this envelope — WS streaming rides
- * on `WsResponseFrame` (kind: 'chunk'). This is the canonical codec for other
- * transports and standalone chunk decoding (§7.4, §2.5 protocol neutrality).
+ * Frame streams do NOT emit this envelope; stream rows ride on `WsResponseFrame`
+ * (kind: 'chunk'). This is the codec for standalone chunk decoding (§7.4, §2.5
+ * protocol neutrality).
  */
 
 import type { FieldInput, Schema } from '@mnmal-ai/substrate-types';

@@ -4,20 +4,22 @@
  * `SubstrateServer` implementation and must produce byte-identical results for
  * deterministic outputs (schemas, sorted queries, mutation returns).
  *
- * The harness abstracts the two transports behind a tiny adapter interface:
- *   - `MemorySubstrateServer` — zero-socket, `server.inject()` everywhere and
- *     `server.connectWebsocket()` for the WS flows.
+ * The harness abstracts the two servers behind a tiny adapter interface:
+ *   - `MemorySubstrateServer` — zero-socket, `server.inject()` everywhere,
+ *     including the frame streams (inject hands back the live body).
  *   - `FastifySubstrateServer` — same `inject()` contract (Fastify exposes it),
- *     but WS requires a real port; the harness starts the server on an
- *     ephemeral port and the adapter dials out via the `ws` package.
+ *     but a frame stream needs a real port (inject buffers until the response
+ *     ends); the harness starts the server on an ephemeral port and POSTs with
+ *     `fetch`.
  *
  * Scenarios tested per server: schema, list + single + cursor-paginated
  * queries, errors-only envelope, the full mutation lifecycle, edge-aware
  * delete with sweep reconciliation, crossRef onMissing:'reject' enforcement
  * (create + update, no row written on rejection), subscribe
  * (snapshot + add) and streaming (chunks in order + terminal end frame).
- * The streaming scenarios run over BOTH stream transports (WS and SSE) via a
- * `StreamDriver`, so each runs 4× — {memory, fastify} × {ws, sse}.
+ * The streaming scenarios run over the one stream transport — length-prefixed
+ * frames on `POST /substrate/v1/{subscribe,stream}` — via a `StreamDriver`, so
+ * each runs once per server.
  * Bridge-federated query and subscribe-with-pushed-update from §9.4 are not
  * covered here.
  */
@@ -27,6 +29,7 @@ import { MemoryEdgesStore } from '@mnmal-ai/substrate-core';
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
 import { FakeEmbedder } from '@mnmal-ai/substrate-embedder/fake';
 import { clearExtensionOperators, registerExtensionOperator } from '@mnmal-ai/substrate-filter';
+import { decodeStreamFrames, FRAMES_JSON_MIME } from '@mnmal-ai/substrate-pack';
 import {
   type ClusterProvenance,
   createRecallPlugin,
@@ -47,7 +50,6 @@ import type {
   WsResponseFrame
 } from '@mnmal-ai/substrate-types';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import WebSocket from 'ws';
 import { fixturePlugin } from './_fixtures/fixture-plugin.js';
 
 // ---------------------------------------------------------------------------
@@ -55,14 +57,8 @@ import { fixturePlugin } from './_fixtures/fixture-plugin.js';
 // `describe` block passes the SAME test function to both impls.
 // ---------------------------------------------------------------------------
 
-interface WsHandle {
-  send(payload: unknown): void;
-  onFrame(cb: (frame: WsResponseFrame) => void): void;
-  close(): void;
-}
-
-/** An open SSE response: status plus the still-flowing body, never buffered. */
-interface SseHandle {
+/** An open frames response: status plus the still-flowing body, never buffered. */
+interface FramesHandle {
   readonly status: number;
   /** Null when the route refused before opening a stream — pre-stream failures are ordinary HTTP. */
   readonly body: ReadableStream<Uint8Array> | null;
@@ -70,14 +66,12 @@ interface SseHandle {
 
 interface HarnessHandle {
   inject(req: Partial<SubstrateRequest>): Promise<SubstrateResponse>;
-  openWebsocket(path: string): Promise<WsHandle>;
-  /**
-   * POST an SSE stream/subscribe frame and hand back the live body. POST rather
-   * than GET because GET is ticket-authenticated (EventSource can set neither a
-   * body nor headers) and the ticket buys nothing here — the harness composes
-   * without auth, so the POST gate is the identity function.
-   */
-  openSse(path: string, frame: Record<string, unknown>, signal: AbortSignal): Promise<SseHandle>;
+  /** POST a stream/subscribe frame (frames+json) and hand back the live body. */
+  openFrames(
+    path: string,
+    frame: Record<string, unknown>,
+    signal: AbortSignal
+  ): Promise<FramesHandle>;
   composed: ComposeResult;
   server: SubstrateServer;
   /**
@@ -109,11 +103,11 @@ function jsonBody<T>(res: SubstrateResponse): T {
 }
 
 /**
- * An SSE route answers with the transport's `ReadableStream` verbatim; anything
+ * A stream route answers with the transport's `ReadableStream` verbatim; anything
  * else (a JSON error envelope, say) is not a stream and the caller must see
  * that as "no body" rather than a decode failure further downstream.
  */
-function asSseBody(body: SubstrateResponse['body']): ReadableStream<Uint8Array> | null {
+function asFramesBody(body: SubstrateResponse['body']): ReadableStream<Uint8Array> | null {
   return body instanceof ReadableStream ? body : null;
 }
 
@@ -213,29 +207,16 @@ async function memoryHarness(): Promise<HarnessHandle> {
     async inject(req) {
       return server.inject(req);
     },
-    async openSse(path, frame, signal) {
+    async openFrames(path, frame, signal) {
       // `inject()` hands back the handler's response object untouched, so the
       // body arrives as the live ReadableStream — no socket needed.
-      const res = await server.inject({ ...asJsonRequest(path, frame), signal });
-      return { status: res.status, body: asSseBody(res.body) };
-    },
-    async openWebsocket(path) {
-      const client = server.connectWebsocket(path);
-      const listeners: Array<(frame: WsResponseFrame) => void> = [];
-      client.onMessage((buf) => {
-        const frame = JSON.parse(buf.toString('utf8')) as WsResponseFrame;
-        for (const cb of listeners.slice()) cb(frame);
+      const req = asJsonRequest(path, frame);
+      const res = await server.inject({
+        ...req,
+        headers: { ...req.headers, accept: FRAMES_JSON_MIME },
+        signal
       });
-      // MemorySubstrateServer dispatches the handler on a microtask so caller
-      // listeners register first. Flush before returning.
-      await Promise.resolve();
-      return {
-        send: (payload) => client.send(JSON.stringify(payload)),
-        onFrame: (cb) => {
-          listeners.push(cb);
-        },
-        close: () => client.close()
-      };
+      return { status: res.status, body: asFramesBody(res.body) };
     },
     async teardown() {
       await composed.stop();
@@ -271,42 +252,18 @@ async function fastifyHarness(): Promise<HarnessHandle> {
       if (server.inject === undefined) throw new Error('FastifySubstrateServer.inject unavailable');
       return server.inject(req);
     },
-    async openSse(path, frame, signal) {
+    async openFrames(path, frame, signal) {
       // A real socket, NOT `inject()`: Fastify's inject buffers `rawPayload` and
       // resolves only once the response ends, so a subscribe (which ends only on
       // disconnect) would deadlock and a stream would arrive as one flush —
       // neither of which is the behaviour under test.
       const res = await fetch(`http://127.0.0.1:${port}${path}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', accept: FRAMES_JSON_MIME },
         body: JSON.stringify(frame),
         signal
       });
       return { status: res.status, body: res.body };
-    },
-    async openWebsocket(path) {
-      const ws = new WebSocket(`ws://127.0.0.1:${port}${path}`);
-      const listeners: Array<(frame: WsResponseFrame) => void> = [];
-      ws.on('message', (data: Buffer | Buffer[] | ArrayBuffer) => {
-        const buf = Buffer.isBuffer(data)
-          ? data
-          : Array.isArray(data)
-            ? Buffer.concat(data as Buffer[])
-            : Buffer.from(data);
-        const frame = JSON.parse(buf.toString('utf8')) as WsResponseFrame;
-        for (const cb of listeners.slice()) cb(frame);
-      });
-      await new Promise<void>((resolve, reject) => {
-        ws.once('open', () => resolve());
-        ws.once('error', reject);
-      });
-      return {
-        send: (payload) => ws.send(JSON.stringify(payload)),
-        onFrame: (cb) => {
-          listeners.push(cb);
-        },
-        close: () => ws.close()
-      };
     },
     async teardown() {
       await composed.stop();
@@ -814,19 +771,17 @@ async function scenarioOnMissingReject(h: HarnessHandle): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Stream-transport drivers (§2.5). WS and SSE carry the same information in
-// different envelopes — WS multiplexes `{id, op, frame}` over one socket and
-// answers with `WsResponseFrame`s; SSE dedicates one HTTP response per session,
-// takes the frame in the request, and answers with `event:`/`data:` blocks.
-// Normalizing both onto `ObservedFrame` is what lets ONE scenario body prove
-// both transports instead of two scenarios that drift apart.
+// Stream driver (§2.5). One HTTP response per session: the frame goes in the
+// POST body and the answer is a sequence of length-prefixed `WsResponseFrame`
+// JSON payloads. Cancellation IS disconnection. Normalizing onto
+// `ObservedFrame` keeps the scenario bodies transport-neutral.
 // ---------------------------------------------------------------------------
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-/** The transport-neutral intersection the shared scenarios assert against. */
+/** The transport-neutral view the shared scenarios assert against. */
 interface ObservedFrame {
   kind: string;
   key?: string;
@@ -834,121 +789,64 @@ interface ObservedFrame {
   row?: unknown;
   sequence?: number;
   code?: string;
+  shapes?: WsResponseFrame['shapes'];
+  final?: boolean;
+}
+
+function observe(f: WsResponseFrame): ObservedFrame {
+  // Terminal frames carry no `data` at all, hence the empty-record floor.
+  const data = isRecord(f.data) ? f.data : {};
+  const key = Object.keys(data)[0];
+  const value = key === undefined ? undefined : data[key];
+  return {
+    kind: f.kind,
+    ...(key !== undefined ? { key } : {}),
+    ...(Array.isArray(value) ? { rows: value } : value !== undefined ? { row: value } : {}),
+    ...(f.sequence !== undefined ? { sequence: f.sequence } : {}),
+    ...(f.errors?.[0]?.code !== undefined ? { code: f.errors[0].code } : {}),
+    ...(f.shapes !== undefined ? { shapes: f.shapes } : {}),
+    ...(f.final !== undefined ? { final: f.final } : {})
+  };
+}
+
+/** Reads to EOF, appending each decoded frame to `sink`. */
+async function drainFrames(body: ReadableStream<Uint8Array>, sink: ObservedFrame[]): Promise<void> {
+  try {
+    for await (const payload of decodeStreamFrames(body)) {
+      sink.push(observe(JSON.parse(new TextDecoder().decode(payload)) as WsResponseFrame));
+    }
+  } catch {
+    // Cancelling a session means killing the connection, so the pending read
+    // rejects by design. Frames observed before that stand.
+  }
 }
 
 interface StreamDriver {
-  open(mode: 'subscribe' | 'stream', id: string, frame: Record<string, unknown>): Promise<void>;
+  open(mode: 'subscribe' | 'stream', frame: Record<string, unknown>): Promise<void>;
   frames(): ObservedFrame[];
-  /** WS sends an explicit cancel op; for SSE, cancellation IS disconnection. */
-  cancel(id: string): void;
+  /** Cancellation is disconnection: aborts the response. */
   close(): void;
 }
 
-function wsDriver(h: HarnessHandle): StreamDriver {
-  const observed: ObservedFrame[] = [];
-  let ws: WsHandle | null = null;
-  return {
-    async open(mode, id, frame) {
-      ws = await h.openWebsocket('/substrate/v1/ws');
-      ws.onFrame((f) => {
-        // Terminal frames carry no `data` at all, hence the empty-record floor.
-        const data = isRecord(f.data) ? f.data : {};
-        const key = Object.keys(data)[0];
-        const value = key === undefined ? undefined : data[key];
-        observed.push({
-          kind: f.kind,
-          ...(key !== undefined ? { key } : {}),
-          ...(Array.isArray(value) ? { rows: value } : value !== undefined ? { row: value } : {}),
-          ...(f.sequence !== undefined ? { sequence: f.sequence } : {}),
-          ...(f.errors?.[0]?.code !== undefined ? { code: f.errors[0].code } : {})
-        });
-      });
-      ws.send({ id, op: mode, frame });
-    },
-    frames: () => observed,
-    cancel(id) {
-      ws?.send({ id, op: 'cancel' });
-    },
-    close: () => ws?.close()
-  };
-}
-
-/** The `data:` payload shapes `sse-frame.ts` emits, per frame kind. */
-interface SsePayload {
-  key?: string;
-  rows?: unknown[];
-  row?: unknown;
-  sequence?: number;
-  code?: string;
-}
-
-/**
- * One `event:`/`data:` block. Returns null for blocks that carry no frame — the
- * opening `retry:` and the `: keepalive` comments a long-lived subscribe emits.
- */
-function parseSseBlock(block: string): ObservedFrame | null {
-  let kind: string | undefined;
-  let data: string | undefined;
-  for (const line of block.split('\n')) {
-    if (line.startsWith('event: ')) kind = line.slice(7);
-    else if (line.startsWith('data: ')) data = line.slice(6);
-  }
-  if (kind === undefined || data === undefined) return null;
-  const payload = JSON.parse(data) as SsePayload;
-  return {
-    kind,
-    ...(payload.key !== undefined ? { key: payload.key } : {}),
-    ...(payload.rows !== undefined ? { rows: payload.rows } : {}),
-    ...(payload.row !== undefined ? { row: payload.row } : {}),
-    ...(payload.sequence !== undefined ? { sequence: payload.sequence } : {}),
-    ...(payload.code !== undefined ? { code: payload.code } : {})
-  };
-}
-
-/** Reads to EOF, appending each complete block to `sink`. */
-async function drainSse(body: ReadableStream<Uint8Array>, sink: ObservedFrame[]): Promise<void> {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buffered = '';
-  try {
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffered += decoder.decode(value, { stream: true });
-      for (let at = buffered.indexOf('\n\n'); at !== -1; at = buffered.indexOf('\n\n')) {
-        const parsed = parseSseBlock(buffered.slice(0, at));
-        buffered = buffered.slice(at + 2);
-        if (parsed !== null) sink.push(parsed);
-      }
-    }
-  } catch {
-    // Cancelling an SSE session means killing the connection, so the pending
-    // read rejects by design. Frames observed before that stand.
-  }
-}
-
-function sseDriver(h: HarnessHandle): StreamDriver {
+function framesDriver(h: HarnessHandle): StreamDriver {
   const observed: ObservedFrame[] = [];
   const abort = new AbortController();
   return {
-    async open(mode, _id, frame) {
-      const res = await h.openSse(
+    async open(mode, frame) {
+      const res = await h.openFrames(
         mode === 'stream' ? '/substrate/v1/stream' : '/substrate/v1/subscribe',
         frame,
         abort.signal
       );
       expect(res.status).toBe(200);
       const body = res.body;
-      if (body === null) throw new Error('SSE route returned no stream body');
+      if (body === null) throw new Error('stream route returned no stream body');
       // Drained detached, NOT awaited: a subscribe has no terminal frame until
       // the client disconnects, so awaiting the drain here would deadlock the
       // scenario that is supposed to go on and provoke an `add`.
-      void drainSse(body, observed);
+      void drainFrames(body, observed);
     },
     frames: () => observed,
-    cancel() {
-      abort.abort();
-    },
     close() {
       abort.abort();
     }
@@ -956,14 +854,14 @@ function sseDriver(h: HarnessHandle): StreamDriver {
 }
 
 /**
- * Every driver here closes in a `finally`, which is not tidiness: an SSE session
+ * Every driver here closes in a `finally`, which is not tidiness: a stream session
  * owns a real HTTP response and Fastify's shutdown waits on in-flight requests,
  * so a driver left open by a failing assertion turns one clear failure into a
  * 10s afterEach timeout that buries it.
  */
 async function scenarioSubscribe(h: HarnessHandle, driver: StreamDriver): Promise<void> {
   try {
-    await driver.open('subscribe', 'sub-par', {
+    await driver.open('subscribe', {
       'default/Todo': { params: {}, fields: { id: true, title: true, done: true } }
     });
     await waitFor(() => driver.frames().length >= 1);
@@ -980,10 +878,6 @@ async function scenarioSubscribe(h: HarnessHandle, driver: StreamDriver): Promis
     expect(added?.kind).toBe('add');
     expect(added?.key).toBe('default/Todo');
     expect(added?.row).toMatchObject({ id: 'sub1', title: 'pushed' });
-
-    // The terminal `end { final: true }` a WS cancel acks lives in a WS-only
-    // test: an SSE cancel is a disconnect, so no frame can follow it here.
-    driver.cancel('sub-par');
   } finally {
     driver.close();
   }
@@ -998,7 +892,7 @@ async function scenarioStream(h: HarnessHandle, driver: StreamDriver): Promise<v
     );
   }
   try {
-    await driver.open('stream', 'stream-par', {
+    await driver.open('stream', {
       'default/streamTodos': { params: {}, fields: { id: true, title: true } }
     });
     await waitFor(() => driver.frames().some((f) => f.kind === 'end'), 5000);
@@ -1505,25 +1399,15 @@ for (const { name, factory } of SERVERS) {
       await scenarioOnMissingReject(harness);
     });
 
-    // The same scenario body over both stream transports: §2.5 protocol
-    // neutrality is enforced here, not asserted in a docstring.
-    for (const [transport, makeDriver] of [
-      ['ws', wsDriver],
-      ['sse', sseDriver]
-    ] as const) {
-      it(`subscribe [${transport}]: snapshot + add`, async () => {
-        await scenarioSubscribe(harness, makeDriver(harness));
-      });
+    it('subscribe: snapshot + add', async () => {
+      await scenarioSubscribe(harness, framesDriver(harness));
+    });
 
-      it(`stream [${transport}]: chunks in order + terminal end frame`, async () => {
-        await scenarioStream(harness, makeDriver(harness));
-      });
-    }
+    it('stream: chunks in order + terminal end frame', async () => {
+      await scenarioStream(harness, framesDriver(harness));
+    });
 
-    // Two WS-envelope behaviours with no SSE equivalent. They are asserted here
-    // rather than dropped from the shared scenario's reach entirely — the
-    // parity gate narrows to the intersection, the coverage does not.
-    it('stream chunks carry per-key shapes [ws]', async () => {
+    it('stream chunks carry per-key shapes', async () => {
       // Seeded, not empty: `streamTodos` yields one chunk per stored row, so an
       // unseeded harness would stream zero chunks and the per-chunk assertion
       // below would pass without ever running.
@@ -1534,47 +1418,28 @@ for (const { name, factory } of SERVERS) {
           })
         );
       }
-      const ws = await harness.openWebsocket('/substrate/v1/ws');
-      const frames: Array<WsResponseFrame> = [];
-      ws.onFrame((f) => frames.push(f));
-      ws.send({
-        id: 'shapes-par',
-        op: 'stream',
-        frame: { 'default/streamTodos': { params: {}, fields: { id: true } } }
-      });
-      await waitFor(() => frames.some((f) => f.kind === 'end'), 5000);
+      const driver = framesDriver(harness);
+      try {
+        await driver.open('stream', {
+          'default/streamTodos': { params: {}, fields: { id: true } }
+        });
+        await waitFor(() => driver.frames().some((f) => f.kind === 'end'), 5000);
 
-      const chunks = frames.filter((f) => f.kind === 'chunk');
-      expect(chunks).toHaveLength(2);
-      for (const c of chunks) {
-        expect(c.shapes).toEqual({ 'default/streamTodos': 'single' });
+        const chunks = driver.frames().filter((f) => f.kind === 'chunk');
+        expect(chunks).toHaveLength(2);
+        for (const c of chunks) {
+          expect(c.shapes).toEqual({ 'default/streamTodos': 'single' });
+        }
+        expect(driver.frames().at(-1)?.final).toBe(true);
+      } finally {
+        driver.close();
       }
-      expect(frames.at(-1)?.final).toBe(true);
-      ws.close();
     });
 
-    it('subscribe cancel is acknowledged with end { final: true } [ws]', async () => {
-      const ws = await harness.openWebsocket('/substrate/v1/ws');
-      const frames: Array<WsResponseFrame> = [];
-      ws.onFrame((f) => frames.push(f));
-      ws.send({
-        id: 'cancel-par',
-        op: 'subscribe',
-        frame: { 'default/Todo': { params: {}, fields: { id: true } } }
-      });
-      await waitFor(() => frames.length >= 1);
-
-      ws.send({ id: 'cancel-par', op: 'cancel' });
-      await waitFor(() => frames.some((f) => f.kind === 'end'));
-      expect(frames.find((f) => f.kind === 'end')?.final).toBe(true);
-      ws.close();
-    });
-
-    it('reconnect yields a fresh snapshot, not a resume [sse]', async () => {
+    it('reconnect yields a fresh snapshot, not a resume', async () => {
       // Subscriptions are state-convergent, not event-sourced (spec §4): there
       // is no durable change log, so a second connection must re-snapshot
-      // rather than replay what it missed. This pins the contract that
-      // `sse-frame.ts` deliberately emits no `id:` for.
+      // rather than replay what it missed.
       const frame: Record<string, unknown> = {
         'default/Todo': { params: {}, fields: { id: true } }
       };
@@ -1584,9 +1449,9 @@ for (const { name, factory } of SERVERS) {
         })
       );
 
-      const first = sseDriver(harness);
+      const first = framesDriver(harness);
       try {
-        await first.open('subscribe', 'rc-1', frame);
+        await first.open('subscribe', frame);
         await waitFor(() => first.frames().length >= 1);
         expect(first.frames()[0]?.kind).toBe('snapshot');
         expect(first.frames()[0]?.rows).toHaveLength(1);
@@ -1602,9 +1467,9 @@ for (const { name, factory } of SERVERS) {
         })
       );
 
-      const second = sseDriver(harness);
+      const second = framesDriver(harness);
       try {
-        await second.open('subscribe', 'rc-2', frame);
+        await second.open('subscribe', frame);
         await waitFor(() => second.frames().length >= 1);
         expect(second.frames()[0]?.kind).toBe('snapshot');
         expect(second.frames()[0]?.rows).toHaveLength(2);

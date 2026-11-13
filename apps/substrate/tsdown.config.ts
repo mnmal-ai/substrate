@@ -7,7 +7,6 @@ import { defineBinTsdown, defineLibTsdown } from '@mnmal-ai/substrate-config/tsd
 const EXTERNAL = [
   '@fastify/compress',
   '@fastify/cors',
-  '@fastify/websocket',
   '@mnmal-ai/holomap-clusterer',
   '@modelcontextprotocol/sdk',
   '@preact/signals-core',
@@ -16,7 +15,6 @@ const EXTERNAL = [
   'msgpackr',
   'postgres',
   'semver',
-  'ws',
   'zod'
 ];
 

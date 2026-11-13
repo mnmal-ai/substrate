@@ -4,7 +4,7 @@ Internal: bundled into `@mnmal-ai/substrate` and not published; its public surfa
 
 In-process `SubstrateServer` for tests and embedding.
 
-The socket-free sibling of `@mnmal-ai/substrate-server-fastify`. `MemorySubstrateServer` implements the same `SubstrateServer` interface from `@mnmal-ai/substrate-types`, but requests are delivered with `server.inject(req)` and come back as a `SubstrateResponse`; `createMemoryWsPair` gives an in-process WebSocket pair. No port, no TCP.
+The socket-free sibling of `@mnmal-ai/substrate-server-fastify`. `MemorySubstrateServer` implements the same `SubstrateServer` interface from `@mnmal-ai/substrate-types`, but requests are delivered with `server.inject(req)` and come back as a `SubstrateResponse`. No port, no TCP.
 
 ## Where it fits
 

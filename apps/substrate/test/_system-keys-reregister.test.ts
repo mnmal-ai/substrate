@@ -47,8 +47,7 @@ async function scenario(sys: Dataset): Promise<void> {
     server,
     dataset: new MemoryDataset({ namespace: 'default' }),
     datasets: { [SYSTEM_NAMESPACE]: sys },
-    auth: { keys: [{ kid: 'file', alg: 'HS256', publicKey: SECRET }], adminCapability: 'admin' },
-    streamTicketSecret: 'keys-reregister-ticket'
+    auth: { keys: [{ kid: 'file', alg: 'HS256', publicKey: SECRET }], adminCapability: 'admin' }
   });
   await server.start();
   stops.push(async () => {

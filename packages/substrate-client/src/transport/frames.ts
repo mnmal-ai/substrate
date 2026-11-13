@@ -4,7 +4,7 @@
  * stream-frames codec). Each subscription owns its request, so cancelling one
  * aborts only that request.
  *
- * A subscription survives what WS let it survive, re-subscribing for a fresh
+ * A subscription survives the following, re-subscribing for a fresh
  * snapshot: a dropped connection (after backoff), `end { server_restart }`
  * (at once), `subscription_overloaded` (after the overload delay, within its
  * budget) and a lapsed credential when `getToken` can mint a new one. A 401 or

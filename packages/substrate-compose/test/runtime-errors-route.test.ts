@@ -30,9 +30,7 @@ async function mk(opts: { auth?: AuthConfig } = {}) {
     systemActor: 'test',
     server,
     dataset,
-    ...(opts.auth !== undefined
-      ? { auth: opts.auth, streamTicketSecret: 'test-stream-ticket-secret' }
-      : {})
+    ...(opts.auth !== undefined ? { auth: opts.auth } : {})
   });
   await server.start();
   return { server, composed };

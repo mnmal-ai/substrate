@@ -140,8 +140,7 @@ describe('registerSentinelStatusRoute', () => {
       post: vi.fn(),
       put: vi.fn(),
       delete: vi.fn(),
-      patch: vi.fn(),
-      websocket: vi.fn()
+      patch: vi.fn()
     };
     const engine: EngineHandle = {
       query,

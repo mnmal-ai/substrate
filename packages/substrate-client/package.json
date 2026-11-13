@@ -29,8 +29,7 @@
     "@mnmal-ai/substrate-pack": "workspace:*",
     "@mnmal-ai/substrate-policy": "workspace:*",
     "@mnmal-ai/substrate-types": "workspace:*",
-    "@preact/signals-core": "catalog:",
-    "ws": "catalog:"
+    "@preact/signals-core": "catalog:"
   },
   "devDependencies": {
     "@mnmal-ai/substrate-compose": "workspace:*",
@@ -41,7 +40,6 @@
     "@mnmal-ai/substrate-server-fastify": "workspace:*",
     "@mnmal-ai/substrate-server-memory": "workspace:*",
     "@types/node": "catalog:",
-    "@types/ws": "catalog:",
     "jsdom": "catalog:",
     "msw": "catalog:",
     "tsdown": "catalog:",

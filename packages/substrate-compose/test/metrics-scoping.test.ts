@@ -31,7 +31,7 @@ async function mk(withAuth: boolean) {
     systemActor: 'test',
     server,
     dataset: new MemoryDataset({ namespace: 'default' }),
-    ...(withAuth ? { auth: authCfg, streamTicketSecret: 'test-stream-ticket-secret' } : {})
+    ...(withAuth ? { auth: authCfg } : {})
   });
   await server.start();
   const admin = { authorization: `Bearer ${token(['admin', 'read', 'mutate'], ['*'])}` };
@@ -111,8 +111,7 @@ describe('GET /substrate/v1/metrics namespace scoping', () => {
       systemActor: 'test',
       server,
       dataset: new MemoryDataset({ namespace: 'default' }),
-      auth: { ...authCfg, mode: 'attribute' },
-      streamTicketSecret: 'test-stream-ticket-secret'
+      auth: { ...authCfg, mode: 'attribute' }
     });
     await server.start();
     await server.inject({

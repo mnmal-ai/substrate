@@ -1,5 +1,5 @@
 /**
- * Frame-stream routes, beside the WS route:
+ * The sentinel's frame-stream routes:
  *
  *   - `POST /register` (the plugin router gates it on `mutate`) takes the
  *     register body `{ name, url, namespaces, version?, bridges? }`. A refusal is
@@ -24,14 +24,14 @@ import type {
   SubstrateResponse
 } from '@mnmal-ai/substrate/sdk';
 import { jsonResponse } from '@mnmal-ai/substrate/sdk';
-import type { LivenessRegistry, PeerConnection } from './liveness.js';
 import {
   grantsCapability,
   handleClose,
   handleRegister,
   handleWatch,
   parseFrame
-} from './ws-route.js';
+} from './coordinators.js';
+import type { LivenessRegistry, PeerConnection } from './liveness.js';
 
 const HEADERS: Record<string, string> = {
   'content-type': FRAMES_JSON_MIME,

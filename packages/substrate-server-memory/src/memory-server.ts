@@ -16,9 +16,6 @@
  *     fixtures — more specific routes register first.
  *   - The error hook is last-one-wins. Networked impls differ (Fastify
  *     overwrites its own setErrorHandler, and our impl mirrors that).
- *   - WS handler throws and rejections are surfaced through `onError` because
- *     there's no transport to close; an unknown WS path throws synchronously
- *     from `connectWebsocket` so misuse is loud.
  */
 
 import type {
@@ -30,21 +27,12 @@ import type {
   StartOpts,
   SubstrateRequest,
   SubstrateResponse,
-  SubstrateServer,
-  WsHandler
+  SubstrateServer
 } from '@mnmal-ai/substrate-types';
 import { WS_REASON_SERVER_RESTART } from '@mnmal-ai/substrate-types';
-import { createMemoryWsPair, type MemoryWsClient } from './memory-ws-connection.js';
 import { matchRoute } from './route-matcher.js';
 
 type ErrorHook = (err: Error, req?: SubstrateRequest) => void;
-
-export class UnknownWsPathError extends Error {
-  constructor(path: string) {
-    super(`No websocket route registered for path: ${path}`);
-    this.name = 'UnknownWsPathError';
-  }
-}
 
 /**
  * @internal — thrown when `MemorySubstrateServer.start()` is called twice.
@@ -61,11 +49,6 @@ interface RouteEntry {
   readonly method: HttpMethod;
   readonly pattern: string;
   readonly handler: HttpHandler;
-}
-
-interface WsRouteEntry {
-  readonly pattern: string;
-  readonly handler: WsHandler;
 }
 
 // Inline (not imported from `@mnmal-ai/substrate-compose`) because substrate-compose
@@ -110,7 +93,6 @@ function parseQuery(path: string): { pathname: string; query: Record<string, str
 
 export class MemorySubstrateServer implements SubstrateServer {
   readonly #routes: RouteEntry[] = [];
-  readonly #wsRoutes: WsRouteEntry[] = [];
   readonly #inFlight = new Set<AbortController>();
   readonly #shutdownHooks = new Set<(reason: string) => void>();
   #errorHook: ErrorHook | undefined;
@@ -121,10 +103,6 @@ export class MemorySubstrateServer implements SubstrateServer {
 
   route(method: HttpMethod, path: string, handler: HttpHandler): void {
     this.#routes.push({ method, pattern: path, handler });
-  }
-
-  websocket(path: string, handler: WsHandler): void {
-    this.#wsRoutes.push({ pattern: path, handler });
   }
 
   onError(hook: ErrorHook): void {
@@ -218,8 +196,7 @@ export class MemorySubstrateServer implements SubstrateServer {
       post: (path, handler) => this.route('POST', prefixed(path), handler),
       put: (path, handler) => this.route('PUT', prefixed(path), handler),
       delete: (path, handler) => this.route('DELETE', prefixed(path), handler),
-      patch: (path, handler) => this.route('PATCH', prefixed(path), handler),
-      websocket: (path, handler) => this.websocket(prefixed(path), handler)
+      patch: (path, handler) => this.route('PATCH', prefixed(path), handler)
     };
   }
 
@@ -323,61 +300,5 @@ export class MemorySubstrateServer implements SubstrateServer {
       this.#pending--;
       if (ownedController !== null) this.#inFlight.delete(ownedController);
     }
-  }
-
-  #reportWsError(err: unknown): void {
-    const error = err instanceof Error ? err : new Error(String(err));
-    if (!this.#errorHook) return;
-    try {
-      this.#errorHook(error);
-    } catch {
-      // Hook faults must not mask the originating error.
-    }
-  }
-
-  connectWebsocket(path: string, headers: Record<string, string> = {}): MemoryWsClient {
-    const parsed = parseQuery(path);
-    let matched: WsRouteEntry | undefined;
-    let params: Record<string, string> = {};
-    for (const entry of this.#wsRoutes) {
-      const m = matchRoute(entry.pattern, parsed.pathname);
-      if (m !== null) {
-        matched = entry;
-        params = m;
-        break;
-      }
-    }
-    if (!matched) throw new UnknownWsPathError(parsed.pathname);
-
-    // Per §4.8 transport symmetry, upgrade metadata travels on SubstrateRequest.
-    // params come straight from the router match; query is the parsed
-    // querystring; body is null (WS upgrades carry none).
-    const substrateReq: SubstrateRequest = {
-      method: 'GET',
-      path: parsed.pathname,
-      headers,
-      query: parsed.query,
-      params,
-      body: null
-    };
-
-    const { server, client } = createMemoryWsPair();
-    // Dispatch the handler on a microtask. This mirrors real WS behaviour where
-    // the server-side `onopen` fires after the caller has had a chance to
-    // register listeners. If we invoked synchronously, a handler that sends
-    // before yielding would drop the frame (no listener registered yet).
-    queueMicrotask(() => {
-      try {
-        const result = matched.handler(substrateReq, server);
-        if (result && typeof (result as Promise<void>).then === 'function') {
-          (result as Promise<void>).catch((err: unknown) => {
-            this.#reportWsError(err);
-          });
-        }
-      } catch (err) {
-        this.#reportWsError(err);
-      }
-    });
-    return client;
   }
 }

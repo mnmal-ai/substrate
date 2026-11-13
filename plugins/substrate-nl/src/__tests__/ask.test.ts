@@ -1,7 +1,8 @@
+import { decodeStreamFrames } from '@mnmal-ai/substrate/pack';
 import type { NlOutcome, PlanClause, Query, SubstrateRequest } from '@mnmal-ai/substrate/sdk';
 import { describe, expect, it, vi } from 'vitest';
 import type { NlEngineAccess, NlEnvelope } from '../access.js';
-import { sseBytes, toEventStream } from '../ask/encode.js';
+import { frameBytes, toEventStream } from '../ask/encode.js';
 import type { NlEvent } from '../ask/events.js';
 import { mergePlan, runAsk } from '../ask/run.js';
 import type { Judge } from '../judge/judge.js';
@@ -596,14 +597,17 @@ describe('the confidence rule', () => {
     );
   });
 
-  it("SSE names the unknown outcome's event 'unknown'", async () => {
+  it("frames name the unknown outcome's event 'unknown'", async () => {
     const { e } = engine();
     const stream = toEventStream(
       runAsk({ namespace: 'ns', question: 'how many zorblax todos' }, http, { pack, engine: e }),
-      sseBytes
+      frameBytes
     );
-    const text = await new Response(stream).text();
-    expect(text).toContain('event: unknown\n');
+    const events: string[] = [];
+    for await (const p of decodeStreamFrames(stream)) {
+      events.push((JSON.parse(new TextDecoder().decode(p)) as { event: string }).event);
+    }
+    expect(events).toContain('unknown');
   });
 });
 

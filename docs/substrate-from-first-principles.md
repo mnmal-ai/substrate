@@ -4,7 +4,7 @@
 >
 > **Stance:** this document is opinionated. It records *what* Substrate is and *why* each piece exists, including what trading it away would cost. The invariants in §2 are fixed; everything below them is an implementation choice that could change.
 >
-> **Companion docs:** [`getting-started.md`](getting-started.md) (install and first query), [`plugin-author-guide.md`](plugin-author-guide.md) (writing plugins), [`surface-parity.md`](surface-parity.md) (how HTTP, MCP, WS and SSE differ), [`ws-subscription-contract.md`](ws-subscription-contract.md) (live-update protocol).
+> **Companion docs:** [`getting-started.md`](getting-started.md) (install and first query), [`plugin-author-guide.md`](plugin-author-guide.md) (writing plugins), [`surface-parity.md`](surface-parity.md) (how HTTP, MCP and frame streams differ), [`stream-contract.md`](stream-contract.md) (live-update protocol).
 
 ---
 
@@ -67,11 +67,11 @@ Registering a type yields a list query and `get<T>`, `create<T>`, `update<T>`, `
 
 ### 2.5 Protocol choice is a caller concern
 
-HTTP, WebSocket, SSE, JSON, substrate-pack: one resolution pipeline underneath, one set of semantics. A bug fix in the engine fixes every transport; a cross-namespace edge resolves identically over each.
+HTTP, MCP, frame streams, JSON, substrate-pack: one resolution pipeline underneath, one set of semantics. A bug fix in the engine fixes every transport; a cross-namespace edge resolves identically over each.
 
 **Why fixed:** every place two transports implement the same thing separately is a bug waiting to be found. Transports that re-implement parts of the pipeline drift quietly.
 
-**Differences are documented, not silent.** Some features are transport-specific (live updates are WS/SSE only, for example). [`surface-parity.md`](surface-parity.md) lists them.
+**Differences are documented, not silent.** Some features are transport-specific (live updates are frame streams only, for example). [`surface-parity.md`](surface-parity.md) lists them.
 
 ### 2.6 The agent surface is complete
 
@@ -93,7 +93,7 @@ Six layers, each with one contract to the layer below. Implementations swap at l
 ├──────────────────────────────────────────────────┤
 │  L4  Client         (@mnmal-ai/substrate/client) │  ← framework-agnostic
 ├──────────────────────────────────────────────────┤
-│  L3  Transport      (HTTP, WS, SSE, pack)        │  ← wire protocols
+│  L3  Transport      (HTTP, frame streams, pack)  │  ← wire protocols
 ├──────────────────────────────────────────────────┤
 │  L2  Engine         (resolution, policy, edges)  │  ← the resolution machine
 ├──────────────────────────────────────────────────┤
@@ -214,7 +214,7 @@ interface RequestContext {
   operation: 'query' | 'mutate' | 'subscribe' | 'stream';
   now: Date;
   headers: Record<string, string>;    // raw request headers (read-only)
-  meta: Record<string, unknown>;      // per-connection (WS) or per-request
+  meta: Record<string, unknown>;      // per-request
   verb?: AutoCrudVerb;                // which autoCRUD verb, when applicable
   // plus clientIp, authEnabled, entry
 }
@@ -466,7 +466,7 @@ Selecting sub-fields of a crossRef field (`priceId: { value: true }`) makes the 
 
 ### 4.8 Server
 
-The HTTP/WebSocket transport, abstracted the way `Dataset` abstracts storage. The engine, the binary and every plugin are blind to the underlying framework.
+The HTTP transport, abstracted the way `Dataset` abstracts storage. The engine, the binary and every plugin are blind to the underlying framework.
 
 ```ts
 interface SubstrateRequest {
@@ -487,21 +487,10 @@ interface SubstrateResponse {
 
 type HttpHandler = (req: SubstrateRequest) => SubstrateResponse | Promise<SubstrateResponse>;
 
-interface WsConnection {
-  readonly id: string;
-  send(frame: Buffer | Uint8Array | string): void;
-  onMessage(cb: (frame: Buffer) => void): void;
-  onClose(cb: (code?: number) => void): void;
-  close(code?: number, reason?: string): void;
-}
-
-type WsHandler = (req: SubstrateRequest, conn: WsConnection) => void | Promise<void>;
-
 interface SubstrateServer {
   start(opts?: StartOpts): Promise<{ address: string; port: number }>;
   stop(opts?: { grace?: number; abortInFlight?: boolean }): Promise<void>;
   route(method: HttpMethod, path: string, handler: HttpHandler): void;
-  websocket(path: string, handler: WsHandler): void;
   createPluginRouter(plugin: { name: string }): PluginRouter;
   onError?(hook: (err: Error, req?: SubstrateRequest) => void): void;
   inject?(req: Partial<SubstrateRequest>): Promise<SubstrateResponse>;  // in-process test hook
@@ -514,11 +503,10 @@ interface PluginRouter {
   put(path: string, handler: HttpHandler): void;
   delete(path: string, handler: HttpHandler): void;
   patch(path: string, handler: HttpHandler): void;
-  websocket(path: string, handler: WsHandler): void;
 }
 ```
 
-**One request type for both transports.** A WebSocket upgrade is an HTTP GET, so WS handlers receive the same `SubstrateRequest` (`method: 'GET'`, `body: null`). Upgrade concerns live on `req`, live-socket operations on `conn`. Auth middleware that sets `req.identity` therefore runs identically for HTTP and WS.
+**Long-lived responses are ordinary responses.** A route that streams returns a `ReadableStream` body, and the client closing the response cancels it. `onShutdown` lets such a route flush a terminal frame before the server drains.
 
 **Plugins get a scoped router**, prefixed `/substrate/v1/plugins/<name>`. They never touch the raw server.
 
@@ -599,7 +587,7 @@ Plugins can contribute extra operators (the recall plugin adds `embeddingSimilar
 - **Negotiate with the dataset.** Each dataset declares `capabilities.operators` per field kind; the engine rejects anything the dataset cannot evaluate, rather than returning silently empty results.
 - **Never refuse for want of an index.** A filter on an unindexed field, or a sort on an unindexed non-json scalar, is accepted and scans. Sorting on a crossRef, list, struct or json field is still refused (`orderby_nonscalar`). `_allowTableScan` is accepted and ignored, and `unindexed_field` is no longer produced.
 
-**Pagination is cursor-based.** The cursor is opaque: base64url(JSON) of the last row's `orderBy` values plus its id. The next page re-runs the query with `(orderBy tuple) > (last seen tuple)` — exclusive, so it starts after the cursor row. With `id` as the final tie-breaker this survives data changes between pages without duplicates or gaps. If `orderBy` omits `id`, the engine appends `{ id: 'asc' }`. The `where` clause re-applies on every page. The envelope carries `_pagination[key] = { nextCursor?, hasMore }`. Under a row-filter policy the cursor is sealed (encrypted with a key derived from `SUBSTRATE_STREAM_TICKET_SECRET`, or held only by the process when that is unset), because the row it names may be one the caller cannot see; without the secret a sealed cursor stops opening when the server restarts or on another replica. An unsealed cursor is refused there.
+**Pagination is cursor-based.** The cursor is opaque: base64url(JSON) of the last row's `orderBy` values plus its id. The next page re-runs the query with `(orderBy tuple) > (last seen tuple)` — exclusive, so it starts after the cursor row. With `id` as the final tie-breaker this survives data changes between pages without duplicates or gaps. If `orderBy` omits `id`, the engine appends `{ id: 'asc' }`. The `where` clause re-applies on every page. The envelope carries `_pagination[key] = { nextCursor?, hasMore }`. Under a row-filter policy the cursor is sealed (encrypted with a key derived from `SUBSTRATE_CURSOR_SECRET`, or held only by the process when that is unset), because the row it names may be one the caller cannot see; without the secret a sealed cursor stops opening when the server restarts or on another replica. An unsealed cursor is refused there.
 
 **Remote list reads are bounded.** A query over HTTP (and MCP, which goes through it) that names no `limit` gets the default page, `SUBSTRATE_PAGE_LIMIT_DEFAULT` (100); a `limit` above `SUBSTRATE_PAGE_LIMIT_MAX` (1000) is refused with `limit_exceeds_max`, and one that is not a non-negative integer with `invalid_limit`. Page with the cursor to read further. In-process engine callers are not bounded. A subscription's first snapshot is bounded the same way by `SUBSTRATE_SNAPSHOT_LIMIT`, counting only the rows the subscriber may see; under a row policy the snapshot reads up to 100 pages to find them, and a larger subscription is refused with `snapshot_too_large` (narrow it with `where`).
 
@@ -632,7 +620,7 @@ A `mutate` resolves when its transaction has committed and same-store edge propa
 
 ### 5.4 Subscriptions
 
-A subscribe frame has the same shape as a query frame and returns an initial snapshot followed by pushed updates. Live updates are available over WebSocket (`/substrate/v1/ws`) and SSE (`/substrate/v1/subscribe`); there is no MCP subscription tool.
+A subscribe frame has the same shape as a query frame and returns an initial snapshot followed by pushed updates. Live updates are frame streams on `POST /substrate/v1/subscribe`; there is no MCP subscription tool.
 
 **Filter semantics:**
 
@@ -643,48 +631,39 @@ A subscribe frame has the same shape as a query frame and returns an initial sna
 - **`remove` carries only the id** (`removedId`). The client already has the row.
 - **Write events.** Write-path resolvers announce committed writes via `args.onWrite({ ns, type, id, operation, row? })`. The engine collects them inside the transaction and fans out only after commit, so a rolled-back mutation pushes nothing.
 
-**Back-pressure.** Subscriptions assume the client keeps up. Updates queue per subscription (default limit 256); on overflow the server ends the subscription with an `error` frame (`code: 'subscription_overloaded'`) followed by `end { reason: 'subscription_overloaded', final: true }`. Resubscribe to recover — the snapshot is the recovery path. Full contract: [`ws-subscription-contract.md`](ws-subscription-contract.md).
+**Back-pressure.** Subscriptions assume the client keeps up. Updates queue per subscription (default limit 256); on overflow the server ends the subscription with an `error` frame (`code: 'subscription_overloaded'`) followed by `end { reason: 'subscription_overloaded', final: true }`. Resubscribe to recover — the snapshot is the recovery path. Full contract: [`stream-contract.md`](stream-contract.md).
 
-**Reconnection.** The client reconnects with backoff and resubscribes; the server sends a fresh snapshot. Callers should treat snapshots as idempotent replacements.
+**Reconnection.** The client resubscribes with backoff; the server sends a fresh snapshot. Callers should treat snapshots as idempotent replacements.
 
-**WS frames** (exported from `@mnmal-ai/substrate/sdk`): one request shape and one response shape for both subscriptions and streams.
+**Frame streams.** The request body is the frame object, as for a query, and auth is the same as `POST /substrate/v1/query` (`read`). The response body is a sequence of length-prefixed frames (a 4-byte big-endian length, then the payload; a zero-length frame is a heartbeat). One response carries one session, and closing it cancels the session.
 
 ```ts
-interface WsRequestFrame {
-  id: string;                                  // client-generated; correlates responses
-  op: 'subscribe' | 'stream' | 'cancel' | 'whoami';
-  frame?: Record<string, { params?: Record<string, unknown>; fields?: FieldInput }>;
-}
-
-type WsResponseKind = 'snapshot' | 'add' | 'update' | 'remove' | 'chunk' | 'end' | 'error';
-
-interface WsResponseFrame {
+interface StreamFrame {
   id: string;
-  kind: WsResponseKind;
-  schemaVersion?: string;
+  kind: 'snapshot' | 'add' | 'update' | 'remove' | 'chunk' | 'end' | 'error';
   data?: unknown;                              // named objects (JSON) or positional (substrate-pack)
   shapes?: Record<string, 'single' | 'list'>;
   removedId?: Id;                              // kind === 'remove'
   errors?: Array<{ message: string; code?: string; path?: string[] }>;
+  reason?: string;                             // kind === 'end'
   final?: boolean;
-  sequence?: number;                           // streams
 }
 ```
 
-**Encoding.** A client that sends `Sec-WebSocket-Protocol: substrate-pack` (`WS_SUBPROTOCOL_SUBSTRATE_PACK` in `@mnmal-ai/substrate/pack`) gets msgpack with positional rows; otherwise frames are JSON with named objects. The engine always produces named-object frames; the route serialises per connection.
+**Encoding.** `Accept: application/vnd.substrate.frames+json` (the default) gets JSON frames with named objects; `application/vnd.substrate.frames+pack` gets msgpack with positional `data`. Any other `Accept` is refused `406 not_acceptable`. The engine always produces named-object frames; the route serialises per response.
 
-**On SSE, refusals arrive in-band.** Once the stream has opened, the HTTP status is already `200`; a failure arrives as an `event: error` frame. Read the stream, not the status. Browsers cannot send headers with `EventSource`, so SSE authentication uses a short-lived signed ticket from `POST /substrate/v1/stream/ticket` (signed with `SUBSTRATE_STREAM_TICKET_SECRET`, required when auth is on).
+**Refusals after the stream opens arrive in-band.** A failure before the first byte is an ordinary HTTP status. After that the status is already `200`, and a failure arrives as an `error` frame. Read the frames, not the status. A server shutting down sends `end { reason: 'server_restart' }`; subscribe again for a fresh snapshot.
 
 ### 5.5 Streaming
 
-A stream frame emits rows one at a time as the resolver yields them, over WS (`op: 'stream'`) or SSE (`/substrate/v1/stream`). Use it for large result sets and progressive processing.
+A stream frame emits rows one at a time as the resolver yields them, as frames on `POST /substrate/v1/stream`. Use it for large result sets and progressive processing.
 
 - **Opt-in per resolver.** A stream needs a resolver that returns an `AsyncIterable<Row>`. autoCRUD resolvers do not, and reaching one through `stream` yields `not_streamable`.
 - **One key per stream** (`stream_multi_key` otherwise), so per-row ordering is never interleaved.
 - **Filters validate exactly as for queries**, and row-filter obligations apply per chunk.
 - **Frames:** `chunk` frames with a monotonic `sequence` from 0, then a terminal `end` or `error`.
-- **Cancellation.** The engine passes an `AbortSignal` as `args.signal`; well-behaved resolvers release cursors and locks in a `finally` block. Cancellation is cooperative: it guarantees no further chunks, not that the in-flight one is suppressed. A cancelled stream ends with `{ kind: 'end', final: true, _meta: { cancelled: true } }`. On SSE, cancelling is disconnecting.
-- **Back-pressure.** The engine awaits delivery of each chunk, so a slow consumer pauses the producer. The SSE route paces data frames to the consumer's demand. Servers must not accumulate unbounded buffers.
+- **Cancellation.** The engine passes an `AbortSignal` as `args.signal`; well-behaved resolvers release cursors and locks in a `finally` block. Cancellation is cooperative: it guarantees no further chunks, not that the in-flight one is suppressed. Cancelling is closing the response.
+- **Back-pressure.** The engine awaits delivery of each chunk, so a slow consumer pauses the producer. The stream route paces data frames to the consumer's demand. Servers must not accumulate unbounded buffers.
 
 A stream and a query for the same params go through the same pipeline and produce the same rows; only delivery differs.
 
@@ -692,9 +671,9 @@ A stream and a query for the same params go through the same pipeline and produc
 
 Provided by the `@mnmal-ai/substrate-nl` plugin. NL is **parser first, judge second**: a model never writes the query.
 
-`POST /substrate/v1/nl { namespace, question, project?, type?, asOf? }` reads the question against a per-namespace **pack** — types, fields, enum values and rulings, built from the live schema under the caller's row policy. A deterministic parser resolves what it can; an optional, constrained LLM judge (Ollama) chooses only among options the parser enumerated. The result is `{ outcome, trail }` as JSON, or the same as SSE when the request sends `accept: text/event-stream`. `asOf` (an ISO-8601 date-time with an offset) anchors relative dates and month-day years, and defaults to the server clock; the `parsed` event carries the clock used.
+`POST /substrate/v1/nl { namespace, question, project?, type?, asOf? }` reads the question against a per-namespace **pack** — types, fields, enum values and rulings, built from the live schema under the caller's row policy. A deterministic parser resolves what it can; an optional, constrained LLM judge (Ollama) chooses only among options the parser enumerated. The result is `{ outcome, trail }` as JSON, or the same as length-prefixed JSON frames, each `{ event, data }`, when the request sends `accept: application/vnd.substrate.frames+json`. `asOf` (an ISO-8601 date-time with an offset) anchors relative dates and month-day years, and defaults to the server clock; the `parsed` event carries the clock used.
 
-**Outcomes** (`outcome.kind`): `rows` (the frame ran; engine `errors` ride along and are never reported as "0 rows"), `recall` (semantic fallback), `clarify` (a question back to the caller) or `refuse`. NL is read-only: a mutation-shaped question is refused, never executed. **SSE events** arrive in order: `parsed`, optionally `judging` / `judged`, then the outcome kind, then `done`. A slow or unavailable judge hands off within `judge.timeoutMs`, labelled, so the stream never hangs.
+**Outcomes** (`outcome.kind`): `rows` (the frame ran; engine `errors` ride along and are never reported as "0 rows"), `recall` (semantic fallback), `clarify` (a question back to the caller) or `refuse`. NL is read-only: a mutation-shaped question is refused, never executed. **Streamed events** arrive in order: `parsed`, optionally `judging` / `judged`, then the outcome kind, then `done`. A slow or unavailable judge hands off within `judge.timeoutMs`, labelled, so the stream never hangs.
 
 `GET /substrate/v1/nl/pack/<ns>` serves the pack with an `etag` (`304` on a matching `if-none-match`). Packs are cached per caller grant, so a restricted caller never sees another principal's values. Both routes require `read`. Engine failures reach the client as a fixed `{ error: 'NL query failed', code: 'nl_engine_error' }`; the real error is logged server-side.
 
@@ -787,7 +766,7 @@ for await (const rows of client.watch<Product>({
 - `query` / `mutate` return the envelope (§7.0), decoded from JSON or substrate-pack (`wire: 'pack'`). Both accept an `AbortSignal`.
 - `subscribe` / `stream` return async iterables of raw events; breaking the loop cancels. `watch` folds a single-key subscription into a live `T[]`.
 - The client fetches the federated schema, checks `schemaVersion` on every response, and refetches once on mismatch before throwing `SchemaDriftError` (§7.1).
-- WS reconnects with backoff and can resubscribe automatically after `subscription_overloaded`.
+- A subscription resubscribes with backoff after a dropped connection or `server_restart`, and after `subscription_overloaded`.
 - `client.nl` and `client.admin` wrap the NL and admin routes.
 
 There are no framework bindings (React hooks or similar) in this repository.
@@ -861,7 +840,7 @@ SUBSTRATE_DATABASE_URL=postgres://… SUBSTRATE_PLUGIN_DIR=/srv/substrate /srv/s
 | `SUBSTRATE_AUTH_MODE` | `required` (default once auth is on) or `attribute` (anonymous reads admitted, anonymous writes refused). Setting this or `SUBSTRATE_AUTH_KEY_REGISTRY` enables auth |
 | `SUBSTRATE_AUTH_KEY_REGISTRY` | Path to a JSON file of JWT verification keys. Optional with a postgres store, which holds `Key` rows. **Breaking:** a token signed by any RS256/ES256 key, from this file or a `Key` row, must carry both `exp` and `ns`; a missing `ns` is refused (`malformed_claim:ns`), never read as `*`, so a third-party issuer must emit it. Only HS256 tokens against a file-registry secret keep both optional |
 | `SUBSTRATE_ADMIN_CAPABILITY` | Capability that confers admin (default `admin`) |
-| `SUBSTRATE_STREAM_TICKET_SECRET` | HMAC key for SSE stream tickets; required when auth is on |
+| `SUBSTRATE_CURSOR_SECRET` | Seals pagination cursors under row-filter policies (§5.2), so every process sharing it opens the same cursors. Unset, the key is per process. The retired `SUBSTRATE_STREAM_TICKET_SECRET` is read when this is unset |
 | `SUBSTRATE_JWT_LEEWAY_SECONDS` | Clock-skew tolerance on `exp` / `nbf` |
 | `SUBSTRATE_JWT_MAX_TTL_SECONDS` | Longest a token may still have to run; a later `exp` is refused (default 7200, `0` disables) |
 | `SUBSTRATE_PUBLIC_ORIGIN` | The origins callers reach this server by, comma-separated (e.g. `https://host:3100,https://alias`); list every URL operators point the admin CLI or MCP at, since those mint `aud` from it. A token carrying `aud` (a string or an array) must name one of them or is refused with `wrong_audience`, and a token with no `aud` is refused with `missing_audience`. **Required when auth is on and `HOST` is not loopback**: the server refuses to boot without it, since otherwise a token minted for any other origin would replay here. On a loopback `HOST` it defaults to `http(s)://127.0.0.1:<port>`, `localhost` and `[::1]` (https when TLS is on) |
@@ -875,7 +854,7 @@ SUBSTRATE_DATABASE_URL=postgres://… SUBSTRATE_PLUGIN_DIR=/srv/substrate /srv/s
 | `SUBSTRATE_PAGE_LIMIT_DEFAULT`, `SUBSTRATE_PAGE_LIMIT_MAX` | Page size for a remote query that names no `limit` (default 100); the largest `limit` accepted (default 1000) (§5.2) |
 | `SUBSTRATE_SNAPSHOT_LIMIT` | Most rows a subscription's first snapshot may return, counting only rows the subscriber may see; more is refused with `snapshot_too_large` (default `SUBSTRATE_PAGE_LIMIT_MAX`) (§5.2) |
 | `SUBSTRATE_HARD_DELETE` | `refuse` disables hard-destructive operations |
-| `SUBSTRATE_CORS_ORIGINS`, `SUBSTRATE_TRUSTED_PROXIES`, `SUBSTRATE_BODY_LIMIT_BYTES` | Browser origins, proxy IPs trusted for client IP, request size cap. The client IP also keys the cap of 64 open WS sockets plus SSE streams per anonymous or auth-off client (authenticated clients are capped per identity), so behind a proxy missing from `SUBSTRATE_TRUSTED_PROXIES` every such client shares one bucket. The same holds for anonymous callers behind one NAT: they share one address, so they share its caps (IPv6 clients are keyed by /64) |
+| `SUBSTRATE_CORS_ORIGINS`, `SUBSTRATE_TRUSTED_PROXIES`, `SUBSTRATE_BODY_LIMIT_BYTES` | Browser origins, proxy IPs trusted for client IP, request size cap. The client IP also keys the cap of 64 open streams per anonymous or auth-off client (authenticated clients are capped per identity), so behind a proxy missing from `SUBSTRATE_TRUSTED_PROXIES` every such client shares one bucket. The same holds for anonymous callers behind one NAT: they share one address, so they share its caps (IPv6 clients are keyed by /64) |
 | `SUBSTRATE_SHUTDOWN_GRACE_MS` | Graceful drain deadline (default 5 s) |
 | `SUBSTRATE_FILTER_WRITE_MAX_MATCH`, `SUBSTRATE_FILTER_WRITE_IDS_CAP` | Caps on `updateMany<T>` / `deleteMany<T>` (default 10000 matched rows; 1000 listed ids) (§5.1) |
 | `SUBSTRATE_PROMOTE_INTERVAL_MS` | How often the promotion sweep gives runtime-proposed fields their columns (default 6 h; `0` stops the timer) (§5.15) |
@@ -886,7 +865,7 @@ Natural-language query and the recall embedder are configured by their plugins' 
 
 **Multi-tenancy is operational.** The type system has no tenancy concept. Run separate instances with separate stores, or separate namespaces with grants. Fewer shared-state failure modes.
 
-**Routes.** Core routes live under `/substrate/v1/`: `query`, `mutate`, `schema` (`/schema/<ns>`, `/schema/<ns>/<Type>`), `federated-schema`, `onboard`, `whoami`, `ws`, `stream`, `subscribe`, `stream/ticket`, `metrics`, `errors`, `config`, plus `_system/*` admin routes and plugin routes under `/substrate/v1/plugins/<name>/`. `/health` is at the root. When auth is on, schema, onboarding and query need `read`; `mutate` needs `mutate`; `_system` management, `errors` and `config` need `admin`. `/health`, `/substrate/v1/whoami` and `/substrate/v1/_system/register` need no credential.
+**Routes.** Core routes live under `/substrate/v1/`: `query`, `mutate`, `schema` (`/schema/<ns>`, `/schema/<ns>/<Type>`), `federated-schema`, `onboard`, `whoami`, `stream`, `subscribe`, `metrics`, `errors`, `config`, plus `_system/*` admin routes and plugin routes under `/substrate/v1/plugins/<name>/`. `/health` is at the root. When auth is on, schema, onboarding and query need `read`; `mutate` needs `mutate`; `_system` management, `errors` and `config` need `admin`. `/health`, `/substrate/v1/whoami` and `/substrate/v1/_system/register` need no credential.
 
 **The `_system` namespace** is always mounted. It holds admin-gated `Key` (a verification key; its `id` is the JWT `kid`), `Invite`, and `AuditEvent`.
 
@@ -914,7 +893,7 @@ Every async operation follows the same contract.
 
 **Cancellation.** One-shot calls take an `AbortSignal`; iterables cancel when the consumer breaks out of the loop. Cancellation is cooperative: one in-flight chunk may still arrive, and the client discards post-cancel frames.
 
-**Errors.** Engine and policy failures arrive as envelope `errors` entries with a `code`, `message` and `path` (for example `policy_denied`, `unauthorized_namespace`, `unknown_field`, `restrict_violation`). Policy denials always surface; they are never silent. On WS and SSE they arrive as `error` frames. The client throws `AuthError`, `NetworkError`, `SchemaDriftError` and `SubscribeError` for transport-level failures. An unexpected error (a driver failure, a bug) reaches the caller only as `internal error`, and its detail goes to the server's `engine_internal_error` metric, so connection strings and relation names never leave the server. A policy that throws denies with `policy error` (§4.4).
+**Errors.** Engine and policy failures arrive as envelope `errors` entries with a `code`, `message` and `path` (for example `policy_denied`, `unauthorized_namespace`, `unknown_field`, `restrict_violation`). Policy denials always surface; they are never silent. On a frame stream they arrive as `error` frames. The client throws `AuthError`, `NetworkError`, `SchemaDriftError` and `SubscribeError` for transport-level failures. An unexpected error (a driver failure, a bug) reaches the caller only as `internal error`, and its detail goes to the server's `engine_internal_error` metric, so connection strings and relation names never leave the server. A policy that throws denies with `policy error` (§4.4).
 
 **Idempotency.** Queries are naturally idempotent. A mutation is safe to retry only with an idempotency key: a frame entry carrying `idempotencyKey` is deduplicated within a window (default 24 h). All entries in a frame that carry a key must carry the same one (`idempotency_key_conflict` otherwise). Without a key, a retry may write twice. Only an envelope with no errors is cached, and the cache is scoped to the caller's identity. Two concurrent calls with the same key join one run within a process; across processes sharing a store, both may run. Expired keys are reaped on the sweep interval.
 
@@ -1144,7 +1123,7 @@ interface PackEnvelope {
 type EnvelopeShape = 'single' | 'list' | Array<'single' | 'list'>;
 ```
 
-Query results are positionally encoded from the client's field selection and the type's fields. Over HTTP, WS and MCP, the JSON key order of a returned row follows the request; for in-process dataset reads (`dataset.read`), key order is not part of the contract. Mutation results are encoded from the mutation's declared `returns` (§4.2); mutations have no field selection.
+Query results are positionally encoded from the client's field selection and the type's fields. Over HTTP, frame streams and MCP, the JSON key order of a returned row follows the request; for in-process dataset reads (`dataset.read`), key order is not part of the contract. Mutation results are encoded from the mutation's declared `returns` (§4.2); mutations have no field selection.
 
 **Non-fatal sidecars.** `_completeness` and `_diagnostics` report things that went wrong without the read failing. Both are keyed by frame key, and for both **absence means nothing to report**, so older clients stay correct. They are deliberately NOT `errors`: a client doing `if (env.errors) throw` would start failing successful reads.
 
@@ -1212,7 +1191,7 @@ interface PackStreamChunk {
 }
 ```
 
-The WS `stream` operation uses the unified `WsResponseFrame` (`kind: 'chunk'`, §5.4) rather than this envelope; the chunk codec exists for transports and clients that decode chunks independently.
+The `stream` route uses the unified stream frame (`kind: 'chunk'`, §5.4) rather than this envelope; the chunk codec exists for transports and clients that decode chunks independently.
 
 ### 7.5 Why positional encoding
 
@@ -1242,9 +1221,9 @@ A per-type enum like `requireAuth` / `denyAll` hits its ceiling immediately. Pol
 
 Storing cross-namespace edges as rows in a special namespace creates an asymmetry between "normal" namespaces and the hidden one, and turns the sweep into archaeology across namespaces. Edges are a first-class primitive in their own table (§4.6).
 
-### 8.5 Multiple WebSocket frame families
+### 8.5 Multiple stream frame families
 
-Separate frame shapes for snapshots, updates and streams drift apart and make multiplexing fragile. There is one request frame and one response frame, keyed by a client-chosen id (§5.4).
+Separate frame shapes for snapshots, updates and streams drift apart. There is one response frame shape for subscriptions and streams (§5.4).
 
 ### 8.6 A client bound to one namespace
 
@@ -1260,7 +1239,7 @@ Inferring list-vs-single from the data has a false positive (a single row whose 
 
 ### 8.9 Raw framework access for plugins
 
-Handing plugins the underlying HTTP framework instance couples every plugin that uses it to that framework. Everything such an escape hatch would be used for has a first-class home: WebSockets via `PluginRouter.websocket`, streaming via `SubstrateResponse.body: ReadableStream`, body parsing in the transport adapter. A plugin that needs more should get a new `SubstrateServer` capability, not a hole through it.
+Handing plugins the underlying HTTP framework instance couples every plugin that uses it to that framework. Everything such an escape hatch would be used for has a first-class home: streaming via `SubstrateResponse.body: ReadableStream`, body parsing in the transport adapter. A plugin that needs more should get a new `SubstrateServer` capability, not a hole through it.
 
 ---
 
@@ -1277,7 +1256,7 @@ Each layer boundary has a suite that runs against every implementation:
 - L0 dataset: read / write / delete / pagination / cursor, against memory *and* pg.
 - L1 resolvers: autoCRUD and custom dispatch against a stub dataset.
 - L2 engine: resolution, cross-references and policy evaluation.
-- L3 transport: the same operations over HTTP, WS-JSON and WS-substrate-pack must produce identical results.
+- L3 transport: the same operations over HTTP and frame streams, JSON and substrate-pack, must produce identical results.
 - L4 client: query, subscribe and error propagation against a stub transport.
 
 ### 9.3 Wire-format matrix
@@ -1286,7 +1265,7 @@ Each layer boundary has a suite that runs against every implementation:
 
 ### 9.4 Cross-server parity
 
-`apps/substrate/test/cross-server-parity.test.ts` runs shared scenarios — query, mutate, edge-aware delete and sweep, WS subscribe, WS streaming — byte-identically against `MemorySubstrateServer` and `FastifySubstrateServer`. Protocol neutrality (§2.5) is enforced by tests, not by review.
+`apps/substrate/test/cross-server-parity.test.ts` runs shared scenarios — query, mutate, edge-aware delete and sweep, subscribe, streaming — byte-identically against `MemorySubstrateServer` and `FastifySubstrateServer`. Protocol neutrality (§2.5) is enforced by tests, not by review.
 
 ### 9.5 Multi-instance federation
 

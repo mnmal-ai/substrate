@@ -27,8 +27,7 @@ async function drop(ns: string[]) {
     systemActor: 'test',
     server,
     dataset: new MemoryDataset({ namespace: 'default' }),
-    auth: authCfg,
-    streamTicketSecret: 'test-stream-ticket-secret'
+    auth: authCfg
   });
   await server.start();
   const res = await server.inject({

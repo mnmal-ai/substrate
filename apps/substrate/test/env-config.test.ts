@@ -87,21 +87,18 @@ describe('parseEnv', () => {
     expect(cfg.keyReprimeIntervalMs).toBe(DEFAULT_KEY_REPRIME_INTERVAL_MS);
   });
 
-  it('parses SUBSTRATE_STREAM_TICKET_SECRET, treating empty as unset', () => {
-    // compose() refuses to boot an auth-enabled instance without this — the
-    // ungated browser stream routes authenticate on the ticket signature alone.
-    expect(parseEnv({ SUBSTRATE_STREAM_TICKET_SECRET: 'sekrit' }).streamTicketSecret).toBe(
-      'sekrit'
-    );
-    expect(parseEnv({}).streamTicketSecret).toBeNull();
-    expect(parseEnv({ SUBSTRATE_STREAM_TICKET_SECRET: '' }).streamTicketSecret).toBeNull();
-    // Whitespace-only must read as ABSENT, not as a valid-looking HMAC key —
-    // Node HMACs happily with `'   '` and the forgery is then trivial.
-    expect(parseEnv({ SUBSTRATE_STREAM_TICKET_SECRET: '   ' }).streamTicketSecret).toBeNull();
-    // A stray trailing space in the env file must not change the signing key.
-    expect(parseEnv({ SUBSTRATE_STREAM_TICKET_SECRET: ' sekrit ' }).streamTicketSecret).toBe(
-      'sekrit'
-    );
+  it('parses SUBSTRATE_CURSOR_SECRET, trimmed, with empty as unset', () => {
+    expect(parseEnv({ SUBSTRATE_CURSOR_SECRET: ' sekrit ' }).cursorSealSecret).toBe('sekrit');
+    expect(parseEnv({}).cursorSealSecret).toBeNull();
+    expect(parseEnv({ SUBSTRATE_CURSOR_SECRET: '   ' }).cursorSealSecret).toBeNull();
+  });
+
+  it('falls back to the retired SUBSTRATE_STREAM_TICKET_SECRET, so issued cursors still open', () => {
+    expect(parseEnv({ SUBSTRATE_STREAM_TICKET_SECRET: 'old' }).cursorSealSecret).toBe('old');
+    expect(
+      parseEnv({ SUBSTRATE_STREAM_TICKET_SECRET: 'old', SUBSTRATE_CURSOR_SECRET: 'new' })
+        .cursorSealSecret
+    ).toBe('new');
   });
 
   it('parses SUBSTRATE_KEY_REFRESH_INTERVAL_MS into a positive ms count, rejecting bad values', () => {
@@ -286,8 +283,7 @@ describe('parseEnv', () => {
     const keys = join(dir, 'aud-keys.json');
     writeFileSync(keys, JSON.stringify([{ kid: 'k', alg: 'HS256', publicKey: 'x'.repeat(32) }]));
     const env = {
-      SUBSTRATE_AUTH_KEY_REGISTRY: keys,
-      SUBSTRATE_STREAM_TICKET_SECRET: 's'.repeat(16)
+      SUBSTRATE_AUTH_KEY_REGISTRY: keys
     };
     const cfg = parseEnv({ ...env, SUBSTRATE_PUBLIC_ORIGIN: 'https://a:3100/, https://b' });
     expect(cfg.auth?.audiences).toEqual(['https://a:3100', 'https://b']);
@@ -302,8 +298,7 @@ describe('parseEnv', () => {
     const keys = join(dir, 'aud-req-keys.json');
     writeFileSync(keys, JSON.stringify([{ kid: 'k', alg: 'HS256', publicKey: 'x'.repeat(32) }]));
     const env = {
-      SUBSTRATE_AUTH_KEY_REGISTRY: keys,
-      SUBSTRATE_STREAM_TICKET_SECRET: 's'.repeat(16)
+      SUBSTRATE_AUTH_KEY_REGISTRY: keys
     };
     expect(() => parseEnv(env)).toThrow(/SUBSTRATE_PUBLIC_ORIGIN is required/);
     expect(() => parseEnv({ ...env, HOST: '10.0.0.1' })).toThrow(/SUBSTRATE_PUBLIC_ORIGIN/);
@@ -644,8 +639,7 @@ describe('auth integration', () => {
       server,
       dataset,
       auth: cfg.auth,
-      coordinators: [fixturePlugin],
-      streamTicketSecret: 'test-stream-ticket-secret'
+      coordinators: [fixturePlugin]
     });
     await server.start();
 

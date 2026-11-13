@@ -16,7 +16,7 @@
  * createPluginRouter design call: plugin routes are mounted under
  * `/substrate/v1/plugins/<name>` so they can never shadow `/substrate/v1/*` and two plugins
  * declaring the same subpath (e.g. `/ping`) stay isolated. The facade
- * prefixes every path before handing it to `registerRoute` / `registerWsRoute`
+ * prefixes every path before handing it to `registerRoute`
  * — the main Fastify instance still sees one flat routing table.
  *
  * start() twice: Fastify's listen() rejects on a second call. We surface that
@@ -24,11 +24,9 @@
  * caller's intent is ambiguous, fail loudly.
  */
 
-import { randomUUID } from 'node:crypto';
 import { constants as h2constants, type ServerHttp2Stream } from 'node:http2';
 import compressPlugin from '@fastify/compress';
 import corsPlugin from '@fastify/cors';
-import websocketPlugin, { type WebsocketHandler } from '@fastify/websocket';
 import type {
   HttpHandler,
   HttpMethod,
@@ -39,9 +37,7 @@ import type {
   SubstrateRequest,
   SubstrateResponse,
   SubstrateServer,
-  TlsConfig,
-  WsConnection,
-  WsHandler
+  TlsConfig
 } from '@mnmal-ai/substrate-types';
 import { WS_REASON_SERVER_RESTART } from '@mnmal-ai/substrate-types';
 import Fastify, {
@@ -98,24 +94,11 @@ export interface FastifySubstrateServerOptions {
    * bounded by it. `0` disables.
    */
   requestTimeout?: number;
-  /** Largest WebSocket frame accepted, in bytes. Default 1 MiB (`ws` allows 100 MiB). */
-  wsMaxPayload?: number;
-  /**
-   * Most bytes a WebSocket may have queued for a peer that is not reading.
-   * A send past it closes the socket 1013 `send_buffer_full`. Default 16 MiB.
-   */
-  wsMaxBuffered?: number;
-  /** Operator-facing warnings (e.g. a WebSocket closed for a full send buffer). Default: Fastify's logger. */
-  onWarn?: (message: string) => void;
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 /** Streams one HTTP/2 connection may have open at once. Node's default is unbounded. */
 const H2_MAX_CONCURRENT_STREAMS = 128;
-const DEFAULT_WS_MAX_PAYLOAD = 1 << 20;
-const DEFAULT_WS_MAX_BUFFERED = 16 << 20;
-/** How long a buffer-full socket gets to finish its close handshake before it is dropped. */
-const WS_CLOSE_GRACE_MS = 1_000;
 
 type ErrorHook = (err: Error, req?: SubstrateRequest) => void;
 
@@ -128,13 +111,7 @@ export class FastifySubstrateServer implements SubstrateServer {
   #observer: RequestObserver | undefined;
   #inFlightObserver: ((op: RuntimeOp, delta: 1 | -1) => void) | undefined;
   private readonly inFlight = new Set<AbortController>();
-  // Live WS connections paired with the route layer's pre-close emitter (set
-  // via `conn.onShutdown(...)`). Walked on `stop()` to flush structured `end`
-  // frames per subscription before the underlying socket closes — clients see
-  // a graceful shutdown signal instead of a 1006 abrupt drop.
-  private readonly inFlightWs = new Map<WsConnection, ((reason: string) => void) | null>();
-  // Route-level graceful-shutdown listeners (`onShutdown`). Separate from
-  // `inFlightWs` because these are per-ROUTE, not per-connection: an SSE route
+  // Route-level graceful-shutdown listeners (`onShutdown`): a stream route
   // registers once at compose time and owns whatever responses are open when
   // the notice fires.
   readonly #shutdownHooks = new Set<(reason: string) => void>();
@@ -142,8 +119,6 @@ export class FastifySubstrateServer implements SubstrateServer {
   // finishes. `stop()` waits on these before `fastify.close()` — see
   // `#drainThenClose` for why the ordering is load-bearing.
   readonly #streamedResponses = new Set<Promise<void>>();
-  readonly #wsMaxBuffered: number;
-  readonly #onWarn: ((message: string) => void) | undefined;
 
   constructor(options: FastifySubstrateServerOptions = {}) {
     const {
@@ -152,13 +127,8 @@ export class FastifySubstrateServer implements SubstrateServer {
       tls,
       cors,
       compression = true,
-      requestTimeout = DEFAULT_REQUEST_TIMEOUT_MS,
-      wsMaxPayload = DEFAULT_WS_MAX_PAYLOAD,
-      wsMaxBuffered = DEFAULT_WS_MAX_BUFFERED,
-      onWarn
+      requestTimeout = DEFAULT_REQUEST_TIMEOUT_MS
     } = options;
-    this.#wsMaxBuffered = wsMaxBuffered;
-    this.#onWarn = onWarn;
     this.hasTls = tls !== undefined;
 
     const common = {
@@ -168,7 +138,7 @@ export class FastifySubstrateServer implements SubstrateServer {
     };
     if (tls) {
       // HTTP/2 negotiated by ALPN, with HTTP/1.1 kept for clients that do not
-      // offer h2 and for the WebSocket upgrade, which HTTP/2 cannot carry.
+      // offer h2.
       this.fastify = Fastify({
         ...common,
         http2: true,
@@ -265,13 +235,6 @@ export class FastifySubstrateServer implements SubstrateServer {
         allowedHeaders: ['Authorization', 'Content-Type', 'Accept']
       });
     }
-
-    // Register the websocket plugin eagerly. `fastify-plugin` wraps
-    // @fastify/websocket so its `wsHandler` route option propagates through
-    // the plugin tree — subsequent child-plugin registrations (made via
-    // `websocket()` / `createPluginRouter().websocket()`) inherit it.
-    // `void` — third-party plugin; failures surface at ready() time.
-    void this.fastify.register(websocketPlugin, { options: { maxPayload: wsMaxPayload } });
   }
 
   private invokeErrorHook(err: Error, req?: FastifyRequest): void {
@@ -305,12 +268,8 @@ export class FastifySubstrateServer implements SubstrateServer {
   }
 
   async stop(opts?: { grace?: number; abortInFlight?: boolean }): Promise<void> {
-    // Notify live WS connections BEFORE fastify.close() drops their sockets,
-    // so the route layer can emit structured `end { reason }` frames and the
-    // client sees a graceful shutdown signal instead of a 1006 abrupt drop.
-    this.notifyWsShutdown(WS_REASON_SERVER_RESTART);
-    // Same courtesy for routes holding an HTTP response open (SSE). This runs
-    // BEFORE `abortAllRequests` deliberately: such a response IS an in-flight
+    // Routes holding a response open (streams) flush a terminal `end { reason }`
+    // frame and end it. This runs BEFORE `abortAllRequests` deliberately: such a response IS an in-flight
     // request, and aborting it first would tear the session down as a client
     // disconnect — no terminal frame, and the teardown attributed to
     // `socket_close` rather than `shutdown`.
@@ -384,33 +343,8 @@ export class FastifySubstrateServer implements SubstrateServer {
   }
 
   /**
-   * Walk every live WS connection and invoke its registered shutdown emitter,
-   * then close the socket with code 1012 (Service Restart). Synchronous so
-   * frames flush before the @fastify/websocket plugin's close pass runs.
-   */
-  private notifyWsShutdown(reason: string): void {
-    // Snapshot — emitters call conn.close() which fires onClose, removing the
-    // entry from inFlightWs. Iterating the live map would skip pairs.
-    const entries = [...this.inFlightWs.entries()];
-    for (const [conn, emit] of entries) {
-      try {
-        emit?.(reason);
-      } catch {
-        // Route-layer emit may throw if the socket buffer is full or already
-        // half-closed — swallow so one bad conn doesn't block the rest of the
-        // drain. Each conn's close still fires below.
-      }
-      try {
-        conn.close(1012, reason);
-      } catch {
-        // Already closed.
-      }
-    }
-  }
-
-  /**
    * Wrap an HTTP-method route in a child plugin so it lands in the plugin
-   * queue *after* compress / cors / websocket have finished loading.
+   * queue *after* compress / cors have finished loading.
    * @fastify/compress installs an `onRoute` hook that decorates each route
    * with compression metadata; routes added directly to the parent scope
    * before ready() runs miss that hook and are never compressed.
@@ -426,22 +360,6 @@ export class FastifySubstrateServer implements SubstrateServer {
   ): void {
     this.fastify.register((scope, _opts, done) => {
       registerRoute(scope, method, path, handler, inFlight, this.#streamedResponses);
-      done();
-    });
-  }
-
-  /** Same ordering guarantee as #registerWrapped but for WebSocket routes. */
-  #registerWsWrapped(path: string, handler: WsHandler): void {
-    this.fastify.register((scope, _opts, done) => {
-      registerWsRoute(
-        scope,
-        path,
-        handler,
-        this.inFlightWs,
-        (err) => this.invokeErrorHook(err),
-        this.#wsMaxBuffered,
-        this.#onWarn ?? ((message) => scope.log.warn(message))
-      );
       done();
     });
   }
@@ -505,10 +423,6 @@ export class FastifySubstrateServer implements SubstrateServer {
     this.#observer = observer;
   }
 
-  websocket(path: string, handler: WsHandler): void {
-    this.#registerWsWrapped(path, handler);
-  }
-
   onError(hook: ErrorHook): void {
     this.errorHook = hook;
   }
@@ -529,8 +443,7 @@ export class FastifySubstrateServer implements SubstrateServer {
       ...(Object.fromEntries(verbEntries) as Pick<
         PluginRouter,
         'get' | 'post' | 'put' | 'delete' | 'patch'
-      >),
-      websocket: (path, handler) => this.#registerWsWrapped(prefixed(path), handler)
+      >)
     };
   }
 
@@ -635,116 +548,6 @@ function registerRoute(
         inFlight.delete(controller);
       }
     }
-  });
-}
-
-function registerWsRoute(
-  fastify: FastifyInstance,
-  path: string,
-  handler: WsHandler,
-  inFlightWs: Map<WsConnection, ((reason: string) => void) | null>,
-  onHandlerError: (err: Error) => void,
-  maxBuffered: number,
-  warn: (message: string) => void
-): void {
-  const wsHandler: WebsocketHandler = (socket, req) => {
-    // Upgrade metadata (path, headers, query, params, identity) rides on the
-    // SubstrateRequest — same shape HTTP handlers see. Body is forced to null
-    // because WS upgrades don't carry one; the default coercion agrees for a
-    // GET, but we set it explicitly so intent is loud at the boundary.
-    const substrateReq: SubstrateRequest = { ...toSubstrateRequest(req), body: null };
-    let shutdownEmitter: ((reason: string) => void) | null = null;
-    let bufferFull = false;
-    const conn: WsConnection = {
-      id: randomUUID(),
-      send(frame) {
-        if (bufferFull) return;
-        // A peer that stops reading would otherwise grow the queue without
-        // bound. Close with a reason a client can act on; a peer that never
-        // reads the close frame is dropped after the grace period, and either
-        // way 'close' runs the route's teardown.
-        if (socket.bufferedAmount > maxBuffered) {
-          bufferFull = true;
-          warn(
-            `websocket ${path} conn ${conn.id}: send buffer full (${socket.bufferedAmount} > ${maxBuffered} bytes); closing 1013`
-          );
-          socket.close(1013, 'send_buffer_full');
-          setTimeout(() => socket.terminate(), WS_CLOSE_GRACE_MS).unref?.();
-          return;
-        }
-        if (typeof frame === 'string') {
-          socket.send(frame);
-        } else if (Buffer.isBuffer(frame)) {
-          socket.send(frame);
-        } else {
-          socket.send(Buffer.from(frame));
-        }
-      },
-      // Stream back-pressure. Resolve immediately when the
-      // socket's queued bytes are under the high-water mark (the common case —
-      // zero cost on `send`); otherwise poll until the buffer drains or the
-      // socket leaves OPEN, so a stuck/closing socket never hangs the producer.
-      drain() {
-        const HIGH_WATER = 1 << 20; // 1 MiB
-        if (socket.bufferedAmount <= HIGH_WATER || socket.readyState !== 1) {
-          return Promise.resolve();
-        }
-        return new Promise<void>((resolve) => {
-          const check = (): void => {
-            if (socket.readyState !== 1 || socket.bufferedAmount <= HIGH_WATER) {
-              resolve();
-              return;
-            }
-            setTimeout(check, 10).unref?.();
-          };
-          setTimeout(check, 10).unref?.();
-        });
-      },
-      onMessage(cb) {
-        socket.on('message', (buf: Buffer) => {
-          cb(Buffer.isBuffer(buf) ? buf : Buffer.from(buf));
-        });
-      },
-      onClose(cb) {
-        socket.on('close', (code: number) => {
-          cb(code);
-        });
-      },
-      close(code, reason) {
-        socket.close(code, reason);
-      },
-      onShutdown(cb) {
-        shutdownEmitter = cb;
-        // Re-publish the latest emitter to the registry — the route layer
-        // installs its emitter mid-handler, after the conn was first added.
-        inFlightWs.set(conn, shutdownEmitter);
-      }
-    };
-    inFlightWs.set(conn, null);
-    socket.on('close', () => {
-      inFlightWs.delete(conn);
-    });
-    // A rejection here would be an unhandledRejection, which can crash the
-    // process; report it and close with 1011 (internal error) instead.
-    const fail = (err: unknown): void => {
-      onHandlerError(err instanceof Error ? err : new Error(String(err)));
-      socket.close(1011, 'internal error');
-    };
-    try {
-      Promise.resolve(handler(substrateReq, conn)).catch(fail);
-    } catch (err) {
-      fail(err);
-    }
-  };
-  fastify.route({
-    method: 'GET',
-    url: path,
-    handler: (_req, reply) => {
-      // Non-upgrade GETs on a WS path get a 426. The wsHandler below
-      // intercepts Upgrade requests before this plain handler runs.
-      reply.status(426).send({ error: 'Upgrade Required' });
-    },
-    wsHandler
   });
 }
 

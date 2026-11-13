@@ -48,9 +48,8 @@ import { queryRoute } from '../routes/query.js';
 import { errorsRouteHandler } from '../routes/runtime-errors.js';
 import { metricsRouteHandler } from '../routes/runtime-stats.js';
 import { schemaForNamespaceRoute, schemaForTypeRoute, schemaRoute } from '../routes/schema.js';
-import { registerSseRoutes } from '../routes/sse.js';
+import { registerStreamRoutes } from '../routes/stream-routes.js';
 import { whoamiRoute } from '../routes/whoami.js';
-import { registerWsRoute } from '../routes/ws.js';
 import {
   type Capability,
   wrapPluginRouter,
@@ -64,7 +63,6 @@ export interface CoreRoutesArgs {
   trustedProxies: Set<string>;
   pageLimits: { defaultLimit: number; maxLimit: number };
   auth: AuthConfig | undefined;
-  streamTicketSecret: string | undefined;
   version: string | undefined;
   stats: RuntimeStats;
   routeEventMetric: (name: string, payload?: unknown) => void;
@@ -105,7 +103,6 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
     gate,
     trustedProxies,
     auth,
-    streamTicketSecret,
     version,
     stats,
     routeEventMetric,
@@ -192,20 +189,12 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
     '/substrate/v1/mutate',
     gate(mutateRoute(engine, trustedProxies, auth !== undefined), 'mutate')
   );
-  // One count across WS and SSE, so switching transport does not reset it.
   const connections = createConnectionLimiter();
   const sessionCap = createConnectionLimiter(MAX_SESSIONS_PER_CLIENT);
-  registerSseRoutes(
+  registerStreamRoutes(
     server,
     engine,
     trustedProxies,
-    // The dev fallback is reachable only with auth disabled — the guard at the
-    // top of `compose` refuses an absent/short/whitespace secret otherwise. A
-    // whitespace-only value trims to `''` and takes the fallback rather than
-    // becoming an empty HMAC key.
-    streamTicketSecret !== undefined && streamTicketSecret.length > 0
-      ? streamTicketSecret
-      : 'substrate-dev-insecure-stream-secret',
     gate,
     routeEventMetric,
     auth,
@@ -446,17 +435,6 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
   // handling (see `whoamiRoute`).
   server.route('GET', '/substrate/v1/whoami', whoamiRoute(auth));
 
-  registerWsRoute(
-    server,
-    engine,
-    trustedProxies,
-    routeEventMetric,
-    auth,
-    systemIdentity,
-    connections,
-    sessionCap
-  );
-
   for (const plugin of coordinatorPlugins) {
     if (plugin.routes === undefined) continue;
     const rawRouter = withRouterRequestContext(
@@ -494,7 +472,6 @@ function withRouterRequestContext(
     post: (path, h) => router.post(path, w(h)),
     put: (path, h) => router.put(path, w(h)),
     delete: (path, h) => router.delete(path, w(h)),
-    patch: (path, h) => router.patch(path, w(h)),
-    websocket: (path, h) => router.websocket(path, h)
+    patch: (path, h) => router.patch(path, w(h))
   };
 }

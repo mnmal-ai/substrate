@@ -1,5 +1,5 @@
 /**
- * The natural-language surface on the wire: `POST /substrate/v1/nl` (JSON or SSE) and
+ * The natural-language surface on the wire: `POST /substrate/v1/nl` (JSON or frames+json) and
  * `GET /substrate/v1/nl/pack/:ns`. One definition, shared by the `substrate-nl` plugin
  * that serves it and the `substrate-client` that consumes it, so a drift between
  * them fails the type-check rather than a user.
@@ -154,7 +154,7 @@ export interface NlParsedData {
 export type NlJudgedStatus = 'resolved' | 'recall' | 'clarify' | 'refuse' | 'escalated';
 
 /**
- * One SSE event, discriminated by the SSE event name. The terminal answer is
+ * One stream event, discriminated by `event`. The terminal answer is
  * named by its outcome kind (`rows` | `recall` | `clarify` | `refuse` | `unknown`) and
  * carries the whole outcome; `done` always follows. An in-band `error` event
  * is not in this union: the client throws on it.
@@ -171,7 +171,7 @@ export type NlWireEvent =
   | { event: 'done'; data: Record<string, never> };
 
 /**
- * The JSON encoding's trail spells the terminal event `outcome`, where SSE
+ * The JSON encoding's trail spells the terminal event `outcome`, where the stream
  * names it by the outcome kind.
  */
 export type NlTrailEvent =

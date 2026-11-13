@@ -15,8 +15,6 @@ import { describe, expect, it } from 'vitest';
 import type { AuthConfig } from '../src/auth.js';
 import { compose } from '../src/compose.js';
 
-const streamTicketSecret = 'test-stream-ticket-secret';
-
 describe('ComposeResult.keyRegistry', () => {
   it('is exposed when auth is on, so the root can mount kernel routes with it', async () => {
     const auth: AuthConfig = {
@@ -27,8 +25,7 @@ describe('ComposeResult.keyRegistry', () => {
       systemActor: 'test',
       server: new MemorySubstrateServer(),
       dataset: new MemoryDataset({ namespace: 'default' }),
-      auth,
-      streamTicketSecret
+      auth
     });
 
     // The whole point: the root needs a handle to the SAME registry compose
@@ -45,8 +42,7 @@ describe('ComposeResult.keyRegistry', () => {
       // Auth is off in this harness, so the deployment declares who it writes as.
       systemActor: 'test',
       server: new MemorySubstrateServer(),
-      dataset: new MemoryDataset({ namespace: 'default' }),
-      streamTicketSecret
+      dataset: new MemoryDataset({ namespace: 'default' })
     });
     expect(composed.keyRegistry).toBeNull();
     expect('keyRegistry' in composed).toBe(true);
@@ -63,8 +59,7 @@ describe('ComposeResult.keyRegistry', () => {
       systemActor: 'test',
       server: new MemorySubstrateServer(),
       dataset: new MemoryDataset({ namespace: 'default' }),
-      auth,
-      streamTicketSecret
+      auth
     });
     expect(auth.keyRegistry).toBeUndefined();
     await composed.stop();

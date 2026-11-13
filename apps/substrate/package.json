@@ -31,7 +31,6 @@
   "dependencies": {
     "@fastify/compress": "catalog:",
     "@fastify/cors": "catalog:",
-    "@fastify/websocket": "catalog:",
     "@mnmal-ai/holomap-clusterer": "catalog:",
     "@modelcontextprotocol/sdk": "catalog:",
     "@preact/signals-core": "catalog:",
@@ -39,7 +38,6 @@
     "msgpackr": "catalog:",
     "postgres": "catalog:",
     "semver": "catalog:",
-    "ws": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
@@ -65,7 +63,6 @@
     "@mnmal-ai/surface-core": "catalog:",
     "@types/node": "catalog:",
     "@types/semver": "catalog:",
-    "@types/ws": "catalog:",
     "msw": "catalog:",
     "tsdown": "catalog:",
     "tsx": "catalog:",

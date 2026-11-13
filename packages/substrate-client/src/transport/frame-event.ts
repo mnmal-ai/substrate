@@ -3,7 +3,7 @@
 import { SubscribeError } from '../errors.js';
 import type { ReconnectSchedulerOpts } from '../reconnect.js';
 
-/** A server response frame, as WS or a frame stream delivers it. */
+/** A server response frame, as a frame stream delivers it. */
 export interface FrameMessage {
   kind: string;
   data?: unknown;

@@ -1,47 +1,14 @@
 /**
- * WS route — `/substrate/v1/plugins/substrate-sentinel/ws`.
+ * Coordinator registration and the topology feed, independent of transport:
+ * `handleRegister` upserts the coordinator, its namespaces and bridges and
+ * tracks the peer; `handleWatch` adds a watcher; `handleClose` marks a
+ * registrant offline and tells the watchers. `stream-routes.ts` mounts them.
  *
- * Built on `PluginRouter.websocket`, a framework-agnostic primitive (§4.8) with
- * no native ping/pong and no raw `terminate()`; `./liveness.ts` supplies an
- * application-level heartbeat.
- *
- * Frame protocol (JSON, UTF-8):
- *   - client → server
- *     - `{ type: 'register', name, url, namespaces: string[], version?, bridges?: [...] }` (requires 'mutate')
- *     - `{ type: 'watch' }`                                (requires 'read')
- *     - `{ type: 'pong' }`                                 (application heartbeat ack, unauthenticated)
- *   - server → client
- *     - `{ ok: true, registered, updated, coordinator }` (register reply)
- *     - `{ ok: true, watching: true }`                    (watch reply)
- *     - `{ event: 'online' | 'offline', name, url, ... }` (watcher broadcast)
- *     - `{ type: 'ping' }`                                (liveness tick)
- *     - `{ error: 'unknown frame type' }`                 (parser errors)
- *     - `{ error: 'unauthorized' }`                       (register/watch, no identity)
- *     - `{ error: 'forbidden' }`                          (register/watch, identity lacks the capability)
- *
- * Auth: `register` requires the 'mutate' capability (it mutates the
- * coordinator table) and `watch` requires 'read' (it subscribes to the
- * topology broadcast) — mirroring `withAuth`'s method-based capability map
- * for the HTTP routes (`substrate-compose`'s `compose.ts`). Both require
- * `req.identity` to be populated at all, resolved once at upgrade by
- * `wrapWsHandler`: missing identity is 'unauthorized', an
- * identity present but lacking the capability is 'forbidden'. `pong` carries
- * no capability requirement of its own — it is liveness only — but that is
- * not the same as being open to anonymous callers: under the default
- * `required` auth mode an unauthenticated connection is closed at upgrade and
- * never reaches this frame handler at all. Anonymous `pong` is reachable only
- * where the transport admits anonymous connections (attribute mode).
+ * `register` needs the 'mutate' capability (it writes the coordinator table)
+ * and `watch` needs 'read' (it subscribes to the topology broadcast).
  */
 
-import type {
-  EngineHandle,
-  Identity,
-  PackEnvelope,
-  PluginRouteContext,
-  PluginRouter,
-  SubstrateRequest,
-  WsConnection
-} from '@mnmal-ai/substrate/sdk';
+import type { EngineHandle, Identity, PackEnvelope } from '@mnmal-ai/substrate/sdk';
 import {
   formatQualifiedKey,
   grantedIn,
@@ -447,8 +414,8 @@ export interface RegisterRefusal {
 
 /**
  * Upsert the coordinator, track `conn` for it, send the register reply, then
- * broadcast `online`. A refusal is returned for the caller to deliver: a WS
- * frame, or an HTTP status before any stream opens.
+ * broadcast `online`. A refusal is returned for the caller to deliver as an
+ * HTTP status, before any stream opens.
  */
 export async function handleRegister(
   engine: EngineHandle,
@@ -552,74 +519,4 @@ export async function handleClose(
     // tolerate the missing row rather than crashing the close pipeline.
   }
   registry.broadcastEvent({ event: 'offline', name: meta.name, url: meta.url });
-}
-
-export function registerSentinelWsRoute(
-  router: PluginRouter,
-  ctx: PluginRouteContext,
-  namespace: string,
-  registry: LivenessRegistry
-): void {
-  router.websocket('/ws', (req: SubstrateRequest, conn: WsConnection): void => {
-    // Resolved once at upgrade — a WS peer's identity cannot change
-    // mid-connection, and re-checking per frame would re-verify on every pong.
-    const identity = req.identity;
-
-    conn.onMessage((buf: Buffer): void => {
-      const frame = parseFrame(buf);
-      if (frame === undefined) {
-        sendJson(conn, { error: 'invalid JSON' });
-        return;
-      }
-      // Any live frame is evidence the peer is alive — refresh the heartbeat
-      // even for frames that do nothing else interesting.
-      registry.markAlive(conn);
-
-      const type = typeof frame.type === 'string' ? frame.type : undefined;
-      // `register` mutates the coordinator table (requires 'mutate') and
-      // `watch` subscribes to the topology broadcast (requires 'read') —
-      // both privileged. `pong` is liveness only, ungated. Presence of an
-      // identity is checked before capability so an anonymous caller always
-      // sees 'unauthorized', never 'forbidden'.
-      const required = type === 'register' ? 'mutate' : type === 'watch' ? 'read' : undefined;
-      if (required !== undefined) {
-        if (identity === undefined) {
-          ctx.metric('sentinel_frame_unauthorized', { type });
-          sendJson(conn, { error: 'unauthorized' });
-          return;
-        }
-        // Asked through `grantsCapability`, which resolves through the same
-        // `grantOf` the engine gates use — one reader, one verdict.
-        if (!grantsCapability(identity, namespace, required)) {
-          ctx.metric('sentinel_frame_forbidden', { type, required });
-          sendJson(conn, { error: 'forbidden' });
-          return;
-        }
-      }
-      if (type === 'register') {
-        handleRegister(ctx.engine, namespace, identity ?? null, registry, conn, frame).then(
-          (refusal) => {
-            if (refusal !== undefined) sendJson(conn, { error: refusal.error });
-          },
-          () => sendJson(conn, { error: 'register failed' })
-        );
-        return;
-      }
-      if (type === 'watch') {
-        handleWatch(registry, conn);
-        return;
-      }
-      if (type === 'pong') {
-        // Alive already marked above. Nothing else to do.
-        return;
-      }
-      sendJson(conn, { error: 'unknown frame type' });
-    });
-
-    conn.onClose((): void => {
-      handleClose(ctx.engine, namespace, identity ?? null, registry, conn).catch(() => {
-        // Swallow — close-path faults cannot be surfaced to the peer.
-      });
-    });
-  });
 }

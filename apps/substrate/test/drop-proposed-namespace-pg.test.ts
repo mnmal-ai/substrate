@@ -82,8 +82,7 @@ describe.skipIf(!POSTGRES_URL)('dropping a proposed namespace (pg)', () => {
       coordinators: [
         createProposalsPlugin({ ownedNamespaces: [OWNED], pubsub: createNoopPubSub() })
       ],
-      auth: { keys: [{ kid: 'file', alg: 'HS256', publicKey: SECRET }], adminCapability: 'admin' },
-      streamTicketSecret: 'drop-proposed-ticket'
+      auth: { keys: [{ kid: 'file', alg: 'HS256', publicKey: SECRET }], adminCapability: 'admin' }
     });
     await server.start();
     stops.push(async () => {

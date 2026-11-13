@@ -18,8 +18,8 @@ export interface Identity {
    * tasks: ['read','mutate'] }`; `'*'` is a legal key. Read it through the
    * `identity-grant.ts` helpers.
    *
-   * A plain object rather than a Map: `Identity` is JSON-serialised into the
-   * SSE stream ticket, and a Map would arrive as `{}` on the far side.
+   * A plain object rather than a Map: `Identity` is JSON-serialised, and a
+   * Map would arrive as `{}` on the far side.
    *
    * A bare `{ id }` with no grant (direct-call tests, system actors) is the
    * no-claim case: `grantOf` resolves it to `null`, and the engine's grant
@@ -49,7 +49,7 @@ export interface RequestContext {
    * `peerIp` + the operator-configured trusted-proxy allowlist. When the peer
    * is in the allowlist, this is the leftmost `x-forwarded-for` entry; when
    * untrusted, this is the peer IP itself. Undefined when the transport doesn't
-   * expose peerIp (direct engine unit tests, pre-upgrade WS paths).
+   * expose peerIp (direct engine unit tests, paths without a peer).
    */
   clientIp?: string;
   /**

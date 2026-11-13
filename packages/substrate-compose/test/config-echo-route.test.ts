@@ -42,9 +42,7 @@ async function mk(opts: { auth?: AuthConfig; configReport?: ConfigReport } = {})
     systemActor: 'test',
     server,
     dataset,
-    ...(opts.auth !== undefined
-      ? { auth: opts.auth, streamTicketSecret: 'test-stream-ticket-secret' }
-      : {}),
+    ...(opts.auth !== undefined ? { auth: opts.auth } : {}),
     ...(opts.configReport !== undefined ? { configReport: opts.configReport } : {})
   });
   await server.start();

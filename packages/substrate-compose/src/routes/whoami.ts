@@ -26,7 +26,7 @@ import { jsonResponse } from './helpers.js';
 
 /**
  * The caller-facing projection of an `Identity`: `{ id, grants }`. Shared with
- * the WS `whoami` frame.
+ * the `whoami` frame.
  */
 export function describeIdentity(identity: Identity): Record<string, unknown> {
   return {

@@ -1,4 +1,4 @@
-/** A response frame's wire payload per encoding, shared by WS and frame streams. */
+/** A response frame's wire payload per encoding, used by frame streams. */
 
 import type { Engine } from '@mnmal-ai/substrate-core';
 import { encodePositional, encodeWsFrame, type WireMode } from '@mnmal-ai/substrate-pack';
@@ -68,7 +68,7 @@ function encodeByShape(
   return encodePositional(value, fields, schema, typeName, ctx);
 }
 
-/** The WS message for `frame`; a frame stream carries the same bytes behind a length prefix. */
+/** The wire payload for `frame`; a frame stream carries it behind a length prefix. */
 export function serializeFrame(
   frame: WsResponseFrame,
   mode: WireMode,

@@ -108,7 +108,7 @@ export function projectionFields(
 }
 
 /**
- * WS analog of `projectEnvelope` — applies the same row-trimming to the
+ * Frame analog of `projectEnvelope` — applies the same row-trimming to the
  * `data` payload of a `WsResponseFrame` using the per-key `fieldsByKey`
  * map the route layer captures at subscribe / stream time.
  *

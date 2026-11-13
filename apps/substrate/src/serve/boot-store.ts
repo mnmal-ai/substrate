@@ -153,7 +153,6 @@ export async function bootStore(opts: BootStoreOptions): Promise<BootedStore> {
     // the https options when the instance is created, not at listen().
     const server = new FastifySubstrateServer({
       logger: false,
-      onWarn: (message) => process.stderr.write(`${message}\n`),
       ...(config.tls !== null ? { tls: config.tls } : {}),
       ...(config.cors !== null ? { cors: config.cors } : {}),
       ...(config.bodyLimit !== null ? { bodyLimit: config.bodyLimit } : {})

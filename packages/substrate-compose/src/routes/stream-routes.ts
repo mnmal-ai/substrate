@@ -1,71 +1,38 @@
 /**
- * SSE transport adapter + the routes that mount it. Spec §2.3, §5.
+ * The stream routes: `POST /substrate/v1/stream` and `POST /substrate/v1/subscribe`.
+ * The response body is a sequence of length-prefixed frames, JSON or pack as the
+ * `Accept` header asks; any other `Accept` is refused `406 not_acceptable`.
+ * Failures BEFORE the stream opens are ordinary HTTP status codes; once bytes are
+ * on the wire the status is spent and errors travel in-band as `error` frames.
  *
- * Routes: `GET|POST /substrate/v1/stream`, `GET|POST /substrate/v1/subscribe`, and
- * `POST /substrate/v1/stream/ticket`. Failures BEFORE the stream opens are ordinary
- * HTTP status codes; once bytes are on the wire the status is spent and errors
- * travel in-band as `event: error`.
- *
- * One HTTP response carries exactly ONE session, so — unlike the WS route —
- * there is no session map here and cancellation IS disconnection.
+ * One HTTP response carries exactly ONE session, so cancellation IS disconnection.
  *
  * Back-pressure: the returned `ReadableStream` is demand-driven. `emit` awaits
  * the consumer's demand before resolving, and because the engine awaits
  * `onFrame` per chunk (§5.5), that pause propagates all the way back to the
- * producer. Only DATA-BEARING frames pace to demand — see the comment in
- * `emit` for why terminal frames must not.
+ * producer.
  */
 
 import type { Engine, MetricFn } from '@mnmal-ai/substrate-core';
-import { framesEncodingFromAccept } from '@mnmal-ai/substrate-pack';
+import {
+  FRAMES_JSON_MIME,
+  FRAMES_PACK_MIME,
+  framesEncodingFromAccept
+} from '@mnmal-ai/substrate-pack';
 import type {
   FieldInput,
   HttpHandler,
-  Identity,
   SubstrateRequest,
   SubstrateResponse,
   SubstrateServer
 } from '@mnmal-ai/substrate-types';
 import { type AuthConfig, credentialLapse, watchCredential } from '../auth.js';
 import type { ConnectionLimiter } from './connection-limit.js';
-import { createDemandTransport, type DemandTransport } from './demand-transport.js';
 import { createFramesTransport, framesHeaders } from './frames-transport.js';
 import { extractClientIp, jsonResponse } from './helpers.js';
-import { SSE_HEADERS, SSE_HEARTBEAT, sseEvent, sseRetry } from './sse-frame.js';
 import { erroredKey, StreamSession, type StreamTransport } from './stream-session.js';
-import { hashFrame, mintStreamTicket, TICKET_TTL_MS, verifyStreamTicket } from './stream-ticket.js';
-
-export interface SseTransportOptions {
-  /** Idle keepalive period. Proxies reap silent connections. */
-  heartbeatMs?: number;
-  /** Client reconnect backoff advertised on open. */
-  retryMs?: number;
-  /** Fired when the CONSUMER tears down — i.e. the client disconnected. */
-  onCancel?: () => void;
-}
-
-const _DEFAULT_HEARTBEAT_MS = 20_000;
-const DEFAULT_RETRY_MS = 5_000;
-
-export function createSseTransport(opts: SseTransportOptions): DemandTransport {
-  const encoder = new TextEncoder();
-  return createDemandTransport({
-    encode: (frame, fieldsByKey) => encoder.encode(sseEvent(frame, fieldsByKey)),
-    heartbeat: encoder.encode(SSE_HEARTBEAT),
-    preamble: encoder.encode(sseRetry(opts.retryMs ?? DEFAULT_RETRY_MS)),
-    ...(opts.heartbeatMs !== undefined ? { heartbeatMs: opts.heartbeatMs } : {}),
-    ...(opts.onCancel !== undefined ? { onCancel: opts.onCancel } : {})
-  });
-}
 
 type FrameRecord = Record<string, { params?: Record<string, unknown>; fields?: FieldInput }>;
-
-/** The capability a stream ticket must carry, and the one the mint route grants. */
-const STREAM_CAPABILITY = 'read';
-
-export type ParsedStreamRequest =
-  | { ok: true; frame: FrameRecord; identity: Identity | null }
-  | { ok: false; status: 400 | 401; code: string };
 
 /**
  * Shape validation: an object whose every VALUE is a plain object. Inner
@@ -73,14 +40,12 @@ export type ParsedStreamRequest =
  *
  * The values must be checked here: `StreamSession` reads `entry.fields` off
  * each one, and a throw after the transport opens leaks its heartbeat timer.
- * The WS route uses it too, where that throw would escape the message
- * listener and exit the process.
  *
  * Unlike `validateFrame` in `helpers.ts`, array values (the §5.13
  * batched-mutate shape) are rejected: streams cannot carry them, so this
  * turns an in-band error into a pre-stream 400.
  */
-export function isFrameRecord(value: unknown): value is FrameRecord {
+function isFrameRecord(value: unknown): value is FrameRecord {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   for (const entry of Object.values(value)) {
     if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return false;
@@ -98,48 +63,12 @@ function parseFrameJson(raw: string): FrameRecord | null {
   return isFrameRecord(parsed) ? parsed : null;
 }
 
-/**
- * Resolve the frame + identity for a stream request.
- *
- * GET is the EventSource path: the frame rides the query string and auth rides
- * a ticket, because EventSource can set neither a body nor headers. POST is the
- * node/MCP path: frame in the body, auth already applied upstream by `gate`.
- *
- * Both paths feed the SAME `JSON.parse`, so a frame's value types are identical
- * either way — a ticket minted from a POST body verifies against the same frame
- * arriving via GET. Never coerce query values to strings.
- */
-export function parseStreamRequest(
-  req: Pick<SubstrateRequest, 'method' | 'body' | 'query' | 'identity'>,
-  secret: string,
-  nowMs: number
-): ParsedStreamRequest {
-  const raw = req.method === 'POST' ? (req.body?.toString('utf8') ?? '') : (req.query.frame ?? '');
-  const frame = parseFrameJson(raw);
-  if (frame === null) return { ok: false, status: 400, code: 'invalid_frame' };
-
-  if (req.method === 'POST') {
-    return { ok: true, frame, identity: req.identity ?? null };
-  }
-
-  const ticket = req.query.ticket;
-  if (ticket === undefined || ticket === '') {
-    return { ok: false, status: 401, code: 'ticket_missing' };
-  }
-  const verdict = verifyStreamTicket(secret, ticket, frame, nowMs);
-  if (!verdict.ok) return { ok: false, status: 401, code: verdict.code };
-  // Enforce the capability the payload carries rather than trusting that the
-  // mint route (which always grants `read`) is the only issuer.
-  if (!verdict.payload.capabilities.includes(STREAM_CAPABILITY)) {
-    return { ok: false, status: 401, code: 'ticket_missing_capability' };
-  }
-  return { ok: true, frame, identity: verdict.payload.identity };
-}
-
 /** Errors BEFORE the stream opens are ordinary HTTP; after, they're in-band. */
-function errorResponse(status: number, code: string): SubstrateResponse {
-  return jsonResponse(status, { errors: [{ message: code, code }] });
+function errorResponse(status: number, code: string, message = code): SubstrateResponse {
+  return jsonResponse(status, { errors: [{ message, code }] });
 }
+
+const NOT_ACCEPTABLE = `streams answer ${FRAMES_JSON_MIME} or ${FRAMES_PACK_MIME}; send one in Accept`;
 
 /**
  * Structural match for `compose.ts`'s `gate`. Declared here rather than
@@ -151,19 +80,18 @@ export type RouteGate = (
   required: 'read' | 'mutate' | 'admin' | null
 ) => HttpHandler;
 
-/** One open SSE response, as the graceful-shutdown walk needs to see it. */
-interface LiveSseResponse {
+/** One open stream response, as the graceful-shutdown walk needs to see it. */
+interface LiveStream {
   /** Flush the terminal `end { reason }` the client is owed. */
   end(reason: string): void;
   /** Tear the session down, attributing it to `shutdown`. */
   cancel(): void;
 }
 
-export function registerSseRoutes(
+export function registerStreamRoutes(
   server: SubstrateServer,
   engine: Engine,
   trustedProxies: Set<string>,
-  secret: string,
   gate: RouteGate,
   /**
    * Server-side trace for failures the client is deliberately told nothing
@@ -172,18 +100,17 @@ export function registerSseRoutes(
   metric: MetricFn,
   /** When set, a stream ends once the credential that opened it lapses. */
   auth?: AuthConfig,
-  /** Per-client cap shared with the WS route; absent → uncapped. */
+  /** Per-client connection cap; absent → uncapped. */
   connections?: ConnectionLimiter,
-  /** Per-client session cap shared with the WS route; absent → uncapped. */
+  /** Per-client session cap; absent → uncapped. */
   sessionCap?: ConnectionLimiter
 ): void {
   /**
-   * Every SSE response currently held open, for the graceful-shutdown walk.
-   * Lives at route scope (WS keeps one per socket) because an SSE response
-   * has no connection object to hang a hook off. A subscribe never self-ends,
-   * so without this `server.stop()` would wait on it forever.
+   * Every stream response currently held open, for the graceful-shutdown walk.
+   * A subscribe never self-ends, so without this `server.stop()` would wait on
+   * it forever.
    */
-  const live = new Set<LiveSseResponse>();
+  const live = new Set<LiveStream>();
   /**
    * Latched by the shutdown notice. A request already in flight but not yet
    * in `live` would never be told to end and would hang the drain, so no new
@@ -207,9 +134,11 @@ export function registerSseRoutes(
     async (req: SubstrateRequest): Promise<SubstrateResponse> => {
       // Pre-stream, so an ordinary HTTP status is still available to say it.
       if (shuttingDown) return errorResponse(503, 'server_shutting_down');
-      const parsed = parseStreamRequest(req, secret, Date.now());
-      if (!parsed.ok) return errorResponse(parsed.status, parsed.code);
-      // A ticket can outlive the token that minted it by up to its TTL.
+      const frames = framesEncodingFromAccept(req.headers.accept);
+      if (frames === undefined) return errorResponse(406, 'not_acceptable', NOT_ACCEPTABLE);
+      const frame = parseFrameJson(req.body?.toString('utf8') ?? '');
+      if (frame === null) return errorResponse(400, 'invalid_frame');
+      const parsed = { frame, identity: req.identity ?? null };
       const lapsed = auth === undefined ? null : credentialLapse(parsed.identity, auth);
       if (lapsed !== null) return errorResponse(401, lapsed);
 
@@ -233,27 +162,20 @@ export function registerSseRoutes(
       // exists; the later spurious-cancel window is covered by `cancel` being
       // idempotent (it early-returns once the session is terminated).
       let session: StreamSession | undefined;
-      // GET is the EventSource path, which only speaks SSE.
-      const frames =
-        req.method === 'POST' ? framesEncodingFromAccept(req.headers.accept) : undefined;
-      const sessionId = frames === undefined ? `sse-${mode}` : `frames-${mode}`;
-      const onCancel = () => session?.cancel('client_disconnect');
-      const { transport, body, writeFrame } =
-        frames === undefined
-          ? createSseTransport({ onCancel })
-          : createFramesTransport({
-              mode: frames,
-              engine,
-              onCancel,
-              onTooLarge: () => session?.cancel('cancelled')
-            });
+      const sessionId = `frames-${mode}`;
+      const { transport, body, writeFrame } = createFramesTransport({
+        mode: frames,
+        engine,
+        onCancel: () => session?.cancel('client_disconnect'),
+        onTooLarge: () => session?.cancel('cancelled')
+      });
 
       /**
        * This response's entry in the shutdown registry. Closures over
        * `session` rather than a field holding it, so the record can be built
        * before the session exists and `close` can drop it by identity.
        */
-      const record: LiveSseResponse = {
+      const record: LiveStream = {
         end: (reason) => writeFrame({ id: sessionId, kind: 'end', reason, final: true }),
         cancel: () => session?.cancel('shutdown')
       };
@@ -315,7 +237,7 @@ export function registerSseRoutes(
       } catch (err) {
         // No session will ever close `watched`, so close it here: it holds both slots.
         watched.close('complete');
-        metric('sse_stream_start_failed', {
+        metric('stream_start_failed', {
           mode,
           keys: Object.keys(parsed.frame ?? {}),
           error: err instanceof Error ? err.message : String(err)
@@ -340,7 +262,7 @@ export function registerSseRoutes(
         // not escape the handler: `cancel` closes the transport. The client is
         // told only `stream_start_failed`; substrate-compose has no logger, so the
         // metric sink is the operator's trace.
-        metric('sse_stream_start_failed', {
+        metric('stream_start_failed', {
           mode,
           keys: Object.keys(parsed.frame ?? {}),
           error: err instanceof Error ? err.message : String(err)
@@ -360,46 +282,17 @@ export function registerSseRoutes(
       // empty frame registers nothing and would leak the same way. Streams are
       // exempt — `engine.stream` always emits a terminal `end`.
       if (mode === 'subscribe' && keys.every((k) => failedKeys.has(k))) {
-        // Deliberately no synthesized `end` frame: WS ends this case the same
-        // way, and the two transports must stay frame-for-frame identical.
+        // Deliberately no synthesized `end` frame: the client reads the lone
+        // `error` frames and the closed body.
         session.cancel('complete');
       }
       return {
         status: 200,
-        headers: frames === undefined ? SSE_HEADERS : framesHeaders(frames),
+        headers: framesHeaders(frames),
         body
       };
     };
 
-  for (const [path, mode] of [
-    ['/substrate/v1/stream', 'stream'],
-    ['/substrate/v1/subscribe', 'subscribe']
-  ] as const) {
-    // GET is deliberately UNGATED: `withAuth` rejects a tokenless request
-    // before the handler runs, and EventSource cannot send `Authorization` —
-    // gating it would make the ticket path (whose entire purpose is that
-    // limitation) unreachable. The ticket, minted by the gated POST below and
-    // verified in `parseStreamRequest`, is this route's authentication.
-    server.route('GET', path, open(mode));
-    server.route('POST', path, gate(open(mode), 'read'));
-  }
-
-  server.route(
-    'POST',
-    '/substrate/v1/stream/ticket',
-    gate(async (req: SubstrateRequest): Promise<SubstrateResponse> => {
-      const frame = parseFrameJson(req.body?.toString('utf8') ?? '');
-      if (frame === null) return errorResponse(400, 'invalid_frame');
-      const ticket = mintStreamTicket(
-        secret,
-        {
-          identity: req.identity ?? null,
-          capabilities: [STREAM_CAPABILITY],
-          frameHash: hashFrame(frame)
-        },
-        Date.now()
-      );
-      return jsonResponse(200, { ticket, expiresIn: TICKET_TTL_MS / 1000 });
-    }, 'read')
-  );
+  server.route('POST', '/substrate/v1/stream', gate(open('stream'), 'read'));
+  server.route('POST', '/substrate/v1/subscribe', gate(open('subscribe'), 'read'));
 }

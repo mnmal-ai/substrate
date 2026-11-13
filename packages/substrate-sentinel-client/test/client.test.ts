@@ -31,15 +31,12 @@ function writeKey(): string {
 const KEY_PATH = writeKey();
 
 /**
- * Sentinel's `register`/`watch` frames require `req.identity`, and a sentinel
- * composed with no `auth` refuses both. Every test below that expects a real
- * register/watch round-trip must compose `auth` + `streamTicketSecret` in and
- * present a bearer on both the raw register socket and the sentinel-client's
- * own watch request, through the `fetch` seam.
+ * Every test below that expects a real register/watch round-trip composes
+ * `auth` in and presents a bearer on both the raw register request and the
+ * sentinel-client's own watch request, through the `fetch` seam.
  */
 const HS_SECRET = 'sentinel-client-test-secret';
 const HS_KID = 'sentinel-client-test';
-const STREAM_TICKET_SECRET = 'sentinel-client-test-stream-ticket-secret';
 const authConfig: AuthConfig = {
   keys: [{ kid: HS_KID, alg: 'HS256', publicKey: HS_SECRET }]
 };
@@ -111,7 +108,6 @@ async function startFastify(opts: {
   coordinators?: Array<CoordinatorPlugin>;
   datasets?: Record<string, MemoryDataset>;
   auth?: AuthConfig;
-  streamTicketSecret?: string;
 }): Promise<Instance> {
   const server = new FastifySubstrateServer({ logger: false });
   const defaultDataset = new MemoryDataset({ namespace: 'default' });
@@ -125,8 +121,6 @@ async function startFastify(opts: {
   if (opts.coordinators !== undefined) composeArgs.coordinators = opts.coordinators;
   if (opts.datasets !== undefined) composeArgs.datasets = opts.datasets;
   if (opts.auth !== undefined) composeArgs.auth = opts.auth;
-  if (opts.streamTicketSecret !== undefined)
-    composeArgs.streamTicketSecret = opts.streamTicketSecret;
   const composed = await compose(composeArgs);
   const { port } = await server.start({ host: '127.0.0.1', port: 0 });
   return {
@@ -172,8 +166,7 @@ describe('startSentinelClient — online handler', () => {
         })
       ],
       datasets: { sentinel: new MemoryDataset({ namespace: 'sentinel' }) },
-      auth: authConfig,
-      streamTicketSecret: STREAM_TICKET_SECRET
+      auth: authConfig
     });
     b = await startFastify({
       coordinators: [buildDemoPlugin()],
@@ -235,8 +228,7 @@ describe('startSentinelClient — offline + stop', () => {
         })
       ],
       datasets: { sentinel: new MemoryDataset({ namespace: 'sentinel' }) },
-      auth: authConfig,
-      streamTicketSecret: STREAM_TICKET_SECRET
+      auth: authConfig
     });
     b = await startFastify({
       coordinators: [buildDemoPlugin()],
@@ -284,8 +276,7 @@ describe('startSentinelClient — offline + stop', () => {
         })
       ],
       datasets: { sentinel: new MemoryDataset({ namespace: 'sentinel' }) },
-      auth: authConfig,
-      streamTicketSecret: STREAM_TICKET_SECRET
+      auth: authConfig
     });
     b = await startFastify({
       coordinators: [buildDemoPlugin()],
@@ -352,8 +343,7 @@ describe('startSentinelClient — end-to-end through compose', () => {
         })
       ],
       datasets: { sentinel: new MemoryDataset({ namespace: 'sentinel' }) },
-      auth: authConfig,
-      streamTicketSecret: STREAM_TICKET_SECRET
+      auth: authConfig
     });
     b = await startFastify({
       coordinators: [buildDemoPlugin()],

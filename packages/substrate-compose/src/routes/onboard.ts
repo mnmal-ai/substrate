@@ -97,7 +97,7 @@ const HTTP_INSTRUCTIONS = {
       '`authEnabled: false` means this deployment verifies nothing, which is NOT the same as you being anonymous',
       'USE IT BEFORE CONCLUDING A CREDENTIAL WORKS: on a reads-open stack an authenticated read and an anonymous one return byte-identical results, so a successful query is never evidence of identity',
       'the grant is returned AS RECORDED — a wildcard stays a `"*"` key in `grants` rather than expanding into every namespace',
-      'also available as the MCP tool `whoami`, and as a WS frame `{ id, op: "whoami" }` — ask on the SOCKET when the socket is what you are asking about, since its auth is a separate code path from HTTP'
+      'also available as the MCP tool `whoami`'
     ]
   },
   federatedSchema: {
@@ -106,81 +106,54 @@ const HTTP_INSTRUCTIONS = {
     notes: [
       'returns `Record<namespace, Schema>` for every active namespace',
       'cache at cold-start + rebuild when a response signals a federatedVersion mismatch',
-      'build the WS nsIndex map from sorted(federatedSchema keys)'
+      'build the pack nsIndex map from sorted(federatedSchema keys)'
     ]
   }
 } as const;
 
 /**
- * The live subscription surfaces: WS and SSE carry the same engine operations
- * in different envelopes, so both are described.
+ * The live subscription surfaces: one POST per subscription or stream, the
+ * response body a sequence of length-prefixed frames.
  *
  * Every string here is a claim about the wire, held to the real routes by
- * `onboard-wire-shapes.test.ts`. A claim conditioned on an auth mode is only
- * defended if that test composes a server in that mode.
+ * `onboard-wire-shapes.test.ts`.
  */
-const WS_INSTRUCTIONS = {
+const STREAM_INSTRUCTIONS = {
   subscribe: {
-    transport: 'ws',
-    path: '/substrate/v1/ws',
-    frame:
-      '{"id":"1","op":"subscribe","frame":{"<ns>/<TypeName>":{"params":{"where":{}},"fields":{"id":true}}}}',
-    /**
-     * Structured rather than prose: each field is one cell of the
-     * {mode} × {token} matrix, so `onboard-wire-shapes.test.ts` can read a cell
-     * and drive that cell.
-     */
-    authByMode: {
-      required:
-        'DEFAULT. A tokenless upgrade receives one { id:"", kind:"error", errors:[{ code:"unauthorized" }] } frame and is closed with code 4001',
-      attribute:
-        'A tokenless upgrade is ADMITTED and runs anonymously, matching the HTTP routes under this mode — send `{ id, op:"whoami" }` and `identity` comes back null.',
-      invalidToken:
-        'Closed 4001 in BOTH modes. This is the distinction to design against rather than the mode: `attribute` relaxes "you sent nothing", never "what you sent is broken", so a caller that always sends a token sees identical behaviour either way'
-    },
+    method: 'POST',
+    path: '/substrate/v1/subscribe',
+    accept: 'application/vnd.substrate.frames+json',
+    body: '{"<ns>/<TypeName>":{"params":{"where":{}},"fields":{"id":true}}}',
     notes: [
-      'ops are `subscribe` | `stream` | `cancel` | `whoami` — any other `op`, and any frame missing a string `id`, is refused with { id:"", kind:"error", errors:[{ code:"invalid_frame" }] }',
-      'server replies { id, kind:"snapshot", data:{ "<ns>/<TypeName>": rows }, shapes } immediately, then pushes kind:"add" | "update" | "remove" (a remove carries `removedId`, no `data`)',
+      'send `Accept: application/vnd.substrate.frames+json` (or `+pack`, see `substratePack`); any other Accept is refused 406 with code `not_acceptable`',
+      'the response body is a sequence of frames: a 4-byte big-endian length, then that many bytes of payload. A zero-length frame is a heartbeat; skip it',
+      'the first frame is { id, kind:"snapshot", data:{ "<ns>/<TypeName>": rows }, shapes }, then kind:"add" | "update" | "remove" (a remove carries `removedId`, no `data`)',
       'PARAMS ARE NARROWER THAN QUERY: subscribe accepts only `where` and `orderBy`. `limit` is a POST /substrate/v1/query param and is refused here with code `unknown_param` — the allowlist is in the message',
-      'multi-key subscribe IS supported (unlike stream); one socket multiplexes many sessions, keyed by your `id`',
-      'cancel with { id, op:"cancel" } — the server acknowledges a cancelled SUBSCRIBE with { id, kind:"end", final:true }',
-      '`{ id, op:"whoami" }` answers { id, kind:"whoami", data:{ authEnabled, identity } } without opening a session — ask it on the socket rather than over HTTP when the socket is what you are asking about',
-      'subscriptions are connection-scoped — cancelled automatically on disconnect',
+      'multi-key subscribe IS supported (unlike stream)',
+      'one subscription per response: close the response to cancel it',
       'virtual namespaces cannot be subscribed: a `recall/*` key is refused with code `subscription_unsupported_frame` (one-shot query/mutate only)',
-      'AUTH FOLLOWS `mode` — see `authByMode` on this section for the cell-by-cell answer. The short version: the DEFAULT mode refuses a tokenless socket, `attribute` admits one, and neither mode admits a broken token',
-      'ANONYMOUS IS NOT PERMITTED — it is only ADMITTED. An anonymous socket still meets the namespace read policy inside `engine.subscribe`, which answers `policy_denied` on its own terms; the upgrade gate decides nothing except whether a tokenless caller reaches it'
+      'auth is the same as POST /substrate/v1/query: the route needs `read`',
+      'failures BEFORE the stream opens are ordinary HTTP status codes; once bytes are on the wire the status is spent and errors arrive in-band as { kind:"error", errors } frames',
+      'a server shutting down sends { kind:"end", reason:"server_restart" } before closing: subscribe again for a fresh snapshot'
     ]
   },
   stream: {
-    transport: 'ws',
-    path: '/substrate/v1/ws',
-    frame:
-      '{"id":"1","op":"stream","frame":{"<ns>/<TypeName>":{"params":{},"fields":{"id":true}}}}',
+    method: 'POST',
+    path: '/substrate/v1/stream',
+    accept: 'application/vnd.substrate.frames+json',
+    body: '{"<ns>/<TypeName>":{"params":{},"fields":{"id":true}}}',
     notes: [
       'single op-key only — two keys are refused with code `stream_multi_key`',
-      'server pushes { id, kind:"chunk", data:{ "<ns>/<TypeName>": <entity> } } per chunk',
+      'one { id, kind:"chunk", data:{ "<ns>/<TypeName>": <entity> } } frame per chunk',
       'terminates with { id, kind:"end", final:true } — errors terminate too, no partial-error-then-resume',
       'streaming needs a resolver returning an async iterable; autoCRUD types are not streamable and answer code `not_streamable`'
     ]
   },
   substratePack: {
-    transport: 'ws',
-    path: '/substrate/v1/ws',
+    accept: 'application/vnd.substrate.frames+pack',
     notes: [
-      'advertise `Sec-WebSocket-Protocol: substrate-pack` at handshake to negotiate MessagePack frames with positionally-encoded `data`',
-      'the negotiation is SYMMETRIC: on a pack socket your REQUEST frames must be MessagePack too — sending JSON text there is refused with code `invalid_frame`',
-      'positional `data` decodes against the field selection you sent, in declared field order — see @mnmal-ai/substrate-pack (encodeWsFrame / decodeWsEnvelope)'
-    ]
-  },
-  sse: {
-    transport: 'sse',
-    paths: ['/substrate/v1/subscribe', '/substrate/v1/stream', '/substrate/v1/stream/ticket'],
-    notes: [
-      'same two engine operations as WS, one session per HTTP response — cancellation IS disconnection, so there is no `cancel` op and no session id',
-      'POST /substrate/v1/subscribe (or /substrate/v1/stream) with the frame object as the BODY — the qualified-frame-keyed payload, exactly as POST /substrate/v1/query takes it',
-      'GET the same paths with ?frame=<url-encoded JSON> for EventSource, which cannot send an Authorization header: mint a ticket first with POST /substrate/v1/stream/ticket (body = the same frame) and pass ?ticket=<ticket>. A ticketless GET is 401 `ticket_missing`; the ticket is bound to that exact frame',
-      'THE EVENT ENVELOPE DIFFERS FROM WS: SSE emits `event: <kind>` with a per-frame payload — snapshot/add/update carry { key, rows } or { key, row }, remove carries { removedId }, end carries { reason }, error carries { code, message }. WS instead sends one object per frame carrying `data` keyed by the frame key',
-      'failures BEFORE the stream opens are ordinary HTTP status codes; once bytes are on the wire the status is spent and errors arrive in-band as `event: error`'
+      'send `Accept: application/vnd.substrate.frames+pack` on subscribe or stream for MessagePack frames with positionally-encoded `data`; the request body stays JSON',
+      'positional `data` decodes against the field selection you sent, in declared field order — see @mnmal-ai/substrate-pack (decodeStreamFrames / decodeWsEnvelope)'
     ]
   }
 } as const;
@@ -307,10 +280,9 @@ export function buildOnboardBody(deps: OnboardDeps): Record<string, unknown> {
     schemaForType: HTTP_INSTRUCTIONS.schemaForType,
     federatedSchema: HTTP_INSTRUCTIONS.federatedSchema,
     whoami: HTTP_INSTRUCTIONS.whoami,
-    subscribe: WS_INSTRUCTIONS.subscribe,
-    stream: WS_INSTRUCTIONS.stream,
-    substratePack: WS_INSTRUCTIONS.substratePack,
-    sse: WS_INSTRUCTIONS.sse,
+    subscribe: STREAM_INSTRUCTIONS.subscribe,
+    stream: STREAM_INSTRUCTIONS.stream,
+    substratePack: STREAM_INSTRUCTIONS.substratePack,
     codeMode: CODE_MODE_INSTRUCTIONS,
     plugins: buildPluginContributions(deps.coordinators),
     pluginRoutes: buildPluginRoutes(deps.coordinators)

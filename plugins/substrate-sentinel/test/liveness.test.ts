@@ -3,30 +3,27 @@ import type {
   EngineHandle,
   NamespaceConfig,
   PackEnvelope,
-  Registry,
-  WsConnection
+  Registry
 } from '@mnmal-ai/substrate/sdk';
 import { describe, expect, it } from 'vitest';
 import {
   type CoordinatorConnection,
   createLivenessRegistry,
+  type PeerConnection,
   runLivenessTick
 } from '../src/liveness.js';
 
-function makeConn(overrides: Partial<WsConnection> = {}): {
-  conn: WsConnection;
+function makeConn(overrides: Partial<PeerConnection> = {}): {
+  conn: PeerConnection;
   sent: Array<string>;
   closed: Array<boolean>;
 } {
   const sent: Array<string> = [];
   const closed: Array<boolean> = [];
-  const conn: WsConnection = {
-    id: `conn-${Math.random().toString(36).slice(2)}`,
+  const conn: PeerConnection = {
     send: (frame) => {
-      sent.push(typeof frame === 'string' ? frame : Buffer.from(frame).toString('utf8'));
+      sent.push(frame);
     },
-    onMessage: () => undefined,
-    onClose: () => undefined,
     close: (code) => {
       closed.push(code !== undefined);
     },

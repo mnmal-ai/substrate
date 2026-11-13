@@ -1,6 +1,6 @@
 /**
  * With TLS the server negotiates HTTP/2 by ALPN and keeps HTTP/1.1 for clients
- * that do not offer h2, including the WebSocket upgrade.
+ * that do not offer h2.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -10,7 +10,6 @@ import https from 'node:https';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, describe, expect, it } from 'vitest';
-import WebSocket from 'ws';
 import { FastifySubstrateServer } from '../src/index.js';
 
 function hasOpenssl(): boolean {
@@ -151,25 +150,6 @@ describe.skipIf(!hasOpenssl())(
         }
       );
       expect(res).toEqual({ version: '1.1', status: 200, body: 'pong' });
-    });
-
-    it('keeps the WebSocket upgrade working over the HTTP/1.1 fallback', async () => {
-      const port = await start((s) => {
-        s.websocket('/ws', (_req, conn) => {
-          conn.onMessage((data) => conn.send(data));
-        });
-      });
-      const ws = new WebSocket(`wss://127.0.0.1:${port}/ws`, { ca: tls.cert });
-      await new Promise<void>((resolve, reject) => {
-        ws.once('open', () => resolve());
-        ws.once('error', reject);
-      });
-      const echoed = new Promise<string>((resolve) => {
-        ws.once('message', (d) => resolve(String(d)));
-      });
-      ws.send('hello');
-      expect(await echoed).toBe('hello');
-      ws.close();
     });
 
     it('streams a ReadableStream body over h2', async () => {

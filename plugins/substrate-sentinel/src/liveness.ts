@@ -1,16 +1,16 @@
 /**
- * Liveness bookkeeping for the sentinel's WS and frame-stream peers.
+ * Liveness bookkeeping for the sentinel's frame-stream peers.
  *
- * A WS peer has no native ping surface, so this module maintains an
- * application-level liveness protocol over JSON frames:
+ * This module maintains an application-level liveness protocol over JSON
+ * frames for peers that are not `selfLive`:
  *
  *   - The registry tracks every live socket in one of two sets: `coordinators`
  *     (registered HDS instances) or `watchers` (agents tailing topology).
  *   - Each tracked socket records when it was last heard from (`lastSeenMs`),
  *     set on add and refreshed by `markAlive()` on any inbound frame.
  *   - A tick (driven by the plugin's `ScheduledTask`) calls `drainStale`, which
- *     returns every socket whose last heartbeat is older than
- *     `staleThresholdMs`, then pings the survivors.
+ *     returns every non-`selfLive` socket whose last heartbeat is older than
+ *     `staleThresholdMs`, then pings (or heartbeats) the survivors.
  *   - A stale coordinator is evicted: its connection is closed and the
  *     matching `Coordinator` row is updated to `status: 'offline'`. A stale
  *     watcher is dropped.
@@ -24,10 +24,10 @@ import type { EngineHandle } from '@mnmal-ai/substrate/sdk';
 import { makeCtx } from '@mnmal-ai/substrate/sdk';
 
 /**
- * A registered or watching peer: a WS connection, or a frame-stream response.
- * A WS peer proves it is alive by answering pings. A frame-stream peer is alive
- * while its response is open (`selfLive`), and gets zero-length `heartbeat()`
- * frames instead of pings, which also surface a dead socket as a failed write.
+ * A registered or watching peer. A `selfLive` peer (a frame-stream response) is
+ * alive while its response is open and is never drained as stale; it gets
+ * zero-length `heartbeat()` frames, which also surface a dead socket as a failed
+ * write. Any other peer proves it is alive by answering pings.
  */
 export interface PeerConnection {
   send(message: string): void;

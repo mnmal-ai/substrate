@@ -83,8 +83,7 @@ describe('compose WIRES the sink, not merely declares it', () => {
     const composed = await compose({
       server,
       dataset,
-      auth: { keys: [], mode: 'attribute' },
-      streamTicketSecret: 'anon-read-wiring-secret-value'
+      auth: { keys: [], mode: 'attribute' }
     });
     await server.start();
     try {

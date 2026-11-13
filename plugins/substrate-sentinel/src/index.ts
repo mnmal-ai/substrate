@@ -1,16 +1,16 @@
 /**
  * @mnmal-ai/substrate-sentinel — coordinator plugin that manages dynamic
  * discovery for Substrate coordinators (Coordinator, CoordinatorNamespace,
- * CoordinatorBridge rows) plus a persistent WS surface for registration and
+ * CoordinatorBridge rows) plus frame-stream routes for registration and
  * topology watching.
  *
  * Coordinator plugin seam (§5.11):
  *   - `namespaces[0]` — the 3-type autoCRUD surface (see `./namespace.ts`).
- *   - `routes` — `/status` (health dashboard read) and `/ws` (registration +
- *     watcher heartbeat).
+ *   - `routes` — `/status` (health dashboard read), `POST /register` and
+ *     `GET /watch` (see `./stream-routes.ts`).
  *   - `schedule` — a single `<ns>-liveness` task runs every
- *     `pingIntervalMs` (default 30s), pings every socket, and evicts
- *     coordinators whose last heartbeat is older than `staleThresholdMs`.
+ *     `pingIntervalMs` (default 30s) and sends every open stream a heartbeat
+ *     frame.
  *
  * `createSentinelPlugin` is a pure factory taking a fully-resolved
  * `SentinelPluginConfig`. The structured-config `bootstrap` is the canonical
@@ -24,7 +24,6 @@ import { createLivenessRegistry, runLivenessTick } from './liveness.js';
 import { buildSentinelNamespace } from './namespace.js';
 import { registerSentinelStatusRoute } from './status-route.js';
 import { registerSentinelStreamRoutes } from './stream-routes.js';
-import { registerSentinelWsRoute } from './ws-route.js';
 
 export type { SentinelPluginConfig } from './config.js';
 export {
@@ -39,7 +38,6 @@ export {
 export { buildSentinelNamespace, SENTINEL_TYPE_NAMES } from './namespace.js';
 export { type CoordinatorRecord, registerSentinelStatusRoute } from './status-route.js';
 export { framePeer, registerSentinelStreamRoutes } from './stream-routes.js';
-export { registerSentinelWsRoute } from './ws-route.js';
 
 export function createSentinelPlugin(cfg: SentinelPluginConfig): CoordinatorPlugin {
   const registry = createLivenessRegistry({ staleThresholdMs: cfg.staleThresholdMs });
@@ -62,7 +60,6 @@ export function createSentinelPlugin(cfg: SentinelPluginConfig): CoordinatorPlug
     ],
     routes: (router, routeCtx): void => {
       registerSentinelStatusRoute(router, routeCtx, cfg.namespace);
-      registerSentinelWsRoute(router, routeCtx, cfg.namespace, registry);
       endStreams = registerSentinelStreamRoutes(router, routeCtx, cfg.namespace, registry);
     },
     onStop: (): Promise<void> => endStreams()

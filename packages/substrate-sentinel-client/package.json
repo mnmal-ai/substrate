@@ -40,7 +40,6 @@
     "@mnmal-ai/substrate-sdk": "workspace:*",
     "@mnmal-ai/substrate-server-fastify": "workspace:*",
     "@types/node": "catalog:",
-    "@types/ws": "catalog:",
     "tsdown": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"

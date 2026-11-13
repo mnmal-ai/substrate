@@ -16,8 +16,6 @@ import {
   signHs256
 } from '../src/auth.js';
 import { withAuth } from '../src/compose/auth-middleware.js';
-import { parseStreamRequest } from '../src/routes/sse.js';
-import { hashFrame, mintStreamTicket } from '../src/routes/stream-ticket.js';
 
 const KID = 'agent@host';
 const SECRET = 'token-lifetime-test-secret-0123456789';
@@ -161,27 +159,5 @@ describe('credentialLapse', () => {
     expect(credentialLapse(verdict.identity, cfg)).toBeNull();
     records.delete(KID);
     expect(credentialLapse(verdict.identity, cfg)).toBe('credential_revoked');
-  });
-
-  it('refuses an SSE ticket whose minting token has expired since', () => {
-    const exp = now() + 5;
-    const jwt = signHs256({ sub: 'u', exp, capabilities: ['read'] }, SECRET, { kid: 'k1' });
-    const verdict = authenticateBearer(jwt, hsCfg);
-    if (!verdict.ok) throw new Error('expected a verified token');
-    const frame = { 'default/Memo': { fields: { id: true } } };
-    const ticketSecret = 'ticket-secret-0123456789';
-    const ticket = mintStreamTicket(
-      ticketSecret,
-      { identity: verdict.identity, capabilities: ['read'], frameHash: hashFrame(frame) },
-      Date.now()
-    );
-    const parsed = parseStreamRequest(
-      { method: 'GET', body: null, query: { frame: JSON.stringify(frame), ticket } },
-      ticketSecret,
-      Date.now()
-    );
-    if (!parsed.ok) throw new Error('expected a valid ticket');
-    // The identity survives the ticket's JSON round trip with its expiry.
-    expect(credentialLapse(parsed.identity, hsCfg, exp + 1)).toBe('credential_expired');
   });
 });

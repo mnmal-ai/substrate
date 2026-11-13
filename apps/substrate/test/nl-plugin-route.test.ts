@@ -21,6 +21,7 @@ import {
 } from '@mnmal-ai/substrate-compose';
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
 import { createNlPlugin } from '@mnmal-ai/substrate-nl';
+import { decodeStreamFrames, FRAMES_JSON_MIME } from '@mnmal-ai/substrate-pack';
 import { row } from '@mnmal-ai/substrate-policy';
 import { installAutoCrud } from '@mnmal-ai/substrate-sdk';
 import { MemorySubstrateServer } from '@mnmal-ai/substrate-server-memory';
@@ -72,7 +73,6 @@ async function mkServer(opts: {
   if (opts.auth !== undefined) {
     composeOpts.auth = opts.auth;
     // compose() refuses an auth-enabled instance without a stream-ticket secret.
-    composeOpts.streamTicketSecret = 'test-stream-ticket-secret';
   }
   const composed = await compose(composeOpts);
 
@@ -98,18 +98,6 @@ async function mkServer(opts: {
 
   await server.start();
   return { server, composed };
-}
-
-async function streamToString(res: SubstrateResponse): Promise<string> {
-  if (!(res.body instanceof ReadableStream)) return bodyToString(res);
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let out = '';
-  for (;;) {
-    const chunk = await reader.read();
-    if (chunk.done) return out;
-    out += decoder.decode(chunk.value, { stream: true });
-  }
 }
 
 const JSON_HEADERS = { 'content-type': 'application/json' };
@@ -161,15 +149,17 @@ describe('the NL routes', () => {
     expect(JSON.stringify(parsed.outcome)).toContain('nl-seed');
   });
 
-  it('streams parsed, rows and done as SSE when asked for text/event-stream', async () => {
+  it('streams parsed, rows and done as frames when asked for frames+json', async () => {
     ctx = await mkServer({});
     await seedTodo(ctx.server);
     const res = await ctx.server.inject(
-      ask({ namespace: 'default', question: 'open todos' }, { accept: 'text/event-stream' })
+      ask({ namespace: 'default', question: 'open todos' }, { accept: FRAMES_JSON_MIME })
     );
     expect(res.status).toBe(200);
-    const text = await streamToString(res);
-    const names = [...text.matchAll(/^event: (\w+)$/gm)].map((m) => m[1]);
+    const names: string[] = [];
+    for await (const p of decodeStreamFrames(res.body as ReadableStream<Uint8Array>)) {
+      names.push((JSON.parse(new TextDecoder().decode(p)) as { event: string }).event);
+    }
     expect(names).toEqual(['parsed', 'rows', 'done']);
   });
 

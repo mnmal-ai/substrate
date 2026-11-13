@@ -1,6 +1,6 @@
 /**
- * Per-client cap on long-lived connections — WS sockets and SSE streams draw
- * from one shared count, so a client cannot dodge it by switching transport.
+ * Per-client cap on long-lived connections. Every held-open response draws
+ * from one shared count.
  * Keyed by identity id when the caller authenticated, otherwise by client IP:
  * with auth off every caller shares the system identity, so the IP is the
  * only thing that tells clients apart. A caller with neither is not capped,
@@ -16,12 +16,12 @@
 import type { Identity } from '@mnmal-ai/substrate-types';
 import { ipCapKey } from './helpers.js';
 
-/** Most WS sockets plus SSE streams one client may hold open at once. */
+/** Most long-lived responses one client may hold open at once. */
 export const MAX_CONNECTIONS_PER_CLIENT = 64;
 
 /**
  * Most subscribe/stream sessions one client may hold open at once, across
- * every WS socket and SSE stream. Each one is engine work on every write.
+ * every open response. Each one is engine work on every write.
  */
 export const MAX_SESSIONS_PER_CLIENT = 1024;
 

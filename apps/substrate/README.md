@@ -21,7 +21,7 @@ A plugin package declares `@mnmal-ai/substrate` as a peer dependency and as a de
 
 | Subcommand | Purpose |
 |---|---|
-| `substrate serve` | Boot the HTTP/WS server (default port 3100) |
+| `substrate serve` | Boot the HTTP server (default port 3100) |
 | `substrate mcp` | stdio MCP server; reads `SUBSTRATE_URL`, and `SUBSTRATE_MCP_TOOLS` (csv) to register only some tools |
 | `substrate init [dir] [flags]` | Scaffold a runtime directory (interactive; `--yes` for scripted use) |
 | `substrate ask <question…>` | Ask a natural-language question (needs `substrate-nl`) |
@@ -35,7 +35,7 @@ A plugin package declares `@mnmal-ai/substrate` as a peer dependency and as a de
 
 ### MCP tools
 
-`substrate mcp` serves `schema`, `query`, `mutate`, `run`, `recall`, `ask`, `whoami`, `propose_type`, `propose_field`, `propose_index`, and the admin-gated `drop_namespace` / `drop_type`. `run` executes a short script against the store in one call (the same context as `substrate run`), in a child process with no file, network, process or environment access. It talks to a running server at `SUBSTRATE_URL` and signs requests when `SUBSTRATE_AGENT_KEY_ID` and `SUBSTRATE_AGENT_KEY_PATH` are set. [`docs/surface-parity.md`](https://github.com/mnmal-ai/substrate/blob/main/docs/surface-parity.md) maps what each surface (HTTP, MCP, WS, SSE) offers.
+`substrate mcp` serves `schema`, `query`, `mutate`, `run`, `recall`, `ask`, `whoami`, `propose_type`, `propose_field`, `propose_index`, and the admin-gated `drop_namespace` / `drop_type`. `run` executes a short script against the store in one call (the same context as `substrate run`), in a child process with no file, network, process or environment access. It talks to a running server at `SUBSTRATE_URL` and signs requests when `SUBSTRATE_AGENT_KEY_ID` and `SUBSTRATE_AGENT_KEY_PATH` are set. [`docs/surface-parity.md`](https://github.com/mnmal-ai/substrate/blob/main/docs/surface-parity.md) maps what each surface (HTTP, MCP, frame streams) offers.
 
 ### `substrate ask`
 
@@ -138,7 +138,7 @@ The main ones; `substrate --help` and the header of `apps/substrate/src/main.ts`
 | `SUBSTRATE_AUTH_MODE` | `required` or `attribute` (anonymous callers allowed on non-admin routes). Setting it, or `SUBSTRATE_AUTH_KEY_REGISTRY`, enables auth. |
 | `SUBSTRATE_AUTH_KEY_REGISTRY` | Path to a JSON key registry file. Without it, auth reads keys registered in Postgres with `substrate-admin`. |
 | `SUBSTRATE_PUBLIC_ORIGIN` | The origins callers reach this server by, comma-separated (`https://host:3100,https://alias`). A token whose `aud` names none of them is refused. **Required when auth is enabled and `HOST` is not loopback**; on loopback it defaults to the loopback origins. |
-| `SUBSTRATE_STREAM_TICKET_SECRET` | HMAC key signing SSE stream tickets. **Required when auth is enabled**; at least 16 characters. The ticket signature is the only authentication on `GET /substrate/v1/stream` and `GET /substrate/v1/subscribe`, because `EventSource` can send no header or body. Rotating it invalidates every outstanding ticket. |
+| `SUBSTRATE_CURSOR_SECRET` | Seals pagination cursors under row-filter policies, so every process sharing it opens the same cursors. Unset, the key is per process and a sealed cursor stops opening after a restart or on another replica. When it is unset, the retired `SUBSTRATE_STREAM_TICKET_SECRET` is read instead. Rotating it ends every outstanding sealed cursor. |
 | `SUBSTRATE_TLS_KEY_PATH` / `SUBSTRATE_TLS_CERT_PATH` / `SUBSTRATE_TLS_CA_PATH` | Serve HTTPS, over HTTP/2 with an HTTP/1.1 fallback. Key and cert are required together. |
 | `SUBSTRATE_NAMESPACE` | Default namespace for recall requests that omit one; with neither, recall refuses with `missing_namespace`. |
 | `SUBSTRATE_STATEMENT_TIMEOUT_MS` | Statement timeout for typed edge walk reads (default 30000). A read it cancels is refused `query_timeout`. It also bounds the wait for a free database connection; a request that waits longer is refused `store_busy`. |

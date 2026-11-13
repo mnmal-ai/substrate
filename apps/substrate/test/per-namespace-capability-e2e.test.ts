@@ -84,8 +84,7 @@ describe('a grant of plane:read reads plane and cannot write it', () => {
         [SYSTEM_NAMESPACE]: substrateDs
       },
       coordinators: [plugin('c', 'cortext'), plugin('p', 'plane')],
-      auth,
-      streamTicketSecret: 'per-ns-caps-e2e-ticket-secret'
+      auth
     });
     await server.start();
 

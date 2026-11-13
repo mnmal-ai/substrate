@@ -4,7 +4,7 @@ Internal: bundled into `@mnmal-ai/substrate` and not published; its public surfa
 
 Foundational types and zero-dependency runtime primitives for Substrate.
 
-The lowest-level package in the workspace. It defines the core interfaces (`SubstrateServer`, `SubstrateRequest`, `SubstrateResponse`, `Dataset`, the plugin contracts `CoordinatorPlugin` and `KernelPlugin`, policy and WebSocket frame types) and a small set of runtime primitives: the error classes everything throws, qualified-frame-key parsing and formatting, canonicalization, the `assertNever` exhaustiveness helper, and the `SUBSTRATE_HARD_DELETE` gate. The primitives live here rather than in `substrate-core` so the authoring layer (`substrate-sdk`) can use them without depending on the engine.
+The lowest-level package in the workspace. It defines the core interfaces (`SubstrateServer`, `SubstrateRequest`, `SubstrateResponse`, `Dataset`, the plugin contracts `CoordinatorPlugin` and `KernelPlugin`, policy and stream frame types) and a small set of runtime primitives: the error classes everything throws, qualified-frame-key parsing and formatting, canonicalization, the `assertNever` exhaustiveness helper, and the `SUBSTRATE_HARD_DELETE` gate. The primitives live here rather than in `substrate-core` so the authoring layer (`substrate-sdk`) can use them without depending on the engine.
 
 It has no npm runtime dependencies, so importing it never pulls in a transitive payload.
 

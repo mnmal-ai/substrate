@@ -703,7 +703,7 @@ export interface CoordinatorPlugin {
    *   - subprocess children that should receive SIGTERM cleanly
    *   - long-lived `setInterval` timers (`.unref()` keeps them from
    *     blocking exit, but explicit teardown is still cleaner for tests)
-   *   - WebSocket subscriptions / outbound connections that should close
+   *   - open subscriptions / outbound connections that should close
    *     cooperatively rather than dropping mid-request
    *
    * Errors are caught + logged via the lifecycle metric sink under
@@ -723,7 +723,7 @@ export interface CoordinatorPlugin {
    */
   schedule?: ScheduledTask[];
   /**
-   * Mount plugin-scoped HTTP/WS routes. Called once at compose-time with a
+   * Mount plugin-scoped HTTP routes. Called once at compose-time with a
    * `PluginRouter` pre-prefixed `/substrate/v1/plugins/<name>` by the server impl. The
    * router surface matches `PluginRouter` in `./server.ts`.
    *

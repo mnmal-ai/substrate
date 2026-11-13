@@ -34,7 +34,7 @@ later use (see [Calling sibling resolvers](#calling-sibling-resolvers)).
 Both tiers are declared in `@mnmal-ai/substrate/sdk`.
 
 - **`CoordinatorPlugin`** is agent-facing. It owns one or more data
-  namespaces, can mount HTTP/WS routes under
+  namespaces, can mount HTTP routes under
   `/substrate/v1/plugins/<name>/`, can contribute onboard instructions and
   scheduled tasks, and has `onStart` / `onStop` lifecycle hooks.
   `substrate-sentinel` and the built-in `substrate-proposals` are
@@ -569,9 +569,7 @@ With auth on, every HTTP route the plugin mounts requires `read` for `GET`
 and `mutate` for any other method, and the caller must hold that capability
 in one of the plugin's declared `namespaces` (explicitly or by `*`). A plugin
 that declares no namespaces accepts the capability held in any namespace.
-Tokenless `GET`s are still admitted in `attribute` mode. WS routes resolve
-identity only; the handler decides what an anonymous or under-granted caller
-may do.
+Tokenless `GET`s are still admitted in `attribute` mode.
 
 `onStop` hooks run in reverse registration order during shutdown. The engine
 and database are still live, so final writes are possible. A failing
@@ -1300,7 +1298,7 @@ plan for:
 
 ### Cross-instance notification
 
-Live updates (WS/SSE subscriptions) and schema proposals reach only the
+Live updates (subscriptions) and schema proposals reach only the
 process that made the change; subscribers on another replica do not see it.
 Substrate does not notify one replica of another's out-of-band changes (for
 example a registry change made at runtime). If your plugin needs that, accept
@@ -1386,7 +1384,7 @@ indexed list fields). All of these come from `@mnmal-ai/substrate/testing`. Call
 test-database guards from the same subpath first: they refuse a database that
 isn't `_test`/`_dev` and a superuser role.
 
-### HTTP / WebSocket
+### HTTP
 
 Run the composed server on `MemorySubstrateServer` from
 `@mnmal-ai/substrate/testing` (in-process, no socket; drive it with

@@ -73,8 +73,7 @@ describe('GET /substrate/v1/metrics', () => {
       systemActor: 'test',
       server,
       dataset,
-      auth,
-      streamTicketSecret: 'test-stream-ticket-secret'
+      auth
     });
 
     // No Authorization header → should be rejected as 401.

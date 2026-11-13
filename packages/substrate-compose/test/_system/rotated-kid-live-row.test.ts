@@ -60,8 +60,7 @@ async function rotatedStack() {
     server,
     dataset: new MemoryDataset({ namespace: 'default' }),
     datasets: { [SYSTEM_NAMESPACE]: sys },
-    auth: { keys: [{ kid: 'file', alg: 'HS256', publicKey: SECRET }], adminCapability: 'admin' },
-    streamTicketSecret: 'rotated-kid-live-row-stream'
+    auth: { keys: [{ kid: 'file', alg: 'HS256', publicKey: SECRET }], adminCapability: 'admin' }
   });
   await server.start();
   stop = () => composed.stop();

@@ -20,8 +20,6 @@ export interface DemandTransportOptions {
   ) => Uint8Array;
   /** Written every `heartbeatMs` while the body is open. */
   heartbeat: Uint8Array;
-  /** Written once when the body opens. */
-  preamble?: Uint8Array;
   heartbeatMs?: number;
   /** Fired when the CONSUMER tears down — i.e. the client disconnected. */
   onCancel?: () => void;
@@ -43,7 +41,7 @@ export interface DemandTransport {
 
 /**
  * A response body paced to consumer demand, carrying one session's frames in
- * whatever wire encoding `encode` gives. SSE and length-prefixed frames share it.
+ * whatever wire encoding `encode` gives.
  */
 export function createDemandTransport(opts: DemandTransportOptions): DemandTransport {
   const heartbeatMs = opts.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
@@ -100,7 +98,6 @@ export function createDemandTransport(opts: DemandTransportOptions): DemandTrans
   const body = new ReadableStream<Uint8Array>({
     start(c) {
       controller = c;
-      if (opts.preamble !== undefined) write(opts.preamble);
       heartbeat = setInterval(() => write(opts.heartbeat), heartbeatMs);
       // Node keeps the process alive for interval timers; a keepalive must not.
       heartbeat.unref?.();

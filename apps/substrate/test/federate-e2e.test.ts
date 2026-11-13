@@ -104,10 +104,9 @@ describe.skipIf(!POSTGRES_URL)('federation enrollment end to end', () => {
       // store — without it compose allocates its own in-memory `_system`.
       datasets: { [SYSTEM_NAMESPACE]: new PgDataset({ namespace: SYSTEM_NAMESPACE, sql }) },
       coordinators: [fixturePlugin],
-      auth: { keys: [], adminCapability: 'admin' },
+      auth: { keys: [], adminCapability: 'admin' }
       // Required whenever `auth` is set (compose throws otherwise) — signs SSE
       // stream tickets. Unused by this test but must be present and >=16 chars.
-      streamTicketSecret: 'federate-e2e-test-stream-ticket-secret'
     });
     await server.start();
   });

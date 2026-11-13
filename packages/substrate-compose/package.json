@@ -41,11 +41,9 @@
     "@mnmal-ai/substrate-server-memory": "workspace:*",
     "@types/node": "catalog:",
     "@types/semver": "catalog:",
-    "@types/ws": "catalog:",
     "tsdown": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:",
-    "ws": "catalog:",
     "zod": "catalog:"
   },
   "engines": {

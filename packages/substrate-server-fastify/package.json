@@ -28,18 +28,15 @@
   "dependencies": {
     "@fastify/compress": "catalog:",
     "@fastify/cors": "catalog:",
-    "@fastify/websocket": "catalog:",
     "@mnmal-ai/substrate-types": "workspace:*",
     "fastify": "catalog:"
   },
   "devDependencies": {
     "@mnmal-ai/substrate-config": "workspace:*",
     "@types/node": "catalog:",
-    "@types/ws": "catalog:",
     "tsdown": "catalog:",
     "typescript": "catalog:",
-    "vitest": "catalog:",
-    "ws": "catalog:"
+    "vitest": "catalog:"
   },
   "engines": {
     "node": ">=26.13.1"

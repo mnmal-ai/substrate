@@ -3,7 +3,7 @@
  *
  * `compose()` orchestrates; this module owns the per-request gate:
  * bearer-token + capability check (`withAuth`), the no-auth attribution
- * (`withSystemActor`), and the plugin-router / WS wrappers. One implementation
+ * (`withSystemActor`), and the plugin-router wrappers. One implementation
  * so in-compose routes and substrate kernel routes cannot drift into
  * differently-enforced versions of the same rule.
  */
@@ -14,9 +14,7 @@ import type {
   Identity,
   PluginRouter,
   SubstrateRequest,
-  SubstrateResponse,
-  WsConnection,
-  WsHandler
+  SubstrateResponse
 } from '@mnmal-ai/substrate-types';
 import { allCapabilities, confersAnywhere, grantedIn, grantOf } from '@mnmal-ai/substrate-types';
 import {
@@ -24,8 +22,7 @@ import {
   authenticateBearer,
   type BearerRejectionReason,
   extractBearer,
-  rejectionDetail,
-  watchCredential
+  rejectionDetail
 } from '../auth.js';
 
 /**
@@ -149,8 +146,7 @@ export function wrapPluginRouterWithSystemActor(
     post: (path, h) => router.post(path, w(h)),
     put: (path, h) => router.put(path, w(h)),
     delete: (path, h) => router.delete(path, w(h)),
-    patch: (path, h) => router.patch(path, w(h)),
-    websocket: (path, h) => router.websocket(path, h)
+    patch: (path, h) => router.patch(path, w(h))
   };
 }
 
@@ -229,114 +225,11 @@ export function withAuth(
 }
 
 /**
- * Cap on frames buffered before a plugin WS handler's `onMessage` registers
- * (the early-frame race — see `wrapWsHandler`). An unauthenticated peer that
- * never reaches a registered listener, whether rejected outright or simply
- * connected to a handler that never calls `onMessage`, must not be able to
- * grow this queue without bound while the socket stays open.
- */
-const WS_EARLY_FRAME_QUEUE_LIMIT = 64;
-
-/**
- * Authenticate a plugin WebSocket route and hand the inner handler a request
- * carrying `identity` when the caller presented a valid bearer token. A plugin
- * serving its own frame protocol at `/substrate/v1/plugins/<name>/ws` gets neither the
- * binary's handshake auth nor the engine's per-frame gate.
- *
- * Mirrors `withAuth`'s mode handling: an absent token is rejected (1008)
- * unless `cfg.mode === 'attribute'`, in which case the
- * caller proceeds anonymous, with any caller-supplied `identity` stripped —
- * the same defence-in-depth `withAuth` applies on its own anonymous path.
- * A token that is present but invalid is always rejected, regardless of
- * mode: presenting a bad credential is an error, never a downgrade to
- * anonymous. Which frames are privileged, and what capability each
- * requires, stays the plugin's call — this wrapper only resolves identity.
- */
-export function wrapWsHandler(handler: WsHandler, cfg: AuthConfig): WsHandler {
-  return async (req: SubstrateRequest, conn: WsConnection): Promise<void> => {
-    // Buffer synchronously, BEFORE the await below. `onMessage` attaches
-    // straight to the socket with no queue of its own, so a frame arriving
-    // while verification is in flight would otherwise be dropped. Bounded
-    // by WS_EARLY_FRAME_QUEUE_LIMIT, and stops accepting entirely once
-    // `rejected` (a peer closed for cause must not keep filling it).
-    const queued: Buffer[] = [];
-    const listeners: Array<(b: Buffer) => void> = [];
-    let rejected = false;
-
-    function rejectAndClose(reason: string): void {
-      rejected = true;
-      queued.length = 0;
-      conn.close(1008, reason); // 1008 = policy violation
-    }
-
-    conn.onMessage((b) => {
-      if (rejected) return;
-      if (listeners.length > 0) {
-        for (const cb of listeners) cb(b);
-        return;
-      }
-      queued.push(b);
-      if (queued.length > WS_EARLY_FRAME_QUEUE_LIMIT) rejectAndClose('frame backlog');
-    });
-
-    const token = extractBearer(req.headers.authorization);
-    if (token === null) {
-      // attribute mode: allow anonymous; required mode (the default when
-      // SUBSTRATE_AUTH_MODE is unset) rejects, mirroring withAuth.
-      if (cfg.mode !== 'attribute') {
-        rejectAndClose('unauthorized');
-        return;
-      }
-      // exactOptionalPropertyTypes: omit the key rather than assigning
-      // undefined. Defence in depth against a caller-supplied identity claim
-      // riding in on headers — mirrors withAuth's anonymous path.
-      const { identity: _identity, ...anonReq } = req;
-      req = anonReq;
-    } else {
-      const verdict = authenticateBearer(token, cfg);
-      if (!verdict.ok) {
-        rejectAndClose('unauthorized');
-        return;
-      }
-      req = { ...req, identity: verdict.identity };
-      // The socket outlives the token: close it when the credential lapses.
-      const stop = watchCredential(verdict.identity, cfg, (lapse) => conn.close(1008, lapse));
-      conn.onClose(stop);
-    }
-
-    // The queue could have overflowed while the `await` above was in
-    // flight (rejectAndClose already closed the socket and cleared it) —
-    // don't hand a dead connection to the inner handler.
-    if (rejected) return;
-
-    const shim: WsConnection = {
-      ...conn,
-      onMessage: (cb) => {
-        // Drain fully — including anything that arrives re-entrantly while
-        // draining — before this listener is armed for live frames, so a
-        // re-entrant arrival queues behind what's still replaying instead of
-        // jumping ahead of it. Only the first registrant ever sees a
-        // non-empty queue here; later registrants just join the fan-out for
-        // frames from this point on, without being replayed history they
-        // weren't present for.
-        while (queued.length > 0) {
-          for (const b of queued.splice(0)) cb(b);
-        }
-        listeners.push(cb);
-      }
-    };
-    await handler(req, shim);
-  };
-}
-
-/**
  * Wrap a `PluginRouter` so every registered route runs through `withAuth`
  * with a capability inferred from the HTTP method — GET reads, everything
  * else mutates. An authenticated caller must hold that capability in one of
  * `namespaces` (the plugin's declared namespaces); a plugin that declares
- * none accepts the capability held in any namespace. WS routes are wrapped by
- * `wrapWsHandler`, which resolves identity but leaves the
- * privileged/anonymous decision to the plugin.
+ * none accepts the capability held in any namespace.
  */
 export function wrapPluginRouter(
   router: PluginRouter,
@@ -363,7 +256,6 @@ export function wrapPluginRouter(
     post: (path, h) => router.post(path, gate('POST', h)),
     put: (path, h) => router.put(path, gate('PUT', h)),
     delete: (path, h) => router.delete(path, gate('DELETE', h)),
-    patch: (path, h) => router.patch(path, gate('PATCH', h)),
-    websocket: (path, h) => router.websocket(path, wrapWsHandler(h, cfg))
+    patch: (path, h) => router.patch(path, gate('PATCH', h))
   };
 }

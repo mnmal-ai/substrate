@@ -1,7 +1,7 @@
 /**
- * WS-frame wire codec. Spec §8.5.
+ * Frame wire codec. Spec §8.5.
  *
- * Centralizes JSON-vs-pack envelope handling for WebSocket transports plus the
+ * Centralizes JSON-vs-pack envelope handling for frame streams plus the
  * precomputed decode plan that turns positional `data` tuples back into named
  * objects. The plan is built once per subscription, so per-frame work is
  * O(plan entries). Shared by substrate-client and the perf harness so both
@@ -21,17 +21,16 @@ import { decodePositional } from './decoder.js';
 export type WireMode = 'json' | 'pack';
 
 /**
- * Encode an outbound WS frame. Pack mode returns msgpack bytes; JSON mode
- * returns stringified text. The `mode` argument is the wire-format discriminant
- * — call sites can route the result to the right `WebSocket.send` overload via
- * a typed `typeof wire === 'string'` branch.
+ * Encode an outbound frame. Pack mode returns msgpack bytes; JSON mode
+ * returns stringified text. The `mode` argument is the wire-format discriminant;
+ * callers branch on `typeof wire === 'string'`.
  */
 export function encodeWsFrame(value: unknown, mode: WireMode): string | Uint8Array {
   return mode === 'pack' ? pack(value) : stringifyJson(value);
 }
 
 /**
- * Decode an inbound WS message envelope (the outer `{ id, kind, data?, ... }`
+ * Decode an inbound frame envelope (the outer `{ id, kind, data?, ... }`
  * shape — positional `data` reconstruction is a separate concern handled by
  * `applyDecodePlanInPlace`).
  *
@@ -84,11 +83,11 @@ function toBytes(raw: unknown): Uint8Array {
 }
 
 // ---------------------------------------------------------------------------
-// WS pack-decode plan
+// Pack-decode plan
 // ---------------------------------------------------------------------------
 
 /**
- * A single precomputed entry in a WS pack-decode plan. All per-key lookups
+ * A single precomputed entry in a pack-decode plan. All per-key lookups
  * (parseQualifiedKey, schema probe, fields narrow) happen once at plan-build
  * time; per-frame decoding then iterates the plan directly.
  *

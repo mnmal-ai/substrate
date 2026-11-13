@@ -82,7 +82,6 @@ async function mkServer(overrides: { rateLimiter?: RateLimiter } = {}): Promise<
     dataset,
     datasets: { [SYSTEM_NAMESPACE]: substrateDataset },
     auth: authCfg,
-    streamTicketSecret: 'test-stream-ticket-secret',
     registerRateLimiter: rateLimiter,
     coordinators: [fixturePlugin]
   });
@@ -733,7 +732,6 @@ describe('GET /substrate/v1/whoami — attribute mode', () => {
       server,
       dataset,
       auth: attributeAuthCfg,
-      streamTicketSecret: 'test-stream-ticket-secret',
       coordinators: [fixturePlugin]
     });
     await server.start();

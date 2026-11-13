@@ -222,7 +222,7 @@ export const DEFAULT_IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
  * without the call site knowing which metric string to use.
  *
  *  - `'cancel'`      — explicit client-driven cancel (op: 'cancel') or direct handle use
- *  - `'socket_close'` — underlying WS socket closed (conn.onClose)
+ *  - `'socket_close'` — client disconnected (response closed)
  *  - `'shutdown'`     — server-initiated graceful shutdown (conn.onShutdown)
  */
 export type SubscriptionCancelReason = 'cancel' | 'socket_close' | 'shutdown';
@@ -245,8 +245,8 @@ export interface SubscribeInput {
   ctx: Partial<RequestContext>;
   /**
    * Frame sink. Sync-returning callbacks are still valid; the engine awaits
-   * whatever `onFrame` returns so back-pressure-aware transports (e.g. WS
-   * send-buffer drain) can resolve asynchronously. The fanout loop tracks
+   * whatever `onFrame` returns so back-pressure-aware transports (e.g. a frame
+   * stream's write drain) can resolve asynchronously. The fanout loop tracks
    * pending (unsettled) calls per subscription and tears the entry down when
    * the count exceeds `EngineOptions.subscriptions.queueLimit` (§5.13).
    */

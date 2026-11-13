@@ -2,7 +2,7 @@
  * Integration tests — SubstrateClient <-> FastifySubstrateServer in-process.
  *
  * These tests stand up a real Fastify server on an ephemeral port and drive it
- * through `SubstrateClient` over HTTP + WS. No MSW mocks; 127.0.0.1 requests are
+ * through `SubstrateClient` over HTTP and frame streams. No MSW mocks; 127.0.0.1 requests are
  * exempted from MSW interception in _setup.ts.
  *
  * The `default` namespace with Todo + Tag types is registered by the
@@ -64,7 +64,7 @@ describe('SubstrateClient <-> FastifySubstrateServer integration', () => {
     await client.close();
   });
 
-  it('subscribes to default/Todo over WS and receives snapshot + add on new create', async () => {
+  it('subscribes to default/Todo and receives snapshot + add on new create', async () => {
     const client = new SubstrateClient({ endpoint: baseUrl });
     const events: string[] = [];
     const iter = client
@@ -132,10 +132,10 @@ describe('SubstrateClient <-> FastifySubstrateServer integration', () => {
     await client.close();
   });
 
-  // Pack-over-WS subscription — verifies subprotocol negotiation, msgpack
+  // Pack subscription — verifies Accept negotiation, msgpack
   // framing, and the positional → named decode at the SubstrateClient facade.
-  it('subscribes via wsEncoding=pack and receives named-object data', async () => {
-    const client = new SubstrateClient({ endpoint: baseUrl, wsEncoding: 'pack' });
+  it('subscribes via streamWire=pack and receives named-object data', async () => {
+    const client = new SubstrateClient({ endpoint: baseUrl, streamWire: 'pack' });
     const iter = client
       .subscribe({ 'default/Todo': { params: {}, fields: { id: true, title: true } } })
       [Symbol.asyncIterator]();
@@ -165,7 +165,7 @@ describe('SubstrateClient <-> FastifySubstrateServer integration', () => {
   // (named-object row, not positional tuple) AND that return() resolves
   // promptly in the Suspended-Await scenario against a real server.
   it('pack-mode decode still applies + return() is prompt', async () => {
-    const client = new SubstrateClient({ endpoint: baseUrl, wsEncoding: 'pack' });
+    const client = new SubstrateClient({ endpoint: baseUrl, streamWire: 'pack' });
     const mutator = new SubstrateClient({ endpoint: baseUrl });
     await mutator.mutate({
       'default/createTodo': { params: { title: 'decode-check' }, fields: { id: true } }

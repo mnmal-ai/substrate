@@ -38,8 +38,7 @@ async function start(mode: 'required' | 'attribute'): Promise<MemorySubstrateSer
   await compose({
     server,
     dataset: new MemoryDataset({ namespace: 'default' }),
-    auth: authCfg(mode),
-    streamTicketSecret: 'schema-onboard-ticket-secret'
+    auth: authCfg(mode)
   });
   await server.start();
   return server;

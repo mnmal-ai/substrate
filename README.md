@@ -1,6 +1,6 @@
 # substrate
 
-An agent-first typed data substrate. Plugins declare namespaces and types; Substrate gives every type query, mutate and subscribe operations without handler code, and serves them over HTTP, MCP, WebSocket and SSE.
+An agent-first typed data substrate. Plugins declare namespaces and types; Substrate gives every type query, mutate and subscribe operations without handler code, and serves them over HTTP and MCP, with live updates as streamed frames.
 
 Every operation names its target with a qualified frame key, `<namespace>/<Type>` for queries and `<namespace>/<mutation>` for mutations:
 
@@ -11,7 +11,7 @@ curl -s -X POST http://localhost:3100/substrate/v1/query \
 ```
 
 - **Typed, declared once.** A plugin defines its types with `defineNamespace` and a field DSL; autoCRUD derives `create`/`update`/`delete` mutations and list queries, with declarative policies deciding who may do what.
-- **One grammar on four surfaces.** The same frames work over HTTP (`/substrate/v1/query`, `/substrate/v1/mutate`), the `substrate mcp` stdio server, WebSocket (`/substrate/v1/ws`, JSON or MessagePack) and SSE. Live subscriptions are WS and SSE.
+- **One grammar on three surfaces.** The same frames work over HTTP (`/substrate/v1/query`, `/substrate/v1/mutate`), the `substrate mcp` stdio server, and frame streams (`POST /substrate/v1/subscribe` and `/substrate/v1/stream`, JSON or MessagePack). Live subscriptions are frame streams.
 - **Self-describing.** `GET /substrate/v1/onboard` returns the frame grammar, per-operation instructions and every loaded plugin's surface, so a fresh agent can compose valid frames from one request.
 - **Semantic recall.** The built-in `substrate-recall` plugin embeds declared types into pgvector and fuses dense and keyword ranking.
 - **Schema at runtime.** With the built-in `substrate-proposals` plugin, an authorised agent can add namespaces, types and fields to a running server, additively and with an audit trail.
@@ -69,8 +69,8 @@ With `SUBSTRATE_PLUGIN_DIR` unset the server loads no plugins and serves only `/
 - [Operator decisions](docs/operator-decisions.md): every choice you make when you deploy or upgrade, its default, and what it costs
 - [Upgrading to per-type tables](docs/upgrading-to-type-tables.md): what changes, and the upgrade procedure for an existing store
 - [Upgrading to the warehouse grammar](docs/upgrading-to-warehouse-grammar.md): `bucket` and `derive` become `groupBy` and `select`, plus the new expression params
-- [Surface parity](docs/surface-parity.md): what HTTP, MCP, WS and SSE each offer, and where their shapes differ (edge walks are query-only; subscriptions refuse them)
-- [WebSocket subscription teardown](docs/ws-subscription-contract.md): how subscriptions end and what a client should do
+- [Surface parity](docs/surface-parity.md): what HTTP, MCP and frame streams each offer, and where their shapes differ (edge walks are query-only; subscriptions refuse them)
+- [Frame stream contract](docs/stream-contract.md): the stream wire format, how subscriptions end and what a client should do
 - [Design spec](docs/substrate-from-first-principles.md): the design source of truth
 - Each package and plugin has its own README; [`apps/substrate`](apps/substrate/README.md) covers the binary, its subcommands and environment variables.
 
@@ -94,9 +94,9 @@ packages/                     internal, bundled into @mnmal-ai/substrate
   substrate-compose/          composition root: plugins + dataset + server + auth
   substrate-dataset-memory/   in-memory dataset
   substrate-dataset-pg/       Postgres dataset, edges, migrations
-  substrate-server-fastify/   Fastify HTTP/WS server
+  substrate-server-fastify/   Fastify HTTP server
   substrate-server-memory/    in-process server for tests and embedding
-  substrate-client/           typed HTTP/WS client
+  substrate-client/           typed HTTP client
   substrate-embedder/         embedders for recall (ONNX in-process, Ollama)
   substrate-bridge-http/      HTTP federation bridge client
   substrate-sentinel-client/  dynamic bridge discovery from a Sentinel
