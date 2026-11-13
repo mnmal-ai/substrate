@@ -1,7 +1,15 @@
+import { FRAMES_JSON_MIME, framesEncodingFromAccept } from '@mnmal-ai/substrate/pack';
 import type { HttpHandler, SubstrateResponse } from '@mnmal-ai/substrate/sdk';
 import { error400, jsonResponse, parseJsonBody } from '@mnmal-ai/substrate/sdk';
 import type { NlEngineAccess } from './access.js';
-import { SSE_HEADERS, toJson, toSseStream } from './ask/encode.js';
+import {
+  FRAMES_HEADERS,
+  frameBytes,
+  SSE_HEADERS,
+  sseBytes,
+  toEventStream,
+  toJson
+} from './ask/encode.js';
 import type { AskRequest } from './ask/events.js';
 import { runAsk } from './ask/run.js';
 import type { Judge } from './judge/judge.js';
@@ -79,6 +87,13 @@ export function askHandler(deps: NlRouteDeps): HttpHandler {
       });
     if (ask.type !== undefined && !Object.hasOwn(served.pack.types, ask.type))
       return error400(`unknown type '${ask.type}'`);
+    const frames = framesEncodingFromAccept(req.headers.accept);
+    // NL events are a few small objects, so frames are JSON only.
+    if (frames === 'pack')
+      return jsonResponse(406, {
+        error: `NL streams ${FRAMES_JSON_MIME} only`,
+        code: 'not_acceptable'
+      });
     const events = runAsk(ask, req, {
       pack: served.pack,
       engine: deps.engine,
@@ -86,9 +101,20 @@ export function askHandler(deps: NlRouteDeps): HttpHandler {
       ...(deps.judgeTimeoutMs !== undefined ? { judgeTimeoutMs: deps.judgeTimeoutMs } : {}),
       ...(deps.now !== undefined ? { now: deps.now } : {})
     });
+    if (frames === 'json') {
+      return {
+        status: 200,
+        headers: FRAMES_HEADERS,
+        body: toEventStream(events, frameBytes, undefined, log)
+      };
+    }
     const accept = (req.headers.accept ?? '').toLowerCase();
     if (accept.includes('text/event-stream')) {
-      return { status: 200, headers: SSE_HEADERS, body: toSseStream(events, undefined, log) };
+      return {
+        status: 200,
+        headers: SSE_HEADERS,
+        body: toEventStream(events, sseBytes, undefined, log)
+      };
     }
     try {
       return jsonResponse(200, await toJson(events));

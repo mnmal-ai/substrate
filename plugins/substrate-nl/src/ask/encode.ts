@@ -1,3 +1,4 @@
+import { encodeStreamFrame, FRAMES_JSON_MIME } from '@mnmal-ai/substrate/pack';
 import type { NlEvent, NlOutcome } from './events.js';
 
 /** Same headers as substrate-compose's SSE routes (not exported from its entry). */
@@ -18,30 +19,39 @@ function wireName(ev: NlEvent): [string, unknown] {
   return [event, rest];
 }
 
-export function toSseStream(
+/** One NL event as wire bytes. */
+export type EncodeEvent = (name: string, data: unknown) => Uint8Array;
+
+const utf8 = new TextEncoder();
+export const sseBytes: EncodeEvent = (name, data) => utf8.encode(sseEvent(name, data));
+/** A length-prefixed JSON frame carrying `{ event, data }`, the client's `NlWireEvent`. */
+export const frameBytes: EncodeEvent = (event, data) => encodeStreamFrame({ event, data }, 'json');
+
+export const FRAMES_HEADERS: Record<string, string> = {
+  'content-type': FRAMES_JSON_MIME,
+  'cache-control': 'no-store',
+  'x-accel-buffering': 'no'
+};
+
+export function toEventStream(
   events: AsyncGenerator<NlEvent>,
+  encode: EncodeEvent,
   onCancel?: () => void,
   onError?: (err: unknown) => void
 ): ReadableStream<Uint8Array> {
-  const enc = new TextEncoder();
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
         const next = await events.next();
         if (next.done === true) return controller.close();
         const [name, data] = wireName(next.value);
-        controller.enqueue(enc.encode(sseEvent(name, data)));
+        controller.enqueue(encode(name, data));
       } catch (err) {
-        // In-band, like the subscription SSE surface: the status is already 200.
+        // In-band: the status is already 200.
         // The text is fixed: the real error goes to the server log, never the client.
         onError?.(err);
         controller.enqueue(
-          enc.encode(
-            sseEvent('error', {
-              code: 'nl_engine_error',
-              message: 'NL query failed'
-            })
-          )
+          encode('error', { code: 'nl_engine_error', message: 'NL query failed' })
         );
         controller.close();
       }

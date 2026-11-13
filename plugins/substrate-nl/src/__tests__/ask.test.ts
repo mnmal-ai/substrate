@@ -1,7 +1,7 @@
 import type { NlOutcome, PlanClause, Query, SubstrateRequest } from '@mnmal-ai/substrate/sdk';
 import { describe, expect, it, vi } from 'vitest';
 import type { NlEngineAccess, NlEnvelope } from '../access.js';
-import { toSseStream } from '../ask/encode.js';
+import { sseBytes, toEventStream } from '../ask/encode.js';
 import type { NlEvent } from '../ask/events.js';
 import { mergePlan, runAsk } from '../ask/run.js';
 import type { Judge } from '../judge/judge.js';
@@ -598,8 +598,9 @@ describe('the confidence rule', () => {
 
   it("SSE names the unknown outcome's event 'unknown'", async () => {
     const { e } = engine();
-    const stream = toSseStream(
-      runAsk({ namespace: 'ns', question: 'how many zorblax todos' }, http, { pack, engine: e })
+    const stream = toEventStream(
+      runAsk({ namespace: 'ns', question: 'how many zorblax todos' }, http, { pack, engine: e }),
+      sseBytes
     );
     const text = await new Response(stream).text();
     expect(text).toContain('event: unknown\n');

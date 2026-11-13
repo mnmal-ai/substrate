@@ -1,3 +1,4 @@
+import { decodeStreamFrames, FRAMES_JSON_MIME, FRAMES_PACK_MIME } from '@mnmal-ai/substrate/pack';
 import type { SubstrateRequest } from '@mnmal-ai/substrate/sdk';
 import { describe, expect, it } from 'vitest';
 import type { NlEngineAccess } from '../access.js';
@@ -32,6 +33,13 @@ const post = (
   ...(signal !== undefined ? { signal } : {})
 });
 const text = async (b: unknown) => new Response(b as ReadableStream).text();
+const frameEvents = async (b: unknown) => {
+  const out: Array<{ event: string; data: unknown }> = [];
+  for await (const p of decodeStreamFrames(b as ReadableStream<Uint8Array>)) {
+    out.push(JSON.parse(new TextDecoder().decode(p)));
+  }
+  return out;
+};
 
 describe('POST /substrate/v1/nl', () => {
   it('JSON by default: { outcome, trail }', async () => {
@@ -66,6 +74,44 @@ describe('POST /substrate/v1/nl', () => {
     );
     const names = [...(await text(res.body)).matchAll(/^event: (\w+)$/gm)].map((m) => m[1]);
     expect(names).toEqual(['parsed', 'judging', 'judged', 'rows', 'done']);
+  });
+
+  it('frames+json yields the same events as the JSON trail, outcome named by its kind', async () => {
+    const q = { namespace: 'ns', question: 'open todos' };
+    const json = JSON.parse(String((await askHandler(deps())(post(q))).body));
+    const res = await askHandler(deps())(post(q, { accept: FRAMES_JSON_MIME }));
+    expect(res.status).toBe(200);
+    expect(res.headers?.['content-type']).toBe(FRAMES_JSON_MIME);
+    const events = await frameEvents(res.body);
+    expect(events.map((e) => e.event)).toEqual(['parsed', 'rows', 'done']);
+    expect(events[1]?.data).toEqual(json.outcome);
+  });
+
+  it('frames: a thrown engine error is an in-band error event with fixed text', async () => {
+    const bad: NlEngineAccess = {
+      ...engine,
+      query: async () => {
+        throw new Error('SELECT secret FROM x');
+      }
+    };
+    const res = await askHandler({
+      engine: bad,
+      packs: new PackService({ engine }),
+      log: () => {}
+    })(post({ namespace: 'ns', question: 'open todos' }, { accept: FRAMES_JSON_MIME }));
+    const events = await frameEvents(res.body);
+    expect(events.at(-1)).toEqual({
+      event: 'error',
+      data: { code: 'nl_engine_error', message: 'NL query failed' }
+    });
+  });
+
+  it('frames+pack is 406: NL streams JSON frames only', async () => {
+    const res = await askHandler(deps())(
+      post({ namespace: 'ns', question: 'open todos' }, { accept: FRAMES_PACK_MIME })
+    );
+    expect(res.status).toBe(406);
+    expect(JSON.parse(String(res.body))).toMatchObject({ code: 'not_acceptable' });
   });
 
   it('validates namespace and question; unknown namespace is 404', async () => {
