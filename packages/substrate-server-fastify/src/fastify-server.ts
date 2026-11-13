@@ -298,7 +298,7 @@ export class FastifySubstrateServer implements SubstrateServer {
     // frame and end it. This runs BEFORE `abortAllRequests` deliberately: such a response IS an in-flight
     // request, and aborting it first would tear the session down as a client
     // disconnect — no terminal frame, and the teardown attributed to
-    // `socket_close` rather than `shutdown`.
+    // `client_disconnect` rather than `shutdown`.
     this.#notifyShutdown(WS_REASON_SERVER_RESTART);
     if (opts?.abortInFlight === true) {
       this.abortAllRequests('server_shutdown');

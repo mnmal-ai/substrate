@@ -6,7 +6,7 @@
  * subscription spans. Five teardown paths are exercised:
  *
  *  1. cancel (default) — handle.cancel() with no argument → `_cancel`
- *  2. socket_close     — handle.cancel('socket_close') → `_socket_close`
+ *  2. client_disconnect     — handle.cancel('client_disconnect') → `_client_disconnect`
  *  3. shutdown         — handle.cancel('shutdown') → `_shutdown`
  *  4. overload         — queue-limit breach → `_overloaded` + legacy `_overloaded` metric
  *  5. namespace tombstone — engine.tombstoneNamespace() → `_namespace_tombstoned`
@@ -131,7 +131,7 @@ describe('subscription teardown counters by reason', () => {
     expect(countMetric(metrics, 'engine_subscription_closed_cancel')).toBe(1);
   });
 
-  it('socket_close reason: handle.cancel("socket_close") → engine_subscription_closed_socket_close', async () => {
+  it('client_disconnect reason: handle.cancel("client_disconnect") → engine_subscription_closed_client_disconnect', async () => {
     const { engine, metrics } = bootstrap();
 
     const handle = await engine.subscribe({
@@ -140,9 +140,9 @@ describe('subscription teardown counters by reason', () => {
       ctx: makeCtx(),
       onFrame: () => {}
     });
-    handle.cancel('socket_close');
+    handle.cancel('client_disconnect');
 
-    expect(countMetric(metrics, 'engine_subscription_closed_socket_close')).toBe(1);
+    expect(countMetric(metrics, 'engine_subscription_closed_client_disconnect')).toBe(1);
     expect(countMetric(metrics, 'engine_subscription_closed_cancel')).toBe(0);
   });
 
