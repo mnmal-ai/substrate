@@ -2,7 +2,7 @@
 
 Releases before 1.0.0-alpha.21 are recorded only in their GitHub release notes.
 
-## 1.0.0-beta.1 (unreleased)
+## 1.0.0-beta.1 (2026-11-14)
 
 The first beta. From here on the frame grammar, the wire format and the HTTP and MCP surfaces change only by addition. A breaking change goes through a deprecation first. See *Stability* in the [README](README.md#stability). Upgrading from an alpha takes the steps in [Upgrading to 1.0.0-beta.1](docs/upgrading-to-beta.md).
 
