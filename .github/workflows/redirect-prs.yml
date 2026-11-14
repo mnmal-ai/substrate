@@ -1,9 +1,12 @@
 name: Redirect pull requests
 
 # This project doesn't accept pull requests (see CONTRIBUTING.md). A PR from
-# anyone outside the org gets a comment pointing at the issue forms, and is
-# closed. Org members, collaborators and bots (Renovate, Dependabot) are left
-# alone.
+# anyone without write access gets a comment pointing at the issue forms, and
+# is closed. Bots (Renovate, Dependabot) are left alone.
+#
+# Access is read from the permission API, not from the event's
+# author_association: with private org membership the payload does not report
+# a member as MEMBER. If the lookup fails, the step fails and the PR stays open.
 #
 # pull_request_target runs in the base repo's context so the token can comment
 # and close on a fork's PR. Nothing from the PR is checked out or run.
@@ -18,17 +21,21 @@ permissions:
 jobs:
   redirect:
     name: Redirect to an issue
-    if: >-
-      github.event.pull_request.user.type != 'Bot' &&
-      !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
+    if: github.event.pull_request.user.type != 'Bot'
     runs-on: ubuntu-latest
     steps:
-      - name: Comment and close
+      - name: Comment and close unless the author has write access
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
+          permission=$(gh api "repos/${GH_REPO}/collaborators/${AUTHOR}/permission" --jq .permission)
+          echo "${AUTHOR} has ${permission} access"
+          case "$permission" in
+            admin|maintain|write) exit 0 ;;
+          esac
           cat > body.md <<EOF
           Thanks for this. We don't accept pull requests, so I'm closing it.
 
