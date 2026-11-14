@@ -6,6 +6,7 @@
 import {
   evaluateWhere,
   type FieldDefOf,
+  walkGrammarPath,
   whereContainsExtensionOperator
 } from '@mnmal-ai/substrate-filter';
 import type {
@@ -33,7 +34,6 @@ import {
 } from '@mnmal-ai/substrate-types';
 import { FilterValidationError, validateFilter } from '../filter/validator.js';
 import { applyObligations, evaluatePolicy } from '../policy-evaluator.js';
-import { walkGrammarPath } from '../walk-gate.js';
 import {
   checkIdentityGrant,
   clientErrorMessage,

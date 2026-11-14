@@ -6,6 +6,7 @@
  * imports `Engine`.
  */
 
+import { walkGrammarPath } from '@mnmal-ai/substrate-filter';
 import type {
   DatasetRegistry,
   EdgesStore,
@@ -27,7 +28,6 @@ import {
 } from '@mnmal-ai/substrate-types';
 import { FilterValidationError, validateFilter } from '../filter/validator.js';
 import { evaluatePolicy } from '../policy-evaluator.js';
-import { walkGrammarPath } from '../walk-gate.js';
 import {
   checkIdentityGrant,
   clientErrorMessage,

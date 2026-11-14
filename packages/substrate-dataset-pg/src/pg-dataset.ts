@@ -32,7 +32,8 @@ import {
   fieldRequested,
   fullBuiltinOperators,
   preResolveExtensionOperatorsDetailed,
-  walkAggExprType
+  walkAggExprType,
+  whereUsesWalks
 } from '@mnmal-ai/substrate-filter';
 import type {
   ActorIdentity,
@@ -108,14 +109,7 @@ import { compileExprTyped } from './pg-sql/expression.js';
 import { buildGroupedRead } from './pg-sql/grouped.js';
 import { fieldExprSql, sqlStringLiteral } from './pg-sql/primitives.js';
 import type { ComputedLookup } from './pg-sql/sorting.js';
-import {
-  prepareSharedPicks,
-  tableLookup,
-  walkScope,
-  walkTypes,
-  whereUsesWalks,
-  withCtes
-} from './pg-sql/walk.js';
+import { prepareSharedPicks, tableLookup, walkScope, walkTypes, withCtes } from './pg-sql/walk.js';
 import {
   assembleRowMetadata,
   type BodyOrderByCast,

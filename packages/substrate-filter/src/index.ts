@@ -115,4 +115,10 @@ export {
   type WalkForm,
   windowGroupBy
 } from './walk-forms.js';
-export { forEachWalkHop, type WalkHop } from './walk-hops.js';
+export {
+  forEachWalkHop,
+  usesWalkGrammar,
+  type WalkHop,
+  walkGrammarPath,
+  whereUsesWalks
+} from './walk-hops.js';
