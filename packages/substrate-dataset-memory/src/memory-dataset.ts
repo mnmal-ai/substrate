@@ -632,9 +632,14 @@ export class MemoryDataset implements Dataset {
         return JSON.stringify(values.map((v) => (v instanceof Date ? v.toISOString() : v)));
       };
       const held = new Map<string, Id>();
+      const stored = this.store.get(type);
       for (const r of changed.values()) {
         const key = keyOf(r);
         if (key === undefined) continue;
+        // A row keeping its values is not checked: a duplicate it shares predates the
+        // index (pg holds such values outside it, in a pending field's `extra`).
+        const prior = stored?.get(r.id);
+        if (prior !== undefined && keyOf(prior) === key) continue;
         if (held.has(key)) throw this.uniqueViolation(type, decl, fields);
         held.set(key, r.id);
       }
