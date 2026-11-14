@@ -65,6 +65,45 @@ describe('client.admin.keys', () => {
       'server reported hasMore with no nextCursor — refusing to report a partial key table as complete'
     );
   });
+
+  it("filter: 'all' asks for revoked rows on every page and returns revokedAt", async () => {
+    const seen: (string | null)[] = [];
+    mockHandlers(
+      http.get(`${E}/substrate/v1/_system/keys`, ({ request }) => {
+        const q = new URL(request.url).searchParams;
+        seen.push(q.get('filter'));
+        return q.get('cursor') === null
+          ? HttpResponse.json({
+              filter: 'all',
+              keys: [{ ...row('a'), revokedAt: '2026-11-01T00:00:00Z' }],
+              hasMore: true,
+              nextCursor: 'c1'
+            })
+          : HttpResponse.json({
+              filter: 'all',
+              keys: [{ ...row('b'), revokedAt: null }],
+              hasMore: false
+            });
+      })
+    );
+    const keys = await new SubstrateClient({ endpoint: E, token: 't' }).admin.keys({
+      filter: 'all'
+    });
+    expect(seen).toEqual(['all', 'all']);
+    expect(keys.map((k) => k.revokedAt)).toEqual(['2026-11-01T00:00:00Z', null]);
+  });
+
+  it('the default read sends no filter', async () => {
+    let url = '';
+    mockHandlers(
+      http.get(`${E}/substrate/v1/_system/keys`, ({ request }) => {
+        url = request.url;
+        return HttpResponse.json({ filter: 'active', keys: [], hasMore: false });
+      })
+    );
+    await new SubstrateClient({ endpoint: E, token: 't' }).admin.keys();
+    expect(new URL(url).search).toBe('');
+  });
 });
 
 describe('client.admin.update / revoke', () => {
