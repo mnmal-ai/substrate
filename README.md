@@ -69,6 +69,7 @@ With `SUBSTRATE_PLUGIN_DIR` unset the server loads no plugins and serves only `/
 - [Operator decisions](docs/operator-decisions.md): every choice you make when you deploy or upgrade, its default, and what it costs
 - [Upgrading to per-type tables](docs/upgrading-to-type-tables.md): what changes, and the upgrade procedure for an existing store
 - [Upgrading to the warehouse grammar](docs/upgrading-to-warehouse-grammar.md): `bucket` and `derive` become `groupBy` and `select`, plus the new expression params
+- [Edge walks](docs/walks.md): the walk grammar reference: `_walk`, `pick` and `among`, `as` and `$ref`, `_agg`, nested selections, frame aggregates, limits and refusal codes
 - [Surface parity](docs/surface-parity.md): what HTTP, MCP and frame streams each offer, and where their shapes differ (edge walks are query-only; subscriptions refuse them)
 - [Frame stream contract](docs/stream-contract.md): the stream wire format, how subscriptions end and what a client should do
 - [Design spec](docs/substrate-from-first-principles.md): the design source of truth
