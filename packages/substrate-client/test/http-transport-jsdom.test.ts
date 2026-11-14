@@ -10,6 +10,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HttpTransport } from '../src/transport/http.js';
 
+// The browser builds alias the default fetch to this module.
+vi.mock(
+  '../src/transport/platform-fetch.js',
+  () => import('../src/transport/platform-fetch.browser.js')
+);
+
 const ENDPOINT = 'http://substrate.test';
 
 describe('HttpTransport — jsdom fetch receiver', () => {

@@ -302,10 +302,11 @@ export interface FilterWriteLimits {
   idsCap: number;
 }
 
-export const DEFAULT_FILTER_WRITE_LIMITS: Readonly<FilterWriteLimits> = Object.freeze({
-  maxMatch: 10_000,
-  idsCap: 1_000
-});
+export const DEFAULT_FILTER_WRITE_LIMITS: Readonly<FilterWriteLimits> =
+  /* @__PURE__ */ Object.freeze({
+    maxMatch: 10_000,
+    idsCap: 1_000
+  });
 
 export interface DropResult {
   /** Number of rows physically removed. */

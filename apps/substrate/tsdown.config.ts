@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { defineBinTsdown, defineLibTsdown } from '@mnmal-ai/substrate-config/tsdown';
 
 // The published package is one bundle: every @mnmal-ai/substrate-* workspace
@@ -41,12 +42,22 @@ const js = defineBinTsdown({
     // The MCP `run` sandbox forks `./script-runner.js` beside the chunk that holds it.
     'script-runner': 'src/mcp/script-runner.ts'
   },
-  banner: {
-    js: "import { createRequire as __binCreateRequire } from 'node:module'; const require = __binCreateRequire(import.meta.url);"
-  },
   neverBundle: EXTERNAL,
   alwaysBundle: [/^@mnmal-ai\/substrate-/, /^@inquirer\//]
 });
+
+// msgpackr and semver do not declare themselves free of load-time side
+// effects, so a consumer's bundler keeps them whenever it reaches a chunk that
+// imports them. Each is imported by one small module, kept in a chunk of its
+// own; with `"sideEffects": false`, a consumer that uses neither drops both.
+js.outputOptions = {
+  codeSplitting: {
+    groups: [
+      { name: 'msgpackr', test: /substrate-pack[\\/]src[\\/]msgpackr\.ts$/ },
+      { name: 'semver', test: /substrate-compose[\\/]src[\\/]semver\.ts$/ }
+    ]
+  }
+};
 
 // Both builds resolve workspace packages to their sources (tsconfig.bundle.json),
 // so the bundle never reads another package's dist.
@@ -59,8 +70,15 @@ const dts = {
   dts: { resolve: [/^@mnmal-ai\/substrate-/], emitDtsOnly: true }
 };
 
-// The `browser` condition of `./client`: platform-neutral, and without the bin
-// banner, whose `node:module` import a browser cannot load.
+const BROWSER_PLATFORM_FETCH = fileURLToPath(
+  new URL(
+    '../../packages/substrate-client/src/transport/platform-fetch.browser.ts',
+    import.meta.url
+  )
+);
+
+// The `browser` condition of `./client`: platform-neutral, with the platform
+// `fetch` as `substrateFetch`'s default instead of the `node:http2` pool.
 const browser = {
   ...defineLibTsdown({
     entry: { 'client.browser': 'src/exports/client.browser.ts' },
@@ -69,6 +87,7 @@ const browser = {
   }),
   clean: false,
   tsconfig: '../../tsconfig.bundle.json',
+  alias: { './platform-fetch.js': BROWSER_PLATFORM_FETCH },
   deps: { neverBundle: EXTERNAL, alwaysBundle: [/^@mnmal-ai\/substrate-/] }
 };
 

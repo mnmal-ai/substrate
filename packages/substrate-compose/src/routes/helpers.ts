@@ -27,10 +27,10 @@ import { projectEnvelope } from './project-json.js';
 
 // Frozen because response builders return this shared reference directly
 // rather than allocating per request; handlers must not mutate it.
-export const JSON_HEADERS: Readonly<Record<string, string>> = Object.freeze({
+export const JSON_HEADERS: Readonly<Record<string, string>> = /* @__PURE__ */ Object.freeze({
   'content-type': 'application/json'
 });
-const PACK_HEADERS: Readonly<Record<string, string>> = Object.freeze({
+const PACK_HEADERS: Readonly<Record<string, string>> = /* @__PURE__ */ Object.freeze({
   'content-type': PACK_MIME
 });
 

@@ -10,7 +10,7 @@ import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from 'node:cr
 
 const PREFIX = 's1.';
 // shortcut: without a configured secret the key is per process, so a sealed cursor dies with a restart and does not open on a peer process.
-let KEY: Buffer = randomBytes(32);
+let KEY: Buffer = /* @__PURE__ */ randomBytes(32);
 
 /** Derives the seal key from a deployment secret, so every process sharing it opens the same cursors. */
 export function setCursorSealSecret(secret: string): void {

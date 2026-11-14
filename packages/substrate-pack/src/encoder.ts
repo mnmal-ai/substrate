@@ -29,7 +29,6 @@ import {
   type PackEnvelope,
   type Schema
 } from '@mnmal-ai/substrate-types';
-import { pack } from 'msgpackr';
 import {
   type FieldDefPlan,
   type FieldDefPlanCache,
@@ -40,6 +39,7 @@ import {
   resolveFieldMap as sharedResolveFieldMap,
   type WalkSlot
 } from './_plan-cache.js';
+import { pack } from './msgpackr.js';
 
 export interface EncodeContext {
   /** Federated schema map — required when the type has any crossRef fields selected. */

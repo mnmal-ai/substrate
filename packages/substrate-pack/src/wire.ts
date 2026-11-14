@@ -14,9 +14,9 @@ import {
   type Schema,
   stringifyJson
 } from '@mnmal-ai/substrate-types';
-import { pack, Unpackr } from 'msgpackr';
-
+import type { Unpackr } from 'msgpackr';
 import { decodePositional } from './decoder.js';
+import { createUnpackr, pack } from './msgpackr.js';
 
 export type WireMode = 'json' | 'pack';
 
@@ -44,7 +44,10 @@ export function encodeWsFrame(value: unknown, mode: WireMode): string | Uint8Arr
  * `raw as string` casts at every call site.
  */
 export function decodeWsEnvelope<T = unknown>(raw: unknown, mode: WireMode): T {
-  if (mode === 'pack') return inbound.unpack(toBytes(raw)) as T;
+  if (mode === 'pack') {
+    inbound ??= createUnpackr({ structuredClone: false, mapsAsObjects: true });
+    return inbound.unpack(toBytes(raw)) as T;
+  }
   if (typeof raw === 'string') return JSON.parse(raw) as T;
   return JSON.parse(new TextDecoder().decode(toBytes(raw))) as T;
 }
@@ -55,7 +58,7 @@ export function decodeWsEnvelope<T = unknown>(raw: unknown, mode: WireMode): T {
  * plain-object maps. msgpackr's other built-in extensions are process-global
  * and still decode, so a server checks a request with `isPlainRequestData`.
  */
-const inbound = new Unpackr({ structuredClone: false, mapsAsObjects: true });
+let inbound: Unpackr | undefined;
 
 const MAX_REQUEST_DEPTH = 64;
 

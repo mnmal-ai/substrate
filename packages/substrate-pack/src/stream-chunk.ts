@@ -20,9 +20,9 @@
  */
 
 import type { FieldInput, Schema } from '@mnmal-ai/substrate-types';
-import { pack, unpack } from 'msgpackr';
 import { decodePositional } from './decoder.js';
 import { encodePositional } from './encoder.js';
+import { pack, unpack } from './msgpackr.js';
 
 /**
  * Per §7.4. `shape` is fixed to `'single'`; chunks never carry a list.

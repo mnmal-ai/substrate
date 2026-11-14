@@ -9,6 +9,7 @@
     "directory": "apps/substrate"
   },
   "type": "module",
+  "sideEffects": false,
   "bin": {
     "substrate": "dist/substrate.js",
     "substrate-admin": "dist/substrate-admin.js"
@@ -21,7 +22,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsdown && node scripts/copy-plugin-configs.mjs && node scripts/check-browser-bundle.mjs",
+    "build": "tsdown && node scripts/copy-plugin-configs.mjs && node scripts/check-browser-bundle.mjs && node scripts/check-entry-sizes.mjs",
     "prepack": "TURBO_TELEMETRY_DISABLED=1 turbo run build --filter=@mnmal-ai/substrate",
     "dev": "tsx src/bin/substrate.ts serve",
     "test": "vitest run",
