@@ -301,13 +301,14 @@ to their transport.
 subscribe('<ns>/<Type>'): unknown param 'limit'. Allowed: _allowTableScan, orderBy, where.
 ```
 
-The allowlist is engine-wide (`KNOWN_SUBSCRIBE_PARAMS`), not a namespace quirk.
-A consumer that reuses its query params for a subscription gets `unknown_param`.
+The allowlist is engine-wide (`KNOWN_SUBSCRIBE_PARAMS`), not a namespace quirk,
+and a `stream` on a type applies the same one. A consumer that reuses its query
+params for a subscription or a stream gets `unknown_param`.
 
 Typed edge walks (`_walk`, `_agg`, `count`, `aggregate`, `groupBy`, `having`, `offset`) are
 query-only on every surface. `query` answers them; `subscribe` and `stream` refuse a
 frame that uses one with `walks_in_subscription`, and `mutate` refuses them with
-`walks_in_mutation`. `select` is no subscribe param, so a subscription that sends it gets
+`walks_in_mutation`. `select` is no subscribe or stream param, so a frame that sends it gets
 `unknown_param`, like any param beyond `where` and `orderBy`; `where.$expr` is allowed in a
 subscription's `where`.
 

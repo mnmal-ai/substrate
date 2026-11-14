@@ -354,6 +354,58 @@ describe('Engine.stream — error paths (§5.5)', () => {
     expect(err?.errors?.[0]?.code).toBe('unknown_field');
   });
 
+  it('a param beyond the subscribe allowlist is unknown_param, resolver never invoked (#1952)', async () => {
+    for (const k of ['select', 'limit', 'cursor', 'includeDeleted']) {
+      let called = false;
+      const local = bootstrap();
+      local.registry.register('Todo', {
+        kind: 'type',
+        fields: todoFields(),
+        resolver: async function* () {
+          called = true;
+          yield { id: '1' } as Row;
+        }
+      });
+      const got: WsResponseFrame[] = [];
+      local.engine.stream({
+        id: 'str-select',
+        frame: { 'default/Todo': { params: { [k]: { x: 1 } }, fields: { id: true } } },
+        ctx: makeCtx(),
+        onFrame: (f) => void got.push(f)
+      });
+      await waitForEnd(got);
+      expect(called).toBe(false);
+      expect(got.find((f) => f.kind === 'error')?.errors?.[0]).toMatchObject({
+        code: 'unknown_param',
+        path: ['default/Todo', 'params', k],
+        message: expect.stringContaining('Allowed: _allowTableScan, orderBy, where.')
+      });
+    }
+  });
+
+  it('a stream with where and orderBy still streams its rows (#1952)', async () => {
+    ctx.registry.register('Todo', {
+      kind: 'type',
+      fields: todoFields(),
+      resolver: async function* () {
+        yield { id: '1', title: 'a' } as Row;
+      }
+    });
+    ctx.engine.stream({
+      id: 'str-ok',
+      frame: {
+        'default/Todo': {
+          params: { where: { title: { eq: 'a' } }, orderBy: [{ title: 'asc' }] },
+          fields: { id: true }
+        }
+      },
+      ctx: makeCtx(),
+      onFrame: (f) => void frames.push(f)
+    });
+    await waitForEnd(frames);
+    expect(frames.map((f) => f.kind)).toEqual(['chunk', 'end']);
+  });
+
   it('unqualified key → unqualified_key error + end', async () => {
     ctx.engine.stream({
       id: 'str-raw',
