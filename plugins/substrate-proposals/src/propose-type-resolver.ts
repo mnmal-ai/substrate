@@ -326,12 +326,16 @@ async function proposeTypeLocked(
   let appliedRow: Row;
 
   if (engine !== undefined) {
-    appliedRow = await writeInTx(binding.registry, ctx, args, 'updateTypeProposal', {
-      id: newId,
-      applied: true,
-      appliedAt: now,
-      resultingSchemaVersion
-    });
+    // Trusted: steps 1-4 already authorised this proposal, storage and index options included.
+    appliedRow = await writeInTx(
+      binding.registry,
+      ctx,
+      args,
+      'updateTypeProposal',
+      { id: newId, applied: true, appliedAt: now, resultingSchemaVersion },
+      false,
+      true
+    );
     // autoCRUD's update returns `{ id }` on the projection above. The full
     // row shape is what callers expect — re-read so the downstream consumer
     // (e.g. envelope encoder) sees every field.

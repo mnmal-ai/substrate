@@ -6,7 +6,7 @@
 
 import { Engine, loadPlugins, MemoryEdgesStore } from '@mnmal-ai/substrate-core';
 import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-dataset-memory';
-import type { RequestContext } from '@mnmal-ai/substrate-types';
+import type { RequestContext, ResolverArgs } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
 import { createNoopPubSub, createProposalsPlugin } from '../src/index.js';
 
@@ -51,7 +51,7 @@ async function boot(
   });
   const engine = new Engine({ namespaces: loaded.namespaces, datasets, edges });
   await loaded.runOnStart(engine);
-  return { engine };
+  return { engine, loaded };
 }
 
 function ctx(capabilities: string[]): Partial<RequestContext> {
@@ -191,7 +191,7 @@ describe('proposal records', () => {
   });
 });
 
-describe('removing a TypeProposal (#1792)', () => {
+describe('removing a TypeProposal (#1792, #1954)', () => {
   const str = JSON.stringify({ t: { kind: 'scalar', type: 'string' } });
   const propose = ['read', 'mutate', 'substrate.propose'];
 
@@ -204,7 +204,13 @@ describe('removing a TypeProposal (#1792)', () => {
 
   const removals: Array<[string, Record<string, unknown>]> = [
     ['app/deleteTypeProposal', { id: 'tp' }],
-    ['app/updateTypeProposal', { id: 'tp', archived: true }]
+    ['app/updateTypeProposal', { id: 'tp', archived: true }],
+    // Each changes what boot replays for the type (#1954).
+    ['app/updateTypeProposal', { id: 'tp', applied: false }],
+    ['app/updateTypeProposal', { id: 'tp', typeName: 'Empty' }],
+    ['app/updateTypeProposal', { id: 'tp', fieldsJson: '{}' }],
+    // Not on the benign list, so gated too.
+    ['app/updateTypeProposal', { id: 'tp', supersededByCode: true }]
   ];
 
   it('of a type with storage needs the drop capability', async () => {
@@ -221,7 +227,13 @@ describe('removing a TypeProposal (#1792)', () => {
         ctx: ctx(propose)
       });
       expect(batched.errors?.[0]?.code).toBe('policy_denied');
-      expect((await ds.read('TypeProposal', { id: 'tp' })).rows[0]?.archived).toBe(false);
+      const kept = (await ds.read('TypeProposal', { id: 'tp' })).rows[0];
+      expect(kept).toMatchObject({
+        archived: false,
+        applied: true,
+        typeName: 'Stored',
+        fieldsJson: str
+      });
       const allowed = await engine.mutate({
         frame: { [key]: { params, fields: { id: true } } },
         ctx: ctx([...propose, 'admin'])
@@ -258,17 +270,52 @@ describe('removing a TypeProposal (#1792)', () => {
     }
   });
 
-  it('other updates still need only the propose capability', async () => {
+  it('updates touching only benign fields still need only the propose capability', async () => {
     const { engine } = await seeded(true);
     const env = await engine.mutate({
       frame: {
         'app/updateTypeProposal': {
-          params: { id: 'tp', proposedReason: 'clarified' },
+          params: { id: 'tp', proposedReason: 'clarified', proposedBy: 'someone' },
           fields: { id: true }
         }
       },
       ctx: ctx(propose)
     });
     expect(env.errors).toBeUndefined();
+  });
+
+  it('checks the stored typeName, so a rename cannot point the check at an empty type', async () => {
+    // 'Empty' has no rows; the proposal's stored type 'Stored' does.
+    const { ds, engine } = await seeded(true);
+    const env = await engine.mutate({
+      frame: {
+        'app/updateTypeProposal': { params: { id: 'tp', typeName: 'Empty' }, fields: { id: true } }
+      },
+      ctx: ctx(propose)
+    });
+    expect(env.errors?.[0]?.code).toBe('policy_denied');
+    expect((await ds.read('TypeProposal', { id: 'tp' })).rows[0]?.typeName).toBe('Stored');
+  });
+
+  it('fails closed on a removal with no id or no dataset to check', async () => {
+    const { ds, loaded } = await seeded(true);
+    const registry = loaded.namespaces.get('app')?.registry;
+    const call = (key: string, args: Partial<ResolverArgs>) =>
+      registry
+        ?.get(key)
+        ?.resolver({ ...ctx(propose), namespace: 'app' } as RequestContext, args as ResolverArgs);
+    await expect(
+      call('updateTypeProposal', { params: { applied: false }, dataset: ds })
+    ).rejects.toMatchObject({
+      code: 'policy_denied'
+    });
+    await expect(call('deleteTypeProposal', { params: { id: 'tp' } })).rejects.toMatchObject({
+      code: 'policy_denied'
+    });
+    await expect(
+      call('updateTypeProposal', { params: { id: 'tp', archived: true } })
+    ).rejects.toMatchObject({
+      code: 'policy_denied'
+    });
   });
 });
