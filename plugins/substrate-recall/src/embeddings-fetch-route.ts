@@ -17,6 +17,7 @@ import type { Embedder } from '@mnmal-ai/substrate-embedder';
 import type { HttpHandler, SubstrateRequest, SubstrateResponse } from '@mnmal-ai/substrate-types';
 import { handleEmbeddingsFetch, validateFetchInput } from './embeddings-fetch-core.js';
 import type { EmbeddingsStore } from './embeddings-store.js';
+import { queryTimeoutResponse } from './query-timeout.js';
 import {
   bindPolicy,
   type ReadPolicyCheck,
@@ -98,6 +99,8 @@ export function embeddingsFetchRouteHandler(cfg: EmbeddingsFetchRouteConfig): Ht
       });
       return jsonResponse(200, out);
     } catch (err) {
+      const timedOut = queryTimeoutResponse(err);
+      if (timedOut !== null) return timedOut;
       const code = (err as { code?: string } | null)?.code;
       const message = err instanceof Error ? err.message : String(err);
       if (code === 'bad_request') {

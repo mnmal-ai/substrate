@@ -348,6 +348,19 @@ describe('recallRouteHandler', () => {
     const body = JSON.parse(Buffer.from(res.body as Buffer).toString('utf8'));
     expect(body.error.code).toBe('internal');
   });
+
+  it('returns 503 query_timeout when the store is cancelled by a statement timeout', async () => {
+    const embedder = new FakeEmbedder({ dimension: 8 });
+    const cancelled = Object.assign(new Error('canceling statement due to statement timeout'), {
+      code: '57014'
+    });
+    const { store } = makeStore({ knnImpl: () => Promise.reject(cancelled) });
+    const handler = recallRouteHandler({ embedder, store });
+    const res = await handler(makePostReq({ query: 'x', type: 'Decision' }));
+    expect(res.status).toBe(503);
+    const body = JSON.parse(Buffer.from(res.body as Buffer).toString('utf8'));
+    expect(body.error.code).toBe('query_timeout');
+  });
 });
 
 // ---------------------------------------------------------------------------
