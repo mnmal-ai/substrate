@@ -105,6 +105,26 @@ const BENIGN_PROPOSAL_FIELDS = new Set([
  * Marks a write the plugin makes on its own behalf after it has authorised the
  * whole operation (propose_type's step 5). A symbol, so no wire frame can set it.
  */
+/**
+ * Why `typeName` is already defined, or undefined when it is free: it has
+ * stored rows, or another live (applied, not archived) proposal defines it.
+ * A second live definition would make boot replay choose between them.
+ */
+async function defined(
+  dataset: Dataset,
+  typeName: string,
+  exceptId?: string
+): Promise<string | undefined> {
+  if (await typeHasRows(dataset, typeName)) return 'has stored rows';
+  const live = await dataset.read('TypeProposal', {
+    where: {
+      AND: [{ typeName: { eq: typeName } }, { applied: { eq: true } }, { archived: { eq: false } }]
+    },
+    limit: 2
+  });
+  return live.rows.some((r) => r.id !== exceptId) ? 'already has an applied proposal' : undefined;
+}
+
 export const TRUSTED_WRITE: unique symbol = Symbol('substrate-proposals.trustedWrite');
 
 export function gateTypeProposalRemoval(
@@ -142,10 +162,11 @@ export function gateTypeProposalRemoval(
                 `cannot check '${String(name)}' for stored rows; needs '${dropCapability}'`
               );
             }
-            if (typeof name === 'string' && (await typeHasRows(args.dataset, name))) {
+            const why = typeof name === 'string' ? await defined(args.dataset, name) : undefined;
+            if (why !== undefined) {
               throw deny(
                 ctx,
-                `'${name}' has stored rows; an applied proposal for it redefines the type, which needs '${dropCapability}' as drop_type does`
+                `'${String(name)}' ${why}; an applied proposal for it redefines the type, which needs '${dropCapability}' as drop_type does`
               );
             }
             return resolver(ctx, args);
@@ -158,12 +179,23 @@ export function gateTypeProposalRemoval(
             );
           }
           const { rows } = await args.dataset.read('TypeProposal', { id, limit: 1 });
-          const typeName = rows[0]?.typeName;
-          if (typeof typeName === 'string' && (await typeHasRows(args.dataset, typeName))) {
+          const stored = rows[0]?.typeName;
+          if (typeof stored === 'string' && (await typeHasRows(args.dataset, stored))) {
             throw deny(
               ctx,
-              `'${typeName}' has stored rows; this change to its proposal drops or redefines the type, which needs '${dropCapability}' as drop_type does`
+              `'${stored}' has stored rows; this change to its proposal drops or redefines the type, which needs '${dropCapability}' as drop_type does`
             );
+          }
+          // A rename points the proposal at another type: that name must be free too.
+          const next = params.typeName;
+          if (typeof next === 'string' && next !== stored) {
+            const why = await defined(args.dataset, next, id);
+            if (why !== undefined) {
+              throw deny(
+                ctx,
+                `'${next}' ${why}; renaming a proposal onto it redefines the type, which needs '${dropCapability}' as drop_type does`
+              );
+            }
           }
         }
         return resolver(ctx, args);

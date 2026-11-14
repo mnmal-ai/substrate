@@ -308,6 +308,61 @@ describe('removing a TypeProposal (#1792, #1954)', () => {
     ).toBeUndefined();
   });
 
+  it('a rename onto a defined name needs the drop capability, whatever the stored name holds', async () => {
+    // The stored type 'Empty' has no rows; the target 'Stored' does, or has a live proposal.
+    const { ds, engine } = await seeded(true);
+    await ds.write('TypeProposal', [row({ id: 'te', typeName: 'Empty', fieldsJson: str })]);
+    const onto = (typeName: string) =>
+      engine.mutate({
+        frame: {
+          'app/updateTypeProposal': { params: { id: 'te', typeName }, fields: { id: true } }
+        },
+        ctx: ctx(propose)
+      });
+    expect((await onto('Stored')).errors?.[0]?.code).toBe('policy_denied');
+    await ds.write('TypeProposal', [row({ id: 'tl', typeName: 'Live', fieldsJson: str })]);
+    expect((await onto('Live')).errors?.[0]?.code).toBe('policy_denied');
+    expect((await ds.read('TypeProposal', { id: 'te' })).rows[0]?.typeName).toBe('Empty');
+    expect((await onto('Free')).errors).toBeUndefined();
+  });
+
+  it('a second applied proposal for a name with a live one needs the drop capability', async () => {
+    const { ds, engine } = await seeded(false);
+    // 'Stored' has no rows here, but proposal 'tp' already defines it.
+    expect((await ds.read('Stored', {})).rows).toEqual([]);
+    const env = await engine.mutate({
+      frame: {
+        'app/createTypeProposal': {
+          params: row({ id: 'dup', typeName: 'Stored', fieldsJson: '{}', applied: true }),
+          fields: { id: true }
+        }
+      },
+      ctx: ctx(propose)
+    });
+    expect(env.errors?.[0]?.code).toBe('policy_denied');
+  });
+
+  it('boot replay registers the oldest applied definition of a name', async () => {
+    const ds = new MemoryDataset({ namespace: 'app' });
+    const later = new Date(T0.getTime() + 60_000);
+    // Written newest first, so natural order would read the newer one first.
+    await ds.write('TypeProposal', [
+      row({ id: 'old', typeName: 'Twin', fieldsJson: str, appliedAt: T0 })
+    ]);
+    await ds.write('TypeProposal', [
+      row({
+        id: 'new',
+        typeName: 'Twin',
+        fieldsJson: JSON.stringify({ u: { kind: 'scalar', type: 'string' } }),
+        appliedAt: later
+      })
+    ]);
+    const { loaded } = await boot(ds);
+    const fields = loaded.namespaces.get('app')?.registry.get('Twin')?.fields;
+    expect(fields).toHaveProperty('t');
+    expect(fields).not.toHaveProperty('u');
+  });
+
   it('checks the stored typeName, so a rename cannot point the check at an empty type', async () => {
     // 'Empty' has no rows; the proposal's stored type 'Stored' does.
     const { ds, engine } = await seeded(true);
