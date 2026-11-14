@@ -16,7 +16,9 @@ const healthy = [
   http.get(`${B}/health`, () => HttpResponse.json({ version: '7.6.0' })),
   http.get(`${B}/substrate/v1/onboard`, () =>
     HttpResponse.json({ binary: { coordinators: [], virtualNamespaces: [] } })
-  )
+  ),
+  // No storage section, as a memory store answers; unmocked, every admin run hit msw's unhandled-request error path.
+  http.get(`${B}/substrate/v1/config`, () => HttpResponse.json({}))
 ];
 const status = (r: { checks: readonly { name: string; status: string }[] }, name: string) =>
   r.checks.find((c) => c.name === name)?.status;
@@ -279,7 +281,8 @@ describe('diagnose', () => {
         liveKeyWithoutRow: [],
         agentKids: ['agent@Box']
       });
-    });
+      // Every probe is mocked and no timer runs; the CI timeout was a starved runner, not a wait.
+    }, 15_000);
 
     it('a credential failure leaves facts empty — absent, not zero', async () => {
       mockHandlers(...healthy, whoamiOf(null));
