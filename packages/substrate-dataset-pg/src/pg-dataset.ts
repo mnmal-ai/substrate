@@ -94,6 +94,7 @@ import {
 } from './index-reconciler.js';
 import { detectLayout, ident, type StorageLayout } from './layout.js';
 import { IndexLockAborted, UnsupportedStoreLayoutError, withTableIndexLock } from './migrate.js';
+import { cachedMisfitCount, countMisfits, freshMisfitCount } from './misfits.js';
 import type { PgEdgesStore } from './pg-edges-store.js';
 import { PgShortIdStore, parseShortId } from './pg-short-id-store.js';
 import {
@@ -2056,12 +2057,17 @@ export class PgDataset implements Dataset {
     const pending = lines.filter((l) => l.state === 'pending').length;
     const failed = lines.filter((l) => l.failed).length;
     const orphaned = lines.filter((l) => l.state === 'orphaned').length;
+    // Never scans on this (unauthenticated) path: the last count, if any.
+    const misfits = (
+      cachedMisfitCount(this.#sql, () => countMisfits(this.#sql as Sql)) ?? []
+    ).reduce((n, m) => n + m.count, 0);
     const parts = [
       ...(pending > 0
         ? [plural(pending, 'field pending promotion', 'fields pending promotion')]
         : []),
       ...(failed > 0 ? [plural(failed, 'promotion failed', 'promotions failed')] : []),
-      ...(orphaned > 0 ? [plural(orphaned, 'field orphaned', 'fields orphaned')] : [])
+      ...(orphaned > 0 ? [plural(orphaned, 'field orphaned', 'fields orphaned')] : []),
+      ...(misfits > 0 ? [plural(misfits, 'misfit kept under $raw', 'misfits kept under $raw')] : [])
     ];
     return parts.length === 0 ? [] : [`${parts.join('; ')} — see the storage report`];
   }
@@ -2236,6 +2242,12 @@ export class PgDataset implements Dataset {
     }
     // A failed promotion is a fault; a pending or orphaned field is a state worth showing.
     for (const f of await this.#fieldLines()) (f.failed ? warnings : info).push(f.line);
+    for (const m of await freshMisfitCount(this.#sql, () => countMisfits(sql))) {
+      info.push(
+        `${m.namespace}/${m.type}.${m.field} has ${m.count} misfit${m.count === 1 ? '' : 's'} kept under $raw: ` +
+          'the column holds NULL for them, so its index does not serve them; write the field again or widen its vocabulary'
+      );
+    }
     if (tables.length > opts.partitionBudget) {
       warnings.push(
         `${tables.length} type tables exceed the budget of ${opts.partitionBudget}: move a namespace to its own instance behind a bridge`
