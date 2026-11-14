@@ -12,7 +12,8 @@ import {
   checkExpr,
   type ExprScope,
   exprTypeOfField,
-  metadataExprType
+  metadataExprType,
+  walkGrammarPath
 } from '@mnmal-ai/substrate-filter';
 import {
   EXPR_LIMITS,
@@ -23,7 +24,6 @@ import {
   type TypeSchema,
   type WalkNode
 } from '@mnmal-ai/substrate-types';
-import { walkGrammarPath } from '../walk-gate.js';
 import { FilterValidationError } from './validator.js';
 
 export const MAX_WALK_DEPTH = 3;
@@ -825,7 +825,7 @@ export function validateFrameParams(
       if (
         h.lookup(scope.fields, n) !== undefined ||
         RESERVED_ROW_KEYS.has(n) ||
-        (isObj(nested) && '_walk' in nested)
+        (isObj(nested) && Object.hasOwn(nested, '_walk'))
       ) {
         fail(
           'select_invalid',

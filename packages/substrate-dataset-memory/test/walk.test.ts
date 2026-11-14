@@ -1079,7 +1079,7 @@ describe('task 8 review fixes', () => {
     expect(await ids(ds, 'Cert', recent)).toEqual(['c1', 'c2']);
   });
 
-  it('$ and _agg.x inside a nested selection where resolve against the seed; absent fields are null', async () => {
+  it('$ and _agg.x inside a nested selection where resolve against the seed; absent declared fields are omitted (#1842)', async () => {
     const ds = await dataset({
       Cert: [
         { id: 'c1', ask: 15 },
@@ -1111,9 +1111,9 @@ describe('task 8 review fixes', () => {
         }
       } as NonNullable<ReadParams['nested']>
     });
-    expect(res.rows[0]?.above).toEqual([{ id: 'l2', price: 20, firstSeen: null }]);
+    expect(res.rows[0]?.above).toEqual([{ id: 'l2', price: 20 }]);
     expect(res.rows[1]?.above).toEqual([]);
-    expect(res.rows[0]?.all).toContainEqual({ id: 'l4', price: null });
+    expect(res.rows[0]?.all).toContainEqual({ id: 'l4' });
   });
 });
 

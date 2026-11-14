@@ -1,7 +1,7 @@
 import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-dataset-memory';
+import { usesWalkGrammar, walkGrammarPath } from '@mnmal-ai/substrate-filter';
 import { describe, expect, it } from 'vitest';
 import { Engine, MemoryEdgesStore, type NamespaceConfig, Registry } from '../src/index.js';
-import { usesWalkGrammar, walkGrammarPath } from '../src/walk-gate.js';
 
 describe('usesWalkGrammar', () => {
   const where = (w: unknown) => usesWalkGrammar({ params: { where: w }, fields: { id: true } });
@@ -28,6 +28,21 @@ describe('usesWalkGrammar', () => {
     expect(walkGrammarPath({ fields: { owner: { _agg: {} } } })).toEqual([
       'fields',
       'owner',
+      '_agg'
+    ]);
+  });
+
+  it('reads own keys only, as the hop traversal and the validator do (#1825)', () => {
+    const inherited = Object.create({ _walk: {}, groupBy: 'day' }) as Record<string, unknown>;
+    expect(usesWalkGrammar({ fields: { kids: inherited } })).toBe(false);
+    expect(usesWalkGrammar({ params: inherited })).toBe(false);
+  });
+
+  it('with walkParams false, ignores params named like walk params but not real grammar', () => {
+    const params = { count: true, aggregate: 'sum', groupBy: 'day', having: 1, offset: 2 };
+    expect(walkGrammarPath({ params }, { walkParams: false })).toBeNull();
+    expect(walkGrammarPath({ params, fields: { _agg: {} } }, { walkParams: false })).toEqual([
+      'fields',
       '_agg'
     ]);
   });
