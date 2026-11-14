@@ -58,6 +58,24 @@ describe('a declared unique index conflict (memory)', () => {
     expect(await count(ds)).toBe(1);
   });
 
+  it('does not check a row that keeps its values, so a duplicate predating the index stands', async () => {
+    // Written before the index was declared, as pg holds a pending field's values in `extra`.
+    let indexes: IndexDecl[] = [];
+    const ds = new MemoryDataset({
+      namespace: 'uv',
+      typeDefLookup: () => ({ fields: { code: { kind: 'scalar', type: 'string' } }, indexes })
+    });
+    await ds.write(TYPE, [
+      { id: 'a', code: 'X' },
+      { id: 'b', code: 'X' }
+    ]);
+    indexes = [{ fields: ['code'], unique: true, name: 'code_uq' }];
+    await ds.write(TYPE, [{ id: 'a', code: 'X' }]);
+    // Moving onto a held value is still refused.
+    await ds.write(TYPE, [{ id: 'c', code: 'Z' }]);
+    await refusal(ds.write(TYPE, [{ id: 'c', code: 'X' }]));
+  });
+
   it('refuses a collision inside one write, landing none of its rows', async () => {
     const ds = fixture();
     await refusal(
