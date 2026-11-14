@@ -341,6 +341,61 @@ describe('substrate-mcp tool handlers', () => {
     const result = await handler({ payload: parsed });
     expect(result.isError).toBeUndefined();
   });
+
+  describe('a call without the payload wrapper, through the registered tools', () => {
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const mcp = createMcpServer(TEST_ENDPOINT, { tools: 'query,mutate' });
+      const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+      await mcp.connect(serverSide);
+      const client = new Client({ name: 'bare-frame-test', version: '0.0.0' });
+      await client.connect(clientSide);
+      try {
+        return (await client.callTool({ name, arguments: args })) as ToolResult;
+      } finally {
+        await client.close();
+        await mcp.close();
+      }
+    };
+
+    it('query takes a bare ns/Type frame as the payload', async () => {
+      const result = await call('query', { 'default/Todo': { params: {}, fields: { id: true } } });
+      expect(result.isError).toBeUndefined();
+      const env = parseToolText(result) as { data: Record<string, unknown> };
+      expect(env.data['default/Todo']).toEqual([]);
+    });
+
+    it('mutate takes a bare ns/mutation frame as the payload', async () => {
+      const result = await call('mutate', {
+        'default/createTodo': { params: { title: 'bare', done: false }, fields: { title: true } }
+      });
+      expect(result.isError).toBeUndefined();
+      const env = parseToolText(result) as { data: Record<string, { title: string }> };
+      expect(env.data['default/createTodo']?.title).toBe('bare');
+    });
+
+    it('refuses arguments that are not a frame, naming the payload wrapper', async () => {
+      for (const name of ['query', 'mutate']) {
+        const result = await call(name, { 'default/Todo': {}, fields: { id: true } });
+        expect(result.isError).toBe(true);
+        expect(result.content[0]?.text).toContain('{ "payload": { "<ns>/<Type>"');
+      }
+    });
+
+    it('still advertises the payload argument', async () => {
+      const mcp = createMcpServer(TEST_ENDPOINT, { tools: 'query' });
+      const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+      await mcp.connect(serverSide);
+      const client = new Client({ name: 'bare-frame-schema', version: '0.0.0' });
+      await client.connect(clientSide);
+      try {
+        const [tool] = (await client.listTools()).tools;
+        expect(Object.keys(tool?.inputSchema.properties ?? {})).toEqual(['payload']);
+      } finally {
+        await client.close();
+        await mcp.close();
+      }
+    });
+  });
 });
 
 /**

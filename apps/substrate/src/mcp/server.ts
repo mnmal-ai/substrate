@@ -99,6 +99,29 @@ export const payloadSchema = (example: string) =>
     })
     .describe(example);
 
+/**
+ * query/mutate input: `payload`, plus any other keys kept, so a bare
+ * `{ "<ns>/<Type>": ... }` frame reaches the handler (frameOf) instead of being
+ * stripped and refused. Optional, so the SDK does not refuse the bare call first.
+ */
+const frameInputSchema = (example: string) =>
+  z.object({ payload: payloadSchema(example).optional() }).loose();
+
+export interface FrameArgs {
+  [key: string]: unknown;
+  payload?: Record<string, unknown> | undefined;
+}
+
+/** The frame a call carries: its `payload`, or the arguments themselves when every key is `<ns>/<name>`. */
+function frameOf(args: FrameArgs): Record<string, unknown> | undefined {
+  if (args.payload !== undefined) return args.payload;
+  const keys = Object.keys(args).filter((k) => k !== 'payload');
+  return keys.length > 0 && keys.every((k) => k.includes('/')) ? args : undefined;
+}
+
+const MISSING_PAYLOAD =
+  'missing payload: wrap the frame as { "payload": { "<ns>/<Type>": { "params": {...}, "fields": {...} } } }';
+
 function errorResult(message: string): ToolResult {
   return { content: [{ type: 'text', text: `Error: ${message}` }], isError: true };
 }
@@ -320,10 +343,10 @@ export function createSchemaHandler(
   };
 }
 
-export function createQueryHandler(
-  endpoint: string
-): (args: { payload: Record<string, unknown> }) => Promise<ToolResult> {
-  return async ({ payload }) => {
+export function createQueryHandler(endpoint: string): (args: FrameArgs) => Promise<ToolResult> {
+  return async (args) => {
+    const payload = frameOf(args);
+    if (payload === undefined) return errorResult(MISSING_PAYLOAD);
     try {
       const envelope = await postSubstrate(endpoint, '/substrate/v1/query', payload);
       return okResult(envelope);
@@ -333,10 +356,10 @@ export function createQueryHandler(
   };
 }
 
-export function createMutateHandler(
-  endpoint: string
-): (args: { payload: Record<string, unknown> }) => Promise<ToolResult> {
-  return async ({ payload }) => {
+export function createMutateHandler(endpoint: string): (args: FrameArgs) => Promise<ToolResult> {
+  return async (args) => {
+    const payload = frameOf(args);
+    if (payload === undefined) return errorResult(MISSING_PAYLOAD);
     try {
       const envelope = await postSubstrate(endpoint, '/substrate/v1/mutate', payload);
       return okResult(envelope);
@@ -573,7 +596,7 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
   // never the subscribe/stream path, so it speaks `/substrate/v1/*` JSON directly.
   const TOOLS: Array<{
     name: string;
-    config: { description?: string; inputSchema?: Record<string, unknown> };
+    config: { description?: string; inputSchema?: Record<string, unknown> | z.ZodType };
     // biome-ignore lint/suspicious/noExplicitAny: handler signatures vary per tool
     handler: (...args: any[]) => Promise<ToolResult>;
   }> = [
@@ -630,12 +653,10 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
           'namespaces — e.g. { "prices/Price": {...}, "products/Product": {...} }. ' +
           'The expression functions for select, where.$expr, groupBy and having are listed by the `schema` tool.' +
           WALK_DESCRIPTION,
-        inputSchema: {
-          payload: payloadSchema(
-            'Query frame. Example: { "default/Todo": { "params": { "limit": 20 }, ' +
-              '"fields": { "id": true, "title": true } } }'
-          )
-        }
+        inputSchema: frameInputSchema(
+          'Query frame. Example: { "default/Todo": { "params": { "limit": 20 }, ' +
+            '"fields": { "id": true, "title": true } } }'
+        )
       },
       handler: createQueryHandler(endpoint)
     },
@@ -655,17 +676,15 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
           'make writes atomic together, put them in one array under one op-key. ' +
           'The memory dataset mints a fresh tx scope per namespace, so ' +
           'single-frame op-keys in two namespaces are refused there.',
-        inputSchema: {
-          payload: payloadSchema(
-            'Mutation frame. Single: { "default/createTodo": { "params": { "title": "..." }, ' +
-              '"fields": { "id": true } } }. Batched atomic: ' +
-              '{ "default/updateTodo": [ { "params": { "id": "1", "done": true }, "fields": { "id": true } }, ' +
-              '{ "params": { "id": "2", "done": true }, "fields": { "id": true } } ] }. ' +
-              'By filter: { "default/updateManyTodo": { "params": { "where": { "done": { "eq": false } }, ' +
-              '"set": { "done": true } }, "fields": { "count": true, "ids": true, "idsTruncated": true } } }; ' +
-              'deleteMany<Type> takes only "where".'
-          )
-        }
+        inputSchema: frameInputSchema(
+          'Mutation frame. Single: { "default/createTodo": { "params": { "title": "..." }, ' +
+            '"fields": { "id": true } } }. Batched atomic: ' +
+            '{ "default/updateTodo": [ { "params": { "id": "1", "done": true }, "fields": { "id": true } }, ' +
+            '{ "params": { "id": "2", "done": true }, "fields": { "id": true } } ] }. ' +
+            'By filter: { "default/updateManyTodo": { "params": { "where": { "done": { "eq": false } }, ' +
+            '"set": { "done": true } }, "fields": { "count": true, "ids": true, "idsTruncated": true } } }; ' +
+            'deleteMany<Type> takes only "where".'
+        )
       },
       handler: createMutateHandler(endpoint)
     },

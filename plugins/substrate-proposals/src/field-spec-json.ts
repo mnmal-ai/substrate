@@ -5,7 +5,11 @@
  * and must land through code.
  */
 
-import { field, reservedMetadataFieldMessage } from '@mnmal-ai/substrate-sdk';
+import {
+  field,
+  RESERVED_AUTOCRUD_FIELD_NAMES,
+  reservedMetadataFieldMessage
+} from '@mnmal-ai/substrate-sdk';
 import type {
   FieldDef,
   FieldDefCrossRef,
@@ -230,6 +234,22 @@ export function stringifyFieldDef(def: FieldDef): FieldSpecJson {
       const exhaustive: never = def;
       throw new Error(`unknown FieldDef kind: ${JSON.stringify(exhaustive)}`);
     }
+  }
+}
+
+/**
+ * Refuse a proposed field the engine injects (`shortId`), which apply would overwrite.
+ * The resolvers call it, not apply: a stored proposal that names one still replays.
+ *
+ * @throws ProposalError `invalid_params` naming `fieldName`
+ */
+export function assertNotEngineInjected(fieldName: string): void {
+  if (RESERVED_AUTOCRUD_FIELD_NAMES.includes(fieldName)) {
+    throw new ProposalError(
+      'invalid_params',
+      `\`${fieldName}\` is a reserved field name, auto-injected by the engine`,
+      { param: 'fieldName', fieldName }
+    );
   }
 }
 

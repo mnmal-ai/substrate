@@ -141,6 +141,27 @@ describe('propose_type resolver', () => {
     expect(registry.has('Dress')).toBe(false);
   });
 
+  it('refuses a field named shortId, which the engine injects', async () => {
+    const { resolver, registry } = harness;
+    await expect(
+      resolver(
+        makeCtx(),
+        makeArgs({
+          typeName: 'Dress',
+          fields: { shortId: { kind: 'scalar', type: 'number' } },
+          proposedBy: 'designer-agent',
+          proposedReason: 'engine-injected name'
+        })
+      )
+    ).rejects.toSatisfy(
+      (err: unknown) =>
+        err instanceof ProposalError &&
+        err.code === 'invalid_params' &&
+        err.message.includes('`shortId` is a reserved field name, auto-injected by the engine')
+    );
+    expect(registry.has('Dress')).toBe(false);
+  });
+
   it('rejects an exact re-propose for the same typeName', async () => {
     const { resolver } = harness;
     const ctx = makeCtx();

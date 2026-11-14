@@ -204,6 +204,25 @@ describe('propose_field resolver', () => {
     expect((await dataset.read('FieldProposal', {})).rows).toHaveLength(0);
   });
 
+  it('refuses a field named shortId, which the engine injects', async () => {
+    seedDress(harness);
+    const { resolver, dataset } = harness;
+    const args = makeArgs({
+      targetType: 'Dress',
+      fieldName: 'shortId',
+      fieldSpec: { kind: 'scalar', type: 'number' },
+      proposedBy: 'test',
+      proposedReason: 'engine-injected name'
+    });
+    await expect(resolver(makeCtx(), args)).rejects.toSatisfy(
+      (err: unknown) =>
+        err instanceof ProposalError &&
+        err.code === 'invalid_params' &&
+        err.message.includes('`shortId` is a reserved field name, auto-injected by the engine')
+    );
+    expect((await dataset.read('FieldProposal', {})).rows).toHaveLength(0);
+  });
+
   it('rejects an invalid field spec without writing a proposal row', async () => {
     seedDress(harness);
     const { resolver, dataset } = harness;
