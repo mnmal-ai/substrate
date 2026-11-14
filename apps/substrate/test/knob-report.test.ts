@@ -31,6 +31,8 @@ const NO_DEFAULT: Record<string, string> = {
   SUBSTRATE_TLS_CERT_PATH: 'no default — see SUBSTRATE_TLS_KEY_PATH',
   SUBSTRATE_TLS_CA_PATH: 'no default — optional chain material, reported as part of tls: enabled',
   SUBSTRATE_STORAGE_LAYOUT: 'not a knob — retired; read only to warn that it is ignored',
+  SUBSTRATE_PARTITION_BUDGET:
+    'deprecated; read as the fallback for SUBSTRATE_TYPE_TABLE_BUDGET, and reported under that knob when set',
   SUBSTRATE_STREAM_TICKET_SECRET:
     'retired; read as the fallback for SUBSTRATE_CURSOR_SECRET, and reported under that knob when set'
 };
