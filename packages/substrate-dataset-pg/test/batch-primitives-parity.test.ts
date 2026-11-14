@@ -96,8 +96,8 @@ describe('batch primitives (memory vs pg)', () => {
   );
 
   it(
-    'bindShortIds on a row that already has a short id behaves as bindShortId does, per dataset',
-    each(async (name, ds) => {
+    'binding a row that already has a short id keeps the first, single and batch, on both stores',
+    each(async (_n, ds) => {
       const rows = ['s1', 's2', 'b1', 'b2'];
       await ds.write(
         'Item',
@@ -133,13 +133,16 @@ describe('batch primitives (memory vs pg)', () => {
           )
         };
       };
-      expect([await observe('b1'), await observe('b2')]).toEqual([
-        await observe('s1'),
-        await observe('s2')
-      ]);
-      if (name === 'pg') {
-        // Postgres keeps the first binding and ignores the rest (ON CONFLICT DO NOTHING).
-        expect(await observe('b2')).toEqual({ reported: 0, resolves: [true, false, false] });
+      // Keep-first (#1846): short ids are stable handles, so a later bind is ignored.
+      const once = { reported: 0, resolves: [true, false] };
+      const twice = { reported: 0, resolves: [true, false, false] };
+      for (const [rowId, want] of [
+        ['s1', once],
+        ['s2', twice],
+        ['b1', once],
+        ['b2', twice]
+      ] as const) {
+        expect(await observe(rowId), rowId).toEqual(want);
       }
     })
   );

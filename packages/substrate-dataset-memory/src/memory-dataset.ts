@@ -879,7 +879,8 @@ export class MemoryDataset implements Dataset {
   }
 
   async bindShortId(type: string, shortId: number, rowId: string): Promise<void> {
-    await this.shortIds.bind(this.namespace, type, shortId, rowId);
+    // Keep-first, as pg: a row's short id never moves, and a no-op leaves nothing to undo.
+    if (!(await this.shortIds.bind(this.namespace, type, shortId, rowId))) return;
     // Store shortId directly on the row so read() returns rows without any
     // per-row spread allocation. The withTransaction
     // snapshot shallow-clones every row, so the field is preserved/rolled
