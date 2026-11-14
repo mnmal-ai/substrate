@@ -254,14 +254,23 @@ describe.skipIf(!POSTGRES_URL)('walk parity on far-row columns', () => {
       where: { _walk: { in: IN } } as WhereClause,
       agg: agg({ hi: { in: IN, max: 'rank' }, avg: { in: IN, avg: 'rank' } }),
       nested: nested({
-        obs: { _walk: { in: IN }, fields: { rank: true }, orderBy: [{ rank: 'desc' }], limit: 1 }
+        obs: {
+          _walk: { in: IN },
+          fields: { rank: true, note: true },
+          orderBy: [{ rank: 'desc' }],
+          limit: 1
+        }
       })
     });
+    // A nested row omits a declared field it lacks, as the top-level read does; an
+    // undeclared one reads null (#1842).
     expect(Object.fromEntries(rows.map((r) => [label(r), [r._agg, r.obs]]))).toEqual({
-      c1: [{ hi: 3, avg: 2 }, [{ id: u('o1'), rank: 3 }]],
-      c2: [{ hi: 7, avg: 7 }, [{ id: u('o3'), rank: 7 }]],
-      c3: [{ hi: null, avg: null }, [{ id: u('o4'), rank: null }]]
+      c1: [{ hi: 3, avg: 2 }, [{ id: u('o1'), rank: 3, note: null }]],
+      c2: [{ hi: 7, avg: 7 }, [{ id: u('o3'), rank: 7, note: null }]],
+      c3: [{ hi: null, avg: null }, [{ id: u('o4'), note: null }]]
     });
+    const top = await same('Observation', { where: { id: { eq: u('o4') } } });
+    expect(Object.hasOwn(top[0] ?? {}, 'rank')).toBe(false);
   }
 
   it('a far field held in extra (pending), then in its column (promoted), reads the same', async () => {

@@ -975,7 +975,10 @@ describe.skipIf(!POSTGRES_URL)('walk aggregates and nested projection (pg)', () 
         { id: u('c1'), grade: 9, obs: [{ id: u('o2'), price: 1 }], _truncated: { obs: true } }
       ]
     });
-    expect(ls[1]).toMatchObject({ id: u('l2'), seller: null, price: null, sellerRow: [] });
+    // A declared field the nested row lacks is omitted, as on the top-level read (#1842).
+    expect(ls[1]).toMatchObject({ id: u('l2'), sellerRow: [] });
+    expect(ls[1]).not.toHaveProperty('seller');
+    expect(ls[1]).not.toHaveProperty('price');
     expect(ls[1]).not.toHaveProperty('_metadata');
   });
 

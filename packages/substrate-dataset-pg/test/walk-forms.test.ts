@@ -289,9 +289,9 @@ describe.skipIf(!POSTGRES_URL)('walk forms through the engine (pg = memory)', ()
         }
       });
       const h0 = (env.data[key('Hub')] as Row[]).find((r) => names.get(String(r.id)) === 'h0');
-      const ranks = ((h0?.top ?? []) as Array<{ rank: number | null }>).map((l) => l.rank);
-      // rank ascending, the unranked last.
-      expect(ranks).toEqual([0, 0, 1, 1, 2, null].slice(0, limit));
+      const ranks = ((h0?.top ?? []) as Array<{ rank?: number }>).map((l) => l.rank);
+      // rank ascending, the unranked last (its absent rank omitted, #1842).
+      expect(ranks).toEqual([0, 0, 1, 1, 2, undefined].slice(0, limit));
       expect(h0?._truncated).toEqual(limit < 6 ? { top: true } : undefined);
       // The plan names that order, served by the eager (hub, rank, id) index.
       expect(

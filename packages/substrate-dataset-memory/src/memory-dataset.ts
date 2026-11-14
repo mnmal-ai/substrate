@@ -975,7 +975,8 @@ function conditionalMatchEq(actual: unknown, expected: unknown): boolean {
  * A row's walk selections: `_agg` values and nested lists, each list
  * filtered, ordered (id ascending last) and cut to its limit, with
  * `_truncated` naming the lists that were cut. Nested rows carry `id`, their
- * selected fields (null when absent) and their own walk selections.
+ * selected fields (a column field absent when null, any other null when absent)
+ * and their own walk selections.
  */
 function walkProjection(
   row: Row,
@@ -1023,12 +1024,18 @@ function walkProjection(
       Object.entries(fields).filter(([, v]) => isNested(v))
     ) as Record<string, NestedSelection>;
     const plain = Object.keys(fields).filter((k) => k !== '_agg' && !isNested(fields[k]));
+    // A declared scalar or crossRef that is null or missing is absent, as on the top-level
+    // read (#1842); any other missing field is null, as pg's jsonb_build_object gives it.
+    const cell = (n: Row, k: string): Array<[string, unknown]> => {
+      const v = Object.hasOwn(n, k) ? n[k] : null;
+      const def = v === null ? fieldDefOf(k) : undefined;
+      return def !== undefined && isColumnField(def) ? [] : [[k, v]];
+    };
     out.push([
       name,
       list.map((n) => ({
         id: n.id,
-        // An absent field is null, as pg's jsonb_build_object gives it.
-        ...Object.fromEntries(plain.map((k) => [k, Object.hasOwn(n, k) ? n[k] : null])),
+        ...Object.fromEntries(plain.flatMap((k) => cell(n, k))),
         ...walkProjection(n, subAggs, subNested, far, false)
       }))
     ]);
