@@ -636,6 +636,31 @@ describe('aggregate, select, groupBy, count and nested validation', () => {
     ).not.toThrow();
   });
 
+  it('accepts among on a pick, validates it over the far type, and refuses it without one (#1810)', () => {
+    expect(() =>
+      check({
+        _walk: {
+          in: 'cards/Observation.cert',
+          pick: { latest: 'observedAt' },
+          among: { price: { gt: 0 } },
+          where: { price: { gte: 100 } }
+        }
+      })
+    ).not.toThrow();
+    expect(
+      refusal({ _walk: { in: 'cards/Observation.cert', among: { price: { gt: 0 } } } })
+    ).toMatchObject({ code: 'walk_quantifier', path: ['where', '_walk', 'among'] });
+    expect(
+      refusal({
+        _walk: {
+          in: 'cards/Observation.cert',
+          pick: { latest: 'observedAt' },
+          among: { nope: { eq: 1 } }
+        }
+      })
+    ).toMatchObject({ code: 'unknown_field', path: ['where', '_walk', 'among', 'nope'] });
+  });
+
   it('validates nested selections', () => {
     expect(() =>
       checkFrame({

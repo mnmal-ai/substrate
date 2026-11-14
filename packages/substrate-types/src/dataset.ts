@@ -104,6 +104,12 @@ export interface WalkNode {
   where?: WhereClause;
   quantifier?: 'any' | 'none' | 'all';
   pick?: WalkPick;
+  /**
+   * Pick walks only: the neighbours the pick chooses among. `where` then
+   * judges the picked row, so "the latest non-skipped run" is
+   * `{ pick: { latest: 'at' }, among: { NOT: { status: { eq: 'skipped' } } } }` (#1810).
+   */
+  among?: WhereClause;
 }
 
 /** `'$.f'` | `'<as>.f'` | `'_agg.<name>'` */

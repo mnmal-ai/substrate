@@ -50,6 +50,13 @@ describe('sharedPicks', () => {
     expect(
       sharedPicks({ where: where({ _walk: hub }), aggregate: { n: { count: true } } }).size
     ).toBe(0);
+    // An among reading the seed would pick per seed; one reading only the far row still shares.
+    const among = (a: unknown) =>
+      where({ _walk: { out: 'spec', where: { _walk: { ...pick, among: a } } } });
+    expect(
+      sharedPicks({ where: among({ price: { gt: { $ref: '$.ask' } } }), count: true }).size
+    ).toBe(0);
+    expect(sharedPicks({ where: among({ price: { gt: 0 } }), count: true }).size).toBe(1);
     // An inbound first hop reaches a hub only its seed does: nothing to share.
     const inbound = where({ _walk: { in: 'ns/Spec.x', where: { _walk: pick } } });
     expect(sharedPicks({ where: inbound, count: true }).size).toBe(0);

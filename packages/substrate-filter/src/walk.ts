@@ -175,7 +175,10 @@ export function evaluateWalk(row: Row, node: WalkNode, walk: WalkContext): boole
   const where = node.where;
   const test = (n: Row) => where === undefined || evaluateWhere(n, where, fieldDefOf, far);
   if (node.pick !== undefined) {
-    const one = pickOne(rows, node.pick, fieldDefOf);
+    const among = node.among;
+    const pool =
+      among === undefined ? rows : rows.filter((n) => evaluateWhere(n, among, fieldDefOf, far));
+    const one = pickOne(pool, node.pick, fieldDefOf);
     return one !== undefined && test(one);
   }
   switch (node.quantifier ?? 'any') {

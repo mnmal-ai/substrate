@@ -263,7 +263,7 @@ export function buildWalk(
       sql`${a}.*`,
       from,
       alias,
-      cond,
+      amongCond(sql, node, cond, farTable, { ...scope, alias, type }),
       key,
       dir === 'min' ? 'ASC' : 'DESC'
     );
@@ -279,6 +279,19 @@ export function buildWalk(
     default:
       return sql`EXISTS (${rows}${far === null ? sql`` : sql` AND ${far}`})`;
   }
+}
+
+/** A pick's candidate condition: the hop's `cond`, AND its `among` compiled over the far row (#1810). */
+function amongCond(
+  sql: Sql | TransactionSql,
+  node: WalkNode,
+  cond: Fragment,
+  farTable: TypeTable,
+  far: WalkScope
+): Fragment {
+  if (node.among === undefined) return cond;
+  const among = buildWhere(sql, node.among, castFor(far, far.type), farTable, far);
+  return among === null ? cond : sql`${cond} AND ${among}`;
 }
 
 /** True when a `pick` walk sits anywhere in `where`. */
@@ -419,7 +432,7 @@ export function prepareSharedPicks(
       sql`${a}.*, ${a} AS __row`,
       from,
       alias,
-      cond,
+      amongCond(sql, pick, cond, farTable, { ...hubScope, alias, type }),
       key,
       dir === 'min' ? 'ASC' : 'DESC'
     );

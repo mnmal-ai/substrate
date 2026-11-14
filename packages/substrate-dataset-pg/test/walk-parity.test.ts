@@ -147,6 +147,28 @@ const mustAgree: Array<[string, string, ReadParams, Expected]> = [
   ],
   ['pick min', 'Cert', { where: obs({ price: { lt: 80 } }, { pick: { min: 'price' } }) }, ['c2']],
   [
+    'pick latest among the unsold (#1810)',
+    'Cert',
+    {
+      where: obs(
+        { price: { lt: 100 } },
+        { pick: { latest: 'observedAt' }, among: { NOT: { status: { eq: 'sold' } } } }
+      )
+    },
+    ['c1', 'c2']
+  ],
+  [
+    'pick max among a seed-relative window (#1810)',
+    'Cert',
+    {
+      where: obs(undefined, {
+        pick: { max: 'price' },
+        among: { price: { lte: { $ref: '$.ask', times: 1.25 } } }
+      })
+    },
+    ['c1', 'c2']
+  ],
+  [
     '$ref to the seed, times',
     'Cert',
     { where: obs({ price: { gte: { $ref: '$.ask', times: 1.25 } } }) },

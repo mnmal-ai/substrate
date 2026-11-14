@@ -88,6 +88,7 @@ export function walkSites(
           kind: 'order'
         };
       }
+      addWhere(node.among, [...path, 'among']);
       addWhere(node.where, [...path, 'where']);
     } else if (kind === 'agg') {
       if (isObj(node.latest)) {
