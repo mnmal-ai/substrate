@@ -7,6 +7,9 @@
  * pass silently either.
  */
 import {
+  type FieldDef,
+  isImpossibleIsoTimestamp,
+  isIsoTimestamp,
   METADATA_AUTHOR_FIELDS,
   METADATA_FILTER_FIELDS,
   type Schema
@@ -127,8 +130,48 @@ function phraseProblem(schema: Schema, e: z.infer<typeof FieldPhraseSchema>): st
   }
   if (types.size > 1) return `refers to more than one type (${[...types].join(', ')})`;
   const [type] = types;
+  if (e.value !== undefined && e.field !== undefined && type !== undefined) {
+    const def = schema.types[type]?.fields[e.field.slice(e.field.indexOf('.') + 1)];
+    const problem = def !== undefined ? valueProblem(def, e.value) : undefined;
+    if (problem !== undefined) return `value for '${e.field}' ${problem}`;
+  }
   if (e.exclude !== undefined && type !== undefined) return excludeProblem(schema, type, e.exclude);
   return undefined;
+}
+
+/**
+ * Why `value` cannot be an equality binding on `def`, or undefined. The parser
+ * binds it as `{ eq: value }` verbatim, so a mismatch would build a frame the
+ * engine refuses (list, json) or one that silently matches nothing (9 on a
+ * string field, an enum member that does not exist).
+ */
+function valueProblem(def: FieldDef, value: unknown): string | undefined {
+  if (def.kind === 'crossRef')
+    return typeof value === 'string' && value !== '' ? undefined : 'is not a row id';
+  if (def.kind !== 'scalar' || def.type === 'json')
+    return `cannot bind a ${def.kind === 'scalar' ? 'json' : def.kind} field by equality`;
+  switch (def.type) {
+    case 'string': {
+      if (typeof value !== 'string') return 'is not a string';
+      if (def.enum === undefined || def.strict === false || def.enum.includes(value)) return;
+      const lower = value.toLowerCase();
+      const alias = Object.keys(def.aliases ?? {}).some((a) => a.toLowerCase() === lower);
+      return alias ? undefined : `'${value}' is not one of ${def.enum.join(', ')}`;
+    }
+    case 'number':
+      return typeof value === 'number' && Number.isFinite(value) ? undefined : 'is not a number';
+    case 'int16':
+    case 'int32':
+    case 'int64':
+      return Number.isInteger(value) ? undefined : 'is not an integer';
+    case 'boolean':
+      return typeof value === 'boolean' ? undefined : 'is not a boolean';
+    case 'date':
+      // The engine's own test, so a value kept here is never refused at query time.
+      return typeof value === 'string' && isIsoTimestamp(value) && !isImpossibleIsoTimestamp(value)
+        ? undefined
+        : 'is not an ISO 8601 date';
+  }
 }
 
 /** Why an exclude clause does not fit `type`, or undefined. */
