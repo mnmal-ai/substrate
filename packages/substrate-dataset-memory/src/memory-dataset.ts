@@ -14,7 +14,7 @@
  * is in-memory; there's no indexing, so every filter is a scan.
  */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   applyExtensionResultMeta,
   asSortValue,
@@ -55,6 +55,7 @@ import type {
   FilterWriteOptions,
   FilterWriteResult,
   Id,
+  IndexDecl,
   NestedSelection,
   ReadParams,
   ReadResult,
@@ -71,7 +72,8 @@ import {
   assertNoRepeatedIds,
   createKeyedMutex,
   filterTooBroad,
-  isColumnField
+  isColumnField,
+  ResolverFrameError
 } from '@mnmal-ai/substrate-types';
 import { NamespaceMismatch, ReservedField } from './errors.js';
 import { MemoryShortIdStore, type ShortIdBucketSnapshot } from './memory-short-id-store.js';
@@ -99,12 +101,15 @@ export interface MemoryDatasetOptions {
   /**
    * The namespace's type definitions; a type declared `ordering: 'visible'`
    * gets `_metadata.seq` on insert, as the pg dataset's lookup does. Its
-   * `fields` say which keys read back absent when null (`isColumnField`).
+   * `fields` say which keys read back absent when null (`isColumnField`), and
+   * its unique `indexes` refuse a colliding write with `unique_violation`.
    */
   typeDefLookup?: (
     type: string,
     namespace: string
-  ) => { ordering?: 'visible'; fields?: Record<string, FieldDef> } | undefined;
+  ) =>
+    | { ordering?: 'visible'; fields?: Record<string, FieldDef>; indexes?: IndexDecl[] }
+    | undefined;
   /**
    * Internal: binding assignments one read's walks may try before refusing
    * `walk_budget_exceeded`. Defaults to `WALK_EVALUATION_BUDGET`; tests lower it.
@@ -527,6 +532,9 @@ export class MemoryDataset implements Dataset {
     const def = this.typeDefLookup?.(type, this.namespace);
     const visible = def?.ordering === 'visible';
     const columns = columnFieldNames(def?.fields);
+    // Staged, then checked against the unique indexes, then landed: a refused
+    // write leaves no row behind, as pg's one INSERT does.
+    const staged = new Map<Id, Row>();
 
     for (const input of rows) {
       // An id-less row gets a v7 UUID (see uuidv7.ts for its limits).
@@ -547,7 +555,7 @@ export class MemoryDataset implements Dataset {
         rowToWrite = { ...row, _metadata: autoMeta };
       }
 
-      const existing = b.get(row.id);
+      const existing = staged.get(row.id) ?? b.get(row.id);
       if (existing && options?.insertOnly === true) continue;
 
       // Strip _deletedAt from the INPUT before merging. In-progress writes
@@ -573,7 +581,7 @@ export class MemoryDataset implements Dataset {
           const existingMeta = existing._metadata as RowMetadata | undefined;
           landed._metadata = mergeRowMetadata(existingMeta, incomingMeta);
         }
-        b.set(rowToWrite.id, landed);
+        staged.set(rowToWrite.id, landed);
       } else {
         landed = sanitised;
         const meta = landed._metadata as RowMetadata | undefined;
@@ -583,7 +591,7 @@ export class MemoryDataset implements Dataset {
           this.seqs.set(type, seq);
           landed._metadata = { ...(landed._metadata as RowMetadata), seq };
         }
-        b.set(rowToWrite.id, landed);
+        staged.set(rowToWrite.id, landed);
       }
       ids.push(row.id);
       // Push a defensive copy so callers can't mutate the stored row through
@@ -595,7 +603,59 @@ export class MemoryDataset implements Dataset {
       merged.push(withoutNullColumns(columns, { ...landed }));
     }
 
+    this.assertUnique(type, staged);
+    for (const [id, landed] of staged) b.set(id, landed);
     return { written: ids.length, ids, rows: merged };
+  }
+
+  /**
+   * Refuses `changed` (rows by id, as they would land) when it collides with
+   * another live row on a declared unique index, as pg's partial unique btree
+   * does: same `unique_violation`, index name and fields. A null or absent key
+   * value never collides (pg's NULLs are distinct; no index is NULLS NOT DISTINCT).
+   */
+  private assertUnique(type: string, changed: ReadonlyMap<Id, Row>): void {
+    if (changed.size === 0) return;
+    const indexes = this.typeDefLookup?.(type, this.namespace)?.indexes ?? [];
+    for (const decl of indexes) {
+      if (decl.unique !== true) continue;
+      const fields = decl.fields.map((f) => (typeof f === 'string' ? f : f.field));
+      const only = decl.where === 'live' || decl.where === undefined ? {} : decl.where;
+      const keyOf = (r: Row): string | undefined => {
+        if (r._deletedAt != null) return undefined;
+        for (const [f, v] of Object.entries(only)) {
+          const got = getFieldValue(r, f);
+          if (v === null ? got != null : got !== v) return undefined;
+        }
+        const values = fields.map((f) => getFieldValue(r, f));
+        if (values.some((v) => v == null)) return undefined;
+        return JSON.stringify(values.map((v) => (v instanceof Date ? v.toISOString() : v)));
+      };
+      const held = new Map<string, Id>();
+      for (const r of changed.values()) {
+        const key = keyOf(r);
+        if (key === undefined) continue;
+        if (held.has(key)) throw this.uniqueViolation(type, decl, fields);
+        held.set(key, r.id);
+      }
+      if (held.size === 0) continue;
+      for (const r of this.store.get(type)?.values() ?? []) {
+        if (changed.has(r.id)) continue;
+        const key = keyOf(r);
+        if (key !== undefined && held.has(key)) throw this.uniqueViolation(type, decl, fields);
+      }
+    }
+  }
+
+  private uniqueViolation(type: string, decl: IndexDecl, fields: string[]): ResolverFrameError {
+    // shortcut: pg hashes an unnamed declaration's name again when two declarations
+    // share it; not mirrored here. Name the index when that matters.
+    const index = decl.name ?? generatedIdentifier(this.namespace, type, fields.join('_'), 'uniq');
+    return new ResolverFrameError(
+      'unique_violation',
+      `${this.namespace}/${type}: a row already holds these values for unique index ${index} (${fields.join(', ')})`,
+      { index, fields }
+    );
   }
 
   /** The type's column fields, looked up once per call rather than per row. */
@@ -686,6 +746,7 @@ export class MemoryDataset implements Dataset {
     for (const [k, expected] of Object.entries(match)) {
       if (!conditionalMatchEq(row[k], expected)) return { matched: false, row: null };
     }
+    this.assertUnique(type, new Map([[id, withUpdates(row, updates)]]));
     // Mutate the row in-place to match the `write()` upsert contract — nested
     // `_deletedAt` writes are silently stripped so callers can't use this path
     // to revive a tombstone.
@@ -730,6 +791,7 @@ export class MemoryDataset implements Dataset {
 
     // seq is the dataset's, never the caller's, as on pg where it has its own column.
     const seq = (row._metadata as RowMetadata | undefined)?.seq;
+    this.assertUnique(ref.type, new Map([[ref.id, { ...row, [fieldName]: value }]]));
     row[fieldName] = value;
     if (fieldName === '_metadata' && (value != null || seq !== undefined)) {
       // A null clears the columns, as pg's UPDATE does, but not seq.
@@ -871,6 +933,17 @@ export class MemoryDataset implements Dataset {
     // UPDATE needs; every slot for it then holds the final row.
     const folded = new Map<Id, Record<string, unknown>>();
     for (const p of patches) folded.set(p.id, { ...folded.get(p.id), ...p.patch });
+    // Checked as a whole first, so a refused patch leaves every row unchanged, as pg's one UPDATE does.
+    const b = this.store.get(type);
+    this.assertUnique(
+      type,
+      new Map(
+        [...folded].flatMap(([id, patch]): Array<[Id, Row]> => {
+          const row = b?.get(id);
+          return row !== undefined && row._deletedAt == null ? [[id, withUpdates(row, patch)]] : [];
+        })
+      )
+    );
     const done = new Map<Id, Row | null>();
     for (const [id, patch] of folded) {
       const r = await this.conditionalUpdate(type, id, {}, patch, actor ?? undefined, now);
@@ -935,6 +1008,26 @@ export class MemoryDataset implements Dataset {
 // ---------------------------------------------------------------------------
 // Filter evaluation helpers
 // ---------------------------------------------------------------------------
+
+/** `row` with `updates` merged in, less the keys no update may set (`id`, `_deletedAt`). */
+function withUpdates(row: Row, updates: Record<string, unknown>): Row {
+  const out: Row = { ...row };
+  for (const [k, v] of Object.entries(updates)) {
+    if (k !== RESERVED_DELETED_AT && k !== 'id') out[k] = v;
+  }
+  return out;
+}
+
+/** pg's generated index name (`generatedIdentifier` in substrate-dataset-pg's migrate.ts). */
+function generatedIdentifier(namespace: string, type: string, field: string, suffix: string) {
+  const fold = (s: string): string => s.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+  const hash = createHash('sha256')
+    .update(JSON.stringify([namespace, type, field]))
+    .digest('hex')
+    .slice(0, 8);
+  const tail = `_${hash}_${suffix}`;
+  return `rows_${fold(namespace)}_${fold(type)}_${fold(field)}`.slice(0, 63 - tail.length) + tail;
+}
 
 /** The names of the declared fields that read back absent when null (`isColumnField`). */
 function columnFieldNames(fields: Record<string, FieldDef> | undefined): string[] {
