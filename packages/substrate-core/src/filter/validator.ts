@@ -37,10 +37,11 @@ import {
   type FieldDefStruct,
   type FieldKind,
   type FilterCapabilities,
+  ISO_INSTANT_FORM,
   isImpossibleIsoTimestamp,
   isInt16,
   isInt32,
-  isIsoTimestamp,
+  isIsoInstant,
   METADATA_FILTER_FIELDS,
   type OrderByClause,
   parseInt64,
@@ -403,10 +404,12 @@ function validatePrimitiveKind(
           path
         );
       }
-      if (typeof value === 'string' && !isIsoTimestamp(value)) {
+      // Strict like a write: an offset-less operand would be read as UTC, which is
+      // rarely what the caller's local "2026-11-14" meant.
+      if (typeof value === 'string' && !isIsoInstant(value)) {
         throw new FilterValidationError(
           'type_mismatch',
-          `operator '${op}' on '${field}': ${JSON.stringify(value)} is not an ISO 8601 date or date-time`,
+          `operator '${op}' on '${field}': ${JSON.stringify(value)} is not ${ISO_INSTANT_FORM}`,
           path
         );
       }

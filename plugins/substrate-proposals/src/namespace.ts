@@ -19,18 +19,22 @@
 import { defineNamespace, field } from '@mnmal-ai/substrate-sdk';
 import type { NamespaceDefinition } from '@mnmal-ai/substrate-types';
 import {
+  DEFAULT_DROP_CAPABILITY,
   DEFAULT_INDEX_CAPABILITY,
   DEFAULT_PROPOSE_CAPABILITY,
+  gateTypeProposalRemoval,
   proposeToWrite
 } from './capability.js';
 
 export function defineProposalTypes(
   namespace: string,
   capability: string = DEFAULT_PROPOSE_CAPABILITY,
-  indexCapability: string = DEFAULT_INDEX_CAPABILITY
+  indexCapability: string = DEFAULT_INDEX_CAPABILITY,
+  // shortcut: not threaded from SUBSTRATE_ADMIN_CAPABILITY; plumb it through the plugin config if a deployment renames admin.
+  dropCapability: string = capability === '' ? '' : DEFAULT_DROP_CAPABILITY
 ): NamespaceDefinition {
   const policy = proposeToWrite(capability, indexCapability);
-  return defineNamespace(namespace, {
+  const def = defineNamespace(namespace, {
     TypeProposal: {
       policy,
       fields: {
@@ -70,6 +74,13 @@ export function defineProposalTypes(
       }
     }
   });
+  return {
+    ...def,
+    install(ctx) {
+      def.install(ctx);
+      gateTypeProposalRemoval(ctx.registry, dropCapability);
+    }
+  };
 }
 
 /** The canonical ordered list of type names registered by this namespace. */

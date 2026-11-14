@@ -116,6 +116,7 @@ export interface InstalledSystemNamespace {
  * Wrap a `Registry` so `register` AND `replace` calls for the configured
  * mutation names route their resolver through `wrap(resolver, mutationName)`.
  * Other type names pass through untouched. `get` is a transparent passthrough.
+ * A wrapped entry loses its `batch` resolver, so arrays reach the interceptor.
  *
  * This is the seam autoCRUD writes into — we cannot modify the resolver after
  * the fact because `Registry.register` throws on duplicates. `replace` is
@@ -129,15 +130,20 @@ function wrapRegistryMutations(
   const keyName = (key: Parameters<Registry['register']>[0]): string =>
     typeof key === 'string' ? key : key.name;
 
-  const wrapInput = <I extends Parameters<Registry['register']>[1]>(name: string, input: I): I => {
+  type Input = Parameters<Registry['register']>[1];
+  const wrapInput = (name: string, input: Input): Input => {
     const interceptor = interceptors[name];
     if (interceptor === undefined) return input;
+    // Drop autoCRUD's `batch`: a mutate array would call it directly and skip
+    // the interceptor (#1953). Without it the engine runs each element through
+    // the wrapped resolver, still inside the array's one transaction.
+    const { batch: _batch, ...rest } = input;
     return {
-      ...input,
+      ...rest,
       // The interceptor's AutoCrudResolver shape is a structural subset of the
       // Registry resolver shape (no AsyncIterable). The cast is safe at
       // every callsite below — autoCRUD never registers stream resolvers.
-      resolver: interceptor(input.resolver as AutoCrudResolver) as I['resolver']
+      resolver: interceptor(input.resolver as AutoCrudResolver) as Input['resolver']
     };
   };
 

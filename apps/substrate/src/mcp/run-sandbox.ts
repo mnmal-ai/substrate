@@ -36,10 +36,11 @@ export interface SandboxRunOptions {
   log?: (line: string) => void;
 }
 
-type Op = 'query' | 'queryAll' | 'recall' | 'schema' | 'mutate' | 'log';
+type Op = 'query' | 'queryAll' | 'byShortId' | 'recall' | 'schema' | 'mutate' | 'log';
 const OPS: ReadonlySet<string> = new Set<Op>([
   'query',
   'queryAll',
+  'byShortId',
   'recall',
   'schema',
   'mutate',

@@ -1,5 +1,6 @@
 /**
- * `/keys`: the active key table. Unlocked it reads as the admin identity: Enter edits a
+ * `/keys`: the active key table; `r` toggles revoked keys in, dimmed with their revocation time
+ * and read-only. Unlocked it reads as the admin identity: Enter edits a
  * row's grant (editor.tsx), `x` revokes it, `i` mints an invite and `n` registers a new key, each
  * through a review. Locked, it reads as the agent, which a 403 turns into "admin required", and
  * Enter shows a row's grant read-only. Locking closes the table and every editor panel.
@@ -10,6 +11,7 @@ import { defineModule, type ModuleCtx, sanitise, type TuiModule } from '@mnmal-a
 import { truncateCells } from '@mnmal-ai/surface-kit';
 import { adminCapabilityOf } from '../admin/session.js';
 import type { TuiDeps } from '../deps.js';
+import { type Line, linesView } from '../lines.js';
 // A runtime cycle once editor imports loadKeys back (Tasks 6/7), safe because each side uses the other only inside functions.
 import { type EditorPanels, editorPanels, KEYS_CHROME, openEditor, switchTo } from './editor.js';
 import { compactGrant, GRANT_LEGEND } from './grant.js';
@@ -21,24 +23,37 @@ export interface KeysState {
   note: string | null;
   cursor: number;
   detail: boolean;
+  /** Revoked rows are listed too (`r`). */
+  revoked: boolean;
 }
 export type KeysPanels = { keys: KeysState } & EditorPanels;
 type Panels = KeysPanels;
 type Ctx = ModuleCtx<Panels>;
 
+const isRevoked = (r: AdminKeyRow) => typeof r.revokedAt === 'string';
+/** The rows the editor flows judge against: a revoked key holds no grant. */
+const live = (rows: readonly AdminKeyRow[]) => rows.filter((r) => !isRevoked(r));
+
 /** Opens the table and reads it; `select` is a kid whose row takes the cursor once the read lands. */
-export async function loadKeys(ctx: Ctx, deps: TuiDeps, select?: string): Promise<void> {
+export async function loadKeys(
+  ctx: Ctx,
+  deps: TuiDeps,
+  select?: string,
+  revoked = false
+): Promise<void> {
   const source: KeysState['source'] = deps.admin.unlocked() ? 'admin' : 'agent';
-  ctx.open('keys', { source, rows: null, note: null, cursor: 0, detail: false });
+  ctx.open('keys', { source, rows: null, note: null, cursor: 0, detail: false, revoked });
+  const filter = revoked ? ('all' as const) : ('active' as const);
   try {
     const rows =
       source === 'admin'
-        ? await deps.admin.run(({ client }) => client.admin.keys({ signal: ctx.signal }))
-        : await deps.keys(ctx.signal);
+        ? await deps.admin.run(({ client }) => client.admin.keys({ signal: ctx.signal, filter }))
+        : await deps.keys(ctx.signal, filter);
     const at = select === undefined ? -1 : rows.findIndex((r) => r.kid === select);
     const cursor = Math.max(0, at);
     // Only into the table this read opened: a late admin read never lands in an agent table.
-    ctx.update('keys', (s) => (s.source === source ? { ...s, rows, cursor } : s));
+    const mine = (s: KeysState) => s.source === source && s.revoked === revoked;
+    ctx.update('keys', (s) => (mine(s) ? { ...s, rows, cursor } : s));
   } catch (err) {
     // As admin, a coded refusal other than the auth gate's is the route's own: say what it said.
     const routeRefusal =
@@ -51,7 +66,9 @@ export async function loadKeys(ctx: Ctx, deps: TuiDeps, select?: string): Promis
       : err instanceof AuthError
         ? 'admin required — /admin unlock'
         : `could not read keys: ${err instanceof Error ? err.message : String(err)}`;
-    ctx.update('keys', (s) => (s.source === source ? { ...s, rows: null, note } : s));
+    ctx.update('keys', (s) =>
+      s.source === source && s.revoked === revoked ? { ...s, rows: null, note } : s
+    );
   }
 }
 
@@ -75,7 +92,11 @@ export function keysModule(deps: TuiDeps): TuiModule<Panels> {
         ...KEYS_CHROME,
         view: ({ state, theme, size }) => {
           const w = Math.max(1, size.columns - 2);
-          const count = state.rows === null ? '' : ` · ${state.rows.length} active`;
+          const gone = state.rows === null ? 0 : state.rows.filter(isRevoked).length;
+          const count =
+            state.rows === null
+              ? ''
+              : ` · ${state.rows.length - gone} active${state.revoked ? ` · ${gone} revoked` : ''}`;
           const head = `${theme.glyph.title} keys${count} · ${state.source}`;
           if (state.note !== null) return [head, `  ${sanitise(state.note)}`].join('\n');
           if (state.rows === null) return [head, '  reading…'].join('\n');
@@ -84,6 +105,9 @@ export function keysModule(deps: TuiDeps): TuiModule<Panels> {
             return [
               head,
               truncateCells(sanitise(`  ${pick.kid}  ${pick.name}  ${pick.algorithm}`), w),
+              ...(isRevoked(pick)
+                ? [truncateCells(sanitise(`  revoked ${pick.revokedAt}`), w)]
+                : []),
               ...describeGrant(pick.namespaces, pick.capabilities).map((g) =>
                 truncateCells(sanitise(`    ${g}`), w)
               ),
@@ -95,22 +119,33 @@ export function keysModule(deps: TuiDeps): TuiModule<Panels> {
           // Head, legend and hints take three rows.
           const max = Math.max(1, size.rows - 3);
           const start = Math.max(0, Math.min(state.cursor - max + 1, state.rows.length - max));
-          const lines = state.rows.slice(start, start + max).map((r, k) => {
+          const lines = state.rows.slice(start, start + max).map((r, k): Line => {
             const mark = start + k === state.cursor ? theme.glyph.cursor : ' ';
             const grant = compactGrant(r.namespaces, r.capabilities);
-            return truncateCells(
-              sanitise(`${mark} ${r.kid.padEnd(kidW)}  ${r.name.padEnd(nameW)}  ${grant}`),
+            const gone = isRevoked(r);
+            const text = truncateCells(
+              sanitise(
+                `${mark} ${r.kid.padEnd(kidW)}  ${r.name.padEnd(nameW)}  ${gone ? `revoked ${r.revokedAt}  ` : ''}${grant}`
+              ),
               w
             );
+            return gone ? { text, tone: 'dim' } : { text };
           });
-          return [
-            head,
-            ...lines,
-            truncateCells(`  ${GRANT_LEGEND}`, w),
-            state.source === 'admin' && deps.admin.unlocked()
-              ? '  ↑↓/jk move · enter edit · x revoke · i invite · n register · esc close'
-              : '  ↑↓/jk move · enter grant · esc close'
-          ].join('\n');
+          const toggle = state.revoked ? 'r hide revoked' : 'r show revoked';
+          return linesView(
+            [
+              { text: head },
+              ...lines,
+              { text: truncateCells(`  ${GRANT_LEGEND}`, w) },
+              {
+                text:
+                  state.source === 'admin' && deps.admin.unlocked()
+                    ? `  ↑↓/jk move · enter edit · x revoke · i invite · n register · ${toggle} · esc close`
+                    : `  ↑↓/jk move · enter grant · ${toggle} · esc close`
+              }
+            ],
+            theme
+          );
         },
         keymap: [
           { key: 'up', act: 'up' },
@@ -121,25 +156,28 @@ export function keysModule(deps: TuiDeps): TuiModule<Panels> {
           { key: 'backspace', act: 'out' },
           { key: 'n', act: 'register' },
           { key: 'i', act: 'invite' },
-          { key: 'x', act: 'revoke' }
+          { key: 'x', act: 'revoke' },
+          { key: 'r', act: 'toggleRevoked' }
         ],
         on: {
           up: move(-1),
           down: move(1),
           in: (s, ctx) => {
             if (s.rows === null || s.rows.length === 0) return undefined;
-            if (deps.admin.unlocked() && s.source === 'admin') {
-              void openEditor(
-                ctx,
-                deps,
-                { kind: 'update', row: s.rows[s.cursor] as AdminKeyRow },
-                s.rows
-              );
+            const row = s.rows[s.cursor] as AdminKeyRow;
+            // A revoked row is read-only: Enter shows its grant, never the editor.
+            if (deps.admin.unlocked() && s.source === 'admin' && !isRevoked(row)) {
+              void openEditor(ctx, deps, { kind: 'update', row }, live(s.rows));
               return undefined;
             }
             return { ...s, detail: true };
           },
           out: (s) => (s.detail ? { ...s, detail: false } : undefined),
+          toggleRevoked: (s, ctx) => {
+            if (s.detail || (s.rows === null && s.note === null)) return undefined;
+            void loadKeys(ctx, deps, s.rows?.[s.cursor]?.kid, !s.revoked);
+            return undefined;
+          },
           register: (s, ctx) => {
             if (!(deps.admin.unlocked() && s.source === 'admin' && s.rows !== null && !s.detail)) {
               return undefined;
@@ -150,7 +188,7 @@ export function keysModule(deps: TuiDeps): TuiModule<Panels> {
               label: 'kid to register',
               error: null,
               back: null,
-              table: s.rows
+              table: live(s.rows)
             });
             return undefined;
           },
@@ -158,7 +196,7 @@ export function keysModule(deps: TuiDeps): TuiModule<Panels> {
             if (!(deps.admin.unlocked() && s.source === 'admin' && s.rows !== null && !s.detail)) {
               return undefined;
             }
-            void openEditor(ctx, deps, { kind: 'invite' }, s.rows);
+            void openEditor(ctx, deps, { kind: 'invite' }, live(s.rows));
             return undefined;
           },
           revoke: (s, ctx) => {
@@ -166,7 +204,8 @@ export function keysModule(deps: TuiDeps): TuiModule<Panels> {
               return undefined;
             }
             const row = s.rows[s.cursor];
-            if (row === undefined) return undefined;
+            if (row === undefined || isRevoked(row)) return undefined;
+            const table = live(s.rows);
             ctx.setDraft('');
             switchTo(ctx, deps, 'review', {
               flow: { kind: 'revoke', row },
@@ -174,13 +213,13 @@ export function keysModule(deps: TuiDeps): TuiModule<Panels> {
               next: null,
               verdict: revokeVerdict({
                 kid: row.kid,
-                table: s.rows,
+                table,
                 adminCapability: adminCapabilityOf(deps.adminEnv).adminCapability ?? 'admin'
               }),
               stage: 'review',
               error: null,
               mismatch: false,
-              table: s.rows
+              table
             });
             return undefined;
           }

@@ -741,7 +741,7 @@ describe('apps/substrate integration', () => {
     expect(env.errors?.[0]?.code).toBe('unknown_field');
   });
 
-  it('unindexed field in where without _allowTableScan is accepted', async () => {
+  it('unindexed field in where is accepted', async () => {
     const res = await server.inject({
       method: 'POST',
       path: '/substrate/v1/query',
@@ -759,7 +759,7 @@ describe('apps/substrate integration', () => {
     expect(env.errors).toBeUndefined();
   });
 
-  it('unindexed field in where is allowed when _allowTableScan: true (ignored)', async () => {
+  it('unindexed field in where reads the row; the retired _allowTableScan is unknown_param', async () => {
     await server.inject({
       method: 'POST',
       path: '/substrate/v1/mutate',
@@ -779,7 +779,7 @@ describe('apps/substrate integration', () => {
       body: Buffer.from(
         JSON.stringify({
           'default/Todo': {
-            params: { where: { priority: { eq: 5 } }, _allowTableScan: true },
+            params: { where: { priority: { eq: 5 } } },
             fields: { id: true, priority: true }
           }
         })
@@ -789,6 +789,23 @@ describe('apps/substrate integration', () => {
     expect(env.errors).toBeUndefined();
     const rows = env.data['default/Todo'] as Array<{ id: string }>;
     expect(rows.map((r) => r.id)).toEqual(['pri']);
+
+    const retired = await server.inject({
+      method: 'POST',
+      path: '/substrate/v1/query',
+      headers: { 'content-type': 'application/json' },
+      body: Buffer.from(
+        JSON.stringify({
+          'default/Todo': {
+            params: { where: { priority: { eq: 5 } }, _allowTableScan: true },
+            fields: { id: true }
+          }
+        })
+      )
+    });
+    const refused = jsonBody<PackEnvelope>(retired);
+    expect(refused.data['default/Todo']).toBeUndefined();
+    expect(refused.errors?.[0]?.code).toBe('unknown_param');
   });
 
   it('updateTodo updates a field and getTodo reflects it', async () => {

@@ -38,6 +38,7 @@ import {
   type TypeIndexOptions,
   typeProposalRegistryKeys
 } from './apply.js';
+import { typeHasRows } from './capability.js';
 import type { PubSub } from './config.js';
 import {
   applyUntilRollback,
@@ -159,7 +160,7 @@ async function hasStorage(dataset: Dataset, typeName: string): Promise<boolean> 
     limit: 1
   });
   if (proposals.rows.length > 0) return true;
-  return (await dataset.read(typeName, { includeDeleted: true, limit: 1 })).rows.length > 0;
+  return typeHasRows(dataset, typeName);
 }
 
 /** Steps 2-7, run while holding the proposal lock for this type name. */
@@ -325,12 +326,16 @@ async function proposeTypeLocked(
   let appliedRow: Row;
 
   if (engine !== undefined) {
-    appliedRow = await writeInTx(binding.registry, ctx, args, 'updateTypeProposal', {
-      id: newId,
-      applied: true,
-      appliedAt: now,
-      resultingSchemaVersion
-    });
+    // Trusted: steps 1-4 already authorised this proposal, storage and index options included.
+    appliedRow = await writeInTx(
+      binding.registry,
+      ctx,
+      args,
+      'updateTypeProposal',
+      { id: newId, applied: true, appliedAt: now, resultingSchemaVersion },
+      false,
+      true
+    );
     // autoCRUD's update returns `{ id }` on the projection above. The full
     // row shape is what callers expect — re-read so the downstream consumer
     // (e.g. envelope encoder) sees every field.

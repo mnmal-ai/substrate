@@ -77,11 +77,8 @@ function asRows(
   return isAsyncIterable<Row>(result) ? null : result;
 }
 
-const KNOWN_SUBSCRIBE_PARAMS: ReadonlySet<string> = new Set([
-  'where',
-  'orderBy',
-  '_allowTableScan'
-]);
+/** Params a live read (subscribe, or stream on a type) accepts; anything else is `unknown_param`. */
+export const KNOWN_SUBSCRIBE_PARAMS: ReadonlySet<string> = new Set(['where', 'orderBy']);
 
 export interface SubscribeSubsystemDeps {
   namespaces: Map<string, NamespaceConfig>;

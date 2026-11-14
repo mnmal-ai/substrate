@@ -1,8 +1,9 @@
 import {
   canonicalVocabValue,
+  ISO_INSTANT_FORM,
   isInt16,
   isInt32,
-  isIsoTimestamp,
+  isIsoInstant,
   parseInt64
 } from '@mnmal-ai/substrate-types';
 
@@ -290,6 +291,8 @@ export function assertNoNullOnNonNullable(
  * or `date` scalar. pg sorts and date-filters these by casting
  * `body->>field` to numeric, boolean or timestamptz, so one stored
  * `dueAt: "next week"` fails every such read of the type, for every caller.
+ * A date must be a full instant (`isIsoInstant`): an offset-less or date-only
+ * string names no instant until something guesses a zone, so it is refused.
  * `string` and `json` fields are left alone: nothing casts them. `null` is
  * the null guard's business, not this one's.
  */
@@ -320,7 +323,7 @@ export function assertScalarTypes(
               ? typeof v === 'boolean'
               : def.type === 'date'
                 ? typeof v === 'string'
-                  ? isIsoTimestamp(v)
+                  ? isIsoInstant(v)
                   : v instanceof Date && Number.isFinite(v.getTime())
                 : true;
     if (!ok) throwInvalidScalar(name, v, def.type, phase);
@@ -461,7 +464,7 @@ export function assertServerSetFieldsFillable(
 function throwInvalidScalar(name: string, v: unknown, type: string, phase: string): never {
   throw new ResolverFrameError(
     'invalid_field_type',
-    `Cannot ${phase} '${name}' with ${JSON.stringify(typeof v === 'bigint' ? String(v) : v)}: expected a ${type === 'date' ? 'date (ISO 8601 string)' : type}.`,
+    `Cannot ${phase} '${name}' with ${JSON.stringify(typeof v === 'bigint' ? String(v) : v)}: expected ${type === 'date' ? ISO_INSTANT_FORM : `a ${type}`}.`,
     { field: name, expected: type, phase }
   );
 }

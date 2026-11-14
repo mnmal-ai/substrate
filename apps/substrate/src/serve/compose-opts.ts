@@ -118,7 +118,7 @@ export async function buildComposeOpts(args: {
   };
   if (dataset.storageReport !== undefined) {
     const report = dataset.storageReport.bind(dataset);
-    composeOpts.storageReport = () => report({ partitionBudget: config.partitionBudget });
+    composeOpts.storageReport = () => report({ partitionBudget: config.typeTableBudget });
   }
   if (coordinators.length > 0) {
     composeOpts.coordinators = coordinators;

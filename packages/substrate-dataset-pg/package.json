@@ -26,6 +26,7 @@
   "scripts": {
     "build": "tsdown && tsc -p tsconfig.dts.json",
     "test": "vitest run",
+    "golden:record": "GOLDEN_RECORD=1 vitest run test/golden && biome format --write test/golden/expected.json",
     "check-types": "tsc -p tsconfig.json --noEmit",
     "lint": "biome check ."
   },

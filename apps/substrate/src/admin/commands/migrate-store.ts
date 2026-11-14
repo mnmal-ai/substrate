@@ -450,7 +450,7 @@ export async function runMigrateStore(
         missingIndexes: () => missingIndexes(booted, args.skipIndexBuild),
         fullChecksum: args.fullChecksum,
         sampleRows: 1000,
-        partitionBudget: parseEnv(targetEnv).partitionBudget,
+        partitionBudget: parseEnv(targetEnv).typeTableBudget,
         storageReport: async (r) => {
           const { warnings } = await (booted.dataset as PgDataset).storageReport(r);
           // A failed build pass and an INVALID index fail verification, each named.

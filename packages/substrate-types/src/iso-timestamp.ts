@@ -41,3 +41,18 @@ export function isIsoTimestamp(v: string): boolean {
 export function isImpossibleIsoTimestamp(v: string): boolean {
   return ISO_TIMESTAMP.test(v) && normalizeIsoTimestamp(v) === undefined;
 }
+
+/** The form a write or a filter operand must take, for error messages. */
+export const ISO_INSTANT_FORM =
+  'an ISO 8601 instant with a time and an offset, e.g. 2026-11-14T10:00:00Z or 2026-11-14T10:00:00+01:00';
+
+/**
+ * Is `v` an instant: a real date, a time AND an offset (`Z` or `±HH:MM`)?
+ * What a write and a filter operand must be. Offset-less and date-only values
+ * name no instant on their own, so they are refused rather than read as UTC;
+ * `normalizeIsoTimestamp` stays lenient so rows written before this still read.
+ */
+export function isIsoInstant(v: string): boolean {
+  const m = ISO_TIMESTAMP.exec(v);
+  return m?.[2] !== undefined && m[5] !== undefined && normalizeIsoTimestamp(v) !== undefined;
+}

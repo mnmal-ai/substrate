@@ -106,12 +106,15 @@ rather than silently answering about the default namespace.
 **The type form takes `shape` on BOTH surfaces** — `?shape=fields` over HTTP,
 `schema {namespace, type, shape}` over MCP. It is the one place the two
 spell a parameter the same way, because it is a projection rather than scoping.
-`full` is the default and inlines every mutation's params and returns; `fields`
-returns the field defs plus `mutationNames` at roughly a sixth the size.
+`compact` is the default: generated autoCRUD mutations name the type instead
+of restating its field block (`createTodo: { params: 'Todo fields', returns:
+'Todo' }`), custom mutations keep full signatures, and `mutationRefs` says how
+to read the names. `full` inlines every mutation's params and returns, the
+field block about seven times over; `fields` returns the field defs plus
+`mutationNames`. For a cortext/Todo-shaped type the three measure about 4.7 KB,
+15.8 KB and 3.4 KB.
 
 Reach for `fields` whenever the question is "what fields does this type have".
-For an autoCRUD type the mutations restate the field block five times over, so
-the full shape grows several times faster than the fields themselves.
 
 An unrecognised `shape` is **refused**, not ignored.
 
@@ -298,16 +301,17 @@ to their transport.
 `limit` is a query param. On subscribe it is refused:
 
 ```
-subscribe('<ns>/<Type>'): unknown param 'limit'. Allowed: _allowTableScan, orderBy, where.
+subscribe('<ns>/<Type>'): unknown param 'limit'. Allowed: orderBy, where.
 ```
 
-The allowlist is engine-wide (`KNOWN_SUBSCRIBE_PARAMS`), not a namespace quirk.
-A consumer that reuses its query params for a subscription gets `unknown_param`.
+The allowlist is engine-wide (`KNOWN_SUBSCRIBE_PARAMS`), not a namespace quirk,
+and a `stream` on a type applies the same one. A consumer that reuses its query
+params for a subscription or a stream gets `unknown_param`.
 
 Typed edge walks (`_walk`, `_agg`, `count`, `aggregate`, `groupBy`, `having`, `offset`) are
 query-only on every surface. `query` answers them; `subscribe` and `stream` refuse a
 frame that uses one with `walks_in_subscription`, and `mutate` refuses them with
-`walks_in_mutation`. `select` is no subscribe param, so a subscription that sends it gets
+`walks_in_mutation`. `select` is no subscribe or stream param, so a frame that sends it gets
 `unknown_param`, like any param beyond `where` and `orderBy`; `where.$expr` is allowed in a
 subscription's `where`.
 

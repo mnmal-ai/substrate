@@ -54,7 +54,7 @@ The reconciler (`reconcileTypeIndexes`) builds each type's indexes at boot and k
 
 ## Safe casts
 
-The baseline adds `substrate_num(jsonb)` and `substrate_ts(jsonb)`, used by filters, sorts and index expressions over values held in `extra`. Both are `IMMUTABLE` and `PARALLEL SAFE`, return NULL for a wrong-shaped value instead of raising, and are schema-qualified throughout (`pg_catalog.` operators and types) so the caller's `search_path` cannot change what they do. `substrate_ts` accepts the ISO dates and date-times the write validator accepts, and rebuilds each with an explicit offset before the cast, which is what makes it immutable regardless of `TimeZone` and `DateStyle`. A date with no offset is read as UTC, so writers should send an offset or `Z`.
+The baseline adds `substrate_num(jsonb)` and `substrate_ts(jsonb)`, used by filters, sorts and index expressions over values held in `extra`. Both are `IMMUTABLE` and `PARALLEL SAFE`, return NULL for a wrong-shaped value instead of raising, and are schema-qualified throughout (`pg_catalog.` operators and types) so the caller's `search_path` cannot change what they do. `substrate_ts` accepts every ISO date and date-time in the shared grammar, and rebuilds each with an explicit offset before the cast, which is what makes it immutable regardless of `TimeZone` and `DateStyle`. A stored date with no offset is read as UTC; writes and filter operands must carry a time and an offset, so only rows written before 1.0.0-beta.1 can lack one.
 
 ## Ids and visible order
 

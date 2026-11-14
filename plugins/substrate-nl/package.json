@@ -47,6 +47,7 @@
     "@mnmal-ai/substrate": "workspace:*",
     "@mnmal-ai/substrate-config": "workspace:*",
     "@types/node": "catalog:",
+    "postgres": "catalog:",
     "tsdown": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"

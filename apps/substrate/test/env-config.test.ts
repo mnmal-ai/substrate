@@ -512,12 +512,35 @@ describe('parseEnv', () => {
     expect(() => parseEnv({ SUBSTRATE_SHUTDOWN_GRACE_MS: '-1' })).toThrow(EnvConfigError);
   });
 
-  it('partition budget: defaults to 500, honours an override, refuses anything else', () => {
-    expect(parseEnv({}).partitionBudget).toBe(500);
-    expect(parseEnv({ SUBSTRATE_PARTITION_BUDGET: '3' }).partitionBudget).toBe(3);
+  it('type table budget: defaults to 500, honours an override, refuses anything else', () => {
+    expect(parseEnv({}).typeTableBudget).toBe(500);
+    expect(parseEnv({ SUBSTRATE_TYPE_TABLE_BUDGET: '3' }).typeTableBudget).toBe(3);
     for (const bad of ['0', '-1', '1.5', 'abc']) {
-      expect(() => parseEnv({ SUBSTRATE_PARTITION_BUDGET: bad })).toThrow(EnvConfigError);
+      expect(() => parseEnv({ SUBSTRATE_TYPE_TABLE_BUDGET: bad })).toThrow(EnvConfigError);
     }
+  });
+
+  it('type table budget: the deprecated SUBSTRATE_PARTITION_BUDGET is read when the new name is unset, with one warning', () => {
+    const writes: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
+      writes.push(String(chunk));
+      return true;
+    });
+    try {
+      expect(parseEnv({ SUBSTRATE_PARTITION_BUDGET: '3' }).typeTableBudget).toBe(3);
+      expect(
+        parseEnv({ SUBSTRATE_PARTITION_BUDGET: '3', SUBSTRATE_TYPE_TABLE_BUDGET: '7' })
+          .typeTableBudget
+      ).toBe(7);
+      expect(() => parseEnv({ SUBSTRATE_PARTITION_BUDGET: 'abc' })).toThrow(
+        /SUBSTRATE_PARTITION_BUDGET/
+      );
+    } finally {
+      vi.restoreAllMocks();
+    }
+    const warned = writes.filter((w) => w.includes('SUBSTRATE_PARTITION_BUDGET'));
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toContain('set SUBSTRATE_TYPE_TABLE_BUDGET instead');
   });
 
   it('statement timeout: defaults to 30000, honours an override, refuses anything else', () => {

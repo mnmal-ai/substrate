@@ -13,8 +13,14 @@ on:
 
 permissions: {}
 
+# The draft state is part of the group. Every job skips drafts, so a draft run
+# does nothing; in the shared group, a draft `synchronize` landing just after
+# `ready_for_review` cancelled the real run and left the PR with no checks
+# (#1801). Split, a draft run can only cancel another draft run, and a ready
+# run still cancels the ready run it supersedes. push events have no
+# pull_request, so they land in the `ready` suffix and keep their old behaviour.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.pull_request.draft == true && 'draft' || 'ready' }}
   cancel-in-progress: true
 
 jobs:

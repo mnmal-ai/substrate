@@ -633,4 +633,37 @@ describe('GET /substrate/v1/_system/keys — the gate is the point', () => {
     const body = jsonBody<{ keys: Array<{ kid: string }> }>(await getKeys(ctx));
     expect(body.keys.map((k) => k.kid)).not.toContain('agent-one@TestHost');
   });
+
+  it('?filter=all includes the revoked key with its revokedAt, and says so', async () => {
+    const ctx = await mkServer();
+    await postKeys(ctx, validBody());
+    await postKeys(ctx, validBody({ kid: 'agent-two@TestHost', name: 'agent two' }));
+    await ctx.server.inject({
+      method: 'PATCH',
+      path: '/substrate/v1/_system/keys',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${adminToken()}` },
+      body: Buffer.from(JSON.stringify({ kid: 'agent-one@TestHost', revoke: true }))
+    });
+    const res = await getKeys(ctx, adminToken(), '?filter=all');
+    expect(res.status).toBe(200);
+    const body = jsonBody<{
+      filter: string;
+      keys: Array<{ kid: string; revokedAt: string | null }>;
+    }>(res);
+    expect(body.filter).toBe('all');
+    const revoked = body.keys.find((k) => k.kid === 'agent-one@TestHost');
+    expect(typeof revoked?.revokedAt).toBe('string');
+    expect(Number.isNaN(Date.parse(revoked?.revokedAt ?? ''))).toBe(false);
+    // Live keys carry the field too, as null, so "not revoked" is stated rather than implied.
+    expect(body.keys.find((k) => k.kid === 'agent-two@TestHost')?.revokedAt).toBeNull();
+  });
+
+  it('refuses an unknown filter, and keeps the gate on ?filter=all', async () => {
+    const ctx = await mkServer();
+    const res = await getKeys(ctx, adminToken(), '?filter=revoked');
+    expect(res.status).toBe(400);
+    expect(jsonBody<{ code: string }>(res).code).toBe('invalid_filter');
+    expect((await getKeys(ctx, null, '?filter=all')).status).toBe(401);
+    expect((await getKeys(ctx, nonAdminToken(), '?filter=all')).status).toBe(403);
+  });
 });

@@ -6,7 +6,7 @@
 
 import { Engine, loadPlugins, MemoryEdgesStore } from '@mnmal-ai/substrate-core';
 import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-dataset-memory';
-import type { RequestContext } from '@mnmal-ai/substrate-types';
+import type { RequestContext, ResolverArgs } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
 import { createNoopPubSub, createProposalsPlugin } from '../src/index.js';
 
@@ -51,7 +51,7 @@ async function boot(
   });
   const engine = new Engine({ namespaces: loaded.namespaces, datasets, edges });
   await loaded.runOnStart(engine);
-  return { engine };
+  return { engine, loaded };
 }
 
 function ctx(capabilities: string[]): Partial<RequestContext> {
@@ -188,5 +188,233 @@ describe('proposal records', () => {
     expect('indexed' in (replayed.title ?? {})).toBe(false);
     expect(replayed.body?.indexed).toBe(false);
     expect(replayed.code?.indexed).toBe(true);
+  });
+});
+
+describe('removing a TypeProposal (#1792, #1954)', () => {
+  const str = JSON.stringify({ t: { kind: 'scalar', type: 'string' } });
+  const propose = ['read', 'mutate', 'substrate.propose'];
+
+  async function seeded(withRows: boolean) {
+    const ds = new MemoryDataset({ namespace: 'app' });
+    await ds.write('TypeProposal', [row({ id: 'tp', typeName: 'Stored', fieldsJson: str })]);
+    if (withRows) await ds.write('Stored', [{ id: 's1', t: 'x' }]);
+    return { ds, ...(await boot(ds)) };
+  }
+
+  const removals: Array<[string, Record<string, unknown>]> = [
+    ['app/deleteTypeProposal', { id: 'tp' }],
+    ['app/updateTypeProposal', { id: 'tp', archived: true }],
+    // Each changes what boot replays for the type (#1954).
+    ['app/updateTypeProposal', { id: 'tp', applied: false }],
+    ['app/updateTypeProposal', { id: 'tp', typeName: 'Empty' }],
+    ['app/updateTypeProposal', { id: 'tp', fieldsJson: '{}' }],
+    // Not on the benign list, so gated too.
+    ['app/updateTypeProposal', { id: 'tp', supersededByCode: true }]
+  ];
+
+  it('of a type with storage needs the drop capability', async () => {
+    for (const [key, params] of removals) {
+      const { ds, engine } = await seeded(true);
+      const denied = await engine.mutate({
+        frame: { [key]: { params, fields: { id: true } } },
+        ctx: ctx(propose)
+      });
+      expect(denied.errors?.[0]?.code).toBe('policy_denied');
+      // An array takes the same guard.
+      const batched = await engine.mutate({
+        frame: { [key]: [{ params, fields: { id: true } }] },
+        ctx: ctx(propose)
+      });
+      expect(batched.errors?.[0]?.code).toBe('policy_denied');
+      const kept = (await ds.read('TypeProposal', { id: 'tp' })).rows[0];
+      expect(kept).toMatchObject({
+        archived: false,
+        applied: true,
+        typeName: 'Stored',
+        fieldsJson: str
+      });
+      const allowed = await engine.mutate({
+        frame: { [key]: { params, fields: { id: true } } },
+        ctx: ctx([...propose, 'admin'])
+      });
+      expect(allowed.errors).toBeUndefined();
+    }
+  });
+
+  it('by filter is refused, so it cannot route around the guard', async () => {
+    const { engine } = await seeded(true);
+    for (const [key, params] of [
+      ['app/deleteManyTypeProposal', { where: { typeName: { eq: 'Stored' } } }],
+      [
+        'app/updateManyTypeProposal',
+        { where: { typeName: { eq: 'Stored' } }, set: { archived: true } }
+      ]
+    ] as const) {
+      const env = await engine.mutate({
+        frame: { [key]: { params, fields: { count: true } } },
+        ctx: ctx(propose)
+      });
+      expect(env.errors?.[0]).toBeDefined();
+    }
+  });
+
+  it('of a type with no storage needs only the propose capability', async () => {
+    for (const [key, params] of removals) {
+      const { engine } = await seeded(false);
+      const env = await engine.mutate({
+        frame: { [key]: { params, fields: { id: true } } },
+        ctx: ctx(propose)
+      });
+      expect(env.errors).toBeUndefined();
+    }
+  });
+
+  it('updates touching only benign fields still need only the propose capability', async () => {
+    const { engine } = await seeded(true);
+    const env = await engine.mutate({
+      frame: {
+        'app/updateTypeProposal': {
+          params: { id: 'tp', proposedReason: 'clarified', proposedBy: 'someone' },
+          fields: { id: true }
+        }
+      },
+      ctx: ctx(propose)
+    });
+    expect(env.errors).toBeUndefined();
+  });
+
+  it('a fresh applied proposal for a stored name needs the drop capability (#1956)', async () => {
+    let n = 0;
+    const fresh = (typeName: string, applied: boolean) => ({
+      'app/createTypeProposal': {
+        params: row({ id: `fresh-${++n}`, typeName, fieldsJson: str, applied }),
+        fields: { id: true }
+      }
+    });
+    const { engine } = await seeded(true);
+    const denied = await engine.mutate({ frame: fresh('Stored', true), ctx: ctx(propose) });
+    expect(denied.errors?.[0]?.code).toBe('policy_denied');
+    // Unapplied, or for a name with no rows, stays propose-only.
+    expect(
+      (await engine.mutate({ frame: fresh('Stored', false), ctx: ctx(propose) })).errors
+    ).toBeUndefined();
+    expect(
+      (await engine.mutate({ frame: fresh('Fresh', true), ctx: ctx(propose) })).errors
+    ).toBeUndefined();
+    expect(
+      (await engine.mutate({ frame: fresh('Stored', true), ctx: ctx([...propose, 'admin']) }))
+        .errors
+    ).toBeUndefined();
+  });
+
+  it('a rename onto a defined name needs the drop capability, whatever the stored name holds', async () => {
+    // The stored type 'Empty' has no rows; the target 'Stored' does, or has a live proposal.
+    const { ds, engine } = await seeded(true);
+    await ds.write('TypeProposal', [row({ id: 'te', typeName: 'Empty', fieldsJson: str })]);
+    const onto = (typeName: string) =>
+      engine.mutate({
+        frame: {
+          'app/updateTypeProposal': { params: { id: 'te', typeName }, fields: { id: true } }
+        },
+        ctx: ctx(propose)
+      });
+    expect((await onto('Stored')).errors?.[0]?.code).toBe('policy_denied');
+    await ds.write('TypeProposal', [row({ id: 'tl', typeName: 'Live', fieldsJson: str })]);
+    expect((await onto('Live')).errors?.[0]?.code).toBe('policy_denied');
+    expect((await ds.read('TypeProposal', { id: 'te' })).rows[0]?.typeName).toBe('Empty');
+    expect((await onto('Free')).errors).toBeUndefined();
+  });
+
+  it('a second applied proposal for a name with a live one needs the drop capability', async () => {
+    const { ds, engine } = await seeded(false);
+    // 'Stored' has no rows here, but proposal 'tp' already defines it.
+    expect((await ds.read('Stored', {})).rows).toEqual([]);
+    const env = await engine.mutate({
+      frame: {
+        'app/createTypeProposal': {
+          params: row({ id: 'dup', typeName: 'Stored', fieldsJson: '{}', applied: true }),
+          fields: { id: true }
+        }
+      },
+      ctx: ctx(propose)
+    });
+    expect(env.errors?.[0]?.code).toBe('policy_denied');
+  });
+
+  it('applying an unapplied proposal for a name with a live one needs the drop capability', async () => {
+    const { ds, engine } = await seeded(false);
+    await ds.write('TypeProposal', [
+      row({ id: 'idle', typeName: 'Stored', fieldsJson: '{}', applied: false })
+    ]);
+    const apply = (params: Record<string, unknown>) =>
+      engine.mutate({
+        frame: {
+          'app/updateTypeProposal': { params: { id: 'idle', ...params }, fields: { id: true } }
+        },
+        ctx: ctx(propose)
+      });
+    expect((await apply({ applied: true })).errors?.[0]?.code).toBe('policy_denied');
+    // appliedAt is not benign: it is no lever on replay order, but it is gated all the same.
+    expect((await apply({ appliedAt: T0 })).errors).toBeUndefined();
+    expect((await ds.read('TypeProposal', { id: 'idle' })).rows[0]?.applied).toBe(false);
+  });
+
+  it('boot replay registers the oldest applied definition of a name', async () => {
+    const ds = new MemoryDataset({ namespace: 'app' });
+    const later = new Date(T0.getTime() + 60_000);
+    // Natural order (createdAt desc) would read the newer one first.
+    await ds.write('TypeProposal', [
+      row({ id: 'old', typeName: 'Twin', fieldsJson: str, _metadata: { createdAt: T0 } })
+    ]);
+    await ds.write('TypeProposal', [
+      row({
+        id: 'new',
+        typeName: 'Twin',
+        fieldsJson: JSON.stringify({ u: { kind: 'scalar', type: 'string' } }),
+        // A backdated appliedAt is no lever: replay orders by the server-set createdAt.
+        appliedAt: new Date(0),
+        _metadata: { createdAt: later }
+      })
+    ]);
+    const { loaded } = await boot(ds);
+    const fields = loaded.namespaces.get('app')?.registry.get('Twin')?.fields;
+    expect(fields).toHaveProperty('t');
+    expect(fields).not.toHaveProperty('u');
+  });
+
+  it('checks the stored typeName, so a rename cannot point the check at an empty type', async () => {
+    // 'Empty' has no rows; the proposal's stored type 'Stored' does.
+    const { ds, engine } = await seeded(true);
+    const env = await engine.mutate({
+      frame: {
+        'app/updateTypeProposal': { params: { id: 'tp', typeName: 'Empty' }, fields: { id: true } }
+      },
+      ctx: ctx(propose)
+    });
+    expect(env.errors?.[0]?.code).toBe('policy_denied');
+    expect((await ds.read('TypeProposal', { id: 'tp' })).rows[0]?.typeName).toBe('Stored');
+  });
+
+  it('fails closed on a removal with no id or no dataset to check', async () => {
+    const { ds, loaded } = await seeded(true);
+    const registry = loaded.namespaces.get('app')?.registry;
+    const call = (key: string, args: Partial<ResolverArgs>) =>
+      registry
+        ?.get(key)
+        ?.resolver({ ...ctx(propose), namespace: 'app' } as RequestContext, args as ResolverArgs);
+    await expect(
+      call('updateTypeProposal', { params: { applied: false }, dataset: ds })
+    ).rejects.toMatchObject({
+      code: 'policy_denied'
+    });
+    await expect(call('deleteTypeProposal', { params: { id: 'tp' } })).rejects.toMatchObject({
+      code: 'policy_denied'
+    });
+    await expect(
+      call('updateTypeProposal', { params: { id: 'tp', archived: true } })
+    ).rejects.toMatchObject({
+      code: 'policy_denied'
+    });
   });
 });

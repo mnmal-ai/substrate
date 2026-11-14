@@ -6,6 +6,16 @@ import { FastifySubstrateServer } from '../src/index.js';
 // The server speaks HTTP/2 only; the platform fetch speaks HTTP/1.1.
 const h2fetch = createH2Fetch();
 
+/**
+ * Resolves once `signal` aborts: the server's req.raw 'close' lands after an
+ * unbounded number of loop turns, so a fixed sleep flakes under load. A signal
+ * that never aborts fails on the test timeout.
+ */
+const aborted = (signal: AbortSignal | undefined): Promise<void> =>
+  signal === undefined || signal.aborted
+    ? Promise.resolve()
+    : new Promise((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+
 describe('FastifySubstrateServer abort fan-out', () => {
   it('attaches a per-request signal and aborts it on client disconnect', async () => {
     const server = new FastifySubstrateServer();
@@ -34,9 +44,7 @@ describe('FastifySubstrateServer abort fan-out', () => {
       const observedSignal = await handlerEntered;
       expect(observedSignal).toBeDefined();
       session.destroy();
-      // Yield the loop a couple of times so the server's req.raw 'close'
-      // event has a chance to fire and our abort listener runs.
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await aborted(observedSignal);
       expect(observedSignal?.aborted).toBe(true);
       expect(observedSignal?.reason).toBe('client_disconnect');
     } finally {
@@ -229,7 +237,7 @@ describe('FastifySubstrateServer abort fan-out', () => {
       const observedSignal = await handlerEntered;
       expect(observedSignal).toBeDefined();
       session.destroy();
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await aborted(observedSignal);
       expect(observedSignal?.aborted).toBe(true);
       expect(observedSignal?.reason).toBe('client_disconnect');
     } finally {

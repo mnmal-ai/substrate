@@ -275,14 +275,29 @@ const TYPE_REQ = {
 } as const;
 
 describe('GET /substrate/v1/schema/:namespace/:type — shape projection', () => {
-  it('defaults to the full write contract, so existing callers are unaffected', async () => {
+  it('defaults to the compact write contract: generated CRUD names the type', async () => {
     const res = await schemaForTypeRoute(engineWithType())({ ...TYPE_REQ });
     const body = JSON.parse(String(res.body));
 
     expect(res.status).toBe(200);
     expect(Object.keys(body.mutations).sort()).toEqual(['createTodo', 'getTodo', 'updateTodo']);
+    expect(body.mutations.createTodo).toEqual({ params: 'Todo fields', returns: 'Todo' });
+    expect(typeof body.mutationRefs).toBe('string');
     expect(body.mutationNames).toBeUndefined();
     expect(body).not.toHaveProperty('expressions');
+  });
+
+  it('compact keeps custom mutations, and a generated name with a different signature, in full', async () => {
+    const markTodoRead = { params: {}, returns: { ...TODO_ROW, nullable: true } };
+    const deleteTodo = { params: { id: { kind: 'scalar', type: 'string' } }, returns: TODO_ROW };
+    const res = await schemaForTypeRoute(engineWithType({ markTodoRead, deleteTodo }))({
+      ...TYPE_REQ
+    });
+    const body = JSON.parse(String(res.body));
+
+    expect(body.mutations.markTodoRead).toEqual(markTodoRead);
+    // A generated verb is compacted only where the block really is the type's.
+    expect(body.mutations.deleteTodo).toEqual({ params: deleteTodo.params, returns: 'Todo' });
   });
 
   it('shape=fields drops the mutations and keeps the field defs intact', async () => {
@@ -341,7 +356,7 @@ describe('GET /substrate/v1/schema/:namespace/:type — shape projection', () =>
     const body = JSON.parse(String(res.body));
 
     expect(res.status).toBe(400);
-    expect(body.allowedShapes).toEqual(['full', 'fields']);
+    expect(body.allowedShapes).toEqual(['compact', 'full', 'fields']);
     expect(body.error).toContain('feilds');
   });
 

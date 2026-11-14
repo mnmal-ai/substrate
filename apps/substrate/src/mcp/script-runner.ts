@@ -58,6 +58,7 @@ async function start(m: Start): Promise<void> {
     args: Object.freeze({ ...m.args }),
     query: (frame: unknown) => call('query', frame),
     queryAll: (key: unknown, frame: unknown) => call('queryAll', key, frame),
+    byShortId: (key: unknown, n: unknown, fields?: unknown) => call('byShortId', key, n, fields),
     recall: (input: unknown) => call('recall', input),
     schema: (namespace?: unknown, type?: unknown) => call('schema', namespace, type),
     mutate: (frame: unknown) => call('mutate', frame),

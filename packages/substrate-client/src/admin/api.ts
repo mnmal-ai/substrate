@@ -12,6 +12,8 @@ export interface AdminKeyRow {
   readonly namespaces: string;
   readonly capabilities: string;
   readonly createdAt: string;
+  /** Present only on a `filter: 'all'` read: the revocation time, or null on a live key. */
+  readonly revokedAt?: string | null;
 }
 
 export interface AdminGrantChange {
@@ -89,8 +91,11 @@ export interface AdminInviteResult {
 }
 
 export interface AdminApi extends SurgeryApi {
-  /** GET /substrate/v1/_system/keys, paged to completion: a truncated key table is never silent. */
-  keys(opts?: { signal?: AbortSignal }): Promise<AdminKeyRow[]>;
+  /**
+   * GET /substrate/v1/_system/keys, paged to completion: a truncated key table is never silent.
+   * `filter: 'all'` includes revoked keys, each row carrying `revokedAt`; the default is live keys only.
+   */
+  keys(opts?: { signal?: AbortSignal; filter?: 'active' | 'all' }): Promise<AdminKeyRow[]>;
   /** PATCH of a key's grant. REPLACES both lists (namespaces and capabilities) with `change`'s; nothing is merged with what the key held. */
   update(change: AdminGrantChange, opts?: { signal?: AbortSignal }): Promise<AdminUpdateResult>;
   revoke(kid: string, opts?: { signal?: AbortSignal }): Promise<AdminRevokeResult>;
@@ -114,7 +119,10 @@ export function createAdminApi(t: HttpTransport): AdminApi {
       const out: AdminKeyRow[] = [];
       let cursor: string | undefined;
       for (;;) {
-        const qs = cursor === undefined ? '' : `?cursor=${encodeURIComponent(cursor)}`;
+        const q = new URLSearchParams();
+        if (opts.filter === 'all') q.set('filter', 'all');
+        if (cursor !== undefined) q.set('cursor', cursor);
+        const qs = q.toString() === '' ? '' : `?${q.toString()}`;
         const res = await t.raw(`/substrate/v1/_system/keys${qs}`, {
           method: 'GET',
           ...(opts.signal !== undefined ? { signal: opts.signal } : {})

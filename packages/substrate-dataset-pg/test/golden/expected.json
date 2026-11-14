@@ -1,0 +1,3926 @@
+{
+  "filter eq string": {
+    "rows": [
+      {
+        "id": "i2",
+        "big": {
+          "$int64": "7"
+        },
+        "n": 2.5,
+        "phrase": "foobar",
+        "ref": "i1",
+        "region": 1,
+        "status": "closed",
+        "title": "beta",
+        "addr": {
+          "city": "York"
+        },
+        "meta": {
+          "year": "1995",
+          "region": "us"
+        },
+        "tags": ["b"],
+        "at": "2024-03-05T10:20:30.123999Z"
+      }
+    ],
+    "hasMore": false
+  },
+  "filter in, nin and neq": {
+    "rows": [
+      {
+        "id": "i1",
+        "big": {
+          "$int64": "9007199254740993"
+        },
+        "n": 1,
+        "phrase": "foo",
+        "region": 1,
+        "status": "open",
+        "title": "alpha",
+        "addr": {
+          "city": "Leeds"
+        },
+        "meta": {
+          "tier": {
+            "name": "gold"
+          },
+          "year": 1995,
+          "region": "eu"
+        },
+        "tags": ["a", "b"],
+        "at": "2024-01-01T00:00:00.123456Z"
+      },
+      {
+        "id": "i2",
+        "big": {
+          "$int64": "7"
+        },
+        "n": 2.5,
+        "phrase": "foobar",
+        "ref": "i1",
+        "region": 1,
+        "status": "closed",
+        "title": "beta",
+        "addr": {
+          "city": "York"
+        },
+        "meta": {
+          "year": "1995",
+          "region": "us"
+        },
+        "tags": ["b"],
+        "at": "2024-03-05T10:20:30.123999Z"
+      }
+    ],
+    "hasMore": false
+  },
+  "filter in [] matches nothing": {
+    "rows": [],
+    "hasMore": false
+  },
+  "filter nin [] excludes nothing": {
+    "rows": [
+      {
+        "id": "i1",
+        "big": {
+          "$int64": "9007199254740993"
+        },
+        "n": 1,
+        "phrase": "foo",
+        "region": 1,
+        "status": "open",
+        "title": "alpha",
+        "addr": {
+          "city": "Leeds"
+        },
+        "meta": {
+          "tier": {
+            "name": "gold"
+          },
+          "year": 1995,
+          "region": "eu"
+        },
+        "tags": ["a", "b"],
+        "at": "2024-01-01T00:00:00.123456Z"
+      },
+      {
+        "id": "i10",
+        "n": 3,
+        "region": 2,
+        "title": "axb"
+      },
+      {
+        "id": "i2",
+        "big": {
+          "$int64": "7"
+        },
+        "n": 2.5,
+        "phrase": "foobar",
+        "ref": "i1",
+        "region": 1,
+        "status": "closed",
+        "title": "beta",
+        "addr": {
+          "city": "York"
+        },
+        "meta": {
+          "year": "1995",
+          "region": "us"
+        },
+        "tags": ["b"],
+        "at": "2024-03-05T10:20:30.123999Z"
+      },
+      {
+        "id": "i3",
+        "big": {
+          "$int64": "-3"
+        },
+        "phrase": "",
+        "ref": "i1",
+        "region": 2,
+        "title": "Gamma",
+        "meta": null,
+        "tags": []
+      },
+      {
+        "id": "i4",
+        "region": 2,
+        "title": "delta"
+      },
+      {
+        "id": "i5",
+        "phrase": "bar",
+        "region": 3,
+        "title": "epsilon",
+        "n": "5",
+        "status": "zzz"
+      },
+      {
+        "id": "i6",
+        "big": {
+          "$int64": "9223372036854775807"
+        },
+        "n": 10,
+        "phrase": "aaab",
+        "ref": "i2",
+        "region": 3,
+        "status": "closed",
+        "title": "zeta",
+        "tags": ["c", "a"],
+        "at": "2023-12-31T23:59:59.999999Z"
+      },
+      {
+        "id": "i7",
+        "big": {
+          "$int64": "0"
+        },
+        "n": 0,
+        "region": 1,
+        "status": "open",
+        "title": "eta"
+      },
+      {
+        "id": "i8",
+        "n": -1.25,
+        "phrase": "foo",
+        "title": "theta",
+        "meta": {
+          "year": 2001
+        }
+      },
+      {
+        "id": "i9",
+        "n": 3,
+        "region": 2,
+        "title": "a%b"
+      }
+    ],
+    "hasMore": false
+  },
+  "filter contains, startsWith, endsWith": {
+    "rows": [
+      {
+        "id": "i1",
+        "big": {
+          "$int64": "9007199254740993"
+        },
+        "n": 1,
+        "phrase": "foo",
+        "region": 1,
+        "status": "open",
+        "title": "alpha",
+        "addr": {
+          "city": "Leeds"
+        },
+        "meta": {
+          "tier": {
+            "name": "gold"
+          },
+          "year": 1995,
+          "region": "eu"
+        },
+        "tags": ["a", "b"],
+        "at": "2024-01-01T00:00:00.123456Z"
+      },
+      {
+        "id": "i2",
+        "big": {
+          "$int64": "7"
+        },
+        "n": 2.5,
+        "phrase": "foobar",
+        "ref": "i1",
+        "region": 1,
+        "status": "closed",
+        "title": "beta",
+        "addr": {
+          "city": "York"
+        },
+        "meta": {
+          "year": "1995",
+          "region": "us"
+        },
+        "tags": ["b"],
+        "at": "2024-03-05T10:20:30.123999Z"
+      },
+      {
+        "id": "i3",
+        "big": {
+          "$int64": "-3"
+        },
+        "phrase": "",
+        "ref": "i1",
+        "region": 2,
+        "title": "Gamma",
+        "meta": null,
+        "tags": []
+      },
+      {
+        "id": "i6",
+        "big": {
+          "$int64": "9223372036854775807"
+        },
+        "n": 10,
+        "phrase": "aaab",
+        "ref": "i2",
+        "region": 3,
+        "status": "closed",
+        "title": "zeta",
+        "tags": ["c", "a"],
+        "at": "2023-12-31T23:59:59.999999Z"
+      },
+      {
+        "id": "i7",
+        "big": {
+          "$int64": "0"
+        },
+        "n": 0,
+        "region": 1,
+        "status": "open",
+        "title": "eta"
+      },
+      {
+        "id": "i8",
+        "n": -1.25,
+        "phrase": "foo",
+        "title": "theta",
+        "meta": {
+          "year": 2001
+        }
+      }
+    ],
+    "hasMore": false
+  },
+  "filter like and notLike are case-sensitive, % is literal under contains": {
+    "rows": [
+      {
+        "id": "i10",
+        "n": 3,
+        "region": 2,
+        "title": "axb"
+      },
+      {
+        "id": "i9",
+        "n": 3,
+        "region": 2,
+        "title": "a%b"
+      }
+    ],
+    "hasMore": false
+  },
+  "filter notLike": {
+    "rows": [
+      {
+        "id": "i10",
+        "n": 3,
+        "region": 2,
+        "title": "axb"
+      },
+      {
+        "id": "i5",
+        "phrase": "bar",
+        "region": 3,
+        "title": "epsilon",
+        "n": "5",
+        "status": "zzz"
+      },
+      {
+        "id": "i9",
+        "n": 3,
+        "region": 2,
+        "title": "a%b"
+      }
+    ],
+    "hasMore": false
+  },
+  "filter gt/lte on a number": {
+    "rows": [
+      {
+        "id": "i1",
+        "big": {
+          "$int64": "9007199254740993"
+        },
+        "n": 1,
+        "phrase": "foo",
+        "region": 1,
+        "status": "open",
+        "title": "alpha",
+        "addr": {
+          "city": "Leeds"
+        },
+        "meta": {
+          "tier": {
+            "name": "gold"
+          },
+          "year": 1995,
+          "region": "eu"
+        },
+        "tags": ["a", "b"],
+        "at": "2024-01-01T00:00:00.123456Z"
+      },
+      {
+        "id": "i10",
+        "n": 3,
+        "region": 2,
+        "title": "axb"
+      },
+      {
+        "id": "i2",
+        "big": {
+          "$int64": "7"
+        },
+        "n": 2.5,
+        "phrase": "foobar",
+        "ref": "i1",
+        "region": 1,
+        "status": "closed",
+        "title": "beta",
+        "addr": {
+          "city": "York"
+        },
+        "meta": {
+          "year": "1995",
+          "region": "us"
+        },
+        "tags": ["b"],
+        "at": "2024-03-05T10:20:30.123999Z"
+      },
+      {
+        "id": "i9",
+        "n": 3,
+        "region": 2,
+        "title": "a%b"
+      }
+    ],
+    "hasMore": false
+  },
+  "filter between on a string": {
+    "rows": [
+      {
+        "id": "i2",
+        "big": {
+          "$int64": "7"
+        },
+        "n": 2.5,
+        "phrase": "foobar",
+        "ref": "i1",
+        "region": 1,
+        "status": "closed",
+        "title": "beta",
+        "addr": {
+          "city": "York"
+        },
+        "meta": {
+          "year": "1995",
+          "region": "us"
+        },
+        "tags": ["b"],
+        "at": "2024-03-05T10:20:30.123999Z"
+      },
+      {
+        "id": "i4",
+        "region": 2,
+        "title": "delta"
+      }
+    ],
+    "hasMore": false
+  },
+  "filter on a date with microseconds": {
+    "rows": [
+      {
+        "id": "i1",
+        "big": {
+          "$int64": "9007199254740993"
+        },
+        "n": 1,
+        "phrase": "foo",
+        "region": 1,
+        "status": "open",
+        "title": "alpha",
+        "addr": {
+          "city": "Leeds"
+        },
+        "meta": {
+          "tier": {
+            "name": "gold"
+          },
+          "year": 1995,
+          "region": "eu"
+        },
+        "tags": ["a", "b"],
+        "at": "2024-01-01T00:00:00.123456Z"
+      },
+      {
+        "id": "i2",
+        "big": {
+          "$int64": "7"
+        },
+        "n": 2.5,
+        "phrase": "foobar",
+        "ref": "i1",
+        "region": 1,
+        "status": "closed",
+        "title": "beta",
+        "addr": {
+          "city": "York"
+        },
+        "meta": {
+          "year": "1995",
+          "region": "us"
+        },
+        "tags": ["b"],
+        "at": "2024-03-05T10:20:30.123999Z"
+      }
+    ],
+    "hasMore": false
+  },
+  "filter int64 past 2^53": {
+    "rows": [
+      {
+        "id": "i1",
+        "big": {
+          "$int64": "9007199254740993"
+        },
+        "n": 1,
+        "phrase": "foo",
+        "region": 1,
+        "status": "open",
+        "title": "alpha",
+        "addr": {
+          "city": "Leeds"
+        },
+        "meta": {
+          "tier": {
+            "name": "gold"
+          },
+          "year": 1995,
+          "region": "eu"
+        },
+        "tags": ["a", "b"],
+        "at": "2024-01-01T00:00:00.123456Z"
+      },
+      {
+        "id": "i6",
+        "big": {
+          "$int64": "9223372036854775807"
+        },
+        "n": 10,
+        "phrase": "aaab",
+        "ref": "i2",
+        "region": 3,
+        "status": "closed",
+        "title": "zeta",
+        "tags": ["c", "a"],
+        "at": "2023-12-31T23:59:59.999999Z"
+      }
+    ],
+    "hasMore": false
+  },
+  "filter AND, OR and NOT": {
+    "rows": [
+      {
+        "id": "i2",
+        "big": {
+          "$int64": "7"
+        },
+        "n": 2.5,
+        "phrase": "foobar",
+        "ref": "i1",
+        "region": 1,
+        "status": "closed",
+        "title": "beta",
+        "addr": {
+          "city": "York"
+        },
+        "meta": {
+          "year": "1995",
+          "region": "us"
+        },
+        "tags": ["b"],
+        "at": "2024-03-05T10:20:30.123999Z"
+      },
+      {
+        "id": "i5",
+        "phrase": "bar",
+        "region": 3,
+        "title": "epsilon",
+        "n": "5",
+        "status": "zzz"
+      },
+      {
+        "id": "i6",
+        "big": {
+          "$int64": "9223372036854775807"
+        },
+        "n": 10,
+        "phrase": "aaab",
+        "ref": "i2",
+        "region": 3,
+        "status": "closed",
+        "title": "zeta",
+        "tags": ["c", "a"],
+        "at": "2023-12-31T23:59:59.999999Z"
+      }
+    ],
+    "hasMore": false
+  },
+  "filter on a struct sub-field": {
+    "rows": [
+      {
+        "id": "i2",
+        "big": {
+          "$int64": "7"
+        },
+        "n": 2.5,
+        "phrase": "foobar",
+        "ref": "i1",
+        "region": 1,
+        "status": "closed",
+        "title": "beta",
+        "addr": {
+          "city": "York"
+        },
+        "meta": {
+          "year": "1995",
+          "region": "us"
+        },
+        "tags": ["b"],
+        "at": "2024-03-05T10:20:30.123999Z"
+      }
+    ],
+    "hasMore": false
+  },
+  "filter on a json path is type-strict": {
+    "rows": [
+      {
+        "id": "i1",
+        "big": {
+          "$int64": "9007199254740993"
+        },
+        "n": 1,
+        "phrase": "foo",
+        "region": 1,
+        "status": "open",
+        "title": "alpha",
+        "addr": {
+          "city": "Leeds"
+        },
+        "meta": {
+          "tier": {
+            "name": "gold"
+          },
+          "year": 1995,
+          "region": "eu"
+        },
+        "tags": ["a", "b"],
+        "at": "2024-01-01T00:00:00.123456Z"
+      }
+    ],
+    "hasMore": false
+  },
+  "filter on a nested json path": {
+    "rows": [
+      {
+        "id": "i1",
+        "big": {
+          "$int64": "9007199254740993"
+        },
+        "n": 1,
+        "phrase": "foo",
+        "region": 1,
+        "status": "open",
+        "title": "alpha",
+        "addr": {
+          "city": "Leeds"
+        },
+        "meta": {
+          "tier": {
+            "name": "gold"
+          },
+          "year": 1995,
+          "region": "eu"
+        },
+        "tags": ["a", "b"],
+        "at": "2024-01-01T00:00:00.123456Z"
+      }
+    ],
+    "hasMore": false
+  },
+  "filter list has": {
+    "rows": [
+      {
+        "id": "i1",
+        "big": {
+          "$int64": "9007199254740993"
+        },
+        "n": 1,
+        "phrase": "foo",
+        "region": 1,
+        "status": "open",
+        "title": "alpha",
+        "addr": {
+          "city": "Leeds"
+        },
+        "meta": {
+          "tier": {
+            "name": "gold"
+          },
+          "year": 1995,
+          "region": "eu"
+        },
+        "tags": ["a", "b"],
+        "at": "2024-01-01T00:00:00.123456Z"
+      },
+      {
+        "id": "i6",
+        "big": {
+          "$int64": "9223372036854775807"
+        },
+        "n": 10,
+        "phrase": "aaab",
+        "ref": "i2",
+        "region": 3,
+        "status": "closed",
+        "title": "zeta",
+        "tags": ["c", "a"],
+        "at": "2023-12-31T23:59:59.999999Z"
+      }
+    ],
+    "hasMore": false
+  },
+  "filter crossRef eq": {
+    "rows": [
+      {
+        "id": "i2",
+        "big": {
+          "$int64": "7"
+        },
+        "n": 2.5,
+        "phrase": "foobar",
+        "ref": "i1",
+        "region": 1,
+        "status": "closed",
+        "title": "beta",
+        "addr": {
+          "city": "York"
+        },
+        "meta": {
+          "year": "1995",
+          "region": "us"
+        },
+        "tags": ["b"],
+        "at": "2024-03-05T10:20:30.123999Z"
+      },
+      {
+        "id": "i3",
+        "big": {
+          "$int64": "-3"
+        },
+        "phrase": "",
+        "ref": "i1",
+        "region": 2,
+        "title": "Gamma",
+        "meta": null,
+        "tags": []
+      }
+    ],
+    "hasMore": false
+  },
+  "filter id in": {
+    "rows": [
+      {
+        "id": "i2",
+        "big": {
+          "$int64": "7"
+        },
+        "n": 2.5,
+        "phrase": "foobar",
+        "ref": "i1",
+        "region": 1,
+        "status": "closed",
+        "title": "beta",
+        "addr": {
+          "city": "York"
+        },
+        "meta": {
+          "year": "1995",
+          "region": "us"
+        },
+        "tags": ["b"],
+        "at": "2024-03-05T10:20:30.123999Z"
+      },
+      {
+        "id": "i4",
+        "region": 2,
+        "title": "delta"
+      }
+    ],
+    "hasMore": false
+  },
+  "filter $expr on a computed condition": {
+    "rows": [
+      {
+        "id": "i1",
+        "big": {
+          "$int64": "9007199254740993"
+        },
+        "n": 1,
+        "phrase": "foo",
+        "region": 1,
+        "status": "open",
+        "title": "alpha",
+        "addr": {
+          "city": "Leeds"
+        },
+        "meta": {
+          "tier": {
+            "name": "gold"
+          },
+          "year": 1995,
+          "region": "eu"
+        },
+        "tags": ["a", "b"],
+        "at": "2024-01-01T00:00:00.123456Z"
+      },
+      {
+        "id": "i3",
+        "big": {
+          "$int64": "-3"
+        },
+        "phrase": "",
+        "ref": "i1",
+        "region": 2,
+        "title": "Gamma",
+        "meta": null,
+        "tags": []
+      },
+      {
+        "id": "i4",
+        "region": 2,
+        "title": "delta"
+      },
+      {
+        "id": "i5",
+        "phrase": "bar",
+        "region": 3,
+        "title": "epsilon",
+        "n": "5",
+        "status": "zzz"
+      },
+      {
+        "id": "i8",
+        "n": -1.25,
+        "phrase": "foo",
+        "title": "theta",
+        "meta": {
+          "year": 2001
+        }
+      }
+    ],
+    "hasMore": false
+  },
+  "filter NOT $expr is a complement: a null result is false, so NOT keeps the row": {
+    "rows": [
+      {
+        "id": "i1",
+        "big": {
+          "$int64": "9007199254740993"
+        },
+        "n": 1,
+        "phrase": "foo",
+        "region": 1,
+        "status": "open",
+        "title": "alpha",
+        "addr": {
+          "city": "Leeds"
+        },
+        "meta": {
+          "tier": {
+            "name": "gold"
+          },
+          "year": 1995,
+          "region": "eu"
+        },
+        "tags": ["a", "b"],
+        "at": "2024-01-01T00:00:00.123456Z"
+      },
+      {
+        "id": "i3",
+        "big": {
+          "$int64": "-3"
+        },
+        "phrase": "",
+        "ref": "i1",
+        "region": 2,
+        "title": "Gamma",
+        "meta": null,
+        "tags": []
+      },
+      {
+        "id": "i4",
+        "region": 2,
+        "title": "delta"
+      },
+      {
+        "id": "i5",
+        "phrase": "bar",
+        "region": 3,
+        "title": "epsilon",
+        "n": "5",
+        "status": "zzz"
+      },
+      {
+        "id": "i7",
+        "big": {
+          "$int64": "0"
+        },
+        "n": 0,
+        "region": 1,
+        "status": "open",
+        "title": "eta"
+      },
+      {
+        "id": "i8",
+        "n": -1.25,
+        "phrase": "foo",
+        "title": "theta",
+        "meta": {
+          "year": 2001
+        }
+      }
+    ],
+    "hasMore": false
+  },
+  "tombstoned rows are hidden": {
+    "rows": [],
+    "hasMore": false
+  },
+  "includeDeleted shows tombstoned rows": {
+    "rows": [
+      {
+        "id": "i11",
+        "n": 99,
+        "region": 1,
+        "title": "iota",
+        "_deletedAt": {}
+      }
+    ],
+    "hasMore": false
+  },
+  "eq null matches null and absent": {
+    "rows": [
+      {
+        "id": "i3",
+        "big": {
+          "$int64": "-3"
+        },
+        "phrase": "",
+        "ref": "i1",
+        "region": 2,
+        "title": "Gamma",
+        "meta": null,
+        "tags": []
+      },
+      {
+        "id": "i4",
+        "region": 2,
+        "title": "delta"
+      }
+    ],
+    "hasMore": false
+  },
+  "neq null": {
+    "rows": [
+      {
+        "id": "i1",
+        "big": {
+          "$int64": "9007199254740993"
+        },
+        "n": 1,
+        "phrase": "foo",
+        "region": 1,
+        "status": "open",
+        "title": "alpha",
+        "addr": {
+          "city": "Leeds"
+        },
+        "meta": {
+          "tier": {
+            "name": "gold"
+          },
+          "year": 1995,
+          "region": "eu"
+        },
+        "tags": ["a", "b"],
+        "at": "2024-01-01T00:00:00.123456Z"
+      },
+      {
+        "id": "i2",
+        "big": {
+          "$int64": "7"
+        },
+        "n": 2.5,
+        "phrase": "foobar",
+        "ref": "i1",
+        "region": 1,
+        "status": "closed",
+        "title": "beta",
+        "addr": {
+          "city": "York"
+        },
+        "meta": {
+          "year": "1995",
+          "region": "us"
+        },
+        "tags": ["b"],
+        "at": "2024-03-05T10:20:30.123999Z"
+      },
+      {
+        "id": "i3",
+        "big": {
+          "$int64": "-3"
+        },
+        "phrase": "",
+        "ref": "i1",
+        "region": 2,
+        "title": "Gamma",
+        "meta": null,
+        "tags": []
+      },
+      {
+        "id": "i5",
+        "phrase": "bar",
+        "region": 3,
+        "title": "epsilon",
+        "n": "5",
+        "status": "zzz"
+      },
+      {
+        "id": "i6",
+        "big": {
+          "$int64": "9223372036854775807"
+        },
+        "n": 10,
+        "phrase": "aaab",
+        "ref": "i2",
+        "region": 3,
+        "status": "closed",
+        "title": "zeta",
+        "tags": ["c", "a"],
+        "at": "2023-12-31T23:59:59.999999Z"
+      },
+      {
+        "id": "i8",
+        "n": -1.25,
+        "phrase": "foo",
+        "title": "theta",
+        "meta": {
+          "year": 2001
+        }
+      }
+    ],
+    "hasMore": false
+  },
+  "in with null": {
+    "rows": [
+      {
+        "id": "i5",
+        "phrase": "bar",
+        "region": 3,
+        "title": "epsilon",
+        "n": "5",
+        "status": "zzz"
+      },
+      {
+        "id": "i6",
+        "big": {
+          "$int64": "9223372036854775807"
+        },
+        "n": 10,
+        "phrase": "aaab",
+        "ref": "i2",
+        "region": 3,
+        "status": "closed",
+        "title": "zeta",
+        "tags": ["c", "a"],
+        "at": "2023-12-31T23:59:59.999999Z"
+      },
+      {
+        "id": "i8",
+        "n": -1.25,
+        "phrase": "foo",
+        "title": "theta",
+        "meta": {
+          "year": 2001
+        }
+      }
+    ],
+    "hasMore": false
+  },
+  "nin with null": {
+    "rows": [
+      {
+        "id": "i10",
+        "n": 3,
+        "region": 2,
+        "title": "axb"
+      },
+      {
+        "id": "i3",
+        "big": {
+          "$int64": "-3"
+        },
+        "phrase": "",
+        "ref": "i1",
+        "region": 2,
+        "title": "Gamma",
+        "meta": null,
+        "tags": []
+      },
+      {
+        "id": "i4",
+        "region": 2,
+        "title": "delta"
+      },
+      {
+        "id": "i5",
+        "phrase": "bar",
+        "region": 3,
+        "title": "epsilon",
+        "n": "5",
+        "status": "zzz"
+      },
+      {
+        "id": "i6",
+        "big": {
+          "$int64": "9223372036854775807"
+        },
+        "n": 10,
+        "phrase": "aaab",
+        "ref": "i2",
+        "region": 3,
+        "status": "closed",
+        "title": "zeta",
+        "tags": ["c", "a"],
+        "at": "2023-12-31T23:59:59.999999Z"
+      },
+      {
+        "id": "i9",
+        "n": 3,
+        "region": 2,
+        "title": "a%b"
+      }
+    ],
+    "hasMore": false
+  },
+  "an explicit null on a column field reads absent; json and list keep null": {
+    "rows": [
+      {
+        "id": "i3",
+        "big": {
+          "$int64": "-3"
+        },
+        "phrase": "",
+        "ref": "i1",
+        "region": 2,
+        "title": "Gamma",
+        "meta": null,
+        "tags": []
+      }
+    ],
+    "hasMore": false
+  },
+  "a row lacking every optional field": {
+    "rows": [
+      {
+        "id": "i4",
+        "region": 2,
+        "title": "delta"
+      }
+    ],
+    "hasMore": false
+  },
+  "empty string is not null": {
+    "rows": [
+      {
+        "id": "i3",
+        "big": {
+          "$int64": "-3"
+        },
+        "phrase": "",
+        "ref": "i1",
+        "region": 2,
+        "title": "Gamma",
+        "meta": null,
+        "tags": []
+      }
+    ],
+    "hasMore": false
+  },
+  "misfit: a string in a number field reads back as written": {
+    "rows": [
+      {
+        "id": "i5",
+        "phrase": "bar",
+        "region": 3,
+        "title": "epsilon",
+        "n": "5",
+        "status": "zzz"
+      }
+    ],
+    "hasMore": false
+  },
+  "misfit: eq '5' finds the string": {
+    "rows": [
+      {
+        "id": "i5",
+        "phrase": "bar",
+        "region": 3,
+        "title": "epsilon",
+        "n": "5",
+        "status": "zzz"
+      }
+    ],
+    "hasMore": false
+  },
+  "misfit: in mixes kinds": {
+    "rows": [
+      {
+        "id": "i5",
+        "phrase": "bar",
+        "region": 3,
+        "title": "epsilon",
+        "n": "5",
+        "status": "zzz"
+      },
+      {
+        "id": "i6",
+        "big": {
+          "$int64": "9223372036854775807"
+        },
+        "n": 10,
+        "phrase": "aaab",
+        "ref": "i2",
+        "region": 3,
+        "status": "closed",
+        "title": "zeta",
+        "tags": ["c", "a"],
+        "at": "2023-12-31T23:59:59.999999Z"
+      }
+    ],
+    "hasMore": false
+  },
+  "misfit: gt skips the string": {
+    "rows": [
+      {
+        "id": "i10",
+        "n": 3,
+        "region": 2,
+        "title": "axb"
+      },
+      {
+        "id": "i2",
+        "big": {
+          "$int64": "7"
+        },
+        "n": 2.5,
+        "phrase": "foobar",
+        "ref": "i1",
+        "region": 1,
+        "status": "closed",
+        "title": "beta",
+        "addr": {
+          "city": "York"
+        },
+        "meta": {
+          "year": "1995",
+          "region": "us"
+        },
+        "tags": ["b"],
+        "at": "2024-03-05T10:20:30.123999Z"
+      },
+      {
+        "id": "i6",
+        "big": {
+          "$int64": "9223372036854775807"
+        },
+        "n": 10,
+        "phrase": "aaab",
+        "ref": "i2",
+        "region": 3,
+        "status": "closed",
+        "title": "zeta",
+        "tags": ["c", "a"],
+        "at": "2023-12-31T23:59:59.999999Z"
+      },
+      {
+        "id": "i9",
+        "n": 3,
+        "region": 2,
+        "title": "a%b"
+      }
+    ],
+    "hasMore": false
+  },
+  "misfit: eq null does not match the string": {
+    "rows": [],
+    "hasMore": false
+  },
+  "misfit: out-of-vocab enum eq": {
+    "rows": [
+      {
+        "id": "i5",
+        "phrase": "bar",
+        "region": 3,
+        "title": "epsilon",
+        "n": "5",
+        "status": "zzz"
+      }
+    ],
+    "hasMore": false
+  },
+  "misfit: out-of-vocab enum neq": {
+    "rows": [
+      {
+        "id": "i1",
+        "big": {
+          "$int64": "9007199254740993"
+        },
+        "n": 1,
+        "phrase": "foo",
+        "region": 1,
+        "status": "open",
+        "title": "alpha",
+        "addr": {
+          "city": "Leeds"
+        },
+        "meta": {
+          "tier": {
+            "name": "gold"
+          },
+          "year": 1995,
+          "region": "eu"
+        },
+        "tags": ["a", "b"],
+        "at": "2024-01-01T00:00:00.123456Z"
+      },
+      {
+        "id": "i10",
+        "n": 3,
+        "region": 2,
+        "title": "axb"
+      },
+      {
+        "id": "i2",
+        "big": {
+          "$int64": "7"
+        },
+        "n": 2.5,
+        "phrase": "foobar",
+        "ref": "i1",
+        "region": 1,
+        "status": "closed",
+        "title": "beta",
+        "addr": {
+          "city": "York"
+        },
+        "meta": {
+          "year": "1995",
+          "region": "us"
+        },
+        "tags": ["b"],
+        "at": "2024-03-05T10:20:30.123999Z"
+      },
+      {
+        "id": "i3",
+        "big": {
+          "$int64": "-3"
+        },
+        "phrase": "",
+        "ref": "i1",
+        "region": 2,
+        "title": "Gamma",
+        "meta": null,
+        "tags": []
+      },
+      {
+        "id": "i4",
+        "region": 2,
+        "title": "delta"
+      },
+      {
+        "id": "i6",
+        "big": {
+          "$int64": "9223372036854775807"
+        },
+        "n": 10,
+        "phrase": "aaab",
+        "ref": "i2",
+        "region": 3,
+        "status": "closed",
+        "title": "zeta",
+        "tags": ["c", "a"],
+        "at": "2023-12-31T23:59:59.999999Z"
+      },
+      {
+        "id": "i7",
+        "big": {
+          "$int64": "0"
+        },
+        "n": 0,
+        "region": 1,
+        "status": "open",
+        "title": "eta"
+      },
+      {
+        "id": "i8",
+        "n": -1.25,
+        "phrase": "foo",
+        "title": "theta",
+        "meta": {
+          "year": 2001
+        }
+      },
+      {
+        "id": "i9",
+        "n": 3,
+        "region": 2,
+        "title": "a%b"
+      }
+    ],
+    "hasMore": false
+  },
+  "misfit: nin with the misfit and null": {
+    "rows": [
+      {
+        "id": "i1",
+        "big": {
+          "$int64": "9007199254740993"
+        },
+        "n": 1,
+        "phrase": "foo",
+        "region": 1,
+        "status": "open",
+        "title": "alpha",
+        "addr": {
+          "city": "Leeds"
+        },
+        "meta": {
+          "tier": {
+            "name": "gold"
+          },
+          "year": 1995,
+          "region": "eu"
+        },
+        "tags": ["a", "b"],
+        "at": "2024-01-01T00:00:00.123456Z"
+      },
+      {
+        "id": "i2",
+        "big": {
+          "$int64": "7"
+        },
+        "n": 2.5,
+        "phrase": "foobar",
+        "ref": "i1",
+        "region": 1,
+        "status": "closed",
+        "title": "beta",
+        "addr": {
+          "city": "York"
+        },
+        "meta": {
+          "year": "1995",
+          "region": "us"
+        },
+        "tags": ["b"],
+        "at": "2024-03-05T10:20:30.123999Z"
+      },
+      {
+        "id": "i6",
+        "big": {
+          "$int64": "9223372036854775807"
+        },
+        "n": 10,
+        "phrase": "aaab",
+        "ref": "i2",
+        "region": 3,
+        "status": "closed",
+        "title": "zeta",
+        "tags": ["c", "a"],
+        "at": "2023-12-31T23:59:59.999999Z"
+      },
+      {
+        "id": "i7",
+        "big": {
+          "$int64": "0"
+        },
+        "n": 0,
+        "region": 1,
+        "status": "open",
+        "title": "eta"
+      }
+    ],
+    "hasMore": false
+  },
+  "natural order is createdAt desc": {
+    "rows": [
+      {
+        "id": "i10",
+        "n": 3,
+        "region": 2,
+        "title": "axb"
+      },
+      {
+        "id": "i9",
+        "n": 3,
+        "region": 2,
+        "title": "a%b"
+      },
+      {
+        "id": "i8",
+        "n": -1.25,
+        "phrase": "foo",
+        "title": "theta",
+        "meta": {
+          "year": 2001
+        }
+      },
+      {
+        "id": "i7",
+        "big": {
+          "$int64": "0"
+        },
+        "n": 0,
+        "region": 1,
+        "status": "open",
+        "title": "eta"
+      },
+      {
+        "id": "i6",
+        "big": {
+          "$int64": "9223372036854775807"
+        },
+        "n": 10,
+        "phrase": "aaab",
+        "ref": "i2",
+        "region": 3,
+        "status": "closed",
+        "title": "zeta",
+        "tags": ["c", "a"],
+        "at": "2023-12-31T23:59:59.999999Z"
+      },
+      {
+        "id": "i5",
+        "phrase": "bar",
+        "region": 3,
+        "title": "epsilon",
+        "n": "5",
+        "status": "zzz"
+      },
+      {
+        "id": "i4",
+        "region": 2,
+        "title": "delta"
+      },
+      {
+        "id": "i3",
+        "big": {
+          "$int64": "-3"
+        },
+        "phrase": "",
+        "ref": "i1",
+        "region": 2,
+        "title": "Gamma",
+        "meta": null,
+        "tags": []
+      },
+      {
+        "id": "i2",
+        "big": {
+          "$int64": "7"
+        },
+        "n": 2.5,
+        "phrase": "foobar",
+        "ref": "i1",
+        "region": 1,
+        "status": "closed",
+        "title": "beta",
+        "addr": {
+          "city": "York"
+        },
+        "meta": {
+          "year": "1995",
+          "region": "us"
+        },
+        "tags": ["b"],
+        "at": "2024-03-05T10:20:30.123999Z"
+      },
+      {
+        "id": "i1",
+        "big": {
+          "$int64": "9007199254740993"
+        },
+        "n": 1,
+        "phrase": "foo",
+        "region": 1,
+        "status": "open",
+        "title": "alpha",
+        "addr": {
+          "city": "Leeds"
+        },
+        "meta": {
+          "tier": {
+            "name": "gold"
+          },
+          "year": 1995,
+          "region": "eu"
+        },
+        "tags": ["a", "b"],
+        "at": "2024-01-01T00:00:00.123456Z"
+      }
+    ],
+    "hasMore": false
+  },
+  "sort string asc": {
+    "rows": [
+      {
+        "id": "i3",
+        "big": {
+          "$int64": "-3"
+        },
+        "phrase": "",
+        "ref": "i1",
+        "region": 2,
+        "title": "Gamma",
+        "meta": null,
+        "tags": []
+      },
+      {
+        "id": "i9",
+        "n": 3,
+        "region": 2,
+        "title": "a%b"
+      },
+      {
+        "id": "i1",
+        "big": {
+          "$int64": "9007199254740993"
+        },
+        "n": 1,
+        "phrase": "foo",
+        "region": 1,
+        "status": "open",
+        "title": "alpha",
+        "addr": {
+          "city": "Leeds"
+        },
+        "meta": {
+          "tier": {
+            "name": "gold"
+          },
+          "year": 1995,
+          "region": "eu"
+        },
+        "tags": ["a", "b"],
+        "at": "2024-01-01T00:00:00.123456Z"
+      },
+      {
+        "id": "i10",
+        "n": 3,
+        "region": 2,
+        "title": "axb"
+      },
+      {
+        "id": "i2",
+        "big": {
+          "$int64": "7"
+        },
+        "n": 2.5,
+        "phrase": "foobar",
+        "ref": "i1",
+        "region": 1,
+        "status": "closed",
+        "title": "beta",
+        "addr": {
+          "city": "York"
+        },
+        "meta": {
+          "year": "1995",
+          "region": "us"
+        },
+        "tags": ["b"],
+        "at": "2024-03-05T10:20:30.123999Z"
+      },
+      {
+        "id": "i4",
+        "region": 2,
+        "title": "delta"
+      },
+      {
+        "id": "i5",
+        "phrase": "bar",
+        "region": 3,
+        "title": "epsilon",
+        "n": "5",
+        "status": "zzz"
+      },
+      {
+        "id": "i7",
+        "big": {
+          "$int64": "0"
+        },
+        "n": 0,
+        "region": 1,
+        "status": "open",
+        "title": "eta"
+      },
+      {
+        "id": "i8",
+        "n": -1.25,
+        "phrase": "foo",
+        "title": "theta",
+        "meta": {
+          "year": 2001
+        }
+      },
+      {
+        "id": "i6",
+        "big": {
+          "$int64": "9223372036854775807"
+        },
+        "n": 10,
+        "phrase": "aaab",
+        "ref": "i2",
+        "region": 3,
+        "status": "closed",
+        "title": "zeta",
+        "tags": ["c", "a"],
+        "at": "2023-12-31T23:59:59.999999Z"
+      }
+    ],
+    "hasMore": false
+  },
+  "sort number desc, nulls last, id breaks ties": {
+    "rows": [
+      {
+        "id": "i6",
+        "big": {
+          "$int64": "9223372036854775807"
+        },
+        "n": 10,
+        "phrase": "aaab",
+        "ref": "i2",
+        "region": 3,
+        "status": "closed",
+        "title": "zeta",
+        "tags": ["c", "a"],
+        "at": "2023-12-31T23:59:59.999999Z"
+      },
+      {
+        "id": "i10",
+        "n": 3,
+        "region": 2,
+        "title": "axb"
+      },
+      {
+        "id": "i9",
+        "n": 3,
+        "region": 2,
+        "title": "a%b"
+      },
+      {
+        "id": "i2",
+        "big": {
+          "$int64": "7"
+        },
+        "n": 2.5,
+        "phrase": "foobar",
+        "ref": "i1",
+        "region": 1,
+        "status": "closed",
+        "title": "beta",
+        "addr": {
+          "city": "York"
+        },
+        "meta": {
+          "year": "1995",
+          "region": "us"
+        },
+        "tags": ["b"],
+        "at": "2024-03-05T10:20:30.123999Z"
+      },
+      {
+        "id": "i1",
+        "big": {
+          "$int64": "9007199254740993"
+        },
+        "n": 1,
+        "phrase": "foo",
+        "region": 1,
+        "status": "open",
+        "title": "alpha",
+        "addr": {
+          "city": "Leeds"
+        },
+        "meta": {
+          "tier": {
+            "name": "gold"
+          },
+          "year": 1995,
+          "region": "eu"
+        },
+        "tags": ["a", "b"],
+        "at": "2024-01-01T00:00:00.123456Z"
+      },
+      {
+        "id": "i7",
+        "big": {
+          "$int64": "0"
+        },
+        "n": 0,
+        "region": 1,
+        "status": "open",
+        "title": "eta"
+      },
+      {
+        "id": "i8",
+        "n": -1.25,
+        "phrase": "foo",
+        "title": "theta",
+        "meta": {
+          "year": 2001
+        }
+      },
+      {
+        "id": "i5",
+        "phrase": "bar",
+        "region": 3,
+        "title": "epsilon",
+        "n": "5",
+        "status": "zzz"
+      },
+      {
+        "id": "i3",
+        "big": {
+          "$int64": "-3"
+        },
+        "phrase": "",
+        "ref": "i1",
+        "region": 2,
+        "title": "Gamma",
+        "meta": null,
+        "tags": []
+      },
+      {
+        "id": "i4",
+        "region": 2,
+        "title": "delta"
+      }
+    ],
+    "hasMore": false
+  },
+  "sort number asc then title desc": {
+    "rows": [
+      {
+        "id": "i8",
+        "n": -1.25,
+        "phrase": "foo",
+        "title": "theta",
+        "meta": {
+          "year": 2001
+        }
+      },
+      {
+        "id": "i7",
+        "big": {
+          "$int64": "0"
+        },
+        "n": 0,
+        "region": 1,
+        "status": "open",
+        "title": "eta"
+      },
+      {
+        "id": "i1",
+        "big": {
+          "$int64": "9007199254740993"
+        },
+        "n": 1,
+        "phrase": "foo",
+        "region": 1,
+        "status": "open",
+        "title": "alpha",
+        "addr": {
+          "city": "Leeds"
+        },
+        "meta": {
+          "tier": {
+            "name": "gold"
+          },
+          "year": 1995,
+          "region": "eu"
+        },
+        "tags": ["a", "b"],
+        "at": "2024-01-01T00:00:00.123456Z"
+      },
+      {
+        "id": "i2",
+        "big": {
+          "$int64": "7"
+        },
+        "n": 2.5,
+        "phrase": "foobar",
+        "ref": "i1",
+        "region": 1,
+        "status": "closed",
+        "title": "beta",
+        "addr": {
+          "city": "York"
+        },
+        "meta": {
+          "year": "1995",
+          "region": "us"
+        },
+        "tags": ["b"],
+        "at": "2024-03-05T10:20:30.123999Z"
+      },
+      {
+        "id": "i10",
+        "n": 3,
+        "region": 2,
+        "title": "axb"
+      },
+      {
+        "id": "i9",
+        "n": 3,
+        "region": 2,
+        "title": "a%b"
+      },
+      {
+        "id": "i6",
+        "big": {
+          "$int64": "9223372036854775807"
+        },
+        "n": 10,
+        "phrase": "aaab",
+        "ref": "i2",
+        "region": 3,
+        "status": "closed",
+        "title": "zeta",
+        "tags": ["c", "a"],
+        "at": "2023-12-31T23:59:59.999999Z"
+      },
+      {
+        "id": "i5",
+        "phrase": "bar",
+        "region": 3,
+        "title": "epsilon",
+        "n": "5",
+        "status": "zzz"
+      },
+      {
+        "id": "i4",
+        "region": 2,
+        "title": "delta"
+      },
+      {
+        "id": "i3",
+        "big": {
+          "$int64": "-3"
+        },
+        "phrase": "",
+        "ref": "i1",
+        "region": 2,
+        "title": "Gamma",
+        "meta": null,
+        "tags": []
+      }
+    ],
+    "hasMore": false
+  },
+  "sort int64": {
+    "rows": [
+      {
+        "id": "i6",
+        "big": {
+          "$int64": "9223372036854775807"
+        },
+        "n": 10,
+        "phrase": "aaab",
+        "ref": "i2",
+        "region": 3,
+        "status": "closed",
+        "title": "zeta",
+        "tags": ["c", "a"],
+        "at": "2023-12-31T23:59:59.999999Z"
+      },
+      {
+        "id": "i1",
+        "big": {
+          "$int64": "9007199254740993"
+        },
+        "n": 1,
+        "phrase": "foo",
+        "region": 1,
+        "status": "open",
+        "title": "alpha",
+        "addr": {
+          "city": "Leeds"
+        },
+        "meta": {
+          "tier": {
+            "name": "gold"
+          },
+          "year": 1995,
+          "region": "eu"
+        },
+        "tags": ["a", "b"],
+        "at": "2024-01-01T00:00:00.123456Z"
+      },
+      {
+        "id": "i2",
+        "big": {
+          "$int64": "7"
+        },
+        "n": 2.5,
+        "phrase": "foobar",
+        "ref": "i1",
+        "region": 1,
+        "status": "closed",
+        "title": "beta",
+        "addr": {
+          "city": "York"
+        },
+        "meta": {
+          "year": "1995",
+          "region": "us"
+        },
+        "tags": ["b"],
+        "at": "2024-03-05T10:20:30.123999Z"
+      },
+      {
+        "id": "i7",
+        "big": {
+          "$int64": "0"
+        },
+        "n": 0,
+        "region": 1,
+        "status": "open",
+        "title": "eta"
+      },
+      {
+        "id": "i3",
+        "big": {
+          "$int64": "-3"
+        },
+        "phrase": "",
+        "ref": "i1",
+        "region": 2,
+        "title": "Gamma",
+        "meta": null,
+        "tags": []
+      },
+      {
+        "id": "i10",
+        "n": 3,
+        "region": 2,
+        "title": "axb"
+      },
+      {
+        "id": "i8",
+        "n": -1.25,
+        "phrase": "foo",
+        "title": "theta",
+        "meta": {
+          "year": 2001
+        }
+      },
+      {
+        "id": "i9",
+        "n": 3,
+        "region": 2,
+        "title": "a%b"
+      },
+      {
+        "id": "i5",
+        "phrase": "bar",
+        "region": 3,
+        "title": "epsilon",
+        "n": "5",
+        "status": "zzz"
+      },
+      {
+        "id": "i4",
+        "region": 2,
+        "title": "delta"
+      }
+    ],
+    "hasMore": false
+  },
+  "sort date asc": {
+    "rows": [
+      {
+        "id": "i6",
+        "big": {
+          "$int64": "9223372036854775807"
+        },
+        "n": 10,
+        "phrase": "aaab",
+        "ref": "i2",
+        "region": 3,
+        "status": "closed",
+        "title": "zeta",
+        "tags": ["c", "a"],
+        "at": "2023-12-31T23:59:59.999999Z"
+      },
+      {
+        "id": "i1",
+        "big": {
+          "$int64": "9007199254740993"
+        },
+        "n": 1,
+        "phrase": "foo",
+        "region": 1,
+        "status": "open",
+        "title": "alpha",
+        "addr": {
+          "city": "Leeds"
+        },
+        "meta": {
+          "tier": {
+            "name": "gold"
+          },
+          "year": 1995,
+          "region": "eu"
+        },
+        "tags": ["a", "b"],
+        "at": "2024-01-01T00:00:00.123456Z"
+      },
+      {
+        "id": "i2",
+        "big": {
+          "$int64": "7"
+        },
+        "n": 2.5,
+        "phrase": "foobar",
+        "ref": "i1",
+        "region": 1,
+        "status": "closed",
+        "title": "beta",
+        "addr": {
+          "city": "York"
+        },
+        "meta": {
+          "year": "1995",
+          "region": "us"
+        },
+        "tags": ["b"],
+        "at": "2024-03-05T10:20:30.123999Z"
+      },
+      {
+        "id": "i10",
+        "n": 3,
+        "region": 2,
+        "title": "axb"
+      },
+      {
+        "id": "i8",
+        "n": -1.25,
+        "phrase": "foo",
+        "title": "theta",
+        "meta": {
+          "year": 2001
+        }
+      },
+      {
+        "id": "i9",
+        "n": 3,
+        "region": 2,
+        "title": "a%b"
+      },
+      {
+        "id": "i7",
+        "big": {
+          "$int64": "0"
+        },
+        "n": 0,
+        "region": 1,
+        "status": "open",
+        "title": "eta"
+      },
+      {
+        "id": "i5",
+        "phrase": "bar",
+        "region": 3,
+        "title": "epsilon",
+        "n": "5",
+        "status": "zzz"
+      },
+      {
+        "id": "i3",
+        "big": {
+          "$int64": "-3"
+        },
+        "phrase": "",
+        "ref": "i1",
+        "region": 2,
+        "title": "Gamma",
+        "meta": null,
+        "tags": []
+      },
+      {
+        "id": "i4",
+        "region": 2,
+        "title": "delta"
+      }
+    ],
+    "hasMore": false
+  },
+  "sort by createdAt asc": {
+    "rows": [
+      {
+        "id": "i1",
+        "big": {
+          "$int64": "9007199254740993"
+        },
+        "n": 1,
+        "phrase": "foo",
+        "region": 1,
+        "status": "open",
+        "title": "alpha",
+        "addr": {
+          "city": "Leeds"
+        },
+        "meta": {
+          "tier": {
+            "name": "gold"
+          },
+          "year": 1995,
+          "region": "eu"
+        },
+        "tags": ["a", "b"],
+        "at": "2024-01-01T00:00:00.123456Z"
+      },
+      {
+        "id": "i2",
+        "big": {
+          "$int64": "7"
+        },
+        "n": 2.5,
+        "phrase": "foobar",
+        "ref": "i1",
+        "region": 1,
+        "status": "closed",
+        "title": "beta",
+        "addr": {
+          "city": "York"
+        },
+        "meta": {
+          "year": "1995",
+          "region": "us"
+        },
+        "tags": ["b"],
+        "at": "2024-03-05T10:20:30.123999Z"
+      },
+      {
+        "id": "i3",
+        "big": {
+          "$int64": "-3"
+        },
+        "phrase": "",
+        "ref": "i1",
+        "region": 2,
+        "title": "Gamma",
+        "meta": null,
+        "tags": []
+      },
+      {
+        "id": "i4",
+        "region": 2,
+        "title": "delta"
+      },
+      {
+        "id": "i5",
+        "phrase": "bar",
+        "region": 3,
+        "title": "epsilon",
+        "n": "5",
+        "status": "zzz"
+      },
+      {
+        "id": "i6",
+        "big": {
+          "$int64": "9223372036854775807"
+        },
+        "n": 10,
+        "phrase": "aaab",
+        "ref": "i2",
+        "region": 3,
+        "status": "closed",
+        "title": "zeta",
+        "tags": ["c", "a"],
+        "at": "2023-12-31T23:59:59.999999Z"
+      },
+      {
+        "id": "i7",
+        "big": {
+          "$int64": "0"
+        },
+        "n": 0,
+        "region": 1,
+        "status": "open",
+        "title": "eta"
+      },
+      {
+        "id": "i8",
+        "n": -1.25,
+        "phrase": "foo",
+        "title": "theta",
+        "meta": {
+          "year": 2001
+        }
+      },
+      {
+        "id": "i9",
+        "n": 3,
+        "region": 2,
+        "title": "a%b"
+      },
+      {
+        "id": "i10",
+        "n": 3,
+        "region": 2,
+        "title": "axb"
+      }
+    ],
+    "hasMore": false
+  },
+  "limit cuts and says hasMore": {
+    "rows": [
+      {
+        "id": "i3",
+        "big": {
+          "$int64": "-3"
+        },
+        "phrase": "",
+        "ref": "i1",
+        "region": 2,
+        "title": "Gamma",
+        "meta": null,
+        "tags": []
+      },
+      {
+        "id": "i9",
+        "n": 3,
+        "region": 2,
+        "title": "a%b"
+      },
+      {
+        "id": "i1",
+        "big": {
+          "$int64": "9007199254740993"
+        },
+        "n": 1,
+        "phrase": "foo",
+        "region": 1,
+        "status": "open",
+        "title": "alpha",
+        "addr": {
+          "city": "Leeds"
+        },
+        "meta": {
+          "tier": {
+            "name": "gold"
+          },
+          "year": 1995,
+          "region": "eu"
+        },
+        "tags": ["a", "b"],
+        "at": "2024-01-01T00:00:00.123456Z"
+      }
+    ],
+    "hasMore": true,
+    "nextCursor": true
+  },
+  "count with a filter": {
+    "rows": [],
+    "hasMore": false,
+    "count": 4
+  },
+  "pages by title": {
+    "pages": [
+      {
+        "rows": [
+          {
+            "id": "i3",
+            "big": {
+              "$int64": "-3"
+            },
+            "phrase": "",
+            "ref": "i1",
+            "region": 2,
+            "title": "Gamma",
+            "meta": null,
+            "tags": []
+          },
+          {
+            "id": "i9",
+            "n": 3,
+            "region": 2,
+            "title": "a%b"
+          },
+          {
+            "id": "i1",
+            "big": {
+              "$int64": "9007199254740993"
+            },
+            "n": 1,
+            "phrase": "foo",
+            "region": 1,
+            "status": "open",
+            "title": "alpha",
+            "addr": {
+              "city": "Leeds"
+            },
+            "meta": {
+              "tier": {
+                "name": "gold"
+              },
+              "year": 1995,
+              "region": "eu"
+            },
+            "tags": ["a", "b"],
+            "at": "2024-01-01T00:00:00.123456Z"
+          }
+        ],
+        "hasMore": true,
+        "nextCursor": true
+      },
+      {
+        "rows": [
+          {
+            "id": "i10",
+            "n": 3,
+            "region": 2,
+            "title": "axb"
+          },
+          {
+            "id": "i2",
+            "big": {
+              "$int64": "7"
+            },
+            "n": 2.5,
+            "phrase": "foobar",
+            "ref": "i1",
+            "region": 1,
+            "status": "closed",
+            "title": "beta",
+            "addr": {
+              "city": "York"
+            },
+            "meta": {
+              "year": "1995",
+              "region": "us"
+            },
+            "tags": ["b"],
+            "at": "2024-03-05T10:20:30.123999Z"
+          },
+          {
+            "id": "i4",
+            "region": 2,
+            "title": "delta"
+          }
+        ],
+        "hasMore": true,
+        "nextCursor": true
+      },
+      {
+        "rows": [
+          {
+            "id": "i5",
+            "phrase": "bar",
+            "region": 3,
+            "title": "epsilon",
+            "n": "5",
+            "status": "zzz"
+          },
+          {
+            "id": "i7",
+            "big": {
+              "$int64": "0"
+            },
+            "n": 0,
+            "region": 1,
+            "status": "open",
+            "title": "eta"
+          },
+          {
+            "id": "i8",
+            "n": -1.25,
+            "phrase": "foo",
+            "title": "theta",
+            "meta": {
+              "year": 2001
+            }
+          }
+        ],
+        "hasMore": true,
+        "nextCursor": true
+      },
+      {
+        "rows": [
+          {
+            "id": "i6",
+            "big": {
+              "$int64": "9223372036854775807"
+            },
+            "n": 10,
+            "phrase": "aaab",
+            "ref": "i2",
+            "region": 3,
+            "status": "closed",
+            "title": "zeta",
+            "tags": ["c", "a"],
+            "at": "2023-12-31T23:59:59.999999Z"
+          }
+        ],
+        "hasMore": false
+      }
+    ]
+  },
+  "pages by a nullable number with ties": {
+    "pages": [
+      {
+        "rows": [
+          {
+            "id": "i6",
+            "big": {
+              "$int64": "9223372036854775807"
+            },
+            "n": 10,
+            "phrase": "aaab",
+            "ref": "i2",
+            "region": 3,
+            "status": "closed",
+            "title": "zeta",
+            "tags": ["c", "a"],
+            "at": "2023-12-31T23:59:59.999999Z"
+          },
+          {
+            "id": "i10",
+            "n": 3,
+            "region": 2,
+            "title": "axb"
+          }
+        ],
+        "hasMore": true,
+        "nextCursor": true
+      },
+      {
+        "rows": [
+          {
+            "id": "i9",
+            "n": 3,
+            "region": 2,
+            "title": "a%b"
+          },
+          {
+            "id": "i2",
+            "big": {
+              "$int64": "7"
+            },
+            "n": 2.5,
+            "phrase": "foobar",
+            "ref": "i1",
+            "region": 1,
+            "status": "closed",
+            "title": "beta",
+            "addr": {
+              "city": "York"
+            },
+            "meta": {
+              "year": "1995",
+              "region": "us"
+            },
+            "tags": ["b"],
+            "at": "2024-03-05T10:20:30.123999Z"
+          }
+        ],
+        "hasMore": true,
+        "nextCursor": true
+      },
+      {
+        "rows": [
+          {
+            "id": "i1",
+            "big": {
+              "$int64": "9007199254740993"
+            },
+            "n": 1,
+            "phrase": "foo",
+            "region": 1,
+            "status": "open",
+            "title": "alpha",
+            "addr": {
+              "city": "Leeds"
+            },
+            "meta": {
+              "tier": {
+                "name": "gold"
+              },
+              "year": 1995,
+              "region": "eu"
+            },
+            "tags": ["a", "b"],
+            "at": "2024-01-01T00:00:00.123456Z"
+          },
+          {
+            "id": "i7",
+            "big": {
+              "$int64": "0"
+            },
+            "n": 0,
+            "region": 1,
+            "status": "open",
+            "title": "eta"
+          }
+        ],
+        "hasMore": true,
+        "nextCursor": true
+      },
+      {
+        "rows": [
+          {
+            "id": "i8",
+            "n": -1.25,
+            "phrase": "foo",
+            "title": "theta",
+            "meta": {
+              "year": 2001
+            }
+          },
+          {
+            "id": "i5",
+            "phrase": "bar",
+            "region": 3,
+            "title": "epsilon",
+            "n": "5",
+            "status": "zzz"
+          }
+        ],
+        "hasMore": true,
+        "nextCursor": true
+      },
+      {
+        "rows": [
+          {
+            "id": "i3",
+            "big": {
+              "$int64": "-3"
+            },
+            "phrase": "",
+            "ref": "i1",
+            "region": 2,
+            "title": "Gamma",
+            "meta": null,
+            "tags": []
+          },
+          {
+            "id": "i4",
+            "region": 2,
+            "title": "delta"
+          }
+        ],
+        "hasMore": false
+      }
+    ]
+  },
+  "pages by a date, filtered": {
+    "pages": [
+      {
+        "rows": [
+          {
+            "id": "i2",
+            "big": {
+              "$int64": "7"
+            },
+            "n": 2.5,
+            "phrase": "foobar",
+            "ref": "i1",
+            "region": 1,
+            "status": "closed",
+            "title": "beta",
+            "addr": {
+              "city": "York"
+            },
+            "meta": {
+              "year": "1995",
+              "region": "us"
+            },
+            "tags": ["b"],
+            "at": "2024-03-05T10:20:30.123999Z"
+          },
+          {
+            "id": "i1",
+            "big": {
+              "$int64": "9007199254740993"
+            },
+            "n": 1,
+            "phrase": "foo",
+            "region": 1,
+            "status": "open",
+            "title": "alpha",
+            "addr": {
+              "city": "Leeds"
+            },
+            "meta": {
+              "tier": {
+                "name": "gold"
+              },
+              "year": 1995,
+              "region": "eu"
+            },
+            "tags": ["a", "b"],
+            "at": "2024-01-01T00:00:00.123456Z"
+          }
+        ],
+        "hasMore": true,
+        "nextCursor": true
+      },
+      {
+        "rows": [
+          {
+            "id": "i10",
+            "n": 3,
+            "region": 2,
+            "title": "axb"
+          },
+          {
+            "id": "i8",
+            "n": -1.25,
+            "phrase": "foo",
+            "title": "theta",
+            "meta": {
+              "year": 2001
+            }
+          }
+        ],
+        "hasMore": true,
+        "nextCursor": true
+      },
+      {
+        "rows": [
+          {
+            "id": "i9",
+            "n": 3,
+            "region": 2,
+            "title": "a%b"
+          },
+          {
+            "id": "i7",
+            "big": {
+              "$int64": "0"
+            },
+            "n": 0,
+            "region": 1,
+            "status": "open",
+            "title": "eta"
+          }
+        ],
+        "hasMore": true,
+        "nextCursor": true
+      },
+      {
+        "rows": [
+          {
+            "id": "i3",
+            "big": {
+              "$int64": "-3"
+            },
+            "phrase": "",
+            "ref": "i1",
+            "region": 2,
+            "title": "Gamma",
+            "meta": null,
+            "tags": []
+          },
+          {
+            "id": "i4",
+            "region": 2,
+            "title": "delta"
+          }
+        ],
+        "hasMore": false
+      }
+    ]
+  },
+  "pages in natural order": {
+    "pages": [
+      {
+        "rows": [
+          {
+            "id": "i10",
+            "n": 3,
+            "region": 2,
+            "title": "axb"
+          },
+          {
+            "id": "i9",
+            "n": 3,
+            "region": 2,
+            "title": "a%b"
+          },
+          {
+            "id": "i8",
+            "n": -1.25,
+            "phrase": "foo",
+            "title": "theta",
+            "meta": {
+              "year": 2001
+            }
+          },
+          {
+            "id": "i7",
+            "big": {
+              "$int64": "0"
+            },
+            "n": 0,
+            "region": 1,
+            "status": "open",
+            "title": "eta"
+          }
+        ],
+        "hasMore": true,
+        "nextCursor": true
+      },
+      {
+        "rows": [
+          {
+            "id": "i6",
+            "big": {
+              "$int64": "9223372036854775807"
+            },
+            "n": 10,
+            "phrase": "aaab",
+            "ref": "i2",
+            "region": 3,
+            "status": "closed",
+            "title": "zeta",
+            "tags": ["c", "a"],
+            "at": "2023-12-31T23:59:59.999999Z"
+          },
+          {
+            "id": "i5",
+            "phrase": "bar",
+            "region": 3,
+            "title": "epsilon",
+            "n": "5",
+            "status": "zzz"
+          },
+          {
+            "id": "i4",
+            "region": 2,
+            "title": "delta"
+          },
+          {
+            "id": "i3",
+            "big": {
+              "$int64": "-3"
+            },
+            "phrase": "",
+            "ref": "i1",
+            "region": 2,
+            "title": "Gamma",
+            "meta": null,
+            "tags": []
+          }
+        ],
+        "hasMore": true,
+        "nextCursor": true
+      },
+      {
+        "rows": [
+          {
+            "id": "i2",
+            "big": {
+              "$int64": "7"
+            },
+            "n": 2.5,
+            "phrase": "foobar",
+            "ref": "i1",
+            "region": 1,
+            "status": "closed",
+            "title": "beta",
+            "addr": {
+              "city": "York"
+            },
+            "meta": {
+              "year": "1995",
+              "region": "us"
+            },
+            "tags": ["b"],
+            "at": "2024-03-05T10:20:30.123999Z"
+          },
+          {
+            "id": "i1",
+            "big": {
+              "$int64": "9007199254740993"
+            },
+            "n": 1,
+            "phrase": "foo",
+            "region": 1,
+            "status": "open",
+            "title": "alpha",
+            "addr": {
+              "city": "Leeds"
+            },
+            "meta": {
+              "tier": {
+                "name": "gold"
+              },
+              "year": 1995,
+              "region": "eu"
+            },
+            "tags": ["a", "b"],
+            "at": "2024-01-01T00:00:00.123456Z"
+          }
+        ],
+        "hasMore": false
+      }
+    ]
+  },
+  "pages by a select key": {
+    "pages": [
+      {
+        "rows": [
+          {
+            "id": "i5",
+            "phrase": "bar",
+            "region": 3,
+            "title": "epsilon",
+            "n": "5",
+            "status": "zzz",
+            "l": 7
+          },
+          {
+            "id": "i8",
+            "n": -1.25,
+            "phrase": "foo",
+            "title": "theta",
+            "meta": {
+              "year": 2001
+            },
+            "l": 5
+          },
+          {
+            "id": "i1",
+            "big": {
+              "$int64": "9007199254740993"
+            },
+            "n": 1,
+            "phrase": "foo",
+            "region": 1,
+            "status": "open",
+            "title": "alpha",
+            "addr": {
+              "city": "Leeds"
+            },
+            "meta": {
+              "tier": {
+                "name": "gold"
+              },
+              "year": 1995,
+              "region": "eu"
+            },
+            "tags": ["a", "b"],
+            "at": "2024-01-01T00:00:00.123456Z",
+            "l": 5
+          }
+        ],
+        "hasMore": true,
+        "nextCursor": true
+      },
+      {
+        "rows": [
+          {
+            "id": "i3",
+            "big": {
+              "$int64": "-3"
+            },
+            "phrase": "",
+            "ref": "i1",
+            "region": 2,
+            "title": "Gamma",
+            "meta": null,
+            "tags": [],
+            "l": 5
+          },
+          {
+            "id": "i4",
+            "region": 2,
+            "title": "delta",
+            "l": 5
+          },
+          {
+            "id": "i6",
+            "big": {
+              "$int64": "9223372036854775807"
+            },
+            "n": 10,
+            "phrase": "aaab",
+            "ref": "i2",
+            "region": 3,
+            "status": "closed",
+            "title": "zeta",
+            "tags": ["c", "a"],
+            "at": "2023-12-31T23:59:59.999999Z",
+            "l": 4
+          }
+        ],
+        "hasMore": true,
+        "nextCursor": true
+      },
+      {
+        "rows": [
+          {
+            "id": "i2",
+            "big": {
+              "$int64": "7"
+            },
+            "n": 2.5,
+            "phrase": "foobar",
+            "ref": "i1",
+            "region": 1,
+            "status": "closed",
+            "title": "beta",
+            "addr": {
+              "city": "York"
+            },
+            "meta": {
+              "year": "1995",
+              "region": "us"
+            },
+            "tags": ["b"],
+            "at": "2024-03-05T10:20:30.123999Z",
+            "l": 4
+          },
+          {
+            "id": "i10",
+            "n": 3,
+            "region": 2,
+            "title": "axb",
+            "l": 3
+          },
+          {
+            "id": "i9",
+            "n": 3,
+            "region": 2,
+            "title": "a%b",
+            "l": 3
+          }
+        ],
+        "hasMore": true,
+        "nextCursor": true
+      },
+      {
+        "rows": [
+          {
+            "id": "i7",
+            "big": {
+              "$int64": "0"
+            },
+            "n": 0,
+            "region": 1,
+            "status": "open",
+            "title": "eta",
+            "l": 3
+          }
+        ],
+        "hasMore": false
+      }
+    ]
+  },
+  "select computed number, string and boolean keys": {
+    "rows": [
+      {
+        "id": "i3",
+        "big": {
+          "$int64": "-3"
+        },
+        "phrase": "",
+        "ref": "i1",
+        "region": 2,
+        "title": "Gamma",
+        "meta": null,
+        "tags": [],
+        "l": 5,
+        "n1": null,
+        "up": "GAMMA",
+        "wide": null
+      },
+      {
+        "id": "i9",
+        "n": 3,
+        "region": 2,
+        "title": "a%b",
+        "l": 3,
+        "n1": 4,
+        "up": "A%B",
+        "wide": true
+      },
+      {
+        "id": "i1",
+        "big": {
+          "$int64": "9007199254740993"
+        },
+        "n": 1,
+        "phrase": "foo",
+        "region": 1,
+        "status": "open",
+        "title": "alpha",
+        "addr": {
+          "city": "Leeds"
+        },
+        "meta": {
+          "tier": {
+            "name": "gold"
+          },
+          "year": 1995,
+          "region": "eu"
+        },
+        "tags": ["a", "b"],
+        "at": "2024-01-01T00:00:00.123456Z",
+        "l": 5,
+        "n1": 2,
+        "up": "ALPHA",
+        "wide": false
+      },
+      {
+        "id": "i10",
+        "n": 3,
+        "region": 2,
+        "title": "axb",
+        "l": 3,
+        "n1": 4,
+        "up": "AXB",
+        "wide": true
+      },
+      {
+        "id": "i2",
+        "big": {
+          "$int64": "7"
+        },
+        "n": 2.5,
+        "phrase": "foobar",
+        "ref": "i1",
+        "region": 1,
+        "status": "closed",
+        "title": "beta",
+        "addr": {
+          "city": "York"
+        },
+        "meta": {
+          "year": "1995",
+          "region": "us"
+        },
+        "tags": ["b"],
+        "at": "2024-03-05T10:20:30.123999Z",
+        "l": 4,
+        "n1": 3.5,
+        "up": "BETA",
+        "wide": true
+      },
+      {
+        "id": "i4",
+        "region": 2,
+        "title": "delta",
+        "l": 5,
+        "n1": null,
+        "up": "DELTA",
+        "wide": null
+      },
+      {
+        "id": "i5",
+        "phrase": "bar",
+        "region": 3,
+        "title": "epsilon",
+        "n": "5",
+        "status": "zzz",
+        "l": 7,
+        "n1": null,
+        "up": "EPSILON",
+        "wide": null
+      },
+      {
+        "id": "i7",
+        "big": {
+          "$int64": "0"
+        },
+        "n": 0,
+        "region": 1,
+        "status": "open",
+        "title": "eta",
+        "l": 3,
+        "n1": 1,
+        "up": "ETA",
+        "wide": false
+      },
+      {
+        "id": "i8",
+        "n": -1.25,
+        "phrase": "foo",
+        "title": "theta",
+        "meta": {
+          "year": 2001
+        },
+        "l": 5,
+        "n1": -0.25,
+        "up": "THETA",
+        "wide": false
+      },
+      {
+        "id": "i6",
+        "big": {
+          "$int64": "9223372036854775807"
+        },
+        "n": 10,
+        "phrase": "aaab",
+        "ref": "i2",
+        "region": 3,
+        "status": "closed",
+        "title": "zeta",
+        "tags": ["c", "a"],
+        "at": "2023-12-31T23:59:59.999999Z",
+        "l": 4,
+        "n1": 11,
+        "up": "ZETA",
+        "wide": true
+      }
+    ],
+    "hasMore": false
+  },
+  "select int64 and date truncation": {
+    "rows": [
+      {
+        "id": "i3",
+        "big": {
+          "$int64": "-3"
+        },
+        "phrase": "",
+        "ref": "i1",
+        "region": 2,
+        "title": "Gamma",
+        "meta": null,
+        "tags": [],
+        "b2": {
+          "$int64": "-2"
+        },
+        "day": null
+      },
+      {
+        "id": "i1",
+        "big": {
+          "$int64": "9007199254740993"
+        },
+        "n": 1,
+        "phrase": "foo",
+        "region": 1,
+        "status": "open",
+        "title": "alpha",
+        "addr": {
+          "city": "Leeds"
+        },
+        "meta": {
+          "tier": {
+            "name": "gold"
+          },
+          "year": 1995,
+          "region": "eu"
+        },
+        "tags": ["a", "b"],
+        "at": "2024-01-01T00:00:00.123456Z",
+        "b2": {
+          "$int64": "9007199254740994"
+        },
+        "day": "2024-01-01T00:00:00.000000Z"
+      },
+      {
+        "id": "i2",
+        "big": {
+          "$int64": "7"
+        },
+        "n": 2.5,
+        "phrase": "foobar",
+        "ref": "i1",
+        "region": 1,
+        "status": "closed",
+        "title": "beta",
+        "addr": {
+          "city": "York"
+        },
+        "meta": {
+          "year": "1995",
+          "region": "us"
+        },
+        "tags": ["b"],
+        "at": "2024-03-05T10:20:30.123999Z",
+        "b2": {
+          "$int64": "8"
+        },
+        "day": "2024-03-05T00:00:00.000000Z"
+      },
+      {
+        "id": "i7",
+        "big": {
+          "$int64": "0"
+        },
+        "n": 0,
+        "region": 1,
+        "status": "open",
+        "title": "eta",
+        "b2": {
+          "$int64": "1"
+        },
+        "day": null
+      }
+    ],
+    "hasMore": false
+  },
+  "ungrouped aggregate": {
+    "rows": [],
+    "hasMore": false,
+    "groups": [
+      {
+        "c": 10,
+        "cn": 7,
+        "s": 18.25,
+        "a": 2.60714285714,
+        "mn": -1.25,
+        "mx": 10,
+        "d": 3
+      }
+    ]
+  },
+  "ungrouped aggregate over no rows is one group": {
+    "rows": [],
+    "hasMore": false,
+    "groups": [
+      {
+        "c": 0,
+        "s": null,
+        "d": 0
+      }
+    ]
+  },
+  "group by a field, default key order": {
+    "rows": [],
+    "hasMore": false,
+    "groups": [
+      {
+        "region": 1,
+        "c": 3,
+        "s": 3.5
+      },
+      {
+        "region": 2,
+        "c": 4,
+        "s": 6
+      },
+      {
+        "region": 3,
+        "c": 2,
+        "s": 10
+      },
+      {
+        "region": null,
+        "c": 1,
+        "s": -1.25
+      }
+    ]
+  },
+  "group ordered by an aggregate, with having": {
+    "rows": [],
+    "hasMore": false,
+    "groups": [
+      {
+        "region": 2,
+        "c": 4
+      },
+      {
+        "region": 1,
+        "c": 3
+      },
+      {
+        "region": 3,
+        "c": 2
+      }
+    ]
+  },
+  "group by an int64 with min and max": {
+    "rows": [],
+    "hasMore": false,
+    "groups": [
+      {
+        "status": "closed",
+        "mn": {
+          "$int64": "7"
+        },
+        "mx": {
+          "$int64": "9223372036854775807"
+        }
+      },
+      {
+        "status": "open",
+        "mn": {
+          "$int64": "0"
+        },
+        "mx": {
+          "$int64": "9007199254740993"
+        }
+      },
+      {
+        "status": null,
+        "mn": {
+          "$int64": "-3"
+        },
+        "mx": {
+          "$int64": "-3"
+        }
+      }
+    ]
+  },
+  "int64 sum overflow raises": {
+    "error": "value_out_of_range"
+  },
+  "int64 select overflow raises": {
+    "error": "value_out_of_range"
+  },
+  "group offset and limit say truncated": {
+    "rows": [],
+    "hasMore": false,
+    "groups": [
+      {
+        "region": 2,
+        "c": 4
+      },
+      {
+        "region": 3,
+        "c": 2
+      }
+    ],
+    "truncated": true
+  },
+  "group by an expression key": {
+    "rows": [],
+    "hasMore": false,
+    "groups": [
+      {
+        "k": "",
+        "c": 1,
+        "l": 5
+      },
+      {
+        "k": "aaab",
+        "c": 1,
+        "l": 4
+      },
+      {
+        "k": "bar",
+        "c": 1,
+        "l": 7
+      },
+      {
+        "k": "f",
+        "c": 3,
+        "l": 4.66666666667
+      },
+      {
+        "k": null,
+        "c": 4,
+        "l": 3.5
+      }
+    ]
+  },
+  "group by day": {
+    "rows": [],
+    "hasMore": false,
+    "groups": [
+      {
+        "day": "2023-12-31T00:00:00.000000Z",
+        "c": 1,
+        "mx": "2023-12-31T23:59:59.999999Z"
+      },
+      {
+        "day": "2024-01-01T00:00:00.000000Z",
+        "c": 1,
+        "mx": "2024-01-01T00:00:00.123456Z"
+      },
+      {
+        "day": "2024-03-05T00:00:00.000000Z",
+        "c": 1,
+        "mx": "2024-03-05T10:20:30.123999Z"
+      }
+    ]
+  },
+  "walk any": {
+    "rows": [
+      {
+        "id": "c1",
+        "ask": 100,
+        "grade": 9
+      },
+      {
+        "id": "c5",
+        "ask": 300,
+        "grade": 9
+      },
+      {
+        "id": "c6",
+        "ask": 10,
+        "grade": 9
+      }
+    ],
+    "hasMore": false
+  },
+  "walk none": {
+    "rows": [
+      {
+        "id": "c2",
+        "ask": 80,
+        "grade": 9
+      },
+      {
+        "id": "c3",
+        "ask": 20,
+        "grade": 8
+      },
+      {
+        "id": "c4",
+        "ask": 50,
+        "grade": 9
+      },
+      {
+        "id": "c7",
+        "ask": 5,
+        "grade": 9
+      }
+    ],
+    "hasMore": false
+  },
+  "walk all, vacuous over a tombstoned-only cert": {
+    "rows": [
+      {
+        "id": "c1",
+        "ask": 100,
+        "grade": 9
+      },
+      {
+        "id": "c3",
+        "ask": 20,
+        "grade": 8
+      },
+      {
+        "id": "c5",
+        "ask": 300,
+        "grade": 9
+      },
+      {
+        "id": "c6",
+        "ask": 10,
+        "grade": 9
+      },
+      {
+        "id": "c7",
+        "ask": 5,
+        "grade": 9
+      }
+    ],
+    "hasMore": false
+  },
+  "walk pick latest": {
+    "rows": [
+      {
+        "id": "c2",
+        "ask": 80,
+        "grade": 9
+      },
+      {
+        "id": "c4",
+        "ask": 50,
+        "grade": 9
+      },
+      {
+        "id": "c5",
+        "ask": 300,
+        "grade": 9
+      }
+    ],
+    "hasMore": false
+  },
+  "walk pick max": {
+    "rows": [
+      {
+        "id": "c5",
+        "ask": 300,
+        "grade": 9
+      },
+      {
+        "id": "c6",
+        "ask": 10,
+        "grade": 9
+      }
+    ],
+    "hasMore": false
+  },
+  "walk pick latest among the unsold": {
+    "rows": [
+      {
+        "id": "c1",
+        "ask": 100,
+        "grade": 9
+      },
+      {
+        "id": "c2",
+        "ask": 80,
+        "grade": 9
+      }
+    ],
+    "hasMore": false
+  },
+  "walk pick max among a seed-relative window": {
+    "rows": [
+      {
+        "id": "c1",
+        "ask": 100,
+        "grade": 9
+      },
+      {
+        "id": "c2",
+        "ask": 80,
+        "grade": 9
+      }
+    ],
+    "hasMore": false
+  },
+  "walk $ref to a binding": {
+    "rows": [
+      {
+        "id": "c1",
+        "ask": 100,
+        "grade": 9
+      }
+    ],
+    "hasMore": false
+  },
+  "walk outbound then inbound": {
+    "rows": [
+      {
+        "id": "o2",
+        "cert": "c2",
+        "price": 70,
+        "status": "listed",
+        "observedAt": "2026-10-29T00:00:00Z"
+      }
+    ],
+    "hasMore": false
+  },
+  "walk _agg filter skips tombstones": {
+    "rows": [
+      {
+        "id": "c7",
+        "ask": 5,
+        "grade": 9
+      }
+    ],
+    "hasMore": false
+  },
+  "walk _agg feature fields": {
+    "rows": [
+      {
+        "id": "c1",
+        "ask": 100,
+        "grade": 9,
+        "_agg": {
+          "n": 2,
+          "avg": 110,
+          "last": 130,
+          "recent": 1
+        }
+      },
+      {
+        "id": "c2",
+        "ask": 80,
+        "grade": 9,
+        "_agg": {
+          "n": 1,
+          "avg": 70,
+          "last": 70,
+          "recent": 1
+        }
+      },
+      {
+        "id": "c4",
+        "ask": 50,
+        "grade": 9,
+        "_agg": {
+          "n": 1,
+          "avg": null,
+          "last": null,
+          "recent": 1
+        }
+      },
+      {
+        "id": "c5",
+        "ask": 300,
+        "grade": 9,
+        "_agg": {
+          "n": 2,
+          "avg": 475,
+          "last": 450,
+          "recent": 1
+        }
+      },
+      {
+        "id": "c6",
+        "ask": 10,
+        "grade": 9,
+        "_agg": {
+          "n": 1,
+          "avg": 1000,
+          "last": 1000,
+          "recent": 1
+        }
+      },
+      {
+        "id": "c7",
+        "ask": 5,
+        "grade": 9,
+        "_agg": {
+          "n": 0,
+          "avg": null,
+          "last": null,
+          "recent": 0
+        }
+      }
+    ],
+    "hasMore": false
+  },
+  "walk nested list, cut": {
+    "rows": [
+      {
+        "id": "c1",
+        "ask": 100,
+        "grade": 9,
+        "latest": [
+          {
+            "id": "o1a",
+            "price": 130,
+            "status": "sold"
+          }
+        ],
+        "_truncated": {
+          "latest": true
+        }
+      },
+      {
+        "id": "c2",
+        "ask": 80,
+        "grade": 9,
+        "latest": [
+          {
+            "id": "o2",
+            "price": 70,
+            "status": "listed"
+          }
+        ]
+      },
+      {
+        "id": "c4",
+        "ask": 50,
+        "grade": 9,
+        "latest": [
+          {
+            "id": "o4",
+            "status": "listed"
+          }
+        ]
+      },
+      {
+        "id": "c5",
+        "ask": 300,
+        "grade": 9,
+        "latest": [
+          {
+            "id": "o5b",
+            "price": 450,
+            "status": "listed"
+          }
+        ],
+        "_truncated": {
+          "latest": true
+        }
+      },
+      {
+        "id": "c6",
+        "ask": 10,
+        "grade": 9,
+        "latest": [
+          {
+            "id": "o6",
+            "price": 1000,
+            "status": "sold"
+          }
+        ]
+      },
+      {
+        "id": "c7",
+        "ask": 5,
+        "grade": 9,
+        "latest": []
+      }
+    ],
+    "hasMore": false
+  },
+  "walk count": {
+    "rows": [],
+    "hasMore": false,
+    "count": 4
+  },
+  "walk in a grouped read": {
+    "rows": [],
+    "hasMore": false,
+    "groups": [
+      {
+        "bucket": "2026-10-25T00:00:00.000000Z",
+        "n": 1,
+        "avg": 500
+      },
+      {
+        "bucket": "2026-10-27T00:00:00.000000Z",
+        "n": 1,
+        "avg": 90
+      },
+      {
+        "bucket": "2026-10-29T00:00:00.000000Z",
+        "n": 5,
+        "avg": 412.5
+      }
+    ]
+  },
+  "walk select over an _agg, paged": {
+    "pages": [
+      {
+        "rows": [
+          {
+            "id": "c6",
+            "ask": 10,
+            "grade": 9,
+            "_agg": {
+              "last": 1000
+            },
+            "m": 990
+          },
+          {
+            "id": "c5",
+            "ask": 300,
+            "grade": 9,
+            "_agg": {
+              "last": 450
+            },
+            "m": 150
+          },
+          {
+            "id": "c3",
+            "ask": 20,
+            "grade": 8,
+            "_agg": {
+              "last": 100
+            },
+            "m": 80
+          }
+        ],
+        "hasMore": true,
+        "nextCursor": true
+      },
+      {
+        "rows": [
+          {
+            "id": "c1",
+            "ask": 100,
+            "grade": 9,
+            "_agg": {
+              "last": 130
+            },
+            "m": 30
+          },
+          {
+            "id": "c2",
+            "ask": 80,
+            "grade": 9,
+            "_agg": {
+              "last": 70
+            },
+            "m": -10
+          },
+          {
+            "id": "c7",
+            "ask": 5,
+            "grade": 9,
+            "_agg": {
+              "last": null
+            },
+            "m": null
+          }
+        ],
+        "hasMore": true,
+        "nextCursor": true
+      },
+      {
+        "rows": [
+          {
+            "id": "c4",
+            "ask": 50,
+            "grade": 9,
+            "_agg": {
+              "last": null
+            },
+            "m": null
+          }
+        ],
+        "hasMore": false
+      }
+    ]
+  },
+  "walk run yardstick": {
+    "rows": [
+      {
+        "id": "t1",
+        "file": "reads.test.ts",
+        "name": "reads rows",
+        "package": "pkg-a",
+        "pgGated": true
+      },
+      {
+        "id": "t2",
+        "file": "writes.test.ts",
+        "name": "writes rows",
+        "package": "pkg-a",
+        "pgGated": true
+      },
+      {
+        "id": "t4",
+        "file": "index.test.ts",
+        "name": "uses an index",
+        "package": "pkg-b",
+        "pgGated": true
+      }
+    ],
+    "hasMore": false
+  },
+  "count over a type never written": {
+    "rows": [],
+    "hasMore": false,
+    "count": 0
+  }
+}

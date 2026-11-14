@@ -16,6 +16,16 @@ curl --http2-prior-knowledge -s -X POST http://localhost:3100/substrate/v1/query
 - **Semantic recall.** The built-in `substrate-recall` plugin embeds declared types into pgvector and fuses dense and keyword ranking.
 - **Schema at runtime.** With the built-in `substrate-proposals` plugin, an authorised agent can add namespaces, types and fields to a running server, additively and with an audit trail.
 
+## Stability
+
+Substrate is in beta (`1.0.0-beta.N`, published to npm's `next` tag). From 1.0.0-beta.1:
+
+- **Frozen, except for additions:** the frame grammar (keys, `params`, `where` operators, walks, aggregates), the wire format of the envelope and of frame streams, the error codes, and the HTTP routes and MCP tools with their arguments. New params, operators, fields and routes may appear. Existing ones keep their meaning.
+- **A breaking change takes a deprecation:** the old form keeps working, with a warning, for at least one beta, and the [CHANGELOG](CHANGELOG.md) names it.
+- **Not covered:** internal packages (everything bundled into `@mnmal-ai/substrate` but not exported from its public subpaths), the plugin runtime's internals, `substrate-tui`, diagnostic output such as `_diagnostics` plans and the storage report's wording, and performance.
+
+Upgrading from an alpha: [Upgrading to 1.0.0-beta.1](docs/upgrading-to-beta.md).
+
 ## Install and run
 
 Substrate needs Node `>=26.13.1`. A durable deployment needs PostgreSQL 18 or newer with the [pgvector](https://github.com/pgvector/pgvector) extension; an in-memory store is available for trying it out. An existing store on the old `legacy` or `partitioned` layout must be copied with `substrate-admin migrate-store` before this release boots it; see [Upgrading to per-type tables](docs/upgrading-to-type-tables.md). [Operator decisions](docs/operator-decisions.md) lists every choice a deployment makes and what each costs.
@@ -67,6 +77,7 @@ With `SUBSTRATE_PLUGIN_DIR` unset the server loads no plugins and serves only `/
 - [Plugin author guide](docs/plugin-author-guide.md): `defineNamespace`, the field DSL, autoCRUD, custom resolvers, onboarding, testing
 - [Plugin tiers](docs/plugin-tier-decision.md): kernel vs coordinator plugins
 - [Operator decisions](docs/operator-decisions.md): every choice you make when you deploy or upgrade, its default, and what it costs
+- [Upgrading to 1.0.0-beta.1](docs/upgrading-to-beta.md): the breaking changes in the first beta, how to tell if you are affected, and what to do
 - [Upgrading to per-type tables](docs/upgrading-to-type-tables.md): what changes, and the upgrade procedure for an existing store
 - [Upgrading to the warehouse grammar](docs/upgrading-to-warehouse-grammar.md): `bucket` and `derive` become `groupBy` and `select`, plus the new expression params
 - [Edge walks](docs/walks.md): the walk grammar reference: `_walk`, `pick` and `among`, `as` and `$ref`, `_agg`, nested selections, frame aggregates, limits and refusal codes

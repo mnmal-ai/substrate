@@ -42,6 +42,7 @@ import {
   withCanonicalMetadataFilters,
   withNaturalOrder
 } from './internals.js';
+import { KNOWN_SUBSCRIBE_PARAMS } from './subscribe.js';
 
 export interface StreamSubsystemDeps {
   namespaces: Map<string, NamespaceConfig>;
@@ -311,8 +312,7 @@ export class StreamSubsystem {
 
     if (registryEntry.kind === 'type') {
       // A stream is a live read like a subscription, so walks are refused the same way (walks spec, Non-goals).
-      // Walk-only params too: a stream has no param allowlist, and an autoCRUD list resolver
-      // would hand count, aggregate, groupBy, … to the store unvalidated (#1951 review).
+      // Walk-only params too, before the allowlist below, so they keep the walks code (#1951 review).
       const walkPath = walkGrammarPath(frame as Record<string, unknown>);
       if (walkPath !== null) {
         await emitError('walks are not available in streams', WALKS_IN_SUBSCRIPTION, [
@@ -322,6 +322,18 @@ export class StreamSubsystem {
         return;
       }
       const params = frame.params;
+      // The subscribe allowlist: anything else (select, limit, …) would reach the resolver unvalidated (#1952).
+      for (const paramKey of Object.keys(params ?? {})) {
+        if (!KNOWN_SUBSCRIBE_PARAMS.has(paramKey)) {
+          const allowed = [...KNOWN_SUBSCRIBE_PARAMS].sort();
+          await emitError(
+            `stream('${key}'): unknown param '${paramKey}'. Allowed: ${allowed.join(', ')}.`,
+            'unknown_param',
+            [key, 'params', paramKey]
+          );
+          return;
+        }
+      }
       const where = params?.where as WhereClause | undefined;
       const orderBy = params?.orderBy as OrderByClause[] | undefined;
       if (where !== undefined || orderBy !== undefined) {

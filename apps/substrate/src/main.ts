@@ -39,6 +39,8 @@
  *                            mutation frames that exceed 1 MiB.
  *   SUBSTRATE_STATEMENT_TIMEOUT_MS  statement timeout for walk reads in ms (default 30000);
  *                            a cancelled read is refused `query_timeout`
+ *   SUBSTRATE_TYPE_TABLE_BUDGET  type tables above which the storage report warns (default 500);
+ *                            the deprecated SUBSTRATE_PARTITION_BUDGET is read while it is unset
  *   SUBSTRATE_SWEEP_INTERVAL_MS  sweep cadence in ms (default 300000)
  *   SUBSTRATE_INVITE_SWEEP_INTERVAL_MS  invite reaper cadence in ms (default 3600000 = 1h)
  *   SUBSTRATE_TOMBSTONE_RETENTION_DAYS  retention window for tombstoned rows /

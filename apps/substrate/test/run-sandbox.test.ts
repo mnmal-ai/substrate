@@ -37,6 +37,25 @@ describe('runSandboxed', () => {
     expect(r.stats.queries).toBe(1);
   });
 
+  it('relays byShortId, a helper the child forwards rather than reimplements', async () => {
+    const env = (data: Record<string, unknown>): PackEnvelope =>
+      ({ schemaVersion: 'v', shapes: {}, data }) as PackEnvelope;
+    const client = {
+      query: async () =>
+        env({
+          'ns/T': [
+            { id: 'a', shortId: 1 },
+            { id: 'b', shortId: 2 }
+          ]
+        })
+    } as unknown as SubstrateClient;
+    const r = await run(
+      `export default async (s) => (await s.byShortId('ns/T', [2, 1])).map((t) => t.id);`,
+      { client }
+    );
+    expect(r).toMatchObject({ ok: true, result: ['b', 'a'] });
+  });
+
   it('strips TypeScript type syntax from the script', async () => {
     const r = await run(
       `import type { ScriptContext } from '@mnmal-ai/substrate/client';

@@ -664,7 +664,11 @@ describe('autoCRUD reject — values that do not match a scalar field type', () 
     ['dueAt', '2026-02-30'],
     ['dueAt', '2026-10-21T24:30:00Z'],
     ['dueAt', '0000-01-01'],
-    ['dueAt', '2026-01-01T00:00:00+16:00']
+    ['dueAt', '2026-01-01T00:00:00+16:00'],
+    // No offset, or no time: not an instant until something guesses a zone.
+    ['dueAt', '2026-11-14'],
+    ['dueAt', '2026-11-14T10:00:00'],
+    ['dueAt', '2026-11-14Z']
   ] as const) {
     it(`refuses ${field}: ${JSON.stringify(value)} on create and update`, async () => {
       const { create, update } = setup();
@@ -678,6 +682,13 @@ describe('autoCRUD reject — values that do not match a scalar field type', () 
     });
   }
 
+  it('names the accepted form when it refuses an offset-less date', async () => {
+    const { create } = setup();
+    await expect(create(makeCtx(), { params: { dueAt: '2026-11-14T10:00:00' } })).rejects.toThrow(
+      /expected an ISO 8601 instant with a time and an offset, e\.g\. 2026-11-14T10:00:00Z/
+    );
+  });
+
   it('accepts well-typed values and null on a nullable field', async () => {
     const { create } = setup();
     await expect(
@@ -686,7 +697,11 @@ describe('autoCRUD reject — values that do not match a scalar field type', () 
       })
     ).resolves.toBeDefined();
     // Edge cases pg accepts: a leap day in year 4 and the widest offset.
-    for (const dueAt of ['0004-02-29', '2026-01-01T00:00:00-15:59', '2026-10-21T10:00:00+0530']) {
+    for (const dueAt of [
+      '0004-02-29T00:00:00Z',
+      '2026-01-01T00:00:00-15:59',
+      '2026-10-21T10:00:00+0530'
+    ]) {
       await expect(create(makeCtx(), { params: { dueAt } })).resolves.toBeDefined();
     }
     await expect(
