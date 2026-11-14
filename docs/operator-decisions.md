@@ -66,7 +66,7 @@ The step-by-step upgrade is in [Upgrading to per-type tables](upgrading-to-type-
 
 **The default:** 30000 (30 s), applied to typed edge walk reads only. It never raises a shorter timeout already in force.
 
-**What it costs:** a walk read that runs longer is cancelled and refused with `query_timeout`, carrying `details.timeoutMs`. Raise it and a heavy walk can hold a connection longer. A role- or database-level `statement_timeout` you set yourself also turns into `query_timeout` on any read, without `timeoutMs`.
+**What it costs:** a walk read that runs longer is cancelled and refused with `query_timeout`, carrying `details.timeoutMs`. Raise it and a heavy walk can hold a connection longer. A role- or database-level `statement_timeout` you set yourself also turns into `query_timeout`, without `timeoutMs`, on any read, on the edges store and on recall's queries (its HTTP routes answer 503).
 
 The same value bounds how long a request waits for a free database connection. A read or write that waits longer never starts and is refused with `store_busy`, which is safe to retry. `/health` reports the pool as `pool: { connections, opening, idle, leased, waiting }`; a `waiting` count that stays above zero means the pool is too small for the load.
 
@@ -123,11 +123,12 @@ A value its declared column cannot hold (an enum value outside the vocabulary, a
 
 **Finding them:**
 
+- The storage report (`substrate-admin doctor`, `GET /substrate/v1/config`) counts the live rows holding each field under `$raw`, per type and field, as info. `/health` `warnings` carries the store-wide total, naming nothing. Counting scans every type table, so `/health` never counts on its own request: it shows the last finished count (none until one finishes) and starts a background recount at most every five minutes, a failed one included. The storage report always counts afresh.
 - `migrate-store` counts misfits per type and field in its report.
 - `substrate check-enums` reports stored values outside a field's declared enum.
-- On a running store, query the type's table directly: `substrate_type_tables` maps `<namespace>/<Type>` to its table, and `extra ? '$raw'` selects the rows that carry one.
+- To list the rows themselves, query the type's table directly: `substrate_type_tables` maps `<namespace>/<Type>` to its table, and `extra ? '$raw'` selects the rows that carry one.
 
-**Repairing them:** write the field again with a value the column holds (an ordinary `update<Type>`, or `updateMany<Type>` for many rows), which clears its `$raw` entry. Or widen the vocabulary so the value fits, as above. The storage report (`substrate-admin doctor`, `GET /substrate/v1/config`) does not count misfits.
+**Repairing them:** write the field again with a value the column holds (an ordinary `update<Type>`, or `updateMany<Type>` for many rows), which clears its `$raw` entry. Or widen the vocabulary so the value fits, as above.
 
 ### Date operands are ISO 8601
 

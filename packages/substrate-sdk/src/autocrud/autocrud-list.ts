@@ -107,7 +107,8 @@ export function listResolver<_T extends Row = Row>(
     const fields = args.fields as Record<string, unknown> | undefined;
     if (fields !== undefined) {
       const entries = Object.entries(fields);
-      const isNested = (v: unknown) => typeof v === 'object' && v !== null && '_walk' in v;
+      const isNested = (v: unknown) =>
+        typeof v === 'object' && v !== null && Object.hasOwn(v, '_walk');
       const agg = fields._agg;
       if (agg !== undefined) readParams.agg = agg as Record<string, WalkAgg>;
       const nested = entries.filter(([, v]) => isNested(v));

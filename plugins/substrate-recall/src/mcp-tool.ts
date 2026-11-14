@@ -14,6 +14,7 @@ import type { EmbedStats } from './embed-stats.js';
 import type { EmbeddingsStore } from './embeddings-store.js';
 import type { LexicalStore } from './lexical-store.js';
 import { checkParams } from './params.js';
+import { recallQueryTimeout } from './query-timeout.js';
 import {
   bindPolicy,
   DEFAULT_SALIENCE_CONFIG,
@@ -201,6 +202,8 @@ export function recallMcpTool(cfg: RecallMcpToolConfig): McpToolRegistration {
           caller
         });
       } catch (err) {
+        const timedOut = recallQueryTimeout(err);
+        if (timedOut !== null) return { error: { code: timedOut.code, message: timedOut.message } };
         const code = (err as { code?: string } | null)?.code;
         if (
           code === 'bad_request' ||

@@ -17,6 +17,7 @@
 import { isDateField, isRefOperand, windowGroupBy } from '@mnmal-ai/substrate-filter';
 import {
   type FieldDef,
+  isColumnField,
   type NestedSelection,
   UnsupportedFilterError,
   type WalkAgg,
@@ -636,10 +637,21 @@ export function buildNested(
   const id = sql.unsafe(
     `CASE WHEN jsonb_typeof(${doc} -> 'id') IN ('number', 'string') THEN ${doc} -> 'id' ELSE to_jsonb(${alias}.id) END`
   );
-  const obj = buildObject(sql, [
+  const pair = (k: string) => sql`${k}::text, ${fieldExpr(sql, farTable, k, 'json', alias)}`;
+  // A declared scalar or crossRef the row lacks is absent, as on the top-level read (#1842).
+  const isColumn = (k: string) => {
+    const def = scope.fieldDef(type, k);
+    return def !== undefined && isColumnField(def);
+  };
+  const columns = plain.filter(isColumn);
+  const base = buildObject(sql, [
     sql`'id'::text, ${id}`,
-    ...plain.map((k) => sql`${k}::text, ${fieldExpr(sql, farTable, k, 'json', alias)}`)
+    ...plain.filter((k) => !isColumn(k)).map(pair)
   ]);
+  const obj =
+    columns.length === 0
+      ? base
+      : sql`${base} || jsonb_strip_nulls(${buildObject(sql, columns.map(pair))})`;
   const sub = buildWalkProjection(sql, subAggs, subNested, farTable, farScope);
   const row = sub === null ? obj : sql`${obj} || ${sub}`;
   // The LIMIT is on the order itself, so an index in that order stops after it.

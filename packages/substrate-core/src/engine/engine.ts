@@ -29,7 +29,12 @@
  *     `Row` → `'single'`.
  */
 
-import { getExtensionOperator, listExtensionOperators } from '@mnmal-ai/substrate-filter';
+import {
+  getExtensionOperator,
+  listExtensionOperators,
+  usesWalkGrammar,
+  walkGrammarPath
+} from '@mnmal-ai/substrate-filter';
 import type {
   ActorIdentity,
   AfterTxWork,
@@ -224,7 +229,6 @@ function grantRefusalCode(verdict: { reason: 'namespace' | 'capability' }): stri
 
 import { evaluatePolicy } from '../policy-evaluator.js';
 import { Registry } from '../registry.js';
-import { usesWalkGrammar, walkGrammarPath } from '../walk-gate.js';
 import { type HopResolver, hopResolver, type WalkedType, walkedTypes } from '../walk-types.js';
 import { BridgeSubsystem } from './bridge.js';
 import { isSealedCursor, openCursor } from './cursor-seal.js';
@@ -1721,10 +1725,7 @@ export class Engine {
     } else if (isVirtual) {
       // Only where and fields: a virtual resolver's own params may be named
       // count, aggregate, groupBy, having or offset (#1822).
-      const walkPath = walkGrammarPath({
-        fields: frame.fields,
-        params: { where: frame.params?.where }
-      });
+      const walkPath = walkGrammarPath(frame as Record<string, unknown>, { walkParams: false });
       if (walkPath) {
         addError(
           envelope,

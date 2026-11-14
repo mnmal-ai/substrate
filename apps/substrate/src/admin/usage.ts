@@ -66,6 +66,7 @@ export const USAGE = [
   '    migrations and plugins (SUBSTRATE_PLUGIN_DIR) serve uses, copied, indexed and verified.',
   '    SUBSTRATE_INDEX_DISK_PATH must be set (the target volume mount, or off).',
   '    SUBSTRATE_SYSTEM_ACTOR is not needed: the prepare boot serves no request, so nothing is attributed to it.',
+  '    The rest of the serve env (SUBSTRATE_*) is checked before preflight; a value serve would refuse exits 2.',
   '    --from-schema / --to-schema <s>  pin a side to schema <s>',
   '    --dry-run          preflight only: the plan, every refusal, nothing written',
   '    --verify-only      build indexes, then verify a finished copy against its source',

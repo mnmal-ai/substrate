@@ -28,6 +28,7 @@ import {
   createCrystalliseGuard
 } from './crystallise-guard.js';
 import type { EmbeddingsStore } from './embeddings-store.js';
+import { queryTimeoutResponse } from './query-timeout.js';
 import { bindPolicy, type ReadPolicyCheck } from './recall-route.js';
 import { callerFromRequest } from './row-visibility.js';
 import type { ClusterRunParams } from './run-clusterer.js';
@@ -112,6 +113,8 @@ export function crystalliseRouteHandler(cfg: CrystalliseRouteConfig): HttpHandle
       );
       return jsonResponse(200, out);
     } catch (err) {
+      const timedOut = queryTimeoutResponse(err);
+      if (timedOut !== null) return timedOut;
       const code = (err as { code?: string } | null)?.code;
       const message = err instanceof Error ? err.message : String(err);
       if (code === 'policy_denied') {

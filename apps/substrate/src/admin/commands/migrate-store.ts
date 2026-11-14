@@ -16,7 +16,12 @@ import postgres, { type Sql } from 'postgres';
 import { pgNoticeOptions } from '../../pg-client.js';
 import { type KernelHostDeps, loadPluginsFromDir } from '../../plugin-dir-loader.js';
 import { type BootedStore, bootStore } from '../../serve/boot-store.js';
-import { BINARY_CONTRACT_VERSION, parseEnv, refuseContractViolation } from '../../serve/config.js';
+import {
+  BINARY_CONTRACT_VERSION,
+  EnvConfigError,
+  parseEnv,
+  refuseContractViolation
+} from '../../serve/config.js';
 import { resolvePluginDir } from '../../serve/plugins.js';
 import { buildDeferredIndexes } from '../../serve/wiring.js';
 import { validateArgv } from '../argv.js';
@@ -318,10 +323,19 @@ export async function runMigrateStore(
     // so nothing is attributed to it.
     SUBSTRATE_SYSTEM_ACTOR: vars.SUBSTRATE_SYSTEM_ACTOR?.trim() || 'migrate-store'
   };
+  // Parsed now, so an env the prepare boot would refuse is refused before the preflight, not after it.
+  let config: ReturnType<typeof parseEnv>;
+  try {
+    config = parseEnv(targetEnv);
+  } catch (err) {
+    if (!(err instanceof EnvConfigError)) throw err;
+    report.refusals.push(`the target's serve env is invalid: ${err.message}`);
+    return finish(2);
+  }
   const pluginDir = resolvePluginDir(targetEnv);
   const boot = () =>
     bootStore({
-      config: parseEnv(targetEnv),
+      config,
       pluginDir,
       allowMigrating: true,
       // A prepare boot starts no advisor and no plugin backfill, so nothing writes beside the copy.

@@ -1,5 +1,27 @@
 import { describe, expect, it } from 'vitest';
+import { MemoryDataset } from '../src/memory-dataset.js';
 import { MemoryShortIdStore } from '../src/memory-short-id-store.js';
+
+describe('MemoryDataset short-id binding keeps the first (#1846)', () => {
+  it('ignores a rebind of the row or of the short id, and a rolled-back no-op leaves the first', async () => {
+    const ds = new MemoryDataset({ namespace: 'claude' });
+    await ds.write('Todo', [{ id: 'a' }, { id: 'b' }]);
+    await ds.bindShortId('Todo', 1, 'a');
+    await ds.bindShortId('Todo', 2, 'a');
+    await ds.bindShortIds('Todo', [{ shortId: 1, rowId: 'b' }]);
+    await expect(
+      ds.withTransaction(async (tx) => {
+        await tx.bindShortId('Todo', 3, 'a');
+        throw new Error('boom');
+      })
+    ).rejects.toThrow('boom');
+    expect(await ds.getShortIdForRow('Todo', 'a')).toBe(1);
+    expect(await ds.resolveShortId('Todo', 1)).toBe('a');
+    expect(await ds.resolveShortId('Todo', 2)).toBeNull();
+    expect(await ds.getShortIdForRow('Todo', 'b')).toBeNull();
+    expect((await ds.read('Todo', { id: 'a' })).rows[0]?.shortId).toBe(1);
+  });
+});
 
 describe('MemoryShortIdStore', () => {
   it('allocates monotonic ids per (namespace, type)', async () => {

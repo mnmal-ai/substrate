@@ -87,7 +87,8 @@ describe.skipIf(!POSTGRES_URL)('boot refuses the old layouts (pg)', () => {
         '0004t_field_error_version',
         '0005t_int64_field_kind',
         '0006t_int32_field_kind',
-        '0007t_int16_field_kind'
+        '0007t_int16_field_kind',
+        '0008t_short_ids_row_fk'
       ]);
       expect(await sql`SELECT to_regclass('rows') AS r`).toEqual([{ r: null }]);
     } finally {

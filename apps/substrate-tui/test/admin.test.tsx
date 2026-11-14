@@ -6,13 +6,14 @@ import type { DiagnoseOpts, DiagnoseResult } from '@mnmal-ai/substrate/client';
 import { createApp } from '@mnmal-ai/surface-core';
 import { marathon } from '@mnmal-ai/surface-theme';
 import { render } from 'ink-testing-library';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { adminModule } from '../src/admin/module.js';
 import { createAdminSession } from '../src/admin/session.js';
 import type { TuiDeps } from '../src/deps.js';
 import { noAdmin, noDash } from './_fakes.js';
 
 const tick = (ms = 40) => new Promise((r) => setTimeout(r, ms));
+const until = (assert: () => void) => vi.waitFor(assert, { timeout: 2000, interval: 20 });
 const ENTER = '\r';
 
 function keyDir(passphrase?: string) {
@@ -79,13 +80,13 @@ describe('/admin', () => {
   it('1. unlock with a plain key verifies as admin, then shows the badge and unlocks the session', async () => {
     const app = start({ SUBSTRATE_ADMIN_KEY_PATH: keyDir() }, verdict(true, 'ops-admin@Box'));
     await type(app, '/admin unlock');
-    await tick();
+    // The badge renders after the verify settles: poll the frame rather than read it once.
+    await until(() => expect(app.frame()).toMatch(/admin ops-admin@Box · 15m/));
     expect(app.deps.admin.unlocked()).toBe(true);
-    expect(app.frame()).toMatch(/admin ops-admin@Box · 15m/);
     expect(app.seen[0]?.expectAdmin).not.toBe(false);
     await type(app, '/admin lock');
     expect(app.deps.admin.unlocked()).toBe(false);
-    expect(app.frame()).not.toMatch(/admin ops-admin@Box ·/);
+    await until(() => expect(app.frame()).not.toMatch(/admin ops-admin@Box ·/));
     app.unmount();
   });
 

@@ -63,6 +63,17 @@ describe('subscribe — walks', () => {
     expect(frames[0]?.errors?.[0]?.code).toBe('walks_in_subscription');
     expect(engine.activeSubscriptionCount()).toBe(0);
   });
+
+  it('a param merely named like a walk param is an unknown param, not a walk (#1951)', async () => {
+    for (const k of ['count', 'aggregate', 'groupBy', 'having', 'offset']) {
+      const engine = buildEngine();
+      const frames = await subscribe(engine, { params: { [k]: true }, fields: { id: true } });
+      expect(frames[0]?.errors?.[0]).toMatchObject({
+        code: 'unknown_param',
+        path: ['ns/Thing', 'params', k]
+      });
+    }
+  });
 });
 
 describe('stream — walks', () => {
@@ -85,5 +96,30 @@ describe('stream — walks', () => {
       code: 'walks_in_subscription',
       path: ['ns/Thing', 'where', '_walk']
     });
+  });
+});
+
+describe('stream — walk-only params (#1951 review)', () => {
+  it('a stream on a real type carrying aggregate or groupBy is still refused', async () => {
+    for (const k of ['count', 'aggregate', 'groupBy', 'having', 'offset']) {
+      const engine = buildEngine();
+      const frames: WsResponseFrame[] = [];
+      engine.stream({
+        id: 'str',
+        frame: {
+          'ns/Thing': { params: { [k]: k === 'count' ? true : 'x' }, fields: { id: true } }
+        },
+        ctx: {},
+        onFrame: (f) => void frames.push(f)
+      });
+      for (let i = 0; i < 100 && !frames.some((f) => f.kind === 'end'); i++) {
+        await new Promise<void>((r) => setImmediate(r));
+      }
+      expect(frames.map((f) => f.kind)).toEqual(['error', 'end']);
+      expect(frames[0]?.errors?.[0]).toMatchObject({
+        code: 'walks_in_subscription',
+        path: ['ns/Thing', k]
+      });
+    }
   });
 });

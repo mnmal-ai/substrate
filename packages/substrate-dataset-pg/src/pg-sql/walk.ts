@@ -19,7 +19,13 @@
  * The tree is assumed validated (substrate-core walk-validator).
  */
 
-import { forEachWalkHop, groupConjuncts, refNames, sharedPicks } from '@mnmal-ai/substrate-filter';
+import {
+  forEachWalkHop,
+  groupConjuncts,
+  refNames,
+  sharedPicks,
+  whereUsesWalks
+} from '@mnmal-ai/substrate-filter';
 import {
   type FieldDef,
   type RefOperand,
@@ -158,15 +164,6 @@ export function walkTypes(
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
-
-/** True when `where` uses the walk grammar (`_walk`, `_agg` or a `$ref` operand) anywhere. */
-export function whereUsesWalks(where: unknown): boolean {
-  if (Array.isArray(where)) return where.some(whereUsesWalks);
-  if (!isObj(where)) return false;
-  return Object.entries(where).some(
-    ([k, v]) => k === '_walk' || k === '_agg' || k === '$ref' || whereUsesWalks(v)
-  );
-}
 
 const castFor =
   (scope: WalkScope, type: string) =>

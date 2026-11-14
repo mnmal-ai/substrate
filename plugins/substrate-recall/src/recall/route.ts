@@ -12,6 +12,7 @@ import type { EmbedStats } from '../embed-stats.js';
 import type { EmbeddingsStore } from '../embeddings-store.js';
 import type { LexicalStore } from '../lexical-store.js';
 import { checkParams } from '../params.js';
+import { queryTimeoutResponse } from '../query-timeout.js';
 import { callerFromRequest } from '../row-visibility.js';
 import { handleRecallRequest } from './handler.js';
 import {
@@ -237,6 +238,8 @@ export function recallRouteHandler(cfg: RecallRouteConfig): HttpHandler {
       });
       return jsonResponse(200, out);
     } catch (err) {
+      const timedOut = queryTimeoutResponse(err);
+      if (timedOut !== null) return timedOut;
       const code = (err as { code?: string } | null)?.code;
       const message = err instanceof Error ? err.message : String(err);
       if (code === 'bad_request') {

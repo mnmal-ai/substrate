@@ -6,6 +6,7 @@
  * imports `Engine`.
  */
 
+import { walkGrammarPath } from '@mnmal-ai/substrate-filter';
 import type {
   DatasetRegistry,
   EdgesStore,
@@ -27,7 +28,6 @@ import {
 } from '@mnmal-ai/substrate-types';
 import { FilterValidationError, validateFilter } from '../filter/validator.js';
 import { evaluatePolicy } from '../policy-evaluator.js';
-import { walkGrammarPath } from '../walk-gate.js';
 import {
   checkIdentityGrant,
   clientErrorMessage,
@@ -311,6 +311,8 @@ export class StreamSubsystem {
 
     if (registryEntry.kind === 'type') {
       // A stream is a live read like a subscription, so walks are refused the same way (walks spec, Non-goals).
+      // Walk-only params too: a stream has no param allowlist, and an autoCRUD list resolver
+      // would hand count, aggregate, groupBy, … to the store unvalidated (#1951 review).
       const walkPath = walkGrammarPath(frame as Record<string, unknown>);
       if (walkPath !== null) {
         await emitError('walks are not available in streams', WALKS_IN_SUBSCRIPTION, [

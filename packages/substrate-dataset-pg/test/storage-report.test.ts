@@ -4,6 +4,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
+import { field } from '@mnmal-ai/substrate-sdk';
 import type { FieldDef, IndexDecl, StorageReport } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -236,5 +237,26 @@ describe.skipIf(!POSTGRES_URL)('storageReport (tables)', () => {
     expect(over.warnings).toContain(
       `${n} type tables exceed the budget of ${n - 1}: move a namespace to its own instance behind a bridge`
     );
+  });
+
+  it('counts misfits per type and field as info, and /health counts them without names', async () => {
+    const ns = freshNs();
+    const ds = dataset(ns, { current: { status: field.enum(['a']) } });
+    await ds.ensureTypeStorage(TYPE);
+    await ds.write(TYPE, [
+      { id: 'm1', status: 'zzz' },
+      { id: 'm2', status: 'yyy' },
+      { id: 'm3', status: 'a' },
+      { id: 'm4', status: 'zzz' }
+    ]);
+    await ds.tombstone(TYPE, ['m4']);
+    const line = `${ns}/${TYPE}.status has 2 misfits kept under $raw: the column holds NULL for them, so its index does not serve them; write the field again or widen its vocabulary`;
+    const report = await ds.storageReport({ partitionBudget: BIG });
+    expect(report.info).toContain(line);
+    expect(report.warnings.join('\n')).not.toContain(ns);
+    // The report's fresh count is what /health reuses.
+    const [health] = await ds.fieldWarnings();
+    expect(health).toMatch(/\b\d+ misfits? kept under \$raw\b.* — see the storage report$/);
+    expect(health).not.toContain(ns);
   });
 });

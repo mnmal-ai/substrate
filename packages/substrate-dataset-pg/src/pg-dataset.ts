@@ -32,7 +32,8 @@ import {
   fieldRequested,
   fullBuiltinOperators,
   preResolveExtensionOperatorsDetailed,
-  walkAggExprType
+  walkAggExprType,
+  whereUsesWalks
 } from '@mnmal-ai/substrate-filter';
 import type {
   ActorIdentity,
@@ -70,7 +71,6 @@ import {
   filterTooBroad,
   isColumnField,
   naturalOrderOf,
-  QUERY_TIMEOUT,
   ResolverFrameError,
   STORE_BUSY,
   VALUE_OUT_OF_RANGE
@@ -78,7 +78,7 @@ import {
 import type { PendingQuery, Row as PgRow, ReservedSql, Sql, TransactionSql } from 'postgres';
 import { withPgAdvisoryLock } from './advisory-lock.js';
 import type { DiskGuard } from './disk-guard.js';
-import { NamespaceMismatch, ReservedField } from './errors.js';
+import { NamespaceMismatch, queryTimeoutError, ReservedField } from './errors.js';
 import {
   describeTypeIndexes,
   desiredIndexKeys,
@@ -95,6 +95,7 @@ import {
 } from './index-reconciler.js';
 import { detectLayout, ident, type StorageLayout } from './layout.js';
 import { IndexLockAborted, UnsupportedStoreLayoutError, withTableIndexLock } from './migrate.js';
+import { cachedMisfitCount, countMisfits, freshMisfitCount } from './misfits.js';
 import type { PgEdgesStore } from './pg-edges-store.js';
 import { PgShortIdStore, parseShortId } from './pg-short-id-store.js';
 import {
@@ -108,14 +109,7 @@ import { compileExprTyped } from './pg-sql/expression.js';
 import { buildGroupedRead } from './pg-sql/grouped.js';
 import { fieldExprSql, sqlStringLiteral } from './pg-sql/primitives.js';
 import type { ComputedLookup } from './pg-sql/sorting.js';
-import {
-  prepareSharedPicks,
-  tableLookup,
-  walkScope,
-  walkTypes,
-  whereUsesWalks,
-  withCtes
-} from './pg-sql/walk.js';
+import { prepareSharedPicks, tableLookup, walkScope, walkTypes, withCtes } from './pg-sql/walk.js';
 import {
   assembleRowMetadata,
   type BodyOrderByCast,
@@ -629,7 +623,11 @@ export class PgDataset implements Dataset {
         return await this.#read(type, params, false);
       } catch (err) {
         // A role- or database-level statement_timeout: its value is not known here.
-        throw this.#queryTimeout(type, err, params.signal) ?? storeBusy(err) ?? err;
+        throw (
+          queryTimeoutError(`${this.namespace}/${type}`, err, params.signal) ??
+          storeBusy(err) ??
+          err
+        );
       }
     }
     if (!this.#inTx) return this.withTransaction((tx) => tx.read(type, params));
@@ -649,8 +647,8 @@ export class PgDataset implements Dataset {
       return await this.#read(type, params, true);
     } catch (err) {
       throw (
-        this.#queryTimeout(
-          type,
+        queryTimeoutError(
+          `${this.namespace}/${type}`,
           err,
           params.signal,
           lowered ? this.#statementTimeoutMs : undefined
@@ -659,30 +657,6 @@ export class PgDataset implements Dataset {
         err
       );
     }
-  }
-
-  /**
-   * A statement-timeout cancel (57014) as `query_timeout`, else null.
-   * `cancellable` already swaps a caller's abort for its reason, and the
-   * signal check keeps one that races the cancel an abort. 57014 also covers an
-   * operator's cancel, so the message does not claim a timeout. `timeoutMs` is
-   * omitted when the limit is not known to be substrate's own.
-   */
-  #queryTimeout(
-    type: string,
-    err: unknown,
-    signal: AbortSignal | undefined,
-    timeoutMs?: number
-  ): ResolverFrameError | null {
-    if ((err as { code?: unknown } | null)?.code !== '57014' || signal?.aborted === true) {
-      return null;
-    }
-    return new ResolverFrameError(
-      QUERY_TIMEOUT,
-      `${this.namespace}/${type}: the read was cancelled by the server (statement timeout or cancel)` +
-        (timeoutMs !== undefined ? `; the limit is ${timeoutMs} ms` : ''),
-      timeoutMs !== undefined ? { timeoutMs } : undefined
-    );
   }
 
   /**
@@ -2077,12 +2051,17 @@ export class PgDataset implements Dataset {
     const pending = lines.filter((l) => l.state === 'pending').length;
     const failed = lines.filter((l) => l.failed).length;
     const orphaned = lines.filter((l) => l.state === 'orphaned').length;
+    // Never scans on this (unauthenticated) path: the last count, if any.
+    const misfits = (
+      cachedMisfitCount(this.#sql, () => countMisfits(this.#sql as Sql)) ?? []
+    ).reduce((n, m) => n + m.count, 0);
     const parts = [
       ...(pending > 0
         ? [plural(pending, 'field pending promotion', 'fields pending promotion')]
         : []),
       ...(failed > 0 ? [plural(failed, 'promotion failed', 'promotions failed')] : []),
-      ...(orphaned > 0 ? [plural(orphaned, 'field orphaned', 'fields orphaned')] : [])
+      ...(orphaned > 0 ? [plural(orphaned, 'field orphaned', 'fields orphaned')] : []),
+      ...(misfits > 0 ? [plural(misfits, 'misfit kept under $raw', 'misfits kept under $raw')] : [])
     ];
     return parts.length === 0 ? [] : [`${parts.join('; ')} — see the storage report`];
   }
@@ -2257,6 +2236,12 @@ export class PgDataset implements Dataset {
     }
     // A failed promotion is a fault; a pending or orphaned field is a state worth showing.
     for (const f of await this.#fieldLines()) (f.failed ? warnings : info).push(f.line);
+    for (const m of await freshMisfitCount(this.#sql, () => countMisfits(sql))) {
+      info.push(
+        `${m.namespace}/${m.type}.${m.field} has ${m.count} misfit${m.count === 1 ? '' : 's'} kept under $raw: ` +
+          'the column holds NULL for them, so its index does not serve them; write the field again or widen its vocabulary'
+      );
+    }
     if (tables.length > opts.partitionBudget) {
       warnings.push(
         `${tables.length} type tables exceed the budget of ${opts.partitionBudget}: move a namespace to its own instance behind a bridge`

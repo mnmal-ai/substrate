@@ -42,6 +42,10 @@ import { TX_STATEMENTS as FIELD_ERROR_VERSION_TX } from './migrations/0004t_fiel
 import { TX_STATEMENTS as INT64_FIELD_KIND_TX } from './migrations/0005t_int64_field_kind.js';
 import { TX_STATEMENTS as INT32_FIELD_KIND_TX } from './migrations/0006t_int32_field_kind.js';
 import { TX_STATEMENTS as INT16_FIELD_KIND_TX } from './migrations/0007t_int16_field_kind.js';
+import {
+  CONCURRENT_STATEMENTS as SHORT_IDS_ROW_FK_CONCURRENT,
+  TX_STATEMENTS as SHORT_IDS_ROW_FK_TX
+} from './migrations/0008t_short_ids_row_fk.js';
 import { sqlStringLiteral } from './pg-sql/primitives.js';
 import { assertServerVersion } from './server-version.js';
 import { UUID_CHECK_MIGRATION } from './uuid-check.js';
@@ -111,6 +115,12 @@ const INT16_FIELD_KIND: MigrationInput = {
   txStatements: INT16_FIELD_KIND_TX
 };
 
+const SHORT_IDS_ROW_FK: MigrationInput = {
+  version: '0008t_short_ids_row_fk',
+  txStatements: SHORT_IDS_ROW_FK_TX,
+  concurrentStatements: SHORT_IDS_ROW_FK_CONCURRENT
+};
+
 function normalise(input: MigrationInput): Migration {
   if ('statements' in input && input.statements !== undefined) {
     return {
@@ -139,7 +149,8 @@ const UUID_CHECK_INPUT: MigrationInput = {
 /**
  * The tables baseline, then the gated UUID CHECKs when
  * `SUBSTRATE_ENFORCE_UUID_CHECK=true` (or the explicit override is true), then
- * the type tables' catalog version, then the field error version, then the int64, int32 and int16 field kinds. Used
+ * the type tables' catalog version, then the field error version, then the int64, int32 and int16 field kinds,
+ * then the short_ids → row_ids FK repair. Used
  * by `runMigrations` and exported for unit tests.
  */
 export function getMigrationList(
@@ -152,7 +163,8 @@ export function getMigrationList(
     FIELD_ERROR_VERSION,
     INT64_FIELD_KIND,
     INT32_FIELD_KIND,
-    INT16_FIELD_KIND
+    INT16_FIELD_KIND,
+    SHORT_IDS_ROW_FK
   ].map(normalise);
 }
 

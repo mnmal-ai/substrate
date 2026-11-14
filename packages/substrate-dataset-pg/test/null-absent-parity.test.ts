@@ -216,6 +216,58 @@ describe.skipIf(!POSTGRES_URL)('null reads absent (pg)', () => {
     return pg;
   });
 
+  // Todo #1852: a field declared after rows exist, as propose_field declares
+  // one, reads absent on those rows on both stores, whether pg holds it in
+  // `extra` (pending), in its promoted column, or in a column added at once.
+  it('a field declared after rows exist reads absent on them, pending, promoted or a column', async () => {
+    const LATE = 'Late';
+    const late: Record<string, FieldDef> = { title: field.string() };
+    const lookups = {
+      typeDefLookup: (type: string) => (type === LATE ? { fields: late } : undefined),
+      fieldDefLookup: (type: string, name: string) => (type === LATE ? late[name] : undefined)
+    };
+    const lpg = new PgDataset({ namespace: NS, sql, ...lookups });
+    const mem = new MemoryDataset({ namespace: NS, ...lookups });
+    await lpg.ensureTypeStorage(LATE);
+    const ids = [randomUUID(), randomUUID()];
+    for (const ds of [lpg, mem]) {
+      await ds.write(
+        LATE,
+        ids.map((id) => ({ id, title: 'old' }))
+      );
+    }
+    /** Per row, the late keys a plain read and a projecting read return. */
+    const keys = async (ds: Dataset) => {
+      const out: string[][] = [];
+      for (const id of ids) {
+        for (const fields of [undefined, { title: true, rank: true, note: true }]) {
+          const [row] = (await ds.read(LATE, { id, ...(fields ? { fields } : {}) })).rows;
+          out.push(['rank', 'note'].filter((k) => k in (row as Row)));
+        }
+      }
+      return out;
+    };
+    const absent = Array.from({ length: 4 }, () => []);
+    const agree = async () => {
+      const onPg = await keys(lpg);
+      expect(await keys(mem)).toEqual(onPg);
+      expect(onPg).toEqual(absent);
+    };
+
+    late.rank = field.number();
+    expect(await lpg.ensureTypeStorage(LATE, { newFields: 'pending' })).toEqual({
+      pending: ['rank']
+    });
+    await agree();
+    expect(
+      await lpg.promotePendingFields({ lockTimeoutMs: 2000, batchRows: 100, namespace: NS })
+    ).toEqual([{ kind: 'promoted', namespace: NS, type: LATE, field: 'rank', attempts: 1 }]);
+    await agree();
+    late.note = field.string();
+    expect(await lpg.ensureTypeStorage(LATE)).toEqual({ pending: [] });
+    await agree();
+  });
+
   // The projection stands a marker in for a key the row lacks and `materialize`
   // drops it. None of these read shapes may let it out.
   describe('a projected key the row lacks, under each read shape', () => {

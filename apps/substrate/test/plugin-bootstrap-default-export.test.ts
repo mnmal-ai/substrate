@@ -22,8 +22,13 @@ describe('every plugin bootstrap default-exports a function', () => {
   it('finds the plugins', () => {
     expect(plugins).toContain('substrate-nl');
   });
-  it.each(plugins)('%s', async (name) => {
-    const mod = await import(new URL(`${name}/src/bootstrap.ts`, pluginsDir).href);
-    expect(typeof mod.default).toBe('function');
-  });
+  // A cold import transforms the plugin's whole source graph (substrate-nl's is large): seconds on a loaded box.
+  it.each(plugins)(
+    '%s',
+    async (name) => {
+      const mod = await import(new URL(`${name}/src/bootstrap.ts`, pluginsDir).href);
+      expect(typeof mod.default).toBe('function');
+    },
+    30_000
+  );
 });

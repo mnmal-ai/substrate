@@ -27,6 +27,7 @@ import {
 } from './lexical-coverage-core.js';
 import type { LexicalSourceRegistry, LexicalTypeRef } from './lexical-source-registry.js';
 import type { LexicalStore } from './lexical-store.js';
+import { queryTimeoutResponse } from './query-timeout.js';
 
 /** Shape returned by the GET route. */
 export interface EmbedStatsResponse extends EmbedStatsSnapshot {
@@ -180,6 +181,8 @@ async function coverageResponse(
     const coverage = await handleLexicalCoverage({}, coverageDeps);
     return jsonResponse(200, { ...base, lexicalCoverage: coverage.types });
   } catch (err) {
+    const timedOut = queryTimeoutResponse(err);
+    if (timedOut !== null) return timedOut;
     const code = (err as { code?: string } | null)?.code;
     const message = err instanceof Error ? err.message : String(err);
     if (code === 'unknown_type') {

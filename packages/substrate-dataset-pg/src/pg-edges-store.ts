@@ -28,6 +28,7 @@ import type {
   OnDelete
 } from '@mnmal-ai/substrate-types';
 import type { PendingQuery, Row as PgRow, Sql } from 'postgres';
+import { timeoutAware } from './errors.js';
 import { type PgHandle, txScopeIdFor } from './tx-scope.js';
 
 type Fragment = PendingQuery<PgRow[]>;
@@ -121,7 +122,9 @@ export class PgEdgesStore implements EdgesStore {
     const fromBridged = input.from.bridged === true;
     const toBridged = input.to.bridged === true;
 
-    await this.#sql`
+    await timeoutAware(
+      'edges',
+      this.#sql`
       INSERT INTO edges (
         id, from_ns, from_type, from_id, from_bridged,
         to_ns, to_type, to_id, to_bridged,
@@ -134,7 +137,8 @@ export class PgEdgesStore implements EdgesStore {
         ${input.fieldName}, ${input.policy}, ${createdAt},
         NULL, NULL, false
       )
-    `;
+    `
+    );
 
     return {
       id,
@@ -167,7 +171,9 @@ export class PgEdgesStore implements EdgesStore {
     // so the statement text never grows with the batch. Booleans and
     // timestamps travel as text and are cast here, because postgres.js
     // serialises a bare ::boolean[] parameter unreliably.
-    await this.#sql`
+    await timeoutAware(
+      'edges',
+      this.#sql`
       INSERT INTO edges (
         id, from_ns, from_type, from_id, from_bridged,
         to_ns, to_type, to_id, to_bridged,
@@ -191,31 +197,38 @@ export class PgEdgesStore implements EdgesStore {
         ${edges.map((e) => e.createdAt.toISOString())}::text[]
       ) AS t(id, from_ns, from_type, from_id, from_bridged,
              to_ns, to_type, to_id, to_bridged, field_name, policy, created_at)
-    `;
+    `
+    );
     return edges;
   }
 
   async tombstoneMany(ids: readonly string[], at?: Date): Promise<void> {
     if (ids.length === 0) return;
     // Same `deleted_at IS NULL` guard as `tombstone`: the first stamp stays.
-    await this.#sql`
+    await timeoutAware(
+      'edges',
+      this.#sql`
       UPDATE edges
       SET deleted_at = ${at ?? this.#now()}
       WHERE id = ANY(${ids as string[]}::uuid[])
         AND deleted_at IS NULL
-    `;
+    `
+    );
   }
 
   async tombstone(id: string, at?: Date): Promise<void> {
     const stamp = at ?? this.#now();
     // `deleted_at IS NULL` guard keeps tombstone terminal — a second call
     // preserves the original stamp without us re-running the caller check.
-    await this.#sql`
+    await timeoutAware(
+      'edges',
+      this.#sql`
       UPDATE edges
       SET deleted_at = ${stamp}
       WHERE id = ${id}
         AND deleted_at IS NULL
-    `;
+    `
+    );
   }
 
   /**
@@ -223,12 +236,15 @@ export class PgEdgesStore implements EdgesStore {
    * `olderThan`. Called by the sweep loop. Returns the number deleted.
    */
   async purgeTombstonedEdges(opts: { olderThan: Date }): Promise<{ deleted: number }> {
-    const rows = await this.#sql<{ id: string }[]>`
+    const rows = await timeoutAware(
+      'edges',
+      this.#sql<{ id: string }[]>`
       DELETE FROM edges
       WHERE deleted_at IS NOT NULL
         AND deleted_at < ${opts.olderThan}
       RETURNING id
-    `;
+    `
+    );
     return { deleted: rows.length };
   }
 
@@ -245,28 +261,37 @@ export class PgEdgesStore implements EdgesStore {
     if (!hasLastSweptAt && !hasBlocked) return;
 
     if (hasLastSweptAt && hasBlocked) {
-      await this.#sql`
+      await timeoutAware(
+        'edges',
+        this.#sql`
         UPDATE edges
         SET last_swept_at = ${patch.lastSweptAt ?? null},
             blocked = ${patch.blocked ?? false}
         WHERE id = ${patch.id}
-      `;
+      `
+      );
       return;
     }
     if (hasLastSweptAt) {
-      await this.#sql`
+      await timeoutAware(
+        'edges',
+        this.#sql`
         UPDATE edges
         SET last_swept_at = ${patch.lastSweptAt ?? null}
         WHERE id = ${patch.id}
-      `;
+      `
+      );
       return;
     }
     // hasBlocked only.
-    await this.#sql`
+    await timeoutAware(
+      'edges',
+      this.#sql`
       UPDATE edges
       SET blocked = ${patch.blocked ?? false}
       WHERE id = ${patch.id}
-    `;
+    `
+    );
   }
 
   async readNextBatch(
@@ -277,19 +302,25 @@ export class PgEdgesStore implements EdgesStore {
     // skips them itself.
     const rows =
       cursorId === null
-        ? await this.#sql<EdgeRowRecord[]>`
+        ? await timeoutAware(
+            'edges',
+            this.#sql<EdgeRowRecord[]>`
           SELECT ${this.#edgeCols}
           FROM edges
           ORDER BY id ASC
           LIMIT ${size}
         `
-        : await this.#sql<EdgeRowRecord[]>`
+          )
+        : await timeoutAware(
+            'edges',
+            this.#sql<EdgeRowRecord[]>`
           SELECT ${this.#edgeCols}
           FROM edges
           WHERE id > ${cursorId}
           ORDER BY id ASC
           LIMIT ${size}
-        `;
+        `
+          );
 
     const edges = rows.map(rowToEdge);
     const last = edges[edges.length - 1];
@@ -297,14 +328,17 @@ export class PgEdgesStore implements EdgesStore {
   }
 
   async findEdgesTo(ref: EdgeRef): Promise<Edge[]> {
-    const rows = await this.#sql<EdgeRowRecord[]>`
+    const rows = await timeoutAware(
+      'edges',
+      this.#sql<EdgeRowRecord[]>`
       SELECT ${this.#edgeCols}
       FROM edges
       WHERE to_ns = ${ref.ns}
         AND to_type = ${ref.type}
         AND to_id = ${refToId(ref.id)}
         AND deleted_at IS NULL
-    `;
+    `
+    );
     return rows.map(rowToEdge);
   }
 
@@ -341,46 +375,57 @@ export class PgEdgesStore implements EdgesStore {
       side === 'to'
         ? [sql('to_ns'), sql('to_type'), sql('to_id')]
         : [sql('from_ns'), sql('from_type'), sql('from_id')];
-    const rows = await sql<EdgeRowRecord[]>`
+    const rows = await timeoutAware(
+      'edges',
+      sql<EdgeRowRecord[]>`
       SELECT ${this.#edgeCols}
       FROM edges
       JOIN unnest(${seekNs}::text[], ${seekType}::text[], ${seekId}::text[])
         AS seek(seek_ns, seek_type, seek_id)
         ON ${colNs} = seek.seek_ns AND ${colType} = seek.seek_type AND ${colId} = seek.seek_id
       WHERE deleted_at IS NULL
-    `;
+    `
+    );
     return rows.map(rowToEdge);
   }
 
   async findEdgesFrom(ref: EdgeRef): Promise<Edge[]> {
-    const rows = await this.#sql<EdgeRowRecord[]>`
+    const rows = await timeoutAware(
+      'edges',
+      this.#sql<EdgeRowRecord[]>`
       SELECT ${this.#edgeCols}
       FROM edges
       WHERE from_ns = ${ref.ns}
         AND from_type = ${ref.type}
         AND from_id = ${refToId(ref.id)}
         AND deleted_at IS NULL
-    `;
+    `
+    );
     return rows.map(rowToEdge);
   }
 
   async findEdgesTouchingNamespace(namespace: string, limit: number): Promise<Edge[]> {
     // ORDER BY id (the PK, so no sort step) keeps repeated calls in agreement;
     // the refuse-cascade drop path calls this twice.
-    const rows = await this.#sql<EdgeRowRecord[]>`
+    const rows = await timeoutAware(
+      'edges',
+      this.#sql<EdgeRowRecord[]>`
       SELECT ${this.#edgeCols}
       FROM edges
       WHERE deleted_at IS NULL
         AND (from_ns = ${namespace} OR to_ns = ${namespace})
       ORDER BY id ASC
       LIMIT ${limit}
-    `;
+    `
+    );
     return rows.map(rowToEdge);
   }
 
   async findEdgesTouchingType(namespace: string, type: string, limit: number): Promise<Edge[]> {
     // ORDER BY id ASC — same rationale as findEdgesTouchingNamespace above.
-    const rows = await this.#sql<EdgeRowRecord[]>`
+    const rows = await timeoutAware(
+      'edges',
+      this.#sql<EdgeRowRecord[]>`
       SELECT ${this.#edgeCols}
       FROM edges
       WHERE deleted_at IS NULL
@@ -388,7 +433,8 @@ export class PgEdgesStore implements EdgesStore {
           OR (to_ns = ${namespace} AND to_type = ${type}))
       ORDER BY id ASC
       LIMIT ${limit}
-    `;
+    `
+    );
     return rows.map(rowToEdge);
   }
 
@@ -401,7 +447,9 @@ export class PgEdgesStore implements EdgesStore {
       type === undefined
         ? this.#sql`to_ns = ${namespace}`
         : this.#sql`(to_ns = ${namespace} AND to_type = ${type})`;
-    const rows = await this.#sql<{ ns: string }[]>`
+    const rows = await timeoutAware(
+      'edges',
+      this.#sql<{ ns: string }[]>`
       SELECT ns FROM (
         SELECT to_ns AS ns FROM edges WHERE ${fromMatch}
         UNION
@@ -409,7 +457,8 @@ export class PgEdgesStore implements EdgesStore {
       ) linked
       WHERE ns <> ${namespace}
       ORDER BY ns
-    `;
+    `
+    );
     return rows.map((r) => r.ns);
   }
 
@@ -431,7 +480,9 @@ export class PgEdgesStore implements EdgesStore {
     );
     let total = 0;
     while (true) {
-      const rows = await this.#sql`
+      const rows = await timeoutAware(
+        'edges',
+        this.#sql`
         DELETE FROM edges
         WHERE id IN (
           SELECT id FROM edges
@@ -439,7 +490,8 @@ export class PgEdgesStore implements EdgesStore {
           LIMIT ${batchSize}
         )
         RETURNING id
-      `;
+      `
+      );
       total += rows.length;
       if (rows.length < batchSize) return total;
       await this.#yieldBetweenBatches();
@@ -461,7 +513,9 @@ export class PgEdgesStore implements EdgesStore {
     const farEnd = this.#farEndWithin(namespace, within, fromMatch, toMatch);
     let total = 0;
     while (true) {
-      const rows = await this.#sql`
+      const rows = await timeoutAware(
+        'edges',
+        this.#sql`
         DELETE FROM edges
         WHERE id IN (
           SELECT id FROM edges
@@ -469,7 +523,8 @@ export class PgEdgesStore implements EdgesStore {
           LIMIT ${batchSize}
         )
         RETURNING id
-      `;
+      `
+      );
       total += rows.length;
       if (rows.length < batchSize) return total;
       await this.#yieldBetweenBatches();
@@ -499,7 +554,9 @@ export class PgEdgesStore implements EdgesStore {
   }
 
   async canDelete(ref: EdgeRef): Promise<CanDeleteResult> {
-    const rows = await this.#sql<EdgeRowRecord[]>`
+    const rows = await timeoutAware(
+      'edges',
+      this.#sql<EdgeRowRecord[]>`
       SELECT ${this.#edgeCols}
       FROM edges
       WHERE to_ns = ${ref.ns}
@@ -507,18 +564,22 @@ export class PgEdgesStore implements EdgesStore {
         AND to_id = ${refToId(ref.id)}
         AND policy = 'restrict'
         AND deleted_at IS NULL
-    `;
+    `
+    );
     if (rows.length === 0) return { ok: true };
     return { ok: false, blockedBy: rows.map(rowToEdge) };
   }
 
   async findBlocked(): Promise<Edge[]> {
-    const rows = await this.#sql<EdgeRowRecord[]>`
+    const rows = await timeoutAware(
+      'edges',
+      this.#sql<EdgeRowRecord[]>`
       SELECT ${this.#edgeCols}
       FROM edges
       WHERE blocked = true
         AND deleted_at IS NULL
-    `;
+    `
+    );
     return rows.map(rowToEdge);
   }
 

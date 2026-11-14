@@ -33,6 +33,7 @@ import { handleEmbeddingsFetch, validateFetchInput } from './embeddings-fetch-co
 import type { EmbeddingsStore } from './embeddings-store.js';
 import type { LexicalStore } from './lexical-store.js';
 import { checkParams } from './params.js';
+import { recallQueryTimeout } from './query-timeout.js';
 import {
   bindPolicy,
   DEFAULT_SALIENCE_CONFIG,
@@ -204,9 +205,12 @@ export function parseHitParams(params: Record<string, unknown> | undefined): Rec
  * Re-raise a coded core throw as a `ResolverFrameError` so the engine surfaces
  * the same code the HTTP route maps to a status. `policy_denied` / `bad_request`
  * pass through verbatim; embedder `unavailable` / `invalid_response` become
- * `embedder_*` (route 503 parity). Anything uncoded rethrows raw.
+ * `embedder_*` (route 503 parity), and a statement-timeout cancel becomes
+ * `query_timeout`. Anything uncoded rethrows raw.
  */
 function rethrowCoded(err: unknown): never {
+  const timedOut = recallQueryTimeout(err);
+  if (timedOut !== null) throw timedOut;
   const code = (err as { code?: string } | null)?.code;
   const message = err instanceof Error ? err.message : String(err);
   if (code === 'policy_denied' || code === 'bad_request') {
