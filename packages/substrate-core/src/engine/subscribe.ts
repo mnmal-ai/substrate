@@ -596,7 +596,8 @@ export class SubscribeSubsystem {
     if ((decision.obligations?.length ?? 0) > 0) delete args.fields;
 
     // Walks are not pushed in v1 (walks spec, Non-goals): refused before the param allowlist.
-    const walkPath = walkGrammarPath(frame as Record<string, unknown>);
+    // Only where and fields: a param merely named count, groupBy, … is the allowlist's to refuse (#1951).
+    const walkPath = walkGrammarPath(frame as Record<string, unknown>, { walkParams: false });
     if (walkPath !== null) {
       deliverFrame(
         input.onFrame,

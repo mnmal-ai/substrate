@@ -63,6 +63,17 @@ describe('subscribe — walks', () => {
     expect(frames[0]?.errors?.[0]?.code).toBe('walks_in_subscription');
     expect(engine.activeSubscriptionCount()).toBe(0);
   });
+
+  it('a param merely named like a walk param is an unknown param, not a walk (#1951)', async () => {
+    for (const k of ['count', 'aggregate', 'groupBy', 'having', 'offset']) {
+      const engine = buildEngine();
+      const frames = await subscribe(engine, { params: { [k]: true }, fields: { id: true } });
+      expect(frames[0]?.errors?.[0]).toMatchObject({
+        code: 'unknown_param',
+        path: ['ns/Thing', 'params', k]
+      });
+    }
+  });
 });
 
 describe('stream — walks', () => {
@@ -84,6 +95,55 @@ describe('stream — walks', () => {
     expect(frames[0]?.errors?.[0]).toMatchObject({
       code: 'walks_in_subscription',
       path: ['ns/Thing', 'where', '_walk']
+    });
+  });
+});
+
+describe('stream — params named like walk params (#1951)', () => {
+  it('reach a streaming resolver; real walk grammar is still refused', async () => {
+    let got: unknown;
+    const registry = new Registry();
+    registry.register('Feed', {
+      kind: 'type',
+      fields: {},
+      resolver: async (_ctx, args) => {
+        got = args.params;
+        return (async function* () {
+          yield { id: '1' };
+        })();
+      }
+    });
+    const datasets = new MemoryDatasetRegistry();
+    datasets.set('ns', new MemoryDataset({ namespace: 'ns' }));
+    const engine = new Engine({
+      namespaces: new Map<string, NamespaceConfig>([['ns', { registry }]]),
+      datasets,
+      edges: new MemoryEdgesStore({ now: () => new Date('2026-10-30T00:00:00Z') })
+    });
+    const run = async (entry: Record<string, unknown>) => {
+      const frames: WsResponseFrame[] = [];
+      engine.stream({
+        id: 'str',
+        frame: { 'ns/Feed': entry },
+        ctx: {},
+        onFrame: (f) => void frames.push(f)
+      });
+      for (let i = 0; i < 100 && !frames.some((f) => f.kind === 'end'); i++) {
+        await new Promise<void>((r) => setImmediate(r));
+      }
+      return frames;
+    };
+    const params = { count: true, aggregate: 'sum', groupBy: 'day', having: 1, offset: 2 };
+    const ok = await run({ params, fields: { id: true } });
+    expect(ok.filter((f) => f.kind === 'error')).toEqual([]);
+    expect(got).toMatchObject(params);
+    const refused = await run({
+      params,
+      fields: { id: true, _agg: { n: { in: 'ns/X.y', count: true } } }
+    });
+    expect(refused[0]?.errors?.[0]).toMatchObject({
+      code: 'walks_in_subscription',
+      path: ['ns/Feed', 'fields', '_agg']
     });
   });
 });
