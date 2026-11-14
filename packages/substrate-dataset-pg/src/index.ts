@@ -6,7 +6,12 @@ export type { IndexDecl } from '@mnmal-ai/substrate-types';
 export { tryWithPgAdvisoryLock } from './advisory-lock.js';
 export { copyRows, type Misfit, parseSourceBody, type SourceRow } from './copy-rows.js';
 export { type DiskGuard, makeDiskGuard } from './disk-guard.js';
-export { NamespaceMismatch, ReservedField } from './errors.js';
+export {
+  NamespaceMismatch,
+  queryTimeoutError,
+  ReservedField,
+  timeoutAware
+} from './errors.js';
 export {
   desiredIndexKeys,
   type HeldIndex,

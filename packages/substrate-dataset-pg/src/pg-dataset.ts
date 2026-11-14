@@ -70,7 +70,6 @@ import {
   filterTooBroad,
   isColumnField,
   naturalOrderOf,
-  QUERY_TIMEOUT,
   ResolverFrameError,
   STORE_BUSY,
   VALUE_OUT_OF_RANGE
@@ -78,7 +77,7 @@ import {
 import type { PendingQuery, Row as PgRow, ReservedSql, Sql, TransactionSql } from 'postgres';
 import { withPgAdvisoryLock } from './advisory-lock.js';
 import type { DiskGuard } from './disk-guard.js';
-import { NamespaceMismatch, ReservedField } from './errors.js';
+import { NamespaceMismatch, queryTimeoutError, ReservedField } from './errors.js';
 import {
   describeTypeIndexes,
   desiredIndexKeys,
@@ -629,7 +628,11 @@ export class PgDataset implements Dataset {
         return await this.#read(type, params, false);
       } catch (err) {
         // A role- or database-level statement_timeout: its value is not known here.
-        throw this.#queryTimeout(type, err, params.signal) ?? storeBusy(err) ?? err;
+        throw (
+          queryTimeoutError(`${this.namespace}/${type}`, err, params.signal) ??
+          storeBusy(err) ??
+          err
+        );
       }
     }
     if (!this.#inTx) return this.withTransaction((tx) => tx.read(type, params));
@@ -649,8 +652,8 @@ export class PgDataset implements Dataset {
       return await this.#read(type, params, true);
     } catch (err) {
       throw (
-        this.#queryTimeout(
-          type,
+        queryTimeoutError(
+          `${this.namespace}/${type}`,
           err,
           params.signal,
           lowered ? this.#statementTimeoutMs : undefined
@@ -659,30 +662,6 @@ export class PgDataset implements Dataset {
         err
       );
     }
-  }
-
-  /**
-   * A statement-timeout cancel (57014) as `query_timeout`, else null.
-   * `cancellable` already swaps a caller's abort for its reason, and the
-   * signal check keeps one that races the cancel an abort. 57014 also covers an
-   * operator's cancel, so the message does not claim a timeout. `timeoutMs` is
-   * omitted when the limit is not known to be substrate's own.
-   */
-  #queryTimeout(
-    type: string,
-    err: unknown,
-    signal: AbortSignal | undefined,
-    timeoutMs?: number
-  ): ResolverFrameError | null {
-    if ((err as { code?: unknown } | null)?.code !== '57014' || signal?.aborted === true) {
-      return null;
-    }
-    return new ResolverFrameError(
-      QUERY_TIMEOUT,
-      `${this.namespace}/${type}: the read was cancelled by the server (statement timeout or cancel)` +
-        (timeoutMs !== undefined ? `; the limit is ${timeoutMs} ms` : ''),
-      timeoutMs !== undefined ? { timeoutMs } : undefined
-    );
   }
 
   /**

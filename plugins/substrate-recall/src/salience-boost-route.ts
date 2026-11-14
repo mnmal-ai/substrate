@@ -16,6 +16,7 @@
 import { jsonResponse } from '@mnmal-ai/substrate-compose';
 import type { HttpHandler, SubstrateRequest, SubstrateResponse } from '@mnmal-ai/substrate-types';
 import type { EmbeddingsStore } from './embeddings-store.js';
+import { queryTimeoutResponse } from './query-timeout.js';
 import {
   bindPolicy,
   DEFAULT_SALIENCE_CONFIG,
@@ -99,6 +100,8 @@ export function salienceBoostRouteHandler(cfg: SalienceBoostRouteConfig): HttpHa
       });
       return jsonResponse(200, out);
     } catch (err) {
+      const timedOut = queryTimeoutResponse(err);
+      if (timedOut !== null) return timedOut;
       const code = (err as { code?: string } | null)?.code;
       const message = err instanceof Error ? err.message : String(err);
       if (code === 'policy_denied') {
