@@ -28,7 +28,7 @@ import {
   type ValidateFilterInput,
   validateFilter
 } from '../filter/validator.js';
-import { usesWalkGrammar } from '../walk-gate.js';
+import { walkGrammarPath } from '../walk-gate.js';
 import { hopResolver } from '../walk-types.js';
 import { addError } from './internals.js';
 
@@ -148,20 +148,32 @@ export function runFilterGuard(deps: FilterGuardDeps, input: FilterGuardInput): 
     }
   }
 
-  const walks = usesWalkGrammar(entry as Record<string, unknown>);
+  const walkPath = walkGrammarPath(entry as Record<string, unknown>);
+  const walks = walkPath !== null;
   const selects = entry.params?.select !== undefined;
   if (where === undefined && orderBy === undefined && !walks && !selects) return true;
-  return validateAgainst(deps, envelope, key, ns, name, dataset, {
-    ...(where !== undefined ? { where } : {}),
-    ...(orderBy !== undefined ? { orderBy } : {}),
-    ...(walks || selects ? walkInput(entry) : {})
-  });
+  return validateAgainst(
+    deps,
+    envelope,
+    key,
+    ns,
+    name,
+    dataset,
+    {
+      ...(where !== undefined ? { where } : {}),
+      ...(orderBy !== undefined ? { orderBy } : {}),
+      ...(walks || selects ? walkInput(entry) : {})
+    },
+    walkPath
+  );
 }
 
 /**
  * Validates `filter` against `typeName`'s published schema. Records the
  * refusal and returns false on a `FilterValidationError`; a type registered
- * but absent from the schema is let through with a diagnostic.
+ * but absent from the schema is let through with a diagnostic, unless the
+ * frame walks (`walkPath`): a walk needs the schema to resolve, so it is
+ * refused there, fail-closed.
  */
 function validateAgainst(
   deps: FilterGuardDeps,
@@ -170,7 +182,8 @@ function validateAgainst(
   ns: string,
   typeName: string,
   dataset: Pick<Dataset, 'capabilities'>,
-  filter: Partial<ValidateFilterInput>
+  filter: Partial<ValidateFilterInput>,
+  walkPath: string[] | null = null
 ): boolean {
   try {
     let typeSchema = deps.schemaFor(ns).types[typeName];
@@ -179,6 +192,13 @@ function validateAgainst(
       // post-construction registration whose invalidator was never wired.
       deps.invalidateSchemaCaches(ns);
       typeSchema = deps.schemaFor(ns).types[typeName];
+    }
+    if (typeSchema === undefined && walkPath !== null) {
+      throw new FilterValidationError(
+        'walk_unknown_ref',
+        `'${ns}/${typeName}' is absent from the '${ns}' schema, so a walk from it cannot resolve`,
+        walkPath
+      );
     }
     if (typeSchema === undefined) {
       // Registered but absent from the published schema (e.g. a type

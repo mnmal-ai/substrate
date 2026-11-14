@@ -6,15 +6,25 @@
 
 import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-dataset-memory';
 import { requireCapability, row } from '@mnmal-ai/substrate-policy';
-import type { Policy, ResolverArgs } from '@mnmal-ai/substrate-types';
+import type { Policy, RegistryEntry, ResolverArgs } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
 import { Engine, MemoryEdgesStore, type NamespaceConfig, Registry } from '../src/index.js';
 import { hopResolver, walkedTypes } from '../src/walk-types.js';
 
 const allow: Policy = () => ({ allow: true });
 
-function build(policies: { Thing?: Policy; Part?: Policy; Note?: Policy } = {}) {
-  const registry = new Registry();
+/** A registry whose `hidden` type resolves but is absent from the published schema. */
+class HidingRegistry extends Registry {
+  constructor(private readonly hidden: string) {
+    super();
+  }
+  override *all(): IterableIterator<[string, RegistryEntry]> {
+    for (const e of super.all()) if (e[0] !== this.hidden) yield e;
+  }
+}
+
+function build(policies: { Thing?: Policy; Part?: Policy; Note?: Policy } = {}, hidden?: string) {
+  const registry = hidden === undefined ? new Registry() : new HidingRegistry(hidden);
   let reached = 0;
   const resolver = async () => {
     reached++;
@@ -76,6 +86,19 @@ describe('policy on walked types', () => {
         path: ['ns/Thing', 'where', '_walk']
       })
     ]);
+    expect(reached()).toBe(0);
+  });
+
+  it('a walk from a type absent from the schema is refused as walk_unknown_ref (#1824)', async () => {
+    const { engine, reached } = build({}, 'Thing');
+    for (const [frame, path] of [
+      [walkFrame, ['ns/Thing', 'where', '_walk']],
+      [aggFrame, ['ns/Thing', 'fields', '_agg']]
+    ] as const) {
+      const res = await engine.query({ frame, ctx });
+      expect(res.data).not.toHaveProperty('ns/Thing');
+      expect(res.errors).toEqual([expect.objectContaining({ code: 'walk_unknown_ref', path })]);
+    }
     expect(reached()).toBe(0);
   });
 
