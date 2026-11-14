@@ -633,13 +633,22 @@ export class MemoryDataset implements Dataset {
       };
       const held = new Map<string, Id>();
       const stored = this.store.get(type);
+      const kept = new Set<string>();
+      const moved = new Set<string>();
       for (const r of changed.values()) {
         const key = keyOf(r);
         if (key === undefined) continue;
         // A row keeping its values is not checked: a duplicate it shares predates the
         // index (pg holds such values outside it, in a pending field's `extra`).
         const prior = stored?.get(r.id);
-        if (prior !== undefined && keyOf(prior) === key) continue;
+        if (prior !== undefined && keyOf(prior) === key) {
+          // Kept, so it still holds the value against rows moving onto it.
+          if (moved.has(key)) throw this.uniqueViolation(type, decl, fields);
+          kept.add(key);
+          continue;
+        }
+        if (kept.has(key)) throw this.uniqueViolation(type, decl, fields);
+        moved.add(key);
         if (held.has(key)) throw this.uniqueViolation(type, decl, fields);
         held.set(key, r.id);
       }

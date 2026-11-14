@@ -71,9 +71,22 @@ describe('a declared unique index conflict (memory)', () => {
     ]);
     indexes = [{ fields: ['code'], unique: true, name: 'code_uq' }];
     await ds.write(TYPE, [{ id: 'a', code: 'X' }]);
-    // Moving onto a held value is still refused.
+    // Moving onto a held value is still refused, also beside a row that keeps it, in either order.
     await ds.write(TYPE, [{ id: 'c', code: 'Z' }]);
     await refusal(ds.write(TYPE, [{ id: 'c', code: 'X' }]));
+    await refusal(
+      ds.write(TYPE, [
+        { id: 'a', code: 'X' },
+        { id: 'c', code: 'X' }
+      ])
+    );
+    await refusal(
+      ds.write(TYPE, [
+        { id: 'c', code: 'X' },
+        { id: 'a', code: 'X' }
+      ])
+    );
+    expect((await ds.read(TYPE, { ids: ['c'] })).rows[0]?.code).toBe('Z');
   });
 
   it('refuses a collision inside one write, landing none of its rows', async () => {
