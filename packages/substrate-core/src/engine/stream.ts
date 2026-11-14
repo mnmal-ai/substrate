@@ -311,8 +311,9 @@ export class StreamSubsystem {
 
     if (registryEntry.kind === 'type') {
       // A stream is a live read like a subscription, so walks are refused the same way (walks spec, Non-goals).
-      // Only where and fields: a streaming resolver's own params may be named count, groupBy, … (#1951).
-      const walkPath = walkGrammarPath(frame as Record<string, unknown>, { walkParams: false });
+      // Walk-only params too: a stream has no param allowlist, and an autoCRUD list resolver
+      // would hand count, aggregate, groupBy, … to the store unvalidated (#1951 review).
+      const walkPath = walkGrammarPath(frame as Record<string, unknown>);
       if (walkPath !== null) {
         await emitError('walks are not available in streams', WALKS_IN_SUBSCRIPTION, [
           key,
