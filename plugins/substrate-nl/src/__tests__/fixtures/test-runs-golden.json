@@ -714,15 +714,64 @@
   {
     "question": "tests whose latest local duration is over 5000",
     "expect": {
-      "kind": "unknown",
-      "dropped": ["latest"]
+      "kind": "rows",
+      "answer": "rows",
+      "frame": {
+        "runs/Test": {
+          "where": {
+            "_walk": {
+              "in": "runs/LocalRun.test",
+              "where": {
+                "durationMs": {
+                  "gt": 5000
+                }
+              },
+              "pick": {
+                "latest": "at"
+              },
+              "among": {
+                "NOT": {
+                  "status": {
+                    "in": ["skipped", "killed"]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   {
     "question": "how many tests whose highest ci duration is over 60000",
     "expect": {
-      "kind": "unknown",
-      "dropped": ["highest"]
+      "kind": "rows",
+      "answer": "count",
+      "frame": {
+        "runs/Test": {
+          "where": {
+            "_walk": {
+              "in": "runs/CiRun.test",
+              "where": {
+                "durationMs": {
+                  "gt": 60000
+                }
+              },
+              "pick": {
+                "max": "durationMs"
+              },
+              "among": {
+                "NOT": {
+                  "status": {
+                    "in": ["skipped", "killed"]
+                  }
+                }
+              }
+            }
+          },
+          "count": true
+        }
+      }
     }
   },
   {

@@ -61,7 +61,7 @@ const isAny = (w: WalkNode) => w.pick === undefined && (w.quantifier ?? 'any') =
  * aggregate), O is a top-level AND conjunct `{ _walk: { out, where } }`
  * of the seed's where (an `any` walk, no `as`) that reads no top-level `as`
  * binding, P is an inbound pick among O's where's AND conjuncts, and P's
- * where reads no binding but `$` (or a frame `_agg`). Picking depends only on
+ * where reads no binding but `$` (or a frame `_agg`) and its `among` none. Picking depends only on
  * the hub, and `$` is read after the pick, so P's where is still tested per
  * seed. O reading a top-level binding would compile inside that binding's
  * EXISTS, where the shared CTE could not be hashed.
@@ -82,6 +82,8 @@ export function sharedPicks(params: {
     if ([...refNames(o.where)].some((n) => bound.has(n))) continue;
     for (const p of conjunctWalks(o.where)) {
       if (typeof p.in !== 'string' || p.pick === undefined) continue;
+      // `among` decides which row is picked, so it may read only the far row: a `$` would make the pick per seed.
+      if (refNames(p.among).size > 0) continue;
       if ([...refNames(p.where)].every((n) => n === '$' || n === '_agg')) out.set(p, o);
     }
   }

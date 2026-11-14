@@ -34,7 +34,7 @@ export const MAX_FRAME_BINDINGS = 6;
 export const MAX_DATE_SHIFT_MS = 1e13;
 
 const COMPARISON_OPS = new Set(['eq', 'neq', 'gt', 'gte', 'lt', 'lte']);
-const WALK_KEYS = new Set(['as', 'in', 'out', 'where', 'quantifier', 'pick']);
+const WALK_KEYS = new Set(['as', 'in', 'out', 'where', 'quantifier', 'pick', 'among']);
 
 /** What a walk, or a `$ref` inside one, can see. */
 export interface WalkScope {
@@ -314,6 +314,16 @@ export function validateWalk(
         [...path, 'pick', k]
       );
     }
+  }
+  if (node.among !== undefined) {
+    if (pick === undefined) {
+      fail(
+        'walk_quantifier',
+        "'among' narrows the rows a pick chooses from; without a pick use 'where'",
+        [...path, 'among']
+      );
+    }
+    validateWhere(node.among, [...path, 'among'], farScope(scope, hop));
   }
   if (node.where !== undefined) validateWhere(node.where, [...path, 'where'], farScope(scope, hop));
 }

@@ -175,6 +175,26 @@ describe('memory edge walks', () => {
     expect(await ids(ds, 'Cert', obs())).toEqual([]);
   });
 
+  it('among narrows the rows a pick chooses from before where judges the picked one (#1810)', async () => {
+    const ds = await dataset({
+      Cert: [{ id: 'c1' }, { id: 'c2' }],
+      Observation: [
+        { id: 'o1', cert: 'c1', price: 100, observedAt: '2026-10-20T00:00:00Z' },
+        { id: 'o2', cert: 'c1', price: 0, observedAt: '2026-10-21T00:00:00Z' },
+        { id: 'o3', cert: 'c2', price: 0, observedAt: '2026-10-21T00:00:00Z' }
+      ]
+    });
+    const real = { price: { gt: 0 } };
+    const latest = { pick: { latest: 'observedAt' } };
+    // Without among the 0 placeholder is the latest, and it fails where.
+    expect(await ids(ds, 'Cert', obs({ price: { gte: 100 } }, latest))).toEqual([]);
+    expect(await ids(ds, 'Cert', obs({ price: { gte: 100 } }, { ...latest, among: real }))).toEqual(
+      ['c1']
+    );
+    // A cert whose only neighbours are excluded has nothing to pick.
+    expect(await ids(ds, 'Cert', obs(undefined, { ...latest, among: real }))).toEqual(['c1']);
+  });
+
   it('pick latest/max/min applies the predicate to the one neighbour', async () => {
     const ds = await dataset({
       Cert: [{ id: 'c1' }],

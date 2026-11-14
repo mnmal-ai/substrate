@@ -108,3 +108,78 @@ describe('unknown projection fields are reported, not rejected', () => {
     expect(unknown).toEqual(['nonesuch']);
   });
 });
+
+describe('unknown projection fields inside nested walk selections (#1823)', () => {
+  function walkEngine(): Engine {
+    const registry = new Registry();
+    const resolver: Resolver = async () => [];
+    registry.register('Thing', { resolver, fields: { title: str } });
+    registry.register('Part', {
+      resolver,
+      fields: {
+        thing: { kind: 'crossRef', ns: 'default', type: 'Thing', onDelete: 'set_null' },
+        label: str
+      }
+    });
+    registry.register('Note', {
+      resolver,
+      fields: {
+        part: { kind: 'crossRef', ns: 'default', type: 'Part', onDelete: 'set_null' },
+        body: str
+      }
+    });
+    const datasets = new MemoryDatasetRegistry();
+    datasets.set('default', new MemoryDataset({ namespace: 'default', walkReference: true }));
+    return new Engine({
+      namespaces: new Map<string, NamespaceConfig>([['default', { registry }]]),
+      datasets,
+      edges: new MemoryEdgesStore({ now: () => new Date() })
+    });
+  }
+
+  it('checks nested fields against the far type, at any depth, by path', async () => {
+    const env = await walkEngine().query({
+      frame: {
+        'default/Thing': {
+          params: {},
+          fields: {
+            id: true,
+            titel: true,
+            parts: {
+              _walk: { in: 'default/Part.thing' },
+              fields: {
+                label: true,
+                lable: true,
+                notes: { _walk: { in: 'default/Note.part' }, fields: { body: true, bdy: true } }
+              }
+            }
+          }
+        }
+      },
+      ctx: makeCtx()
+    });
+    expect(env.errors).toBeUndefined();
+    expect(env._diagnostics?.['default/Thing']?.unknownProjectionFields).toEqual([
+      'titel',
+      'parts.lable',
+      'parts.notes.bdy'
+    ]);
+  });
+
+  it('says nothing when every nested field is declared on its far type', async () => {
+    const env = await walkEngine().query({
+      frame: {
+        'default/Thing': {
+          params: {},
+          fields: {
+            id: true,
+            parts: { _walk: { in: 'default/Part.thing' }, fields: { label: true } }
+          }
+        }
+      },
+      ctx: makeCtx()
+    });
+    expect(env.errors).toBeUndefined();
+    expect(env._diagnostics).toBeUndefined();
+  });
+});

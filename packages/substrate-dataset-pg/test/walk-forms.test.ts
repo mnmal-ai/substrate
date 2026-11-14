@@ -224,6 +224,21 @@ describe.skipIf(!POSTGRES_URL)('walk forms through the engine (pg = memory)', ()
     expect(formAt(page, 'Seed', path)).toBe('per-seed');
   }, 60_000);
 
+  it('a shared pick with among: per-hub when among reads only the far row (#1810)', async () => {
+    const path = ['where', '_walk', 'where', '_walk'];
+    const withAmong = (among: unknown) => ({
+      _walk: { ...HUB_PICK._walk, where: { _walk: { ...HUB_PICK._walk.where._walk, among } } }
+    });
+    const far = await both('Seed', {
+      params: { count: true, where: withAmong({ price: { gt: 50 } }) }
+    });
+    expect(formAt(far, 'Seed', path)).toBe('per-hub');
+    const seed = await both('Seed', {
+      params: { count: true, where: withAmong({ price: { lte: { $ref: '$.ask' } } }) }
+    });
+    expect(formAt(seed, 'Seed', path)).toBe('per-seed');
+  }, 60_000);
+
   it('a window: group-by for every seed, per-seed for a short page, the same answers', async () => {
     const all = await both('Hub', WINDOW);
     for (const n of ['n', 'avg', 'hi']) {

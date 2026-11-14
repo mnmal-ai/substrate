@@ -636,6 +636,31 @@ describe('aggregate, select, groupBy, count and nested validation', () => {
     ).not.toThrow();
   });
 
+  it('accepts among on a pick, validates it over the far type, and refuses it without one (#1810)', () => {
+    expect(() =>
+      check({
+        _walk: {
+          in: 'cards/Observation.cert',
+          pick: { latest: 'observedAt' },
+          among: { price: { gt: 0 } },
+          where: { price: { gte: 100 } }
+        }
+      })
+    ).not.toThrow();
+    expect(
+      refusal({ _walk: { in: 'cards/Observation.cert', among: { price: { gt: 0 } } } })
+    ).toMatchObject({ code: 'walk_quantifier', path: ['where', '_walk', 'among'] });
+    expect(
+      refusal({
+        _walk: {
+          in: 'cards/Observation.cert',
+          pick: { latest: 'observedAt' },
+          among: { nope: { eq: 1 } }
+        }
+      })
+    ).toMatchObject({ code: 'unknown_field', path: ['where', '_walk', 'among', 'nope'] });
+  });
+
   it('validates nested selections', () => {
     expect(() =>
       checkFrame({
@@ -806,5 +831,97 @@ describe('select and $expr validation', () => {
         where: { _walk: { in: 'cards/Listing.cert', where: { $expr: { gt: ['price', 1] } } } }
       }).code
     ).toBe('expr_invalid');
+  });
+});
+
+/** The walks plan's deferred Task 4/5 test gaps (#1827). */
+describe('walk validator negative cases', () => {
+  it('refuses a $ref to a binding made in the same OR branch (Ruling 10)', () => {
+    expect(
+      refusal({
+        OR: [
+          { AND: [listing({ as: 'L' }), { ask: { gte: { $ref: 'L.price' } } }] },
+          { grade: { eq: 9 } }
+        ]
+      })
+    ).toEqual({ code: 'walk_binding', path: ['where', 'OR', '0', 'AND', '1', 'ask', 'gte'] });
+  });
+
+  it('refuses a duplicate or non-identifier as', () => {
+    expect(
+      refusal({ AND: [listing({ as: 'L' }), { _walk: { as: 'L', in: 'cards/Observation.cert' } }] })
+    ).toEqual({ code: 'walk_binding', path: ['where', 'AND', '1', '_walk', 'as'] });
+    expect(refusal(listing({ as: '1x' }))).toEqual({
+      code: 'walk_binding',
+      path: ['where', '_walk', 'as']
+    });
+  });
+
+  it('refuses _walk beside AND or OR, as a field key there is', () => {
+    expect(refusal({ ...listing(), AND: [{ grade: { eq: 9 } }] })).toEqual({
+      code: 'invalid_logical',
+      path: ['where']
+    });
+    expect(refusal({ ...listing(), OR: [{ grade: { eq: 9 } }, { ask: { gt: 1 } }] })).toEqual({
+      code: 'invalid_logical',
+      path: ['where']
+    });
+  });
+
+  it('refuses _walk inside a struct', () => {
+    expect(refusal({ dims: listing() }, 'Observation')).toEqual({
+      code: 'walk_unsupported_ref',
+      path: ['where', 'dims', '_walk']
+    });
+  });
+
+  it('accepts an _agg latest ordered by createdAt', () => {
+    expect(() =>
+      checkFrame({
+        fields: {
+          _agg: { a: { in: 'cards/Observation.cert', latest: { by: 'createdAt', value: 'price' } } }
+        }
+      })
+    ).not.toThrow();
+  });
+
+  it("refuses a $ref '_agg.x' whose kind differs from the compared field", () => {
+    expect(
+      frameRefusal({
+        where: { gradedAt: { gt: { $ref: '_agg.n' } } },
+        fields: { _agg: { n: { in: 'cards/Observation.cert', count: true } } }
+      })
+    ).toEqual({ code: 'ref_kind_mismatch', path: ['where', 'gradedAt', 'gt'] });
+    expect(
+      frameRefusal({
+        where: { ask: { gt: { $ref: '_agg.d' } } },
+        fields: { _agg: { d: { in: 'cards/Observation.cert', max: 'observedAt' } } }
+      })
+    ).toEqual({ code: 'ref_kind_mismatch', path: ['where', 'ask', 'gt'] });
+  });
+
+  it('refuses count with select, groupBy or cursor, and a non-boolean count', () => {
+    expect(frameRefusal({ count: true, select: { m: 'ask' } })).toEqual({
+      code: 'count_conflict',
+      path: ['select']
+    });
+    expect(frameRefusal({ count: true, cursor: 'c' })).toEqual({
+      code: 'count_conflict',
+      path: ['cursor']
+    });
+    expect(frameRefusal({ count: true, groupBy: { b: 'grade' } })).toEqual({
+      code: 'agg_invalid',
+      path: ['groupBy']
+    });
+    expect(frameRefusal({ count: 'yes' as unknown as boolean })).toEqual({
+      code: 'type_mismatch',
+      path: ['count']
+    });
+  });
+
+  it('refuses a groupBy name that is also an aggregate name', () => {
+    expect(
+      frameRefusal({ aggregate: { bucket: { count: true } }, groupBy: { bucket: 'grade' } })
+    ).toEqual({ code: 'group_invalid', path: ['groupBy', 'bucket'] });
   });
 });

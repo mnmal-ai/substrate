@@ -24,7 +24,7 @@ const isObj = (v: unknown): v is Record<string, unknown> =>
  * Visits every hop of a frame entry `{ params: { where }, fields }` seeded at
  * `seed`, at any depth, each before the hops beneath it. `visit` gets the hop
  * and its near type and returns the far type; the hops in the far rows'
- * wheres (the node's `where`, then a nested selection's own `where`) and a
+ * wheres (a pick's `among` and the node's `where`, then a nested selection's own `where`) and a
  * nested selection's `fields` are visited next. Returning `undefined` stops the
  * descent below that hop. A where is searched generically, under AND/OR/NOT
  * and anywhere else, as the walk gate does.
@@ -46,7 +46,10 @@ export function forEachWalkHop(
       const at = [...path, k];
       if ((k === '_walk' || k === '_agg') && isObj(child)) {
         const far = visit({ kind: k === '_walk' ? 'walk' : 'agg', node: child, path: at }, type);
-        if (far !== undefined) inWhere(child.where, far, [...at, 'where']);
+        if (far !== undefined) {
+          inWhere(child.among, far, [...at, 'among']);
+          inWhere(child.where, far, [...at, 'where']);
+        }
       } else inWhere(child, type, at);
     }
   };

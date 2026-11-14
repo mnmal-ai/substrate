@@ -28,7 +28,8 @@ import {
   type ValidateFilterInput,
   validateFilter
 } from '../filter/validator.js';
-import { usesWalkGrammar } from '../walk-gate.js';
+import { walkGrammarPath } from '../walk-gate.js';
+import { hopResolver } from '../walk-types.js';
 import { addError } from './internals.js';
 
 /**
@@ -96,20 +97,49 @@ export function runFilterGuard(deps: FilterGuardDeps, input: FilterGuardInput): 
   // An undeclared projection key is absent from every row, so it
   // is reported (diagnostic + metric) rather than silent. Deliberately not
   // rejected: during a rolling deploy a newer client legitimately projects a
-  // field a not-yet-restarted server does not know.
+  // field a not-yet-restarted server does not know. A nested walk selection's
+  // fields are checked against its far type and reported by dotted path.
   if (entry.fields !== undefined) {
     const typeSchema = deps.schemaFor(ns).types[name];
     if (typeSchema) {
       // A `select` name is a computed key the dataset adds to each row.
       const selectNames = (entry.params?.select ?? {}) as object;
-      const unknown = Object.keys(entry.fields).filter(
-        (f) =>
-          !(f in typeSchema.fields) &&
-          !PROJECTION_VIRTUAL_KEYS.has(f) &&
-          computedFieldOwner(f) === undefined &&
-          !isWalkSelection(f, (entry.fields as Record<string, unknown>)[f]) &&
-          !Object.hasOwn(selectNames, f)
-      );
+      const types = deps.schemaFor(ns).types;
+      const resolve = hopResolver(ns, (t) => (Object.hasOwn(types, t) ? types[t] : undefined));
+      const unknown: string[] = [];
+      const collect = (
+        fields: Record<string, unknown>,
+        type: string,
+        declared: Record<string, unknown>,
+        prefix: string
+      ): void => {
+        for (const [f, sel] of Object.entries(fields)) {
+          if (isWalkSelection(f, sel)) {
+            if (f === '_agg') continue;
+            const nested = sel as Record<string, unknown>;
+            let far: string;
+            try {
+              far = resolve(nested._walk as Record<string, unknown>, type, []);
+            } catch {
+              continue; // an unresolvable hop is the validator's to refuse
+            }
+            const farFields = types[far]?.fields;
+            if (farFields && typeof nested.fields === 'object' && nested.fields !== null) {
+              collect(nested.fields as Record<string, unknown>, far, farFields, `${prefix}${f}.`);
+            }
+            continue;
+          }
+          if (
+            !(f in declared) &&
+            !PROJECTION_VIRTUAL_KEYS.has(f) &&
+            computedFieldOwner(f) === undefined &&
+            !(prefix === '' && Object.hasOwn(selectNames, f))
+          ) {
+            unknown.push(prefix + f);
+          }
+        }
+      };
+      collect(entry.fields as Record<string, unknown>, name, typeSchema.fields, '');
       if (unknown.length > 0) {
         envelope._diagnostics ??= {};
         envelope._diagnostics[key] = { unknownProjectionFields: unknown };
@@ -118,20 +148,32 @@ export function runFilterGuard(deps: FilterGuardDeps, input: FilterGuardInput): 
     }
   }
 
-  const walks = usesWalkGrammar(entry as Record<string, unknown>);
+  const walkPath = walkGrammarPath(entry as Record<string, unknown>);
+  const walks = walkPath !== null;
   const selects = entry.params?.select !== undefined;
   if (where === undefined && orderBy === undefined && !walks && !selects) return true;
-  return validateAgainst(deps, envelope, key, ns, name, dataset, {
-    ...(where !== undefined ? { where } : {}),
-    ...(orderBy !== undefined ? { orderBy } : {}),
-    ...(walks || selects ? walkInput(entry) : {})
-  });
+  return validateAgainst(
+    deps,
+    envelope,
+    key,
+    ns,
+    name,
+    dataset,
+    {
+      ...(where !== undefined ? { where } : {}),
+      ...(orderBy !== undefined ? { orderBy } : {}),
+      ...(walks || selects ? walkInput(entry) : {})
+    },
+    walkPath
+  );
 }
 
 /**
  * Validates `filter` against `typeName`'s published schema. Records the
  * refusal and returns false on a `FilterValidationError`; a type registered
- * but absent from the schema is let through with a diagnostic.
+ * but absent from the schema is let through with a diagnostic, unless the
+ * frame walks (`walkPath`): a walk needs the schema to resolve, so it is
+ * refused there, fail-closed.
  */
 function validateAgainst(
   deps: FilterGuardDeps,
@@ -140,7 +182,8 @@ function validateAgainst(
   ns: string,
   typeName: string,
   dataset: Pick<Dataset, 'capabilities'>,
-  filter: Partial<ValidateFilterInput>
+  filter: Partial<ValidateFilterInput>,
+  walkPath: string[] | null = null
 ): boolean {
   try {
     let typeSchema = deps.schemaFor(ns).types[typeName];
@@ -149,6 +192,13 @@ function validateAgainst(
       // post-construction registration whose invalidator was never wired.
       deps.invalidateSchemaCaches(ns);
       typeSchema = deps.schemaFor(ns).types[typeName];
+    }
+    if (typeSchema === undefined && walkPath !== null) {
+      throw new FilterValidationError(
+        'walk_unknown_ref',
+        `'${ns}/${typeName}' is absent from the '${ns}' schema, so a walk from it cannot resolve`,
+        walkPath
+      );
     }
     if (typeSchema === undefined) {
       // Registered but absent from the published schema (e.g. a type

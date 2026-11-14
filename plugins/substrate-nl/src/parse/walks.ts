@@ -123,12 +123,6 @@ export interface WalkClaims {
   dropped: Dropped[];
 }
 
-const PICKED: Record<PickClaim['kind'], string> = {
-  latest: 'latest',
-  max: 'highest',
-  min: 'lowest'
-};
-
 export const PICK_WORDS: Record<string, PickClaim['kind']> = {
   latest: 'latest',
   current: 'latest',
@@ -689,23 +683,6 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
     w.notes.push(defaultYield(w.type, yieldTo, []));
   }
 
-  // The engine picks first and filters the picked row, so an exclusion cannot apply
-  // before a pick: the pick is dropped, and the reading stays strict (so `unknown`).
-  let pickDropped = false;
-  for (const w of walks.values()) {
-    if (w.pick === undefined || w.excludes.length === 0) continue;
-    const names = w.excludes
-      .flatMap((x) => x.plan.map((c) => `'${String(c.path.at(-1)).replace(/^ruling:/, '')}'`))
-      .join(', ');
-    dropped.push({
-      span: w.pick.span,
-      reason: `cannot pick the ${PICKED[w.pick.kind]} ${w.type} while the ${names} exclusion applies`,
-      kind: 'filter'
-    });
-    delete w.pick;
-    pickDropped = true;
-  }
-
   // Bindings: every unpicked one-hop walk, so comparisons can name it.
   const taken = new Set<string>();
   const ordered = [...walks.values()].sort((x, y) =>
@@ -743,7 +720,6 @@ export function compose(input: ComposeInput): Composed | { clarify: string } {
       seedParts.some((p) => p.plan.some((c) => c.kind === 'ref')) ||
       plan.length > 0,
     strict:
-      pickDropped ||
       ordered.some((w) => w.pick !== undefined) ||
       composed.some((p) => p.plan.some((c) => c.kind === 'ref'))
   };
@@ -758,14 +734,17 @@ function hopKey(ns: string, h: Hop): string {
 
 /** One walk as a (possibly nested) `_walk` clause. */
 function walkPart(ns: string, w: Walk, exclude: (type: string) => Part | null): Part {
-  const inner = andOf([...w.filters, ...w.window, ...w.excludes]);
+  // A pick chooses among the rows its exclusions leave (#1810); `where` then judges the picked row.
+  const among = w.pick === undefined ? null : andOf(w.excludes);
+  const inner = andOf([...w.filters, ...w.window, ...(among === null ? w.excludes : [])]);
   const label =
     w.pick === undefined ? 'any' : `pick:${w.pick.kind}(${w.pick.by}) from ${w.pick.source}`;
   let node: Record<string, unknown> = {
     ...(w.alias !== undefined ? { as: w.alias } : {}),
     ...edge(ns, w.path[w.path.length - 1] as Hop),
     ...(inner !== null ? { where: inner.where } : {}),
-    ...(w.pick !== undefined ? { pick: { [w.pick.kind]: w.pick.by } } : {})
+    ...(w.pick !== undefined ? { pick: { [w.pick.kind]: w.pick.by } } : {}),
+    ...(among !== null ? { among: among.where } : {})
   };
   let plan: PlanClause[] = [
     {
@@ -773,6 +752,7 @@ function walkPart(ns: string, w: Walk, exclude: (type: string) => Part | null): 
       kind: 'hop',
       served: true
     },
+    ...(among?.plan ?? []).map((c) => ({ ...c, path: ['_walk', 'among', ...c.path] })),
     ...[...(inner?.plan ?? []), ...w.notes].map((c) => ({
       ...c,
       path: ['_walk', 'where', ...c.path]

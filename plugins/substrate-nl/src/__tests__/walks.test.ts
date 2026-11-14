@@ -303,16 +303,16 @@ describe('pick one', () => {
     expect(low.as).toBeUndefined();
   });
 
-  it('an exclusion cannot apply before a pick: the pick is dropped and the reading stays strict', () => {
+  it('an exclusion applies before a pick, through among, and the reading stays strict (#1810)', () => {
     const c = card('cards with the lowest asking price under 20').candidates[0];
-    expect(JSON.stringify(c?.frame)).not.toContain('"pick"');
-    expect(c?.dropped).toEqual([
-      {
-        span: 'lowest',
-        reason: "cannot pick the lowest Listing while the 'asking price' exclusion applies",
-        kind: 'filter'
-      }
-    ]);
+    const where = c?.frame['cards/Cert']?.params.where as
+      | { _walk: Record<string, unknown> }
+      | undefined;
+    const w = where?._walk ?? {};
+    expect(w.pick).toEqual({ min: 'price' });
+    expect(w.among).toEqual({ NOT: { placeholderPrice: { eq: true } } });
+    expect(w.where).toEqual({ price: { lt: 20 } });
+    expect(c?.dropped).toEqual([]);
     expect(c?.strict).toBe(true);
   });
 
@@ -603,15 +603,15 @@ describe('typeExcludes', () => {
     expect(walk?.plan).toContainEqual(yieldNote(['where', '_walk', 'where']));
   });
 
-  it('drops a pick on the excluded type', () => {
+  it('picks among the rows the type exclusion leaves (#1810)', () => {
     const c = parse('tests whose latest run duration is over 5');
-    expect(c?.dropped).toEqual([
-      {
-        span: 'latest',
-        reason: "cannot pick the latest Run while the 'Run default exclude' exclusion applies",
-        kind: 'filter'
-      }
-    ]);
+    const where = c?.frame['c/Test']?.params.where as
+      | { _walk: Record<string, unknown> }
+      | undefined;
+    const w = where?._walk ?? {};
+    expect(w.pick).toEqual({ latest: 'at' });
+    expect(w.among).toEqual({ NOT: { status: { in: ['skipped', 'killed'] } } });
+    expect(c?.dropped).toEqual([]);
     expect(c?.strict).toBe(true);
   });
 });

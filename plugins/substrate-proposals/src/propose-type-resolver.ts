@@ -46,7 +46,7 @@ import {
   writeInTx
 } from './engine-write.js';
 import { ProposalError } from './errors.js';
-import type { FieldSpecJson } from './field-spec-json.js';
+import { assertNotEngineInjected, type FieldSpecJson } from './field-spec-json.js';
 import { proposalLockKey, withProposalLock } from './proposal-lock.js';
 import type { RegistryStore } from './registry-store.js';
 
@@ -112,6 +112,7 @@ export function makeProposeTypeResolver(
       (ns, type) =>
         (ns === deps.namespace && type === input.typeName) || deps.registryStore.ownsType(ns, type)
     );
+    for (const name of Object.keys(input.fields)) assertNotEngineInjected(name);
     // A new type is empty, so declaring its order and indexes needs only the
     // propose capability; changing them on an existing type is `propose_index`.
     try {

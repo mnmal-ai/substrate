@@ -37,7 +37,12 @@ import {
   writeInTx
 } from './engine-write.js';
 import { ProposalError } from './errors.js';
-import { type FieldSpecJson, parseFieldSpec, stringifyFieldDef } from './field-spec-json.js';
+import {
+  assertNotEngineInjected,
+  type FieldSpecJson,
+  parseFieldSpec,
+  stringifyFieldDef
+} from './field-spec-json.js';
 import { proposalLockKey, withProposalLock } from './proposal-lock.js';
 import type { RegistryStore } from './registry-store.js';
 
@@ -90,6 +95,7 @@ export function makeProposeFieldResolver(
     assertValidFieldProposal(input.targetType, input.fieldName, input.fieldSpec, (ns, type) =>
       deps.registryStore.ownsType(ns, type)
     );
+    assertNotEngineInjected(input.fieldName);
     if (input.proposedReason !== undefined && typeof input.proposedReason !== 'string') {
       throw new ProposalError('invalid_params', "'proposedReason' must be a string", {
         param: 'proposedReason'
