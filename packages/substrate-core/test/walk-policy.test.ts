@@ -389,4 +389,34 @@ describe('walk grammar outside validated query paths', () => {
     });
     expect(reached).toBe(0);
   });
+
+  it("a virtual type's own params named like walk params reach its resolver (#1822)", async () => {
+    let got: unknown;
+    const registry = new Registry();
+    registry.register('Hit', {
+      resolver: async (_ctx, args) => {
+        got = args.params;
+        return [];
+      }
+    });
+    const engine = new Engine({
+      namespaces: new Map<string, NamespaceConfig>([['v', { registry, virtual: true }]]),
+      datasets: new MemoryDatasetRegistry(),
+      edges: new MemoryEdgesStore({ now: () => new Date('2026-04-18T00:00:00Z') })
+    });
+    const params = { count: true, aggregate: 'sum', groupBy: 'day', having: 1, offset: 2 };
+    const res = await engine.query({ frame: { 'v/Hit': { params, fields: { id: true } } }, ctx });
+    expect(res.errors).toBeUndefined();
+    expect(got).toMatchObject(params);
+    const agg = await engine.query({
+      frame: {
+        'v/Hit': { params: {}, fields: { id: true, _agg: { n: { in: 'v/X.y', count: true } } } }
+      },
+      ctx
+    });
+    expect(agg.errors?.[0]).toMatchObject({
+      code: 'walk_unsupported_ref',
+      path: ['v/Hit', 'fields', '_agg']
+    });
+  });
 });
