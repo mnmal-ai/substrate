@@ -5,7 +5,12 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { QUERY_TIMEOUT, ResolverFrameError, type WhereClause } from '@mnmal-ai/substrate-types';
+import {
+  QUERY_TIMEOUT,
+  type ReadParams,
+  ResolverFrameError,
+  type WhereClause
+} from '@mnmal-ai/substrate-types';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset } from '../src/index.js';
@@ -89,6 +94,23 @@ describe.skipIf(!POSTGRES_URL)('read timeout (pg)', () => {
       expect(err).toMatchObject({ code: QUERY_TIMEOUT, details: { timeoutMs: TIMEOUT_MS } });
     });
     expect((await ds.read('Cert', {})).rows).toEqual([]);
+  });
+
+  it('refuses walk projections and a far-row shortId walk that outlive it as query_timeout', async () => {
+    const reads: ReadParams[] = [
+      {
+        nested: { obs: { _walk: { in: `${NS}/Observation.cert` }, fields: { id: true } } } as never
+      },
+      { agg: { n: { in: `${NS}/Observation.cert`, count: true } } as never },
+      { where: { _walk: { in: `${NS}/Observation.cert`, where: { shortId: { eq: 1 } } } } as never }
+    ];
+    await underLock(async () => {
+      for (const params of reads) {
+        const err = await ds.read('Cert', params).catch((e: unknown) => e);
+        expect(err, JSON.stringify(params)).toBeInstanceOf(ResolverFrameError);
+        expect(err).toMatchObject({ code: QUERY_TIMEOUT, details: { timeoutMs: TIMEOUT_MS } });
+      }
+    });
   });
 
   it('runs a select read under the statement timeout too', async () => {
