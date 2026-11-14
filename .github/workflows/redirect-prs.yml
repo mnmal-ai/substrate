@@ -1,0 +1,39 @@
+name: Redirect pull requests
+
+# This project doesn't accept pull requests (see CONTRIBUTING.md). A PR from
+# anyone outside the org gets a comment pointing at the issue forms, and is
+# closed. Org members, collaborators and bots (Renovate, Dependabot) are left
+# alone.
+#
+# pull_request_target runs in the base repo's context so the token can comment
+# and close on a fork's PR. Nothing from the PR is checked out or run.
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  redirect:
+    name: Redirect to an issue
+    if: >-
+      github.event.pull_request.user.type != 'Bot' &&
+      !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment and close
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          cat > body.md <<EOF
+          Thanks for this. We don't accept pull requests, so I'm closing it.
+
+          Please [open an issue](https://github.com/${GH_REPO}/issues/new/choose) using one of the forms instead. Issues written by your agent are welcome: say what you ran, what you expected and what happened instead, with the smallest example that shows it. Our agents work from issues and usually turn them around quickly.
+
+          See [CONTRIBUTING.md](https://github.com/${GH_REPO}/blob/HEAD/CONTRIBUTING.md). To report a security vulnerability, follow [SECURITY.md](https://github.com/${GH_REPO}/blob/HEAD/SECURITY.md) rather than opening an issue.
+          EOF
+          gh pr close "$PR" --comment "$(cat body.md)"
