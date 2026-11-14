@@ -6,7 +6,7 @@
  */
 
 import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-dataset-memory';
-import type { RequestContext, Resolver, Row } from '@mnmal-ai/substrate-types';
+import type { IdempotencyStore, RequestContext, Resolver, Row } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
 import type { NamespaceConfig } from '../src/index.js';
 import { Engine, MemoryEdgesStore, Registry } from '../src/index.js';
@@ -82,5 +82,63 @@ describe('subscriber pushes per commit', () => {
     await done;
     await new Promise((r) => setTimeout(r, 20));
     expect(pushed.length).toBe(2);
+  });
+
+  it('pushes the committed single-frame bucket when a later array key throws (#1849)', async () => {
+    const dataset = new MemoryDataset({ namespace: NS });
+    const datasets = new MemoryDatasetRegistry();
+    datasets.set(NS, dataset);
+    const registry = new Registry();
+    const namespaces = new Map<string, NamespaceConfig>([[NS, { registry }]]);
+    // Test double: only the array slot's idempotency lookup reaches `get`, and it
+    // rejects, so the array key throws out of the mutate after the single bucket commits.
+    const store = {
+      get: () => Promise.reject(new Error('idempotency store down')),
+      put: () => Promise.resolve()
+    } as unknown as IdempotencyStore;
+    const engine = new Engine({
+      namespaces,
+      datasets,
+      edges: new MemoryEdgesStore({ now: () => new Date() }),
+      idempotency: { store },
+      metric: () => {}
+    });
+    registry.register('Todo', {
+      kind: 'type',
+      fields: { id: { kind: 'scalar', type: 'string' }, title: { kind: 'scalar', type: 'string' } },
+      resolver: (async () => []) as unknown as Resolver
+    });
+    const create: Resolver = async (_ctx, args) => {
+      const id = String((args.params as { id: string }).id);
+      const row = { id, title: id } as Row;
+      await args.dataset?.write('Todo', [row]);
+      args.onWrite?.({ ns: NS, type: 'Todo', id, operation: 'create', row });
+      return row;
+    };
+    registry.register('createTodo', { kind: 'mutation', resolver: create });
+    registry.register('createTodos', { kind: 'mutation', resolver: create });
+
+    const pushed: unknown[] = [];
+    await engine.subscribe({
+      id: 'sub',
+      frame: { [`${NS}/Todo`]: { params: {}, fields: { id: true } } },
+      ctx: ctx(),
+      onFrame: (f: { kind: string }) => {
+        if (f.kind !== 'snapshot') pushed.push(f);
+      }
+    });
+
+    await expect(
+      engine.mutate({
+        frame: {
+          [`${NS}/createTodo`]: { params: { id: 'a' } },
+          [`${NS}/createTodos`]: [{ params: { id: 'b' }, idempotencyKey: 'k' }]
+        },
+        ctx: ctx()
+      })
+    ).rejects.toThrow('idempotency store down');
+    await new Promise((r) => setTimeout(r, 20));
+    // `a` committed with the single-frame bucket; the array's throw must not swallow its push.
+    expect(pushed.length).toBe(1);
   });
 });
