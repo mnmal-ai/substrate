@@ -355,7 +355,7 @@ describe('Engine.stream — error paths (§5.5)', () => {
   });
 
   it('a param beyond the subscribe allowlist is unknown_param, resolver never invoked (#1952)', async () => {
-    for (const k of ['select', 'limit', 'cursor', 'includeDeleted']) {
+    for (const k of ['select', 'limit', 'cursor', 'includeDeleted', '_allowTableScan']) {
       let called = false;
       const local = bootstrap();
       local.registry.register('Todo', {
@@ -378,7 +378,7 @@ describe('Engine.stream — error paths (§5.5)', () => {
       expect(got.find((f) => f.kind === 'error')?.errors?.[0]).toMatchObject({
         code: 'unknown_param',
         path: ['default/Todo', 'params', k],
-        message: expect.stringContaining('Allowed: _allowTableScan, orderBy, where.')
+        message: expect.stringContaining('Allowed: orderBy, where.')
       });
     }
   });
