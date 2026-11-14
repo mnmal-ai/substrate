@@ -165,7 +165,7 @@ const CODE_MODE_INSTRUCTIONS = {
     'For an agent with a shell: run a TypeScript script whose default export receives a signed client, so many reads and writes cost one call and return one small JSON report. It composes the operations above; it adds none, and every call meets the same grants and policy.',
   when: 'a count or census over many rows, a join across types, recall followed by fetching the bodies of the hits worth reading, or a batch of writes chosen by what a read found. One lookup or one write is simpler as a direct query or mutate',
   context:
-    'the default export gets `s` with `args`, `query(frame)`, `queryAll(key, { params, fields })`, `recall({ query, namespace, type, ... })`, `mutate(payload)` and `log(...)`; return a reduced result (counts, ids, a verdict), not whole rows',
+    'the default export gets `s` with `args`, `query(frame)`, `queryAll(key, { params, fields })`, `byShortId(key, n | n[], fields?)` (rows by shortId, in input order; throws naming any missing), `recall({ query, namespace, type, ... })`, `mutate(payload)` and `log(...)`; return a reduced result (counts, ids, a verdict), not whole rows',
   notes: [
     'signs from SUBSTRATE_URL, SUBSTRATE_AGENT_KEY_ID and SUBSTRATE_AGENT_KEY_PATH, and refuses to run unsigned',
     'read-only by default: `mutate` throws unless `--dry-run` (records each payload and sends nothing) or `--write` (sends up to `--max-writes` frames, default 50). Dry-run first, read the recorded mutations, then write',

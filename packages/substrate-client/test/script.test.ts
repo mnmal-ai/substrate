@@ -207,3 +207,53 @@ describe('s.schema', () => {
     expect(t).toMatchObject({ ok: false, error: "schema: unknown type 'ns/Nope'" });
   });
 });
+
+describe('s.byShortId', () => {
+  const ROWS = [
+    { id: 'a', shortId: 1, title: 'one' },
+    { id: 'b', shortId: 2, title: 'two' },
+    { id: 'c', shortId: 3, title: 'three' }
+  ];
+  type ShortIdFrame = { params: { where: { shortId: { eq?: number; in?: number[] } } } };
+  // Answers a `shortId` eq/in filter from ROWS, in store order rather than input order.
+  const store = (seen: Record<string, unknown>[] = []) =>
+    fakeClient((frame) => {
+      seen.push(frame);
+      const [key, f] = Object.entries(frame)[0] as [string, ShortIdFrame];
+      const p = f.params.where.shortId;
+      const ids = p.in ?? [p.eq];
+      return { data: { [key]: ROWS.filter((r) => ids.includes(r.shortId)) } };
+    }).client;
+
+  it('resolves one shortId to its row through an eq filter', async () => {
+    const seen: Record<string, unknown>[] = [];
+    const r = await run(async (s) => s.byShortId('ns/Todo', 2), store(seen));
+    expect(r.result).toEqual(ROWS[1]);
+    expect(seen[0]).toEqual({ 'ns/Todo': { params: { where: { shortId: { eq: 2 } } } } });
+  });
+
+  it('returns an array in input order through an in filter, adding shortId to fields', async () => {
+    const seen: Record<string, unknown>[] = [];
+    const r = await run(
+      async (s) => (await s.byShortId('ns/Todo', [3, 1, 3], { title: true })).map((t) => t.title),
+      store(seen)
+    );
+    expect(r.result).toEqual(['three', 'one', 'three']);
+    expect(seen[0]).toEqual({
+      'ns/Todo': {
+        params: { where: { shortId: { in: [3, 1] } } },
+        fields: { title: true, shortId: true }
+      }
+    });
+  });
+
+  it('throws naming every missing shortId', async () => {
+    const r = await run(async (s) => s.byShortId('ns/Todo', [1, 8, 9]), store());
+    expect(r).toMatchObject({ ok: false, error: 'ns/Todo: no row with shortId 8, 9' });
+  });
+
+  it('answers an empty array without a query', async () => {
+    const r = await run(async (s) => s.byShortId('ns/Todo', []), store());
+    expect(r).toMatchObject({ ok: true, result: [], stats: { queries: 0 } });
+  });
+});

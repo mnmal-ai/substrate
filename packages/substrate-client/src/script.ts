@@ -54,6 +54,21 @@ export interface ScriptContext {
     key: string,
     frame: { params?: Record<string, unknown>; fields?: unknown }
   ): Promise<Record<string, unknown>[]>;
+  /**
+   * The rows with these shortIds, through `where: { shortId: { eq | in } }`.
+   * One number gives one row; an array gives the rows in input order. Throws
+   * naming every shortId with no row. `fields` gains `shortId` when given.
+   */
+  byShortId(
+    key: string,
+    n: number,
+    fields?: Record<string, unknown>
+  ): Promise<Record<string, unknown>>;
+  byShortId(
+    key: string,
+    n: readonly number[],
+    fields?: Record<string, unknown>
+  ): Promise<Record<string, unknown>[]>;
   /** Recall hits, best first, through the `recall/Hit` frame. */
   recall(input: ScriptRecallInput): Promise<ScriptRecallHit[]>;
   /**
@@ -143,28 +158,55 @@ export async function runScript(
     return env;
   };
 
+  async function queryAll(
+    key: string,
+    frame: { params?: Record<string, unknown>; fields?: unknown }
+  ): Promise<Record<string, unknown>[]> {
+    const rows: Record<string, unknown>[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < maxPages; page++) {
+      const params = { ...frame.params, ...(cursor !== undefined ? { cursor } : {}) };
+      stats.queries++;
+      const env = await client.query({ [key]: { ...frame, params } } as QualifiedFrame);
+      assertKeys({ [key]: frame } as QualifiedFrame, env, 'query');
+      const data = env.data[key];
+      rows.push(...((Array.isArray(data) ? data : [data]) as Record<string, unknown>[]));
+      const p = env._pagination?.[key];
+      if (p?.hasMore !== true) return rows;
+      if (p.nextCursor === undefined) throw new Error(`${key}: hasMore with no nextCursor`);
+      cursor = p.nextCursor;
+    }
+    throw new Error(`${key}: still hasMore after ${maxPages} pages`);
+  }
+
+  async function byShortId(
+    key: string,
+    n: number | readonly number[],
+    fields?: Record<string, unknown>
+  ): Promise<Record<string, unknown> | Record<string, unknown>[]> {
+    const wanted = Array.isArray(n) ? n : [n];
+    if (wanted.length === 0) return [];
+    const unique = [...new Set(wanted)];
+    const rows = await queryAll(key, {
+      params: {
+        where: { shortId: unique.length === 1 ? { eq: unique[0] } : { in: unique } }
+      },
+      ...(fields !== undefined ? { fields: { ...fields, shortId: true } } : {})
+    });
+    const byId = new Map(rows.map((r) => [Number(r.shortId), r]));
+    const missing = unique.filter((id) => !byId.has(id));
+    if (missing.length > 0) throw new Error(`${key}: no row with shortId ${missing.join(', ')}`);
+    const found = wanted.map((id) => byId.get(id) as Record<string, unknown>);
+    return Array.isArray(n) ? found : (found[0] as Record<string, unknown>);
+  }
+
   const ctx: ScriptContext = {
     kid,
     mode,
     args: Object.freeze({ ...args }),
     query,
-    async queryAll(key, frame) {
-      const rows: Record<string, unknown>[] = [];
-      let cursor: string | undefined;
-      for (let page = 0; page < maxPages; page++) {
-        const params = { ...frame.params, ...(cursor !== undefined ? { cursor } : {}) };
-        stats.queries++;
-        const env = await client.query({ [key]: { ...frame, params } } as QualifiedFrame);
-        assertKeys({ [key]: frame } as QualifiedFrame, env, 'query');
-        const data = env.data[key];
-        rows.push(...((Array.isArray(data) ? data : [data]) as Record<string, unknown>[]));
-        const p = env._pagination?.[key];
-        if (p?.hasMore !== true) return rows;
-        if (p.nextCursor === undefined) throw new Error(`${key}: hasMore with no nextCursor`);
-        cursor = p.nextCursor;
-      }
-      throw new Error(`${key}: still hasMore after ${maxPages} pages`);
-    },
+    queryAll,
+    byShortId: byShortId as ScriptContext['byShortId'],
     async recall({ query: to, row, ...params }) {
       // The frame drops `row` unless `fields` names it, so the handle default sends no `fields`.
       const fields =

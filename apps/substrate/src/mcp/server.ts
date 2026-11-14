@@ -698,7 +698,8 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
           'a census that must page, a join, recall-then-hydrate, a batch of writes chosen by a read). ' +
           '`script` is a JS/TS module whose default export is `async (s) => result`; type syntax is stripped. ' +
           '`s` has: kid, mode, args; query(frame) (throws on a refused frame); queryAll(key, { params, fields }) ' +
-          '(pages to the end); recall({ query, namespace, type, k?, where?, row? }); schema(namespace?, type?); ' +
+          '(pages to the end); byShortId(key, n | n[], fields?) (rows in input order; throws naming any missing); ' +
+          'recall({ query, namespace, type, k?, where?, row? }); schema(namespace?, type?); ' +
           'mutate(frame); log(...). Return counts, ids and short handles, not whole rows. ' +
           'Modes: "read" (default) refuses mutate; "dry-run" records each mutate payload in the report without ' +
           'sending it; "write" sends up to maxWrites frames (default 50; an array element counts one). ' +
