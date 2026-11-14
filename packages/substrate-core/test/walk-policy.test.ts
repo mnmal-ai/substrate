@@ -6,15 +6,25 @@
 
 import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-dataset-memory';
 import { requireCapability, row } from '@mnmal-ai/substrate-policy';
-import type { Policy, ResolverArgs } from '@mnmal-ai/substrate-types';
+import type { Policy, RegistryEntry, ResolverArgs } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
 import { Engine, MemoryEdgesStore, type NamespaceConfig, Registry } from '../src/index.js';
 import { hopResolver, walkedTypes } from '../src/walk-types.js';
 
 const allow: Policy = () => ({ allow: true });
 
-function build(policies: { Thing?: Policy; Part?: Policy; Note?: Policy } = {}) {
-  const registry = new Registry();
+/** A registry whose `hidden` type resolves but is absent from the published schema. */
+class HidingRegistry extends Registry {
+  constructor(private readonly hidden: string) {
+    super();
+  }
+  override *all(): IterableIterator<[string, RegistryEntry]> {
+    for (const e of super.all()) if (e[0] !== this.hidden) yield e;
+  }
+}
+
+function build(policies: { Thing?: Policy; Part?: Policy; Note?: Policy } = {}, hidden?: string) {
+  const registry = hidden === undefined ? new Registry() : new HidingRegistry(hidden);
   let reached = 0;
   const resolver = async () => {
     reached++;
@@ -76,6 +86,19 @@ describe('policy on walked types', () => {
         path: ['ns/Thing', 'where', '_walk']
       })
     ]);
+    expect(reached()).toBe(0);
+  });
+
+  it('a walk from a type absent from the schema is refused as walk_unknown_ref (#1824)', async () => {
+    const { engine, reached } = build({}, 'Thing');
+    for (const [frame, path] of [
+      [walkFrame, ['ns/Thing', 'where', '_walk']],
+      [aggFrame, ['ns/Thing', 'fields', '_agg']]
+    ] as const) {
+      const res = await engine.query({ frame, ctx });
+      expect(res.data).not.toHaveProperty('ns/Thing');
+      expect(res.errors).toEqual([expect.objectContaining({ code: 'walk_unknown_ref', path })]);
+    }
     expect(reached()).toBe(0);
   });
 
@@ -365,5 +388,35 @@ describe('walk grammar outside validated query paths', () => {
       path: ['v/Hit', 'where', '_walk']
     });
     expect(reached).toBe(0);
+  });
+
+  it("a virtual type's own params named like walk params reach its resolver (#1822)", async () => {
+    let got: unknown;
+    const registry = new Registry();
+    registry.register('Hit', {
+      resolver: async (_ctx, args) => {
+        got = args.params;
+        return [];
+      }
+    });
+    const engine = new Engine({
+      namespaces: new Map<string, NamespaceConfig>([['v', { registry, virtual: true }]]),
+      datasets: new MemoryDatasetRegistry(),
+      edges: new MemoryEdgesStore({ now: () => new Date('2026-04-18T00:00:00Z') })
+    });
+    const params = { count: true, aggregate: 'sum', groupBy: 'day', having: 1, offset: 2 };
+    const res = await engine.query({ frame: { 'v/Hit': { params, fields: { id: true } } }, ctx });
+    expect(res.errors).toBeUndefined();
+    expect(got).toMatchObject(params);
+    const agg = await engine.query({
+      frame: {
+        'v/Hit': { params: {}, fields: { id: true, _agg: { n: { in: 'v/X.y', count: true } } } }
+      },
+      ctx
+    });
+    expect(agg.errors?.[0]).toMatchObject({
+      code: 'walk_unsupported_ref',
+      path: ['v/Hit', 'fields', '_agg']
+    });
   });
 });

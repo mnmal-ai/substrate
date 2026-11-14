@@ -1719,7 +1719,12 @@ export class Engine {
         return null;
       }
     } else if (isVirtual) {
-      const walkPath = walkGrammarPath(frame as Record<string, unknown>);
+      // Only where and fields: a virtual resolver's own params may be named
+      // count, aggregate, groupBy, having or offset (#1822).
+      const walkPath = walkGrammarPath({
+        fields: frame.fields,
+        params: { where: frame.params?.where }
+      });
       if (walkPath) {
         addError(
           envelope,
