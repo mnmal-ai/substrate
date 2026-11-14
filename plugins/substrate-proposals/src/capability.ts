@@ -3,11 +3,18 @@
  */
 
 import { requireCapability } from '@mnmal-ai/substrate-policy';
-import type { Policy } from '@mnmal-ai/substrate-types';
+import {
+  type Dataset,
+  type Policy,
+  type Registry,
+  ResolverFrameError
+} from '@mnmal-ai/substrate-types';
 
 export const DEFAULT_PROPOSE_CAPABILITY = 'substrate.propose';
 /** Changes a type's indexes or natural order (`propose_index`); separate from proposing schema. */
 export const DEFAULT_INDEX_CAPABILITY = 'substrate.index';
+/** What `drop_type` / `drop_namespace` require in the target namespace (the compose default). */
+export const DEFAULT_DROP_CAPABILITY = 'admin';
 
 /**
  * Create a policy that requires the given capability to be present in the
@@ -59,4 +66,56 @@ export function makeIndexPolicy(capability: string = DEFAULT_INDEX_CAPABILITY): 
     const target = args.params?.namespace;
     return gate(typeof target === 'string' ? { ...ctx, namespace: target } : ctx, args);
   };
+}
+
+/** Whether `typeName` has rows, archived and tombstoned ones included (purged ones are gone). */
+export async function typeHasRows(dataset: Dataset, typeName: string): Promise<boolean> {
+  return (await dataset.read(typeName, { includeDeleted: true, limit: 1 })).rows.length > 0;
+}
+
+/**
+ * Deleting or archiving a TypeProposal drops its type's definition at the next
+ * boot, so for a type with storage it needs the drop capability, as
+ * `drop_type` does; a proposal for a type with no rows stays the propose
+ * capability's alone (#1792). The guarded entries lose `batch`, so a mutate
+ * array runs per element through the guard, and `updateMany` / `deleteMany`
+ * refuse once their single-row entry is replaced. An empty capability opts out.
+ */
+export function gateTypeProposalRemoval(
+  registry: Registry,
+  dropCapability: string = DEFAULT_DROP_CAPABILITY
+): void {
+  if (dropCapability === '') return;
+  const gate = makeProposePolicy(dropCapability);
+  const removes: Record<string, (params: Record<string, unknown>) => boolean> = {
+    deleteTypeProposal: () => true,
+    updateTypeProposal: (params) => params.archived === true
+  };
+  for (const [key, isRemoval] of Object.entries(removes)) {
+    const entry = registry.get(key);
+    if (entry === undefined) continue;
+    const { batch: _batch, resolver, ...rest } = entry;
+    registry.replace(key, {
+      ...rest,
+      resolver: async (ctx, args) => {
+        const params = args.params ?? {};
+        const id = params.id;
+        if (isRemoval(params) && typeof id === 'string' && args.dataset !== undefined) {
+          const { rows } = await args.dataset.read('TypeProposal', { id, limit: 1 });
+          const typeName = rows[0]?.typeName;
+          if (typeof typeName === 'string' && (await typeHasRows(args.dataset, typeName))) {
+            const decision = gate(ctx, args);
+            if (!decision.allow) {
+              throw new ResolverFrameError(
+                'policy_denied',
+                `${key}: '${typeName}' has stored rows; removing its proposal drops the type, which needs '${dropCapability}' as drop_type does`,
+                { required: `${ctx.namespace}:${dropCapability}` }
+              );
+            }
+          }
+        }
+        return resolver(ctx, args);
+      }
+    });
+  }
 }

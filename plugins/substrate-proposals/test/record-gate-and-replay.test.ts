@@ -190,3 +190,85 @@ describe('proposal records', () => {
     expect(replayed.code?.indexed).toBe(true);
   });
 });
+
+describe('removing a TypeProposal (#1792)', () => {
+  const str = JSON.stringify({ t: { kind: 'scalar', type: 'string' } });
+  const propose = ['read', 'mutate', 'substrate.propose'];
+
+  async function seeded(withRows: boolean) {
+    const ds = new MemoryDataset({ namespace: 'app' });
+    await ds.write('TypeProposal', [row({ id: 'tp', typeName: 'Stored', fieldsJson: str })]);
+    if (withRows) await ds.write('Stored', [{ id: 's1', t: 'x' }]);
+    return { ds, ...(await boot(ds)) };
+  }
+
+  const removals: Array<[string, Record<string, unknown>]> = [
+    ['app/deleteTypeProposal', { id: 'tp' }],
+    ['app/updateTypeProposal', { id: 'tp', archived: true }]
+  ];
+
+  it('of a type with storage needs the drop capability', async () => {
+    for (const [key, params] of removals) {
+      const { ds, engine } = await seeded(true);
+      const denied = await engine.mutate({
+        frame: { [key]: { params, fields: { id: true } } },
+        ctx: ctx(propose)
+      });
+      expect(denied.errors?.[0]?.code).toBe('policy_denied');
+      // An array takes the same guard.
+      const batched = await engine.mutate({
+        frame: { [key]: [{ params, fields: { id: true } }] },
+        ctx: ctx(propose)
+      });
+      expect(batched.errors?.[0]?.code).toBe('policy_denied');
+      expect((await ds.read('TypeProposal', { id: 'tp' })).rows[0]?.archived).toBe(false);
+      const allowed = await engine.mutate({
+        frame: { [key]: { params, fields: { id: true } } },
+        ctx: ctx([...propose, 'admin'])
+      });
+      expect(allowed.errors).toBeUndefined();
+    }
+  });
+
+  it('by filter is refused, so it cannot route around the guard', async () => {
+    const { engine } = await seeded(true);
+    for (const [key, params] of [
+      ['app/deleteManyTypeProposal', { where: { typeName: { eq: 'Stored' } } }],
+      [
+        'app/updateManyTypeProposal',
+        { where: { typeName: { eq: 'Stored' } }, set: { archived: true } }
+      ]
+    ] as const) {
+      const env = await engine.mutate({
+        frame: { [key]: { params, fields: { count: true } } },
+        ctx: ctx(propose)
+      });
+      expect(env.errors?.[0]).toBeDefined();
+    }
+  });
+
+  it('of a type with no storage needs only the propose capability', async () => {
+    for (const [key, params] of removals) {
+      const { engine } = await seeded(false);
+      const env = await engine.mutate({
+        frame: { [key]: { params, fields: { id: true } } },
+        ctx: ctx(propose)
+      });
+      expect(env.errors).toBeUndefined();
+    }
+  });
+
+  it('other updates still need only the propose capability', async () => {
+    const { engine } = await seeded(true);
+    const env = await engine.mutate({
+      frame: {
+        'app/updateTypeProposal': {
+          params: { id: 'tp', proposedReason: 'clarified' },
+          fields: { id: true }
+        }
+      },
+      ctx: ctx(propose)
+    });
+    expect(env.errors).toBeUndefined();
+  });
+});
