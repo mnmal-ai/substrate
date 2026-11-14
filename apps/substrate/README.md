@@ -51,7 +51,7 @@ Posts the question to `POST /substrate/v1/nl` on `SUBSTRATE_URL` and prints the 
 substrate run <script.mts> [--args <json>] [--dry-run | --write] [--max-writes <n>] [--out <file>]
 ```
 
-Imports the script and calls its default export with a `ScriptContext` (`args`, `query`, `queryAll`, `recall`, `mutate`, `log`), so one call can chain many reads and writes and return one result. The client is signed from `SUBSTRATE_URL`, `SUBSTRATE_AGENT_KEY_ID` and `SUBSTRATE_AGENT_KEY_PATH`; an unsigned run is refused.
+Imports the script and calls its default export with a `ScriptContext` (`args`, `query`, `queryAll`, `byShortId`, `recall`, `mutate`, `log`), so one call can chain many reads and writes and return one result. The client is signed from `SUBSTRATE_URL`, `SUBSTRATE_AGENT_KEY_ID` and `SUBSTRATE_AGENT_KEY_PATH`; an unsigned run is refused.
 
 ```ts
 import type { ScriptContext } from '@mnmal-ai/substrate/client';
@@ -72,7 +72,9 @@ Guardrails:
 - **A rejected frame throws.** A query whose key is missing from `data`, or a mutate the server refused, fails the run with the server's error rather than reading as empty.
 - **Truncation is reported.** `query` adds a warning when a result has `hasMore`; `queryAll` pages to the end.
 
-`s.recall({ query, namespace, type, k?, threshold?, where?, row? })` returns hits best first, through the `recall/Hit` frame. Each hit's `row` is `id` plus the handle fields; pass `row: { body: true }` (or `true`) for more, on the hits you will read.
+`s.byShortId('cortext/Todo', 1787)` returns that row, and `s.byShortId('cortext/Todo', [1787, 1785], { title: true })` returns the rows in input order, through `where: { shortId: { eq | in } }`. It throws naming every shortId with no row, rather than returning fewer rows than asked for.
+
+`s.recall({ query, namespace, type, k?, threshold?, where?, row? })` returns hits best first, through the `recall/Hit` frame, typed as `RecallHit` (exported beside `ScriptContext`). Each hit's `row` is `id` plus the handle fields (`name`, `title`, `topic`, `synopsis`, `description`, each typed `string | undefined`, so `h.row.name` needs no cast); pass `row: { body: true }` (or `true`) for more, on the hits you will read.
 
 `--args` takes a JSON object, which the script reads as `s.args` (`{}` when omitted), so one script serves many calls.
 

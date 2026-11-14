@@ -147,8 +147,8 @@ export function schemaForNamespaceRoute(engine: Engine): HttpHandler {
   };
 }
 
-/** Projections available on the scoped type route. */
-const TYPE_SHAPES = ['full', 'fields'] as const;
+/** Projections available on the scoped type route; the first is the default. */
+const TYPE_SHAPES = ['compact', 'full', 'fields'] as const;
 
 /**
  * GET /substrate/v1/schema/:namespace/:type — one type's write contract.
@@ -157,10 +157,13 @@ const TYPE_SHAPES = ['full', 'fields'] as const;
  * `create<Type>` / `update<Type>` / … param + return shapes), so a caller
  * learns exactly what a write may carry in one cheap round-trip.
  *
- * `?shape=fields` drops the mutations, which for autoCRUD types restate the
- * field block five times over, and returns only their names. An unknown
- * `shape` is refused rather than ignored, so a wrong guess cannot look like
- * it worked.
+ * By default (`compact`) the generated autoCRUD mutations name the type
+ * instead of restating its field block (`createTodo: { params: 'Todo fields',
+ * returns: 'Todo' }`), and `mutationRefs` says how to read those names. Custom
+ * mutations keep their full signatures. `?shape=full` inlines every field
+ * block, as the namespace's published schema does. `?shape=fields` drops the
+ * mutations and returns only their names. An unknown `shape` is refused
+ * rather than ignored, so a wrong guess cannot look like it worked.
  */
 export function schemaForTypeRoute(engine: Engine): HttpHandler {
   return async (req) => {
@@ -169,14 +172,14 @@ export function schemaForTypeRoute(engine: Engine): HttpHandler {
     if (ns === undefined || ns === '' || type === undefined || type === '') {
       return jsonResponse(400, { error: 'namespace and type path segments are required' });
     }
-    const shape = req.query.shape ?? 'full';
+    const shape = req.query.shape ?? 'compact';
     if (!(TYPE_SHAPES as readonly string[]).includes(shape)) {
       return jsonResponse(400, {
         error: `unknown shape '${shape}'`,
         detail:
           "The `shape` query parameter selects a projection of this type's contract. An unrecognised value is refused rather than ignored, so a wrong guess cannot look like it worked.",
         allowedShapes: [...TYPE_SHAPES],
-        hint: `Use GET /substrate/v1/schema/${ns}/${type}?shape=fields for the field defs alone, or omit \`shape\` for the full write contract.`
+        hint: `Use GET /substrate/v1/schema/${ns}/${type}?shape=fields for the field defs alone, ?shape=full for every mutation with its field block inlined, or omit \`shape\` for the compact write contract.`
       });
     }
     let schema: ReturnType<Engine['schemaFor']>;
@@ -243,13 +246,74 @@ export function schemaForTypeRoute(engine: Engine): HttpHandler {
     // `mutationNames` rather than nothing: a caller that asked for fields still
     // has to know which mutations exist to write at all, and the names cost a
     // line where the inlined contracts cost five copies of the field block.
-    return jsonResponse(
-      200,
-      shape === 'fields'
-        ? { ...withHops, mutationNames: Object.keys(mutations).sort() }
-        : { ...withHops, mutations }
+    if (shape === 'fields') {
+      return jsonResponse(200, { ...withHops, mutationNames: Object.keys(mutations).sort() });
+    }
+    if (shape === 'full') return jsonResponse(200, { ...withHops, mutations });
+    const compact = Object.fromEntries(
+      Object.entries(mutations).map(([name, def]) => [
+        name,
+        GENERATED_VERBS.test(name.slice(0, -type.length)) && name.endsWith(type)
+          ? compactMutation(def, type, typeSchema.fields)
+          : def
+      ])
     );
+    return jsonResponse(200, {
+      ...withHops,
+      mutations: compact,
+      mutationRefs: mutationRefsLegend(type)
+    });
   };
+}
+
+/** The verbs autoCRUD generates mutations under: `<verb><Type>`. */
+const GENERATED_VERBS = /^(get|create|update|delete|updateMany|deleteMany|purge)$/;
+
+/** How to read the type names a compact mutation carries in place of a field block. */
+function mutationRefsLegend(type: string): string {
+  return (
+    `A string in place of a signature stands for ${type}'s \`fields\` block: '${type}' is one row ` +
+    `as \`fields\` declares it ('${type} | null' when no row has the id); '${type} fields' is ` +
+    `\`fields\` itself, each field as declared; 'id, plus any subset of ${type} fields' and ` +
+    `'any subset of ${type} fields' are patches. ?shape=full inlines every block.`
+  );
+}
+
+/** A compact mutation: a piece of its signature, or the type reference that replaced it. */
+type CompactPiece = FieldDef | string;
+
+/**
+ * Replaces each place a generated mutation restates the type's field block
+ * with the type's name. Structural, not name-based: a piece that differs from
+ * the field block (a plugin's replacement `createTodo`) is kept as declared.
+ */
+function compactMutation(
+  def: MutationSchema,
+  type: string,
+  fields: Record<string, FieldDef>
+): { params: Record<string, CompactPiece> | string; returns: CompactPiece } & Omit<
+  MutationSchema,
+  'params' | 'returns'
+> {
+  const isRow = (f: FieldDef): boolean =>
+    f.kind === 'struct' && isDeepStrictEqual(f.fields, fields);
+  const { id, ...rest } = def.params;
+  const params: Record<string, CompactPiece> | string = isDeepStrictEqual(def.params, fields)
+    ? `${type} fields`
+    : id !== undefined && isDeepStrictEqual(rest, fields)
+      ? `id, plus any subset of ${type} fields`
+      : Object.fromEntries(
+          Object.entries(def.params).map(([k, f]) => [
+            k,
+            isRow(f) ? `any subset of ${type} fields` : f
+          ])
+        );
+  const returns = isRow(def.returns)
+    ? def.returns.nullable === true
+      ? `${type} | null`
+      : type
+    : def.returns;
+  return { ...def, params, returns };
 }
 
 /**

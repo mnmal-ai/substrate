@@ -611,10 +611,11 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
           "for one namespace, or `namespace` + `type` for a single type's write " +
           'contract ({ fields, mutations }). Mine the scoped shape BEFORE a ' +
           'create/update so you send only declared fields — autoCRUD rejects ' +
-          'undeclared fields with `unknown_field`. CHEAPER STILL: add ' +
-          '`shape: "fields"` when you only need the type\'s field names and ' +
-          'kinds — for an autoCRUD type the mutations restate the field block ' +
-          'five times over, so the default answer costs about 6x the question.',
+          'undeclared fields with `unknown_field`. The type answer is compact: ' +
+          "generated CRUD names the type ('Todo fields', 'Todo') instead of " +
+          'restating its field block; `mutationRefs` says how to read it. ' +
+          '`shape: "fields"` drops the mutations to their names; `shape: "full"` ' +
+          'inlines every block (several times larger).',
         inputSchema: {
           namespace: z
             .string()
@@ -629,10 +630,10 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
               'Scope to one type within `namespace`, e.g. "Todo" — returns its field defs + create/update param shapes. Requires `namespace`.'
             ),
           shape: z
-            .enum(['full', 'fields'])
+            .enum(['compact', 'full', 'fields'])
             .optional()
             .describe(
-              'Projection of the type contract; requires `namespace` + `type`. "full" (default) inlines every mutation\'s params and returns. "fields" returns the field defs plus `mutationNames`, about a sixth the size — use it to answer "what fields does this type have".'
+              'Projection of the type contract; requires `namespace` + `type`. "compact" (default) prints the field block once and names the type in generated CRUD. "full" inlines every mutation\'s params and returns. "fields" returns the field defs plus `mutationNames` — use it to answer "what fields does this type have".'
             ),
           full: z
             .boolean()
@@ -697,7 +698,8 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
           'a census that must page, a join, recall-then-hydrate, a batch of writes chosen by a read). ' +
           '`script` is a JS/TS module whose default export is `async (s) => result`; type syntax is stripped. ' +
           '`s` has: kid, mode, args; query(frame) (throws on a refused frame); queryAll(key, { params, fields }) ' +
-          '(pages to the end); recall({ query, namespace, type, k?, where?, row? }); schema(namespace?, type?); ' +
+          '(pages to the end); byShortId(key, n | n[], fields?) (rows in input order; throws naming any missing); ' +
+          'recall({ query, namespace, type, k?, where?, row? }); schema(namespace?, type?); ' +
           'mutate(frame); log(...). Return counts, ids and short handles, not whole rows. ' +
           'Modes: "read" (default) refuses mutate; "dry-run" records each mutate payload in the report without ' +
           'sending it; "write" sends up to maxWrites frames (default 50; an array element counts one). ' +
