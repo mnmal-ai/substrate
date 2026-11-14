@@ -7,7 +7,8 @@
  *
  * Returns the columns `substrate-admin list` renders plus `id`; `publicKey` is
  * omitted. `hasMore`/`nextCursor` pass through so a truncated read is never
- * silent. Revoked rows are excluded, and `filter: 'active'` says so.
+ * silent. By default revoked rows are excluded, and `filter: 'active'` says so;
+ * `?filter=all` includes them and adds `revokedAt` (null on a live key) to every row.
  */
 
 import type { Engine } from '@mnmal-ai/substrate-core';
@@ -37,9 +38,15 @@ export function keysListRoute(engine: Engine, opts: KeysRouteOptions): HttpHandl
       limit = n;
     }
 
+    const rawFilter = req.query.filter;
+    const filter = rawFilter === undefined || rawFilter === '' ? 'active' : rawFilter;
+    if (filter !== 'active' && filter !== 'all') {
+      return badRequest('invalid_filter', "filter must be 'active' or 'all'");
+    }
+
     const keyFrame = `${SYSTEM_NAMESPACE}/${KEY_TYPE}`;
     const params: Record<string, unknown> = {
-      where: { revokedAt: { eq: null } },
+      ...(filter === 'active' ? { where: { revokedAt: { eq: null } } } : {}),
       limit
     };
     const cursor = req.query.cursor;
@@ -56,6 +63,7 @@ export function keysListRoute(engine: Engine, opts: KeysRouteOptions): HttpHandl
             algorithm: true,
             namespaces: true,
             capabilities: true,
+            ...(filter === 'all' ? { revokedAt: true } : {}),
             _metadata: true
           }
         }
@@ -85,7 +93,7 @@ export function keysListRoute(engine: Engine, opts: KeysRouteOptions): HttpHandl
 
     const page = envelope._pagination?.[keyFrame];
     return jsonResponse(200, {
-      filter: 'active',
+      filter,
       keys: rows.map((row) => {
         const meta = row._metadata as RowMetadata | undefined;
         return {
@@ -95,11 +103,17 @@ export function keysListRoute(engine: Engine, opts: KeysRouteOptions): HttpHandl
           algorithm: typeof row.algorithm === 'string' ? row.algorithm : '',
           namespaces: typeof row.namespaces === 'string' ? row.namespaces : '',
           capabilities: typeof row.capabilities === 'string' ? row.capabilities : '',
-          createdAt: meta?.createdAt ?? ''
+          createdAt: meta?.createdAt ?? '',
+          ...(filter === 'all' ? { revokedAt: revokedAtOf(row.revokedAt) } : {})
         };
       }),
       hasMore: page?.hasMore ?? false,
       ...(page?.nextCursor !== undefined ? { nextCursor: page.nextCursor } : {})
     });
   };
+}
+
+function revokedAtOf(v: unknown): string | null {
+  if (v instanceof Date) return v.toISOString();
+  return typeof v === 'string' && v !== '' ? v : null;
 }

@@ -2,13 +2,14 @@ import { type AdminKeyRow, AuthError, type SubstrateClient } from '@mnmal-ai/sub
 import { createApp } from '@mnmal-ai/surface-core';
 import { marathon } from '@mnmal-ai/surface-theme';
 import { render } from 'ink-testing-library';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createAdminSession } from '../src/admin/session.js';
 import type { TuiDeps } from '../src/deps.js';
 import { compactGrant } from '../src/keys/grant.js';
 import { keysModule } from '../src/keys/module.js';
 import { noAdmin, noDash } from './_fakes.js';
 
+const until = (assert: () => void) => vi.waitFor(assert, { timeout: 2000, interval: 20 });
 const tick = (ms = 40) => new Promise((r) => setTimeout(r, ms));
 const ENTER = '\r';
 const DOWN = '\u001B[B';
@@ -161,6 +162,71 @@ describe('/keys', () => {
     expect(app.frame()).toContain('a-agent@Box');
     expect(app.frame()).not.toContain('z-secret@Box');
     expect(app.frame()).toContain('keys · 2 active · agent');
+    app.unmount();
+  });
+});
+
+describe('/keys revoked toggle (#1914)', () => {
+  const GONE: AdminKeyRow = {
+    ...row('c-old@Box', 'journal'),
+    revokedAt: '2026-11-01T10:00:00.000Z'
+  };
+  const LIVE = ROWS.map((r) => ({ ...r, revokedAt: null }));
+
+  it('r re-reads with filter all and lists revoked rows with their revokedAt; r again hides them', async () => {
+    const filters: (string | undefined)[] = [];
+    const app = start({
+      keys: async (_signal, filter) => {
+        filters.push(filter);
+        return filter === 'all' ? [...LIVE, GONE] : ROWS;
+      }
+    });
+    await open(app);
+    expect(app.frame()).toContain('r show revoked');
+    expect(app.frame()).not.toContain('c-old@Box');
+    app.stdin.write('r');
+    await until(() => expect(app.frame()).toContain('revoked 2026-11-01T10:00:00.000Z'));
+    expect(app.frame()).toMatch(/c-old@Box\s+c-old key\s+revoked 2026-11-01/);
+    expect(app.frame()).toContain('keys · 2 active · 1 revoked · agent');
+    expect(app.frame()).toContain('r hide revoked');
+    app.stdin.write('r');
+    await until(() => expect(app.frame()).not.toContain('c-old@Box'));
+    expect(filters).toEqual(['active', 'all', 'active']);
+    app.unmount();
+  });
+
+  it('unlocked, a revoked row is read-only: enter shows its grant, x does nothing', async () => {
+    const seen: (string | undefined)[] = [];
+    const admin = createAdminSession({
+      endpoint: 'http://h',
+      idleMs: 60_000,
+      makeClient: () =>
+        ({
+          admin: {
+            keys: async (o?: { filter?: string }) => {
+              seen.push(o?.filter);
+              return o?.filter === 'all' ? [GONE, ...LIVE] : ROWS;
+            }
+          },
+          close: async () => {}
+        }) as unknown as SubstrateClient
+    });
+    admin.unlock('b-admin@Box', () => 't');
+    const app = start({ admin });
+    await open(app);
+    app.stdin.write('r');
+    await until(() => expect(app.frame()).toContain('c-old@Box'));
+    expect(seen).toEqual(['active', 'all']);
+    // The cursor stays on the row it was on (a-agent), so move up to the revoked one.
+    app.stdin.write('k');
+    await tick();
+    app.stdin.write('x');
+    await tick();
+    expect(app.frame()).not.toContain('revoke c-old@Box');
+    expect(app.frame()).toContain('keys · 2 active · 1 revoked · admin');
+    app.stdin.write(ENTER);
+    await until(() => expect(app.frame()).toContain('revoked 2026-11-01T10:00:00.000Z'));
+    expect(app.frame()).toContain('backspace back');
     app.unmount();
   });
 });

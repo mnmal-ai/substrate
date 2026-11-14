@@ -31,8 +31,8 @@ export interface TuiDeps {
   readonly adminEnv: AdminEnv;
   /** The agent identity's Authorization value, or null when anonymous. */
   readonly agentAuthorization: (() => string) | null;
-  /** GET /substrate/v1/_system/keys as the AGENT identity (403 unless its grant confers admin). */
-  keys(signal?: AbortSignal): Promise<AdminKeyRow[]>;
+  /** GET /substrate/v1/_system/keys as the AGENT identity (403 unless its grant confers admin). `all` includes revoked keys. */
+  keys(signal?: AbortSignal, filter?: 'active' | 'all'): Promise<AdminKeyRow[]>;
 }
 
 /** An HTTP failure from `getJson`: `status` is what `NetworkError` and `AuthError` also carry. */
@@ -108,7 +108,8 @@ export function makeDeps(
       ...(env.HOME !== undefined ? { HOME: env.HOME } : {})
     },
     agentAuthorization: token !== null ? () => `Bearer ${token()}` : null,
-    keys: (signal) => client.admin.keys(sig(signal)),
+    keys: (signal, filter) =>
+      client.admin.keys({ ...sig(signal), ...(filter !== undefined ? { filter } : {}) }),
     async getJson(path, signal) {
       const headers: Record<string, string> = { accept: 'application/json' };
       if (config.token !== null) headers.authorization = `Bearer ${config.token()}`;
