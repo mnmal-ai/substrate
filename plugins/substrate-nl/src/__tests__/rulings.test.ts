@@ -39,13 +39,25 @@ describe('fieldPhrases', () => {
     margin: { select: { sub: ['Listing.price', 'Listing.cost'] } },
     slower: { field: 'Listing.price', pick: 'max' }
   };
-  const fields = (...n: string[]) => Object.fromEntries(n.map((k) => [k, { kind: 'string' }]));
+  const fields = (...n: string[]) =>
+    Object.fromEntries(n.map((k) => [k, { kind: 'scalar', type: 'string' }]));
   const typed = (nl: unknown): Schema =>
     ({
       ...schema({ nl }),
       types: {
         Listing: { fields: fields('price', 'cost', 'status') },
-        Cert: { fields: fields('grade') }
+        Cert: {
+          fields: {
+            grade: { kind: 'scalar', type: 'int32' },
+            score: { kind: 'scalar', type: 'number' },
+            graded: { kind: 'scalar', type: 'boolean' },
+            issued: { kind: 'scalar', type: 'date' },
+            tier: { kind: 'scalar', type: 'string', enum: ['gold'], aliases: { Au: 'gold' } },
+            meta: { kind: 'scalar', type: 'json' },
+            tags: { kind: 'list', of: { kind: 'scalar', type: 'string' } },
+            listing: { kind: 'crossRef', ns: 'x', type: 'Listing', onDelete: 'set_null' }
+          }
+        }
       }
     }) as unknown as Schema;
 
@@ -99,6 +111,39 @@ describe('fieldPhrases', () => {
     const bad = readRulings(typed({}), { fieldPhrases: { x: { pick: 'min', nope: 1 } } } as never);
     expect(bad.rulings.fieldPhrases).toBeUndefined();
     expect(bad.warnings).toHaveLength(1);
+  });
+  it("keeps a value that fits the field's kind and drops one that does not, naming why", () => {
+    const ok = {
+      s: { field: 'Listing.status', value: 'draft' },
+      i: { field: 'Cert.grade', value: 9 },
+      n: { field: 'Cert.score', value: 9.5 },
+      b: { field: 'Cert.graded', value: false },
+      d: { field: 'Cert.issued', value: '2026-01-02' },
+      e: { field: 'Cert.tier', value: 'gold' },
+      alias: { field: 'Cert.tier', value: 'au' },
+      ref: { field: 'Cert.listing', value: '0190a0a0-0000-7000-8000-000000000000' }
+    };
+    const bad = {
+      numOnString: { field: 'Listing.status', value: 9 },
+      stringOnInt: { field: 'Cert.grade', value: '9' },
+      fraction: { field: 'Cert.grade', value: 9.5 },
+      notBool: { field: 'Cert.graded', value: 'yes' },
+      notDate: { field: 'Cert.issued', value: 'soon' },
+      notIso: { field: 'Cert.issued', value: 'Jan 2 2026' },
+      notReal: { field: 'Cert.issued', value: '2026-02-30' },
+      notMember: { field: 'Cert.tier', value: 'silver' },
+      json: { field: 'Cert.meta', value: 'x' },
+      list: { field: 'Cert.tags', value: 'x' },
+      badRef: { field: 'Cert.listing', value: 3 }
+    };
+    const r = readRulings(typed({ fieldPhrases: { ...ok, ...bad } }));
+    expect(r.rulings.fieldPhrases).toEqual(ok);
+    expect(r.warnings).toHaveLength(Object.keys(bad).length);
+    expect(r.warnings.join('\n')).toMatch(
+      /'numonstring'.*value for 'Listing.status' is not a string/
+    );
+    expect(r.warnings.join('\n')).toMatch(/'notmember'.*'silver' is not one of gold/);
+    expect(r.warnings.join('\n')).toMatch(/'list'.*cannot bind a list field/);
   });
   it('refuses an entry naming an unknown type or field at load, naming the phrase', () => {
     const r = readRulings(

@@ -23,7 +23,7 @@ The procedure has five stages. The flags, exit codes and what the command copies
    - Make the target role the owner of the database, or of the schema it will use. Since PostgreSQL 15, `public` no longer grants `CREATE` to every role.
    - Never boot `serve` against the target before migrating. A target that already holds data is refused.
 2. Keep free disk on the target of at least twice the size of the source's copied tables (table data without indexes); the dry run prints it as `estimated target need`. With `SUBSTRATE_INDEX_DISK_PATH` set to a path, a real run is refused below it; with `off`, nothing is checked, so check by hand. On the benchmark below, free space on the target dipped by about 25 GiB during the run.
-3. Load the service's environment into the shell that runs the command, so the plugin directory (`SUBSTRATE_PLUGIN_DIR` and the plugins' own settings), `SUBSTRATE_ENFORCE_UUID_CHECK` and `SUBSTRATE_PARTITION_BUDGET` match what `serve` will use. The target is prepared with the same migrations and plugins, and a source with the UUID check is refused when the target would not enforce it.
+3. Load the service's environment into the shell that runs the command, so the plugin directory (`SUBSTRATE_PLUGIN_DIR` and the plugins' own settings), `SUBSTRATE_ENFORCE_UUID_CHECK` and `SUBSTRATE_TYPE_TABLE_BUDGET` match what `serve` will use. The target is prepared with the same migrations and plugins, and a source with the UUID check is refused when the target would not enforce it.
 4. Set `SUBSTRATE_INDEX_DISK_PATH` to the mount of the **target's** data volume, or to `off` when the database has no local volume. A real run refuses without it (a dry run only warns).
 5. Put the connection strings in `SUBSTRATE_MIGRATE_FROM_URL` and `SUBSTRATE_MIGRATE_TO_URL`, or name other variables with `--from-env` / `--to-env`. A connection string on the command line is refused, and none is printed. A read-only role is enough for the source. `SUBSTRATE_SYSTEM_ACTOR` is not needed.
 
@@ -108,7 +108,7 @@ An array under one generated `create`, `update` or `delete` key runs as one stat
 - **Walk order.** A nested walk list with no `orderBy` returns the far type's natural order (newest first unless `orderedBy`), ties by id. It used to be id ascending. Pass `orderBy: [{ id: 'asc' }]` to keep the old order.
 - **Projection.** A projected read returns its top-level keys in request order; `id` leads unless the request places it elsewhere.
 - **A projected key the row lacks** is absent for every field kind.
-- **Date operands must be ISO 8601.** A loose string such as `"yesterday"` or `"01/02/2026"` on a date field is refused with `type_mismatch`, naming the field. `"2026-01-02"`, date-times and offsets are accepted as before.
+- **Date operands must be ISO 8601.** A loose string such as `"yesterday"` or `"01/02/2026"` on a date field is refused with `type_mismatch`, naming the field. `"2026-01-02"`, date-times and offsets are accepted as before. (From 1.0.0-beta.1 a date operand needs a time and an offset; see `upgrading-to-beta.md`.)
 - **Off-vocabulary operands.** `eq`/`in` now find, and `neq`/`nin` exclude, a value the column could not hold (an enum value outside the vocabulary, a string in a number field), on pg as on memory.
 
 ## Plugin authors

@@ -186,6 +186,18 @@ describe('autocrud.listResolver', () => {
     ).rejects.toThrow(expect.objectContaining({ code: 'unknown_param' }));
   });
 
+  it('refuses the retired _allowTableScan as an unknown param (#1955)', async () => {
+    const dataset = new MemoryDataset({ namespace: 'default' });
+    await expect(
+      listResolver('Todo', dataset)(makeCtx(), { params: { _allowTableScan: true } })
+    ).rejects.toThrow(
+      expect.objectContaining({
+        code: 'unknown_param',
+        details: expect.objectContaining({ field: '_allowTableScan' })
+      })
+    );
+  });
+
   it('attaches the rejected param name in error.details for programmatic dispatch', async () => {
     const dataset = new MemoryDataset({ namespace: 'default' });
     try {

@@ -65,7 +65,8 @@ describe('subscribe — walks', () => {
   });
 
   it('a param merely named like a walk param is an unknown param, not a walk (#1951)', async () => {
-    for (const k of ['count', 'aggregate', 'groupBy', 'having', 'offset']) {
+    // _allowTableScan was accepted and ignored before 1.0.0-beta.1 (#1955).
+    for (const k of ['count', 'aggregate', 'groupBy', 'having', 'offset', '_allowTableScan']) {
       const engine = buildEngine();
       const frames = await subscribe(engine, { params: { [k]: true }, fields: { id: true } });
       expect(frames[0]?.errors?.[0]).toMatchObject({

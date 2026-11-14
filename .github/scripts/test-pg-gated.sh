@@ -14,7 +14,7 @@ out="${PG_REPORTS:-${RUNNER_TEMP:-$(mktemp -d)}}"
 mkdir -p "$out"
 
 dirs() {
-  grep -rl --include='*.ts' POSTGRES_URL apps/*/test packages/*/test plugins/*/test |
+  grep -rl --include='*.ts' POSTGRES_URL apps/*/test packages/*/test plugins/*/test plugins/*/src/__tests__ |
     cut -d/ -f1-2 | sort -u
 }
 

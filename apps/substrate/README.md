@@ -51,7 +51,7 @@ Posts the question to `POST /substrate/v1/nl` on `SUBSTRATE_URL` and prints the 
 substrate run <script.mts> [--args <json>] [--dry-run | --write] [--max-writes <n>] [--out <file>]
 ```
 
-Imports the script and calls its default export with a `ScriptContext` (`args`, `query`, `queryAll`, `recall`, `mutate`, `log`), so one call can chain many reads and writes and return one result. The client is signed from `SUBSTRATE_URL`, `SUBSTRATE_AGENT_KEY_ID` and `SUBSTRATE_AGENT_KEY_PATH`; an unsigned run is refused.
+Imports the script and calls its default export with a `ScriptContext` (`args`, `query`, `queryAll`, `byShortId`, `recall`, `mutate`, `log`), so one call can chain many reads and writes and return one result. The client is signed from `SUBSTRATE_URL`, `SUBSTRATE_AGENT_KEY_ID` and `SUBSTRATE_AGENT_KEY_PATH`; an unsigned run is refused.
 
 ```ts
 import type { ScriptContext } from '@mnmal-ai/substrate/client';
@@ -72,7 +72,9 @@ Guardrails:
 - **A rejected frame throws.** A query whose key is missing from `data`, or a mutate the server refused, fails the run with the server's error rather than reading as empty.
 - **Truncation is reported.** `query` adds a warning when a result has `hasMore`; `queryAll` pages to the end.
 
-`s.recall({ query, namespace, type, k?, threshold?, where?, row? })` returns hits best first, through the `recall/Hit` frame. Each hit's `row` is `id` plus the handle fields; pass `row: { body: true }` (or `true`) for more, on the hits you will read.
+`s.byShortId('cortext/Todo', 1787)` returns that row, and `s.byShortId('cortext/Todo', [1787, 1785], { title: true })` returns the rows in input order, through `where: { shortId: { eq | in } }`. It throws naming every shortId with no row, rather than returning fewer rows than asked for.
+
+`s.recall({ query, namespace, type, k?, threshold?, where?, row? })` returns hits best first, through the `recall/Hit` frame, typed as `RecallHit` (exported beside `ScriptContext`). Each hit's `row` is `id` plus the handle fields (`name`, `title`, `topic`, `synopsis`, `description`, each typed `string | undefined`, so `h.row.name` needs no cast); pass `row: { body: true }` (or `true`) for more, on the hits you will read.
 
 `--args` takes a JSON object, which the script reads as `s.args` (`{}` when omitted), so one script serves many calls.
 
@@ -144,6 +146,7 @@ The main ones; `substrate --help` and the header of `apps/substrate/src/main.ts`
 | `SUBSTRATE_STATEMENT_TIMEOUT_MS` | Statement timeout for typed edge walk reads (default 30000). A read it cancels is refused `query_timeout`. It also bounds the wait for a free database connection; a request that waits longer is refused `store_busy`. |
 | `SUBSTRATE_PAGE_LIMIT_DEFAULT` / `SUBSTRATE_PAGE_LIMIT_MAX` | Page size for a remote query that names no `limit` (default 100), and the largest `limit` accepted (default 1000). |
 | `SUBSTRATE_FILTER_WRITE_MAX_MATCH` / `SUBSTRATE_FILTER_WRITE_IDS_CAP` | `updateMany<Type>` / `deleteMany<Type>`: a filter matching more rows than the max is refused `filter_too_broad` (default 10000); the result lists at most the cap of ids (default 1000). |
+| `SUBSTRATE_TYPE_TABLE_BUDGET` | Type tables above which the storage report warns (default 500). The deprecated `SUBSTRATE_PARTITION_BUDGET` is read while it is unset, with one warning. |
 | `SUBSTRATE_SWEEP_INTERVAL_MS` | Edge-sweep cadence (default 300000) |
 | `SUBSTRATE_INDEX_DISK_PATH` | The database volume's mount, when the database is on this host: free space there is checked before each background index build. `off` skips the check. |
 | `SUBSTRATE_INDEX_DISK_MARGIN_MB` | Free space a build must leave (default 2048; `0` requires only the estimate). |
@@ -163,6 +166,7 @@ Natural-language query and the recall embedder are not configured by environment
 - [Operator decisions](https://github.com/mnmal-ai/substrate/blob/main/docs/operator-decisions.md)
 - [Upgrading to per-type tables](https://github.com/mnmal-ai/substrate/blob/main/docs/upgrading-to-type-tables.md)
 - [Upgrading to the warehouse grammar](https://github.com/mnmal-ai/substrate/blob/main/docs/upgrading-to-warehouse-grammar.md)
+- [Upgrading to 1.0.0-beta.1](https://github.com/mnmal-ai/substrate/blob/main/docs/upgrading-to-beta.md)
 - [Plugin author guide](https://github.com/mnmal-ai/substrate/blob/main/docs/plugin-author-guide.md)
 
 ## License

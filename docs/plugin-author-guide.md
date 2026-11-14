@@ -697,9 +697,8 @@ Sneaker: {
 That is the whole definition. Filtering and sorting work on every one of
 those fields, and nothing refuses a query because a field has no index: a
 filter or sort on a field nothing serves scans, and gets slower as the type
-grows, but it never fails. (`unindexed_field` is no longer raised, and the
-`_allowTableScan` param is accepted and ignored.) Indexes arrive when the data
-and the reads call for them, and substrate tells you which.
+grows, but it never fails. (`unindexed_field` is no longer raised.) Indexes
+arrive when the data and the reads call for them, and substrate tells you which.
 
 **What is automatic.**
 
@@ -998,7 +997,7 @@ Every `field.*` builder in `@mnmal-ai/substrate/sdk` returns a plain
 | `field.string(opts?)` | `{kind:'scalar',type:'string'}` | unset | Names, identifiers, short text. |
 | `field.number(opts?)` | `{kind:'scalar',type:'number'}` | unset | Counts, scores, money in minor units. |
 | `field.boolean(opts?)` | `{kind:'scalar',type:'boolean'}` | unset | Flags. |
-| `field.date(opts?)` | `{kind:'scalar',type:'date'}` | unset | Timestamps. `serverSet: 'create' \| 'update' \| 'both'` marks one your server code sets; autoCRUD rejects client values for it. A date with no offset is read as UTC, so writers should send an offset or `Z`. Filter operands must be ISO 8601; a loose string is refused `type_mismatch`. |
+| `field.date(opts?)` | `{kind:'scalar',type:'date'}` | unset | Timestamps. `serverSet: 'create' \| 'update' \| 'both'` marks one your server code sets; autoCRUD rejects client values for it. Writes and filter operands must be ISO 8601 instants with a time and an offset (`2026-11-14T10:00:00Z`); a date alone or an offset-less date-time is refused, a write with `invalid_field_type` and a filter operand with `type_mismatch`. |
 | `field.enum(values, opts?)` | string scalar with `enum` | unset | A closed set of values. |
 | `field.vocab(values, opts?)` | string scalar with `enum` + `aliases` | unset | A governed vocabulary: aliases are normalised to canonical values on write and in filters. `strict: false` admits unknown values. |
 | `field.json(opts?)` | `{kind:'scalar',type:'json'}` | `false` | Opaque bodies. See below. |
@@ -1074,9 +1073,9 @@ For every type that does not opt out:
   filter matching more than `SUBSTRATE_FILTER_WRITE_MAX_MATCH` rows (default
   10000) is refused `filter_too_broad`. Declaring both `X` and `ManyX` in one
   namespace is refused at install (`AutoCrudNameCollisionError`).
-- `<Type>({ where?, orderBy?, limit?, cursor?, id?, ids?, includeDeleted?, _allowTableScan? })`:
+- `<Type>({ where?, orderBy?, limit?, cursor?, id?, ids?, includeDeleted? })`:
   the list query, addressed by the bare `<ns>/<Type>` key. Unknown params are
-  rejected with `unknown_param`. `_allowTableScan` is deprecated and ignored.
+  rejected with `unknown_param`.
 
 The autoCRUD resolvers write through the dataset, run `postWrite` for create
 and update (not delete), and emit write events to subscribers after the
@@ -1349,12 +1348,12 @@ import { describe, expect, it } from 'vitest';
 
 describe('archiveOldOutfits', () => {
   it('archives outfits not worn for 30 days', async () => {
-    const now = new Date('2026-04-26');
+    const now = new Date('2026-04-26T00:00:00Z');
     const dataset = new MemoryDataset({ namespace: 'closet' });
     const edges = new MemoryEdgesStore({ now: () => now });
     await dataset.write('Outfit', [
-      { id: '1', label: 'old', lastWornAt: '2026-03-01', archived: false },
-      { id: '2', label: 'recent', lastWornAt: '2026-04-20', archived: false }
+      { id: '1', label: 'old', lastWornAt: '2026-03-01T00:00:00Z', archived: false },
+      { id: '2', label: 'recent', lastWornAt: '2026-04-20T00:00:00Z', archived: false }
     ]);
 
     const result = await archiveOldOutfits(

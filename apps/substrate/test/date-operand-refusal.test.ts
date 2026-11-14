@@ -84,16 +84,16 @@ for (const kind of ['memory', 'pg'] as const) {
           expect(env.errors?.[0], gt).toMatchObject({ code: 'type_mismatch' });
           expect(env.errors?.[0]?.message, gt).toMatch(/on 'at': .* is not a real date/);
         }
-        const ok = await read('2026-03-01');
+        const ok = await read('2026-03-01T00:00:00Z');
         expect(ok.errors).toBeUndefined();
         expect(ok.data[`${ns}/Ev`]).toHaveLength(1);
-        for (const gt of ['yesterday', 'abc']) {
+        for (const gt of ['yesterday', 'abc', '2026-01-02', '2026-01-02T03:04:05']) {
           const env = await read(gt);
           expect(env.data[`${ns}/Ev`], gt).toBeUndefined();
           expect(env.errors?.[0], gt).toMatchObject({ code: 'type_mismatch' });
-          expect(env.errors?.[0]?.message, gt).toMatch(/on 'at': .* is not an ISO 8601 date/);
+          expect(env.errors?.[0]?.message, gt).toMatch(/on 'at': .* is not an ISO 8601 instant/);
         }
-        for (const gt of ['2026-01-02', '2026-01-02T03:04:05Z']) {
+        for (const gt of ['2026-01-02T00:00:00Z', '2026-01-02T03:04:05+01:00']) {
           const env = await read(gt);
           expect(env.errors, gt).toBeUndefined();
           expect(env.data[`${ns}/Ev`], gt).toHaveLength(1);
