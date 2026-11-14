@@ -130,9 +130,9 @@ A value its declared column cannot hold (an enum value outside the vocabulary, a
 
 **Repairing them:** write the field again with a value the column holds (an ordinary `update<Type>`, or `updateMany<Type>` for many rows), which clears its `$raw` entry. Or widen the vocabulary so the value fits, as above.
 
-### Date operands are ISO 8601
+### Date values are ISO 8601 instants
 
-A filter operand on a date field must be an ISO 8601 date (`2026-01-02`) or date-time, with or without an offset. A loose string such as `"yesterday"` or `"01/02/2026"` is refused with `type_mismatch`, naming the field. A date with no offset is read as UTC, so writers should send an offset or `Z`.
+A date written through a mutation, and a filter operand on a date field, must be an ISO 8601 instant: a date, a time and an offset, such as `2026-01-02T00:00:00Z` or `2026-01-02T09:00:00+01:00`. A date alone (`2026-01-02`) or a date-time with no offset is refused: a write with `invalid_field_type`, a filter with `type_mismatch`, each naming the field and the accepted form. So is a loose string such as `"yesterday"` or `"01/02/2026"`. Rows stored before 1.0.0-beta.1 with an offset-less date still read, as UTC.
 
 ## Unique indexes and keys
 

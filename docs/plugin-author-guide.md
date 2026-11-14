@@ -998,7 +998,7 @@ Every `field.*` builder in `@mnmal-ai/substrate/sdk` returns a plain
 | `field.string(opts?)` | `{kind:'scalar',type:'string'}` | unset | Names, identifiers, short text. |
 | `field.number(opts?)` | `{kind:'scalar',type:'number'}` | unset | Counts, scores, money in minor units. |
 | `field.boolean(opts?)` | `{kind:'scalar',type:'boolean'}` | unset | Flags. |
-| `field.date(opts?)` | `{kind:'scalar',type:'date'}` | unset | Timestamps. `serverSet: 'create' \| 'update' \| 'both'` marks one your server code sets; autoCRUD rejects client values for it. A date with no offset is read as UTC, so writers should send an offset or `Z`. Filter operands must be ISO 8601; a loose string is refused `type_mismatch`. |
+| `field.date(opts?)` | `{kind:'scalar',type:'date'}` | unset | Timestamps. `serverSet: 'create' \| 'update' \| 'both'` marks one your server code sets; autoCRUD rejects client values for it. Writes and filter operands must be ISO 8601 instants with a time and an offset (`2026-11-14T10:00:00Z`); a date alone or an offset-less date-time is refused, a write with `invalid_field_type` and a filter operand with `type_mismatch`. |
 | `field.enum(values, opts?)` | string scalar with `enum` | unset | A closed set of values. |
 | `field.vocab(values, opts?)` | string scalar with `enum` + `aliases` | unset | A governed vocabulary: aliases are normalised to canonical values on write and in filters. `strict: false` admits unknown values. |
 | `field.json(opts?)` | `{kind:'scalar',type:'json'}` | `false` | Opaque bodies. See below. |
@@ -1349,12 +1349,12 @@ import { describe, expect, it } from 'vitest';
 
 describe('archiveOldOutfits', () => {
   it('archives outfits not worn for 30 days', async () => {
-    const now = new Date('2026-04-26');
+    const now = new Date('2026-04-26T00:00:00Z');
     const dataset = new MemoryDataset({ namespace: 'closet' });
     const edges = new MemoryEdgesStore({ now: () => now });
     await dataset.write('Outfit', [
-      { id: '1', label: 'old', lastWornAt: '2026-03-01', archived: false },
-      { id: '2', label: 'recent', lastWornAt: '2026-04-20', archived: false }
+      { id: '1', label: 'old', lastWornAt: '2026-03-01T00:00:00Z', archived: false },
+      { id: '2', label: 'recent', lastWornAt: '2026-04-20T00:00:00Z', archived: false }
     ]);
 
     const result = await archiveOldOutfits(

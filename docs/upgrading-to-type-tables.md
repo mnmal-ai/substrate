@@ -108,7 +108,7 @@ An array under one generated `create`, `update` or `delete` key runs as one stat
 - **Walk order.** A nested walk list with no `orderBy` returns the far type's natural order (newest first unless `orderedBy`), ties by id. It used to be id ascending. Pass `orderBy: [{ id: 'asc' }]` to keep the old order.
 - **Projection.** A projected read returns its top-level keys in request order; `id` leads unless the request places it elsewhere.
 - **A projected key the row lacks** is absent for every field kind.
-- **Date operands must be ISO 8601.** A loose string such as `"yesterday"` or `"01/02/2026"` on a date field is refused with `type_mismatch`, naming the field. `"2026-01-02"`, date-times and offsets are accepted as before.
+- **Date operands must be ISO 8601.** A loose string such as `"yesterday"` or `"01/02/2026"` on a date field is refused with `type_mismatch`, naming the field. `"2026-01-02"`, date-times and offsets are accepted as before. (From 1.0.0-beta.1 a date operand needs a time and an offset; see `upgrading-to-beta.md`.)
 - **Off-vocabulary operands.** `eq`/`in` now find, and `neq`/`nin` exclude, a value the column could not hold (an enum value outside the vocabulary, a string in a number field), on pg as on memory.
 
 ## Plugin authors

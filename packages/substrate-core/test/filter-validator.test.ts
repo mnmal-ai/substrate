@@ -126,11 +126,11 @@ describe('validateFilter — where clause', () => {
       const run = () =>
         validateFilter({ where: { createdAt: operand }, typeSchema: SCHEMA, capabilities: CAPS });
       expectCode(run, 'type_mismatch');
-      expect(run).toThrow(/on 'createdAt': .* is not an ISO 8601 date/);
+      expect(run).toThrow(/on 'createdAt': .* is not an ISO 8601 instant/);
     }
     expectOk(() =>
       validateFilter({
-        where: { createdAt: { gt: '2026-01-02', lt: '2026-01-02T03:04:05Z' } },
+        where: { createdAt: { gt: '2026-01-02T00:00:00Z', lt: '2026-01-02T03:04:05+01:00' } },
         typeSchema: SCHEMA,
         capabilities: CAPS
       })
@@ -151,8 +151,8 @@ describe('validateFilter — where clause', () => {
     for (const operand of [
       { gt: '2026-02-30' },
       { eq: '2026-13-01T00:00:00Z' },
-      { in: ['2026-10-24', '0000-01-01'] },
-      { between: ['2026-10-24', '2026-02-30T10:00:00Z'] },
+      { in: ['2026-10-24T00:00:00Z', '0000-01-01'] },
+      { between: ['2026-10-24T00:00:00Z', '2026-02-30T10:00:00Z'] },
       { lt: new Date(Number.NaN) }
     ]) {
       const run = () =>
@@ -162,11 +162,26 @@ describe('validateFilter — where clause', () => {
     }
     expectOk(() =>
       validateFilter({
-        where: { createdAt: { gt: '2026-10-24', lt: '2026-10-25T10:00:00' } },
+        where: { createdAt: { gt: '2026-10-24T00:00:00Z', lt: '2026-10-25T10:00:00Z' } },
         typeSchema: SCHEMA,
         capabilities: CAPS
       })
     );
+  });
+
+  it('refuses a date operand with no offset, or no time, showing the accepted form', () => {
+    for (const operand of [
+      { gte: '2026-11-14' },
+      { lt: '2026-11-14T10:00:00' },
+      { eq: '2026-11-14 10:00' },
+      { gt: '2026-11-14Z' },
+      { in: ['2026-11-14T10:00:00Z', '2026-11-14T10:00'] }
+    ]) {
+      const run = () =>
+        validateFilter({ where: { createdAt: operand }, typeSchema: SCHEMA, capabilities: CAPS });
+      expectCode(run, 'type_mismatch');
+      expect(run).toThrow(/with a time and an offset, e\.g\. 2026-11-14T10:00:00Z/);
+    }
   });
 
   it('rejects unknown fields', () => {
