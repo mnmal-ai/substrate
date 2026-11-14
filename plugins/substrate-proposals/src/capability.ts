@@ -115,7 +115,9 @@ export function gateTypeProposalRemoval(
   const gate = makeProposePolicy(dropCapability);
   const removes: Record<string, (params: Record<string, unknown>) => boolean> = {
     deleteTypeProposal: () => true,
-    updateTypeProposal: (params) => Object.keys(params).some((k) => !BENIGN_PROPOSAL_FIELDS.has(k))
+    updateTypeProposal: (params) => Object.keys(params).some((k) => !BENIGN_PROPOSAL_FIELDS.has(k)),
+    // A fresh applied proposal for a stored name redefines that type at boot (#1956).
+    createTypeProposal: (params) => params.applied === true
   };
   for (const [key, isRemoval] of Object.entries(removes)) {
     const entry = registry.get(key);
@@ -131,6 +133,23 @@ export function gateTypeProposalRemoval(
         const params = args.params ?? {};
         const trusted = (args as { [TRUSTED_WRITE]?: true })[TRUSTED_WRITE] === true;
         if (!trusted && isRemoval(params) && !gate(ctx, args).allow) {
+          if (key === 'createTypeProposal') {
+            // No stored row yet: the name it would apply is the one to check.
+            const name = params.typeName;
+            if (args.dataset === undefined) {
+              throw deny(
+                ctx,
+                `cannot check '${String(name)}' for stored rows; needs '${dropCapability}'`
+              );
+            }
+            if (typeof name === 'string' && (await typeHasRows(args.dataset, name))) {
+              throw deny(
+                ctx,
+                `'${name}' has stored rows; an applied proposal for it redefines the type, which needs '${dropCapability}' as drop_type does`
+              );
+            }
+            return resolver(ctx, args);
+          }
           const id = params.id;
           if (typeof id !== 'string' || args.dataset === undefined) {
             throw deny(

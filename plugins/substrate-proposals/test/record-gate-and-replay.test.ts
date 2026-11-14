@@ -284,6 +284,30 @@ describe('removing a TypeProposal (#1792, #1954)', () => {
     expect(env.errors).toBeUndefined();
   });
 
+  it('a fresh applied proposal for a stored name needs the drop capability (#1956)', async () => {
+    let n = 0;
+    const fresh = (typeName: string, applied: boolean) => ({
+      'app/createTypeProposal': {
+        params: row({ id: `fresh-${++n}`, typeName, fieldsJson: str, applied }),
+        fields: { id: true }
+      }
+    });
+    const { engine } = await seeded(true);
+    const denied = await engine.mutate({ frame: fresh('Stored', true), ctx: ctx(propose) });
+    expect(denied.errors?.[0]?.code).toBe('policy_denied');
+    // Unapplied, or for a name with no rows, stays propose-only.
+    expect(
+      (await engine.mutate({ frame: fresh('Stored', false), ctx: ctx(propose) })).errors
+    ).toBeUndefined();
+    expect(
+      (await engine.mutate({ frame: fresh('Fresh', true), ctx: ctx(propose) })).errors
+    ).toBeUndefined();
+    expect(
+      (await engine.mutate({ frame: fresh('Stored', true), ctx: ctx([...propose, 'admin']) }))
+        .errors
+    ).toBeUndefined();
+  });
+
   it('checks the stored typeName, so a rename cannot point the check at an empty type', async () => {
     // 'Empty' has no rows; the proposal's stored type 'Stored' does.
     const { ds, engine } = await seeded(true);
