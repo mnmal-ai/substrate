@@ -298,7 +298,7 @@ to their transport.
 `limit` is a query param. On subscribe it is refused:
 
 ```
-subscribe('<ns>/<Type>'): unknown param 'limit'. Allowed: _allowTableScan, orderBy, where.
+subscribe('<ns>/<Type>'): unknown param 'limit'. Allowed: orderBy, where.
 ```
 
 The allowlist is engine-wide (`KNOWN_SUBSCRIBE_PARAMS`), not a namespace quirk,

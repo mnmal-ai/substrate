@@ -56,7 +56,7 @@ describe('json path predicates through the engine', () => {
       id: 's1',
       frame: {
         'default/Item': {
-          params: { where: { values: { path: ['year'], gt: 1990 } }, _allowTableScan: true },
+          params: { where: { values: { path: ['year'], gt: 1990 } } },
           fields: { id: true }
         }
       },
@@ -78,7 +78,7 @@ describe('json path predicates through the engine', () => {
     expect(frames.some((f) => f.kind === 'error')).toBe(false);
   });
 
-  it('a scanning operator without _allowTableScan is accepted at subscribe time', async () => {
+  it('a scanning operator is accepted at subscribe time', async () => {
     const engine = setup();
     const frames: WsResponseFrame[] = [];
     await engine.subscribe({

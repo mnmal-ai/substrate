@@ -12,3 +12,19 @@
 **Are you affected?** You are if any client writes or filters dates as bare days or local date-times. Search your code for date strings without a trailing `Z` or `±HH:MM`, and for `toISOString().slice(0, 10)`. A refused request names the field, so a failing write or read points at the call. Rows already stored with an offset-less date are not affected: they still read, as UTC.
 
 **What to do.** Send a full instant. In JavaScript, `new Date(...).toISOString()` always produces one. For a whole day, send its midnight in the zone you mean: `where: { at: { gte: '2026-11-14T00:00:00+01:00', lt: '2026-11-15T00:00:00+01:00' } }`.
+
+## `_allowTableScan` is refused
+
+**What changed.** The `_allowTableScan` param was accepted and ignored since filters stopped being refused for want of an index. It is now an unknown param: a query on an autoCRUD list, a subscribe and a stream that send it are refused with `unknown_param`, and the message lists the params that are allowed.
+
+**Are you affected?** You are if any client, script or saved frame sends `_allowTableScan`. Search for the string.
+
+**What to do.** Delete it. It changed nothing, so removing it changes no result.
+
+## `SUBSTRATE_PARTITION_BUDGET` is now `SUBSTRATE_TYPE_TABLE_BUDGET`
+
+**What changed.** The env var that sets how many type tables the storage report allows before it warns is renamed `SUBSTRATE_TYPE_TABLE_BUDGET`, since it counts type tables, not partitions. The old name is still read while the new one is unset, and logs one deprecation warning at boot. It will be removed in a later release.
+
+**Are you affected?** You are if a unit file, compose file or environment sets `SUBSTRATE_PARTITION_BUDGET`, or if the boot log shows `warning: SUBSTRATE_PARTITION_BUDGET is deprecated`.
+
+**What to do.** Rename the variable. When both are set, `SUBSTRATE_TYPE_TABLE_BUDGET` wins.

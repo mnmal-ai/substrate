@@ -697,9 +697,8 @@ Sneaker: {
 That is the whole definition. Filtering and sorting work on every one of
 those fields, and nothing refuses a query because a field has no index: a
 filter or sort on a field nothing serves scans, and gets slower as the type
-grows, but it never fails. (`unindexed_field` is no longer raised, and the
-`_allowTableScan` param is accepted and ignored.) Indexes arrive when the data
-and the reads call for them, and substrate tells you which.
+grows, but it never fails. (`unindexed_field` is no longer raised.) Indexes
+arrive when the data and the reads call for them, and substrate tells you which.
 
 **What is automatic.**
 
@@ -1074,9 +1073,9 @@ For every type that does not opt out:
   filter matching more than `SUBSTRATE_FILTER_WRITE_MAX_MATCH` rows (default
   10000) is refused `filter_too_broad`. Declaring both `X` and `ManyX` in one
   namespace is refused at install (`AutoCrudNameCollisionError`).
-- `<Type>({ where?, orderBy?, limit?, cursor?, id?, ids?, includeDeleted?, _allowTableScan? })`:
+- `<Type>({ where?, orderBy?, limit?, cursor?, id?, ids?, includeDeleted? })`:
   the list query, addressed by the bare `<ns>/<Type>` key. Unknown params are
-  rejected with `unknown_param`. `_allowTableScan` is deprecated and ignored.
+  rejected with `unknown_param`.
 
 The autoCRUD resolvers write through the dataset, run `postWrite` for create
 and update (not delete), and emit write events to subscribers after the

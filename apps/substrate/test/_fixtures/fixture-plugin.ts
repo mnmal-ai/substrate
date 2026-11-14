@@ -40,7 +40,7 @@ async function installFixtureNamespace(ctx: NamespaceInstallContext): Promise<vo
     // (writes go to body, reads route to metadata). Use _metadata.createdAt or
     // pick a different name (e.g. `dueAt`) for body-level dates.
     // Deliberately unindexed so integration tests can show an unindexed
-    // filter is accepted, with or without the ignored _allowTableScan.
+    // filter is accepted.
     priority: { kind: 'scalar', type: 'number', default: 0 },
     // Engine-allocated sequence number per (ns, type). Indexed so
     // cross-server parity tests filter by shortId.eq through an index.

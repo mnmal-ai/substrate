@@ -74,7 +74,7 @@ The same value bounds how long a request waits for a free database connection. A
 
 ### Type-table budget
 
-**What you choose:** `SUBSTRATE_PARTITION_BUDGET`, the number of type tables above which the storage report warns. The name is older than the layout.
+**What you choose:** `SUBSTRATE_TYPE_TABLE_BUDGET`, the number of type tables above which the storage report warns. The old name, `SUBSTRATE_PARTITION_BUDGET`, is still read while the new one is unset, and logs one deprecation warning.
 
 **The default:** 500.
 

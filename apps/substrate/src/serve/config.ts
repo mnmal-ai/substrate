@@ -28,7 +28,7 @@ const DEFAULT_STATEMENT_TIMEOUT_MS = 30_000;
 const DEFAULT_INVITE_SWEEP_INTERVAL_MS = 3_600_000;
 const DEFAULT_TOMBSTONE_RETENTION_DAYS = 30;
 const DEFAULT_SHUTDOWN_GRACE_MS = 5_000;
-const DEFAULT_PARTITION_BUDGET = 500;
+const DEFAULT_TYPE_TABLE_BUDGET = 500;
 const DEFAULT_INDEX_DISK_MARGIN_MB = 2048;
 const DEFAULT_INDEX_RETRY_INTERVAL_MS = 600_000;
 const DEFAULT_ADVISOR_INTERVAL_MS = 600_000;
@@ -70,9 +70,10 @@ export interface ParsedConfig {
    */
   shutdownGraceMs: number;
   /**
-   * `SUBSTRATE_PARTITION_BUDGET` — type tables beyond which the config report warns.
+   * `SUBSTRATE_TYPE_TABLE_BUDGET` — type tables beyond which the config report warns.
+   * The deprecated `SUBSTRATE_PARTITION_BUDGET` is read when it is unset.
    */
-  partitionBudget: number;
+  typeTableBudget: number;
   /** `SUBSTRATE_STATEMENT_TIMEOUT_MS` — the statement timeout a walk read runs under; a read it cancels is refused `query_timeout`. */
   statementTimeoutMs: number;
   /**
@@ -166,6 +167,8 @@ export class EnvConfigError extends Error {
 
 /** Set once the retired `SUBSTRATE_STORAGE_LAYOUT` has been warned about. */
 let warnedStorageLayout = false;
+/** Set once the deprecated `SUBSTRATE_PARTITION_BUDGET` has been warned about. */
+let warnedPartitionBudget = false;
 
 /**
  * Parses the serve env into a fully resolved `ParsedConfig`. The only I/O is
@@ -234,13 +237,23 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
   const inviteSweepIntervalMs = parseInviteSweepIntervalMs(env, knobs);
   const tombstoneRetentionDays = parseTombstoneRetentionDays(env, knobs);
   const shutdownGraceMs = parseShutdownGraceMs(env, knobs);
-  const partitionBudget = parsePositiveIntEnv(
+  // The pre-beta name, kept as a deprecated alias (#1955).
+  const oldBudget = nonEmpty(env.SUBSTRATE_PARTITION_BUDGET) !== undefined;
+  if (oldBudget && !warnedPartitionBudget) {
+    warnedPartitionBudget = true;
+    process.stderr.write(
+      'warning: SUBSTRATE_PARTITION_BUDGET is deprecated; set SUBSTRATE_TYPE_TABLE_BUDGET instead (the old name is read only while the new one is unset)\n'
+    );
+  }
+  const typeTableBudget = parsePositiveIntEnv(
     env,
     knobs,
-    'partitionBudget',
-    'SUBSTRATE_PARTITION_BUDGET',
-    DEFAULT_PARTITION_BUDGET,
-    'partitions'
+    'typeTableBudget',
+    oldBudget && nonEmpty(env.SUBSTRATE_TYPE_TABLE_BUDGET) === undefined
+      ? 'SUBSTRATE_PARTITION_BUDGET'
+      : 'SUBSTRATE_TYPE_TABLE_BUDGET',
+    DEFAULT_TYPE_TABLE_BUDGET,
+    'type tables'
   );
   const statementTimeoutMs = parsePositiveIntEnv(
     env,
@@ -400,7 +413,7 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
     inviteSweepIntervalMs,
     tombstoneRetentionDays,
     shutdownGraceMs,
-    partitionBudget,
+    typeTableBudget,
     statementTimeoutMs,
     indexDiskPath,
     indexDiskMarginMb,
