@@ -342,19 +342,39 @@ describe('removing a TypeProposal (#1792, #1954)', () => {
     expect(env.errors?.[0]?.code).toBe('policy_denied');
   });
 
+  it('applying an unapplied proposal for a name with a live one needs the drop capability', async () => {
+    const { ds, engine } = await seeded(false);
+    await ds.write('TypeProposal', [
+      row({ id: 'idle', typeName: 'Stored', fieldsJson: '{}', applied: false })
+    ]);
+    const apply = (params: Record<string, unknown>) =>
+      engine.mutate({
+        frame: {
+          'app/updateTypeProposal': { params: { id: 'idle', ...params }, fields: { id: true } }
+        },
+        ctx: ctx(propose)
+      });
+    expect((await apply({ applied: true })).errors?.[0]?.code).toBe('policy_denied');
+    // appliedAt is not benign: it is no lever on replay order, but it is gated all the same.
+    expect((await apply({ appliedAt: T0 })).errors).toBeUndefined();
+    expect((await ds.read('TypeProposal', { id: 'idle' })).rows[0]?.applied).toBe(false);
+  });
+
   it('boot replay registers the oldest applied definition of a name', async () => {
     const ds = new MemoryDataset({ namespace: 'app' });
     const later = new Date(T0.getTime() + 60_000);
-    // Written newest first, so natural order would read the newer one first.
+    // Natural order (createdAt desc) would read the newer one first.
     await ds.write('TypeProposal', [
-      row({ id: 'old', typeName: 'Twin', fieldsJson: str, appliedAt: T0 })
+      row({ id: 'old', typeName: 'Twin', fieldsJson: str, _metadata: { createdAt: T0 } })
     ]);
     await ds.write('TypeProposal', [
       row({
         id: 'new',
         typeName: 'Twin',
         fieldsJson: JSON.stringify({ u: { kind: 'scalar', type: 'string' } }),
-        appliedAt: later
+        // A backdated appliedAt is no lever: replay orders by the server-set createdAt.
+        appliedAt: new Date(0),
+        _metadata: { createdAt: later }
       })
     ]);
     const { loaded } = await boot(ds);

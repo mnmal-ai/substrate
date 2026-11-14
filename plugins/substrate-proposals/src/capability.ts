@@ -84,7 +84,6 @@ const BENIGN_PROPOSAL_FIELDS = new Set([
   'proposedReason',
   'proposedBy',
   'proposedAt',
-  'appliedAt',
   'resultingSchemaVersion'
 ]);
 
@@ -186,14 +185,18 @@ export function gateTypeProposalRemoval(
               `'${stored}' has stored rows; this change to its proposal drops or redefines the type, which needs '${dropCapability}' as drop_type does`
             );
           }
-          // A rename points the proposal at another type: that name must be free too.
-          const next = params.typeName;
-          if (typeof next === 'string' && next !== stored) {
-            const why = await defined(args.dataset, next, id);
+          // A proposal left live by this update (applied, not archived) must be the
+          // only definition of its name, the stored one or a rename's target.
+          const name = typeof params.typeName === 'string' ? params.typeName : stored;
+          const live =
+            (params.applied ?? rows[0]?.applied) === true &&
+            (params.archived ?? rows[0]?.archived) !== true;
+          if (live && typeof name === 'string') {
+            const why = await defined(args.dataset, name, id);
             if (why !== undefined) {
               throw deny(
                 ctx,
-                `'${next}' ${why}; renaming a proposal onto it redefines the type, which needs '${dropCapability}' as drop_type does`
+                `'${name}' ${why}; this change makes a second live definition of it, which needs '${dropCapability}' as drop_type does`
               );
             }
           }

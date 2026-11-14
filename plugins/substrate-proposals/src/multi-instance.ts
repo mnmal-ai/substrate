@@ -222,8 +222,9 @@ export async function reconcileNamespace(args: ReconcileArgs): Promise<void> {
         { archived: { eq: false } }
       ]
     },
-    // Oldest first: the first registration of a name wins, so the original definition does.
-    orderBy: [{ appliedAt: 'asc' }],
+    // Oldest first by the server-set createdAt, which no caller can write: the first
+    // registration of a name wins, so the original definition does.
+    orderBy: [{ createdAt: 'asc' }],
     limit: 10000
   });
   // Prepared once each, after every replay pass, so storage sees the final indexes.
