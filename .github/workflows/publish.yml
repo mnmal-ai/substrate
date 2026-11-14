@@ -104,9 +104,12 @@ jobs:
           if head=$(git rev-parse -q --verify 'HEAD^2') \
             && [ "$(git rev-parse 'HEAD^{tree}')" = "$(git rev-parse "$head^{tree}")" ]; then
             gh api "repos/$GITHUB_REPOSITORY/commits/$head/check-runs?per_page=100" --jq '.check_runs' > "$RUNNER_TEMP/checks.json"
+            # Only each check's latest run counts: the pre-merge gate fails until the
+            # label is added, and that earlier run stays on the same head.
             if jq -e '
-                (map(select(.status != "completed" or ((.conclusion | IN("success", "skipped", "neutral")) | not))) | length == 0)
-                and ((["Build, type-check, lint & test", "Postgres-gated tests"]
+                group_by(.name) | map(max_by(.started_at))
+                | (map(select(.status != "completed" or ((.conclusion | IN("success", "skipped", "neutral")) | not))) | length == 0)
+                and ((["Build, type-check, lint & test", "Pre-merge Postgres gate"]
                       - [.[] | select(.conclusion == "success") | .name]) | length == 0)
               ' "$RUNNER_TEMP/checks.json" > /dev/null; then
               passed=true
