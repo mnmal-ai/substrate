@@ -57,6 +57,21 @@ describe('migrate-store argv', () => {
     expect(disk.out + disk.err).not.toContain('hunter2secret');
   });
 
+  it('refuses a serve env the prepare boot would refuse, before connecting (#1868)', async () => {
+    const r = await cli(['migrate-store', '--json'], {
+      SUBSTRATE_MIGRATE_FROM_URL: SECRET_URL,
+      SUBSTRATE_MIGRATE_TO_URL: `${SECRET_URL}2`,
+      SUBSTRATE_INDEX_DISK_PATH: 'off',
+      SUBSTRATE_STATEMENT_TIMEOUT_MS: '9999999999'
+    });
+    // db.example is never reached: a preflight would fail on connect, not refuse with this.
+    expect(r.code, r.out + r.err).toBe(2);
+    const report = JSON.parse(r.out) as { refusals: string[]; phases: Record<string, number> };
+    expect(report.refusals.join()).toMatch(/serve env is invalid: SUBSTRATE_STATEMENT_TIMEOUT_MS/);
+    expect(report.phases).toEqual({});
+    expect(r.out + r.err).not.toContain('hunter2secret');
+  });
+
   it('refuses --dry-run with --verify-only, and a repeated --from-env', async () => {
     expect((await cli(['migrate-store', '--dry-run', '--verify-only'])).code).toBe(2);
     // The schema names boot accepts, and no others.
