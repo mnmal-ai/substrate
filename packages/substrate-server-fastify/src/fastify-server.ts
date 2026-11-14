@@ -29,7 +29,7 @@ import {
   type ServerHttp2Session,
   type ServerHttp2Stream
 } from 'node:http2';
-import type { Socket } from 'node:net';
+import type { Server, Socket } from 'node:net';
 import type { TLSSocket } from 'node:tls';
 import compressPlugin from '@fastify/compress';
 import corsPlugin from '@fastify/cors';
@@ -170,17 +170,11 @@ export class FastifySubstrateServer implements SubstrateServer {
         : { http: { settings } })
     }) as unknown as FastifyInstance;
     if (requestTimeout > 0) boundH2Requests(this.fastify, requestTimeout);
-    if (pingIntervalMs > 0) pingSessions(this.fastify, pingIntervalMs);
-    this.fastify.server.on('connection', (socket: Socket) => {
-      this.#sockets.add(socket);
-      socket.once('close', () => this.#sockets.delete(socket));
-    });
-    // Node answers a TLS client that offered no h2 with a 403, then holds the
-    // socket for `unknownProtocolTimeout` (10 s), which would stall `stop()`.
-    this.fastify.server.on('secureConnection', (socket: TLSSocket) => {
-      if (socket.alpnProtocol === 'h2') return;
-      this.#refused.add(socket);
-      socket.once('close', () => this.#refused.delete(socket));
+    this.#watch(this.fastify.server, pingIntervalMs);
+    // On host `localhost` Fastify also listens on each further address it
+    // resolves to (::1), on secondary servers it has bound by `onListen`.
+    this.fastify.addHook('onListen', async () => {
+      for (const server of secondaryServers(this.fastify)) this.#watch(server, pingIntervalMs);
     });
 
     // Raw-bytes parsers for binary payloads (substrate-pack). Everything else
@@ -274,6 +268,22 @@ export class FastifySubstrateServer implements SubstrateServer {
     }
   }
 
+  /** Track `server`'s connections for `stop()`, and ping its HTTP/2 sessions. */
+  #watch(server: Server, pingIntervalMs: number): void {
+    if (pingIntervalMs > 0) pingSessions(server, pingIntervalMs);
+    server.on('connection', (socket: Socket) => {
+      this.#sockets.add(socket);
+      socket.once('close', () => this.#sockets.delete(socket));
+    });
+    // Node answers a TLS client that offered no h2 with a 403, then holds the
+    // socket for `unknownProtocolTimeout` (10 s), which would stall `stop()`.
+    server.on('secureConnection', (socket: TLSSocket) => {
+      if (socket.alpnProtocol === 'h2') return;
+      this.#refused.add(socket);
+      socket.once('close', () => this.#refused.delete(socket));
+    });
+  }
+
   async start(opts?: StartOpts): Promise<{ address: string; port: number }> {
     if (opts?.tls && !this.hasTls) {
       throw new Error(
@@ -306,7 +316,13 @@ export class FastifySubstrateServer implements SubstrateServer {
     // `fastify.close()` sends every session a GOAWAY: no new streams, and the
     // open ones finish. At `grace`, any connection still open is destroyed.
     for (const socket of this.#refused) socket.destroy();
-    const closed = this.fastify.close();
+    // Fastify closes its secondary listeners without waiting for them.
+    const closed = Promise.all([
+      this.fastify.close(),
+      ...secondaryServers(this.fastify)
+        .filter((s) => s.listening)
+        .map((s) => new Promise((resolve) => s.once('close', resolve)))
+    ]);
     const grace = opts?.grace;
     if (grace !== undefined) {
       let timer: NodeJS.Timeout | undefined;
@@ -570,8 +586,8 @@ function boundH2Requests(fastify: FastifyInstance, ms: number): void {
  * ping can queue behind a full write buffer on a slow link, or its ack behind
  * a blocked event loop.
  */
-function pingSessions(fastify: FastifyInstance, ms: number): void {
-  fastify.server.on('session', (session: ServerHttp2Session) => {
+function pingSessions(server: Server, ms: number): void {
+  server.on('session', (session: ServerHttp2Session) => {
     let unanswered = 0;
     const timer = setInterval(() => {
       if (unanswered >= 2) {
@@ -590,4 +606,18 @@ function pingSessions(fastify: FastifyInstance, ms: number): void {
     timer.unref();
     session.once('close', () => clearInterval(timer));
   });
+}
+
+/**
+ * Fastify's secondary listeners. Fastify 5 keeps them only under its private
+ * `fastify.serverBindings` symbol (lib/server.js `multipleBindings`), with no
+ * public accessor, so look the symbol up by its description.
+ */
+function secondaryServers(fastify: FastifyInstance): Server[] {
+  const key = Object.getOwnPropertySymbols(fastify).find(
+    (s) => s.description === 'fastify.serverBindings'
+  );
+  const bindings =
+    key === undefined ? undefined : (fastify as unknown as Record<symbol, unknown>)[key];
+  return Array.isArray(bindings) ? (bindings as Server[]) : [];
 }
