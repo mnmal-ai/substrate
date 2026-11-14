@@ -611,10 +611,11 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
           "for one namespace, or `namespace` + `type` for a single type's write " +
           'contract ({ fields, mutations }). Mine the scoped shape BEFORE a ' +
           'create/update so you send only declared fields — autoCRUD rejects ' +
-          'undeclared fields with `unknown_field`. CHEAPER STILL: add ' +
-          '`shape: "fields"` when you only need the type\'s field names and ' +
-          'kinds — for an autoCRUD type the mutations restate the field block ' +
-          'five times over, so the default answer costs about 6x the question.',
+          'undeclared fields with `unknown_field`. The type answer is compact: ' +
+          "generated CRUD names the type ('Todo fields', 'Todo') instead of " +
+          'restating its field block; `mutationRefs` says how to read it. ' +
+          '`shape: "fields"` drops the mutations to their names; `shape: "full"` ' +
+          'inlines every block (several times larger).',
         inputSchema: {
           namespace: z
             .string()
@@ -629,10 +630,10 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
               'Scope to one type within `namespace`, e.g. "Todo" — returns its field defs + create/update param shapes. Requires `namespace`.'
             ),
           shape: z
-            .enum(['full', 'fields'])
+            .enum(['compact', 'full', 'fields'])
             .optional()
             .describe(
-              'Projection of the type contract; requires `namespace` + `type`. "full" (default) inlines every mutation\'s params and returns. "fields" returns the field defs plus `mutationNames`, about a sixth the size — use it to answer "what fields does this type have".'
+              'Projection of the type contract; requires `namespace` + `type`. "compact" (default) prints the field block once and names the type in generated CRUD. "full" inlines every mutation\'s params and returns. "fields" returns the field defs plus `mutationNames` — use it to answer "what fields does this type have".'
             ),
           full: z
             .boolean()

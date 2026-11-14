@@ -83,7 +83,7 @@ const HTTP_INSTRUCTIONS = {
     path: '/substrate/v1/schema/<namespace>/<Type>',
     notes: [
       "cheapest way to learn a type's exact write shape before a create/update",
-      'response: { schemaVersion, namespace, type, fields, mutations } — `fields` is the declared FieldDef map (the write allow-list), `mutations` carries the matching create<Type>/update<Type> param + return shapes',
+      "response: { schemaVersion, namespace, type, fields, mutations, mutationRefs } — `fields` is the declared FieldDef map (the write allow-list). In `mutations`, generated CRUD names the type rather than restating `fields` (createTodo: { params: 'Todo fields', returns: 'Todo' }); `mutationRefs` says how to read those names. Custom mutations keep full signatures. `?shape=full` inlines every block; `?shape=fields` lists mutation names only",
       '404 lists availableTypes when the type is unknown',
       'the declared fields ARE the contract: autoCRUD rejects any undeclared field on write with code `unknown_field` (details carry `allowed: [...]`)'
     ]

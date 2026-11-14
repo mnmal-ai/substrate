@@ -106,12 +106,15 @@ rather than silently answering about the default namespace.
 **The type form takes `shape` on BOTH surfaces** — `?shape=fields` over HTTP,
 `schema {namespace, type, shape}` over MCP. It is the one place the two
 spell a parameter the same way, because it is a projection rather than scoping.
-`full` is the default and inlines every mutation's params and returns; `fields`
-returns the field defs plus `mutationNames` at roughly a sixth the size.
+`compact` is the default: generated autoCRUD mutations name the type instead
+of restating its field block (`createTodo: { params: 'Todo fields', returns:
+'Todo' }`), custom mutations keep full signatures, and `mutationRefs` says how
+to read the names. `full` inlines every mutation's params and returns, the
+field block about seven times over; `fields` returns the field defs plus
+`mutationNames`. For a cortext/Todo-shaped type the three measure about 4.7 KB,
+15.8 KB and 3.4 KB.
 
 Reach for `fields` whenever the question is "what fields does this type have".
-For an autoCRUD type the mutations restate the field block five times over, so
-the full shape grows several times faster than the fields themselves.
 
 An unrecognised `shape` is **refused**, not ignored.
 
