@@ -1,5 +1,5 @@
 import type { PackEnvelope } from '@mnmal-ai/substrate-types';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 import type { SubstrateClient } from '../src/client.js';
 import { runScript, type ScriptContext } from '../src/script.js';
 
@@ -166,9 +166,13 @@ describe('runScript', () => {
     const r = await run(async (s) => {
       const hits = await s.recall({ query: 'pack', namespace: 'cortext', type: 'Memory', k: 3 });
       await s.recall({ query: 'pack', namespace: 'cortext', type: 'Memory', row: { body: true } });
-      return hits.map((h) => h.row.synopsis);
+      // Typed without a cast: handle fields and body are strings when present.
+      expectTypeOf(hits[0]?.row.name).toEqualTypeOf<string | undefined>();
+      expectTypeOf(hits[0]?.row.body).toEqualTypeOf<string | undefined>();
+      expectTypeOf(hits[0]?.row.id).toEqualTypeOf<string | undefined>();
+      return hits.map((h) => h.row.synopsis?.toUpperCase());
     }, client);
-    expect(r.result).toEqual(['s']);
+    expect(r.result).toEqual(['S']);
     expect(seen[0]).toEqual({
       'recall/Hit': { params: { to: 'pack', namespace: 'cortext', type: 'Memory', k: 3 } }
     });

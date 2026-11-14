@@ -28,15 +28,40 @@ export interface ScriptRecallInput {
   row?: true | Record<string, true>;
 }
 
-export interface ScriptRecallHit {
+/**
+ * A recall hit's `row`. Without `row` in the request it is `id` plus whichever
+ * handle fields the row has (recall's HANDLE_FIELDS); `row: { body: true }` or
+ * `row: true` adds `body` and the other fields asked for.
+ */
+export interface RecallHitRow {
+  id: string;
+  name?: string;
+  title?: string;
+  topic?: string;
+  synopsis?: string;
+  description?: string;
+  /** Present only when the request asked for it and the type has one. */
+  body?: string;
+  [field: string]: unknown;
+}
+
+/** One `recall/Hit` row, as the recall frame returns it. */
+export interface RecallHit {
+  /** The hit row's id, the same as `row.id`. */
   id: string;
   namespace: string;
   type: string;
   score: number;
   kind: 'seed' | 'expansion';
+  /** Set on an expansion hit. */
   expandedFrom?: unknown;
-  row: Record<string, unknown>;
+  /** Returned when the request named no `row` fields. */
+  salience?: number;
+  blendedScore?: number;
+  row: RecallHitRow;
 }
+
+export type ScriptRecallHit = RecallHit;
 
 /** What a script's default export receives. */
 export interface ScriptContext {

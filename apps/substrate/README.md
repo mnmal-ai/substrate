@@ -74,7 +74,7 @@ Guardrails:
 
 `s.byShortId('cortext/Todo', 1787)` returns that row, and `s.byShortId('cortext/Todo', [1787, 1785], { title: true })` returns the rows in input order, through `where: { shortId: { eq | in } }`. It throws naming every shortId with no row, rather than returning fewer rows than asked for.
 
-`s.recall({ query, namespace, type, k?, threshold?, where?, row? })` returns hits best first, through the `recall/Hit` frame. Each hit's `row` is `id` plus the handle fields; pass `row: { body: true }` (or `true`) for more, on the hits you will read.
+`s.recall({ query, namespace, type, k?, threshold?, where?, row? })` returns hits best first, through the `recall/Hit` frame, typed as `RecallHit` (exported beside `ScriptContext`). Each hit's `row` is `id` plus the handle fields (`name`, `title`, `topic`, `synopsis`, `description`, each typed `string | undefined`, so `h.row.name` needs no cast); pass `row: { body: true }` (or `true`) for more, on the hits you will read.
 
 `--args` takes a JSON object, which the script reads as `s.args` (`{}` when omitted), so one script serves many calls.
 

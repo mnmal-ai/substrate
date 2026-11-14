@@ -73,6 +73,8 @@ export type {
 } from './nl.js';
 export {
   DEFAULT_MAX_WRITES,
+  type RecallHit,
+  type RecallHitRow,
   type RunScriptOptions,
   runScript,
   type ScriptContext,
