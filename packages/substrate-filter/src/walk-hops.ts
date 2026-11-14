@@ -64,7 +64,7 @@ export function forEachWalkHop(
           const far = visit({ kind: 'agg', node: agg, path: [...at, n] }, type);
           if (far !== undefined) inWhere(agg.where, far, [...at, n, 'where']);
         }
-      } else if (isObj(sel) && isObj(sel._walk)) {
+      } else if (isObj(sel) && Object.hasOwn(sel, '_walk') && isObj(sel._walk)) {
         const walk = sel._walk;
         const wp = [...at, '_walk'];
         const far = visit(
@@ -82,4 +82,68 @@ export function forEachWalkHop(
   const params = isObj(entry.params) ? entry.params : {};
   inWhere(params.where, seed, ['where']);
   inFields(entry.fields, seed, ['fields']);
+}
+
+/** Path of the first `_walk`, `_agg` or `$ref` key anywhere in a where, under `path`, or null. */
+function whereWalkPath(v: unknown, path: string[]): string[] | null {
+  if (Array.isArray(v)) {
+    for (let i = 0; i < v.length; i++) {
+      const hit = whereWalkPath(v[i], [...path, String(i)]);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  if (!isObj(v)) return null;
+  for (const [k, child] of Object.entries(v)) {
+    if (k === '_walk' || k === '_agg' || k === '$ref') return [...path, k];
+    const hit = whereWalkPath(child, [...path, k]);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/** True when a where uses the walk grammar (`_walk`, `_agg` or a `$ref` operand) anywhere. */
+export function whereUsesWalks(where: unknown): boolean {
+  return whereWalkPath(where, []) !== null;
+}
+
+/** `_agg` or a `{ _walk }` selection anywhere in a field selection, sub-selections included. */
+function fieldsWalkPath(fields: unknown, path: string[]): string[] | null {
+  if (!isObj(fields)) return null;
+  for (const [name, sel] of Object.entries(fields)) {
+    if (name === '_agg') return [...path, name];
+    if (!isObj(sel)) continue;
+    if (Object.hasOwn(sel, '_walk')) return [...path, name, '_walk'];
+    const hit = fieldsWalkPath(sel, [...path, name]);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+const WALK_PARAM_KEYS = ['aggregate', 'groupBy', 'having', 'offset'];
+
+/**
+ * Path (inside the frame) of the first walk-grammar construct in a frame entry
+ * `{ params, fields }`, or null: the where and the field selection, then the
+ * walk-only params unless `walkParams` is false. A resolver whose own params
+ * may share those names (a virtual type, a stream) passes false (#1822, #1951).
+ */
+export function walkGrammarPath(
+  entry: Record<string, unknown>,
+  { walkParams = true }: { walkParams?: boolean } = {}
+): string[] | null {
+  const params = isObj(entry.params) ? entry.params : {};
+  const where = whereWalkPath(params.where, ['where']);
+  if (where) return where;
+  if (walkParams) {
+    // Only `count: true` is walk grammar, as pg's walkParams reads it.
+    if (params.count === true) return ['count'];
+    for (const k of WALK_PARAM_KEYS) if (Object.hasOwn(params, k)) return [k];
+  }
+  return fieldsWalkPath(entry.fields, ['fields']);
+}
+
+/** True when a frame entry `{ params, fields }` uses any walk-grammar construct. */
+export function usesWalkGrammar(entry: Record<string, unknown>): boolean {
+  return walkGrammarPath(entry) !== null;
 }

@@ -544,7 +544,7 @@ export interface Dataset {
   /**
    * Store-wide counts of the fields an operator should know about: held in
    * jsonb until promoted, whose promotion failed, and no longer declared with
-   * their column kept. Counts only, with no namespace, type, field or error
+   * their column kept; and of misfits, values kept under `$raw`. Counts only, with no namespace, type, field or error
    * text, since `/health` shows it unauthenticated; `storageReport` names them.
    *
    * OPTIONAL. Backends with no per-type tables omit it.
@@ -562,7 +562,7 @@ export interface Dataset {
    * indexes this process has yet to build or failed to build, fields whose
    * promotion failed, and a type-table count over `partitionBudget`; and, as
    * `info`, engine indexes no longer declared, pending and orphaned fields,
-   * and open index recommendations. Never changes anything.
+   * misfits per type and field, and open index recommendations. Never changes anything.
    *
    * OPTIONAL. Backends without per-type storage omit it.
    */

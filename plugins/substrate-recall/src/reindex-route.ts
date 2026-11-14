@@ -9,6 +9,7 @@
 
 import { jsonResponse } from '@mnmal-ai/substrate-compose';
 import type { HttpHandler, SubstrateRequest, SubstrateResponse } from '@mnmal-ai/substrate-types';
+import { queryTimeoutResponse } from './query-timeout.js';
 import { handleReindex, type ReindexCoreDeps, validateReindexInput } from './reindex-core.js';
 
 export type ReindexRouteConfig = ReindexCoreDeps;
@@ -33,6 +34,8 @@ export function reindexRouteHandler(cfg: ReindexRouteConfig): HttpHandler {
     try {
       return jsonResponse(200, await handleReindex(validateReindexInput(parsed), cfg));
     } catch (err) {
+      const timedOut = queryTimeoutResponse(err);
+      if (timedOut !== null) return timedOut;
       const code = (err as { code?: string } | null)?.code;
       const message = err instanceof Error ? err.message : String(err);
       if (code === 'bad_request' || code === 'unknown_type') {

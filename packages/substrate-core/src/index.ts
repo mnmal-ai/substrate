@@ -10,12 +10,14 @@
 // Re-exported from its home package for consumers that import it from substrate-core.
 export { HttpBridgeClient } from '@mnmal-ai/substrate-bridge-http';
 export { RestrictViolation } from '@mnmal-ai/substrate-types';
+
 /**
  * @internal — §6.4 lost-namespace handler, used by `engine.ts`. Exported for
  * custom-engine integrators but treated as package-private; the signature may
  * change.
  */
 
+export { usesWalkGrammar, walkGrammarPath } from '@mnmal-ai/substrate-filter';
 export {
   type ReadShape,
   readShapeOf,
@@ -67,5 +69,4 @@ export {
 export { publishSchema } from './schema-publisher.js';
 export { applyPolicy, loadSweepState, runSweep, saveSweepState } from './sweep.js';
 export { TaskScheduler } from './task-scheduler.js';
-export { usesWalkGrammar, walkGrammarPath } from './walk-gate.js';
 export { hopResolver } from './walk-types.js';

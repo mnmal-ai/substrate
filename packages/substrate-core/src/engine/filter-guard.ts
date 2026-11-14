@@ -13,6 +13,7 @@
 import {
   computedFieldOwner,
   hasComputedFields,
+  walkGrammarPath,
   whereContainsOperator
 } from '@mnmal-ai/substrate-filter';
 import type {
@@ -28,7 +29,6 @@ import {
   type ValidateFilterInput,
   validateFilter
 } from '../filter/validator.js';
-import { walkGrammarPath } from '../walk-gate.js';
 import { hopResolver } from '../walk-types.js';
 import { addError } from './internals.js';
 
@@ -240,7 +240,9 @@ function validateAgainst(
 
 /** `_agg` and nested `{ _walk }` selections are walk grammar, not projected fields. */
 function isWalkSelection(name: string, sel: unknown): boolean {
-  return name === '_agg' || (typeof sel === 'object' && sel !== null && '_walk' in sel);
+  return (
+    name === '_agg' || (typeof sel === 'object' && sel !== null && Object.hasOwn(sel, '_walk'))
+  );
 }
 
 /** The walk-grammar params and field selection `validateFilter` checks. */

@@ -46,6 +46,7 @@ import {
   createCrystalliseGuard
 } from './crystallise-guard.js';
 import type { EmbeddingsStore } from './embeddings-store.js';
+import { recallQueryTimeout, timeoutMapped } from './query-timeout.js';
 import { bindPolicy, type ReadPolicyCheck } from './recall-route.js';
 import { callerFromContext, visibleRefs } from './row-visibility.js';
 import type { ClusterRunParams } from './run-clusterer.js';
@@ -161,6 +162,8 @@ function memberRow(m: ClusterMemberRecord): Row {
 }
 
 function rethrowCoded(err: unknown): never {
+  const timedOut = recallQueryTimeout(err);
+  if (timedOut !== null) throw timedOut;
   const code = (err as { code?: string } | null)?.code;
   const message = err instanceof Error ? err.message : String(err);
   if (code === 'policy_denied' || code === 'bad_request' || code === CRYSTALLISE_IN_FLIGHT_CODE) {
@@ -415,8 +418,8 @@ export function buildClusterSurface(deps: ClusterSurfaceDeps): {
 
   return {
     types: {
-      Cluster: { fields: CLUSTER_FIELDS, resolver: clusterResolver },
-      ClusterMember: { fields: CLUSTER_MEMBER_FIELDS, resolver: memberResolver }
+      Cluster: { fields: CLUSTER_FIELDS, resolver: timeoutMapped(clusterResolver) },
+      ClusterMember: { fields: CLUSTER_MEMBER_FIELDS, resolver: timeoutMapped(memberResolver) }
     },
     mutations: {
       crystallise: { resolver: crystalliseResolver },

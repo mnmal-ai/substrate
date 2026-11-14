@@ -64,13 +64,17 @@ export class MemoryShortIdStore {
 
   /**
    * Record the (shortId → rowId) pairing. Safe to call without a prior
-   * `allocateUnbound` (the mapping is stored unconditionally).
+   * `allocateUnbound`. Keeps the first binding: a no-op when the row or the
+   * shortId is already bound, as pg's `ON CONFLICT DO NOTHING` (short ids are
+   * stable handles and never move). Resolves whether it bound.
    */
-  async bind(ns: string, type: string, shortId: number, rowId: string): Promise<void> {
+  async bind(ns: string, type: string, shortId: number, rowId: string): Promise<boolean> {
     const b = this.bucket(ns, type);
+    if (b.byRow.has(rowId) || b.byShort.has(shortId)) return false;
     b.byShort.set(shortId, rowId);
     b.byRow.set(rowId, shortId);
     if (shortId >= b.next) b.next = shortId + 1;
+    return true;
   }
 
   async resolveShortId(ns: string, type: string, shortId: number): Promise<string | null> {

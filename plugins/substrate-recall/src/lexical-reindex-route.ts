@@ -14,6 +14,7 @@ import {
   type LexicalReindexCoreDeps,
   validateLexicalReindexInput
 } from './lexical-reindex-core.js';
+import { queryTimeoutResponse } from './query-timeout.js';
 
 export type LexicalReindexRouteConfig = LexicalReindexCoreDeps;
 
@@ -40,6 +41,8 @@ export function lexicalReindexRouteHandler(cfg: LexicalReindexRouteConfig): Http
         await handleLexicalReindex(validateLexicalReindexInput(parsed), cfg)
       );
     } catch (err) {
+      const timedOut = queryTimeoutResponse(err);
+      if (timedOut !== null) return timedOut;
       const code = (err as { code?: string } | null)?.code;
       const message = err instanceof Error ? err.message : String(err);
       if (code === 'bad_request' || code === 'unknown_type') {
