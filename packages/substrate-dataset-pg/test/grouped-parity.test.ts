@@ -443,7 +443,8 @@ describe('grouped reads on memory and pg', () => {
           read(e, params)
         )
       );
-      for (const o of outs) expect(o.errors?.[0]?.code, JSON.stringify(params)).toBe('value_out_of_range');
+      for (const o of outs)
+        expect(o.errors?.[0]?.code, JSON.stringify(params)).toBe('value_out_of_range');
     }
   });
 

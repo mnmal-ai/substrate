@@ -137,8 +137,7 @@ export function buildGroupedRead(
   // Only a LIMIT can stop early, and not when the first order key is an aggregate: no input order
   // supplies that key, so a Sort reads every group before it returns one.
   const firstOrder = spec.orderBy?.[0] === undefined ? undefined : Object.keys(spec.orderBy[0])[0];
-  const fenced =
-    raises && spec.limit !== undefined && !aggs.some((a) => a.name === firstOrder);
+  const fenced = raises && spec.limit !== undefined && !aggs.some((a) => a.name === firstOrder);
   const inner = fenced
     ? sql`SELECT y.*, count(*) OVER () AS w FROM (${grouped}) y OFFSET 0`
     : grouped;
