@@ -495,3 +495,51 @@ describe('time field ruling', () => {
     );
   });
 });
+
+describe('a field named before its value', () => {
+  // "project" is a stored Memory.type value, so the word is claimed as a value;
+  // on Todo it names the field that "substrate" is a value of.
+  const pk = buildNamespacePack({
+    namespace: 'ns',
+    operators: OPERATORS,
+    schema: {
+      schemaVersion: 'v',
+      mutations: {},
+      types: {
+        Todo: { fields: { title: s(), project: s(), area: s() } },
+        Memory: { fields: { name: s(), type: s(), project: s() } }
+      }
+    },
+    profile: {
+      types: {
+        Todo: {
+          project: { values: ['substrate', 'labs'], truncated: false },
+          area: { values: ['substrate', 'ops'], truncated: false }
+        },
+        Memory: { type: { values: ['project', 'feedback'], truncated: false } }
+      }
+    }
+  });
+  const q = (text: string) => parseQuestion(text, pk, ctx);
+
+  it('reads "in project substrate" as project = substrate', () => {
+    const r = q('todos in project substrate');
+    expect(r.status).toBe('resolved');
+    expect(JSON.stringify(r.candidates[0]?.frame)).toContain('{"project":{"eq":"substrate"}}');
+    expect(r.candidates[0]?.evidence).toContainEqual({
+      span: 'project',
+      role: 'field',
+      detail: 'project'
+    });
+  });
+
+  it('still refuses the field word alone, with no value of that field beside it', () => {
+    expect(q('todos in project').status).not.toBe('resolved');
+  });
+
+  it('still reads the word as a value on the type that stores it', () => {
+    expect(JSON.stringify(q('project memories').candidates[0]?.frame)).toContain(
+      '{"type":{"eq":"project"}}'
+    );
+  });
+});

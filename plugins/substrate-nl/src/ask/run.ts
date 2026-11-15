@@ -304,6 +304,16 @@ async function recall(
   };
 }
 
+/** No reading to offer as an option: say what was not understood instead of asking an empty question. */
+function noReading(question: string, reason: string): NlOutcome {
+  return {
+    kind: 'unknown',
+    question,
+    dropped: [{ span: question, reason, kind: 'filter' }],
+    plan: []
+  };
+}
+
 function clarify(
   question: string,
   reason: string,
@@ -457,7 +467,10 @@ export async function* runAsk(
           outcome = { kind: 'refuse', reason: judged.reason };
           break;
         case 'clarify':
-          outcome = clarify(req.question, judged.reason, first.candidates, deps.pack);
+          outcome =
+            first.candidates.length === 0
+              ? noReading(req.question, `judge asked to clarify: ${first.reason ?? 'no reading'}`)
+              : clarify(req.question, judged.reason, first.candidates, deps.pack);
           break;
         case 'escalated':
           // The judge's reading, not the parser's first: an escalated pick carries only its choice.

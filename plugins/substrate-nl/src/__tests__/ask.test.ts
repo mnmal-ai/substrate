@@ -636,3 +636,36 @@ describe('mergePlan', () => {
     expect(mergePlan(parsed, undefined)).toBe(parsed);
   });
 });
+
+describe('a judge that asks to clarify', () => {
+  it('with no reading to offer, answers unknown and says what was not understood', async () => {
+    const { e, query } = engine();
+    const o = outcome(
+      await collect(
+        runAsk({ namespace: 'ns', question: 'zorblax quux' }, http, {
+          pack,
+          engine: e,
+          judge: judge({ action: 'clarify' })
+        })
+      )
+    );
+    expect(o).toMatchObject({ kind: 'unknown', question: 'zorblax quux', plan: [] });
+    expect(o.kind === 'unknown' && o.dropped[0]?.reason).toMatch(/^judge asked to clarify: /);
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it('with readings, still offers them as options', async () => {
+    const { e } = engine();
+    const o = outcome(
+      await collect(
+        runAsk({ namespace: 'ns', question: 'zorblax quux todos' }, http, {
+          pack,
+          engine: e,
+          judge: judge({ action: 'clarify' })
+        })
+      )
+    );
+    expect(o.kind).toBe('clarify');
+    expect(o.kind === 'clarify' && o.options.length).toBeGreaterThan(0);
+  });
+});
