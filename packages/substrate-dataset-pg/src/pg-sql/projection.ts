@@ -59,13 +59,16 @@ export function buildRowProjection(
   const wanted = [...keys, RAW_KEY];
   const subset: Fragment = sql`COALESCE(CASE WHEN pg_column_size(${ex}) < ${sql.unsafe(String(INLINE_EXTRA_BYTES))} THEN (SELECT jsonb_object_agg(k, ${ex} -> k) FROM unnest(${wanted}::text[]) k WHERE ${ex} ? k) ELSE (SELECT jsonb_object_agg(e.key, e.value) FROM jsonb_each(${ex}) e WHERE e.key = ANY(${wanted}::text[])) END, '{}'::jsonb)`;
   // When every requested field has its own column, `decodeRow` reads nothing from `extra` but
-  // `id` and `$raw`, which most rows lack: one key test per row instead of the subset subplan.
+  // `id` and `$raw`, which most rows lack: one key test per row, then a probe of each. No
+  // subquery, so the target list stays parallel-safe.
   const allColumns = [...keys].every((k) => k === 'id' || table.column(k)?.state === 'column');
+  const probe = (k: string): Fragment =>
+    sql`CASE WHEN ${ex} ? ${k}::text THEN jsonb_build_object(${k}::text, ${ex} -> ${k}::text) ELSE '{}'::jsonb END`;
   const extra: Fragment =
     fields === undefined
       ? ex
       : allColumns
-        ? sql`CASE WHEN ${ex} ?| ${['id', RAW_KEY]}::text[] THEN ${subset} ELSE '{}'::jsonb END`
+        ? sql`CASE WHEN ${ex} ?| ${['id', RAW_KEY]}::text[] THEN ${probe('id')} || ${probe(RAW_KEY)} ELSE '{}'::jsonb END`
         : subset;
   const head = columns.length === 0 ? '' : `${columns.join(', ')}, `;
   return sql`${sql.unsafe(head)}${extra} AS extra${walk === null ? sql`` : sql`, ${walk}`}`;

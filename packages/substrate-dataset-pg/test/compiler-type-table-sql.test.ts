@@ -365,14 +365,13 @@ describe('a date column reads the same whatever the session TimeZone', () => {
     );
     expect(text).toContain('r.extra AS extra');
     // A projected subset keeps `$raw`, which overlays any column it shields.
-    expect(render(buildRowProjection(sql, OBS, { observedAt: true }))).toMatch(
-      /jsonb_each\(r\.extra\) e WHERE e\.key = ANY\(\$::text\[\]\)/
-    );
-    // Column fields only: the subset runs only for a row holding `id` or `$raw` in extra.
-    expect(render(buildRowProjection(sql, OBS, { observedAt: true }))).toContain(
-      'CASE WHEN r.extra ?| $::text[] THEN'
-    );
-    expect(render(buildRowProjection(sql, OBS, { gone: true }))).not.toContain('?|');
+    const general = render(buildRowProjection(sql, OBS, { gone: true }));
+    expect(general).toMatch(/jsonb_each\(r\.extra\) e WHERE e\.key = ANY\(\$::text\[\]\)/);
+    expect(general).not.toContain('?|');
+    // Column fields only: `id` and `$raw` are probed for a row holding either, with no subquery.
+    const columnsOnly = render(buildRowProjection(sql, OBS, { observedAt: true }));
+    expect(columnsOnly).toContain('CASE WHEN r.extra ?| $::text[] THEN');
+    expect(columnsOnly).not.toMatch(/SELECT/i);
   });
 
   it('decodeRow reads that text as the canonical form a Date gives', () => {
