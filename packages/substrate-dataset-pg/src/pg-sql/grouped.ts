@@ -134,7 +134,12 @@ export function buildGroupedRead(
   // select above the grouping (the planner would otherwise evaluate the range check above the
   // window), makes every group be produced first. The outer select names `w` too, since the
   // planner drops a subquery column nothing reads; decode ignores it.
-  const inner = raises
+  // Only a LIMIT can stop early, and not when the first order key is an aggregate: no input order
+  // supplies that key, so a Sort reads every group before it returns one.
+  const firstOrder = spec.orderBy?.[0] === undefined ? undefined : Object.keys(spec.orderBy[0])[0];
+  const fenced =
+    raises && spec.limit !== undefined && !aggs.some((a) => a.name === firstOrder);
+  const inner = fenced
     ? sql`SELECT y.*, count(*) OVER () AS w FROM (${grouped}) y OFFSET 0`
     : grouped;
 
@@ -188,7 +193,7 @@ export function buildGroupedRead(
     spec.offset === undefined || spec.offset === 0 ? sql`` : sql` OFFSET ${spec.offset}`;
   const statement = sql`SELECT 1 AS g, ${list([
     ...outs.map((o, n) => sql`${project(o.frag, o.type)} AS ${u(`o${n}`)}`),
-    ...(raises ? [sql`x.w`] : [])
+    ...(fenced ? [sql`x.w`] : [])
   ])} FROM (${inner}) x${having}${
     order.length === 0 ? sql`` : sql` ORDER BY ${list(order)}`
   }${limit}${offset}`;

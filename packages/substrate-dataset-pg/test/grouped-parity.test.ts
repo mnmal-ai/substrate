@@ -426,6 +426,27 @@ describe('grouped reads on memory and pg', () => {
     for (const o of arith) expect(o.errors?.[0]?.code).toBe('value_out_of_range');
   });
 
+  it('an overflow raises without the window fence: ordered by an aggregate, or with no LIMIT', async () => {
+    // 98 overflows; ordering by the sum or reading every group must still produce it.
+    const base = {
+      where: { region: { in: [0, 1, 98] } },
+      groupBy: { region: 'region' },
+      aggregate: { s: { sum: 'user' }, m: { max: { add: ['user', 1] } } }
+    };
+    for (const params of [
+      { ...base, orderBy: [{ s: 'asc' }], limit: 1 },
+      { ...base, orderBy: [{ m: 'desc' }, { region: 'asc' }], limit: 1 },
+      base
+    ]) {
+      const outs = await Promise.all(
+        [...engines.map(([, e]) => e), ...(streaming ? [streaming] : [])].map((e) =>
+          read(e, params)
+        )
+      );
+      for (const o of outs) expect(o.errors?.[0]?.code, JSON.stringify(params)).toBe('value_out_of_range');
+    }
+  });
+
   it('a float overflow in a group key raises the same code and message on both', async () => {
     const outs = await Promise.all(
       engines.map(([, e]) =>
