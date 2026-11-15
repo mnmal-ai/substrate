@@ -736,7 +736,24 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
       continue;
     }
     const refs = (own(a.pack.values, v.key as string) ?? []).filter((r) => r.type === type);
-    if (refs.length === 0) return { reason: `"${v.span}" is not a ${type} value` };
+    if (refs.length === 0) {
+      // "in project substrate": a word stored as a value elsewhere names this
+      // type's field, when another value in the question is one of that field's.
+      const named = Object.keys(fields).find(
+        (f) =>
+          fields[f]?.phrases.includes(v.key as string) &&
+          a.values.some(
+            (o) =>
+              o !== v &&
+              (own(a.pack.values, o.key as string) ?? []).some(
+                (r) => r.type === type && r.field === f
+              )
+          )
+      );
+      if (named === undefined) return { reason: `"${v.span}" is not a ${type} value` };
+      ev.push({ span: v.span, role: 'field', detail: named });
+      continue;
+    }
     const field = pickField(
       refs.map((r) => r.field),
       fields,

@@ -134,4 +134,21 @@ describe('explicit dates in a question', () => {
       lt: day('2026-10-03')
     });
   });
+
+  it('reads since/after/before/until a named range as open-ended at its edges', () => {
+    // asOf is Friday 2026-10-02; last week is Mon 09-21 .. Mon 09-28.
+    expect(rangeFor('since last week', asOf)).toEqual({ gte: day('2026-09-21') });
+    expect(rangeFor('after last week', asOf)).toEqual({ gte: day('2026-09-28') });
+    expect(rangeFor('before last week', asOf)).toEqual({ lt: day('2026-09-21') });
+    expect(rangeFor('until yesterday', asOf)).toEqual({ lt: day('2026-10-02') });
+    expect(rangeFor('since last month', asOf)).toEqual({ gte: day('2026-09-01') });
+    expect(rangeFor('since open', asOf)).toBeNull();
+  });
+
+  it('claims "since last week" whole, so no word of it is dropped', () => {
+    expect(JSON.stringify(params('how many decisions since last week')?.where)).toContain(
+      JSON.stringify({ createdAt: { gte: day('2026-09-21') } })
+    );
+    expect(parseQuestion('how many decisions since last week', pack, ctx).status).toBe('resolved');
+  });
 });

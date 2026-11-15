@@ -65,11 +65,25 @@ export function rangeFor(phrase: string, asOf: string): DateRange | null {
     return { gte: at(back.getTime()), lt: at(today + day) };
   }
   const since = /^since (\w+)$/.exec(phrase);
-  if (since !== null) {
-    const target = WEEKDAYS.indexOf(since[1] as string);
-    if (target < 0) return null;
+  const target = since === null ? -1 : WEEKDAYS.indexOf(since[1] as string);
+  if (target >= 0) {
     const back = (weekday - target + 7) % 7;
     return { gte: at(today - back * day), lt: at(today + day) };
+  }
+  // A lead word before a named range ("since last week") opens it at one edge.
+  const lead = /^(since|after|before|until) (.+)$/.exec(phrase);
+  const named = lead === null ? null : rangeFor(lead[2] as string, asOf);
+  if (named?.gte !== undefined && named.lt !== undefined) {
+    switch (lead?.[1]) {
+      case 'since':
+        return { gte: named.gte };
+      case 'after':
+        return { gte: named.lt };
+      case 'before':
+        return { lt: named.gte };
+      case 'until':
+        return { lt: named.lt };
+    }
   }
   return explicitRange(phrase, today, at, offset);
 }
