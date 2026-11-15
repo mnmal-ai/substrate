@@ -10,15 +10,18 @@ on:
 
 permissions: {}
 
+# A push cancels the run for the commit it replaced. A label event runs in a group of its own:
+# several labels added at once fire runs on one commit, and a run cancelled while queued has
+# no gate job; when it is the commit's newest run, the required gate reads as never reported.
 concurrency:
-  group: pre-merge-${{ github.event.pull_request.number }}
+  group: pre-merge-${{ github.event.pull_request.number }}-${{ github.event.action == 'labeled' && github.run_id || 'push' }}
   cancel-in-progress: true
 
 jobs:
   # A push to a PR without the label runs nothing heavy, and the gate below
   # says why. Any label added to a ready PR re-runs the set: filtering on the
-  # added label would skip the passes, fail the gate and, through the
-  # concurrency group, cancel the run it replaced.
+  # added label would skip the passes and fail the gate, and that failure
+  # would be the commit's newest gate result.
   pg-plan:
     name: Postgres passes
     if: contains(github.event.pull_request.labels.*.name, 'ready-to-merge')
