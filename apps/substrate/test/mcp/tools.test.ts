@@ -276,6 +276,42 @@ describe('substrate-mcp tool handlers', () => {
     expect(listedEnv.data['default/Todo']?.map((r) => r.title)).toContain('via mcp');
   });
 
+  it('a shape-refused mutate carries the type contract', async () => {
+    const r = await createMutateHandler(TEST_ENDPOINT)({
+      payload: { 'default/createTodo': { params: { title: 'x', bogus: 1 }, fields: { id: true } } }
+    });
+    const env = parseToolText(r) as {
+      errors: Array<{ code: string }>;
+      contract?: Record<string, { fields?: unknown }>;
+    };
+    expect(env.errors[0]?.code).toBe('unknown_field');
+    expect(env.contract?.['default/Todo']?.fields).toBeDefined();
+  });
+
+  it('a successful mutate carries no contract', async () => {
+    const r = await createMutateHandler(TEST_ENDPOINT)({
+      payload: { 'default/createTodo': { params: { title: 'ok' }, fields: { id: true } } }
+    });
+    expect('contract' in (parseToolText(r) as object)).toBe(false);
+  });
+
+  it('two shape refusals on one type attach one contract', async () => {
+    const bad = { params: { title: 'x', bogus: 1 }, fields: { id: true } };
+    const r = await createMutateHandler(TEST_ENDPOINT)({
+      payload: { 'default/createTodo': [bad, bad] }
+    });
+    const env = parseToolText(r) as { contract?: Record<string, unknown> };
+    expect(Object.keys(env.contract ?? {})).toEqual(['default/Todo']);
+  });
+
+  it('a refused op with no generated type leaves the result untouched', async () => {
+    const r = await createMutateHandler(TEST_ENDPOINT)({
+      payload: { 'default/notAGeneratedOp': { params: { bogus: 1 }, fields: { id: true } } }
+    });
+    expect(r.isError).toBeUndefined();
+    expect('contract' in (parseToolText(r) as object)).toBe(false);
+  });
+
   it('query handler surfaces transport throw as isError result', async () => {
     globalThis.fetch = (async () => {
       throw new Error('ECONNREFUSED');
@@ -320,6 +356,20 @@ describe('substrate-mcp tool handlers', () => {
     expect(parsed).toEqual({
       'default/Todo': { params: { limit: 3 }, fields: { id: true } }
     });
+  });
+
+  it('payloadSchema quotes the parser on malformed JSON', () => {
+    const r = payloadSchema('demo').safeParse('{not json}');
+    expect(r.success).toBe(false);
+    if (r.success) return;
+    expect(r.error.issues.map((i) => i.message).join(' ')).toMatch(/valid JSON \(.+\)/);
+  });
+
+  it('payloadSchema shows a valid payload when the shape is wrong', () => {
+    const r = payloadSchema('demo').safeParse(42);
+    expect(r.success).toBe(false);
+    if (r.success) return;
+    expect(r.error.issues.map((i) => i.message).join(' ')).toContain('"params"');
   });
 
   it('payloadSchema rejects malformed JSON strings with a helpful issue', () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   BridgeUnreachableError,
+  idHint,
   isResolverFrameError,
   isRestrictViolation,
   MissingReferentError,
@@ -117,5 +118,22 @@ describe('BridgeUnreachableError', () => {
     expect(err.baseUrl).toBe('https://b.internal:3100');
     expect(err.cause).toBe('HTTP 401 (auth)');
     expect(err.name).toBe('BridgeUnreachableError');
+  });
+});
+
+describe('idHint', () => {
+  it('is empty for a UUID and names the shortId lookup otherwise', () => {
+    expect(idHint('01a1e1da-3c29-7183-aa5c-8400000d4ea0')).toBe('');
+    expect(idHint('#1839')).toBe(
+      ' — if this is a shortId, resolve it with where: { shortId: { eq: N } }'
+    );
+    expect(idHint(1839)).toContain('if this is a shortId');
+  });
+
+  it('rides on a missing crossRef referent with a non-UUID id', () => {
+    const msg = (id: string) =>
+      new MissingReferentError('owner', { ns: 'default', type: 'Thing', id }).message;
+    expect(msg('__5__')).toContain('if this is a shortId');
+    expect(msg('01a1e1da-3c29-7183-aa5c-8400000d4ea0')).not.toContain('shortId');
   });
 });

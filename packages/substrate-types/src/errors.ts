@@ -81,6 +81,15 @@ export function filterTooBroad(
   );
 }
 
+const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A miss on an id that is not UUID-shaped is usually a shortId sent where the UUID belongs. */
+export function idHint(value: unknown): string {
+  return typeof value === 'string' && UUID_SHAPE.test(value)
+    ? ''
+    : ' — if this is a shortId, resolve it with where: { shortId: { eq: N } }';
+}
+
 /**
  * Thrown by a write-path resolver when a crossRef declaring `onMissing: 'reject'`
  * references a target that does not exist (or has been tombstoned). Extends
@@ -93,7 +102,7 @@ export class MissingReferentError extends ResolverFrameError {
   constructor(field: string, target: { ns: string; type: string; id: string | number }) {
     super(
       'missing_referent',
-      `crossRef '${field}' references a non-existent ${target.ns}/${target.type} (id=${target.id})`,
+      `crossRef '${field}' references a non-existent ${target.ns}/${target.type} (id=${target.id})${idHint(target.id)}`,
       { field, target }
     );
   }

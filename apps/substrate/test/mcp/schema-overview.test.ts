@@ -160,3 +160,12 @@ describe('buildInstructions', () => {
     await client.close();
   });
 });
+
+describe('opt-in tools in the instructions', () => {
+  it('names the opt-in tools and how to enable them, with and without an overview', () => {
+    for (const text of [buildInstructions(null), buildInstructions({})]) {
+      expect(text).toContain('SUBSTRATE_MCP_TOOLS=all');
+      expect(text).toMatch(/propose_type/);
+    }
+  });
+});

@@ -708,4 +708,26 @@ describe('autoCRUD reject — values that do not match a scalar field type', () 
       create(makeCtx(), { params: { count: null, done: null, dueAt: null } })
     ).resolves.toBeDefined();
   });
+
+  it('an update to a non-UUID id that is missing says how to resolve a shortId', async () => {
+    const dataset = new MemoryDataset({ namespace: 'default' });
+    const resolver = updateResolver('Thing', dataset, makeEdges(), { fields: THING_FIELDS });
+    const err = await resolver(makeCtx(), { params: { id: '__1839__', name: 'y' } }).catch(
+      (e) => e
+    );
+    expect(err.code).toBe('not_found');
+    expect(err.message).toContain(
+      'if this is a shortId, resolve it with where: { shortId: { eq: N } }'
+    );
+  });
+
+  it('an update to a missing UUID keeps the plain not_found message', async () => {
+    const dataset = new MemoryDataset({ namespace: 'default' });
+    const resolver = updateResolver('Thing', dataset, makeEdges(), { fields: THING_FIELDS });
+    const err = await resolver(makeCtx(), {
+      params: { id: '01a1e1da-3c29-7183-aa5c-8400000d4ea0', name: 'y' }
+    }).catch((e) => e);
+    expect(err.code).toBe('not_found');
+    expect(err.message).not.toContain('shortId');
+  });
 });

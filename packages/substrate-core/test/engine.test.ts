@@ -125,6 +125,28 @@ describe('Engine.query', () => {
     expect(envelope.errors?.[0]?.message).toContain("unknown namespace 'missing'");
   });
 
+  it('an unqualified frame part names where it belongs', async () => {
+    const { engine } = singleNs(new Registry());
+    const envelope = await engine.query({ frame: { fields: { params: {} } }, ctx: makeCtx() });
+    expect(envelope.errors?.[0]?.code).toBe('unqualified_key');
+    expect(envelope.errors?.[0]?.message).toContain('is part of a frame, not a frame key');
+  });
+
+  it('an unqualified key declared by exactly one namespace suggests the qualified spelling', async () => {
+    const registry = new Registry();
+    registry.register('Todo', { resolver: async () => [] });
+    const { engine } = singleNs(registry);
+    const envelope = await engine.query({ frame: { Todo: { params: {} } }, ctx: makeCtx() });
+    expect(envelope.errors?.[0]?.code).toBe('unqualified_key');
+    expect(envelope.errors?.[0]?.message).toContain("did you mean 'default/Todo'?");
+  });
+
+  it('an unqualified key nobody declares keeps the plain message', async () => {
+    const { engine } = singleNs(new Registry());
+    const envelope = await engine.query({ frame: { Nope: { params: {} } }, ctx: makeCtx() });
+    expect(envelope.errors?.[0]?.message).not.toContain('did you mean');
+  });
+
   it('surfaces unqualified keys as envelope errors', async () => {
     const { engine } = singleNs(new Registry());
     const envelope = await engine.query({
