@@ -553,10 +553,10 @@ export function createRunHandler(env: NodeJS.ProcessEnv = process.env) {
 
 export interface McpServerOptions {
   /**
-   * Comma-separated tool names to register (SUBSTRATE_MCP_TOOLS). Unset or blank
-   * registers every tool. Every registered definition rides along on every
-   * model call, so an agent that only queries and recalls should not carry
-   * all ten.
+   * Comma-separated tool names and presets to register (SUBSTRATE_MCP_TOOLS):
+   * `core` (the default when unset or blank) or `all`. Every registered
+   * definition rides along on every model call, so the default leaves out the
+   * admin tools and `ask`.
    */
   tools?: string;
   /** Sent to the client at initialize; clients put it in the agent's context. */
@@ -1048,7 +1048,7 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
     TOOLS.map((t) => t.name)
   );
   for (const t of TOOLS) {
-    if (allowed !== null && !allowed.has(t.name)) continue;
+    if (!allowed.has(t.name)) continue;
     // biome-ignore lint/suspicious/noExplicitAny: config.inputSchema varies per tool
     server.registerTool(t.name, t.config as any, t.handler);
   }
@@ -1056,25 +1056,29 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
   return server;
 }
 
+/** The tools a worker agent needs; the admin tools and `ask` are opt-in. */
+export const CORE_TOOLS: readonly string[] = ['query', 'mutate', 'schema', 'recall', 'run', 'whoami'];
+
 /**
- * Parse SUBSTRATE_MCP_TOOLS. `null` means register everything. An unknown name
- * throws: a typo that silently registered nothing would read as "this server
- * has no such tool", which is a worse failure than refusing to start.
+ * Parse SUBSTRATE_MCP_TOOLS: tool names and the presets `core` (the default)
+ * and `all`. An unknown name throws: a typo that silently registered nothing
+ * would read as "this server has no such tool", which is a worse failure than
+ * refusing to start.
  */
-function resolveToolAllowlist(raw: string | undefined, known: string[]): Set<string> | null {
-  if (raw === undefined || raw.trim() === '') return null;
-  const names = raw
-    .split(',')
-    .map((n) => n.trim())
-    .filter((n) => n !== '');
-  for (const n of names) {
-    if (!known.includes(n)) {
+function resolveToolAllowlist(raw: string | undefined, known: string[]): Set<string> {
+  if (raw === undefined || raw.trim() === '') return new Set(CORE_TOOLS);
+  const names = new Set<string>();
+  for (const n of raw.split(',').map((t) => t.trim())) {
+    if (n === '') continue;
+    if (n === 'core') for (const t of CORE_TOOLS) names.add(t);
+    else if (n === 'all') for (const t of known) names.add(t);
+    else if (known.includes(n)) names.add(n);
+    else
       throw new Error(
-        `SUBSTRATE_MCP_TOOLS: unknown tool '${n}'. Valid names: ${[...known].sort().join(', ')}`
+        `SUBSTRATE_MCP_TOOLS: unknown tool '${n}'. Valid names: core, all, ${[...known].sort().join(', ')}`
       );
-    }
   }
-  return new Set(names);
+  return names;
 }
 
 /** The overview for the session's instructions, or null when the server is slow or down. */

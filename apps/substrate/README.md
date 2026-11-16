@@ -22,7 +22,7 @@ A plugin package declares `@mnmal-ai/substrate` as a peer dependency and as a de
 | Subcommand | Purpose |
 |---|---|
 | `substrate serve` | Boot the HTTP server (default port 3100) |
-| `substrate mcp` | stdio MCP server; reads `SUBSTRATE_URL`, and `SUBSTRATE_MCP_TOOLS` (csv) to register only some tools |
+| `substrate mcp` | stdio MCP server; reads `SUBSTRATE_URL`, and `SUBSTRATE_MCP_TOOLS` (csv of tool names, `core` or `all`; default `core`: query, mutate, schema, recall, run, whoami) |
 | `substrate init [dir] [flags]` | Scaffold a runtime directory (interactive; `--yes` for scripted use) |
 | `substrate ask <question…>` | Ask a natural-language question (needs `substrate-nl`) |
 | `substrate run <script.mts>` | Run a script against a signed, guarded client and print one JSON report |
