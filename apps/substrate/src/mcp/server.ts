@@ -364,13 +364,64 @@ export function createQueryHandler(endpoint: string): (args: FrameArgs) => Promi
   };
 }
 
+/** The refusal codes that mean the frame's params do not fit the type. */
+const SHAPE_CODES = new Set([
+  'unknown_field',
+  'missing_required_field',
+  'invalid_enum_value',
+  'invalid_field_type'
+]);
+
+interface EnvelopeError {
+  code?: string;
+  path?: unknown[];
+}
+
+/** The type a generated mutation key writes, or null for any other key. */
+function typeOfOp(key: string): { ns: string; type: string } | null {
+  const slash = key.indexOf('/');
+  if (slash < 1) return null;
+  const m = /^(create|update|upsert|delete)(Many)?([A-Z][A-Za-z0-9_]*)$/.exec(key.slice(slash + 1));
+  return m?.[3] === undefined ? null : { ns: key.slice(0, slash), type: m[3] };
+}
+
+/** Each shape-refused type's write contract, keyed `<ns>/<Type>`; undefined when there is none. */
+async function shapeContracts(
+  endpoint: string,
+  errors: EnvelopeError[]
+): Promise<Record<string, unknown> | undefined> {
+  const types = new Map<string, { ns: string; type: string }>();
+  for (const e of errors) {
+    if (e.code === undefined || !SHAPE_CODES.has(e.code)) continue;
+    const t = typeof e.path?.[0] === 'string' ? typeOfOp(e.path[0]) : null;
+    if (t !== null) types.set(`${t.ns}/${t.type}`, t);
+  }
+  const fetched = await Promise.all(
+    [...types].map(async ([key, { ns, type }]) => {
+      try {
+        const path = `/substrate/v1/schema/${encodeURIComponent(ns)}/${encodeURIComponent(type)}?shape=fields`;
+        return [key, await getSubstrate(endpoint, path)] as const;
+      } catch {
+        return null;
+      }
+    })
+  );
+  const found = fetched.filter((f) => f !== null);
+  return found.length === 0 ? undefined : Object.fromEntries(found);
+}
+
 export function createMutateHandler(endpoint: string): (args: FrameArgs) => Promise<ToolResult> {
   return async (args) => {
     const payload = frameOf(args);
     if (payload === undefined) return errorResult(MISSING_PAYLOAD);
     try {
-      const envelope = await postSubstrate(endpoint, '/substrate/v1/mutate', payload);
-      return okResult(envelope);
+      const envelope = await postSubstrate<{ errors?: EnvelopeError[] }>(
+        endpoint,
+        '/substrate/v1/mutate',
+        payload
+      );
+      const contract = await shapeContracts(endpoint, envelope.errors ?? []);
+      return okResult(contract === undefined ? envelope : { ...envelope, contract });
     } catch (err) {
       return errorResult(toMessage(err));
     }
@@ -626,7 +677,7 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
       name: 'mutate',
       config: {
         description:
-          'Run mutations. payload maps <ns>/<mutation> keys to { params, fields }, or to an array of them. An array under one key is one transaction. Single-frame keys share one transaction on one tx scope and are refused across two; a single-frame key beside an array is not rolled back with it, so put writes that must land together in one array.',
+          'Mutate. payload maps <ns>/<mutation> keys to { params, fields } or an array of them. An array under one key is one transaction. Single-frame keys share one transaction on one tx scope and are refused across two; a single-frame key beside an array is not rolled back with it, so writes that must land together go in one array. A shape-refused write returns its type contract as `contract`.',
         inputSchema: frameInputSchema(
           'Mutation frame. Single: { "default/createTodo": { "params": { "title": "..." }, ' +
             '"fields": { "id": true } } }. Batched atomic: ' +
