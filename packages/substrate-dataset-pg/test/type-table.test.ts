@@ -7,7 +7,7 @@ import { randomBytes } from 'node:crypto';
 import { field, RESERVED_AUTOCRUD_FIELDS } from '@mnmal-ai/substrate-sdk';
 import { type FieldDef, isColumnField } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, onTestFinished } from 'vitest';
 import { detectLayout, runMigrations, UUID_CHECK_MIGRATION, UUID_REGEX } from '../src/index.js';
 import { columnName, MAX_IDENTIFIER, typeTableName } from '../src/layout.js';
 import {
@@ -356,6 +356,10 @@ describe.skipIf(!POSTGRES_URL)('tables layout', () => {
 
   it('a new table lays its columns out by alignment: 8-byte, 4, 1, then variable-length', async () => {
     const type = freshType();
+    // An int32 catalog row left behind fails a forced re-run of the int64 kind migration in other files.
+    onTestFinished(async () => {
+      await sql`DELETE FROM substrate_type_fields WHERE namespace = ${NS} AND type = ${type}`;
+    });
     await ensure(type, {
       title: field.string(),
       hits: field.int32(),
