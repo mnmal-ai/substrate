@@ -24,6 +24,71 @@
       "description": "Hold tsdown at 0.23.1: 0.23.2 depends on rolldown-plugin-dts 0.29.0-beta, whose tsc generator refuses TypeScript 7.0 and whose tsgo generator needs typescript 7.1 beta. Lift once a tsdown release supports TypeScript 7.0 stable.",
       "matchPackageNames": ["tsdown"],
       "allowedVersions": "<0.23.2"
+    },
+    {
+      "description": "Package labels for a dependency outside the catalog: the label named after the workspace package's directory.",
+      "matchFileNames": [
+        "apps/*/package.json",
+        "packages/*/package.json",
+        "plugins/*/package.json"
+      ],
+      "addLabels": ["{{parentDir}}"]
+    },
+    {
+      "description": "Package labels for a catalog dependency: the workspace packages that declare it. Regenerate when a package starts or stops using it.",
+      "matchPackageNames": ["@fastify/compress", "@fastify/cors", "fastify"],
+      "addLabels": ["substrate", "substrate-server-fastify"]
+    },
+    {
+      "description": "Package labels for a catalog dependency: the workspace packages that declare it. Regenerate when a package starts or stops using it.",
+      "matchPackageNames": ["@inquirer/prompts"],
+      "addLabels": ["substrate"]
+    },
+    {
+      "description": "Package labels for a catalog dependency: the workspace packages that declare it. Regenerate when a package starts or stops using it.",
+      "matchPackageNames": ["@preact/signals-core"],
+      "addLabels": ["substrate", "substrate-client"]
+    },
+    {
+      "description": "Package labels for a catalog dependency: the workspace packages that declare it. Regenerate when a package starts or stops using it.",
+      "matchPackageNames": ["@types/react", "ink", "ink-testing-library", "react"],
+      "addLabels": ["substrate-tui"]
+    },
+    {
+      "description": "Package labels for a catalog dependency: the workspace packages that declare it. Regenerate when a package starts or stops using it.",
+      "matchPackageNames": ["@types/semver", "semver"],
+      "addLabels": ["substrate", "substrate-compose", "substrate-recall"]
+    },
+    {
+      "description": "Package labels for a catalog dependency: the workspace packages that declare it. Regenerate when a package starts or stops using it.",
+      "matchPackageNames": ["jsdom"],
+      "addLabels": ["substrate-client"]
+    },
+    {
+      "description": "Package labels for a catalog dependency: the workspace packages that declare it. Regenerate when a package starts or stops using it.",
+      "matchPackageNames": ["msgpackr"],
+      "addLabels": ["substrate", "substrate-pack"]
+    },
+    {
+      "description": "Package labels for a catalog dependency: the workspace packages that declare it. Regenerate when a package starts or stops using it.",
+      "matchPackageNames": ["msw"],
+      "addLabels": ["substrate", "substrate-client", "substrate-embedder"]
+    },
+    {
+      "description": "Package labels for a catalog dependency: the workspace packages that declare it. Regenerate when a package starts or stops using it.",
+      "matchPackageNames": ["postgres"],
+      "addLabels": [
+        "substrate",
+        "substrate-dataset-pg",
+        "substrate-nl",
+        "substrate-proposals",
+        "substrate-recall"
+      ]
+    },
+    {
+      "description": "Package labels for a catalog dependency: the workspace packages that declare it. Regenerate when a package starts or stops using it.",
+      "matchPackageNames": ["tsx"],
+      "addLabels": ["substrate", "substrate-tui"]
     }
   ]
 }
