@@ -322,6 +322,20 @@ describe('substrate-mcp tool handlers', () => {
     });
   });
 
+  it('payloadSchema quotes the parser on malformed JSON', () => {
+    const r = payloadSchema('demo').safeParse('{not json}');
+    expect(r.success).toBe(false);
+    if (r.success) return;
+    expect(r.error.issues.map((i) => i.message).join(' ')).toMatch(/valid JSON \(.+\)/);
+  });
+
+  it('payloadSchema shows a valid payload when the shape is wrong', () => {
+    const r = payloadSchema('demo').safeParse(42);
+    expect(r.success).toBe(false);
+    if (r.success) return;
+    expect(r.error.issues.map((i) => i.message).join(' ')).toContain('"params"');
+  });
+
   it('payloadSchema rejects malformed JSON strings with a helpful issue', () => {
     const schema = payloadSchema('demo');
     const result = schema.safeParse('{not json}');

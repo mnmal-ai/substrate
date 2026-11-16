@@ -24,7 +24,12 @@ import type {
   ResolverArgs,
   Row
 } from '@mnmal-ai/substrate-types';
-import { normaliseVocabValues, ReservedField, ResolverFrameError } from '@mnmal-ai/substrate-types';
+import {
+  idHint,
+  normaliseVocabValues,
+  ReservedField,
+  ResolverFrameError
+} from '@mnmal-ai/substrate-types';
 import {
   assertEnumValues,
   assertNoClientServerFields,
@@ -160,7 +165,7 @@ export function preparePatch(
 export function updateNotFound(typeName: string, id: Id): ResolverFrameError {
   return new ResolverFrameError(
     'not_found',
-    `updateResolver('${typeName}'): no row with id '${String(id)}'`,
+    `updateResolver('${typeName}'): no row with id '${String(id)}'${idHint(id)}`,
     { field: 'id' }
   );
 }

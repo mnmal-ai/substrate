@@ -1586,6 +1586,16 @@ export class Engine {
     return false;
   }
 
+  /** An unqualified key's refusal, naming the fix when one is evident. */
+  #unqualifiedMessage(key: string): string {
+    if (key === 'params' || key === 'fields' || key === 'where') {
+      return `'${key}' is part of a frame, not a frame key: send { "<ns>/<op>": { "params": {...}, "fields": {...} } }`;
+    }
+    const owners = [...this.#namespaces].filter(([, cfg]) => cfg.registry.get(key) !== undefined);
+    const hint = owners.length === 1 ? ` — did you mean '${owners[0]?.[0]}/${key}'?` : '';
+    return `unqualified frame key '${key}' — expected '<ns>/<name>'${hint}`;
+  }
+
   /**
    * Everything a frame entry does before its resolver runs: the grant, the
    * lookups, policy, the walk refusals, the filter guard, the cursor and the
@@ -1606,12 +1616,7 @@ export class Engine {
     txEntries?: number
   ): PreparedEntry | null {
     if (!parsed) {
-      addError(
-        envelope,
-        [key],
-        `unqualified frame key '${key}' — expected '<ns>/<name>'`,
-        'unqualified_key'
-      );
+      addError(envelope, [key], this.#unqualifiedMessage(key), 'unqualified_key');
       this.#metric('engine_unqualified_key', key);
       return null;
     }
@@ -2001,12 +2006,7 @@ export class Engine {
     signal?: AbortSignal
   ): Promise<void> {
     if (!parsed) {
-      addError(
-        envelope,
-        [key],
-        `unqualified frame key '${key}' — expected '<ns>/<name>'`,
-        'unqualified_key'
-      );
+      addError(envelope, [key], this.#unqualifiedMessage(key), 'unqualified_key');
       this.#metric('engine_unqualified_key', key);
       return;
     }

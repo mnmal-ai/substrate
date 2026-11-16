@@ -79,19 +79,27 @@ export const payloadSchema = (example: string) =>
         try {
           const parsed = JSON.parse(raw) as unknown;
           if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-            ctx.addIssue({ code: 'custom', message: 'payload must decode to a JSON object' });
+            ctx.addIssue({
+              code: 'custom',
+              message:
+                'payload must decode to a JSON object — e.g. { "default/Todo": { "params": { "limit": 5 }, "fields": { "id": true } } }'
+            });
             return z.NEVER;
           }
           return parsed as Record<string, unknown>;
-        } catch {
-          ctx.addIssue({ code: 'custom', message: 'payload must be valid JSON' });
+        } catch (err) {
+          ctx.addIssue({
+            code: 'custom',
+            message: `payload must be valid JSON (${(err as Error).message})`
+          });
           return z.NEVER;
         }
       }
       if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
         ctx.addIssue({
           code: 'custom',
-          message: 'payload must be an object or a JSON string decoding to an object'
+          message:
+            'payload must be an object or a JSON string decoding to an object — e.g. { "default/Todo": { "params": { "limit": 5 }, "fields": { "id": true } } }'
         });
         return z.NEVER;
       }
