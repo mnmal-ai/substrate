@@ -613,9 +613,8 @@ export function createRunHandler(env: NodeJS.ProcessEnv = process.env) {
 export interface McpServerOptions {
   /**
    * Comma-separated tool names and presets to register (SUBSTRATE_MCP_TOOLS):
-   * `core` (the default when unset or blank) or `all`. Every registered
-   * definition rides along on every model call, so the default leaves out the
-   * admin tools and `ask`.
+   * `core` or `all`. Unset or blank means `all` until 1.0.0-beta.3, then `core`.
+   * Every registered definition rides along on every model call.
    */
   tools?: string;
   /** Sent to the client at initialize; clients put it in the agent's context. */
@@ -1012,13 +1011,13 @@ export const CORE_TOOLS: readonly string[] = [
 ];
 
 /**
- * Parse SUBSTRATE_MCP_TOOLS: tool names and the presets `core` (the default)
- * and `all`. An unknown name throws: a typo that silently registered nothing
+ * Parse SUBSTRATE_MCP_TOOLS: tool names and the presets `core` and `all`
+ * (the default while unset or blank). An unknown name throws: a typo that silently registered nothing
  * would read as "this server has no such tool", which is a worse failure than
  * refusing to start.
  */
 function resolveToolAllowlist(raw: string | undefined, known: string[]): Set<string> {
-  if (raw === undefined || raw.trim() === '') return new Set(CORE_TOOLS);
+  if (raw === undefined || raw.trim() === '') return new Set(known);
   const names = new Set<string>();
   for (const n of raw.split(',').map((t) => t.trim())) {
     if (n === '') continue;
@@ -1050,6 +1049,12 @@ async function fetchOverview(endpoint: string): Promise<ReturnType<typeof schema
 export async function runMcp(): Promise<void> {
   const endpoint = process.env.SUBSTRATE_URL ?? 'http://localhost:3100';
   configureAgentAuth(process.env, endpoint);
+  if (!process.env.SUBSTRATE_MCP_TOOLS?.trim()) {
+    // stderr: stdout carries the MCP protocol.
+    console.error(
+      'substrate mcp: deprecated: SUBSTRATE_MCP_TOOLS is unset, so every tool is registered. From 1.0.0-beta.3 the default is core (query, mutate, schema, recall, run, whoami). Set SUBSTRATE_MCP_TOOLS=all to keep the admin tools and ask, or core to opt in now.'
+    );
+  }
   const server = createMcpServer(endpoint, {
     ...(process.env.SUBSTRATE_MCP_TOOLS === undefined
       ? {}

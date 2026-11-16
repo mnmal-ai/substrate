@@ -131,7 +131,7 @@ const CONVENTIONS = [
   '- In one `mutate` call the single-frame keys commit together or not at all, and an array under one key is one transaction. Send unrelated writes as separate calls.',
   '- `createdAt`, `updatedAt`, `createdBy` and `updatedBy` are server-set: never send them; read them through `_metadata`.',
   '- `whoami` says which identity this session reads and writes as.',
-  '- Admin tools (propose_type, propose_field, propose_index, drop_namespace, drop_type) and ask are off by default; set SUBSTRATE_MCP_TOOLS=all (or core,<name>) in the MCP server env to enable them.',
+  '- If an admin tool (propose_type, propose_field, propose_index, drop_namespace, drop_type) or ask is missing from your tools, set SUBSTRATE_MCP_TOOLS=all (or core,<name>) in the MCP server env.',
   '- With a shell, `substrate run <script.mts>` runs many reads and writes in one call and returns one small report (GET /substrate/v1/onboard, `instructions.codeMode`).'
 ].join('\n');
 
