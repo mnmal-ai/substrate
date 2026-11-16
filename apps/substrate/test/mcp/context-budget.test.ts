@@ -37,4 +37,18 @@ describe('MCP context budget', () => {
       Buffer.byteLength(buildInstructions(null));
     expect(total).toBeLessThanOrEqual(9000);
   });
+
+  it('keeps the facts an agent needs to form a valid call', async () => {
+    const tools = await listTools();
+    const text = (name: string) => JSON.stringify(tools.find((t) => t.name === name));
+    expect(text('query')).toContain('{ \\"lit\\": \\"text\\" }');
+    expect(text('query')).toContain('{ \\"fn\\": [args] }');
+    expect(text('query')).toContain('`offset`');
+    expect(text('recall')).toContain('params.to');
+    expect(text('recall')).toContain('null matches');
+    expect(text('run')).toContain('type syntax is stripped');
+    expect(text('run')).toContain('report.mutations');
+    expect(text('run')).toMatch(/query\(frame\)[^,]*throws/);
+    expect(text('schema')).toContain('mutationRefs');
+  });
 });

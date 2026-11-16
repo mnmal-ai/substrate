@@ -716,7 +716,7 @@ describe('autoCRUD reject — values that do not match a scalar field type', () 
       (e) => e
     );
     expect(err.code).toBe('not_found');
-    expect(err.message).toContain('resolve a shortId with where: { shortId: { eq: N } }');
+    expect(err.message).toContain('if this is a shortId, resolve it with where: { shortId: { eq: N } }');
   });
 
   it('an update to a missing UUID keeps the plain not_found message', async () => {

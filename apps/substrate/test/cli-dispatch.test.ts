@@ -43,6 +43,17 @@ describe('runCli dispatcher', () => {
     }
   });
 
+  it('help names the MCP tool presets and the core default', async () => {
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await runCli(['--help']);
+      const printed = stdoutSpy.mock.calls.map((c) => String(c[0])).join('');
+      expect(printed).toMatch(/SUBSTRATE_MCP_TOOLS[^]*core[^]*all/);
+    } finally {
+      stdoutSpy.mockRestore();
+    }
+  });
+
   it('prints help and exits 0 on -h', async () => {
     const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     try {

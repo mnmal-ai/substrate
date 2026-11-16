@@ -623,7 +623,7 @@ export interface McpServerOptions {
 }
 
 const WALK_DESCRIPTION =
-  ' Walks: `_walk: { in: "ns/Type.field" }` follows a reference backwards (the overview marks it `←Type.field`), `out: "field"` forwards; it filters in `where`, nests rows in `fields`, or aggregates in `fields._agg`. E.g. orders with an item over 50, and their item count: { "shop/Order": { "params": { "where": { "_walk": { "in": "shop/Item.order", "where": { "price": { "gt": 50 } } } } }, "fields": { "id": true, "_agg": { "items": { "in": "shop/Item.order", "count": true } } } } }. `quantifier`: "any" (default), "none" or "all"; `pick`: { latest | max | min: field }. An "any" walk binds `as: "L"`, read later as { "$ref": "L.price", "times": 1.25 } (`$.f` is the seed row, `_agg.<n>` an aggregate; `times`/`plus` scale, `plus` on a date shifts ms). `_agg`: count, avg/sum/min/max: field, or latest: { by, value }; in `where` it compares: { "_agg": {...}, "gte": 3 }. Params: `count: true`; `aggregate: { n: { sum: "price" } }`, per group with `groupBy: { day: { dateTrunc: [{ "lit": "day" }, "seenAt"] } }`, filtered by `having`; `select: { m: { sub: ["_agg.x", "price"] } }` adds a computed value, sortable in `orderBy`. Walks are query-only.';
+  ' Walks: `_walk: { in: "ns/Type.field" }` follows a reference backwards (overview: `←Type.field`), `out: "field"` forwards; it filters in `where`, nests rows in `fields`, aggregates in `fields._agg`. E.g. orders with an item over 50, with item count: { "shop/Order": { "params": { "where": { "_walk": { "in": "shop/Item.order", "where": { "price": { "gt": 50 } } } } }, "fields": { "_agg": { "items": { "in": "shop/Item.order", "count": true } } } } }. `quantifier`: "any" (default), "none", "all"; `pick`: { latest | max | min: field }. An "any" walk binds `as: "L"`, read later as { "$ref": "L.price", "times": 1.25 } (`$.f` seed row, `_agg.<n>` aggregate; `times`/`plus` scale, `plus` on a date shifts ms). `_agg`: count, avg/sum/min/max: field, latest: { by, value }; in `where` it compares: { "_agg": {...}, "gte": 3 }. Params: `count: true`; `aggregate: { n: { sum: "price" } }`, per group with `groupBy: { day: { dateTrunc: [{ "lit": "day" }, "seenAt"] } }`, `having`, `offset`; `select: { m: { sub: ["_agg.x", "price"] } }` adds a value, sortable in `orderBy`. An expression is a field name, a literal, { "lit": "text" } or { "fn": [args] }. Walks are query-only.';
 
 export function createMcpServer(endpoint: string, options: McpServerOptions = {}): McpServer {
   const server = new McpServer(
@@ -645,7 +645,7 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
       name: 'schema',
       config: {
         description:
-          "Schema lookup. No args: every namespace's types as `field: type` lines. `namespace`: one namespace. `namespace` + `type`: that type's write contract ({ fields, mutations }); read it before a create/update, since undeclared fields are refused (`unknown_field`). `full: true` with no namespace: the whole federated schema plus the expression catalogue (large).",
+          "Schema lookup. No args: every namespace's types as `field: type` lines. `namespace`: one namespace. `namespace` + `type`: that type's write contract ({ fields, mutations }); read it before a create/update, since undeclared fields are refused (`unknown_field`). Compact answers name generated CRUD instead of repeating fields; `mutationRefs` explains. `full: true` with no namespace: the whole federated schema plus the expression catalogue (large).",
         inputSchema: {
           namespace: z.string().min(1).optional().describe('e.g. "notes"'),
           type: z.string().min(1).optional().describe('e.g. "Todo"; needs `namespace`'),
@@ -664,7 +664,7 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
       name: 'query',
       config: {
         description:
-          'Query. payload maps <ns>/<Type> keys, across namespaces if needed, to { params, fields }. Expression functions are listed by `schema`.' +
+          'Query. payload maps <ns>/<Type> keys (any namespaces) to { params, fields }; `schema` lists expression functions.' +
           WALK_DESCRIPTION,
         inputSchema: frameInputSchema(
           'Query frame. Example: { "default/Todo": { "params": { "limit": 20 }, ' +
@@ -694,7 +694,7 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
       name: 'run',
       config: {
         description:
-          'Run a sandboxed script for work needing 3+ dependent calls (paging, joins, read-driven writes). `script` is a module whose default export is `async (s) => result`. `s`: kid, mode, args, query(frame), queryAll(key, { params, fields }), byShortId(key, n | n[], fields?), recall({ query, namespace, type, k?, where?, row? }), schema(ns?, type?), mutate(frame), log(). Modes: "read" (default; refuses mutate), "dry-run" (records, sends nothing), "write". Dry-run, check report.mutations, then write. Return ids and counts.',
+          'Sandboxed script for 3+ dependent calls (paging, joins, read-driven writes). `script`: a module exporting default `async (s) => result`; type syntax is stripped. `s`: kid, mode, args, query(frame) (throws if refused), queryAll(key, { params, fields }), byShortId(key, n | n[], fields?), recall({ query, namespace, type, k?, where?, row? }), schema(ns?, type?), mutate(frame), log(). Modes: "read" (default; refuses mutate), "dry-run" (records, sends nothing), "write". Dry-run, check report.mutations, then write. Return ids/counts.',
         inputSchema: {
           script: z
             .string()
@@ -958,7 +958,7 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
       name: 'recall',
       config: {
         description:
-          "Semantic search: top-k records by similarity to `query`. Each hit's `row` is `id` plus handle fields (name, title, synopsis...).",
+          'Semantic search: top-k records by similarity to `query`; hits carry `id` + handle fields. As a query frame, recall/Hit takes the text in params.to.',
         inputSchema: {
           query: z.string().min(1).describe('Search text'),
           k: z.number().int().min(1).max(100).optional().describe('Default 10'),
@@ -970,7 +970,7 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
           where: z
             .record(z.string(), z.unknown())
             .optional()
-            .describe('field -> { eq } | { in: [...] }, e.g. { "project": { "in": ["x", null] } }'),
+            .describe('field -> { eq } | { in: [...] }; null matches missing'),
           rowFields: z
             .union([z.record(z.string(), z.literal(true)), z.literal(true)])
             .optional()

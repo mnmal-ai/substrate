@@ -81,21 +81,21 @@ export function filterTooBroad(
   );
 }
 
-/**
- * Thrown by a write-path resolver when a crossRef declaring `onMissing: 'reject'`
- * references a target that does not exist (or has been tombstoned). Extends
- * ResolverFrameError so the engine's existing catch branch surfaces it as a
- * clean `missing_referent` envelope error with structured `details`.
- */
 const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** A miss on an id that is not UUID-shaped is usually a shortId sent where the UUID belongs. */
 export function idHint(value: unknown): string {
   return typeof value === 'string' && UUID_SHAPE.test(value)
     ? ''
-    : ' — ids are UUIDs; resolve a shortId with where: { shortId: { eq: N } }';
+    : ' — if this is a shortId, resolve it with where: { shortId: { eq: N } }';
 }
 
+/**
+ * Thrown by a write-path resolver when a crossRef declaring `onMissing: 'reject'`
+ * references a target that does not exist (or has been tombstoned). Extends
+ * ResolverFrameError so the engine's existing catch branch surfaces it as a
+ * clean `missing_referent` envelope error with structured `details`.
+ */
 export class MissingReferentError extends ResolverFrameError {
   override readonly name = 'MissingReferentError';
 
