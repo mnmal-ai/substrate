@@ -564,25 +564,7 @@ export interface McpServerOptions {
 }
 
 const WALK_DESCRIPTION =
-  ' WALKS: a reference field is followed backwards with `_walk`, which names the inbound field as ' +
-  '"ns/Type.field" (the schema overview marks it `←Type.field`). It filters in `where`, ' +
-  'aggregates in `fields._agg`, or nests rows in `fields`. Example: orders with an item ' +
-  'priced over 50, and their item count: { "shop/Order": { "params": { "where": { "_walk": ' +
-  '{ "in": "shop/Item.order", "where": { "price": { "gt": 50 } } } } }, "fields": { "id": true, ' +
-  '"_agg": { "items": { "in": "shop/Item.order", "count": true } } } } }. ' +
-  '`out: "field"` follows a reference forwards. A `_walk` takes `quantifier` "any" (default), ' +
-  '"none" or "all", or `pick` one neighbour by { "latest": <date> }, { "max": <f> } or { "min": <f> }; ' +
-  'an "any" walk binds `as: "L"`, and a later comparison reads it as { "$ref": "L.price", "times": 1.25 } ' +
-  '(`$.f` is the seed row, `_agg.<name>` an aggregate; `times`/`plus` scale numbers, `plus` shifts a ' +
-  'date in ms). `_agg` also takes avg/sum/min/max: <field> or latest: { by, value }, and in `where` ' +
-  'compares beside a comparison: { "_agg": { "in": ..., "count": true }, "gte": 3 }. Frame params: ' +
-  '`count: true` answers { count }; `aggregate: { name: { sum: "price" } }` answers one group, or one per ' +
-  'key of `groupBy: { day: { dateTrunc: [{ "lit": "day" }, "seenAt"] } }` (a map of names to expressions; ' +
-  '`having` filters the groups, `offset` skips them, `orderBy` names their outputs). ' +
-  '`select: { m: { sub: ["_agg.x", "price"] } }` adds a computed value to each row, ordered by `orderBy: [{ "m": "desc" }]`. ' +
-  'An expression is a field name, a literal, `{ "lit": "text" }` or `{ "fn": [args] }`. ' +
-  'Walks are query-only: subscribe, stream and mutate ' +
-  'refuse them, as does a store without walks (walks_unsupported_store).';
+  ' Walks: `_walk: { in: "ns/Type.field" }` follows a reference backwards (the overview marks it `←Type.field`), `out: "field"` forwards; it filters in `where`, nests rows in `fields`, or aggregates in `fields._agg`. E.g. orders with an item over 50, and their item count: { "shop/Order": { "params": { "where": { "_walk": { "in": "shop/Item.order", "where": { "price": { "gt": 50 } } } } }, "fields": { "id": true, "_agg": { "items": { "in": "shop/Item.order", "count": true } } } } }. `quantifier`: "any" (default), "none" or "all"; `pick`: { latest | max | min: field }. An "any" walk binds `as: "L"`, read later as { "$ref": "L.price", "times": 1.25 } (`$.f` is the seed row, `_agg.<n>` an aggregate; `times`/`plus` scale, `plus` on a date shifts ms). `_agg`: count, avg/sum/min/max: field, or latest: { by, value }; in `where` it compares: { "_agg": {...}, "gte": 3 }. Params: `count: true`; `aggregate: { n: { sum: "price" } }`, per group with `groupBy: { day: { dateTrunc: [{ "lit": "day" }, "seenAt"] } }`, filtered by `having`; `select: { m: { sub: ["_agg.x", "price"] } }` adds a computed value, sortable in `orderBy`. Walks are query-only.';
 
 export function createMcpServer(endpoint: string, options: McpServerOptions = {}): McpServer {
   const server = new McpServer(
@@ -604,43 +586,17 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
       name: 'schema',
       config: {
         description:
-          "Fetch the Substrate schema. No args → a compact overview: every namespace's " +
-          'types, one line of `field: type` each, enough to write a query. `full: true` → ' +
-          'the whole federated schema plus the full expression catalogue under `$expressions` ' +
-          '(large; rarely needed). SCOPED + CHEAP: pass `namespace` ' +
-          "for one namespace, or `namespace` + `type` for a single type's write " +
-          'contract ({ fields, mutations }). Mine the scoped shape BEFORE a ' +
-          'create/update so you send only declared fields — autoCRUD rejects ' +
-          'undeclared fields with `unknown_field`. The type answer is compact: ' +
-          "generated CRUD names the type ('Todo fields', 'Todo') instead of " +
-          'restating its field block; `mutationRefs` says how to read it. ' +
-          '`shape: "fields"` drops the mutations to their names; `shape: "full"` ' +
-          'inlines every block (several times larger).',
+          "Schema lookup. No args: every namespace's types as `field: type` lines. `namespace`: one namespace. `namespace` + `type`: that type's write contract ({ fields, mutations }); read it before a create/update, since undeclared fields are refused (`unknown_field`). `full: true` with no namespace: the whole federated schema plus the expression catalogue (large).",
         inputSchema: {
-          namespace: z
-            .string()
-            .min(1)
-            .optional()
-            .describe('Scope to one namespace, e.g. "notes". Omit for the full federated schema.'),
-          type: z
-            .string()
-            .min(1)
-            .optional()
-            .describe(
-              'Scope to one type within `namespace`, e.g. "Todo" — returns its field defs + create/update param shapes. Requires `namespace`.'
-            ),
+          namespace: z.string().min(1).optional().describe('e.g. "notes"'),
+          type: z.string().min(1).optional().describe('e.g. "Todo"; needs `namespace`'),
           shape: z
             .enum(['compact', 'full', 'fields'])
             .optional()
             .describe(
-              'Projection of the type contract; requires `namespace` + `type`. "compact" (default) prints the field block once and names the type in generated CRUD. "full" inlines every mutation\'s params and returns. "fields" returns the field defs plus `mutationNames` — use it to answer "what fields does this type have".'
+              'Type contract: "compact" (default), "fields" (fields + mutation names) or "full" (every block inlined)'
             ),
-          full: z
-            .boolean()
-            .optional()
-            .describe(
-              'With no `namespace`: true returns the whole federated schema instead of the overview.'
-            )
+          full: z.boolean().optional().describe('No namespace: the whole federated schema')
         }
       },
       handler: createSchemaHandler(endpoint)
@@ -649,10 +605,7 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
       name: 'query',
       config: {
         description:
-          'Query Substrate. payload is a single frame object mapping qualified keys ' +
-          '(<ns>/<Type>) to { params, fields }. ONE call can span multiple ' +
-          'namespaces — e.g. { "prices/Price": {...}, "products/Product": {...} }. ' +
-          'The expression functions for select, where.$expr, groupBy and having are listed by the `schema` tool.' +
+          'Query. payload maps <ns>/<Type> keys, across namespaces if needed, to { params, fields }. Expression functions are listed by `schema`.' +
           WALK_DESCRIPTION,
         inputSchema: frameInputSchema(
           'Query frame. Example: { "default/Todo": { "params": { "limit": 20 }, ' +
@@ -665,18 +618,7 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
       name: 'mutate',
       config: {
         description:
-          'Run one or more mutations. payload is a single frame object mapping ' +
-          'qualified keys (<ns>/<mutationName>) to { params, fields } (single-frame) ' +
-          'or to an array of frames (batched atomic). ONE op-key can accept a ' +
-          'single frame or an array. An ARRAY op-key is its own transaction: it ' +
-          'commits or rolls back as a unit, independently of every other op-key ' +
-          'in the call. The SINGLE-FRAME op-keys share one transaction when they ' +
-          'sit on one tx scope (every namespace on one pg handle); across two ' +
-          'tx scopes they are refused rather than split. So a single-frame ' +
-          'op-key beside an array is NOT rolled back when the array fails — to ' +
-          'make writes atomic together, put them in one array under one op-key. ' +
-          'The memory dataset mints a fresh tx scope per namespace, so ' +
-          'single-frame op-keys in two namespaces are refused there.',
+          'Run mutations. payload maps <ns>/<mutation> keys to { params, fields }, or to an array of them. An array under one key is one transaction. Single-frame keys share one transaction on one tx scope and are refused across two; a single-frame key beside an array is not rolled back with it, so put writes that must land together in one array.',
         inputSchema: frameInputSchema(
           'Mutation frame. Single: { "default/createTodo": { "params": { "title": "..." }, ' +
             '"fields": { "id": true } } }. Batched atomic: ' +
@@ -693,37 +635,20 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
       name: 'run',
       config: {
         description:
-          'Run a short script against Substrate in one call: many queries and writes, one small report back. ' +
-          'Use it when the work takes three or more dependent calls (ids passed from one call to the next, ' +
-          'a census that must page, a join, recall-then-hydrate, a batch of writes chosen by a read). ' +
-          '`script` is a JS/TS module whose default export is `async (s) => result`; type syntax is stripped. ' +
-          '`s` has: kid, mode, args; query(frame) (throws on a refused frame); queryAll(key, { params, fields }) ' +
-          '(pages to the end); byShortId(key, n | n[], fields?) (rows in input order; throws naming any missing); ' +
-          'recall({ query, namespace, type, k?, where?, row? }); schema(namespace?, type?); ' +
-          'mutate(frame); log(...). Return counts, ids and short handles, not whole rows. ' +
-          'Modes: "read" (default) refuses mutate; "dry-run" records each mutate payload in the report without ' +
-          'sending it; "write" sends up to maxWrites frames (default 50; an array element counts one). ' +
-          'Dry-run first, read report.mutations, then write. The script runs sandboxed: no files, network, ' +
-          'processes or environment; it reaches only the store, as this agent. Report: { ok, kid, mode, result, ' +
-          'error?, mutations[{ frame, applied, errors? }], warnings, stats }.',
+          'Run a sandboxed script for work needing 3+ dependent calls (paging, joins, read-driven writes). `script` is a module whose default export is `async (s) => result`. `s`: kid, mode, args, query(frame), queryAll(key, { params, fields }), byShortId(key, n | n[], fields?), recall({ query, namespace, type, k?, where?, row? }), schema(ns?, type?), mutate(frame), log(). Modes: "read" (default; refuses mutate), "dry-run" (records, sends nothing), "write". Dry-run, check report.mutations, then write. Return ids and counts.',
         inputSchema: {
           script: z
             .string()
             .min(1)
-            .describe(
-              "Module text, e.g. \"export default async (s) => (await s.queryAll('cortext/Todo', { params: { where: { status: { eq: 'open' } } }, fields: { id: true } })).length\""
-            ),
-          args: z
-            .record(z.string(), z.unknown())
-            .optional()
-            .describe('Passed to the script as s.args.'),
-          mode: z.enum(['read', 'dry-run', 'write']).optional().describe('Default "read".'),
+            .describe("e.g. export default async (s) => (await s.queryAll('ns/Todo', {})).length"),
+          args: z.record(z.string(), z.unknown()).optional().describe('Passed as s.args'),
+          mode: z.enum(['read', 'dry-run', 'write']).optional().describe('Default "read"'),
           maxWrites: z
             .number()
             .int()
             .nonnegative()
             .optional()
-            .describe('Write mode: most mutate frames to send. Default 50.')
+            .describe('Write mode: max mutate frames, default 50')
         }
       },
       handler: createRunHandler()
@@ -943,17 +868,7 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
       name: 'whoami',
       config: {
         description:
-          'Ask the server who this MCP session is authenticated as. Returns ' +
-          '{ authEnabled, identity }, where `identity` is null for an anonymous caller and ' +
-          'otherwise carries { id, grants } — a namespace -> capabilities map, AS RECORDED, so a ' +
-          "wildcard stays a `'*'` key rather than expanding into every namespace. " +
-          'USE THIS BEFORE CONCLUDING A CREDENTIAL WORKS: on a reads-open stack an ' +
-          'authenticated read and an anonymous one return byte-identical results, so a ' +
-          'successful query is not evidence of identity. ' +
-          '`authEnabled: false` means the deployment verifies nothing (a posture you cannot ' +
-          'fix from here); `authEnabled: true` with `identity: null` means your own ' +
-          'credential never arrived (SUBSTRATE_AGENT_KEY_ID / SUBSTRATE_AGENT_KEY_PATH). Those need ' +
-          'different fixes, which is why they are separate fields.',
+          'Who this session is authenticated as: { authEnabled, identity: { id, grants } | null }. Ask before concluding a credential works: reads can succeed anonymously. authEnabled false: the server verifies nothing. identity null with authEnabled true: your key never arrived (SUBSTRATE_AGENT_KEY_ID / SUBSTRATE_AGENT_KEY_PATH).',
         inputSchema: {}
       },
       handler: async (): Promise<ToolResult> => {
@@ -984,52 +899,23 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
       name: 'recall',
       config: {
         description:
-          'Semantic recall over embedded Substrate records. Returns top-K records by cosine similarity ' +
-          'to the NL query. Use for finding prior context by meaning when structural ' +
-          '`where`/`contains` queries miss. WHICH TYPES ARE EMBEDDED IS A SERVER FACT — ask it ' +
-          '(`GET /substrate/v1/embed-stats` returns `embeddedTypes`) rather than assuming; a type is ' +
-          'embedded iff its namespace definition declares an `embed.source`. The same operation ' +
-          'is also reachable as `POST /substrate/v1/recall` (body param `query`) and as the frame key ' +
-          '`recall/Hit` through query — where the search text is `params.to`, not ' +
-          '`params.query` and not a `where` clause. See docs/surface-parity.md.',
+          "Semantic search: top-k records by similarity to `query`. Each hit's `row` is `id` plus handle fields (name, title, synopsis...).",
         inputSchema: {
-          query: z.string().min(1).describe('Natural-language query to embed and match against.'),
-          k: z.number().int().min(1).max(100).optional().describe('Max results. Default 10.'),
-          namespace: z
-            .string()
-            .optional()
-            .describe(
-              'Namespace to search. Pass it: there is no default. Omitted, the server ' +
-                'falls back to ITS OWN SUBSTRATE_NAMESPACE and refuses with `missing_namespace` if that is unset.'
-            ),
-          type: z.string().min(1).describe('Type to search, e.g. "Note". Required.'),
-          threshold: z.number().optional().describe('Minimum similarity (0..1). Default 0.'),
-          lexicalThreshold: z
-            .number()
-            .optional()
-            .describe(
-              'Cosine floor for hits only the lexical (keyword) arm found. Default: same as ' +
-                'threshold. 0 keeps them unfloored, so keyword matches survive a high threshold.'
-            ),
+          query: z.string().min(1).describe('Search text'),
+          k: z.number().int().min(1).max(100).optional().describe('Default 10'),
+          namespace: z.string().optional().describe('Required (no default)'),
+          type: z.string().min(1).describe('e.g. "Note"'),
+          threshold: z.number().optional().describe('Min similarity 0..1'),
+          lexicalThreshold: z.number().optional().describe('Keyword-only hit floor'),
           // Loose on purpose: the server validates the shape and names the fault.
           where: z
             .record(z.string(), z.unknown())
             .optional()
-            .describe(
-              'Row-field filter applied inside every candidate source, so k fills with ' +
-                'matching rows: field -> { eq: scalar | null } or { in: [scalar | null, ...] }, ' +
-                'every field must match; eq null matches a missing or null field. Example: ' +
-                '{ "project": { "in": ["substrate", null] } }.'
-            ),
+            .describe('field -> { eq } | { in: [...] }, e.g. { "project": { "in": ["x", null] } }'),
           rowFields: z
             .union([z.record(z.string(), z.literal(true)), z.literal(true)])
             .optional()
-            .describe(
-              "Row-body projection. Omitted, each hit's `row` carries `id` plus its handle " +
-                'fields (name, title, topic, synopsis, description), which is enough to decide on. ' +
-                'Ask for more only when you need it: field -> true keeps just those fields plus ' +
-                '`id`, e.g. { "synopsis": true, "body": true }; true returns the whole body.'
-            )
+            .describe('{ field: true } adds fields; true = whole row')
         }
       },
       handler: async (input: RecallInput): Promise<ToolResult> => {
@@ -1057,7 +943,14 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
 }
 
 /** The tools a worker agent needs; the admin tools and `ask` are opt-in. */
-export const CORE_TOOLS: readonly string[] = ['query', 'mutate', 'schema', 'recall', 'run', 'whoami'];
+export const CORE_TOOLS: readonly string[] = [
+  'query',
+  'mutate',
+  'schema',
+  'recall',
+  'run',
+  'whoami'
+];
 
 /**
  * Parse SUBSTRATE_MCP_TOOLS: tool names and the presets `core` (the default)
