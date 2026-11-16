@@ -2,6 +2,34 @@
 
 Releases before 1.0.0-alpha.21 are recorded only in their GitHub release notes.
 
+## 1.0.0-beta.2 (2026-11-16)
+
+Changes since 1.0.0-beta.1. Nothing breaks; one default is deprecated.
+
+### Deprecated
+
+- **The MCP server's default tool set (#244, #247).** An unset `SUBSTRATE_MCP_TOOLS` still registers every tool, and `substrate mcp` now logs a warning about it. From 1.0.0-beta.3 the default is the `core` preset: `query`, `mutate`, `schema`, `recall`, `run` and `whoami`. Agents that use `propose_type`, `propose_field`, `propose_index`, `drop_namespace`, `drop_type` or `ask` should set `SUBSTRATE_MCP_TOOLS=all` (or `core,<name>`). Set `core` to opt in now.
+
+### Added
+
+- **MCP for small-context models (#244):**
+  - `SUBSTRATE_MCP_TOOLS` takes the presets `core` and `all`, mixed with tool names (`core,propose_type`).
+  - Shorter tool descriptions. With `core`, what a session receives before its first call (tool definitions plus instructions, type overview included) went from about 31 KB to about 17 KB on our store.
+  - A `mutate` refused for its shape (`unknown_field`, `missing_required_field`, `invalid_enum_value`, `invalid_field_type`) returns the refused type's write contract under `contract`.
+  - Errors that say the fix: `not_found` and `missing_referent` on an id that isn't a UUID point at resolving a shortId; `unqualified_key` says when `params`, `fields` or `where` was sent as a frame key, and suggests `<ns>/<key>` when exactly one namespace has that name; a malformed MCP payload names the parser's position and shows a valid one.
+
+### Changed
+
+- **Performance (pg):**
+  - A projection of column-backed fields no longer has a subquery, so those plans can run in parallel. The window fence is only used under an early-stopping `LIMIT` (#239).
+  - A new type table lays its columns out by alignment, so rows are 5–8% smaller. Existing tables are unchanged (#241).
+
+### Fixed
+
+- **NL:** "in project X" resolves to a field filter, and "since last week" to an open range (#238).
+- **Server:** builds against fastify 5.12.8, whose `addresses()` can return a pipe path (#245).
+- **Dependencies:** fastify 5.12.8 (security), msgpackr 2.1.4.
+
 ## 1.0.0-beta.1 (2026-11-14)
 
 The first beta. From here on the frame grammar, the wire format and the HTTP and MCP surfaces change only by addition. A breaking change goes through a deprecation first. See *Stability* in the [README](README.md#stability). Upgrading from an alpha takes the steps in [Upgrading to 1.0.0-beta.1](docs/upgrading-to-beta.md).
