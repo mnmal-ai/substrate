@@ -48,7 +48,7 @@ describe('runCli dispatcher', () => {
     try {
       await runCli(['--help']);
       const printed = stdoutSpy.mock.calls.map((c) => String(c[0])).join('');
-      expect(printed).toMatch(/SUBSTRATE_MCP_TOOLS[^]*core[^]*all/);
+      expect(printed).toMatch(/SUBSTRATE_MCP_TOOLS[\s\S]*core[\s\S]*all/);
     } finally {
       stdoutSpy.mockRestore();
     }
