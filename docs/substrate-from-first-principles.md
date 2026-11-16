@@ -694,7 +694,7 @@ Provided by the `@mnmal-ai/substrate-nl` plugin. NL is **parser first, judge sec
 | `propose_type`, `propose_field` | Runtime schema proposals (needs the proposals plugin, §5.15). |
 | `drop_namespace`, `drop_type` | Admin-gated data drops (§5.12); require a confirmation phrase and an explicit `cascade`. |
 
-`SUBSTRATE_MCP_TOOLS` (comma-separated) picks the registered set. Every tool definition rides along on every model call, so the default is the `core` preset: `query`, `mutate`, `schema`, `recall`, `run` and `whoami`. `all` registers every tool, and presets mix with names (`core,propose_type`). The admin tools (`propose_type`, `propose_field`, `propose_index`, `drop_namespace`, `drop_type`) and `ask` are opt-in, and the session instructions say how to enable them. An unknown name refuses to start and lists the valid ones.
+`SUBSTRATE_MCP_TOOLS` (comma-separated) picks the registered set. Every tool definition rides along on every model call, so the `core` preset carries only `query`, `mutate`, `schema`, `recall`, `run` and `whoami`. `all` registers every tool, and presets mix with names (`core,propose_type`). Unset means `all`, with a deprecation warning on stderr; from 1.0.0-beta.3 it means `core`, and the admin tools (`propose_type`, `propose_field`, `propose_index`, `drop_namespace`, `drop_type`) and `ask` become opt-in. The session instructions say how to enable a missing one. An unknown name refuses to start and lists the valid ones.
 
 Payloads use qualified frame keys, so there is no separate namespace argument and one call can span namespaces:
 

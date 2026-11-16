@@ -29,8 +29,19 @@ async function listedTools(tools?: string): Promise<string[]> {
 }
 
 describe('SUBSTRATE_MCP_TOOLS', () => {
-  it('registers the core set when unset', async () => {
-    expect(await listedTools()).toEqual(['mutate', 'query', 'recall', 'run', 'schema', 'whoami']);
+  it('registers every tool when unset (deprecated default; core from 1.0.0-beta.3)', async () => {
+    expect(await listedTools()).toHaveLength(12);
+  });
+
+  it('core registers the worker set', async () => {
+    expect(await listedTools('core')).toEqual([
+      'mutate',
+      'query',
+      'recall',
+      'run',
+      'schema',
+      'whoami'
+    ]);
   });
 
   it('all registers every tool', async () => {
@@ -49,14 +60,7 @@ describe('SUBSTRATE_MCP_TOOLS', () => {
   });
 
   it('treats a blank value as unset rather than as "no tools"', async () => {
-    expect(await listedTools('  ')).toEqual([
-      'mutate',
-      'query',
-      'recall',
-      'run',
-      'schema',
-      'whoami'
-    ]);
+    expect(await listedTools('  ')).toHaveLength(12);
   });
 
   it('refuses an unknown tool name, naming the valid ones', () => {

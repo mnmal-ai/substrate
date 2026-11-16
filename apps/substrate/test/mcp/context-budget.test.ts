@@ -10,7 +10,7 @@ import { buildInstructions } from '../../src/mcp/schema-overview.js';
 import { createMcpServer } from '../../src/mcp/server.js';
 
 async function listTools(): Promise<Array<{ name: string }>> {
-  const server = createMcpServer('http://127.0.0.1:1', {});
+  const server = createMcpServer('http://127.0.0.1:1', { tools: 'core' });
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
   await server.connect(serverSide);
   const client = new Client({ name: 'budget-test', version: '0.0.0' });
