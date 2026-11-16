@@ -7,6 +7,9 @@
   "minimumReleaseAge": "1 day",
   "labels": ["repo", "infra", "P3-low"],
   "assignees": ["mnmal-ai-agent"],
+  "vulnerabilityAlerts": {
+    "labels": ["repo", "fix", "P1-high"]
+  },
   "dependencyDashboard": true,
   "packageRules": [
     {
