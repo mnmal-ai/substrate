@@ -7,7 +7,7 @@ import { randomBytes } from 'node:crypto';
 import { field, RESERVED_AUTOCRUD_FIELDS } from '@mnmal-ai/substrate-sdk';
 import { type FieldDef, isColumnField } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, onTestFinished } from 'vitest';
 import { detectLayout, runMigrations, UUID_CHECK_MIGRATION, UUID_REGEX } from '../src/index.js';
 import { columnName, MAX_IDENTIFIER, typeTableName } from '../src/layout.js';
 import {
@@ -352,6 +352,47 @@ describe.skipIf(!POSTGRES_URL)('tables layout', () => {
     expect(loaded?.pending).toEqual([]);
     await listener.unlisten();
     expect(notified).toContain(`${NS}/${type}`);
+  });
+
+  it('a new table lays its columns out by alignment: 8-byte, 4, 1, then variable-length', async () => {
+    const type = freshType();
+    // An int32 catalog row left behind fails a forced re-run of the int64 kind migration in other files.
+    onTestFinished(async () => {
+      await sql`DELETE FROM substrate_type_fields WHERE namespace = ${NS} AND type = ${type}`;
+    });
+    await ensure(type, {
+      title: field.string(),
+      hits: field.int32(),
+      done: field.boolean(),
+      price: field.number(),
+      ref: field.crossRef(NS, 'Other'),
+      total: field.int64(),
+      observedAt: field.date()
+    });
+    const rows = await sql<Array<{ attname: string }>>`
+      SELECT attname FROM pg_attribute
+      WHERE attrelid = to_regclass(${`"${await tableOf(type)}"`}) AND attnum > 0 AND NOT attisdropped
+      ORDER BY attnum`;
+    const c = columnName;
+    expect(rows.map((r) => r.attname)).toEqual([
+      'deleted_at',
+      'created_at',
+      'updated_at',
+      'seq',
+      c('price'),
+      c('total'),
+      c('observedAt'),
+      c('hits'),
+      c('done'),
+      'id',
+      'created_by_kind',
+      'created_by_id',
+      'updated_by_kind',
+      'updated_by_id',
+      'extra',
+      c('title'),
+      c('ref')
+    ]);
   });
 
   it('json/list/struct/shortId get no column', async () => {

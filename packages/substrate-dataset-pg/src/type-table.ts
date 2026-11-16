@@ -646,30 +646,48 @@ async function freeTableName(tx: TransactionSql, namespace: string, type: string
 const kindCheck = (column: string): string =>
   `CHECK (${column} IS NULL OR ${column} IN ('agent','user','system'))`;
 
+/** Each column kind's alignment in bytes; 0 for variable-length (text), which goes last. */
+const ALIGN: Readonly<Record<ColumnKind, number>> = {
+  date: 8,
+  number: 8,
+  int64: 8,
+  int32: 4,
+  int16: 2,
+  boolean: 1,
+  text: 0,
+  enum: 0,
+  crossRef: 0
+};
+
 function createTableSql(
   table: string,
   declared: ReadonlyMap<string, { kind: ColumnKind; vocab: readonly string[] | undefined }>,
   enforceUuidCheck: boolean
 ): string {
+  // Postgres pads each value to its type's alignment, so the columns go widest-aligned first and
+  // variable-length last: no padding between fixed-width values. Later ADD COLUMNs append.
+  const fields = [...declared].sort(([, a], [, b]) => ALIGN[b.kind] - ALIGN[a.kind]);
+  const column = ([field, { kind, vocab }]: (typeof fields)[number]): string[] => {
+    const c = columnName(field);
+    const def = `${ident(c)} ${PG_TYPE[kind]}`;
+    return kind === 'enum'
+      ? [def, `CONSTRAINT ${ident(enumCheckName(c))} ${enumCheck(c, vocab)}`]
+      : [def];
+  };
   const parts = [
-    'id text PRIMARY KEY',
     'deleted_at timestamptz NULL',
     'created_at timestamptz NULL',
     'updated_at timestamptz NULL',
+    'seq bigint NULL',
+    ...fields.filter(([, f]) => ALIGN[f.kind] > 0).flatMap(column),
+    'id text PRIMARY KEY',
     `created_by_kind text NULL ${kindCheck('created_by_kind')}`,
     'created_by_id text NULL',
     `updated_by_kind text NULL ${kindCheck('updated_by_kind')}`,
     'updated_by_id text NULL',
-    'seq bigint NULL',
-    "extra jsonb NOT NULL DEFAULT '{}'"
+    "extra jsonb NOT NULL DEFAULT '{}'",
+    ...fields.filter(([, f]) => ALIGN[f.kind] === 0).flatMap(column)
   ];
-  for (const [field, { kind, vocab }] of declared) {
-    const column = columnName(field);
-    parts.push(`${ident(column)} ${PG_TYPE[kind]}`);
-    if (kind === 'enum') {
-      parts.push(`CONSTRAINT ${ident(enumCheckName(column))} ${enumCheck(column, vocab)}`);
-    }
-  }
   if (enforceUuidCheck) parts.push(`CONSTRAINT id_uuid_format CHECK (id ~ '${UUID_REGEX}')`);
   return `CREATE TABLE ${ident(table)} (\n  ${parts.join(',\n  ')}\n)`;
 }
