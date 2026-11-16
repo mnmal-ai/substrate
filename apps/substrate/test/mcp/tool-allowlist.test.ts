@@ -49,7 +49,14 @@ describe('SUBSTRATE_MCP_TOOLS', () => {
   });
 
   it('treats a blank value as unset rather than as "no tools"', async () => {
-    expect(await listedTools('  ')).toEqual(['mutate', 'query', 'recall', 'run', 'schema', 'whoami']);
+    expect(await listedTools('  ')).toEqual([
+      'mutate',
+      'query',
+      'recall',
+      'run',
+      'schema',
+      'whoami'
+    ]);
   });
 
   it('refuses an unknown tool name, naming the valid ones', () => {
