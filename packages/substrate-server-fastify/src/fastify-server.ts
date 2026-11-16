@@ -295,7 +295,8 @@ export class FastifySubstrateServer implements SubstrateServer {
     await this.fastify.ready();
     const address = await this.fastify.listen({ host, port });
     const info = this.fastify.addresses()[0];
-    if (!info) {
+    // fastify >= 5.12.8 types an entry as AddressInfo | string (a pipe or socket path).
+    if (info === undefined || typeof info === 'string') {
       const match = /:(\d+)$/.exec(address);
       const fallbackPort = match?.[1] ? Number.parseInt(match[1], 10) : port;
       return { address: host, port: fallbackPort };
