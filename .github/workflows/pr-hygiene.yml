@@ -40,7 +40,7 @@ jobs:
           persist-credentials: false
 
       - name: Test the hygiene scripts
-        run: node --test .github/scripts/check-pr-labels.test.mjs .github/scripts/check-label-drift.test.mjs
+        run: node --test .github/scripts/check-pr-labels.test.mjs .github/scripts/check-label-drift.test.mjs .github/scripts/pre-merge-mode.test.mjs
 
       - name: Check workspace members against the label catalog
         env:

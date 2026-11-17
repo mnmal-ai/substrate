@@ -3,6 +3,13 @@ name: Pre-merge
 # The heavy Postgres suites, the golden evals included (packages/substrate-dataset-pg/
 # test/golden), run here once a PR carries `ready-to-merge` (Decision #627,
 # Todo #1859). The label starts a run, and every later push re-runs it.
+#
+# The suites run once per commit. Each run picks a mode in pg-plan:
+#   run     - run the suites (a push, the ready-to-merge label, or no other run to follow)
+#   follow  - another label added to a ready PR: wait for the run on this commit that is
+#             running the suites, and report its gate result rather than repeating it
+#   release - the PR changes only package.json "version" lines and CHANGELOG.md
+#             (a release PR): the code is main's, which passed this gate, so nothing runs
 on:
   pull_request:
     branches: [main]
@@ -19,22 +26,39 @@ concurrency:
 
 jobs:
   # A push to a PR without the label runs nothing heavy, and the gate below
-  # says why. Any label added to a ready PR re-runs the set: filtering on the
-  # added label would skip the passes and fail the gate, and that failure
-  # would be the commit's newest gate result.
+  # says why. Any other label added to a ready PR still gets a gate result, since
+  # a skipped or failed gate would be the commit's newest: it follows the run
+  # that is testing the commit (mode `follow`) rather than repeating the suites.
   pg-plan:
     name: Postgres passes
     if: contains(github.event.pull_request.labels.*.name, 'ready-to-merge')
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read
+      pull-requests: read
     outputs:
+      mode: ${{ steps.mode.outputs.mode }}
+      follow: ${{ steps.mode.outputs.follow }}
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
+      - name: Choose the mode
+        id: mode
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          ACTION: ${{ github.event.action }}
+          ADDED: ${{ github.event.label.name }}
+          RUN_ID: ${{ github.run_id }}
+        run: node .github/scripts/pre-merge-mode.mjs >> "$GITHUB_OUTPUT"
+
       - name: Plan one pass per package
         id: plan
+        if: steps.mode.outputs.mode == 'run'
         run: echo "matrix=$(.github/scripts/test-pg-gated.sh plan)" >> "$GITHUB_OUTPUT"
 
   # As ci.yml's pg-pass: the role is least-privilege because the test guards
@@ -43,6 +67,7 @@ jobs:
   pg-pass:
     name: pg ${{ matrix.dir }}
     needs: pg-plan
+    if: needs.pg-plan.outputs.mode == 'run'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -110,31 +135,53 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
       - name: The PR is labelled ready-to-merge
         if: ${{ !contains(github.event.pull_request.labels.*.name, 'ready-to-merge') }}
         run: |
           echo "::error::add the ready-to-merge label to run the pre-merge Postgres suites"
           exit 1
 
-      - name: Every pass succeeded
-        if: needs.pg-plan.result != 'success' || needs.pg-pass.result != 'success'
+      - name: The plan succeeded
+        if: needs.pg-plan.result != 'success'
         run: |
-          echo "::error::a pre-merge pg pass did not succeed (plan: ${{ needs.pg-plan.result }}, passes: ${{ needs.pg-pass.result }})"
+          echo "::error::the pre-merge plan did not succeed (${{ needs.pg-plan.result }})"
           exit 1
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: A release PR reuses main's result
+        if: needs.pg-plan.outputs.mode == 'release'
+        run: echo "only package.json versions and CHANGELOG.md changed; main passed this gate"
+
+      - name: Follow the run that is testing this commit
+        if: needs.pg-plan.outputs.mode == 'follow'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          FOLLOW: ${{ needs.pg-plan.outputs.follow }}
+        run: node .github/scripts/pre-merge-mode.mjs follow
+
+      - name: Every pass succeeded
+        if: needs.pg-plan.outputs.mode == 'run' && needs.pg-pass.result != 'success'
+        run: |
+          echo "::error::a pre-merge pg pass did not succeed (passes: ${{ needs.pg-pass.result }})"
+          exit 1
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        if: needs.pg-plan.outputs.mode == 'run'
         with:
           pattern: pg-report-*
           path: ${{ runner.temp }}/pg-reports
           merge-multiple: true
 
       - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d  # v5.2.4
+        if: needs.pg-plan.outputs.mode == 'run'
 
       # Covers the golden evals: their pg cases skip without POSTGRES_URL like any other.
       - name: Every pg-gated test ran, none skipped
+        if: needs.pg-plan.outputs.mode == 'run'
         env:
           PG_REPORTS: ${{ runner.temp }}/pg-reports
         run: .github/scripts/test-pg-gated.sh check
