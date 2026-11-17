@@ -15,14 +15,15 @@ import {
   type FieldDef,
   type FieldInput,
   type HttpHandler,
-  parseQualifiedKey
+  parseQualifiedKey,
+  type QualifiedFrame
 } from '@mnmal-ai/substrate-types';
 import {
   buildContext,
   error400,
+  frameShapeError,
   parseJsonBody,
-  serializeEnvelope,
-  validateFrame
+  serializeEnvelope
 } from './helpers.js';
 
 export function mutateRoute(
@@ -33,10 +34,9 @@ export function mutateRoute(
   return async (req) => {
     const parsed = parseJsonBody(req);
     if (!parsed.ok) return parsed.response;
-    if (!validateFrame(parsed.value)) {
-      return error400('frame must be an object of { params?, fields? } entries');
-    }
-    const frame = parsed.value;
+    const shapeError = frameShapeError(parsed.value);
+    if (shapeError !== null) return error400(shapeError);
+    const frame = parsed.value as QualifiedFrame;
     const envelope = await engine.mutate({
       frame,
       ctx: buildContext(req, trustedProxies, authEnabled),

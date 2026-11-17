@@ -149,7 +149,10 @@ export class HttpTransport {
         info
       );
     }
-    throw new NetworkError(`${res.status} from ${url}`, null, await errorInfo(res));
+    const info = await errorInfo(res);
+    // The server's reason rides in the message too: a caller that prints only `message` (a run script, a log) still sees what to fix.
+    const reason = [info.code, info.serverMessage].filter((s) => s !== undefined).join(': ');
+    throw new NetworkError(`${res.status} from ${url}${reason ? `: ${reason}` : ''}`, null, info);
   }
 }
 

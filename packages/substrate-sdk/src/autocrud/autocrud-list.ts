@@ -67,7 +67,7 @@ export function listResolver<_T extends Row = Row>(
   options: ListResolverOptions = {}
 ): TypedResolver<ReadResult> {
   return async (_ctx, args) => {
-    rejectUnknownParams('list', typeName, args.params, KNOWN_LIST_PARAMS);
+    rejectUnknownParams('list', typeName, args.params, KNOWN_LIST_PARAMS, options.fields);
     // Prefer the engine-supplied handle so a list-inside-mutate (rare) sees
     // the active tx's writes; direct-call unit tests fall back to the closure.
     const ds = args.dataset ?? dataset;

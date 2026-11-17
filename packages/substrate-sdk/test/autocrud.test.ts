@@ -186,6 +186,25 @@ describe('autocrud.listResolver', () => {
     ).rejects.toThrow(expect.objectContaining({ code: 'unknown_param' }));
   });
 
+  it('an unknown param that is a field of the type says filters go in where', async () => {
+    const dataset = new MemoryDataset({ namespace: 'default' });
+    const fields: Record<string, FieldDef> = { project: { kind: 'scalar', type: 'string' } };
+    await expect(
+      listResolver('Todo', dataset, { fields })(makeCtx(), {
+        params: { project: { eq: 'substrate' } }
+      })
+    ).rejects.toThrow(
+      /'project' is a field: filters go in where, e\.g\. params: \{ where: \{ project:/
+    );
+  });
+
+  it('a paging token under the wrong name points at params.cursor', async () => {
+    const dataset = new MemoryDataset({ namespace: 'default' });
+    await expect(
+      listResolver('Todo', dataset)(makeCtx(), { params: { nextCursor: 'abc' } })
+    ).rejects.toThrow(/pass the previous page's _pagination nextCursor as params\.cursor/);
+  });
+
   it('refuses the retired _allowTableScan as an unknown param (#1955)', async () => {
     const dataset = new MemoryDataset({ namespace: 'default' });
     await expect(

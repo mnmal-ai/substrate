@@ -198,27 +198,31 @@ export function withRequestContext(
  * validation. Anything that doesn't look like an object of objects (or arrays
  * of objects, for batched mutate §5.13) is rejected.
  */
-export function validateFrame(
-  value: unknown
-): value is Record<
-  string,
-  | { params?: Record<string, unknown>; fields?: Record<string, unknown> }
-  | Array<{ params?: Record<string, unknown>; fields?: Record<string, unknown> }>
-> {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
-  for (const entry of Object.values(value as Record<string, unknown>)) {
-    if (entry === null || typeof entry !== 'object') return false;
+const FRAME_SHAPE = 'a frame is { "<ns>/<Type>": { "params": {...}, "fields": {...} } }';
+
+const kindOf = (v: unknown): string =>
+  v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v;
+
+/** Why a request body is not a frame, naming the offending key; null when it is one. Entry keys are checked by the engine. */
+export function frameShapeError(value: unknown): string | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return `the body is ${kindOf(value)}, not a frame: ${FRAME_SHAPE}`;
+  }
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (entry === null || typeof entry !== 'object') {
+      return `'${key}' is ${kindOf(entry)}; each key maps to { params?, fields?, idempotencyKey? }: ${FRAME_SHAPE}`;
+    }
     if (Array.isArray(entry)) {
-      // Batched mutate array: every element must look like a FrameEntry
-      // object. An empty array is accepted at the boundary; the engine
-      // rejects it with a clearer `empty_frame_array` error so callers
-      // get a consistent diagnostic surface.
-      for (const sub of entry) {
-        if (sub === null || typeof sub !== 'object' || Array.isArray(sub)) return false;
+      // An empty batch passes here; the engine refuses it as `empty_frame_array`.
+      const i = entry.findIndex(
+        (sub) => sub === null || typeof sub !== 'object' || Array.isArray(sub)
+      );
+      if (i >= 0) {
+        return `'${key}'[${i}] is ${kindOf(entry[i])}; each element of a batch is { params?, fields?, idempotencyKey? }`;
       }
     }
   }
-  return true;
+  return null;
 }
 
 export function readAcceptHeader(req: SubstrateRequest): string | undefined {

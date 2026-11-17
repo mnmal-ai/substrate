@@ -451,6 +451,20 @@ describe('aggregate, select, groupBy, count and nested validation', () => {
     ).not.toThrow();
   });
 
+  it('an offset without aggregate points at the cursor and count', () => {
+    expect(() => checkFrame({ offset: 100 } as Frame)).toThrow(
+      /offset shapes an aggregate's groups; it needs aggregate\. To page rows, pass the previous page's _pagination nextCursor as params\.cursor; for a total, use count: true\./
+    );
+  });
+
+  it('an empty groupBy expression names the accepted forms', () => {
+    expect(() =>
+      checkFrame({ aggregate: { n: { count: true } }, groupBy: { target: {} } } as Frame)
+    ).toThrow(
+      /an expression is a field name \("title"\), a number, or an object with exactly one function key .*got an object with no keys/
+    );
+  });
+
   it('date and number metadata read in expressions; string metadata does not', () => {
     expect(() =>
       checkFrame({

@@ -4,13 +4,13 @@
  */
 
 import type { Engine } from '@mnmal-ai/substrate-core';
-import type { HttpHandler } from '@mnmal-ai/substrate-types';
+import type { HttpHandler, QualifiedFrame } from '@mnmal-ai/substrate-types';
 import {
   buildContext,
   error400,
+  frameShapeError,
   parseJsonBody,
-  serializeEnvelope,
-  validateFrame
+  serializeEnvelope
 } from './helpers.js';
 
 export function queryRoute(
@@ -22,10 +22,9 @@ export function queryRoute(
   return async (req) => {
     const parsed = parseJsonBody(req);
     if (!parsed.ok) return parsed.response;
-    if (!validateFrame(parsed.value)) {
-      return error400('frame must be an object of { params?, fields? } entries');
-    }
-    const frame = parsed.value;
+    const shapeError = frameShapeError(parsed.value);
+    if (shapeError !== null) return error400(shapeError);
+    const frame = parsed.value as QualifiedFrame;
     const envelope = await engine.query({
       frame,
       ctx: buildContext(req, trustedProxies, authEnabled),
