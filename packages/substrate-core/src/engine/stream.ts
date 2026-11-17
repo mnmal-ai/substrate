@@ -39,6 +39,7 @@ import {
   parseQualifiedKey,
   type StreamHandle,
   type StreamInput,
+  unknownFrameKeyMessage,
   withCanonicalMetadataFilters,
   withNaturalOrder
 } from './internals.js';
@@ -220,6 +221,11 @@ export class StreamSubsystem {
     const parsed = parseQualifiedKey(key);
     if (!parsed) {
       await emitError(`unqualified frame key '${key}' — expected '<ns>/<name>'`, 'unqualified_key');
+      return;
+    }
+    const badKeys = unknownFrameKeyMessage(frameEntry);
+    if (badKeys !== null) {
+      await emitError(badKeys, 'unknown_frame_key');
       return;
     }
     const { ns, name } = parsed;
