@@ -95,8 +95,10 @@ describe('/keys', () => {
     const app = start({ admin });
     await open(app);
     expect(app.frame()).toContain('keys · 2 active · admin');
-    expect(app.frame()).toContain('a-agent@Box');
-    expect(app.frame()).toMatch(/a-agent@Box\s+a-agent key\s+journal:r\+m,plane:r/);
+    // Grouped under the host, the agent name with one aligned column per namespace; no description.
+    expect(app.frame()).toMatch(/^\s+Box$/m);
+    expect(app.frame()).toMatch(/a-agent\s+journal rm\s+plane r/);
+    expect(app.frame()).not.toContain('a-agent key');
     expect(app.frame()).toContain('r=read · m=mutate · a=admin');
     app.unmount();
   });
@@ -159,8 +161,8 @@ describe('/keys', () => {
     expect(app.frame()).toContain('keys · 2 active · agent');
     release();
     await tick(80);
-    expect(app.frame()).toContain('a-agent@Box');
-    expect(app.frame()).not.toContain('z-secret@Box');
+    expect(app.frame()).toMatch(/a-agent\s+journal/);
+    expect(app.frame()).not.toContain('z-secret');
     expect(app.frame()).toContain('keys · 2 active · agent');
     app.unmount();
   });
@@ -185,8 +187,9 @@ describe('/keys revoked toggle (#1914)', () => {
     expect(app.frame()).toContain('r show revoked');
     expect(app.frame()).not.toContain('c-old@Box');
     app.stdin.write('r');
-    await until(() => expect(app.frame()).toContain('revoked 2026-11-01T10:00:00.000Z'));
-    expect(app.frame()).toMatch(/c-old@Box\s+c-old key\s+revoked 2026-11-01/);
+    // Revoked keys sit in a section of their own, with the date they were revoked.
+    await until(() => expect(app.frame()).toMatch(/^\s+revoked$/m));
+    expect(app.frame()).toMatch(/c-old@Box\s+2026-11-01/);
     expect(app.frame()).toContain('keys · 2 active · 1 revoked · agent');
     expect(app.frame()).toContain('r hide revoked');
     app.stdin.write('r');
@@ -217,8 +220,10 @@ describe('/keys revoked toggle (#1914)', () => {
     app.stdin.write('r');
     await until(() => expect(app.frame()).toContain('c-old@Box'));
     expect(seen).toEqual(['active', 'all']);
-    // The cursor stays on the row it was on (a-agent), so move up to the revoked one.
-    app.stdin.write('k');
+    // The cursor stays on the row it was on (a-agent); revoked rows sort last, two rows down.
+    app.stdin.write('j');
+    await tick();
+    app.stdin.write('j');
     await tick();
     app.stdin.write('x');
     await tick();

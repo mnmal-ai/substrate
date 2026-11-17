@@ -47,6 +47,13 @@ export function compactGrant(namespaces: string, capabilities: string): string {
     .join(',');
 }
 
+/** A namespace's capabilities as their short letters in canonical order: read, mutate, admin → `rma`. */
+export function shortCaps(caps: Iterable<string>): string {
+  return canonicalCaps(caps)
+    .map((c) => SHORT[c] ?? `(${c})`)
+    .join('');
+}
+
 /** A stored row's grant, or null when it does not parse (the table still renders it). */
 export function rowGrant(row: { namespaces: string; capabilities: string }): Grant | null {
   try {

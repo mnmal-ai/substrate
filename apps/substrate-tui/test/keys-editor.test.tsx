@@ -197,7 +197,7 @@ describe('the grant editor', () => {
 
   it('scrolls a ten-namespace grant to the cursor where the grid cannot hold it (80×14)', async () => {
     const many = Array.from({ length: 10 }, (_, i) => `ns${i}`).join(',');
-    const app = unlockedApp({ rows: [row('wide@Box', many), ...ROWS.slice(1)], size: [80, 14] });
+    const app = unlockedApp({ rows: [row('a-wide@Box', many), ...ROWS.slice(1)], size: [80, 14] });
     await openKeys(app);
     await type(app, ENTER);
     await tick(60);
@@ -461,7 +461,7 @@ describe('review and apply', () => {
   });
 
   it('a tier-2 target containing table-bound letters (k, j, x, i, n) types into the draft', async () => {
-    const kid = 'labs-claude@laptop';
+    const kid = 'labs-claude@Annex'; // sorts before Box, so it is the first row
     const app = unlockedApp({ rows: [row(kid, 'journal'), ...ROWS.slice(1)] });
     await toReview(app, DOWN, ' '); // _system read on → widens
     await type(app, ...kid, ENTER);
@@ -962,7 +962,7 @@ describe('1603 minors', () => {
   });
 
   it('the grid keeps every cell four wide: the cursor does not shift a glyph, tails share a column', async () => {
-    const app = unlockedApp({ rows: [row('x@Box', 'journal,legacy'), ...ROWS.slice(1)] });
+    const app = unlockedApp({ rows: [row('a-x@Box', 'journal,legacy'), ...ROWS.slice(1)] });
     await openKeys(app);
     await type(app, ENTER);
     await tick(60);
