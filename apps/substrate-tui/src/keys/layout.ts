@@ -60,7 +60,7 @@ export function listLines(rows: readonly AdminKeyRow[]): ListLine[] {
     const g = rowGrant(r);
     return g === null ? null : new Map([...g].map(([ns, caps]) => [ns, shortCaps(caps)]));
   });
-  const active = rows.map((r, i) => i).filter((i) => !isRevoked(rows[i] as AdminKeyRow));
+  const active = rows.flatMap((r, i) => (isRevoked(r) ? [] : [i]));
   const cols = namespaceColumns(active.map((i) => grants[i] ?? null));
   const colW = cols.map(
     (ns) => ns.length + 1 + Math.max(1, ...active.map((i) => grants[i]?.get(ns)?.length ?? 0))
