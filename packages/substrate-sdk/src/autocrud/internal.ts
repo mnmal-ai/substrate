@@ -65,6 +65,9 @@ export function unknownParamHint(
   allowed: ReadonlySet<string>,
   fields?: Readonly<Record<string, FieldDef>>
 ): string {
+  if (key === 'fields' || key === 'idempotencyKey') {
+    return ` '${key}' sits beside params, not inside it: { params: { ... }, ${key}: ... }.`;
+  }
   if (allowed.has('where') && fields !== undefined && Object.hasOwn(fields, key)) {
     return ` '${key}' is a field: filters go in where, e.g. params: { where: { ${key}: { eq: ... } } }.`;
   }

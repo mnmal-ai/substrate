@@ -220,4 +220,9 @@ describe('checkExpr refusal messages', () => {
       /exactly one function key such as \{ "lower": \["title"\] \}.*got an object with keys lower, upper/
     );
   });
+  it('a one-field array names the field it meant', () => {
+    expect(refusal(['URL'] as unknown as Expr).message).toMatch(
+      /got an array; for the field, write "URL"$/
+    );
+  });
 });
