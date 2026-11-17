@@ -693,7 +693,7 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
       name: 'run',
       config: {
         description:
-          'Sandboxed script for 3+ dependent calls (paging, joins, read-driven writes). `script`: a module exporting default `async (s) => result`; type syntax is stripped. `s`: kid, mode, args, query(frame) (throws if refused), queryAll(key, { params, fields }), byShortId(key, n | n[], fields?), recall({ query, namespace, type, k?, where?, row? }), schema(ns?, type?), mutate(frame), log(). Modes: "read" (default; refuses mutate), "dry-run" (records, sends nothing), "write". Dry-run, check report.mutations, then write. Return ids/counts.',
+          'Sandboxed script for 3+ dependent calls (paging, joins, read-driven writes). `script`: default export `async (s) => result`; type syntax is stripped. `s`: kid, mode, args, query(frame | key, entry) (throws if refused), queryAll(key, { params, fields }), byShortId(key, n | n[], fields?), recall({ query, namespace, type, k?, where?, row? }), schema(ns?, type?), mutate(frame | key, entry), log(). Modes: "read" (default, no mutate), "dry-run" (records only), "write". Dry-run, check report.mutations, then write. Return ids/counts.',
         inputSchema: {
           script: z
             .string()

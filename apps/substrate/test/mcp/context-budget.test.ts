@@ -48,7 +48,7 @@ describe('MCP context budget', () => {
     expect(text('recall')).toContain('null matches');
     expect(text('run')).toContain('type syntax is stripped');
     expect(text('run')).toContain('report.mutations');
-    expect(text('run')).toMatch(/query\(frame\)[^,]*throws/);
+    expect(text('run')).toMatch(/query\(frame \| key, entry\)[^,]*throws/);
     expect(text('schema')).toContain('mutationRefs');
   });
 });

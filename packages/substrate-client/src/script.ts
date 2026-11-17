@@ -63,6 +63,40 @@ export interface RecallHit {
 
 export type ScriptRecallHit = RecallHit;
 
+/** One key's entry, as queryAll takes it. */
+export interface ScriptFrameEntry {
+  params?: Record<string, unknown>;
+  fields?: unknown;
+  idempotencyKey?: string;
+}
+
+/**
+ * The frame for `query`/`mutate`, called either way: `(frame)` or `(key, entry)`.
+ * Anything else throws naming both forms, rather than reaching the server as a non-frame body.
+ */
+export function frameOf(
+  op: 'query' | 'mutate',
+  frameOrKey: unknown,
+  entry?: unknown
+): QualifiedFrame {
+  if (typeof frameOrKey === 'string') {
+    if (entry !== undefined && (entry === null || typeof entry !== 'object')) {
+      throw new Error(
+        `s.${op}('${frameOrKey}', entry): entry must be { params?, fields? }, got ${entry === null ? 'null' : typeof entry}`
+      );
+    }
+    return { [frameOrKey]: entry ?? {} } as QualifiedFrame;
+  }
+  if (frameOrKey === null || typeof frameOrKey !== 'object' || Array.isArray(frameOrKey)) {
+    const got =
+      frameOrKey === null ? 'null' : Array.isArray(frameOrKey) ? 'an array' : typeof frameOrKey;
+    throw new Error(
+      `s.${op} takes a frame { 'ns/Type': { params, fields } } or (key, { params, fields }), got ${got}`
+    );
+  }
+  return frameOrKey as QualifiedFrame;
+}
+
 /** What a script's default export receives. */
 export interface ScriptContext {
   readonly kid: string | null;
@@ -70,10 +104,12 @@ export interface ScriptContext {
   /** The caller's `--args` object; `{}` when none was passed. */
   readonly args: Readonly<Record<string, unknown>>;
   /**
-   * One query. Throws when a requested key is missing from `data`, which is a
-   * rejected frame, not an empty result.
+   * One query: a whole frame, or one key and its entry as queryAll takes them.
+   * Throws when a requested key is missing from `data`, which is a rejected
+   * frame, not an empty result.
    */
   query(frame: QualifiedFrame): Promise<PackEnvelope>;
+  query(key: string, entry: ScriptFrameEntry): Promise<PackEnvelope>;
   /** Every row of a single-key query, paging until `hasMore` is false. */
   queryAll(
     key: string,
@@ -106,6 +142,7 @@ export interface ScriptContext {
    * in `read`, past `maxWrites`, or when the server refuses any frame.
    */
   mutate(frame: QualifiedFrame): Promise<PackEnvelope | null>;
+  mutate(key: string, entry: ScriptFrameEntry | ScriptFrameEntry[]): Promise<PackEnvelope | null>;
   /** Writes to stderr; stdout carries only the result. */
   log(...args: unknown[]): void;
 }
@@ -172,7 +209,11 @@ export async function runScript(
   const stats = { queries: 0, writes: 0, ms: 0 };
   const started = Date.now();
 
-  const query = async (frame: QualifiedFrame): Promise<PackEnvelope> => {
+  const query = async (
+    frameOrKey: QualifiedFrame | string,
+    entry?: unknown
+  ): Promise<PackEnvelope> => {
+    const frame = frameOf('query', frameOrKey, entry);
     stats.queries++;
     const env = await client.query(frame);
     assertKeys(frame, env, 'query');
@@ -229,7 +270,7 @@ export async function runScript(
     kid,
     mode,
     args: Object.freeze({ ...args }),
-    query,
+    query: query as ScriptContext['query'],
     queryAll,
     byShortId: byShortId as ScriptContext['byShortId'],
     async recall({ query: to, row, ...params }) {
@@ -263,7 +304,8 @@ export async function runScript(
       if (t === undefined) throw new Error(`schema: unknown type '${namespace}/${type}'`);
       return t;
     },
-    async mutate(frame) {
+    mutate: (async (frameOrKey: QualifiedFrame | string, entry?: unknown) => {
+      const frame = frameOf('mutate', frameOrKey, entry);
       if (mode === 'read')
         throw new Error('mutate refused: read mode (run in dry-run or write mode)');
       if (mode === 'dry-run') {
@@ -286,7 +328,7 @@ export async function runScript(
       });
       assertKeys(frame, env, 'mutate');
       return env;
-    },
+    }) as ScriptContext['mutate'],
     log: (...args) =>
       log(args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' '))
   };
