@@ -2,6 +2,20 @@
 
 Releases before 1.0.0-alpha.21 are recorded only in their GitHub release notes.
 
+## 1.0.0-beta.5 (2026-11-17)
+
+Changes since 1.0.0-beta.4. Nothing breaks: the new call form is additive, and error codes are unchanged.
+
+### Added
+
+- **`run` scripts: `s.query` and `s.mutate` also take `(key, entry)` (#255),** the form `queryAll` and `byShortId` already take. `s.mutate(key, entry[])` is a batch. The whole-frame form is unchanged. Any other call throws naming both forms before anything is sent. The MCP `run` sandbox forwards both.
+
+### Fixed
+
+- **More errors name the fix (#256):**
+  - `fields` or `idempotencyKey` sent inside `params` says it sits beside them.
+  - An array used as an expression names the accepted forms, and for a one-field array (`["shortId"]`) the field it meant.
+
 ## 1.0.0-beta.4 (2026-11-17)
 
 Changes since 1.0.0-beta.3. Nothing breaks: error codes are unchanged, and only message text is clearer.
