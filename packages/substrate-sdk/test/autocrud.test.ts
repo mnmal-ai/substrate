@@ -198,6 +198,13 @@ describe('autocrud.listResolver', () => {
     );
   });
 
+  it('fields sent inside params says it sits beside them', async () => {
+    const dataset = new MemoryDataset({ namespace: 'default' });
+    await expect(
+      listResolver('Todo', dataset)(makeCtx(), { params: { fields: { id: true } } })
+    ).rejects.toThrow(/'fields' sits beside params, not inside it/);
+  });
+
   it('a paging token under the wrong name points at params.cursor', async () => {
     const dataset = new MemoryDataset({ namespace: 'default' });
     await expect(

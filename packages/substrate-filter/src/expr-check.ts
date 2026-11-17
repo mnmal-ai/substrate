@@ -26,6 +26,9 @@ export type ExprCheck =
   | { ok: true; type: ExprType; nodes: number; depth: number }
   | { ok: false; code: 'expr_invalid'; message: string; path: string[] };
 
+const EXPR_FORMS =
+  'an expression is a field name ("title"), a number, or an object with exactly one function key such as { "lower": ["title"] } or { "lit": "text" }';
+
 const SIGS = new Map<string, FunctionSig>(EXPR_FUNCTIONS.map((s) => [s.name, s]));
 const isNumeric = (t: ExprType): boolean => t === 'number' || t === 'int64';
 
@@ -125,11 +128,18 @@ export function checkExpr(expr: Expr, scope: ExprScope, path: string[]): ExprChe
       if (t === undefined) return refuse(`unknown field '${e}'`, at);
       return { t: { type: t }, depth };
     }
-    if (typeof e !== 'object' || Array.isArray(e)) return refuse('not an expression', at);
+    if (typeof e !== 'object' || Array.isArray(e)) {
+      // A one-field array is the usual slip: name the field it meant.
+      const only =
+        Array.isArray(e) && e.length === 1 && typeof e[0] === 'string'
+          ? `; for the field, write "${e[0]}"`
+          : '';
+      return refuse(`${EXPR_FORMS}; got ${Array.isArray(e) ? 'an array' : typeof e}${only}`, at);
+    }
     const keys = Object.keys(e);
     if (keys.length !== 1)
       return refuse(
-        `an expression is a field name ("title"), a number, or an object with exactly one function key such as { "lower": ["title"] } or { "lit": "text" }; got an object with ${keys.length === 0 ? 'no keys' : `keys ${keys.join(', ')}`}`,
+        `${EXPR_FORMS}; got an object with ${keys.length === 0 ? 'no keys' : `keys ${keys.join(', ')}`}`,
         at
       );
     const key = keys[0] as string;
