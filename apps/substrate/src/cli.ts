@@ -38,7 +38,7 @@ Subcommands:
   mcp                       Boot the stdio MCP server. Reads SUBSTRATE_URL, and
                             SUBSTRATE_MCP_TOOLS (csv of tool names, core or all;
                             core: query, mutate, schema, recall, run, whoami; default
-                            all, deprecated: core from 1.0.0-beta.3).
+                            core).
   init [dir] [flags]        Scaffold a new Substrate runtime directory. Interactive by
                             default; pass --yes for non-interactive scripted use.
   federate <verb>           Federation onboarding: enroll / join / check.

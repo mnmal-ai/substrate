@@ -4,6 +4,10 @@ Releases before 1.0.0-alpha.21 are recorded only in their GitHub release notes.
 
 ## Unreleased
 
+### Changed
+
+- **The MCP server registers the `core` tool set by default.** With `SUBSTRATE_MCP_TOOLS` unset or blank, `substrate mcp` registers `query`, `mutate`, `schema`, `recall`, `run` and `whoami`, as announced in 1.0.0-beta.2, and no longer logs a deprecation warning. Set `SUBSTRATE_MCP_TOOLS=all` (or `core,<name>`) for `propose_type`, `propose_field`, `propose_index`, `drop_namespace`, `drop_type` and `ask`.
+
 ### Fixed
 
 - **A frame key other than `params`, `fields` or `idempotencyKey` is refused with `unknown_frame_key`.** It used to be ignored, so a filter sent as `{ "ns/Type": { "where": … } }` instead of inside `params` was dropped and the read returned every row. The refusal names the key and, for `where`, `limit`, `orderBy`, `cursor`, `count` and `offset`, says it belongs in `params`. This applies to query, mutate (including each element of a batch), subscribe and stream, and to `run` scripts' `s.queryAll`, which now throws. A caller that relied on the ignored key now gets an error for that frame.
