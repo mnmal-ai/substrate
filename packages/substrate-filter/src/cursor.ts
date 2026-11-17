@@ -53,26 +53,22 @@ export function encodeCursor(input: CursorPayload): string {
   return Buffer.from(json, 'utf8').toString('base64url');
 }
 
+// A damaged cursor is almost always a retyped one; the parser's position says nothing useful.
+const DAMAGED =
+  "cursor is damaged: pass the previous page's _pagination nextCursor back unchanged, or drop cursor to start from the first page";
+
 const orderText = (order: CursorOrder): string => order.map(([f, d]) => `${f} ${d}`).join(', ');
 
 /** Decodes a cursor and checks it was issued for `expected`, the read's normalized order. */
 export function decodeCursor(cursor: string, expected: CursorOrder): CursorPayload {
-  let json: string;
-  try {
-    json = Buffer.from(cursor, 'base64url').toString('utf8');
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
-    throw new CursorDecodeError(`cursor is not valid base64url: ${reason}`);
-  }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(json);
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
-    throw new CursorDecodeError(`cursor payload is not valid JSON: ${reason}`);
+    parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
+  } catch {
+    throw new CursorDecodeError(DAMAGED);
   }
   if (parsed === null || typeof parsed !== 'object') {
-    throw new CursorDecodeError('cursor payload is not an object');
+    throw new CursorDecodeError(DAMAGED);
   }
   const obj = parsed as Record<string, unknown>;
   const values = obj.orderByValues;

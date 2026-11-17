@@ -41,6 +41,8 @@ export interface WalkScope {
   /** The frame's namespace; walks never leave it. Absent: walks are unavailable here. */
   namespace?: string;
   schemaOf?: (type: string) => TypeSchema | undefined;
+  /** Every type in the namespace, so a bad `in` can name the refs that do point at the current type. */
+  typeNames?: readonly string[];
   /** The type the current where-clause filters, and its fields. */
   typeName?: string;
   fields: Record<string, FieldDef>;
@@ -80,6 +82,30 @@ function fail(
 }
 
 /** A type's schema, or undefined for anything that is not one (e.g. a prototype key like `constructor`). */
+/** The refs a walk from the current type can take: inbound for `in` (when the type list is known), its own crossRefs for `out`. */
+function refsHint(dir: 'in' | 'out', scope: WalkScope): string {
+  const { namespace, schemaOf, typeName, typeNames } = scope;
+  if (namespace === undefined || schemaOf === undefined || typeName === undefined) return '';
+  const refs: string[] = [];
+  if (dir === 'out') {
+    for (const [f, d] of Object.entries(scope.fields))
+      if (d.kind === 'crossRef' && d.ns === namespace) refs.push(f);
+    return refs.length > 0
+      ? `; 'out' takes a crossRef of '${typeName}': ${refs.join(', ')}`
+      : `; '${typeName}' has no crossRef to follow out`;
+  }
+  if (typeNames === undefined) return '';
+  for (const t of typeNames) {
+    const far = schemaIn(schemaOf, t);
+    for (const [f, d] of Object.entries(far?.fields ?? {}))
+      if (d.kind === 'crossRef' && d.ns === namespace && d.type === typeName)
+        refs.push(`'${namespace}/${t}.${f}'`);
+  }
+  return refs.length > 0
+    ? `; 'in' names a crossRef on another type that points at '${typeName}': ${refs.join(', ')}`
+    : `; no crossRef in '${namespace}' points at '${typeName}'`;
+}
+
 function schemaIn(
   schemaOf: (type: string) => TypeSchema | undefined,
   type: string
@@ -153,7 +179,7 @@ export function resolveHop(node: Record<string, unknown>, path: string[], scope:
     );
   }
   if (rest.length > 0 || def === undefined || def.kind !== 'crossRef') {
-    fail('walk_unknown_ref', `'${spec}' is not a crossRef field`, at);
+    fail('walk_unknown_ref', `'${spec}' is not a crossRef field${refsHint(dir, scope)}`, at);
   }
   if (def.ns !== namespace) {
     fail(
@@ -164,7 +190,11 @@ export function resolveHop(node: Record<string, unknown>, path: string[], scope:
   }
   if (dir === 'in') {
     if (def.type !== typeName) {
-      fail('walk_unknown_ref', `'${spec}' points at '${def.type}', not '${typeName}'`, at);
+      fail(
+        'walk_unknown_ref',
+        `'${spec}' points at '${def.type}', not '${typeName}'${refsHint(dir, scope)}`,
+        at
+      );
     }
     return { typeName: farType, fields: fieldOwner };
   }

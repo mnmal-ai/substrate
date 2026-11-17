@@ -35,6 +35,13 @@ describe('encodeCursor / decodeCursor', () => {
     expect(() => decodeCursor(garbage, ID)).toThrow(CursorDecodeError);
   });
 
+  it('tells the caller to pass a damaged cursor back unchanged', () => {
+    const retyped = `${encodeCursor({ orderByValues: [], id: 'a', order: ID })}x`.slice(3);
+    expect(() => decodeCursor(retyped, ID)).toThrow(
+      /pass the previous page's _pagination nextCursor back unchanged/
+    );
+  });
+
   it('throws CursorDecodeError when orderByValues is missing', () => {
     const bad = Buffer.from(JSON.stringify({ id: 'x' }), 'utf8').toString('base64url');
     expect(() => decodeCursor(bad, ID)).toThrow(CursorDecodeError);
