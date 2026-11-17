@@ -2,6 +2,19 @@
 
 Releases before 1.0.0-alpha.21 are recorded only in their GitHub release notes.
 
+## 1.0.0-beta.4 (2026-11-17)
+
+Changes since 1.0.0-beta.3. Nothing breaks: error codes are unchanged, and only message text is clearer.
+
+### Fixed
+
+- **Errors name the fix (#252):**
+  - A refused HTTP request's `NetworkError` message carries the server's code and reason (`400 from <url>: <code>: <message>`), so a `run` script that prints only `message` sees what to fix. `status`, `code`, `serverMessage` and `body` are unchanged.
+  - The query and mutate routes name the key or batch element of a malformed frame and show the frame shape, including `idempotencyKey`.
+  - A list `unknown_param` that is a field of the type says filters go in `where`, with an example. A paging token under another name points at `params.cursor`.
+  - `offset` without `aggregate` points at `params.cursor` for paging and `count: true` for a total.
+  - A malformed expression object names the accepted forms and the keys it got.
+
 ## 1.0.0-beta.3 (2026-11-16)
 
 Changes since 1.0.0-beta.2. One breaking change, announced in beta.2: the MCP server's default tool set.
