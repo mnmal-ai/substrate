@@ -550,7 +550,7 @@ function validateLeaf(
       if (extOp === undefined) {
         throw new FilterValidationError(
           'unknown_operator',
-          `operator '${op}' is not valid for field '${fieldName}' (kind=${kind})`,
+          `operator '${op}' is not valid for field '${fieldName}' (kind=${kind}); it takes ${[...allowedOps].join(', ')}${kind === 'crossRef' ? " ('eq: null' tests for no reference)" : ''}`,
           [...path, op]
         );
       }
@@ -1018,6 +1018,8 @@ export interface ValidateFilterInput {
   capabilities: FilterCapabilities;
   /** Resolves a type in `namespace`; walks are refused without it. */
   schemaOf?: (type: string) => TypeSchema | undefined;
+  /** Every type in the namespace, for walk refusals that name the refs that exist. */
+  typeNames?: readonly string[];
   /** The frame's namespace, and the seed type's name in it. */
   namespace?: string;
   typeName?: string;
@@ -1037,6 +1039,7 @@ export function validateFilter(input: ValidateFilterInput): void {
   const seed: WalkScope = {
     ...(input.namespace !== undefined ? { namespace: input.namespace } : {}),
     ...(input.schemaOf !== undefined ? { schemaOf: input.schemaOf } : {}),
+    ...(input.typeNames !== undefined ? { typeNames: input.typeNames } : {}),
     ...(input.typeName !== undefined ? { typeName: input.typeName } : {}),
     fields,
     depth: 0,

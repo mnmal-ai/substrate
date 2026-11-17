@@ -219,6 +219,7 @@ function validateAgainst(
         typeSchema,
         capabilities: dataset.capabilities,
         schemaOf: (type) => (Object.hasOwn(types, type) ? types[type] : undefined),
+        typeNames: Object.keys(types),
         namespace: ns,
         typeName
       });

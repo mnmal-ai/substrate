@@ -154,6 +154,38 @@ describe('walk validation', () => {
     });
   });
 
+  it('names the refs a refused walk could have taken', () => {
+    const run =
+      (where: unknown, type = 'Cert') =>
+      () =>
+        validateFilter({
+          where: where as WhereClause,
+          typeSchema: SCHEMAS[type] as TypeSchema,
+          capabilities: CAPS,
+          schemaOf: (t) => SCHEMAS[t],
+          typeNames: Object.keys(SCHEMAS),
+          namespace: 'cards',
+          typeName: type
+        });
+    // The seed's own type named in `in`: list the refs that point at it.
+    const into =
+      "'in' names a crossRef on another type that points at 'Cert': 'cards/Listing.cert', 'cards/Observation.cert'";
+    expect(run({ _walk: { in: 'cards/Cert.grade' } })).toThrow(into);
+    expect(run({ _walk: { in: 'cards/Cert.set' } })).toThrow(
+      "'in' names a crossRef on another type that points at 'Cert': 'cards/Listing.cert', 'cards/Observation.cert'"
+    );
+    expect(run({ _walk: { in: 'cards/Listing.price' } }, 'Listing')).toThrow(
+      "no crossRef in 'cards' points at 'Listing'"
+    );
+    expect(run({ _walk: { out: 'grade' } })).toThrow("'out' takes a crossRef of 'Cert': set");
+  });
+
+  it('lists the operators a crossRef takes when it refuses one', () => {
+    expect(() => check({ set: { exists: true } })).toThrow(
+      /\(kind=crossRef\); it takes .*eq.*\('eq: null' tests for no reference\)/
+    );
+  });
+
   it('refuses a prototype-key type name as an unknown type', () => {
     // A plain-object type map, as the published schema uses, so `constructor` resolves to Object.
     const types: Record<string, TypeSchema> = { ...SCHEMAS };
