@@ -14,7 +14,8 @@ import type { TuiDeps } from '../deps.js';
 import { type Line, linesView } from '../lines.js';
 // A runtime cycle once editor imports loadKeys back (Tasks 6/7), safe because each side uses the other only inside functions.
 import { type EditorPanels, editorPanels, KEYS_CHROME, openEditor, switchTo } from './editor.js';
-import { compactGrant, GRANT_LEGEND } from './grant.js';
+import { GRANT_LEGEND } from './grant.js';
+import { isRevoked, listLines, orderForView } from './layout.js';
 import { revokeVerdict } from './verdict.js';
 
 export interface KeysState {
@@ -30,7 +31,6 @@ export type KeysPanels = { keys: KeysState } & EditorPanels;
 type Panels = KeysPanels;
 type Ctx = ModuleCtx<Panels>;
 
-const isRevoked = (r: AdminKeyRow) => typeof r.revokedAt === 'string';
 /** The rows the editor flows judge against: a revoked key holds no grant. */
 const live = (rows: readonly AdminKeyRow[]) => rows.filter((r) => !isRevoked(r));
 
@@ -45,10 +45,11 @@ export async function loadKeys(
   ctx.open('keys', { source, rows: null, note: null, cursor: 0, detail: false, revoked });
   const filter = revoked ? ('all' as const) : ('active' as const);
   try {
-    const rows =
+    const rows = orderForView(
       source === 'admin'
         ? await deps.admin.run(({ client }) => client.admin.keys({ signal: ctx.signal, filter }))
-        : await deps.keys(ctx.signal, filter);
+        : await deps.keys(ctx.signal, filter)
+    );
     const at = select === undefined ? -1 : rows.findIndex((r) => r.kid === select);
     const cursor = Math.max(0, at);
     // Only into the table this read opened: a late admin read never lands in an agent table.
@@ -114,22 +115,25 @@ export function keysModule(deps: TuiDeps): TuiModule<Panels> {
               '  backspace back · esc close'
             ].join('\n');
           }
-          const kidW = Math.min(40, Math.max(4, ...state.rows.map((r) => r.kid.length)));
-          const nameW = Math.min(24, Math.max(4, ...state.rows.map((r) => r.name.length)));
+          const all = listLines(state.rows);
           // Head, legend and hints take three rows.
           const max = Math.max(1, size.rows - 3);
-          const start = Math.max(0, Math.min(state.cursor - max + 1, state.rows.length - max));
-          const lines = state.rows.slice(start, start + max).map((r, k): Line => {
-            const mark = start + k === state.cursor ? theme.glyph.cursor : ' ';
-            const grant = compactGrant(r.namespaces, r.capabilities);
-            const gone = isRevoked(r);
+          const at = Math.max(
+            0,
+            all.findIndex((l) => l.row === state.cursor)
+          );
+          const start = Math.max(0, Math.min(at - max + 1, all.length - max));
+          const lines = all.slice(start, start + max).map((l): Line => {
+            const mark = l.row !== undefined && l.row === state.cursor ? theme.glyph.cursor : ' ';
             const text = truncateCells(
               sanitise(
-                `${mark} ${r.kid.padEnd(kidW)}  ${r.name.padEnd(nameW)}  ${gone ? `revoked ${r.revokedAt}  ` : ''}${grant}`
+                l.kind === 'key' || l.kind === 'revoked' ? `${mark}  ${l.text}` : ` ${l.text}`
               ),
               w
             );
-            return gone ? { text, tone: 'dim' } : { text };
+            return l.kind === 'revoked' || l.kind === 'revoked-head'
+              ? { text, tone: 'dim' }
+              : { text };
           });
           const toggle = state.revoked ? 'r hide revoked' : 'r show revoked';
           return linesView(
