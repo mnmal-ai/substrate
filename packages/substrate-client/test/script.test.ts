@@ -86,8 +86,14 @@ describe('runScript', () => {
   it('query and mutate also take (key, entry), the form queryAll takes', async () => {
     const seen: Record<string, unknown>[] = [];
     const { client } = fakeClient(
-      (f) => (seen.push(f), { data: { 'ns/T': [{ id: '1' }] } }),
-      (f) => (seen.push(f), { data: { 'ns/createT': [{ id: 'a' }, { id: 'b' }] } })
+      (f) => {
+        seen.push(f);
+        return { data: { 'ns/T': [{ id: '1' }] } };
+      },
+      (f) => {
+        seen.push(f);
+        return { data: { 'ns/createT': [{ id: 'a' }, { id: 'b' }] } };
+      }
     );
     const r = await run(
       async (s) => {
