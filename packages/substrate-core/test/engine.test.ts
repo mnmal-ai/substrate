@@ -147,6 +147,47 @@ describe('Engine.query', () => {
     expect(envelope.errors?.[0]?.message).not.toContain('did you mean');
   });
 
+  it('refuses a frame key other than params, fields or idempotencyKey instead of dropping it', async () => {
+    let runs = 0;
+    const registry = new Registry();
+    registry.register('Todo', {
+      resolver: async () => {
+        runs++;
+        return [];
+      }
+    });
+    const { engine } = singleNs(registry);
+    const envelope = await engine.query({
+      frame: { 'default/Todo': { where: { title: { eq: 'x' } }, fields: { id: true } } as never },
+      ctx: makeCtx()
+    });
+    expect(runs).toBe(0);
+    expect(envelope.data).not.toHaveProperty('default/Todo');
+    expect(envelope.errors?.[0]).toMatchObject({
+      code: 'unknown_frame_key',
+      path: ['default/Todo']
+    });
+    expect(envelope.errors?.[0]?.message).toContain("'where' belongs in params (params.where)");
+
+    const ok = await engine.query({
+      frame: { 'default/Todo': { params: { limit: 5 }, fields: { id: true } } },
+      ctx: makeCtx()
+    });
+    expect(ok.errors ?? []).toEqual([]);
+    expect(runs).toBe(1);
+  });
+
+  it('refuses an unknown frame key inside a batched mutate element', async () => {
+    const registry = new Registry();
+    registry.register('make', { kind: 'mutation', resolver: async () => ({ id: 'x' }) });
+    const { engine } = singleNs(registry);
+    const envelope = await engine.mutate({
+      frame: { 'default/make': [{ params: {} }, { params: {}, limit: 1 } as never] },
+      ctx: makeCtx()
+    });
+    expect(envelope.errors?.map((e) => e.code)).toContain('unknown_frame_key');
+  });
+
   it('surfaces unqualified keys as envelope errors', async () => {
     const { engine } = singleNs(new Registry());
     const envelope = await engine.query({

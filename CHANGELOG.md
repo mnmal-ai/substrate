@@ -2,6 +2,12 @@
 
 Releases before 1.0.0-alpha.21 are recorded only in their GitHub release notes.
 
+## Unreleased
+
+### Fixed
+
+- **A frame key other than `params`, `fields` or `idempotencyKey` is refused with `unknown_frame_key`.** It used to be ignored, so a filter sent as `{ "ns/Type": { "where": … } }` instead of inside `params` was dropped and the read returned every row. The refusal names the key and, for `where`, `limit`, `orderBy`, `cursor`, `count` and `offset`, says it belongs in `params`. This applies to query, mutate (including each element of a batch), subscribe and stream, and to `run` scripts' `s.queryAll`, which now throws. A caller that relied on the ignored key now gets an error for that frame.
+
 ## 1.0.0-beta.2 (2026-11-16)
 
 Changes since 1.0.0-beta.1. Nothing breaks; one default is deprecated.

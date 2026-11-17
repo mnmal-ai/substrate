@@ -256,6 +256,7 @@ import {
   type SubscriptionStatsSnapshot,
   scopeBridgeIdempotency,
   toResolverArgs,
+  unknownFrameKeyMessage,
   withCanonicalMetadataFilters,
   withNaturalOrder,
   withNestedNaturalOrder
@@ -1618,6 +1619,13 @@ export class Engine {
     if (!parsed) {
       addError(envelope, [key], this.#unqualifiedMessage(key), 'unqualified_key');
       this.#metric('engine_unqualified_key', key);
+      return null;
+    }
+
+    const badKeys = unknownFrameKeyMessage(entry);
+    if (badKeys !== null) {
+      addError(envelope, [key], badKeys, 'unknown_frame_key');
+      this.#metric('engine_unknown_frame_key', key);
       return null;
     }
 

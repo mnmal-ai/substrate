@@ -112,6 +112,26 @@ export function clientErrorMessage(err: unknown, metric: MetricFn, key: string):
   return 'internal error';
 }
 
+const FRAME_KEYS = new Set(['params', 'fields', 'idempotencyKey']);
+const PARAM_SPELLINGS = new Set(['where', 'limit', 'orderBy', 'cursor', 'count', 'offset']);
+
+/**
+ * The refusal for a frame entry carrying a key other than `params`, `fields`
+ * or `idempotencyKey`, or null when it carries none. An ignored `where` would
+ * read every row, so an unknown key is refused rather than dropped.
+ */
+export function unknownFrameKeyMessage(entry: unknown): string | null {
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return null;
+  const bad = Object.keys(entry).filter((k) => !FRAME_KEYS.has(k));
+  if (bad.length === 0) return null;
+  const inParams = bad.filter((k) => PARAM_SPELLINGS.has(k));
+  const hint =
+    inParams.length > 0
+      ? `; ${inParams.map((k) => `'${k}'`).join(', ')} belongs in params (params.${inParams[0]})`
+      : '';
+  return `unknown frame key${bad.length > 1 ? 's' : ''} ${bad.map((k) => `'${k}'`).join(', ')}: a frame takes params, fields and idempotencyKey${hint}`;
+}
+
 export interface EngineOptions {
   namespaces: Map<string, NamespaceConfig>;
   datasets: DatasetRegistry;

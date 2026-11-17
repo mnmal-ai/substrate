@@ -51,6 +51,7 @@ import {
   type SubscriptionHandle,
   type SubscriptionStatsSnapshot,
   toResolverArgs,
+  unknownFrameKeyMessage,
   withCanonicalMetadataFilters,
   withNaturalOrder
 } from './internals.js';
@@ -400,6 +401,19 @@ export class SubscribeSubsystem {
               path: [key]
             }
           ]
+        },
+        this.#metric
+      );
+      return null;
+    }
+    const badKeys = unknownFrameKeyMessage(frameEntry);
+    if (badKeys !== null) {
+      deliverFrame(
+        input.onFrame,
+        {
+          id: input.id,
+          kind: 'error',
+          errors: [{ message: badKeys, code: 'unknown_frame_key', path: [key] }]
         },
         this.#metric
       );
