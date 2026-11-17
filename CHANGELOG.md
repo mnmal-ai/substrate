@@ -2,11 +2,13 @@
 
 Releases before 1.0.0-alpha.21 are recorded only in their GitHub release notes.
 
-## Unreleased
+## 1.0.0-beta.6 (2026-11-17)
+
+Changes since 1.0.0-beta.5. Nothing breaks: error codes are unchanged, and only message text is clearer.
 
 ### Fixed
 
-- **Three more errors name the fix:**
+- **Three more errors name the fix (#259):**
   - A refused operator on a field lists the operators that field takes, and for a crossRef adds that `eq: null` tests for no reference.
   - A refused walk lists the walks that would work: for `in`, the crossRefs on other types that point at the current type; for `out`, the current type's own crossRefs.
   - A damaged cursor (`invalid_cursor`) says to pass the previous page's `nextCursor` back unchanged, instead of quoting the JSON parser's position.
