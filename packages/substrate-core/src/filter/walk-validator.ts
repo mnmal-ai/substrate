@@ -742,7 +742,11 @@ export function validateFrameParams(
   const grouped = p.aggregate !== undefined;
   for (const k of ['groupBy', 'having', 'offset'] as const) {
     if (p[k] !== undefined && !grouped) {
-      fail('agg_invalid', `${k} shapes an aggregate's groups; it needs aggregate`, [k]);
+      fail(
+        'agg_invalid',
+        `${k} shapes an aggregate's groups; it needs aggregate.${k === 'offset' ? " To page rows, pass the previous page's _pagination nextCursor as params.cursor; for a total, use count: true." : ''}`,
+        [k]
+      );
     }
   }
   if (p.aggregate !== undefined) {

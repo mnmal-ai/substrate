@@ -213,3 +213,11 @@ describe('catalogue agrees with the checker', () => {
     expect(new Set(EXPR_FUNCTIONS.map((f) => f.name)).size).toBe(EXPR_FUNCTIONS.length);
   });
 });
+
+describe('checkExpr refusal messages', () => {
+  it('an object with several keys names them and the accepted forms', () => {
+    expect(refusal({ lower: ['URL'], upper: ['URL'] } as unknown as Expr).message).toMatch(
+      /exactly one function key such as \{ "lower": \["title"\] \}.*got an object with keys lower, upper/
+    );
+  });
+});

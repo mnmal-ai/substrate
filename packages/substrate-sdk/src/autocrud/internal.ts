@@ -44,18 +44,34 @@ export function rejectUnknownParams(
   resolverName: string,
   typeName: string,
   params: Record<string, unknown> | undefined,
-  allowed: ReadonlySet<string>
+  allowed: ReadonlySet<string>,
+  fields?: Readonly<Record<string, FieldDef>>
 ): void {
   if (!params) return;
   for (const key of Object.keys(params)) {
     if (!allowed.has(key)) {
       throw new ResolverFrameError(
         'unknown_param',
-        `${resolverName}('${typeName}'): unknown param '${key}'. Allowed: ${[...allowed].sort().join(', ')}.`,
+        `${resolverName}('${typeName}'): unknown param '${key}'. Allowed: ${[...allowed].sort().join(', ')}.${unknownParamHint(key, allowed, fields)}`,
         { field: key, allowed: [...allowed].sort() }
       );
     }
   }
+}
+
+/** The likely fix for an unknown param, when one is obvious: a field name sent as a param, or a paging token under the wrong name. */
+export function unknownParamHint(
+  key: string,
+  allowed: ReadonlySet<string>,
+  fields?: Readonly<Record<string, FieldDef>>
+): string {
+  if (allowed.has('where') && fields !== undefined && Object.hasOwn(fields, key)) {
+    return ` '${key}' is a field: filters go in where, e.g. params: { where: { ${key}: { eq: ... } } }.`;
+  }
+  if (allowed.has('cursor') && /cursor|page|after|token/i.test(key)) {
+    return " To page, pass the previous page's _pagination nextCursor as params.cursor.";
+  }
+  return '';
 }
 
 /**

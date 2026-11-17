@@ -101,6 +101,20 @@ describe('HttpTransport', () => {
     await expect(t.query({}, {})).rejects.toMatchObject({ name: 'AuthError', status: 403 });
   });
 
+  it("a refused request's message carries the server's code and reason", async () => {
+    mockHandlers(
+      http.post(`${ENDPOINT}/substrate/v1/query`, () =>
+        HttpResponse.json({ error: "'x/T' is string", code: 'bad_frame' }, { status: 400 })
+      )
+    );
+    const t = new HttpTransport({ endpoint: ENDPOINT });
+    await expect(t.query({}, {})).rejects.toMatchObject({
+      name: 'NetworkError',
+      status: 400,
+      message: `400 from ${ENDPOINT}/substrate/v1/query: bad_frame: 'x/T' is string`
+    });
+  });
+
   it('throws NetworkError on fetch rejection', async () => {
     mockHandlers(http.post(`${ENDPOINT}/substrate/v1/query`, () => HttpResponse.error()));
     const t = new HttpTransport({ endpoint: ENDPOINT });

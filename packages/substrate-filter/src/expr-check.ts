@@ -128,7 +128,10 @@ export function checkExpr(expr: Expr, scope: ExprScope, path: string[]): ExprChe
     if (typeof e !== 'object' || Array.isArray(e)) return refuse('not an expression', at);
     const keys = Object.keys(e);
     if (keys.length !== 1)
-      return refuse(`an expression object has exactly one key, got ${keys.length}`, at);
+      return refuse(
+        `an expression is a field name ("title"), a number, or an object with exactly one function key such as { "lower": ["title"] } or { "lit": "text" }; got an object with ${keys.length === 0 ? 'no keys' : `keys ${keys.join(', ')}`}`,
+        at
+      );
     const key = keys[0] as string;
     const val = (e as Record<string, unknown>)[key];
     if (key === 'lit') {
