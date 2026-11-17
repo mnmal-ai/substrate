@@ -2,7 +2,9 @@
 
 Releases before 1.0.0-alpha.21 are recorded only in their GitHub release notes.
 
-## Unreleased
+## 1.0.0-beta.3 (2026-11-16)
+
+Changes since 1.0.0-beta.2. One breaking change, announced in beta.2: the MCP server's default tool set.
 
 ### Changed
 
