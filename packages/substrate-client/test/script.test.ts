@@ -83,6 +83,41 @@ describe('runScript', () => {
     expect(calls.query).toBe(3);
   });
 
+  it('query and mutate also take (key, entry), the form queryAll takes', async () => {
+    const seen: Record<string, unknown>[] = [];
+    const { client } = fakeClient(
+      (f) => (seen.push(f), { data: { 'ns/T': [{ id: '1' }] } }),
+      (f) => (seen.push(f), { data: { 'ns/createT': [{ id: 'a' }, { id: 'b' }] } })
+    );
+    const r = await run(
+      async (s) => {
+        await s.query('ns/T', { params: { limit: 1 }, fields: { id: true } });
+        await s.mutate('ns/createT', [{ params: {} }, { params: {} }]);
+      },
+      client,
+      'write'
+    );
+    expect(r.ok).toBe(true);
+    expect(seen).toEqual([
+      { 'ns/T': { params: { limit: 1 }, fields: { id: true } } },
+      { 'ns/createT': [{ params: {} }, { params: {} }] }
+    ]);
+    expect(r.stats.writes).toBe(2);
+  });
+
+  it('a call that is neither form names both, without reaching the server', async () => {
+    const { client, calls } = fakeClient(() => ({}));
+    const r = await run((s) => s.query(42 as unknown as string, {}), client);
+    expect(r.error).toBe(
+      "s.query takes a frame { 'ns/Type': { params, fields } } or (key, { params, fields }), got number"
+    );
+    const bad = await run((s) => s.query('ns/T', 'x' as never), client);
+    expect(bad.error).toBe(
+      "s.query('ns/T', entry): entry must be { params?, fields? }, got string"
+    );
+    expect(calls.query).toBe(0);
+  });
+
   it('refuses mutations in read mode and records them unsent in dry-run', async () => {
     const { client, calls } = fakeClient(() => ({}));
     const read = await run((s) => s.mutate(create(1)), client);

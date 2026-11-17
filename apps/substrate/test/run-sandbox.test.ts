@@ -37,6 +37,22 @@ describe('runSandboxed', () => {
     expect(r.stats.queries).toBe(1);
   });
 
+  it('relays the (key, entry) forms of query and mutate', async () => {
+    const r = await run(
+      `export default async (s) => {
+        const rows = (await s.query('ns/T', { fields: { id: true } })).data['ns/T'];
+        await s.mutate('ns/createT', { params: {} });
+        return rows[0].id;
+      };`,
+      { mode: 'write' }
+    );
+    expect(r).toMatchObject({
+      ok: true,
+      result: '1',
+      mutations: [{ frame: { 'ns/createT': { params: {} } }, applied: true }]
+    });
+  });
+
   it('relays byShortId, a helper the child forwards rather than reimplements', async () => {
     const env = (data: Record<string, unknown>): PackEnvelope =>
       ({ schemaVersion: 'v', shapes: {}, data }) as PackEnvelope;

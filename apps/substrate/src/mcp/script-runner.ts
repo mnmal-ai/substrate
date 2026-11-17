@@ -56,12 +56,12 @@ async function start(m: Start): Promise<void> {
     kid: m.kid,
     mode: m.mode,
     args: Object.freeze({ ...m.args }),
-    query: (frame: unknown) => call('query', frame),
+    query: (frame: unknown, entry?: unknown) => call('query', frame, entry),
     queryAll: (key: unknown, frame: unknown) => call('queryAll', key, frame),
     byShortId: (key: unknown, n: unknown, fields?: unknown) => call('byShortId', key, n, fields),
     recall: (input: unknown) => call('recall', input),
     schema: (namespace?: unknown, type?: unknown) => call('schema', namespace, type),
-    mutate: (frame: unknown) => call('mutate', frame),
+    mutate: (frame: unknown, entry?: unknown) => call('mutate', frame, entry),
     log: (...args: unknown[]) => {
       void call('log', ...args);
     }
