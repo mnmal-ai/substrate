@@ -135,6 +135,8 @@ const OLDEST = new Set('oldest earliest first'.split(' '));
 const AUTHOR_VERBS = new Set(
   'raised created written filed authored opened made sent logged'.split(' ')
 );
+/** Words that make the number after them a shortId: "shortId 1752", "id 1752", "number 1752". */
+const ID_WORDS = new Set(['shortid', 'id', 'number']);
 const BUILTIN_FIELD_ALIASES: Record<string, string> = { author: 'createdById' };
 
 interface Token {
@@ -295,7 +297,7 @@ export function parseQuestion(
     if (e >= 0) evidence.splice(e, 1);
   }
 
-  // --- ids: #N anywhere, or a number right after a type word ---
+  // --- ids: #N anywhere, or a number right after a type word or an id word ---
   const ids: number[] = [];
   let bareNumber = false;
   tokens.forEach((t, i) => {
@@ -305,7 +307,16 @@ export function parseQuestion(
       t.used = true;
       evidence.push({ span: t.text, role: 'id', detail: 'shortId' });
     } else if (/^\d+$/.test(t.text)) {
-      if (tokens[i - 1]?.used === true && mentioned.size > 0) {
+      const prev = tokens[i - 1];
+      if (prev !== undefined && !prev.used && ID_WORDS.has(prev.text)) {
+        ids.push(Number(t.text));
+        t.used = true;
+        prev.used = true;
+        // "short id 1752"
+        const before = tokens[i - 2];
+        if (prev.text === 'id' && before?.text === 'short' && !before.used) before.used = true;
+        evidence.push({ span: `${prev.text} ${t.text}`, role: 'id', detail: 'shortId' });
+      } else if (prev?.used === true && mentioned.size > 0) {
         ids.push(Number(t.text));
         t.used = true;
         evidence.push({ span: t.text, role: 'id', detail: 'shortId' });

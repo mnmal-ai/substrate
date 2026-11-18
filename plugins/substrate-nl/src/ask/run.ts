@@ -106,7 +106,8 @@ async function rows(
   leftovers: Dropped[] = []
 ): Promise<NlOutcome> {
   const dropped = [...c.dropped, ...leftovers];
-  if (c.strict && dropped.some((d) => d.kind === 'filter'))
+  // A handoff's dropped words were never read, so running without them answers a broader question.
+  if ((c.strict || source === 'handoff') && dropped.some((d) => d.kind === 'filter'))
     return { kind: 'unknown', question, dropped, plan: c.plan };
   let frame = executable(c, deps.pack);
   const key = Object.keys(frame)[0] as string;

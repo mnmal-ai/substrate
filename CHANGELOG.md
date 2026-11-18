@@ -2,6 +2,16 @@
 
 Releases before 1.0.0-alpha.21 are recorded only in their GitHub release notes.
 
+## Unreleased
+
+### Changed
+
+- **`ask` no longer runs a reading with words it could not read (#261).** When the parser's reading still has unexplained words and no judge settles them (no judge configured, or the judge timed out or escalated), the outcome is `unknown`, with `dropped` naming those words, and no query runs. Before, the reading ran without them and could return the whole type: one eval question returned all 97 open Todos with full bodies, 585 KB.
+
+### Fixed
+
+- **`ask` reads a number after an id word as a shortId (#261):** "the Todo with shortId 1752", "todo id 1752", "todo number 1752" and "todo with short id 1752" now resolve to `shortId eq 1752`, as `#1752` and `todo 1752` already did.
+
 ## 1.0.0-beta.6 (2026-11-17)
 
 Changes since 1.0.0-beta.5. Nothing breaks: error codes are unchanged, and only message text is clearer.
