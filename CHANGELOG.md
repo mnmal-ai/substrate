@@ -2,7 +2,9 @@
 
 Releases before 1.0.0-alpha.21 are recorded only in their GitHub release notes.
 
-## Unreleased
+## 1.0.0-beta.7 (2026-11-18)
+
+Changes since 1.0.0-beta.6. One behaviour change in `ask`: a reading with words it could not read now answers `unknown` instead of running. The query API and error codes are unchanged.
 
 ### Changed
 
@@ -11,6 +13,7 @@ Releases before 1.0.0-alpha.21 are recorded only in their GitHub release notes.
 ### Fixed
 
 - **`ask` reads a number after an id word as a shortId (#261):** "the Todo with shortId 1752", "todo id 1752", "todo number 1752" and "todo with short id 1752" now resolve to `shortId eq 1752`, as `#1752` and `todo 1752` already did.
+- **CI installs again (#262):** CI skips `onnxruntime-node`'s optional CUDA download, whose upstream GitHub release now returns 404. Dev-only; the published package does not depend on it.
 
 ## 1.0.0-beta.6 (2026-11-17)
 
