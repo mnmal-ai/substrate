@@ -125,6 +125,21 @@ describe('ordering, counting, authors', () => {
     );
   });
 
+  it('reads a number after an id word as a shortId', () => {
+    for (const q of [
+      'exact title of the Todo with shortId 1752',
+      'the todo with id 1752',
+      'todo number 1752',
+      'todo with short id 1752'
+    ]) {
+      const r = parse(q);
+      expect(r.status, q).toBe('resolved');
+      expect(r.candidates[0]?.frame, q).toEqual({
+        'ns/Todo': { params: { where: { shortId: { eq: 1752 } } } }
+      });
+    }
+  });
+
   it('treats values beside an id as commentary ("#5, is that recall?")', () => {
     const r = parseQuestion('todo #5, is that recall or ops?', pack, ctx);
     expect(r.status).toBe('resolved');

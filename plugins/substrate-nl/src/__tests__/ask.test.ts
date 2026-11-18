@@ -186,14 +186,17 @@ describe('runAsk', () => {
     expect(query).not.toHaveBeenCalled();
   });
 
-  it('escalation without a judge hands off with the parser reading, labelled', async () => {
-    const { e } = engine();
+  it('escalation without a judge is unknown, its dropped words labelled, and runs nothing', async () => {
+    const { e, query } = engine();
     const evs = await collect(
       runAsk({ namespace: 'ns', question: 'zorblax quux todos' }, http, { pack, engine: e })
     );
     expect(evs.map((x) => x.event)).not.toContain('judging');
-    const o = outcome(evs);
-    expect(o).toMatchObject({ kind: 'rows', source: 'handoff', handoff: 'judge not configured' });
+    expect(outcome(evs)).toMatchObject({
+      kind: 'unknown',
+      dropped: [{ span: 'zorblax', reason: 'not understood (judge not configured)' }, {}]
+    });
+    expect(query).not.toHaveBeenCalled();
   });
 
   it('a judge that hangs hands off after judgeTimeoutMs', async () => {
@@ -235,9 +238,8 @@ describe('runAsk', () => {
     const evs = await p;
     vi.useRealTimers();
     expect(outcome(evs)).toMatchObject({
-      kind: 'rows',
-      source: 'handoff',
-      handoff: 'judge unavailable'
+      kind: 'unknown',
+      dropped: [{ span: 'zorblax', reason: 'not understood (judge unavailable)' }, {}]
     });
     expect(evs.at(-1)?.event).toBe('done');
   });
@@ -485,11 +487,14 @@ describe('the confidence rule', () => {
     expect(query).not.toHaveBeenCalled();
   });
 
-  it('a field literally named "pick" leaves a rows reading answered, with dropped', async () => {
-    const { e } = engine();
+  it('a field literally named "pick" leaves a reading with unread words unknown', async () => {
+    const { e, query } = engine();
     const o = outcome(await ask('gold cards with island size', e));
-    expect(o).toMatchObject({ kind: 'rows', dropped: [{ span: 'island size', kind: 'filter' }] });
-    expect(JSON.stringify(o.kind === 'rows' ? o.frame : null)).toContain('"pick":{"eq":"gold"}');
+    expect(o).toMatchObject({
+      kind: 'unknown',
+      dropped: [{ span: 'island size', kind: 'filter' }]
+    });
+    expect(query).not.toHaveBeenCalled();
   });
 
   it('a dropped ordering on rows is answered with dropped', async () => {
@@ -546,14 +551,15 @@ describe('the confidence rule', () => {
     expect(o).toMatchObject({ kind: 'unknown' });
   });
 
-  it('no judge + rows + leftovers → rows with dropped (handoff)', async () => {
-    const { e } = engine();
+  it('no judge + rows + leftovers → unknown with dropped, never the whole type', async () => {
+    const { e, query } = engine();
     const o = outcome(
       await collect(
         runAsk({ namespace: 'ns', question: 'zorblax quux todos' }, http, { pack, engine: e })
       )
     );
-    expect(o).toMatchObject({ kind: 'rows', source: 'handoff' });
+    expect(o).toMatchObject({ kind: 'unknown' });
+    expect(query).not.toHaveBeenCalled();
     expect((o as { dropped: { span: string }[] }).dropped.map((d) => d.span)).toEqual([
       'zorblax',
       'quux'

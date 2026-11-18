@@ -30,7 +30,7 @@ A **kernel-tier plugin**, installed separately: `pnpm add @mnmal-ai/substrate-nl
 }
 ```
 
-- `judge` optional: an [Ollama](https://ollama.com) server and model for the constrained judge (`timeoutMs` defaults to 20000). Absent means parser-only: every escalation is an honest hand-off. A slow or down judge hands off within `timeoutMs`.
+- `judge` optional: an [Ollama](https://ollama.com) server and model for the constrained judge (`timeoutMs` defaults to 20000). Absent means parser-only: every escalation is an honest hand-off. A slow or down judge hands off within `timeoutMs`. A hand-off with words the parser could not read answers `unknown` and runs nothing.
 - `rulings` optional; per-namespace overrides merged over rulings the namespace declares.
 - `packTtlMs` how long a served pack is reused (default 300000).
 

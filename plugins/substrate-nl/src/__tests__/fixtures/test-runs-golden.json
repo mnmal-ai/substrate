@@ -934,11 +934,7 @@
   {
     "question": "which tests are flaky",
     "expect": {
-      "kind": "rows",
-      "answer": "rows",
-      "frame": {
-        "runs/Test": {}
-      },
+      "kind": "unknown",
       "dropped": ["flaky"]
     }
   },
