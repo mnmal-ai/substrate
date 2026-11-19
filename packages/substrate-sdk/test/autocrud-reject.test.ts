@@ -16,6 +16,7 @@ import {
   deleteResolver,
   getResolver,
   purgeResolver,
+  updateManyResolver,
   updateResolver
 } from '../src/autocrud/index.js';
 import { assertCrossRefDeletePolicies } from '../src/autocrud/internal.js';
@@ -652,16 +653,18 @@ describe('autoCRUD reject — a crossRef value that is not an id', () => {
     return {
       dataset,
       create: createResolver('Thing', dataset, { fields: REFS }),
-      update: updateResolver('Thing', dataset, makeEdges(), { fields: REFS })
+      update: updateResolver('Thing', dataset, makeEdges(), { fields: REFS }),
+      updateMany: updateManyResolver('Thing', dataset, makeEdges(), { fields: REFS })
     };
   };
 
   for (const value of [{ id: 'r0' }, ['r0'], true]) {
-    it(`refuses parent: ${JSON.stringify(value)} on create and update`, async () => {
-      const { dataset, create, update } = setup();
+    it(`refuses parent: ${JSON.stringify(value)} on create, update and updateMany`, async () => {
+      const { dataset, create, update, updateMany } = setup();
       await expect(create(makeCtx(), { params: { id: 'r0', parent: value } })).rejects.toThrow(
         expect.objectContaining({
           code: 'invalid_field_type',
+          message: expect.stringContaining('expected an id (a string or a number).'),
           details: { field: 'parent', expected: 'crossRef', phase: 'create' }
         })
       );
@@ -670,6 +673,14 @@ describe('autoCRUD reject — a crossRef value that is not an id', () => {
         expect.objectContaining({
           code: 'invalid_field_type',
           details: { field: 'parent', expected: 'crossRef', phase: 'update' }
+        })
+      );
+      await expect(
+        updateMany(makeCtx(), { params: { where: { id: { eq: 'r1' } }, set: { parent: value } } })
+      ).rejects.toThrow(
+        expect.objectContaining({
+          code: 'invalid_field_type',
+          details: expect.objectContaining({ field: 'parent', expected: 'crossRef' })
         })
       );
       const { rows } = await dataset.read('Thing', {});

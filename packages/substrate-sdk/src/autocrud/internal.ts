@@ -313,7 +313,7 @@ export function assertNoNullOnNonNullable(
  * A date must be a full instant (`isIsoInstant`): an offset-less or date-only
  * string names no instant until something guesses a zone, so it is refused.
  * `string` and `json` fields are left alone: nothing casts them. A crossRef
- * must be an id, a string or a number: the existence check looks up nothing
+ * must be an id (a string or a number): the existence check looks up nothing
  * else, so any other value would be stored unchecked. `null` is the null
  * guard's business, not this one's.
  */
@@ -492,7 +492,7 @@ export function assertServerSetFieldsFillable(
 function throwInvalidScalar(name: string, v: unknown, type: string, phase: string): never {
   throw new ResolverFrameError(
     'invalid_field_type',
-    `Cannot ${phase} '${name}' with ${JSON.stringify(typeof v === 'bigint' ? String(v) : v)}: expected ${type === 'date' ? ISO_INSTANT_FORM : type === 'crossRef' ? 'an id, a string or a number' : `a ${type}`}.`,
+    `Cannot ${phase} '${name}' with ${JSON.stringify(typeof v === 'bigint' ? String(v) : v)}: expected ${type === 'date' ? ISO_INSTANT_FORM : type === 'crossRef' ? 'an id (a string or a number)' : `a ${type}`}.`,
     { field: name, expected: type, phase }
   );
 }
