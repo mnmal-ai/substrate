@@ -28,7 +28,6 @@ import { runAsk } from '../ask/run.js';
 import { PackService } from '../pack/service.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
-const NS = `nlt_${randomBytes(4).toString('hex')}`;
 const TYPES = { Sale: { fields: { price: field.number(), soldAt: field.date() } } };
 const RULINGS = { timeField: { Sale: 'soldAt' } };
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -55,56 +54,65 @@ const ctx = {
   meta: {}
 };
 
+/** A namespace of its own on Postgres holding `sales`, and `ask` over it. */
+async function mount(sql: Sql, sales: object[]) {
+  const ns = `nlt_${randomBytes(4).toString('hex')}`;
+  const nsDef = defineNamespace(ns, TYPES, { annotations: { nl: RULINGS } });
+  const edges = new PgEdgesStore({ sql });
+  const dataset = new PgDataset({
+    namespace: ns,
+    sql,
+    edgesStore: edges,
+    fieldDefLookup: (type, f) => nsDef.types?.[type]?.fields[f],
+    typeDefLookup: (type) => nsDef.types?.[type]
+  });
+  await dataset.ensureTypeStorage('Sale');
+  await dataset.write('Sale', sales as never);
+  const composed = await compose({
+    server: new MemorySubstrateServer(),
+    dataset: new MemoryDataset({ namespace: 'default' }),
+    datasets: { [ns]: dataset },
+    edges: edges as unknown as MemoryEdgesStore,
+    coordinators: [{ name: `${ns}-pg`, contractVersion: '*', namespaces: [nsDef] }] as never,
+    systemActor: 'test'
+  });
+  const engine: NlEngineAccess = {
+    federatedSchema: () => composed.engine.federatedSchema(),
+    operators: (n) => composed.engine.datasetFor(n)?.capabilities.operators,
+    query: (frame: Query) => composed.engine.query({ frame, ctx }) as never
+  };
+  const packs = new PackService({ engine });
+  const ask = async (question: string): Promise<NlOutcome> => {
+    const served = await packs.get(ns, http);
+    if (served === undefined) throw new Error('no pack');
+    let outcome: NlOutcome | undefined;
+    for await (const ev of runAsk({ namespace: ns, question }, http, {
+      pack: served.pack,
+      engine,
+      now: () => new Date('2026-11-19T12:00:00Z')
+    }) as AsyncGenerator<NlEvent>) {
+      if (ev.event === 'outcome') outcome = ev.outcome;
+    }
+    if (outcome === undefined) throw new Error(`no outcome for ${question}`);
+    return outcome;
+  };
+  return { ask, stop: () => composed.stop() };
+}
+
 describe.skipIf(!POSTGRES_URL)('NL time groupings over pg', () => {
   let sql: Sql;
-  let composed: Awaited<ReturnType<typeof compose>>;
+  const stops: (() => Promise<void>)[] = [];
   let ask: (question: string) => Promise<NlOutcome>;
 
   beforeAll(async () => {
     sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
-    const nsDef = defineNamespace(NS, TYPES, { annotations: { nl: RULINGS } });
-    const edges = new PgEdgesStore({ sql });
-    const dataset = new PgDataset({
-      namespace: NS,
-      sql,
-      edgesStore: edges,
-      fieldDefLookup: (type, f) => nsDef.types?.[type]?.fields[f],
-      typeDefLookup: (type) => nsDef.types?.[type]
-    });
-    await dataset.ensureTypeStorage('Sale');
-    await dataset.write('Sale', SALES as never);
-    composed = await compose({
-      server: new MemorySubstrateServer(),
-      dataset: new MemoryDataset({ namespace: 'default' }),
-      datasets: { [NS]: dataset },
-      edges: edges as unknown as MemoryEdgesStore,
-      coordinators: [{ name: `${NS}-pg`, contractVersion: '*', namespaces: [nsDef] }] as never,
-      systemActor: 'test'
-    });
-    const engine: NlEngineAccess = {
-      federatedSchema: () => composed.engine.federatedSchema(),
-      operators: (ns) => composed.engine.datasetFor(ns)?.capabilities.operators,
-      query: (frame: Query) => composed.engine.query({ frame, ctx }) as never
-    };
-    const packs = new PackService({ engine });
-    ask = async (question) => {
-      const served = await packs.get(NS, http);
-      if (served === undefined) throw new Error('no pack');
-      let outcome: NlOutcome | undefined;
-      for await (const ev of runAsk({ namespace: NS, question }, http, {
-        pack: served.pack,
-        engine,
-        now: () => new Date('2026-11-19T12:00:00Z')
-      }) as AsyncGenerator<NlEvent>) {
-        if (ev.event === 'outcome') outcome = ev.outcome;
-      }
-      if (outcome === undefined) throw new Error(`no outcome for ${question}`);
-      return outcome;
-    };
+    const m = await mount(sql, SALES);
+    stops.push(m.stop);
+    ask = m.ask;
   });
 
   afterAll(async () => {
-    await composed?.stop();
+    for (const stop of stops) await stop();
     await sql?.end({ timeout: 5 });
   });
 
@@ -126,6 +134,30 @@ describe.skipIf(!POSTGRES_URL)('NL time groupings over pg', () => {
         { key: '2026-10-05', value: 30 },
         { key: '2026-11-02', value: 40 }
       ]
+    });
+  });
+
+  describe('with a sale in 2025', () => {
+    let askYears: (question: string) => Promise<NlOutcome>;
+
+    beforeAll(async () => {
+      const late2025 = { id: id(5), price: 50, soldAt: '2025-12-30T12:00:00.000Z' };
+      const m = await mount(sql, [...SALES, late2025]);
+      stops.push(m.stop);
+      askYears = m.ask;
+    });
+
+    it('counts per month within a year on Postgres', async () => {
+      const perMonth = await askYears('how many sales per month in 2026');
+      const lastYear = await askYears('how many sales in 2025');
+      expect(perMonth.kind === 'rows' && perMonth.aggregate).toMatchObject({
+        groups: [
+          { key: '2026-09', value: 1 },
+          { key: '2026-10', value: 2 },
+          { key: '2026-11', value: 1 }
+        ]
+      });
+      expect(lastYear.kind === 'rows' && lastYear.count).toBe(1);
     });
   });
 });

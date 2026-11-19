@@ -15,7 +15,7 @@ import type { NamespaceRulings, ValueAlias } from '../pack/rulings.js';
 import type { NamespacePack, PackField, PackType } from '../pack/types.js';
 import { pluralize, splitWords } from '../pack/words.js';
 import { whereFields } from '../rulings/schema.js';
-import { type DateRange, rangeFor } from './time.js';
+import { type DateRange, rangeFor, unitsAt } from './time.js';
 import {
   andOf,
   type Composed,
@@ -252,6 +252,8 @@ export function parseQuestion(
 
   // --- type phrases: rulings first, then the pack's, longest first ---
   const mentioned = new Map<string, { span: string; plural: boolean; at: [number, number] }>();
+  /** Every singular type phrase, by position: a number after one may be an id. */
+  const singularAt: { types: string[]; at: [number, number] }[] = [];
   for (const entry of buildTypeIndex(pack, rulings)) {
     const n = entry.phrase.split(' ').length;
     for (let i = 0; i + n <= tokens.length; i++) {
@@ -259,18 +261,35 @@ export function parseQuestion(
       if (slice.some((t) => t.used) || slice.map((t) => t.text).join(' ') !== entry.phrase)
         continue;
       for (const t of slice) t.used = true;
-      for (const type of entry.types)
-        mentioned.set(type, {
-          span: entry.phrase,
-          plural: entry.plural,
-          at: mentioned.get(type)?.at ?? [i, i + n - 1]
-        });
+      if (!entry.plural) singularAt.push({ types: entry.types, at: [i, i + n - 1] });
+      // A type's earliest mention stands for it: span, number and position from one occurrence.
+      for (const type of entry.types) {
+        const prior = mentioned.get(type);
+        if (prior === undefined || i < prior.at[0])
+          mentioned.set(type, { span: entry.phrase, plural: entry.plural, at: [i, i + n - 1] });
+      }
     }
   }
   for (const [type, m] of mentioned) evidence.push({ span: m.span, role: 'type', detail: type });
 
   // --- time, before ids, so the N in "last N days" is not read as a number ---
-  const time = claimTime(tokens, ctx.asOf);
+  const claimed = claimTime(tokens, ctx.asOf);
+  // "in may", "in 2025": if it, or a value round it ("may release"), is stored, neither is read.
+  const heldValue =
+    claimed === null
+      ? undefined
+      : unitsAt(claimed.span)
+          .map((i) => valueAround(tokens, claimed.at[0] + i, claimed.at, pack))
+          .find((v) => v !== undefined);
+  const time = heldValue === undefined ? claimed : null;
+  const heldTime: Dropped | null =
+    claimed === null || heldValue === undefined
+      ? null
+      : {
+          span: claimed.span,
+          reason: `"${heldValue}" could be a time or a stored value; neither is assumed`,
+          kind: 'filter'
+        };
   if (time !== null) {
     evidence.push({
       span: time.span,
@@ -306,6 +325,12 @@ export function parseQuestion(
   }
 
   // --- ids: #N anywhere, or a number right after a type word or an id word ---
+  // Any singular mention of a type cues an id, so long as the type's first mention is singular.
+  const followsSingularType = (at: number) =>
+    singularAt.some(
+      (s) =>
+        at >= s.at[0] && at <= s.at[1] && s.types.some((t) => mentioned.get(t)?.plural === false)
+    );
   const ids: number[] = [];
   let bareNumber = false;
   tokens.forEach((t, i) => {
@@ -324,7 +349,7 @@ export function parseQuestion(
         const before = tokens[i - 2];
         if (prev.text === 'id' && before?.text === 'short' && !before.used) before.used = true;
         evidence.push({ span: `${prev.text} ${t.text}`, role: 'id', detail: 'shortId' });
-      } else if (prev?.used === true && mentioned.size > 0) {
+      } else if (followsSingularType(i - 1)) {
         ids.push(Number(t.text));
         t.used = true;
         evidence.push({ span: t.text, role: 'id', detail: 'shortId' });
@@ -570,6 +595,7 @@ export function parseQuestion(
       values,
       clauses,
       time: composed === undefined || composed.timeOnSeed ? time : null,
+      heldTime,
       order,
       fieldOrder: fieldOrder ?? composed?.seedOrder ?? null,
       plural: mentioned.get(type)?.plural ?? false,
@@ -614,8 +640,9 @@ export function parseQuestion(
       reason: `dropped: ${only.dropped.map((d) => `"${d.span}" (${d.reason})`).join('; ')}`
     };
   }
-  // An id lookup is fixed by the id: leftover words are commentary, not filters.
-  if (only.residual.length > 0 && ids.length === 0) {
+  // An id fixes the lookup: leftover words are commentary, but never one carrying a number.
+  const numbered = (w: string) => w.split(' ').some((x) => /^\$?\d+(?:\.\d+)?[%×]?$/.test(x));
+  if (only.residual.some((w) => ids.length === 0 || numbered(w))) {
     return {
       status: 'partial',
       candidates,
@@ -637,6 +664,8 @@ interface AssemblyInput {
   values: ValueClaim[];
   clauses: FieldClause[];
   time: { span: string; range: DateRange; at: [number, number] } | null;
+  /** A time phrase whose month is also a stored value: claimed, read as neither, dropped. */
+  heldTime: Dropped | null;
   order: 'desc' | 'asc' | null;
   /** An ordering by a field, resolved against this type. */
   fieldOrder: FieldOrder | null;
@@ -735,6 +764,7 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
           }
         ]
       : []),
+    ...(a.heldTime !== null ? [a.heldTime] : []),
     ...(a.aggregate?.held !== undefined
       ? [
           {
@@ -1073,7 +1103,7 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
     },
     answer,
     evidence: ev,
-    residual: contentWords(tokens, strict),
+    residual: contentWords(tokens),
     plan,
     dropped,
     ...(countBy !== null
@@ -1836,8 +1866,8 @@ function creditFieldWords(tokens: Token[], field: PackField | undefined): boolea
   return hit;
 }
 
-/** Unexplained words; with `numbers`, a lone unread number too, which a strict reading cannot lose. */
-function contentWords(tokens: Token[], numbers = false): string[] {
+/** Unexplained words, and a lone unread number, which no reading may lose. */
+function contentWords(tokens: Token[]): string[] {
   const free = (t: Token | undefined): t is Token =>
     t !== undefined && !t.used && !GLUE.has(t.text);
   const num = (t: Token | undefined) => free(t) && /^\d+$/.test(t.text);
@@ -1846,8 +1876,8 @@ function contentWords(tokens: Token[], numbers = false): string[] {
   tokens.forEach((t, i) => {
     if (!free(t)) return;
     if (num(t)) {
-      // A number no word explains ("in 2025") would widen a count or an aggregate to all time.
-      if (numbers && !word(tokens[i - 1]) && !word(tokens[i + 1])) out.push(t.text);
+      // A number no word explains ("items 2025") would widen any reading it was meant to narrow.
+      if (!word(tokens[i - 1]) && !word(tokens[i + 1])) out.push(t.text);
       return;
     }
     // A number beside an unexplained word is lost with it: "8 cores", never just "cores".
@@ -1859,6 +1889,27 @@ function contentWords(tokens: Token[], numbers = false): string[] {
     out.push(`${before}${t.text}${after}`);
   });
   return out;
+}
+
+/**
+ * A pack value of up to four words, as the value pass reads, that takes in token `k` and
+ * whose other words are free or in `span`: "may", "june 2025", "may release".
+ */
+function valueAround(
+  tokens: Token[],
+  k: number,
+  span: [number, number],
+  pack: NamespacePack
+): string | undefined {
+  for (let n = 4; n >= 1; n--) {
+    for (let i = Math.max(0, k - n + 1); i <= k && i + n <= tokens.length; i++) {
+      const slice = tokens.slice(i, i + n);
+      if (slice.some((t, j) => t.used && (i + j < span[0] || i + j > span[1]))) continue;
+      const key = slice.map((t) => t.text).join(' ');
+      if (own(pack.values, key) !== undefined) return key;
+    }
+  }
+  return undefined;
 }
 
 /** Claims the longest n-grams (up to `max` words) for which `accept` returns true. */

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { NlEngineAccess, NlEnvelope } from '../access.js';
 import type { NlEvent } from '../ask/events.js';
 import { runAsk } from '../ask/run.js';
+import type { Judge } from '../judge/judge.js';
 import { buildNamespacePack } from '../pack/build.js';
 import type { NamespaceRulings } from '../pack/rulings.js';
 import type { ServedPack } from '../pack/service.js';
@@ -82,6 +83,93 @@ describe('archived phrasing on a count', () => {
 
   it('a total over a number field is still an aggregate', () => {
     expect(params('total rank of categories')?.aggregate).toEqual({ value: { sum: 'rank' } });
+  });
+});
+
+describe('a number with no cue is not a shortId', () => {
+  it.each(['how many sales 2025', 'total price of sales per month 2025'])('%s', (q) => {
+    const r = parse(q);
+    expect(JSON.stringify(r.candidates)).not.toContain('shortId');
+    expect(r.residual).toContain('2025');
+  });
+});
+
+describe('a lone number nothing reads', () => {
+  it('never drops an unread number', async () => {
+    const statused = withTypes({
+      Item: {
+        fields: {
+          ...(types.Item as { fields: object }).fields,
+          status: { ...str, enum: ['open', 'sold'] }
+        }
+      }
+    }).served;
+    for (const [q, p, n] of [
+      ['items 2025', served, '2025'],
+      ['open items 7', statused, '7'],
+      // The earliest mention is plural, so 5 is not an id; "category" later is no cue.
+      ['categories 5 and the category', served, '5']
+    ] as const) {
+      const r = parseQuestion(q, p, { asOf, rulings: p.rulings });
+      expect(r.status, q).toBe('partial');
+      expect(r.residual, q).toEqual([n]);
+      expect(JSON.stringify(r.candidates), q).not.toContain('shortId');
+      const { e, query } = engine(() => ({ data: {} }));
+      expect((await ask(q, e, p)).kind, q).toBe('unknown');
+      // A judge that calls the number noise does not make it read.
+      expect((await ask(q, e, p, picker)).kind, q).toBe('unknown');
+      expect(query, q).not.toHaveBeenCalled();
+    }
+    // A judge never calls a leftover with a digit noise, though beside an id the parser may.
+    for (const q of ['sales in 2025 q3', 'sales in fy2025']) {
+      const { e, query } = engine(() => ({ data: {} }));
+      expect((await ask(q, e, served, picker)).kind, q).toBe('unknown');
+      expect(query, q).not.toHaveBeenCalled();
+    }
+    // Picked leftover words, with no digit among them, are noise: the reading runs.
+    const { e, query } = engine(() => ({ data: { 'shop/Item': [] } }));
+    expect(await ask('zorblax items', e, served, picker)).toMatchObject({
+      kind: 'rows',
+      source: 'judge',
+      dropped: [{ span: 'zorblax', reason: 'judge: noise' }]
+    });
+    expect(query).toHaveBeenCalledOnce();
+    expect(parse('items in 2025')).toMatchObject({ status: 'resolved', residual: [] });
+    expect(params('items in 2025')).toEqual({
+      where: { listedAt: { gte: '2025-01-01T00:00:00Z', lt: '2026-01-01T00:00:00Z' } }
+    });
+    expect(parse('top 5 items by price')).toMatchObject({ status: 'resolved', residual: [] });
+    // Outside 1900 to 2199 a four-digit number is no year: the phrase is no window.
+    for (const q of [
+      'items between 1000 and 2000',
+      'items from 1000 to 2000',
+      'items with price between 1000 and 2000',
+      'sales in 3000',
+      'sales since 1000'
+    ]) {
+      const r = parse(q);
+      expect(r.status, q).toBe('partial');
+      expect(JSON.stringify(r.candidates), q).not.toMatch(/listedAt|soldAt/);
+      const { e, query } = engine(() => ({ data: {} }));
+      expect((await ask(q, e)).kind, q).toBe('unknown');
+      expect((await ask(q, e, served, picker)).kind, q).toBe('unknown');
+      expect(query, q).not.toHaveBeenCalled();
+    }
+  });
+
+  it("reads a type's number and plurality at its first mention", () => {
+    const q = 'item with the highest price of all items';
+    expect(parse(q).candidates[0]?.answer).toBe('single');
+    expect(params(q)).toEqual({ orderBy: [{ price: 'desc' }], limit: 1 });
+    expect(parse('category 5 and the categories')).toMatchObject({ status: 'resolved' });
+    expect(params('category 5 and the categories')).toEqual({ where: { shortId: { eq: 5 } } });
+    for (const [q, ids] of [
+      ['item 5 and item 7', [5, 7]],
+      ['sale 3 and sale 4', [3, 4]]
+    ] as const) {
+      expect(parse(q), q).toMatchObject({ status: 'resolved', residual: [] });
+      expect(params(q), q).toEqual({ where: { shortId: { in: ids } } });
+    }
   });
 });
 
@@ -347,12 +435,26 @@ function engine(reply: (frame: Query) => NlEnvelope) {
   const e: NlEngineAccess = { federatedSchema: () => ({}), operators: () => ({}), query };
   return { e, query };
 }
-async function ask(question: string, e: NlEngineAccess, pack = served): Promise<NlOutcome> {
+async function ask(
+  question: string,
+  e: NlEngineAccess,
+  pack = served,
+  judge?: Judge
+): Promise<NlOutcome> {
   const evs: NlEvent[] = [];
-  for await (const ev of runAsk({ namespace: 'shop', question }, http, { pack, engine: e }))
-    evs.push(ev);
+  const deps = { pack, engine: e, ...(judge !== undefined ? { judge } : {}) };
+  for await (const ev of runAsk({ namespace: 'shop', question }, http, deps)) evs.push(ev);
   return (evs.find((x) => x.event === 'outcome') as Extract<NlEvent, { event: 'outcome' }>).outcome;
 }
+/** A judge that picks the first reading whenever a pick is offered, else escalates. */
+const picker: Judge = {
+  decide: async (p) =>
+    (p.schema.anyOf as { properties: { action: { const: string } } }[]).some(
+      (b) => b.properties.action.const === 'pick'
+    )
+      ? { action: 'pick', candidate: 0 }
+      : { action: 'escalate' }
+};
 type Sent = Record<string, { params: Record<string, unknown>; fields: Record<string, unknown> }>;
 /** The shop pack with `extra` types added or replaced; a Plan's time field is startedAt. */
 function withTypes(extra: Schema['types']) {
@@ -686,12 +788,29 @@ describe('aggregates: answering', () => {
     expect(params('subscriptions with the highest monthly price')).toEqual({});
   });
 
+  it('windows a count or aggregate to a named year, grouped where the question asks', () => {
+    const window = { gte: '2025-01-01T00:00:00Z', lt: '2026-01-01T00:00:00Z' };
+    const month = { bucket: { dateTrunc: [{ lit: 'month' }, 'soldAt'] } };
+    for (const [q, grouped] of [
+      ['how many sales per month in 2025', true],
+      ['how many sales in 2025 per month', true],
+      ['monthly total price of sales in 2025', true],
+      ['how many sales in 2025', false]
+    ] as const) {
+      const r = parse(q);
+      expect(r.status, q).toBe('resolved');
+      expect(r.residual, q).toEqual([]);
+      expect(params(q), q).toMatchObject({ where: { soldAt: window } });
+      if (grouped) expect(params(q), q).toMatchObject({ groupBy: month });
+      else expect(params(q), q).not.toHaveProperty('groupBy');
+    }
+  });
+
   it('answers unknown when a count or aggregate leaves a number unread', async () => {
     for (const q of [
-      'how many sales per month in 2025',
-      'how many sales in 2025 per month',
-      'monthly total price of sales in 2025',
-      'how many sales in 2025'
+      'how many sales 2025',
+      'how many sales per month 2025',
+      'total price of sales per month 2025'
     ]) {
       const r = parse(q);
       expect(r.status, q).toBe('partial');

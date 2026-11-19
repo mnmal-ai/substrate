@@ -141,6 +141,14 @@ describe('POST /substrate/v1/nl', () => {
     }
   });
 
+  it('refuses an asOf outside years 1000 to 9998 as invalid_params', async () => {
+    for (const asOf of ['0050-03-01T00:00:00Z', '9999-06-01T00:00:00Z']) {
+      const r = await askHandler(deps())(post({ namespace: 'ns', question: 'todos today', asOf }));
+      expect(r.status, asOf).toBe(400);
+      expect(JSON.parse(String(r.body)).code, asOf).toBe('invalid_params');
+    }
+  });
+
   it('without asOf, the parsed event carries the server clock', async () => {
     const now = () => new Date('2026-10-02T17:00:00Z');
     const res = await askHandler({ ...deps(), now })(post({ namespace: 'ns', question: 'todos' }));

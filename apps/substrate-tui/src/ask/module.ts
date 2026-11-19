@@ -39,8 +39,9 @@ function explain(err: unknown, endpoint: string): string {
   return e.message ?? String(err);
 }
 
-/** What the server accepts for `asOf`: a date-time with an explicit offset. */
-const ISO_WITH_OFFSET = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
+/** What the server accepts for `asOf`: a date-time with an explicit offset, in years 1000 to 9998. */
+const ISO_WITH_OFFSET =
+  /^(?!9999)[1-9]\d{3}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
 
 /**
  * The ask module. A plain list of rows goes to `pager`, whose module the app must also register;
@@ -161,7 +162,7 @@ export function askModule(
           }
           if (!ISO_WITH_OFFSET.test(v) || Number.isNaN(Date.parse(v)))
             return ctx.print(
-              'asOf needs an ISO-8601 date-time with an offset, e.g. 2026-10-24T23:59:59-05:00'
+              'asOf needs an ISO-8601 date-time with an offset, in years 1000 to 9998, e.g. 2026-10-24T23:59:59-05:00'
             );
           asOf = v;
           ctx.print(`asOf → ${asOf}`);

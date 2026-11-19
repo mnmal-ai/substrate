@@ -394,6 +394,93 @@ describe('runAsk', () => {
     );
     expect(Object.keys(query.mock.calls[0]?.[0] ?? {})[0]).toBe('ns/Decision');
   });
+
+  it('answers unknown when a month or year of a time phrase is also a stored value', async () => {
+    const may = { type: 'Todo', field: 'area', value: 'may' };
+    const withMay: ServedPack = { ...pack, values: { ...pack.values, may: [may] } };
+    const asOf = '2026-11-19T10:00:00Z';
+    const run = async (question: string, p: ServedPack) => {
+      const { e, query } = engine();
+      const evs = await collect(
+        runAsk({ namespace: 'ns', question, asOf }, http, { pack: p, engine: e })
+      );
+      return { evs, sent: JSON.stringify(query.mock.calls[0]?.[0] ?? null) };
+    };
+    const valued = (field: string, ...keys: string[]): ServedPack => ({
+      ...pack,
+      values: {
+        ...pack.values,
+        ...Object.fromEntries(keys.map((k) => [k, [{ type: 'Todo', field, value: k }]]))
+      }
+    });
+    for (const [q, p, span, value] of [
+      ['todos in may', withMay, 'in may', 'may'],
+      ['todos since may', withMay, 'since may', 'may'],
+      ['todos during may 2025', withMay, 'during may 2025', 'may'],
+      // A stored value of several words that takes in the month or year holds it too.
+      ['todos in june 2025', valued('area', 'june 2025'), 'in june 2025', 'june 2025'],
+      ['todos in may release', valued('tags', 'may release'), 'in may', 'may release'],
+      ['todos in 2025', valued('area', '2025'), 'in 2025', '2025'],
+      [
+        'todos in 2025 roadmap',
+        valued('area', '2025 roadmap', 'roadmap'),
+        'in 2025',
+        '2025 roadmap'
+      ]
+    ] as const) {
+      const held = await run(q, p);
+      const parsed = held.evs[0] as Extract<NlEvent, { event: 'parsed' }>;
+      expect(parsed.status, q).toBe('partial');
+      const params = JSON.stringify(parsed.frame?.['ns/Todo']?.params);
+      expect(params, q).not.toContain('createdAt');
+      expect(params, q).not.toContain(JSON.stringify(value));
+      expect(outcome(held.evs), q).toMatchObject({
+        kind: 'unknown',
+        dropped: [{ span, kind: 'filter' }]
+      });
+      expect(held.sent, q).toBe('null');
+    }
+    const window = await run('todos in may', pack);
+    expect(outcome(window.evs)).toMatchObject({ kind: 'rows', source: 'parser' });
+    expect(window.sent).toContain(
+      JSON.stringify({ createdAt: { gte: '2026-05-01T00:00:00Z', lt: '2026-06-01T00:00:00Z' } })
+    );
+    const year = await run('todos in 2025', pack);
+    expect(outcome(year.evs)).toMatchObject({ kind: 'rows', source: 'parser' });
+    expect(year.sent).toContain(
+      JSON.stringify({ createdAt: { gte: '2025-01-01T00:00:00Z', lt: '2026-01-01T00:00:00Z' } })
+    );
+    for (const q of ['may todos', 'todos in area may']) {
+      const value = await run(q, withMay);
+      expect(outcome(value.evs), q).toMatchObject({ kind: 'rows', source: 'parser' });
+      expect(value.sent, q).toContain(JSON.stringify({ area: { eq: 'may' } }));
+      expect(value.sent, q).not.toContain('createdAt');
+    }
+    // A day names the date, not the month: "may 5" stays a window.
+    expect((await run('todos on may 5', withMay)).sent).toContain('"createdAt"');
+  });
+
+  it('answers unknown when a number is left unread', async () => {
+    const asOf = '2026-11-19T10:00:00Z';
+    for (const [q, residual] of [
+      ['todo 5 7', ['7']],
+      ['todo 5 also 7', ['also 7']],
+      ['show me 20 todos', ['20']],
+      ['todos in october 5 2025', ['5', '2025']],
+      ['todos in october of 2025', ['2025']],
+      ['todos in sept 15', ['15']]
+    ] as const) {
+      const { e, query } = engine();
+      const evs = await collect(
+        runAsk({ namespace: 'ns', question: q, asOf }, http, { pack, engine: e })
+      );
+      const parsed = evs[0] as Extract<NlEvent, { event: 'parsed' }>;
+      expect(parsed.status, q).toBe('partial');
+      expect(parsed.residual, q).toEqual(residual);
+      expect(outcome(evs), q).toMatchObject({ kind: 'unknown' });
+      expect(query, q).not.toHaveBeenCalled();
+    }
+  });
 });
 
 // --- walk readings: the confidence rule on the wire ---

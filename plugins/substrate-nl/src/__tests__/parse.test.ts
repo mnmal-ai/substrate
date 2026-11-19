@@ -140,6 +140,76 @@ describe('ordering, counting, authors', () => {
     }
   });
 
+  it('reads a number as a shortId only with a cue', () => {
+    for (const q of [
+      'todo 1752',
+      "What's #1752?",
+      'todo id 1752',
+      'todo number 1752',
+      'todo with short id 1752'
+    ]) {
+      expect(JSON.stringify(parse(q).candidates[0]?.frame), q).toContain('{"shortId":{"eq":1752}}');
+    }
+    expect(JSON.stringify(parse('todo 1997').candidates[0]?.frame)).toContain(
+      '{"shortId":{"eq":1997}}'
+    );
+    const r = parse('todos 1752');
+    expect(JSON.stringify(r.candidates)).not.toContain('shortId');
+    expect(r.residual).toEqual(['1752']);
+    // A singular type word cues every number after it once the type's first mention is singular.
+    for (const [q, ids] of [
+      ['todo 5 and todo 7', [5, 7]],
+      ['todo 5 or todo 7', [5, 7]],
+      ['todo 5, todo 7', [5, 7]],
+      ['show todo 5 and todo 12', [5, 12]],
+      ['decision 651 and decision 652', [651, 652]]
+    ] as const) {
+      expect(parse(q), q).toMatchObject({ status: 'resolved', residual: [] });
+      expect(params(q), q).toEqual({ where: { shortId: { in: ids } } });
+    }
+  });
+
+  it('never drops an unread number', () => {
+    for (const [q, n] of [
+      ['todos 5 and the todo', '5'],
+      // A singular type word cues an id only at the type's first mention.
+      ['todos and todo 5', '5'],
+      // "identities" is indexed before "identity": the earliest mention still decides.
+      ['agent identities 5 and the agent identity', '5'],
+      // A count is no limit: the number is unread.
+      ['show me 20 todos', '20']
+    ] as const) {
+      const r = parse(q);
+      expect(r.status, q).toBe('partial');
+      expect(r.residual, q).toEqual([n]);
+      expect(JSON.stringify(r.candidates), q).not.toContain('shortId');
+    }
+    expect(params('show me 20 todos')).not.toHaveProperty('limit');
+    // Beside an id, words are commentary but a number, alone or among words, is never.
+    for (const [q, residual] of [
+      ['todo 5 7', ['7']],
+      ["What's #5 7?", ['7']],
+      ['todo 5 also 7', ['also 7']],
+      ['todo 5 or maybe 7', ['maybe 7']],
+      ['todo 5 and 7 too', ['7 too']],
+      ['todo #5 vs 7', ['vs 7']],
+      ['todo #5 3.5', ['3.5']],
+      ['todo #5 on 8 cores', ['8 cores']]
+    ] as const) {
+      const r = parse(q);
+      expect(r.status, q).toBe('partial');
+      expect(r.residual, q).toEqual(residual);
+    }
+    expect(parse('#5 7').status).toBe('clarify');
+    expect(parse("What's #1752 about?")).toMatchObject({ status: 'resolved' });
+    expect(params("What's #1752 about?")).toEqual({ where: { shortId: { eq: 1752 } } });
+    // A bare "#1752" asks which type is meant; with a type or a question it is the id.
+    for (const q of ['todo 1752', 'todo #1752', "What's #1752?"]) {
+      expect(parse(q), q).toMatchObject({ status: 'resolved', residual: [] });
+      expect(params(q), q).toEqual({ where: { shortId: { eq: 1752 } } });
+    }
+  });
+
   it('treats values beside an id as commentary ("#5, is that recall?")', () => {
     const r = parseQuestion('todo #5, is that recall or ops?', pack, ctx);
     expect(r.status).toBe('resolved');
