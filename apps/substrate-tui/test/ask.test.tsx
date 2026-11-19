@@ -216,6 +216,20 @@ describe('substrate.ask', () => {
     await until(() => expect(calls.length).toBe(2));
     expect(calls[1]).not.toHaveProperty('asOf');
   });
+  it('/asof refuses a year the server does not read', async () => {
+    const { deps, calls } = fake(() => [rowsEv(0), { event: 'done', data: {} }]);
+    const app = start(deps);
+    for (const v of ['9999-01-01T00:00:00Z', '0999-12-31T00:00:00Z']) {
+      app.stdin.write(`/asof ${v}`);
+      app.stdin.write(ENTER);
+      await until(() => expect(app.frame()).toContain('in years 1000 to 9998'));
+      expect(app.frame(), v).not.toContain(`asOf → ${v}`);
+    }
+    app.stdin.write('things');
+    app.stdin.write(ENTER);
+    await until(() => expect(calls.length).toBe(1));
+    expect(calls[0]).not.toHaveProperty('asOf');
+  });
   it('/ns switches the namespace for the next question', async () => {
     const { deps, calls } = fake(() => [rowsEv(0), { event: 'done', data: {} }]);
     const app = start(deps);
