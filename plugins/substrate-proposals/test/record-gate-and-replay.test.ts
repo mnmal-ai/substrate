@@ -396,6 +396,41 @@ describe('removing a TypeProposal (#1792, #1954)', () => {
     expect((await ds.read('TypeProposal', { id: 'tp' })).rows[0]?.typeName).toBe('Stored');
   });
 
+  it('finds the proposal as the write does, so every form of its id meets the guard', async () => {
+    const ds = new MemoryDataset({ namespace: 'app' });
+    const { engine } = await boot(ds);
+    const proposed = await engine.mutate({
+      frame: {
+        'app/propose_type': {
+          params: { typeName: 'Kept', fields: { t: { kind: 'scalar', type: 'string' } } },
+          fields: { id: true }
+        }
+      },
+      ctx: ctx(propose)
+    });
+    expect(proposed.errors).toBeUndefined();
+    const stored = await engine.mutate({
+      frame: { 'app/createKept': { params: { t: 'x' }, fields: { id: true } } },
+      ctx: ctx(propose)
+    });
+    expect(stored.errors).toBeUndefined();
+    const id = (proposed.data['app/propose_type'] as { id: string }).id;
+    const shortId = (await ds.read('TypeProposal', { id })).rows[0]?.shortId as number;
+    for (const form of [id, shortId, String(shortId)]) {
+      for (const [key, params] of [
+        ['app/updateTypeProposal', { id: form, archived: true }],
+        ['app/deleteTypeProposal', { id: form }]
+      ] as const) {
+        const env = await engine.mutate({
+          frame: { [key]: { params, fields: { id: true } } },
+          ctx: ctx(propose)
+        });
+        expect(env.errors?.[0]?.code, `${key} ${typeof form} ${form}`).toBe('policy_denied');
+      }
+    }
+    expect((await ds.read('TypeProposal', { id })).rows[0]).toMatchObject({ archived: false });
+  });
+
   it('fails closed on a removal with no id or no dataset to check', async () => {
     const { ds, loaded } = await seeded(true);
     const registry = loaded.namespaces.get('app')?.registry;

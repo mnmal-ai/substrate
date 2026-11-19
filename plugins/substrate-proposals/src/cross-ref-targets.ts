@@ -3,16 +3,16 @@
  * a proposal row is written directly, and when a stored proposal is applied.
  */
 
-import { autoCrudOptionsOf, resolveEntityRows } from '@mnmal-ai/substrate-sdk';
+import { autoCrudOptionsOf } from '@mnmal-ai/substrate-sdk';
 import {
   grantedIn,
   grantOf,
+  type Id,
   type Identity,
   type Registry,
   type RequestContext,
   type ResolverArgs,
-  ResolverFrameError,
-  type Row
+  ResolverFrameError
 } from '@mnmal-ai/substrate-types';
 import { CONTROL_NAMESPACE } from './control-plane.js';
 import {
@@ -22,6 +22,7 @@ import {
   parseFieldSpec
 } from './field-spec-json.js';
 import type { RegistryStore } from './registry-store.js';
+import { lockedInIdOrder, lockedRow } from './row-lock.js';
 
 /**
  * The crossRef target check for a proposal in `namespace`. A target in a
@@ -167,14 +168,16 @@ const LIVE = { applied: true, supersededByCode: false, archived: false };
  * stored row is read under a row lock held until the write's transaction
  * ends (a store whose transactions run one at a time needs none), so
  * concurrent updates of one row run their checks one after another, each on
- * the row as the one before left it. An update that must be checked but
- * whose row cannot be loaded is refused. A spec that does not parse is left
- * to apply, which refuses it. The guarded entries lose `batch`, so a mutate
- * array runs per element through the check.
+ * the row as the one before left it, and the update then writes that row by
+ * its stored id, whatever row its `id` names by then. An update that must be
+ * checked but whose row cannot be loaded, or held still, is refused. A spec
+ * that does not parse is left to apply, which refuses it. A mutate array runs
+ * per element through the check; an array of updates first locks every row
+ * it names, in id order.
  *
  * @throws ProposalError `invalid_field_spec` from the wrapped resolvers
  * @throws ResolverFrameError `policy_denied` when an update must be checked
- *   against a stored row that cannot be loaded
+ *   against a stored row that cannot be loaded or locked
  */
 export function gateProposalReferences(
   registry: Registry,
@@ -195,40 +198,47 @@ export function gateProposalReferences(
     if (entry === undefined) continue;
     const { batch: _batch, resolver, ...rest } = entry;
     const isUpdate = key.startsWith('update');
+    const guard = async (ctx: RequestContext, args: ResolverArgs) => {
+      const params = Object.fromEntries(
+        Object.entries(args.params ?? {}).filter(([, v]) => v !== undefined)
+      );
+      const after = isUpdate ? await rowAfterUpdate(key, type, params, args.dataset) : undefined;
+      const row = isUpdate ? after?.row : params;
+      if (row !== undefined) {
+        const check = crossRefTargetCheck(store, namespace, always, (ns) =>
+          canReadNamespace(ctx.identity, ns)
+        );
+        for (const [name, spec] of specs(row)) {
+          if (parses(spec)) assertCrossRefTargets(name, spec, check);
+        }
+      }
+      return resolver(
+        ctx,
+        after === undefined ? args : { ...args, params: { ...args.params, id: after.id } }
+      );
+    };
     registry.replace(key, {
       ...rest,
-      resolver: async (ctx: RequestContext, args: ResolverArgs) => {
-        const params = Object.fromEntries(
-          Object.entries(args.params ?? {}).filter(([, v]) => v !== undefined)
-        );
-        const row = isUpdate ? await rowAfterUpdate(key, type, params, args.dataset) : params;
-        if (row !== undefined) {
-          const check = crossRefTargetCheck(store, namespace, always, (ns) =>
-            canReadNamespace(ctx.identity, ns)
-          );
-          for (const [name, spec] of specs(row)) {
-            if (parses(spec)) assertCrossRefTargets(name, spec, check);
-          }
-        }
-        return resolver(ctx, args);
-      }
+      resolver: guard,
+      ...(isUpdate ? { batch: lockedInIdOrder(type, guard) } : {})
     });
   }
 }
 
 /**
- * The row an update of `type` will leave, when it needs checking: undefined
- * when every param is reference-neutral, or when the update rewrites no spec
- * and the row will not be live.
+ * The stored row an update of `type` reaches, locked, with the row the update
+ * will leave when that needs checking. Undefined when no check needs the
+ * stored row: every param is reference-neutral, or the update rewrites no
+ * spec and the row will not be live.
  *
- * @throws ResolverFrameError `policy_denied` when the row cannot be loaded
+ * @throws ResolverFrameError `policy_denied` when the row cannot be loaded or locked
  */
 async function rowAfterUpdate(
   key: string,
   type: string,
   params: Record<string, unknown>,
   dataset: ResolverArgs['dataset']
-): Promise<Record<string, unknown> | undefined> {
+): Promise<{ id: Id; row: Record<string, unknown> | undefined } | undefined> {
   const keys = Object.keys(params);
   if (keys.every((k) => REFERENCE_NEUTRAL.has(k))) return undefined;
   const rewritesSpec = keys.some((k) => SPEC_KEYS.has(k));
@@ -241,24 +251,5 @@ async function rowAfterUpdate(
     );
   }
   const row = { ...stored, ...params };
-  return rewritesSpec || isLiveProposal(row) ? row : undefined;
-}
-
-/**
- * The live row of `type` an update reaches, found as the update resolver finds
- * it (`id` as `coerceId` takes it, then a raw id or a short id), locked until
- * the transaction ends and read again under the lock: a concurrent write of
- * the row has committed by then, or waits for this transaction. Null when
- * there is no such row, or no id or dataset to find it by.
- */
-async function lockedRow(
-  type: string,
-  id: unknown,
-  dataset: ResolverArgs['dataset']
-): Promise<Row | null> {
-  if ((typeof id !== 'string' && typeof id !== 'number') || dataset === undefined) return null;
-  const found = (await resolveEntityRows(dataset, type, [id]))[0] ?? null;
-  if (found === null) return null;
-  await dataset.lockForUpdate?.(type, [found.id]);
-  return (await dataset.read(type, { id: found.id, includeDeleted: false })).rows[0] ?? null;
+  return { id: stored.id, row: rewritesSpec || isLiveProposal(row) ? row : undefined };
 }

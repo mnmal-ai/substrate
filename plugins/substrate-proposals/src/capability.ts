@@ -5,11 +5,14 @@
 import { requireCapability } from '@mnmal-ai/substrate-policy';
 import {
   type Dataset,
+  type Id,
   type Policy,
   type Registry,
+  type RegistryEntryResolver,
   type RequestContext,
   ResolverFrameError
 } from '@mnmal-ai/substrate-types';
+import { lockedInIdOrder, lockedRow } from './row-lock.js';
 
 export const DEFAULT_PROPOSE_CAPABILITY = 'substrate.propose';
 /** Changes a type's indexes or natural order (`propose_index`); separate from proposing schema. */
@@ -94,11 +97,14 @@ const BENIGN_PROPOSAL_FIELDS = new Set([
  * drop capability, as `drop_type` does; a proposal for a type with no rows
  * stays the propose capability's alone (#1792, #1954). Storage is checked
  * under the proposal's stored `typeName`, read before the write, so a rename
- * cannot point the check at an empty name, and a removal with no string `id`
- * or no dataset to check is refused. The guarded entries lose `batch`, so a
- * mutate array runs per element through the guard, and `updateMany` /
- * `deleteMany` refuse once their single-row entry is replaced. An empty
- * capability opts out.
+ * cannot point the check at an empty name. The proposal is found as the write
+ * finds it (a raw id, then a short id), locked until the write's transaction
+ * ends, and the write then reaches it by its stored id, so the row checked is
+ * the row written. A removal whose proposal cannot be loaded or locked is
+ * refused. A mutate array runs per element through the guard, an array of
+ * updates or deletes first locking every row it names in id order, and
+ * `updateMany` / `deleteMany` refuse once their single-row entry is replaced.
+ * An empty capability opts out.
  */
 /**
  * Marks a write the plugin makes on its own behalf after it has authorised the
@@ -112,7 +118,7 @@ const BENIGN_PROPOSAL_FIELDS = new Set([
 async function defined(
   dataset: Dataset,
   typeName: string,
-  exceptId?: string
+  exceptId?: Id
 ): Promise<string | undefined> {
   if (await typeHasRows(dataset, typeName)) return 'has stored rows';
   const live = await dataset.read('TypeProposal', {
@@ -146,63 +152,66 @@ export function gateTypeProposalRemoval(
       new ResolverFrameError('policy_denied', `${key}: ${why}`, {
         required: `${ctx.namespace}:${dropCapability}`
       });
-    registry.replace(key, {
-      ...rest,
-      resolver: async (ctx, args) => {
-        const params = args.params ?? {};
-        const trusted = (args as { [TRUSTED_WRITE]?: true })[TRUSTED_WRITE] === true;
-        if (!trusted && isRemoval(params) && !gate(ctx, args).allow) {
-          if (key === 'createTypeProposal') {
-            // No stored row yet: the name it would apply is the one to check.
-            const name = params.typeName;
-            if (args.dataset === undefined) {
-              throw deny(
-                ctx,
-                `cannot check '${String(name)}' for stored rows; needs '${dropCapability}'`
-              );
-            }
-            const why = typeof name === 'string' ? await defined(args.dataset, name) : undefined;
-            if (why !== undefined) {
-              throw deny(
-                ctx,
-                `'${String(name)}' ${why}; an applied proposal for it redefines the type, which needs '${dropCapability}' as drop_type does`
-              );
-            }
-            return resolver(ctx, args);
-          }
-          const id = params.id;
-          if (typeof id !== 'string' || args.dataset === undefined) {
+    const guard: RegistryEntryResolver = async (ctx, args) => {
+      const params = args.params ?? {};
+      const trusted = (args as { [TRUSTED_WRITE]?: true })[TRUSTED_WRITE] === true;
+      if (!trusted && isRemoval(params) && !gate(ctx, args).allow) {
+        if (key === 'createTypeProposal') {
+          // No stored row yet: the name it would apply is the one to check.
+          const name = params.typeName;
+          if (args.dataset === undefined) {
             throw deny(
               ctx,
-              `cannot check the proposal's type for stored rows without an id and a dataset; needs '${dropCapability}'`
+              `cannot check '${String(name)}' for stored rows; needs '${dropCapability}'`
             );
           }
-          const { rows } = await args.dataset.read('TypeProposal', { id, limit: 1 });
-          const stored = rows[0]?.typeName;
-          if (typeof stored === 'string' && (await typeHasRows(args.dataset, stored))) {
+          const why = typeof name === 'string' ? await defined(args.dataset, name) : undefined;
+          if (why !== undefined) {
             throw deny(
               ctx,
-              `'${stored}' has stored rows; this change to its proposal drops or redefines the type, which needs '${dropCapability}' as drop_type does`
+              `'${String(name)}' ${why}; an applied proposal for it redefines the type, which needs '${dropCapability}' as drop_type does`
             );
           }
-          // A proposal left live by this update (applied, not archived) must be the
-          // only definition of its name, the stored one or a rename's target.
-          const name = typeof params.typeName === 'string' ? params.typeName : stored;
-          const live =
-            (params.applied ?? rows[0]?.applied) === true &&
-            (params.archived ?? rows[0]?.archived) !== true;
-          if (live && typeof name === 'string') {
-            const why = await defined(args.dataset, name, id);
-            if (why !== undefined) {
-              throw deny(
-                ctx,
-                `'${name}' ${why}; this change makes a second live definition of it, which needs '${dropCapability}' as drop_type does`
-              );
-            }
+          return resolver(ctx, args);
+        }
+        const { dataset } = args;
+        const row = await lockedRow('TypeProposal', params.id, dataset);
+        if (row === null || dataset === undefined) {
+          throw deny(
+            ctx,
+            `cannot load the proposal to check its type for stored rows; needs '${dropCapability}'`
+          );
+        }
+        const stored = row.typeName;
+        if (typeof stored === 'string' && (await typeHasRows(dataset, stored))) {
+          throw deny(
+            ctx,
+            `'${stored}' has stored rows; this change to its proposal drops or redefines the type, which needs '${dropCapability}' as drop_type does`
+          );
+        }
+        // A proposal left live by this update (applied, not archived) must be the
+        // only definition of its name, the stored one or a rename's target.
+        const name = typeof params.typeName === 'string' ? params.typeName : stored;
+        const live =
+          (params.applied ?? row.applied) === true && (params.archived ?? row.archived) !== true;
+        if (live && typeof name === 'string') {
+          const why = await defined(dataset, name, row.id);
+          if (why !== undefined) {
+            throw deny(
+              ctx,
+              `'${name}' ${why}; this change makes a second live definition of it, which needs '${dropCapability}' as drop_type does`
+            );
           }
         }
-        return resolver(ctx, args);
+        return resolver(ctx, { ...args, params: { ...params, id: row.id } });
       }
+      return resolver(ctx, args);
+    };
+    registry.replace(key, {
+      ...rest,
+      resolver: guard,
+      // A create names no stored row to lock.
+      ...(key === 'createTypeProposal' ? {} : { batch: lockedInIdOrder('TypeProposal', guard) })
     });
   }
 }
