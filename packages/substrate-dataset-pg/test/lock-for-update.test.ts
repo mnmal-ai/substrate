@@ -61,4 +61,15 @@ describe.skipIf(!POSTGRES_URL)('lockForUpdate', () => {
     });
     expect(await second).toBe('b');
   });
+
+  it('refuses a lock outside a transaction, which would end with its own statement', async () => {
+    const pg = new PgDataset({
+      namespace: ns,
+      sql,
+      typeDefLookup: () => ({ fields }),
+      fieldDefLookup: (_t, f) => fields[f]
+    });
+    await pg.write('Note', [{ id: 'k2', title: 'a' }]);
+    await expect(pg.lockForUpdate('Note', ['k2'])).rejects.toThrow(/transaction/);
+  });
 });

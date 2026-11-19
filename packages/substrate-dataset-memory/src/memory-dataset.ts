@@ -186,6 +186,8 @@ export class MemoryDataset implements Dataset {
   readonly #txContext = new AsyncLocalStorage<true>();
   // One transaction at a time: the snapshot and the undo logs below belong to it.
   readonly #txLock = createKeyedMutex();
+  /** See `Dataset.serialTransactions`: `#txLock` admits one transaction at a time. */
+  readonly serialTransactions = true;
 
   // Undo log for shortId bindings made inside the outermost tx. Non-null
   // while a tx is open; rows pushed by bindShortId; replayed through

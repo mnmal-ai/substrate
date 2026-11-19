@@ -1244,6 +1244,8 @@ export class PgDataset implements Dataset {
   }
 
   async lockForUpdate(type: string, ids: Id[]): Promise<void> {
+    // A check relies on this lock, so refuse where it would protect nothing.
+    if (!this.#inTx) throw new Error('PgDataset.lockForUpdate needs a transaction');
     await this.#lockRows(type, ids, 'FOR NO KEY UPDATE OF r');
   }
 
