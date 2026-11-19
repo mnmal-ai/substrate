@@ -3,13 +3,17 @@
  */
 
 import { requireCapability } from '@mnmal-ai/substrate-policy';
+import { resolveIdentity } from '@mnmal-ai/substrate-sdk';
 import {
+  BatchElementError,
+  CLIENT_SUPPLIED_SERVER_FIELD,
   type Dataset,
   type Id,
   type Policy,
   type Registry,
   type RegistryEntryResolver,
   type RequestContext,
+  type ResolverArgs,
   ResolverFrameError
 } from '@mnmal-ai/substrate-types';
 import { isLiveProposal, lockedInIdOrder, lockedRow } from './row-lock.js';
@@ -86,10 +90,61 @@ export async function typeHasRows(dataset: Dataset, typeName: string): Promise<b
 const BENIGN_PROPOSAL_FIELDS = new Set([
   'id',
   'proposedReason',
-  'proposedBy',
   'proposedAt',
   'resultingSchemaVersion'
 ]);
+
+/**
+ * A proposal record's `proposedBy` is the signed caller, never a param, as
+ * the propose resolvers write it: a create of each of `types` stores the
+ * caller's id whatever its params say, and an update that sets it is refused
+ * as a server-controlled field, single or in a mutate array.
+ *
+ * @throws ResolverFrameError `client_supplied_server_field` from an update that sets it
+ */
+export function stampProposedBy(registry: Registry, types: readonly string[]): void {
+  for (const type of types) {
+    for (const key of [`create${type}`, `update${type}`]) {
+      const entry = registry.get(key);
+      if (entry === undefined) continue;
+      const { resolver, batch } = entry;
+      const isCreate = key.startsWith('create');
+      const stamped = (ctx: RequestContext, args: ResolverArgs): ResolverArgs => {
+        const params = args.params ?? {};
+        if (isCreate) {
+          return { ...args, params: { ...params, proposedBy: resolveIdentity(ctx).id } };
+        }
+        if (params.proposedBy !== undefined) {
+          throw new ResolverFrameError(
+            CLIENT_SUPPLIED_SERVER_FIELD,
+            "Cannot supply server-controlled field 'proposedBy' on update",
+            { field: 'proposedBy', phase: 'update' }
+          );
+        }
+        return args;
+      };
+      registry.replace(key, {
+        ...entry,
+        resolver: (ctx, args) => resolver(ctx, stamped(ctx, args)),
+        ...(batch === undefined
+          ? {}
+          : {
+              batch: (ctx, list) =>
+                batch(
+                  ctx,
+                  list.map((args, i) => {
+                    try {
+                      return stamped(ctx, args);
+                    } catch (err) {
+                      throw new BatchElementError(i, err);
+                    }
+                  })
+                )
+            })
+      });
+    }
+  }
+}
 
 /**
  * Why `typeName` is already defined, or undefined when it is free: it has

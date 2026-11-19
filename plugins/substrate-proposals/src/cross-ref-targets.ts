@@ -122,7 +122,6 @@ function parses(spec: unknown): spec is FieldSpecJson {
 const REFERENCE_NEUTRAL: ReadonlySet<string> = new Set([
   'id',
   'proposedReason',
-  'proposedBy',
   'proposedAt',
   'resultingSchemaVersion',
   'appliedAt',

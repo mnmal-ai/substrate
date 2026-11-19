@@ -275,7 +275,7 @@ describe('removing a TypeProposal (#1792, #1954)', () => {
     const env = await engine.mutate({
       frame: {
         'app/updateTypeProposal': {
-          params: { id: 'tp', proposedReason: 'clarified', proposedBy: 'someone' },
+          params: { id: 'tp', proposedReason: 'clarified' },
           fields: { id: true }
         }
       },
@@ -645,7 +645,7 @@ describe('writing a FieldProposal', () => {
   it('passes a change boot replay never reads, and any change to a proposal that stays not live', async () => {
     const { engine } = await seeded();
     for (const [key, params] of [
-      ['app/updateFieldProposal', { id: 'A', proposedReason: 'clarified', proposedBy: 'someone' }],
+      ['app/updateFieldProposal', { id: 'A', proposedReason: 'clarified' }],
       ['app/updateFieldProposal', { id: 'U', fieldSpecJson: N, valueMapJson: '{}' }],
       ['app/updateFieldProposal', { id: 'B', targetType: 'Empty' }],
       ['app/updateFieldProposal', { id: 'U', archived: true }],
@@ -706,6 +706,96 @@ describe('writing a FieldProposal', () => {
       expect((await write(engine, key, params, propose)).errors?.[0]?.code, key).toBe(
         'policy_denied'
       );
+    }
+  });
+});
+
+describe('who proposed a record', () => {
+  const propose = ['read', 'mutate', 'substrate.propose'];
+  const spec = { kind: 'scalar', type: 'string' };
+  const records: Array<[ns: string, type: string, seed: { id: string } & Record<string, unknown>]> =
+    [
+      [
+        'app',
+        'TypeProposal',
+        row({
+          id: 'tp',
+          typeName: 'Fresh',
+          fieldsJson: JSON.stringify({ t: spec }),
+          applied: false
+        })
+      ],
+      [
+        'app',
+        'FieldProposal',
+        row({
+          id: 'fp',
+          targetType: 'Fresh',
+          fieldName: 'f',
+          fieldSpecJson: JSON.stringify(spec),
+          applied: false
+        })
+      ],
+      ['_system_proposals', 'NamespaceProposal', row({ id: 'np', ns: 'fresh', applied: false })]
+    ];
+  async function booted() {
+    const app = new MemoryDataset({ namespace: 'app' });
+    const control = new MemoryDataset({ namespace: '_system_proposals' });
+    const { engine } = await boot(app, control);
+    const stored = async (ns: string, type: string, id: string) =>
+      (await (ns === 'app' ? app : control).read(type, { id })).rows[0]?.proposedBy;
+    return { app, control, engine, stored };
+  }
+
+  it('is the signed caller on create, whatever the params say', async () => {
+    const { engine, stored } = await booted();
+    for (const [ns, type, seed] of records) {
+      for (const proposedBy of ['someone-else', undefined]) {
+        const id = `${seed.id}-${String(proposedBy)}`;
+        const env = await engine.mutate({
+          frame: {
+            [`${ns}/create${type}`]: {
+              params: {
+                ...seed,
+                ...(type === 'NamespaceProposal' ? { ns: id } : {}),
+                id,
+                proposedBy
+              },
+              fields: { id: true }
+            }
+          },
+          ctx: ctx(propose)
+        });
+        expect(env.errors, `${type} ${String(proposedBy)}`).toBeUndefined();
+        expect(await stored(ns, type, id), type).toBe('a');
+      }
+    }
+  });
+
+  it('cannot be rewritten by an update, single, batched or by filter', async () => {
+    const { app, control, engine, stored } = await booted();
+    for (const [ns, type, seed] of records) {
+      await (ns === 'app' ? app : control).write(type, [seed]);
+      const key = `${ns}/update${type}`;
+      const params = { id: seed.id, proposedReason: 'clarified', proposedBy: 'forged' };
+      for (const frame of [{ params, fields: { id: true } }, [{ params, fields: { id: true } }]]) {
+        const env = await engine.mutate({ frame: { [key]: frame } as never, ctx: ctx(propose) });
+        expect(env.errors?.[0], key).toMatchObject({
+          code: 'client_supplied_server_field',
+          message: "Cannot supply server-controlled field 'proposedBy' on update"
+        });
+      }
+      const byFilter = await engine.mutate({
+        frame: {
+          [`${ns}/updateMany${type}`]: {
+            params: { where: { id: { eq: seed.id } }, set: { proposedBy: 'forged' } },
+            fields: { count: true }
+          }
+        },
+        ctx: ctx(propose)
+      });
+      expect(byFilter.errors?.[0], type).toBeDefined();
+      expect(await stored(ns, type, seed.id), type).toBe('home');
     }
   });
 });

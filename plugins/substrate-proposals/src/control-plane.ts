@@ -18,7 +18,7 @@
 
 import { defineNamespace, field } from '@mnmal-ai/substrate-sdk';
 import type { NamespaceDefinition } from '@mnmal-ai/substrate-types';
-import { DEFAULT_PROPOSE_CAPABILITY, proposeToWrite } from './capability.js';
+import { DEFAULT_PROPOSE_CAPABILITY, proposeToWrite, stampProposedBy } from './capability.js';
 
 export const CONTROL_NAMESPACE = '_system_proposals';
 
@@ -33,7 +33,7 @@ export function isProposableNamespace(ns: unknown): ns is string {
 export function defineControlPlaneTypes(
   capability: string = DEFAULT_PROPOSE_CAPABILITY
 ): NamespaceDefinition {
-  return defineNamespace(CONTROL_NAMESPACE, {
+  const def = defineNamespace(CONTROL_NAMESPACE, {
     NamespaceProposal: {
       // Boot replays applied rows into live namespaces, as for TypeProposal.
       policy: proposeToWrite(capability),
@@ -49,6 +49,13 @@ export function defineControlPlaneTypes(
       }
     }
   });
+  return {
+    ...def,
+    install(ctx) {
+      def.install(ctx);
+      stampProposedBy(ctx.registry, CONTROL_TYPE_NAMES);
+    }
+  };
 }
 
 export const CONTROL_TYPE_NAMES = ['NamespaceProposal'] as const;

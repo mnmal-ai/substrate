@@ -24,7 +24,8 @@ import {
   DEFAULT_PROPOSE_CAPABILITY,
   gateFieldProposalRemoval,
   gateTypeProposalRemoval,
-  proposeToWrite
+  proposeToWrite,
+  stampProposedBy
 } from './capability.js';
 import { gateProposalReferences } from './cross-ref-targets.js';
 import type { RegistryStore } from './registry-store.js';
@@ -85,6 +86,7 @@ export function defineProposalTypes(
       gateTypeProposalRemoval(ctx.registry, dropCapability);
       gateFieldProposalRemoval(ctx.registry, dropCapability);
       gateProposalReferences(ctx.registry, namespace, registryStore);
+      stampProposedBy(ctx.registry, PROPOSAL_TYPE_NAMES);
     }
   };
 }
