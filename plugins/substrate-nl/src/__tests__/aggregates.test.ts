@@ -35,7 +35,13 @@ const types: Schema['types'] = {
   },
   Sale: { fields: { item: ref('Item'), price: num, soldAt: date } },
   Subscription: {
-    fields: { cycle: { ...str, enum: ['monthly', 'yearly'] }, price: num, startedAt: date }
+    fields: {
+      cycle: { ...str, enum: ['monthly', 'yearly'] },
+      price: num,
+      fee: num,
+      annualFee: num,
+      startedAt: date
+    }
   },
   Bin: {
     fields: { size: num, code: { ...str, enum: Array.from({ length: 21 }, (_, i) => `c${i}`) } }
@@ -505,6 +511,52 @@ describe('aggregates: answering', () => {
     expect(params('monthly total price of subscriptions')).toEqual({
       aggregate: { value: { sum: 'price' } },
       groupBy: { bucket: { dateTrunc: [{ lit: 'month' }, 'startedAt'] } }
+    });
+  });
+
+  // Each resolves or stays partial with the adjective unread: none needs ambiguous.
+  it('lets a field name win over a unit adjective', () => {
+    for (const [q, fn] of [
+      ['total annual fee of subscriptions', 'sum'],
+      ['highest annual fee of subscriptions', 'max']
+    ] as const) {
+      expect(parse(q).status, q).toBe('resolved');
+      expect(params(q), q).toEqual({ aggregate: { value: { [fn]: 'annualFee' } } });
+    }
+    const yearlyFee: NamespaceRulings = {
+      ...base,
+      fieldPhrases: { 'yearly fee': { field: 'Subscription.fee' } }
+    };
+    expect(params('total yearly fee of subscriptions', yearlyFee)).toEqual({
+      aggregate: { value: { sum: 'fee' } }
+    });
+    // No field name begins with "annual total" here, so the adjective is the unit.
+    expect(params('annual total price of subscriptions')).toEqual({
+      aggregate: { value: { sum: 'price' } },
+      groupBy: { bucket: { dateTrunc: [{ lit: 'year' }, 'startedAt'] } }
+    });
+    // Here one does: before or after the aggregate word, the adjective is not a unit.
+    const plans = buildNamespacePack({
+      namespace: 'shop',
+      schema: {
+        schemaVersion: 'v',
+        mutations: {},
+        types: { Plan: { fields: { annualTotal: num, price: num, startedAt: date } } }
+      },
+      operators: OPERATORS
+    });
+    const plan = (q: string) =>
+      parseQuestion(q, plans, { asOf, rulings: { timeField: { Plan: 'startedAt' } } });
+    const before = plan('annual total price of plans');
+    expect(before.status).toBe('partial');
+    expect(before.residual).toEqual(['annual']);
+    expect(before.candidates[0]?.frame['shop/Plan']?.params).toEqual({
+      aggregate: { value: { sum: 'price' } }
+    });
+    const after = plan('average annual total of plans');
+    expect(after.status).toBe('resolved');
+    expect(after.candidates[0]?.frame['shop/Plan']?.params).toEqual({
+      aggregate: { value: { avg: 'annualTotal' } }
     });
   });
 

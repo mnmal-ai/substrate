@@ -467,7 +467,7 @@ export function parseQuestion(
 
   // --- a unit adjective no value claimed ("sales weekly"), for an aggregate or a count ---
   if ((aggregate !== null || count) && aggregate?.group === undefined && countUnit === null) {
-    const unit = claimUnit(tokens, 0, true);
+    const unit = claimUnit(tokens, 0, { pack, rulings });
     if (aggregate !== null && unit !== null) aggregate.group = unit;
     else countUnit = unit;
   }
@@ -1141,16 +1141,25 @@ function fieldAt(
     const slice = tokens.slice(i, i + n);
     if (slice.length < n || slice.some((t) => t.used)) continue;
     const w = slice.map((t) => t.text).join(' ');
-    const somewhere = Object.values(pack.types).some((t) => {
-      const name = fieldByWords(w, t.fields, rulings);
-      return name !== null && (!numeric || t.fields[name]?.valueType === 'number');
-    });
-    if (somewhere) return { words: w, span: w, end: i + n - 1 };
+    if (namesField(w, pack, rulings, numeric)) return { words: w, span: w, end: i + n - 1 };
   }
   const t = tokens[i];
   return !numeric && t !== undefined && !t.used && !GLUE.has(t.text) && !/^\d/.test(t.text)
     ? { words: t.text, span: t.text, end: i }
     : null;
+}
+
+/** True when `words` name a field on some type (a number field, with `numeric`). */
+function namesField(
+  words: string,
+  pack: NamespacePack,
+  rulings: NamespaceRulings,
+  numeric = false
+): boolean {
+  return Object.values(pack.types).some((t) => {
+    const name = fieldByWords(words, t.fields, rulings);
+    return name !== null && (!numeric || t.fields[name]?.valueType === 'number');
+  });
 }
 
 /** Marks tokens `from`..`f.end` used; a field phrase named here is not walked to. */
@@ -1357,10 +1366,25 @@ const UNIT_ADJECTIVES: Record<string, TimeUnit> = {
   annually: 'year'
 };
 
-/** The unit a free adjective at `k` names. */
-function adjectiveAt(tokens: Token[], k: number): TimeUnit | undefined {
+/** The pack and rulings whose field names a unit adjective gives way to. */
+interface FieldNames {
+  pack: NamespacePack;
+  rulings: NamespaceRulings;
+}
+
+/**
+ * The unit a free adjective at `k` names, unless it alone or with the next one or
+ * two words, claimed or not, names a field ("annual fee", "annual total").
+ */
+function adjectiveAt(tokens: Token[], k: number, names: FieldNames): TimeUnit | undefined {
   const t = tokens[k];
-  return t === undefined || t.used ? undefined : own(UNIT_ADJECTIVES, t.text);
+  const unit = t === undefined || t.used ? undefined : own(UNIT_ADJECTIVES, t.text);
+  if (unit === undefined) return undefined;
+  const words = tokens.slice(k, k + 3).map((x) => x.text);
+  const field = [1, 2, 3].some((n) =>
+    namesField(words.slice(0, n).join(' '), names.pack, names.rulings)
+  );
+  return field ? undefined : unit;
 }
 
 /**
@@ -1370,11 +1394,11 @@ function adjectiveAt(tokens: Token[], k: number): TimeUnit | undefined {
 function claimUnit(
   tokens: Token[],
   from: number,
-  adjectives = false
+  adjectives?: FieldNames
 ): { span: string; unit: TimeUnit } | null {
   for (let k = from; k < tokens.length; k++) {
     const by = tokens[k] as Token;
-    const adjective = adjectives ? adjectiveAt(tokens, k) : undefined;
+    const adjective = adjectives === undefined ? undefined : adjectiveAt(tokens, k, adjectives);
     if (adjective !== undefined) {
       by.used = true;
       return { span: by.text, unit: adjective };
@@ -1405,6 +1429,7 @@ function claimAggregate(
   /** First token index of each type mention. */
   mentions: number[]
 ): AggregateClaim | null {
+  const names = { pack, rulings };
   const ofFollows = (end: number) => VALUE_OF.has(tokens[end + 1]?.text ?? '');
   const valueAt = (start: number, end: number) =>
     ofFollows(end) && mentions.some((m) => m > end) && !mentions.some((m) => m < start);
@@ -1422,7 +1447,7 @@ function claimAggregate(
       f = { phrase: pick.phrase, span: pick.phrase.span, end: pick.phrase.at[1] };
     } else {
       // "total monthly price": the adjective is the unit, not the field.
-      let j = adjectiveAt(tokens, i + 1) === undefined ? i + 1 : i + 2;
+      let j = adjectiveAt(tokens, i + 1, names) === undefined ? i + 1 : i + 2;
       while (!(tokens[j]?.used ?? true) && (tokens[j]?.text === 'of' || tokens[j]?.text === 'the'))
         j++;
       f = fieldAt(tokens, walkClaims, pack, rulings, j, false);
@@ -1431,8 +1456,8 @@ function claimAggregate(
       if (onlyBoolean(f.words, pack, rulings)) continue;
     }
     // A unit adjective beside the aggregate word is its unit, even where it is also a value.
-    const beside = [i + 1, i - 1].find((k) => adjectiveAt(tokens, k) !== undefined);
-    const besideUnit = beside === undefined ? null : claimUnit(tokens, beside, true);
+    const beside = [i + 1, i - 1].find((k) => adjectiveAt(tokens, k, names) !== undefined);
+    const besideUnit = beside === undefined ? null : claimUnit(tokens, beside, names);
     takeField(tokens, walkClaims, i, f);
     const claim: AggregateClaim = {
       span: tokens
