@@ -49,6 +49,21 @@ function typeSkipped(row: Row): ProposalError {
 }
 
 /**
+ * The warning line for a stored proposal skipped at replay: the reserved-name
+ * and skipped-type wordings below, else one naming its namespace, type, field
+ * and the error.
+ */
+export function skipLine(namespace: string, row: Row, err: unknown): string {
+  const reserved = reservedSkipLine(namespace, row, err);
+  if (reserved !== undefined) return reserved;
+  const type = row.typeName ?? row.targetType;
+  const field = (err instanceof ProposalError ? err.details.fieldName : undefined) ?? row.fieldName;
+  const where = `${namespace}${type === undefined ? '' : `/${String(type)}`}`;
+  const what = field === undefined ? '' : ` field '${String(field)}'`;
+  return `substrate-proposals: ${where}${what}: skipped at replay: ${err instanceof Error ? err.message : String(err)}`;
+}
+
+/**
  * The warning line for a stored proposal skipped because it names a field reserved for
  * server metadata, or because its type was skipped; undefined for any other reason.
  */

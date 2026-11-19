@@ -39,6 +39,8 @@ async function boot(
     datasets?: MemoryDatasetRegistry;
     withApp?: boolean;
     metric?: (name: string, payload?: unknown) => void;
+    log?: (line: string) => void;
+    owned?: string[];
   } = {}
 ) {
   // As compose builds it: any namespace asked for gets a dataset, a virtual one too.
@@ -60,7 +62,11 @@ async function boot(
     namespaces: [defineNamespace('app', { Invoice: { fields: { number: field.string() } } })]
   };
   const codePlugins = opts.withApp === false ? [] : [app];
-  const proposals = createProposalsPlugin({ ownedNamespaces: ['ext'], pubsub: createNoopPubSub() });
+  const proposals = createProposalsPlugin({
+    ownedNamespaces: opts.owned ?? ['ext'],
+    pubsub: createNoopPubSub(),
+    log: opts.log ?? (() => {})
+  });
   const edges = new MemoryEdgesStore({ now: () => T0 });
   const loaded = await loadPlugins({
     plugins: [proposals, ...codePlugins],
@@ -629,10 +635,12 @@ describe('a proposed reference to a code-defined type, end to end', () => {
     expect((await proposeType(first, 'Payment', { invoice: ref() })).errors).toBeUndefined();
 
     const metrics: Array<{ name: string; payload: unknown }> = [];
+    const lines: string[] = [];
     const rebooted = await boot(undefined, {
       datasets: first.datasets,
       withApp: false,
-      metric: (name, payload) => metrics.push({ name, payload })
+      metric: (name, payload) => metrics.push({ name, payload }),
+      log: (line) => lines.push(line)
     });
     expect(rebooted.registryFor('ext')?.has('Payment')).toBe(false);
     const skip = metrics.find((m) => m.name === '_system_proposals.replay_skipped');
@@ -641,5 +649,41 @@ describe('a proposed reference to a code-defined type, end to end', () => {
       type: 'Payment',
       error: expect.stringContaining("no type 'app/Invoice'")
     });
+    expect(lines).toEqual([
+      "substrate-proposals: ext/Payment field 'invoice': skipped at replay: Field 'invoice': no type 'app/Invoice'"
+    ]);
+  });
+
+  it('keeps a stored proposal live across a restart while its code target stands', async () => {
+    const first = await boot();
+    expect((await proposeType(first, 'Payment', { invoice: ref() })).errors).toBeUndefined();
+
+    const lines: string[] = [];
+    const rebooted = await boot(undefined, {
+      datasets: first.datasets,
+      log: (line) => lines.push(line)
+    });
+    expect(lines).toEqual([]);
+    expect(rebooted.registryFor('ext')?.get('Payment')?.fields.invoice).toMatchObject({
+      kind: 'crossRef',
+      ns: 'app',
+      type: 'Invoice'
+    });
+    const created = async (key: string, params: Record<string, unknown>): Promise<string> => {
+      const env = await rebooted.mutate({
+        frame: { [key]: { params, fields: { id: true } } },
+        ctx: PROPOSER
+      });
+      expect(env.errors).toBeUndefined();
+      return (env.data[key] as { id: string }).id;
+    };
+    const invoice = await created('app/createInvoice', { number: 'n1' });
+    const payment = await created('ext/createPayment', { invoice });
+    const env = await rebooted.query({
+      frame: { 'ext/Payment': { params: { where: { invoice: { eq: invoice } } }, fields: {} } },
+      ctx: PROPOSER
+    });
+    expect(env.errors).toBeUndefined();
+    expect((env.data['ext/Payment'] as Array<{ id: string }>).map((r) => r.id)).toEqual([payment]);
   });
 });
