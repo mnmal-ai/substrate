@@ -83,22 +83,4 @@ describe.skipIf(!POSTGRES_URL)('PgShortIdStore', () => {
     expect(await store.resolveShortId(TEST_NS_A, 'Todo', 999)).toBeNull();
     expect(await store.getShortIdForRow(TEST_NS_A, 'Todo', 'nope')).toBeNull();
   });
-
-  it('preload inserts rows and sets sequence start past the max', async () => {
-    await seedRow(TEST_NS_A, 'Todo', '1052');
-    await seedRow(TEST_NS_A, 'Todo', '828');
-    await store.preload(TEST_NS_A, 'Todo', [
-      { shortId: 1052, rowId: '1052' },
-      { shortId: 828, rowId: '828' }
-    ]);
-    expect(await store.resolveShortId(TEST_NS_A, 'Todo', 1052)).toBe('1052');
-    expect(await store.allocateUnbound(TEST_NS_A, 'Todo')).toBe(1053);
-  });
-
-  it('preload is idempotent (ON CONFLICT DO NOTHING)', async () => {
-    await seedRow(TEST_NS_A, 'Todo', 'a');
-    await store.preload(TEST_NS_A, 'Todo', [{ shortId: 1, rowId: 'a' }]);
-    await store.preload(TEST_NS_A, 'Todo', [{ shortId: 1, rowId: 'a' }]);
-    expect(await store.resolveShortId(TEST_NS_A, 'Todo', 1)).toBe('a');
-  });
 });

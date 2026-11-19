@@ -155,6 +155,80 @@ describe('runScript', () => {
     expect(calls.mutate).toBe(1);
   });
 
+  it('caps writes sent at once, not only writes sent one after another', async () => {
+    const { client, calls } = fakeClient(
+      () => ({}),
+      () => ({ data: { 'ns/createT': [{}] } })
+    );
+    const r = await run(
+      (s) => Promise.all(Array.from({ length: 10 }, () => s.mutate(create(1)))),
+      client,
+      'write',
+      3
+    );
+    expect(r.ok).toBe(false);
+    expect(calls.mutate).toBe(3);
+    expect(r.stats.writes).toBe(3);
+    expect(r.mutations.filter((m) => m.applied)).toHaveLength(3);
+  });
+
+  it('frees the cap for a payload the server refused whole', async () => {
+    let n = 0;
+    const { client, calls } = fakeClient(
+      () => ({}),
+      () =>
+        n++ === 0
+          ? { data: {}, errors: [{ code: 'x', message: 'no' }] }
+          : { data: { 'ns/createT': [{}] } }
+    );
+    const r = await run(
+      async (s) => {
+        await s.mutate(create(2)).catch(() => {});
+        await s.mutate(create(2));
+      },
+      client,
+      'write',
+      3
+    );
+    expect(r.ok).toBe(true);
+    expect(calls.mutate).toBe(2);
+    expect(r.stats.writes).toBe(2);
+  });
+
+  it('applies the cap in dry-run, so dry-run fails where write would', async () => {
+    const { client } = fakeClient(() => ({}));
+    const r = await run(
+      async (s) => {
+        await s.mutate(create(2));
+        await s.mutate(create(2));
+      },
+      client,
+      'dry-run',
+      3
+    );
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/4 frames would exceed --max-writes 3/);
+    expect(r.mutations).toHaveLength(1);
+  });
+
+  it('waits for a write the script did not await before reporting', async () => {
+    const { client, calls } = fakeClient(
+      () => ({}),
+      () => ({ data: { 'ns/createT': [{}] } })
+    );
+    const r = await run(
+      (s) => {
+        void s.mutate(create(1));
+        return 'returned';
+      },
+      client,
+      'write'
+    );
+    expect(r).toMatchObject({ ok: true, result: 'returned' });
+    expect(calls.mutate).toBe(1);
+    expect(r.mutations).toEqual([expect.objectContaining({ applied: true })]);
+  });
+
   it('marks a refused payload unapplied and a policy-denied one applied for the keys that landed', async () => {
     const rolledBack = fakeClient(
       () => ({}),

@@ -5,7 +5,7 @@
  */
 
 import type { PackEnvelope, QualifiedFrame, Schema } from '@mnmal-ai/substrate-types';
-import { trimTrailingSlashes } from '@mnmal-ai/substrate-types';
+import { stringifyJson, trimTrailingSlashes } from '@mnmal-ai/substrate-types';
 import { AuthError, NetworkError, type NetworkErrorInfo } from '../errors.js';
 import { substrateFetch } from './default-fetch.js';
 import type { FetchLike } from './h2-fetch.js';
@@ -106,7 +106,7 @@ export class HttpTransport {
       res = await this.#fetch(url, {
         method: 'POST',
         headers,
-        body: JSON.stringify(body),
+        body: stringifyJson(body),
         ...(opts.signal !== undefined ? { signal: opts.signal } : {})
       });
     } catch (err) {

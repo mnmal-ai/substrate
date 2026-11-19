@@ -9,6 +9,7 @@ import {
   type ScriptMode,
   type SubstrateClient
 } from '@mnmal-ai/substrate-client';
+import { stringifyJson } from '@mnmal-ai/substrate-types';
 
 export interface RunCliOptions {
   write?: (s: string) => void;
@@ -108,7 +109,7 @@ export async function runRun(argv: string[], options: RunCliOptions = {}): Promi
     maxWrites
   });
   await client.close();
-  const json = `${JSON.stringify(report, null, 2)}\n`;
+  const json = `${stringifyJson(report, 2)}\n`;
   if (out !== undefined) {
     writeFileSync(out, json);
     write(

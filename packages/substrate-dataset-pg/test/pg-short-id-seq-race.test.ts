@@ -44,4 +44,21 @@ describe.skipIf(!POSTGRES_URL)('lazy shortId sequence creation', () => {
     const results = await Promise.allSettled([first, second]);
     expect(results.map((r) => r.status)).toEqual(['fulfilled', 'fulfilled']);
   });
+
+  it('does not make a creator wait once the sequence exists', async () => {
+    await sql.begin((tx) => new PgShortIdStore(tx).allocateUnbound(NS, TYPE));
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const first = sql.begin(async (tx) => {
+      await new PgShortIdStore(tx).allocateUnbound(NS, TYPE);
+      await held;
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    const second = sql.begin((tx) => new PgShortIdStore(tx).allocateUnbound(NS, TYPE));
+    const blocked = new Promise<'blocked'>((r) => setTimeout(() => r('blocked'), 2000));
+    const outcome = await Promise.race([second.then(() => 'done' as const), blocked]);
+    release();
+    await Promise.all([first, second]);
+    expect(outcome).toBe('done');
+  });
 });

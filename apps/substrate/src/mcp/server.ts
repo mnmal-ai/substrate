@@ -18,7 +18,7 @@ import {
   tokenAudience
 } from '@mnmal-ai/substrate-client';
 import type { NlAskRequest } from '@mnmal-ai/substrate-types';
-import { trimTrailingSlashes } from '@mnmal-ai/substrate-types';
+import { stringifyJson, trimTrailingSlashes } from '@mnmal-ai/substrate-types';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -135,7 +135,7 @@ function errorResult(message: string): ToolResult {
 }
 
 function okResult(value: unknown): ToolResult {
-  return { content: [{ type: 'text', text: JSON.stringify(value) }] };
+  return { content: [{ type: 'text', text: stringifyJson(value) }] };
 }
 
 function toMessage(err: unknown): string {
@@ -582,12 +582,16 @@ export function createDropTypeHandler(
  */
 export function createRunHandler(env: NodeJS.ProcessEnv = process.env) {
   let signed: ClientFromEnv | undefined;
-  return async (input: {
-    script: string;
-    args?: Record<string, unknown>;
-    mode?: 'read' | 'dry-run' | 'write';
-    maxWrites?: number;
-  }): Promise<ToolResult> => {
+  return async (
+    input: {
+      script: string;
+      args?: Record<string, unknown>;
+      mode?: 'read' | 'dry-run' | 'write';
+      maxWrites?: number;
+    },
+    // The MCP SDK's request extra: its signal fires when the caller cancels the call.
+    extra?: { signal?: AbortSignal }
+  ): Promise<ToolResult> => {
     try {
       signed ??= createClientFromEnv({ env, allowAnonymous: true });
       if (signed.kid === null) {
@@ -601,7 +605,8 @@ export function createRunHandler(env: NodeJS.ProcessEnv = process.env) {
         mode: input.mode ?? 'read',
         args: input.args ?? {},
         maxWrites: input.maxWrites ?? DEFAULT_MAX_WRITES,
-        log: () => {}
+        log: () => {},
+        ...(extra?.signal !== undefined ? { signal: extra.signal } : {})
       });
       return report.ok ? okResult(report) : { ...okResult(report), isError: true };
     } catch (err) {
