@@ -142,6 +142,9 @@ export async function assertCrossRefTargetsExistMany(
 async function existingIds(ds: Dataset, type: string, inputs: Id[]): Promise<Set<string>> {
   const found = new Set<string>();
   if (inputs.length === 0) return found;
+  // Locked first, so a concurrent delete of a target either waits for this
+  // write or has settled before the read below.
+  await ds.lockShared?.(type, inputs);
   for (const r of (await ds.read(type, { ids: inputs, includeDeleted: false })).rows) {
     found.add(String(r.id));
   }

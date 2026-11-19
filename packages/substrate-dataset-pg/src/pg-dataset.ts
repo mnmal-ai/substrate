@@ -1239,6 +1239,20 @@ export class PgDataset implements Dataset {
     return { written: merged.length, ids: merged.map((r) => r.id), rows: merged };
   }
 
+  async lockShared(type: string, ids: Id[]): Promise<void> {
+    if (!this.#inTx || ids.length === 0) return;
+    const table = await this.#tableFor(type);
+    if (table === undefined) return;
+    // In id order, as tombstone locks, so overlapping lockers and deleters queue
+    // rather than deadlock.
+    await this.#sql`
+      SELECT 1 FROM ${this.#sql.unsafe(table.from)} r
+      WHERE r.id = ANY(${ids.map(idToText)}) AND r.deleted_at IS NULL
+      ORDER BY r.id
+      FOR SHARE OF r
+    `;
+  }
+
   async tombstone(type: string, ids: Id[]): Promise<DeleteResult> {
     if (ids.length === 0) return { deleted: 0, ids: [] };
     const table = await this.#tableFor(type);
