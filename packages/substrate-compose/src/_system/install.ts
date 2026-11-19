@@ -205,6 +205,19 @@ function installFromResult(
 }
 
 /**
+ * Runs `fn` once the surrounding transaction commits, and never when it rolls
+ * back; at once when there is no surrounding transaction. The key cache is
+ * updated this way, so it holds only what the store holds.
+ */
+function onCommit(args: ResolverArgs, fn: () => void): void {
+  if (args.afterTx === undefined) fn();
+  else
+    args.afterTx(async ({ committed }) => {
+      if (committed) fn();
+    });
+}
+
+/**
  * Returns the `kid` field of an autoCRUD resolver result when it is a
  * non-empty string, otherwise null. Delete results (`{ id, deleted }`) carry
  * no kid, so destructive ops must pre-read the row's kid.
@@ -527,7 +540,7 @@ export async function installSystemNamespace(
             },
             now: ctx.now
           });
-          installFromResult(keyRegistry, result, kid, opts.onWarn);
+          onCommit(args, () => installFromResult(keyRegistry, result, kid, opts.onWarn));
         }
         return result;
       }),
@@ -576,7 +589,7 @@ export async function installSystemNamespace(
               now: ctx.now
             });
           }
-          installFromResult(keyRegistry, result, kid, opts.onWarn);
+          onCommit(args, () => installFromResult(keyRegistry, result, kid, opts.onWarn));
         }
         return result;
       }),
@@ -595,7 +608,8 @@ export async function installSystemNamespace(
           if (isLive(target)) kidToEvict = extractKidForInvalidation(target);
         }
         const result = await base(ctx, args);
-        if (kidToEvict !== null) keyRegistry.evict(kidToEvict);
+        const evicted = kidToEvict;
+        if (evicted !== null) onCommit(args, () => keyRegistry.evict(evicted));
         return result;
       }),
     purgeKey: (base) =>
@@ -614,7 +628,8 @@ export async function installSystemNamespace(
         }
         try {
           const result = await base(ctx, args);
-          if (kidToEvict !== null) keyRegistry.evict(kidToEvict);
+          const evicted = kidToEvict;
+          if (evicted !== null) onCommit(args, () => keyRegistry.evict(evicted));
           return result;
         } catch (err) {
           // Kill-switch refusal: emit `destructive_op_refused` BEFORE re-throw so
