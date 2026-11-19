@@ -641,7 +641,6 @@ export function parseQuestion(
     };
   }
   // An id fixes the lookup: leftover words are commentary, but never one carrying a number.
-  const numbered = (w: string) => w.split(' ').some((x) => /^\$?\d+(?:\.\d+)?[%×]?$/.test(x));
   if (only.residual.some((w) => ids.length === 0 || numbered(w))) {
     return {
       status: 'partial',
@@ -652,6 +651,9 @@ export function parseQuestion(
   }
   return { status: 'resolved', candidates, residual: only.residual };
 }
+
+/** True when a leftover entry holds a number ("7", "also 7", "$5", "3.5", "10%"). */
+export const numbered = (w: string) => w.split(' ').some((x) => /^\$?\d+(?:\.\d+)?[%×]?$/.test(x));
 
 interface AssemblyInput {
   /** Walks, comparisons and windows composed for this seed type. */

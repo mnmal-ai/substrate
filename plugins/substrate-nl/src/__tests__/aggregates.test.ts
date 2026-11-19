@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { NlEngineAccess, NlEnvelope } from '../access.js';
 import type { NlEvent } from '../ask/events.js';
 import { runAsk } from '../ask/run.js';
+import type { Judge } from '../judge/judge.js';
 import { buildNamespacePack } from '../pack/build.js';
 import type { NamespaceRulings } from '../pack/rulings.js';
 import type { ServedPack } from '../pack/service.js';
@@ -115,8 +116,18 @@ describe('a lone number nothing reads', () => {
       expect(JSON.stringify(r.candidates), q).not.toContain('shortId');
       const { e, query } = engine(() => ({ data: {} }));
       expect((await ask(q, e, p)).kind, q).toBe('unknown');
+      // A judge that calls the number noise does not make it read.
+      expect((await ask(q, e, p, picker)).kind, q).toBe('unknown');
       expect(query, q).not.toHaveBeenCalled();
     }
+    // Picked leftover words, with no number among them, are noise: the reading runs.
+    const { e, query } = engine(() => ({ data: { 'shop/Item': [] } }));
+    expect(await ask('zorblax items', e, served, picker)).toMatchObject({
+      kind: 'rows',
+      source: 'judge',
+      dropped: [{ span: 'zorblax', reason: 'judge: noise' }]
+    });
+    expect(query).toHaveBeenCalledOnce();
     expect(parse('items in 2025')).toMatchObject({ status: 'resolved', residual: [] });
     expect(params('items in 2025')).toEqual({
       where: { listedAt: { gte: '2025-01-01T00:00:00Z', lt: '2026-01-01T00:00:00Z' } }
@@ -402,12 +413,26 @@ function engine(reply: (frame: Query) => NlEnvelope) {
   const e: NlEngineAccess = { federatedSchema: () => ({}), operators: () => ({}), query };
   return { e, query };
 }
-async function ask(question: string, e: NlEngineAccess, pack = served): Promise<NlOutcome> {
+async function ask(
+  question: string,
+  e: NlEngineAccess,
+  pack = served,
+  judge?: Judge
+): Promise<NlOutcome> {
   const evs: NlEvent[] = [];
-  for await (const ev of runAsk({ namespace: 'shop', question }, http, { pack, engine: e }))
-    evs.push(ev);
+  const deps = { pack, engine: e, ...(judge !== undefined ? { judge } : {}) };
+  for await (const ev of runAsk({ namespace: 'shop', question }, http, deps)) evs.push(ev);
   return (evs.find((x) => x.event === 'outcome') as Extract<NlEvent, { event: 'outcome' }>).outcome;
 }
+/** A judge that picks the first reading whenever a pick is offered, else escalates. */
+const picker: Judge = {
+  decide: async (p) =>
+    (p.schema.anyOf as { properties: { action: { const: string } } }[]).some(
+      (b) => b.properties.action.const === 'pick'
+    )
+      ? { action: 'pick', candidate: 0 }
+      : { action: 'escalate' }
+};
 type Sent = Record<string, { params: Record<string, unknown>; fields: Record<string, unknown> }>;
 /** The shop pack with `extra` types added or replaced; a Plan's time field is startedAt. */
 function withTypes(extra: Schema['types']) {
