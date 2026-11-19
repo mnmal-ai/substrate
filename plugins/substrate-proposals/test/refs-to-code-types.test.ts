@@ -292,6 +292,55 @@ describe('a proposal row written directly', () => {
     ).toContain("'restrict' is not allowed on a reference to 'app/Invoice'");
   });
 
+  it('checks the stored references against whoever makes the row live', async () => {
+    const engine = await boot();
+    const extOnly = as(EXT_ONLY);
+    const unreadable = "you cannot read namespace 'app'";
+    // Written unapplied by a reader of `app`.
+    const created = await write(
+      engine,
+      'createTypeProposal',
+      typeRow('Fresh', { x: ref() }, false)
+    );
+    expect(created.errors).toBeUndefined();
+    const id = (created.data['ext/createTypeProposal'] as { id: string }).id;
+
+    expect(
+      refusal(await write(engine, 'updateTypeProposal', { id, applied: true }, extOnly)).message
+    ).toContain(unreadable);
+    expect(
+      refusal(await write(engine, 'updateTypeProposal', { id, typeName: 'Other' }, extOnly)).message
+    ).toContain(unreadable);
+    // An update that cannot change what boot makes live is not checked.
+    expect(
+      (await write(engine, 'updateTypeProposal', { id, proposedReason: 'why' }, extOnly)).errors
+    ).toBeUndefined();
+    expect(
+      (await write(engine, 'updateTypeProposal', { id, applied: true })).errors
+    ).toBeUndefined();
+
+    const field = await write(engine, 'createFieldProposal', {
+      targetType: 'Fresh',
+      fieldName: 'y',
+      fieldSpecJson: JSON.stringify(ref()),
+      proposedBy: 'agent',
+      proposedAt: T0,
+      proposedReason: 'direct',
+      applied: false,
+      appliedAt: null,
+      supersededByCode: false,
+      archived: false
+    });
+    const fieldId = (field.data['ext/createFieldProposal'] as { id: string }).id;
+    expect(
+      refusal(await write(engine, 'updateFieldProposal', { id: fieldId, applied: true }, extOnly))
+        .message
+    ).toContain(unreadable);
+    expect(
+      (await write(engine, 'updateFieldProposal', { id: fieldId, applied: true })).errors
+    ).toBeUndefined();
+  });
+
   it('is applied at boot only when its target exists and is not restrict', async () => {
     // Written straight to the store, past every check but apply's.
     const ext = new MemoryDataset({ namespace: 'ext', walkReference: true });
