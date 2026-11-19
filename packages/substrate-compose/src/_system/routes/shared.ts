@@ -152,22 +152,33 @@ export function grantRefusal(
   adminCapability: string,
   allowAdmin: boolean
 ): SubstrateResponse | null {
-  // An unparseable grant would store, then make `parseGrantEntries` throw in
-  // `candidatesFor` (auth.ts) on every request bearing that kid.
+  const problem = grantProblem(namespaces, capabilities, adminCapability, allowAdmin);
+  return problem === null ? null : badRequest(problem.code, problem.message);
+}
+
+/** {@link grantRefusal}'s verdict as a code and message, for callers that are not routes. */
+export function grantProblem(
+  namespaces: Array<string>,
+  capabilities: Array<string>,
+  adminCapability: string,
+  allowAdmin: boolean
+): { code: string; message: string } | null {
+  // An unparseable grant would store, and the key verifier skips a key row
+  // whose grant does not parse, so the key would verify nothing.
   const entryError = grantEntryError(namespaces, capabilities);
   if (entryError !== null) {
-    return badRequest(
-      'invalid_grant_entry',
-      `${entryError} — each entry is '<namespace>' or '<namespace>:<cap>[+<cap>...]'.`
-    );
+    return {
+      code: 'invalid_grant_entry',
+      message: `${entryError} — each entry is '<namespace>' or '<namespace>:<cap>[+<cap>...]'.`
+    };
   }
   // Asked of the resolved grant, not the flat list: `namespaces: ['_system:admin']`
   // with `capabilities: ['read']` confers admin.
   if (grantEntriesConfer(namespaces, capabilities, adminCapability) && !allowAdmin) {
-    return badRequest(
-      'admin_requires_opt_in',
-      `granting the '${adminCapability}' capability requires allowAdmin: true (substrate-admin bootstrap is the deliberate admin path)`
-    );
+    return {
+      code: 'admin_requires_opt_in',
+      message: `granting the '${adminCapability}' capability requires allowAdmin: true (substrate-admin bootstrap is the deliberate admin path)`
+    };
   }
   return null;
 }

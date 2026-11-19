@@ -16,6 +16,7 @@ import {
   createProposeIndexHandler,
   createProposeTypeHandler,
   createQueryHandler,
+  createRunHandler,
   createSchemaHandler,
   payloadSchema,
   type ToolResult
@@ -897,5 +898,16 @@ describe('drop_namespace / drop_type handlers', () => {
     } finally {
       globalThis.fetch = origFetch;
     }
+  });
+});
+
+describe('run handler', () => {
+  it('names the two env vars when no signing key is set, not an option the caller cannot pass', async () => {
+    const run = createRunHandler({ SUBSTRATE_URL: 'http://127.0.0.1:1' });
+    const res = await run({ script: 'export default async () => 1;' });
+    expect(res.isError).toBe(true);
+    const text = res.content[0]?.text ?? '';
+    expect(text).toContain('run needs an agent identity');
+    expect(text).not.toContain('allowAnonymous');
   });
 });

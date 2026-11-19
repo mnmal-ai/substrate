@@ -56,6 +56,7 @@ import type {
 import { createKeyedMutex } from '@mnmal-ai/substrate-types';
 import type { StoreProfileName } from '../advisor/profiles.js';
 import { type CreateKeyRegistryOptions, createKeyRegistry, type KeyRegistry } from './registry.js';
+import { grantProblem } from './routes/shared.js';
 import {
   ADVISOR_STATE_FIELDS,
   ADVISOR_STATE_TYPE,
@@ -451,8 +452,8 @@ export async function installSystemNamespace(
   // Guards that hold whoever the caller is. The key verbs are reachable
   // through plain `mutate` as well as the `/_system/keys` routes and the CLI,
   // so these run here, in the write's own transaction: a stored grant must
-  // parse (else every request bearing that kid 500s in `candidatesFor`), and
-  // no write may leave zero active admins. The confirmable gates (`widen`,
+  // parse (the verifier skips a key whose grant does not, so it would verify
+  // nothing), and no write may leave zero active admins. The confirmable gates (`widen`,
   // `allowAdmin`) stay with the routes and CLI that offer the confirmation.
   const keysFor = async (args: ResolverArgs): Promise<Array<Row>> =>
     // Unpaged on purpose: a partial table silently weakens the lockout count.
@@ -673,12 +674,26 @@ export async function installSystemNamespace(
   // event inside the same tx as the insert. The `/invites` route dispatches
   // through `engine.mutate(createInvite)`, so this interceptor is the
   // single emit site — the route must not emit too.
+  //
+  // A redeemed invite becomes a key row, so an invite's grant passes the checks
+  // `POST /_system/invites` runs, whichever way it arrives. `allowAdmin` is the
+  // admin opt-in and is stripped before the write; it is not a stored field.
+  const assertInviteGrant = (row: Record<string, unknown>, allowAdmin: unknown): void => {
+    const problem = grantProblem(
+      decodeList(row.namespaces),
+      decodeList(row.capabilities),
+      adminCapability,
+      allowAdmin === true
+    );
+    if (problem !== null) throw new ResolverFrameError(problem.code, problem.message);
+  };
   const inviteInterceptors: Record<string, (base: AutoCrudResolver) => AutoCrudResolver> = {
     createInvite: (base) => async (ctx: RequestContext, args: ResolverArgs) => {
-      const result = await base(ctx, args);
+      const { allowAdmin, ...params } = args.params ?? {};
+      assertInviteGrant(params, allowAdmin);
+      const result = await base(ctx, { ...args, params });
       const inviteId = extractIdForInvalidation(result);
       if (inviteId !== null) {
-        const params = args.params ?? {};
         await emitAuditInTx(ctx, args, {
           actorKid: resolveActorKid(ctx),
           kind: 'invite_created',
@@ -693,6 +708,19 @@ export async function installSystemNamespace(
         });
       }
       return result;
+    },
+    updateInvite: (base) => async (ctx: RequestContext, args: ResolverArgs) => {
+      const { allowAdmin, ...params } = args.params ?? {};
+      // Only a grant the caller supplies is checked, as for `updateKey`.
+      if (params.namespaces !== undefined || params.capabilities !== undefined) {
+        const ds = args.dataset ?? opts.dataset;
+        const target =
+          typeof params.id === 'string'
+            ? (await ds.read(INVITE_TYPE, { id: params.id })).rows[0]
+            : undefined;
+        assertInviteGrant({ ...target, ...params }, allowAdmin);
+      }
+      return base(ctx, { ...args, params });
     },
     purgeInvite: (base) => async (ctx: RequestContext, args: ResolverArgs) => {
       try {

@@ -593,7 +593,7 @@ export function createRunHandler(env: NodeJS.ProcessEnv = process.env) {
     extra?: { signal?: AbortSignal }
   ): Promise<ToolResult> => {
     try {
-      signed ??= createClientFromEnv({ env });
+      signed ??= createClientFromEnv({ env, allowAnonymous: true });
       if (signed.kid === null) {
         return errorResult(
           'run needs an agent identity: set SUBSTRATE_AGENT_KEY_ID and SUBSTRATE_AGENT_KEY_PATH'
