@@ -125,15 +125,16 @@ describe('applying a choice', () => {
     expect(rows.status).toBe('resolved');
   });
 
-  it('a pick whose leftovers hold a number escalates, on any reading', async () => {
+  it('a pick whose leftovers hold a digit escalates, on any reading', async () => {
     for (const [q, n] of [
       ['todos 1752', '1752'],
-      ['show me 20 todos', '20']
+      ['show me 20 todos', '20'],
+      ['todos in q3', 'q3']
     ] as const) {
       const r = await parseWithJudge(q, pack, ctx, scripted({ action: 'pick', candidate: 0 }));
       expect(r.status, q).toBe('escalated');
       if (r.status !== 'escalated') continue;
-      expect(r.result.reason, q).toBe(`a number is never noise: ${n}`);
+      expect(r.result.reason, q).toBe(`a digit is never noise: ${n}`);
       expect(r.result.candidates[0]?.residual, q).toEqual([n]);
     }
   });

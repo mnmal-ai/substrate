@@ -120,7 +120,13 @@ describe('a lone number nothing reads', () => {
       expect((await ask(q, e, p, picker)).kind, q).toBe('unknown');
       expect(query, q).not.toHaveBeenCalled();
     }
-    // Picked leftover words, with no number among them, are noise: the reading runs.
+    // A judge never calls a leftover with a digit noise, though beside an id the parser may.
+    for (const q of ['sales in 2025 q3', 'sales in fy2025']) {
+      const { e, query } = engine(() => ({ data: {} }));
+      expect((await ask(q, e, served, picker)).kind, q).toBe('unknown');
+      expect(query, q).not.toHaveBeenCalled();
+    }
+    // Picked leftover words, with no digit among them, are noise: the reading runs.
     const { e, query } = engine(() => ({ data: { 'shop/Item': [] } }));
     expect(await ask('zorblax items', e, served, picker)).toMatchObject({
       kind: 'rows',

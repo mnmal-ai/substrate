@@ -13,7 +13,6 @@ import type { NamespaceRulings, ValueAlias } from '../pack/rulings.js';
 import type { NamespacePack } from '../pack/types.js';
 import {
   type Candidate,
-  numbered,
   type ParseContext,
   type ParseResult,
   parseQuestion
@@ -286,14 +285,15 @@ export async function parseWithJudge(
             trail
           };
         }
-        // Calling words noise under a count, pick-one or `$ref` changes which rows count, and an
-        // unread number is part of the question on any reading: a judge's guess, not a choice.
-        // Escalated, so the handoff drops them and answers `unknown`.
-        const numbers = chosen.residual.filter(numbered);
-        if ((chosen.strict && chosen.residual.length > 0) || numbers.length > 0) {
+        // Calling words noise under a count, pick-one or `$ref` changes which rows count, and
+        // anything with a digit ("2025", "q3", "fy2025") may be a number or a date on any
+        // reading: a judge's guess, not a choice. Escalated, so the handoff drops them and
+        // answers `unknown`.
+        const digits = chosen.residual.filter((w) => /\d/.test(w));
+        if ((chosen.strict && chosen.residual.length > 0) || digits.length > 0) {
           const reason = chosen.strict
             ? `unexplained under a strict reading: ${chosen.residual.join(', ')}`
-            : `a number is never noise: ${numbers.join(', ')}`;
+            : `a digit is never noise: ${digits.join(', ')}`;
           return {
             status: 'escalated',
             result: { status: 'partial', candidates: [chosen], residual: chosen.residual, reason },
