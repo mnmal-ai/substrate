@@ -524,6 +524,29 @@ describe('aggregates: answering', () => {
       aggregate: { value: { sum: 'price' } },
       groupBy: { bucket: { dateTrunc: [{ lit: 'month' }, 'startedAt'] } }
     });
+    expect(parse('how many monthly subscriptions').status).toBe('resolved');
+    expect(params('how many monthly subscriptions')).toEqual({
+      where: { cycle: { eq: 'monthly' } }
+    });
+  });
+
+  it('reads no value beside an aggregate word that claimed no field', async () => {
+    const plans = withTypes({
+      Plan: { fields: { cycle: { ...str, enum: ['annual', 'monthly'] }, price: num } }
+    });
+    for (const [q, pk] of [
+      ['monthly total of subscriptions', served],
+      ['yearly total of subscriptions', served],
+      ['annual total of plans', plans.served],
+      ['monthly total of plans', plans.served]
+    ] as const) {
+      const { e, query } = engine(() => ({ data: {} }));
+      expect((await ask(q, e, pk)).kind, q).toBe('unknown');
+      expect(query, q).not.toHaveBeenCalled();
+    }
+    const r = parse('monthly total of subscriptions');
+    expect(r.status).toBe('partial');
+    expect(r.residual).toEqual(['monthly']);
   });
 
   // Each resolves or stays partial with the adjective unread: none needs ambiguous.

@@ -459,6 +459,13 @@ export function parseQuestion(
     if (at.length === 1 && GLUE.has(key)) return false;
     // "closed", "done": the closing verb (any terminal status) wins over the literal value.
     if (at.length === 1 && CLOSE_VERBS.has(key)) return false;
+    // Beside an aggregate word an adjective may be its unit, so it is no value ("monthly total of").
+    if (
+      at.length === 1 &&
+      own(UNIT_ADJECTIVES, key) !== undefined &&
+      at.some((k) => besideAggregate(tokens, k))
+    )
+      return false;
     // A plural word names its singular stored value ("protocols" -> protocol).
     const found =
       own(pack.values, key) !== undefined
@@ -1383,6 +1390,11 @@ const UNIT_ADJECTIVES: Record<string, TimeUnit> = {
   annual: 'year',
   annually: 'year'
 };
+
+/** Whether the token just before or after token `k` is an aggregate word, claimed or not. */
+function besideAggregate(tokens: Token[], k: number): boolean {
+  return [k - 1, k + 1].some((j) => own(AGGREGATE_WORDS, tokens[j]?.text ?? '') !== undefined);
+}
 
 /** The types and rulings whose field names a unit adjective gives way to. */
 interface FieldNames {
