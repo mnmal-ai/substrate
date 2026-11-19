@@ -102,6 +102,60 @@ describe('applyProposalFromNotification', () => {
   });
 });
 
+describe('applyProposalFromNotification on a row replay would skip', () => {
+  it('applies only a live row, as replay does', async () => {
+    const { dataset, edges } = makeSharedTxScope();
+    const { store, registry } = makeStore(dataset, edges);
+    const str = { kind: 'scalar', type: 'string' };
+    const common = {
+      proposedBy: 'agent-a',
+      proposedAt: new Date(),
+      proposedReason: 'r',
+      applied: true,
+      appliedAt: new Date(),
+      supersededByCode: false,
+      archived: false
+    };
+    const types = [
+      { id: randomUUID(), typeName: 'Dress', fieldsJson: JSON.stringify({ name: str }), ...common },
+      {
+        id: randomUUID(),
+        typeName: 'Archived',
+        fieldsJson: JSON.stringify({ name: str }),
+        ...common,
+        archived: true
+      },
+      {
+        id: randomUUID(),
+        typeName: 'Superseded',
+        fieldsJson: JSON.stringify({ name: str }),
+        ...common,
+        supersededByCode: true
+      }
+    ];
+    const fields = [
+      { archived: true, fieldName: 'color' },
+      { supersededByCode: true, fieldName: 'size' }
+    ].map((over) => ({
+      id: randomUUID(),
+      targetType: 'Dress',
+      fieldSpecJson: JSON.stringify(str),
+      ...common,
+      ...over
+    }));
+    await dataset.write('TypeProposal', types);
+    await dataset.write('FieldProposal', fields);
+    for (const { id } of [...types, ...fields]) {
+      await applyProposalFromNotification({ namespace: NS, proposalId: id, registryStore: store });
+    }
+    expect(registry.has('Dress')).toBe(true);
+    expect(registry.has('Archived')).toBe(false);
+    expect(registry.has('Superseded')).toBe(false);
+    expect(Object.keys(registry.get('Dress')?.fields ?? {})).not.toContain('color');
+    expect(Object.keys(registry.get('Dress')?.fields ?? {})).not.toContain('size');
+  });
+});
+
 describe('reconcileNamespace', () => {
   let dataset: MemoryDataset;
   let edges: MemoryEdgesStore;

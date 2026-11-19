@@ -21,11 +21,14 @@ const T0 = new Date('2026-11-19T00:00:00Z');
 
 /**
  * Boot over `ext` (seeded or empty). Every store answers walks, so walk
- * refusals come from the grammar, not the store. `virt/Hit` is a type with
- * no storage behind it.
+ * refusals come from the grammar, not the store. `virt/Hit` is a virtual
+ * type: its namespace has a dataset, but autoCRUD stores none of its rows.
  */
 async function boot(ext = new MemoryDataset({ namespace: 'ext', walkReference: true })) {
-  const datasets = new MemoryDatasetRegistry();
+  // As compose builds it: any namespace asked for gets a dataset, a virtual one too.
+  const datasets = new MemoryDatasetRegistry({
+    factory: (ns: string) => new MemoryDataset({ namespace: ns, walkReference: true })
+  });
   datasets.set('ext', ext);
   for (const ns of [CONTROL_NAMESPACE, 'app']) {
     datasets.set(ns, new MemoryDataset({ namespace: ns, walkReference: true }));
@@ -258,7 +261,7 @@ describe('a proposal row written directly', () => {
         await write(
           engine,
           'updateTypeProposal',
-          { id, fieldsJson: JSON.stringify({ x: ref() }) },
+          { id, fieldsJson: JSON.stringify({ x: ref() }), applied: true },
           extOnly
         )
       ).message
@@ -286,40 +289,54 @@ describe('a proposal row written directly', () => {
       refusal(
         await write(engine, 'updateFieldProposal', {
           id: fieldId,
-          fieldSpecJson: JSON.stringify(ref({ onDelete: 'restrict' }))
+          fieldSpecJson: JSON.stringify(ref({ onDelete: 'restrict' })),
+          applied: true
         })
       ).message
     ).toContain("'restrict' is not allowed on a reference to 'app/Invoice'");
   });
 
-  it('checks the stored references against whoever makes the row live', async () => {
+  it('checks the references of a row left live against whoever leaves it so', async () => {
     const engine = await boot();
     const extOnly = as(EXT_ONLY);
     const unreadable = "you cannot read namespace 'app'";
-    // Written unapplied by a reader of `app`.
-    const created = await write(
-      engine,
-      'createTypeProposal',
-      typeRow('Fresh', { x: ref() }, false)
-    );
-    expect(created.errors).toBeUndefined();
-    const id = (created.data['ext/createTypeProposal'] as { id: string }).id;
+    const created = async (key: string, params: Record<string, unknown>): Promise<string> => {
+      const env = await write(engine, key, params);
+      expect(env.errors).toBeUndefined();
+      return (env.data[`ext/${key}`] as { id: string }).id;
+    };
 
-    expect(
-      refusal(await write(engine, 'updateTypeProposal', { id, applied: true }, extOnly)).message
-    ).toContain(unreadable);
+    // Written unapplied, and applied but superseded, by a reader of `app`.
+    const id = await created('createTypeProposal', typeRow('Fresh', { x: ref() }, false));
+    const sup = await created('createTypeProposal', {
+      ...typeRow('Sup', { x: ref() }),
+      supersededByCode: true
+    });
+    const live = [
+      { id, applied: true },
+      { id: sup, supersededByCode: false }
+    ];
+    for (const params of live) {
+      expect(refusal(await write(engine, 'updateTypeProposal', params, extOnly)).message).toContain(
+        unreadable
+      );
+    }
+    // Reference-neutral fields, or a row left unapplied, need no read.
+    for (const params of [
+      { id, proposedReason: 'why' },
+      { id, typeName: 'Renamed' }
+    ]) {
+      expect((await write(engine, 'updateTypeProposal', params, extOnly)).errors).toBeUndefined();
+    }
+    for (const params of live) {
+      expect((await write(engine, 'updateTypeProposal', params)).errors).toBeUndefined();
+    }
+    // Renaming a live row leaves its references live under the new name.
     expect(
       refusal(await write(engine, 'updateTypeProposal', { id, typeName: 'Other' }, extOnly)).message
     ).toContain(unreadable);
-    // An update that cannot change what boot makes live is not checked.
-    expect(
-      (await write(engine, 'updateTypeProposal', { id, proposedReason: 'why' }, extOnly)).errors
-    ).toBeUndefined();
-    expect(
-      (await write(engine, 'updateTypeProposal', { id, applied: true })).errors
-    ).toBeUndefined();
 
-    const field = await write(engine, 'createFieldProposal', {
+    const fieldRow = (over: Record<string, unknown>) => ({
       targetType: 'Fresh',
       fieldName: 'y',
       fieldSpecJson: JSON.stringify(ref()),
@@ -329,16 +346,34 @@ describe('a proposal row written directly', () => {
       applied: false,
       appliedAt: null,
       supersededByCode: false,
-      archived: false
+      archived: false,
+      ...over
     });
-    const fieldId = (field.data['ext/createFieldProposal'] as { id: string }).id;
+    const fid = await created('createFieldProposal', fieldRow({}));
+    const fsup = await created(
+      'createFieldProposal',
+      fieldRow({ applied: true, supersededByCode: true })
+    );
+    const stored = await engine.datasetFor('ext')?.read('FieldProposal', { id: fid });
+    const shortId = stored?.rows[0]?.shortId;
+    expect(typeof shortId).toBe('number');
+    const liveFields = [
+      { id: fid, applied: true },
+      { id: fsup, supersededByCode: false }
+    ];
+    // A numeric id (here a short id) reaches the row as the update resolver does.
+    for (const params of [...liveFields, { id: shortId, applied: true }]) {
+      expect(
+        refusal(await write(engine, 'updateFieldProposal', params, extOnly)).message
+      ).toContain(unreadable);
+    }
+    // A row that cannot be loaded is refused, never checked on the update alone.
     expect(
-      refusal(await write(engine, 'updateFieldProposal', { id: fieldId, applied: true }, extOnly))
-        .message
-    ).toContain(unreadable);
-    expect(
-      (await write(engine, 'updateFieldProposal', { id: fieldId, applied: true })).errors
-    ).toBeUndefined();
+      refusal(await write(engine, 'updateFieldProposal', { id: 'missing', applied: true })).code
+    ).toBe('policy_denied');
+    for (const params of liveFields) {
+      expect((await write(engine, 'updateFieldProposal', params)).errors).toBeUndefined();
+    }
   });
 
   it('is applied at boot only when its target exists and is not restrict', async () => {

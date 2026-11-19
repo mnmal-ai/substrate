@@ -578,11 +578,11 @@ export interface EngineHandle {
   /** Whether `ns` is on the engine, and if so whether it is still served. */
   namespaceState(ns: string): 'absent' | 'live' | 'tombstoned';
   /**
-   * Whether `type` is a type (not a mutation) registered in `ns`, a live
-   * namespace. Optional so a host's own handle stays valid; a caller treats an
-   * absent method as "no such type".
+   * The entry of `type`, a type (not a mutation) registered in `ns`, a live
+   * namespace; undefined for anything else. Optional so a host's own handle
+   * stays valid; a caller treats an absent method as "no such type".
    */
-  hasType?(ns: string, type: string): boolean;
+  typeEntry?(ns: string, type: string): RegistryEntry | undefined;
   /**
    * Construct a fresh empty Registry that the engine can accept via
    * `addNamespace`. Plugins call this to provision new namespaces at runtime

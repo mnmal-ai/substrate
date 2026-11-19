@@ -3,6 +3,7 @@
  * a proposal row is written directly, and when a stored proposal is applied.
  */
 
+import { autoCrudOptionsOf, resolveEntityRows } from '@mnmal-ai/substrate-sdk';
 import {
   grantedIn,
   grantOf,
@@ -25,9 +26,10 @@ import type { RegistryStore } from './registry-store.js';
  * The crossRef target check for a proposal in `namespace`. A target in a
  * namespace this plugin owns must pass `ownedTarget`; the control plane is
  * refused. Any other target must be in a namespace `canRead` admits, be a type
- * the engine has registered with storage behind it, and not be `restrict`, so
- * a proposal never blocks deletes of rows it does not own. The read rule runs
- * first, so an unreadable namespace never tells whether a type exists in it.
+ * the engine has registered whose rows autoCRUD stores (a virtual type has no
+ * rows to point at), and not be `restrict`, so a proposal never blocks deletes
+ * of rows it does not own. The read rule runs first, so an unreadable
+ * namespace never tells whether a type exists in it.
  */
 export function crossRefTargetCheck(
   store: RegistryStore,
@@ -41,8 +43,9 @@ export function crossRefTargetCheck(
     if (store.ownsNamespace(ns)) return ownedTarget(ns, type) ? null : `no type ${target}`;
     if (!canRead(ns)) return `you cannot read namespace '${ns}'`;
     const engine = store.has(namespace) ? store.getBinding(namespace).engine : undefined;
-    if (engine?.hasType?.(ns, type) !== true) return `no type ${target}`;
-    if (engine.datasetFor(ns) === undefined) return `${target} is not a stored type`;
+    const entry = engine?.typeEntry?.(ns, type);
+    if (entry === undefined) return `no type ${target}`;
+    if (autoCrudOptionsOf(entry.resolver) === undefined) return `${target} is not a stored type`;
     if (onDelete === 'restrict') {
       return `'restrict' is not allowed on a reference to ${target}, which this plugin does not own`;
     }
@@ -54,12 +57,18 @@ const always = (): boolean => true;
 
 /**
  * The check for a stored proposal being applied. An owned target need not
- * exist yet, as replay may not have reached it. The read rule is left out:
- * applying has no caller, and every write of a proposal row through the
- * engine was checked against its writer's read (`gateProposalReferences`).
+ * exist yet, as replay may not have reached it. The read rule is left out, as
+ * applying has no caller: the writes through the engine that can leave a row
+ * live were checked against their writer's read (`gateProposalReferences`). A
+ * row written straight to the store, past the engine, was not.
  */
 export function appliedTargetCheck(store: RegistryStore, namespace: string): CrossRefTargetCheck {
   return crossRefTargetCheck(store, namespace, always, always);
+}
+
+/** Whether boot applies a proposal row: the predicate replay reads stored rows by. */
+export function isLiveProposal(row: Record<string, unknown>): boolean {
+  return row.applied === true && row.supersededByCode === false && row.archived === false;
 }
 
 /**
@@ -107,34 +116,43 @@ function parses(spec: unknown): spec is FieldSpecJson {
 }
 
 /**
- * Whether an update's `params` can change what boot makes live from its row:
- * the spec, the name it is applied under, or the row becoming applied or
- * unarchived.
+ * Update params that change neither a proposal row's specs nor whether boot
+ * applies it: what `BENIGN_PROPOSAL_FIELDS` lists, plus the row's apply time
+ * and its index, order, size and value-map options.
  */
-function changesLive(params: Record<string, unknown>): boolean {
-  return (
-    ['fieldsJson', 'fieldSpecJson', 'typeName', 'targetType'].some((k) =>
-      Object.hasOwn(params, k)
-    ) ||
-    params.applied === true ||
-    params.archived === false
-  );
-}
+const REFERENCE_NEUTRAL: ReadonlySet<string> = new Set([
+  'id',
+  'proposedReason',
+  'proposedBy',
+  'proposedAt',
+  'resultingSchemaVersion',
+  'appliedAt',
+  'indexesJson',
+  'orderedByJson',
+  'expectedSize',
+  'valueMapJson'
+]);
+
+/** The flags a row starts with when nothing is known of it: as live as it can be. */
+const LIVE = { applied: true, supersededByCode: false, archived: false };
 
 /**
  * Check the crossRefs of a TypeProposal or FieldProposal row written through
  * the engine as propose_type and propose_field do, against the writer's read,
- * with owned targets allowed before they exist. Boot applies every applied
- * row with no caller to check, so a direct write meets the read rule here. An
- * update that can change what boot makes live is checked on the row as it
- * will stand, the stored row with the update laid over it, so whoever makes a
- * reference live must be able to read its target. A spec that does not parse
- * is left to apply, which refuses it. The guarded entries lose `batch`, so a
- * mutate array runs per element through the check.
+ * with owned targets allowed before they exist. Boot applies every live row
+ * with no caller to check, so a write meets the read rule here.
+ *
+ * A create is checked on its params, which are the whole row. An update is
+ * checked on the row as it will stand, the stored row with the update laid
+ * over it, unless every param is reference-neutral or the row will not be
+ * live, so whoever leaves a reference live can read its target. An update
+ * that could leave the row live but whose row cannot be loaded is refused.
+ * A spec that does not parse is left to apply, which refuses it. The guarded
+ * entries lose `batch`, so a mutate array runs per element through the check.
  *
  * @throws ProposalError `invalid_field_spec` from the wrapped resolvers
  * @throws ResolverFrameError `policy_denied` when an update must be checked
- *   against its stored row and there is no dataset to read it from
+ *   against a stored row that cannot be loaded
  */
 export function gateProposalReferences(
   registry: Registry,
@@ -159,21 +177,7 @@ export function gateProposalReferences(
       ...rest,
       resolver: async (ctx: RequestContext, args: ResolverArgs) => {
         const params = args.params ?? {};
-        let row: Record<string, unknown> | undefined = params;
-        if (isUpdate) {
-          row = changesLive(params) ? params : undefined;
-          // Without an id the update reaches no row; the update itself refuses it.
-          if (row !== undefined && typeof params.id === 'string') {
-            if (args.dataset === undefined) {
-              throw new ResolverFrameError(
-                'policy_denied',
-                `${key}: cannot check the stored row's references without a dataset`
-              );
-            }
-            const { rows } = await args.dataset.read(type, { id: params.id, limit: 1 });
-            row = { ...rows[0], ...params };
-          }
-        }
+        const row = isUpdate ? await rowAfterUpdate(key, type, params, args.dataset) : params;
         if (row !== undefined) {
           const check = crossRefTargetCheck(store, namespace, always, (ns) =>
             canReadNamespace(ctx.identity, ns)
@@ -186,4 +190,35 @@ export function gateProposalReferences(
       }
     });
   }
+}
+
+/**
+ * The row an update of `type` will leave, when it needs checking: undefined
+ * when every param is reference-neutral or the row will not be live.
+ *
+ * @throws ResolverFrameError `policy_denied` when the row cannot be loaded
+ */
+async function rowAfterUpdate(
+  key: string,
+  type: string,
+  params: Record<string, unknown>,
+  dataset: ResolverArgs['dataset']
+): Promise<Record<string, unknown> | undefined> {
+  if (Object.keys(params).every((k) => REFERENCE_NEUTRAL.has(k))) return undefined;
+  if (!isLiveProposal({ ...LIVE, ...params })) return undefined;
+  // The row the update resolver reaches: its id coerced as `coerceId` does,
+  // then resolved as a raw id or a short id.
+  const id = typeof params.id === 'string' || typeof params.id === 'number' ? params.id : undefined;
+  const stored =
+    id === undefined || dataset === undefined
+      ? null
+      : ((await resolveEntityRows(dataset, type, [id]))[0] ?? null);
+  if (stored === null) {
+    throw new ResolverFrameError(
+      'policy_denied',
+      `${key}: cannot load the row to check the references this update could leave live`
+    );
+  }
+  const row = { ...stored, ...params };
+  return isLiveProposal(row) ? row : undefined;
 }

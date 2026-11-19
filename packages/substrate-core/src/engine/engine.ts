@@ -538,9 +538,11 @@ export class Engine {
     return this.#tombstoned.has(ns) ? 'tombstoned' : 'live';
   }
 
-  /** Whether `type` is a type registered in the live namespace `ns`. */
-  hasType(ns: string, type: string): boolean {
-    return this.#isLive(ns) && this.#namespaces.get(ns)?.registry.get(type)?.kind === 'type';
+  /** The entry of `type`, a type registered in the live namespace `ns`, else undefined. */
+  typeEntry(ns: string, type: string): RegistryEntry | undefined {
+    if (!this.#isLive(ns)) return undefined;
+    const entry = this.#namespaces.get(ns)?.registry.get(type);
+    return entry?.kind === 'type' ? entry : undefined;
   }
 
   /** True iff the namespace is registered AND not tombstoned. */

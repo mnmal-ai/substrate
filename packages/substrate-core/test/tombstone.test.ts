@@ -354,14 +354,14 @@ describe('subscribe error text', () => {
   });
 });
 
-describe('Engine.hasType', () => {
+describe('Engine.typeEntry', () => {
   it("answers for a live namespace's types only", () => {
     const { engine } = buildEngine('alpha');
-    expect(engine.hasType('alpha', 'Item')).toBe(true);
-    expect(engine.hasType('alpha', 'createItem')).toBe(false);
-    expect(engine.hasType('alpha', 'Nope')).toBe(false);
-    expect(engine.hasType('beta', 'Item')).toBe(false);
+    expect(engine.typeEntry('alpha', 'Item')?.kind).toBe('type');
+    expect(engine.typeEntry('alpha', 'createItem')).toBeUndefined();
+    expect(engine.typeEntry('alpha', 'Nope')).toBeUndefined();
+    expect(engine.typeEntry('beta', 'Item')).toBeUndefined();
     engine.tombstoneNamespace('alpha');
-    expect(engine.hasType('alpha', 'Item')).toBe(false);
+    expect(engine.typeEntry('alpha', 'Item')).toBeUndefined();
   });
 });

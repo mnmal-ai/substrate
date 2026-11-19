@@ -29,6 +29,7 @@ import {
 } from './apply.js';
 import type { PubSub } from './config.js';
 import { isProposableNamespace } from './control-plane.js';
+import { isLiveProposal } from './cross-ref-targets.js';
 import { ensureStorageAfterCommit } from './engine-write.js';
 import { ProposalError } from './errors.js';
 import type { FieldSpecJson } from './field-spec-json.js';
@@ -103,7 +104,7 @@ export async function applyProposalFromNotification(
   const typeHit = await binding.dataset.read('TypeProposal', { id: args.proposalId });
   if (typeHit.rows.length > 0) {
     const row = typeHit.rows[0] as Row;
-    if (row.applied !== true) return;
+    if (!isLiveProposal(row)) return;
     try {
       const typeName = row.typeName as string;
       let changed = false;
@@ -138,7 +139,7 @@ export async function applyProposalFromNotification(
   const fieldHit = await binding.dataset.read('FieldProposal', { id: args.proposalId });
   if (fieldHit.rows.length > 0) {
     const row = fieldHit.rows[0] as Row;
-    if (row.applied === true) {
+    if (isLiveProposal(row)) {
       try {
         const entry = binding.registry.get(row.targetType as string);
         if (entry && fieldNeedsReplay(entry, row)) {
