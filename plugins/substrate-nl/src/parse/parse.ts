@@ -633,8 +633,8 @@ export function parseQuestion(
       reason: `dropped: ${only.dropped.map((d) => `"${d.span}" (${d.reason})`).join('; ')}`
     };
   }
-  // An id lookup is fixed by the id: leftover words are commentary, not filters.
-  if (only.residual.length > 0 && ids.length === 0) {
+  // An id fixes the lookup: leftover words are commentary, but a lone number may be another id.
+  if (only.residual.some((w) => ids.length === 0 || /^\d+$/.test(w))) {
     return {
       status: 'partial',
       candidates,

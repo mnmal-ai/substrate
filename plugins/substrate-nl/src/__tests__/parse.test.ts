@@ -169,6 +169,13 @@ describe('ordering, counting, authors', () => {
       expect(r.residual, q).toEqual([n]);
       expect(JSON.stringify(r.candidates), q).not.toContain('shortId');
     }
+    // Beside an id, words are commentary but a number may be a second id.
+    for (const q of ['todo 5 7', "What's #5 7?"]) {
+      const r = parse(q);
+      expect(r.status, q).toBe('partial');
+      expect(r.residual, q).toEqual(['7']);
+    }
+    expect(parse('#5 7').status).toBe('clarify');
     // A bare "#1752" asks which type is meant; with a type or a question it is the id.
     for (const q of ['todo 1752', 'todo #1752', "What's #1752?"]) {
       expect(parse(q), q).toMatchObject({ status: 'resolved', residual: [] });

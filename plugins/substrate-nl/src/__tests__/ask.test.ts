@@ -460,9 +460,10 @@ describe('runAsk', () => {
     expect((await run('todos on may 5', withMay)).sent).toContain('"createdAt"');
   });
 
-  it('answers unknown when a month phrase leaves a number unread', async () => {
+  it('answers unknown when a number is left unread', async () => {
     const asOf = '2026-11-19T10:00:00Z';
     for (const [q, residual] of [
+      ['todo 5 7', ['7']],
       ['todos in october 5 2025', ['5', '2025']],
       ['todos in october of 2025', ['2025']],
       ['todos in sept 15', ['15']]
