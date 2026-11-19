@@ -34,6 +34,9 @@ const types: Schema['types'] = {
     fields: { name: str, rank: num, archived: { kind: 'scalar', type: 'boolean', indexed: true } }
   },
   Sale: { fields: { item: ref('Item'), price: num, soldAt: date } },
+  Subscription: {
+    fields: { cycle: { ...str, enum: ['monthly', 'yearly'] }, price: num, startedAt: date }
+  },
   Bin: {
     fields: { size: num, code: { ...str, enum: Array.from({ length: 21 }, (_, i) => `c${i}`) } }
   }
@@ -45,7 +48,9 @@ const pack = buildNamespacePack({
   profile: { types: { Item: { name: { values: ['lamp', 'chair'], truncated: false } } } }
 });
 const asOf = '2026-10-30T12:00:00Z';
-const base: NamespaceRulings = { timeField: { Item: 'listedAt', Sale: 'soldAt' } };
+const base: NamespaceRulings = {
+  timeField: { Item: 'listedAt', Sale: 'soldAt', Subscription: 'startedAt' }
+};
 const phrased: NamespaceRulings = {
   ...base,
   fieldPhrases: {
@@ -452,6 +457,72 @@ describe('aggregates: answering', () => {
     });
     expect(r.candidates[0]?.residual).toContain('condition');
     expect(r.status).toBe('partial');
+  });
+
+  it('reads unit adjectives beside an aggregate or a count', () => {
+    const total = (unit: string) => ({
+      aggregate: { value: { sum: 'price' } },
+      groupBy: { bucket: { dateTrunc: [{ lit: unit }, 'soldAt'] } }
+    });
+    for (const [q, unit] of [
+      ['monthly total price of sales', 'month'],
+      ['total monthly price of sales', 'month'],
+      ['annual total price of sales', 'year'],
+      ['total price of sales annually', 'year']
+    ] as const) {
+      expect(parse(q).status, q).toBe('resolved');
+      expect(params(q), q).toEqual(total(unit));
+    }
+    expect(parse('how many sales weekly').status).toBe('resolved');
+    expect(params('how many sales weekly')).toEqual({
+      aggregate: { value: { count: true } },
+      groupBy: { bucket: { dateTrunc: [{ lit: 'week' }, 'soldAt'] } }
+    });
+    expect(parse('daily how many sales').candidates[0]?.aggregate).toEqual({
+      fn: 'count',
+      field: '*'
+    });
+    // The same late claim takes "by|per <unit>" before "how many".
+    expect(params('per month how many sales')).toEqual({
+      aggregate: { value: { count: true } },
+      groupBy: { bucket: { dateTrunc: [{ lit: 'month' }, 'soldAt'] } }
+    });
+  });
+
+  // Every case below has one reading, so each resolves: none needs ambiguous or unknown.
+  it('lets the data win over a unit adjective', () => {
+    const r = parse('monthly subscriptions');
+    expect(r.status).toBe('resolved');
+    expect(params('monthly subscriptions')).toEqual({ where: { cycle: { eq: 'monthly' } } });
+    // Not beside the aggregate word: the value claim wins.
+    expect(parse('total price of monthly subscriptions').status).toBe('resolved');
+    expect(params('total price of monthly subscriptions')).toEqual({
+      where: { cycle: { eq: 'monthly' } },
+      aggregate: { value: { sum: 'price' } }
+    });
+    // Beside the aggregate word: the unit wins, though "monthly" is a value of cycle.
+    expect(parse('monthly total price of subscriptions').status).toBe('resolved');
+    expect(params('monthly total price of subscriptions')).toEqual({
+      aggregate: { value: { sum: 'price' } },
+      groupBy: { bucket: { dateTrunc: [{ lit: 'month' }, 'startedAt'] } }
+    });
+  });
+
+  it('leaves a lone adjective unread', async () => {
+    const r = parse('weekly sales');
+    expect(r.status).toBe('partial');
+    expect(r.residual).toEqual(['weekly']);
+    expect(params('weekly sales')).toEqual({});
+    const { e, query } = engine(() => ({ data: { 'shop/Sale': [] } }));
+    expect((await ask('weekly sales', e)).kind).toBe('unknown');
+    expect(query).not.toHaveBeenCalled();
+    // "monthly" is a Subscription.cycle value: the value claim wins and rules out the Sale reading.
+    for (const q of ['monthly sales', 'total price of sales monthly']) {
+      const m = parse(q);
+      expect(m.status, q).toBe('unparsed');
+      expect(m.reason, q).toBe('Sale: "monthly" is not a Sale value');
+      expect(m.candidates, q).toEqual([]);
+    }
   });
 
   it('leaves a count without a unit unchanged', () => {

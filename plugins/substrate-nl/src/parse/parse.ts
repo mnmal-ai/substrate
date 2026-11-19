@@ -465,6 +465,13 @@ export function parseQuestion(
     return true;
   });
 
+  // --- a unit adjective no value claimed ("sales weekly"), for an aggregate or a count ---
+  if ((aggregate !== null || count) && aggregate?.group === undefined && countUnit === null) {
+    const unit = claimUnit(tokens, 0, true);
+    if (aggregate !== null && unit !== null) aggregate.group = unit;
+    else countUnit = unit;
+  }
+
   const closeVerb = words.some((w) => CLOSE_VERBS.has(w));
   const updateVerb = words.some((w) => UPDATE_VERBS.has(w));
   for (const t of tokens) if (CLOSE_VERBS.has(t.text) || UPDATE_VERBS.has(t.text)) t.used = true;
@@ -623,7 +630,7 @@ interface AssemblyInput {
   /** The type was named in the plural: an ordering's default limit is 10, else 1. */
   plural: boolean;
   count: boolean;
-  /** "per month" beside a count: the unit its answer is grouped by. */
+  /** "per month" or "monthly" beside a count: the unit its answer is grouped by. */
   countUnit: { span: string; unit: TimeUnit } | null;
   aggregate: AggregateClaim | null;
   allProjects: boolean;
@@ -1304,7 +1311,7 @@ interface AggregateClaim {
   word: string;
   fn: AggregateFn;
   field: { words?: string; phrase?: PhraseClaim };
-  /** "by|per <field>", or "per day|hour|…" (`unit`). */
+  /** "by|per <field>", or a unit (`unit`): "per day|hour|…", "monthly". */
   group?: { span: string; unit?: TimeUnit; field?: { words?: string; phrase?: PhraseClaim } };
 }
 
@@ -1339,11 +1346,39 @@ const MAX_GROUPS = 20;
 const TIME_UNITS = ['hour', 'day', 'week', 'month', 'year'] as const;
 /** The units a date group can truncate to. */
 export type TimeUnit = (typeof TIME_UNITS)[number];
+/** Adjectives that name a unit: "monthly total", "how many sales weekly". */
+const UNIT_ADJECTIVES: Record<string, TimeUnit> = {
+  hourly: 'hour',
+  daily: 'day',
+  weekly: 'week',
+  monthly: 'month',
+  yearly: 'year',
+  annual: 'year',
+  annually: 'year'
+};
 
-/** Claims "by|per <unit>" from token `from` on, skipping used tokens and "<author verb> by". */
-function claimUnit(tokens: Token[], from: number): { span: string; unit: TimeUnit } | null {
+/** The unit a free adjective at `k` names. */
+function adjectiveAt(tokens: Token[], k: number): TimeUnit | undefined {
+  const t = tokens[k];
+  return t === undefined || t.used ? undefined : own(UNIT_ADJECTIVES, t.text);
+}
+
+/**
+ * Claims "by|per <unit>" from token `from` on, skipping used tokens and "<author verb> by";
+ * with `adjectives`, a unit adjective too, whichever comes first.
+ */
+function claimUnit(
+  tokens: Token[],
+  from: number,
+  adjectives = false
+): { span: string; unit: TimeUnit } | null {
   for (let k = from; k < tokens.length; k++) {
     const by = tokens[k] as Token;
+    const adjective = adjectives ? adjectiveAt(tokens, k) : undefined;
+    if (adjective !== undefined) {
+      by.used = true;
+      return { span: by.text, unit: adjective };
+    }
     if (by.used || (by.text !== 'by' && by.text !== 'per')) continue;
     if (AUTHOR_VERBS.has(tokens[k - 1]?.text ?? '')) continue;
     const next = tokens[k + 1];
@@ -1386,7 +1421,8 @@ function claimAggregate(
       walkClaims.picks.splice(walkClaims.picks.indexOf(pick), 1);
       f = { phrase: pick.phrase, span: pick.phrase.span, end: pick.phrase.at[1] };
     } else {
-      let j = i + 1;
+      // "total monthly price": the adjective is the unit, not the field.
+      let j = adjectiveAt(tokens, i + 1) === undefined ? i + 1 : i + 2;
       while (!(tokens[j]?.used ?? true) && (tokens[j]?.text === 'of' || tokens[j]?.text === 'the'))
         j++;
       f = fieldAt(tokens, walkClaims, pack, rulings, j, false);
@@ -1394,6 +1430,9 @@ function claimAggregate(
       // "in total (archived …)": a yes/no field has no total, so the words are not an aggregate.
       if (onlyBoolean(f.words, pack, rulings)) continue;
     }
+    // A unit adjective beside the aggregate word is its unit, even where it is also a value.
+    const beside = [i + 1, i - 1].find((k) => adjectiveAt(tokens, k) !== undefined);
+    const besideUnit = beside === undefined ? null : claimUnit(tokens, beside, true);
     takeField(tokens, walkClaims, i, f);
     const claim: AggregateClaim = {
       span: tokens
@@ -1404,7 +1443,7 @@ function claimAggregate(
       fn,
       field: fieldRef(f)
     };
-    const byUnit = claimUnit(tokens, 0);
+    const byUnit = besideUnit ?? claimUnit(tokens, 0);
     if (byUnit !== null) {
       claim.group = byUnit;
       return claim;
