@@ -464,6 +464,8 @@ describe('runAsk', () => {
     const asOf = '2026-11-19T10:00:00Z';
     for (const [q, residual] of [
       ['todo 5 7', ['7']],
+      ['todo 5 also 7', ['also 7']],
+      ['show me 20 todos', ['20']],
       ['todos in october 5 2025', ['5', '2025']],
       ['todos in october of 2025', ['2025']],
       ['todos in sept 15', ['15']]

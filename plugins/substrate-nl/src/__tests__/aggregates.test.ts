@@ -123,6 +123,14 @@ describe('a lone number nothing reads', () => {
     });
     expect(parse('top 5 items by price')).toMatchObject({ status: 'resolved', residual: [] });
   });
+
+  it("reads a type's number and plurality at its first mention", () => {
+    const q = 'item with the highest price of all items';
+    expect(parse(q).candidates[0]?.answer).toBe('single');
+    expect(params(q)).toEqual({ orderBy: [{ price: 'desc' }], limit: 1 });
+    expect(parse('category 5 and the categories')).toMatchObject({ status: 'resolved' });
+    expect(params('category 5 and the categories')).toEqual({ where: { shortId: { eq: 5 } } });
+  });
 });
 
 describe('aggregates: parsing', () => {

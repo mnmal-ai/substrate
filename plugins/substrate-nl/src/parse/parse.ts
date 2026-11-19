@@ -633,8 +633,9 @@ export function parseQuestion(
       reason: `dropped: ${only.dropped.map((d) => `"${d.span}" (${d.reason})`).join('; ')}`
     };
   }
-  // An id fixes the lookup: leftover words are commentary, but a lone number may be another id.
-  if (only.residual.some((w) => ids.length === 0 || /^\d+$/.test(w))) {
+  // An id fixes the lookup: leftover words are commentary, but never one carrying a number.
+  const numbered = (w: string) => w.split(' ').some((x) => /^\$?\d+(?:\.\d+)?[%×]?$/.test(x));
+  if (only.residual.some((w) => ids.length === 0 || numbered(w))) {
     return {
       status: 'partial',
       candidates,
