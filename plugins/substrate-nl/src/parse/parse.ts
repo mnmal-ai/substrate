@@ -15,7 +15,7 @@ import type { NamespaceRulings, ValueAlias } from '../pack/rulings.js';
 import type { NamespacePack, PackField, PackType } from '../pack/types.js';
 import { pluralize, splitWords } from '../pack/words.js';
 import { whereFields } from '../rulings/schema.js';
-import { type DateRange, monthWords, rangeFor } from './time.js';
+import { type DateRange, monthsAt, rangeFor } from './time.js';
 import {
   andOf,
   type Composed,
@@ -271,18 +271,20 @@ export function parseQuestion(
 
   // --- time, before ids, so the N in "last N days" is not read as a number ---
   const claimed = claimTime(tokens, ctx.asOf);
-  // "in may" where "may" is also a stored value: neither the month nor the value is read.
-  const heldMonth =
+  // "in may" where "may", or a value round it ("may release"), is stored: neither is read.
+  const heldValue =
     claimed === null
       ? undefined
-      : monthWords(claimed.span).find((w) => own(pack.values, w) !== undefined);
-  const time = heldMonth === undefined ? claimed : null;
+      : monthsAt(claimed.span)
+          .map((i) => valueAround(tokens, claimed.at[0] + i, claimed.at, pack))
+          .find((v) => v !== undefined);
+  const time = heldValue === undefined ? claimed : null;
   const heldTime: Dropped | null =
-    claimed === null || heldMonth === undefined
+    claimed === null || heldValue === undefined
       ? null
       : {
           span: claimed.span,
-          reason: `"${heldMonth}" could be the month or a stored value; neither is assumed`,
+          reason: `"${heldValue}" could be the month or a stored value; neither is assumed`,
           kind: 'filter'
         };
   if (time !== null) {
@@ -1879,6 +1881,27 @@ function contentWords(tokens: Token[], numbers = false): string[] {
     out.push(`${before}${t.text}${after}`);
   });
   return out;
+}
+
+/**
+ * A pack value of up to four words, as the value pass reads, that takes in token `k` and
+ * whose other words are free or in `span`: "may", "june 2025", "may release".
+ */
+function valueAround(
+  tokens: Token[],
+  k: number,
+  span: [number, number],
+  pack: NamespacePack
+): string | undefined {
+  for (let n = 4; n >= 1; n--) {
+    for (let i = Math.max(0, k - n + 1); i <= k && i + n <= tokens.length; i++) {
+      const slice = tokens.slice(i, i + n);
+      if (slice.some((t, j) => t.used && (i + j < span[0] || i + j > span[1]))) continue;
+      const key = slice.map((t) => t.text).join(' ');
+      if (own(pack.values, key) !== undefined) return key;
+    }
+  }
+  return undefined;
 }
 
 /** Claims the longest n-grams (up to `max` words) for which `accept` returns true. */

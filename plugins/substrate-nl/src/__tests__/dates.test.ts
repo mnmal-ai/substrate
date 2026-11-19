@@ -214,6 +214,14 @@ describe('years and months as windows', () => {
     expect(rangeFor('in 9998', z)).toEqual({ gte: zz('9998-01-01'), lt: zz('9999-01-01') });
   });
 
+  it('rejects any window with a bound outside years 1000 to 9998', () => {
+    const late = '9999-12-15T10:00:00Z';
+    expect(rangeFor('this year', late)).toBeNull();
+    expect(rangeFor('in december', late)).toBeNull();
+    expect(rangeFor('last 10000 years', z)).toBeNull();
+    expect(rangeFor('last 1000 years', z)).toEqual({ gte: zz('1026-11-19'), lt: zz('2026-11-20') });
+  });
+
   it('reads "in <month>" on the first of that month as the month just begun', () => {
     expect(rangeFor('in november', '2026-11-01T00:00:00Z')).toEqual({
       gte: zz('2026-11-01'),
@@ -246,7 +254,14 @@ describe('years and months as windows', () => {
   it('reads "during" a named range as "in" it', () => {
     expect(rangeFor('during this year', z)).toEqual(rangeFor('this year', z));
     expect(rangeFor('during last year', z)).toEqual(rangeFor('last year', z));
-    for (const q of ['todos during this year', 'todos during last year', 'todos in last year']) {
+    for (const q of [
+      'todos during this year',
+      'todos during last year',
+      'todos in last year',
+      'todos during the last year',
+      'todos in the last year',
+      'todos during the past week'
+    ]) {
       const r = parseQuestion(q, pack, { ...ctx, asOf: z });
       expect(r.status, q).toBe('resolved');
       expect(r.residual, q).toEqual([]);

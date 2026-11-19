@@ -406,14 +406,25 @@ describe('runAsk', () => {
       );
       return { evs, sent: JSON.stringify(query.mock.calls[0]?.[0] ?? null) };
     };
-    for (const q of ['todos in may', 'todos since may', 'todos during may 2025']) {
-      const held = await run(q, withMay);
+    const valued = (key: string, field: string): ServedPack => ({
+      ...pack,
+      values: { ...pack.values, [key]: [{ type: 'Todo', field, value: key }] }
+    });
+    for (const [q, p, span] of [
+      ['todos in may', withMay, 'in may'],
+      ['todos since may', withMay, 'since may'],
+      ['todos during may 2025', withMay, 'during may 2025'],
+      // A stored value of several words that takes in the month holds it too.
+      ['todos in june 2025', valued('june 2025', 'area'), 'in june 2025'],
+      ['todos in may release', valued('may release', 'tags'), 'in may']
+    ] as const) {
+      const held = await run(q, p);
       const parsed = held.evs[0] as Extract<NlEvent, { event: 'parsed' }>;
       expect(parsed.status, q).toBe('partial');
       expect(JSON.stringify(parsed.frame?.['ns/Todo']?.params), q).not.toMatch(/createdAt|area/);
       expect(outcome(held.evs), q).toMatchObject({
         kind: 'unknown',
-        dropped: [{ span: q.slice('todos '.length), kind: 'filter' }]
+        dropped: [{ span, kind: 'filter' }]
       });
       expect(held.sent, q).toBe('null');
     }

@@ -22,10 +22,25 @@ export function validAsOf(asOf: unknown): asOf is string {
  * The range a time phrase names, relative to `asOf` and in its offset:
  * today, yesterday, this/last week (weeks start Monday), this/last month,
  * this/last year (calendar years), rolling "past <unit>" and "last N <units>",
- * "since <weekday>", any of these after "during" (as after the glue word "in");
- * and explicit dates (see `explicitRange`). Null when the phrase is not a time phrase.
+ * "since <weekday>", any of these after "during" or "during the" (as after the glue
+ * words "in the"); and explicit dates (see `explicitRange`). Null when the phrase is
+ * not a time phrase, or when a bound falls outside years 1000 to 9998.
  */
 export function rangeFor(phrase: string, asOf: string): DateRange | null {
+  const r = windowOf(phrase, asOf);
+  return r !== null && supported(r.gte) && supported(r.lt) ? r : null;
+}
+
+/** A bound dated 1000-01-01 to 9999-01-01; past those a year prints as "+010000" or "-007974". */
+function supported(bound: string | undefined): boolean {
+  const date = bound?.slice(0, 10);
+  return (
+    date === undefined || (/^\d{4}-/.test(date) && date >= '1000-01-01' && date <= '9999-01-01')
+  );
+}
+
+/** The range `rangeFor` reads, before its bounds are checked. */
+function windowOf(phrase: string, asOf: string): DateRange | null {
   const m = AS_OF.exec(asOf);
   if (m === null) throw new Error(`asOf must be ISO-8601 with an offset: ${asOf}`);
   const [, y, mo, d, offset] = m as unknown as [string, string, string, string, string];
@@ -76,7 +91,7 @@ export function rangeFor(phrase: string, asOf: string): DateRange | null {
     return { gte: at(today - back * day), lt: at(today + day) };
   }
   // A lead word before a named range ("since last week") opens it at one edge.
-  const lead = /^(since|after|before|until|during) (.+)$/.exec(phrase);
+  const lead = /^(since|after|before|until|during the|during) (.+)$/.exec(phrase);
   const named = lead === null ? null : rangeFor(lead[2] as string, asOf);
   if (named?.gte !== undefined && named.lt !== undefined) {
     switch (lead?.[1]) {
@@ -89,6 +104,7 @@ export function rangeFor(phrase: string, asOf: string): DateRange | null {
       case 'until':
         return { lt: named.lt };
       case 'during':
+      case 'during the':
         return named;
     }
   }
@@ -124,16 +140,18 @@ function monthNumber(w: string): number {
 }
 
 /**
- * The month names a time phrase `rangeFor` accepted reads as whole months: "may" in
- * "in may" and "since may 2025", not in "on may 5", where a day stands beside it.
+ * Where a time phrase `rangeFor` accepted names a whole month: the positions of its month
+ * words, as "may" in "in may" and "since may 2025", not in "on may 5", where a day stands
+ * beside it.
  */
-export function monthWords(phrase: string): string[] {
+export function monthsAt(phrase: string): number[] {
   const words = phrase.split(' ');
-  return words.filter(
-    (w, i) =>
-      monthNumber(w) > 0 &&
-      !DAY_OF_MONTH.test(words[i - 1] ?? '') &&
-      !DAY_OF_MONTH.test(words[i + 1] ?? '')
+  return words.flatMap((w, i) =>
+    monthNumber(w) > 0 &&
+    !DAY_OF_MONTH.test(words[i - 1] ?? '') &&
+    !DAY_OF_MONTH.test(words[i + 1] ?? '')
+      ? [i]
+      : []
   );
 }
 
@@ -151,16 +169,16 @@ interface Operand {
 /**
  * Explicit dates, always after a lead word: "on D" (that day), "in Y" / "during Y"
  * (that year or month), "from D to D" and "between D and D" (inclusive of the last
- * day), "since D" / "after D" (from D / the day after), "before D" / "until D"
- * (before D / through D). A year is 1000 to 9998 and covers its calendar year; a
- * month name, alone or with a year in either order, covers that month (alone, the
- * most recent one that has begun). In "between M and M Y" a yearless month takes
- * the other operand's year, or the year before when it comes later in the year
- * ("between november and february 2026"). A date is ISO `YYYY-MM-DD`, an ISO
- * date-time (an exact instant), or a month name (full, three-letter, or "sept")
- * with a day, optional ordinal and optional year, in either order. A month-day
- * without a year is the most recent one not after `today`. An invalid date is not
- * a date.
+ * day), "since D" / "after D" (from the start of D / from its end: the next day,
+ * month or year), "before D" / "until D" (before D starts / through its end). A
+ * year is 1000 to 9998 and covers its calendar year; a month name, alone or with a
+ * year in either order, covers that month (alone, the most recent one that has
+ * begun). In "between M and M Y" a yearless month takes the other operand's year,
+ * or the year before when it comes later in the year ("between november and
+ * february 2026"). A date is ISO `YYYY-MM-DD`, an ISO date-time (an exact instant),
+ * or a month name (full, three-letter, or "sept") with a day, optional ordinal and
+ * optional year, in either order. A month-day without a year is the most recent one
+ * not after `today`. An invalid date is not a date.
  */
 function explicitRange(
   phrase: string,
