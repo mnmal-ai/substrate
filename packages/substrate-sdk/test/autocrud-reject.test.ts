@@ -634,6 +634,57 @@ describe('autoCRUD — required crossRefs', () => {
   });
 });
 
+describe('autoCRUD reject — a crossRef value that is not an id', () => {
+  // The existence check looks up a string or a number only, so any other value
+  // would be stored unchecked.
+  const REFS: Record<string, FieldDef> = {
+    id: { kind: 'scalar', type: 'string' },
+    parent: {
+      kind: 'crossRef',
+      ns: 'default',
+      type: 'Thing',
+      onDelete: 'set_null',
+      onMissing: 'allow'
+    }
+  };
+  const setup = () => {
+    const dataset = new MemoryDataset({ namespace: 'default' });
+    return {
+      dataset,
+      create: createResolver('Thing', dataset, { fields: REFS }),
+      update: updateResolver('Thing', dataset, makeEdges(), { fields: REFS })
+    };
+  };
+
+  for (const value of [{ id: 'r0' }, ['r0'], true]) {
+    it(`refuses parent: ${JSON.stringify(value)} on create and update`, async () => {
+      const { dataset, create, update } = setup();
+      await expect(create(makeCtx(), { params: { id: 'r0', parent: value } })).rejects.toThrow(
+        expect.objectContaining({
+          code: 'invalid_field_type',
+          details: { field: 'parent', expected: 'crossRef', phase: 'create' }
+        })
+      );
+      await create(makeCtx(), { params: { id: 'r1' } });
+      await expect(update(makeCtx(), { params: { id: 'r1', parent: value } })).rejects.toThrow(
+        expect.objectContaining({
+          code: 'invalid_field_type',
+          details: { field: 'parent', expected: 'crossRef', phase: 'update' }
+        })
+      );
+      const { rows } = await dataset.read('Thing', {});
+      expect(rows.map((r) => [r.id, r.parent])).toEqual([['r1', undefined]]);
+    });
+  }
+
+  it('accepts a string id, a number id and null', async () => {
+    const { create, update } = setup();
+    await expect(create(makeCtx(), { params: { id: 'r1', parent: 'r0' } })).resolves.toBeDefined();
+    await expect(create(makeCtx(), { params: { id: 'r2', parent: 7 } })).resolves.toBeDefined();
+    await expect(update(makeCtx(), { params: { id: 'r1', parent: null } })).resolves.toBeDefined();
+  });
+});
+
 describe('autoCRUD reject — values that do not match a scalar field type', () => {
   // Postgres sorts and date-filters these by casting body->>field to numeric,
   // timestamptz or boolean, so one bad stored value breaks every such read of

@@ -312,8 +312,10 @@ export function assertNoNullOnNonNullable(
  * `dueAt: "next week"` fails every such read of the type, for every caller.
  * A date must be a full instant (`isIsoInstant`): an offset-less or date-only
  * string names no instant until something guesses a zone, so it is refused.
- * `string` and `json` fields are left alone: nothing casts them. `null` is
- * the null guard's business, not this one's.
+ * `string` and `json` fields are left alone: nothing casts them. A crossRef
+ * must be an id, a string or a number: the existence check looks up nothing
+ * else, so any other value would be stored unchecked. `null` is the null
+ * guard's business, not this one's.
  */
 export function assertScalarTypes(
   params: Record<string, unknown>,
@@ -321,9 +323,16 @@ export function assertScalarTypes(
   phase: 'create' | 'update'
 ): void {
   for (const [name, def] of Object.entries(fieldDefs)) {
-    if (def.kind !== 'scalar' || !Object.hasOwn(params, name)) continue;
+    if (!Object.hasOwn(params, name)) continue;
     const v = params[name];
     if (v === null) continue;
+    if (def.kind === 'crossRef') {
+      if (typeof v !== 'string' && typeof v !== 'number') {
+        throwInvalidScalar(name, v, 'crossRef', phase);
+      }
+      continue;
+    }
+    if (def.kind !== 'scalar') continue;
     // An int64 is stored as a bigint whatever form it arrived in.
     if (def.type === 'int64') {
       const n = parseInt64(v);
@@ -483,7 +492,7 @@ export function assertServerSetFieldsFillable(
 function throwInvalidScalar(name: string, v: unknown, type: string, phase: string): never {
   throw new ResolverFrameError(
     'invalid_field_type',
-    `Cannot ${phase} '${name}' with ${JSON.stringify(typeof v === 'bigint' ? String(v) : v)}: expected ${type === 'date' ? ISO_INSTANT_FORM : `a ${type}`}.`,
+    `Cannot ${phase} '${name}' with ${JSON.stringify(typeof v === 'bigint' ? String(v) : v)}: expected ${type === 'date' ? ISO_INSTANT_FORM : type === 'crossRef' ? 'an id, a string or a number' : `a ${type}`}.`,
     { field: name, expected: type, phase }
   );
 }
