@@ -14,6 +14,7 @@
  * is in-memory; there's no indexing, so every filter is a scan.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   applyExtensionResultMeta,
@@ -179,16 +180,19 @@ export class MemoryDataset implements Dataset {
   // rollback, matching pg sequence semantics.
   private shortIds = new MemoryShortIdStore();
 
-  // Guards nested `withTransaction` calls from taking a second snapshot.
-  // Flatten-nested is the G1 semantic (savepoints are out of scope) — the
-  // outermost tx owns the rollback point.
-  #inTx = false;
+  // Set inside this dataset's open transaction, for that transaction's async
+  // context only: a nested `withTransaction` there flattens into it (G1;
+  // savepoints are out of scope), while a concurrent request's call waits.
+  readonly #txContext = new AsyncLocalStorage<true>();
+  // One transaction at a time: the snapshot and the undo logs below belong to it.
+  readonly #txLock = createKeyedMutex();
 
   // Undo log for shortId bindings made inside the outermost tx. Non-null
   // while a tx is open; rows pushed by bindShortId; replayed through
   // MemoryShortIdStore._unbind on rollback. Counter advances are NOT logged —
   // burned shortIds stay burned (pg SEQUENCE semantics).
-  #shortIdUndo: Array<{ type: string; shortId: number; rowId: string }> | null = null;
+  #shortIdUndo: Array<{ type: string; shortId: number; rowId: string; rebind?: true }> | null =
+    null;
 
   // Undo log for entire bucket drops made inside a tx (dropType / dropNamespace).
   // Each entry captures the pre-drop snapshot so rollback can restore it.
@@ -701,7 +705,15 @@ export class MemoryDataset implements Dataset {
 
     const removed: Id[] = [];
     for (const id of ids) {
-      if (b.delete(id)) removed.push(id);
+      const row = b.get(id);
+      if (!b.delete(id)) continue;
+      removed.push(id);
+      // The binding goes with the row, as pg's short_ids cascade drops it.
+      const shortId = row?.shortId;
+      if (typeof shortId === 'number') {
+        this.shortIds._unbind(this.namespace, type, shortId, String(id));
+        this.#shortIdUndo?.push({ type, shortId, rowId: String(id), rebind: true });
+      }
     }
 
     return { deleted: removed.length, ids: removed };
@@ -834,13 +846,19 @@ export class MemoryDataset implements Dataset {
    * rollback. G1 operates on flat rows.
    */
   async withTransaction<T>(fn: (tx: Dataset) => Promise<T>): Promise<T> {
-    if (this.#inTx) {
+    if (this.#txContext.getStore() === true) {
       // Flatten: re-entered from a nested call; the outermost tx owns the
       // snapshot and therefore the rollback point. A throw here propagates,
       // which unwinds to the outer withTransaction and triggers its restore.
       return fn(this);
     }
+    // shortcut: a write made outside any transaction while one is open is
+    // undone if that transaction rolls back; route such writers through
+    // withTransaction if a deployment ever mixes them with concurrent requests.
+    return this.#txLock('tx', () => this.#txContext.run(true, () => this.#runTransaction(fn)));
+  }
 
+  async #runTransaction<T>(fn: (tx: Dataset) => Promise<T>): Promise<T> {
     const snapshot = new Map<string, Map<Id, Row>>();
     for (const [type, bucket] of this.store.entries()) {
       const cloned = new Map<Id, Row>();
@@ -849,9 +867,8 @@ export class MemoryDataset implements Dataset {
     }
 
     const seqSnapshot = new Map(this.seqs);
-    const undoLog: Array<{ type: string; shortId: number; rowId: string }> = [];
+    const undoLog: Array<{ type: string; shortId: number; rowId: string; rebind?: true }> = [];
     const dropUndoLog: Array<{ type: string; snapshot: ShortIdBucketSnapshot }> = [];
-    this.#inTx = true;
     this.#shortIdUndo = undoLog;
     this.#shortIdDropUndo = dropUndoLog;
     try {
@@ -867,18 +884,21 @@ export class MemoryDataset implements Dataset {
           this.shortIds._restoreBucket(this.namespace, entry.type, entry.snapshot);
         }
       }
-      // Replay the bind-undo log in reverse order. Each entry unbinds one
-      // (type, shortId, rowId) triple from the shortId store. bucket.next
-      // is deliberately not reset — burned shortIds stay burned.
+      // Replay the short id undo log in reverse order. Each entry undoes one
+      // bind or one purge's unbind of a (type, shortId, rowId) triple.
+      // bucket.next is deliberately not reset — burned shortIds stay burned.
       for (let i = undoLog.length - 1; i >= 0; i--) {
         const entry = undoLog[i];
-        if (entry !== undefined) {
+        if (entry === undefined) continue;
+        // A purge's unbind is undone by binding again; a bind's by unbinding.
+        if (entry.rebind === true) {
+          await this.shortIds.bind(this.namespace, entry.type, entry.shortId, entry.rowId);
+        } else {
           this.shortIds._unbind(this.namespace, entry.type, entry.shortId, entry.rowId);
         }
       }
       throw err;
     } finally {
-      this.#inTx = false;
       this.#shortIdUndo = null;
       this.#shortIdDropUndo = null;
     }
