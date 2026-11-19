@@ -9,6 +9,7 @@ import { defineNamespace, field } from '@mnmal-ai/substrate-sdk';
 import type {
   CoordinatorPlugin,
   Dataset,
+  Identity,
   PackEnvelope,
   RequestContext
 } from '@mnmal-ai/substrate-types';
@@ -555,11 +556,29 @@ describe('a write naming an id in the other namespace', () => {
       }
     }
 
-    const appReader = as({ ...EXT_ONLY, app: ['read'] });
-    for (const [i, [key, frame]] of existing.entries()) {
-      expect((await run(key, frame, appReader)).errors, key).toBeUndefined();
-      const refused = await run(key, missing[i]?.[1], appReader);
-      expect(refused.errors?.[0]?.code, key).toBe('missing_referent');
+    // A reader, an identity with no grant and no identity at all pass the read gate, so the
+    // referent is looked up. A write with no identity is then refused as unattributed whatever
+    // it names, so only a missing id shows its verdict there.
+    const reader = as({ ...EXT_ONLY, app: ['read'] });
+    const noGrant: Partial<RequestContext> = {
+      ...PROPOSER,
+      identity: { id: 'agent', tokenId: 'agent' } as unknown as Identity
+    };
+    const noIdentity: Partial<RequestContext> = { ...PROPOSER, identity: null };
+    for (const ctx of [reader, noGrant, noIdentity]) {
+      const readGate = await engine.query({
+        frame: { 'app/Invoice': { fields: { id: true } } },
+        ctx
+      });
+      expect(readGate.errors).toBeUndefined();
+      for (const [key, frame] of missing) {
+        expect((await run(key, frame, ctx)).errors?.[0]?.code, key).toBe('missing_referent');
+      }
+    }
+    for (const ctx of [reader, noGrant]) {
+      for (const [key, frame] of existing) {
+        expect((await run(key, frame, ctx)).errors, key).toBeUndefined();
+      }
     }
   });
 });

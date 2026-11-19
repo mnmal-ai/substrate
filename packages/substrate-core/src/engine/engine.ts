@@ -73,6 +73,8 @@ import type {
 import {
   BatchElementError,
   DEFAULT_FILTER_WRITE_LIMITS,
+  grantRefusal,
+  grantRefusalCode,
   isBatchElementError,
   isResolverFrameError,
   isRestrictViolation,
@@ -207,24 +209,6 @@ function observe(hook: (o: ResolveObservation) => void, o: ResolveObservation): 
   } catch {
     // Swallowed: see above.
   }
-}
-
-/**
- * Refusal prose. A missing namespace and a namespace narrowed to the wrong
- * capability are different operator problems, so they get different messages.
- */
-function grantRefusal(
-  ns: string,
-  verdict: { reason: 'namespace' | 'capability'; required?: string }
-): string {
-  return verdict.reason === 'capability'
-    ? `identity's grant for namespace '${ns}' does not include '${verdict.required ?? 'the required capability'}'`
-    : `namespace '${ns}' not in identity's allowed namespaces`;
-}
-
-/** Error code for a grant refusal: `unauthorized_capability` or `unauthorized_namespace`. */
-function grantRefusalCode(verdict: { reason: 'namespace' | 'capability' }): string {
-  return verdict.reason === 'capability' ? 'unauthorized_capability' : 'unauthorized_namespace';
 }
 
 import { evaluatePolicy } from '../policy-evaluator.js';

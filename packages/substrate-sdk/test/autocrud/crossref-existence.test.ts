@@ -418,5 +418,36 @@ describe('a crossRef into another namespace needs read there', () => {
     const sameElement = await refusalOf([{ trace: 't1' }, { trace: 'nope', thing: 'x1' }]);
     expect(isBatchElementError(sameElement) && sameElement.index).toBe(1);
     expect(sameElement).toMatchObject({ cause: { code: 'missing_referent' } });
+
+    // The unreadable field declared first: its refusal wins over the readable missing one.
+    const unreadableDeclaredFirst = await assertCrossRefTargetsExistMany(
+      args,
+      [...both].reverse(),
+      [{ trace: 'nope', thing: 'x1' }],
+      'main',
+      MAIN_ONLY
+    ).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(isBatchElementError(unreadableDeclaredFirst) && unreadableDeclaredFirst.index).toBe(0);
+    expect(unreadableDeclaredFirst).toMatchObject({ cause: { code: 'unauthorized_namespace' } });
+  });
+
+  it("accepts an 'allow' field into an unreadable namespace without resolving it", async () => {
+    const resolveDataset = vi.fn((ns: string) => (ns === 'other' ? other : undefined));
+    const soft = {
+      fieldName: 'thing',
+      def: field.crossRef('other', 'Thing', { onMissing: 'allow' })
+    };
+    for (const [refs, values] of [
+      [[soft], { thing: 'x1' }],
+      [[soft, { fieldName: 'trace', def: traceRef }], { thing: 'nope', trace: 't1' }]
+    ] as const) {
+      await expect(
+        assertCrossRefTargetsExist(argsWith(resolveDataset), [...refs], values, 'main', MAIN_ONLY)
+      ).resolves.toBeUndefined();
+    }
+    expect(resolveDataset).not.toHaveBeenCalled();
   });
 });

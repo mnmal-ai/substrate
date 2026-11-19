@@ -17,9 +17,9 @@ import type {
 } from '@mnmal-ai/substrate-types';
 import {
   BatchElementError,
-  coversNamespace,
-  grantedIn,
-  grantOf,
+  checkIdentityGrant,
+  grantRefusal,
+  grantRefusalCode,
   MissingReferentError,
   ResolverFrameError
 } from '@mnmal-ai/substrate-types';
@@ -57,9 +57,8 @@ export interface PendingIds {
  * written included, as the engine's read gate grants it to `identity`; that
  * verdict is reached before any target is read, a refused namespace is never
  * resolved or read, and the refusal is the read gate's whether or not the id
- * exists. For each
- * readable target type it reads the distinct values once, then
- * resolves the misses that parse as a short id with one `resolveShortIds`.
+ * exists. For each readable target type it reads the distinct values once,
+ * then resolves the misses that parse as a short id with one `resolveShortIds`.
  * A value that `pending` names counts as existing for element `i` only when
  * the element creating it comes before `i`, as sequential dispatch has it
  * written by then. Throws `BatchElementError(i, MissingReferentError)` for
@@ -162,27 +161,20 @@ export async function assertCrossRefTargetsExistMany(
 
 /**
  * The refusal the engine's read gate gives `identity` in `ns`, its code and
- * wording, naming the field; undefined when it may read there. No grant is no
- * claim, and passes.
+ * wording, naming the field; undefined when it may read there.
  */
 function readRefusal(
   identity: Identity | null,
   fieldName: string,
   ns: string
 ): ResolverFrameError | undefined {
-  const grant = grantOf(identity);
-  if (grant === null || grantedIn(grant, ns).includes('read')) return undefined;
-  return coversNamespace(grant, ns)
-    ? new ResolverFrameError(
-        'unauthorized_capability',
-        `crossRef '${fieldName}': identity's grant for namespace '${ns}' does not include 'read'`,
-        { field: fieldName }
-      )
-    : new ResolverFrameError(
-        'unauthorized_namespace',
-        `crossRef '${fieldName}': namespace '${ns}' not in identity's allowed namespaces`,
-        { field: fieldName }
-      );
+  const verdict = checkIdentityGrant(identity, ns, 'query');
+  if (verdict.ok) return undefined;
+  return new ResolverFrameError(
+    grantRefusalCode(verdict),
+    `crossRef '${fieldName}': ${grantRefusal(ns, verdict)}`,
+    { field: fieldName }
+  );
 }
 
 /** The inputs naming a live row: by raw id, else as a short id. */
