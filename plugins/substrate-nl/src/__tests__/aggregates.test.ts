@@ -347,16 +347,28 @@ function engine(reply: (frame: Query) => NlEnvelope) {
   const e: NlEngineAccess = { federatedSchema: () => ({}), operators: () => ({}), query };
   return { e, query };
 }
-async function ask(question: string, e: NlEngineAccess): Promise<NlOutcome> {
+async function ask(question: string, e: NlEngineAccess, pack = served): Promise<NlOutcome> {
   const evs: NlEvent[] = [];
-  for await (const ev of runAsk({ namespace: 'shop', question }, http, {
-    pack: served,
-    engine: e
-  }))
+  for await (const ev of runAsk({ namespace: 'shop', question }, http, { pack, engine: e }))
     evs.push(ev);
   return (evs.find((x) => x.event === 'outcome') as Extract<NlEvent, { event: 'outcome' }>).outcome;
 }
 type Sent = Record<string, { params: Record<string, unknown>; fields: Record<string, unknown> }>;
+/** The shop pack with `extra` types added or replaced; a Plan's time field is startedAt. */
+function withTypes(extra: Schema['types']) {
+  const p = buildNamespacePack({
+    namespace: 'shop',
+    schema: { schemaVersion: 'v', mutations: {}, types: { ...types, ...extra } },
+    operators: OPERATORS
+  });
+  const rulings: NamespaceRulings = { timeField: { ...base.timeField, Plan: 'startedAt' } };
+  const parsed = (q: string) => parseQuestion(q, p, { asOf, rulings });
+  return {
+    served: { ...p, rulings, warnings: [] } as ServedPack,
+    parse: parsed,
+    params: (q: string) => Object.values(parsed(q).candidates[0]?.frame ?? {})[0]?.params
+  };
+}
 
 describe('aggregates: answering', () => {
   it('sends one aggregate frame selecting only id, and carries the value', async () => {
@@ -535,29 +547,71 @@ describe('aggregates: answering', () => {
       aggregate: { value: { sum: 'price' } },
       groupBy: { bucket: { dateTrunc: [{ lit: 'year' }, 'startedAt'] } }
     });
-    // Here one does: before or after the aggregate word, the adjective is not a unit.
-    const plans = buildNamespacePack({
-      namespace: 'shop',
-      schema: {
-        schemaVersion: 'v',
-        mutations: {},
-        types: { Plan: { fields: { annualTotal: num, price: num, startedAt: date } } }
-      },
-      operators: OPERATORS
+  });
+
+  it('lets a field of the asked type win over a unit adjective', async () => {
+    const plans = withTypes({
+      Plan: {
+        fields: {
+          cycle: { ...str, enum: ['annual', 'monthly'] },
+          annualTotal: num,
+          price: num,
+          startedAt: date
+        }
+      }
     });
-    const plan = (q: string) =>
-      parseQuestion(q, plans, { asOf, rulings: { timeField: { Plan: 'startedAt' } } });
-    const before = plan('annual total price of plans');
+    // Before the aggregate word, "annual" begins the field "annual total": neither a unit nor
+    // a cycle value is assumed, so it is dropped and ask is unknown (not ambiguous).
+    const before = plans.parse('annual total price of plans');
     expect(before.status).toBe('partial');
-    expect(before.residual).toEqual(['annual']);
-    expect(before.candidates[0]?.frame['shop/Plan']?.params).toEqual({
+    expect(before.candidates[0]?.dropped).toEqual([
+      {
+        span: 'annual',
+        reason:
+          'beside "total" it could be the unit or part of another reading; neither is assumed',
+        kind: 'filter'
+      }
+    ]);
+    expect(plans.params('annual total price of plans')).toEqual({
       aggregate: { value: { sum: 'price' } }
     });
-    const after = plan('average annual total of plans');
-    expect(after.status).toBe('resolved');
-    expect(after.candidates[0]?.frame['shop/Plan']?.params).toEqual({
+    const { e, query } = engine(() => ({ data: {} }));
+    expect((await ask('annual total price of plans', e, plans.served)).kind).toBe('unknown');
+    expect(query).not.toHaveBeenCalled();
+    // After it, the field takes the adjective.
+    expect(plans.parse('average annual total of plans').status).toBe('resolved');
+    expect(plans.params('average annual total of plans')).toEqual({
       aggregate: { value: { avg: 'annualTotal' } }
     });
+    expect(plans.params('monthly total price of plans')).toEqual({
+      aggregate: { value: { sum: 'price' } },
+      groupBy: { bucket: { dateTrunc: [{ lit: 'month' }, 'startedAt'] } }
+    });
+  });
+
+  it('reads a field name only on the asked type and the types it references', () => {
+    const other = withTypes({
+      Plan: { fields: { monthlyTotal: num, annualTotal: num, monthlyPrice: num } }
+    });
+    for (const [q, unit] of [
+      ['monthly total price of subscriptions', 'month'],
+      ['total monthly price of subscriptions', 'month'],
+      ['annual total price of subscriptions', 'year']
+    ] as const) {
+      expect(other.parse(q).status, q).toBe('resolved');
+      expect(other.params(q), q).toEqual({
+        aggregate: { value: { sum: 'price' } },
+        groupBy: { bucket: { dateTrunc: [{ lit: unit }, 'startedAt'] } }
+      });
+    }
+    // Sale references Item, so Item's "monthly price" is a field the question may mean.
+    const walked = withTypes({
+      Item: { fields: { ...(types.Item as { fields: object }).fields, monthlyPrice: num } }
+    }).parse('total monthly price of sales');
+    expect(walked.status).toBe('partial');
+    expect(walked.candidates[0]?.dropped[0]?.reason).toBe(
+      'aggregating across a walk is not supported'
+    );
   });
 
   it('leaves a lone adjective unread', async () => {

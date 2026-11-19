@@ -12,7 +12,7 @@
 import type { Dropped, NlEvidence, NlParseStatus, PlanClause } from '@mnmal-ai/substrate/sdk';
 import { own } from '../own.js';
 import type { NamespaceRulings, ValueAlias } from '../pack/rulings.js';
-import type { NamespacePack, PackField } from '../pack/types.js';
+import type { NamespacePack, PackField, PackType } from '../pack/types.js';
 import { pluralize, splitWords } from '../pack/words.js';
 import { whereFields } from '../rulings/schema.js';
 import { type DateRange, rangeFor } from './time.js';
@@ -279,12 +279,18 @@ export function parseQuestion(
     });
   }
 
+  // --- fields a unit adjective gives way to: on the asked types and the types they reference ---
+  const names: FieldNames = {
+    types: askedTypes(pack, ctx.forceType !== undefined ? [ctx.forceType] : [...mentioned.keys()]),
+    rulings
+  };
+
   // --- an aggregate, before field orderings, which take "highest <field>" otherwise ---
   const aggregate = claimAggregate(
     tokens,
     walkClaims,
     pack,
-    rulings,
+    names,
     [...mentioned.values()].map((m) => m.at[0])
   );
 
@@ -467,7 +473,7 @@ export function parseQuestion(
 
   // --- a unit adjective no value claimed ("sales weekly"), for an aggregate or a count ---
   if ((aggregate !== null || count) && aggregate?.group === undefined && countUnit === null) {
-    const unit = claimUnit(tokens, 0, { pack, rulings });
+    const unit = claimUnit(tokens, 0, names);
     if (aggregate !== null && unit !== null) aggregate.group = unit;
     else countUnit = unit;
   }
@@ -718,6 +724,15 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
           {
             span: orderSpan,
             reason: `${a.count ? 'counting' : 'aggregating'} over the latest N rows is not supported`,
+            kind: 'filter' as const
+          }
+        ]
+      : []),
+    ...(a.aggregate?.held !== undefined
+      ? [
+          {
+            span: a.aggregate.held,
+            reason: `beside "${a.aggregate.word}" it could be the unit or part of another reading; neither is assumed`,
             kind: 'filter' as const
           }
         ]
@@ -1141,7 +1156,8 @@ function fieldAt(
     const slice = tokens.slice(i, i + n);
     if (slice.length < n || slice.some((t) => t.used)) continue;
     const w = slice.map((t) => t.text).join(' ');
-    if (namesField(w, pack, rulings, numeric)) return { words: w, span: w, end: i + n - 1 };
+    if (namesField(w, Object.values(pack.types), rulings, numeric))
+      return { words: w, span: w, end: i + n - 1 };
   }
   const t = tokens[i];
   return !numeric && t !== undefined && !t.used && !GLUE.has(t.text) && !/^\d/.test(t.text)
@@ -1149,14 +1165,14 @@ function fieldAt(
     : null;
 }
 
-/** True when `words` name a field on some type (a number field, with `numeric`). */
+/** True when `words` name a field on one of `types` (a number field, with `numeric`). */
 function namesField(
   words: string,
-  pack: NamespacePack,
+  types: PackType[],
   rulings: NamespaceRulings,
   numeric = false
 ): boolean {
-  return Object.values(pack.types).some((t) => {
+  return types.some((t) => {
     const name = fieldByWords(words, t.fields, rulings);
     return name !== null && (!numeric || t.fields[name]?.valueType === 'number');
   });
@@ -1322,6 +1338,8 @@ interface AggregateClaim {
   field: { words?: string; phrase?: PhraseClaim };
   /** "by|per <field>", or a unit (`unit`): "per day|hour|…", "monthly". */
   group?: { span: string; unit?: TimeUnit; field?: { words?: string; phrase?: PhraseClaim } };
+  /** A unit adjective before the aggregate word that is not its unit: read as nothing, dropped. */
+  held?: string;
 }
 
 type AggregateFn = 'avg' | 'sum' | 'min' | 'max';
@@ -1366,15 +1384,27 @@ const UNIT_ADJECTIVES: Record<string, TimeUnit> = {
   annually: 'year'
 };
 
-/** The pack and rulings whose field names a unit adjective gives way to. */
+/** The types and rulings whose field names a unit adjective gives way to. */
 interface FieldNames {
-  pack: NamespacePack;
+  types: PackType[];
   rulings: NamespaceRulings;
+}
+
+/** The asked types and the types their crossRefs reach; every type when none is asked. */
+function askedTypes(pack: NamespacePack, asked: string[]): PackType[] {
+  const seeds = asked.flatMap((t) => own(pack.types, t) ?? []);
+  if (seeds.length === 0) return Object.values(pack.types);
+  const reached = seeds.flatMap((t) =>
+    Object.values(t.fields).flatMap((f) =>
+      f.target?.namespace === pack.namespace ? (own(pack.types, f.target.type) ?? []) : []
+    )
+  );
+  return [...new Set([...seeds, ...reached])];
 }
 
 /**
  * The unit a free adjective at `k` names, unless it alone or with the next one or
- * two words, claimed or not, names a field ("annual fee", "annual total").
+ * two words, claimed or not, names a field of `names.types` ("annual fee", "annual total").
  */
 function adjectiveAt(tokens: Token[], k: number, names: FieldNames): TimeUnit | undefined {
   const t = tokens[k];
@@ -1382,7 +1412,7 @@ function adjectiveAt(tokens: Token[], k: number, names: FieldNames): TimeUnit | 
   if (unit === undefined) return undefined;
   const words = tokens.slice(k, k + 3).map((x) => x.text);
   const field = [1, 2, 3].some((n) =>
-    namesField(words.slice(0, n).join(' '), names.pack, names.rulings)
+    namesField(words.slice(0, n).join(' '), names.types, names.rulings)
   );
   return field ? undefined : unit;
 }
@@ -1425,11 +1455,11 @@ function claimAggregate(
   tokens: Token[],
   walkClaims: WalkClaims,
   pack: NamespacePack,
-  rulings: NamespaceRulings,
+  names: FieldNames,
   /** First token index of each type mention. */
   mentions: number[]
 ): AggregateClaim | null {
-  const names = { pack, rulings };
+  const { rulings } = names;
   const ofFollows = (end: number) => VALUE_OF.has(tokens[end + 1]?.text ?? '');
   const valueAt = (start: number, end: number) =>
     ofFollows(end) && mentions.some((m) => m > end) && !mentions.some((m) => m < start);
@@ -1468,6 +1498,12 @@ function claimAggregate(
       fn,
       field: fieldRef(f)
     };
+    // An adjective before it that is not its unit is no value either: neither reading is taken.
+    const prev = tokens[i - 1];
+    if (prev !== undefined && !prev.used && own(UNIT_ADJECTIVES, prev.text) !== undefined) {
+      prev.used = true;
+      claim.held = prev.text;
+    }
     const byUnit = besideUnit ?? claimUnit(tokens, 0);
     if (byUnit !== null) {
       claim.group = byUnit;
