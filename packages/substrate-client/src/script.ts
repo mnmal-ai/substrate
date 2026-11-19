@@ -1,4 +1,4 @@
-import type { PackEnvelope } from '@mnmal-ai/substrate-types';
+import { type PackEnvelope, stringifyJson } from '@mnmal-ai/substrate-types';
 import type { SubstrateClient } from './client.js';
 import type { QualifiedFrame } from './transport/http.js';
 
@@ -172,6 +172,17 @@ export interface RunScriptOptions {
 export const DEFAULT_MAX_WRITES = 50;
 const DEFAULT_MAX_PAGES = 200;
 
+/** One `log` argument as text: strings as they are, bigints as digits, anything unserialisable via String. */
+function logText(a: unknown): string {
+  if (typeof a === 'string') return a;
+  if (typeof a === 'bigint') return a.toString();
+  try {
+    return stringifyJson(a) ?? String(a);
+  } catch {
+    return String(a);
+  }
+}
+
 /** Counts the frames in a mutate payload: an array under an op-key is one frame per element. */
 function frameCount(frame: QualifiedFrame): number {
   return Object.values(frame).reduce<number>((n, v) => n + (Array.isArray(v) ? v.length : 1), 0);
@@ -208,6 +219,18 @@ export async function runScript(
   const warnings: string[] = [];
   const stats = { queries: 0, writes: 0, ms: 0 };
   const started = Date.now();
+  /** Frames counted against `maxWrites`: applied, in flight, or recorded in dry-run. */
+  let planned = 0;
+  const inflight = new Set<Promise<unknown>>();
+  const track = <T>(p: Promise<T>): Promise<T> => {
+    inflight.add(p);
+    // Also marks the promise handled, so a write the script never awaits cannot crash it.
+    p.then(
+      () => inflight.delete(p),
+      () => inflight.delete(p)
+    );
+    return p;
+  };
 
   const query = async (
     frameOrKey: QualifiedFrame | string,
@@ -304,42 +327,55 @@ export async function runScript(
       if (t === undefined) throw new Error(`schema: unknown type '${namespace}/${type}'`);
       return t;
     },
-    mutate: (async (frameOrKey: QualifiedFrame | string, entry?: unknown) => {
-      const frame = frameOf('mutate', frameOrKey, entry);
-      if (mode === 'read')
-        throw new Error('mutate refused: read mode (run in dry-run or write mode)');
-      if (mode === 'dry-run') {
-        mutations.push({ frame, applied: false });
-        return null;
-      }
-      const n = frameCount(frame);
-      if (stats.writes + n > maxWrites) {
-        throw new Error(
-          `mutate refused: ${stats.writes + n} frames would exceed --max-writes ${maxWrites}`
-        );
-      }
-      const env = await client.mutate(frame);
-      const applied = Object.keys(frame).some((k) => k in env.data);
-      if (applied) stats.writes += n;
-      mutations.push({
-        frame,
-        applied,
-        ...(env.errors !== undefined ? { errors: env.errors } : {})
-      });
-      assertKeys(frame, env, 'mutate');
-      return env;
-    }) as ScriptContext['mutate'],
-    log: (...args) =>
-      log(args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' '))
+    mutate: ((frameOrKey: QualifiedFrame | string, entry?: unknown) =>
+      track(
+        (async () => {
+          const frame = frameOf('mutate', frameOrKey, entry);
+          if (mode === 'read')
+            throw new Error('mutate refused: read mode (run in dry-run or write mode)');
+          const n = frameCount(frame);
+          if (planned + n > maxWrites) {
+            throw new Error(
+              `mutate refused: ${planned + n} frames would exceed --max-writes ${maxWrites}`
+            );
+          }
+          // Counted before sending, so writes sent at once cannot all pass the check.
+          planned += n;
+          if (mode === 'dry-run') {
+            mutations.push({ frame, applied: false });
+            return null;
+          }
+          // A request that throws may still have landed, so it keeps its count.
+          const env = await client.mutate(frame);
+          const applied = Object.keys(frame).some((k) => k in env.data);
+          if (applied) stats.writes += n;
+          else planned -= n;
+          mutations.push({
+            frame,
+            applied,
+            ...(env.errors !== undefined ? { errors: env.errors } : {})
+          });
+          assertKeys(frame, env, 'mutate');
+          return env;
+        })()
+      )) as ScriptContext['mutate'],
+    log: (...args) => log(args.map(logText).join(' '))
   };
 
   const report = (extra: { ok: boolean; result?: unknown; error?: string }): ScriptReport => {
     stats.ms = Date.now() - started;
     return { ...extra, kid, mode, args, mutations, warnings, stats };
   };
+  // Writes still in flight when the script ends belong in its report.
+  const settle = async (): Promise<void> => {
+    while (inflight.size > 0) await Promise.allSettled([...inflight]);
+  };
   try {
-    return report({ ok: true, result: await script(ctx) });
+    const result = await script(ctx);
+    await settle();
+    return report({ ok: true, result });
   } catch (err) {
+    await settle();
     return report({ ok: false, error: err instanceof Error ? err.message : String(err) });
   }
 }

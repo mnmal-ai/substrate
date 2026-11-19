@@ -1,14 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { ReconnectScheduler } from '../src/reconnect.js';
 
 describe('ReconnectScheduler', () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-  });
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
   it('delays grow exponentially, capped at maxDelayMs', () => {
     const s = new ReconnectScheduler({ baseDelayMs: 1000, maxDelayMs: 30000, jitter: 0 });
     expect(s.nextDelay()).toBe(1000);
@@ -42,19 +35,5 @@ describe('ReconnectScheduler', () => {
     }
     // Not all 20 should be identical (jitter should produce variance)
     expect(new Set(delays).size).toBeGreaterThan(1);
-  });
-
-  it('schedule() resolves after the computed delay', async () => {
-    const s = new ReconnectScheduler({ baseDelayMs: 1000, maxDelayMs: 30000, jitter: 0 });
-    let resolved = false;
-    const p = s.schedule().then(() => {
-      resolved = true;
-    });
-    vi.advanceTimersByTime(999);
-    await Promise.resolve();
-    expect(resolved).toBe(false);
-    vi.advanceTimersByTime(1);
-    await p;
-    expect(resolved).toBe(true);
   });
 });

@@ -1,5 +1,5 @@
 import { generateKeyPairSync } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { KeyRecord, KeyRegistry } from '../src/_system/registry.js';
 import {
   type AuthConfig,
@@ -150,5 +150,32 @@ describe('audience (SUBSTRATE_PUBLIC_ORIGIN)', () => {
     const { privatePem, publicPem } = keypair();
     const jwt = mint(privatePem, validPayload({ aud: 'https://elsewhere:3100' }));
     expect(diagnoseBearerToken(jwt, cfgFor(publicPem))).toBeNull();
+  });
+});
+
+describe('a registry key whose stored grant does not parse', () => {
+  it('is skipped with one warning instead of throwing on every request', async () => {
+    const { privatePem, publicPem } = keypair();
+    const cfg: AuthConfig = {
+      keys: [],
+      keyRegistry: registry({
+        kid: KID,
+        algorithm: 'EdDSA',
+        publicKey: publicPem,
+        namespaces: ['notes:'],
+        capabilities: ['read'],
+        revokedAt: null
+      })
+    };
+    const jwt = mint(privatePem, validPayload());
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      expect(await verifyBearerToken(jwt, cfg)).toBeNull();
+      expect(await verifyBearerToken(jwt, cfg)).toBeNull();
+      const warnings = stderr.mock.calls.filter(([line]) => String(line).includes(KID));
+      expect(warnings).toHaveLength(1);
+    } finally {
+      stderr.mockRestore();
+    }
   });
 });

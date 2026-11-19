@@ -333,22 +333,6 @@ export function keysRoute(engine: Engine, opts: KeysRouteOptions): HttpHandler {
       });
     }
 
-    // The backstop the pre-flight cannot cover: the type is writable but the
-    // autoCRUD create mutation is absent (`unknown_name`). The credential has
-    // committed by now, so this reports the partial landing in the words an
-    // operator needs rather than dressing it as success.
-    if (dirFrameKey !== null) {
-      const dirErr = errorFor(dirFrameKey);
-      if (dirErr !== undefined) {
-        return jsonResponse(500, {
-          code: 'directory_write_failed',
-          message: `credential for '${b.kid}' was registered but its directory row in '${dirFrameKey}' was NOT: ${dirErr.message ?? 'unknown error'}. This identity is HALF registered — create the directory row by hand, or revoke the key and retry.`,
-          kid: b.kid,
-          directory: { created: false, reason: dirErr.code ?? 'error' }
-        });
-      }
-    }
-
     // A top-level error (no `path`) means the whole frame was refused — e.g.
     // `cross_tx_scope_refused` when the directory namespace lives on another
     // substrate. Nothing committed, so this is a clean refusal.

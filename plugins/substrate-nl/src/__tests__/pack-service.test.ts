@@ -187,4 +187,53 @@ describe('PackService', () => {
     fail = false;
     expect((await svc.get('ns', req('a')))?.pack.namespace).toBe('ns');
   });
+
+  it('does not cache a pack built from a refused read', async () => {
+    const e = engine();
+    let refuse = true;
+    const inner = e.query;
+    e.query = async (f, r) => {
+      if (refuse) return { data: {}, errors: [{ code: 'aborted', message: 'request aborted' }] };
+      return inner(f, r);
+    };
+    const svc = new PackService({ engine: e });
+    await expect(svc.get('ns', req('a'))).rejects.toThrow(/aborted/);
+    refuse = false;
+    const pack = (await svc.get('ns', req('a')))?.pack;
+    expect(JSON.stringify(pack)).toContain('substrate');
+  });
+
+  it('does not cache a pack whose build request was cancelled', async () => {
+    const e = engine();
+    const ac = new AbortController();
+    const inner = e.query;
+    e.query = async (f, r) => {
+      ac.abort();
+      return inner(f, r);
+    };
+    const svc = new PackService({ engine: e });
+    const cancelled = { ...req('a'), signal: ac.signal } as SubstrateRequest;
+    await expect(svc.get('ns', cancelled)).rejects.toThrow();
+    e.query = inner;
+    expect(JSON.stringify((await svc.get('ns', req('a')))?.pack)).toContain('substrate');
+  });
+
+  it.each(['policy_denied', 'streamable_on_oneshot'])(
+    'builds a pack when a read is refused for good (%s), leaving its values out',
+    async (code) => {
+      const e = engine();
+      e.query = async () => ({ data: {}, errors: [{ code, message: 'refused' }] });
+      const svc = new PackService({ engine: e });
+      const pack = (await svc.get('ns', req('a')))?.pack;
+      expect(pack?.namespace).toBe('ns');
+      expect(JSON.stringify(pack)).not.toContain('substrate');
+    }
+  );
+
+  it.each(['query_timeout', 'store_busy'])('fails the build on a transient %s', async (code) => {
+    const e = engine();
+    e.query = async () => ({ data: {}, errors: [{ code, message: 'try later' }] });
+    const svc = new PackService({ engine: e });
+    await expect(svc.get('ns', req('a'))).rejects.toThrow(code);
+  });
 });

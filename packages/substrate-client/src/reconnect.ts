@@ -34,15 +34,4 @@ export class ReconnectScheduler {
   reset(): void {
     this.#attempt = 0;
   }
-
-  /**
-   * Resolve after `nextDelay()` ms. Callers must use this serially — the
-   * `#attempt` counter is shared across calls, so overlapping `schedule()`
-   * invocations will produce incorrect delays. The stream reconnect loop awaits
-   * each `schedule()` before firing the next attempt.
-   */
-  async schedule(): Promise<void> {
-    const d = this.nextDelay();
-    await new Promise<void>((resolve) => setTimeout(resolve, d));
-  }
 }

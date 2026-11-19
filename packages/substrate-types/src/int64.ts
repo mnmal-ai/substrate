@@ -38,12 +38,12 @@ export function isInt32(v: unknown): v is number {
  * keeps every digit on the JSON wire. The plain call runs first, so a value
  * with no bigint pays nothing for the replacer.
  */
-export function stringifyJson(value: unknown): string {
+export function stringifyJson(value: unknown, space?: number): string {
   try {
-    return JSON.stringify(value);
+    return JSON.stringify(value, null, space);
   } catch (e) {
     if (!(e instanceof TypeError) || !/BigInt/.test(e.message)) throw e;
-    return JSON.stringify(value, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
+    return JSON.stringify(value, (_k, v) => (typeof v === 'bigint' ? v.toString() : v), space);
   }
 }
 

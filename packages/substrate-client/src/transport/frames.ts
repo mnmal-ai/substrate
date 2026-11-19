@@ -139,9 +139,6 @@ async function* run(
         idleMs > 0 ? withIdleTimeout(body, idleMs) : body
       )) {
         const msg = decodeFrame(payload, opts.wire);
-        // Only a response that delivers and then lasts proves health: one that sends its
-        // snapshot and drops at once must keep growing the delay, or every retry re-queries.
-        if (Date.now() - openedAt >= reconnect.maxDelayMs) backoff.reset();
         if (
           subscribe &&
           msg.kind === 'error' &&
@@ -191,6 +188,10 @@ async function* run(
       }
       // The body broke (dropped connection, truncated frame): fall through to backoff.
     }
+    // A response that stayed open this long was healthy, quiet or not (heartbeats never
+    // reach the decoder). One that sends its snapshot and drops at once keeps growing the
+    // delay, or every retry re-queries.
+    if (Date.now() - openedAt >= reconnect.maxDelayMs) backoff.reset();
     if (next === 'stop') return;
     if (next === undefined) {
       if (signal.aborted) return;

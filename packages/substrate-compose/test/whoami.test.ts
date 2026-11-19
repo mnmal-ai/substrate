@@ -13,6 +13,7 @@
  * reported as an absent one.
  */
 
+import { createHmac } from 'node:crypto';
 import { capabilitiesFor, flattenGrant, parseGrantEntries } from '@mnmal-ai/substrate-policy';
 import type { SubstrateRequest } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
@@ -34,6 +35,8 @@ function token(capabilities: string[] = ['read'], namespaces: string[] = ['journ
     { kid: KID }
   );
 }
+
+const b64url = (value: unknown): string => Buffer.from(JSON.stringify(value)).toString('base64url');
 
 function request(headers: Record<string, string> = {}): SubstrateRequest {
   return {
@@ -82,6 +85,22 @@ describe('GET /substrate/v1/whoami', () => {
     expect(res.status).toBe(401);
     expect(res.body.code).toBe('unauthorized');
     expect(String(res.body.detail)).toContain('not the same as sending no token');
+  });
+
+  it('401s a token whose header decodes to null rather than failing with a 500', async () => {
+    const res = await call(AUTH, { authorization: 'Bearer bnVsbA.e30.AA' });
+
+    expect(res.status).toBe(401);
+    expect(res.body.code).toBe('unauthorized');
+  });
+
+  it('401s a correctly signed token whose payload decodes to null', async () => {
+    const segments = `${b64url({ alg: 'HS256', kid: KID })}.${b64url(null)}`;
+    const sig = createHmac('sha256', SECRET).update(segments).digest('base64url');
+    const res = await call(AUTH, { authorization: `Bearer ${segments}.${sig}` });
+
+    expect(res.status).toBe(401);
+    expect(res.body.code).toBe('unauthorized');
   });
 
   it('returns the principal for a valid token', async () => {
