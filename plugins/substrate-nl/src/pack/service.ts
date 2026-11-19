@@ -93,11 +93,11 @@ export class PackService {
         },
         req
       );
-      // A failed read throws, so the build fails and is not cached: an empty
-      // profile would be served to every caller for the whole TTL.
+      // A cancelled request or a transient refusal fails the build, which is not
+      // cached: an empty profile would be served to every caller for the whole TTL.
       if (req.signal?.aborted === true) throw new Error(`pack build for '${ns}' was cancelled`);
       const rows = env.data?.[frameKey];
-      if (rows === undefined && !deniedRead(env.errors)) {
+      if (rows === undefined && transientRefusal(env.errors)) {
         throw new Error(
           `pack build: reading ${frameKey} failed: ${JSON.stringify(env.errors ?? [])}`
         );
@@ -121,13 +121,16 @@ export class PackService {
   }
 }
 
-/** Refusals meaning the principal may not read the type: its values stay out of the pack. */
-const DENIED = new Set(['policy_denied', 'forbidden', 'forbidden_namespace']);
+/**
+ * Refusals that may not recur on the next build. Any other refusal (a policy
+ * denial, a type that only streams) is lasting, and leaves the type's values out.
+ */
+const TRANSIENT = new Set(['aborted', 'query_timeout', 'store_busy']);
 
-function deniedRead(errors: unknown[] | undefined): boolean {
+function transientRefusal(errors: unknown[] | undefined): boolean {
   return (errors ?? []).some((e) => {
     const code = (e as { code?: unknown } | null)?.code;
-    return typeof code === 'string' && DENIED.has(code);
+    return typeof code === 'string' && TRANSIENT.has(code);
   });
 }
 

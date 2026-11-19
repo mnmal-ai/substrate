@@ -218,15 +218,22 @@ describe('PackService', () => {
     expect(JSON.stringify((await svc.get('ns', req('a')))?.pack)).toContain('substrate');
   });
 
-  it('builds a pack when a type is denied to the principal, leaving its values out', async () => {
+  it.each(['policy_denied', 'streamable_on_oneshot'])(
+    'builds a pack when a read is refused for good (%s), leaving its values out',
+    async (code) => {
+      const e = engine();
+      e.query = async () => ({ data: {}, errors: [{ code, message: 'refused' }] });
+      const svc = new PackService({ engine: e });
+      const pack = (await svc.get('ns', req('a')))?.pack;
+      expect(pack?.namespace).toBe('ns');
+      expect(JSON.stringify(pack)).not.toContain('substrate');
+    }
+  );
+
+  it.each(['query_timeout', 'store_busy'])('fails the build on a transient %s', async (code) => {
     const e = engine();
-    e.query = async () => ({
-      data: {},
-      errors: [{ code: 'policy_denied', message: 'policy denied' }]
-    });
+    e.query = async () => ({ data: {}, errors: [{ code, message: 'try later' }] });
     const svc = new PackService({ engine: e });
-    const pack = (await svc.get('ns', req('a')))?.pack;
-    expect(pack?.namespace).toBe('ns');
-    expect(JSON.stringify(pack)).not.toContain('substrate');
+    await expect(svc.get('ns', req('a'))).rejects.toThrow(code);
   });
 });
