@@ -202,9 +202,10 @@ async function aggregate(
     params.groupBy as { bucket?: { dateTrunc?: [{ lit: string }, string] } } | undefined
   )?.bucket?.dateTrunc;
   const by = group?.field ?? trunc?.[0].lit;
-  // The engine keys a date group by its instant; a day or hour reads as it always did.
+  // The engine keys a date group by its instant; the label keeps the digits its unit resolves.
+  const LABEL_LENGTH: Record<string, number> = { hour: 13, day: 10, week: 10, month: 7, year: 4 };
   const short = (k: unknown) =>
-    typeof k === 'string' && trunc !== undefined ? k.slice(0, trunc[0].lit === 'day' ? 10 : 13) : k;
+    typeof k === 'string' && trunc !== undefined ? k.slice(0, LABEL_LENGTH[trunc[0].lit] ?? 13) : k;
   const rows = data?.groups;
   const result =
     rows === undefined

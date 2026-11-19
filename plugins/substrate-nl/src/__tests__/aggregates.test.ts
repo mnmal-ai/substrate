@@ -255,7 +255,7 @@ describe('aggregates: parsing', () => {
     });
   });
 
-  it('groups by an enum or yes/no field, or buckets by day or hour', () => {
+  it('groups by an enum or yes/no field, or buckets by a time unit', () => {
     const r = parse('average price of items by condition');
     expect(r.status).toBe('resolved');
     expect(r.candidates[0]?.aggregate).toEqual({
@@ -288,11 +288,19 @@ describe('aggregates: parsing', () => {
       aggregate: { value: { max: 'price' } },
       groupBy: { bucket: { dateTrunc: [{ lit: 'hour' }, 'listedAt'] } }
     });
+    for (const [q, unit] of [
+      ['total price of sales per month', 'month'],
+      ['total price of sales per week', 'week'],
+      ['total price of sales by year', 'year']
+    ] as const)
+      expect(params(q), q).toEqual({
+        aggregate: { value: { sum: 'price' } },
+        groupBy: { bucket: { dateTrunc: [{ lit: unit }, 'soldAt'] } }
+      });
   });
 
   it('drops a grouping it cannot express, keeping the whole aggregate', () => {
     for (const [q, span, reason] of [
-      ['total price of sales per month', 'per month', 'only day and hour groupings are supported'],
       [
         'average price of items by name',
         'by name',
@@ -380,6 +388,27 @@ describe('aggregates: answering', () => {
         truncated: true
       }
     });
+  });
+
+  it('labels each group by its unit', async () => {
+    for (const [q, instants, keys] of [
+      [
+        'total price of sales per week',
+        ['2026-10-19T00:00:00.000000Z', '2026-10-26T00:00:00.000000Z'],
+        ['2026-10-19', '2026-10-26']
+      ],
+      ['total price of sales per month', ['2026-10-01T00:00:00.000000Z'], ['2026-10']],
+      ['total price of sales per year', ['2026-01-01T00:00:00.000000Z'], ['2026']]
+    ] as const) {
+      const { e } = engine(() => ({
+        data: { 'shop/Sale': { groups: instants.map((bucket) => ({ bucket, value: 1 })) } }
+      }));
+      const o = await ask(q, e);
+      expect(
+        (o as { aggregate: { groups: { key: string }[] } }).aggregate.groups.map((g) => g.key),
+        q
+      ).toEqual(keys);
+    }
   });
 
   it('drops the null-key group of a day grouping, a row with no time field', async () => {

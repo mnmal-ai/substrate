@@ -1414,6 +1414,11 @@ function seedField(
   return { name, f };
 }
 
+/** The units a date group can truncate to. */
+export type TimeUnit = 'hour' | 'day' | 'week' | 'month' | 'year';
+const isTimeUnit = (u: string): u is TimeUnit =>
+  ['hour', 'day', 'week', 'month', 'year'].includes(u);
+
 /** An aggregate claim read on `type`: its function and field, or drops saying why not. */
 function aggregateOn(
   c: AggregateClaim,
@@ -1425,7 +1430,7 @@ function aggregateOn(
   field?: string;
   exclude?: Record<string, unknown>;
   group?: { field: string; values: (string | boolean)[] };
-  dateGroup?: { field: string; by: 'day' | 'hour' };
+  dateGroup?: { field: string; by: TimeUnit };
   dropped: Dropped[];
   evidence: Evidence[];
 } {
@@ -1456,8 +1461,7 @@ function aggregateOn(
     return out;
   };
   if (g.unit !== undefined) {
-    if (g.unit !== 'day' && g.unit !== 'hour')
-      return drop('only day and hour groupings are supported');
+    if (!isTimeUnit(g.unit)) return drop(`${g.unit} is not a time unit to group by`);
     const field = own(rulings.timeField, type) ?? 'createdAt';
     out.dateGroup = { field, by: g.unit };
     out.evidence.push({ span: g.span, role: 'field', detail: `bucket ${field} by ${g.unit}` });
