@@ -10,6 +10,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { EmbeddingsStore } from '../src/embeddings-store.js';
 import { InMemoryEmbeddingsStore } from '../src/in-memory-embeddings-store.js';
 import { embeddingsMigration } from '../src/migrations/0001_embeddings.js';
+import { embeddingsNullableVectorMigration } from '../src/migrations/0004_embeddings_nullable_vector.js';
 import { PgEmbeddingsStore } from '../src/pg-embeddings-store.js';
 import { putRows, truncateRows } from './_pg-rows.js';
 
@@ -31,8 +32,13 @@ function vec(seed: number, dim = 768): Float32Array {
 async function ensureSchema(url: string): Promise<void> {
   const setupSql = postgres(url);
   try {
-    // Create embeddings table + HNSW index + salience columns
+    // Create embeddings table + HNSW index + salience columns, with a nullable vector
     await embeddingsMigration().apply({ sql: setupSql, metric: () => {}, layout: null });
+    await embeddingsNullableVectorMigration().apply({
+      sql: setupSql,
+      metric: () => {},
+      layout: null
+    });
   } finally {
     await setupSql.end();
   }
@@ -981,5 +987,77 @@ describe.skipIf(!isPgGated)('selectCandidates parity (memory vs pg)', () => {
         name
       ).toEqual(['s1', 's2']);
     }
+  });
+});
+
+/**
+ * The unindexable marker: a row whose source has no text keeps an embeddings
+ * entry with a NULL vector, so the backfill stops re-reading it. No reader
+ * may return it, on either store.
+ */
+describe.skipIf(!isPgGated)('unindexable marker parity (memory vs pg)', () => {
+  let sql: ReturnType<typeof postgres>;
+  const ref = { namespace: 'app', type: 'Doc', id: 'd1' };
+  const key = { rowNamespace: 'app', rowType: 'Doc', rowId: 'd1' };
+  const t0 = new Date('2026-01-01T00:00:00Z');
+  const t1 = new Date('2026-01-02T00:00:00Z');
+  const t2 = new Date('2026-01-03T00:00:00Z');
+
+  beforeAll(async () => {
+    await ensureSchema(POSTGRES_URL as string);
+  });
+
+  beforeEach(async () => {
+    sql = postgres(POSTGRES_URL as string);
+    await sql`TRUNCATE TABLE embeddings CASCADE`;
+    await truncateRows(sql);
+  });
+
+  afterEach(async () => {
+    await sql.end();
+  });
+
+  it('empty → marker no reader returns; text again → a real vector, on both stores', async () => {
+    await putRows(sql, [{ namespace: 'app', type: 'Doc', id: 'd1', body: { id: 'd1' } }]);
+    const selector = {
+      scopes: [{ namespace: 'app', type: 'Doc' }],
+      excludeTextPrefixes: [],
+      limit: 10
+    };
+    for (const store of [new InMemoryEmbeddingsStore(), new PgEmbeddingsStore({ sql })]) {
+      await store.upsert({ ...key, vector: vec(1), model: MODEL, now: t0 });
+      await store.markUnindexable({ ...key, now: t1 });
+      for (const model of [MODEL, 'unindexable']) {
+        expect(await store.knnSearch({ ...ref, model, vector: vec(1), k: 5 })).toEqual([]);
+        expect(await store.fetchEmbeddings([ref], model)).toEqual([]);
+        expect(await store.selectCandidates(selector, model)).toEqual([]);
+      }
+      expect(await store.boostSalience([ref], 24)).toEqual([]);
+
+      await store.upsert({ ...key, vector: vec(1), model: MODEL, now: t2 });
+      const hits = await store.knnSearch({ ...ref, model: MODEL, vector: vec(1), k: 5 });
+      expect(hits.map((h) => h.row.id)).toEqual(['d1']);
+    }
+  });
+
+  it('a marker never replaces a newer vector, on both stores', async () => {
+    await putRows(sql, [{ namespace: 'app', type: 'Doc', id: 'd1', body: { id: 'd1' } }]);
+    for (const store of [new InMemoryEmbeddingsStore(), new PgEmbeddingsStore({ sql })]) {
+      await store.upsert({ ...key, vector: vec(1), model: MODEL, now: t1 });
+      await store.markUnindexable({ ...key, now: t0 });
+      expect(await store.fetchEmbeddings([ref], MODEL)).toHaveLength(1);
+    }
+  });
+
+  it('pg purgeOrphans reaps a marker whose row is gone and keeps a live one', async () => {
+    await putRows(sql, [{ namespace: 'app', type: 'Doc', id: 'kept', body: {} }]);
+    const pg = new PgEmbeddingsStore({ sql });
+    for (const rowId of ['kept', 'gone']) {
+      await pg.markUnindexable({ rowNamespace: 'app', rowType: 'Doc', rowId, now: t0 });
+    }
+    expect(await pg.purgeOrphans()).toBe(1);
+    const remaining = await sql<{ row_id: string; model: string }[]>`
+      SELECT row_id, model FROM embeddings`;
+    expect(remaining).toEqual([{ row_id: 'kept', model: 'unindexable' }]);
   });
 });

@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { alignVectorDimensions } from '../src/align-dimension.js';
 import { InMemoryEmbeddingsStore } from '../src/in-memory-embeddings-store.js';
 import { recallClustersMigration } from '../src/migrations/0002_recall_clusters.js';
+import { embeddingsNullableVectorMigration } from '../src/migrations/0004_embeddings_nullable_vector.js';
 import { createRecallPlugin } from '../src/plugin.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
@@ -93,6 +94,16 @@ describe.skipIf(POSTGRES_URL === undefined)('alignVectorDimensions', () => {
       found: { embeddings: 768 }
     });
     expect(await typeOf('embeddings', 'embedding')).toBe('vector(768)');
+  });
+
+  it('re-types a column that holds only unindexable markers, keeping them', async () => {
+    await embeddingsNullableVectorMigration().apply({ sql, metric: () => {}, layout: null });
+    await sql`INSERT INTO embeddings (row_namespace, row_type, row_id, embedding, model)
+      VALUES ('ns', 'T', 'marked', NULL, 'unindexable')`;
+    const report = await alignVectorDimensions(sql, { dimension: 1024 });
+    expect(report).toMatchObject({ embeddings: 'aligned' });
+    expect(await typeOf('embeddings', 'embedding')).toBe('vector(1024)');
+    expect(await sql`SELECT 1 FROM embeddings WHERE row_id = 'marked'`).toHaveLength(1);
   });
 
   it('runs on every boot through the plugin hook, with an embedder', async () => {

@@ -228,6 +228,45 @@ describe('embedAndStore', () => {
     });
   });
 
+  describe('un-indexable rows on a store that keeps a marker', () => {
+    it('marks the row, stamped like a vector, instead of deleting', async () => {
+      const { store, deletes } = makeStore();
+      const marks: Array<{ rowNamespace: string; rowType: string; rowId: string; now?: Date }> = [];
+      store.markUnindexable = async (input) => {
+        marks.push(input);
+      };
+      const stats = createEmbedStats();
+      const before = Date.now();
+      await embedAndStore(
+        { id: 'r1', text: '' },
+        {
+          namespace: 'labs',
+          type: 'Trace',
+          fields: ['text'],
+          embedder: new FakeEmbedder({ dimension: 4 }),
+          store,
+          stats
+        }
+      );
+      expect(deletes).toHaveLength(0);
+      expect(marks).toMatchObject([{ rowNamespace: 'labs', rowType: 'Trace', rowId: 'r1' }]);
+      expect(marks[0]?.now?.getTime()).toBeGreaterThanOrEqual(before);
+      expect(stats.snapshot()).toMatchObject({ skips: 1, successes: 0, failures: 0 });
+    });
+
+    it('a marked row that gains text is embedded and recallable again', async () => {
+      const embedder = new FakeEmbedder({ dimension: 4 });
+      const store = new InMemoryEmbeddingsStore();
+      const opts = { namespace: 'labs', type: 'Trace', fields: ['text'], embedder, store };
+      const ref = { namespace: 'labs', type: 'Trace', id: 'r1' };
+      await embedAndStore({ id: 'r1', text: '' }, opts);
+      expect(await store.fetchEmbeddings([ref], embedder.modelId)).toEqual([]);
+      await new Promise((r) => setTimeout(r, 2));
+      await embedAndStore({ id: 'r1', text: 'now it has words' }, opts);
+      expect(await store.fetchEmbeddings([ref], embedder.modelId)).toHaveLength(1);
+    });
+  });
+
   describe('fields option', () => {
     it('joins non-empty string field values with newline', async () => {
       const embedder = new FakeEmbedder({ dimension: 4 });

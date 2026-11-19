@@ -7,8 +7,9 @@
  * first booted with no embedder keeps the 768 default, and an embedder of
  * another dimension configured later would fail every write.
  *
- * An EMPTY column is re-typed, because vectors and centroids are derived and
- * there is nothing to reinterpret. A POPULATED column at another dimension is
+ * An EMPTY column, one holding no vectors (unindexable markers hold NULL), is
+ * re-typed, because vectors and centroids are derived and there is nothing to
+ * reinterpret. A POPULATED column at another dimension is
  * left alone: re-typing it would reinterpret stored data. The caller decides
  * how to surface that.
  *
@@ -47,8 +48,11 @@ async function columnDim(s: Sql, table: string, column: string): Promise<number 
   return (rows[0] as { dim: number | null } | undefined)?.dim ?? null;
 }
 
-async function isEmpty(s: Sql, table: string): Promise<boolean> {
-  const rows = await s.unsafe(`SELECT NOT EXISTS (SELECT 1 FROM ${table}) AS empty`);
+/** No row holds a vector in `column`; a NULL (an unindexable marker) re-types freely. */
+async function isEmpty(s: Sql, table: string, column: string): Promise<boolean> {
+  const rows = await s.unsafe(
+    `SELECT NOT EXISTS (SELECT 1 FROM ${table} WHERE ${column} IS NOT NULL) AS empty`
+  );
   return (rows[0] as { empty: boolean } | undefined)?.empty === true;
 }
 
@@ -63,7 +67,7 @@ async function alignColumn(
   if (found === null) return { state: 'absent' };
   if (found === dimension) return { state: 'match', found };
   await s.unsafe(`LOCK TABLE ${table} IN ACCESS EXCLUSIVE MODE`);
-  if (!(await isEmpty(s, table))) return { state: 'populated', found };
+  if (!(await isEmpty(s, table, column))) return { state: 'populated', found };
   await s.unsafe(`ALTER TABLE ${table} ALTER COLUMN ${column} TYPE vector(${dimension})`);
   if (after !== undefined) await after();
   return { state: 'aligned', found };
