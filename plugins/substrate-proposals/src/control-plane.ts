@@ -21,7 +21,7 @@ import type { NamespaceDefinition } from '@mnmal-ai/substrate-types';
 import {
   DEFAULT_DROP_CAPABILITY,
   DEFAULT_PROPOSE_CAPABILITY,
-  gateNamespaceProposalRemoval,
+  gateNamespaceProposalLiveness,
   proposeToWrite,
   stampProposedBy
 } from './capability.js';
@@ -63,7 +63,7 @@ export function defineControlPlaneTypes(
     ...def,
     install(ctx) {
       def.install(ctx);
-      gateNamespaceProposalRemoval(ctx.registry, registryStore, dropCapability);
+      gateNamespaceProposalLiveness(ctx.registry, registryStore, dropCapability);
       stampProposedBy(ctx.registry, CONTROL_TYPE_NAMES);
     }
   };

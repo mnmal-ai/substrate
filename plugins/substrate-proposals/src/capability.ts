@@ -169,8 +169,8 @@ async function defined(
 
 /**
  * Marks a write the plugin makes on its own behalf after it has authorised the
- * whole operation (propose_type's step 5, propose_field's writes). A symbol, so
- * no wire frame can set it.
+ * whole operation (propose_type's step 5, propose_field's and
+ * propose_namespace's writes). A symbol, so no wire frame can set it.
  */
 export const TRUSTED_WRITE: unique symbol = Symbol('substrate-proposals.trustedWrite');
 
@@ -385,13 +385,24 @@ async function namespaceHasRows(store: RegistryStore, ns: string): Promise<boole
   return false;
 }
 
+/** Whether a NamespaceProposal row is live: boot installs it and code has not superseded it. */
+function liveNamespace(row: Record<string, unknown>): boolean {
+  return installsNamespace(row) && row.supersededByCode === false;
+}
+
 /**
- * Deleting a live NamespaceProposal, or an update that archives it, unapplies
- * it or renames its `ns`, takes its namespace off the engine at the next boot.
- * When that namespace holds stored rows, or this engine does not hold it to
- * check, that needs the drop capability in that namespace, as
- * `drop_namespace` does; otherwise the propose capability is enough. An update
- * that can change none of those passes unchecked. As for TypeProposal, the
+ * A NamespaceProposal write can take a namespace off the engine at the next
+ * boot, or put one on. Deleting a proposal boot installs, or an update that
+ * archives it, unapplies it or renames its `ns`, takes its namespace off: when
+ * that namespace holds stored rows, or this engine does not hold it to check,
+ * that needs the drop capability in that namespace, as `drop_namespace` does.
+ * A create of an applied proposal, or an update that leaves one boot installs
+ * where it was not live (`archived: false`, `applied: true` or
+ * `supersededByCode: false` on a row that is not live, or a new `ns`), puts a
+ * namespace on, which needs the drop capability in that namespace whatever its
+ * rows: a dropped namespace's rows are gone, and its name stays retired. The
+ * plugin's own writes ({@link TRUSTED_WRITE}, as propose_namespace makes) and
+ * updates that can do neither pass unchecked. As for TypeProposal, the
  * proposal is found as the write finds it, locked until the write's
  * transaction ends, and written by its stored id; one that cannot be loaded or
  * locked is refused; an array of updates or deletes first locks every row it
@@ -399,61 +410,92 @@ async function namespaceHasRows(store: RegistryStore, ns: string): Promise<boole
  * single-row entry is replaced. Params whose value is undefined are left out
  * first, as the update resolver leaves them. An empty capability opts out.
  */
-export function gateNamespaceProposalRemoval(
+export function gateNamespaceProposalLiveness(
   registry: Registry,
   store: RegistryStore,
   dropCapability: string = DEFAULT_DROP_CAPABILITY
 ): void {
   if (dropCapability === '') return;
   const gate = makeProposePolicy(dropCapability);
-  for (const key of ['deleteNamespaceProposal', 'updateNamespaceProposal']) {
+  for (const key of [
+    'createNamespaceProposal',
+    'deleteNamespaceProposal',
+    'updateNamespaceProposal'
+  ]) {
     const entry = registry.get(key);
     if (entry === undefined) continue;
     const { batch: _batch, resolver, ...rest } = entry;
+    const isCreate = key === 'createNamespaceProposal';
     const isDelete = key === 'deleteNamespaceProposal';
+    const deny = (ns: string, why: string): ResolverFrameError =>
+      new ResolverFrameError('policy_denied', `${key}: ${why}`, {
+        required: `${ns}:${dropCapability}`
+      });
+    const putsOn = (ns: string): string =>
+      `this puts namespace '${ns}' on the engine at the next boot, which needs '${dropCapability}' as drop_namespace does`;
     const guard: RegistryEntryResolver = async (ctx, args) => {
       const params = Object.fromEntries(
         Object.entries(args.params ?? {}).filter(([, v]) => v !== undefined)
       );
-      const trusted = (args as { [TRUSTED_WRITE]?: true })[TRUSTED_WRITE] === true;
-      // Only a new `ns`, or `applied` / `archived` set to anything but live, takes a namespace off.
-      const keeps =
+      if ((args as { [TRUSTED_WRITE]?: true })[TRUSTED_WRITE] === true) {
+        return resolver(ctx, args);
+      }
+      const holds = (ns: string): boolean => gate({ ...ctx, namespace: ns }, args).allow;
+      if (isCreate) {
+        const ns = params.ns;
+        if (params.applied === true && typeof ns === 'string' && !holds(ns)) {
+          throw deny(ns, `an applied proposal: ${putsOn(ns)}`);
+        }
+        return resolver(ctx, args);
+      }
+      const removes =
+        isDelete ||
+        'ns' in params ||
+        (params.applied ?? true) !== true ||
+        (params.archived ?? false) !== false;
+      const restores =
         !isDelete &&
-        !('ns' in params) &&
-        (params.applied ?? true) === true &&
-        (params.archived ?? false) === false;
-      if (trusted || keeps) return resolver(ctx, args);
+        ('ns' in params ||
+          params.applied === true ||
+          params.archived === false ||
+          params.supersededByCode === false);
+      if (!removes && !restores) return resolver(ctx, args);
       const row = await lockedRow('NamespaceProposal', params.id, args.dataset);
       if (row === null) {
-        throw new ResolverFrameError(
-          'policy_denied',
-          `${key}: cannot load the proposal to check its namespace for stored rows; needs '${dropCapability}'`,
-          { required: `${ctx.namespace}:${dropCapability}` }
+        throw deny(
+          ctx.namespace,
+          `cannot load the proposal to check the namespace it names; needs '${dropCapability}'`
         );
       }
       const after = isDelete ? undefined : { ...row, ...params };
-      const ns = row.ns;
-      const removes =
-        installsNamespace(row) &&
-        (after === undefined || !installsNamespace(after) || after.ns !== ns);
-      if (removes && typeof ns === 'string' && !gate({ ...ctx, namespace: ns }, args).allow) {
-        const rows = await namespaceHasRows(store, ns);
+      const from = row.ns;
+      const to = after?.ns;
+      const leaves =
+        installsNamespace(row) && (after === undefined || !installsNamespace(after) || to !== from);
+      if (leaves && typeof from === 'string' && !holds(from)) {
+        const rows = await namespaceHasRows(store, from);
         if (rows !== false) {
           const why =
             rows === true ? 'has stored rows' : 'is not held here to check for stored rows';
-          throw new ResolverFrameError(
-            'policy_denied',
-            `${key}: namespace '${ns}' ${why}; this change to its proposal takes it off at the next boot, which needs '${dropCapability}' as drop_namespace does`,
-            { required: `${ns}:${dropCapability}` }
+          throw deny(
+            from,
+            `namespace '${from}' ${why}; this change to its proposal takes it off at the next boot, which needs '${dropCapability}' as drop_namespace does`
           );
         }
       }
+      const arrives =
+        restores &&
+        after !== undefined &&
+        installsNamespace(after) &&
+        (!liveNamespace(row) || to !== from);
+      if (arrives && typeof to === 'string' && !holds(to)) throw deny(to, putsOn(to));
       return resolver(ctx, { ...args, params: { ...args.params, id: row.id } });
     };
     registry.replace(key, {
       ...rest,
       resolver: guard,
-      batch: lockedInIdOrder('NamespaceProposal', guard)
+      // A create names no stored row to lock.
+      ...(isCreate ? {} : { batch: lockedInIdOrder('NamespaceProposal', guard) })
     });
   }
 }

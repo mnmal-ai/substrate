@@ -712,13 +712,21 @@ describe('writing a FieldProposal', () => {
   });
 });
 
+const withGrants = (grants: Record<string, string[]>): Partial<RequestContext> => ({
+  ...ctx([]),
+  identity: { id: 'a', tokenId: 'a', grants }
+});
+const mutateOne = (
+  engine: Engine,
+  key: string,
+  params: Record<string, unknown>,
+  c = ctx(['read', 'mutate', 'substrate.propose'])
+) => engine.mutate({ frame: { [key]: { params, fields: { id: true } } }, ctx: c });
+
 describe('removing a NamespaceProposal', () => {
   const str = JSON.stringify({ t: { kind: 'scalar', type: 'string' } });
   const propose = ['read', 'mutate', 'substrate.propose'];
-  const as = (grants: Record<string, string[]>): Partial<RequestContext> => ({
-    ...ctx([]),
-    identity: { id: 'a', tokenId: 'a', grants }
-  });
+  const as = withGrants;
 
   /** A live NamespaceProposal 'np' for 'home', which holds a proposed type with a row unless `withRows` is false. */
   async function seeded(withRows: boolean) {
@@ -737,11 +745,9 @@ describe('removing a NamespaceProposal', () => {
   const removals: Array<[string, Record<string, unknown>]> = [
     ['_system_proposals/deleteNamespaceProposal', { id: 'np' }],
     ['_system_proposals/updateNamespaceProposal', { id: 'np', archived: true }],
-    ['_system_proposals/updateNamespaceProposal', { id: 'np', applied: false }],
-    ['_system_proposals/updateNamespaceProposal', { id: 'np', ns: 'elsewhere' }]
+    ['_system_proposals/updateNamespaceProposal', { id: 'np', applied: false }]
   ];
-  const run = (engine: Engine, key: string, params: Record<string, unknown>, c = ctx(propose)) =>
-    engine.mutate({ frame: { [key]: { params, fields: { id: true } } }, ctx: c });
+  const run = mutateOne;
 
   it('of a namespace with stored rows needs the drop capability in that namespace', async () => {
     for (const [key, params] of removals) {
@@ -765,6 +771,18 @@ describe('removing a NamespaceProposal', () => {
       const inHome = as({ '*': propose, home: ['admin'] });
       expect((await run(engine, key, params, inHome)).errors, key).toBeUndefined();
     }
+  });
+
+  it('by a rename needs the drop capability in the namespace it leaves and the one it names', async () => {
+    const rename = { id: 'np', ns: 'elsewhere' };
+    const key = '_system_proposals/updateNamespaceProposal';
+    const { engine } = await seeded(true);
+    for (const grants of [{}, { home: ['admin'] }, { elsewhere: ['admin'] }]) {
+      const env = await run(engine, key, rename, as({ '*': propose, ...grants }));
+      expect(env.errors?.[0]?.code, JSON.stringify(grants)).toBe('policy_denied');
+    }
+    const both = as({ '*': propose, home: ['admin'], elsewhere: ['admin'] });
+    expect((await run(engine, key, rename, both)).errors).toBeUndefined();
   });
 
   it('of a namespace with no stored rows needs only the propose capability', async () => {
@@ -831,6 +849,89 @@ describe('removing a NamespaceProposal', () => {
         )
       ).errors
     ).toBeUndefined();
+  });
+});
+
+describe('restoring a NamespaceProposal', () => {
+  const propose = ['read', 'mutate', 'substrate.propose'];
+  const names = ['gone', 'idle', 'sup', 'home', 'other', 'made', 'fresh'];
+
+  /**
+   * Proposals for 'gone' (archived, as a drop leaves it), 'idle' (unapplied),
+   * 'sup' (superseded by code) and 'home' (live), none holding rows.
+   */
+  async function seed(control: MemoryDataset): Promise<void> {
+    await control.write('NamespaceProposal', [
+      row({ id: 'gone', ns: 'gone', archived: true }),
+      row({ id: 'idle', ns: 'idle', applied: false }),
+      row({ id: 'sup', ns: 'sup', supersededByCode: true }),
+      row({ id: 'home', ns: 'home' })
+    ]);
+  }
+  const bootOver = (control: MemoryDataset) =>
+    boot(
+      new MemoryDataset({ namespace: 'app' }),
+      control,
+      names.map((namespace) => new MemoryDataset({ namespace }))
+    );
+
+  /** Each write and the namespace it makes live. */
+  const restores: Array<[string, Record<string, unknown>, string]> = [
+    ['_system_proposals/updateNamespaceProposal', { id: 'gone', archived: false }, 'gone'],
+    ['_system_proposals/updateNamespaceProposal', { id: 'idle', applied: true }, 'idle'],
+    ['_system_proposals/updateNamespaceProposal', { id: 'sup', supersededByCode: false }, 'sup'],
+    ['_system_proposals/updateNamespaceProposal', { id: 'home', ns: 'other' }, 'other'],
+    ['_system_proposals/createNamespaceProposal', row({ id: 'made', ns: 'made' }), 'made']
+  ];
+
+  it('needs the drop capability in the namespace it makes live, whatever its rows', async () => {
+    for (const [key, params, ns] of restores) {
+      const control = new MemoryDataset({ namespace: '_system_proposals' });
+      await seed(control);
+      const { engine } = await bootOver(control);
+      expect((await mutateOne(engine, key, params)).errors?.[0]?.code, key).toBe('policy_denied');
+      const batched = await engine.mutate({
+        frame: { [key]: [{ params, fields: { id: true } }] },
+        ctx: ctx(propose)
+      });
+      expect(batched.errors?.[0]?.code, key).toBe('policy_denied');
+      const inControl = withGrants({ '*': propose, _system_proposals: [...propose, 'admin'] });
+      expect((await mutateOne(engine, key, params, inControl)).errors?.[0]?.code, key).toBe(
+        'policy_denied'
+      );
+      const inTarget = withGrants({ '*': propose, [ns]: ['admin'] });
+      expect((await mutateOne(engine, key, params, inTarget)).errors, key).toBeUndefined();
+    }
+  });
+
+  it('keeps a dropped namespace retired across a reboot unless the drop capability restores it', async () => {
+    const control = new MemoryDataset({ namespace: '_system_proposals' });
+    await seed(control);
+    const first = await bootOver(control);
+    expect(first.engine.registryFor('gone')).toBeUndefined();
+    const unarchive = { id: 'gone', archived: false };
+    const key = '_system_proposals/updateNamespaceProposal';
+    expect((await mutateOne(first.engine, key, unarchive)).errors?.[0]?.code).toBe('policy_denied');
+    const rebooted = await bootOver(control);
+    expect(rebooted.engine.registryFor('gone')).toBeUndefined();
+
+    const admin = withGrants({ '*': propose, gone: ['admin'] });
+    expect((await mutateOne(rebooted.engine, key, unarchive, admin)).errors).toBeUndefined();
+    expect((await bootOver(control)).engine.registryFor('gone')).toBeDefined();
+  });
+
+  it('leaves propose_namespace to write its own proposal with the propose capability', async () => {
+    const control = new MemoryDataset({ namespace: '_system_proposals' });
+    const { engine } = await bootOver(control);
+    const env = await mutateOne(engine, '_system_proposals/propose_namespace', {
+      ns: 'fresh',
+      proposedReason: 'a new namespace'
+    });
+    expect(env.errors).toBeUndefined();
+    expect(engine.registryFor('fresh')).toBeDefined();
+    expect((await control.read('NamespaceProposal', {})).rows).toMatchObject([
+      { ns: 'fresh', applied: true, archived: false }
+    ]);
   });
 });
 

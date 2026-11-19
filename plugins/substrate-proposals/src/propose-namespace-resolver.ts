@@ -194,16 +194,24 @@ async function proposeNamespaceLocked(
     proposalId = String(prior.id);
   } else {
     // The dataset assigns the proposal's id.
-    const created = await writeInTx(controlBinding.registry, ctx, args, 'createNamespaceProposal', {
-      ns,
-      proposedBy,
-      proposedAt: new Date(),
-      proposedReason,
-      applied: false,
-      appliedAt: null,
-      supersededByCode: false,
-      archived: false
-    });
+    const created = await writeInTx(
+      controlBinding.registry,
+      ctx,
+      args,
+      'createNamespaceProposal',
+      {
+        ns,
+        proposedBy,
+        proposedAt: new Date(),
+        proposedReason,
+        applied: false,
+        appliedAt: null,
+        supersededByCode: false,
+        archived: false
+      },
+      false,
+      true
+    );
     proposalId = String(created.id);
   }
 
@@ -230,11 +238,16 @@ async function proposeNamespaceLocked(
 
   // Step 7 — mark applied=true via autoCRUD update
   const now = new Date();
-  await writeInTx(controlBinding.registry, ctx, args, 'updateNamespaceProposal', {
-    id: proposalId,
-    applied: true,
-    appliedAt: now
-  });
+  // Trusted: this call has checked the name, so the liveness gate's drop capability is not needed.
+  await writeInTx(
+    controlBinding.registry,
+    ctx,
+    args,
+    'updateNamespaceProposal',
+    { id: proposalId, applied: true, appliedAt: now },
+    false,
+    true
+  );
 
   // Step 8 — NOTIFY peers once the row commits, so they can't observe a
   // half-applied state.
