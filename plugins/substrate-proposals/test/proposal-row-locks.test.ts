@@ -23,6 +23,7 @@ import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CONTROL_NAMESPACE } from '../src/control-plane.js';
 import { createNoopPubSub, createProposalsPlugin, storageSettled } from '../src/index.js';
+import { isLiveProposal } from '../src/row-lock.js';
 import { deleteNamespaces } from './_layout.js';
 
 const T0 = new Date('2026-11-19T00:00:00Z');
@@ -344,5 +345,55 @@ describe.skipIf(!POSTGRES_URL)('two arrays naming the same proposal rows (pg)', 
       for (const id of ids) expect((await ext.read('TypeProposal', { id })).rows).toEqual([]);
     }
     expect(others).toEqual([]);
+  }, 180_000);
+
+  it('never leaves a field proposal live on a type with rows, from a retarget racing a return to live', async () => {
+    for (const typeName of ['Stored', 'Empty']) {
+      const env = await mutate('propose_type', {
+        params: { typeName, fields: { n: JSON.parse(clean) } },
+        fields: { id: true }
+      });
+      expect(env.errors).toBeUndefined();
+    }
+    await storageSettled();
+    expect((await mutate('createStored', { params: { n: 1 }, fields: { id: true } })).errors).toBe(
+      undefined
+    );
+    const tally: Record<string, number> = {};
+    const violations: string[] = [];
+    for (let i = 0; i < TRIALS; i++) {
+      for (const order of ['AB', 'BA'] as const) {
+        // Archived on the empty type, so neither write alone needs the drop capability.
+        const created = await mutate('createFieldProposal', {
+          params: {
+            ...base,
+            applied: true,
+            archived: true,
+            targetType: 'Empty',
+            fieldName: `f${order}${i}`,
+            fieldSpecJson: clean
+          },
+          fields: { id: true }
+        });
+        expect(created.errors).toBeUndefined();
+        const id = (created.data[`${EXT}/createFieldProposal`] as { id: string }).id;
+        const retarget = () =>
+          mutate('updateFieldProposal', {
+            params: { id, targetType: 'Stored' },
+            fields: { id: true }
+          });
+        const unarchive = () =>
+          mutate('updateFieldProposal', { params: { id, archived: false }, fields: { id: true } });
+        const [a, b] =
+          order === 'AB'
+            ? await Promise.all([retarget(), unarchive()])
+            : (await Promise.all([unarchive(), retarget()])).reverse();
+        const row = (await ext.read('FieldProposal', { id })).rows[0] as Row;
+        const outcome = `${order} retarget=${a?.errors?.[0]?.code ?? 'ok'} unarchive=${b?.errors?.[0]?.code ?? 'ok'} live=${isLiveProposal(row)} target=${String(row.targetType)}`;
+        tally[outcome] = (tally[outcome] ?? 0) + 1;
+        if (isLiveProposal(row) && row.targetType === 'Stored') violations.push(outcome);
+      }
+    }
+    expect(violations, JSON.stringify(tally, null, 1)).toEqual([]);
   }, 180_000);
 });

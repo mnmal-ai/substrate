@@ -253,7 +253,18 @@ async function proposeFieldLocked(
   // The dataset assigns the proposal's id.
   const newId: Id | undefined =
     engine !== undefined
-      ? (await writeInTx(binding.registry, ctx, args, 'createFieldProposal', initialParams)).id
+      ? // Trusted: steps 1-3 already authorised this proposal, a narrowing's migration included.
+        (
+          await writeInTx(
+            binding.registry,
+            ctx,
+            args,
+            'createFieldProposal',
+            initialParams,
+            false,
+            true
+          )
+        ).id
       : (await args.dataset.write('FieldProposal', [initialParams])).ids[0];
   if (newId === undefined) throw new Error('dataset.write did not return an id for FieldProposal');
 
@@ -289,12 +300,15 @@ async function proposeFieldLocked(
   const now = new Date();
   const resultingSchemaVersion = publishSchema(binding.registry).schemaVersion;
   if (engine !== undefined) {
-    await writeInTx(binding.registry, ctx, args, 'updateFieldProposal', {
-      id: newId,
-      applied: true,
-      appliedAt: now,
-      resultingSchemaVersion
-    });
+    await writeInTx(
+      binding.registry,
+      ctx,
+      args,
+      'updateFieldProposal',
+      { id: newId, applied: true, appliedAt: now, resultingSchemaVersion },
+      false,
+      true
+    );
   }
   const readBack = await args.dataset.read('FieldProposal', { id: newId });
   const rawRow = readBack.rows[0];
