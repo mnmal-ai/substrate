@@ -427,6 +427,8 @@ delete Price 42
   → apply each incoming edge's policy (§6.2), locally or via the sweep
 ```
 
+Writing a crossRef needs `read` on the target's namespace, the writer's own included; without it the write is refused as a read of that namespace would be (`unauthorized_namespace` or `unauthorized_capability`), whether or not the id exists. A crossRef value must be an id (a string or a number) or null; anything else is `invalid_field_type`.
+
 A crossRef field may also declare `onMissing: 'reject'`, which refuses a create or update whose reference points at a missing or tombstoned target. The default is `'allow'`. It applies only to locally resolvable targets.
 
 **Why this shape:** edges are operational data (policies, timestamps, sweep state), not application data. A dedicated table keeps the type system clean and makes the sweep a scan of one table.
@@ -946,7 +948,9 @@ agent → "<ns>/propose_type" → TypeProposal row → Registry.register + autoC
 - `<ns>/propose_type` — `{ typeName, fields, proposedReason }`. Registers the type and records a `<ns>/TypeProposal` row.
 - `<ns>/propose_field` — `{ targetType, fieldName, fieldSpec, proposedReason, valueMap? }`. Adds a field to an existing type (declared in code or proposed). Idempotent on an exact match; refuses `destructive_change_required` if the field exists with a different spec, except an enum narrowing that carries a `valueMap`, which rewrites the stored values first. On Postgres a proposed field gets no column on the request path: it is `pending` (`schema` marks it `storage: "pending"`), its values live in the row's jsonb, and reads, filters and sorts answer as they will once the promotion sweep gives it a column (`SUBSTRATE_PROMOTE_INTERVAL_MS`, or `substrate-admin promote-fields`).
 
-There is no separate edge proposal: a cross-namespace edge is a `propose_field` whose spec has `kind: 'crossRef'`. Both namespaces must be owned by the plugin.
+There is no separate edge proposal: a cross-namespace edge is a `propose_field` whose spec has `kind: 'crossRef'`. The target may be a type in a namespace the plugin owns, or any stored, registered type (code-defined included) in a namespace the proposer can read. On a target the plugin does not own, `onDelete` is `set_null` (default), `cascade` or `orphan`, never `restrict`. The proposal is refused when the target has no type, when the namespace is unreadable to the proposer (identical whether or not the type exists), when `restrict` is asked, when the type is virtual (no autoCRUD storage, such as `recall/Hit`), or when it is in the `_system_proposals` control plane. Walks across namespaces are not supported (`walk_cross_namespace`).
+
+Proposal rows written directly through the engine meet the same rules, checked against the writer under a row lock (an update that can make a row live is checked on the merged row). A change that drops or redefines a field or type with stored rows needs the drop capability, `createFieldProposal` is gated, and `updateMany` / `deleteMany` on proposal types are refused.
 
 **Runtime namespaces.** A reserved control-plane namespace, `_system_proposals`, carries `propose_namespace`, which hot-adds a new namespace (with its own propose mutations) to the running engine. The host must already have provisioned a dataset for it (`dataset_not_provisioned` otherwise).
 
@@ -972,7 +976,7 @@ Proposed types get the reserved `shortId` field like code-declared types, so the
 - Per-type policies for proposed types; they inherit the plugin's default.
 - Un-proposing. Archive the `TypeProposal` row to hide it from audit queries; the type stays live until code replaces it or an operator purges it.
 
-Config (`<SUBSTRATE_PLUGIN_DIR>/substrate-proposals.config.json`): `{ ownedNamespaces, proposeCapability }`. The plugin's onboard contribution carries the full `FieldSpecJson` grammar, the error codes and examples. Error codes: `type_already_proposed`, `type_already_exists`, `destructive_change_required`, `unknown_type`, `unowned_namespace`, `invalid_field_spec`, plus the engine's `policy_denied` when the capability is missing.
+Config (`<SUBSTRATE_PLUGIN_DIR>/substrate-proposals.config.json`): `{ ownedNamespaces, proposeCapability }`. The plugin's onboard contribution carries the full `FieldSpecJson` grammar, the error codes and examples. Error codes: `type_already_proposed`, `type_already_exists`, `destructive_change_required`, `unknown_type`, `unowned_namespace`, `invalid_field_spec`, `client_supplied_server_field` (a `proposedBy` on update), plus the engine's `policy_denied` when the capability is missing.
 
 ---
 

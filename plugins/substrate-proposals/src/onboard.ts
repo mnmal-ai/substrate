@@ -176,9 +176,11 @@ export function buildOnboardBody(ownedNamespaces: ReadonlyArray<string>): Onboar
           shape:
             '{ kind: "crossRef", ns: string, type: string, onDelete?: "set_null"|"cascade"|"restrict"|"orphan", indexed?: bool, nullable?: bool }',
           notes:
-            'Use crossRef to declare an edge. Cross-namespace edges work when both ns values are in ' +
-            'the plugin\'s ownedNamespaces. onDelete defaults to "set_null". For N:M, propose a join ' +
-            'type with two crossRef fields — v2 does not model N:M natively.'
+            'Use crossRef to declare an edge. The target may be a type in an ownedNamespaces namespace, ' +
+            'or any stored type (code-defined included) in a namespace you can read. onDelete defaults to ' +
+            '"set_null"; on a target the plugin does not own it is set_null, cascade or orphan, never restrict. ' +
+            'Virtual types (such as recall/Hit) are refused. Walks across namespaces are not supported. ' +
+            'For N:M, propose a join type with two crossRef fields — v2 does not model N:M natively.'
         },
         struct: {
           shape: '{ kind: "struct", fields: Record<string, FieldSpecJson>, nullable?: bool }',
