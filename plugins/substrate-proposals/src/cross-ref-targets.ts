@@ -11,7 +11,8 @@ import {
   type Registry,
   type RequestContext,
   type ResolverArgs,
-  ResolverFrameError
+  ResolverFrameError,
+  type Row
 } from '@mnmal-ai/substrate-types';
 import { CONTROL_NAMESPACE } from './control-plane.js';
 import {
@@ -58,9 +59,11 @@ const always = (): boolean => true;
 /**
  * The check for a stored proposal being applied. An owned target need not
  * exist yet, as replay may not have reached it. The read rule is left out, as
- * applying has no caller: the writes through the engine that can leave a row
- * live were checked against their writer's read (`gateProposalReferences`). A
- * row written straight to the store, past the engine, was not.
+ * applying has no caller. A write through the engine that rewrites a row's
+ * spec, or could leave the row live, was checked against its writer's read
+ * (`gateProposalReferences`) on the row as the writes before it left it, a
+ * concurrent one included. A row written straight to the store, past the
+ * engine, was not checked.
  */
 export function appliedTargetCheck(store: RegistryStore, namespace: string): CrossRefTargetCheck {
   return crossRefTargetCheck(store, namespace, always, always);
@@ -133,6 +136,18 @@ const REFERENCE_NEUTRAL: ReadonlySet<string> = new Set([
   'valueMapJson'
 ]);
 
+/**
+ * Update params that rewrite a proposal row's specs, or the type or field they
+ * define: an update carrying one is checked whether or not the row is left live.
+ */
+const SPEC_KEYS: ReadonlySet<string> = new Set([
+  'fieldsJson',
+  'fieldSpecJson',
+  'typeName',
+  'targetType',
+  'fieldName'
+]);
+
 /** The flags a row starts with when nothing is known of it: as live as it can be. */
 const LIVE = { applied: true, supersededByCode: false, archived: false };
 
@@ -140,15 +155,22 @@ const LIVE = { applied: true, supersededByCode: false, archived: false };
  * Check the crossRefs of a TypeProposal or FieldProposal row written through
  * the engine as propose_type and propose_field do, against the writer's read,
  * with owned targets allowed before they exist. Boot applies every live row
- * with no caller to check, so a write meets the read rule here.
+ * with no caller to check, so a write meets the read rule here. Params whose
+ * value is undefined are left out first, as the update resolver leaves them.
  *
- * A create is checked on its params, which are the whole row. An update is
- * checked on the row as it will stand, the stored row with the update laid
- * over it, unless every param is reference-neutral or the row will not be
- * live, so whoever leaves a reference live can read its target. An update
- * that could leave the row live but whose row cannot be loaded is refused.
- * A spec that does not parse is left to apply, which refuses it. The guarded
- * entries lose `batch`, so a mutate array runs per element through the check.
+ * A create is checked on its params, which are the whole row. An update that
+ * rewrites a spec, or the type or field it defines, is checked on the row as
+ * it will stand: the stored row with the update laid over it. So is an update
+ * of other flags that leaves the row live, so whoever leaves a reference live
+ * can read its target. An update of reference-neutral fields only, or one
+ * that leaves the row not live and rewrites no spec, is not checked. The
+ * stored row is read under a row lock held until the write's transaction
+ * ends (a store whose transactions run one at a time needs none), so
+ * concurrent updates of one row run their checks one after another, each on
+ * the row as the one before left it. An update that must be checked but
+ * whose row cannot be loaded is refused. A spec that does not parse is left
+ * to apply, which refuses it. The guarded entries lose `batch`, so a mutate
+ * array runs per element through the check.
  *
  * @throws ProposalError `invalid_field_spec` from the wrapped resolvers
  * @throws ResolverFrameError `policy_denied` when an update must be checked
@@ -176,7 +198,9 @@ export function gateProposalReferences(
     registry.replace(key, {
       ...rest,
       resolver: async (ctx: RequestContext, args: ResolverArgs) => {
-        const params = args.params ?? {};
+        const params = Object.fromEntries(
+          Object.entries(args.params ?? {}).filter(([, v]) => v !== undefined)
+        );
         const row = isUpdate ? await rowAfterUpdate(key, type, params, args.dataset) : params;
         if (row !== undefined) {
           const check = crossRefTargetCheck(store, namespace, always, (ns) =>
@@ -194,7 +218,8 @@ export function gateProposalReferences(
 
 /**
  * The row an update of `type` will leave, when it needs checking: undefined
- * when every param is reference-neutral or the row will not be live.
+ * when every param is reference-neutral, or when the update rewrites no spec
+ * and the row will not be live.
  *
  * @throws ResolverFrameError `policy_denied` when the row cannot be loaded
  */
@@ -204,21 +229,36 @@ async function rowAfterUpdate(
   params: Record<string, unknown>,
   dataset: ResolverArgs['dataset']
 ): Promise<Record<string, unknown> | undefined> {
-  if (Object.keys(params).every((k) => REFERENCE_NEUTRAL.has(k))) return undefined;
-  if (!isLiveProposal({ ...LIVE, ...params })) return undefined;
-  // The row the update resolver reaches: its id coerced as `coerceId` does,
-  // then resolved as a raw id or a short id.
-  const id = typeof params.id === 'string' || typeof params.id === 'number' ? params.id : undefined;
-  const stored =
-    id === undefined || dataset === undefined
-      ? null
-      : ((await resolveEntityRows(dataset, type, [id]))[0] ?? null);
+  const keys = Object.keys(params);
+  if (keys.every((k) => REFERENCE_NEUTRAL.has(k))) return undefined;
+  const rewritesSpec = keys.some((k) => SPEC_KEYS.has(k));
+  if (!rewritesSpec && !isLiveProposal({ ...LIVE, ...params })) return undefined;
+  const stored = await lockedRow(type, params.id, dataset);
   if (stored === null) {
     throw new ResolverFrameError(
       'policy_denied',
-      `${key}: cannot load the row to check the references this update could leave live`
+      `${key}: cannot load the row to check the references this update leaves`
     );
   }
   const row = { ...stored, ...params };
-  return isLiveProposal(row) ? row : undefined;
+  return rewritesSpec || isLiveProposal(row) ? row : undefined;
+}
+
+/**
+ * The live row of `type` an update reaches, found as the update resolver finds
+ * it (`id` as `coerceId` takes it, then a raw id or a short id), locked until
+ * the transaction ends and read again under the lock: a concurrent write of
+ * the row has committed by then, or waits for this transaction. Null when
+ * there is no such row, or no id or dataset to find it by.
+ */
+async function lockedRow(
+  type: string,
+  id: unknown,
+  dataset: ResolverArgs['dataset']
+): Promise<Row | null> {
+  if ((typeof id !== 'string' && typeof id !== 'number') || dataset === undefined) return null;
+  const found = (await resolveEntityRows(dataset, type, [id]))[0] ?? null;
+  if (found === null) return null;
+  await dataset.lockForUpdate?.(type, [found.id]);
+  return (await dataset.read(type, { id: found.id, includeDeleted: false })).rows[0] ?? null;
 }

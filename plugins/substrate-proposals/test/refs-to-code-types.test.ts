@@ -261,7 +261,7 @@ describe('a proposal row written directly', () => {
         await write(
           engine,
           'updateTypeProposal',
-          { id, fieldsJson: JSON.stringify({ x: ref() }), applied: true },
+          { id, fieldsJson: JSON.stringify({ x: ref() }) },
           extOnly
         )
       ).message
@@ -289,8 +289,7 @@ describe('a proposal row written directly', () => {
       refusal(
         await write(engine, 'updateFieldProposal', {
           id: fieldId,
-          fieldSpecJson: JSON.stringify(ref({ onDelete: 'restrict' })),
-          applied: true
+          fieldSpecJson: JSON.stringify(ref({ onDelete: 'restrict' }))
         })
       ).message
     ).toContain("'restrict' is not allowed on a reference to 'app/Invoice'");
@@ -321,10 +320,10 @@ describe('a proposal row written directly', () => {
         unreadable
       );
     }
-    // Reference-neutral fields, or a row left unapplied, need no read.
+    // Reference-neutral fields, or flags that leave the row unapplied, need no read.
     for (const params of [
       { id, proposedReason: 'why' },
-      { id, typeName: 'Renamed' }
+      { id, applied: false }
     ]) {
       expect((await write(engine, 'updateTypeProposal', params, extOnly)).errors).toBeUndefined();
     }
@@ -374,6 +373,60 @@ describe('a proposal row written directly', () => {
     for (const params of liveFields) {
       expect((await write(engine, 'updateFieldProposal', params)).errors).toBeUndefined();
     }
+  });
+
+  it('checks an update that rewrites a spec whatever the row is left as', async () => {
+    const engine = await boot();
+    const extOnly = as(EXT_ONLY);
+    const unreadable = "you cannot read namespace 'app'";
+    const created = async (key: string, params: Record<string, unknown>): Promise<string> => {
+      const env = await write(engine, key, params);
+      expect(env.errors).toBeUndefined();
+      return (env.data[`ext/${key}`] as { id: string }).id;
+    };
+    const id = await created('createTypeProposal', typeRow('Fresh', { x: ref() }, false));
+    const live = await created('createTypeProposal', typeRow('Live', { n: amount }));
+    const fid = await created('createFieldProposal', {
+      targetType: 'Fresh',
+      fieldName: 'y',
+      fieldSpecJson: JSON.stringify(ref()),
+      proposedBy: 'agent',
+      proposedAt: T0,
+      proposedReason: 'direct',
+      applied: false,
+      appliedAt: null,
+      supersededByCode: false,
+      archived: false
+    });
+
+    const refused: Array<[string, Record<string, unknown>]> = [
+      ['updateTypeProposal', { id, typeName: 'Renamed' }],
+      [
+        'updateTypeProposal',
+        { id: live, fieldsJson: JSON.stringify({ x: ref() }), applied: false }
+      ],
+      ['updateFieldProposal', { id: fid, fieldName: 'z' }],
+      ['updateFieldProposal', { id: fid, targetType: 'Other' }],
+      ['updateFieldProposal', { id: fid, fieldSpecJson: JSON.stringify(ref()) }],
+      // An undefined value is a key not sent, as the update resolver reads it.
+      ['updateTypeProposal', { id, applied: true, archived: undefined }]
+    ];
+    for (const [key, params] of refused) {
+      expect(refusal(await write(engine, key, params, extOnly)).message, key).toContain(unreadable);
+    }
+    expect(
+      (await write(engine, 'updateTypeProposal', { id, applied: true })).errors
+    ).toBeUndefined();
+    expect(
+      (
+        await write(
+          engine,
+          'updateTypeProposal',
+          { id, proposedReason: 'why', applied: undefined },
+          extOnly
+        )
+      ).errors
+    ).toBeUndefined();
   });
 
   it('is applied at boot only when its target exists and is not restrict', async () => {
