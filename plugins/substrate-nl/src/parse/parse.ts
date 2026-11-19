@@ -1040,6 +1040,14 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
         bucket: { dateTrunc: [{ lit: agg.dateGroup.by }, agg.dateGroup.field] }
       };
   }
+  // From the pick-one itself, not the answer label: "which grade" over "latest" still picks one.
+  const strict =
+    a.count ||
+    aggClaim !== null ||
+    order !== null ||
+    sortBy !== null ||
+    a.ids.length === 1 ||
+    a.composed?.strict === true;
   const answer =
     aggClaim !== null || countBy !== null
       ? 'aggregate'
@@ -1065,10 +1073,9 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
     },
     answer,
     evidence: ev,
-    residual: contentWords(tokens),
+    residual: contentWords(tokens, strict),
     plan,
     dropped,
-    // From the pick-one itself, not the answer label: "which grade" over "latest" still picks one.
     ...(countBy !== null
       ? { aggregate: { fn: 'count' as const, field: '*' } }
       : agg?.fn !== undefined && agg.field !== undefined
@@ -1080,13 +1087,7 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
             }
           }
         : {}),
-    strict:
-      a.count ||
-      aggClaim !== null ||
-      order !== null ||
-      sortBy !== null ||
-      a.ids.length === 1 ||
-      a.composed?.strict === true
+    strict
   };
 }
 
@@ -1830,13 +1831,20 @@ function creditFieldWords(tokens: Token[], field: PackField | undefined): boolea
   return hit;
 }
 
-function contentWords(tokens: Token[]): string[] {
+/** Unexplained words; with `numbers`, a lone unread number too, which a strict reading cannot lose. */
+function contentWords(tokens: Token[], numbers = false): string[] {
   const free = (t: Token | undefined): t is Token =>
     t !== undefined && !t.used && !GLUE.has(t.text);
   const num = (t: Token | undefined) => free(t) && /^\d+$/.test(t.text);
+  const word = (t: Token | undefined) => free(t) && !num(t);
   const out: string[] = [];
   tokens.forEach((t, i) => {
-    if (!free(t) || num(t)) return;
+    if (!free(t)) return;
+    if (num(t)) {
+      // A number no word explains ("in 2025") would widen a count or an aggregate to all time.
+      if (numbers && !word(tokens[i - 1]) && !word(tokens[i + 1])) out.push(t.text);
+      return;
+    }
     // A number beside an unexplained word is lost with it: "8 cores", never just "cores".
     const before = num(tokens[i - 1]) ? `${tokens[i - 1]?.text} ` : '';
     const after =

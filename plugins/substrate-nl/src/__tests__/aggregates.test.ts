@@ -654,6 +654,22 @@ describe('aggregates: answering', () => {
     }
   });
 
+  it('answers unknown when a count or aggregate leaves a number unread', async () => {
+    for (const q of [
+      'how many sales per month in 2025',
+      'how many sales in 2025 per month',
+      'monthly total price of sales in 2025',
+      'how many sales in 2025'
+    ]) {
+      const r = parse(q);
+      expect(r.status, q).toBe('partial');
+      expect(r.residual, q).toEqual(['2025']);
+      const { e, query } = engine(() => ({ data: {} }));
+      expect((await ask(q, e)).kind, q).toBe('unknown');
+      expect(query, q).not.toHaveBeenCalled();
+    }
+  });
+
   it('leaves a count without a unit unchanged', () => {
     expect(params('how many sales')).toEqual({});
     expect(parse('how many sales').candidates[0]?.answer).toBe('count');
