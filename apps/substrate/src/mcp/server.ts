@@ -739,7 +739,7 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
             .min(1)
             .optional()
             .describe(
-              '"now" for relative dates ("yesterday", "last week") and month-day year inference: ISO-8601 date-time with an offset, e.g. 2026-10-02T12:00:00-05:00. Default: the server clock.'
+              '"now" for relative dates ("yesterday", "last week") and month-day year inference; a bare month or year ("in march", "in 2025") reads as a window: ISO-8601 date-time with an offset, within years 1000 to 9998, e.g. 2026-10-02T12:00:00-05:00. Default: the server clock.'
             )
         }
       },
