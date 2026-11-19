@@ -26,9 +26,15 @@ describe.skipIf(!POSTGRES_URL)('a reference to a code-defined type (pg)', () => 
   let sql: Sql;
   let engine: Engine;
   let sweep: () => Promise<unknown>;
+  // This test's edges and rows, its proposal rows included, so a crashed run leaves nothing behind.
+  const clean = async (): Promise<void> => {
+    await sql`DELETE FROM edges WHERE from_ns = ANY(${[EXT, APP]}) OR to_ns = ANY(${[EXT, APP]})`;
+    await deleteNamespaces(sql, EXT, APP);
+  };
 
   beforeAll(async () => {
     sql = postgres(POSTGRES_URL as string, { onnotice: () => {}, max: 10 });
+    await clean();
     const edges = new PgEdgesStore({ sql });
     const datasets = new MemoryDatasetRegistry();
     for (const ns of [EXT, APP, CONTROL_NAMESPACE]) {
@@ -41,7 +47,11 @@ describe.skipIf(!POSTGRES_URL)('a reference to a code-defined type (pg)', () => 
       now: () => new Date(),
       metric() {}
     };
-    sweep = () => runSweep(deps, { lastSweptCursor: null }, 10_000);
+    // Other suites share the edges table, so sweep every page of it.
+    sweep = async () => {
+      let state = await runSweep(deps, { lastSweptCursor: null }, 10_000);
+      while (state.lastSweptCursor !== null) state = await runSweep(deps, state, 10_000);
+    };
     const datasetFor = (ns: string): Dataset | undefined => datasets.get(ns);
     const app: CoordinatorPlugin = {
       name: 'app',
@@ -60,7 +70,7 @@ describe.skipIf(!POSTGRES_URL)('a reference to a code-defined type (pg)', () => 
 
   afterAll(async () => {
     await storageSettled();
-    await deleteNamespaces(sql, EXT, APP, CONTROL_NAMESPACE);
+    await clean();
     await sql.end({ timeout: 5 });
   });
 
