@@ -542,7 +542,10 @@ describe('aggregates: answering', () => {
       ['monthly total of subscriptions', served],
       ['yearly total of subscriptions', served],
       ['annual total of plans', plans.served],
-      ['monthly total of plans', plans.served]
+      ['monthly total of plans', plans.served],
+      // Nor is it a unit for a count or another aggregate in the question.
+      ['how many monthly total subscriptions', served],
+      ['average price of monthly total subscriptions', served]
     ] as const) {
       const { e, query } = engine(() => ({ data: {} }));
       expect((await ask(q, e, pk)).kind, q).toBe('unknown');

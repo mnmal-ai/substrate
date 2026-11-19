@@ -480,7 +480,7 @@ export function parseQuestion(
 
   // --- a unit adjective no value claimed ("sales weekly"), for an aggregate or a count ---
   if ((aggregate !== null || count) && aggregate?.group === undefined && countUnit === null) {
-    const unit = claimUnit(tokens, 0, names);
+    const unit = claimUnit(tokens, 0, names, true);
     if (aggregate !== null && unit !== null) aggregate.group = unit;
     else countUnit = unit;
   }
@@ -1432,16 +1432,21 @@ function adjectiveAt(tokens: Token[], k: number, names: FieldNames): TimeUnit | 
 
 /**
  * Claims "by|per <unit>" from token `from` on, skipping used tokens and "<author verb> by";
- * with `adjectives`, a unit adjective too, whichever comes first.
+ * with `adjectives`, a unit adjective too, whichever comes first. With `awayFromAggregate`,
+ * an adjective next to an aggregate word is skipped: that word did not claim it as its unit.
  */
 function claimUnit(
   tokens: Token[],
   from: number,
-  adjectives?: FieldNames
+  adjectives?: FieldNames,
+  awayFromAggregate = false
 ): { span: string; unit: TimeUnit } | null {
   for (let k = from; k < tokens.length; k++) {
     const by = tokens[k] as Token;
-    const adjective = adjectives === undefined ? undefined : adjectiveAt(tokens, k, adjectives);
+    const adjective =
+      adjectives === undefined || (awayFromAggregate && besideAggregate(tokens, k))
+        ? undefined
+        : adjectiveAt(tokens, k, adjectives);
     if (adjective !== undefined) {
       by.used = true;
       return { span: by.text, unit: adjective };
