@@ -38,7 +38,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { planServesShape, uuidFromName } from '@mnmal-ai/substrate-compose';
-import { RESERVED_AUTOCRUD_FIELD_NAMES, resolveIdentity } from '@mnmal-ai/substrate-sdk';
+import { resolveIdentity } from '@mnmal-ai/substrate-sdk';
 import type {
   ActorIdentity,
   Dataset,
@@ -56,10 +56,12 @@ import {
   typeIndexOptionsOf
 } from './apply.js';
 import type { PubSub } from './config.js';
+import { isLiveProposal } from './cross-ref-targets.js';
 import { ensureStorageAfterCommit, notifyAfterCommit } from './engine-write.js';
 import { ProposalError, type ProposalErrorCode } from './errors.js';
 import { proposalLockKey, withProposalLock } from './proposal-lock.js';
 import type { NamespaceBinding, RegistryStore } from './registry-store.js';
+import { lockedRow } from './row-lock.js';
 
 const SYSTEM_NAMESPACE = '_system';
 const RECOMMENDATION_TYPE = 'IndexRecommendation';
@@ -92,13 +94,6 @@ export interface ProposeIndexInput {
   orderedBy?: OrderedBy;
   indexName?: string;
   reason: string;
-}
-
-/** A read row without the engine fields reads add (`shortId`), for writing back. */
-function bodyOf(row: Row): Row {
-  const body = { ...row };
-  for (const name of RESERVED_AUTOCRUD_FIELD_NAMES) delete body[name];
-  return body;
 }
 
 function invalid(param: string, message: string): ProposalError {
@@ -344,8 +339,14 @@ async function proposalOf(binding: NamespaceBinding, type: string): Promise<Row 
 }
 
 /**
- * Stores `next` on the proposal row, reinstalls the type with it, and tells
- * peers once the caller's transaction commits.
+ * Stores `next` in the proposal row's index and order columns, reinstalls the
+ * type with it, and tells peers once the caller's transaction commits. The
+ * columns are written in a transaction of their own, under the row's lock,
+ * and only while the row is still `proposal` as read: this type's live
+ * definition, with the options `next` was built from. A concurrent change to
+ * the row (archived, superseded, renamed, or its options rewritten) stands.
+ *
+ * @throws ProposalError `proposal_changed` when the row changed since it was read
  */
 async function storeTypeIndexOptions(
   call: Call,
@@ -357,17 +358,33 @@ async function storeTypeIndexOptions(
   // No indexes is stored, and installed, as none at all, as replay reads it.
   const { indexes: all, ...rest } = next;
   const opts: TypeIndexOptions = { ...rest, ...(all?.length ? { indexes: all } : {}) };
-  await binding.dataset.write(
-    'TypeProposal',
-    [
-      {
-        ...bodyOf(proposal),
-        indexesJson: opts.indexes !== undefined ? JSON.stringify(opts.indexes) : null,
-        orderedByJson: opts.orderedBy !== undefined ? JSON.stringify(opts.orderedBy) : null
-      }
-    ],
-    { identity }
-  );
+  await binding.dataset.withTransaction(async (tx) => {
+    const row = await lockedRow('TypeProposal', proposal.id, tx);
+    const unchanged =
+      row !== null &&
+      isLiveProposal(row) &&
+      row.typeName === input.type &&
+      (row.indexesJson ?? null) === (proposal.indexesJson ?? null) &&
+      (row.orderedByJson ?? null) === (proposal.orderedByJson ?? null);
+    if (!unchanged) {
+      throw new ProposalError(
+        'proposal_changed',
+        `the proposal for ${input.namespace}/${input.type} changed while propose_index ran, so nothing was stored; retry`,
+        { namespace: input.namespace, type: input.type }
+      );
+    }
+    await tx.write(
+      'TypeProposal',
+      [
+        {
+          id: row.id,
+          indexesJson: opts.indexes !== undefined ? JSON.stringify(opts.indexes) : null,
+          orderedByJson: opts.orderedBy !== undefined ? JSON.stringify(opts.orderedBy) : null
+        }
+      ],
+      { identity }
+    );
+  });
   applyTypeIndexOptions({
     namespace: input.namespace,
     typeName: input.type,

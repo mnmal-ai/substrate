@@ -183,6 +183,37 @@ describe('propose_index (memory)', () => {
     await storageSettled();
   });
 
+  it('stores nothing over a proposal changed while it ran, so the change stands', async () => {
+    const home = new MemoryDataset({ namespace: NS });
+    const sys = new MemoryDataset({ namespace: '_system' });
+    let archiveOnAudit = false;
+    const write = sys.write.bind(sys);
+    // The audit lands between propose_index's read of the row and its write:
+    // an archive committed there is what a concurrent writer would leave.
+    sys.write = async (type, rows, options) => {
+      if (type === 'AuditEvent' && archiveOnAudit) {
+        const where = { typeName: { eq: 'Sneaker' } };
+        const [row] = (await home.read('TypeProposal', { where })).rows;
+        await home.conditionalUpdate('TypeProposal', row?.id as string, {}, { archived: true });
+      }
+      return write(type, rows, options);
+    };
+    const { engine } = await setup(home, sys);
+    archiveOnAudit = true;
+    const env = await proposeIndex(engine, {
+      namespace: NS,
+      type: 'Sneaker',
+      action: 'orderedBy',
+      orderedBy: { size: 'desc' }
+    });
+    expect(code(env)).toBe('proposal_changed');
+    const [row] = (await home.read('TypeProposal', { where: { typeName: { eq: 'Sneaker' } } }))
+      .rows;
+    expect(row?.archived).toBe(true);
+    expect(row?.orderedByJson ?? null).toBeNull();
+    expect(sneaker(engine)?.orderedBy).toBeUndefined();
+  });
+
   it('refuses a batch of propose_index calls, which share one transaction', async () => {
     const { engine } = await setup();
     const add = (field: string) => ({
@@ -909,6 +940,55 @@ describe.skipIf(!POSTGRES_URL)('propose_index (pg)', () => {
       ).toBe('still_desired');
     }
   });
+
+  it('leaves a proposal archived by a concurrent update archived', async () => {
+    const typeName = `Racer${randomUUID().slice(0, 8)}`;
+    const proposed = await engine.mutate({
+      frame: {
+        [`${APP}/propose_type`]: {
+          params: {
+            typeName,
+            fields: { brand: { kind: 'scalar', type: 'string' } },
+            proposedReason: 'r'
+          },
+          fields: { id: true }
+        }
+      },
+      ctx: PROPOSER
+    });
+    expect(proposed.errors ?? []).toEqual([]);
+    await storageSettled();
+    const id = (proposed.data[`${APP}/propose_type`] as { id: string }).id;
+    const proposals = engine.datasetFor(APP) as Dataset;
+    const archive = (archived: boolean) =>
+      engine.mutate({
+        frame: {
+          [`${APP}/updateTypeProposal`]: { params: { id, archived }, fields: { id: true } }
+        },
+        ctx: PROPOSER
+      });
+    const tally: Record<string, number> = {};
+    let lost = 0;
+    for (let i = 0; i < 40; i++) {
+      expect((await archive(false)).errors ?? []).toEqual([]);
+      const [archived, indexed] = await Promise.all([
+        archive(true),
+        proposeIndex(engine, {
+          namespace: APP,
+          type: typeName,
+          action: 'add',
+          declaration: { fields: ['brand'] }
+        })
+      ]);
+      expect(archived.errors ?? []).toEqual([]);
+      const row = (await proposals.read('TypeProposal', { id })).rows[0];
+      const outcome = `propose_index=${code(indexed) ?? 'ok'} archived=${String(row?.archived)}`;
+      tally[outcome] = (tally[outcome] ?? 0) + 1;
+      if (row?.archived !== true) lost++;
+    }
+    await storageSettled();
+    expect(lost, JSON.stringify(tally, null, 1)).toBe(0);
+  }, 120_000);
 
   it('refuses propose_index sharing its transaction with a write, and changes nothing', async () => {
     const { type, leftovers } = await codeType([{ fields: ['brand', 'size'] }]);

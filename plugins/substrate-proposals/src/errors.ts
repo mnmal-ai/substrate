@@ -33,7 +33,8 @@ export type ProposalErrorCode =
   | 'recommendation_closed'
   | 'recommendation_stale'
   | 'propose_index_not_alone'
-  | 'index_drop_timeout';
+  | 'index_drop_timeout'
+  | 'proposal_changed';
 
 /**
  * Structured error for proposal operations with stable error codes.
