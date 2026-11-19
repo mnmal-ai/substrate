@@ -661,6 +661,31 @@ describe('aggregates: answering', () => {
     }
   });
 
+  it('reads no value beside a superlative that orders', async () => {
+    // "highest" orders here; beside it "monthly" is neither the cycle nor a unit.
+    const q = 'subscriptions with the monthly highest price';
+    const r = parse(q);
+    expect(r.status).toBe('partial');
+    expect(r.residual).toEqual(['monthly']);
+    expect(params(q)).toEqual({ orderBy: [{ price: 'desc' }], limit: 10 });
+    const { e, query } = engine(() => ({ data: {} }));
+    expect((await ask(q, e)).kind).toBe('unknown');
+    expect(query).not.toHaveBeenCalled();
+    // Away from the superlative the value claim still filters.
+    expect(params('monthly subscriptions with the highest price')).toEqual({
+      where: { cycle: { eq: 'monthly' } },
+      orderBy: [{ price: 'desc' }],
+      limit: 10
+    });
+    // After it, the ordering takes "monthly" as its field and drops it: no cycle filter.
+    const after = parse('subscriptions with the highest monthly price');
+    expect(after.status).toBe('partial');
+    expect(after.candidates[0]?.dropped).toEqual([
+      { span: 'highest monthly', reason: 'Subscription has no field "monthly"', kind: 'order' }
+    ]);
+    expect(params('subscriptions with the highest monthly price')).toEqual({});
+  });
+
   it('answers unknown when a count or aggregate leaves a number unread', async () => {
     for (const q of [
       'how many sales per month in 2025',
