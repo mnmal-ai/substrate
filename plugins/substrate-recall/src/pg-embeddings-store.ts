@@ -349,6 +349,7 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
   async staleRowIds(input: {
     namespace: string;
     type: string;
+    model: string;
     afterId: string;
     limit: number;
   }): Promise<string[]> {
@@ -367,6 +368,7 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
           WHERE e.row_namespace = r.namespace
             AND e.row_type      = r.type
             AND e.row_id        = r.id
+            AND e.model         = ${input.model}
             AND (r.updated_at IS NULL OR e.updated_at >= r.updated_at)
         )
       ORDER BY r.id

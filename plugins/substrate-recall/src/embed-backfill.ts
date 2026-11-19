@@ -17,6 +17,8 @@ export interface EmbedBackfillDeps {
   /** Per-type resume point, `<ns>/<Type>` → last id seen. Owned by the caller across passes. */
   cursors: Map<string, string>;
   perTypeLimit: number;
+  /** The active embedder's `modelId`; a vector stored under any other model is stale. */
+  model: string;
 }
 
 export interface EmbedBackfillResult {
@@ -40,6 +42,7 @@ export async function runEmbedBackfill(deps: EmbedBackfillDeps): Promise<EmbedBa
     const ids = await staleRowIds({
       namespace,
       type,
+      model: deps.model,
       afterId: from ?? '',
       limit: deps.perTypeLimit
     });

@@ -349,6 +349,7 @@ export function createRecallPlugin(cfg: RecallPluginConfig): KernelPlugin {
       // idempotent, so duplicates cost embed calls only. Take a pg advisory lock
       // if a multi-process deployment makes that matter.
       const cursors = new Map<string, string>();
+      const model = cfg.embedder.modelId;
       let running = false;
       clearInterval(backfillTimer);
       backfillTimer = setInterval(() => {
@@ -359,7 +360,8 @@ export function createRecallPlugin(cfg: RecallPluginConfig): KernelPlugin {
           store: cfg.store,
           resolveDataset,
           cursors,
-          perTypeLimit: EMBED_BACKFILL_PER_TYPE
+          perTypeLimit: EMBED_BACKFILL_PER_TYPE,
+          model
         })
           .then((r) => {
             if (r.embedded + r.failed === 0 && r.stopped === undefined) return;
