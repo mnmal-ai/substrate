@@ -36,10 +36,11 @@ export async function runEmbedBackfill(deps: EmbedBackfillDeps): Promise<EmbedBa
     const dataset = deps.resolveDataset(namespace);
     if (reembed === undefined || dataset === null) continue;
     const key = `${namespace}/${type}`;
+    const from = deps.cursors.get(key);
     const ids = await staleRowIds({
       namespace,
       type,
-      afterId: deps.cursors.get(key) ?? '',
+      afterId: from ?? '',
       limit: deps.perTypeLimit
     });
     // A short page reached the end of the type: start again from the top next pass.
@@ -54,7 +55,12 @@ export async function runEmbedBackfill(deps: EmbedBackfillDeps): Promise<EmbedBa
       else if (outcome.status === 'unindexable') result.unindexable++;
       else if (outcome.status === 'failed') {
         result.failed++;
-        if (outcome.code === 'unavailable') return { ...result, stopped: outcome.error };
+        if (outcome.code === 'unavailable') {
+          // Rows embedded so far are no longer stale, so the next pass rescans this page cheaply.
+          if (from === undefined) deps.cursors.delete(key);
+          else deps.cursors.set(key, from);
+          return { ...result, stopped: outcome.error };
+        }
       }
     }
   }

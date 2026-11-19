@@ -102,6 +102,41 @@ describe('runEmbedBackfill', () => {
     expect(s.seen).toHaveLength(1);
   });
 
+  it('skips a row that fails on its own and embeds the rest of the page', async () => {
+    const s = setup({
+      stale: ['a', 'b', 'c'],
+      outcome: (row) =>
+        row.id === 'a'
+          ? { status: 'failed', error: 'returned 500', code: 'invalid_response' }
+          : { status: 'embedded' }
+    });
+    const r = await runEmbedBackfill({
+      registry: s.registry,
+      store: s.store,
+      resolveDataset: () => s.dataset,
+      cursors: new Map(),
+      perTypeLimit: 10
+    });
+    expect(r).toEqual({ embedded: 2, unindexable: 0, failed: 1 });
+    expect(s.seen.map((row) => row.id)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('resumes from the page it stopped in when the embedder was unavailable', async () => {
+    const s = setup({
+      stale: ['a', 'b', 'c'],
+      outcome: () => ({ status: 'failed', error: 'down', code: 'unavailable' })
+    });
+    const cursors = new Map<string, string>([['notes/Note', '0']]);
+    await runEmbedBackfill({
+      registry: s.registry,
+      store: s.store,
+      resolveDataset: () => s.dataset,
+      cursors,
+      perTypeLimit: 2
+    });
+    expect(cursors.get('notes/Note')).toBe('0');
+  });
+
   it('does nothing against a store that cannot see the rows', async () => {
     const s = setup({ stale: ['a'], staleRowIds: false });
     const r = await runEmbedBackfill({
