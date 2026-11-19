@@ -130,7 +130,8 @@ export type NlOutcome =
   | { kind: 'refuse'; reason: string };
 
 export interface NlAggregate {
-  fn: 'avg' | 'sum' | 'min' | 'max';
+  fn: 'count' | 'avg' | 'sum' | 'min' | 'max';
+  /** `'*'` for a count. */
   field: string;
   by?: string;
   /** Null when no row has a value (an empty set, or every value null). */

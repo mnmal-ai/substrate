@@ -411,6 +411,44 @@ describe('aggregates: answering', () => {
     }
   });
 
+  it('counts per time unit', async () => {
+    const q = 'how many sales per month';
+    expect(params(q)).toEqual({
+      aggregate: { value: { count: true } },
+      groupBy: { bucket: { dateTrunc: [{ lit: 'month' }, 'soldAt'] } }
+    });
+    expect(parse(q).candidates[0]?.aggregate).toEqual({ fn: 'count', field: '*' });
+    const { e } = engine(() => ({
+      data: {
+        'shop/Sale': {
+          groups: [
+            { bucket: '2026-10-01T00:00:00.000000Z', value: 3 },
+            { bucket: null, value: 1 }
+          ]
+        }
+      }
+    }));
+    expect(await ask(q, e)).toMatchObject({
+      aggregate: { fn: 'count', field: '*', by: 'month', groups: [{ key: '2026-10', value: 3 }] }
+    });
+  });
+
+  it('keeps the unit when a count drops an aggregate', () => {
+    const r = parse('how many sales max price per month');
+    expect(r.candidates[0]?.dropped).toContainEqual(
+      expect.objectContaining({ reason: 'an aggregate does not apply to a count' })
+    );
+    expect(params('how many sales max price per month')).toEqual({
+      aggregate: { value: { count: true } },
+      groupBy: { bucket: { dateTrunc: [{ lit: 'month' }, 'soldAt'] } }
+    });
+  });
+
+  it('leaves a count without a unit unchanged', () => {
+    expect(params('how many sales')).not.toHaveProperty('groupBy');
+    expect(parse('how many sales').candidates[0]?.answer).toBe('count');
+  });
+
   it('drops the null-key group of a day grouping, a row with no time field', async () => {
     const { e } = engine(() => ({
       data: {
