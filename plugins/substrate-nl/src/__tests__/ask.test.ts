@@ -395,7 +395,7 @@ describe('runAsk', () => {
     expect(Object.keys(query.mock.calls[0]?.[0] ?? {})[0]).toBe('ns/Decision');
   });
 
-  it('answers unknown when the month of a time phrase is also a stored value', async () => {
+  it('answers unknown when a month or year of a time phrase is also a stored value', async () => {
     const may = { type: 'Todo', field: 'area', value: 'may' };
     const withMay: ServedPack = { ...pack, values: { ...pack.values, may: [may] } };
     const asOf = '2026-11-19T10:00:00Z';
@@ -406,22 +406,34 @@ describe('runAsk', () => {
       );
       return { evs, sent: JSON.stringify(query.mock.calls[0]?.[0] ?? null) };
     };
-    const valued = (key: string, field: string): ServedPack => ({
+    const valued = (field: string, ...keys: string[]): ServedPack => ({
       ...pack,
-      values: { ...pack.values, [key]: [{ type: 'Todo', field, value: key }] }
+      values: {
+        ...pack.values,
+        ...Object.fromEntries(keys.map((k) => [k, [{ type: 'Todo', field, value: k }]]))
+      }
     });
-    for (const [q, p, span] of [
-      ['todos in may', withMay, 'in may'],
-      ['todos since may', withMay, 'since may'],
-      ['todos during may 2025', withMay, 'during may 2025'],
-      // A stored value of several words that takes in the month holds it too.
-      ['todos in june 2025', valued('june 2025', 'area'), 'in june 2025'],
-      ['todos in may release', valued('may release', 'tags'), 'in may']
+    for (const [q, p, span, value] of [
+      ['todos in may', withMay, 'in may', 'may'],
+      ['todos since may', withMay, 'since may', 'may'],
+      ['todos during may 2025', withMay, 'during may 2025', 'may'],
+      // A stored value of several words that takes in the month or year holds it too.
+      ['todos in june 2025', valued('area', 'june 2025'), 'in june 2025', 'june 2025'],
+      ['todos in may release', valued('tags', 'may release'), 'in may', 'may release'],
+      ['todos in 2025', valued('area', '2025'), 'in 2025', '2025'],
+      [
+        'todos in 2025 roadmap',
+        valued('area', '2025 roadmap', 'roadmap'),
+        'in 2025',
+        '2025 roadmap'
+      ]
     ] as const) {
       const held = await run(q, p);
       const parsed = held.evs[0] as Extract<NlEvent, { event: 'parsed' }>;
       expect(parsed.status, q).toBe('partial');
-      expect(JSON.stringify(parsed.frame?.['ns/Todo']?.params), q).not.toMatch(/createdAt|area/);
+      const params = JSON.stringify(parsed.frame?.['ns/Todo']?.params);
+      expect(params, q).not.toContain('createdAt');
+      expect(params, q).not.toContain(JSON.stringify(value));
       expect(outcome(held.evs), q).toMatchObject({
         kind: 'unknown',
         dropped: [{ span, kind: 'filter' }]
@@ -432,6 +444,11 @@ describe('runAsk', () => {
     expect(outcome(window.evs)).toMatchObject({ kind: 'rows', source: 'parser' });
     expect(window.sent).toContain(
       JSON.stringify({ createdAt: { gte: '2026-05-01T00:00:00Z', lt: '2026-06-01T00:00:00Z' } })
+    );
+    const year = await run('todos in 2025', pack);
+    expect(outcome(year.evs)).toMatchObject({ kind: 'rows', source: 'parser' });
+    expect(year.sent).toContain(
+      JSON.stringify({ createdAt: { gte: '2025-01-01T00:00:00Z', lt: '2026-01-01T00:00:00Z' } })
     );
     for (const q of ['may todos', 'todos in area may']) {
       const value = await run(q, withMay);

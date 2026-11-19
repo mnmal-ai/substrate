@@ -15,7 +15,7 @@ import type { NamespaceRulings, ValueAlias } from '../pack/rulings.js';
 import type { NamespacePack, PackField, PackType } from '../pack/types.js';
 import { pluralize, splitWords } from '../pack/words.js';
 import { whereFields } from '../rulings/schema.js';
-import { type DateRange, monthsAt, rangeFor } from './time.js';
+import { type DateRange, rangeFor, unitsAt } from './time.js';
 import {
   andOf,
   type Composed,
@@ -271,11 +271,11 @@ export function parseQuestion(
 
   // --- time, before ids, so the N in "last N days" is not read as a number ---
   const claimed = claimTime(tokens, ctx.asOf);
-  // "in may" where "may", or a value round it ("may release"), is stored: neither is read.
+  // "in may", "in 2025": if it, or a value round it ("may release"), is stored, neither is read.
   const heldValue =
     claimed === null
       ? undefined
-      : monthsAt(claimed.span)
+      : unitsAt(claimed.span)
           .map((i) => valueAround(tokens, claimed.at[0] + i, claimed.at, pack))
           .find((v) => v !== undefined);
   const time = heldValue === undefined ? claimed : null;
@@ -284,7 +284,7 @@ export function parseQuestion(
       ? null
       : {
           span: claimed.span,
-          reason: `"${heldValue}" could be the month or a stored value; neither is assumed`,
+          reason: `"${heldValue}" could be a time or a stored value; neither is assumed`,
           kind: 'filter'
         };
   if (time !== null) {

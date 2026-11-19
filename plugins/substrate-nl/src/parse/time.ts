@@ -8,12 +8,14 @@ const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'frida
 
 /** An ISO-8601 date-time with an offset: the only accepted `asOf`. */
 const AS_OF = /^(\d{4})-(\d{2})-(\d{2})T[\d:.]+(Z|[+-]\d{2}:\d{2})$/;
+/** A year from 1000 to 9998, so every window's end is still a four-digit year. */
+const YEAR = /^(?!9999)[1-9]\d{3}$/;
 
-/** True when `asOf` is an ISO-8601 date-time with an offset naming a real instant. */
+/** True when `asOf` is an ISO-8601 date-time with an offset naming a real instant in a `YEAR`. */
 export function validAsOf(asOf: unknown): asOf is string {
   if (typeof asOf !== 'string') return false;
   const m = AS_OF.exec(asOf);
-  if (m === null || !Number.isFinite(Date.parse(asOf))) return false;
+  if (m === null || !YEAR.test(m[1] as string) || !Number.isFinite(Date.parse(asOf))) return false;
   const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
   return new Date(Date.UTC(y, mo - 1, d)).getUTCDate() === d;
 }
@@ -31,7 +33,7 @@ export function rangeFor(phrase: string, asOf: string): DateRange | null {
   return r !== null && supported(r.gte) && supported(r.lt) ? r : null;
 }
 
-/** A bound dated 1000-01-01 to 9999-01-01; past those a year prints as "+010000" or "-007974". */
+/** True when a bound is a four-digit date from 1000-01-01 to 9999-01-01, the end of a `YEAR`. */
 function supported(bound: string | undefined): boolean {
   const date = bound?.slice(0, 10);
   return (
@@ -82,6 +84,8 @@ function windowOf(phrase: string, asOf: string): DateRange | null {
     if (unit === 'week') back.setUTCDate(back.getUTCDate() - 7 * n);
     if (unit === 'month') back.setUTCMonth(back.getUTCMonth() - n);
     if (unit === 'year') back.setUTCFullYear(back.getUTCFullYear() - n);
+    // Too far back for a Date: no window, rather than a throw from `at`.
+    if (Number.isNaN(back.getTime())) return null;
     return { gte: at(back.getTime()), lt: at(today + day) };
   }
   const since = /^since (\w+)$/.exec(phrase);
@@ -126,8 +130,6 @@ const MONTHS = [
   'december'
 ];
 const DAY_MS = 86_400_000;
-/** A year from 1000 to 9998, so every window's end is still a four-digit year. */
-const YEAR = /^(?!9999)[1-9]\d{3}$/;
 /** A day of the month, with an optional ordinal: "5", "5th". */
 const DAY_OF_MONTH = /^(\d{1,2})(?:st|nd|rd|th)?$/;
 
@@ -140,19 +142,25 @@ function monthNumber(w: string): number {
 }
 
 /**
- * Where a time phrase `rangeFor` accepted names a whole month: the positions of its month
- * words, as "may" in "in may" and "since may 2025", not in "on may 5", where a day stands
- * beside it.
+ * Where a time phrase `rangeFor` accepted names a whole year or month: the positions of
+ * the words of each such operand, as "may" in "in may", "june", "august" and "2025" in
+ * "between june and august 2025"; none in "on may 5 2025" (a day) or "last 2000 days".
  */
-export function monthsAt(phrase: string): number[] {
+export function unitsAt(phrase: string): number[] {
   const words = phrase.split(' ');
-  return words.flatMap((w, i) =>
-    monthNumber(w) > 0 &&
-    !DAY_OF_MONTH.test(words[i - 1] ?? '') &&
-    !DAY_OF_MONTH.test(words[i + 1] ?? '')
-      ? [i]
-      : []
-  );
+  const head = words[0] ?? '';
+  if (!['in', 'during', 'since', 'after', 'before', 'until', 'from', 'between'].includes(head))
+    return [];
+  const sep = head === 'from' ? 'to' : head === 'between' ? 'and' : undefined;
+  const out: number[] = [];
+  for (let start = 1, i = 1; i <= words.length; i++) {
+    if (i < words.length && words[i] !== sep) continue;
+    const operand = words.slice(start, i);
+    if (operand.length <= 2 && operand.every((w) => YEAR.test(w) || monthNumber(w) > 0))
+      for (let j = start; j < i; j++) out.push(j);
+    start = i + 1;
+  }
+  return out;
 }
 
 /**

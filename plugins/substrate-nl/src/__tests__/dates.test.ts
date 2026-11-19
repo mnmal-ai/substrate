@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseQuestion } from '../parse/parse.js';
-import { rangeFor } from '../parse/time.js';
+import { rangeFor, validAsOf } from '../parse/time.js';
 import { ctx, pack } from './_fixture.js';
 
 const asOf = '2026-10-02T12:00:00-05:00';
@@ -220,6 +220,21 @@ describe('years and months as windows', () => {
     expect(rangeFor('in december', late)).toBeNull();
     expect(rangeFor('last 10000 years', z)).toBeNull();
     expect(rangeFor('last 1000 years', z)).toEqual({ gte: zz('1026-11-19'), lt: zz('2026-11-20') });
+  });
+
+  it('reads a rolling window too long for a date as no window, without throwing', () => {
+    for (const p of ['last 200000000 days', 'last 99999999999999999999 years'])
+      expect(rangeFor(p, z), p).toBeNull();
+    const r = parseQuestion('todos in the last 200000000 days', pack, { ...ctx, asOf: z });
+    expect(r.candidates[0]?.evidence.some((e) => e.role === 'time')).toBe(false);
+    expect(r.status).toBe('partial');
+  });
+
+  it('accepts an asOf only in years 1000 to 9998', () => {
+    for (const a of ['0050-03-01T00:00:00Z', '0999-12-31T23:00:00Z', '9999-01-01T00:00:00Z'])
+      expect(validAsOf(a), a).toBe(false);
+    for (const a of ['1000-01-01T00:00:00Z', '9998-12-31T23:00:00-05:00'])
+      expect(validAsOf(a), a).toBe(true);
   });
 
   it('reads "in <month>" on the first of that month as the month just begun', () => {
