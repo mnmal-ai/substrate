@@ -15,7 +15,7 @@ import {
 import {
   compose,
   MemoryDataset,
-  MemoryEdgesStore,
+  type MemoryEdgesStore,
   MemorySubstrateServer,
   PgDataset,
   PgEdgesStore
