@@ -370,14 +370,19 @@ function parseSegments(token: string): {
   if (h === undefined || p === undefined || s === undefined) return null;
   if (h.length === 0 || p.length === 0 || s.length === 0) return null;
   try {
-    const header = JSON.parse(base64UrlDecode(h).toString('utf8')) as JwtHeader;
-    const payload = JSON.parse(base64UrlDecode(p).toString('utf8')) as JwtPayload;
+    const header: unknown = JSON.parse(base64UrlDecode(h).toString('utf8'));
+    const payload: unknown = JSON.parse(base64UrlDecode(p).toString('utf8'));
+    if (!isPlainObject(header) || !isPlainObject(payload)) return null;
     const signingInput = Buffer.from(`${h}.${p}`, 'utf8');
     const signature = base64UrlDecode(s);
-    return { header, payload, signingInput, signature };
+    return { header: header as JwtHeader, payload: payload as JwtPayload, signingInput, signature };
   } catch {
     return null;
   }
+}
+
+function isPlainObject(value: unknown): value is object {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**
