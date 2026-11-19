@@ -252,6 +252,8 @@ export function parseQuestion(
 
   // --- type phrases: rulings first, then the pack's, longest first ---
   const mentioned = new Map<string, { span: string; plural: boolean; at: [number, number] }>();
+  /** Every singular type phrase, by position: a number after one may be an id. */
+  const singularAt: { types: string[]; at: [number, number] }[] = [];
   for (const entry of buildTypeIndex(pack, rulings)) {
     const n = entry.phrase.split(' ').length;
     for (let i = 0; i + n <= tokens.length; i++) {
@@ -259,6 +261,7 @@ export function parseQuestion(
       if (slice.some((t) => t.used) || slice.map((t) => t.text).join(' ') !== entry.phrase)
         continue;
       for (const t of slice) t.used = true;
+      if (!entry.plural) singularAt.push({ types: entry.types, at: [i, i + n - 1] });
       // A type's earliest mention stands for it: span, number and position from one occurrence.
       for (const type of entry.types) {
         const prior = mentioned.get(type);
@@ -322,8 +325,12 @@ export function parseQuestion(
   }
 
   // --- ids: #N anywhere, or a number right after a type word or an id word ---
+  // Any singular mention of a type cues an id, so long as the type's first mention is singular.
   const followsSingularType = (at: number) =>
-    [...mentioned.values()].some((m) => !m.plural && at >= m.at[0] && at <= m.at[1]);
+    singularAt.some(
+      (s) =>
+        at >= s.at[0] && at <= s.at[1] && s.types.some((t) => mentioned.get(t)?.plural === false)
+    );
   const ids: number[] = [];
   let bareNumber = false;
   tokens.forEach((t, i) => {

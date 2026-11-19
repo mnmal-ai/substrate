@@ -156,6 +156,17 @@ describe('ordering, counting, authors', () => {
     const r = parse('todos 1752');
     expect(JSON.stringify(r.candidates)).not.toContain('shortId');
     expect(r.residual).toEqual(['1752']);
+    // A singular type word cues every number after it once the type's first mention is singular.
+    for (const [q, ids] of [
+      ['todo 5 and todo 7', [5, 7]],
+      ['todo 5 or todo 7', [5, 7]],
+      ['todo 5, todo 7', [5, 7]],
+      ['show todo 5 and todo 12', [5, 12]],
+      ['decision 651 and decision 652', [651, 652]]
+    ] as const) {
+      expect(parse(q), q).toMatchObject({ status: 'resolved', residual: [] });
+      expect(params(q), q).toEqual({ where: { shortId: { in: ids } } });
+    }
   });
 
   it('never drops an unread number', () => {

@@ -130,6 +130,13 @@ describe('a lone number nothing reads', () => {
     expect(params(q)).toEqual({ orderBy: [{ price: 'desc' }], limit: 1 });
     expect(parse('category 5 and the categories')).toMatchObject({ status: 'resolved' });
     expect(params('category 5 and the categories')).toEqual({ where: { shortId: { eq: 5 } } });
+    for (const [q, ids] of [
+      ['item 5 and item 7', [5, 7]],
+      ['sale 3 and sale 4', [3, 4]]
+    ] as const) {
+      expect(parse(q), q).toMatchObject({ status: 'resolved', residual: [] });
+      expect(params(q), q).toEqual({ where: { shortId: { in: ids } } });
+    }
   });
 });
 
