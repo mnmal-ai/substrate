@@ -18,7 +18,14 @@
 
 import { defineNamespace, field } from '@mnmal-ai/substrate-sdk';
 import type { NamespaceDefinition } from '@mnmal-ai/substrate-types';
-import { DEFAULT_PROPOSE_CAPABILITY, proposeToWrite, stampProposedBy } from './capability.js';
+import {
+  DEFAULT_DROP_CAPABILITY,
+  DEFAULT_PROPOSE_CAPABILITY,
+  gateNamespaceProposalRemoval,
+  proposeToWrite,
+  stampProposedBy
+} from './capability.js';
+import type { RegistryStore } from './registry-store.js';
 
 export const CONTROL_NAMESPACE = '_system_proposals';
 
@@ -31,7 +38,10 @@ export function isProposableNamespace(ns: unknown): ns is string {
 }
 
 export function defineControlPlaneTypes(
-  capability: string = DEFAULT_PROPOSE_CAPABILITY
+  registryStore: RegistryStore,
+  capability: string = DEFAULT_PROPOSE_CAPABILITY,
+  // shortcut: not threaded from SUBSTRATE_ADMIN_CAPABILITY, as for defineProposalTypes.
+  dropCapability: string = capability === '' ? '' : DEFAULT_DROP_CAPABILITY
 ): NamespaceDefinition {
   const def = defineNamespace(CONTROL_NAMESPACE, {
     NamespaceProposal: {
@@ -53,6 +63,7 @@ export function defineControlPlaneTypes(
     ...def,
     install(ctx) {
       def.install(ctx);
+      gateNamespaceProposalRemoval(ctx.registry, registryStore, dropCapability);
       stampProposedBy(ctx.registry, CONTROL_TYPE_NAMES);
     }
   };

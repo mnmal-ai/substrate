@@ -131,7 +131,7 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
         dataset: ctx.dataset,
         edges: ctx.edges
       });
-      defineControlPlaneTypes(capability).install(ctx);
+      defineControlPlaneTypes(registryStore, capability).install(ctx);
 
       // propose_namespace mutation — runtime namespace creation. Resolver factory captures `registryStore` at install time; the engine
       // handle is late-bound by `onStart` (see below) so the resolver can call

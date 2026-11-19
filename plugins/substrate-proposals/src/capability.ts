@@ -16,6 +16,7 @@ import {
   type ResolverArgs,
   ResolverFrameError
 } from '@mnmal-ai/substrate-types';
+import type { RegistryStore } from './registry-store.js';
 import { isLiveProposal, lockedInIdOrder, lockedRow } from './row-lock.js';
 
 export const DEFAULT_PROPOSE_CAPABILITY = 'substrate.propose';
@@ -358,6 +359,101 @@ export function gateFieldProposalRemoval(
       resolver: guard,
       // A create names no stored row to lock.
       ...(isCreate ? {} : { batch: lockedInIdOrder('FieldProposal', guard) })
+    });
+  }
+}
+
+/**
+ * Whether boot installs a NamespaceProposal row's namespace: the rows replay
+ * reads (applied, not archived), and only a namespace named by a string.
+ */
+function installsNamespace(row: Record<string, unknown>): boolean {
+  return row.applied === true && row.archived === false && typeof row.ns === 'string';
+}
+
+/**
+ * Whether namespace `ns` holds a stored row in any type this engine registers
+ * there, proposal records included; undefined when this engine does not hold
+ * the namespace, so it cannot be checked.
+ */
+async function namespaceHasRows(store: RegistryStore, ns: string): Promise<boolean | undefined> {
+  if (!store.has(ns)) return undefined;
+  const { registry, dataset } = store.getBinding(ns);
+  for (const [name, entry] of registry.all()) {
+    if (entry.kind === 'type' && (await typeHasRows(dataset, name))) return true;
+  }
+  return false;
+}
+
+/**
+ * Deleting a live NamespaceProposal, or an update that archives it, unapplies
+ * it or renames its `ns`, takes its namespace off the engine at the next boot.
+ * When that namespace holds stored rows, or this engine does not hold it to
+ * check, that needs the drop capability in that namespace, as
+ * `drop_namespace` does; otherwise the propose capability is enough. An update
+ * that can change none of those passes unchecked. As for TypeProposal, the
+ * proposal is found as the write finds it, locked until the write's
+ * transaction ends, and written by its stored id; one that cannot be loaded or
+ * locked is refused; an array of updates or deletes first locks every row it
+ * names in id order; and `updateMany` / `deleteMany` refuse once their
+ * single-row entry is replaced. Params whose value is undefined are left out
+ * first, as the update resolver leaves them. An empty capability opts out.
+ */
+export function gateNamespaceProposalRemoval(
+  registry: Registry,
+  store: RegistryStore,
+  dropCapability: string = DEFAULT_DROP_CAPABILITY
+): void {
+  if (dropCapability === '') return;
+  const gate = makeProposePolicy(dropCapability);
+  for (const key of ['deleteNamespaceProposal', 'updateNamespaceProposal']) {
+    const entry = registry.get(key);
+    if (entry === undefined) continue;
+    const { batch: _batch, resolver, ...rest } = entry;
+    const isDelete = key === 'deleteNamespaceProposal';
+    const guard: RegistryEntryResolver = async (ctx, args) => {
+      const params = Object.fromEntries(
+        Object.entries(args.params ?? {}).filter(([, v]) => v !== undefined)
+      );
+      const trusted = (args as { [TRUSTED_WRITE]?: true })[TRUSTED_WRITE] === true;
+      // Only a new `ns`, or `applied` / `archived` set to anything but live, takes a namespace off.
+      const keeps =
+        !isDelete &&
+        !('ns' in params) &&
+        (params.applied ?? true) === true &&
+        (params.archived ?? false) === false;
+      if (trusted || keeps) return resolver(ctx, args);
+      const row = await lockedRow('NamespaceProposal', params.id, args.dataset);
+      if (row === null) {
+        throw new ResolverFrameError(
+          'policy_denied',
+          `${key}: cannot load the proposal to check its namespace for stored rows; needs '${dropCapability}'`,
+          { required: `${ctx.namespace}:${dropCapability}` }
+        );
+      }
+      const after = isDelete ? undefined : { ...row, ...params };
+      const ns = row.ns;
+      const removes =
+        installsNamespace(row) &&
+        (after === undefined || !installsNamespace(after) || after.ns !== ns);
+      if (removes && typeof ns === 'string' && !gate({ ...ctx, namespace: ns }, args).allow) {
+        const rows = await namespaceHasRows(store, ns);
+        if (rows !== false) {
+          const why =
+            rows === true ? 'has stored rows' : 'is not held here to check for stored rows';
+          throw new ResolverFrameError(
+            'policy_denied',
+            `${key}: namespace '${ns}' ${why}; this change to its proposal takes it off at the next boot, which needs '${dropCapability}' as drop_namespace does`,
+            { required: `${ns}:${dropCapability}` }
+          );
+        }
+      }
+      return resolver(ctx, { ...args, params: { ...args.params, id: row.id } });
+    };
+    registry.replace(key, {
+      ...rest,
+      resolver: guard,
+      batch: lockedInIdOrder('NamespaceProposal', guard)
     });
   }
 }

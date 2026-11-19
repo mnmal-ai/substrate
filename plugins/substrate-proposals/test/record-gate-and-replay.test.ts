@@ -31,11 +31,13 @@ function row(
 
 async function boot(
   dataset: MemoryDataset,
-  control = new MemoryDataset({ namespace: '_system_proposals' })
+  control = new MemoryDataset({ namespace: '_system_proposals' }),
+  more: MemoryDataset[] = []
 ) {
   const datasets = new MemoryDatasetRegistry();
   datasets.set('app', dataset);
   datasets.set('_system_proposals', control);
+  for (const ds of more) datasets.set(ds.namespace, ds);
   // Datasets a replayed NamespaceProposal could name, so only the name check refuses them.
   datasets.set('a/b', new MemoryDataset({ namespace: 'a/b' }));
   const plugin = createProposalsPlugin({
@@ -707,6 +709,128 @@ describe('writing a FieldProposal', () => {
         'policy_denied'
       );
     }
+  });
+});
+
+describe('removing a NamespaceProposal', () => {
+  const str = JSON.stringify({ t: { kind: 'scalar', type: 'string' } });
+  const propose = ['read', 'mutate', 'substrate.propose'];
+  const as = (grants: Record<string, string[]>): Partial<RequestContext> => ({
+    ...ctx([]),
+    identity: { id: 'a', tokenId: 'a', grants }
+  });
+
+  /** A live NamespaceProposal 'np' for 'home', which holds a proposed type with a row unless `withRows` is false. */
+  async function seeded(withRows: boolean) {
+    const control = new MemoryDataset({ namespace: '_system_proposals' });
+    await control.write('NamespaceProposal', [row({ id: 'np', ns: 'home' })]);
+    const home = new MemoryDataset({ namespace: 'home' });
+    if (withRows) {
+      await home.write('TypeProposal', [row({ id: 'tp', typeName: 'Note', fieldsJson: str })]);
+      await home.write('Note', [{ id: 'n1', t: 'x' }]);
+    }
+    const booted = await boot(new MemoryDataset({ namespace: 'app' }), control, [home]);
+    expect(booted.engine.registryFor('home')).toBeDefined();
+    return { control, ...booted };
+  }
+
+  const removals: Array<[string, Record<string, unknown>]> = [
+    ['_system_proposals/deleteNamespaceProposal', { id: 'np' }],
+    ['_system_proposals/updateNamespaceProposal', { id: 'np', archived: true }],
+    ['_system_proposals/updateNamespaceProposal', { id: 'np', applied: false }],
+    ['_system_proposals/updateNamespaceProposal', { id: 'np', ns: 'elsewhere' }]
+  ];
+  const run = (engine: Engine, key: string, params: Record<string, unknown>, c = ctx(propose)) =>
+    engine.mutate({ frame: { [key]: { params, fields: { id: true } } }, ctx: c });
+
+  it('of a namespace with stored rows needs the drop capability in that namespace', async () => {
+    for (const [key, params] of removals) {
+      const { control, engine } = await seeded(true);
+      expect((await run(engine, key, params)).errors?.[0]?.code, key).toBe('policy_denied');
+      const batched = await engine.mutate({
+        frame: { [key]: [{ params, fields: { id: true } }] },
+        ctx: ctx(propose)
+      });
+      expect(batched.errors?.[0]?.code, key).toBe('policy_denied');
+      // The drop capability held only in the control plane is not held in 'home'.
+      const elsewhere = as({ '*': propose, _system_proposals: [...propose, 'admin'] });
+      expect((await run(engine, key, params, elsewhere)).errors?.[0]?.code, key).toBe(
+        'policy_denied'
+      );
+      expect((await control.read('NamespaceProposal', { id: 'np' })).rows[0]).toMatchObject({
+        ns: 'home',
+        applied: true,
+        archived: false
+      });
+      const inHome = as({ '*': propose, home: ['admin'] });
+      expect((await run(engine, key, params, inHome)).errors, key).toBeUndefined();
+    }
+  });
+
+  it('of a namespace with no stored rows needs only the propose capability', async () => {
+    for (const [key, params] of removals) {
+      const { engine } = await seeded(false);
+      expect((await run(engine, key, params)).errors, key).toBeUndefined();
+    }
+  });
+
+  it('passes a change replay never reads, and any change to a proposal that is not live', async () => {
+    const { control, engine } = await seeded(true);
+    const benign = { id: 'np', proposedReason: 'clarified' };
+    expect(
+      (await run(engine, '_system_proposals/updateNamespaceProposal', benign)).errors
+    ).toBeUndefined();
+    await control.write('NamespaceProposal', [row({ id: 'idle', ns: 'home', applied: false })]);
+    for (const [key, params] of [
+      ['_system_proposals/updateNamespaceProposal', { id: 'idle', archived: true }],
+      ['_system_proposals/deleteNamespaceProposal', { id: 'idle' }]
+    ] as const) {
+      expect((await run(engine, key, params)).errors, key).toBeUndefined();
+    }
+  });
+
+  it('by filter is refused, so it cannot route around the guard', async () => {
+    const { control, engine } = await seeded(true);
+    for (const [key, params] of [
+      ['_system_proposals/deleteManyNamespaceProposal', { where: { ns: { eq: 'home' } } }],
+      [
+        '_system_proposals/updateManyNamespaceProposal',
+        { where: { ns: { eq: 'home' } }, set: { archived: true } }
+      ]
+    ] as const) {
+      const env = await engine.mutate({
+        frame: { [key]: { params, fields: { count: true } } },
+        ctx: ctx([...propose, 'admin'])
+      });
+      expect(env.errors?.[0]?.code, key).toBe('capability_unsupported');
+    }
+    expect((await control.read('NamespaceProposal', { id: 'np' })).rows[0]).toMatchObject({
+      archived: false
+    });
+  });
+
+  it('fails closed when the proposal or its namespace cannot be checked', async () => {
+    const { control, engine } = await seeded(true);
+    // A live proposal for a namespace this host never installed.
+    await control.write('NamespaceProposal', [row({ id: 'ghost', ns: 'ghost' })]);
+    for (const [key, params] of [
+      ['_system_proposals/deleteNamespaceProposal', { id: 'missing' }],
+      ['_system_proposals/updateNamespaceProposal', { id: 'missing', archived: true }],
+      ['_system_proposals/deleteNamespaceProposal', { id: 'ghost' }],
+      ['_system_proposals/updateNamespaceProposal', { id: 'ghost', archived: true }]
+    ] as const) {
+      expect((await run(engine, key, params)).errors?.[0]?.code, key).toBe('policy_denied');
+    }
+    expect(
+      (
+        await run(
+          engine,
+          '_system_proposals/deleteNamespaceProposal',
+          { id: 'ghost' },
+          ctx([...propose, 'admin'])
+        )
+      ).errors
+    ).toBeUndefined();
   });
 });
 
