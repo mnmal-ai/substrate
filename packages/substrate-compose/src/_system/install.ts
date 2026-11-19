@@ -481,6 +481,31 @@ export async function installSystemNamespace(
   // dataset the lock is held until commit; the local mutex covers datasets
   // without one.
   const localKeyLock = createKeyedMutex();
+  /**
+   * Brings `kid`'s cache entry in line with the store once the key write
+   * commits, by re-reading its committed rows; nothing happens on rollback.
+   * Each refresh reads at the time it runs and refreshes of one kid run one at
+   * a time, so callbacks that finish out of order still end on the newest
+   * committed state. If the re-read fails, the kid is evicted. With no
+   * surrounding transaction, `direct` applies the written row at once.
+   */
+  const refreshLock = createKeyedMutex();
+  const syncKid = (args: ResolverArgs, kid: string, direct: () => void): void => {
+    if (args.afterTx === undefined) {
+      direct();
+      return;
+    }
+    args.afterTx(async ({ committed }) => {
+      if (!committed) return;
+      try {
+        await refreshLock(kid, () => keyRegistry.refresh(kid));
+      } catch (err) {
+        // A failed re-read fails closed: the kid stays out of the cache until the next reload.
+        keyRegistry.evict(kid);
+        throw err;
+      }
+    });
+  };
   const lockedKeyWrite =
     (fn: AutoCrudResolver): AutoCrudResolver =>
     (ctx, args) => {
@@ -527,7 +552,7 @@ export async function installSystemNamespace(
             },
             now: ctx.now
           });
-          installFromResult(keyRegistry, result, kid, opts.onWarn);
+          syncKid(args, kid, () => installFromResult(keyRegistry, result, kid, opts.onWarn));
         }
         return result;
       }),
@@ -576,7 +601,7 @@ export async function installSystemNamespace(
               now: ctx.now
             });
           }
-          installFromResult(keyRegistry, result, kid, opts.onWarn);
+          syncKid(args, kid, () => installFromResult(keyRegistry, result, kid, opts.onWarn));
         }
         return result;
       }),
@@ -595,7 +620,8 @@ export async function installSystemNamespace(
           if (isLive(target)) kidToEvict = extractKidForInvalidation(target);
         }
         const result = await base(ctx, args);
-        if (kidToEvict !== null) keyRegistry.evict(kidToEvict);
+        const evicted = kidToEvict;
+        if (evicted !== null) syncKid(args, evicted, () => keyRegistry.evict(evicted));
         return result;
       }),
     purgeKey: (base) =>
@@ -614,7 +640,8 @@ export async function installSystemNamespace(
         }
         try {
           const result = await base(ctx, args);
-          if (kidToEvict !== null) keyRegistry.evict(kidToEvict);
+          const evicted = kidToEvict;
+          if (evicted !== null) syncKid(args, evicted, () => keyRegistry.evict(evicted));
           return result;
         } catch (err) {
           // Kill-switch refusal: emit `destructive_op_refused` BEFORE re-throw so
