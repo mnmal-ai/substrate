@@ -23,8 +23,9 @@ export interface NlAskRequest {
   /** Force the reading to this type; resubmit a clarify option's `type`. Must name a type of the namespace. */
   type?: string;
   /**
-   * "Now" for relative dates and month-day year inference: ISO-8601 date-time with an
-   * offset (`2026-10-02T12:00:00-05:00`). Ranges are in its offset. Defaults to the server clock.
+   * "Now" for relative dates and month-day year inference; a bare month or year ("in march",
+   * "in 2025") reads as a window. ISO-8601 date-time with an offset, within years 1000 to 9998
+   * (`2026-10-02T12:00:00-05:00`). Ranges are in its offset. Defaults to the server clock.
    */
   asOf?: string;
 }
