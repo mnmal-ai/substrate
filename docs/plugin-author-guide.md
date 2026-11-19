@@ -892,8 +892,9 @@ reads but still maintained on every write.
 
 `add` and `orderedBy` write the index declaration onto the type's proposal row.
 If that proposal changed while `propose_index` ran, the call is refused
-`proposal_changed` and nothing is stored; retry. `remove` does not write a
-proposal and never returns it.
+`proposal_changed` and nothing is stored; retry. A `remove` with no
+recommendation that retracts a declaration from a proposed type's row writes
+that row too, so it can be refused `proposal_changed` the same way.
 
 #### Profiles
 
