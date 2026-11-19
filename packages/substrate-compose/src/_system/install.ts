@@ -486,8 +486,8 @@ export async function installSystemNamespace(
    * commits, by re-reading its committed rows; nothing happens on rollback.
    * Each refresh reads at the time it runs and refreshes of one kid run one at
    * a time, so callbacks that finish out of order still end on the newest
-   * committed state. With no surrounding transaction, `direct` applies the
-   * written row at once.
+   * committed state. If the re-read fails, the kid is evicted. With no
+   * surrounding transaction, `direct` applies the written row at once.
    */
   const refreshLock = createKeyedMutex();
   const syncKid = (args: ResolverArgs, kid: string, direct: () => void): void => {
@@ -496,7 +496,14 @@ export async function installSystemNamespace(
       return;
     }
     args.afterTx(async ({ committed }) => {
-      if (committed) await refreshLock(kid, () => keyRegistry.refresh(kid));
+      if (!committed) return;
+      try {
+        await refreshLock(kid, () => keyRegistry.refresh(kid));
+      } catch (err) {
+        // A failed re-read fails closed: the kid stays out of the cache until the next reload.
+        keyRegistry.evict(kid);
+        throw err;
+      }
     });
   };
   const lockedKeyWrite =

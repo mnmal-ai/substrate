@@ -224,4 +224,27 @@ describe('_system key interceptors — the cache follows committed writes only',
     await tx.settle(false);
     expect(keyRegistry.lookup(KID)).not.toBeNull();
   });
+
+  it('a commit whose re-read fails evicts the kid instead of keeping a stale entry', async () => {
+    const { store, snapshot, registry, keyRegistry } = await installed();
+    const created = (await registry.get('createKey')?.resolver(CTX, {
+      params: keyParams(),
+      dataset: store
+    } as unknown as ResolverArgs)) as Row;
+    snapshot.rows = [created];
+    expect(keyRegistry.lookup(KID)).not.toBeNull();
+    const revoke = settler();
+    await registry.get('updateKey')?.resolver(CTX, {
+      params: { id: created.id, revokedAt: new Date(Date.now() - 1000).toISOString() },
+      dataset: store,
+      afterTx: revoke.afterTx
+    } as unknown as ResolverArgs);
+    const failingRefresh = Object.assign(keyRegistry, {
+      refresh: async () => {
+        throw new Error('dataset unavailable');
+      }
+    });
+    await expect(revoke.settle(true)).rejects.toThrow('dataset unavailable');
+    expect(failingRefresh.lookup(KID)).toBeNull();
+  });
 });
