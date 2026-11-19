@@ -196,6 +196,13 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
     if (targets.length === 0) return [];
     const sql = this.#sql as Sql;
     const halfLifeSeconds = halfLifeHours * 3600;
+    // Rows lock in VALUES order, so every boost takes them in one fixed order
+    // (plain code-unit comparison, independent of the column collation) and two
+    // concurrent boosts over the same rows cannot deadlock.
+    const cmp = (x: string, y: string): number => (x < y ? -1 : x > y ? 1 : 0);
+    const ordered = [...targets].sort(
+      (a, b) => cmp(a.namespace, b.namespace) || cmp(a.type, b.type) || cmp(a.id, b.id)
+    );
     // Decay-then-add as one set-based UPDATE driven by a VALUES join: one
     // round-trip regardless of target count. Targets without an embedding row
     // drop out of the join; RETURNING reports the ones that matched.
@@ -208,7 +215,7 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
                       )
                     + ${bump},
           salience_updated_at = now()
-      FROM (VALUES ${sql(targets.map((t) => [t.namespace, t.type, t.id]))}) AS t(ns, ty, id)
+      FROM (VALUES ${sql(ordered.map((t) => [t.namespace, t.type, t.id]))}) AS t(ns, ty, id)
       WHERE e.row_namespace = t.ns
         AND e.row_type      = t.ty
         AND e.row_id        = t.id
