@@ -500,6 +500,10 @@ describe('aggregates: answering', () => {
       fn: 'count',
       field: '*'
     });
+    expect(params('daily how many sales')).toEqual({
+      aggregate: { value: { count: true } },
+      groupBy: { bucket: { dateTrunc: [{ lit: 'day' }, 'soldAt'] } }
+    });
     // The same late claim takes "by|per <unit>" before "how many".
     expect(params('per month how many sales')).toEqual({
       aggregate: { value: { count: true } },
