@@ -99,6 +99,17 @@ describe.skipIf(!isPgGated)('LexicalStore parity (memory vs pg)', () => {
     expect(hits[0]?.row).toEqual({ id: 'holiday' });
   });
 
+  it('adds the row shortId to the body in pg', async () => {
+    await sql`INSERT INTO row_ids (namespace, type, id) VALUES (${NS}, ${TYPE}, 'holiday') ON CONFLICT DO NOTHING`;
+    await sql`INSERT INTO short_ids (namespace, type, short_id, row_id) VALUES (${NS}, ${TYPE}, 42, 'holiday') ON CONFLICT DO NOTHING`;
+    try {
+      const hits = await pg.search({ namespace: NS, type: TYPE, query: 'Sweden', k: 5 });
+      expect(hits[0]?.row).toEqual({ id: 'holiday', shortId: 42 });
+    } finally {
+      await sql`DELETE FROM row_ids WHERE namespace = ${NS} AND type = ${TYPE} AND id = 'holiday'`;
+    }
+  });
+
   it('excludes a soft-deleted row in both backends', async () => {
     await tombstoneRow(sql, NS, TYPE, 'holiday');
     const memWithRows = new InMemoryLexicalStore({

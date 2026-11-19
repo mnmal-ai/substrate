@@ -122,8 +122,8 @@ export interface RecallInput {
    */
   where?: KnnRowFilter;
   /**
-   * Row-body projection. Field -> `true` keeps those keys plus `id`; `true`
-   * keeps the whole body. Absent → `id` plus the handle fields
+   * Row-body projection. Field -> `true` keeps those keys plus `id` and
+   * `shortId`; `true` keeps the whole body. Absent → `id`, `shortId` and the handle fields
    * (`HANDLE_FIELDS`) the row has. Applied after row filtering and policy,
    * which still see the full body. A malformed value is refused with
    * `bad_request`.

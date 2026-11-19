@@ -341,7 +341,7 @@ describe('runAsk', () => {
     expect(o).toMatchObject({ kind: 'recall', hits: [{ id: 'h1' }] });
     const sent = query.mock.calls.at(-1)?.[0] as Record<
       string,
-      { params: Record<string, unknown> }
+      { params: Record<string, unknown>; fields?: Record<string, unknown> }
     >;
     // recall/Hit refuses a frame with no `type`, so the judge must name one.
     expect(sent['recall/Hit']?.params).toMatchObject({
@@ -349,6 +349,8 @@ describe('runAsk', () => {
       namespace: 'ns',
       type: 'SessionLog'
     });
+    // Hits come back as handles plus shortId, not whole bodies.
+    expect(sent['recall/Hit']?.fields).toMatchObject({ row: { shortId: true, title: true } });
   });
 
   it('a type forced by the caller wins over the one the judge names', async () => {

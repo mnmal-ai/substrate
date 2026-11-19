@@ -57,6 +57,23 @@ const parse = (q: string, rulings = base) => parseQuestion(q, pack, { asOf, ruli
 const params = (q: string, rulings = base) =>
   Object.values(parse(q, rulings).candidates[0]?.frame ?? {})[0]?.params;
 
+describe('archived phrasing on a count', () => {
+  it.each([
+    'How many categories are there in total (archived or not)?',
+    'how many categories including archived',
+    'how many categories in total'
+  ])('%s counts every row with no leftovers', (q) => {
+    const c = parse(q).candidates[0];
+    expect(Object.values(c?.frame ?? {})[0]?.params).toEqual({});
+    expect(c?.dropped).toEqual([]);
+    expect(c?.residual).toEqual([]);
+  });
+
+  it('a total over a number field is still an aggregate', () => {
+    expect(params('total rank of categories')?.aggregate).toEqual({ value: { sum: 'rank' } });
+  });
+});
+
 describe('aggregates: parsing', () => {
   it('reads average, total, min and max of a number field', () => {
     for (const [q, fn] of [

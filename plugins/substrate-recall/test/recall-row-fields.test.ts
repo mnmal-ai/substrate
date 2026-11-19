@@ -80,6 +80,33 @@ describe('the recall/Hit frame', () => {
     expect(rows[0]?.row).toEqual({ id: 'n1', synopsis: 'short handle' });
   });
 
+  it('keeps shortId beside id in the default and chosen projections', async () => {
+    const withShort = () =>
+      ({
+        knnSearch: async () => [{ row: { ...BODY, shortId: 7 }, score: 0.9, salience: 0 }],
+        boostSalience: async () => [],
+        fetchEmbeddings: async () => [],
+        selectCandidates: async () => []
+      }) as unknown as EmbeddingsStore;
+    const plugin = createRecallPlugin({
+      embedder: new FakeEmbedder({ dimension: 8 }),
+      store: withShort()
+    });
+    const tool = plugin.mcpTools?.find((t) => t.name === 'recall');
+    const run = async (input: Record<string, unknown>) =>
+      (
+        (await tool!.handler({ query: 'q', ...BASE, ...input })) as {
+          rows: Array<{ row: Record<string, unknown> }>;
+        }
+      ).rows[0]?.row;
+    expect(await run({})).toEqual({ id: 'n1', shortId: 7, synopsis: 'short handle' });
+    expect(await run({ rowFields: { body: true } })).toEqual({
+      id: 'n1',
+      shortId: 7,
+      body: 'a long body nobody asked for'
+    });
+  });
+
   it('returns the whole body for row: true', async () => {
     const rows = await frame({ id: true, row: true });
     expect(rows[0]?.row).toEqual(BODY);

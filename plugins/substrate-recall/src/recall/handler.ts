@@ -549,14 +549,14 @@ function rowFieldsProblem(value: unknown): string | null {
   return null;
 }
 
-/** Narrow a hit's `row` to `id` plus `rowFields`, or plus the handle fields when absent. */
+/** Narrow a hit's `row` to `id` and `shortId` plus `rowFields`, or plus the handle fields when absent. */
 function projectRow<R extends { row: Record<string, unknown> }>(
   hit: R,
   rowFields: Record<string, true> | undefined
 ): R {
   const row: Record<string, unknown> = {};
   const keep = rowFields === undefined ? HANDLE_FIELDS : Object.keys(rowFields);
-  for (const field of ['id', ...keep]) {
+  for (const field of ['id', 'shortId', ...keep]) {
     if (Object.hasOwn(hit.row, field)) row[field] = hit.row[field];
   }
   return { ...hit, row };

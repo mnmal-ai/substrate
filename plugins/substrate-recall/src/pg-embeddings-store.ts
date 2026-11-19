@@ -33,6 +33,7 @@ import type {
   SalienceTarget
 } from './embeddings-store.js';
 import {
+  HIT_BODY_SQL,
   purgeTypeTableOrphans,
   ROW_BODY_SQL,
   rowFilterSql,
@@ -150,7 +151,7 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
             tx,
             tx`
         SELECT
-          ${tx.unsafe(ROW_BODY_SQL)}              AS row,
+          ${tx.unsafe(HIT_BODY_SQL)}              AS row,
           1 - (e.embedding <=> ${literal}::vector) AS score,
           e.salience ${
             halfLife !== undefined && halfLife > 0
@@ -246,7 +247,7 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
     // the tuple, so no extra index is needed.
     const fetch = (part: typeof ids, from: ReturnType<typeof rowsFrom>) => sql<EmbeddingRow[]>`
       SELECT e.row_namespace, e.row_type, e.row_id, e.embedding::text AS embedding,
-             ${sql.unsafe(ROW_BODY_SQL)} AS body, e.salience
+             ${sql.unsafe(HIT_BODY_SQL)} AS body, e.salience
       FROM (VALUES ${sql(part.map((id) => [id.namespace, id.type, id.id]))}) AS t(ns, ty, id)
       JOIN embeddings e
         ON e.row_namespace = t.ns AND e.row_type = t.ty AND e.row_id = t.id
