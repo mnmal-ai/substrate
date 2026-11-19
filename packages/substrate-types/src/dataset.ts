@@ -396,6 +396,14 @@ export interface Dataset {
   read(type: string, params: ReadParams): Promise<ReadResult>;
   write(type: string, rows: WriteRow[], options?: WriteOptions): Promise<WriteResult>;
   tombstone(type: string, ids: Id[]): Promise<DeleteResult>;
+  /**
+   * Inside a transaction, share-locks the live rows among `ids` until it ends:
+   * a concurrent `tombstone` of one waits for this transaction, and this call
+   * waits for a tombstone already in flight, so a read after it sees the
+   * outcome. Called before checking that a reference's target exists. A no-op
+   * outside a transaction; absent where transactions already run one at a time.
+   */
+  lockShared?(type: string, ids: Id[]): Promise<void>;
   purge(type: string, ids: Id[]): Promise<DeleteResult>;
   /**
    * Physically delete every row of `type` within this dataset's namespace,

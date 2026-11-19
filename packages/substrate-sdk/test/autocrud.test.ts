@@ -571,10 +571,10 @@ describe('autocrud.deleteResolver (direct-call)', () => {
       policy: 'restrict'
     });
     const resolver = deleteResolver('Todo', dataset, edges);
-    await expect(resolver(makeCtx(), { params: { id: 't1' } })).rejects.toThrow(
-      /restrict.*cannot delete/
-    );
-    // Row still live — Phase 0 gate prevented the tombstone.
+    // The engine runs every resolver in a transaction; the refusal rolls the tombstone back.
+    await expect(
+      dataset.withTransaction((tx) => resolver(makeCtx(), { params: { id: 't1' }, dataset: tx }))
+    ).rejects.toThrow(/restrict.*cannot delete/);
     const { rows: liveRows } = await dataset.read('Todo', { id: 't1' });
     expect(liveRows).toHaveLength(1);
   });
