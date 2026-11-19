@@ -22,7 +22,7 @@ import {
   parseFieldSpec
 } from './field-spec-json.js';
 import type { RegistryStore } from './registry-store.js';
-import { lockedInIdOrder, lockedRow } from './row-lock.js';
+import { isLiveProposal, LIVE, lockedInIdOrder, lockedRow } from './row-lock.js';
 
 /**
  * The crossRef target check for a proposal in `namespace`. A target in a
@@ -68,11 +68,6 @@ const always = (): boolean => true;
  */
 export function appliedTargetCheck(store: RegistryStore, namespace: string): CrossRefTargetCheck {
   return crossRefTargetCheck(store, namespace, always, always);
-}
-
-/** Whether boot applies a proposal row: the predicate replay reads stored rows by. */
-export function isLiveProposal(row: Record<string, unknown>): boolean {
-  return row.applied === true && row.supersededByCode === false && row.archived === false;
 }
 
 /**
@@ -148,9 +143,6 @@ const SPEC_KEYS: ReadonlySet<string> = new Set([
   'targetType',
   'fieldName'
 ]);
-
-/** The flags a row starts with when nothing is known of it: as live as it can be. */
-const LIVE = { applied: true, supersededByCode: false, archived: false };
 
 /**
  * Check the crossRefs of a TypeProposal or FieldProposal row written through

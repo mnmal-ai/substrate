@@ -416,9 +416,11 @@ export interface Dataset {
    */
   lockForUpdate?(type: string, ids: Id[]): Promise<void>;
   /**
-   * True when this dataset runs its transactions one at a time, so a check
-   * made inside one sees no concurrent write and needs no row lock (memory).
-   * A check that relies on `lockForUpdate` refuses a dataset with neither.
+   * True when read inside one of this dataset's transactions and those run
+   * one at a time, so a check made there sees no concurrent write and needs
+   * no row lock (memory). False or absent anywhere else, outside a
+   * transaction included, as `lockForUpdate` throws there. A check that
+   * relies on `lockForUpdate` refuses a dataset with neither.
    */
   readonly serialTransactions?: boolean;
   purge(type: string, ids: Id[]): Promise<DeleteResult>;

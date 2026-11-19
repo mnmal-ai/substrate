@@ -1,10 +1,10 @@
 /**
  * The proposal row gates check a stored row under a row lock. The write lands
- * on the row the check read, whatever its id names by the time it runs; a
- * store that can neither lock a row nor runs one transaction at a time is
- * refused; and a mutate array locks its rows in id order, so two arrays
- * naming the same rows queue rather than deadlock (pg, skipped when
- * POSTGRES_URL is absent).
+ * on the row the check read, whatever its id names by the time it runs, from
+ * a single write or an array; a store that can neither lock a row nor runs
+ * the check inside one of its one-at-a-time transactions is refused; and a
+ * mutate array locks its rows in id order, so two arrays naming the same rows
+ * queue rather than deadlock (pg, skipped when POSTGRES_URL is absent).
  */
 
 import { Engine, loadPlugins, MemoryEdgesStore } from '@mnmal-ai/substrate-core';
@@ -121,11 +121,25 @@ describe('a proposal row gate (memory)', () => {
         )
       );
     }
+    /** Calls `key`'s array resolver straight, one element per params, over `dataset`. */
+    function callArray(
+      key: string,
+      ctx: Partial<RequestContext>,
+      list: Array<Record<string, unknown>>,
+      dataset: Dataset
+    ): Promise<unknown> {
+      const batch = registry?.get(key)?.batch;
+      if (batch === undefined) throw new Error(`no array resolver for ${key}`);
+      return batch(
+        { ...ctx, namespace: 'ext' } as RequestContext,
+        list.map((params) => ({ params, dataset }) as ResolverArgs)
+      );
+    }
     const read = async (type: string, id: string): Promise<Row | undefined> =>
       (await ext.read(type, { id })).rows[0];
     const shortIdOf = async (type: string, id: string): Promise<string> =>
       String((await read(type, id))?.shortId);
-    return { engine, ext, create, call, read, shortIdOf };
+    return { engine, ext, create, call, callArray, read, shortIdOf };
   }
 
   it('writes the row the reference check read, whatever its id names by then', async () => {
@@ -178,7 +192,26 @@ describe('a proposal row gate (memory)', () => {
     expect(await read('TypeProposal', id)).toMatchObject({ archived: true });
   });
 
-  it('refuses a check over a store that can neither lock the row nor runs one transaction at a time', async () => {
+  it('writes, from an array, the rows the array locked, whatever their ids name by then', async () => {
+    const { ext, create, callArray, read, shortIdOf } = await boot();
+    const id = await create('FieldProposal', {
+      targetType: 'Order',
+      fieldName: 'checked',
+      fieldSpecJson: clean
+    });
+    const shortId = await shortIdOf('FieldProposal', id);
+    // A row created under the short id while the array waited for its locks.
+    const racing = lockingWhile(ext, () =>
+      ext.write('FieldProposal', [
+        { ...base, id: shortId, targetType: 'Order', fieldName: 'other', fieldSpecJson: clean }
+      ])
+    );
+    await callArray('updateFieldProposal', READER, [{ id: shortId, applied: true }], racing);
+    expect(await read('FieldProposal', shortId)).toMatchObject({ applied: false });
+    expect(await read('FieldProposal', id)).toMatchObject({ applied: true });
+  });
+
+  it('refuses a check it cannot hold the row still for, memory outside a transaction included', async () => {
     const { ext, create, call } = await boot();
     const fieldProposal = await create('FieldProposal', {
       targetType: 'Order',
@@ -198,12 +231,17 @@ describe('a proposal row gate (memory)', () => {
       ['updateTypeProposal', { id: typeProposal, archived: true }]
     ];
     for (const [key, params] of cases) {
-      await expect(call(key, READER, params, unlocked), key).rejects.toMatchObject({
-        code: 'policy_denied'
-      });
-      await expect(call(key, READER, params, ext), key).resolves.toMatchObject({
-        id: params.id
-      });
+      // A store that can neither lock nor run one transaction at a time, then
+      // memory outside a transaction, where a write can interleave.
+      for (const dataset of [unlocked, ext]) {
+        await expect(call(key, READER, params, dataset), key).rejects.toMatchObject({
+          code: 'policy_denied'
+        });
+      }
+      await expect(
+        ext.withTransaction((tx) => call(key, READER, params, tx)),
+        key
+      ).resolves.toMatchObject({ id: params.id });
     }
   });
 });

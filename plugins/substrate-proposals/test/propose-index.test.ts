@@ -183,35 +183,65 @@ describe('propose_index (memory)', () => {
     await storageSettled();
   });
 
-  it('stores nothing over a proposal changed while it ran, so the change stands', async () => {
-    const home = new MemoryDataset({ namespace: NS });
-    const sys = new MemoryDataset({ namespace: '_system' });
-    let archiveOnAudit = false;
-    const write = sys.write.bind(sys);
-    // The audit lands between propose_index's read of the row and its write:
-    // an archive committed there is what a concurrent writer would leave.
-    sys.write = async (type, rows, options) => {
-      if (type === 'AuditEvent' && archiveOnAudit) {
-        const where = { typeName: { eq: 'Sneaker' } };
-        const [row] = (await home.read('TypeProposal', { where })).rows;
-        await home.conditionalUpdate('TypeProposal', row?.id as string, {}, { archived: true });
+  it('stores and audits nothing over a proposal changed while it ran, and audits a store once', async () => {
+    const changes: Record<string, Record<string, unknown>> = {
+      archived: { archived: true },
+      // Drops `size`, the field the order names.
+      'spec rewritten': {
+        fieldsJson: JSON.stringify({ brand: { kind: 'scalar', type: 'string' } })
       }
-      return write(type, rows, options);
     };
-    const { engine } = await setup(home, sys);
-    archiveOnAudit = true;
-    const env = await proposeIndex(engine, {
-      namespace: NS,
-      type: 'Sneaker',
-      action: 'orderedBy',
-      orderedBy: { size: 'desc' }
-    });
-    expect(code(env)).toBe('proposal_changed');
-    const [row] = (await home.read('TypeProposal', { where: { typeName: { eq: 'Sneaker' } } }))
-      .rows;
-    expect(row?.archived).toBe(true);
-    expect(row?.orderedByJson ?? null).toBeNull();
-    expect(sneaker(engine)?.orderedBy).toBeUndefined();
+    const where = { typeName: { eq: 'Sneaker' } };
+    for (const [label, change] of Object.entries(changes)) {
+      const home = new MemoryDataset({ namespace: NS });
+      const read = home.read.bind(home);
+      const withTransaction = home.withTransaction.bind(home);
+      let changeBeforeStore = false;
+      // propose_index has read the live row; this change commits before the
+      // transaction its store runs in begins.
+      home.withTransaction = async <T>(fn: (tx: Dataset) => Promise<T>): Promise<T> => {
+        if (changeBeforeStore) {
+          changeBeforeStore = false;
+          const [live] = (await read('TypeProposal', { where })).rows;
+          await home.conditionalUpdate('TypeProposal', live?.id as string, {}, change);
+        }
+        return withTransaction(fn);
+      };
+      const { engine, system } = await setup(home);
+      const audits = async (): Promise<number> =>
+        (await system.read('AuditEvent', { where: { targetKid: { eq: `${NS}/Sneaker` } } })).rows
+          .length;
+      // A copy: memory hands back its stored row, which the change rewrites in place.
+      const original = { ...(await read('TypeProposal', { where })).rows[0] };
+      const order = {
+        namespace: NS,
+        type: 'Sneaker',
+        action: 'orderedBy',
+        orderedBy: { size: 'desc' }
+      };
+      changeBeforeStore = true;
+      expect(code(await proposeIndex(engine, order)), label).toBe('proposal_changed');
+      const [changed] = (await read('TypeProposal', { where })).rows;
+      expect(changed, label).toMatchObject(change);
+      expect(changed?.orderedByJson ?? null, label).toBeNull();
+      expect(sneaker(engine)?.orderedBy, label).toBeUndefined();
+      expect(await audits(), label).toBe(0);
+
+      // Once the row is the definition it was, the same call stores and audits once.
+      await home.conditionalUpdate(
+        'TypeProposal',
+        original.id as string,
+        {},
+        {
+          archived: false,
+          fieldsJson: original.fieldsJson
+        }
+      );
+      expect((await proposeIndex(engine, order)).errors ?? [], label).toEqual([]);
+      const [stored] = (await read('TypeProposal', { where })).rows;
+      expect(stored?.orderedByJson, label).toBe(JSON.stringify({ size: 'desc' }));
+      expect(await audits(), label).toBe(1);
+    }
   });
 
   it('refuses a batch of propose_index calls, which share one transaction', async () => {
@@ -941,7 +971,7 @@ describe.skipIf(!POSTGRES_URL)('propose_index (pg)', () => {
     }
   });
 
-  it('leaves a proposal archived by a concurrent update archived', async () => {
+  it('leaves a proposal archived by a concurrent update archived, whichever lands first', async () => {
     const typeName = `Racer${randomUUID().slice(0, 8)}`;
     const proposed = await engine.mutate({
       frame: {
@@ -967,27 +997,48 @@ describe.skipIf(!POSTGRES_URL)('propose_index (pg)', () => {
         },
         ctx: PROPOSER
       });
+    const audits = async (): Promise<number> =>
+      (await system.read('AuditEvent', { where: { targetKid: { eq: `${APP}/${typeName}` } } })).rows
+        .length;
     const tally: Record<string, number> = {};
-    let lost = 0;
+    const violations: string[] = [];
     for (let i = 0; i < 40; i++) {
       expect((await archive(false)).errors ?? []).toEqual([]);
+      const before = await audits();
+      // Each side starts after its own 0-40 ms, so either can land first.
+      const after = <T>(fn: () => Promise<T>): Promise<T> =>
+        new Promise((resolve) => setTimeout(resolve, Math.floor(Math.random() * 40))).then(fn);
       const [archived, indexed] = await Promise.all([
-        archive(true),
-        proposeIndex(engine, {
-          namespace: APP,
-          type: typeName,
-          action: 'add',
-          declaration: { fields: ['brand'] }
-        })
+        after(() => archive(true)),
+        after(() =>
+          proposeIndex(engine, {
+            namespace: APP,
+            type: typeName,
+            action: 'add',
+            declaration: { fields: ['brand'] }
+          })
+        )
       ]);
       expect(archived.errors ?? []).toEqual([]);
       const row = (await proposals.read('TypeProposal', { id })).rows[0];
-      const outcome = `propose_index=${code(indexed) ?? 'ok'} archived=${String(row?.archived)}`;
+      const stored = code(indexed) === undefined;
+      const audited = (await audits()) - before;
+      const outcome = `propose_index=${code(indexed) ?? 'ok'} archived=${String(row?.archived)} audited=${audited}`;
       tally[outcome] = (tally[outcome] ?? 0) + 1;
-      if (row?.archived !== true) lost++;
+      if (row?.archived !== true) violations.push(outcome);
+      // An applied call audits once; a refused one, never.
+      if (audited !== (stored ? 1 : 0)) violations.push(outcome);
+      if (stored && row?.indexesJson == null) violations.push(outcome);
     }
     await storageSettled();
-    expect(lost, JSON.stringify(tally, null, 1)).toBe(0);
+    const report = JSON.stringify(tally, null, 1);
+    expect(violations, report).toEqual([]);
+    // Both orders occurred: propose_index first, and the archive first.
+    const stores = Object.entries(tally)
+      .filter(([k]) => k.startsWith('propose_index=ok'))
+      .reduce((n, [, v]) => n + v, 0);
+    expect(stores, report).toBeGreaterThan(0);
+    expect(stores, report).toBeLessThan(40);
   }, 120_000);
 
   it('refuses propose_index sharing its transaction with a write, and changes nothing', async () => {

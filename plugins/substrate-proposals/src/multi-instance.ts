@@ -29,13 +29,13 @@ import {
 } from './apply.js';
 import type { PubSub } from './config.js';
 import { isProposableNamespace } from './control-plane.js';
-import { isLiveProposal } from './cross-ref-targets.js';
 import { ensureStorageAfterCommit } from './engine-write.js';
 import { ProposalError } from './errors.js';
 import type { FieldSpecJson } from './field-spec-json.js';
 import { defineProposalTypes } from './namespace.js';
 import { CLUSTER_CHANNEL } from './propose-namespace-resolver.js';
 import type { RegistryStore } from './registry-store.js';
+import { isLiveProposal } from './row-lock.js';
 
 /** Why a stored field proposal is skipped when replay skipped its type. */
 function typeSkipped(row: Row): ProposalError {

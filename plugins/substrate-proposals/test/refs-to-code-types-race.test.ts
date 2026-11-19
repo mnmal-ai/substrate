@@ -22,8 +22,8 @@ import type {
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CONTROL_NAMESPACE } from '../src/control-plane.js';
-import { isLiveProposal } from '../src/cross-ref-targets.js';
 import { createNoopPubSub, createProposalsPlugin, storageSettled } from '../src/index.js';
+import { isLiveProposal } from '../src/row-lock.js';
 import { deleteNamespaces } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;

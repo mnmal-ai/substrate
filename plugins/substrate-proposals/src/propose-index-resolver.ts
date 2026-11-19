@@ -30,7 +30,8 @@
  *
  * Audit: every applied call writes one `_system/AuditEvent` (`index_proposed`)
  * once its checks have passed and before its first effect (for a drop, under
- * the table lock, just before `DROP INDEX`), so no effect lands unaudited. For
+ * the table lock, just before `DROP INDEX`; for a proposal row, under the row
+ * lock, just before the write), so no effect lands unaudited. For
  * a recommendation the event's id derives from the recommendation's, written
  * insert-only, so a retry after a partial failure converges without a second
  * event.
@@ -56,12 +57,11 @@ import {
   typeIndexOptionsOf
 } from './apply.js';
 import type { PubSub } from './config.js';
-import { isLiveProposal } from './cross-ref-targets.js';
 import { ensureStorageAfterCommit, notifyAfterCommit } from './engine-write.js';
 import { ProposalError, type ProposalErrorCode } from './errors.js';
 import { proposalLockKey, withProposalLock } from './proposal-lock.js';
 import type { NamespaceBinding, RegistryStore } from './registry-store.js';
-import { lockedRow } from './row-lock.js';
+import { isLiveProposal, lockedRow } from './row-lock.js';
 
 const SYSTEM_NAMESPACE = '_system';
 const RECOMMENDATION_TYPE = 'IndexRecommendation';
@@ -321,9 +321,13 @@ async function proposeIndex(
   } as Row;
 }
 
-/** The applied, live TypeProposal row of `type`, or undefined (a code-defined type). */
+/**
+ * The applied, live TypeProposal row of `type` as read now, or undefined (a
+ * code-defined type). A copy: memory hands back its stored row, which a later
+ * write changes in place.
+ */
 async function proposalOf(binding: NamespaceBinding, type: string): Promise<Row | undefined> {
-  return (
+  const [row] = (
     await binding.dataset.read('TypeProposal', {
       where: {
         AND: [
@@ -335,16 +339,19 @@ async function proposalOf(binding: NamespaceBinding, type: string): Promise<Row 
       },
       limit: 1
     })
-  ).rows[0];
+  ).rows;
+  return row === undefined ? undefined : { ...row };
 }
 
 /**
  * Stores `next` in the proposal row's index and order columns, reinstalls the
  * type with it, and tells peers once the caller's transaction commits. The
  * columns are written in a transaction of their own, under the row's lock,
- * and only while the row is still `proposal` as read: this type's live
- * definition, with the options `next` was built from. A concurrent change to
- * the row (archived, superseded, renamed, or its options rewritten) stands.
+ * and only while the row is still `proposal` as read: the same row, this
+ * type's live definition, with the spec and the options `next` was built
+ * from. A concurrent change to the row (archived, superseded, renamed, its
+ * spec or its options rewritten) stands. `beforeWrite` (the call's audit)
+ * runs once those checks pass, just before the write.
  *
  * @throws ProposalError `proposal_changed` when the row changed since it was read
  */
@@ -352,7 +359,8 @@ async function storeTypeIndexOptions(
   call: Call,
   binding: NamespaceBinding,
   proposal: Row,
-  next: TypeIndexOptions
+  next: TypeIndexOptions,
+  beforeWrite: () => Promise<void>
 ): Promise<void> {
   const { deps, args, input, identity } = call;
   // No indexes is stored, and installed, as none at all, as replay reads it.
@@ -362,8 +370,10 @@ async function storeTypeIndexOptions(
     const row = await lockedRow('TypeProposal', proposal.id, tx);
     const unchanged =
       row !== null &&
+      row.id === proposal.id &&
       isLiveProposal(row) &&
       row.typeName === input.type &&
+      row.fieldsJson === proposal.fieldsJson &&
       (row.indexesJson ?? null) === (proposal.indexesJson ?? null) &&
       (row.orderedByJson ?? null) === (proposal.orderedByJson ?? null);
     if (!unchanged) {
@@ -373,6 +383,7 @@ async function storeTypeIndexOptions(
         { namespace: input.namespace, type: input.type }
       );
     }
+    await beforeWrite();
     await tx.write(
       'TypeProposal',
       [
@@ -428,8 +439,9 @@ async function removeIndex(
       decl !== undefined &&
       kept.length < (current.indexes ?? []).length
     ) {
-      await call.audit({ indexName: name, retracted: decl });
-      await storeTypeIndexOptions(call, binding, proposal, { ...current, indexes: kept });
+      await storeTypeIndexOptions(call, binding, proposal, { ...current, indexes: kept }, () =>
+        call.audit({ indexName: name, retracted: decl })
+      );
     }
   }
 
@@ -521,8 +533,7 @@ async function changeProposedType(call: Call): Promise<void> {
   }
 
   await call.claim('accepted');
-  await call.audit(detail);
-  await storeTypeIndexOptions(call, binding, proposal, next);
+  await storeTypeIndexOptions(call, binding, proposal, next, () => call.audit(detail));
   ensureStorageAfterCommit(
     args.afterTx,
     binding.dataset,

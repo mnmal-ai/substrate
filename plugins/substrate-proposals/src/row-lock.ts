@@ -1,7 +1,8 @@
 /**
- * How a proposal row gate holds still the row it checks: found as the write
- * finds it, locked until the write's transaction ends, and, for a mutate
- * array, locked with the array's other rows in id order.
+ * The stored proposal row a gate checks: whether boot applies it, and how the
+ * gate holds it still (found as the write finds it, locked until the write's
+ * transaction ends, and, for a mutate array, locked with the array's other
+ * rows in id order).
  */
 
 import { resolveEntityRows } from '@mnmal-ai/substrate-sdk';
@@ -14,6 +15,14 @@ import {
   ResolverFrameError,
   type Row
 } from '@mnmal-ai/substrate-types';
+
+/** Whether boot applies a proposal row: the predicate replay reads stored rows by. */
+export function isLiveProposal(row: Record<string, unknown>): boolean {
+  return row.applied === true && row.supersededByCode === false && row.archived === false;
+}
+
+/** The flags a row starts with when nothing is known of it: as live as it can be. */
+export const LIVE = { applied: true, supersededByCode: false, archived: false };
 
 /** `raw` as `coerceId` takes it: a string or a number, else nothing. */
 function idOf(raw: unknown): Id | undefined {
@@ -52,29 +61,32 @@ export async function lockedRow(
 /**
  * A guarded update or delete entry's resolver for a mutate array: locks every
  * row the array names, in id order as writes lock rows, then runs each
- * element through `resolver` in turn. Each element's own check finds its row
- * already locked, so two arrays naming the same rows in different orders
- * queue rather than deadlock. Where the dataset takes no row locks, the
- * elements' own checks decide.
+ * element through `resolver` in turn, naming the row it locked by its stored
+ * id. Each element's own check finds its row already locked, so two arrays
+ * naming the same rows in different orders queue rather than deadlock. Where
+ * the dataset takes no row locks, the elements' own checks decide.
  *
  * @throws BatchElementError naming the element `resolver` refused
  */
 export function lockedInIdOrder(type: string, resolver: RegistryEntryResolver): BatchResolver {
   return async (ctx, list) => {
     const dataset = list[0]?.dataset;
-    if (dataset?.lockForUpdate !== undefined) {
-      const found = await resolveEntityRows(
-        dataset,
-        type,
-        list.map((args) => idOf(args.params?.id))
-      );
-      const ids = found.flatMap((row) => (row === null ? [] : [row.id]));
-      if (ids.length > 0) await dataset.lockForUpdate(type, ids);
-    }
+    const found =
+      dataset === undefined
+        ? []
+        : await resolveEntityRows(
+            dataset,
+            type,
+            list.map((args) => idOf(args.params?.id))
+          );
+    const ids = found.flatMap((row) => (row === null ? [] : [row.id]));
+    if (ids.length > 0) await dataset?.lockForUpdate?.(type, ids);
     const out: Array<Row | null> = [];
     for (const [i, args] of list.entries()) {
+      const row = found[i] ?? null;
+      const pinned = row === null ? args : { ...args, params: { ...args.params, id: row.id } };
       try {
-        out.push((await resolver(ctx, args)) as Row | null);
+        out.push((await resolver(ctx, pinned)) as Row | null);
       } catch (err) {
         throw new BatchElementError(i, err);
       }
