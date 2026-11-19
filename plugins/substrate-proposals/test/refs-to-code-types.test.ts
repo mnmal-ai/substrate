@@ -3,7 +3,14 @@
  * proposals plugin, `app` is a code-defined namespace beside it.
  */
 
-import { Engine, loadPlugins, MemoryEdgesStore, Registry } from '@mnmal-ai/substrate-core';
+import {
+  Engine,
+  loadPlugins,
+  MemoryBridgeRegistry,
+  MemoryEdgesStore,
+  Registry,
+  runSweep
+} from '@mnmal-ai/substrate-core';
 import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-dataset-memory';
 import { defineNamespace, field } from '@mnmal-ai/substrate-sdk';
 import type {
@@ -17,6 +24,7 @@ import { describe, expect, it } from 'vitest';
 import { CONTROL_NAMESPACE } from '../src/control-plane.js';
 import type { CrossRefSpec, FieldSpecJson } from '../src/field-spec-json.js';
 import { createNoopPubSub, createProposalsPlugin } from '../src/index.js';
+import { referenceLifecycle } from './_refs-lifecycle.js';
 
 const T0 = new Date('2026-11-19T00:00:00Z');
 
@@ -25,14 +33,25 @@ const T0 = new Date('2026-11-19T00:00:00Z');
  * refusals come from the grammar, not the store. `virt/Hit` is a virtual
  * type: its namespace has a dataset, but autoCRUD stores none of its rows.
  */
-async function boot(ext = new MemoryDataset({ namespace: 'ext', walkReference: true })) {
+async function boot(
+  ext = new MemoryDataset({ namespace: 'ext', walkReference: true }),
+  opts: {
+    datasets?: MemoryDatasetRegistry;
+    withApp?: boolean;
+    metric?: (name: string, payload?: unknown) => void;
+  } = {}
+) {
   // As compose builds it: any namespace asked for gets a dataset, a virtual one too.
-  const datasets = new MemoryDatasetRegistry({
-    factory: (ns: string) => new MemoryDataset({ namespace: ns, walkReference: true })
-  });
-  datasets.set('ext', ext);
-  for (const ns of [CONTROL_NAMESPACE, 'app']) {
-    datasets.set(ns, new MemoryDataset({ namespace: ns, walkReference: true }));
+  const datasets =
+    opts.datasets ??
+    new MemoryDatasetRegistry({
+      factory: (ns: string) => new MemoryDataset({ namespace: ns, walkReference: true })
+    });
+  if (opts.datasets === undefined) {
+    datasets.set('ext', ext);
+    for (const ns of [CONTROL_NAMESPACE, 'app']) {
+      datasets.set(ns, new MemoryDataset({ namespace: ns, walkReference: true }));
+    }
   }
   const datasetFor = (ns: string): Dataset | undefined => datasets.get(ns);
   const app: CoordinatorPlugin = {
@@ -40,15 +59,21 @@ async function boot(ext = new MemoryDataset({ namespace: 'ext', walkReference: t
     contractVersion: '>=1.0.0-alpha.0 <2.0.0',
     namespaces: [defineNamespace('app', { Invoice: { fields: { number: field.string() } } })]
   };
+  const codePlugins = opts.withApp === false ? [] : [app];
   const proposals = createProposalsPlugin({ ownedNamespaces: ['ext'], pubsub: createNoopPubSub() });
   const edges = new MemoryEdgesStore({ now: () => T0 });
-  const loaded = await loadPlugins({ plugins: [proposals, app], datasetFor, edges });
+  const loaded = await loadPlugins({
+    plugins: [proposals, ...codePlugins],
+    datasetFor,
+    edges,
+    ...(opts.metric === undefined ? {} : { metric: opts.metric })
+  });
   const virt = new Registry();
   virt.register('Hit', { resolver: async () => [] });
   const namespaces = new Map([...loaded.namespaces, ['virt', { registry: virt }]]);
   const engine = new Engine({ namespaces, datasets, edges });
   await loaded.runOnStart(engine);
-  return engine;
+  return Object.assign(engine, { datasets, edges });
 }
 
 function as(grants: Record<string, string[]>): Partial<RequestContext> {
@@ -580,5 +605,41 @@ describe('a write naming an id in the other namespace', () => {
         expect((await run(key, frame, ctx)).errors, key).toBeUndefined();
       }
     }
+  });
+});
+
+describe('a proposed reference to a code-defined type, end to end', () => {
+  it('writes, filters and deletes across the reference', async () => {
+    const engine = await boot();
+    const { datasets, edges } = engine;
+    const deps = {
+      datasets,
+      bridges: new MemoryBridgeRegistry(),
+      edges,
+      now: () => T0,
+      metric() {}
+    };
+    await referenceLifecycle(engine, 'ext', 'app', PROPOSER, () =>
+      runSweep(deps, { lastSweptCursor: null })
+    );
+  });
+
+  it('skips a stored proposal whose code target is gone at replay', async () => {
+    const first = await boot();
+    expect((await proposeType(first, 'Payment', { invoice: ref() })).errors).toBeUndefined();
+
+    const metrics: Array<{ name: string; payload: unknown }> = [];
+    const rebooted = await boot(undefined, {
+      datasets: first.datasets,
+      withApp: false,
+      metric: (name, payload) => metrics.push({ name, payload })
+    });
+    expect(rebooted.registryFor('ext')?.has('Payment')).toBe(false);
+    const skip = metrics.find((m) => m.name === '_system_proposals.replay_skipped');
+    expect(skip?.payload).toMatchObject({
+      namespace: 'ext',
+      type: 'Payment',
+      error: expect.stringContaining("no type 'app/Invoice'")
+    });
   });
 });
