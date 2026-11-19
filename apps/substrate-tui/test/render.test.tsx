@@ -90,6 +90,19 @@ describe('renderers', () => {
     expect(grouped).not.toMatch(/false/);
     expect(grouped).not.toContain('\u001b[31m');
   });
+  it('a count per unit reads "count by month", without its field', () => {
+    const out = show(
+      KIND.rows,
+      rows({
+        answer: 'aggregate',
+        data: { groups: [] },
+        aggregate: { fn: 'count', field: '*', by: 'month', groups: [{ key: '2026-10', value: 3 }] }
+      })
+    );
+    expect(out).toMatch(/count by month/);
+    expect(out).not.toContain('*');
+    expect(out).toMatch(/2026-10\s+3/);
+  });
   it('an aggregate shows the no-value group as (none), rounds floats, and shows errors', () => {
     const f = show(
       KIND.rows,

@@ -444,8 +444,18 @@ describe('aggregates: answering', () => {
     });
   });
 
+  it('reads a unit before a field group in the same question', () => {
+    const r = parse('average price of items by condition per month');
+    expect(params('average price of items by condition per month')).toEqual({
+      aggregate: { value: { avg: 'price' } },
+      groupBy: { bucket: { dateTrunc: [{ lit: 'month' }, 'listedAt'] } }
+    });
+    expect(r.candidates[0]?.residual).toContain('condition');
+    expect(r.status).toBe('partial');
+  });
+
   it('leaves a count without a unit unchanged', () => {
-    expect(params('how many sales')).not.toHaveProperty('groupBy');
+    expect(params('how many sales')).toEqual({});
     expect(parse('how many sales').candidates[0]?.answer).toBe('count');
   });
 
