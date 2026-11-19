@@ -306,6 +306,8 @@ export function parseQuestion(
   }
 
   // --- ids: #N anywhere, or a number right after a type word or an id word ---
+  const followsSingularType = (at: number) =>
+    [...mentioned.values()].some((m) => !m.plural && at >= m.at[0] && at <= m.at[1]);
   const ids: number[] = [];
   let bareNumber = false;
   tokens.forEach((t, i) => {
@@ -324,7 +326,7 @@ export function parseQuestion(
         const before = tokens[i - 2];
         if (prev.text === 'id' && before?.text === 'short' && !before.used) before.used = true;
         evidence.push({ span: `${prev.text} ${t.text}`, role: 'id', detail: 'shortId' });
-      } else if (prev?.used === true && mentioned.size > 0) {
+      } else if (followsSingularType(i - 1)) {
         ids.push(Number(t.text));
         t.used = true;
         evidence.push({ span: t.text, role: 'id', detail: 'shortId' });

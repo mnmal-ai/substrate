@@ -140,6 +140,23 @@ describe('ordering, counting, authors', () => {
     }
   });
 
+  it('reads a number as a shortId only with a cue', () => {
+    for (const q of [
+      'todo 1752',
+      "What's #1752?",
+      'todo id 1752',
+      'todo number 1752',
+      'todo with short id 1752'
+    ]) {
+      expect(JSON.stringify(parse(q).candidates[0]?.frame), q).toContain('{"shortId":{"eq":1752}}');
+    }
+    expect(JSON.stringify(parse('todo 1997').candidates[0]?.frame)).toContain(
+      '{"shortId":{"eq":1997}}'
+    );
+    const r = parse('todos 1752');
+    expect(JSON.stringify(r.candidates)).not.toContain('shortId');
+  });
+
   it('treats values beside an id as commentary ("#5, is that recall?")', () => {
     const r = parseQuestion('todo #5, is that recall or ops?', pack, ctx);
     expect(r.status).toBe('resolved');

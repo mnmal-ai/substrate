@@ -85,6 +85,14 @@ describe('archived phrasing on a count', () => {
   });
 });
 
+describe('a number with no cue is not a shortId', () => {
+  it.each(['how many sales 2025', 'total price of sales per month 2025'])('%s', (q) => {
+    const r = parse(q);
+    expect(JSON.stringify(r.candidates)).not.toContain('shortId');
+    expect(r.residual).toContain('2025');
+  });
+});
+
 describe('aggregates: parsing', () => {
   it('reads average, total, min and max of a number field', () => {
     for (const [q, fn] of [
