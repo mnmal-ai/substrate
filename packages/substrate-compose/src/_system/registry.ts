@@ -3,13 +3,14 @@
  *
  * Priming + write-through invalidation. The registry is the synchronous
  * source-of-truth the auth verifier consults for dataset-backed keys. Keys
- * live in the `_system/Key` table; writes go through autoCRUD and fire
- * `install(row)` / `evict(kid)` so lookups see new state within the same
- * request cycle.
+ * live in the `_system/Key` table; a key write through autoCRUD calls
+ * `refresh(kid)` once its transaction commits (nothing on rollback), or,
+ * with no surrounding transaction, `install(row)` / `evict(kid)` at once, so
+ * lookups see new state within the same request cycle.
  *
- * `install` takes the row rather than re-reading it: the autoCRUD interceptor
- * runs INSIDE the writing transaction, so a re-read cannot see the
- * uncommitted write and would evict a new key or cache a revoked one as live.
+ * A re-read only works after commit: inside the writing transaction it
+ * cannot see the uncommitted write and would evict a new key or cache a
+ * revoked one as live.
  *
  * Invariants:
  *   - `lookup(kid)` is synchronous and returns `null` for missing or revoked

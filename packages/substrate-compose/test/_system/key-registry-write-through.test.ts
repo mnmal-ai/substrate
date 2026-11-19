@@ -159,16 +159,38 @@ describe('_system key interceptors — the cache follows committed writes only',
     expect(keyRegistry.lookup(KID)).toBeNull();
   });
 
-  it('a createKey that commits is cached when the transaction settles', async () => {
-    const { store, registry, keyRegistry } = await installed();
+  it('a createKey that commits is cached from the committed row when the transaction settles', async () => {
+    const { store, snapshot, registry, keyRegistry } = await installed();
     const tx = settler();
-    await registry.get('createKey')?.resolver(CTX, {
+    const created = (await registry.get('createKey')?.resolver(CTX, {
       params: keyParams(),
       dataset: store,
       afterTx: tx.afterTx
-    } as unknown as ResolverArgs);
+    } as unknown as ResolverArgs)) as Row;
+    snapshot.rows = [created];
     await tx.settle(true);
     expect(keyRegistry.lookup(KID)?.publicKey).toBe('pk-write-through');
+  });
+
+  it('a late commit callback does not revive a key revoked after it', async () => {
+    const { store, snapshot, registry, keyRegistry } = await installed();
+    const create = settler();
+    const created = (await registry.get('createKey')?.resolver(CTX, {
+      params: keyParams(),
+      dataset: store,
+      afterTx: create.afterTx
+    } as unknown as ResolverArgs)) as Row;
+    // The create commits, then a revoke commits and settles before the create's callback runs.
+    const revoke = settler();
+    const revoked = (await registry.get('updateKey')?.resolver(CTX, {
+      params: { id: created.id, revokedAt: new Date(Date.now() - 1000).toISOString() },
+      dataset: store,
+      afterTx: revoke.afterTx
+    } as unknown as ResolverArgs)) as Row;
+    snapshot.rows = [revoked];
+    await revoke.settle(true);
+    await create.settle(true);
+    expect(keyRegistry.lookup(KID)).toBeNull();
   });
 
   it('an updateKey that widens a grant and rolls back leaves the old grant cached', async () => {
