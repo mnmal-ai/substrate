@@ -893,6 +893,24 @@ describe('who proposed a record', () => {
         expect(env.errors, `${type} ${String(proposedBy)}`).toBeUndefined();
         expect(await stored(ns, type, id), type).toBe('a');
       }
+      // A mutate array stamps every element.
+      const ids = [`${seed.id}-array-0`, `${seed.id}-array-1`];
+      const env = await engine.mutate({
+        frame: {
+          [`${ns}/create${type}`]: ids.map((id) => ({
+            params: {
+              ...seed,
+              ...(type === 'NamespaceProposal' ? { ns: id } : {}),
+              id,
+              proposedBy: 'someone-else'
+            },
+            fields: { id: true }
+          }))
+        },
+        ctx: ctx(propose)
+      });
+      expect(env.errors, `${type} array`).toBeUndefined();
+      for (const id of ids) expect(await stored(ns, type, id), `${type} array`).toBe('a');
     }
   });
 
@@ -918,7 +936,7 @@ describe('who proposed a record', () => {
         },
         ctx: ctx(propose)
       });
-      expect(byFilter.errors?.[0], type).toBeDefined();
+      expect(byFilter.errors?.[0]?.code, type).toBe('capability_unsupported');
       expect(await stored(ns, type, seed.id), type).toBe('home');
     }
   });
