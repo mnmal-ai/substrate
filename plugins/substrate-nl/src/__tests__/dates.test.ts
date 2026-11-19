@@ -279,9 +279,17 @@ describe('years and months as windows', () => {
       gte: zz('2024-08-01'),
       lt: zz('2025-07-01')
     });
-    // Reversed with both years given, or with neither, is not a range.
-    for (const p of ['between november 2026 and february 2026', 'between october and december'])
+    // A yearless second month takes the first's year: reversed, like both years or neither, is no range.
+    for (const p of [
+      'between november 2026 and february 2026',
+      'between october and december',
+      'between november 2025 and february'
+    ])
       expect(rangeFor(p, z), p).toBeNull();
+    expect(rangeFor('between march 2025 and june', z)).toEqual({
+      gte: zz('2025-03-01'),
+      lt: zz('2025-07-01')
+    });
   });
 
   it('reads "during" a named range as "in" it', () => {
