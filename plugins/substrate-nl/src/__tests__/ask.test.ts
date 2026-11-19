@@ -394,6 +394,43 @@ describe('runAsk', () => {
     );
     expect(Object.keys(query.mock.calls[0]?.[0] ?? {})[0]).toBe('ns/Decision');
   });
+
+  it('answers unknown when the month of a time phrase is also a stored value', async () => {
+    const may = { type: 'Todo', field: 'area', value: 'may' };
+    const withMay: ServedPack = { ...pack, values: { ...pack.values, may: [may] } };
+    const asOf = '2026-11-19T10:00:00Z';
+    const run = async (question: string, p: ServedPack) => {
+      const { e, query } = engine();
+      const evs = await collect(
+        runAsk({ namespace: 'ns', question, asOf }, http, { pack: p, engine: e })
+      );
+      return { evs, sent: JSON.stringify(query.mock.calls[0]?.[0] ?? null) };
+    };
+    for (const q of ['todos in may', 'todos since may', 'todos during may 2025']) {
+      const held = await run(q, withMay);
+      const parsed = held.evs[0] as Extract<NlEvent, { event: 'parsed' }>;
+      expect(parsed.status, q).toBe('partial');
+      expect(JSON.stringify(parsed.frame?.['ns/Todo']?.params), q).not.toMatch(/createdAt|area/);
+      expect(outcome(held.evs), q).toMatchObject({
+        kind: 'unknown',
+        dropped: [{ span: q.slice('todos '.length), kind: 'filter' }]
+      });
+      expect(held.sent, q).toBe('null');
+    }
+    const window = await run('todos in may', pack);
+    expect(outcome(window.evs)).toMatchObject({ kind: 'rows', source: 'parser' });
+    expect(window.sent).toContain(
+      JSON.stringify({ createdAt: { gte: '2026-05-01T00:00:00Z', lt: '2026-06-01T00:00:00Z' } })
+    );
+    for (const q of ['may todos', 'todos in area may']) {
+      const value = await run(q, withMay);
+      expect(outcome(value.evs), q).toMatchObject({ kind: 'rows', source: 'parser' });
+      expect(value.sent, q).toContain(JSON.stringify({ area: { eq: 'may' } }));
+      expect(value.sent, q).not.toContain('createdAt');
+    }
+    // A day names the date, not the month: "may 5" stays a window.
+    expect((await run('todos on may 5', withMay)).sent).toContain('"createdAt"');
+  });
 });
 
 // --- walk readings: the confidence rule on the wire ---

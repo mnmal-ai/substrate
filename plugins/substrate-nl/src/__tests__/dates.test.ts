@@ -197,5 +197,62 @@ describe('years and months as windows', () => {
   it('still rejects what is not a date', () => {
     for (const p of ['in 99', 'in 20255', 'in 0050', 'in octember', 'during'])
       expect(rangeFor(p, z), p).toBeNull();
+    for (const p of ['on 2025', 'on october', 'on october 2025'])
+      expect(rangeFor(p, z), p).toBeNull();
+  });
+
+  it('rejects a year whose window would end past year 9999', () => {
+    for (const p of [
+      'in 9999',
+      'until 9999',
+      'after 9999',
+      'in december 9999',
+      'on dec 31 9999',
+      'on 9999-12-31'
+    ])
+      expect(rangeFor(p, z), p).toBeNull();
+    expect(rangeFor('in 9998', z)).toEqual({ gte: zz('9998-01-01'), lt: zz('9999-01-01') });
+  });
+
+  it('reads "in <month>" on the first of that month as the month just begun', () => {
+    expect(rangeFor('in november', '2026-11-01T00:00:00Z')).toEqual({
+      gte: zz('2026-11-01'),
+      lt: zz('2026-12-01')
+    });
+    const ist = '2026-01-01T00:30:00+05:30';
+    expect(rangeFor('in january', ist)).toEqual({
+      gte: '2026-01-01T00:00:00+05:30',
+      lt: '2026-02-01T00:00:00+05:30'
+    });
+    expect(rangeFor('in december', ist)).toEqual({
+      gte: '2025-12-01T00:00:00+05:30',
+      lt: '2026-01-01T00:00:00+05:30'
+    });
+  });
+
+  it('reads a month range across a new year from the later month year', () => {
+    const winter = { gte: zz('2025-11-01'), lt: zz('2026-03-01') };
+    expect(rangeFor('between november and february 2026', z)).toEqual(winter);
+    expect(rangeFor('between november 2025 and february 2026', z)).toEqual(winter);
+    expect(rangeFor('between august and june 2025', z)).toEqual({
+      gte: zz('2024-08-01'),
+      lt: zz('2025-07-01')
+    });
+    // Reversed with both years given, or with neither, is not a range.
+    for (const p of ['between november 2026 and february 2026', 'between october and december'])
+      expect(rangeFor(p, z), p).toBeNull();
+  });
+
+  it('reads "during" a named range as "in" it', () => {
+    expect(rangeFor('during this year', z)).toEqual(rangeFor('this year', z));
+    expect(rangeFor('during last year', z)).toEqual(rangeFor('last year', z));
+    for (const q of ['todos during this year', 'todos during last year', 'todos in last year']) {
+      const r = parseQuestion(q, pack, { ...ctx, asOf: z });
+      expect(r.status, q).toBe('resolved');
+      expect(r.residual, q).toEqual([]);
+    }
+    expect(JSON.stringify(params('todos during last year')?.where)).toContain(
+      JSON.stringify({ createdAt: { gte: day('2025-01-01'), lt: day('2026-01-01') } })
+    );
   });
 });

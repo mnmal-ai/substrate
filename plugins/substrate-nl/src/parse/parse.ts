@@ -15,7 +15,7 @@ import type { NamespaceRulings, ValueAlias } from '../pack/rulings.js';
 import type { NamespacePack, PackField, PackType } from '../pack/types.js';
 import { pluralize, splitWords } from '../pack/words.js';
 import { whereFields } from '../rulings/schema.js';
-import { type DateRange, rangeFor } from './time.js';
+import { type DateRange, monthWords, rangeFor } from './time.js';
 import {
   andOf,
   type Composed,
@@ -270,7 +270,21 @@ export function parseQuestion(
   for (const [type, m] of mentioned) evidence.push({ span: m.span, role: 'type', detail: type });
 
   // --- time, before ids, so the N in "last N days" is not read as a number ---
-  const time = claimTime(tokens, ctx.asOf);
+  const claimed = claimTime(tokens, ctx.asOf);
+  // "in may" where "may" is also a stored value: neither the month nor the value is read.
+  const heldMonth =
+    claimed === null
+      ? undefined
+      : monthWords(claimed.span).find((w) => own(pack.values, w) !== undefined);
+  const time = heldMonth === undefined ? claimed : null;
+  const heldTime: Dropped | null =
+    claimed === null || heldMonth === undefined
+      ? null
+      : {
+          span: claimed.span,
+          reason: `"${heldMonth}" could be the month or a stored value; neither is assumed`,
+          kind: 'filter'
+        };
   if (time !== null) {
     evidence.push({
       span: time.span,
@@ -572,6 +586,7 @@ export function parseQuestion(
       values,
       clauses,
       time: composed === undefined || composed.timeOnSeed ? time : null,
+      heldTime,
       order,
       fieldOrder: fieldOrder ?? composed?.seedOrder ?? null,
       plural: mentioned.get(type)?.plural ?? false,
@@ -639,6 +654,8 @@ interface AssemblyInput {
   values: ValueClaim[];
   clauses: FieldClause[];
   time: { span: string; range: DateRange; at: [number, number] } | null;
+  /** A time phrase whose month is also a stored value: claimed, read as neither, dropped. */
+  heldTime: Dropped | null;
   order: 'desc' | 'asc' | null;
   /** An ordering by a field, resolved against this type. */
   fieldOrder: FieldOrder | null;
@@ -737,6 +754,7 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
           }
         ]
       : []),
+    ...(a.heldTime !== null ? [a.heldTime] : []),
     ...(a.aggregate?.held !== undefined
       ? [
           {
