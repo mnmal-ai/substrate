@@ -130,6 +130,13 @@ const SCALAR_TYPES: ReadonlySet<ScalarType> = new Set([
   'json'
 ]);
 
+const ON_DELETE: ReadonlySet<string> = new Set<OnDelete>([
+  'set_null',
+  'cascade',
+  'restrict',
+  'orphan'
+]);
+
 export function parseFieldSpec(json: FieldSpecJson): FieldDef {
   switch (json.kind) {
     case 'scalar': {
@@ -162,6 +169,13 @@ export function parseFieldSpec(json: FieldSpecJson): FieldDef {
       if ('onMissing' in json && json.onMissing !== undefined) {
         throw new Error(
           'onMissing is not supported via propose_field; declare it in a hand-authored namespace instead'
+        );
+      }
+      if (typeof json.ns !== 'string') throw new Error('crossRef ns must be a string');
+      if (typeof json.type !== 'string') throw new Error('crossRef type must be a string');
+      if (json.onDelete !== undefined && !ON_DELETE.has(json.onDelete)) {
+        throw new Error(
+          `crossRef onDelete must be set_null, cascade, restrict or orphan, got ${JSON.stringify(json.onDelete)}`
         );
       }
       const def: FieldDefCrossRef = {
