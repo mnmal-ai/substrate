@@ -39,7 +39,7 @@ import {
   parseGrantEntries
 } from '@mnmal-ai/substrate-policy';
 import type { Identity } from '@mnmal-ai/substrate-types';
-import type { IdentityDirectoryConfig, KeyRegistry } from './_system/index.js';
+import type { IdentityDirectoryConfig, KeyRecord, KeyRegistry } from './_system/index.js';
 
 export type JwtAlg = 'RS256' | 'ES256' | 'HS256' | 'EdDSA';
 
@@ -370,14 +370,19 @@ function parseSegments(token: string): {
   if (h === undefined || p === undefined || s === undefined) return null;
   if (h.length === 0 || p.length === 0 || s.length === 0) return null;
   try {
-    const header = JSON.parse(base64UrlDecode(h).toString('utf8')) as JwtHeader;
-    const payload = JSON.parse(base64UrlDecode(p).toString('utf8')) as JwtPayload;
+    const header: unknown = JSON.parse(base64UrlDecode(h).toString('utf8'));
+    const payload: unknown = JSON.parse(base64UrlDecode(p).toString('utf8'));
+    if (!isPlainObject(header) || !isPlainObject(payload)) return null;
     const signingInput = Buffer.from(`${h}.${p}`, 'utf8');
     const signature = base64UrlDecode(s);
-    return { header, payload, signingInput, signature };
+    return { header: header as JwtHeader, payload: payload as JwtPayload, signingInput, signature };
   } catch {
     return null;
   }
+}
+
+function isPlainObject(value: unknown): value is object {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**
@@ -426,19 +431,42 @@ function selectCandidates(cfg: AuthConfig, header: JwtHeader): Array<Candidate> 
     (header.alg === 'EdDSA' || header.alg === 'RS256' || header.alg === 'ES256')
   ) {
     const record = cfg.keyRegistry.lookup(header.kid);
-    if (record !== null && record.algorithm === header.alg) {
+    const allowedGrant =
+      record !== null && record.algorithm === header.alg ? rowGrant(record) : null;
+    if (record !== null && allowedGrant !== null) {
       const key: AuthKey = { kid: record.kid, alg: record.algorithm, publicKey: record.publicKey };
       out.push({
         key,
         source: 'dataset',
         allowedNamespaces: record.namespaces,
         allowedCapabilities: record.capabilities,
-        allowedGrant: parseGrantEntries(record.namespaces, record.capabilities)
+        allowedGrant
       });
     }
   }
 
   return out;
+}
+
+/** Kids already warned about. Bounded by the key registry: only a registered kid gets here. */
+const warnedUnparseableGrant = new Set<string>();
+
+/**
+ * The key row's grant, or `null` when it does not parse. Such a key verifies
+ * nothing, and is reported once per kid so a token naming it cannot flood the log.
+ */
+function rowGrant(record: KeyRecord): Grant | null {
+  try {
+    return parseGrantEntries(record.namespaces, record.capabilities);
+  } catch (err) {
+    if (!warnedUnparseableGrant.has(record.kid)) {
+      warnedUnparseableGrant.add(record.kid);
+      process.stderr.write(
+        `[substrate] key '${record.kid}' is skipped because its stored grant does not parse: ${err instanceof Error ? err.message : String(err)}. Re-grant or revoke it.\n`
+      );
+    }
+    return null;
+  }
 }
 
 function verifyHmac(key: AuthKey, signingInput: Buffer, signature: Buffer): boolean {

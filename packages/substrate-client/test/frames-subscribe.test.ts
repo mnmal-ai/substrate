@@ -11,7 +11,7 @@ import { type ComposeResult, compose } from '@mnmal-ai/substrate-compose';
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
 import { encodeStreamFrame, FRAMES_JSON_MIME, FRAMES_PACK_MIME } from '@mnmal-ai/substrate-pack';
 import { FastifySubstrateServer } from '@mnmal-ai/substrate-server-fastify';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AuthError, NetworkError, SubscribeError, SubstrateClient } from '../src/index.js';
 import type { SubscribeEvent } from '../src/transport/frame-event.js';
 import { demoPlugin } from './fixtures/demo-plugin.js';
@@ -356,6 +356,36 @@ describe('frames against a scripted server', () => {
     const gaps = at.slice(1, 5).map((t, i) => t - (at[i] as number));
     // 10, 20, 40, 80 ms: a reset on every snapshot would keep each near 10.
     expect(gaps[3]).toBeGreaterThanOrEqual(70);
+  });
+
+  it('a quiet subscription that stayed open past maxDelayMs reconnects at the base delay', async () => {
+    // Each response sends its snapshot, then nothing, then drops after the
+    // clock has moved past maxDelayMs: a long quiet connection, compressed.
+    let skewMs = 0;
+    const realNow = Date.now.bind(Date);
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + skewMs);
+    try {
+      const at: number[] = [];
+      const { baseUrl } = await scripted((_n, res) => {
+        at.push(performance.now());
+        open(res);
+        send(res, snapshot('s'));
+        setTimeout(() => {
+          skewMs += 2_000;
+          drop(res);
+        }, 5);
+      });
+      const it = client(baseUrl, { reconnect: { baseDelayMs: 50, maxDelayMs: 1000, jitter: 0 } })
+        .subscribe(TODO)
+        [Symbol.asyncIterator]();
+      await take(it, 5);
+      await it.return?.();
+      const gaps = at.slice(1, 5).map((t, i) => t - (at[i] as number));
+      // Without a reset the delay climbs 50, 100, 200, 400 ms.
+      expect(gaps[3]).toBeLessThan(200);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it('a 4xx on resubscribe surfaces instead of retrying forever', async () => {

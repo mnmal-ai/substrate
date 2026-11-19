@@ -22,6 +22,43 @@ const run = (source: string, opts: Partial<Parameters<typeof runSandboxed>[1]> =
   runSandboxed(source, { kid: 'a@h', log: () => {}, ...fakeClient(), ...opts });
 
 describe('runSandboxed', () => {
+  it('logs a bigint and a cyclic object without failing the run', async () => {
+    const lines: string[] = [];
+    const r = await run(
+      `export default async (s) => {
+        const loop = {}; loop.self = loop;
+        s.log('n', 1n); s.log(loop);
+        await s.query({ 'ns/T': {} });
+        return 'ok';
+      };`,
+      { log: (l) => lines.push(l) }
+    );
+    expect(r).toMatchObject({ ok: true, result: 'ok' });
+    expect(lines[0]).toBe('n 1');
+  });
+
+  it('stops the script when the caller cancels', async () => {
+    const ac = new AbortController();
+    const started = Date.now();
+    setTimeout(() => ac.abort(), 300);
+    const r = await run(`export default () => new Promise((r) => setTimeout(r, 20000));`, {
+      signal: ac.signal
+    });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/cancelled/);
+    expect(Date.now() - started).toBeLessThan(10_000);
+  });
+
+  it('caps writes the script sends at once', async () => {
+    const fake = fakeClient();
+    const r = await run(
+      `export default (s) => Promise.all(Array.from({ length: 10 }, () => s.mutate('ns/createT', { params: {} })));`,
+      { ...fake, mode: 'write', maxWrites: 3 }
+    );
+    expect(r.ok).toBe(false);
+    expect(fake.mutated).toHaveLength(3);
+  });
+
   it('relays the context: args, query, schema, and a bigint across the hop', async () => {
     const r = await run(
       `export default async (s) => {

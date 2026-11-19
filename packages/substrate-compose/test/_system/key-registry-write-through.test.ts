@@ -128,3 +128,123 @@ describe('_system key interceptors — write-through must not re-read', () => {
     expect(keyRegistry.lookup(KID)).toBeNull();
   });
 });
+
+/** An `afterTx` that queues work, then settles it as committed or rolled back. */
+function settler(): {
+  afterTx: (fn: (o: { committed: boolean }) => Promise<void>) => void;
+  settle: (committed: boolean) => Promise<void>;
+} {
+  const queued: Array<(o: { committed: boolean }) => Promise<void>> = [];
+  return {
+    afterTx: (fn) => {
+      queued.push(fn);
+    },
+    settle: async (committed) => {
+      for (const fn of queued.splice(0)) await fn({ committed });
+    }
+  };
+}
+
+describe('_system key interceptors — the cache follows committed writes only', () => {
+  it('a createKey that rolls back never reaches the cache', async () => {
+    const { store, registry, keyRegistry } = await installed();
+    const tx = settler();
+    await registry.get('createKey')?.resolver(CTX, {
+      params: keyParams(),
+      dataset: store,
+      afterTx: tx.afterTx
+    } as unknown as ResolverArgs);
+    expect(keyRegistry.lookup(KID)).toBeNull();
+    await tx.settle(false);
+    expect(keyRegistry.lookup(KID)).toBeNull();
+  });
+
+  it('a createKey that commits is cached from the committed row when the transaction settles', async () => {
+    const { store, snapshot, registry, keyRegistry } = await installed();
+    const tx = settler();
+    const created = (await registry.get('createKey')?.resolver(CTX, {
+      params: keyParams(),
+      dataset: store,
+      afterTx: tx.afterTx
+    } as unknown as ResolverArgs)) as Row;
+    snapshot.rows = [created];
+    await tx.settle(true);
+    expect(keyRegistry.lookup(KID)?.publicKey).toBe('pk-write-through');
+  });
+
+  it('a late commit callback does not revive a key revoked after it', async () => {
+    const { store, snapshot, registry, keyRegistry } = await installed();
+    const create = settler();
+    const created = (await registry.get('createKey')?.resolver(CTX, {
+      params: keyParams(),
+      dataset: store,
+      afterTx: create.afterTx
+    } as unknown as ResolverArgs)) as Row;
+    // The create commits, then a revoke commits and settles before the create's callback runs.
+    const revoke = settler();
+    const revoked = (await registry.get('updateKey')?.resolver(CTX, {
+      params: { id: created.id, revokedAt: new Date(Date.now() - 1000).toISOString() },
+      dataset: store,
+      afterTx: revoke.afterTx
+    } as unknown as ResolverArgs)) as Row;
+    snapshot.rows = [revoked];
+    await revoke.settle(true);
+    await create.settle(true);
+    expect(keyRegistry.lookup(KID)).toBeNull();
+  });
+
+  it('an updateKey that widens a grant and rolls back leaves the old grant cached', async () => {
+    const { store, registry, keyRegistry } = await installed();
+    const created = (await registry.get('createKey')?.resolver(CTX, {
+      params: keyParams(),
+      dataset: store
+    } as unknown as ResolverArgs)) as Row;
+    const tx = settler();
+    await registry.get('updateKey')?.resolver(CTX, {
+      params: { id: created.id, namespaces: '*' },
+      dataset: store,
+      afterTx: tx.afterTx
+    } as unknown as ResolverArgs);
+    await tx.settle(false);
+    expect(keyRegistry.lookup(KID)?.namespaces).toEqual(['probe']);
+  });
+
+  it('a deleteKey that rolls back keeps the key cached', async () => {
+    const { store, registry, keyRegistry } = await installed();
+    const created = (await registry.get('createKey')?.resolver(CTX, {
+      params: keyParams(),
+      dataset: store
+    } as unknown as ResolverArgs)) as Row;
+    const tx = settler();
+    await registry.get('deleteKey')?.resolver(CTX, {
+      params: { id: created.id },
+      dataset: store,
+      afterTx: tx.afterTx
+    } as unknown as ResolverArgs);
+    await tx.settle(false);
+    expect(keyRegistry.lookup(KID)).not.toBeNull();
+  });
+
+  it('a commit whose re-read fails evicts the kid instead of keeping a stale entry', async () => {
+    const { store, snapshot, registry, keyRegistry } = await installed();
+    const created = (await registry.get('createKey')?.resolver(CTX, {
+      params: keyParams(),
+      dataset: store
+    } as unknown as ResolverArgs)) as Row;
+    snapshot.rows = [created];
+    expect(keyRegistry.lookup(KID)).not.toBeNull();
+    const revoke = settler();
+    await registry.get('updateKey')?.resolver(CTX, {
+      params: { id: created.id, revokedAt: new Date(Date.now() - 1000).toISOString() },
+      dataset: store,
+      afterTx: revoke.afterTx
+    } as unknown as ResolverArgs);
+    const failingRefresh = Object.assign(keyRegistry, {
+      refresh: async () => {
+        throw new Error('dataset unavailable');
+      }
+    });
+    await expect(revoke.settle(true)).rejects.toThrow('dataset unavailable');
+    expect(failingRefresh.lookup(KID)).toBeNull();
+  });
+});

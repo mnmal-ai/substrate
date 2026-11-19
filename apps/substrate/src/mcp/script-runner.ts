@@ -63,7 +63,8 @@ async function start(m: Start): Promise<void> {
     schema: (namespace?: unknown, type?: unknown) => call('schema', namespace, type),
     mutate: (frame: unknown, entry?: unknown) => call('mutate', frame, entry),
     log: (...args: unknown[]) => {
-      void call('log', ...args);
+      // Logging is best effort: a failed log call must not end the script.
+      call('log', ...args).catch(() => {});
     }
   });
   try {

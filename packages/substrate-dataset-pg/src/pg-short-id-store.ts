@@ -55,11 +55,13 @@ export class PgShortIdStore {
     const name = seqName(ns, type);
     const cacheKey = `${ns}\0${type}`;
     if (this.#ensuredSequences.has(cacheKey)) return name;
-    // The lock is a transaction lock held until the caller's transaction ends,
-    // so a concurrent creator waits and then finds the sequence, rather than
-    // failing on pg_class's unique index. `name` is `[a-z0-9_]` only.
+    // Locks only while the sequence is missing. The lock is a transaction lock
+    // held until the caller's transaction ends, so a concurrent creator of a
+    // new sequence waits and then finds it, rather than failing on pg_class's
+    // unique index; once the sequence exists, creates take no lock at all.
+    // `name` is `[a-z0-9_]` only.
     await this.sql.unsafe(
-      `DO $$ BEGIN PERFORM pg_advisory_xact_lock(hashtext(current_schema() || '.' || '${name}')); CREATE SEQUENCE IF NOT EXISTS "${name}"; END $$`
+      `DO $$ BEGIN IF to_regclass('"${name}"') IS NULL THEN PERFORM pg_advisory_xact_lock(hashtext(current_schema() || '.' || '${name}')); CREATE SEQUENCE IF NOT EXISTS "${name}"; END IF; END $$`
     );
     this.#ensuredSequences.add(cacheKey);
     return name;
@@ -68,7 +70,6 @@ export class PgShortIdStore {
   /**
    * Allocate a new short-id without binding it to a row. The caller is
    * responsible for calling `bind` before the row is visible to consumers.
-   * Used by the migrate backfill's preload path.
    */
   async allocateUnbound(ns: string, type: string): Promise<number> {
     const name = await this.ensureSequence(ns, type);
@@ -177,42 +178,5 @@ export class PgShortIdStore {
       RETURNING short_id
     `;
     return rows.length;
-  }
-
-  /**
-   * Bulk-insert pre-existing mappings and advance the sequence past the max
-   * shortId seen. Used by substrate-migrate backfill. Idempotent — re-runs are
-   * no-ops via ON CONFLICT DO NOTHING + GREATEST on setval.
-   */
-  async preload(
-    ns: string,
-    type: string,
-    entries: Array<{ shortId: number; rowId: string }>
-  ): Promise<void> {
-    if (entries.length === 0) return;
-
-    await this.sql`
-      INSERT INTO short_ids ${this.sql(
-        entries.map((e) => ({
-          namespace: ns,
-          type,
-          short_id: e.shortId,
-          row_id: e.rowId
-        })),
-        'namespace',
-        'type',
-        'short_id',
-        'row_id'
-      )}
-      ON CONFLICT (namespace, type, short_id) DO NOTHING
-    `;
-
-    const max = entries.reduce((m, e) => Math.max(m, e.shortId), 0);
-    const name = await this.ensureSequence(ns, type);
-    // Advance the sequence to max so that the next nextval returns max+1.
-    // GREATEST guards against regressing the sequence when preloading partial data.
-    await this.sql.unsafe(
-      `SELECT setval('"${name}"', GREATEST((SELECT last_value FROM "${name}"), ${max}))`
-    );
   }
 }
