@@ -58,13 +58,14 @@ const ctx = {
 describe.skipIf(!POSTGRES_URL)('NL time groupings over pg', () => {
   let sql: Sql;
   let composed: Awaited<ReturnType<typeof compose>>;
+  let dataset: PgDataset;
   let ask: (question: string) => Promise<NlOutcome>;
 
   beforeAll(async () => {
     sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
     const nsDef = defineNamespace(NS, TYPES, { annotations: { nl: RULINGS } });
     const edges = new PgEdgesStore({ sql });
-    const dataset = new PgDataset({
+    dataset = new PgDataset({
       namespace: NS,
       sql,
       edgesStore: edges,
@@ -127,5 +128,22 @@ describe.skipIf(!POSTGRES_URL)('NL time groupings over pg', () => {
         { key: '2026-11-02', value: 40 }
       ]
     });
+  });
+
+  it('counts per month within a year on Postgres', async () => {
+    // Seeded here, so the per-month expectations above stay as they are.
+    await dataset.write('Sale', [
+      { id: id(5), price: 50, soldAt: '2025-12-30T12:00:00.000Z' }
+    ] as never);
+    const perMonth = await ask('how many sales per month in 2026');
+    const lastYear = await ask('how many sales in 2025');
+    expect(perMonth.kind === 'rows' && perMonth.aggregate).toMatchObject({
+      groups: [
+        { key: '2026-09', value: 1 },
+        { key: '2026-10', value: 2 },
+        { key: '2026-11', value: 1 }
+      ]
+    });
+    expect(lastYear.kind === 'rows' && lastYear.count).toBe(1);
   });
 });
