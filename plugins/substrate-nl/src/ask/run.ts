@@ -11,7 +11,7 @@ import type { NlEngineAccess, NlEnvelope } from '../access.js';
 import { type Judge, type JudgedResult, parseWithJudge } from '../judge/judge.js';
 import { own } from '../own.js';
 import type { ServedPack } from '../pack/service.js';
-import { type Candidate, type ParseContext, parseQuestion } from '../parse/parse.js';
+import { type Candidate, type ParseContext, parseQuestion, type TimeUnit } from '../parse/parse.js';
 import type { AskRequest, NlEvent, NlOutcome } from './events.js';
 
 export interface AskDeps {
@@ -147,6 +147,9 @@ async function rows(
   };
 }
 
+/** Characters of the engine's canonical instant that name a group of each unit. */
+const LABEL_LENGTH: Record<TimeUnit, number> = { hour: 13, day: 10, week: 10, month: 7, year: 4 };
+
 type Groups = { groups?: Record<string, unknown>[]; truncated?: true } | undefined;
 
 /**
@@ -199,12 +202,12 @@ async function aggregate(
         };
   }
   const trunc = (
-    params.groupBy as { bucket?: { dateTrunc?: [{ lit: string }, string] } } | undefined
+    params.groupBy as { bucket?: { dateTrunc?: [{ lit: TimeUnit }, string] } } | undefined
   )?.bucket?.dateTrunc;
   const by = group?.field ?? trunc?.[0].lit;
-  // The engine keys a date group by its instant; a day or hour reads as it always did.
+  // The engine keys a date group by its instant; the label keeps the digits its unit resolves.
   const short = (k: unknown) =>
-    typeof k === 'string' && trunc !== undefined ? k.slice(0, trunc[0].lit === 'day' ? 10 : 13) : k;
+    typeof k === 'string' && trunc !== undefined ? k.slice(0, LABEL_LENGTH[trunc[0].lit]) : k;
   const rows = data?.groups;
   const result =
     rows === undefined

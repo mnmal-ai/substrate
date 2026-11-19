@@ -169,6 +169,44 @@ describe('substrate ask', () => {
     expect(r.out).toContain('  dropped "latest": conflicts\n');
   });
 
+  it('an aggregate prints its value, or one line per group with the unit in the heading', async () => {
+    const one = await run(['q'], {
+      kind: 'rows',
+      source: 'parser',
+      frame: { 'a/B': {} },
+      answer: 'aggregate',
+      data: { groups: [{ value: 12.5 }] },
+      aggregate: { fn: 'avg', field: 'price', value: 12.5 },
+      dropped: [],
+      plan: []
+    });
+    expect(one.code).toBe(0);
+    expect(one.out).toBe('▸ a/B · parser · avg price = 12.5\n');
+    const grouped = await run(['q'], {
+      kind: 'rows',
+      source: 'parser',
+      frame: { 'a/B': {} },
+      answer: 'aggregate',
+      data: { groups: [] },
+      aggregate: {
+        fn: 'count',
+        field: '*',
+        by: 'month',
+        groups: [
+          { key: '2026-09', value: 4 },
+          { key: '2026-10', value: 3 }
+        ],
+        truncated: true
+      },
+      dropped: [],
+      plan: []
+    });
+    expect(grouped.code).toBe(0);
+    expect(grouped.out).toBe(
+      '▸ a/B · parser · count by month\n  2026-09  4\n  2026-10  3\n  …more groups\n'
+    );
+  });
+
   it('rows with errors exit 1 and print them', async () => {
     const r = await run(['q'], {
       kind: 'rows',

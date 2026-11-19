@@ -12,7 +12,7 @@
 import type { Dropped, NlEvidence, NlParseStatus, PlanClause } from '@mnmal-ai/substrate/sdk';
 import { own } from '../own.js';
 import type { NamespaceRulings, ValueAlias } from '../pack/rulings.js';
-import type { NamespacePack, PackField } from '../pack/types.js';
+import type { NamespacePack, PackField, PackType } from '../pack/types.js';
 import { pluralize, splitWords } from '../pack/words.js';
 import { whereFields } from '../rulings/schema.js';
 import { type DateRange, rangeFor } from './time.js';
@@ -70,7 +70,7 @@ export interface Candidate {
    * engine cannot express, run as one aggregate per value.
    */
   aggregate?: {
-    fn: AggregateFn;
+    fn: AggregateFn | 'count';
     field: string;
     group?: { field: string; values: (string | boolean)[] };
   };
@@ -279,12 +279,18 @@ export function parseQuestion(
     });
   }
 
+  // --- fields a unit adjective gives way to: on the asked types and the types they reference ---
+  const names: FieldNames = {
+    types: askedTypes(pack, ctx.forceType !== undefined ? [ctx.forceType] : [...mentioned.keys()]),
+    rulings
+  };
+
   // --- an aggregate, before field orderings, which take "highest <field>" otherwise ---
   const aggregate = claimAggregate(
     tokens,
     walkClaims,
     pack,
-    rulings,
+    names,
     [...mentioned.values()].map((m) => m.at[0])
   );
 
@@ -329,6 +335,7 @@ export function parseQuestion(
   // --- superlatives, "current <singular>", counts, scope, history ---
   let order: 'desc' | 'asc' | null = null;
   let count = false;
+  let countUnit: { span: string; unit: TimeUnit } | null = null;
   let allProjects = false;
   let historyWord = false;
   const singularMention = [...mentioned.values()].some((m) => !m.plural);
@@ -352,6 +359,7 @@ export function parseQuestion(
       count = true;
       t.used = true;
       next.used = true;
+      countUnit = claimUnit(tokens, i + 2);
       evidence.push({ span: 'how many', role: 'count', detail: 'answer = count' });
     } else if ((t.text === 'every' || t.text === 'all') && /^projects?$/.test(next?.text ?? '')) {
       allProjects = true;
@@ -451,6 +459,13 @@ export function parseQuestion(
     if (at.length === 1 && GLUE.has(key)) return false;
     // "closed", "done": the closing verb (any terminal status) wins over the literal value.
     if (at.length === 1 && CLOSE_VERBS.has(key)) return false;
+    // Beside an aggregate word an adjective may be its unit, so it is no value ("monthly total of").
+    if (
+      at.length === 1 &&
+      own(UNIT_ADJECTIVES, key) !== undefined &&
+      at.some((k) => besideAggregate(tokens, k))
+    )
+      return false;
     // A plural word names its singular stored value ("protocols" -> protocol).
     const found =
       own(pack.values, key) !== undefined
@@ -462,6 +477,13 @@ export function parseQuestion(
     values.push({ span: key, key: found, at });
     return true;
   });
+
+  // --- a unit adjective no value claimed ("sales weekly"), for an aggregate or a count ---
+  if ((aggregate !== null || count) && aggregate?.group === undefined && countUnit === null) {
+    const unit = claimUnit(tokens, 0, names, true);
+    if (aggregate !== null && unit !== null) aggregate.group = unit;
+    else countUnit = unit;
+  }
 
   const closeVerb = words.some((w) => CLOSE_VERBS.has(w));
   const updateVerb = words.some((w) => UPDATE_VERBS.has(w));
@@ -552,6 +574,12 @@ export function parseQuestion(
       fieldOrder: fieldOrder ?? composed?.seedOrder ?? null,
       plural: mentioned.get(type)?.plural ?? false,
       count,
+      // A unit an aggregate word claimed ("how many sales max price per month") still groups the count.
+      countUnit:
+        countUnit ??
+        (aggregate?.group?.unit !== undefined
+          ? { span: aggregate.group.span, unit: aggregate.group.unit }
+          : null),
       aggregate,
       allProjects,
       historyWord,
@@ -615,6 +643,8 @@ interface AssemblyInput {
   /** The type was named in the plural: an ordering's default limit is 10, else 1. */
   plural: boolean;
   count: boolean;
+  /** "per month" or "monthly" beside a count: the unit its answer is grouped by. */
+  countUnit: { span: string; unit: TimeUnit } | null;
   aggregate: AggregateClaim | null;
   allProjects: boolean;
   historyWord: boolean;
@@ -701,6 +731,15 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
           {
             span: orderSpan,
             reason: `${a.count ? 'counting' : 'aggregating'} over the latest N rows is not supported`,
+            kind: 'filter' as const
+          }
+        ]
+      : []),
+    ...(a.aggregate?.held !== undefined
+      ? [
+          {
+            span: a.aggregate.held,
+            reason: `beside "${a.aggregate.word}" it could be the unit or part of another reading; neither is assumed`,
             kind: 'filter' as const
           }
         ]
@@ -983,6 +1022,17 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
     delete params.select;
     delete params.orderBy;
   }
+  const countBy = a.count && a.countUnit !== null ? a.countUnit : null;
+  const timeField = own(rulings.timeField, type) ?? 'createdAt';
+  if (countBy !== null) {
+    params.aggregate = { value: { count: true } };
+    params.groupBy = { bucket: { dateTrunc: [{ lit: countBy.unit }, timeField] } };
+    ev.push({
+      span: countBy.span,
+      role: 'field',
+      detail: `bucket ${timeField} by ${countBy.unit}`
+    });
+  }
   if (agg?.fn !== undefined && agg.field !== undefined) {
     params.aggregate = { value: { [agg.fn]: agg.field } };
     if (agg.dateGroup !== undefined)
@@ -990,8 +1040,16 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
         bucket: { dateTrunc: [{ lit: agg.dateGroup.by }, agg.dateGroup.field] }
       };
   }
+  // From the pick-one itself, not the answer label: "which grade" over "latest" still picks one.
+  const strict =
+    a.count ||
+    aggClaim !== null ||
+    order !== null ||
+    sortBy !== null ||
+    a.ids.length === 1 ||
+    a.composed?.strict === true;
   const answer =
-    aggClaim !== null
+    aggClaim !== null || countBy !== null
       ? 'aggregate'
       : a.askField !== null
         ? a.askField.group
@@ -1015,26 +1073,21 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
     },
     answer,
     evidence: ev,
-    residual: contentWords(tokens),
+    residual: contentWords(tokens, strict),
     plan,
     dropped,
-    // From the pick-one itself, not the answer label: "which grade" over "latest" still picks one.
-    ...(agg?.fn !== undefined && agg.field !== undefined
-      ? {
-          aggregate: {
-            fn: agg.fn,
-            field: agg.field,
-            ...(agg.group !== undefined ? { group: agg.group } : {})
+    ...(countBy !== null
+      ? { aggregate: { fn: 'count' as const, field: '*' } }
+      : agg?.fn !== undefined && agg.field !== undefined
+        ? {
+            aggregate: {
+              fn: agg.fn,
+              field: agg.field,
+              ...(agg.group !== undefined ? { group: agg.group } : {})
+            }
           }
-        }
-      : {}),
-    strict:
-      a.count ||
-      aggClaim !== null ||
-      order !== null ||
-      sortBy !== null ||
-      a.ids.length === 1 ||
-      a.composed?.strict === true
+        : {}),
+    strict
   };
 }
 
@@ -1111,16 +1164,26 @@ function fieldAt(
     const slice = tokens.slice(i, i + n);
     if (slice.length < n || slice.some((t) => t.used)) continue;
     const w = slice.map((t) => t.text).join(' ');
-    const somewhere = Object.values(pack.types).some((t) => {
-      const name = fieldByWords(w, t.fields, rulings);
-      return name !== null && (!numeric || t.fields[name]?.valueType === 'number');
-    });
-    if (somewhere) return { words: w, span: w, end: i + n - 1 };
+    if (namesField(w, Object.values(pack.types), rulings, numeric))
+      return { words: w, span: w, end: i + n - 1 };
   }
   const t = tokens[i];
   return !numeric && t !== undefined && !t.used && !GLUE.has(t.text) && !/^\d/.test(t.text)
     ? { words: t.text, span: t.text, end: i }
     : null;
+}
+
+/** True when `words` name a field on one of `types` (a number field, with `numeric`). */
+function namesField(
+  words: string,
+  types: PackType[],
+  rulings: NamespaceRulings,
+  numeric = false
+): boolean {
+  return types.some((t) => {
+    const name = fieldByWords(words, t.fields, rulings);
+    return name !== null && (!numeric || t.fields[name]?.valueType === 'number');
+  });
 }
 
 /** Marks tokens `from`..`f.end` used; a field phrase named here is not walked to. */
@@ -1281,8 +1344,10 @@ interface AggregateClaim {
   word: string;
   fn: AggregateFn;
   field: { words?: string; phrase?: PhraseClaim };
-  /** "by|per <field>", or "per day|hour|…" (`unit`). */
-  group?: { span: string; unit?: string; field?: { words?: string; phrase?: PhraseClaim } };
+  /** "by|per <field>", or a unit (`unit`): "per day|hour|…", "monthly". */
+  group?: { span: string; unit?: TimeUnit; field?: { words?: string; phrase?: PhraseClaim } };
+  /** A unit adjective before the aggregate word that is not its unit: read as nothing, dropped. */
+  held?: string;
 }
 
 type AggregateFn = 'avg' | 'sum' | 'min' | 'max';
@@ -1313,7 +1378,90 @@ const DIRECTION_WORDS: Record<string, 'asc' | 'desc'> = {
 };
 /** A field grouping runs one frame per value: more than this is dropped. */
 const MAX_GROUPS = 20;
-const BUCKET_WORDS = new Set(['hour', 'day', 'week', 'month', 'year']);
+const TIME_UNITS = ['hour', 'day', 'week', 'month', 'year'] as const;
+/** The units a date group can truncate to. */
+export type TimeUnit = (typeof TIME_UNITS)[number];
+/** Adjectives that name a unit: "monthly total", "how many sales weekly". */
+const UNIT_ADJECTIVES: Record<string, TimeUnit> = {
+  hourly: 'hour',
+  daily: 'day',
+  weekly: 'week',
+  monthly: 'month',
+  yearly: 'year',
+  annual: 'year',
+  annually: 'year'
+};
+
+/** Whether the token just before or after token `k` is an aggregate word, claimed or not. */
+function besideAggregate(tokens: Token[], k: number): boolean {
+  return [k - 1, k + 1].some((j) => own(AGGREGATE_WORDS, tokens[j]?.text ?? '') !== undefined);
+}
+
+/** The types and rulings whose field names a unit adjective gives way to. */
+interface FieldNames {
+  types: PackType[];
+  rulings: NamespaceRulings;
+}
+
+/** The asked types and the types their crossRefs reach; every type when none is asked. */
+function askedTypes(pack: NamespacePack, asked: string[]): PackType[] {
+  const seeds = asked.flatMap((t) => own(pack.types, t) ?? []);
+  if (seeds.length === 0) return Object.values(pack.types);
+  const reached = seeds.flatMap((t) =>
+    Object.values(t.fields).flatMap((f) =>
+      f.target?.namespace === pack.namespace ? (own(pack.types, f.target.type) ?? []) : []
+    )
+  );
+  return [...new Set([...seeds, ...reached])];
+}
+
+/**
+ * The unit a free adjective at `k` names, unless it alone or with the next one or
+ * two words, claimed or not, names a field of `names.types` ("annual fee", "annual total").
+ */
+function adjectiveAt(tokens: Token[], k: number, names: FieldNames): TimeUnit | undefined {
+  const t = tokens[k];
+  const unit = t === undefined || t.used ? undefined : own(UNIT_ADJECTIVES, t.text);
+  if (unit === undefined) return undefined;
+  const words = tokens.slice(k, k + 3).map((x) => x.text);
+  const field = [1, 2, 3].some((n) =>
+    namesField(words.slice(0, n).join(' '), names.types, names.rulings)
+  );
+  return field ? undefined : unit;
+}
+
+/**
+ * Claims "by|per <unit>" from token `from` on, skipping used tokens and "<author verb> by";
+ * with `adjectives`, a unit adjective too, whichever comes first. With `awayFromAggregate`,
+ * an adjective next to an aggregate word is skipped: that word did not claim it as its unit.
+ */
+function claimUnit(
+  tokens: Token[],
+  from: number,
+  adjectives?: FieldNames,
+  awayFromAggregate = false
+): { span: string; unit: TimeUnit } | null {
+  for (let k = from; k < tokens.length; k++) {
+    const by = tokens[k] as Token;
+    const adjective =
+      adjectives === undefined || (awayFromAggregate && besideAggregate(tokens, k))
+        ? undefined
+        : adjectiveAt(tokens, k, adjectives);
+    if (adjective !== undefined) {
+      by.used = true;
+      return { span: by.text, unit: adjective };
+    }
+    if (by.used || (by.text !== 'by' && by.text !== 'per')) continue;
+    if (AUTHOR_VERBS.has(tokens[k - 1]?.text ?? '')) continue;
+    const next = tokens[k + 1];
+    const unit =
+      next === undefined || next.used ? undefined : TIME_UNITS.find((u) => u === next.text);
+    if (next === undefined || unit === undefined) continue;
+    by.used = next.used = true;
+    return { span: `${by.text} ${next.text}`, unit };
+  }
+  return null;
+}
 
 /**
  * Claims one aggregate. "highest|lowest <field>" is a value only when "of" or
@@ -1325,10 +1473,11 @@ function claimAggregate(
   tokens: Token[],
   walkClaims: WalkClaims,
   pack: NamespacePack,
-  rulings: NamespaceRulings,
+  names: FieldNames,
   /** First token index of each type mention. */
   mentions: number[]
 ): AggregateClaim | null {
+  const { rulings } = names;
   const ofFollows = (end: number) => VALUE_OF.has(tokens[end + 1]?.text ?? '');
   const valueAt = (start: number, end: number) =>
     ofFollows(end) && mentions.some((m) => m > end) && !mentions.some((m) => m < start);
@@ -1345,7 +1494,8 @@ function claimAggregate(
       walkClaims.picks.splice(walkClaims.picks.indexOf(pick), 1);
       f = { phrase: pick.phrase, span: pick.phrase.span, end: pick.phrase.at[1] };
     } else {
-      let j = i + 1;
+      // "total monthly price": the adjective is the unit, not the field.
+      let j = adjectiveAt(tokens, i + 1, names) === undefined ? i + 1 : i + 2;
       while (!(tokens[j]?.used ?? true) && (tokens[j]?.text === 'of' || tokens[j]?.text === 'the'))
         j++;
       f = fieldAt(tokens, walkClaims, pack, rulings, j, false);
@@ -1353,6 +1503,9 @@ function claimAggregate(
       // "in total (archived …)": a yes/no field has no total, so the words are not an aggregate.
       if (onlyBoolean(f.words, pack, rulings)) continue;
     }
+    // A unit adjective beside the aggregate word is its unit, even where it is also a value.
+    const beside = [i + 1, i - 1].find((k) => adjectiveAt(tokens, k, names) !== undefined);
+    const besideUnit = beside === undefined ? null : claimUnit(tokens, beside, names);
     takeField(tokens, walkClaims, i, f);
     const claim: AggregateClaim = {
       span: tokens
@@ -1363,16 +1516,21 @@ function claimAggregate(
       fn,
       field: fieldRef(f)
     };
+    // An adjective before it that is not its unit is no value either: neither reading is taken.
+    const prev = tokens[i - 1];
+    if (prev !== undefined && !prev.used && own(UNIT_ADJECTIVES, prev.text) !== undefined) {
+      prev.used = true;
+      claim.held = prev.text;
+    }
+    const byUnit = besideUnit ?? claimUnit(tokens, 0);
+    if (byUnit !== null) {
+      claim.group = byUnit;
+      return claim;
+    }
     for (let k = 0; k < tokens.length; k++) {
       const by = tokens[k] as Token;
       if (by.used || (by.text !== 'by' && by.text !== 'per')) continue;
       if (AUTHOR_VERBS.has(tokens[k - 1]?.text ?? '')) continue;
-      const next = tokens[k + 1];
-      if (next !== undefined && !next.used && BUCKET_WORDS.has(next.text)) {
-        by.used = next.used = true;
-        claim.group = { span: `${by.text} ${next.text}`, unit: next.text };
-        break;
-      }
       const g = fieldAt(tokens, walkClaims, pack, rulings, k + 1, false);
       if (g === null) continue;
       takeField(tokens, walkClaims, k, g);
@@ -1425,7 +1583,7 @@ function aggregateOn(
   field?: string;
   exclude?: Record<string, unknown>;
   group?: { field: string; values: (string | boolean)[] };
-  dateGroup?: { field: string; by: 'day' | 'hour' };
+  dateGroup?: { field: string; by: TimeUnit };
   dropped: Dropped[];
   evidence: Evidence[];
 } {
@@ -1456,8 +1614,6 @@ function aggregateOn(
     return out;
   };
   if (g.unit !== undefined) {
-    if (g.unit !== 'day' && g.unit !== 'hour')
-      return drop('only day and hour groupings are supported');
     const field = own(rulings.timeField, type) ?? 'createdAt';
     out.dateGroup = { field, by: g.unit };
     out.evidence.push({ span: g.span, role: 'field', detail: `bucket ${field} by ${g.unit}` });
@@ -1680,13 +1836,20 @@ function creditFieldWords(tokens: Token[], field: PackField | undefined): boolea
   return hit;
 }
 
-function contentWords(tokens: Token[]): string[] {
+/** Unexplained words; with `numbers`, a lone unread number too, which a strict reading cannot lose. */
+function contentWords(tokens: Token[], numbers = false): string[] {
   const free = (t: Token | undefined): t is Token =>
     t !== undefined && !t.used && !GLUE.has(t.text);
   const num = (t: Token | undefined) => free(t) && /^\d+$/.test(t.text);
+  const word = (t: Token | undefined) => free(t) && !num(t);
   const out: string[] = [];
   tokens.forEach((t, i) => {
-    if (!free(t) || num(t)) return;
+    if (!free(t)) return;
+    if (num(t)) {
+      // A number no word explains ("in 2025") would widen a count or an aggregate to all time.
+      if (numbers && !word(tokens[i - 1]) && !word(tokens[i + 1])) out.push(t.text);
+      return;
+    }
     // A number beside an unexplained word is lost with it: "8 cores", never just "cores".
     const before = num(tokens[i - 1]) ? `${tokens[i - 1]?.text} ` : '';
     const after =

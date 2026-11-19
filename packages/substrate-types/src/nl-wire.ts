@@ -91,8 +91,11 @@ export type NlOutcome =
       count?: number;
       /**
        * On an `aggregate` answer: `fn` of `field` over the rows the frame matches,
-       * as one `value`, or per group keyed by `by` (a field, or the `day`/`hour`
-       * date group). Absent when the engine refused the frame, with `errors` saying why.
+       * as one `value`, or per group keyed by `by`. `by` is a field, or a time unit
+       * whose group keys are labels: `hour` `2026-10-20T09`, `day` `2026-10-20`,
+       * `week` its Monday `2026-10-19`, `month` `2026-10`, `year` `2026`. A count per
+       * unit is `fn: 'count'` with `field: '*'`. Absent when the engine refused the
+       * frame, with `errors` saying why.
        */
       aggregate?: NlAggregate;
       errors?: unknown[];
@@ -130,7 +133,8 @@ export type NlOutcome =
   | { kind: 'refuse'; reason: string };
 
 export interface NlAggregate {
-  fn: 'avg' | 'sum' | 'min' | 'max';
+  fn: 'count' | 'avg' | 'sum' | 'min' | 'max';
+  /** `'*'` for a count. */
   field: string;
   by?: string;
   /** Null when no row has a value (an empty set, or every value null). */

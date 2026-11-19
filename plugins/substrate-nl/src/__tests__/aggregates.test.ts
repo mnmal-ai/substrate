@@ -34,6 +34,15 @@ const types: Schema['types'] = {
     fields: { name: str, rank: num, archived: { kind: 'scalar', type: 'boolean', indexed: true } }
   },
   Sale: { fields: { item: ref('Item'), price: num, soldAt: date } },
+  Subscription: {
+    fields: {
+      cycle: { ...str, enum: ['monthly', 'yearly'] },
+      price: num,
+      fee: num,
+      annualFee: num,
+      startedAt: date
+    }
+  },
   Bin: {
     fields: { size: num, code: { ...str, enum: Array.from({ length: 21 }, (_, i) => `c${i}`) } }
   }
@@ -45,7 +54,9 @@ const pack = buildNamespacePack({
   profile: { types: { Item: { name: { values: ['lamp', 'chair'], truncated: false } } } }
 });
 const asOf = '2026-10-30T12:00:00Z';
-const base: NamespaceRulings = { timeField: { Item: 'listedAt', Sale: 'soldAt' } };
+const base: NamespaceRulings = {
+  timeField: { Item: 'listedAt', Sale: 'soldAt', Subscription: 'startedAt' }
+};
 const phrased: NamespaceRulings = {
   ...base,
   fieldPhrases: {
@@ -255,7 +266,7 @@ describe('aggregates: parsing', () => {
     });
   });
 
-  it('groups by an enum or yes/no field, or buckets by day or hour', () => {
+  it('groups by an enum or yes/no field, or buckets by a time unit', () => {
     const r = parse('average price of items by condition');
     expect(r.status).toBe('resolved');
     expect(r.candidates[0]?.aggregate).toEqual({
@@ -288,11 +299,19 @@ describe('aggregates: parsing', () => {
       aggregate: { value: { max: 'price' } },
       groupBy: { bucket: { dateTrunc: [{ lit: 'hour' }, 'listedAt'] } }
     });
+    for (const [q, unit] of [
+      ['total price of sales per month', 'month'],
+      ['total price of sales per week', 'week'],
+      ['total price of sales by year', 'year']
+    ] as const)
+      expect(params(q), q).toEqual({
+        aggregate: { value: { sum: 'price' } },
+        groupBy: { bucket: { dateTrunc: [{ lit: unit }, 'soldAt'] } }
+      });
   });
 
   it('drops a grouping it cannot express, keeping the whole aggregate', () => {
     for (const [q, span, reason] of [
-      ['total price of sales per month', 'per month', 'only day and hour groupings are supported'],
       [
         'average price of items by name',
         'by name',
@@ -328,16 +347,28 @@ function engine(reply: (frame: Query) => NlEnvelope) {
   const e: NlEngineAccess = { federatedSchema: () => ({}), operators: () => ({}), query };
   return { e, query };
 }
-async function ask(question: string, e: NlEngineAccess): Promise<NlOutcome> {
+async function ask(question: string, e: NlEngineAccess, pack = served): Promise<NlOutcome> {
   const evs: NlEvent[] = [];
-  for await (const ev of runAsk({ namespace: 'shop', question }, http, {
-    pack: served,
-    engine: e
-  }))
+  for await (const ev of runAsk({ namespace: 'shop', question }, http, { pack, engine: e }))
     evs.push(ev);
   return (evs.find((x) => x.event === 'outcome') as Extract<NlEvent, { event: 'outcome' }>).outcome;
 }
 type Sent = Record<string, { params: Record<string, unknown>; fields: Record<string, unknown> }>;
+/** The shop pack with `extra` types added or replaced; a Plan's time field is startedAt. */
+function withTypes(extra: Schema['types']) {
+  const p = buildNamespacePack({
+    namespace: 'shop',
+    schema: { schemaVersion: 'v', mutations: {}, types: { ...types, ...extra } },
+    operators: OPERATORS
+  });
+  const rulings: NamespaceRulings = { timeField: { ...base.timeField, Plan: 'startedAt' } };
+  const parsed = (q: string) => parseQuestion(q, p, { asOf, rulings });
+  return {
+    served: { ...p, rulings, warnings: [] } as ServedPack,
+    parse: parsed,
+    params: (q: string) => Object.values(parsed(q).candidates[0]?.frame ?? {})[0]?.params
+  };
+}
 
 describe('aggregates: answering', () => {
   it('sends one aggregate frame selecting only id, and carries the value', async () => {
@@ -380,6 +411,300 @@ describe('aggregates: answering', () => {
         truncated: true
       }
     });
+  });
+
+  it('labels each group by its unit', async () => {
+    for (const [q, instants, keys] of [
+      [
+        'total price of sales per week',
+        ['2026-10-19T00:00:00.000000Z', '2026-10-26T00:00:00.000000Z'],
+        ['2026-10-19', '2026-10-26']
+      ],
+      ['total price of sales per month', ['2026-10-01T00:00:00.000000Z'], ['2026-10']],
+      ['total price of sales per year', ['2026-01-01T00:00:00.000000Z'], ['2026']]
+    ] as const) {
+      const { e } = engine(() => ({
+        data: { 'shop/Sale': { groups: instants.map((bucket) => ({ bucket, value: 1 })) } }
+      }));
+      const o = await ask(q, e);
+      expect(
+        (o as { aggregate: { groups: { key: string }[] } }).aggregate.groups.map((g) => g.key),
+        q
+      ).toEqual(keys);
+    }
+  });
+
+  it('counts per time unit', async () => {
+    const q = 'how many sales per month';
+    expect(params(q)).toEqual({
+      aggregate: { value: { count: true } },
+      groupBy: { bucket: { dateTrunc: [{ lit: 'month' }, 'soldAt'] } }
+    });
+    expect(parse(q).candidates[0]?.aggregate).toEqual({ fn: 'count', field: '*' });
+    const { e } = engine(() => ({
+      data: {
+        'shop/Sale': {
+          groups: [
+            { bucket: '2026-10-01T00:00:00.000000Z', value: 3 },
+            { bucket: null, value: 1 }
+          ]
+        }
+      }
+    }));
+    expect(await ask(q, e)).toMatchObject({
+      aggregate: { fn: 'count', field: '*', by: 'month', groups: [{ key: '2026-10', value: 3 }] }
+    });
+  });
+
+  it('keeps the unit when a count drops an aggregate', () => {
+    const r = parse('how many sales max price per month');
+    expect(r.candidates[0]?.dropped).toContainEqual(
+      expect.objectContaining({ reason: 'an aggregate does not apply to a count' })
+    );
+    expect(params('how many sales max price per month')).toEqual({
+      aggregate: { value: { count: true } },
+      groupBy: { bucket: { dateTrunc: [{ lit: 'month' }, 'soldAt'] } }
+    });
+  });
+
+  it('reads a unit before a field group in the same question', () => {
+    const r = parse('average price of items by condition per month');
+    expect(params('average price of items by condition per month')).toEqual({
+      aggregate: { value: { avg: 'price' } },
+      groupBy: { bucket: { dateTrunc: [{ lit: 'month' }, 'listedAt'] } }
+    });
+    expect(r.candidates[0]?.residual).toContain('condition');
+    expect(r.status).toBe('partial');
+  });
+
+  it('reads unit adjectives beside an aggregate or a count', () => {
+    const total = (unit: string) => ({
+      aggregate: { value: { sum: 'price' } },
+      groupBy: { bucket: { dateTrunc: [{ lit: unit }, 'soldAt'] } }
+    });
+    for (const [q, unit] of [
+      ['monthly total price of sales', 'month'],
+      ['total monthly price of sales', 'month'],
+      ['annual total price of sales', 'year'],
+      ['total price of sales annually', 'year']
+    ] as const) {
+      expect(parse(q).status, q).toBe('resolved');
+      expect(params(q), q).toEqual(total(unit));
+    }
+    expect(parse('how many sales weekly').status).toBe('resolved');
+    expect(params('how many sales weekly')).toEqual({
+      aggregate: { value: { count: true } },
+      groupBy: { bucket: { dateTrunc: [{ lit: 'week' }, 'soldAt'] } }
+    });
+    expect(parse('daily how many sales').candidates[0]?.aggregate).toEqual({
+      fn: 'count',
+      field: '*'
+    });
+    expect(params('daily how many sales')).toEqual({
+      aggregate: { value: { count: true } },
+      groupBy: { bucket: { dateTrunc: [{ lit: 'day' }, 'soldAt'] } }
+    });
+    // The same late claim takes "by|per <unit>" before "how many".
+    expect(params('per month how many sales')).toEqual({
+      aggregate: { value: { count: true } },
+      groupBy: { bucket: { dateTrunc: [{ lit: 'month' }, 'soldAt'] } }
+    });
+  });
+
+  // Every case below has one reading, so each resolves: none needs ambiguous or unknown.
+  it('lets the data win over a unit adjective', () => {
+    const r = parse('monthly subscriptions');
+    expect(r.status).toBe('resolved');
+    expect(params('monthly subscriptions')).toEqual({ where: { cycle: { eq: 'monthly' } } });
+    // Not beside the aggregate word: the value claim wins.
+    expect(parse('total price of monthly subscriptions').status).toBe('resolved');
+    expect(params('total price of monthly subscriptions')).toEqual({
+      where: { cycle: { eq: 'monthly' } },
+      aggregate: { value: { sum: 'price' } }
+    });
+    // Beside the aggregate word: the unit wins, though "monthly" is a value of cycle.
+    expect(parse('monthly total price of subscriptions').status).toBe('resolved');
+    expect(params('monthly total price of subscriptions')).toEqual({
+      aggregate: { value: { sum: 'price' } },
+      groupBy: { bucket: { dateTrunc: [{ lit: 'month' }, 'startedAt'] } }
+    });
+    expect(parse('how many monthly subscriptions').status).toBe('resolved');
+    expect(params('how many monthly subscriptions')).toEqual({
+      where: { cycle: { eq: 'monthly' } }
+    });
+  });
+
+  it('reads no value beside an aggregate word that claimed no field', async () => {
+    const plans = withTypes({
+      Plan: { fields: { cycle: { ...str, enum: ['annual', 'monthly'] }, price: num } }
+    });
+    for (const [q, pk] of [
+      ['monthly total of subscriptions', served],
+      ['yearly total of subscriptions', served],
+      ['annual total of plans', plans.served],
+      ['monthly total of plans', plans.served],
+      // Nor is it a unit for a count or another aggregate in the question.
+      ['how many monthly total subscriptions', served],
+      ['average price of monthly total subscriptions', served]
+    ] as const) {
+      const { e, query } = engine(() => ({ data: {} }));
+      expect((await ask(q, e, pk)).kind, q).toBe('unknown');
+      expect(query, q).not.toHaveBeenCalled();
+    }
+    const r = parse('monthly total of subscriptions');
+    expect(r.status).toBe('partial');
+    expect(r.residual).toEqual(['monthly']);
+  });
+
+  // Each resolves or stays partial with the adjective unread: none needs ambiguous.
+  it('lets a field name win over a unit adjective', () => {
+    for (const [q, fn] of [
+      ['total annual fee of subscriptions', 'sum'],
+      ['highest annual fee of subscriptions', 'max']
+    ] as const) {
+      expect(parse(q).status, q).toBe('resolved');
+      expect(params(q), q).toEqual({ aggregate: { value: { [fn]: 'annualFee' } } });
+    }
+    const yearlyFee: NamespaceRulings = {
+      ...base,
+      fieldPhrases: { 'yearly fee': { field: 'Subscription.fee' } }
+    };
+    expect(params('total yearly fee of subscriptions', yearlyFee)).toEqual({
+      aggregate: { value: { sum: 'fee' } }
+    });
+    // No field name begins with "annual total" here, so the adjective is the unit.
+    expect(params('annual total price of subscriptions')).toEqual({
+      aggregate: { value: { sum: 'price' } },
+      groupBy: { bucket: { dateTrunc: [{ lit: 'year' }, 'startedAt'] } }
+    });
+  });
+
+  it('lets a field of the asked type win over a unit adjective', async () => {
+    const plans = withTypes({
+      Plan: {
+        fields: {
+          cycle: { ...str, enum: ['annual', 'monthly'] },
+          annualTotal: num,
+          price: num,
+          startedAt: date
+        }
+      }
+    });
+    // Before the aggregate word, "annual" begins the field "annual total": neither a unit nor
+    // a cycle value is assumed, so it is dropped and ask is unknown (not ambiguous).
+    const before = plans.parse('annual total price of plans');
+    expect(before.status).toBe('partial');
+    expect(before.candidates[0]?.dropped).toEqual([
+      {
+        span: 'annual',
+        reason:
+          'beside "total" it could be the unit or part of another reading; neither is assumed',
+        kind: 'filter'
+      }
+    ]);
+    expect(plans.params('annual total price of plans')).toEqual({
+      aggregate: { value: { sum: 'price' } }
+    });
+    const { e, query } = engine(() => ({ data: {} }));
+    expect((await ask('annual total price of plans', e, plans.served)).kind).toBe('unknown');
+    expect(query).not.toHaveBeenCalled();
+    // After it, the field takes the adjective.
+    expect(plans.parse('average annual total of plans').status).toBe('resolved');
+    expect(plans.params('average annual total of plans')).toEqual({
+      aggregate: { value: { avg: 'annualTotal' } }
+    });
+    expect(plans.params('monthly total price of plans')).toEqual({
+      aggregate: { value: { sum: 'price' } },
+      groupBy: { bucket: { dateTrunc: [{ lit: 'month' }, 'startedAt'] } }
+    });
+  });
+
+  it('reads a field name only on the asked type and the types it references', () => {
+    const other = withTypes({
+      Plan: { fields: { monthlyTotal: num, annualTotal: num, monthlyPrice: num } }
+    });
+    for (const [q, unit] of [
+      ['monthly total price of subscriptions', 'month'],
+      ['total monthly price of subscriptions', 'month'],
+      ['annual total price of subscriptions', 'year']
+    ] as const) {
+      expect(other.parse(q).status, q).toBe('resolved');
+      expect(other.params(q), q).toEqual({
+        aggregate: { value: { sum: 'price' } },
+        groupBy: { bucket: { dateTrunc: [{ lit: unit }, 'startedAt'] } }
+      });
+    }
+    // Sale references Item, so Item's "monthly price" is a field the question may mean.
+    const walked = withTypes({
+      Item: { fields: { ...(types.Item as { fields: object }).fields, monthlyPrice: num } }
+    }).parse('total monthly price of sales');
+    expect(walked.status).toBe('partial');
+    expect(walked.candidates[0]?.dropped[0]?.reason).toBe(
+      'aggregating across a walk is not supported'
+    );
+  });
+
+  it('leaves a lone adjective unread', async () => {
+    const r = parse('weekly sales');
+    expect(r.status).toBe('partial');
+    expect(r.residual).toEqual(['weekly']);
+    expect(params('weekly sales')).toEqual({});
+    const { e, query } = engine(() => ({ data: { 'shop/Sale': [] } }));
+    expect((await ask('weekly sales', e)).kind).toBe('unknown');
+    expect(query).not.toHaveBeenCalled();
+    // "monthly" is a Subscription.cycle value: the value claim wins and rules out the Sale reading.
+    for (const q of ['monthly sales', 'total price of sales monthly']) {
+      const m = parse(q);
+      expect(m.status, q).toBe('unparsed');
+      expect(m.reason, q).toBe('Sale: "monthly" is not a Sale value');
+      expect(m.candidates, q).toEqual([]);
+    }
+  });
+
+  it('reads no value beside a superlative that orders', async () => {
+    // "highest" orders here; beside it "monthly" is neither the cycle nor a unit.
+    const q = 'subscriptions with the monthly highest price';
+    const r = parse(q);
+    expect(r.status).toBe('partial');
+    expect(r.residual).toEqual(['monthly']);
+    expect(params(q)).toEqual({ orderBy: [{ price: 'desc' }], limit: 10 });
+    const { e, query } = engine(() => ({ data: {} }));
+    expect((await ask(q, e)).kind).toBe('unknown');
+    expect(query).not.toHaveBeenCalled();
+    // Away from the superlative the value claim still filters.
+    expect(params('monthly subscriptions with the highest price')).toEqual({
+      where: { cycle: { eq: 'monthly' } },
+      orderBy: [{ price: 'desc' }],
+      limit: 10
+    });
+    // After it, the ordering takes "monthly" as its field and drops it: no cycle filter.
+    const after = parse('subscriptions with the highest monthly price');
+    expect(after.status).toBe('partial');
+    expect(after.candidates[0]?.dropped).toEqual([
+      { span: 'highest monthly', reason: 'Subscription has no field "monthly"', kind: 'order' }
+    ]);
+    expect(params('subscriptions with the highest monthly price')).toEqual({});
+  });
+
+  it('answers unknown when a count or aggregate leaves a number unread', async () => {
+    for (const q of [
+      'how many sales per month in 2025',
+      'how many sales in 2025 per month',
+      'monthly total price of sales in 2025',
+      'how many sales in 2025'
+    ]) {
+      const r = parse(q);
+      expect(r.status, q).toBe('partial');
+      expect(r.residual, q).toEqual(['2025']);
+      const { e, query } = engine(() => ({ data: {} }));
+      expect((await ask(q, e)).kind, q).toBe('unknown');
+      expect(query, q).not.toHaveBeenCalled();
+    }
+  });
+
+  it('leaves a count without a unit unchanged', () => {
+    expect(params('how many sales')).toEqual({});
+    expect(parse('how many sales').candidates[0]?.answer).toBe('count');
   });
 
   it('drops the null-key group of a day grouping, a row with no time field', async () => {

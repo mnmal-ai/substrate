@@ -160,7 +160,7 @@ const COLS = { id: 6, status: 10, project: 14, gaps: 6, minTitle: 12 };
 const titleWidth = (columns: number) =>
   Math.max(COLS.minTitle, columns - (COLS.id + COLS.status + COLS.project + COLS.gaps));
 
-const FN_LABEL = { avg: 'average', sum: 'total', min: 'min', max: 'max' } as const;
+const FN_LABEL = { count: 'count', avg: 'average', sum: 'total', min: 'min', max: 'max' } as const;
 // Two decimals for a float; a tiny one keeps three significant digits rather than reading 0.
 const aggValue = (v: unknown, view?: TypeView, field?: string) =>
   v === null || v === undefined
@@ -280,7 +280,9 @@ const rows: Renderer = ({ data, theme, size }) => {
   ));
   const agg = o.aggregate;
   if (agg !== undefined) {
-    const head = `${Object.hasOwn(FN_LABEL, agg.fn) ? FN_LABEL[agg.fn] : str(agg.fn)} ${str(agg.field)}`;
+    const fnLabel = Object.hasOwn(FN_LABEL, agg.fn) ? FN_LABEL[agg.fn] : str(agg.fn);
+    // A count has no field to name.
+    const head = agg.fn === 'count' ? fnLabel : `${fnLabel} ${str(agg.field)}`;
     const errs = errorLines(o.errors).map((l, i) => (
       <Text key={`e${i}`} color={theme.color.error}>{`  ${l}`}</Text>
     ));

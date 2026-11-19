@@ -4,7 +4,7 @@ import {
   NetworkError,
   type SubstrateClient
 } from '@mnmal-ai/substrate-client';
-import type { Dropped, NlOutcome, PlanClause } from '@mnmal-ai/substrate-types';
+import type { Dropped, NlAggregate, NlOutcome, PlanClause } from '@mnmal-ai/substrate-types';
 import { sanitise } from '@mnmal-ai/surface-core/pure';
 
 export interface AskCliOptions {
@@ -109,12 +109,19 @@ function render(o: NlOutcome | null): string {
       const key = Object.keys(o.frame)[0] ?? '?';
       // A rejected frame arrives with no `data` key at all; that is not zero rows.
       const rows = Array.isArray(o.data) ? (o.data as Record<string, unknown>[]) : undefined;
+      const agg = o.aggregate;
       const tail =
         o.count !== undefined
           ? `count ${o.count}`
-          : rows === undefined
-            ? 'rejected'
-            : `${rows.length} rows`;
+          : agg !== undefined
+            ? aggText(agg)
+            : rows === undefined
+              ? 'rejected'
+              : `${rows.length} rows`;
+      const groups =
+        (agg?.groups ?? [])
+          .map((g) => `  ${g.key === null ? '(none)' : String(g.key)}  ${shown(g.value)}\n`)
+          .join('') + (agg?.truncated === true ? '  …more groups\n' : '');
       const head = `▸ ${key} · ${o.source}${o.handoff !== undefined ? ` (${o.handoff})` : ''} · ${tail}\n`;
       const errs = (o.errors ?? []).map((e) => `  ✗ ${JSON.stringify(e)}\n`).join('');
       const body = (rows ?? [])
@@ -123,7 +130,7 @@ function render(o: NlOutcome | null): string {
             `  ${String(r.shortId ?? r.id ?? '')}  ${String(r.title ?? r.synopsis ?? r.name ?? '')}\n`
         )
         .join('');
-      return head + errs + droppedText(o.dropped) + body;
+      return head + errs + droppedText(o.dropped) + groups + body;
     }
     case 'recall': {
       const errs = (o.errors ?? []).map((e) => `  ✗ ${JSON.stringify(e)}\n`).join('');
@@ -140,6 +147,15 @@ function render(o: NlOutcome | null): string {
     case 'unknown':
       return `? unknown: not answered, because part of the question was dropped\n${droppedText(o.dropped)}${planText(o.plan)}`;
   }
+}
+
+// A null value means no row had one.
+const shown = (v: unknown): string => (v === null || v === undefined ? '—' : String(v));
+
+/** "avg price = 12.5", or "count by month" for a grouped aggregate. A count has no field to name. */
+function aggText(a: NlAggregate): string {
+  const fn = a.fn === 'count' ? 'count' : `${a.fn} ${a.field}`;
+  return a.groups !== undefined ? `${fn} by ${a.by ?? '?'}` : `${fn} = ${shown(a.value)}`;
 }
 
 // `?? []`: a server from before the confidence rule sends no `dropped` or `plan`.
