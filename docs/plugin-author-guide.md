@@ -887,9 +887,13 @@ transaction changes: a concurrent drop waits for every transaction that holds
 a lock on the table, its caller's included. A drop that still waits more
 than 10 seconds on another transaction (a long export, say) gives up with
 `index_drop_timeout`; the recommendation stays `open`, and a retry once that
-transaction ends finishes it. A proposal that changed while `propose_index` ran is refused `proposal_changed`,
-and nothing is stored; retry. Until then the index can be left INVALID: unused by
+transaction ends finishes it. Until then the index can be left INVALID: unused by
 reads but still maintained on every write.
+
+`add` and `orderedBy` write the index declaration onto the type's proposal row.
+If that proposal changed while `propose_index` ran, the call is refused
+`proposal_changed` and nothing is stored; retry. `remove` does not write a
+proposal and never returns it.
 
 #### Profiles
 
@@ -1049,10 +1053,12 @@ does not exist (or is tombstoned):
   the target namespace is not locally resolvable.
 - `'allow'`: never checked. Use it for genuinely soft references.
 
-Whatever `onMissing` says, writing a crossRef needs `read` on the target's
-namespace, the writer's own included. The refusal is the one a read of that
+A crossRef that is checked for existence (`onMissing` other than `'allow'`)
+needs `read` on the target's namespace whenever the write sets a non-null value,
+the writer's own namespace included. The refusal is the one a read of that
 namespace gives (`unauthorized_namespace` or `unauthorized_capability`),
-whether or not the id exists. A crossRef value must be an id (a string or a
+whether or not the id exists. An `'allow'` field, and a null value, do no lookup
+and need no read. A crossRef value must be an id (a string or a
 number) or null; anything else is `invalid_field_type`.
 
 `onDelete` is copied onto each edge when the edge is created, and an edge's
