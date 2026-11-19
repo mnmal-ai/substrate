@@ -496,3 +496,65 @@ describe('a read across the reference', () => {
     }
   });
 });
+
+describe('a write naming an id in the other namespace', () => {
+  it('needs read there, and refuses the same way whether or not the id exists', async () => {
+    const engine = await boot();
+    expect(
+      (await proposeType(engine, 'Payment', { amount, invoice: ref() })).errors
+    ).toBeUndefined();
+    const invoice = await engine.mutate({
+      frame: { 'app/createInvoice': { params: { number: 'INV-1' }, fields: { id: true } } },
+      ctx: PROPOSER
+    });
+    const invoiceId = (invoice.data['app/createInvoice'] as { id: string }).id;
+    const created = await engine.mutate({
+      frame: {
+        'ext/createPayment': { params: { amount: 1, invoice: invoiceId }, fields: { id: true } }
+      },
+      ctx: PROPOSER
+    });
+    const paymentId = (created.data['ext/createPayment'] as { id: string }).id;
+    const missingId = '01900000-0000-7000-8000-000000000000';
+
+    // Every autoCRUD write that can set the reference, single and batched.
+    const writes = (id: string): Array<[string, unknown]> => [
+      ['ext/createPayment', { params: { amount: 5, invoice: id }, fields: { id: true } }],
+      ['ext/createPayment', [{ params: { amount: 5, invoice: id }, fields: { id: true } }]],
+      ['ext/updatePayment', { params: { id: paymentId, invoice: id }, fields: { id: true } }],
+      [
+        'ext/updateManyPayment',
+        { params: { where: { id: { eq: paymentId } }, set: { invoice: id } } }
+      ]
+    ];
+    const run = (key: string, frame: unknown, ctx: Partial<RequestContext>) =>
+      engine.mutate({ frame: { [key]: frame } as never, ctx });
+
+    const extOnly = as(EXT_ONLY);
+    const readGate = await engine.query({
+      frame: { 'app/Invoice': { fields: { id: true } } },
+      ctx: extOnly
+    });
+    expect(readGate.errors?.[0]?.code).toBe('unauthorized_namespace');
+    const existing = writes(invoiceId);
+    const missing = writes(missingId);
+    for (const [i, [key, frame]] of existing.entries()) {
+      const known = await run(key, frame, extOnly);
+      const unknown = await run(key, missing[i]?.[1], extOnly);
+      expect(known.errors?.[0], key).toMatchObject({
+        code: readGate.errors?.[0]?.code,
+        message: "crossRef 'invoice': namespace 'app' not in identity's allowed namespaces",
+        path: [key]
+      });
+      expect(unknown.errors, key).toEqual(known.errors);
+      expect(unknown.data, key).toEqual(known.data);
+    }
+
+    const appReader = as({ ...EXT_ONLY, app: ['read'] });
+    for (const [i, [key, frame]] of existing.entries()) {
+      expect((await run(key, frame, appReader)).errors, key).toBeUndefined();
+      const refused = await run(key, missing[i]?.[1], appReader);
+      expect(refused.errors?.[0]?.code, key).toBe('missing_referent');
+    }
+  });
+});

@@ -98,7 +98,7 @@ export function updateManyResolver(
     const set = preparePatch(raw, fields);
     if (crossRefs.length > 0) {
       try {
-        await assertCrossRefTargetsExistMany(args, crossRefs, [set], ds.namespace);
+        await assertCrossRefTargetsExistMany(args, crossRefs, [set], ds.namespace, ctx.identity);
       } catch (err) {
         throw isBatchElementError(err) ? err.cause : err;
       }
