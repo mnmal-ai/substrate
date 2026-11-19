@@ -34,14 +34,13 @@ import {
   applyTypeProposal,
   assertValidTypeIndexOptions,
   assertValidTypeProposal,
-  canReadNamespace,
-  crossRefTargetCheck,
   proposedFieldDefs,
   type TypeIndexOptions,
   typeProposalRegistryKeys
 } from './apply.js';
 import { typeHasRows } from './capability.js';
 import type { PubSub } from './config.js';
+import { canReadNamespace, crossRefTargetCheck } from './cross-ref-targets.js';
 import {
   applyUntilRollback,
   ensureStorageAfterCommit,

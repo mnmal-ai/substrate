@@ -377,7 +377,12 @@ export function installHotAddedNamespace(args: InstallHotAddedNamespaceArgs): vo
     args.registryStore.set(args.ns, binding);
   }
   const registry = skipRegistered(binding.registry);
-  defineProposalTypes(args.ns, args.proposeCapability, args.indexCapability).install({
+  defineProposalTypes(
+    args.ns,
+    args.registryStore,
+    args.proposeCapability,
+    args.indexCapability
+  ).install({
     registry,
     dataset: binding.dataset,
     edges: binding.edges

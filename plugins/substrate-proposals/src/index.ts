@@ -177,7 +177,7 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
         registryStore.set(ns, { registry: ctx.registry, dataset: ctx.dataset, edges: ctx.edges });
 
         // Register TypeProposal + FieldProposal autoCRUD types.
-        defineProposalTypes(ns, capability, indexCapability).install(ctx);
+        defineProposalTypes(ns, registryStore, capability, indexCapability).install(ctx);
 
         // Register propose_type + propose_field mutations via the shared
         // helper (single-source with the hot-add path).

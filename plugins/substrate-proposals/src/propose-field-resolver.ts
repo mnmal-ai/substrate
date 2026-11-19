@@ -28,13 +28,9 @@ import type {
   ResolverArgs,
   Row
 } from '@mnmal-ai/substrate-types';
-import {
-  applyFieldProposal,
-  assertValidFieldProposal,
-  canReadNamespace,
-  crossRefTargetCheck
-} from './apply.js';
+import { applyFieldProposal, assertValidFieldProposal } from './apply.js';
 import type { PubSub } from './config.js';
+import { canReadNamespace, crossRefTargetCheck } from './cross-ref-targets.js';
 import {
   applyUntilRollback,
   ensureStorageAfterCommit,

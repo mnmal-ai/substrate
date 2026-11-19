@@ -3,7 +3,7 @@
  * proposals plugin, `app` is a code-defined namespace beside it.
  */
 
-import { Engine, loadPlugins, MemoryEdgesStore } from '@mnmal-ai/substrate-core';
+import { Engine, loadPlugins, MemoryEdgesStore, Registry } from '@mnmal-ai/substrate-core';
 import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-dataset-memory';
 import { defineNamespace, field } from '@mnmal-ai/substrate-sdk';
 import type {
@@ -19,10 +19,16 @@ import { createNoopPubSub, createProposalsPlugin } from '../src/index.js';
 
 const T0 = new Date('2026-11-19T00:00:00Z');
 
-async function boot(): Promise<Engine> {
+/**
+ * Boot over `ext` (seeded or empty). Every store answers walks, so walk
+ * refusals come from the grammar, not the store. `virt/Hit` is a type with
+ * no storage behind it.
+ */
+async function boot(ext = new MemoryDataset({ namespace: 'ext', walkReference: true })) {
   const datasets = new MemoryDatasetRegistry();
-  for (const ns of [CONTROL_NAMESPACE, 'ext', 'app']) {
-    datasets.set(ns, new MemoryDataset({ namespace: ns }));
+  datasets.set('ext', ext);
+  for (const ns of [CONTROL_NAMESPACE, 'app']) {
+    datasets.set(ns, new MemoryDataset({ namespace: ns, walkReference: true }));
   }
   const datasetFor = (ns: string): Dataset | undefined => datasets.get(ns);
   const app: CoordinatorPlugin = {
@@ -33,7 +39,10 @@ async function boot(): Promise<Engine> {
   const proposals = createProposalsPlugin({ ownedNamespaces: ['ext'], pubsub: createNoopPubSub() });
   const edges = new MemoryEdgesStore({ now: () => T0 });
   const loaded = await loadPlugins({ plugins: [proposals, app], datasetFor, edges });
-  const engine = new Engine({ namespaces: loaded.namespaces, datasets, edges });
+  const virt = new Registry();
+  virt.register('Hit', { resolver: async () => [] });
+  const namespaces = new Map([...loaded.namespaces, ['virt', { registry: virt }]]);
+  const engine = new Engine({ namespaces, datasets, edges });
   await loaded.runOnStart(engine);
   return engine;
 }
@@ -164,5 +173,189 @@ describe('a proposed reference to a code-defined type', () => {
       type: 'Invoice',
       onDelete: 'set_null'
     });
+  });
+
+  it('refuses a type with no storage behind it', async () => {
+    const engine = await boot();
+    const { code, message } = refusal(
+      await proposeType(engine, 'Payment', { hit: ref({ ns: 'virt', type: 'Hit' }) })
+    );
+    expect(code).toBe('invalid_field_spec');
+    expect(message).toContain("'virt/Hit' is not a stored type");
+  });
+
+  it('lets an explicit grant entry beat the wildcard', async () => {
+    const engine = await boot();
+    const grants = { ...EXT_ONLY, app: ['mutate'], '*': ['read'] };
+    expect(
+      refusal(await proposeType(engine, 'Payment', { invoice: ref() }, as(grants))).message
+    ).toContain("you cannot read namespace 'app'");
+  });
+});
+
+/** A TypeProposal row as a direct write would carry it. */
+function typeRow(typeName: string, fields: Record<string, FieldSpecJson>, applied = true) {
+  return {
+    typeName,
+    fieldsJson: JSON.stringify(fields),
+    proposedBy: 'agent',
+    proposedAt: T0,
+    proposedReason: 'direct',
+    applied,
+    appliedAt: applied ? T0 : null,
+    supersededByCode: false,
+    archived: false
+  };
+}
+
+function write(
+  engine: Engine,
+  key: string,
+  params: Record<string, unknown>,
+  ctx = PROPOSER
+): Promise<PackEnvelope> {
+  return engine.mutate({ frame: { [`ext/${key}`]: { params, fields: { id: true } } }, ctx });
+}
+
+describe('a proposal row written directly', () => {
+  it('meets the same rules as propose_type and propose_field', async () => {
+    const engine = await boot();
+    const extOnly = as(EXT_ONLY);
+    const unreadable = "you cannot read namespace 'app'";
+
+    expect(
+      refusal(await write(engine, 'createTypeProposal', typeRow('Fresh', { x: ref() }), extOnly))
+        .message
+    ).toContain(unreadable);
+    // An array runs each element through the same check.
+    const batched = await engine.mutate({
+      frame: {
+        'ext/createTypeProposal': [{ params: typeRow('Fresh', { x: ref() }), fields: { id: true } }]
+      },
+      ctx: extOnly
+    });
+    expect(batched.errors?.[0]?.message).toContain(unreadable);
+    expect(
+      refusal(
+        await write(
+          engine,
+          'createTypeProposal',
+          typeRow('Fresh', { x: ref({ onDelete: 'restrict' }) })
+        )
+      ).message
+    ).toContain("'restrict' is not allowed on a reference to 'app/Invoice'");
+
+    // A type proposed by the row itself, or not yet replayed, is an owned target.
+    const fresh = await write(
+      engine,
+      'createTypeProposal',
+      typeRow('Fresh', { x: ref(), self: ref({ ns: 'ext', type: 'Fresh' }) }, false)
+    );
+    expect(fresh.errors).toBeUndefined();
+    const id = (fresh.data['ext/createTypeProposal'] as { id: string }).id;
+    expect(
+      refusal(
+        await write(
+          engine,
+          'updateTypeProposal',
+          { id, fieldsJson: JSON.stringify({ x: ref() }) },
+          extOnly
+        )
+      ).message
+    ).toContain(unreadable);
+
+    const fieldRow = {
+      targetType: 'Fresh',
+      fieldName: 'y',
+      fieldSpecJson: JSON.stringify(ref()),
+      proposedBy: 'agent',
+      proposedAt: T0,
+      proposedReason: 'direct',
+      applied: false,
+      appliedAt: null,
+      supersededByCode: false,
+      archived: false
+    };
+    expect(
+      refusal(await write(engine, 'createFieldProposal', fieldRow, extOnly)).message
+    ).toContain(unreadable);
+    const field = await write(engine, 'createFieldProposal', fieldRow);
+    expect(field.errors).toBeUndefined();
+    const fieldId = (field.data['ext/createFieldProposal'] as { id: string }).id;
+    expect(
+      refusal(
+        await write(engine, 'updateFieldProposal', {
+          id: fieldId,
+          fieldSpecJson: JSON.stringify(ref({ onDelete: 'restrict' }))
+        })
+      ).message
+    ).toContain("'restrict' is not allowed on a reference to 'app/Invoice'");
+  });
+
+  it('is applied at boot only when its target exists and is not restrict', async () => {
+    // Written straight to the store, past every check but apply's.
+    const ext = new MemoryDataset({ namespace: 'ext', walkReference: true });
+    await ext.write('TypeProposal', [
+      { id: 'fine', ...typeRow('Fine', { invoice: ref() }) },
+      { id: 'restricted', ...typeRow('Restricted', { invoice: ref({ onDelete: 'restrict' }) }) },
+      { id: 'gone', ...typeRow('Gone', { invoice: ref({ type: 'Nope' }) }) }
+    ]);
+    const registry = (await boot(ext)).registryFor('ext');
+    expect(registry?.has('Fine')).toBe(true);
+    expect(registry?.has('Restricted')).toBe(false);
+    expect(registry?.has('Gone')).toBe(false);
+  });
+});
+
+describe('a read across the reference', () => {
+  it('returns the stored id only, and refuses a walk into the other namespace', async () => {
+    const engine = await boot();
+    expect(
+      (await proposeType(engine, 'Payment', { amount, invoice: ref() })).errors
+    ).toBeUndefined();
+    const invoice = await engine.mutate({
+      frame: { 'app/createInvoice': { params: { number: 'INV-1' }, fields: { id: true } } },
+      ctx: PROPOSER
+    });
+    const invoiceId = (invoice.data['app/createInvoice'] as { id: string }).id;
+    const payment = await engine.mutate({
+      frame: {
+        'ext/createPayment': { params: { amount: 5, invoice: invoiceId }, fields: { id: true } }
+      },
+      ctx: PROPOSER
+    });
+    expect(payment.errors).toBeUndefined();
+
+    const extReader = as({ ext: ['read'] });
+    const read = await engine.query({
+      frame: { 'ext/Payment': { params: {}, fields: { id: true, invoice: { number: true } } } },
+      ctx: extReader
+    });
+    expect(read.errors).toBeUndefined();
+    expect((read.data['ext/Payment'] as Array<{ invoice: unknown }>)[0]?.invoice).toBe(invoiceId);
+    expect(JSON.stringify(read.data)).not.toContain('INV-1');
+
+    const walks: Array<[string, Record<string, unknown>, Partial<RequestContext>]> = [
+      [
+        'ext/Payment',
+        { params: { where: { _walk: { out: 'invoice', where: { number: { eq: 'INV-1' } } } } } },
+        extReader
+      ],
+      [
+        'ext/Payment',
+        { fields: { id: true, inv: { _walk: { out: 'invoice' }, fields: { number: true } } } },
+        extReader
+      ],
+      [
+        'app/Invoice',
+        { params: { where: { _walk: { in: 'ext/Payment.invoice' } } } },
+        as({ app: ['read'] })
+      ]
+    ];
+    for (const [key, frame, ctx] of walks) {
+      const env = await engine.query({ frame: { [key]: { fields: { id: true }, ...frame } }, ctx });
+      expect(env.errors?.[0]?.code, key).toBe('walk_cross_namespace');
+      expect(env.data[key], key).toBeUndefined();
+    }
   });
 });
