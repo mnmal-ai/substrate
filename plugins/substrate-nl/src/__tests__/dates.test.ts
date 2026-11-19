@@ -173,6 +173,10 @@ describe('years and months as windows', () => {
   it('reads this year and last year as calendar years', () => {
     expect(rangeFor('this year', z)).toEqual({ gte: zz('2026-01-01'), lt: zz('2027-01-01') });
     expect(rangeFor('last year', z)).toEqual({ gte: zz('2025-01-01'), lt: zz('2026-01-01') });
+    expect(rangeFor('last year', '2026-01-15T10:00:00Z')).toEqual({
+      gte: zz('2025-01-01'),
+      lt: zz('2026-01-01')
+    });
     expect(rangeFor('this year', '2026-01-01T00:30:00+05:30')?.gte).toBe(
       '2026-01-01T00:00:00+05:30'
     );
