@@ -91,10 +91,8 @@ export class RegistryStore {
   }
 
   /**
-   * True when `type` is a type registered in a namespace this plugin owns, so
-   * a proposed crossRef cannot point into a namespace it does not manage or at
-   * a type that does not exist. The control plane is the plugin's own, not a
-   * user namespace.
+   * True when `type` is a type registered in a namespace this plugin owns. The
+   * control plane is the plugin's own, not a user namespace.
    */
   ownsType(namespace: string, type: string): boolean {
     return (

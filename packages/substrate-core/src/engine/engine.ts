@@ -538,6 +538,11 @@ export class Engine {
     return this.#tombstoned.has(ns) ? 'tombstoned' : 'live';
   }
 
+  /** Whether `type` is a type registered in the live namespace `ns`. */
+  hasType(ns: string, type: string): boolean {
+    return this.#isLive(ns) && this.#namespaces.get(ns)?.registry.get(type)?.kind === 'type';
+  }
+
   /** True iff the namespace is registered AND not tombstoned. */
   #isLive(ns: string): boolean {
     return this.#namespaces.has(ns) && !this.#tombstoned.has(ns);

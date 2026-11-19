@@ -34,6 +34,8 @@ import {
   applyTypeProposal,
   assertValidTypeIndexOptions,
   assertValidTypeProposal,
+  canReadNamespace,
+  crossRefTargetCheck,
   proposedFieldDefs,
   type TypeIndexOptions,
   typeProposalRegistryKeys
@@ -106,12 +108,19 @@ export function makeProposeTypeResolver(
 
     const input = parseInput(args.params ?? {});
     // Refused before the lock and any row write. A crossRef may target an
-    // owned type that exists, or the type being proposed.
+    // owned type that exists, the type being proposed, or a registered type
+    // in a namespace the caller can read.
     assertValidTypeProposal(
       input.typeName,
       input.fields,
-      (ns, type) =>
-        (ns === deps.namespace && type === input.typeName) || deps.registryStore.ownsType(ns, type)
+      crossRefTargetCheck(
+        deps.registryStore,
+        deps.namespace,
+        (ns, type) =>
+          (ns === deps.namespace && type === input.typeName) ||
+          deps.registryStore.ownsType(ns, type),
+        (ns) => canReadNamespace(ctx.identity, ns)
+      )
     );
     for (const name of Object.keys(input.fields)) assertNotEngineInjected(name);
     // A new type is empty, so declaring its order and indexes needs only the

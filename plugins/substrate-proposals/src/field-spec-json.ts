@@ -83,23 +83,25 @@ export function assertProposableName(param: string, value: unknown): asserts val
   }
 }
 
+/** Why a proposed crossRef may not target `ref`, or null when it may. */
+export type CrossRefTargetCheck = (ref: CrossRefSpec) => string | null;
+
 /**
- * Refuse a crossRef, at any depth in `spec`, whose target `ownsType` rejects.
+ * Refuse a crossRef, at any depth in `spec`, that `check` gives a reason against.
  *
- * @throws ProposalError `invalid_field_spec` naming the field and the target
+ * @throws ProposalError `invalid_field_spec` naming the field and the reason
  */
-export function assertCrossRefsOwned(
+export function assertCrossRefTargets(
   fieldName: string,
   spec: FieldSpecJson,
-  ownsType: (ns: string, type: string) => boolean
+  check: CrossRefTargetCheck
 ): void {
   for (const ref of crossRefsIn(spec)) {
-    if (!ownsType(ref.ns, ref.type)) {
-      throw new ProposalError(
-        'invalid_field_spec',
-        `Field '${fieldName}' references '${ref.ns}/${ref.type}', which is not a type in a namespace this plugin owns`,
-        { fieldName }
-      );
+    const reason = check(ref);
+    if (reason !== null) {
+      throw new ProposalError('invalid_field_spec', `Field '${fieldName}': ${reason}`, {
+        fieldName
+      });
     }
   }
 }

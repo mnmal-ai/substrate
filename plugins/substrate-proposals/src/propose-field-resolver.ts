@@ -28,7 +28,12 @@ import type {
   ResolverArgs,
   Row
 } from '@mnmal-ai/substrate-types';
-import { applyFieldProposal, assertValidFieldProposal } from './apply.js';
+import {
+  applyFieldProposal,
+  assertValidFieldProposal,
+  canReadNamespace,
+  crossRefTargetCheck
+} from './apply.js';
 import type { PubSub } from './config.js';
 import {
   applyUntilRollback,
@@ -92,8 +97,16 @@ export function makeProposeFieldResolver(
 
     const input = (args.params ?? {}) as unknown as ProposeFieldInput;
     // Refused before the lock and any row write; the crossRef target must exist.
-    assertValidFieldProposal(input.targetType, input.fieldName, input.fieldSpec, (ns, type) =>
-      deps.registryStore.ownsType(ns, type)
+    assertValidFieldProposal(
+      input.targetType,
+      input.fieldName,
+      input.fieldSpec,
+      crossRefTargetCheck(
+        deps.registryStore,
+        deps.namespace,
+        (ns, type) => deps.registryStore.ownsType(ns, type),
+        (ns) => canReadNamespace(ctx.identity, ns)
+      )
     );
     assertNotEngineInjected(input.fieldName);
     if (input.proposedReason !== undefined && typeof input.proposedReason !== 'string') {

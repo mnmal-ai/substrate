@@ -1,6 +1,11 @@
 import { field } from '@mnmal-ai/substrate-sdk';
 import { describe, expect, it } from 'vitest';
-import { type FieldSpecJson, parseFieldSpec, stringifyFieldDef } from '../src/field-spec-json.js';
+import {
+  assertCrossRefTargets,
+  type FieldSpecJson,
+  parseFieldSpec,
+  stringifyFieldDef
+} from '../src/field-spec-json.js';
 
 describe('FieldSpecJson round-trip', () => {
   it('scalar string round-trips', () => {
@@ -139,5 +144,22 @@ describe('vocabulary specs', () => {
     expect(() => parseFieldSpec({ kind: 'scalar', type: 'string', aliases: { a: 'b' } })).toThrow(
       /enum/
     );
+  });
+});
+
+describe('assertCrossRefTargets', () => {
+  const nested: FieldSpecJson = {
+    kind: 'list',
+    of: { kind: 'struct', fields: { to: { kind: 'crossRef', ns: 'app', type: 'Invoice' } } }
+  };
+
+  it('puts the field and the refusal reason in the error', () => {
+    expect(() =>
+      assertCrossRefTargets('refs', nested, (ref) => `no type '${ref.ns}/${ref.type}'`)
+    ).toThrow("Field 'refs': no type 'app/Invoice'");
+  });
+
+  it('accepts when the check returns null', () => {
+    expect(() => assertCrossRefTargets('refs', nested, () => null)).not.toThrow();
   });
 });

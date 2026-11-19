@@ -25,15 +25,20 @@ import {
   type Dataset,
   type EdgesStore,
   type FieldDef,
+  grantedIn,
+  grantOf,
+  type Identity,
   type IndexDecl,
   type OrderedBy,
   type Registry
 } from '@mnmal-ai/substrate-types';
+import { CONTROL_NAMESPACE } from './control-plane.js';
 import { ProposalError } from './errors.js';
 import {
-  assertCrossRefsOwned,
+  assertCrossRefTargets,
   assertProposableName,
   assertValidFieldSpec,
+  type CrossRefTargetCheck,
   type FieldSpecJson,
   parseFieldSpec
 } from './field-spec-json.js';
@@ -52,21 +57,65 @@ export interface ApplyTypeProposalArgs {
   edges: EdgesStore;
 }
 
-/** Answers whether a crossRef may target `type` in `ns`. */
-export type CrossRefTargetCheck = (ns: string, type: string) => boolean;
+/**
+ * The crossRef target check for a proposal in `namespace`. A target in a
+ * namespace this plugin owns must pass `ownedTarget`; the control plane is
+ * refused. Any other target must be in a namespace `canRead` admits, be a type
+ * the engine has registered, and not be `restrict`, so a proposal never blocks
+ * deletes of rows it does not own. The read rule runs first, so an unreadable
+ * namespace never tells whether a type exists in it.
+ */
+export function crossRefTargetCheck(
+  store: RegistryStore,
+  namespace: string,
+  ownedTarget: (ns: string, type: string) => boolean,
+  canRead: (ns: string) => boolean
+): CrossRefTargetCheck {
+  return ({ ns, type, onDelete }) => {
+    const target = `'${ns}/${type}'`;
+    if (ns === CONTROL_NAMESPACE) return `${target} is in this plugin's control plane`;
+    if (store.ownsNamespace(ns)) return ownedTarget(ns, type) ? null : `no type ${target}`;
+    if (!canRead(ns)) return `you cannot read namespace '${ns}'`;
+    const engine = store.has(namespace) ? store.getBinding(namespace).engine : undefined;
+    if (engine?.hasType?.(ns, type) !== true) return `no type ${target}`;
+    if (onDelete === 'restrict') {
+      return `'restrict' is not allowed on a reference to ${target}, which this plugin does not own`;
+    }
+    return null;
+  };
+}
 
 /**
- * Refuse a type proposal no caller could address, or whose crossRefs leave
- * the plugin's namespaces. The resolver passes a check that also requires the
- * target type to exist; replay cannot, as a target in another namespace may
- * not have been replayed yet.
+ * The check for a proposal being applied: an owned target need not exist yet,
+ * as replay may not have reached it, and the proposer's read was checked when
+ * the proposal was made.
+ */
+function appliedTargetCheck(store: RegistryStore, namespace: string): CrossRefTargetCheck {
+  const always = (): boolean => true;
+  return crossRefTargetCheck(store, namespace, always, always);
+}
+
+/**
+ * Whether `identity` may read `ns`, as the engine's grant gate decides: no
+ * grant is no claim, and passes.
+ */
+export function canReadNamespace(identity: Identity | null, ns: string): boolean {
+  const grant = grantOf(identity);
+  return grant === null || grantedIn(grant, ns).includes('read');
+}
+
+/**
+ * Refuse a type proposal no caller could address, or whose crossRefs `targets`
+ * refuses. The resolver passes a check that also requires an owned target type
+ * to exist; replay cannot, as a target in another owned namespace may not have
+ * been replayed yet.
  *
  * @throws ProposalError `invalid_params` / `invalid_field_spec`
  */
 export function assertValidTypeProposal(
   typeName: unknown,
   fields: unknown,
-  ownsTarget: CrossRefTargetCheck
+  targets: CrossRefTargetCheck
 ): asserts fields is Record<string, FieldSpecJson> {
   assertProposableName('typeName', typeName);
   if (
@@ -81,7 +130,7 @@ export function assertValidTypeProposal(
   }
   for (const [fieldName, spec] of Object.entries(fields as Record<string, FieldSpecJson>)) {
     assertValidFieldSpec(fieldName, spec);
-    assertCrossRefsOwned(fieldName, spec, ownsTarget);
+    assertCrossRefTargets(fieldName, spec, targets);
   }
 }
 
@@ -90,7 +139,7 @@ export function assertValidFieldProposal(
   targetType: unknown,
   fieldName: string,
   fieldSpec: FieldSpecJson,
-  ownsTarget: CrossRefTargetCheck
+  targets: CrossRefTargetCheck
 ): void {
   assertProposableName('targetType', targetType);
   if ((PROPOSAL_TYPE_NAMES as readonly string[]).includes(targetType)) {
@@ -101,7 +150,7 @@ export function assertValidFieldProposal(
     );
   }
   assertValidFieldSpec(fieldName, fieldSpec);
-  assertCrossRefsOwned(fieldName, fieldSpec, ownsTarget);
+  assertCrossRefTargets(fieldName, fieldSpec, targets);
 }
 
 /** Installs the proposed type's autoCRUD surface into `registry`. */
@@ -145,11 +194,7 @@ export function typeProposalRegistryKeys(
  */
 export function applyTypeProposal(args: ApplyTypeProposalArgs): void {
   const store = args.registryStore;
-  assertValidTypeProposal(
-    args.typeName,
-    args.fields,
-    (ns, type) => (ns === args.namespace && type === args.typeName) || store.ownsNamespace(ns)
-  );
+  assertValidTypeProposal(args.typeName, args.fields, appliedTargetCheck(store, args.namespace));
   const binding = store.getBinding(args.namespace);
 
   installProposedType(binding.registry, args);
@@ -333,8 +378,11 @@ export function sameJson(a: unknown, b: unknown): boolean {
  */
 export function applyFieldProposal(args: ApplyFieldProposalArgs): void {
   const store = args.registryStore;
-  assertValidFieldProposal(args.targetType, args.fieldName, args.fieldSpec, (ns) =>
-    store.ownsNamespace(ns)
+  assertValidFieldProposal(
+    args.targetType,
+    args.fieldName,
+    args.fieldSpec,
+    appliedTargetCheck(store, args.namespace)
   );
   const binding = store.getBinding(args.namespace);
   const existing = binding.registry.get(args.targetType);
