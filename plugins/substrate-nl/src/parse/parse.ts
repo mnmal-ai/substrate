@@ -259,12 +259,12 @@ export function parseQuestion(
       if (slice.some((t) => t.used) || slice.map((t) => t.text).join(' ') !== entry.phrase)
         continue;
       for (const t of slice) t.used = true;
-      for (const type of entry.types)
-        mentioned.set(type, {
-          span: entry.phrase,
-          plural: entry.plural,
-          at: mentioned.get(type)?.at ?? [i, i + n - 1]
-        });
+      // A type's earliest mention stands for it: span, number and position from one occurrence.
+      for (const type of entry.types) {
+        const prior = mentioned.get(type);
+        if (prior === undefined || i < prior.at[0])
+          mentioned.set(type, { span: entry.phrase, plural: entry.plural, at: [i, i + n - 1] });
+      }
     }
   }
   for (const [type, m] of mentioned) evidence.push({ span: m.span, role: 'type', detail: type });
@@ -1095,7 +1095,7 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
     },
     answer,
     evidence: ev,
-    residual: contentWords(tokens, strict),
+    residual: contentWords(tokens),
     plan,
     dropped,
     ...(countBy !== null
@@ -1858,8 +1858,8 @@ function creditFieldWords(tokens: Token[], field: PackField | undefined): boolea
   return hit;
 }
 
-/** Unexplained words; with `numbers`, a lone unread number too, which a strict reading cannot lose. */
-function contentWords(tokens: Token[], numbers = false): string[] {
+/** Unexplained words, and a lone unread number, which no reading may lose. */
+function contentWords(tokens: Token[]): string[] {
   const free = (t: Token | undefined): t is Token =>
     t !== undefined && !t.used && !GLUE.has(t.text);
   const num = (t: Token | undefined) => free(t) && /^\d+$/.test(t.text);
@@ -1868,8 +1868,8 @@ function contentWords(tokens: Token[], numbers = false): string[] {
   tokens.forEach((t, i) => {
     if (!free(t)) return;
     if (num(t)) {
-      // A number no word explains ("in 2025") would widen a count or an aggregate to all time.
-      if (numbers && !word(tokens[i - 1]) && !word(tokens[i + 1])) out.push(t.text);
+      // A number no word explains ("items 2025") would widen any reading it was meant to narrow.
+      if (!word(tokens[i - 1]) && !word(tokens[i + 1])) out.push(t.text);
       return;
     }
     // A number beside an unexplained word is lost with it: "8 cores", never just "cores".

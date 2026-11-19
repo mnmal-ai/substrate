@@ -93,6 +93,38 @@ describe('a number with no cue is not a shortId', () => {
   });
 });
 
+describe('a lone number nothing reads', () => {
+  it('never drops an unread number', async () => {
+    const statused = withTypes({
+      Item: {
+        fields: {
+          ...(types.Item as { fields: object }).fields,
+          status: { ...str, enum: ['open', 'sold'] }
+        }
+      }
+    }).served;
+    for (const [q, p, n] of [
+      ['items 2025', served, '2025'],
+      ['open items 7', statused, '7'],
+      // The earliest mention is plural, so 5 is not an id; "category" later is no cue.
+      ['categories 5 and the category', served, '5']
+    ] as const) {
+      const r = parseQuestion(q, p, { asOf, rulings: p.rulings });
+      expect(r.status, q).toBe('partial');
+      expect(r.residual, q).toEqual([n]);
+      expect(JSON.stringify(r.candidates), q).not.toContain('shortId');
+      const { e, query } = engine(() => ({ data: {} }));
+      expect((await ask(q, e, p)).kind, q).toBe('unknown');
+      expect(query, q).not.toHaveBeenCalled();
+    }
+    expect(parse('items in 2025')).toMatchObject({ status: 'resolved', residual: [] });
+    expect(params('items in 2025')).toEqual({
+      where: { listedAt: { gte: '2025-01-01T00:00:00Z', lt: '2026-01-01T00:00:00Z' } }
+    });
+    expect(parse('top 5 items by price')).toMatchObject({ status: 'resolved', residual: [] });
+  });
+});
+
 describe('aggregates: parsing', () => {
   it('reads average, total, min and max of a number field', () => {
     for (const [q, fn] of [

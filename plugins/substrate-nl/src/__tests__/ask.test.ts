@@ -459,6 +459,25 @@ describe('runAsk', () => {
     // A day names the date, not the month: "may 5" stays a window.
     expect((await run('todos on may 5', withMay)).sent).toContain('"createdAt"');
   });
+
+  it('answers unknown when a month phrase leaves a number unread', async () => {
+    const asOf = '2026-11-19T10:00:00Z';
+    for (const [q, residual] of [
+      ['todos in october 5 2025', ['5', '2025']],
+      ['todos in october of 2025', ['2025']],
+      ['todos in sept 15', ['15']]
+    ] as const) {
+      const { e, query } = engine();
+      const evs = await collect(
+        runAsk({ namespace: 'ns', question: q, asOf }, http, { pack, engine: e })
+      );
+      const parsed = evs[0] as Extract<NlEvent, { event: 'parsed' }>;
+      expect(parsed.status, q).toBe('partial');
+      expect(parsed.residual, q).toEqual(residual);
+      expect(outcome(evs), q).toMatchObject({ kind: 'unknown' });
+      expect(query, q).not.toHaveBeenCalled();
+    }
+  });
 });
 
 // --- walk readings: the confidence rule on the wire ---

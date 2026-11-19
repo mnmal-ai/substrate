@@ -155,6 +155,25 @@ describe('ordering, counting, authors', () => {
     );
     const r = parse('todos 1752');
     expect(JSON.stringify(r.candidates)).not.toContain('shortId');
+    expect(r.residual).toEqual(['1752']);
+  });
+
+  it('never drops an unread number', () => {
+    for (const [q, n] of [
+      ['todos 5 and the todo', '5'],
+      // "identities" is indexed before "identity": the earliest mention still decides.
+      ['agent identities 5 and the agent identity', '5']
+    ] as const) {
+      const r = parse(q);
+      expect(r.status, q).toBe('partial');
+      expect(r.residual, q).toEqual([n]);
+      expect(JSON.stringify(r.candidates), q).not.toContain('shortId');
+    }
+    // A bare "#1752" asks which type is meant; with a type or a question it is the id.
+    for (const q of ['todo 1752', 'todo #1752', "What's #1752?"]) {
+      expect(parse(q), q).toMatchObject({ status: 'resolved', residual: [] });
+      expect(params(q), q).toEqual({ where: { shortId: { eq: 1752 } } });
+    }
   });
 
   it('treats values beside an id as commentary ("#5, is that recall?")', () => {
