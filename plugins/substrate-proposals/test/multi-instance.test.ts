@@ -323,6 +323,40 @@ describe('reconcileNamespace', () => {
     expect(lines[0]).toContain(`${NS}/Ledger: field 'seq' is reserved for server metadata`);
   });
 
+  it('a peer notification for a row whose spec is not a string skips it', async () => {
+    const spec = { kind: 'scalar', type: 'string' };
+    const live = {
+      proposedBy: 'designer',
+      proposedAt: new Date(),
+      proposedReason: 'written past the gate',
+      applied: true,
+      appliedAt: new Date(),
+      supersededByCode: false,
+      archived: false
+    };
+    await dataset.write('TypeProposal', [
+      { id: 'host', typeName: 'Host', fieldsJson: JSON.stringify({ t: spec }), ...live },
+      { id: 'arr', typeName: 'Arr', fieldsJson: [JSON.stringify({ t: spec })], ...live }
+    ]);
+    await dataset.write('FieldProposal', [
+      { id: 'obj', targetType: 'Host', fieldName: 'f', fieldSpecJson: spec, ...live }
+    ]);
+    const { store, registry } = makeStore(dataset, edges);
+    const skipped: unknown[] = [];
+    for (const proposalId of ['host', 'arr', 'obj']) {
+      await applyProposalFromNotification({
+        namespace: NS,
+        proposalId,
+        registryStore: store,
+        onSkip: (r) => skipped.push(r.id)
+      });
+    }
+    expect(registry.has('Host')).toBe(true);
+    expect(registry.has('Arr')).toBe(false);
+    expect(registry.get('Host')?.fields.f).toBeUndefined();
+    expect(skipped).toEqual(['arr', 'obj']);
+  });
+
   it('replays FieldProposals after their parent TypeProposals', async () => {
     // Seed TypeProposal for Dress{name} and FieldProposal for Dress.color.
     const typeProposalId = randomUUID();

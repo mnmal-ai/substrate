@@ -461,6 +461,68 @@ describe('a proposal row written directly', () => {
     ).toBeUndefined();
   });
 
+  it('refuses a spec that is not a string, and replay skips one stored so', async () => {
+    const engine = await boot();
+    const spec = JSON.stringify({ x: ref() });
+    const unstrung = [[spec], { x: ref() }, 7];
+    const fieldRow = (fieldSpecJson: unknown) => ({
+      targetType: 'Fresh',
+      fieldName: 'y',
+      fieldSpecJson,
+      proposedBy: 'agent',
+      proposedAt: T0,
+      proposedReason: 'direct',
+      applied: true,
+      appliedAt: T0,
+      supersededByCode: false,
+      archived: false
+    });
+    const created = async (key: string, params: Record<string, unknown>): Promise<string> => {
+      const env = await write(engine, key, params);
+      expect(env.errors).toBeUndefined();
+      return (env.data[`ext/${key}`] as { id: string }).id;
+    };
+    const id = await created('createTypeProposal', typeRow('Fresh', { n: amount }));
+    const fid = await created('createFieldProposal', fieldRow(JSON.stringify(amount)));
+    for (const value of unstrung) {
+      const writes: Array<[string, Record<string, unknown>]> = [
+        ['createTypeProposal', { ...typeRow('Other', {}), fieldsJson: value }],
+        ['updateTypeProposal', { id, fieldsJson: value }],
+        ['createFieldProposal', fieldRow(value)],
+        ['updateFieldProposal', { id: fid, fieldSpecJson: value }]
+      ];
+      for (const [key, params] of writes) {
+        const { code, message } = refusal(await write(engine, key, params));
+        expect(code, key).toBe('invalid_params');
+        expect(message, key).toMatch(/'(fieldsJson|fieldSpecJson)' must be a JSON string/);
+      }
+    }
+
+    // Written straight to the store, past the gate.
+    const ext = new MemoryDataset({ namespace: 'ext', walkReference: true });
+    await ext.write('TypeProposal', [
+      { id: 'host', ...typeRow('Host', { n: amount }) },
+      ...unstrung.map((fieldsJson, i) => ({ id: `t${i}`, ...typeRow(`T${i}`, {}), fieldsJson }))
+    ]);
+    await ext.write(
+      'FieldProposal',
+      unstrung.map((fieldSpecJson, i) => ({
+        id: `f${i}`,
+        ...fieldRow(fieldSpecJson),
+        targetType: 'Host',
+        fieldName: `f${i}`
+      }))
+    );
+    const lines: string[] = [];
+    const registry = (await boot(ext, { log: (line) => lines.push(line) })).registryFor('ext');
+    expect(registry?.has('Host')).toBe(true);
+    for (const i of unstrung.keys()) {
+      expect(registry?.has(`T${i}`)).toBe(false);
+      expect(registry?.get('Host')?.fields[`f${i}`]).toBeUndefined();
+    }
+    expect(lines).toHaveLength(unstrung.length * 2);
+  });
+
   it('is applied at boot only when its target exists and is not restrict', async () => {
     // Written straight to the store, past every check but apply's.
     const ext = new MemoryDataset({ namespace: 'ext', walkReference: true });

@@ -49,6 +49,21 @@ function typeSkipped(row: Row): ProposalError {
 }
 
 /**
+ * A stored row's field specs, parsed.
+ *
+ * @throws ProposalError `invalid_field_spec` when the stored value is not a
+ *   string, as `JSON.parse` would read an array as its joined elements
+ * @throws SyntaxError when it is not JSON
+ */
+function storedSpec(row: Row, param: 'fieldsJson' | 'fieldSpecJson'): unknown {
+  const json = row[param];
+  if (typeof json !== 'string') {
+    throw new ProposalError('invalid_field_spec', `stored '${param}' is not a string`, { param });
+  }
+  return JSON.parse(json);
+}
+
+/**
  * The warning line for a stored proposal skipped at replay: the reserved-name
  * and skipped-type wordings below, else one naming its namespace, type, field
  * and the error.
@@ -124,7 +139,7 @@ export async function applyProposalFromNotification(
       const typeName = row.typeName as string;
       let changed = false;
       if (!binding.registry.get(typeName)) {
-        const fields = JSON.parse(row.fieldsJson as string) as Record<string, FieldSpecJson>;
+        const fields = storedSpec(row, 'fieldsJson') as Record<string, FieldSpecJson>;
         applyTypeProposal({
           namespace: args.namespace,
           typeName,
@@ -158,7 +173,7 @@ export async function applyProposalFromNotification(
       try {
         const entry = binding.registry.get(row.targetType as string);
         if (entry && fieldNeedsReplay(entry, row)) {
-          const fieldSpec = JSON.parse(row.fieldSpecJson as string) as FieldSpecJson;
+          const fieldSpec = storedSpec(row, 'fieldSpecJson') as FieldSpecJson;
           applyFieldProposal({
             namespace: args.namespace,
             targetType: row.targetType as string,
@@ -249,7 +264,7 @@ export async function reconcileNamespace(args: ReconcileArgs): Promise<void> {
   for (const row of typeRows.rows) {
     if (binding.registry.get(row.typeName as string)) continue;
     try {
-      const fields = JSON.parse(row.fieldsJson as string) as Record<string, FieldSpecJson>;
+      const fields = storedSpec(row, 'fieldsJson') as Record<string, FieldSpecJson>;
       applyTypeProposal({
         namespace: args.namespace,
         typeName: row.typeName as string,
@@ -286,7 +301,7 @@ export async function reconcileNamespace(args: ReconcileArgs): Promise<void> {
     }
     if (!entry || !fieldNeedsReplay(entry, row)) continue;
     try {
-      const fieldSpec = JSON.parse(row.fieldSpecJson as string) as FieldSpecJson;
+      const fieldSpec = storedSpec(row, 'fieldSpecJson') as FieldSpecJson;
       applyFieldProposal({
         namespace: args.namespace,
         targetType: row.targetType as string,

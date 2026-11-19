@@ -15,6 +15,7 @@ import {
   ResolverFrameError
 } from '@mnmal-ai/substrate-types';
 import { CONTROL_NAMESPACE } from './control-plane.js';
+import { ProposalError } from './errors.js';
 import {
   assertCrossRefTargets,
   type CrossRefTargetCheck,
@@ -115,6 +116,21 @@ function parses(spec: unknown): spec is FieldSpecJson {
 }
 
 /**
+ * Refuse a spec param that is present and not a string: replay parses the
+ * stored value as JSON text, and `JSON.parse` of an array parses its joined
+ * elements, so a spec this gate never saw would be applied.
+ *
+ * @throws ProposalError `invalid_params` naming the param
+ */
+function assertSpecString(params: Record<string, unknown>): void {
+  for (const param of ['fieldsJson', 'fieldSpecJson']) {
+    if (param in params && typeof params[param] !== 'string') {
+      throw new ProposalError('invalid_params', `'${param}' must be a JSON string`, { param });
+    }
+  }
+}
+
+/**
  * Update params that change neither a proposal row's specs nor whether boot
  * applies it: what `BENIGN_PROPOSAL_FIELDS` lists, plus the row's apply time
  * and its index, order, size and value-map options.
@@ -162,11 +178,13 @@ const SPEC_KEYS: ReadonlySet<string> = new Set([
  * the row as the one before left it, and the update then writes that row by
  * its stored id, whatever row its `id` names by then. An update that must be
  * checked but whose row cannot be loaded, or held still, is refused. A spec
- * that does not parse is left to apply, which refuses it. A mutate array runs
+ * param that is not a string is refused; a spec string that does not parse is
+ * left to apply, which refuses it. A mutate array runs
  * per element through the check; an array of updates first locks every row
  * it names, in id order.
  *
- * @throws ProposalError `invalid_field_spec` from the wrapped resolvers
+ * @throws ProposalError `invalid_field_spec` from the wrapped resolvers, or
+ *   `invalid_params` for a spec param that is not a string
  * @throws ResolverFrameError `policy_denied` when an update must be checked
  *   against a stored row that cannot be loaded or locked
  */
@@ -193,6 +211,7 @@ export function gateProposalReferences(
       const params = Object.fromEntries(
         Object.entries(args.params ?? {}).filter(([, v]) => v !== undefined)
       );
+      assertSpecString(params);
       const after = isUpdate ? await rowAfterUpdate(key, type, params, args.dataset) : undefined;
       const row = isUpdate ? after?.row : params;
       if (row !== undefined) {
