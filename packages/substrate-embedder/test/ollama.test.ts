@@ -61,21 +61,47 @@ describe('OllamaEmbedder', () => {
     });
   });
 
-  it('embed: throws EmbedError(unavailable) on non-2xx response', async () => {
-    server.use(
-      http.post('http://localhost:11434/api/embed', () =>
-        HttpResponse.json({ error: 'model not found' }, { status: 404 })
-      )
-    );
-    const e = new OllamaEmbedder({
-      baseUrl: 'http://localhost:11434',
-      model: 'bge-small-en:v1.5',
-      dimension: 384
-    });
-    await expect(e.embed('x')).rejects.toSatisfy((err: unknown) => {
-      return err instanceof EmbedError && err.code === 'unavailable';
-    });
-  });
+  it.each([401, 403, 404, 408, 429, 502, 503, 504])(
+    'embed: throws EmbedError(unavailable) on a %i, which no other input would avoid',
+    async (status) => {
+      server.use(
+        http.post('http://localhost:11434/api/embed', () =>
+          HttpResponse.json({ error: 'nope' }, { status })
+        )
+      );
+      const e = new OllamaEmbedder({
+        baseUrl: 'http://localhost:11434',
+        model: 'bge-small-en:v1.5',
+        dimension: 384
+      });
+      await expect(e.embed('x')).rejects.toSatisfy((err: unknown) => {
+        return err instanceof EmbedError && err.code === 'unavailable';
+      });
+    }
+  );
+
+  it.each([400, 413, 422, 500])(
+    'embed: throws EmbedError(invalid_response) on a %i, which only this input caused',
+    async (status) => {
+      server.use(
+        http.post('http://localhost:11434/api/embed', () =>
+          HttpResponse.json({ error: 'failed to process input' }, { status })
+        )
+      );
+      const e = new OllamaEmbedder({
+        baseUrl: 'http://localhost:11434',
+        model: 'bge-small-en:v1.5',
+        dimension: 384
+      });
+      await expect(e.embed('x')).rejects.toSatisfy((err: unknown) => {
+        return (
+          err instanceof EmbedError &&
+          err.code === 'invalid_response' &&
+          err.message.includes(String(status))
+        );
+      });
+    }
+  );
 
   it('embed: throws EmbedError(invalid_response) on missing embeddings field', async () => {
     server.use(

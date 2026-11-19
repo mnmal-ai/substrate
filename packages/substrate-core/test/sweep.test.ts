@@ -55,7 +55,7 @@ function countMetric(h: Harness, name: SweepMetricName | string): number {
 }
 
 describe('runSweep — per-policy branches', () => {
-  it('EXISTS target → update lastSweptAt, no policy fires', async () => {
+  it('EXISTS target → edge left unwritten, no policy fires', async () => {
     const h = makeHarness();
     const priceDs = new MemoryDataset({ namespace: 'prices' });
     await priceDs.write('Price', [{ id: 42 }]);
@@ -76,7 +76,7 @@ describe('runSweep — per-policy branches', () => {
 
     const [rec] = await h.edges.readNextBatch(null, 10).then((b) => b.edges);
     expect(rec?.id).toBe(edge.id);
-    expect(rec?.lastSweptAt).toBeInstanceOf(Date);
+    expect(rec?.lastSweptAt).toBeUndefined();
     expect(rec?.deletedAt).toBeUndefined();
   });
 
@@ -204,7 +204,7 @@ describe('runSweep — per-policy branches', () => {
     expect(swept).toBeDefined();
   });
 
-  it('DELETED + restrict: stamps lastSweptAt, edge stays live, metric fired', async () => {
+  it('DELETED + restrict: edge stays live and unwritten, metric fired', async () => {
     const h = makeHarness();
 
     const priceDs = new MemoryDataset({ namespace: 'prices' });
@@ -228,7 +228,7 @@ describe('runSweep — per-policy branches', () => {
     const batch = await h.edges.readNextBatch(null, 10);
     const rec = batch.edges.find((e) => e.id === edge.id);
     expect(rec?.deletedAt).toBeUndefined();
-    expect(rec?.lastSweptAt).toBeInstanceOf(Date);
+    expect(rec?.lastSweptAt).toBeUndefined();
 
     expect(countMetric(h, 'restrict_violation')).toBe(1);
     const {
@@ -237,7 +237,7 @@ describe('runSweep — per-policy branches', () => {
     expect(row?.priceId).toBe(42);
   });
 
-  it('DELETED + orphan: stamps lastSweptAt, edge stays live', async () => {
+  it('DELETED + orphan: edge stays live and unwritten', async () => {
     const h = makeHarness();
 
     const priceDs = new MemoryDataset({ namespace: 'prices' });
@@ -261,7 +261,7 @@ describe('runSweep — per-policy branches', () => {
     const batch = await h.edges.readNextBatch(null, 10);
     const rec = batch.edges.find((e) => e.id === edge.id);
     expect(rec?.deletedAt).toBeUndefined();
-    expect(rec?.lastSweptAt).toBeInstanceOf(Date);
+    expect(rec?.lastSweptAt).toBeUndefined();
   });
 });
 
@@ -466,17 +466,17 @@ describe('runSweep — cursor + drain-loop', () => {
 
   it('processedEdgeIds prevents double-processing within a cycle', async () => {
     const h = makeHarness();
-    const updateSpy = vi.spyOn(h.edges, 'update');
 
     const priceDs = new MemoryDataset({ namespace: 'prices' });
     await priceDs.write('Price', [{ id: 42 }]);
     h.datasets.set('prices', priceDs);
+    const targetReads = vi.spyOn(priceDs, 'read');
 
     const productDs = new MemoryDataset({ namespace: 'products' });
     await productDs.write('Product', [{ id: 1 }]);
     h.datasets.set('products', productDs);
 
-    const edge = await h.edges.write({
+    await h.edges.write({
       from: { ns: 'products', type: 'Product', id: 1 },
       to: { ns: 'prices', type: 'Price', id: 42 },
       fieldName: 'priceId',
@@ -485,10 +485,7 @@ describe('runSweep — cursor + drain-loop', () => {
 
     await runSweep(h.deps, { lastSweptCursor: null });
 
-    const updatesForEdge = updateSpy.mock.calls.filter(
-      (args) => (args[0] as { id: string }).id === edge.id
-    );
-    expect(updatesForEdge).toHaveLength(1);
+    expect(targetReads).toHaveBeenCalledTimes(1);
   });
 
   it('skips tombstoned edges', async () => {
@@ -590,7 +587,7 @@ describe('runSweep — time budget + persisted cursor', () => {
     const state = await runSweep(h.deps, { lastSweptCursor: null }, 2, 60_000);
 
     const { edges } = await h.edges.readNextBatch(null, 10);
-    expect(edges.every((e) => e.lastSweptAt instanceof Date)).toBe(true);
+    expect(h.metrics.find((m) => m.name === 'swept')?.payload).toBe(3);
     const system = new MemoryDataset({ namespace: '_system' });
     expect(await loadSweepState(system)).toEqual({ lastSweptCursor: null });
     await saveSweepState(system, state);

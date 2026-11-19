@@ -36,12 +36,22 @@ function setup(opts: {
     }
   } as Parameters<EmbedSourceRegistry['add']>[0]);
   const asked: string[] = [];
+  const models: string[] = [];
   const store = {
     ...(opts.staleRowIds === false
       ? {}
       : {
-          staleRowIds: async ({ afterId, limit }: { afterId: string; limit: number }) => {
+          staleRowIds: async ({
+            afterId,
+            limit,
+            model
+          }: {
+            afterId: string;
+            limit: number;
+            model: string;
+          }) => {
             asked.push(afterId);
+            models.push(model);
             return opts.stale.filter((id) => id > afterId).slice(0, limit);
           }
         })
@@ -49,7 +59,7 @@ function setup(opts: {
   const dataset = fakeDataset(
     Object.fromEntries(opts.stale.map((id) => [id, { id, v: 'current' } as Row]))
   );
-  return { registry, store, dataset, seen, asked };
+  return { registry, store, dataset, seen, asked, models };
 }
 
 describe('runEmbedBackfill', () => {
@@ -60,13 +70,27 @@ describe('runEmbedBackfill', () => {
       store: s.store,
       resolveDataset: () => s.dataset,
       cursors: new Map(),
-      perTypeLimit: 10
+      perTypeLimit: 10,
+      model: 'm:1'
     });
     expect(r).toEqual({ embedded: 2, unindexable: 0, failed: 0 });
     expect(s.seen).toEqual([
       { id: 'a', v: 'current' },
       { id: 'b', v: 'current' }
     ]);
+  });
+
+  it('asks for the rows that are stale under the active model', async () => {
+    const s = setup({ stale: ['a'] });
+    await runEmbedBackfill({
+      registry: s.registry,
+      store: s.store,
+      resolveDataset: () => s.dataset,
+      cursors: new Map(),
+      perTypeLimit: 10,
+      model: 'next:768'
+    });
+    expect(s.models).toEqual(['next:768']);
   });
 
   it('pages by id across passes and starts over after a short page', async () => {
@@ -78,7 +102,8 @@ describe('runEmbedBackfill', () => {
         store: s.store,
         resolveDataset: () => s.dataset,
         cursors,
-        perTypeLimit: 2
+        perTypeLimit: 2,
+        model: 'm:1'
       });
     await pass();
     await pass();
@@ -96,10 +121,48 @@ describe('runEmbedBackfill', () => {
       store: s.store,
       resolveDataset: () => s.dataset,
       cursors: new Map(),
-      perTypeLimit: 10
+      perTypeLimit: 10,
+      model: 'm:1'
     });
     expect(r).toEqual({ embedded: 0, unindexable: 0, failed: 1, stopped: 'down' });
     expect(s.seen).toHaveLength(1);
+  });
+
+  it('skips a row that fails on its own and embeds the rest of the page', async () => {
+    const s = setup({
+      stale: ['a', 'b', 'c'],
+      outcome: (row) =>
+        row.id === 'a'
+          ? { status: 'failed', error: 'returned 500', code: 'invalid_response' }
+          : { status: 'embedded' }
+    });
+    const r = await runEmbedBackfill({
+      registry: s.registry,
+      store: s.store,
+      resolveDataset: () => s.dataset,
+      cursors: new Map(),
+      perTypeLimit: 10,
+      model: 'm:1'
+    });
+    expect(r).toEqual({ embedded: 2, unindexable: 0, failed: 1 });
+    expect(s.seen.map((row) => row.id)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('resumes from the page it stopped in when the embedder was unavailable', async () => {
+    const s = setup({
+      stale: ['a', 'b', 'c'],
+      outcome: () => ({ status: 'failed', error: 'down', code: 'unavailable' })
+    });
+    const cursors = new Map<string, string>([['notes/Note', '0']]);
+    await runEmbedBackfill({
+      registry: s.registry,
+      store: s.store,
+      resolveDataset: () => s.dataset,
+      cursors,
+      perTypeLimit: 2,
+      model: 'm:1'
+    });
+    expect(cursors.get('notes/Note')).toBe('0');
   });
 
   it('does nothing against a store that cannot see the rows', async () => {
@@ -109,7 +172,8 @@ describe('runEmbedBackfill', () => {
       store: s.store,
       resolveDataset: () => s.dataset,
       cursors: new Map(),
-      perTypeLimit: 10
+      perTypeLimit: 10,
+      model: 'm:1'
     });
     expect(r).toEqual({ embedded: 0, unindexable: 0, failed: 0 });
     expect(s.seen).toEqual([]);
@@ -174,6 +238,7 @@ describe.skipIf(POSTGRES_URL === undefined)('PgEmbeddingsStore.staleRowIds', () 
     const all = await store.staleRowIds({
       namespace: 'notes',
       type: 'Note',
+      model: 'm',
       afterId: '',
       limit: 10
     });
@@ -181,9 +246,40 @@ describe.skipIf(POSTGRES_URL === undefined)('PgEmbeddingsStore.staleRowIds', () 
     const after = await store.staleRowIds({
       namespace: 'notes',
       type: 'Note',
+      model: 'm',
       afterId: 'missing',
       limit: 10
     });
     expect(after).toEqual(['stale']);
+  });
+
+  it('counts a vector stored under another model as stale', async () => {
+    const t0 = new Date('2026-10-01T00:00:00Z');
+    await putRows(sql, [
+      { namespace: 'notes', type: 'Note', id: 'current', body: {}, updatedAt: t0, deletedAt: null },
+      { namespace: 'notes', type: 'Note', id: 'previous', body: {}, updatedAt: t0, deletedAt: null }
+    ]);
+    const store = new PgEmbeddingsStore({ sql });
+    for (const [id, model] of [
+      ['current', 'next'],
+      ['previous', 'old']
+    ] as const) {
+      await store.upsert({
+        rowNamespace: 'notes',
+        rowType: 'Note',
+        rowId: id,
+        vector: vec,
+        model,
+        now: t0
+      });
+    }
+    const stale = await store.staleRowIds({
+      namespace: 'notes',
+      type: 'Note',
+      model: 'next',
+      afterId: '',
+      limit: 10
+    });
+    expect(stale).toEqual(['previous']);
   });
 });

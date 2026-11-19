@@ -145,7 +145,6 @@ export async function applyPolicy(
     }
 
     case 'restrict': {
-      await deps.edges.update({ id: edge.id, lastSweptAt: deps.now() });
       deps.metric('restrict_violation', {
         edgeId: edge.id,
         from: edge.from,
@@ -156,7 +155,6 @@ export async function applyPolicy(
     }
 
     case 'orphan': {
-      await deps.edges.update({ id: edge.id, lastSweptAt: deps.now() });
       deps.metric('policy_applied', 'orphan');
       return;
     }
@@ -203,18 +201,16 @@ async function sweepBatch(base: Edge[], deps: SweepDeps): Promise<number> {
 
     const target = await resolveTarget(edge.to, deps);
 
-    if (target === 'EXISTS') {
-      await deps.edges.update({ id: edge.id, lastSweptAt: deps.now() });
-    } else if (target === 'UNKNOWN') {
+    // EXISTS: the target is live and there is nothing to do.
+    if (target === 'UNKNOWN') {
       deps.metric('bridge_unreachable', edge.to.ns);
-      // Edge untouched — no lastSweptAt, no blocked.
+      // Edge untouched — no blocked.
     } else if (target === 'DELETED') {
       await applyPolicy(edge, cascadeQueue, deps);
-    } else {
-      // MISSING
+    } else if (target === 'MISSING') {
       if (edge.to.bridged === true && deps.bridges.isUnreachable(edge.to.ns)) {
         deps.metric('bridge_unreachable', edge.to.ns);
-        // Edge untouched — no lastSweptAt, no blocked.
+        // Edge untouched — no blocked.
       } else {
         await applyPolicy(edge, cascadeQueue, deps);
       }

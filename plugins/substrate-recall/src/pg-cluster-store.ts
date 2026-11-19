@@ -192,23 +192,44 @@ export class PgClusterStore implements ClusterStore {
     if (inputs.length === 0) return;
     const sql = this.#sql as Sql;
     const batchNow = new Date();
+    // A pair repeated within the batch keeps its first occurrence, as a
+    // sequence of single inserts would.
+    const seen = new Set<string>();
+    const rows = inputs.filter((input) => {
+      const key = JSON.stringify([
+        input.clusterId,
+        input.ref.namespace,
+        input.ref.type,
+        input.ref.id
+      ]);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
     await sql.begin(async (tx) => {
-      // Per-cluster stamps, recorded only when a row was actually inserted:
-      // clusters with differing `now` keep their own timestamps, and a
-      // fully-duplicate batch leaves `lastAccretedAt` untouched.
+      const inserted = await tx<Array<{ id: string }>>`
+        INSERT INTO recall_cluster_members
+          (id, cluster_id, member_ns, member_type, member_id, origin, similarity, attached_at)
+        SELECT * FROM unnest(
+          ${rows.map((r) => r.id)}::text[],
+          ${rows.map((r) => r.clusterId)}::text[],
+          ${rows.map((r) => r.ref.namespace)}::text[],
+          ${rows.map((r) => r.ref.type)}::text[],
+          ${rows.map((r) => r.ref.id)}::text[],
+          ${rows.map((r) => r.origin)}::text[],
+          ${rows.map((r) => String(r.similarity))}::float8[],
+          ${rows.map((r) => (r.now ?? batchNow).toISOString())}::text[]::timestamptz[]
+        )
+        ON CONFLICT (cluster_id, member_ns, member_type, member_id) DO NOTHING
+        RETURNING id
+      `;
+      // Per-cluster stamps, recorded only for rows actually inserted (the last
+      // one per cluster wins): clusters with differing `now` keep their own
+      // timestamps, and a fully-duplicate batch leaves `lastAccretedAt` untouched.
+      const insertedIds = new Set(inserted.map((r) => r.id));
       const stamps = new Map<string, Date>();
-      for (const input of inputs) {
-        const inserted = await tx`
-          INSERT INTO recall_cluster_members
-            (id, cluster_id, member_ns, member_type, member_id, origin, similarity, attached_at)
-          VALUES (
-            ${input.id}, ${input.clusterId}, ${input.ref.namespace}, ${input.ref.type},
-            ${input.ref.id}, ${input.origin}, ${input.similarity}, ${input.now ?? batchNow}
-          )
-          ON CONFLICT (cluster_id, member_ns, member_type, member_id) DO NOTHING
-          RETURNING id
-        `;
-        if (inserted.length > 0) stamps.set(input.clusterId, input.now ?? batchNow);
+      for (const r of rows) {
+        if (insertedIds.has(r.id)) stamps.set(r.clusterId, r.now ?? batchNow);
       }
       await recountClusters(tx as unknown as Sql, Array.from(stamps.keys()), stamps);
     });

@@ -12,10 +12,10 @@
  * whose gate is declared but not the one that is enforced.
  */
 
-import { EmbedError } from '@mnmal-ai/substrate-embedder';
+import { EmbedError, OllamaEmbedder } from '@mnmal-ai/substrate-embedder';
 import { FakeEmbedder } from '@mnmal-ai/substrate-embedder/fake';
 import type { Dataset, NamespaceDefinition, Row } from '@mnmal-ai/substrate-types';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { makeEmbedPostWrite, makeReembed } from '../src/embed-and-store.js';
 import { EmbedSourceRegistry } from '../src/embed-source-registry.js';
 import { InMemoryEmbeddingsStore } from '../src/in-memory-embeddings-store.js';
@@ -371,5 +371,34 @@ describe('an unavailable embedder stops the page', () => {
     });
     await expect(run).resolves.toMatchObject({ scanned: 3, embedded: 2, failed: 1 });
     expect(attempted).toEqual(['a', 'b', 'c']);
+  });
+
+  it('keeps going past a row that makes Ollama answer 500', async () => {
+    vi.stubGlobal('fetch', async (_url: string, init: { body: string }) => {
+      const { input } = JSON.parse(init.body) as { input: string };
+      if (input === 'a') return new Response('{"error":"llama runner failed"}', { status: 500 });
+      return Response.json({ embeddings: [Array.from({ length: 16 }, () => 0.25)] });
+    });
+    try {
+      const store = new InMemoryEmbeddingsStore();
+      const embedder = new OllamaEmbedder({ model: 'probe', dimension: 16, contextLength: 512 });
+      const reg = registryWith({
+        reembed: makeReembed({
+          ...binding(store, embedder as never),
+          source: (r: Row) => String(r.id)
+        })
+      });
+      const result = await handleReindex(
+        { namespace: 'cortext', type: 'Memory' },
+        {
+          registry: reg,
+          resolveDataset: () => pagedDataset([{ id: 'a' }, { id: 'b' }, { id: 'c' }] as Row[])
+        }
+      );
+      expect(result).toMatchObject({ scanned: 3, embedded: 2, failed: 1 });
+      expect(result.failures.map((f) => f.id)).toEqual(['a']);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

@@ -79,7 +79,7 @@ export class OllamaEmbedder implements Embedder {
     if (!res.ok) {
       const preview = await res.text().catch(() => '<unreadable>');
       throw new EmbedError(
-        'unavailable',
+        isPerInputStatus(res.status) ? 'invalid_response' : 'unavailable',
         `OllamaEmbedder: POST ${url} returned ${res.status}: ${preview.slice(0, 200)}`
       );
     }
@@ -189,7 +189,16 @@ export class OllamaEmbedder implements Embedder {
   }
 }
 
-/** `unavailable` for a failed request, naming the timeout when it was the abort. */
+/**
+ * Whether an error status from `/api/embed` belongs to this input alone: a 4xx
+ * or a 500. Auth refusals, a missing model (404), timeouts, rate limits and the
+ * other 5xx fail every input alike, so they stay `unavailable`.
+ */
+function isPerInputStatus(status: number): boolean {
+  if (status === 500) return true;
+  return status >= 400 && status < 500 && ![401, 403, 404, 408, 429].includes(status);
+}
+
 // A copy of substrate-types' trimTrailingSlashes: this package takes no dependencies.
 function trimTrailingSlashes(url: string): string {
   let end = url.length;
@@ -197,6 +206,7 @@ function trimTrailingSlashes(url: string): string {
   return url.slice(0, end);
 }
 
+/** `unavailable` for a failed request, naming the timeout when it was the abort. */
 function transportError(
   url: string,
   controller: AbortController,

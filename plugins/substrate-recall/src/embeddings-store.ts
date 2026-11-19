@@ -163,13 +163,15 @@ export interface EmbeddingsStore {
    */
   upsert(input: EmbeddingsStoreUpsertInput): Promise<void>;
   /**
-   * Ids of live rows of (namespace, type) whose vector is missing or older than
-   * the row, after `afterId` in id order: the writes whose embed failed. Optional;
-   * a store that cannot see the rows table omits it and nothing is backfilled.
+   * Ids of live rows of (namespace, type) with no vector under `model`, or one
+   * older than the row, after `afterId` in id order: the writes whose embed
+   * failed, and rows embedded by a previous model. Optional; a store that
+   * cannot see the rows table omits it and nothing is backfilled.
    */
   staleRowIds?(input: {
     namespace: string;
     type: string;
+    model: string;
     afterId: string;
     limit: number;
   }): Promise<string[]>;

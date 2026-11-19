@@ -370,7 +370,7 @@ interface Edge {
   policy: OnDelete;                   // snapshotted at write time
   createdAt: Date;
   deletedAt?: Date;                   // tombstone; terminal
-  lastSweptAt?: Date;                 // last sweep observation
+  lastSweptAt?: Date;                 // reserved; the sweep does not write it
   blocked?: boolean;                  // cascade blocked by an unreachable bridge (§6.5)
 }
 ```
@@ -1012,8 +1012,8 @@ Both paths MUST use the same `applyPolicy`, and the sweep is idempotent against 
 | `set_null` | tombstoned | done; later sweeps skip it |
 | `cascade` (unblocked) | tombstoned | done; fan-out queued for the driver |
 | `cascade` (bridge unreachable) | `blocked = true`, stays live | retried next cycle |
-| `restrict` | `lastSweptAt` stamped, stays live | the constraint is still violated; tombstoning would hide it from operators |
-| `orphan` | `lastSweptAt` stamped, stays live | reads must keep surfacing `__orphan` |
+| `restrict` | unchanged, stays live | the constraint is still violated; tombstoning would hide it from operators |
+| `orphan` | unchanged, stays live | reads must keep surfacing `__orphan` |
 
 **Phase 0 runs once, at the caller's delete — not for cascades.** A cascade is the engine executing a policy the schema author already agreed to. If it reaches a downstream `restrict` edge, that surfaces through the `restrict_violation` metric, not a late rejection: stopping a cascade halfway would leave data worse off than finishing it and alerting an operator.
 
@@ -1041,7 +1041,7 @@ while worklist not empty:
   if edge.id in processed or edge.deletedAt: continue
   processed.add(edge.id)
   case resolveTarget(edge.to):
-    EXISTS:  edges.update({ id, lastSweptAt: now })
+    EXISTS:  nothing                              # the edge is left unwritten
     DELETED: applyPolicy(edge, cascadeQueue)
     MISSING:
       if edge.to.bridged and bridgeUnreachable(edge.to.ns):
@@ -1061,8 +1061,8 @@ cascade:  if edge.to.bridged and bridgeUnreachable(edge.to.ns):
           else:
             dataset.tombstone(edge.from); edges.tombstone(edge.id)
             enqueue every live edge pointing at edge.from
-restrict: edges.update({ id, lastSweptAt: now }); metric('restrict_violation', {...})
-orphan:   edges.update({ id, lastSweptAt: now })
+restrict: metric('restrict_violation', {...})
+orphan:   metric('policy_applied', 'orphan')
 ```
 
 **Details that matter:**
@@ -1071,7 +1071,7 @@ orphan:   edges.update({ id, lastSweptAt: now })
 - **The cursor advances by the base batch only.** Cascade edges may have ids anywhere in the table; advancing by the base batch guarantees progress, and idempotency makes revisits safe.
 - **Cursor state is caller-owned.** Restarting from `null` is always valid.
 - **Wraparound.** An empty batch resets the cursor, so the next cycle re-validates `EXISTS` edges from the head and catches drift (a target tombstoned by a missed local path, a bridge back online). Set the interval high enough that a full pass is affordable for your edge count.
-- **Unreachable bridges appear twice, on purpose.** On `MISSING`, the target cannot be read at all: the sweep bails and leaves the edge untouched — stamping `lastSweptAt` would claim an observation that did not happen. In `applyPolicy('cascade')`, the target is known deleted but the bridge is down, so the cascade cannot safely cross it: the edge is marked `blocked` and retried. The two conditions have different invariants and different blast radii.
+- **Unreachable bridges appear twice, on purpose.** On `MISSING`, the target cannot be read at all: the sweep bails, emits `bridge_unreachable` and leaves the edge untouched. In `applyPolicy('cascade')`, the target is known deleted but the bridge is down, so the cascade cannot safely cross it: the edge is marked `blocked` and retried. The two conditions have different invariants and different blast radii.
 - **Unknown `from` namespace.** If the edge's source namespace no longer exists, there is nowhere to write; the edge is tombstoned and `from_ns_unknown` is emitted. Blocking forever would accumulate zombie edges.
 - **Blocked edges** are listed by `edges.findBlocked()` for manual resolution.
 

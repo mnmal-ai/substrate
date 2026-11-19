@@ -155,6 +155,28 @@ for (const impl of IMPLS) {
       expect(afterSecond?.lastAccretedAt?.getTime()).toBe(firstNow.getTime());
     });
 
+    it('a pair repeated within one batch keeps its first occurrence', async () => {
+      await form('c1');
+      await form('c2', 0.5);
+      const ref = { namespace: 'cortext', type: 'Decision', id: 'd1' };
+      const first = new Date('2026-01-01T00:00:00Z');
+      const second = new Date('2026-01-02T00:00:00Z');
+      await store.attachMembers([
+        { id: 'm1', clusterId: 'c1', ref, origin: 'formation', similarity: 0.8, now: first },
+        { id: 'm2', clusterId: 'c2', ref, origin: 'formation', similarity: 0.6, now: second },
+        { id: 'm3', clusterId: 'c1', ref, origin: 'accretion', similarity: 0.9, now: second }
+      ]);
+      const members = await store.listMembers(['c1', 'c2']);
+      expect(members.map((m) => [m.id, m.clusterId, m.similarity]).sort()).toEqual([
+        ['m1', 'c1', 0.8],
+        ['m2', 'c2', 0.6]
+      ]);
+      const c1 = await store.getCluster('c1');
+      expect(c1?.memberCount).toBe(1);
+      expect(c1?.lastAccretedAt?.getTime()).toBe(first.getTime());
+      expect((await store.getCluster('c2'))?.lastAccretedAt?.getTime()).toBe(second.getTime());
+    });
+
     it('claimedMembers reports live claims only', async () => {
       await form('c1');
       const claimed = { namespace: 'cortext', type: 'Decision', id: 'd1' };

@@ -307,6 +307,33 @@ describe('PgEmbeddingsStore.boostSalience', () => {
     await store.boostSalience([], 168);
     expect(calls).toHaveLength(0);
   });
+
+  it('builds VALUES in (namespace, type, id) byte order, whatever order the targets came in', async () => {
+    const { sql } = makeFakeSql(() => []);
+    const valueLists: unknown[] = [];
+    const spy = Object.assign((first: unknown, ...rest: unknown[]) => {
+      if (!(Array.isArray(first) && 'raw' in first)) valueLists.push(first);
+      return (sql as unknown as (...a: unknown[]) => unknown)(first, ...rest);
+    }, sql);
+    const store = new PgEmbeddingsStore({ sql: spy as unknown as import('postgres').Sql });
+    await store.boostSalience(
+      [
+        { namespace: 'x', type: 'T', id: '1' },
+        { namespace: 'claude', type: 'Decision', id: 'r2' },
+        { namespace: 'claude', type: 'Decision', id: 'R1' },
+        { namespace: 'claude', type: 'Alpha', id: 'z' }
+      ],
+      168
+    );
+    expect(valueLists).toEqual([
+      [
+        ['claude', 'Alpha', 'z'],
+        ['claude', 'Decision', 'R1'],
+        ['claude', 'Decision', 'r2'],
+        ['x', 'T', '1']
+      ]
+    ]);
+  });
 });
 
 describe('PgEmbeddingsStore.knnSearch', () => {
