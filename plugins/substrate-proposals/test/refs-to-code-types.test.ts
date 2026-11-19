@@ -530,24 +530,29 @@ describe('a write naming an id in the other namespace', () => {
     const run = (key: string, frame: unknown, ctx: Partial<RequestContext>) =>
       engine.mutate({ frame: { [key]: frame } as never, ctx });
 
-    const extOnly = as(EXT_ONLY);
-    const readGate = await engine.query({
-      frame: { 'app/Invoice': { fields: { id: true } } },
-      ctx: extOnly
-    });
-    expect(readGate.errors?.[0]?.code).toBe('unauthorized_namespace');
     const existing = writes(invoiceId);
     const missing = writes(missingId);
-    for (const [i, [key, frame]] of existing.entries()) {
-      const known = await run(key, frame, extOnly);
-      const unknown = await run(key, missing[i]?.[1], extOnly);
-      expect(known.errors?.[0], key).toMatchObject({
-        code: readGate.errors?.[0]?.code,
-        message: "crossRef 'invoice': namespace 'app' not in identity's allowed namespaces",
-        path: [key]
-      });
-      expect(unknown.errors, key).toEqual(known.errors);
-      expect(unknown.data, key).toEqual(known.data);
+    // Not covering `app`, and covering it without read: each gets the read gate's own answer.
+    const unreaders: Array<[Partial<RequestContext>, string]> = [
+      [as(EXT_ONLY), 'unauthorized_namespace'],
+      [as({ ...EXT_ONLY, app: ['mutate'] }), 'unauthorized_capability']
+    ];
+    for (const [ctx, code] of unreaders) {
+      const readGate = (
+        await engine.query({ frame: { 'app/Invoice': { fields: { id: true } } }, ctx })
+      ).errors?.[0];
+      expect(readGate?.code).toBe(code);
+      for (const [i, [key, frame]] of existing.entries()) {
+        const known = await run(key, frame, ctx);
+        const unknown = await run(key, missing[i]?.[1], ctx);
+        expect(known.errors?.[0], key).toMatchObject({
+          code,
+          message: `crossRef 'invoice': ${readGate?.message}`,
+          path: [key]
+        });
+        expect(unknown.errors, key).toEqual(known.errors);
+        expect(unknown.data, key).toEqual(known.data);
+      }
     }
 
     const appReader = as({ ...EXT_ONLY, app: ['read'] });

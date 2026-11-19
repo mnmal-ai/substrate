@@ -352,14 +352,46 @@ describe('a crossRef into another namespace needs read there', () => {
     expect((await attempt(MAIN_ONLY, { thing: null })).err).toBeUndefined();
   });
 
-  it('leaves a same-namespace reference to the existence check, whatever the grant', async () => {
+  it('needs read in the namespace being written too, reading nothing', async () => {
     const mutateOnly = writer({ main: ['mutate'] });
     const refs = [{ fieldName: 'trace', def: traceRef }];
+    const attemptSame = async (trace: string) => {
+      const resolveDataset = vi.fn(() => undefined);
+      const read = vi.spyOn(ds, 'read');
+      const resolveShortIds = vi.spyOn(ds, 'resolveShortIds');
+      const err = await assertCrossRefTargetsExist(
+        { dataset: ds, resolveDataset },
+        refs,
+        { trace },
+        'main',
+        mutateOnly
+      ).then(
+        () => undefined,
+        (e: unknown) => e
+      );
+      const looks =
+        resolveDataset.mock.calls.length +
+        read.mock.calls.length +
+        resolveShortIds.mock.calls.length;
+      vi.restoreAllMocks();
+      return { err, looks };
+    };
+    const existing = await attemptSame('t1');
+    const missing = await attemptSame('nope');
+    expect(existing.err).toMatchObject({
+      code: 'unauthorized_capability',
+      message: "crossRef 'trace': identity's grant for namespace 'main' does not include 'read'"
+    });
+    expect(missing.err).toEqual(existing.err);
+    expect(String(missing.err)).toBe(String(existing.err));
+    expect([existing.looks, missing.looks]).toEqual([0, 0]);
+
+    const reader = writer({ main: ['read', 'mutate'] });
     await expect(
-      assertCrossRefTargetsExist({ dataset: ds }, refs, { trace: 't1' }, 'main', mutateOnly)
+      assertCrossRefTargetsExist({ dataset: ds }, refs, { trace: 't1' }, 'main', reader)
     ).resolves.toBeUndefined();
     await expect(
-      assertCrossRefTargetsExist({ dataset: ds }, refs, { trace: 'nope' }, 'main', mutateOnly)
+      assertCrossRefTargetsExist({ dataset: ds }, refs, { trace: 'nope' }, 'main', reader)
     ).rejects.toBeInstanceOf(MissingReferentError);
   });
 

@@ -53,10 +53,11 @@ export interface PendingIds {
 
 /**
  * Refuse a crossRef to a missing target, for a batch: element `i`'s values are
- * `values[i]`. A target in another namespace first needs `read` there, as the
- * engine's read gate grants it to `identity`; that verdict is reached before
- * any target is read, a refused namespace is never resolved or read, and the
- * refusal carries the read gate's code whether or not the id exists. For each
+ * `values[i]`. Every target first needs `read` in its namespace, the one being
+ * written included, as the engine's read gate grants it to `identity`; that
+ * verdict is reached before any target is read, a refused namespace is never
+ * resolved or read, and the refusal is the read gate's whether or not the id
+ * exists. For each
  * readable target type it reads the distinct values once, then
  * resolves the misses that parse as a short id with one `resolveShortIds`.
  * A value that `pending` names counts as existing for element `i` only when
@@ -91,7 +92,7 @@ export async function assertCrossRefTargetsExistMany(
   if (enforced.length === 0) return;
   const unreadable = new Map<string, ResolverFrameError>();
   for (const { fieldName, def } of enforced) {
-    const refusal = def.ns === fromNs ? undefined : readRefusal(identity, fieldName, def.ns);
+    const refusal = readRefusal(identity, fieldName, def.ns);
     if (refusal !== undefined) unreadable.set(fieldName, refusal);
   }
   const refOf = (i: number, fieldName: string): Id | undefined => {
