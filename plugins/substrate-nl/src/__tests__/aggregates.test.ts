@@ -133,6 +133,22 @@ describe('a lone number nothing reads', () => {
       where: { listedAt: { gte: '2025-01-01T00:00:00Z', lt: '2026-01-01T00:00:00Z' } }
     });
     expect(parse('top 5 items by price')).toMatchObject({ status: 'resolved', residual: [] });
+    // Outside 1900 to 2199 a four-digit number is no year: the phrase is no window.
+    for (const q of [
+      'items between 1000 and 2000',
+      'items from 1000 to 2000',
+      'items with price between 1000 and 2000',
+      'sales in 3000',
+      'sales since 1000'
+    ]) {
+      const r = parse(q);
+      expect(r.status, q).toBe('partial');
+      expect(JSON.stringify(r.candidates), q).not.toMatch(/listedAt|soldAt/);
+      const { e, query } = engine(() => ({ data: {} }));
+      expect((await ask(q, e)).kind, q).toBe('unknown');
+      expect((await ask(q, e, served, picker)).kind, q).toBe('unknown');
+      expect(query, q).not.toHaveBeenCalled();
+    }
   });
 
   it("reads a type's number and plurality at its first mention", () => {

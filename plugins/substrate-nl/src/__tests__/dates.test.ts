@@ -201,17 +201,31 @@ describe('years and months as windows', () => {
       expect(rangeFor(p, z), p).toBeNull();
   });
 
-  it('rejects a year whose window would end past year 9999', () => {
+  it('reads a four-digit number as a year only from 1900 to 2199', () => {
     for (const p of [
       'in 9999',
       'until 9999',
       'after 9999',
       'in december 9999',
       'on dec 31 9999',
-      'on 9999-12-31'
+      'on 9999-12-31',
+      'in 9998',
+      'in 1899',
+      'in 2200',
+      'in 3000',
+      'since 1000',
+      'between 1000 and 2000',
+      'from 1000 to 2000',
+      'between 2024 and 2200',
+      'in may 1850',
+      'in 1850 may',
+      'between june and august 1850',
+      'on may 5 1850'
     ])
       expect(rangeFor(p, z), p).toBeNull();
-    expect(rangeFor('in 9998', z)).toEqual({ gte: zz('9998-01-01'), lt: zz('9999-01-01') });
+    expect(rangeFor('in 1900', z)).toEqual({ gte: zz('1900-01-01'), lt: zz('1901-01-01') });
+    expect(rangeFor('in 2199', z)).toEqual({ gte: zz('2199-01-01'), lt: zz('2200-01-01') });
+    expect(rangeFor('on may 5 1900', z)).toEqual({ gte: zz('1900-05-05'), lt: zz('1900-05-06') });
   });
 
   it('rejects any window with a bound outside years 1000 to 9998', () => {

@@ -10,6 +10,8 @@ const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'frida
 const AS_OF = /^(\d{4})-(\d{2})-(\d{2})T[\d:.]+(Z|[+-]\d{2}:\d{2})$/;
 /** A year from 1000 to 9998, so every window's end is still a four-digit year. */
 const YEAR = /^(?!9999)[1-9]\d{3}$/;
+/** A year a question names, 1900 to 2199. Any other four-digit number is not read as a year. */
+const CALENDAR_YEAR = /^(?:19|2[01])\d{2}$/;
 
 /** True when `asOf` is an ISO-8601 date-time with an offset naming a real instant in a `YEAR`. */
 export function validAsOf(asOf: unknown): asOf is string {
@@ -156,7 +158,7 @@ export function unitsAt(phrase: string): number[] {
   for (let start = 1, i = 1; i <= words.length; i++) {
     if (i < words.length && words[i] !== sep) continue;
     const operand = words.slice(start, i);
-    if (operand.length <= 2 && operand.every((w) => YEAR.test(w) || monthNumber(w) > 0))
+    if (operand.length <= 2 && operand.every((w) => CALENDAR_YEAR.test(w) || monthNumber(w) > 0))
       for (let j = start; j < i; j++) out.push(j);
     start = i + 1;
   }
@@ -179,7 +181,7 @@ interface Operand {
  * (that year or month), "from D to D" and "between D and D" (inclusive of the last
  * day), "since D" / "after D" (from the start of D / from its end: the next day,
  * month or year), "before D" / "until D" (before D starts / through its end). A
- * year is 1000 to 9998 and covers its calendar year; a month name, alone or with a
+ * year is a `CALENDAR_YEAR` and covers its calendar year; a month name, alone or with a
  * year in either order, covers that month (alone, the most recent one that has
  * begun). In "between M and M Y" a yearless month takes the other operand's year,
  * or the year before when it comes later in the year ("between november and
@@ -197,7 +199,7 @@ function explicitRange(
   const operand = (words: string[]): Operand | null => {
     if (words.length === 1) {
       const w = words[0] as string;
-      if (YEAR.test(w)) {
+      if (CALENDAR_YEAR.test(w)) {
         return {
           start: at(Date.UTC(Number(w), 0, 1)),
           end: at(Date.UTC(Number(w) + 1, 0, 1)),
@@ -221,14 +223,15 @@ function explicitRange(
     }
     if (words.length !== 2 && words.length !== 3) return null;
     const [a = '', b = '', year] = words;
-    if (YEAR.test(b) && monthNumber(a) > 0 && year === undefined)
+    if (CALENDAR_YEAR.test(b) && monthNumber(a) > 0 && year === undefined)
       return monthOf(Number(b), monthNumber(a));
-    if (YEAR.test(a) && monthNumber(b) > 0 && year === undefined)
+    if (CALENDAR_YEAR.test(a) && monthNumber(b) > 0 && year === undefined)
       return monthOf(Number(a), monthNumber(b));
     const dom = (w: string) => DAY_OF_MONTH.exec(w)?.[1];
     const [mo, d] = monthNumber(a) > 0 ? [monthNumber(a), dom(b)] : [monthNumber(b), dom(a)];
     if (mo === 0 || d === undefined) return null;
-    if (year !== undefined) return YEAR.test(year) ? dayOf(Number(year), mo, Number(d)) : null;
+    if (year !== undefined)
+      return CALENDAR_YEAR.test(year) ? dayOf(Number(year), mo, Number(d)) : null;
     // Most recent such date not after today: this year, else an earlier one (Feb 29 may go back several).
     for (let y = new Date(today).getUTCFullYear(), n = 0; n < 8; y--, n++) {
       const t = Date.UTC(y, mo - 1, Number(d));
@@ -260,7 +263,8 @@ function explicitRange(
     if (i < 0) return null;
     const xw = rest.slice(0, i);
     const yw = rest.slice(i + 1);
-    const yearOf = (ws: string[]) => (ws.length === 2 ? ws.find((w) => YEAR.test(w)) : undefined);
+    const yearOf = (ws: string[]) =>
+      ws.length === 2 ? ws.find((w) => CALENDAR_YEAR.test(w)) : undefined;
     const monthIn = (ws: string[]) => Math.max(...ws.map(monthNumber));
     const bare = (ws: string[]) => ws.length === 1 && monthNumber(ws[0] as string) > 0;
     const xYear = bare(xw) ? yearOf(yw) : undefined;
