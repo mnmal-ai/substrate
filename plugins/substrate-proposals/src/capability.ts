@@ -412,12 +412,14 @@ function liveNamespace(row: Record<string, unknown>): boolean {
  * `supersededByCode: false` on a row that is not live, or a new `ns`), puts a
  * namespace on, which needs the drop capability in that namespace whatever its
  * rows: a dropped namespace's rows are gone, and its name stays retired. An
- * archived proposal is that retired name's marker, as only a drop archives
- * one: deleting it needs the drop capability in its namespace, and its `ns`
- * never changes. A second proposal that is not archived for one name, created
- * or renamed onto it, needs the drop capability there too. The plugin's own
- * writes ({@link TRUSTED_WRITE}, as propose_namespace makes) and updates that
- * can do none of these pass unchecked. As for TypeProposal, the
+ * archived proposal is that retired name's marker, as a drop archives one:
+ * archiving one (a create or an update), and any change to or delete of an
+ * archived one, needs the drop capability in its namespace, and an archived
+ * proposal's `ns` never changes. A second proposal that is not archived for
+ * one name, created or renamed onto it, needs the drop capability there too;
+ * either takes the name's proposal lock first, as propose_namespace does. The
+ * plugin's own writes ({@link TRUSTED_WRITE}, as propose_namespace makes) pass
+ * unchecked. As for TypeProposal, the
  * proposal is found as the write finds it, locked until the write's
  * transaction ends, and written by its stored id; one that cannot be loaded or
  * locked is refused; an array of updates or deletes first locks every row it
@@ -448,6 +450,10 @@ export function gateNamespaceProposalLiveness(
       });
     const secondFor = (ns: string): string =>
       `'${ns}' already has a proposal that is not archived; a second one needs '${dropCapability}' as drop_namespace does`;
+    const retired = (ns: string): string =>
+      `'${ns}' was dropped and its name stays retired; changing or deleting its proposal frees the name, which needs '${dropCapability}' as drop_namespace does`;
+    const retires = (ns: string): string =>
+      `archiving a proposal retires the name '${ns}', as a drop does, which needs '${dropCapability}' as drop_namespace does`;
     const putsOn = (ns: string): string =>
       `this puts namespace '${ns}' on the engine at the next boot, which needs '${dropCapability}' as drop_namespace does`;
     const guard: RegistryEntryResolver = async (ctx, args) => {
@@ -463,6 +469,7 @@ export function gateNamespaceProposalLiveness(
         const ns = params.ns;
         if (typeof ns !== 'string' || holds(ns)) return resolver(ctx, args);
         if (params.applied === true) throw deny(ns, `an applied proposal: ${putsOn(ns)}`);
+        if (params.archived === true) throw deny(ns, retires(ns));
         if (dataset === undefined) {
           throw deny(ns, `cannot check '${ns}' for another proposal; needs '${dropCapability}'`);
         }
@@ -476,68 +483,66 @@ export function gateNamespaceProposalLiveness(
           }
         );
       }
-      const removes =
-        isDelete ||
-        'ns' in params ||
-        (params.applied ?? true) !== true ||
-        (params.archived ?? false) !== false;
       const restores =
         !isDelete &&
         ('ns' in params ||
           params.applied === true ||
           params.archived === false ||
           params.supersededByCode === false);
-      if (!removes && !restores) return resolver(ctx, args);
-      const row = await lockedRow('NamespaceProposal', params.id, dataset);
-      if (row === null || dataset === undefined) {
-        throw deny(
-          ctx.namespace,
-          `cannot load the proposal to check the namespace it names; needs '${dropCapability}'`
-        );
-      }
-      const after = isDelete ? undefined : { ...row, ...params };
-      const from = row.ns;
-      const to = after?.ns;
-      if (row.archived === true) {
-        if (!isDelete && to !== from) {
-          throw new ProposalError(
-            'namespace_retired',
-            `${key}: '${String(from)}' was dropped and its name stays retired; its proposal's ns cannot change`,
-            { ns: from }
-          );
-        }
-        if (isDelete && typeof from === 'string' && !holds(from)) {
+      const checked = async () => {
+        const row = await lockedRow('NamespaceProposal', params.id, dataset);
+        if (row === null || dataset === undefined) {
           throw deny(
-            from,
-            `'${from}' was dropped and its name stays retired; deleting its proposal frees the name, which needs '${dropCapability}' as drop_namespace does`
+            ctx.namespace,
+            `cannot load the proposal to check the namespace it names; needs '${dropCapability}'`
           );
         }
-      }
-      const leaves =
-        installsNamespace(row) && (after === undefined || !installsNamespace(after) || to !== from);
-      if (leaves && typeof from === 'string' && !holds(from)) {
-        const rows = await namespaceHasRows(store, from);
-        if (rows !== false) {
-          const why =
-            rows === true ? 'has stored rows' : 'is not held here to check for stored rows';
-          throw deny(
-            from,
-            `namespace '${from}' ${why}; this change to its proposal takes it off at the next boot, which needs '${dropCapability}' as drop_namespace does`
-          );
+        const after = isDelete ? undefined : { ...row, ...params };
+        const from = row.ns;
+        const to = after?.ns;
+        if (row.archived === true) {
+          if (!isDelete && to !== from) {
+            throw new ProposalError(
+              'namespace_retired',
+              `${key}: '${String(from)}' was dropped and its name stays retired; its proposal's ns cannot change`,
+              { ns: from }
+            );
+          }
+          if (typeof from === 'string' && !holds(from)) throw deny(from, retired(from));
+        } else if (params.archived === true && typeof to === 'string' && !holds(to)) {
+          throw deny(to, retires(to));
         }
-      }
-      const arrives =
-        restores &&
-        after !== undefined &&
-        installsNamespace(after) &&
-        (!liveNamespace(row) || to !== from);
-      if (arrives && typeof to === 'string' && !holds(to)) throw deny(to, putsOn(to));
-      // shortcut: unlike a create, a rename does not take the name's proposal lock, so a
-      // concurrent propose_namespace of that name can still race it; take it if that matters.
-      if (to !== from && typeof to === 'string' && !holds(to) && (await standing(dataset, to))) {
-        throw deny(to, secondFor(to));
-      }
-      return resolver(ctx, { ...args, params: { ...args.params, id: row.id } });
+        const leaves =
+          installsNamespace(row) &&
+          (after === undefined || !installsNamespace(after) || to !== from);
+        if (leaves && typeof from === 'string' && !holds(from)) {
+          const rows = await namespaceHasRows(store, from);
+          if (rows !== false) {
+            const why =
+              rows === true ? 'has stored rows' : 'is not held here to check for stored rows';
+            throw deny(
+              from,
+              `namespace '${from}' ${why}; this change to its proposal takes it off at the next boot, which needs '${dropCapability}' as drop_namespace does`
+            );
+          }
+        }
+        const arrives =
+          restores &&
+          after !== undefined &&
+          installsNamespace(after) &&
+          (!liveNamespace(row) || to !== from);
+        if (arrives && typeof to === 'string' && !holds(to)) throw deny(to, putsOn(to));
+        if (to !== from && typeof to === 'string' && !holds(to) && (await standing(dataset, to))) {
+          throw deny(to, secondFor(to));
+        }
+        return resolver(ctx, { ...args, params: { ...args.params, id: row.id } });
+      };
+      // A rename onto a name takes that name's proposal lock before the row's, as
+      // propose_namespace does, so its check for another proposal sees theirs.
+      const onto = params.ns;
+      return typeof onto === 'string' && !holds(onto) && dataset !== undefined
+        ? withProposalLock(dataset, proposalLockKey('namespace', ctx.namespace, onto), checked)
+        : checked();
     };
     registry.replace(key, {
       ...rest,

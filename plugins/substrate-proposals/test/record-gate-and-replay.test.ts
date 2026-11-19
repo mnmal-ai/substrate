@@ -785,10 +785,13 @@ describe('removing a NamespaceProposal', () => {
     expect((await run(engine, key, rename, both)).errors).toBeUndefined();
   });
 
-  it('of a namespace with no stored rows needs only the propose capability', async () => {
+  it('of a namespace with no stored rows needs only the propose capability, unless it archives', async () => {
     for (const [key, params] of removals) {
       const { engine } = await seeded(false);
-      expect((await run(engine, key, params)).errors, key).toBeUndefined();
+      const env = await run(engine, key, params);
+      // Archiving retires the name, which needs the drop capability whatever the rows.
+      if (params.archived === true) expect(env.errors?.[0]?.code, key).toBe('policy_denied');
+      else expect(env.errors, key).toBeUndefined();
     }
   });
 
@@ -803,7 +806,7 @@ describe('removing a NamespaceProposal', () => {
       row({ id: 'idle2', ns: 'home', applied: false })
     ]);
     for (const [key, params] of [
-      ['_system_proposals/updateNamespaceProposal', { id: 'idle', archived: true }],
+      ['_system_proposals/updateNamespaceProposal', { id: 'idle', supersededByCode: true }],
       ['_system_proposals/deleteNamespaceProposal', { id: 'idle2' }]
     ] as const) {
       expect((await run(engine, key, params)).errors, key).toBeUndefined();
@@ -976,6 +979,26 @@ describe('a retired, stranded or second NamespaceProposal', () => {
     expect((await mutateOne(engine, del, { id: 'gone' }, inGone)).errors).toBeUndefined();
   });
 
+  it('changes nothing else on a retired proposal without the drop capability in its namespace', async () => {
+    const inGone = withGrants({ '*': propose, gone: ['admin'] });
+    for (const params of [
+      { id: 'gone', archived: false },
+      { id: 'gone', applied: false },
+      { id: 'gone', proposedReason: 'clarified' }
+    ]) {
+      const { control, engine } = await booted();
+      const label = JSON.stringify(params);
+      expect((await mutateOne(engine, update, params)).errors?.[0]?.code, label).toBe(
+        'policy_denied'
+      );
+      expect(
+        (await control.read('NamespaceProposal', { id: 'gone' })).rows[0],
+        label
+      ).toMatchObject({ archived: true, applied: true, proposedReason: 'seed' });
+      expect((await mutateOne(engine, update, params, inGone)).errors, label).toBeUndefined();
+    }
+  });
+
   it('lets propose_namespace resume only a stranded row a fresh call could have written', async () => {
     const { control, engine } = await booted();
     // Written directly, unapplied, for a namespace the config owns.
@@ -1001,6 +1024,21 @@ describe('a retired, stranded or second NamespaceProposal', () => {
     expect((await control.read('NamespaceProposal', { id: 'stranded' })).rows[0]?.applied).toBe(
       true
     );
+  });
+
+  it('retires a name only with the drop capability, by a create or an update that archives', async () => {
+    const { control, engine } = await booted();
+    const unapplied = row({ id: 'x', ns: 'x', applied: false });
+    expect((await mutateOne(engine, create, unapplied)).errors).toBeUndefined();
+    const archived = row({ id: 'y', ns: 'y', applied: false, archived: true });
+    const archive = { id: 'x', archived: true };
+    expect((await mutateOne(engine, update, archive)).errors?.[0]?.code).toBe('policy_denied');
+    expect((await mutateOne(engine, create, archived)).errors?.[0]?.code).toBe('policy_denied');
+    expect((await control.read('NamespaceProposal', { id: 'x' })).rows[0]?.archived).toBe(false);
+    expect((await control.read('NamespaceProposal', { id: 'y' })).rows).toEqual([]);
+    const admin = withGrants({ '*': propose, x: ['admin'], y: ['admin'] });
+    expect((await mutateOne(engine, update, archive, admin)).errors).toBeUndefined();
+    expect((await mutateOne(engine, create, archived, admin)).errors).toBeUndefined();
   });
 
   it('refuses a second proposal for a name, created or renamed onto it, without the drop capability', async () => {
