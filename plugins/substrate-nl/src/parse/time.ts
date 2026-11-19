@@ -183,9 +183,10 @@ interface Operand {
  * month or year), "before D" / "until D" (before D starts / through its end). A
  * year is a `CALENDAR_YEAR` and covers its calendar year; a month name, alone or with a
  * year in either order, covers that month (alone, the most recent one that has
- * begun). In "between M and M Y" a yearless month takes the other operand's year,
+ * begun). In "between M and M Y" a yearless first month takes the second's year,
  * or the year before when it comes later in the year ("between november and
- * february 2026"). A date is ISO `YYYY-MM-DD`, an ISO date-time (an exact instant),
+ * february 2026"); a yearless second month takes the first's year. A range that
+ * ends before it starts is not read. A date is ISO `YYYY-MM-DD`, an ISO date-time (an exact instant),
  * or a month name (full, three-letter, or "sept") with a day, optional ordinal and
  * optional year, in either order. A month-day without a year is the most recent one
  * not after `today`. An invalid date is not a date.
