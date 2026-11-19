@@ -208,3 +208,43 @@ describe('InMemoryEmbeddingsStore.delete', () => {
     ).resolves.toBeUndefined();
   });
 });
+
+describe('InMemoryEmbeddingsStore.markUnindexable', () => {
+  const ref = { namespace: 'demo', type: 'Doc', id: 'doc-1' };
+  const key = { rowNamespace: 'demo', rowType: 'Doc', rowId: 'doc-1' };
+  const t0 = new Date('2026-10-01T00:00:00Z');
+  const t1 = new Date('2026-10-02T00:00:00Z');
+  const selector = {
+    scopes: [{ namespace: 'demo', type: 'Doc' }],
+    excludeTextPrefixes: [],
+    limit: 10
+  };
+
+  it('replaces a vector with a marker that no reader returns', async () => {
+    const store = new InMemoryEmbeddingsStore();
+    await store.upsert({ ...key, vector: vec(1), model: 'fake:v1', now: t0 });
+    await store.markUnindexable({ ...key, now: t1 });
+    // Asked under the marker's own model name too: the missing vector alone excludes it.
+    for (const model of ['fake:v1', 'unindexable']) {
+      expect(await store.knnSearch({ ...ref, model, vector: vec(1), k: 5 })).toEqual([]);
+      expect(await store.fetchEmbeddings([ref], model)).toEqual([]);
+      expect(await store.selectCandidates(selector, model)).toEqual([]);
+    }
+    expect(await store.boostSalience([ref], 24)).toEqual([]);
+  });
+
+  it('is overwritten by a real vector once the row has text again', async () => {
+    const store = new InMemoryEmbeddingsStore();
+    await store.markUnindexable({ ...key, now: t0 });
+    await store.upsert({ ...key, vector: vec(1), model: 'fake:v1', now: t1 });
+    const hits = await store.knnSearch({ ...ref, model: 'fake:v1', vector: vec(1), k: 5 });
+    expect(hits.map((h) => h.row.id)).toEqual(['doc-1']);
+  });
+
+  it('never replaces a newer vector', async () => {
+    const store = new InMemoryEmbeddingsStore();
+    await store.upsert({ ...key, vector: vec(1), model: 'fake:v1', now: t1 });
+    await store.markUnindexable({ ...key, now: t0 });
+    expect(await store.fetchEmbeddings([ref], 'fake:v1')).toHaveLength(1);
+  });
+});

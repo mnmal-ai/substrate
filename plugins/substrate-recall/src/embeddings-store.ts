@@ -27,6 +27,19 @@ export interface EmbeddingsStoreDeleteInput {
   rowId: string;
 }
 
+/** Identifies the row a `markUnindexable` call marks, and when its source was read. */
+export interface EmbeddingsStoreMarkInput extends EmbeddingsStoreDeleteInput {
+  /** As `EmbeddingsStoreUpsertInput.now`: defaults to now, and an older mark never replaces a newer vector. */
+  now?: Date;
+}
+
+/**
+ * The `model` of a marker entry: a row whose source has no embeddable text,
+ * stored with no vector. No reader returns it; `staleRowIds` counts it as
+ * current until the row changes.
+ */
+export const UNINDEXABLE_MODEL = 'unindexable';
+
 export interface EmbeddingsStoreKnnInput {
   /** Row scope. Most callers know exactly one (namespace, type) at recall time. */
   namespace: string;
@@ -163,10 +176,11 @@ export interface EmbeddingsStore {
    */
   upsert(input: EmbeddingsStoreUpsertInput): Promise<void>;
   /**
-   * Ids of live rows of (namespace, type) with no vector under `model`, or one
-   * older than the row, after `afterId` in id order: the writes whose embed
-   * failed, and rows embedded by a previous model. Optional; a store that
-   * cannot see the rows table omits it and nothing is backfilled.
+   * Ids of live rows of (namespace, type) with no vector under `model` or
+   * unindexable marker, or one older than the row, after `afterId` in id
+   * order: the writes whose embed failed, and rows embedded by a previous
+   * model. Optional; a store that cannot see the rows table omits it and
+   * nothing is backfilled.
    */
   staleRowIds?(input: {
     namespace: string;
@@ -178,10 +192,20 @@ export interface EmbeddingsStore {
 
   /**
    * Remove the embedding for one row, leaving the row itself untouched. Used
-   * to un-index a row whose `embed.source` returns the null sentinel.
-   * Idempotent: deleting an absent embedding is a no-op.
+   * to un-index a row whose `embed.source` returns no text when the store has
+   * no `markUnindexable`. Idempotent: deleting an absent embedding is a no-op.
    */
   delete(input: EmbeddingsStoreDeleteInput): Promise<void>;
+
+  /**
+   * Replace the row's embedding with an unindexable marker: model
+   * `UNINDEXABLE_MODEL`, no vector, stamped `now`. Used when `embed.source`
+   * returns no text, so `staleRowIds` stops listing the row until it changes.
+   * No search, fetch, candidate selection or salience boost returns a marker.
+   * Salience survives, as on `upsert`. Optional; without it the row's
+   * embedding is deleted instead.
+   */
+  markUnindexable?(input: EmbeddingsStoreMarkInput): Promise<void>;
 
   /**
    * KNN search — return up to `k` rows whose embeddings are closest to

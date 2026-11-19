@@ -15,9 +15,11 @@ import {
   type EmbeddingsStoreFetchResult,
   type EmbeddingsStoreKnnInput,
   type EmbeddingsStoreKnnResult,
+  type EmbeddingsStoreMarkInput,
   type EmbeddingsStoreUpsertInput,
   matchesRowFilter,
-  type SalienceTarget
+  type SalienceTarget,
+  UNINDEXABLE_MODEL
 } from './embeddings-store.js';
 import { unresolvedRow } from './row-visibility.js';
 
@@ -28,7 +30,8 @@ interface Entry {
   rowNamespace: string;
   rowType: string;
   rowId: string;
-  vector: Float32Array;
+  /** Null for an unindexable marker, which no reader returns. */
+  vector: Float32Array | null;
   model: string;
   updatedAt: Date;
   /** Per-row salience signal. Mirrors `embeddings.salience`. */
@@ -64,6 +67,14 @@ export class InMemoryEmbeddingsStore implements EmbeddingsStore {
   }
 
   async upsert(input: EmbeddingsStoreUpsertInput): Promise<void> {
+    this.#write(input, input.vector, input.model);
+  }
+
+  async markUnindexable(input: EmbeddingsStoreMarkInput): Promise<void> {
+    this.#write(input, null, UNINDEXABLE_MODEL);
+  }
+
+  #write(input: EmbeddingsStoreMarkInput, vector: Float32Array | null, model: string): void {
     const k = key(input.rowNamespace, input.rowType, input.rowId);
     const existing = this.#entries.get(k);
     // Salience survives re-embed, as in pg. New rows start at 0.
@@ -74,8 +85,8 @@ export class InMemoryEmbeddingsStore implements EmbeddingsStore {
       rowNamespace: input.rowNamespace,
       rowType: input.rowType,
       rowId: input.rowId,
-      vector: input.vector,
-      model: input.model,
+      vector,
+      model,
       updatedAt: now,
       salience: existing?.salience ?? 0,
       salienceUpdatedAt: existing?.salienceUpdatedAt ?? now
@@ -105,16 +116,17 @@ export class InMemoryEmbeddingsStore implements EmbeddingsStore {
 
   async knnSearch(input: EmbeddingsStoreKnnInput): Promise<EmbeddingsStoreKnnResult[]> {
     const threshold = typeof input.threshold === 'number' ? input.threshold : 0;
-    const candidates: Array<{ entry: Entry; score: number }> = [];
+    const candidates: Array<{ entry: Entry; vector: Float32Array; score: number }> = [];
     const now = Date.now();
     const halfLife = input.salienceHalfLifeHours;
     for (const entry of this.#entries.values()) {
       if (entry.rowNamespace !== input.namespace) continue;
       if (entry.rowType !== input.type) continue;
       if (entry.model !== input.model) continue;
+      if (entry.vector === null) continue;
       const score = cosineSimilarity(entry.vector, input.vector);
       if (score < threshold) continue;
-      candidates.push({ entry, score });
+      candidates.push({ entry, vector: entry.vector, score });
     }
     candidates.sort((a, b) => b.score - a.score);
     const limit = Math.max(1, Math.floor(input.k));
@@ -122,7 +134,7 @@ export class InMemoryEmbeddingsStore implements EmbeddingsStore {
     // Walk candidates until k are filled rather than slice-then-read, so a
     // deleted row's slot goes to the next-best live candidate.
     const results: EmbeddingsStoreKnnResult[] = [];
-    for (const { entry, score } of candidates) {
+    for (const { entry, vector, score } of candidates) {
       if (results.length >= limit) break;
       const read = await this.#readRow(entry.rowNamespace, entry.rowType, entry.rowId);
       if (read === null) continue;
@@ -143,7 +155,7 @@ export class InMemoryEmbeddingsStore implements EmbeddingsStore {
             : entry.salience,
         // Copy (not alias) so a caller mutating the result can't corrupt the
         // stored vector.
-        ...(input.returnVector === true ? { vector: Array.from(entry.vector) } : {})
+        ...(input.returnVector === true ? { vector: Array.from(vector) } : {})
       });
     }
     return results;
@@ -159,7 +171,7 @@ export class InMemoryEmbeddingsStore implements EmbeddingsStore {
     const applied: SalienceTarget[] = [];
     for (const t of targets) {
       const entry = this.#entries.get(key(t.namespace, t.type, t.id));
-      if (entry === undefined) continue;
+      if (entry === undefined || entry.vector === null) continue;
       const elapsedMs = now.getTime() - entry.salienceUpdatedAt.getTime();
       entry.salience = decayed(entry.salience, elapsedMs, halfLifeHours) + bump;
       entry.salienceUpdatedAt = now;
@@ -176,7 +188,7 @@ export class InMemoryEmbeddingsStore implements EmbeddingsStore {
     const out: EmbeddingsStoreFetchResult[] = [];
     for (const ref of ids) {
       const entry = this.#entries.get(key(ref.namespace, ref.type, ref.id));
-      if (entry === undefined) continue;
+      if (entry === undefined || entry.vector === null) continue;
       if (entry.model !== model) continue;
       const dataset = this.#datasetFor?.(entry.rowNamespace, entry.rowType);
       let row: Record<string, unknown> = unresolvedRow({ id: entry.rowId });
@@ -208,6 +220,7 @@ export class InMemoryEmbeddingsStore implements EmbeddingsStore {
     // must agree with pg's `COLLATE "C"` byte order.
     const cmp = (x: string, y: string): number => (x < y ? -1 : x > y ? 1 : 0);
     const entries = Array.from(this.#entries.values())
+      .flatMap((e) => (e.vector === null ? [] : [{ ...e, vector: e.vector }]))
       .filter((e) => e.model === model && inScope(e.rowNamespace, e.rowType))
       .sort(
         (a, b) =>

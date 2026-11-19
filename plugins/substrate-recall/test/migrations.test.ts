@@ -1,6 +1,7 @@
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { embeddingsMigration } from '../src/migrations/0001_embeddings.js';
+import { embeddingsNullableVectorMigration } from '../src/migrations/0004_embeddings_nullable_vector.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const isPgGated = POSTGRES_URL !== undefined;
@@ -105,5 +106,55 @@ describe.skipIf(!isPgGated)('embeddingsMigration', () => {
     expect(() => embeddingsMigration({ dimension: 0 })).toThrow();
     expect(() => embeddingsMigration({ hnswM: -1 })).toThrow();
     expect(() => embeddingsMigration({ hnswEfConstruction: 1.5 })).toThrow();
+  });
+});
+
+describe.skipIf(!isPgGated)('embeddingsNullableVectorMigration', () => {
+  let sql: ReturnType<typeof postgres>;
+  const ctx = () => ({ sql, metric: () => {}, layout: null });
+  const nullable = async (): Promise<boolean> => {
+    const rows = await sql<Array<{ notnull: boolean }>>`
+      SELECT attnotnull AS notnull FROM pg_attribute
+      WHERE attrelid = 'embeddings'::regclass AND attname = 'embedding'
+    `;
+    return rows[0]?.notnull === false;
+  };
+  const insertMarker = () =>
+    sql`INSERT INTO embeddings (row_namespace, row_type, row_id, embedding, model)
+        VALUES ('ns', 'T', 'marked', NULL, 'unindexable')`;
+
+  beforeAll(async () => {
+    sql = postgres(POSTGRES_URL as string, { onnotice: () => {} });
+  });
+
+  afterAll(async () => {
+    await sql`DROP TABLE IF EXISTS embeddings CASCADE`;
+    await sql.end();
+  });
+
+  it('lets the embedding column hold NULL, and applies cleanly twice', async () => {
+    await sql`DROP TABLE IF EXISTS embeddings CASCADE`;
+    await embeddingsMigration().apply(ctx());
+    expect(await nullable()).toBe(false);
+    await embeddingsNullableVectorMigration().apply(ctx());
+    await embeddingsNullableVectorMigration().apply(ctx());
+    expect(await nullable()).toBe(true);
+    await insertMarker();
+    expect(await indexNames(sql)).toContain('embeddings_hnsw');
+  });
+
+  it('is a no-op when the embeddings table does not exist', async () => {
+    await sql`DROP TABLE IF EXISTS embeddings CASCADE`;
+    await embeddingsNullableVectorMigration().apply(ctx());
+    expect(await tableExists(sql)).toBe(false);
+  });
+
+  it('rollback removes the NULL rows and restores NOT NULL', async () => {
+    await embeddingsMigration().apply(ctx());
+    await embeddingsNullableVectorMigration().apply(ctx());
+    await insertMarker();
+    await embeddingsNullableVectorMigration().rollback?.(ctx());
+    expect(await nullable()).toBe(false);
+    expect(await sql`SELECT 1 FROM embeddings WHERE row_id = 'marked'`).toHaveLength(0);
   });
 });

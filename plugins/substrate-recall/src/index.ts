@@ -90,6 +90,7 @@ export type {
   EmbeddingsStoreFetchResult,
   EmbeddingsStoreKnnInput,
   EmbeddingsStoreKnnResult,
+  EmbeddingsStoreMarkInput,
   EmbeddingsStoreUpsertInput
 } from './embeddings-store.js';
 export { embeddingSimilarOperator } from './filter-operator.js';
@@ -143,6 +144,7 @@ export {
   type LexicalMigrationOptions,
   lexicalMigration
 } from './migrations/0003_lexical.js';
+export { embeddingsNullableVectorMigration } from './migrations/0004_embeddings_nullable_vector.js';
 export { checkParams, unknownParamMessage, unknownParams } from './params.js';
 export { PgClusterStore, type PgClusterStoreOptions } from './pg-cluster-store.js';
 export { PgEmbeddingsStore, type PgEmbeddingsStoreOptions } from './pg-embeddings-store.js';

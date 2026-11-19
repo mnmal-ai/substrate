@@ -6,6 +6,7 @@ import { runEmbedBackfill } from '../src/embed-backfill.js';
 import { EmbedSourceRegistry } from '../src/embed-source-registry.js';
 import type { EmbeddingsStore } from '../src/embeddings-store.js';
 import { embeddingsMigration } from '../src/migrations/0001_embeddings.js';
+import { embeddingsNullableVectorMigration } from '../src/migrations/0004_embeddings_nullable_vector.js';
 import { PgEmbeddingsStore } from '../src/pg-embeddings-store.js';
 import { putRows, truncateRows } from './_pg-rows.js';
 
@@ -190,6 +191,11 @@ describe.skipIf(POSTGRES_URL === undefined)('PgEmbeddingsStore.staleRowIds', () 
     const setupSql = postgres(POSTGRES_URL as string);
     try {
       await embeddingsMigration().apply({ sql: setupSql, metric: () => {}, layout: null });
+      await embeddingsNullableVectorMigration().apply({
+        sql: setupSql,
+        metric: () => {},
+        layout: null
+      });
     } finally {
       await setupSql.end();
     }
@@ -281,5 +287,31 @@ describe.skipIf(POSTGRES_URL === undefined)('PgEmbeddingsStore.staleRowIds', () 
       limit: 10
     });
     expect(stale).toEqual(['previous']);
+  });
+
+  it('skips a row marked unindexable until the row changes', async () => {
+    const t0 = new Date('2026-10-01T00:00:00Z');
+    const t1 = new Date('2026-10-02T00:00:00Z');
+    const row = (updatedAt: Date) => ({
+      namespace: 'notes',
+      type: 'Note',
+      id: 'marked',
+      body: {},
+      updatedAt,
+      deletedAt: null
+    });
+    await putRows(sql, [row(t0)]);
+    const store = new PgEmbeddingsStore({ sql });
+    await store.markUnindexable({
+      rowNamespace: 'notes',
+      rowType: 'Note',
+      rowId: 'marked',
+      now: t0
+    });
+    const ask = () =>
+      store.staleRowIds({ namespace: 'notes', type: 'Note', model: 'm', afterId: '', limit: 10 });
+    expect(await ask()).toEqual([]);
+    await putRows(sql, [row(t1)]);
+    expect(await ask()).toEqual(['marked']);
   });
 });

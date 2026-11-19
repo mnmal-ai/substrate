@@ -2,8 +2,8 @@
  * embedAndStore — generic write-path embedding primitive for plugin authors.
  *
  *   - Skips rows whose `id` is not a string.
- *   - Embeds the source text even when it is empty; only the null sentinel
- *     from `serializeRow` skips.
+ *   - Treats a null, undefined, empty or blank source as un-indexable: nothing
+ *     is embedded and the row's entry becomes an unindexable marker.
  *   - Swallows ALL errors: the write has already committed, so the mutation
  *     must succeed regardless. Logs to stderr and records a stats failure.
  */
@@ -21,8 +21,9 @@ export interface EmbedAndStoreOptions {
    * Optional custom serializer returning the source text to embed (sync or
    * async), or `null` / `undefined` to declare the row un-indexable.
    *
-   * The null sentinel is distinct from `''`: an empty string still embeds,
-   * whereas the sentinel embeds nothing and removes any existing embedding.
+   * The null sentinel, like empty or blank text, embeds nothing and replaces
+   * any existing embedding with an unindexable marker (or deletes it, on a
+   * store without `markUnindexable`).
    *
    * When omitted, the source text joins the non-empty string values of
    * `fields` with `'\n'`; if both are omitted it is `''`.
@@ -47,7 +48,7 @@ export interface EmbedAndStoreOptions {
  */
 export type EmbedOutcome =
   | { status: 'embedded' }
-  /** Source returned the null sentinel — any existing vector was deleted. */
+  /** Source returned no text — any existing vector was replaced by a marker or deleted. */
   | { status: 'unindexable' }
   /** Row carried no string or number `id`; nothing was attempted. */
   | { status: 'no-id' }
@@ -87,13 +88,15 @@ export async function embedRowReporting(
     // no vector (the embed fails and the OLD vector would survive, matching
     // text the row no longer has), and blank text embeds to noise.
     if (source === null || source === undefined || source.trim() === '') {
-      // Delete any existing vector too: rows can become un-indexable after
-      // they were first embedded.
-      await opts.store.delete({
-        rowNamespace: opts.namespace,
-        rowType: opts.type,
-        rowId: id
-      });
+      // Replace any existing vector too: rows can become un-indexable after
+      // they were first embedded. The marker, stamped like a vector, keeps
+      // the backfill from re-reading the row until it changes.
+      const key = { rowNamespace: opts.namespace, rowType: opts.type, rowId: id };
+      if (opts.store.markUnindexable !== undefined) {
+        await opts.store.markUnindexable({ ...key, now });
+      } else {
+        await opts.store.delete(key);
+      }
       return { status: 'unindexable' };
     }
 

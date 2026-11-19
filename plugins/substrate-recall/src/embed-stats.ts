@@ -16,9 +16,9 @@ export interface EmbedStatsSnapshot {
   /** Writes whose embedder or sql call threw. */
   readonly failures: number;
   /**
-   * Writes whose `embed.source` returned the null sentinel — the row was
-   * declared un-indexable, so nothing was embedded and any existing
-   * embedding was removed. Neither a success nor a failure.
+   * Writes whose `embed.source` returned no text — the row is un-indexable,
+   * so nothing was embedded and any existing embedding was replaced by an
+   * unindexable marker. Neither a success nor a failure.
    */
   readonly skips: number;
   /** Most recent failure, or null when no failures have occurred since boot. */

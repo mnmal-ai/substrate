@@ -273,9 +273,11 @@ keyword search needs differs from the short handle you embed.
 ### Declaring a row un-indexable
 
 Returning `null` or `undefined` means **this row must never enter the recall
-candidate set**. Recall skips the embed and deletes any embedding the row
-already has, so the row stays readable and referenceable but drops out of
-recall:
+candidate set**. Recall skips the embed and replaces any embedding the row
+already has with an unindexable marker (no vector, so no search returns it),
+so the row stays readable and referenceable but drops out of recall. The
+marker also tells the embed backfill the row is current, so it is not re-read
+until the row is written again:
 
 ```ts
 embed: {
@@ -283,16 +285,14 @@ embed: {
 }
 ```
 
-The delete matters on a live corpus: rows often become un-indexable after
+The replacement matters on a live corpus: rows often become un-indexable after
 they were written, and any write to the row re-runs the hook and removes the
 stale vector. Rows that were already un-indexable before you added the check
 keep their vectors until they are written again or re-embedded (recall's
 admin route `POST /substrate/v1/embed/reindex` does this server-side).
 
-`''` is **not** the sentinel. An empty string embeds normally. Returning `''`
-to mean "skip" is worse than indexing the real text, because every such row
-lands on the same point in vector space and matches whatever the empty-string
-embedding happens to be close to.
+Empty or blank text is treated the same way: there is nothing to embed, so
+the row gets the marker too.
 
 Skipped writes are counted as `skips` in `GET /substrate/v1/embed-stats`, so
 a source that starts rejecting every row shows up there instead of looking

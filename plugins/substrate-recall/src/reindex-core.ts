@@ -40,7 +40,7 @@ export interface ReindexResult {
   /** Rows read from the dataset this page. */
   scanned: number;
   embedded: number;
-  /** Source returned the null sentinel; any existing vector was removed. */
+  /** Source returned no text; any existing vector was replaced by an unindexable marker. */
   unindexable: number;
   failed: number;
   /**

@@ -3,7 +3,8 @@
  *
  * One table (`embeddings`) keyed by (rowNamespace, rowType, rowId). The
  * model identifier is stored with the vector; knnSearch filters on it after
- * the vector scan.
+ * the vector scan. A row with no embeddable text keeps a marker entry (model
+ * `UNINDEXABLE_MODEL`, NULL vector) that every read excludes.
  *
  * Vectors cross the wire as pgvector text literals (`[v1,...,vN]`), bound as
  * parameters and cast in SQL.
@@ -29,9 +30,11 @@ import type {
   EmbeddingsStoreFetchResult,
   EmbeddingsStoreKnnInput,
   EmbeddingsStoreKnnResult,
+  EmbeddingsStoreMarkInput,
   EmbeddingsStoreUpsertInput,
   SalienceTarget
 } from './embeddings-store.js';
+import { UNINDEXABLE_MODEL } from './embeddings-store.js';
 import {
   HIT_BODY_SQL,
   purgeTypeTableOrphans,
@@ -64,27 +67,8 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
   }
 
   async upsert(input: EmbeddingsStoreUpsertInput): Promise<void> {
-    const sql = this.#sql as Sql;
-    const literal = vectorLiteral(input.vector);
-    // ON CONFLICT omits salience + salience_updated_at so re-embedding a row
-    // preserves its accumulated recall-attention signal.
     try {
-      await sql`
-        INSERT INTO embeddings (row_namespace, row_type, row_id, embedding, model, updated_at)
-        VALUES (
-          ${input.rowNamespace},
-          ${input.rowType},
-          ${input.rowId},
-          ${literal}::vector,
-          ${input.model},
-          ${input.now ?? new Date()}
-        )
-        ON CONFLICT (row_namespace, row_type, row_id) DO UPDATE SET
-          embedding  = EXCLUDED.embedding,
-          model      = EXCLUDED.model,
-          updated_at = EXCLUDED.updated_at
-        WHERE embeddings.updated_at <= EXCLUDED.updated_at
-      `;
+      await this.#write(input, vectorLiteral(input.vector), input.model);
     } catch (err) {
       // pgvector reports a dimension mismatch as "expected N dimensions, not
       // M"; rethrow it as an embedder-vs-table disagreement. Other errors
@@ -100,6 +84,37 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
       }
       throw err;
     }
+  }
+
+  async markUnindexable(input: EmbeddingsStoreMarkInput): Promise<void> {
+    await this.#write(input, null, UNINDEXABLE_MODEL);
+  }
+
+  /** Writes one entry; a NULL `literal` is the unindexable marker. */
+  async #write(
+    input: EmbeddingsStoreMarkInput,
+    literal: string | null,
+    model: string
+  ): Promise<void> {
+    const sql = this.#sql as Sql;
+    // ON CONFLICT omits salience + salience_updated_at so re-embedding a row
+    // preserves its accumulated recall-attention signal.
+    await sql`
+      INSERT INTO embeddings (row_namespace, row_type, row_id, embedding, model, updated_at)
+      VALUES (
+        ${input.rowNamespace},
+        ${input.rowType},
+        ${input.rowId},
+        ${literal}::vector,
+        ${model},
+        ${input.now ?? new Date()}
+      )
+      ON CONFLICT (row_namespace, row_type, row_id) DO UPDATE SET
+        embedding  = EXCLUDED.embedding,
+        model      = EXCLUDED.model,
+        updated_at = EXCLUDED.updated_at
+      WHERE embeddings.updated_at <= EXCLUDED.updated_at
+    `;
   }
 
   async delete(input: EmbeddingsStoreDeleteInput): Promise<void> {
@@ -167,6 +182,7 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
         WHERE e.row_namespace = ${input.namespace}
           AND e.row_type      = ${input.type}
           AND e.model         = ${input.model}
+          AND e.embedding IS NOT NULL
           AND r.deleted_at IS NULL
           AND 1 - (e.embedding <=> ${literal}::vector) >= ${threshold}
           ${rowFilterSql(tx as unknown as Sql, ref, input.rowFilter)}
@@ -204,8 +220,9 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
       (a, b) => cmp(a.namespace, b.namespace) || cmp(a.type, b.type) || cmp(a.id, b.id)
     );
     // Decay-then-add as one set-based UPDATE driven by a VALUES join: one
-    // round-trip regardless of target count. Targets without an embedding row
-    // drop out of the join; RETURNING reports the ones that matched.
+    // round-trip regardless of target count. Targets without an embedding row,
+    // or with only a marker, drop out of the join; RETURNING reports the ones
+    // that matched.
     const applied = await sql<Array<{ ns: string; ty: string; id: string }>>`
       UPDATE embeddings AS e
       SET salience = e.salience
@@ -219,6 +236,7 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
       WHERE e.row_namespace = t.ns
         AND e.row_type      = t.ty
         AND e.row_id        = t.id
+        AND e.embedding IS NOT NULL
       RETURNING e.row_namespace AS ns, e.row_type AS ty, e.row_id AS id
     `;
     return applied.map((r) => ({ namespace: r.ns, type: r.ty, id: r.id }));
@@ -261,6 +279,7 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
       JOIN ${from} r
         ON r.namespace = e.row_namespace AND r.type = e.row_type AND r.id = e.row_id
       WHERE e.model = ${model}
+        AND e.embedding IS NOT NULL
         AND r.deleted_at IS NULL
     `;
     // One statement per type, so each id is looked up in its own type's table only.
@@ -329,6 +348,7 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
         JOIN (${kept}) k
           ON k.namespace = e.row_namespace AND k.type = e.row_type AND k.id = e.row_id
         WHERE e.model = ${model}
+          AND e.embedding IS NOT NULL
         ORDER BY e.row_namespace COLLATE "C" ASC, e.row_type COLLATE "C" ASC, e.row_id COLLATE "C" ASC
         LIMIT ${selector.limit}
       )
@@ -375,7 +395,7 @@ export class PgEmbeddingsStore implements EmbeddingsStore {
           WHERE e.row_namespace = r.namespace
             AND e.row_type      = r.type
             AND e.row_id        = r.id
-            AND e.model         = ${input.model}
+            AND (e.model = ${input.model} OR e.model = ${UNINDEXABLE_MODEL})
             AND (r.updated_at IS NULL OR e.updated_at >= r.updated_at)
         )
       ORDER BY r.id

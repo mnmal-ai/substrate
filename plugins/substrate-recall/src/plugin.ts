@@ -51,6 +51,7 @@ import {
 } from './migrations/0001_embeddings.js';
 import { recallClustersMigration } from './migrations/0002_recall_clusters.js';
 import { type LexicalMigrationOptions, lexicalMigration } from './migrations/0003_lexical.js';
+import { embeddingsNullableVectorMigration } from './migrations/0004_embeddings_nullable_vector.js';
 import {
   type ReadPolicyCheck,
   recallRouteHandler,
@@ -393,7 +394,8 @@ export function createRecallPlugin(cfg: RecallPluginConfig): KernelPlugin {
         dimension: cfg.migration?.dimension ?? DEFAULT_CLUSTER_DIMENSION
       }),
       // Likewise applied with no `lexicalStore` wired. Keep ordered by id.
-      lexicalMigration(cfg.lexicalMigration ?? {})
+      lexicalMigration(cfg.lexicalMigration ?? {}),
+      embeddingsNullableVectorMigration()
     ],
 
     filterOperators:

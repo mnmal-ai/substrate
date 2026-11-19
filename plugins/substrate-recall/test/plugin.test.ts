@@ -30,7 +30,8 @@ describe('createRecallPlugin', () => {
     expect(plugin.migrations?.map((m) => m.id)).toEqual([
       '0001_embeddings',
       '0002_recall_clusters',
-      '0003_lexical'
+      '0003_lexical',
+      '0004_embeddings_nullable_vector'
     ]);
     expect(Object.keys(plugin.filterOperators ?? {})).toContain('embeddingSimilar');
     expect(plugin.kernelRoutes).toEqual(
