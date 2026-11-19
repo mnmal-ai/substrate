@@ -12,7 +12,7 @@ import {
   type RequestContext,
   ResolverFrameError
 } from '@mnmal-ai/substrate-types';
-import { lockedInIdOrder, lockedRow } from './row-lock.js';
+import { isLiveProposal, LIVE, lockedInIdOrder, lockedRow } from './row-lock.js';
 
 export const DEFAULT_PROPOSE_CAPABILITY = 'substrate.propose';
 /** Changes a type's indexes or natural order (`propose_index`); separate from proposing schema. */
@@ -212,6 +212,71 @@ export function gateTypeProposalRemoval(
       resolver: guard,
       // A create names no stored row to lock.
       ...(key === 'createTypeProposal' ? {} : { batch: lockedInIdOrder('TypeProposal', guard) })
+    });
+  }
+}
+
+/** FieldProposal params that redefine the field a proposal adds. */
+const FIELD_SPEC_KEYS = ['targetType', 'fieldName', 'fieldSpecJson'];
+
+/**
+ * Deleting a live FieldProposal, or an update that leaves it not live
+ * (`archived: true`, `applied: false`, `supersededByCode: true`) or redefines
+ * its field (`targetType`, `fieldName`, `fieldSpecJson`), drops the field as
+ * it stands at the next boot. When the proposal's stored target type has rows
+ * that needs the drop capability, as `drop_type` does; otherwise the propose
+ * capability's alone. As for TypeProposal, the proposal is found as the write
+ * finds it, locked until the write's transaction ends, and written by its
+ * stored id; a removal whose proposal cannot be loaded or locked is refused; an
+ * array of updates or deletes first locks every row it names in id order; and
+ * `updateMany` / `deleteMany` refuse once their single-row entry is replaced.
+ * Params whose value is undefined are left out first, as the update resolver
+ * leaves them. An empty capability opts out.
+ */
+export function gateFieldProposalRemoval(
+  registry: Registry,
+  dropCapability: string = DEFAULT_DROP_CAPABILITY
+): void {
+  if (dropCapability === '') return;
+  const gate = makeProposePolicy(dropCapability);
+  for (const key of ['deleteFieldProposal', 'updateFieldProposal']) {
+    const entry = registry.get(key);
+    if (entry === undefined) continue;
+    const { batch: _batch, resolver, ...rest } = entry;
+    const isDelete = key === 'deleteFieldProposal';
+    const guard: RegistryEntryResolver = async (ctx, args) => {
+      const params = Object.fromEntries(
+        Object.entries(args.params ?? {}).filter(([, v]) => v !== undefined)
+      );
+      const redefines = FIELD_SPEC_KEYS.some((k) => k in params);
+      const mayRemove = isDelete || redefines || !isLiveProposal({ ...LIVE, ...params });
+      const trusted = (args as { [TRUSTED_WRITE]?: true })[TRUSTED_WRITE] === true;
+      if (!mayRemove || trusted || gate(ctx, args).allow) return resolver(ctx, args);
+      const deny = (why: string): ResolverFrameError =>
+        new ResolverFrameError('policy_denied', `${key}: ${why}`, {
+          required: `${ctx.namespace}:${dropCapability}`
+        });
+      const { dataset } = args;
+      const row = await lockedRow('FieldProposal', params.id, dataset);
+      if (row === null || dataset === undefined) {
+        throw deny(
+          `cannot load the proposal to check its target type for stored rows; needs '${dropCapability}'`
+        );
+      }
+      const removes =
+        isLiveProposal(row) && (isDelete || redefines || !isLiveProposal({ ...row, ...params }));
+      const target = row.targetType;
+      if (removes && typeof target === 'string' && (await typeHasRows(dataset, target))) {
+        throw deny(
+          `'${target}' has stored rows; this change to a live proposal of its field '${String(row.fieldName)}' drops the field, which needs '${dropCapability}' as drop_type does`
+        );
+      }
+      return resolver(ctx, { ...args, params: { ...args.params, id: row.id } });
+    };
+    registry.replace(key, {
+      ...rest,
+      resolver: guard,
+      batch: lockedInIdOrder('FieldProposal', guard)
     });
   }
 }

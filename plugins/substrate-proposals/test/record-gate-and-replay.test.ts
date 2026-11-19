@@ -453,3 +453,153 @@ describe('removing a TypeProposal (#1792, #1954)', () => {
     });
   });
 });
+
+describe('removing a FieldProposal', () => {
+  const str = JSON.stringify({ t: { kind: 'scalar', type: 'string' } });
+  const propose = ['read', 'mutate', 'substrate.propose'];
+
+  /** A live proposal of field `extra` on the proposed type `Stored`, which has rows or not. */
+  async function seeded(withRows: boolean, applied = true) {
+    const ds = new MemoryDataset({ namespace: 'app' });
+    await ds.write('TypeProposal', [row({ id: 'tp', typeName: 'Stored', fieldsJson: str })]);
+    if (withRows) await ds.write('Stored', [{ id: 's1', t: 'x' }]);
+    const booted = await boot(ds);
+    const created = await booted.engine.mutate({
+      frame: {
+        'app/createFieldProposal': {
+          params: row({
+            id: 'fp',
+            targetType: 'Stored',
+            fieldName: 'extra',
+            fieldSpecJson: JSON.stringify({ kind: 'scalar', type: 'string' }),
+            applied
+          }),
+          fields: { id: true }
+        }
+      },
+      ctx: ctx(propose)
+    });
+    expect(created.errors).toBeUndefined();
+    const shortId = (await ds.read('FieldProposal', { id: 'fp' })).rows[0]?.shortId as number;
+    return { ds, shortId, ...booted };
+  }
+
+  const removals: Array<[string, Record<string, unknown>]> = [
+    ['app/deleteFieldProposal', {}],
+    ['app/updateFieldProposal', { archived: true }],
+    ['app/updateFieldProposal', { applied: false }],
+    ['app/updateFieldProposal', { supersededByCode: true }],
+    // Each redefines the field boot replays.
+    ['app/updateFieldProposal', { fieldName: 'renamed' }],
+    ['app/updateFieldProposal', { targetType: 'Other' }],
+    [
+      'app/updateFieldProposal',
+      { fieldSpecJson: JSON.stringify({ kind: 'scalar', type: 'number' }) }
+    ]
+  ];
+
+  it('of a field on a type with storage needs the drop capability, by any form of its id', async () => {
+    for (const [key, change] of removals) {
+      const { ds, engine, shortId } = await seeded(true);
+      for (const id of ['fp', shortId, String(shortId)]) {
+        const params = { id, ...change };
+        const denied = await engine.mutate({
+          frame: { [key]: { params, fields: { id: true } } },
+          ctx: ctx(propose)
+        });
+        expect(denied.errors?.[0]?.code, `${key} ${JSON.stringify(params)}`).toBe('policy_denied');
+        // An array takes the same guard.
+        const batched = await engine.mutate({
+          frame: { [key]: [{ params, fields: { id: true } }] },
+          ctx: ctx(propose)
+        });
+        expect(batched.errors?.[0]?.code, `${key} [${JSON.stringify(params)}]`).toBe(
+          'policy_denied'
+        );
+      }
+      expect((await ds.read('FieldProposal', { id: 'fp' })).rows[0]).toMatchObject({
+        archived: false,
+        applied: true,
+        supersededByCode: false,
+        fieldName: 'extra',
+        targetType: 'Stored'
+      });
+      const allowed = await engine.mutate({
+        frame: { [key]: { params: { id: 'fp', ...change }, fields: { id: true } } },
+        ctx: ctx([...propose, 'admin'])
+      });
+      expect(allowed.errors, key).toBeUndefined();
+    }
+  });
+
+  it('of a field on a type with no storage needs only the propose capability', async () => {
+    for (const [key, change] of removals) {
+      const { engine } = await seeded(false);
+      const env = await engine.mutate({
+        frame: { [key]: { params: { id: 'fp', ...change }, fields: { id: true } } },
+        ctx: ctx(propose)
+      });
+      expect(env.errors, key).toBeUndefined();
+    }
+  });
+
+  it('of a proposal that is not live, or by a change that keeps it live, needs only the propose capability', async () => {
+    const { engine: idle } = await seeded(true, false);
+    for (const [key, params] of [
+      ['app/updateFieldProposal', { id: 'fp', archived: true }],
+      ['app/deleteFieldProposal', { id: 'fp' }]
+    ] as const) {
+      const env = await idle.mutate({
+        frame: { [key]: { params, fields: { id: true } } },
+        ctx: ctx(propose)
+      });
+      expect(env.errors, key).toBeUndefined();
+    }
+    const { engine } = await seeded(true);
+    for (const params of [
+      { id: 'fp', proposedReason: 'clarified' },
+      { id: 'fp', applied: true, appliedAt: T1 },
+      { id: 'fp', valueMapJson: null }
+    ]) {
+      const env = await engine.mutate({
+        frame: { 'app/updateFieldProposal': { params, fields: { id: true } } },
+        ctx: ctx(propose)
+      });
+      expect(env.errors, JSON.stringify(params)).toBeUndefined();
+    }
+  });
+
+  it('by filter is refused, so it cannot route around the guard', async () => {
+    const { ds, engine } = await seeded(true);
+    for (const [key, params] of [
+      ['app/deleteManyFieldProposal', { where: { targetType: { eq: 'Stored' } } }],
+      [
+        'app/updateManyFieldProposal',
+        { where: { targetType: { eq: 'Stored' } }, set: { archived: true } }
+      ]
+    ] as const) {
+      const env = await engine.mutate({
+        frame: { [key]: { params, fields: { count: true } } },
+        ctx: ctx([...propose, 'admin'])
+      });
+      expect(env.errors?.[0], key).toBeDefined();
+    }
+    expect((await ds.read('FieldProposal', { id: 'fp' })).rows[0]).toMatchObject({
+      archived: false
+    });
+  });
+
+  it('fails closed on a removal whose proposal cannot be loaded', async () => {
+    const { engine } = await seeded(true);
+    for (const [key, params] of [
+      ['app/deleteFieldProposal', { id: 'missing' }],
+      ['app/updateFieldProposal', { id: 'missing', archived: true }]
+    ] as const) {
+      const env = await engine.mutate({
+        frame: { [key]: { params, fields: { id: true } } },
+        ctx: ctx(propose)
+      });
+      expect(env.errors?.[0]?.code, key).toBe('policy_denied');
+    }
+  });
+});

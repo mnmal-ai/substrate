@@ -22,6 +22,7 @@ import {
   DEFAULT_DROP_CAPABILITY,
   DEFAULT_INDEX_CAPABILITY,
   DEFAULT_PROPOSE_CAPABILITY,
+  gateFieldProposalRemoval,
   gateTypeProposalRemoval,
   proposeToWrite
 } from './capability.js';
@@ -82,6 +83,7 @@ export function defineProposalTypes(
     install(ctx) {
       def.install(ctx);
       gateTypeProposalRemoval(ctx.registry, dropCapability);
+      gateFieldProposalRemoval(ctx.registry, dropCapability);
       gateProposalReferences(ctx.registry, namespace, registryStore);
     }
   };
