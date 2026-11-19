@@ -41,20 +41,24 @@ export interface DeleteRowsArgs {
 }
 
 /**
- * `deleteRow` for many rows of one type in the dataset's namespace: one
- * `findEdgesToMany` gates them all (one `canDelete` for a single row), then
- * one `tombstone` call. Throws
- * `RestrictViolation` for the first id, in `ids` order, that a live `restrict`
- * edge blocks, before tombstoning anything. Returns the ids tombstoned.
+ * `deleteRow` for many rows of one type in the dataset's namespace, inside the
+ * caller's transaction: one `tombstone` call, then one `findEdgesToMany`
+ * gates them all (one `canDelete` for a single row). Throws
+ * `RestrictViolation` for the first id, in `ids` order, that a live
+ * `restrict` edge blocks, and the caller's transaction must roll the
+ * tombstones back; every autoCRUD caller runs in the engine's. Tombstoning
+ * first locks the rows, so a create referencing one either commits its edge
+ * before the check reads, or waits and then finds the row gone. Returns the
+ * ids tombstoned.
  */
 export async function deleteRows(args: DeleteRowsArgs): Promise<Id[]> {
   if (args.ids.length === 0) return [];
+  const { ids } = await args.dataset.tombstone(args.type, args.ids);
   await assertNoRestrictEdges(
     args.edges,
     { ns: args.dataset.namespace, type: args.type },
     args.ids
   );
-  const { ids } = await args.dataset.tombstone(args.type, args.ids);
   return ids;
 }
 

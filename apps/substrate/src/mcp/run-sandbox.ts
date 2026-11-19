@@ -33,6 +33,8 @@ export interface SandboxRunOptions {
   maxWrites?: number;
   /** Kill the child and fail the run past this. */
   timeoutMs?: number;
+  /** Kill the child and fail the run when this fires. */
+  signal?: AbortSignal;
   log?: (line: string) => void;
 }
 
@@ -60,7 +62,7 @@ export async function runSandboxed(source: string, opts: SandboxRunOptions): Pro
   const runner = runnerPath();
   const timeoutMs = opts.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
   try {
-    return await runScript((s) => inChild(s, runner, script, timeoutMs), {
+    return await runScript((s) => inChild(s, runner, script, timeoutMs, opts.signal), {
       client: opts.client,
       kid: opts.kid,
       ...(opts.mode !== undefined ? { mode: opts.mode } : {}),
@@ -77,7 +79,8 @@ function inChild(
   s: ScriptContext,
   runner: string,
   script: string,
-  timeoutMs: number
+  timeoutMs: number,
+  signal: AbortSignal | undefined
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const child = fork(runner, [], {
@@ -93,10 +96,12 @@ function inChild(
       serialization: 'advanced'
     });
     let settled = false;
+    const onAbort = (): void => finish(new Error('script cancelled by the caller'));
     const finish = (err: Error | null, value?: unknown): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
       child.kill('SIGKILL');
       if (err !== null) reject(err);
       else resolve(value);
@@ -105,6 +110,8 @@ function inChild(
       () => finish(new Error(`script timed out after ${timeoutMs} ms`)),
       timeoutMs
     );
+    if (signal?.aborted === true) onAbort();
+    else signal?.addEventListener('abort', onAbort, { once: true });
     child.on('error', (err) => finish(err));
     child.on('exit', (code, signal) =>
       finish(new Error(`script process exited (${signal ?? `code ${code}`}) before finishing`))

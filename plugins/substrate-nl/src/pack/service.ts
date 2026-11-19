@@ -93,7 +93,15 @@ export class PackService {
         },
         req
       );
+      // A cancelled request or a transient refusal fails the build, which is not
+      // cached: an empty profile would be served to every caller for the whole TTL.
+      if (req.signal?.aborted === true) throw new Error(`pack build for '${ns}' was cancelled`);
       const rows = env.data?.[frameKey];
+      if (rows === undefined && transientRefusal(env.errors)) {
+        throw new Error(
+          `pack build: reading ${frameKey} failed: ${JSON.stringify(env.errors ?? [])}`
+        );
+      }
       const page = env._pagination?.[frameKey];
       return {
         rows: Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [],
@@ -111,6 +119,19 @@ export class PackService {
     const etag = `"${createHash('sha256').update(JSON.stringify(pack)).digest('hex').slice(0, 16)}"`;
     return { pack, etag, at: now };
   }
+}
+
+/**
+ * Refusals that may not recur on the next build. Any other refusal (a policy
+ * denial, a type that only streams) is lasting, and leaves the type's values out.
+ */
+const TRANSIENT = new Set(['aborted', 'query_timeout', 'store_busy']);
+
+function transientRefusal(errors: unknown[] | undefined): boolean {
+  return (errors ?? []).some((e) => {
+    const code = (e as { code?: unknown } | null)?.code;
+    return typeof code === 'string' && TRANSIENT.has(code);
+  });
 }
 
 /**

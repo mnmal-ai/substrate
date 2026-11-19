@@ -83,6 +83,8 @@ export function invitesRoute(engine: Engine, opts: KeysRouteOptions): HttpHandle
       capabilities: encodeList(capabilities),
       expiresAt: expiresAt.toISOString()
     };
+    // The `createInvite` interceptor repeats the admin check, so it needs the opt-in too.
+    if (b.allowAdmin === true) params.allowAdmin = true;
 
     // Dispatch through the engine so the admin-gate policy on the mutation
     // still applies — the route-cap map adds an extra `admin` layer upstream
