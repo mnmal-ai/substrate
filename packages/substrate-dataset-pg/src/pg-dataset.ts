@@ -1240,16 +1240,29 @@ export class PgDataset implements Dataset {
   }
 
   async lockShared(type: string, ids: Id[]): Promise<void> {
+    await this.#lockRows(type, ids, 'FOR SHARE OF r');
+  }
+
+  async lockForUpdate(type: string, ids: Id[]): Promise<void> {
+    await this.#lockRows(type, ids, 'FOR NO KEY UPDATE OF r');
+  }
+
+  /** Locks the live rows among `ids` until the transaction ends; outside one, nothing. */
+  async #lockRows(
+    type: string,
+    ids: Id[],
+    strength: 'FOR SHARE OF r' | 'FOR NO KEY UPDATE OF r'
+  ): Promise<void> {
     if (!this.#inTx || ids.length === 0) return;
     const table = await this.#tableFor(type);
     if (table === undefined) return;
-    // In id order, as tombstone locks, so overlapping lockers and deleters queue
-    // rather than deadlock.
+    // In id order, as tombstone and patchRows lock, so overlapping lockers,
+    // writers and deleters queue rather than deadlock.
     await this.#sql`
       SELECT 1 FROM ${this.#sql.unsafe(table.from)} r
       WHERE r.id = ANY(${ids.map(idToText)}) AND r.deleted_at IS NULL
       ORDER BY r.id
-      FOR SHARE OF r
+      ${this.#sql.unsafe(strength)}
     `;
   }
 

@@ -404,6 +404,15 @@ export interface Dataset {
    * outside a transaction; absent where transactions already run one at a time.
    */
   lockShared?(type: string, ids: Id[]): Promise<void>;
+  /**
+   * Inside a transaction, locks the live rows among `ids` for update until it
+   * ends: a concurrent write or lock of one waits for this transaction, and
+   * this call waits for one already in flight, so a read after it sees the
+   * outcome. Called before checking a row's stored content that its update
+   * relies on. A no-op outside a transaction; absent where transactions
+   * already run one at a time.
+   */
+  lockForUpdate?(type: string, ids: Id[]): Promise<void>;
   purge(type: string, ids: Id[]): Promise<DeleteResult>;
   /**
    * Physically delete every row of `type` within this dataset's namespace,
