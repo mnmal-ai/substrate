@@ -5,8 +5,7 @@
 
 import { autoCrudOptionsOf } from '@mnmal-ai/substrate-sdk';
 import {
-  grantedIn,
-  grantOf,
+  checkIdentityGrant,
   type Id,
   type Identity,
   type Registry,
@@ -26,12 +25,14 @@ import type { RegistryStore } from './registry-store.js';
 import { isLiveProposal, LIVE, lockedInIdOrder, lockedRow } from './row-lock.js';
 
 /**
- * The crossRef target check for a proposal in `namespace`. A target in a
- * namespace this plugin owns must pass `ownedTarget`; the control plane is
- * refused. Any other target must be in a namespace `canRead` admits, be a type
- * the engine has registered whose rows autoCRUD stores (a virtual type has no
- * rows to point at), and not be `restrict`, so a proposal never blocks deletes
- * of rows it does not own. The read rule runs first, so an unreadable
+ * The crossRef target check for a proposal in `namespace`. The control plane
+ * is refused. A target in any other namespace than `namespace`, owned or not,
+ * must be in one `canRead` admits; the proposer holds the propose capability
+ * in `namespace` itself. A target in a namespace this plugin owns must then
+ * pass `ownedTarget`. Any other target must be a type the engine has
+ * registered whose rows autoCRUD stores (a virtual type has no rows to point
+ * at), and not be `restrict`, so a proposal never blocks deletes of rows it
+ * does not own. The read rule runs before any lookup, so an unreadable
  * namespace never tells whether a type exists in it.
  */
 export function crossRefTargetCheck(
@@ -43,8 +44,8 @@ export function crossRefTargetCheck(
   return ({ ns, type, onDelete }) => {
     const target = `'${ns}/${type}'`;
     if (ns === CONTROL_NAMESPACE) return `${target} is in this plugin's control plane`;
+    if (ns !== namespace && !canRead(ns)) return `you cannot read namespace '${ns}'`;
     if (store.ownsNamespace(ns)) return ownedTarget(ns, type) ? null : `no type ${target}`;
-    if (!canRead(ns)) return `you cannot read namespace '${ns}'`;
     const engine = store.has(namespace) ? store.getBinding(namespace).engine : undefined;
     const entry = engine?.typeEntry?.(ns, type);
     if (entry === undefined) return `no type ${target}`;
@@ -71,13 +72,9 @@ export function appliedTargetCheck(store: RegistryStore, namespace: string): Cro
   return crossRefTargetCheck(store, namespace, always, always);
 }
 
-/**
- * Whether `identity` may read `ns`, as the engine's grant gate decides: no
- * grant is no claim, and passes.
- */
+/** Whether `identity` may read `ns`, as the engine's grant gate decides. */
 export function canReadNamespace(identity: Identity | null, ns: string): boolean {
-  const grant = grantOf(identity);
-  return grant === null || grantedIn(grant, ns).includes('read');
+  return checkIdentityGrant(identity, ns, 'query').ok;
 }
 
 /** `json` parsed, or undefined when it is not a JSON string. */

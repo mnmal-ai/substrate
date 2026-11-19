@@ -226,6 +226,36 @@ describe('a proposed reference to a code-defined type', () => {
       refusal(await proposeType(engine, 'Payment', { invoice: ref() }, as(grants))).message
     ).toContain("you cannot read namespace 'app'");
   });
+
+  it('refuses an owned namespace the proposer cannot read the same way, type or no type', async () => {
+    const engine = await boot(undefined, { owned: ['ext', 'vault'] });
+    const inVault = engine.mutate({
+      frame: {
+        'vault/propose_type': { params: { typeName: 'Safe', fields: { amount } }, fields: {} }
+      },
+      ctx: PROPOSER
+    });
+    expect((await inVault).errors).toBeUndefined();
+
+    const vault = (over: Partial<CrossRefSpec>) => ref({ ns: 'vault', type: 'Safe', ...over });
+    const extOnly = as(EXT_ONLY);
+    const known = refusal(await proposeType(engine, 'Payment', { v: vault({}) }, extOnly));
+    expect(known).toEqual({
+      code: 'invalid_field_spec',
+      message: "Field 'v': you cannot read namespace 'vault'"
+    });
+    for (const spec of [vault({ type: 'Missing' }), vault({ onDelete: 'restrict' })]) {
+      expect(refusal(await proposeType(engine, 'Payment', { v: spec }, extOnly))).toEqual(known);
+    }
+    // The namespace being proposed into needs no read beyond the propose capability.
+    const self = ref({ ns: 'ext', type: 'Payment', onDelete: 'restrict' });
+    expect((await proposeType(engine, 'Payment', { self }, extOnly)).errors).toBeUndefined();
+    // A reader of the owned namespace may still ask restrict of it.
+    const reader = as({ ...EXT_ONLY, vault: ['read'] });
+    expect(
+      (await proposeType(engine, 'Ledger', { v: vault({ onDelete: 'restrict' }) }, reader)).errors
+    ).toBeUndefined();
+  });
 });
 
 /** A TypeProposal row as a direct write would carry it. */
