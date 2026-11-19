@@ -249,8 +249,10 @@ export function buildOnboardBody(ownedNamespaces: ReadonlyArray<string>): Onboar
         'per-deployment.',
       invalid_field_spec:
         'fieldSpec did not match one of the four allowed shapes (scalar / crossRef / struct / list), ' +
-        'or a crossRef targets a type outside the namespaces this plugin owns. ' +
-        'Check kind, nesting, type spellings and crossRef targets.',
+        'or a crossRef target was refused: no such type, a namespace other than the one you propose ' +
+        'into that you cannot read (the same answer whether or not the type exists), a type with no ' +
+        'storage, the control plane, or restrict on a type this plugin does not own. ' +
+        'Check kind, nesting, type spellings, onDelete and crossRef targets.',
       invalid_params:
         'A required param is missing or malformed: typeName / targetType / fieldName must match ' +
         '[A-Za-z_][A-Za-z0-9_]*, fields must be a non-empty object, proposedReason a string.',
