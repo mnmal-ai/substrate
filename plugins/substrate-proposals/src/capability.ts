@@ -16,6 +16,8 @@ import {
   type ResolverArgs,
   ResolverFrameError
 } from '@mnmal-ai/substrate-types';
+import { ProposalError } from './errors.js';
+import { proposalLockKey, withProposalLock } from './proposal-lock.js';
 import type { RegistryStore } from './registry-store.js';
 import { isLiveProposal, lockedInIdOrder, lockedRow } from './row-lock.js';
 
@@ -385,6 +387,15 @@ async function namespaceHasRows(store: RegistryStore, ns: string): Promise<boole
   return false;
 }
 
+/** Whether a NamespaceProposal that is not archived names `ns`. */
+async function standing(dataset: Dataset, ns: string): Promise<boolean> {
+  const { rows } = await dataset.read('NamespaceProposal', {
+    where: { AND: [{ ns: { eq: ns } }, { archived: { eq: false } }] },
+    limit: 1
+  });
+  return rows.length > 0;
+}
+
 /** Whether a NamespaceProposal row is live: boot installs it and code has not superseded it. */
 function liveNamespace(row: Record<string, unknown>): boolean {
   return installsNamespace(row) && row.supersededByCode === false;
@@ -400,9 +411,13 @@ function liveNamespace(row: Record<string, unknown>): boolean {
  * where it was not live (`archived: false`, `applied: true` or
  * `supersededByCode: false` on a row that is not live, or a new `ns`), puts a
  * namespace on, which needs the drop capability in that namespace whatever its
- * rows: a dropped namespace's rows are gone, and its name stays retired. The
- * plugin's own writes ({@link TRUSTED_WRITE}, as propose_namespace makes) and
- * updates that can do neither pass unchecked. As for TypeProposal, the
+ * rows: a dropped namespace's rows are gone, and its name stays retired. An
+ * archived proposal is that retired name's marker, as only a drop archives
+ * one: deleting it needs the drop capability in its namespace, and its `ns`
+ * never changes. A second proposal that is not archived for one name, created
+ * or renamed onto it, needs the drop capability there too. The plugin's own
+ * writes ({@link TRUSTED_WRITE}, as propose_namespace makes) and updates that
+ * can do none of these pass unchecked. As for TypeProposal, the
  * proposal is found as the write finds it, locked until the write's
  * transaction ends, and written by its stored id; one that cannot be loaded or
  * locked is refused; an array of updates or deletes first locks every row it
@@ -431,6 +446,8 @@ export function gateNamespaceProposalLiveness(
       new ResolverFrameError('policy_denied', `${key}: ${why}`, {
         required: `${ns}:${dropCapability}`
       });
+    const secondFor = (ns: string): string =>
+      `'${ns}' already has a proposal that is not archived; a second one needs '${dropCapability}' as drop_namespace does`;
     const putsOn = (ns: string): string =>
       `this puts namespace '${ns}' on the engine at the next boot, which needs '${dropCapability}' as drop_namespace does`;
     const guard: RegistryEntryResolver = async (ctx, args) => {
@@ -441,12 +458,23 @@ export function gateNamespaceProposalLiveness(
         return resolver(ctx, args);
       }
       const holds = (ns: string): boolean => gate({ ...ctx, namespace: ns }, args).allow;
+      const { dataset } = args;
       if (isCreate) {
         const ns = params.ns;
-        if (params.applied === true && typeof ns === 'string' && !holds(ns)) {
-          throw deny(ns, `an applied proposal: ${putsOn(ns)}`);
+        if (typeof ns !== 'string' || holds(ns)) return resolver(ctx, args);
+        if (params.applied === true) throw deny(ns, `an applied proposal: ${putsOn(ns)}`);
+        if (dataset === undefined) {
+          throw deny(ns, `cannot check '${ns}' for another proposal; needs '${dropCapability}'`);
         }
-        return resolver(ctx, args);
+        // The lock propose_namespace takes for the name, so the check sees its row.
+        return withProposalLock(
+          dataset,
+          proposalLockKey('namespace', ctx.namespace, ns),
+          async () => {
+            if (await standing(dataset, ns)) throw deny(ns, secondFor(ns));
+            return resolver(ctx, args);
+          }
+        );
       }
       const removes =
         isDelete ||
@@ -460,8 +488,8 @@ export function gateNamespaceProposalLiveness(
           params.archived === false ||
           params.supersededByCode === false);
       if (!removes && !restores) return resolver(ctx, args);
-      const row = await lockedRow('NamespaceProposal', params.id, args.dataset);
-      if (row === null) {
+      const row = await lockedRow('NamespaceProposal', params.id, dataset);
+      if (row === null || dataset === undefined) {
         throw deny(
           ctx.namespace,
           `cannot load the proposal to check the namespace it names; needs '${dropCapability}'`
@@ -470,6 +498,21 @@ export function gateNamespaceProposalLiveness(
       const after = isDelete ? undefined : { ...row, ...params };
       const from = row.ns;
       const to = after?.ns;
+      if (row.archived === true) {
+        if (!isDelete && to !== from) {
+          throw new ProposalError(
+            'namespace_retired',
+            `${key}: '${String(from)}' was dropped and its name stays retired; its proposal's ns cannot change`,
+            { ns: from }
+          );
+        }
+        if (isDelete && typeof from === 'string' && !holds(from)) {
+          throw deny(
+            from,
+            `'${from}' was dropped and its name stays retired; deleting its proposal frees the name, which needs '${dropCapability}' as drop_namespace does`
+          );
+        }
+      }
       const leaves =
         installsNamespace(row) && (after === undefined || !installsNamespace(after) || to !== from);
       if (leaves && typeof from === 'string' && !holds(from)) {
@@ -489,6 +532,11 @@ export function gateNamespaceProposalLiveness(
         installsNamespace(after) &&
         (!liveNamespace(row) || to !== from);
       if (arrives && typeof to === 'string' && !holds(to)) throw deny(to, putsOn(to));
+      // shortcut: unlike a create, a rename does not take the name's proposal lock, so a
+      // concurrent propose_namespace of that name can still race it; take it if that matters.
+      if (to !== from && typeof to === 'string' && !holds(to) && (await standing(dataset, to))) {
+        throw deny(to, secondFor(to));
+      }
       return resolver(ctx, { ...args, params: { ...args.params, id: row.id } });
     };
     registry.replace(key, {

@@ -798,10 +798,13 @@ describe('removing a NamespaceProposal', () => {
     expect(
       (await run(engine, '_system_proposals/updateNamespaceProposal', benign)).errors
     ).toBeUndefined();
-    await control.write('NamespaceProposal', [row({ id: 'idle', ns: 'home', applied: false })]);
+    await control.write('NamespaceProposal', [
+      row({ id: 'idle', ns: 'home', applied: false }),
+      row({ id: 'idle2', ns: 'home', applied: false })
+    ]);
     for (const [key, params] of [
       ['_system_proposals/updateNamespaceProposal', { id: 'idle', archived: true }],
-      ['_system_proposals/deleteNamespaceProposal', { id: 'idle' }]
+      ['_system_proposals/deleteNamespaceProposal', { id: 'idle2' }]
     ] as const) {
       expect((await run(engine, key, params)).errors, key).toBeUndefined();
     }
@@ -932,6 +935,86 @@ describe('restoring a NamespaceProposal', () => {
     expect((await control.read('NamespaceProposal', {})).rows).toMatchObject([
       { ns: 'fresh', applied: true, archived: false }
     ]);
+  });
+});
+
+describe('a retired, stranded or second NamespaceProposal', () => {
+  const propose = ['read', 'mutate', 'substrate.propose'];
+  const update = '_system_proposals/updateNamespaceProposal';
+  const create = '_system_proposals/createNamespaceProposal';
+
+  /** 'gone' was dropped (its proposal archived) and 'home' is live; 'app' is owned in code config. */
+  async function booted() {
+    const control = new MemoryDataset({ namespace: '_system_proposals' });
+    await control.write('NamespaceProposal', [
+      row({ id: 'gone', ns: 'gone', archived: true }),
+      row({ id: 'home', ns: 'home' })
+    ]);
+    const more = ['gone', 'home', 'fresh', 'x'].map(
+      (namespace) => new MemoryDataset({ namespace })
+    );
+    return { control, ...(await boot(new MemoryDataset({ namespace: 'app' }), control, more)) };
+  }
+  const proposeNs = (engine: Engine, ns: string) =>
+    mutateOne(engine, '_system_proposals/propose_namespace', { ns, proposedReason: 'why' });
+
+  it('keeps a retired name retired: a delete needs the drop capability, a new ns is refused', async () => {
+    const { control, engine } = await booted();
+    const del = '_system_proposals/deleteNamespaceProposal';
+    expect((await mutateOne(engine, del, { id: 'gone' })).errors?.[0]?.code).toBe('policy_denied');
+    const admin = withGrants({ '*': [...propose, 'admin'] });
+    for (const c of [ctx(propose), admin]) {
+      const env = await mutateOne(engine, update, { id: 'gone', ns: 'reused' }, c);
+      expect(env.errors?.[0]?.code).toBe('namespace_retired');
+    }
+    expect((await control.read('NamespaceProposal', { id: 'gone' })).rows[0]).toMatchObject({
+      ns: 'gone',
+      archived: true
+    });
+    expect((await proposeNs(engine, 'gone')).errors?.[0]?.code).toBe('namespace_retired');
+    const inGone = withGrants({ '*': propose, gone: ['admin'] });
+    expect((await mutateOne(engine, del, { id: 'gone' }, inGone)).errors).toBeUndefined();
+  });
+
+  it('lets propose_namespace resume only a stranded row a fresh call could have written', async () => {
+    const { control, engine } = await booted();
+    // Written directly, unapplied, for a namespace the config owns.
+    const forged = row({ id: 'forged', ns: 'app', applied: false });
+    expect((await mutateOne(engine, create, forged)).errors).toBeUndefined();
+    expect((await proposeNs(engine, 'app')).errors?.[0]?.code).toBe('invalid_namespace');
+    expect(
+      (await mutateOne(engine, update, { id: 'forged', applied: true })).errors?.[0]?.code
+    ).toBe('policy_denied');
+    expect((await control.read('NamespaceProposal', { id: 'forged' })).rows[0]?.applied).toBe(
+      false
+    );
+    const inApp = withGrants({ '*': propose, app: ['admin'] });
+    expect(
+      (await mutateOne(engine, update, { id: 'forged', applied: true }, inApp)).errors
+    ).toBeUndefined();
+
+    // A stranded row for a name no one holds resumes, as a fresh call would take it.
+    const stranded = row({ id: 'stranded', ns: 'fresh', applied: false });
+    expect((await mutateOne(engine, create, stranded)).errors).toBeUndefined();
+    expect((await proposeNs(engine, 'fresh')).errors).toBeUndefined();
+    expect(engine.registryFor('fresh')).toBeDefined();
+    expect((await control.read('NamespaceProposal', { id: 'stranded' })).rows[0]?.applied).toBe(
+      true
+    );
+  });
+
+  it('refuses a second proposal for a name, created or renamed onto it, without the drop capability', async () => {
+    const { engine } = await booted();
+    const second = row({ id: 'second', ns: 'home', applied: false });
+    expect((await mutateOne(engine, create, second)).errors?.[0]?.code).toBe('policy_denied');
+    expect(
+      (await mutateOne(engine, create, row({ id: 'x', ns: 'x', applied: false }))).errors
+    ).toBeUndefined();
+    expect((await mutateOne(engine, update, { id: 'x', ns: 'home' })).errors?.[0]?.code).toBe(
+      'policy_denied'
+    );
+    const inHome = withGrants({ '*': propose, home: ['admin'] });
+    expect((await mutateOne(engine, create, second, inHome)).errors).toBeUndefined();
   });
 });
 
