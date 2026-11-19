@@ -93,7 +93,15 @@ export class PackService {
         },
         req
       );
+      // A failed read throws, so the build fails and is not cached: an empty
+      // profile would be served to every caller for the whole TTL.
+      if (req.signal?.aborted === true) throw new Error(`pack build for '${ns}' was cancelled`);
       const rows = env.data?.[frameKey];
+      if (rows === undefined && !deniedRead(env.errors)) {
+        throw new Error(
+          `pack build: reading ${frameKey} failed: ${JSON.stringify(env.errors ?? [])}`
+        );
+      }
       const page = env._pagination?.[frameKey];
       return {
         rows: Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [],
@@ -111,6 +119,16 @@ export class PackService {
     const etag = `"${createHash('sha256').update(JSON.stringify(pack)).digest('hex').slice(0, 16)}"`;
     return { pack, etag, at: now };
   }
+}
+
+/** Refusals meaning the principal may not read the type: its values stay out of the pack. */
+const DENIED = new Set(['policy_denied', 'forbidden', 'forbidden_namespace']);
+
+function deniedRead(errors: unknown[] | undefined): boolean {
+  return (errors ?? []).some((e) => {
+    const code = (e as { code?: unknown } | null)?.code;
+    return typeof code === 'string' && DENIED.has(code);
+  });
 }
 
 /**
