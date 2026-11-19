@@ -128,6 +128,8 @@ const HISTORY_WORDS = new Set(
     ' '
   )
 );
+/** Words before a history word that only say "include it": "including archived". */
+const INCLUDE_WORDS = new Set(['including', 'include', 'plus']);
 /** Connectives a composed reading cannot honour; dropped while composing walks. */
 const CONNECTIVES = new Set(['or', 'not', 'no', 'every']);
 const LATEST = new Set('latest newest recent last'.split(' '));
@@ -362,6 +364,12 @@ export function parseQuestion(
     } else if (HISTORY_WORDS.has(t.text)) {
       historyWord = true;
       t.used = true;
+      // "including archived", "archived or not"
+      const prev = tokens[i - 1];
+      if (prev !== undefined && !prev.used && INCLUDE_WORDS.has(prev.text)) prev.used = true;
+      const after = tokens[i + 2];
+      if (next?.text === 'or' && after?.text === 'not' && !next.used && !after.used)
+        next.used = after.used = true;
       evidence.push({ span: t.text, role: 'history', detail: 'search the whole record' });
     }
   });
@@ -1058,6 +1066,20 @@ function fieldByWords(
   return phrased ?? (words.includes(' ') ? null : resolveField(words, fields, rulings));
 }
 
+/** True when `words` name a field somewhere and every field they name is a yes/no field. */
+function onlyBoolean(
+  words: string | undefined,
+  pack: NamespacePack,
+  rulings: NamespaceRulings
+): boolean {
+  if (words === undefined) return false;
+  const named = Object.values(pack.types).flatMap((t) => {
+    const n = fieldByWords(words, t.fields, rulings);
+    return n === null ? [] : [t.fields[n]];
+  });
+  return named.length > 0 && named.every((f) => f?.valueType === 'boolean');
+}
+
 /** Words naming a field, claimed at one position. */
 interface FieldWords {
   words?: string;
@@ -1328,6 +1350,8 @@ function claimAggregate(
         j++;
       f = fieldAt(tokens, walkClaims, pack, rulings, j, false);
       if (f === null || (VALUE_SUPERLATIVES.has(t.text) && !valueAt(i, f.end))) continue;
+      // "in total (archived …)": a yes/no field has no total, so the words are not an aggregate.
+      if (onlyBoolean(f.words, pack, rulings)) continue;
     }
     takeField(tokens, walkClaims, i, f);
     const claim: AggregateClaim = {

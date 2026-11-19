@@ -281,6 +281,16 @@ async function countRest(
   return count;
 }
 
+/** The row fields `ask` returns per recall hit: enough to name and pick a row. */
+const HIT_ROW = {
+  shortId: true,
+  name: true,
+  title: true,
+  topic: true,
+  synopsis: true,
+  description: true
+} as const;
+
 async function recall(
   query: string,
   ns: string,
@@ -291,7 +301,8 @@ async function recall(
   const frame = {
     'recall/Hit': {
       params: { to: query, namespace: ns, type, k: RECALL_K },
-      fields: { id: true, namespace: true, type: true, score: true, row: true }
+      // Handle fields and shortId only: whole bodies made one reply 99 KB for 10 hits.
+      fields: { id: true, namespace: true, type: true, score: true, row: HIT_ROW }
     }
   } as Query;
   const env = await deps.engine.query(frame, http);

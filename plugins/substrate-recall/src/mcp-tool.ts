@@ -157,7 +157,7 @@ export function recallMcpTool(cfg: RecallMcpToolConfig): McpToolRegistration {
         rowFields: {
           type: ['object', 'boolean'],
           description:
-            'Row-body projection. Omitted, each hit\'s `row` carries `id` plus its handle fields (name, title, topic, synopsis, description), enough to decide on. field -> true keeps just those fields plus `id`, e.g. { "synopsis": true, "body": true }; true returns the whole body.'
+            'Row-body projection. Omitted, each hit\'s `row` carries `id`, `shortId` plus its handle fields (name, title, topic, synopsis, description), enough to decide on. field -> true keeps just those fields plus `id` and `shortId`, e.g. { "synopsis": true, "body": true }; true returns the whole body.'
         }
       },
       required: ['query', 'type']

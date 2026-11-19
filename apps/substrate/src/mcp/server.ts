@@ -957,7 +957,7 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
       name: 'recall',
       config: {
         description:
-          'Semantic search: top-k records by similarity to `query`; hits carry `id` + handle fields. As a query frame, recall/Hit takes the text in params.to.',
+          'Semantic search: top-k records by similarity to `query`; hits carry `id`, `shortId` + handle fields. As a query frame, recall/Hit takes the text in params.to.',
         inputSchema: {
           query: z.string().min(1).describe('Search text'),
           k: z.number().int().min(1).max(100).optional().describe('Default 10'),

@@ -21,6 +21,14 @@ import { type KnnRowFilter, ROW_FILTER_FIELD } from './embeddings-store.js';
 /** The row body over `r`, as the dataset read path returns it: `rowsFrom` names it `body`. */
 export const ROW_BODY_SQL = 'r.body';
 
+/**
+ * A hit's row: the body plus its `shortId` from `short_ids`, which the body
+ * does not carry. Probed once per returned row (short_ids_row_uniq_idx).
+ */
+export const HIT_BODY_SQL =
+  "r.body || coalesce((SELECT jsonb_build_object('shortId', s.short_id) FROM short_ids s " +
+  "WHERE s.namespace = r.namespace AND s.type = r.type AND s.row_id = r.id), '{}'::jsonb)";
+
 /** A type and its rows' ref; `ref` is undefined when the type has no table yet. */
 export interface ScopedRef {
   namespace: string;

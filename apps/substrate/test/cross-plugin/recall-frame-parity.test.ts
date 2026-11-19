@@ -299,7 +299,7 @@ describe('recall route-vs-frame parity', () => {
     const frameRows = envelope.data['recall/Hit'] as Array<{ id: string; row: unknown }>;
 
     expect(routeRows.length).toBeGreaterThanOrEqual(2);
-    for (const r of routeRows) expect(Object.keys(r.row).sort()).toEqual(['id', 'name']);
+    for (const r of routeRows) expect(Object.keys(r.row).sort()).toEqual(['id', 'name', 'shortId']);
     // The frame selects exactly what it names; the hit's `id` sits beside `row`.
     expect(frameRows.map((r) => r.row)).toEqual(routeRows.map((r) => ({ name: r.row.name })));
     expect(frameRows.map((r) => r.id)).toEqual(routeRows.map((r) => r.row.id));

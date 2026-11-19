@@ -16,7 +16,7 @@ import type {
   LexicalStoreSearchResult,
   LexicalStoreUpsertInput
 } from './lexical-store.js';
-import { purgeTypeTableOrphans, ROW_BODY_SQL, rowFilterSql, rowsFrom } from './pg-row-filter.js';
+import { HIT_BODY_SQL, purgeTypeTableOrphans, rowFilterSql, rowsFrom } from './pg-row-filter.js';
 
 /** Hard ceiling on `k`, mirroring the embeddings store's cap. */
 const MAX_K = 100;
@@ -150,7 +150,7 @@ export class PgLexicalStore implements LexicalStore {
         l.row_namespace,
         l.row_type,
         l.row_id,
-        ${this.#sql.unsafe(ROW_BODY_SQL)} AS body,
+        ${this.#sql.unsafe(HIT_BODY_SQL)} AS body,
         ts_rank(l.tsv, q.query)      AS score
       FROM lexical l
       CROSS JOIN ${query} AS q(query)
