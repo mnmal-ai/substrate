@@ -152,3 +152,50 @@ describe('explicit dates in a question', () => {
     expect(parseQuestion('how many decisions since last week', pack, ctx).status).toBe('resolved');
   });
 });
+
+describe('years and months as windows', () => {
+  const est = '2026-11-19T10:00:00-05:00';
+  const z = '2026-11-19T10:00:00Z';
+  const e = (d: string) => `${d}T00:00:00-05:00`;
+  const zz = (d: string) => `${d}T00:00:00Z`;
+
+  it('reads a year as a window', () => {
+    for (const p of ['in 2025', 'during 2025'])
+      expect(rangeFor(p, est), p).toEqual({ gte: e('2025-01-01'), lt: e('2026-01-01') });
+    expect(rangeFor('since 2024', est)).toEqual({ gte: e('2024-01-01') });
+    expect(rangeFor('after 2024', est)).toEqual({ gte: e('2025-01-01') });
+    expect(rangeFor('before 2025', est)).toEqual({ lt: e('2025-01-01') });
+    expect(rangeFor('until 2025', est)).toEqual({ lt: e('2026-01-01') });
+    for (const p of ['between 2024 and 2025', 'from 2024 to 2025'])
+      expect(rangeFor(p, est), p).toEqual({ gte: e('2024-01-01'), lt: e('2026-01-01') });
+  });
+
+  it('reads this year and last year as calendar years', () => {
+    expect(rangeFor('this year', z)).toEqual({ gte: zz('2026-01-01'), lt: zz('2027-01-01') });
+    expect(rangeFor('last year', z)).toEqual({ gte: zz('2025-01-01'), lt: zz('2026-01-01') });
+    expect(rangeFor('this year', '2026-01-01T00:30:00+05:30')?.gte).toBe(
+      '2026-01-01T00:00:00+05:30'
+    );
+    expect(rangeFor('last 2 years', z)).toEqual({ gte: zz('2024-11-19'), lt: zz('2026-11-20') });
+  });
+
+  it('reads a month as a window', () => {
+    expect(rangeFor('in october', z)).toEqual({ gte: zz('2026-10-01'), lt: zz('2026-11-01') });
+    expect(rangeFor('in december', z)).toEqual({ gte: zz('2025-12-01'), lt: zz('2026-01-01') });
+    expect(rangeFor('in november', z)).toEqual({ gte: zz('2026-11-01'), lt: zz('2026-12-01') });
+    for (const p of ['in october 2025', 'in oct 2025', 'in 2025 october'])
+      expect(rangeFor(p, z), p).toEqual({ gte: zz('2025-10-01'), lt: zz('2025-11-01') });
+    expect(rangeFor('since october', z)).toEqual({ gte: zz('2026-10-01') });
+    expect(rangeFor('before march 2025', z)).toEqual({ lt: zz('2025-03-01') });
+    expect(rangeFor('until march 2025', z)).toEqual({ lt: zz('2025-04-01') });
+    expect(rangeFor('between june and august 2025', z)).toEqual({
+      gte: zz('2025-06-01'),
+      lt: zz('2025-09-01')
+    });
+  });
+
+  it('still rejects what is not a date', () => {
+    for (const p of ['in 99', 'in 20255', 'in 0050', 'in octember', 'during'])
+      expect(rangeFor(p, z), p).toBeNull();
+  });
+});

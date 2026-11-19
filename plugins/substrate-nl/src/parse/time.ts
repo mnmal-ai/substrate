@@ -21,6 +21,7 @@ export function validAsOf(asOf: unknown): asOf is string {
 /**
  * The range a time phrase names, relative to `asOf` and in its offset:
  * today, yesterday, this/last week (weeks start Monday), this/last month,
+ * this/last year (calendar years),
  * rolling "past <unit>" and "last N <units>", "since <weekday>"; and explicit
  * dates (see `explicitRange`). Null when the phrase is not a time phrase.
  */
@@ -50,6 +51,10 @@ export function rangeFor(phrase: string, asOf: string): DateRange | null {
       return { gte: at(monthStart), lt: at(nextMonth) };
     case 'last month':
       return { gte: at(lastMonth), lt: at(monthStart) };
+    case 'this year':
+      return { gte: at(Date.UTC(Number(y), 0, 1)), lt: at(Date.UTC(Number(y) + 1, 0, 1)) };
+    case 'last year':
+      return { gte: at(Date.UTC(Number(y) - 1, 0, 1)), lt: at(Date.UTC(Number(y), 0, 1)) };
   }
   // Rolling windows end today: "past month" is a month back from today, unlike
   // the calendar "last month".
@@ -108,13 +113,18 @@ const DAY_MS = 86_400_000;
 interface Operand {
   start: string;
   end: string;
+  /** Set for a whole year or month, the only operands "in" and "during" accept. */
+  unit?: 'year' | 'month';
 }
 
 /**
- * Explicit dates, always after a lead word: "on D" (that day), "from D to D" and
- * "between D and D" (inclusive of the last day), "since D" / "after D" (from
- * D / the day after), "before D" / "until D" (before D / through D). A date
- * is ISO `YYYY-MM-DD`, an ISO date-time (an exact instant), or a month name
+ * Explicit dates, always after a lead word: "on D" (that day), "in Y" / "during Y"
+ * (that year or month), "from D to D" and "between D and D" (inclusive of the last
+ * day), "since D" / "after D" (from D / the day after), "before D" / "until D"
+ * (before D / through D). A year is four digits and covers its calendar year; a
+ * month name, alone or with a year in either order, covers that month (alone, the
+ * most recent one that has begun; in "between M and M Y" a yearless month takes the
+ * other operand's year). A date is ISO `YYYY-MM-DD`, an ISO date-time (an exact instant), or a month name
  * (full, three-letter, or "sept") with a day, optional ordinal and optional year, in
  * either order. A month-day without a year is the most recent one not after
  * `today`. An invalid date is not a date.
@@ -128,6 +138,20 @@ function explicitRange(
   const operand = (words: string[]): Operand | null => {
     if (words.length === 1) {
       const w = words[0] as string;
+      if (/^[1-9]\d{3}$/.test(w)) {
+        return {
+          start: at(Date.UTC(Number(w), 0, 1)),
+          end: at(Date.UTC(Number(w) + 1, 0, 1)),
+          unit: 'year'
+        };
+      }
+      if (month(w) > 0) {
+        const thisYear = new Date(today).getUTCFullYear();
+        return monthOf(
+          Date.UTC(thisYear, month(w) - 1, 1) > today ? thisYear - 1 : thisYear,
+          month(w)
+        );
+      }
       const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(w);
       if (iso !== null) return dayOf(Number(iso[1]), Number(iso[2]), Number(iso[3]));
       const dt =
@@ -140,9 +164,10 @@ function explicitRange(
     }
     if (words.length !== 2 && words.length !== 3) return null;
     const [a = '', b = '', year] = words;
-    const month = (w: string) =>
-      MONTHS.findIndex((m) => w === m || (w.length === 3 && m.startsWith(w))) + 1 ||
-      (w === 'sept' ? 9 : 0);
+    if (/^[1-9]\d{3}$/.test(b) && month(a) > 0 && year === undefined)
+      return monthOf(Number(b), month(a));
+    if (/^[1-9]\d{3}$/.test(a) && month(b) > 0 && year === undefined)
+      return monthOf(Number(a), month(b));
     const dom = (w: string) => /^(\d{1,2})(?:st|nd|rd|th)?$/.exec(w)?.[1];
     const [mo, d] = month(a) > 0 ? [month(a), dom(b)] : [month(b), dom(a)];
     if (mo === 0 || d === undefined) return null;
@@ -154,6 +179,14 @@ function explicitRange(
     }
     return null;
   };
+  const month = (w: string) =>
+    MONTHS.findIndex((m) => w === m || (w.length === 3 && m.startsWith(w))) + 1 ||
+    (w === 'sept' ? 9 : 0);
+  const monthOf = (y: number, mo: number): Operand => ({
+    start: at(Date.UTC(y, mo - 1, 1)),
+    end: at(Date.UTC(y, mo, 1)),
+    unit: 'month'
+  });
   const valid = (y: number, mo: number, d: number) => {
     const t = new Date(Date.UTC(y, mo - 1, d));
     return t.getUTCFullYear() === y && t.getUTCMonth() === mo - 1 && t.getUTCDate() === d;
@@ -170,8 +203,13 @@ function explicitRange(
     const sep = head === 'from' ? 'to' : 'and';
     const i = rest.indexOf(sep);
     if (i < 0) return null;
-    const x = operand(rest.slice(0, i));
-    const y = operand(rest.slice(i + 1));
+    const xw = rest.slice(0, i);
+    const yw = rest.slice(i + 1);
+    const yearOf = (ws: string[]) =>
+      ws.length === 2 ? ws.find((w) => /^\d{4}$/.test(w)) : undefined;
+    const bare = (ws: string[]) => ws.length === 1 && month(ws[0] as string) > 0;
+    const x = operand(bare(xw) && yearOf(yw) ? [...xw, yearOf(yw) as string] : xw);
+    const y = operand(bare(yw) && yearOf(xw) ? [...yw, yearOf(xw) as string] : yw);
     if (x === null || y === null || Date.parse(y.end) <= Date.parse(x.start)) return null;
     return { gte: x.start, lt: y.end };
   }
@@ -179,7 +217,10 @@ function explicitRange(
   if (o === null) return null;
   switch (head) {
     case 'on':
-      return o.start === o.end ? null : { gte: o.start, lt: o.end };
+      return o.start === o.end || o.unit !== undefined ? null : { gte: o.start, lt: o.end };
+    case 'in':
+    case 'during':
+      return o.unit === undefined ? null : { gte: o.start, lt: o.end };
     case 'since':
       return { gte: o.start };
     case 'after':

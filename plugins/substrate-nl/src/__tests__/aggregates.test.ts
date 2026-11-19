@@ -694,12 +694,29 @@ describe('aggregates: answering', () => {
     expect(params('subscriptions with the highest monthly price')).toEqual({});
   });
 
+  it('windows a count or aggregate to a named year, grouped where the question asks', () => {
+    const window = { gte: '2025-01-01T00:00:00Z', lt: '2026-01-01T00:00:00Z' };
+    const month = { bucket: { dateTrunc: [{ lit: 'month' }, 'soldAt'] } };
+    for (const [q, grouped] of [
+      ['how many sales per month in 2025', true],
+      ['how many sales in 2025 per month', true],
+      ['monthly total price of sales in 2025', true],
+      ['how many sales in 2025', false]
+    ] as const) {
+      const r = parse(q);
+      expect(r.status, q).toBe('resolved');
+      expect(r.residual, q).toEqual([]);
+      expect(params(q), q).toMatchObject({ where: { soldAt: window } });
+      if (grouped) expect(params(q), q).toMatchObject({ groupBy: month });
+      else expect(params(q), q).not.toHaveProperty('groupBy');
+    }
+  });
+
   it('answers unknown when a count or aggregate leaves a number unread', async () => {
     for (const q of [
-      'how many sales per month in 2025',
-      'how many sales in 2025 per month',
-      'monthly total price of sales in 2025',
-      'how many sales in 2025'
+      'how many sales 2025',
+      'how many sales per month 2025',
+      'total price of sales per month 2025'
     ]) {
       const r = parse(q);
       expect(r.status, q).toBe('partial');
