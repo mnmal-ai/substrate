@@ -452,8 +452,8 @@ export async function installSystemNamespace(
   // Guards that hold whoever the caller is. The key verbs are reachable
   // through plain `mutate` as well as the `/_system/keys` routes and the CLI,
   // so these run here, in the write's own transaction: a stored grant must
-  // parse (else every request bearing that kid 500s in `candidatesFor`), and
-  // no write may leave zero active admins. The confirmable gates (`widen`,
+  // parse (the verifier skips a key whose grant does not, so it would verify
+  // nothing), and no write may leave zero active admins. The confirmable gates (`widen`,
   // `allowAdmin`) stay with the routes and CLI that offer the confirmation.
   const keysFor = async (args: ResolverArgs): Promise<Array<Row>> =>
     // Unpaged on purpose: a partial table silently weakens the lockout count.
