@@ -353,3 +353,15 @@ describe('subscribe error text', () => {
     });
   });
 });
+
+describe('Engine.typeEntry', () => {
+  it("answers for a live namespace's types only", () => {
+    const { engine } = buildEngine('alpha');
+    expect(engine.typeEntry('alpha', 'Item')?.kind).toBe('type');
+    expect(engine.typeEntry('alpha', 'createItem')).toBeUndefined();
+    expect(engine.typeEntry('alpha', 'Nope')).toBeUndefined();
+    expect(engine.typeEntry('beta', 'Item')).toBeUndefined();
+    engine.tombstoneNamespace('alpha');
+    expect(engine.typeEntry('alpha', 'Item')).toBeUndefined();
+  });
+});

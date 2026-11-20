@@ -155,14 +155,15 @@ async function proposeNamespaceLocked(
   }
   // A hot-added binding with no row is an attempt whose row write was rolled
   // back after the install landed; it is completed like a stranded row. Any
-  // other name the engine holds (another plugin's) is refused, and a
-  // tombstoned (dropped) one always is, so a proposal can neither install
-  // into it nor have its rollback clear the tombstone.
+  // other name the engine holds (another plugin's, or one the config owns) is
+  // refused, a resumed row's included, since a stranded row may have been
+  // written directly; a tombstoned (dropped) one always is, so a proposal can
+  // neither install into it nor have its rollback clear the tombstone.
   const state = controlEngine?.namespaceState(ns) ?? 'absent';
   const held = deps.registryStore.has(ns)
     ? deps.registryStore.getBinding(ns).hotAdded !== true
     : state !== 'absent';
-  if (state === 'tombstoned' || (!resuming && held)) {
+  if (state === 'tombstoned' || held) {
     throw new ProposalError(
       'invalid_namespace',
       `'${ns}' is already installed on this engine and cannot be proposed`
@@ -194,16 +195,24 @@ async function proposeNamespaceLocked(
     proposalId = String(prior.id);
   } else {
     // The dataset assigns the proposal's id.
-    const created = await writeInTx(controlBinding.registry, ctx, args, 'createNamespaceProposal', {
-      ns,
-      proposedBy,
-      proposedAt: new Date(),
-      proposedReason,
-      applied: false,
-      appliedAt: null,
-      supersededByCode: false,
-      archived: false
-    });
+    const created = await writeInTx(
+      controlBinding.registry,
+      ctx,
+      args,
+      'createNamespaceProposal',
+      {
+        ns,
+        proposedBy,
+        proposedAt: new Date(),
+        proposedReason,
+        applied: false,
+        appliedAt: null,
+        supersededByCode: false,
+        archived: false
+      },
+      false,
+      true
+    );
     proposalId = String(created.id);
   }
 
@@ -230,11 +239,17 @@ async function proposeNamespaceLocked(
 
   // Step 7 — mark applied=true via autoCRUD update
   const now = new Date();
-  await writeInTx(controlBinding.registry, ctx, args, 'updateNamespaceProposal', {
-    id: proposalId,
-    applied: true,
-    appliedAt: now
-  });
+  // Trusted: a fresh row or a resumed one has passed the same name checks, so
+  // applying it grants nothing a fresh propose_namespace would not.
+  await writeInTx(
+    controlBinding.registry,
+    ctx,
+    args,
+    'updateNamespaceProposal',
+    { id: proposalId, applied: true, appliedAt: now },
+    false,
+    true
+  );
 
   // Step 8 — NOTIFY peers once the row commits, so they can't observe a
   // half-applied state.

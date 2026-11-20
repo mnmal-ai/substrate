@@ -38,4 +38,4 @@ export {
   type PostWriteHook,
   type TypeInput
 } from './namespace.js';
-export { resolveEntityId, resolveEntityRow } from './short-id-resolver.js';
+export { resolveEntityId, resolveEntityRow, resolveEntityRows } from './short-id-resolver.js';

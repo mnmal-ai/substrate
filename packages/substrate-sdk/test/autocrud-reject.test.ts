@@ -16,6 +16,7 @@ import {
   deleteResolver,
   getResolver,
   purgeResolver,
+  updateManyResolver,
   updateResolver
 } from '../src/autocrud/index.js';
 import { assertCrossRefDeletePolicies } from '../src/autocrud/internal.js';
@@ -631,6 +632,67 @@ describe('autoCRUD — required crossRefs', () => {
       })
     ).toThrow(/'parent'.*nullable: false but onDelete: 'set_null'/);
     expect(() => assertCrossRefDeletePolicies('Thing', FIELDS)).not.toThrow();
+  });
+});
+
+describe('autoCRUD reject — a crossRef value that is not an id', () => {
+  // The existence check looks up a string or a number only, so any other value
+  // would be stored unchecked.
+  const REFS: Record<string, FieldDef> = {
+    id: { kind: 'scalar', type: 'string' },
+    parent: {
+      kind: 'crossRef',
+      ns: 'default',
+      type: 'Thing',
+      onDelete: 'set_null',
+      onMissing: 'allow'
+    }
+  };
+  const setup = () => {
+    const dataset = new MemoryDataset({ namespace: 'default' });
+    return {
+      dataset,
+      create: createResolver('Thing', dataset, { fields: REFS }),
+      update: updateResolver('Thing', dataset, makeEdges(), { fields: REFS }),
+      updateMany: updateManyResolver('Thing', dataset, makeEdges(), { fields: REFS })
+    };
+  };
+
+  for (const value of [{ id: 'r0' }, ['r0'], true]) {
+    it(`refuses parent: ${JSON.stringify(value)} on create, update and updateMany`, async () => {
+      const { dataset, create, update, updateMany } = setup();
+      await expect(create(makeCtx(), { params: { id: 'r0', parent: value } })).rejects.toThrow(
+        expect.objectContaining({
+          code: 'invalid_field_type',
+          message: expect.stringContaining('expected an id (a string or a number).'),
+          details: { field: 'parent', expected: 'crossRef', phase: 'create' }
+        })
+      );
+      await create(makeCtx(), { params: { id: 'r1' } });
+      await expect(update(makeCtx(), { params: { id: 'r1', parent: value } })).rejects.toThrow(
+        expect.objectContaining({
+          code: 'invalid_field_type',
+          details: { field: 'parent', expected: 'crossRef', phase: 'update' }
+        })
+      );
+      await expect(
+        updateMany(makeCtx(), { params: { where: { id: { eq: 'r1' } }, set: { parent: value } } })
+      ).rejects.toThrow(
+        expect.objectContaining({
+          code: 'invalid_field_type',
+          details: expect.objectContaining({ field: 'parent', expected: 'crossRef' })
+        })
+      );
+      const { rows } = await dataset.read('Thing', {});
+      expect(rows.map((r) => [r.id, r.parent])).toEqual([['r1', undefined]]);
+    });
+  }
+
+  it('accepts a string id, a number id and null', async () => {
+    const { create, update } = setup();
+    await expect(create(makeCtx(), { params: { id: 'r1', parent: 'r0' } })).resolves.toBeDefined();
+    await expect(create(makeCtx(), { params: { id: 'r2', parent: 7 } })).resolves.toBeDefined();
+    await expect(update(makeCtx(), { params: { id: 'r1', parent: null } })).resolves.toBeDefined();
   });
 });
 

@@ -40,11 +40,11 @@ import {
   namespaceDropParticipant,
   reconcileClusterNamespaces,
   reconcileNamespace,
-  reservedSkipLine,
   retireDroppedNamespace,
   setupClusterDropListener,
   setupClusterNamespaceListener,
-  setupNamespaceListener
+  setupNamespaceListener,
+  skipLine
 } from './multi-instance.js';
 import { defineProposalTypes } from './namespace.js';
 import { buildOnboardBody, registerOnboardRoute } from './onboard.js';
@@ -131,7 +131,7 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
         dataset: ctx.dataset,
         edges: ctx.edges
       });
-      defineControlPlaneTypes(capability).install(ctx);
+      defineControlPlaneTypes(registryStore, capability).install(ctx);
 
       // propose_namespace mutation — runtime namespace creation. Resolver factory captures `registryStore` at install time; the engine
       // handle is late-bound by `onStart` (see below) so the resolver can call
@@ -177,7 +177,7 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
         registryStore.set(ns, { registry: ctx.registry, dataset: ctx.dataset, edges: ctx.edges });
 
         // Register TypeProposal + FieldProposal autoCRUD types.
-        defineProposalTypes(ns, capability, indexCapability).install(ctx);
+        defineProposalTypes(ns, registryStore, capability, indexCapability).install(ctx);
 
         // Register propose_type + propose_field mutations via the shared
         // helper (single-source with the hot-add path).
@@ -226,8 +226,7 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
       // per-ns reconcile loop below iterates the union of static
       // ownedNamespaces + hot-added ones, so TypeProposals in hot-added
       // namespaces are replayed too.
-      // A stored row that cannot be applied is skipped: a metric always, and one warning
-      // line when its name is reserved for server metadata.
+      // A stored row that cannot be applied is skipped, with a metric and one warning line.
       const log = config.log ?? ((line: string) => console.warn(line));
       const skipped = (ns: string, row: Row, err: unknown): void => {
         ctx.metric('_system_proposals.replay_skipped', {
@@ -237,8 +236,7 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
           field: row.fieldName ?? null,
           error: err instanceof Error ? err.message : String(err)
         });
-        const line = reservedSkipLine(ns, row, err);
-        if (line !== undefined) log(line);
+        log(skipLine(ns, row, err));
       };
       const controlBinding = registryStore.getBinding(CONTROL_NAMESPACE);
       const hotAddedNamespaces = await reconcileClusterNamespaces({
@@ -250,12 +248,14 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
         proposeCapability: capability,
         indexCapability,
         registerProposalMutations,
-        onSkip: (row, err) =>
+        onSkip: (row, err) => {
           ctx.metric('_system_proposals.replay_skipped', {
             namespace: CONTROL_NAMESPACE,
             id: row.id,
             error: err instanceof Error ? err.message : String(err)
-          })
+          });
+          log(skipLine(CONTROL_NAMESPACE, row, err));
+        }
       });
 
       const allNs = [...config.ownedNamespaces, ...hotAddedNamespaces];

@@ -135,11 +135,12 @@ export interface FieldDefCrossRef {
   type: string;
   onDelete: OnDelete; // default: 'set_null' — resolved at registration
   /**
-   * Write-time existence policy. 'reject' refuses a create/update
-   * whose crossRef value points at a non-existent or tombstoned target;
-   * 'allow' is the default when absent. Consulted only at write time, never
-   * stored on the edge. Enforced only for locally-resolvable
-   * target namespaces (compose rejects 'reject' on bridged/unknown targets).
+   * Write-time existence policy. Absent, a create/update whose crossRef
+   * value points at a non-existent or tombstoned target is refused when the
+   * target namespace resolves locally, and not looked up when it does not.
+   * 'reject' refuses in both cases (compose rejects it on bridged/unknown
+   * targets); 'allow' turns the check off. Consulted only at write time,
+   * never stored on the edge.
    */
   onMissing?: OnMissing;
   /**

@@ -244,6 +244,7 @@ export function createBatchResolver(
           crossRefs,
           list.map((args) => args.params ?? {}),
           ds.namespace,
+          ctx.identity,
           { type: typeName, ids: pending }
         )
       );
@@ -401,7 +402,8 @@ export function updateBatchResolver(
           first,
           crossRefs,
           list.map((_, i) => (refusal.live(i) ? patches[i]?.params : undefined) ?? {}),
-          ds.namespace
+          ds.namespace,
+          ctx.identity
         )
       );
     }

@@ -10,7 +10,6 @@ import {
   type BridgeFrame,
   type BridgeRegistry,
   type CommittedWritesHook,
-  coversNamespace,
   type Dataset,
   type DatasetRegistry,
   type EdgesStore,
@@ -18,8 +17,6 @@ import {
   type FieldInput,
   type FilterWriteLimits,
   type FrameEntry,
-  grantedIn,
-  grantOf,
   type IdempotencyStore,
   isResolverFrameError,
   type MetadataHop,
@@ -378,39 +375,8 @@ export interface SubscriptionEntry {
   readonly pendingEvents: WriteEvent[];
 }
 
-/**
- * Per-frame authorisation gate (§5.12): checks that `identity`'s grant covers
- * `ns` AND allows `operation` there (`mutate` needs `mutate`; everything else
- * needs `read`). Returns which dimension failed.
- *
- * An absent identity, or one with no grant (a bare `{ id }`), passes: those
- * are direct-call tests and system actors. So an authenticator must give every
- * remote caller a `grants` object (`{}` for none), or that caller reaches
- * every namespace on transports that rely on this gate.
- */
-export function checkIdentityGrant(
-  identity: RequestContext['identity'] | null | undefined,
-  ns: string,
-  operation: 'query' | 'mutate' | 'subscribe' | 'stream'
-): { ok: true } | { ok: false; reason: 'namespace' | 'capability'; required?: string } {
-  if (identity === null || identity === undefined) return { ok: true };
-
-  // `null` is the no-claim population and PASSES; fabricating an empty grant
-  // instead would refuse every direct-call test and system actor.
-  const resolved = grantOf(identity);
-  if (resolved === null) return { ok: true };
-
-  // An explicit entry beats the wildcard — the resolution `grantedIn` shares
-  // with the grant module, so the two cannot disagree about what a grant means.
-  if (!coversNamespace(resolved, ns)) return { ok: false, reason: 'namespace' };
-
-  // `mutate` is the only writing operation; subscribe and stream are reads, the
-  // same mapping the route layer applies by method.
-  const required = operation === 'mutate' ? 'mutate' : 'read';
-  return grantedIn(resolved, ns).includes(required)
-    ? { ok: true }
-    : { ok: false, reason: 'capability', required };
-}
+/** The per-frame grant gate, the one the SDK's referent check also asks. */
+export { checkIdentityGrant } from '@mnmal-ai/substrate-types';
 
 export function toResolverArgs(
   entry: FrameEntry,

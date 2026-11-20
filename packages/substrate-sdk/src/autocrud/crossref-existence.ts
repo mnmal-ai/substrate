@@ -12,9 +12,17 @@ import type {
   FieldDef,
   FieldDefCrossRef,
   Id,
+  Identity,
   ResolverArgs
 } from '@mnmal-ai/substrate-types';
-import { BatchElementError, MissingReferentError } from '@mnmal-ai/substrate-types';
+import {
+  BatchElementError,
+  checkIdentityGrant,
+  grantRefusal,
+  grantRefusalCode,
+  MissingReferentError,
+  ResolverFrameError
+} from '@mnmal-ai/substrate-types';
 import { parseShortForm } from '../short-id-resolver.js';
 
 export interface CrossRefFieldInfo {
@@ -45,8 +53,12 @@ export interface PendingIds {
 
 /**
  * Refuse a crossRef to a missing target, for a batch: element `i`'s values are
- * `values[i]`. For each target type it reads the distinct values once, then
- * resolves the misses that parse as a short id with one `resolveShortIds`.
+ * `values[i]`. Every target first needs `read` in its namespace, the one being
+ * written included, as the engine's read gate grants it to `identity`; that
+ * verdict is reached before any target is read, a refused namespace is never
+ * resolved or read, and the refusal is the read gate's whether or not the id
+ * exists. For each readable target type it reads the distinct values once,
+ * then resolves the misses that parse as a short id with one `resolveShortIds`.
  * A value that `pending` names counts as existing for element `i` only when
  * the element creating it comes before `i`, as sequential dispatch has it
  * written by then. Throws `BatchElementError(i, MissingReferentError)` for
@@ -72,10 +84,16 @@ export async function assertCrossRefTargetsExistMany(
   crossRefs: CrossRefFieldInfo[],
   values: ReadonlyArray<Record<string, unknown>>,
   fromNs: string,
+  identity: Identity | null,
   pending?: PendingIds
 ): Promise<void> {
   const enforced = crossRefs.filter(({ def }) => def.onMissing !== 'allow');
   if (enforced.length === 0) return;
+  const unreadable = new Map<string, ResolverFrameError>();
+  for (const { fieldName, def } of enforced) {
+    const refusal = readRefusal(identity, fieldName, def.ns);
+    if (refusal !== undefined) unreadable.set(fieldName, refusal);
+  }
   const refOf = (i: number, fieldName: string): Id | undefined => {
     const v = values[i]?.[fieldName];
     return typeof v === 'string' || typeof v === 'number' ? v : undefined;
@@ -86,6 +104,7 @@ export async function assertCrossRefTargetsExistMany(
   // Distinct values per target (ns, type), each group probed once.
   const groups = new Map<string, { ds: Dataset; type: string; ids: Set<Id> }>();
   for (const { fieldName, def } of enforced) {
+    if (unreadable.has(fieldName)) continue;
     const ds = targetOf(def);
     if (ds === undefined) continue;
     const key = `${def.ns}\u0000${def.type}`;
@@ -108,6 +127,8 @@ export async function assertCrossRefTargetsExistMany(
     for (const { fieldName, def } of enforced) {
       const value = refOf(i, fieldName);
       if (value === undefined) continue;
+      const refused = unreadable.get(fieldName);
+      if (refused !== undefined) throw new BatchElementError(i, refused);
       const missing = new MissingReferentError(fieldName, {
         ns: def.ns,
         type: def.type,
@@ -136,6 +157,24 @@ export async function assertCrossRefTargetsExistMany(
       throw new BatchElementError(i, missing);
     }
   }
+}
+
+/**
+ * The refusal the engine's read gate gives `identity` in `ns`, its code and
+ * wording, naming the field; undefined when it may read there.
+ */
+function readRefusal(
+  identity: Identity | null,
+  fieldName: string,
+  ns: string
+): ResolverFrameError | undefined {
+  const verdict = checkIdentityGrant(identity, ns, 'query');
+  if (verdict.ok) return undefined;
+  return new ResolverFrameError(
+    grantRefusalCode(verdict),
+    `crossRef '${fieldName}': ${grantRefusal(ns, verdict)}`,
+    { field: fieldName }
+  );
 }
 
 /** The inputs naming a live row: by raw id, else as a short id. */

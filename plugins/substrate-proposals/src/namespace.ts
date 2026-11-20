@@ -22,12 +22,17 @@ import {
   DEFAULT_DROP_CAPABILITY,
   DEFAULT_INDEX_CAPABILITY,
   DEFAULT_PROPOSE_CAPABILITY,
+  gateFieldProposalRemoval,
   gateTypeProposalRemoval,
-  proposeToWrite
+  proposeToWrite,
+  stampProposedBy
 } from './capability.js';
+import { gateProposalReferences } from './cross-ref-targets.js';
+import type { RegistryStore } from './registry-store.js';
 
 export function defineProposalTypes(
   namespace: string,
+  registryStore: RegistryStore,
   capability: string = DEFAULT_PROPOSE_CAPABILITY,
   indexCapability: string = DEFAULT_INDEX_CAPABILITY,
   // shortcut: not threaded from SUBSTRATE_ADMIN_CAPABILITY; plumb it through the plugin config if a deployment renames admin.
@@ -79,6 +84,9 @@ export function defineProposalTypes(
     install(ctx) {
       def.install(ctx);
       gateTypeProposalRemoval(ctx.registry, dropCapability);
+      gateFieldProposalRemoval(ctx.registry, dropCapability);
+      gateProposalReferences(ctx.registry, namespace, registryStore);
+      stampProposedBy(ctx.registry, PROPOSAL_TYPE_NAMES);
     }
   };
 }

@@ -29,11 +29,13 @@ import {
   type OrderedBy,
   type Registry
 } from '@mnmal-ai/substrate-types';
+import { appliedTargetCheck } from './cross-ref-targets.js';
 import { ProposalError } from './errors.js';
 import {
-  assertCrossRefsOwned,
+  assertCrossRefTargets,
   assertProposableName,
   assertValidFieldSpec,
+  type CrossRefTargetCheck,
   type FieldSpecJson,
   parseFieldSpec
 } from './field-spec-json.js';
@@ -52,21 +54,18 @@ export interface ApplyTypeProposalArgs {
   edges: EdgesStore;
 }
 
-/** Answers whether a crossRef may target `type` in `ns`. */
-export type CrossRefTargetCheck = (ns: string, type: string) => boolean;
-
 /**
- * Refuse a type proposal no caller could address, or whose crossRefs leave
- * the plugin's namespaces. The resolver passes a check that also requires the
- * target type to exist; replay cannot, as a target in another namespace may
- * not have been replayed yet.
+ * Refuse a type proposal no caller could address, or whose crossRefs `targets`
+ * refuses. The resolver passes a check that also requires an owned target type
+ * to exist; replay cannot, as a target in another owned namespace may not have
+ * been replayed yet.
  *
  * @throws ProposalError `invalid_params` / `invalid_field_spec`
  */
 export function assertValidTypeProposal(
   typeName: unknown,
   fields: unknown,
-  ownsTarget: CrossRefTargetCheck
+  targets: CrossRefTargetCheck
 ): asserts fields is Record<string, FieldSpecJson> {
   assertProposableName('typeName', typeName);
   if (
@@ -81,7 +80,7 @@ export function assertValidTypeProposal(
   }
   for (const [fieldName, spec] of Object.entries(fields as Record<string, FieldSpecJson>)) {
     assertValidFieldSpec(fieldName, spec);
-    assertCrossRefsOwned(fieldName, spec, ownsTarget);
+    assertCrossRefTargets(fieldName, spec, targets);
   }
 }
 
@@ -90,7 +89,7 @@ export function assertValidFieldProposal(
   targetType: unknown,
   fieldName: string,
   fieldSpec: FieldSpecJson,
-  ownsTarget: CrossRefTargetCheck
+  targets: CrossRefTargetCheck
 ): void {
   assertProposableName('targetType', targetType);
   if ((PROPOSAL_TYPE_NAMES as readonly string[]).includes(targetType)) {
@@ -101,7 +100,7 @@ export function assertValidFieldProposal(
     );
   }
   assertValidFieldSpec(fieldName, fieldSpec);
-  assertCrossRefsOwned(fieldName, fieldSpec, ownsTarget);
+  assertCrossRefTargets(fieldName, fieldSpec, targets);
 }
 
 /** Installs the proposed type's autoCRUD surface into `registry`. */
@@ -145,11 +144,7 @@ export function typeProposalRegistryKeys(
  */
 export function applyTypeProposal(args: ApplyTypeProposalArgs): void {
   const store = args.registryStore;
-  assertValidTypeProposal(
-    args.typeName,
-    args.fields,
-    (ns, type) => (ns === args.namespace && type === args.typeName) || store.ownsNamespace(ns)
-  );
+  assertValidTypeProposal(args.typeName, args.fields, appliedTargetCheck(store, args.namespace));
   const binding = store.getBinding(args.namespace);
 
   installProposedType(binding.registry, args);
@@ -333,8 +328,11 @@ export function sameJson(a: unknown, b: unknown): boolean {
  */
 export function applyFieldProposal(args: ApplyFieldProposalArgs): void {
   const store = args.registryStore;
-  assertValidFieldProposal(args.targetType, args.fieldName, args.fieldSpec, (ns) =>
-    store.ownsNamespace(ns)
+  assertValidFieldProposal(
+    args.targetType,
+    args.fieldName,
+    args.fieldSpec,
+    appliedTargetCheck(store, args.namespace)
   );
   const binding = store.getBinding(args.namespace);
   const existing = binding.registry.get(args.targetType);

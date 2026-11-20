@@ -30,6 +30,7 @@ import type {
 } from '@mnmal-ai/substrate-types';
 import { applyFieldProposal, assertValidFieldProposal } from './apply.js';
 import type { PubSub } from './config.js';
+import { canReadNamespace, crossRefTargetCheck } from './cross-ref-targets.js';
 import {
   applyUntilRollback,
   ensureStorageAfterCommit,
@@ -92,8 +93,16 @@ export function makeProposeFieldResolver(
 
     const input = (args.params ?? {}) as unknown as ProposeFieldInput;
     // Refused before the lock and any row write; the crossRef target must exist.
-    assertValidFieldProposal(input.targetType, input.fieldName, input.fieldSpec, (ns, type) =>
-      deps.registryStore.ownsType(ns, type)
+    assertValidFieldProposal(
+      input.targetType,
+      input.fieldName,
+      input.fieldSpec,
+      crossRefTargetCheck(
+        deps.registryStore,
+        deps.namespace,
+        (ns, type) => deps.registryStore.ownsType(ns, type),
+        (ns) => canReadNamespace(ctx.identity, ns)
+      )
     );
     assertNotEngineInjected(input.fieldName);
     if (input.proposedReason !== undefined && typeof input.proposedReason !== 'string') {
@@ -244,7 +253,18 @@ async function proposeFieldLocked(
   // The dataset assigns the proposal's id.
   const newId: Id | undefined =
     engine !== undefined
-      ? (await writeInTx(binding.registry, ctx, args, 'createFieldProposal', initialParams)).id
+      ? // Trusted: steps 1-3 already authorised this proposal, a narrowing's migration included.
+        (
+          await writeInTx(
+            binding.registry,
+            ctx,
+            args,
+            'createFieldProposal',
+            initialParams,
+            false,
+            true
+          )
+        ).id
       : (await args.dataset.write('FieldProposal', [initialParams])).ids[0];
   if (newId === undefined) throw new Error('dataset.write did not return an id for FieldProposal');
 
@@ -280,12 +300,15 @@ async function proposeFieldLocked(
   const now = new Date();
   const resultingSchemaVersion = publishSchema(binding.registry).schemaVersion;
   if (engine !== undefined) {
-    await writeInTx(binding.registry, ctx, args, 'updateFieldProposal', {
-      id: newId,
-      applied: true,
-      appliedAt: now,
-      resultingSchemaVersion
-    });
+    await writeInTx(
+      binding.registry,
+      ctx,
+      args,
+      'updateFieldProposal',
+      { id: newId, applied: true, appliedAt: now, resultingSchemaVersion },
+      false,
+      true
+    );
   }
   const readBack = await args.dataset.read('FieldProposal', { id: newId });
   const rawRow = readBack.rows[0];

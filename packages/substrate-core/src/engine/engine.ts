@@ -73,6 +73,8 @@ import type {
 import {
   BatchElementError,
   DEFAULT_FILTER_WRITE_LIMITS,
+  grantRefusal,
+  grantRefusalCode,
   isBatchElementError,
   isResolverFrameError,
   isRestrictViolation,
@@ -207,24 +209,6 @@ function observe(hook: (o: ResolveObservation) => void, o: ResolveObservation): 
   } catch {
     // Swallowed: see above.
   }
-}
-
-/**
- * Refusal prose. A missing namespace and a namespace narrowed to the wrong
- * capability are different operator problems, so they get different messages.
- */
-function grantRefusal(
-  ns: string,
-  verdict: { reason: 'namespace' | 'capability'; required?: string }
-): string {
-  return verdict.reason === 'capability'
-    ? `identity's grant for namespace '${ns}' does not include '${verdict.required ?? 'the required capability'}'`
-    : `namespace '${ns}' not in identity's allowed namespaces`;
-}
-
-/** Error code for a grant refusal: `unauthorized_capability` or `unauthorized_namespace`. */
-function grantRefusalCode(verdict: { reason: 'namespace' | 'capability' }): string {
-  return verdict.reason === 'capability' ? 'unauthorized_capability' : 'unauthorized_namespace';
 }
 
 import { evaluatePolicy } from '../policy-evaluator.js';
@@ -536,6 +520,13 @@ export class Engine {
   namespaceState(ns: string): 'absent' | 'live' | 'tombstoned' {
     if (!this.#namespaces.has(ns)) return 'absent';
     return this.#tombstoned.has(ns) ? 'tombstoned' : 'live';
+  }
+
+  /** The entry of `type`, a type registered in the live namespace `ns`, else undefined. */
+  typeEntry(ns: string, type: string): RegistryEntry | undefined {
+    if (!this.#isLive(ns)) return undefined;
+    const entry = this.#namespaces.get(ns)?.registry.get(type);
+    return entry?.kind === 'type' ? entry : undefined;
   }
 
   /** True iff the namespace is registered AND not tombstoned. */

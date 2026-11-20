@@ -83,23 +83,25 @@ export function assertProposableName(param: string, value: unknown): asserts val
   }
 }
 
+/** Why a proposed crossRef may not target `ref`, or null when it may. */
+export type CrossRefTargetCheck = (ref: CrossRefSpec) => string | null;
+
 /**
- * Refuse a crossRef, at any depth in `spec`, whose target `ownsType` rejects.
+ * Refuse a crossRef, at any depth in `spec`, that `check` gives a reason against.
  *
- * @throws ProposalError `invalid_field_spec` naming the field and the target
+ * @throws ProposalError `invalid_field_spec` naming the field and the reason
  */
-export function assertCrossRefsOwned(
+export function assertCrossRefTargets(
   fieldName: string,
   spec: FieldSpecJson,
-  ownsType: (ns: string, type: string) => boolean
+  check: CrossRefTargetCheck
 ): void {
   for (const ref of crossRefsIn(spec)) {
-    if (!ownsType(ref.ns, ref.type)) {
-      throw new ProposalError(
-        'invalid_field_spec',
-        `Field '${fieldName}' references '${ref.ns}/${ref.type}', which is not a type in a namespace this plugin owns`,
-        { fieldName }
-      );
+    const reason = check(ref);
+    if (reason !== null) {
+      throw new ProposalError('invalid_field_spec', `Field '${fieldName}': ${reason}`, {
+        fieldName
+      });
     }
   }
 }
@@ -126,6 +128,13 @@ const SCALAR_TYPES: ReadonlySet<ScalarType> = new Set([
   'boolean',
   'date',
   'json'
+]);
+
+const ON_DELETE: ReadonlySet<string> = new Set<OnDelete>([
+  'set_null',
+  'cascade',
+  'restrict',
+  'orphan'
 ]);
 
 export function parseFieldSpec(json: FieldSpecJson): FieldDef {
@@ -160,6 +169,13 @@ export function parseFieldSpec(json: FieldSpecJson): FieldDef {
       if ('onMissing' in json && json.onMissing !== undefined) {
         throw new Error(
           'onMissing is not supported via propose_field; declare it in a hand-authored namespace instead'
+        );
+      }
+      if (typeof json.ns !== 'string') throw new Error('crossRef ns must be a string');
+      if (typeof json.type !== 'string') throw new Error('crossRef type must be a string');
+      if (json.onDelete !== undefined && !ON_DELETE.has(json.onDelete)) {
+        throw new Error(
+          `crossRef onDelete must be set_null, cascade, restrict or orphan, got ${JSON.stringify(json.onDelete)}`
         );
       }
       const def: FieldDefCrossRef = {

@@ -1,6 +1,12 @@
 import { field } from '@mnmal-ai/substrate-sdk';
 import { describe, expect, it } from 'vitest';
-import { type FieldSpecJson, parseFieldSpec, stringifyFieldDef } from '../src/field-spec-json.js';
+import {
+  assertCrossRefTargets,
+  assertValidFieldSpec,
+  type FieldSpecJson,
+  parseFieldSpec,
+  stringifyFieldDef
+} from '../src/field-spec-json.js';
 
 describe('FieldSpecJson round-trip', () => {
   it('scalar string round-trips', () => {
@@ -83,6 +89,21 @@ describe('FieldSpecJson round-trip', () => {
     expect(() => parseFieldSpec(bad)).toThrow(/propose_field/);
   });
 
+  it('refuses a crossRef whose onDelete is unknown, or whose ns or type is not a string', () => {
+    const base = { kind: 'crossRef', ns: 'home', type: 'Closet' };
+    for (const [over, reason] of [
+      [{ onDelete: 'bogus' }, /onDelete must be set_null, cascade, restrict or orphan/],
+      [{ ns: 7 }, /ns must be a string/],
+      [{ type: ['Closet'] }, /type must be a string/]
+    ] as const) {
+      const spec = { ...base, ...over } as unknown as FieldSpecJson;
+      expect(() => parseFieldSpec(spec)).toThrow(reason);
+      expect(() => assertValidFieldSpec('closet', spec)).toThrow(
+        expect.objectContaining({ code: 'invalid_field_spec', details: { fieldName: 'closet' } })
+      );
+    }
+  });
+
   it('crossRef without onMissing still parses fine (no regression)', () => {
     const json: FieldSpecJson = {
       kind: 'crossRef',
@@ -139,5 +160,22 @@ describe('vocabulary specs', () => {
     expect(() => parseFieldSpec({ kind: 'scalar', type: 'string', aliases: { a: 'b' } })).toThrow(
       /enum/
     );
+  });
+});
+
+describe('assertCrossRefTargets', () => {
+  const nested: FieldSpecJson = {
+    kind: 'list',
+    of: { kind: 'struct', fields: { to: { kind: 'crossRef', ns: 'app', type: 'Invoice' } } }
+  };
+
+  it('puts the field and the refusal reason in the error', () => {
+    expect(() =>
+      assertCrossRefTargets('refs', nested, (ref) => `no type '${ref.ns}/${ref.type}'`)
+    ).toThrow("Field 'refs': no type 'app/Invoice'");
+  });
+
+  it('accepts when the check returns null', () => {
+    expect(() => assertCrossRefTargets('refs', nested, () => null)).not.toThrow();
   });
 });

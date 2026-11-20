@@ -176,9 +176,12 @@ export function buildOnboardBody(ownedNamespaces: ReadonlyArray<string>): Onboar
           shape:
             '{ kind: "crossRef", ns: string, type: string, onDelete?: "set_null"|"cascade"|"restrict"|"orphan", indexed?: bool, nullable?: bool }',
           notes:
-            'Use crossRef to declare an edge. Cross-namespace edges work when both ns values are in ' +
-            'the plugin\'s ownedNamespaces. onDelete defaults to "set_null". For N:M, propose a join ' +
-            'type with two crossRef fields — v2 does not model N:M natively.'
+            'Use crossRef to declare an edge. The target may be a type in the namespace you propose into, ' +
+            'or, in another namespace you can read, a type in an ownedNamespaces namespace or any stored ' +
+            'type (code-defined included). onDelete defaults to ' +
+            '"set_null"; on a target the plugin does not own it is set_null, cascade or orphan, never restrict. ' +
+            'Virtual types (such as recall/Hit) are refused. Walks across namespaces are not supported. ' +
+            'For N:M, propose a join type with two crossRef fields — v2 does not model N:M natively.'
         },
         struct: {
           shape: '{ kind: "struct", fields: Record<string, FieldSpecJson>, nullable?: bool }',
@@ -246,11 +249,16 @@ export function buildOnboardBody(ownedNamespaces: ReadonlyArray<string>): Onboar
         'per-deployment.',
       invalid_field_spec:
         'fieldSpec did not match one of the four allowed shapes (scalar / crossRef / struct / list), ' +
-        'or a crossRef targets a type outside the namespaces this plugin owns. ' +
-        'Check kind, nesting, type spellings and crossRef targets.',
+        'or a crossRef target was refused: no such type, a namespace other than the one you propose ' +
+        'into that you cannot read (the same answer whether or not the type exists), a type with no ' +
+        'storage, the control plane, or restrict on a type this plugin does not own. ' +
+        'Check kind, nesting, type spellings, onDelete and crossRef targets.',
       invalid_params:
         'A required param is missing or malformed: typeName / targetType / fieldName must match ' +
-        '[A-Za-z_][A-Za-z0-9_]*, fields must be a non-empty object, proposedReason a string.'
+        '[A-Za-z_][A-Za-z0-9_]*, fields must be a non-empty object, proposedReason a string.',
+      proposal_changed:
+        "propose_index found the type's proposal changed while it ran: an add or orderedBy, or a " +
+        'remove that retracts a declaration from a proposed type. Nothing was stored; retry.'
     },
     examples: {
       addNewNamespace: {

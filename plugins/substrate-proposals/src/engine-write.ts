@@ -32,7 +32,10 @@ export async function writeInTx(
   params: Record<string, unknown>,
   /** Skip the op's policy: the caller has already authorised the whole write. */
   skipPolicy = false,
-  /** Also skip the removal gate on TypeProposal writes (see {@link TRUSTED_WRITE}). */
+  /**
+   * Also skip the gates on TypeProposal, FieldProposal and NamespaceProposal
+   * writes (see {@link TRUSTED_WRITE}).
+   */
   trusted = false
 ): Promise<Row> {
   const entry = registry.get(op);

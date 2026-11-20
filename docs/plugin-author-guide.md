@@ -890,6 +890,12 @@ than 10 seconds on another transaction (a long export, say) gives up with
 transaction ends finishes it. Until then the index can be left INVALID: unused by
 reads but still maintained on every write.
 
+`add` and `orderedBy` write the index declaration onto the type's proposal row.
+If that proposal changed while `propose_index` ran, the call is refused
+`proposal_changed` and nothing is stored; retry. A `remove` with no
+recommendation that retracts a declaration from a proposed type's row writes
+that row too, so it can be refused `proposal_changed` the same way.
+
 #### Profiles
 
 Thresholds come from a sizing profile, held in the single
@@ -1047,6 +1053,14 @@ does not exist (or is tombstoned):
 - `'reject'`: as the default, and compose additionally refuses to start if
   the target namespace is not locally resolvable.
 - `'allow'`: never checked. Use it for genuinely soft references.
+
+A crossRef that is checked for existence (`onMissing` other than `'allow'`)
+needs `read` on the target's namespace whenever the write sets a non-null value,
+the writer's own namespace included. The refusal is the one a read of that
+namespace gives (`unauthorized_namespace` or `unauthorized_capability`),
+whether or not the id exists. An `'allow'` field, and a null value, do no lookup
+and need no read. A crossRef value must be an id (a string or a
+number) or null; anything else is `invalid_field_type`.
 
 `onDelete` is copied onto each edge when the edge is created, and an edge's
 policy cannot be changed afterwards. Changing a field's `onDelete` therefore

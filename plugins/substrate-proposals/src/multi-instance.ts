@@ -35,6 +35,7 @@ import type { FieldSpecJson } from './field-spec-json.js';
 import { defineProposalTypes } from './namespace.js';
 import { CLUSTER_CHANNEL } from './propose-namespace-resolver.js';
 import type { RegistryStore } from './registry-store.js';
+import { isLiveProposal } from './row-lock.js';
 
 /** Why a stored field proposal is skipped when replay skipped its type. */
 function typeSkipped(row: Row): ProposalError {
@@ -45,6 +46,36 @@ function typeSkipped(row: Row): ProposalError {
     `type '${type}' was skipped at replay, so its field '${field}' is not added`,
     { typeName: type, fieldName: field, typeSkipped: true }
   );
+}
+
+/**
+ * A stored row's field specs, parsed.
+ *
+ * @throws ProposalError `invalid_field_spec` when the stored value is not a
+ *   string, as `JSON.parse` would read an array as its joined elements
+ * @throws SyntaxError when it is not JSON
+ */
+function storedSpec(row: Row, param: 'fieldsJson' | 'fieldSpecJson'): unknown {
+  const json = row[param];
+  if (typeof json !== 'string') {
+    throw new ProposalError('invalid_field_spec', `stored '${param}' is not a string`, { param });
+  }
+  return JSON.parse(json);
+}
+
+/**
+ * The warning line for a stored proposal skipped at replay: the reserved-name
+ * and skipped-type wordings below, else one naming its namespace, type, field
+ * and the error.
+ */
+export function skipLine(namespace: string, row: Row, err: unknown): string {
+  const reserved = reservedSkipLine(namespace, row, err);
+  if (reserved !== undefined) return reserved;
+  const type = row.typeName ?? row.targetType;
+  const field = (err instanceof ProposalError ? err.details.fieldName : undefined) ?? row.fieldName;
+  const where = `${namespace}${type === undefined ? '' : `/${String(type)}`}`;
+  const what = field === undefined ? '' : ` field '${String(field)}'`;
+  return `substrate-proposals: ${where}${what}: skipped at replay: ${err instanceof Error ? err.message : String(err)}`;
 }
 
 /**
@@ -103,12 +134,12 @@ export async function applyProposalFromNotification(
   const typeHit = await binding.dataset.read('TypeProposal', { id: args.proposalId });
   if (typeHit.rows.length > 0) {
     const row = typeHit.rows[0] as Row;
-    if (row.applied !== true) return;
+    if (!isLiveProposal(row)) return;
     try {
       const typeName = row.typeName as string;
       let changed = false;
       if (!binding.registry.get(typeName)) {
-        const fields = JSON.parse(row.fieldsJson as string) as Record<string, FieldSpecJson>;
+        const fields = storedSpec(row, 'fieldsJson') as Record<string, FieldSpecJson>;
         applyTypeProposal({
           namespace: args.namespace,
           typeName,
@@ -138,11 +169,11 @@ export async function applyProposalFromNotification(
   const fieldHit = await binding.dataset.read('FieldProposal', { id: args.proposalId });
   if (fieldHit.rows.length > 0) {
     const row = fieldHit.rows[0] as Row;
-    if (row.applied === true) {
+    if (isLiveProposal(row)) {
       try {
         const entry = binding.registry.get(row.targetType as string);
         if (entry && fieldNeedsReplay(entry, row)) {
-          const fieldSpec = JSON.parse(row.fieldSpecJson as string) as FieldSpecJson;
+          const fieldSpec = storedSpec(row, 'fieldSpecJson') as FieldSpecJson;
           applyFieldProposal({
             namespace: args.namespace,
             targetType: row.targetType as string,
@@ -233,7 +264,7 @@ export async function reconcileNamespace(args: ReconcileArgs): Promise<void> {
   for (const row of typeRows.rows) {
     if (binding.registry.get(row.typeName as string)) continue;
     try {
-      const fields = JSON.parse(row.fieldsJson as string) as Record<string, FieldSpecJson>;
+      const fields = storedSpec(row, 'fieldsJson') as Record<string, FieldSpecJson>;
       applyTypeProposal({
         namespace: args.namespace,
         typeName: row.typeName as string,
@@ -270,7 +301,7 @@ export async function reconcileNamespace(args: ReconcileArgs): Promise<void> {
     }
     if (!entry || !fieldNeedsReplay(entry, row)) continue;
     try {
-      const fieldSpec = JSON.parse(row.fieldSpecJson as string) as FieldSpecJson;
+      const fieldSpec = storedSpec(row, 'fieldSpecJson') as FieldSpecJson;
       applyFieldProposal({
         namespace: args.namespace,
         targetType: row.targetType as string,
@@ -377,7 +408,12 @@ export function installHotAddedNamespace(args: InstallHotAddedNamespaceArgs): vo
     args.registryStore.set(args.ns, binding);
   }
   const registry = skipRegistered(binding.registry);
-  defineProposalTypes(args.ns, args.proposeCapability, args.indexCapability).install({
+  defineProposalTypes(
+    args.ns,
+    args.registryStore,
+    args.proposeCapability,
+    args.indexCapability
+  ).install({
     registry,
     dataset: binding.dataset,
     edges: binding.edges
