@@ -4,7 +4,7 @@ name: warehouse
 promise: Monthly totals and per-customer rollups, asked in the same frames as every read.
 shows:
   - Unpaid totals by the month they fall due, grouped with dateTrunc
-  - Money summed exactly as int64, sent as a decimal string
+  - Money summed exactly as int64, returned as a decimal string
   - Each customer's open invoices and next due date, through a walk
 extras: [clickbench]
 ---
@@ -21,13 +21,13 @@ The scenario is a small invoicing app: three customers and eight invoices, all i
 
 Analytics are frames like every other read, sent to the same route. They take `groupBy` with `dateTrunc`, sums and counts, and walks that aggregate across a reference. Over the same invoices, the run asks what is outstanding by the month it falls due, then each customer's open invoices with the next due date.
 
-`amount` is an `int64` in integer minor units, cents here. It travels as a decimal string so no digit is lost, and sums exactly. A month key is a computed date, so it comes back as UTC text to the microsecond.
+`amount` is an `int64` in integer minor units, cents here. Replies carry it as a decimal string so no digit is lost, and it sums exactly. A write may send it as a number while it is a safe integer, as this run's seed does. A month key is a computed date, so it comes back as UTC text to the microsecond.
 
-After the run, [ClickBench](https://github.com/ClickHouse/ClickBench), a public benchmark for analytical databases, puts the same grammar to its 43 queries, each written as a frame, with its answer checked against the benchmark's own SQL.
+Below the run, [ClickBench](https://github.com/ClickHouse/ClickBench), a public benchmark for analytical databases, puts the same grammar to its 43 queries, each written as a frame, with its answer checked against the benchmark's own SQL.
 
 ## Where it stops
 
 - **Per-customer sums through a walk aren't supported yet.** A walk aggregate's `sum` takes a `number` field, and `amount` is an `int64`. So the per-customer read shows open invoices and the next due date, not totals. The monthly totals come from a frame aggregate, which sums `int64` exactly.
 - **The walk needs Postgres in a deployment.** This run is on the memory store with a test-only walk evaluator switched on. A server on the memory store refuses walks with `walks_unsupported_store`.
-- **ClickBench is 42 compared / 43, on one machine class.** The block above was measured on an Apple M1 with 8 cores and 16 GB, on PostgreSQL 18, not in substrate's CI. All 43 queries are expressible as frames. One came back empty on both sides, so it isn't counted as compared, and every compared answer matched.
+- **ClickBench is 42 compared / 43, on one machine class.** The block above names the machine it was measured on, outside substrate's CI. A query that came back empty on both sides isn't counted as compared.
 - **ClickBench here is frames against SQL, on the same Postgres.** The frames read substrate's own table and the SQL reads a plain Postgres table, in one database, each loaded with the same rows: about 10M, every 10th row of the benchmark's data. It isn't a comparison with a columnar warehouse, and says nothing about how substrate would fare against one.
