@@ -8,7 +8,8 @@ html {
   background: var(--bg);
   color: var(--text);
   font-family: var(--sans);
-  line-height: 1.5;
+  font-size: 19px;
+  line-height: 1.55;
   -webkit-text-size-adjust: 100%;
 }
 
@@ -21,6 +22,22 @@ main {
   max-width: var(--max-width);
   margin: 0 auto;
   padding: 0 var(--gutter);
+}
+
+h1 {
+  font-size: clamp(40px, 5.2vw, 66px);
+  line-height: 1.05;
+  letter-spacing: -0.035em;
+  font-weight: 700;
+}
+
+h2 {
+  font-size: clamp(32px, 4vw, 48px);
+}
+
+.label {
+  font-family: var(--mono);
+  font-size: 13px;
 }
 
 code,

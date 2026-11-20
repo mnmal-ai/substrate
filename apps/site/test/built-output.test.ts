@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { licensedMonoAvailable } from '../src/lib/fonts.ts';
 
 const dist = new URL('../dist/', import.meta.url).pathname;
 const html = readFileSync(join(dist, 'index.html'), 'utf8');
@@ -13,8 +14,8 @@ const css = (dir: string): string[] =>
         : []
   );
 const cssText = css(dist).join('\n');
-// A `dist/` built with the licensed fonts present is the deploy path, not this one.
-const forkBuild = !/BerkeleyMono/.test(html);
+// With the licensed files present the build is the deploy path, which must reference them.
+const forkBuild = !licensedMonoAvailable(new URL('../public/', import.meta.url).pathname);
 
 describe('built output', () => {
   it.runIf(forkBuild)('references no licensed font when the files are absent', () => {
