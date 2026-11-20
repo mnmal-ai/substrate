@@ -73,6 +73,20 @@ Pinecone here is outside Elsewhere.
     );
   });
 
+  it('reports a product named in plain text beside another product link', () => {
+    expect(
+      unlinkedProducts(
+        '## Elsewhere\n\n[PostgREST](https://docs.postgrest.org/) and Hasura both serve a schema.\n'
+      )
+    ).toEqual(['Hasura']);
+  });
+
+  it('counts a product named inside longer link text as linked', () => {
+    expect(
+      unlinkedProducts('## Elsewhere\n\n[the Hasura docs](https://hasura.io/docs/) say so.\n')
+    ).toEqual([]);
+  });
+
   it('never reports Postgres or PostgreSQL', () => {
     expect(unlinkedProducts('## Elsewhere\n\nPostgres and PostgreSQL.\n')).toEqual([]);
   });
