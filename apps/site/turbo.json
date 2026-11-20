@@ -1,0 +1,4 @@
+{
+  "extends": ["//"],
+  "tasks": { "test": { "dependsOn": ["^build", "build"] } }
+}

@@ -1,0 +1,9 @@
+{
+  "extends": "@mnmal-ai/substrate-config/tsconfig.app.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "allowImportingTsExtensions": true,
+    "paths": {}
+  },
+  "include": ["src/lib/**/*", "examples/**/*", "test/**/*", "vitest.config.ts"]
+}
