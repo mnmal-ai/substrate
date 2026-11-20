@@ -221,6 +221,13 @@ export interface PgDatasetOptions {
    */
   fieldDefLookup?: FieldDefLookup;
   /**
+   * The field definitions of any namespace. `forNamespace(ns)` hands the clone
+   * `fieldDefLookupFor(ns)`, so a handle on another namespace casts by its own
+   * definitions rather than this handle's. Without it a clone inherits
+   * `fieldDefLookup`, which answers for this handle's namespace only.
+   */
+  fieldDefLookupFor?: (namespace: string) => FieldDefLookup;
+  /**
    * The namespace's type definitions, which `ensureTypeStorage` builds the
    * type's indexes from. Without it only the engine's own indexes are built.
    */
@@ -251,6 +258,7 @@ interface InternalPgSubstrateDatasetOptions {
   txScopeId?: string;
   edgesStore?: PgEdgesStore;
   fieldDefLookup?: FieldDefLookup;
+  fieldDefLookupFor?: (namespace: string) => FieldDefLookup;
   /** Shared with the instance this one was derived from. */
   layoutCache?: LayoutCache;
   typeDefLookup?: TypeDefLookup;
@@ -424,6 +432,7 @@ export class PgDataset implements Dataset {
   readonly #edgesStore: PgEdgesStore | null;
   /** Stored so tx-bound and forNamespace clones inherit it. */
   readonly #fieldDefLookup: FieldDefLookup | null;
+  readonly #fieldDefLookupFor: ((namespace: string) => FieldDefLookup) | null;
   readonly #layoutCache: LayoutCache;
   readonly #typeDefLookup: TypeDefLookup | null;
   readonly #diskGuard: DiskGuard | undefined;
@@ -450,6 +459,7 @@ export class PgDataset implements Dataset {
     }
     this.#edgesStore = edgesOpt ?? null;
     this.#fieldDefLookup = options.fieldDefLookup ?? null;
+    this.#fieldDefLookupFor = options.fieldDefLookupFor ?? null;
     this.#layoutCache = ('layoutCache' in options ? options.layoutCache : undefined) ?? {};
     this.#typeDefLookup = options.typeDefLookup ?? null;
     this.#diskGuard = options.diskGuard;
@@ -1516,6 +1526,9 @@ export class PgDataset implements Dataset {
           inTx: true,
           txScopeId: this.txScopeId,
           ...(this.#fieldDefLookup !== null ? { fieldDefLookup: this.#fieldDefLookup } : {}),
+          ...(this.#fieldDefLookupFor !== null
+            ? { fieldDefLookupFor: this.#fieldDefLookupFor }
+            : {}),
           layoutCache: this.#layoutCache,
           statementTimeoutMs: this.#statementTimeoutMs,
           ...(this.#typeDefLookup !== null ? { typeDefLookup: this.#typeDefLookup } : {}),
@@ -1560,6 +1573,9 @@ export class PgDataset implements Dataset {
             // calls (flattened) retain the same enlistment behaviour.
             ...(this.#edgesStore !== null ? { edgesStore: this.#edgesStore } : {}),
             ...(this.#fieldDefLookup !== null ? { fieldDefLookup: this.#fieldDefLookup } : {}),
+            ...(this.#fieldDefLookupFor !== null
+              ? { fieldDefLookupFor: this.#fieldDefLookupFor }
+              : {}),
             layoutCache: this.#layoutCache,
             statementTimeoutMs: this.#statementTimeoutMs,
             ...(this.#typeDefLookup !== null ? { typeDefLookup: this.#typeDefLookup } : {}),
@@ -1913,7 +1929,14 @@ export class PgDataset implements Dataset {
       sql: this.#sql as Sql,
       inTx: false,
       ...(this.#edgesStore !== null ? { edgesStore: this.#edgesStore } : {}),
-      ...(this.#fieldDefLookup !== null ? { fieldDefLookup: this.#fieldDefLookup } : {}),
+      ...(this.#fieldDefLookupFor !== null
+        ? {
+            fieldDefLookup: this.#fieldDefLookupFor(namespace),
+            fieldDefLookupFor: this.#fieldDefLookupFor
+          }
+        : this.#fieldDefLookup !== null
+          ? { fieldDefLookup: this.#fieldDefLookup }
+          : {}),
       layoutCache: this.#layoutCache,
       statementTimeoutMs: this.#statementTimeoutMs,
       ...(this.#typeDefLookup !== null ? { typeDefLookup: this.#typeDefLookup } : {}),

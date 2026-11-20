@@ -98,6 +98,7 @@ export async function wireStore(
       dataset: new MemoryDataset({
         namespace: DEFAULT_NAMESPACE,
         fieldDefLookup: fieldDefLookupFor(DEFAULT_NAMESPACE),
+        fieldDefLookupFor,
         ...(typeDefLookupFor ? { typeDefLookup: typeDefLookupFor(DEFAULT_NAMESPACE) } : {})
       }),
       edges: new MemoryEdgesStore({ now: () => new Date() }),
@@ -128,6 +129,7 @@ export async function wireStore(
         sql,
         edgesStore: edges,
         fieldDefLookup: fieldDefLookupFor(DEFAULT_NAMESPACE),
+        fieldDefLookupFor,
         ...(typeDefLookupFor ? { typeDefLookup: typeDefLookupFor(DEFAULT_NAMESPACE) } : {}),
         ...(diskGuard !== undefined ? { diskGuard } : {}),
         ...(statementTimeoutMs !== undefined ? { statementTimeoutMs } : {})
@@ -138,6 +140,7 @@ export async function wireStore(
         sql,
         edgesStore: edges,
         fieldDefLookup: fieldDefLookupFor(SYSTEM_NAMESPACE),
+        fieldDefLookupFor,
         ...(typeDefLookupFor ? { typeDefLookup: typeDefLookupFor(SYSTEM_NAMESPACE) } : {}),
         ...(diskGuard !== undefined ? { diskGuard } : {}),
         ...(statementTimeoutMs !== undefined ? { statementTimeoutMs } : {})
@@ -501,8 +504,10 @@ export function extractIndexedListFields(
  * across to the default substrate.
  *
  * `fieldDefLookupFor` yields the namespace-scoped lookup that lets pg datasets
- * cast numeric/date/boolean body fields in orderBy + range + cursor compares.
- * Memory datasets ignore it.
+ * cast numeric/date/boolean body fields in orderBy + range + cursor compares
+ * and memory datasets order and filter dates as instants. Each dataset also
+ * gets the factory itself, so a handle it makes for another namespace uses
+ * that namespace's definitions.
  */
 export function buildPluginDatasetMap(
   plugins: Array<CoordinatorPlugin>,
@@ -529,6 +534,7 @@ export function buildPluginDatasetMap(
               namespace: ns,
               sql: sharedSql,
               fieldDefLookup: fieldDefLookupFor(ns),
+              fieldDefLookupFor,
               typeDefLookup: typeDefLookup ?? ((type) => nsDef.types?.[type]),
               // `nsDef.promotedColumns` is deprecated and ignored: every declared scalar is a column.
               // Thread the shared edges store so every plugin-contributed
@@ -541,6 +547,7 @@ export function buildPluginDatasetMap(
           : new MemoryDataset({
               namespace: ns,
               fieldDefLookup: fieldDefLookupFor(ns),
+              fieldDefLookupFor,
               typeDefLookup: typeDefLookup ?? ((type) => nsDef.types?.[type])
             });
     }

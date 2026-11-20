@@ -100,6 +100,12 @@ export interface MemoryDatasetOptions {
    */
   fieldDefLookup?: (type: string, field: string) => FieldDef | undefined;
   /**
+   * The field declarations of any namespace. `forNamespace(ns)` hands the clone
+   * `fieldDefLookupFor(ns)` instead of this handle's `fieldDefLookup`, which
+   * answers for this handle's namespace only.
+   */
+  fieldDefLookupFor?: (namespace: string) => (type: string, field: string) => FieldDef | undefined;
+  /**
    * The namespace's type definitions; a type declared `ordering: 'visible'`
    * gets `_metadata.seq` on insert, as the pg dataset's lookup does. Its
    * `fields` say which keys read back absent when null (`isColumnField`), and
@@ -154,6 +160,7 @@ export class MemoryDataset implements Dataset {
   readonly namespace: string;
   readonly txScopeId: string;
   readonly #fieldDefLookup: MemoryDatasetOptions['fieldDefLookup'];
+  readonly #fieldDefLookupFor: MemoryDatasetOptions['fieldDefLookupFor'];
   // TS-private, not `#`: write() must work through a Proxy, as `store` does.
   private readonly typeDefLookup: MemoryDatasetOptions['typeDefLookup'];
   private readonly walkBudget: number;
@@ -210,6 +217,7 @@ export class MemoryDataset implements Dataset {
     this.namespace = options.namespace;
     this.txScopeId = options.txScopeId ?? `mem:${randomUUID()}`;
     this.#fieldDefLookup = options.fieldDefLookup;
+    this.#fieldDefLookupFor = options.fieldDefLookupFor;
     this.typeDefLookup = options.typeDefLookup;
     this.walkBudget = options.walkBudget ?? WALK_EVALUATION_BUDGET;
     this.walkReference = options.walkReference === true;
@@ -1041,7 +1049,14 @@ export class MemoryDataset implements Dataset {
       namespace,
       walkBudget: this.walkBudget,
       walkReference: this.walkReference,
-      ...(this.#fieldDefLookup !== undefined ? { fieldDefLookup: this.#fieldDefLookup } : {}),
+      ...(this.#fieldDefLookupFor !== undefined
+        ? {
+            fieldDefLookup: this.#fieldDefLookupFor(namespace),
+            fieldDefLookupFor: this.#fieldDefLookupFor
+          }
+        : this.#fieldDefLookup !== undefined
+          ? { fieldDefLookup: this.#fieldDefLookup }
+          : {}),
       ...(this.typeDefLookup !== undefined ? { typeDefLookup: this.typeDefLookup } : {})
     });
   }
