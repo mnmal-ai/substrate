@@ -47,11 +47,12 @@ export function compactGrant(namespaces: string, capabilities: string): string {
     .join(',');
 }
 
-/** A namespace's capabilities as their short letters in canonical order: read, mutate, admin → `rma`. */
-export function shortCaps(caps: Iterable<string>): string {
-  return canonicalCaps(caps)
-    .map((c) => SHORT[c] ?? `(${c})`)
-    .join('');
+/**
+ * A namespace's capabilities as tokens in canonical order: read, mutate, admin → `r`, `m`, `a`, and
+ * one with no short form spelled out as `(name)`.
+ */
+export function shortCaps(caps: Iterable<string>): string[] {
+  return canonicalCaps(caps).map((c) => SHORT[c] ?? `(${c})`);
 }
 
 /** A stored row's grant, or null when it does not parse (the table still renders it). */
