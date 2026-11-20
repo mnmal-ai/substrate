@@ -3,12 +3,13 @@ import { normalise, runExample } from './_harness.ts';
 import { app } from './_scenario.ts';
 import { steps } from './reshape/steps.ts';
 
-describe('reshape example', () => {
+describe.skipIf(!process.env.POSTGRES_URL)('reshape example (pg)', () => {
   it('proposes a type that references code, uses it at once, and records who proposed it', async () => {
     const setup = {
       name: 'reshape',
       namespaces: [app],
       agents: ['schema-agent'],
+      dataset: 'pg' as const,
       proposals: { owned: ['billing'] }
     };
     const n = normalise(await runExample(setup, steps));

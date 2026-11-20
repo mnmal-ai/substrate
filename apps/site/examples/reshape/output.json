@@ -501,6 +501,30 @@
         "shapes": {
           "billing/Payment": "list"
         },
+        "_diagnostics": {
+          "billing/Payment": {
+            "plan": [
+              {
+                "path": [
+                  "fields",
+                  "settles",
+                  "_walk"
+                ],
+                "kind": "hop",
+                "served": true
+              },
+              {
+                "path": [
+                  "fields",
+                  "settles",
+                  "orderBy"
+                ],
+                "kind": "order",
+                "served": true
+              }
+            ]
+          }
+        },
         "_pagination": {
           "billing/Payment": {
             "hasMore": false

@@ -100,8 +100,9 @@ export interface ExampleSetup {
    */
   advisor?: { owned: string[]; storeProfile: 'scale' };
   /**
-   * The proposals plugin owns these namespaces, on either dataset, and every agent is granted
-   * `substrate.propose`. `advisor` implies it, over its own `owned`.
+   * The proposals plugin owns these namespaces and every agent is granted `substrate.propose`.
+   * Over pg only: a memory server wires one store per namespace, so a proposed type could not
+   * walk to a code-defined one there. `advisor` implies it, over its own `owned`.
    */
   proposals?: { owned: string[] };
 }
@@ -160,6 +161,9 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
     await assertNotSuperuser(url, { packageName: PACKAGE_NAME });
     await assertCannotWriteOutsideTestDatabases(url, { packageName: PACKAGE_NAME });
   }
+  if (setup.proposals !== undefined && kind !== 'pg') {
+    throw new Error("proposals run over the pg dataset only: set dataset 'pg'.");
+  }
   if (setup.embedder !== undefined && kind === 'pg') {
     throw new Error(`embedder '${setup.embedder}' runs over the memory dataset only.`);
   }
@@ -207,32 +211,26 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
   for (const ns of defs) {
     const name = ns.namespace;
     const fieldDefLookup = (type: string, f: string) => typeDefLookup(type, name)?.fields[f];
-    const memory = () =>
-      new MemoryDataset({
-        namespace: name,
-        fieldDefLookup,
-        typeDefLookup: (type: string) => typeDefLookup(type, name),
-        walkReference: true
-      });
-    // A walk crosses namespaces only within one store, so with proposals they share one.
-    const first = Object.values(datasets)[0];
     const ds =
       sql === undefined
-        ? proposals === undefined
-          ? memory()
-          : first instanceof MemoryDataset
-            ? (first.forNamespace(name) as MemoryDataset)
-            : new MemoryDataset({
-                namespace: name,
-                fieldDefLookupFor: (ns) => (type, f) => typeDefLookup(type, ns)?.fields[f],
-                typeDefLookup: (type, ns) => typeDefLookup(type, ns ?? name),
-                walkReference: true
-              })
+        ? new MemoryDataset({
+            namespace: name,
+            fieldDefLookup,
+            typeDefLookup: (type: string) => typeDefLookup(type, name),
+            walkReference: true
+          })
         : new PgDataset({
             namespace: name,
             sql,
             edgesStore: edges as PgEdgesStore,
             fieldDefLookup,
+            // A walk out of a proposed type into `app` types the other namespace's fields.
+            ...(proposals === undefined
+              ? {}
+              : {
+                  fieldDefLookupFor: (ns: string) => (type: string, f: string) =>
+                    typeDefLookup(type, ns)?.fields[f]
+                }),
             typeDefLookup: (type: string) => typeDefLookup(type, name)
           });
     if (ds instanceof PgDataset) {
@@ -317,7 +315,7 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
           })
     });
     await server.start();
-    if (advisor !== undefined) {
+    if (proposals !== undefined && sql !== undefined) {
       // Tables and unique indexes for every registered type, as the binary's boot does.
       for (const ns of Object.keys(composed.engine.federatedSchema())) {
         if (!composed.datasets.has(ns)) continue;
@@ -409,7 +407,7 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
       let res = await send();
       for (let i = 1; i < (step.repeat ?? 1); i++) res = await send();
       // An approved index builds in the background; the next step should find it built.
-      if (advisor !== undefined) await storageSettled();
+      if (proposals !== undefined && sql !== undefined) await storageSettled();
       if (step.explain === true && sql !== undefined) {
         const mine = sent ?? [];
         sent = undefined;
