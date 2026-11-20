@@ -5,6 +5,7 @@ import {
   normalise,
   runExample,
   type Step,
+  SYSTEM_KID,
   type Transcript
 } from './_harness.ts';
 
@@ -97,6 +98,28 @@ describe('runExample', () => {
     const b = await runExample(setup, stepsFor());
     expect(a.steps.map((s) => s.status)).toEqual([200, 200, 200]);
     expect(normalise(a)).toEqual(normalise(b));
+  });
+
+  it('runs a step without `as` as the system actor when auth is on', async () => {
+    const create = (as?: string): Step => ({
+      label: 'create customer',
+      method: 'POST',
+      path: '/substrate/v1/mutate',
+      ...(as === undefined ? {} : { as }),
+      body: {
+        'app/createCustomer': { params: { name: 'Ada' }, fields: { id: true, _metadata: true } }
+      }
+    });
+    const t = await runExample({ ...setup, agents: ['billing-agent'] }, [
+      create(),
+      create('billing-agent')
+    ]);
+    type Created = { data: Record<string, { _metadata: { createdBy: { id: string } } }> };
+    const by = (i: number) =>
+      (t.steps[i] as { response: Created }).response.data['app/createCustomer']?._metadata.createdBy
+        .id;
+    expect(t.steps.map((s) => s.status)).toEqual([200, 200]);
+    expect([by(0), by(1)]).toEqual([SYSTEM_KID, 'billing-agent']);
   });
 
   it('refuses a pg example without POSTGRES_URL', async () => {

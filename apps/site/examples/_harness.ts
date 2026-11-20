@@ -52,6 +52,9 @@ export interface ExampleSetup {
 
 const PACKAGE_NAME = '@mnmal-ai/substrate-site';
 // Throwaway HS256 secret for in-process signing; it guards nothing.
+// Kid an unsigned step signs as when auth is on: compose has no system actor under auth
+// (`systemActor` is ignored there), so the system actor is a registered key of its own.
+export const SYSTEM_KID = 'system';
 const SECRET = 'substrate-site-example-signing-secret-0123456789';
 
 export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Transcript> {
@@ -122,23 +125,28 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
       ...(kernelPlugins === undefined ? {} : { kernelPlugins }),
       ...(agents === undefined
         ? { systemActor: 'system' }
-        : { auth: { keys: agents.map((kid) => ({ kid, alg: 'HS256', publicKey: SECRET })) } })
+        : {
+            auth: {
+              keys: [SYSTEM_KID, ...agents].map((kid) => ({ kid, alg: 'HS256', publicKey: SECRET }))
+            }
+          })
     });
     await server.start();
 
     const results: StepResult[] = [];
     for (const step of steps) {
       const headers: Record<string, string> = { 'content-type': 'application/json' };
-      if (step.as !== undefined) {
+      if (agents !== undefined) {
+        const kid = step.as ?? SYSTEM_KID;
         const token = signHs256(
           {
-            sub: step.as,
+            sub: kid,
             exp: Math.floor(Date.now() / 1000) + 600,
             capabilities: ['read', 'mutate'],
             ns: setup.namespaces.map((n) => n.namespace)
           },
           SECRET,
-          { kid: step.as }
+          { kid }
         );
         headers.authorization = `Bearer ${token}`;
       }
