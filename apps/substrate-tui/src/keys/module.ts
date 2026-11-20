@@ -11,11 +11,12 @@ import { defineModule, type ModuleCtx, sanitise, type TuiModule } from '@mnmal-a
 import { truncateCells } from '@mnmal-ai/surface-kit';
 import { adminCapabilityOf } from '../admin/session.js';
 import type { TuiDeps } from '../deps.js';
-import { type Line, linesView } from '../lines.js';
+import { type Line, linesView, type Part, partsLine, truncateParts } from '../lines.js';
+import { clean } from '../text.js';
 // A runtime cycle once editor imports loadKeys back (Tasks 6/7), safe because each side uses the other only inside functions.
 import { type EditorPanels, editorPanels, KEYS_CHROME, openEditor, switchTo } from './editor.js';
 import { GRANT_LEGEND } from './grant.js';
-import { isRevoked, listLines, orderForView } from './layout.js';
+import { isRevoked, listLines, orderForView, selectLine } from './layout.js';
 import { revokeVerdict } from './verdict.js';
 
 export interface KeysState {
@@ -27,6 +28,43 @@ export interface KeysState {
   /** Revoked rows are listed too (`r`). */
   revoked: boolean;
 }
+const count = (s: KeysState): string => {
+  if (s.rows === null) return '';
+  const gone = s.rows.filter(isRevoked).length;
+  return ` · ${s.rows.length - gone} active${s.revoked ? ` · ${gone} revoked` : ''}`;
+};
+
+/** The head line: accent glyph, bold `keys`, then the counts and source in dimMid. */
+export function headParts(state: KeysState, titleGlyph: string): Part[] {
+  return [
+    { text: titleGlyph, tone: 'accent' },
+    { text: ' ' },
+    { text: 'keys', tone: 'text', bold: true },
+    { text: `${count(state)} · ${state.source}`, tone: 'dimMid' }
+  ];
+}
+
+/** The grant legend, dim with its `a` in warn bold. */
+export function legendParts(): Part[] {
+  return [
+    { text: `  ${GRANT_LEGEND.slice(0, GRANT_LEGEND.lastIndexOf('a='))}`, tone: 'dim' },
+    { text: 'a', tone: 'warn', bold: true },
+    { text: GRANT_LEGEND.slice(GRANT_LEGEND.lastIndexOf('a=') + 1), tone: 'dim' }
+  ];
+}
+
+/** Key hints: key names text, actions dimMid, `·` separators dim. */
+export function hintParts(pairs: readonly (readonly [key: string, action: string])[]): Part[] {
+  return [
+    { text: '  ' },
+    ...pairs.flatMap(([key, action], i): Part[] => [
+      ...(i > 0 ? [{ text: ' · ', tone: 'dim' as const }] : []),
+      { text: key, tone: 'text' },
+      { text: ` ${action}`, tone: 'dimMid' }
+    ])
+  ];
+}
+
 export type KeysPanels = { keys: KeysState } & EditorPanels;
 type Panels = KeysPanels;
 type Ctx = ModuleCtx<Panels>;
@@ -92,30 +130,25 @@ export function keysModule(deps: TuiDeps): TuiModule<Panels> {
       keys: {
         ...KEYS_CHROME,
         view: ({ state, theme, size }) => {
-          const w = Math.max(1, size.columns - 2);
-          const gone = state.rows === null ? 0 : state.rows.filter(isRevoked).length;
-          const count =
-            state.rows === null
-              ? ''
-              : ` · ${state.rows.length - gone} active${state.revoked ? ` · ${gone} revoked` : ''}`;
-          const head = `${theme.glyph.title} keys${count} · ${state.source}`;
-          if (state.note !== null) return [head, `  ${sanitise(state.note)}`].join('\n');
-          if (state.rows === null) return [head, '  reading…'].join('\n');
+          // The core hands the view its content width, the panel's inset already taken off.
+          const w = size.columns;
+          const headLine = partsLine(truncateParts(headParts(state, theme.glyph.title), w));
+          if (state.note !== null)
+            return linesView([headLine, { text: `  ${sanitise(state.note)}` }], theme);
+          if (state.rows === null) return linesView([headLine, { text: '  reading…' }], theme);
           const pick = state.rows[state.cursor];
           if (state.detail && pick !== undefined) {
-            return [
-              head,
-              truncateCells(sanitise(`  ${pick.kid}  ${pick.name}  ${pick.algorithm}`), w),
-              ...(isRevoked(pick)
-                ? [truncateCells(sanitise(`  revoked ${pick.revokedAt}`), w)]
-                : []),
+            const detail = [
+              truncateCells(clean(`  ${pick.kid}  ${pick.name}  ${pick.algorithm}`), w),
+              ...(isRevoked(pick) ? [truncateCells(clean(`  revoked ${pick.revokedAt}`), w)] : []),
               ...describeGrant(pick.namespaces, pick.capabilities).map((g) =>
-                truncateCells(sanitise(`    ${g}`), w)
+                truncateCells(clean(`    ${g}`), w)
               ),
               '  backspace back · esc close'
-            ].join('\n');
+            ];
+            return linesView([headLine, ...detail.map((text): Line => ({ text }))], theme);
           }
-          const all = listLines(state.rows);
+          const all = listLines(state.rows, w);
           // Head, legend and hints take three rows.
           const max = Math.max(1, size.rows - 3);
           const at = Math.max(
@@ -123,30 +156,41 @@ export function keysModule(deps: TuiDeps): TuiModule<Panels> {
             all.findIndex((l) => l.row === state.cursor)
           );
           const start = Math.max(0, Math.min(at - max + 1, all.length - max));
-          const lines = all.slice(start, start + max).map((l): Line => {
-            const mark = l.row !== undefined && l.row === state.cursor ? theme.glyph.cursor : ' ';
-            const text = truncateCells(
-              sanitise(
-                l.kind === 'key' || l.kind === 'revoked' ? `${mark}  ${l.text}` : ` ${l.text}`
-              ),
-              w
+          const lines = all
+            .slice(start, start + max)
+            .map(
+              (l): Line =>
+                partsLine(
+                  l.row !== undefined && l.row === state.cursor
+                    ? selectLine(l, theme.glyph.cursor, w)
+                    : l.parts
+                )
             );
-            return l.kind === 'revoked' || l.kind === 'revoked-head'
-              ? { text, tone: 'dim' }
-              : { text };
-          });
-          const toggle = state.revoked ? 'r hide revoked' : 'r show revoked';
+          // 'r show revoked' is one key and its action, so the toggle's key is the lone `r`.
+          const toggle = state.revoked ? 'hide revoked' : 'show revoked';
+          const hints: [string, string][] =
+            state.source === 'admin' && deps.admin.unlocked()
+              ? [
+                  ['↑↓/jk', 'move'],
+                  ['enter', 'edit'],
+                  ['x', 'revoke'],
+                  ['i', 'invite'],
+                  ['n', 'register'],
+                  ['r', toggle],
+                  ['esc', 'close']
+                ]
+              : [
+                  ['↑↓/jk', 'move'],
+                  ['enter', 'grant'],
+                  ['r', toggle],
+                  ['esc', 'close']
+                ];
           return linesView(
             [
-              { text: head },
+              headLine,
               ...lines,
-              { text: truncateCells(`  ${GRANT_LEGEND}`, w) },
-              {
-                text:
-                  state.source === 'admin' && deps.admin.unlocked()
-                    ? `  ↑↓/jk move · enter edit · x revoke · i invite · n register · ${toggle} · esc close`
-                    : `  ↑↓/jk move · enter grant · ${toggle} · esc close`
-              }
+              partsLine(truncateParts(legendParts(), w)),
+              partsLine(truncateParts(hintParts(hints), w))
             ],
             theme
           );
