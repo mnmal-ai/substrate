@@ -10,7 +10,9 @@
     "lint": "biome check ."
   },
   "dependencies": {
-    "astro": "catalog:"
+    "@mnmal-ai/substrate": "workspace:*",
+    "astro": "catalog:",
+    "postgres": "catalog:"
   },
   "devDependencies": {
     "@mnmal-ai/substrate-config": "workspace:*",
