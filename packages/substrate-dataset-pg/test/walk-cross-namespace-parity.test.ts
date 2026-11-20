@@ -768,6 +768,27 @@ describe.skipIf(!POSTGRES_URL)('walk parity across namespaces, memory and pg', (
     expect(params.orderBy === undefined ? got.sort() : got).toEqual(expected);
   });
 
+  it('a crossing date _agg select keeps microseconds and orders by instant', async () => {
+    const params: ReadParams = {
+      agg: agg({ last: { in: OBS, max: 'observedAt' } }),
+      select: { lastAt: '_agg.last' },
+      orderBy: [{ lastAt: 'desc' }]
+    };
+    const read = async (ds: PgDataset | MemoryDataset) =>
+      (await ds.read('Cert', params)).rows.map(dropNulls);
+    const rows = await read(mem.A);
+    expect(await read(pg.A)).toEqual(rows);
+    expect(rows.slice(0, 4).map((r) => [name(r), r.lastAt])).toEqual([
+      ['c3', '2026-10-29T12:00:00.000000Z'],
+      ['c1', '2026-10-29T10:00:00.000000Z'],
+      ['c6', '2026-10-29T06:00:00.000000Z'],
+      ['c5', '2026-10-29T03:00:00.000000Z']
+    ]);
+    // c7's one observation is tombstoned, so its value is null and sorts last.
+    expect(rows.map(name).at(-1)).toBe('c7');
+    expect(rows.at(-1)?.lastAt).toBeUndefined();
+  });
+
   it('a windowed _agg across namespaces groups the far window in one pass (group-by form)', async () => {
     const frame = (limit?: number): ReadParams => ({
       where: walk({ in: OBS, where: WINDOW }),
