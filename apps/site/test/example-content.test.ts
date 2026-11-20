@@ -9,6 +9,10 @@ const files = (existsSync(dir) ? readdirSync(dir) : [])
   .map((f) => ({ slug: f.slice(0, -3), text: readFileSync(join(dir, f), 'utf8') }));
 
 describe('example content', () => {
+  it('all seven examples have a page', () => {
+    expect(files.map((f) => f.slug).sort()).toEqual([...EXAMPLE_SLUGS].sort());
+  });
+
   it('every content file is a known example in its place', () => {
     expect(files.length).toBeGreaterThan(0);
     for (const { slug, text } of files) {
