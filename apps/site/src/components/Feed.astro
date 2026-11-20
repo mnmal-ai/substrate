@@ -6,7 +6,7 @@ interface Props {
 }
 const { events } = Astro.props;
 ---
-<figure class="feed-box">
+<figure class="feed-box" aria-labelledby="feed-caption">
   <div class="signal" aria-hidden="true"><span class="pulse"></span></div>
   <div class="window">
     <div class="viewport">
@@ -33,7 +33,7 @@ const { events } = Astro.props;
     </div>
   </div>
   <figcaption>
-    <span>// replayed from the worked examples below</span>
+    <span id="feed-caption">// replayed from the worked examples below</span>
     <button type="button" class="pause" aria-pressed="false" hidden>pause</button>
   </figcaption>
 </figure>

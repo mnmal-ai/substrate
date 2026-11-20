@@ -85,6 +85,12 @@ a {
   box-shadow: 0 0 14px var(--accent);
 }
 
+/* Hovering the feed or pressing its pause button stops the pulse with it. */
+.feed-box:hover .pulse,
+.feed-box:has([aria-pressed='true']) .pulse {
+  animation-play-state: paused;
+}
+
 @keyframes pulse-down {
   from {
     transform: translateY(0);
