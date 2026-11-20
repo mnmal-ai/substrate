@@ -67,7 +67,7 @@ const href = (slug: string) => pageHref(import.meta.env.BASE_URL, slug);
 
       <section class="shows" aria-labelledby="shows">
         <h2 id="shows" class="label">What it shows</h2>
-        <ul>{entry.data.shows.map((s) => <li>{s}</li>)}</ul>
+        <ul role="list">{entry.data.shows.map((s) => <li>{s}</li>)}</ul>
       </section>
 
       <section class="section" aria-labelledby="elsewhere">
@@ -170,13 +170,14 @@ const href = (slug: string) => pageHref(import.meta.env.BASE_URL, slug);
     display: none;
   }
 
+  /* The empty alternative text keeps the sign out of the summary's accessible name. */
   .picker summary::after {
-    content: '+';
+    content: '+' / '';
     color: var(--muted);
   }
 
   .picker[open] summary::after {
-    content: '−';
+    content: '−' / '';
   }
 
   .picker-list {

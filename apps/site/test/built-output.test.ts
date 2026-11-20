@@ -104,7 +104,11 @@ describe('built output', () => {
           r.selector.split(',').some((s) => new RegExp(`^\\.${cls}(?![\\w-])`).test(s.trim())) &&
           /display:\s*none/.test(r.body)
       );
-    expect(hidden('sidebar', /\((?:max-width:|width\s*<)/), 'sidebar when narrow').toBe(true);
+    // Just under the picker's 960px, so no width shows both navs or neither.
+    expect(
+      hidden('sidebar', /\((?:max-width:\s*959\.98px|width\s*<=\s*959\.98px)/),
+      'sidebar when narrow'
+    ).toBe(true);
     expect(
       hidden('picker', /\((?:min-width:\s*960px|width\s*>=\s*960px)/),
       'picker when wide'
@@ -175,12 +179,25 @@ describe('built output', () => {
     }
   });
 
-  it('in-page anchors resolve', () => {
+  it('anchors resolve and ids are unique', () => {
+    // Each page's ids, keyed by the URL path that serves it.
+    const idsAt = new Map(
+      pages.map(({ path, html }) => [
+        `/substrate/${path.replace(/index\.html$/, '')}`,
+        [...html.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1] as string)
+      ])
+    );
     for (const { path, html } of pages) {
-      const ids = new Set([...html.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]));
-      const missing = [...html.matchAll(/href="#([^"]*)"/g)]
-        .map((m) => m[1] as string)
-        .filter((id) => !ids.has(id));
+      const own = `/substrate/${path.replace(/index\.html$/, '')}`;
+      const ids = idsAt.get(own) ?? [];
+      expect(
+        ids.filter((id, i) => ids.indexOf(id) !== i),
+        `${path} duplicate ids`
+      ).toEqual([]);
+      const missing = [...html.matchAll(/href="(\/substrate\/[^"#]*)?#([^"]*)"/g)]
+        .map((m) => ({ page: m[1] ?? own, id: m[2] as string }))
+        .filter(({ page, id }) => !idsAt.get(page)?.includes(id))
+        .map(({ page, id }) => `${page}#${id}`);
       expect(missing, path).toEqual([]);
     }
   });

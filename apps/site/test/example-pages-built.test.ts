@@ -54,6 +54,7 @@ describe('example pages', () => {
         slug
       ).toEqual(['What it shows', 'Elsewhere', 'On substrate', 'Where it stops']);
       expect(sectionHtml(html, 'shows')?.match(/<li[\s>]/g), slug).toHaveLength(3);
+      expect(sectionHtml(html, 'shows'), slug).toContain('<ul role="list"');
     }
   });
 
@@ -62,8 +63,11 @@ describe('example pages', () => {
       const navs = [
         ...html.matchAll(/<nav[^>]*aria-label="Worked examples"[^>]*>([\s\S]*?)<\/nav>/g)
       ].map((m) => m[1] as string);
-      expect(navs.length, slug).toBeGreaterThan(0);
+      // One in the sidebar, one in the narrow-screen picker.
+      expect(navs, slug).toHaveLength(2);
       for (const nav of navs) {
+        // The list is unstyled, so Safari needs the role to keep announcing it as a list.
+        expect(nav, slug).toMatch(/^\s*<ol role="list"/);
         expect(
           [...nav.matchAll(/href="([^"]*)"/g)].map((m) => m[1]),
           slug
@@ -98,9 +102,9 @@ describe('example pages', () => {
     // The ClickBench block sits in On substrate, after the run.
     const warehouse = pages.find((p) => p.slug === 'warehouse')?.html ?? '';
     const onSubstrate = sectionHtml(warehouse, 'on-substrate') ?? '';
-    expect(onSubstrate.indexOf('/43 compared')).toBeGreaterThan(
-      onSubstrate.indexOf('class="steps"')
-    );
+    const steps = onSubstrate.indexOf('class="steps"');
+    expect(steps).toBeGreaterThanOrEqual(0);
+    expect(onSubstrate.indexOf('/43 compared')).toBeGreaterThan(steps);
   });
 
   it('figure', () => {

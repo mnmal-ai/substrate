@@ -11,7 +11,7 @@ interface Props {
 const { entries, current, label } = Astro.props;
 ---
 <nav aria-label={label}>
-  <ol>
+  <ol role="list">
     {
       entries.map((e) => (
         <li>

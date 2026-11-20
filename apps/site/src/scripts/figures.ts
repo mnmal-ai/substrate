@@ -15,9 +15,11 @@ for (const el of document.querySelectorAll<HTMLElement>('[data-figure]')) {
   const figure = make(el, { theme: 'dark' });
   const card = el.dataset.mode === 'card' ? el.closest<HTMLElement>('.card') : null;
   if (card === null) continue;
-  let hovered = false;
-  let focused = false;
+  // A pointer or focus may already be inside the card when the script runs.
+  let hovered = card.matches(':hover');
+  let focused = card.matches(':focus-within');
   const sync = () => figure.update({ play: hovered || focused });
+  sync();
   card.addEventListener('pointerenter', () => {
     hovered = true;
     sync();
