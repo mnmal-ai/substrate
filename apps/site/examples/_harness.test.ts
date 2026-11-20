@@ -20,25 +20,6 @@ const app = defineNamespace('app', {
   }
 });
 const setup: ExampleSetup = { name: 'harness', namespaces: [app] };
-const post = (label: string, body: unknown): Step => ({
-  label,
-  method: 'POST',
-  path: label.startsWith('read') ? '/substrate/v1/query' : '/substrate/v1/mutate',
-  body
-});
-const stepsFor = (customer?: string): Step[] => [
-  post('create customer', {
-    'app/createCustomer': { params: { name: 'Ada' }, fields: { id: true } }
-  }),
-  post('create invoice', {
-    'app/createInvoice': {
-      params: { number: 'INV-1', dueAt: '2026-10-31', customer: customer ?? 'x' },
-      fields: { id: true }
-    }
-  }),
-  post('read customer', { 'app/Customer': { fields: { id: true, name: true } } })
-];
-
 const ID = '0197a000-0000-7000-8000-000000000001';
 
 describe('normalise', () => {
@@ -92,12 +73,80 @@ describe('normalise', () => {
   });
 });
 
+describe('normalise embedded values', () => {
+  const step = (response: unknown): Transcript => ({
+    example: 'x',
+    steps: [{ label: 'a', method: 'GET', path: '/p', feed: false, status: 200, response }]
+  });
+  it('maps cursors by first appearance and ids inside longer strings', () => {
+    const id = '01990000-aaaa-7bbb-8ccc-123456789abc';
+    const out = normalise(
+      step({
+        a: { nextCursor: 'abc' },
+        b: { nextCursor: 'def' },
+        c: { nextCursor: 'abc' },
+        d: { nextCursor: null },
+        e: `no row ${id} here`,
+        f: id
+      })
+    ).steps[0]?.response;
+    expect(out).toEqual({
+      a: { nextCursor: 'cursor-1' },
+      b: { nextCursor: 'cursor-2' },
+      c: { nextCursor: 'cursor-1' },
+      d: { nextCursor: null },
+      e: `no row ${ID} here`,
+      f: ID
+    });
+  });
+});
+
 describe('runExample', () => {
   it('is stable across two runs', async () => {
-    const a = await runExample(setup, stepsFor());
-    const b = await runExample(setup, stepsFor());
-    expect(a.steps.map((s) => s.status)).toEqual([200, 200, 200]);
+    const cid = '0197a111-1111-7111-8111-111111111111';
+    const mutate = (body: unknown): Step => ({
+      label: 'write',
+      method: 'POST',
+      path: '/substrate/v1/mutate',
+      body
+    });
+    const invoice = (n: string) =>
+      mutate({
+        'app/createInvoice': {
+          params: { number: n, dueAt: '2026-10-31T00:00:00Z', customer: cid },
+          fields: { id: true }
+        }
+      });
+    const run = () =>
+      runExample(setup, [
+        mutate({
+          'app/createCustomer': { params: { id: cid, name: 'Ada' }, fields: { id: true } }
+        }),
+        invoice('INV-1'),
+        invoice('INV-2'),
+        {
+          label: 'page',
+          method: 'POST',
+          path: '/substrate/v1/query',
+          body: { 'app/Invoice': { params: { limit: 1 }, fields: { id: true, number: true } } }
+        }
+      ]);
+    const a = await run();
+    const b = await run();
+    expect(a.steps.map((s) => s.status)).toEqual([200, 200, 200, 200]);
+    expect(JSON.stringify(a)).not.toContain('"errors"');
+    expect(JSON.stringify(a)).toContain('nextCursor');
+    expect(a).not.toEqual(b);
     expect(normalise(a)).toEqual(normalise(b));
+  });
+
+  it('throws on bad `as` or agents', async () => {
+    const step = (as: string): Step => ({ label: 's', method: 'GET', path: '/health', as });
+    await expect(runExample(setup, [step('x')])).rejects.toThrow(/no agents/);
+    await expect(runExample({ ...setup, agents: ['a'] }, [step('x')])).rejects.toThrow(
+      /not in agents/
+    );
+    await expect(runExample({ ...setup, agents: [SYSTEM_KID] }, [])).rejects.toThrow(/reserved/);
   });
 
   it('runs a step without `as` as the system actor when auth is on', async () => {

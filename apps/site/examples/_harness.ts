@@ -58,6 +58,21 @@ export const SYSTEM_KID = 'system';
 const SECRET = 'substrate-site-example-signing-secret-0123456789';
 
 export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Transcript> {
+  const agents = setup.agents;
+  if (agents?.includes(SYSTEM_KID)) {
+    throw new Error(
+      `agents must not contain '${SYSTEM_KID}': it is reserved for the system actor.`
+    );
+  }
+  for (const step of steps) {
+    if (step.as === undefined) continue;
+    if (agents === undefined) {
+      throw new Error(`Step '${step.label}' sets as '${step.as}' but the setup has no agents.`);
+    }
+    if (!agents.includes(step.as)) {
+      throw new Error(`Step '${step.label}' signs as '${step.as}', which is not in agents.`);
+    }
+  }
   const kind = setup.dataset ?? 'memory';
   const url = process.env.POSTGRES_URL;
   if (kind === 'pg') {
@@ -101,7 +116,6 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
     datasets[name] = ds;
   }
 
-  const agents = setup.agents;
   const kernelPlugins =
     setup.embedder === 'fake'
       ? [
@@ -184,22 +198,36 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
   }
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/gi;
 const PINNED_TIME = '2026-11-03T09:00:00.000Z';
 
-// Ids renumber by first appearance (step order, request before response) and
-// server timestamps are pinned, so a run is byte-identical to the last.
+// Ids and cursors renumber by first appearance (step order, request before
+// response) and server timestamps are pinned, so a run is byte-identical to
+// the last. A cursor embeds a real timestamp and row id, so it is replaced whole.
 export function normalise(t: Transcript): Transcript {
   const ids = new Map<string, string>();
+  const cursors = new Map<string, string>();
+  const token = (map: Map<string, string>, key: string, make: (n: number) => string): string => {
+    let out = map.get(key);
+    if (out === undefined) {
+      out = make(map.size + 1);
+      map.set(key, out);
+    }
+    return out;
+  };
   const walk = (v: unknown, key?: string): unknown => {
     if (key === 'createdAt' || key === 'updatedAt') return PINNED_TIME;
-    if (typeof v === 'string' && UUID.test(v)) {
-      let out = ids.get(v);
-      if (out === undefined) {
-        out = `0197a000-0000-7000-8000-${String(ids.size + 1).padStart(12, '0')}`;
-        ids.set(v, out);
-      }
-      return out;
+    if (key === 'nextCursor' && typeof v === 'string') {
+      return token(cursors, v, (n) => `cursor-${n}`);
+    }
+    if (typeof v === 'string') {
+      return v.replace(UUID, (id) =>
+        token(
+          ids,
+          id.toLowerCase(),
+          (n) => `0197a000-0000-7000-8000-${String(n).padStart(12, '0')}`
+        )
+      );
     }
     if (Array.isArray(v)) return v.map((x) => walk(x));
     if (v !== null && typeof v === 'object') {
