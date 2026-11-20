@@ -1,0 +1,129 @@
+---
+import { getCollection } from 'astro:content';
+import { byOrder, EXAMPLE_FIGURES, type ExampleSlug, pageHref } from '../lib/example-pages.ts';
+import Figure from './Figure.astro';
+
+const entries = byOrder(await getCollection('examples'));
+const nn = (order: number) => String(order).padStart(2, '0');
+---
+<section id="examples" class="section" aria-labelledby="examples-title">
+  <div class="joint signal" aria-hidden="true"><span class="pulse"></span></div>
+  <p class="label kicker">// worked examples</p>
+  <h2 id="examples-title">Seven promises, and the runs that keep them</h2>
+  <p class="lede">
+    Each one is a script the site's tests run against substrate's engine in CI. Its page shows the
+    code, then replays the frames and responses a run produced, not typed in. All the data is
+    invented.
+  </p>
+
+  <ol class="cards">
+    {
+      entries.map((e) => (
+        <li class="card" data-reveal>
+          <div class="art">
+            <Figure name={EXAMPLE_FIGURES[e.id as ExampleSlug]} mode="card" />
+          </div>
+          <a href={pageHref(import.meta.env.BASE_URL, e.id)}>
+            <span class="label n">{`${nn(e.data.order)} ${e.data.name}`}</span>
+            <span class="promise">{e.data.promise}</span>
+          </a>
+        </li>
+      ))
+    }
+  </ol>
+</section>
+
+<style>
+  .cards {
+    display: grid;
+    gap: 16px;
+    margin: 40px 0 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  /* The figure on top, then the number, name and promise. */
+  .card {
+    position: relative;
+    display: grid;
+    grid-template-rows: auto 1fr;
+    gap: 20px;
+    min-width: 0;
+    padding: 20px 22px 24px;
+    border: 1px solid transparent;
+    border-radius: 14px;
+    background: var(--panel);
+    transition: border-color 0.2s ease-out;
+  }
+
+  .card:hover,
+  .card:focus-within {
+    border-color: var(--accent);
+  }
+
+  .art {
+    max-width: 320px;
+  }
+
+  a {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    color: var(--text);
+    text-decoration: none;
+  }
+
+  /* The link's box covers the card, so the whole card is one target with one focus ring. */
+  a::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 14px;
+  }
+
+  a:focus-visible {
+    outline: none;
+  }
+
+  a:focus-visible::after {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .n {
+    color: var(--accent);
+    font-size: 14px;
+  }
+
+  .promise {
+    font-size: 17px;
+    line-height: 1.45;
+  }
+
+  /* Two columns, then four. The first example leads across two, its figure beside its promise. */
+  @media (min-width: 640px) {
+    .cards {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .card:first-child {
+      grid-column: span 2;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-rows: none;
+      align-items: center;
+      gap: 32px;
+    }
+
+    .card:first-child .promise {
+      font-size: clamp(19px, 1.8vw, 24px);
+      line-height: 1.3;
+      letter-spacing: -0.01em;
+    }
+  }
+
+  @media (min-width: 1100px) {
+    .cards {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+  }
+</style>

@@ -1,6 +1,7 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { EXAMPLE_FIGURES, EXAMPLE_SLUGS, pageHref } from '../src/lib/example-pages.ts';
 import { licensedMonoAvailable } from '../src/lib/fonts.ts';
 
 const dist = new URL('../dist/', import.meta.url).pathname;
@@ -160,8 +161,8 @@ describe('built output', () => {
     for (const { path, html } of pages) {
       expect(html.match(/<h1[\s>]/g), path).toHaveLength(1);
       const sections = [...html.matchAll(/<section\b[^>]*>/g)].map((m) => m[0]);
-      // The nine sections of the landing page, hero to start.
-      if (path === 'index.html') expect(sections).toHaveLength(9);
+      // The landing page: hero, replaces, examples, surfaces, built-on-itself and start.
+      if (path === 'index.html') expect(sections).toHaveLength(6);
       for (const s of sections) {
         const by = /aria-labelledby="([^"]+)"/.exec(s)?.[1];
         const named =
@@ -200,5 +201,46 @@ describe('built output', () => {
         .map(({ page, id }) => `${page}#${id}`);
       expect(missing, path).toEqual([]);
     }
+  });
+});
+
+describe('landing page', () => {
+  const examples = /<section[^>]*\sid="examples"[^>]*>([\s\S]*?)<\/section>/.exec(html)?.[1] ?? '';
+
+  it('links all seven examples', () => {
+    const hrefs = [...examples.matchAll(/<a\b[^>]*\shref="([^"]*)"/g)].map((m) => m[1]);
+    expect(hrefs).toEqual(EXAMPLE_SLUGS.map((s) => pageHref('/substrate', s)));
+    for (const slug of EXAMPLE_SLUGS) {
+      expect(existsSync(join(dist, 'examples', slug, 'index.html')), slug).toBe(true);
+    }
+  });
+
+  it('has no inline worked example', () => {
+    expect(html).not.toContain('class="steps"');
+    expect(html).not.toContain('<figure class="file"');
+  });
+
+  it('cards carry their figures', () => {
+    const figures = [...examples.matchAll(/<[^>]*\sdata-figure="([^"]*)"[^>]*>/g)];
+    expect(figures.map((m) => m[1])).toEqual(EXAMPLE_SLUGS.map((s) => EXAMPLE_FIGURES[s]));
+    for (const [tag] of figures) {
+      expect(tag).toContain('data-mode="card"');
+      expect(tag).toMatch(/\sinert[\s=>]/);
+      expect(tag).toContain('aria-hidden="true"');
+    }
+    for (const [link] of examples.matchAll(/<a\b[\s\S]*?<\/a>/g)) {
+      expect(link).not.toContain('data-figure');
+    }
+    // The figures module is the script that looks up [data-figure].
+    const scripts = [...html.matchAll(/<script type="module" src="\/substrate\/([^"]+)"/g)].map(
+      (m) => readFileSync(join(dist, m[1] as string), 'utf8')
+    );
+    expect(scripts.some((code) => code.includes('[data-figure]'))).toBe(true);
+  });
+
+  it("sends the hero's examples button to the first example", () => {
+    expect(/<a[^>]*\shref="([^"]*)"[^>]*>See the worked examples<\/a>/.exec(html)?.[1]).toBe(
+      '/substrate/examples/onboard/'
+    );
   });
 });

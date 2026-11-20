@@ -58,7 +58,10 @@ describe('committed ClickBench data', () => {
 });
 
 describe('built page', () => {
-  const html = readFileSync(new URL('../dist/index.html', import.meta.url), 'utf8');
+  const html = readFileSync(
+    new URL('../dist/examples/warehouse/index.html', import.meta.url),
+    'utf8'
+  );
   it('leads with n/43 compared and never puts 43/43 beside compared or match', () => {
     const s = summarise(data);
     expect(s.compared).toBeLessThan(43);
