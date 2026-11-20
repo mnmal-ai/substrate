@@ -280,9 +280,9 @@ describe('/keys styling', () => {
 
   it('tones the head the same in the note, reading, detail and list views', () => {
     type Node = { props: { children: Node[] | string; color?: string; bold?: boolean } };
-    const { view } = (keysModule({ ...noDash, ...noAdmin() } as TuiDeps).panels ?? {}).keys as {
-      view: (p: unknown) => unknown;
-    };
+    const panel = keysModule({ ...noDash, ...noAdmin() } as TuiDeps).panels?.keys;
+    if (panel === undefined) throw new Error('the keys module has no keys panel');
+    const { view } = panel as { view: (p: unknown) => unknown };
     const tones = (s: KeysState) => {
       const node = view({ state: s, theme: marathon, size: { columns: 60, rows: 20 } }) as Node;
       const head = (node.props.children as Node[])[0] as Node;

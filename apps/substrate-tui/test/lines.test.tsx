@@ -1,5 +1,6 @@
 import { marathon } from '@mnmal-ai/surface-theme';
 import { render } from 'ink-testing-library';
+import type { ReactElement } from 'react';
 import { describe, expect, it } from 'vitest';
 import { linesView, partsLine, truncateParts } from '../src/lines.js';
 
@@ -51,7 +52,7 @@ describe('linesView', () => {
       [partsLine([{ text: 'ab' }, { text: 'cd', bold: true }]), { text: 'plain', tone: 'dim' }],
       marathon
     );
-    const { lastFrame } = render(<>{view}</>);
+    const { lastFrame } = render(view as ReactElement);
     expect(lastFrame()).toContain('abcd');
     expect(lastFrame()).toContain('plain');
   });
