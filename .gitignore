@@ -12,7 +12,7 @@ dist
 coverage
 
 # Postgres dumps produced by scripts/backup-postgres.sh
-data/
+/data/
 
 # Local snapshots (one-shot data exports, not source-controlled)
 scripts/.snapshots/

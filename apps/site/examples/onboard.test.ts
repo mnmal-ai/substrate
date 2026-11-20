@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { normalise, runExample, type StepResult } from './_harness.ts';
 import { app } from './onboard/namespace.ts';
-import { steps } from './onboard/steps.ts';
+import { EVERY_SURFACE, steps } from './onboard/steps.ts';
 
 type Rows = {
   data: { 'app/Invoice': { number: string; dueAt: string; billedTo: { name: string }[] }[] };
@@ -28,8 +28,14 @@ describe('onboard example', () => {
       expect(s.status, s.label).toBe(200);
       expect(s.response, s.label).not.toHaveProperty('errors');
     }
-    const q = n.steps.find((s) => s.path.endsWith('/query')) as StepResult;
-    const rows = (q.response as Rows).data['app/Invoice'];
+    const step = (label: string) => {
+      const found = n.steps.find((s) => s.label === label);
+      expect(found, label).toBeDefined();
+      return found as StepResult;
+    };
+    const rows = (step('Query sent invoices, with the customer').response as Rows).data[
+      'app/Invoice'
+    ];
     expect(rows.length).toBe(6);
     expect(rows.map((r) => r.number)).toEqual([
       'INV-1002',
@@ -42,6 +48,11 @@ describe('onboard example', () => {
     const due = rows.map((r) => r.dueAt);
     expect(due).toEqual([...due].sort());
     for (const r of rows) expect(r.billedTo[0]?.name).toBeTruthy();
+
+    // The walk-free read returns the same invoices in the same order, with only its two fields.
+    const plain = step(EVERY_SURFACE).response as { data: { 'app/Invoice': object[] } };
+    const plainRows = plain.data['app/Invoice'];
+    expect(plainRows).toEqual(rows.map((r) => ({ number: r.number, dueAt: r.dueAt })));
     expect(Object.keys(sc.mutations)).toContain('createInvoice');
   });
 });

@@ -1,5 +1,6 @@
 ---
 import { Code } from 'astro:components';
+import { EVERY_SURFACE } from '../../examples/onboard/steps.ts';
 import { loadExample } from '../lib/examples.ts';
 import { pretty, THEME, threeWays } from '../lib/steps.ts';
 import Example from './Example.astro';
@@ -11,14 +12,14 @@ const live = ['onboard', 'reshape', 'ask', 'coordinate'].filter(
 const has = (name: string) => live.includes(name);
 const label = (name: string) => `${String(live.indexOf(name) + 1).padStart(2, '0')} ${name}`;
 
-// The onboard query, as the transcript sent it over HTTP, in the shapes MCP and a stream take.
-const query = loadExample('onboard').transcript?.steps.find((s) => s.path.endsWith('/query'));
+// The onboard run's walk-free read, as HTTP sent it, in the shapes MCP and a subscription take.
+const query = loadExample('onboard').transcript?.steps.find((s) => s.label === EVERY_SURFACE);
 const ways = query === undefined ? undefined : threeWays(query.body as Record<string, object>);
 const panes =
   ways === undefined
     ? []
     : [
-        { surface: 'HTTP', how: `POST ${query?.path}`, body: ways.http },
+        { surface: 'HTTP', how: 'POST /substrate/v1/query', body: ways.http },
         { surface: 'MCP', how: 'the query tool, with arguments', body: ways.mcp },
         { surface: 'Stream', how: 'POST /substrate/v1/subscribe', body: ways.subscribe }
       ];
@@ -55,14 +56,9 @@ const panes =
                 <figcaption>
                   <h4 id="ways-title">The same frame, three ways</h4>
                   <p>
-                    The query above, as each surface takes it, built from the object the run sent.
-                    Only the HTTP run's output is shown.
-                    {ways?.dropped.length !== 0 && (
-                      <>
-                        Subscriptions refuse edge walks, so the stream form leaves out{' '}
-                        <code>{ways?.dropped.join(', ')}</code>.
-                      </>
-                    )}
+                    The walk-free read from the run above, as each surface takes it: the object the
+                    run sent, unchanged. Only the HTTP run's output is shown here; the coordinate
+                    stop below shows a live subscription.
                   </p>
                 </figcaption>
                 <div class="panes">

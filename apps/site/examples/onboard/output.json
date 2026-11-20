@@ -537,6 +537,72 @@
       }
     },
     {
+      "label": "Query sent invoices by due date, in a frame every surface takes",
+      "method": "POST",
+      "path": "/substrate/v1/query",
+      "body": {
+        "app/Invoice": {
+          "params": {
+            "where": {
+              "status": {
+                "eq": "sent"
+              }
+            },
+            "orderBy": [
+              {
+                "dueAt": "asc"
+              }
+            ]
+          },
+          "fields": {
+            "number": true,
+            "dueAt": true
+          }
+        }
+      },
+      "feed": false,
+      "status": 200,
+      "response": {
+        "schemaVersion": "9a75ac1bfcbb",
+        "data": {
+          "app/Invoice": [
+            {
+              "number": "INV-1002",
+              "dueAt": "2026-09-18T00:00:00.000Z"
+            },
+            {
+              "number": "INV-1003",
+              "dueAt": "2026-10-02T00:00:00.000Z"
+            },
+            {
+              "number": "INV-1005",
+              "dueAt": "2026-11-05T00:00:00.000Z"
+            },
+            {
+              "number": "INV-1006",
+              "dueAt": "2026-11-19T00:00:00.000Z"
+            },
+            {
+              "number": "INV-1007",
+              "dueAt": "2026-11-27T00:00:00.000Z"
+            },
+            {
+              "number": "INV-1009",
+              "dueAt": "2026-12-09T00:00:00.000Z"
+            }
+          ]
+        },
+        "shapes": {
+          "app/Invoice": "list"
+        },
+        "_pagination": {
+          "app/Invoice": {
+            "hasMore": false
+          }
+        }
+      }
+    },
+    {
       "label": "Ask the server to describe itself",
       "method": "GET",
       "path": "/substrate/v1/onboard",

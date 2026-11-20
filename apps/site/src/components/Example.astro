@@ -13,8 +13,8 @@ interface Props {
 }
 const { name, show } = Astro.props;
 
-// A response longer than this shows in full under a summary that folds it away: snapshots can run
-// to hundreds of lines.
+// A response longer than this is folded behind a summary that opens it: snapshots can run to
+// hundreds of lines.
 const LONG = 40;
 const dir = `apps/site/examples/${name}`;
 const { files, transcript } = loadExample(name);
@@ -77,7 +77,7 @@ const outcome = (s: Exclude<PageStep, { kind: 'seed' }>) =>
                 <div class="half">
                   <p class="label meta out">{outcome(s)}</p>
                   {lines > LONG ? (
-                    <details open>
+                    <details>
                       <summary class="label">{`response · ${lines} lines`}</summary>
                       <Code code={response} lang="json" theme={THEME} />
                     </details>

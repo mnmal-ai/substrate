@@ -65,17 +65,23 @@ describe('threeWays', () => {
   const frame = {
     'app/Invoice': {
       params: { where: { status: { eq: 'sent' } }, orderBy: [{ dueAt: 'asc' }] },
-      fields: { number: true, billedTo: { _walk: { out: 'customer' }, fields: { name: true } } }
+      fields: { number: true, dueAt: true }
     }
   };
 
-  it('wraps the same frame for MCP and drops walks from the subscription', () => {
-    const ways = threeWays(frame);
-    expect(ways.http).toBe(frame);
-    expect(ways.mcp).toEqual({ payload: frame });
-    expect(ways.subscribe).toEqual({
-      'app/Invoice': { params: frame['app/Invoice'].params, fields: { number: true } }
-    });
-    expect(ways.dropped).toEqual(['billedTo']);
+  it('sends the same frame over HTTP, as the MCP payload, and as a subscription', () => {
+    expect(threeWays(frame)).toEqual({ http: frame, mcp: { payload: frame }, subscribe: frame });
+  });
+
+  it('refuses a frame a subscription would refuse', () => {
+    const walked = {
+      'app/Invoice': {
+        ...frame['app/Invoice'],
+        fields: { number: true, billedTo: { _walk: { out: 'customer' }, fields: { name: true } } }
+      }
+    };
+    expect(() => threeWays(walked)).toThrow(/walks an edge/);
+    const limited = { 'app/Invoice': { ...frame['app/Invoice'], params: { limit: 5 } } };
+    expect(() => threeWays(limited)).toThrow(/sends limit/);
   });
 });

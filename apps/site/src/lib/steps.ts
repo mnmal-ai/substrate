@@ -77,24 +77,26 @@ export function pageSteps(t: Transcript, seedLabels: Set<string>): PageStep[] {
   return out;
 }
 
+// The params a subscription accepts (docs/surface-parity.md §4); anything else it refuses.
+const SUBSCRIBE_PARAMS = ['where', 'orderBy'];
+
 /**
  * One query frame as three surfaces take it: the HTTP body, the MCP `query` tool's arguments, and
- * a `POST /substrate/v1/subscribe` body. Subscriptions refuse edge walks, so the last drops every
- * walked field and `_agg`, and `dropped` names them.
+ * a `POST /substrate/v1/subscribe` body, all the same object. Throws at build time on a frame a
+ * subscription would refuse (an edge walk, or a param beyond `where` and `orderBy`), so the page
+ * never shows one.
  */
 export function threeWays(frame: Record<string, Frame>) {
-  const dropped: string[] = [];
-  const subscribe = Object.fromEntries(
-    Object.entries(frame).map(([key, f]) => {
-      const fields = Object.fromEntries(
-        Object.entries(f.fields ?? {}).filter(([name, sel]) => {
-          const walk = name === '_agg' || (isObject(sel) && '_walk' in sel);
-          if (walk) dropped.push(name);
-          return !walk;
-        })
-      );
-      return [key, { ...f, fields }];
-    })
-  );
-  return { http: frame, mcp: { payload: frame }, subscribe, dropped };
+  for (const [key, f] of Object.entries(frame)) {
+    if (/"_(walk|agg)":/.test(JSON.stringify(f))) {
+      throw new Error(`threeWays: ${key} walks an edge, which a subscription refuses.`);
+    }
+    const extra = Object.keys(isObject(f.params) ? f.params : {}).filter(
+      (p) => !SUBSCRIBE_PARAMS.includes(p)
+    );
+    if (extra.length > 0) {
+      throw new Error(`threeWays: ${key} sends ${extra.join(', ')}, which a subscription refuses.`);
+    }
+  }
+  return { http: frame, mcp: { payload: frame }, subscribe: frame };
 }

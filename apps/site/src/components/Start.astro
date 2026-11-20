@@ -3,11 +3,13 @@ import { Code } from 'astro:components';
 import { repoLink } from '../data/surfaces.ts';
 import { THEME } from '../lib/steps.ts';
 
-// Quoted from the README and docs/getting-started.md, which own these commands.
-const docker = `git clone https://github.com/mnmal-ai/substrate.git && cd substrate
+// The commands of the README and docs/getting-started.md, which own them, one per line.
+const docker = `git clone https://github.com/mnmal-ai/substrate.git
+cd substrate
 docker compose up -d
 curl --http2-prior-knowledge http://localhost:3100/health`;
-const npm = `npx @mnmal-ai/substrate@next init ~/my-substrate --yes --store=memory --plugins=
+const npm = `npx @mnmal-ai/substrate@next init ~/my-substrate \\
+  --yes --store=memory --plugins=
 cd ~/my-substrate
 pnpm install
 set -a && source .env && set +a

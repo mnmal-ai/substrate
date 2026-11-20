@@ -1,6 +1,9 @@
 import type { Step } from '../_harness.ts';
 import { seedSteps } from '../_scenario.ts';
 
+/** The label of the walk-free read the page sends three ways: HTTP, MCP and a subscription. */
+export const EVERY_SURFACE = 'Query sent invoices by due date, in a frame every surface takes';
+
 export const steps: Step[] = [
   ...seedSteps,
   {
@@ -38,6 +41,17 @@ export const steps: Step[] = [
           dueAt: true,
           billedTo: { _walk: { out: 'customer' }, fields: { name: true } }
         }
+      }
+    }
+  },
+  {
+    label: EVERY_SURFACE,
+    method: 'POST',
+    path: '/substrate/v1/query',
+    body: {
+      'app/Invoice': {
+        params: { where: { status: { eq: 'sent' } }, orderBy: [{ dueAt: 'asc' }] },
+        fields: { number: true, dueAt: true }
       }
     }
   },

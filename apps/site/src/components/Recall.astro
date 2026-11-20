@@ -10,8 +10,8 @@ const live = loadExample('recall').transcript !== null;
   <p class="label kicker">// recall</p>
   <h2 id="recall-title">Search any declared type by meaning</h2>
   <p class="lede">
-    Give a type an <code>embed.source</code> and every write is embedded into pgvector beside its
-    row. A <code>recall/Hit</code> frame then searches it by meaning. A type that also declares a
+    Give a type an <code>embed.source</code> and every write is embedded into pgvector, in the same
+    Postgres. A <code>recall/Hit</code> frame then searches it by meaning. A type that also declares a
     <code>lexical.source</code> gets keyword ranking fused in, so a small model loses little, and
     embedded rows can be clustered into durable <code>recall/Cluster</code> rows.
   </p>

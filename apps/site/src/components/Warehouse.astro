@@ -14,13 +14,12 @@ const clickbench = Object.values(
   import.meta.glob<ClickBench>('../data/clickbench.json', { eager: true, import: 'default' })
 )[0];
 
-// Quote the run's own values: a computed month key and a walk aggregate over a stored date.
-type Value = { groups?: { month?: string }[] } & { _agg?: { nextDue?: string } }[];
+// Quote the run's own computed month key.
+type Value = { groups?: { month?: string }[] };
 const values = (loadExample('warehouse').transcript?.steps ?? []).flatMap((s) =>
   Object.values((s.response as { data?: Record<string, Value> }).data ?? {})
 );
 const month = values.find((v) => v.groups !== undefined)?.groups?.[0]?.month;
-const nextDue = values.find((v) => Array.isArray(v))?.[0]?._agg?.nextDue;
 ---
 <section class="section" aria-labelledby="warehouse-title">
   <div class="joint signal" aria-hidden="true"><span class="pulse"></span></div>
@@ -35,11 +34,10 @@ const nextDue = values.find((v) => Array.isArray(v))?.[0]?._agg?.nextDue;
     <code>amount</code> is an <code>int64</code> in integer minor units, cents here. It travels
     as a decimal string so no digit is lost, and sums exactly.
     {
-      month !== undefined && nextDue !== undefined && (
+      month !== undefined && (
         <>
           A month key is a computed date, so it comes back as UTC text to the microsecond, as in{' '}
-          <code>{month}</code>. <code>nextDue</code>, a minimum over stored <code>dueAt</code> values, comes
-          back as it was stored, as in <code>{nextDue}</code>.
+          <code>{month}</code>.
         </>
       )
     }
