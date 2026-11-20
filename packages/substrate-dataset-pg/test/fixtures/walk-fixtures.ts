@@ -10,7 +10,7 @@ import type { FieldDef } from '@mnmal-ai/substrate-types';
 export const RECENT = '2026-10-28T00:00:00Z';
 
 /** The crossRef fields, whose values are fixture names like ids. */
-export const REF_FIELDS = new Set(['id', 'cert', 'test']);
+export const REF_FIELDS = new Set(['id', 'cert', 'test', 'obs']);
 
 export function walkSchema(ns: string): Record<string, Record<string, FieldDef>> {
   const num: FieldDef = { kind: 'scalar', type: 'number' };
@@ -108,3 +108,62 @@ export const RUNS = {
 
 /** Rows tombstoned after loading, by type. */
 export const TOMBSTONED: Record<string, string[]> = { Observation: ['o7'] };
+
+/**
+ * The same cards split over two namespaces: `near` keeps the certs and a
+ * ticket per cert, `far` holds the observations and listings that point back
+ * at the certs, and tickets point out at observations. `far` also declares a
+ * `Cert` of its own (same name, other rows) and a `Never` type that is never written.
+ */
+export function crossSchema(
+  near: string,
+  far: string
+): Record<string, Record<string, Record<string, FieldDef>>> {
+  const num: FieldDef = { kind: 'scalar', type: 'number' };
+  const str: FieldDef = { kind: 'scalar', type: 'string' };
+  const date: FieldDef = { kind: 'scalar', type: 'date' };
+  const ref = (ns: string, type: string): FieldDef => ({
+    kind: 'crossRef',
+    ns,
+    type,
+    onDelete: 'set_null'
+  });
+  return {
+    [near]: {
+      Cert: { grade: num, ask: num },
+      Ticket: { cert: ref(near, 'Cert'), obs: ref(far, 'Observation'), label: str }
+    },
+    [far]: {
+      Cert: { grade: num, ask: num },
+      Listing: { cert: ref(near, 'Cert'), price: num, firstSeen: date },
+      Observation: { cert: ref(near, 'Cert'), price: num, observedAt: date, status: str },
+      Never: { cert: ref(near, 'Cert'), n: num }
+    }
+  };
+}
+
+/** Rows by type for the near namespace: the certs and listings are CARDS' own. */
+export const CROSS_NEAR = {
+  Cert: CARDS.Cert,
+  Ticket: [
+    { id: 'tk1', cert: 'c1', obs: 'o1a', label: 'a' },
+    { id: 'tk2', cert: 'c2', obs: 'o2', label: 'b' },
+    { id: 'tk3', cert: 'c3', obs: 'o3', label: 'c' },
+    { id: 'tk4', cert: 'c5', obs: 'o5b', label: 'd' },
+    { id: 'tk5', cert: 'c7', obs: 'o7', label: 'e' },
+    { id: 'tk6', cert: 'c4', obs: null, label: 'f' }
+  ]
+};
+
+/** Rows by type for the far namespace; `Cert` reuses ids c1 and c2 with grades that differ from the near certs. */
+export const CROSS_FAR = {
+  Cert: [
+    { id: 'c1', grade: 1, ask: 1 },
+    { id: 'c2', grade: 1, ask: 1 }
+  ],
+  Listing: CARDS.Listing,
+  Observation: CARDS.Observation
+};
+
+/** Far rows tombstoned after loading, by type. */
+export const CROSS_TOMBSTONED = TOMBSTONED;
