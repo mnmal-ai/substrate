@@ -15,7 +15,6 @@ html {
 
 body {
   margin: 0;
-  overflow-x: hidden;
 }
 
 /* --max-width is the content's; the gutters sit outside it. */
@@ -34,6 +33,15 @@ h1 {
 
 h2 {
   font-size: clamp(32px, 4vw, 48px);
+  line-height: 1.1;
+  letter-spacing: -0.025em;
+  text-wrap: balance;
+}
+
+h3 {
+  font-size: clamp(22px, 2.2vw, 28px);
+  line-height: 1.2;
+  letter-spacing: -0.015em;
 }
 
 .label {
@@ -44,6 +52,66 @@ h2 {
 code,
 pre {
   font-family: var(--mono);
+}
+
+/* Inline code in prose: a shade lighter than its paragraph, never wider than the line. */
+:not(pre) > code {
+  font-size: 0.86em;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+/* A long frame scrolls inside its own box rather than widening the page. */
+pre {
+  overflow-x: auto;
+  margin: 0;
+  padding: 16px 20px;
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.6;
+  tab-size: 2;
+}
+
+/* Shiki sets its theme's background inline; panels use the page's own. */
+pre.astro-code {
+  background-color: var(--panel) !important;
+}
+
+/* The theme's comment grey falls short of AA contrast on a panel; the muted token passes. */
+pre.astro-code span[style*='#767C9D' i] {
+  color: var(--muted) !important;
+}
+
+/*
+ * Every section below the hero: a signal line dropping in from the one above, a mono label,
+ * the heading, then a lede.
+ */
+.section {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding-bottom: clamp(48px, 7vw, 88px);
+}
+
+.joint {
+  height: clamp(56px, 8vw, 96px);
+  margin-bottom: 28px;
+}
+
+.kicker {
+  margin: 0;
+  color: var(--muted);
+}
+
+.section > h2 {
+  max-width: 22em;
+  margin: 14px 0 0;
+}
+
+.lede {
+  max-width: 40em;
+  margin: 20px 0 0;
+  color: var(--muted);
 }
 
 a {

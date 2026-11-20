@@ -5,5 +5,12 @@
     "allowImportingTsExtensions": true,
     "paths": {}
   },
-  "include": ["src/lib/**/*", "src/scripts/**/*", "examples/**/*", "test/**/*", "vitest.config.ts"]
+  "include": [
+    "src/lib/**/*",
+    "src/data/**/*",
+    "src/scripts/**/*",
+    "examples/**/*",
+    "test/**/*",
+    "vitest.config.ts"
+  ]
 }

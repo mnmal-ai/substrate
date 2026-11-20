@@ -31,6 +31,14 @@ const reducedMotionRules = (text: string): { selector: string; body: string }[] 
       body: r[2] as string
     }));
   });
+// Every innermost `selector { body }` rule, inline or in a file.
+const styleText = `${cssText}\n${[...html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)].map((m) => m[1]).join('\n')}`;
+const rules = [...styleText.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((r) => ({
+  selectors: (r[1] as string).split(',').map((s) => s.trim()),
+  body: r[2] as string
+}));
+const ruled = (selector: RegExp, body: RegExp) =>
+  rules.some((r) => r.selectors.some((s) => selector.test(s)) && body.test(r.body));
 const forkBuild = !licensedMonoAvailable(new URL('../public/', import.meta.url).pathname);
 
 describe('built output', () => {
@@ -66,6 +74,26 @@ describe('built output', () => {
         rules.some((r) => selector.test(r.selector) && /animation:\s*none/.test(r.body)),
         cls
       ).toBe(true);
+    }
+  });
+
+  it('keeps long lines inside their boxes', () => {
+    expect(ruled(/(^|[\s>])pre(?![\w-])/, /overflow-x:\s*auto/), 'pre scrolls').toBe(true);
+    expect(ruled(/\.line(?![\w-])/, /overflow-wrap:\s*anywhere/), 'feed lines wrap').toBe(true);
+    // Hiding the page's overflow would mask a box that is too wide instead of fixing it.
+    expect(ruled(/^(html|body)$/, /overflow(-x)?:\s*(hidden|clip)/), 'page clips').toBe(false);
+  });
+
+  it('has one h1 and labelled sections', () => {
+    expect(html.match(/<h1[\s>]/g)).toHaveLength(1);
+    const sections = [...html.matchAll(/<section\b[^>]*>/g)].map((m) => m[0]);
+    // The nine sections of the page, hero to start.
+    expect(sections).toHaveLength(9);
+    for (const s of sections) {
+      const by = /aria-labelledby="([^"]+)"/.exec(s)?.[1];
+      const named =
+        /aria-label="[^"]+"/.test(s) || (by !== undefined && html.includes(`id="${by}"`));
+      expect(named, s).toBe(true);
     }
   });
 });

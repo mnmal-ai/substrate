@@ -1,0 +1,34 @@
+---
+import { loadExample } from '../lib/examples.ts';
+import Example from './Example.astro';
+
+// Present only after a live run (written at deploy). CI has none, so the code shows alone.
+const live = loadExample('recall').transcript !== null;
+---
+<section class="section" aria-labelledby="recall-title">
+  <div class="joint signal" aria-hidden="true"><span class="pulse"></span></div>
+  <p class="label kicker">// recall</p>
+  <h2 id="recall-title">Search any declared type by meaning</h2>
+  <p class="lede">
+    Give a type an <code>embed.source</code> and every write is embedded into pgvector beside its
+    row. A <code>recall/Hit</code> frame then searches it by meaning. A type that also declares a
+    <code>lexical.source</code> gets keyword ranking fused in, so a small model loses little, and
+    embedded rows can be clustered into durable <code>recall/Cluster</code> rows.
+  </p>
+  <p class="lede">
+    Here each customer gains a free-text service note, embedded on every write.
+    {
+      live &&
+        ' The question is “customers unhappy about late delivery”. These hits come from a real embedder (bge-base) run when the site is deployed. CI checks the same example with a test embedder whose ranking is noise, so its output never reaches this page.'
+    }
+  </p>
+  <div class="run">
+    <Example name="recall" show={['namespace.ts']} />
+  </div>
+</section>
+
+<style>
+  .run {
+    margin-top: 40px;
+  }
+</style>

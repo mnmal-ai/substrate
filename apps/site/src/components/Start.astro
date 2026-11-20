@@ -1,0 +1,102 @@
+---
+import { Code } from 'astro:components';
+import { repoLink } from '../data/surfaces.ts';
+import { THEME } from '../lib/steps.ts';
+
+// Quoted from the README and docs/getting-started.md, which own these commands.
+const docker = `git clone https://github.com/mnmal-ai/substrate.git && cd substrate
+docker compose up -d
+curl --http2-prior-knowledge http://localhost:3100/health`;
+const npm = `npx @mnmal-ai/substrate@next init ~/my-substrate --yes --store=memory --plugins=
+cd ~/my-substrate
+pnpm install
+set -a && source .env && set +a
+./node_modules/.bin/substrate serve`;
+---
+<section id="start" class="section" aria-labelledby="start-title">
+  <div class="joint signal" aria-hidden="true"><span class="pulse"></span></div>
+  <p class="label kicker">// start</p>
+  <h2 id="start-title">Get started</h2>
+  <p class="lede">
+    Two ways to a running server. Releases publish on npm's <code>next</code> tag until 1.0.0.
+  </p>
+  <div class="ways">
+    <div class="way" data-reveal>
+      <h3>Docker</h3>
+      <Code code={docker} lang="bash" theme={THEME} />
+      <p>
+        Builds the server from source on the first <code>up</code>, which takes a few minutes, and
+        starts it beside a pgvector Postgres. No image is published.
+      </p>
+    </div>
+    <div class="way" data-reveal>
+      <h3>npm</h3>
+      <Code code={npm} lang="bash" theme={THEME} />
+      <p>
+        Needs Node 26.13.1 or newer and pnpm. <code>substrate init</code> scaffolds a runtime
+        directory, here with the memory store; for Postgres, leave out <code>--store=memory</code>
+        and follow the guide below. In your own code, <code>npm i @mnmal-ai/substrate@next</code> brings the SDK and the client.
+      </p>
+    </div>
+  </div>
+  <p class="next">
+    <a class="cta" href={repoLink('docs/getting-started.md')}>Read the getting-started guide</a>
+    <span>Postgres, the embedder, and connecting an MCP client.</span>
+  </p>
+</section>
+
+<style>
+  .ways {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 440px), 1fr));
+    gap: 16px;
+    margin-top: 40px;
+  }
+
+  .way {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    min-width: 0;
+    padding: clamp(20px, 3vw, 28px);
+    border-radius: 14px;
+    background: var(--panel-2);
+  }
+
+  .way :global(pre.astro-code) {
+    background-color: var(--bg) !important;
+  }
+
+  h3,
+  .way p {
+    margin: 0;
+  }
+
+  .way p {
+    color: var(--muted);
+    font-size: 17px;
+  }
+
+  .next {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 14px 20px;
+    margin: 32px 0 0;
+    color: var(--muted);
+  }
+
+  .cta {
+    padding: 16px 24px;
+    border-radius: 10px;
+    background: var(--accent);
+    color: var(--bg);
+    font-size: 16px;
+    font-weight: 600;
+    text-decoration: none;
+  }
+
+  .cta:hover {
+    background: var(--text);
+  }
+</style>
