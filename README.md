@@ -2,6 +2,8 @@
 
 Your data, your agents' memory, and the work between them, in one typed server on your own Postgres. You declare namespaces and types; substrate gives every type query and mutate operations over HTTP and MCP, and subscriptions over frame streams, with no handler code. Agents write and query, propose new types, ask in plain English, search by meaning and hand each other work, all in the same frames. Anything can subscribe to what changes.
 
+**Site: [mnmal-ai.github.io/substrate](https://mnmal-ai.github.io/substrate/).** Every example there runs in CI, and the output shown is what that run produced.
+
 ## What it replaces
 
 The usual stack is a database, an API in front of it, a vector store beside it, a memory service for your agents, and the glue that lets them hand each other work. Substrate does each job from one process, in one frame grammar.
