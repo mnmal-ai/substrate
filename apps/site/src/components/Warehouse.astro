@@ -2,17 +2,16 @@
 import { loadExample } from '../lib/examples.ts';
 import Example from './Example.astro';
 
-// Task 14 brings the ClickBench results in here. Until the file exists the block stays out.
-interface ClickBench {
-  compared: number;
-  total: number;
-  sha: string;
-  date: string;
-  machine: string;
-}
+import { type ClickBench, summarise } from '../lib/clickbench.ts';
+
+// The block stays out until the results file exists.
 const clickbench = Object.values(
   import.meta.glob<ClickBench>('../data/clickbench.json', { eager: true, import: 'default' })
 )[0];
+const sum = clickbench && summarise(clickbench);
+const ratios = (clickbench?.passes ?? []).map((p) => p.sumRatio);
+const [lo, hi] = [Math.min(...ratios), Math.max(...ratios)];
+const vacuous = clickbench?.queries.filter((q) => q.expressible && !q.compared).length ?? 0;
 
 // Quote the run's own computed month key.
 type Value = { groups?: { month?: string }[] };
@@ -46,11 +45,18 @@ const month = values.find((v) => v.groups !== undefined)?.groups?.[0]?.month;
     <Example name="warehouse" show={['namespace.ts']} />
   </div>
   {
-    clickbench !== undefined && (
+    clickbench !== undefined && sum !== undefined && (
       <div class="bench" data-reveal>
         <p class="label kicker">// ClickBench, as frames</p>
-        <p class="headline">{`${clickbench.compared} compared / ${clickbench.total}`}</p>
-        <p class="label kicker">{`${clickbench.sha} · ${clickbench.date} · ${clickbench.machine}`}</p>
+        <p class="headline">
+          {`${sum.expressible}/${clickbench.queries.length} expressible · ${sum.matched} of ${sum.compared} compared match · ${sum.sumRatio}× hand-written SQL overall (${lo.toFixed(2)}–${hi.toFixed(2)}× across ${clickbench.runs} passes), worst ${sum.worstRatio}×`}
+        </p>
+        <p class="label kicker">{`${clickbench.sha} · ${clickbench.version} · ${clickbench.date} · ${clickbench.machine} · ${clickbench.runs} runs`}</p>
+        <p class="note">
+          The same SQL on a plain Postgres table, about 10M rows (every 10th row of the upstream{' '}
+          <code>hits</code> file), with answers compared row for row. Times are medians of {clickbench.runs} passes.
+          {vacuous > 0 && ` ${vacuous} query came back empty on both sides, so it is not counted as compared.`}
+        </p>
       </div>
     )
   }
@@ -73,7 +79,13 @@ const month = values.find((v) => v.groups !== undefined)?.groups?.[0]?.month;
 
   .headline {
     margin: 0;
-    font-size: clamp(32px, 4vw, 48px);
+    font-size: clamp(22px, 2.6vw, 32px);
+    line-height: 1.25;
     font-weight: 700;
+  }
+
+  .note {
+    margin: 0;
+    max-width: 70ch;
   }
 </style>
