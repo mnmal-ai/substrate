@@ -26,6 +26,7 @@ import {
   TaskScheduler
 } from '@mnmal-ai/substrate-core';
 import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-dataset-memory';
+import { autoCrudOptionsOf } from '@mnmal-ai/substrate-sdk';
 import type {
   BridgeClient,
   BridgeRegistry,
@@ -476,6 +477,7 @@ async function composeInner(
     datasets,
     edges,
     sweepHooks: { bridges },
+    isStoredEntry: (entry) => autoCrudOptionsOf(entry.resolver) !== undefined,
     onResolve: (o) => stats.recordResolve(o),
     metric: (name, payload): void => {
       stats.recordEvent(name);

@@ -7,10 +7,10 @@
 
 import { forEachWalkHop, type TypeRef } from '@mnmal-ai/substrate-filter';
 import type { TypeSchema, WhereClause } from '@mnmal-ai/substrate-types';
-import { resolveHop } from './filter/walk-validator.js';
+import { resolveHop, type WalkResolvers } from './filter/walk-validator.js';
 
 export interface WalkedType {
-  type: string;
+  ref: TypeRef;
   where?: WhereClause;
   /**
    * True for an `all` or `pick` walk: those read far rows the walk's `where`
@@ -23,35 +23,44 @@ export interface WalkedType {
 }
 
 /** The far type a hop node (`{ in }` or `{ out }`) reaches from `from`. Throws when it does not resolve. */
-export type HopResolver = (node: Record<string, unknown>, from: string, path: string[]) => string;
+export type HopResolver = (node: Record<string, unknown>, from: TypeRef, path: string[]) => TypeRef;
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 
-/** A `HopResolver` over one namespace's types, sharing the validator's edge resolution; a hop that leaves the namespace throws. */
+/**
+ * A `HopResolver` for walks seeded in `namespace`, sharing the validator's
+ * edge resolution and its crossing rules: a hop leaves `namespace` only as
+ * `resolvers` allow (without them, it throws).
+ */
 export function hopResolver(
   namespace: string,
-  types: Record<string, TypeSchema | undefined>
+  types: Record<string, TypeSchema | undefined>,
+  resolvers: WalkResolvers = {}
 ): HopResolver {
+  const schemaOf = (ns: string) => (ns === namespace ? types : resolvers.schemaOf?.(ns));
   return (node, from, path) => {
-    const fields = Object.hasOwn(types, from) ? types[from]?.fields : undefined;
-    if (!isObj(fields)) throw new Error(`unknown type '${namespace}/${from}'`);
+    const own = schemaOf(from.ns);
+    const fields =
+      own !== undefined && Object.hasOwn(own, from.type) ? own[from.type]?.fields : undefined;
+    if (!isObj(fields)) throw new Error(`unknown type '${from.ns}/${from.type}'`);
     return resolveHop(node, path, {
-      namespace,
+      ...resolvers,
+      namespace: from.ns,
       seedNamespace: namespace,
-      schemaOf: (ns) => (ns === namespace ? types : undefined),
-      typeName: from,
+      schemaOf,
+      typeName: from.type,
       fields,
       depth: 0,
       bindings: new Map(),
       hidden: new Set(),
       underOrNot: false,
       groupBound: false
-    }).ref.type;
+    }).ref;
   };
 }
 
-/** Walked types of a frame entry `{ params, fields }` seeded at `seed`, deduplicated by (type, where, unfiltered). */
+/** Walked types of a frame entry `{ params, fields }` seeded at `seed`, deduplicated by (namespace, type, where, unfiltered). */
 export function walkedTypes(
   entry: Record<string, unknown>,
   seed: TypeRef,
@@ -64,18 +73,18 @@ export function walkedTypes(
     path: string[],
     where = node.where
   ) => {
-    const type = resolve(node, from.type, path);
+    const ref = resolve(node, from, path);
     const unfiltered = node.quantifier === 'all' || node.pick !== undefined;
-    const k = JSON.stringify([type, where ?? null, unfiltered]);
+    const k = JSON.stringify([ref.ns, ref.type, where ?? null, unfiltered]);
     if (!out.has(k)) {
       out.set(k, {
-        type,
+        ref,
         path,
         ...(where !== undefined ? { where: where as WhereClause } : {}),
         ...(unfiltered ? { unfiltered: true as const } : {})
       });
     }
-    return { ns: from.ns, type };
+    return ref;
   };
 
   forEachWalkHop(entry, seed, ({ node, path, selection }, from) => {

@@ -32,6 +32,7 @@
 import {
   getExtensionOperator,
   listExtensionOperators,
+  type TypeRef,
   usesWalkGrammar,
   walkGrammarPath
 } from '@mnmal-ai/substrate-filter';
@@ -68,6 +69,7 @@ import type {
   Row,
   Schema,
   SweepDeps,
+  TypeSchema,
   WriteEvent
 } from '@mnmal-ai/substrate-types';
 import {
@@ -97,7 +99,7 @@ interface WalkScan {
   sites: WalkSite[];
   resolve: HopResolver;
   fieldsOf: (type: string) => Record<string, FieldDef> | undefined;
-  naturalOrder: (type: string) => OrderedBy;
+  naturalOrder: (ref: TypeRef) => OrderedBy;
 }
 
 /** `#runEntry`'s parameters after `(envelope, key)`. */
@@ -211,6 +213,7 @@ function observe(hook: (o: ResolveObservation) => void, o: ResolveObservation): 
   }
 }
 
+import type { WalkResolvers } from '../filter/walk-validator.js';
 import { evaluatePolicy } from '../policy-evaluator.js';
 import { Registry } from '../registry.js';
 import { type HopResolver, hopResolver, type WalkedType, walkedTypes } from '../walk-types.js';
@@ -310,6 +313,7 @@ export class Engine {
    */
   readonly #inFlightMutates = new Map<string, Promise<PackEnvelope>>();
   readonly #bridges: BridgeRegistry;
+  readonly #isStoredEntry: (entry: RegistryEntry) => boolean;
   /**
    * Disposer returned by `DatasetRegistry.onNamespaceLost`. Present iff the
    * registry implements the optional lifecycle surface (§6.4); `dispose()`
@@ -348,6 +352,7 @@ export class Engine {
           }
         : undefined;
     this.#bridges = opts.sweepHooks?.bridges ?? NO_BRIDGES;
+    this.#isStoredEntry = opts.isStoredEntry ?? ((): boolean => false);
     this.#schema = new SchemaSubsystem({
       namespaces: this.#namespaces,
       bridges: this.#bridges,
@@ -1342,6 +1347,8 @@ export class Engine {
     // frames use the federated version so the client can detect drift on any
     // of the referenced namespaces. Empty frames use the federated version —
     // matches the "I queried no types, tell me what you look like" shape.
+    // A frame whose walk leaves its namespace moves to the federated version
+    // once the walk passes its gate (`#refuseWalkPolicy`).
     const nsSet = new Set<string>();
     for (const k of keys) {
       const parsed = parsedByKey.get(k);
@@ -1430,38 +1437,88 @@ export class Engine {
     return refused;
   }
 
-  /** Far-type resolution for the metadata rewrite; a hop that does not resolve is left to the validator. */
-  #metadataHop(ns: string, from: string): MetadataHop {
-    const types = this.schemaFor(ns).types;
-    const schemaOf = (t: string) => (Object.hasOwn(types, t) ? types[t] : undefined);
-    const resolve = hopResolver(ns, types);
+  /**
+   * Far-type resolution for the metadata rewrite, each far type in its own
+   * namespace; a hop that does not resolve, or that `walk` refuses, is left to
+   * the validator.
+   */
+  #metadataHop(ns: string, from: string, walk: WalkResolvers | undefined): MetadataHop {
+    const tools = this.#walkTools(ns, walk);
     const hopFrom =
-      (type: string): MetadataHop =>
+      (type: TypeRef): MetadataHop =>
       (node) => {
-        let far: string;
+        let far: TypeRef;
         try {
-          far = resolve(node, type, []);
+          far = tools.resolve(node, type, []);
         } catch {
           return undefined;
         }
-        const fields = schemaOf(far)?.fields;
+        const fields = tools.schemaOf(far)?.fields;
         return fields !== undefined ? { fields, hop: hopFrom(far) } : undefined;
       };
-    return hopFrom(from);
+    return hopFrom({ ns, type: from });
   }
 
-  /** Hop resolution, field declarations and natural order over namespace `ns`'s schema. */
-  #walkTools(ns: string): Omit<WalkScan, 'sites'> {
+  /**
+   * Hop resolution, field declarations and natural order for walks seeded in
+   * `ns`, each far type read in its own namespace. Hops leave `ns` only as
+   * `walk` allows.
+   */
+  #walkTools(
+    ns: string,
+    walk?: WalkResolvers
+  ): Omit<WalkScan, 'sites'> & { schemaOf: (ref: TypeRef) => TypeSchema | undefined } {
     const types = this.schemaFor(ns).types;
-    const schemaOf = (t: string) => (Object.hasOwn(types, t) ? types[t] : undefined);
+    const schemaOf = (ref: TypeRef) => {
+      const own = ref.ns === ns ? types : walk?.schemaOf?.(ref.ns);
+      return own !== undefined && Object.hasOwn(own, ref.type) ? own[ref.type] : undefined;
+    };
     return {
-      resolve: hopResolver(ns, types),
-      fieldsOf: (t) => schemaOf(t)?.fields,
-      naturalOrder: (t) => naturalOrderOf(schemaOf(t) ?? {})
+      resolve: hopResolver(ns, types, walk),
+      schemaOf,
+      fieldsOf: (t) => schemaOf({ ns, type: t })?.fields,
+      naturalOrder: (ref) => naturalOrderOf(schemaOf(ref) ?? {})
     };
   }
 
-  /** The walk sites of a walk-grammar query frame, or undefined for an ordinary one. */
+  /**
+   * What lets a walk seeded on the `seed` dataset leave its namespace, for
+   * `identity`: its read grant on the far namespace (the same check as every
+   * read gate), then a far type that is stored (or bridged, which the store
+   * rule then refuses), then a far namespace whose dataset this engine holds,
+   * that is not bridged and that shares the seed's store.
+   */
+  #walkResolvers(
+    identity: RequestContext['identity'] | null | undefined,
+    seed: Dataset | undefined
+  ): WalkResolvers {
+    const storeOf = (d: Dataset) => d.walkStoreId ?? d.txScopeId;
+    const bridged = (n: string) => !this.#namespaces.has(n) && this.#bridges.has(n);
+    return {
+      schemaOf: (n) =>
+        this.#isLive(n)
+          ? this.schemaFor(n).types
+          : bridged(n)
+            ? this.federatedSchema()[n]?.types
+            : undefined,
+      canRead: (n) => checkIdentityGrant(identity, n, 'query').ok,
+      isStoredType: (ref) => {
+        if (bridged(ref.ns)) return true;
+        const entry = this.typeEntry(ref.ns, ref.type);
+        return entry !== undefined && this.#isStoredEntry(entry);
+      },
+      walkable: (n) => {
+        const far = bridged(n) ? undefined : this.#datasets.get(n);
+        return far !== undefined && seed !== undefined && storeOf(far) === storeOf(seed);
+      },
+      namespaceNames: [...this.#namespaces.keys()]
+    };
+  }
+
+  /**
+   * The walk sites of a walk-grammar query frame, or undefined for an ordinary
+   * one. Hops stay in `ns` here: a frame whose walks leave it is not described.
+   */
   #walkSitesOf(frame: FrameEntry, ns: string, seed: string): WalkScan | undefined {
     if (!usesWalkGrammar(frame as Record<string, unknown>)) return undefined;
     const tools = this.#walkTools(ns);
@@ -1521,10 +1578,14 @@ export class Engine {
   /**
    * Fail-closed policy for walk grammar (spec §2, §3). A walk is a read of
    * every type it touches: each walked, aggregated or nested type's read
-   * policy runs with the walk's own `where`, and a deny refuses the frame. Any
-   * obligation, on a walked type or on the seed, is refused too: obligations
-   * filter rows after the read, which cannot reach rows a walk counted,
-   * aggregated or joined. Records the error and returns true on refusal.
+   * policy runs in that type's own namespace with the walk's own `where`, and
+   * a deny refuses the frame. Any obligation, on a walked type or on the seed,
+   * is refused too: obligations filter rows after the read, which cannot reach
+   * rows a walk counted, aggregated or joined. A walked type in another
+   * namespace must be on a store that answers walks. Records the error and
+   * returns true on refusal. A frame that passes with a walk into another
+   * namespace carries the federated schema version, as a multi-namespace
+   * frame does.
    */
   #refuseWalkPolicy(
     envelope: PackEnvelope,
@@ -1533,7 +1594,8 @@ export class Engine {
     ns: string,
     seed: string,
     ctx: RequestContext,
-    decision: PolicyDecision
+    decision: PolicyDecision,
+    walk: WalkResolvers | undefined
   ): boolean {
     const seedPath = walkGrammarPath(frame as Record<string, unknown>);
     if (seedPath === null) return false;
@@ -1556,25 +1618,29 @@ export class Engine {
       walked = walkedTypes(
         frame as Record<string, unknown>,
         { ns, type: seed },
-        hopResolver(ns, types)
+        hopResolver(ns, types, walk)
       );
     } catch {
       // Validation already resolved every hop; one that no longer resolves is refused, not skipped.
       return refuse(seedPath, 'a walk in this frame does not resolve', 'policy_denied');
     }
-    for (const w of walked) {
-      const d = this.evaluateReadPolicy(ns, w.type, ctx.identity ?? null, ctx, {
-        params: w.where !== undefined && w.unfiltered !== true ? { where: w.where } : {}
+    for (const { ref, where, unfiltered, path } of walked) {
+      if (ref.ns !== ns && this.#datasets.get(ref.ns)?.capabilities.walks !== true) {
+        return refuse(path, `the '${ref.ns}' store does not answer walks`, WALKS_UNSUPPORTED_STORE);
+      }
+      const d = this.evaluateReadPolicy(ref.ns, ref.type, ctx.identity ?? null, ctx, {
+        params: where !== undefined && unfiltered !== true ? { where } : {}
       });
-      if (!d.allow) return refuse(w.path, d.reason ?? 'policy denied', 'policy_denied');
+      if (!d.allow) return refuse(path, d.reason ?? 'policy denied', 'policy_denied');
       if (blocked(d)) {
         return refuse(
-          w.path,
-          `'${ns}/${w.type}' is row-filtered for this caller, so a walk cannot read it`,
+          path,
+          `'${ref.ns}/${ref.type}' is row-filtered for this caller, so a walk cannot read it`,
           ROW_POLICY_BLOCKS_WALK
         );
       }
     }
+    if (walked.some((w) => w.ref.ns !== ns)) envelope.schemaVersion = this.federatedSchemaVersion();
     return false;
   }
 
@@ -1664,6 +1730,13 @@ export class Engine {
 
     // A by-filter mutation's `where` is a query's `where` on its target type.
     const filterTarget = operation === 'mutate' ? registryEntry.filterTarget : undefined;
+    // What lets this read's walks leave `ns`, judged for this caller.
+    const walk =
+      operation === 'query' &&
+      registryEntry.kind === 'type' &&
+      usesWalkGrammar(entry as Record<string, unknown>)
+        ? this.#walkResolvers(ctxBase.identity, dataset)
+        : undefined;
     // Metadata spellings the read path returns (`createdBy`, `_metadata`, …)
     // reach policy, validation and the resolver as the canonical columns.
     const frame =
@@ -1671,9 +1744,7 @@ export class Engine {
         ? withCanonicalMetadataFilters(
             entry,
             registryEntry.fields,
-            usesWalkGrammar(entry as Record<string, unknown>)
-              ? this.#metadataHop(ns, name)
-              : undefined
+            walk !== undefined ? this.#metadataHop(ns, name, walk) : undefined
           )
         : filterTarget !== undefined
           ? withCanonicalMetadataFilters(entry, nsCfg.registry.get(filterTarget)?.fields ?? {})
@@ -1772,14 +1843,15 @@ export class Engine {
       entryKind: registryEntry.kind,
       isVirtual,
       dataset,
-      ...(filterTarget !== undefined ? { filterTarget } : {})
+      ...(filterTarget !== undefined ? { filterTarget } : {}),
+      ...(walk !== undefined ? { walk } : {})
     });
     if (!guardOk) return null;
 
     if (
       operation === 'query' &&
       registryEntry.kind === 'type' &&
-      this.#refuseWalkPolicy(envelope, key, frame, ns, name, ctx, decision)
+      this.#refuseWalkPolicy(envelope, key, frame, ns, name, ctx, decision, walk)
     ) {
       return null;
     }
@@ -1816,8 +1888,13 @@ export class Engine {
       args.fields !== undefined &&
       usesWalkGrammar(frame as Record<string, unknown>)
     ) {
-      const tools = walkScan ?? this.#walkTools(ns);
-      args.fields = withNestedNaturalOrder(args.fields, name, tools.resolve, tools.naturalOrder);
+      const tools = walkScan ?? this.#walkTools(ns, walk);
+      args.fields = withNestedNaturalOrder(
+        args.fields,
+        { ns, type: name },
+        tools.resolve,
+        tools.naturalOrder
+      );
     }
     return {
       registryEntry,

@@ -6,7 +6,7 @@
 
 import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-dataset-memory';
 import { requireCapability, row } from '@mnmal-ai/substrate-policy';
-import type { Policy, RegistryEntry, ResolverArgs } from '@mnmal-ai/substrate-types';
+import type { Policy, RegistryEntry, ResolverArgs, TypeSchema } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
 import { Engine, MemoryEdgesStore, type NamespaceConfig, Registry } from '../src/index.js';
 import { hopResolver, walkedTypes } from '../src/walk-types.js';
@@ -310,9 +310,13 @@ describe('walkedTypes', () => {
       resolve
     );
     expect(got).toEqual([
-      { type: 'Part', path: ['where', 'AND', '0', '_walk'] },
-      { type: 'Part', where: { n: { gt: 1 } }, path: ['fields', 'parts', '_walk'] },
-      { type: 'Note', path: ['fields', 'parts', 'fields', 'notes', '_walk'] }
+      { ref: { ns: 'ns', type: 'Part' }, path: ['where', 'AND', '0', '_walk'] },
+      {
+        ref: { ns: 'ns', type: 'Part' },
+        where: { n: { gt: 1 } },
+        path: ['fields', 'parts', '_walk']
+      },
+      { ref: { ns: 'ns', type: 'Note' }, path: ['fields', 'parts', 'fields', 'notes', '_walk'] }
     ]);
   });
 
@@ -333,8 +337,13 @@ describe('walkedTypes', () => {
       resolve
     );
     expect(got).toEqual([
-      { type: 'Part', where: w, path: ['where', 'AND', '0', '_walk'] },
-      { type: 'Part', where: w, unfiltered: true, path: ['where', 'AND', '1', '_walk'] }
+      { ref: { ns: 'ns', type: 'Part' }, where: w, path: ['where', 'AND', '0', '_walk'] },
+      {
+        ref: { ns: 'ns', type: 'Part' },
+        where: w,
+        unfiltered: true,
+        path: ['where', 'AND', '1', '_walk']
+      }
     ]);
   });
 
@@ -345,7 +354,41 @@ describe('walkedTypes', () => {
         { ns: 'ns', type: 'Part' },
         resolve
       )
-    ).toEqual([{ type: 'Thing', path: ['where', '_walk'] }]);
+    ).toEqual([{ ref: { ns: 'ns', type: 'Thing' }, path: ['where', '_walk'] }]);
+  });
+
+  it('keeps same-named types in two namespaces apart', () => {
+    const invoice = { fields: { total: { kind: 'scalar', type: 'number' } } } as const;
+    const spaces: Record<string, Record<string, TypeSchema>> = {
+      ext: {
+        Payment: {
+          fields: {
+            invoice: { kind: 'crossRef', ns: 'app', type: 'Invoice', onDelete: 'set_null' },
+            local: { kind: 'crossRef', ns: 'ext', type: 'Invoice', onDelete: 'set_null' }
+          }
+        },
+        Invoice: invoice
+      },
+      app: { Invoice: invoice }
+    };
+    const crossing = hopResolver('ext', spaces.ext as Record<string, TypeSchema>, {
+      schemaOf: (ns) => spaces[ns],
+      canRead: () => true,
+      isStoredType: () => true,
+      walkable: () => true
+    });
+    expect(
+      walkedTypes(
+        {
+          params: { where: { AND: [{ _walk: { out: 'local' } }, { _walk: { out: 'invoice' } }] } }
+        },
+        { ns: 'ext', type: 'Payment' },
+        crossing
+      )
+    ).toEqual([
+      { ref: { ns: 'ext', type: 'Invoice' }, path: ['where', 'AND', '0', '_walk'] },
+      { ref: { ns: 'app', type: 'Invoice' }, path: ['where', 'AND', '1', '_walk'] }
+    ]);
   });
 });
 

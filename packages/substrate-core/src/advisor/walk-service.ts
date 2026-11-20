@@ -71,11 +71,12 @@ export function walkSites(
   entry: Record<string, unknown>,
   seed: TypeRef,
   resolve: HopResolver,
-  naturalOrder?: (type: string) => OrderedBy
+  naturalOrder?: (ref: TypeRef) => OrderedBy
 ): WalkSite[] {
   const out: WalkSite[] = [];
   forEachWalkHop(entry, seed, ({ kind, node, path, selection }, from) => {
-    const far = resolve(node, from.type, path);
+    const farRef = resolve(node, from, path);
+    const far = farRef.type;
     const s: WalkSite = { path, node, far, wheres: [] };
     // Validation proved `in` is '<ns>/<Type>.<field>' with no dot in the type.
     if (typeof node.in === 'string') s.crossRef = node.in.slice(node.in.indexOf('.') + 1);
@@ -113,12 +114,12 @@ export function walkSites(
     } else if (selection !== undefined) {
       const { sel, path: at } = selection;
       let by = orderOf(sel.orderBy);
-      if (by.length === 0 && naturalOrder !== undefined) by = orderOf([naturalOrder(far)]);
+      if (by.length === 0 && naturalOrder !== undefined) by = orderOf([naturalOrder(farRef)]);
       if (by.length > 0) s.order = { by, path: [...at, 'orderBy'], kind: 'order', exact: true };
       addWhere(node.where, [...path, 'where']);
       addWhere(sel.where, [...at, 'where']);
     }
-    return { ns: from.ns, type: far };
+    return farRef;
   });
   return out;
 }
@@ -216,7 +217,7 @@ export interface ClassifyInput {
   /** A type's declared fields, for what an index may key on. */
   fieldsOf: (type: string) => Fields | undefined;
   /** A type's natural order: a nested list without `orderBy` reads in it (#1821). */
-  naturalOrder?: (type: string) => OrderedBy;
+  naturalOrder?: (ref: TypeRef) => OrderedBy;
 }
 
 /**

@@ -239,7 +239,7 @@ describe('walk shapes', () => {
         }
       },
       { ns: 'cards', type: 'Cert' },
-      (node) => (node.in !== undefined ? 'Observation' : 'Cert')
+      (node) => ({ ns: 'cards', type: node.in !== undefined ? 'Observation' : 'Cert' })
     );
     const shapes = walkShapesOf('cards', sites, () => fields);
     expect(shapes).toEqual([
