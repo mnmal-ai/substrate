@@ -105,7 +105,7 @@ export function runFilterGuard(deps: FilterGuardDeps, input: FilterGuardInput): 
       // A `select` name is a computed key the dataset adds to each row.
       const selectNames = (entry.params?.select ?? {}) as object;
       const types = deps.schemaFor(ns).types;
-      const resolve = hopResolver(ns, (t) => (Object.hasOwn(types, t) ? types[t] : undefined));
+      const resolve = hopResolver(ns, types);
       const unknown: string[] = [];
       const collect = (
         fields: Record<string, unknown>,
@@ -212,14 +212,12 @@ function validateAgainst(
         filterValidationSkipped: `type '${typeName}' is registered but absent from the '${ns}' schema`
       };
     } else {
-      // Own keys only: a caller's type name may be `constructor` or `__proto__`.
       const types = deps.schemaFor(ns).types;
       validateFilter({
         ...filter,
         typeSchema,
         capabilities: dataset.capabilities,
-        schemaOf: (type) => (Object.hasOwn(types, type) ? types[type] : undefined),
-        typeNames: Object.keys(types),
+        schemaOf: (n) => (n === ns ? types : undefined),
         namespace: ns,
         typeName
       });

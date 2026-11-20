@@ -57,6 +57,7 @@ import {
   validateSelection,
   validateWalk,
   validateWalkAgg,
+  type WalkResolvers,
   type WalkScope
 } from './walk-validator.js';
 
@@ -73,6 +74,7 @@ export type FilterErrorCode =
   | 'walk_unknown_ref'
   | 'walk_unsupported_ref'
   | 'walk_cross_namespace'
+  | 'walk_cross_store'
   | 'walk_too_deep'
   | 'walk_binding'
   | 'walk_quantifier'
@@ -82,7 +84,8 @@ export type FilterErrorCode =
   | 'expr_invalid'
   | 'select_invalid'
   | 'group_invalid'
-  | 'count_conflict';
+  | 'count_conflict'
+  | 'policy_denied';
 
 export class FilterValidationError extends Error {
   override readonly name = 'FilterValidationError';
@@ -1011,15 +1014,12 @@ function validateOrderBy(
   });
 }
 
-export interface ValidateFilterInput {
+/** A filter and frame to validate against `typeSchema`. Walks are refused without `schemaOf`, and none leaves `namespace` unless `canRead` allows it. */
+export interface ValidateFilterInput extends WalkResolvers {
   where?: WhereClause;
   orderBy?: OrderByClause[];
   typeSchema: TypeSchema;
   capabilities: FilterCapabilities;
-  /** Resolves a type in `namespace`; walks are refused without it. */
-  schemaOf?: (type: string) => TypeSchema | undefined;
-  /** Every type in the namespace, for walk refusals that name the refs that exist. */
-  typeNames?: readonly string[];
   /** The frame's namespace, and the seed type's name in it. */
   namespace?: string;
   typeName?: string;
@@ -1039,7 +1039,10 @@ export function validateFilter(input: ValidateFilterInput): void {
   const seed: WalkScope = {
     ...(input.namespace !== undefined ? { namespace: input.namespace } : {}),
     ...(input.schemaOf !== undefined ? { schemaOf: input.schemaOf } : {}),
-    ...(input.typeNames !== undefined ? { typeNames: input.typeNames } : {}),
+    ...(input.canRead !== undefined ? { canRead: input.canRead } : {}),
+    ...(input.isStoredType !== undefined ? { isStoredType: input.isStoredType } : {}),
+    ...(input.walkable !== undefined ? { walkable: input.walkable } : {}),
+    ...(input.namespaceNames !== undefined ? { namespaceNames: input.namespaceNames } : {}),
     ...(input.typeName !== undefined ? { typeName: input.typeName } : {}),
     fields,
     depth: 0,

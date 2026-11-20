@@ -615,7 +615,8 @@ describe('a read across the reference', () => {
     ];
     for (const [key, frame, ctx] of walks) {
       const env = await engine.query({ frame: { [key]: { fields: { id: true }, ...frame } }, ctx });
-      expect(env.errors?.[0]?.code, key).toBe('walk_cross_namespace');
+      expect(env.errors?.[0]?.code, key).toBe('policy_denied');
+      expect(env.errors?.[0]?.message, key).toBe('this walk is not permitted');
       expect(env.data[key], key).toBeUndefined();
     }
   });

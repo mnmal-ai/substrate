@@ -59,13 +59,14 @@ const INDEXES: Record<string, Indexes> = {
   Note: []
 };
 
-const schemaOf = (t: string) => (Object.hasOwn(TYPES, t) ? { fields: TYPES[t] ?? {} } : undefined);
+const SCHEMAS = Object.fromEntries(Object.entries(TYPES).map(([t, fields]) => [t, { fields }]));
+const schemaOf = (t: string) => (Object.hasOwn(SCHEMAS, t) ? SCHEMAS[t] : undefined);
 const classify = (entry: Record<string, unknown>, seed = 'Cert'): PlanClause[] =>
   classifyWalkService(
     {
       entry,
       seed: { ns: 'cards', type: seed },
-      resolve: hopResolver('cards', schemaOf),
+      resolve: hopResolver('cards', SCHEMAS),
       fieldsOf: (t) => schemaOf(t)?.fields
     },
     (t) => INDEXES[t] ?? []
@@ -365,7 +366,7 @@ describe('walk forms (#1815) and a nested list in natural order (#1821)', () => 
       {
         entry,
         seed: { ns: 'cards', type: seed },
-        resolve: hopResolver('cards', schemaOf),
+        resolve: hopResolver('cards', SCHEMAS),
         fieldsOf: (t) => schemaOf(t)?.fields,
         naturalOrder: () => ({ createdAt: 'desc' })
       },

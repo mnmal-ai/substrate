@@ -40,7 +40,7 @@ const SCHEMAS: Record<string, TypeSchema> = Object.fromEntries(
   ])
 );
 const fieldDef = (t: string, f: string) => FIELDS[t]?.[f];
-const resolve = hopResolver(NS, (t) => SCHEMAS[t]);
+const resolve = hopResolver(NS, SCHEMAS);
 
 const pickHub = {
   _walk: {

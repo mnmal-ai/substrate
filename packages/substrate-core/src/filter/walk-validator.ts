@@ -13,6 +13,7 @@ import {
   type ExprScope,
   exprTypeOfField,
   metadataExprType,
+  type TypeRef,
   walkGrammarPath
 } from '@mnmal-ai/substrate-filter';
 import {
@@ -36,13 +37,28 @@ export const MAX_DATE_SHIFT_MS = 1e13;
 const COMPARISON_OPS = new Set(['eq', 'neq', 'gt', 'gte', 'lt', 'lte']);
 const WALK_KEYS = new Set(['as', 'in', 'out', 'where', 'quantifier', 'pick', 'among']);
 
+/**
+ * What lets a walk resolve its hops and cross into another namespace. A hop
+ * that leaves the current namespace needs `canRead` to say yes before anything
+ * in the far namespace is looked up; without it no hop crosses.
+ */
+export interface WalkResolvers {
+  /** A namespace's types. Absent: walks are unavailable here. */
+  schemaOf?: (ns: string) => Record<string, TypeSchema | undefined> | undefined;
+  /** Whether the caller may read a namespace. */
+  canRead?: (ns: string) => boolean;
+  /** Whether a type in another namespace has stored rows; one without is refused like an unknown type. */
+  isStoredType?: (ref: TypeRef) => boolean;
+  /** Whether another namespace's rows are on the frame's store. */
+  walkable?: (ns: string) => boolean;
+  /** Namespaces whose refs into the current type a refusal may name, once `canRead` allows each. */
+  namespaceNames?: readonly string[];
+}
+
 /** What a walk, or a `$ref` inside one, can see. */
-export interface WalkScope {
-  /** The frame's namespace; walks never leave it. Absent: walks are unavailable here. */
+export interface WalkScope extends WalkResolvers {
+  /** The current hop's namespace. Absent: walks are unavailable here. */
   namespace?: string;
-  schemaOf?: (type: string) => TypeSchema | undefined;
-  /** Every type in the namespace, so a bad `in` can name the refs that do point at the current type. */
-  typeNames?: readonly string[];
   /** The type the current where-clause filters, and its fields. */
   typeName?: string;
   fields: Record<string, FieldDef>;
@@ -81,47 +97,62 @@ function fail(
   throw new FilterValidationError(code, msg, path);
 }
 
-/** A type's schema, or undefined for anything that is not one (e.g. a prototype key like `constructor`). */
-/** The refs a walk from the current type can take: inbound for `in` (when the type list is known), its own crossRefs for `out`. */
+/** A hop into a namespace the caller cannot read: the same refusal whatever the target, naming nothing. */
+function denyWalk(path: string[]): never {
+  fail('policy_denied', 'this walk is not permitted', path);
+}
+
+/** A type in `types`, or undefined for anything that is not one (e.g. a prototype key like `constructor`). */
+function typeIn(
+  types: Record<string, TypeSchema | undefined> | undefined,
+  type: string
+): TypeSchema | undefined {
+  const s: unknown = types !== undefined && Object.hasOwn(types, type) ? types[type] : undefined;
+  return isObj(s) && isObj(s.fields) ? (s as unknown as TypeSchema) : undefined;
+}
+
+/**
+ * The refs a walk from the current type can take: inbound for `in`, its own
+ * crossRefs for `out`. Only namespaces the caller can read are named.
+ */
 function refsHint(dir: 'in' | 'out', scope: WalkScope): string {
-  const { namespace, schemaOf, typeName, typeNames } = scope;
+  const { namespace, schemaOf, typeName } = scope;
   if (namespace === undefined || schemaOf === undefined || typeName === undefined) return '';
+  const readable = (ns: string) => ns === namespace || scope.canRead?.(ns) === true;
   const refs: string[] = [];
   if (dir === 'out') {
     for (const [f, d] of Object.entries(scope.fields))
-      if (d.kind === 'crossRef' && d.ns === namespace) refs.push(f);
+      if (d.kind === 'crossRef' && readable(d.ns)) refs.push(f);
     return refs.length > 0
       ? `; 'out' takes a crossRef of '${typeName}': ${refs.join(', ')}`
       : `; '${typeName}' has no crossRef to follow out`;
   }
-  if (typeNames === undefined) return '';
-  for (const t of typeNames) {
-    const far = schemaIn(schemaOf, t);
-    for (const [f, d] of Object.entries(far?.fields ?? {}))
-      if (d.kind === 'crossRef' && d.ns === namespace && d.type === typeName)
-        refs.push(`'${namespace}/${t}.${f}'`);
+  const others = (scope.namespaceNames ?? []).filter((ns) => ns !== namespace && readable(ns));
+  for (const ns of [namespace, ...others]) {
+    const types = schemaOf(ns);
+    for (const t of Object.keys(types ?? {})) {
+      for (const [f, d] of Object.entries(typeIn(types, t)?.fields ?? {}))
+        if (d.kind === 'crossRef' && d.ns === namespace && d.type === typeName)
+          refs.push(`'${ns}/${t}.${f}'`);
+    }
   }
   return refs.length > 0
     ? `; 'in' names a crossRef on another type that points at '${typeName}': ${refs.join(', ')}`
     : `; no crossRef in '${namespace}' points at '${typeName}'`;
 }
 
-function schemaIn(
-  schemaOf: (type: string) => TypeSchema | undefined,
-  type: string
-): TypeSchema | undefined {
-  const s: unknown = schemaOf(type);
-  return isObj(s) && isObj(s.fields) ? (s as unknown as TypeSchema) : undefined;
-}
-
 export interface Hop {
-  typeName: string;
+  ref: TypeRef;
   fields: Record<string, FieldDef>;
 }
 
 /**
  * Resolve a walk's `in` / `out` to the far type. Shared by `_walk` and the
  * where-side `_agg`, so both name edges the same way.
+ *
+ * A hop into another namespace is checked in this order: the caller's read
+ * grant there (`denyWalk` before any lookup in it), then the far type (unknown
+ * or not stored: `walk_unknown_ref`), then the store (`walk_cross_store`).
  */
 export function resolveHop(node: Record<string, unknown>, path: string[], scope: WalkScope): Hop {
   const { namespace, schemaOf, typeName } = scope;
@@ -140,7 +171,18 @@ export function resolveHop(node: Record<string, unknown>, path: string[], scope:
   const at = [...path, dir];
   if (typeof spec !== 'string') fail('walk_unknown_ref', `'${dir}' must be a string`, at);
 
-  let farType: string;
+  const enter = (ns: string) => {
+    if (ns !== namespace && scope.canRead?.(ns) !== true) denyWalk(path);
+  };
+  const farFields = (ref: TypeRef) => {
+    const far = typeIn(schemaOf(ref.ns), ref.type);
+    if (far === undefined || (ref.ns !== namespace && scope.isStoredType?.(ref) !== true)) {
+      fail('walk_unknown_ref', `unknown type '${ref.ns}/${ref.type}'`, at);
+    }
+    return far.fields;
+  };
+
+  let inRef: TypeRef | undefined;
   let fieldPath: string;
   let fieldOwner: Record<string, FieldDef>;
   if (dir === 'in') {
@@ -148,16 +190,11 @@ export function resolveHop(node: Record<string, unknown>, path: string[], scope:
     if (m === null)
       fail('walk_unknown_ref', `'in' must be '<ns>/<Type>.<field>', got '${spec}'`, at);
     const [, ns, type, field] = m as unknown as [string, string, string, string];
-    if (ns !== namespace) {
-      fail('walk_cross_namespace', `a walk stays in namespace '${namespace}', not '${ns}'`, at);
-    }
-    const far = schemaIn(schemaOf, type);
-    if (far === undefined) fail('walk_unknown_ref', `unknown type '${ns}/${type}'`, at);
-    farType = type;
+    enter(ns);
+    inRef = { ns, type };
     fieldPath = field;
-    fieldOwner = far.fields;
+    fieldOwner = farFields(inRef);
   } else {
-    farType = '';
     fieldPath = spec;
     fieldOwner = scope.fields;
   }
@@ -181,33 +218,39 @@ export function resolveHop(node: Record<string, unknown>, path: string[], scope:
   if (rest.length > 0 || def === undefined || def.kind !== 'crossRef') {
     fail('walk_unknown_ref', `'${spec}' is not a crossRef field${refsHint(dir, scope)}`, at);
   }
-  if (def.ns !== namespace) {
-    fail(
-      'walk_cross_namespace',
-      `'${spec}' points into namespace '${def.ns}'; a walk stays in '${namespace}'`,
-      at
-    );
-  }
-  if (dir === 'in') {
-    if (def.type !== typeName) {
+  let hop: Hop;
+  if (inRef !== undefined) {
+    if (def.ns !== namespace || def.type !== typeName) {
       fail(
         'walk_unknown_ref',
-        `'${spec}' points at '${def.type}', not '${typeName}'${refsHint(dir, scope)}`,
+        def.ns === namespace
+          ? `'${spec}' points at '${def.type}', not '${typeName}'${refsHint(dir, scope)}`
+          : `'${spec}' does not point at '${namespace}/${typeName}'${refsHint(dir, scope)}`,
         at
       );
     }
-    return { typeName: farType, fields: fieldOwner };
+    hop = { ref: inRef, fields: fieldOwner };
+  } else {
+    enter(def.ns);
+    const ref = { ns: def.ns, type: def.type };
+    hop = { ref, fields: farFields(ref) };
   }
-  const far = schemaIn(schemaOf, def.type);
-  if (far === undefined) fail('walk_unknown_ref', `unknown type '${def.ns}/${def.type}'`, at);
-  return { typeName: def.type, fields: far.fields };
+  if (hop.ref.ns !== namespace && scope.walkable?.(hop.ref.ns) !== true) {
+    fail(
+      'walk_cross_store',
+      `namespace '${hop.ref.ns}' is not on this frame's store, so a walk cannot reach it`,
+      at
+    );
+  }
+  return hop;
 }
 
-/** The scope a walk's own `where` is validated in: the far type, one hop deeper, a fresh AND group. */
+/** The scope a walk's own `where` is validated in: the far type in its namespace, one hop deeper, a fresh AND group. */
 export function farScope(scope: WalkScope, hop: Hop): WalkScope {
   return {
     ...scope,
-    typeName: hop.typeName,
+    namespace: hop.ref.ns,
+    typeName: hop.ref.type,
     fields: hop.fields,
     depth: scope.depth + 1,
     groupBound: false
@@ -331,7 +374,7 @@ export function validateWalk(
     }
     const def = typeof field === 'string' ? lookup(hop.fields, field) : undefined;
     if (def === undefined)
-      fail('unknown_field', `unknown field '${String(field)}' on '${hop.typeName}'`, [
+      fail('unknown_field', `unknown field '${String(field)}' on '${hop.ref.type}'`, [
         ...path,
         'pick',
         k
@@ -497,7 +540,7 @@ function aggKind(
   const field = (name: unknown, p: string[], ok: (kind: string) => boolean, what: string) => {
     const def = typeof name === 'string' ? h.lookup(owner.fields, name) : undefined;
     if (def === undefined) {
-      fail('agg_invalid', `unknown field '${String(name)}' on '${owner.typeName}'`, p);
+      fail('agg_invalid', `unknown field '${String(name)}' on '${owner.ref.type}'`, p);
     }
     const kind = h.kindOf(def);
     if (!ok(kind)) fail('agg_invalid', `${fn} needs ${what}; '${String(name)}' is ${kind}`, p);

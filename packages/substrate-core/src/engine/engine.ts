@@ -1434,7 +1434,7 @@ export class Engine {
   #metadataHop(ns: string, from: string): MetadataHop {
     const types = this.schemaFor(ns).types;
     const schemaOf = (t: string) => (Object.hasOwn(types, t) ? types[t] : undefined);
-    const resolve = hopResolver(ns, schemaOf);
+    const resolve = hopResolver(ns, types);
     const hopFrom =
       (type: string): MetadataHop =>
       (node) => {
@@ -1455,7 +1455,7 @@ export class Engine {
     const types = this.schemaFor(ns).types;
     const schemaOf = (t: string) => (Object.hasOwn(types, t) ? types[t] : undefined);
     return {
-      resolve: hopResolver(ns, schemaOf),
+      resolve: hopResolver(ns, types),
       fieldsOf: (t) => schemaOf(t)?.fields,
       naturalOrder: (t) => naturalOrderOf(schemaOf(t) ?? {})
     };
@@ -1556,7 +1556,7 @@ export class Engine {
       walked = walkedTypes(
         frame as Record<string, unknown>,
         { ns, type: seed },
-        hopResolver(ns, (t) => (Object.hasOwn(types, t) ? types[t] : undefined))
+        hopResolver(ns, types)
       );
     } catch {
       // Validation already resolved every hop; one that no longer resolves is refused, not skipped.

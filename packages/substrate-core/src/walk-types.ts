@@ -28,17 +28,17 @@ export type HopResolver = (node: Record<string, unknown>, from: string, path: st
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 
-/** A `HopResolver` over one namespace's schema, sharing the validator's edge resolution. */
+/** A `HopResolver` over one namespace's types, sharing the validator's edge resolution; a hop that leaves the namespace throws. */
 export function hopResolver(
   namespace: string,
-  schemaOf: (type: string) => TypeSchema | undefined
+  types: Record<string, TypeSchema | undefined>
 ): HopResolver {
   return (node, from, path) => {
-    const fields = schemaOf(from)?.fields;
+    const fields = Object.hasOwn(types, from) ? types[from]?.fields : undefined;
     if (!isObj(fields)) throw new Error(`unknown type '${namespace}/${from}'`);
     return resolveHop(node, path, {
       namespace,
-      schemaOf,
+      schemaOf: (ns) => (ns === namespace ? types : undefined),
       typeName: from,
       fields,
       depth: 0,
@@ -46,7 +46,7 @@ export function hopResolver(
       hidden: new Set(),
       underOrNot: false,
       groupBound: false
-    }).typeName;
+    }).ref.type;
   };
 }
 

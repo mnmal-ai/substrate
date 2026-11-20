@@ -286,7 +286,7 @@ describe('policy on walked types', () => {
 describe('walkedTypes', () => {
   const { engine } = build();
   const types = engine.schemaFor('ns').types;
-  const resolve = hopResolver('ns', (t) => (Object.hasOwn(types, t) ? types[t] : undefined));
+  const resolve = hopResolver('ns', types);
 
   it('lists walks, _agg and nested selections at any depth, deduplicated by (type, where)', () => {
     const got = walkedTypes(
