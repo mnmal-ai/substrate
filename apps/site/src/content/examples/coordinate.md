@@ -18,7 +18,7 @@ Identity is the other gap. A broker can authenticate each connection, and [Rabbi
 
 ## On substrate
 
-The scenario is a small invoicing app: three customers and eight invoices, all invented, seeded from [`_scenario.ts`](https://github.com/mnmal-ai/substrate/blob/main/apps/site/examples/_scenario.ts), which most of the examples share. This run adds a `Task` type to it. The script below runs against substrate's engine in the site's CI, and the responses shown are that run's output, not typed in.
+The scenario is a small invoicing app: three customers and eight invoices, all invented, seeded from [`_scenario.ts`](https://github.com/mnmal-ai/substrate/blob/main/apps/site/examples/_scenario.ts), which most of the examples share. This run adds a `Task` type to it. The script below runs against substrate's engine in substrate's CI, and the responses shown are that run's output, not typed in.
 
 `collections-agent` subscribes to open tasks. `billing-agent` writes one, signed with its own key. The new row arrives on the open subscription with no polling, and its metadata names the key that wrote it. When `collections-agent` takes the task, `updatedBy` names its key in turn.
 

@@ -12,11 +12,11 @@ shows:
 
 The common way to answer questions over a database is text-to-SQL: give a model the schema and the question, let it write a query, and run that query. [LangChain's SQL agent](https://docs.langchain.com/oss/python/langchain/sql-agent) works this way: the agent generates a SQL command, and its tools execute it.
 
-It's flexible. A capable model can answer questions that no fixed grammar will read. The cost is that the query is model output. [The same LangChain docs](https://docs.langchain.com/oss/python/langchain/sql-agent) say there are inherent risks in running it, and advise narrowly scoped database permissions and validation before executing model-generated SQL. So the moving parts are a model, a prompt that carries the schema, a check on what it writes, and a role narrow enough to limit the damage.
+It's flexible. A capable model can answer questions that no fixed grammar will read. The cost is that the query is model output. [The same LangChain docs](https://docs.langchain.com/oss/python/langchain/sql-agent) say there are inherent risks in running it, advise narrowly scoped database permissions and validation before executing model-generated SQL, and add a query-checking tool and a human approval step before a query runs. So the moving parts are a model, a prompt that carries the schema, a check on what it writes, and a role narrow enough to limit the damage.
 
 ## On substrate
 
-The scenario is a small invoicing app: three customers and eight invoices, all invented, seeded from [`_scenario.ts`](https://github.com/mnmal-ai/substrate/blob/main/apps/site/examples/_scenario.ts), which most of the examples share. The script below runs against substrate's engine in the site's CI, and the responses shown are that run's output, not typed in.
+The scenario is a small invoicing app: three customers and eight invoices, all invented, seeded from [`_scenario.ts`](https://github.com/mnmal-ai/substrate/blob/main/apps/site/examples/_scenario.ts), which most of the examples share. The script below runs against substrate's engine in substrate's CI, and the responses shown are that run's output, not typed in.
 
 A deterministic parser turns the question into a frame, and an optional, constrained judge handles only what the parser leaves ambiguous: the model never writes a query. The answer carries the frame it ran and the words that justified each part of it. A question it can't read answers `unknown` and runs nothing. `ask` comes from the `@mnmal-ai/substrate-nl` plugin, which is installed separately.
 
