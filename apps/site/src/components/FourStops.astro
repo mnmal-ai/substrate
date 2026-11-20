@@ -105,9 +105,14 @@ const panes =
             <p class="say">
               A deterministic parser turns the question into a frame, and an optional constrained
               judge handles only what the parser leaves ambiguous: the model never writes a query. A
-              question it can't read answers <code>unknown</code> and runs nothing.
+              question it can't read answers <code>unknown</code> and runs nothing. This run has no
+              judge, only the parser, and counts rather than sums.
             </p>
-            <Example name="ask" show={['namespace.ts']} />
+            <p class="say">
+              This deployment tells <code>ask</code> an invoice’s time is its due date (the{' '}
+              <code>timeField</code> setting), so “per month” groups by <code>dueAt</code>.
+            </p>
+            <Example name="ask" show={[]} />
           </div>
         </li>
       )

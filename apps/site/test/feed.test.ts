@@ -108,6 +108,38 @@ describe('feedEvents', () => {
   });
 });
 
+describe('feedEvents, ask steps', () => {
+  const ask = (response: unknown): Transcript => ({
+    example: 'ask',
+    steps: [
+      step({
+        feed: true,
+        path: '/substrate/v1/nl',
+        body: { namespace: 'app', question: 'how many sent invoices per month' },
+        response
+      })
+    ]
+  });
+
+  it('renders the question and its row count, or unknown', () => {
+    const rows = {
+      outcome: {
+        kind: 'rows',
+        frame: { 'app/Invoice': { params: { where: { status: { eq: 'sent' } } } } },
+        data: { groups: [{}, {}, {}] }
+      }
+    };
+    expect(feedEvents([ask(rows)])).toEqual([
+      {
+        kind: 'ask · "how many sent invoices per month"',
+        line: 'where status eq sent',
+        result: '→ 3 rows'
+      }
+    ]);
+    expect(feedEvents([ask({ outcome: { kind: 'unknown' } })])[0]?.result).toBe('→ unknown');
+  });
+});
+
 describe('loadExample', () => {
   it("returns an example's own files by name, and nothing for an unknown one", () => {
     const { files } = loadExample('coordinate');

@@ -100,12 +100,32 @@ function result(step: StepResult, op: string, key: string): string {
   return groups === undefined ? '→ 1 row' : `→ ${count(groups.length, 'group')}`;
 }
 
+type AskOutcome = { kind?: string; frame?: Record<string, Frame>; data?: unknown };
+
+// An ask step posts `{ question }` to `nl`: the line is the frame the parser built, if it built one.
+function ask(step: StepResult): FeedEvent {
+  const question = (step.body as { question?: string } | undefined)?.question ?? '';
+  const outcome = (step.response as { outcome?: AskOutcome }).outcome;
+  const frame = Object.values(outcome?.frame ?? {})[0];
+  const data = outcome?.data;
+  const rows = Array.isArray(data) ? data : (data as { groups?: unknown[] } | undefined)?.groups;
+  return {
+    kind: `ask · ${JSON.stringify(question)}`,
+    line: outcome?.kind === 'rows' ? fit(Object.entries(frame?.params ?? {}).flatMap(clause)) : '',
+    result:
+      outcome?.kind === 'rows' && rows !== undefined
+        ? `→ ${count(rows.length, 'row')}`
+        : `→ ${outcome?.kind ?? step.status}`
+  };
+}
+
 /** One event per `feed` step, in order. Harness-only step fields never reach a line. */
 export function feedEvents(ts: Transcript[]): FeedEvent[] {
   return ts.flatMap((t) =>
     t.steps
       .filter((s) => s.feed)
       .map((s) => {
+        if (s.path.endsWith('/nl')) return ask(s);
         // A received frame has no request of its own: it answers the subscription its stream opened.
         const req =
           s.receive === undefined ? s : (t.steps.find((o) => o.stream === s.receive) ?? s);

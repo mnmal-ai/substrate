@@ -24,6 +24,7 @@ import {
   runMigrations,
   signHs256
 } from '@mnmal-ai/substrate/testing';
+import { createNlPlugin, type NamespaceRulings } from '@mnmal-ai/substrate-nl';
 import postgres from 'postgres';
 
 export interface Step {
@@ -105,6 +106,11 @@ export interface ExampleSetup {
    * walk to a code-defined one there. `advisor` implies it, over its own `owned`.
    */
   proposals?: { owned: string[] };
+  /**
+   * Serve `POST /substrate/v1/nl` over the namespaces, parser only: no judge, no network.
+   * `rulings` are the operator's per-namespace overrides.
+   */
+  ask?: { rulings?: Record<string, NamespaceRulings> };
 }
 
 const PACKAGE_NAME = '@mnmal-ai/substrate-site';
@@ -314,6 +320,29 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
             }
           })
     });
+    if (setup.ask !== undefined) {
+      // compose mounts no kernel routes; the binary does, so the demo does the same here.
+      const nl = createNlPlugin({
+        ...(setup.ask.rulings === undefined ? {} : { rulings: setup.ask.rulings }),
+        engine: {
+          federatedSchema: () => composed?.engine.federatedSchema() ?? {},
+          operators: (n) => composed?.engine.datasetFor(n)?.capabilities.operators,
+          // The demo's own system identity: the request's auth is not what is on show.
+          query: (frame) =>
+            composed?.engine.query({
+              frame,
+              ctx: {
+                identity: { kind: 'system', id: SYSTEM_KID, grants: { '*': ['read', 'mutate'] } },
+                now: new Date(),
+                headers: {},
+                meta: {}
+              }
+            } as never) as never
+        }
+      });
+      for (const r of nl.kernelRoutes ?? [])
+        server.route(r.method, `/substrate/v1/${r.path}`, r.handler);
+    }
     await server.start();
     if (proposals !== undefined && sql !== undefined) {
       // Tables and unique indexes for every registered type, as the binary's boot does.
