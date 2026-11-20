@@ -128,7 +128,13 @@ describe('runExample', () => {
           label: 'page',
           method: 'POST',
           path: '/substrate/v1/query',
-          body: { 'app/Invoice': { params: { limit: 1 }, fields: { id: true, number: true } } }
+          // Ordered on a field: two rows written in one millisecond tie on the natural order.
+          body: {
+            'app/Invoice': {
+              params: { limit: 1, orderBy: [{ number: 'asc' }] },
+              fields: { id: true, number: true }
+            }
+          }
         }
       ]);
     const a = await run();
@@ -169,6 +175,80 @@ describe('runExample', () => {
         .id;
     expect(t.steps.map((s) => s.status)).toEqual([200, 200]);
     expect([by(0), by(1)]).toEqual([SYSTEM_KID, 'billing-agent']);
+  });
+
+  it('holds a stream open across steps and records its frames in order', async () => {
+    const cid = '0197a111-1111-7111-8111-111111111111';
+    const mutate = (label: string, body: unknown): Step => ({
+      label,
+      method: 'POST',
+      path: '/substrate/v1/mutate',
+      body
+    });
+    const receive: Step = {
+      label: 'receive',
+      method: 'POST',
+      path: '/substrate/v1/subscribe',
+      receive: 'customers'
+    };
+    const run = () =>
+      runExample(setup, [
+        {
+          label: 'subscribe',
+          method: 'POST',
+          path: '/substrate/v1/subscribe',
+          body: { 'app/Customer': { fields: { id: true, name: true, _metadata: true } } },
+          stream: 'customers'
+        },
+        mutate('create', {
+          'app/createCustomer': { params: { id: cid, name: 'Ada' }, fields: { id: true } }
+        }),
+        receive,
+        // No client id, so the raw transcripts differ between runs.
+        mutate('create', {
+          'app/createCustomer': { params: { name: 'Bo' }, fields: { id: true } }
+        }),
+        receive,
+        mutate('update', {
+          'app/updateCustomer': { params: { id: cid, name: 'Ada L' }, fields: { id: true } }
+        }),
+        receive
+      ]);
+    const a = await run();
+    const b = await run();
+    type Frame = { kind: string; data?: Record<string, { name: string }> };
+    const frames = a.steps
+      .filter((s) => s.path.endsWith('/subscribe'))
+      .map((s) => s.response as Frame);
+    expect(a.steps.map((s) => s.status)).toEqual([200, 200, 200, 200, 200, 200, 200]);
+    expect(frames.map((f) => [f.kind, f.data?.['app/Customer']?.name])).toEqual([
+      ['snapshot', undefined],
+      ['add', 'Ada'],
+      ['add', 'Bo'],
+      ['update', 'Ada L']
+    ]);
+    expect(JSON.stringify(a)).not.toContain('"errors"');
+    expect(a).not.toEqual(b);
+    expect(normalise(a)).toEqual(normalise(b));
+  });
+
+  it('throws when a receive has no open stream or no frame', async () => {
+    const step = (label: string, extra: Partial<Step>): Step => ({
+      label,
+      method: 'POST',
+      path: '/substrate/v1/subscribe',
+      ...extra
+    });
+    await expect(runExample(setup, [step('r', { receive: 'nope' })])).rejects.toThrow(
+      /'r' receives from 'nope', which no earlier step opened/
+    );
+    const open = step('open', {
+      body: { 'app/Customer': { fields: { id: true } } },
+      stream: 'quiet'
+    });
+    await expect(runExample(setup, [open, step('wait', { receive: 'quiet' })])).rejects.toThrow(
+      /'wait' got no frame on 'quiet'/
+    );
   });
 
   it('refuses a pg example without POSTGRES_URL', async () => {

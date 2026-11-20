@@ -1,4 +1,5 @@
 import { writeFile } from 'node:fs/promises';
+import { decodeStreamFrames, FRAMES_JSON_MIME } from '@mnmal-ai/substrate/pack';
 import { createRecallPlugin, InMemoryEmbeddingsStore } from '@mnmal-ai/substrate/recall';
 import type { NamespaceDefinition } from '@mnmal-ai/substrate/sdk';
 import {
@@ -24,6 +25,10 @@ export interface Step {
   body?: unknown;
   as?: string;
   feed?: boolean;
+  /** Hold this request open as a frame stream under this name. Its response is the first frame. */
+  stream?: string;
+  /** Send nothing: the response is the next frame on the stream an earlier step opened. */
+  receive?: string;
 }
 
 export interface StepResult {
@@ -56,6 +61,27 @@ const PACKAGE_NAME = '@mnmal-ai/substrate-site';
 // (`systemActor` is ignored there), so the system actor is a registered key of its own.
 export const SYSTEM_KID = 'system';
 const SECRET = 'substrate-site-example-signing-secret-0123456789';
+// In process a frame lands in milliseconds; this only turns a missing one into a named failure.
+const FRAME_WAIT_MS = 5000;
+
+type Frames = AsyncGenerator<Uint8Array>;
+
+async function nextFrame(frames: Frames, label: string, name: string): Promise<unknown> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`Step '${label}' got no frame on '${name}' in ${FRAME_WAIT_MS}ms.`)),
+      FRAME_WAIT_MS
+    );
+  });
+  try {
+    const { value, done } = await Promise.race([frames.next(), timeout]);
+    if (done === true) throw new Error(`Step '${label}' got no frame on '${name}': it ended.`);
+    return JSON.parse(new TextDecoder().decode(value));
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Transcript> {
   const agents = setup.agents;
@@ -126,6 +152,7 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
         ]
       : undefined;
   const server = new MemorySubstrateServer();
+  const streams = new Map<string, Frames>();
   let composed: ComposeResult | undefined;
   try {
     composed = await compose({
@@ -149,7 +176,28 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
 
     const results: StepResult[] = [];
     for (const step of steps) {
+      const result = {
+        label: step.label,
+        method: step.method,
+        path: step.path,
+        ...(step.body === undefined ? {} : { body: step.body }),
+        ...(step.as === undefined ? {} : { as: step.as }),
+        feed: step.feed ?? false
+      };
+      if (step.receive !== undefined) {
+        const frames = streams.get(step.receive);
+        if (frames === undefined) {
+          throw new Error(
+            `Step '${step.label}' receives from '${step.receive}', which no earlier step opened.`
+          );
+        }
+        // Streams open only on a 200, and every frame after it rides that response.
+        const response = await nextFrame(frames, step.label, step.receive);
+        results.push({ ...result, status: 200, response });
+        continue;
+      }
       const headers: Record<string, string> = { 'content-type': 'application/json' };
+      if (step.stream !== undefined) headers.accept = FRAMES_JSON_MIME;
       if (agents !== undefined) {
         const kid = step.as ?? SYSTEM_KID;
         const token = signHs256(
@@ -170,6 +218,13 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
         headers,
         ...(step.body === undefined ? {} : { body: Buffer.from(JSON.stringify(step.body)) })
       });
+      if (step.stream !== undefined && res.status === 200) {
+        const frames = decodeStreamFrames(res.body as ReadableStream<Uint8Array>);
+        streams.set(step.stream, frames);
+        const response = await nextFrame(frames, step.label, step.stream);
+        results.push({ ...result, status: res.status, response });
+        continue;
+      }
       const raw =
         res.body === undefined || res.body === null
           ? ''
@@ -180,19 +235,12 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
       } catch {
         // A non-JSON body is kept as text.
       }
-      results.push({
-        label: step.label,
-        method: step.method,
-        path: step.path,
-        ...(step.body === undefined ? {} : { body: step.body }),
-        ...(step.as === undefined ? {} : { as: step.as }),
-        feed: step.feed ?? false,
-        status: res.status,
-        response
-      });
+      results.push({ ...result, status: res.status, response });
     }
     return { example: setup.name, steps: results };
   } finally {
+    // Not awaited: after a timeout a read is still pending, and shutdown below ends it.
+    for (const frames of streams.values()) void frames.return(undefined);
     await composed?.stop();
     await sql?.end({ timeout: 5 });
   }
