@@ -354,7 +354,7 @@
       "q": 41,
       "expressible": true,
       "compared": false,
-      "answersMatch": false,
+      "answersMatch": null,
       "p50Ms": 4642.3,
       "baselineP50Ms": 4201.3
     },

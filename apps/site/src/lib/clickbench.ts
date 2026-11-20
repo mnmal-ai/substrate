@@ -2,7 +2,8 @@ export interface ClickBenchQuery {
   q: number;
   expressible: boolean;
   compared: boolean;
-  answersMatch: boolean;
+  /** null when nothing was compared (empty on both sides). */
+  answersMatch: boolean | null;
   p50Ms: number;
   baselineP50Ms: number;
 }

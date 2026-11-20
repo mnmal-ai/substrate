@@ -7,7 +7,7 @@ const row = (q: number, compared: boolean, p50Ms: number, baselineP50Ms: number)
   q,
   expressible: true,
   compared,
-  answersMatch: compared,
+  answersMatch: compared ? (true as boolean | null) : null,
   p50Ms,
   baselineP50Ms
 });
@@ -48,6 +48,8 @@ describe('committed ClickBench data', () => {
       expect(Object.keys(q).sort()).toEqual(
         ['answersMatch', 'baselineP50Ms', 'compared', 'expressible', 'p50Ms', 'q'].sort()
       );
+      // null only where nothing was compared
+      expect(q.answersMatch === null).toBe(!q.compared);
     }
     for (const p of data.passes)
       expect(Object.keys(p).sort()).toEqual(['sumRatio', 'worstQ', 'worstRatio']);
