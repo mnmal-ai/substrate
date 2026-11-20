@@ -20,9 +20,9 @@ describe('forEachWalkHop', () => {
 
   it('visits every hop before the hops beneath it, with its kind, path and near type', () => {
     const seen: string[] = [];
-    forEachWalkHop(entry, 'S', ({ kind, path }, near) => {
-      seen.push(`${kind} ${near} ${path.join('.')}`);
-      return `${near}>${path[path.length - 1]}`;
+    forEachWalkHop(entry, { ns: 'x', type: 'S' }, ({ kind, path }, near) => {
+      seen.push(`${kind} ${near.type} ${path.join('.')}`);
+      return { ns: 'x', type: `${near.type}>${path[path.length - 1]}` };
     });
     expect(seen).toEqual([
       'walk S where.OR.0._walk',
@@ -37,11 +37,38 @@ describe('forEachWalkHop', () => {
 
   it('does not descend below a hop the visitor resolves to undefined', () => {
     const seen: string[] = [];
-    forEachWalkHop(entry, 'S', ({ path, selection }) => {
+    forEachWalkHop(entry, { ns: 'x', type: 'S' }, ({ path, selection }) => {
       seen.push(path.join('.'));
-      return selection === undefined ? 'T' : undefined;
+      return selection === undefined ? { ns: 'x', type: 'T' } : undefined;
     });
     expect(seen).not.toContain('fields.list._walk.where._walk');
     expect(seen).not.toContain('fields.list.fields.inner._walk');
+  });
+
+  it('gives an in hop its written namespace', () => {
+    let ns: string | undefined;
+    forEachWalkHop(
+      { params: { where: { _walk: { in: 'app/Invoice.customer' } } } },
+      { ns: 'ext', type: 'Payment' },
+      (hop) => {
+        ns = hop.ns;
+        return undefined;
+      }
+    );
+    expect(ns).toBe('app');
+  });
+
+  it('passes the visitor result as the next near side', () => {
+    const next = { ns: 'app', type: 'Invoice' };
+    const nears: unknown[] = [];
+    forEachWalkHop(
+      { params: { where: { _walk: { out: 'a', where: { _walk: { out: 'b' } } } } } },
+      { ns: 'ext', type: 'Payment' },
+      (_hop, near) => {
+        nears.push(near);
+        return next;
+      }
+    );
+    expect(nears[1]).toEqual(next);
   });
 });

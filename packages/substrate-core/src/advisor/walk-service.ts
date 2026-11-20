@@ -5,7 +5,12 @@
  * here refuses anything; it only describes.
  */
 
-import { forEachWalkHop, sharedPicks, windowGroupBy } from '@mnmal-ai/substrate-filter';
+import {
+  forEachWalkHop,
+  sharedPicks,
+  type TypeRef,
+  windowGroupBy
+} from '@mnmal-ai/substrate-filter';
 import type {
   FieldDef,
   IndexPlan,
@@ -64,13 +69,13 @@ function orderOf(orderBy: unknown): Order {
  */
 export function walkSites(
   entry: Record<string, unknown>,
-  seed: string,
+  seed: TypeRef,
   resolve: HopResolver,
   naturalOrder?: (type: string) => OrderedBy
 ): WalkSite[] {
   const out: WalkSite[] = [];
   forEachWalkHop(entry, seed, ({ kind, node, path, selection }, from) => {
-    const far = resolve(node, from, path);
+    const far = resolve(node, from.type, path);
     const s: WalkSite = { path, node, far, wheres: [] };
     // Validation proved `in` is '<ns>/<Type>.<field>' with no dot in the type.
     if (typeof node.in === 'string') s.crossRef = node.in.slice(node.in.indexOf('.') + 1);
@@ -113,7 +118,7 @@ export function walkSites(
       addWhere(node.where, [...path, 'where']);
       addWhere(sel.where, [...at, 'where']);
     }
-    return far;
+    return { ns: from.ns, type: far };
   });
   return out;
 }
@@ -206,7 +211,7 @@ export const nextKeys = (indexes: PlanIndex[], lead: string): string[] => [
 
 export interface ClassifyInput {
   entry: Record<string, unknown>;
-  seed: string;
+  seed: TypeRef;
   resolve: HopResolver;
   /** A type's declared fields, for what an index may key on. */
   fieldsOf: (type: string) => Fields | undefined;
@@ -235,7 +240,8 @@ export function classifyWalkService(
   input: ClassifyInput,
   indexesOf: (type: string) => PlanIndex[]
 ): PlanClause[] {
-  const { entry, seed, fieldsOf } = input;
+  const { entry, seed: seedRef, fieldsOf } = input;
+  const seed = seedRef.type;
   const out: PlanClause[] = [];
   const params = isObj(entry.params) ? entry.params : {};
   const clause = (
@@ -283,7 +289,7 @@ export function classifyWalkService(
     return grouped ? 'group-by' : 'per-seed';
   };
 
-  for (const s of walkSites(entry, seed, input.resolve, input.naturalOrder)) {
+  for (const s of walkSites(entry, seedRef, input.resolve, input.naturalOrder)) {
     const farIndexes = indexesOf(s.far);
     const cr = s.crossRef;
     // A crossRef declared `indexed: false` has no eager index to serve its hop.

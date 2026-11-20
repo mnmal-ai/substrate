@@ -106,8 +106,13 @@ function entryOf(params: Record<string, unknown>): Record<string, unknown> {
 describe('walkTypes reaches what core walkSites reaches', () => {
   for (const { seed, params } of CORPUS) {
     it(JSON.stringify(params).slice(0, 90), () => {
-      const core = new Set([seed, ...walkSites(entryOf(params), seed, resolve).map((s) => s.far)]);
-      expect([...walkTypes(params, seed, fieldDef)].sort()).toEqual([...core].sort());
+      const core = new Set([
+        seed,
+        ...walkSites(entryOf(params), { ns: 'ns', type: seed }, resolve).map((s) => s.far)
+      ]);
+      expect([...walkTypes(params, { ns: 'ns', type: seed }, fieldDef)].sort()).toEqual(
+        [...core].sort()
+      );
       // Every case but the plain where reaches a far type.
       if (params.where !== CORPUS[0]?.params.where) expect(core.size).toBeGreaterThan(1);
     });

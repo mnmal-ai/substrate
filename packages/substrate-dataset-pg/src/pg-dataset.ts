@@ -745,7 +745,7 @@ export class PgDataset implements Dataset {
     // loaded first (F19). A type with no table yet reads as an empty one.
     const lookup = this.#fieldDefLookup;
     const fieldDef = (t: string, f: string) => lookup?.(t, f);
-    const types = [...(walks ? walkTypes(params, type, fieldDef) : [type])];
+    const types = [...(walks ? walkTypes(params, { ns: this.namespace, type }, fieldDef) : [type])];
     const loaded = await Promise.all(types.map((t) => this.#tableFor(t, this.namespace, true)));
     const tableFor = tableLookup(
       loaded.map((t, i) => t ?? absentTypeTable(this.namespace, types[i] as string))
@@ -897,7 +897,9 @@ export class PgDataset implements Dataset {
       const outputs = new Map<string, Fragment>();
       const aggTypes = new Map<string, ExprType>();
       for (const [name, spec] of Object.entries(frameAggs ?? {})) {
-        const t = walkAggExprType(spec, type, fieldDef);
+        const t = walkAggExprType(spec, { ns: this.namespace, type }, (r, f) =>
+          fieldDef(r.type, f)
+        );
         if (!used.includes(`"_agg.${name}"`) || t === undefined || scope?.aggValue === undefined) {
           continue;
         }

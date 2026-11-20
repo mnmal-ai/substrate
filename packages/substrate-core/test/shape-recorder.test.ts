@@ -238,7 +238,7 @@ describe('walk shapes', () => {
           up: { _walk: { out: 'cert' } }
         }
       },
-      'Cert',
+      { ns: 'cards', type: 'Cert' },
       (node) => (node.in !== undefined ? 'Observation' : 'Cert')
     );
     const shapes = walkShapesOf('cards', sites, () => fields);

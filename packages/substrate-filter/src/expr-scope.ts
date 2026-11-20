@@ -5,6 +5,7 @@
 import type { Expr, ExprType, FieldDef, WalkAgg } from '@mnmal-ai/substrate-types';
 import { METADATA_FILTER_FIELDS } from '@mnmal-ai/substrate-types';
 import type { FieldDefOf } from './predicate.js';
+import type { TypeRef } from './walk-hops.js';
 
 /** `number`, `int16` and `int32` (as `int64`), `int64`, `string`, `boolean` and `date` fields, and a crossRef's id (a string); json, list and struct fields are not usable. */
 export function exprTypeOfField(def: FieldDef | undefined): ExprType | undefined {
@@ -56,8 +57,8 @@ export const hasExprKey = (where: unknown): where is { $expr: Expr } =>
  */
 export function walkAggExprType(
   spec: WalkAgg,
-  near: string,
-  fieldDef: (type: string, field: string) => FieldDef | undefined
+  near: TypeRef,
+  fieldDef: (ref: TypeRef, field: string) => FieldDef | undefined
 ): ExprType | undefined {
   const rec = spec as unknown as Record<string, unknown>;
   if (Object.hasOwn(rec, 'count') || Object.hasOwn(rec, 'sum') || Object.hasOwn(rec, 'avg')) {
@@ -65,11 +66,13 @@ export function walkAggExprType(
   }
   const latest = Object.hasOwn(rec, 'latest') ? (rec.latest as { value: string }) : undefined;
   const field = latest !== undefined ? latest.value : (rec.min ?? rec.max);
-  let far: string | undefined;
-  if (spec.in !== undefined) far = /^[^/]+\/([^./]+)\./.exec(spec.in)?.[1];
-  else {
+  let far: TypeRef | undefined;
+  if (spec.in !== undefined) {
+    const m = /^([^/]+)\/([^./]+)\./.exec(spec.in);
+    far = m?.[1] !== undefined && m[2] !== undefined ? { ns: m[1], type: m[2] } : undefined;
+  } else {
     const def = fieldDef(near, spec.out ?? '');
-    far = def?.kind === 'crossRef' ? def.type : undefined;
+    far = def?.kind === 'crossRef' ? { ns: def.ns, type: def.type } : undefined;
   }
   return far === undefined || typeof field !== 'string'
     ? undefined

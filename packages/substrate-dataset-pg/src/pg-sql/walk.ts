@@ -24,6 +24,7 @@ import {
   groupConjuncts,
   refNames,
   sharedPicks,
+  type TypeRef,
   whereUsesWalks
 } from '@mnmal-ai/substrate-filter';
 import {
@@ -148,16 +149,17 @@ export function farTypeOf(
  */
 export function walkTypes(
   params: { where?: unknown; agg?: unknown; nested?: unknown },
-  seed: string,
+  seed: TypeRef,
   fieldDef: (type: string, field: string) => FieldDef | undefined
 ): Set<string> {
-  const types = new Set([seed]);
+  const types = new Set([seed.type]);
   // The frame entry these params were split from: nested selections and `_agg` under `fields`.
   const fields = { ...(isObj(params.nested) ? params.nested : {}), _agg: params.agg };
   forEachWalkHop({ params: { where: params.where }, fields }, seed, ({ node }, near) => {
-    const far = farTypeOf(node as { in?: string; out?: string }, near, fieldDef);
-    if (far !== undefined) types.add(far);
-    return far;
+    const far = farTypeOf(node as { in?: string; out?: string }, near.type, fieldDef);
+    if (far === undefined) return undefined;
+    types.add(far);
+    return { ns: near.ns, type: far };
   });
   return types;
 }

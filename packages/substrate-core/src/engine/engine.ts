@@ -1468,7 +1468,7 @@ export class Engine {
     try {
       const sites = walkSites(
         frame as Record<string, unknown>,
-        seed,
+        { ns, type: seed },
         tools.resolve,
         tools.naturalOrder
       );
@@ -1509,7 +1509,7 @@ export class Engine {
     return classifyWalkService(
       {
         entry: frame as Record<string, unknown>,
-        seed,
+        seed: { ns, type: seed },
         resolve: scan.resolve,
         fieldsOf: scan.fieldsOf,
         naturalOrder: scan.naturalOrder
@@ -1555,7 +1555,7 @@ export class Engine {
     try {
       walked = walkedTypes(
         frame as Record<string, unknown>,
-        seed,
+        { ns, type: seed },
         hopResolver(ns, (t) => (Object.hasOwn(types, t) ? types[t] : undefined))
       );
     } catch {

@@ -5,6 +5,12 @@
  * so the three can never disagree on which hops a frame has.
  */
 
+/** A type in a namespace. */
+export interface TypeRef {
+  ns: string;
+  type: string;
+}
+
 /** One hop of a frame entry. */
 export interface WalkHop {
   /** A `_walk` in a where, an `_agg` (in a where or in `fields._agg`), or a nested selection's `_walk`. */
@@ -13,9 +19,16 @@ export interface WalkHop {
   node: Record<string, unknown>;
   /** The node's path inside the frame entry, e.g. `['where', 'AND', '0', '_walk']`. */
   path: string[];
+  /** The namespace an `in` hop writes (`<ns>/<Type>.<field>`); absent on an `out` hop. */
+  ns?: string;
   /** A nested hop's selection (`{ _walk, where?, orderBy?, fields }`) and its path. */
   selection?: { sel: Record<string, unknown>; path: string[] };
 }
+
+const inNs = (node: Record<string, unknown>): { ns?: string } => {
+  const ns = typeof node.in === 'string' ? /^([^/]+)\//.exec(node.in)?.[1] : undefined;
+  return ns === undefined ? {} : { ns };
+};
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -31,10 +44,10 @@ const isObj = (v: unknown): v is Record<string, unknown> =>
  */
 export function forEachWalkHop(
   entry: Record<string, unknown>,
-  seed: string,
-  visit: (hop: WalkHop, near: string) => string | undefined
+  seed: TypeRef,
+  visit: (hop: WalkHop, near: TypeRef) => TypeRef | undefined
 ): void {
-  const inWhere = (v: unknown, type: string, path: string[]): void => {
+  const inWhere = (v: unknown, type: TypeRef, path: string[]): void => {
     if (Array.isArray(v)) {
       v.forEach((c, i) => {
         inWhere(c, type, [...path, String(i)]);
@@ -45,7 +58,10 @@ export function forEachWalkHop(
     for (const [k, child] of Object.entries(v)) {
       const at = [...path, k];
       if ((k === '_walk' || k === '_agg') && isObj(child)) {
-        const far = visit({ kind: k === '_walk' ? 'walk' : 'agg', node: child, path: at }, type);
+        const far = visit(
+          { kind: k === '_walk' ? 'walk' : 'agg', node: child, path: at, ...inNs(child) },
+          type
+        );
         if (far !== undefined) {
           inWhere(child.among, far, [...at, 'among']);
           inWhere(child.where, far, [...at, 'where']);
@@ -54,21 +70,21 @@ export function forEachWalkHop(
     }
   };
 
-  const inFields = (fields: unknown, type: string, path: string[]): void => {
+  const inFields = (fields: unknown, type: TypeRef, path: string[]): void => {
     if (!isObj(fields)) return;
     for (const [name, sel] of Object.entries(fields)) {
       const at = [...path, name];
       if (name === '_agg' && isObj(sel)) {
         for (const [n, agg] of Object.entries(sel)) {
           if (!isObj(agg)) continue;
-          const far = visit({ kind: 'agg', node: agg, path: [...at, n] }, type);
+          const far = visit({ kind: 'agg', node: agg, path: [...at, n], ...inNs(agg) }, type);
           if (far !== undefined) inWhere(agg.where, far, [...at, n, 'where']);
         }
       } else if (isObj(sel) && Object.hasOwn(sel, '_walk') && isObj(sel._walk)) {
         const walk = sel._walk;
         const wp = [...at, '_walk'];
         const far = visit(
-          { kind: 'nested', node: walk, path: wp, selection: { sel, path: at } },
+          { kind: 'nested', node: walk, path: wp, ...inNs(walk), selection: { sel, path: at } },
           type
         );
         if (far === undefined) continue;

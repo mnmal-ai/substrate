@@ -373,7 +373,7 @@ export class MemoryDataset implements Dataset {
         const spec = frameAggs?.[name.slice(5)];
         return spec === undefined
           ? undefined
-          : walkAggExprType(spec, type, (t, f) => lookup?.(t, f));
+          : walkAggExprType(spec, { ns: this.namespace, type }, (r, f) => lookup?.(r.type, f));
       };
       for (const [name, expr] of entries) {
         const checked = checkExpr(expr, { field: typeOf }, []);

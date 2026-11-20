@@ -306,7 +306,7 @@ describe('walkedTypes', () => {
           }
         }
       },
-      'Thing',
+      { ns: 'ns', type: 'Thing' },
       resolve
     );
     expect(got).toEqual([
@@ -329,7 +329,7 @@ describe('walkedTypes', () => {
           }
         }
       },
-      'Thing',
+      { ns: 'ns', type: 'Thing' },
       resolve
     );
     expect(got).toEqual([
@@ -340,7 +340,11 @@ describe('walkedTypes', () => {
 
   it('resolves out-walks to the crossRef target', () => {
     expect(
-      walkedTypes({ params: { where: { _walk: { out: 'thing' } } } }, 'Part', resolve)
+      walkedTypes(
+        { params: { where: { _walk: { out: 'thing' } } } },
+        { ns: 'ns', type: 'Part' },
+        resolve
+      )
     ).toEqual([{ type: 'Thing', path: ['where', '_walk'] }]);
   });
 });

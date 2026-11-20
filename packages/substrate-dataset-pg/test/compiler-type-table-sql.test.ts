@@ -350,7 +350,7 @@ describe('a walk reads each type from its own table', () => {
           }
         }
       },
-      'Obs',
+      { ns: 'ns', type: 'Obs' },
       fieldDef
     );
     expect([...types].sort()).toEqual(['Cert', 'Note', 'Obs', 'Sale', 'Tag']);

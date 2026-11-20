@@ -5,7 +5,7 @@
  * frame runs, so a walk can never read rows a top-level read could not.
  */
 
-import { forEachWalkHop } from '@mnmal-ai/substrate-filter';
+import { forEachWalkHop, type TypeRef } from '@mnmal-ai/substrate-filter';
 import type { TypeSchema, WhereClause } from '@mnmal-ai/substrate-types';
 import { resolveHop } from './filter/walk-validator.js';
 
@@ -53,12 +53,17 @@ export function hopResolver(
 /** Walked types of a frame entry `{ params, fields }` seeded at `seed`, deduplicated by (type, where, unfiltered). */
 export function walkedTypes(
   entry: Record<string, unknown>,
-  seed: string,
+  seed: TypeRef,
   resolve: HopResolver
 ): WalkedType[] {
   const out = new Map<string, WalkedType>();
-  const hop = (node: Record<string, unknown>, from: string, path: string[], where = node.where) => {
-    const type = resolve(node, from, path);
+  const hop = (
+    node: Record<string, unknown>,
+    from: TypeRef,
+    path: string[],
+    where = node.where
+  ) => {
+    const type = resolve(node, from.type, path);
     const unfiltered = node.quantifier === 'all' || node.pick !== undefined;
     const k = JSON.stringify([type, where ?? null, unfiltered]);
     if (!out.has(k)) {
@@ -69,7 +74,7 @@ export function walkedTypes(
         ...(unfiltered ? { unfiltered: true as const } : {})
       });
     }
-    return type;
+    return { ns: from.ns, type };
   };
 
   forEachWalkHop(entry, seed, ({ node, path, selection }, from) => {
