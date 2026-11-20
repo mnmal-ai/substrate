@@ -11,7 +11,7 @@ dist
 # Vitest coverage output
 coverage
 
-# Postgres dumps produced by scripts/backup-postgres.sh
+# A data/ directory at the repo root, for local database dumps; nothing in the repo writes one.
 /data/
 
 # Local snapshots (one-shot data exports, not source-controlled)
