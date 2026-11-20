@@ -231,6 +231,13 @@ describe('landing page', () => {
     for (const [link] of examples.matchAll(/<a\b[\s\S]*?<\/a>/g)) {
       expect(link).not.toContain('data-figure');
     }
+    // figures.ts plays a card's figure from its closest `.card`, so each figure sits in one.
+    const cards = examples.split(/<li\b[^>]*\sclass="(?:[^"]*\s)?card(?:\s[^"]*)?"/).slice(1);
+    expect(cards).toHaveLength(7);
+    for (const card of cards) {
+      const body = card.slice(0, card.indexOf('</li>'));
+      expect(body.match(/\sdata-figure="/g)).toHaveLength(1);
+    }
     // The figures module is the script that looks up [data-figure].
     const scripts = [...html.matchAll(/<script type="module" src="\/substrate\/([^"]+)"/g)].map(
       (m) => readFileSync(join(dist, m[1] as string), 'utf8')

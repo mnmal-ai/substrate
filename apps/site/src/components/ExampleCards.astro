@@ -11,7 +11,7 @@ const nn = (order: number) => String(order).padStart(2, '0');
   <p class="label kicker">// worked examples</p>
   <h2 id="examples-title">Seven promises, and the runs that keep them</h2>
   <p class="lede">
-    Each one is a script the site's tests run against substrate's engine in CI. Its page shows the
+    Each one is a script that substrate's CI runs against substrate's engine. Its page shows the
     code, then replays the frames and responses a run produced, not typed in. All the data is
     invented.
   </p>
@@ -54,6 +54,14 @@ const nn = (order: number) => String(order).padStart(2, '0');
     border-radius: 14px;
     background: var(--panel);
     transition: border-color 0.2s ease-out;
+  }
+
+  /* base.css's reveal transition would otherwise replace the border's. */
+  :global(.reveal) .card[data-reveal] {
+    transition:
+      opacity 0.6s ease-out,
+      transform 0.6s ease-out,
+      border-color 0.2s ease-out;
   }
 
   .card:hover,
