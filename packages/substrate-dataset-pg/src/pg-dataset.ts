@@ -430,7 +430,7 @@ export class PgDataset implements Dataset {
   readonly #inTx: boolean;
   readonly #shortIds: PgShortIdStore;
   readonly #edgesStore: PgEdgesStore | null;
-  /** Stored so tx-bound and forNamespace clones inherit it. */
+  /** This handle's own lookup; a clone for another namespace inherits it only when no `fieldDefLookupFor` is given. */
   readonly #fieldDefLookup: FieldDefLookup | null;
   readonly #fieldDefLookupFor: ((namespace: string) => FieldDefLookup) | null;
   readonly #layoutCache: LayoutCache;
@@ -1525,10 +1525,7 @@ export class PgDataset implements Dataset {
           sql: txSql,
           inTx: true,
           txScopeId: this.txScopeId,
-          ...(this.#fieldDefLookup !== null ? { fieldDefLookup: this.#fieldDefLookup } : {}),
-          ...(this.#fieldDefLookupFor !== null
-            ? { fieldDefLookupFor: this.#fieldDefLookupFor }
-            : {}),
+          ...this.#fieldDefOptions(this.namespace),
           layoutCache: this.#layoutCache,
           statementTimeoutMs: this.#statementTimeoutMs,
           ...(this.#typeDefLookup !== null ? { typeDefLookup: this.#typeDefLookup } : {}),
@@ -1572,15 +1569,7 @@ export class PgDataset implements Dataset {
             // Propagate the edges store reference so nested withTransaction
             // calls (flattened) retain the same enlistment behaviour.
             ...(this.#edgesStore !== null ? { edgesStore: this.#edgesStore } : {}),
-            // Each handle answers field definitions for its own namespace.
-            ...(this.#fieldDefLookupFor !== null
-              ? {
-                  fieldDefLookup: this.#fieldDefLookupFor(ns),
-                  fieldDefLookupFor: this.#fieldDefLookupFor
-                }
-              : this.#fieldDefLookup !== null
-                ? { fieldDefLookup: this.#fieldDefLookup }
-                : {}),
+            ...this.#fieldDefOptions(ns),
             layoutCache: this.#layoutCache,
             statementTimeoutMs: this.#statementTimeoutMs,
             ...(this.#typeDefLookup !== null ? { typeDefLookup: this.#typeDefLookup } : {}),
@@ -1913,6 +1902,22 @@ export class PgDataset implements Dataset {
     `) as unknown as Array<GuardedRecord & { matched: number }>;
   }
 
+  /**
+   * The field-definition options for a handle on `ns`: this handle's own lookup
+   * for its own namespace (or when no factory is given), the factory's answer
+   * for any other. The factory is always passed on.
+   */
+  #fieldDefOptions(
+    ns: string
+  ): Pick<InternalPgSubstrateDatasetOptions, 'fieldDefLookup' | 'fieldDefLookupFor'> {
+    const factory = this.#fieldDefLookupFor;
+    const lookup = factory === null || ns === this.namespace ? this.#fieldDefLookup : factory(ns);
+    return {
+      ...(lookup !== null ? { fieldDefLookup: lookup } : {}),
+      ...(factory !== null ? { fieldDefLookupFor: factory } : {})
+    };
+  }
+
   /** A body field's declared kind as the cast its extraction takes; null when undeclared. */
   #castFor(type: string): (field: string) => BodyOrderByCast | null {
     return (field) =>
@@ -1934,14 +1939,7 @@ export class PgDataset implements Dataset {
       sql: this.#sql as Sql,
       inTx: false,
       ...(this.#edgesStore !== null ? { edgesStore: this.#edgesStore } : {}),
-      ...(this.#fieldDefLookupFor !== null
-        ? {
-            fieldDefLookup: this.#fieldDefLookupFor(namespace),
-            fieldDefLookupFor: this.#fieldDefLookupFor
-          }
-        : this.#fieldDefLookup !== null
-          ? { fieldDefLookup: this.#fieldDefLookup }
-          : {}),
+      ...this.#fieldDefOptions(namespace),
       layoutCache: this.#layoutCache,
       statementTimeoutMs: this.#statementTimeoutMs,
       ...(this.#typeDefLookup !== null ? { typeDefLookup: this.#typeDefLookup } : {}),
