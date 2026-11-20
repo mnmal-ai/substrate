@@ -13,9 +13,10 @@ describe.skipIf(!process.env.POSTGRES_URL)('self-tending example (pg)', () => {
       namespaces: [],
       agents: ['ops-agent'],
       dataset: 'pg' as const,
-      advisor: { owned, storeProfile: 'scale' as const, slowReadMs: 60 }
+      advisor: { owned, storeProfile: 'scale' as const }
     };
-    const n = normalise(await runExample(setup, steps));
+    const raw = await runExample(setup, steps);
+    const n = normalise(raw);
     await expect(`${JSON.stringify(n, null, 2)}\n`).toMatchFileSnapshot(
       './self-tending/output.json'
     );
@@ -24,7 +25,8 @@ describe.skipIf(!process.env.POSTGRES_URL)('self-tending example (pg)', () => {
       expect(s.response, s.label).not.toHaveProperty('errors');
     }
 
-    const [, , recs, approved] = n.steps.map((s) => s.response) as [
+    const [, , , recs, approved] = n.steps.map((s) => s.response) as [
+      unknown,
       unknown,
       unknown,
       { data: { '_system/IndexRecommendation': Rec[] } },
@@ -36,26 +38,32 @@ describe.skipIf(!process.env.POSTGRES_URL)('self-tending example (pg)', () => {
     expect(rows[0]).toMatchObject({ type: 'Event', action: 'add', state: 'open' });
     expect(JSON.parse(rows[0]?.declarationJson as string).fields[0]).toBe('status');
     expect(approved.data['_system_proposals/propose_index']).toBeDefined();
-    expect(n.steps[3]?.body).toMatchObject({
+    expect(n.steps[4]?.body).toMatchObject({
       '_system_proposals/propose_index': { params: { recommendationId: rows[0]?.id } }
     });
 
-    // The read's plan. The advisor's rows are in the transcript; a plan is not, because its
-    // costs vary by run.
+    // Ids as the server issued them, before normalising: the same rows in the same order, and
+    // each of the three has its own createdAt, so the order cannot be a tie.
+    type Read = { data: { 'ops/Event': { id: string }[] } };
+    const ids = (i: number) =>
+      (raw.steps[i] as { response: Read }).response.data['ops/Event'].map((r) => r.id);
+    expect(ids(2)).toHaveLength(3);
+    expect(ids(5)).toEqual(ids(2));
+
+    // The plan of the statement the engine itself sent for the final read, with its bound
+    // parameters. Plans are not in the transcript: their costs vary by run.
+    const plan = raw.plans?.[steps[5]?.label as string];
+    expect(plan, 'the final read was explained').toBeDefined();
     const sql = postgres(process.env.POSTGRES_URL as string, { onnotice: () => {} });
     try {
       const [table] = await sql<{ table_name: string }[]>`
         SELECT table_name FROM substrate_type_tables WHERE namespace = 'ops' AND type = 'Event'`;
-      const [index] = await sql<{ indexname: string; indexdef: string }[]>`
-        SELECT indexname, indexdef FROM pg_indexes
+      const [index] = await sql<{ indexname: string }[]>`
+        SELECT indexname FROM pg_indexes
         WHERE schemaname = current_schema() AND tablename = ${table?.table_name as string}
           AND indexname LIKE '%status_createdat%'`;
       expect(index, 'the approved index exists').toBeDefined();
-      const [, status, created] = /\((\w+), (\w+)/.exec(index?.indexdef ?? '') as RegExpExecArray;
-      const plan = await sql.unsafe(
-        `EXPLAIN SELECT id FROM "${table?.table_name}" WHERE ${status} = 'open' AND deleted_at IS NULL ORDER BY ${created} DESC NULLS LAST LIMIT 5`
-      );
-      expect(plan.map((r) => r['QUERY PLAN']).join('\n')).toContain(index?.indexname as string);
+      expect(plan).toContain(index?.indexname as string);
     } finally {
       await sql.end({ timeout: 5 });
     }

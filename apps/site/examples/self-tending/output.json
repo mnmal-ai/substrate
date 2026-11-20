@@ -43,7 +43,55 @@
       }
     },
     {
-      "label": "Read open events, 20 times: each read is recorded and none is served by an index",
+      "label": "Demo setup: seed 3,000 closed and 3 open events straight into the store, then ANALYZE. This is simulated load, not traffic",
+      "method": "POST",
+      "path": "/substrate/v1/query",
+      "body": {
+        "ops/Event": {
+          "params": {
+            "limit": 1
+          },
+          "fields": {
+            "id": true,
+            "status": true
+          }
+        }
+      },
+      "as": "ops-agent",
+      "feed": false,
+      "fill": {
+        "namespace": "ops",
+        "type": "Event",
+        "field": "status",
+        "value": "open",
+        "otherwise": "closed",
+        "rows": 3000,
+        "matching": 3
+      },
+      "status": 200,
+      "response": {
+        "schemaVersion": "c870ad95c65f",
+        "data": {
+          "ops/Event": [
+            {
+              "id": "0197a000-0000-7000-8000-000000000002",
+              "status": "open"
+            }
+          ]
+        },
+        "shapes": {
+          "ops/Event": "list"
+        },
+        "_pagination": {
+          "ops/Event": {
+            "hasMore": true,
+            "nextCursor": "cursor-1"
+          }
+        }
+      }
+    },
+    {
+      "label": "Demo: this run delays every read of ops by 60 ms, so the advisor sees a slow shape quickly. Read open events 20 times; none is served by an index",
       "method": "POST",
       "path": "/substrate/v1/query",
       "body": {
@@ -65,6 +113,8 @@
       },
       "as": "ops-agent",
       "feed": false,
+      "repeat": 20,
+      "slow": 60,
       "status": 200,
       "response": {
         "schemaVersion": "c870ad95c65f",
@@ -81,14 +131,6 @@
             {
               "id": "0197a000-0000-7000-8000-000000000004",
               "status": "open"
-            },
-            {
-              "id": "0197a000-0000-7000-8000-000000000005",
-              "status": "open"
-            },
-            {
-              "id": "0197a000-0000-7000-8000-000000000006",
-              "status": "open"
             }
           ]
         },
@@ -97,8 +139,7 @@
         },
         "_pagination": {
           "ops/Event": {
-            "hasMore": true,
-            "nextCursor": "cursor-1"
+            "hasMore": false
           }
         }
       }
@@ -127,6 +168,7 @@
       },
       "as": "ops-agent",
       "feed": false,
+      "advise": true,
       "status": 200,
       "response": {
         "schemaVersion": "63d6418fe033",
@@ -223,14 +265,6 @@
             {
               "id": "0197a000-0000-7000-8000-000000000004",
               "status": "open"
-            },
-            {
-              "id": "0197a000-0000-7000-8000-000000000005",
-              "status": "open"
-            },
-            {
-              "id": "0197a000-0000-7000-8000-000000000006",
-              "status": "open"
             }
           ]
         },
@@ -239,8 +273,7 @@
         },
         "_pagination": {
           "ops/Event": {
-            "hasMore": true,
-            "nextCursor": "cursor-1"
+            "hasMore": false
           }
         }
       }

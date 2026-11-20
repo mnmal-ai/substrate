@@ -29,20 +29,29 @@ export const steps: Step[] = [
         },
         fields: { id: true }
       }
-    },
-    // The store then holds 3,000 events, as a busy week would. One in fifty is still open.
+    }
+  },
+  {
+    label:
+      'Demo setup: seed 3,000 closed and 3 open events straight into the store, then ANALYZE. This is simulated load, not traffic',
+    method: 'POST',
+    path: '/substrate/v1/query',
+    as: 'ops-agent',
     fill: {
       namespace: 'ops',
       type: 'Event',
       field: 'status',
       value: 'open',
       otherwise: 'closed',
-      every: 50,
-      rows: 3000
-    }
+      rows: 3000,
+      matching: 3
+    },
+    body: { 'ops/Event': { params: { limit: 1 }, fields: { id: true, status: true } } }
   },
   {
-    label: 'Read open events, 20 times: each read is recorded and none is served by an index',
+    label:
+      'Demo: this run delays every read of ops by 60 ms, so the advisor sees a slow shape quickly. Read open events 20 times; none is served by an index',
+    slow: 60,
     method: 'POST',
     as: 'ops-agent',
     path: '/substrate/v1/query',
@@ -82,6 +91,7 @@ export const steps: Step[] = [
   },
   {
     label: 'Read open events again: the same frame, now served by the index',
+    explain: true,
     method: 'POST',
     as: 'ops-agent',
     path: '/substrate/v1/query',

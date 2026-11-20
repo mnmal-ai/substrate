@@ -40,8 +40,9 @@ export interface Step {
   /** Send the request this many times; the result is the last response. */
   repeat?: number;
   /**
-   * pg with `advisor`, after the request: insert `rows` rows. Every `every`th has `field` set to
-   * `value`, the rest to `otherwise`.
+   * pg with `advisor`, before the request: a demo directive, echoed in the result. Insert `rows`
+   * rows straight into the dataset with `field` set to `otherwise`, then `matching` more with it
+   * set to `value`, one write each so their `createdAt` values differ, then ANALYZE.
    */
   fill?: {
     namespace: string;
@@ -49,10 +50,17 @@ export interface Step {
     field: string;
     value: string;
     otherwise: string;
-    every: number;
     rows: number;
+    matching: number;
   };
-  /** pg with `advisor`, before the request: run one index-advisor pass. */
+  /**
+   * pg with `advisor`, before the request, echoed in the result: from now on every read of the
+   * advisor's owned namespaces takes at least this many ms, so the advisor sees a slow shape.
+   */
+  slow?: number;
+  /** pg with `advisor`: keep the SQL the request makes, and EXPLAIN it (no ANALYZE) into `plans`. */
+  explain?: boolean;
+  /** pg with `advisor`, before the request, echoed in the result: run one index-advisor pass. */
   advise?: boolean;
 }
 
@@ -65,6 +73,10 @@ export interface StepResult {
   feed: boolean;
   stream?: string;
   receive?: string;
+  repeat?: number;
+  fill?: Step['fill'];
+  slow?: number;
+  advise?: boolean;
   status: number;
   response: unknown;
 }
@@ -72,6 +84,8 @@ export interface StepResult {
 export interface Transcript {
   example: string;
   steps: StepResult[];
+  /** The plan of each `explain` step's own SQL, by label. Not part of the page's transcript. */
+  plans?: Record<string, string>;
 }
 
 export interface ExampleSetup {
@@ -82,9 +96,9 @@ export interface ExampleSetup {
   dataset?: 'memory' | 'pg';
   /**
    * pg only: the proposals plugin owns these namespaces, the index advisor runs over them
-   * under this store profile, and every read of them takes at least `slowReadMs`.
+   * under this store profile.
    */
-  advisor?: { owned: string[]; storeProfile: 'scale'; slowReadMs: number };
+  advisor?: { owned: string[]; storeProfile: 'scale' };
 }
 
 const PACKAGE_NAME = '@mnmal-ai/substrate-site';
@@ -145,7 +159,16 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
     throw new Error(`embedder '${setup.embedder}' runs over the memory dataset only.`);
   }
 
-  const sql = kind === 'pg' ? postgres(url as string, { onnotice: () => {} }) : undefined;
+  let slowMs = 0;
+  // Statements the engine sends, kept only while an `explain` step runs.
+  let sent: { query: string; params: unknown[] }[] | undefined;
+  const sql =
+    kind === 'pg'
+      ? postgres(url as string, {
+          onnotice: () => {},
+          debug: (_c, query, params) => sent?.push({ query, params })
+        })
+      : undefined;
   if (sql !== undefined) await runMigrations(sql);
   const edges =
     sql === undefined ? new MemoryEdgesStore({ now: () => new Date() }) : new PgEdgesStore({ sql });
@@ -205,12 +228,13 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
       edgesStore: edges as PgEdgesStore,
       typeDefLookup
     });
-    // Slow for the scale profile (50 ms), which a table this small never is on its own.
+    // A step's `slow` sets the delay: the scale profile counts 50 ms as slow, which a table
+    // this small never reaches on its own.
     for (const name of advisor.owned) {
       const ds = datasets[name] as PgDataset;
       const read = ds.read.bind(ds);
       ds.read = async (...args) => {
-        await new Promise((resolve) => setTimeout(resolve, advisor.slowReadMs));
+        await new Promise((resolve) => setTimeout(resolve, slowMs));
         return read(...args);
       };
     }
@@ -287,6 +311,7 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
     }
 
     const results: StepResult[] = [];
+    const plans: Record<string, string> = {};
     for (const step of steps) {
       const result = {
         label: step.label,
@@ -296,7 +321,11 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
         ...(step.as === undefined ? {} : { as: step.as }),
         feed: step.feed ?? false,
         ...(step.stream === undefined ? {} : { stream: step.stream }),
-        ...(step.receive === undefined ? {} : { receive: step.receive })
+        ...(step.receive === undefined ? {} : { receive: step.receive }),
+        ...(step.repeat === undefined ? {} : { repeat: step.repeat }),
+        ...(step.fill === undefined ? {} : { fill: step.fill }),
+        ...(step.slow === undefined ? {} : { slow: step.slow }),
+        ...(step.advise === undefined ? {} : { advise: step.advise })
       };
       if (step.receive !== undefined) {
         const frames = streams.get(step.receive);
@@ -329,7 +358,26 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
         );
         headers.authorization = `Bearer ${token}`;
       }
+      if (step.slow !== undefined) slowMs = step.slow;
+      if (step.fill !== undefined && sql !== undefined) {
+        const { namespace, type, field, value, otherwise, rows, matching } = step.fill;
+        const ds = datasets[namespace] as PgDataset;
+        const id = (i: number) => `0197a400-0000-7000-8000-${String(i + 1).padStart(12, '0')}`;
+        await ds.write(
+          type,
+          Array.from({ length: rows }, (_, i) => ({ id: id(i), [field]: otherwise }))
+        );
+        // Each matching row gets its own write and second, so their order cannot tie.
+        const base = Date.now();
+        for (let i = 0; i < matching; i++) {
+          await ds.write(type, [{ id: id(rows + i), [field]: value }], {
+            now: new Date(base + (i + 1) * 1000)
+          });
+        }
+        await sql.unsafe('ANALYZE');
+      }
       if (step.advise === true) await composed.runAdvisorNow?.();
+      if (step.explain === true) sent = [];
       const send = () =>
         server.inject({
           method: step.method,
@@ -341,17 +389,16 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
       for (let i = 1; i < (step.repeat ?? 1); i++) res = await send();
       // An approved index builds in the background; the next step should find it built.
       if (advisor !== undefined) await storageSettled();
-      if (step.fill !== undefined && sql !== undefined) {
-        const { namespace, type, field, value, otherwise, every, rows } = step.fill;
-        const ds = datasets[namespace] as PgDataset;
-        await ds.write(
-          type,
-          Array.from({ length: rows }, (_, i) => ({
-            id: `0197a400-0000-7000-8000-${String(i + 1).padStart(12, '0')}`,
-            [field]: (i + 1) % every === 0 ? value : otherwise
-          }))
+      if (step.explain === true && sql !== undefined) {
+        const mine = sent ?? [];
+        sent = undefined;
+        // The read's own SELECT on the type table, not the statements around it.
+        const read = mine.findLast(
+          (q) => /^\s*(select|with)\b/i.test(q.query) && q.query.includes('f_')
         );
-        await sql.unsafe('ANALYZE');
+        if (read === undefined) throw new Error(`Step '${step.label}' sent no read to EXPLAIN.`);
+        const plan = await sql.unsafe(`EXPLAIN ${read.query}`, read.params as never);
+        plans[step.label] = plan.map((r) => String(r['QUERY PLAN'])).join('\n');
       }
       if (step.stream !== undefined && res.status === 200) {
         const frames = decodeStreamFrames(res.body as ReadableStream<Uint8Array>);
@@ -372,7 +419,11 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
       }
       results.push({ ...result, status: res.status, response });
     }
-    return { example: setup.name, steps: results };
+    return {
+      example: setup.name,
+      steps: results,
+      ...(Object.keys(plans).length === 0 ? {} : { plans })
+    };
   } finally {
     // Not awaited: after a timeout a read is still pending, and shutdown below ends it.
     for (const frames of streams.values()) void frames.return(undefined);
