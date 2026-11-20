@@ -2,7 +2,7 @@
  * Picks the pre-merge run's mode (see pre-merge.yml), and in `follow` mode waits for
  * the followed run's gate. Talks to the GitHub REST API with GH_TOKEN.
  *
- * CLI: `node pre-merge-mode.mjs` prints `mode=<run|follow|release>` and `follow=<run id>`
+ * CLI: `node pre-merge-mode.mjs` prints `mode=<run|follow|release|docs>` and `follow=<run id>`
  * for $GITHUB_OUTPUT. `node pre-merge-mode.mjs follow` exits 0 when run $FOLLOW's gate
  * succeeded, 1 otherwise.
  */
@@ -25,6 +25,30 @@ export function isVersionOnly(files) {
     const changed = patch.split('\n').filter((l) => /^[+-]/.test(l) && !/^(\+\+\+|---)/.test(l));
     return changed.length > 0 && changed.every((l) => VERSION_LINE.test(l));
   });
+}
+
+/**
+ * A path no Postgres suite reads: Markdown, docs/, the site workflow, and the site's own
+ * source and assets. The site's examples, tests and config stay out: its Postgres pass runs them.
+ * @param {string} f
+ */
+const isDocsPath = (f) =>
+  f.endsWith('.md') ||
+  f.startsWith('docs/') ||
+  f === '.github/workflows/site.yml' ||
+  f.startsWith('apps/site/src/') ||
+  f.startsWith('apps/site/public/');
+
+/**
+ * True when every file a PR changes, and every path a rename moved from, is a docs path.
+ * @param {Array<{ filename: string, previous_filename?: string }>} files
+ */
+export function isDocsOnly(files) {
+  if (files.length === 0) return false;
+  return files.every(
+    ({ filename, previous_filename }) =>
+      isDocsPath(filename) && (previous_filename === undefined || isDocsPath(previous_filename))
+  );
 }
 
 /**
@@ -77,7 +101,12 @@ async function suiteRuns() {
 }
 
 async function chooseMode() {
-  if (isVersionOnly(await prFiles())) return { mode: 'release' };
+  const files = await prFiles();
+  // The files API lists at most 3000 files; a longer PR runs the suites rather than be judged on part.
+  const { changed_files } = await api(`pulls/${process.env.PR}`);
+  if (files.length < changed_files) return { mode: 'run' };
+  if (isVersionOnly(files)) return { mode: 'release' };
+  if (isDocsOnly(files)) return { mode: 'docs' };
   const { ACTION, ADDED, RUN_ID } = process.env;
   if (ACTION === 'labeled' && ADDED !== 'ready-to-merge') {
     // Labels added together fire together: give the run that starts the suites time to plan them.
