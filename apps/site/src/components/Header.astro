@@ -3,7 +3,10 @@ const home = import.meta.env.BASE_URL.replace(/\/?$/, '/');
 const repo = 'https://github.com/mnmal-ai/substrate';
 ---
 <header class="site">
-  <a class="mark" href={home}><span>~/</span>substrate</a>
+  <a class="mark" href={home}>
+    <svg class="mnmal" viewBox="0 0 279 28.987" width="125" height="13" role="img" aria-label="mnmal" fill="currentColor"><polygon points="18.739,0 28.987,0 28.987,14.494 24.742,14.494 10.248,28.987 0,28.987 0,14.494 4.245,14.494"/><polygon points="47.726,0 57.974,0 57.974,14.494 53.729,14.494 39.235,28.987 28.987,28.987 28.987,14.494 33.232,14.494"/><rect x="57.974" y="14.494" width="10.87" height="14.493"/><rect x="72.468" y="14.494" width="10.87" height="14.493"/><polygon points="83.338,14.494 83.338,0 93.586,0 108.08,14.494 112.325,14.494 112.325,28.987 102.076,28.987 87.583,14.494"/><rect x="112.325" y="0" width="10.87" height="14.494"/><polygon points="145.557,0 155.805,0 155.805,14.494 151.56,14.494 137.067,28.987 126.818,28.987 126.818,14.494 131.063,14.494"/><polygon points="174.544,0 184.792,0 184.792,14.494 180.547,14.494 166.054,28.987 155.805,28.987 155.805,14.494 160.05,14.494"/><rect x="184.792" y="14.494" width="10.87" height="14.493"/><rect x="199.286" y="14.494" width="10.87" height="14.493"/><polygon points="210.156,14.494 210.156,0 227.651,0 242.145,14.494 246.39,14.494 246.39,28.987 236.141,28.987 221.648,14.494"/><polygon points="250.013,14.494 250.013,0 260.261,0 274.755,14.494 279,14.494 279,28.987 268.752,28.987 254.258,14.494"/></svg>
+    <span class="name"><span>~/</span>substrate</span>
+  </a>
   <nav aria-label="Primary">
     <a href="#examples">examples</a>
     <a href={`${repo}/tree/main/docs`}>docs</a>
@@ -29,13 +32,25 @@ const repo = 'https://github.com/mnmal-ai/substrate';
     text-decoration: none;
   }
 
+  /* The mnmal logomark stacked above the product name. */
   .mark {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
     font-size: 18px;
     font-weight: 700;
     color: var(--text);
   }
 
-  .mark span {
+  .mnmal {
+    display: block;
+    height: 13px;
+    width: auto;
+    color: var(--white);
+  }
+
+  .name span {
     color: var(--accent);
   }
 
