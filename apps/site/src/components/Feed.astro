@@ -1,0 +1,168 @@
+---
+import type { FeedEvent } from '../lib/feed.ts';
+
+interface Props {
+  events: FeedEvent[];
+}
+const { events } = Astro.props;
+---
+<figure class="feed-box" aria-labelledby="feed-caption">
+  <div class="signal" aria-hidden="true"><span class="pulse"></span></div>
+  <div class="window">
+    <div class="viewport">
+      {/* Two identical copies make the loop seamless. Only the first is read out. */}
+      <div class="feed" style={`--events: ${events.length}`}>
+        {[false, true].map((copy) => (
+          <div
+            role={copy ? undefined : 'log'}
+            aria-label={copy ? undefined : 'Frames from the worked examples'}
+            aria-hidden={copy ? 'true' : undefined}
+          >
+            <ol>
+              {events.map((e) => (
+                <li>
+                  <span class="kind">{e.kind}</span>
+                  <span class="line">{e.line}</span>
+                  <span class="result">{e.result}</span>
+                </li>
+              ))}
+            </ol>
+          </div>
+        ))}
+      </div>
+    </div>
+  </div>
+  <figcaption>
+    <span id="feed-caption">// replayed from the worked examples below</span>
+    <button type="button" class="pause" aria-pressed="false" hidden>pause</button>
+  </figcaption>
+</figure>
+
+<script>
+  // The pause button needs this script, so it stays hidden without it.
+  const button = document.querySelector<HTMLButtonElement>('.feed-box .pause');
+  if (button !== null) {
+    button.hidden = false;
+    button.addEventListener('click', () => {
+      button.setAttribute('aria-pressed', String(button.getAttribute('aria-pressed') !== 'true'));
+    });
+  }
+</script>
+
+<style>
+  /* The signal line runs beside both the feed and its caption. */
+  .feed-box {
+    display: grid;
+    grid-template-columns: 2px minmax(0, 1fr);
+    gap: 12px 20px;
+    min-width: 0;
+    margin: 0;
+  }
+
+  .signal {
+    grid-row: span 2;
+  }
+
+  .window {
+    padding: 0 20px;
+    border-radius: 14px;
+    background: var(--panel);
+  }
+
+  .viewport {
+    height: 440px;
+    overflow: hidden;
+    mask-image: linear-gradient(transparent, #000 8%, #000 92%, transparent);
+  }
+
+  .feed {
+    animation: feed-scroll calc(var(--events) * 3.5s) linear infinite;
+  }
+
+  .feed-box:hover .feed,
+  .feed-box:has([aria-pressed='true']) .feed {
+    animation-play-state: paused;
+  }
+
+  @keyframes feed-scroll {
+    to {
+      transform: translateY(-50%);
+    }
+  }
+
+  ol {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  li {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 16px 0;
+    border-bottom: 1px solid var(--rule);
+    font-family: var(--mono);
+    line-height: 1.4;
+  }
+
+  .kind {
+    font-size: 13px;
+    color: var(--muted);
+  }
+
+  .line {
+    font-size: 14px;
+    color: var(--text);
+    overflow-wrap: anywhere;
+  }
+
+  .result {
+    font-size: 13px;
+    color: var(--accent);
+  }
+
+  figcaption {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 16px;
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--muted);
+  }
+
+  .pause {
+    padding: 4px 12px;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .pause:hover,
+  .pause[aria-pressed='true'] {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  /* Static and complete: one copy, every event, nothing to pause. */
+  @media (prefers-reduced-motion: reduce) {
+    .feed {
+      animation: none;
+    }
+
+    .viewport {
+      height: auto;
+      mask-image: none;
+    }
+
+    .feed > [aria-hidden],
+    .pause {
+      display: none;
+    }
+  }
+</style>

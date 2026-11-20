@@ -1,0 +1,58 @@
+---
+// What runs on substrate today. The operator's rule: claim only what the record shows.
+const runs = [
+  { what: 'memory', line: "The memory system MNMAL's agents keep, and recall from by meaning." },
+  { what: 'agent mail', line: "The mail those agents send each other, signed with each one's key." },
+  { what: 'coda', line: 'Coda, an AI architecture for entities that grow up.' },
+  { what: 'models', line: 'Frontier models and local 27B models, reading and writing one store.' }
+];
+---
+<section class="section" aria-labelledby="itself-title">
+  <div class="joint signal" aria-hidden="true"><span class="pulse"></span></div>
+  <p class="label kicker">// built on itself</p>
+  <h2 id="itself-title">Built on itself, since April 2026</h2>
+  <p class="lede">
+    Every piece of MNMAL's own work runs on substrate, in the same frames shown above, and has since
+    April 2026.
+  </p>
+  <ul class="runs">
+    {
+      runs.map((r) => (
+        <li data-reveal>
+          <span class="label">{r.what}</span>
+          <p>{r.line}</p>
+        </li>
+      ))
+    }
+  </ul>
+</section>
+
+<style>
+  .runs {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr));
+    gap: 16px;
+    margin: 40px 0 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  li {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 28px;
+    border-radius: 14px;
+    background: var(--panel);
+  }
+
+  .label {
+    color: var(--accent);
+  }
+
+  li p {
+    margin: 0;
+    font-size: 19px;
+    line-height: 1.5;
+  }
+</style>

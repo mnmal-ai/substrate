@@ -1,0 +1,234 @@
+---
+import { Code } from 'astro:components';
+import { EVERY_SURFACE } from '../../examples/onboard/steps.ts';
+import { loadExample } from '../lib/examples.ts';
+import { pretty, THEME, threeWays } from '../lib/steps.ts';
+import Example from './Example.astro';
+
+// The stops in the spec's order. A stop renders once its example exists.
+const live = ['onboard', 'reshape', 'ask', 'coordinate'].filter(
+  (name) => Object.keys(loadExample(name).files).length > 0
+);
+const has = (name: string) => live.includes(name);
+const label = (name: string) => `${String(live.indexOf(name) + 1).padStart(2, '0')} ${name}`;
+
+// The onboard run's walk-free read, as HTTP sent it, in the shapes MCP and a subscription take.
+const query = loadExample('onboard').transcript?.steps.find((s) => s.label === EVERY_SURFACE);
+const ways = query === undefined ? undefined : threeWays(query.body as Record<string, object>);
+const panes =
+  ways === undefined
+    ? []
+    : [
+        { surface: 'HTTP', how: 'POST /substrate/v1/query', body: ways.http },
+        { surface: 'MCP', how: 'the query tool, with arguments', body: ways.mcp },
+        { surface: 'Stream', how: 'POST /substrate/v1/subscribe', body: ways.subscribe }
+      ];
+---
+<section id="examples" class="section" aria-labelledby="stops-title">
+  <div class="joint signal" aria-hidden="true"><span class="pulse"></span></div>
+  <p class="label kicker">// worked examples</p>
+  <h2 id="stops-title">One invoicing app, from first type to agents at work</h2>
+  <p class="lede">
+    Customers and invoices, all invented. Each stop is a script the site's tests run against
+    substrate's engine in CI. The frames and responses below are that run's output, replayed, not
+    typed in.
+  </p>
+
+  <ol class="stops">
+    {
+      has('onboard') && (
+        <li class="stop">
+          <div class="rail signal" aria-hidden="true"><span class="pulse" /></div>
+          <div class="body">
+            <p class="label n">{label('onboard')}</p>
+            <h3 id="stop-onboard">Declare two types. The whole API follows.</h3>
+            <p class="say">
+              <code>defineNamespace</code> declares <code>app/Customer</code> and{' '}
+              <code>app/Invoice</code>. Composed into a server, both can be written, read and
+              subscribed to at once, with no handler code. A read can walk the reference from an
+              invoice to its customer, and a fresh agent learns all of it from{' '}
+              <code>GET /substrate/v1/onboard</code> and the schema route. The onboard reply is trimmed
+              here; the full one also carries per-operation instructions and every plugin's surface.
+            </p>
+            <Example name="onboard" show={['namespace.ts']} />
+            {panes.length > 0 && (
+              <figure class="ways" aria-labelledby="ways-title">
+                <figcaption>
+                  <h4 id="ways-title">The same frame, three ways</h4>
+                  <p>
+                    The walk-free read from the run above, as each surface takes it: the object the
+                    run sent, unchanged. Only the HTTP run's output is shown here; the coordinate
+                    stop below shows a live subscription.
+                  </p>
+                </figcaption>
+                <div class="panes">
+                  {panes.map((p) => (
+                    <div class="pane">
+                      <p class="label">
+                        <span class="surface">{p.surface}</span> {p.how}
+                      </p>
+                      <Code code={pretty(p.body, 44)} lang="json" theme={THEME} />
+                    </div>
+                  ))}
+                </div>
+              </figure>
+            )}
+          </div>
+        </li>
+      )
+    }
+    {
+      has('reshape') && (
+        <li class="stop">
+          <div class="rail signal" aria-hidden="true"><span class="pulse" /></div>
+          <div class="body">
+            <p class="label n">{label('reshape')}</p>
+            <h3 id="stop-reshape">Your agent proposes a type. Use it on the next call.</h3>
+            <p class="say">
+              On the running server an agent calls <code>propose_type</code> for{' '}
+              <code>billing/Payment</code>, referencing the code-defined <code>app/Invoice</code>, then
+              writes and reads it straight away, walking back to the invoice. Each proposal is kept
+              as a record that names the key that signed it. This run is on Postgres: a server on
+              the memory store keeps one store per namespace, so it refuses this walk from{' '}
+              <code>billing</code> into <code>app</code>.
+            </p>
+            <Example name="reshape" show={[]} />
+          </div>
+        </li>
+      )
+    }
+    {
+      has('ask') && (
+        <li class="stop">
+          <div class="rail signal" aria-hidden="true"><span class="pulse" /></div>
+          <div class="body">
+            <p class="label n">{label('ask')}</p>
+            <h3 id="stop-ask">Questions in English, answers as rows.</h3>
+            <p class="say">
+              A deterministic parser turns the question into a frame, and an optional constrained
+              judge handles only what the parser leaves ambiguous: the model never writes a query. A
+              question it can't read answers <code>unknown</code> and runs nothing. This run has no
+              judge, only the parser, and counts rather than sums.
+            </p>
+            <p class="say">
+              This deployment tells <code>ask</code> an invoice’s time is its due date (the{' '}
+              <code>timeField</code> setting), so “per month” groups by <code>dueAt</code>.
+            </p>
+            <Example name="ask" show={[]} />
+          </div>
+        </li>
+      )
+    }
+    {
+      has('coordinate') && (
+        <li class="stop">
+          <div class="rail signal" aria-hidden="true"><span class="pulse" /></div>
+          <div class="body">
+            <p class="label n">{label('coordinate')}</p>
+            <h3 id="stop-coordinate">Two agents, two keys, one live wire.</h3>
+            <p class="say">
+              <code>collections-agent</code> subscribes to open tasks. <code>billing-agent</code>{' '}
+              writes one, signed with its own key. The new row arrives on the open subscription with
+              no polling, and its metadata names the key that wrote it. These are the primitives.
+              For full agent mail built on them, with inboxes, replies, acks and broadcasts, see{' '}
+              <a href="https://github.com/mnmal-ai/synoptic">cortext in synoptic</a>.
+            </p>
+            <Example name="coordinate" show={['namespace.ts']} />
+          </div>
+        </li>
+      )
+    }
+  </ol>
+</section>
+
+<style>
+  .stops {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin: 48px 0 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  /* A signal line runs down each stop, joining it to the next. */
+  .stop {
+    display: grid;
+    grid-template-columns: 2px minmax(0, 1fr);
+    gap: 0 clamp(16px, 3vw, 32px);
+  }
+
+  .body {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    min-width: 0;
+    padding-bottom: clamp(48px, 7vw, 80px);
+  }
+
+  .n {
+    margin: 0;
+    color: var(--accent);
+  }
+
+  h3,
+  .say {
+    margin: 0;
+  }
+
+  .say {
+    max-width: 44em;
+    color: var(--muted);
+  }
+
+  .ways {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    min-width: 0;
+    margin: 20px 0 0;
+    padding: clamp(20px, 3vw, 28px);
+    border-radius: 14px;
+    background: var(--panel-2);
+  }
+
+  /* Code panes sit on the darker panel colour inside this lighter box. */
+  .ways :global(pre.astro-code) {
+    background-color: var(--bg) !important;
+  }
+
+  h4 {
+    margin: 0;
+    font-size: 19px;
+  }
+
+  figcaption p {
+    max-width: 44em;
+    margin: 6px 0 0;
+    color: var(--muted);
+    font-size: 17px;
+  }
+
+  .panes {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+    gap: 16px;
+  }
+
+  .pane {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .pane p {
+    margin: 0;
+    color: var(--muted);
+    overflow-wrap: anywhere;
+  }
+
+  .surface {
+    color: var(--accent);
+  }
+</style>

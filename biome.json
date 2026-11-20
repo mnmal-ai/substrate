@@ -32,7 +32,8 @@
       "!**/dist-publish",
       "!**/node_modules",
       "!**/.turbo",
-      "!**/config.schema.json"
+      "!**/config.schema.json",
+      "!apps/site/examples/*/output.json"
     ]
   }
 }

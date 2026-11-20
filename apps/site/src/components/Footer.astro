@@ -1,0 +1,81 @@
+---
+import { repoLink } from '../data/surfaces.ts';
+
+const base = import.meta.env.BASE_URL.replace(/\/?$/, '/');
+---
+<footer class="site">
+  <div class="signal" aria-hidden="true"><span class="pulse"></span></div>
+  <div class="inner">
+    <p class="mark label"><span>~/</span>substrate</p>
+    <p>
+      Every example on this page is a script substrate's CI runs. The output shown is what a run
+      produced, never typed in.
+    </p>
+    <nav aria-label="Footer">
+      <a href={repoLink('README.md')}>README</a>
+      <a href={repoLink('docs/')}>docs</a>
+      <a href={repoLink('CHANGELOG.md')}>changelog</a>
+      <a href="https://www.npmjs.com/package/@mnmal-ai/substrate">npm</a>
+      <a href="https://github.com/mnmal-ai/substrate">github</a>
+    </nav>
+    <p class="small">
+      Substrate is Apache-2.0. DM Sans and DM Mono are under the
+      <a href={`${base}fonts/OFL.txt`}>SIL Open Font License</a>.
+    </p>
+  </div>
+</footer>
+
+<style>
+  .site {
+    display: grid;
+    grid-template-columns: 2px minmax(0, 1fr);
+    gap: 0 20px;
+    max-width: calc(var(--max-width) + 2 * var(--gutter));
+    margin: 0 auto;
+    padding: 0 var(--gutter) 64px;
+    color: var(--muted);
+    font-size: 16px;
+  }
+
+  .inner {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 8px 0 0;
+  }
+
+  p {
+    max-width: 40em;
+    margin: 0;
+  }
+
+  .mark {
+    color: var(--text);
+    font-size: 18px;
+    font-weight: 700;
+  }
+
+  .mark span {
+    color: var(--accent);
+  }
+
+  nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 24px;
+    font-family: var(--mono);
+    font-size: 14px;
+  }
+
+  nav a {
+    color: var(--muted);
+  }
+
+  nav a:hover {
+    color: var(--text);
+  }
+
+  .small {
+    font-size: 14px;
+  }
+</style>

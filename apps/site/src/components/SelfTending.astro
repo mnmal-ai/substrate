@@ -1,0 +1,33 @@
+---
+import Example from './Example.astro';
+---
+<section class="section" aria-labelledby="tending-title">
+  <div class="joint signal" aria-hidden="true"><span class="pulse"></span></div>
+  <p class="label kicker">// self-tending</p>
+  <h2 id="tending-title">It watches its own reads, and asks before it adds an index</h2>
+  <p class="lede">
+    The engine records the shape and duration of every read. An advisor turns shapes that are
+    frequent and slow into <code>_system/IndexRecommendation</code> rows, and builds nothing
+    itself. An agent holding the <code>substrate.index</code> grant approves one with
+    <code>propose_index</code>. It takes effect on the call, the index builds in the background,
+    and an audit event records why. That
+    works on proposed types, like <code>ops/Event</code> here; on a type defined in code, the
+    recommendation is advice for its author.
+  </p>
+  <p class="lede">
+    This run forces it, on Postgres. The steps marked “Demo” seed events straight into the store
+    and slow every read of <code>ops</code> by 60 ms, so the advisor recommends within one run
+    instead of after real traffic; a served binary's advisor reads every ten minutes. The last read
+    returns the same rows, and the example's test runs <code>EXPLAIN</code> on the statement the
+    engine sent and checks that the plan uses the new index.
+  </p>
+  <div class="run">
+    <Example name="self-tending" show={['namespace.ts']} />
+  </div>
+</section>
+
+<style>
+  .run {
+    margin-top: 40px;
+  }
+</style>

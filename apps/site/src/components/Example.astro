@@ -1,0 +1,194 @@
+---
+import { Code } from 'astro:components';
+import { seedSteps } from '../../examples/_scenario.ts';
+import { repoLink } from '../data/surfaces.ts';
+import { loadExample } from '../lib/examples.ts';
+import { type PageStep, pageSteps, pretty, THEME } from '../lib/steps.ts';
+
+interface Props {
+  /** The directory under apps/site/examples. */
+  name: string;
+  /** Source files to print, by file name; those the example lacks are skipped. */
+  show: string[];
+}
+const { name, show } = Astro.props;
+
+// A response longer than this is folded behind a summary that opens it: snapshots can run to
+// hundreds of lines.
+const LONG = 40;
+const dir = `apps/site/examples/${name}`;
+const { files, transcript } = loadExample(name);
+const code = show.filter((file) => file in files);
+const steps = transcript === null ? [] : pageSteps(transcript, new Set(seedSteps.map((s) => s.label)));
+
+const signed = (as: string | undefined) => (as === undefined ? '' : ` · signed by ${as}`);
+const frameKey = (body: unknown) => Object.keys((body ?? {}) as object)[0] ?? '';
+const whose = (as: string | undefined) => (as === undefined ? 'the' : `${as}’s`);
+const outcome = (s: Exclude<PageStep, { kind: 'seed' }>) =>
+  s.kind === 'frame'
+    ? '← live frame'
+    : `← ${s.step.status}${s.opens ? ', first frame; the stream stays open' : ''}`;
+---
+<div class="example">
+  {
+    code.map((file) => (
+      <figure class="file">
+        <figcaption class="label">
+          <a href={repoLink(`${dir}/${file}`)}>{`examples/${name}/${file}`}</a>
+        </figcaption>
+        <Code code={(files[file] ?? '').trimEnd()} lang="ts" theme={THEME} />
+      </figure>
+    ))
+  }
+  {
+    steps.length > 0 && (
+      <ol class="steps" aria-label={`The ${name} run, step by step`}>
+        {steps.map((s) => {
+          if (s.kind === 'seed') {
+            return (
+              <li class="seed label" data-reveal>
+                <span>{s.summary}</span>
+                <a href={repoLink('apps/site/examples/_scenario.ts')}>_scenario.ts</a>
+              </li>
+            );
+          }
+          const response = pretty(s.step.response, 60);
+          const lines = response.split('\n').length;
+          return (
+            <li class="step" data-reveal>
+              <p class="what">{s.step.label}</p>
+              <div class="io">
+                {s.kind === 'frame' ? (
+                  <div class="half">
+                    <p class="label meta">
+                      {`no request · a frame arrives on ${whose(s.on.as)} subscription to ${frameKey(s.on.body)}`}
+                    </p>
+                  </div>
+                ) : (
+                  <div class="half">
+                    <p class="label meta">
+                      {`${s.step.method} ${s.step.path}${signed(s.step.as)}`}
+                    </p>
+                    {s.step.body !== undefined && (
+                      <Code code={pretty(s.step.body, 60)} lang="json" theme={THEME} />
+                    )}
+                  </div>
+                )}
+                <div class="half">
+                  <p class="label meta out">{outcome(s)}</p>
+                  {lines > LONG ? (
+                    <details>
+                      <summary class="label">{`response · ${lines} lines`}</summary>
+                      <Code code={response} lang="json" theme={THEME} />
+                    </details>
+                  ) : (
+                    <Code code={response} lang="json" theme={THEME} />
+                  )}
+                </div>
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+    )
+  }
+</div>
+
+<style>
+  .example {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    min-width: 0;
+  }
+
+  .file {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+    margin: 0;
+  }
+
+  .file a,
+  .seed a {
+    color: var(--muted);
+  }
+
+  .file a:hover,
+  .seed a:hover {
+    color: var(--accent);
+  }
+
+  .steps {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .seed {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    padding: 12px 20px;
+    border: 1px dashed var(--rule);
+    border-radius: 10px;
+    color: var(--muted);
+  }
+
+  .step {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+    padding-top: 20px;
+    border-top: 1px solid var(--rule);
+  }
+
+  .what {
+    margin: 0;
+    font-size: 17px;
+    font-weight: 600;
+    line-height: 1.4;
+  }
+
+  /* Frame and response side by side once both fit, stacked below that. */
+  .io {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+    gap: 12px 20px;
+    align-items: start;
+  }
+
+  .half {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .meta {
+    margin: 0;
+    color: var(--muted);
+    overflow-wrap: anywhere;
+  }
+
+  .out {
+    color: var(--accent);
+  }
+
+  summary {
+    padding: 12px 20px;
+    border-radius: 10px;
+    background: var(--panel);
+    color: var(--accent);
+    cursor: pointer;
+  }
+
+  details[open] summary {
+    margin-bottom: 8px;
+  }
+</style>

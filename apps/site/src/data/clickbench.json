@@ -1,0 +1,370 @@
+{
+  "sha": "8e7f40d",
+  "version": "1.0.0-beta.8",
+  "date": "2026-11-20",
+  "machine": "Apple M1, 8 cores, 16 GB, PostgreSQL 18",
+  "runs": 3,
+  "passes": [
+    {
+      "sumRatio": 1.1,
+      "worstRatio": 1.32,
+      "worstQ": 31
+    },
+    {
+      "sumRatio": 1.16,
+      "worstRatio": 1.42,
+      "worstQ": 30
+    },
+    {
+      "sumRatio": 1.19,
+      "worstRatio": 1.43,
+      "worstQ": 5
+    }
+  ],
+  "queries": [
+    {
+      "q": 0,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 299.5,
+      "baselineP50Ms": 540.8
+    },
+    {
+      "q": 1,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 4922.7,
+      "baselineP50Ms": 4349.2
+    },
+    {
+      "q": 2,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 4911.7,
+      "baselineP50Ms": 4339.2
+    },
+    {
+      "q": 3,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 4864,
+      "baselineP50Ms": 4271.5
+    },
+    {
+      "q": 4,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 7760.7,
+      "baselineP50Ms": 5636
+    },
+    {
+      "q": 5,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 7921.7,
+      "baselineP50Ms": 5557.3
+    },
+    {
+      "q": 6,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 4996.1,
+      "baselineP50Ms": 4359.9
+    },
+    {
+      "q": 7,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 5045.8,
+      "baselineP50Ms": 4317.2
+    },
+    {
+      "q": 8,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 9302.2,
+      "baselineP50Ms": 7865.7
+    },
+    {
+      "q": 9,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 9786.3,
+      "baselineP50Ms": 8024.2
+    },
+    {
+      "q": 10,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 5211.4,
+      "baselineP50Ms": 4505.6
+    },
+    {
+      "q": 11,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 5246.2,
+      "baselineP50Ms": 4594.2
+    },
+    {
+      "q": 12,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 5393.7,
+      "baselineP50Ms": 4687.6
+    },
+    {
+      "q": 13,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 5572.4,
+      "baselineP50Ms": 4738.1
+    },
+    {
+      "q": 14,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 5400.1,
+      "baselineP50Ms": 4681.1
+    },
+    {
+      "q": 15,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 8362.9,
+      "baselineP50Ms": 7397.9
+    },
+    {
+      "q": 16,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 13251.3,
+      "baselineP50Ms": 10333.4
+    },
+    {
+      "q": 17,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 6966.9,
+      "baselineP50Ms": 7600.6
+    },
+    {
+      "q": 18,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 12159.4,
+      "baselineP50Ms": 9926.1
+    },
+    {
+      "q": 19,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 4926,
+      "baselineP50Ms": 4136.9
+    },
+    {
+      "q": 20,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 5030.7,
+      "baselineP50Ms": 4304.9
+    },
+    {
+      "q": 21,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 5009.9,
+      "baselineP50Ms": 4318.7
+    },
+    {
+      "q": 22,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 4991,
+      "baselineP50Ms": 4291.3
+    },
+    {
+      "q": 23,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 4939.7,
+      "baselineP50Ms": 4310.6
+    },
+    {
+      "q": 24,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 4859.1,
+      "baselineP50Ms": 4280.2
+    },
+    {
+      "q": 25,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 4842.6,
+      "baselineP50Ms": 4249.9
+    },
+    {
+      "q": 26,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 4829.7,
+      "baselineP50Ms": 4415.1
+    },
+    {
+      "q": 27,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 5200.8,
+      "baselineP50Ms": 4347.1
+    },
+    {
+      "q": 28,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 12446.9,
+      "baselineP50Ms": 11299.2
+    },
+    {
+      "q": 29,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 5353.4,
+      "baselineP50Ms": 4369.6
+    },
+    {
+      "q": 30,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 6778.2,
+      "baselineP50Ms": 4846.5
+    },
+    {
+      "q": 31,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 6882.9,
+      "baselineP50Ms": 5078.1
+    },
+    {
+      "q": 32,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 14134.7,
+      "baselineP50Ms": 13686.3
+    },
+    {
+      "q": 33,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 10072.5,
+      "baselineP50Ms": 8187.7
+    },
+    {
+      "q": 34,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 9923.4,
+      "baselineP50Ms": 7803.1
+    },
+    {
+      "q": 35,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 7519,
+      "baselineP50Ms": 6386.5
+    },
+    {
+      "q": 36,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 4838.4,
+      "baselineP50Ms": 4301
+    },
+    {
+      "q": 37,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 4864.7,
+      "baselineP50Ms": 4324.1
+    },
+    {
+      "q": 38,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 4716.5,
+      "baselineP50Ms": 4221.3
+    },
+    {
+      "q": 39,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 4626.8,
+      "baselineP50Ms": 4254.6
+    },
+    {
+      "q": 40,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 4663.5,
+      "baselineP50Ms": 4226.6
+    },
+    {
+      "q": 41,
+      "expressible": true,
+      "compared": false,
+      "answersMatch": null,
+      "p50Ms": 4642.3,
+      "baselineP50Ms": 4201.3
+    },
+    {
+      "q": 42,
+      "expressible": true,
+      "compared": true,
+      "answersMatch": true,
+      "p50Ms": 4632.7,
+      "baselineP50Ms": 4162.3
+    }
+  ]
+}

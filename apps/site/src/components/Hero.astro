@@ -1,0 +1,93 @@
+---
+import pkg from '../../../substrate/package.json';
+import type { FeedEvent } from '../lib/feed.ts';
+import Feed from './Feed.astro';
+
+interface Props {
+  events: FeedEvent[];
+}
+const { events } = Astro.props;
+---
+<section class="hero" aria-labelledby="hero-title">
+  <div class="pitch">
+    <p class="label eyebrow">// agent-first typed data · v{pkg.version}</p>
+    <h1 id="hero-title">
+      Your data, your agents' memory, and the work between them. On one live wire.
+    </h1>
+    <p class="lede">
+      One typed server on your own Postgres. Agents write and query, propose new types, ask in
+      plain English, search by meaning and hand each other work, all in the same frames. Anything
+      can subscribe to what changes.
+    </p>
+    <div class="ctas">
+      <a class="cta primary" href="#start">Get started</a>
+      <a class="cta" href="#examples">See the worked examples</a>
+    </div>
+  </div>
+  <Feed events={events} />
+</section>
+
+<style>
+  .hero {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr));
+    gap: 56px;
+    align-items: center;
+    padding: clamp(32px, 6vw, 64px) 0 clamp(56px, 8vw, 88px);
+  }
+
+  .pitch {
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+    min-width: 0;
+  }
+
+  .eyebrow,
+  h1,
+  .lede {
+    margin: 0;
+  }
+
+  .eyebrow,
+  .lede {
+    color: var(--muted);
+  }
+
+  h1 {
+    text-wrap: balance;
+  }
+
+  .lede {
+    max-width: 34em;
+  }
+
+  .ctas {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+  }
+
+  .cta {
+    padding: 16px 24px;
+    border-radius: 10px;
+    background: var(--panel-2);
+    color: var(--text);
+    font-size: 16px;
+    font-weight: 600;
+    text-decoration: none;
+  }
+
+  .cta:hover {
+    color: var(--accent);
+  }
+
+  .cta.primary {
+    background: var(--accent);
+    color: var(--bg);
+  }
+
+  .cta.primary:hover {
+    background: var(--text);
+  }
+</style>

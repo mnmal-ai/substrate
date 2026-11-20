@@ -1,0 +1,63 @@
+---
+import { repoLink, surfaces } from '../data/surfaces.ts';
+---
+<section class="section" aria-labelledby="surfaces-title">
+  <div class="joint signal" aria-hidden="true"><span class="pulse"></span></div>
+  <p class="label kicker">// surfaces</p>
+  <h2 id="surfaces-title">One grammar, wherever your agents already are</h2>
+  <p class="lede">
+    HTTP, MCP, frame streams, the TypeScript client and <code>substrate run</code> all take the
+    same frames. The rest run substrate, look into it, or plug it into your agents.
+  </p>
+  <ul class="grid">
+    {
+      surfaces.map((s) => (
+        <li data-reveal>
+          <a href={repoLink(s.href)}>
+            <span class="label name">{s.name}</span>
+            <span class="blurb">{s.blurb}</span>
+          </a>
+        </li>
+      ))
+    }
+  </ul>
+</section>
+
+<style>
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
+    gap: 16px;
+    margin: 40px 0 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  a {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    height: 100%;
+    padding: 22px 24px;
+    border: 1px solid transparent;
+    border-radius: 14px;
+    background: var(--panel);
+    color: var(--text);
+    text-decoration: none;
+  }
+
+  a:hover {
+    border-color: var(--accent);
+  }
+
+  .name {
+    color: var(--accent);
+    font-size: 14px;
+  }
+
+  .blurb {
+    color: var(--muted);
+    font-size: 16px;
+    line-height: 1.5;
+  }
+</style>
