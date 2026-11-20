@@ -29,7 +29,7 @@
       "response": {
         "id": "frames-subscribe",
         "kind": "snapshot",
-        "schemaVersion": "07bfc81ece17",
+        "schemaVersion": "schema",
         "data": {
           "app/Task": []
         },
@@ -58,7 +58,7 @@
       "feed": false,
       "status": 200,
       "response": {
-        "schemaVersion": "07bfc81ece17",
+        "schemaVersion": "schema",
         "data": {
           "app/createCustomer": {
             "id": "0197a000-0000-7000-8000-000000000001"
@@ -89,7 +89,7 @@
       "feed": false,
       "status": 200,
       "response": {
-        "schemaVersion": "07bfc81ece17",
+        "schemaVersion": "schema",
         "data": {
           "app/createCustomer": {
             "id": "0197a000-0000-7000-8000-000000000002"
@@ -120,7 +120,7 @@
       "feed": false,
       "status": 200,
       "response": {
-        "schemaVersion": "07bfc81ece17",
+        "schemaVersion": "schema",
         "data": {
           "app/createCustomer": {
             "id": "0197a000-0000-7000-8000-000000000003"
@@ -155,7 +155,7 @@
       "feed": false,
       "status": 200,
       "response": {
-        "schemaVersion": "07bfc81ece17",
+        "schemaVersion": "schema",
         "data": {
           "app/createInvoice": {
             "id": "0197a000-0000-7000-8000-000000000004"
@@ -190,7 +190,7 @@
       "feed": false,
       "status": 200,
       "response": {
-        "schemaVersion": "07bfc81ece17",
+        "schemaVersion": "schema",
         "data": {
           "app/createInvoice": {
             "id": "0197a000-0000-7000-8000-000000000005"
@@ -225,7 +225,7 @@
       "feed": false,
       "status": 200,
       "response": {
-        "schemaVersion": "07bfc81ece17",
+        "schemaVersion": "schema",
         "data": {
           "app/createInvoice": {
             "id": "0197a000-0000-7000-8000-000000000006"
@@ -260,7 +260,7 @@
       "feed": false,
       "status": 200,
       "response": {
-        "schemaVersion": "07bfc81ece17",
+        "schemaVersion": "schema",
         "data": {
           "app/createInvoice": {
             "id": "0197a000-0000-7000-8000-000000000007"
@@ -295,7 +295,7 @@
       "feed": false,
       "status": 200,
       "response": {
-        "schemaVersion": "07bfc81ece17",
+        "schemaVersion": "schema",
         "data": {
           "app/createInvoice": {
             "id": "0197a000-0000-7000-8000-000000000008"
@@ -330,7 +330,7 @@
       "feed": false,
       "status": 200,
       "response": {
-        "schemaVersion": "07bfc81ece17",
+        "schemaVersion": "schema",
         "data": {
           "app/createInvoice": {
             "id": "0197a000-0000-7000-8000-000000000009"
@@ -365,7 +365,7 @@
       "feed": false,
       "status": 200,
       "response": {
-        "schemaVersion": "07bfc81ece17",
+        "schemaVersion": "schema",
         "data": {
           "app/createInvoice": {
             "id": "0197a000-0000-7000-8000-000000000010"
@@ -400,7 +400,7 @@
       "feed": false,
       "status": 200,
       "response": {
-        "schemaVersion": "07bfc81ece17",
+        "schemaVersion": "schema",
         "data": {
           "app/createInvoice": {
             "id": "0197a000-0000-7000-8000-000000000011"
@@ -434,7 +434,7 @@
       "feed": true,
       "status": 200,
       "response": {
-        "schemaVersion": "07bfc81ece17",
+        "schemaVersion": "schema",
         "data": {
           "app/createTask": {
             "id": "0197a000-0000-7000-8000-000000000012",
@@ -458,7 +458,7 @@
       "response": {
         "id": "frames-subscribe",
         "kind": "add",
-        "schemaVersion": "07bfc81ece17",
+        "schemaVersion": "schema",
         "data": {
           "app/Task": {
             "id": "0197a000-0000-7000-8000-000000000012",
@@ -507,7 +507,7 @@
       "feed": false,
       "status": 200,
       "response": {
-        "schemaVersion": "07bfc81ece17",
+        "schemaVersion": "schema",
         "data": {
           "app/Task": [
             {
@@ -522,7 +522,7 @@
               ],
               "_metadata": {
                 "createdBy": {
-                  "kind": "user",
+                  "kind": "agent",
                   "id": "billing-agent"
                 }
               }
@@ -562,14 +562,14 @@
       "feed": true,
       "status": 200,
       "response": {
-        "schemaVersion": "07bfc81ece17",
+        "schemaVersion": "schema",
         "data": {
           "app/updateTask": {
             "id": "0197a000-0000-7000-8000-000000000012",
             "status": "in_progress",
             "_metadata": {
               "updatedBy": {
-                "kind": "user",
+                "kind": "agent",
                 "id": "collections-agent"
               }
             }

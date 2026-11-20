@@ -71,6 +71,26 @@ describe('normalise', () => {
       dueAt: '2026-10-31'
     });
   });
+
+  it('pins every schemaVersion, at any depth', () => {
+    const t: Transcript = {
+      example: 'x',
+      steps: [
+        {
+          label: 'a',
+          method: 'GET',
+          path: '/p',
+          feed: false,
+          status: 200,
+          response: { schemaVersion: '9a75ac1bfcbb', data: [{ meta: { schemaVersion: 'f18c' } }] }
+        }
+      ]
+    };
+    expect(normalise(t).steps[0]?.response).toEqual({
+      schemaVersion: 'schema',
+      data: [{ meta: { schemaVersion: 'schema' } }]
+    });
+  });
 });
 
 describe('normalise embedded values', () => {
@@ -155,6 +175,12 @@ describe('runExample', () => {
     await expect(runExample({ ...setup, agents: [SYSTEM_KID] }, [])).rejects.toThrow(/reserved/);
   });
 
+  it('throws on ask with agents: nothing would check the signature', async () => {
+    await expect(runExample({ ...setup, ask: {}, agents: ['a'] }, [])).rejects.toThrow(
+      /ask runs unsigned/
+    );
+  });
+
   it('runs a step without `as` as the system actor when auth is on', async () => {
     const create = (as?: string): Step => ({
       label: 'create customer',
@@ -169,12 +195,17 @@ describe('runExample', () => {
       create(),
       create('billing-agent')
     ]);
-    type Created = { data: Record<string, { _metadata: { createdBy: { id: string } } }> };
+    type By = { kind: string; id: string };
+    type Created = { data: Record<string, { _metadata: { createdBy: By } }> };
     const by = (i: number) =>
-      (t.steps[i] as { response: Created }).response.data['app/createCustomer']?._metadata.createdBy
-        .id;
+      (t.steps[i] as { response: Created }).response.data['app/createCustomer']?._metadata
+        .createdBy;
     expect(t.steps.map((s) => s.status)).toEqual([200, 200]);
-    expect([by(0), by(1)]).toEqual([SYSTEM_KID, 'billing-agent']);
+    // An agent key writes as an agent; the system key keeps the default kind.
+    expect([by(0), by(1)]).toEqual([
+      { kind: 'user', id: SYSTEM_KID },
+      { kind: 'agent', id: 'billing-agent' }
+    ]);
   });
 
   it('holds a stream open across steps and records its frames in order', async () => {

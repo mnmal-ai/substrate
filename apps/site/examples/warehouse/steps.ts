@@ -15,8 +15,7 @@ export const steps: Step[] = [
           aggregate: { outstanding: { sum: 'amount' }, invoices: { count: true } },
           groupBy: { month: { dateTrunc: [{ lit: 'month' }, 'dueAt'] } },
           orderBy: [{ month: 'asc' }]
-        },
-        fields: { id: true }
+        }
       }
     }
   },

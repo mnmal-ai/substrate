@@ -143,6 +143,10 @@ async function nextFrame(frames: Frames, label: string, name: string): Promise<u
 
 export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Transcript> {
   const agents = setup.agents;
+  if (setup.ask !== undefined && agents !== undefined) {
+    // The NL route is mounted outside compose's auth, so a signature on it would go unchecked.
+    throw new Error('ask runs unsigned: its route is outside auth, so set no agents.');
+  }
   if (agents?.includes(SYSTEM_KID)) {
     throw new Error(
       `agents must not contain '${SYSTEM_KID}': it is reserved for the system actor.`
@@ -316,7 +320,16 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
         ? { systemActor: 'system' }
         : {
             auth: {
-              keys: [SYSTEM_KID, ...agents].map((kid) => ({ kid, alg: 'HS256', publicKey: SECRET }))
+              // An agent key stamps `kind: 'agent'` on what it writes, as a served binary's does.
+              keys: [
+                { kid: SYSTEM_KID, alg: 'HS256' as const, publicKey: SECRET },
+                ...agents.map((kid) => ({
+                  kid,
+                  alg: 'HS256' as const,
+                  publicKey: SECRET,
+                  kind: 'agent' as const
+                }))
+              ]
             }
           })
     });
@@ -482,10 +495,12 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
 
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/gi;
 const PINNED_TIME = '2026-11-03T09:00:00.000Z';
+const PINNED_SCHEMA = 'schema';
 
 // Ids and cursors renumber by first appearance (step order, request before
-// response) and server timestamps are pinned, so a run is byte-identical to
-// the last. A cursor embeds a real timestamp and row id, so it is replaced whole.
+// response) and server timestamps and schema versions are pinned, so a run is
+// byte-identical to the last. A cursor embeds a real timestamp and row id, so it
+// is replaced whole.
 export function normalise(t: Transcript): Transcript {
   const ids = new Map<string, string>();
   const cursors = new Map<string, string>();
@@ -499,6 +514,8 @@ export function normalise(t: Transcript): Transcript {
   };
   const walk = (v: unknown, key?: string): unknown => {
     if (key === 'createdAt' || key === 'updatedAt') return PINNED_TIME;
+    // A hash of the whole schema: any engine change would otherwise churn every snapshot.
+    if (key === 'schemaVersion') return PINNED_SCHEMA;
     if (key === 'nextCursor' && typeof v === 'string') {
       return token(cursors, v, (n) => `cursor-${n}`);
     }

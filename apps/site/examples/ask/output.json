@@ -21,7 +21,7 @@
       "feed": false,
       "status": 200,
       "response": {
-        "schemaVersion": "9a75ac1bfcbb",
+        "schemaVersion": "schema",
         "data": {
           "app/createCustomer": {
             "id": "0197a000-0000-7000-8000-000000000001"
@@ -52,7 +52,7 @@
       "feed": false,
       "status": 200,
       "response": {
-        "schemaVersion": "9a75ac1bfcbb",
+        "schemaVersion": "schema",
         "data": {
           "app/createCustomer": {
             "id": "0197a000-0000-7000-8000-000000000002"
@@ -83,7 +83,7 @@
       "feed": false,
       "status": 200,
       "response": {
-        "schemaVersion": "9a75ac1bfcbb",
+        "schemaVersion": "schema",
         "data": {
           "app/createCustomer": {
             "id": "0197a000-0000-7000-8000-000000000003"
@@ -118,7 +118,7 @@
       "feed": false,
       "status": 200,
       "response": {
-        "schemaVersion": "9a75ac1bfcbb",
+        "schemaVersion": "schema",
         "data": {
           "app/createInvoice": {
             "id": "0197a000-0000-7000-8000-000000000004"
@@ -153,7 +153,7 @@
       "feed": false,
       "status": 200,
       "response": {
-        "schemaVersion": "9a75ac1bfcbb",
+        "schemaVersion": "schema",
         "data": {
           "app/createInvoice": {
             "id": "0197a000-0000-7000-8000-000000000005"
@@ -188,7 +188,7 @@
       "feed": false,
       "status": 200,
       "response": {
-        "schemaVersion": "9a75ac1bfcbb",
+        "schemaVersion": "schema",
         "data": {
           "app/createInvoice": {
             "id": "0197a000-0000-7000-8000-000000000006"
@@ -223,7 +223,7 @@
       "feed": false,
       "status": 200,
       "response": {
-        "schemaVersion": "9a75ac1bfcbb",
+        "schemaVersion": "schema",
         "data": {
           "app/createInvoice": {
             "id": "0197a000-0000-7000-8000-000000000007"
@@ -258,7 +258,7 @@
       "feed": false,
       "status": 200,
       "response": {
-        "schemaVersion": "9a75ac1bfcbb",
+        "schemaVersion": "schema",
         "data": {
           "app/createInvoice": {
             "id": "0197a000-0000-7000-8000-000000000008"
@@ -293,7 +293,7 @@
       "feed": false,
       "status": 200,
       "response": {
-        "schemaVersion": "9a75ac1bfcbb",
+        "schemaVersion": "schema",
         "data": {
           "app/createInvoice": {
             "id": "0197a000-0000-7000-8000-000000000009"
@@ -328,7 +328,7 @@
       "feed": false,
       "status": 200,
       "response": {
-        "schemaVersion": "9a75ac1bfcbb",
+        "schemaVersion": "schema",
         "data": {
           "app/createInvoice": {
             "id": "0197a000-0000-7000-8000-000000000010"
@@ -363,7 +363,7 @@
       "feed": false,
       "status": 200,
       "response": {
-        "schemaVersion": "9a75ac1bfcbb",
+        "schemaVersion": "schema",
         "data": {
           "app/createInvoice": {
             "id": "0197a000-0000-7000-8000-000000000011"

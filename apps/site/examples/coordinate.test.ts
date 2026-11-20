@@ -3,7 +3,8 @@ import { normalise, runExample } from './_harness.ts';
 import { app } from './coordinate/namespace.ts';
 import { steps } from './coordinate/steps.ts';
 
-type Kid = { _metadata: { createdBy?: { id: string }; updatedBy?: { id: string } } };
+type By = { kind: string; id: string };
+type Kid = { _metadata: { createdBy?: By; updatedBy?: By } };
 type Task = { id: string; title: string; status: string };
 
 describe('coordinate example', () => {
@@ -32,10 +33,13 @@ describe('coordinate example', () => {
     expect(received.data['app/Task']).toMatchObject({ id: task.id, title: task.title });
 
     expect(read.data['app/Task']).toHaveLength(1);
-    expect(read.data['app/Task'][0]?._metadata.createdBy?.id).toBe('billing-agent');
+    expect(read.data['app/Task'][0]?._metadata.createdBy).toEqual({
+      kind: 'agent',
+      id: 'billing-agent'
+    });
 
     const claimed = updated.data['app/updateTask'];
     expect(claimed).toMatchObject({ id: task.id, status: 'in_progress' });
-    expect(claimed._metadata.updatedBy?.id).toBe('collections-agent');
+    expect(claimed._metadata.updatedBy).toEqual({ kind: 'agent', id: 'collections-agent' });
   });
 });

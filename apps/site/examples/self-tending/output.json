@@ -31,7 +31,7 @@
       "feed": false,
       "status": 200,
       "response": {
-        "schemaVersion": "3d6fa5b71fd0",
+        "schemaVersion": "schema",
         "data": {
           "ops/propose_type": {
             "id": "0197a000-0000-7000-8000-000000000001"
@@ -70,7 +70,7 @@
       },
       "status": 200,
       "response": {
-        "schemaVersion": "c870ad95c65f",
+        "schemaVersion": "schema",
         "data": {
           "ops/Event": [
             {
@@ -117,7 +117,7 @@
       "slow": 60,
       "status": 200,
       "response": {
-        "schemaVersion": "c870ad95c65f",
+        "schemaVersion": "schema",
         "data": {
           "ops/Event": [
             {
@@ -171,7 +171,7 @@
       "advise": true,
       "status": 200,
       "response": {
-        "schemaVersion": "63d6418fe033",
+        "schemaVersion": "schema",
         "data": {
           "_system/IndexRecommendation": [
             {
@@ -215,7 +215,7 @@
       "feed": false,
       "status": 200,
       "response": {
-        "schemaVersion": "735faad88320",
+        "schemaVersion": "schema",
         "data": {
           "_system_proposals/propose_index": {
             "id": "28b29d62-ce38-89b8-b280-d738b2f1d8e9"
@@ -251,7 +251,7 @@
       "feed": false,
       "status": 200,
       "response": {
-        "schemaVersion": "c870ad95c65f",
+        "schemaVersion": "schema",
         "data": {
           "ops/Event": [
             {
