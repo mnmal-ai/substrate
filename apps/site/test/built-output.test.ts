@@ -101,11 +101,14 @@ describe('built output', () => {
     };
     const token = (name: string) =>
       new RegExp(`--${name}:\\s*(#[0-9a-f]{6})`, 'i').exec(styleText)?.[1] as string;
-    // A colour a `pre.astro-code span[style*='#…' i]` rule repaints with the muted token.
+    // A colour a `pre.astro-code span[style*='#…' i]` rule repaints with the muted token. The
+    // minifier may quote the value or emit it as an escaped identifier (`\#…`).
     const repainted = rules
       .filter((r) => /color:\s*var\(--muted\)\s*!important/.test(r.body))
       .flatMap((r) => r.selectors)
-      .flatMap((sel) => /^pre\.astro-code span\[style\*=["'](#[0-9a-f]+)["'] i\]$/i.exec(sel) ?? [])
+      .flatMap(
+        (sel) => /^pre\.astro-code span\[style\*=["']?\\?(#[0-9a-f]+)["']? i\]$/i.exec(sel) ?? []
+      )
       .filter((m) => m.startsWith('#'))
       .map((m) => m.toLowerCase());
     const colours = new Set(
