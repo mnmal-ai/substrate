@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "astro build",
-    "test": "vitest run",
+    "build": "node scripts/wasi-fallback.mjs astro build",
+    "test": "node scripts/wasi-fallback.mjs vitest run",
     "check-types": "tsc -p tsconfig.json --noEmit",
     "lint": "biome check ."
   },
