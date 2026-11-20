@@ -28,20 +28,26 @@ export function isVersionOnly(files) {
 }
 
 /**
- * True when a PR changes only docs: Markdown, docs/, the site workflow, or the site outside
- * its examples and manifest. The site's examples run on Postgres in the pre-merge passes.
- * @param {Array<{ filename: string }>} files
+ * A path no Postgres suite reads: Markdown, docs/, the site workflow, and the site's own
+ * source and assets. The site's examples, tests and config stay out: its Postgres pass runs them.
+ * @param {string} f
+ */
+const isDocsPath = (f) =>
+  f.endsWith('.md') ||
+  f.startsWith('docs/') ||
+  f === '.github/workflows/site.yml' ||
+  f.startsWith('apps/site/src/') ||
+  f.startsWith('apps/site/public/');
+
+/**
+ * True when every file a PR changes, and every path a rename moved from, is a docs path.
+ * @param {Array<{ filename: string, previous_filename?: string }>} files
  */
 export function isDocsOnly(files) {
   if (files.length === 0) return false;
   return files.every(
-    ({ filename: f }) =>
-      f.endsWith('.md') ||
-      f.startsWith('docs/') ||
-      f === '.github/workflows/site.yml' ||
-      (f.startsWith('apps/site/') &&
-        !f.startsWith('apps/site/examples/') &&
-        f !== 'apps/site/package.json')
+    ({ filename, previous_filename }) =>
+      isDocsPath(filename) && (previous_filename === undefined || isDocsPath(previous_filename))
   );
 }
 
@@ -96,6 +102,9 @@ async function suiteRuns() {
 
 async function chooseMode() {
   const files = await prFiles();
+  // The files API lists at most 3000 files; a longer PR runs the suites rather than be judged on part.
+  const { changed_files } = await api(`pulls/${process.env.PR}`);
+  if (files.length < changed_files) return { mode: 'run' };
   if (isVersionOnly(files)) return { mode: 'release' };
   if (isDocsOnly(files)) return { mode: 'docs' };
   const { ACTION, ADDED, RUN_ID } = process.env;

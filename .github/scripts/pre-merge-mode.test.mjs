@@ -36,12 +36,11 @@ test('any other file, a package.json with no patch, or no files is not version-o
   assert.equal(isVersionOnly([]), false);
 });
 
-test('a docs PR: the site outside its examples, docs/, Markdown and the site workflow', () => {
+test('a docs PR: the site source and assets, docs/, Markdown and the site workflow', () => {
   const docs = [
     'apps/site/src/pages/index.astro',
     'apps/site/src/content/examples/onboard.md',
     'apps/site/public/favicon.svg',
-    'apps/site/test/built-output.test.ts',
     'docs/walks.md',
     'README.md',
     'plugins/substrate-nl/README.md',
@@ -50,11 +49,15 @@ test('a docs PR: the site outside its examples, docs/, Markdown and the site wor
   assert.equal(isDocsOnly(docs.map((filename) => ({ filename }))), true);
 });
 
-test('a site example, the site manifest, any other file, or no files is not docs-only', () => {
-  // The site's examples run on Postgres in the pre-merge passes.
+test('site examples, tests, config, any other file, or no files is not docs-only', () => {
+  // The site's Postgres pass runs its examples and tests under its vitest config.
   for (const filename of [
     'apps/site/examples/reshape/steps.ts',
     'apps/site/examples/self-tending/output.json',
+    'apps/site/test/built-output.test.ts',
+    'apps/site/test/_global-setup.ts',
+    'apps/site/vitest.config.ts',
+    'apps/site/astro.config.mjs',
     'apps/site/package.json',
     'pnpm-lock.yaml',
     'packages/substrate-core/src/engine.ts',
@@ -63,6 +66,17 @@ test('a site example, the site manifest, any other file, or no files is not docs
     assert.equal(isDocsOnly([{ filename: 'README.md' }, { filename }]), false, filename);
   }
   assert.equal(isDocsOnly([]), false);
+});
+
+test('a rename counts as docs only when both its old and new paths are docs', () => {
+  const moved = (previous_filename, filename) => [
+    { filename, previous_filename, status: 'renamed' }
+  ];
+  assert.equal(
+    isDocsOnly(moved('apps/site/examples/reshape/steps.ts', 'apps/site/src/x.ts')),
+    false
+  );
+  assert.equal(isDocsOnly(moved('docs/old.md', 'docs/new.md')), true);
 });
 
 test('follows the newest other run that started the suites', () => {
