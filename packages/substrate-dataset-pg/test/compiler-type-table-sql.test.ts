@@ -354,7 +354,7 @@ describe('a walk reads each type from its own table', () => {
     ).toThrow(/'Cert'/);
   });
 
-  it('a single-namespace walk compiles to the SQL it did before walks could cross', () => {
+  it('single-namespace walks and a nested list compile byte for byte to the SQL pinned here', () => {
     const s = walkScope(NS, 'Cert', 'r', refDef, tableLookup([CERT, OBS, SPEC, SALE]));
     const w = {
       AND: [

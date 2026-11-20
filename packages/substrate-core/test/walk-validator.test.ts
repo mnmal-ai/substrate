@@ -275,6 +275,20 @@ describe('walk validation', () => {
     });
   });
 
+  it('refuses a same-namespace in whose far field points into another namespace', () => {
+    // `cards/Observation.elsewhere` points at `other/Cert`, not the seed's `cards/Cert`.
+    const where = { _walk: { in: 'cards/Observation.elsewhere' } };
+    for (const walk of [CROSS, {}]) {
+      expect(refusal(where, 'Cert', walk)).toEqual({
+        code: 'walk_unknown_ref',
+        path: ['where', '_walk', 'in']
+      });
+      expect(() => check(where, 'Cert', walk)).toThrow(
+        /^'cards\/Observation\.elsewhere' does not point at 'cards\/Cert'/
+      );
+    }
+  });
+
   it('refuses a fourth hop', () => {
     const hops = (n: number) => ({
       _walk: {

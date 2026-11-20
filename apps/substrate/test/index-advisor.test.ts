@@ -283,7 +283,8 @@ describe.skipIf(!POSTGRES_URL)('index advisor (pg)', () => {
           ctx
         });
         expect(env.errors ?? []).toEqual([]);
-        // Judged on app's Invoice: its payment index serves the hop, nothing serves status.
+        // The hop is served and status is not. Both Invoices have these fields and this
+        // index, so the plan cannot say which was judged; the recommendation rows below do.
         expect(env._diagnostics?.[`${extNs}/Payment`]?.plan).toEqual([
           { path: ['where', '_walk'], kind: 'hop', served: true },
           {
