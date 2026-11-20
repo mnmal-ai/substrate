@@ -86,10 +86,11 @@ const panes =
             <h3 id="stop-reshape">Your agent proposes a type. Use it on the next call.</h3>
             <p class="say">
               On the running server an agent calls <code>propose_type</code> for{' '}
-              <code>app/Payment</code>, referencing <code>app/Invoice</code>, then writes and reads
-              it straight away. Every change leaves an audit row.
+              <code>billing/Payment</code>, referencing the code-defined <code>app/Invoice</code>, then
+              writes and reads it straight away, walking back to the invoice. Each proposal is kept
+              as a record that names the key that signed it.
             </p>
-            <Example name="reshape" show={['namespace.ts']} />
+            <Example name="reshape" show={[]} />
           </div>
         </li>
       )

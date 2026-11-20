@@ -98,7 +98,7 @@ Composed into a server, both types can be written, read and subscribed to with n
 
 The run answered with six invoices, each with only its `number` and `dueAt`.
 
-The other worked examples, from agents handing each other work to warehouse queries, recall and the index advisor, are on the site, each with the code and the output its CI run produced: **[mnmal-ai.github.io/substrate](https://mnmal-ai.github.io/substrate/)**.
+The other worked examples, from agents handing each other work to warehouse queries, recall, the index advisor and a type an agent proposes at run time, are on the site, each with the code and the output its CI run produced: **[mnmal-ai.github.io/substrate](https://mnmal-ai.github.io/substrate/)**.
 
 ## Stability
 

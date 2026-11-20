@@ -99,6 +99,11 @@ export interface ExampleSetup {
    * under this store profile.
    */
   advisor?: { owned: string[]; storeProfile: 'scale' };
+  /**
+   * The proposals plugin owns these namespaces, on either dataset, and every agent is granted
+   * `substrate.propose`. `advisor` implies it, over its own `owned`.
+   */
+  proposals?: { owned: string[] };
 }
 
 const PACKAGE_NAME = '@mnmal-ai/substrate-site';
@@ -176,10 +181,11 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
   if (advisor !== undefined && kind !== 'pg') {
     throw new Error("advisor runs over the pg dataset only: set dataset 'pg'.");
   }
+  const owned = advisor?.owned ?? setup.proposals?.owned;
   const proposals =
-    advisor === undefined
+    owned === undefined
       ? undefined
-      : createProposalsPlugin({ ownedNamespaces: advisor.owned, pubsub: createNoopPubSub() });
+      : createProposalsPlugin({ ownedNamespaces: owned, pubsub: createNoopPubSub() });
   const defs = [...setup.namespaces, ...(proposals?.namespaces ?? [])];
   let composed: ComposeResult | undefined;
   // A type proposed at run time is in the registry, not in `defs`.
@@ -201,14 +207,27 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
   for (const ns of defs) {
     const name = ns.namespace;
     const fieldDefLookup = (type: string, f: string) => typeDefLookup(type, name)?.fields[f];
+    const memory = () =>
+      new MemoryDataset({
+        namespace: name,
+        fieldDefLookup,
+        typeDefLookup: (type: string) => typeDefLookup(type, name),
+        walkReference: true
+      });
+    // A walk crosses namespaces only within one store, so with proposals they share one.
+    const first = Object.values(datasets)[0];
     const ds =
       sql === undefined
-        ? new MemoryDataset({
-            namespace: name,
-            fieldDefLookup,
-            typeDefLookup: (type: string) => typeDefLookup(type, name),
-            walkReference: true
-          })
+        ? proposals === undefined
+          ? memory()
+          : first instanceof MemoryDataset
+            ? (first.forNamespace(name) as MemoryDataset)
+            : new MemoryDataset({
+                namespace: name,
+                fieldDefLookupFor: (ns) => (type, f) => typeDefLookup(type, ns)?.fields[f],
+                typeDefLookup: (type, ns) => typeDefLookup(type, ns ?? name),
+                walkReference: true
+              })
         : new PgDataset({
             namespace: name,
             sql,
@@ -348,9 +367,11 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
             sub: kid,
             exp: Math.floor(Date.now() / 1000) + 600,
             capabilities:
-              advisor === undefined
-                ? ['read', 'mutate']
-                : ['read', 'mutate', 'substrate.propose', 'substrate.index'],
+              advisor !== undefined
+                ? ['read', 'mutate', 'substrate.propose', 'substrate.index']
+                : proposals !== undefined
+                  ? ['read', 'mutate', 'substrate.propose']
+                  : ['read', 'mutate'],
             ns: defs.map((n) => n.namespace).concat(advisor === undefined ? [] : ['_system'])
           },
           SECRET,
