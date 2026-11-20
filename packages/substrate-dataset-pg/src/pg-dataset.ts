@@ -1572,10 +1572,15 @@ export class PgDataset implements Dataset {
             // Propagate the edges store reference so nested withTransaction
             // calls (flattened) retain the same enlistment behaviour.
             ...(this.#edgesStore !== null ? { edgesStore: this.#edgesStore } : {}),
-            ...(this.#fieldDefLookup !== null ? { fieldDefLookup: this.#fieldDefLookup } : {}),
+            // Each handle answers field definitions for its own namespace.
             ...(this.#fieldDefLookupFor !== null
-              ? { fieldDefLookupFor: this.#fieldDefLookupFor }
-              : {}),
+              ? {
+                  fieldDefLookup: this.#fieldDefLookupFor(ns),
+                  fieldDefLookupFor: this.#fieldDefLookupFor
+                }
+              : this.#fieldDefLookup !== null
+                ? { fieldDefLookup: this.#fieldDefLookup }
+                : {}),
             layoutCache: this.#layoutCache,
             statementTimeoutMs: this.#statementTimeoutMs,
             ...(this.#typeDefLookup !== null ? { typeDefLookup: this.#typeDefLookup } : {}),
