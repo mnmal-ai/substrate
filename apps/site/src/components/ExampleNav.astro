@@ -1,0 +1,69 @@
+---
+import { pageHref } from '../lib/example-pages.ts';
+
+interface Props {
+  /** The examples in page order. */
+  entries: { id: string; data: { order: number; name: string } }[];
+  /** The slug of the page being shown. */
+  current: string;
+  label: string;
+}
+const { entries, current, label } = Astro.props;
+---
+<nav aria-label={label}>
+  <ol>
+    {
+      entries.map((e) => (
+        <li>
+          <a
+            href={pageHref(import.meta.env.BASE_URL, e.id)}
+            aria-current={e.id === current ? 'page' : undefined}
+          >
+            <span class="n">{String(e.data.order).padStart(2, '0')}</span> {e.data.name}
+          </a>
+        </li>
+      ))
+    }
+  </ol>
+</nav>
+
+<style>
+  /* A signal line down the list; the current page lights its stretch of it. */
+  ol {
+    display: flex;
+    flex-direction: column;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    border-left: 2px solid var(--rule);
+  }
+
+  a {
+    display: block;
+    margin-left: -2px;
+    padding: 7px 0 7px 18px;
+    border-left: 2px solid transparent;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 14px;
+    text-decoration: none;
+  }
+
+  a:hover {
+    color: var(--text);
+  }
+
+  a[aria-current='page'] {
+    border-left-color: var(--accent);
+    color: var(--text);
+  }
+
+  .n {
+    margin-right: 6px;
+    color: var(--muted);
+  }
+
+  a[aria-current='page'] .n {
+    color: var(--accent);
+  }
+</style>

@@ -1,9 +1,7 @@
 ---
-import { Code } from 'astro:components';
-import { EVERY_SURFACE } from '../../examples/onboard/steps.ts';
 import { loadExample } from '../lib/examples.ts';
-import { pretty, THEME, threeWays } from '../lib/steps.ts';
 import Example from './Example.astro';
+import ThreeWays from './extras/ThreeWays.astro';
 
 // The stops in the spec's order. A stop renders once its example exists.
 const live = ['onboard', 'reshape', 'ask', 'coordinate'].filter(
@@ -11,18 +9,6 @@ const live = ['onboard', 'reshape', 'ask', 'coordinate'].filter(
 );
 const has = (name: string) => live.includes(name);
 const label = (name: string) => `${String(live.indexOf(name) + 1).padStart(2, '0')} ${name}`;
-
-// The onboard run's walk-free read, as HTTP sent it, in the shapes MCP and a subscription take.
-const query = loadExample('onboard').transcript?.steps.find((s) => s.label === EVERY_SURFACE);
-const ways = query === undefined ? undefined : threeWays(query.body as Record<string, object>);
-const panes =
-  ways === undefined
-    ? []
-    : [
-        { surface: 'HTTP', how: 'POST /substrate/v1/query', body: ways.http },
-        { surface: 'MCP', how: 'the query tool, with arguments', body: ways.mcp },
-        { surface: 'Stream', how: 'POST /substrate/v1/subscribe', body: ways.subscribe }
-      ];
 ---
 <section id="examples" class="section" aria-labelledby="stops-title">
   <div class="joint signal" aria-hidden="true"><span class="pulse"></span></div>
@@ -51,28 +37,7 @@ const panes =
               here; the full one also carries per-operation instructions and every plugin's surface.
             </p>
             <Example name="onboard" show={['namespace.ts']} />
-            {panes.length > 0 && (
-              <figure class="ways" aria-labelledby="ways-title">
-                <figcaption>
-                  <h4 id="ways-title">The same frame, three ways</h4>
-                  <p>
-                    The walk-free read from the run above, as each surface takes it: the object the
-                    run sent, unchanged. Only the HTTP run's output is shown here; the coordinate
-                    stop below shows a live subscription.
-                  </p>
-                </figcaption>
-                <div class="panes">
-                  {panes.map((p) => (
-                    <div class="pane">
-                      <p class="label">
-                        <span class="surface">{p.surface}</span> {p.how}
-                      </p>
-                      <Code code={pretty(p.body, 44)} lang="json" theme={THEME} />
-                    </div>
-                  ))}
-                </div>
-              </figure>
-            )}
+            <ThreeWays />
           </div>
         </li>
       )
@@ -179,56 +144,5 @@ const panes =
   .say {
     max-width: 44em;
     color: var(--muted);
-  }
-
-  .ways {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-    min-width: 0;
-    margin: 20px 0 0;
-    padding: clamp(20px, 3vw, 28px);
-    border-radius: 14px;
-    background: var(--panel-2);
-  }
-
-  /* Code panes sit on the darker panel colour inside this lighter box. */
-  .ways :global(pre.astro-code) {
-    background-color: var(--bg) !important;
-  }
-
-  h4 {
-    margin: 0;
-    font-size: 19px;
-  }
-
-  figcaption p {
-    max-width: 44em;
-    margin: 6px 0 0;
-    color: var(--muted);
-    font-size: 17px;
-  }
-
-  .panes {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
-    gap: 16px;
-  }
-
-  .pane {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    min-width: 0;
-  }
-
-  .pane p {
-    margin: 0;
-    color: var(--muted);
-    overflow-wrap: anywhere;
-  }
-
-  .surface {
-    color: var(--accent);
   }
 </style>

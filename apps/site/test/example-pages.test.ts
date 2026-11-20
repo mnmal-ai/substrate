@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   byOrder,
+  EXAMPLE_FIGURES,
+  EXAMPLE_SLUGS,
   neighbours,
   pageHref,
   splitSections,
@@ -96,5 +98,15 @@ describe('pageHref', () => {
   it('joins base and slug with one slash', () => {
     expect(pageHref('/substrate', 'ask')).toBe('/substrate/examples/ask/');
     expect(pageHref('/substrate/', 'ask')).toBe('/substrate/examples/ask/');
+  });
+});
+
+describe('EXAMPLE_FIGURES', () => {
+  it('every example has a figure Hairline exports', async () => {
+    expect(new Set(Object.keys(EXAMPLE_FIGURES))).toEqual(new Set(EXAMPLE_SLUGS));
+    const hairline = await import('@lucasmarkes/hairline');
+    for (const name of Object.values(EXAMPLE_FIGURES)) {
+      expect(typeof hairline[name], name).toBe('function');
+    }
   });
 });

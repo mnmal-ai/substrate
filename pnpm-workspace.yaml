@@ -37,6 +37,7 @@ catalog:
   '@inquirer/prompts': ^8.7.2
   turbo: "^2.11.7"
   "@fastify/compress": "^9.2.0"
+  "@lucasmarkes/hairline": "0.5.1"
   "@fastify/cors": "^11.3.0"
   "@modelcontextprotocol/sdk": "^1.32.0"
   "@preact/signals-core": "^1.14.4"

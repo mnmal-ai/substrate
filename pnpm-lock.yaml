@@ -176,6 +176,9 @@ catalogs:
     '@inquirer/prompts':
       specifier: ^8.7.2
       version: 8.7.5
+    '@lucasmarkes/hairline':
+      specifier: 0.5.1
+      version: 0.5.1
     '@mnmal-ai/holomap-clusterer':
       specifier: 0.2.1
       version: 0.2.1
@@ -291,6 +294,9 @@ importers:
 
   apps/site:
     dependencies:
+      '@lucasmarkes/hairline':
+        specifier: 'catalog:'
+        version: 0.5.1(react@19.3.1)
       '@mnmal-ai/substrate':
         specifier: workspace:*
         version: link:../substrate
@@ -1931,6 +1937,14 @@ packages:
 
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
+
+  '@lucasmarkes/hairline@0.5.1':
+    resolution: {integrity: sha512-zjY3bdMC3As/+enKitZ1X+D1HjpesQiAKzG1sbCFsOrb5xIuJEoepkJTBIO4jmFh6JXOQlGGylhV71nr9ipNpQ==}
+    peerDependencies:
+      react: '>=18'
+    peerDependenciesMeta:
+      react:
+        optional: true
 
   '@mnmal-ai/holomap-clusterer@0.2.1':
     resolution: {integrity: sha512-X3d4Zj0IQoliinQ6ajjZOMYJ5AyfXZZoaZxyTJWJWmxCNNN2ZbP/nnt8WLS/Ddbrs3WxdfreAyzGX9pDCAKxRQ==}
@@ -5225,6 +5239,10 @@ snapshots:
     dependencies:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.6.0
+
+  '@lucasmarkes/hairline@0.5.1(react@19.3.1)':
+    optionalDependencies:
+      react: 19.3.1
 
   '@mnmal-ai/holomap-clusterer@0.2.1': {}
 

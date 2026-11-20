@@ -10,6 +10,7 @@
     "lint": "biome check ."
   },
   "dependencies": {
+    "@lucasmarkes/hairline": "catalog:",
     "@mnmal-ai/substrate": "workspace:*",
     "@mnmal-ai/substrate-embedder": "workspace:*",
     "@mnmal-ai/substrate-nl": "workspace:*",

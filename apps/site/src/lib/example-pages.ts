@@ -11,6 +11,20 @@ export const EXAMPLE_SLUGS = [
 
 export type ExampleSlug = (typeof EXAMPLE_SLUGS)[number];
 
+/** The `@lucasmarkes/hairline` exports the example pages draw. */
+export type FigureName = 'settle' | 'rebuild' | 'query' | 'hub' | 'cabinet' | 'riffle' | 'slow';
+
+/** Each example's Hairline figure, drawn in its page header and on its landing card. */
+export const EXAMPLE_FIGURES: Readonly<Record<ExampleSlug, FigureName>> = {
+  onboard: 'settle',
+  reshape: 'rebuild',
+  ask: 'query',
+  coordinate: 'hub',
+  warehouse: 'cabinet',
+  recall: 'riffle',
+  'self-tending': 'slow'
+};
+
 /** The three `##` sections every example's Markdown body carries, in order. */
 export const SECTIONS = [
   { id: 'elsewhere', title: 'Elsewhere' },
