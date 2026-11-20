@@ -1,6 +1,8 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import clickbench from '../src/data/clickbench.json';
+import { summarise } from '../src/lib/clickbench.ts';
 import { EXAMPLE_SLUGS, SECTIONS, unlinkedProducts } from '../src/lib/example-pages.ts';
 
 const dir = new URL('../src/content/examples/', import.meta.url).pathname;
@@ -31,5 +33,16 @@ describe('example content', () => {
 
   it('every product named in Elsewhere links its docs', () => {
     for (const { slug, text } of files) expect(unlinkedProducts(text), slug).toEqual([]);
+  });
+
+  it('warehouse quotes the ClickBench count the data file holds', () => {
+    const text = readFileSync(join(dir, 'warehouse.md'), 'utf8');
+    const quoted = [...text.matchAll(/(\d+) compared \/ (\d+)/g)].map((m) =>
+      [m[1], m[2]].map(Number)
+    );
+    expect(quoted.length).toBeGreaterThan(0);
+    for (const pair of quoted) {
+      expect(pair).toEqual([summarise(clickbench).compared, clickbench.queries.length]);
+    }
   });
 });
