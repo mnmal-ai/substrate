@@ -110,4 +110,35 @@ describe.skipIf(!POSTGRES_URL)('fieldDefLookup wired into buildPluginDatasetMap'
       .sort((a: number, b: number) => a - b);
     expect(counts).toEqual([10, 100]);
   });
+
+  it("a plugin dataset's handle for another namespace orders by that namespace's definitions", async () => {
+    const hostDef: NamespaceDefinition = defineNamespace('khost', {
+      Note: { fields: { id: { kind: 'scalar', type: 'string', indexed: true } } }
+    });
+    const hostPlugin: CoordinatorPlugin = {
+      name: 'khost',
+      contractVersion: '*',
+      namespaces: [hostDef]
+    };
+    // Declared in nsDefs only: the host dataset's own type definitions know
+    // nothing of it, so `count` is a body field and the factory alone says it is a number.
+    const readingsDef: NamespaceDefinition = defineNamespace('kreadings', {
+      Reading: { fields: { count: { kind: 'scalar', type: 'number' } } }
+    });
+    const nsDefs = new Map<string, NamespaceDefinition>([
+      ['khost', hostDef],
+      ['kreadings', readingsDef]
+    ]);
+    const datasets = buildPluginDatasetMap(
+      [hostPlugin],
+      new PgDataset({ namespace: 'default', sql }),
+      sql,
+      edges,
+      makeFieldDefLookupFactory(nsDefs)
+    );
+    const sibling = datasets.khost?.forNamespace('kreadings');
+    await sibling?.write('Reading', [{ count: 2 }, { count: 10 }]);
+    const rows = (await sibling?.read('Reading', { orderBy: [{ count: 'asc' }] }))?.rows ?? [];
+    expect(rows.map((r: Record<string, unknown>) => r.count)).toEqual([2, 10]);
+  });
 });
