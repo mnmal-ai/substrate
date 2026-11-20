@@ -8,7 +8,6 @@ import {
   rmSync,
   writeFileSync
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -25,7 +24,10 @@ describe('licensed build', () => {
   it.runIf(!existsSync(licensedDir))(
     'emits the Berkeley Mono face and preload when both files are present',
     () => {
-      const outDir = mkdtempSync(join(tmpdir(), 'site-licensed-'));
+      // On the package's own filesystem: astro moves CSS assets into outDir with a rename,
+      // which fails across devices (EXDEV) when tmpdir() is a separate mount.
+      mkdirSync(join(root, '.astro'), { recursive: true });
+      const outDir = mkdtempSync(join(root, '.astro', 'licensed-'));
       mkdirSync(licensedDir, { recursive: true });
       try {
         for (const f of ['Regular', 'Bold']) {

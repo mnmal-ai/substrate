@@ -18,8 +18,9 @@ body {
   overflow-x: hidden;
 }
 
+/* --max-width is the content's; the gutters sit outside it. */
 main {
-  max-width: var(--max-width);
+  max-width: calc(var(--max-width) + 2 * var(--gutter));
   margin: 0 auto;
   padding: 0 var(--gutter);
 }
@@ -54,11 +55,77 @@ a {
   outline-offset: 2px;
 }
 
+/*
+ * A signal line with a pulse travelling down it. The pulse box fills the line, so translating it
+ * by 100% of its own height carries the dot from one end to the other.
+ */
+.signal {
+  position: relative;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--rule);
+}
+
+.pulse {
+  position: absolute;
+  inset: 0;
+  animation: pulse-down 4s linear infinite;
+}
+
+.pulse::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 10px;
+  height: 10px;
+  margin: -4px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 14px var(--accent);
+}
+
+@keyframes pulse-down {
+  from {
+    transform: translateY(0);
+    opacity: 0;
+  }
+  10%,
+  90% {
+    opacity: 1;
+  }
+  to {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+}
+
+/* reveal.ts adds .reveal to <html> only when motion is allowed, then .in as each block scrolls in. */
+@media (prefers-reduced-motion: no-preference) {
+  .reveal [data-reveal] {
+    opacity: 0;
+    transform: translateY(16px);
+    transition:
+      opacity 0.6s ease-out,
+      transform 0.6s ease-out;
+  }
+
+  .reveal [data-reveal].in {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     animation: none !important;
     transition: none !important;
+  }
+
+  /* At rest the dot sits at the top of its line. */
+  .pulse {
+    animation: none;
   }
 }

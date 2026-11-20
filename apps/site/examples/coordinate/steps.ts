@@ -42,6 +42,7 @@ export const steps: Step[] = [
     method: 'POST',
     path: '/substrate/v1/subscribe',
     as: 'collections-agent',
+    feed: true,
     receive: 'open-tasks'
   },
   {

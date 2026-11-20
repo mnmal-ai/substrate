@@ -452,7 +452,7 @@
       "method": "POST",
       "path": "/substrate/v1/subscribe",
       "as": "collections-agent",
-      "feed": false,
+      "feed": true,
       "receive": "open-tasks",
       "status": 200,
       "response": {
