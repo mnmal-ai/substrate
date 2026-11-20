@@ -98,7 +98,7 @@ const QUERY_KEY_CONCURRENCY = 16;
 interface WalkScan {
   sites: WalkSite[];
   resolve: HopResolver;
-  fieldsOf: (type: string) => Record<string, FieldDef> | undefined;
+  fieldsOf: (ref: TypeRef) => Record<string, FieldDef> | undefined;
   naturalOrder: (ref: TypeRef) => OrderedBy;
 }
 
@@ -1476,7 +1476,7 @@ export class Engine {
     return {
       resolve: hopResolver(ns, types, walk),
       schemaOf,
-      fieldsOf: (t) => schemaOf({ ns, type: t })?.fields,
+      fieldsOf: (ref) => schemaOf(ref)?.fields,
       naturalOrder: (ref) => naturalOrderOf(schemaOf(ref) ?? {})
     };
   }
@@ -1517,11 +1517,17 @@ export class Engine {
 
   /**
    * The walk sites of a walk-grammar query frame, or undefined for an ordinary
-   * one. Hops stay in `ns` here: a frame whose walks leave it is not described.
+   * one, each far type in its own namespace. Asked only of a frame the walk
+   * gate passed, with the `walk` resolvers it passed under.
    */
-  #walkSitesOf(frame: FrameEntry, ns: string, seed: string): WalkScan | undefined {
+  #walkSitesOf(
+    frame: FrameEntry,
+    ns: string,
+    seed: string,
+    walk: WalkResolvers | undefined
+  ): WalkScan | undefined {
     if (!usesWalkGrammar(frame as Record<string, unknown>)) return undefined;
-    const tools = this.#walkTools(ns);
+    const tools = this.#walkTools(ns, walk);
     try {
       const sites = walkSites(
         frame as Record<string, unknown>,
@@ -1531,15 +1537,16 @@ export class Engine {
       );
       return { sites, ...tools };
     } catch {
-      // Validation resolved every hop already; a describer never fails the read.
+      // A describer never fails the read.
       return undefined;
     }
   }
 
   /**
    * The frame's clauses marked index-served (goal 7), from the store's index
-   * plans. Undefined when the store has none (memory) or any type's plan is
-   * unknown: a plan that cannot be judged is omitted, never guessed.
+   * plans, each type's asked of its own namespace's dataset. Undefined when
+   * the store has none (memory) or any type's plan is unknown: a plan that
+   * cannot be judged is omitted, never guessed.
    */
   async #walkPlan(
     dataset: Dataset,
@@ -1550,10 +1557,17 @@ export class Engine {
     scan: WalkScan
   ): Promise<PlanClause[] | undefined> {
     if (dataset.indexPlan === undefined) return undefined;
-    const types = [...new Set([seed, ...scan.sites.map((s) => s.far)])];
+    const qualified = (r: TypeRef) => `${r.ns}/${r.type}`;
+    const types = new Map(
+      [{ ns, type: seed }, ...scan.sites.map((s) => s.far)].map((r) => [qualified(r), r])
+    );
     let plans: Array<IndexPlan | undefined>;
     try {
-      plans = await Promise.all(types.map((t) => dataset.indexPlan?.(t, ns)));
+      plans = await Promise.all(
+        [...types.values()].map((r) =>
+          (r.ns === ns ? dataset : this.#datasets.get(r.ns))?.indexPlan?.(r.type, r.ns)
+        )
+      );
     } catch (err) {
       this.#metric('engine_walk_plan_failed', {
         key,
@@ -1562,7 +1576,7 @@ export class Engine {
       return undefined;
     }
     if (plans.some((p) => p === undefined)) return undefined;
-    const byType = new Map(types.map((t, i) => [t, plans[i]?.indexes ?? []]));
+    const byType = new Map([...types.keys()].map((t, i) => [t, plans[i]?.indexes ?? []]));
     return classifyWalkService(
       {
         entry: frame as Record<string, unknown>,
@@ -1571,7 +1585,7 @@ export class Engine {
         fieldsOf: scan.fieldsOf,
         naturalOrder: scan.naturalOrder
       },
-      (t) => byType.get(t) ?? []
+      (r) => byType.get(qualified(r)) ?? []
     );
   }
 
@@ -1877,7 +1891,7 @@ export class Engine {
 
     const walkScan =
       operation === 'query' && registryEntry.kind === 'type' && !isVirtual
-        ? this.#walkSitesOf(frame, ns, name)
+        ? this.#walkSitesOf(frame, ns, name, walk)
         : undefined;
     // A nested walk list reads in its far type's natural order unless it names one (#1821),
     // even when the plan's describer gave up; validation resolved every hop, so this does not throw.
@@ -1989,7 +2003,7 @@ export class Engine {
         );
         // Each walk is charged the whole read's time: the far reads run inside it.
         if (walkScan !== undefined && this.#shapeRecorder !== undefined) {
-          for (const s of walkShapesOf(ns, walkScan.sites, walkScan.fieldsOf)) {
+          for (const s of walkShapesOf(walkScan.sites, walkScan.fieldsOf)) {
             this.#shapeRecorder.observe(s, ms);
           }
         }

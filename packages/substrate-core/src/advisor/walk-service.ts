@@ -30,7 +30,8 @@ export interface WalkSite {
   path: string[];
   /** The hop node itself: a `_walk`, an `_agg` or a nested selection's `_walk`. */
   node: Record<string, unknown>;
-  far: string;
+  /** The far type, in its own namespace. */
+  far: TypeRef;
   /** The far type's crossRef an inbound hop follows; undefined for an outbound hop (a primary-key read). */
   crossRef?: string;
   /** Each `where` filtering the far rows, with its path. */
@@ -75,8 +76,7 @@ export function walkSites(
 ): WalkSite[] {
   const out: WalkSite[] = [];
   forEachWalkHop(entry, seed, ({ kind, node, path, selection }, from) => {
-    const farRef = resolve(node, from, path);
-    const far = farRef.type;
+    const far = resolve(node, from, path);
     const s: WalkSite = { path, node, far, wheres: [] };
     // Validation proved `in` is '<ns>/<Type>.<field>' with no dot in the type.
     if (typeof node.in === 'string') s.crossRef = node.in.slice(node.in.indexOf('.') + 1);
@@ -114,12 +114,12 @@ export function walkSites(
     } else if (selection !== undefined) {
       const { sel, path: at } = selection;
       let by = orderOf(sel.orderBy);
-      if (by.length === 0 && naturalOrder !== undefined) by = orderOf([naturalOrder(farRef)]);
+      if (by.length === 0 && naturalOrder !== undefined) by = orderOf([naturalOrder(far)]);
       if (by.length > 0) s.order = { by, path: [...at, 'orderBy'], kind: 'order', exact: true };
       addWhere(node.where, [...path, 'where']);
       addWhere(sel.where, [...at, 'where']);
     }
-    return farRef;
+    return far;
   });
   return out;
 }
@@ -215,7 +215,7 @@ export interface ClassifyInput {
   seed: TypeRef;
   resolve: HopResolver;
   /** A type's declared fields, for what an index may key on. */
-  fieldsOf: (type: string) => Fields | undefined;
+  fieldsOf: (ref: TypeRef) => Fields | undefined;
   /** A type's natural order: a nested list without `orderBy` reads in it (#1821). */
   naturalOrder?: (ref: TypeRef) => OrderedBy;
 }
@@ -239,17 +239,16 @@ export interface ClassifyInput {
  */
 export function classifyWalkService(
   input: ClassifyInput,
-  indexesOf: (type: string) => PlanIndex[]
+  indexesOf: (ref: TypeRef) => PlanIndex[]
 ): PlanClause[] {
-  const { entry, seed: seedRef, fieldsOf } = input;
-  const seed = seedRef.type;
+  const { entry, seed, fieldsOf } = input;
   const out: PlanClause[] = [];
   const params = isObj(entry.params) ? entry.params : {};
   const clause = (
     path: string[],
     kind: PlanClause['kind'],
     served: boolean,
-    type: string,
+    type: TypeRef,
     keys: Array<string | { field: string; dir: 'asc' | 'desc' }>
   ) => {
     const c: PlanClause = { path, kind, served };
@@ -290,7 +289,7 @@ export function classifyWalkService(
     return grouped ? 'group-by' : 'per-seed';
   };
 
-  for (const s of walkSites(entry, seedRef, input.resolve, input.naturalOrder)) {
+  for (const s of walkSites(entry, seed, input.resolve, input.naturalOrder)) {
     const farIndexes = indexesOf(s.far);
     const cr = s.crossRef;
     // A crossRef declared `indexed: false` has no eager index to serve its hop.

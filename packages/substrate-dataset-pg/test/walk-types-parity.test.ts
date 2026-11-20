@@ -108,7 +108,7 @@ describe('walkTypes reaches what core walkSites reaches', () => {
     it(JSON.stringify(params).slice(0, 90), () => {
       const core = new Set([
         seed,
-        ...walkSites(entryOf(params), { ns: 'ns', type: seed }, resolve).map((s) => s.far)
+        ...walkSites(entryOf(params), { ns: 'ns', type: seed }, resolve).map((s) => s.far.type)
       ]);
       const types = walkTypes(params, { ns: 'ns', type: seed }, (t, f) => fieldDef(t.type, f));
       expect(types.map((t) => t.type).sort()).toEqual([...core].sort());

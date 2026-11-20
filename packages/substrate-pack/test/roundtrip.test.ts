@@ -496,6 +496,95 @@ describe('walk results roundtrip', () => {
   });
 });
 
+describe('walk results across namespaces roundtrip', () => {
+  const id: FieldDef = { kind: 'scalar', type: 'string' };
+  const ref = (ns: string, type: string): FieldDef => ({
+    kind: 'crossRef',
+    ns,
+    type,
+    onDelete: 'set_null'
+  });
+  // Both namespaces declare an Invoice; only app's has a customer to walk on to.
+  const ext: Schema = {
+    schemaVersion: 'x1',
+    types: {
+      Payment: {
+        fields: { id, amount: { kind: 'scalar', type: 'number' }, invoice: ref('app', 'Invoice') }
+      },
+      Invoice: { fields: { id, total: { kind: 'scalar', type: 'number' } } }
+    },
+    mutations: {}
+  };
+  const app: Schema = {
+    schemaVersion: 'a1',
+    types: {
+      Invoice: {
+        fields: { id, number: id, payment: ref('ext', 'Payment'), customer: ref('app', 'Customer') }
+      },
+      Customer: { fields: { id, name: id } }
+    },
+    mutations: {}
+  };
+  const ctxFor = (ns: string, type: string, fields: unknown) => ({
+    fieldsByKey: { [`${ns}/${type}`]: fields as FieldInput },
+    typeByKey: { [`${ns}/${type}`]: type },
+    schemas: { ext, app },
+    currentNsByKey: { [`${ns}/${type}`]: ns }
+  });
+  const envOf = (key: string, rows: unknown): PackEnvelope => ({
+    schemaVersion: 'x1',
+    data: { [key]: rows },
+    shapes: { [key]: 'list' }
+  });
+
+  it("an outbound walk into app/Invoice is positioned under app's Invoice", () => {
+    const ctx = ctxFor('ext', 'Payment', {
+      amount: true,
+      inv: {
+        _walk: { out: 'invoice' },
+        fields: {
+          number: true,
+          cust: { _walk: { out: 'customer' }, fields: { name: true } }
+        }
+      }
+    });
+    const rows = [
+      {
+        amount: 30,
+        inv: [{ id: 'i1', number: 'INV-1', cust: [{ id: 'c1', name: 'Ada' }] }]
+      }
+    ];
+    const encoded = encodeEnvelope(envOf('ext/Payment', rows), ctx);
+    // [amount, inv, _truncated]; each invoice [id, number, cust, _truncated], each customer [id, name].
+    expect((unpack(encoded) as PackEnvelope).data['ext/Payment']).toEqual([
+      [30, [['i1', 'INV-1', [['c1', 'Ada']], null]], null]
+    ]);
+    expect(decodeEnvelope(encoded, ctx).data['ext/Payment']).toEqual(rows);
+  });
+
+  it('an inbound walk from app/Invoice into ext/Payment, and back out to app, is positioned in each', () => {
+    const ctx = ctxFor('app', 'Invoice', {
+      number: true,
+      pays: {
+        _walk: { in: 'ext/Payment.invoice' },
+        fields: { amount: true, inv: { _walk: { out: 'invoice' }, fields: { number: true } } }
+      }
+    });
+    const rows = [
+      {
+        number: 'INV-1',
+        pays: [{ id: 'p1', amount: 30, inv: [{ id: 'i1', number: 'INV-1' }] }],
+        _truncated: { pays: true }
+      }
+    ];
+    const encoded = encodeEnvelope(envOf('app/Invoice', rows), ctx);
+    expect((unpack(encoded) as PackEnvelope).data['app/Invoice']).toEqual([
+      ['INV-1', [['p1', 30, [['i1', 'INV-1']], null]], { pays: true }]
+    ]);
+    expect(decodeEnvelope(encoded, ctx).data['app/Invoice']).toEqual(rows);
+  });
+});
+
 describe('int64 roundtrip', () => {
   it('a bigint field comes back as a bigint', () => {
     const schema: Schema = {
