@@ -32,6 +32,7 @@ import {
   fieldRequested,
   fullBuiltinOperators,
   preResolveExtensionOperatorsDetailed,
+  type TypeRef,
   walkAggExprType,
   whereUsesWalks
 } from '@mnmal-ai/substrate-filter';
@@ -354,7 +355,7 @@ type GuardedRecord = TableRowRecord & { ok: boolean; iso: string };
 /** A read whose statement found one of its tables past the version it was built for. */
 class StaleRead {
   constructor(
-    readonly types: readonly string[],
+    readonly types: readonly TypeRef[],
     /** The transaction's isolation level, as the statement saw it. */
     readonly iso: string
   ) {}
@@ -425,6 +426,8 @@ export class PgDataset implements Dataset {
   };
 
   readonly txScopeId: string;
+  /** Every handle on one pool can walk into the others: the pool's {@link txScopeId}. */
+  readonly walkStoreId: string;
 
   readonly #sql: PgHandle;
   readonly #inTx: boolean;
@@ -449,6 +452,7 @@ export class PgDataset implements Dataset {
     // Tx-bound datasets inherit their parent's txScopeId.
     const explicit = 'txScopeId' in options ? options.txScopeId : undefined;
     this.txScopeId = explicit ?? txScopeIdFor(options.sql);
+    this.walkStoreId = this.txScopeId;
     this.#shortIds = new PgShortIdStore(this.#sql);
     // An edges store from a different Sql pool cannot share a transaction.
     const edgesOpt = options.edgesStore;
@@ -582,9 +586,9 @@ export class PgDataset implements Dataset {
     }
   }
 
-  /** Drops `type`'s descriptor from the transaction's map and the pool's cache. */
-  #forget(type: string): void {
-    const key = `${this.namespace}/${type}`;
+  /** Drops `namespace`/`type`'s descriptor from the transaction's map and the pool's cache. */
+  #forget(type: string, namespace = this.namespace): void {
+    const key = `${namespace}/${type}`;
     this.#txTables?.delete(key);
     dropTableCache(this.#tableCache, key);
   }
@@ -696,15 +700,15 @@ export class PgDataset implements Dataset {
           // The pool's descriptor is newer than this transaction's snapshot, and
           // right for every other reader: read through the snapshot's own instead.
           for (const t of err.types) {
-            const table = await loadTypeTable(this.#sql, this.namespace, t);
-            this.#txTables?.set(`${this.namespace}/${t}`, {
+            const table = await loadTypeTable(this.#sql, t.ns, t.type);
+            this.#txTables?.set(`${t.ns}/${t.type}`, {
               table: table ?? null,
               gen: -1,
               snapshot: true
             });
           }
         } else {
-          for (const t of err.types) this.#forget(t);
+          for (const t of err.types) this.#forget(t.type, t.ns);
         }
       }
     }
@@ -742,23 +746,25 @@ export class PgDataset implements Dataset {
     }
 
     // The compiler cannot await, so the seed's and every far type's table is
-    // loaded first (F19). A type with no table yet reads as an empty one.
+    // loaded first (F19), each from its own namespace. A type with no table
+    // yet reads as an empty one.
     const lookup = this.#fieldDefLookup;
-    const fieldDef = (t: string, f: string) => lookup?.(t, f);
-    const types = [...(walks ? walkTypes(params, { ns: this.namespace, type }, fieldDef) : [type])];
-    const loaded = await Promise.all(types.map((t) => this.#tableFor(t, this.namespace, true)));
-    const tableFor = tableLookup(
-      loaded.map((t, i) => t ?? absentTypeTable(this.namespace, types[i] as string))
-    );
-    const table = tableFor(type);
+    const seed = { ns: this.namespace, type };
+    // A far namespace's fields by that namespace's definitions only, and none without them.
+    const fieldDef = (t: TypeRef, f: string) =>
+      t.ns === this.namespace ? lookup?.(t.type, f) : this.#fieldDefLookupFor?.(t.ns)(t.type, f);
+    const types = walks ? walkTypes(params, seed, fieldDef) : [seed];
+    const loaded = await Promise.all(types.map((t) => this.#tableFor(t.type, t.ns, true)));
+    const tableFor = tableLookup(types.map((t, i) => loaded[i] ?? absentTypeTable(t.ns, t.type)));
+    const table = tableFor(seed);
     // Each statement checks every descriptor it decodes through (M3); an
     // unmigrated store has no catalog to check, and no table to read.
     const guard: ReadGuardEntry[] | null =
       (await this.#layout()) === 'absent'
         ? null
         : types.map((t, i) => ({
-            namespace: this.namespace,
-            type: t,
+            namespace: t.ns,
+            type: t.type,
             version: loaded[i]?.version ?? null
           }));
     /** `statement`'s rows, but those of a stale read, which throw {@link StaleRead}; `key` is non-null on a real row. */
@@ -795,7 +801,7 @@ export class PgDataset implements Dataset {
     if (scope !== undefined) {
       // As the plan advisor's `leads`: a full index, the crossRef first, `key` next.
       scope.indexDir = (t, crossRef, key) =>
-        desiredIndexKeys(this.#indexArgs(t, this.namespace)).find(
+        desiredIndexKeys(this.#indexArgs(t.type, t.ns)).find(
           (i) => i.only === undefined && i.keys[0]?.[0] === crossRef && i.keys[1]?.[0] === key
         )?.keys[1]?.[1];
     }
@@ -829,7 +835,7 @@ export class PgDataset implements Dataset {
         const base = { clauses: [...clauses], ids: hasIdFilter };
         // A frame `_agg` window read by every seed is one group-by pass.
         windowJoins = prepareWindows(sql, resolved, base, bodyCastFor, table, scope, (t, field) =>
-          desiredIndexKeys(this.#indexArgs(t, this.namespace)).some(
+          desiredIndexKeys(this.#indexArgs(t.type, t.ns)).some(
             (i) => i.only === undefined && i.keys[0]?.[0] === field
           )
         );
@@ -857,7 +863,7 @@ export class PgDataset implements Dataset {
         matched,
         pickJoins,
         table,
-        (f) => fieldDef(type, f)
+        (f) => fieldDef(seed, f)
       );
       const rows = await run<{ g: number } & Record<string, unknown>>(
         sql`${withCtes(sql, scope)}${grouped.statement}`,
@@ -897,9 +903,7 @@ export class PgDataset implements Dataset {
       const outputs = new Map<string, Fragment>();
       const aggTypes = new Map<string, ExprType>();
       for (const [name, spec] of Object.entries(frameAggs ?? {})) {
-        const t = walkAggExprType(spec, { ns: this.namespace, type }, (r, f) =>
-          fieldDef(r.type, f)
-        );
+        const t = walkAggExprType(spec, seed, fieldDef);
         if (!used.includes(`"_agg.${name}"`) || t === undefined || scope?.aggValue === undefined) {
           continue;
         }
@@ -916,7 +920,7 @@ export class PgDataset implements Dataset {
         aggTypes.set(`_agg.${name}`, t);
       }
       const fieldType = (name: string) =>
-        aggTypes.get(name) ?? exprTypeOfField(fieldDef(type, name));
+        aggTypes.get(name) ?? exprTypeOfField(fieldDef(seed, name));
       for (const [name, expr] of selectEntries) {
         const { fragment, type: t } = compileExprTyped(sql, expr, {
           table,

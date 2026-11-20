@@ -110,9 +110,8 @@ describe('walkTypes reaches what core walkSites reaches', () => {
         seed,
         ...walkSites(entryOf(params), { ns: 'ns', type: seed }, resolve).map((s) => s.far)
       ]);
-      expect([...walkTypes(params, { ns: 'ns', type: seed }, fieldDef)].sort()).toEqual(
-        [...core].sort()
-      );
+      const types = walkTypes(params, { ns: 'ns', type: seed }, (t, f) => fieldDef(t.type, f));
+      expect(types.map((t) => t.type).sort()).toEqual([...core].sort());
       // Every case but the plain where reaches a far type.
       if (params.where !== CORPUS[0]?.params.where) expect(core.size).toBeGreaterThan(1);
     });

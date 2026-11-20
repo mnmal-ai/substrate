@@ -7,14 +7,19 @@
  * Pure: nothing connects to a database.
  */
 
+import type { TypeRef } from '@mnmal-ai/substrate-filter';
 import type { FieldDef, WhereClause } from '@mnmal-ai/substrate-types';
 import postgres from 'postgres';
 import { afterAll, describe, expect, it } from 'vitest';
 import { columnName, ident, typeTableName } from '../src/layout.js';
-import { buildNested, prepareWindows } from '../src/pg-sql/aggregate.js';
+import { buildNested, buildWalkColumns, prepareWindows } from '../src/pg-sql/aggregate.js';
 import { buildGroupedRead } from '../src/pg-sql/grouped.js';
 import { buildRowProjection } from '../src/pg-sql/projection.js';
-import { buildOrderBy, buildSortKeyProjection } from '../src/pg-sql/sorting.js';
+import {
+  buildOrderBy,
+  buildSortKeyProjection,
+  resolveBodyOrderByCast
+} from '../src/pg-sql/sorting.js';
 import {
   prepareSharedPicks,
   tableLookup,
@@ -57,7 +62,8 @@ const NS = 'ns';
 function typed(
   type: string,
   cols: Array<[string, ColumnKind, TypedColumn['state']?]>,
-  pending: string[] = []
+  pending: string[] = [],
+  namespace = NS
 ): TypeTable {
   const columns: TypedColumn[] = cols.map(([field, kind, state = 'column']) => ({
     field,
@@ -67,9 +73,9 @@ function typed(
   }));
   const byField = new Map(columns.map((c) => [c.field, c]));
   return {
-    namespace: NS,
+    namespace,
     type,
-    from: ident(typeTableName(NS, type)),
+    from: ident(typeTableName(namespace, type)),
     jsonb: 'extra',
     column: (f) => byField.get(f),
     columns: () => columns,
@@ -114,6 +120,8 @@ const FIELDS: Record<string, Record<string, FieldDef>> = {
   Sale: { spec: ref('Spec'), at: { kind: 'scalar', type: 'date' } }
 };
 const fieldDef = (t: string, f: string): FieldDef | undefined => FIELDS[t]?.[f];
+/** {@link fieldDef} as a walk scope asks it, by type in its namespace. */
+const refDef = (t: TypeRef, f: string) => (t.ns === NS ? fieldDef(t.type, f) : undefined);
 const castFor = (f: string) => (f === 'observedAt' ? 'timestamptz' : null);
 const where = (w: unknown, table: TypeTable = OBS) =>
   render(buildWhere(sql, w as WhereClause, castFor, table));
@@ -245,7 +253,7 @@ describe('every column kind and state', () => {
   });
 
   it('a nested list reads each field as jsonb: to_jsonb, a date as UTC ms text, $raw over all, null as absent', () => {
-    const s = walkScope(NS, 'Cert', 'r', fieldDef, tableLookup([CERT, OBS]));
+    const s = walkScope(NS, 'Cert', 'r', refDef, tableLookup([CERT, OBS]));
     const text = render(
       buildNested(
         sql,
@@ -274,7 +282,7 @@ describe('every column kind and state', () => {
 
 describe('a walk reads each type from its own table', () => {
   const tableFor = tableLookup([OBS, CERT]);
-  const scope = (type: string) => walkScope(NS, type, 'r', fieldDef, tableFor);
+  const scope = (type: string) => walkScope(NS, type, 'r', refDef, tableFor);
 
   it('walk hop FROM the far table, joined on near.f_cert', () => {
     const out = render(
@@ -299,7 +307,7 @@ describe('a walk reads each type from its own table', () => {
   });
 
   it('the window key and its seed semi-join are bare crossRef columns', () => {
-    const s = walkScope(NS, 'Cert', 'r', fieldDef, tableLookup([CERT, OBS]));
+    const s = walkScope(NS, 'Cert', 'r', refDef, tableLookup([CERT, OBS]));
     const w = { observedAt: { gte: '2026-10-29T00:00:00Z' } };
     const p = {
       where: { _walk: { in: 'ns/Obs.cert', where: w } },
@@ -307,7 +315,15 @@ describe('a walk reads each type from its own table', () => {
     } as never;
     const base = { clauses: [sql`r.id = ANY('{a,b}')`], ids: true };
     const joins = render(
-      prepareWindows(sql, p, base, castFor, CERT, s, (t, f) => t === 'Obs' && f === 'observedAt')
+      prepareWindows(
+        sql,
+        p,
+        base,
+        castFor,
+        CERT,
+        s,
+        (t, f) => t.type === 'Obs' && f === 'observedAt'
+      )
     );
     const ctes = render(withCtes(sql, s));
     expect(ctes).toContain('SELECT w1.f_cert AS __k');
@@ -316,7 +332,7 @@ describe('a walk reads each type from its own table', () => {
   });
 
   it("a shared pick's hubs are the bare crossRef column, joined bare", () => {
-    const s = walkScope(NS, 'Cert', 'r', fieldDef, tableLookup([CERT, SPEC, SALE]));
+    const s = walkScope(NS, 'Cert', 'r', refDef, tableLookup([CERT, SPEC, SALE]));
     const p = {
       count: true,
       where: {
@@ -331,11 +347,41 @@ describe('a walk reads each type from its own table', () => {
   });
 
   it('tableFor on a type not preloaded throws, naming the type (F19)', () => {
-    expect(() => tableLookup([OBS])('Cert')).toThrow(/'Cert'/);
-    const partial = walkScope(NS, 'Obs', 'r', fieldDef, tableLookup([OBS]));
+    expect(() => tableLookup([OBS])({ ns: NS, type: 'Cert' })).toThrow(/'Cert'/);
+    const partial = walkScope(NS, 'Obs', 'r', refDef, tableLookup([OBS]));
     expect(() =>
       buildWhere(sql, { _walk: { out: 'cert' } } as WhereClause, castFor, OBS, partial)
     ).toThrow(/'Cert'/);
+  });
+
+  it('a single-namespace walk compiles to the SQL it did before walks could cross', () => {
+    const s = walkScope(NS, 'Cert', 'r', refDef, tableLookup([CERT, OBS, SPEC, SALE]));
+    const w = {
+      AND: [
+        { _walk: { in: 'ns/Obs.cert', as: 'o', where: { price: { gt: 1 } } } },
+        { _walk: { in: 'ns/Obs.cert', where: { observedAt: { gt: { $ref: 'o.observedAt' } } } } },
+        {
+          _walk: { out: 'spec', where: { _walk: { in: 'ns/Sale.spec', pick: { latest: 'at' } } } }
+        },
+        { _walk: { in: 'ns/Obs.cert', quantifier: 'none', where: { title: { eq: 'x' } } } },
+        { _agg: { in: 'ns/Obs.cert', count: true }, gte: 3 }
+      ]
+    } as unknown as WhereClause;
+    const text = render(buildWhere(sql, w, castFor, CERT, s));
+    expect(text).toBe(
+      `( (EXISTS (SELECT 1 FROM ${SPEC.from} w3 WHERE w3.deleted_at IS NULL AND w3.id = r.f_spec AND (EXISTS (SELECT 1 FROM ((SELECT w4.* FROM ${SALE.from} w4 WHERE w4.deleted_at IS NULL AND w4.f_spec = w3.id AND w4.f_at = (SELECT max(w4.f_at) FROM ${SALE.from} w4 WHERE w4.deleted_at IS NULL AND w4.f_spec = w3.id) ORDER BY w4.id COLLATE "C" ASC LIMIT 1) UNION ALL (SELECT w4.* FROM ${SALE.from} w4 WHERE w4.deleted_at IS NULL AND w4.f_spec = w3.id AND w4.f_at IS NULL ORDER BY w4.id COLLATE "C" ASC LIMIT 1) LIMIT 1) w4)))) AND (NOT EXISTS (SELECT 1 FROM ${OBS.from} w5 WHERE w5.deleted_at IS NULL AND w5.f_cert = r.id AND (((w5.f_title IS NOT NULL AND w5.f_title = $::text))))) AND EXISTS (SELECT 1 FROM (SELECT (SELECT to_jsonb(count(*)) FROM ${OBS.from} w6 WHERE (w6.deleted_at IS NULL AND w6.f_cert = r.id)) AS v) w7 WHERE ( w7.v IS NOT NULL AND w7.v <> 'null'::jsonb AND (substrate_num(w7.v)::float8 IS NOT NULL AND '3'::float8 IS NOT NULL AND substrate_num(w7.v)::float8 >= '3'::float8))) AND EXISTS (SELECT 1 FROM ${OBS.from} w1 WHERE ( w1.deleted_at IS NULL AND w1.f_cert = r.id AND (((w1.f_price IS NOT NULL AND w1.f_price > $))) AND (EXISTS (SELECT 1 FROM ${OBS.from} w2 WHERE w2.deleted_at IS NULL AND w2.f_cert = r.id AND (((w2.${AT} IS NOT NULL AND w1.${AT} IS NOT NULL AND w2.${AT} > w1.${AT}))))))))`
+    );
+    const nested = render(
+      buildNested(
+        sql,
+        { _walk: { in: 'ns/Obs.cert' }, fields: { title: true, cert: true } } as never,
+        CERT,
+        s
+      )
+    );
+    expect(nested).toBe(
+      `(SELECT COALESCE(jsonb_agg( jsonb_build_object( 'id'::text, CASE WHEN jsonb_typeof(w8.extra -> 'id') IN ('number', 'string') THEN w8.extra -> 'id' ELSE to_jsonb(w8.id) END , $::text, COALESCE(w8.extra -> '$raw' -> 'title', to_jsonb(w8.f_title))) || jsonb_strip_nulls( jsonb_build_object( $::text, COALESCE(w8.extra -> '$raw' -> 'cert', to_jsonb(w8.f_cert)))) ORDER BY  w8.id COLLATE "C" ASC NULLS LAST), '[]'::jsonb) FROM (SELECT w8.* FROM ${OBS.from} w8 WHERE (w8.deleted_at IS NULL AND w8.f_cert = r.id) ORDER BY  w8.id COLLATE "C" ASC NULLS LAST ) w8)`
+    );
   });
 
   it('walkTypes finds the seed and every far type to preload', () => {
@@ -351,9 +397,188 @@ describe('a walk reads each type from its own table', () => {
         }
       },
       { ns: 'ns', type: 'Obs' },
-      fieldDef
+      refDef
     );
-    expect([...types].sort()).toEqual(['Cert', 'Note', 'Obs', 'Sale', 'Tag']);
+    expect(types.map((t) => t.type).sort()).toEqual(['Cert', 'Note', 'Obs', 'Sale', 'Tag']);
+  });
+});
+
+describe('a walk across namespaces reads each far type from its own namespace', () => {
+  const APP = 'app';
+  // `ns/Payment` references `app/Invoice` and its own namespace's same-named `ns/Invoice`.
+  const INVOICE = typed('Invoice', [['number', 'text']], [], APP);
+  const OWN = typed('Invoice', [['number', 'text']]);
+  const PAYMENT = typed('Payment', [
+    ['invoice', 'crossRef'],
+    ['own', 'crossRef'],
+    ['amount', 'number']
+  ]);
+  // `due` lives in `extra`: app declares it a date, ns a number.
+  const DEFS: Record<string, Record<string, Record<string, FieldDef>>> = {
+    [NS]: {
+      Payment: {
+        invoice: { kind: 'crossRef', ns: APP, type: 'Invoice', onDelete: 'set_null' },
+        own: ref('Invoice'),
+        amount: { kind: 'scalar', type: 'number' }
+      },
+      Invoice: { due: { kind: 'scalar', type: 'number' } }
+    },
+    [APP]: { Invoice: { due: { kind: 'scalar', type: 'date' } } }
+  };
+  const def = (r: TypeRef, f: string) => DEFS[r.ns]?.[r.type]?.[f];
+  const tables = tableLookup([PAYMENT, OWN, INVOICE]);
+  const scope = (type: string, ns = NS) => walkScope(ns, type, 'r', def, tables);
+  const rowCast = (r: TypeRef) => (f: string) => resolveBodyOrderByCast(def(r, f));
+  const payment = { ns: NS, type: 'Payment' };
+  const invoice = { ns: APP, type: 'Invoice' };
+  const fromPayment = (w: unknown) =>
+    render(buildWhere(sql, w as WhereClause, rowCast(payment), PAYMENT, scope('Payment')));
+
+  it('the same-named types are two tables, named by layout.ts', () => {
+    expect(INVOICE.from).toBe(ident(typeTableName(APP, 'Invoice')));
+    expect(INVOICE.from).not.toBe(OWN.from);
+    expect(tables(invoice)).toBe(INVOICE);
+    expect(tables({ ns: NS, type: 'Invoice' })).toBe(OWN);
+    expect(() => tables({ ns: 'other', type: 'Invoice' })).toThrow(/'Invoice'.*'other'/);
+  });
+
+  it("an out hop joins the crossRef's namespace's table on its id", () => {
+    const out = fromPayment({ _walk: { out: 'invoice', where: { number: { eq: 'A-1' } } } });
+    expect(out).toContain(
+      `FROM ${INVOICE.from} w1 WHERE w1.deleted_at IS NULL AND w1.id = r.f_invoice AND`
+    );
+    expect(out).not.toContain(OWN.from);
+  });
+
+  it("an in hop reads its written namespace's table by the crossRef", () => {
+    const inbound = render(
+      buildWhere(
+        sql,
+        { _walk: { in: 'ns/Payment.invoice' } } as WhereClause,
+        rowCast(invoice),
+        INVOICE,
+        scope('Invoice', APP)
+      )
+    );
+    expect(inbound).toContain(
+      `FROM ${PAYMENT.from} w1 WHERE w1.deleted_at IS NULL AND w1.f_invoice = r.id)`
+    );
+  });
+
+  it("each far row's fields cast by its own namespace's definitions", () => {
+    const both = fromPayment({
+      AND: [
+        { _walk: { out: 'invoice', where: { due: { gte: '2026-01-01T00:00:00Z' } } } },
+        { _walk: { out: 'own', where: { due: { gte: 5 } } } }
+      ]
+    });
+    expect(both).toContain(`FROM ${INVOICE.from} w1`);
+    expect(both).toContain(`substrate_ts(w1.extra -> 'due')`);
+    expect(both).toContain(`FROM ${OWN.from} w2`);
+    expect(both).toContain(`substrate_num(w2.extra -> 'due')`);
+  });
+
+  it('a walk back into the seed namespace reads the seed namespace again', () => {
+    const back = fromPayment({
+      _walk: {
+        out: 'invoice',
+        where: { _walk: { in: 'ns/Payment.invoice', where: { _walk: { out: 'own' } } } }
+      }
+    });
+    expect(back).toContain(`FROM ${INVOICE.from} w1`);
+    expect(back).toContain(
+      `FROM ${PAYMENT.from} w2 WHERE w2.deleted_at IS NULL AND w2.f_invoice = w1.id`
+    );
+    expect(back).toContain(`FROM ${OWN.from} w3 WHERE w3.deleted_at IS NULL AND w3.id = w2.f_own`);
+  });
+
+  it('a nested list and an _agg read the far table', () => {
+    const nested = render(
+      buildNested(
+        sql,
+        { _walk: { out: 'invoice' }, fields: { number: true, due: true } } as never,
+        PAYMENT,
+        scope('Payment')
+      )
+    );
+    expect(nested).toContain(`FROM ${INVOICE.from} w1 WHERE`);
+    const cols = buildWalkColumns(
+      sql,
+      { paid: { in: 'ns/Payment.invoice', sum: 'amount' } } as never,
+      {},
+      INVOICE,
+      scope('Invoice', APP)
+    );
+    expect(render(cols?.select)).toContain(`FROM ${PAYMENT.from} w1 WHERE`);
+    // A latest pick asks the far type's (crossRef, key) index direction in its own namespace.
+    const s = scope('Invoice', APP);
+    const asked: TypeRef[] = [];
+    s.indexDir = (t) => {
+      asked.push(t);
+      return undefined;
+    };
+    const last = buildWalkColumns(
+      sql,
+      { last: { in: 'ns/Payment.invoice', latest: { by: 'amount', value: 'amount' } } } as never,
+      {},
+      INVOICE,
+      s
+    );
+    expect(render(last?.select)).toContain(`FROM ${PAYMENT.from} w1 WHERE`);
+    expect(asked).toEqual([payment]);
+  });
+
+  it("a window and a shared pick read their far tables, asking each far type's indexes in its namespace", () => {
+    const s = scope('Invoice', APP);
+    const w = { amount: { gte: 10 } };
+    const p = {
+      where: { _walk: { in: 'ns/Payment.invoice', where: w } },
+      agg: { n: { in: 'ns/Payment.invoice', where: w, count: true } }
+    } as never;
+    const asked: TypeRef[] = [];
+    const joins = render(
+      prepareWindows(sql, p, { clauses: [], ids: false }, rowCast(invoice), INVOICE, s, (t, f) => {
+        asked.push(t);
+        return f === 'amount';
+      })
+    );
+    expect(asked).toContainEqual(payment);
+    expect(render(withCtes(sql, s))).toContain(`SELECT w1.f_invoice AS __k`);
+    expect(render(withCtes(sql, s))).toContain(`FROM ${PAYMENT.from} w1 WHERE`);
+    expect(joins).toContain('LEFT JOIN win_w1 ON');
+
+    const hub = scope('Payment');
+    const picks = {
+      count: true,
+      where: {
+        _walk: {
+          out: 'invoice',
+          where: { _walk: { in: 'ns/Payment.invoice', pick: { latest: 'amount' } } }
+        }
+      }
+    } as never;
+    prepareSharedPicks(sql, picks, { clauses: [], ids: false }, rowCast(payment), PAYMENT, hub);
+    const ctes = render(withCtes(sql, hub));
+    expect(ctes).toContain(`JOIN ${INVOICE.from} w`);
+    expect(ctes).toContain(
+      `FROM ${PAYMENT.from} w1 WHERE w1.deleted_at IS NULL AND w1.f_invoice = h.id`
+    );
+  });
+
+  it('walkTypes names each far type with its namespace, same-named ones apart', () => {
+    const types = walkTypes(
+      {
+        where: {
+          _walk: {
+            out: 'invoice',
+            where: { _walk: { in: 'ns/Payment.invoice', where: { _walk: { out: 'own' } } } }
+          }
+        }
+      },
+      payment,
+      def
+    );
+    expect(types).toEqual([payment, invoice, { ns: NS, type: 'Invoice' }]);
   });
 });
 

@@ -8,7 +8,7 @@
  * Pure: nothing connects to a database.
  */
 
-import { encodeCursor } from '@mnmal-ai/substrate-filter';
+import { encodeCursor, type TypeRef } from '@mnmal-ai/substrate-filter';
 import type { FieldDef, ReadParams, WalkAgg, WhereClause } from '@mnmal-ai/substrate-types';
 import postgres from 'postgres';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -168,6 +168,9 @@ const FIELDS: Record<string, Record<string, FieldDef>> = {
 };
 const fieldDef = (t: string, f: string) => FIELDS[t]?.[f];
 const tableFor = (t: string) => bareTypeTable(NS, t);
+/** The scope's lookups, by type in its namespace (every type here is in NS). */
+const refDef = (t: TypeRef, f: string) => fieldDef(t.type, f);
+const refTable = (t: TypeRef) => tableFor(t.type);
 const CERT = tableFor('Cert');
 const castFor = (f: string) => resolveBodyOrderByCast(fieldDef('Cert', f));
 const BASE = sql`r.namespace = 'ns' AND r.type = 'Cert'`;
@@ -177,7 +180,7 @@ const seedBase = (ids = false) => ({ clauses: ids ? [BASE, IDS] : [BASE], ids })
 /** The where (and the CTEs it reads) of a Cert read with `params`, as pg-dataset compiles them. */
 function compileWhere(
   params: ReadParams,
-  s: WalkScope = walkScope(NS, 'Cert', 'r', fieldDef, tableFor)
+  s: WalkScope = walkScope(NS, 'Cert', 'r', refDef, refTable)
 ) {
   const joins = prepareSharedPicks(sql, params, seedBase(), castFor, CERT, s);
   const where = buildWhere(sql, params.where as WhereClause, castFor, CERT, s);
@@ -528,7 +531,7 @@ describe('a frame _agg over its seeds window: one group-by pass', () => {
       ...(limit === undefined ? {} : { limit })
     }) as ReadParams;
   function page(p: ReadParams, ids = false): string {
-    const s = walkScope(NS, 'Cert', 'r', fieldDef, tableFor);
+    const s = walkScope(NS, 'Cert', 'r', refDef, refTable);
     const joins = prepareWindows(
       sql,
       p,
@@ -536,7 +539,7 @@ describe('a frame _agg over its seeds window: one group-by pass', () => {
       castFor,
       CERT,
       s,
-      (t: string, f: string) => t === 'Obs' && f === 'at'
+      (t: TypeRef, f: string) => t.type === 'Obs' && f === 'at'
     );
     const where = buildWhere(sql, p.where as WhereClause, castFor, CERT, s);
     const proj = buildWalkProjection(sql, p.agg, {}, CERT, s);
@@ -582,7 +585,7 @@ describe('a frame _agg over its seeds window: one group-by pass', () => {
   });
 
   it("leaves a shared pick's hub walk out of the window's seed semi-join", () => {
-    const s = walkScope(NS, 'Cert', 'r', fieldDef, tableFor);
+    const s = walkScope(NS, 'Cert', 'r', refDef, refTable);
     const pickHub = {
       _walk: {
         out: 'spec',
@@ -607,7 +610,7 @@ describe('a frame _agg over its seeds window: one group-by pass', () => {
       castFor,
       CERT,
       s,
-      (t: string, f: string) => t === 'Obs' && f === 'at'
+      (t: TypeRef, f: string) => t.type === 'Obs' && f === 'at'
     );
     prepareSharedPicks(sql, p, base, castFor, CERT, s);
     const text = render(withCtes(sql, s));
