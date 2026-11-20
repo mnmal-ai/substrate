@@ -1508,6 +1508,7 @@ export class Engine {
         return entry !== undefined && this.#isStoredEntry(entry);
       },
       walkable: (n) => {
+        // Refuses an unregistered namespace only where the registry has no factory: a factory builds one on `get`.
         const far = bridged(n) ? undefined : this.#datasets.get(n);
         return far !== undefined && seed !== undefined && storeOf(far) === storeOf(seed);
       },

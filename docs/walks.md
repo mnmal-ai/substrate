@@ -231,6 +231,8 @@ Suppose `ext/Payment` has `amount: number` and `invoice: →app/Invoice`, and `a
 } } }
 ```
 
+`inv` is a list, as every nested selection is. An `out` hop reaches at most one row, so a nested `out` selection returns an array of at most one row: empty when `invoice` is null or names a deleted invoice.
+
 Invoices with no payment, and each invoice's total paid, from the `app` side:
 
 ```json
@@ -250,7 +252,7 @@ Invoices with no payment, and each invoice's total paid, from the `app` side:
 
 ### Probe resistance
 
-A hop into a namespace the caller cannot read is refused before anything in it is looked up, with one fixed error: `policy_denied`, message `this walk is not permitted`, no names, and no `details`. Its `path` is the hop node, such as `[..., 'where', '_walk']`. The answer is the same whatever the target is: an existing or missing type or field, a virtual type, a namespace on another store, a bridged namespace, or a namespace that does not exist. "Did you mean" hints list only namespaces the caller can read.
+A hop into a namespace the caller cannot read is refused before anything in it is looked up, with one fixed error: `policy_denied`, message `this walk is not permitted`, no names, and no `details`. Its `path` is the hop node, such as `[..., 'where', '_walk']`. The answer is the same whatever the target is: an existing or missing type or field, a virtual type, a namespace on another store, a bridged namespace, or a namespace that does not exist. A walk error's "did you mean" hint lists only namespaces the caller can read.
 
 ### After the grant
 
