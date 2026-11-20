@@ -30,8 +30,15 @@ describe('onboard example', () => {
     }
     const q = n.steps.find((s) => s.path.endsWith('/query')) as StepResult;
     const rows = (q.response as Rows).data['app/Invoice'];
-    expect(rows.length).toBe(4);
-    expect(rows.map((r) => r.number)).toEqual(['INV-1005', 'INV-1006', 'INV-1007', 'INV-1009']);
+    expect(rows.length).toBe(6);
+    expect(rows.map((r) => r.number)).toEqual([
+      'INV-1002',
+      'INV-1003',
+      'INV-1005',
+      'INV-1006',
+      'INV-1007',
+      'INV-1009'
+    ]);
     const due = rows.map((r) => r.dueAt);
     expect(due).toEqual([...due].sort());
     for (const r of rows) expect(r.billedTo[0]?.name).toBeTruthy();

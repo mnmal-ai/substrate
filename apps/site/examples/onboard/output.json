@@ -140,7 +140,7 @@
             "currency": "EUR",
             "issuedAt": "2026-08-19T00:00:00.000Z",
             "dueAt": "2026-09-18T00:00:00.000Z",
-            "status": "paid",
+            "status": "sent",
             "customer": "0197a000-0000-7000-8000-000000000002"
           },
           "fields": {
@@ -174,7 +174,7 @@
             "currency": "EUR",
             "issuedAt": "2026-09-02T00:00:00.000Z",
             "dueAt": "2026-10-02T00:00:00.000Z",
-            "status": "paid",
+            "status": "sent",
             "customer": "0197a000-0000-7000-8000-000000000003"
           },
           "fields": {
@@ -444,6 +444,30 @@
         "schemaVersion": "9a75ac1bfcbb",
         "data": {
           "app/Invoice": [
+            {
+              "number": "INV-1002",
+              "amount": "84050",
+              "currency": "EUR",
+              "dueAt": "2026-09-18T00:00:00.000Z",
+              "billedTo": [
+                {
+                  "id": "0197a000-0000-7000-8000-000000000002",
+                  "name": "Lumen Works"
+                }
+              ]
+            },
+            {
+              "number": "INV-1003",
+              "amount": "230000",
+              "currency": "EUR",
+              "dueAt": "2026-10-02T00:00:00.000Z",
+              "billedTo": [
+                {
+                  "id": "0197a000-0000-7000-8000-000000000003",
+                  "name": "Tidewater Labs"
+                }
+              ]
+            },
             {
               "number": "INV-1005",
               "amount": "99900",
