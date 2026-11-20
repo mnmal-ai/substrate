@@ -12,7 +12,7 @@ import {
   runSweep
 } from '@mnmal-ai/substrate-core';
 import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-dataset-memory';
-import { defineNamespace, field } from '@mnmal-ai/substrate-sdk';
+import { autoCrudOptionsOf, defineNamespace, field } from '@mnmal-ai/substrate-sdk';
 import type {
   CoordinatorPlugin,
   Dataset,
@@ -24,6 +24,7 @@ import { describe, expect, it } from 'vitest';
 import { CONTROL_NAMESPACE } from '../src/control-plane.js';
 import type { CrossRefSpec, FieldSpecJson } from '../src/field-spec-json.js';
 import { createNoopPubSub, createProposalsPlugin } from '../src/index.js';
+import { crossWalks } from './_cross-walks.js';
 import { referenceLifecycle } from './_refs-lifecycle.js';
 
 const T0 = new Date('2026-11-19T00:00:00Z');
@@ -52,7 +53,7 @@ async function boot(
   if (opts.datasets === undefined) {
     datasets.set('ext', ext);
     for (const ns of [CONTROL_NAMESPACE, 'app']) {
-      datasets.set(ns, new MemoryDataset({ namespace: ns, walkReference: true }));
+      datasets.set(ns, ext.forNamespace(ns));
     }
   }
   const datasetFor = (ns: string): Dataset | undefined => datasets.get(ns);
@@ -77,7 +78,12 @@ async function boot(
   const virt = new Registry();
   virt.register('Hit', { resolver: async () => [] });
   const namespaces = new Map([...loaded.namespaces, ['virt', { registry: virt }]]);
-  const engine = new Engine({ namespaces, datasets, edges });
+  const engine = new Engine({
+    namespaces,
+    datasets,
+    edges,
+    isStoredEntry: (entry) => autoCrudOptionsOf(entry.resolver) !== undefined
+  });
   await loaded.runOnStart(engine);
   return Object.assign(engine, { datasets, edges });
 }
@@ -619,6 +625,30 @@ describe('a read across the reference', () => {
       expect(env.errors?.[0]?.message, key).toBe('this walk is not permitted');
       expect(env.data[key], key).toBeUndefined();
     }
+  });
+});
+
+describe('a walk across the reference', () => {
+  it('answers a caller who can read both namespaces and denies one who cannot', async () => {
+    // The memory store reads each walked field's definition from the engine's registries.
+    let engine: Engine | undefined;
+    const lookupFor = (ns: string) => (type: string, f: string) =>
+      engine?.registryFor(ns)?.get(type)?.fields[f];
+    const ext = new MemoryDataset({
+      namespace: 'ext',
+      walkReference: true,
+      fieldDefLookup: lookupFor('ext'),
+      fieldDefLookupFor: lookupFor
+    });
+    engine = await boot(ext);
+    await crossWalks(
+      engine,
+      'ext',
+      'app',
+      PROPOSER,
+      as({ ext: ['read'], app: ['read'] }),
+      as({ ext: ['read'] })
+    );
   });
 });
 

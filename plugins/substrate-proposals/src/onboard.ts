@@ -180,7 +180,7 @@ export function buildOnboardBody(ownedNamespaces: ReadonlyArray<string>): Onboar
             'or, in another namespace you can read, a type in an ownedNamespaces namespace or any stored ' +
             'type (code-defined included). onDelete defaults to ' +
             '"set_null"; on a target the plugin does not own it is set_null, cascade or orphan, never restrict. ' +
-            'Virtual types (such as recall/Hit) are refused. Walks across namespaces are not supported. ' +
+            'Virtual types (such as recall/Hit) are refused. A walk may cross it when the caller can read both namespaces. ' +
             'For N:M, propose a join type with two crossRef fields — v2 does not model N:M natively.'
         },
         struct: {
