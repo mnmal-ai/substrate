@@ -19,16 +19,9 @@ export interface WalkHop {
   node: Record<string, unknown>;
   /** The node's path inside the frame entry, e.g. `['where', 'AND', '0', '_walk']`. */
   path: string[];
-  /** The namespace an `in` hop writes (`<ns>/<Type>.<field>`); absent on an `out` hop. */
-  ns?: string;
   /** A nested hop's selection (`{ _walk, where?, orderBy?, fields }`) and its path. */
   selection?: { sel: Record<string, unknown>; path: string[] };
 }
-
-const inNs = (node: Record<string, unknown>): { ns?: string } => {
-  const ns = typeof node.in === 'string' ? /^([^/]+)\//.exec(node.in)?.[1] : undefined;
-  return ns === undefined ? {} : { ns };
-};
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -58,10 +51,7 @@ export function forEachWalkHop(
     for (const [k, child] of Object.entries(v)) {
       const at = [...path, k];
       if ((k === '_walk' || k === '_agg') && isObj(child)) {
-        const far = visit(
-          { kind: k === '_walk' ? 'walk' : 'agg', node: child, path: at, ...inNs(child) },
-          type
-        );
+        const far = visit({ kind: k === '_walk' ? 'walk' : 'agg', node: child, path: at }, type);
         if (far !== undefined) {
           inWhere(child.among, far, [...at, 'among']);
           inWhere(child.where, far, [...at, 'where']);
@@ -77,14 +67,14 @@ export function forEachWalkHop(
       if (name === '_agg' && isObj(sel)) {
         for (const [n, agg] of Object.entries(sel)) {
           if (!isObj(agg)) continue;
-          const far = visit({ kind: 'agg', node: agg, path: [...at, n], ...inNs(agg) }, type);
+          const far = visit({ kind: 'agg', node: agg, path: [...at, n] }, type);
           if (far !== undefined) inWhere(agg.where, far, [...at, n, 'where']);
         }
       } else if (isObj(sel) && Object.hasOwn(sel, '_walk') && isObj(sel._walk)) {
         const walk = sel._walk;
         const wp = [...at, '_walk'];
         const far = visit(
-          { kind: 'nested', node: walk, path: wp, ...inNs(walk), selection: { sel, path: at } },
+          { kind: 'nested', node: walk, path: wp, selection: { sel, path: at } },
           type
         );
         if (far === undefined) continue;

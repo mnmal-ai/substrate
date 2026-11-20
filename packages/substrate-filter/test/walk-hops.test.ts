@@ -45,19 +45,6 @@ describe('forEachWalkHop', () => {
     expect(seen).not.toContain('fields.list.fields.inner._walk');
   });
 
-  it('gives an in hop its written namespace', () => {
-    let ns: string | undefined;
-    forEachWalkHop(
-      { params: { where: { _walk: { in: 'app/Invoice.customer' } } } },
-      { ns: 'ext', type: 'Payment' },
-      (hop) => {
-        ns = hop.ns;
-        return undefined;
-      }
-    );
-    expect(ns).toBe('app');
-  });
-
   it('passes the visitor result as the next near side', () => {
     const next = { ns: 'app', type: 'Invoice' };
     const nears: unknown[] = [];
