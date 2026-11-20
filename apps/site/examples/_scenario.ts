@@ -2,10 +2,12 @@ import type { Step } from './_harness.ts';
 
 export { app } from './onboard/namespace.ts';
 
+// Fixed ids are numbered as `normalise` numbers ids by first appearance, customers 1 to 3 and
+// invoices 4 to 11, so the page shows each one as it is sent and a copied frame runs as shown.
 const customers = [
-  ['0197a100-0000-7000-8000-000000000001', 'Harbor & Pine', 'billing@harborpine.example', 'EMEA'],
-  ['0197a100-0000-7000-8000-000000000002', 'Lumen Works', 'ap@lumenworks.example', 'NA'],
-  ['0197a100-0000-7000-8000-000000000003', 'Tidewater Labs', 'finance@tidewater.example', 'APAC']
+  ['0197a000-0000-7000-8000-000000000001', 'Harbor & Pine', 'billing@harborpine.example', 'EMEA'],
+  ['0197a000-0000-7000-8000-000000000002', 'Lumen Works', 'ap@lumenworks.example', 'NA'],
+  ['0197a000-0000-7000-8000-000000000003', 'Tidewater Labs', 'finance@tidewater.example', 'APAC']
 ] as const;
 
 // [number, customer index, amount in cents, issued, due, status]
@@ -21,6 +23,7 @@ const invoices = [
 ] as const;
 
 const iso = (d: string) => `${d}T00:00:00.000Z`;
+const invoiceId = (i: number) => `0197a000-0000-7000-8000-${String(i + 4).padStart(12, '0')}`;
 
 export const seedSteps: Step[] = [
   ...customers.map(
@@ -32,14 +35,14 @@ export const seedSteps: Step[] = [
     })
   ),
   ...invoices.map(
-    ([number, c, amount, issued, due, status]): Step => ({
+    ([number, c, amount, issued, due, status], i): Step => ({
       label: `Create invoice ${number}`,
       method: 'POST',
       path: '/substrate/v1/mutate',
       body: {
         'app/createInvoice': {
           params: {
-            id: `0197a200-0000-7000-8000-00000000${number.slice(4)}`,
+            id: invoiceId(i),
             number,
             amount,
             currency: 'EUR',

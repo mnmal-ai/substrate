@@ -20,7 +20,7 @@ export const steps: Step[] = [
           issuedAt: '2026-11-09T00:00:00.000Z',
           dueAt: '2026-12-09T00:00:00.000Z',
           status: 'sent',
-          customer: '0197a100-0000-7000-8000-000000000003'
+          customer: '0197a000-0000-7000-8000-000000000003'
         },
         fields: { id: true, number: true, status: true }
       }

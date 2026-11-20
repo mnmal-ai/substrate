@@ -2,8 +2,9 @@ import type { Step } from '../_harness.ts';
 import { seedSteps } from '../_scenario.ts';
 
 // A seeded invoice that is still `sent`.
-const INVOICE = '0197a200-0000-7000-8000-000000001002';
-const PAYMENT = '0197a300-0000-7000-8000-000000000001';
+const INVOICE = '0197a000-0000-7000-8000-000000000005';
+// 13: the proposal record the server creates first takes 12, so the page shows this as sent.
+const PAYMENT = '0197a000-0000-7000-8000-000000000013';
 
 export const steps: Step[] = [
   ...seedSteps,

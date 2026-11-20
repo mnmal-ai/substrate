@@ -3,17 +3,17 @@ import { seedSteps } from '../_scenario.ts';
 
 const notes = [
   [
-    '0197a100-0000-7000-8000-000000000001',
+    '0197a000-0000-7000-8000-000000000001',
     'Harbor & Pine',
     'Pallet arrived nine days after the promised date and they have asked for a credit.'
   ],
   [
-    '0197a100-0000-7000-8000-000000000002',
+    '0197a000-0000-7000-8000-000000000002',
     'Lumen Works',
     'Happy with the new packaging. Asked about volume pricing for next spring.'
   ],
   [
-    '0197a100-0000-7000-8000-000000000003',
+    '0197a000-0000-7000-8000-000000000003',
     'Tidewater Labs',
     'Second shipment in a row came late and nobody told them. Considering another supplier.'
   ]

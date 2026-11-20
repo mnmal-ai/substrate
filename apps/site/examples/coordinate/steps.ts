@@ -1,8 +1,9 @@
 import type { Step } from '../_harness.ts';
 import { seedSteps } from '../_scenario.ts';
 
-const INV_1002 = '0197a200-0000-7000-8000-000000001002';
-const TASK = '0197a300-0000-7000-8000-000000000001';
+const INV_1002 = '0197a000-0000-7000-8000-000000000005';
+// The first id after the seed's eleven, so the page shows it as sent.
+const TASK = '0197a000-0000-7000-8000-000000000012';
 
 export const steps: Step[] = [
   {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { StepResult } from '../examples/_harness.ts';
+import type { Step, StepResult } from '../examples/_harness.ts';
 import { seedSteps } from '../examples/_scenario.ts';
 import { loadExample } from '../src/lib/examples.ts';
 import { pageSteps, pretty, threeWays } from '../src/lib/steps.ts';
@@ -58,6 +58,26 @@ describe('pageSteps', () => {
     const t = transcript('self-tending');
     const labels = pageSteps(t, seed).map((s) => (s.kind === 'seed' ? '' : s.step.label));
     expect(labels).toEqual(t.steps.map((s: StepResult) => s.label));
+  });
+});
+
+describe('committed transcripts', () => {
+  const stepFiles = import.meta.glob<Step[]>('../examples/*/steps.ts', {
+    import: 'steps',
+    eager: true
+  });
+  // Fixed ids are chosen so normalising leaves them as they are: a frame copied from the page runs.
+  it('show every request exactly as its steps send it', () => {
+    const names: string[] = [];
+    for (const [path, steps] of Object.entries(stepFiles)) {
+      const name = path.split('/')[2] ?? '';
+      // recall's only transcript is a live run's, written at deploy and never committed.
+      if (name === 'recall') continue;
+      names.push(name);
+      const shown = transcript(name).steps.map((s) => s.body);
+      expect(shown, name).toEqual(steps.map((s) => s.body));
+    }
+    expect(names).toHaveLength(6);
   });
 });
 
