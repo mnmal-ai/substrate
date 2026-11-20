@@ -1,20 +1,104 @@
 # substrate
 
-An agent-first typed data substrate. Plugins declare namespaces and types; Substrate gives every type query, mutate and subscribe operations without handler code, and serves them over HTTP and MCP, with live updates as streamed frames.
+Your data, your agents' memory, and the work between them, in one typed server on your own Postgres. You declare namespaces and types; substrate gives every type query, mutate and subscribe operations with no handler code, over HTTP and MCP. Agents write and query, propose new types, ask in plain English, search by meaning and hand each other work, all in the same frames. Anything can subscribe to what changes.
 
-Every operation names its target with a qualified frame key, `<namespace>/<Type>` for queries and `<namespace>/<mutation>` for mutations:
+## What it replaces
+
+The usual stack is a database, an API in front of it, a vector store beside it, a memory service for your agents, and the glue that lets them hand each other work. Substrate does each job from one process, in one frame grammar.
+
+| Job | Usually | On substrate |
+|---|---|---|
+| Database | Postgres | Your own PostgreSQL 18 with pgvector. Substrate keeps a table per declared type. |
+| API layer | PostgREST, Hasura | Every declared type can be queried, mutated and subscribed to over HTTP and MCP, with no handler code. Policies decide who may do what. |
+| Vector store | a separate vector database | Rows of a type that declares it are embedded on write into pgvector, in the same Postgres. Recall fuses dense and keyword ranking. |
+| Agent memory | Mem0, Zep | Memory is more types: rows your agents write, query and recall by meaning, in the same store as the data they're about. |
+| Coordination | queues and glue code | Each agent signs with its own key, subscribes to the rows it cares about, and every row records which key wrote it. |
+
+It is not a drop-in for any of them. Substrate serves the types you declare, not an existing schema, and recall ranks what your agents wrote rather than having a model extract memories from their conversations.
+
+## What's different
+
+- **One grammar on three surfaces.** A frame names its target as `<namespace>/<Type>` or `<namespace>/<mutation>`, and the same frames work over HTTP (`/substrate/v1/query`, `/substrate/v1/mutate`), the `substrate mcp` stdio server, and frame streams (`POST /substrate/v1/subscribe` and `/substrate/v1/stream`, JSON or MessagePack). A fresh agent learns the grammar and every loaded plugin's surface from `GET /substrate/v1/onboard`. [Surface parity](docs/surface-parity.md) lists where the surfaces differ.
+- **Schema your agent can change at runtime.** With the built-in [proposals plugin](plugins/substrate-proposals/README.md), an agent holding the `substrate.propose` capability adds namespaces, types and fields to the running server, with no code deploy, and uses them straight away. Each change is stored as a proposal record, so it is audited and replayed on boot.
+- **Questions in English, and the model never writes a query.** In the [`@mnmal-ai/substrate-nl`](plugins/substrate-nl/README.md) plugin, a deterministic parser reads the question against the live schema, and an optional, constrained judge handles only the ambiguous remainder.
+
+## Quick start
+
+Two ways to a running server. Until 1.0.0, releases publish on npm's `next` tag; `latest` holds a 0.0.0 placeholder.
+
+### Docker
+
+`docker compose up` builds the server from source with the in-tree plugins, which takes a few minutes the first time, and starts it beside a pgvector Postgres. No image is published.
 
 ```bash
-curl --http2-prior-knowledge -s -X POST http://localhost:3100/substrate/v1/query \
-  -H 'content-type: application/json' \
-  -d '{"notes/Note":{"params":{"where":{"title":{"eq":"hello"}},"limit":5},"fields":{"id":true,"body":true}}}'
+git clone https://github.com/mnmal-ai/substrate.git && cd substrate
+docker compose up -d
+curl --http2-prior-knowledge http://localhost:3100/health
+curl --http2-prior-knowledge http://localhost:3100/substrate/v1/onboard
 ```
 
-- **Typed, declared once.** A plugin defines its types with `defineNamespace` and a field DSL; autoCRUD derives `create`/`update`/`delete` mutations and list queries, with declarative policies deciding who may do what.
-- **One grammar on three surfaces.** The same frames work over HTTP (`/substrate/v1/query`, `/substrate/v1/mutate`), the `substrate mcp` stdio server, and frame streams (`POST /substrate/v1/subscribe` and `/substrate/v1/stream`, JSON or MessagePack). Live subscriptions are frame streams.
-- **Self-describing.** `GET /substrate/v1/onboard` returns the frame grammar, per-operation instructions and every loaded plugin's surface, so a fresh agent can compose valid frames from one request.
-- **Semantic recall.** The built-in `substrate-recall` plugin embeds declared types into pgvector and fuses dense and keyword ranking.
-- **Schema at runtime.** With the built-in `substrate-proposals` plugin, an authorised agent can add namespaces, types and fields to a running server, additively and with an audit trail.
+Add `-f docker-compose.yml -f docker-compose.embed.yml` for dense recall through a local Ollama.
+
+### npm
+
+Needs Node `>=26.13.1` and pnpm. `substrate init` scaffolds a runtime directory: the binary (with recall and proposals built in) and any optional plugins in one `node_modules`, and a `.env`. This one uses the memory store, which needs no database and keeps nothing across a restart:
+
+```bash
+npx @mnmal-ai/substrate@next init ~/my-substrate --yes --store=memory --plugins= --port=3100
+cd ~/my-substrate
+pnpm install
+set -a && source .env && set +a
+./node_modules/.bin/substrate serve
+```
+
+A durable store needs PostgreSQL 18 or newer with [pgvector](https://github.com/pgvector/pgvector); leave out `--store=memory` and `init` writes a compose file for one. [Getting started](docs/getting-started.md) covers Postgres, the embedder and connecting an MCP client, and [Operator decisions](docs/operator-decisions.md) lists every choice a deployment makes and what each costs. An existing store on the old `legacy` or `partitioned` layout must be copied with `substrate-admin migrate-store` before this release boots it; see [Upgrading to per-type tables](docs/upgrading-to-type-tables.md).
+
+## Example: an invoicing app
+
+Two types, declared once. This is the site's onboard example, and substrate's CI runs it against the engine and checks its output:
+
+```ts
+import { defineNamespace, field } from '@mnmal-ai/substrate/sdk';
+
+export const app = defineNamespace('app', {
+  Customer: {
+    fields: {
+      name: field.string(),
+      email: field.string(),
+      region: field.string()
+    }
+  },
+  Invoice: {
+    fields: {
+      number: field.string(),
+      amount: field.int64(),
+      currency: field.string(),
+      issuedAt: field.date(),
+      dueAt: field.date(),
+      status: field.enum(['draft', 'sent', 'paid', 'void']),
+      customer: field.crossRef('app', 'Customer')
+    }
+  }
+});
+```
+
+Composed into a server, both types can be written, read and subscribed to with no handler code: `app/createInvoice`, `app/updateInvoice` and the rest are generated. This frame, from that run, reads the sent invoices by due date. The run sent it to `POST /substrate/v1/query`; the MCP `query` tool takes the same object as its `payload`, and `POST /substrate/v1/subscribe` takes it unchanged for a snapshot followed by every change.
+
+```json
+{
+  "app/Invoice": {
+    "params": {
+      "where": { "status": { "eq": "sent" } },
+      "orderBy": [{ "dueAt": "asc" }]
+    },
+    "fields": { "number": true, "dueAt": true }
+  }
+}
+```
+
+The run answered with six invoices, each with only its `number` and `dueAt`.
+
+The other worked examples, from agents handing each other work to warehouse queries, recall and the index advisor, are on the site, each with the code and the output its CI run produced: **[mnmal-ai.github.io/substrate](https://mnmal-ai.github.io/substrate/)**.
 
 ## Stability
 
@@ -26,51 +110,6 @@ Substrate is in beta (`1.0.0-beta.N`, published to npm's `next` tag). From 1.0.0
 
 Upgrading from an alpha: [Upgrading to 1.0.0-beta.1](docs/upgrading-to-beta.md).
 
-## Install and run
-
-Substrate needs Node `>=26.13.1`. A durable deployment needs PostgreSQL 18 or newer with the [pgvector](https://github.com/pgvector/pgvector) extension; an in-memory store is available for trying it out. An existing store on the old `legacy` or `partitioned` layout must be copied with `substrate-admin migrate-store` before this release boots it; see [Upgrading to per-type tables](docs/upgrading-to-type-tables.md). [Operator decisions](docs/operator-decisions.md) lists every choice a deployment makes and what each costs.
-
-### Docker
-
-The quickest way to a running server. `docker compose up` builds the server with the in-tree plugins and starts it next to a pgvector Postgres:
-
-```bash
-docker compose up -d
-curl --http2-prior-knowledge http://localhost:3100/health
-curl --http2-prior-knowledge http://localhost:3100/substrate/v1/onboard
-```
-
-Add `-f docker-compose.yml -f docker-compose.embed.yml` for dense recall through a local Ollama. [`docs/getting-started.md`](docs/getting-started.md) goes on from there.
-
-### npm runtime
-
-`substrate init` scaffolds a runtime directory: the binary (with recall and proposals built in) and any optional plugins in one `node_modules`, a `.env`, and (for Postgres) a compose file.
-
-Until 1.0.0, releases publish on npm's `next` tag, so install with `@next`. `latest` holds a 0.0.0 placeholder.
-
-```bash
-npx @mnmal-ai/substrate@next init ~/my-substrate --yes --store=memory --plugins=
-cd ~/my-substrate
-pnpm install
-set -a && source .env && set +a
-./node_modules/.bin/substrate serve
-```
-
-[`docs/getting-started.md`](docs/getting-started.md) walks through this, including Postgres, the embedder and connecting an MCP client.
-
-### From source
-
-```bash
-pnpm install
-pnpm build
-docker compose up -d postgres   # pgvector/pgvector:pg18 on localhost:5432 (user/password: substrate)
-SUBSTRATE_DATABASE_URL=postgres://substrate:substrate@localhost:5432/substrate \
-SUBSTRATE_SYSTEM_ACTOR=local-dev \
-  pnpm --filter @mnmal-ai/substrate dev
-```
-
-With `SUBSTRATE_PLUGIN_DIR` unset the server loads no plugins and serves only `/health` and the `_system` admin namespace.
-
 ## Documentation
 
 - [Getting started](docs/getting-started.md): from nothing to a running server with a plugin loaded
@@ -80,7 +119,7 @@ With `SUBSTRATE_PLUGIN_DIR` unset the server loads no plugins and serves only `/
 - [Upgrading to 1.0.0-beta.1](docs/upgrading-to-beta.md): the breaking changes in the first beta, how to tell if you are affected, and what to do
 - [Upgrading to per-type tables](docs/upgrading-to-type-tables.md): what changes, and the upgrade procedure for an existing store
 - [Upgrading to the warehouse grammar](docs/upgrading-to-warehouse-grammar.md): `bucket` and `derive` become `groupBy` and `select`, plus the new expression params
-- [Edge walks](docs/walks.md): the walk grammar reference: `_walk`, `pick` and `among`, `as` and `$ref`, `_agg`, nested selections, frame aggregates, limits and refusal codes
+- [Edge walks](docs/walks.md): the walk grammar: `_walk`, `pick` and `among`, `as` and `$ref`, `_agg`, nested selections, frame aggregates, limits and refusal codes
 - [Surface parity](docs/surface-parity.md): what HTTP, MCP and frame streams each offer, and where their shapes differ (edge walks are query-only; subscriptions refuse them)
 - [Frame stream contract](docs/stream-contract.md): the stream wire format, how subscriptions end and what a client should do
 - [Design spec](docs/substrate-from-first-principles.md): the design source of truth
@@ -93,6 +132,7 @@ Four packages publish to npm: `@mnmal-ai/substrate` (the binary and the librarie
 ```
 apps/
   substrate/                  @mnmal-ai/substrate: the binary (serve, mcp, init, ask, …; substrate-admin) and the public subpaths
+  site/                       the landing page and its worked examples, which run in CI (private, not published)
   substrate-image/            the Docker image: the binary, substrate-nl and substrate-sentinel as one runtime
   substrate-tui/              @mnmal-ai/substrate-tui: terminal UI: natural-language ask, schema browser, status
 packages/                     internal, bundled into @mnmal-ai/substrate
@@ -125,8 +165,21 @@ plugins/
 TypeScript (strict, `exactOptionalPropertyTypes`), pnpm workspaces with Turborepo, Biome for lint and format, Vitest for tests.
 
 ```bash
+pnpm install
 pnpm check-types && pnpm lint && pnpm test
 ```
+
+To run the server from source:
+
+```bash
+pnpm build
+docker compose up -d postgres   # pgvector/pgvector:pg18 on localhost:5432 (user/password: substrate)
+SUBSTRATE_DATABASE_URL=postgres://substrate:substrate@localhost:5432/substrate \
+SUBSTRATE_SYSTEM_ACTOR=local-dev \
+  pnpm --filter @mnmal-ai/substrate dev
+```
+
+With `SUBSTRATE_PLUGIN_DIR` unset the server loads no plugins and serves only `/health` and the `_system` admin namespace.
 
 Postgres-backed suites skip unless `POSTGRES_URL` is set; [`packages/substrate-dataset-pg`](packages/substrate-dataset-pg/README.md#running-tests) explains the guards they run and how to set up a test database.
 
