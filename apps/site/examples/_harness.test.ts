@@ -221,6 +221,10 @@ describe('runExample', () => {
       .filter((s) => s.path.endsWith('/subscribe'))
       .map((s) => s.response as Frame);
     expect(a.steps.map((s) => s.status)).toEqual([200, 200, 200, 200, 200, 200, 200]);
+    expect(a.steps[0]?.stream).toBe('customers');
+    expect(a.steps[2]?.receive).toBe('customers');
+    expect(a.steps[1]).not.toHaveProperty('stream');
+    expect(a.steps[1]).not.toHaveProperty('receive');
     expect(frames.map((f) => [f.kind, f.data?.['app/Customer']?.name])).toEqual([
       ['snapshot', undefined],
       ['add', 'Ada'],

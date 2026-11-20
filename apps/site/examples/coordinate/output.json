@@ -24,6 +24,7 @@
       },
       "as": "collections-agent",
       "feed": false,
+      "stream": "open-tasks",
       "status": 200,
       "response": {
         "id": "frames-subscribe",
@@ -452,6 +453,7 @@
       "path": "/substrate/v1/subscribe",
       "as": "collections-agent",
       "feed": false,
+      "receive": "open-tasks",
       "status": 200,
       "response": {
         "id": "frames-subscribe",

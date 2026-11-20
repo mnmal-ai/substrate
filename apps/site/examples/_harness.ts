@@ -38,6 +38,8 @@ export interface StepResult {
   body?: unknown;
   as?: string;
   feed: boolean;
+  stream?: string;
+  receive?: string;
   status: number;
   response: unknown;
 }
@@ -182,7 +184,9 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
         path: step.path,
         ...(step.body === undefined ? {} : { body: step.body }),
         ...(step.as === undefined ? {} : { as: step.as }),
-        feed: step.feed ?? false
+        feed: step.feed ?? false,
+        ...(step.stream === undefined ? {} : { stream: step.stream }),
+        ...(step.receive === undefined ? {} : { receive: step.receive })
       };
       if (step.receive !== undefined) {
         const frames = streams.get(step.receive);
