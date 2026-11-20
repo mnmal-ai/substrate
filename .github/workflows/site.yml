@@ -1,7 +1,10 @@
 name: Site
 
-# Manual until launch; the push trigger lands with the launch task.
+# Deploys when the site changes on main, and on demand.
 on:
+  push:
+    branches: [main]
+    paths: ['apps/site/**']
   workflow_dispatch:
 
 # Each job asks for its own: the build runs install scripts with the font secrets and gets
