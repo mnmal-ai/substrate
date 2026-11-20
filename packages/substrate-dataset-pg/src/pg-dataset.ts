@@ -74,6 +74,7 @@ import {
   naturalOrderOf,
   ResolverFrameError,
   STORE_BUSY,
+  UnsupportedFilterError,
   VALUE_OUT_OF_RANGE
 } from '@mnmal-ai/substrate-types';
 import type { PendingQuery, Row as PgRow, ReservedSql, Sql, TransactionSql } from 'postgres';
@@ -754,6 +755,16 @@ export class PgDataset implements Dataset {
     const fieldDef = (t: TypeRef, f: string) =>
       t.ns === this.namespace ? lookup?.(t.type, f) : this.#fieldDefLookupFor?.(t.ns)(t.type, f);
     const types = walks ? walkTypes(params, seed, fieldDef) : [seed];
+    // Without far definitions a crossing walk would cast far fields blind: refuse it.
+    const away =
+      this.#fieldDefLookupFor === null ? types.find((t) => t.ns !== this.namespace) : undefined;
+    if (away !== undefined) {
+      throw new UnsupportedFilterError(
+        `${away.ns}/${away.type}`,
+        '_walk',
+        `crosses into namespace '${away.ns}', and this dataset has no fieldDefLookupFor to type its fields`
+      );
+    }
     const loaded = await Promise.all(types.map((t) => this.#tableFor(t.type, t.ns, true)));
     const tableFor = tableLookup(types.map((t, i) => loaded[i] ?? absentTypeTable(t.ns, t.type)));
     const table = tableFor(seed);
