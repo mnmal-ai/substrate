@@ -1,6 +1,6 @@
 # substrate
 
-Your data, your agents' memory, and the work between them, in one typed server on your own Postgres. You declare namespaces and types; substrate gives every type query, mutate and subscribe operations with no handler code, over HTTP and MCP. Agents write and query, propose new types, ask in plain English, search by meaning and hand each other work, all in the same frames. Anything can subscribe to what changes.
+Your data, your agents' memory, and the work between them, in one typed server on your own Postgres. You declare namespaces and types; substrate gives every type query and mutate operations over HTTP and MCP, and subscriptions over frame streams, with no handler code. Agents write and query, propose new types, ask in plain English, search by meaning and hand each other work, all in the same frames. Anything can subscribe to what changes.
 
 ## What it replaces
 
@@ -9,7 +9,7 @@ The usual stack is a database, an API in front of it, a vector store beside it, 
 | Job | Usually | On substrate |
 |---|---|---|
 | Database | Postgres | Your own PostgreSQL 18 with pgvector. Substrate keeps a table per declared type. |
-| API layer | PostgREST, Hasura | Every declared type can be queried, mutated and subscribed to over HTTP and MCP, with no handler code. Policies decide who may do what. |
+| API layer | PostgREST, Hasura | Every declared type can be queried and mutated over HTTP and MCP, and subscribed to over frame streams, with no handler code. Policies decide who may do what. |
 | Vector store | a separate vector database | Rows of a type that declares it are embedded on write into pgvector, in the same Postgres. Recall fuses dense and keyword ranking. |
 | Agent memory | Mem0, Zep | Memory is more types: rows your agents write, query and recall by meaning, in the same store as the data they're about. |
 | Coordination | queues and glue code | Each agent signs with its own key, subscribes to the rows it cares about, and every row records which key wrote it. |

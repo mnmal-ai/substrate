@@ -88,7 +88,9 @@ const panes =
               On the running server an agent calls <code>propose_type</code> for{' '}
               <code>billing/Payment</code>, referencing the code-defined <code>app/Invoice</code>, then
               writes and reads it straight away, walking back to the invoice. Each proposal is kept
-              as a record that names the key that signed it.
+              as a record that names the key that signed it. This run is on Postgres: a server on
+              the memory store keeps one store per namespace, so it refuses this walk from{' '}
+              <code>billing</code> into <code>app</code>.
             </p>
             <Example name="reshape" show={[]} />
           </div>

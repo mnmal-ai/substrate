@@ -12,6 +12,9 @@ const sum = clickbench && summarise(clickbench);
 const ratios = (clickbench?.passes ?? []).map((p) => p.sumRatio);
 const [lo, hi] = [Math.min(...ratios), Math.max(...ratios)];
 const vacuous = clickbench?.queries.filter((q) => q.expressible && !q.compared).length ?? 0;
+// The headline leads with how many were compared, never a bare count of all 43.
+const total = clickbench?.queries.length ?? 0;
+const matching = sum?.matched === sum?.compared ? 'all matching' : `${sum?.matched} matching`;
 
 // Quote the run's own computed month key.
 type Value = { groups?: { month?: string }[] };
@@ -49,7 +52,7 @@ const month = values.find((v) => v.groups !== undefined)?.groups?.[0]?.month;
       <div class="bench" data-reveal>
         <p class="label kicker">// ClickBench, as frames</p>
         <p class="headline">
-          {`${sum.expressible}/${clickbench.queries.length} expressible · ${sum.matched} of ${sum.compared} compared match · ${sum.sumRatio}× hand-written SQL overall (${lo.toFixed(2)}–${hi.toFixed(2)}× across ${clickbench.runs} passes), worst ${sum.worstRatio}×`}
+          {`${sum.compared}/${total} compared, ${matching} · ${sum.expressible}/${total} expressible as frames · ${sum.sumRatio}× hand-written SQL overall (${lo.toFixed(2)}–${hi.toFixed(2)}× across ${clickbench.runs} passes), worst ${sum.worstRatio}×`}
         </p>
         <p class="label kicker">{`${clickbench.sha} · ${clickbench.version} · ${clickbench.date} · ${clickbench.machine} · ${clickbench.runs} runs`}</p>
         <p class="note">

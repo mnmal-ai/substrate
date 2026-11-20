@@ -84,6 +84,44 @@ describe('built output', () => {
     expect(ruled(/^(html|body)$/, /overflow(-x)?:\s*(hidden|clip)/), 'page clips').toBe(false);
   });
 
+  it('gives every code token at least 4.5:1 contrast on both code backgrounds', () => {
+    // WCAG relative luminance of #rrggbb, with #rrggbbaa composited over the background.
+    const channels = (hex: string) =>
+      [1, 3, 5, 7].map((i) => Number.parseInt(hex.slice(i, i + 2) || 'ff', 16) / 255);
+    const luminance = (rgb: number[]) =>
+      rgb
+        .map((c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4))
+        .reduce((sum, c, i) => sum + c * ([0.2126, 0.7152, 0.0722][i] ?? 0), 0);
+    const contrast = (fg: string, bg: string) => {
+      const [f, b] = [channels(fg), channels(bg)];
+      const alpha = f[3] ?? 1;
+      const over = [0, 1, 2].map((i) => alpha * (f[i] ?? 0) + (1 - alpha) * (b[i] ?? 0));
+      const [hi, lo] = [luminance(over), luminance(b)].sort((x, y) => y - x);
+      return ((hi ?? 0) + 0.05) / ((lo ?? 0) + 0.05);
+    };
+    const token = (name: string) =>
+      new RegExp(`--${name}:\\s*(#[0-9a-f]{6})`, 'i').exec(styleText)?.[1] as string;
+    // A colour a `pre.astro-code span[style*='#…' i]` rule repaints with the muted token.
+    const repainted = rules
+      .filter((r) => /color:\s*var\(--muted\)\s*!important/.test(r.body))
+      .flatMap((r) => r.selectors)
+      .flatMap((sel) => /^pre\.astro-code span\[style\*=["'](#[0-9a-f]+)["'] i\]$/i.exec(sel) ?? [])
+      .filter((m) => m.startsWith('#'))
+      .map((m) => m.toLowerCase());
+    const colours = new Set(
+      [...html.matchAll(/<span style="color:(#[0-9a-f]{6,8})/gi)].map((m) => m[1] as string)
+    );
+    expect(colours.size).toBeGreaterThan(0);
+    for (const colour of colours) {
+      const shown = repainted.some((p) => colour.toLowerCase().startsWith(p))
+        ? token('muted')
+        : colour;
+      for (const bg of [token('panel'), token('bg')]) {
+        expect(contrast(shown, bg), `${colour} on ${bg}`).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+  });
+
   it('has one h1 and labelled sections', () => {
     expect(html.match(/<h1[\s>]/g)).toHaveLength(1);
     const sections = [...html.matchAll(/<section\b[^>]*>/g)].map((m) => m[0]);

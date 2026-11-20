@@ -59,8 +59,12 @@ describe('committed ClickBench data', () => {
 
 describe('built page', () => {
   const html = readFileSync(new URL('../dist/index.html', import.meta.url), 'utf8');
-  it('states n of n compared and never a bare 43/43 match', () => {
-    expect(html).toContain('42 of 42 compared');
-    expect(html).not.toMatch(/43\/43\s+(compared|match)/);
+  it('leads with n/43 compared and never puts 43/43 beside compared or match', () => {
+    const s = summarise(data);
+    expect(s.compared).toBeLessThan(43);
+    expect(html).toContain(
+      `${s.compared}/43 compared, all matching · ${s.expressible}/43 expressible as frames · ${s.sumRatio}×`
+    );
+    expect(html).not.toMatch(/43\/43[^·<]{0,24}(compar|match)|(compar|match)[^·<]{0,24}43\/43/);
   });
 });

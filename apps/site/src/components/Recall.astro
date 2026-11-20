@@ -19,7 +19,7 @@ const live = loadExample('recall').transcript !== null;
     Here each customer gains a free-text service note, embedded on every write.
     {
       live &&
-        ' The question is “customers unhappy about late delivery”. These hits come from a real embedder (bge-base) run when the site is deployed. CI checks the same example with a test embedder whose ranking is noise, so its output never reaches this page.'
+        ' The question is “customers unhappy about late delivery”. These hits come from a real embedder (bge-base) run when the site is deployed. CI checks the same example with a test embedder whose ranking is noise, so its output never reaches this page. The run shown keeps its rows and vectors in memory; on Postgres the vectors live in pgvector, beside the rows.'
     }
   </p>
   <div class="run">
