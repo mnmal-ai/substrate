@@ -39,6 +39,7 @@ export const seedSteps: Step[] = [
       body: {
         'app/createInvoice': {
           params: {
+            id: `0197a200-0000-7000-8000-00000000${number.slice(4)}`,
             number,
             amount,
             currency: 'EUR',

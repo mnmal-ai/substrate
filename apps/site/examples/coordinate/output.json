@@ -1,0 +1,582 @@
+{
+  "example": "coordinate",
+  "steps": [
+    {
+      "label": "collections-agent subscribes to open tasks",
+      "method": "POST",
+      "path": "/substrate/v1/subscribe",
+      "body": {
+        "app/Task": {
+          "params": {
+            "where": {
+              "status": {
+                "eq": "open"
+              }
+            }
+          },
+          "fields": {
+            "id": true,
+            "title": true,
+            "invoice": true,
+            "status": true
+          }
+        }
+      },
+      "as": "collections-agent",
+      "feed": false,
+      "status": 200,
+      "response": {
+        "id": "frames-subscribe",
+        "kind": "snapshot",
+        "schemaVersion": "07bfc81ece17",
+        "data": {
+          "app/Task": []
+        },
+        "shapes": {
+          "app/Task": "list"
+        }
+      }
+    },
+    {
+      "label": "Create customer Harbor & Pine",
+      "method": "POST",
+      "path": "/substrate/v1/mutate",
+      "body": {
+        "app/createCustomer": {
+          "params": {
+            "id": "0197a000-0000-7000-8000-000000000001",
+            "name": "Harbor & Pine",
+            "email": "billing@harborpine.example",
+            "region": "EMEA"
+          },
+          "fields": {
+            "id": true
+          }
+        }
+      },
+      "feed": false,
+      "status": 200,
+      "response": {
+        "schemaVersion": "07bfc81ece17",
+        "data": {
+          "app/createCustomer": {
+            "id": "0197a000-0000-7000-8000-000000000001"
+          }
+        },
+        "shapes": {
+          "app/createCustomer": "single"
+        }
+      }
+    },
+    {
+      "label": "Create customer Lumen Works",
+      "method": "POST",
+      "path": "/substrate/v1/mutate",
+      "body": {
+        "app/createCustomer": {
+          "params": {
+            "id": "0197a000-0000-7000-8000-000000000002",
+            "name": "Lumen Works",
+            "email": "ap@lumenworks.example",
+            "region": "NA"
+          },
+          "fields": {
+            "id": true
+          }
+        }
+      },
+      "feed": false,
+      "status": 200,
+      "response": {
+        "schemaVersion": "07bfc81ece17",
+        "data": {
+          "app/createCustomer": {
+            "id": "0197a000-0000-7000-8000-000000000002"
+          }
+        },
+        "shapes": {
+          "app/createCustomer": "single"
+        }
+      }
+    },
+    {
+      "label": "Create customer Tidewater Labs",
+      "method": "POST",
+      "path": "/substrate/v1/mutate",
+      "body": {
+        "app/createCustomer": {
+          "params": {
+            "id": "0197a000-0000-7000-8000-000000000003",
+            "name": "Tidewater Labs",
+            "email": "finance@tidewater.example",
+            "region": "APAC"
+          },
+          "fields": {
+            "id": true
+          }
+        }
+      },
+      "feed": false,
+      "status": 200,
+      "response": {
+        "schemaVersion": "07bfc81ece17",
+        "data": {
+          "app/createCustomer": {
+            "id": "0197a000-0000-7000-8000-000000000003"
+          }
+        },
+        "shapes": {
+          "app/createCustomer": "single"
+        }
+      }
+    },
+    {
+      "label": "Create invoice INV-1001",
+      "method": "POST",
+      "path": "/substrate/v1/mutate",
+      "body": {
+        "app/createInvoice": {
+          "params": {
+            "id": "0197a000-0000-7000-8000-000000000004",
+            "number": "INV-1001",
+            "amount": 120000,
+            "currency": "EUR",
+            "issuedAt": "2026-08-04T00:00:00.000Z",
+            "dueAt": "2026-09-03T00:00:00.000Z",
+            "status": "paid",
+            "customer": "0197a000-0000-7000-8000-000000000001"
+          },
+          "fields": {
+            "id": true
+          }
+        }
+      },
+      "feed": false,
+      "status": 200,
+      "response": {
+        "schemaVersion": "07bfc81ece17",
+        "data": {
+          "app/createInvoice": {
+            "id": "0197a000-0000-7000-8000-000000000004"
+          }
+        },
+        "shapes": {
+          "app/createInvoice": "single"
+        }
+      }
+    },
+    {
+      "label": "Create invoice INV-1002",
+      "method": "POST",
+      "path": "/substrate/v1/mutate",
+      "body": {
+        "app/createInvoice": {
+          "params": {
+            "id": "0197a000-0000-7000-8000-000000000005",
+            "number": "INV-1002",
+            "amount": 84050,
+            "currency": "EUR",
+            "issuedAt": "2026-08-19T00:00:00.000Z",
+            "dueAt": "2026-09-18T00:00:00.000Z",
+            "status": "sent",
+            "customer": "0197a000-0000-7000-8000-000000000002"
+          },
+          "fields": {
+            "id": true
+          }
+        }
+      },
+      "feed": false,
+      "status": 200,
+      "response": {
+        "schemaVersion": "07bfc81ece17",
+        "data": {
+          "app/createInvoice": {
+            "id": "0197a000-0000-7000-8000-000000000005"
+          }
+        },
+        "shapes": {
+          "app/createInvoice": "single"
+        }
+      }
+    },
+    {
+      "label": "Create invoice INV-1003",
+      "method": "POST",
+      "path": "/substrate/v1/mutate",
+      "body": {
+        "app/createInvoice": {
+          "params": {
+            "id": "0197a000-0000-7000-8000-000000000006",
+            "number": "INV-1003",
+            "amount": 230000,
+            "currency": "EUR",
+            "issuedAt": "2026-09-02T00:00:00.000Z",
+            "dueAt": "2026-10-02T00:00:00.000Z",
+            "status": "sent",
+            "customer": "0197a000-0000-7000-8000-000000000003"
+          },
+          "fields": {
+            "id": true
+          }
+        }
+      },
+      "feed": false,
+      "status": 200,
+      "response": {
+        "schemaVersion": "07bfc81ece17",
+        "data": {
+          "app/createInvoice": {
+            "id": "0197a000-0000-7000-8000-000000000006"
+          }
+        },
+        "shapes": {
+          "app/createInvoice": "single"
+        }
+      }
+    },
+    {
+      "label": "Create invoice INV-1004",
+      "method": "POST",
+      "path": "/substrate/v1/mutate",
+      "body": {
+        "app/createInvoice": {
+          "params": {
+            "id": "0197a000-0000-7000-8000-000000000007",
+            "number": "INV-1004",
+            "amount": 45000,
+            "currency": "EUR",
+            "issuedAt": "2026-09-15T00:00:00.000Z",
+            "dueAt": "2026-10-15T00:00:00.000Z",
+            "status": "void",
+            "customer": "0197a000-0000-7000-8000-000000000001"
+          },
+          "fields": {
+            "id": true
+          }
+        }
+      },
+      "feed": false,
+      "status": 200,
+      "response": {
+        "schemaVersion": "07bfc81ece17",
+        "data": {
+          "app/createInvoice": {
+            "id": "0197a000-0000-7000-8000-000000000007"
+          }
+        },
+        "shapes": {
+          "app/createInvoice": "single"
+        }
+      }
+    },
+    {
+      "label": "Create invoice INV-1005",
+      "method": "POST",
+      "path": "/substrate/v1/mutate",
+      "body": {
+        "app/createInvoice": {
+          "params": {
+            "id": "0197a000-0000-7000-8000-000000000008",
+            "number": "INV-1005",
+            "amount": 99900,
+            "currency": "EUR",
+            "issuedAt": "2026-10-06T00:00:00.000Z",
+            "dueAt": "2026-11-05T00:00:00.000Z",
+            "status": "sent",
+            "customer": "0197a000-0000-7000-8000-000000000002"
+          },
+          "fields": {
+            "id": true
+          }
+        }
+      },
+      "feed": false,
+      "status": 200,
+      "response": {
+        "schemaVersion": "07bfc81ece17",
+        "data": {
+          "app/createInvoice": {
+            "id": "0197a000-0000-7000-8000-000000000008"
+          }
+        },
+        "shapes": {
+          "app/createInvoice": "single"
+        }
+      }
+    },
+    {
+      "label": "Create invoice INV-1006",
+      "method": "POST",
+      "path": "/substrate/v1/mutate",
+      "body": {
+        "app/createInvoice": {
+          "params": {
+            "id": "0197a000-0000-7000-8000-000000000009",
+            "number": "INV-1006",
+            "amount": 176500,
+            "currency": "EUR",
+            "issuedAt": "2026-10-20T00:00:00.000Z",
+            "dueAt": "2026-11-19T00:00:00.000Z",
+            "status": "sent",
+            "customer": "0197a000-0000-7000-8000-000000000003"
+          },
+          "fields": {
+            "id": true
+          }
+        }
+      },
+      "feed": false,
+      "status": 200,
+      "response": {
+        "schemaVersion": "07bfc81ece17",
+        "data": {
+          "app/createInvoice": {
+            "id": "0197a000-0000-7000-8000-000000000009"
+          }
+        },
+        "shapes": {
+          "app/createInvoice": "single"
+        }
+      }
+    },
+    {
+      "label": "Create invoice INV-1007",
+      "method": "POST",
+      "path": "/substrate/v1/mutate",
+      "body": {
+        "app/createInvoice": {
+          "params": {
+            "id": "0197a000-0000-7000-8000-000000000010",
+            "number": "INV-1007",
+            "amount": 60000,
+            "currency": "EUR",
+            "issuedAt": "2026-10-28T00:00:00.000Z",
+            "dueAt": "2026-11-27T00:00:00.000Z",
+            "status": "sent",
+            "customer": "0197a000-0000-7000-8000-000000000001"
+          },
+          "fields": {
+            "id": true
+          }
+        }
+      },
+      "feed": false,
+      "status": 200,
+      "response": {
+        "schemaVersion": "07bfc81ece17",
+        "data": {
+          "app/createInvoice": {
+            "id": "0197a000-0000-7000-8000-000000000010"
+          }
+        },
+        "shapes": {
+          "app/createInvoice": "single"
+        }
+      }
+    },
+    {
+      "label": "Create invoice INV-1008",
+      "method": "POST",
+      "path": "/substrate/v1/mutate",
+      "body": {
+        "app/createInvoice": {
+          "params": {
+            "id": "0197a000-0000-7000-8000-000000000011",
+            "number": "INV-1008",
+            "amount": 15000,
+            "currency": "EUR",
+            "issuedAt": "2026-11-02T00:00:00.000Z",
+            "dueAt": "2026-12-02T00:00:00.000Z",
+            "status": "draft",
+            "customer": "0197a000-0000-7000-8000-000000000002"
+          },
+          "fields": {
+            "id": true
+          }
+        }
+      },
+      "feed": false,
+      "status": 200,
+      "response": {
+        "schemaVersion": "07bfc81ece17",
+        "data": {
+          "app/createInvoice": {
+            "id": "0197a000-0000-7000-8000-000000000011"
+          }
+        },
+        "shapes": {
+          "app/createInvoice": "single"
+        }
+      }
+    },
+    {
+      "label": "billing-agent opens a task: INV-1002 was due 18 Sep and today is 3 Nov 2026",
+      "method": "POST",
+      "path": "/substrate/v1/mutate",
+      "body": {
+        "app/createTask": {
+          "params": {
+            "id": "0197a000-0000-7000-8000-000000000012",
+            "title": "Chase Lumen Works for INV-1002",
+            "invoice": "0197a000-0000-7000-8000-000000000005",
+            "status": "open"
+          },
+          "fields": {
+            "id": true,
+            "title": true,
+            "status": true
+          }
+        }
+      },
+      "as": "billing-agent",
+      "feed": true,
+      "status": 200,
+      "response": {
+        "schemaVersion": "07bfc81ece17",
+        "data": {
+          "app/createTask": {
+            "id": "0197a000-0000-7000-8000-000000000012",
+            "title": "Chase Lumen Works for INV-1002",
+            "status": "open"
+          }
+        },
+        "shapes": {
+          "app/createTask": "single"
+        }
+      }
+    },
+    {
+      "label": "collections-agent receives it, live",
+      "method": "POST",
+      "path": "/substrate/v1/subscribe",
+      "as": "collections-agent",
+      "feed": false,
+      "status": 200,
+      "response": {
+        "id": "frames-subscribe",
+        "kind": "add",
+        "schemaVersion": "07bfc81ece17",
+        "data": {
+          "app/Task": {
+            "id": "0197a000-0000-7000-8000-000000000012",
+            "title": "Chase Lumen Works for INV-1002",
+            "invoice": "0197a000-0000-7000-8000-000000000005",
+            "status": "open"
+          }
+        },
+        "shapes": {
+          "app/Task": "single"
+        }
+      }
+    },
+    {
+      "label": "collections-agent reads it, with the key that signed it",
+      "method": "POST",
+      "path": "/substrate/v1/query",
+      "body": {
+        "app/Task": {
+          "params": {
+            "where": {
+              "id": {
+                "eq": "0197a000-0000-7000-8000-000000000012"
+              }
+            }
+          },
+          "fields": {
+            "title": true,
+            "status": true,
+            "forInvoice": {
+              "_walk": {
+                "out": "invoice"
+              },
+              "fields": {
+                "number": true,
+                "dueAt": true
+              }
+            },
+            "_metadata": {
+              "createdBy": true
+            }
+          }
+        }
+      },
+      "as": "collections-agent",
+      "feed": false,
+      "status": 200,
+      "response": {
+        "schemaVersion": "07bfc81ece17",
+        "data": {
+          "app/Task": [
+            {
+              "title": "Chase Lumen Works for INV-1002",
+              "status": "open",
+              "forInvoice": [
+                {
+                  "id": "0197a000-0000-7000-8000-000000000005",
+                  "number": "INV-1002",
+                  "dueAt": "2026-09-18T00:00:00.000Z"
+                }
+              ],
+              "_metadata": {
+                "createdBy": {
+                  "kind": "user",
+                  "id": "billing-agent"
+                }
+              }
+            }
+          ]
+        },
+        "shapes": {
+          "app/Task": "list"
+        },
+        "_pagination": {
+          "app/Task": {
+            "hasMore": false
+          }
+        }
+      }
+    },
+    {
+      "label": "collections-agent takes it",
+      "method": "POST",
+      "path": "/substrate/v1/mutate",
+      "body": {
+        "app/updateTask": {
+          "params": {
+            "id": "0197a000-0000-7000-8000-000000000012",
+            "status": "in_progress"
+          },
+          "fields": {
+            "id": true,
+            "status": true,
+            "_metadata": {
+              "updatedBy": true
+            }
+          }
+        }
+      },
+      "as": "collections-agent",
+      "feed": true,
+      "status": 200,
+      "response": {
+        "schemaVersion": "07bfc81ece17",
+        "data": {
+          "app/updateTask": {
+            "id": "0197a000-0000-7000-8000-000000000012",
+            "status": "in_progress",
+            "_metadata": {
+              "updatedBy": {
+                "kind": "user",
+                "id": "collections-agent"
+              }
+            }
+          }
+        },
+        "shapes": {
+          "app/updateTask": "single"
+        }
+      }
+    }
+  ]
+}

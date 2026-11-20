@@ -101,6 +101,7 @@
       "body": {
         "app/createInvoice": {
           "params": {
+            "id": "0197a000-0000-7000-8000-000000000004",
             "number": "INV-1001",
             "amount": 120000,
             "currency": "EUR",
@@ -135,6 +136,7 @@
       "body": {
         "app/createInvoice": {
           "params": {
+            "id": "0197a000-0000-7000-8000-000000000005",
             "number": "INV-1002",
             "amount": 84050,
             "currency": "EUR",
@@ -169,6 +171,7 @@
       "body": {
         "app/createInvoice": {
           "params": {
+            "id": "0197a000-0000-7000-8000-000000000006",
             "number": "INV-1003",
             "amount": 230000,
             "currency": "EUR",
@@ -203,6 +206,7 @@
       "body": {
         "app/createInvoice": {
           "params": {
+            "id": "0197a000-0000-7000-8000-000000000007",
             "number": "INV-1004",
             "amount": 45000,
             "currency": "EUR",
@@ -237,6 +241,7 @@
       "body": {
         "app/createInvoice": {
           "params": {
+            "id": "0197a000-0000-7000-8000-000000000008",
             "number": "INV-1005",
             "amount": 99900,
             "currency": "EUR",
@@ -271,6 +276,7 @@
       "body": {
         "app/createInvoice": {
           "params": {
+            "id": "0197a000-0000-7000-8000-000000000009",
             "number": "INV-1006",
             "amount": 176500,
             "currency": "EUR",
@@ -305,6 +311,7 @@
       "body": {
         "app/createInvoice": {
           "params": {
+            "id": "0197a000-0000-7000-8000-000000000010",
             "number": "INV-1007",
             "amount": 60000,
             "currency": "EUR",
@@ -339,6 +346,7 @@
       "body": {
         "app/createInvoice": {
           "params": {
+            "id": "0197a000-0000-7000-8000-000000000011",
             "number": "INV-1008",
             "amount": 15000,
             "currency": "EUR",
