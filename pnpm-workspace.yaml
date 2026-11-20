@@ -30,7 +30,7 @@ overrides:
 
 catalog:
   "@biomejs/biome": "2.6.4"
-  astro: "^6.4.8"
+  astro: "^7.4.7"
   '@inquirer/prompts': ^8.7.2
   turbo: "^2.11.7"
   "@fastify/compress": "^9.2.0"
