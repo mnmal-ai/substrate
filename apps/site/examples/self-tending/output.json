@@ -1,0 +1,249 @@
+{
+  "example": "self-tending",
+  "steps": [
+    {
+      "label": "Propose ops/Event, a type expected to grow large",
+      "method": "POST",
+      "path": "/substrate/v1/mutate",
+      "body": {
+        "ops/propose_type": {
+          "params": {
+            "typeName": "Event",
+            "fields": {
+              "source": {
+                "kind": "scalar",
+                "type": "string"
+              },
+              "status": {
+                "kind": "scalar",
+                "type": "string"
+              }
+            },
+            "proposedReason": "Operational events, read by status",
+            "expectedSize": "large"
+          },
+          "fields": {
+            "id": true
+          }
+        }
+      },
+      "as": "ops-agent",
+      "feed": false,
+      "status": 200,
+      "response": {
+        "schemaVersion": "3d6fa5b71fd0",
+        "data": {
+          "ops/propose_type": {
+            "id": "0197a000-0000-7000-8000-000000000001"
+          }
+        },
+        "shapes": {
+          "ops/propose_type": "single"
+        }
+      }
+    },
+    {
+      "label": "Read open events, 20 times: each read is recorded and none is served by an index",
+      "method": "POST",
+      "path": "/substrate/v1/query",
+      "body": {
+        "ops/Event": {
+          "params": {
+            "where": {
+              "status": {
+                "eq": "open"
+              }
+            },
+            "limit": 5
+          },
+          "fields": {
+            "id": true,
+            "source": true,
+            "status": true
+          }
+        }
+      },
+      "as": "ops-agent",
+      "feed": false,
+      "status": 200,
+      "response": {
+        "schemaVersion": "c870ad95c65f",
+        "data": {
+          "ops/Event": [
+            {
+              "id": "0197a000-0000-7000-8000-000000000002",
+              "status": "open"
+            },
+            {
+              "id": "0197a000-0000-7000-8000-000000000003",
+              "status": "open"
+            },
+            {
+              "id": "0197a000-0000-7000-8000-000000000004",
+              "status": "open"
+            },
+            {
+              "id": "0197a000-0000-7000-8000-000000000005",
+              "status": "open"
+            },
+            {
+              "id": "0197a000-0000-7000-8000-000000000006",
+              "status": "open"
+            }
+          ]
+        },
+        "shapes": {
+          "ops/Event": "list"
+        },
+        "_pagination": {
+          "ops/Event": {
+            "hasMore": true,
+            "nextCursor": "cursor-1"
+          }
+        }
+      }
+    },
+    {
+      "label": "Read the advisor’s recommendations",
+      "method": "POST",
+      "path": "/substrate/v1/query",
+      "body": {
+        "_system/IndexRecommendation": {
+          "params": {
+            "where": {
+              "namespace": {
+                "eq": "ops"
+              }
+            }
+          },
+          "fields": {
+            "id": true,
+            "type": true,
+            "action": true,
+            "state": true,
+            "declarationJson": true
+          }
+        }
+      },
+      "as": "ops-agent",
+      "feed": false,
+      "status": 200,
+      "response": {
+        "schemaVersion": "63d6418fe033",
+        "data": {
+          "_system/IndexRecommendation": [
+            {
+              "id": "d2166985-8422-8be1-b527-e22959757d98",
+              "type": "Event",
+              "action": "add",
+              "state": "open",
+              "declarationJson": "{\"fields\":[\"status\",{\"field\":\"createdAt\",\"dir\":\"desc\"}]}"
+            }
+          ]
+        },
+        "shapes": {
+          "_system/IndexRecommendation": "list"
+        },
+        "_pagination": {
+          "_system/IndexRecommendation": {
+            "hasMore": false
+          }
+        }
+      }
+    },
+    {
+      "label": "Approve it: propose_index add, sent alone",
+      "method": "POST",
+      "path": "/substrate/v1/mutate",
+      "body": {
+        "_system_proposals/propose_index": {
+          "params": {
+            "namespace": "ops",
+            "type": "Event",
+            "action": "add",
+            "recommendationId": "d2166985-8422-8be1-b527-e22959757d98",
+            "reason": "Open events are read constantly and every read scans the table"
+          },
+          "fields": {
+            "id": true
+          }
+        }
+      },
+      "as": "ops-agent",
+      "feed": false,
+      "status": 200,
+      "response": {
+        "schemaVersion": "735faad88320",
+        "data": {
+          "_system_proposals/propose_index": {
+            "id": "28b29d62-ce38-89b8-b280-d738b2f1d8e9"
+          }
+        },
+        "shapes": {
+          "_system_proposals/propose_index": "single"
+        }
+      }
+    },
+    {
+      "label": "Read open events again: the same frame, now served by the index",
+      "method": "POST",
+      "path": "/substrate/v1/query",
+      "body": {
+        "ops/Event": {
+          "params": {
+            "where": {
+              "status": {
+                "eq": "open"
+              }
+            },
+            "limit": 5
+          },
+          "fields": {
+            "id": true,
+            "source": true,
+            "status": true
+          }
+        }
+      },
+      "as": "ops-agent",
+      "feed": false,
+      "status": 200,
+      "response": {
+        "schemaVersion": "c870ad95c65f",
+        "data": {
+          "ops/Event": [
+            {
+              "id": "0197a000-0000-7000-8000-000000000002",
+              "status": "open"
+            },
+            {
+              "id": "0197a000-0000-7000-8000-000000000003",
+              "status": "open"
+            },
+            {
+              "id": "0197a000-0000-7000-8000-000000000004",
+              "status": "open"
+            },
+            {
+              "id": "0197a000-0000-7000-8000-000000000005",
+              "status": "open"
+            },
+            {
+              "id": "0197a000-0000-7000-8000-000000000006",
+              "status": "open"
+            }
+          ]
+        },
+        "shapes": {
+          "ops/Event": "list"
+        },
+        "_pagination": {
+          "ops/Event": {
+            "hasMore": true,
+            "nextCursor": "cursor-1"
+          }
+        }
+      }
+    }
+  ]
+}

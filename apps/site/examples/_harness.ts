@@ -2,6 +2,11 @@ import { writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { decodeStreamFrames, FRAMES_JSON_MIME } from '@mnmal-ai/substrate/pack';
+import {
+  createNoopPubSub,
+  createProposalsPlugin,
+  storageSettled
+} from '@mnmal-ai/substrate/proposals';
 import { createRecallPlugin, InMemoryEmbeddingsStore } from '@mnmal-ai/substrate/recall';
 import type { NamespaceDefinition } from '@mnmal-ai/substrate/sdk';
 import {
@@ -16,6 +21,7 @@ import {
   MemorySubstrateServer,
   PgDataset,
   PgEdgesStore,
+  runMigrations,
   signHs256
 } from '@mnmal-ai/substrate/testing';
 import postgres from 'postgres';
@@ -31,6 +37,23 @@ export interface Step {
   stream?: string;
   /** Send nothing: the response is the next frame on the stream an earlier step opened. */
   receive?: string;
+  /** Send the request this many times; the result is the last response. */
+  repeat?: number;
+  /**
+   * pg with `advisor`, after the request: insert `rows` rows. Every `every`th has `field` set to
+   * `value`, the rest to `otherwise`.
+   */
+  fill?: {
+    namespace: string;
+    type: string;
+    field: string;
+    value: string;
+    otherwise: string;
+    every: number;
+    rows: number;
+  };
+  /** pg with `advisor`, before the request: run one index-advisor pass. */
+  advise?: boolean;
 }
 
 export interface StepResult {
@@ -57,6 +80,11 @@ export interface ExampleSetup {
   agents?: string[];
   embedder?: 'fake' | 'live';
   dataset?: 'memory' | 'pg';
+  /**
+   * pg only: the proposals plugin owns these namespaces, the index advisor runs over them
+   * under this store profile, and every read of them takes at least `slowReadMs`.
+   */
+  advisor?: { owned: string[]; storeProfile: 'scale'; slowReadMs: number };
 }
 
 const PACKAGE_NAME = '@mnmal-ai/substrate-site';
@@ -118,27 +146,74 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
   }
 
   const sql = kind === 'pg' ? postgres(url as string, { onnotice: () => {} }) : undefined;
+  if (sql !== undefined) await runMigrations(sql);
   const edges =
     sql === undefined ? new MemoryEdgesStore({ now: () => new Date() }) : new PgEdgesStore({ sql });
+  const advisor = setup.advisor;
+  if (advisor !== undefined && kind !== 'pg') {
+    throw new Error("advisor runs over the pg dataset only: set dataset 'pg'.");
+  }
+  const proposals =
+    advisor === undefined
+      ? undefined
+      : createProposalsPlugin({ ownedNamespaces: advisor.owned, pubsub: createNoopPubSub() });
+  const defs = [...setup.namespaces, ...(proposals?.namespaces ?? [])];
+  let composed: ComposeResult | undefined;
+  // A type proposed at run time is in the registry, not in `defs`.
+  const live = (namespace: string, type: string) => {
+    const entry = composed?.engine.registryFor(namespace)?.get(type);
+    return entry?.kind === 'type' ? entry : undefined;
+  };
+  const typeDefLookup = (type: string, namespace: string) => {
+    const declared = defs.find((d) => d.namespace === namespace)?.types?.[type];
+    const entry = live(namespace, type);
+    if (declared !== undefined || entry === undefined) return declared;
+    return {
+      fields: entry.fields,
+      ...(entry.expectedSize === undefined ? {} : { expectedSize: entry.expectedSize }),
+      ...(entry.indexes === undefined ? {} : { indexes: entry.indexes })
+    };
+  };
   const datasets: Record<string, MemoryDataset | PgDataset> = {};
-  for (const ns of setup.namespaces) {
+  for (const ns of defs) {
     const name = ns.namespace;
-    const fieldDefLookup = (type: string, f: string) => ns.types?.[type]?.fields[f];
-    const typeDefLookup = (type: string) => ns.types?.[type];
+    const fieldDefLookup = (type: string, f: string) => typeDefLookup(type, name)?.fields[f];
     const ds =
       sql === undefined
-        ? new MemoryDataset({ namespace: name, fieldDefLookup, typeDefLookup, walkReference: true })
+        ? new MemoryDataset({
+            namespace: name,
+            fieldDefLookup,
+            typeDefLookup: (type: string) => typeDefLookup(type, name),
+            walkReference: true
+          })
         : new PgDataset({
             namespace: name,
             sql,
             edgesStore: edges as PgEdgesStore,
             fieldDefLookup,
-            typeDefLookup
+            typeDefLookup: (type: string) => typeDefLookup(type, name)
           });
     if (ds instanceof PgDataset) {
       for (const type of Object.keys(ns.types ?? {})) await ds.ensureTypeStorage(type);
     }
     datasets[name] = ds;
+  }
+  if (sql !== undefined && advisor !== undefined) {
+    datasets._system = new PgDataset({
+      namespace: '_system',
+      sql,
+      edgesStore: edges as PgEdgesStore,
+      typeDefLookup
+    });
+    // Slow for the scale profile (50 ms), which a table this small never is on its own.
+    for (const name of advisor.owned) {
+      const ds = datasets[name] as PgDataset;
+      const read = ds.read.bind(ds);
+      ds.read = async (...args) => {
+        await new Promise((resolve) => setTimeout(resolve, advisor.slowReadMs));
+        return read(...args);
+      };
+    }
   }
 
   // Imported on demand so a CI run that never goes live never loads it.
@@ -167,16 +242,28 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
       : undefined;
   const server = new MemorySubstrateServer();
   const streams = new Map<string, Frames>();
-  let composed: ComposeResult | undefined;
   try {
     composed = await compose({
       server,
-      dataset: new MemoryDataset({ namespace: 'default' }),
+      // On pg the default dataset is the one the advisor reads statistics through.
+      dataset:
+        sql === undefined
+          ? new MemoryDataset({ namespace: 'default' })
+          : new PgDataset({
+              namespace: 'default',
+              sql,
+              edgesStore: edges as PgEdgesStore,
+              typeDefLookup
+            }),
       datasets,
       edges,
       coordinators: [
-        { name: setup.name, contractVersion: '*', namespaces: setup.namespaces } as never
+        { name: setup.name, contractVersion: '*', namespaces: setup.namespaces } as never,
+        ...(proposals === undefined ? [] : [proposals])
       ],
+      ...(advisor === undefined
+        ? {}
+        : { advisor: { intervalMs: 3_600_000, storeProfile: advisor.storeProfile } }),
       ...(kernelPlugins === undefined ? {} : { kernelPlugins }),
       ...(agents === undefined
         ? { systemActor: 'system' }
@@ -187,6 +274,17 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
           })
     });
     await server.start();
+    if (advisor !== undefined) {
+      // Tables and unique indexes for every registered type, as the binary's boot does.
+      for (const ns of Object.keys(composed.engine.federatedSchema())) {
+        if (!composed.datasets.has(ns)) continue;
+        for (const [type, entry] of composed.engine.registryFor(ns)?.all() ?? []) {
+          if (entry.kind === 'type') {
+            await composed.datasets.get(ns)?.ensureTypeStorage?.(type, { indexes: 'unique' });
+          }
+        }
+      }
+    }
 
     const results: StepResult[] = [];
     for (const step of steps) {
@@ -220,20 +318,41 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
           {
             sub: kid,
             exp: Math.floor(Date.now() / 1000) + 600,
-            capabilities: ['read', 'mutate'],
-            ns: setup.namespaces.map((n) => n.namespace)
+            capabilities:
+              advisor === undefined
+                ? ['read', 'mutate']
+                : ['read', 'mutate', 'substrate.propose', 'substrate.index'],
+            ns: defs.map((n) => n.namespace).concat(advisor === undefined ? [] : ['_system'])
           },
           SECRET,
           { kid }
         );
         headers.authorization = `Bearer ${token}`;
       }
-      const res = await server.inject({
-        method: step.method,
-        path: step.path,
-        headers,
-        ...(step.body === undefined ? {} : { body: Buffer.from(JSON.stringify(step.body)) })
-      });
+      if (step.advise === true) await composed.runAdvisorNow?.();
+      const send = () =>
+        server.inject({
+          method: step.method,
+          path: step.path,
+          headers,
+          ...(step.body === undefined ? {} : { body: Buffer.from(JSON.stringify(step.body)) })
+        });
+      let res = await send();
+      for (let i = 1; i < (step.repeat ?? 1); i++) res = await send();
+      // An approved index builds in the background; the next step should find it built.
+      if (advisor !== undefined) await storageSettled();
+      if (step.fill !== undefined && sql !== undefined) {
+        const { namespace, type, field, value, otherwise, every, rows } = step.fill;
+        const ds = datasets[namespace] as PgDataset;
+        await ds.write(
+          type,
+          Array.from({ length: rows }, (_, i) => ({
+            id: `0197a400-0000-7000-8000-${String(i + 1).padStart(12, '0')}`,
+            [field]: (i + 1) % every === 0 ? value : otherwise
+          }))
+        );
+        await sql.unsafe('ANALYZE');
+      }
       if (step.stream !== undefined && res.status === 200) {
         const frames = decodeStreamFrames(res.body as ReadableStream<Uint8Array>);
         streams.set(step.stream, frames);
