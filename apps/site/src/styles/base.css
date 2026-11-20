@@ -1,0 +1,205 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 19px;
+  line-height: 1.55;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+}
+
+/* --max-width is the content's; the gutters sit outside it. */
+main {
+  max-width: calc(var(--max-width) + 2 * var(--gutter));
+  margin: 0 auto;
+  padding: 0 var(--gutter);
+}
+
+h1 {
+  font-size: clamp(40px, 5.2vw, 66px);
+  line-height: 1.05;
+  letter-spacing: -0.035em;
+  font-weight: 700;
+}
+
+h2 {
+  font-size: clamp(32px, 4vw, 48px);
+  line-height: 1.1;
+  letter-spacing: -0.025em;
+  text-wrap: balance;
+}
+
+h3 {
+  font-size: clamp(22px, 2.2vw, 28px);
+  line-height: 1.2;
+  letter-spacing: -0.015em;
+}
+
+.label {
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+code,
+pre {
+  font-family: var(--mono);
+}
+
+/* Inline code in prose: a shade lighter than its paragraph, never wider than the line. */
+:not(pre) > code {
+  font-size: 0.86em;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+/* A long frame scrolls inside its own box rather than widening the page. */
+pre {
+  overflow-x: auto;
+  margin: 0;
+  padding: 16px 20px;
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.6;
+  tab-size: 2;
+}
+
+/* Shiki sets its theme's background inline; panels use the page's own. */
+pre.astro-code {
+  background-color: var(--panel) !important;
+}
+
+/* The theme's comment grey falls short of AA contrast on a panel; the muted token passes. */
+pre.astro-code span[style*='#767C9D' i] {
+  color: var(--muted) !important;
+}
+
+/*
+ * Every section below the hero: a signal line dropping in from the one above, a mono label,
+ * the heading, then a lede.
+ */
+.section {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding-bottom: clamp(48px, 7vw, 88px);
+}
+
+.joint {
+  height: clamp(56px, 8vw, 96px);
+  margin-bottom: 28px;
+}
+
+.kicker {
+  margin: 0;
+  color: var(--muted);
+}
+
+.section > h2 {
+  max-width: 22em;
+  margin: 14px 0 0;
+}
+
+.lede {
+  max-width: 40em;
+  margin: 20px 0 0;
+  color: var(--muted);
+}
+
+a {
+  color: var(--accent);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/*
+ * A signal line with a pulse travelling down it. The pulse box fills the line, so translating it
+ * by 100% of its own height carries the dot from one end to the other.
+ */
+.signal {
+  position: relative;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--rule);
+}
+
+.pulse {
+  position: absolute;
+  inset: 0;
+  animation: pulse-down 4s linear infinite;
+}
+
+.pulse::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 10px;
+  height: 10px;
+  margin: -4px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 14px var(--accent);
+}
+
+/* Hovering the feed or pressing its pause button stops the pulse with it. */
+.feed-box:hover .pulse,
+.feed-box:has([aria-pressed='true']) .pulse {
+  animation-play-state: paused;
+}
+
+@keyframes pulse-down {
+  from {
+    transform: translateY(0);
+    opacity: 0;
+  }
+  10%,
+  90% {
+    opacity: 1;
+  }
+  to {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+}
+
+/* reveal.ts adds .reveal to <html> only when motion is allowed, then .in as each block scrolls in. */
+@media (prefers-reduced-motion: no-preference) {
+  .reveal [data-reveal] {
+    opacity: 0;
+    transform: translateY(16px);
+    transition:
+      opacity 0.6s ease-out,
+      transform 0.6s ease-out;
+  }
+
+  .reveal [data-reveal].in {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  /* At rest the dot sits at the top of its line. */
+  .pulse {
+    animation: none;
+  }
+}

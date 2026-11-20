@@ -1,0 +1,4 @@
+dist/
+.astro/
+public/fonts/licensed/
+examples/*/output.live.json

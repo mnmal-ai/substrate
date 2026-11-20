@@ -1,0 +1,23 @@
+/*
+ * Colours and type are copied from Axon's dark theme (mnmal-ai/axon, packages/tokens:
+ * base.json and semantic.json). The display scale beyond Axon's 26px maximum is defined here.
+ * --mono is set by Base.astro, which knows whether the licensed mono font is present.
+ */
+:root {
+  --bg: #0a0f1a;
+  --panel: #111827;
+  --panel-2: #1a2235;
+  --rule: #1e293b;
+
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+
+  --accent: #00aeef;
+  --magenta: #ff339a;
+  --yellow: #ffe644;
+
+  --sans: 'DM Sans', system-ui, sans-serif;
+
+  --max-width: 1200px;
+  --gutter: clamp(16px, 5vw, 80px);
+}

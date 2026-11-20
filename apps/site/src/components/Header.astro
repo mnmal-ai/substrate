@@ -1,0 +1,64 @@
+---
+const home = import.meta.env.BASE_URL.replace(/\/?$/, '/');
+const repo = 'https://github.com/mnmal-ai/substrate';
+---
+<header class="site">
+  <a class="mark" href={home}><span>~/</span>substrate</a>
+  <nav aria-label="Primary">
+    <a href="#examples">examples</a>
+    <a href={`${repo}/tree/main/docs`}>docs</a>
+    <a href={repo}>github</a>
+    <a class="install" href="#start">npm i @mnmal-ai/substrate@next</a>
+  </nav>
+</header>
+
+<style>
+  .site {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px 28px;
+    max-width: calc(var(--max-width) + 2 * var(--gutter));
+    margin: 0 auto;
+    padding: 28px var(--gutter);
+    font-family: var(--mono);
+  }
+
+  a {
+    text-decoration: none;
+  }
+
+  .mark {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .mark span {
+    color: var(--accent);
+  }
+
+  nav {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px clamp(20px, 2.5vw, 28px);
+    font-size: 14px;
+  }
+
+  nav a {
+    color: var(--muted);
+  }
+
+  nav a:hover {
+    color: var(--text);
+  }
+
+  nav .install {
+    padding: 10px 16px;
+    border-radius: 8px;
+    background: var(--panel-2);
+    color: var(--accent);
+  }
+</style>

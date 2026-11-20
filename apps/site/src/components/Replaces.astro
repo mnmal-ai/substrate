@@ -1,0 +1,106 @@
+---
+// Each job in the usual stack, and what does it on substrate. Products are named only where the
+// caveat below keeps the comparison fair.
+const jobs = [
+  {
+    job: 'database',
+    usual: 'Postgres',
+    here: 'Your own PostgreSQL 18 with pgvector. Substrate keeps a table per declared type.'
+  },
+  {
+    job: 'api layer',
+    usual: 'PostgREST, Hasura',
+    here: 'Every declared type can be queried and mutated over HTTP and MCP, and subscribed to over frame streams, with no handler code. Policies decide who may do what.'
+  },
+  {
+    job: 'vector store',
+    usual: 'a separate vector database',
+    here: 'Rows of a type that declares it are embedded on write into pgvector, in the same Postgres. Recall fuses dense and keyword ranking.'
+  },
+  {
+    job: 'agent memory',
+    usual: 'Mem0, Zep',
+    here: "Memory is more types: rows your agents write, query and recall by meaning, in the same store as the data they're about."
+  },
+  {
+    job: 'coordination',
+    usual: 'queues and glue code',
+    here: 'Each agent signs with its own key, subscribes to the rows it cares about, and every row records which key wrote it.'
+  }
+];
+---
+<section class="section" aria-labelledby="replaces-title">
+  <div class="joint signal" aria-hidden="true"><span class="pulse"></span></div>
+  <p class="label kicker">// what it replaces</p>
+  <h2 id="replaces-title">Five jobs in the usual stack. One server on your own Postgres.</h2>
+  <p class="lede">
+    A database, an API in front of it, a vector store beside it, a memory service for your agents,
+    and the glue that lets them hand each other work. Substrate does each job from one process, in
+    one frame grammar.
+  </p>
+  <ol class="jobs">
+    {
+      jobs.map((j) => (
+        <li data-reveal>
+          <p class="label job">
+            {j.job}
+            <span>{j.usual}</span>
+          </p>
+          <p class="here">{j.here}</p>
+        </li>
+      ))
+    }
+  </ol>
+  <p class="caveat">
+    It is not a drop-in for any of them. Substrate serves the types you declare, not an existing
+    schema, and recall ranks what your agents wrote rather than having a model extract memories
+    from their conversations.
+  </p>
+</section>
+
+<style>
+  .jobs {
+    display: flex;
+    flex-direction: column;
+    margin: 40px 0 0;
+    padding: 0;
+    list-style: none;
+    border-top: 1px solid var(--rule);
+  }
+
+  li {
+    display: grid;
+    gap: 8px 40px;
+    padding: 22px 0;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  li p {
+    margin: 0;
+  }
+
+  .job {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    color: var(--accent);
+  }
+
+  .job span {
+    color: var(--muted);
+  }
+
+  /* The job and its products on the left, substrate's answer in the wider right column. */
+  @media (min-width: 720px) {
+    li {
+      grid-template-columns: 1fr 2fr;
+    }
+  }
+
+  .caveat {
+    max-width: 40em;
+    margin-top: 28px;
+    color: var(--muted);
+    font-size: 17px;
+  }
+</style>

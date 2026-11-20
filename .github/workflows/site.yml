@@ -1,0 +1,103 @@
+name: Site
+
+# Manual until launch; the push trigger lands with the launch task.
+on:
+  workflow_dispatch:
+
+# Each job asks for its own: the build runs install scripts with the font secrets and gets
+# only contents: read, and the Pages and OIDC tokens are the deploy job's alone.
+permissions: {}
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+# onnxruntime-node (via fastembed, dev-only) downloads optional CUDA binaries
+# from a GitHub release that no longer exists; the CPU binaries ship on npm.
+env:
+  ONNXRUNTIME_NODE_INSTALL_CUDA: skip
+
+jobs:
+  build:
+    name: Build site
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      # Pins os.tmpdir() so the model cache path below is the one the embedder uses.
+      TMPDIR: /tmp
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d  # v5.2.4
+        with:
+          cache: true
+
+      - name: Get pnpm store path
+        id: pnpm-cache
+        run: echo "dir=$(pnpm store path)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ steps.pnpm-cache.outputs.dir }}
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: ${{ runner.os }}-pnpm-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # An empty secret would deploy the fallback mono silently.
+      - name: Decode licensed fonts
+        env:
+          SITE_FONT_MONO_REGULAR: ${{ secrets.SITE_FONT_MONO_REGULAR }}
+          SITE_FONT_MONO_BOLD: ${{ secrets.SITE_FONT_MONO_BOLD }}
+        run: |
+          for v in SITE_FONT_MONO_REGULAR SITE_FONT_MONO_BOLD; do
+            if [ -z "${!v}" ]; then echo "::error::secret $v is empty"; exit 1; fi
+          done
+          dir=apps/site/public/fonts/licensed
+          mkdir -p "$dir"
+          printf '%s' "$SITE_FONT_MONO_REGULAR" | base64 -d > "$dir/BerkeleyMono-Regular.woff2"
+          printf '%s' "$SITE_FONT_MONO_BOLD" | base64 -d > "$dir/BerkeleyMono-Bold.woff2"
+
+      - name: Build site dependencies
+        run: pnpm turbo run build --filter=@mnmal-ai/substrate-site^...
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: /tmp/substrate-site-embed-cache
+          key: ${{ runner.os }}-embed-bge-base-en-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: ${{ runner.os }}-embed-bge-base-en-
+
+      # Writes the recall output the site reads at build time.
+      - name: Run live recall example
+        run: node apps/site/examples/recall.live.ts
+
+      - name: Build site
+        run: pnpm turbo run build --filter=@mnmal-ai/substrate-site
+
+      - name: Licensed font is linked
+        run: grep -q 'fonts/licensed/BerkeleyMono-Regular.woff2' apps/site/dist/index.html
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5.0.0
+        with:
+          path: apps/site/dist
+          retention-days: 1
+
+  deploy:
+    name: Deploy to Pages
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      # Reads the repo's Pages settings, which needs the Pages token the build job lacks.
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d  # v6.0.0
+
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346  # v5.0.1
