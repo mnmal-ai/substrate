@@ -38,6 +38,7 @@ export function hopResolver(
     if (!isObj(fields)) throw new Error(`unknown type '${namespace}/${from}'`);
     return resolveHop(node, path, {
       namespace,
+      seedNamespace: namespace,
       schemaOf: (ns) => (ns === namespace ? types : undefined),
       typeName: from,
       fields,

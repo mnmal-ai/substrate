@@ -1037,7 +1037,9 @@ export interface ValidateFilterInput extends WalkResolvers {
 export function validateFilter(input: ValidateFilterInput): void {
   const fields = input.typeSchema.fields;
   const seed: WalkScope = {
-    ...(input.namespace !== undefined ? { namespace: input.namespace } : {}),
+    ...(input.namespace !== undefined
+      ? { namespace: input.namespace, seedNamespace: input.namespace }
+      : {}),
     ...(input.schemaOf !== undefined ? { schemaOf: input.schemaOf } : {}),
     ...(input.canRead !== undefined ? { canRead: input.canRead } : {}),
     ...(input.isStoredType !== undefined ? { isStoredType: input.isStoredType } : {}),

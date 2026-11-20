@@ -1019,9 +1019,16 @@ describe('walks across namespaces', () => {
     },
     app: {
       Invoice: {
-        fields: { total: num, payment: ref('Payment', 'ext'), self: ref('Invoice', 'app') }
+        fields: {
+          total: num,
+          payment: ref('Payment', 'ext'),
+          self: ref('Invoice', 'app'),
+          hit: ref('Hit', 'app')
+        }
       },
-      Hit: { fields: { score: num, payment: ref('Payment', 'ext') } }
+      Hit: {
+        fields: { score: num, payment: ref('Payment', 'ext'), invoice: ref('Invoice', 'app') }
+      }
     },
     bridge: {
       Ledger: { fields: { payment: ref('Payment', 'ext') } },
@@ -1215,6 +1222,32 @@ describe('walks across namespaces', () => {
       code: 'walk_unknown_ref',
       path: ['where', '_walk', 'in']
     });
+  });
+
+  it('refuses a virtual type reached by a second hop inside another namespace', () => {
+    const r = resolvers(() => true);
+    for (const [walk, dir] of [
+      [{ out: 'hit' }, 'out'],
+      [{ in: 'app/Hit.invoice' }, 'in']
+    ] as const) {
+      const err = thrown({ where: { _walk: { out: 'invoice', where: { _walk: walk } } } }, r);
+      expect({ code: err.code, message: err.message, path: err.path }).toEqual({
+        code: 'walk_unknown_ref',
+        message: "unknown type 'app/Hit'",
+        path: ['where', '_walk', 'where', '_walk', dir]
+      });
+    }
+    // A hop back into the seed namespace keeps the seed's path: no stored-ness question.
+    r.isStoredType.mockClear();
+    validateFilter({
+      where: { _walk: { out: 'invoice', where: { _walk: { out: 'payment' } } } } as WhereClause,
+      typeSchema: SPACES.ext?.Payment as TypeSchema,
+      capabilities: CAPS,
+      namespace: 'ext',
+      typeName: 'Payment',
+      ...r
+    });
+    expect(r.isStoredType.mock.calls).toEqual([[{ ns: 'app', type: 'Invoice' }]]);
   });
 
   it('lists only readable namespaces in refsHint', () => {

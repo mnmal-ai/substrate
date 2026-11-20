@@ -59,6 +59,8 @@ export interface WalkResolvers {
 export interface WalkScope extends WalkResolvers {
   /** The current hop's namespace. Absent: walks are unavailable here. */
   namespace?: string;
+  /** The frame's namespace. A far type in any other namespace must be stored. */
+  seedNamespace?: string;
   /** The type the current where-clause filters, and its fields. */
   typeName?: string;
   fields: Record<string, FieldDef>;
@@ -152,7 +154,8 @@ export interface Hop {
  *
  * A hop into another namespace is checked in this order: the caller's read
  * grant there (`denyWalk` before any lookup in it), then the far type (unknown
- * or not stored: `walk_unknown_ref`), then the store (`walk_cross_store`).
+ * or not stored: `walk_unknown_ref`), then the store (`walk_cross_store`). A far
+ * type outside the frame's namespace must be stored however the walk got there.
  */
 export function resolveHop(node: Record<string, unknown>, path: string[], scope: WalkScope): Hop {
   const { namespace, schemaOf, typeName } = scope;
@@ -176,7 +179,10 @@ export function resolveHop(node: Record<string, unknown>, path: string[], scope:
   };
   const farFields = (ref: TypeRef) => {
     const far = typeIn(schemaOf(ref.ns), ref.type);
-    if (far === undefined || (ref.ns !== namespace && scope.isStoredType?.(ref) !== true)) {
+    if (
+      far === undefined ||
+      (ref.ns !== scope.seedNamespace && scope.isStoredType?.(ref) !== true)
+    ) {
       fail('walk_unknown_ref', `unknown type '${ref.ns}/${ref.type}'`, at);
     }
     return far.fields;
