@@ -2,8 +2,9 @@
  * Walk and `$ref` validation (typed edge walks spec §1 Grammar, §2 Validation).
  */
 
+import type { TypeRef } from '@mnmal-ai/substrate-filter';
 import type { FilterCapabilities, TypeSchema, WhereClause } from '@mnmal-ai/substrate-types';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { FilterValidationError, validateFilter } from '../src/filter/validator.js';
 import { MAX_DATE_SHIFT_MS } from '../src/filter/walk-validator.js';
 
@@ -64,20 +65,44 @@ const CAPS: FilterCapabilities = {
   cursor: true
 } as FilterCapabilities;
 
-function check(where: unknown, type = 'Cert'): void {
+/** The `other` namespace: a readable, stored neighbour of `cards` on the same store. */
+const OTHER: Record<string, TypeSchema> = {
+  Cert: { fields: { grade: { kind: 'scalar', type: 'number' } } },
+  Listing: { fields: { cert: ref('Cert'), price: { kind: 'scalar', type: 'number' } } },
+  Observation: { fields: { cert: ref('Cert'), price: { kind: 'scalar', type: 'number' } } }
+};
+
+const cardsOnly = (ns: string) => (ns === 'cards' ? SCHEMAS : undefined);
+
+type WalkInput = Partial<Parameters<typeof validateFilter>[0]>;
+
+/** `cards` and `other` both readable, stored and on one store. */
+const CROSS: WalkInput = {
+  schemaOf: (ns) => (ns === 'cards' ? SCHEMAS : ns === 'other' ? OTHER : undefined),
+  canRead: () => true,
+  isStoredType: () => true,
+  walkable: () => true
+};
+
+function check(where: unknown, type = 'Cert', walk: WalkInput = {}): void {
   validateFilter({
     where: where as WhereClause,
     typeSchema: SCHEMAS[type] as TypeSchema,
     capabilities: CAPS,
-    schemaOf: (t) => SCHEMAS[t],
+    schemaOf: cardsOnly,
     namespace: 'cards',
-    typeName: type
+    typeName: type,
+    ...walk
   });
 }
 
-function refusal(where: unknown, type = 'Cert'): { code: string; path: string[] } {
+function refusal(
+  where: unknown,
+  type = 'Cert',
+  walk: WalkInput = {}
+): { code: string; path: string[] } {
   try {
-    check(where, type);
+    check(where, type, walk);
   } catch (err) {
     if (err instanceof FilterValidationError) return { code: err.code, path: err.path };
     throw err;
@@ -162,8 +187,7 @@ describe('walk validation', () => {
           where: where as WhereClause,
           typeSchema: SCHEMAS[type] as TypeSchema,
           capabilities: CAPS,
-          schemaOf: (t) => SCHEMAS[t],
-          typeNames: Object.keys(SCHEMAS),
+          schemaOf: cardsOnly,
           namespace: 'cards',
           typeName: type
         });
@@ -195,7 +219,7 @@ describe('walk validation', () => {
           where: { _walk: { in: `cards/${type}.x` } } as WhereClause,
           typeSchema: SCHEMAS.Cert as TypeSchema,
           capabilities: CAPS,
-          schemaOf: (t) => types[t],
+          schemaOf: (ns) => (ns === 'cards' ? types : undefined),
           namespace: 'cards',
           typeName: 'Cert'
         });
@@ -237,15 +261,32 @@ describe('walk validation', () => {
     });
   });
 
-  it('refuses another namespace', () => {
+  it('crosses into a readable, stored namespace on the same store, and only when told it may', () => {
+    expect(() => check({ _walk: { in: 'other/Listing.cert' } }, 'Cert', CROSS)).not.toThrow();
+    expect(() => check({ _walk: { out: 'elsewhere' } }, 'Observation', CROSS)).not.toThrow();
+    // Without a grant callback a walk stays in the frame's namespace.
     expect(refusal({ _walk: { in: 'other/Listing.cert' } })).toEqual({
-      code: 'walk_cross_namespace',
-      path: ['where', '_walk', 'in']
+      code: 'policy_denied',
+      path: ['where', '_walk']
     });
     expect(refusal({ _walk: { out: 'elsewhere' } }, 'Observation')).toEqual({
-      code: 'walk_cross_namespace',
-      path: ['where', '_walk', 'out']
+      code: 'policy_denied',
+      path: ['where', '_walk']
     });
+  });
+
+  it('refuses a same-namespace in whose far field points into another namespace', () => {
+    // `cards/Observation.elsewhere` points at `other/Cert`, not the seed's `cards/Cert`.
+    const where = { _walk: { in: 'cards/Observation.elsewhere' } };
+    for (const walk of [CROSS, {}]) {
+      expect(refusal(where, 'Cert', walk)).toEqual({
+        code: 'walk_unknown_ref',
+        path: ['where', '_walk', 'in']
+      });
+      expect(() => check(where, 'Cert', walk)).toThrow(
+        /^'cards\/Observation\.elsewhere' does not point at 'cards\/Cert'/
+      );
+    }
   });
 
   it('refuses a fourth hop', () => {
@@ -366,10 +407,9 @@ describe('walk validation', () => {
     expect(() =>
       check({ _agg: { in: 'cards/Observation.cert', count: true }, gte: 3 })
     ).not.toThrow();
-    expect(refusal({ _agg: { in: 'other/Observation.cert', count: true }, gte: 3 })).toEqual({
-      code: 'walk_cross_namespace',
-      path: ['where', '_agg', 'in']
-    });
+    expect(() =>
+      check({ _agg: { in: 'other/Observation.cert', count: true }, gte: 3 }, 'Cert', CROSS)
+    ).not.toThrow();
   });
 });
 
@@ -380,7 +420,7 @@ function checkFrame(frame: Frame, type = 'Cert'): void {
     ...frame,
     typeSchema: SCHEMAS[type] as TypeSchema,
     capabilities: CAPS,
-    schemaOf: (t) => (Object.hasOwn(SCHEMAS, t) ? SCHEMAS[t] : undefined),
+    schemaOf: cardsOnly,
     namespace: 'cards',
     typeName: type
   });
@@ -969,5 +1009,279 @@ describe('walk validator negative cases', () => {
     expect(
       frameRefusal({ aggregate: { bucket: { count: true } }, groupBy: { bucket: 'grade' } })
     ).toEqual({ code: 'group_invalid', path: ['groupBy', 'bucket'] });
+  });
+});
+
+describe('walks across namespaces', () => {
+  const num = { kind: 'scalar', type: 'number' } as const;
+  // Seed `ext/Payment`. `app` holds a stored type, a virtual one and refs back; `bridge` is on
+  // another store; `vault` references the seed but is never readable in these tests.
+  const SPACES: Record<string, Record<string, TypeSchema>> = {
+    ext: {
+      Payment: {
+        fields: {
+          amount: num,
+          invoice: ref('Invoice', 'app'),
+          ghost: ref('Nope', 'app'),
+          hit: ref('Hit', 'app'),
+          lost: ref('Thing', 'nowhere'),
+          ledger: ref('Ledger', 'bridge'),
+          secret: ref('Audit', 'vault')
+        }
+      },
+      Refund: { fields: { payment: ref('Payment', 'ext') } }
+    },
+    app: {
+      Invoice: {
+        fields: {
+          total: num,
+          payment: ref('Payment', 'ext'),
+          self: ref('Invoice', 'app'),
+          hit: ref('Hit', 'app')
+        }
+      },
+      Hit: {
+        fields: { score: num, payment: ref('Payment', 'ext'), invoice: ref('Invoice', 'app') }
+      }
+    },
+    bridge: {
+      Ledger: { fields: { payment: ref('Payment', 'ext') } },
+      Shadow: { fields: { payment: ref('Payment', 'ext') } }
+    },
+    vault: { Audit: { fields: { payment: ref('Payment', 'ext') } } }
+  };
+  const VIRTUAL = new Set(['app/Hit', 'bridge/Shadow']);
+  const resolvers = (readable: (ns: string) => boolean) => ({
+    schemaOf: vi.fn((ns: string) => (Object.hasOwn(SPACES, ns) ? SPACES[ns] : undefined)),
+    canRead: vi.fn(readable),
+    isStoredType: vi.fn((r: TypeRef) => !VIRTUAL.has(`${r.ns}/${r.type}`)),
+    walkable: vi.fn((ns: string) => ns !== 'bridge'),
+    namespaceNames: ['app', 'bridge', 'ext', 'vault']
+  });
+  const thrown = (frame: Frame, walk: WalkInput, type = 'Payment'): FilterValidationError => {
+    try {
+      validateFilter({
+        ...frame,
+        typeSchema: SPACES.ext?.[type] as TypeSchema,
+        capabilities: CAPS,
+        namespace: 'ext',
+        typeName: type,
+        ...walk
+      });
+    } catch (err) {
+      if (err instanceof FilterValidationError) return err;
+      throw err;
+    }
+    throw new Error('expected a refusal');
+  };
+  /** Everything a refusal carries but its stack trace. */
+  const wire = (err: FilterValidationError) =>
+    JSON.stringify([
+      err.constructor.name,
+      Object.getOwnPropertyNames(err)
+        .filter((k) => k !== 'stack')
+        .sort()
+        .map((k) => [k, (err as unknown as Record<string, unknown>)[k]])
+    ]);
+  const DENIED = { code: 'policy_denied', message: 'this walk is not permitted' };
+
+  it('denies an unreadable namespace before any lookup', () => {
+    const forms: Array<[Frame, string[]]> = [
+      [{ where: { _walk: { out: 'invoice' } } }, ['where', '_walk']],
+      [{ where: { _walk: { in: 'app/Invoice.payment' } } }, ['where', '_walk']],
+      [
+        { fields: { inv: { _walk: { out: 'invoice' }, fields: { total: true } } } },
+        ['fields', 'inv', '_walk']
+      ],
+      [{ where: { _agg: { in: 'app/Invoice.payment', count: true }, gte: 1 } }, ['where', '_agg']],
+      [
+        { fields: { _agg: { n: { in: 'app/Invoice.payment', count: true } } } },
+        ['fields', '_agg', 'n']
+      ],
+      [
+        {
+          where: {
+            AND: [{ _walk: { as: 'I', out: 'invoice' } }, { amount: { gte: { $ref: 'I.total' } } }]
+          }
+        },
+        ['where', 'AND', '0', '_walk']
+      ],
+      [
+        {
+          where: {
+            _walk: {
+              in: 'ext/Refund.payment',
+              where: { _walk: { out: 'payment', where: { _walk: { out: 'invoice' } } } }
+            }
+          }
+        },
+        ['where', '_walk', 'where', '_walk', 'where', '_walk']
+      ]
+    ];
+    for (const [frame, path] of forms) {
+      const r = resolvers((ns) => ns !== 'app');
+      const err = thrown(frame, r);
+      expect({ code: err.code, message: err.message, path: err.path }).toEqual({
+        ...DENIED,
+        path
+      });
+      expect(r.canRead).toHaveBeenCalledWith('app');
+      expect(r.schemaOf).not.toHaveBeenCalledWith('app');
+      expect(r.walkable).not.toHaveBeenCalledWith('app');
+      expect(r.isStoredType.mock.calls.filter(([t]) => t.ns === 'app')).toEqual([]);
+    }
+  });
+
+  it('gives the same denial for every target in an unreadable namespace', () => {
+    const targets: Array<Record<string, unknown>> = [
+      { in: 'app/Invoice.payment' }, // an existing type and field
+      { in: 'app/Nope.payment' }, // a missing type
+      { in: 'app/Invoice.nope' }, // a missing field
+      { in: 'app/Hit.payment' }, // a virtual type
+      { in: 'bridge/Ledger.payment' }, // a namespace on another store
+      { in: 'nowhere/Thing.payment' }, // a namespace that does not exist
+      { out: 'invoice' },
+      { out: 'ghost' },
+      { out: 'hit' },
+      { out: 'ledger' },
+      { out: 'lost' }
+    ];
+    const errs = targets.map((t) =>
+      wire(
+        thrown(
+          { where: { _walk: t } },
+          resolvers((ns) => ns === 'ext')
+        )
+      )
+    );
+    expect(new Set(errs).size).toBe(1);
+    expect(JSON.parse(errs[0] as string)).toEqual([
+      'FilterValidationError',
+      [
+        ['code', 'policy_denied'],
+        ['message', 'this walk is not permitted'],
+        ['name', 'FilterValidationError'],
+        ['path', ['where', '_walk']]
+      ]
+    ]);
+  });
+
+  it('denies an out field the caller can see when its target namespace is unreadable', () => {
+    // `ghost` targets a type `app` does not have: still the uniform denial, never walk_unknown_ref.
+    for (const out of ['invoice', 'ghost']) {
+      const err = thrown(
+        { where: { _walk: { out } } },
+        resolvers((ns) => ns !== 'app')
+      );
+      expect({ code: err.code, message: err.message }).toEqual(DENIED);
+    }
+  });
+
+  it('refuses a virtual type with walk_unknown_ref and another store with walk_cross_store', () => {
+    const r = resolvers(() => true);
+    const refused = (walk: Record<string, unknown>) => {
+      const err = thrown({ where: { _walk: walk } }, r);
+      return { code: err.code, message: err.message, path: err.path };
+    };
+    expect(refused({ in: 'app/Hit.payment' })).toEqual({
+      code: 'walk_unknown_ref',
+      message: "unknown type 'app/Hit'",
+      path: ['where', '_walk', 'in']
+    });
+    expect(refused({ out: 'hit' })).toEqual({
+      code: 'walk_unknown_ref',
+      message: "unknown type 'app/Hit'",
+      path: ['where', '_walk', 'out']
+    });
+    expect(refused({ in: 'bridge/Ledger.payment' })).toMatchObject({
+      code: 'walk_cross_store',
+      path: ['where', '_walk', 'in']
+    });
+    expect(refused({ in: 'bridge/Ledger.payment' }).message).toContain("'bridge'");
+    expect(refused({ out: 'ledger' })).toMatchObject({
+      code: 'walk_cross_store',
+      path: ['where', '_walk', 'out']
+    });
+    // The far type resolves before the store rule.
+    expect(refused({ in: 'bridge/Shadow.payment' }).code).toBe('walk_unknown_ref');
+    expect(refused({ in: 'nowhere/Thing.payment' })).toMatchObject({
+      code: 'walk_unknown_ref',
+      message: "unknown type 'nowhere/Thing'"
+    });
+    // A stored type on the same store validates, as does a walk back into the seed.
+    for (const walk of [
+      { in: 'app/Invoice.payment' },
+      { out: 'invoice', where: { _walk: { out: 'payment' } } }
+    ]) {
+      expect(() =>
+        validateFilter({
+          where: { _walk: walk } as WhereClause,
+          typeSchema: SPACES.ext?.Payment as TypeSchema,
+          capabilities: CAPS,
+          namespace: 'ext',
+          typeName: 'Payment',
+          ...r
+        })
+      ).not.toThrow();
+    }
+    // The far field must point at the near namespace's type.
+    expect(refused({ in: 'app/Invoice.self' })).toMatchObject({
+      code: 'walk_unknown_ref',
+      path: ['where', '_walk', 'in']
+    });
+    expect(
+      thrown({ where: { _walk: { in: 'app/Invoice.payment' } } }, r, 'Refund').message
+    ).toMatch(/^'app\/Invoice\.payment' points at 'Payment', not 'Refund'/);
+    expect(thrown({ where: { _walk: { in: 'app/Invoice.payment' } } }, r, 'Refund')).toMatchObject({
+      code: 'walk_unknown_ref',
+      path: ['where', '_walk', 'in']
+    });
+  });
+
+  it('refuses a virtual type reached by a second hop inside another namespace', () => {
+    const r = resolvers(() => true);
+    for (const [walk, dir] of [
+      [{ out: 'hit' }, 'out'],
+      [{ in: 'app/Hit.invoice' }, 'in']
+    ] as const) {
+      const err = thrown({ where: { _walk: { out: 'invoice', where: { _walk: walk } } } }, r);
+      expect({ code: err.code, message: err.message, path: err.path }).toEqual({
+        code: 'walk_unknown_ref',
+        message: "unknown type 'app/Hit'",
+        path: ['where', '_walk', 'where', '_walk', dir]
+      });
+    }
+    // A hop back into the seed namespace keeps the seed's path: no stored-ness question.
+    r.isStoredType.mockClear();
+    validateFilter({
+      where: { _walk: { out: 'invoice', where: { _walk: { out: 'payment' } } } } as WhereClause,
+      typeSchema: SPACES.ext?.Payment as TypeSchema,
+      capabilities: CAPS,
+      namespace: 'ext',
+      typeName: 'Payment',
+      ...r
+    });
+    expect(r.isStoredType.mock.calls).toEqual([[{ ns: 'app', type: 'Invoice' }]]);
+  });
+
+  it('lists only readable namespaces in refsHint', () => {
+    const notVault = resolvers((ns) => ns !== 'vault');
+    const inbound = thrown({ where: { _walk: { in: 'ext/Payment.amount' } } }, notVault);
+    expect(inbound.message).toBe(
+      "'ext/Payment.amount' is not a crossRef field; 'in' names a crossRef on another type that points at 'Payment': 'ext/Refund.payment', 'app/Invoice.payment', 'app/Hit.payment', 'bridge/Ledger.payment', 'bridge/Shadow.payment'"
+    );
+    const outbound = thrown({ where: { _walk: { out: 'amount' } } }, notVault);
+    expect(outbound.message).toBe(
+      "'amount' is not a crossRef field; 'out' takes a crossRef of 'Payment': invoice, ghost, hit, lost, ledger"
+    );
+    expect(notVault.schemaOf).not.toHaveBeenCalledWith('vault');
+    // With only the seed readable, the hints are the single-namespace ones.
+    const seedOnly = resolvers((ns) => ns === 'ext');
+    expect(thrown({ where: { _walk: { in: 'ext/Payment.amount' } } }, seedOnly).message).toBe(
+      "'ext/Payment.amount' is not a crossRef field; 'in' names a crossRef on another type that points at 'Payment': 'ext/Refund.payment'"
+    );
+    expect(thrown({ where: { _walk: { out: 'amount' } } }, seedOnly).message).toBe(
+      "'amount' is not a crossRef field; 'Payment' has no crossRef to follow out"
+    );
   });
 });

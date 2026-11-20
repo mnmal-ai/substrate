@@ -203,6 +203,115 @@ describe.skipIf(!POSTGRES_URL)('index advisor (pg)', () => {
     }
   }, 60_000);
 
+  it("records a slow walk into another namespace on that namespace's type, never the seed's same-named one", async () => {
+    const extNs = `${ns}_ext`;
+    const appNs = `${ns}_app`;
+    const status: FieldDef = { kind: 'scalar', type: 'string' };
+    // Both namespaces declare an Invoice with the same fields.
+    const invoice = {
+      fields: { status, payment: { kind: 'crossRef', ns: extNs, type: 'Payment' } as FieldDef },
+      expectedSize: 'large' as const
+    };
+    const extDef = defineNamespace(extNs, { Payment: { fields: { status } }, Invoice: invoice });
+    const appDef = defineNamespace(appNs, { Invoice: invoice });
+    const plugin = { name: extNs, contractVersion: '*', namespaces: [extDef, appDef] };
+    const nsDefs = new Map([
+      [extNs, extDef],
+      [appNs, appDef]
+    ]);
+    let composed: ComposeResult | undefined;
+    const typeDefLookup = makeTypeDefLookupFactory(nsDefs, (n) => composed?.engine.registryFor(n))(
+      extNs
+    );
+    const edges = new PgEdgesStore({ sql });
+    const dataset = new PgDataset({ namespace: 'default', sql, edgesStore: edges, typeDefLookup });
+    const datasets = buildPluginDatasetMap(
+      [plugin],
+      dataset,
+      sql,
+      edges,
+      makeFieldDefLookupFactory(nsDefs),
+      typeDefLookup
+    );
+    const system = new PgDataset({ namespace: '_system', sql, edgesStore: edges, typeDefLookup });
+    datasets._system = system;
+    await reconcileDeclaredStorage((n) => datasets[n], nsDefs);
+
+    // Every read seeded in ext takes at least 60 ms; a walk's far reads run inside it.
+    const payments = datasets[extNs] as PgDataset;
+    const read = payments.read.bind(payments);
+    payments.read = async (...args) => {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      return read(...args);
+    };
+
+    composed = await compose({
+      server: new MemorySubstrateServer(),
+      dataset,
+      edges,
+      datasets,
+      coordinators: [plugin],
+      systemActor: 'local-dev',
+      advisor: { intervalMs: 3_600_000, storeProfile: 'scale' }
+    });
+    const recommendations = async (namespace: string) =>
+      (await system.read('IndexRecommendation', { where: { namespace: { eq: namespace } } })).rows;
+    try {
+      await reconcileRegisteredStorage(composed.engine, composed.datasets, nsDefs);
+      await system.write('StoreProfile', [
+        { id: STORE_PROFILE_ID, profile: 'scale', updatedReason: 'test' }
+      ]);
+      // Either Invoice is big enough to advise on.
+      for (const n of [extNs, appNs]) {
+        await insertOpen(sql, n, 'Invoice', ROWS);
+        await sql.unsafe(`VACUUM (ANALYZE) ${await relationOf(sql, n, 'Invoice')}`);
+      }
+
+      for (let i = 0; i < 20; i++) {
+        const env = await composed.engine.query({
+          frame: {
+            [`${extNs}/Payment`]: {
+              params: {
+                where: {
+                  _walk: { in: `${appNs}/Invoice.payment`, where: { status: { eq: 'open' } } }
+                },
+                limit: 5
+              },
+              fields: { id: true }
+            }
+          },
+          ctx
+        });
+        expect(env.errors ?? []).toEqual([]);
+        // The hop is served and status is not. Both Invoices have these fields and this
+        // index, so the plan cannot say which was judged; the recommendation rows below do.
+        expect(env._diagnostics?.[`${extNs}/Payment`]?.plan).toEqual([
+          { path: ['where', '_walk'], kind: 'hop', served: true },
+          {
+            path: ['where', '_walk', 'where', 'status'],
+            kind: 'filter',
+            served: false,
+            recommend: { fields: ['payment', 'status'] }
+          }
+        ]);
+      }
+      expect(await composed.runAdvisorNow?.()).toEqual({ upserted: 1 });
+
+      const rows = await recommendations(appNs);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ type: 'Invoice', action: 'add', state: 'open' });
+      expect(JSON.parse(String(rows[0]?.declarationJson))).toEqual({
+        fields: ['payment', 'status']
+      });
+      expect(await recommendations(extNs)).toEqual([]);
+    } finally {
+      await composed.stop();
+      await deleteNamespaces(sql, extNs, appNs);
+      await deleteRecommendations(sql, extNs);
+      await deleteRecommendations(sql, appNs);
+    }
+  }, 60_000);
+
   it("advises on a proposed type declaring expectedSize 'large' at a size it would not otherwise", async () => {
     const pns = `${ns}_hint`;
     const plugin = createProposalsPlugin({ ownedNamespaces: [pns], pubsub: createNoopPubSub() });

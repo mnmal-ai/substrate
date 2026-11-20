@@ -393,6 +393,8 @@ export interface Dataset {
    * mutates with `cross_tx_scope_refused`.
    */
   readonly txScopeId: string;
+  /** Datasets with equal `walkStoreId` can be walked across in one read. */
+  readonly walkStoreId?: string;
   read(type: string, params: ReadParams): Promise<ReadResult>;
   write(type: string, rows: WriteRow[], options?: WriteOptions): Promise<WriteResult>;
   tombstone(type: string, ids: Id[]): Promise<DeleteResult>;

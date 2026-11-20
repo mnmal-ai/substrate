@@ -13,6 +13,7 @@
 import {
   computedFieldOwner,
   hasComputedFields,
+  type TypeRef,
   walkGrammarPath,
   whereContainsOperator
 } from '@mnmal-ai/substrate-filter';
@@ -29,6 +30,7 @@ import {
   type ValidateFilterInput,
   validateFilter
 } from '../filter/validator.js';
+import type { WalkResolvers } from '../filter/walk-validator.js';
 import { hopResolver } from '../walk-types.js';
 import { addError } from './internals.js';
 
@@ -57,6 +59,8 @@ export interface FilterGuardInput {
   dataset: Pick<Dataset, 'capabilities'> | undefined;
   /** A by-filter mutation's target type: its `params.where` is validated against it. */
   filterTarget?: string;
+  /** What lets the frame's walks leave `ns`. Absent: no walk leaves it. */
+  walk?: WalkResolvers;
 }
 
 export function runFilterGuard(deps: FilterGuardDeps, input: FilterGuardInput): boolean {
@@ -105,11 +109,12 @@ export function runFilterGuard(deps: FilterGuardDeps, input: FilterGuardInput): 
       // A `select` name is a computed key the dataset adds to each row.
       const selectNames = (entry.params?.select ?? {}) as object;
       const types = deps.schemaFor(ns).types;
-      const resolve = hopResolver(ns, (t) => (Object.hasOwn(types, t) ? types[t] : undefined));
+      const resolve = hopResolver(ns, types, input.walk);
+      const schemaOf = (n: string) => (n === ns ? types : input.walk?.schemaOf?.(n));
       const unknown: string[] = [];
       const collect = (
         fields: Record<string, unknown>,
-        type: string,
+        type: TypeRef,
         declared: Record<string, unknown>,
         prefix: string
       ): void => {
@@ -117,13 +122,13 @@ export function runFilterGuard(deps: FilterGuardDeps, input: FilterGuardInput): 
           if (isWalkSelection(f, sel)) {
             if (f === '_agg') continue;
             const nested = sel as Record<string, unknown>;
-            let far: string;
+            let far: TypeRef;
             try {
               far = resolve(nested._walk as Record<string, unknown>, type, []);
             } catch {
-              continue; // an unresolvable hop is the validator's to refuse
+              continue; // an unresolvable or refused hop is the validator's to refuse
             }
-            const farFields = types[far]?.fields;
+            const farFields = schemaOf(far.ns)?.[far.type]?.fields;
             if (farFields && typeof nested.fields === 'object' && nested.fields !== null) {
               collect(nested.fields as Record<string, unknown>, far, farFields, `${prefix}${f}.`);
             }
@@ -139,7 +144,7 @@ export function runFilterGuard(deps: FilterGuardDeps, input: FilterGuardInput): 
           }
         }
       };
-      collect(entry.fields as Record<string, unknown>, name, typeSchema.fields, '');
+      collect(entry.fields as Record<string, unknown>, { ns, type: name }, typeSchema.fields, '');
       if (unknown.length > 0) {
         envelope._diagnostics ??= {};
         envelope._diagnostics[key] = { unknownProjectionFields: unknown };
@@ -164,16 +169,17 @@ export function runFilterGuard(deps: FilterGuardDeps, input: FilterGuardInput): 
       ...(orderBy !== undefined ? { orderBy } : {}),
       ...(walks || selects ? walkInput(entry) : {})
     },
-    walkPath
+    walkPath,
+    input.walk
   );
 }
 
 /**
- * Validates `filter` against `typeName`'s published schema. Records the
- * refusal and returns false on a `FilterValidationError`; a type registered
- * but absent from the schema is let through with a diagnostic, unless the
- * frame walks (`walkPath`): a walk needs the schema to resolve, so it is
- * refused there, fail-closed.
+ * Validates `filter` against `typeName`'s published schema, its walks leaving
+ * `ns` only as `walk` allows. Records the refusal and returns false on a
+ * `FilterValidationError`; a type registered but absent from the schema is let
+ * through with a diagnostic, unless the frame walks (`walkPath`): a walk needs
+ * the schema to resolve, so it is refused there, fail-closed.
  */
 function validateAgainst(
   deps: FilterGuardDeps,
@@ -183,7 +189,8 @@ function validateAgainst(
   typeName: string,
   dataset: Pick<Dataset, 'capabilities'>,
   filter: Partial<ValidateFilterInput>,
-  walkPath: string[] | null = null
+  walkPath: string[] | null = null,
+  walk: WalkResolvers = {}
 ): boolean {
   try {
     let typeSchema = deps.schemaFor(ns).types[typeName];
@@ -212,14 +219,13 @@ function validateAgainst(
         filterValidationSkipped: `type '${typeName}' is registered but absent from the '${ns}' schema`
       };
     } else {
-      // Own keys only: a caller's type name may be `constructor` or `__proto__`.
       const types = deps.schemaFor(ns).types;
       validateFilter({
         ...filter,
+        ...walk,
         typeSchema,
         capabilities: dataset.capabilities,
-        schemaOf: (type) => (Object.hasOwn(types, type) ? types[type] : undefined),
-        typeNames: Object.keys(types),
+        schemaOf: (n) => (n === ns ? types : walk.schemaOf?.(n)),
         namespace: ns,
         typeName
       });

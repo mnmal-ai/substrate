@@ -5,6 +5,12 @@
  * so the three can never disagree on which hops a frame has.
  */
 
+/** A type in a namespace. */
+export interface TypeRef {
+  ns: string;
+  type: string;
+}
+
 /** One hop of a frame entry. */
 export interface WalkHop {
   /** A `_walk` in a where, an `_agg` (in a where or in `fields._agg`), or a nested selection's `_walk`. */
@@ -31,10 +37,10 @@ const isObj = (v: unknown): v is Record<string, unknown> =>
  */
 export function forEachWalkHop(
   entry: Record<string, unknown>,
-  seed: string,
-  visit: (hop: WalkHop, near: string) => string | undefined
+  seed: TypeRef,
+  visit: (hop: WalkHop, near: TypeRef) => TypeRef | undefined
 ): void {
-  const inWhere = (v: unknown, type: string, path: string[]): void => {
+  const inWhere = (v: unknown, type: TypeRef, path: string[]): void => {
     if (Array.isArray(v)) {
       v.forEach((c, i) => {
         inWhere(c, type, [...path, String(i)]);
@@ -54,7 +60,7 @@ export function forEachWalkHop(
     }
   };
 
-  const inFields = (fields: unknown, type: string, path: string[]): void => {
+  const inFields = (fields: unknown, type: TypeRef, path: string[]): void => {
     if (!isObj(fields)) return;
     for (const [name, sel] of Object.entries(fields)) {
       const at = [...path, name];

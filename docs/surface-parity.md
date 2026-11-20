@@ -311,7 +311,7 @@ params for a subscription or a stream gets `unknown_param`.
 Typed edge walks (`_walk`, `_agg`, `count`, `aggregate`, `groupBy`, `having`, `offset`) are
 query-only on every surface. `query` answers them; `subscribe` and `stream` refuse a
 frame that uses one with `walks_in_subscription`, and `mutate` refuses them with
-`walks_in_mutation`. `select` is no subscribe or stream param, so a frame that sends it gets
+`walks_in_mutation`. A query walk may cross into another namespace on the same store when the caller can read every namespace it touches. `select` is no subscribe or stream param, so a frame that sends it gets
 `unknown_param`, like any param beyond `where` and `orderBy`; `where.$expr` is allowed in a
 subscription's `where`.
 

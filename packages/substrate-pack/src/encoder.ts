@@ -357,10 +357,11 @@ function encodeWalkSlot(
       if (!Array.isArray(value)) {
         throw new PackEncodeError('expected array for nested selection', path);
       }
-      const plan = getRowPlan(slot.fields, resolveFieldMap(schema, slot.type, path));
+      const [far, at] = inNamespace(slot.ns, slot.type, 'walk', schema, path, ctx);
+      const plan = getRowPlan(slot.fields, resolveFieldMap(far, slot.type, path));
       return value.map((row, idx) => {
         path.push(`[${idx}]`);
-        const out = encodeRowWithPlan(row, plan, schema, path, ctx);
+        const out = encodeRowWithPlan(row, plan, far, path, at);
         path.pop();
         return out;
       });
@@ -503,30 +504,37 @@ function encodeCrossRef(
   path: string[],
   ctx: EncodeContext
 ): unknown {
-  if (def.ns === ctx.currentNs) {
-    // In-namespace hop — reuse the current schema.
-    const targetFields = resolveFieldMap(schema, def.type, path);
-    return encodeRowWithPlan(value, getRowPlan(selection, targetFields), schema, path, ctx);
-  }
+  const [target, at] = inNamespace(def.ns, def.type, 'crossRef', schema, path, ctx);
+  const targetFields = resolveFieldMap(target, def.type, path);
+  return encodeRowWithPlan(value, getRowPlan(selection, targetFields), target, path, at);
+}
+
+/**
+ * The schema rows of `ns` encode under, and the context to encode them in:
+ * the current ones when `ns` is current, else `ctx.schemas[ns]`. `hop` names
+ * what crossed into `ns` when its schema is missing.
+ */
+function inNamespace(
+  ns: string,
+  type: string,
+  hop: 'crossRef' | 'walk',
+  schema: Schema,
+  path: string[],
+  ctx: EncodeContext
+): [Schema, EncodeContext] {
+  if (ns === ctx.currentNs) return [schema, ctx];
   const schemas = ctx.schemas;
   if (schemas === undefined) {
+    throw new PackEncodeError(`cross-namespace ${hop} '${ns}/${type}' requires ctx.schemas`, path);
+  }
+  const target = Object.hasOwn(schemas, ns) ? schemas[ns] : undefined;
+  if (target === undefined) {
     throw new PackEncodeError(
-      `cross-namespace crossRef '${def.ns}/${def.type}' requires ctx.schemas`,
+      `cross-namespace ${hop} target namespace '${ns}' not in ctx.schemas`,
       path
     );
   }
-  const targetSchema = schemas[def.ns];
-  if (targetSchema === undefined) {
-    throw new PackEncodeError(
-      `cross-namespace crossRef target namespace '${def.ns}' not in ctx.schemas`,
-      path
-    );
-  }
-  const targetFields = resolveFieldMap(targetSchema, def.type, path);
-  return encodeRowWithPlan(value, getRowPlan(selection, targetFields), targetSchema, path, {
-    ...ctx,
-    currentNs: def.ns
-  });
+  return [target, { ...ctx, currentNs: ns }];
 }
 
 // ---------------------------------------------------------------------------

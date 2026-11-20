@@ -117,6 +117,7 @@ export {
 } from './walk-forms.js';
 export {
   forEachWalkHop,
+  type TypeRef,
   usesWalkGrammar,
   type WalkHop,
   walkGrammarPath,

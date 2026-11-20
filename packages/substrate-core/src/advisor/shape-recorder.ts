@@ -4,6 +4,7 @@
  * operand values, so nothing a caller filtered on is kept.
  */
 
+import type { TypeRef } from '@mnmal-ai/substrate-filter';
 import type { FieldDef } from '@mnmal-ai/substrate-types';
 import { LogHistogram } from '../metrics/histogram.js';
 import type { WalkSite } from './walk-service.js';
@@ -101,15 +102,14 @@ export function readShapeOf(
 }
 
 /**
- * One far-type shape per inbound walk: the far rows are read by the hop's
- * crossRef (an equality per seed row), then the walk's own filters, in the
- * walk's order. An outbound hop reads one row by primary key, which no index
- * could speed, so it has none.
+ * One far-type shape per inbound walk, in the far type's own namespace: the
+ * far rows are read by the hop's crossRef (an equality per seed row), then the
+ * walk's own filters, in the walk's order. An outbound hop reads one row by
+ * primary key, which no index could speed, so it has none.
  */
 export function walkShapesOf(
-  namespace: string,
   sites: WalkSite[],
-  fieldsOf: (type: string) => Record<string, FieldDef> | undefined
+  fieldsOf: (ref: TypeRef) => Record<string, FieldDef> | undefined
 ): ReadShape[] {
   const out: ReadShape[] = [];
   for (const s of sites) {
@@ -117,7 +117,7 @@ export function walkShapesOf(
     const wheres = s.wheres.map((w) => w.where);
     const where = wheres.length === 1 ? wheres[0] : { AND: wheres };
     const order = (s.order?.by ?? []).map(([f, d]) => ({ [f]: d }));
-    const shape = readShapeOf(namespace, s.far, fieldsOf(s.far) ?? {}, where, order);
+    const shape = readShapeOf(s.far.ns, s.far.type, fieldsOf(s.far) ?? {}, where, order);
     shape.filters.unshift({ field: s.crossRef, op: 'eq' });
     out.push(shape);
   }

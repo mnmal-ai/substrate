@@ -5,6 +5,7 @@
  */
 
 import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-dataset-memory';
+import type { TypeRef } from '@mnmal-ai/substrate-filter';
 import type { FieldDef, ReadParams, ReadResult } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
 import { walkShapesOf } from '../src/advisor/shape-recorder.js';
@@ -238,10 +239,10 @@ describe('walk shapes', () => {
           up: { _walk: { out: 'cert' } }
         }
       },
-      'Cert',
-      (node) => (node.in !== undefined ? 'Observation' : 'Cert')
+      { ns: 'cards', type: 'Cert' },
+      (node) => ({ ns: 'cards', type: node.in !== undefined ? 'Observation' : 'Cert' })
     );
-    const shapes = walkShapesOf('cards', sites, () => fields);
+    const shapes = walkShapesOf(sites, () => fields);
     expect(shapes).toEqual([
       {
         namespace: 'cards',
@@ -265,5 +266,34 @@ describe('walk shapes', () => {
         orderBy: [['observedAt', 'desc']]
       }
     ]);
+  });
+
+  it('shapes a walk into another namespace in that namespace, with its fields', () => {
+    const sites = walkSites(
+      {
+        params: {
+          where: { _walk: { in: 'app/Invoice.payment', where: { total: { gte: 5 } } } }
+        }
+      },
+      { ns: 'ext', type: 'Payment' },
+      () => ({ ns: 'app', type: 'Invoice' })
+    );
+    const asked: TypeRef[] = [];
+    const shapes = walkShapesOf(sites, (ref) => {
+      asked.push(ref);
+      return fields;
+    });
+    expect(shapes).toEqual([
+      {
+        namespace: 'app',
+        type: 'Invoice',
+        filters: [
+          { field: 'payment', op: 'eq' },
+          { field: 'total', op: 'gte' }
+        ],
+        orderBy: []
+      }
+    ]);
+    expect(asked).toEqual([{ ns: 'app', type: 'Invoice' }]);
   });
 });

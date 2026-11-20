@@ -9,12 +9,13 @@
 import { Engine, loadPlugins, MemoryBridgeRegistry, runSweep } from '@mnmal-ai/substrate-core';
 import { MemoryDatasetRegistry } from '@mnmal-ai/substrate-dataset-memory';
 import { PgDataset, PgEdgesStore } from '@mnmal-ai/substrate-dataset-pg';
-import { defineNamespace, field } from '@mnmal-ai/substrate-sdk';
+import { autoCrudOptionsOf, defineNamespace, field } from '@mnmal-ai/substrate-sdk';
 import type { CoordinatorPlugin, Dataset } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, it } from 'vitest';
 import { CONTROL_NAMESPACE } from '../src/control-plane.js';
 import { createNoopPubSub, createProposalsPlugin, storageSettled } from '../src/index.js';
+import { crossWalks } from './_cross-walks.js';
 import { deleteNamespaces } from './_layout.js';
 import { referenceLifecycle } from './_refs-lifecycle.js';
 
@@ -37,8 +38,20 @@ describe.skipIf(!POSTGRES_URL)('a reference to a code-defined type (pg)', () => 
     await clean();
     const edges = new PgEdgesStore({ sql });
     const datasets = new MemoryDatasetRegistry();
+    // A walk reads each hop's field definitions from the engine's registries, built below.
+    const lookupFor = (ns: string) => (type: string, f: string) =>
+      engine?.registryFor(ns)?.get(type)?.fields[f];
     for (const ns of [EXT, APP, CONTROL_NAMESPACE]) {
-      datasets.set(ns, new PgDataset({ namespace: ns, sql, edgesStore: edges }));
+      datasets.set(
+        ns,
+        new PgDataset({
+          namespace: ns,
+          sql,
+          edgesStore: edges,
+          fieldDefLookup: lookupFor(ns),
+          fieldDefLookupFor: lookupFor
+        })
+      );
     }
     const deps = {
       datasets,
@@ -64,7 +77,12 @@ describe.skipIf(!POSTGRES_URL)('a reference to a code-defined type (pg)', () => 
       datasetFor
     });
     const loaded = await loadPlugins({ plugins: [proposals, app], datasetFor, edges });
-    engine = new Engine({ namespaces: loaded.namespaces, datasets, edges });
+    engine = new Engine({
+      namespaces: loaded.namespaces,
+      datasets,
+      edges,
+      isStoredEntry: (entry) => autoCrudOptionsOf(entry.resolver) !== undefined
+    });
     await loaded.runOnStart(engine);
   }, 60_000);
 
@@ -78,5 +96,22 @@ describe.skipIf(!POSTGRES_URL)('a reference to a code-defined type (pg)', () => 
     const grants = { '*': ['read', 'mutate', 'substrate.propose'] };
     const ctx = { identity: { id: 'agent', tokenId: 'agent', grants }, headers: {}, meta: {} };
     await referenceLifecycle(engine, EXT, APP, ctx, sweep);
+  });
+
+  it('walks across the reference for a reader of both namespaces, and denies one of ext only', async () => {
+    const ctx = (grants: Record<string, string[]>) => ({
+      identity: { id: 'agent', tokenId: 'agent', grants },
+      headers: {},
+      meta: {}
+    });
+    await crossWalks(
+      engine,
+      EXT,
+      APP,
+      ctx({ '*': ['read', 'mutate', 'substrate.propose'] }),
+      ctx({ [EXT]: ['read'], [APP]: ['read'] }),
+      ctx({ [EXT]: ['read'] }),
+      'Remittance'
+    );
   });
 });

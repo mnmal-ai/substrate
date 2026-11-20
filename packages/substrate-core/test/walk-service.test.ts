@@ -7,8 +7,10 @@
  */
 
 import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-dataset-memory';
+import type { TypeRef } from '@mnmal-ai/substrate-filter';
 import type {
   FieldDef,
+  Identity,
   IndexPlan,
   PlanClause,
   ReadParams,
@@ -59,11 +61,17 @@ const INDEXES: Record<string, Indexes> = {
   Note: []
 };
 
-const schemaOf = (t: string) => (Object.hasOwn(TYPES, t) ? { fields: TYPES[t] ?? {} } : undefined);
+const SCHEMAS = Object.fromEntries(Object.entries(TYPES).map(([t, fields]) => [t, { fields }]));
+const schemaOf = (t: string) => (Object.hasOwn(SCHEMAS, t) ? SCHEMAS[t] : undefined);
 const classify = (entry: Record<string, unknown>, seed = 'Cert'): PlanClause[] =>
   classifyWalkService(
-    { entry, seed, resolve: hopResolver('cards', schemaOf), fieldsOf: (t) => schemaOf(t)?.fields },
-    (t) => INDEXES[t] ?? []
+    {
+      entry,
+      seed: { ns: 'cards', type: seed },
+      resolve: hopResolver('cards', SCHEMAS),
+      fieldsOf: (r) => schemaOf(r.type)?.fields
+    },
+    (r) => INDEXES[r.type] ?? []
   );
 const where = (w: unknown) => ({ params: { where: w }, fields: { id: true } });
 const at = (plan: PlanClause[], ...path: string[]) =>
@@ -351,7 +359,7 @@ describe('engine: plan and walk shapes', () => {
 describe('walk forms (#1815) and a nested list in natural order (#1821)', () => {
   const OBS = 'cards/Observation.cert';
   // Windows need an index leading with the window's field.
-  const indexes = (t: string): Indexes =>
+  const indexes = ({ type: t }: TypeRef): Indexes =>
     t === 'Observation'
       ? [...(INDEXES.Observation ?? []), idx('observed', ['observedAt', 'desc'], ['id', 'asc'])]
       : (INDEXES[t] ?? []);
@@ -359,9 +367,9 @@ describe('walk forms (#1815) and a nested list in natural order (#1821)', () => 
     classifyWalkService(
       {
         entry,
-        seed,
-        resolve: hopResolver('cards', schemaOf),
-        fieldsOf: (t) => schemaOf(t)?.fields,
+        seed: { ns: 'cards', type: seed },
+        resolve: hopResolver('cards', SCHEMAS),
+        fieldsOf: (r) => schemaOf(r.type)?.fields,
         naturalOrder: () => ({ createdAt: 'desc' })
       },
       indexes
@@ -528,5 +536,147 @@ describe('walk forms (#1815) and a nested list in natural order (#1821)', () => 
       'l2',
       'l3'
     ]);
+  });
+});
+
+describe('engine: a walk into another namespace is planned and shaped there', () => {
+  const num: FieldDef = { kind: 'scalar', type: 'number' };
+  const payment: FieldDef = { kind: 'crossRef', ns: 'ext', type: 'Payment', onDelete: 'set_null' };
+  const invoice: FieldDef = { kind: 'crossRef', ns: 'app', type: 'Invoice', onDelete: 'set_null' };
+  // Both namespaces declare an Invoice; only app's declares dueOn and is indexed on (payment, total).
+  const TYPES2: Record<string, Record<string, Record<string, FieldDef>>> = {
+    ext: { Payment: { amount: num, invoice }, Invoice: { payment, total: num } },
+    app: { Invoice: { payment, total: num, dueOn: { kind: 'scalar', type: 'date' } } }
+  };
+  const PLANS: Record<string, Record<string, Indexes>> = {
+    ext: { Payment: [eager('invoice')], Invoice: [eager('payment')] },
+    app: {
+      Invoice: [eager('payment'), idx('payment_total', ['payment', 'asc'], ['total', 'asc'])]
+    }
+  };
+
+  /** `ext` and `app` siblings on one memory store; each handle answers `indexPlan` from its own plans and logs the ask. */
+  function build(recorder?: ShapeRecorder) {
+    const asked: string[] = [];
+    const ext = new MemoryDataset({ namespace: 'ext', walkReference: true });
+    const handles = { ext, app: ext.forNamespace('app') as MemoryDataset };
+    const datasets = new MemoryDatasetRegistry();
+    const namespaces = new Map<string, NamespaceConfig>();
+    const stored = new WeakSet<object>();
+    for (const [ns, ds] of Object.entries(handles)) {
+      Object.assign(ds, {
+        indexPlan: async (type: string, namespace: string) => {
+          asked.push(`${ns} handle: ${namespace}/${type}`);
+          return { indexes: PLANS[ns]?.[type] ?? [] };
+        }
+      });
+      datasets.set(ns, ds);
+      const registry = new Registry();
+      for (const [name, fields] of Object.entries(TYPES2[ns] ?? {})) {
+        const resolver = async (_ctx: unknown, args: { params?: unknown }): Promise<ReadResult> =>
+          ds.read(name, (args.params ?? {}) as ReadParams);
+        stored.add(resolver);
+        registry.register(name, { fields, policy: () => ({ allow: true }), resolver });
+      }
+      namespaces.set(ns, { registry });
+    }
+    const engine = new Engine({
+      namespaces,
+      datasets,
+      edges: new MemoryEdgesStore({ now: () => new Date() }),
+      isStoredEntry: (e) => stored.has(e.resolver),
+      ...(recorder !== undefined ? { shapeRecorder: recorder } : {})
+    });
+    return { engine, asked };
+  }
+  const ctx = { identity: null };
+  const crossing = {
+    'ext/Payment': where({
+      _walk: {
+        in: 'app/Invoice.payment',
+        where: { total: { gte: 5 }, dueOn: { lt: '2026-12-01T00:00:00Z' } }
+      }
+    })
+  };
+
+  it("plans each clause against the far namespace's type, asking that namespace's handle", async () => {
+    const { engine, asked } = build();
+    const env = await engine.query({ frame: crossing, ctx });
+    expect(env.errors).toBeUndefined();
+    expect(env._diagnostics?.['ext/Payment']?.plan).toEqual([
+      { path: ['where', '_walk'], kind: 'hop', served: true },
+      // app's (payment, total) index serves it; ext's Invoice has none.
+      { path: ['where', '_walk', 'where', 'total'], kind: 'filter', served: true },
+      // Only app's Invoice declares dueOn, so only it can recommend an index on it.
+      {
+        path: ['where', '_walk', 'where', 'dueOn'],
+        kind: 'filter',
+        served: false,
+        recommend: { fields: ['payment', 'dueOn'] }
+      }
+    ]);
+    expect(asked.sort()).toEqual(['app handle: app/Invoice', 'ext handle: ext/Payment']);
+  });
+
+  it("a walk to the seed namespace's same-named type is planned against that one", async () => {
+    const { engine, asked } = build();
+    const env = await engine.query({
+      frame: {
+        'ext/Payment': where({ _walk: { in: 'ext/Invoice.payment', where: { total: { gte: 5 } } } })
+      },
+      ctx
+    });
+    expect(env._diagnostics?.['ext/Payment']?.plan).toEqual([
+      { path: ['where', '_walk'], kind: 'hop', served: true },
+      {
+        path: ['where', '_walk', 'where', 'total'],
+        kind: 'filter',
+        served: false,
+        recommend: { fields: ['payment', 'total'] }
+      }
+    ]);
+    expect(asked.sort()).toEqual(['ext handle: ext/Invoice', 'ext handle: ext/Payment']);
+  });
+
+  it('records the far shape in the far namespace; an outbound hop records none', async () => {
+    const recorder = new ShapeRecorder();
+    const { engine } = build(recorder);
+    await engine.query({ frame: crossing, ctx });
+    await engine.query({
+      frame: {
+        'ext/Payment': {
+          params: {},
+          fields: { id: true, inv: { _walk: { out: 'invoice' }, fields: { total: true } } }
+        }
+      },
+      ctx
+    });
+    const shapes = recorder.drain().map((o) => o.shape);
+    expect(shapes.sort((a, b) => a.namespace.localeCompare(b.namespace))).toEqual([
+      {
+        namespace: 'app',
+        type: 'Invoice',
+        filters: [
+          { field: 'payment', op: 'eq' },
+          { field: 'total', op: 'gte' },
+          { field: 'dueOn', op: 'lt' }
+        ],
+        orderBy: []
+      },
+      { namespace: 'ext', type: 'Payment', filters: [], orderBy: [['createdAt', 'desc']] }
+    ]);
+  });
+
+  it('a crossing refused for the caller records no shape and carries no plan', async () => {
+    const recorder = new ShapeRecorder();
+    const { engine, asked } = build(recorder);
+    const env = await engine.query({
+      frame: crossing,
+      ctx: { identity: { id: 'probe', kind: 'agent', grants: { ext: ['read'] } } as Identity }
+    });
+    expect(env.errors?.map((e) => e.code)).toEqual(['policy_denied']);
+    expect(env._diagnostics).toBeUndefined();
+    expect(recorder.drain()).toEqual([]);
+    expect(asked).toEqual([]);
   });
 });

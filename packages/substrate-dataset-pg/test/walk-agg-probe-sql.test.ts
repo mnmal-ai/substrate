@@ -55,9 +55,15 @@ const HUB = tableFor('Hub');
 
 /** A seed scope over Hub whose (hub, `key`) index runs in `dirs[key]`. */
 function scope(dirs: Record<string, 'asc' | 'desc'>): WalkScope {
-  const s = walkScope(NS, 'Hub', 'r', (t, f) => FIELDS[t]?.[f], tableFor);
+  const s = walkScope(
+    NS,
+    'Hub',
+    'r',
+    (t, f) => FIELDS[t.type]?.[f],
+    (t) => tableFor(t.type)
+  );
   s.indexDir = (t, crossRef, key) =>
-    t === 'Nbr' && crossRef === 'hub' && Object.hasOwn(dirs, key) ? dirs[key] : undefined;
+    t.type === 'Nbr' && crossRef === 'hub' && Object.hasOwn(dirs, key) ? dirs[key] : undefined;
   return s;
 }
 const project = (aggs: Record<string, WalkAgg>, s: WalkScope) =>

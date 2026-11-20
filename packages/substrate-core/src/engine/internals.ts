@@ -4,7 +4,11 @@
  */
 
 import { createHash } from 'node:crypto';
-import { listExtensionOperators, whereContainsOperator } from '@mnmal-ai/substrate-filter';
+import {
+  listExtensionOperators,
+  type TypeRef,
+  whereContainsOperator
+} from '@mnmal-ai/substrate-filter';
 import {
   type AfterTxWork,
   type BridgeFrame,
@@ -200,6 +204,12 @@ export interface EngineOptions {
   sweepHooks?: {
     bridges?: BridgeRegistry;
   };
+  /**
+   * Whether a type entry's rows are stored in its namespace's dataset (an
+   * autoCRUD type). Compose passes autoCRUD's record of the types it
+   * installed. Absent: no walk reaches a type outside its frame's namespace.
+   */
+  isStoredEntry?: (entry: RegistryEntry) => boolean;
 }
 
 /**
@@ -433,16 +443,16 @@ export function withNaturalOrder(
 
 /**
  * `fields` with each nested `{ _walk }` selection that names no `orderBy`
- * given its far type's natural order, at any depth: a nested list reads as a
- * top-level read of its type does, served by the eager `(crossRef, natural
- * order, id)` index; the datasets append `id` as the tie-break. Returns
- * `fields` itself when nothing is added.
+ * given its far type's natural order, at any depth and in the far type's own
+ * namespace: a nested list reads as a top-level read of its type does, served
+ * by the eager `(crossRef, natural order, id)` index; the datasets append `id`
+ * as the tie-break. Returns `fields` itself when nothing is added.
  */
 export function withNestedNaturalOrder<T>(
   fields: T,
-  from: string,
+  from: TypeRef,
   resolve: HopResolver,
-  orderOf: (type: string) => OrderedBy
+  orderOf: (ref: TypeRef) => OrderedBy
 ): T {
   if (typeof fields !== 'object' || fields === null || Array.isArray(fields)) return fields;
   let changed = false;

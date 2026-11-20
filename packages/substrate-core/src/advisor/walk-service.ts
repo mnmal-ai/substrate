@@ -5,7 +5,12 @@
  * here refuses anything; it only describes.
  */
 
-import { forEachWalkHop, sharedPicks, windowGroupBy } from '@mnmal-ai/substrate-filter';
+import {
+  forEachWalkHop,
+  sharedPicks,
+  type TypeRef,
+  windowGroupBy
+} from '@mnmal-ai/substrate-filter';
 import type {
   FieldDef,
   IndexPlan,
@@ -25,7 +30,8 @@ export interface WalkSite {
   path: string[];
   /** The hop node itself: a `_walk`, an `_agg` or a nested selection's `_walk`. */
   node: Record<string, unknown>;
-  far: string;
+  /** The far type, in its own namespace. */
+  far: TypeRef;
   /** The far type's crossRef an inbound hop follows; undefined for an outbound hop (a primary-key read). */
   crossRef?: string;
   /** Each `where` filtering the far rows, with its path. */
@@ -64,9 +70,9 @@ function orderOf(orderBy: unknown): Order {
  */
 export function walkSites(
   entry: Record<string, unknown>,
-  seed: string,
+  seed: TypeRef,
   resolve: HopResolver,
-  naturalOrder?: (type: string) => OrderedBy
+  naturalOrder?: (ref: TypeRef) => OrderedBy
 ): WalkSite[] {
   const out: WalkSite[] = [];
   forEachWalkHop(entry, seed, ({ kind, node, path, selection }, from) => {
@@ -206,12 +212,12 @@ export const nextKeys = (indexes: PlanIndex[], lead: string): string[] => [
 
 export interface ClassifyInput {
   entry: Record<string, unknown>;
-  seed: string;
+  seed: TypeRef;
   resolve: HopResolver;
   /** A type's declared fields, for what an index may key on. */
-  fieldsOf: (type: string) => Fields | undefined;
+  fieldsOf: (ref: TypeRef) => Fields | undefined;
   /** A type's natural order: a nested list without `orderBy` reads in it (#1821). */
-  naturalOrder?: (type: string) => OrderedBy;
+  naturalOrder?: (ref: TypeRef) => OrderedBy;
 }
 
 /**
@@ -233,7 +239,7 @@ export interface ClassifyInput {
  */
 export function classifyWalkService(
   input: ClassifyInput,
-  indexesOf: (type: string) => PlanIndex[]
+  indexesOf: (ref: TypeRef) => PlanIndex[]
 ): PlanClause[] {
   const { entry, seed, fieldsOf } = input;
   const out: PlanClause[] = [];
@@ -242,7 +248,7 @@ export function classifyWalkService(
     path: string[],
     kind: PlanClause['kind'],
     served: boolean,
-    type: string,
+    type: TypeRef,
     keys: Array<string | { field: string; dir: 'asc' | 'desc' }>
   ) => {
     const c: PlanClause = { path, kind, served };

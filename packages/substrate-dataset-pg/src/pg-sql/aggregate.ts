@@ -14,7 +14,7 @@
  * The tree is assumed validated (substrate-core walk-validator).
  */
 
-import { isDateField, isRefOperand, windowGroupBy } from '@mnmal-ai/substrate-filter';
+import { isDateField, isRefOperand, type TypeRef, windowGroupBy } from '@mnmal-ai/substrate-filter';
 import {
   type FieldDef,
   isColumnField,
@@ -250,7 +250,7 @@ function sharedScan(
   scope: WalkScope,
   alias: string
 ): {
-  type: string;
+  type: TypeRef;
   from: string;
   via?: string;
   cond: Fragment;
@@ -305,7 +305,7 @@ export function prepareWindows(
   rowCastFor: (field: string) => BodyOrderByCast | null,
   table: TypeTable,
   scope: WalkScope,
-  indexed: (type: string, field: string) => boolean
+  indexed: (type: TypeRef, field: string) => boolean
 ): Fragment {
   const groups = new Map<string, Array<[string, WalkAgg]>>();
   for (const [name, spec] of Object.entries(params.agg ?? {})) {

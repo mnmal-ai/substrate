@@ -6,8 +6,9 @@
  * - a hop follows the crossRef value in the row (its column on a type table,
  *   else its BODY or `extra` key): inbound through the eager crossRef index
  *   expression, outbound through the far row's id;
- * - every far row is read from its type's table (`scope.tableFor`), pinned to
- *   its namespace and type there on `rows` (partition pruning), and must be live;
+ * - every far row is read from its own type's table (`scope.tableFor`) in the
+ *   hop's namespace (an `in` hop's written `<ns>`, an `out` crossRef's target
+ *   namespace), so a walk may cross namespaces on one store, and must be live;
  * - `any` → EXISTS, `none` → NOT EXISTS, `all` → NOT EXISTS of a neighbour
  *   whose predicate IS NOT TRUE, `pick` → the one neighbour `firstRow`
  *   finds by index probes;
@@ -24,6 +25,7 @@ import {
   groupConjuncts,
   refNames,
   sharedPicks,
+  type TypeRef,
   whereUsesWalks
 } from '@mnmal-ai/substrate-filter';
 import {
@@ -58,25 +60,27 @@ export interface WalkScope {
   namespace: string;
   /** The alias of the row this clause filters. */
   alias: string;
-  type: string;
+  /** The type of the row this clause filters, in its namespace. */
+  type: TypeRef;
   /** The frame's seed row, named `$` by a `$ref`. */
   seedAlias: string;
-  seedType: string;
+  seedType: TypeRef;
   /** Rows bound by enclosing or sibling `any` walks' `as`. */
-  bindings: ReadonlyMap<string, { alias: string; type: string }>;
+  bindings: ReadonlyMap<string, { alias: string; type: TypeRef }>;
   /** A fresh table alias, unique within the statement. */
   nextAlias(): string;
-  fieldDef(type: string, field: string): FieldDef | undefined;
+  /** `field` of `type`, by the definitions of `type`'s own namespace. */
+  fieldDef(type: TypeRef, field: string): FieldDef | undefined;
   /**
-   * The table of `type` in this namespace. Synchronous, since the compiler
+   * The table of `type` in its namespace. Synchronous, since the compiler
    * cannot await: the caller preloads the seed and every far type
    * ({@link walkTypes}) and this throws on a type it was not given (F19).
    */
-  tableFor(type: string): TypeTable;
+  tableFor(type: TypeRef): TypeTable;
   /** The frame's `_agg` value `name` for the seed row, as jsonb, read by `_agg.<name>` operands. */
   aggValue?: (name: string) => Fragment;
   /** The direction of `key` in a full index on `type` keyed `(crossRef, key, …)`, when one is declared. */
-  indexDir?: (type: string, crossRef: string, key: string) => 'asc' | 'desc' | undefined;
+  indexDir?: (type: TypeRef, crossRef: string, key: string) => 'asc' | 'desc' | undefined;
   /** Statement-level CTEs every statement of the read starts with (`WITH …`), shared by all seeds. */
   ctes?: Fragment[];
   /** Per-hub picks (#1815): a hub walk, and each of its picks' CTE, keyed `__hub`. */
@@ -96,21 +100,22 @@ export function withCtes(sql: Sql | TransactionSql, scope: WalkScope | undefined
   return sql`WITH ${ctes.reduce((a, b) => sql`${a}, ${b}`)} `;
 }
 
-/** The scope of a read's top-level where, over `type` rows aliased `alias`. */
+/** The scope of a read's top-level where, over `namespace`/`type` rows aliased `alias`. */
 export function walkScope(
   namespace: string,
   type: string,
   alias: string,
-  fieldDef: (type: string, field: string) => FieldDef | undefined,
-  tableFor: (type: string) => TypeTable
+  fieldDef: (type: TypeRef, field: string) => FieldDef | undefined,
+  tableFor: (type: TypeRef) => TypeTable
 ): WalkScope {
   let n = 0;
+  const seed = { ns: namespace, type };
   return {
     namespace,
     alias,
-    type,
+    type: seed,
     seedAlias: alias,
-    seedType: type,
+    seedType: seed,
     bindings: new Map(),
     nextAlias: () => `w${++n}`,
     fieldDef,
@@ -118,12 +123,17 @@ export function walkScope(
   };
 }
 
-/** A map lookup over `tables` by type, which throws on a type it does not hold (F19). */
-export function tableLookup(tables: readonly TypeTable[]): (type: string) => TypeTable {
-  const byType = new Map(tables.map((t) => [t.type, t]));
-  return (type) => {
-    const t = byType.get(type);
-    if (t === undefined) throw new Error(`internal: no type table was preloaded for '${type}'`);
+/** `<ns>/<type>`, the key a type is held by across namespaces. */
+const refKey = (ref: TypeRef): string => `${ref.ns}/${ref.type}`;
+
+/** A map lookup over `tables` by namespace and type, which throws on a type it does not hold (F19). */
+export function tableLookup(tables: readonly TypeTable[]): (ref: TypeRef) => TypeTable {
+  const byRef = new Map(tables.map((t) => [refKey({ ns: t.namespace, type: t.type }), t]));
+  return (ref) => {
+    const t = byRef.get(refKey(ref));
+    if (t === undefined) {
+      throw new Error(`internal: no type table was preloaded for '${ref.type}' in '${ref.ns}'`);
+    }
     return t;
   };
 }
@@ -131,49 +141,52 @@ export function tableLookup(tables: readonly TypeTable[]): (type: string) => Typ
 /** The far type of hop `node` from a `near` row, or undefined when it names none. */
 export function farTypeOf(
   node: { in?: string; out?: string },
-  near: string,
-  fieldDef: (type: string, field: string) => FieldDef | undefined
-): string | undefined {
-  if (node.in !== undefined) return /^[^/]+\/([^./]+)\./.exec(node.in)?.[1];
+  near: TypeRef,
+  fieldDef: (type: TypeRef, field: string) => FieldDef | undefined
+): TypeRef | undefined {
+  if (node.in !== undefined) {
+    const m = /^([^/]+)\/([^./]+)\./.exec(node.in);
+    return m?.[1] === undefined || m[2] === undefined ? undefined : { ns: m[1], type: m[2] };
+  }
   const def = fieldDef(near, node.out ?? '');
-  return def?.kind === 'crossRef' ? def.type : undefined;
+  return def?.kind === 'crossRef' ? { ns: def.ns, type: def.type } : undefined;
 }
 
 /**
  * The seed and every type a read's walks reach (where, frame `agg`, nested, at
- * any depth): the types `tableFor` must be given before compiling (F19). The
- * hops are substrate-filter's `forEachWalkHop`, which substrate-core's walk
- * sites and walked types share. A hop naming no type is left to `hop`, which
- * refuses it.
+ * any depth), each in its namespace, seed first and each once: the types
+ * `tableFor` must be given before compiling (F19). The hops are
+ * substrate-filter's `forEachWalkHop`, which substrate-core's walk sites and
+ * walked types share. A hop naming no type is left to `hop`, which refuses it.
  */
 export function walkTypes(
   params: { where?: unknown; agg?: unknown; nested?: unknown },
-  seed: string,
-  fieldDef: (type: string, field: string) => FieldDef | undefined
-): Set<string> {
-  const types = new Set([seed]);
+  seed: TypeRef,
+  fieldDef: (type: TypeRef, field: string) => FieldDef | undefined
+): TypeRef[] {
+  const types = new Map([[refKey(seed), seed]]);
   // The frame entry these params were split from: nested selections and `_agg` under `fields`.
   const fields = { ...(isObj(params.nested) ? params.nested : {}), _agg: params.agg };
   forEachWalkHop({ params: { where: params.where }, fields }, seed, ({ node }, near) => {
     const far = farTypeOf(node as { in?: string; out?: string }, near, fieldDef);
-    if (far !== undefined) types.add(far);
+    if (far !== undefined) types.set(refKey(far), far);
     return far;
   });
-  return types;
+  return [...types.values()];
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 
 const castFor =
-  (scope: WalkScope, type: string) =>
+  (scope: WalkScope, type: TypeRef) =>
   (field: string): BodyOrderByCast | null =>
     resolveBodyOrderByCast(scope.fieldDef(type, field));
 
 /**
- * The far type of one hop from `scope`'s row (whose table is `near`), the
- * table `from` its rows are read FROM, and the condition that pins the far row
- * `alias` to it: namespace and type on `rows`, live, and the crossRef join.
+ * The far type of one hop from `scope`'s row (whose table is `near`), in its
+ * namespace, the table `from` its rows are read FROM, and the condition that
+ * pins the far row `alias` to it: live, and the crossRef join.
  */
 export function hop(
   sql: Sql | TransactionSql,
@@ -181,16 +194,16 @@ export function hop(
   scope: WalkScope,
   alias: string,
   near: TypeTable
-): { type: string; from: string; cond: Fragment; via?: string; pin: Fragment } {
-  let type: string;
+): { type: TypeRef; from: string; cond: Fragment; via?: string; pin: Fragment } {
+  let type: TypeRef;
   let via: string | undefined;
   let join: Fragment;
   if (node.in !== undefined) {
-    const m = /^[^/]+\/([^./]+)\.(.+)$/.exec(node.in);
+    const m = /^([^/]+)\/([^./]+)\.(.+)$/.exec(node.in);
     if (m === null)
       throw new Error(`internal: walk 'in' '${node.in}' is not '<ns>/<Type>.<field>'`);
-    const [, farType, field] = m as unknown as [string, string, string];
-    type = farType;
+    const [, farNs, farType, field] = m as unknown as [string, string, string, string];
+    type = { ns: farNs, type: farType };
     via = field;
     // Verbatim the eager crossRef index's key, so the index serves the hop. A
     // crossRef column has `id`'s collation, so it joins bare.
@@ -204,16 +217,15 @@ export function hop(
     const field = node.out ?? '';
     const def = scope.fieldDef(scope.type, field);
     if (def?.kind !== 'crossRef') {
-      throw new Error(`internal: walk 'out' '${field}' is not a crossRef on '${scope.type}'`);
+      throw new Error(`internal: walk 'out' '${field}' is not a crossRef on '${scope.type.type}'`);
     }
-    type = def.type;
+    type = { ns: def.ns, type: def.type };
     // Uncollated, as `id` is, so the far id's index serves it; a crossRef column joins bare.
     const farId = `${qualifier(alias)}id${near.column(field) === undefined ? '::text' : ''}`;
     join = sql`${sql.unsafe(farId)} = ${fieldExpr(sql, near, field, 'rawText', scope.alias)}`;
   }
   const table = scope.tableFor(type);
-  // A walk never leaves the frame's namespace (the validator refuses it), so
-  // the far row is pinned to the dataset's, as the memory reference reads it.
+  // The far type's own table holds only its rows, so the pin is liveness alone.
   const pin: Fragment = sql`${sql.unsafe(`${qualifier(alias)}deleted_at IS NULL`)}`;
   return {
     type,
@@ -401,8 +413,9 @@ export function prepareSharedPicks(
     new Set([...picks].filter(([, h]) => h === hub).map(([p]) => p));
   const { hubPicks: _p, windows: _w, ...plain } = scope;
   for (const [pick, hub] of picks) {
-    const hubType = scope.fieldDef(scope.seedType, hub.out as string);
-    if (hubType?.kind !== 'crossRef') continue;
+    const hubDef = scope.fieldDef(scope.seedType, hub.out as string);
+    if (hubDef?.kind !== 'crossRef') continue;
+    const hubType = { ns: hubDef.ns, type: hubDef.type };
     const { filter } = seedFilter(
       sql,
       params.where,
@@ -412,8 +425,8 @@ export function prepareSharedPicks(
       scope,
       (i) => (i as { _walk?: WalkNode })._walk === hub
     );
-    const hubScope: WalkScope = { ...scope, alias: 'h', type: hubType.type };
-    const hubTable = scope.tableFor(hubType.type);
+    const hubScope: WalkScope = { ...scope, alias: 'h', type: hubType };
+    const hubTable = scope.tableFor(hubType);
     const alias = scope.nextAlias();
     const a = sql.unsafe(alias);
     const cte = `pick_${alias}`;
@@ -462,10 +475,10 @@ export function prepareSharedPicks(
     if (scope.hubPicks.get(hub) === undefined) {
       const { own } = splitHubWhere(hub, sharedOf(hub));
       if (own.length > 0) {
-        const f = buildWhere(sql, { AND: own }, castFor(scope, hubType.type), hubTable, {
+        const f = buildWhere(sql, { AND: own }, castFor(scope, hubType), hubTable, {
           ...plain,
           alias: hb,
-          type: hubType.type
+          type: hubType
         });
         if (f !== null) on.push(f);
       }

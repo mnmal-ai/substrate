@@ -62,7 +62,7 @@ A walk follows the crossRef value stored in the row, the same value a read retur
 What a walk can follow:
 
 - A top-level crossRef with a single value. A list of crossRefs, or a crossRef nested in a struct, is refused with `walk_unsupported_ref`.
-- An edge inside the frame's own namespace. A walk that would leave it is refused with `walk_cross_namespace`.
+- An edge into another namespace on the same store; see [Crossing namespaces](#crossing-namespaces).
 - With `in`, the named field must point at the current type, or the walk is refused with `walk_unknown_ref`.
 
 `_walk`, `_agg` and `$ref` are not valid inside a struct field's predicate (`walk_unsupported_ref`).
@@ -211,6 +211,58 @@ Inside a walk, `$` is still the seed row. Jobs with a run that went over the job
   "_walk": { "in": "ci/Run.job", "where": { "durationMs": { "gt": { "$ref": "$.timeoutMs" } } } }
 } } } }
 ```
+
+## Crossing namespaces
+
+A walk may cross into another namespace on the same store when all of these hold:
+
+- the caller holds `read` on every namespace the walk touches;
+- every walked type's policy allows the read;
+- every namespace lives in the seed's store.
+
+`in: "<ns>/<Type>.<field>"` names the namespace. `out` follows the crossRef's own namespace, so the far type is wherever the field points. Each hop is checked in its own namespace, and the frame's `schemaVersion` covers all the namespaces it touches.
+
+Suppose `ext/Payment` has `amount: number` and `invoice: →app/Invoice`, and `app/Invoice` has `number: string`. Payments with their invoice number, from the `ext` side:
+
+```json
+{ "ext/Payment": { "fields": {
+  "amount": true,
+  "inv": { "_walk": { "out": "invoice" }, "fields": { "number": true } }
+} } }
+```
+
+`inv` is a list, as every nested selection is. An `out` hop reaches at most one row, so a nested `out` selection returns an array of at most one row: empty when `invoice` is null or names a deleted invoice.
+
+Invoices with no payment, and each invoice's total paid, from the `app` side:
+
+```json
+{ "app/Invoice": { "params": { "where": {
+  "_walk": { "in": "ext/Payment.invoice", "quantifier": "none" }
+} }, "fields": { "number": true } } }
+```
+
+```json
+{ "app/Invoice": { "fields": {
+  "number": true,
+  "_agg": { "paid": { "in": "ext/Payment.invoice", "sum": "amount" } }
+} } }
+```
+
+`inboundRefs` in the schema list same-namespace references only, so an `in` walk from another namespace is spelled from the outbound field's definition: `<ns>/<Type>.<field>`.
+
+### Probe resistance
+
+A hop into a namespace the caller cannot read is refused before anything in it is looked up, with one fixed error: `policy_denied`, message `this walk is not permitted`, no names, and no `details`. Its `path` is the hop node, such as `[..., 'where', '_walk']`. The answer is the same whatever the target is: an existing or missing type or field, a virtual type, a namespace on another store, a bridged namespace, or a namespace that does not exist. A walk error's "did you mean" hint lists only namespaces the caller can read.
+
+### After the grant
+
+Once the caller can read a namespace, the walk is checked in this order:
+
+1. An unknown or virtual far type is `walk_unknown_ref`.
+2. A namespace on another store, or a bridged one, is `walk_cross_store`.
+3. The far type's policy: `policy_denied`, or `row_policy_blocks_walk` for a row policy.
+
+Walks are still not available in subscriptions or streams, and natural-language packs stay within one namespace.
 
 ## Walk aggregates: `_agg`
 
@@ -400,9 +452,10 @@ Grammar refusals, before anything runs:
 
 | Code | Meaning |
 |---|---|
-| `walk_unknown_ref` | The walk's edge does not resolve: it names both or neither of `in` and `out`; `in` is not `<ns>/<Type>.<field>`; the type is unknown; the field is not a crossRef; an `in` field does not point at the current type. Also returned when walks are not available on the read at all. |
+| `walk_unknown_ref` | The walk's edge does not resolve: it names both or neither of `in` and `out`; `in` is not `<ns>/<Type>.<field>`; the type is unknown or virtual, in a namespace the caller can read; the field is not a crossRef; an `in` field does not point at the current type. Also returned when walks are not available on the read at all. |
 | `walk_unsupported_ref` | A walk construct where it cannot be answered: a list of crossRefs or a crossRef nested in a struct; `_walk`, `_agg` or `$ref` inside a struct predicate; `_agg` or a nested selection below the top level of a selection; a nested selection reusing a declared field name; any walk on a virtual type. |
-| `walk_cross_namespace` | The walk would leave the frame's namespace. |
+| `walk_cross_namespace` | Retired: no longer emitted. A walk may leave the frame's namespace; see [Crossing namespaces](#crossing-namespaces). |
+| `walk_cross_store` | The far namespace is not on the seed's store, or is a bridged namespace. The path is the hop's `in` or `out` key, such as `[..., '_walk', 'in']`. Returned only once the caller can read that namespace. |
 | `walk_too_deep` | More than 3 hops. |
 | `walk_binding` | A bad `as`: not an identifier, already bound, more than 3 in an AND group or 6 in a frame, or a `$ref` to a binding across or under `OR` / `NOT`. |
 | `walk_quantifier` | A quantifier other than `any`, `none` or `all`; `as` on a `none`, `all` or pick walk; `none` or `all` with `pick`; `among` without `pick`. |
@@ -425,7 +478,7 @@ Refusals that depend on where the frame is sent or who sends it:
 | `walks_in_mutation` | A walk construct in a mutation's returned-row selection or its by-filter `where`. |
 | `walks_unsupported_store` | The namespace's store does not answer walks, such as the in-memory store. |
 | `row_policy_blocks_walk` | The seed type, or a type the frame walks into, counts or aggregates over, is row-filtered for this caller. A row filter runs after the read, so it cannot be applied inside a walk. A plain read of a row-filtered seed type still works. |
-| `policy_denied` | A read policy on a walked type denies this caller. |
+| `policy_denied` | A read policy on a walked type denies this caller, or the walk enters a namespace the caller cannot read. The second form is one fixed error; see [Crossing namespaces](#crossing-namespaces). |
 
 Refusals while running:
 

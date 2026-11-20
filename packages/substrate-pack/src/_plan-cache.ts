@@ -22,14 +22,14 @@ export type RowPlan = Array<readonly [string, true | FieldInput, FieldDef | unde
  * results are encoded deliberately instead:
  *   - `agg`: the row's `_agg` map, as its values in the selection's order.
  *   - `nested`: a `{ _walk }` selection, as a list of rows positional under
- *     the far type's plan; `fields` is the selection's own with `id` first,
- *     since a nested row always carries its id.
+ *     the plan of the far type `ns`/`type`; `fields` is the selection's own
+ *     with `id` first, since a nested row always carries its id.
  *   - `truncated`: the row's `_truncated` map as-is, null when nothing was
  *     cut. Present only, and last, when the selection has a nested walk.
  */
 export type WalkSlot =
   | { kind: 'agg'; names: string[] }
-  | { kind: 'nested'; type: string; fields: FieldInput }
+  | { kind: 'nested'; ns: string; type: string; fields: FieldInput }
   | { kind: 'truncated' };
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
@@ -45,17 +45,18 @@ function walkSlot(
   if (name === '_agg') return { kind: 'agg', names: Object.keys(sel) };
   const walk = sel._walk;
   if (!isObj(walk)) return undefined;
-  // Walks stay in their namespace (the validator refuses otherwise), so the
-  // far type is named by `in`'s type or by the `out` crossRef's target.
-  let type: string | undefined;
-  if (typeof walk.in === 'string') type = /^[^/]+\/([^./]+)\./.exec(walk.in)?.[1];
-  else if (typeof walk.out === 'string') {
+  // The far type is `in`'s `<ns>/<Type>`, or the `out` crossRef's target.
+  let far: { ns: string; type: string } | undefined;
+  if (typeof walk.in === 'string') {
+    const m = /^([^/]+)\/([^./]+)\./.exec(walk.in);
+    if (m !== null) far = { ns: m[1] as string, type: m[2] as string };
+  } else if (typeof walk.out === 'string') {
     const def = Object.hasOwn(fieldMap, walk.out) ? fieldMap[walk.out] : undefined;
-    if (def?.kind === 'crossRef') type = def.type;
+    if (def?.kind === 'crossRef') far = { ns: def.ns, type: def.type };
   }
-  if (type === undefined) return undefined;
+  if (far === undefined) return undefined;
   const fields = isObj(sel.fields) ? (sel.fields as FieldInput) : {};
-  return { kind: 'nested', type, fields: { id: true, ...fields } };
+  return { kind: 'nested', ...far, fields: { id: true, ...fields } };
 }
 
 /**
