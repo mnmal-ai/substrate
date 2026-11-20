@@ -29,17 +29,18 @@ import {
   isDateField,
   storedMicros
 } from './predicate.js';
+import type { TypeRef } from './walk-hops.js';
 
-/** What a dataset hands the evaluator so walks can reach other rows of its namespace. */
+/** What a dataset hands the evaluator so walks can reach rows of its own and sibling namespaces. */
 export interface WalkContext {
-  /** Live (untombstoned) rows of `type` whose own body `field` holds `id`. */
-  neighbours(type: string, field: string, id: string): Row[];
-  /** The live row of `type` with this id, if any. */
-  get(type: string, id: string): Row | undefined;
+  /** Live (untombstoned) rows of `ref` whose own body `field` holds `id`. */
+  neighbours(ref: TypeRef, field: string, id: string): Row[];
+  /** The live row of `ref` with this id, if any. */
+  get(ref: TypeRef, id: string): Row | undefined;
   /** A type's field declarations. */
-  fieldDefOf(type: string): FieldDefOf;
+  fieldDefOf(ref: TypeRef): FieldDefOf;
   /** The type of the row under evaluation. */
-  type: string;
+  type: TypeRef;
   /** The frame's seed row, named `$` by a `$ref`. */
   seed: Row;
   /** Rows bound by enclosing `any` walks' `as`. */
@@ -117,7 +118,7 @@ export function hop(
   row: Row,
   node: { in?: string; out?: string },
   walk: WalkContext
-): { type: string; rows: Row[] } {
+): { type: TypeRef; rows: Row[] } {
   const far = hopRows(row, node, walk);
   charge(walk, far.rows.length);
   return far;
@@ -127,22 +128,29 @@ function hopRows(
   row: Row,
   node: { in?: string; out?: string },
   walk: WalkContext
-): { type: string; rows: Row[] } {
+): { type: TypeRef; rows: Row[] } {
   if (node.in !== undefined) {
-    const m = /^[^/]+\/([^./]+)\.(.+)$/.exec(node.in);
+    const m = /^([^/]+)\/([^./]+)\.(.+)$/.exec(node.in);
     if (m === null)
       throw new Error(`internal: walk 'in' '${node.in}' is not '<ns>/<Type>.<field>'`);
-    const [, type, field] = m as unknown as [string, string, string];
-    return { type, rows: typeof row.id === 'string' ? walk.neighbours(type, field, row.id) : [] };
+    const [, ns, type, field] = m as unknown as [string, string, string, string];
+    const ref = { ns, type };
+    return {
+      type: ref,
+      rows: typeof row.id === 'string' ? walk.neighbours(ref, field, row.id) : []
+    };
   }
   const field = node.out ?? '';
   const def = walk.fieldDefOf(walk.type)(field);
   if (def?.kind !== 'crossRef') {
-    throw new Error(`internal: walk 'out' '${field}' is not a crossRef on '${walk.type}'`);
+    throw new Error(
+      `internal: walk 'out' '${field}' is not a crossRef on '${walk.type.ns}/${walk.type.type}'`
+    );
   }
   const id = Object.hasOwn(row, field) ? row[field] : undefined;
-  const far = typeof id === 'string' ? walk.get(def.type, id) : undefined;
-  return { type: def.type, rows: far === undefined ? [] : [far] };
+  const ref = { ns: def.ns, type: def.type };
+  const far = typeof id === 'string' ? walk.get(ref, id) : undefined;
+  return { type: ref, rows: far === undefined ? [] : [far] };
 }
 
 /**
@@ -220,7 +228,7 @@ export function evaluateGroup(
       bindings.set(name, n);
       const ok = group.every((g, j) => {
         if (checkAt[j] !== i || g.where === undefined) return true;
-        const h = hops[j] as { type: string };
+        const h = hops[j] as { type: TypeRef };
         const far = bindings.get(names[j] ?? '') as Row;
         return evaluateWhere(far, g.where, walk.fieldDefOf(h.type), { ...ctx, type: h.type });
       });

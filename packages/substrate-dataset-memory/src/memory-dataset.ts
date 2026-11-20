@@ -128,6 +128,18 @@ export interface MemoryDatasetOptions {
    * store; without this the engine refuses walks on it (`walks_unsupported_store`).
    */
   walkReference?: boolean;
+  /**
+   * Internal: the walk group `forNamespace` shares with its clones, so a walk
+   * can cross into a sibling namespace. Leave unset: a dataset built without
+   * one starts its own group.
+   */
+  walkGroup?: MemoryWalkGroup;
+}
+
+/** Memory datasets that can be walked across in one read, by namespace. */
+export interface MemoryWalkGroup {
+  id: string;
+  members: Map<string, MemoryDataset>;
 }
 
 const RESERVED_DELETED_AT = '_deletedAt';
@@ -159,6 +171,9 @@ function withoutSeq(meta: RowMetadata): RowMetadata {
 export class MemoryDataset implements Dataset {
   readonly namespace: string;
   readonly txScopeId: string;
+  /** Equal on every sibling `forNamespace` made from one root; see `Dataset.walkStoreId`. */
+  readonly walkStoreId: string;
+  readonly #walkGroup: MemoryWalkGroup;
   readonly #fieldDefLookup: MemoryDatasetOptions['fieldDefLookup'];
   readonly #fieldDefLookupFor: MemoryDatasetOptions['fieldDefLookupFor'];
   // TS-private, not `#`: write() must work through a Proxy, as `store` does.
@@ -216,6 +231,9 @@ export class MemoryDataset implements Dataset {
   constructor(options: MemoryDatasetOptions) {
     this.namespace = options.namespace;
     this.txScopeId = options.txScopeId ?? `mem:${randomUUID()}`;
+    this.#walkGroup = options.walkGroup ?? { id: `mem:${randomUUID()}`, members: new Map() };
+    this.walkStoreId = this.#walkGroup.id;
+    this.#walkGroup.members.set(this.namespace, this);
     this.#fieldDefLookup = options.fieldDefLookup;
     this.#fieldDefLookupFor = options.fieldDefLookupFor;
     this.typeDefLookup = options.typeDefLookup;
@@ -508,26 +526,30 @@ export class MemoryDataset implements Dataset {
   }
 
   /**
-   * Walks over this namespace's live rows, for one read. Neighbours follow the
-   * row body's crossRef value (spec 2026-10-24-typed-edge-walks §1), indexed
-   * per (type, field) on first use.
+   * Walks over the live rows of this namespace and its siblings in one walk
+   * group, for one read. Neighbours follow the row body's crossRef value
+   * (spec 2026-10-24-typed-edge-walks §1), indexed per (namespace, type, field)
+   * on first use. A namespace with no member in the group has no rows.
    */
   private walkContext(type: string): Omit<WalkContext, 'seed'> {
-    const lookup = this.#fieldDefLookup;
     const index = new Map<string, Map<unknown, Row[]>>();
     const live = (r: Row | undefined) => (r === undefined || r._deletedAt != null ? undefined : r);
+    const member = (ns: string) => (ns === this.namespace ? this : this.#walkGroup.members.get(ns));
     return {
-      type,
+      type: { ns: this.namespace, type },
       bindings: new Map(),
       budget: { left: this.walkBudget },
-      fieldDefOf: (t) => (field) => lookup?.(t, field),
-      get: (t, id) => live(this.store.get(t)?.get(id)),
-      neighbours: (t, field, id) => {
-        const key = `${t}\0${field}`;
+      fieldDefOf: (ref) => {
+        const m = member(ref.ns);
+        return (field) => (m === undefined ? undefined : m.#fieldDefLookup?.(ref.type, field));
+      },
+      get: (ref, id) => live(member(ref.ns)?.store.get(ref.type)?.get(id)),
+      neighbours: (ref, field, id) => {
+        const key = `${ref.ns}\0${ref.type}\0${field}`;
         let byValue = index.get(key);
         if (byValue === undefined) {
           byValue = new Map();
-          for (const r of this.store.get(t)?.values() ?? []) {
+          for (const r of member(ref.ns)?.store.get(ref.type)?.values() ?? []) {
             if (r._deletedAt != null || !Object.hasOwn(r, field)) continue;
             const list = byValue.get(r[field]);
             if (list === undefined) byValue.set(r[field], [r]);
@@ -1049,6 +1071,7 @@ export class MemoryDataset implements Dataset {
       namespace,
       walkBudget: this.walkBudget,
       walkReference: this.walkReference,
+      walkGroup: this.#walkGroup,
       ...(this.#fieldDefLookupFor !== undefined
         ? {
             fieldDefLookup: this.#fieldDefLookupFor(namespace),
