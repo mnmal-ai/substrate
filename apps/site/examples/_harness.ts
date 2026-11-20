@@ -1,4 +1,6 @@
 import { writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { decodeStreamFrames, FRAMES_JSON_MIME } from '@mnmal-ai/substrate/pack';
 import { createRecallPlugin, InMemoryEmbeddingsStore } from '@mnmal-ai/substrate/recall';
 import type { NamespaceDefinition } from '@mnmal-ai/substrate/sdk';
@@ -111,13 +113,8 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
     await assertNotSuperuser(url, { packageName: PACKAGE_NAME });
     await assertCannotWriteOutsideTestDatabases(url, { packageName: PACKAGE_NAME });
   }
-  if (setup.embedder === 'live') {
-    throw new Error(
-      "embedder 'live' is not available in this build: no ONNX embedder is exported."
-    );
-  }
-  if (setup.embedder === 'fake' && kind === 'pg') {
-    throw new Error("embedder 'fake' runs over the memory dataset only.");
+  if (setup.embedder !== undefined && kind === 'pg') {
+    throw new Error(`embedder '${setup.embedder}' runs over the memory dataset only.`);
   }
 
   const sql = kind === 'pg' ? postgres(url as string, { onnotice: () => {} }) : undefined;
@@ -144,11 +141,26 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
     datasets[name] = ds;
   }
 
+  // Imported on demand so a CI run that never goes live never loads it.
+  // `fastembed` is undeclared and is resolved from the embedder package's own real path.
+  const embedder =
+    setup.embedder === 'live'
+      ? new (await import('@mnmal-ai/substrate-embedder')).OnnxEmbedder({
+          model: 'bge-base-en',
+          dimension: 768,
+          // Absolute: fastembed's default is relative to the working directory.
+          cacheDir: join(tmpdir(), 'substrate-site-embed-cache')
+        })
+      : setup.embedder === 'fake'
+        ? new FakeEmbedder({ dimension: 8 })
+        : undefined;
+  // The first embed downloads the model, far past the plugin's 30s write timeout.
+  if (setup.embedder === 'live') await embedder?.embed('warm up');
   const kernelPlugins =
-    setup.embedder === 'fake'
+    embedder !== undefined
       ? [
           createRecallPlugin({
-            embedder: new FakeEmbedder({ dimension: 8 }),
+            embedder,
             store: new InMemoryEmbeddingsStore({ datasetFor: (ns) => datasets[ns] })
           })
         ]

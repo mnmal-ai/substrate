@@ -293,6 +293,9 @@ importers:
       '@mnmal-ai/substrate':
         specifier: workspace:*
         version: link:../substrate
+      '@mnmal-ai/substrate-embedder':
+        specifier: workspace:*
+        version: link:../../packages/substrate-embedder
       astro:
         specifier: 'catalog:'
         version: 6.4.8(@types/node@26.6.6)(lightningcss@1.33.0)(rollup@4.68.7)(tsx@4.23.15)(yaml@2.9.1)

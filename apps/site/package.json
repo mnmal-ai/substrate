@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@mnmal-ai/substrate": "workspace:*",
+    "@mnmal-ai/substrate-embedder": "workspace:*",
     "astro": "catalog:",
     "postgres": "catalog:"
   },
