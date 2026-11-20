@@ -10,6 +10,8 @@ name: Pre-merge
 #             running the suites, and report its gate result rather than repeating it
 #   release - the PR changes only package.json "version" lines and CHANGELOG.md
 #             (a release PR): the code is main's, which passed this gate, so nothing runs
+#   docs    - the PR changes only Markdown, docs/, the site workflow, or the site outside
+#             its examples and package.json: no Postgres suite reads them, so nothing runs
 on:
   pull_request:
     branches: [main]
@@ -159,6 +161,10 @@ jobs:
       - name: A release PR reuses main's result
         if: needs.pg-plan.outputs.mode == 'release'
         run: echo "only package.json versions and CHANGELOG.md changed; main passed this gate"
+
+      - name: A docs PR needs no Postgres
+        if: needs.pg-plan.outputs.mode == 'docs'
+        run: echo "only docs and the site outside its examples changed; no Postgres suite reads them"
 
       - name: Follow the run that is testing this commit
         if: needs.pg-plan.outputs.mode == 'follow'

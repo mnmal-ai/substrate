@@ -2,7 +2,7 @@
  * Picks the pre-merge run's mode (see pre-merge.yml), and in `follow` mode waits for
  * the followed run's gate. Talks to the GitHub REST API with GH_TOKEN.
  *
- * CLI: `node pre-merge-mode.mjs` prints `mode=<run|follow|release>` and `follow=<run id>`
+ * CLI: `node pre-merge-mode.mjs` prints `mode=<run|follow|release|docs>` and `follow=<run id>`
  * for $GITHUB_OUTPUT. `node pre-merge-mode.mjs follow` exits 0 when run $FOLLOW's gate
  * succeeded, 1 otherwise.
  */
@@ -25,6 +25,24 @@ export function isVersionOnly(files) {
     const changed = patch.split('\n').filter((l) => /^[+-]/.test(l) && !/^(\+\+\+|---)/.test(l));
     return changed.length > 0 && changed.every((l) => VERSION_LINE.test(l));
   });
+}
+
+/**
+ * True when a PR changes only docs: Markdown, docs/, the site workflow, or the site outside
+ * its examples and manifest. The site's examples run on Postgres in the pre-merge passes.
+ * @param {Array<{ filename: string }>} files
+ */
+export function isDocsOnly(files) {
+  if (files.length === 0) return false;
+  return files.every(
+    ({ filename: f }) =>
+      f.endsWith('.md') ||
+      f.startsWith('docs/') ||
+      f === '.github/workflows/site.yml' ||
+      (f.startsWith('apps/site/') &&
+        !f.startsWith('apps/site/examples/') &&
+        f !== 'apps/site/package.json')
+  );
 }
 
 /**
@@ -77,7 +95,9 @@ async function suiteRuns() {
 }
 
 async function chooseMode() {
-  if (isVersionOnly(await prFiles())) return { mode: 'release' };
+  const files = await prFiles();
+  if (isVersionOnly(files)) return { mode: 'release' };
+  if (isDocsOnly(files)) return { mode: 'docs' };
   const { ACTION, ADDED, RUN_ID } = process.env;
   if (ACTION === 'labeled' && ADDED !== 'ready-to-merge') {
     // Labels added together fire together: give the run that starts the suites time to plan them.
