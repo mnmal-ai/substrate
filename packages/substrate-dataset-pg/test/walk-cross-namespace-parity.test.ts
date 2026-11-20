@@ -11,7 +11,7 @@ import type { ReadParams, Row, WhereClause } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgDataset } from '../src/index.js';
-import { dropNamespace } from './_layout.js';
+import { dropNamespace, relationOf } from './_layout.js';
 import { strip, walkComparers } from './_walk-helpers.js';
 import {
   CROSS_FAR,
@@ -51,6 +51,8 @@ const fx = (rows: ReadonlyArray<Record<string, unknown>>) =>
 
 type Seed = 'A' | 'B';
 let sql: Sql;
+let traced: Sql;
+let sent: string[] = [];
 let pg: Record<Seed, PgDataset>;
 let mem: Record<Seed, MemoryDataset>;
 const label = (id: string) => names.get(id) ?? id;
@@ -75,6 +77,8 @@ const w = (x: unknown) => x as WhereClause;
 const walk = (node: Record<string, unknown>) => w({ _walk: node });
 const agg = (a: Record<string, unknown>) => a as unknown as NonNullable<ReadParams['agg']>;
 const nested = (n: Record<string, unknown>) => n as unknown as NonNullable<ReadParams['nested']>;
+/** A range on the indexed `price`, the window an `_agg` can group in one pass. */
+const WINDOW = { price: { gte: 100 } };
 const grade9 = { grade: { eq: 9 } };
 /** The crossing `Listing` pick of a cert, judged on a price. */
 const lastListing = (extra: Record<string, unknown> = {}) => ({
@@ -243,18 +247,23 @@ const mustAgree: Array<[string, Seed, string, ReadParams, Expected]> = [
     ['c1', 'c3']
   ],
   [
-    'as binding a near row from a far seed',
+    'as binding a near row from a far seed, read inside a walk back to the far namespace',
     'B',
     'Observation',
     {
       where: w({
         AND: [
           { _walk: { as: 'C', out: 'cert' } },
-          { _walk: { in: LST, where: { price: { gte: { $ref: 'C.ask' } } } } }
+          {
+            _walk: {
+              out: 'cert',
+              where: { _walk: { in: LST, where: { price: { gte: { $ref: 'C.ask' } } } } }
+            }
+          }
         ]
       })
     },
-    []
+    ['o1a', 'o1b', 'o2', 'o4']
   ],
   // _agg in where.
   [
@@ -527,6 +536,131 @@ const mustAgree: Array<[string, Seed, string, ReadParams, Expected]> = [
     { where: walk({ out: 'cert', where: walk(lastListing()) }), count: true },
     { count: 3 }
   ],
+  // Window and shared forms: Observation.price and .observedAt are indexed, Listing is not.
+  [
+    'in pick latest, counted',
+    'A',
+    'Cert',
+    {
+      where: walk({ in: OBS, where: { status: { eq: 'listed' } }, pick: { latest: 'observedAt' } }),
+      count: true
+    },
+    { count: 3 }
+  ],
+  [
+    'in pick max, counted',
+    'A',
+    'Cert',
+    {
+      where: walk({ in: OBS, where: { price: { gte: 500 } }, pick: { max: 'price' } }),
+      count: true
+    },
+    { count: 2 }
+  ],
+  [
+    'in pick min, counted',
+    'A',
+    'Cert',
+    { where: walk({ in: OBS, where: { price: { lt: 80 } }, pick: { min: 'price' } }), count: true },
+    { count: 1 }
+  ],
+  [
+    'a windowed _agg beside a pick _agg, a page of every seed',
+    'A',
+    'Cert',
+    {
+      where: walk({ in: OBS, where: WINDOW }),
+      agg: agg({
+        n: { in: OBS, where: WINDOW, count: true },
+        tot: { in: OBS, where: WINDOW, sum: 'price' },
+        last: { in: OBS, latest: { by: 'observedAt', value: 'price' } }
+      })
+    },
+    {
+      c1: { _agg: { n: 1, tot: 130, last: 130 } },
+      c3: { _agg: { n: 1, tot: 100, last: 100 } },
+      c5: { _agg: { n: 2, tot: 950, last: 450 } },
+      c6: { _agg: { n: 1, tot: 1000, last: 1000 } }
+    }
+  ],
+  [
+    'the same windowed _agg on a short page',
+    'A',
+    'Cert',
+    {
+      where: walk({ in: OBS, where: WINDOW }),
+      limit: 10,
+      agg: agg({
+        n: { in: OBS, where: WINDOW, count: true },
+        tot: { in: OBS, where: WINDOW, sum: 'price' }
+      })
+    },
+    { c1: { _agg: { n: 1, tot: 130 } }, c5: { _agg: { n: 2, tot: 950 } } }
+  ],
+  // Picks and out-hop aggregates beyond latest.
+  [
+    'nested far list whose where walks back and picks the max',
+    'A',
+    'Cert',
+    {
+      where: { grade: { eq: 9 } },
+      nested: nested({
+        o: {
+          _walk: { in: OBS },
+          where: { _walk: { out: 'cert', where: walk(lastListing({ pick: { max: 'price' } })) } },
+          fields: { price: true },
+          orderBy: [{ price: 'asc' }]
+        }
+      })
+    },
+    { c1: { o: [{ price: 90 }, { price: 130 }] }, c5: { o: [] } }
+  ],
+  [
+    'nested far list whose where walks back and picks the min',
+    'A',
+    'Cert',
+    {
+      where: { grade: { eq: 9 } },
+      nested: nested({
+        o: {
+          _walk: { in: OBS },
+          where: {
+            _walk: {
+              out: 'cert',
+              where: walk(lastListing({ pick: { min: 'price' }, where: { price: { lt: 50 } } }))
+            }
+          },
+          fields: { price: true },
+          orderBy: [{ price: 'asc' }]
+        }
+      })
+    },
+    { c1: { o: [] }, c2: { o: [{ price: 70 }] } }
+  ],
+  [
+    '_agg min and max over an out hop, number and date',
+    'A',
+    'Ticket',
+    {
+      agg: agg({
+        lo: { out: 'obs', min: 'price' },
+        hi: { out: 'obs', max: 'price' },
+        first: { out: 'obs', min: 'observedAt' },
+        last: { out: 'obs', max: 'observedAt' }
+      })
+    },
+    {
+      tk1: {
+        _agg: {
+          lo: 130,
+          hi: 130,
+          first: '2026-10-29T10:00:00Z',
+          last: '2026-10-29T10:00:00Z'
+        }
+      },
+      tk6: { _agg: { lo: null, hi: null, first: null, last: null } }
+    }
+  ],
   // Types and namespaces with no rows.
   ['in any over a type never written', 'A', 'Cert', { where: walk({ in: NEVER }) }, []],
   [
@@ -573,9 +707,15 @@ const mustAgree: Array<[string, Seed, string, ReadParams, Expected]> = [
 beforeAll(async () => {
   if (!POSTGRES_URL) return;
   sql = postgres(POSTGRES_URL, { onnotice: () => {} });
+  traced = postgres(POSTGRES_URL, {
+    onnotice: () => {},
+    debug: (_c, query) => {
+      sent.push(query);
+    }
+  });
   const root = new PgDataset({
     namespace: A,
-    sql,
+    sql: traced,
     fieldDefLookup: fieldDefLookupFor(A),
     fieldDefLookupFor,
     typeDefLookup
@@ -606,6 +746,7 @@ afterAll(async () => {
   if (!POSTGRES_URL) return;
   await dropNamespace(sql, A);
   await dropNamespace(sql, B);
+  await traced.end({ timeout: 5 });
   await sql.end({ timeout: 5 });
 });
 
@@ -625,5 +766,22 @@ describe.skipIf(!POSTGRES_URL)('walk parity across namespaces, memory and pg', (
     }
     const got = rows.map(name);
     expect(params.orderBy === undefined ? got.sort() : got).toEqual(expected);
+  });
+
+  it('a windowed _agg across namespaces groups the far window in one pass (group-by form)', async () => {
+    const frame = (limit?: number): ReadParams => ({
+      where: walk({ in: OBS, where: WINDOW }),
+      ...(limit === undefined ? {} : { limit }),
+      agg: agg({ n: { in: OBS, where: WINDOW, count: true } })
+    });
+    const far = await relationOf(sql, B, 'Observation');
+    const statement = () =>
+      sent.find((q) => q.includes(far) && /GROUP BY/i.test(q) && /count\(/i.test(q));
+    sent = [];
+    await pg.A.read('Cert', frame());
+    expect(statement()).toBeDefined();
+    sent = [];
+    await pg.A.read('Cert', frame(10));
+    expect(statement()).toBeUndefined();
   });
 });

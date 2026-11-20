@@ -136,7 +136,12 @@ export function crossSchema(
     [far]: {
       Cert: { grade: num, ask: num },
       Listing: { cert: ref(near, 'Cert'), price: num, firstSeen: date },
-      Observation: { cert: ref(near, 'Cert'), price: num, observedAt: date, status: str },
+      Observation: {
+        cert: ref(near, 'Cert'),
+        price: { ...num, indexed: true },
+        observedAt: { ...date, indexed: true },
+        status: str
+      },
       Never: { cert: ref(near, 'Cert'), n: num }
     }
   };
