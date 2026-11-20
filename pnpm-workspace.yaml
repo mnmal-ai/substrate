@@ -33,7 +33,7 @@ overrides:
 
 catalog:
   "@biomejs/biome": "2.6.4"
-  astro: "^6.4.8"
+  astro: "^7.4.13"
   '@inquirer/prompts': ^8.7.2
   turbo: "^2.11.7"
   "@fastify/compress": "^9.2.0"
@@ -84,3 +84,9 @@ minimumReleaseAgeExclude:
   - "@turbo/windows-arm64@2.11.7"
   - "@types/node@26.6.4"
   - turbo@2.11.7
+
+# Also install the wasm32-wasi builds of napi-rs addons. Astro 7's native compiler binding needs
+# AVX2 and dies with SIGILL without it; apps/site/scripts/wasi-fallback.mjs switches to the WASI
+# builds on such a CPU. os and libc stay at their default, the current machine's.
+supportedArchitectures:
+  cpu: [current, wasm32]
