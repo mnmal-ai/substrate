@@ -2,6 +2,20 @@
 
 Releases before 1.0.0-alpha.21 are recorded only in their GitHub release notes.
 
+## 1.0.0-beta.10 (2026-11-21)
+
+Changes since 1.0.0-beta.9. Nothing existing changes meaning. A server whose types declare no actions publishes the same schema hash and the same `core` MCP instructions as before. On Postgres, boot runs one new migration, `0009t_act_results`, which adds the `act_results` table. `SUBSTRATE_MCP_TOOLS=all` now registers 13 tools, because it includes `act`.
+
+### Added
+
+- **`act`: declared actions and sketches (#291).** An agent sends a short sketch, such as `close Todo #12 resolution=wont_do; log Entry summary="Shipped" closes=#14`, instead of hand-built frames. The reply is a one-line ack plus a short-lived result id. [`docs/act.md`](docs/act.md) is the guide.
+  - **Declarations.** `defineNamespace` types take `actions`, as data: a kind (`update` or `create`), params with field types, `set` values (a literal, `{ param }` or `{ now: true }`), and optional `then` follow-ons that run once per element of a list param. Boot refuses a bad declaration with a named error. Actions are published in `TypeSchema.actions` and count toward the schema hash.
+  - **Compiler.** A deterministic compiler turns sketch text, or its JSON form, into an explicit plan, or refuses with `sketch_unresolved` naming the step, the token, the choices and the nearest valid sketch. Nothing is guessed. Built-ins on every stored type: `create`, `update`, `find` and `count`. There is no delete. `?` and `? Type` give help. At most 50 write steps.
+  - **Execution.** Every step goes through the same per-entry path as `mutate` (namespace grant, type policy, caller identity), and all steps share one transaction. `#N` in a reference field resolves inside that transaction through the caller's read path. A dry run executes, then rolls back. Bridged and virtual namespaces are refused, and `act` needs a signed caller.
+  - **Result records**, in memory or Postgres, are readable only by the credential that created them. They expire after 24 hours by default (`SUBSTRATE_ACT_RESULT_TTL_MS`), and a sweep stage reaps them.
+  - **Surfaces:** `POST /substrate/v1/act` and `GET /substrate/v1/act/results/:id`, `client.act` and `client.actResult`, `s.act` in `run` scripts, the `substrate act` CLI, and an MCP `act` tool. The schema overview names each type's actions.
+- **The `lean` MCP preset (#291).** `SUBSTRATE_MCP_TOOLS=lean` registers `act` and `whoami`, plus `ask` when the server runs substrate-nl. The `act` tool is 701 bytes, and the lean tools plus instructions are 1703 bytes, against about 8.5 KB for `core`. `act` is also in `all`, and `core,act` adds it to core.
+
 ## 1.0.0-beta.9 (2026-11-21)
 
 Changes since 1.0.0-beta.8. One behaviour change for Postgres consumers: an int64 field read inside a nested selection, or through a walk `latest`, now comes back as a bigint (a decimal string on the JSON wire), as top-level int64 fields and the memory store already did. Before, it was a JSON number that lost digits past 2^53. `ask` also answers some questions differently: "per month by due date" buckets on the named field, and ordering through a relation skips the rows the default exclusions skip.
