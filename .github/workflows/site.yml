@@ -80,6 +80,10 @@ jobs:
       - name: Build site
         run: pnpm turbo run build --filter=@mnmal-ai/substrate-site
 
+      # The deploy build has the live recall run and the licensed fonts; check them before publishing.
+      - name: Built pages pass the site's output tests
+        run: pnpm --filter @mnmal-ai/substrate-site exec vitest run test/built-output.test.ts test/example-pages-built.test.ts
+
       - name: Licensed font is linked
         run: grep -q 'fonts/licensed/BerkeleyMono-Regular.woff2' apps/site/dist/index.html
 

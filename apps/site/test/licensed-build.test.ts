@@ -39,6 +39,7 @@ describe('licensed build', () => {
           stdio: 'pipe'
         });
         const html = readFileSync(join(outDir, 'index.html'), 'utf8');
+        const example = readFileSync(join(outDir, 'examples', 'onboard', 'index.html'), 'utf8');
         const css = readdirSync(outDir, { recursive: true, encoding: 'utf8' })
           .filter((f) => f.endsWith('.css'))
           .map((f) => readFileSync(join(outDir, f), 'utf8'))
@@ -48,6 +49,7 @@ describe('licensed build', () => {
           const url = `/substrate/fonts/licensed/BerkeleyMono-${f}.woff2`;
           expect(all).toContain(`url(${url})`);
           expect(html).toContain(`<link rel="preload" href="${url}"`);
+          expect(example).toContain(`<link rel="preload" href="${url}"`);
         }
         expect(all).toContain("font-family:'Berkeley Mono Site'");
         expect(all).not.toMatch(/data:(font|application\/font)/);

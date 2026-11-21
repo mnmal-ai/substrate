@@ -1,0 +1,39 @@
+---
+import type { FigureName } from '../lib/example-pages.ts';
+
+interface Props {
+  name: FigureName;
+  /** `page`: interactive, in a page header. `card`: inert and hidden, on a landing card. */
+  mode: 'page' | 'card';
+}
+const { name, mode } = Astro.props;
+const card = mode === 'card';
+---
+<div
+  class="figure"
+  data-figure={name}
+  data-mode={mode}
+  inert={card}
+  aria-hidden={card ? 'true' : undefined}
+>
+</div>
+
+<script src="../scripts/figures.ts"></script>
+
+<style>
+  /* The 5:4 box is reserved before the figure draws, so nothing shifts. */
+  .figure {
+    --hairline-plate: var(--bg);
+    --hairline-hi: var(--accent);
+    --hairline-edge: #cbd5e1;
+    --hairline-mid: #475569;
+    --hairline-lo: var(--rule);
+    --hairline-stroke: 1;
+    aspect-ratio: 5 / 4;
+    max-width: 100%;
+  }
+
+  .figure[data-mode='card'] {
+    --hairline-plate: var(--panel);
+  }
+</style>

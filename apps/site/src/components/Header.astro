@@ -1,4 +1,6 @@
 ---
+import { pageHref } from '../lib/example-pages.ts';
+
 const home = import.meta.env.BASE_URL.replace(/\/?$/, '/');
 const repo = 'https://github.com/mnmal-ai/substrate';
 ---
@@ -8,10 +10,10 @@ const repo = 'https://github.com/mnmal-ai/substrate';
     <span class="name"><span>~/</span>substrate</span>
   </a>
   <nav aria-label="Primary">
-    <a href="#examples">examples</a>
+    <a href={pageHref(home, 'onboard')}>examples</a>
     <a href={`${repo}/tree/main/docs`}>docs</a>
     <a href={repo}>github</a>
-    <a class="install" href="#start">npm i @mnmal-ai/substrate@next</a>
+    <a class="install" href={`${home}#start`}>npm i @mnmal-ai/substrate@next</a>
   </nav>
 </header>
 

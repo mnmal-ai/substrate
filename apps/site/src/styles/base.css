@@ -123,6 +123,26 @@ a {
   outline-offset: 2px;
 }
 
+/* The skip link waits just above the top edge and drops into view while it holds focus. */
+.skip {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 1;
+  padding: 10px 16px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 14px;
+  text-decoration: none;
+  transform: translateY(calc(-100% - 8px));
+}
+
+.skip:focus {
+  transform: none;
+}
+
 /*
  * A signal line with a pulse travelling down it. The pulse box fills the line, so translating it
  * by 100% of its own height carries the dot from one end to the other.

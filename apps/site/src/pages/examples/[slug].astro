@@ -1,0 +1,406 @@
+---
+import type { InferGetStaticPropsType } from 'astro';
+import { getCollection } from 'astro:content';
+import Example from '../../components/Example.astro';
+import ExampleNav from '../../components/ExampleNav.astro';
+import ClickBenchBlock from '../../components/extras/ClickBenchBlock.astro';
+import ThreeWays from '../../components/extras/ThreeWays.astro';
+import Figure from '../../components/Figure.astro';
+import Footer from '../../components/Footer.astro';
+import Header from '../../components/Header.astro';
+import Base from '../../layouts/Base.astro';
+import {
+  byOrder,
+  EXAMPLE_FIGURES,
+  type ExampleSlug,
+  neighbours,
+  pageHref,
+  splitSections
+} from '../../lib/example-pages.ts';
+import { loadExample } from '../../lib/examples.ts';
+
+export async function getStaticPaths() {
+  const ordered = byOrder(await getCollection('examples'));
+  return ordered.map((entry, index) => ({
+    params: { slug: entry.id },
+    props: { entry, ordered, index }
+  }));
+}
+
+type Props = InferGetStaticPropsType<typeof getStaticPaths>;
+const { entry, ordered, index } = Astro.props;
+const { prev, next } = neighbours(ordered, index);
+// The prose lists are unstyled, so Safari needs the role to keep announcing them as lists.
+const { elsewhere, onSubstrate, stops } = splitSections(
+  (entry.rendered?.html ?? '')
+    .replaceAll('<ul>', '<ul role="list">')
+    .replaceAll('<ol>', '<ol role="list">'),
+  `${entry.id}.md`
+);
+// Recall has no transcript until the deploy's live run writes one.
+const live = loadExample(entry.id).transcript !== null;
+const extras = { 'three-ways': ThreeWays, clickbench: ClickBenchBlock };
+const nn = (order: number) => String(order).padStart(2, '0');
+const href = (slug: string) => pageHref(import.meta.env.BASE_URL, slug);
+---
+<Base title={`${entry.data.name} · substrate examples`} description={entry.data.promise}>
+  <Header />
+  <main id="main" class="example-page">
+    <aside class="sidebar">
+      <p class="label kicker">// worked examples</p>
+      <ExampleNav entries={ordered} current={entry.id} label="Worked examples" />
+    </aside>
+    <article>
+      <details class="picker">
+        <summary class="label">{`${nn(entry.data.order)} ${entry.data.name} · all examples`}</summary>
+        <div class="picker-list">
+          <ExampleNav entries={ordered} current={entry.id} label="Worked examples" />
+        </div>
+      </details>
+
+      <header class="intro">
+        <div class="title">
+          <p class="label kicker">{`// example ${nn(entry.data.order)} · ${entry.data.name}`}</p>
+          <h1>{entry.data.promise}</h1>
+        </div>
+        <div class="art">
+          <Figure name={EXAMPLE_FIGURES[entry.id as ExampleSlug]} mode="page" />
+        </div>
+      </header>
+
+      <section class="shows" aria-labelledby="shows">
+        <h2 id="shows" class="label">What it shows</h2>
+        <ul role="list">{entry.data.shows.map((s) => <li>{s}</li>)}</ul>
+      </section>
+
+      <section class="section" aria-labelledby="elsewhere">
+        <div class="joint signal" aria-hidden="true"><span class="pulse"></span></div>
+        <h2 id="elsewhere">Elsewhere</h2>
+        <div class="prose" set:html={elsewhere} />
+      </section>
+
+      <section class="section" aria-labelledby="on-substrate">
+        <div class="joint signal" aria-hidden="true"><span class="pulse"></span></div>
+        <h2 id="on-substrate">On substrate</h2>
+        <div class="prose" set:html={onSubstrate} />
+        <div class="run">
+          <Example name={entry.id} show={['namespace.ts']} />
+          {
+            !live && (
+              <p class="note">
+                The run appears on the published site: it needs the real embedder, which runs at
+                deploy.
+              </p>
+            )
+          }
+          {
+            entry.data.extras.map((key) => {
+              const Extra = extras[key];
+              return <Extra />;
+            })
+          }
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="where-it-stops">
+        <div class="joint signal" aria-hidden="true"><span class="pulse"></span></div>
+        <h2 id="where-it-stops">Where it stops</h2>
+        <div class="prose" set:html={stops} />
+      </section>
+
+      <nav class="more" aria-label="More examples">
+        {
+          prev && (
+            <a rel="prev" href={href(prev.id)}>
+              <span class="label dir"><span aria-hidden="true">←</span> previous</span>
+              <span class="label to">{`${nn(prev.data.order)} ${prev.data.name}`}</span>
+              <span class="promise">{prev.data.promise}</span>
+            </a>
+          )
+        }
+        {
+          next && (
+            <a rel="next" href={href(next.id)}>
+              <span class="label dir">next <span aria-hidden="true">→</span></span>
+              <span class="label to">{`${nn(next.data.order)} ${next.data.name}`}</span>
+              <span class="promise">{next.data.promise}</span>
+            </a>
+          )
+        }
+      </nav>
+    </article>
+  </main>
+  <Footer />
+  <script src="../../scripts/reveal.ts"></script>
+</Base>
+
+<style>
+  /* One column, with the picker above the content; the sidebar takes over at 960px. */
+  .example-page {
+    padding-bottom: clamp(48px, 7vw, 88px);
+  }
+
+  article {
+    min-width: 0;
+  }
+
+  .sidebar {
+    position: sticky;
+    top: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding-top: clamp(32px, 5vw, 64px);
+  }
+
+  .picker {
+    margin-top: 8px;
+    border-radius: 10px;
+    background: var(--panel);
+  }
+
+  .picker summary {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 12px 18px;
+    color: var(--accent);
+    list-style: none;
+    cursor: pointer;
+  }
+
+  .picker summary::-webkit-details-marker {
+    display: none;
+  }
+
+  /*
+   * The empty alternative text keeps the sign out of the summary's accessible name; the plain
+   * declaration before it shows the sign where an engine ignores the alternative-text form.
+   */
+  .picker summary::after {
+    content: '+';
+    content: '+' / '';
+    color: var(--muted);
+  }
+
+  .picker[open] summary::after {
+    content: '−';
+    content: '−' / '';
+  }
+
+  .picker-list {
+    padding: 0 18px 16px;
+  }
+
+  @media (max-width: 959.98px) {
+    .sidebar {
+      display: none;
+    }
+  }
+
+  @media (min-width: 960px) {
+    .example-page {
+      display: grid;
+      grid-template-columns: 180px minmax(0, 1fr);
+      gap: clamp(40px, 5vw, 72px);
+      align-items: start;
+    }
+
+    .picker {
+      display: none;
+    }
+  }
+
+  /* The promise and its figure, side by side once there is room. */
+  .intro {
+    display: grid;
+    gap: 28px;
+    padding: clamp(32px, 5vw, 64px) 0 clamp(36px, 5vw, 56px);
+  }
+
+  .title {
+    min-width: 0;
+  }
+
+  h1 {
+    max-width: 18em;
+    margin: 16px 0 0;
+    font-size: clamp(32px, 3.4vw, 48px);
+    line-height: 1.1;
+    text-wrap: balance;
+  }
+
+  .art {
+    width: 100%;
+    max-width: 280px;
+  }
+
+  @media (min-width: 960px) {
+    .intro {
+      grid-template-columns: minmax(0, 1fr) clamp(220px, 26vw, 360px);
+      align-items: center;
+      gap: 40px;
+    }
+
+    .art {
+      max-width: 360px;
+    }
+  }
+
+  /* What it shows: three short panels under the promise. */
+  .shows {
+    padding-bottom: clamp(48px, 7vw, 88px);
+  }
+
+  .shows h2 {
+    margin: 0 0 14px;
+    color: var(--muted);
+    font-weight: 400;
+    letter-spacing: 0;
+  }
+
+  .shows ul {
+    display: grid;
+    gap: 14px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  @media (min-width: 640px) {
+    .shows ul {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+  }
+
+  .shows li {
+    padding: 18px 20px 20px;
+    border-radius: 12px;
+    background: var(--panel);
+    font-size: 17px;
+    line-height: 1.45;
+  }
+
+  .shows li::before {
+    content: '';
+    display: block;
+    width: 18px;
+    height: 2px;
+    margin-bottom: 14px;
+    background: var(--accent);
+  }
+
+  .section > h2 {
+    margin: 0 0 24px;
+    font-size: clamp(28px, 3.2vw, 40px);
+  }
+
+  /* The Markdown sections: muted prose, bold lead-ins in the text colour, dashes for bullets. */
+  .prose {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    max-width: 40em;
+    color: var(--muted);
+  }
+
+  .prose :global(p),
+  .prose :global(ul) {
+    margin: 0;
+  }
+
+  .prose :global(strong) {
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  .prose :global(a) {
+    text-underline-offset: 3px;
+  }
+
+  .prose :global(ul) {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 0;
+    list-style: none;
+  }
+
+  .prose :global(li) {
+    position: relative;
+    padding-left: 26px;
+  }
+
+  .prose :global(li::before) {
+    content: '';
+    position: absolute;
+    top: 0.75em;
+    left: 0;
+    width: 12px;
+    height: 2px;
+    background: var(--accent);
+  }
+
+  .run {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    margin-top: 40px;
+  }
+
+  .note {
+    margin: 20px 0 0;
+    padding: 14px 20px;
+    border: 1px dashed var(--rule);
+    border-radius: 10px;
+    color: var(--muted);
+    font-size: 16px;
+  }
+
+  /* Previous and next: the neighbour's number, name and promise. */
+  .more {
+    display: grid;
+    gap: 16px;
+  }
+
+  @media (min-width: 640px) {
+    .more {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .more [rel='next'] {
+      grid-column: 2;
+      text-align: right;
+    }
+  }
+
+  .more a {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+    padding: 20px 24px 22px;
+    border-radius: 14px;
+    background: var(--panel);
+    color: var(--text);
+    text-decoration: none;
+  }
+
+  .more a:hover {
+    background: var(--panel-2);
+  }
+
+  .dir {
+    color: var(--muted);
+  }
+
+  .to {
+    color: var(--accent);
+  }
+
+  .promise {
+    color: var(--muted);
+    font-size: 16px;
+    line-height: 1.45;
+  }
+</style>

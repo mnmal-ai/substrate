@@ -1,5 +1,6 @@
 ---
 import pkg from '../../../substrate/package.json';
+import { pageHref } from '../lib/example-pages.ts';
 import type { FeedEvent } from '../lib/feed.ts';
 import Feed from './Feed.astro';
 
@@ -21,7 +22,7 @@ const { events } = Astro.props;
     </p>
     <div class="ctas">
       <a class="cta primary" href="#start">Get started</a>
-      <a class="cta" href="#examples">See the worked examples</a>
+      <a class="cta" href={pageHref(import.meta.env.BASE_URL, 'onboard')}>See the worked examples</a>
     </div>
   </div>
   <Feed events={events} />
