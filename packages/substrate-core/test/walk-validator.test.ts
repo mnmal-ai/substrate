@@ -1532,6 +1532,22 @@ describe('walked group keys', () => {
     });
   });
 
+  it('refuses a walked metadata field, saying metadata is not walked', () => {
+    for (const key of ['customer.createdAt', 'customer.seq']) {
+      const err = refused({
+        aggregate: n,
+        groupBy: { month: { dateTrunc: [{ lit: 'month' }, key] } }
+      });
+      expect({ code: err.code, path: err.path }, key).toEqual({
+        code: 'expr_invalid',
+        path: ['groupBy', 'month', 'dateTrunc', '1']
+      });
+      expect(err.message, key).toBe(
+        `unknown field '${key}': metadata fields ('${key.slice(9)}') are not walked, only declared fields of 'app/Customer'`
+      );
+    }
+  });
+
   it('refuses a list of crossRefs as a walk does', () => {
     const err = refused({ aggregate: n, groupBy: { g: 'payers.region' } });
     expect({ code: err.code, path: err.path }).toEqual({

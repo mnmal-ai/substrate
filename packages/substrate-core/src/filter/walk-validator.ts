@@ -764,6 +764,13 @@ function walkedFieldType(name: string, scope: WalkScope, at: string[]): ExprType
     throw err;
   }
   const t = Object.hasOwn(hop.fields, field) ? exprTypeOfField(hop.fields[field]) : undefined;
+  if (t === undefined && metadataExprType(field) !== undefined) {
+    fail(
+      'expr_invalid',
+      `unknown field '${name}': metadata fields ('${field}') are not walked, only declared fields of '${hop.ref.ns}/${hop.ref.type}'`,
+      at
+    );
+  }
   if (t === undefined) {
     fail(
       'expr_invalid',

@@ -1610,7 +1610,8 @@ export class Engine {
     seed: string,
     ctx: RequestContext,
     decision: PolicyDecision,
-    walk: WalkResolvers | undefined
+    walk: WalkResolvers | undefined,
+    isVirtual: boolean
   ): boolean {
     const seedPath = walkGrammarPath(frame as Record<string, unknown>);
     if (seedPath === null) return false;
@@ -1627,6 +1628,8 @@ export class Engine {
         ROW_POLICY_BLOCKS_WALK
       );
     }
+    // A virtual frame holds no walk (refused earlier), and its own params are its resolver's, not walk hops.
+    if (isVirtual) return false;
     const types = this.schemaFor(ns).types;
     let walked: WalkedType[];
     try {
@@ -1863,12 +1866,10 @@ export class Engine {
     });
     if (!guardOk) return null;
 
-    // A virtual frame holds no walk (refused above), and its own params are its resolver's, not walk grammar.
     if (
       operation === 'query' &&
       registryEntry.kind === 'type' &&
-      !isVirtual &&
-      this.#refuseWalkPolicy(envelope, key, frame, ns, name, ctx, decision, walk)
+      this.#refuseWalkPolicy(envelope, key, frame, ns, name, ctx, decision, walk, isVirtual)
     ) {
       return null;
     }

@@ -125,6 +125,42 @@ describe.skipIf(!POSTGRES_URL)('walk aggregates over integers: pg and memory agr
     });
   });
 
+  it('selects and orders by an integer avg, the integer _agg an expression can read', async () => {
+    for (const [dir, want] of [
+      [
+        'asc',
+        [
+          ['c1', 1.5, 0.75],
+          ['c2', 5, 2.5],
+          ['c3', null, null]
+        ]
+      ],
+      [
+        'desc',
+        [
+          ['c2', 5, 2.5],
+          ['c1', 1.5, 0.75],
+          ['c3', null, null]
+        ]
+      ]
+    ] as const) {
+      const params: ReadParams = {
+        agg: agg({ mean: { in: IN, avg: 'qty' } }),
+        select: { m: '_agg.mean', half: { div: ['_agg.mean', 2] } },
+        orderBy: [{ m: dir }]
+      };
+      const read = async (ds: PgDataset | MemoryDataset) =>
+        (await ds.read('Customer', params)).rows.map((r) => [
+          [...ids].find(([, id]) => id === r.id)?.[0],
+          r.m,
+          r.half
+        ]);
+      const m = await read(mem);
+      expect(await read(pg), dir).toEqual(m);
+      expect(m, dir).toEqual(want);
+    }
+  });
+
   it('min and max keep the field kind; an int32 sum is an int64', async () => {
     expect(
       await aggs({
