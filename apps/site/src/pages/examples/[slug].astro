@@ -45,12 +45,12 @@ const href = (slug: string) => pageHref(import.meta.env.BASE_URL, slug);
 ---
 <Base title={`${entry.data.name} · substrate examples`} description={entry.data.promise}>
   <Header />
-  <main id="main" class="example-page">
+  <main class="example-page">
     <aside class="sidebar">
       <p class="label kicker">// worked examples</p>
       <ExampleNav entries={ordered} current={entry.id} label="Worked examples" />
     </aside>
-    <article>
+    <article id="main">
       <details class="picker">
         <summary class="label">{`${nn(entry.data.order)} ${entry.data.name} · all examples`}</summary>
         <div class="picker-list">
