@@ -19,7 +19,7 @@ For agents, there's one more. If they should call the API as MCP tools, that's a
 
 ## On substrate
 
-The scenario is a small invoicing app: three customers and eight invoices, all invented, seeded from [`_scenario.ts`](https://github.com/mnmal-ai/substrate/blob/main/apps/site/examples/_scenario.ts), which most of the examples share. The script below runs against substrate's engine in substrate's CI, and the responses shown are that run's output, not typed in.
+The scenario is a small invoicing app: three customers and eight invoices, all invented, seeded from [`_scenario.ts`](https://github.com/mnmal-ai/substrate/blob/main/apps/site/examples/_scenario.ts), which most of the examples share. The run below comes from a script that substrate's CI runs against substrate's engine, and the responses shown are that run's output, not typed in.
 
 `defineNamespace` declares `app/Customer` and `app/Invoice`. Composed into a server, both can be written, read and subscribed to at once, with no handler code: `app/createInvoice`, `app/updateInvoice` and the rest are generated. A read can walk the reference from an invoice to its customer, and a fresh agent learns all of it from `GET /substrate/v1/onboard` and the schema route.
 
@@ -28,7 +28,7 @@ The onboard and schema replies are trimmed here. The full onboard reply also car
 ## Where it stops
 
 - **Subscriptions take `where` and `orderBy` only, and refuse walks.** A subscription or stream that walks is refused with `walks_in_subscription`. That's why the frame shown three ways is the walk-free read, not the one that walks to the customer.
-- **The output shown is the HTTP run's.** The MCP and subscription panes show the frame each surface takes, not a response from it. The coordinate example shows a live subscription.
+- **The output shown is the HTTP run's.** The MCP and subscription panes show the frame each surface takes, not a response from it. The [coordinate example](../coordinate/) shows a live subscription.
 - **MCP has no subscription tool.** Live updates come over frame streams only, so an agent on MCP alone polls.
 - **It serves the types you declare, not an existing schema.** Substrate keeps a table per declared type, so it can't put an API on tables you already have.
 - **The walk needs Postgres in a deployment.** This run sends its requests to the HTTP routes in process, on the memory store with a test-only walk evaluator switched on. A server on the memory store refuses walks with `walks_unsupported_store`.

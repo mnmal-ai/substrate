@@ -16,7 +16,7 @@ The other route skips the migration: a JSON column, or a schemaless store that t
 
 ## On substrate
 
-The scenario is a small invoicing app: three customers and eight invoices, all invented, seeded from [`_scenario.ts`](https://github.com/mnmal-ai/substrate/blob/main/apps/site/examples/_scenario.ts), which most of the examples share. The script below runs against substrate's engine in substrate's CI, and the responses shown are that run's output, not typed in.
+The scenario is a small invoicing app: three customers and eight invoices, all invented, seeded from [`_scenario.ts`](https://github.com/mnmal-ai/substrate/blob/main/apps/site/examples/_scenario.ts), which most of the examples share. The run below comes from a script that substrate's CI runs against substrate's engine, and the responses shown are that run's output, not typed in.
 
 On the running server, an agent calls `propose_type` for `billing/Payment`, with a reference to the code-defined `app/Invoice`. On the next call it records a payment, then reads it back, walking out to the invoice it settles. Nothing is deployed in between.
 

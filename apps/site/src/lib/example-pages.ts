@@ -108,17 +108,20 @@ export const PRODUCTS: readonly string[] = [
 
 /**
  * Products named in `## Elsewhere` outside the text of an http(s) Markdown link, in first-seen
- * order. A name inside `[…Name…](http…)` counts as linked; a plain mention does not, even when
- * another link sits in the same paragraph.
+ * order. A plain mention passes when the text of an http(s) link in the same paragraph names the
+ * product, as in `[Hasura](…) tracks tables. Hasura also…`; otherwise it is reported.
  */
 export function unlinkedProducts(markdown: string): string[] {
   const section = /^## Elsewhere\s*$([\s\S]*?)(?=^## |(?![\s\S]))/m.exec(markdown)?.[1] ?? '';
+  const link = /\[([^\]]*)\]\(https?:[^)]*\)/g;
   const found = new Set<string>();
   for (const para of section.split(/\n\s*\n/)) {
-    const plain = para.replace(/\[[^\]]*\]\(https?:[^)]*\)/g, ' ');
+    const linkText = [...para.matchAll(link)].map((m) => m[1]).join(' ');
+    const plain = para.replace(link, ' ');
     const hits = PRODUCTS.flatMap((p) => {
-      const at = plain.search(new RegExp(`\\b${p}\\b`));
-      return at < 0 ? [] : [{ p, at }];
+      const name = new RegExp(`\\b${p}\\b`);
+      const at = plain.search(name);
+      return at < 0 || name.test(linkText) ? [] : [{ p, at }];
     });
     for (const { p } of hits.sort((a, b) => a.at - b.at)) found.add(p);
   }

@@ -83,6 +83,14 @@ Pinecone here is outside Elsewhere.
     ).toEqual(['Hasura']);
   });
 
+  it('passes a plain mention when link text in the same paragraph names the product', () => {
+    expect(
+      unlinkedProducts(
+        '## Elsewhere\n\n[Hasura](https://hasura.io/docs/) tracks tables. Hasura also serves subscriptions.\n'
+      )
+    ).toEqual([]);
+  });
+
   it('counts a product named inside longer link text as linked', () => {
     expect(
       unlinkedProducts('## Elsewhere\n\n[the Hasura docs](https://hasura.io/docs/) say so.\n')

@@ -17,7 +17,7 @@ As the data grows, analytics often move to a warehouse. [ClickHouse](https://cli
 
 ## On substrate
 
-The scenario is a small invoicing app: three customers and eight invoices, all invented, seeded from [`_scenario.ts`](https://github.com/mnmal-ai/substrate/blob/main/apps/site/examples/_scenario.ts), which most of the examples share. The script below runs against substrate's engine in substrate's CI, and the responses shown are that run's output, not typed in.
+The scenario is a small invoicing app: three customers and eight invoices, all invented, seeded from [`_scenario.ts`](https://github.com/mnmal-ai/substrate/blob/main/apps/site/examples/_scenario.ts), which most of the examples share. The run below comes from a script that substrate's CI runs against substrate's engine, and the responses shown are that run's output, not typed in.
 
 Analytics are frames like every other read, sent to the same route. They take `groupBy` with `dateTrunc`, sums and counts, and walks that aggregate across a reference. Over the same invoices, the run asks what is outstanding by the month it falls due, then each customer's open invoices with the next due date.
 

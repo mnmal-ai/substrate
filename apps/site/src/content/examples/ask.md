@@ -16,7 +16,7 @@ It's flexible. A capable model can answer questions that no fixed grammar will r
 
 ## On substrate
 
-The scenario is a small invoicing app: three customers and eight invoices, all invented, seeded from [`_scenario.ts`](https://github.com/mnmal-ai/substrate/blob/main/apps/site/examples/_scenario.ts), which most of the examples share. The script below runs against substrate's engine in substrate's CI, and the responses shown are that run's output, not typed in.
+The scenario is a small invoicing app: three customers and eight invoices, all invented, seeded from [`_scenario.ts`](https://github.com/mnmal-ai/substrate/blob/main/apps/site/examples/_scenario.ts), which most of the examples share. The run below comes from a script that substrate's CI runs against substrate's engine, and the responses shown are that run's output, not typed in.
 
 A deterministic parser turns the question into a frame, and an optional, constrained judge handles only what the parser leaves ambiguous: the model never writes a query. The answer carries the frame it ran and the words that justified each part of it. A question it can't read answers `unknown` and runs nothing. `ask` comes from the `@mnmal-ai/substrate-nl` plugin, which is installed separately.
 
@@ -27,6 +27,6 @@ This deployment tells `ask` that an invoice's time is its due date (the `timeFie
 ## Where it stops
 
 - **There's no judge in this run, only the parser.** The second answer says so: "happy" is dropped as not understood, with the judge not configured.
-- **It counts; it doesn't sum.** `amount` is an int64 field, and `ask` doesn't read a total over an int64 field yet, so a question asking for one answers `unknown`. The engine itself sums int64 exactly in a query frame, as the warehouse example shows.
+- **It counts; it doesn't sum.** `amount` is an int64 field, and `ask` doesn't read a total over an int64 field yet, so a question asking for one answers `unknown`. The engine itself sums int64 exactly in a query frame, as the [warehouse example](../warehouse/) shows.
 - **`timeField` is set to `dueAt` for this run.** Without that setting, "per month" groups by `createdAt`, the time each row was written.
 - **A question stays within one namespace.** Here that's `app`.
