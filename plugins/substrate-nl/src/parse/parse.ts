@@ -360,7 +360,7 @@ export function parseQuestion(
   // --- superlatives, "current <singular>", counts, scope, history ---
   let order: 'desc' | 'asc' | null = null;
   let count = false;
-  let countUnit: { span: string; unit: TimeUnit } | null = null;
+  let countUnit: { span: string; unit: TimeUnit; end: number } | null = null;
   let allProjects = false;
   let historyWord = false;
   const singularMention = [...mentioned.values()].some((m) => !m.plural);
@@ -604,7 +604,11 @@ export function parseQuestion(
       countUnit:
         countUnit ??
         (aggregate?.group?.unit !== undefined
-          ? { span: aggregate.group.span, unit: aggregate.group.unit }
+          ? {
+              span: aggregate.group.span,
+              unit: aggregate.group.unit,
+              end: aggregate.group.end ?? tokens.length
+            }
           : null),
       aggregate,
       allProjects,
@@ -673,7 +677,7 @@ interface AssemblyInput {
   plural: boolean;
   count: boolean;
   /** "per month" or "monthly" beside a count: the unit its answer is grouped by. */
-  countUnit: { span: string; unit: TimeUnit } | null;
+  countUnit: { span: string; unit: TimeUnit; end: number } | null;
   aggregate: AggregateClaim | null;
   allProjects: boolean;
   historyWord: boolean;
@@ -886,7 +890,16 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
   if (sortBy !== null && sortBy.hop === undefined && orderExclude !== undefined)
     where.push({ NOT: orderExclude });
 
-  const agg = aggClaim === null ? null : aggregateOn(aggClaim, type, pack, rulings);
+  // "per month by due date": a date field named after the unit buckets in place of the ruled one.
+  const unitClaim = a.count
+    ? a.countUnit
+    : aggClaim?.group?.unit !== undefined
+      ? { ...aggClaim.group, end: aggClaim.group.end ?? tokens.length }
+      : null;
+  const bucketField =
+    unitClaim === null ? null : claimDateField(tokens, unitClaim.end, fields, rulings);
+  const agg =
+    aggClaim === null ? null : aggregateOn(aggClaim, type, pack, rulings, bucketField ?? undefined);
   if (agg !== null) {
     dropped.push(...agg.dropped);
     ev.push(...agg.evidence);
@@ -1053,7 +1066,7 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
     delete params.orderBy;
   }
   const countBy = a.count && a.countUnit !== null ? a.countUnit : null;
-  const timeField = own(rulings.timeField, type) ?? 'createdAt';
+  const timeField = bucketField ?? own(rulings.timeField, type) ?? 'createdAt';
   if (countBy !== null) {
     params.aggregate = { value: { count: true } };
     params.groupBy = { bucket: { dateTrunc: [{ lit: countBy.unit }, timeField] } };
@@ -1203,6 +1216,10 @@ function fieldAt(
     : null;
 }
 
+/** Integer kinds sum, average and order like `number`. */
+const isNumeric = (valueType: string | undefined) =>
+  valueType === 'number' || valueType === 'int16' || valueType === 'int32' || valueType === 'int64';
+
 /** True when `words` name a field on one of `types` (a number field, with `numeric`). */
 function namesField(
   words: string,
@@ -1212,7 +1229,7 @@ function namesField(
 ): boolean {
   return types.some((t) => {
     const name = fieldByWords(words, t.fields, rulings);
-    return name !== null && (!numeric || t.fields[name]?.valueType === 'number');
+    return name !== null && (!numeric || isNumeric(t.fields[name]?.valueType));
   });
 }
 
@@ -1375,7 +1392,13 @@ interface AggregateClaim {
   fn: AggregateFn;
   field: { words?: string; phrase?: PhraseClaim };
   /** "by|per <field>", or a unit (`unit`): "per day|hour|…", "monthly". */
-  group?: { span: string; unit?: TimeUnit; field?: { words?: string; phrase?: PhraseClaim } };
+  group?: {
+    span: string;
+    unit?: TimeUnit;
+    /** Index of the last token of the unit phrase. */
+    end?: number;
+    field?: { words?: string; phrase?: PhraseClaim };
+  };
   /** A unit adjective before the aggregate word that is not its unit: read as nothing, dropped. */
   held?: string;
 }
@@ -1461,6 +1484,35 @@ function adjectiveAt(tokens: Token[], k: number, names: FieldNames): TimeUnit | 
 }
 
 /**
+ * Claims "by <date field>" right after a unit phrase ending at token `end` ("per month by due
+ * date"): the longest run of up to three free words naming a date field, or a lone word that
+ * starts exactly one date field's phrase ("due"). Anything else stays unread.
+ */
+function claimDateField(
+  tokens: Token[],
+  end: number,
+  fields: Record<string, PackField>,
+  rulings: NamespaceRulings
+): string | null {
+  const by = tokens[end + 1];
+  if (by === undefined || by.used || by.text !== 'by') return null;
+  const dates = Object.values(fields).filter((f) => f.valueType === 'date');
+  for (let n = 3; n >= 1; n--) {
+    const slice = tokens.slice(end + 2, end + 2 + n);
+    if (slice.length < n || slice.some((t) => t.used)) continue;
+    const words = slice.map((t) => t.text).join(' ');
+    const named = fieldByWords(words, fields, rulings);
+    const starts = dates.filter((f) => f.phrases.some((p) => p.startsWith(`${words} `)));
+    const name = named ?? (starts.length === 1 ? (starts[0]?.name ?? null) : null);
+    if (name === null || fields[name]?.valueType !== 'date') continue;
+    by.used = true;
+    for (const t of slice) t.used = true;
+    return name;
+  }
+  return null;
+}
+
+/**
  * Claims "by|per <unit>" from token `from` on, skipping used tokens and "<author verb> by";
  * with `adjectives`, a unit adjective too, whichever comes first. With `awayFromAggregate`,
  * an adjective next to an aggregate word is skipped: that word did not claim it as its unit.
@@ -1470,7 +1522,7 @@ function claimUnit(
   from: number,
   adjectives?: FieldNames,
   awayFromAggregate = false
-): { span: string; unit: TimeUnit } | null {
+): { span: string; unit: TimeUnit; end: number } | null {
   for (let k = from; k < tokens.length; k++) {
     const by = tokens[k] as Token;
     const adjective =
@@ -1479,7 +1531,7 @@ function claimUnit(
         : adjectiveAt(tokens, k, adjectives);
     if (adjective !== undefined) {
       by.used = true;
-      return { span: by.text, unit: adjective };
+      return { span: by.text, unit: adjective, end: k };
     }
     if (by.used || (by.text !== 'by' && by.text !== 'per')) continue;
     if (AUTHOR_VERBS.has(tokens[k - 1]?.text ?? '')) continue;
@@ -1488,7 +1540,7 @@ function claimUnit(
       next === undefined || next.used ? undefined : TIME_UNITS.find((u) => u === next.text);
     if (next === undefined || unit === undefined) continue;
     by.used = next.used = true;
-    return { span: `${by.text} ${next.text}`, unit };
+    return { span: `${by.text} ${next.text}`, unit, end: k + 1 };
   }
   return null;
 }
@@ -1607,7 +1659,8 @@ function aggregateOn(
   c: AggregateClaim,
   type: string,
   pack: NamespacePack,
-  rulings: NamespaceRulings
+  rulings: NamespaceRulings,
+  bucketField?: string
 ): {
   fn?: AggregateFn;
   field?: string;
@@ -1619,10 +1672,11 @@ function aggregateOn(
 } {
   const r = seedField({ span: c.span, ...c.field }, type, pack, rulings, 'aggregating');
   const wants = c.fn === 'min' || c.fn === 'max' ? ['number', 'date'] : ['number'];
+  const accepts = (vt: string | undefined) => isNumeric(vt) || (wants.length > 1 && vt === 'date');
   const reason =
     'reason' in r
       ? r.reason
-      : (r.f.kind === 'scalar' || r.f.kind === 'metadata') && wants.includes(r.f.valueType ?? '')
+      : (r.f.kind === 'scalar' || r.f.kind === 'metadata') && accepts(r.f.valueType)
         ? null
         : `${c.word} needs a ${wants.join(' or ')} field; ${r.name} is a ${r.f.valueType ?? r.f.kind} field`;
   // Without a field there is no value to give: a dropped filter, so the strict reading is unknown.
@@ -1644,7 +1698,7 @@ function aggregateOn(
     return out;
   };
   if (g.unit !== undefined) {
-    const field = own(rulings.timeField, type) ?? 'createdAt';
+    const field = bucketField ?? own(rulings.timeField, type) ?? 'createdAt';
     out.dateGroup = { field, by: g.unit };
     out.evidence.push({ span: g.span, role: 'field', detail: `bucket ${field} by ${g.unit}` });
     return out;
@@ -1690,7 +1744,7 @@ function orderField(
   if (o.pick !== undefined) return { reason: pickReason(o.pick, `${type}.${name}`, type) };
   const sortable =
     (f.kind === 'scalar' || f.kind === 'metadata') &&
-    (f.valueType === 'number' || (f.valueType === 'date' && o.numeric !== true));
+    (isNumeric(f.valueType) || (f.valueType === 'date' && o.numeric !== true));
   if (!sortable)
     return {
       reason:
@@ -1769,7 +1823,7 @@ function hopOrder(
     return { reason: `ordering across ${path.length} hops is not supported; one hop only` };
   const f = own(pack.types, to.type)?.fields[to.field];
   const qualified = `${to.type}.${to.field}`;
-  if (f === undefined || (f.kind !== 'scalar' && f.kind !== 'metadata') || f.valueType !== 'number')
+  if (f === undefined || (f.kind !== 'scalar' && f.kind !== 'metadata') || !isNumeric(f.valueType))
     return {
       reason: `ordering across a hop needs a number field; ${qualified} is a ${f?.valueType ?? f?.kind} field`
     };
@@ -1819,7 +1873,7 @@ function resolveField(
 
 /** A clause value as the field's type, or undefined when it is not one. */
 function coerce(raw: string, f: PackField): unknown {
-  if (f.valueType === 'number') {
+  if (isNumeric(f.valueType)) {
     const n = Number(raw);
     return Number.isFinite(n) ? n : undefined;
   }
