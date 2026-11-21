@@ -50,6 +50,20 @@ export function fieldTypeLookup(
 export const hasExprKey = (where: unknown): where is { $expr: Expr } =>
   typeof where === 'object' && where !== null && Object.hasOwn(where, '$expr');
 
+/** The type a walk (`in` or `out`) from `near` reaches, or undefined when it names none. */
+export function walkFarType(
+  walk: { in?: string; out?: string },
+  near: TypeRef,
+  fieldDef: (ref: TypeRef, field: string) => FieldDef | undefined
+): TypeRef | undefined {
+  if (walk.in !== undefined) {
+    const m = /^([^/]+)\/([^./]+)\./.exec(walk.in);
+    return m?.[1] !== undefined && m[2] !== undefined ? { ns: m[1], type: m[2] } : undefined;
+  }
+  const def = fieldDef(near, walk.out ?? '');
+  return def?.kind === 'crossRef' ? { ns: def.ns, type: def.type } : undefined;
+}
+
 /**
  * The function a walk aggregate applies and the far field it reads (the field
  * definition is undefined for count): `near` is the seed type, `fieldDef`
@@ -67,21 +81,21 @@ function aggField(
   if (fn === undefined) return undefined;
   if (fn === 'count') return { fn, def: undefined };
   const field = fn === 'latest' ? (rec.latest as { value: string }).value : rec[fn];
-  let far: TypeRef | undefined;
-  if (spec.in !== undefined) {
-    const m = /^([^/]+)\/([^./]+)\./.exec(spec.in);
-    far = m?.[1] !== undefined && m[2] !== undefined ? { ns: m[1], type: m[2] } : undefined;
-  } else {
-    const def = fieldDef(near, spec.out ?? '');
-    far = def?.kind === 'crossRef' ? { ns: def.ns, type: def.type } : undefined;
-  }
+  const far = walkFarType(spec, near, fieldDef);
   return far === undefined || typeof field !== 'string'
     ? undefined
     : { fn, def: fieldDef(far, field) };
 }
 
-const isIntegerDef = (def: FieldDef | undefined): boolean =>
-  def?.kind === 'scalar' && (def.type === 'int16' || def.type === 'int32' || def.type === 'int64');
+/** The integer type of a field definition, or undefined when it is not an int16, int32 or int64 scalar. */
+export function integerType(def: FieldDef | undefined): 'int16' | 'int32' | 'int64' | undefined {
+  return def?.kind === 'scalar' &&
+    (def.type === 'int16' || def.type === 'int32' || def.type === 'int64')
+    ? def.type
+    : undefined;
+}
+
+const isIntegerDef = (def: FieldDef | undefined): boolean => integerType(def) !== undefined;
 
 /**
  * Whether a walk aggregate's value is an int64: the sum of an integer field,

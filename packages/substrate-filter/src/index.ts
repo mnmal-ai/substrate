@@ -41,9 +41,11 @@ export {
   exprTypeOfField,
   fieldTypeLookup,
   hasExprKey,
+  integerType,
   metadataExprType,
   walkAggExprType,
-  walkAggIsInt64
+  walkAggIsInt64,
+  walkFarType
 } from './expr-scope.js';
 export {
   clearExtensionOperators,

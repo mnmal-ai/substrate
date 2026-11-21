@@ -1,5 +1,5 @@
 /**
- * An integer walk `_agg` reaches clients: an int64 sum past 2^53 is a decimal
+ * An integer walk `_agg` reaches clients, top-level or nested: an int64 sum past 2^53 is a decimal
  * string on the JSON wire and an exact bigint from the pack wire.
  */
 
@@ -18,12 +18,18 @@ describe('/substrate/v1/query integer walk aggregates', () => {
       namespace: 'shop',
       walkReference: true,
       fieldDefLookup: (type, f) =>
-        type === 'Payment' && f === 'amount' ? { kind: 'scalar', type: 'int64' } : undefined
+        (type === 'Payment' && f === 'amount') || (type === 'Receipt' && f === 'cents')
+          ? { kind: 'scalar', type: 'int64' }
+          : undefined
     });
     await dataset.write('Customer', [{ id: 'c1', label: 'a' }]);
     await dataset.write('Payment', [
       { id: 'p1', customer: 'c1', amount: 9007199254740993n },
       { id: 'p2', customer: 'c1', amount: 1n }
+    ] as never);
+    await dataset.write('Receipt', [
+      { id: 'r1', payment: 'p1', cents: 9007199254740993n },
+      { id: 'r2', payment: 'p1', cents: 1n }
     ] as never);
     const composed = await compose({
       systemActor: 'test',
@@ -42,6 +48,12 @@ describe('/substrate/v1/query integer walk aggregates', () => {
                   customer: field.crossRef('shop', 'Customer'),
                   amount: field.int64()
                 }
+              },
+              Receipt: {
+                fields: {
+                  payment: field.crossRef('shop', 'Payment'),
+                  cents: field.int64()
+                }
               }
             })
           ]
@@ -53,7 +65,11 @@ describe('/substrate/v1/query integer walk aggregates', () => {
       'shop/Customer': {
         fields: {
           label: true,
-          _agg: { total: { in: 'shop/Payment.customer', sum: 'amount' } }
+          _agg: { total: { in: 'shop/Payment.customer', sum: 'amount' } },
+          pays: {
+            _walk: { in: 'shop/Payment.customer' },
+            fields: { _agg: { cents: { in: 'shop/Receipt.payment', sum: 'cents' } } }
+          }
         }
       }
     };
@@ -71,7 +87,14 @@ describe('/substrate/v1/query integer walk aggregates', () => {
       const json = JSON.parse(String((await post(false)).body)) as PackEnvelope;
       expect(json.errors).toBeUndefined();
       expect(json.data['shop/Customer']).toEqual([
-        { label: 'a', _agg: { total: '9007199254740994' } }
+        {
+          label: 'a',
+          _agg: { total: '9007199254740994' },
+          pays: [
+            { id: 'p1', _agg: { cents: '9007199254740994' } },
+            { id: 'p2', _agg: { cents: null } }
+          ]
+        }
       ]);
 
       const res = await post(true);
@@ -83,7 +106,14 @@ describe('/substrate/v1/query integer walk aggregates', () => {
       });
       // The pack wire carries the int64 natively and decodes it to a bigint.
       expect(env.data['shop/Customer']).toEqual([
-        { label: 'a', _agg: { total: 9007199254740994n } }
+        {
+          label: 'a',
+          _agg: { total: 9007199254740994n },
+          pays: [
+            { id: 'p1', _agg: { cents: 9007199254740994n } },
+            { id: 'p2', _agg: { cents: null } }
+          ]
+        }
       ]);
     } finally {
       await composed.stop();

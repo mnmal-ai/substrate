@@ -277,7 +277,7 @@ A walk aggregate is one value computed per seed row over the rows one walk reach
 | `"max": "<field>"` | the field's kind | number, integer or date |
 | `"latest": { "by": "<date field>", "value": "<field>" }` | `value` of the far row latest by `by` | `value` is any scalar except json |
 
-An integer field is an int16, int32 or int64. An integer `sum` is exact (past 2^53 too) and, like an int64 field, comes back as a decimal string on the wire; a sum past int64 fails with a range error. `avg` is always a number, and an int16 or int32 `min` or `max` is a number. `avg`, `sum`, `min` and `max` ignore nulls. Over no far rows, every function is null except `count`, which is 0. `latest` breaks ties as a pick does: nulls last, then the lowest `id`.
+An integer field is an int16, int32 or int64. An integer `sum` is exact (past 2^53 too) and, like an int64 field, comes back as a decimal string on the wire; a sum past int64 fails with `value_out_of_range`. `avg` is always a number, and an int16 or int32 `min` or `max` is a number. `avg`, `sum`, `min` and `max` ignore nulls. Over no far rows, every function is null except `count`, which is 0. `latest` breaks ties as a pick does: nulls last, then the lowest `id`.
 
 A walk aggregate takes `in`, `out` and `where`, and nothing else: no `quantifier`, `pick`, `among` or `as`.
 

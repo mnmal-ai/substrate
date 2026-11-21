@@ -19,6 +19,7 @@ import {
   type WalkPick,
   type WhereClause
 } from '@mnmal-ai/substrate-types';
+import { integerType } from './expr-scope.js';
 import { int64Agg } from './int64-agg.js';
 import {
   asSortValue,
@@ -311,7 +312,7 @@ export function applyAgg(rows: Row[], fn: AggFn, fieldDefOf: FieldDefOf): unknow
     const v = one === undefined ? undefined : getFieldValue(one, field);
     return v == null || storedMicros(v) === undefined ? null : v;
   }
-  const int = integerKind(field, fieldDefOf);
+  const int = integerType(fieldDefOf(field));
   if (int !== undefined) {
     const present = rows
       .map((r) => getFieldValue(r, field))
@@ -330,18 +331,6 @@ export function applyAgg(rows: Row[], fn: AggFn, fieldDefOf: FieldDefOf): unknow
     rows.map((r) => getFieldValue(r, field)),
     op
   );
-}
-
-/** The integer type of `field`, or undefined when it is not an int16, int32 or int64 field. */
-function integerKind(
-  field: string,
-  fieldDefOf: FieldDefOf
-): 'int16' | 'int32' | 'int64' | undefined {
-  const def = fieldDefOf(field);
-  return def?.kind === 'scalar' &&
-    (def.type === 'int16' || def.type === 'int32' || def.type === 'int64')
-    ? def.type
-    : undefined;
 }
 
 /** avg/sum/min/max over the numbers among `values` (the rest drop out), null over none; float64, a sum past its range is null. */

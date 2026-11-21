@@ -16,7 +16,15 @@
  * The tree is assumed validated (substrate-core walk-validator).
  */
 
-import { isDateField, isRefOperand, type TypeRef, windowGroupBy } from '@mnmal-ai/substrate-filter';
+import {
+  integerType,
+  isDateField,
+  isRefOperand,
+  type TypeRef,
+  walkAggIsInt64,
+  walkFarType,
+  windowGroupBy
+} from '@mnmal-ai/substrate-filter';
 import {
   type FieldDef,
   isColumnField,
@@ -130,8 +138,8 @@ function aggOver(
       kind: 'date'
     };
   }
-  const def = fieldDef(field);
-  if (def?.kind === 'scalar' && ['int16', 'int32', 'int64'].includes(def.type)) {
+  const intType = integerType(fieldDef(field));
+  if (intType !== undefined) {
     // Summed as bigint (numeric), never float8, and valued as memory does: an int64
     // sum, min or max is a decimal string, an int16 or int32 min or max a number.
     const f = fieldExpr(sql, table, field, 'int64', alias);
@@ -142,7 +150,7 @@ function aggOver(
       };
     }
     const exact = op === 'sum' ? sql`sum(${f})::bigint` : sql`${sql.unsafe(op)}(${f})`;
-    if (op !== 'sum' && def.type !== 'int64')
+    if (op !== 'sum' && intType !== 'int64')
       return { agg: sql`to_jsonb(${exact})`, kind: 'number' };
     return { agg: sql`to_jsonb((${exact})::text)`, kind: 'int64' };
   }
@@ -684,4 +692,61 @@ export function buildNested(
   // The LIMIT is on the order itself, so an index in that order stops after it.
   const agg = sql.unsafe(as === 'json' ? 'json_agg' : 'jsonb_agg');
   return sql`(SELECT COALESCE(${agg}(${row} ORDER BY ${orderBy}), ${sql.unsafe(`'[]'::${as}`)}) FROM (SELECT ${a}.* FROM ${sql.unsafe(from)} ${a} WHERE ${combineAnd(sql, [cond, ...filters])} ORDER BY ${orderBy} ${limit}) ${a})`;
+}
+
+/** Where int64-valued `_agg` values sit in a read's rows: names at this level and the nested lists that hold more. */
+export interface Int64AggPlan {
+  aggs: string[];
+  nested: Array<[string, Int64AggPlan]>;
+}
+
+/**
+ * The int64-valued `_agg` entries among `aggs` and, at any depth, among
+ * `nested`'s own `_agg`s, each read against its selection's far type; undefined
+ * when there are none.
+ */
+export function int64AggPlan(
+  aggs: Record<string, WalkAgg> | undefined,
+  nested: Record<string, NestedSelection> | undefined,
+  near: TypeRef,
+  fieldDef: (ref: TypeRef, field: string) => FieldDef | undefined
+): Int64AggPlan | undefined {
+  const names = Object.entries(aggs ?? {})
+    .filter(([, spec]) => walkAggIsInt64(spec, near, fieldDef))
+    .map(([name]) => name);
+  const lists: Array<[string, Int64AggPlan]> = [];
+  for (const [name, sel] of Object.entries(nested ?? {})) {
+    const far = walkFarType(sel._walk, near, fieldDef);
+    if (far === undefined) continue;
+    const sub = int64AggPlan(
+      Object.hasOwn(sel.fields, '_agg') ? (sel.fields._agg as Record<string, WalkAgg>) : undefined,
+      Object.fromEntries(Object.entries(sel.fields).filter(([, v]) => isNested(v))) as Record<
+        string,
+        NestedSelection
+      >,
+      far,
+      fieldDef
+    );
+    if (sub !== undefined) lists.push([name, sub]);
+  }
+  return names.length === 0 && lists.length === 0 ? undefined : { aggs: names, nested: lists };
+}
+
+/**
+ * Reads `row`'s int64 `_agg` values (decimal strings in the jsonb) as bigints,
+ * in the row and in each nested row, as memory returns them.
+ */
+export function decodeInt64Aggs(row: Record<string, unknown>, plan: Int64AggPlan): void {
+  const aggs = row._agg as Record<string, unknown> | undefined | null;
+  if (aggs !== undefined && aggs !== null) {
+    for (const name of plan.aggs) {
+      const v = aggs[name];
+      if (typeof v === 'string') aggs[name] = BigInt(v);
+    }
+  }
+  for (const [name, sub] of plan.nested) {
+    const list = row[name];
+    if (!Array.isArray(list)) continue;
+    for (const r of list) if (typeof r === 'object' && r !== null) decodeInt64Aggs(r, sub);
+  }
 }

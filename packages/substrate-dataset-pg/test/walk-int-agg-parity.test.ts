@@ -23,6 +23,15 @@ const defs: Record<string, Record<string, FieldDef>> = {
     amount: int('int64'),
     qty: int('int32'),
     small: int('int16')
+  },
+  Line: {
+    payment: { kind: 'crossRef', ns: NS, type: 'Payment', onDelete: 'set_null' },
+    cents: int('int64')
+  },
+  Safe: { name: { kind: 'scalar', type: 'string' } },
+  Deposit: {
+    safe: { kind: 'crossRef', ns: NS, type: 'Safe', onDelete: 'set_null' },
+    amount: int('int64')
   }
 };
 const lookup = {
@@ -59,9 +68,22 @@ beforeAll(async () => {
     { id: 'p2', customer: 'c1', amount: 1n, qty: 2, small: 7 },
     { id: 'p3', customer: 'c2', amount: 50n, qty: 5, small: 1 }
   ].map((p) => ({ ...p, id: u(p.id), customer: u(p.customer) }));
+  const lines = [
+    { id: 'l1', payment: 'p1', cents: 9007199254740993n },
+    { id: 'l2', payment: 'p1', cents: 1n },
+    { id: 'l3', payment: 'p2', cents: 5n }
+  ].map((l) => ({ ...l, id: u(l.id), payment: u(l.payment) }));
+  // A safe whose deposits sum past the int64 range.
+  const deposits = [
+    { id: 'd1', safe: 's1', amount: 9223372036854775807n },
+    { id: 'd2', safe: 's1', amount: 1n }
+  ].map((d) => ({ ...d, id: u(d.id), safe: u(d.safe) }));
   for (const ds of [pg, mem]) {
     await ds.write('Customer', customers);
     await ds.write('Payment', payments as never);
+    await ds.write('Line', lines as never);
+    await ds.write('Safe', [{ id: u('s1') }] as never);
+    await ds.write('Deposit', deposits as never);
   }
 });
 
@@ -131,6 +153,40 @@ describe.skipIf(!POSTGRES_URL)('walk aggregates over integers: pg and memory agr
       const m = labelled((await mem.read('Customer', { where })).rows);
       expect(labelled((await pg.read('Customer', { where })).rows), `${op} ${operand}`).toEqual(m);
       expect(m).toEqual(want);
+    }
+  });
+
+  it('reads the int64 sum of a nested selection as the same bigint', async () => {
+    const params: ReadParams = {
+      orderBy: [{ id: 'asc' }],
+      nested: {
+        pays: {
+          _walk: { in: IN },
+          fields: { id: true, _agg: { cents: { in: `${NS}/Line.payment`, sum: 'cents' } } },
+          orderBy: [{ id: 'asc' }]
+        }
+      } as unknown as NonNullable<ReadParams['nested']>
+    };
+    const read = async (ds: PgDataset | MemoryDataset) =>
+      (await ds.read('Customer', params)).rows.map((r) =>
+        ((r.pays ?? []) as Array<{ id: string; _agg: unknown }>).map((p) => p._agg)
+      );
+    const want = await read(mem);
+    expect(await read(pg)).toEqual(want);
+    expect(
+      want
+        .flat()
+        .map((a) => (a as { cents: unknown }).cents)
+        .sort()
+    ).toEqual([5n, 9007199254740994n, null].sort());
+  });
+
+  it('raises value_out_of_range for a sum past int64 on both stores', async () => {
+    const params: ReadParams = {
+      agg: agg({ total: { in: `${NS}/Deposit.safe`, sum: 'amount' } })
+    };
+    for (const ds of [mem, pg]) {
+      await expect(ds.read('Safe', params)).rejects.toMatchObject({ code: 'value_out_of_range' });
     }
   });
 });

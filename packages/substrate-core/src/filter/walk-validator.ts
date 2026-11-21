@@ -345,7 +345,7 @@ export function bindGroup(where: unknown, path: string[], scope: WalkScope): Wal
 }
 
 const DATE_OR_NUMBER = new Set<FieldKind>(['scalar.number', 'scalar.date']);
-const INTEGERS = new Set<string>(['scalar.int16', 'scalar.int32', 'scalar.int64']);
+const INTEGERS = new Set<FieldKind>(['scalar.int16', 'scalar.int32', 'scalar.int64']);
 
 /** A `_walk` node. `validateWhere` validates its far-side where in `farScope`. */
 export function validateWalk(
@@ -564,7 +564,7 @@ function aggKind(
       const kind = field(
         v,
         at,
-        (k) => k === 'scalar.number' || INTEGERS.has(k),
+        (k) => k === 'scalar.number' || INTEGERS.has(k as FieldKind),
         'a number or integer field'
       );
       return fn === 'sum' && kind !== 'scalar.number' ? 'scalar.int64' : 'scalar.number';
@@ -574,7 +574,7 @@ function aggKind(
       return field(
         v,
         at,
-        (k) => DATE_OR_NUMBER.has(k as FieldKind) || INTEGERS.has(k),
+        (k) => DATE_OR_NUMBER.has(k as FieldKind) || INTEGERS.has(k as FieldKind),
         'a number, integer or date field'
       );
     default: {

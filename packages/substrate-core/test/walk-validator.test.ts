@@ -534,6 +534,10 @@ describe('aggregate, select, groupBy, count and nested validation', () => {
       expect(() =>
         check({ _agg: { in: OBS, sum: 'units' }, gte: '9007199254740993' })
       ).not.toThrow();
+      expect(refusal({ _agg: { in: OBS, sum: 'units' }, gte: 'abc' })).toEqual({
+        code: 'type_mismatch',
+        path: ['where', 'gte']
+      });
       expect(msg({ _agg: { in: OBS, sum: 'units' }, gte: 'abc' })).toContain('expected an int64');
       expect(msg({ _agg: { in: OBS, sum: 'qty' }, gte: 1.5 })).toContain('expected an int64');
       // avg is always a number.
@@ -559,6 +563,25 @@ describe('aggregate, select, groupBy, count and nested validation', () => {
         expect(() =>
           checkFrame({ fields: { id: true, _agg: aggs }, select: { x: `_agg.${n}` } })
         ).toThrow(/cannot use/);
+      }
+      // The message names the value's type with the right article.
+      for (const [n, want] of [
+        ['s', 'has an int64 value'],
+        ['m', 'has an int16 value'],
+        ['b', 'has a boolean value']
+      ] as const) {
+        expect(() =>
+          checkFrame({
+            fields: {
+              id: true,
+              _agg: {
+                ...aggs,
+                b: { in: OBS, latest: { by: 'observedAt', value: 'flag' } }
+              }
+            },
+            select: { x: `_agg.${n}` }
+          })
+        ).toThrow(want);
       }
     });
   });
