@@ -18,6 +18,7 @@ export { RestrictViolation } from '@mnmal-ai/substrate-types';
  */
 
 export { usesWalkGrammar, walkGrammarPath } from '@mnmal-ai/substrate-filter';
+export { assertActionGraph } from './act/validate.js';
 export {
   type ReadShape,
   readShapeOf,

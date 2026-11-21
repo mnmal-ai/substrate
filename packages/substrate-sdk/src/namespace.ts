@@ -29,6 +29,7 @@
 
 import { and } from '@mnmal-ai/substrate-policy';
 import type {
+  ActionDecl,
   EmbedSourceContext,
   FieldDef,
   IndexDecl,
@@ -40,6 +41,7 @@ import type {
   PostWriteHook,
   Row
 } from '@mnmal-ai/substrate-types';
+import { assertTypeActions } from './actions.js';
 import { installAutoCrud } from './autocrud/index.js';
 import {
   assertCrossRefDeletePolicies,
@@ -126,6 +128,8 @@ export interface TypeInput {
    * means newest first by `createdAt`.
    */
   orderedBy?: OrderedBy;
+  /** Actions on this type, as data: what a sketch's action word compiles to. */
+  actions?: Record<string, ActionDecl>;
   /**
    * `'visible'`: each inserted row gets `_metadata.seq`, strictly increasing
    * per type in commit order, so a reader paging by `seq` never sees a higher
@@ -240,6 +244,7 @@ export function defineNamespace(
       throw new Error(`ordering on ${typeName} must be 'visible', got '${String(ordering)}'`);
     }
     if (typeInput.orderedBy !== undefined) assertOrderedBy(typeName, typeInput);
+    assertTypeActions(typeName, typeInput);
     const size: unknown = typeInput.expectedSize;
     if (size !== undefined && size !== 'small' && size !== 'large') {
       throw new Error(
@@ -278,6 +283,7 @@ export function defineNamespace(
           fields: augmentedFields
         };
         if (typeInput.orderedBy !== undefined) installOpts.orderedBy = typeInput.orderedBy;
+        if (typeInput.actions !== undefined) installOpts.actions = typeInput.actions;
         if (combined !== undefined) installOpts.policy = combined;
         if (typeInput.purgeable === true) installOpts.purgeable = true;
         if (typeInput.adminCapability !== undefined) {

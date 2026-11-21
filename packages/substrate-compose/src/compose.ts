@@ -13,6 +13,7 @@
  */
 
 import {
+  assertActionGraph,
   createRuntimeStats,
   Engine,
   loadPlugins,
@@ -445,6 +446,8 @@ async function composeInner(
       }
     }
   }
+
+  assertActionGraph(namespaces);
 
   // Runtime-metrics counter. Created before the engine so
   // engineOpts.metric can fan into it; the subscription gauge is late-bound

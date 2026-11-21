@@ -14,6 +14,7 @@
  * the concrete `Registry` class in `@mnmal-ai/substrate-core` implements it.
  */
 
+import type { ActionDecl } from './act.js';
 import type { ActorIdentity, Id, Row } from './core.js';
 import type { Dataset, ReadResult } from './dataset.js';
 import type { EdgesStore } from './edge.js';
@@ -73,6 +74,8 @@ export interface RegistryEntryInput {
   returns?: FieldDef;
   /** Natural order of a `kind: 'type'` entry; published on its `TypeSchema`. */
   orderedBy?: OrderedBy;
+  /** Actions of a `kind: 'type'` entry; published on its `TypeSchema`. */
+  actions?: Record<string, ActionDecl>;
   /** Declared indexes of a `kind: 'type'` entry installed at runtime (a proposed type). */
   indexes?: IndexDecl[];
   /** A proposed type's size hint; `large` lowers the index advisor's row minimum. */
@@ -110,6 +113,8 @@ export interface RegistryEntry {
   returns?: FieldDef;
   /** Mirrors `RegistryEntryInput.orderedBy`. */
   orderedBy?: OrderedBy;
+  /** Mirrors `RegistryEntryInput.actions`. */
+  actions?: Record<string, ActionDecl>;
   /** Mirrors `RegistryEntryInput.indexes`. */
   indexes?: IndexDecl[];
   /** Mirrors `RegistryEntryInput.expectedSize`. */
@@ -335,6 +340,8 @@ export interface NamespaceTypeDef {
   indexes?: IndexDecl[];
   /** The type's natural order, the default read order. See {@link OrderedBy}. */
   orderedBy?: OrderedBy;
+  /** Actions on this type, as data. See {@link ActionDecl}. */
+  actions?: Record<string, ActionDecl>;
   /** See the SDK's `TypeInput.ordering`. */
   ordering?: 'visible';
   /** Size hint: `large` lowers the index advisor's row minimum for this type. */

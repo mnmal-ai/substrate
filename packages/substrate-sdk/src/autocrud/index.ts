@@ -20,6 +20,7 @@
 
 import { and, requireCapability } from '@mnmal-ai/substrate-policy';
 import type {
+  ActionDecl,
   AutoCrudVerb,
   BatchResolver,
   Dataset,
@@ -87,6 +88,7 @@ export interface AutoCrudRegistry {
       params?: Record<string, FieldDef>;
       returns?: FieldDef;
       orderedBy?: OrderedBy;
+      actions?: Record<string, ActionDecl>;
       indexes?: IndexDecl[];
       expectedSize?: 'small' | 'large';
       /** Semantic autoCRUD verb threaded to policies via ctx.verb. */
@@ -144,6 +146,8 @@ export interface InstallAutoCrudOptions {
   postWrite?: PostWriteHook;
   /** The type's natural order — published on the type entry's schema. */
   orderedBy?: OrderedBy;
+  /** The type's actions, published on the type entry's schema. */
+  actions?: Record<string, ActionDecl>;
   /** Declared indexes, kept on the type entry for storage to build (proposed types). */
   indexes?: IndexDecl[];
   /** Size hint, kept on the type entry for the index advisor (proposed types). */
@@ -337,6 +341,7 @@ export function installAutoCrud(
     ...(policy !== undefined ? { policy } : {}),
     ...(fields !== undefined ? { fields } : {}),
     ...(options.orderedBy !== undefined ? { orderedBy: options.orderedBy } : {}),
+    ...(options.actions !== undefined ? { actions: options.actions } : {}),
     ...(options.indexes !== undefined ? { indexes: options.indexes } : {}),
     ...(options.expectedSize !== undefined ? { expectedSize: options.expectedSize } : {})
   });

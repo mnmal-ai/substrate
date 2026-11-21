@@ -1,5 +1,6 @@
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
-import type { Dataset, FieldDef, NamespaceDefinition } from '@mnmal-ai/substrate-types';
+import type { ActionDecl, Dataset, FieldDef, NamespaceDefinition } from '@mnmal-ai/substrate-types';
+import { toActionSchema } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
 import {
   Engine,
@@ -217,5 +218,44 @@ describe('namespace annotations', () => {
     expect(plain.schemaFor('a').annotations).toBeUndefined();
     expect(annotated.schemaFor('a').schemaVersion).toBe(plain.schemaFor('a').schemaVersion);
     expect(annotated.federatedSchema().a?.annotations).toEqual({ nl: { x: 1 } });
+  });
+});
+
+describe('publishSchema actions', () => {
+  const todoFields: Record<string, FieldDef> = {
+    title: stringField,
+    status: { kind: 'scalar', type: 'string', enum: ['open', 'closed'] },
+    resolution: { kind: 'scalar', type: 'string', nullable: true },
+    archived: { kind: 'scalar', type: 'boolean', default: false }
+  };
+  const close: ActionDecl = {
+    kind: 'update',
+    past: 'closed',
+    set: { status: 'closed', resolution: 'done', archived: true }
+  };
+  const publish = (actions?: Record<string, ActionDecl>) => {
+    const r = new Registry();
+    r.register('Todo', {
+      resolver: noop,
+      fields: todoFields,
+      ...(actions !== undefined ? { actions } : {})
+    });
+    return publishSchema(r);
+  };
+
+  it('publishes each action in its compiled form', () => {
+    const schema = publish({ close });
+    expect(schema.types.Todo?.actions?.close).toEqual(toActionSchema(close));
+    expect(schema.types.Todo?.actions?.close?.fixed).toEqual(['status', 'resolution', 'archived']);
+  });
+
+  it('changes the schemaVersion when an action is added', () => {
+    expect(publish({ close }).schemaVersion).not.toBe(publish().schemaVersion);
+  });
+
+  it('publishes no actions key, and keeps its schemaVersion, for a type without actions', () => {
+    const schema = publish();
+    expect(Object.hasOwn(schema.types.Todo ?? {}, 'actions')).toBe(false);
+    expect(schema.schemaVersion).toBe('300f329bd09d');
   });
 });

@@ -9,6 +9,7 @@
  * on a missing id).
  */
 
+import type { ActionSchema } from './act.js';
 import type { OnDelete, OnMissing } from './edge.js';
 import type { IndexDecl } from './plugin.js';
 
@@ -227,6 +228,8 @@ export interface TypeSchema {
   fields: Record<string, FieldDef>;
   /** The type's natural order; absent means {@link DEFAULT_ORDERED_BY}. */
   orderedBy?: OrderedBy;
+  /** The type's declared actions, by name; absent when it declares none. */
+  actions?: Record<string, ActionSchema>;
   /**
    * Same-namespace crossRefs that point at this type: `field` on `type`.
    * Where a walk can come from. Absent when none.
