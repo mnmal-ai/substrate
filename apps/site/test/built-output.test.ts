@@ -53,12 +53,16 @@ describe('built output', () => {
     expect(pages).toHaveLength(1 + EXAMPLE_SLUGS.length);
   });
 
-  it('opens every page with a skip link to its main', () => {
+  it('opens every page with a skip link to its content, past an example page sidebar', () => {
     for (const { path, html } of pages) {
       const body = html.slice(html.indexOf('<body'));
       const first = /<(?:a|button|input|select|textarea|summary)\b[^>]*>[^<]*/.exec(body)?.[0];
       expect(first, path).toMatch(/\shref="#main"[^>]*>Skip to content$/);
-      expect(body, path).toMatch(/<main\b[^>]*\sid="main"/);
+      const target = path === 'index.html' ? 'main' : 'article';
+      expect(body, path).toMatch(new RegExp(`<${target}\\b[^>]*\\sid="main"`));
+      if (target === 'article') {
+        expect(body.indexOf('class="sidebar"'), path).toBeLessThan(body.indexOf('id="main"'));
+      }
     }
   });
 
