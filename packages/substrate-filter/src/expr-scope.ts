@@ -99,7 +99,7 @@ const isIntegerDef = (def: FieldDef | undefined): boolean => integerType(def) !=
 
 /**
  * Whether a walk aggregate's value is an int64: the sum of an integer field,
- * or the min or max of an int64 field. (An int16 or int32 min or max is a number.)
+ * or the min, max or latest of an int64 field. (An int16 or int32 min or max is a number.)
  */
 export function walkAggIsInt64(
   spec: WalkAgg,
@@ -109,7 +109,7 @@ export function walkAggIsInt64(
   const r = aggField(spec, near, fieldDef);
   if (r === undefined) return false;
   if (r.fn === 'sum') return isIntegerDef(r.def);
-  return (r.fn === 'min' || r.fn === 'max') && r.def?.kind === 'scalar' && r.def.type === 'int64';
+  return r.fn !== 'count' && r.fn !== 'avg' && integerType(r.def) === 'int64';
 }
 
 /**

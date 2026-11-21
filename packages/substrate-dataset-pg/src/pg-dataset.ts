@@ -104,8 +104,8 @@ import {
   buildFrameCount,
   buildWalkAgg,
   buildWalkColumns,
-  decodeInt64Aggs,
-  int64AggPlan,
+  decodeInt64,
+  int64Plan,
   mergeWalkColumns,
   prepareWindows
 } from './pg-sql/aggregate.js';
@@ -1135,8 +1135,8 @@ export class PgDataset implements Dataset {
 
     const fields = this.#typeDefLookup?.(type, this.namespace)?.fields;
     const orders = new Map<string, string[]>();
-    // An int64-valued `_agg`, top-level or nested, is a decimal string in the jsonb; the row holds a bigint, as memory's.
-    const int64Aggs = int64AggPlan(frameAggs, params.nested, seed, fieldDef);
+    // An int64 `_agg` value or nested-row field is a decimal string in the jsonb; the row holds a bigint, as memory's.
+    const int64 = int64Plan(frameAggs, params.nested, seed, fieldDef);
     const materialised: Row[] = new Array(rows.length);
     for (let i = 0; i < rows.length; i++) {
       // A large read yields between batches, so other requests are not held behind it.
@@ -1149,7 +1149,7 @@ export class PgDataset implements Dataset {
         table,
         params.fields
       );
-      if (int64Aggs !== undefined) decodeInt64Aggs(row, int64Aggs);
+      if (int64 !== undefined) decodeInt64(row, int64);
       for (const [k, [name]] of selectEntries.entries()) {
         const v = (r as unknown as Record<string, unknown>)[`__sel_${k}`];
         row[name] =

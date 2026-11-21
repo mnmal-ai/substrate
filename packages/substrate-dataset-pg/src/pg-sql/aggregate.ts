@@ -10,6 +10,8 @@
  *   or a `latest` the winning row's STORED value (ties id ascending, nulls last);
  *   over an integer field, an exact bigint sum (a decimal string), a float8 avg
  *   and the field's own min/max;
+ * - an int64 value read from a row (a nested row's field, a `latest`) is its
+ *   decimal text, since JSON.parse rounds a jsonb number past 2^53;
  * - a nested list is `jsonb_agg` over `ORDER BY …, id LIMIT limit+1`; the
  *   extra row only says the list was cut, as `_truncated: { <name>: true }`.
  *
@@ -175,6 +177,13 @@ function aggOver(
     kind: 'number'
   };
 }
+
+/**
+ * jsonb `v` with an integral number as its decimal text, which {@link decodeInt64}
+ * reads back as a bigint; anything else as it is. `v` is evaluated once.
+ */
+const int64Text = (sql: Sql | TransactionSql, v: Fragment): Fragment =>
+  sql`(SELECT CASE WHEN jsonb_typeof(j) = 'number' AND (j #>> '{}') ~ '^-?[0-9]+$' THEN to_jsonb(j #>> '{}') ELSE j END FROM (SELECT ${v} AS j) i64)`;
 
 /** A number field read as an exact numeric: a stored decimal is never narrowed through float8. */
 export function exactNumeric(
@@ -396,7 +405,9 @@ function buildWalkAggs(
     const { type } = hop(sql, spec, scope, 'x', table);
     const far = scope.tableFor(type);
     if (aggOver(sql, spec, far, 'x', (f) => scope.fieldDef(type, f)).pick !== undefined) {
-      own.push(sql`${name}::text, ${buildWalkAgg(sql, spec, table, scope).value}`);
+      const { value } = buildWalkAgg(sql, spec, table, scope);
+      const int64 = walkAggIsInt64(spec, scope.type, scope.fieldDef);
+      own.push(sql`${name}::text, ${int64 ? int64Text(sql, value) : value}`);
       continue;
     }
     const key = windowKey(spec);
@@ -672,7 +683,10 @@ export function buildNested(
   const id = sql.unsafe(
     `CASE WHEN jsonb_typeof(${doc} -> 'id') IN ('number', 'string') THEN ${doc} -> 'id' ELSE to_jsonb(${alias}.id) END`
   );
-  const pair = (k: string) => sql`${k}::text, ${fieldExpr(sql, farTable, k, 'json', alias)}`;
+  const pair = (k: string) => {
+    const v = fieldExpr(sql, farTable, k, 'json', alias);
+    return sql`${k}::text, ${integerType(scope.fieldDef(type, k)) === 'int64' ? int64Text(sql, v) : v}`;
+  };
   // A declared scalar or crossRef the row lacks is absent, as on the top-level read (#1842).
   const isColumn = (k: string) => {
     const def = scope.fieldDef(type, k);
@@ -694,59 +708,69 @@ export function buildNested(
   return sql`(SELECT COALESCE(${agg}(${row} ORDER BY ${orderBy}), ${sql.unsafe(`'[]'::${as}`)}) FROM (SELECT ${a}.* FROM ${sql.unsafe(from)} ${a} WHERE ${combineAnd(sql, [cond, ...filters])} ORDER BY ${orderBy} ${limit}) ${a})`;
 }
 
-/** Where int64-valued `_agg` values sit in a read's rows: names at this level and the nested lists that hold more. */
-export interface Int64AggPlan {
+/** Where int64 values sit in a read's rows: `_agg` names and nested-row fields at this level, and the nested lists that hold more. */
+export interface Int64Plan {
   aggs: string[];
-  nested: Array<[string, Int64AggPlan]>;
+  fields: string[];
+  nested: Array<[string, Int64Plan]>;
 }
 
 /**
  * The int64-valued `_agg` entries among `aggs` and, at any depth, among
- * `nested`'s own `_agg`s, each read against its selection's far type; undefined
- * when there are none.
+ * `nested`'s own `_agg`s and int64 fields, each read against its selection's
+ * far type; undefined when there are none. `fields` are a nested row's own:
+ * the seed row's are decoded by `decodeRow`.
  */
-export function int64AggPlan(
+export function int64Plan(
   aggs: Record<string, WalkAgg> | undefined,
   nested: Record<string, NestedSelection> | undefined,
   near: TypeRef,
-  fieldDef: (ref: TypeRef, field: string) => FieldDef | undefined
-): Int64AggPlan | undefined {
+  fieldDef: (ref: TypeRef, field: string) => FieldDef | undefined,
+  fields: string[] = []
+): Int64Plan | undefined {
   const names = Object.entries(aggs ?? {})
     .filter(([, spec]) => walkAggIsInt64(spec, near, fieldDef))
     .map(([name]) => name);
-  const lists: Array<[string, Int64AggPlan]> = [];
+  const lists: Array<[string, Int64Plan]> = [];
   for (const [name, sel] of Object.entries(nested ?? {})) {
     const far = walkFarType(sel._walk, near, fieldDef);
     if (far === undefined) continue;
-    const sub = int64AggPlan(
+    const entries = Object.entries(sel.fields);
+    const sub = int64Plan(
       Object.hasOwn(sel.fields, '_agg') ? (sel.fields._agg as Record<string, WalkAgg>) : undefined,
-      Object.fromEntries(Object.entries(sel.fields).filter(([, v]) => isNested(v))) as Record<
-        string,
-        NestedSelection
-      >,
+      Object.fromEntries(entries.filter(([, v]) => isNested(v))) as Record<string, NestedSelection>,
       far,
-      fieldDef
+      fieldDef,
+      entries
+        .filter(([k, v]) => !isNested(v) && integerType(fieldDef(far, k)) === 'int64')
+        .map(([k]) => k)
     );
     if (sub !== undefined) lists.push([name, sub]);
   }
-  return names.length === 0 && lists.length === 0 ? undefined : { aggs: names, nested: lists };
+  return names.length === 0 && fields.length === 0 && lists.length === 0
+    ? undefined
+    : { aggs: names, fields, nested: lists };
 }
 
 /**
- * Reads `row`'s int64 `_agg` values (decimal strings in the jsonb) as bigints,
- * in the row and in each nested row, as memory returns them.
+ * Reads `row`'s int64 values (decimal strings in the jsonb) as bigints, in the
+ * row and in each nested row, as memory returns them. A string that is no
+ * int64 (a stored value the column could not hold) is left as it is.
  */
-export function decodeInt64Aggs(row: Record<string, unknown>, plan: Int64AggPlan): void {
-  const aggs = row._agg as Record<string, unknown> | undefined | null;
-  if (aggs !== undefined && aggs !== null) {
-    for (const name of plan.aggs) {
-      const v = aggs[name];
-      if (typeof v === 'string') aggs[name] = BigInt(v);
+export function decodeInt64(row: Record<string, unknown>, plan: Int64Plan): void {
+  const decode = (o: Record<string, unknown>, names: string[]) => {
+    for (const name of names) {
+      const v = o[name];
+      const n = typeof v === 'string' ? parseInt64(v) : undefined;
+      if (n !== undefined) o[name] = n;
     }
-  }
+  };
+  const aggs = row._agg as Record<string, unknown> | undefined | null;
+  if (aggs !== undefined && aggs !== null) decode(aggs, plan.aggs);
+  decode(row, plan.fields);
   for (const [name, sub] of plan.nested) {
     const list = row[name];
     if (!Array.isArray(list)) continue;
-    for (const r of list) if (typeof r === 'object' && r !== null) decodeInt64Aggs(r, sub);
+    for (const r of list) if (typeof r === 'object' && r !== null) decodeInt64(r, sub);
   }
 }
