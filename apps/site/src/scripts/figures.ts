@@ -42,9 +42,12 @@ function mount(el: HTMLElement): void {
 const near = new IntersectionObserver(
   (entries) => {
     for (const entry of entries) {
-      if (!entry.isIntersecting) continue;
-      near.unobserve(entry.target);
-      mount(entry.target as HTMLElement);
+      const el = entry.target as HTMLElement;
+      // One batch can hold two entries for the same element.
+      if (!entry.isIntersecting || el.dataset.mounted !== undefined) continue;
+      el.dataset.mounted = '';
+      near.unobserve(el);
+      mount(el);
     }
   },
   { rootMargin: '200px' }
