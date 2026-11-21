@@ -17,7 +17,7 @@ import {
   substrateFetch,
   tokenAudience
 } from '@mnmal-ai/substrate-client';
-import type { NlAskRequest } from '@mnmal-ai/substrate-types';
+import type { ActMode, NlAskRequest } from '@mnmal-ai/substrate-types';
 import { stringifyJson, trimTrailingSlashes } from '@mnmal-ai/substrate-types';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -29,6 +29,7 @@ import { makeAgentJwtProvider, resolveAgentCapabilities } from './agent-jwt.js';
 import { runSandboxed } from './run-sandbox.js';
 import {
   buildInstructions,
+  buildLeanInstructions,
   expressionLines,
   LOCAL_EXPRESSIONS_NOTE,
   localExpressions,
@@ -615,15 +616,51 @@ export function createRunHandler(env: NodeJS.ProcessEnv = process.env) {
   };
 }
 
+/**
+ * `act`: a sketch goes to `POST /substrate/v1/act`, a result id to its record. The default
+ * namespace is read from the env on each call.
+ */
+export function createActHandler(endpoint: string, env: NodeJS.ProcessEnv = process.env) {
+  return async (args: {
+    sketch?: string;
+    mode?: ActMode;
+    result?: string;
+  }): Promise<ToolResult> => {
+    try {
+      if (args.result !== undefined) {
+        const path = `/substrate/v1/act/results/${encodeURIComponent(args.result)}`;
+        return okResult(await getSubstrate(endpoint, path));
+      }
+      if (args.sketch === undefined) return errorResult('pass `sketch`, or `result` to fetch one');
+      const namespace = env.SUBSTRATE_NAMESPACE;
+      const reply = await postSubstrate<{ ok?: boolean }>(
+        endpoint,
+        '/substrate/v1/act',
+        {
+          sketch: args.sketch,
+          ...(args.mode !== undefined ? { mode: args.mode } : {}),
+          ...(namespace !== undefined && namespace !== '' ? { namespace } : {})
+        },
+        'parsedError'
+      );
+      return { ...okResult(reply), isError: reply.ok === false };
+    } catch (err) {
+      return errorResult(toMessage(err));
+    }
+  };
+}
+
 export interface McpServerOptions {
   /**
    * Comma-separated tool names and presets to register (SUBSTRATE_MCP_TOOLS):
-   * `core` or `all`. Unset or blank means `core`.
+   * `core`, `lean` or `all`. Unset or blank means `core`.
    * Every registered definition rides along on every model call.
    */
   tools?: string;
   /** Sent to the client at initialize; clients put it in the agent's context. */
   instructions?: string;
+  /** Whether a `lean` preset adds `ask`: true when the server runs substrate-nl. */
+  nlAvailable?: boolean;
 }
 
 const WALK_DESCRIPTION =
@@ -715,6 +752,19 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
         }
       },
       handler: createRunHandler()
+    },
+    {
+      name: 'act',
+      config: {
+        description:
+          'Run operations as one transaction. Steps split by `;`: `<action> <Type> [#id …] [field=value …] [as $t]`. Built-ins: create, update, find, count. `?` or `? Type` for help. Reply { ok, ack, result }; pass `result` to fetch the full record. A refusal names the problem, the choices and the nearest valid sketch; nothing ran.',
+        inputSchema: {
+          sketch: z.string().min(1).optional().describe('e.g. close Todo #12'),
+          mode: z.enum(['write', 'dry-run']).optional(),
+          result: z.string().min(1).optional().describe('Result id to fetch')
+        }
+      },
+      handler: createActHandler(endpoint)
     },
     {
       name: 'ask',
@@ -994,7 +1044,8 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
 
   const allowed = resolveToolAllowlist(
     options.tools,
-    TOOLS.map((t) => t.name)
+    TOOLS.map((t) => t.name),
+    options.nlAvailable === true
   );
   for (const t of TOOLS) {
     if (!allowed.has(t.name)) continue;
@@ -1015,23 +1066,33 @@ export const CORE_TOOLS: readonly string[] = [
   'whoami'
 ];
 
+/** The `lean` preset: the agent's whole fixed cost is `act` and `whoami`, plus `ask` where nl runs. */
+export const LEAN_TOOLS: readonly string[] = ['act', 'whoami'];
+
 /**
- * Parse SUBSTRATE_MCP_TOOLS: tool names and the presets `core` and `all`
+ * Parse SUBSTRATE_MCP_TOOLS: tool names and the presets `core`, `lean` and `all`
  * (`core` while unset or blank). An unknown name throws: a typo that silently registered nothing
  * would read as "this server has no such tool", which is a worse failure than
  * refusing to start.
  */
-function resolveToolAllowlist(raw: string | undefined, known: string[]): Set<string> {
+function resolveToolAllowlist(
+  raw: string | undefined,
+  known: string[],
+  nlAvailable = false
+): Set<string> {
   if (raw === undefined || raw.trim() === '') return new Set(CORE_TOOLS);
   const names = new Set<string>();
   for (const n of raw.split(',').map((t) => t.trim())) {
     if (n === '') continue;
     if (n === 'core') for (const t of CORE_TOOLS) names.add(t);
-    else if (n === 'all') for (const t of known) names.add(t);
+    else if (n === 'lean') {
+      for (const t of LEAN_TOOLS) names.add(t);
+      if (nlAvailable) names.add('ask');
+    } else if (n === 'all') for (const t of known) names.add(t);
     else if (known.includes(n)) names.add(n);
     else
       throw new Error(
-        `SUBSTRATE_MCP_TOOLS: unknown tool '${n}'. Valid names: core, all, ${[...known].sort().join(', ')}`
+        `SUBSTRATE_MCP_TOOLS: unknown tool '${n}'. Valid names: core, lean, all, ${[...known].sort().join(', ')}`
       );
   }
   return names;
@@ -1047,6 +1108,19 @@ async function fetchOverview(endpoint: string): Promise<ReturnType<typeof schema
   return Promise.race([fetched, timeout]);
 }
 
+/** Whether the server runs substrate-nl, so a lean session can offer `ask`; false on any failure or after 5 s. */
+async function probeNl(endpoint: string): Promise<boolean> {
+  const timeout = new Promise<false>((resolve) => setTimeout(() => resolve(false), 5000).unref());
+  const probed = getSubstrate<{ binary?: { coordinators?: Array<{ name?: unknown }> } }>(
+    endpoint,
+    '/substrate/v1/onboard'
+  ).then(
+    (r) => r.binary?.coordinators?.some((c) => c.name === 'substrate-nl') === true,
+    () => false
+  );
+  return Promise.race([probed, timeout]);
+}
+
 /**
  * Boot the stdio MCP server. Resolves once the transport is connected; the
  * process keeps running until the host (Claude Code, etc.) closes stdio.
@@ -1054,11 +1128,14 @@ async function fetchOverview(endpoint: string): Promise<ReturnType<typeof schema
 export async function runMcp(): Promise<void> {
   const endpoint = process.env.SUBSTRATE_URL ?? 'http://localhost:3100';
   configureAgentAuth(process.env, endpoint);
+  const lean = (process.env.SUBSTRATE_MCP_TOOLS ?? '').split(',').some((t) => t.trim() === 'lean');
+  const overview = await fetchOverview(endpoint);
   const server = createMcpServer(endpoint, {
     ...(process.env.SUBSTRATE_MCP_TOOLS === undefined
       ? {}
       : { tools: process.env.SUBSTRATE_MCP_TOOLS }),
-    instructions: buildInstructions(await fetchOverview(endpoint))
+    instructions: lean ? buildLeanInstructions(overview) : buildInstructions(overview),
+    nlAvailable: lean && (await probeNl(endpoint))
   });
   const transport = new StdioServerTransport();
   await server.connect(transport);

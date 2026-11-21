@@ -27,7 +27,20 @@ interface FieldShape {
 interface NamespaceSchema {
   types?: Record<
     string,
-    { fields?: Record<string, FieldShape>; inboundRefs?: Array<{ type: string; field: string }> }
+    {
+      fields?: Record<string, FieldShape>;
+      inboundRefs?: Array<{ type: string; field: string }>;
+      actions?: Record<
+        string,
+        {
+          kind?: string;
+          params?: Record<
+            string,
+            { type?: unknown; list?: string; optional?: boolean; default?: unknown }
+          >;
+        }
+      >;
+    }
   >;
   mutations?: Record<string, unknown>;
 }
@@ -35,6 +48,8 @@ interface NamespaceSchema {
 export interface NamespaceOverview {
   types: Record<string, string>;
   mutations?: string[];
+  /** Type to its action index text, `close(resolution?), defer(revisitWhen)`; read by the lean instructions. */
+  actions?: Record<string, string>;
 }
 
 // The overview rides in the session instructions, which an agent trusts. Proposals let any
@@ -86,21 +101,40 @@ export function schemaOverview(
   for (const [ns, schema] of Object.entries(federated)) {
     const typeDefs = schema.types ?? {};
     const types: Record<string, string> = {};
+    const actions: Record<string, string> = {};
     for (const [name, def] of Object.entries(typeDefs)) {
       // `←Type.field`: a same-namespace reference to this type, the start of an inbound walk.
-      types[safe(name, NAME)] = [
+      const line = [
         ...Object.entries(def.fields ?? {}).map(
           ([field, shape]) => `${safe(field, NAME)}: ${fieldType(shape, ns)}`
         ),
         ...(def.inboundRefs ?? []).map((r) => `←${safe(r.type, NAME)}.${safe(r.field, NAME)}`)
       ].join(', ');
+      const declared = Object.entries(def.actions ?? {});
+      types[safe(name, NAME)] =
+        declared.length > 0
+          ? `${line}; actions: ${declared.map(([a]) => safe(a, NAME)).join(', ')}`
+          : line;
+      if (declared.length > 0)
+        actions[safe(name, NAME)] = declared
+          .map(([a, decl]) => {
+            const params = Object.entries(decl.params ?? {}).map(
+              ([p, d]) => `${safe(p, NAME)}${d.optional === true || 'default' in d ? '?' : ''}`
+            );
+            return `${safe(a, NAME)}${params.length > 0 ? `(${params.join(', ')})` : ''}`;
+          })
+          .join(', ');
     }
     const custom = Object.keys(schema.mutations ?? {}).filter((m) => {
       const crud = AUTO_CRUD.exec(m);
       return !(crud?.[2] !== undefined && crud[2] in typeDefs);
     });
     const mutations = custom.map((m) => safe(m, NAME));
-    out[safe(ns, NAME)] = mutations.length > 0 ? { types, mutations } : { types };
+    out[safe(ns, NAME)] = {
+      types,
+      ...(mutations.length > 0 ? { mutations } : {}),
+      ...(Object.keys(actions).length > 0 ? { actions } : {})
+    };
   }
   return out;
 }
@@ -140,7 +174,12 @@ export function buildInstructions(overview: Record<string, NamespaceOverview> | 
   if (overview === null) {
     return `${CONVENTIONS}\n\nThe type list was unavailable at session start; call \`schema\` with no arguments for it.`;
   }
-  const full = JSON.stringify(overview);
+  // The action index is the lean instructions' text; here each type line already names its actions.
+  const full = JSON.stringify(
+    Object.fromEntries(
+      Object.entries(overview).map(([ns, { actions: _actions, ...rest }]) => [ns, rest])
+    )
+  );
   const body =
     full.length <= INSTRUCTIONS_OVERVIEW_MAX
       ? `${overviewLegend}\n${full}`
@@ -198,3 +237,28 @@ export function expressionLines(c: ExpressionCatalogue): string[] {
 /** Said beside a catalogue that is this binary's own, which may differ from what the server accepts. */
 export const LOCAL_EXPRESSIONS_NOTE =
   "The server published no expression catalogue (GET /substrate/v1/schema), so this is the local binary's; the server may accept a different set.";
+
+const LEAN_CONVENTIONS = [
+  'Substrate holds typed records. Use `act` for every operation: send a sketch, get a one-line ack and a result id.',
+  '- A step is `<action> <Type> [#shortId …] [field=value …] [as $name]`; split steps with `;` or newlines. Built-ins: create, update, find, count. `?` lists types and actions, `? Type` shows one.',
+  '- Everything in one sketch commits together or not at all. Pass `result` to fetch the full outcome; results expire after a day.'
+].join('\n');
+
+/** The lean session's `instructions`: three lines of conventions, then one index line per namespace. */
+export function buildLeanInstructions(overview: Record<string, NamespaceOverview> | null): string {
+  if (overview === null) {
+    return `${LEAN_CONVENTIONS}\n\nThe type list was unavailable at session start; send \`?\` for it.`;
+  }
+  const line = (ns: string, o: NamespaceOverview, withActions: boolean) =>
+    `${ns}: ${Object.keys(o.types)
+      .map((t) => (withActions && o.actions?.[t] !== undefined ? `${t}{${o.actions[t]}}` : t))
+      .join(', ')}`;
+  const index = (withActions: boolean) =>
+    Object.entries(overview)
+      .map(([ns, o]) => line(ns, o, withActions))
+      .join('\n');
+  const full = index(true);
+  return `${LEAN_CONVENTIONS}\n\nTypes and actions at session start:\n${
+    full.length <= INSTRUCTIONS_OVERVIEW_MAX ? full : index(false)
+  }`;
+}

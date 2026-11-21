@@ -45,14 +45,14 @@ describe('SUBSTRATE_MCP_TOOLS', () => {
   });
 
   it('all registers every tool', async () => {
-    expect(await listedTools('all')).toHaveLength(12);
+    expect(await listedTools('all')).toHaveLength(13);
   });
 
   it('mixes a preset with named tools', async () => {
     const mixed = await listedTools('core,propose_type');
     expect(mixed).toContain('propose_type');
     expect(mixed).toHaveLength(7);
-    expect(await listedTools('all,query')).toHaveLength(12);
+    expect(await listedTools('all,query')).toHaveLength(13);
   });
 
   it('registers only the named tools', async () => {

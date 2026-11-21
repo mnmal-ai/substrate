@@ -38,9 +38,9 @@ Usage:
 Subcommands:
   serve                     Boot the Substrate HTTP server (default port 3100).
   mcp                       Boot the stdio MCP server. Reads SUBSTRATE_URL, and
-                            SUBSTRATE_MCP_TOOLS (csv of tool names, core or all;
-                            core: query, mutate, schema, recall, run, whoami; default
-                            core).
+                            SUBSTRATE_MCP_TOOLS (csv of tool names, core, lean or
+                            all; core: query, mutate, schema, recall, run, whoami;
+                            lean: act, whoami; default core).
   init [dir] [flags]        Scaffold a new Substrate runtime directory. Interactive by
                             default; pass --yes for non-interactive scripted use.
   federate <verb>           Federation onboarding: enroll / join / check.
