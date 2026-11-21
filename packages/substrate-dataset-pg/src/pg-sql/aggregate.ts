@@ -738,10 +738,7 @@ export function int64Plan(
     const entries = Object.entries(sel.fields);
     const sub = int64Plan(
       Object.hasOwn(sel.fields, '_agg') ? (sel.fields._agg as Record<string, WalkAgg>) : undefined,
-      Object.fromEntries(entries.filter(([, v]) => isNested(v))) as Record<
-        string,
-        NestedSelection
-      >,
+      Object.fromEntries(entries.filter(([, v]) => isNested(v))) as Record<string, NestedSelection>,
       far,
       fieldDef,
       entries

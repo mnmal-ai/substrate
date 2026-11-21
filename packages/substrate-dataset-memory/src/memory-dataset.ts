@@ -383,7 +383,8 @@ export class MemoryDataset implements Dataset {
               // One hop per crossRef, however many keys read through it.
               const hits = new Map<string, Row | undefined>();
               for (const w of walked) {
-                if (!hits.has(w.out)) hits.set(w.out, hop(row, { out: w.out }, ctxFor(row)).rows[0]);
+                if (!hits.has(w.out))
+                  hits.set(w.out, hop(row, { out: w.out }, ctxFor(row)).rows[0]);
                 const hit = hits.get(w.out);
                 copy[w.ref] = hit === undefined ? null : (getFieldValue(hit, w.field) ?? null);
               }

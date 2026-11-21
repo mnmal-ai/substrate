@@ -65,7 +65,14 @@ beforeAll(async () => {
   for (const type of Object.keys(defs)) await pg.ensureTypeStorage(type);
   const customers = ['c1', 'c2', 'c3'].map((id) => ({ id: u(id) }));
   const payments = [
-    { id: 'p1', customer: 'c1', amount: 9007199254740993n, qty: 1, small: -4, paidAt: '2026-02-01T00:00:00.000Z' },
+    {
+      id: 'p1',
+      customer: 'c1',
+      amount: 9007199254740993n,
+      qty: 1,
+      small: -4,
+      paidAt: '2026-02-01T00:00:00.000Z'
+    },
     { id: 'p2', customer: 'c1', amount: 1n, qty: 2, small: 7, paidAt: '2026-01-01T00:00:00.000Z' },
     { id: 'p3', customer: 'c2', amount: 50n, qty: 5, small: 1, paidAt: '2026-03-01T00:00:00.000Z' }
   ].map((p) => ({ ...p, id: u(p.id), customer: u(p.customer) }));
@@ -239,9 +246,7 @@ describe.skipIf(!POSTGRES_URL)('walk aggregates over integers: pg and memory agr
   });
 
   it('a latest over an int64 field is the same bigint', async () => {
-    expect(
-      await aggs({ last: { in: IN, latest: { by: 'paidAt', value: 'amount' } } })
-    ).toEqual({
+    expect(await aggs({ last: { in: IN, latest: { by: 'paidAt', value: 'amount' } } })).toEqual({
       c1: { last: 9007199254740993n },
       c2: { last: 50n },
       c3: { last: null }
