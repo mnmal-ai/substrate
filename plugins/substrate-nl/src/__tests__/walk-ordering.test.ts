@@ -229,6 +229,25 @@ describe('ordering by a field one crossRef hop away', () => {
     expect(frameOf('suppliers with the lowest item cost', costed)).toEqual(
       inHop('minItemPrice', { where: { NOT: { name: { eq: 'lamp' } } }, min: 'price' }, 'asc', 10)
     );
+    // The far type's default exclusion applies too, beside the phrase's.
+    const excluded: NamespaceRulings = {
+      ...costed,
+      typeExcludes: { Item: { name: { eq: 'chair' } } }
+    };
+    expect(frameOf('top suppliers by item price', excluded)).toEqual(
+      inHop('maxItemPrice', { where: { NOT: { name: { eq: 'chair' } } }, max: 'price' }, 'desc', 10)
+    );
+    expect(frameOf('suppliers with the lowest item cost', excluded)).toEqual(
+      inHop(
+        'minItemPrice',
+        {
+          where: { AND: [{ NOT: { name: { eq: 'lamp' } } }, { NOT: { name: { eq: 'chair' } } }] },
+          min: 'price'
+        },
+        'asc',
+        10
+      )
+    );
   });
 
   it('drops two hops, an unknown field, a field on several types and a non-number field', () => {
@@ -243,7 +262,7 @@ describe('ordering by a field one crossRef hop away', () => {
       // An integer hop value would be read through `select`, which refuses an integer `_agg`.
       [
         'top items by supplier headcount',
-        'ordering across a hop needs a number field; Supplier.headcount is a int32 field'
+        'ordering across a hop needs a number field; Supplier.headcount is an int32 field'
       ]
     ] as const) {
       const r = parse(q);

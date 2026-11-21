@@ -224,4 +224,18 @@ describe.skipIf(!POSTGRES_URL)('NL walk frames over pg agree with memory', () =>
       expect(p.plan.some((c) => c.kind === 'hop' && c.served)).toBe(true);
     });
   }
+
+  it('top 2 tests by run duration: an in-hop ordering, in the same order', async () => {
+    const question = 'top 2 tests by run duration';
+    const [m, p] = [await mem.ask(question), await pg.ask(question)];
+    if (m.kind !== 'rows' || p.kind !== 'rows') throw new Error(`${m.kind} / ${p.kind}`);
+    expect(p.frame).toEqual(m.frame);
+    expect(p.frame[`${NS}/Test`]?.params).toMatchObject({
+      orderBy: [{ maxRunDurationMs: 'desc' }]
+    });
+    const names = (o: typeof m) =>
+      ((o.data as Array<{ id: string }>) ?? []).map((r) => TESTS.find((t) => t.id === r.id)?.name);
+    expect(names(m)).toEqual(['t2', 't4']);
+    expect(names(p)).toEqual(names(m));
+  });
 });

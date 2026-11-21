@@ -1222,6 +1222,9 @@ function fieldAt(
 const isNumeric = (valueType: string | undefined) =>
   valueType === 'number' || valueType === 'int16' || valueType === 'int32' || valueType === 'int64';
 
+/** A field kind with its article: "an int32", "a date". */
+const aKind = (kind: string | undefined) => `${/^[aeiou]/.test(kind ?? '') ? 'an' : 'a'} ${kind}`;
+
 /** True when `words` name a field on one of `types` (a number field, with `numeric`). */
 function namesField(
   words: string,
@@ -1693,7 +1696,7 @@ function aggregateOn(
       ? r.reason
       : (r.f.kind === 'scalar' || r.f.kind === 'metadata') && accepts(r.f.valueType)
         ? null
-        : `${c.word} needs a ${wants.join(' or ')} field; ${r.name} is a ${r.f.valueType ?? r.f.kind} field`;
+        : `${c.word} needs a ${wants.join(' or ')} field; ${r.name} is ${aKind(r.f.valueType ?? r.f.kind)} field`;
   // Without a field there is no value to give: a dropped filter, so the strict reading is unknown.
   if (reason !== null || 'reason' in r)
     return { dropped: [{ span: c.span, reason: reason ?? '', kind: 'filter' }], evidence: [] };
@@ -1764,8 +1767,8 @@ function orderField(
     return {
       reason:
         o.numeric === true
-          ? `"most" needs a number field; ${name} is a ${f.valueType ?? f.kind} field`
-          : `${name} is a ${f.valueType ?? f.kind} field; only number and date fields order`
+          ? `"most" needs a number field; ${name} is ${aKind(f.valueType ?? f.kind)} field`
+          : `${name} is ${aKind(f.valueType ?? f.kind)} field; only number and date fields order`
     };
   return { field: name };
 }
@@ -1841,14 +1844,18 @@ function hopOrder(
   // The hop's value is read through `select`, where an integer-valued `_agg` is refused.
   if (f === undefined || (f.kind !== 'scalar' && f.kind !== 'metadata') || f.valueType !== 'number')
     return {
-      reason: `ordering across a hop needs a number field; ${qualified} is a ${f?.valueType ?? f?.kind} field`
+      reason: `ordering across a hop needs a number field; ${qualified} is ${aKind(f?.valueType ?? f?.kind)} field`
     };
   const h = path[0] as Hop;
   if (o.pick !== undefined && (h.dir === 'out' || o.pick.kind !== 'latest'))
     return { reason: pickReason(o.pick, qualified, seed) };
   const cap = to.field.charAt(0).toUpperCase() + to.field.slice(1);
-  const exclude = o.phrase?.entry.exclude;
-  const where = exclude !== undefined ? { where: { NOT: exclude } } : {};
+  // The phrase's exclusion and the far type's default one, as a walk filter applies it.
+  const excludes = [o.phrase?.entry.exclude, own(rulings.typeExcludes, to.type)].flatMap((x) =>
+    x === undefined ? [] : [{ NOT: x }]
+  );
+  const where =
+    excludes.length === 0 ? {} : { where: excludes.length === 1 ? excludes[0] : { AND: excludes } };
   if (h.dir === 'out') {
     const name = `${to.type.charAt(0).toLowerCase()}${to.type.slice(1)}${cap}`;
     return {
