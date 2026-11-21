@@ -2,6 +2,40 @@
 
 Releases before 1.0.0-alpha.21 are recorded only in their GitHub release notes.
 
+## 1.0.0-beta.9 (2026-11-21)
+
+Changes since 1.0.0-beta.8. One behaviour change for Postgres consumers: an int64 field read inside a nested selection, or through a walk `latest`, now comes back as a bigint (a decimal string on the JSON wire), as top-level int64 fields and the memory store already did. Before, it was a JSON number that lost digits past 2^53. `ask` also answers some questions differently: "per month by due date" buckets on the named field, and ordering through a relation skips the rows the default exclusions skip.
+
+### Added
+
+- **Walk aggregates over integer fields (#287).** A walk `_agg` takes `sum`, `avg`, `min` and `max` over `int16`, `int32` and `int64` fields, not only `number` fields. The rules match frame aggregates:
+  - `sum` of an integer field is an exact int64: a bigint in memory, a decimal string on the JSON wire. Postgres sums with native `bigint`.
+  - `avg` is a number. `min` and `max` keep the field's kind.
+  - A sum past the int64 range fails with `value_out_of_range` on both stores.
+- **Group a frame aggregate by a field of a related row (#287, #289).** In `groupBy`, `"<crossRef>.<field>"` names a field on the row the out walk through that crossRef reaches, for example `groupBy: { region: "customer.region" }`. It also works inside a group expression, such as `dateTrunc` over a related row's date.
+  - One hop, out walks only, and only in `groupBy`. `select`, aggregate arguments and `having` refuse it with `expr_invalid`.
+  - A null, missing or deleted related row gives a `null` key, and the row still counts.
+  - The walk rules apply unchanged: the read grant on the far namespace is checked first, and `walk_cross_store`, `walks_unsupported_store`, the far type's read policy and its row policy refuse as for any walk.
+  - The index advisor counts a key through a related row as that walk's hop.
+- **`ask` reads integer fields (#287).** Total, sum, average, min, max and ordering by a field of the type accept integer fields. Ordering through a relation still takes number fields only.
+
+### Changed
+
+- **`ask` "by <date field>" (#287).** "per month by due date" buckets on the named date field instead of the time-field ruling. Words that don't name a date field stay unread, and the answer says so.
+- **substrate-tui `/keys` (#280).** One ruled band per machine with its key count, the bootstrap key by name, revoked keys in a struck-through band of their own, and colour from the theme's tones only. Editing is unchanged.
+
+### Fixed
+
+- **int64 precision on Postgres (#289).** An int64 field in a nested selection, or a walk `latest` over an int64 field, returned 9007199254740992 for 9007199254740993, and a number where memory returns a bigint. Both now come back exact. `where` comparisons are unchanged.
+- **`ask` ordering through a relation (#289).** "top 2 tests by run duration" ranked tests by their skipped runs too. Ordering now applies the far type's default exclusions, as filters on the same question already did.
+- **`ask` integer operands stay exact (#287).** An int64 filter operand past 2^53 is sent as its decimal string instead of a rounded number.
+- **substrate-tui key names (#280).** A line break in a key's name, which an invite redeemer chooses, becomes a space, so a name can no longer forge rows in `/keys` or the dash and status panels.
+
+### Docs
+
+- **A landing site with worked examples (#277, #282, #283, #285, #286, #288).** https://mnmal-ai.github.io/substrate/ has a page per worked example. Every sample runs in CI against a composed substrate, and the page renders the recorded transcript.
+- **`docs/walks.md` (#287)** covers integer walk aggregates and group keys through a related row.
+
 ## 1.0.0-beta.8 (2026-11-20)
 
 Changes since 1.0.0-beta.7. Several behaviour changes. A walk into another namespace now runs, and the error code `walk_cross_namespace` is gone: clients that matched on it must handle `policy_denied` and the new `walk_cross_store`. A key with write but no read access can no longer write references. A reference value must be an id. `ask` answers `unknown` for more questions that hold a bare number or year, and a TypeScript consumer that switches on the aggregate `fn` needs a `count` case.
