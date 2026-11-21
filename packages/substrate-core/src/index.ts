@@ -51,6 +51,10 @@ export {
 } from './filter/validator.js';
 export { assertHardDeleteAllowed, validateHardDeleteEnv } from './hard-delete-gate.js';
 export { loadPlugins, PluginNamespaceCollision } from './load-plugins.js';
+export {
+  MemoryActResultStore,
+  type MemoryActResultStoreOptions
+} from './memory-act-result-store.js';
 export { MemoryBridgeCredentialStore } from './memory-bridge-credential-store.js';
 export { MemoryBridgeRegistry } from './memory-bridge-registry.js';
 export { MemoryEdgesStore } from './memory-edges-store.js';
