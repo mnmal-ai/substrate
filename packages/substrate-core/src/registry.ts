@@ -84,6 +84,7 @@ export class Registry extends RegistryBase implements RegistryInterface {
     };
     if (input.returns !== undefined) entry.returns = input.returns;
     if (input.orderedBy !== undefined) entry.orderedBy = input.orderedBy;
+    if (input.actions !== undefined) entry.actions = input.actions;
     if (input.indexes !== undefined) entry.indexes = input.indexes;
     if (input.expectedSize !== undefined) entry.expectedSize = input.expectedSize;
     if (input.verb !== undefined) entry.verb = input.verb;
@@ -112,6 +113,7 @@ export class Registry extends RegistryBase implements RegistryInterface {
     };
     if (input.returns !== undefined) entry.returns = input.returns;
     if (input.orderedBy !== undefined) entry.orderedBy = input.orderedBy;
+    if (input.actions !== undefined) entry.actions = input.actions;
     if (input.indexes !== undefined) entry.indexes = input.indexes;
     if (input.expectedSize !== undefined) entry.expectedSize = input.expectedSize;
     if (input.verb !== undefined) entry.verb = input.verb;

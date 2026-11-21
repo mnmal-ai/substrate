@@ -10,6 +10,7 @@ import {
   whereContainsOperator
 } from '@mnmal-ai/substrate-filter';
 import {
+  type ActResultStore,
   type AfterTxWork,
   type BridgeFrame,
   type BridgeRegistry,
@@ -182,6 +183,12 @@ export interface EngineOptions {
     store: IdempotencyStore;
     defaultTtlMs?: number;
   };
+  /**
+   * `act`: where result records live (default a `MemoryActResultStore`), how
+   * long they last (default 24 h) and the most write steps a sketch may
+   * expand to (default 50).
+   */
+  act?: { results?: ActResultStore; resultTtlMs?: number; maxWriteSteps?: number };
   /**
    * Subscription back-pressure (§5.13). Per-subscription pending-frame
    * threshold; when exceeded the engine emits a final `subscription_overloaded`

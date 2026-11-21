@@ -8,6 +8,7 @@
  * Spec: `docs/substrate-from-first-principles.md`.
  */
 
+export * from './act.js';
 export * from './assert-never.js';
 export * from './bridge.js';
 export * from './canonicalize.js';

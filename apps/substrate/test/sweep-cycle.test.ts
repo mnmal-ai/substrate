@@ -207,4 +207,42 @@ describe('runSweepCycle — embeddings-gc arm', () => {
     expect(result.tombstonePurge).toEqual({ rows: 2, edges: 0 });
     expect(result.embeddingsGc).toBe(5);
   });
+
+  it('runs the act-result reap after embeddings-gc and returns its value', async () => {
+    const order: string[] = [];
+    const result = await runSweepCycle(
+      async () => NEXT_STATE,
+      null,
+      null,
+      async () => {
+        order.push('embeddings');
+        return 0;
+      },
+      async () => {
+        order.push('act');
+        return { deleted: 2 };
+      }
+    );
+    expect(order).toEqual(['embeddings', 'act']);
+    expect(result.actReap).toEqual({ deleted: 2 });
+  });
+
+  it('tags an act-result reap failure with stage="act-result-reap"', async () => {
+    const rejected = runSweepCycle(
+      async () => NEXT_STATE,
+      null,
+      null,
+      null,
+      async () => {
+        throw new Error('results unreachable');
+      }
+    );
+    await expect(rejected).rejects.toBeInstanceOf(SweepStageError);
+    await expect(rejected).rejects.toMatchObject({ stage: 'act-result-reap' });
+  });
+
+  it('skips the act-result reap when null', async () => {
+    const result = await runSweepCycle(async () => NEXT_STATE, null, null, null, null);
+    expect(result.actReap).toBeUndefined();
+  });
 });

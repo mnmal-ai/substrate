@@ -48,6 +48,7 @@
  *                            sweep loop. Default 30. Pg-backed only — memory
  *                            mode tombstones vanish on restart anyway.
  *   SUBSTRATE_IDEMPOTENCY_TTL_MS override §5.13 dedup TTL (default: engine 24h)
+ *   SUBSTRATE_ACT_RESULT_TTL_MS  `act` result record lifetime in ms (default: engine 24h)
  *   SUBSTRATE_IDEMPOTENCY_DISABLED  truthy (1/true) disables mutation dedup
  *   SUBSTRATE_TRUSTED_PROXIES    CSV of exact peer-IP strings whose x-forwarded-for
  *                            header is honoured by `/substrate/v1/_system/register`.
@@ -139,6 +140,7 @@ export async function runServe(): Promise<void> {
     recallStore,
     lexicalStore,
     idempotencyStore,
+    actResultStore,
     sentinelClientConfig,
     bridgeRegistry,
     disposeBridges,
@@ -172,6 +174,7 @@ export async function runServe(): Promise<void> {
     config,
     sweepDeps,
     idempotencyStore,
+    actResultStore,
     dataset,
     edges,
     storeSql,

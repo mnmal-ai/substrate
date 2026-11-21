@@ -13,6 +13,7 @@
  */
 
 import {
+  assertActionGraph,
   createRuntimeStats,
   Engine,
   loadPlugins,
@@ -28,6 +29,7 @@ import {
 import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-dataset-memory';
 import { autoCrudOptionsOf } from '@mnmal-ai/substrate-sdk';
 import type {
+  ActResultStore,
   BridgeClient,
   BridgeRegistry,
   CoordinatorPlugin,
@@ -148,6 +150,8 @@ export interface ComposeOpts {
     store: IdempotencyStore;
     defaultTtlMs?: number;
   };
+  /** `act` result store and lifetime. Threads straight into `EngineOptions.act`; absent → engine defaults. */
+  act?: { results?: ActResultStore; resultTtlMs?: number };
   /**
    * §5.13 subscription back-pressure override. Threads straight into
    * `EngineOptions.subscriptions`. Default (absent): engine default
@@ -446,6 +450,8 @@ async function composeInner(
     }
   }
 
+  assertActionGraph(namespaces);
+
   // Runtime-metrics counter. Created before the engine so
   // engineOpts.metric can fan into it; the subscription gauge is late-bound
   // because `engine` is constructed just below.
@@ -489,6 +495,7 @@ async function composeInner(
   opts.server.observeInFlight?.((_op, d) => {
     inFlight += d;
   });
+  if (opts.act !== undefined) engineOpts.act = opts.act;
   if (opts.idempotency !== undefined) {
     const idempotencyOpt: { store: IdempotencyStore; defaultTtlMs?: number } = {
       store: opts.idempotency.store

@@ -37,7 +37,15 @@ import {
   walkGrammarPath
 } from '@mnmal-ai/substrate-filter';
 import type {
+  ActHandle,
+  ActInput,
+  ActMode,
   ActorIdentity,
+  ActPlanStep,
+  ActResponse,
+  ActResultRecord,
+  ActResultStore,
+  ActStepOutcome,
   AfterTxWork,
   AutoCrudVerb,
   BatchResolver,
@@ -86,6 +94,16 @@ import {
   WALKS_IN_MUTATION,
   WALKS_UNSUPPORTED_STORE
 } from '@mnmal-ai/substrate-types';
+import { compileSketch } from '../act/compile.js';
+import {
+  ActDryRunRollback,
+  ActStepFailure,
+  formatAck,
+  MAX_STORED_ROWS,
+  newResultId,
+  ownerKeyOf,
+  stepOutcome
+} from '../act/outcome.js';
 import { readShapeOf, walkShapesOf } from '../advisor/shape-recorder.js';
 import { classifyWalkService, type WalkSite, walkSites } from '../advisor/walk-service.js';
 import { applyLostNamespace } from '../apply-lost-namespace.js';
@@ -115,6 +133,9 @@ type RunEntryRest = [
   afterTx?: (fn: AfterTxWork) => void,
   txEntries?: number
 ];
+
+/** A partition that opens a transaction. */
+type TxPartition = Exclude<LocalTxScopePartition, { kind: 'zero_datasets' }>;
 
 /** Unwinds the shared single-frame tx; the refusing entry's error is already on the envelope. */
 class SharedTxRefusal extends Error {
@@ -214,6 +235,7 @@ function observe(hook: (o: ResolveObservation) => void, o: ResolveObservation): 
 }
 
 import type { WalkResolvers } from '../filter/walk-validator.js';
+import { MemoryActResultStore } from '../memory-act-result-store.js';
 import { evaluatePolicy } from '../policy-evaluator.js';
 import { Registry } from '../registry.js';
 import { type HopResolver, hopResolver, type WalkedType, walkedTypes } from '../walk-types.js';
@@ -278,7 +300,7 @@ export type {
   SubscriptionStatsSnapshot
 } from './internals.js';
 
-export class Engine {
+export class Engine implements ActHandle {
   // Grown by addNamespace(). Taken out of service by tombstoneNamespace()
   // (name held until restart) or removeNamespace() (name freed). Either way
   // in-flight ops that already resolved a NamespaceConfig keep running.
@@ -312,6 +334,9 @@ export class Engine {
    * processes still admits concurrent duplicates.
    */
   readonly #inFlightMutates = new Map<string, Promise<PackEnvelope>>();
+  /** `act` runs under an idempotency key that have not finished, keyed `ownerKey \0 key`. */
+  readonly #inFlightActs = new Map<string, Promise<ActResponse>>();
+  readonly #act: { results: ActResultStore; ttlMs: number; maxWriteSteps: number };
   readonly #bridges: BridgeRegistry;
   readonly #isStoredEntry: (entry: RegistryEntry) => boolean;
   /**
@@ -351,6 +376,11 @@ export class Engine {
             defaultTtlMs: opts.idempotency.defaultTtlMs ?? DEFAULT_IDEMPOTENCY_TTL_MS
           }
         : undefined;
+    this.#act = {
+      results: opts.act?.results ?? new MemoryActResultStore(),
+      ttlMs: opts.act?.resultTtlMs ?? 86_400_000,
+      maxWriteSteps: opts.act?.maxWriteSteps ?? 50
+    };
     this.#bridges = opts.sweepHooks?.bridges ?? NO_BRIDGES;
     this.#isStoredEntry = opts.isStoredEntry ?? ((): boolean => false);
     this.#schema = new SchemaSubsystem({
@@ -1118,34 +1148,10 @@ export class Engine {
     };
 
     try {
-      if (partition.kind === 'single_dataset') {
-        // Virtual keys receive txDs too; #runEntry discards it by contract.
-        await this.#withRowsAndEdgesTx(
-          partition.dataset,
-          partition.entries[0]?.ns,
-          (txDs, txEdges) => runBody(() => txDs, txEdges)
-        );
-      } else {
-        const firstDataset = partition.firstDataset;
-        const nsList = Array.from(new Set(partition.entries.map((e) => e.ns)));
-        if (firstDataset.withScopedTransaction === undefined) {
-          nsList.sort();
-          addTopLevelError(
-            envelope,
-            `mutate cannot coalesce across [${nsList.join(', ')}]: tx scope '${firstDataset.txScopeId ?? 'unknown'}' does not support withScopedTransaction`,
-            'cross_tx_scope_refused'
-          );
-          this.#metric('engine_cross_tx_scope_refused', { namespaces: nsList });
-          return;
-        }
-        await firstDataset.withScopedTransaction(nsList, async ({ datasets, edges }) => {
-          const txFor = (ns: string): Dataset | null => datasets.get(ns) ?? null;
-          if (edges !== null) {
-            await runBody(txFor, edges);
-          } else {
-            await this.#edges.withTransaction((txEdges) => runBody(txFor, txEdges));
-          }
-        });
+      const scopeRefusal = await this.#inLocalTx(partition, runBody);
+      if (scopeRefusal !== undefined) {
+        addTopLevelError(envelope, scopeRefusal, 'cross_tx_scope_refused');
+        return;
       }
       committed = true;
     } catch (err) {
@@ -1174,6 +1180,273 @@ export class Engine {
       await this.#runSettled(settled, committed);
     }
     for (const event of pending) onWrite(event);
+  }
+
+  /**
+   * Runs `body` in one transaction over `partition`'s datasets and the edges.
+   * `single_dataset` shares that dataset's tx; `coalesced_tx_scope` needs
+   * `withScopedTransaction`, and without it resolves the refusal message
+   * instead of running `body`.
+   */
+  async #inLocalTx(
+    partition: TxPartition,
+    body: (txFor: (ns: string) => Dataset | null, txEdges: EdgesStore) => Promise<void>
+  ): Promise<string | undefined> {
+    if (partition.kind === 'single_dataset') {
+      // Virtual keys receive txDs too; #runEntry discards it by contract.
+      await this.#withRowsAndEdgesTx(partition.dataset, partition.entries[0]?.ns, (txDs, txEdges) =>
+        body(() => txDs, txEdges)
+      );
+      return undefined;
+    }
+    const firstDataset = partition.firstDataset;
+    const nsList = Array.from(new Set(partition.entries.map((e) => e.ns)));
+    if (firstDataset.withScopedTransaction === undefined) {
+      nsList.sort();
+      this.#metric('engine_cross_tx_scope_refused', { namespaces: nsList });
+      return `mutate cannot coalesce across [${nsList.join(', ')}]: tx scope '${firstDataset.txScopeId ?? 'unknown'}' does not support withScopedTransaction`;
+    }
+    await firstDataset.withScopedTransaction(nsList, async ({ datasets, edges }) => {
+      const txFor = (ns: string): Dataset | null => datasets.get(ns) ?? null;
+      if (edges !== null) await body(txFor, edges);
+      else await this.#edges.withTransaction((txEdges) => body(txFor, txEdges));
+    });
+    return undefined;
+  }
+
+  /**
+   * Runs a sketch as the caller: compiled against the schema the caller can
+   * read, every step through `#runEntry` in one transaction, write hooks on
+   * commit only, and a result record only the caller can read.
+   */
+  async act(input: ActInput): Promise<ActResponse> {
+    if (input.mode !== undefined && input.mode !== 'write' && input.mode !== 'dry-run') {
+      return {
+        ok: false,
+        error: { code: 'bad_request', message: "mode must be 'write' or 'dry-run'" },
+        result: null
+      };
+    }
+    const identity = input.ctx.identity ?? null;
+    if (identity === null) {
+      return {
+        ok: false,
+        error: { code: 'unauthorized', message: 'act needs a signed caller' },
+        result: null
+      };
+    }
+    // Records and keys belong to the whole credential, so a narrower grant under the same id shares none.
+    const ownerKey = ownerKeyOf(identity);
+    const key = (input.mode ?? 'write') === 'write' ? input.idempotencyKey : undefined;
+    if (key === undefined) return this.#actRun(input, identity, ownerKey);
+    // The store sees the key only once the first run ends; a retry meanwhile joins that run.
+    const flightKey = `${ownerKey}\0${key}`;
+    const running = this.#inFlightActs.get(flightKey);
+    if (running !== undefined) return running;
+    const run = (async (): Promise<ActResponse> => {
+      const found = await this.#act.results.findByIdempotencyKey(ownerKey, key);
+      if (found !== undefined) return { ok: true, ack: found.ack ?? '', result: found.id };
+      return this.#actRun(input, identity, ownerKey);
+    })();
+    this.#inFlightActs.set(flightKey, run);
+    try {
+      return await run;
+    } finally {
+      this.#inFlightActs.delete(flightKey);
+    }
+  }
+
+  async actResult(id: string, identity: Identity | null): Promise<ActResultRecord | undefined> {
+    return identity === null ? undefined : this.#act.results.get(id, ownerKeyOf(identity));
+  }
+
+  async #actRun(input: ActInput, identity: Identity, ownerKey: string): Promise<ActResponse> {
+    const { results, ttlMs, maxWriteSteps } = this.#act;
+    const mode = input.mode ?? 'write';
+    const schema = Object.fromEntries(
+      Object.entries(this.federatedSchema()).filter(
+        ([ns]) => checkIdentityGrant(identity, ns, 'query').ok
+      )
+    );
+    const localNamespaces = new Set(
+      [...this.#namespaces]
+        .filter(([ns, cfg]) => cfg.virtual !== true && this.#datasets.get(ns) !== undefined)
+        .map(([ns]) => ns)
+    );
+    const compiled = compileSketch(input.sketch, schema, {
+      ...(input.namespace !== undefined ? { defaultNamespace: input.namespace } : {}),
+      localNamespaces,
+      maxWriteSteps
+    });
+    if ('refusal' in compiled) return { ok: false, refusal: compiled.refusal };
+    if ('help' in compiled) return { ok: true, help: compiled.help };
+    const { plan } = compiled;
+
+    // A crossRef `#N` is looked up on its target type, so that type joins the transaction.
+    const refTypes = plan.steps.flatMap((s) =>
+      Object.values(s.late ?? {}).flatMap((l) => ('ref' in l ? [l.ref.type] : []))
+    );
+    const keys = [...new Set([...plan.steps.map((s) => s.key), ...refTypes])];
+    const parsedByKey = this.#buildParsedKeyCache(keys);
+    const partition = partitionMutateByTxScope(keys, parsedByKey, this.#datasets);
+    const outcomes: ActStepOutcome[] = [];
+    let error: { code: string; message: string; step?: number } | undefined;
+    if (partition.kind === 'cross_tx_scope_refused') {
+      this.#metric('engine_cross_tx_scope_refused', { namespaces: partition.namespaces });
+      error = { code: 'cross_tx_scope_refused', message: partition.message };
+    } else if (partition.kind === 'zero_datasets') {
+      // Unreachable: the compiler admits only namespaces with a dataset.
+      throw new Error('act plan names no dataset');
+    } else {
+      error = await this.#actSteps(input, mode, plan.steps, parsedByKey, partition, outcomes);
+    }
+
+    const ack = formatAck(plan, outcomes, mode);
+    const id = newResultId();
+    const createdAt = new Date();
+    const record: ActResultRecord = {
+      id,
+      owner: identity.id,
+      ownerKey,
+      createdAt: createdAt.toISOString(),
+      expiresAt: new Date(createdAt.getTime() + ttlMs).toISOString(),
+      mode,
+      ok: error === undefined,
+      ...(error === undefined ? { ack } : { error }),
+      ...(error === undefined && mode === 'write' && input.idempotencyKey !== undefined
+        ? { idempotencyKey: input.idempotencyKey }
+        : {}),
+      schemaVersion: this.federatedSchemaVersion(),
+      sketch: input.sketch,
+      plan,
+      steps: outcomes
+    };
+    let result: string | null = id;
+    try {
+      await results.put(record, ttlMs);
+    } catch (err) {
+      // The write may have committed: failing the call would invite a retry that repeats it.
+      this.#metric('engine_act_result_store_failed', {
+        error: err instanceof Error ? err.message : String(err)
+      });
+      result = null;
+    }
+    return error === undefined ? { ok: true, ack, result } : { ok: false, error, result };
+  }
+
+  /**
+   * Runs `steps` in one transaction, filling late values as each step comes
+   * up, and dispatches their write events only if it commits. Pushes each
+   * step's outcome; resolves the failure, or undefined.
+   */
+  async #actSteps(
+    input: ActInput,
+    mode: ActMode,
+    steps: ActPlanStep[],
+    parsedByKey: Map<string, ParsedKey | null>,
+    partition: TxPartition,
+    outcomes: ActStepOutcome[]
+  ): Promise<{ code: string; message: string; step?: number } | undefined> {
+    const now = input.ctx.now ?? new Date();
+    const queryCtx = this.#buildContext({ ...input.ctx, now }, 'query');
+    const mutateCtx = this.#buildContext({ ...input.ctx, now }, 'mutate');
+    const pending: WriteEvent[] = [];
+    const settled: AfterTxWork[] = [];
+    const binds = new Map<string, unknown>();
+    let rowBudget = MAX_STORED_ROWS;
+    const body = async (
+      txFor: (ns: string) => Dataset | null,
+      txEdges: EdgesStore
+    ): Promise<void> => {
+      // One entry through the caller's grant and policy; any refusal fails `step`.
+      const run = async (
+        step: ActPlanStep,
+        key: string,
+        entry: FrameEntry,
+        operation: 'query' | 'mutate'
+      ): Promise<PackEnvelope> => {
+        const envelope = this.#makeEnvelope([key], parsedByKey);
+        const parsed = parsedByKey.get(key) ?? null;
+        const thrown = await this.#runEntry(
+          envelope,
+          key,
+          entry,
+          operation === 'query' ? queryCtx : mutateCtx,
+          operation,
+          parsed === null ? null : txFor(parsed.ns),
+          txEdges,
+          parsed,
+          (event) => pending.push(event),
+          input.signal,
+          (fn) => settled.push(fn),
+          steps.length
+        );
+        const refusal = envelope.errors?.find((e) => e.path?.[0] === key);
+        if (thrown || refusal !== undefined) {
+          throw new ActStepFailure({
+            code: refusal?.code ?? 'resolver_error',
+            message: refusal?.message ?? `'${key}' refused`,
+            step: step.step
+          });
+        }
+        return envelope;
+      };
+      const maxLimit = input.pageLimits?.maxLimit;
+      for (const step of steps) {
+        const params = { ...step.params };
+        if (step.action === 'find' && maxLimit !== undefined) {
+          params.limit = Math.min(Number(params.limit), maxLimit);
+        }
+        for (const [field, late] of Object.entries(step.late ?? {})) {
+          if ('bind' in late) params[field] = binds.get(late.bind);
+          else if ('now' in late) params[field] = now.toISOString();
+          else {
+            const { type, shortId } = late.ref;
+            const where = { shortId: { eq: shortId } };
+            const found = await run(
+              step,
+              type,
+              { params: { where, limit: 1 }, fields: { id: true } },
+              'query'
+            );
+            const row = (found.data[type] as Row[] | undefined)?.[0];
+            if (row === undefined) {
+              throw new ActStepFailure({
+                code: 'not_found',
+                message: `no ${type} #${shortId}`,
+                step: step.step
+              });
+            }
+            params[field] = row.id;
+          }
+        }
+        const envelope = await run(step, step.key, { params, fields: step.fields }, step.operation);
+        const outcome = stepOutcome(step, envelope, rowBudget);
+        rowBudget -= outcome.rows?.length ?? 0;
+        if (step.bind !== undefined) binds.set(step.bind, outcome.touched?.[0]?.id);
+        outcomes.push(outcome);
+      }
+      if (mode === 'dry-run') throw new ActDryRunRollback();
+    };
+    let committed = false;
+    try {
+      const scopeRefusal = await this.#inLocalTx(partition, body);
+      if (scopeRefusal !== undefined) {
+        return { code: 'cross_tx_scope_refused', message: scopeRefusal };
+      }
+      committed = true;
+      this.#subscribe.dispatchWrites(pending);
+      if (this.#committed.active) {
+        this.#committed.queue(pending, actorOf(input.ctx.identity ?? null));
+      }
+      return undefined;
+    } catch (err) {
+      if (err instanceof ActStepFailure) return err.error;
+      if (err instanceof ActDryRunRollback) return undefined;
+      throw err;
+    } finally {
+      await this.#runSettled(settled, committed);
+    }
   }
 
   /**

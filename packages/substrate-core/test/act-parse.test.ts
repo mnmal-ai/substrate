@@ -1,0 +1,106 @@
+import type { ActStep } from '@mnmal-ai/substrate-types';
+import { describe, expect, it } from 'vitest';
+import { formatSketch, formatStep, parseSketch } from '../src/act/parse.js';
+
+const cases: Array<[string, ActStep[]]> = [
+  ['close Todo #2014', [{ action: 'close', type: 'Todo', refs: ['#2014'] }]],
+  [
+    'close Todo #2014 #2015 resolution=wont_do',
+    [{ action: 'close', type: 'Todo', refs: ['#2014', '#2015'], args: { resolution: 'wont_do' } }]
+  ],
+  [
+    'log SessionLog summary="Shipped beta.9" closes=#2014,#2015',
+    [
+      {
+        action: 'log',
+        type: 'SessionLog',
+        args: { summary: 'Shipped beta.9', closes: ['#2014', '#2015'] }
+      }
+    ]
+  ],
+  [
+    'create Todo title="x" as $t; update Todo $t priority=high',
+    [
+      { action: 'create', type: 'Todo', args: { title: 'x' }, as: 't' },
+      { action: 'update', type: 'Todo', refs: ['$t'], args: { priority: 'high' } }
+    ]
+  ],
+  [
+    'update cortext/Todo 3f2a-uuid notes=null',
+    [{ action: 'update', type: 'cortext/Todo', refs: ['3f2a-uuid'], args: { notes: null } }]
+  ],
+  [
+    'log SessionLog summary="a; b, c #1" branch=x',
+    [{ action: 'log', type: 'SessionLog', args: { summary: 'a; b, c #1', branch: 'x' } }]
+  ],
+  [
+    'create Note body="say \\"hi\\"\\nbye"',
+    [{ action: 'create', type: 'Note', args: { body: 'say "hi"\nbye' } }]
+  ],
+  [
+    'find Todo status=open,blocked',
+    [{ action: 'find', type: 'Todo', args: { status: ['open', 'blocked'] } }]
+  ],
+  ['?', [{ action: '?' }]],
+  ['? Todo', [{ action: '?', type: 'Todo' }]]
+];
+
+describe('parseSketch', () => {
+  it.each(cases)('parses %s', (text, steps) => {
+    expect(parseSketch(text)).toMatchObject({ steps });
+  });
+
+  it('records each step text', () => {
+    expect(parseSketch(' close Todo #1 ;\n\n count Todo ')).toMatchObject({
+      texts: ['close Todo #1', 'count Todo']
+    });
+  });
+
+  it('keeps a newline inside quotes in one step', () => {
+    expect(parseSketch('create Note body="a\nb"')).toMatchObject({
+      steps: [{ args: { body: 'a\nb' } }]
+    });
+  });
+
+  it.each([
+    ['', 1, 'empty sketch'],
+    [' ; \n', 1, 'empty sketch'],
+    ['close Todo title="open', 1, 'unterminated quote'],
+    ['close Todo #1 as t', 1, 'as needs $name'],
+    ['close Todo #1; close Todo a=1 a=2', 2, "duplicate arg 'a'"],
+    ['close', 1, 'missing type'],
+    ['? Todo extra', 1, 'help takes at most a type']
+  ])('refuses %j', (text, step, problem) => {
+    expect(parseSketch(text)).toEqual({
+      refusal: {
+        code: 'sketch_unresolved',
+        step,
+        token: expect.any(String),
+        problem,
+        choices: [],
+        nearest: null
+      }
+    });
+  });
+});
+
+describe('formatSketch', () => {
+  it.each(cases)('round-trips %s', (text, steps) => {
+    const parsed = parseSketch(text);
+    if (!('steps' in parsed)) throw new Error('parse failed');
+    expect(parseSketch(formatSketch(parsed.steps))).toMatchObject({ steps });
+  });
+
+  it('quotes values that need it', () => {
+    expect(formatStep({ action: 'create', type: 'Todo', args: { title: 'a b' } })).toBe(
+      'create Todo title="a b"'
+    );
+    const step: ActStep = {
+      action: 'create',
+      type: 'T',
+      args: { a: '', b: 'null', c: 'x"y\\z', d: null }
+    };
+    expect(formatStep(step)).toBe('create T a="" b="null" c="x\\"y\\\\z" d=null');
+    expect(parseSketch(formatStep(step))).toMatchObject({ steps: [step] });
+  });
+});

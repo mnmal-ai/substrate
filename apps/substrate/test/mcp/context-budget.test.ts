@@ -6,11 +6,11 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { describe, expect, it } from 'vitest';
-import { buildInstructions } from '../../src/mcp/schema-overview.js';
+import { buildInstructions, buildLeanInstructions } from '../../src/mcp/schema-overview.js';
 import { createMcpServer } from '../../src/mcp/server.js';
 
-async function listTools(): Promise<Array<{ name: string }>> {
-  const server = createMcpServer('http://127.0.0.1:1', { tools: 'core' });
+async function listTools(tools = 'core'): Promise<Array<{ name: string }>> {
+  const server = createMcpServer('http://127.0.0.1:1', { tools });
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
   await server.connect(serverSide);
   const client = new Client({ name: 'budget-test', version: '0.0.0' });
@@ -36,6 +36,23 @@ describe('MCP context budget', () => {
       Buffer.byteLength(JSON.stringify(await listTools())) +
       Buffer.byteLength(buildInstructions(null));
     expect(total).toBeLessThanOrEqual(9000);
+  });
+
+  it('the act tool fits 1000 bytes', async () => {
+    const act = (await listTools('all')).find((t) => t.name === 'act');
+    expect(Buffer.byteLength(JSON.stringify(act))).toBeLessThanOrEqual(1000);
+  });
+
+  it('the lean set plus its fixed instructions stays under 3 KB', async () => {
+    const tools = await listTools('lean');
+    expect(tools.map((t) => t.name).sort()).toEqual(['act', 'whoami']);
+    expect(
+      Buffer.byteLength(JSON.stringify(tools)) + Buffer.byteLength(buildLeanInstructions(null))
+    ).toBeLessThanOrEqual(3000);
+  });
+
+  it('core does not carry act', async () => {
+    expect((await listTools('core')).map((t) => t.name)).not.toContain('act');
   });
 
   it('keeps the facts an agent needs to form a valid call', async () => {

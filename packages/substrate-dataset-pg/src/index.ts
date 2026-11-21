@@ -50,6 +50,7 @@ export {
   UnsupportedSchemaNameError,
   UnsupportedStoreLayoutError
 } from './migrate.js';
+export { PgActResultStore, type PgActResultStoreOptions } from './pg-act-result-store.js';
 export {
   type FieldDefLookup,
   PgDataset,

@@ -37,6 +37,7 @@ import {
 } from '../_system/routes.js';
 import type { IdentityDirectoryConfig } from '../_system/types.js';
 import type { AuthConfig } from '../auth.js';
+import { actResultRoute, actRoute } from '../routes/act.js';
 import { type ConfigReport, configRouteHandler } from '../routes/config-echo.js';
 import { createConnectionLimiter } from '../routes/connection-limit.js';
 import { federatedSchemaRoute } from '../routes/federated-schema.js';
@@ -188,6 +189,17 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
     'POST',
     '/substrate/v1/mutate',
     gate(mutateRoute(engine, trustedProxies, auth !== undefined), 'mutate')
+  );
+  // `read` admits the route; the engine requires `mutate` for each write step.
+  server.route(
+    'POST',
+    '/substrate/v1/act',
+    gate(actRoute(engine, trustedProxies, auth !== undefined, args.pageLimits), 'read')
+  );
+  server.route(
+    'GET',
+    '/substrate/v1/act/results/:id',
+    gate(actResultRoute(engine, trustedProxies, auth !== undefined), 'read')
   );
   const connections = createConnectionLimiter();
   registerStreamRoutes(server, engine, trustedProxies, gate, routeEventMetric, auth, connections);

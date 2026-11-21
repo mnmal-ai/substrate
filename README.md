@@ -122,6 +122,7 @@ Upgrading from an alpha: [Upgrading to 1.0.0-beta.1](docs/upgrading-to-beta.md).
 - [Upgrading to per-type tables](docs/upgrading-to-type-tables.md): what changes, and the upgrade procedure for an existing store
 - [Upgrading to the warehouse grammar](docs/upgrading-to-warehouse-grammar.md): `bucket` and `derive` become `groupBy` and `select`, plus the new expression params
 - [Edge walks](docs/walks.md): the walk grammar: `_walk`, `pick` and `among`, `as` and `$ref`, `_agg`, nested selections, frame aggregates, limits and refusal codes
+- [Act](docs/act.md): declared actions and sketches, so an agent sends a terse sketch and gets a one-line ack; the `lean` MCP preset, the HTTP route, CLI and client
 - [Surface parity](docs/surface-parity.md): what HTTP, MCP and frame streams each offer, and where their shapes differ (edge walks are query-only; subscriptions refuse them)
 - [Frame stream contract](docs/stream-contract.md): the stream wire format, how subscriptions end and what a client should do
 - [Design spec](docs/substrate-from-first-principles.md): the design source of truth

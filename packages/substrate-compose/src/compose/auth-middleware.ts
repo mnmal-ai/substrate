@@ -66,7 +66,7 @@ const NO_CREDENTIAL_DETAIL =
   'SUBSTRATE_AGENT_KEY_PATH (or SUBSTRATE_AGENT_TOKEN) and retry. GET /substrate/v1/whoami ' +
   'reports what this server sees for your credential, and answers without one.';
 
-function noCredentialResponse(): SubstrateResponse {
+export function noCredentialResponse(): SubstrateResponse {
   return {
     status: 401,
     headers: { 'content-type': 'application/json' },

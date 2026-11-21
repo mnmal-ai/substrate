@@ -18,6 +18,7 @@ import type {
   Schema,
   TypeSchema
 } from '@mnmal-ai/substrate-types';
+import { toActionSchema } from '@mnmal-ai/substrate-types';
 import { canonicalize } from './canonicalize.js';
 
 /**
@@ -68,10 +69,14 @@ export function publishSchema(registry: Registry): Schema {
       };
     } else {
       // Only when declared, so a type without one keeps its schemaVersion.
-      types[name] =
-        entry.orderedBy !== undefined
-          ? { fields: entry.fields, orderedBy: entry.orderedBy }
-          : { fields: entry.fields };
+      const type: TypeSchema = { fields: entry.fields };
+      if (entry.orderedBy !== undefined) type.orderedBy = entry.orderedBy;
+      if (entry.actions !== undefined && Object.keys(entry.actions).length > 0) {
+        type.actions = Object.fromEntries(
+          Object.entries(entry.actions).map(([action, decl]) => [action, toActionSchema(decl)])
+        );
+      }
+      types[name] = type;
     }
   }
 

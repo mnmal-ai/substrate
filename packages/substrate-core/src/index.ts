@@ -18,6 +18,11 @@ export { RestrictViolation } from '@mnmal-ai/substrate-types';
  */
 
 export { usesWalkGrammar, walkGrammarPath } from '@mnmal-ai/substrate-filter';
+export type { ActHandle } from '@mnmal-ai/substrate-types';
+export { type CompileOptions, type CompileResult, compileSketch } from './act/compile.js';
+export { formatAck } from './act/outcome.js';
+export { formatSketch, parseSketch } from './act/parse.js';
+export { assertActionGraph } from './act/validate.js';
 export {
   type ReadShape,
   readShapeOf,
@@ -48,6 +53,10 @@ export {
 } from './filter/validator.js';
 export { assertHardDeleteAllowed, validateHardDeleteEnv } from './hard-delete-gate.js';
 export { loadPlugins, PluginNamespaceCollision } from './load-plugins.js';
+export {
+  MemoryActResultStore,
+  type MemoryActResultStoreOptions
+} from './memory-act-result-store.js';
 export { MemoryBridgeCredentialStore } from './memory-bridge-credential-store.js';
 export { MemoryBridgeRegistry } from './memory-bridge-registry.js';
 export { MemoryEdgesStore } from './memory-edges-store.js';

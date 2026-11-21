@@ -8,7 +8,8 @@
  *   substrate normalise-vocab — rewrite stored vocabulary aliases to canonical values
  *   substrate backfill-field  — write per-row values of one field, metadata preserved
  *   substrate ask         — ask a natural-language question (./cli/ask)
- *   substrate run         — run a script against a signed, guarded client (./cli/run)
+ *   substrate act         — run a sketch in one transaction (./cli/act)
+ *   substrate run       — run a script against a signed, guarded client (./cli/run)
  *   substrate federate    — enroll / join / check bridges (./cli/federate)
  *
  * No flags-vs-subcommand ambiguity: subcommands are always argv[2].
@@ -16,6 +17,7 @@
  */
 
 import pkg from '../package.json' with { type: 'json' };
+import { runAct } from './cli/act/main.js';
 import { runAsk } from './cli/ask/main.js';
 import { runBackfillField } from './cli/backfill-field/main.js';
 import { runCheckEnums } from './cli/check-enums/main.js';
@@ -36,15 +38,19 @@ Usage:
 Subcommands:
   serve                     Boot the Substrate HTTP server (default port 3100).
   mcp                       Boot the stdio MCP server. Reads SUBSTRATE_URL, and
-                            SUBSTRATE_MCP_TOOLS (csv of tool names, core or all;
-                            core: query, mutate, schema, recall, run, whoami; default
-                            core).
+                            SUBSTRATE_MCP_TOOLS (csv of tool names, core, lean or
+                            all; core: query, mutate, schema, recall, run, whoami;
+                            lean: act, whoami; default core).
   init [dir] [flags]        Scaffold a new Substrate runtime directory. Interactive by
                             default; pass --yes for non-interactive scripted use.
   federate <verb>           Federation onboarding: enroll / join / check.
                             Run \`substrate federate\` for the verb list.
   ask <question>            Ask a natural-language question (needs the substrate-nl plugin).
                             Flags: --ns, --project, --json. Reads SUBSTRATE_URL.
+  act <sketch> [--dry-run] [--ns <ns>] [--key <k>] [--json] | --result <id>
+                            Run a sketch: declared actions and create/update/find/count,
+                            in one transaction. Reads SUBSTRATE_URL and
+                            SUBSTRATE_AGENT_KEY_ID/_PATH.
   run <script.mts> [--args <json>] [--dry-run | --write] [--max-writes <n>] [--out <file>]
                             Run a script's default export (s) => result against a client
                             signed from SUBSTRATE_URL + SUBSTRATE_AGENT_KEY_ID/_PATH, and
@@ -151,6 +157,8 @@ export async function runCli(argv: string[]): Promise<number> {
       return await runBackfillField(rest);
     case 'ask':
       return await runAsk(rest);
+    case 'act':
+      return await runAct(rest);
     case 'run':
       return await runRun(rest);
     case 'federate':

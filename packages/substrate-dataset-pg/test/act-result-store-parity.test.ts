@@ -1,0 +1,89 @@
+import { MemoryActResultStore } from '@mnmal-ai/substrate-core';
+import type { ActResultRecord, ActResultStore } from '@mnmal-ai/substrate-types';
+import postgres, { type Sql } from 'postgres';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { PgActResultStore, runMigrations } from '../src/index.js';
+
+const POSTGRES_URL = process.env.POSTGRES_URL;
+
+const rec = (
+  id: string,
+  ownerKey: string,
+  extra: Partial<ActResultRecord> = {}
+): ActResultRecord => ({
+  id,
+  // One display owner for every record: matching goes by ownerKey alone.
+  owner: 'agent-1',
+  ownerKey,
+  createdAt: '2026-01-01T00:00:00.000Z',
+  expiresAt: '2026-01-02T00:00:00.000Z',
+  mode: 'write',
+  ok: true,
+  schemaVersion: 'v1',
+  sketch: 'find Thing',
+  plan: { steps: [] } as unknown as ActResultRecord['plan'],
+  steps: [],
+  ...extra
+});
+
+function cases(make: () => ActResultStore): void {
+  const DAY = 86_400_000;
+  it('put then get by ownerKey returns the record', async () => {
+    const s = make();
+    await s.put(rec('r1', 'alice'), DAY);
+    expect(await s.get('r1', 'alice')).toMatchObject({ id: 'r1', ownerKey: 'alice' });
+  });
+  it('get under another ownerKey is undefined, though the owner is the same', async () => {
+    const s = make();
+    await s.put(rec('r1', 'alice'), DAY);
+    expect(await s.get('r1', 'bob')).toBeUndefined();
+  });
+  it('ttlMs 0 is expired at once and reaped', async () => {
+    const s = make();
+    await s.put(rec('r1', 'alice'), 0);
+    expect(await s.get('r1', 'alice')).toBeUndefined();
+    expect(await s.reapExpired()).toEqual({ deleted: 1 });
+  });
+  it('first live write for (ownerKey, key) wins', async () => {
+    const s = make();
+    await s.put(rec('r1', 'alice', { idempotencyKey: 'k' }), DAY);
+    await s.put(rec('r2', 'alice', { idempotencyKey: 'k' }), DAY);
+    expect((await s.findByIdempotencyKey('alice', 'k'))?.id).toBe('r1');
+    expect(await s.get('r2', 'alice')).toBeUndefined();
+  });
+  it('the same key under another ownerKey is independent', async () => {
+    const s = make();
+    await s.put(rec('r1', 'alice', { idempotencyKey: 'k' }), DAY);
+    await s.put(rec('r2', 'bob', { idempotencyKey: 'k' }), DAY);
+    expect((await s.findByIdempotencyKey('alice', 'k'))?.id).toBe('r1');
+    expect((await s.findByIdempotencyKey('bob', 'k'))?.id).toBe('r2');
+  });
+  it('an expired key is replaced by a new put', async () => {
+    const s = make();
+    await s.put(rec('r1', 'alice', { idempotencyKey: 'k' }), 0);
+    await s.put(rec('r2', 'alice', { idempotencyKey: 'k' }), DAY);
+    expect((await s.findByIdempotencyKey('alice', 'k'))?.id).toBe('r2');
+  });
+  it('bigint comes back as a decimal string', async () => {
+    const s = make();
+    const steps = [{ step: 1, action: 'find', type: 'Thing', rows: [{ big: 9007199254740993n }] }];
+    await s.put(rec('r1', 'alice', { steps: steps as unknown as ActResultRecord['steps'] }), DAY);
+    expect((await s.get('r1', 'alice'))?.steps[0]?.rows?.[0]?.big).toBe('9007199254740993');
+  });
+}
+
+describe.skipIf(!POSTGRES_URL)('ActResultStore conformance (memory and pg)', () => {
+  let sql: Sql;
+  beforeAll(async () => {
+    sql = postgres(POSTGRES_URL as string);
+    await runMigrations(sql);
+  });
+  afterAll(async () => {
+    await sql.end();
+  });
+  beforeEach(async () => {
+    await sql`DELETE FROM act_results`;
+  });
+  describe('memory', () => cases(() => new MemoryActResultStore()));
+  describe('pg', () => cases(() => new PgActResultStore({ sql })));
+});

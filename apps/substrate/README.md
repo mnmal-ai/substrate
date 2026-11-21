@@ -22,10 +22,11 @@ A plugin package declares `@mnmal-ai/substrate` as a peer dependency and as a de
 | Subcommand | Purpose |
 |---|---|
 | `substrate serve` | Boot the HTTP server (default port 3100) |
-| `substrate mcp` | stdio MCP server; reads `SUBSTRATE_URL`, and `SUBSTRATE_MCP_TOOLS` (csv of tool names, `core` or `all`; `core` is query, mutate, schema, recall, run, whoami; unset means `core`) |
+| `substrate mcp` | stdio MCP server; reads `SUBSTRATE_URL`, and `SUBSTRATE_MCP_TOOLS` (csv of tool names, `core`, `lean` or `all`; `core` is query, mutate, schema, recall, run, whoami; `lean` is act, whoami, and ask with `substrate-nl`; unset means `core`) |
 | `substrate init [dir] [flags]` | Scaffold a runtime directory (interactive; `--yes` for scripted use) |
 | `substrate ask <question…>` | Ask a natural-language question (needs `substrate-nl`) |
 | `substrate run <script.mts>` | Run a script against a signed, guarded client and print one JSON report |
+| `substrate act <sketch…>` | Run an `act` sketch and print its one-line ack and result id; `--dry-run`, `--ns`, `--result <id>` ([`docs/act.md`](https://github.com/mnmal-ai/substrate/blob/main/docs/act.md)) |
 | `substrate federate <verb>` | Federation onboarding: `enroll` / `join` / `check` |
 | `substrate check-enums [--json]` | Report stored values outside a field's declared enum; exits 1 on drift, so it works as a CI gate |
 | `substrate normalise-vocab <ns> <Type> <field> [--apply]` | Rewrite stored vocabulary aliases to canonical values (admin) |
@@ -35,7 +36,7 @@ A plugin package declares `@mnmal-ai/substrate` as a peer dependency and as a de
 
 ### MCP tools
 
-`substrate mcp` serves `schema`, `query`, `mutate`, `run`, `recall`, `ask`, `whoami`, `propose_type`, `propose_field`, `propose_index`, and the admin-gated `drop_namespace` / `drop_type`. `run` executes a short script against the store in one call (the same context as `substrate run`), in a child process with no file, network, process or environment access. It talks to a running server at `SUBSTRATE_URL` and signs requests when `SUBSTRATE_AGENT_KEY_ID` and `SUBSTRATE_AGENT_KEY_PATH` are set. [`docs/surface-parity.md`](https://github.com/mnmal-ai/substrate/blob/main/docs/surface-parity.md) maps what each surface (HTTP, MCP, frame streams) offers.
+`substrate mcp` serves `schema`, `query`, `mutate`, `run`, `act`, `recall`, `ask`, `whoami`, `propose_type`, `propose_field`, `propose_index`, and the admin-gated `drop_namespace` / `drop_type`. `run` executes a short script against the store in one call (the same context as `substrate run`), in a child process with no file, network, process or environment access. It talks to a running server at `SUBSTRATE_URL` and signs requests when `SUBSTRATE_AGENT_KEY_ID` and `SUBSTRATE_AGENT_KEY_PATH` are set. [`docs/surface-parity.md`](https://github.com/mnmal-ai/substrate/blob/main/docs/surface-parity.md) maps what each surface (HTTP, MCP, frame streams) offers.
 
 ### `substrate ask`
 

@@ -46,6 +46,7 @@ import {
   CONCURRENT_STATEMENTS as SHORT_IDS_ROW_FK_CONCURRENT,
   TX_STATEMENTS as SHORT_IDS_ROW_FK_TX
 } from './migrations/0008t_short_ids_row_fk.js';
+import { TX_STATEMENTS as ACT_RESULTS_TX } from './migrations/0009t_act_results.js';
 import { sqlStringLiteral } from './pg-sql/primitives.js';
 import { assertServerVersion } from './server-version.js';
 import { UUID_CHECK_MIGRATION } from './uuid-check.js';
@@ -121,6 +122,11 @@ const SHORT_IDS_ROW_FK: MigrationInput = {
   concurrentStatements: SHORT_IDS_ROW_FK_CONCURRENT
 };
 
+const ACT_RESULTS: MigrationInput = {
+  version: '0009t_act_results',
+  txStatements: ACT_RESULTS_TX
+};
+
 function normalise(input: MigrationInput): Migration {
   if ('statements' in input && input.statements !== undefined) {
     return {
@@ -164,7 +170,8 @@ export function getMigrationList(
     INT64_FIELD_KIND,
     INT32_FIELD_KIND,
     INT16_FIELD_KIND,
-    SHORT_IDS_ROW_FK
+    SHORT_IDS_ROW_FK,
+    ACT_RESULTS
   ].map(normalise);
 }
 

@@ -1,4 +1,9 @@
-import { type PackEnvelope, stringifyJson } from '@mnmal-ai/substrate-types';
+import {
+  type ActResponse,
+  type ActStep,
+  type PackEnvelope,
+  stringifyJson
+} from '@mnmal-ai/substrate-types';
 import type { SubstrateClient } from './client.js';
 import type { QualifiedFrame } from './transport/http.js';
 
@@ -143,6 +148,12 @@ export interface ScriptContext {
    */
   mutate(frame: QualifiedFrame): Promise<PackEnvelope | null>;
   mutate(key: string, entry: ScriptFrameEntry | ScriptFrameEntry[]): Promise<PackEnvelope | null>;
+  /**
+   * One act sketch (one transaction). Sends `dry-run` in `read` and `dry-run`
+   * modes and `write` in `write` mode, counting 1 toward `maxWrites`. Throws
+   * on a refusal or a failure.
+   */
+  act(sketch: string | ActStep[], opts?: { namespace?: string }): Promise<ActResponse>;
   /** Writes to stderr; stdout carries only the result. */
   log(...args: unknown[]): void;
 }
@@ -359,6 +370,39 @@ export async function runScript(
           return env;
         })()
       )) as ScriptContext['mutate'],
+    act: (sketch, opts = {}) =>
+      track(
+        (async () => {
+          const write = mode === 'write';
+          if (write) {
+            if (planned + 1 > maxWrites) {
+              throw new Error(
+                `act refused: ${planned + 1} frames would exceed --max-writes ${maxWrites}`
+              );
+            }
+            // Counted before sending, so calls sent at once cannot all pass the check.
+            planned += 1;
+          }
+          const reply = await client.act({
+            sketch,
+            mode: write ? 'write' : 'dry-run',
+            ...(opts.namespace !== undefined ? { namespace: opts.namespace } : {})
+          });
+          if (reply.ok) {
+            if (write && 'ack' in reply) stats.writes += 1;
+            return reply;
+          }
+          if ('refusal' in reply) {
+            // A refusal ran nothing, so it gives the count back.
+            if (write) planned -= 1;
+            throw new Error(`act refused at step ${reply.refusal.step}: ${reply.refusal.problem}`);
+          }
+          const { step, code, message } = reply.error;
+          throw new Error(
+            `act failed${step !== undefined ? ` at step ${step}` : ''}: ${code}: ${message}`
+          );
+        })()
+      ),
     log: (...args) => log(args.map(logText).join(' '))
   };
 
