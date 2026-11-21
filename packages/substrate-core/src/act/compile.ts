@@ -114,6 +114,8 @@ class Compiler {
   /** The sketch step being compiled, 1-based. */
   #n = 0;
   readonly #bindings = new Set<string>();
+  /** Write steps built so far; checked at each one so a large expansion stops at the cap. */
+  #writes = 0;
 
   constructor(
     readonly schema: Readonly<Record<string, Schema>>,
@@ -139,15 +141,6 @@ class Compiler {
 
     const drafts: Draft[] = [];
     for (const [i, step] of steps.entries()) this.#at(i + 1).#compileStep(step, drafts);
-
-    const max = this.options.maxWriteSteps ?? DEFAULT_MAX_WRITE_STEPS;
-    const writes = drafts.filter((d) => d.operation === 'mutate');
-    if (writes.length > max) {
-      this.#at((writes[max] as Draft).source).#refuse(
-        '',
-        `${writes.length} write steps exceed the cap of ${max}`
-      );
-    }
     return { plan: { steps: drafts.map((d, i) => ({ step: i + 1, ...d })) } };
   }
 
@@ -313,6 +306,10 @@ class Compiler {
       }
       Object.assign(params, built.params);
       Object.assign(late, built.late);
+      const max = this.options.maxWriteSteps ?? DEFAULT_MAX_WRITE_STEPS;
+      if (++this.#writes > max) {
+        this.#refuse('', `${this.#writes} write steps exceed the cap of ${max}`);
+      }
       out.push({
         source: this.#n,
         action: name,

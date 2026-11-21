@@ -59,9 +59,10 @@ export function coerceValue(def: FieldDef, value: ActValue): Coerced {
     case 'string': {
       if (typeof value !== 'string') return fail('a string');
       if (def.enum === undefined) return ok(value);
-      const v = canonicalVocabValue(def, value);
-      return def.strict === false || def.enum.includes(v as string)
-        ? ok(v)
+      // Checked in canonical form but kept raw: the write path and the list
+      // resolver normalise it, reading an alias's implications from the raw value.
+      return def.strict === false || def.enum.includes(canonicalVocabValue(def, value) as string)
+        ? ok(value)
         : fail(`one of ${def.enum.join('|')}`);
     }
     case 'number': {

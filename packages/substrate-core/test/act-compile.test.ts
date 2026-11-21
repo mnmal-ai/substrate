@@ -24,7 +24,8 @@ const todoFields: Record<string, FieldDef> = {
     kind: 'scalar',
     type: 'string',
     enum: ['open', 'closed', 'deferred'],
-    aliases: { done: 'closed' }
+    aliases: { done: 'closed', shut: 'closed' },
+    implies: { done: { resolution: 'completed' } }
   },
   resolution: { ...resolution, nullable: true },
   archived: { kind: 'scalar', type: 'boolean', default: false },
@@ -323,8 +324,9 @@ describe('compileSketch plans', () => {
     expect('plan' in result && result.plan.steps[0]?.params.big).toBe(9007199254740993n);
   });
 
-  it('canonicalises a vocabulary alias', () => {
-    expect(compile('update Todo #1 status=Done')).toEqual({
+  // The write path and the list resolver normalise an alias and read its implications from the raw value.
+  it('keeps a vocabulary alias raw', () => {
+    expect(compile('update Todo #1 status=Shut')).toEqual({
       plan: {
         steps: [
           {
@@ -333,7 +335,34 @@ describe('compileSketch plans', () => {
             action: 'update',
             key: 'work/updateTodo',
             ...todoWrite,
-            params: { id: '1', status: 'closed' }
+            params: { id: '1', status: 'Shut' }
+          }
+        ]
+      }
+    });
+  });
+
+  it('leaves an alias implication to the write path and the list resolver', () => {
+    expect(compile('update Todo #1 status=done; find Todo status=done')).toEqual({
+      plan: {
+        steps: [
+          {
+            step: 1,
+            source: 1,
+            action: 'update',
+            key: 'work/updateTodo',
+            ...todoWrite,
+            params: { id: '1', status: 'done' }
+          },
+          {
+            step: 2,
+            source: 2,
+            action: 'find',
+            type: 'work/Todo',
+            key: 'work/Todo',
+            operation: 'query',
+            params: { where: { status: { eq: 'done' } }, limit: 1000 },
+            fields: { id: true, shortId: true }
           }
         ]
       }
@@ -438,6 +467,19 @@ describe('compileSketch refusals', () => {
     expect(compile(`close Todo ${refs}`)).toEqual(
       refusal(1, '', '51 write steps exceed the cap of 50')
     );
+  });
+
+  it('refuses at the cap while expanding, before building the whole plan', () => {
+    const sweep: ActionDecl = {
+      params: { items: { list: 'work/Todo' } },
+      // biome-ignore lint/suspicious/noThenProperty: `then` is the action declaration's key
+      then: [{ action: 'work/Todo.close', each: { param: 'items' } }]
+    };
+    const s = fixture({ close, defer, sweep });
+    const refs = (n: number) => Array.from({ length: n }, (_, i) => `#${i + 1}`);
+    // 200 refs, each followed by 1000 closes: 200,200 write steps if fully expanded.
+    const sketch = `sweep Todo ${refs(200).join(' ')} items=${refs(1000).join(',')}`;
+    expect(compile(sketch, opts, s)).toEqual(refusal(1, '', '51 write steps exceed the cap of 50'));
   });
 
   it('refuses a namespace that is not local', () => {
