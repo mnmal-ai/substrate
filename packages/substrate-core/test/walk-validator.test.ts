@@ -42,6 +42,8 @@ const SCHEMAS: Record<string, TypeSchema> = {
       observedAt: { kind: 'scalar', type: 'date' },
       flag: { kind: 'scalar', type: 'boolean' },
       qty: { kind: 'scalar', type: 'int64' },
+      units: { kind: 'scalar', type: 'int32' },
+      tiny: { kind: 'scalar', type: 'int16' },
       elsewhere: ref('Cert', 'other'),
       dims: { kind: 'struct', fields: { w: { kind: 'scalar', type: 'number' } } }
     }
@@ -496,6 +498,69 @@ describe('aggregate, select, groupBy, count and nested validation', () => {
     expect(() =>
       check({ _agg: { in: 'cards/Observation.cert', avg: 'price' }, gt: 1, lt: 9 })
     ).not.toThrow();
+  });
+
+  describe('integer aggregates', () => {
+    const OBS = 'cards/Observation.cert';
+    const msg = (where: unknown): string => {
+      try {
+        check(where);
+      } catch (err) {
+        if (err instanceof FilterValidationError) return err.message;
+        throw err;
+      }
+      throw new Error('expected a refusal');
+    };
+
+    it('accepts sum, avg, min and max over integer fields', () => {
+      for (const field of ['qty', 'units', 'tiny']) {
+        expect(() => check({ _agg: { in: OBS, sum: field }, gte: 1 })).not.toThrow();
+        expect(() => check({ _agg: { in: OBS, avg: field }, gte: 1.5 })).not.toThrow();
+        expect(() => check({ _agg: { in: OBS, min: field }, gte: 1 })).not.toThrow();
+        expect(() => check({ _agg: { in: OBS, max: field }, gte: 1 })).not.toThrow();
+      }
+      expect(() =>
+        checkFrame({
+          fields: {
+            id: true,
+            _agg: { total: { in: OBS, sum: 'qty' }, mean: { in: OBS, avg: 'units' } }
+          }
+        })
+      ).not.toThrow();
+    });
+
+    it('gives each aggregate the value kind its field decides', () => {
+      // An integer sum is an int64: its operand is an int64, so a decimal string reads.
+      expect(() =>
+        check({ _agg: { in: OBS, sum: 'units' }, gte: '9007199254740993' })
+      ).not.toThrow();
+      expect(msg({ _agg: { in: OBS, sum: 'units' }, gte: 'abc' })).toContain('expected an int64');
+      expect(msg({ _agg: { in: OBS, sum: 'qty' }, gte: 1.5 })).toContain('expected an int64');
+      // avg is always a number.
+      expect(msg({ _agg: { in: OBS, avg: 'qty' }, gte: 'abc' })).toContain('expected number');
+      // min and max keep the field's own kind.
+      expect(msg({ _agg: { in: OBS, max: 'tiny' }, gte: 70000 })).toContain('expected an int16');
+      expect(msg({ _agg: { in: OBS, min: 'units' }, gte: 2 ** 40 })).toContain('expected an int32');
+      expect(() => check({ _agg: { in: OBS, min: 'qty' }, gte: '5' })).not.toThrow();
+    });
+
+    it('still refuses sum over a non-numeric field, naming the accepted kinds', () => {
+      const r = refusal({ _agg: { in: OBS, sum: 'flag' }, gte: 1 });
+      expect(r.code).toBe('agg_invalid');
+      expect(msg({ _agg: { in: OBS, sum: 'flag' }, gte: 1 })).toContain('number or integer field');
+    });
+
+    it('says an integer-valued aggregate cannot be used in an expression', () => {
+      const aggs = {
+        s: { in: OBS, sum: 'units' },
+        m: { in: OBS, max: 'tiny' }
+      };
+      for (const n of ['s', 'm']) {
+        expect(() =>
+          checkFrame({ fields: { id: true, _agg: aggs }, select: { x: `_agg.${n}` } })
+        ).toThrow(/cannot use/);
+      }
+    });
   });
 
   it('refuses latest on a frame aggregate', () => {

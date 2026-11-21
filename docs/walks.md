@@ -271,13 +271,13 @@ A walk aggregate is one value computed per seed row over the rows one walk reach
 | Function | Value | Field |
 |---|---|---|
 | `"count": true` | number of far rows | none |
-| `"avg": "<field>"` | number | number |
-| `"sum": "<field>"` | number | number |
-| `"min": "<field>"` | the field's kind | number or date |
-| `"max": "<field>"` | the field's kind | number or date |
+| `"avg": "<field>"` | number | number or integer |
+| `"sum": "<field>"` | number over a number field, an exact int64 over an integer field | number or integer |
+| `"min": "<field>"` | the field's kind | number, integer or date |
+| `"max": "<field>"` | the field's kind | number, integer or date |
 | `"latest": { "by": "<date field>", "value": "<field>" }` | `value` of the far row latest by `by` | `value` is any scalar except json |
 
-`avg`, `sum`, `min` and `max` ignore nulls. Over no far rows, every function is null except `count`, which is 0. `latest` breaks ties as a pick does: nulls last, then the lowest `id`.
+An integer field is an int16, int32 or int64. An integer `sum` is exact (past 2^53 too) and, like an int64 field, comes back as a decimal string on the wire; a sum past int64 fails with a range error. `avg` is always a number, and an int16 or int32 `min` or `max` is a number. `avg`, `sum`, `min` and `max` ignore nulls. Over no far rows, every function is null except `count`, which is 0. `latest` breaks ties as a pick does: nulls last, then the lowest `id`.
 
 A walk aggregate takes `in`, `out` and `where`, and nothing else: no `quantifier`, `pick`, `among` or `as`.
 
@@ -312,7 +312,7 @@ In a where clause, `_agg` is one comparison: the aggregate, plus one or more of 
 } } } }
 ```
 
-The operand is a number, a date or a string to match the aggregate's value, or a `$ref`. Nothing else may sit beside `_agg` in that object; put other conditions in their own clause under `AND` (`agg_invalid`). An `_agg` with no comparison is refused the same way.
+The operand is a number, a date or a string to match the aggregate's value, or a `$ref`. For an int64 aggregate (an integer `sum`, or the `min` or `max` of an int64 field) it is whatever an int64 field filter takes: a safe integer or a decimal string. A `$ref` does not compare with an int64 aggregate. Nothing else may sit beside `_agg` in that object; put other conditions in their own clause under `AND` (`agg_invalid`). An `_agg` with no comparison is refused the same way.
 
 To compare a field with an aggregate the frame selects, use `$ref: "_agg.<name>"`. Jobs whose timeout is below their mean run time:
 
@@ -424,7 +424,7 @@ These params shape the whole frame's answer rather than each row. They are docum
 ```
 
 - A `select` name is an identifier. It may not collide with a field of the type, a row key such as `id` or `createdAt`, or a nested selection's name (`select_invalid`).
-- An `_agg` used in an expression must be one the frame selects, and must have a number, date or string value. A boolean or int64 aggregate value is refused with `expr_invalid`.
+- An `_agg` used in an expression must be one the frame selects, and must have a number, date or string value. A boolean or integer aggregate value is refused with `expr_invalid`.
 - `select` replaces the old `derive` param, which is refused with `unknown_param`.
 
 ## Limits

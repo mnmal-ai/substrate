@@ -8,6 +8,8 @@
  *   that pass the walk's `where`, valued as jsonb exactly as memory returns
  *   it: a count, float8 avg/sum/min/max over numbers, and for a date min/max
  *   or a `latest` the winning row's STORED value (ties id ascending, nulls last);
+ *   over an integer field, an exact bigint sum (a decimal string), a float8 avg
+ *   and the field's own min/max;
  * - a nested list is `jsonb_agg` over `ORDER BY …, id LIMIT limit+1`; the
  *   extra row only says the list was cut, as `_truncated: { <name>: true }`.
  *
@@ -19,6 +21,7 @@ import {
   type FieldDef,
   isColumnField,
   type NestedSelection,
+  parseInt64,
   UnsupportedFilterError,
   type WalkAgg,
   type WalkAggPredicate,
@@ -57,8 +60,8 @@ import {
 } from './walk.js';
 import { buildWhere } from './where.js';
 
-/** How an aggregate's value compares: as a number, as an instant, or as stored. */
-type AggKind = 'number' | 'date' | 'other';
+/** How an aggregate's value compares: as a number, an exact int64, an instant, or as stored. */
+type AggKind = 'number' | 'int64' | 'date' | 'other';
 
 const AGG_OPS = ['avg', 'sum', 'min', 'max'] as const;
 
@@ -126,6 +129,22 @@ function aggOver(
       pick: { value: field, by: field, key: ts, dir, filter: sql`${ts} IS NOT NULL` },
       kind: 'date'
     };
+  }
+  const def = fieldDef(field);
+  if (def?.kind === 'scalar' && ['int16', 'int32', 'int64'].includes(def.type)) {
+    // Summed as bigint (numeric), never float8, and valued as memory does: an int64
+    // sum, min or max is a decimal string, an int16 or int32 min or max a number.
+    const f = fieldExpr(sql, table, field, 'int64', alias);
+    if (op === 'avg') {
+      return {
+        agg: sql`to_jsonb(sum(${f})::float8 / NULLIF(count(${f}), 0)::float8)`,
+        kind: 'number'
+      };
+    }
+    const exact = op === 'sum' ? sql`sum(${f})::bigint` : sql`${sql.unsafe(op)}(${f})`;
+    if (op !== 'sum' && def.type !== 'int64')
+      return { agg: sql`to_jsonb(${exact})`, kind: 'number' };
+    return { agg: sql`to_jsonb((${exact})::text)`, kind: 'int64' };
   }
   // float8 throughout, so the value is the double memory computes.
   const n = refValue(sql, table, field, 'number', alias);
@@ -425,12 +444,20 @@ export function buildAggPredicate(
     if (raw == null) {
       parts.push(sql`FALSE`);
     } else if (isRefOperand(raw)) {
-      if (kind === 'other') {
+      if (kind === 'other' || kind === 'int64') {
         throw new UnsupportedFilterError('_agg', op, 'a $ref compares number or date aggregates');
       }
       const left = kind === 'date' ? sql`substrate_ts(${v})` : sql`substrate_num(${v})::float8`;
       const right = refOperand(sql, '_agg', op, raw, kind, scope);
       parts.push(compareRef(sql, '_agg', op, left, right, refIsCostly(raw)));
+    } else if (kind === 'int64') {
+      // As an int64 field's filter reads its operand: an integer, decimal string or bigint.
+      const n = parseInt64(raw);
+      if (n === undefined)
+        throw new UnsupportedFilterError('_agg', op, 'requires an int64 operand');
+      parts.push(
+        compareRef(sql, '_agg', op, sql`((${v} #>> '{}')::bigint)`, sql`${n.toString()}::bigint`)
+      );
     } else if (kind === 'date') {
       parts.push(compareRef(sql, '_agg', op, sql`substrate_ts(${v})`, tsParam(sql, raw)));
     } else if (kind === 'number' || typeof raw === 'number') {

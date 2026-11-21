@@ -34,6 +34,7 @@ import {
   preResolveExtensionOperatorsDetailed,
   type TypeRef,
   walkAggExprType,
+  walkAggIsInt64,
   whereUsesWalks
 } from '@mnmal-ai/substrate-filter';
 import type {
@@ -1132,6 +1133,10 @@ export class PgDataset implements Dataset {
 
     const fields = this.#typeDefLookup?.(type, this.namespace)?.fields;
     const orders = new Map<string, string[]>();
+    // An int64-valued `_agg` is a decimal string in the jsonb column; the row holds a bigint, as memory's.
+    const int64Aggs = Object.entries(frameAggs ?? {})
+      .filter(([, spec]) => walkAggIsInt64(spec, seed, fieldDef))
+      .map(([name]) => name);
     const materialised: Row[] = new Array(rows.length);
     for (let i = 0; i < rows.length; i++) {
       // A large read yields between batches, so other requests are not held behind it.
@@ -1144,6 +1149,13 @@ export class PgDataset implements Dataset {
         table,
         params.fields
       );
+      const aggs = row._agg as Record<string, unknown> | undefined;
+      if (aggs !== undefined) {
+        for (const name of int64Aggs) {
+          const v = aggs[name];
+          if (typeof v === 'string') aggs[name] = BigInt(v);
+        }
+      }
       for (const [k, [name]] of selectEntries.entries()) {
         const v = (r as unknown as Record<string, unknown>)[`__sel_${k}`];
         row[name] =

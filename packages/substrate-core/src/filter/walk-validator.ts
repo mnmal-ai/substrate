@@ -345,6 +345,7 @@ export function bindGroup(where: unknown, path: string[], scope: WalkScope): Wal
 }
 
 const DATE_OR_NUMBER = new Set<FieldKind>(['scalar.number', 'scalar.date']);
+const INTEGERS = new Set<string>(['scalar.int16', 'scalar.int32', 'scalar.int64']);
 
 /** A `_walk` node. `validateWhere` validates its far-side where in `farScope`. */
 export function validateWalk(
@@ -518,8 +519,10 @@ const WALK_AGG_KEYS = new Set(['in', 'out', 'where']);
 
 /**
  * One aggregate function over `owner`'s fields, returning its value kind:
- * `count`, `avg` and `sum` are numbers; `min`, `max` and `latest` take their
- * field's kind. `latest` picks a row: it belongs to a per-row walk aggregate.
+ * `count` and `avg` are numbers; `sum` is a number over a number field and an
+ * int64 over an integer one; `min`, `max` and `latest` take their field's
+ * kind. `avg`, `sum`, `min` and `max` read number and integer fields (`min`
+ * and `max` dates too). `latest` picks a row: it belongs to a per-row walk aggregate.
  */
 function aggKind(
   agg: Record<string, unknown>,
@@ -557,12 +560,23 @@ function aggKind(
       if (v !== true) fail('agg_invalid', 'count takes true', at);
       return 'scalar.number';
     case 'avg':
-    case 'sum':
-      field(v, at, (k) => k === 'scalar.number', 'a number field');
-      return 'scalar.number';
+    case 'sum': {
+      const kind = field(
+        v,
+        at,
+        (k) => k === 'scalar.number' || INTEGERS.has(k),
+        'a number or integer field'
+      );
+      return fn === 'sum' && kind !== 'scalar.number' ? 'scalar.int64' : 'scalar.number';
+    }
     case 'min':
     case 'max':
-      return field(v, at, (k) => DATE_OR_NUMBER.has(k as FieldKind), 'a number or date field');
+      return field(
+        v,
+        at,
+        (k) => DATE_OR_NUMBER.has(k as FieldKind) || INTEGERS.has(k),
+        'a number, integer or date field'
+      );
     default: {
       if (!isObj(v) || Object.keys(v).some((k) => k !== 'by' && k !== 'value')) {
         fail('agg_invalid', 'latest takes { by: <dateField>, value: <field> }', at);
@@ -714,7 +728,7 @@ const RESERVED_ROW_KEYS = new Set([
   'seq'
 ]);
 
-/** The expression type of a walk aggregate's value kind; a boolean or int64 value is not usable. */
+/** The expression type of a walk aggregate's value kind; a boolean or integer value is not usable. */
 const AGG_EXPR_TYPE: Partial<Record<string, ExprType>> = {
   'scalar.number': 'number',
   'scalar.date': 'date',
@@ -745,7 +759,7 @@ function refuseUnusableAgg(expr: unknown, scope: WalkScope, path: string[], dept
     if (kind !== undefined && AGG_EXPR_TYPE[kind] === undefined) {
       fail(
         'expr_invalid',
-        `'${expr}' has a ${kind.replace('scalar.', '')} value, which an expression cannot use (only number, date and string aggregates)`,
+        `'${expr}' has ${/^scalar\.[aeiou]/.test(kind) ? 'an' : 'a'} ${kind.replace('scalar.', '')} value, which an expression cannot use (only number, date and string aggregates)`,
         path
       );
     }

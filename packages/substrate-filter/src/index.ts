@@ -42,7 +42,8 @@ export {
   fieldTypeLookup,
   hasExprKey,
   metadataExprType,
-  walkAggExprType
+  walkAggExprType,
+  walkAggIsInt64
 } from './expr-scope.js';
 export {
   clearExtensionOperators,
@@ -61,9 +62,9 @@ export {
   canRaise,
   type Grouped,
   type GroupedParams,
-  groupRows,
-  outOfRange
+  groupRows
 } from './grouped.js';
+export { int64Agg, outOfRange } from './int64-agg.js';
 export {
   assertJsonPathPredicate,
   evaluateJsonPathPredicate,

@@ -332,14 +332,19 @@ export function evaluateMembers(
 
 /**
  * `{ _agg, <cmp>: v }` on this row, compared by the aggregate's kind (dates as
- * instants). A null aggregate, or a `$ref` operand that resolves to null,
+ * instants, int64 as bigints). A null aggregate, or a `$ref` operand that resolves to null,
  * matches nothing, as SQL NULL.
  */
 function evaluateAggPredicate(row: Row, where: WalkAggPredicate, walk: WalkContext): boolean {
   const { value, asDate } = computeAggTyped(row, where._agg, walk);
   if (value == null) return false;
-  for (const [op, raw] of Object.entries(where)) {
-    if (op === '_agg') continue;
+  const { _agg, ...cmp } = where;
+  // An int64 aggregate compares with its operands read as bigints, as an int64 field does.
+  const operands = (typeof value === 'bigint' ? int64Predicate('_agg', cmp) : cmp) as Record<
+    string,
+    unknown
+  >;
+  for (const [op, raw] of Object.entries(operands)) {
     const operand = isRefOperand(raw) ? resolveRef(raw, asDate, walk) : raw;
     if (operand == null) return false;
     if (!applyOp('_agg', op, value, operand, asDate)) return false;

@@ -19,6 +19,7 @@ import {
   type WalkPick,
   type WhereClause
 } from '@mnmal-ai/substrate-types';
+import { int64Agg } from './int64-agg.js';
 import {
   asSortValue,
   compareFilterValues,
@@ -290,7 +291,9 @@ export function isoFromMicros(micros: bigint): string {
  * return the winning row's stored value (ties id ascending); each is null over
  * none. count counts rows; latest is the stored `value` of the row latest by
  * `by` (nulls last, ties id ascending), or null. Arithmetic is float64, and
- * a sum past float64's range is null.
+ * a sum past float64's range is null. Over an integer field the sum is an
+ * exact bigint (a sum past int64 raises), avg a float64 and min/max the
+ * field's own value (a bigint for int64, a number for int16 and int32).
  */
 export function applyAgg(rows: Row[], fn: AggFn, fieldDefOf: FieldDefOf): unknown {
   if (Object.hasOwn(fn, 'count')) return rows.length;
@@ -308,10 +311,37 @@ export function applyAgg(rows: Row[], fn: AggFn, fieldDefOf: FieldDefOf): unknow
     const v = one === undefined ? undefined : getFieldValue(one, field);
     return v == null || storedMicros(v) === undefined ? null : v;
   }
+  const int = integerKind(field, fieldDefOf);
+  if (int !== undefined) {
+    const present = rows
+      .map((r) => getFieldValue(r, field))
+      .flatMap((v) =>
+        typeof v === 'bigint'
+          ? [v]
+          : typeof v === 'number' && Number.isInteger(v)
+            ? [BigInt(v)]
+            : []
+      );
+    const out = int64Agg(op, present);
+    // An int16 or int32 min/max is the field's own number.
+    return typeof out === 'bigint' && op !== 'sum' && int !== 'int64' ? Number(out) : out;
+  }
   return numericAgg(
     rows.map((r) => getFieldValue(r, field)),
     op
   );
+}
+
+/** The integer type of `field`, or undefined when it is not an int16, int32 or int64 field. */
+function integerKind(
+  field: string,
+  fieldDefOf: FieldDefOf
+): 'int16' | 'int32' | 'int64' | undefined {
+  const def = fieldDefOf(field);
+  return def?.kind === 'scalar' &&
+    (def.type === 'int16' || def.type === 'int32' || def.type === 'int64')
+    ? def.type
+    : undefined;
 }
 
 /** avg/sum/min/max over the numbers among `values` (the rest drop out), null over none; float64, a sum past its range is null. */
