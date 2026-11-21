@@ -1,6 +1,7 @@
 /** The worked examples in page order; each is `/examples/<slug>/`. */
 export const EXAMPLE_SLUGS = [
   'onboard',
+  'act',
   'reshape',
   'ask',
   'coordinate',
@@ -12,11 +13,20 @@ export const EXAMPLE_SLUGS = [
 export type ExampleSlug = (typeof EXAMPLE_SLUGS)[number];
 
 /** The `@lucasmarkes/hairline` exports the example pages draw. */
-export type FigureName = 'settle' | 'rebuild' | 'query' | 'hub' | 'cabinet' | 'riffle' | 'slow';
+export type FigureName =
+  | 'settle'
+  | 'sieve'
+  | 'rebuild'
+  | 'query'
+  | 'hub'
+  | 'cabinet'
+  | 'riffle'
+  | 'slow';
 
 /** Each example's Hairline figure, drawn in its page header and on its landing card. */
 export const EXAMPLE_FIGURES: Readonly<Record<ExampleSlug, FigureName>> = {
   onboard: 'settle',
+  act: 'sieve',
   reshape: 'rebuild',
   ask: 'query',
   coordinate: 'hub',

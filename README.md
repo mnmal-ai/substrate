@@ -1,6 +1,6 @@
 # substrate
 
-Your data, your agents' memory, and the work between them, in one typed server on your own Postgres. You declare namespaces and types; substrate gives every type query and mutate operations over HTTP and MCP, and subscriptions over frame streams, with no handler code. Agents write and query, propose new types, ask in plain English, search by meaning and hand each other work, all in the same frames. Anything can subscribe to what changes.
+Your data, your agents' memory, and the work between them, in one typed server on your own Postgres. You declare namespaces and types; substrate gives every type query and mutate operations over HTTP and MCP, and subscriptions over frame streams, with no handler code. Agents write and query, propose new types, ask in plain English, search by meaning and hand each other work, all in the same frames. Or an agent states what it wants in a one-line sketch, and deterministic code works out the frames, so its context goes on the problem, not the tool. Anything can subscribe to what changes.
 
 **Site: [mnmal-ai.github.io/substrate](https://mnmal-ai.github.io/substrate/).** Every example there runs in CI, and the output shown is what that run produced.
 
@@ -20,6 +20,7 @@ It is not a drop-in for any of them. Substrate serves the types you declare, not
 
 ## What's different
 
+- **An agent's context goes on the problem, not the tool.** A namespace declares what its actions mean, once, as data, and an agent sends a sketch such as `pay Invoice #2 closes=#1` instead of hand-built frames. A deterministic compiler resolves it against the live schema, runs every step as the agent in one transaction, and answers in one line: `paid app/Invoice #2; closed app/Task #1`. Nothing is guessed. A sketch that doesn't resolve is refused with the nearest valid one, before anything runs. The MCP `lean` preset carries only `act` and `whoami`: 1,703 bytes of tools and instructions before any types are listed, against about 8.5 KB for `core`. [Act](docs/act.md) is the guide.
 - **One grammar on three surfaces.** A frame names its target as `<namespace>/<Type>` or `<namespace>/<mutation>`, and the same frames work over HTTP (`/substrate/v1/query`, `/substrate/v1/mutate`), the `substrate mcp` stdio server, and frame streams (`POST /substrate/v1/subscribe` and `/substrate/v1/stream`, JSON or MessagePack). A fresh agent learns the grammar and every loaded plugin's surface from `GET /substrate/v1/onboard`. [Surface parity](docs/surface-parity.md) lists where the surfaces differ.
 - **Schema your agent can change at runtime.** With the built-in [proposals plugin](plugins/substrate-proposals/README.md), an agent holding the `substrate.propose` capability adds namespaces, types and fields to the running server, with no code deploy, and uses them straight away. Each change is stored as a proposal record, so it is audited and replayed on boot.
 - **Questions in English, and the model never writes a query.** In the [`@mnmal-ai/substrate-nl`](plugins/substrate-nl/README.md) plugin, a deterministic parser reads the question against the live schema, and an optional, constrained judge handles only the ambiguous remainder.
@@ -100,7 +101,7 @@ Composed into a server, both types can be written, read and subscribed to with n
 
 The run answered with six invoices, each with only its `number` and `dueAt`.
 
-The other worked examples, from agents handing each other work to warehouse queries, recall, the index advisor, a type an agent proposes at run time and plain-English questions answered by `ask`, are on the site, each with the code and the output its CI run produced: **[mnmal-ai.github.io/substrate](https://mnmal-ai.github.io/substrate/)**.
+The other worked examples, from an agent paying an invoice in one sketch to agents handing each other work to warehouse queries, recall, the index advisor, a type an agent proposes at run time and plain-English questions answered by `ask`, are on the site, each with the code and the output its CI run produced: **[mnmal-ai.github.io/substrate](https://mnmal-ai.github.io/substrate/)**.
 
 ## Stability
 
@@ -115,6 +116,7 @@ Upgrading from an alpha: [Upgrading to 1.0.0-beta.1](docs/upgrading-to-beta.md).
 ## Documentation
 
 - [Getting started](docs/getting-started.md): from nothing to a running server with a plugin loaded
+- [Act](docs/act.md): declared actions and sketches. An agent states what it wants in one line and gets one line back, with a deterministic compiler in between. Also the `lean` MCP preset, the HTTP route, CLI and client
 - [Plugin author guide](docs/plugin-author-guide.md): `defineNamespace`, the field DSL, autoCRUD, custom resolvers, onboarding, testing
 - [Plugin tiers](docs/plugin-tier-decision.md): kernel vs coordinator plugins
 - [Operator decisions](docs/operator-decisions.md): every choice you make when you deploy or upgrade, its default, and what it costs
@@ -122,7 +124,6 @@ Upgrading from an alpha: [Upgrading to 1.0.0-beta.1](docs/upgrading-to-beta.md).
 - [Upgrading to per-type tables](docs/upgrading-to-type-tables.md): what changes, and the upgrade procedure for an existing store
 - [Upgrading to the warehouse grammar](docs/upgrading-to-warehouse-grammar.md): `bucket` and `derive` become `groupBy` and `select`, plus the new expression params
 - [Edge walks](docs/walks.md): the walk grammar: `_walk`, `pick` and `among`, `as` and `$ref`, `_agg`, nested selections, frame aggregates, limits and refusal codes
-- [Act](docs/act.md): declared actions and sketches, so an agent sends a terse sketch and gets a one-line ack; the `lean` MCP preset, the HTTP route, CLI and client
 - [Surface parity](docs/surface-parity.md): what HTTP, MCP and frame streams each offer, and where their shapes differ (edge walks are query-only; subscriptions refuse them)
 - [Frame stream contract](docs/stream-contract.md): the stream wire format, how subscriptions end and what a client should do
 - [Design spec](docs/substrate-from-first-principles.md): the design source of truth

@@ -1,5 +1,5 @@
 ---
-order: 7
+order: 8
 name: self-tending
 promise: The engine spots its own slow reads, and an agent approves the index it recommends.
 shows:
