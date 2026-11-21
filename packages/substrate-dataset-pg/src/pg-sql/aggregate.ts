@@ -8,17 +8,28 @@
  *   that pass the walk's `where`, valued as jsonb exactly as memory returns
  *   it: a count, float8 avg/sum/min/max over numbers, and for a date min/max
  *   or a `latest` the winning row's STORED value (ties id ascending, nulls last);
+ *   over an integer field, an exact bigint sum (a decimal string), a float8 avg
+ *   and the field's own min/max;
  * - a nested list is `jsonb_agg` over `ORDER BY …, id LIMIT limit+1`; the
  *   extra row only says the list was cut, as `_truncated: { <name>: true }`.
  *
  * The tree is assumed validated (substrate-core walk-validator).
  */
 
-import { isDateField, isRefOperand, type TypeRef, windowGroupBy } from '@mnmal-ai/substrate-filter';
+import {
+  integerType,
+  isDateField,
+  isRefOperand,
+  type TypeRef,
+  walkAggIsInt64,
+  walkFarType,
+  windowGroupBy
+} from '@mnmal-ai/substrate-filter';
 import {
   type FieldDef,
   isColumnField,
   type NestedSelection,
+  parseInt64,
   UnsupportedFilterError,
   type WalkAgg,
   type WalkAggPredicate,
@@ -57,8 +68,8 @@ import {
 } from './walk.js';
 import { buildWhere } from './where.js';
 
-/** How an aggregate's value compares: as a number, as an instant, or as stored. */
-type AggKind = 'number' | 'date' | 'other';
+/** How an aggregate's value compares: as a number, an exact int64, an instant, or as stored. */
+type AggKind = 'number' | 'int64' | 'date' | 'other';
 
 const AGG_OPS = ['avg', 'sum', 'min', 'max'] as const;
 
@@ -126,6 +137,22 @@ function aggOver(
       pick: { value: field, by: field, key: ts, dir, filter: sql`${ts} IS NOT NULL` },
       kind: 'date'
     };
+  }
+  const intType = integerType(fieldDef(field));
+  if (intType !== undefined) {
+    // Summed as bigint (numeric), never float8, and valued as memory does: an int64
+    // sum, min or max is a decimal string, an int16 or int32 min or max a number.
+    const f = fieldExpr(sql, table, field, 'int64', alias);
+    if (op === 'avg') {
+      return {
+        agg: sql`to_jsonb(sum(${f})::float8 / NULLIF(count(${f}), 0)::float8)`,
+        kind: 'number'
+      };
+    }
+    const exact = op === 'sum' ? sql`sum(${f})::bigint` : sql`${sql.unsafe(op)}(${f})`;
+    if (op !== 'sum' && intType !== 'int64')
+      return { agg: sql`to_jsonb(${exact})`, kind: 'number' };
+    return { agg: sql`to_jsonb((${exact})::text)`, kind: 'int64' };
   }
   // float8 throughout, so the value is the double memory computes.
   const n = refValue(sql, table, field, 'number', alias);
@@ -425,12 +452,20 @@ export function buildAggPredicate(
     if (raw == null) {
       parts.push(sql`FALSE`);
     } else if (isRefOperand(raw)) {
-      if (kind === 'other') {
+      if (kind === 'other' || kind === 'int64') {
         throw new UnsupportedFilterError('_agg', op, 'a $ref compares number or date aggregates');
       }
       const left = kind === 'date' ? sql`substrate_ts(${v})` : sql`substrate_num(${v})::float8`;
       const right = refOperand(sql, '_agg', op, raw, kind, scope);
       parts.push(compareRef(sql, '_agg', op, left, right, refIsCostly(raw)));
+    } else if (kind === 'int64') {
+      // As an int64 field's filter reads its operand: an integer, decimal string or bigint.
+      const n = parseInt64(raw);
+      if (n === undefined)
+        throw new UnsupportedFilterError('_agg', op, 'requires an int64 operand');
+      parts.push(
+        compareRef(sql, '_agg', op, sql`((${v} #>> '{}')::bigint)`, sql`${n.toString()}::bigint`)
+      );
     } else if (kind === 'date') {
       parts.push(compareRef(sql, '_agg', op, sql`substrate_ts(${v})`, tsParam(sql, raw)));
     } else if (kind === 'number' || typeof raw === 'number') {
@@ -657,4 +692,61 @@ export function buildNested(
   // The LIMIT is on the order itself, so an index in that order stops after it.
   const agg = sql.unsafe(as === 'json' ? 'json_agg' : 'jsonb_agg');
   return sql`(SELECT COALESCE(${agg}(${row} ORDER BY ${orderBy}), ${sql.unsafe(`'[]'::${as}`)}) FROM (SELECT ${a}.* FROM ${sql.unsafe(from)} ${a} WHERE ${combineAnd(sql, [cond, ...filters])} ORDER BY ${orderBy} ${limit}) ${a})`;
+}
+
+/** Where int64-valued `_agg` values sit in a read's rows: names at this level and the nested lists that hold more. */
+export interface Int64AggPlan {
+  aggs: string[];
+  nested: Array<[string, Int64AggPlan]>;
+}
+
+/**
+ * The int64-valued `_agg` entries among `aggs` and, at any depth, among
+ * `nested`'s own `_agg`s, each read against its selection's far type; undefined
+ * when there are none.
+ */
+export function int64AggPlan(
+  aggs: Record<string, WalkAgg> | undefined,
+  nested: Record<string, NestedSelection> | undefined,
+  near: TypeRef,
+  fieldDef: (ref: TypeRef, field: string) => FieldDef | undefined
+): Int64AggPlan | undefined {
+  const names = Object.entries(aggs ?? {})
+    .filter(([, spec]) => walkAggIsInt64(spec, near, fieldDef))
+    .map(([name]) => name);
+  const lists: Array<[string, Int64AggPlan]> = [];
+  for (const [name, sel] of Object.entries(nested ?? {})) {
+    const far = walkFarType(sel._walk, near, fieldDef);
+    if (far === undefined) continue;
+    const sub = int64AggPlan(
+      Object.hasOwn(sel.fields, '_agg') ? (sel.fields._agg as Record<string, WalkAgg>) : undefined,
+      Object.fromEntries(Object.entries(sel.fields).filter(([, v]) => isNested(v))) as Record<
+        string,
+        NestedSelection
+      >,
+      far,
+      fieldDef
+    );
+    if (sub !== undefined) lists.push([name, sub]);
+  }
+  return names.length === 0 && lists.length === 0 ? undefined : { aggs: names, nested: lists };
+}
+
+/**
+ * Reads `row`'s int64 `_agg` values (decimal strings in the jsonb) as bigints,
+ * in the row and in each nested row, as memory returns them.
+ */
+export function decodeInt64Aggs(row: Record<string, unknown>, plan: Int64AggPlan): void {
+  const aggs = row._agg as Record<string, unknown> | undefined | null;
+  if (aggs !== undefined && aggs !== null) {
+    for (const name of plan.aggs) {
+      const v = aggs[name];
+      if (typeof v === 'string') aggs[name] = BigInt(v);
+    }
+  }
+  for (const [name, sub] of plan.nested) {
+    const list = row[name];
+    if (!Array.isArray(list)) continue;
+    for (const r of list) if (typeof r === 'object' && r !== null) decodeInt64Aggs(r, sub);
+  }
 }

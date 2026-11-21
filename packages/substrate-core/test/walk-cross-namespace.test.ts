@@ -47,6 +47,9 @@ const listOf =
     const read: ReadParams = {};
     if (p.where !== undefined) read.where = p.where as NonNullable<ReadParams['where']>;
     if (p.orderBy !== undefined) read.orderBy = p.orderBy as NonNullable<ReadParams['orderBy']>;
+    if (p.aggregate !== undefined)
+      read.aggregate = p.aggregate as NonNullable<ReadParams['aggregate']>;
+    if (p.groupBy !== undefined) read.groupBy = p.groupBy as NonNullable<ReadParams['groupBy']>;
     const fields = (args.fields ?? {}) as Record<string, unknown>;
     if (fields._agg !== undefined) read.agg = fields._agg as NonNullable<ReadParams['agg']>;
     const nested = Object.entries(fields).filter(([, v]) => isObj(v) && Object.hasOwn(v, '_walk'));
@@ -453,6 +456,53 @@ describe('after the grant passes', () => {
         path: ['ext/Payment', 'where', '_walk']
       })
     ]);
+  });
+});
+
+describe('a walked group key goes through the walk gate', () => {
+  const grouped = (key = 'invoice.number') => ({
+    'ext/Payment': {
+      params: { aggregate: { n: { count: true }, paid: { sum: 'amount' } }, groupBy: { g: key } },
+      fields: { id: true }
+    }
+  });
+  const at = ['ext/Payment', 'groupBy', 'g'];
+
+  it('groups by a field of the row in another namespace, under the federated schemaVersion', async () => {
+    const { engine, registries } = await build();
+    const before = await engine.query({ frame: grouped(), ctx: reader });
+    expect(before.errors).toBeUndefined();
+    expect(before.data['ext/Payment']).toEqual({ groups: [{ g: 'INV-1', n: 2, paid: 50 }] });
+    registries.app.register('Credit', { fields: { amount: num }, resolver: async () => [] });
+    const after = await engine.query({ frame: grouped(), ctx: reader });
+    expect(after.schemaVersion).not.toBe(before.schemaVersion);
+  });
+
+  it('is refused like an out walk into a namespace the caller cannot read, untouched', async () => {
+    const { engine, touched } = await build();
+    for (const key of ['invoice.number', 'ghost.x', 'hit.score', 'far.payment', 'lost.x']) {
+      const env = await engine.query({ frame: grouped(key), ctx: probe });
+      expect(env.data, key).not.toHaveProperty('ext/Payment');
+      expect(env.errors, key).toEqual([{ ...DENIED, path: at }]);
+    }
+    expect(touched).toEqual([]);
+  });
+
+  it('a far store without walks, a far policy deny and a far row policy refuse at the key', async () => {
+    const cases: Array<[BuildOptions, Record<string, unknown>]> = [
+      [{ appWalks: false }, { code: 'walks_unsupported_store' }],
+      [
+        { policies: { 'app/Invoice': () => ({ allow: false, reason: 'no invoices' }) } },
+        { code: 'policy_denied', message: 'no invoices' }
+      ],
+      [{ policies: { 'app/Invoice': row(() => true) } }, { code: 'row_policy_blocks_walk' }]
+    ];
+    for (const [options, error] of cases) {
+      const { engine } = await build(options);
+      const env = await engine.query({ frame: grouped(), ctx: reader });
+      expect(env.data).not.toHaveProperty('ext/Payment');
+      expect(env.errors).toEqual([expect.objectContaining({ ...error, path: at })]);
+    }
   });
 });
 

@@ -41,8 +41,11 @@ export {
   exprTypeOfField,
   fieldTypeLookup,
   hasExprKey,
+  integerType,
   metadataExprType,
-  walkAggExprType
+  walkAggExprType,
+  walkAggIsInt64,
+  walkFarType
 } from './expr-scope.js';
 export {
   clearExtensionOperators,
@@ -61,9 +64,9 @@ export {
   canRaise,
   type Grouped,
   type GroupedParams,
-  groupRows,
-  outOfRange
+  groupRows
 } from './grouped.js';
+export { int64Agg, outOfRange } from './int64-agg.js';
 export {
   assertJsonPathPredicate,
   evaluateJsonPathPredicate,
@@ -117,6 +120,8 @@ export {
 } from './walk-forms.js';
 export {
   forEachWalkHop,
+  groupWalkRefs,
+  splitWalkedRef,
   type TypeRef,
   usesWalkGrammar,
   type WalkHop,

@@ -451,10 +451,13 @@ describe('walk grammar outside validated query paths', () => {
       datasets: new MemoryDatasetRegistry(),
       edges: new MemoryEdgesStore({ now: () => new Date('2026-04-18T00:00:00Z') })
     });
-    const params = { count: true, aggregate: 'sum', groupBy: 'day', having: 1, offset: 2 };
-    const res = await engine.query({ frame: { 'v/Hit': { params, fields: { id: true } } }, ctx });
-    expect(res.errors).toBeUndefined();
-    expect(got).toMatchObject(params);
+    for (const groupBy of ['day', { by: 'labels.team' }]) {
+      const params = { count: true, aggregate: 'sum', groupBy, having: 1, offset: 2 };
+      const res = await engine.query({ frame: { 'v/Hit': { params, fields: { id: true } } }, ctx });
+      expect(res.errors, JSON.stringify(groupBy)).toBeUndefined();
+      expect(got).toMatchObject(params);
+      got = undefined;
+    }
     const agg = await engine.query({
       frame: {
         'v/Hit': { params: {}, fields: { id: true, _agg: { n: { in: 'v/X.y', count: true } } } }
@@ -465,5 +468,43 @@ describe('walk grammar outside validated query paths', () => {
       code: 'walk_unsupported_ref',
       path: ['v/Hit', 'fields', '_agg']
     });
+  });
+
+  it('a row-filtered virtual type is refused a count or an aggregate, never counted unfiltered', async () => {
+    let counted = 0;
+    const registry = new Registry();
+    registry.register('Hit', {
+      policy: row((_c, r: { id: string }) => r.id === 'a'),
+      resolver: async (_ctx, args) => {
+        const p = args.params as { count?: boolean; aggregate?: unknown };
+        if (p.count === true || p.aggregate !== undefined) {
+          counted++;
+          return { rows: [], hasMore: false, count: 3 };
+        }
+        return [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+      }
+    });
+    const engine = new Engine({
+      namespaces: new Map<string, NamespaceConfig>([['v', { registry, virtual: true }]]),
+      datasets: new MemoryDatasetRegistry(),
+      edges: new MemoryEdgesStore({ now: () => new Date('2026-04-18T00:00:00Z') })
+    });
+    const list = await engine.query({
+      frame: { 'v/Hit': { params: {}, fields: { id: true } } },
+      ctx
+    });
+    expect(list.data['v/Hit']).toEqual([{ id: 'a' }]);
+    for (const [params, at] of [
+      [{ count: true }, 'count'],
+      [{ aggregate: { sum: 'n' } }, 'aggregate']
+    ] as const) {
+      const res = await engine.query({ frame: { 'v/Hit': { params, fields: { id: true } } }, ctx });
+      expect(res.data).not.toHaveProperty('v/Hit');
+      expect(res.errors?.[0]).toMatchObject({
+        code: 'row_policy_blocks_walk',
+        path: ['v/Hit', at]
+      });
+    }
+    expect(counted).toBe(0);
   });
 });

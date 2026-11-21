@@ -13,6 +13,7 @@ import {
   type ExprScope,
   exprTypeOfField,
   metadataExprType,
+  splitWalkedRef,
   type TypeRef,
   walkGrammarPath
 } from '@mnmal-ai/substrate-filter';
@@ -345,6 +346,7 @@ export function bindGroup(where: unknown, path: string[], scope: WalkScope): Wal
 }
 
 const DATE_OR_NUMBER = new Set<FieldKind>(['scalar.number', 'scalar.date']);
+const INTEGERS = new Set<FieldKind>(['scalar.int16', 'scalar.int32', 'scalar.int64']);
 
 /** A `_walk` node. `validateWhere` validates its far-side where in `farScope`. */
 export function validateWalk(
@@ -518,8 +520,10 @@ const WALK_AGG_KEYS = new Set(['in', 'out', 'where']);
 
 /**
  * One aggregate function over `owner`'s fields, returning its value kind:
- * `count`, `avg` and `sum` are numbers; `min`, `max` and `latest` take their
- * field's kind. `latest` picks a row: it belongs to a per-row walk aggregate.
+ * `count` and `avg` are numbers; `sum` is a number over a number field and an
+ * int64 over an integer one; `min`, `max` and `latest` take their field's
+ * kind. `avg`, `sum`, `min` and `max` read number and integer fields (`min`
+ * and `max` dates too). `latest` picks a row: it belongs to a per-row walk aggregate.
  */
 function aggKind(
   agg: Record<string, unknown>,
@@ -557,12 +561,23 @@ function aggKind(
       if (v !== true) fail('agg_invalid', 'count takes true', at);
       return 'scalar.number';
     case 'avg':
-    case 'sum':
-      field(v, at, (k) => k === 'scalar.number', 'a number field');
-      return 'scalar.number';
+    case 'sum': {
+      const kind = field(
+        v,
+        at,
+        (k) => k === 'scalar.number' || INTEGERS.has(k as FieldKind),
+        'a number or integer field'
+      );
+      return fn === 'sum' && kind !== 'scalar.number' ? 'scalar.int64' : 'scalar.number';
+    }
     case 'min':
     case 'max':
-      return field(v, at, (k) => DATE_OR_NUMBER.has(k as FieldKind), 'a number or date field');
+      return field(
+        v,
+        at,
+        (k) => DATE_OR_NUMBER.has(k as FieldKind) || INTEGERS.has(k as FieldKind),
+        'a number, integer or date field'
+      );
     default: {
       if (!isObj(v) || Object.keys(v).some((k) => k !== 'by' && k !== 'value')) {
         fail('agg_invalid', 'latest takes { by: <dateField>, value: <field> }', at);
@@ -714,19 +729,73 @@ const RESERVED_ROW_KEYS = new Set([
   'seq'
 ]);
 
-/** The expression type of a walk aggregate's value kind; a boolean or int64 value is not usable. */
+/** The expression type of a walk aggregate's value kind; a boolean or integer value is not usable. */
 const AGG_EXPR_TYPE: Partial<Record<string, ExprType>> = {
   'scalar.number': 'number',
   'scalar.date': 'date',
   'scalar.string': 'string'
 };
 
-function exprScopeOf(scope: WalkScope, withAgg: boolean): ExprScope {
+/**
+ * The type of a walked field `"<crossRef>.<field>"`: the out hop through a
+ * top-level crossRef of the frame's type, resolved as any walk is (grant
+ * first), reaching a field of the far type an expression can read.
+ */
+function walkedFieldType(name: string, scope: WalkScope, at: string[]): ExprType {
+  const { out, field } = splitWalkedRef(name);
+  const def = Object.hasOwn(scope.fields, out) ? scope.fields[out] : undefined;
+  // A list of crossRefs goes on to resolveHop, which refuses it as it does any walk.
+  if (def?.kind !== 'crossRef' && !(def?.kind === 'list' && def.of.kind === 'crossRef')) {
+    fail('expr_invalid', `unknown field '${name}': '${out}' is not a crossRef`, at);
+  }
+  if (field.includes('.')) {
+    fail(
+      'expr_invalid',
+      `'${name}' walks more than one hop; a walked field is '<crossRef>.<field>'`,
+      at
+    );
+  }
+  let hop: Hop;
+  try {
+    hop = resolveHop({ out }, at, scope);
+  } catch (err) {
+    // resolveHop's path names an `out` key, which the request does not have: refuse at the string.
+    if (err instanceof FilterValidationError) fail(err.code, err.message, at);
+    throw err;
+  }
+  const t = Object.hasOwn(hop.fields, field) ? exprTypeOfField(hop.fields[field]) : undefined;
+  if (t === undefined && metadataExprType(field) !== undefined) {
+    fail(
+      'expr_invalid',
+      `unknown field '${name}': metadata fields ('${field}') are not walked, only declared fields of '${hop.ref.ns}/${hop.ref.type}'`,
+      at
+    );
+  }
+  if (t === undefined) {
+    fail(
+      'expr_invalid',
+      `unknown field '${name}': '${hop.ref.ns}/${hop.ref.type}' has no field '${field}' an expression can read (json, list and struct fields are not)`,
+      at
+    );
+  }
+  return t;
+}
+
+/** What a frame expression's bare strings name; `walked` lets a `groupBy` read walked fields. */
+function exprScopeOf(scope: WalkScope, withAgg: boolean, walked: boolean): ExprScope {
   return {
-    field(name) {
+    field(name, at) {
       if (name.startsWith('_agg.')) {
         const kind = withAgg ? scope.aggs?.get(name.slice(5)) : undefined;
         return kind === undefined ? undefined : AGG_EXPR_TYPE[kind];
+      }
+      if (name.includes('.')) {
+        if (walked) return walkedFieldType(name, scope, at);
+        fail(
+          'expr_invalid',
+          `unknown field '${name}': a walked field ('<crossRef>.<field>') is read in groupBy only`,
+          at
+        );
       }
       return (
         (scope.outputsOnly ? undefined : metadataExprType(name)) ??
@@ -745,7 +814,7 @@ function refuseUnusableAgg(expr: unknown, scope: WalkScope, path: string[], dept
     if (kind !== undefined && AGG_EXPR_TYPE[kind] === undefined) {
       fail(
         'expr_invalid',
-        `'${expr}' has a ${kind.replace('scalar.', '')} value, which an expression cannot use (only number, date and string aggregates)`,
+        `'${expr}' has ${/^scalar\.[aeiou]/.test(kind) ? 'an' : 'a'} ${kind.replace('scalar.', '')} value, which an expression cannot use (only number, date and string aggregates)`,
         path
       );
     }
@@ -757,15 +826,19 @@ function refuseUnusableAgg(expr: unknown, scope: WalkScope, path: string[], dept
   }
 }
 
-/** Checks one expression of the frame, charging its nodes to the frame's budget; returns its type. */
+/**
+ * Checks one expression of the frame, charging its nodes to the frame's budget; returns its type.
+ * `walked`: a `groupBy` expression, which may read walked fields.
+ */
 export function checkFrameExpr(
   expr: unknown,
   scope: WalkScope,
   withAgg: boolean,
-  path: string[]
+  path: string[],
+  walked = false
 ): ExprType {
   if (withAgg) refuseUnusableAgg(expr, scope, path);
-  const r = checkExpr(expr as Expr, exprScopeOf(scope, withAgg), path);
+  const r = checkExpr(expr as Expr, exprScopeOf(scope, withAgg, walked), path);
   if (!r.ok) fail('expr_invalid', r.message, r.path);
   const used = scope.exprNodes ?? { count: 0 };
   used.count += r.nodes;
@@ -869,7 +942,7 @@ export function validateFrameParams(
       if (outputs.has(n)) {
         fail('group_invalid', `groupBy name '${n}' is also an aggregate name`, at);
       }
-      outputs.set(n, checkFrameExpr(expr, scope, false, at));
+      outputs.set(n, checkFrameExpr(expr, scope, false, at, true));
     }
   }
   if (p.having !== undefined) {

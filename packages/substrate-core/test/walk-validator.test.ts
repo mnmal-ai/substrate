@@ -42,6 +42,8 @@ const SCHEMAS: Record<string, TypeSchema> = {
       observedAt: { kind: 'scalar', type: 'date' },
       flag: { kind: 'scalar', type: 'boolean' },
       qty: { kind: 'scalar', type: 'int64' },
+      units: { kind: 'scalar', type: 'int32' },
+      tiny: { kind: 'scalar', type: 'int16' },
       elsewhere: ref('Cert', 'other'),
       dims: { kind: 'struct', fields: { w: { kind: 'scalar', type: 'number' } } }
     }
@@ -496,6 +498,92 @@ describe('aggregate, select, groupBy, count and nested validation', () => {
     expect(() =>
       check({ _agg: { in: 'cards/Observation.cert', avg: 'price' }, gt: 1, lt: 9 })
     ).not.toThrow();
+  });
+
+  describe('integer aggregates', () => {
+    const OBS = 'cards/Observation.cert';
+    const msg = (where: unknown): string => {
+      try {
+        check(where);
+      } catch (err) {
+        if (err instanceof FilterValidationError) return err.message;
+        throw err;
+      }
+      throw new Error('expected a refusal');
+    };
+
+    it('accepts sum, avg, min and max over integer fields', () => {
+      for (const field of ['qty', 'units', 'tiny']) {
+        expect(() => check({ _agg: { in: OBS, sum: field }, gte: 1 })).not.toThrow();
+        expect(() => check({ _agg: { in: OBS, avg: field }, gte: 1.5 })).not.toThrow();
+        expect(() => check({ _agg: { in: OBS, min: field }, gte: 1 })).not.toThrow();
+        expect(() => check({ _agg: { in: OBS, max: field }, gte: 1 })).not.toThrow();
+      }
+      expect(() =>
+        checkFrame({
+          fields: {
+            id: true,
+            _agg: { total: { in: OBS, sum: 'qty' }, mean: { in: OBS, avg: 'units' } }
+          }
+        })
+      ).not.toThrow();
+    });
+
+    it('gives each aggregate the value kind its field decides', () => {
+      // An integer sum is an int64: its operand is an int64, so a decimal string reads.
+      expect(() =>
+        check({ _agg: { in: OBS, sum: 'units' }, gte: '9007199254740993' })
+      ).not.toThrow();
+      expect(refusal({ _agg: { in: OBS, sum: 'units' }, gte: 'abc' })).toEqual({
+        code: 'type_mismatch',
+        path: ['where', 'gte']
+      });
+      expect(msg({ _agg: { in: OBS, sum: 'units' }, gte: 'abc' })).toContain('expected an int64');
+      expect(msg({ _agg: { in: OBS, sum: 'qty' }, gte: 1.5 })).toContain('expected an int64');
+      // avg is always a number.
+      expect(msg({ _agg: { in: OBS, avg: 'qty' }, gte: 'abc' })).toContain('expected number');
+      // min and max keep the field's own kind.
+      expect(msg({ _agg: { in: OBS, max: 'tiny' }, gte: 70000 })).toContain('expected an int16');
+      expect(msg({ _agg: { in: OBS, min: 'units' }, gte: 2 ** 40 })).toContain('expected an int32');
+      expect(() => check({ _agg: { in: OBS, min: 'qty' }, gte: '5' })).not.toThrow();
+    });
+
+    it('still refuses sum over a non-numeric field, naming the accepted kinds', () => {
+      const r = refusal({ _agg: { in: OBS, sum: 'flag' }, gte: 1 });
+      expect(r.code).toBe('agg_invalid');
+      expect(msg({ _agg: { in: OBS, sum: 'flag' }, gte: 1 })).toContain('number or integer field');
+    });
+
+    it('says an integer-valued aggregate cannot be used in an expression', () => {
+      const aggs = {
+        s: { in: OBS, sum: 'units' },
+        m: { in: OBS, max: 'tiny' }
+      };
+      for (const n of ['s', 'm']) {
+        expect(() =>
+          checkFrame({ fields: { id: true, _agg: aggs }, select: { x: `_agg.${n}` } })
+        ).toThrow(/cannot use/);
+      }
+      // The message names the value's type with the right article.
+      for (const [n, want] of [
+        ['s', 'has an int64 value'],
+        ['m', 'has an int16 value'],
+        ['b', 'has a boolean value']
+      ] as const) {
+        expect(() =>
+          checkFrame({
+            fields: {
+              id: true,
+              _agg: {
+                ...aggs,
+                b: { in: OBS, latest: { by: 'observedAt', value: 'flag' } }
+              }
+            },
+            select: { x: `_agg.${n}` }
+          })
+        ).toThrow(want);
+      }
+    });
   });
 
   it('refuses latest on a frame aggregate', () => {
@@ -1283,5 +1371,216 @@ describe('walks across namespaces', () => {
     expect(thrown({ where: { _walk: { out: 'amount' } } }, seedOnly).message).toBe(
       "'amount' is not a crossRef field; 'Payment' has no crossRef to follow out"
     );
+  });
+
+  it('resolves a walked group key as an out walk: grant first, then the far type and the store', () => {
+    const grouped = (key: string): Frame => ({
+      aggregate: { n: { count: true } },
+      groupBy: { g: key }
+    });
+    const r = resolvers((ns) => ns !== 'app');
+    const err = thrown(grouped('invoice.total'), r);
+    expect({ code: err.code, message: err.message, path: err.path }).toEqual({
+      ...DENIED,
+      path: ['groupBy', 'g']
+    });
+    expect(wire(err)).toBe(
+      wire(
+        thrown(
+          { where: { _walk: { out: 'invoice' } } },
+          resolvers((ns) => ns !== 'app')
+        )
+      ).replace('["where","_walk"]', '["groupBy","g"]')
+    );
+    expect(r.schemaOf).not.toHaveBeenCalledWith('app');
+    const all = resolvers(() => true);
+    // A hop refusal points at the string that walks, never at an `out` key the request lacks.
+    expect(thrown(grouped('hit.score'), all)).toMatchObject({
+      code: 'walk_unknown_ref',
+      path: ['groupBy', 'g']
+    });
+    expect(thrown(grouped('ledger.payment'), all)).toMatchObject({
+      code: 'walk_cross_store',
+      path: ['groupBy', 'g']
+    });
+    const nested: Frame = {
+      aggregate: { n: { count: true } },
+      groupBy: { g: { coalesce: [{ lit: 'x' }, 'ledger.payment'] } }
+    };
+    expect(thrown(nested, all)).toMatchObject({
+      code: 'walk_cross_store',
+      path: ['groupBy', 'g', 'coalesce', '1']
+    });
+    const denied = thrown(
+      { aggregate: { n: { count: true } }, groupBy: { g: { add: [1, 'invoice.total'] } } },
+      r
+    );
+    expect({ code: denied.code, message: denied.message, path: denied.path }).toEqual({
+      ...DENIED,
+      path: ['groupBy', 'g', 'add', '1']
+    });
+    expect(() =>
+      validateFilter({
+        ...grouped('invoice.total'),
+        typeSchema: SPACES.ext?.Payment as TypeSchema,
+        capabilities: CAPS,
+        namespace: 'ext',
+        typeName: 'Payment',
+        ...all
+      })
+    ).not.toThrow();
+  });
+});
+
+describe('walked group keys', () => {
+  const APP: Record<string, TypeSchema> = {
+    Customer: {
+      fields: {
+        region: { kind: 'scalar', type: 'string' },
+        signedUpAt: { kind: 'scalar', type: 'date' },
+        notes: { kind: 'scalar', type: 'json' },
+        address: { kind: 'struct', fields: { city: { kind: 'scalar', type: 'string' } } }
+      }
+    },
+    Invoice: {
+      fields: {
+        customer: ref('Customer', 'app'),
+        amount: { kind: 'scalar', type: 'int64' },
+        payers: { kind: 'list', of: ref('Customer', 'app') }
+      }
+    }
+  };
+  const run = (frame: Frame): void =>
+    validateFilter({
+      ...frame,
+      typeSchema: APP.Invoice as TypeSchema,
+      capabilities: CAPS,
+      schemaOf: (ns) => (ns === 'app' ? APP : undefined),
+      namespace: 'app',
+      typeName: 'Invoice'
+    });
+  const refused = (frame: Frame): FilterValidationError => {
+    try {
+      run(frame);
+    } catch (err) {
+      if (err instanceof FilterValidationError) return err;
+      throw err;
+    }
+    throw new Error('expected a refusal');
+  };
+  const n = { n: { count: true } };
+
+  it('accepts the example, and a walked field anywhere inside a groupBy expression', () => {
+    expect(() =>
+      run({
+        aggregate: { n: { count: true }, total: { sum: 'amount' } },
+        groupBy: { region: 'customer.region' },
+        orderBy: [{ total: 'desc' }]
+      })
+    ).not.toThrow();
+    expect(() =>
+      run({
+        aggregate: n,
+        groupBy: { month: { dateTrunc: [{ lit: 'month' }, 'customer.signedUpAt'] } }
+      })
+    ).not.toThrow();
+    // `having` sees the group name, not the walked field.
+    expect(() =>
+      run({
+        aggregate: n,
+        groupBy: { region: 'customer.region' },
+        having: { eq: ['region', { lit: 'north' }] }
+      })
+    ).not.toThrow();
+  });
+
+  it("types a walked field as the far field's expression type", () => {
+    const err = refused({
+      aggregate: n,
+      groupBy: { month: { dateTrunc: [{ lit: 'month' }, 'customer.region'] } }
+    });
+    expect({ code: err.code, path: err.path }).toEqual({
+      code: 'expr_invalid',
+      path: ['groupBy', 'month', 'dateTrunc', '1']
+    });
+  });
+
+  it('refuses an unknown or unreadable far field, a head that is no crossRef, and a second hop', () => {
+    for (const key of [
+      'customer.nope',
+      'customer.notes',
+      'customer.address',
+      'amount.x',
+      'nope.region',
+      'customer.region.x'
+    ]) {
+      const err = refused({ aggregate: n, groupBy: { g: key } });
+      expect({ code: err.code, path: err.path }, key).toEqual({
+        code: 'expr_invalid',
+        path: ['groupBy', 'g']
+      });
+      expect(err.message, key).toContain(`'${key}'`);
+    }
+    // The refusal points at the node holding the walked string.
+    const err = refused({
+      aggregate: n,
+      groupBy: { month: { dateTrunc: [{ lit: 'month' }, 'customer.nope'] } }
+    });
+    expect({ code: err.code, path: err.path }).toEqual({
+      code: 'expr_invalid',
+      path: ['groupBy', 'month', 'dateTrunc', '1']
+    });
+  });
+
+  it('refuses a walked metadata field, saying metadata is not walked', () => {
+    for (const key of ['customer.createdAt', 'customer.seq']) {
+      const err = refused({
+        aggregate: n,
+        groupBy: { month: { dateTrunc: [{ lit: 'month' }, key] } }
+      });
+      expect({ code: err.code, path: err.path }, key).toEqual({
+        code: 'expr_invalid',
+        path: ['groupBy', 'month', 'dateTrunc', '1']
+      });
+      expect(err.message, key).toBe(
+        `unknown field '${key}': metadata fields ('${key.slice(9)}') are not walked, only declared fields of 'app/Customer'`
+      );
+    }
+  });
+
+  it('refuses a list of crossRefs as a walk does', () => {
+    const err = refused({ aggregate: n, groupBy: { g: 'payers.region' } });
+    expect({ code: err.code, path: err.path }).toEqual({
+      code: 'walk_unsupported_ref',
+      path: ['groupBy', 'g']
+    });
+  });
+
+  it('refuses a walked field outside groupBy, naming groupBy', () => {
+    const forms: Array<[Frame, string[]]> = [
+      [{ select: { r: 'customer.region' } }, ['select', 'r']],
+      [{ aggregate: { m: { min: 'customer.region' } } }, ['aggregate', 'm', 'min']],
+      [
+        {
+          aggregate: n,
+          groupBy: { region: 'customer.region' },
+          having: { eq: ['customer.region', { lit: 'north' }] }
+        },
+        ['having', 'eq', '0']
+      ],
+      [
+        { where: { $expr: { eq: ['customer.region', { lit: 'north' }] } } },
+        ['where', '$expr', 'eq', '0']
+      ]
+    ];
+    for (const [frame, path] of forms) {
+      const err = refused(frame);
+      expect({ code: err.code, path: err.path }, JSON.stringify(frame)).toEqual({
+        code: 'expr_invalid',
+        path
+      });
+      expect(err.message).toContain("'customer.region'");
+      expect(err.message).toContain('groupBy');
+    }
   });
 });

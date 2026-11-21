@@ -271,13 +271,13 @@ A walk aggregate is one value computed per seed row over the rows one walk reach
 | Function | Value | Field |
 |---|---|---|
 | `"count": true` | number of far rows | none |
-| `"avg": "<field>"` | number | number |
-| `"sum": "<field>"` | number | number |
-| `"min": "<field>"` | the field's kind | number or date |
-| `"max": "<field>"` | the field's kind | number or date |
+| `"avg": "<field>"` | number | number or integer |
+| `"sum": "<field>"` | number over a number field, an exact int64 over an integer field | number or integer |
+| `"min": "<field>"` | the field's kind | number, integer or date |
+| `"max": "<field>"` | the field's kind | number, integer or date |
 | `"latest": { "by": "<date field>", "value": "<field>" }` | `value` of the far row latest by `by` | `value` is any scalar except json |
 
-`avg`, `sum`, `min` and `max` ignore nulls. Over no far rows, every function is null except `count`, which is 0. `latest` breaks ties as a pick does: nulls last, then the lowest `id`.
+An integer field is an int16, int32 or int64. An integer `sum` is exact (past 2^53 too) and, like an int64 field, comes back as a decimal string on the wire; a sum past int64 fails with `value_out_of_range`. `avg` is always a number, and an int16 or int32 `min` or `max` is a number. `avg`, `sum`, `min` and `max` ignore nulls. Over no far rows, every function is null except `count`, which is 0. `latest` breaks ties as a pick does: nulls last, then the lowest `id`.
 
 A walk aggregate takes `in`, `out` and `where`, and nothing else: no `quantifier`, `pick`, `among` or `as`.
 
@@ -312,7 +312,7 @@ In a where clause, `_agg` is one comparison: the aggregate, plus one or more of 
 } } } }
 ```
 
-The operand is a number, a date or a string to match the aggregate's value, or a `$ref`. Nothing else may sit beside `_agg` in that object; put other conditions in their own clause under `AND` (`agg_invalid`). An `_agg` with no comparison is refused the same way.
+The operand is a number, a date or a string to match the aggregate's value, or a `$ref`. For an int64 aggregate (an integer `sum`, or the `min` or `max` of an int64 field) it is whatever an int64 field filter takes: a safe integer or a decimal string. A `$ref` does not compare with an int64 aggregate. Nothing else may sit beside `_agg` in that object; put other conditions in their own clause under `AND` (`agg_invalid`). An `_agg` with no comparison is refused the same way.
 
 To compare a field with an aggregate the frame selects, use `$ref: "_agg.<name>"`. Jobs whose timeout is below their mean run time:
 
@@ -408,6 +408,25 @@ These params shape the whole frame's answer rather than each row. They are docum
 - `limit` caps the groups and `offset` skips them.
 - Frame aggregate expressions cannot read `_agg.<name>`.
 
+### Grouping by a walked field
+
+Inside a `groupBy` expression, the bare string `"<crossRef>.<field>"` reads `<field>` on the row that the out-walk through `<crossRef>` reaches, much as `"_agg.<name>"` reads a walk aggregate. Suppose `app/Invoice` has `customer: →Customer` and `amount: int64`, and `app/Customer` has `region: string` and `signedUpAt: date`. Invoices summed per customer region:
+
+```json
+{ "app/Invoice": { "params": {
+  "aggregate": { "n": { "count": true }, "total": { "sum": "amount" } },
+  "groupBy": { "region": "customer.region" },
+  "orderBy": [{ "total": "desc" }]
+} } }
+```
+
+- **One hop, out only.** `<crossRef>` must be a top-level crossRef of the frame's type, so it reaches at most one row. `<field>` must be a top-level field of that row that an expression can read: not json, a list or a struct. `"a.b.c"` is refused.
+  - A list of crossRefs is refused with `walk_unsupported_ref`, as in any walk.
+  - Any other bad reference is `expr_invalid`.
+- **In `groupBy` only.** The reference may sit anywhere inside a `groupBy` expression, such as `{ "dateTrunc": [{ "lit": "month" }, "customer.signedUpAt"] }`, and it types as the far field does. `select`, aggregate arguments, `having` and `where.$expr` refuse it with `expr_invalid`. `having` reads the group's name instead.
+- **Null keys.** A null crossRef, or one that names a missing or deleted row, groups under a `null` key. The row still counts.
+- **The same gate as any `out` walk.** The caller's read grant on the far namespace is checked first, then the far type, the store and the far type's policy; see [Crossing namespaces](#crossing-namespaces). A store that does not answer walks refuses with `walks_unsupported_store`. The reference counts as one hop. A validation refusal's path is the expression node that holds the reference, such as `[..., 'groupBy', 'month', 'dateTrunc', '1']`.
+
 ### `select` and ordering by derived values
 
 `select` maps names to expressions. Each row gains one key per entry, and `orderBy` may name it. A `select` expression can read the frame's walk aggregates as the bare string `"_agg.<name>"`. Jobs ordered by how far their timeout sits above their mean run time, tightest first:
@@ -424,7 +443,7 @@ These params shape the whole frame's answer rather than each row. They are docum
 ```
 
 - A `select` name is an identifier. It may not collide with a field of the type, a row key such as `id` or `createdAt`, or a nested selection's name (`select_invalid`).
-- An `_agg` used in an expression must be one the frame selects, and must have a number, date or string value. A boolean or int64 aggregate value is refused with `expr_invalid`.
+- An `_agg` used in an expression must be one the frame selects, and must have a number, date or string value. A boolean or integer aggregate value is refused with `expr_invalid`.
 - `select` replaces the old `derive` param, which is refused with `unknown_param`.
 
 ## Limits
@@ -464,7 +483,7 @@ Grammar refusals, before anything runs:
 | `agg_invalid` | A malformed `_agg` or `aggregate`: no function or more than one, an unknown key, a field of the wrong kind, a bad name, an empty map; a where-side `_agg` without a comparison or with another key beside it; `latest` as a frame aggregate; `groupBy`, `having` or `offset` without `aggregate`; `select`, `cursor`, `orderBy` or a field other than `id` on an aggregate frame. |
 | `group_invalid` | An empty or malformed `groupBy`, a bad name, or a name shared with an aggregate. |
 | `select_invalid` | A malformed `select`, a bad name, or a name that collides with a field, a row key or a nested selection. |
-| `expr_invalid` | An expression that does not type-check, a non-boolean `having` or `$expr`, an unusable `_agg` value, `$expr` inside a walk, or an expression over its node or depth limit. |
+| `expr_invalid` | An expression that does not type-check, a non-boolean `having` or `$expr`, an unusable `_agg` value, `$expr` inside a walk, a walked field (`"<crossRef>.<field>"`) that does not resolve or sits outside `groupBy`, or an expression over its node or depth limit. |
 | `count_conflict` | `count: true` with `aggregate`, `select`, `orderBy`, `cursor`, or a field other than `id`. |
 | `type_mismatch` | A wrong shape: an unknown walk or nested selection key, a malformed `pick`, a pick field of the wrong kind, `$ref` on an operator it does not allow, a bad `times` / `plus`, a date shift past `1e13` ms, a bad nested `limit` or `offset`, a nested selection without `fields`. |
 | `unknown_field` | A field the far type does not have, in a walk's `where` or `among`, a `pick`, or a nested selection; or `_metadata`, `shortId` or `_deletedAt` in a nested selection. |

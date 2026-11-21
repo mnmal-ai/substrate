@@ -3,17 +3,10 @@
  * memory: the reference the Postgres compiler is held to. Groups are keyed by
  * a stable encoding of the key tuple; nulls form one group, as SQL's GROUP BY.
  */
-import {
-  type Expr,
-  type ExprType,
-  type FrameAgg,
-  type OrderByClause,
-  ResolverFrameError,
-  type Row,
-  VALUE_OUT_OF_RANGE
-} from '@mnmal-ai/substrate-types';
+import type { Expr, ExprType, FrameAgg, OrderByClause, Row } from '@mnmal-ai/substrate-types';
 import { checkExpr } from './expr-check.js';
 import { evalExpr } from './expr-eval.js';
+import { int64Agg, outOfRange } from './int64-agg.js';
 import { storedMicros } from './predicate.js';
 import { isoFromMicros, numericAgg } from './walk.js';
 
@@ -26,8 +19,6 @@ export function canRaise(e: unknown): boolean {
   return Object.entries(e).some(([k, v]) => ARITHMETIC.has(k) || canRaise(v));
 }
 
-const MIN_INT64 = -(2n ** 63n);
-const MAX_INT64 = 2n ** 63n - 1n;
 type Op = 'count' | 'countDistinct' | 'avg' | 'sum' | 'min' | 'max';
 const OPS: readonly Op[] = ['count', 'countDistinct', 'avg', 'sum', 'min', 'max'];
 
@@ -82,30 +73,12 @@ function compare(a: unknown, b: unknown, t: ExprType | null): number {
   return (a as number) < (b as number) ? -1 : (a as number) > (b as number) ? 1 : 0;
 }
 
-/** The evaluator's int64 range error and its float overflow/underflow error: pg's 22003. */
-const isRangeError = (err: unknown): err is Error =>
-  (err instanceof RangeError && err.message === 'bigint out of range') ||
-  (err instanceof Error && err.message.startsWith('value out of range: '));
-
-export function outOfRange(err: unknown): never {
-  if (isRangeError(err)) throw new ResolverFrameError(VALUE_OUT_OF_RANGE, err.message);
-  throw err;
-}
-
 function aggregateOf(op: Op, arg: Expr, t: ExprType | null, values: unknown[], rows: number) {
   if (op === 'count') return arg === true ? rows : values.filter((v) => v !== null).length;
   const present = values.filter((v) => v !== null);
   if (op === 'countDistinct') return new Set(present.map((v) => encode(v, t))).size;
   if (present.length === 0) return null;
-  if (t === 'int64') {
-    const ns = present as bigint[];
-    if (op === 'min' || op === 'max')
-      return ns.reduce((a, b) => ((op === 'min' ? b < a : b > a) ? b : a));
-    const sum = ns.reduce((a, b) => a + b, 0n);
-    if (op === 'avg') return Number(sum) / ns.length;
-    if (sum < MIN_INT64 || sum > MAX_INT64) outOfRange(new RangeError('bigint out of range'));
-    return sum;
-  }
+  if (t === 'int64') return int64Agg(op as 'avg' | 'sum' | 'min' | 'max', present as bigint[]);
   if (t === 'string' || t === 'date') {
     const best = present.reduce((a, b) =>
       (op === 'min' ? compare(b, a, t) < 0 : compare(b, a, t) > 0) ? b : a

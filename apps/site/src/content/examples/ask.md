@@ -27,6 +27,6 @@ This deployment tells `ask` that an invoice's time is its due date (the `timeFie
 ## Where it stops
 
 - **There's no judge in this run, only the parser.** The second answer says so: "happy" is dropped as not understood, with the judge not configured.
-- **It counts; it doesn't sum.** `amount` is an int64 field, and `ask` doesn't read a total over an int64 field yet, so a question asking for one answers `unknown`. The engine itself sums int64 exactly in a query frame, as the [warehouse example](../warehouse/) shows.
-- **`timeField` is set to `dueAt` for this run.** Without that setting, "per month" groups by `createdAt`, the time each row was written.
+- **A total groups by time, or by an enum or yes/no field of the invoice.** `ask` reads "total amount of sent invoices per month" and sums `amount`, an int64 field, exactly, as a query frame does in the [warehouse example](../warehouse/). "Per region" names a field of the customer, one reference away, so that grouping is dropped with a reason.
+- **`timeField` is set to `dueAt` for this run.** Without that setting, "per month" groups by `createdAt`, the time each row was written. A question can name the date field instead: "per month by due date" groups by `dueAt`.
 - **A question stays within one namespace.** Here that's `app`.
