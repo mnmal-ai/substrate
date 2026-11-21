@@ -86,7 +86,7 @@ export async function runAct(argv: string[], options: ActCliOptions = {}): Promi
     if ('refusal' in reply) {
       const r = reply.refusal;
       if (!json) {
-        write(`refused at step ${r.step}: ${line(r.problem)}\n`);
+        write(`refused at step ${stepOf(r.step)}: ${line(r.problem)}\n`);
         if (r.choices.length > 0) write(`  choices: ${r.choices.map(line).join(', ')}\n`);
         if (r.nearest !== null) write(`  nearest: ${line(r.nearest)}\n`);
       }
@@ -95,7 +95,7 @@ export async function runAct(argv: string[], options: ActCliOptions = {}): Promi
     if ('error' in reply) {
       if (!json) {
         const e = reply.error;
-        write(`failed at step ${e.step ?? '?'}: ${line(e.code)}: ${line(e.message)}\n`);
+        write(`failed at step ${stepOf(e.step)}: ${line(e.code)}: ${line(e.message)}\n`);
         if (reply.result !== null) write(`result ${line(reply.result)}\n`);
       }
       return 1;
@@ -113,6 +113,11 @@ export async function runAct(argv: string[], options: ActCliOptions = {}): Promi
     write(`substrate act: ${line(messageOf(err))}\n`);
     return 1;
   }
+}
+
+// A step is a number; anything else the server sent prints as `?`, never raw.
+function stepOf(step: unknown): string {
+  return Number.isInteger(step) ? String(step) : '?';
 }
 
 function messageOf(err: unknown): string {

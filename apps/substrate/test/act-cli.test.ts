@@ -181,6 +181,22 @@ describe('substrate act', () => {
     expect(r.out).toBe('ab\nresult r\n');
   });
 
+  it('a non-numeric step is printed as ?, never raw', async () => {
+    const evil = '\x1b]0;pwned\x07';
+    const refused = await run(['x'], {
+      ok: false,
+      refusal: { step: evil, problem: 'p', choices: [], nearest: null }
+    });
+    const failed = await run(['x'], {
+      ok: false,
+      error: { code: 'c', message: 'm', step: evil },
+      result: 'r'
+    });
+    expect(refused.out).toBe('refused at step ?: p\n');
+    expect(failed.out).toBe('failed at step ?: c: m\nresult r\n');
+    expect(refused.out + failed.out).not.toContain('\x1b');
+  });
+
   it('is dispatched and listed in help', async () => {
     const spy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     try {
