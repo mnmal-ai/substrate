@@ -22,7 +22,8 @@ const defs: Record<string, Record<string, FieldDef>> = {
     customer: { kind: 'crossRef', ns: NS, type: 'Customer', onDelete: 'set_null' },
     amount: int('int64'),
     qty: int('int32'),
-    small: int('int16')
+    small: int('int16'),
+    paidAt: { kind: 'scalar', type: 'date' }
   },
   Line: {
     payment: { kind: 'crossRef', ns: NS, type: 'Payment', onDelete: 'set_null' },
@@ -64,9 +65,9 @@ beforeAll(async () => {
   for (const type of Object.keys(defs)) await pg.ensureTypeStorage(type);
   const customers = ['c1', 'c2', 'c3'].map((id) => ({ id: u(id) }));
   const payments = [
-    { id: 'p1', customer: 'c1', amount: 9007199254740993n, qty: 1, small: -4 },
-    { id: 'p2', customer: 'c1', amount: 1n, qty: 2, small: 7 },
-    { id: 'p3', customer: 'c2', amount: 50n, qty: 5, small: 1 }
+    { id: 'p1', customer: 'c1', amount: 9007199254740993n, qty: 1, small: -4, paidAt: '2026-02-01T00:00:00.000Z' },
+    { id: 'p2', customer: 'c1', amount: 1n, qty: 2, small: 7, paidAt: '2026-01-01T00:00:00.000Z' },
+    { id: 'p3', customer: 'c2', amount: 50n, qty: 5, small: 1, paidAt: '2026-03-01T00:00:00.000Z' }
   ].map((p) => ({ ...p, id: u(p.id), customer: u(p.customer) }));
   const lines = [
     { id: 'l1', payment: 'p1', cents: 9007199254740993n },
@@ -215,6 +216,36 @@ describe.skipIf(!POSTGRES_URL)('walk aggregates over integers: pg and memory agr
         .map((a) => (a as { cents: unknown }).cents)
         .sort()
     ).toEqual([5n, 9007199254740994n, null].sort());
+  });
+
+  it('reads an int64 field of a nested selection as the same bigint', async () => {
+    const params: ReadParams = {
+      orderBy: [{ id: 'asc' }],
+      nested: {
+        pays: {
+          _walk: { in: IN },
+          fields: { id: true, amount: true, qty: true },
+          orderBy: [{ id: 'asc' }]
+        }
+      } as unknown as NonNullable<ReadParams['nested']>
+    };
+    const read = async (ds: PgDataset | MemoryDataset) =>
+      (await ds.read('Customer', params)).rows.map((r) =>
+        ((r.pays ?? []) as Array<{ amount: unknown; qty: unknown }>).map((p) => [p.amount, p.qty])
+      );
+    const want = await read(mem);
+    expect(await read(pg)).toEqual(want);
+    expect(want.flat().map(([a]) => a)).toContain(9007199254740993n);
+  });
+
+  it('a latest over an int64 field is the same bigint', async () => {
+    expect(
+      await aggs({ last: { in: IN, latest: { by: 'paidAt', value: 'amount' } } })
+    ).toEqual({
+      c1: { last: 9007199254740993n },
+      c2: { last: 50n },
+      c3: { last: null }
+    });
   });
 
   it('raises value_out_of_range for a sum past int64 on both stores', async () => {
