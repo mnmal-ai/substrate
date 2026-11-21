@@ -60,11 +60,18 @@ defineNamespace('work', {
 - `kind` is `update` (the default, acting on referenced records) or `create` (taking no reference).
 - `set` values are a literal, `{ param: name }`, or `{ now: true }` for the transaction's timestamp.
 - `params` use field types, so values are coerced and checked as fields are: enums, and int64 kept exact. A param with a `default` or `optional: true` may be left out. A `list` param takes record references.
-- `then` runs follow-on actions in the same transaction, optionally once per element of a list param. The target may be in another namespace on the same store.
+- `then` runs follow-on actions in the same transaction, once per element of the list param its `each` names; `each` is required. The target is written `<namespace>/<Type>.<action>`, must be an update action on the list param's type whose params are all optional or defaulted, and may be in another namespace on the same store.
 - `past` is the word the acknowledgement uses. Without it the ack says `<action> done`.
-- An action name may not collide with a built-in.
 
-Boot refuses with a message when a `set` field does not exist or a literal does not fit its field, a param type is unknown, a `create` action leaves a required field without a param, a `set` value or a field default, a `then` target does not exist, or `then` chains form a cycle.
+Boot refuses with a message when:
+
+- an action name collides with a built-in, or the type has `autoCrud: false`;
+- a param has no field type, or is never used;
+- a `set` field does not exist or is server-set, a literal does not fit its field, `{ now: true }` sets a field that is not a date, or `{ param }` names a param that is undeclared or a `list`;
+- a `then` entry has no `each`, its `each` names a param that is not a `list`, or its target's type is not the list's type;
+- an update action sets nothing and has no `then`;
+- a `create` action leaves a required field without a `set` value, a param that is always present, or a field default;
+- once every namespace has installed, a `then` target does not exist, is a create action, or has a param with no default, or `then` chains form a cycle.
 
 A composite action grants nothing. Every step goes through its target's normal grant and policy with the caller's identity, so an action cannot write what the caller could not write directly.
 
@@ -82,9 +89,9 @@ A sketch is text, or the same thing as JSON (`ActStep[]`). Steps are separated b
 - **Type.** `Todo` resolves to the one readable type of that name. `work/Todo` always works. A default namespace breaks ties: `namespace` in the request, filled from `SUBSTRATE_NAMESPACE` by the MCP tool and from `--ns` by the CLI. Remaining ambiguity is refused with the qualified choices.
 - **References.** `#12` is a shortId; a full id also works. Several references apply the action to each: `close Todo #12 #13`.
 - **Values.** Bare words, double-quoted strings, numbers, `true`, `false`, `null`, and comma-separated lists, coerced by the field or param type. A quoted value may contain `;`, a newline, `=`, `#` and `,`, and stays one value. Inside quotes, `\"`, `\\` and `\n` are escapes.
-- **Extra fields.** A sketch may pass `field=value` beyond an action's params, for example `close Todo #12 title="Done early"`. Each must name a field of the type that the action's `set` does not fix. Naming a fixed field, such as `close Todo #12 archived=false`, is refused, so no sketch can undo what the action guarantees.
-- **Bindings.** `create Todo title="x" as $t` makes `$t` usable as a reference or value in later steps of the same sketch.
-- **`find` and `count`.** They filter on `field=value` pairs and add no hidden filters, so what you see is what runs. `fields=a,b` chooses what `find` stores in the result. `find` stores at most 1000 rows and says when it truncated. `count` needs a store that answers aggregate reads (Postgres). A plain memory store refuses `count` exactly as `query` does.
+- **Extra fields.** A sketch may pass `field=value` beyond an action's params, for example `close Todo #12 title="Done early"`. Each must name a field of the type that the action's `set` does not fix. Naming a fixed field, such as `close Todo #12 archived=false`, is refused, so no sketch can undo what the action guarantees. No write takes an `id` arg: the id comes from the reference.
+- **Bindings.** `create Todo title="x" as $t` names the record for later steps of the same sketch. `$t` resolves where a record reference goes: as a step's reference (`update Todo $t priority=high`), in a `list` param, and as the value of a crossRef field (`create Note todo=$t`). A crossRef field also takes `#12`. In any other field a binding is plain text: `title=$t` writes `$t`. A list of crossRefs takes full ids only.
+- **`find` and `count`.** They filter on `field=value` pairs and add no hidden filters, so what you see is what runs. `fields=a,b` chooses what `find` stores in the result. Each `find` reads at most the server's page maximum (1000 by default), the result record keeps at most 1000 rows across all its `find` steps, and the ack says when either truncated. `count` needs a store that answers aggregate reads (Postgres). A plain memory store refuses `count` exactly as `query` does.
 - **Help.** `?` lists the readable types by namespace with their action names. `? Todo` shows that type's actions with their params, and its fields. Help writes no result record.
 
 The same sketch against the same schema version always compiles to the same plan.
@@ -110,7 +117,7 @@ Acks name what happened: `closed work/Todo #12 #13`. A `find` acks as `12 work/T
 
 One sketch is one transaction: it commits whole or not at all. A step that fails at execution, such as `close Todo #1; close Todo #999999`, aborts the lot and the reply names the failing step.
 
-`idempotencyKey` in the request replays the earlier reply. Two concurrent calls with the same caller and key run once and return the same result id.
+`idempotencyKey` in the request replays an earlier successful write by the same caller: its ack and result id, while its result record lives. A failed run is not replayed, so a retry runs again, and a dry run ignores the key. Two concurrent calls with the same caller and key run once and return the same result id.
 
 ## Result records
 
@@ -135,6 +142,6 @@ A result record holds the whole outcome of one sketch: id, owner, creation and e
   substrate act --dry-run 'create Todo title="Try it"'
   substrate act --result r_7f3k2q
   ```
-  Other flags: `--key <idempotencyKey>` and `--json`.
-- **Client.** `client.act({ sketch, mode?, namespace?, idempotencyKey? })` and `client.actResult(id)` in `@mnmal-ai/substrate-client`.
+  `--ns` defaults to `SUBSTRATE_NAMESPACE`. Other flags: `--key <idempotencyKey>` and `--json`.
+- **Client.** `client.act({ sketch, mode?, namespace?, idempotencyKey? })` and `client.actResult(id)` on `SubstrateClient` from `@mnmal-ai/substrate/client`.
 - **`run` scripts.** `s.act(sketch, { namespace? })` runs one sketch. It sends `dry-run` in `read` and `dry-run` modes, and `write` in `write` mode, counting one toward `maxWrites`.
