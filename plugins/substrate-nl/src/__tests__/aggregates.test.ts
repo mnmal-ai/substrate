@@ -488,6 +488,26 @@ describe('aggregates: answering', () => {
     });
   });
 
+  it("carries an integer total as the decimal string the engine's bigint is on the wire", async () => {
+    const { e } = engine((f) =>
+      'shop/Sale' in f
+        ? {
+            data: {
+              'shop/Sale': {
+                groups: [{ bucket: '2026-10-20T00:00:00.000000Z', value: 9007199254740993n }]
+              }
+            }
+          }
+        : { data: { 'shop/Item': { groups: [{ value: 9007199254740994n }] } } }
+    );
+    expect(await ask('total price of items', e)).toMatchObject({
+      aggregate: { fn: 'sum', value: '9007199254740994' }
+    });
+    expect(await ask('total price of sales per day', e)).toMatchObject({
+      aggregate: { groups: [{ key: '2026-10-20', value: '9007199254740993' }] }
+    });
+  });
+
   it('carries day buckets as groups keyed by the bucket', async () => {
     const { e } = engine(() => ({
       data: {

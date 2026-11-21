@@ -8,6 +8,7 @@ import { OPERATORS } from './_fixture.js';
 const num = { kind: 'scalar' as const, type: 'number' as const, indexed: true };
 const str = { kind: 'scalar' as const, type: 'string' as const, indexed: true };
 const date = { kind: 'scalar' as const, type: 'date' as const, indexed: true };
+const int = { kind: 'scalar' as const, type: 'int32' as const, indexed: true };
 const ref = (type: string) => ({
   kind: 'crossRef' as const,
   ns: 'shop',
@@ -16,7 +17,7 @@ const ref = (type: string) => ({
 });
 const types: Schema['types'] = {
   Item: { fields: { name: str, price: num, listedAt: date, supplier: ref('Supplier') } },
-  Supplier: { fields: { title: str, rating: num, foundedAt: date } },
+  Supplier: { fields: { title: str, rating: num, foundedAt: date, headcount: int } },
   Sale: { fields: { item: ref('Item'), price: num, soldAt: date } }
 };
 const pack = buildNamespacePack({
@@ -238,6 +239,11 @@ describe('ordering by a field one crossRef hop away', () => {
       [
         'top items by supplier founded at',
         'ordering across a hop needs a number field; Supplier.foundedAt is a date field'
+      ],
+      // An integer hop value would be read through `select`, which refuses an integer `_agg`.
+      [
+        'top items by supplier headcount',
+        'ordering across a hop needs a number field; Supplier.headcount is a int32 field'
       ]
     ] as const) {
       const r = parse(q);

@@ -1825,7 +1825,8 @@ function hopOrder(
     return { reason: `ordering across ${path.length} hops is not supported; one hop only` };
   const f = own(pack.types, to.type)?.fields[to.field];
   const qualified = `${to.type}.${to.field}`;
-  if (f === undefined || (f.kind !== 'scalar' && f.kind !== 'metadata') || !isNumeric(f.valueType))
+  // The hop's value is read through `select`, where an integer-valued `_agg` is refused.
+  if (f === undefined || (f.kind !== 'scalar' && f.kind !== 'metadata') || f.valueType !== 'number')
     return {
       reason: `ordering across a hop needs a number field; ${qualified} is a ${f?.valueType ?? f?.kind} field`
     };

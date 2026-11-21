@@ -209,6 +209,8 @@ async function aggregate(
   const short = (k: unknown) =>
     typeof k === 'string' && trunc !== undefined ? k.slice(0, LABEL_LENGTH[trunc[0].lit]) : k;
   const rows = data?.groups;
+  // An integer total is a bigint from the engine; the outcome carries the decimal string the wire does.
+  const wire = (v: unknown) => (typeof v === 'bigint' ? v.toString() : v) as number | string | null;
   const result =
     rows === undefined
       ? undefined
@@ -223,10 +225,10 @@ async function aggregate(
                   .filter((g) => trunc === undefined || g.bucket !== null)
                   .map((g) => ({
                     key: short(g.bucket ?? g.key) as string | boolean | null,
-                    value: g.value as number | string | null
+                    value: wire(g.value)
                   }))
               }
-            : { value: (rows[0]?.value ?? null) as number | string | null }),
+            : { value: wire(rows[0]?.value ?? null) }),
           ...(data?.truncated === true ? { truncated: true as const } : {})
         };
   return {
