@@ -1,0 +1,500 @@
+/**
+ * Sketch to plan. Resolves each step against the published schema and spells
+ * out every frame key, param, field selection and late-bound value, or
+ * refuses with the choices and the nearest valid sketch. Pure: no I/O, no
+ * clock, and objects are built in a fixed order so the output is byte-stable.
+ */
+
+import {
+  type ActHelp,
+  type ActionSchema,
+  type ActionThenDecl,
+  type ActLate,
+  type ActPlan,
+  type ActPlanStep,
+  type ActRefusal,
+  type ActStep,
+  type ActValue,
+  BUILT_IN_ACTIONS,
+  type FieldDef,
+  type Schema,
+  type TypeSchema,
+  toActionSchema
+} from '@mnmal-ai/substrate-types';
+import { coerceValue } from './coerce.js';
+import { typeHelp, typesHelp } from './help.js';
+import { formatSketch, parseSketch } from './parse.js';
+
+export interface CompileOptions {
+  defaultNamespace?: string;
+  /** Namespaces with a dataset that are not virtual. */
+  localNamespaces: ReadonlySet<string>;
+  /** Default 50. */
+  maxWriteSteps?: number;
+}
+export type CompileResult = { plan: ActPlan } | { refusal: ActRefusal } | { help: ActHelp };
+
+const DEFAULT_MAX_WRITE_STEPS = 50;
+const FIND_LIMIT = 1000;
+const BUILT_IN: Record<'create' | 'update', ActionSchema> = {
+  create: toActionSchema({ kind: 'create' }),
+  update: toActionSchema({ kind: 'update' })
+};
+
+interface Target {
+  ns: string;
+  name: string;
+  qualified: string;
+  type: TypeSchema;
+}
+type Draft = Omit<ActPlanStep, 'step'>;
+type Resolved = { value: unknown } | { late: ActLate };
+/** Rewrites the current sketch step with `choice` in place of the offending token. */
+type Swap = (step: ActStep, choice: string) => ActStep;
+
+/** Unwinds to `compileSketch` carrying a refusal. */
+class Refused {
+  constructor(readonly refusal: ActRefusal) {}
+}
+
+function levenshtein(a: string, b: string): number {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) {
+      const sub = (prev[j - 1] as number) + (a[i - 1] === b[j - 1] ? 0 : 1);
+      cur.push(Math.min((prev[j] as number) + 1, (cur[j - 1] as number) + 1, sub));
+    }
+    prev = cur;
+  }
+  return prev[b.length] as number;
+}
+
+const isValue = (v: unknown): boolean =>
+  v === null ||
+  typeof v === 'string' ||
+  typeof v === 'boolean' ||
+  (typeof v === 'number' && Number.isFinite(v)) ||
+  (Array.isArray(v) && v.every(isValue));
+
+/** The JSON form arrives from a request body; check its shape before reading it. */
+function isStep(s: unknown): boolean {
+  if (typeof s !== 'object' || s === null || Array.isArray(s)) return false;
+  const { action, type, refs, args, as } = s as Record<string, unknown>;
+  return (
+    typeof action === 'string' &&
+    (type === undefined || typeof type === 'string') &&
+    (refs === undefined || (Array.isArray(refs) && refs.every((r) => typeof r === 'string'))) &&
+    (args === undefined ||
+      (typeof args === 'object' &&
+        args !== null &&
+        !Array.isArray(args) &&
+        Object.values(args).every(isValue))) &&
+    (as === undefined || typeof as === 'string')
+  );
+}
+
+const asList = (v: ActValue): ActValue[] => (Array.isArray(v) ? v : [v]);
+const idFields = (type: TypeSchema): Record<string, true> =>
+  Object.hasOwn(type.fields, 'shortId') ? { id: true, shortId: true } : { id: true };
+const swapValue =
+  (arg: string): Swap =>
+  (s, c) => ({ ...s, args: { ...s.args, [arg]: c } });
+const swapElement =
+  (arg: string, list: ActValue[], i: number): Swap =>
+  (s, c) => ({ ...s, args: { ...s.args, [arg]: list.map((v, j) => (j === i ? c : v)) } });
+const swapKey =
+  (arg: string): Swap =>
+  (s, c) => ({
+    ...s,
+    args: Object.fromEntries(Object.entries(s.args ?? {}).map(([k, v]) => [k === arg ? c : k, v]))
+  });
+
+class Compiler {
+  /** The sketch step being compiled, 1-based. */
+  #n = 0;
+  readonly #bindings = new Set<string>();
+
+  constructor(
+    readonly schema: Readonly<Record<string, Schema>>,
+    readonly options: CompileOptions,
+    readonly steps: ActStep[]
+  ) {}
+
+  run(): CompileResult {
+    const { steps } = this;
+    if (steps.length === 0) this.#at(1).#refuse('', 'empty sketch');
+    const bad = steps.findIndex((s) => !isStep(s));
+    if (bad !== -1) this.#at(bad + 1).#refuse('', 'malformed step');
+
+    const helpAt = steps.findIndex((s) => s.action === '?');
+    if (helpAt !== -1) {
+      this.#at(helpAt + 1);
+      if (steps.length > 1) this.#refuse('?', 'help stands alone');
+      const step = steps[helpAt] as ActStep;
+      if (step.type === undefined) return { help: typesHelp(this.schema) };
+      const target = this.#resolveType(step.type);
+      return { help: typeHelp(target.qualified, target.type) };
+    }
+
+    const drafts: Draft[] = [];
+    for (const [i, step] of steps.entries()) this.#at(i + 1).#compileStep(step, drafts);
+
+    const max = this.options.maxWriteSteps ?? DEFAULT_MAX_WRITE_STEPS;
+    const writes = drafts.filter((d) => d.operation === 'mutate');
+    if (writes.length > max) {
+      this.#at((writes[max] as Draft).source).#refuse(
+        '',
+        `${writes.length} write steps exceed the cap of ${max}`
+      );
+    }
+    return { plan: { steps: drafts.map((d, i) => ({ step: i + 1, ...d })) } };
+  }
+
+  #at(n: number): this {
+    this.#n = n;
+    return this;
+  }
+
+  get #step(): ActStep {
+    return this.steps[this.#n - 1] as ActStep;
+  }
+
+  /** Throws the refusal. `nearest` swaps in the choice closest to `token` under `key`. */
+  #refuse(
+    token: string,
+    problem: string,
+    choices: string[] = [],
+    swap?: Swap,
+    key: (choice: string) => string = (c) => c
+  ): never {
+    const sorted = [...new Set(choices)].sort();
+    let nearest: string | null = null;
+    if (swap !== undefined && sorted.length > 0) {
+      let best = sorted[0] as string;
+      let bestDistance = Number.POSITIVE_INFINITY;
+      for (const c of sorted) {
+        const d = levenshtein(token, key(c));
+        if (d < bestDistance) [best, bestDistance] = [c, d];
+      }
+      const n = this.#n;
+      nearest = formatSketch(this.steps.map((s, i) => (i === n - 1 ? swap(s, best) : s)));
+    }
+    throw new Refused({
+      code: 'sketch_unresolved',
+      step: this.#n,
+      token,
+      problem,
+      choices: sorted,
+      nearest
+    });
+  }
+
+  #target(ns: string, name: string): Target | undefined {
+    const schema = Object.hasOwn(this.schema, ns) ? this.schema[ns] : undefined;
+    const type =
+      schema !== undefined && Object.hasOwn(schema.types, name) ? schema.types[name] : undefined;
+    return type === undefined ? undefined : { ns, name, qualified: `${ns}/${name}`, type };
+  }
+
+  #resolveType(token: string): Target {
+    const swap: Swap = (s, c) => ({ ...s, type: c });
+    const slash = token.indexOf('/');
+    const all = (qualified: boolean) =>
+      Object.entries(this.schema).flatMap(([ns, s]) =>
+        Object.keys(s.types).map((name) => (qualified ? `${ns}/${name}` : name))
+      );
+    if (slash !== -1) {
+      const target = this.#target(token.slice(0, slash), token.slice(slash + 1));
+      return target ?? this.#refuse(token, `unknown type '${token}'`, all(true), swap);
+    }
+    const owners = Object.keys(this.schema)
+      .filter((ns) => this.#target(ns, token) !== undefined)
+      .sort();
+    const fallback = this.options.defaultNamespace;
+    const ns =
+      owners.length === 1
+        ? owners[0]
+        : fallback !== undefined && owners.includes(fallback)
+          ? fallback
+          : undefined;
+    if (ns !== undefined) return this.#target(ns, token) as Target;
+    if (owners.length > 1) {
+      // Every choice names the type as written, so they are compared by name and tie.
+      const choices = owners.map((o) => `${o}/${token}`);
+      this.#refuse(token, `ambiguous type '${token}'`, choices, swap, (c) =>
+        c.slice(c.indexOf('/') + 1)
+      );
+    }
+    return this.#refuse(token, `unknown type '${token}'`, all(false), swap);
+  }
+
+  #local(target: Target, token: string): void {
+    if (!this.options.localNamespaces.has(target.ns)) {
+      this.#refuse(token, `${target.ns} is bridged or virtual; act runs on local stores only`);
+    }
+  }
+
+  #compileStep(step: ActStep, out: Draft[]): void {
+    if (step.type === undefined) this.#refuse(step.action, 'missing type');
+    const target = this.#resolveType(step.type);
+    this.#local(target, step.type);
+    const refs = step.refs ?? [];
+    const args = step.args ?? {};
+
+    if (step.action === 'find' || step.action === 'count') {
+      if (refs.length > 0) this.#refuse(refs[0] as string, `${step.action} takes no reference`);
+      if (step.as !== undefined) this.#refuse(`$${step.as}`, 'as needs a single record');
+      out.push(this.#readStep(step.action, target, args));
+      return;
+    }
+
+    const declared = target.type.actions ?? {};
+    const action = Object.hasOwn(declared, step.action)
+      ? (declared[step.action] as ActionSchema)
+      : step.action === 'create' || step.action === 'update'
+        ? BUILT_IN[step.action]
+        : this.#refuse(
+            step.action,
+            `unknown action '${step.action}' on ${target.qualified}`,
+            [...Object.keys(declared), ...BUILT_IN_ACTIONS],
+            (s, c) => ({ ...s, action: c })
+          );
+    if (action.kind === 'update' && refs.length === 0) {
+      this.#refuse(step.action, `${step.action} needs a reference`);
+    }
+    if (action.kind === 'create' && refs.length > 0) {
+      this.#refuse(refs[0] as string, `${step.action} takes no reference`);
+    }
+    if (step.as !== undefined && refs.length > 1) {
+      this.#refuse(`$${step.as}`, 'as needs a single record');
+    }
+    this.#expand(
+      target,
+      step.action,
+      action,
+      action.kind === 'create' ? [undefined] : refs,
+      args,
+      out,
+      step.as
+    );
+    if (step.as !== undefined) this.#bindings.add(step.as);
+  }
+
+  /**
+   * One step per ref (`undefined` for a create), each followed by its `then`
+   * entries, once per element of their `each` list, expanded recursively.
+   */
+  #expand(
+    target: Target,
+    name: string,
+    action: ActionSchema,
+    refs: readonly (ActValue | undefined)[],
+    args: Record<string, ActValue>,
+    out: Draft[],
+    bind?: string
+  ): void {
+    const mutation = `${action.kind}${target.name}`;
+    if (!Object.hasOwn((this.schema[target.ns] as Schema).mutations, mutation)) {
+      this.#refuse(this.#step.action, `${target.qualified} has no ${mutation} mutation`);
+    }
+    const built = this.#buildParams(target, name, action, args);
+    const thens = action.then.flatMap((t) => {
+      const elements = built.lists.get(t.each.param) ?? [];
+      return elements.length > 0 ? [{ ...this.#thenTarget(t), elements }] : [];
+    });
+    for (const ref of refs) {
+      const params: Record<string, unknown> = {};
+      const late: Record<string, ActLate> = {};
+      if (ref !== undefined) {
+        const r = this.#resolveRef(ref);
+        if ('late' in r) late.id = r.late;
+        else params.id = r.value;
+      }
+      Object.assign(params, built.params);
+      Object.assign(late, built.late);
+      out.push({
+        source: this.#n,
+        action: name,
+        type: target.qualified,
+        key: `${target.ns}/${mutation}`,
+        operation: 'mutate',
+        params,
+        ...(Object.keys(late).length > 0 ? { late } : {}),
+        fields: idFields(target.type),
+        ...(action.past !== undefined ? { past: action.past } : {}),
+        ...(bind !== undefined ? { bind } : {})
+      });
+      for (const t of thens) {
+        for (const el of t.elements) this.#expand(t.target, t.name, t.action, [el], {}, out);
+      }
+    }
+  }
+
+  #thenTarget(then: ActionThenDecl): { target: Target; name: string; action: ActionSchema } {
+    const dot = then.action.lastIndexOf('.');
+    const qualified = then.action.slice(0, dot);
+    const name = then.action.slice(dot + 1);
+    const slash = qualified.indexOf('/');
+    const target = this.#target(qualified.slice(0, slash), qualified.slice(slash + 1));
+    const actions = target?.type.actions ?? {};
+    if (target === undefined || dot === -1 || !Object.hasOwn(actions, name)) {
+      return this.#refuse(this.#step.action, `then target ${then.action} does not exist`);
+    }
+    const action = actions[name] as ActionSchema;
+    if (action.kind === 'create') {
+      this.#refuse(this.#step.action, `then target ${then.action} is a create action`);
+    }
+    this.#local(target, this.#step.action);
+    return { target, name, action };
+  }
+
+  #resolveRef(ref: ActValue): Resolved {
+    if (typeof ref !== 'string') return this.#refuse(String(ref), 'not a reference');
+    const body = /^[#$]/.test(ref) ? ref.slice(1) : ref;
+    if (body === '') return this.#refuse(ref, 'empty reference');
+    if (!ref.startsWith('$')) return { value: body };
+    if (!this.#bindings.has(body)) return this.#refuse(ref, `unknown binding '${ref}'`);
+    return { late: { bind: body } };
+  }
+
+  /** `raw` as `def` expects it, or a refusal offering the enum's values. */
+  #coerce(def: FieldDef, raw: ActValue, name: string, swap?: Swap): unknown {
+    const r = coerceValue(def, raw);
+    if (r.ok) return r.value;
+    const choices = def.kind === 'scalar' && def.enum !== undefined ? [...def.enum] : [];
+    return this.#refuse(String(raw), `${name}: ${r.problem}`, choices, swap);
+  }
+
+  /** A write value; a crossRef may name a binding, filled at execution. */
+  #writeValue(def: FieldDef, raw: ActValue, name: string, swap?: Swap): Resolved {
+    if (def.kind === 'crossRef' && typeof raw === 'string' && raw.startsWith('$')) {
+      return this.#resolveRef(raw);
+    }
+    return { value: this.#coerce(def, raw, name, swap) };
+  }
+
+  /** Params and late values after `id`: the action's `set` in order, then extra fields in sketch order. */
+  #buildParams(target: Target, name: string, action: ActionSchema, args: Record<string, ActValue>) {
+    const fields = target.type.fields;
+    const serverOwned = (def: FieldDef) =>
+      def.kind === 'scalar' &&
+      (def.readonly === true || def.serverSet === 'both' || def.serverSet === action.kind);
+    const given = new Map<string, Resolved>();
+    const lists = new Map<string, ActValue[]>();
+    const extras: Array<[string, Resolved]> = [];
+
+    for (const [arg, raw] of Object.entries(args)) {
+      const param = Object.hasOwn(action.params, arg) ? action.params[arg] : undefined;
+      if (param !== undefined) {
+        if ('list' in param) lists.set(arg, asList(raw));
+        else given.set(arg, this.#writeValue(param.type, raw, arg, swapValue(arg)));
+        continue;
+      }
+      if (action.fixed.includes(arg)) this.#refuse(arg, `${arg} is fixed by ${name}`);
+      const def = Object.hasOwn(fields, arg) ? fields[arg] : undefined;
+      if (def === undefined) {
+        const writable = Object.entries(fields)
+          .filter(([f, d]) => !action.fixed.includes(f) && !serverOwned(d))
+          .map(([f]) => f);
+        this.#refuse(
+          arg,
+          `unknown field '${arg}' on ${target.qualified}`,
+          [...Object.keys(action.params), ...writable],
+          swapKey(arg)
+        );
+      }
+      if (serverOwned(def)) this.#refuse(arg, `${arg} is server-set`);
+      extras.push([arg, this.#writeValue(def, raw, arg, swapValue(arg))]);
+    }
+
+    for (const [p, decl] of Object.entries(action.params)) {
+      const required = decl.optional !== true && !('default' in decl && decl.default !== undefined);
+      if (required && !given.has(p) && !lists.has(p)) {
+        this.#refuse(this.#step.action, `missing param '${p}'`, [p]);
+      }
+    }
+
+    const params: Record<string, unknown> = {};
+    const late: Record<string, ActLate> = {};
+    const put = (field: string, r: Resolved) => {
+      if ('late' in r) late[field] = r.late;
+      else params[field] = r.value;
+    };
+    for (const [field, value] of Object.entries(action.set)) {
+      if (value === null || typeof value !== 'object') params[field] = value;
+      else if ('now' in value) late[field] = { now: true };
+      else {
+        const r = given.get(value.param) ?? this.#paramDefault(action, value.param, lists);
+        if (r !== undefined) put(field, r);
+      }
+    }
+    for (const [field, r] of extras) put(field, r);
+    return { params, late, lists };
+  }
+
+  /** An absent param's value: its default, or undefined when it is optional. */
+  #paramDefault(
+    action: ActionSchema,
+    name: string,
+    lists: Map<string, ActValue[]>
+  ): Resolved | undefined {
+    const decl = Object.hasOwn(action.params, name) ? action.params[name] : undefined;
+    if (decl === undefined) return undefined;
+    if ('list' in decl) return lists.has(name) ? { value: lists.get(name) } : undefined;
+    return decl.default === undefined ? undefined : this.#writeValue(decl.type, decl.default, name);
+  }
+
+  #readStep(action: 'find' | 'count', target: Target, args: Record<string, ActValue>): Draft {
+    const fields = target.type.fields;
+    const names = Object.keys(fields);
+    const unknown = (token: string, swap: Swap) =>
+      this.#refuse(token, `unknown field '${token}' on ${target.qualified}`, names, swap);
+    const where: Record<string, unknown> = {};
+    const select = idFields(target.type);
+    for (const [arg, raw] of Object.entries(args)) {
+      if (action === 'find' && arg === 'fields') {
+        const list = asList(raw);
+        for (const [i, f] of list.entries()) {
+          if (typeof f !== 'string' || !Object.hasOwn(fields, f))
+            unknown(String(f), swapElement(arg, list, i));
+          select[f as string] = true;
+        }
+        continue;
+      }
+      const def = Object.hasOwn(fields, arg) ? fields[arg] : undefined;
+      if (def === undefined) return unknown(arg, swapKey(arg));
+      where[arg] = Array.isArray(raw)
+        ? { in: raw.map((el, i) => this.#coerce(def, el, arg, swapElement(arg, raw, i))) }
+        : { eq: this.#coerce(def, raw, arg, swapValue(arg)) };
+    }
+    return {
+      source: this.#n,
+      action,
+      type: target.qualified,
+      key: target.qualified,
+      operation: 'query',
+      params: action === 'find' ? { where, limit: FIND_LIMIT } : { where, count: true },
+      fields: action === 'find' ? select : { id: true }
+    };
+  }
+}
+
+export function compileSketch(
+  sketch: string | ActStep[],
+  schema: Readonly<Record<string, Schema>>,
+  options: CompileOptions
+): CompileResult {
+  let steps: ActStep[];
+  if (typeof sketch === 'string') {
+    const parsed = parseSketch(sketch);
+    if ('refusal' in parsed) return parsed;
+    steps = parsed.steps;
+  } else steps = sketch;
+  try {
+    return new Compiler(schema, options, steps).run();
+  } catch (e) {
+    if (e instanceof Refused) return { refusal: e.refusal };
+    throw e;
+  }
+}

@@ -18,6 +18,8 @@ export { RestrictViolation } from '@mnmal-ai/substrate-types';
  */
 
 export { usesWalkGrammar, walkGrammarPath } from '@mnmal-ai/substrate-filter';
+export { type CompileOptions, type CompileResult, compileSketch } from './act/compile.js';
+export { formatSketch, parseSketch } from './act/parse.js';
 export { assertActionGraph } from './act/validate.js';
 export {
   type ReadShape,
