@@ -15,7 +15,9 @@ import {
   aggType,
   canRaise,
   exprTypeOfField,
-  metadataExprType
+  groupWalkRefs,
+  metadataExprType,
+  type TypeRef
 } from '@mnmal-ai/substrate-filter';
 import type { Expr, ExprType, FieldDef, FrameAgg, OrderByClause } from '@mnmal-ai/substrate-types';
 import type { Sql, TransactionSql } from 'postgres';
@@ -23,6 +25,7 @@ import type { TypeTable } from '../type-table.js';
 import { exactNumeric } from './aggregate.js';
 import { compileExprTyped } from './expression.js';
 import type { Fragment } from './primitives.js';
+import { hop, type WalkScope } from './walk.js';
 
 /** 2^1024 − 2^970, the least value float8 rounds to Infinity, as an exact numeric. */
 const OVERFLOW = `${2n ** 1024n - 2n ** 970n}::numeric`;
@@ -54,12 +57,39 @@ export function buildGroupedRead(
   matched: Fragment,
   joins: Fragment,
   table: TypeTable,
-  fieldDef: (field: string) => FieldDef | undefined
+  fieldDef: (field: string) => FieldDef | undefined,
+  scope?: WalkScope
 ): GroupedStatement {
   const u = (s: string): Fragment => sql.unsafe(s);
-  const fieldType = (name: string) => exprTypeOfField(fieldDef(name));
+  // A walked key `"<crossRef>.<field>"` reads the far row through one LEFT JOIN per crossRef,
+  // so a seed row whose crossRef is null or names no live row keeps a null key and still counts.
+  const walked = new Map<string, Fragment>();
+  const walkedTypes = new Map<string, ExprType>();
+  const joined = new Map<string, { alias: string; type: TypeRef }>();
+  let walkJoins = sql``;
+  for (const ref of groupWalkRefs(spec.groupBy)) {
+    if (scope === undefined) throw new Error(`internal: walked group key '${ref}' has no scope`);
+    const [out = '', field = ''] = ref.split('.');
+    let j = joined.get(out);
+    if (j === undefined) {
+      const alias = scope.nextAlias();
+      const h = hop(sql, { out }, scope, alias, table);
+      walkJoins = sql`${walkJoins} LEFT JOIN ${u(h.from)} ${u(alias)} ON ${h.cond}`;
+      j = { alias, type: h.type };
+      joined.set(out, j);
+    }
+    const far = j.type;
+    const c = compileExprTyped(sql, field, {
+      table: scope.tableFor(far),
+      alias: j.alias,
+      fieldType: (f) => exprTypeOfField(scope.fieldDef(far, f))
+    });
+    walked.set(ref, c.fragment);
+    if (c.type !== null) walkedTypes.set(ref, c.type);
+  }
+  const fieldType = (name: string) => walkedTypes.get(name) ?? exprTypeOfField(fieldDef(name));
   const compile = (e: Expr) =>
-    compileExprTyped(sql, e, { table, alias: 'r', fieldType }) as {
+    compileExprTyped(sql, e, { table, alias: 'r', fieldType, outputs: walked }) as {
       fragment: Fragment;
       type: ExprType | null;
     };
@@ -126,7 +156,7 @@ export function buildGroupedRead(
   const grouped = sql`SELECT ${list([
     ...keys.map((k) => sql`${k.frag} AS ${u(`k${k.i}`)}`),
     ...aggs.map((a) => sql`${a.raw} AS ${u(`a${a.j}`)}`)
-  ])} FROM ${u(table.from)} r${joins} WHERE ${matched}${
+  ])} FROM ${u(table.from)} r${joins}${walkJoins} WHERE ${matched}${
     keys.length === 0 ? sql`` : sql` GROUP BY ${u(keys.map((_, i) => i + 1).join(', '))}`
   } OFFSET 0`;
   // Anything that can raise (an int64 sum, arithmetic in an argument) must raise for every group.

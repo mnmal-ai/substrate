@@ -34,6 +34,7 @@ import {
   fullBuiltinOperators,
   getFieldValue,
   groupRows,
+  groupWalkRefs,
   hop,
   isDateField,
   normalizeOrderBy,
@@ -362,10 +363,33 @@ export class MemoryDataset implements Dataset {
     // A count or whole-result aggregate returns no rows.
     if (params.count === true) return { rows: [], hasMore: false, count: pool.length };
     if (params.aggregate !== undefined) {
+      // A walked group key `"<crossRef>.<field>"` rides on a row copy under that name, read off
+      // the live row the out-walk reaches (none: null), so groupRows reads it as a field.
+      const walked = groupWalkRefs(params.groupBy).map((ref) => {
+        const [out = '', field = ''] = ref.split('.');
+        const def = fieldDefOf(out);
+        const far =
+          def?.kind === 'crossRef'
+            ? walk.fieldDefOf({ ns: def.ns, type: def.type })(field)
+            : undefined;
+        return { ref, out, field, far };
+      });
+      const rows =
+        walked.length === 0
+          ? pool
+          : pool.map((row) => {
+              const copy: Row = { ...row };
+              for (const w of walked) {
+                const [hit] = hop(row, { out: w.out }, ctxFor(row)).rows;
+                copy[w.ref] = hit === undefined ? null : (getFieldValue(hit, w.field) ?? null);
+              }
+              return copy;
+            });
+      const defOf: FieldDefOf = (f) => walked.find((w) => w.ref === f)?.far ?? fieldDefOf(f);
       const { groups, truncated } = groupRows(
-        pool,
+        rows,
         { ...params, aggregate: params.aggregate },
-        fieldTypeLookup(fieldDefOf),
+        fieldTypeLookup(defOf),
         limit
       );
       return { rows: [], hasMore: false, groups, ...(truncated ? { truncated: true } : {}) };

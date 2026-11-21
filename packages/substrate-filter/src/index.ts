@@ -120,6 +120,7 @@ export {
 } from './walk-forms.js';
 export {
   forEachWalkHop,
+  groupWalkRefs,
   type TypeRef,
   usesWalkGrammar,
   type WalkHop,

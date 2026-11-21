@@ -154,20 +154,21 @@ export function farTypeOf(
 
 /**
  * The seed and every type a read's walks reach (where, frame `agg`, nested, at
- * any depth), each in its namespace, seed first and each once: the types
+ * any depth, and walked group keys), each in its namespace, seed first and each once: the types
  * `tableFor` must be given before compiling (F19). The hops are
  * substrate-filter's `forEachWalkHop`, which substrate-core's walk sites and
  * walked types share. A hop naming no type is left to `hop`, which refuses it.
  */
 export function walkTypes(
-  params: { where?: unknown; agg?: unknown; nested?: unknown },
+  params: { where?: unknown; agg?: unknown; nested?: unknown; groupBy?: unknown },
   seed: TypeRef,
   fieldDef: (type: TypeRef, field: string) => FieldDef | undefined
 ): TypeRef[] {
   const types = new Map([[refKey(seed), seed]]);
   // The frame entry these params were split from: nested selections and `_agg` under `fields`.
   const fields = { ...(isObj(params.nested) ? params.nested : {}), _agg: params.agg };
-  forEachWalkHop({ params: { where: params.where }, fields }, seed, ({ node }, near) => {
+  const entry = { params: { where: params.where, groupBy: params.groupBy }, fields };
+  forEachWalkHop(entry, seed, ({ node }, near) => {
     const far = farTypeOf(node as { in?: string; out?: string }, near, fieldDef);
     if (far !== undefined) types.set(refKey(far), far);
     return far;

@@ -65,6 +65,7 @@ function build(walkReference = true) {
     resolver: async () => []
   });
   registry.register('Thing', {
+    fields: { name: { kind: 'scalar', type: 'string' } },
     resolver: async () => {
       reached++;
       return [];
@@ -156,6 +157,21 @@ describe('engine walk gate', () => {
     });
     expect(res.errors ?? []).toEqual([]);
     expect(reached()).toBe(1);
+  });
+
+  it('a walked group key is refused by a store without walks, and passes on one with them', async () => {
+    const f = {
+      'ns/Part': {
+        params: { aggregate: { n: { count: true } }, groupBy: { t: 'thing.name' } },
+        fields: { id: true }
+      }
+    };
+    const refused = await build(false).engine.query({ frame: f, ctx });
+    expect(refused.errors).toEqual([
+      expect.objectContaining({ code: 'walks_unsupported_store', path: ['ns/Part', 'aggregate'] })
+    ]);
+    const passed = await build(true).engine.query({ frame: f, ctx });
+    expect(passed.errors ?? []).toEqual([]);
   });
 });
 

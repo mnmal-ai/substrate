@@ -13,9 +13,12 @@ export interface TypeRef {
 
 /** One hop of a frame entry. */
 export interface WalkHop {
-  /** A `_walk` in a where, an `_agg` (in a where or in `fields._agg`), or a nested selection's `_walk`. */
-  kind: 'walk' | 'agg' | 'nested';
-  /** The hop node: the `_walk` or `_agg` object itself. */
+  /**
+   * A `_walk` in a where, an `_agg` (in a where or in `fields._agg`), a nested
+   * selection's `_walk`, or the out hop a walked group key reads through.
+   */
+  kind: 'walk' | 'agg' | 'nested' | 'group';
+  /** The hop node: the `_walk` or `_agg` object itself, or `{ out: <crossRef> }` for a group key. */
   node: Record<string, unknown>;
   /** The node's path inside the frame entry, e.g. `['where', 'AND', '0', '_walk']`. */
   path: string[];
@@ -26,14 +29,37 @@ export interface WalkHop {
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 
+/** Adds to `out` each walked field reference (`"<crossRef>.<field>"`) expression `e` reads. */
+function walkedRefsIn(e: unknown, out: Set<string>): void {
+  if (typeof e === 'string') {
+    if (e.includes('.') && !e.startsWith('_agg.')) out.add(e);
+  } else if (Array.isArray(e)) {
+    for (const x of e) walkedRefsIn(x, out);
+  } else if (isObj(e)) {
+    // A lit or int64 holds a value, not a field.
+    for (const [k, v] of Object.entries(e)) if (k !== 'lit' && k !== 'int64') walkedRefsIn(v, out);
+  }
+}
+
 /**
- * Visits every hop of a frame entry `{ params: { where }, fields }` seeded at
+ * The walked field references a frame's `groupBy` expressions read, each once:
+ * `"<crossRef>.<field>"` names `<field>` of the row the out-walk through `<crossRef>` reaches.
+ */
+export function groupWalkRefs(groupBy: unknown): string[] {
+  const out = new Set<string>();
+  if (isObj(groupBy)) for (const e of Object.values(groupBy)) walkedRefsIn(e, out);
+  return [...out];
+}
+
+/**
+ * Visits every hop of a frame entry `{ params: { where, groupBy }, fields }` seeded at
  * `seed`, at any depth, each before the hops beneath it. `visit` gets the hop
  * and its near type and returns the far type; the hops in the far rows'
  * wheres (a pick's `among` and the node's `where`, then a nested selection's own `where`) and a
  * nested selection's `fields` are visited next. Returning `undefined` stops the
  * descent below that hop. A where is searched generically, under AND/OR/NOT
- * and anywhere else, as the walk gate does.
+ * and anywhere else, as the walk gate does. Walked group keys are one out hop
+ * from the seed per crossRef, at the first `groupBy` entry that reads through it.
  */
 export function forEachWalkHop(
   entry: Record<string, unknown>,
@@ -88,6 +114,15 @@ export function forEachWalkHop(
   const params = isObj(entry.params) ? entry.params : {};
   inWhere(params.where, seed, ['where']);
   inFields(entry.fields, seed, ['fields']);
+  const heads = new Set<string>();
+  for (const [name, e] of Object.entries(isObj(params.groupBy) ? params.groupBy : {})) {
+    for (const ref of groupWalkRefs({ [name]: e })) {
+      const out = ref.slice(0, ref.indexOf('.'));
+      if (heads.has(out)) continue;
+      heads.add(out);
+      visit({ kind: 'group', node: { out }, path: ['groupBy', name] }, seed);
+    }
+  }
 }
 
 /** Path of the first `_walk`, `_agg` or `$ref` key anywhere in a where, under `path`, or null. */

@@ -876,7 +876,8 @@ export class PgDataset implements Dataset {
         matched,
         pickJoins,
         table,
-        (f) => fieldDef(seed, f)
+        (f) => fieldDef(seed, f),
+        scope
       );
       const rows = await run<{ g: number } & Record<string, unknown>>(
         sql`${withCtes(sql, scope)}${grouped.statement}`,

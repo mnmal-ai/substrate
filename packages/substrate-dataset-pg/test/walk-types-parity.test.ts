@@ -151,6 +151,15 @@ const CORPUS: Array<{ seed: TypeRef; params: Record<string, unknown>; reaches?: 
       nested: { paid: { _walk: { in: 'ext/Payment.invoice' }, fields: { amount: true } } }
     },
     reaches: ['app/Invoice', 'ext/Payment', 'app/Payment']
+  },
+  // A walked group key: one out hop, into another namespace.
+  {
+    seed: { ns: 'ext', type: 'Payment' },
+    params: {
+      aggregate: { n: { count: true } },
+      groupBy: { total: 'invoice.total', next: { add: ['invoice.total', 1] } }
+    },
+    reaches: ['ext/Payment', 'app/Invoice']
   }
 ];
 
@@ -158,7 +167,7 @@ const CORPUS: Array<{ seed: TypeRef; params: Record<string, unknown>; reaches?: 
 function entryOf(params: Record<string, unknown>): Record<string, unknown> {
   const fields = { ...((params.nested as object) ?? {}) } as Record<string, unknown>;
   if (params.agg !== undefined) fields._agg = params.agg;
-  return { params: { where: params.where }, fields };
+  return { params: { where: params.where, groupBy: params.groupBy }, fields };
 }
 
 describe('walkTypes reaches what core walkSites reaches', () => {

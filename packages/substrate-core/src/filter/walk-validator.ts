@@ -735,12 +735,57 @@ const AGG_EXPR_TYPE: Partial<Record<string, ExprType>> = {
   'scalar.string': 'string'
 };
 
-function exprScopeOf(scope: WalkScope, withAgg: boolean): ExprScope {
+/**
+ * The type of a walked field `"<crossRef>.<field>"`: the out hop through a
+ * top-level crossRef of the frame's type, resolved as any walk is (grant
+ * first), reaching a field of the far type an expression can read.
+ */
+function walkedFieldType(name: string, scope: WalkScope, path: string[]): ExprType {
+  const [head = '', field = '', ...more] = name.split('.');
+  const def = Object.hasOwn(scope.fields, head) ? scope.fields[head] : undefined;
+  // A list of crossRefs goes on to resolveHop, which refuses it as it does any walk.
+  if (def?.kind !== 'crossRef' && !(def?.kind === 'list' && def.of.kind === 'crossRef')) {
+    fail('expr_invalid', `unknown field '${name}': '${head}' is not a crossRef`, path);
+  }
+  if (more.length > 0) {
+    fail(
+      'expr_invalid',
+      `'${name}' walks more than one hop; a walked field is '<crossRef>.<field>'`,
+      path
+    );
+  }
+  const hop = resolveHop({ out: head }, path, scope);
+  const t = Object.hasOwn(hop.fields, field) ? exprTypeOfField(hop.fields[field]) : undefined;
+  if (t === undefined) {
+    fail(
+      'expr_invalid',
+      `unknown field '${name}': '${hop.ref.ns}/${hop.ref.type}' has no field '${field}' an expression can read (json, list and struct fields are not)`,
+      path
+    );
+  }
+  return t;
+}
+
+/** What a frame expression's bare strings name; `walked` lets a `groupBy` read walked fields. */
+function exprScopeOf(
+  scope: WalkScope,
+  withAgg: boolean,
+  walked: boolean,
+  path: string[]
+): ExprScope {
   return {
     field(name) {
       if (name.startsWith('_agg.')) {
         const kind = withAgg ? scope.aggs?.get(name.slice(5)) : undefined;
         return kind === undefined ? undefined : AGG_EXPR_TYPE[kind];
+      }
+      if (name.includes('.')) {
+        if (walked) return walkedFieldType(name, scope, path);
+        fail(
+          'expr_invalid',
+          `unknown field '${name}': a walked field ('<crossRef>.<field>') is read in groupBy only`,
+          path
+        );
       }
       return (
         (scope.outputsOnly ? undefined : metadataExprType(name)) ??
@@ -771,15 +816,19 @@ function refuseUnusableAgg(expr: unknown, scope: WalkScope, path: string[], dept
   }
 }
 
-/** Checks one expression of the frame, charging its nodes to the frame's budget; returns its type. */
+/**
+ * Checks one expression of the frame, charging its nodes to the frame's budget; returns its type.
+ * `walked`: a `groupBy` expression, which may read walked fields.
+ */
 export function checkFrameExpr(
   expr: unknown,
   scope: WalkScope,
   withAgg: boolean,
-  path: string[]
+  path: string[],
+  walked = false
 ): ExprType {
   if (withAgg) refuseUnusableAgg(expr, scope, path);
-  const r = checkExpr(expr as Expr, exprScopeOf(scope, withAgg), path);
+  const r = checkExpr(expr as Expr, exprScopeOf(scope, withAgg, walked, path), path);
   if (!r.ok) fail('expr_invalid', r.message, r.path);
   const used = scope.exprNodes ?? { count: 0 };
   used.count += r.nodes;
@@ -883,7 +932,7 @@ export function validateFrameParams(
       if (outputs.has(n)) {
         fail('group_invalid', `groupBy name '${n}' is also an aggregate name`, at);
       }
-      outputs.set(n, checkFrameExpr(expr, scope, false, at));
+      outputs.set(n, checkFrameExpr(expr, scope, false, at, true));
     }
   }
   if (p.having !== undefined) {

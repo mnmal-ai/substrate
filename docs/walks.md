@@ -408,6 +408,25 @@ These params shape the whole frame's answer rather than each row. They are docum
 - `limit` caps the groups and `offset` skips them.
 - Frame aggregate expressions cannot read `_agg.<name>`.
 
+### Grouping by a walked field
+
+Inside a `groupBy` expression, the bare string `"<crossRef>.<field>"` reads `<field>` on the row that the out-walk through `<crossRef>` reaches, much as `"_agg.<name>"` reads a walk aggregate. Suppose `app/Invoice` has `customer: →Customer` and `amount: int64`, and `app/Customer` has `region: string` and `signedUpAt: date`. Invoices summed per customer region:
+
+```json
+{ "app/Invoice": { "params": {
+  "aggregate": { "n": { "count": true }, "total": { "sum": "amount" } },
+  "groupBy": { "region": "customer.region" },
+  "orderBy": [{ "total": "desc" }]
+} } }
+```
+
+- **One hop, out only.** `<crossRef>` must be a top-level crossRef of the frame's type, so it reaches at most one row. `<field>` must be a top-level field of that row that an expression can read: not json, a list or a struct. `"a.b.c"` is refused.
+  - A list of crossRefs is refused with `walk_unsupported_ref`, as in any walk.
+  - Any other bad reference is `expr_invalid`.
+- **In `groupBy` only.** The reference may sit anywhere inside a `groupBy` expression, such as `{ "dateTrunc": [{ "lit": "month" }, "customer.signedUpAt"] }`, and it types as the far field does. `select`, aggregate arguments, `having` and `where.$expr` refuse it with `expr_invalid`. `having` reads the group's name instead.
+- **Null keys.** A null crossRef, or one that names a missing or deleted row, groups under a `null` key. The row still counts.
+- **The same gate as any `out` walk.** The caller's read grant on the far namespace is checked first, then the far type, the store and the far type's policy; see [Crossing namespaces](#crossing-namespaces). A store that does not answer walks refuses with `walks_unsupported_store`. The reference counts as one hop.
+
 ### `select` and ordering by derived values
 
 `select` maps names to expressions. Each row gains one key per entry, and `orderBy` may name it. A `select` expression can read the frame's walk aggregates as the bare string `"_agg.<name>"`. Jobs ordered by how far their timeout sits above their mean run time, tightest first:
@@ -464,7 +483,7 @@ Grammar refusals, before anything runs:
 | `agg_invalid` | A malformed `_agg` or `aggregate`: no function or more than one, an unknown key, a field of the wrong kind, a bad name, an empty map; a where-side `_agg` without a comparison or with another key beside it; `latest` as a frame aggregate; `groupBy`, `having` or `offset` without `aggregate`; `select`, `cursor`, `orderBy` or a field other than `id` on an aggregate frame. |
 | `group_invalid` | An empty or malformed `groupBy`, a bad name, or a name shared with an aggregate. |
 | `select_invalid` | A malformed `select`, a bad name, or a name that collides with a field, a row key or a nested selection. |
-| `expr_invalid` | An expression that does not type-check, a non-boolean `having` or `$expr`, an unusable `_agg` value, `$expr` inside a walk, or an expression over its node or depth limit. |
+| `expr_invalid` | An expression that does not type-check, a non-boolean `having` or `$expr`, an unusable `_agg` value, `$expr` inside a walk, a walked field (`"<crossRef>.<field>"`) that does not resolve or sits outside `groupBy`, or an expression over its node or depth limit. |
 | `count_conflict` | `count: true` with `aggregate`, `select`, `orderBy`, `cursor`, or a field other than `id`. |
 | `type_mismatch` | A wrong shape: an unknown walk or nested selection key, a malformed `pick`, a pick field of the wrong kind, `$ref` on an operator it does not allow, a bad `times` / `plus`, a date shift past `1e13` ms, a bad nested `limit` or `offset`, a nested selection without `fields`. |
 | `unknown_field` | A field the far type does not have, in a walk's `where` or `among`, a `pick`, or a nested selection; or `_metadata`, `shortId` or `_deletedAt` in a nested selection. |

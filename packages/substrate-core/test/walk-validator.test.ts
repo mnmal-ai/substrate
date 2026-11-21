@@ -1372,4 +1372,170 @@ describe('walks across namespaces', () => {
       "'amount' is not a crossRef field; 'Payment' has no crossRef to follow out"
     );
   });
+
+  it('resolves a walked group key as an out walk: grant first, then the far type and the store', () => {
+    const grouped = (key: string): Frame => ({
+      aggregate: { n: { count: true } },
+      groupBy: { g: key }
+    });
+    const r = resolvers((ns) => ns !== 'app');
+    const err = thrown(grouped('invoice.total'), r);
+    expect({ code: err.code, message: err.message, path: err.path }).toEqual({
+      ...DENIED,
+      path: ['groupBy', 'g']
+    });
+    expect(wire(err)).toBe(
+      wire(
+        thrown(
+          { where: { _walk: { out: 'invoice' } } },
+          resolvers((ns) => ns !== 'app')
+        )
+      ).replace('["where","_walk"]', '["groupBy","g"]')
+    );
+    expect(r.schemaOf).not.toHaveBeenCalledWith('app');
+    const all = resolvers(() => true);
+    expect(thrown(grouped('hit.score'), all)).toMatchObject({
+      code: 'walk_unknown_ref',
+      path: ['groupBy', 'g', 'out']
+    });
+    expect(thrown(grouped('ledger.payment'), all)).toMatchObject({
+      code: 'walk_cross_store',
+      path: ['groupBy', 'g', 'out']
+    });
+    expect(() =>
+      validateFilter({
+        ...grouped('invoice.total'),
+        typeSchema: SPACES.ext?.Payment as TypeSchema,
+        capabilities: CAPS,
+        namespace: 'ext',
+        typeName: 'Payment',
+        ...all
+      })
+    ).not.toThrow();
+  });
+});
+
+describe('walked group keys', () => {
+  const APP: Record<string, TypeSchema> = {
+    Customer: {
+      fields: {
+        region: { kind: 'scalar', type: 'string' },
+        signedUpAt: { kind: 'scalar', type: 'date' },
+        notes: { kind: 'scalar', type: 'json' },
+        address: { kind: 'struct', fields: { city: { kind: 'scalar', type: 'string' } } }
+      }
+    },
+    Invoice: {
+      fields: {
+        customer: ref('Customer', 'app'),
+        amount: { kind: 'scalar', type: 'int64' },
+        payers: { kind: 'list', of: ref('Customer', 'app') }
+      }
+    }
+  };
+  const run = (frame: Frame): void =>
+    validateFilter({
+      ...frame,
+      typeSchema: APP.Invoice as TypeSchema,
+      capabilities: CAPS,
+      schemaOf: (ns) => (ns === 'app' ? APP : undefined),
+      namespace: 'app',
+      typeName: 'Invoice'
+    });
+  const refused = (frame: Frame): FilterValidationError => {
+    try {
+      run(frame);
+    } catch (err) {
+      if (err instanceof FilterValidationError) return err;
+      throw err;
+    }
+    throw new Error('expected a refusal');
+  };
+  const n = { n: { count: true } };
+
+  it('accepts the example, and a walked field anywhere inside a groupBy expression', () => {
+    expect(() =>
+      run({
+        aggregate: { n: { count: true }, total: { sum: 'amount' } },
+        groupBy: { region: 'customer.region' },
+        orderBy: [{ total: 'desc' }]
+      })
+    ).not.toThrow();
+    expect(() =>
+      run({
+        aggregate: n,
+        groupBy: { month: { dateTrunc: [{ lit: 'month' }, 'customer.signedUpAt'] } }
+      })
+    ).not.toThrow();
+    // `having` sees the group name, not the walked field.
+    expect(() =>
+      run({
+        aggregate: n,
+        groupBy: { region: 'customer.region' },
+        having: { eq: ['region', { lit: 'north' }] }
+      })
+    ).not.toThrow();
+  });
+
+  it("types a walked field as the far field's expression type", () => {
+    const err = refused({
+      aggregate: n,
+      groupBy: { month: { dateTrunc: [{ lit: 'month' }, 'customer.region'] } }
+    });
+    expect({ code: err.code, path: err.path }).toEqual({
+      code: 'expr_invalid',
+      path: ['groupBy', 'month', 'dateTrunc', '1']
+    });
+  });
+
+  it('refuses an unknown or unreadable far field, a head that is no crossRef, and a second hop', () => {
+    for (const key of [
+      'customer.nope',
+      'customer.notes',
+      'customer.address',
+      'amount.x',
+      'nope.region',
+      'customer.region.x'
+    ]) {
+      const err = refused({ aggregate: n, groupBy: { g: key } });
+      expect({ code: err.code, path: err.path }, key).toEqual({
+        code: 'expr_invalid',
+        path: ['groupBy', 'g']
+      });
+      expect(err.message, key).toContain(`'${key}'`);
+    }
+  });
+
+  it('refuses a list of crossRefs as a walk does', () => {
+    const err = refused({ aggregate: n, groupBy: { g: 'payers.region' } });
+    expect({ code: err.code, path: err.path }).toEqual({
+      code: 'walk_unsupported_ref',
+      path: ['groupBy', 'g', 'out']
+    });
+  });
+
+  it('refuses a walked field outside groupBy, naming groupBy', () => {
+    const forms: Array<[Frame, string[]]> = [
+      [{ select: { r: 'customer.region' } }, ['select', 'r']],
+      [{ aggregate: { m: { min: 'customer.region' } } }, ['aggregate', 'm', 'min']],
+      [
+        {
+          aggregate: n,
+          groupBy: { region: 'customer.region' },
+          having: { eq: ['customer.region', { lit: 'north' }] }
+        },
+        ['having']
+      ],
+      [{ where: { $expr: { eq: ['customer.region', { lit: 'north' }] } } }, ['where', '$expr']]
+    ];
+    for (const [frame, path] of forms) {
+      const err = refused(frame);
+      expect({ code: err.code, path: err.path }, JSON.stringify(frame)).toEqual({
+        code: 'expr_invalid',
+        path
+      });
+      expect(err.message).toContain("'customer.region'");
+      expect(err.message).toContain('groupBy');
+    }
+  });
 });

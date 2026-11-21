@@ -58,4 +58,25 @@ describe('forEachWalkHop', () => {
     );
     expect(nears[1]).toEqual(next);
   });
+
+  it('visits one out hop from the seed per crossRef a walked group key reads through', () => {
+    const seen: string[] = [];
+    const groupBy = {
+      region: 'customer.region',
+      month: { dateTrunc: [{ lit: 'a.b' }, 'customer.signedUpAt'] },
+      rep: { coalesce: ['owner.name', '_agg.n', 'status'] }
+    };
+    forEachWalkHop(
+      { params: { groupBy } },
+      { ns: 'x', type: 'S' },
+      ({ kind, node, path }, near) => {
+        seen.push(`${kind} ${near.type} ${JSON.stringify(node)} ${path.join('.')}`);
+        return undefined;
+      }
+    );
+    expect(seen).toEqual([
+      'group S {"out":"customer"} groupBy.region',
+      'group S {"out":"owner"} groupBy.rep'
+    ]);
+  });
 });

@@ -182,7 +182,10 @@ export interface ReadParams {
   /** Return a match count (`ReadResult.count`). */
   count?: boolean;
   aggregate?: Record<string, FrameAgg>;
-  /** Group keys by output name; with `aggregate`, the read returns one group per distinct key tuple. */
+  /**
+   * Group keys by output name; with `aggregate`, the read returns one group per distinct key tuple.
+   * A key may read `"<crossRef>.<field>"`, the field of the row an out-walk reaches (null without one).
+   */
   groupBy?: Record<string, Expr>;
   /** A boolean expression over group keys and aggregate names, applied before order and limit. */
   having?: Expr;
