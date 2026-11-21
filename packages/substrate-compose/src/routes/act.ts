@@ -8,6 +8,7 @@
 
 import type {
   ActHandle,
+  ActInput,
   ActRequest,
   HttpHandler,
   SubstrateRequest,
@@ -20,7 +21,7 @@ const MAX_IDEMPOTENCY_KEY = 256;
 
 const isNonEmptyString = (v: unknown): v is string => typeof v === 'string' && v !== '';
 
-/** The first malformed field's message, or the request. */
+/** The first malformed field's message, or the request's known fields. */
 function parseActBody(value: unknown): ActRequest | string {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return 'body must be an object';
@@ -45,7 +46,12 @@ function parseActBody(value: unknown): ActRequest | string {
   ) {
     return `idempotencyKey must be a non-empty string of at most ${MAX_IDEMPOTENCY_KEY} characters`;
   }
-  return b as unknown as ActRequest;
+  return {
+    sketch: sketch as ActRequest['sketch'],
+    ...(mode !== undefined ? { mode } : {}),
+    ...(namespace !== undefined ? { namespace } : {}),
+    ...(idempotencyKey !== undefined ? { idempotencyKey } : {})
+  };
 }
 
 /** Auth on and no identity: an admitted anonymous read, which cannot act. */
@@ -60,7 +66,8 @@ const anonymousRefusal = (
 export function actRoute(
   engine: ActHandle,
   trustedProxies: Set<string>,
-  authEnabled?: boolean
+  authEnabled?: boolean,
+  pageLimits?: ActInput['pageLimits']
 ): HttpHandler {
   return async (req) => {
     const refused = anonymousRefusal(req, authEnabled);
@@ -72,6 +79,7 @@ export function actRoute(
     const response = await engine.act({
       ...request,
       ctx: buildContext(req, trustedProxies, authEnabled),
+      ...(pageLimits !== undefined ? { pageLimits } : {}),
       ...(req.signal !== undefined ? { signal: req.signal } : {})
     });
     return jsonResponse(200, response);

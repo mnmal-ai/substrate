@@ -447,6 +447,34 @@ describe('Engine.act', () => {
     });
   });
 
+  it("caps a find at the transport's page maximum", async () => {
+    const { engine, work } = boot();
+    await work.write(
+      'Note',
+      Array.from({ length: 25 }, (_, i) => ({ title: `n${i}` }))
+    );
+    const r = await engine.act({
+      sketch: 'find Note',
+      ctx: as(alice),
+      pageLimits: { defaultLimit: 5, maxLimit: 10 }
+    });
+    expect(r).toMatchObject({ ok: true, ack: '10 work/Note rows (truncated)' });
+    const step = (await recordOf(engine, r)).steps[0];
+    expect(step?.rows).toHaveLength(10);
+    expect(step?.truncated).toBe(true);
+  });
+
+  it('refuses a mode it does not know before running anything', async () => {
+    const { engine, work } = boot();
+    const mode = 'commit' as unknown as 'write';
+    expect(await engine.act({ sketch: 'create Note title=x', mode, ctx: as(alice) })).toEqual({
+      ok: false,
+      error: { code: 'bad_request', message: "mode must be 'write' or 'dry-run'" },
+      result: null
+    });
+    expect(await all(work, 'Note')).toHaveLength(0);
+  });
+
   it('answers a committed write without a result when the store fails', async () => {
     const failing: ActResultStore = {
       put: async () => {

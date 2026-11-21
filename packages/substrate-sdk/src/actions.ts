@@ -53,7 +53,9 @@ function assertAction(
       fail(`${typeName}.${field} is server-set`);
     }
     if (isParamRef(value)) {
-      if (params[value.param] === undefined) fail(`set uses undeclared param '${value.param}'`);
+      const param = params[value.param];
+      if (param === undefined) fail(`set uses undeclared param '${value.param}'`);
+      if ('list' in param) fail(`set field '${field}' cannot take list param '${value.param}'`);
       used.add(value.param);
     } else if (isNow(value)) {
       if (def.kind !== 'scalar' || def.type !== 'date') fail('{ now: true } needs a date field');

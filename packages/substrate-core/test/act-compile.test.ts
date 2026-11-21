@@ -386,6 +386,7 @@ describe('compileSketch plans', () => {
   it('is byte-stable', () => {
     const sketch =
       'log SessionLog summary=s branch=b closes=#1,#2; update Todo #3 big=9007199254740993 notes=n; find Todo status=open';
+    expect('plan' in compile(sketch)).toBe(true);
     const json = () =>
       JSON.stringify(compile(sketch), (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
     expect(json()).toBe(json());
@@ -395,7 +396,9 @@ describe('compileSketch plans', () => {
     const ast: ActStep[] = [
       { action: 'close', type: 'Todo', refs: ['#2014'], args: { resolution: 'wont_do' } }
     ];
-    expect(compile(ast)).toEqual(compile('close Todo #2014 resolution=wont_do'));
+    const r = compile(ast);
+    expect('plan' in r).toBe(true);
+    expect(r).toEqual(compile('close Todo #2014 resolution=wont_do'));
   });
 });
 
@@ -547,6 +550,48 @@ describe('compileSketch refusals', () => {
 
   it('refuses as on a step with several records', () => {
     expect(compile('close Todo #1 #2 as $t')).toEqual(refusal(1, '$t', 'as needs a single record'));
+  });
+
+  it('echoes a long token clipped and skips its nearest search', () => {
+    const many = Object.fromEntries(
+      Array.from({ length: 60 }, (_, i) => [`Type${i}`, { fields: { title: str } }])
+    );
+    const s = { ...schema, wide: publish('wide', many) };
+    const r = compile(`find ${'X'.repeat(900_000)}`, opts, s);
+    if (!('refusal' in r)) throw new Error('expected a refusal');
+    expect(r.refusal.nearest).toBeNull();
+    expect(r.refusal.choices).toContain('Type0');
+    expect(r.refusal.token).toBe(`${'X'.repeat(64)}…`);
+    expect(r.refusal.problem.length).toBeLessThan(200);
+  });
+
+  it('refuses a crossRef shortId into a namespace that is not local', () => {
+    const link = publish('work', {
+      Link: {
+        fields: {
+          title: str,
+          todo: { kind: 'crossRef', ns: 'other', type: 'Todo', onDelete: 'set_null' }
+        }
+      }
+    });
+    const s = { ...schema, work: link };
+    const local = { localNamespaces: new Set(['work']), defaultNamespace: 'work' };
+    expect(compile('create Link title=x todo=#7', local, s)).toEqual(
+      refusal(1, '#7', 'other is bridged or virtual; act runs on local stores only')
+    );
+    // A full id is a literal, written as `mutate` writes it.
+    const plan = compile('create Link title=x todo=t_1', local, s);
+    expect(plan).toMatchObject({ plan: { steps: [{ params: { title: 'x', todo: 't_1' } }] } });
+  });
+
+  it('refuses an id arg on a write', () => {
+    for (const sketch of [
+      'update Todo #1 id=x',
+      'create Todo title=t id=x',
+      'close Todo #1 id=x'
+    ]) {
+      expect(compile(sketch)).toEqual(refusal(1, 'id', 'id comes from the reference'));
+    }
   });
 
   it('refuses a malformed AST step', () => {

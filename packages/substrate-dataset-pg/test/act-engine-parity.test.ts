@@ -1,7 +1,8 @@
 /**
  * `Engine.act` on pg: two namespaces on one pool coalesce into one
  * transaction, a failing step rolls every earlier step back, a dry run writes
- * nothing, an int64 past 2^53 lands exactly, and records go to
+ * nothing, an int64 past 2^53 lands exactly, a crossRef `#N` or binding
+ * stores the real id, and records go to
  * `PgActResultStore`. The memory counterpart is the SDK's `act-engine.test.ts`.
  */
 
@@ -35,7 +36,7 @@ const defs: Record<string, Record<string, Record<string, FieldDef>>> = {
       status: field.enum(['open', 'closed'], { default: 'open' }),
       archived: field.boolean({ default: false })
     },
-    Note: { title: field.string() },
+    Note: { title: field.string(), todo: field.crossRef(WORK, 'Todo') },
     Thing: { big: field.int64({ nullable: true }) }
   },
   [JOURNAL]: {
@@ -201,5 +202,32 @@ describe.skipIf(!POSTGRES_URL)('Engine.act on pg', () => {
     const r = await engine.act({ sketch: `update Thing #${t.shortId} big=9007199254740993`, ctx });
     expect(r).toMatchObject({ ok: true });
     expect((await read('Thing', t.id))?.big).toBe(9007199254740993n);
+  });
+
+  it('stores the real id for a crossRef shortId and for a binding', async () => {
+    const a = await create('Todo', { title: 'a' });
+    const r = await engine.act({ sketch: `create Note title=x todo=#${a.shortId}`, ctx });
+    expect(r).toMatchObject({ ok: true });
+    const byShortId = await engine.query({
+      frame: { [`${WORK}/Note`]: { params: { where: { title: { eq: 'x' } } } } },
+      ctx
+    });
+    expect((byShortId.data[`${WORK}/Note`] as Row[])[0]?.todo).toBe(a.id);
+
+    const bound = await engine.act({
+      sketch: 'create Todo title=b as $t; create Note title=y todo=$t',
+      ctx
+    });
+    expect(bound).toMatchObject({ ok: true });
+    const env = await engine.query({
+      frame: {
+        [`${WORK}/Note`]: { params: { where: { title: { eq: 'y' } } } },
+        [`${WORK}/Todo`]: { params: { where: { title: { eq: 'b' } } } }
+      },
+      ctx
+    });
+    const todo = (env.data[`${WORK}/Todo`] as Row[])[0];
+    expect(todo?.id).toBeDefined();
+    expect((env.data[`${WORK}/Note`] as Row[])[0]?.todo).toBe(todo?.id);
   });
 });

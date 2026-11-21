@@ -1220,6 +1220,13 @@ export class Engine implements ActHandle {
    * commit only, and a result record only the caller can read.
    */
   async act(input: ActInput): Promise<ActResponse> {
+    if (input.mode !== undefined && input.mode !== 'write' && input.mode !== 'dry-run') {
+      return {
+        ok: false,
+        error: { code: 'bad_request', message: "mode must be 'write' or 'dry-run'" },
+        result: null
+      };
+    }
     const identity = input.ctx.identity ?? null;
     if (identity === null) {
       return {
@@ -1384,8 +1391,12 @@ export class Engine implements ActHandle {
         }
         return envelope;
       };
+      const maxLimit = input.pageLimits?.maxLimit;
       for (const step of steps) {
         const params = { ...step.params };
+        if (step.action === 'find' && maxLimit !== undefined) {
+          params.limit = Math.min(Number(params.limit), maxLimit);
+        }
         for (const [field, late] of Object.entries(step.late ?? {})) {
           if ('bind' in late) params[field] = binds.get(late.bind);
           else if ('now' in late) params[field] = now.toISOString();

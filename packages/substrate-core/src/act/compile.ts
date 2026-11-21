@@ -21,7 +21,7 @@ import {
   type TypeSchema,
   toActionSchema
 } from '@mnmal-ai/substrate-types';
-import { coerceValue } from './coerce.js';
+import { clipToken, coerceValue, TOKEN_ECHO } from './coerce.js';
 import { typeHelp, typesHelp } from './help.js';
 import { formatSketch, parseSketch } from './parse.js';
 
@@ -68,6 +68,13 @@ function levenshtein(a: string, b: string): number {
     prev = cur;
   }
   return prev[b.length] as number;
+}
+
+/** A refusal echoes a long token clipped, in `token` and in `problem`. */
+function clipped(r: ActRefusal): ActRefusal {
+  if (r.token.length <= TOKEN_ECHO) return r;
+  const short = clipToken(r.token);
+  return { ...r, token: short, problem: r.problem.replaceAll(r.token, short) };
 }
 
 const isValue = (v: unknown): boolean =>
@@ -153,7 +160,10 @@ class Compiler {
     return this.steps[this.#n - 1] as ActStep;
   }
 
-  /** Throws the refusal. `nearest` swaps in the choice closest to `token` under `key`. */
+  /**
+   * Throws the refusal. `nearest` swaps in the choice closest to `token` under
+   * `key`; a token too long to echo gets none, so its distance is never measured.
+   */
   #refuse(
     token: string,
     problem: string,
@@ -163,7 +173,7 @@ class Compiler {
   ): never {
     const sorted = [...new Set(choices)].sort();
     let nearest: string | null = null;
-    if (swap !== undefined && sorted.length > 0) {
+    if (swap !== undefined && sorted.length > 0 && token.length <= TOKEN_ECHO) {
       let best = sorted[0] as string;
       let bestDistance = Number.POSITIVE_INFINITY;
       for (const c of sorted) {
@@ -222,16 +232,16 @@ class Compiler {
     return this.#refuse(token, `unknown type '${token}'`, all(false), swap);
   }
 
-  #local(target: Target, token: string): void {
-    if (!this.options.localNamespaces.has(target.ns)) {
-      this.#refuse(token, `${target.ns} is bridged or virtual; act runs on local stores only`);
+  #local(ns: string, token: string): void {
+    if (!this.options.localNamespaces.has(ns)) {
+      this.#refuse(token, `${ns} is bridged or virtual; act runs on local stores only`);
     }
   }
 
   #compileStep(step: ActStep, out: Draft[]): void {
     if (step.type === undefined) this.#refuse(step.action, 'missing type');
     const target = this.#resolveType(step.type);
-    this.#local(target, step.type);
+    this.#local(target.ns, step.type);
     const refs = step.refs ?? [];
     const args = step.args ?? {};
 
@@ -342,7 +352,7 @@ class Compiler {
     if (action.kind === 'create') {
       this.#refuse(this.#step.action, `then target ${then.action} is a create action`);
     }
-    this.#local(target, this.#step.action);
+    this.#local(target.ns, this.#step.action);
     return { target, name, action };
   }
 
@@ -363,12 +373,16 @@ class Compiler {
     return this.#refuse(String(raw), `${name}: ${r.problem}`, choices, swap);
   }
 
-  /** A write value. A crossRef may name a binding or a shortId, both resolved at execution. */
+  /**
+   * A write value. A crossRef may name a binding or a shortId, both resolved at
+   * execution; a shortId is looked up on its target, which must be local.
+   */
   #writeValue(def: FieldDef, raw: ActValue, name: string, swap?: Swap): Resolved {
     if (def.kind === 'crossRef' && typeof raw === 'string') {
       if (raw.startsWith('$')) return this.#resolveRef(raw);
       const shortId = /^#\d+$/.test(raw) ? Number(raw.slice(1)) : undefined;
       if (shortId !== undefined && Number.isSafeInteger(shortId)) {
+        this.#local(def.ns, raw);
         return { late: { ref: { type: `${def.ns}/${def.type}`, shortId } } };
       }
     }
@@ -392,6 +406,7 @@ class Compiler {
     const extras: Array<[string, Resolved]> = [];
 
     for (const [arg, raw] of Object.entries(args)) {
+      if (arg === 'id') this.#refuse(arg, 'id comes from the reference');
       const param = Object.hasOwn(action.params, arg) ? action.params[arg] : undefined;
       if (param !== undefined) {
         if ('list' in param) lists.set(arg, asList(raw));
@@ -501,13 +516,13 @@ export function compileSketch(
   let steps: ActStep[];
   if (typeof sketch === 'string') {
     const parsed = parseSketch(sketch);
-    if ('refusal' in parsed) return parsed;
+    if ('refusal' in parsed) return { refusal: clipped(parsed.refusal) };
     steps = parsed.steps;
   } else steps = sketch;
   try {
     return new Compiler(schema, options, steps).run();
   } catch (e) {
-    if (e instanceof Refused) return { refusal: e.refusal };
+    if (e instanceof Refused) return { refusal: clipped(e.refusal) };
     throw e;
   }
 }

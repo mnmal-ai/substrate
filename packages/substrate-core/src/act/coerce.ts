@@ -21,6 +21,12 @@ const INT = /^-?(0|[1-9]\d*)$/;
 
 const ok = (value: unknown): Coerced => ({ ok: true, value });
 
+/** Longest token a refusal echoes or measures against its choices. */
+export const TOKEN_ECHO = 64;
+/** `s`, or its first `TOKEN_ECHO` characters and `…` when longer. */
+export const clipToken = (s: string): string =>
+  s.length > TOKEN_ECHO ? `${s.slice(0, TOKEN_ECHO)}…` : s;
+
 function isNullable(def: FieldDef): boolean {
   if (def.kind === 'crossRef') return def.nullable ?? def.onDelete === 'set_null';
   if (def.kind === 'scalar') return def.nullable === true || def.type === 'json';
@@ -30,7 +36,7 @@ function isNullable(def: FieldDef): boolean {
 export function coerceValue(def: FieldDef, value: ActValue): Coerced {
   const fail = (what: string): Coerced => ({
     ok: false,
-    problem: `${typeof value === 'string' ? `'${value}'` : String(value)} is not ${what}`
+    problem: `${typeof value === 'string' ? `'${clipToken(value)}'` : String(value)} is not ${what}`
   });
   if (value === null)
     return isNullable(def) ? ok(null) : { ok: false, problem: 'null is not allowed' };

@@ -99,6 +99,20 @@ describe('substrate act', () => {
     expect(r).toEqual({ code: 1, out: 'failed at step 2: not_found: gone\nresult r_y\n' });
   });
 
+  it('a failure or refusal with no step names none', async () => {
+    const failed = await run(['x'], {
+      ok: false,
+      error: { code: 'unauthorized', message: 'act needs a signed caller' },
+      result: null
+    });
+    expect(failed).toEqual({ code: 1, out: 'failed: unauthorized: act needs a signed caller\n' });
+    const refused = await run(['x'], {
+      ok: false,
+      refusal: { step: null, problem: 'p', choices: [], nearest: null }
+    });
+    expect(refused.out).toBe('refused: p\n');
+  });
+
   it('help prints the help JSON; --json prints any reply as JSON', async () => {
     const help = await run(['?'], { ok: true, help: { types: { work: { Todo: ['close'] } } } });
     expect(help.code).toBe(0);

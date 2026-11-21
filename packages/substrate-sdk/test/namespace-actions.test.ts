@@ -71,6 +71,13 @@ describe('defineNamespace actions', () => {
     rejects({ close: { set: { notes: { param: 'y' } } } }, "set uses undeclared param 'y'");
   });
 
+  it('refuses a list param in set', () => {
+    rejects(
+      { close: { params: { items: { list: 'work/Todo' } }, set: { notes: { param: 'items' } } } },
+      "set field 'notes' cannot take list param 'items'"
+    );
+  });
+
   it('refuses a param nothing uses', () => {
     rejects(
       { close: { params: { x: { type: field.string() } }, set: { status: 'closed' } } },

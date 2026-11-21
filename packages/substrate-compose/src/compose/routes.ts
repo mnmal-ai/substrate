@@ -194,7 +194,7 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
   server.route(
     'POST',
     '/substrate/v1/act',
-    gate(actRoute(engine, trustedProxies, auth !== undefined), 'read')
+    gate(actRoute(engine, trustedProxies, auth !== undefined, args.pageLimits), 'read')
   );
   server.route(
     'GET',

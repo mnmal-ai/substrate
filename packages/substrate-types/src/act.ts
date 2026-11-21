@@ -145,6 +145,8 @@ export interface ActRequest {
 export interface ActInput extends ActRequest {
   ctx: EngineInput['ctx'];
   signal?: AbortSignal;
+  /** Caps each `find` step's page at `maxLimit`, as for a query from the same transport. */
+  pageLimits?: EngineInput['pageLimits'];
 }
 export type ActResponse =
   | { ok: true; ack: string; result: string | null }

@@ -7,9 +7,11 @@
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
 import { defineNamespace, field } from '@mnmal-ai/substrate-sdk';
 import { MemorySubstrateServer } from '@mnmal-ai/substrate-server-memory';
+import type { ActHandle, ActInput } from '@mnmal-ai/substrate-types';
 import { afterEach, describe, expect, it } from 'vitest';
 import { signHs256 } from '../src/auth.js';
 import { compose } from '../src/compose.js';
+import { actRoute } from '../src/routes/act.js';
 
 interface ActJson {
   ok?: boolean;
@@ -166,5 +168,48 @@ describe('act routes with auth off', () => {
     const rec = await call('GET', `/substrate/v1/act/results/${done.json.result}`);
     expect(rec.status).toBe(200);
     expect(rec.json.owner).toBe('local-dev');
+  });
+});
+
+describe('actRoute', () => {
+  it('passes the known request fields and the page limits to the engine, nothing else', async () => {
+    const seen: ActInput[] = [];
+    const engine: ActHandle = {
+      act: async (input) => {
+        seen.push(input);
+        return { ok: true, ack: 'a', result: null };
+      },
+      actResult: async () => undefined
+    };
+    const pageLimits = { defaultLimit: 5, maxLimit: 10 };
+    const route = actRoute(engine, new Set(), false, pageLimits);
+    const body = {
+      sketch: 'find Todo',
+      mode: 'dry-run',
+      namespace: 'work',
+      idempotencyKey: 'k',
+      ctx: { identity: { id: 'forged' } },
+      extra: 1
+    };
+    const res = await route({
+      method: 'POST',
+      path: '/substrate/v1/act',
+      headers: {},
+      query: {},
+      params: {},
+      body: Buffer.from(JSON.stringify(body))
+    });
+    expect(res.status).toBe(200);
+    const [input] = seen as [ActInput];
+    expect(Object.keys(input).sort()).toEqual([
+      'ctx',
+      'idempotencyKey',
+      'mode',
+      'namespace',
+      'pageLimits',
+      'sketch'
+    ]);
+    expect(input.ctx.identity).toBeNull();
+    expect(input.pageLimits).toEqual(pageLimits);
   });
 });
