@@ -768,6 +768,21 @@ describe.skipIf(!POSTGRES_URL)('walk parity across namespaces, memory and pg', (
     expect(params.orderBy === undefined ? got.sort() : got).toEqual(expected);
   });
 
+  it('groups by a field of the row a crossing out-walk reaches; a dead or null ref keys null', async () => {
+    const params = {
+      aggregate: { n: { count: true } },
+      groupBy: { status: 'obs.status' }
+    } as unknown as ReadParams;
+    const groups = (await mem.A.read('Ticket', params)).groups;
+    expect((await pg.A.read('Ticket', params)).groups).toEqual(groups);
+    // tk5's observation o7 is tombstoned and tk6 has none.
+    expect(groups).toEqual([
+      { status: 'listed', n: 2 },
+      { status: 'sold', n: 2 },
+      { status: null, n: 2 }
+    ]);
+  });
+
   it('a crossing date _agg select keeps microseconds and orders by instant', async () => {
     const params: ReadParams = {
       agg: agg({ last: { in: OBS, max: 'observedAt' } }),

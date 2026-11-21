@@ -17,6 +17,7 @@ import {
   exprTypeOfField,
   groupWalkRefs,
   metadataExprType,
+  splitWalkedRef,
   type TypeRef
 } from '@mnmal-ai/substrate-filter';
 import type { Expr, ExprType, FieldDef, FrameAgg, OrderByClause } from '@mnmal-ai/substrate-types';
@@ -69,7 +70,7 @@ export function buildGroupedRead(
   let walkJoins = sql``;
   for (const ref of groupWalkRefs(spec.groupBy)) {
     if (scope === undefined) throw new Error(`internal: walked group key '${ref}' has no scope`);
-    const [out = '', field = ''] = ref.split('.');
+    const { out, field } = splitWalkedRef(ref);
     let j = joined.get(out);
     if (j === undefined) {
       const alias = scope.nextAlias();

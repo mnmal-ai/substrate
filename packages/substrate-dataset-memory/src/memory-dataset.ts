@@ -40,6 +40,7 @@ import {
   normalizeOrderBy,
   outOfRange,
   preResolveExtensionOperatorsDetailed,
+  splitWalkedRef,
   storedMicros,
   WALK_EVALUATION_BUDGET,
   type WalkContext,
@@ -366,7 +367,7 @@ export class MemoryDataset implements Dataset {
       // A walked group key `"<crossRef>.<field>"` rides on a row copy under that name, read off
       // the live row the out-walk reaches (none: null), so groupRows reads it as a field.
       const walked = groupWalkRefs(params.groupBy).map((ref) => {
-        const [out = '', field = ''] = ref.split('.');
+        const { out, field } = splitWalkedRef(ref);
         const def = fieldDefOf(out);
         const far =
           def?.kind === 'crossRef'

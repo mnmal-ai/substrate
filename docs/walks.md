@@ -425,7 +425,7 @@ Inside a `groupBy` expression, the bare string `"<crossRef>.<field>"` reads `<fi
   - Any other bad reference is `expr_invalid`.
 - **In `groupBy` only.** The reference may sit anywhere inside a `groupBy` expression, such as `{ "dateTrunc": [{ "lit": "month" }, "customer.signedUpAt"] }`, and it types as the far field does. `select`, aggregate arguments, `having` and `where.$expr` refuse it with `expr_invalid`. `having` reads the group's name instead.
 - **Null keys.** A null crossRef, or one that names a missing or deleted row, groups under a `null` key. The row still counts.
-- **The same gate as any `out` walk.** The caller's read grant on the far namespace is checked first, then the far type, the store and the far type's policy; see [Crossing namespaces](#crossing-namespaces). A store that does not answer walks refuses with `walks_unsupported_store`. The reference counts as one hop.
+- **The same gate as any `out` walk.** The caller's read grant on the far namespace is checked first, then the far type, the store and the far type's policy; see [Crossing namespaces](#crossing-namespaces). A store that does not answer walks refuses with `walks_unsupported_store`. The reference counts as one hop. A validation refusal's path is the expression node that holds the reference, such as `[..., 'groupBy', 'month', 'dateTrunc', '1']`.
 
 ### `select` and ordering by derived values
 

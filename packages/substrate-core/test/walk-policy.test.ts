@@ -451,10 +451,13 @@ describe('walk grammar outside validated query paths', () => {
       datasets: new MemoryDatasetRegistry(),
       edges: new MemoryEdgesStore({ now: () => new Date('2026-04-18T00:00:00Z') })
     });
-    const params = { count: true, aggregate: 'sum', groupBy: 'day', having: 1, offset: 2 };
-    const res = await engine.query({ frame: { 'v/Hit': { params, fields: { id: true } } }, ctx });
-    expect(res.errors).toBeUndefined();
-    expect(got).toMatchObject(params);
+    for (const groupBy of ['day', { by: 'labels.team' }]) {
+      const params = { count: true, aggregate: 'sum', groupBy, having: 1, offset: 2 };
+      const res = await engine.query({ frame: { 'v/Hit': { params, fields: { id: true } } }, ctx });
+      expect(res.errors, JSON.stringify(groupBy)).toBeUndefined();
+      expect(got).toMatchObject(params);
+      got = undefined;
+    }
     const agg = await engine.query({
       frame: {
         'v/Hit': { params: {}, fields: { id: true, _agg: { n: { in: 'v/X.y', count: true } } } }

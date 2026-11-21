@@ -51,6 +51,12 @@ export function groupWalkRefs(groupBy: unknown): string[] {
   return [...out];
 }
 
+/** A walked field reference split at its first dot: the crossRef walked out through, and the rest. */
+export function splitWalkedRef(ref: string): { out: string; field: string } {
+  const dot = ref.indexOf('.');
+  return { out: ref.slice(0, dot), field: ref.slice(dot + 1) };
+}
+
 /**
  * Visits every hop of a frame entry `{ params: { where, groupBy }, fields }` seeded at
  * `seed`, at any depth, each before the hops beneath it. `visit` gets the hop
@@ -117,7 +123,7 @@ export function forEachWalkHop(
   const heads = new Set<string>();
   for (const [name, e] of Object.entries(isObj(params.groupBy) ? params.groupBy : {})) {
     for (const ref of groupWalkRefs({ [name]: e })) {
-      const out = ref.slice(0, ref.indexOf('.'));
+      const { out } = splitWalkedRef(ref);
       if (heads.has(out)) continue;
       heads.add(out);
       visit({ kind: 'group', node: { out }, path: ['groupBy', name] }, seed);

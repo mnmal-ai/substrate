@@ -1394,13 +1394,30 @@ describe('walks across namespaces', () => {
     );
     expect(r.schemaOf).not.toHaveBeenCalledWith('app');
     const all = resolvers(() => true);
+    // A hop refusal points at the string that walks, never at an `out` key the request lacks.
     expect(thrown(grouped('hit.score'), all)).toMatchObject({
       code: 'walk_unknown_ref',
-      path: ['groupBy', 'g', 'out']
+      path: ['groupBy', 'g']
     });
     expect(thrown(grouped('ledger.payment'), all)).toMatchObject({
       code: 'walk_cross_store',
-      path: ['groupBy', 'g', 'out']
+      path: ['groupBy', 'g']
+    });
+    const nested: Frame = {
+      aggregate: { n: { count: true } },
+      groupBy: { g: { coalesce: [{ lit: 'x' }, 'ledger.payment'] } }
+    };
+    expect(thrown(nested, all)).toMatchObject({
+      code: 'walk_cross_store',
+      path: ['groupBy', 'g', 'coalesce', '1']
+    });
+    const denied = thrown(
+      { aggregate: { n: { count: true } }, groupBy: { g: { add: [1, 'invoice.total'] } } },
+      r
+    );
+    expect({ code: denied.code, message: denied.message, path: denied.path }).toEqual({
+      ...DENIED,
+      path: ['groupBy', 'g', 'add', '1']
     });
     expect(() =>
       validateFilter({
@@ -1504,13 +1521,22 @@ describe('walked group keys', () => {
       });
       expect(err.message, key).toContain(`'${key}'`);
     }
+    // The refusal points at the node holding the walked string.
+    const err = refused({
+      aggregate: n,
+      groupBy: { month: { dateTrunc: [{ lit: 'month' }, 'customer.nope'] } }
+    });
+    expect({ code: err.code, path: err.path }).toEqual({
+      code: 'expr_invalid',
+      path: ['groupBy', 'month', 'dateTrunc', '1']
+    });
   });
 
   it('refuses a list of crossRefs as a walk does', () => {
     const err = refused({ aggregate: n, groupBy: { g: 'payers.region' } });
     expect({ code: err.code, path: err.path }).toEqual({
       code: 'walk_unsupported_ref',
-      path: ['groupBy', 'g', 'out']
+      path: ['groupBy', 'g']
     });
   });
 
@@ -1524,9 +1550,12 @@ describe('walked group keys', () => {
           groupBy: { region: 'customer.region' },
           having: { eq: ['customer.region', { lit: 'north' }] }
         },
-        ['having']
+        ['having', 'eq', '0']
       ],
-      [{ where: { $expr: { eq: ['customer.region', { lit: 'north' }] } } }, ['where', '$expr']]
+      [
+        { where: { $expr: { eq: ['customer.region', { lit: 'north' }] } } },
+        ['where', '$expr', 'eq', '0']
+      ]
     ];
     for (const [frame, path] of forms) {
       const err = refused(frame);

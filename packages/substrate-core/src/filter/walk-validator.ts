@@ -13,6 +13,7 @@ import {
   type ExprScope,
   exprTypeOfField,
   metadataExprType,
+  splitWalkedRef,
   type TypeRef,
   walkGrammarPath
 } from '@mnmal-ai/substrate-filter';
@@ -740,51 +741,53 @@ const AGG_EXPR_TYPE: Partial<Record<string, ExprType>> = {
  * top-level crossRef of the frame's type, resolved as any walk is (grant
  * first), reaching a field of the far type an expression can read.
  */
-function walkedFieldType(name: string, scope: WalkScope, path: string[]): ExprType {
-  const [head = '', field = '', ...more] = name.split('.');
-  const def = Object.hasOwn(scope.fields, head) ? scope.fields[head] : undefined;
+function walkedFieldType(name: string, scope: WalkScope, at: string[]): ExprType {
+  const { out, field } = splitWalkedRef(name);
+  const def = Object.hasOwn(scope.fields, out) ? scope.fields[out] : undefined;
   // A list of crossRefs goes on to resolveHop, which refuses it as it does any walk.
   if (def?.kind !== 'crossRef' && !(def?.kind === 'list' && def.of.kind === 'crossRef')) {
-    fail('expr_invalid', `unknown field '${name}': '${head}' is not a crossRef`, path);
+    fail('expr_invalid', `unknown field '${name}': '${out}' is not a crossRef`, at);
   }
-  if (more.length > 0) {
+  if (field.includes('.')) {
     fail(
       'expr_invalid',
       `'${name}' walks more than one hop; a walked field is '<crossRef>.<field>'`,
-      path
+      at
     );
   }
-  const hop = resolveHop({ out: head }, path, scope);
+  let hop: Hop;
+  try {
+    hop = resolveHop({ out }, at, scope);
+  } catch (err) {
+    // resolveHop's path names an `out` key, which the request does not have: refuse at the string.
+    if (err instanceof FilterValidationError) fail(err.code, err.message, at);
+    throw err;
+  }
   const t = Object.hasOwn(hop.fields, field) ? exprTypeOfField(hop.fields[field]) : undefined;
   if (t === undefined) {
     fail(
       'expr_invalid',
       `unknown field '${name}': '${hop.ref.ns}/${hop.ref.type}' has no field '${field}' an expression can read (json, list and struct fields are not)`,
-      path
+      at
     );
   }
   return t;
 }
 
 /** What a frame expression's bare strings name; `walked` lets a `groupBy` read walked fields. */
-function exprScopeOf(
-  scope: WalkScope,
-  withAgg: boolean,
-  walked: boolean,
-  path: string[]
-): ExprScope {
+function exprScopeOf(scope: WalkScope, withAgg: boolean, walked: boolean): ExprScope {
   return {
-    field(name) {
+    field(name, at) {
       if (name.startsWith('_agg.')) {
         const kind = withAgg ? scope.aggs?.get(name.slice(5)) : undefined;
         return kind === undefined ? undefined : AGG_EXPR_TYPE[kind];
       }
       if (name.includes('.')) {
-        if (walked) return walkedFieldType(name, scope, path);
+        if (walked) return walkedFieldType(name, scope, at);
         fail(
           'expr_invalid',
           `unknown field '${name}': a walked field ('<crossRef>.<field>') is read in groupBy only`,
-          path
+          at
         );
       }
       return (
@@ -828,7 +831,7 @@ export function checkFrameExpr(
   walked = false
 ): ExprType {
   if (withAgg) refuseUnusableAgg(expr, scope, path);
-  const r = checkExpr(expr as Expr, exprScopeOf(scope, withAgg, walked, path), path);
+  const r = checkExpr(expr as Expr, exprScopeOf(scope, withAgg, walked), path);
   if (!r.ok) fail('expr_invalid', r.message, r.path);
   const used = scope.exprNodes ?? { count: 0 };
   used.count += r.nodes;

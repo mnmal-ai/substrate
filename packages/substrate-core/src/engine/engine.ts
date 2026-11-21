@@ -1863,9 +1863,11 @@ export class Engine {
     });
     if (!guardOk) return null;
 
+    // A virtual frame holds no walk (refused above), and its own params are its resolver's, not walk grammar.
     if (
       operation === 'query' &&
       registryEntry.kind === 'type' &&
+      !isVirtual &&
       this.#refuseWalkPolicy(envelope, key, frame, ns, name, ctx, decision, walk)
     ) {
       return null;

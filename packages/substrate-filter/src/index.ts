@@ -121,6 +121,7 @@ export {
 export {
   forEachWalkHop,
   groupWalkRefs,
+  splitWalkedRef,
   type TypeRef,
   usesWalkGrammar,
   type WalkHop,

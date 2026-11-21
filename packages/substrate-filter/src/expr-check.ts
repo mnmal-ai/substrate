@@ -18,8 +18,8 @@ import { capturesWithAlternation } from './regex-ast.js';
 import { checkRegexSubset } from './regex-subset.js';
 
 export interface ExprScope {
-  /** The type of a bare string: a field, `_agg.<name>`, or an output name in `having`. */
-  field(name: string): ExprType | undefined;
+  /** The type of a bare string at path `at`: a field, `_agg.<name>`, or an output name in `having`. */
+  field(name: string, at: string[]): ExprType | undefined;
 }
 
 export type ExprCheck =
@@ -124,7 +124,7 @@ export function checkExpr(expr: Expr, scope: ExprScope, path: string[]): ExprChe
       };
     }
     if (typeof e === 'string') {
-      const t = scope.field(e);
+      const t = scope.field(e, at);
       if (t === undefined) return refuse(`unknown field '${e}'`, at);
       return { t: { type: t }, depth };
     }

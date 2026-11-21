@@ -22,7 +22,8 @@ const defs: Record<string, Record<string, FieldDef>> = {
   },
   Invoice: {
     customer: { kind: 'crossRef', ns: NS, type: 'Customer', onDelete: 'set_null' },
-    amount: { kind: 'scalar', type: 'int64' }
+    amount: { kind: 'scalar', type: 'int64' },
+    status: { kind: 'scalar', type: 'string' }
   }
 };
 const lookup = {
@@ -53,17 +54,18 @@ beforeAll(async () => {
   const customers = [
     { id: 'c1', region: 'north', signedUpAt: '2026-01-15T10:00:00Z' },
     { id: 'c2', region: 'south', signedUpAt: '2026-02-03T00:00:00Z' },
-    { id: 'c3', region: 'north', signedUpAt: '2026-01-20T23:59:59Z' },
+    // Stored with an offset and a fraction: it groups and prints as the UTC instant.
+    { id: 'c3', region: 'north', signedUpAt: '2026-01-21T01:59:59.5+02:00' },
     { id: 'c4', region: 'north', signedUpAt: '2026-01-01T00:00:00Z' }
   ].map((c) => ({ ...c, id: u(c.id) }));
   // c4 is deleted and `gone` was never written: both key null, as a null customer does.
   const invoices = [
-    { id: 'i1', customer: u('c1'), amount: 9007199254740993n },
-    { id: 'i2', customer: u('c3'), amount: 1n },
-    { id: 'i3', customer: u('c2'), amount: 50n },
-    { id: 'i4', customer: null, amount: 7n },
-    { id: 'i5', customer: u('c4'), amount: 3n },
-    { id: 'i6', customer: u('gone'), amount: 2n }
+    { id: 'i1', customer: u('c1'), amount: 9007199254740993n, status: 'paid' },
+    { id: 'i2', customer: u('c3'), amount: 1n, status: 'open' },
+    { id: 'i3', customer: u('c2'), amount: 50n, status: 'paid' },
+    { id: 'i4', customer: null, amount: 7n, status: 'open' },
+    { id: 'i5', customer: u('c4'), amount: 3n, status: 'void' },
+    { id: 'i6', customer: u('gone'), amount: 2n, status: 'open' }
   ].map((i) => ({ ...i, id: u(i.id) }));
   for (const ds of [pg, mem]) {
     await ds.write('Customer', customers as never);
@@ -111,6 +113,36 @@ describe.skipIf(!POSTGRES_URL)('a walked group key: pg and memory agree', () => 
       { month: '2026-01-01T00:00:00.000000Z', region: 'north', n: 2, total: 9007199254740994n },
       { month: '2026-02-01T00:00:00.000000Z', region: 'south', n: 1, total: 50n },
       { month: null, region: null, n: 3, total: 12n }
+    ]);
+  });
+
+  it('prints a bare walked date key as microsecond UTC text', async () => {
+    expect(await groups({ groupBy: { signedUp: 'customer.signedUpAt' } })).toEqual([
+      { signedUp: '2026-01-15T10:00:00.000000Z', n: 1, total: 9007199254740993n },
+      { signedUp: '2026-02-03T00:00:00.000000Z', n: 1, total: 50n },
+      { signedUp: null, n: 3, total: 12n },
+      { signedUp: '2026-01-20T23:59:59.500000Z', n: 1, total: 1n }
+    ]);
+  });
+
+  it("mixes a walked field with the seed's own in one key", async () => {
+    expect(await groups({ groupBy: { who: { coalesce: ['customer.region', 'status'] } } })).toEqual(
+      [
+        { who: 'north', n: 2, total: 9007199254740994n },
+        { who: 'south', n: 1, total: 50n },
+        { who: 'open', n: 2, total: 9n },
+        { who: 'void', n: 1, total: 3n }
+      ]
+    );
+  });
+
+  it('a where walk and a walked key through the same crossRef each get their own alias', async () => {
+    const where = {
+      _walk: { out: 'customer', quantifier: 'none', where: { region: { eq: 'south' } } }
+    } as unknown as NonNullable<ReadParams['where']>;
+    expect(await groups({ where, groupBy: { region: 'customer.region' } })).toEqual([
+      { region: 'north', n: 2, total: 9007199254740994n },
+      { region: null, n: 3, total: 12n }
     ]);
   });
 });
