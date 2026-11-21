@@ -363,10 +363,20 @@ class Compiler {
     return this.#refuse(String(raw), `${name}: ${r.problem}`, choices, swap);
   }
 
-  /** A write value; a crossRef may name a binding, filled at execution. */
+  /** A write value. A crossRef may name a binding or a shortId, both resolved at execution. */
   #writeValue(def: FieldDef, raw: ActValue, name: string, swap?: Swap): Resolved {
-    if (def.kind === 'crossRef' && typeof raw === 'string' && raw.startsWith('$')) {
-      return this.#resolveRef(raw);
+    if (def.kind === 'crossRef' && typeof raw === 'string') {
+      if (raw.startsWith('$')) return this.#resolveRef(raw);
+      const shortId = /^#\d+$/.test(raw) ? Number(raw.slice(1)) : undefined;
+      if (shortId !== undefined && Number.isSafeInteger(shortId)) {
+        return { late: { ref: { type: `${def.ns}/${def.type}`, shortId } } };
+      }
+    }
+    if (def.kind === 'list' && def.of.kind === 'crossRef') {
+      for (const el of asList(raw)) {
+        if (typeof el === 'string' && /^[#$]/.test(el))
+          this.#refuse(el, `${name} takes full ids only`);
+      }
     }
     return { value: this.#coerce(def, raw, name, swap) };
   }
@@ -461,9 +471,15 @@ class Compiler {
       }
       const def = Object.hasOwn(fields, arg) ? fields[arg] : undefined;
       if (def === undefined) return unknown(arg, swapKey(arg));
+      const operand = (v: ActValue, swap: Swap) => {
+        if (def.kind === 'crossRef' && typeof v === 'string' && v.startsWith('#')) {
+          this.#refuse(v, `${v} cannot filter ${arg}; use the record's id`);
+        }
+        return this.#coerce(def, v, arg, swap);
+      };
       where[arg] = Array.isArray(raw)
-        ? { in: raw.map((el, i) => this.#coerce(def, el, arg, swapElement(arg, raw, i))) }
-        : { eq: this.#coerce(def, raw, arg, swapValue(arg)) };
+        ? { in: raw.map((el, i) => operand(el, swapElement(arg, raw, i))) }
+        : { eq: operand(raw, swapValue(arg)) };
     }
     return {
       source: this.#n,

@@ -47,13 +47,11 @@ export function coerceValue(def: FieldDef, value: ActValue): Coerced {
   if (def.kind === 'struct')
     return { ok: false, problem: 'a struct cannot be written from a sketch' };
   if (def.kind === 'crossRef') {
-    const ref = typeof value === 'number' ? String(value) : value;
-    if (typeof ref !== 'string') return fail('a reference');
-    // Write steps read `$name` before calling this; anywhere else it has no record yet.
-    if (ref.startsWith('$'))
-      return { ok: false, problem: `${ref} is a binding, which only write steps take` };
-    const id = ref.startsWith('#') ? ref.slice(1) : ref;
-    return id === '' ? { ok: false, problem: 'empty reference' } : ok(id);
+    const id = typeof value === 'number' ? String(value) : value;
+    if (typeof id !== 'string') return fail('a reference');
+    if (id === '') return { ok: false, problem: 'empty reference' };
+    // `#N` and `$name` are read by the compiler where a step can resolve them; here only a full id fits.
+    return /^[#$]/.test(id) ? fail('a full id') : ok(id);
   }
   switch (def.type) {
     case 'string': {

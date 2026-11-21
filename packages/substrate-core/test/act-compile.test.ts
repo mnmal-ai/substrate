@@ -93,7 +93,12 @@ function fixture(todoActions: Record<string, ActionDecl> = { close, defer }) {
       Note: {
         fields: {
           title: str,
-          todo: { kind: 'crossRef', ns: 'work', type: 'Todo', onDelete: 'set_null' }
+          todo: { kind: 'crossRef', ns: 'work', type: 'Todo', onDelete: 'set_null' },
+          related: {
+            kind: 'list',
+            of: { kind: 'crossRef', ns: 'work', type: 'Todo', onDelete: 'set_null' },
+            nullable: true
+          }
         }
       }
     }),
@@ -225,10 +230,10 @@ describe('compileSketch plans', () => {
     });
   });
 
-  it('takes a reference for a crossRef field', () => {
+  it('takes a binding, a shortId or a full id for a crossRef field', () => {
     const noteWrite = { type: 'work/Note', operation: 'mutate', fields: { id: true } };
     const result = compile(
-      'create Todo title=x as $t; create Note title=n todo=$t; update Note n1 todo=#7'
+      'create Todo title=x as $t; create Note title=n todo=$t; create Note title=m todo=#7; update Note n1 todo=abc-123'
     );
     expect(result).toEqual({
       plan: {
@@ -254,10 +259,19 @@ describe('compileSketch plans', () => {
           {
             step: 3,
             source: 3,
+            action: 'create',
+            key: 'work/createNote',
+            ...noteWrite,
+            params: { title: 'm' },
+            late: { todo: { ref: { type: 'work/Todo', shortId: 7 } } }
+          },
+          {
+            step: 4,
+            source: 4,
             action: 'update',
             key: 'work/updateNote',
             ...noteWrite,
-            params: { id: 'n1', todo: '7' }
+            params: { id: 'n1', todo: 'abc-123' }
           }
         ]
       }
@@ -480,6 +494,21 @@ describe('compileSketch refusals', () => {
     // 200 refs, each followed by 1000 closes: 200,200 write steps if fully expanded.
     const sketch = `sweep Todo ${refs(200).join(' ')} items=${refs(1000).join(',')}`;
     expect(compile(sketch, opts, s)).toEqual(refusal(1, '', '51 write steps exceed the cap of 50'));
+  });
+
+  it('refuses a shortId in a crossRef filter', () => {
+    expect(compile('find Note todo=#7')).toEqual(
+      refusal(1, '#7', "#7 cannot filter todo; use the record's id")
+    );
+  });
+
+  it('refuses a shortId or a binding in a list of crossRefs', () => {
+    expect(compile('update Note n1 related=abc,#7')).toEqual(
+      refusal(1, '#7', 'related takes full ids only')
+    );
+    expect(compile('create Todo title=x as $t; update Note n1 related=$t')).toEqual(
+      refusal(2, '$t', 'related takes full ids only')
+    );
   });
 
   it('refuses a namespace that is not local', () => {

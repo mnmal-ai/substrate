@@ -63,7 +63,8 @@ export interface ActRefusal {
   choices: string[];
   nearest: string | null;
 }
-export type ActLate = { bind: string } | { now: true };
+/** Filled at execution: a binding's id, `ctx.now`, or the id of the `type` record with `shortId`. */
+export type ActLate = { bind: string } | { now: true } | { ref: { type: string; shortId: number } };
 export interface ActPlanStep {
   /** 1-based, after expansion. */
   step: number;
