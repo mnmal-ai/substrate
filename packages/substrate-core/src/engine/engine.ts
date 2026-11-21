@@ -116,6 +116,9 @@ type RunEntryRest = [
   txEntries?: number
 ];
 
+/** A partition that opens a transaction. */
+type TxPartition = Exclude<LocalTxScopePartition, { kind: 'zero_datasets' }>;
+
 /** Unwinds the shared single-frame tx; the refusing entry's error is already on the envelope. */
 class SharedTxRefusal extends Error {
   override readonly name = 'SharedTxRefusal';
@@ -1118,34 +1121,10 @@ export class Engine {
     };
 
     try {
-      if (partition.kind === 'single_dataset') {
-        // Virtual keys receive txDs too; #runEntry discards it by contract.
-        await this.#withRowsAndEdgesTx(
-          partition.dataset,
-          partition.entries[0]?.ns,
-          (txDs, txEdges) => runBody(() => txDs, txEdges)
-        );
-      } else {
-        const firstDataset = partition.firstDataset;
-        const nsList = Array.from(new Set(partition.entries.map((e) => e.ns)));
-        if (firstDataset.withScopedTransaction === undefined) {
-          nsList.sort();
-          addTopLevelError(
-            envelope,
-            `mutate cannot coalesce across [${nsList.join(', ')}]: tx scope '${firstDataset.txScopeId ?? 'unknown'}' does not support withScopedTransaction`,
-            'cross_tx_scope_refused'
-          );
-          this.#metric('engine_cross_tx_scope_refused', { namespaces: nsList });
-          return;
-        }
-        await firstDataset.withScopedTransaction(nsList, async ({ datasets, edges }) => {
-          const txFor = (ns: string): Dataset | null => datasets.get(ns) ?? null;
-          if (edges !== null) {
-            await runBody(txFor, edges);
-          } else {
-            await this.#edges.withTransaction((txEdges) => runBody(txFor, txEdges));
-          }
-        });
+      const scopeRefusal = await this.#inLocalTx(partition, runBody);
+      if (scopeRefusal !== undefined) {
+        addTopLevelError(envelope, scopeRefusal, 'cross_tx_scope_refused');
+        return;
       }
       committed = true;
     } catch (err) {
@@ -1174,6 +1153,38 @@ export class Engine {
       await this.#runSettled(settled, committed);
     }
     for (const event of pending) onWrite(event);
+  }
+
+  /**
+   * Runs `body` in one transaction over `partition`'s datasets and the edges.
+   * `single_dataset` shares that dataset's tx; `coalesced_tx_scope` needs
+   * `withScopedTransaction`, and without it resolves the refusal message
+   * instead of running `body`.
+   */
+  async #inLocalTx(
+    partition: TxPartition,
+    body: (txFor: (ns: string) => Dataset | null, txEdges: EdgesStore) => Promise<void>
+  ): Promise<string | undefined> {
+    if (partition.kind === 'single_dataset') {
+      // Virtual keys receive txDs too; #runEntry discards it by contract.
+      await this.#withRowsAndEdgesTx(partition.dataset, partition.entries[0]?.ns, (txDs, txEdges) =>
+        body(() => txDs, txEdges)
+      );
+      return undefined;
+    }
+    const firstDataset = partition.firstDataset;
+    const nsList = Array.from(new Set(partition.entries.map((e) => e.ns)));
+    if (firstDataset.withScopedTransaction === undefined) {
+      nsList.sort();
+      this.#metric('engine_cross_tx_scope_refused', { namespaces: nsList });
+      return `mutate cannot coalesce across [${nsList.join(', ')}]: tx scope '${firstDataset.txScopeId ?? 'unknown'}' does not support withScopedTransaction`;
+    }
+    await firstDataset.withScopedTransaction(nsList, async ({ datasets, edges }) => {
+      const txFor = (ns: string): Dataset | null => datasets.get(ns) ?? null;
+      if (edges !== null) await body(txFor, edges);
+      else await this.#edges.withTransaction((txEdges) => body(txFor, txEdges));
+    });
+    return undefined;
   }
 
   /**
