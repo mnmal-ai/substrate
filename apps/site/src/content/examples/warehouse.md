@@ -27,7 +27,7 @@ Below the run, [ClickBench](https://github.com/ClickHouse/ClickBench), a public 
 
 ## Where it stops
 
-- **A per-customer total through a walk can't be sorted.** A walk aggregate sums `amount` exactly, as an `int64`, and a `select` expression can't read an integer aggregate, so `orderBy` can't name one. Grouping invoices by `customer.name` gives per-customer totals that sort. The per-customer read here counts open invoices and finds the next due date.
+- **A per-customer total through a walk can't be sorted.** A walk aggregate sums `amount` exactly, as an `int64`, and a `select` expression can't read an integer walk aggregate, so `orderBy` can't name one. Grouping invoices by `customer.name` gives per-customer totals that sort. The per-customer read here counts open invoices and finds the next due date.
 - **The walk needs Postgres in a deployment.** This run is on the memory store with a test-only walk evaluator switched on. A server on the memory store refuses walks with `walks_unsupported_store`.
 - **ClickBench is 42 compared / 43, on one machine class.** The block above names the machine it was measured on, outside substrate's CI. A query that came back empty on both sides isn't counted as compared.
 - **ClickBench here is frames against SQL, on the same Postgres.** The frames read substrate's own table and the SQL reads a plain Postgres table, in one database, each loaded with the same rows: about 10M, every 10th row of the benchmark's data. It isn't a comparison with a columnar warehouse, and says nothing about how substrate would fare against one.
