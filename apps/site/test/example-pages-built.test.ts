@@ -58,6 +58,33 @@ describe('example pages', () => {
     }
   });
 
+  it('keeps the Markdown lists announced as lists', () => {
+    for (const { slug, html } of pages) {
+      const prose = [...html.matchAll(/<div class="prose"[^>]*>([\s\S]*?)<\/div>/g)]
+        .map((m) => m[1])
+        .join('');
+      const lists = [...prose.matchAll(/<[uo]l\b[^>]*>/g)].map((m) => m[0]);
+      // Where it stops is a bulleted list on every page.
+      expect(lists.length, slug).toBeGreaterThan(0);
+      for (const tag of lists) expect(tag, slug).toContain('role="list"');
+    }
+  });
+
+  it('cross-references reach the pages they name', () => {
+    const reached = pages.flatMap(({ slug, html }) =>
+      [...html.matchAll(/href="(\.\.?\/[^"]*)"/g)].map(
+        (m) => new URL(m[1] as string, `https://site${pageHref('/substrate', slug)}`).pathname
+      )
+    );
+    expect(reached).toEqual(
+      expect.arrayContaining(['/substrate/examples/warehouse/', '/substrate/examples/coordinate/'])
+    );
+    for (const path of reached) {
+      const page = join(dist, path.replace('/substrate/', ''), 'index.html');
+      expect(existsSync(page), path).toBe(true);
+    }
+  });
+
   it('navigation', () => {
     for (const { slug, index, html } of pages) {
       const navs = [

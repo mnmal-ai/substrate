@@ -11,12 +11,11 @@ const nn = (order: number) => String(order).padStart(2, '0');
   <p class="label kicker">// worked examples</p>
   <h2 id="examples-title">Seven promises, and the runs that keep them</h2>
   <p class="lede">
-    Each one is a script that substrate's CI runs against substrate's engine. Its page shows the
-    code, then replays the frames and responses a run produced, not typed in. All the data is
-    invented.
+    Each one is a script that substrate's CI runs against substrate's engine. Its page replays the
+    frames and responses a run produced, not typed in. All the data is invented.
   </p>
 
-  <ol class="cards">
+  <ol class="cards" role="list">
     {
       entries.map((e) => (
         <li class="card" data-reveal>

@@ -30,8 +30,11 @@ export async function getStaticPaths() {
 type Props = InferGetStaticPropsType<typeof getStaticPaths>;
 const { entry, ordered, index } = Astro.props;
 const { prev, next } = neighbours(ordered, index);
+// The prose lists are unstyled, so Safari needs the role to keep announcing them as lists.
 const { elsewhere, onSubstrate, stops } = splitSections(
-  entry.rendered?.html ?? '',
+  (entry.rendered?.html ?? '')
+    .replaceAll('<ul>', '<ul role="list">')
+    .replaceAll('<ol>', '<ol role="list">'),
   `${entry.id}.md`
 );
 // Recall has no transcript until the deploy's live run writes one.
@@ -42,7 +45,7 @@ const href = (slug: string) => pageHref(import.meta.env.BASE_URL, slug);
 ---
 <Base title={`${entry.data.name} · substrate examples`} description={entry.data.promise}>
   <Header />
-  <main class="example-page">
+  <main id="main" class="example-page">
     <aside class="sidebar">
       <p class="label kicker">// worked examples</p>
       <ExampleNav entries={ordered} current={entry.id} label="Worked examples" />
@@ -109,7 +112,7 @@ const href = (slug: string) => pageHref(import.meta.env.BASE_URL, slug);
         {
           prev && (
             <a rel="prev" href={href(prev.id)}>
-              <span class="label dir">← previous</span>
+              <span class="label dir"><span aria-hidden="true">←</span> previous</span>
               <span class="label to">{`${nn(prev.data.order)} ${prev.data.name}`}</span>
               <span class="promise">{prev.data.promise}</span>
             </a>
@@ -118,7 +121,7 @@ const href = (slug: string) => pageHref(import.meta.env.BASE_URL, slug);
         {
           next && (
             <a rel="next" href={href(next.id)}>
-              <span class="label dir">next →</span>
+              <span class="label dir">next <span aria-hidden="true">→</span></span>
               <span class="label to">{`${nn(next.data.order)} ${next.data.name}`}</span>
               <span class="promise">{next.data.promise}</span>
             </a>
@@ -170,13 +173,18 @@ const href = (slug: string) => pageHref(import.meta.env.BASE_URL, slug);
     display: none;
   }
 
-  /* The empty alternative text keeps the sign out of the summary's accessible name. */
+  /*
+   * The empty alternative text keeps the sign out of the summary's accessible name; the plain
+   * declaration before it shows the sign where an engine ignores the alternative-text form.
+   */
   .picker summary::after {
+    content: '+';
     content: '+' / '';
     color: var(--muted);
   }
 
   .picker[open] summary::after {
+    content: '−';
     content: '−' / '';
   }
 

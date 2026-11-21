@@ -8,23 +8,20 @@ import Replaces from '../components/Replaces.astro';
 import Start from '../components/Start.astro';
 import Surfaces from '../components/Surfaces.astro';
 import Base from '../layouts/Base.astro';
+import { EXAMPLE_SLUGS } from '../lib/example-pages.ts';
 import { loadExample } from '../lib/examples.ts';
 import { feedEvents } from '../lib/feed.ts';
 
 // The hero feed replays the worked examples' own transcripts, in page order. An example without
 // a transcript (recall before its live run) adds nothing.
-const events = feedEvents(
-  ['onboard', 'reshape', 'ask', 'coordinate', 'warehouse', 'recall', 'self-tending'].flatMap(
-    (name) => loadExample(name).transcript ?? []
-  )
-);
+const events = feedEvents(EXAMPLE_SLUGS.flatMap((name) => loadExample(name).transcript ?? []));
 ---
 <Base
   title="substrate"
   description="One typed server on your own Postgres for your data, your agents' memory and the work between them."
 >
   <Header />
-  <main>
+  <main id="main">
     <Hero events={events} />
     <Replaces />
     <ExampleCards />

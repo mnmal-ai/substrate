@@ -50,7 +50,16 @@ const forkBuild = !licensedMonoAvailable(new URL('../public/', import.meta.url).
 describe('built output', () => {
   it('builds the landing page and every example page', () => {
     expect(pages.map((p) => p.path)).toContain('index.html');
-    expect(pages.length).toBeGreaterThan(1);
+    expect(pages).toHaveLength(1 + EXAMPLE_SLUGS.length);
+  });
+
+  it('opens every page with a skip link to its main', () => {
+    for (const { path, html } of pages) {
+      const body = html.slice(html.indexOf('<body'));
+      const first = /<(?:a|button|input|select|textarea|summary)\b[^>]*>[^<]*/.exec(body)?.[0];
+      expect(first, path).toMatch(/\shref="#main"[^>]*>Skip to content$/);
+      expect(body, path).toMatch(/<main\b[^>]*\sid="main"/);
+    }
   });
 
   it.runIf(forkBuild)('references no licensed font when the files are absent', () => {
@@ -243,6 +252,11 @@ describe('landing page', () => {
       (m) => readFileSync(join(dist, m[1] as string), 'utf8')
     );
     expect(scripts.some((code) => code.includes('[data-figure]'))).toBe(true);
+  });
+
+  it('keeps the cards announced as a list', () => {
+    // The list is unstyled, so Safari needs the role to keep announcing it as a list.
+    expect(/<ol\b[^>]*\sclass="cards"[^>]*>/.exec(examples)?.[0]).toContain('role="list"');
   });
 
   it("sends the hero's examples button to the first example", () => {
