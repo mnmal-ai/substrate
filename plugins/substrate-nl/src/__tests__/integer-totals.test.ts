@@ -25,7 +25,11 @@ const types: Schema['types'] = {
 const pack = buildNamespacePack({
   namespace: 'shop',
   schema: { schemaVersion: 'v', mutations: {}, types },
-  operators: OPERATORS
+  operators: {
+    ...OPERATORS,
+    'scalar.int64': ['eq', 'gt', 'in'],
+    'scalar.int32': ['eq', 'gt', 'in']
+  }
 });
 const rulings: NamespaceRulings = { timeField: { Invoice: 'sentAt' } };
 const parse = (q: string) =>
@@ -73,5 +77,33 @@ describe('grouping by a named date field', () => {
       bucket: { dateTrunc: [{ lit: 'month' }, 'sentAt'] }
     });
     expect(c?.residual).toEqual(['status']);
+  });
+});
+
+describe('other readings of an integer field', () => {
+  it('takes the max of one', () => {
+    expect(params('max amount of invoices')?.aggregate).toEqual({ value: { max: 'amount' } });
+  });
+
+  it('orders by one', () => {
+    expect(params('invoices with the highest amount')).toEqual({
+      orderBy: [{ amount: 'desc' }],
+      limit: 10
+    });
+  });
+
+  it('keeps an int64 operand exact past 2^53', () => {
+    const c = parse('invoices amount:>9007199254740993');
+    expect(JSON.stringify(c?.frame)).toContain('"gt":"9007199254740993"');
+    expect(c?.evidence.map((e) => e.detail).join()).toContain('"9007199254740993"');
+  });
+
+  it('keeps a safe int64 operand a number', () => {
+    expect(JSON.stringify(parse('invoices amount:>500')?.frame)).toContain('"gt":500');
+  });
+
+  it("reads a dropped aggregate's date words as unread", () => {
+    const c = parse('total zorb of invoices per month by due date');
+    expect(c?.residual).toEqual(expect.arrayContaining(['due', 'date']));
   });
 });

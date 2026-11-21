@@ -896,10 +896,12 @@ function assemble(type: string, a: AssemblyInput): Candidate | { reason: string 
     : aggClaim?.group?.unit !== undefined
       ? { ...aggClaim.group, end: aggClaim.group.end ?? tokens.length }
       : null;
-  const bucketField =
-    unitClaim === null ? null : claimDateField(tokens, unitClaim.end, fields, rulings);
+  const bucket = unitClaim === null ? null : claimDateField(tokens, unitClaim.end, fields, rulings);
+  const bucketField = bucket?.name ?? null;
   const agg =
     aggClaim === null ? null : aggregateOn(aggClaim, type, pack, rulings, bucketField ?? undefined);
+  // A dropped aggregate buckets nothing, so the words stay unread.
+  if (agg !== null && agg.fn === undefined) for (const t of bucket?.taken ?? []) t.used = false;
   if (agg !== null) {
     dropped.push(...agg.dropped);
     ev.push(...agg.evidence);
@@ -1493,7 +1495,7 @@ function claimDateField(
   end: number,
   fields: Record<string, PackField>,
   rulings: NamespaceRulings
-): string | null {
+): { name: string; taken: Token[] } | null {
   const by = tokens[end + 1];
   if (by === undefined || by.used || by.text !== 'by') return null;
   const dates = Object.values(fields).filter((f) => f.valueType === 'date');
@@ -1505,9 +1507,9 @@ function claimDateField(
     const starts = dates.filter((f) => f.phrases.some((p) => p.startsWith(`${words} `)));
     const name = named ?? (starts.length === 1 ? (starts[0]?.name ?? null) : null);
     if (name === null || fields[name]?.valueType !== 'date') continue;
-    by.used = true;
-    for (const t of slice) t.used = true;
-    return name;
+    const taken = [by, ...slice];
+    for (const t of taken) t.used = true;
+    return { name, taken };
   }
   return null;
 }
@@ -1873,9 +1875,15 @@ function resolveField(
 
 /** A clause value as the field's type, or undefined when it is not one. */
 function coerce(raw: string, f: PackField): unknown {
-  if (isNumeric(f.valueType)) {
+  if (f.valueType === 'number') {
     const n = Number(raw);
     return Number.isFinite(n) ? n : undefined;
+  }
+  // An integer kind keeps its exact digits: a number only when it is a safe integer.
+  if (isNumeric(f.valueType)) {
+    if (!/^-?\d+$/.test(raw)) return undefined;
+    const n = Number(raw);
+    return Number.isSafeInteger(n) ? n : BigInt(raw).toString();
   }
   if (f.valueType === 'boolean') return raw === 'true' ? true : raw === 'false' ? false : undefined;
   return raw;
