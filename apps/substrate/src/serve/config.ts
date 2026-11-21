@@ -109,6 +109,8 @@ export interface ParsedConfig {
    * 24h default in place, any positive integer overrides it.
    */
   idempotency: { defaultTtlMs: number | null; disabled: boolean };
+  /** `SUBSTRATE_ACT_RESULT_TTL_MS`; `null` leaves the engine's 24h default in place. */
+  act: { resultTtlMs: number | null };
   /**
    * Peer IPs whose `x-forwarded-for` header is honoured for
    * `/substrate/v1/_system/register` rate-limit bucketing (§5.12). Exact IP strings
@@ -333,6 +335,7 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
     writeHeavyWord === '1' || writeHeavyWord === 'true'
   );
   const idempotency = parseIdempotencyConfig(env, knobs);
+  const act = parseActConfig(env, knobs);
   const trustedProxies = parseTrustedProxies(env, knobs);
   const port = parsePort(env, knobs);
   // Without auth every caller acts as the system actor, admin routes included,
@@ -423,6 +426,7 @@ export function parseEnv(env: NodeJS.ProcessEnv): ParsedConfig {
     storeProfile,
     storeWriteHeavy,
     idempotency,
+    act,
     trustedProxies,
     port,
     host,
@@ -805,6 +809,24 @@ function parseIdempotencyConfig(
     );
   }
   return { defaultTtlMs: noteTtl(parsed), disabled: false };
+}
+
+/** Parses `SUBSTRATE_ACT_RESULT_TTL_MS`; a non-positive or non-integer value throws `EnvConfigError`. */
+function parseActConfig(
+  env: NodeJS.ProcessEnv,
+  knobs: KnobRecorder
+): { resultTtlMs: number | null } {
+  const ttlRaw = env.SUBSTRATE_ACT_RESULT_TTL_MS;
+  const note = (v: number | null): number | null =>
+    knobs.record('actResultTtlMs', 'SUBSTRATE_ACT_RESULT_TTL_MS', ttlRaw, v);
+  if (ttlRaw === undefined || ttlRaw === '') return { resultTtlMs: note(null) };
+  const parsed = Number(ttlRaw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new EnvConfigError(
+      `SUBSTRATE_ACT_RESULT_TTL_MS: invalid value '${ttlRaw}' — expected a positive integer (milliseconds)`
+    );
+  }
+  return { resultTtlMs: note(parsed) };
 }
 
 /**

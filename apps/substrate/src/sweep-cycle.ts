@@ -4,7 +4,7 @@
  * their retention horizon, attributing any failure to the right stage so
  * stderr logging points operators at the real source.
  *
- * The chain is a four-step sequence:
+ * The chain is a five-step sequence:
  *   1. edge-sweep — reconciles cross-ref edges (§6.3).
  *   2. idempotency-reap — drops expired §5.13 dedup rows. Skipped when no
  *      idempotency store is configured.
@@ -15,6 +15,8 @@
  *      `rows` row is gone or soft-deleted (no delete path touches the
  *      plugin-owned tables, so vectors and text orphan without this). Skipped
  *      when not pg-backed.
+ *   5. act-result-reap — drops expired `act` result records. Skipped when no
+ *      act result store is supplied.
  *
  * Each step's failure is wrapped in `SweepStageError` carrying the stage
  * tag so the caller's `.catch` formats `sweep cycle failed [stage]: …`.
@@ -23,7 +25,12 @@
 
 import type { SweepState } from '@mnmal-ai/substrate-types';
 
-export type SweepStage = 'edge-sweep' | 'idempotency-reap' | 'tombstone-purge' | 'embeddings-gc';
+export type SweepStage =
+  | 'edge-sweep'
+  | 'idempotency-reap'
+  | 'tombstone-purge'
+  | 'embeddings-gc'
+  | 'act-result-reap';
 
 export class SweepStageError extends Error {
   override readonly name = 'SweepStageError';
@@ -47,13 +54,16 @@ export interface SweepCycleResult {
   tombstonePurge?: TombstonePurgeResult;
   /** Orphaned-embedding count when the embeddings-gc arm ran; `undefined` otherwise. */
   embeddingsGc?: number;
+  /** `reapExpired()` return value of the act result store when that arm ran; `undefined` otherwise. */
+  actReap?: unknown;
 }
 
 export async function runSweepCycle(
   sweepFn: () => Promise<SweepState>,
   reapFn: (() => Promise<unknown>) | null,
   purgeFn: (() => Promise<TombstonePurgeResult>) | null = null,
-  embeddingsGcFn: (() => Promise<number>) | null = null
+  embeddingsGcFn: (() => Promise<number>) | null = null,
+  actReapFn: (() => Promise<unknown>) | null = null
 ): Promise<SweepCycleResult> {
   let nextState: SweepState;
   try {
@@ -85,7 +95,16 @@ export async function runSweepCycle(
       throw new SweepStageError('embeddings-gc', err);
     }
   }
+  let actReap: unknown;
+  if (actReapFn !== null) {
+    try {
+      actReap = await actReapFn();
+    } catch (err) {
+      throw new SweepStageError('act-result-reap', err);
+    }
+  }
   const result: SweepCycleResult = { state: nextState };
+  if (actReap !== undefined) result.actReap = actReap;
   if (reap !== undefined) result.reap = reap;
   if (tombstonePurge !== undefined) result.tombstonePurge = tombstonePurge;
   if (embeddingsGc !== undefined) result.embeddingsGc = embeddingsGc;

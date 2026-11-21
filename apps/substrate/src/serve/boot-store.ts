@@ -60,6 +60,7 @@ export interface BootedStore {
   recallStore: RecallStores['recallStore'];
   lexicalStore: RecallStores['lexicalStore'];
   idempotencyStore: ComposedOpts['idempotencyStore'];
+  actResultStore: ComposedOpts['actResultStore'];
   sentinelClientConfig: ComposedOpts['sentinelClientConfig'];
   bridgeRegistry: ComposedOpts['bridgeRegistry'];
   disposeBridges: ComposedOpts['disposeBridges'];
@@ -164,20 +165,26 @@ export async function bootStore(opts: BootStoreOptions): Promise<BootedStore> {
       process.stderr.write(`[substrate] internal error on ${where}: ${err.stack ?? err.message}\n`);
     });
 
-    const { composeOpts, idempotencyStore, sentinelClientConfig, bridgeRegistry, disposeBridges } =
-      await buildComposeOpts({
-        config,
-        server,
-        dataset,
-        edges,
-        coordinators,
-        storeSql,
-        substrateNamespaceDataset,
-        fieldDefLookupFor,
-        typeDefLookup: typeDefLookupFor(DEFAULT_NAMESPACE),
-        kernel,
-        diskGuard
-      });
+    const {
+      composeOpts,
+      idempotencyStore,
+      actResultStore,
+      sentinelClientConfig,
+      bridgeRegistry,
+      disposeBridges
+    } = await buildComposeOpts({
+      config,
+      server,
+      dataset,
+      edges,
+      coordinators,
+      storeSql,
+      substrateNamespaceDataset,
+      fieldDefLookupFor,
+      typeDefLookup: typeDefLookupFor(DEFAULT_NAMESPACE),
+      kernel,
+      diskGuard
+    });
     opened.push(disposeBridges);
 
     // Filter operators live in a process-wide registry. Close takes back this
@@ -254,6 +261,7 @@ export async function bootStore(opts: BootStoreOptions): Promise<BootedStore> {
       recallStore,
       lexicalStore,
       idempotencyStore,
+      actResultStore,
       sentinelClientConfig,
       bridgeRegistry,
       disposeBridges,

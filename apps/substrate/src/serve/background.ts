@@ -20,6 +20,7 @@ import {
   startSentinelClient
 } from '@mnmal-ai/substrate-sentinel-client';
 import type {
+  ActResultStore,
   Dataset,
   EdgesStore,
   IdempotencyStore,
@@ -46,6 +47,7 @@ export function startBackground(args: {
   config: ParsedConfig;
   sweepDeps: SweepDeps;
   idempotencyStore: IdempotencyStore | null;
+  actResultStore: ActResultStore;
   dataset: Dataset;
   edges: EdgesStore;
   storeSql: Sql | null;
@@ -59,6 +61,7 @@ export function startBackground(args: {
     config,
     sweepDeps,
     idempotencyStore,
+    actResultStore,
     dataset,
     edges,
     storeSql,
@@ -127,7 +130,9 @@ export function startBackground(args: {
         ? async (): Promise<number> =>
             ((await pgRecall?.purgeOrphans()) ?? 0) + ((await pgLexical?.purgeOrphans()) ?? 0)
         : null;
-    const cycle = () => runSweepCycle(sweepFn, reapFn, purgeFn, embeddingsGcFn);
+    // Fifth stage: drop expired `act` result records (memory and pg alike).
+    const actReapFn = (): Promise<unknown> => actResultStore.reapExpired() as Promise<unknown>;
+    const cycle = () => runSweepCycle(sweepFn, reapFn, purgeFn, embeddingsGcFn, actReapFn);
     const run =
       storeSql === null
         ? cycle()
@@ -140,10 +145,13 @@ export function startBackground(args: {
     run
       .then((result) => {
         if (result === null) return;
-        const { state, reap, tombstonePurge, embeddingsGc } = result;
+        const { state, reap, tombstonePurge, embeddingsGc, actReap } = result;
         sweepState = state;
         if (reap !== undefined) {
           process.stdout.write(`plugin.idempotency_reap ${JSON.stringify(reap)}\n`);
+        }
+        if (actReap !== undefined) {
+          process.stdout.write(`act.result_reap ${JSON.stringify(actReap)}\n`);
         }
         if (tombstonePurge !== undefined && (tombstonePurge.rows > 0 || tombstonePurge.edges > 0)) {
           process.stdout.write(`tombstone_purge ${JSON.stringify(tombstonePurge)}\n`);

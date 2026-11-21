@@ -10,19 +10,24 @@
 import { statfs as fsStatfs } from 'node:fs/promises';
 import { type ComposeOpts, SYSTEM_NAMESPACE } from '@mnmal-ai/substrate-compose';
 import type { MemoryBridgeRegistry } from '@mnmal-ai/substrate-core';
-import { MemoryIdempotencyStore } from '@mnmal-ai/substrate-core';
+import { MemoryActResultStore, MemoryIdempotencyStore } from '@mnmal-ai/substrate-core';
 import type {
   DiskGuard,
   FieldDefLookup,
   PgEdgesStore,
   TypeDefLookup
 } from '@mnmal-ai/substrate-dataset-pg';
-import { makeDiskGuard, PgIdempotencyStore } from '@mnmal-ai/substrate-dataset-pg';
+import {
+  makeDiskGuard,
+  PgActResultStore,
+  PgIdempotencyStore
+} from '@mnmal-ai/substrate-dataset-pg';
 import {
   loadConfig as loadSentinelClientConfig,
   type SentinelClientConfig
 } from '@mnmal-ai/substrate-sentinel-client';
 import type {
+  ActResultStore,
   CoordinatorPlugin,
   Dataset,
   EdgesStore,
@@ -41,6 +46,7 @@ export interface ComposedOpts {
    * same instance the engine uses. Non-null unless the operator disabled dedup.
    */
   idempotencyStore: IdempotencyStore | null;
+  actResultStore: ActResultStore;
   sentinelClientConfig: SentinelClientConfig | null;
   bridgeRegistry: MemoryBridgeRegistry;
   disposeBridges: () => void;
@@ -192,6 +198,13 @@ export async function buildComposeOpts(args: {
       composeOpts.idempotency = idempotencyOpt;
     }
 
+    // `act` result records: always on, pg-backed when storeSql is present.
+    const actResultStore: ActResultStore =
+      storeSql !== null ? new PgActResultStore({ sql: storeSql }) : new MemoryActResultStore();
+    const actOpt: { results: ActResultStore; resultTtlMs?: number } = { results: actResultStore };
+    if (config.act.resultTtlMs !== null) actOpt.resultTtlMs = config.act.resultTtlMs;
+    composeOpts.act = actOpt;
+
     composeOpts.version = readPackageVersion();
     if (kernel.length > 0) {
       composeOpts.kernelPlugins = kernel;
@@ -202,7 +215,14 @@ export async function buildComposeOpts(args: {
     // Distinct from migrations (dataset-pg framework's own table).
     await ensureMigrationsTable(storeSql);
 
-    return { composeOpts, idempotencyStore, sentinelClientConfig, bridgeRegistry, disposeBridges };
+    return {
+      composeOpts,
+      idempotencyStore,
+      actResultStore,
+      sentinelClientConfig,
+      bridgeRegistry,
+      disposeBridges
+    };
   } catch (err) {
     disposeBridges();
     throw err;
