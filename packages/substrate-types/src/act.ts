@@ -110,7 +110,14 @@ export interface ActStepOutcome {
 }
 export interface ActResultRecord {
   id: string;
+  /** The caller's id, for display. */
   owner: string;
+  /**
+   * Lowercase hex SHA-256 of the caller's dedup component (id, roles, scopes
+   * and grant). Reads and idempotency match on this, so a credential with a
+   * narrower grant under the same id sees none of a broader one's records.
+   */
+  ownerKey: string;
   createdAt: string;
   expiresAt: string;
   mode: ActMode;
@@ -125,8 +132,8 @@ export interface ActResultRecord {
 }
 export interface ActResultStore {
   put(record: ActResultRecord, ttlMs: number): Promise<void>;
-  get(id: string, owner: string): Promise<ActResultRecord | undefined>;
-  findByIdempotencyKey(owner: string, key: string): Promise<ActResultRecord | undefined>;
+  get(id: string, ownerKey: string): Promise<ActResultRecord | undefined>;
+  findByIdempotencyKey(ownerKey: string, key: string): Promise<ActResultRecord | undefined>;
   reapExpired(): Promise<{ deleted: number }>;
 }
 export interface ActRequest {

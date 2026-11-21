@@ -408,6 +408,26 @@ describe('Engine.act', () => {
     expect(await engine.actResult(resultOf(r), null)).toBeUndefined();
   });
 
+  it('scopes records and idempotency keys to the whole credential, not the id alone', async () => {
+    const { engine, work } = boot();
+    const broad = caller('agent', { work: both, journal: both });
+    const narrow = caller('agent', { work: ['read'] });
+    const note = { sketch: 'create Note title=x', idempotencyKey: 'k' };
+    const r = await engine.act({ ...note, ctx: as(broad) });
+    expect(r).toMatchObject({ ok: true });
+    expect(await engine.actResult(resultOf(r), broad)).toBeDefined();
+    expect(await engine.actResult(resultOf(r), narrow)).toBeUndefined();
+
+    // No replay: the narrower credential runs its own plan, and its grant refuses the write.
+    const replay = await engine.act({ ...note, ctx: as(narrow) });
+    expect(replay).toMatchObject({
+      ok: false,
+      error: { step: 1, code: 'unauthorized_capability' }
+    });
+    expect(resultOf(replay)).not.toBe(resultOf(r));
+    expect(await all(work, 'Note')).toHaveLength(1);
+  });
+
   it('caps stored rows at 1000 across the record and says so', async () => {
     const { engine, work } = boot();
     const notes = (n: number) => Array.from({ length: n }, (_, i) => ({ title: `n${i}` }));

@@ -4,15 +4,17 @@
  * transaction.
  */
 
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import type {
   ActMode,
   ActPlan,
   ActPlanStep,
   ActStepOutcome,
+  Identity,
   PackEnvelope,
   Row
 } from '@mnmal-ai/substrate-types';
+import { callerDedupComponent } from '../engine/internals.js';
 
 /** Most rows one result record keeps, across all its `find` steps. */
 export const MAX_STORED_ROWS = 1000;
@@ -37,6 +39,11 @@ export class ActDryRunRollback extends Error {
 
 export function newResultId(): string {
   return `r_${randomBytes(9).toString('base64url')}`;
+}
+
+/** Lowercase hex SHA-256 of the caller's id, roles, scopes and grant: what owns a result record. */
+export function ownerKeyOf(identity: Identity): string {
+  return createHash('sha256').update(callerDedupComponent(identity), 'utf8').digest('hex');
 }
 
 /** What `step` did, read from its envelope. A `find` keeps at most `rowBudget` rows. */

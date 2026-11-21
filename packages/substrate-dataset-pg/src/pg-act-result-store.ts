@@ -1,8 +1,9 @@
 /**
  * PgActResultStore: PostgreSQL-backed `ActResultStore`.
  *
- * Rows live in `act_results`; the whole record is JSONB, with `id`, `owner`,
- * `idempotency_key` and `expires_at` kept as indexed copies for the queries.
+ * Rows live in `act_results`; the whole record is JSONB, with `id`, `owner`
+ * (the record's `ownerKey`), `idempotency_key` and `expires_at` kept as
+ * indexed copies for the queries.
  * Expiry is lazy on reads; `reapExpired` deletes. SQL errors propagate.
  */
 
@@ -24,19 +25,19 @@ export class PgActResultStore implements ActResultStore {
     this.#sql = options.sql;
   }
 
-  async get(id: string, owner: string): Promise<ActResultRecord | undefined> {
+  async get(id: string, ownerKey: string): Promise<ActResultRecord | undefined> {
     const rows = await this.#sql<Array<{ record: ActResultRecord }>>`
       SELECT record FROM act_results
-      WHERE id = ${id} AND owner = ${owner} AND expires_at > now()
+      WHERE id = ${id} AND owner = ${ownerKey} AND expires_at > now()
       LIMIT 1
     `;
     return rows[0]?.record;
   }
 
-  async findByIdempotencyKey(owner: string, key: string): Promise<ActResultRecord | undefined> {
+  async findByIdempotencyKey(ownerKey: string, key: string): Promise<ActResultRecord | undefined> {
     const rows = await this.#sql<Array<{ record: ActResultRecord }>>`
       SELECT record FROM act_results
-      WHERE owner = ${owner} AND idempotency_key = ${key} AND expires_at > now()
+      WHERE owner = ${ownerKey} AND idempotency_key = ${key} AND expires_at > now()
       LIMIT 1
     `;
     return rows[0]?.record;
@@ -50,17 +51,17 @@ export class PgActResultStore implements ActResultStore {
       await sql`
         INSERT INTO act_results (id, owner, idempotency_key, record, expires_at)
         VALUES (
-          ${record.id}, ${record.owner}, NULL, ${json}::text::jsonb,
+          ${record.id}, ${record.ownerKey}, NULL, ${json}::text::jsonb,
           now() + (${ttlMs}::bigint || ' milliseconds')::interval
         )
       `;
       return;
     }
-    // First live write for (owner, key) wins; an expired one is replaced.
+    // First live write for (ownerKey, key) wins; an expired one is replaced.
     await sql`
       INSERT INTO act_results (id, owner, idempotency_key, record, expires_at)
       VALUES (
-        ${record.id}, ${record.owner}, ${key}, ${json}::text::jsonb,
+        ${record.id}, ${record.ownerKey}, ${key}, ${json}::text::jsonb,
         now() + (${ttlMs}::bigint || ' milliseconds')::interval
       )
       ON CONFLICT (owner, idempotency_key) WHERE idempotency_key IS NOT NULL DO UPDATE SET

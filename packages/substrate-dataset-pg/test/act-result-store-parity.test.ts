@@ -6,9 +6,15 @@ import { PgActResultStore, runMigrations } from '../src/index.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 
-const rec = (id: string, owner: string, extra: Partial<ActResultRecord> = {}): ActResultRecord => ({
+const rec = (
+  id: string,
+  ownerKey: string,
+  extra: Partial<ActResultRecord> = {}
+): ActResultRecord => ({
   id,
-  owner,
+  // One display owner for every record: matching goes by ownerKey alone.
+  owner: 'agent-1',
+  ownerKey,
   createdAt: '2026-01-01T00:00:00.000Z',
   expiresAt: '2026-01-02T00:00:00.000Z',
   mode: 'write',
@@ -22,12 +28,12 @@ const rec = (id: string, owner: string, extra: Partial<ActResultRecord> = {}): A
 
 function cases(make: () => ActResultStore): void {
   const DAY = 86_400_000;
-  it('put then get by owner returns the record', async () => {
+  it('put then get by ownerKey returns the record', async () => {
     const s = make();
     await s.put(rec('r1', 'alice'), DAY);
-    expect(await s.get('r1', 'alice')).toMatchObject({ id: 'r1', owner: 'alice' });
+    expect(await s.get('r1', 'alice')).toMatchObject({ id: 'r1', ownerKey: 'alice' });
   });
-  it('get by another owner is undefined', async () => {
+  it('get under another ownerKey is undefined, though the owner is the same', async () => {
     const s = make();
     await s.put(rec('r1', 'alice'), DAY);
     expect(await s.get('r1', 'bob')).toBeUndefined();
@@ -38,14 +44,14 @@ function cases(make: () => ActResultStore): void {
     expect(await s.get('r1', 'alice')).toBeUndefined();
     expect(await s.reapExpired()).toEqual({ deleted: 1 });
   });
-  it('first live write for (owner, key) wins', async () => {
+  it('first live write for (ownerKey, key) wins', async () => {
     const s = make();
     await s.put(rec('r1', 'alice', { idempotencyKey: 'k' }), DAY);
     await s.put(rec('r2', 'alice', { idempotencyKey: 'k' }), DAY);
     expect((await s.findByIdempotencyKey('alice', 'k'))?.id).toBe('r1');
     expect(await s.get('r2', 'alice')).toBeUndefined();
   });
-  it('the same key under another owner is independent', async () => {
+  it('the same key under another ownerKey is independent', async () => {
     const s = make();
     await s.put(rec('r1', 'alice', { idempotencyKey: 'k' }), DAY);
     await s.put(rec('r2', 'bob', { idempotencyKey: 'k' }), DAY);

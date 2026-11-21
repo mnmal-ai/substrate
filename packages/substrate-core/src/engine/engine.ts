@@ -101,6 +101,7 @@ import {
   formatAck,
   MAX_STORED_ROWS,
   newResultId,
+  ownerKeyOf,
   stepOutcome
 } from '../act/outcome.js';
 import { readShapeOf, walkShapesOf } from '../advisor/shape-recorder.js';
@@ -333,7 +334,7 @@ export class Engine implements ActHandle {
    * processes still admits concurrent duplicates.
    */
   readonly #inFlightMutates = new Map<string, Promise<PackEnvelope>>();
-  /** `act` runs under an idempotency key that have not finished, keyed `owner \0 key`. */
+  /** `act` runs under an idempotency key that have not finished, keyed `ownerKey \0 key`. */
   readonly #inFlightActs = new Map<string, Promise<ActResponse>>();
   readonly #act: { results: ActResultStore; ttlMs: number; maxWriteSteps: number };
   readonly #bridges: BridgeRegistry;
@@ -1227,16 +1228,18 @@ export class Engine implements ActHandle {
         result: null
       };
     }
+    // Records and keys belong to the whole credential, so a narrower grant under the same id shares none.
+    const ownerKey = ownerKeyOf(identity);
     const key = (input.mode ?? 'write') === 'write' ? input.idempotencyKey : undefined;
-    if (key === undefined) return this.#actRun(input, identity);
+    if (key === undefined) return this.#actRun(input, identity, ownerKey);
     // The store sees the key only once the first run ends; a retry meanwhile joins that run.
-    const flightKey = `${identity.id}\0${key}`;
+    const flightKey = `${ownerKey}\0${key}`;
     const running = this.#inFlightActs.get(flightKey);
     if (running !== undefined) return running;
     const run = (async (): Promise<ActResponse> => {
-      const found = await this.#act.results.findByIdempotencyKey(identity.id, key);
+      const found = await this.#act.results.findByIdempotencyKey(ownerKey, key);
       if (found !== undefined) return { ok: true, ack: found.ack ?? '', result: found.id };
-      return this.#actRun(input, identity);
+      return this.#actRun(input, identity, ownerKey);
     })();
     this.#inFlightActs.set(flightKey, run);
     try {
@@ -1247,10 +1250,10 @@ export class Engine implements ActHandle {
   }
 
   async actResult(id: string, identity: Identity | null): Promise<ActResultRecord | undefined> {
-    return identity === null ? undefined : this.#act.results.get(id, identity.id);
+    return identity === null ? undefined : this.#act.results.get(id, ownerKeyOf(identity));
   }
 
-  async #actRun(input: ActInput, identity: Identity): Promise<ActResponse> {
+  async #actRun(input: ActInput, identity: Identity, ownerKey: string): Promise<ActResponse> {
     const { results, ttlMs, maxWriteSteps } = this.#act;
     const mode = input.mode ?? 'write';
     const schema = Object.fromEntries(
@@ -1297,6 +1300,7 @@ export class Engine implements ActHandle {
     const record: ActResultRecord = {
       id,
       owner: identity.id,
+      ownerKey,
       createdAt: createdAt.toISOString(),
       expiresAt: new Date(createdAt.getTime() + ttlMs).toISOString(),
       mode,

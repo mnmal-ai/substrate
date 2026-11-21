@@ -107,13 +107,13 @@ describe.skipIf(!POSTGRES_URL)('Engine.act on pg', () => {
 
   beforeEach(async () => {
     for (const ns of [WORK, JOURNAL]) await clearNamespace(sql, ns);
-    await sql`DELETE FROM act_results WHERE owner = ${OWNER}`;
+    await sql`DELETE FROM act_results WHERE record->>'owner' = ${OWNER}`;
   });
 
   afterAll(async () => {
     if (!POSTGRES_URL) return;
     for (const ns of [WORK, JOURNAL]) await dropNamespace(sql, ns);
-    await sql`DELETE FROM act_results WHERE owner = ${OWNER}`;
+    await sql`DELETE FROM act_results WHERE record->>'owner' = ${OWNER}`;
     await sql.end();
   });
 

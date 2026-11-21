@@ -28,19 +28,23 @@ export class MemoryActResultStore implements ActResultStore {
     this.#now = options.now ?? ((): number => Date.now());
   }
 
-  async get(id: string, owner: string): Promise<ActResultRecord | undefined> {
+  async get(id: string, ownerKey: string): Promise<ActResultRecord | undefined> {
     const entry = this.#entries.get(id);
-    if (entry === undefined || entry.record.owner !== owner || entry.expiresAt <= this.#now()) {
+    if (
+      entry === undefined ||
+      entry.record.ownerKey !== ownerKey ||
+      entry.expiresAt <= this.#now()
+    ) {
       return undefined;
     }
     return entry.record;
   }
 
-  async findByIdempotencyKey(owner: string, key: string): Promise<ActResultRecord | undefined> {
+  async findByIdempotencyKey(ownerKey: string, key: string): Promise<ActResultRecord | undefined> {
     const now = this.#now();
     for (const entry of this.#entries.values()) {
       if (
-        entry.record.owner === owner &&
+        entry.record.ownerKey === ownerKey &&
         entry.record.idempotencyKey === key &&
         entry.expiresAt > now
       ) {
@@ -53,10 +57,10 @@ export class MemoryActResultStore implements ActResultStore {
   async put(record: ActResultRecord, ttlMs: number): Promise<void> {
     const now = this.#now();
     if (record.idempotencyKey !== undefined) {
-      // The first live write for (owner, key) wins; an expired one is replaced.
+      // The first live write for (ownerKey, key) wins; an expired one is replaced.
       for (const [id, entry] of this.#entries) {
         if (
-          entry.record.owner !== record.owner ||
+          entry.record.ownerKey !== record.ownerKey ||
           entry.record.idempotencyKey !== record.idempotencyKey
         )
           continue;
