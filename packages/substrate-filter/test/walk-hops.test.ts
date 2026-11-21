@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { forEachWalkHop } from '../src/walk-hops.js';
+import { forEachWalkHop, splitWalkedRef } from '../src/walk-hops.js';
 
 describe('forEachWalkHop', () => {
   const entry = {
@@ -78,5 +78,15 @@ describe('forEachWalkHop', () => {
       'group S {"out":"customer"} groupBy.region',
       'group S {"out":"owner"} groupBy.rep'
     ]);
+  });
+});
+
+describe('splitWalkedRef', () => {
+  it('splits at the first dot and refuses a name with none', () => {
+    expect(splitWalkedRef('customer.address.city')).toEqual({
+      out: 'customer',
+      field: 'address.city'
+    });
+    expect(() => splitWalkedRef('region')).toThrow(/not a walked field reference/);
   });
 });

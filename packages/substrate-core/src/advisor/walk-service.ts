@@ -322,11 +322,12 @@ export function classifyWalkService(
   }
 
   // A group key that truncates a date field, as a bucket did: served by an index leading with it.
+  // A walked field (`<crossRef>.<field>`) is read off the row its out hop reaches, planned above.
   if (isObj(params.groupBy)) {
     for (const [name, e] of Object.entries(params.groupBy)) {
       const args = isObj(e) && Array.isArray(e.dateTrunc) ? e.dateTrunc : undefined;
       const field = args?.[1];
-      if (typeof field === 'string') {
+      if (typeof field === 'string' && !field.includes('.')) {
         clause(['groupBy', name], 'group', leads(seedIndexes, [field], []), seed, [field]);
       }
     }

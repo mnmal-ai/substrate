@@ -261,6 +261,16 @@ describe('classifyWalkService', () => {
       recommend: { fields: ['observedAt'] }
     });
   });
+
+  it('a group key truncating a walked date is its served out hop alone', () => {
+    const plan = classify(
+      { params: { groupBy: { bucket: { dateTrunc: [{ lit: 'day' }, 'cert.issuedAt'] } } } },
+      'Observation'
+    );
+    expect(plan.filter((c) => c.path.join('.') === 'groupBy.bucket')).toEqual([
+      { path: ['groupBy', 'bucket'], kind: 'hop', served: true }
+    ]);
+  });
 });
 
 describe('engine: plan and walk shapes', () => {

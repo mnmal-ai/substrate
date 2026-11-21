@@ -54,6 +54,7 @@ export function groupWalkRefs(groupBy: unknown): string[] {
 /** A walked field reference split at its first dot: the crossRef walked out through, and the rest. */
 export function splitWalkedRef(ref: string): { out: string; field: string } {
   const dot = ref.indexOf('.');
+  if (dot < 0) throw new Error(`internal: '${ref}' is not a walked field reference`);
   return { out: ref.slice(0, dot), field: ref.slice(dot + 1) };
 }
 
