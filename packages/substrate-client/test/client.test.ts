@@ -125,3 +125,45 @@ describe('SubstrateClient', () => {
     await expect(client.close()).resolves.toBeUndefined();
   });
 });
+
+describe('SubstrateClient act', () => {
+  it('act POSTs the request and returns the parsed reply', async () => {
+    let body: unknown;
+    mockHandlers(
+      http.post(`${ENDPOINT}/substrate/v1/act`, async ({ request }) => {
+        body = await request.json();
+        return HttpResponse.json({ ok: true, ack: 'closed Todo #1', result: '9007199254740993' });
+      })
+    );
+    const c = new SubstrateClient({ endpoint: ENDPOINT });
+    const reply = await c.act({ sketch: 'close Todo #1' });
+    expect(body).toEqual({ sketch: 'close Todo #1' });
+    expect(reply).toEqual({ ok: true, ack: 'closed Todo #1', result: '9007199254740993' });
+  });
+
+  it('actResult GETs the result by id', async () => {
+    let url = '';
+    mockHandlers(
+      http.get(`${ENDPOINT}/substrate/v1/act/results/:id`, ({ request }) => {
+        url = new URL(request.url).pathname;
+        return HttpResponse.json({ id: 'r_x' });
+      })
+    );
+    const c = new SubstrateClient({ endpoint: ENDPOINT });
+    expect(await c.actResult('r_x')).toEqual({ id: 'r_x' });
+    expect(url).toBe('/substrate/v1/act/results/r_x');
+  });
+
+  it('actResult rejects a 404 with a NetworkError carrying the status', async () => {
+    mockHandlers(
+      http.get(`${ENDPOINT}/substrate/v1/act/results/:id`, () =>
+        HttpResponse.json({ code: 'not_found', message: 'no such result' }, { status: 404 })
+      )
+    );
+    const c = new SubstrateClient({ endpoint: ENDPOINT });
+    await expect(c.actResult('r_nope')).rejects.toMatchObject({
+      name: 'NetworkError',
+      status: 404
+    });
+  });
+});

@@ -21,6 +21,9 @@ import {
   SchemaDriftError
 } from '@mnmal-ai/substrate-pack';
 import {
+  type ActRequest,
+  type ActResponse,
+  type ActResultRecord,
   type FieldDef,
   type FieldInput,
   type PackEnvelope,
@@ -283,6 +286,28 @@ export class SubstrateClient {
       ...(opts.signal !== undefined ? { signal: opts.signal } : {})
     });
     return (await res.json()) as RuntimeErrors;
+  }
+
+  /** Runs a sketch. Resolves with the reply for any 200, refusals and failures included. */
+  async act(req: ActRequest, opts: { signal?: AbortSignal } = {}): Promise<ActResponse> {
+    this.#ensureOpen();
+    const res = await this.#http.raw('/substrate/v1/act', {
+      method: 'POST',
+      body: req,
+      accept: 'application/json',
+      ...(opts.signal !== undefined ? { signal: opts.signal } : {})
+    });
+    return (await res.json()) as ActResponse;
+  }
+
+  /** A stored act result. A missing or foreign id throws a `NetworkError` with status 404. */
+  async actResult(id: string, opts: { signal?: AbortSignal } = {}): Promise<ActResultRecord> {
+    this.#ensureOpen();
+    const res = await this.#http.raw(`/substrate/v1/act/results/${encodeURIComponent(id)}`, {
+      method: 'GET',
+      ...(opts.signal !== undefined ? { signal: opts.signal } : {})
+    });
+    return (await res.json()) as ActResultRecord;
   }
 
   async close(): Promise<void> {

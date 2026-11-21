@@ -376,3 +376,75 @@ describe('s.byShortId', () => {
     expect(r).toMatchObject({ ok: true, result: [], stats: { queries: 0 } });
   });
 });
+
+describe('s.act', () => {
+  const actClient = (reply: unknown) => {
+    const sent: Record<string, unknown>[] = [];
+    const client = {
+      act: async (req: Record<string, unknown>) => {
+        sent.push(req);
+        return reply;
+      }
+    } as unknown as SubstrateClient;
+    return { client, sent };
+  };
+  const ok = { ok: true, ack: 'closed Todo #1', result: 'r_1' };
+
+  it('sends dry-run in read mode', async () => {
+    const { client, sent } = actClient(ok);
+    const r = await run((s) => s.act('close Todo #1'), client);
+    expect(r.ok).toBe(true);
+    expect(sent).toEqual([{ sketch: 'close Todo #1', mode: 'dry-run' }]);
+  });
+
+  it('sends write in write mode, counts each call, and stops past maxWrites', async () => {
+    const { client, sent } = actClient(ok);
+    const r = await run(
+      async (s) => {
+        await s.act('close Todo #1', { namespace: 'cortext' });
+        await s.act('close Todo #2');
+      },
+      client,
+      'write',
+      1
+    );
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/exceed --max-writes 1/);
+    expect(sent).toEqual([{ sketch: 'close Todo #1', mode: 'write', namespace: 'cortext' }]);
+    expect(r.stats.writes).toBe(1);
+  });
+
+  it('throws on a refusal and gives the count back', async () => {
+    const { client } = actClient({
+      ok: false,
+      refusal: {
+        code: 'sketch_unresolved',
+        step: 1,
+        token: 'x',
+        problem: 'unknown',
+        choices: [],
+        nearest: null
+      }
+    });
+    const r = await run(
+      async (s) => {
+        await s.act('x').catch(() => {});
+        await s.act('y');
+      },
+      client,
+      'write',
+      1
+    );
+    expect(r.error).toMatch(/^act refused at step 1: unknown/);
+  });
+
+  it('throws on a failure naming step, code and message', async () => {
+    const { client } = actClient({
+      ok: false,
+      error: { code: 'not_found', message: 'no row', step: 2 },
+      result: 'r_2'
+    });
+    const r = await run((s) => s.act('x'), client);
+    expect(r.error).toMatch(/act failed at step 2: not_found: no row/);
+  });
+});
