@@ -35,6 +35,30 @@ const rulings: NamespaceRulings = { timeField: { Invoice: 'sentAt' } };
 const parse = (q: string) =>
   parseQuestion(q, pack, { asOf: '2026-10-30T12:00:00Z', rulings }).candidates[0];
 const params = (q: string) => Object.values(parse(q)?.frame ?? {})[0]?.params;
+/** `q` read against an Invoice whose fields are `title`, `amount`, `sentAt` and `fields`. */
+const parseWith = (fields: Schema['types'][string]['fields'], q: string) => {
+  const p = buildNamespacePack({
+    namespace: 'shop',
+    schema: {
+      schemaVersion: 'v',
+      mutations: {},
+      types: {
+        Invoice: {
+          fields: {
+            title: scalar('string'),
+            amount: scalar('int64'),
+            sentAt: scalar('date'),
+            ...fields
+          }
+        }
+      }
+    },
+    operators: OPERATORS
+  });
+  return parseQuestion(q, p, { asOf: '2026-10-30T12:00:00Z', rulings }).candidates[0];
+};
+const groupOf = (c: ReturnType<typeof parse>) =>
+  Object.values(c?.frame ?? {})[0]?.params.groupBy as unknown;
 
 describe('totals over integer fields', () => {
   it('sums an int64 field per month', () => {
@@ -71,6 +95,26 @@ describe('grouping by a named date field', () => {
     });
   });
 
+  it('takes one generic date word after the field it names', () => {
+    const due = parseWith({ dueAt: scalar('date') }, 'how many invoices per month by due date');
+    expect(groupOf(due)).toEqual({ bucket: { dateTrunc: [{ lit: 'month' }, 'dueAt'] } });
+    expect(due?.residual).toEqual([]);
+    for (const word of ['time', 'day', 'timestamp']) {
+      const c = parseWith({ dueAt: scalar('date') }, `how many invoices per month by due ${word}`);
+      expect(groupOf(c), word).toEqual({ bucket: { dateTrunc: [{ lit: 'month' }, 'dueAt'] } });
+      expect(c?.residual, word).toEqual([]);
+    }
+    const created = parse('how many invoices per month by created date');
+    expect(groupOf(created)).toEqual({ bucket: { dateTrunc: [{ lit: 'month' }, 'createdAt'] } });
+    expect(created?.residual).toEqual([]);
+  });
+
+  it('takes no date word when the words name no date field', () => {
+    const c = parseWith({ dueCode: scalar('string') }, 'how many invoices per month by due date');
+    expect(groupOf(c)).toEqual({ bucket: { dateTrunc: [{ lit: 'month' }, 'sentAt'] } });
+    expect(c?.residual).toEqual(expect.arrayContaining(['due', 'date']));
+  });
+
   it('leaves the words unread when they name no date field', () => {
     const c = parse('how many invoices per month by status');
     expect(Object.values(c?.frame ?? {})[0]?.params.groupBy).toEqual({
@@ -105,5 +149,8 @@ describe('other readings of an integer field', () => {
   it("reads a dropped aggregate's date words as unread", () => {
     const c = parse('total zorb of invoices per month by due date');
     expect(c?.residual).toEqual(expect.arrayContaining(['due', 'date']));
+    // The generic date word is released with the field's words.
+    const at = parseWith({ dueAt: scalar('date') }, 'total zorb of invoices per month by due date');
+    expect(at?.residual).toEqual(expect.arrayContaining(['due', 'date']));
   });
 });

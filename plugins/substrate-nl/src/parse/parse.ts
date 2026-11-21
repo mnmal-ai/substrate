@@ -1485,10 +1485,14 @@ function adjectiveAt(tokens: Token[], k: number, names: FieldNames): TimeUnit | 
   return field ? undefined : unit;
 }
 
+/** Words that may follow a named date field without naming anything else ("by due date"). */
+const GENERIC_DATE_WORDS = new Set(['date', 'time', 'day', 'timestamp']);
+
 /**
  * Claims "by <date field>" right after a unit phrase ending at token `end` ("per month by due
  * date"): the longest run of up to three free words naming a date field, or a lone word that
- * starts exactly one date field's phrase ("due"). Anything else stays unread.
+ * starts exactly one date field's phrase ("due"), then one free generic date word the field's
+ * own words do not hold ("due date" on `dueAt`). Anything else stays unread.
  */
 function claimDateField(
   tokens: Token[],
@@ -1506,8 +1510,17 @@ function claimDateField(
     const named = fieldByWords(words, fields, rulings);
     const starts = dates.filter((f) => f.phrases.some((p) => p.startsWith(`${words} `)));
     const name = named ?? (starts.length === 1 ? (starts[0]?.name ?? null) : null);
-    if (name === null || fields[name]?.valueType !== 'date') continue;
+    const f = name === null ? undefined : fields[name];
+    if (name === null || f?.valueType !== 'date') continue;
     const taken = [by, ...slice];
+    const next = tokens[end + 2 + n];
+    if (
+      next !== undefined &&
+      !next.used &&
+      GENERIC_DATE_WORDS.has(next.text) &&
+      !f.phrases.some((p) => p.split(' ').includes(next.text))
+    )
+      taken.push(next);
     for (const t of taken) t.used = true;
     return { name, taken };
   }
