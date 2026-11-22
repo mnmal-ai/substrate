@@ -21,6 +21,21 @@ An agent in a harness carries every tool's definition and instructions in its co
 
 The model spends its turns on the problem, not on the tool. The [act worked example](https://mnmal-ai.github.io/substrate/examples/act/) shows one run, recorded by CI.
 
+### Measured
+
+One housekeeping task, given to a headless Claude Code session on Opus 5.5 with only the substrate MCP server loaded. The store is in memory, freshly seeded for each run with cortext's types and 27 records. The task: close one Todo as won't do, supersede a Decision, defer a Todo, write a SessionLog that closes another Todo in the same write, and list the open Todos in one area. Three runs per preset; medians:
+
+| | `core` | `lean` (`act`) | change |
+|---|---|---|---|
+| Context before the task | 8.2k tokens | 4.7k | −43% |
+| Context at the end | 29.5k | 12.3k | −58% |
+| Context the task added | 21.2k | 7.6k | −64% |
+| Tool calls | 13 | 7 | −46% |
+| Cost per run | $0.30 | $0.10 | −68% |
+| Store correct afterwards | 3 of 3 | 3 of 3 | |
+
+`core` spends its growth on `schema` lookups for each type's write contract, `query` replies and hand-built `mutate` frames. `lean` spends it on help for three types in one call, the `find` rows it asks for, and fetching a dry run's result record to check the plan before writing it. This is one task on a small store with one model, so the size of the gap will vary. A read-heavy task gains less, because rows cost the same either way.
+
 ## Declaring actions
 
 A namespace declares actions per type in `defineNamespace`. Declarations are data: they are published in the schema and never run code.
