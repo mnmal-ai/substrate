@@ -239,6 +239,7 @@ export function makeProposeActionResolver(
     } catch (err) {
       throw invalid(err instanceof Error ? err.message : String(err), 'decl');
     }
+    // Must name the principal the engine passes the layer as `identity.id` (pendingFor, used).
     const proposer = resolveIdentity(ctx).id;
     const declJson = JSON.stringify(canonicalize(decl));
     // The caller's transaction, so the lock, reads and writes share its one connection.

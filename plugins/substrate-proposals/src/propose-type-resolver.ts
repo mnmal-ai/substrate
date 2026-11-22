@@ -345,9 +345,12 @@ async function proposeTypeLocked(
   }
 
   // Step 5 — mark the row as applied, stamping the schemaVersion that
-  // RESULTED from the step-4 apply (publishSchema over the mutated registry).
+  // RESULTED from the step-4 apply: the engine's, which counts published coined
+  // words, or publishSchema over the mutated registry where no engine is wired.
   const now = new Date();
-  const resultingSchemaVersion = publishSchema(binding.registry).schemaVersion;
+  const resultingSchemaVersion = (
+    engine?.schemaFor(deps.namespace) ?? publishSchema(binding.registry)
+  ).schemaVersion;
   let appliedRow: Row;
 
   if (engine !== undefined) {

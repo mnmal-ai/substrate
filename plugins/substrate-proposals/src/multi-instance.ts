@@ -642,6 +642,10 @@ export function namespaceDropParticipant(controlNamespace: string): DropParticip
     async onDrop(ns, datasetFor) {
       const control = datasetFor(controlNamespace);
       await archiveAll(control, 'NamespaceProposal', { ns: { eq: ns } });
+      // shortcut: this instance's action layer and its peers' keep the dropped namespace's
+      // words until restart. Locally nothing reaches them (re-creating the name is refused and
+      // act skips a missing namespace); on a peer a pending word stays usable by its proposer.
+      // Apply the retired rows and tell peers on ACTIONS_CHANNEL if that window matters.
       await archiveAll(
         control,
         'ActionProposal',

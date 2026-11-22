@@ -258,7 +258,7 @@ const refused: Record<
   }
 };
 
-function bornActions(world: () => World, restart: (w: World) => World, coins = true): void {
+function bornActions(world: () => World, restart: (w: World) => World): void {
   let w: World;
   let engine: Engine;
 
@@ -306,21 +306,18 @@ function bornActions(world: () => World, restart: (w: World) => World, coins = t
     ]);
   });
 
-  it.each(Object.keys(refused).filter((name) => coins || name !== 'coined then target'))(
-    'refuses %s',
-    async (name) => {
-      expect(await proposeType(engine, w, 'Widget', WIDGET, { archive })).toBe('ok');
-      const { says, actions } = refused[name] as (typeof refused)[string];
-      expect(
-        await proposeTypeError(engine, w, 'Gadget', WIDGET, await actions(engine, w))
-      ).toMatchObject({
-        code: 'invalid_params',
-        message: expect.stringContaining(says)
-      });
-      expect(await typeProposal(w, 'Gadget')).toBeUndefined();
-      expect(engine.schemaFor(w.own).types.Gadget).toBeUndefined();
-    }
-  );
+  it.each(Object.keys(refused))('refuses %s', async (name) => {
+    expect(await proposeType(engine, w, 'Widget', WIDGET, { archive })).toBe('ok');
+    const { says, actions } = refused[name] as (typeof refused)[string];
+    expect(
+      await proposeTypeError(engine, w, 'Gadget', WIDGET, await actions(engine, w))
+    ).toMatchObject({
+      code: 'invalid_params',
+      message: expect.stringContaining(says)
+    });
+    expect(await typeProposal(w, 'Gadget')).toBeUndefined();
+    expect(engine.schemaFor(w.own).types.Gadget).toBeUndefined();
+  });
 
   it('keeps born actions after a restart and a later field proposal', async () => {
     expect(await proposeType(engine, w, 'Widget', WIDGET, { archive })).toBe('ok');
@@ -477,9 +474,6 @@ describe.skipIf(!POSTGRES_URL)('actions born with a proposed type (pg)', () => {
 
   bornActions(
     () => pgWorld(),
-    (w) => pgWorld(w.clock),
-    // Coining writes the control plane's ActionProposal table, which propose-action.test.ts
-    // locks and watches for lock waits at the same time; the coined case runs on memory.
-    false
+    (w) => pgWorld(w.clock)
   );
 });

@@ -46,7 +46,7 @@ import {
   type PubSub,
   storageSettled
 } from '../src/index.js';
-import { deleteNamespaces, relationOf } from './_layout.js';
+import { deleteNamespaces } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const VIRTUAL = 'vshop';
@@ -221,8 +221,14 @@ function control(w: World): Dataset {
   return dataset;
 }
 
+/** This world's records: on Postgres the control plane also holds other suites' words. */
 async function records(w: World): Promise<Row[]> {
-  return (await control(w).read('ActionProposal', { limit: 1000 })).rows;
+  return (
+    await control(w).read('ActionProposal', {
+      where: { targetNamespace: { in: [w.ns, w.own] } },
+      limit: 1000
+    })
+  ).rows;
 }
 
 async function record(w: World, name: string): Promise<Row | undefined> {
@@ -759,6 +765,22 @@ describe('evidence', () => {
       ok: false,
       error: { code: 'invalid_enum_value', message: "'status' must be one of: active, closed" }
     });
+
+    // A proposal stamps the version the engine then serves, the published word included.
+    const stamped = async (type: string) =>
+      (await w.datasets.get(w.own)?.read(type, { limit: 10 }))?.rows.map(
+        (r) => r.resultingSchemaVersion
+      );
+    expect(await stamped('FieldProposal')).toContain(engine.schemaFor(w.own).schemaVersion);
+    expect(
+      await proposal('propose_type', {
+        typeName: 'Crew',
+        fields: { name: { kind: 'scalar', type: 'string' } },
+        proposedBy: 'agent-r',
+        proposedReason: 'crews'
+      })
+    ).toBeUndefined();
+    expect(await stamped('TypeProposal')).toContain(engine.schemaFor(w.own).schemaVersion);
   });
 });
 
@@ -888,11 +910,11 @@ describe('governance', () => {
 
   it('brings back every live word after a restart, however many records stay live', async () => {
     const long = new Date(w.clock.ms - 2 * LAPSE_MS);
-    // Lapsed words stay live records. A full boot page (1000) of them, older than
-    // the word in use, puts that word on the second page.
+    // Lapsed words stay live records. More than a boot page (1000) of them, older
+    // than the word in use, puts that word past the first page.
     await control(w).write(
       'ActionProposal',
-      Array.from({ length: 1000 }, (_, i) => ({
+      Array.from({ length: 1001 }, (_, i) => ({
         targetNamespace: w.ns,
         targetType: 'Ticket',
         name: `old${i}`,
@@ -924,9 +946,7 @@ describe('governance', () => {
     const row = await record(w, 'reopen');
     if (row === undefined) throw new Error('no record');
     const { id: _id, ...word } = row;
-    await control(w).write('ActionProposal', [
-      { ...word, targetNamespace: 'elsewhere', name: 'kept' }
-    ]);
+    await control(w).write('ActionProposal', [{ ...word, targetNamespace: w.own, name: 'kept' }]);
     // What the drop route does: participants inside its transaction, then the tombstone.
     for (const participant of engine.dropParticipants()) {
       await participant.onDrop(w.ns, (ns) => {
@@ -964,16 +984,19 @@ async function clearActionProposals(sql: Sql, ...namespaces: string[]): Promise<
   );
 }
 
-/** Resolves once a statement on `table` waits for a lock. */
-async function lockWaitOn(sql: Sql, table: string): Promise<void> {
+/**
+ * Resolves once a statement waits for backend `holder`'s transaction to end on
+ * a row it locked. Waits on its snapshot (an index build) are not row waits.
+ */
+async function rowWaitOn(sql: Sql, holder: number): Promise<void> {
   for (let i = 0; i < 500; i++) {
     const [waiting] = await sql<Array<{ n: number }>>`
       SELECT count(*)::int AS n FROM pg_stat_activity
-      WHERE wait_event_type = 'Lock' AND query LIKE ${`%${table}%`}`;
+      WHERE ${holder} = ANY(pg_blocking_pids(pid)) AND wait_event = 'transactionid'`;
     if ((waiting?.n ?? 0) > 0) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error(`nothing waited for a lock on ${table}`);
+  throw new Error(`nothing waited for a row lock backend ${holder} holds`);
 }
 
 describe.skipIf(!POSTGRES_URL)('propose_action (pg)', () => {
@@ -1126,17 +1149,24 @@ describe.skipIf(!POSTGRES_URL)('propose_action (pg)', () => {
     ).toMatchObject({ ok: true });
     const [row] = await records(w);
     if (row === undefined) throw new Error('no record');
-    const table = (await relationOf(sql, CONTROL_NAMESPACE, 'ActionProposal')).replace(/"/g, '');
+    // One connection, so the pid read here is the backend whose transaction holds the lock.
+    const holderSql = postgres(POSTGRES_URL as string, { onnotice: () => {}, max: 1 });
     let redefine: Promise<ActResponse> | undefined;
-    // A use holds the record's row lock while it promotes, and the redefinition starts meanwhile.
-    await control(w).withTransaction(async (tx) => {
-      await tx.lockForUpdate?.('ActionProposal', [row.id]);
-      redefine = act(engine, w, 'agent-a', 'define Ticket.reopen reopened status=closed');
-      await lockWaitOn(sql, table);
-      await tx.write('ActionProposal', [
-        { id: row.id, status: 'promoted', uses: PROMOTE_USES, promotedAt: new Date(w.clock.ms) }
-      ]);
-    });
+    try {
+      const [{ pid }] = await holderSql<[{ pid: number }]>`SELECT pg_backend_pid() AS pid`;
+      const holder = new PgDataset({ namespace: CONTROL_NAMESPACE, sql: holderSql });
+      // A use holds the record's row lock while it promotes, and the redefinition starts meanwhile.
+      await holder.withTransaction(async (tx) => {
+        await tx.lockForUpdate?.('ActionProposal', [row.id]);
+        redefine = act(engine, w, 'agent-a', 'define Ticket.reopen reopened status=closed');
+        await rowWaitOn(sql, pid);
+        await tx.write('ActionProposal', [
+          { id: row.id, status: 'promoted', uses: PROMOTE_USES, promotedAt: new Date(w.clock.ms) }
+        ]);
+      });
+    } finally {
+      await holderSql.end({ timeout: 5 });
+    }
     expect(await redefine).toMatchObject(taken);
     expect(await records(w)).toMatchObject([
       { status: 'promoted', uses: PROMOTE_USES, declJson: row.declJson }
