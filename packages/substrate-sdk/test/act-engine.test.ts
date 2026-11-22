@@ -71,7 +71,12 @@ interface Booted {
 
 /** `coalesce: false` puts the two namespaces on separate substrates. */
 function boot(
-  opts: { coalesce?: boolean; results?: ActResultStore; layer?: ActionLayer } = {}
+  opts: {
+    coalesce?: boolean;
+    results?: ActResultStore;
+    layer?: ActionLayer;
+    recorded?: Array<Record<string, unknown>>;
+  } = {}
 ): Booted {
   const coalesce = opts.coalesce ?? true;
   const edges = new MemoryEdgesStore({ now: () => NOW });
@@ -120,8 +125,19 @@ function boot(
     fields: { n: field.number() },
     resolver: async () => []
   });
+  // Stands in for the plugin's propose_action mutation.
+  const ctl = new Registry();
+  ctl.register('propose_action', {
+    kind: 'mutation',
+    params: { namespace: field.string() },
+    resolver: async (_ctx, args) => {
+      opts.recorded?.push(args.params as Record<string, unknown>);
+      return { id: 'p1' } as Row;
+    }
+  });
   const datasets = new MemoryDatasetRegistry();
   datasets.set('work', work);
+  datasets.set('_test_ctl', new MemoryDataset({ namespace: '_test_ctl', ...dsOpts }));
   datasets.set('journal', journal);
   const batches: CommittedWriteBatch[] = [];
   const metrics: string[] = [];
@@ -130,7 +146,8 @@ function boot(
       ['work', { registry: workReg }],
       ['journal', { registry: journalReg }],
       ['calc', { registry: calc, virtual: true }],
-      ['_system_x', { registry: hidden, virtual: true }]
+      ['_system_x', { registry: hidden, virtual: true }],
+      ['_test_ctl', { registry: ctl }]
     ]),
     datasets,
     edges,
@@ -636,5 +653,54 @@ describe('Engine.act pending words', () => {
     const r = await engine.act({ sketch: '?', ctx: as(alice) });
     expect(r).toMatchObject({ ok: true, help: { types: { work: expect.anything() } } });
     expect('help' in r && (r.help as { types: object }).types).not.toHaveProperty('_system_x');
+  });
+});
+
+describe('Engine.act define', () => {
+  const ctlCaller = caller('agent-a', { work: both, _test_ctl: ['mutate'] });
+  function bootDefine() {
+    const recorded: Array<Record<string, unknown>> = [];
+    const layer: ActionLayer = {
+      proposeKey: '_test_ctl/propose_action',
+      published: () => ({}),
+      pendingFor: () => ({}),
+      used: () => undefined
+    };
+    return { ...boot({ layer, recorded }), recorded };
+  }
+
+  it('runs define as the caller through the namespace grant', async () => {
+    const { engine, recorded } = bootDefine();
+    expect(
+      await engine.act({ sketch: 'define Todo.reopen status=open', ctx: as(ctlCaller) })
+    ).toMatchObject({
+      ok: true,
+      ack: 'defined work/Todo.reopen (yours; public after 5 uses an hour apart)'
+    });
+    expect(recorded[0]).toMatchObject({ namespace: 'work', type: 'Todo', name: 'reopen' });
+  });
+
+  it('refuses define for a caller with no grant on the control namespace', async () => {
+    const { engine, recorded } = bootDefine();
+    const r = await engine.act({ sketch: 'define Todo.reopen status=open', ctx: as(dan) });
+    expect(r).toMatchObject({ ok: false });
+    expect(recorded).toEqual([]);
+  });
+
+  it('dry-run define replies with its plan line', async () => {
+    const { engine } = bootDefine();
+    const r = await engine.act({
+      sketch: 'define Todo.reopen status=open',
+      mode: 'dry-run',
+      ctx: as(ctlCaller)
+    });
+    expect(r).toMatchObject({ ok: true, plan: ['define work/Todo.reopen status=open'] });
+  });
+
+  it('refuses define on a server with no action layer', async () => {
+    const { engine } = boot();
+    expect(
+      await engine.act({ sketch: 'define Todo.reopen status=open', ctx: as(ctlCaller) })
+    ).toMatchObject({ ok: false, refusal: { problem: 'this server takes no action proposals' } });
   });
 });

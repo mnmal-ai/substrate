@@ -1307,7 +1307,8 @@ export class Engine implements ActHandle {
     const compiled = compileSketch(input.sketch, schema, {
       ...(input.namespace !== undefined ? { defaultNamespace: input.namespace } : {}),
       localNamespaces,
-      maxWriteSteps
+      maxWriteSteps,
+      ...(this.#actionLayer !== undefined ? { defineKey: this.#actionLayer.proposeKey } : {})
     });
     if ('refusal' in compiled) return { ok: false, refusal: compiled.refusal };
     if ('help' in compiled) return { ok: true, help: compiled.help };

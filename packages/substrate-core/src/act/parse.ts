@@ -21,6 +21,8 @@ interface Tok {
 
 const ACTION = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const TYPE = /^([A-Za-z_][A-Za-z0-9_]*\/)?[A-Za-z_][A-Za-z0-9_]*$/;
+/** `define` names the word after its type: `Todo.reopen`. */
+const DEFINE_TYPE = /^([A-Za-z_][A-Za-z0-9_]*\/)?[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)?$/;
 /** A step reference: `#N`, `$name`, or a full id. */
 export const REF = /^(#\d+|\$[A-Za-z_][A-Za-z0-9_]*|[A-Za-z0-9_.:-]+)$/;
 const BINDING = /^\$([A-Za-z_][A-Za-z0-9_]*)$/;
@@ -132,7 +134,11 @@ function parseStep(text: string, n: number): ActStep | { refusal: ActRefusal } {
     if (toks.length > 2) return refuse(n, (toks[2] as Tok).raw, 'help takes at most a type');
     return second ? { action: '?', type: second.raw } : { action: '?' };
   }
-  if (!second || !plain(second) || !TYPE.test(word(second))) {
+  if (
+    !second ||
+    !plain(second) ||
+    !(word(head) === 'define' ? DEFINE_TYPE : TYPE).test(word(second))
+  ) {
     return refuse(n, second?.raw ?? head.raw, 'missing type');
   }
 
@@ -170,7 +176,7 @@ export function parseSketch(text: string): ParsedSketch {
   return { steps, texts: split.steps };
 }
 
-function formatValue(v: ActValue): string {
+export function formatValue(v: ActValue): string {
   if (v === null) return 'null';
   // shortcut: nested lists print as their comma join, which does not re-parse; the parser never produces them.
   if (Array.isArray(v)) {

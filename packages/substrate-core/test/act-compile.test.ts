@@ -711,3 +711,106 @@ describe('compileSketch help', () => {
     });
   });
 });
+
+describe('compileSketch define', () => {
+  const key = '_system_proposals/propose_action';
+  const withKey: CompileOptions = { ...opts, defineKey: key };
+  const def = (sketch: string) => compile(sketch, withKey);
+
+  it('compiles define to the propose_action step', () => {
+    const r = def('define Todo.reopen reopened status=open notes=$why?');
+    expect(r).toEqual({
+      plan: {
+        steps: [
+          {
+            step: 1,
+            source: 1,
+            action: 'define',
+            type: 'work/Todo',
+            key,
+            operation: 'mutate',
+            params: {
+              namespace: 'work',
+              type: 'Todo',
+              name: 'reopen',
+              decl: {
+                kind: 'update',
+                past: 'reopened',
+                params: { why: { type: optStr, optional: true } },
+                set: { status: 'open', notes: { param: 'why' } }
+              },
+              sketch: 'define work/Todo.reopen reopened status=open notes=$why?'
+            },
+            fields: { id: true },
+            past: 'defined'
+          }
+        ]
+      }
+    });
+  });
+
+  it('names a param after its field for a bare $, and sets now on a date field', () => {
+    const r = compile('define SessionLog.stamp startedAt=now summary=$ branch=$b', withKey);
+    expect(r).toMatchObject({
+      plan: {
+        steps: [
+          {
+            params: {
+              decl: {
+                params: { summary: { type: str }, b: { type: str } },
+                set: {
+                  startedAt: { now: true },
+                  summary: { param: 'summary' },
+                  branch: { param: 'b' }
+                }
+              }
+            }
+          }
+        ]
+      }
+    });
+  });
+
+  it('refuses define without an action layer', () => {
+    expect(compile('define Todo.xx status=open')).toEqual(
+      refusal(1, 'define', 'this server takes no action proposals')
+    );
+  });
+
+  it.each([
+    ['define Todo.Bad status=open', 'name'],
+    ['define Todo.find status=open', 'built-in'],
+    ['define Todo.xx', 'nothing'],
+    ['define Todo.xx nope=1', 'unknown field'],
+    ['define Todo.xx title=now', 'date'],
+    ['define Todo.xx shortId=$', 'server-set'],
+    ['define Todo.xx status=nope', 'one of'],
+    ['define Todo.xx Bad status=open', 'name']
+  ])('refuses %s', (sketch, problem) => {
+    const r = def(sketch);
+    expect(r).toHaveProperty('refusal.problem', expect.stringContaining(problem));
+  });
+
+  it('offers the nearest valid sketch for a misspelt type', () => {
+    expect(def('define Todp.xx status=open')).toMatchObject({
+      refusal: { nearest: expect.stringMatching(/^define \w+\.xx status=open$/) }
+    });
+  });
+
+  it('refuses define beside another step, and a second define', () => {
+    const stands = refusal(1, 'define', 'define stands alone');
+    expect(def('define Todo.xx status=open; close Todo #1')).toEqual(stands);
+    expect(def('define Todo.xx status=open; define Todo.yy status=open')).toEqual(stands);
+    expect(def('close Todo #1; define Todo.xx status=open')).toEqual(
+      refusal(2, 'define', 'define stands alone')
+    );
+  });
+
+  it('refuses one param name over two field types, allows it over one', () => {
+    expect(def('define Todo.xx title=$p status=$p')).toHaveProperty(
+      'refusal.problem',
+      expect.stringContaining("param 'p'")
+    );
+    expect(def('define SessionLog.xx summary=$p branch=$p')).toHaveProperty('plan');
+  });
+});

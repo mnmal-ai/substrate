@@ -49,6 +49,17 @@ const cases: Array<[string, ActStep[]]> = [
     'create Note title="[x]" body=[y',
     [{ action: 'create', type: 'Note', args: { title: '[x]', body: '[y' } }]
   ],
+  [
+    'define work/Todo.reopen reopened status=open owner=$who?',
+    [
+      {
+        action: 'define',
+        type: 'work/Todo.reopen',
+        refs: ['reopened'],
+        args: { status: 'open', owner: '$who?' }
+      }
+    ]
+  ],
   ['?', [{ action: '?' }]],
   ['? Todo', [{ action: '?', type: 'Todo' }]]
 ];
