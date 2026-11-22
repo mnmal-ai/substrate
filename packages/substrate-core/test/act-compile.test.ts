@@ -4,7 +4,7 @@
  * its `FieldDef`s and autoCRUD mutation entries by hand.
  */
 
-import type { ActionDecl, ActStep, FieldDef, Schema } from '@mnmal-ai/substrate-types';
+import type { ActHelp, ActionDecl, ActStep, FieldDef, Schema } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
 import { type CompileOptions, compileSketch, publishSchema, Registry } from '../src/index.js';
 import { withInboundRefs } from '../src/schema-publisher.js';
@@ -203,6 +203,14 @@ describe('compileSketch plans', () => {
     });
   });
 
+  it('reads a bracketed list param as a comma list', () => {
+    expect(compile('log SessionLog summary=s branch=b closes=[#1,#2]')).toEqual(
+      compile('log SessionLog summary=s branch=b closes=#1,#2')
+    );
+    const one = compile('log SessionLog summary=s branch=b closes=[#1]');
+    expect('plan' in one && one.plan.steps.slice(1)).toEqual([closeStep(2, 1, '1')]);
+  });
+
   it('binds a record and late-binds its id in a later step', () => {
     expect(compile('create Todo title=x as $t; update Todo $t priority=high')).toEqual({
       plan: {
@@ -298,6 +306,31 @@ describe('compileSketch plans', () => {
         ]
       }
     });
+  });
+
+  it('compiles find references as a shortId or id filter', () => {
+    const where = (sketch: string) => {
+      const r = compile(sketch);
+      return 'plan' in r ? r.plan.steps[0]?.params.where : r;
+    };
+    expect(where('find Todo #1 fields=title')).toEqual({ shortId: { eq: 1 } });
+    expect(where('find Todo #1 #2 status=open')).toEqual({
+      shortId: { in: [1, 2] },
+      status: { eq: 'open' }
+    });
+    expect(where('find Note 3f2a-uuid')).toEqual({ id: { eq: '3f2a-uuid' } });
+    expect(where('count Todo #3')).toEqual({ shortId: { eq: 3 } });
+  });
+
+  it('refuses find references it cannot turn into one filter', () => {
+    expect(compile('find Todo #1 3f2a')).toEqual(
+      refusal(1, '3f2a', 'find takes shortIds or ids, not both')
+    );
+    expect(compile('create Todo title=x as $t; find Todo $t')).toEqual(
+      refusal(2, '$t', 'find takes no binding')
+    );
+    expect(compile('find Note #1')).toEqual(refusal(1, '#1', 'work/Note has no shortId'));
+    expect(compile('find Todo #1 shortId=2')).toEqual(refusal(1, '#1', 'shortId is given twice'));
   });
 
   it('compiles count', () => {
@@ -541,6 +574,12 @@ describe('compileSketch refusals', () => {
     );
   });
 
+  it('refuses a quoted list element that is not a reference', () => {
+    expect(compile('log SessionLog summary=s branch=b closes="[#1]"')).toEqual(
+      refusal(1, '[#1]', 'not a reference')
+    );
+  });
+
   it('refuses a then target that does not exist', () => {
     const s = fixture({ defer });
     expect(compile('log SessionLog summary=s branch=b closes=#1', opts, s)).toEqual(
@@ -639,14 +678,34 @@ describe('compileSketch help', () => {
     });
   });
 
+  it('answers several help steps in order', () => {
+    const one = (sketch: string) => {
+      const r = compile(sketch);
+      return 'help' in r ? r.help : r;
+    };
+    expect(compile('?; ? Todo; ? journal/SessionLog')).toEqual({
+      help: [one('?'), one('? Todo'), one('? journal/SessionLog')]
+    });
+  });
+
+  it('refuses help beside an action', () => {
+    expect(compile('close Todo #1; ? Todo')).toEqual(refusal(2, '?', 'help stands alone'));
+  });
+
+  it('refuses more than 10 help steps', () => {
+    expect(compile(Array(11).fill('?').join('; '))).toEqual(
+      refusal(11, '?', 'at most 10 help steps')
+    );
+  });
+
   it('spells references and list params', () => {
     const help = compile('? journal/SessionLog');
-    expect('help' in help && help.help.actions?.log?.params.closes).toEqual({
+    expect('help' in help && (help.help as ActHelp).actions?.log?.params.closes).toEqual({
       type: '→work/Todo[]',
       required: false
     });
     const note = compile('? Note');
-    expect('help' in note && note.help.fields?.todo).toEqual({
+    expect('help' in note && (note.help as ActHelp).fields?.todo).toEqual({
       type: '→work/Todo',
       required: false
     });

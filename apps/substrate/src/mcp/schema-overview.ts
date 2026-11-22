@@ -240,8 +240,8 @@ export const LOCAL_EXPRESSIONS_NOTE =
 
 const LEAN_CONVENTIONS = [
   'Substrate holds typed records. Use `act` for every operation: send a sketch, get a one-line ack and a result id.',
-  '- A step is `<action> <Type> [#shortId …] [field=value …] [as $name]`; split steps with `;` or newlines. Built-ins: create, update, find, count. `?` lists types and actions, `? Type` shows one.',
-  '- Everything in one sketch commits together or not at all. Pass `result` to fetch the full outcome; results are short-lived.'
+  '- A step is `<action> <Type> [#shortId …] [field=value …] [as $name]`; split steps with `;` or newlines. Lists are `a,b` or `[a,b]`. Built-ins: create, update, find, count. `?` lists types and actions, `? Type` shows one.',
+  '- `find` answers its rows in `found`: id, shortId and the fields named by `fields=a,b`. Everything in one sketch commits together or not at all; pass `result` to fetch the full outcome (short-lived).'
 ].join('\n');
 
 /** The lean session's `instructions`: three lines of conventions, then one index line per namespace. */

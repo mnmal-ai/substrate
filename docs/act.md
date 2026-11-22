@@ -16,10 +16,25 @@ An agent in a harness carries every tool's definition and instructions in its co
 
 - **Conventions live in the namespace.** An action declares what it means once, so every agent applies it the same way and none has to remember it.
 - **The compiler is deterministic.** The same sketch against the same schema always compiles to the same plan. What doesn't resolve is refused, with the choices and the nearest valid sketch.
-- **Replies are one line.** The full outcome waits in a result record the agent fetches only if it needs it.
-- **The fixed cost is small.** The MCP `lean` preset carries `act` and `whoami`: 1,703 bytes of tools and instructions before any types are listed, against about 8.5 KB for `core`.
+- **Replies are short.** The ack is one line, and a `find` answers with its rows cut to the fields it names. The full outcome waits in a result record the agent fetches only if it needs it.
+- **The fixed cost is small.** The MCP `lean` preset carries `act` and `whoami`: 1,848 bytes of tools and instructions before any types are listed, against about 8.5 KB for `core`.
 
 The model spends its turns on the problem, not on the tool. The [act worked example](https://mnmal-ai.github.io/substrate/examples/act/) shows one run, recorded by CI.
+
+### Measured
+
+One housekeeping task, given to a headless Claude Code session on Opus 5.5 with only the substrate MCP server loaded. The store is in memory, freshly seeded for each run with cortext's types and 27 records. The task: close one Todo as won't do, supersede a Decision, defer a Todo, write a SessionLog that closes another Todo in the same write, and list the open Todos in one area. Three runs per preset; medians:
+
+| | `core` | `lean` (`act`) | change |
+|---|---|---|---|
+| Context before the task | 8.2k tokens | 4.7k | −43% |
+| Context at the end | 29.5k | 11.8k | −60% |
+| Context the task added | 21.2k | 7.1k | −67% |
+| Tool calls | 13 | 6 | −54% |
+| Cost per run | $0.30 | $0.085 | −72% |
+| Store correct afterwards | 3 of 3 | 3 of 3 | |
+
+`core` spends its growth on `schema` lookups for each type's write contract, `query` replies and hand-built `mutate` frames. `lean` spends it on help for three types in one call, a dry run whose reply shows every value it would write, and the `find` rows it asks for. This is one task on a small store with one model, so the size of the gap will vary. A read-heavy task gains less, because rows cost the same either way.
 
 ## Declaring actions
 
@@ -98,12 +113,12 @@ A sketch is text, or the same thing as JSON (`ActStep[]`). Steps are separated b
 
 - **Actions.** A declared action, or a built-in on every stored type: `create` and `update` (the field-only fallback), `find` and `count`. Sketches cannot delete. Use the generated delete mutation for that.
 - **Type.** `Todo` resolves to the one readable type of that name. `work/Todo` always works. A default namespace breaks ties: `namespace` in the request, filled from `SUBSTRATE_NAMESPACE` by the MCP tool and from `--ns` by the CLI. Remaining ambiguity is refused with the qualified choices.
-- **References.** `#12` is a shortId; a full id also works. Several references apply the action to each: `close Todo #12 #13`.
-- **Values.** Bare words, double-quoted strings, numbers, `true`, `false`, `null`, and comma-separated lists, coerced by the field or param type. A quoted value may contain `;`, a newline, `=`, `#` and `,`, and stays one value. Inside quotes, `\"`, `\\` and `\n` are escapes.
+- **References.** `#12` is a shortId; a full id also works. Several references apply the action to each: `close Todo #12 #13`. `find` and `count` take references as a filter, all shortIds or all full ids: `find Todo #12 #13 fields=status`.
+- **Values.** Bare words, double-quoted strings, numbers, `true`, `false`, `null`, and lists, written `a,b` or in brackets (`[a,b]`, `[a]`, `[]`), coerced by the field or param type. A quoted value may contain `;`, a newline, `=`, `#` and `,`, and stays one value. Inside quotes, `\"`, `\\` and `\n` are escapes.
 - **Extra fields.** A sketch may pass `field=value` beyond an action's params, for example `close Todo #12 title="Done early"`. Each must name a field of the type that the action's `set` does not fix. Naming a fixed field, such as `close Todo #12 archived=false`, is refused, so no sketch can undo what the action guarantees. No write takes an `id` arg: the id comes from the reference.
 - **Bindings.** `create Todo title="x" as $t` names the record for later steps of the same sketch. `$t` resolves where a record reference goes: as a step's reference (`update Todo $t priority=high`), in a `list` param, and as the value of a crossRef field (`create Note todo=$t`). A crossRef field also takes `#12`. In any other field a binding is plain text: `title=$t` writes `$t`. A list of crossRefs takes full ids only.
-- **`find` and `count`.** They filter on `field=value` pairs and add no hidden filters, so what you see is what runs. `fields=a,b` chooses what `find` stores in the result. Each `find` reads at most the server's page maximum (1000 by default), the result record keeps at most 1000 rows across all its `find` steps, and the ack says when either truncated. `count` needs a store that answers aggregate reads (Postgres). A plain memory store refuses `count` exactly as `query` does.
-- **Help.** `?` lists the readable types by namespace with their action names. `? Todo` shows that type's actions with their params, and its fields. Help writes no result record.
+- **`find` and `count`.** They filter on `field=value` pairs and add no hidden filters, so what you see is what runs. A `find` row holds `id`, `shortId` and the fields `fields=a,b` names, in the reply and in the result record. Each `find` reads at most the server's page maximum (1000 by default), the result record keeps at most 1000 rows across all its `find` steps, and the ack says when either truncated. `count` needs a store that answers aggregate reads (Postgres). A plain memory store refuses `count` exactly as `query` does.
+- **Help.** `?` lists the readable types by namespace with their action names. `? Todo` shows that type's actions with their params, and its fields. Several help steps may share a sketch, `? Todo; ? Note`, and the help is then a list in step order. Help beside any other step is refused. Help writes no result record.
 
 The same sketch against the same schema version always compiles to the same plan.
 
@@ -113,10 +128,12 @@ Limits: at most 50 write steps after expansion. Bridged and virtual namespaces a
 
 | Outcome | Reply |
 |---|---|
-| Success | `{ "ok": true, "ack": "…", "result": "<id>" }` |
-| Help | `{ "ok": true, "help": { … } }` |
+| Success | `{ "ok": true, "ack": "…", "result": "<id>", "found": [ … ] }` |
+| Help | `{ "ok": true, "help": { … } }`, or a list of them |
 | Refusal | `{ "ok": false, "refusal": { "code": "sketch_unresolved", "step", "token", "problem", "choices", "nearest" } }` |
 | Failure | `{ "ok": false, "error": { "code", "message", "step" }, "result": "<id>" }` |
+
+`found` is there when the sketch has `find` steps whose rows come to at most 100: one entry per `find`, with its `step`, `action`, `type`, `rows` and `truncated`. Above 100 rows, they are in the result record only.
 
 A refusal means nothing ran and no result record exists. `nearest` is the closest valid sketch as text. A failure means a step failed while running: everything rolled back, and the result record holds the plan for diagnosis.
 
@@ -124,7 +141,7 @@ Acks name what happened: `closed work/Todo #12 #13`. A `find` acks as `12 work/T
 
 ## Dry runs and idempotency
 
-`mode: "dry-run"` runs every step inside the transaction and rolls back, so it meets the refusals a real run would. The ack says it was a dry run. Hooks (`postWrite`, `onWrite`, `afterTx`, subscribers) fire only on commit.
+`mode: "dry-run"` runs every step inside the transaction and rolls back, so it meets the refusals a real run would. The ack says it was a dry run, and the reply's `plan` lists each compiled step as one line with every value it sends, such as `close work/Todo id=12 status=closed resolution=wont_do archived=true`. Checking a dry run takes no result fetch. Hooks (`postWrite`, `onWrite`, `afterTx`, subscribers) fire only on commit.
 
 One sketch is one transaction: it commits whole or not at all. A step that fails at execution, such as `close Todo #1; close Todo #999999`, aborts the lot and the reply names the failing step.
 

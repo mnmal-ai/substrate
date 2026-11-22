@@ -10,14 +10,18 @@ import type {
   ActPlan,
   ActPlanStep,
   ActStepOutcome,
+  ActValue,
   Identity,
   PackEnvelope,
   Row
 } from '@mnmal-ai/substrate-types';
 import { callerDedupComponent } from '../engine/internals.js';
+import { formatStep } from './parse.js';
 
 /** Most rows one result record keeps, across all its `find` steps. */
 export const MAX_STORED_ROWS = 1000;
+/** Most rows a reply carries in `found`, across all its `find` steps. */
+export const MAX_INLINE_ROWS = 100;
 
 const BUILT_IN_PAST = new Map([
   ['create', 'created'],
@@ -46,7 +50,10 @@ export function ownerKeyOf(identity: Identity): string {
   return createHash('sha256').update(callerDedupComponent(identity), 'utf8').digest('hex');
 }
 
-/** What `step` did, read from its envelope. A `find` keeps at most `rowBudget` rows. */
+/**
+ * What `step` did, read from its envelope. A `find` keeps at most `rowBudget`
+ * rows, each cut to the step's field selection.
+ */
 export function stepOutcome(
   step: ActPlanStep,
   envelope: PackEnvelope,
@@ -57,7 +64,10 @@ export function stepOutcome(
   if (step.action === 'count') return { ...base, count: (data as { count: number }).count };
   if (step.action === 'find') {
     const all = (data ?? []) as Row[];
-    const rows = all.slice(0, rowBudget);
+    const keep = Object.keys(step.fields);
+    const rows = all
+      .slice(0, rowBudget)
+      .map((row) => Object.fromEntries(keep.filter((k) => k in row).map((k) => [k, row[k]])));
     const hasMore = envelope._pagination?.[step.key]?.hasMore === true;
     return { ...base, rows, truncated: hasMore || rows.length < all.length };
   }
@@ -65,6 +75,42 @@ export function stepOutcome(
   if (row === null || row === undefined) return { ...base, touched: [] };
   const shortId = typeof row.shortId === 'number' ? { shortId: row.shortId } : {};
   return { ...base, touched: [{ id: String(row.id), ...shortId }] };
+}
+
+/** The `find` outcomes for a reply's `found`: none when there are none, or more than `MAX_INLINE_ROWS` rows. */
+export function inlineFinds(outcomes: ActStepOutcome[]): { found?: ActStepOutcome[] } {
+  const finds = outcomes.filter((o) => o.action === 'find');
+  const rows = finds.reduce((n, o) => n + (o.rows?.length ?? 0), 0);
+  return finds.length > 0 && rows <= MAX_INLINE_ROWS ? { found: finds } : {};
+}
+
+const toValue = (v: unknown): ActValue =>
+  v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean'
+    ? v
+    : Array.isArray(v)
+      ? v.map(toValue)
+      : typeof v === 'bigint'
+        ? String(v)
+        : JSON.stringify(v);
+
+/**
+ * One plan step as sketch text with every value it sends: `close work/Todo
+ * id=1 status=closed`. A read shows its filter, and a `find` its fields; a
+ * late value shows as `$name`, `#N` or `now`.
+ */
+export function planLine(step: ActPlanStep): string {
+  const args: Record<string, ActValue> = {};
+  if (step.operation === 'query') {
+    const where = (step.params.where ?? {}) as Record<string, { eq?: unknown; in?: unknown[] }>;
+    for (const [k, op] of Object.entries(where)) args[k] = toValue('in' in op ? op.in : op.eq);
+    if (step.action === 'find') args.fields = Object.keys(step.fields);
+  } else {
+    for (const [k, v] of Object.entries(step.params)) args[k] = toValue(v);
+  }
+  const late = Object.entries(step.late ?? {}).map(
+    ([k, l]) => `${k}=${'bind' in l ? `$${l.bind}` : 'now' in l ? 'now' : `#${l.ref.shortId}`}`
+  );
+  return [formatStep({ action: step.action, type: step.type, args }), ...late].join(' ');
 }
 
 /**
