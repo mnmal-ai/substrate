@@ -42,7 +42,7 @@ import {
   type PubSub,
   storageSettled
 } from '../src/index.js';
-import { deleteNamespaces } from './_layout.js';
+import { deleteNamespaces, relationOf } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const VIRTUAL = 'vshop';
@@ -710,6 +710,18 @@ async function clearActionProposals(sql: Sql, ...namespaces: string[]): Promise<
   );
 }
 
+/** Resolves once a statement on `table` waits for a lock. */
+async function lockWaitOn(sql: Sql, table: string): Promise<void> {
+  for (let i = 0; i < 500; i++) {
+    const [waiting] = await sql<Array<{ n: number }>>`
+      SELECT count(*)::int AS n FROM pg_stat_activity
+      WHERE wait_event_type = 'Lock' AND query LIKE ${`%${table}%`}`;
+    if ((waiting?.n ?? 0) > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`nothing waited for a lock on ${table}`);
+}
+
 describe.skipIf(!POSTGRES_URL)('propose_action (pg)', () => {
   const ns = 'kactdef';
   const own = 'kactdefown';
@@ -831,5 +843,30 @@ describe.skipIf(!POSTGRES_URL)('propose_action (pg)', () => {
     const rows = await records(w);
     expect(rows.filter((r) => r.status === 'promoted')).toHaveLength(MAX_PUBLISHED_PER_TYPE);
     expect(rows.filter((r) => r.status === 'pending')).toMatchObject([{ uses: PROMOTE_USES }]);
+  });
+
+  it('refuses a redefinition a promotion overtakes, and the published word stays as it was', async () => {
+    const w = pgWorld();
+    const engine = await boot(w);
+    expect(
+      await act(engine, w, 'agent-a', 'define Ticket.reopen reopened status=open')
+    ).toMatchObject({ ok: true });
+    const [row] = await records(w);
+    if (row === undefined) throw new Error('no record');
+    const table = (await relationOf(sql, CONTROL_NAMESPACE, 'ActionProposal')).replace(/"/g, '');
+    let redefine: Promise<ActResponse> | undefined;
+    // A use holds the record's row lock while it promotes, and the redefinition starts meanwhile.
+    await control(w).withTransaction(async (tx) => {
+      await tx.lockForUpdate?.('ActionProposal', [row.id]);
+      redefine = act(engine, w, 'agent-a', 'define Ticket.reopen reopened status=closed');
+      await lockWaitOn(sql, table);
+      await tx.write('ActionProposal', [
+        { id: row.id, status: 'promoted', uses: PROMOTE_USES, promotedAt: new Date(w.clock.ms) }
+      ]);
+    });
+    expect(await redefine).toMatchObject(taken);
+    expect(await records(w)).toMatchObject([
+      { status: 'promoted', uses: PROMOTE_USES, declJson: row.declJson }
+    ]);
   });
 });

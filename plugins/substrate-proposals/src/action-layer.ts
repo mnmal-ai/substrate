@@ -59,6 +59,8 @@ export interface ProposalActionLayerDeps {
 /** Who a use's write is stamped as. */
 const PLUGIN_ACTOR: ActorIdentity = { kind: 'system', id: 'substrate-proposals' };
 
+const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
 const time = (v: unknown): number =>
   v === null || v === undefined ? 0 : new Date(v as string | Date).getTime();
 
@@ -173,12 +175,7 @@ export class ProposalActionLayer implements ActionLayer {
       const id = words?.get(`${type}.${name}`)?.row.id;
       if (id === undefined) continue;
       const work = this.#recordUse(id, at).catch((err: unknown) =>
-        this.#deps.metric('_system_proposals.action_use_failed', {
-          id,
-          type,
-          name,
-          error: err instanceof Error ? err.message : String(err)
-        })
+        this.#report('_system_proposals.action_use_failed', { id, type, name, error: message(err) })
       );
       this.#recording.add(work);
       void work.finally(() => this.#recording.delete(work));
@@ -238,7 +235,21 @@ export class ProposalActionLayer implements ActionLayer {
     });
     if (written === null) return;
     this.apply(written);
-    await this.#deps.pubsub.notify(ACTIONS_CHANNEL, String(written.id));
+    await this.#deps.pubsub.notify(ACTIONS_CHANNEL, String(written.id)).catch((err: unknown) =>
+      this.#report('_system_proposals.action_notify_failed', {
+        id: written.id,
+        error: message(err)
+      })
+    );
+  }
+
+  /** A metric whose sink may throw: the throw is dropped, so a use never fails loudly. */
+  #report(name: string, payload: Record<string, unknown>): void {
+    try {
+      this.#deps.metric(name, payload);
+    } catch {
+      // The sink's own failure has nowhere further to go.
+    }
   }
 
   /**

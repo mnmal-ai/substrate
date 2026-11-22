@@ -42,6 +42,7 @@ import { ProposalError } from './errors.js';
 import { PROPOSAL_TYPE_NAMES } from './namespace.js';
 import { proposalLockKey, withProposalLock } from './proposal-lock.js';
 import type { RegistryStore } from './registry-store.js';
+import { lockedRow } from './row-lock.js';
 
 export interface ProposeActionResolverDeps {
   registryStore: RegistryStore;
@@ -283,6 +284,18 @@ export function makeProposeActionResolver(
             `you hold ${MAX_PENDING_PER_PROPOSER} live pending words in '${namespace}'; one frees when it lapses after ${LAPSE_MS / 86_400_000} days unused`,
             { namespace, cap: MAX_PENDING_PER_PROPOSER }
           );
+        }
+        if (own !== undefined) {
+          // A use may have promoted the word since the read above; its row lock settles it.
+          const held = await lockedRow('ActionProposal', own.id, dataset);
+          if (
+            held === null ||
+            held.id !== own.id ||
+            held.status !== 'pending' ||
+            held.archived === true
+          ) {
+            throw taken('was promoted or closed while this define ran, and stays as it is');
+          }
         }
 
         const written =
