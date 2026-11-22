@@ -1,5 +1,5 @@
 ---
-order: 6
+order: 7
 name: recall
 promise: Declare which text to embed, and every write becomes searchable by meaning.
 shows:

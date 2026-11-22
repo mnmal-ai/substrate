@@ -12,8 +12,14 @@ export const surfaces: { name: string; blurb: string; href: string }[] = [
   {
     name: 'MCP',
     blurb:
-      'substrate mcp: a stdio server with query, mutate, schema, recall and run, plus ask and the propose tools when enabled.',
+      'substrate mcp: a stdio server with query, mutate, schema, recall and run, plus ask and the propose tools when enabled. The lean preset carries act and whoami alone.',
     href: 'apps/substrate/README.md'
+  },
+  {
+    name: 'act',
+    blurb:
+      'One line of intent in, one line of acknowledgement out. Declared actions carry the conventions, and a deterministic compiler resolves the rest.',
+    href: 'docs/act.md'
   },
   {
     name: 'Frame streams',

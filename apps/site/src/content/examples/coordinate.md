@@ -1,5 +1,5 @@
 ---
-order: 4
+order: 5
 name: coordinate
 promise: Two signed agents hand off work live, and every row names the key that wrote it.
 shows:

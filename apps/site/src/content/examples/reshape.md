@@ -1,5 +1,5 @@
 ---
-order: 2
+order: 3
 name: reshape
 promise: An agent adds a type to the running server and uses it on the next call.
 shows:

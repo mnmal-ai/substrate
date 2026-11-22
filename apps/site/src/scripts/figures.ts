@@ -2,10 +2,10 @@
 // Draws each [data-figure] element with the Hairline export it names, once it comes within 200px
 // of the viewport. A card's figure plays its tour only while the card is hovered or holds focus;
 // a page's figure answers the pointer.
-import { cabinet, hub, query, rebuild, riffle, settle, slow } from '@lucasmarkes/hairline';
+import { cabinet, hub, query, rebuild, riffle, settle, sieve, slow } from '@lucasmarkes/hairline';
 import type { FigureName } from '../lib/example-pages.ts';
 
-const draw = { settle, rebuild, query, hub, cabinet, riffle, slow } satisfies Record<
+const draw = { settle, sieve, rebuild, query, hub, cabinet, riffle, slow } satisfies Record<
   FigureName,
   unknown
 >;

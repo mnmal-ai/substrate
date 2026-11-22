@@ -220,7 +220,7 @@ describe('built output', () => {
 describe('landing page', () => {
   const examples = /<section[^>]*\sid="examples"[^>]*>([\s\S]*?)<\/section>/.exec(html)?.[1] ?? '';
 
-  it('links all seven examples', () => {
+  it('links every example', () => {
     const hrefs = [...examples.matchAll(/<a\b[^>]*\shref="([^"]*)"/g)].map((m) => m[1]);
     expect(hrefs).toEqual(EXAMPLE_SLUGS.map((s) => pageHref('/substrate', s)));
     for (const slug of EXAMPLE_SLUGS) {
@@ -246,7 +246,7 @@ describe('landing page', () => {
     }
     // figures.ts plays a card's figure from its closest `.card`, so each figure sits in one.
     const cards = examples.split(/<li\b[^>]*\sclass="(?:[^"]*\s)?card(?:\s[^"]*)?"/).slice(1);
-    expect(cards).toHaveLength(7);
+    expect(cards).toHaveLength(EXAMPLE_SLUGS.length);
     for (const card of cards) {
       const body = card.slice(0, card.indexOf('</li>'));
       expect(body.match(/\sdata-figure="/g)).toHaveLength(1);

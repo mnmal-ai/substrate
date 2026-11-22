@@ -1,5 +1,5 @@
 ---
-order: 5
+order: 6
 name: warehouse
 promise: Monthly totals and per-customer rollups, asked in the same frames as every read.
 shows:

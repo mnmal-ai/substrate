@@ -10,6 +10,17 @@ close Todo #12 resolution=wont_do; create Note body="Follow up on #12"
 { "ok": true, "ack": "closed work/Todo #12; created work/Note #7", "result": "r_7f3k2q" }
 ```
 
+## Why
+
+An agent in a harness carries every tool's definition and instructions in its context on every turn, and the replies it gets back pile up there too. The longer a session runs, the more of that context goes on the tool: re-reading a grammar, rebuilding frames, and recalling conventions no schema states, such as what closing a record means in this namespace. `act` moves that work out of the model.
+
+- **Conventions live in the namespace.** An action declares what it means once, so every agent applies it the same way and none has to remember it.
+- **The compiler is deterministic.** The same sketch against the same schema always compiles to the same plan. What doesn't resolve is refused, with the choices and the nearest valid sketch.
+- **Replies are one line.** The full outcome waits in a result record the agent fetches only if it needs it.
+- **The fixed cost is small.** The MCP `lean` preset carries `act` and `whoami`: 1,703 bytes of tools and instructions before any types are listed, against about 8.5 KB for `core`.
+
+The model spends its turns on the problem, not on the tool. The [act worked example](https://mnmal-ai.github.io/substrate/examples/act/) shows one run, recorded by CI.
+
 ## Declaring actions
 
 A namespace declares actions per type in `defineNamespace`. Declarations are data: they are published in the schema and never run code.
