@@ -222,13 +222,14 @@ export function buildInstructions(
       Object.entries(overview).map(([ns, { actions: _actions, ...rest }]) => [ns, rest])
     )
   );
-  const body =
-    full.length <= INSTRUCTIONS_OVERVIEW_MAX
-      ? `${overviewLegend}\n${full}`
-      : `Type names only (the full overview is large; call \`schema\` with no arguments for fields):\n${JSON.stringify(
-          Object.fromEntries(Object.entries(overview).map(([ns, o]) => [ns, Object.keys(o.types)]))
-        )}`;
-  return `${CONVENTIONS}\n\nTypes on this server at session start:\n${body}${any ? `\n${PENDING_LEGEND}` : ''}`;
+  // Type names alone carry no marks, so the legend goes only with the full overview.
+  const fits = full.length <= INSTRUCTIONS_OVERVIEW_MAX;
+  const body = fits
+    ? `${overviewLegend}\n${full}`
+    : `Type names only (the full overview is large; call \`schema\` with no arguments for fields):\n${JSON.stringify(
+        Object.fromEntries(Object.entries(overview).map(([ns, o]) => [ns, Object.keys(o.types)]))
+      )}`;
+  return `${CONVENTIONS}\n\nTypes on this server at session start:\n${body}${any && fits ? `\n${PENDING_LEGEND}` : ''}`;
 }
 
 /** An expression catalogue, as the server's unscoped `GET /substrate/v1/schema` publishes it. */
@@ -308,7 +309,9 @@ export function buildLeanInstructions(
       .map(([ns, o]) => line(ns, o, withActions))
       .join('\n');
   const full = index(true);
+  // Type names alone carry no marks, so the legend goes only with the full index.
+  const fits = full.length <= INSTRUCTIONS_OVERVIEW_MAX;
   return `${LEAN_CONVENTIONS}\n\nTypes and actions at session start:\n${
-    full.length <= INSTRUCTIONS_OVERVIEW_MAX ? full : index(false)
-  }${any ? `\n${PENDING_LEGEND}` : ''}`;
+    fits ? full : index(false)
+  }${any && fits ? `\n${PENDING_LEGEND}` : ''}`;
 }

@@ -159,6 +159,21 @@ describe('action names in the overview', () => {
     expect(buildInstructions(overview)).not.toContain('* yours, pending');
   });
 
+  it('prints no legend when the index falls back to type names', () => {
+    const names = Array.from({ length: 400 }, (_, i) => `T${i}`);
+    const big = {
+      ns: {
+        types: Object.fromEntries(names.map((t) => [t, 'x: string, '.repeat(5)])),
+        actions: Object.fromEntries(names.map((t) => [t, 'close(resolution?), defer(revisitWhen)']))
+      }
+    };
+    const pending = { ns: { T0: ['reopen'] } };
+    for (const text of [buildLeanInstructions(big, pending), buildInstructions(big, pending)]) {
+      expect(text).not.toContain('reopen*');
+      expect(text).not.toContain('* yours, pending');
+    }
+  });
+
   it('says the list is unavailable with no overview', () => {
     expect(buildLeanInstructions(null)).toContain('send `?`');
   });
