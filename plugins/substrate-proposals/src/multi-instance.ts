@@ -13,14 +13,17 @@
  */
 
 import type {
+  ActionDecl,
   Dataset,
   DropParticipant,
   EdgesStore,
   EngineHandle,
   Registry,
-  Row
+  Row,
+  WhereClause
 } from '@mnmal-ai/substrate-types';
 import {
+  type ApplyTypeProposalArgs,
   applyFieldProposal,
   applyTypeIndexOptions,
   applyTypeProposal,
@@ -37,6 +40,17 @@ import { CLUSTER_CHANNEL } from './propose-namespace-resolver.js';
 import type { RegistryStore } from './registry-store.js';
 import { isLiveProposal } from './row-lock.js';
 
+/** A TypeProposal row as `applyTypeProposal` takes it; its actions are checked there. */
+function storedType(row: Row): Pick<ApplyTypeProposalArgs, 'typeName' | 'fields' | 'actions'> {
+  return {
+    typeName: row.typeName as string,
+    fields: storedSpec(row, 'fieldsJson') as Record<string, FieldSpecJson>,
+    ...(row.actionsJson == null
+      ? {}
+      : { actions: storedSpec(row, 'actionsJson') as Record<string, ActionDecl> })
+  };
+}
+
 /** Why a stored field proposal is skipped when replay skipped its type. */
 function typeSkipped(row: Row): ProposalError {
   const type = String(row.targetType);
@@ -49,13 +63,13 @@ function typeSkipped(row: Row): ProposalError {
 }
 
 /**
- * A stored row's field specs, parsed.
+ * A stored row's field specs, or born actions, parsed.
  *
  * @throws ProposalError `invalid_field_spec` when the stored value is not a
  *   string, as `JSON.parse` would read an array as its joined elements
  * @throws SyntaxError when it is not JSON
  */
-function storedSpec(row: Row, param: 'fieldsJson' | 'fieldSpecJson'): unknown {
+function storedSpec(row: Row, param: 'fieldsJson' | 'fieldSpecJson' | 'actionsJson'): unknown {
   const json = row[param];
   if (typeof json !== 'string') {
     throw new ProposalError('invalid_field_spec', `stored '${param}' is not a string`, { param });
@@ -139,11 +153,9 @@ export async function applyProposalFromNotification(
       const typeName = row.typeName as string;
       let changed = false;
       if (!binding.registry.get(typeName)) {
-        const fields = storedSpec(row, 'fieldsJson') as Record<string, FieldSpecJson>;
         applyTypeProposal({
           namespace: args.namespace,
-          typeName,
-          fields,
+          ...storedType(row),
           registryStore: args.registryStore,
           dataset: binding.dataset,
           edges: binding.edges
@@ -264,11 +276,9 @@ export async function reconcileNamespace(args: ReconcileArgs): Promise<void> {
   for (const row of typeRows.rows) {
     if (binding.registry.get(row.typeName as string)) continue;
     try {
-      const fields = storedSpec(row, 'fieldsJson') as Record<string, FieldSpecJson>;
       applyTypeProposal({
         namespace: args.namespace,
-        typeName: row.typeName as string,
-        fields,
+        ...storedType(row),
         registryStore: args.registryStore,
         dataset: binding.dataset,
         edges: binding.edges
@@ -598,29 +608,50 @@ function isHotAdded(registryStore: RegistryStore, ns: string): boolean {
   return registryStore.has(ns) && registryStore.getBinding(ns).hotAdded === true;
 }
 
+/** Archives every row of `type` matching `where` that is not archived, `patch` merged in. */
+async function archiveAll(
+  dataset: Dataset,
+  type: string,
+  where: WhereClause,
+  patch: Record<string, unknown> = {}
+): Promise<void> {
+  for (;;) {
+    const standing = await dataset.read(type, {
+      where: { AND: [where, { archived: { eq: false } }] },
+      limit: 500
+    });
+    if (standing.rows.length === 0) return;
+    await dataset.write(
+      type,
+      standing.rows.map((row) => ({ ...row, ...patch, archived: true }))
+    );
+  }
+}
+
 /**
  * Drop participant: inside the drop's own transaction, archive every
  * NamespaceProposal row for the dropped namespace, so boot replay does not
- * reinstall it and the name stays reserved (`namespace_retired`). Decided from
- * the control plane, not this process's bindings: only a proposed namespace
- * has rows. A throw rolls the drop back.
+ * reinstall it and the name stays reserved (`namespace_retired`), and retire
+ * every ActionProposal targeting it. Decided from the control plane, not this
+ * process's bindings: only a proposed namespace has NamespaceProposal rows. A
+ * throw rolls the drop back.
  */
 export function namespaceDropParticipant(controlNamespace: string): DropParticipant {
   return {
     namespaces: [controlNamespace],
     async onDrop(ns, datasetFor) {
       const control = datasetFor(controlNamespace);
-      for (;;) {
-        const standing = await control.read('NamespaceProposal', {
-          where: { AND: [{ ns: { eq: ns } }, { archived: { eq: false } }] },
-          limit: 500
-        });
-        if (standing.rows.length === 0) return;
-        await control.write(
-          'NamespaceProposal',
-          standing.rows.map((row) => ({ ...row, archived: true }))
-        );
-      }
+      await archiveAll(control, 'NamespaceProposal', { ns: { eq: ns } });
+      // shortcut: this instance's action layer and its peers' keep the dropped namespace's
+      // words until restart. Locally nothing reaches them (re-creating the name is refused and
+      // act skips a missing namespace); on a peer a pending word stays usable by its proposer.
+      // Apply the retired rows and tell peers on ACTIONS_CHANNEL if that window matters.
+      await archiveAll(
+        control,
+        'ActionProposal',
+        { targetNamespace: { eq: ns } },
+        { status: 'retired' }
+      );
     }
   };
 }

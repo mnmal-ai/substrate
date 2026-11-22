@@ -99,6 +99,7 @@ const toValue = (v: unknown): ActValue =>
  * late value shows as `$name`, `#N` or `now`.
  */
 export function planLine(step: ActPlanStep): string {
+  if (step.action === 'define') return String(step.params.sketch);
   const args: Record<string, ActValue> = {};
   if (step.operation === 'query') {
     const where = (step.params.where ?? {}) as Record<string, { eq?: unknown; in?: unknown[] }>;
@@ -126,6 +127,9 @@ export function formatAck(plan: ActPlan, outcomes: ActStepOutcome[], mode: ActMo
       );
     } else if (o.action === 'count') {
       parts.push(`${o.type} count ${o.count}`);
+    } else if (o.action === 'define') {
+      const { name } = (plan.steps[o.step - 1]?.params ?? {}) as { name?: string };
+      parts.push(`defined ${o.type}.${name} (yours; public after 5 uses an hour apart)`);
     } else {
       const past =
         plan.steps[o.step - 1]?.past ?? BUILT_IN_PAST.get(o.action) ?? `${o.action} done`;

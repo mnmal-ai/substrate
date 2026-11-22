@@ -7,7 +7,10 @@
 
 import {
   type ActHelp,
+  type ActionDecl,
+  type ActionParamDecl,
   type ActionSchema,
+  type ActionSetValue,
   type ActionThenDecl,
   type ActLate,
   type ActPlan,
@@ -23,7 +26,7 @@ import {
 } from '@mnmal-ai/substrate-types';
 import { clipToken, coerceValue, TOKEN_ECHO } from './coerce.js';
 import { typeHelp, typesHelp } from './help.js';
-import { formatSketch, parseSketch, REF } from './parse.js';
+import { formatSketch, formatStep, formatValue, parseSketch, REF } from './parse.js';
 
 export interface CompileOptions {
   defaultNamespace?: string;
@@ -31,6 +34,8 @@ export interface CompileOptions {
   localNamespaces: ReadonlySet<string>;
   /** Default 50. */
   maxWriteSteps?: number;
+  /** The frame key `define` compiles to; absent when the server takes no action proposals. */
+  defineKey?: string;
 }
 export type CompileResult =
   | { plan: ActPlan }
@@ -41,6 +46,10 @@ const DEFAULT_MAX_WRITE_STEPS = 50;
 /** Each help step can answer the whole schema overview, so a reply's size is bounded by this. */
 const MAX_HELP_STEPS = 10;
 const FIND_LIMIT = 1000;
+const WORD_NAME = /^[a-z][A-Za-z0-9]{1,31}$/;
+const RESERVED_WORDS = ['create', 'update', 'find', 'count', 'define'];
+/** `$`, `$name`, `$?` or `$name?` in a `define` argument. */
+const PLACEHOLDER = /^\$([A-Za-z_][A-Za-z0-9_]*)?(\?)?$/;
 const BUILT_IN: Record<'create' | 'update', ActionSchema> = {
   create: toActionSchema({ kind: 'create' }),
   update: toActionSchema({ kind: 'update' })
@@ -158,6 +167,16 @@ class Compiler {
       return { help: help.length === 1 ? (help[0] as ActHelp) : help };
     }
 
+    const defineAt = steps.findIndex((s) => s.action === 'define');
+    if (defineAt !== -1) {
+      this.#at(defineAt + 1);
+      if (steps.length > 1) this.#refuse('define', 'define stands alone');
+      if (this.options.defineKey === undefined) {
+        this.#refuse('define', 'this server takes no action proposals');
+      }
+      return { plan: { steps: [{ step: 1, ...this.#define(this.options.defineKey) }] } };
+    }
+
     const drafts: Draft[] = [];
     for (const [i, step] of steps.entries()) this.#at(i + 1).#compileStep(step, drafts);
     return { plan: { steps: drafts.map((d, i) => ({ step: i + 1, ...d })) } };
@@ -212,8 +231,9 @@ class Compiler {
     return type === undefined ? undefined : { ns, name, qualified: `${ns}/${name}`, type };
   }
 
-  #resolveType(token: string): Target {
-    const swap: Swap = (s, c) => ({ ...s, type: c });
+  /** `suffix` is kept on the type token when a refusal swaps in a choice (`define` writes `.name` there). */
+  #resolveType(token: string, suffix = ''): Target {
+    const swap: Swap = (s, c) => ({ ...s, type: c + suffix });
     const slash = token.indexOf('/');
     const all = (qualified: boolean) =>
       Object.entries(this.schema).flatMap(([ns, s]) =>
@@ -248,6 +268,104 @@ class Compiler {
     if (!this.options.localNamespaces.has(ns)) {
       this.#refuse(token, `${ns} is bridged or virtual; act runs on local stores only`);
     }
+  }
+
+  /** The one plan step that proposes a coined word: `define <Type>.<name> [past] field=<literal>|$|$name|$?|$name?|now`. */
+  #define(key: string): Draft {
+    const step = this.#step;
+    const token = step.type ?? '';
+    const dot = token.lastIndexOf('.');
+    if (dot === -1) this.#refuse(token, 'define needs <Type>.<name>');
+    const name = token.slice(dot + 1);
+    const target = this.#resolveType(token.slice(0, dot), token.slice(dot));
+    this.#local(target.ns, token);
+    if (RESERVED_WORDS.includes(name)) this.#refuse(name, `'${name}' is a built-in action`);
+    const badName = (n: string) =>
+      this.#refuse(n, `name must match ${WORD_NAME.source} (two or more characters)`);
+    if (!WORD_NAME.test(name)) badName(name);
+    const [past, extra] = step.refs ?? [];
+    if (extra !== undefined) this.#refuse(extra, 'define takes at most one past word');
+    if (step.as !== undefined) this.#refuse(`$${step.as}`, 'define takes no binding');
+    if (past !== undefined && !WORD_NAME.test(past)) badName(past);
+    const args = step.args ?? {};
+    if (Object.keys(args).length === 0) this.#refuse('define', 'define sets nothing');
+
+    const fields = target.type.fields;
+    const params: Record<string, ActionParamDecl> = {};
+    const set: Record<string, ActionSetValue> = {};
+    for (const [arg, raw] of Object.entries(args)) {
+      const def = Object.hasOwn(fields, arg) ? fields[arg] : undefined;
+      if (def === undefined) {
+        const writable = Object.entries(fields)
+          .filter(([, d]) => !(d.kind === 'scalar' && (d.readonly === true || d.serverSet)))
+          .map(([f]) => f);
+        this.#refuse(arg, `unknown field '${arg}' on ${target.qualified}`, writable, swapKey(arg));
+      }
+      if (def.kind === 'scalar' && (def.readonly === true || def.serverSet !== undefined)) {
+        this.#refuse(arg, `${arg} is server-set`);
+      }
+      if (raw === 'now') {
+        if (def.kind !== 'scalar' || def.type !== 'date') {
+          this.#refuse(arg, `${arg}: now fits a date field only`);
+        }
+        set[arg] = { now: true };
+        continue;
+      }
+      const ph = typeof raw === 'string' ? PLACEHOLDER.exec(raw) : null;
+      if (ph === null) {
+        const value = this.#coerce(def, raw, arg, swapValue(arg));
+        if (typeof value === 'object' && value !== null) {
+          this.#refuse(String(raw), `${arg}: define sets a single value`);
+        }
+        set[arg] = value as ActionSetValue;
+        continue;
+      }
+      const param = ph[1] ?? arg;
+      // A param's type is the field's, minus what only the server may set.
+      let type: FieldDef = def;
+      if (def.kind === 'scalar') {
+        const { readonly: _r, serverSet: _s, ...rest } = def;
+        type = rest;
+      }
+      const prior = Object.hasOwn(params, param) ? params[param] : undefined;
+      if (
+        prior !== undefined &&
+        JSON.stringify((prior as { type: FieldDef }).type) !== JSON.stringify(type)
+      ) {
+        this.#refuse(String(raw), `param '${param}' is used for two field types`);
+      }
+      const optional = ph[2] !== undefined && (prior === undefined || prior.optional === true);
+      params[param] = { type, ...(optional ? { optional: true } : {}) };
+      set[arg] = { param };
+    }
+
+    const decl: ActionDecl = {
+      kind: 'update',
+      ...(past !== undefined ? { past } : {}),
+      params,
+      set
+    };
+    const shown = Object.entries(args).map(
+      ([k, v]) => `${k}=${typeof v === 'string' && PLACEHOLDER.test(v) ? v : formatValue(v)}`
+    );
+    const sketch = [
+      formatStep({
+        action: 'define',
+        type: `${target.qualified}.${name}`,
+        ...(past !== undefined ? { refs: [past] } : {})
+      }),
+      ...shown
+    ].join(' ');
+    return {
+      source: this.#n,
+      action: 'define',
+      type: target.qualified,
+      key,
+      operation: 'mutate',
+      params: { namespace: target.ns, type: target.name, name, decl, sketch },
+      fields: { id: true },
+      past: 'defined'
+    };
   }
 
   #compileStep(step: ActStep, out: Draft[]): void {

@@ -295,10 +295,13 @@ async function proposeFieldLocked(
   }
 
   // Step 6 — mark the row as applied, stamping the schemaVersion that
-  // RESULTED from the step-5 apply: the registry is already mutated, so
-  // publishSchema reads the post-apply state.
+  // RESULTED from the step-5 apply: the registry is already mutated, so the
+  // engine's schema (published coined words included) reads the post-apply
+  // state, as publishSchema does where no engine is wired.
   const now = new Date();
-  const resultingSchemaVersion = publishSchema(binding.registry).schemaVersion;
+  const resultingSchemaVersion = (
+    engine?.schemaFor(deps.namespace) ?? publishSchema(binding.registry)
+  ).schemaVersion;
   if (engine !== undefined) {
     await writeInTx(
       binding.registry,

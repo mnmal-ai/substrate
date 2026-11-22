@@ -22,7 +22,7 @@ export type { ActHandle } from '@mnmal-ai/substrate-types';
 export { type CompileOptions, type CompileResult, compileSketch } from './act/compile.js';
 export { formatAck } from './act/outcome.js';
 export { formatSketch, parseSketch } from './act/parse.js';
-export { assertActionGraph } from './act/validate.js';
+export { assertActionChains, assertActionGraph } from './act/validate.js';
 export {
   type ReadShape,
   readShapeOf,

@@ -6,6 +6,7 @@
  * `@mnmal-ai/substrate-policy`.
  */
 
+export { assertTypeActions } from './actions.js';
 export * from './autocrud/index.js';
 export {
   isReservedAutoCrudField,

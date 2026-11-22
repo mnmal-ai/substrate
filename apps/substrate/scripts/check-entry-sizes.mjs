@@ -20,7 +20,7 @@ const BUDGETS = [
   ['sdk', 'field', 16_000],
   ['sdk', 'defineNamespace', 125_000],
   ['recall', 'createRecallPlugin', 185_000],
-  ['proposals', 'createProposalsPlugin', 300_000],
+  ['proposals', 'createProposalsPlugin', 350_000],
   ['testing', 'MemoryDataset', 155_000]
 ];
 

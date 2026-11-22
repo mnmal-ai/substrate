@@ -12,10 +12,13 @@
  *   - a policy gate derived from config.proposeCapability (defaults to 'substrate.propose')
  *   - `propose_index` on the control plane, for indexes of any namespace, gated
  *     by config.indexCapability (defaults to 'substrate.index')
+ *   - `propose_action` on the control plane, which coins an action word on a
+ *     stored type of any namespace, gated by the namespace grants alone
  *
  * onStart wires the engine handle into each binding, replays applied proposals
- * via reconcileNamespace, and subscribes to per-ns + cluster-wide LISTEN/NOTIFY
- * channels for multi-instance coherence.
+ * via reconcileNamespace, builds the action layer from the ActionProposal
+ * records, and subscribes to per-ns + cluster-wide LISTEN/NOTIFY channels for
+ * multi-instance coherence.
  */
 
 import type {
@@ -28,6 +31,7 @@ import type {
   Registry,
   Row
 } from '@mnmal-ai/substrate-types';
+import { ACTIONS_CHANNEL, ProposalActionLayer, registryActions } from './action-layer.js';
 import {
   DEFAULT_INDEX_CAPABILITY,
   DEFAULT_PROPOSE_CAPABILITY,
@@ -48,6 +52,7 @@ import {
 } from './multi-instance.js';
 import { defineProposalTypes } from './namespace.js';
 import { buildOnboardBody, registerOnboardRoute } from './onboard.js';
+import { makeProposeActionResolver } from './propose-action-resolver.js';
 import { makeProposeFieldResolver } from './propose-field-resolver.js';
 import { makeProposeIndexResolver } from './propose-index-resolver.js';
 import { makeProposeNamespaceResolver } from './propose-namespace-resolver.js';
@@ -79,6 +84,9 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
   const capability = config.proposeCapability ?? DEFAULT_PROPOSE_CAPABILITY;
   const policy = makeProposePolicy(capability);
   const indexCapability = config.indexCapability ?? DEFAULT_INDEX_CAPABILITY;
+  const now = config.now ?? ((): Date => new Date());
+  // Built from the ActionProposal records in onStart.
+  let actionLayer: ProposalActionLayer | undefined;
 
   // Late-bound dataset lookup for hot-added namespaces. An explicit
   // `config.datasetFor` wins; otherwise onStart swaps in the engine handle's
@@ -131,7 +139,11 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
         dataset: ctx.dataset,
         edges: ctx.edges
       });
-      defineControlPlaneTypes(registryStore, capability).install(ctx);
+      // An admin's archive vetoes or retires a word: this layer drops it, then peers are told.
+      defineControlPlaneTypes(registryStore, capability, undefined, async (row) => {
+        actionLayer?.apply(row);
+        await config.pubsub.notify(ACTIONS_CHANNEL, String(row.id));
+      }).install(ctx);
 
       // propose_namespace mutation — runtime namespace creation. Resolver factory captures `registryStore` at install time; the engine
       // handle is late-bound by `onStart` (see below) so the resolver can call
@@ -165,6 +177,18 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
           channelFor: (n: string): string => `_substrate_proposals_${n}`
         }),
         policy: makeIndexPolicy(indexCapability)
+      });
+
+      // propose_action — a coined action word on a type of any namespace. No
+      // policy: `mutate` on this namespace and on the target is the whole gate.
+      ctx.registry.register('propose_action', {
+        kind: 'mutation',
+        resolver: makeProposeActionResolver({
+          registryStore,
+          pubsub: config.pubsub,
+          now,
+          layer: () => actionLayer
+        })
       });
     }
   };
@@ -284,13 +308,47 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
         ctx.metric('_system_proposals.namespace_ready', { namespace: ns });
       }
 
+      // The action layer, from the records still live (not archived), told of peers' changes.
+      actionLayer = new ProposalActionLayer({
+        proposeKey: `${CONTROL_NAMESPACE}/propose_action`,
+        now,
+        invalidateSchemaCaches: (ns) => ctx.engine.invalidateSchemaCaches(ns),
+        schemaVersion: (ns) => ctx.engine.schemaFor(ns).schemaVersion,
+        dataset: controlBinding.dataset,
+        pubsub: config.pubsub,
+        metric: (name, payload) => ctx.metric(name, payload),
+        onSkip: (row, err) => skipped(CONTROL_NAMESPACE, row, err)
+      });
+      // Every page: lapsed words stay live records, so their number only grows.
+      const actionRows: Row[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await controlBinding.dataset.read('ActionProposal', {
+          where: { archived: { eq: false } },
+          orderBy: [{ createdAt: 'asc' }],
+          limit: 1000,
+          ...(cursor !== undefined ? { cursor } : {})
+        });
+        actionRows.push(...page.rows);
+        cursor = page.nextCursor;
+      } while (cursor !== undefined);
+      // Names declared in code, or born with a type, supersede coined words.
+      await actionLayer.load(
+        actionRows,
+        new Set(registryActions(ctx.engine.federatedSchema()).keys())
+      );
+      ctx.engine.setActionLayer(actionLayer);
+      // shortcut: a peer's change between the read above and this listen is missed until it
+      // changes again or this instance restarts; listen first and order the applies if that matters.
+      await actionLayer.listenToPeers();
+
       // Cluster-wide listener: when a peer instance applies propose_namespace,
       // install the new ns into THIS engine too. Edges store comes from the
       // control-plane binding (every install threads the same EdgesStore in
       // production).
-      // A drop of a namespace this plugin hot-added: its proposal rows are
-      // archived inside the drop's transaction, then once it commits the
-      // namespace leaves this engine and peers are told.
+      // A namespace drop archives its proposal rows and retires the words coined
+      // on it, inside the drop's transaction. Once it commits, a namespace this
+      // plugin hot-added leaves this engine and peers are told.
       ctx.engine.addDropParticipant(namespaceDropParticipant(CONTROL_NAMESPACE));
       ctx.engine.onNamespaceTombstoned((ns) => {
         void retireDroppedNamespace({

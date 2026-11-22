@@ -39,6 +39,7 @@ import {
 import type {
   ActHandle,
   ActInput,
+  ActionLayer,
   ActMode,
   ActorIdentity,
   ActPlanStep,
@@ -91,6 +92,7 @@ import {
   isRestrictViolation,
   naturalOrderOf,
   ROW_POLICY_BLOCKS_WALK,
+  toActionSchema,
   WALK_UNSUPPORTED_REF,
   WALKS_IN_MUTATION,
   WALKS_UNSUPPORTED_STORE
@@ -351,6 +353,7 @@ export class Engine implements ActHandle {
   #lifecycleDisposer: (() => void) | undefined;
   /** Schema-federation subsystem; the engine's public schema methods delegate here. */
   readonly #schema: SchemaSubsystem;
+  #actionLayer: ActionLayer | undefined;
   /**
    * Live subscription subsystem (§5.4, §5.13). Owns the subscription bus, the
    * back-pressure queue, and the WriteEvent fanout. The mutate path calls
@@ -390,7 +393,8 @@ export class Engine implements ActHandle {
       namespaces: this.#namespaces,
       bridges: this.#bridges,
       isLive: (ns: string): boolean => this.#isLive(ns),
-      isTombstoned: (ns: string): boolean => this.#tombstoned.has(ns)
+      isTombstoned: (ns: string): boolean => this.#tombstoned.has(ns),
+      coinedFor: (ns) => this.#actionLayer?.published(ns)
     });
     this.#bridgeProxy = new BridgeSubsystem({ bridges: this.#bridges, metric: this.#metric });
     this.#subscribe = new SubscribeSubsystem({
@@ -618,6 +622,11 @@ export class Engine implements ActHandle {
    */
   datasetFor(ns: string): Dataset | undefined {
     return this.#datasets.get(ns);
+  }
+
+  setActionLayer(layer: ActionLayer): void {
+    if (this.#actionLayer !== undefined) throw new Error('an action layer is already installed');
+    this.#actionLayer = layer;
   }
 
   schemaFor(ns: string): Schema {
@@ -1268,11 +1277,29 @@ export class Engine implements ActHandle {
   async #actRun(input: ActInput, identity: Identity, ownerKey: string): Promise<ActResponse> {
     const { results, ttlMs, maxWriteSteps } = this.#act;
     const mode = input.mode ?? 'write';
-    const schema = Object.fromEntries(
+    const schema: Record<string, Schema> = Object.fromEntries(
       Object.entries(this.federatedSchema()).filter(
         ([ns]) => checkIdentityGrant(identity, ns, 'query').ok
       )
     );
+    // The caller's pending words join their types; the cached schema is copied, never mutated.
+    // `identity.id` must name the principal propose_action records as the proposer (resolveIdentity(ctx).id).
+    const pendingKeys = new Set<string>();
+    for (const [qualified, words] of Object.entries(
+      this.#actionLayer?.pendingFor(identity.id) ?? {}
+    )) {
+      const [ns = '', typeName = ''] = qualified.split('/');
+      const nsSchema = schema[ns];
+      const type = nsSchema?.types[typeName];
+      if (nsSchema === undefined || type === undefined) continue;
+      const actions = { ...type.actions };
+      for (const [name, p] of Object.entries(words)) {
+        if (Object.hasOwn(actions, name)) continue;
+        actions[name] = { ...toActionSchema(p.decl), pending: { uses: p.uses, needed: p.needed } };
+        pendingKeys.add(`${qualified}.${name}`);
+      }
+      schema[ns] = { ...nsSchema, types: { ...nsSchema.types, [typeName]: { ...type, actions } } };
+    }
     const localNamespaces = new Set(
       [...this.#namespaces]
         .filter(([ns, cfg]) => cfg.virtual !== true && this.#datasets.get(ns) !== undefined)
@@ -1281,7 +1308,8 @@ export class Engine implements ActHandle {
     const compiled = compileSketch(input.sketch, schema, {
       ...(input.namespace !== undefined ? { defaultNamespace: input.namespace } : {}),
       localNamespaces,
-      maxWriteSteps
+      maxWriteSteps,
+      ...(this.#actionLayer !== undefined ? { defineKey: this.#actionLayer.proposeKey } : {})
     });
     if ('refusal' in compiled) return { ok: false, refusal: compiled.refusal };
     if ('help' in compiled) return { ok: true, help: compiled.help };
@@ -1304,6 +1332,23 @@ export class Engine implements ActHandle {
       throw new Error('act plan names no dataset');
     } else {
       error = await this.#actSteps(input, mode, plan.steps, parsedByKey, partition, outcomes);
+    }
+    if (error === undefined && mode === 'write' && pendingKeys.size > 0) {
+      const used = new Map<string, { type: string; name: string }>();
+      for (const s of plan.steps) {
+        const k = `${s.type}.${s.action}`;
+        if (pendingKeys.has(k)) used.set(k, { type: s.type, name: s.action });
+      }
+      if (used.size > 0) {
+        try {
+          this.#actionLayer?.used(identity.id, [...used.values()], input.ctx.now ?? new Date());
+        } catch (err) {
+          // The write committed: a failing layer must not turn it into an error reply.
+          this.#metric('engine_act_layer_used_failed', {
+            error: err instanceof Error ? err.message : String(err)
+          });
+        }
+      }
     }
 
     const ack = formatAck(plan, outcomes, mode);

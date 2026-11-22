@@ -18,6 +18,7 @@
 
 import { defineNamespace, field } from '@mnmal-ai/substrate-sdk';
 import type { NamespaceDefinition } from '@mnmal-ai/substrate-types';
+import { registryActions } from './action-layer.js';
 import {
   DEFAULT_DROP_CAPABILITY,
   DEFAULT_INDEX_CAPABILITY,
@@ -58,7 +59,9 @@ export function defineProposalTypes(
         /** `OrderedBy` as JSON, set by `propose_index orderedBy`; null for the default. */
         orderedByJson: field.string({ indexed: false, nullable: true }),
         /** `'small' | 'large'`, the proposer's size hint for the index advisor; null when none. */
-        expectedSize: field.enum(['small', 'large'], { indexed: false, nullable: true })
+        expectedSize: field.enum(['small', 'large'], { indexed: false, nullable: true }),
+        /** The actions born with the type, `Record<string, ActionDecl>` as JSON; null for none. */
+        actionsJson: field.string({ indexed: false, nullable: true })
       }
     },
     FieldProposal: {
@@ -83,12 +86,34 @@ export function defineProposalTypes(
     ...def,
     install(ctx) {
       def.install(ctx);
-      gateTypeProposalRemoval(ctx.registry, dropCapability);
+      gateTypeProposalRemoval(ctx.registry, dropCapability, (typeName) =>
+        chainsInto(registryStore, namespace, typeName)
+      );
       gateFieldProposalRemoval(ctx.registry, dropCapability);
       gateProposalReferences(ctx.registry, namespace, registryStore);
       stampProposedBy(ctx.registry, PROPOSAL_TYPE_NAMES);
     }
   };
+}
+
+/**
+ * The registry actions, keyed `ns/Type.name`, on types other than
+ * `namespace/typeName` whose `then` targets one of its actions.
+ */
+// shortcut: chains are read from this engine's registry, which keeps a type whose proposal was
+// archived until restart. So a chaining type archived that way still blocks removal until then, and
+// propose_type can chain a new type to such a type, which replay then skips at the next boot. Read
+// the live TypeProposal rows, here and in propose_type's check, if either bites.
+function chainsInto(registryStore: RegistryStore, namespace: string, typeName: string): string[] {
+  const engine = registryStore.has(namespace)
+    ? registryStore.getBinding(namespace).engine
+    : undefined;
+  const prefix = `${namespace}/${typeName}.`;
+  return [...registryActions(engine?.federatedSchema() ?? {})]
+    .filter(
+      ([key, a]) => !key.startsWith(prefix) && a.then.some((t) => t.action.startsWith(prefix))
+    )
+    .map(([key]) => key);
 }
 
 /** The canonical ordered list of type names registered by this namespace. */

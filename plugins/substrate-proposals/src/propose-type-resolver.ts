@@ -20,6 +20,7 @@
 import { publishSchema } from '@mnmal-ai/substrate-core';
 import { resolveIdentity } from '@mnmal-ai/substrate-sdk';
 import type {
+  ActionDecl,
   Dataset,
   EdgesStore,
   Id,
@@ -29,9 +30,11 @@ import type {
   ResolverArgs,
   Row
 } from '@mnmal-ai/substrate-types';
+import { registryActions } from './action-layer.js';
 import {
   applyTypeIndexOptions,
   applyTypeProposal,
+  assertValidTypeActions,
   assertValidTypeIndexOptions,
   assertValidTypeProposal,
   proposedFieldDefs,
@@ -73,6 +76,8 @@ export interface ProposeTypeInput {
   indexes?: IndexDecl[];
   /** Hint for the index advisor: a `'large'` type is recommended indexes sooner. */
   expectedSize?: 'small' | 'large';
+  /** Actions born with the type, published with it. */
+  actions?: Record<string, ActionDecl>;
 }
 
 function parseInput(params: Record<string, unknown>): ProposeTypeInput {
@@ -122,6 +127,16 @@ export function makeProposeTypeResolver(
       )
     );
     for (const name of Object.keys(input.fields)) assertNotEngineInjected(name);
+    if (input.actions !== undefined) {
+      const engine = deps.registryStore.getBinding(deps.namespace).engine;
+      assertValidTypeActions(
+        deps.namespace,
+        input.typeName,
+        input.fields,
+        input.actions,
+        registryActions(engine?.federatedSchema() ?? {})
+      );
+    }
     // A new type is empty, so declaring its order and indexes needs only the
     // propose capability; changing them on an existing type is `propose_index`.
     try {
@@ -241,7 +256,8 @@ async function proposeTypeLocked(
     resultingSchemaVersion: null,
     supersededByCode: false,
     archived: false,
-    expectedSize: input.expectedSize ?? null
+    expectedSize: input.expectedSize ?? null,
+    actionsJson: input.actions === undefined ? null : JSON.stringify(input.actions)
   };
   const indexOpts = indexOptionsOf(input);
   const indexFields: Record<string, unknown> = {
@@ -291,6 +307,7 @@ async function proposeTypeLocked(
           namespace: deps.namespace,
           typeName,
           fields,
+          ...(input.actions !== undefined ? { actions: input.actions } : {}),
           registryStore: deps.registryStore,
           dataset: deps.dataset,
           edges: deps.edges
@@ -328,9 +345,12 @@ async function proposeTypeLocked(
   }
 
   // Step 5 — mark the row as applied, stamping the schemaVersion that
-  // RESULTED from the step-4 apply (publishSchema over the mutated registry).
+  // RESULTED from the step-4 apply: the engine's, which counts published coined
+  // words, or publishSchema over the mutated registry where no engine is wired.
   const now = new Date();
-  const resultingSchemaVersion = publishSchema(binding.registry).schemaVersion;
+  const resultingSchemaVersion = (
+    engine?.schemaFor(deps.namespace) ?? publishSchema(binding.registry)
+  ).schemaVersion;
   let appliedRow: Row;
 
   if (engine !== undefined) {

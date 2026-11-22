@@ -169,24 +169,67 @@ const CONVENTIONS = [
   '- With a shell, `substrate run <script.mts>` runs many reads and writes in one call and returns one small report (GET /substrate/v1/onboard, `instructions.codeMode`).'
 ].join('\n');
 
+/** The caller's pending (coined, unpromoted) action names, by namespace and type, without the `*`. */
+export type PendingWords = Record<string, Record<string, string[]>>;
+
+const PENDING_LEGEND = '* yours, pending';
+
+/** The overview with each pending word appended to its type's action text as `name*`. */
+function markPending(
+  overview: Record<string, NamespaceOverview>,
+  pending: PendingWords | null | undefined
+): { overview: Record<string, NamespaceOverview>; any: boolean } {
+  let any = false;
+  const marked = Object.fromEntries(
+    Object.entries(overview).map(([ns, o]) => {
+      const types = { ...o.types };
+      const actions = { ...o.actions };
+      for (const [type, names] of Object.entries(pending?.[ns] ?? {})) {
+        if (!(type in types) || names.length === 0) continue;
+        any = true;
+        const stars = names.map((n) => `${safe(n, NAME)}*`).join(', ');
+        const declared = actions[type];
+        actions[type] = declared === undefined ? stars : `${declared}, ${stars}`;
+        types[type] = types[type]?.includes('; actions: ')
+          ? `${types[type]}, ${stars}`
+          : `${types[type]}; actions: ${stars}`;
+      }
+      return [
+        ns,
+        {
+          ...o,
+          types,
+          ...(Object.keys(actions).length > 0 ? { actions } : {})
+        }
+      ];
+    })
+  );
+  return { overview: marked, any };
+}
+
 /** The MCP `instructions` text: the conventions, then this server's types as of session start. */
-export function buildInstructions(overview: Record<string, NamespaceOverview> | null): string {
-  if (overview === null) {
+export function buildInstructions(
+  source: Record<string, NamespaceOverview> | null,
+  pending?: PendingWords | null
+): string {
+  if (source === null) {
     return `${CONVENTIONS}\n\nThe type list was unavailable at session start; call \`schema\` with no arguments for it.`;
   }
+  const { overview, any } = markPending(source, pending);
   // The action index is the lean instructions' text; here each type line already names its actions.
   const full = JSON.stringify(
     Object.fromEntries(
       Object.entries(overview).map(([ns, { actions: _actions, ...rest }]) => [ns, rest])
     )
   );
-  const body =
-    full.length <= INSTRUCTIONS_OVERVIEW_MAX
-      ? `${overviewLegend}\n${full}`
-      : `Type names only (the full overview is large; call \`schema\` with no arguments for fields):\n${JSON.stringify(
-          Object.fromEntries(Object.entries(overview).map(([ns, o]) => [ns, Object.keys(o.types)]))
-        )}`;
-  return `${CONVENTIONS}\n\nTypes on this server at session start:\n${body}`;
+  // Type names alone carry no marks, so the legend goes only with the full overview.
+  const fits = full.length <= INSTRUCTIONS_OVERVIEW_MAX;
+  const body = fits
+    ? `${overviewLegend}\n${full}`
+    : `Type names only (the full overview is large; call \`schema\` with no arguments for fields):\n${JSON.stringify(
+        Object.fromEntries(Object.entries(overview).map(([ns, o]) => [ns, Object.keys(o.types)]))
+      )}`;
+  return `${CONVENTIONS}\n\nTypes on this server at session start:\n${body}${any && fits ? `\n${PENDING_LEGEND}` : ''}`;
 }
 
 /** An expression catalogue, as the server's unscoped `GET /substrate/v1/schema` publishes it. */
@@ -241,14 +284,22 @@ export const LOCAL_EXPRESSIONS_NOTE =
 const LEAN_CONVENTIONS = [
   'Substrate holds typed records. Use `act` for every operation: send a sketch, get a one-line ack and a result id.',
   '- A step is `<action> <Type> [#shortId …] [field=value …] [as $name]`; split steps with `;` or newlines. Lists are `a,b` or `[a,b]`. Built-ins: create, update, find, count. `?` lists types and actions, `? Type` shows one.',
+  "- `define Type.name field=value field=$ …` coins an update action for you; after 5 uses an hour apart it is everyone's.",
   '- `find` answers its rows in `found`: id, shortId and the fields named by `fields=a,b`. Everything in one sketch commits together or not at all; pass `result` to fetch the full outcome (short-lived).'
 ].join('\n');
 
-/** The lean session's `instructions`: three lines of conventions, then one index line per namespace. */
-export function buildLeanInstructions(overview: Record<string, NamespaceOverview> | null): string {
-  if (overview === null) {
+/** The lean session's `instructions`: the conventions, then one index line per namespace; `_system*` namespaces are left out. */
+export function buildLeanInstructions(
+  source: Record<string, NamespaceOverview> | null,
+  pending?: PendingWords | null
+): string {
+  if (source === null) {
     return `${LEAN_CONVENTIONS}\n\nThe type list was unavailable at session start; send \`?\` for it.`;
   }
+  const visible = Object.fromEntries(
+    Object.entries(source).filter(([ns]) => !ns.startsWith('_system'))
+  );
+  const { overview, any } = markPending(visible, pending);
   const line = (ns: string, o: NamespaceOverview, withActions: boolean) =>
     `${ns}: ${Object.keys(o.types)
       .map((t) => (withActions && o.actions?.[t] !== undefined ? `${t}{${o.actions[t]}}` : t))
@@ -258,7 +309,9 @@ export function buildLeanInstructions(overview: Record<string, NamespaceOverview
       .map(([ns, o]) => line(ns, o, withActions))
       .join('\n');
   const full = index(true);
+  // Type names alone carry no marks, so the legend goes only with the full index.
+  const fits = full.length <= INSTRUCTIONS_OVERVIEW_MAX;
   return `${LEAN_CONVENTIONS}\n\nTypes and actions at session start:\n${
-    full.length <= INSTRUCTIONS_OVERVIEW_MAX ? full : index(false)
-  }`;
+    fits ? full : index(false)
+  }${any && fits ? `\n${PENDING_LEGEND}` : ''}`;
 }

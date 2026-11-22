@@ -34,7 +34,13 @@ export type ProposalErrorCode =
   | 'recommendation_stale'
   | 'propose_index_not_alone'
   | 'index_drop_timeout'
-  | 'proposal_changed';
+  | 'proposal_changed'
+  // propose_action error codes
+  | 'action_taken'
+  | 'pending_cap'
+  | 'propose_action_not_alone'
+  // a type proposal whose actions another type's actions chain to
+  | 'action_chained';
 
 /**
  * Structured error for proposal operations with stable error codes.

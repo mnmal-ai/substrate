@@ -14,21 +14,33 @@ export function assertActionGraph(namespaces: ReadonlyMap<string, NamespaceConfi
       }
     }
   }
+  assertActionChains(actions);
+}
 
-  for (const [from, decl] of actions) {
-    for (const then of decl.then ?? []) {
+/**
+ * As `assertActionGraph`, over actions keyed `<ns>/<Type>.<name>`, for the
+ * chains from the `from` keys only: the rest of `actions` is taken as already
+ * checked, so a target it chains on to need not be present.
+ */
+export function assertActionChains(
+  actions: ReadonlyMap<string, ActionDecl>,
+  from: Iterable<string> = actions.keys()
+): void {
+  const starts = [...from];
+  for (const key of starts) {
+    for (const then of actions.get(key)?.then ?? []) {
       const target = actions.get(then.action);
       if (target === undefined) {
-        throw new Error(`${from}: then target ${then.action} does not exist`);
+        throw new Error(`${key}: then target ${then.action} does not exist`);
       }
       if (target.kind === 'create') {
-        throw new Error(`${from}: then target ${then.action} is a create action`);
+        throw new Error(`${key}: then target ${then.action} is a create action`);
       }
       for (const [param, p] of Object.entries(target.params ?? {})) {
         const optional = p.optional === true || ('default' in p && p.default !== undefined);
         if (!optional) {
           throw new Error(
-            `${from}: then target ${then.action} needs param '${param}', which has no default`
+            `${key}: then target ${then.action} needs param '${param}', which has no default`
           );
         }
       }
@@ -49,5 +61,5 @@ export function assertActionGraph(namespaces: ReadonlyMap<string, NamespaceConfi
     path.pop();
     done.add(key);
   };
-  for (const key of actions.keys()) visit(key);
+  for (const key of starts) visit(key);
 }
