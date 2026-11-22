@@ -125,7 +125,9 @@ The reply is one ack, such as `defined work/Todo.start (yours; public after 5 us
 
 The caller must be signed and hold `mutate` on the control-plane namespace `_system_proposals`, and `mutate` on the namespace of the target type. The first is the operator's lever: grant it per agent, by invite or by patching the agent's key, and revoke it the same way. To opt an agent in, add `_system_proposals` with `mutate` to its key's namespaces. A `define` stores a short-lived result record, as any `act` call does.
 
-`read` on `_system_proposals` is a different grant. Anyone holding it can read every `ActionProposal` record, which names the target type, the sketch and the proposer, across all namespaces. Give `read` there to operators only. A coining agent needs `mutate` alone.
+A `'*'` grant covers `_system_proposals` too. A key granted `'*'` with `mutate` can coin as soon as the server runs a version that takes action proposals, with no opt-in. Narrow such keys to named namespaces if coining should stay opt-in.
+
+`read` on `_system_proposals` is a different grant. Anyone holding it can read every `ActionProposal` record, which names the target type, the sketch and the proposer, across all namespaces. A `'*'` grant with `read` holds it. Give `read` there to operators only. A coining agent needs `mutate` alone.
 
 ### Names and meaning
 

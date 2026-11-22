@@ -25,13 +25,13 @@ Changes are additive, with one exception: `propose_field` with a `valueMap` narr
 
 Words for an existing type are coined with `define Type.name field=value …` in an `act` sketch (see [`docs/act.md`](../../docs/act.md#coining-actions)). A coined word is usable only by its proposer until 5 committed uses, at least an hour apart, promote it. Each is stored as an `ActionProposal` record in `_system_proposals`.
 
-- **Opting an agent in.** Add `_system_proposals` with `mutate` to the agent's key, by invite or key patch. It also needs `mutate` on the namespace of the target type. Grant `read` on `_system_proposals` to operators only, because it shows every `ActionProposal` (target type, sketch and proposer) across namespaces.
+- **Opting an agent in.** Add `_system_proposals` with `mutate` to the agent's key, by invite or key patch. It also needs `mutate` on the namespace of the target type. A `'*'` grant covers `_system_proposals`, so a key with `'*'` and `mutate` can coin with no opt-in, and one with `'*'` and `read` can read every `ActionProposal`. Grant `read` on `_system_proposals` to operators only, because it shows every `ActionProposal` (target type, sketch and proposer) across namespaces.
 - **Veto and retire.** Archive the `ActionProposal` record. This needs `admin` in the word's target namespace. Archiving a pending word vetoes it, and archiving a published one retires it. The name stays closed on that type. Other client writes to the record are refused.
 - **Caps.** 10 published coined words per type, 20 pending per proposer per namespace, and a pending word lapses after 30 days unused.
 
 ## Where it fits
 
-Proposals is built into `@mnmal-ai/substrate`: it loads whenever the binary sits in `SUBSTRATE_PLUGIN_DIR`, and there is nothing to install. Its exports are available from `@mnmal-ai/substrate/proposals`. Every `propose_*` call requires the `substrate.propose` capability on the caller's identity; without it the policy answers `policy_denied`.
+Proposals is built into `@mnmal-ai/substrate`: it loads whenever the binary sits in `SUBSTRATE_PLUGIN_DIR`, and there is nothing to install. Its exports are available from `@mnmal-ai/substrate/proposals`. `propose_namespace`, `propose_type` and `propose_field` require the `substrate.propose` capability on the caller's identity, and `propose_index` requires `substrate.index` in the namespace it indexes; without it the policy answers `policy_denied`. `propose_action` needs no capability, only the namespace grants under [Actions](#actions).
 
 ## Usage
 
