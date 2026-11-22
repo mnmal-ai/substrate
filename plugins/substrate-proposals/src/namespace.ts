@@ -100,8 +100,10 @@ export function defineProposalTypes(
  * The registry actions, keyed `ns/Type.name`, on types other than
  * `namespace/typeName` whose `then` targets one of its actions.
  */
-// shortcut: read from this engine's registry, so a chaining type whose proposal was archived still
-// counts until restart; read the live TypeProposal rows if that blocks real removals.
+// shortcut: chains are read from this engine's registry, which keeps a type whose proposal was
+// archived until restart. So a chaining type archived that way still blocks removal until then, and
+// propose_type can chain a new type to such a type, which replay then skips at the next boot. Read
+// the live TypeProposal rows, here and in propose_type's check, if either bites.
 function chainsInto(registryStore: RegistryStore, namespace: string, typeName: string): string[] {
   const engine = registryStore.has(namespace)
     ? registryStore.getBinding(namespace).engine

@@ -177,8 +177,9 @@ export function assertValidTypeActions(
       if (!isObject(t) || typeof t.action !== 'string' || !isObject(t.each)) {
         throw invalid('a then entry needs an action and each', at);
       }
+      const slash = t.action.indexOf('/');
       if (chains.has(t.action) || born.has(t.action)) kept.push(t);
-      else if (!awaited(t.action.slice(0, t.action.indexOf('/')))) {
+      else if (slash <= 0 || !awaited(t.action.slice(0, slash))) {
         throw invalid(`then target ${t.action} is not declared in code or born with a type`, at);
       }
     }

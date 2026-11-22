@@ -86,7 +86,7 @@ const layers = new WeakMap<Engine, ProposalActionLayer>();
 /** The owned namespace listed, and so replayed, after `w.own`. */
 const later = (w: World): string => `${w.own}2`;
 
-async function boot(w: World): Promise<Engine> {
+async function boot(w: World, proposeCapability?: string): Promise<Engine> {
   const datasetFor = (n: string): Dataset | undefined => w.datasets.get(n);
   const loaded = await loadPlugins({
     plugins: [
@@ -94,7 +94,8 @@ async function boot(w: World): Promise<Engine> {
         ownedNamespaces: [w.own, later(w)],
         pubsub: createNoopPubSub(),
         datasetFor,
-        now: () => new Date(w.clock.ms)
+        now: () => new Date(w.clock.ms),
+        ...(proposeCapability !== undefined ? { proposeCapability } : {})
       }),
       ticketPlugin(w.ns)
     ],
@@ -140,15 +141,15 @@ function pack(widgetNs: string): ActionDecl {
   };
 }
 
-/** A propose_type as `agent`; resolves to its error code, or 'ok' once its storage is ready. */
-async function proposeType(
+/** A propose_type; resolves to its first error, or undefined once its storage is ready. */
+async function proposeTypeError(
   engine: Engine,
   w: World,
   typeName: string,
   fields: Record<string, unknown>,
   actions?: Record<string, unknown>,
   ns = w.own
-): Promise<string> {
+): Promise<{ code?: string; message: string } | undefined> {
   const env = await engine.mutate({
     frame: {
       [`${ns}/propose_type`]: {
@@ -159,8 +160,12 @@ async function proposeType(
     ctx: ctxOf(w, 'agent-r')
   });
   await storageSettled();
-  return env.errors?.[0]?.code ?? 'ok';
+  return env.errors?.[0];
 }
+
+/** As `proposeTypeError`; resolves to the error's code, or 'ok'. */
+const proposeType = async (...args: Parameters<typeof proposeTypeError>): Promise<string> =>
+  (await proposeTypeError(...args))?.code ?? 'ok';
 
 function act(
   engine: Engine,
@@ -187,18 +192,19 @@ async function typeProposal(w: World, typeName: string): Promise<Row | undefined
   return rows[0];
 }
 
-/** Archives a TypeProposal as `agent`; resolves to the error, or 'ok'. */
-async function archiveProposal(
+/** Updates a TypeProposal as `agent` (archives it by default); resolves to the error, or 'ok'. */
+async function updateProposal(
   engine: Engine,
   w: World,
   agent: string,
-  typeName: string
+  typeName: string,
+  patch: Record<string, unknown> = { archived: true }
 ): Promise<{ code: string; message?: string } | 'ok'> {
   const row = await typeProposal(w, typeName);
   const env = await engine.mutate({
     frame: {
       [`${w.own}/updateTypeProposal`]: {
-        params: { id: row?.id, archived: true },
+        params: { id: row?.id, ...patch },
         fields: { id: true }
       }
     },
@@ -222,22 +228,37 @@ async function publishReopen(engine: Engine, w: World): Promise<void> {
   expect(engine.schemaFor(w.ns).types.Ticket?.actions?.reopen).toMatchObject({ coined: true });
 }
 
-/** Each refused case: Gadget's actions, after any setup it needs. */
-const refused: Record<string, (engine: Engine, w: World) => Promise<Record<string, ActionDecl>>> = {
-  'field fit': async () => ({ archive: { set: { status: 7 } } }),
-  'missing then target': async (_engine, w) => ({
-    sweep: forEach(`${w.own}/Widget`, `${w.own}/Widget.vanish`)
-  }),
-  cycle: async (_engine, w) => ({
-    cascade: forEach(`${w.own}/Gadget`, `${w.own}/Gadget.cascade`)
-  }),
-  'coined then target': async (engine, w) => {
-    await publishReopen(engine, w);
-    return { reopenAll: forEach(`${w.ns}/Ticket`, `${w.ns}/Ticket.reopen`) };
+/** Each refused case: what its refusal says, and Gadget's actions, after any setup it needs. */
+const refused: Record<
+  string,
+  { says: string; actions: (engine: Engine, w: World) => Promise<Record<string, ActionDecl>> }
+> = {
+  'field fit': {
+    says: "'7' is not a value of Gadget.status",
+    actions: async () => ({ archive: { set: { status: 7 } } })
+  },
+  'missing then target': {
+    says: '/Widget.vanish is not declared in code or born with a type',
+    actions: async (_engine, w) => ({
+      sweep: forEach(`${w.own}/Widget`, `${w.own}/Widget.vanish`)
+    })
+  },
+  cycle: {
+    says: '/Gadget.cascade -> ',
+    actions: async (_engine, w) => ({
+      cascade: forEach(`${w.own}/Gadget`, `${w.own}/Gadget.cascade`)
+    })
+  },
+  'coined then target': {
+    says: '/Ticket.reopen is not declared in code or born with a type',
+    actions: async (engine, w) => {
+      await publishReopen(engine, w);
+      return { reopenAll: forEach(`${w.ns}/Ticket`, `${w.ns}/Ticket.reopen`) };
+    }
   }
 };
 
-function bornActions(world: () => World, restart: (w: World) => World): void {
+function bornActions(world: () => World, restart: (w: World) => World, coins = true): void {
   let w: World;
   let engine: Engine;
 
@@ -285,13 +306,21 @@ function bornActions(world: () => World, restart: (w: World) => World): void {
     ]);
   });
 
-  it.each(Object.keys(refused))('refuses %s', async (name) => {
-    expect(await proposeType(engine, w, 'Widget', WIDGET, { archive })).toBe('ok');
-    const actions = await (refused[name] as (typeof refused)[string])(engine, w);
-    expect(await proposeType(engine, w, 'Gadget', WIDGET, actions)).toBe('invalid_params');
-    expect(await typeProposal(w, 'Gadget')).toBeUndefined();
-    expect(engine.schemaFor(w.own).types.Gadget).toBeUndefined();
-  });
+  it.each(Object.keys(refused).filter((name) => coins || name !== 'coined then target'))(
+    'refuses %s',
+    async (name) => {
+      expect(await proposeType(engine, w, 'Widget', WIDGET, { archive })).toBe('ok');
+      const { says, actions } = refused[name] as (typeof refused)[string];
+      expect(
+        await proposeTypeError(engine, w, 'Gadget', WIDGET, await actions(engine, w))
+      ).toMatchObject({
+        code: 'invalid_params',
+        message: expect.stringContaining(says)
+      });
+      expect(await typeProposal(w, 'Gadget')).toBeUndefined();
+      expect(engine.schemaFor(w.own).types.Gadget).toBeUndefined();
+    }
+  );
 
   it('keeps born actions after a restart and a later field proposal', async () => {
     expect(await proposeType(engine, w, 'Widget', WIDGET, { archive })).toBe('ok');
@@ -343,15 +372,40 @@ function bornActions(world: () => World, restart: (w: World) => World): void {
   it('refuses removing a type whose action another type chains to', async () => {
     expect(await proposeType(engine, w, 'Widget', WIDGET, { archive })).toBe('ok');
     expect(await proposeType(engine, w, 'Box', { label: str }, { pack: pack(w.own) })).toBe('ok');
-    const refusal = await archiveProposal(engine, w, 'agent-o', 'Widget');
+    const refusal = await updateProposal(engine, w, 'agent-o', 'Widget');
     expect(refusal).toMatchObject({ code: 'action_chained' });
     expect(refusal === 'ok' ? '' : refusal.message).toContain(`${w.own}/Box.pack`);
     expect(await typeProposal(w, 'Widget')).toMatchObject({ archived: false });
 
-    expect(await archiveProposal(engine, w, 'agent-o', 'Box')).toBe('ok');
+    // A rewrite of its actions or fields could drop or break what Box chains to.
+    const rewrites = [
+      { actionsJson: JSON.stringify({ archive: { set: { name: 'gone' } } }) },
+      { fieldsJson: JSON.stringify({ name: str }) }
+    ];
+    for (const patch of rewrites) {
+      expect(await updateProposal(engine, w, 'agent-r', 'Widget', patch)).toMatchObject({
+        code: 'action_chained'
+      });
+    }
+    expect(JSON.parse(String((await typeProposal(w, 'Widget'))?.actionsJson))).toEqual({
+      archive
+    });
+
+    expect(await updateProposal(engine, w, 'agent-o', 'Box')).toBe('ok');
     w = restart(w);
     engine = await boot(w);
-    expect(await archiveProposal(engine, w, 'agent-o', 'Widget')).toBe('ok');
+    expect(await updateProposal(engine, w, 'agent-o', 'Widget')).toBe('ok');
+  });
+
+  it('keeps the chain rule when the drop capability is empty', async () => {
+    w = restart(w);
+    engine = await boot(w, '');
+    expect(await proposeType(engine, w, 'Widget', WIDGET, { archive })).toBe('ok');
+    expect(await proposeType(engine, w, 'Box', { label: str }, { pack: pack(w.own) })).toBe('ok');
+    expect(await updateProposal(engine, w, 'agent-c', 'Widget')).toMatchObject({
+      code: 'action_chained'
+    });
+    expect(await updateProposal(engine, w, 'agent-c', 'Box')).toBe('ok');
   });
 
   it('refuses define for a born name', async () => {
@@ -423,6 +477,9 @@ describe.skipIf(!POSTGRES_URL)('actions born with a proposed type (pg)', () => {
 
   bornActions(
     () => pgWorld(),
-    (w) => pgWorld(w.clock)
+    (w) => pgWorld(w.clock),
+    // Coining writes the control plane's ActionProposal table, which propose-action.test.ts
+    // locks and watches for lock waits at the same time; the coined case runs on memory.
+    false
   );
 });

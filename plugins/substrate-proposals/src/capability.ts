@@ -192,17 +192,17 @@ export const TRUSTED_WRITE: unique symbol = Symbol('substrate-proposals.trustedW
  * or locked is refused. A mutate array runs per element through the guard,
  * an array of updates or deletes first locking every row it names in id
  * order, and `updateMany` / `deleteMany` refuse once their single-row entry
- * is replaced. An empty capability opts out. Whatever the capability, a write
- * that takes a live proposal's type away (a delete, an update leaving it not
- * live, or a rename) is refused while `chainsInto` names an action of another
- * type whose `then` targets one of its actions.
+ * is replaced. An empty capability drops the capability requirement. Whatever
+ * the capability, a write that takes a live proposal's type away (a delete, an
+ * update leaving it not live, a rename, or a rewrite of its fields or actions)
+ * is refused while `chainsInto` names an action of another type whose `then`
+ * targets one of its actions.
  */
 export function gateTypeProposalRemoval(
   registry: Registry,
   dropCapability: string = DEFAULT_DROP_CAPABILITY,
   chainsInto: (typeName: string) => string[] = () => []
 ): void {
-  if (dropCapability === '') return;
   const gate = makeProposePolicy(dropCapability);
   const removes: Record<string, (params: Record<string, unknown>) => boolean> = {
     deleteTypeProposal: () => true,
@@ -228,8 +228,13 @@ export function gateTypeProposalRemoval(
       if (row === null) return args;
       const name = String(row.typeName);
       const after = { ...row, ...params };
+      // A rewritten spec may drop an action a chain targets, or stop it fitting.
       const takesAway =
-        key === 'deleteTypeProposal' || !isLiveProposal(after) || after.typeName !== row.typeName;
+        key === 'deleteTypeProposal' ||
+        !isLiveProposal(after) ||
+        after.typeName !== row.typeName ||
+        'actionsJson' in params ||
+        'fieldsJson' in params;
       const from = isLiveProposal(row) && takesAway ? chainsInto(name) : [];
       if (from.length > 0) {
         throw new ProposalError(
