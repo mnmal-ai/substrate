@@ -39,6 +39,7 @@ import {
 import type {
   ActHandle,
   ActInput,
+  ActionLayer,
   ActMode,
   ActorIdentity,
   ActPlanStep,
@@ -351,6 +352,7 @@ export class Engine implements ActHandle {
   #lifecycleDisposer: (() => void) | undefined;
   /** Schema-federation subsystem; the engine's public schema methods delegate here. */
   readonly #schema: SchemaSubsystem;
+  #actionLayer: ActionLayer | undefined;
   /**
    * Live subscription subsystem (§5.4, §5.13). Owns the subscription bus, the
    * back-pressure queue, and the WriteEvent fanout. The mutate path calls
@@ -390,7 +392,8 @@ export class Engine implements ActHandle {
       namespaces: this.#namespaces,
       bridges: this.#bridges,
       isLive: (ns: string): boolean => this.#isLive(ns),
-      isTombstoned: (ns: string): boolean => this.#tombstoned.has(ns)
+      isTombstoned: (ns: string): boolean => this.#tombstoned.has(ns),
+      coinedFor: (ns) => this.#actionLayer?.published(ns)
     });
     this.#bridgeProxy = new BridgeSubsystem({ bridges: this.#bridges, metric: this.#metric });
     this.#subscribe = new SubscribeSubsystem({
@@ -618,6 +621,11 @@ export class Engine implements ActHandle {
    */
   datasetFor(ns: string): Dataset | undefined {
     return this.#datasets.get(ns);
+  }
+
+  setActionLayer(layer: ActionLayer): void {
+    if (this.#actionLayer !== undefined) throw new Error('an action layer is already installed');
+    this.#actionLayer = layer;
   }
 
   schemaFor(ns: string): Schema {

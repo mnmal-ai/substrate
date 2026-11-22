@@ -20,6 +20,11 @@ function stubEngine(): EngineHandle {
     mutate: empty,
     announceWrites: async (): Promise<void> => {},
     invalidateSchemaCaches: (): void => {},
+    setActionLayer: (): void => {},
+    schemaFor: (): never => {
+      throw new Error('test fake: schemaFor not supported');
+    },
+    federatedSchema: () => ({}),
     addNamespace: (_ns: string, _config: NamespaceConfig): void => {
       throw new Error('test fake: addNamespace not supported');
     },

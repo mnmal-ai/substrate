@@ -31,6 +31,26 @@ export interface ActionSchema {
   /** Object.keys(set) */
   fixed: string[];
   then: ActionThenDecl[];
+  /** A word coined at runtime rather than declared in code. */
+  coined?: true;
+  /** Set on the proposer's own view of a word still earning promotion. */
+  pending?: { uses: number; needed: number };
+}
+export interface PendingAction {
+  decl: ActionDecl;
+  uses: number;
+  needed: number;
+}
+/** The plugin-side store of coined action words, installed with `EngineHandle.setActionLayer`. */
+export interface ActionLayer {
+  /** '<controlNs>/propose_action': the frame key `define` compiles to. */
+  readonly proposeKey: string;
+  /** Published coined words in `ns`: type name → action name → decl. */
+  published(ns: string): Record<string, Record<string, ActionDecl>>;
+  /** The caller's live (not lapsed) pending words: qualified type → name → pending. */
+  pendingFor(identityId: string): Record<string, Record<string, PendingAction>>;
+  /** After a committed write run; fire and forget. */
+  used(identityId: string, actions: ReadonlyArray<{ type: string; name: string }>, at: Date): void;
 }
 
 /** The published form of a declaration, defaults filled in. */

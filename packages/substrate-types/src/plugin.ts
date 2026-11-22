@@ -14,7 +14,7 @@
  * the concrete `Registry` class in `@mnmal-ai/substrate-core` implements it.
  */
 
-import type { ActionDecl } from './act.js';
+import type { ActionDecl, ActionLayer } from './act.js';
 import type { ActorIdentity, Id, Row } from './core.js';
 import type { Dataset, ReadResult } from './dataset.js';
 import type { EdgesStore } from './edge.js';
@@ -505,6 +505,10 @@ export type CommittedWritesHook = (batch: CommittedWriteBatch) => void | Promise
  * engine package.
  */
 export interface EngineHandle {
+  /** Install the action layer; throws if one is already installed. */
+  setActionLayer(layer: ActionLayer): void;
+  schemaFor(ns: string): Schema;
+  federatedSchema(): Record<string, Schema>;
   query(input: EngineInput): Promise<PackEnvelope>;
   mutate(input: EngineInput): Promise<PackEnvelope>;
   /**

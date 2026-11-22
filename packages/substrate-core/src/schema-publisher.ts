@@ -12,6 +12,7 @@
 
 import { createHash } from 'node:crypto';
 import type {
+  ActionDecl,
   FieldDef,
   MutationSchema,
   Registry,
@@ -56,7 +57,10 @@ function writesRows(entry: {
   );
 }
 
-export function publishSchema(registry: Registry): Schema {
+export function publishSchema(
+  registry: Registry,
+  coined?: Record<string, Record<string, ActionDecl>>
+): Schema {
   const types: Record<string, TypeSchema> = {};
   const mutations: Record<string, MutationSchema> = {};
 
@@ -78,6 +82,18 @@ export function publishSchema(registry: Registry): Schema {
       }
       types[name] = type;
     }
+  }
+
+  // Merged before hashing, so a changed published set moves schemaVersion.
+  for (const [typeName, words] of Object.entries(coined ?? {})) {
+    const type = types[typeName];
+    if (type === undefined) continue;
+    const actions = { ...type.actions };
+    for (const [name, decl] of Object.entries(words)) {
+      if (name in actions) continue;
+      actions[name] = { ...toActionSchema(decl), coined: true };
+    }
+    if (Object.keys(actions).length > 0) type.actions = actions;
   }
 
   return {

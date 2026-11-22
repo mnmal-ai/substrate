@@ -8,7 +8,12 @@
  * engine slice arrives via `SchemaSubsystemDeps`.
  */
 
-import type { BridgeRegistry, NamespaceConfig, Schema } from '@mnmal-ai/substrate-types';
+import type {
+  ActionDecl,
+  BridgeRegistry,
+  NamespaceConfig,
+  Schema
+} from '@mnmal-ai/substrate-types';
 import { canonicalize } from '../canonicalize.js';
 import { publishSchema, sha256Short, withInboundRefs } from '../schema-publisher.js';
 
@@ -24,6 +29,8 @@ export interface SchemaSubsystemDeps {
   isLive: (ns: string) => boolean;
   /** Tombstone predicate — refuses schema reads against a tombstoned ns. */
   isTombstoned: (ns: string) => boolean;
+  /** Published coined action words for `ns`, merged into its schema. */
+  coinedFor: (ns: string) => Record<string, Record<string, ActionDecl>> | undefined;
 }
 
 export class SchemaSubsystem {
@@ -31,6 +38,7 @@ export class SchemaSubsystem {
   readonly #bridges: BridgeRegistry;
   readonly #isLive: (ns: string) => boolean;
   readonly #isTombstoned: (ns: string) => boolean;
+  readonly #coinedFor: SchemaSubsystemDeps['coinedFor'];
 
   // Per-ns published schema, cached against the registry's mutation epoch.
   // Registries can change at runtime (proposed types), so the epoch, not an
@@ -54,6 +62,7 @@ export class SchemaSubsystem {
     this.#bridges = deps.bridges;
     this.#isLive = deps.isLive;
     this.#isTombstoned = deps.isTombstoned;
+    this.#coinedFor = deps.coinedFor;
   }
 
   schemaFor(ns: string): Schema {
@@ -66,7 +75,7 @@ export class SchemaSubsystem {
     const epoch = cfg.registry.epoch;
     const cached = epoch === undefined ? undefined : this.#schemaCache.get(ns);
     if (cached !== undefined && cached.epoch === epoch) return cached.schema;
-    const schema = withInboundRefs(publishSchema(cfg.registry), ns);
+    const schema = withInboundRefs(publishSchema(cfg.registry, this.#coinedFor(ns)), ns);
     const withVirtual: Schema = cfg.virtual === true ? { ...schema, virtual: true } : schema;
     // Annotations ride beside the hash, like `virtual`: `publishSchema` hashes
     // only types + mutations, so an annotations change never moves schemaVersion.
