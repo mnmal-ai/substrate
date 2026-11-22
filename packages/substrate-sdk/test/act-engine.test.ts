@@ -224,6 +224,29 @@ describe('Engine.act', () => {
     expect(batches).toEqual([]);
   });
 
+  it("a dry run's reply spells out each compiled step with the values it sends", async () => {
+    const { engine } = boot();
+    await seedTodos(engine, 1);
+    const r = await engine.act({
+      sketch:
+        'log SessionLog summary="Shipped it" branch=main closes=#1; find Todo status=closed fields=title; count Todo',
+      mode: 'dry-run',
+      ctx: as(alice)
+    });
+    expect(r).toMatchObject({
+      ok: true,
+      plan: [
+        'log journal/SessionLog summary="Shipped it" branch=main startedAt=now',
+        'close work/Todo id=1 status=closed archived=true',
+        'find work/Todo status=closed fields=id,shortId,title',
+        'count work/Todo'
+      ]
+    });
+    expect(await engine.act({ sketch: 'close Todo #1', ctx: as(alice) })).not.toHaveProperty(
+      'plan'
+    );
+  });
+
   it('dispatches subscribers and committed-write hooks once a write commits', async () => {
     const { engine, batches } = boot();
     const frames: WsResponseFrame[] = [];

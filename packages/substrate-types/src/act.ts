@@ -155,6 +155,8 @@ export type ActResponse =
       result: string | null;
       /** The `find` steps' rows, when there are any and at most 100 in all. */
       found?: ActStepOutcome[];
+      /** A dry run's compiled steps, one sketch-like line each, with every value they send. */
+      plan?: string[];
     }
   | { ok: true; help: ActHelp | ActHelp[] }
   | { ok: false; refusal: ActRefusal }

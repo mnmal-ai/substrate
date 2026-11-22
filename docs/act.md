@@ -141,7 +141,7 @@ Acks name what happened: `closed work/Todo #12 #13`. A `find` acks as `12 work/T
 
 ## Dry runs and idempotency
 
-`mode: "dry-run"` runs every step inside the transaction and rolls back, so it meets the refusals a real run would. The ack says it was a dry run. Hooks (`postWrite`, `onWrite`, `afterTx`, subscribers) fire only on commit.
+`mode: "dry-run"` runs every step inside the transaction and rolls back, so it meets the refusals a real run would. The ack says it was a dry run, and the reply's `plan` lists each compiled step as one line with every value it sends, such as `close work/Todo id=12 status=closed resolution=wont_do archived=true`. Checking a dry run takes no result fetch. Hooks (`postWrite`, `onWrite`, `afterTx`, subscribers) fire only on commit.
 
 One sketch is one transaction: it commits whole or not at all. A step that fails at execution, such as `close Todo #1; close Todo #999999`, aborts the lot and the reply names the failing step.
 

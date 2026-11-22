@@ -104,6 +104,7 @@ import {
   MAX_STORED_ROWS,
   newResultId,
   ownerKeyOf,
+  planLine,
   stepOutcome
 } from '../act/outcome.js';
 import { readShapeOf, walkShapesOf } from '../advisor/shape-recorder.js';
@@ -1336,7 +1337,13 @@ export class Engine implements ActHandle {
       result = null;
     }
     return error === undefined
-      ? { ok: true, ack, result, ...inlineFinds(outcomes) }
+      ? {
+          ok: true,
+          ack,
+          result,
+          ...inlineFinds(outcomes),
+          ...(mode === 'dry-run' ? { plan: plan.steps.map(planLine) } : {})
+        }
       : { ok: false, error, result };
   }
 
