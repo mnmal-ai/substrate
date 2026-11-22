@@ -41,6 +41,14 @@ const cases: Array<[string, ActStep[]]> = [
     'find Todo status=open,blocked',
     [{ action: 'find', type: 'Todo', args: { status: ['open', 'blocked'] } }]
   ],
+  [
+    'log SessionLog closes=[#1] tags=[a,b] none=[]',
+    [{ action: 'log', type: 'SessionLog', args: { closes: ['#1'], tags: ['a', 'b'], none: [] } }]
+  ],
+  [
+    'create Note title="[x]" body=[y',
+    [{ action: 'create', type: 'Note', args: { title: '[x]', body: '[y' } }]
+  ],
   ['?', [{ action: '?' }]],
   ['? Todo', [{ action: '?', type: 'Todo' }]]
 ];

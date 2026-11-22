@@ -187,6 +187,8 @@ describe('Engine.act', () => {
     const r = await engine.act({ sketch: 'close Todo #1; close Todo #999999', ctx: as(alice) });
     // `not_found` is autoCRUD update's code for a missing row.
     expect(r).toMatchObject({ ok: false, error: { step: 2, code: 'not_found' } });
+    // The resolver's `where: { shortId }` hint names a query shape no sketch writes.
+    expect('error' in r && r.error.message).not.toContain('shortId');
     expect(await todo(work, 1)).toMatchObject({ status: 'open', archived: false });
     expect((await recordOf(engine, r)).error?.step).toBe(2);
   });
@@ -264,10 +266,45 @@ describe('Engine.act', () => {
       },
       ctx: as(bob)
     });
-    expect((await recordOf(engine, r, bob)).steps[0]?.rows).toEqual(env.data['work/Todo']);
+    const rows = (env.data['work/Todo'] as Row[]).map(({ id, shortId }) => ({ id, shortId }));
+    expect((await recordOf(engine, r, bob)).steps[0]?.rows).toEqual(rows);
 
     const refused = await engine.act({ sketch: 'find Todo', ctx: as(carol) });
     expect(refused).toMatchObject({ ok: false, refusal: { problem: "unknown type 'Todo'" } });
+  });
+
+  it('stores and answers only the fields a find selects', async () => {
+    const { engine } = boot();
+    await seedTodos(engine, 2);
+    const r = await engine.act({ sketch: 'find Todo #2 fields=title', ctx: as(alice) });
+    const row = { id: expect.any(String), shortId: 2, title: 't2' };
+    expect(r).toEqual({
+      ok: true,
+      ack: '1 work/Todo rows',
+      result: expect.stringMatching(/^r_/),
+      found: [{ step: 1, action: 'find', type: 'work/Todo', rows: [row], truncated: false }]
+    });
+    expect((await recordOf(engine, r)).steps[0]?.rows).toEqual([row]);
+  });
+
+  it('closes the records a bracketed list names', async () => {
+    const { engine, work } = boot();
+    await seedTodos(engine, 2);
+    const r = await engine.act({
+      sketch: 'log SessionLog summary=s branch=b closes=[#2]',
+      ctx: as(alice)
+    });
+    expect(r).toMatchObject({ ok: true, ack: 'logged journal/SessionLog #1; closed work/Todo #2' });
+    expect(await todo(work, 2)).toMatchObject({ status: 'closed', archived: true });
+  });
+
+  it('answers several help steps at once', async () => {
+    const { engine } = boot();
+    const r = await engine.act({ sketch: '? Todo; ? SessionLog', ctx: as(alice) });
+    expect(r).toMatchObject({
+      ok: true,
+      help: [{ type: 'work/Todo' }, { type: 'journal/SessionLog' }]
+    });
   });
 
   it('count reports the number of matches', async () => {
@@ -434,6 +471,7 @@ describe('Engine.act', () => {
     await work.write('Note', notes(1001));
     const r = await engine.act({ sketch: 'find Note', ctx: as(alice) });
     expect(r).toMatchObject({ ok: true, ack: '1000 work/Note rows (truncated)' });
+    expect(r).not.toHaveProperty('found');
     const step = (await recordOf(engine, r)).steps[0];
     expect(step?.rows).toHaveLength(1000);
     expect(step?.truncated).toBe(true);

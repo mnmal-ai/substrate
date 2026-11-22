@@ -149,8 +149,14 @@ export interface ActInput extends ActRequest {
   pageLimits?: EngineInput['pageLimits'];
 }
 export type ActResponse =
-  | { ok: true; ack: string; result: string | null }
-  | { ok: true; help: ActHelp }
+  | {
+      ok: true;
+      ack: string;
+      result: string | null;
+      /** The `find` steps' rows, when there are any and at most 100 in all. */
+      found?: ActStepOutcome[];
+    }
+  | { ok: true; help: ActHelp | ActHelp[] }
   | { ok: false; refusal: ActRefusal }
   | { ok: false; error: { code: string; message: string; step?: number }; result: string | null };
 export interface ActHandle {

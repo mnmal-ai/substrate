@@ -757,7 +757,7 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
       name: 'act',
       config: {
         description:
-          'Run operations as one transaction. Steps split by `;`: `<action> <Type> [#id …] [field=value …] [as $t]`. Built-ins: create, update, find, count. `?` or `? Type` for help. Reply { ok, ack, result }; pass `result` to fetch the full record. A refusal names the problem, the choices and the nearest valid sketch; nothing ran.',
+          'Run operations as one transaction. Steps split by `;`: `<action> <Type> [#id …] [field=value …] [as $t]`. Built-ins: create, update, find, count. `?` or `? Type` for help. Reply { ok, ack, result, found? }: `found` holds find rows (up to 100); pass `result` to fetch the full record. A refusal names the problem, the choices and the nearest valid sketch; nothing ran.',
         inputSchema: {
           sketch: z.string().min(1).optional().describe('e.g. close Todo #12'),
           mode: z.enum(['write', 'dry-run']).optional(),

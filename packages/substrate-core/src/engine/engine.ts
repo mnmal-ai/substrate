@@ -85,6 +85,7 @@ import {
   DEFAULT_FILTER_WRITE_LIMITS,
   grantRefusal,
   grantRefusalCode,
+  idHint,
   isBatchElementError,
   isResolverFrameError,
   isRestrictViolation,
@@ -99,6 +100,7 @@ import {
   ActDryRunRollback,
   ActStepFailure,
   formatAck,
+  inlineFinds,
   MAX_STORED_ROWS,
   newResultId,
   ownerKeyOf,
@@ -1245,7 +1247,9 @@ export class Engine implements ActHandle {
     if (running !== undefined) return running;
     const run = (async (): Promise<ActResponse> => {
       const found = await this.#act.results.findByIdempotencyKey(ownerKey, key);
-      if (found !== undefined) return { ok: true, ack: found.ack ?? '', result: found.id };
+      if (found !== undefined) {
+        return { ok: true, ack: found.ack ?? '', result: found.id, ...inlineFinds(found.steps) };
+      }
       return this.#actRun(input, identity, ownerKey);
     })();
     this.#inFlightActs.set(flightKey, run);
@@ -1331,7 +1335,9 @@ export class Engine implements ActHandle {
       });
       result = null;
     }
-    return error === undefined ? { ok: true, ack, result } : { ok: false, error, result };
+    return error === undefined
+      ? { ok: true, ack, result, ...inlineFinds(outcomes) }
+      : { ok: false, error, result };
   }
 
   /**
@@ -1385,7 +1391,8 @@ export class Engine implements ActHandle {
         if (thrown || refusal !== undefined) {
           throw new ActStepFailure({
             code: refusal?.code ?? 'resolver_error',
-            message: refusal?.message ?? `'${key}' refused`,
+            // The resolver's shortId hint names a `where` shape no sketch writes.
+            message: refusal?.message.replace(idHint(''), '') ?? `'${key}' refused`,
             step: step.step
           });
         }

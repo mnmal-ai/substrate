@@ -21,9 +21,10 @@ interface Tok {
 
 const ACTION = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const TYPE = /^([A-Za-z_][A-Za-z0-9_]*\/)?[A-Za-z_][A-Za-z0-9_]*$/;
-const REF = /^(#\d+|\$[A-Za-z_][A-Za-z0-9_]*|[A-Za-z0-9_.:-]+)$/;
+/** A step reference: `#N`, `$name`, or a full id. */
+export const REF = /^(#\d+|\$[A-Za-z_][A-Za-z0-9_]*|[A-Za-z0-9_.:-]+)$/;
 const BINDING = /^\$([A-Za-z_][A-Za-z0-9_]*)$/;
-const NEEDS_QUOTES = /[\s;,"=#$\\]/;
+const NEEDS_QUOTES = /[\s;,"=#$\\[\]]/;
 
 const refuse = (step: number, token: string, problem: string): { refusal: ActRefusal } => ({
   refusal: { code: 'sketch_unresolved', step, token, problem, choices: [], nearest: null }
@@ -105,8 +106,15 @@ function tokenize(text: string): Tok[] {
   return toks;
 }
 
-function argValue(elems: Elem[]): ActValue {
+/** `raw` is the value as written: `[a,b]`, `[a]` and `[]` are lists whatever their length. */
+function argValue(elems: Elem[], raw: string): ActValue {
   const [first] = elems as [Elem];
+  if (raw.length > 1 && raw.startsWith('[') && raw.endsWith(']')) {
+    const vs = elems.map((e) => e.v);
+    vs[0] = (vs[0] as string).slice(1);
+    vs[vs.length - 1] = (vs.at(-1) as string).slice(0, -1);
+    return vs.length === 1 && vs[0] === '' ? [] : vs;
+  }
   if (elems.length > 1) return elems.map((e) => e.v);
   return !first.quoted && first.v === 'null' ? null : first.v;
 }
@@ -135,7 +143,7 @@ function parseStep(text: string, n: number): ActStep | { refusal: ActRefusal } {
     if (t.key !== null) {
       step.args ??= {};
       if (Object.hasOwn(step.args, t.key)) return refuse(n, t.raw, `duplicate arg '${t.key}'`);
-      step.args[t.key] = argValue(t.elems);
+      step.args[t.key] = argValue(t.elems, t.raw.slice(t.key.length + 1));
     } else if (plain(t) && word(t) === 'as') {
       const name = i === rest.length - 2 ? BINDING.exec((rest[i + 1] as Tok).raw)?.[1] : undefined;
       if (name === undefined) return refuse(n, t.raw, 'as needs $name');
@@ -165,7 +173,10 @@ export function parseSketch(text: string): ParsedSketch {
 function formatValue(v: ActValue): string {
   if (v === null) return 'null';
   // shortcut: nested lists print as their comma join, which does not re-parse; the parser never produces them.
-  if (Array.isArray(v)) return v.map(formatValue).join(',');
+  if (Array.isArray(v)) {
+    const joined = v.map(formatValue).join(',');
+    return v.length < 2 ? `[${joined}]` : joined;
+  }
   const s = String(v);
   if (s === '' || s === 'null' || NEEDS_QUOTES.test(s)) {
     return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')}"`;

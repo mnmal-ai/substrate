@@ -23,7 +23,7 @@ import {
 } from '@mnmal-ai/substrate-types';
 import { clipToken, coerceValue, TOKEN_ECHO } from './coerce.js';
 import { typeHelp, typesHelp } from './help.js';
-import { formatSketch, parseSketch } from './parse.js';
+import { formatSketch, parseSketch, REF } from './parse.js';
 
 export interface CompileOptions {
   defaultNamespace?: string;
@@ -32,7 +32,10 @@ export interface CompileOptions {
   /** Default 50. */
   maxWriteSteps?: number;
 }
-export type CompileResult = { plan: ActPlan } | { refusal: ActRefusal } | { help: ActHelp };
+export type CompileResult =
+  | { plan: ActPlan }
+  | { refusal: ActRefusal }
+  | { help: ActHelp | ActHelp[] };
 
 const DEFAULT_MAX_WRITE_STEPS = 50;
 const FIND_LIMIT = 1000;
@@ -138,12 +141,16 @@ class Compiler {
 
     const helpAt = steps.findIndex((s) => s.action === '?');
     if (helpAt !== -1) {
-      this.#at(helpAt + 1);
-      if (steps.length > 1) this.#refuse('?', 'help stands alone');
-      const step = steps[helpAt] as ActStep;
-      if (step.type === undefined) return { help: typesHelp(this.schema) };
-      const target = this.#resolveType(step.type);
-      return { help: typeHelp(target.qualified, target.type) };
+      if (steps.some((s) => s.action !== '?')) {
+        this.#at(helpAt + 1).#refuse('?', 'help stands alone');
+      }
+      const help = steps.map((step, i) => {
+        this.#at(i + 1);
+        if (step.type === undefined) return typesHelp(this.schema);
+        const target = this.#resolveType(step.type);
+        return typeHelp(target.qualified, target.type);
+      });
+      return { help: help.length === 1 ? (help[0] as ActHelp) : help };
     }
 
     const drafts: Draft[] = [];
@@ -246,9 +253,8 @@ class Compiler {
     const args = step.args ?? {};
 
     if (step.action === 'find' || step.action === 'count') {
-      if (refs.length > 0) this.#refuse(refs[0] as string, `${step.action} takes no reference`);
       if (step.as !== undefined) this.#refuse(`$${step.as}`, 'as needs a single record');
-      out.push(this.#readStep(step.action, target, args));
+      out.push(this.#readStep(step.action, target, refs, args));
       return;
     }
 
@@ -360,6 +366,7 @@ class Compiler {
     if (typeof ref !== 'string') return this.#refuse(String(ref), 'not a reference');
     const body = /^[#$]/.test(ref) ? ref.slice(1) : ref;
     if (body === '') return this.#refuse(ref, 'empty reference');
+    if (!REF.test(ref)) return this.#refuse(ref, 'not a reference');
     if (!ref.startsWith('$')) return { value: body };
     if (!this.#bindings.has(body)) return this.#refuse(ref, `unknown binding '${ref}'`);
     return { late: { bind: body } };
@@ -467,12 +474,35 @@ class Compiler {
     return decl.default === undefined ? undefined : this.#writeValue(decl.type, decl.default, name);
   }
 
-  #readStep(action: 'find' | 'count', target: Target, args: Record<string, ActValue>): Draft {
+  /** References filter on `shortId` (`#N`) or `id`; each `field=value` adds an `eq` or `in`. */
+  #readStep(
+    action: 'find' | 'count',
+    target: Target,
+    refs: readonly string[],
+    args: Record<string, ActValue>
+  ): Draft {
     const fields = target.type.fields;
     const names = Object.keys(fields);
     const unknown = (token: string, swap: Swap) =>
       this.#refuse(token, `unknown field '${token}' on ${target.qualified}`, names, swap);
     const where: Record<string, unknown> = {};
+    if (refs.length > 0) {
+      const short = (refs[0] as string).startsWith('#');
+      const values = refs.map((ref) => {
+        const r = this.#resolveRef(ref);
+        if ('late' in r) return this.#refuse(ref, `${action} takes no binding`);
+        if (ref.startsWith('#') !== short) {
+          this.#refuse(ref, `${action} takes shortIds or ids, not both`);
+        }
+        return short ? Number(r.value) : r.value;
+      });
+      if (short && !Object.hasOwn(fields, 'shortId')) {
+        this.#refuse(refs[0] as string, `${target.qualified} has no shortId`);
+      }
+      const key = short ? 'shortId' : 'id';
+      if (Object.hasOwn(args, key)) this.#refuse(refs[0] as string, `${key} is given twice`);
+      where[key] = values.length === 1 ? { eq: values[0] } : { in: values };
+    }
     const select = idFields(target.type);
     for (const [arg, raw] of Object.entries(args)) {
       if (action === 'find' && arg === 'fields') {
