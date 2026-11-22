@@ -3,7 +3,8 @@
  * no one else's, its name stays unique on its type, a proposer holds at most
  * 20 live pending words in a namespace, and the words come back from their
  * records after a restart. `propose_action` takes raw JSON from any mutate,
- * so it is also tested as untrusted input.
+ * so it is also tested as untrusted input. Five uses an hour apart promote a
+ * word for everyone, at most 10 per type.
  *
  * `shop` (`kactdef` on Postgres) declares Ticket in code, with `close`; the
  * plugin owns `lab` (`kactdefown`). The Postgres suite is skipped when
@@ -25,7 +26,15 @@ import type {
 } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { ACTIONS_CHANNEL, LAPSE_MS, MAX_PENDING_PER_PROPOSER } from '../src/action-layer.js';
+import {
+  ACTIONS_CHANNEL,
+  LAPSE_MS,
+  MAX_PENDING_PER_PROPOSER,
+  MAX_PUBLISHED_PER_TYPE,
+  PROMOTE_USES,
+  type ProposalActionLayer,
+  USE_SPACING_MS
+} from '../src/action-layer.js';
 import { CONTROL_NAMESPACE } from '../src/control-plane.js';
 import {
   createNoopPubSub,
@@ -33,7 +42,7 @@ import {
   type PubSub,
   storageSettled
 } from '../src/index.js';
-import { deleteNamespaces, relationOf } from './_layout.js';
+import { deleteNamespaces } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const VIRTUAL = 'vshop';
@@ -56,13 +65,14 @@ function grantsOf(w: World, agent: string): Identity['grants'] {
     // Reads shop, so `define` compiles and reaches propose_action.
     'agent-d': { [w.ns]: ['read'], [CONTROL_NAMESPACE]: ['mutate'] },
     'agent-e': { [CONTROL_NAMESPACE]: ['mutate'] },
-    'agent-r': { '*': both }
+    'agent-r': { '*': [...both, 'substrate.propose'] }
   };
   return grants[agent] ?? {};
 }
 
 const ctxOf = (w: World, agent: string) => ({
   identity: { id: agent, tokenId: agent, grants: grantsOf(w, agent) },
+  now: new Date(w.clock.ms),
   headers: {},
   meta: {}
 });
@@ -84,6 +94,15 @@ function ticketPlugin(ns: string): CoordinatorPlugin {
       })
     ]
   };
+}
+
+/** Each booted engine's action layer, for the tests that drive it directly. */
+const layers = new WeakMap<Engine, ProposalActionLayer>();
+
+function layerOf(engine: Engine): ProposalActionLayer {
+  const layer = layers.get(engine);
+  if (layer === undefined) throw new Error('no action layer');
+  return layer;
 }
 
 async function boot(w: World, pubsub: PubSub = createNoopPubSub()): Promise<Engine> {
@@ -114,6 +133,11 @@ async function boot(w: World, pubsub: PubSub = createNoopPubSub()): Promise<Engi
     edges: w.edges,
     isStoredEntry: (entry) => autoCrudOptionsOf(entry.resolver) !== undefined
   });
+  const install = engine.setActionLayer.bind(engine);
+  engine.setActionLayer = (layer) => {
+    layers.set(engine, layer as ProposalActionLayer);
+    install(layer);
+  };
   await loaded.runOnStart(engine);
   return engine;
 }
@@ -185,6 +209,27 @@ async function records(w: World): Promise<Row[]> {
   return (await control(w).read('ActionProposal', { limit: 1000 })).rows;
 }
 
+async function record(w: World, name: string): Promise<Row | undefined> {
+  return (await records(w)).find((r) => r.name === name);
+}
+
+/** Retires a word: its record written past the client gate, then applied to the layer. */
+async function retire(engine: Engine, w: World, row: Row): Promise<void> {
+  const retired = { ...row, status: 'retired', archived: true };
+  await control(w).write('ActionProposal', [retired]);
+  layerOf(engine).apply(retired);
+}
+
+/** A peer that records what it is told. */
+function recordingPubSub(sent: Array<[string, string]>): PubSub {
+  return {
+    listen: async () => {},
+    notify: async (channel, payload) => {
+      sent.push([channel, payload]);
+    }
+  };
+}
+
 const reopenParams = (w: World) => ({
   namespace: w.ns,
   type: 'Ticket',
@@ -233,6 +278,7 @@ describe('propose_action (memory)', () => {
       ok: false,
       refusal: { token: 'reopen' }
     });
+    await layerOf(engine).settled();
     expect(await records(w)).toMatchObject([
       {
         targetNamespace: 'shop',
@@ -240,7 +286,7 @@ describe('propose_action (memory)', () => {
         name: 'reopen',
         proposedBy: 'agent-a',
         status: 'pending',
-        uses: 0,
+        uses: 1,
         archived: false,
         supersededByCode: false
       }
@@ -487,12 +533,7 @@ describe('propose_action (memory)', () => {
 
   it('tells peers on a channel no namespace channel can match', async () => {
     const sent: Array<[string, string]> = [];
-    engine = await boot(w, {
-      listen: async () => {},
-      notify: async (channel, payload) => {
-        sent.push([channel, payload]);
-      }
-    });
+    engine = await boot(w, recordingPubSub(sent));
     expect(await as('agent-a', 'define Ticket.reopen reopened status=open')).toMatchObject({
       ok: true
     });
@@ -515,11 +556,158 @@ describe('propose_action (memory)', () => {
   });
 });
 
-/** Only this file writes ActionProposal rows; the shared control plane keeps everything else. */
-async function clearActionProposals(sql: Sql): Promise<void> {
-  const table = await relationOf(sql, CONTROL_NAMESPACE, 'ActionProposal').catch(() => undefined);
-  if (table !== undefined) await sql.unsafe(`DELETE FROM ${table}`);
-  await sql`DELETE FROM row_ids WHERE namespace = ${CONTROL_NAMESPACE} AND type = 'ActionProposal'`;
+describe('evidence', () => {
+  let w: World;
+  let engine: Engine;
+  const as = (agent: string, sketch: string) => act(engine, w, agent, sketch);
+  /** One committed run, its use recorded. */
+  const use = async (sketch = 'reopen Ticket #1', agent = 'agent-a') => {
+    expect(await as(agent, sketch)).toMatchObject({ ok: true });
+    await layerOf(engine).settled();
+  };
+
+  beforeEach(async () => {
+    w = memoryWorld();
+    engine = await boot(w);
+    expect(await as('agent-a', 'create Ticket title=t status=closed')).toMatchObject({ ok: true });
+    expect(await as('agent-a', 'define Ticket.reopen reopened status=open')).toMatchObject({
+      ok: true
+    });
+  });
+
+  it('promotes after 5 uses an hour apart, for everyone', async () => {
+    const v0 = engine.schemaFor('shop').schemaVersion;
+    for (let i = 0; i < PROMOTE_USES; i++) {
+      await use();
+      w.clock.ms += USE_SPACING_MS;
+    }
+    const v1 = engine.schemaFor('shop').schemaVersion;
+    expect(v1).not.toBe(v0);
+    expect(engine.schemaFor('shop').types.Ticket?.actions?.reopen).toMatchObject({ coined: true });
+    expect(await record(w, 'reopen')).toMatchObject({
+      status: 'promoted',
+      uses: PROMOTE_USES,
+      resultingSchemaVersion: v1
+    });
+    expect(await as('agent-c', 'reopen Ticket #1')).toMatchObject({
+      ok: true,
+      ack: 'reopened shop/Ticket #1'
+    });
+  });
+
+  it('counts a burst inside an hour once', async () => {
+    for (let i = 0; i < PROMOTE_USES; i++) {
+      await use();
+      w.clock.ms += 10 * 60_000;
+    }
+    expect(await record(w, 'reopen')).toMatchObject({ status: 'pending', uses: 1 });
+    expect(await as('agent-c', 'reopen Ticket #1')).toMatchObject({
+      ok: false,
+      refusal: { token: 'reopen' }
+    });
+  });
+
+  it('keeps an 11th earned word ready until a slot frees, then promotes on its next use', async () => {
+    const names = Array.from({ length: MAX_PUBLISHED_PER_TYPE + 1 }, (_, i) => `word${i + 1}`);
+    for (const name of names) {
+      expect(await as('agent-a', `define Ticket.${name} status=open`)).toMatchObject({ ok: true });
+    }
+    const everyWord = names.map((name) => `${name} Ticket #1`).join('; ');
+    for (let i = 0; i < PROMOTE_USES; i++) {
+      await use(everyWord);
+      w.clock.ms += USE_SPACING_MS;
+    }
+    const words = (await records(w)).filter((r) => names.includes(String(r.name)));
+    const promoted = words.filter((r) => r.status === 'promoted');
+    const [ready, ...others] = words.filter((r) => r.status === 'pending');
+    expect(promoted).toHaveLength(MAX_PUBLISHED_PER_TYPE);
+    expect(others).toEqual([]);
+    if (ready === undefined || promoted[0] === undefined) throw new Error('no ready word');
+    expect(ready).toMatchObject({ uses: PROMOTE_USES });
+    const name = String(ready.name);
+
+    // A spaced use while the cap is full still counts, and still does not promote.
+    await use(`${name} Ticket #1`);
+    expect(await record(w, name)).toMatchObject({ status: 'pending', uses: PROMOTE_USES + 1 });
+
+    await retire(engine, w, promoted[0]);
+    // At the same instant: a ready word needs no spacing.
+    await use(`${name} Ticket #1`);
+    expect(await record(w, name)).toMatchObject({ status: 'promoted' });
+    expect(await as('agent-c', `${name} Ticket #1`)).toMatchObject({ ok: true });
+  });
+
+  it('refuses a published word cleanly once its literal no longer fits the field', async () => {
+    const proposal = async (key: string, params: Record<string, unknown>) =>
+      (
+        await engine.mutate({
+          frame: { [`${w.own}/${key}`]: { params, fields: { id: true } } },
+          ctx: ctxOf(w, 'agent-r')
+        })
+      ).errors;
+    const status = (values: string[]) => ({ kind: 'scalar', type: 'string', enum: values });
+    expect(
+      await proposal('propose_type', {
+        typeName: 'Job',
+        fields: { title: { kind: 'scalar', type: 'string' }, status: status(['open', 'closed']) },
+        proposedBy: 'agent-r',
+        proposedReason: 'jobs'
+      })
+    ).toBeUndefined();
+    expect(await as('agent-r', `create ${w.own}/Job title=j status=closed`)).toMatchObject({
+      ok: true
+    });
+    expect(await as('agent-r', `define ${w.own}/Job.reopen reopened status=open`)).toMatchObject({
+      ok: true
+    });
+    for (let i = 0; i < PROMOTE_USES; i++) {
+      await use(`reopen ${w.own}/Job #1`, 'agent-r');
+      w.clock.ms += USE_SPACING_MS;
+    }
+    expect((await records(w)).find((r) => r.targetType === 'Job')).toMatchObject({
+      status: 'promoted'
+    });
+
+    // `active` joins first: a migration target must fit both vocabularies.
+    for (const [values, valueMap] of [
+      [['open', 'active', 'closed'], {}],
+      [['active', 'closed'], { open: 'active' }]
+    ] as const) {
+      expect(
+        await proposal('propose_field', {
+          targetType: 'Job',
+          fieldName: 'status',
+          fieldSpec: status([...values]),
+          valueMap,
+          proposedBy: 'agent-r',
+          proposedReason: 'rename open to active'
+        })
+      ).toBeUndefined();
+    }
+    // The field's own refusal, as a plain update of `status` to `open` gets.
+    expect(await as('agent-r', `reopen ${w.own}/Job #1`)).toMatchObject({
+      ok: false,
+      error: { code: 'invalid_enum_value', message: "'status' must be one of: active, closed" }
+    });
+  });
+});
+
+/** Deletes the ActionProposal rows targeting `namespaces`; the shared control plane keeps the rest. */
+async function clearActionProposals(sql: Sql, ...namespaces: string[]): Promise<void> {
+  const control = new PgDataset({
+    namespace: CONTROL_NAMESPACE,
+    sql,
+    edgesStore: new PgEdgesStore({ sql })
+  });
+  const { rows } = await control.read('ActionProposal', {
+    where: { targetNamespace: { in: namespaces } },
+    includeDeleted: true,
+    limit: 10000
+  });
+  await control.purge(
+    'ActionProposal',
+    rows.map((r) => r.id)
+  );
 }
 
 describe.skipIf(!POSTGRES_URL)('propose_action (pg)', () => {
@@ -537,7 +725,7 @@ describe.skipIf(!POSTGRES_URL)('propose_action (pg)', () => {
   };
   const clean = async (): Promise<void> => {
     await deleteNamespaces(sql, ns, own);
-    await clearActionProposals(sql);
+    await clearActionProposals(sql, ns, own);
   };
 
   beforeAll(async () => {
@@ -580,5 +768,68 @@ describe.skipIf(!POSTGRES_URL)('propose_action (pg)', () => {
     expect(
       await act(again, w, 'agent-c', 'define Ticket.reopen reopened status=open')
     ).toMatchObject(taken);
+  });
+
+  it('counts two concurrent uses of one word once', async () => {
+    const sent: Array<[string, string]> = [];
+    const w = pgWorld();
+    const engine = await boot(w, recordingPubSub(sent));
+    expect(
+      await act(engine, w, 'agent-a', 'define Ticket.reopen reopened status=open')
+    ).toMatchObject({ ok: true });
+    sent.length = 0;
+    const layer = layerOf(engine);
+    const at = new Date(w.clock.ms);
+    const reopen = [{ type: `${ns}/Ticket`, name: 'reopen' }];
+    layer.used('agent-a', reopen, at);
+    layer.used('agent-a', reopen, at);
+    await layer.settled();
+    expect(await records(w)).toMatchObject([{ status: 'pending', uses: 1 }]);
+    // One counted write, so peers are told once.
+    expect(sent).toHaveLength(1);
+  });
+
+  it('lets two words that earn promotion at once take only the last free slot', async () => {
+    const w = pgWorld();
+    await boot(w);
+    const at = new Date(w.clock.ms);
+    const anHourAgo = new Date(at.getTime() - USE_SPACING_MS);
+    const word = (name: string, status: string, uses: number) => ({
+      targetNamespace: ns,
+      targetType: 'Ticket',
+      name,
+      declJson: JSON.stringify({ kind: 'update', params: {}, set: { status: 'open' } }),
+      sketch: `define Ticket.${name} status=open`,
+      proposedBy: 'agent-a',
+      proposedAt: anHourAgo,
+      status,
+      uses,
+      lastUseAt: anHourAgo,
+      promotedAt: null,
+      resultingSchemaVersion: null,
+      supersededByCode: false,
+      archived: false
+    });
+    await control(w).write('ActionProposal', [
+      ...Array.from({ length: MAX_PUBLISHED_PER_TYPE - 1 }, (_, i) =>
+        word(`word${i}`, 'promoted', PROMOTE_USES)
+      ),
+      word('late', 'pending', PROMOTE_USES - 1),
+      word('later', 'pending', PROMOTE_USES - 1)
+    ]);
+    const engine = await boot(pgWorld());
+    const layer = layerOf(engine);
+    layer.used(
+      'agent-a',
+      [
+        { type: `${ns}/Ticket`, name: 'late' },
+        { type: `${ns}/Ticket`, name: 'later' }
+      ],
+      at
+    );
+    await layer.settled();
+    const rows = await records(w);
+    expect(rows.filter((r) => r.status === 'promoted')).toHaveLength(MAX_PUBLISHED_PER_TYPE);
+    expect(rows.filter((r) => r.status === 'pending')).toMatchObject([{ uses: PROMOTE_USES }]);
   });
 });

@@ -309,6 +309,10 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
         proposeKey: `${CONTROL_NAMESPACE}/propose_action`,
         now,
         invalidateSchemaCaches: (ns) => ctx.engine.invalidateSchemaCaches(ns),
+        schemaVersion: (ns) => ctx.engine.schemaFor(ns).schemaVersion,
+        dataset: controlBinding.dataset,
+        pubsub: config.pubsub,
+        metric: (name, payload) => ctx.metric(name, payload),
         onSkip: (row, err) => skipped(CONTROL_NAMESPACE, row, err)
       });
       const actionRows = await controlBinding.dataset.read('ActionProposal', {

@@ -1,10 +1,23 @@
 /**
  * The coined action words this engine knows, kept from the ActionProposal
  * records: each proposer's pending words, each type's promoted words, and the
- * names closed on their type (vetoed, retired or superseded by code).
+ * names closed on their type (vetoed, retired or superseded by code). It also
+ * counts each committed use of a pending word, and promotes the word once the
+ * uses are evidence enough.
  */
 
-import type { ActionDecl, ActionLayer, PendingAction, Row } from '@mnmal-ai/substrate-types';
+import type {
+  ActionDecl,
+  ActionLayer,
+  ActorIdentity,
+  Dataset,
+  Id,
+  PendingAction,
+  Row
+} from '@mnmal-ai/substrate-types';
+import type { PubSub } from './config.js';
+import { proposalLockKey, withProposalLock } from './proposal-lock.js';
+import { lockedRow } from './row-lock.js';
 
 /** Counted uses a pending word needs to be promoted. */
 export const PROMOTE_USES = 5;
@@ -33,9 +46,18 @@ export interface ProposalActionLayerDeps {
   proposeKey: string;
   now: () => Date;
   invalidateSchemaCaches: (ns: string) => void;
+  /** `ns`'s published schema version, coined words included. */
+  schemaVersion: (ns: string) => string;
+  /** The control-plane dataset the ActionProposal records live in. */
+  dataset: Dataset;
+  pubsub: PubSub;
+  metric: (name: string, payload: Record<string, unknown>) => void;
   /** A record the layer cannot read; it is left out. */
   onSkip?: (row: Row, err: unknown) => void;
 }
+
+/** Who a use's write is stamped as. */
+const PLUGIN_ACTOR: ActorIdentity = { kind: 'system', id: 'substrate-proposals' };
 
 const time = (v: unknown): number =>
   v === null || v === undefined ? 0 : new Date(v as string | Date).getTime();
@@ -66,26 +88,23 @@ export class ProposalActionLayer implements ActionLayer {
   readonly #promoted = new Map<string, Map<string, Word>>();
   /** `ns/Type.name` of each closed name */
   readonly #closed = new Set<string>();
+  /** Uses being recorded. */
+  readonly #recording = new Set<Promise<void>>();
 
   constructor(deps: ProposalActionLayerDeps) {
     this.#deps = deps;
     this.proposeKey = deps.proposeKey;
   }
 
-  /** Applies each record, then drops the cached schema of every namespace they target. */
   load(rows: Row[]): void {
-    const namespaces = new Set<string>();
-    for (const row of rows) {
-      this.apply(row);
-      if (typeof row.targetNamespace === 'string') namespaces.add(row.targetNamespace);
-    }
-    for (const ns of namespaces) this.#deps.invalidateSchemaCaches(ns);
+    for (const row of rows) this.apply(row);
   }
 
   /**
    * Upserts the word a record holds: a live pending one into its proposer's
    * map, a live promoted one into its type's map. Any other record closes its
-   * name on its type.
+   * name on its type. A word joining or leaving the published set drops its
+   * namespace's cached schema.
    */
   apply(row: Row): void {
     const { targetNamespace: ns, targetType: type, name, proposedBy } = row;
@@ -101,7 +120,7 @@ export class ProposalActionLayer implements ActionLayer {
     const qualified = `${ns}/${type}`;
     const key = `${qualified}.${name}`;
     for (const words of this.#pending.values()) words.delete(key);
-    this.#promoted.get(qualified)?.delete(name);
+    if (this.#promoted.get(qualified)?.delete(name) === true) this.#deps.invalidateSchemaCaches(ns);
     if (row.archived === true || (row.status !== 'pending' && row.status !== 'promoted')) {
       this.#closed.add(key);
       return;
@@ -114,8 +133,12 @@ export class ProposalActionLayer implements ActionLayer {
       return;
     }
     const word: Word = { row, decl, qualified, name };
-    if (row.status === 'pending') mapOf(this.#pending, proposedBy).set(key, word);
-    else mapOf(this.#promoted, qualified).set(name, word);
+    if (row.status === 'pending') {
+      mapOf(this.#pending, proposedBy).set(key, word);
+    } else {
+      mapOf(this.#promoted, qualified).set(name, word);
+      this.#deps.invalidateSchemaCaches(ns);
+    }
   }
 
   published(ns: string): Record<string, Record<string, ActionDecl>> {
@@ -143,8 +166,93 @@ export class ProposalActionLayer implements ActionLayer {
     return out;
   }
 
-  // shortcut: uses are not counted yet, so no word earns promotion; evidence replaces this.
-  used(_identityId: string, _actions: ReadonlyArray<{ type: string; name: string }>, _at: Date) {}
+  /** Records a use of each of the proposer's pending words in the background; never throws. */
+  used(identityId: string, actions: ReadonlyArray<{ type: string; name: string }>, at: Date): void {
+    const words = this.#pending.get(identityId);
+    for (const { type, name } of actions) {
+      const id = words?.get(`${type}.${name}`)?.row.id;
+      if (id === undefined) continue;
+      const work = this.#recordUse(id, at).catch((err: unknown) =>
+        this.#deps.metric('_system_proposals.action_use_failed', {
+          id,
+          type,
+          name,
+          error: err instanceof Error ? err.message : String(err)
+        })
+      );
+      this.#recording.add(work);
+      void work.finally(() => this.#recording.delete(work));
+    }
+  }
+
+  /** Resolves once every use recorded so far has settled. */
+  async settled(): Promise<void> {
+    await Promise.all([...this.#recording]);
+  }
+
+  /**
+   * Counts a use of the pending word `id` at `at` when it comes
+   * {@link USE_SPACING_MS} after the last counted use, and promotes the word
+   * once it has {@link PROMOTE_USES} and its type has fewer than
+   * {@link MAX_PUBLISHED_PER_TYPE} published, spaced or not. The record stays
+   * locked from its read to the commit. Once committed, the record joins this
+   * layer and peers are told.
+   */
+  async #recordUse(id: Id, at: Date): Promise<void> {
+    const written = await this.#deps.dataset.withTransaction(async (tx): Promise<Row | null> => {
+      const row = await lockedRow('ActionProposal', id, tx);
+      if (row === null || row.status !== 'pending' || row.archived === true) return null;
+      const spaced = row.lastUseAt === null || at.getTime() - time(row.lastUseAt) >= USE_SPACING_MS;
+      const uses = Number(row.uses ?? 0) + (spaced ? 1 : 0);
+      const counted = spaced ? { uses, lastUseAt: at } : {};
+      const store = async (patch: Record<string, unknown>): Promise<Row> => {
+        await tx.write('ActionProposal', [{ id: row.id, ...patch }], {
+          identity: PLUGIN_ACTOR,
+          now: at
+        });
+        return { ...row, ...patch };
+      };
+      if (uses < PROMOTE_USES) return spaced ? store(counted) : null;
+      const ns = String(row.targetNamespace);
+      const type = String(row.targetType);
+      // One promotion per type at a time, so two words cannot both take its last slot.
+      return withProposalLock(tx, proposalLockKey('action', ns, type), async () => {
+        const { rows: published } = await tx.read('ActionProposal', {
+          where: {
+            AND: [
+              { targetNamespace: { eq: ns } },
+              { targetType: { eq: type } },
+              { status: { eq: 'promoted' } },
+              { archived: { eq: false } }
+            ]
+          },
+          limit: MAX_PUBLISHED_PER_TYPE
+        });
+        if (published.length >= MAX_PUBLISHED_PER_TYPE) return spaced ? store(counted) : null;
+        const promotion = { ...counted, status: 'promoted', promotedAt: at };
+        return store({
+          ...promotion,
+          resultingSchemaVersion: this.#versionWith({ ...row, ...promotion }, row)
+        });
+      });
+    });
+    if (written === null) return;
+    this.apply(written);
+    await this.#deps.pubsub.notify(ACTIONS_CHANNEL, String(written.id));
+  }
+
+  /**
+   * The schema version `row`'s namespace has with `row` applied. The layer
+   * holds `prior` afterwards, and nothing else runs in between.
+   */
+  #versionWith(row: Row, prior: Row): string {
+    this.apply(row);
+    try {
+      return this.#deps.schemaVersion(String(row.targetNamespace));
+    } finally {
+      this.apply(prior);
+    }
+  }
 
   /**
    * Who holds `name` on `qualifiedType`: nobody, `proposer` (pending, lapsed
