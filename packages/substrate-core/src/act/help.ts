@@ -44,11 +44,17 @@ const mapValues = <T, U>(o: Record<string, T>, f: (v: T, k: string) => U): Recor
 export function typesHelp(schema: Readonly<Record<string, Schema>>): ActHelp {
   const types: Record<string, Record<string, string[]>> = {};
   for (const ns of Object.keys(schema).sort()) {
+    if (ns.startsWith('_system')) continue;
     const nsTypes = (schema[ns] as Schema).types;
     types[ns] = Object.fromEntries(
       Object.keys(nsTypes)
         .sort()
-        .map((name) => [name, Object.keys(nsTypes[name]?.actions ?? {}).sort()])
+        .map((name) => [
+          name,
+          Object.entries(nsTypes[name]?.actions ?? {})
+            .map(([a, def]) => (def.pending !== undefined ? `${a}*` : a))
+            .sort()
+        ])
     );
   }
   return { types };
@@ -60,7 +66,8 @@ export function typeHelp(qualified: string, type: TypeSchema): ActHelp {
     type: qualified,
     actions: mapValues(type.actions ?? {}, (a) => ({
       kind: a.kind,
-      params: mapValues(a.params, paramHelp)
+      params: mapValues(a.params, paramHelp),
+      ...(a.pending !== undefined ? { pending: a.pending } : {})
     })),
     fields: mapValues(type.fields, (def, name) => ({
       type: fieldType(def),

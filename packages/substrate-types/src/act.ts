@@ -115,7 +115,12 @@ export interface ActHelp {
   type?: string;
   actions?: Record<
     string,
-    { kind: 'update' | 'create'; params: Record<string, { type: string; required: boolean }> }
+    {
+      kind: 'update' | 'create';
+      params: Record<string, { type: string; required: boolean }>;
+      /** A pending word's counted uses so far, and the uses it needs to publish. */
+      pending?: { uses: number; needed: number };
+    }
   >;
   fields?: Record<string, { type: string; required: boolean }>;
 }

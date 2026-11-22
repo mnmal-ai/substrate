@@ -92,6 +92,7 @@ import {
   isRestrictViolation,
   naturalOrderOf,
   ROW_POLICY_BLOCKS_WALK,
+  toActionSchema,
   WALK_UNSUPPORTED_REF,
   WALKS_IN_MUTATION,
   WALKS_UNSUPPORTED_STORE
@@ -1276,11 +1277,28 @@ export class Engine implements ActHandle {
   async #actRun(input: ActInput, identity: Identity, ownerKey: string): Promise<ActResponse> {
     const { results, ttlMs, maxWriteSteps } = this.#act;
     const mode = input.mode ?? 'write';
-    const schema = Object.fromEntries(
+    const schema: Record<string, Schema> = Object.fromEntries(
       Object.entries(this.federatedSchema()).filter(
         ([ns]) => checkIdentityGrant(identity, ns, 'query').ok
       )
     );
+    // The caller's pending words join their types; the cached schema is copied, never mutated.
+    const pendingKeys = new Set<string>();
+    for (const [qualified, words] of Object.entries(
+      this.#actionLayer?.pendingFor(identity.id) ?? {}
+    )) {
+      const [ns = '', typeName = ''] = qualified.split('/');
+      const nsSchema = schema[ns];
+      const type = nsSchema?.types[typeName];
+      if (nsSchema === undefined || type === undefined) continue;
+      const actions = { ...type.actions };
+      for (const [name, p] of Object.entries(words)) {
+        if (Object.hasOwn(actions, name)) continue;
+        actions[name] = { ...toActionSchema(p.decl), pending: { uses: p.uses, needed: p.needed } };
+        pendingKeys.add(`${qualified}.${name}`);
+      }
+      schema[ns] = { ...nsSchema, types: { ...nsSchema.types, [typeName]: { ...type, actions } } };
+    }
     const localNamespaces = new Set(
       [...this.#namespaces]
         .filter(([ns, cfg]) => cfg.virtual !== true && this.#datasets.get(ns) !== undefined)
@@ -1312,6 +1330,15 @@ export class Engine implements ActHandle {
       throw new Error('act plan names no dataset');
     } else {
       error = await this.#actSteps(input, mode, plan.steps, parsedByKey, partition, outcomes);
+    }
+    if (error === undefined && mode === 'write' && pendingKeys.size > 0) {
+      const used = new Map<string, { type: string; name: string }>();
+      for (const s of plan.steps) {
+        const k = `${s.type}.${s.action}`;
+        if (pendingKeys.has(k)) used.set(k, { type: s.type, name: s.action });
+      }
+      if (used.size > 0)
+        this.#actionLayer?.used(identity.id, [...used.values()], input.ctx.now ?? new Date());
     }
 
     const ack = formatAck(plan, outcomes, mode);
