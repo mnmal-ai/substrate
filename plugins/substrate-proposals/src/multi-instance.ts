@@ -13,6 +13,7 @@
  */
 
 import type {
+  ActionDecl,
   Dataset,
   DropParticipant,
   EdgesStore,
@@ -22,6 +23,7 @@ import type {
   WhereClause
 } from '@mnmal-ai/substrate-types';
 import {
+  type ApplyTypeProposalArgs,
   applyFieldProposal,
   applyTypeIndexOptions,
   applyTypeProposal,
@@ -38,6 +40,17 @@ import { CLUSTER_CHANNEL } from './propose-namespace-resolver.js';
 import type { RegistryStore } from './registry-store.js';
 import { isLiveProposal } from './row-lock.js';
 
+/** A TypeProposal row as `applyTypeProposal` takes it; its actions are checked there. */
+function storedType(row: Row): Pick<ApplyTypeProposalArgs, 'typeName' | 'fields' | 'actions'> {
+  return {
+    typeName: row.typeName as string,
+    fields: storedSpec(row, 'fieldsJson') as Record<string, FieldSpecJson>,
+    ...(row.actionsJson == null
+      ? {}
+      : { actions: storedSpec(row, 'actionsJson') as Record<string, ActionDecl> })
+  };
+}
+
 /** Why a stored field proposal is skipped when replay skipped its type. */
 function typeSkipped(row: Row): ProposalError {
   const type = String(row.targetType);
@@ -50,13 +63,13 @@ function typeSkipped(row: Row): ProposalError {
 }
 
 /**
- * A stored row's field specs, parsed.
+ * A stored row's field specs, or born actions, parsed.
  *
  * @throws ProposalError `invalid_field_spec` when the stored value is not a
  *   string, as `JSON.parse` would read an array as its joined elements
  * @throws SyntaxError when it is not JSON
  */
-function storedSpec(row: Row, param: 'fieldsJson' | 'fieldSpecJson'): unknown {
+function storedSpec(row: Row, param: 'fieldsJson' | 'fieldSpecJson' | 'actionsJson'): unknown {
   const json = row[param];
   if (typeof json !== 'string') {
     throw new ProposalError('invalid_field_spec', `stored '${param}' is not a string`, { param });
@@ -140,11 +153,9 @@ export async function applyProposalFromNotification(
       const typeName = row.typeName as string;
       let changed = false;
       if (!binding.registry.get(typeName)) {
-        const fields = storedSpec(row, 'fieldsJson') as Record<string, FieldSpecJson>;
         applyTypeProposal({
           namespace: args.namespace,
-          typeName,
-          fields,
+          ...storedType(row),
           registryStore: args.registryStore,
           dataset: binding.dataset,
           edges: binding.edges
@@ -265,11 +276,9 @@ export async function reconcileNamespace(args: ReconcileArgs): Promise<void> {
   for (const row of typeRows.rows) {
     if (binding.registry.get(row.typeName as string)) continue;
     try {
-      const fields = storedSpec(row, 'fieldsJson') as Record<string, FieldSpecJson>;
       applyTypeProposal({
         namespace: args.namespace,
-        typeName: row.typeName as string,
-        fields,
+        ...storedType(row),
         registryStore: args.registryStore,
         dataset: binding.dataset,
         edges: binding.edges

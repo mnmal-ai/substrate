@@ -117,7 +117,11 @@ export function buildOnboardBody(ownedNamespaces: ReadonlyArray<string>): Onboar
           indexes:
             'optional [{ fields: [...] }] — indexes the usual reads need. Never unique or named. ' +
             'Needs no extra capability on a new type; changing them later needs substrate.index.',
-          expectedSize: 'optional "small"|"large" — "large" gets index advice sooner'
+          expectedSize: 'optional "small"|"large" — "large" gets index advice sooner',
+          actions:
+            'optional { <name>: ActionDecl } — act words published with the type, as code declares them: ' +
+            '{ archive: { past: "archived", set: { status: "archived" } } }. A then target must be declared ' +
+            'in code or born with a type, never a coined word. Later words go through define.'
         },
         returns: {
           id: 'uuid — the TypeProposal record id',

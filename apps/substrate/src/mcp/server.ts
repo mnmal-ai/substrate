@@ -449,6 +449,7 @@ export interface ProposeTypeArgs {
   orderedBy?: Record<string, 'asc' | 'desc'>;
   indexes?: Record<string, unknown>[];
   expectedSize?: 'small' | 'large';
+  actions?: Record<string, unknown>;
 }
 
 export function createProposeTypeHandler(
@@ -840,7 +841,14 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
           expectedSize: z
             .enum(['small', 'large'])
             .optional()
-            .describe('"large" if the type will hold many rows, so indexes are advised sooner.')
+            .describe('"large" if the type will hold many rows, so indexes are advised sooner.'),
+          actions: z
+            .record(z.string(), z.unknown())
+            .optional()
+            .describe(
+              'act words live with the type, declared as code declares them: ' +
+                '{ "archive": { "past": "archived", "set": { "status": "archived" } } }.'
+            )
         }
       },
       handler: createProposeTypeHandler(endpoint)

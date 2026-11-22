@@ -192,11 +192,15 @@ export const TRUSTED_WRITE: unique symbol = Symbol('substrate-proposals.trustedW
  * or locked is refused. A mutate array runs per element through the guard,
  * an array of updates or deletes first locking every row it names in id
  * order, and `updateMany` / `deleteMany` refuse once their single-row entry
- * is replaced. An empty capability opts out.
+ * is replaced. An empty capability opts out. Whatever the capability, a write
+ * that takes a live proposal's type away (a delete, an update leaving it not
+ * live, or a rename) is refused while `chainsInto` names an action of another
+ * type whose `then` targets one of its actions.
  */
 export function gateTypeProposalRemoval(
   registry: Registry,
-  dropCapability: string = DEFAULT_DROP_CAPABILITY
+  dropCapability: string = DEFAULT_DROP_CAPABILITY,
+  chainsInto: (typeName: string) => string[] = () => []
 ): void {
   if (dropCapability === '') return;
   const gate = makeProposePolicy(dropCapability);
@@ -214,9 +218,35 @@ export function gateTypeProposalRemoval(
       new ResolverFrameError('policy_denied', `${key}: ${why}`, {
         required: `${ctx.namespace}:${dropCapability}`
       });
-    const guard: RegistryEntryResolver = async (ctx, args) => {
+    /**
+     * Refuses taking away a type that other actions chain to; resolves `args`
+     * naming the row it locked by its stored id, so the checks below read it.
+     */
+    const unchained = async (args: ResolverArgs): Promise<ResolverArgs> => {
       const params = args.params ?? {};
-      const trusted = (args as { [TRUSTED_WRITE]?: true })[TRUSTED_WRITE] === true;
+      const row = await lockedRow('TypeProposal', params.id, args.dataset);
+      if (row === null) return args;
+      const name = String(row.typeName);
+      const after = { ...row, ...params };
+      const takesAway =
+        key === 'deleteTypeProposal' || !isLiveProposal(after) || after.typeName !== row.typeName;
+      const from = isLiveProposal(row) && takesAway ? chainsInto(name) : [];
+      if (from.length > 0) {
+        throw new ProposalError(
+          'action_chained',
+          `'${name}' cannot be taken away while ${from.join(', ')} chain${from.length === 1 ? 's' : ''} to its actions`,
+          { typeName: name, chainedFrom: from }
+        );
+      }
+      return { ...args, params: { ...params, id: row.id } };
+    };
+    const guard: RegistryEntryResolver = async (ctx, given) => {
+      const trusted = (given as { [TRUSTED_WRITE]?: true })[TRUSTED_WRITE] === true;
+      const args =
+        !trusted && isRemoval(given.params ?? {}) && key !== 'createTypeProposal'
+          ? await unchained(given)
+          : given;
+      const params = args.params ?? {};
       if (!trusted && isRemoval(params) && !gate(ctx, args).allow) {
         if (key === 'createTypeProposal') {
           // No stored row yet: the name it would apply is the one to check.

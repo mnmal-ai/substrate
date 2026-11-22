@@ -11,16 +11,20 @@
  * the new field definition. The existing shortId field is preserved via spread.
  */
 
+import { assertActionChains } from '@mnmal-ai/substrate-core';
 import {
   type AutoCrudRegistry,
   assertIndexDecl,
   assertOrderedBy,
+  assertTypeActions,
   autoCrudOptionsOf,
   type InstallAutoCrudOptions,
   installAutoCrud,
   RESERVED_AUTOCRUD_FIELDS
 } from '@mnmal-ai/substrate-sdk';
 import {
+  type ActionDecl,
+  type ActionSchema,
   canonicalize,
   type Dataset,
   type EdgesStore,
@@ -29,6 +33,7 @@ import {
   type OrderedBy,
   type Registry
 } from '@mnmal-ai/substrate-types';
+import { registryActions } from './action-layer.js';
 import { appliedTargetCheck } from './cross-ref-targets.js';
 import { ProposalError } from './errors.js';
 import {
@@ -40,6 +45,7 @@ import {
   parseFieldSpec
 } from './field-spec-json.js';
 import { PROPOSAL_TYPE_NAMES } from './namespace.js';
+import { RESERVED, UNSAFE, WORD } from './propose-action-resolver.js';
 import type { RegistryStore } from './registry-store.js';
 
 // Engine-reserved fields (currently { shortId: ... }) come from substrate-sdk, not a
@@ -49,6 +55,8 @@ export interface ApplyTypeProposalArgs {
   namespace: string;
   typeName: string;
   fields: Record<string, FieldSpecJson>;
+  /** Actions born with the type, keyed by name. */
+  actions?: Record<string, ActionDecl>;
   registryStore: RegistryStore;
   dataset: Dataset;
   edges: EdgesStore;
@@ -103,13 +111,99 @@ export function assertValidFieldProposal(
   assertCrossRefTargets(fieldName, fieldSpec, targets);
 }
 
+const DECL_KEYS: readonly string[] = ['kind', 'past', 'params', 'set', 'then'];
+
+const isObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * Refuse actions born with a proposed type that code could not declare on it:
+ * each named as an act word and well-formed against `fields`
+ * (`assertTypeActions`), and every `then` chain from them as compose checks
+ * it (`assertActionChains`) over `registryActions`, coined words left out,
+ * plus these. An absent target in a namespace `awaited` admits is let
+ * through: replay may not have reached it, and the compiler refuses a target
+ * that never comes. The shape is checked first, as rows and params are raw
+ * JSON.
+ *
+ * @throws ProposalError `invalid_params`
+ */
+export function assertValidTypeActions(
+  namespace: string,
+  typeName: string,
+  fields: Record<string, FieldSpecJson>,
+  actions: unknown,
+  registryActions: ReadonlyMap<string, ActionSchema>,
+  awaited: (ns: string) => boolean = () => false
+): asserts actions is Record<string, ActionDecl> {
+  const invalid = (message: string, param = 'actions') =>
+    new ProposalError('invalid_params', message, { param });
+  if (!isObject(actions)) throw invalid("'actions' must be an object");
+  const fieldDefs = proposedFieldDefs(fields);
+  const chains = new Map<string, ActionDecl>(
+    [...registryActions].filter(([, action]) => action.coined !== true)
+  );
+  const keyOf = (name: string): string => `${namespace}/${typeName}.${name}`;
+  const born = new Set(Object.keys(actions).map(keyOf));
+  for (const [name, decl] of Object.entries(actions)) {
+    const at = `actions.${name}`;
+    if (!WORD.test(name) || RESERVED.has(name) || UNSAFE.has(name)) {
+      throw invalid(`action name must match ${WORD.source}, and not be '${name}'`, at);
+    }
+    if (!isObject(decl) || Object.keys(decl).some((k) => !DECL_KEYS.includes(k))) {
+      throw invalid(`action '${name}' must be an object of ${DECL_KEYS.join(', ')}`, at);
+    }
+    const { kind, past, params = {}, set = {}, then = [] } = decl;
+    if (kind !== undefined && kind !== 'update' && kind !== 'create') {
+      throw invalid("kind must be 'update' or 'create'", at);
+    }
+    if (past !== undefined && (typeof past !== 'string' || !WORD.test(past))) {
+      throw invalid(`past must match ${WORD.source}`, at);
+    }
+    if (!isObject(params) || !isObject(set) || !Array.isArray(then)) {
+      throw invalid('params and set must be objects, and then an array', at);
+    }
+    for (const [param, p] of Object.entries(params)) {
+      if (UNSAFE.has(param) || !isObject(p)) throw invalid(`param '${param}' is not allowed`, at);
+    }
+    for (const [f, v] of Object.entries(set)) {
+      if (!Object.hasOwn(fieldDefs, f)) throw invalid(`'${f}' is not a field of ${typeName}`, at);
+      if (isObject(v) && 'param' in v && !Object.hasOwn(params, String(v.param))) {
+        throw invalid(`set uses undeclared param '${String(v.param)}'`, at);
+      }
+    }
+    const kept: unknown[] = [];
+    for (const t of then) {
+      if (!isObject(t) || typeof t.action !== 'string' || !isObject(t.each)) {
+        throw invalid('a then entry needs an action and each', at);
+      }
+      if (chains.has(t.action) || born.has(t.action)) kept.push(t);
+      else if (!awaited(t.action.slice(0, t.action.indexOf('/')))) {
+        throw invalid(`then target ${t.action} is not declared in code or born with a type`, at);
+      }
+    }
+    // biome-ignore lint/suspicious/noThenProperty: `then` is the action declaration's key
+    chains.set(keyOf(name), { ...decl, then: kept } as ActionDecl);
+  }
+  try {
+    assertTypeActions(typeName, {
+      fields: fieldDefs,
+      actions: actions as Record<string, ActionDecl>
+    });
+    assertActionChains(chains, born);
+  } catch (err) {
+    throw invalid(err instanceof Error ? err.message : String(err));
+  }
+}
+
 /** Installs the proposed type's autoCRUD surface into `registry`. */
 function installProposedType(
   registry: AutoCrudRegistry,
-  args: Pick<ApplyTypeProposalArgs, 'typeName' | 'fields' | 'dataset' | 'edges'>
+  args: Pick<ApplyTypeProposalArgs, 'typeName' | 'fields' | 'actions' | 'dataset' | 'edges'>
 ): void {
   installAutoCrud(registry, args.typeName, args.dataset, args.edges, {
-    fields: proposedFieldDefs(args.fields)
+    fields: proposedFieldDefs(args.fields),
+    ...(args.actions !== undefined ? { actions: args.actions } : {})
   });
 }
 
@@ -146,6 +240,17 @@ export function applyTypeProposal(args: ApplyTypeProposalArgs): void {
   const store = args.registryStore;
   assertValidTypeProposal(args.typeName, args.fields, appliedTargetCheck(store, args.namespace));
   const binding = store.getBinding(args.namespace);
+  if (args.actions !== undefined) {
+    // Another owned namespace's types may not be replayed yet.
+    assertValidTypeActions(
+      args.namespace,
+      args.typeName,
+      args.fields,
+      args.actions,
+      registryActions(binding.engine?.federatedSchema() ?? {}),
+      (ns) => ns !== args.namespace && store.ownsNamespace(ns)
+    );
+  }
 
   installProposedType(binding.registry, args);
 

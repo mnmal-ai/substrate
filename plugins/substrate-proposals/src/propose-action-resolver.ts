@@ -52,10 +52,11 @@ export interface ProposeActionResolverDeps {
   layer: () => ProposalActionLayer | undefined;
 }
 
-const WORD = /^[a-z][A-Za-z0-9]{1,31}$/;
-const RESERVED: ReadonlySet<string> = new Set([...BUILT_IN_ACTIONS, 'define']);
+/** What an action name, or its past word, must match. */
+export const WORD = /^[a-z][A-Za-z0-9]{1,31}$/;
+export const RESERVED: ReadonlySet<string> = new Set([...BUILT_IN_ACTIONS, 'define']);
 /** Names that would reach the prototype chain of the objects they key. */
-const UNSAFE: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype']);
+export const UNSAFE: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype']);
 
 interface Input {
   namespace: string;
