@@ -89,6 +89,7 @@ describe('action layer seam', () => {
     expect(Object.keys(schema.types)).toEqual(['Ticket']);
     expect(Object.keys(schema.types.Ticket?.actions ?? {}).sort()).toEqual(['close', 'ok']);
     expect(Object.getPrototypeOf(schema.types.Ticket?.actions)).toBe(Object.prototype);
+    expect(Object.prototype).not.toHaveProperty('actions');
     expect(({} as Record<string, unknown>).x).toBeUndefined();
   });
 
