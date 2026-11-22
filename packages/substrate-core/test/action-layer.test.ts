@@ -79,6 +79,19 @@ describe('action layer seam', () => {
     expect(engine.schemaFor('shop').types.Ghost).toBeUndefined();
   });
 
+  it('ignores prototype keys in a coined map without polluting', () => {
+    layer.words = JSON.parse(
+      '{"__proto__":{"x":{"set":{"status":"open"}}},"Ticket":{"__proto__":{"set":{"status":"open"}},"constructor":{"set":{"status":"open"}},"ok":{"set":{"status":"open"}}}}'
+    );
+    engine.setActionLayer(layer);
+    engine.invalidateSchemaCaches('shop');
+    const schema = engine.schemaFor('shop');
+    expect(Object.keys(schema.types)).toEqual(['Ticket']);
+    expect(Object.keys(schema.types.Ticket?.actions ?? {}).sort()).toEqual(['close', 'ok']);
+    expect(Object.getPrototypeOf(schema.types.Ticket?.actions)).toBe(Object.prototype);
+    expect(({} as Record<string, unknown>).x).toBeUndefined();
+  });
+
   it('refuses a second action layer', () => {
     engine.setActionLayer(layer);
     expect(() => engine.setActionLayer(layer)).toThrow(/already/);

@@ -57,6 +57,9 @@ function writesRows(entry: {
   );
 }
 
+/** Names a coined word may never take: they would reach the prototype chain. */
+const UNSAFE_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype']);
+
 export function publishSchema(
   registry: Registry,
   coined?: Record<string, Record<string, ActionDecl>>
@@ -86,11 +89,12 @@ export function publishSchema(
 
   // Merged before hashing, so a changed published set moves schemaVersion.
   for (const [typeName, words] of Object.entries(coined ?? {})) {
+    if (!Object.hasOwn(types, typeName)) continue;
     const type = types[typeName];
     if (type === undefined) continue;
     const actions = { ...type.actions };
     for (const [name, decl] of Object.entries(words)) {
-      if (name in actions) continue;
+      if (UNSAFE_KEYS.has(name) || Object.hasOwn(actions, name)) continue;
       actions[name] = { ...toActionSchema(decl), coined: true };
     }
     if (Object.keys(actions).length > 0) type.actions = actions;
