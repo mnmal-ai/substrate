@@ -2,6 +2,29 @@
 
 Releases before 1.0.0-alpha.21 are recorded only in their GitHub release notes.
 
+## 1.0.0-beta.11 (2026-11-22)
+
+Changes since 1.0.0-beta.10. Existing sketches, frames and replies keep their meaning; `act` replies only gain fields. A server running substrate-proposals publishes a new schema version for each namespace it owns, because `TypeProposal` gains an `actionsJson` field, and for `_system_proposals`, which gains the `ActionProposal` type. On Postgres there is no numbered migration. The new field starts in `extra` and gets its column from the promotion sweep, as any new field does, and the new type's table is created at boot. The `lean` MCP preset's fixed cost is 2,016 bytes, up from 1,848.
+
+### Added
+
+- **Agents coin `act` words (#296).** `define Todo.start status=in_progress owner=$` proposes a new update action on a stored type. [`docs/act.md`](docs/act.md#coining-actions) is the guide.
+  - **Grammar.** `field=value` fixes a value. `field=$`, or `$name`, makes a param typed by the field, and a trailing `?` makes it optional. `field=now` stamps a date. An optional bare word after the name is the past tense used in acks. One `define` per call. Version 1 covers update shortcuts only.
+  - **Pending, then public.** A word is usable only by its proposer at first. `?`, `? Type` and the proposer's lean index show it marked `start*`. Five committed uses, each at least an hour after the last, publish it to every caller and move `schemaVersion`.
+  - **Caps.** At most 10 published coined words per type, and 20 pending per proposer per namespace. A pending word lapses after 30 days without use.
+  - **Names.** Proposals only add, so a declared, published or pending name is refused with `action_taken`. Vetoed and retired names stay closed, and a lapsed name stays reserved to its proposer. Code that declares the same name wins at boot.
+  - **Opt-in.** `define` compiles to the control-plane mutation `_system_proposals/propose_action`, which needs `mutate` on `_system_proposals` and on the target namespace. A `'*'` grant includes the control plane. A word grants no new power: it runs as `update<Type>` under the caller's grants and type policies.
+  - **Veto and retire.** An operator archives the word's `ActionProposal` record, which needs `admin` in the word's target namespace. Every other client write to those records is refused. A namespace drop retires its words.
+  - **Coherence.** Words survive restarts and reach peer instances. Uses are counted under a row lock, and a promotion under a per-type lock.
+- **Proposed types are born with actions (#296).** `propose_type` takes `actions` beside `fields`. They are published with the type at once and follow the same rules as declared actions, including create actions, `then` chains and defaults. A `then` may target only an action that is declared in code or born with a type. Removing or rewriting a type that another live action chains into is refused with `action_chained`.
+- **`act` replies say more (#294).** `find` rows come back in `found` (up to 100 rows), holding `id`, `shortId` and the fields named by `fields=`. A dry run's reply carries `plan`, one line per compiled step with its values. Lists may be written `[a,b]`. `find Todo #12` filters by shortId. Up to 10 `?` steps can share one call.
+
+### Changed
+
+- `?` and the lean MCP index leave out `_system*` namespaces (#296).
+- A step error from `act` no longer carries the resolver's shortId hint, which named a `where` shape no sketch writes (#294).
+- `act` result records hold `find` rows projected to `fields=` (#294).
+
 ## 1.0.0-beta.10 (2026-11-21)
 
 Changes since 1.0.0-beta.9. Nothing existing changes meaning. A server whose types declare no actions publishes the same schema hash and the same `core` MCP instructions as before. On Postgres, boot runs one new migration, `0009t_act_results`, which adds the `act_results` table. `SUBSTRATE_MCP_TOOLS=all` now registers 13 tools, because it includes `act`.
