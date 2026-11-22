@@ -683,7 +683,14 @@ describe('Engine.act define', () => {
   it('refuses define for a caller with no grant on the control namespace', async () => {
     const { engine, recorded } = bootDefine();
     const r = await engine.act({ sketch: 'define Todo.reopen status=open', ctx: as(dan) });
-    expect(r).toMatchObject({ ok: false });
+    expect(r).toMatchObject({
+      ok: false,
+      error: {
+        code: 'unauthorized_namespace',
+        message: "namespace '_test_ctl' not in identity's allowed namespaces",
+        step: 1
+      }
+    });
     expect(recorded).toEqual([]);
   });
 
