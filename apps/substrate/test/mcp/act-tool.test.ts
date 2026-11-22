@@ -143,6 +143,11 @@ describe('action names in the overview', () => {
     expect(buildLeanInstructions(overview, {})).not.toContain('* yours, pending');
   });
 
+  it('prints no legend when the only pending marks are in a hidden namespace', () => {
+    const overview = { ...schemaOverview(federated), _system_x: { types: { T: 'a: string' } } };
+    expect(buildLeanInstructions(overview, { _system_x: { T: ['w'] } })).not.toContain('yours');
+  });
+
   it('marks pending words in the core instructions too', () => {
     const overview = schemaOverview(federated);
     const text = buildInstructions(overview, {

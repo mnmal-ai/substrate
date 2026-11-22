@@ -140,7 +140,7 @@ The caller must be signed and hold `mutate` on the control-plane namespace `_sys
 
 A use is a committed write-mode run whose plan expanded the word. Dry runs, failed runs and replays do not count, and a run counts once per word however many records it touched. A use counts only if it comes at least an hour after the previous counted use, so a burst in one session counts once. At 5 counted uses the word is promoted: every caller sees it, and the schema version moves. The earliest promotion is about four hours after the first use.
 
-- At most 10 coined words are published per type. A word that earns promotion while the type is full stays pending, marked ready, and publishes on its next committed use after a slot frees.
+- At most 10 coined words are published per type. A word that earns promotion while the type is full stays pending, still usable by its proposer and keeping its count, and publishes on its next committed use after a slot frees.
 - At most 20 pending words per proposer per namespace.
 
 The proposer sees its pending words in `?`, `? Type` and, at the start of each MCP session, in the action index, marked with `*` (`Todo{close, start*}`). The server's published schema is the same for every caller.

@@ -295,10 +295,10 @@ export function buildLeanInstructions(
   if (source === null) {
     return `${LEAN_CONVENTIONS}\n\nThe type list was unavailable at session start; send \`?\` for it.`;
   }
-  const { overview: marked, any } = markPending(source, pending);
-  const overview = Object.fromEntries(
-    Object.entries(marked).filter(([ns]) => !ns.startsWith('_system'))
+  const visible = Object.fromEntries(
+    Object.entries(source).filter(([ns]) => !ns.startsWith('_system'))
   );
+  const { overview, any } = markPending(visible, pending);
   const line = (ns: string, o: NamespaceOverview, withActions: boolean) =>
     `${ns}: ${Object.keys(o.types)
       .map((t) => (withActions && o.actions?.[t] !== undefined ? `${t}{${o.actions[t]}}` : t))
