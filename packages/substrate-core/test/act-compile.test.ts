@@ -4,7 +4,7 @@
  * its `FieldDef`s and autoCRUD mutation entries by hand.
  */
 
-import type { ActionDecl, ActStep, FieldDef, Schema } from '@mnmal-ai/substrate-types';
+import type { ActHelp, ActionDecl, ActStep, FieldDef, Schema } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
 import { type CompileOptions, compileSketch, publishSchema, Registry } from '../src/index.js';
 import { withInboundRefs } from '../src/schema-publisher.js';
@@ -692,14 +692,20 @@ describe('compileSketch help', () => {
     expect(compile('close Todo #1; ? Todo')).toEqual(refusal(2, '?', 'help stands alone'));
   });
 
+  it('refuses more than 10 help steps', () => {
+    expect(compile(Array(11).fill('?').join('; '))).toEqual(
+      refusal(11, '?', 'at most 10 help steps')
+    );
+  });
+
   it('spells references and list params', () => {
     const help = compile('? journal/SessionLog');
-    expect('help' in help && help.help.actions?.log?.params.closes).toEqual({
+    expect('help' in help && (help.help as ActHelp).actions?.log?.params.closes).toEqual({
       type: '→work/Todo[]',
       required: false
     });
     const note = compile('? Note');
-    expect('help' in note && note.help.fields?.todo).toEqual({
+    expect('help' in note && (note.help as ActHelp).fields?.todo).toEqual({
       type: '→work/Todo',
       required: false
     });

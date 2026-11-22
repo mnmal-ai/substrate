@@ -38,6 +38,8 @@ export type CompileResult =
   | { help: ActHelp | ActHelp[] };
 
 const DEFAULT_MAX_WRITE_STEPS = 50;
+/** Each help step can answer the whole schema overview, so a reply's size is bounded by this. */
+const MAX_HELP_STEPS = 10;
 const FIND_LIMIT = 1000;
 const BUILT_IN: Record<'create' | 'update', ActionSchema> = {
   create: toActionSchema({ kind: 'create' }),
@@ -143,6 +145,9 @@ class Compiler {
     if (helpAt !== -1) {
       if (steps.some((s) => s.action !== '?')) {
         this.#at(helpAt + 1).#refuse('?', 'help stands alone');
+      }
+      if (steps.length > MAX_HELP_STEPS) {
+        this.#at(MAX_HELP_STEPS + 1).#refuse('?', `at most ${MAX_HELP_STEPS} help steps`);
       }
       const help = steps.map((step, i) => {
         this.#at(i + 1);
