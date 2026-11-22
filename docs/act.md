@@ -28,13 +28,13 @@ One housekeeping task, given to a headless Claude Code session on Opus 5.5 with 
 | | `core` | `lean` (`act`) | change |
 |---|---|---|---|
 | Context before the task | 8.2k tokens | 4.7k | −43% |
-| Context at the end | 29.5k | 12.3k | −58% |
-| Context the task added | 21.2k | 7.6k | −64% |
-| Tool calls | 13 | 7 | −46% |
-| Cost per run | $0.30 | $0.10 | −68% |
+| Context at the end | 29.5k | 11.8k | −60% |
+| Context the task added | 21.2k | 7.1k | −67% |
+| Tool calls | 13 | 6 | −54% |
+| Cost per run | $0.30 | $0.085 | −72% |
 | Store correct afterwards | 3 of 3 | 3 of 3 | |
 
-`core` spends its growth on `schema` lookups for each type's write contract, `query` replies and hand-built `mutate` frames. `lean` spends it on help for three types in one call, the `find` rows it asks for, and fetching a dry run's result record to check the plan before writing it. This is one task on a small store with one model, so the size of the gap will vary. A read-heavy task gains less, because rows cost the same either way.
+`core` spends its growth on `schema` lookups for each type's write contract, `query` replies and hand-built `mutate` frames. `lean` spends it on help for three types in one call, a dry run whose reply shows every value it would write, and the `find` rows it asks for. This is one task on a small store with one model, so the size of the gap will vary. A read-heavy task gains less, because rows cost the same either way.
 
 ## Declaring actions
 
