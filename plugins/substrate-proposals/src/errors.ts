@@ -37,7 +37,8 @@ export type ProposalErrorCode =
   | 'proposal_changed'
   // propose_action error codes
   | 'action_taken'
-  | 'pending_cap';
+  | 'pending_cap'
+  | 'propose_action_not_alone';
 
 /**
  * Structured error for proposal operations with stable error codes.

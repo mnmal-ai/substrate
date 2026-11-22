@@ -31,6 +31,7 @@ import {
 import {
   ACTIONS_CHANNEL,
   isLapsed,
+  LAPSE_MS,
   MAX_PENDING_PER_PROPOSER,
   type ProposalActionLayer
 } from './action-layer.js';
@@ -97,7 +98,9 @@ function coinableType(
   let schema: Schema;
   try {
     schema = engine.schemaFor(namespace);
-  } catch {
+  } catch (err) {
+    // `schemaFor` refuses an unknown or tombstoned namespace with this message.
+    if (!(err instanceof Error) || !err.message.startsWith('unknown namespace')) throw err;
     throw new ProposalError('unknown_type', `namespace '${namespace}' is not on this server`, {
       namespace
     });
@@ -198,6 +201,15 @@ export function makeProposeActionResolver(
   deps: ProposeActionResolverDeps
 ): (ctx: RequestContext, args: ResolverArgs) => Promise<Row> {
   return async (ctx, args) => {
+    // Alone, the store read below sees only committed rows, and the cap sees every
+    // earlier write: entries sharing a transaction would see neither.
+    if ((args.txEntries ?? 1) > 1) {
+      throw new ProposalError(
+        'propose_action_not_alone',
+        'propose_action must be the only entry in its mutate request; send it on its own',
+        { entries: args.txEntries }
+      );
+    }
     const input = parseInput(args.params ?? {});
     const { namespace, type, name } = input;
     const gate = checkIdentityGrant(ctx.identity, namespace, 'mutate');
@@ -249,7 +261,9 @@ export function makeProposeActionResolver(
         for (const row of rows) layer.apply(row);
         const state = layer.nameState(qualified, name, proposer);
         if (state === 'taken') throw taken('is taken by another pending or published word');
-        if (state === 'closed') throw taken('was vetoed or retired, and stays closed');
+        if (state === 'closed') {
+          throw taken('was vetoed, retired or superseded by code, and stays closed');
+        }
 
         const now = deps.now();
         const own = rows.find(
@@ -266,7 +280,7 @@ export function makeProposeActionResolver(
         ) {
           throw new ProposalError(
             'pending_cap',
-            `you hold ${MAX_PENDING_PER_PROPOSER} live pending words in '${namespace}'; one frees when it lapses after 30 days unused`,
+            `you hold ${MAX_PENDING_PER_PROPOSER} live pending words in '${namespace}'; one frees when it lapses after ${LAPSE_MS / 86_400_000} days unused`,
             { namespace, cap: MAX_PENDING_PER_PROPOSER }
           );
         }

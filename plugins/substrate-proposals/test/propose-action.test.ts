@@ -147,6 +147,20 @@ async function propose(
   return env.errors?.[0]?.code ?? 'ok';
 }
 
+/** A raw propose_action mutate array, one transaction; resolves to its error codes. */
+async function proposeArray(
+  engine: Engine,
+  w: World,
+  agent: string,
+  list: Array<Record<string, unknown>>
+): Promise<string[]> {
+  const env = await engine.mutate({
+    frame: { [PROPOSE]: list.map((params) => ({ params, fields: { id: true } })) },
+    ctx: ctxOf(w, agent)
+  });
+  return (env.errors ?? []).map((e) => String(e.code));
+}
+
 /** The first error a raw propose_action mutate answers. */
 async function proposeError(
   engine: Engine,
@@ -300,6 +314,30 @@ describe('propose_action (memory)', () => {
     // A redefinition takes no new slot, and the cap is the proposer's own.
     expect(await as('agent-a', 'define Ticket.word1 status=closed')).toMatchObject({ ok: true });
     expect(await as('agent-c', 'define Ticket.wordx status=open')).toMatchObject({ ok: true });
+  });
+
+  it('refuses propose_action that shares its transaction, leaving no word behind', async () => {
+    const reopen = reopenParams(w);
+    expect(await proposeArray(engine, w, 'agent-a', [reopen, reopen])).toContain(
+      'propose_action_not_alone'
+    );
+    expect(await records(w)).toEqual([]);
+    expect(await as('agent-a', 'reopen Ticket #1')).toMatchObject({
+      ok: false,
+      refusal: { token: 'reopen' }
+    });
+    expect(await as('agent-c', 'define Ticket.reopen reopened status=open')).toMatchObject({
+      ok: true
+    });
+  });
+
+  it('refuses an array that would take more than the cap in one request', async () => {
+    const words = Array.from({ length: MAX_PENDING_PER_PROPOSER + 5 }, (_, i) => ({
+      ...reopenParams(w),
+      name: `word${i}`
+    }));
+    expect(await proposeArray(engine, w, 'agent-a', words)).toContain('propose_action_not_alone');
+    expect(await records(w)).toEqual([]);
   });
 
   it('lets a lapsed word free its slot but keeps its name reserved', async () => {
