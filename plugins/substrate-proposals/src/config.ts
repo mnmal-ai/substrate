@@ -69,6 +69,9 @@ export interface ProposalsPluginConfig {
    * `propose_namespace`.
    */
   datasetFor?: (ns: string) => Dataset | undefined;
+
+  /** The clock coined action words are stamped and lapsed by. Defaults to `() => new Date()`. */
+  now?: () => Date;
 }
 
 /**

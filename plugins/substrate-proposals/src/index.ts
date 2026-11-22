@@ -12,10 +12,13 @@
  *   - a policy gate derived from config.proposeCapability (defaults to 'substrate.propose')
  *   - `propose_index` on the control plane, for indexes of any namespace, gated
  *     by config.indexCapability (defaults to 'substrate.index')
+ *   - `propose_action` on the control plane, which coins an action word on a
+ *     stored type of any namespace, gated by the namespace grants alone
  *
  * onStart wires the engine handle into each binding, replays applied proposals
- * via reconcileNamespace, and subscribes to per-ns + cluster-wide LISTEN/NOTIFY
- * channels for multi-instance coherence.
+ * via reconcileNamespace, builds the action layer from the ActionProposal
+ * records, and subscribes to per-ns + cluster-wide LISTEN/NOTIFY channels for
+ * multi-instance coherence.
  */
 
 import type {
@@ -28,6 +31,7 @@ import type {
   Registry,
   Row
 } from '@mnmal-ai/substrate-types';
+import { ProposalActionLayer } from './action-layer.js';
 import {
   DEFAULT_INDEX_CAPABILITY,
   DEFAULT_PROPOSE_CAPABILITY,
@@ -48,6 +52,7 @@ import {
 } from './multi-instance.js';
 import { defineProposalTypes } from './namespace.js';
 import { buildOnboardBody, registerOnboardRoute } from './onboard.js';
+import { makeProposeActionResolver } from './propose-action-resolver.js';
 import { makeProposeFieldResolver } from './propose-field-resolver.js';
 import { makeProposeIndexResolver } from './propose-index-resolver.js';
 import { makeProposeNamespaceResolver } from './propose-namespace-resolver.js';
@@ -79,6 +84,9 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
   const capability = config.proposeCapability ?? DEFAULT_PROPOSE_CAPABILITY;
   const policy = makeProposePolicy(capability);
   const indexCapability = config.indexCapability ?? DEFAULT_INDEX_CAPABILITY;
+  const now = config.now ?? ((): Date => new Date());
+  // Built from the ActionProposal records in onStart.
+  let actionLayer: ProposalActionLayer | undefined;
 
   // Late-bound dataset lookup for hot-added namespaces. An explicit
   // `config.datasetFor` wins; otherwise onStart swaps in the engine handle's
@@ -165,6 +173,18 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
           channelFor: (n: string): string => `_substrate_proposals_${n}`
         }),
         policy: makeIndexPolicy(indexCapability)
+      });
+
+      // propose_action — a coined action word on a type of any namespace. No
+      // policy: `mutate` on this namespace and on the target is the whole gate.
+      ctx.registry.register('propose_action', {
+        kind: 'mutation',
+        resolver: makeProposeActionResolver({
+          registryStore,
+          pubsub: config.pubsub,
+          now,
+          layer: () => actionLayer
+        })
       });
     }
   };
@@ -283,6 +303,21 @@ export function createProposalsPlugin(config: ProposalsPluginConfig): Coordinato
         });
         ctx.metric('_system_proposals.namespace_ready', { namespace: ns });
       }
+
+      // The action layer, from the records still live (not archived).
+      actionLayer = new ProposalActionLayer({
+        proposeKey: `${CONTROL_NAMESPACE}/propose_action`,
+        now,
+        invalidateSchemaCaches: (ns) => ctx.engine.invalidateSchemaCaches(ns),
+        onSkip: (row, err) => skipped(CONTROL_NAMESPACE, row, err)
+      });
+      const actionRows = await controlBinding.dataset.read('ActionProposal', {
+        where: { archived: { eq: false } },
+        orderBy: [{ createdAt: 'asc' }],
+        limit: 10000
+      });
+      actionLayer.load(actionRows.rows);
+      ctx.engine.setActionLayer(actionLayer);
 
       // Cluster-wide listener: when a peer instance applies propose_namespace,
       // install the new ns into THIS engine too. Edges store comes from the
