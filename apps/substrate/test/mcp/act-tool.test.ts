@@ -2,9 +2,13 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { afterEach, describe, expect, it } from 'vitest';
-import { buildLeanInstructions, schemaOverview } from '../../src/mcp/schema-overview.js';
-import { createActHandler, createMcpServer } from '../../src/mcp/server.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  buildInstructions,
+  buildLeanInstructions,
+  schemaOverview
+} from '../../src/mcp/schema-overview.js';
+import { createActHandler, createMcpServer, fetchPending } from '../../src/mcp/server.js';
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -106,6 +110,50 @@ describe('action names in the overview', () => {
     expect(text).toContain('Use `act` for every operation');
   });
 
+  it('leaves _system namespaces out of the lean index', () => {
+    const text = buildLeanInstructions({
+      ...schemaOverview(federated),
+      _system_proposals: { types: { ActionProposal: 'sketch: string' } }
+    });
+    expect(text).toContain('work: Todo');
+    expect(text).not.toContain('_system_proposals');
+    expect(text).not.toContain('ActionProposal');
+  });
+
+  it('marks the caller’s pending words and adds the legend', () => {
+    const overview = schemaOverview({
+      shop: {
+        types: {
+          Ticket: {
+            fields: {},
+            actions: { close: { kind: 'update', params: {} } }
+          },
+          Order: { fields: {} }
+        }
+      }
+    });
+    const text = buildLeanInstructions(overview, {
+      shop: { Ticket: ['reopen'], Order: ['ship'] }
+    });
+    expect(text).toContain('Ticket{close, reopen*}');
+    expect(text).toContain('Order{ship*}');
+    expect(text).toContain('* yours, pending');
+    expect(text).toContain('`define Type.name field=value field=$ …` coins an update action');
+    expect(buildLeanInstructions(overview)).not.toContain('* yours, pending');
+    expect(buildLeanInstructions(overview, {})).not.toContain('* yours, pending');
+  });
+
+  it('marks pending words in the core instructions too', () => {
+    const overview = schemaOverview(federated);
+    const text = buildInstructions(overview, {
+      work: { Todo: ['reopen'], Note: ['pin'] }
+    });
+    expect(text).toContain('actions: close, defer, reopen*');
+    expect(text).toContain('actions: pin*');
+    expect(text).toContain('* yours, pending');
+    expect(buildInstructions(overview)).not.toContain('* yours, pending');
+  });
+
   it('says the list is unavailable with no overview', () => {
     expect(buildLeanInstructions(null)).toContain('send `?`');
   });
@@ -131,5 +179,41 @@ describe('lean preset', () => {
     expect(() => createMcpServer('http://127.0.0.1:1', { tools: 'bogus' })).toThrow(
       /core, lean, all/
     );
+  });
+});
+
+describe('fetchPending', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('sends a signed act ? and keeps only the starred names, unstarred', async () => {
+    const seen = stubFetch({
+      ok: true,
+      help: {
+        types: { shop: { Ticket: ['close', 'reopen*'], Order: ['ship'] } }
+      }
+    });
+    expect(await fetchPending('http://127.0.0.1:1')).toEqual({
+      shop: { Ticket: ['reopen'] }
+    });
+    expect(seen[0]?.method).toBe('POST');
+    expect(seen[0]?.url).toBe('http://127.0.0.1:1/substrate/v1/act');
+    expect(seen[0]?.body).toEqual({ sketch: '?' });
+  });
+
+  it('starts without pending marks when the act ? call fails', async () => {
+    stubFetch({ error: 'boom' }, 500);
+    expect(await fetchPending('http://127.0.0.1:1')).toBeNull();
+    stubFetch({ ok: false, refusal: { code: 'x' } });
+    expect(await fetchPending('http://127.0.0.1:1')).toBeNull();
+  });
+
+  it('starts without pending marks when the act ? call is slow', async () => {
+    vi.useFakeTimers();
+    globalThis.fetch = (() => new Promise<Response>(() => {})) as typeof fetch;
+    const pending = fetchPending('http://127.0.0.1:1');
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(await pending).toBeNull();
   });
 });

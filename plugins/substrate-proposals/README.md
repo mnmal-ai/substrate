@@ -6,7 +6,8 @@ An authorised agent extends the live schema without a code deploy:
 
 - `_system_proposals/propose_namespace` creates a namespace, immediately queryable and mutatable through autoCRUD;
 - `<ns>/propose_type` adds a type, with the standard create/update/delete/list surface, to an owned namespace;
-- `<ns>/propose_field` adds a field to an existing type.
+- `<ns>/propose_field` adds a field to an existing type;
+- `_system_proposals/propose_action` coins an `act` word for an existing type, usually through `define` in a sketch.
 
 Each proposal is stored as a record (`NamespaceProposal`, `TypeProposal`, `FieldProposal`), so the change history is auditable and proposals are replayed on boot. The proposer is recorded from the caller's signed identity, never from a param.
 
@@ -17,6 +18,16 @@ A proposed `crossRef` may target a type in the namespace it is proposed into, or
 On Postgres a proposed field gets no column on the request path. It is `pending`: its values live in the row's jsonb, reads, filters and sorts answer as they will once it has a column, and an index over it serves no read until the promotion sweep gives it one (every `SUBSTRATE_PROMOTE_INTERVAL_MS`, default 6 hours, or now with `substrate-admin promote-fields`). See [Operator decisions](../../docs/operator-decisions.md#fields).
 
 Changes are additive, with one exception: `propose_field` with a `valueMap` narrows an existing enum and first rewrites every stored value the map names. That path changes data as well as schema and cannot be undone by the plugin, so grant `substrate.propose` only to callers you would trust with a bulk update of the owned namespaces.
+
+## Actions
+
+`propose_type` takes an optional `actions` map beside `fields`, declared as code declares actions (`past`, `params`, `set`, `kind: 'create'`, `then`). They are published for every caller with the type, with no evidence period. A `then` target must be declared in code or born with a type, never a coined word. Archiving or rewriting a type that another type chains into is refused with `action_chained`.
+
+Words for an existing type are coined with `define Type.name field=value …` in an `act` sketch (see [`docs/act.md`](../../docs/act.md#coining-actions)). A coined word is usable only by its proposer until 5 committed uses, at least an hour apart, promote it. Each is stored as an `ActionProposal` record in `_system_proposals`.
+
+- **Opting an agent in.** Add `_system_proposals` with `mutate` to the agent's key, by invite or key patch. It also needs `mutate` on the namespace of the target type. Grant `read` on `_system_proposals` to operators only, because it shows every `ActionProposal` (target type, sketch and proposer) across namespaces.
+- **Veto and retire.** Archive the `ActionProposal` record. This needs `admin` in the word's target namespace. Archiving a pending word vetoes it, and archiving a published one retires it. The name stays closed on that type. Other client writes to the record are refused.
+- **Caps.** 10 published coined words per type, 20 pending per proposer per namespace, and a pending word lapses after 30 days unused.
 
 ## Where it fits
 

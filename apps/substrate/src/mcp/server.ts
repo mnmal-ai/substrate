@@ -34,6 +34,7 @@ import {
   LOCAL_EXPRESSIONS_NOTE,
   localExpressions,
   overviewLegend,
+  type PendingWords,
   schemaOverview,
   serverExpressions
 } from './schema-overview.js';
@@ -758,7 +759,7 @@ export function createMcpServer(endpoint: string, options: McpServerOptions = {}
       name: 'act',
       config: {
         description:
-          'Run operations as one transaction. Steps split by `;`: `<action> <Type> [#id …] [field=value …] [as $t]`. Built-ins: create, update, find, count. `?` or `? Type` for help. Reply { ok, ack, result, found? }: `found` holds find rows (up to 100); pass `result` to fetch the full record. A refusal names the problem, the choices and the nearest valid sketch; nothing ran.',
+          'Run operations as one transaction. Steps split by `;`: `<action> <Type> [#id …] [field=value …] [as $t]`. Built-ins: create, update, find, count. `?` or `? Type` for help. `define Type.name …` proposes a new action. Reply { ok, ack, result, found? }: `found` holds find rows (up to 100); pass `result` to fetch the full record. A refusal names the problem, the choices and the nearest valid sketch; nothing ran.',
         inputSchema: {
           sketch: z.string().min(1).optional().describe('e.g. close Todo #12'),
           mode: z.enum(['write', 'dry-run']).optional(),
@@ -1116,6 +1117,32 @@ async function fetchOverview(endpoint: string): Promise<ReturnType<typeof schema
   return Promise.race([fetched, timeout]);
 }
 
+/**
+ * The caller's pending action words from a signed `act ?`, by namespace and type, without the `*`;
+ * null when the call fails, is refused or takes over 5 s.
+ */
+export async function fetchPending(endpoint: string): Promise<PendingWords | null> {
+  const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000).unref());
+  const fetched = postSubstrate<{
+    help?: { types?: Record<string, Record<string, string[]>> };
+  }>(endpoint, '/substrate/v1/act', { sketch: '?' }).then(
+    (r) => {
+      const types = r.help?.types;
+      if (types === undefined) return null;
+      const pending: PendingWords = {};
+      for (const [ns, byType] of Object.entries(types))
+        for (const [type, names] of Object.entries(byType)) {
+          const starred = names.filter((n) => n.endsWith('*')).map((n) => n.slice(0, -1));
+          if (starred.length === 0) continue;
+          pending[ns] = { ...pending[ns], [type]: starred };
+        }
+      return pending;
+    },
+    () => null
+  );
+  return Promise.race([fetched, timeout]);
+}
+
 /** Whether the server runs substrate-nl, so a lean session can offer `ask`; false on any failure or after 5 s. */
 async function probeNl(endpoint: string): Promise<boolean> {
   const timeout = new Promise<false>((resolve) => setTimeout(() => resolve(false), 5000).unref());
@@ -1137,12 +1164,14 @@ export async function runMcp(): Promise<void> {
   const endpoint = process.env.SUBSTRATE_URL ?? 'http://localhost:3100';
   configureAgentAuth(process.env, endpoint);
   const lean = (process.env.SUBSTRATE_MCP_TOOLS ?? '').split(',').some((t) => t.trim() === 'lean');
-  const overview = await fetchOverview(endpoint);
+  const [overview, pending] = await Promise.all([fetchOverview(endpoint), fetchPending(endpoint)]);
   const server = createMcpServer(endpoint, {
     ...(process.env.SUBSTRATE_MCP_TOOLS === undefined
       ? {}
       : { tools: process.env.SUBSTRATE_MCP_TOOLS }),
-    instructions: lean ? buildLeanInstructions(overview) : buildInstructions(overview),
+    instructions: lean
+      ? buildLeanInstructions(overview, pending)
+      : buildInstructions(overview, pending),
     nlAvailable: lean && (await probeNl(endpoint))
   });
   const transport = new StdioServerTransport();
