@@ -1,7 +1,7 @@
 import { MemoryEdgesStore, Registry } from '@mnmal-ai/substrate-core';
 import { MemoryDataset } from '@mnmal-ai/substrate-dataset-memory';
 import { installAutoCrud, RESERVED_AUTOCRUD_FIELDS } from '@mnmal-ai/substrate-sdk';
-import type { Policy, RequestContext } from '@mnmal-ai/substrate-types';
+import type { ActionDecl, Policy, RequestContext } from '@mnmal-ai/substrate-types';
 import { describe, expect, it, vi } from 'vitest';
 import { applyFieldProposal, applyTypeProposal } from '../src/apply.js';
 import type { FieldSpecJson } from '../src/field-spec-json.js';
@@ -75,6 +75,33 @@ describe('applyFieldProposal', () => {
       .get('updateManyDress')
       ?.resolver(ctx, { dataset, edges, params: { where: {}, set: { color: 'red' } } });
     expect(result).toMatchObject({ count: 1, ids: ['d1'] });
+  });
+
+  it("keeps a type's declared actions when a field is added", () => {
+    const { registry, dataset, edges, registryStore } = makeTestDeps();
+    const actions: Record<string, ActionDecl> = {
+      close: { past: 'closed', set: { status: 'closed' } }
+    };
+    installAutoCrud(registry, 'Ticket', dataset, edges, {
+      fields: {
+        title: { kind: 'scalar', type: 'string' },
+        status: { kind: 'scalar', type: 'string', enum: ['open', 'closed'] },
+        ...RESERVED_AUTOCRUD_FIELDS
+      },
+      actions
+    });
+    applyFieldProposal({
+      namespace: NS,
+      targetType: 'Ticket',
+      fieldName: 'color',
+      fieldSpec: { kind: 'scalar', type: 'string', nullable: true },
+      registryStore,
+      dataset,
+      edges
+    });
+    const entry = registry.get('Ticket');
+    expect(Object.keys(entry?.fields ?? {})).toContain('color');
+    expect(entry?.actions).toEqual(actions);
   });
 
   it('refuses a proposal type as the target', () => {
