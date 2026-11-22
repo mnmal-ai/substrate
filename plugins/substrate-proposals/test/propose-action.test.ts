@@ -25,9 +25,14 @@ import type {
 } from '@mnmal-ai/substrate-types';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { LAPSE_MS, MAX_PENDING_PER_PROPOSER } from '../src/action-layer.js';
+import { ACTIONS_CHANNEL, LAPSE_MS, MAX_PENDING_PER_PROPOSER } from '../src/action-layer.js';
 import { CONTROL_NAMESPACE } from '../src/control-plane.js';
-import { createNoopPubSub, createProposalsPlugin, storageSettled } from '../src/index.js';
+import {
+  createNoopPubSub,
+  createProposalsPlugin,
+  type PubSub,
+  storageSettled
+} from '../src/index.js';
 import { deleteNamespaces, relationOf } from './_layout.js';
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
@@ -71,7 +76,8 @@ function ticketPlugin(ns: string): CoordinatorPlugin {
         Ticket: {
           fields: {
             title: field.string(),
-            status: field.enum(['open', 'closed'], { default: 'open' })
+            status: field.enum(['open', 'closed'], { default: 'open' }),
+            openedAt: field.date({ serverSet: 'create', nullable: true })
           },
           actions: { close: { past: 'closed', set: { status: 'closed' } } }
         }
@@ -80,13 +86,13 @@ function ticketPlugin(ns: string): CoordinatorPlugin {
   };
 }
 
-async function boot(w: World): Promise<Engine> {
+async function boot(w: World, pubsub: PubSub = createNoopPubSub()): Promise<Engine> {
   const datasetFor = (n: string): Dataset | undefined => w.datasets.get(n);
   const loaded = await loadPlugins({
     plugins: [
       createProposalsPlugin({
         ownedNamespaces: [w.own],
-        pubsub: createNoopPubSub(),
+        pubsub,
         datasetFor,
         now: () => new Date(w.clock.ms)
       }),
@@ -139,6 +145,20 @@ async function propose(
     ctx: ctxOf(w, agent)
   });
   return env.errors?.[0]?.code ?? 'ok';
+}
+
+/** The first error a raw propose_action mutate answers. */
+async function proposeError(
+  engine: Engine,
+  w: World,
+  agent: string,
+  params: Record<string, unknown>
+): Promise<unknown> {
+  const env = await engine.mutate({
+    frame: { [PROPOSE]: { params, fields: { id: true } } },
+    ctx: ctxOf(w, agent)
+  });
+  return env.errors?.[0];
 }
 
 function control(w: World): Dataset {
@@ -367,6 +387,27 @@ describe('propose_action (memory)', () => {
     expect(await records(w)).toEqual([]);
   });
 
+  it('refuses a word that sets a readonly or server-set field', async () => {
+    const base = reopenParams(w);
+    // Param types match the fields exactly, so only the server-set rule can refuse them.
+    const shortIdType = { kind: 'scalar', type: 'number', indexed: true };
+    const openedType = { kind: 'scalar', type: 'date', nullable: true };
+    const decls = [
+      { set: { shortId: 7 } },
+      { params: { n: { type: shortIdType } }, set: { shortId: { param: 'n' } } },
+      { set: { openedAt: { now: true } } },
+      { set: { openedAt: '2026-01-01T00:00:00.000Z' } },
+      { params: { at: { type: openedType } }, set: { openedAt: { param: 'at' } } }
+    ];
+    for (const decl of decls) {
+      expect([decl, await proposeError(engine, w, 'agent-r', { ...base, decl })]).toMatchObject([
+        decl,
+        { code: 'invalid_params', message: expect.stringMatching(/is server-set/) }
+      ]);
+    }
+    expect(await records(w)).toEqual([]);
+  });
+
   it('refuses every client write to an ActionProposal record', async () => {
     expect(await as('agent-a', 'define Ticket.reopen reopened status=open')).toMatchObject({
       ok: true
@@ -404,6 +445,23 @@ describe('propose_action (memory)', () => {
       })
     ).toBe('policy_denied');
     expect(await records(w)).toMatchObject([{ id: row.id, uses: 0, archived: false }]);
+  });
+
+  it('tells peers on a channel no namespace channel can match', async () => {
+    const sent: Array<[string, string]> = [];
+    engine = await boot(w, {
+      listen: async () => {},
+      notify: async (channel, payload) => {
+        sent.push([channel, payload]);
+      }
+    });
+    expect(await as('agent-a', 'define Ticket.reopen reopened status=open')).toMatchObject({
+      ok: true
+    });
+    const [row] = await records(w);
+    expect(sent).toEqual([[ACTIONS_CHANNEL, String(row?.id)]]);
+    // Per-namespace channels are `_substrate_proposals_<ns>`.
+    expect(ACTIONS_CHANNEL.startsWith('_substrate_proposals_')).toBe(false);
   });
 
   it('brings pending words back after a restart', async () => {

@@ -17,7 +17,7 @@ export const MAX_PENDING_PER_PROPOSER = 20;
 export const LAPSE_MS = 30 * 86_400_000;
 
 /** Where an instance tells its peers an ActionProposal record changed; the payload is its id. */
-export const ACTIONS_CHANNEL = '_substrate_proposals_actions';
+export const ACTIONS_CHANNEL = '_substrate_action_proposals';
 
 export type NameState = 'free' | 'own' | 'taken' | 'closed';
 
