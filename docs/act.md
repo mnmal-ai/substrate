@@ -16,8 +16,8 @@ An agent in a harness carries every tool's definition and instructions in its co
 
 - **Conventions live in the namespace.** An action declares what it means once, so every agent applies it the same way and none has to remember it.
 - **The compiler is deterministic.** The same sketch against the same schema always compiles to the same plan. What doesn't resolve is refused, with the choices and the nearest valid sketch.
-- **Replies are one line.** The full outcome waits in a result record the agent fetches only if it needs it.
-- **The fixed cost is small.** The MCP `lean` preset carries `act` and `whoami`: 1,703 bytes of tools and instructions before any types are listed, against about 8.5 KB for `core`.
+- **Replies are short.** The ack is one line, and a `find` answers with its rows cut to the fields it names. The full outcome waits in a result record the agent fetches only if it needs it.
+- **The fixed cost is small.** The MCP `lean` preset carries `act` and `whoami`: 1,848 bytes of tools and instructions before any types are listed, against about 8.5 KB for `core`.
 
 The model spends its turns on the problem, not on the tool. The [act worked example](https://mnmal-ai.github.io/substrate/examples/act/) shows one run, recorded by CI.
 
@@ -98,12 +98,12 @@ A sketch is text, or the same thing as JSON (`ActStep[]`). Steps are separated b
 
 - **Actions.** A declared action, or a built-in on every stored type: `create` and `update` (the field-only fallback), `find` and `count`. Sketches cannot delete. Use the generated delete mutation for that.
 - **Type.** `Todo` resolves to the one readable type of that name. `work/Todo` always works. A default namespace breaks ties: `namespace` in the request, filled from `SUBSTRATE_NAMESPACE` by the MCP tool and from `--ns` by the CLI. Remaining ambiguity is refused with the qualified choices.
-- **References.** `#12` is a shortId; a full id also works. Several references apply the action to each: `close Todo #12 #13`.
-- **Values.** Bare words, double-quoted strings, numbers, `true`, `false`, `null`, and comma-separated lists, coerced by the field or param type. A quoted value may contain `;`, a newline, `=`, `#` and `,`, and stays one value. Inside quotes, `\"`, `\\` and `\n` are escapes.
+- **References.** `#12` is a shortId; a full id also works. Several references apply the action to each: `close Todo #12 #13`. `find` and `count` take references as a filter, all shortIds or all full ids: `find Todo #12 #13 fields=status`.
+- **Values.** Bare words, double-quoted strings, numbers, `true`, `false`, `null`, and lists, written `a,b` or in brackets (`[a,b]`, `[a]`, `[]`), coerced by the field or param type. A quoted value may contain `;`, a newline, `=`, `#` and `,`, and stays one value. Inside quotes, `\"`, `\\` and `\n` are escapes.
 - **Extra fields.** A sketch may pass `field=value` beyond an action's params, for example `close Todo #12 title="Done early"`. Each must name a field of the type that the action's `set` does not fix. Naming a fixed field, such as `close Todo #12 archived=false`, is refused, so no sketch can undo what the action guarantees. No write takes an `id` arg: the id comes from the reference.
 - **Bindings.** `create Todo title="x" as $t` names the record for later steps of the same sketch. `$t` resolves where a record reference goes: as a step's reference (`update Todo $t priority=high`), in a `list` param, and as the value of a crossRef field (`create Note todo=$t`). A crossRef field also takes `#12`. In any other field a binding is plain text: `title=$t` writes `$t`. A list of crossRefs takes full ids only.
-- **`find` and `count`.** They filter on `field=value` pairs and add no hidden filters, so what you see is what runs. `fields=a,b` chooses what `find` stores in the result. Each `find` reads at most the server's page maximum (1000 by default), the result record keeps at most 1000 rows across all its `find` steps, and the ack says when either truncated. `count` needs a store that answers aggregate reads (Postgres). A plain memory store refuses `count` exactly as `query` does.
-- **Help.** `?` lists the readable types by namespace with their action names. `? Todo` shows that type's actions with their params, and its fields. Help writes no result record.
+- **`find` and `count`.** They filter on `field=value` pairs and add no hidden filters, so what you see is what runs. A `find` row holds `id`, `shortId` and the fields `fields=a,b` names, in the reply and in the result record. Each `find` reads at most the server's page maximum (1000 by default), the result record keeps at most 1000 rows across all its `find` steps, and the ack says when either truncated. `count` needs a store that answers aggregate reads (Postgres). A plain memory store refuses `count` exactly as `query` does.
+- **Help.** `?` lists the readable types by namespace with their action names. `? Todo` shows that type's actions with their params, and its fields. Several help steps may share a sketch, `? Todo; ? Note`, and the help is then a list in step order. Help beside any other step is refused. Help writes no result record.
 
 The same sketch against the same schema version always compiles to the same plan.
 
@@ -113,10 +113,12 @@ Limits: at most 50 write steps after expansion. Bridged and virtual namespaces a
 
 | Outcome | Reply |
 |---|---|
-| Success | `{ "ok": true, "ack": "…", "result": "<id>" }` |
-| Help | `{ "ok": true, "help": { … } }` |
+| Success | `{ "ok": true, "ack": "…", "result": "<id>", "found": [ … ] }` |
+| Help | `{ "ok": true, "help": { … } }`, or a list of them |
 | Refusal | `{ "ok": false, "refusal": { "code": "sketch_unresolved", "step", "token", "problem", "choices", "nearest" } }` |
 | Failure | `{ "ok": false, "error": { "code", "message", "step" }, "result": "<id>" }` |
+
+`found` is there when the sketch has `find` steps whose rows come to at most 100: one entry per `find`, with its `step`, `action`, `type`, `rows` and `truncated`. Above 100 rows, they are in the result record only.
 
 A refusal means nothing ran and no result record exists. `nearest` is the closest valid sketch as text. A failure means a step failed while running: everything rolled back, and the result record holds the plan for diagnosis.
 
