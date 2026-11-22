@@ -18,7 +18,8 @@ import type {
   EdgesStore,
   EngineHandle,
   Registry,
-  Row
+  Row,
+  WhereClause
 } from '@mnmal-ai/substrate-types';
 import {
   applyFieldProposal,
@@ -598,29 +599,46 @@ function isHotAdded(registryStore: RegistryStore, ns: string): boolean {
   return registryStore.has(ns) && registryStore.getBinding(ns).hotAdded === true;
 }
 
+/** Archives every row of `type` matching `where` that is not archived, `patch` merged in. */
+async function archiveAll(
+  dataset: Dataset,
+  type: string,
+  where: WhereClause,
+  patch: Record<string, unknown> = {}
+): Promise<void> {
+  for (;;) {
+    const standing = await dataset.read(type, {
+      where: { AND: [where, { archived: { eq: false } }] },
+      limit: 500
+    });
+    if (standing.rows.length === 0) return;
+    await dataset.write(
+      type,
+      standing.rows.map((row) => ({ ...row, ...patch, archived: true }))
+    );
+  }
+}
+
 /**
  * Drop participant: inside the drop's own transaction, archive every
  * NamespaceProposal row for the dropped namespace, so boot replay does not
- * reinstall it and the name stays reserved (`namespace_retired`). Decided from
- * the control plane, not this process's bindings: only a proposed namespace
- * has rows. A throw rolls the drop back.
+ * reinstall it and the name stays reserved (`namespace_retired`), and retire
+ * every ActionProposal targeting it. Decided from the control plane, not this
+ * process's bindings: only a proposed namespace has NamespaceProposal rows. A
+ * throw rolls the drop back.
  */
 export function namespaceDropParticipant(controlNamespace: string): DropParticipant {
   return {
     namespaces: [controlNamespace],
     async onDrop(ns, datasetFor) {
       const control = datasetFor(controlNamespace);
-      for (;;) {
-        const standing = await control.read('NamespaceProposal', {
-          where: { AND: [{ ns: { eq: ns } }, { archived: { eq: false } }] },
-          limit: 500
-        });
-        if (standing.rows.length === 0) return;
-        await control.write(
-          'NamespaceProposal',
-          standing.rows.map((row) => ({ ...row, archived: true }))
-        );
-      }
+      await archiveAll(control, 'NamespaceProposal', { ns: { eq: ns } });
+      await archiveAll(
+        control,
+        'ActionProposal',
+        { targetNamespace: { eq: ns } },
+        { status: 'retired' }
+      );
     }
   };
 }

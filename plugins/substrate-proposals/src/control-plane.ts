@@ -12,7 +12,8 @@
  * cold boot, before the per-namespace TypeProposal/FieldProposal reconcile.
  *
  * ActionProposal holds the action words agents coin with `define`, whatever
- * namespace they target; only the plugin writes it.
+ * namespace they target; only the plugin writes it, apart from an admin's
+ * archive (a veto or a retire).
  *
  * `supersededByCode` mirrors TypeProposal/FieldProposal — set when a namespace
  * proposed at runtime is later added to static plugin config (`ownedNamespaces`). The proposal row stays for
@@ -23,17 +24,22 @@ import { defineNamespace, field } from '@mnmal-ai/substrate-sdk';
 import {
   type NamespaceDefinition,
   type Registry,
-  ResolverFrameError
+  type RegistryEntryResolver,
+  ResolverFrameError,
+  type Row
 } from '@mnmal-ai/substrate-types';
 import {
   DEFAULT_DROP_CAPABILITY,
   DEFAULT_PROPOSE_CAPABILITY,
   gateNamespaceProposalLiveness,
+  makeProposePolicy,
   proposeToWrite,
   stampProposedBy,
   TRUSTED_WRITE
 } from './capability.js';
+import { notifyAfterCommit } from './engine-write.js';
 import type { RegistryStore } from './registry-store.js';
+import { lockedInIdOrder, lockedRow } from './row-lock.js';
 
 export const CONTROL_NAMESPACE = '_system_proposals';
 
@@ -49,7 +55,9 @@ export function defineControlPlaneTypes(
   registryStore: RegistryStore,
   capability: string = DEFAULT_PROPOSE_CAPABILITY,
   // shortcut: not threaded from SUBSTRATE_ADMIN_CAPABILITY, as for defineProposalTypes.
-  dropCapability: string = capability === '' ? '' : DEFAULT_DROP_CAPABILITY
+  dropCapability: string = capability === '' ? '' : DEFAULT_DROP_CAPABILITY,
+  /** Runs once an ActionProposal archive commits, with the row as written. */
+  actionArchived: (row: Row) => Promise<void> = async () => {}
 ): NamespaceDefinition {
   const def = defineNamespace(CONTROL_NAMESPACE, {
     NamespaceProposal: {
@@ -91,34 +99,76 @@ export function defineControlPlaneTypes(
     install(ctx) {
       def.install(ctx);
       gateNamespaceProposalLiveness(ctx.registry, registryStore, dropCapability);
-      gateActionProposalWrites(ctx.registry);
+      gateActionProposalWrites(ctx.registry, dropCapability, actionArchived);
       stampProposedBy(ctx.registry, CONTROL_TYPE_NAMES);
     }
   };
 }
 
+/** Whether an update's params only archive its row: `{ id, archived: true }`. */
+function onlyArchives(params: Record<string, unknown>): boolean {
+  const keys = Object.keys(params).filter((k) => params[k] !== undefined);
+  return params.archived === true && keys.every((k) => k === 'id' || k === 'archived');
+}
+
 /**
  * ActionProposal rows change only through the plugin's own writes
- * ({@link TRUSTED_WRITE}), because the action layer is built from them: every
- * client create, update or delete is refused, a mutate array per element.
- * `updateMany` / `deleteMany` refuse once their single-row entry is replaced.
+ * ({@link TRUSTED_WRITE}), because the action layer is built from them, and
+ * through an archive by a holder of the drop capability in the row's
+ * `targetNamespace`: archiving a pending word vetoes it, a promoted one
+ * retires it. The row is locked from the check to the commit, and once
+ * committed goes to `archived`. Every other client create, update or delete
+ * is refused. A mutate array runs per element through the guard, an array of
+ * updates first locking its rows in id order; `updateMany` / `deleteMany`
+ * refuse once their single-row entry is replaced.
  */
-function gateActionProposalWrites(registry: Registry): void {
+function gateActionProposalWrites(
+  registry: Registry,
+  dropCapability: string,
+  archived: (row: Row) => Promise<void>
+): void {
+  const gate = makeProposePolicy(dropCapability);
   for (const key of ['createActionProposal', 'updateActionProposal', 'deleteActionProposal']) {
     const entry = registry.get(key);
     if (entry === undefined) continue;
     const { batch: _batch, resolver, ...rest } = entry;
+    const guard: RegistryEntryResolver = async (ctx, args) => {
+      if ((args as { [TRUSTED_WRITE]?: true })[TRUSTED_WRITE] === true) return resolver(ctx, args);
+      const params = args.params ?? {};
+      if (key !== 'updateActionProposal' || !onlyArchives(params)) {
+        throw new ResolverFrameError(
+          'policy_denied',
+          `${key}: ActionProposal records change only through propose_action, or an archive by '${dropCapability}' in their namespace`
+        );
+      }
+      const row = await lockedRow('ActionProposal', params.id, args.dataset);
+      const ns = row?.targetNamespace;
+      if (row === null || typeof ns !== 'string') {
+        throw new ResolverFrameError(
+          'policy_denied',
+          `${key}: cannot load the record to check its namespace; needs '${dropCapability}' there`
+        );
+      }
+      if (!gate({ ...ctx, namespace: ns }, args).allow) {
+        throw new ResolverFrameError(
+          'policy_denied',
+          `${key}: archiving a word in '${ns}' vetoes or retires it, which needs '${dropCapability}' there`,
+          { required: `${ns}:${dropCapability}` }
+        );
+      }
+      const status =
+        row.status === 'pending' ? 'vetoed' : row.status === 'promoted' ? 'retired' : row.status;
+      const out = await resolver(ctx, {
+        ...args,
+        params: { id: row.id, archived: true, status }
+      });
+      await notifyAfterCommit(args, () => archived({ ...row, archived: true, status }));
+      return out;
+    };
     registry.replace(key, {
       ...rest,
-      resolver: (ctx, args) => {
-        if ((args as { [TRUSTED_WRITE]?: true })[TRUSTED_WRITE] !== true) {
-          throw new ResolverFrameError(
-            'policy_denied',
-            `${key}: ActionProposal records change only through propose_action`
-          );
-        }
-        return resolver(ctx, args);
-      }
+      resolver: guard,
+      ...(key === 'updateActionProposal' ? { batch: lockedInIdOrder('ActionProposal', guard) } : {})
     });
   }
 }

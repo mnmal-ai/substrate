@@ -2,18 +2,20 @@
  * The coined action words this engine knows, kept from the ActionProposal
  * records: each proposer's pending words, each type's promoted words, and the
  * names closed on their type (vetoed, retired or superseded by code). It also
- * counts each committed use of a pending word, and promotes the word once the
- * uses are evidence enough.
+ * counts each committed use of a pending word, promotes the word once the
+ * uses are evidence enough, and applies each change a peer announces.
  */
 
 import type {
   ActionDecl,
   ActionLayer,
+  ActionSchema,
   ActorIdentity,
   Dataset,
   Id,
   PendingAction,
-  Row
+  Row,
+  Schema
 } from '@mnmal-ai/substrate-types';
 import type { PubSub } from './config.js';
 import { proposalLockKey, withProposalLock } from './proposal-lock.js';
@@ -72,6 +74,25 @@ export function isLapsed(row: Row, now: Date): boolean {
   return now.getTime() - Math.max(time(row.lastUseAt), time(row.proposedAt)) >= LAPSE_MS;
 }
 
+/**
+ * Every action of `federated` declared in code or born with its type, keyed
+ * `ns/Type.name`; coined words are left out.
+ */
+export function registryActions(federated: Record<string, Schema>): Map<string, ActionSchema> {
+  const out = new Map<string, ActionSchema>();
+  for (const [ns, schema] of Object.entries(federated)) {
+    for (const [type, typeSchema] of Object.entries(schema.types)) {
+      for (const [name, action] of Object.entries(typeSchema.actions ?? {})) {
+        if (action.coined !== true) out.set(`${ns}/${type}.${name}`, action);
+      }
+    }
+  }
+  return out;
+}
+
+/** What a record whose name code now declares becomes. */
+const SUPERSEDED = { status: 'superseded', supersededByCode: true, archived: true };
+
 function mapOf<V>(maps: Map<string, Map<string, V>>, key: string): Map<string, V> {
   let map = maps.get(key);
   if (map === undefined) {
@@ -98,8 +119,42 @@ export class ProposalActionLayer implements ActionLayer {
     this.proposeKey = deps.proposeKey;
   }
 
-  load(rows: Row[]): void {
-    for (const row of rows) this.apply(row);
+  /**
+   * Applies every record. A live one whose name is in `declaredNames`
+   * (`ns/Type.name`) is first marked superseded by code in the store, unless
+   * it was archived since it was read.
+   */
+  async load(rows: Row[], declaredNames: ReadonlySet<string>): Promise<void> {
+    for (const row of rows) {
+      const live = row.archived !== true && (row.status === 'pending' || row.status === 'promoted');
+      const key = `${String(row.targetNamespace)}/${String(row.targetType)}.${String(row.name)}`;
+      if (!live || !declaredNames.has(key)) {
+        this.apply(row);
+        continue;
+      }
+      const { row: superseded } = await this.#deps.dataset.conditionalUpdate(
+        'ActionProposal',
+        row.id,
+        { archived: false },
+        SUPERSEDED,
+        PLUGIN_ACTOR,
+        this.#deps.now()
+      );
+      this.apply(superseded ?? { ...row, ...SUPERSEDED });
+    }
+  }
+
+  /** Applies each record a peer says changed, as the store now holds it. */
+  async listenToPeers(): Promise<void> {
+    await this.#deps.pubsub.listen(ACTIONS_CHANNEL, async (id) => {
+      // A throw here would end the listener.
+      try {
+        const row = (await this.#deps.dataset.read('ActionProposal', { id })).rows[0];
+        if (row !== undefined) this.apply(row);
+      } catch (err) {
+        this.#report('_system_proposals.action_peer_failed', { id, error: message(err) });
+      }
+    });
   }
 
   /**

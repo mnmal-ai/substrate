@@ -4,7 +4,10 @@
  * 20 live pending words in a namespace, and the words come back from their
  * records after a restart. `propose_action` takes raw JSON from any mutate,
  * so it is also tested as untrusted input. Five uses an hour apart promote a
- * word for everyone, at most 10 per type.
+ * word for everyone, at most 10 per type. An admin of the target namespace
+ * vetoes or retires a word by archiving its record, code that declares its
+ * name supersedes it at boot, a namespace drop retires its words, and a peer
+ * engine hears each change.
  *
  * `shop` (`kactdef` on Postgres) declares Ticket in code, with `close`; the
  * plugin owns `lab` (`kactdefown`). The Postgres suite is skipped when
@@ -16,6 +19,7 @@ import { MemoryDataset, MemoryDatasetRegistry } from '@mnmal-ai/substrate-datase
 import { PgDataset, PgEdgesStore } from '@mnmal-ai/substrate-dataset-pg';
 import { autoCrudOptionsOf, defineNamespace, field } from '@mnmal-ai/substrate-sdk';
 import type {
+  ActionDecl,
   ActMode,
   ActResponse,
   CoordinatorPlugin,
@@ -65,7 +69,15 @@ function grantsOf(w: World, agent: string): Identity['grants'] {
     // Reads shop, so `define` compiles and reaches propose_action.
     'agent-d': { [w.ns]: ['read'], [CONTROL_NAMESPACE]: ['mutate'] },
     'agent-e': { [CONTROL_NAMESPACE]: ['mutate'] },
-    'agent-r': { '*': [...both, 'substrate.propose'] }
+    'agent-r': { '*': [...both, 'substrate.propose'] },
+    // An admin of the target namespace.
+    'agent-o': { [w.ns]: [...both, 'admin'], [CONTROL_NAMESPACE]: both },
+    // An admin everywhere but the target namespace.
+    'agent-x': {
+      [w.ns]: both,
+      [w.own]: [...both, 'admin'],
+      [CONTROL_NAMESPACE]: [...both, 'admin']
+    }
   };
   return grants[agent] ?? {};
 }
@@ -77,7 +89,7 @@ const ctxOf = (w: World, agent: string) => ({
   meta: {}
 });
 
-function ticketPlugin(ns: string): CoordinatorPlugin {
+function ticketPlugin(ns: string, actions: Record<string, ActionDecl> = {}): CoordinatorPlugin {
   return {
     name: 'tickets',
     contractVersion: '>=1.0.0-alpha.0 <2.0.0',
@@ -89,7 +101,7 @@ function ticketPlugin(ns: string): CoordinatorPlugin {
             status: field.enum(['open', 'closed'], { default: 'open' }),
             openedAt: field.date({ serverSet: 'create', nullable: true })
           },
-          actions: { close: { past: 'closed', set: { status: 'closed' } } }
+          actions: { close: { past: 'closed', set: { status: 'closed' } }, ...actions }
         }
       })
     ]
@@ -105,7 +117,11 @@ function layerOf(engine: Engine): ProposalActionLayer {
   return layer;
 }
 
-async function boot(w: World, pubsub: PubSub = createNoopPubSub()): Promise<Engine> {
+async function boot(
+  w: World,
+  pubsub: PubSub = createNoopPubSub(),
+  ticketActions: Record<string, ActionDecl> = {}
+): Promise<Engine> {
   const datasetFor = (n: string): Dataset | undefined => w.datasets.get(n);
   const loaded = await loadPlugins({
     plugins: [
@@ -115,7 +131,7 @@ async function boot(w: World, pubsub: PubSub = createNoopPubSub()): Promise<Engi
         datasetFor,
         now: () => new Date(w.clock.ms)
       }),
-      ticketPlugin(w.ns)
+      ticketPlugin(w.ns, ticketActions)
     ],
     edges: w.edges,
     datasetFor
@@ -213,11 +229,65 @@ async function record(w: World, name: string): Promise<Row | undefined> {
   return (await records(w)).find((r) => r.name === name);
 }
 
-/** Retires a word: its record written past the client gate, then applied to the layer. */
-async function retire(engine: Engine, w: World, row: Row): Promise<void> {
-  const retired = { ...row, status: 'retired', archived: true };
-  await control(w).write('ActionProposal', [retired]);
-  layerOf(engine).apply(retired);
+/** A client write to the control plane; resolves to its error code, or 'ok'. */
+async function controlWrite(
+  engine: Engine,
+  w: World,
+  agent: string,
+  key: string,
+  params: Record<string, unknown>
+): Promise<string> {
+  const env = await engine.mutate({
+    frame: { [`${CONTROL_NAMESPACE}/${key}`]: { params, fields: { id: true } } },
+    ctx: ctxOf(w, agent)
+  });
+  return env.errors?.[0]?.code ?? 'ok';
+}
+
+/** Archives a word's record as `agent`: a veto or a retire. */
+const archive = (engine: Engine, w: World, agent: string, row: Row | undefined) =>
+  controlWrite(engine, w, agent, 'updateActionProposal', { id: row?.id, archived: true });
+
+/** Engines in one process sharing one PubSub: each notify reaches every listener. */
+function loopbackPubSub(): PubSub {
+  const handlers = new Map<string, Array<(payload: string) => void | Promise<void>>>();
+  return {
+    listen: async (channel, handler) => {
+      handlers.set(channel, [...(handlers.get(channel) ?? []), handler]);
+    },
+    notify: async (channel, payload) => {
+      for (const handler of handlers.get(channel) ?? []) await handler(payload);
+    }
+  };
+}
+
+/** Each run creates a ticket and reopens it, so it needs no short id. */
+const REOPEN_NEW = 'create Ticket title=t status=closed as $t; reopen Ticket $t';
+const unknownReopen = { ok: false, refusal: { token: 'reopen' } };
+
+/**
+ * Two engines on one store and one PubSub: a promotion on one reaches the
+ * other without a restart, and so does a retire.
+ */
+async function peerSeesPromotion(w: World, peerWorld: World): Promise<void> {
+  const pubsub = loopbackPubSub();
+  const one = await boot(w, pubsub);
+  const two = await boot(peerWorld, pubsub);
+  expect(await act(one, w, 'agent-a', 'define Ticket.reopen reopened status=open')).toMatchObject({
+    ok: true
+  });
+  expect(await act(two, w, 'agent-c', REOPEN_NEW)).toMatchObject(unknownReopen);
+  for (let i = 0; i < PROMOTE_USES; i++) {
+    expect(await act(one, w, 'agent-a', REOPEN_NEW)).toMatchObject({ ok: true });
+    await layerOf(one).settled();
+    w.clock.ms += USE_SPACING_MS;
+  }
+  expect(two.schemaFor(w.ns).types.Ticket?.actions?.reopen).toMatchObject({ coined: true });
+  expect(await act(two, w, 'agent-c', REOPEN_NEW)).toMatchObject({ ok: true });
+
+  expect(await archive(one, w, 'agent-o', await record(w, 'reopen'))).toBe('ok');
+  expect(two.schemaFor(w.ns).types.Ticket?.actions?.reopen).toBeUndefined();
+  expect(await act(two, w, 'agent-c', REOPEN_NEW)).toMatchObject(unknownReopen);
 }
 
 /** A peer that records what it is told. */
@@ -630,7 +700,7 @@ describe('evidence', () => {
     await use(`${name} Ticket #1`);
     expect(await record(w, name)).toMatchObject({ status: 'pending', uses: PROMOTE_USES + 1 });
 
-    await retire(engine, w, promoted[0]);
+    expect(await archive(engine, w, 'agent-o', promoted[0])).toBe('ok');
     // At the same instant: a ready word needs no spacing.
     await use(`${name} Ticket #1`);
     expect(await record(w, name)).toMatchObject({ status: 'promoted' });
@@ -689,6 +759,190 @@ describe('evidence', () => {
       ok: false,
       error: { code: 'invalid_enum_value', message: "'status' must be one of: active, closed" }
     });
+  });
+});
+
+describe('governance', () => {
+  let w: World;
+  let engine: Engine;
+  const as = (agent: string, sketch: string) => act(engine, w, agent, sketch);
+  /** Five spaced uses of `name` by its proposer. */
+  const promote = async (name: string) => {
+    for (let i = 0; i < PROMOTE_USES; i++) {
+      expect(await as('agent-a', `${name} Ticket #1`)).toMatchObject({ ok: true });
+      await layerOf(engine).settled();
+      w.clock.ms += USE_SPACING_MS;
+    }
+    expect(await record(w, name)).toMatchObject({ status: 'promoted' });
+  };
+
+  beforeEach(async () => {
+    w = memoryWorld();
+    engine = await boot(w);
+    expect(await as('agent-a', 'create Ticket title=t status=closed')).toMatchObject({ ok: true });
+    expect(await as('agent-a', 'define Ticket.reopen reopened status=open')).toMatchObject({
+      ok: true
+    });
+  });
+
+  it('vetoes a pending word when an admin archives it', async () => {
+    expect(await archive(engine, w, 'agent-o', await record(w, 'reopen'))).toBe('ok');
+    expect(await record(w, 'reopen')).toMatchObject({ status: 'vetoed', archived: true });
+    expect(await as('agent-a', 'reopen Ticket #1')).toMatchObject(unknownReopen);
+  });
+
+  it('retires a published word when an admin archives it', async () => {
+    await promote('reopen');
+    const v0 = engine.schemaFor('shop').schemaVersion;
+    expect(await archive(engine, w, 'agent-o', await record(w, 'reopen'))).toBe('ok');
+    expect(await record(w, 'reopen')).toMatchObject({ status: 'retired', archived: true });
+    expect(engine.schemaFor('shop').schemaVersion).not.toBe(v0);
+    expect(engine.schemaFor('shop').types.Ticket?.actions?.reopen).toBeUndefined();
+    expect(await as('agent-c', 'reopen Ticket #1')).toMatchObject(unknownReopen);
+  });
+
+  it('refuses archive by a non-admin, even a substrate.propose holder, and any other client write', async () => {
+    const row = await record(w, 'reopen');
+    if (row === undefined) throw new Error('no record');
+    const write = (key: string, params: Record<string, unknown>) =>
+      controlWrite(engine, w, 'agent-o', key, params);
+    expect(await archive(engine, w, 'agent-r', row)).toBe('policy_denied');
+    // Admin elsewhere, the control plane included, is not admin of the word's namespace.
+    expect(await archive(engine, w, 'agent-x', row)).toBe('policy_denied');
+    for (const params of [
+      { id: row.id, uses: 99 },
+      { id: row.id, archived: true, status: 'promoted' },
+      { id: row.id, archived: true, uses: 99 },
+      { id: row.id, archived: false }
+    ]) {
+      expect([params, await write('updateActionProposal', params)]).toEqual([
+        params,
+        'policy_denied'
+      ]);
+    }
+    expect(await write('deleteActionProposal', { id: row.id })).toBe('policy_denied');
+    const { targetNamespace, targetType, declJson, sketch, proposedAt } = row;
+    expect(
+      await write('createActionProposal', {
+        targetNamespace,
+        targetType,
+        name: 'sneak',
+        declJson,
+        sketch,
+        proposedAt,
+        status: 'promoted',
+        uses: 0,
+        lastUseAt: null,
+        promotedAt: null,
+        resultingSchemaVersion: null,
+        supersededByCode: false,
+        archived: false
+      })
+    ).toBe('policy_denied');
+    expect(await records(w)).toMatchObject([{ id: row.id, status: 'pending', archived: false }]);
+    expect(await as('agent-a', 'reopen Ticket #1')).toMatchObject({ ok: true });
+  });
+
+  it('keeps a vetoed or retired name closed', async () => {
+    expect(await archive(engine, w, 'agent-o', await record(w, 'reopen'))).toBe('ok');
+    expect(await as('agent-a', 'define Ticket.reopen reopened status=open')).toMatchObject(taken);
+    expect(await as('agent-c', 'define Ticket.reopen reopened status=open')).toMatchObject(taken);
+
+    expect(await as('agent-a', 'define Ticket.shut status=closed')).toMatchObject({ ok: true });
+    await promote('shut');
+    expect(await archive(engine, w, 'agent-o', await record(w, 'shut'))).toBe('ok');
+    expect(await record(w, 'shut')).toMatchObject({ status: 'retired' });
+    // And after a restart, which reads only live records.
+    engine = await boot(w);
+    expect(await as('agent-a', 'define Ticket.shut status=closed')).toMatchObject(taken);
+    expect(await as('agent-c', 'define Ticket.reopen reopened status=open')).toMatchObject(taken);
+  });
+
+  it('leaves a vetoed word alone when a use reaches a layer that has not heard of the veto', async () => {
+    const sent: Array<[string, string]> = [];
+    engine = await boot(w, recordingPubSub(sent));
+    const row = await record(w, 'reopen');
+    if (row === undefined) throw new Error('no record');
+    // Vetoed in the store; this engine's layer still holds the word as pending.
+    await control(w).write('ActionProposal', [{ ...row, status: 'vetoed', archived: true }]);
+    const layer = layerOf(engine);
+    layer.used('agent-a', [{ type: 'shop/Ticket', name: 'reopen' }], new Date(w.clock.ms));
+    await layer.settled();
+    expect(await record(w, 'reopen')).toMatchObject({ status: 'vetoed', uses: 0, lastUseAt: null });
+    expect(sent).toEqual([]);
+  });
+
+  it('marks a word supersededByCode when code now declares its name', async () => {
+    engine = await boot(w, createNoopPubSub(), {
+      reopen: { past: 'reopened', set: { status: 'open' } }
+    });
+    expect(await record(w, 'reopen')).toMatchObject({
+      status: 'superseded',
+      supersededByCode: true,
+      archived: true
+    });
+    expect(engine.schemaFor('shop').types.Ticket?.actions?.reopen?.coined).toBeUndefined();
+    expect(await as('agent-c', 'reopen Ticket #1')).toMatchObject({ ok: true });
+    expect(await as('agent-a', 'define Ticket.reopen reopened status=open')).toMatchObject(taken);
+  });
+
+  it('brings back every live word after a restart, however many records stay live', async () => {
+    const long = new Date(w.clock.ms - 2 * LAPSE_MS);
+    // Lapsed words stay live records. A full boot page (1000) of them, older than
+    // the word in use, puts that word on the second page.
+    await control(w).write(
+      'ActionProposal',
+      Array.from({ length: 1000 }, (_, i) => ({
+        targetNamespace: w.ns,
+        targetType: 'Ticket',
+        name: `old${i}`,
+        declJson: JSON.stringify({ kind: 'update', params: {}, set: { status: 'open' } }),
+        sketch: `define Ticket.old${i} status=open`,
+        proposedBy: 'agent-c',
+        proposedAt: long,
+        status: 'pending',
+        uses: 0,
+        lastUseAt: null,
+        promotedAt: null,
+        resultingSchemaVersion: null,
+        supersededByCode: false,
+        archived: false
+      })),
+      { now: long }
+    );
+    engine = await boot(w);
+    expect(await as('agent-a', 'reopen Ticket #1')).toMatchObject({ ok: true });
+  });
+
+  it('archives words on a dropped namespace; drop_type leaves them live', async () => {
+    const shop = w.datasets.get(w.ns);
+    if (shop === undefined) throw new Error('no shop dataset');
+    await shop.dropType('Ticket');
+    expect(await record(w, 'reopen')).toMatchObject({ status: 'pending', archived: false });
+    expect(await as('agent-a', REOPEN_NEW)).toMatchObject({ ok: true });
+
+    const row = await record(w, 'reopen');
+    if (row === undefined) throw new Error('no record');
+    const { id: _id, ...word } = row;
+    await control(w).write('ActionProposal', [
+      { ...word, targetNamespace: 'elsewhere', name: 'kept' }
+    ]);
+    // What the drop route does: participants inside its transaction, then the tombstone.
+    for (const participant of engine.dropParticipants()) {
+      await participant.onDrop(w.ns, (ns) => {
+        const ds = w.datasets.get(ns);
+        if (ds === undefined) throw new Error(`no dataset ${ns}`);
+        return ds;
+      });
+    }
+    engine.tombstoneNamespace(w.ns);
+    expect(await record(w, 'reopen')).toMatchObject({ status: 'retired', archived: true });
+    expect(await record(w, 'kept')).toMatchObject({ status: 'pending', archived: false });
+  });
+
+  it('shows a peer engine a promotion without a restart', async () => {
+    const peers = memoryWorld();
+    await peerSeesPromotion(peers, peers);
   });
 });
 
@@ -843,6 +1097,25 @@ describe.skipIf(!POSTGRES_URL)('propose_action (pg)', () => {
     const rows = await records(w);
     expect(rows.filter((r) => r.status === 'promoted')).toHaveLength(MAX_PUBLISHED_PER_TYPE);
     expect(rows.filter((r) => r.status === 'pending')).toMatchObject([{ uses: PROMOTE_USES }]);
+  });
+
+  it('shows a peer engine a promotion without a restart', async () => {
+    await peerSeesPromotion(pgWorld(), pgWorld());
+  });
+
+  it('marks a word supersededByCode when code now declares its name', async () => {
+    const w = pgWorld();
+    const engine = await boot(w);
+    expect(
+      await act(engine, w, 'agent-a', 'define Ticket.reopen reopened status=open')
+    ).toMatchObject({ ok: true });
+    const again = await boot(pgWorld(), createNoopPubSub(), {
+      reopen: { past: 'reopened', set: { status: 'open' } }
+    });
+    expect(await records(w)).toMatchObject([
+      { status: 'superseded', supersededByCode: true, archived: true }
+    ]);
+    expect(await act(again, w, 'agent-c', REOPEN_NEW)).toMatchObject({ ok: true });
   });
 
   it('refuses a redefinition a promotion overtakes, and the published word stays as it was', async () => {
