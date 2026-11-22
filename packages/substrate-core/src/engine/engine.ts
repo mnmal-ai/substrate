@@ -1283,6 +1283,7 @@ export class Engine implements ActHandle {
       )
     );
     // The caller's pending words join their types; the cached schema is copied, never mutated.
+    // `identity.id` must name the principal propose_action records as the proposer (resolveIdentity(ctx).id).
     const pendingKeys = new Set<string>();
     for (const [qualified, words] of Object.entries(
       this.#actionLayer?.pendingFor(identity.id) ?? {}
@@ -1338,8 +1339,16 @@ export class Engine implements ActHandle {
         const k = `${s.type}.${s.action}`;
         if (pendingKeys.has(k)) used.set(k, { type: s.type, name: s.action });
       }
-      if (used.size > 0)
-        this.#actionLayer?.used(identity.id, [...used.values()], input.ctx.now ?? new Date());
+      if (used.size > 0) {
+        try {
+          this.#actionLayer?.used(identity.id, [...used.values()], input.ctx.now ?? new Date());
+        } catch (err) {
+          // The write committed: a failing layer must not turn it into an error reply.
+          this.#metric('engine_act_layer_used_failed', {
+            error: err instanceof Error ? err.message : String(err)
+          });
+        }
+      }
     }
 
     const ack = formatAck(plan, outcomes, mode);

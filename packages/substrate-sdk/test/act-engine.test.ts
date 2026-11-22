@@ -105,7 +105,14 @@ function boot(
   const journalReg = new Registry();
   defineNamespace('work', {
     Todo: { fields: todoFields, actions: { close } },
-    Note: { fields: { title: field.string(), todo: field.crossRef('work', 'Todo') } }
+    Note: { fields: { title: field.string(), todo: field.crossRef('work', 'Todo') } },
+    Ledger: {
+      fields: { title: field.string() },
+      policy: (ctx) =>
+        ctx.verb === 'update' && ctx.identity?.id === 'alice'
+          ? { allow: false, reason: 'alice may not edit a Ledger entry' }
+          : { allow: true }
+    }
   }).install({ registry: workReg, dataset: work, edges });
   defineNamespace('journal', {
     SessionLog: {
@@ -641,10 +648,60 @@ describe('Engine.act pending words', () => {
     expect(usedCalls).toHaveLength(1);
   });
 
+  it('answers a committed run ok when the layer throws on its use', async () => {
+    const { engine, work, metrics } = boot({
+      layer: {
+        proposeKey: 'test/propose',
+        published: () => ({}),
+        pendingFor: () => ({ 'work/Todo': { reopen } }),
+        used: () => {
+          throw new Error('layer down');
+        }
+      }
+    });
+    await seedTodos(engine, 1);
+    await engine.act({ sketch: 'close Todo #1', ctx: as(alice) });
+    expect(await engine.act({ sketch: 'reopen Todo #1', ctx: as(alice) })).toMatchObject({
+      ok: true,
+      ack: 'reopen done work/Todo #1'
+    });
+    expect(await todo(work, 1)).toMatchObject({ status: 'open' });
+    expect(metrics).toContain('engine_act_layer_used_failed');
+  });
+
   it('reports no use when another step in the run fails', async () => {
     const { engine, usedCalls } = bootWithLayer();
     await seedTodos(engine, 1);
     await engine.act({ sketch: 'reopen Todo #1; update Todo #999 title=x', ctx: as(alice) });
+    expect(usedCalls).toEqual([]);
+  });
+
+  it("refuses a pending word its proposer's type policy refuses, and writes nothing", async () => {
+    const retitle: PendingAction = { decl: { set: { title: 'changed' } }, uses: 1, needed: 5 };
+    const usedCalls: unknown[] = [];
+    const { engine, work } = boot({
+      layer: {
+        proposeKey: 'test/propose',
+        published: () => ({}),
+        pendingFor: (id) => (id === 'alice' ? { 'work/Ledger': { retitle } } : {}),
+        used: (...call) => void usedCalls.push(call)
+      }
+    });
+    expect(await engine.act({ sketch: 'create Ledger title=kept', ctx: as(alice) })).toMatchObject({
+      ok: true
+    });
+    const refused = {
+      ok: false,
+      error: { code: 'policy_denied', message: 'alice may not edit a Ledger entry', step: 1 }
+    };
+    expect(await engine.act({ sketch: 'retitle Ledger #1', ctx: as(alice) })).toMatchObject(
+      refused
+    );
+    // The same refusal a plain update gets.
+    expect(
+      await engine.act({ sketch: 'update Ledger #1 title=changed', ctx: as(alice) })
+    ).toMatchObject(refused);
+    expect(await all(work, 'Ledger')).toMatchObject([{ title: 'kept' }]);
     expect(usedCalls).toEqual([]);
   });
 

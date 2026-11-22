@@ -806,6 +806,12 @@ describe('compileSketch define', () => {
     );
   });
 
+  it('refuses a binding on define', () => {
+    expect(def('define Todo.xx status=open as $x')).toEqual(
+      refusal(1, '$x', 'define takes no binding')
+    );
+  });
+
   it('refuses one param name over two field types, allows it over one', () => {
     expect(def('define Todo.xx title=$p status=$p')).toHaveProperty(
       'refusal.problem',

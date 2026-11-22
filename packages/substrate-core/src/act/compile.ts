@@ -285,6 +285,7 @@ class Compiler {
     if (!WORD_NAME.test(name)) badName(name);
     const [past, extra] = step.refs ?? [];
     if (extra !== undefined) this.#refuse(extra, 'define takes at most one past word');
+    if (step.as !== undefined) this.#refuse(`$${step.as}`, 'define takes no binding');
     if (past !== undefined && !WORD_NAME.test(past)) badName(past);
     const args = step.args ?? {};
     if (Object.keys(args).length === 0) this.#refuse('define', 'define sets nothing');
