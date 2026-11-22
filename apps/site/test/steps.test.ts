@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Step, StepResult } from '../examples/_harness.ts';
 import { seedSteps } from '../examples/_scenario.ts';
+import { EXAMPLE_SLUGS } from '../src/lib/example-pages.ts';
 import { loadExample } from '../src/lib/examples.ts';
 import { pageSteps, pretty, threeWays } from '../src/lib/steps.ts';
 
@@ -77,7 +78,7 @@ describe('committed transcripts', () => {
       const shown = transcript(name).steps.map((s) => s.body);
       expect(shown, name).toEqual(steps.map((s) => s.body));
     }
-    expect(names).toHaveLength(6);
+    expect(names).toHaveLength(EXAMPLE_SLUGS.length - 1);
   });
 });
 
