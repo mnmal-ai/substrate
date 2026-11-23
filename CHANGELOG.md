@@ -2,6 +2,20 @@
 
 Releases before 1.0.0-alpha.21 are recorded only in their GitHub release notes.
 
+## 1.0.0-beta.12 (2026-11-22)
+
+Changes since 1.0.0-beta.11. No schema version moves, there is no migration, and every sketch that compiled before compiles to the same plan. One kind of query that used to answer now refuses: a walk carrying an extension operator. It matched nothing before. The `lean` MCP preset's fixed cost is 2,051 bytes, up from 2,016.
+
+### Changed
+
+- **`define`, then use it, in one sketch (#298).** A sketch may open with one `define`, and its later steps compile against the word it coins: `define Todo.unblock unblocked status=open blockedBy=null; unblock Todo #6 #9`. The whole sketch compiles before anything runs. A proposal never shares a transaction, so the `define` commits on its own, and then the remaining steps run as one transaction. A run-time failure in those steps keeps the word, and the error ends `(step 1 committed: <ns>/<Type>.<name> is defined)`. That run counts as the word's first use. A `define` that is not first, or a second `define`, is refused (`define comes first`, `one define per sketch`). In a coining bench, every agent's first attempt at coining had this shape and was refused as `define stands alone`.
+- **Reference lists (#298).** `close Todo #12,#13` and `close Todo [#12,#13]` now mean `close Todo #12 #13`, for every action. Before, they were refused as `unexpected token`.
+- **Help shares a sketch (#299).** `?` steps may sit beside any other steps, as in `? Todo; find Todo #12 fields=status`. The reply carries `help` beside the ack and `found`, and `ActResponse`'s success shape gains an optional `help`. The 10-step cap counts only help steps, and a `define` must come first among the steps that are not help. `substrate act` prints the help, then the ack. Before, any help beside another step was refused with `help stands alone`.
+
+### Fixed
+
+- **Extension operators inside walks are refused (#299).** An extension operator such as `embeddingSimilar` is resolved only in the frame's own `where` (including under `AND`, `OR` and `NOT`). Inside a `_walk`, on a field within one, or in an `_agg`'s `where`, it never ran, and the walk silently matched nothing. The validator now refuses it there with `capability_unsupported`.
+
 ## 1.0.0-beta.11 (2026-11-22)
 
 Changes since 1.0.0-beta.10. Existing sketches, frames and replies keep their meaning; `act` replies only gain fields. A server running substrate-proposals publishes a new schema version for each namespace it owns, because `TypeProposal` gains an `actionsJson` field, and for `_system_proposals`, which gains the `ActionProposal` type. On Postgres there is no numbered migration. The new field starts in `extra` and gets its column from the promotion sweep, as any new field does, and the new type's table is created at boot. The `lean` MCP preset's fixed cost is 2,016 bytes, up from 1,848.
