@@ -101,11 +101,12 @@ export async function runAct(argv: string[], options: ActCliOptions = {}): Promi
       return 1;
     }
     if (!json) {
-      if ('help' in reply) write(asJson(reply.help));
-      else
+      if (reply.help !== undefined) write(asJson(reply.help));
+      if ('ack' in reply) {
         write(
           `${line(reply.ack)}\n${reply.result !== null ? `result ${line(reply.result)}\n` : ''}`
         );
+      }
     }
     return 0;
   } catch (err) {

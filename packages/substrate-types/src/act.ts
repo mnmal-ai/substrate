@@ -182,6 +182,8 @@ export type ActResponse =
       found?: ActStepOutcome[];
       /** A dry run's compiled steps, one sketch-like line each, with every value they send. */
       plan?: string[];
+      /** The sketch's `?` steps, answered beside its other steps. */
+      help?: ActHelp | ActHelp[];
     }
   | { ok: true; help: ActHelp | ActHelp[] }
   | { ok: false; refusal: ActRefusal }

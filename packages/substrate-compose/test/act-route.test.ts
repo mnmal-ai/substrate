@@ -169,6 +169,20 @@ describe('act routes with auth off', () => {
     expect(rec.status).toBe(200);
     expect(rec.json.owner).toBe('local-dev');
   });
+
+  it('answers help beside the other steps of a sketch', async () => {
+    const { call, seed } = await setup({ auth: false });
+    await seed();
+    const done = await call('POST', '/substrate/v1/act', {
+      sketch: '? Todo; find Todo #1 fields=title'
+    });
+    expect(done.json).toMatchObject({
+      ok: true,
+      ack: '1 work/Todo rows',
+      help: { type: 'work/Todo' },
+      found: [{ rows: [{ shortId: 1, title: 't' }] }]
+    });
+  });
 });
 
 describe('actRoute', () => {

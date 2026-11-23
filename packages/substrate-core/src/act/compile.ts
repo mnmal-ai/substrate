@@ -38,7 +38,7 @@ export interface CompileOptions {
   defineKey?: string;
 }
 export type CompileResult =
-  | { plan: ActPlan }
+  | { plan: ActPlan; help?: ActHelp | ActHelp[] }
   | { refusal: ActRefusal }
   | { help: ActHelp | ActHelp[] };
 
@@ -164,30 +164,32 @@ class Compiler {
     const bad = steps.findIndex((s) => !isStep(s));
     if (bad !== -1) this.#at(bad + 1).#refuse('', 'malformed step');
 
-    const helpAt = steps.findIndex((s) => s.action === '?');
-    if (helpAt !== -1) {
-      if (steps.some((s) => s.action !== '?')) {
-        this.#at(helpAt + 1).#refuse('?', 'help stands alone');
-      }
-      if (steps.length > MAX_HELP_STEPS) {
-        this.#at(MAX_HELP_STEPS + 1).#refuse('?', `at most ${MAX_HELP_STEPS} help steps`);
-      }
-      const help = steps.map((step, i) => {
-        this.#at(i + 1);
-        if (step.type === undefined) return typesHelp(this.schema);
-        const target = this.#resolveType(step.type);
-        return typeHelp(target.qualified, target.type);
-      });
-      return { help: help.length === 1 ? (help[0] as ActHelp) : help };
+    // Help steps are answered beside the plan the other steps compile to.
+    const helpAt = steps.flatMap((s, i) => (s.action === '?' ? [i] : []));
+    if (helpAt.length > MAX_HELP_STEPS) {
+      this.#at((helpAt[MAX_HELP_STEPS] as number) + 1).#refuse(
+        '?',
+        `at most ${MAX_HELP_STEPS} help steps`
+      );
     }
+    const helps = helpAt.map((i) => {
+      const step = this.#at(i + 1).#step;
+      if (step.type === undefined) return typesHelp(this.schema);
+      const target = this.#resolveType(step.type);
+      return typeHelp(target.qualified, target.type);
+    });
+    const help = helps.length === 1 ? (helps[0] as ActHelp) : helps;
+    if (helps.length === steps.length) return { help };
 
     const drafts: Draft[] = [];
-    let from = 0;
+    let skip = -1;
     const defineAt = steps.findIndex((s) => s.action === 'define');
     if (defineAt !== -1) {
       this.#at(defineAt + 1);
-      if (defineAt !== 0) this.#refuse('define', 'define comes first');
-      const again = steps.findIndex((s, i) => i > 0 && s.action === 'define');
+      if (defineAt !== steps.findIndex((s) => s.action !== '?')) {
+        this.#refuse('define', 'define comes first');
+      }
+      const again = steps.findIndex((s, i) => i > defineAt && s.action === 'define');
       if (again !== -1) this.#at(again + 1).#refuse('define', 'one define per sketch');
       if (this.options.defineKey === undefined) {
         this.#refuse('define', 'this server takes no action proposals');
@@ -196,13 +198,14 @@ class Compiler {
       drafts.push(define);
       // The steps after it compile against the word it coins, as its proposer will see it.
       this.schema = withWord(this.schema, define);
-      from = 1;
+      skip = defineAt;
     }
 
     for (const [i, step] of steps.entries()) {
-      if (i >= from) this.#at(i + 1).#compileStep(step, drafts);
+      if (i !== skip && step.action !== '?') this.#at(i + 1).#compileStep(step, drafts);
     }
-    return { plan: { steps: drafts.map((d, i) => ({ step: i + 1, ...d })) } };
+    const plan = { steps: drafts.map((d, i) => ({ step: i + 1, ...d })) };
+    return helps.length > 0 ? { plan, help } : { plan };
   }
 
   #at(n: number): this {
