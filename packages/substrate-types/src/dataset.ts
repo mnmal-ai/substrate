@@ -428,6 +428,17 @@ export interface Dataset {
    * relies on `lockForUpdate` refuses a dataset with neither.
    */
   readonly serialTransactions?: boolean;
+  /**
+   * Inside a transaction, whether `type` has any stored row (archived and
+   * tombstoned ones included), with the answer held until the transaction
+   * ends: a write of the type inside another transaction waits for this one,
+   * and this call waits, briefly, for one already in flight. Undefined when
+   * such a write stayed open through that wait. `namespace` defaults to this
+   * dataset's; another namespace on this dataset's `txScopeId` may be named.
+   * Throws outside a transaction. Absent where transactions already run one
+   * at a time (`serialTransactions`).
+   */
+  hasRowsLocked?(type: string, namespace?: string): Promise<boolean | undefined>;
   purge(type: string, ids: Id[]): Promise<DeleteResult>;
   /**
    * Physically delete every row of `type` within this dataset's namespace,
