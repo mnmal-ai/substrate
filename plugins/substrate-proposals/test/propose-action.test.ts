@@ -369,12 +369,54 @@ describe('propose_action (memory)', () => {
     ]);
   });
 
+  it('defines a word and uses it in one sketch, counting the use', async () => {
+    expect(
+      await as('agent-a', 'define Ticket.reopen reopened status=open; reopen Ticket #1')
+    ).toMatchObject({
+      ok: true,
+      ack: 'defined shop/Ticket.reopen (yours; public after 5 uses an hour apart); reopened shop/Ticket #1'
+    });
+    await layerOf(engine).settled();
+    expect(await records(w)).toMatchObject([{ name: 'reopen', status: 'pending', uses: 1 }]);
+    expect(await as('agent-a', 'find Ticket #1 fields=status')).toMatchObject({
+      found: [{ rows: [{ status: 'open' }] }]
+    });
+  });
+
+  it('keeps the word when a step after define fails at run time', async () => {
+    expect(
+      await as('agent-a', 'define Ticket.reopen reopened status=open; reopen Ticket #9')
+    ).toMatchObject({
+      ok: false,
+      error: {
+        message: expect.stringContaining('(step 1 committed: shop/Ticket.reopen is defined)')
+      }
+    });
+    expect(await record(w, 'reopen')).toMatchObject({ status: 'pending', uses: 0 });
+  });
+
+  it('stores and writes nothing on a dry run of define and a use', async () => {
+    expect(
+      await as('agent-a', 'define Ticket.reopen reopened status=open; reopen Ticket #1', 'dry-run')
+    ).toMatchObject({ ok: true });
+    expect(await records(w)).toEqual([]);
+    expect(await as('agent-a', 'find Ticket #1 fields=status')).toMatchObject({
+      found: [{ rows: [{ status: 'closed' }] }]
+    });
+  });
+
   it('refuses agent-b, who has no control-plane grant', async () => {
     expect(await as('agent-b', 'define Ticket.reopen reopened status=open')).toMatchObject({
       ok: false,
       error: { code: 'unauthorized_namespace' }
     });
+    expect(
+      await as('agent-b', 'define Ticket.reopen reopened status=open; update Ticket #1 status=open')
+    ).toMatchObject({ ok: false, error: { code: 'unauthorized_namespace' } });
     expect(await records(w)).toEqual([]);
+    expect(await as('agent-a', 'find Ticket #1 fields=status')).toMatchObject({
+      found: [{ rows: [{ status: 'closed' }] }]
+    });
   });
 
   it('refuses a caller without mutate on the target namespace', async () => {

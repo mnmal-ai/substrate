@@ -1315,23 +1315,24 @@ export class Engine implements ActHandle {
     if ('help' in compiled) return { ok: true, help: compiled.help };
     const { plan } = compiled;
 
-    // A crossRef `#N` is looked up on its target type, so that type joins the transaction.
-    const refTypes = plan.steps.flatMap((s) =>
-      Object.values(s.late ?? {}).flatMap((l) => ('ref' in l ? [l.ref.type] : []))
-    );
-    const keys = [...new Set([...plan.steps.map((s) => s.key), ...refTypes])];
-    const parsedByKey = this.#buildParsedKeyCache(keys);
-    const partition = partitionMutateByTxScope(keys, parsedByKey, this.#datasets);
+    // A proposal never shares a transaction, so a leading `define` commits first and the rest runs as one after it.
+    const [first] = plan.steps;
+    const coined =
+      first?.action === 'define' && plan.steps.length > 1
+        ? `${first.type}.${(first.params as { name: string }).name}`
+        : undefined;
+    if (coined !== undefined) pendingKeys.add(coined);
+    const phases =
+      coined !== undefined ? [plan.steps.slice(0, 1), plan.steps.slice(1)] : [plan.steps];
     const outcomes: ActStepOutcome[] = [];
     let error: { code: string; message: string; step?: number } | undefined;
-    if (partition.kind === 'cross_tx_scope_refused') {
-      this.#metric('engine_cross_tx_scope_refused', { namespaces: partition.namespaces });
-      error = { code: 'cross_tx_scope_refused', message: partition.message };
-    } else if (partition.kind === 'zero_datasets') {
-      // Unreachable: the compiler admits only namespaces with a dataset.
-      throw new Error('act plan names no dataset');
-    } else {
-      error = await this.#actSteps(input, mode, plan.steps, parsedByKey, partition, outcomes);
+    for (const [i, steps] of phases.entries()) {
+      error = await this.#actPhase(input, mode, steps, outcomes);
+      if (error === undefined) continue;
+      if (i > 0 && mode === 'write') {
+        error = { ...error, message: `${error.message} (step 1 committed: ${coined} is defined)` };
+      }
+      break;
     }
     if (error === undefined && mode === 'write' && pendingKeys.size > 0) {
       const used = new Map<string, { type: string; name: string }>();
@@ -1390,6 +1391,29 @@ export class Engine implements ActHandle {
           ...(mode === 'dry-run' ? { plan: plan.steps.map(planLine) } : {})
         }
       : { ok: false, error, result };
+  }
+
+  /** Partitions `steps` by transaction scope and runs them as one transaction; resolves the failure, or undefined. */
+  async #actPhase(
+    input: ActInput,
+    mode: ActMode,
+    steps: ActPlanStep[],
+    outcomes: ActStepOutcome[]
+  ): Promise<{ code: string; message: string; step?: number } | undefined> {
+    // A crossRef `#N` is looked up on its target type, so that type joins the transaction.
+    const refTypes = steps.flatMap((s) =>
+      Object.values(s.late ?? {}).flatMap((l) => ('ref' in l ? [l.ref.type] : []))
+    );
+    const keys = [...new Set([...steps.map((s) => s.key), ...refTypes])];
+    const parsedByKey = this.#buildParsedKeyCache(keys);
+    const partition = partitionMutateByTxScope(keys, parsedByKey, this.#datasets);
+    if (partition.kind === 'cross_tx_scope_refused') {
+      this.#metric('engine_cross_tx_scope_refused', { namespaces: partition.namespaces });
+      return { code: 'cross_tx_scope_refused', message: partition.message };
+    }
+    // Unreachable: the compiler admits only namespaces with a dataset.
+    if (partition.kind === 'zero_datasets') throw new Error('act plan names no dataset');
+    return this.#actSteps(input, mode, steps, parsedByKey, partition, outcomes);
   }
 
   /**

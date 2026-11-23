@@ -797,13 +797,45 @@ describe('compileSketch define', () => {
     });
   });
 
-  it('refuses define beside another step, and a second define', () => {
-    const stands = refusal(1, 'define', 'define stands alone');
-    expect(def('define Todo.xx status=open; close Todo #1')).toEqual(stands);
-    expect(def('define Todo.xx status=open; define Todo.yy status=open')).toEqual(stands);
-    expect(def('close Todo #1; define Todo.xx status=open')).toEqual(
-      refusal(2, 'define', 'define stands alone')
+  it('compiles the steps after define against the word it coins', () => {
+    const r = def(
+      'define Todo.reopen reopened status=open notes=$why?; reopen Todo #1 #2 why=again; close Todo #3'
     );
+    expect(r).toMatchObject({
+      plan: {
+        steps: [
+          { step: 1, source: 1, action: 'define', key },
+          {
+            step: 2,
+            source: 2,
+            action: 'reopen',
+            key: 'work/updateTodo',
+            params: { id: '1', status: 'open', notes: 'again' },
+            past: 'reopened'
+          },
+          {
+            step: 3,
+            source: 2,
+            action: 'reopen',
+            params: { id: '2', status: 'open', notes: 'again' }
+          },
+          { step: 4, source: 3, action: 'close' }
+        ]
+      }
+    });
+  });
+
+  it('refuses define after another step, and a second define', () => {
+    expect(def('close Todo #1; define Todo.xx status=open')).toEqual(
+      refusal(2, 'define', 'define comes first')
+    );
+    expect(def('define Todo.xx status=open; define Todo.yy status=open')).toEqual(
+      refusal(2, 'define', 'one define per sketch')
+    );
+  });
+
+  it('refuses the whole sketch when a step after define does not compile', () => {
+    expect(def('define Todo.xx status=open; xx Todo #1 nope=1')).toHaveProperty('refusal.step', 2);
   });
 
   it('refuses a binding on define', () => {

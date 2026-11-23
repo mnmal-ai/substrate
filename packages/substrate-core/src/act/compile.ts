@@ -131,6 +131,20 @@ const swapKey =
     args: Object.fromEntries(Object.entries(s.args ?? {}).map(([k, v]) => [k === arg ? c : k, v]))
   });
 
+/** `schema` with the word a `define` draft coins added to its type; copies, never mutates. */
+function withWord(schema: Readonly<Record<string, Schema>>, define: Draft): Record<string, Schema> {
+  const { namespace, type, name, decl } = define.params as {
+    namespace: string;
+    type: string;
+    name: string;
+    decl: ActionDecl;
+  };
+  const ns = schema[namespace] as Schema;
+  const t = ns.types[type] as TypeSchema;
+  const actions = { ...t.actions, [name]: toActionSchema(decl) };
+  return { ...schema, [namespace]: { ...ns, types: { ...ns.types, [type]: { ...t, actions } } } };
+}
+
 class Compiler {
   /** The sketch step being compiled, 1-based. */
   #n = 0;
@@ -139,7 +153,7 @@ class Compiler {
   #writes = 0;
 
   constructor(
-    readonly schema: Readonly<Record<string, Schema>>,
+    public schema: Readonly<Record<string, Schema>>,
     readonly options: CompileOptions,
     readonly steps: ActStep[]
   ) {}
@@ -167,18 +181,27 @@ class Compiler {
       return { help: help.length === 1 ? (help[0] as ActHelp) : help };
     }
 
+    const drafts: Draft[] = [];
+    let from = 0;
     const defineAt = steps.findIndex((s) => s.action === 'define');
     if (defineAt !== -1) {
       this.#at(defineAt + 1);
-      if (steps.length > 1) this.#refuse('define', 'define stands alone');
+      if (defineAt !== 0) this.#refuse('define', 'define comes first');
+      const again = steps.findIndex((s, i) => i > 0 && s.action === 'define');
+      if (again !== -1) this.#at(again + 1).#refuse('define', 'one define per sketch');
       if (this.options.defineKey === undefined) {
         this.#refuse('define', 'this server takes no action proposals');
       }
-      return { plan: { steps: [{ step: 1, ...this.#define(this.options.defineKey) }] } };
+      const define = this.#define(this.options.defineKey);
+      drafts.push(define);
+      // The steps after it compile against the word it coins, as its proposer will see it.
+      this.schema = withWord(this.schema, define);
+      from = 1;
     }
 
-    const drafts: Draft[] = [];
-    for (const [i, step] of steps.entries()) this.#at(i + 1).#compileStep(step, drafts);
+    for (const [i, step] of steps.entries()) {
+      if (i >= from) this.#at(i + 1).#compileStep(step, drafts);
+    }
     return { plan: { steps: drafts.map((d, i) => ({ step: i + 1, ...d })) } };
   }
 
