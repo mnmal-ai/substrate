@@ -1226,6 +1226,12 @@ export class PgDataset implements Dataset {
       return this.withTransaction((tx) => tx.write(type, rows, options));
     }
 
+    // Held to commit, so `hasRowsLocked` waits for this write. A write outside a
+    // transaction is the store's own (the engine writes in one), and skips it.
+    if (this.#inTx) {
+      await this.#sql`SELECT pg_advisory_xact_lock_shared(hashtext(
+        'substrate-type-rows:' || current_schema() || ':' || ${this.namespace} || '/' || ${type}))`;
+    }
     const table = await this.#writeTable(type);
     const sql = this.#sql;
     if (visible) {
@@ -1280,6 +1286,33 @@ export class PgDataset implements Dataset {
     // A check relies on this lock, so refuse where it would protect nothing.
     if (!this.#inTx) throw new Error('PgDataset.lockForUpdate needs a transaction');
     await this.#lockRows(type, ids, 'FOR NO KEY UPDATE OF r');
+  }
+
+  /**
+   * See `Dataset.hasRowsLocked`. Holds the type's rows lock alone, which a
+   * write inside a transaction holds shared until it commits. The lock is
+   * tried rather than queued for, as `moveFieldState` tries its own: a queued
+   * request would hold up every later write of the type. The table is looked
+   * up past the cache, which may not yet know of one just committed.
+   */
+  async hasRowsLocked(type: string, namespace = this.namespace): Promise<boolean | undefined> {
+    if (!this.#inTx) throw new Error('PgDataset.hasRowsLocked needs a transaction');
+    if ((await this.#layout()) === 'absent') {
+      throw new Error('PgDataset.hasRowsLocked: the store is not migrated');
+    }
+    const tx = this.#sql as TransactionSql;
+    const deadline = Date.now() + ROWS_LOCK_TRY_MS;
+    for (let backoff = 10; ; backoff = Math.min(backoff * 2, 200)) {
+      const [held] = await tx<Array<{ ok: boolean }>>`SELECT pg_try_advisory_xact_lock(hashtext(
+        'substrate-type-rows:' || current_schema() || ':' || ${namespace} || '/' || ${type})) AS ok`;
+      if (held?.ok === true) break;
+      const left = deadline - Date.now();
+      if (left <= 0) return undefined;
+      await new Promise((r) => setTimeout(r, Math.min(backoff, left)));
+    }
+    const name = await typeTableOf(tx, namespace, type);
+    if (name === undefined) return false;
+    return (await tx.unsafe(`SELECT 1 FROM ${ident(name)} LIMIT 1`)).length > 0;
   }
 
   /** Locks the live rows among `ids` until the transaction ends; outside one, nothing. */
@@ -2671,6 +2704,9 @@ const MATERIALIZE_BATCH_ROWS = 5000;
 
 /** The statement timeout a walk read runs under, in milliseconds, unless a shorter one is set. */
 export const WALK_STATEMENT_TIMEOUT_MS = 30_000;
+
+/** How long `hasRowsLocked` tries for a type's rows lock before answering undefined. */
+const ROWS_LOCK_TRY_MS = 2000;
 
 /** The params that run under the statement timeout: `count: true`, and each non-empty object. */
 function walkParams(params: ReadParams): string[] {

@@ -41,7 +41,7 @@ import {
   type TypeIndexOptions,
   typeProposalRegistryKeys
 } from './apply.js';
-import { typeHasRows } from './capability.js';
+import { typeHasRowsHeld } from './capability.js';
 import type { PubSub } from './config.js';
 import { canReadNamespace, crossRefTargetCheck } from './cross-ref-targets.js';
 import {
@@ -183,7 +183,7 @@ async function hasStorage(dataset: Dataset, typeName: string): Promise<boolean> 
     limit: 1
   });
   if (proposals.rows.length > 0) return true;
-  return typeHasRows(dataset, typeName);
+  return typeHasRowsHeld(dataset, typeName);
 }
 
 /** Steps 2-7, run while holding the proposal lock for this type name. */
