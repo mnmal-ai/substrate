@@ -80,8 +80,40 @@ export function makeIndexPolicy(capability: string = DEFAULT_INDEX_CAPABILITY): 
 }
 
 /** Whether `typeName` has rows, archived and tombstoned ones included (purged ones are gone). */
-export async function typeHasRows(dataset: Dataset, typeName: string): Promise<boolean> {
+async function typeHasRows(dataset: Dataset, typeName: string): Promise<boolean> {
   return (await dataset.read(typeName, { includeDeleted: true, limit: 1 })).rows.length > 0;
+}
+
+/** Why a type's stored rows cannot be checked while another transaction writes it. */
+const busy = (typeName: string): string => `'${typeName}' is being written; retry`;
+
+/**
+ * Whether `typeName` has rows, as {@link typeHasRows}, with the answer held
+ * until the caller's transaction ends, so a row committed concurrently cannot
+ * slip past a check that it has none: `hasRowsLocked` makes a write adding one
+ * wait, and a dataset that runs transactions one at a time admits none.
+ *
+ * @throws ResolverFrameError `policy_denied` when the dataset can do neither,
+ *   or another transaction holds the type
+ */
+export async function typeHasRowsHeld(dataset: Dataset, typeName: string): Promise<boolean> {
+  if (dataset.hasRowsLocked !== undefined) {
+    const has = await dataset.hasRowsLocked(typeName);
+    if (has === undefined) {
+      throw new ResolverFrameError(
+        'policy_denied',
+        `cannot check for stored rows now: ${busy(typeName)}`
+      );
+    }
+    return has;
+  }
+  if (dataset.serialTransactions !== true) {
+    throw new ResolverFrameError(
+      'policy_denied',
+      `cannot hold '${typeName}' still to check it for stored rows: the store neither locks a type's rows nor runs one transaction at a time`
+    );
+  }
+  return typeHasRows(dataset, typeName);
 }
 
 /**
@@ -159,7 +191,7 @@ async function defined(
   typeName: string,
   exceptId?: Id
 ): Promise<string | undefined> {
-  if (await typeHasRows(dataset, typeName)) return 'has stored rows';
+  if (await typeHasRowsHeld(dataset, typeName)) return 'has stored rows';
   const live = await dataset.read('TypeProposal', {
     where: {
       AND: [{ typeName: { eq: typeName } }, { applied: { eq: true } }, { archived: { eq: false } }]
@@ -280,7 +312,7 @@ export function gateTypeProposalRemoval(
           );
         }
         const stored = row.typeName;
-        if (typeof stored === 'string' && (await typeHasRows(dataset, stored))) {
+        if (typeof stored === 'string' && (await typeHasRowsHeld(dataset, stored))) {
           throw deny(
             ctx,
             `'${stored}' has stored rows; this change to its proposal drops or redefines the type, which needs '${dropCapability}' as drop_type does`
@@ -367,7 +399,7 @@ export function gateFieldProposalRemoval(
       const populated = async (r: Record<string, unknown>): Promise<string | undefined> => {
         const target = r.targetType;
         if (typeof target !== 'string') return 'names no target type to check for stored rows';
-        return (await typeHasRows(dataset, target)) ? `'${target}' has stored rows` : undefined;
+        return (await typeHasRowsHeld(dataset, target)) ? `'${target}' has stored rows` : undefined;
       };
       if (row !== null && isLiveProposal(row)) {
         const why = await populated(row);
@@ -409,17 +441,31 @@ function installsNamespace(row: Record<string, unknown>): boolean {
 }
 
 /**
- * Whether namespace `ns` holds a stored row in any type this engine registers
- * there, proposal records included; undefined when this engine does not hold
- * the namespace, so it cannot be checked.
+ * Why namespace `ns` may hold a stored row in a type this engine registers
+ * there, proposal records included, or undefined when it holds none. Where
+ * `ns` locks its rows, the gate's transaction (`tx`) must share its store, so
+ * that each type's answer holds until that transaction ends, as
+ * {@link typeHasRowsHeld}'s does.
  */
-async function namespaceHasRows(store: RegistryStore, ns: string): Promise<boolean | undefined> {
-  if (!store.has(ns)) return undefined;
+async function namespaceRows(
+  store: RegistryStore,
+  ns: string,
+  tx: Dataset | undefined
+): Promise<string | undefined> {
+  const unchecked = 'is not held here to check for stored rows';
+  if (!store.has(ns)) return unchecked;
   const { registry, dataset } = store.getBinding(ns);
+  const locked = tx?.txScopeId === dataset.txScopeId ? tx?.hasRowsLocked?.bind(tx) : undefined;
+  if (dataset.hasRowsLocked !== undefined && locked === undefined) return unchecked;
   for (const [name, entry] of registry.all()) {
-    if (entry.kind === 'type' && (await typeHasRows(dataset, name))) return true;
+    if (entry.kind !== 'type') continue;
+    // shortcut: a store without row locks (memory) is read unheld, so a first row
+    // racing the check can slip past; such a store serves one process, for tests.
+    const has = locked === undefined ? await typeHasRows(dataset, name) : await locked(name, ns);
+    if (has === undefined) return `cannot be checked for stored rows now, as ${busy(name)}`;
+    if (has) return 'has stored rows';
   }
-  return false;
+  return undefined;
 }
 
 /** Whether a NamespaceProposal that is not archived names `ns`. */
@@ -551,10 +597,8 @@ export function gateNamespaceProposalLiveness(
           installsNamespace(row) &&
           (after === undefined || !installsNamespace(after) || to !== from);
         if (leaves && typeof from === 'string' && !holds(from)) {
-          const rows = await namespaceHasRows(store, from);
-          if (rows !== false) {
-            const why =
-              rows === true ? 'has stored rows' : 'is not held here to check for stored rows';
+          const why = await namespaceRows(store, from, dataset);
+          if (why !== undefined) {
             throw deny(
               from,
               `namespace '${from}' ${why}; this change to its proposal takes it off at the next boot, which needs '${dropCapability}' as drop_namespace does`

@@ -795,6 +795,22 @@ describe('removing a NamespaceProposal', () => {
     }
   });
 
+  it('of a namespace whose store locks rows the gate cannot hold needs the drop capability', async () => {
+    const control = new MemoryDataset({ namespace: '_system_proposals' });
+    await control.write('NamespaceProposal', [row({ id: 'np', ns: 'home' })]);
+    // 'home' locks its rows, but the control plane's transaction is not on its store.
+    const home = Object.assign(new MemoryDataset({ namespace: 'home' }), {
+      hasRowsLocked: async () => false
+    });
+    const { engine } = await boot(new MemoryDataset({ namespace: 'app' }), control, [home]);
+    for (const [key, params] of removals.filter(([, p]) => p.archived !== true)) {
+      expect((await run(engine, key, params)).errors?.[0], key).toMatchObject({
+        code: 'policy_denied',
+        message: expect.stringContaining('is not held here to check for stored rows')
+      });
+    }
+  });
+
   it('passes a change replay never reads, and any change to a proposal that is not live', async () => {
     const { control, engine } = await seeded(true);
     const benign = { id: 'np', proposedReason: 'clarified' };
