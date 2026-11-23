@@ -2,9 +2,11 @@
  * The proposal row gates check a stored row under a row lock. The write lands
  * on the row the check read, whatever its id names by the time it runs, from
  * a single write or an array; a store that can neither lock a row nor runs
- * the check inside one of its one-at-a-time transactions is refused; and a
+ * the check inside one of its one-at-a-time transactions is refused; a
  * mutate array locks its rows in id order, so two arrays naming the same rows
- * queue rather than deadlock (pg, skipped when POSTGRES_URL is absent).
+ * queue rather than deadlock; and a check that a type has no stored rows
+ * refuses while a row of it is being written (pg, skipped when POSTGRES_URL
+ * is absent).
  */
 
 import { Engine, loadPlugins, MemoryEdgesStore } from '@mnmal-ai/substrate-core';
@@ -58,7 +60,11 @@ function over(ds: Dataset, props: Record<string, unknown>): Dataset {
   });
 }
 
-/** `ds` with a row lock that runs `during` the first time it is taken, as a write committing meanwhile. */
+/**
+ * `ds` as a store that locks rows, as pg does: a row lock that runs `during`
+ * the first time it is taken, as a write committing meanwhile, and a held
+ * stored-rows check.
+ */
 function lockingWhile(ds: Dataset, during: () => Promise<unknown>): Dataset {
   let pending: (() => Promise<unknown>) | undefined = during;
   return over(ds, {
@@ -66,7 +72,9 @@ function lockingWhile(ds: Dataset, during: () => Promise<unknown>): Dataset {
       const run = pending;
       pending = undefined;
       await run?.();
-    }
+    },
+    hasRowsLocked: async (type: string) =>
+      (await ds.read(type, { includeDeleted: true, limit: 1 })).rows.length > 0
   });
 }
 
@@ -245,13 +253,27 @@ describe('a proposal row gate (memory)', () => {
       ).resolves.toMatchObject({ id: params.id });
     }
   });
+
+  it('refuses a stored-rows check it cannot hold still, memory outside a transaction included', async () => {
+    const { ext, call } = await boot();
+    const params = { ...base, typeName: 'Fresh', fieldsJson: `{"n":${clean}}`, applied: true };
+    for (const dataset of [over(ext, { serialTransactions: undefined }), ext]) {
+      await expect(call('createTypeProposal', READER, params, dataset)).rejects.toMatchObject({
+        code: 'policy_denied',
+        message: expect.stringContaining("cannot hold 'Fresh' still")
+      });
+    }
+    await expect(
+      ext.withTransaction((tx) => call('createTypeProposal', READER, params, tx))
+    ).resolves.toMatchObject({ typeName: 'Fresh' });
+  });
 });
 
 const POSTGRES_URL = process.env.POSTGRES_URL;
 const EXT = 'klockext';
 const TRIALS = 20;
 
-describe.skipIf(!POSTGRES_URL)('two arrays naming the same proposal rows (pg)', () => {
+describe.skipIf(!POSTGRES_URL)('proposal gates racing other writes (pg)', () => {
   let sql: Sql;
   let engine: Engine;
   let ext: Dataset;
@@ -305,6 +327,33 @@ describe.skipIf(!POSTGRES_URL)('two arrays naming the same proposal rows (pg)', 
       ids.push((env.data[`${EXT}/create${type}`] as { id: string }).id);
     }
     return ids;
+  }
+
+  /**
+   * Runs `gate` while another transaction holds a new row of `type` written
+   * but uncommitted; returns the gate's first error.
+   */
+  async function gateDuringInsert(type: string, gate: () => Promise<PackEnvelope>) {
+    let release!: () => void;
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    let written!: () => void;
+    const wrote = new Promise<void>((r) => {
+      written = r;
+    });
+    const insert = ext.withTransaction(async (tx) => {
+      await tx.write(type, [{ n: 1 }]);
+      written();
+      await held;
+    });
+    await wrote;
+    try {
+      return (await gate()).errors?.[0];
+    } finally {
+      release();
+      await insert;
+    }
   }
 
   const arrayOf = (ids: string[], params: Record<string, unknown>) =>
@@ -396,4 +445,41 @@ describe.skipIf(!POSTGRES_URL)('two arrays naming the same proposal rows (pg)', 
     }
     expect(violations, JSON.stringify(tally, null, 1)).toEqual([]);
   }, 180_000);
+  it('refuses an applied TypeProposal for a type whose first row is being written', async () => {
+    const err = await gateDuringInsert('Ghost', () =>
+      mutate('createTypeProposal', {
+        params: { ...base, typeName: 'Ghost', fieldsJson: `{"n":${clean}}`, applied: true },
+        fields: { id: true }
+      })
+    );
+    expect(err).toMatchObject({
+      code: 'policy_denied',
+      message: expect.stringContaining("'Ghost' is being written")
+    });
+  });
+
+  it('refuses a live FieldProposal on a type whose row is being written', async () => {
+    const env = await mutate('propose_type', {
+      params: { typeName: 'Quiet', fields: { n: JSON.parse(clean) } },
+      fields: { id: true }
+    });
+    expect(env.errors).toBeUndefined();
+    await storageSettled();
+    const err = await gateDuringInsert('Quiet', () =>
+      mutate('createFieldProposal', {
+        params: {
+          ...base,
+          applied: true,
+          targetType: 'Quiet',
+          fieldName: 'late',
+          fieldSpecJson: clean
+        },
+        fields: { id: true }
+      })
+    );
+    expect(err).toMatchObject({
+      code: 'policy_denied',
+      message: expect.stringContaining("'Quiet' is being written")
+    });
+  });
 });
