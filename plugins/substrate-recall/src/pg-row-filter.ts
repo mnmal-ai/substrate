@@ -18,15 +18,19 @@ import type postgres from 'postgres';
 import type { Sql } from 'postgres';
 import { type KnnRowFilter, ROW_FILTER_FIELD } from './embeddings-store.js';
 
-/** The row body over `r`, as the dataset read path returns it: `rowsFrom` names it `body`. */
-export const ROW_BODY_SQL = 'r.body';
+/**
+ * The row over `r`, as the dataset read path returns it: `rowsFrom`'s `body`
+ * with `id` from the key column, since a stored body carries `id` only on rows
+ * written before the key column held it. A body's own `id` wins, as on read.
+ */
+export const ROW_BODY_SQL = "jsonb_build_object('id', r.id) || r.body";
 
 /**
- * A hit's row: the body plus its `shortId` from `short_ids`, which the body
+ * A hit's row: the row plus its `shortId` from `short_ids`, which the body
  * does not carry. Probed once per returned row (short_ids_row_uniq_idx).
  */
 export const HIT_BODY_SQL =
-  "r.body || coalesce((SELECT jsonb_build_object('shortId', s.short_id) FROM short_ids s " +
+  `${ROW_BODY_SQL} || coalesce((SELECT jsonb_build_object('shortId', s.short_id) FROM short_ids s ` +
   "WHERE s.namespace = r.namespace AND s.type = r.type AND s.row_id = r.id), '{}'::jsonb)";
 
 /** A type and its rows' ref; `ref` is undefined when the type has no table yet. */

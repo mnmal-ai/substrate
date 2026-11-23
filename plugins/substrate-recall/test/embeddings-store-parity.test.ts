@@ -329,6 +329,33 @@ describe.skipIf(!isPgGated)('fetchEmbeddings parity (memory vs pg)', () => {
     expect(pgOut[0]!.row).toEqual(rowBody);
   });
 
+  it('pg hit rows carry the key column id when the stored body has none', async () => {
+    // A row written through the dataset keeps `id` in the key column only.
+    await putRows(sql, [
+      { namespace: 'claude', type: 'Decision', id: 'dec-1', body: { topic: 'auth' } }
+    ]);
+    await pg.upsert({
+      rowNamespace: 'claude',
+      rowType: 'Decision',
+      rowId: 'dec-1',
+      vector: vec(1),
+      model: MODEL
+    });
+    const hits = await pg.knnSearch({
+      namespace: 'claude',
+      type: 'Decision',
+      model: MODEL,
+      vector: vec(1),
+      k: 1
+    });
+    expect(hits.map((h) => h.row)).toEqual([{ id: 'dec-1', topic: 'auth' }]);
+    const fetched = await pg.fetchEmbeddings(
+      [{ namespace: 'claude', type: 'Decision', id: 'dec-1' }],
+      MODEL
+    );
+    expect(fetched[0]?.row).toEqual({ id: 'dec-1', topic: 'auth' });
+  });
+
   // Real-PG execution of the batched VALUES-join UPDATE. salience.test.ts only
   // asserts SQL shape against a fake sql; these catch type-inference surprises
   // in the parameterised VALUES list.
