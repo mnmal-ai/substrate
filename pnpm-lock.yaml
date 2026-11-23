@@ -235,7 +235,7 @@ catalogs:
       version: 19.3.1
     semver:
       specifier: ^7.8.5
-      version: 7.8.5
+      version: 7.8.6
     tsdown:
       specifier: ^0.23.0
       version: 0.23.1
@@ -354,7 +354,7 @@ importers:
         version: 4.1.0
       semver:
         specifier: 'catalog:'
-        version: 7.8.5
+        version: 7.8.6
       zod:
         specifier: 'catalog:'
         version: 4.6.7
@@ -632,7 +632,7 @@ importers:
         version: link:../substrate-types
       semver:
         specifier: 'catalog:'
-        version: 7.8.5
+        version: 7.8.6
     devDependencies:
       '@mnmal-ai/substrate-config':
         specifier: workspace:*
@@ -1150,7 +1150,7 @@ importers:
         version: 7.8.0
       semver:
         specifier: 'catalog:'
-        version: 7.8.5
+        version: 7.8.6
       tsdown:
         specifier: 'catalog:'
         version: 0.23.1(tsx@4.23.15)(typescript@7.0.2)
@@ -4041,8 +4041,8 @@ packages:
   semver-compare@1.0.0:
     resolution: {integrity: sha512-YM3/ITh2MJ5MtzaM429anh+x2jiLVjqILF4m4oyQB18W7Ggea7BfqdH/wGMK7dDiMghv/6WG7znWMwUDzJiXow==}
 
-  semver@7.8.5:
-    resolution: {integrity: sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA==}
+  semver@7.8.6:
+    resolution: {integrity: sha512-9lpSSU4Mly3mrtruwLs1eLK6+gzbzqeBFwRNjIjE+9LuDpWdYctrQlQ3ej1Ilgi7gknpsTRnPoLP8DpCHqHIJw==}
     engines: {node: '>=10'}
     hasBin: true
 
@@ -6336,7 +6336,7 @@ snapshots:
       process-warning: 5.1.1
       rfdc: 1.4.1
       secure-json-parse: 4.1.1
-      semver: 7.8.5
+      semver: 7.8.6
       toad-cache: 3.7.4
 
   fastq@1.20.3:
@@ -6421,7 +6421,7 @@ snapshots:
       es6-error: 4.1.1
       matcher: 3.0.0
       roarr: 2.15.4
-      semver: 7.8.5
+      semver: 7.8.6
       serialize-error: 7.0.1
 
   globalthis@1.0.4:
@@ -7160,7 +7160,7 @@ snapshots:
 
   semver-compare@1.0.0: {}
 
-  semver@7.8.5: {}
+  semver@7.8.6: {}
 
   send@1.2.1:
     dependencies:
