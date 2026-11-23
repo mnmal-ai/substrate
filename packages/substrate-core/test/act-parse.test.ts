@@ -9,6 +9,10 @@ const cases: Array<[string, ActStep[]]> = [
     [{ action: 'close', type: 'Todo', refs: ['#2014', '#2015'], args: { resolution: 'wont_do' } }]
   ],
   [
+    'close Todo #17,#20 [#21,#22] [#23] #24',
+    [{ action: 'close', type: 'Todo', refs: ['#17', '#20', '#21', '#22', '#23', '#24'] }]
+  ],
+  [
     'log SessionLog summary="Shipped beta.9" closes=#2014,#2015',
     [
       {
@@ -88,7 +92,10 @@ describe('parseSketch', () => {
     ['close Todo #1 as t', 1, 'as needs $name'],
     ['close Todo #1; close Todo a=1 a=2', 2, "duplicate arg 'a'"],
     ['close', 1, 'missing type'],
-    ['? Todo extra', 1, 'help takes at most a type']
+    ['? Todo extra', 1, 'help takes at most a type'],
+    ['close Todo #1,', 1, 'unexpected token'],
+    ['close Todo []', 1, 'unexpected token'],
+    ['close Todo #1,"#2"', 1, 'unexpected token']
   ])('refuses %j', (text, step, problem) => {
     expect(parseSketch(text)).toEqual({
       refusal: {

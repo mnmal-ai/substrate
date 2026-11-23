@@ -285,7 +285,7 @@ const LEAN_CONVENTIONS = [
   'Substrate holds typed records. Use `act` for every operation: send a sketch, get a one-line ack and a result id.',
   '- A step is `<action> <Type> [#shortId …] [field=value …] [as $name]`; split steps with `;` or newlines. Lists are `a,b` or `[a,b]`. Built-ins: create, update, find, count. `?` lists types and actions, `? Type` shows one.',
   "- `define Type.name field=value field=$ …` coins an update action for you; after 5 uses an hour apart it is everyone's.",
-  '- `find` answers its rows in `found`: id, shortId and the fields named by `fields=a,b`. Everything in one sketch commits together or not at all; pass `result` to fetch the full outcome (short-lived).'
+  '- `find` answers its rows in `found`: id, shortId and the fields named by `fields=a,b`. Everything in one sketch commits together or not at all (a leading `define` commits first); pass `result` to fetch the full outcome (short-lived).'
 ].join('\n');
 
 /** The lean session's `instructions`: the conventions, then one index line per namespace; `_system*` namespaces are left out. */

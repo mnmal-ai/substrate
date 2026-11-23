@@ -121,6 +121,17 @@ function argValue(elems: Elem[], raw: string): ActValue {
   return !first.quoted && first.v === 'null' ? null : first.v;
 }
 
+/** A bare reference, or a list of them written `#1,#2` or `[#1,#2]`; null when the token is anything else. */
+function refList(t: Tok): string[] | null {
+  if (t.key !== null || t.elems.some((e) => e.quoted)) return null;
+  const vs = t.elems.map((e) => e.v);
+  if (t.raw.length > 1 && t.raw.startsWith('[') && t.raw.endsWith(']')) {
+    vs[0] = (vs[0] as string).slice(1);
+    vs[vs.length - 1] = (vs.at(-1) as string).slice(0, -1);
+  }
+  return vs.every((v) => REF.test(v)) ? vs : null;
+}
+
 function parseStep(text: string, n: number): ActStep | { refusal: ActRefusal } {
   const toks = tokenize(text);
   const [head, second] = toks as [Tok, Tok | undefined];
@@ -155,10 +166,12 @@ function parseStep(text: string, n: number): ActStep | { refusal: ActRefusal } {
       if (name === undefined) return refuse(n, t.raw, 'as needs $name');
       step.as = name;
       break;
-    } else if (plain(t) && REF.test(word(t))) {
+    } else {
+      const refs = refList(t);
+      if (refs === null) return refuse(n, t.raw, 'unexpected token');
       step.refs ??= [];
-      step.refs.push(word(t));
-    } else return refuse(n, t.raw, 'unexpected token');
+      step.refs.push(...refs);
+    }
   }
   return step;
 }

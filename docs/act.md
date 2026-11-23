@@ -118,7 +118,7 @@ The reply is one ack, such as `defined work/Todo.start (yours; public after 5 us
 
 - **Grammar.** `define <Type>.<name> [past] field=value …`. `<Type>` resolves as in any sketch. A name matches `^[a-z][A-Za-z0-9]{1,31}$` and may not be `create`, `update`, `find`, `count` or `define`. The optional bare word after the name is the past tense for acks.
 - **Values.** `field=<literal>` fixes the value, and it must fit the field. `field=$` is a required param named after the field. `field=$name` names it. A trailing `?` (`$?`, `$name?`) makes it optional, and a param left out leaves the field untouched. `field=now` sets a date field to the server time.
-- **One per call.** A `define` stands alone, as `?` does. A dry run checks it and stores nothing.
+- **First, then use it.** A sketch holds at most one `define`, and it must be the first step. The steps after it compile against the word it coins, so `define Todo.unblock unblocked status=open blockedBy=null; unblock Todo #6 #9` coins the word and uses it in one call. The whole sketch compiles before anything runs, so a step that does not resolve refuses all of it. A proposal never shares a transaction, so the `define` then commits on its own and the remaining steps run as one transaction after it. If they fail at run time, for example on a missing `#N`, the word stays defined and the error says `step 1 committed`. A dry run checks the whole sketch and stores nothing.
 - **Update shortcuts only.** A coined word has no `then`, no defaults and no list params. A word can set only what `update` could set, and every use runs under the caller's own grants and type policies.
 
 ### Who may coin
@@ -165,7 +165,7 @@ A sketch is text, or the same thing as JSON (`ActStep[]`). Steps are separated b
 
 - **Actions.** A declared action, a word coined with `define` (see *Coining actions*), or a built-in on every stored type: `create` and `update` (the field-only fallback), `find` and `count`. Sketches cannot delete. Use the generated delete mutation for that.
 - **Type.** `Todo` resolves to the one readable type of that name. `work/Todo` always works. A default namespace breaks ties: `namespace` in the request, filled from `SUBSTRATE_NAMESPACE` by the MCP tool and from `--ns` by the CLI. Remaining ambiguity is refused with the qualified choices.
-- **References.** `#12` is a shortId; a full id also works. Several references apply the action to each: `close Todo #12 #13`. `find` and `count` take references as a filter, all shortIds or all full ids: `find Todo #12 #13 fields=status`.
+- **References.** `#12` is a shortId; a full id also works. Several references apply the action to each: `close Todo #12 #13`, also written `#12,#13` or `[#12,#13]`. `find` and `count` take references as a filter, all shortIds or all full ids: `find Todo #12 #13 fields=status`.
 - **Values.** Bare words, double-quoted strings, numbers, `true`, `false`, `null`, and lists, written `a,b` or in brackets (`[a,b]`, `[a]`, `[]`), coerced by the field or param type. A quoted value may contain `;`, a newline, `=`, `#` and `,`, and stays one value. Inside quotes, `\"`, `\\` and `\n` are escapes.
 - **Extra fields.** A sketch may pass `field=value` beyond an action's params, for example `close Todo #12 title="Done early"`. Each must name a field of the type that the action's `set` does not fix. Naming a fixed field, such as `close Todo #12 archived=false`, is refused, so no sketch can undo what the action guarantees. No write takes an `id` arg: the id comes from the reference.
 - **Bindings.** `create Todo title="x" as $t` names the record for later steps of the same sketch. `$t` resolves where a record reference goes: as a step's reference (`update Todo $t priority=high`), in a `list` param, and as the value of a crossRef field (`create Note todo=$t`). A crossRef field also takes `#12`. In any other field a binding is plain text: `title=$t` writes `$t`. A list of crossRefs takes full ids only.
@@ -195,7 +195,7 @@ Acks name what happened: `closed work/Todo #12 #13`. A `find` acks as `12 work/T
 
 `mode: "dry-run"` runs every step inside the transaction and rolls back, so it meets the refusals a real run would. The ack says it was a dry run, and the reply's `plan` lists each compiled step as one line with every value it sends, such as `close work/Todo id=12 status=closed resolution=wont_do archived=true`. Checking a dry run takes no result fetch. Hooks (`postWrite`, `onWrite`, `afterTx`, subscribers) fire only on commit.
 
-One sketch is one transaction: it commits whole or not at all. A step that fails at execution, such as `close Todo #1; close Todo #999999`, aborts the lot and the reply names the failing step.
+One sketch is one transaction: it commits whole or not at all. A step that fails at execution, such as `close Todo #1; close Todo #999999`, aborts the lot and the reply names the failing step. The one exception is a leading `define`, which commits first (see *Coining actions*).
 
 `idempotencyKey` in the request replays an earlier successful write by the same caller: its ack and result id, while its result record lives. A failed run is not replayed, so a retry runs again, and a dry run ignores the key. Two concurrent calls with the same caller and key run once and return the same result id.
 
