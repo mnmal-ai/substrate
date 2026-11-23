@@ -16,12 +16,10 @@
  *     throw for a partial deny.
  *   - `mutate` is the same shape, run inside a single `dataset.withTransaction`
  *     (§5.3 / G1): if any resolver throws, every prior mutation in the frame
- *     rolls back and the promise rejects with that resolver's error. A
- *     resolver refusing with a `ResolverFrameError` rolls the frame back too:
- *     its error is kept and every other entry reports `frame_rolled_back`.
- *     Policy denials surface in `envelope.errors` without aborting — policy is
- *     an authz decision, not a substrate failure, so it does not trigger
- *     rollback.
+ *     rolls back and the promise rejects with that resolver's error. Any
+ *     refusal of an entry (outside the grant, denied by policy, invalid, or a
+ *     resolver's `ResolverFrameError`) rolls the frame back too: its error is
+ *     kept and every other single-frame entry reports `frame_rolled_back`.
  *   - G1 cross-substrate refusal: if a mutate's single-frame entries span more
  *     than one substrate, the engine returns `cross_tx_scope_refused` and
  *     calls NO resolvers. Namespaces sharing a substrate share one tx.
