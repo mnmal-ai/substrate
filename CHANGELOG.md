@@ -2,6 +2,19 @@
 
 Releases before 1.0.0-alpha.21 are recorded only in their GitHub release notes.
 
+## 1.0.0-beta.13 (2026-11-23)
+
+Changes since 1.0.0-beta.12. No schema version moves and there is no migration. Sketches, frames and replies keep their meaning, and the `lean` MCP preset is unchanged. On Postgres, a write inside a transaction now takes a shared per-type advisory lock, one extra statement per transactional write.
+
+### Fixed
+
+- **Proposal gates hold their stored-rows check (#303).** The TypeProposal, FieldProposal and NamespaceProposal gates, and `propose_type`'s storage check, let a caller without the drop capability change a type only while it has no stored rows. That check was an unlocked read, so a row committed meanwhile could slip past it, and the type or field was redefined at the next boot on a type that had rows. The check now holds its answer until the transaction ends. `Dataset` gains an optional `hasRowsLocked(type, namespace?)`. On Postgres, `hasRowsLocked` takes the type's lock exclusively, retrying with backoff for up to 2 s, and a type still being written is refused as `policy_denied` (`… is being written; retry`). Memory runs one transaction at a time and needs no lock.
+- **Recall hit rows on Postgres carry `id` (#305).** A hit's row was the stored body plus `shortId`, and a body holds `id` only on rows written before the key column held it. So rows written by the current dataset came back without `id`, and a row that both arms found was listed twice, each copy with a one-arm RRF score. The row now takes `id` from the key column, and a body's own `id` still wins, as on read.
+
+### Dependencies
+
+- `postgres` (postgres.js) 4.1.0 to 4.1.1 (#301).
+
 ## 1.0.0-beta.12 (2026-11-22)
 
 Changes since 1.0.0-beta.11. No schema version moves, there is no migration, and every sketch that compiled before compiles to the same plan. One kind of query that used to answer now refuses: a walk carrying an extension operator. It matched nothing before. The `lean` MCP preset's fixed cost is 2,051 bytes, up from 2,016.
