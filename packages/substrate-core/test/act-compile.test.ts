@@ -688,8 +688,27 @@ describe('compileSketch help', () => {
     });
   });
 
-  it('refuses help beside an action', () => {
-    expect(compile('close Todo #1; ? Todo')).toEqual(refusal(2, '?', 'help stands alone'));
+  it('answers help beside the plan the other steps compile to', () => {
+    expect(compile('? Todo; find Todo status=open')).toMatchObject({
+      plan: { steps: [{ step: 1, source: 2, action: 'find' }] },
+      help: { type: 'work/Todo' }
+    });
+    expect(compile('close Todo #1; ? Todo; ?')).toMatchObject({
+      plan: { steps: [{ step: 1, source: 1, action: 'close' }] },
+      help: [{ type: 'work/Todo' }, { types: expect.any(Object) }]
+    });
+  });
+
+  it('lets help come before define, and counts only help steps against the cap', () => {
+    const r = compile('? Todo; define Todo.xx status=open; xx Todo #1', {
+      ...opts,
+      defineKey: '_system_proposals/propose_action'
+    });
+    expect(r).toMatchObject({
+      plan: { steps: [{ action: 'define' }, { action: 'xx', source: 3 }] },
+      help: { type: 'work/Todo' }
+    });
+    expect(compile(`${Array(10).fill('?').join('; ')}; find Todo`)).toHaveProperty('plan');
   });
 
   it('refuses more than 10 help steps', () => {

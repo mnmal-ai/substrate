@@ -557,6 +557,7 @@ function validateLeaf(
           [...path, op]
         );
       }
+      refuseExtensionInWalk(op, ctx, [...path, op]);
       // Delegate value validation to the extension operator's own validate fn.
       const vResult = extOp.validate(value);
       if (!vResult.ok) {
@@ -804,6 +805,7 @@ function validateWhereAgainstFields(
       // before the SQL builder sees them.
       const extOp = getExtensionOperator(fieldName);
       if (extOp !== undefined) {
+        refuseExtensionInWalk(fieldName, ctx, [...path, fieldName]);
         const vResult = extOp.validate((where as Record<string, unknown>)[fieldName]);
         if (!vResult.ok) {
           throw new FilterValidationError(
@@ -831,6 +833,17 @@ function validateWhereAgainstFields(
     if (def === METADATA_VIRTUAL_FIELDS.seq) {
       assertSeqIntegers((where as Record<string, unknown>)[fieldName], [...path, fieldName]);
     }
+  }
+}
+
+/** Extension operators are resolved only in the frame's own where, so inside a walk one would match nothing. */
+function refuseExtensionInWalk(op: string, ctx: WalkContext, at: string[]): void {
+  if (ctx.walk.depth > 0) {
+    throw new FilterValidationError(
+      'capability_unsupported',
+      `operator '${op}' runs only in the frame's own where, not inside a walk`,
+      at
+    );
   }
 }
 

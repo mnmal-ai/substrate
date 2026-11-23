@@ -170,7 +170,7 @@ A sketch is text, or the same thing as JSON (`ActStep[]`). Steps are separated b
 - **Extra fields.** A sketch may pass `field=value` beyond an action's params, for example `close Todo #12 title="Done early"`. Each must name a field of the type that the action's `set` does not fix. Naming a fixed field, such as `close Todo #12 archived=false`, is refused, so no sketch can undo what the action guarantees. No write takes an `id` arg: the id comes from the reference.
 - **Bindings.** `create Todo title="x" as $t` names the record for later steps of the same sketch. `$t` resolves where a record reference goes: as a step's reference (`update Todo $t priority=high`), in a `list` param, and as the value of a crossRef field (`create Note todo=$t`). A crossRef field also takes `#12`. In any other field a binding is plain text: `title=$t` writes `$t`. A list of crossRefs takes full ids only.
 - **`find` and `count`.** They filter on `field=value` pairs and add no hidden filters, so what you see is what runs. A `find` row holds `id`, `shortId` and the fields `fields=a,b` names, in the reply and in the result record. Each `find` reads at most the server's page maximum (1000 by default), the result record keeps at most 1000 rows across all its `find` steps, and the ack says when either truncated. `count` needs a store that answers aggregate reads (Postgres). A plain memory store refuses `count` exactly as `query` does.
-- **Help.** `?` lists the readable types by namespace with their action names. `? Todo` shows that type's actions with their params, and its fields. Several help steps may share a sketch, `? Todo; ? Note`, and the help is then a list in step order. Help beside any other step is refused. Help writes no result record.
+- **Help.** `?` lists the readable types by namespace with their action names. `? Todo` shows that type's actions with their params, and its fields. Several help steps may share a sketch, `? Todo; ? Note`, and the help is then a list in step order. Help may also share a sketch with other steps, `? Todo; find Todo #12 fields=status`: the reply carries `help` beside the usual ack and `found`, and the help is computed before any step runs. A sketch of help alone writes no result record.
 
 The same sketch against the same schema version always compiles to the same plan.
 
@@ -180,7 +180,7 @@ Limits: at most 50 write steps after expansion. Bridged and virtual namespaces a
 
 | Outcome | Reply |
 |---|---|
-| Success | `{ "ok": true, "ack": "…", "result": "<id>", "found": [ … ] }` |
+| Success | `{ "ok": true, "ack": "…", "result": "<id>", "found": [ … ] }`, with `help` when the sketch also had `?` steps |
 | Help | `{ "ok": true, "help": { … } }`, or a list of them |
 | Refusal | `{ "ok": false, "refusal": { "code": "sketch_unresolved", "step", "token", "problem", "choices", "nearest" } }` |
 | Failure | `{ "ok": false, "error": { "code", "message", "step" }, "result": "<id>" }` |

@@ -45,7 +45,7 @@ It ANDs with its siblings, like any other key of a where object, and it can sit 
 } } } }
 ```
 
-A walk names exactly one of `in` and `out`. The far side's `where` is validated as a top-level read of the far type would be, so its fields and operators are those of the far type.
+A walk names exactly one of `in` and `out`. The far side's `where` is validated as a top-level read of the far type would be, so its fields and operators are those of the far type. A plugin's extension operator, such as `embeddingSimilar`, is the exception: it is refused there with `capability_unsupported`, and works only in the frame's own `where`.
 
 Walks chain: a walk's `where` can hold another walk. Runs of any job in the `api` repo:
 

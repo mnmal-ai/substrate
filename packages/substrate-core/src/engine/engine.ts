@@ -1312,8 +1312,8 @@ export class Engine implements ActHandle {
       ...(this.#actionLayer !== undefined ? { defineKey: this.#actionLayer.proposeKey } : {})
     });
     if ('refusal' in compiled) return { ok: false, refusal: compiled.refusal };
-    if ('help' in compiled) return { ok: true, help: compiled.help };
-    const { plan } = compiled;
+    if (!('plan' in compiled)) return { ok: true, help: compiled.help };
+    const { plan, help } = compiled;
 
     // A proposal never shares a transaction, so a leading `define` commits first and the rest runs as one after it.
     const [first] = plan.steps;
@@ -1388,7 +1388,8 @@ export class Engine implements ActHandle {
           ack,
           result,
           ...inlineFinds(outcomes),
-          ...(mode === 'dry-run' ? { plan: plan.steps.map(planLine) } : {})
+          ...(mode === 'dry-run' ? { plan: plan.steps.map(planLine) } : {}),
+          ...(help !== undefined ? { help } : {})
         }
       : { ok: false, error, result };
   }

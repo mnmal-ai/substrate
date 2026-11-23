@@ -117,6 +117,17 @@ describe('substrate act', () => {
     const help = await run(['?'], { ok: true, help: { types: { work: { Todo: ['close'] } } } });
     expect(help.code).toBe(0);
     expect(JSON.parse(help.out)).toEqual({ types: { work: { Todo: ['close'] } } });
+    const both = await run(['?', 'Todo;', 'count', 'Todo'], {
+      ok: true,
+      ack: 'work/Todo count 2',
+      result: 'r1',
+      help: { type: 'work/Todo' }
+    });
+    expect(both.code).toBe(0);
+    expect(both.out.endsWith('work/Todo count 2\nresult r1\n')).toBe(true);
+    expect(JSON.parse(both.out.slice(0, both.out.indexOf('work/Todo count')))).toEqual({
+      type: 'work/Todo'
+    });
     const refusal = { ok: false, refusal: { step: 1, problem: 'p', choices: [], nearest: null } };
     const j = await run(['--json', 'x'], refusal);
     expect(j.code).toBe(1);

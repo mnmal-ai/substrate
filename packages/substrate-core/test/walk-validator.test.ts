@@ -4,9 +4,10 @@
 
 import type { TypeRef } from '@mnmal-ai/substrate-filter';
 import type { FilterCapabilities, TypeSchema, WhereClause } from '@mnmal-ai/substrate-types';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FilterValidationError, validateFilter } from '../src/filter/validator.js';
 import { MAX_DATE_SHIFT_MS } from '../src/filter/walk-validator.js';
+import { clearExtensionOperators, registerExtensionOperator } from '../src/index.js';
 
 const ref = (type: string, ns = 'cards') =>
   ({ kind: 'crossRef', ns, type, onDelete: 'set_null' }) as const;
@@ -1582,5 +1583,27 @@ describe('walked group keys', () => {
       expect(err.message).toContain("'customer.region'");
       expect(err.message).toContain('groupBy');
     }
+  });
+});
+
+describe('extension operators and walks', () => {
+  afterEach(() => clearExtensionOperators());
+
+  it('refuses an extension operator inside a walk, where it would match nothing, and accepts it at the root', () => {
+    registerExtensionOperator('similarTo', {
+      validate: (value) => ({ ok: true, value }),
+      execute: async (value) => ({ ok: true, value })
+    });
+    const inside = [
+      listing({ where: { similarTo: 'x' } }),
+      listing({ where: { seller: { similarTo: 'x' } } }),
+      { _agg: { in: 'cards/Observation.cert', count: true, where: { similarTo: 'x' } }, gte: 1 }
+    ];
+    for (const where of inside) {
+      const r = refusal(where);
+      expect(r.code).toBe('capability_unsupported');
+      expect(r.path.at(-1)).toBe('similarTo');
+    }
+    expect(() => check({ similarTo: 'x', label: { similarTo: 'y' }, ...listing() })).not.toThrow();
   });
 });

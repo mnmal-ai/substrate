@@ -579,7 +579,7 @@ Hard-destructive operations (purge, the admin drop routes) can be switched off p
 
 `eq: null` is the is-null test and works on every kind.
 
-Plugins can contribute extra operators (the recall plugin adds `embeddingSimilar`, §5.10).
+Plugins can contribute extra operators (the recall plugin adds `embeddingSimilar`, §5.10). They work in the frame's own `where`, including under `AND`, `OR` and `NOT`. Inside a `_walk` or an `_agg` they are refused with `capability_unsupported`, because they are resolved before the query runs and could not be judged per hop.
 
 **Logical combinators:** `AND` / `OR` (arrays) and `NOT` (single). Multiple fields at one level are implicitly ANDed.
 
