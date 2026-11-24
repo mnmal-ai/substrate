@@ -75,6 +75,17 @@ const FRAME_STREAM = /^application\/vnd\.substrate\.frames\+/u;
  * When `cors` is unset on `FastifySubstrateServerOptions` the CORS plugin is never
  * registered.
  */
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/** The host of an `Origin` value, or null when it is not a URL (`null`, garbage). */
+function hostOf(origin: string): string | null {
+  try {
+    return new URL(origin).host;
+  } catch {
+    return null;
+  }
+}
+
 export interface CorsOptions {
   origins: string[] | '*';
   credentials?: boolean;
@@ -255,6 +266,20 @@ export class FastifySubstrateServer implements SubstrateServer {
         allowedHeaders: ['Authorization', 'Content-Type', 'Accept']
       });
     }
+
+    // A browser names its page in `Origin` on every cross-origin write, with
+    // or without a preflight. A write from an origin this server was not told
+    // about is refused, so a page cannot drive a state change in a visitor's
+    // browser. Other clients send no `Origin` and are untouched.
+    this.fastify.addHook('onRequest', async (req, reply) => {
+      const origin = req.headers.origin;
+      if (origin === undefined || SAFE_METHODS.has(req.method)) return;
+      if (cors?.origins === '*' || cors?.origins.includes(origin)) return;
+      if (hostOf(origin) === req.host) return;
+      await reply
+        .code(403)
+        .send({ code: 'forbidden_origin', message: `origin '${origin}' may not write here` });
+    });
   }
 
   private invokeErrorHook(err: Error, req?: FastifyRequest): void {
