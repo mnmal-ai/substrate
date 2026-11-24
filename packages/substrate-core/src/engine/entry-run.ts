@@ -193,7 +193,10 @@ export class EntryRunner {
         result = await this.#fillFilteredPage(
           result,
           (cursor, limit) =>
-            registryEntry.resolver(ctx, { ...args, params: { ...args.params, cursor, limit } }),
+            registryEntry.resolver(ctx, {
+              ...args,
+              params: { ...args.params, cursor: cursor ?? args.params?.cursor, limit }
+            }),
           (rows) => applyObligations(decision, rows, ctx),
           args.params?.limit
         );
@@ -272,7 +275,7 @@ export class EntryRunner {
    */
   async #fillFilteredPage(
     first: ReadResult,
-    read: (cursor: string, limit: number) => unknown,
+    read: (cursor: string | undefined, limit: number) => unknown,
     visible: (rows: Row[]) => Row[],
     limit: unknown
   ): Promise<ReadResult> {
@@ -280,11 +283,25 @@ export class EntryRunner {
     // shortcut: scans at most ROW_FILTER_SCAN_ROWS rows per read (ten pages' worth if that is more), then answers hasMore with a cursor so the caller pages on; a longer run of hidden rows still shows as empty pages, raise it if callers meet them.
     const budget = Math.max(ROW_FILTER_SCAN_ROWS, 10 * (want + 1));
     const after = (r: ReadResult) => (r.hasMore ? r.nextCursor : undefined);
-    const page = async (cursor: string, n: number): Promise<ReadResult> => {
+    const page = async (cursor: string | undefined, n: number): Promise<ReadResult> => {
       const r = await read(cursor, n);
       return isReadResult(r) ? r : { rows: [], hasMore: false };
     };
+    // The cursor that ends at the last visible row kept: a full page hands that
+    // one out, so its cursor names a row the caller was shown. `from` undefined
+    // is the read's own start.
+    let afterLastVisible: (() => Promise<string | undefined>) | undefined;
+    const kept = (from: string | undefined, chunk: ReadResult, seen: Row[]): void => {
+      const last = seen.at(-1);
+      if (last === undefined) return;
+      const index = chunk.rows.lastIndexOf(last);
+      afterLastVisible =
+        index === chunk.rows.length - 1
+          ? async () => after(chunk)
+          : async () => after(await page(from, index + 1));
+    };
     const rows = visible(first.rows);
+    kept(undefined, first, rows);
     let scanned = first.rows.length;
     // Where the unread rows start; undefined at the end of the data.
     let cursor = after(first);
@@ -297,6 +314,7 @@ export class EntryRunner {
       const seen = visible(chunk.rows);
       if (seen.length <= need && need > 0) {
         rows.push(...seen);
+        kept(from, chunk, seen);
         cursor = after(chunk);
         continue;
       }
@@ -304,12 +322,14 @@ export class EntryRunner {
         cursor = after(chunk);
         continue;
       }
-      // A visible row past the page: the next page starts before it.
-      if (need === 0) return { rows, hasMore: true, nextCursor: from };
+      // A visible row past the page: the next page starts after the last row shown.
+      if (need === 0) {
+        return { rows, hasMore: true, nextCursor: (await afterLastVisible?.()) ?? from };
+      }
       // The chunk holds more visible rows than the page lacks. Keep those it
       // lacks, and re-read up to the last one kept for the cursor that ends there.
-      const kept = new Set(seen.slice(0, need));
-      const last = chunk.rows.findLastIndex((r) => kept.has(r));
+      const taken = new Set(seen.slice(0, need));
+      const last = chunk.rows.findLastIndex((r) => taken.has(r));
       rows.push(...seen.slice(0, need));
       const end = after(await page(from, last + 1));
       return {

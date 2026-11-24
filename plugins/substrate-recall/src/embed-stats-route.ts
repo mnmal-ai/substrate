@@ -18,6 +18,7 @@ import type {
   SubstrateRequest,
   SubstrateResponse
 } from '@mnmal-ai/substrate-types';
+import { grantedIn, grantOf, readsEveryNamespace } from '@mnmal-ai/substrate-types';
 import type { EmbeddedTypeRef, EmbedSourceRegistry } from './embed-source-registry.js';
 import type { EmbedStats, EmbedStatsSnapshot } from './embed-stats.js';
 import {
@@ -157,9 +158,28 @@ export function embedStatsRouteHandler(
   // Sync fast path, async only on the opt-in coverage scan: callers invoke it
   // synchronously and read `.body`. HttpHandler permits both shapes.
   return (req: SubstrateRequest): SubstrateResponse | Promise<SubstrateResponse> => {
-    const base = handleEmbedStatsRequest(stats, registry, lexicalRegistry, composition);
+    const all = handleEmbedStatsRequest(stats, registry, lexicalRegistry, composition);
+    if (readsEveryNamespace(req.identity)) {
+      if (!wantsCoverage(req)) return jsonResponse(200, all);
+      return coverageResponse(all, lexicalRegistry, composition);
+    }
+    // The counts are store-wide, but which types exist and which row last
+    // failed are facts about a namespace: a caller sees its own namespaces'.
+    const reads = (t: { namespace: string }): boolean =>
+      grantedIn(grantOf(req.identity ?? null), t.namespace).includes('read');
+    const base: EmbedStatsResponse = {
+      ...all,
+      lastFailure: null,
+      ...(all.embeddedTypes !== undefined
+        ? { embeddedTypes: all.embeddedTypes.filter(reads) }
+        : {}),
+      ...(all.lexicalTypes !== undefined ? { lexicalTypes: all.lexicalTypes.filter(reads) } : {})
+    };
     if (!wantsCoverage(req)) return jsonResponse(200, base);
-    return coverageResponse(base, lexicalRegistry, composition);
+    // The coverage scan reads every indexed type in every namespace.
+    return jsonResponse(403, {
+      error: { code: 'forbidden', message: 'coverage needs read in every namespace' }
+    });
   };
 }
 

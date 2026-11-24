@@ -18,7 +18,7 @@ const FIELDS: Record<string, FieldDef> = {
 
 const OWNER_ONLY = row((ctx, r) => (r as { owner?: string }).owner === ctx.identity?.id);
 
-async function setup() {
+async function setup(filterWriteLimits?: { maxMatch: number; idsCap: number }) {
   const dataset = new MemoryDataset({ namespace: 'app' });
   await dataset.write('Note', [{ id: 'n1', owner: 'alice', title: 'secret' }]);
   const edges = new MemoryEdgesStore({ now: () => new Date('2026-04-20T00:00:00Z') });
@@ -33,7 +33,8 @@ async function setup() {
   const engine = new Engine({
     namespaces: new Map<string, NamespaceConfig>([['app', { registry }]]),
     datasets,
-    edges
+    edges,
+    ...(filterWriteLimits !== undefined ? { filterWriteLimits } : {})
   });
   return { engine, dataset };
 }
@@ -63,6 +64,62 @@ describe('autoCRUD row guard', () => {
       ctx: as('bob')
     });
     expect(await title(dataset)).toBe('secret');
+  });
+
+  it('answers a delete of a hidden row exactly as a delete of a missing one', async () => {
+    const { engine } = await setup();
+    const answer = async (key: string, params: Record<string, unknown>) => {
+      const env = await engine.mutate({
+        frame: { [key]: { params, fields: { id: true } } },
+        ctx: as('bob')
+      });
+      // Only the id differs between the two rows.
+      return JSON.parse(
+        JSON.stringify({ data: env.data, errors: env.errors ?? [] }).replaceAll(
+          String(params.id),
+          'ID'
+        )
+      );
+    };
+    for (const [key, extra] of [
+      ['app/deleteNote', {}],
+      ['app/deleteNote', { nosuch: 1 }]
+    ] as const) {
+      expect(await answer(key, { id: 'n1', ...extra })).toEqual(
+        await answer(key, { id: 'absent', ...extra })
+      );
+    }
+  });
+
+  it('counts only rows the caller can see towards the cap of a write by filter', async () => {
+    const { engine, dataset } = await setup({ maxMatch: 3, idsCap: 10 });
+    await dataset.write(
+      'Note',
+      ['b1', 'b2', 'b3'].map((id) => ({ id, owner: 'bob', title: 'mine' }))
+    );
+    // Bob's three rows fill the cap; whether alice's hidden row also matches must not show.
+    const probe = async (title: string) => {
+      const env = await engine.mutate({
+        frame: {
+          'app/updateManyNote': {
+            params: {
+              where: { OR: [{ owner: { eq: 'bob' } }, { title: { eq: title } }] },
+              set: { owner: 'bob' }
+            },
+            fields: { count: true }
+          }
+        },
+        ctx: as('bob')
+      });
+      return { data: env.data, errors: env.errors ?? [] };
+    };
+    const hit = await probe('secret');
+    expect(hit.errors).toEqual([]);
+    expect(hit).toEqual(await probe('no such title'));
+    expect(await title(dataset)).toBe('secret');
+
+    await dataset.write('Note', [{ id: 'b4', owner: 'bob', title: 'mine' }]);
+    expect((await probe('no such title')).errors[0]?.code).toBe('filter_too_broad');
   });
 
   it('does not delete a row the caller cannot read', async () => {

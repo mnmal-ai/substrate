@@ -196,11 +196,14 @@ export function deleteManyResolver(
   };
 }
 
+/** Rows per read while a policy's matches are gathered. */
+const POLICY_SCAN_PAGE = 1000;
+
 /**
- * The matched rows a policy lets the caller write: the matches are read
- * (refused past `maxMatch`), the policy runs per row with `{ id, ...set }`,
- * a deny on any row refuses the frame, and a row filter drops the rows the
- * caller cannot see.
+ * The matched rows a policy lets the caller write: the matches are read in
+ * pages, the policy runs per row with `{ id, ...set }`, a deny on any row
+ * refuses the frame, a row filter drops the rows the caller cannot see, and
+ * more than `maxMatch` rows the caller can see refuses it as too broad.
  */
 async function policyKept(
   ctx: RequestContext,
@@ -212,25 +215,36 @@ async function policyKept(
   maxMatch: number,
   set: Record<string, unknown>
 ): Promise<Row[]> {
-  const { rows } = await ds.read(typeName, { where, limit: maxMatch + 1 });
-  // shortcut: the cap counts rows the caller's row filter hides, so a refusal
-  // reveals that more than maxMatch rows exist (as hasMore does in
-  // result-shape.ts); upgrade by compiling row policies into the read's where.
-  if (rows.length > maxMatch) throw filterTooBroad(ds.namespace, typeName, maxMatch);
+  // Only rows the caller may see count towards `maxMatch`, and nothing here
+  // depends on how many are hidden: a refusal that counted hidden rows would
+  // say whether one matches `where`. So every match is read, as a query whose
+  // `where` no index serves reads its type.
   const kept: Row[] = [];
-  for (const row of rows) {
-    let decision: ReturnType<Policy>;
-    try {
-      decision = policy(ctx, { ...args, params: { id: row.id, ...set } });
-    } catch {
-      // Fail closed, as the engine's evaluatePolicy does.
-      decision = { allow: false, reason: 'policy error' };
+  let cursor: string | undefined;
+  do {
+    const page = await ds.read(typeName, {
+      where,
+      limit: Math.min(maxMatch + 1, POLICY_SCAN_PAGE),
+      ...(cursor !== undefined ? { cursor } : {})
+    });
+    for (const row of page.rows) {
+      let decision: ReturnType<Policy>;
+      try {
+        decision = policy(ctx, { ...args, params: { id: row.id, ...set } });
+      } catch {
+        // Fail closed, as the engine's evaluatePolicy does.
+        decision = { allow: false, reason: 'policy error' };
+      }
+      if (!decision.allow) {
+        throw new ResolverFrameError('policy_denied', decision.reason ?? 'policy denied');
+      }
+      if (applyRowFilters(decision, [row], ctx).length > 0) {
+        kept.push(row);
+        if (kept.length > maxMatch) throw filterTooBroad(ds.namespace, typeName, maxMatch);
+      }
     }
-    if (!decision.allow) {
-      throw new ResolverFrameError('policy_denied', decision.reason ?? 'policy denied');
-    }
-    if (applyRowFilters(decision, [row], ctx).length > 0) kept.push(row);
-  }
+    cursor = page.hasMore ? page.nextCursor : undefined;
+  } while (cursor !== undefined);
   return kept;
 }
 
