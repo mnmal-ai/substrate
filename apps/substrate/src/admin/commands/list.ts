@@ -13,6 +13,7 @@ import { type OpenDatasetFn, openPgDataset } from '../dataset.js';
 import type { AdminCliEnv } from '../env.js';
 import { AdminCliError } from '../errors.js';
 import { argvError } from '../usage.js';
+import { oneLine } from '../../terminal-text.js';
 
 export interface ListedKeyRow {
   kid: string;
@@ -120,6 +121,14 @@ function formatTable(rows: Array<ListedKeyRow>): string {
     namespaces: 'namespaces',
     createdAt: 'createdAt'
   };
+  // A key's name is chosen by whoever registered it.
+  rows = rows.map((r) => ({
+    kid: oneLine(r.kid),
+    name: oneLine(r.name),
+    capabilities: oneLine(r.capabilities),
+    namespaces: oneLine(r.namespaces),
+    createdAt: oneLine(r.createdAt)
+  }));
   const all = [header, ...rows];
   const widths = {
     kid: Math.max(...all.map((r) => r.kid.length)),

@@ -19,6 +19,7 @@ import { dirname, join as pathJoin } from 'node:path';
 import { AdminCliError } from '../../admin/errors.js';
 import { type HttpJsonFn, httpJson } from './http.js';
 import { decodeJoinToken } from './token.js';
+import { oneLine } from '../../terminal-text.js';
 
 export interface JoinArgs {
   token: string;
@@ -185,17 +186,31 @@ export function formatJoinOutput(result: JoinResult): string {
       origin: result.origin
     }
   };
+  const env = [JSON.stringify(bridges), JSON.stringify(creds)];
+  const head = [
+    '',
+    `  redeemed at ${oneLine(result.origin)}`,
+    `  kid:        ${oneLine(result.kid)}`,
+    `  namespaces: ${result.namespaces.map(oneLine).join(', ')}    capabilities: ${result.capabilities.map(oneLine).join(', ')}`,
+    `  key:        ${oneLine(result.keyPath)} (0600)`,
+    ''
+  ];
+  // The lines below are single-quoted for a shell, and the peer chose the
+  // namespaces and the kid: a quote in them would end the quoting.
+  if (env.some((json) => json.includes("'"))) {
+    return [
+      ...head,
+      'The peer returned a namespace, kid or name that cannot be written to a .env file safely.',
+      'No bridge settings are printed. Check the values above with the peer operator.',
+      ''
+    ].join('\n');
+  }
   return [
-    '',
-    `  redeemed at ${result.origin}`,
-    `  kid:        ${result.kid}`,
-    `  namespaces: ${result.namespaces.join(', ')}    capabilities: ${result.capabilities.join(', ')}`,
-    `  key:        ${result.keyPath} (0600)`,
-    '',
+    ...head,
     'Add to your .env, then restart:',
     '',
-    `SUBSTRATE_BRIDGES='${JSON.stringify(bridges)}'`,
-    `SUBSTRATE_BRIDGE_CREDENTIALS='${JSON.stringify(creds)}'`,
+    `SUBSTRATE_BRIDGES='${env[0]}'`,
+    `SUBSTRATE_BRIDGE_CREDENTIALS='${env[1]}'`,
     '',
     `Then verify with:  substrate federate check ${result.name}`,
     ''

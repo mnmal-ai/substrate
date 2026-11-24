@@ -14,6 +14,7 @@
 import { createHash } from 'node:crypto';
 import { substrateFetch, tokenAudience } from '@mnmal-ai/substrate-client';
 import { trimTrailingSlashes } from '@mnmal-ai/substrate-types';
+import { oneLine } from '../../terminal-text.js';
 
 /**
  * Structural subset of `FieldDef` — only what drift detection reads. Kept
@@ -277,10 +278,12 @@ export async function runCheckEnums(
 
   write(`Checked ${fields.length} enum-declared field(s).\n`);
   for (const report of drifted) {
-    write(`\n  DRIFT  ${report.namespace}/${report.type}.${report.field}\n`);
-    write(`         declared: ${report.vocabulary.join(', ')}\n`);
+    write(
+      `\n  DRIFT  ${oneLine(report.namespace)}/${oneLine(report.type)}.${oneLine(report.field)}\n`
+    );
+    write(`         declared: ${report.vocabulary.map(oneLine).join(', ')}\n`);
     for (const { value, count } of report.offenders) {
-      write(`         stored:   '${value}' x${count}  (not declared)\n`);
+      write(`         stored:   '${oneLine(value)}' x${count}  (not declared)\n`);
     }
     if (report.truncated) {
       write(`         NOTE: stopped at ${report.rowsScanned} rows — counts are a floor.\n`);
@@ -291,7 +294,7 @@ export async function runCheckEnums(
   for (const report of reports) {
     if (report.offenders.length === 0 && report.truncated) {
       write(
-        `\n  PARTIAL ${report.namespace}/${report.type}.${report.field} — clean over the first ${report.rowsScanned} rows, table not exhausted.\n`
+        `\n  PARTIAL ${oneLine(report.namespace)}/${oneLine(report.type)}.${oneLine(report.field)} — clean over the first ${report.rowsScanned} rows, table not exhausted.\n`
       );
     }
   }
