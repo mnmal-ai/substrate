@@ -34,7 +34,8 @@ import {
   type HttpHandler,
   METADATA_AUTHOR_FIELDS,
   METADATA_FILTER_FIELDS,
-  type MutationSchema
+  type MutationSchema,
+  seesNamespace
 } from '@mnmal-ai/substrate-types';
 import { jsonResponse } from './helpers.js';
 
@@ -76,6 +77,19 @@ function operatorContract(
   };
 }
 
+/**
+ * `ns`'s published schema for this caller. Throws, as for an unknown
+ * namespace, when the caller holds nothing there, so the two answer alike.
+ */
+function visibleSchema(
+  engine: Engine,
+  ns: string,
+  identity: Parameters<typeof seesNamespace>[0]
+): ReturnType<Engine['schemaFor']> {
+  if (!seesNamespace(identity, ns)) throw new Error(`unknown namespace '${ns}'`);
+  return engine.schemaFor(ns);
+}
+
 /** The expression catalogue: what `select`, `where.$expr`, `groupBy`, `having` and aggregates accept. */
 const EXPRESSIONS = {
   functions: EXPR_FUNCTIONS,
@@ -114,7 +128,7 @@ export function schemaRoute(engine: Engine, defaultNamespace: string): HttpHandl
     }
     try {
       return jsonResponse(200, {
-        ...engine.schemaFor(defaultNamespace),
+        ...visibleSchema(engine, defaultNamespace, req.identity),
         ...operatorContract(engine, defaultNamespace),
         // Unscoped only: the scoped routes stay cheap.
         expressions: EXPRESSIONS
@@ -124,7 +138,9 @@ export function schemaRoute(engine: Engine, defaultNamespace: string): HttpHandl
         error: `unknown namespace '${defaultNamespace}'`,
         detail:
           'GET /substrate/v1/schema serves the default namespace only, a pre-federation compatibility surface. This deployment does not host it.',
-        availableNamespaces: Object.keys(engine.federatedSchema()).sort(),
+        availableNamespaces: Object.keys(engine.federatedSchema())
+          .filter((n) => seesNamespace(req.identity, n))
+          .sort(),
         hint: 'Use GET /substrate/v1/schema/<namespace>, GET /substrate/v1/schema/<namespace>/<Type>, or GET /substrate/v1/federated-schema.'
       });
     }
@@ -139,9 +155,12 @@ export function schemaForNamespaceRoute(engine: Engine): HttpHandler {
       return jsonResponse(400, { error: 'namespace path segment is required' });
     }
     try {
-      return jsonResponse(200, { ...engine.schemaFor(ns), ...operatorContract(engine, ns) });
+      return jsonResponse(200, {
+        ...visibleSchema(engine, ns, req.identity),
+        ...operatorContract(engine, ns)
+      });
     } catch {
-      // schemaFor throws on unknown / tombstoned namespace.
+      // Unknown, tombstoned, or one the caller holds nothing in.
       return jsonResponse(404, { error: `unknown namespace '${ns}'` });
     }
   };
@@ -184,7 +203,7 @@ export function schemaForTypeRoute(engine: Engine): HttpHandler {
     }
     let schema: ReturnType<Engine['schemaFor']>;
     try {
-      schema = engine.schemaFor(ns);
+      schema = visibleSchema(engine, ns, req.identity);
     } catch {
       return jsonResponse(404, { error: `unknown namespace '${ns}'` });
     }
