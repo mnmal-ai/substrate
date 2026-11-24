@@ -253,9 +253,12 @@ export function applyTypeProposal(args: ApplyTypeProposalArgs): void {
     );
   }
 
-  // Installing registers one key at a time, so a key that is taken must be
-  // found first or the keys before it stay registered.
-  const taken = typeProposalRegistryKeys(args).find((key) => binding.registry.has(key));
+  // Installing registers one key at a time, so a taken operation key must be
+  // found first or the type entry registered before it stays behind. A taken
+  // type name fails on the first register, with nothing to leave.
+  const taken = typeProposalRegistryKeys(args).find(
+    (key) => key !== args.typeName && binding.registry.has(key)
+  );
   if (taken !== undefined) {
     throw new ProposalError(
       'type_already_exists',

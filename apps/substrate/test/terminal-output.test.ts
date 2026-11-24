@@ -41,7 +41,7 @@ describe('federate join', () => {
     ['a quote in a namespace', { namespaces: ["demo'; touch /tmp/marker; '"] }],
     ['a quote in the kid', { namespaces: ['demo'], kid: "k'$(id)'" }]
   ])('prints no env lines for %s', (_what, over) => {
-    const out = formatJoinOutput({ ...base, namespaces: ['demo'], ...over });
+    const out = formatJoinOutput({ ...base, ...over });
     expect(out).not.toContain('SUBSTRATE_BRIDGES=');
     expect(out).not.toContain('SUBSTRATE_BRIDGE_CREDENTIALS=');
     expect(out).toContain('cannot be written to a .env file safely');

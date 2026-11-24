@@ -8,12 +8,12 @@
 
 import { KEY_TYPE } from '@mnmal-ai/substrate-compose';
 import type { RowMetadata } from '@mnmal-ai/substrate-types';
+import { oneLine } from '../../terminal-text.js';
 import { validateArgv } from '../argv.js';
 import { type OpenDatasetFn, openPgDataset } from '../dataset.js';
 import type { AdminCliEnv } from '../env.js';
 import { AdminCliError } from '../errors.js';
 import { argvError } from '../usage.js';
-import { oneLine } from '../../terminal-text.js';
 
 export interface ListedKeyRow {
   kid: string;

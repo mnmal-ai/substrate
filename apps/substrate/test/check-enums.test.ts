@@ -184,7 +184,7 @@ describe('runCheckEnums', () => {
     const sink = capture();
     await runCheckEnums([], { baseUrl: 'https://h', fetchImpl, write: sink.write });
     expect(sink.out).toContain("stored:   'x   DRIFT  forged'");
-    expect(sink.out).not.toMatch(/[\u001b\u0007]/);
+    for (const byte of ['\u001b', '\u0007']) expect(sink.out).not.toContain(byte);
     expect(sink.out.match(/^ {2}DRIFT/gm)).toHaveLength(1);
   });
 

@@ -17,9 +17,9 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { homedir, hostname as osHostname } from 'node:os';
 import { dirname, join as pathJoin } from 'node:path';
 import { AdminCliError } from '../../admin/errors.js';
+import { oneLine } from '../../terminal-text.js';
 import { type HttpJsonFn, httpJson } from './http.js';
 import { decodeJoinToken } from './token.js';
-import { oneLine } from '../../terminal-text.js';
 
 export interface JoinArgs {
   token: string;
