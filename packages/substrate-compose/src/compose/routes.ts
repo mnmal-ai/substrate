@@ -374,7 +374,9 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
             }
           },
           now: () => new Date(),
-          trustedProxies
+          trustedProxies,
+          announce: (events, actor) => engine.announceWrites(events, actor),
+          storeAdmin: (req) => auth === undefined || holdsEverywhere(req.identity ?? null, adminCap)
         })
       ),
       'admin'
@@ -395,7 +397,9 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
             }
           },
           now: () => new Date(),
-          trustedProxies
+          trustedProxies,
+          announce: (events, actor) => engine.announceWrites(events, actor),
+          storeAdmin: (req) => auth === undefined || holdsEverywhere(req.identity ?? null, adminCap)
         })
       ),
       'admin'
