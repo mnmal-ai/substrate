@@ -94,6 +94,8 @@ async function start(m: Start): Promise<void> {
     if (permission === undefined || permission.has('child') || permission.has('fs.write')) {
       throw new Error('the run sandbox is not active in this runtime; the script was not run');
     }
+    // The parent passes no environment; a launcher in between may add its own (bubblewrap sets PWD).
+    for (const name of Object.keys(process.env)) delete process.env[name];
     const mod = (await import(pathToFileURL(m.script).href)) as { default?: unknown };
     if (typeof mod.default !== 'function') {
       throw new Error('the script must default-export a function (s) => result');
