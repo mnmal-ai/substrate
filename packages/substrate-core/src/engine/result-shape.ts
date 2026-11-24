@@ -90,9 +90,8 @@ export function shapeResult(input: ShapeResultInput): void {
     const filtered = applyObligations(decision, result.rows, ctx);
     envelope.data[key] = filtered;
     envelope.shapes[key] = 'list';
-    // shortcut: hasMore and nextCursor come from the unfiltered read, so row()
-    // hides a row's values but not whether matching rows exist; upgrade by
-    // compiling row policies into the read's where.
+    // A row-filtered page reaches here already filled, with `hasMore` and
+    // `nextCursor` decided from visible rows (Engine#fillFilteredPage).
     const pg: { nextCursor?: string; hasMore: boolean } = {
       hasMore: result.hasMore
     };

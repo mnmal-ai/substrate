@@ -214,6 +214,11 @@ function hopFarType(
   return def?.kind === 'crossRef' ? { ns: def.ns, type: def.type } : undefined;
 }
 
+/** Rows a row-filtered page scans before it stops and hands back a cursor. */
+const ROW_FILTER_SCAN_ROWS = 5000;
+/** Rows it reads at a time while it looks past hidden ones. */
+const ROW_FILTER_CHUNK = 200;
+
 function slotResultOf(scratch: PackEnvelope, key: string): SlotResult {
   const entry: SlotResult = {};
   if (key in scratch.data) entry.data = scratch.data[key];
@@ -261,7 +266,7 @@ function observe(hook: (o: ResolveObservation) => void, o: ResolveObservation): 
 
 import type { WalkResolvers } from '../filter/walk-validator.js';
 import { MemoryActResultStore } from '../memory-act-result-store.js';
-import { evaluatePolicy } from '../policy-evaluator.js';
+import { applyObligations, evaluatePolicy } from '../policy-evaluator.js';
 import { Registry } from '../registry.js';
 import { type HopResolver, hopResolver, type WalkedType, walkedTypes } from '../walk-types.js';
 import { BridgeSubsystem } from './bridge.js';
@@ -276,6 +281,7 @@ import {
   DEFAULT_IDEMPOTENCY_TTL_MS,
   DEFAULT_SUBSCRIPTION_QUEUE_LIMIT,
   type EngineOptions,
+  isReadResult,
   type MetricFn,
   makeArrayDedupKey,
   makeDedupKey,
@@ -1722,6 +1728,67 @@ export class Engine implements ActHandle {
   }
 
   /**
+   * A row-filtered page, built so that what it says about the rows after it
+   * depends only on rows the caller may see. Reads on past hidden rows, a
+   * chunk at a time, until the page holds `limit` visible ones and one more
+   * has been seen: that one is what `hasMore` reports, and the next page
+   * starts just before it.
+   */
+  async #fillFilteredPage(
+    first: ReadResult,
+    read: (cursor: string, limit: number) => unknown,
+    visible: (rows: Row[]) => Row[],
+    limit: unknown
+  ): Promise<ReadResult> {
+    const want = typeof limit === 'number' && limit > 0 ? limit : Math.max(first.rows.length, 1);
+    // shortcut: scans at most ROW_FILTER_SCAN_ROWS rows per read (ten pages' worth if that is more), then answers hasMore with a cursor so the caller pages on; a longer run of hidden rows still shows as empty pages, raise it if callers meet them.
+    const budget = Math.max(ROW_FILTER_SCAN_ROWS, 10 * (want + 1));
+    const after = (r: ReadResult) => (r.hasMore ? r.nextCursor : undefined);
+    const page = async (cursor: string, n: number): Promise<ReadResult> => {
+      const r = await read(cursor, n);
+      return isReadResult(r) ? r : { rows: [], hasMore: false };
+    };
+    const rows = visible(first.rows);
+    let scanned = first.rows.length;
+    // Where the unread rows start; undefined at the end of the data.
+    let cursor = after(first);
+
+    while (cursor !== undefined && scanned < budget) {
+      const from = cursor;
+      const need = want - rows.length;
+      const chunk = await page(from, Math.max(need, ROW_FILTER_CHUNK));
+      scanned += chunk.rows.length;
+      const seen = visible(chunk.rows);
+      if (seen.length <= need && need > 0) {
+        rows.push(...seen);
+        cursor = after(chunk);
+        continue;
+      }
+      if (seen.length === 0) {
+        cursor = after(chunk);
+        continue;
+      }
+      // A visible row past the page: the next page starts before it.
+      if (need === 0) return { rows, hasMore: true, nextCursor: from };
+      // The chunk holds more visible rows than the page lacks. Keep those it
+      // lacks, and re-read up to the last one kept for the cursor that ends there.
+      const kept = new Set(seen.slice(0, need));
+      const last = chunk.rows.findLastIndex((r) => kept.has(r));
+      rows.push(...seen.slice(0, need));
+      const end = after(await page(from, last + 1));
+      return {
+        rows,
+        hasMore: end !== undefined,
+        ...(end !== undefined ? { nextCursor: end } : {})
+      };
+    }
+    // Out of budget with rows unread: the caller pages on from where the scan stopped.
+    return cursor === undefined
+      ? { rows, hasMore: false }
+      : { rows, hasMore: true, nextCursor: cursor };
+  }
+
+  /**
    * §5.12 per-frame grant gate (namespace and capability). Records the refusal
    * under `key` and returns true when `identity` may not run `operation` in
    * `ns`. Bridged keys pass through here too, before they are proxied.
@@ -2437,6 +2504,21 @@ export class Engine implements ActHandle {
     const t0 = performance.now();
     try {
       result = await registryEntry.resolver(ctx, args);
+      if (
+        operation === 'query' &&
+        (decision.obligations?.length ?? 0) > 0 &&
+        isReadResult(result) &&
+        result.count === undefined &&
+        result.groups === undefined
+      ) {
+        result = await this.#fillFilteredPage(
+          result,
+          (cursor, limit) =>
+            registryEntry.resolver(ctx, { ...args, params: { ...args.params, cursor, limit } }),
+          (rows) => applyObligations(decision, rows, ctx),
+          args.params?.limit
+        );
+      }
     } catch (err) {
       if (isRestrictViolation(err)) {
         addError(envelope, [key], err.message, 'restrict_violation');
