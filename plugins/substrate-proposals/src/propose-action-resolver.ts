@@ -33,6 +33,7 @@ import {
   isLapsed,
   LAPSE_MS,
   MAX_PENDING_PER_PROPOSER,
+  PLUGIN_ACTOR,
   type ProposalActionLayer
 } from './action-layer.js';
 import type { PubSub } from './config.js';
@@ -269,12 +270,13 @@ export function makeProposeActionResolver(
           throw taken('was vetoed, retired or superseded by code, and stays closed');
         }
 
-        const own = rows.find(
-          (r) => r.proposedBy === proposer && r.status === 'pending' && r.archived !== true
-        );
+        // The name's one pending record: the proposer's own, or another proposer's
+        // lapsed word, which `nameState` reports as free and this define takes over.
+        const own = rows.find((r) => r.status === 'pending' && r.archived !== true);
+        const mine = own?.proposedBy === proposer;
         const lapsed = own !== undefined && isLapsed(own, now);
         // An identical redefinition keeps the record, and its count, as it is.
-        if (own !== undefined && !lapsed && own.declJson === declJson) return own;
+        if (own !== undefined && mine && !lapsed && own.declJson === declJson) return own;
         // shortcut: the cap is read from this instance's layer, so concurrent defines of
         // different names may pass it together; lock per proposer if that matters.
         if (
@@ -294,7 +296,9 @@ export function makeProposeActionResolver(
             held === null ||
             held.id !== own.id ||
             held.status !== 'pending' ||
-            held.archived === true
+            held.archived === true ||
+            held.proposedBy !== own.proposedBy ||
+            (!mine && !isLapsed(held, now))
           ) {
             throw taken('was promoted or closed while this define ran, and stays as it is');
           }
@@ -333,7 +337,7 @@ export function makeProposeActionResolver(
                 'updateActionProposal',
                 // A lapsed word defined again identically revives with its count;
                 // a different definition starts counting again.
-                own.declJson === declJson
+                mine && own.declJson === declJson
                   ? { id: own.id, proposedAt: now }
                   : {
                       id: own.id,
@@ -346,6 +350,13 @@ export function makeProposeActionResolver(
                 true,
                 true
               );
+        // `proposedBy` is server-set on the generated update, so a takeover writes it directly.
+        if (own !== undefined && !mine) {
+          await dataset.write('ActionProposal', [{ id: own.id, proposedBy: proposer }], {
+            identity: PLUGIN_ACTOR,
+            now
+          });
+        }
         const row = (await dataset.read('ActionProposal', { id: written.id })).rows[0];
         if (row === undefined)
           throw new Error(`ActionProposal ${written.id} not found after write`);

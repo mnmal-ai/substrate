@@ -523,6 +523,13 @@ describe('propose_action (memory)', () => {
     expect(await as('agent-c', 'define Ticket.word2 status=open')).toMatchObject({ ok: true });
     expect(await as('agent-c', 'word2 Ticket #1')).toMatchObject({ ok: true });
     expect(await as('agent-a', 'define Ticket.word2 status=open')).toMatchObject(taken);
+    // The record passed to the new proposer: the name still has one, with a fresh count.
+    const word2 = (await records(w)).filter((r) => r.name === 'word2');
+    expect(word2).toMatchObject([{ proposedBy: 'agent-c', status: 'pending' }]);
+    // A restart replays one record a name, so the word is still agent-c's.
+    engine = await boot(w);
+    expect(await as('agent-c', 'word2 Ticket #1')).toMatchObject({ ok: true });
+    expect(await as('agent-a', 'define Ticket.word2 status=open')).toMatchObject(taken);
   });
 
   it('stores nothing on a dry-run define', async () => {

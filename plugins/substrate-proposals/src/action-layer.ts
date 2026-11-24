@@ -59,7 +59,7 @@ export interface ProposalActionLayerDeps {
 }
 
 /** Who a use's write is stamped as. */
-const PLUGIN_ACTOR: ActorIdentity = { kind: 'system', id: 'substrate-proposals' };
+export const PLUGIN_ACTOR: ActorIdentity = { kind: 'system', id: 'substrate-proposals' };
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
@@ -323,7 +323,8 @@ export class ProposalActionLayer implements ActionLayer {
   /**
    * Who holds `name` on `qualifiedType` at `now`: nobody, `proposer` (pending,
    * lapsed or not), someone else (pending and not lapsed, or promoted for
-   * everyone), or nobody ever again. Another proposer's lapsed word holds nothing.
+   * everyone), or nobody ever again. Another proposer's lapsed word holds
+   * nothing: a define of its name takes its record over.
    */
   nameState(qualifiedType: string, name: string, proposer: string, now: Date): NameState {
     const key = `${qualifiedType}.${name}`;
