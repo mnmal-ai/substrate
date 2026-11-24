@@ -192,6 +192,18 @@ interface SlotResult {
   errors?: FrameErrors;
 }
 
+/** A frame entry whose where, selection or grouping can leave its own type. */
+function bridgedWalk(entry: FrameEntry): boolean {
+  const frame = entry as Record<string, unknown>;
+  if (walkGrammarPath(frame, { walkParams: false }) !== null) return true;
+  const params = frame.params;
+  return (
+    typeof params === 'object' &&
+    params !== null &&
+    ['aggregate', 'groupBy', 'having'].some((k) => Object.hasOwn(params, k))
+  );
+}
+
 function slotResultOf(scratch: PackEnvelope, key: string): SlotResult {
   const entry: SlotResult = {};
   if (key in scratch.data) entry.data = scratch.data[key];
@@ -261,6 +273,7 @@ import {
   NO_BRIDGES,
   type ParsedKey,
   parseQualifiedKey,
+  readsEveryNamespace,
   type StreamHandle,
   type StreamInput,
   type SubscribeInput,
@@ -795,6 +808,18 @@ export class Engine implements ActHandle {
         this.#bridges.has(parsed.ns)
       ) {
         if (this.#refuseUngranted(envelope, key, parsed.ns, ctx.identity, 'query')) continue;
+        // The peer answers under the bridge's credential, and which namespaces
+        // a walk reaches there is not known here.
+        if (bridgedWalk(entry) && !readsEveryNamespace(ctx.identity)) {
+          addError(
+            envelope,
+            [key],
+            `a walk in a bridged query needs read on every namespace (op-key '${key}')`,
+            'bridge_walk_refused'
+          );
+          this.#metric('engine_bridge_walk_refused', { key });
+          continue;
+        }
         let bucket = bridgeBuckets.get(parsed.ns);
         if (bucket === undefined) {
           bucket = {};
