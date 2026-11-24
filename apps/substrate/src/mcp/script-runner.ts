@@ -52,9 +52,18 @@ process.on('message', (m: Start | Reply) => {
 });
 
 async function start(m: Start): Promise<void> {
-  // `--permission` does not cover signals. Without this a script could stop
-  // any other process of the user the server runs as.
-  for (const name of ['kill', '_kill']) {
+  // `--permission` does not cover signals. Without this a script could signal
+  // any other process of the user the server runs as: `_debugProcess` sends
+  // SIGUSR1, and the binding loaders reach the same syscall.
+  for (const name of [
+    'kill',
+    '_kill',
+    '_debugProcess',
+    '_debugEnd',
+    'binding',
+    '_linkedBinding',
+    'dlopen'
+  ]) {
     Object.defineProperty(process, name, {
       value: () => {
         throw new Error('a script cannot signal a process');

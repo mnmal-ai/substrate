@@ -163,10 +163,17 @@ describe('runSandboxed', () => {
         `export default async (s) => { try { ${call}; return 'sent'; } catch (e) { return e.message; } };`,
         { args: { pid: process.pid } }
       );
+    // `_debugProcess` sends a real SIGUSR1, so it is aimed at a pid nothing holds.
+    const nobody = 4_194_303;
     for (const call of [
       'process.kill(s.args.pid, 0)',
       'process._kill(s.args.pid, 0)',
-      "(await import('node:process')).kill(s.args.pid, 0)"
+      "(await import('node:process')).kill(s.args.pid, 0)",
+      `process._debugProcess(${nobody})`,
+      `process._debugEnd(${nobody})`,
+      "process.binding('process_wrap')",
+      "process._linkedBinding('process_wrap')",
+      "process.dlopen({ exports: {} }, '/nonexistent.node')"
     ]) {
       expect(await probe(call)).toMatchObject({
         ok: true,
