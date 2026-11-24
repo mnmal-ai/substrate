@@ -68,6 +68,12 @@ async function start(m: Start): Promise<void> {
     }
   });
   try {
+    // The sandbox is Node's permission model, switched on by flags the parent
+    // passes. A runtime that ignores those flags would run the script unconfined.
+    const permission = (process as { permission?: { has(scope: string): boolean } }).permission;
+    if (permission === undefined || permission.has('child') || permission.has('fs.write')) {
+      throw new Error('the run sandbox is not active in this runtime; the script was not run');
+    }
     const mod = (await import(pathToFileURL(m.script).href)) as { default?: unknown };
     if (typeof mod.default !== 'function') {
       throw new Error('the script must default-export a function (s) => result');

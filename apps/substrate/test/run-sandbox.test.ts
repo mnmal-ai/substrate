@@ -1,3 +1,8 @@
+import { fork } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { SubstrateClient } from '@mnmal-ai/substrate-client';
 import type { PackEnvelope } from '@mnmal-ai/substrate-types';
 import { describe, expect, it } from 'vitest';
@@ -161,6 +166,29 @@ describe('runSandboxed', () => {
     const r = await run(`export default async () => { for (;;) {} };`, { timeoutMs: 500 });
     expect(r).toMatchObject({ ok: false, error: 'script timed out after 500 ms' });
     expect(performance.now() - t0).toBeLessThan(5000);
+  });
+
+  it('refuses to run a script when the permission model is not active', async () => {
+    // The runner started without the flags, as a runtime that ignores them would start it.
+    const runner = fileURLToPath(new URL('../src/mcp/script-runner.ts', import.meta.url));
+    const dir = mkdtempSync(join(tmpdir(), 'substrate-run-test-'));
+    const marker = join(dir, 'ran');
+    const script = join(dir, 'script.mjs');
+    writeFileSync(
+      script,
+      `import { writeFileSync } from 'node:fs'; export default async () => writeFileSync(${JSON.stringify(marker)}, '1');`
+    );
+    const child = fork(runner, [], { env: {}, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    const done = await new Promise<{ ok: boolean; error?: string }>((resolve) => {
+      child.on('message', (m: { type: string; ok: boolean; error?: string }) => {
+        if (m.type === 'done') resolve(m);
+      });
+      child.send({ type: 'start', script, kid: null, mode: 'read', args: {} });
+    });
+    child.kill();
+    expect(done).toMatchObject({ ok: false, error: expect.stringContaining('not active') });
+    expect(existsSync(marker)).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it('reports a script without a default export', async () => {
