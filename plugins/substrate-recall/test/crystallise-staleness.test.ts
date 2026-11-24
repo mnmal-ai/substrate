@@ -108,6 +108,45 @@ describe('handleCrystallise — staleness', () => {
     expect(all.find((m) => m.memberId === 'd4')?.departedAt).toBeInstanceOf(Date);
   });
 
+  it('empties a label copied from a member row once a member row is gone, and keeps an agent label', async () => {
+    await clusters.createCluster({
+      id: 'cB',
+      centroid: new Float32Array([0, 1, 0]),
+      cohesion: 0.9,
+      label: 'written by an agent',
+      labelledBy: 'agent',
+      provenance: PROVENANCE
+    });
+    await clusters.attachMembers(
+      ['d4', 'e1', 'e2'].map((id, i) => ({
+        id: `b${i}`,
+        clusterId: 'cB',
+        ref: { namespace: 'cortext', type: 'Memory', id },
+        origin: 'formation' as const,
+        similarity: 0.9
+      }))
+    );
+    alive.add('e1').add('e2');
+    alive.delete('d4');
+    await handleCrystallise({ mode: 'accrete', select: SELECT }, deps);
+
+    expect((await clusters.getCluster('cA'))?.label).toBe('');
+    expect((await clusters.getCluster('cB'))?.label).toBe('written by an agent');
+  });
+
+  it('empties the label of a cluster that retired before its rows were purged', async () => {
+    await clusters.markDeparted(
+      ['d1', 'd2', 'd3', 'd4'].map((id) => ({ namespace: 'cortext', type: 'Decision', id })),
+      new Date('2026-08-05T00:00:00Z')
+    );
+    await clusters.retire('cA', new Date('2026-08-05T00:00:00Z'));
+    alive.clear();
+    await handleCrystallise({ mode: 'accrete', select: SELECT }, deps);
+
+    const [retired] = await clusters.listClusters({ includeRetired: true });
+    expect(retired?.label).toBe('');
+  });
+
   it('retires a cluster once live membership falls below minClusterSize, and releases its survivors', async () => {
     alive.delete('d3');
     alive.delete('d4');

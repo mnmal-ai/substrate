@@ -245,7 +245,8 @@ function visibilityOf(
   let liveTotal = 0;
   let memberCount = 0;
   let departedCount = 0;
-  let labelReadable = true;
+  // A cluster with no membership rows has nothing to show the caller may read it.
+  let labelReadable = members.length > 0;
   for (const m of members) {
     const canRead = readable.has(m);
     if (!canRead) labelReadable = false;
@@ -257,7 +258,7 @@ function visibilityOf(
     }
   }
   return {
-    visible: liveTotal === 0 || memberCount > 0,
+    visible: members.length > 0 && (liveTotal === 0 || memberCount > 0),
     memberCount,
     departedCount,
     labelReadable

@@ -142,6 +142,12 @@ export interface ClusterStore {
   /** Set `retiredAt`. Idempotent; a retired cluster keeps its original stamp. */
   retire(clusterId: string, now?: Date): Promise<void>;
 
+  /**
+   * Empty the label of each named cluster whose label was copied from a member
+   * row (`labelledBy: 'medoid'`). An agent's label is kept.
+   */
+  clearMedoidLabels(clusterIds: readonly string[]): Promise<void>;
+
   /** Replace the label. `labelledBy` becomes `'agent'`. Returns null if absent. */
   relabel(clusterId: string, label: string): Promise<ClusterRecord | null>;
 
