@@ -182,7 +182,8 @@ export class ActSubsystem {
       ...(input.namespace !== undefined ? { defaultNamespace: input.namespace } : {}),
       localNamespaces,
       maxWriteSteps,
-      ...(this.#actionLayer !== undefined ? { defineKey: this.#actionLayer.proposeKey } : {})
+      ...(this.#actionLayer !== undefined ? { defineKey: this.#actionLayer.proposeKey } : {}),
+      callerId: identity.id
     });
     if ('refusal' in compiled) return { ok: false, refusal: compiled.refusal };
     if (!('plan' in compiled)) return { ok: true, help: compiled.help };
@@ -358,23 +359,32 @@ export class ActSubsystem {
           if ('bind' in late) params[field] = binds.get(late.bind);
           else if ('now' in late) params[field] = now.toISOString();
           else {
-            const { type, shortId } = late.ref;
-            const where = { shortId: { eq: shortId } };
+            const { type } = late.ref;
+            const [key, value] =
+              'shortId' in late.ref
+                ? (['shortId', late.ref.shortId] as const)
+                : ([late.ref.field, late.ref.value] as const);
+            const said = key === 'shortId' ? `#${String(value)}` : `with ${key} ${String(value)}`;
+            // The lookup runs as the caller, so it finds only what the caller may read.
             const found = await run(
               step,
               type,
-              { params: { where, limit: 1 }, fields: { id: true } },
+              { params: { where: { [key]: { eq: value } }, limit: 2 }, fields: { id: true } },
               'query'
             );
-            const row = (found.data[type] as Row[] | undefined)?.[0];
-            if (row === undefined) {
+            const rows = (found.data[type] as Row[] | undefined) ?? [];
+            if (rows.length !== 1) {
               throw new ActStepFailure({
-                code: 'not_found',
-                message: `no ${type} #${shortId}`,
+                code: rows.length === 0 ? 'not_found' : 'ambiguous_reference',
+                message: rows.length === 0 ? `no ${type} ${said}` : `more than one ${type} ${said}`,
                 step: step.step
               });
             }
-            params[field] = row.id;
+            const id = (rows[0] as Row).id;
+            // A find's reference filters; a write's fills the param.
+            if (field.startsWith('where.')) {
+              params.where = { ...(params.where as object), [field.slice(6)]: { eq: id } };
+            } else params[field] = id;
           }
         }
         const envelope = await run(step, step.key, { params, fields: step.fields }, step.operation);

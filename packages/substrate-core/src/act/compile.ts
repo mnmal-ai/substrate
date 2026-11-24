@@ -36,6 +36,8 @@ export interface CompileOptions {
   maxWriteSteps?: number;
   /** The frame key `define` compiles to; absent when the server takes no action proposals. */
   defineKey?: string;
+  /** The caller's identity id, which `@me` stands for; absent for a caller with none. */
+  callerId?: string;
 }
 export type CompileResult =
   | { plan: ActPlan; help?: ActHelp | ActHelp[] }
@@ -534,9 +536,12 @@ class Compiler {
    * A write value. A crossRef may name a binding or a shortId, both resolved at
    * execution; a shortId is looked up on its target, which must be local.
    */
-  #writeValue(def: FieldDef, raw: ActValue, name: string, swap?: Swap): Resolved {
+  #writeValue(def: FieldDef, given: ActValue, name: string, swap?: Swap): Resolved {
+    const raw = this.#me(given);
     if (def.kind === 'crossRef' && typeof raw === 'string') {
       if (raw.startsWith('$')) return this.#resolveRef(raw);
+      const lookup = this.#lookup(def, raw);
+      if (lookup !== undefined) return { late: lookup };
       const shortId = /^#\d+$/.test(raw) ? Number(raw.slice(1)) : undefined;
       if (shortId !== undefined && Number.isSafeInteger(shortId)) {
         this.#local(def.ns, raw);
@@ -550,6 +555,30 @@ class Compiler {
       }
     }
     return { value: this.#coerce(def, raw, name, swap) };
+  }
+
+  /** `@me`, alone or as the value of a `field:@me` lookup, as the caller's identity id. */
+  #me(raw: ActValue): ActValue {
+    if (typeof raw !== 'string' || !(raw === '@me' || raw.endsWith(':@me'))) return raw;
+    const id = this.options.callerId;
+    if (id === undefined) return this.#refuse(raw, '@me needs a caller with an identity');
+    return `${raw.slice(0, -3)}${id}`;
+  }
+
+  /**
+   * `field:value` on a reference: the one record of the referenced type whose
+   * `field` holds `value`, found as the step runs. Undefined when `raw` names
+   * no field of that type, so an id that holds a colon stays an id.
+   */
+  #lookup(def: FieldDef & { kind: 'crossRef' }, raw: string): ActLate | undefined {
+    const at = raw.indexOf(':');
+    const fields = this.schema[def.ns]?.types[def.type]?.fields;
+    const field = at > 0 ? raw.slice(0, at) : '';
+    const by = fields !== undefined && Object.hasOwn(fields, field) ? fields[field] : undefined;
+    if (by === undefined || by.kind !== 'scalar') return undefined;
+    this.#local(def.ns, raw);
+    const value = this.#coerce(by, raw.slice(at + 1), field);
+    return { ref: { type: `${def.ns}/${def.type}`, field, value } };
   }
 
   /** Params and late values after `id`: the action's `set` in order, then extra fields in sketch order. */
@@ -648,6 +677,7 @@ class Compiler {
     const unknown = (token: string, swap: Swap) =>
       this.#refuse(token, `unknown field '${token}' on ${target.qualified}`, names, swap);
     const where: Record<string, unknown> = {};
+    const late: Record<string, ActLate> = {};
     if (refs.length > 0) {
       const short = (refs[0] as string).startsWith('#');
       const values = refs.map((ref) => {
@@ -678,17 +708,24 @@ class Compiler {
       }
       const def = Object.hasOwn(fields, arg) ? fields[arg] : undefined;
       if (def === undefined) return unknown(arg, swapKey(arg));
-      const operand = (v: ActValue, swap: Swap) => {
+      const operand = (given: ActValue, swap: Swap) => {
+        const v = this.#me(given);
         if (def.kind === 'crossRef' && typeof v === 'string' && v.startsWith('#')) {
           this.#refuse(v, `${v} cannot filter ${arg}; use the record's id`);
         }
         return this.#coerce(def, v, arg, swap);
       };
-      where[arg] = Array.isArray(raw)
-        ? { in: raw.map((el, i) => operand(el, swapElement(arg, raw, i))) }
-        : { eq: operand(raw, swapValue(arg)) };
+      const one = Array.isArray(raw) ? undefined : this.#me(raw);
+      const lookup =
+        def.kind === 'crossRef' && typeof one === 'string' ? this.#lookup(def, one) : undefined;
+      if (lookup !== undefined) late[`where.${arg}`] = lookup;
+      else
+        where[arg] = Array.isArray(raw)
+          ? { in: raw.map((el, i) => operand(el, swapElement(arg, raw, i))) }
+          : { eq: operand(raw, swapValue(arg)) };
     }
     return {
+      ...(Object.keys(late).length > 0 ? { late } : {}),
       source: this.#n,
       action,
       type: target.qualified,

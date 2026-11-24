@@ -92,8 +92,14 @@ export interface ActRefusal {
   choices: string[];
   nearest: string | null;
 }
-/** Filled at execution: a binding's id, `ctx.now`, or the id of the `type` record with `shortId`. */
-export type ActLate = { bind: string } | { now: true } | { ref: { type: string; shortId: number } };
+/**
+ * Filled at execution: a binding's id, `ctx.now`, or the id of the one `type`
+ * record with `shortId`, or whose `field` holds `value`.
+ */
+export type ActLate =
+  | { bind: string }
+  | { now: true }
+  | { ref: { type: string; shortId: number } | { type: string; field: string; value: unknown } };
 export interface ActPlanStep {
   /** 1-based, after expansion. */
   step: number;

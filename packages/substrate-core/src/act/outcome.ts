@@ -6,6 +6,7 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import type {
+  ActLate,
   ActMode,
   ActPlan,
   ActPlanStep,
@@ -102,6 +103,13 @@ const toValue = (v: unknown): ActValue =>
         ? String(v)
         : JSON.stringify(v);
 
+/** A late value as a sketch writes it: `$name`, `now`, `#N` or `field:value`. */
+function lateText(l: ActLate): string {
+  if ('bind' in l) return `$${l.bind}`;
+  if ('now' in l) return 'now';
+  return 'shortId' in l.ref ? `#${l.ref.shortId}` : `${l.ref.field}:${String(l.ref.value)}`;
+}
+
 /**
  * One plan step as sketch text with every value it sends: `close work/Todo
  * id=1 status=closed`. A read shows its filter, and a `find` its fields; a
@@ -118,7 +126,7 @@ export function planLine(step: ActPlanStep): string {
     for (const [k, v] of Object.entries(step.params)) args[k] = toValue(v);
   }
   const late = Object.entries(step.late ?? {}).map(
-    ([k, l]) => `${k}=${'bind' in l ? `$${l.bind}` : 'now' in l ? 'now' : `#${l.ref.shortId}`}`
+    ([k, l]) => `${k.startsWith('where.') ? k.slice(6) : k}=${lateText(l)}`
   );
   return [formatStep({ action: step.action, type: step.type, args }), ...late].join(' ');
 }
