@@ -132,7 +132,7 @@ Recall and proposals are built into the binary, so they are never in the plugin 
 └── data/pg/                      # postgres data volume, mounted at /var/lib/postgresql (data in data/pg/18/)
 ```
 
-**`package.json`** lists `@mnmal-ai/substrate` and each chosen plugin as dependencies, pinned to the binary's major, plus `fastembed` when the embedder runs in-process (`minilm`, `bge-base`). One `pnpm install` puts them all in a single shared `node_modules`.
+**`package.json`** lists `@mnmal-ai/substrate` and each chosen plugin as dependencies, pinned to the binary's major, plus `onnxruntime-node` and `@huggingface/tokenizers` when the embedder runs in-process (`minilm`, `bge-base`). One `pnpm install` puts them all in a single shared `node_modules`.
 
 **`.env`** holds what the binary reads at boot:
 
@@ -255,7 +255,7 @@ Recall retrieves rows by semantic similarity (`recall` MCP tool, `POST /substrat
 
 | `--embedder` | Model | Runs | Notes |
 |---|---|---|---|
-| `bge-base` (default) | bge-base-en-v1.5, 768-d | in-process | Better on paraphrase. Adds `fastembed` (about 540 MB, mostly ONNX Runtime). |
+| `bge-base` (default) | bge-base-en-v1.5, 768-d | in-process | Better on paraphrase. Adds ONNX Runtime (about 300 MB; set `ONNXRUNTIME_NODE_INSTALL_CUDA=skip` for the install to leave out 1.4 GB of GPU libraries). |
 | `minilm` | all-MiniLM-L6-v2, 384-d | in-process | Smaller, much faster to embed on CPU. Same install. |
 | `ollama` | bge-base-en-v1.5, 768-d | local [Ollama](https://ollama.com) | Needs `ollama pull hf.co/CompendiumLabs/bge-base-en-v1.5-gguf:F16`. |
 | `none` | | | No dense recall; keyword ranking still works. |

@@ -33,10 +33,11 @@
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
+    "@huggingface/tokenizers": "0.2.0",
     "@mnmal-ai/substrate-config": "workspace:*",
     "@types/node": "catalog:",
-    "fastembed": "^3.0.0",
     "msw": "catalog:",
+    "onnxruntime-node": "1.30.0",
     "tsdown": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"

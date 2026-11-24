@@ -6,7 +6,7 @@ The `Embedder` interface for Substrate semantic recall, with two implementations
 
 An embedder answers "give me a vector for this text". This package defines the `Embedder` interface and `EmbedError`, and ships:
 
-- `OnnxEmbedder`: in-process, via [fastembed](https://www.npmjs.com/package/fastembed) (ONNX Runtime). `fastembed` is not declared as a dependency, because it is large; install it in the runtime (`pnpm add fastembed`; `substrate init --embedder=minilm|bge-base` adds it) if you use this embedder.
+- `OnnxEmbedder`: in-process, on [ONNX Runtime](https://www.npmjs.com/package/onnxruntime-node) with the [Hugging Face tokenizer](https://www.npmjs.com/package/@huggingface/tokenizers). Neither is declared as a dependency, because the runtime is large; install them in the runtime (`pnpm add onnxruntime-node @huggingface/tokenizers`; `substrate init --embedder=minilm|bge-base` adds them) if you use this embedder. Set `ONNXRUNTIME_NODE_INSTALL_CUDA=skip` for that install to leave out about 1.4 GB of GPU libraries a CPU server never loads.
 - `OllamaEmbedder`: calls a local [Ollama](https://ollama.com) server's `/api/embed`.
 
 ## Where it fits

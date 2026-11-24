@@ -39,10 +39,11 @@ const MODEL_BACKENDS = new Set([
   'openai',
   '@google/generative-ai',
   'cohere-ai',
-  // Embedding backends. `fastembed` drags onnxruntime-node (520MB); a
-  // dependency anywhere in the core closure would put it on every consumer.
+  // Embedding backends. onnxruntime-node is about 300MB; a dependency
+  // anywhere in the core closure would put it on every consumer.
   'fastembed',
-  'onnxruntime-node'
+  'onnxruntime-node',
+  '@huggingface/tokenizers'
 ]);
 
 interface Manifest {

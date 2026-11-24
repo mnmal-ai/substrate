@@ -23,7 +23,7 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.pull_request.draft == true && 'draft' || 'ready' }}
   cancel-in-progress: true
 
-# onnxruntime-node (via fastembed, dev-only) downloads optional CUDA binaries
+# onnxruntime-node (dev-only, for the onnx embedder) downloads optional CUDA binaries
 # from a GitHub release that no longer exists; the CPU binaries ship on npm.
 env:
   ONNXRUNTIME_NODE_INSTALL_CUDA: skip

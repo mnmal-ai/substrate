@@ -93,7 +93,7 @@ describe('runInit (--yes)', () => {
     );
   });
 
-  it('defaults to bge-base in-process: onnx config with an absolute cache dir, and fastembed installed', async () => {
+  it('defaults to bge-base in-process: onnx config with an absolute cache dir, and its backends installed', async () => {
     const dir = makeTempDir();
     const target = join(dir, 'rt');
     const code = await runInit([target, '--yes', '--store=memory', '--plugins=cortext']);
@@ -109,7 +109,9 @@ describe('runInit (--yes)', () => {
       }
     });
     const deps = JSON.parse(readFileSync(join(target, 'package.json'), 'utf8')).dependencies;
-    expect(deps.fastembed).toBe('^3.0.0');
+    expect(deps['onnxruntime-node']).toBe('^1.30.0');
+    expect(deps['@huggingface/tokenizers']).toBe('^0.2.0');
+    expect(deps.fastembed).toBeUndefined();
   });
 
   it('--embedder=minilm writes the smaller 384-dim model', async () => {
@@ -125,16 +127,16 @@ describe('runInit (--yes)', () => {
     });
   });
 
-  it('--embedder=ollama does not install fastembed', async () => {
+  it('--embedder=ollama does not install the onnx backends', async () => {
     const dir = makeTempDir();
     const target = join(dir, 'rt');
     const code = await runInit([target, '--yes', '--store=memory', '--embedder=ollama']);
     expect(code).toBe(0);
     const deps = JSON.parse(readFileSync(join(target, 'package.json'), 'utf8')).dependencies;
-    expect(deps.fastembed).toBeUndefined();
+    expect(deps['onnxruntime-node']).toBeUndefined();
   });
 
-  it('--embedder=none writes no recall config and installs neither recall nor fastembed', async () => {
+  it('--embedder=none writes no recall config and installs neither recall nor the onnx backends', async () => {
     const dir = makeTempDir();
     const target = join(dir, 'rt');
     const code = await runInit([
@@ -147,7 +149,7 @@ describe('runInit (--yes)', () => {
     expect(code).toBe(0);
     expect(existsSync(join(target, 'substrate-recall.config.json'))).toBe(false);
     const deps = JSON.parse(readFileSync(join(target, 'package.json'), 'utf8')).dependencies;
-    expect(deps.fastembed).toBeUndefined();
+    expect(deps['onnxruntime-node']).toBeUndefined();
   });
 
   it('rejects an unknown --embedder', async () => {

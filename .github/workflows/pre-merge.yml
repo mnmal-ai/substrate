@@ -26,7 +26,7 @@ concurrency:
   group: pre-merge-${{ github.event.pull_request.number }}-${{ github.event.action == 'labeled' && github.run_id || 'push' }}
   cancel-in-progress: true
 
-# onnxruntime-node (via fastembed, dev-only) downloads optional CUDA binaries
+# onnxruntime-node (dev-only, for the onnx embedder) downloads optional CUDA binaries
 # from a GitHub release that no longer exists; the CPU binaries ship on npm.
 env:
   ONNXRUNTIME_NODE_INSTALL_CUDA: skip

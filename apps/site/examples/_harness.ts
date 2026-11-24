@@ -268,13 +268,13 @@ export async function runExample(setup: ExampleSetup, steps: Step[]): Promise<Tr
   }
 
   // Imported on demand so a CI run that never goes live never loads it.
-  // `fastembed` is undeclared and is resolved from the embedder package's own real path.
+  // Its onnx backends are undeclared and resolve from the embedder package's own real path.
   const embedder =
     setup.embedder === 'live'
       ? new (await import('@mnmal-ai/substrate-embedder')).OnnxEmbedder({
           model: 'bge-base-en',
           dimension: 768,
-          // Absolute: fastembed's default is relative to the working directory.
+          // Absolute: the default is relative to the working directory.
           cacheDir: join(tmpdir(), 'substrate-site-embed-cache')
         })
       : setup.embedder === 'fake'

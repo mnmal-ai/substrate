@@ -121,7 +121,7 @@ cat > substrate-recall.config.json <<'EOF'
 EOF
 ```
 
-`kind: "onnx"` runs the model in-process and needs `fastembed` installed in the runtime (the embedder code itself ships in `@mnmal-ai/substrate`); `substrate init` adds it for `--embedder=bge-base` (the default) and `--embedder=minilm`. `kind: "ollama"` takes a `baseUrl` instead.
+`kind: "onnx"` runs the model in-process and needs `onnxruntime-node` and `@huggingface/tokenizers` installed in the runtime (the embedder code itself ships in `@mnmal-ai/substrate`); `substrate init` adds it for `--embedder=bge-base` (the default) and `--embedder=minilm`. `kind: "ollama"` takes a `baseUrl` instead.
 
 ## Docker
 
