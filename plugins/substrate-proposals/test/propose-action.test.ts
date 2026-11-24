@@ -428,6 +428,12 @@ describe('propose_action (memory)', () => {
     expect(await records(w)).toEqual([]);
   });
 
+  it('refuses a sketch longer than a record keeps', async () => {
+    const long = { ...reopenParams(w), sketch: 'x'.repeat(2001) };
+    expect(await propose(engine, w, 'agent-a', long)).toBe('invalid_params');
+    expect(await records(w)).toEqual([]);
+  });
+
   it('refuses a name taken by a declared action, another pending word, or a built-in', async () => {
     expect(await as('agent-a', 'define Ticket.close shut status=closed')).toMatchObject(taken);
     expect(await as('agent-a', 'define Ticket.reopen reopened status=open')).toMatchObject({
