@@ -253,6 +253,16 @@ export function applyTypeProposal(args: ApplyTypeProposalArgs): void {
     );
   }
 
+  // Installing registers one key at a time, so a key that is taken must be
+  // found first or the keys before it stay registered.
+  const taken = typeProposalRegistryKeys(args).find((key) => binding.registry.has(key));
+  if (taken !== undefined) {
+    throw new ProposalError(
+      'type_already_exists',
+      `Type '${args.typeName}' would register '${taken}', which is already registered in namespace '${args.namespace}'`
+    );
+  }
+
   installProposedType(binding.registry, args);
 
   // Drop the engine's cached schema views so federatedSchema() and
