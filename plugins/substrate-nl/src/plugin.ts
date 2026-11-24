@@ -1,7 +1,9 @@
 /**
  * `@mnmal-ai/substrate-nl` as a substrate plugin: NL owns no namespace, only two
- * kernel routes. Both are read-gated: row policy keeps the data safe, and the
- * gate keeps an anonymous caller from spending the operator's judge GPU.
+ * kernel routes. Both are read-gated: row policy keeps the data safe, and under
+ * auth mode `required` the gate keeps a caller with no key from spending the
+ * operator's judge GPU. Mode `attribute` admits tokenless reads, so there only
+ * the per-caller in-flight cap bounds them.
  */
 import type { KernelPlugin } from '@mnmal-ai/substrate/sdk';
 import type { NlEngineAccess } from './access.js';

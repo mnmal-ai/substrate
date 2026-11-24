@@ -26,6 +26,8 @@ import type {
   WsResponseFrame
 } from '@mnmal-ai/substrate-types';
 import {
+  grantRefusal,
+  grantRefusalCode,
   isResolverFrameError,
   normaliseVocabWhere,
   WALKS_IN_SUBSCRIPTION,
@@ -442,8 +444,8 @@ export class SubscribeSubsystem {
           kind: 'error',
           errors: [
             {
-              message: `namespace '${ns}' not in identity's allowed namespaces`,
-              code: 'unauthorized_namespace',
+              message: grantRefusal(ns, nsGate),
+              code: grantRefusalCode(nsGate),
               path: [key]
             }
           ]

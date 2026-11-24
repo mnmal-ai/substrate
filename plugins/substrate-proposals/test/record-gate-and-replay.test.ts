@@ -718,6 +718,20 @@ describe('writing a FieldProposal', () => {
     }
   });
 
+  it('does not tell a proposer without read whether the type has stored rows', async () => {
+    const blind = ['mutate', 'substrate.propose'];
+    const create = intoStored.find(([l]) => l === 'create');
+    if (create === undefined) throw new Error('no create case');
+    const replies = [];
+    for (const rows of [true, false]) {
+      const { engine } = await seeded(rows);
+      replies.push((await write(engine, create[1], create[2], blind)).errors);
+    }
+    expect(replies[0]?.[0]?.code).toBe('policy_denied');
+    expect(replies[0]?.[0]?.message).toContain("or read in 'app'");
+    expect(replies[1]).toEqual(replies[0]);
+  });
+
   it('passes a change boot replay never reads, and any change to a proposal that stays not live', async () => {
     const { engine } = await seeded();
     for (const [key, params] of [

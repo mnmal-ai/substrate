@@ -98,6 +98,16 @@ export function readsEveryNamespace(identity: GrantBearing | null | undefined): 
   return grantOf(identity) === null || holdsEverywhere(identity, 'read');
 }
 
+/**
+ * True when the identity may see that `ns` exists and what it declares: no
+ * grant claim at all, or any capability held there. A key that only writes
+ * to a namespace still has to know its shape.
+ */
+export function seesNamespace(identity: GrantBearing | null | undefined, ns: string): boolean {
+  const resolved = grantOf(identity);
+  return resolved === null || grantedIn(resolved, ns).length > 0;
+}
+
 export type GrantVerdict =
   | { ok: true }
   | { ok: false; reason: 'namespace' | 'capability'; required?: string };

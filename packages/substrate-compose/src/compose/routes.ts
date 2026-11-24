@@ -141,8 +141,8 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
       ...(poolStats !== undefined ? { pool: poolStats } : {})
     })
   );
-  // Schema discovery and onboarding sit behind `read`, like /substrate/v1/query: the
-  // schema is the whole type map of every namespace. Open without a key:
+  // Schema discovery and onboarding sit behind `read`, like /substrate/v1/query, and
+  // each answers only for the namespaces the caller's grant names. Open without a key:
   // /health, /substrate/v1/whoami and /substrate/v1/_system/register.
   server.route('GET', '/substrate/v1/schema', gate(schemaRoute(engine, 'default'), 'read'));
   // Scoped discovery — cheap shape lookups for agents to mine before a write,
@@ -374,7 +374,9 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
             }
           },
           now: () => new Date(),
-          trustedProxies
+          trustedProxies,
+          announce: (events, actor) => engine.announceWrites(events, actor),
+          storeAdmin: (req) => auth === undefined || holdsEverywhere(req.identity ?? null, adminCap)
         })
       ),
       'admin'
@@ -395,7 +397,9 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
             }
           },
           now: () => new Date(),
-          trustedProxies
+          trustedProxies,
+          announce: (events, actor) => engine.announceWrites(events, actor),
+          storeAdmin: (req) => auth === undefined || holdsEverywhere(req.identity ?? null, adminCap)
         })
       ),
       'admin'

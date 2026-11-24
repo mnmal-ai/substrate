@@ -141,7 +141,8 @@ export class RestrictViolation extends Error {
 
   constructor(ref: EdgeRef, blockedBy: Edge[]) {
     super(
-      `restrict: cannot delete ${ref.ns}/${ref.type}/${ref.id}; ${blockedBy.length} live restrict edge(s) point at it`
+      // No count: the edges may come from rows the caller cannot read.
+      `restrict: cannot delete ${ref.ns}/${ref.type}/${ref.id}; live restrict edge(s) point at it`
     );
     this.blockedBy = blockedBy;
   }

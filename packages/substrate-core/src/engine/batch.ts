@@ -178,7 +178,12 @@ export class ArrayDispatch {
     signal?: AbortSignal
   ): Promise<void> {
     if (!parsed) {
-      addError(envelope, [key], this.#gate.unqualifiedMessage(key), 'unqualified_key');
+      addError(
+        envelope,
+        [key],
+        this.#gate.unqualifiedMessage(key, ctxBase.identity),
+        'unqualified_key'
+      );
       this.#metric('engine_unqualified_key', key);
       return;
     }

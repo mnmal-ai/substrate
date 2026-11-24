@@ -79,6 +79,16 @@ describe('runJoin', () => {
     expect(readFileSync(keyOut, 'utf8')).toBe('pre-existing');
   });
 
+  it('refuses a name that cannot be a file name before contacting the peer', async () => {
+    const peer = stubPeer(ok201);
+    for (const name of ["a'b", '../up', 'has space']) {
+      await expect(
+        runJoin({ token: TOKEN, name, keyOut: pathJoin(dir, 'k.key') }, { httpJson: peer.fn })
+      ).rejects.toThrow(/cannot name the key file/);
+    }
+    expect(peer.calls).toHaveLength(0);
+  });
+
   const failures: Array<{ label: string; response: HttpJsonResult | Error; match: RegExp }> = [
     {
       label: 'unrecognised invite',

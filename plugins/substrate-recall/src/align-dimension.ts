@@ -90,6 +90,15 @@ async function alignLocked(s: Sql, opts: AlignOptions): Promise<AlignmentReport>
   const { dimension } = opts;
   const m = opts.hnswM ?? 16;
   const ef = opts.hnswEfConstruction ?? 64;
+  // Both are written into DDL text below.
+  for (const [name, v] of [
+    ['hnswM', m],
+    ['hnswEfConstruction', ef]
+  ] as const) {
+    if (!Number.isInteger(v) || v <= 0) {
+      throw new Error(`alignVectorDimensions: ${name} must be a positive integer (got ${v})`);
+    }
+  }
   const embeddings = await alignColumn(s, 'embeddings', 'embedding', dimension, async () => {
     // The HNSW index is typed by the column; rebuild it at the new dimension.
     await s.unsafe(`DROP INDEX IF EXISTS embeddings_hnsw`);

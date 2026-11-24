@@ -15,12 +15,14 @@
  */
 
 import type {
+  ActorIdentity,
   Dataset,
   FieldDef,
   HttpHandler,
   Row,
   Schema,
-  SubstrateResponse
+  SubstrateResponse,
+  WriteEvent
 } from '@mnmal-ai/substrate-types';
 import { canonicalVocabValue } from '@mnmal-ai/substrate-types';
 import { extractClientIp, jsonResponse } from '../routes/helpers.js';
@@ -32,6 +34,10 @@ export interface BackfillFieldRouteDeps {
   schemaFor: (namespace: string) => Schema | null;
   now: () => Date;
   trustedProxies: string[] | Set<string>;
+  /** Whether the caller holds admin in every namespace. Absent, proposal records are refused. */
+  storeAdmin?: (req: Parameters<HttpHandler>[0]) => boolean;
+  /** Tells subscribers and write hooks of the rows once they are committed. */
+  announce?: (events: WriteEvent[], actor: ActorIdentity) => Promise<void>;
 }
 
 /** Rows per request: enough for any one-off, small enough to review. */
@@ -39,6 +45,13 @@ export const BACKFILL_MAX_ROWS = 5000;
 /** Row ids named in the audit event; the rest are counted, not listed. */
 export const AUDIT_ID_LIMIT = 500;
 const BATCH = 200;
+/** The proposals plugin's records, which boot replays into the schema. */
+export const PROPOSAL_RECORD_TYPES: ReadonlySet<string> = new Set([
+  'TypeProposal',
+  'FieldProposal',
+  'NamespaceProposal',
+  'ActionProposal'
+]);
 
 const badRequest = (code: string, message: string, extra: object = {}): SubstrateResponse =>
   jsonResponse(400, { code, message, ...extra });
@@ -77,6 +90,10 @@ export function backfillFieldRoute(deps: BackfillFieldRouteDeps): HttpHandler {
         code: 'forbidden_namespace',
         message: '_system cannot be backfilled'
       });
+    }
+    // Boot replays these records into the schema, so editing them needs admin everywhere.
+    if (PROPOSAL_RECORD_TYPES.has(type) && deps.storeAdmin?.(req) !== true) {
+      return jsonResponse(403, { code: 'forbidden', required: '*:admin' });
     }
     const apply = body.apply === true;
     const overwrite = body.overwrite === true;
@@ -163,36 +180,47 @@ export function backfillFieldRoute(deps: BackfillFieldRouteDeps): HttpHandler {
     };
     if (!apply) return jsonResponse(200, { ...summary, applied: false });
 
-    for (let i = 0; i < toWrite.length; i += BATCH) {
-      await dataset.write(
-        type,
-        toWrite.slice(i, i + BATCH).map((id) => {
-          const meta = current.get(id)?._metadata;
-          return (
-            meta === undefined
-              ? { id, [field]: target.get(id) }
-              : { id, [field]: target.get(id), _metadata: meta }
-          ) as Row;
-        })
-      );
-    }
-
-    // Verify: every written row now holds exactly its target.
+    // One transaction: every row is written and verified, or none is.
     const wrong: string[] = [];
-    for (let i = 0; i < toWrite.length; i += BATCH) {
-      for (const r of (await dataset.read(type, { ids: toWrite.slice(i, i + BATCH) })).rows) {
-        if (r[field] !== target.get(String(r.id))) wrong.push(String(r.id));
-      }
-    }
-    if (wrong.length > 0) {
+    const written: Row[] = [];
+    try {
+      await dataset.withTransaction(async (tx) => {
+        for (let i = 0; i < toWrite.length; i += BATCH) {
+          await tx.write(
+            type,
+            toWrite.slice(i, i + BATCH).map((id) => {
+              const meta = current.get(id)?._metadata;
+              return (
+                meta === undefined
+                  ? { id, [field]: target.get(id) }
+                  : { id, [field]: target.get(id), _metadata: meta }
+              ) as Row;
+            })
+          );
+        }
+        // Verify: every written row now holds exactly its target.
+        for (let i = 0; i < toWrite.length; i += BATCH) {
+          for (const r of (await tx.read(type, { ids: toWrite.slice(i, i + BATCH) })).rows) {
+            if (r[field] !== target.get(String(r.id))) wrong.push(String(r.id));
+            else written.push(r);
+          }
+        }
+        if (wrong.length > 0) throw new Error('verify_failed');
+      });
+    } catch (err) {
+      if (wrong.length === 0) throw err;
       return jsonResponse(500, {
         code: 'verify_failed',
-        message: `${wrong.length} row(s) do not hold their target after the write`,
+        message: `${wrong.length} row(s) did not hold their target after the write; nothing was written`,
         ids: wrong.slice(0, 50)
       });
     }
 
     const actorKid = typeof req.identity?.kid === 'string' ? req.identity.kid : 'unknown';
+    await deps.announce?.(
+      written.map((row) => ({ ns: namespace, type, id: row.id, operation: 'update', row })),
+      { kind: 'agent', id: actorKid }
+    );
     const now = deps.now();
     const substrateDs = deps.resolveDataset(SYSTEM_NAMESPACE);
     if (substrateDs !== null && toWrite.length > 0) {
