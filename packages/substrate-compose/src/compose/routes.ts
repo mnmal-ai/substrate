@@ -219,16 +219,6 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
       'admin'
     )
   );
-  // Admin-gated, unlike /substrate/v1/metrics: this says how the deployment is built
-  // — store kind, auth mode, proxy allowlist.
-  if (configReport !== undefined) {
-    server.route(
-      'GET',
-      '/substrate/v1/config',
-      gate(configRouteHandler(configReport, storageReport), 'admin')
-    );
-  }
-
   // §5.12: admin-gated invite mint + public rate-limited register.
   // `/register` bypasses auth entirely — access control IS the invite. The
   // rate limiter lives until `stop()`; tests may inject their own.
@@ -309,6 +299,15 @@ export async function registerCoreRoutes(args: CoreRoutesArgs): Promise<{
         body: Buffer.from(JSON.stringify({ code: 'forbidden', required: `*:${adminCap}` }), 'utf8')
       };
     };
+  // Admin-gated, unlike /substrate/v1/metrics: this says how the deployment is built
+  // — store kind, auth mode, proxy allowlist — for every namespace at once.
+  if (configReport !== undefined) {
+    server.route(
+      'GET',
+      '/substrate/v1/config',
+      gate(adminStoreWide(configRouteHandler(configReport, storageReport)), 'admin')
+    );
+  }
   // A drop's edges can reach other namespaces; the routes ask about those here.
   const dropGrants =
     auth === undefined
