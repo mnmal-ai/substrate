@@ -2,6 +2,50 @@
 
 Releases before 1.0.0-alpha.21 are recorded only in their GitHub release notes.
 
+## 1.0.0-beta.16 (2026-11-24)
+
+Changes since 1.0.0-beta.15. This release closes the remaining authorization gaps from the second audit pass, works through its hardening notes, bounds calls that reach a model, and lets `act` drive types whose writes are their plugin's own mutations. No schema version moves and there is no migration. Several requests that used to be answered are now refused or answered differently; they are listed under *Changed* first. **Before upgrading, give `read` to any key that holds `mutate` without it and updates or deletes rows.**
+
+### Changed
+
+- **A generated update or delete needs `read` as well as `mutate` (#333).** `update<T>`, `delete<T>`, `updateMany<T>` and `deleteMany<T>` answer with what is stored, so a key holding `mutate` alone is refused `unauthorized_capability`. `create<T>` and a plugin's own mutations still need `mutate` alone, which suits a one-way writer.
+- **Schema discovery describes only the namespaces a key's grant names (#334).** `/schema`, `/schema/<ns>`, `/schema/<ns>/<Type>`, `/federated-schema`, `/onboard` and the NL pack answer for a namespace only when the caller holds some capability there. Any other namespace answers `404` exactly as one that is not hosted. The MCP schema overview narrows with it. A caller with no grant claim sees what it did.
+- **A grant refusal answers alike whatever is behind it (#335).** A refused read no longer hits the page limits first or carries the namespace's own `schemaVersion`. The `did you mean '<ns>/<name>'?` hint names only a namespace the caller holds something in. Subscribe and stream answer `unauthorized_capability` for a key that holds the namespace without `read`, as query does; they answered `unauthorized_namespace`.
+- **A proposer who cannot read a namespace cannot change a proposal there without the drop capability (#335).** The gate used to say whether the type or namespace held stored rows.
+- **`backfill-field` and `normalise-vocab` on a proposal record type need admin in every namespace (#336).** `TypeProposal`, `FieldProposal`, `NamespaceProposal` and `ActionProposal` answer `403` with `required: '*:admin'` to a namespace admin.
+- **Calls that reach a model are bounded (#337).** One caller may have four `POST /recall` and four `POST /nl` requests running; one more answers `429 too_many_in_flight` with `retry-after`. Sessions sharing a key count as one caller. Across every caller, four query embeds run at once and 64 wait; one past both fails at once, as an embed timeout does. The four numbers are startup config (`queryEmbedRunning`, `queryEmbedWaiting`, `recallInFlightPerCaller` in the recall config, `inFlightPerCaller` in the NL config); `docs/operator-decisions.md` has an example.
+- **Every `where` is capped (#331).** At most 256 predicates and 32 levels of nesting, on every surface and dataset; past either it answers `invalid_logical`. A subscription's tighter caps are unchanged.
+- **Half of a type's subscription slots are kept for callers with an identity (#332).** Callers with none hold at most 512 of the 1,024.
+- **A read takes back only the kind of cursor it hands out (#340).** A sealed cursor sent to a read with no row filter answers `invalid_cursor`.
+- **The restrict-violation message no longer counts the blocking edges (#340).**
+- **`propose_action` refuses a sketch over 2,000 characters (#340)**, and crystallise's `select.excludeTextPrefixes` takes at most 32 entries, each a plain field name with a prefix of at most 256 characters.
+- **`propose_namespace` refuses any name starting `_system` (#329).**
+- **`federate join` refuses a default key name that is not letters, digits, `.`, `_` or `-` (#339).** Pass `--name`.
+- **The five read-only MCP tools carry `readOnlyHint` (#339).** `schema`, `query`, `ask`, `whoami` and `recall` grow by about 35 bytes each, which includes the `lean` preset's `whoami`. Every other tool keeps the protocol default, which a host reads as able to overwrite or delete.
+- **`KernelRouteClaim` gains `maxInFlightPerCaller` (#337)**, for a plugin route whose work is costly per call.
+
+### Added
+
+- **A declared action can call a namespace mutation (#338).** `ActionDecl` gains `mutation`, so a type whose writes are its plugin's own mutations can declare actions: `ack: { mutation: 'ackMessage', past: 'acked' }` makes `ack Message #12` call `ackMessage` with that record's id, and each `field=value` is one of the mutation's params. Such a type may have `autoCrud: false`. A coined word cannot name a mutation.
+- **A sketch can name a referenced record by one of its fields, and the caller as `@me` (#338).** `find Message recipient=kid:@me status=unread` needs no lookup first. No match fails with `not_found`, more than one with `ambiguous_reference`.
+
+### Fixed
+
+- **`backfill-field` and `normalise-vocab` write in one transaction and announce the rows (#336).** A failure part-way left some rows changed, and subscribers and write hooks never heard of the rows.
+- **A lapsed coined word no longer holds its name against another proposer (#330).**
+- **Relabelling a recall cluster needs read of every member (#330).**
+- **`embed-stats?coverage=true` shares one scan between concurrent callers (#331).**
+- **Operator commands print supplied text as data (#329, #339).** `act`, `ask`, `check-enums`, `normalise-vocab`, `substrate run`, `federate join` and the admin CLI flatten a server's or peer's message to one line and escape C1 control bytes in JSON they print.
+- **`federate join` creates its key file exclusively (#339).**
+- **The run sandbox refuses to run a script when the runtime grants network (#339).**
+- **`substrate init` scaffolds `fastembed ^3.0.0` (#329)**, the major the repository tests.
+- **Smaller guards (#340).** `embed-stats` keeps the first 500 characters of the last embed error, `alignVectorDimensions` checks its two HNSW parameters are positive integers, and the NL pack treats a null identity as anonymous.
+
+### Documentation
+
+- `docs/act.md` and the site's `act` page describe mutation actions, references by field and `@me`, and the page now shows the measured comparison of the `core` tools against `act` (#338).
+- The getting-started guide tells operators how to pin the embedding model and the images (#336); the migration guide says `migrate-store` does not copy idempotency keys (#339).
+
 ## 1.0.0-beta.15 (2026-11-24)
 
 Changes since 1.0.0-beta.14. This release closes the findings of a second security audit pass, over the surfaces the first pass left unexamined. No schema version moves and there is no migration. The `lean` MCP preset is unchanged. Several requests that used to be answered are now refused or answered differently; they are listed under *Changed* first.
