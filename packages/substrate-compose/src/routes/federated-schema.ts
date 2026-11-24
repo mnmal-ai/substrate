@@ -1,6 +1,6 @@
 /**
- * GET /substrate/v1/federated-schema — return the full federated schema view
- * (§4.7). Shape: `Record<ns, Schema>`. Clients that drive multi-ns
+ * GET /substrate/v1/federated-schema — return the federated schema view
+ * (§4.7), narrowed to the namespaces the caller's grant names. Shape: `Record<ns, Schema>`. Clients that drive multi-ns
  * frames call this at cold-start to build their `nsIndex` map.
  *
  * Plus, when the caller may read them, enum verification verdicts under the
@@ -9,7 +9,13 @@
  */
 
 import type { Engine } from '@mnmal-ai/substrate-core';
-import { grantedIn, grantOf, type HttpHandler, type Row } from '@mnmal-ai/substrate-types';
+import {
+  grantedIn,
+  grantOf,
+  type HttpHandler,
+  type Row,
+  seesNamespace
+} from '@mnmal-ai/substrate-types';
 import { buildContext, jsonResponse } from './helpers.js';
 
 /** One field's verification state, as surfaced alongside the schema. */
@@ -32,7 +38,10 @@ export function federatedSchemaRoute(
   authEnabled?: boolean
 ): HttpHandler {
   return async (req) => {
-    const schema = engine.federatedSchema();
+    // Only the namespaces the caller holds something in.
+    const schema = Object.fromEntries(
+      Object.entries(engine.federatedSchema()).filter(([ns]) => seesNamespace(req.identity, ns))
+    );
     const verdicts = await readVerdicts(engine, req, trustedProxies, authEnabled);
     if (verdicts === null) return jsonResponse(200, schema);
     return jsonResponse(200, { ...schema, _enumVerdicts: verdicts });

@@ -1,5 +1,10 @@
 import { createHash } from 'node:crypto';
-import type { NlServedPack, Schema, SubstrateRequest } from '@mnmal-ai/substrate/sdk';
+import {
+  type NlServedPack,
+  type Schema,
+  type SubstrateRequest,
+  seesNamespace
+} from '@mnmal-ai/substrate/sdk';
 import type { NlEngineAccess } from '../access.js';
 import { own } from '../own.js';
 import { readRulings } from '../rulings/schema.js';
@@ -46,7 +51,9 @@ export class PackService {
     req: SubstrateRequest
   ): Promise<{ pack: ServedPack; etag: string } | undefined> {
     const schemas = this.#opts.engine.federatedSchema();
-    const schema = Object.hasOwn(schemas, ns) ? schemas[ns] : undefined;
+    // A namespace the caller holds nothing in answers as one that is not hosted.
+    const schema =
+      Object.hasOwn(schemas, ns) && seesNamespace(req.identity, ns) ? schemas[ns] : undefined;
     if (schema === undefined) return undefined;
     const now = (this.#opts.now ?? Date.now)();
     const ttl = this.#opts.ttlMs ?? 300_000;
