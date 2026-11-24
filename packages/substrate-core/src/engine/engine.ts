@@ -204,6 +204,9 @@ function bridgedWalk(entry: FrameEntry): boolean {
   );
 }
 
+/** How many reads' worth of rows a row-filtered page scans before it stops and hands back a cursor. */
+const ROW_FILTER_SCAN_FACTOR = 10;
+
 function slotResultOf(scratch: PackEnvelope, key: string): SlotResult {
   const entry: SlotResult = {};
   if (key in scratch.data) entry.data = scratch.data[key];
@@ -251,7 +254,7 @@ function observe(hook: (o: ResolveObservation) => void, o: ResolveObservation): 
 
 import type { WalkResolvers } from '../filter/walk-validator.js';
 import { MemoryActResultStore } from '../memory-act-result-store.js';
-import { evaluatePolicy } from '../policy-evaluator.js';
+import { applyObligations, evaluatePolicy } from '../policy-evaluator.js';
 import { Registry } from '../registry.js';
 import { type HopResolver, hopResolver, type WalkedType, walkedTypes } from '../walk-types.js';
 import { BridgeSubsystem } from './bridge.js';
@@ -266,6 +269,7 @@ import {
   DEFAULT_IDEMPOTENCY_TTL_MS,
   DEFAULT_SUBSCRIPTION_QUEUE_LIMIT,
   type EngineOptions,
+  isReadResult,
   type MetricFn,
   makeArrayDedupKey,
   makeDedupKey,
@@ -1709,6 +1713,57 @@ export class Engine implements ActHandle {
   }
 
   /**
+   * A row-filtered page, built so that what it says about the rows after it
+   * depends only on rows the caller may see. Reads on past hidden rows until
+   * the page holds `limit` visible ones, asking each time for exactly what it
+   * still lacks, so it never overshoots and every cursor is a page end. Then
+   * reads ahead until it finds one more visible row, which is what `hasMore`
+   * reports.
+   */
+  async #fillFilteredPage(
+    first: ReadResult,
+    read: (cursor: string, limit: number) => unknown,
+    visible: (rows: Row[]) => Row[],
+    limit: unknown
+  ): Promise<ReadResult> {
+    const want = typeof limit === 'number' && limit > 0 ? limit : Math.max(first.rows.length, 1);
+    // shortcut: scans at most ROW_FILTER_SCAN_FACTOR pages' worth of rows per read, then answers hasMore with a cursor so the caller pages on; a run of hidden rows longer than that still shows as empty pages, raise the factor if callers meet them.
+    const budget = ROW_FILTER_SCAN_FACTOR * (want + 1);
+    const after = (r: ReadResult) => (r.hasMore ? r.nextCursor : undefined);
+    const rows = visible(first.rows);
+    let scanned = first.rows.length;
+    let cursor = after(first);
+
+    const next = async (n: number): Promise<Row[]> => {
+      const page = await read(cursor as string, n);
+      if (!isReadResult(page)) {
+        cursor = undefined;
+        return [];
+      }
+      scanned += page.rows.length;
+      cursor = after(page);
+      return visible(page.rows);
+    };
+
+    while (cursor !== undefined && rows.length < want && scanned < budget) {
+      rows.push(...(await next(want - rows.length)));
+    }
+    // The next page starts here, whatever the read-ahead below finds.
+    let resume = cursor;
+    let more = false;
+    while (cursor !== undefined && rows.length >= want && !more && scanned < budget) {
+      resume = cursor;
+      more = (await next(want)).length > 0;
+    }
+    // Out of budget with rows unread: the caller pages on from where the scan stopped.
+    if (!more && cursor !== undefined) {
+      more = true;
+      resume = cursor;
+    }
+    return { rows, hasMore: more, ...(more && resume !== undefined ? { nextCursor: resume } : {}) };
+  }
+
+  /**
    * §5.12 per-frame grant gate (namespace and capability). Records the refusal
    * under `key` and returns true when `identity` may not run `operation` in
    * `ns`. Bridged keys pass through here too, before they are proxied.
@@ -2376,6 +2431,21 @@ export class Engine implements ActHandle {
     const t0 = performance.now();
     try {
       result = await registryEntry.resolver(ctx, args);
+      if (
+        operation === 'query' &&
+        (decision.obligations?.length ?? 0) > 0 &&
+        isReadResult(result) &&
+        result.count === undefined &&
+        result.groups === undefined
+      ) {
+        result = await this.#fillFilteredPage(
+          result,
+          (cursor, limit) =>
+            registryEntry.resolver(ctx, { ...args, params: { ...args.params, cursor, limit } }),
+          (rows) => applyObligations(decision, rows, ctx),
+          args.params?.limit
+        );
+      }
     } catch (err) {
       if (isRestrictViolation(err)) {
         addError(envelope, [key], err.message, 'restrict_violation');
