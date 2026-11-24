@@ -88,16 +88,17 @@ defineNamespace('work', {
 - `params` use field types, so values are coerced and checked as fields are: enums, and int64 kept exact. A param with a `default` or `optional: true` may be left out. A `list` param takes record references.
 - `then` runs follow-on actions in the same transaction, once per element of the list param its `each` names; `each` is required. The target is written `<namespace>/<Type>.<action>`, must be an update action on the list param's type whose params are all optional or defaulted, and may be in another namespace on the same store.
 - `past` is the word the acknowledgement uses. Without it the ack says `<action> done`.
+- `mutation` names one of the namespace's own mutations to call in place of the generated `create<Type>` or `update<Type>`. It is for a type whose writes are its plugin's mutations, such as a mailbox with `send` and `ack`. An `update` action passes the reference as `id`, a `create` action takes none, and every `field=value` in the sketch is one of that mutation's params, coerced as its declared type. `ack: { mutation: 'ackMessage', past: 'acked' }` makes `ack Message #12` call `ackMessage` with that id. Such an action needs no `set`, and its type may have `autoCrud: false`.
 
 Boot refuses with a message when:
 
-- an action name collides with a built-in, or the type has `autoCrud: false`;
+- an action name collides with a built-in, or the type has `autoCrud: false` and an action without a `mutation`;
 - a param has no field type, or is never used;
 - a `set` field does not exist or is server-set, a literal does not fit its field, `{ now: true }` sets a field that is not a date, or `{ param }` names a param that is undeclared or a `list`;
 - a `then` entry has no `each`, its `each` names a param that is not a `list`, or its target's type is not the list's type;
 - an update action sets nothing and has no `then`;
 - a `create` action leaves a required field without a `set` value, a param that is always present, or a field default;
-- once every namespace has installed, a `then` target does not exist, is a create action, or has a param with no default, or `then` chains form a cycle.
+- once every namespace has installed, a `then` target does not exist, is a create action, or has a param with no default, or `then` chains form a cycle, or a `mutation` is not a mutation of the type's namespace.
 
 A composite action grants nothing. Every step goes through its target's normal grant and policy with the caller's identity, so an action cannot write what the caller could not write directly.
 

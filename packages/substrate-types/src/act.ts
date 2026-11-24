@@ -17,6 +17,13 @@ export interface ActionThenDecl {
 }
 export interface ActionDecl {
   kind?: 'update' | 'create';
+  /**
+   * A mutation of the type's namespace to call in place of the generated
+   * `<kind><Type>`: for a type whose writes are its plugin's own mutations.
+   * `update` passes the reference as `id`, `create` takes none, and each
+   * `field=value` is one of that mutation's params.
+   */
+  mutation?: string;
   past?: string;
   params?: Record<string, ActionParamDecl>;
   set?: Record<string, ActionSetValue>;
@@ -25,6 +32,7 @@ export interface ActionDecl {
 /** Published form, in TypeSchema.actions; the compiler reads only this. */
 export interface ActionSchema {
   kind: 'update' | 'create';
+  mutation?: string;
   past?: string;
   params: Record<string, ActionParamDecl>;
   set: Record<string, ActionSetValue>;
@@ -58,6 +66,7 @@ export function toActionSchema(decl: ActionDecl): ActionSchema {
   const set = decl.set ?? {};
   return {
     kind: decl.kind ?? 'update',
+    ...(decl.mutation !== undefined ? { mutation: decl.mutation } : {}),
     ...(decl.past !== undefined ? { past: decl.past } : {}),
     params: decl.params ?? {},
     set,
@@ -117,6 +126,8 @@ export interface ActHelp {
     string,
     {
       kind: 'update' | 'create';
+      /** The namespace mutation the action calls, when it is not the generated one. */
+      mutation?: string;
       params: Record<string, { type: string; required: boolean }>;
       /** A pending word's counted uses so far, and the uses it needs to publish. */
       pending?: { uses: number; needed: number };

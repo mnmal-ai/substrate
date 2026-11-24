@@ -176,7 +176,7 @@ class Compiler {
       const step = this.#at(i + 1).#step;
       if (step.type === undefined) return typesHelp(this.schema);
       const target = this.#resolveType(step.type);
-      return typeHelp(target.qualified, target.type);
+      return typeHelp(target.qualified, target.type, (this.schema[target.ns] as Schema).mutations);
     });
     const help = helps.length === 1 ? (helps[0] as ActHelp) : helps;
     if (helps.length === steps.length) return { help };
@@ -452,7 +452,7 @@ class Compiler {
     out: Draft[],
     bind?: string
   ): void {
-    const mutation = `${action.kind}${target.name}`;
+    const mutation = action.mutation ?? `${action.kind}${target.name}`;
     if (!Object.hasOwn((this.schema[target.ns] as Schema).mutations, mutation)) {
       this.#refuse(this.#step.action, `${target.qualified} has no ${mutation} mutation`);
     }
@@ -483,7 +483,8 @@ class Compiler {
         operation: 'mutate',
         params,
         ...(Object.keys(late).length > 0 ? { late } : {}),
-        fields: idFields(target.type),
+        fields:
+          action.mutation === undefined ? idFields(target.type) : this.#returned(target, mutation),
         ...(action.past !== undefined ? { past: action.past } : {}),
         ...(bind !== undefined ? { bind } : {})
       });
@@ -553,7 +554,11 @@ class Compiler {
 
   /** Params and late values after `id`: the action's `set` in order, then extra fields in sketch order. */
   #buildParams(target: Target, name: string, action: ActionSchema, args: Record<string, ActValue>) {
-    const fields = target.type.fields;
+    // A mutation action's `field=value` pairs are that mutation's params.
+    const fields =
+      action.mutation === undefined
+        ? target.type.fields
+        : ((this.schema[target.ns] as Schema).mutations[action.mutation]?.params ?? {});
     const serverOwned = (def: FieldDef) =>
       def.kind === 'scalar' &&
       (def.readonly === true || def.serverSet === 'both' || def.serverSet === action.kind);
@@ -609,6 +614,14 @@ class Compiler {
     }
     for (const [field, r] of extras) put(field, r);
     return { params, late, lists };
+  }
+
+  /** The id fields to read back from a custom mutation: those its result declares. */
+  #returned(target: Target, mutation: string): Record<string, true> {
+    const returns = (this.schema[target.ns] as Schema).mutations[mutation]?.returns;
+    const row = returns?.kind === 'list' ? returns.of : returns;
+    const has = (f: string) => row?.kind === 'struct' && Object.hasOwn(row.fields, f);
+    return { ...(has('id') ? { id: true } : {}), ...(has('shortId') ? { shortId: true } : {}) };
   }
 
   /** An absent param's value: its default, or undefined when it is optional. */

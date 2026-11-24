@@ -7,6 +7,7 @@ import type {
   ActHelp,
   ActionParamDecl,
   FieldDef,
+  MutationSchema,
   Schema,
   TypeSchema
 } from '@mnmal-ai/substrate-types';
@@ -61,12 +62,28 @@ export function typesHelp(schema: Readonly<Record<string, Schema>>): ActHelp {
 }
 
 /** `? Type`: its declared actions with their params, and its fields. */
-export function typeHelp(qualified: string, type: TypeSchema): ActHelp {
+export function typeHelp(
+  qualified: string,
+  type: TypeSchema,
+  mutations: Record<string, MutationSchema> = {}
+): ActHelp {
   return {
     type: qualified,
     actions: mapValues(type.actions ?? {}, (a) => ({
       kind: a.kind,
-      params: mapValues(a.params, paramHelp),
+      ...(a.mutation !== undefined ? { mutation: a.mutation } : {}),
+      // A mutation action also takes that mutation's own params, bar the `id` a reference fills.
+      params: {
+        ...(a.mutation === undefined
+          ? {}
+          : mapValues(
+              Object.fromEntries(
+                Object.entries(mutations[a.mutation]?.params ?? {}).filter(([p]) => p !== 'id')
+              ),
+              (def, p) => ({ type: fieldType(def), required: isRequired(p, def) })
+            )),
+        ...mapValues(a.params, paramHelp)
+      },
       ...(a.pending !== undefined ? { pending: a.pending } : {})
     })),
     fields: mapValues(type.fields, (def, name) => ({

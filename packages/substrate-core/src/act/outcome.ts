@@ -71,10 +71,19 @@ export function stepOutcome(
     const hasMore = envelope._pagination?.[step.key]?.hasMore === true;
     return { ...base, rows, truncated: hasMore || rows.length < all.length };
   }
-  const row = data as Row | null | undefined;
-  if (row === null || row === undefined) return { ...base, touched: [] };
-  const shortId = typeof row.shortId === 'number' ? { shortId: row.shortId } : {};
-  return { ...base, touched: [{ id: String(row.id), ...shortId }] };
+  // A custom mutation may answer with several rows, or with nothing that has an id.
+  const rows = (Array.isArray(data) ? data : [data]) as Array<Row | null | undefined>;
+  const touched = rows.flatMap((row) =>
+    row === null || typeof row !== 'object' || row.id === undefined || row.id === null
+      ? []
+      : [
+          {
+            id: String(row.id),
+            ...(typeof row.shortId === 'number' ? { shortId: row.shortId } : {})
+          }
+        ]
+  );
+  return { ...base, touched };
 }
 
 /** The `find` outcomes for a reply's `found`: none when there are none, or more than `MAX_INLINE_ROWS` rows. */
