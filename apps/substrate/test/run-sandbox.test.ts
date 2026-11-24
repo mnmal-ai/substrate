@@ -156,6 +156,32 @@ describe('runSandboxed', () => {
     expect(r).toMatchObject({ ok: true, result: 0 });
   });
 
+  it('gives the script no way to signal a process', async () => {
+    // Signal 0 only probes, so a script that could send it could send any other.
+    const probe = (call: string) =>
+      run(
+        `export default async (s) => { try { ${call}; return 'sent'; } catch (e) { return e.message; } };`,
+        { args: { pid: process.pid } }
+      );
+    // `_debugProcess` sends a real SIGUSR1, so it is aimed at a pid nothing holds.
+    const nobody = 4_194_303;
+    for (const call of [
+      'process.kill(s.args.pid, 0)',
+      'process._kill(s.args.pid, 0)',
+      "(await import('node:process')).kill(s.args.pid, 0)",
+      `process._debugProcess(${nobody})`,
+      `process._debugEnd(${nobody})`,
+      "process.binding('process_wrap')",
+      "process._linkedBinding('process_wrap')",
+      "process.dlopen({ exports: {} }, '/nonexistent.node')"
+    ]) {
+      expect(await probe(call)).toMatchObject({
+        ok: true,
+        result: 'a script cannot signal a process'
+      });
+    }
+  });
+
   it('kills a script that runs past the timeout', async () => {
     const t0 = performance.now();
     const r = await run(`export default async () => { for (;;) {} };`, { timeoutMs: 500 });

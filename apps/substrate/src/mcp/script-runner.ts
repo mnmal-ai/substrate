@@ -2,8 +2,8 @@
  * Child entry for a sandboxed `run`: imports the script and hands its default
  * export a ScriptContext whose every call goes to the parent over IPC. The
  * child runs under `--permission` with no fs beyond this file and the script,
- * no network, no child processes and no workers, so the store, reached through
- * the parent, is all a script can touch.
+ * no network, no child processes and no workers, and its `process` can send no
+ * signal, so the store, reached through the parent, is all a script can touch.
  *
  * Imports node builtins only: any other import would need fs access the
  * sandbox does not grant.
@@ -52,6 +52,26 @@ process.on('message', (m: Start | Reply) => {
 });
 
 async function start(m: Start): Promise<void> {
+  // `--permission` does not cover signals. Without this a script could signal
+  // any other process of the user the server runs as: `_debugProcess` sends
+  // SIGUSR1, and the binding loaders reach the same syscall.
+  for (const name of [
+    'kill',
+    '_kill',
+    '_debugProcess',
+    '_debugEnd',
+    'binding',
+    '_linkedBinding',
+    'dlopen'
+  ]) {
+    Object.defineProperty(process, name, {
+      value: () => {
+        throw new Error('a script cannot signal a process');
+      },
+      writable: false,
+      configurable: false
+    });
+  }
   const s = Object.freeze({
     kid: m.kid,
     mode: m.mode,
