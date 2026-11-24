@@ -178,7 +178,9 @@ describe('runCheckEnums', () => {
   });
 
   it('prints a stored value as one line with no escape or control bytes', async () => {
-    const { fetchImpl } = harness({ 'cortext/Todo': [{ status: 'x\u001b[2J\u0007\n  DRIFT  forged' }] });
+    const { fetchImpl } = harness({
+      'cortext/Todo': [{ status: 'x\u001b[2J\u0007\n  DRIFT  forged' }]
+    });
     const sink = capture();
     await runCheckEnums([], { baseUrl: 'https://h', fetchImpl, write: sink.write });
     expect(sink.out).toContain("stored:   'x   DRIFT  forged'");

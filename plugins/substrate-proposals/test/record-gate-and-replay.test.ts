@@ -166,35 +166,38 @@ describe('proposal records', () => {
   it.each([
     ['a field proposed on it', { field: true }],
     ['a size hint on its row', { expectedSize: 'large' }]
-  ])('never let a type take the keys of one whose name differs in case, with %s', async (_what, how) => {
-    const ds = new MemoryDataset({ namespace: 'app' });
-    const str = { kind: 'scalar', type: 'string' };
-    await ds.write('TypeProposal', [
-      row({ id: 'first', typeName: 'Note', fieldsJson: JSON.stringify({ body: str }) }),
-      row({
-        id: 'twin',
-        typeName: 'note',
-        proposedAt: T1,
-        appliedAt: T1,
-        fieldsJson: JSON.stringify({ t: str }),
-        ...('expectedSize' in how ? { expectedSize: how.expectedSize } : {})
-      })
-    ]);
-    if ('field' in how) {
-      await ds.write('FieldProposal', [
-        row({ id: 'f', targetType: 'note', fieldName: 'x', fieldSpecJson: JSON.stringify(str) })
+  ])(
+    'never let a type take the keys of one whose name differs in case, with %s',
+    async (_what, how) => {
+      const ds = new MemoryDataset({ namespace: 'app' });
+      const str = { kind: 'scalar', type: 'string' };
+      await ds.write('TypeProposal', [
+        row({ id: 'first', typeName: 'Note', fieldsJson: JSON.stringify({ body: str }) }),
+        row({
+          id: 'twin',
+          typeName: 'note',
+          proposedAt: T1,
+          appliedAt: T1,
+          fieldsJson: JSON.stringify({ t: str }),
+          ...('expectedSize' in how ? { expectedSize: how.expectedSize } : {})
+        })
       ]);
+      if ('field' in how) {
+        await ds.write('FieldProposal', [
+          row({ id: 'f', targetType: 'note', fieldName: 'x', fieldSpecJson: JSON.stringify(str) })
+        ]);
+      }
+      const { engine } = await boot(ds);
+      expect(engine.registryFor('app')?.has('note')).toBe(false);
+      const env = await engine.mutate({
+        frame: { 'app/createNote': { params: { body: 'kept' }, fields: { id: true } } },
+        ctx: ctx(['read', 'mutate'])
+      });
+      expect(env.errors ?? []).toEqual([]);
+      expect((await ds.read('Note', {})).rows).toHaveLength(1);
+      expect((await ds.read('note', {})).rows).toHaveLength(0);
     }
-    const { engine } = await boot(ds);
-    expect(engine.registryFor('app')?.has('note')).toBe(false);
-    const env = await engine.mutate({
-      frame: { 'app/createNote': { params: { body: 'kept' }, fields: { id: true } } },
-      ctx: ctx(['read', 'mutate'])
-    });
-    expect(env.errors ?? []).toEqual([]);
-    expect((await ds.read('Note', {})).rows).toHaveLength(1);
-    expect((await ds.read('note', {})).rows).toHaveLength(0);
-  });
+  );
 
   it('never replay a namespace propose_namespace would refuse', async () => {
     const control = new MemoryDataset({ namespace: '_system_proposals' });
