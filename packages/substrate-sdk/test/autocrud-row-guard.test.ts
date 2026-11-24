@@ -28,6 +28,12 @@ async function setup(filterWriteLimits?: { maxMatch: number; idsCap: number }) {
     policy: OWNER_ONLY,
     purgeable: true
   });
+  installAutoCrud(registry, 'Link', dataset, edges, {
+    fields: {
+      id: { kind: 'scalar', type: 'string' },
+      note: { kind: 'crossRef', ns: 'app', type: 'Note', onDelete: 'set_null' }
+    }
+  });
   const datasets = new MemoryDatasetRegistry();
   datasets.set('app', dataset);
   const engine = new Engine({
@@ -66,7 +72,7 @@ describe('autoCRUD row guard', () => {
     expect(await title(dataset)).toBe('secret');
   });
 
-  it('answers a delete of a hidden row exactly as a delete of a missing one', async () => {
+  it('answers a write to a hidden row exactly as a write to a missing one', async () => {
     const { engine } = await setup();
     const answer = async (key: string, params: Record<string, unknown>) => {
       const env = await engine.mutate({
@@ -82,6 +88,8 @@ describe('autoCRUD row guard', () => {
       );
     };
     for (const [key, extra] of [
+      ['app/updateNote', { title: 'x' }],
+      ['app/updateNote', { nosuch: 1 }],
       ['app/deleteNote', {}],
       ['app/deleteNote', { nosuch: 1 }]
     ] as const) {
@@ -120,6 +128,22 @@ describe('autoCRUD row guard', () => {
 
     await dataset.write('Note', [{ id: 'b4', owner: 'bob', title: 'mine' }]);
     expect((await probe('no such title')).errors[0]?.code).toBe('filter_too_broad');
+  });
+
+  it('refuses a reference to a hidden row exactly as a reference to a missing one', async () => {
+    const { engine, dataset } = await setup();
+    const link = async (who: string, note: string) => {
+      const env = await engine.mutate({
+        frame: { 'app/createLink': { params: { note }, fields: { id: true } } },
+        ctx: as(who)
+      });
+      return (env.errors ?? []).map((e) => e.code);
+    };
+    expect(await link('bob', 'n1')).toEqual(['missing_referent']);
+    expect(await link('bob', 'absent')).toEqual(['missing_referent']);
+    expect((await dataset.read('Link', {})).rows).toHaveLength(0);
+    // The owner can reference its own row.
+    expect(await link('alice', 'n1')).toEqual([]);
   });
 
   it('does not delete a row the caller cannot read', async () => {

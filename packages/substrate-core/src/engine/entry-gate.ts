@@ -40,7 +40,7 @@ import {
   WALKS_UNSUPPORTED_STORE
 } from '@mnmal-ai/substrate-types';
 import type { WalkResolvers } from '../filter/walk-validator.js';
-import { evaluatePolicy } from '../policy-evaluator.js';
+import { applyObligations, evaluatePolicy } from '../policy-evaluator.js';
 import { hopResolver, type WalkedType, walkedTypes } from '../walk-types.js';
 import { cursorBinding, isSealedCursor, openCursor } from './cursor-seal.js';
 import { type FilterGuardDeps, runFilterGuard } from './filter-guard.js';
@@ -521,6 +521,22 @@ export class EntryGate {
       afterTx,
       txEntries
     );
+    if (operation === 'mutate') {
+      args.readableRows = (targetNs, type, rows) => {
+        // A type the registry does not hold has no policy to apply.
+        if (this.#namespaces.get(targetNs)?.registry.get(type)?.kind !== 'type') return rows;
+        const read = this.evaluateEntryPolicy(
+          targetNs,
+          type,
+          ctxBase.identity ?? null,
+          'query',
+          ctxBase
+        );
+        return read.allow
+          ? applyObligations(read, rows, { ...ctxBase, namespace: targetNs, operation: 'query' })
+          : [];
+      };
+    }
     const decision = evaluatePolicy(registryEntry.policy, ctx, args);
 
     if (!decision.allow) {

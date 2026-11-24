@@ -143,6 +143,13 @@ export interface ResolverArgs {
    */
   resolveDataset?: (ns: string) => Dataset | undefined;
   /**
+   * Engine-injected on mutate: of `rows` of `ns/type`, the ones this caller
+   * may read under that type's own read policy and row filters. A resolver
+   * that checks a reference asks it, so a row the caller cannot read answers
+   * as a missing one. Absent outside the engine; treat every row as readable then.
+   */
+  readableRows?: (ns: string, type: string, rows: Row[]) => Row[];
+  /**
    * Engine-injected on mutate: how many frame entries share this call's
    * transaction, itself included. A resolver whose effect waits on other
    * transactions (a concurrent index drop) refuses to share one.
